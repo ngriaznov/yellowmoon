@@ -19,6 +19,21 @@ ym-ml.workspace = true
 ym-looks.workspace = true
 ym-export.workspace = true
 thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+# The unit of the decoder's quantisation-step plane (read for the clip mask and the noise estimate).
+half.workspace = true
+# Parallel metadata probes when files are opened, and the 1/8 preview binning.
+rayon.workspace = true
+tracing.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+# The synthetic ARW writer (`ym_raw::testgen`) behind the session and estimate tests.
+ym-raw = { workspace = true, features = ["testgen"] }
+# JSON Schema validation of settings documents against `schema/settings.schema.json` (MIT; default
+# features, which resolve references over HTTP and from files, are off, as in ym-profiles).
+jsonschema = { version = "0.58", default-features = false }
+# Decodes the embedded JPEG previews of real files for the auto-exposure comparison in
+# tests/real_files.rs (MIT OR Apache-2.0 OR Zlib; the same version as ym-color's dev-dependency).
+zune-jpeg = "0.5"

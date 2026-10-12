@@ -4032,7 +4032,16 @@ name = "golden"
 version = "0.0.1"
 dependencies = [
  "anyhow",
+ "assert_cmd",
  "clap",
+ "hex",
+ "predicates",
+ "rayon",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tempfile",
+ "ym-raw",
 ]
 
 [[package]]
@@ -6362,6 +6371,7 @@ dependencies = [
  "clap",
  "half",
  "hex",
+ "predicates",
  "rawler",
  "serde_json",
  "sha2 0.11.0",
@@ -11089,8 +11099,14 @@ dependencies = [
 name = "ym-core"
 version = "0.0.1"
 dependencies = [
+ "half",
+ "jsonschema",
+ "rayon",
+ "serde",
+ "serde_json",
  "tempfile",
  "thiserror 2.0.21",
+ "tracing",
  "ym-color",
  "ym-export",
  "ym-gpu",
@@ -11099,6 +11115,7 @@ dependencies = [
  "ym-noise",
  "ym-profiles",
  "ym-raw",
+ "zune-jpeg",
 ]
 
 [[package]]

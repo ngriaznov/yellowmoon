@@ -1,0 +1,227 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ngriaznov/yellowmoon/crates/ym-core/schema/settings.schema.json",
+  "title": "Yellowmoon DevelopSettings",
+  "description": "The settings of one photo (docs/01 section DevelopSettings): the JSON of the ym:Settings XMP property, of `ym render --settings`, of the golden-image manifest and of the IPC types in src/api/types.ts. Every property is optional when reading (a missing one takes its default, shown here); unknown properties are refused. Values outside their ranges are clamped by the core, not refused; the ranges here are the ones the core clamps to. Not expressible in JSON Schema and checked by the core: colour-balance points lie in the unit disc (a longer vector is scaled back to its circle), curve points are sorted by x with no two at the same x (a curve is sorted when read), a crop rectangle lies in the unit square (it is moved or shrunk to fit).",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "look": {
+      "description": "Look id: builtin:<slug>, user:<slug>, arri:<group number>:<slug> or arri-display:<input>:<target>. Default: the user's default look, builtin:neutral out of the box.",
+      "type": "string",
+      "pattern": "^(?:(?:builtin|user):[^:\\s]+|arri:[0-9]+:[^:\\s]+|arri-display:[^:\\s]+:[^:\\s]+)$",
+      "default": "builtin:neutral"
+    },
+    "look_intensity": { "type": "number", "minimum": 0, "maximum": 100, "default": 100 },
+    "exposure": { "$ref": "#/$defs/exposure" },
+    "contrast": { "$ref": "#/$defs/percent" },
+    "brightness": { "$ref": "#/$defs/percent" },
+    "highlights": { "$ref": "#/$defs/percent" },
+    "shadows": { "$ref": "#/$defs/percent" },
+    "white": { "$ref": "#/$defs/percent" },
+    "black": { "$ref": "#/$defs/percent" },
+    "light_source": {
+      "description": "Colour > White balance presets.",
+      "enum": ["auto", "day", "shade", "tungsten", "led", "fluorescent"],
+      "default": "auto"
+    },
+    "white_balance": { "$ref": "#/$defs/white_balance" },
+    "color_balance": {
+      "description": "Three wheels, each a point [a, b] in the unit disc.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "shadows": { "$ref": "#/$defs/disc_point" },
+        "midtones": { "$ref": "#/$defs/disc_point" },
+        "highlights": { "$ref": "#/$defs/disc_point" }
+      }
+    },
+    "saturation": { "$ref": "#/$defs/percent" },
+    "sharpen": { "$ref": "#/$defs/sharpen" },
+    "noise_reduction": { "$ref": "#/$defs/noise_reduction" },
+    "curve": {
+      "description": "Luma, red, green and blue curves, 2 to 16 control points each.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "luma": { "$ref": "#/$defs/curve" },
+        "red": { "$ref": "#/$defs/curve" },
+        "green": { "$ref": "#/$defs/curve" },
+        "blue": { "$ref": "#/$defs/curve" }
+      }
+    },
+    "decode": {
+      "description": "RAW > Decode switches; all true by default.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "neural_demosaic": { "type": "boolean", "default": true },
+        "highlight_recovery": { "type": "boolean", "default": true },
+        "lens_corrections": { "type": "boolean", "default": true },
+        "chromatic_aberration": { "type": "boolean", "default": true }
+      }
+    },
+    "rolloff": {
+      "description": "RAW > Roll-off, each 0 to 1.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "highlights": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.5 },
+        "low_light": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.5 }
+      }
+    },
+    "crop": {
+      "description": "The crop, or null for none.",
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["rect", "angle_deg", "aspect"],
+          "properties": {
+            "rect": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["x", "y", "width", "height"],
+              "properties": {
+                "x": { "type": "number", "minimum": 0, "maximum": 1 },
+                "y": { "type": "number", "minimum": 0, "maximum": 1 },
+                "width": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 },
+                "height": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 }
+              }
+            },
+            "angle_deg": { "type": "number", "minimum": -45, "maximum": 45 },
+            "aspect": { "enum": ["free", "original", "square", "four_by_five", "sixteen_by_nine"] }
+          }
+        }
+      ],
+      "default": null
+    },
+    "orientation": {
+      "description": "Rotation after the camera's EXIF orientation, in degrees clockwise. Any multiple of 90 is read and normalised.",
+      "type": "integer",
+      "multipleOf": 90,
+      "default": 0
+    },
+    "white_pick": {
+      "description": "Pick white: [x, y] in [0, 1]^2 on the photo as the camera oriented it, or null.",
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "array",
+          "prefixItems": [
+            { "type": "number", "minimum": 0, "maximum": 1 },
+            { "type": "number", "minimum": 0, "maximum": 1 }
+          ],
+          "items": false,
+          "minItems": 2
+        }
+      ],
+      "default": null
+    }
+  },
+  "$defs": {
+    "percent": { "type": "number", "minimum": -100, "maximum": 100, "default": 0 },
+    "exposure": {
+      "description": "Auto, or an absolute exposure in stops (the UI steps by 0.01).",
+      "oneOf": [
+        { "$ref": "#/$defs/auto" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "ev"],
+          "properties": {
+            "kind": { "const": "manual" },
+            "ev": { "type": "number", "minimum": -4, "maximum": 4 }
+          }
+        }
+      ],
+      "default": { "kind": "auto" }
+    },
+    "white_balance": {
+      "description": "Auto, or Kelvin and tint (the UI steps Kelvin by 50; positive tint is magenta).",
+      "oneOf": [
+        { "$ref": "#/$defs/auto" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "kelvin", "tint"],
+          "properties": {
+            "kind": { "const": "manual" },
+            "kelvin": { "type": "number", "minimum": 2000, "maximum": 11000 },
+            "tint": { "type": "number", "minimum": -50, "maximum": 50 }
+          }
+        }
+      ],
+      "default": { "kind": "auto" }
+    },
+    "sharpen": {
+      "description": "Auto, or an amount and a radius in pixels.",
+      "oneOf": [
+        { "$ref": "#/$defs/auto" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "amount", "radius_px"],
+          "properties": {
+            "kind": { "const": "manual" },
+            "amount": { "type": "number", "minimum": 0, "maximum": 300 },
+            "radius_px": { "type": "number", "minimum": 0.3, "maximum": 2.5 }
+          }
+        }
+      ],
+      "default": { "kind": "auto" }
+    },
+    "noise_reduction": {
+      "description": "Auto, or luminance, colour and detail strengths.",
+      "oneOf": [
+        { "$ref": "#/$defs/auto" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "luminance", "color", "detail"],
+          "properties": {
+            "kind": { "const": "manual" },
+            "luminance": { "type": "number", "minimum": 0, "maximum": 100 },
+            "color": { "type": "number", "minimum": 0, "maximum": 100 },
+            "detail": { "type": "number", "minimum": 0, "maximum": 100 }
+          }
+        }
+      ],
+      "default": { "kind": "auto" }
+    },
+    "auto": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind"],
+      "properties": { "kind": { "const": "auto" } }
+    },
+    "disc_point": {
+      "description": "[a, b] with a^2 + b^2 <= 1 (the core scales a longer vector back to the circle).",
+      "type": "array",
+      "prefixItems": [
+        { "type": "number", "minimum": -1, "maximum": 1 },
+        { "type": "number", "minimum": -1, "maximum": 1 }
+      ],
+      "items": false,
+      "minItems": 2,
+      "default": [0, 0]
+    },
+    "curve": {
+      "description": "2 to 16 control points [x, y] in [0, 1]^2, x strictly increasing. Default: the identity [[0, 0], [1, 1]].",
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 16,
+      "items": {
+        "type": "array",
+        "prefixItems": [
+          { "type": "number", "minimum": 0, "maximum": 1 },
+          { "type": "number", "minimum": 0, "maximum": 1 }
+        ],
+        "items": false,
+        "minItems": 2
+      },
+      "default": [[0, 0], [1, 1]]
+    }
+  }
+}
