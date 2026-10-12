@@ -1,0 +1,126 @@
+{
+  "schema_version": 1,
+  "description": "Conversion-gain switch ISO, base ISO and 'processed Hi ISO' thresholds per body (docs/06-noise.md, section Priors, Gain regimes). The table is our own, taken from public measurements quoted in docs/06 and research/notes/noise-estimation.md; every row is to be confirmed on samples, and data from public_priors.py overrides it. switch_iso: the high-gain regime starts at this ISO (null = no break, wide prior). base_iso: ISOs below it use the gain of base_iso (null = 100). processed_hi_iso_above: ISOs above this look processed, so the prior is widened (null = not known).",
+  "bodies": [
+    {
+      "model_id": 384,
+      "model": "ILCE-1",
+      "body": "Sony A1",
+      "switch_iso": 500,
+      "base_iso": null,
+      "processed_hi_iso_above": 16000,
+      "source": "docs/06 table, to be confirmed on samples"
+    },
+    {
+      "model_id": 400,
+      "model": "ILCE-1M2",
+      "body": "Sony A1 II",
+      "switch_iso": 500,
+      "base_iso": null,
+      "processed_hi_iso_above": null,
+      "source": "docs/06 table, to be confirmed on samples",
+      "note": "docs/06 gives 500; a forum post quoted in research/notes/noise-estimation.md claims 640"
+    },
+    {
+      "model_id": 363,
+      "model": "ILCE-7M3",
+      "body": "Sony A7 III",
+      "switch_iso": 640,
+      "base_iso": null,
+      "processed_hi_iso_above": 64000,
+      "source": "docs/06 table, to be confirmed on samples"
+    },
+    {
+      "model_id": 388,
+      "model": "ILCE-7M4",
+      "body": "Sony A7 IV",
+      "switch_iso": 400,
+      "base_iso": null,
+      "processed_hi_iso_above": 64000,
+      "source": "docs/06 table, to be confirmed on samples",
+      "note": "docs/06 gives the switch as approximate (~400)"
+    },
+    {
+      "model_id": 407,
+      "model": "ILCE-7M5",
+      "body": "Sony A7 V",
+      "switch_iso": 1000,
+      "base_iso": null,
+      "processed_hi_iso_above": null,
+      "source": "docs/06 table, to be confirmed on samples"
+    },
+    {
+      "model_id": 375,
+      "model": "ILCE-7RM4",
+      "body": "Sony A7R IV",
+      "switch_iso": 320,
+      "base_iso": null,
+      "processed_hi_iso_above": null,
+      "source": "docs/06 table, to be confirmed on samples"
+    },
+    {
+      "model_id": 390,
+      "model": "ILCE-7RM5",
+      "body": "Sony A7R V",
+      "switch_iso": 320,
+      "base_iso": null,
+      "processed_hi_iso_above": 16000,
+      "source": "docs/06 table, to be confirmed on samples"
+    },
+    {
+      "model_id": 383,
+      "model": "ILCE-7SM3",
+      "body": "Sony A7S III",
+      "switch_iso": 1600,
+      "base_iso": null,
+      "processed_hi_iso_above": 128000,
+      "source": "docs/06 table, to be confirmed on samples"
+    },
+    {
+      "model_id": 381,
+      "model": "ILCE-7C",
+      "body": "Sony A7C",
+      "switch_iso": 640,
+      "base_iso": null,
+      "processed_hi_iso_above": null,
+      "source": "docs/06 table, to be confirmed on samples"
+    },
+    {
+      "model_id": 397,
+      "model": "ILCE-7CM2",
+      "body": "Sony A7C II",
+      "switch_iso": 400,
+      "base_iso": null,
+      "processed_hi_iso_above": null,
+      "source": "docs/06 table, to be confirmed on samples"
+    },
+    {
+      "model_id": 358,
+      "model": "ILCE-9",
+      "body": "Sony A9",
+      "switch_iso": 500,
+      "base_iso": null,
+      "processed_hi_iso_above": null,
+      "source": "docs/06 table, to be confirmed on samples"
+    },
+    {
+      "model_id": 376,
+      "model": "ILCE-9M2",
+      "body": "Sony A9 II",
+      "switch_iso": 640,
+      "base_iso": null,
+      "processed_hi_iso_above": null,
+      "source": "docs/06 table, to be confirmed on samples"
+    },
+    {
+      "model_id": 392,
+      "model": "ILCE-9M3",
+      "body": "Sony A9 III",
+      "switch_iso": 800,
+      "base_iso": 250,
+      "processed_hi_iso_above": 16000,
+      "source": "docs/06 table, to be confirmed on samples",
+      "note": "docs/06: switch at 800, base ISO 250"
+    }
+  ]
+}

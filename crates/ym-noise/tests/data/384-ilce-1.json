@@ -1,0 +1,222 @@
+{
+  "schema_version": 1,
+  "model_id": 384,
+  "model": "ILCE-1",
+  "body": "Sony A1",
+  "regimes": [
+    {
+      "name": "low-gain",
+      "iso_min": 100,
+      "iso_max": 499,
+      "a": {
+        "alpha": 0.976063,
+        "beta": -14.903988,
+        "sigma_log": 0.25,
+        "n_isos": 7,
+        "n_files": 9,
+        "rms_log_residual": 0.038199
+      },
+      "b": {
+        "gamma": 0.501262,
+        "beta": -21.635136,
+        "sigma_rel": 0.4,
+        "n_isos": 7,
+        "n_files": 9,
+        "rms_log_residual": 0.044176
+      }
+    },
+    {
+      "name": "high-gain",
+      "iso_min": 500,
+      "iso_max": null,
+      "a": {
+        "alpha": 1.003577,
+        "beta": -15.046988,
+        "sigma_log": 0.25,
+        "n_isos": 8,
+        "n_files": 9,
+        "rms_log_residual": 0.022381
+      },
+      "b": {
+        "gamma": 1.202873,
+        "beta": -27.78914,
+        "sigma_rel": 0.4,
+        "n_isos": 8,
+        "n_files": 9,
+        "rms_log_residual": 0.047042
+      }
+    }
+  ],
+  "provenance": {
+    "kind": "public-data prior (M2-01)",
+    "method": "prior-free ym-noise estimate per file (crates/ym-noise/examples/estimate_arw.rs); ln a = alpha ln ISO + beta per gain regime from 5 or more ISOs, b = exp(beta) ISO^gamma from 3 or more; files kept when the smooth bins cover at least 60% of the intensity range and the raw is not flagged as filtered",
+    "script": "training/noise/public_priors.py",
+    "corpus": "synthetic estimates (training/noise/test_public_priors.py); not real files",
+    "files": [
+      {
+        "file": "A1_50_0.ARW",
+        "iso": 50,
+        "gain_iso": 100.0,
+        "regime": 0,
+        "a": 2.9694509699700395e-05,
+        "b": 4.124646222519074e-09,
+        "coverage": 0.8
+      },
+      {
+        "file": "A1_100_0.ARW",
+        "iso": 100,
+        "gain_iso": 100.0,
+        "regime": 0,
+        "a": 2.9729907779491354e-05,
+        "b": 3.925093826463102e-09,
+        "coverage": 0.8
+      },
+      {
+        "file": "A1_100_1.ARW",
+        "iso": 100,
+        "gain_iso": 100.0,
+        "regime": 0,
+        "a": 2.890448155054504e-05,
+        "b": 3.9491337231840014e-09,
+        "coverage": 0.8
+      },
+      {
+        "file": "A1_125_0.ARW",
+        "iso": 125,
+        "gain_iso": 125.0,
+        "regime": 0,
+        "a": 3.9205522940671257e-05,
+        "b": 4.587406986829172e-09,
+        "coverage": 0.8
+      },
+      {
+        "file": "A1_160_0.ARW",
+        "iso": 160,
+        "gain_iso": 160.0,
+        "regime": 0,
+        "a": 5.003266909982079e-05,
+        "b": 5.135772855228062e-09,
+        "coverage": 0.8
+      },
+      {
+        "file": "A1_200_0.ARW",
+        "iso": 200,
+        "gain_iso": 200.0,
+        "regime": 0,
+        "a": 6.095496712024437e-05,
+        "b": 5.72010722603069e-09,
+        "coverage": 0.8
+      },
+      {
+        "file": "A1_250_0.ARW",
+        "iso": 250,
+        "gain_iso": 250.0,
+        "regime": 0,
+        "a": 7.016471943323024e-05,
+        "b": 6.6575715450544044e-09,
+        "coverage": 0.8
+      },
+      {
+        "file": "A1_320_0.ARW",
+        "iso": 320,
+        "gain_iso": 320.0,
+        "regime": 0,
+        "a": 9.796434493775297e-05,
+        "b": 7.372809552744984e-09,
+        "coverage": 0.8
+      },
+      {
+        "file": "A1_400_0.ARW",
+        "iso": 400,
+        "gain_iso": 400.0,
+        "regime": 0,
+        "a": 0.00011214998875605373,
+        "b": 7.20523795043618e-09,
+        "coverage": 0.8
+      },
+      {
+        "file": "A1_500_0.ARW",
+        "iso": 500,
+        "gain_iso": 500.0,
+        "regime": 1,
+        "a": 0.00014475616124853631,
+        "b": 1.4584493052274467e-09,
+        "coverage": 0.8
+      },
+      {
+        "file": "A1_640_0.ARW",
+        "iso": 640,
+        "gain_iso": 640.0,
+        "regime": 1,
+        "a": 0.000194360214216592,
+        "b": 2.011624285146489e-09,
+        "coverage": 0.8
+      },
+      {
+        "file": "A1_800_0.ARW",
+        "iso": 800,
+        "gain_iso": 800.0,
+        "regime": 1,
+        "a": 0.0002450538345535989,
+        "b": 2.5368810113849867e-09,
+        "coverage": 0.8
+      },
+      {
+        "file": "A1_800_1.ARW",
+        "iso": 800,
+        "gain_iso": 800.0,
+        "regime": 1,
+        "a": 0.000242981922923102,
+        "b": 2.6996408126655404e-09,
+        "coverage": 0.8
+      },
+      {
+        "file": "A1_1250_0.ARW",
+        "iso": 1250,
+        "gain_iso": 1250.0,
+        "regime": 1,
+        "a": 0.0003652129222274179,
+        "b": 4.993144169357716e-09,
+        "coverage": 0.8
+      },
+      {
+        "file": "A1_2000_0.ARW",
+        "iso": 2000,
+        "gain_iso": 2000.0,
+        "regime": 1,
+        "a": 0.0006135084450695998,
+        "b": 8.506568720809526e-09,
+        "coverage": 0.8
+      },
+      {
+        "file": "A1_3200_0.ARW",
+        "iso": 3200,
+        "gain_iso": 3200.0,
+        "regime": 1,
+        "a": 0.0009364723230865088,
+        "b": 1.331181175227324e-08,
+        "coverage": 0.8
+      },
+      {
+        "file": "A1_6400_0.ARW",
+        "iso": 6400,
+        "gain_iso": 6400.0,
+        "regime": 1,
+        "a": 0.0018937581972994868,
+        "b": 3.176655584358563e-08,
+        "coverage": 0.8
+      },
+      {
+        "file": "A1_12800_0.ARW",
+        "iso": 12800,
+        "gain_iso": 12800.0,
+        "regime": 1,
+        "a": 0.003938325040906176,
+        "b": 7.455085911126414e-08,
+        "coverage": 0.8
+      }
+    ],
+    "excluded": [],
+    "notes": []
+  }
+}

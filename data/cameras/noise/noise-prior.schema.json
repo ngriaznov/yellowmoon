@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ngriaznov/yellowmoon/data/cameras/noise/noise-prior.schema.json",
+  "title": "Yellowmoon per-body noise prior (docs/06-noise.md, section Priors)",
+  "description": "data/cameras/noise/<model-id>-<model>.json: statistics fitted by training/noise/public_priors.py from public files. Read by ym_noise::priors::PriorStore.",
+  "type": "object",
+  "required": ["schema_version", "model_id", "model", "body", "regimes", "provenance"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "const": 1 },
+    "model_id": { "type": "integer", "minimum": 0, "description": "Sony model ID (maker note tag 0xB001); the file name starts with it." },
+    "model": { "type": "string", "minLength": 1, "description": "IFD0 Model string, for example ILCE-1." },
+    "body": { "type": "string", "minLength": 1, "description": "Display name, for example Sony A1." },
+    "regimes": {
+      "type": "array",
+      "minItems": 1,
+      "description": "Gain regimes in increasing ISO. A regime without a fit of a or b uses the class prior for that parameter.",
+      "items": {
+        "type": "object",
+        "required": ["name", "iso_min", "iso_max", "a", "b"],
+        "additionalProperties": false,
+        "properties": {
+          "name": { "type": "string", "enum": ["low-gain", "high-gain", "all"] },
+          "iso_min": { "type": "integer", "minimum": 1, "description": "First gain ISO of the regime (the base ISO for the lowest regime)." },
+          "iso_max": { "type": ["integer", "null"], "minimum": 1, "description": "Last gain ISO of the regime; null = open-ended." },
+          "a": {
+            "type": ["object", "null"],
+            "description": "ln a = alpha ln(gain ISO) + beta; present when the regime has files at 5 or more ISOs.",
+            "required": ["alpha", "beta", "sigma_log", "n_isos", "n_files", "rms_log_residual"],
+            "additionalProperties": false,
+            "properties": {
+              "alpha": { "type": "number", "minimum": 0.6, "maximum": 1.4 },
+              "beta": { "type": "number" },
+              "sigma_log": { "type": "number", "exclusiveMinimum": 0, "description": "Prior sigma of ln a; 0.25 (docs/06)." },
+              "n_isos": { "type": "integer", "minimum": 5 },
+              "n_files": { "type": "integer", "minimum": 5 },
+              "rms_log_residual": { "type": "number", "minimum": 0 }
+            }
+          },
+          "b": {
+            "type": ["object", "null"],
+            "description": "b = exp(beta) gain_ISO^gamma (gamma = 0 is a constant per regime); present when the regime has files at 3 or more ISOs.",
+            "required": ["gamma", "beta", "sigma_rel", "n_isos", "n_files", "rms_log_residual"],
+            "additionalProperties": false,
+            "properties": {
+              "gamma": { "type": "number", "minimum": 0, "maximum": 2 },
+              "beta": { "type": "number" },
+              "sigma_rel": { "type": "number", "exclusiveMinimum": 0, "description": "Relative prior sigma of b; 0.40 (docs/06)." },
+              "n_isos": { "type": "integer", "minimum": 3 },
+              "n_files": { "type": "integer", "minimum": 3 },
+              "rms_log_residual": { "type": "number", "minimum": 0 }
+            }
+          }
+        }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "required": ["kind", "method", "script", "files"],
+      "description": "Where the statistics come from: the method, the script, and one row per source file (statistics only, never the files).",
+      "properties": {
+        "kind": { "type": "string" },
+        "method": { "type": "string" },
+        "script": { "type": "string" },
+        "corpus": { "type": "string" },
+        "corpus_sha256_by_file": { "type": "object", "additionalProperties": { "type": "string", "pattern": "^[0-9a-f]{64}$" } },
+        "files": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["file", "iso", "gain_iso", "regime", "a", "b", "coverage"],
+            "properties": {
+              "file": { "type": "string" },
+              "iso": { "type": "integer" },
+              "gain_iso": { "type": "number" },
+              "regime": { "type": "integer", "minimum": 0 },
+              "a": { "type": "number" },
+              "b": { "type": "number" },
+              "coverage": { "type": "number", "minimum": 0, "maximum": 1 }
+            }
+          }
+        },
+        "excluded": { "type": "array" },
+        "notes": { "type": "array", "items": { "type": "string" } }
+      }
+    }
+  }
+}

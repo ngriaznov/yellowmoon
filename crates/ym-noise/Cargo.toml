@@ -8,3 +8,25 @@ repository.workspace = true
 rust-version.workspace = true
 authors.workspace = true
 publish = false
+
+[dependencies]
+bytemuck.workspace = true
+rand_chacha.workspace = true
+rayon.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+approx.workspace = true
+tempfile.workspace = true
+# Only for examples/estimate_arw.rs, which reads real ARW files through the decoder. The library
+# itself takes a normalised mosaic and does not depend on ym-raw.
+ym-raw.workspace = true
+half.workspace = true
+
+[[example]]
+name = "bench_estimate"
+
+[[example]]
+name = "validate_synthetic"

@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ngriaznov/yellowmoon/data/cameras/noise/gain-regimes.schema.json",
+  "title": "Yellowmoon gain regimes (docs/06-noise.md, section Priors, Gain regimes)",
+  "description": "data/cameras/noise/gain-regimes.json: where each body switches conversion gain, its base ISO and the ISO above which the raw looks processed. Hand-maintained; data from public_priors.py overrides it.",
+  "type": "object",
+  "required": ["schema_version", "description", "bodies"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "const": 1 },
+    "description": { "type": "string" },
+    "bodies": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["model_id", "model", "body", "switch_iso", "base_iso", "processed_hi_iso_above", "source"],
+        "additionalProperties": false,
+        "properties": {
+          "model_id": { "type": "integer", "minimum": 0 },
+          "model": { "type": "string", "minLength": 1 },
+          "body": { "type": "string", "minLength": 1 },
+          "switch_iso": { "type": ["integer", "null"], "minimum": 1, "description": "The high-gain regime starts at this ISO; null = no break." },
+          "base_iso": { "type": ["integer", "null"], "minimum": 1, "description": "ISOs below this use the gain of this ISO; null = 100." },
+          "processed_hi_iso_above": { "type": ["integer", "null"], "minimum": 1, "description": "ISOs above this look processed (prior widened); null = not known." },
+          "source": { "type": "string", "description": "Where the row comes from; every row of the V1 table says 'docs/06 table, to be confirmed on samples'." },
+          "note": { "type": "string" }
+        }
+      }
+    }
+  }
+}
