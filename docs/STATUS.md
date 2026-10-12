@@ -21,9 +21,13 @@ Two facts shape every number below:
 
 | Task | Commit | Notes |
 |---|---|---|
+| M3-02…M3-04 Tauri app: IPC, bindings, fallback viewport, menus, updater | [8244118](https://github.com/ngriaznov/yellowmoon/commit/8244118) | native macOS viewport type-checked only (M0-H4); app and `ym` give identical JPEG bytes on real files |
+| M1-14 `ym` CLI (render, info, looks, doctor) and the `ym` rename | [49e8cee](https://github.com/ngriaznov/yellowmoon/commit/49e8cee) | 109 synthetic files render; `--jobs 1` vs `--jobs 4` byte-identical |
+| ym-core part 3: export queue, preferences, looks service, Core API | [dc9d8c3](https://github.com/ngriaznov/yellowmoon/commit/dc9d8c3) | M3-11, M3-13, M3-14 core half |
+| ym-core part 2: render graph, scheduler, fit/100 %/thumbnail renders | [b960c3e](https://github.com/ngriaznov/yellowmoon/commit/b960c3e) | performance targets need a Mac (see Gate results) |
 | M1-06 illuminant estimator | [2b50516](https://github.com/ngriaznov/yellowmoon/commit/2b50516) | FFCC-style, 11 per-profile models; gate passes on synthetic scenes; Cube++/NUS-8 blocked |
 | Synthetic golden set | [283038a](https://github.com/ngriaznov/yellowmoon/commit/283038a) | 61 ARWs × 5 variants with ALEXA ground truth; stand-in for the CC0 tier |
-| ym-core part 1 (settings, auto estimates, session) | [cd92c88](https://github.com/ngriaznov/yellowmoon/commit/cd92c88) | integration in progress |
+| ym-core part 1 (settings, auto estimates, session) | [cd92c88](https://github.com/ngriaznov/yellowmoon/commit/cd92c88) | |
 | M0-04, M0-05, M2-03, M2-09 ARW container and decoders | [55bc009](https://github.com/ngriaznov/yellowmoon/commit/55bc009) | every V1 variant except ARW 6.0 (gated); 9/9 real files identical to LibRaw |
 | M0-07, GPU halves of M1-09/10/11, C11, C13 | [defd910](https://github.com/ngriaznov/yellowmoon/commit/defd910) | lavapipe only; Metal is M0-H4 |
 | M3-01, M3-05…M3-08 UI, M3-09/11/13 UI, M3-15 | [deebc1c](https://github.com/ngriaznov/yellowmoon/commit/deebc1c) | frontend against the mock; wiring to the real backend in progress |
