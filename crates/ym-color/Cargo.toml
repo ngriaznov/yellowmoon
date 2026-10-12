@@ -8,3 +8,16 @@ repository.workspace = true
 rust-version.workspace = true
 authors.workspace = true
 publish = false
+
+[dependencies]
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
+# Plain timing harness (no criterion): `cargo bench -p ym-color --bench color_cpu`.
+[[bench]]
+name = "color_cpu"
+harness = false

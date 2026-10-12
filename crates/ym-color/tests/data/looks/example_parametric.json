@@ -1,0 +1,25 @@
+{
+  "schema": "yellowmoon.parametric-look/1",
+  "name": "Test warm",
+  "input": "logc4",
+  "cdl": {
+    "slope": [1.04, 1.0, 0.95],
+    "offset": [0.01, 0.0, -0.01],
+    "power": [1.0, 1.0, 1.05],
+    "saturation": 1.05
+  },
+  "hue_vs_sat": [
+    { "hue_deg": 20.0, "value": 1.25 },
+    { "hue_deg": 120.0, "value": 0.85 },
+    { "hue_deg": 250.0, "value": 0.9 }
+  ],
+  "hue_vs_hue": [
+    { "hue_deg": 50.0, "value": -8.0 },
+    { "hue_deg": 200.0, "value": 6.0 }
+  ],
+  "luma_vs_sat": [
+    { "luma": 0.1, "value": 0.7 },
+    { "luma": 0.4, "value": 1.1 },
+    { "luma": 0.9, "value": 0.8 }
+  ]
+}

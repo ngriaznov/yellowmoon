@@ -23,6 +23,22 @@ Application maths is in `docs/02-colour-pipeline.md` (C10). Intensity 0–100% p
 - **Neutral** (default out of the box): identity. Emulated ALEXA colour through our display transform, no creative look.
 - **Signature**: parameters designed by Mykyta in M3 [HUMAN M3-H1] as JSON in `data/looks/builtin/signature.json`: CDL (slope, offset, power, saturation), plus hue-vs-saturation and hue-vs-hue curves and a luma-vs-saturation curve, all evaluated in LogC4. The loader bakes it into a 33³ LUT. Its final name describes its character and avoids ARRI and film-stock names. The agent provides a tuning tool: `yellowmoon looks bake signature.json --preview <ARW>…` that renders a contact sheet.
 
+**Parametric look files (M1-10).** `data/looks/builtin/<name>.json`, loaded by `ym_color::look::ParametricLook::from_json` and baked into a 33³ cube (`bake`, `to_transform`). Schema `yellowmoon.parametric-look/1`; every field except `schema` and `name` is optional, unknown fields are rejected, and `{"schema": "yellowmoon.parametric-look/1", "name": "Neutral"}` is the identity:
+
+```json
+{
+  "schema": "yellowmoon.parametric-look/1",
+  "name": "Example",
+  "input": "logc4",
+  "cdl": { "slope": [1, 1, 1], "offset": [0, 0, 0], "power": [1, 1, 1], "saturation": 1 },
+  "hue_vs_sat":  [ { "hue_deg": 30, "value": 1.15 }, { "hue_deg": 210, "value": 0.9 } ],
+  "hue_vs_hue":  [ { "hue_deg": 60, "value": -6 } ],
+  "luma_vs_sat": [ { "luma": 0.15, "value": 0.8 }, { "luma": 0.6, "value": 1.1 } ]
+}
+```
+
+`hue_vs_sat` and `luma_vs_sat` values multiply the chroma (0 to 8); `hue_vs_hue` values are degrees (±180, positive turns red towards yellow). Hue is in degrees on the LogC4 hue circle (0 red, 60 yellow, 120 green, 180 cyan, 240 blue, 300 magenta), `luma` is the Rec.709-weighted LogC4 luma in [0, 1]. At most 64 points per curve; the curves are monotone (Fritsch–Carlson) splines, periodic for hue, so they never overshoot the values given. The CDL runs first; hue and luma curves keep the luma of the CDL output. Full details: the module documentation of `crates/ym-color/src/look.rs`.
+
 ## Library folder
 
 ```

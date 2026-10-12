@@ -1,0 +1,12 @@
+LUT_3D_SIZE 2
+TITLE "x"
+DOMAIN_MIN -1 -1 -1
+DOMAIN_MAX 2 2 2
+0 0 0
+1 0 0
+0 1 0
+1 1 0
+0 0 1
+1 0 1
+0 1 1
+1 1 1

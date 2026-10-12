@@ -1,0 +1,31 @@
+# Own workspace: cargo-fuzz needs nightly and this crate must not be a member of the root workspace.
+# Run from this directory:  cargo +nightly fuzz run cube_parse -- -max_total_time=600
+[package]
+name = "ym-color-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+license = "Apache-2.0"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+ym-color = { path = ".." }
+
+[[bin]]
+name = "cube_parse"
+path = "fuzz_targets/cube_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "look_json"
+path = "fuzz_targets/look_json.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]
