@@ -49,3 +49,6 @@ The biggest risk is the ALEXA target itself. Most open decisions are settled by 
 ## Decision log
 
 Add entries as `YYYY-MM-DD · decision · numbers · who`.
+
+- 2026-10-12 · The command-line tool is called `ym`, not `yellowmoon`: binary, Homebrew cask link, "Install Command-Line Tool…" link, help text, docs and the `ym doctor` request in the issue template. The crate stays `ym-cli`. Inside the app bundle the sidecar is `Contents/MacOS/ym`, which doesn't collide with the `Yellowmoon` main binary on case-insensitive file systems, so the `yellowmoon-cli` workaround in docs/12 goes away. Rename lands with the CLI integration task (M1-14/M3-14). · — · Mykyta
+- 2026-10-12 · Sensor-map fit objective: Lab-optimal white-preserving 3×3 (was Y^(−2/3)-weighted RGB least squares). M1-05 gate for A7R IV with the old objective failed on LED-V2 (0.773 / 1.377) and D 6750 K (0.508); with the Lab objective 8 of 9 lights pass, LED-V2 stays a reported failure (0.759 / 1.515). · gate.py · Mykyta

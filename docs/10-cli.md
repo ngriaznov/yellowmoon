@@ -1,6 +1,10 @@
 # 10 · Command line
 
-Crate: `ym-cli` (binary `yellowmoon`). Built with `clap` (derive), headless wgpu on Metal, `serde_json` output. No Tauri dependency.
+Crate: `ym-cli` (binary `ym`).
+
+> **Decision 2026-10-12 (Mykyta):** the command is `ym`, not `yellowmoon`. Read every `yellowmoon …` command in this document as `ym …`; the text is updated with the rename in M1-14/M3-14. See docs/16 decision log.
+
+_Was:_ binary `yellowmoon`. Built with `clap` (derive), headless wgpu on Metal, `serde_json` output. No Tauri dependency.
 
 The CLI is a second front end on the same core. A file rendered from the terminal matches the app's export exactly: same decoder, same automatic exposure and white balance, same looks, same export code. It is also our golden-image test harness.
 
