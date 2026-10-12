@@ -1,0 +1,6 @@
+# Run directories, sample sheets and exported test artefacts are never committed (AGENTS.md: training data and
+# large outputs stay out of git; final weights go to data/models/ with their model card).
+runs/
+out/
+__pycache__/
+.pytest_cache/

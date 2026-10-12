@@ -1,0 +1,19 @@
+# Python dependencies of the `jdd` training code (training/jdd). Not shipped.
+# Versions are the ones the tests and the dry run were last run with (Linux x86_64, Python 3.12/3.13).
+#
+# PyTorch is installed from the CPU index in CI and on laptops without a GPU:
+#   pip install torch==2.14.1 --index-url https://download.pytorch.org/whl/cpu
+# On a CUDA training machine (HUMAN M2-H4) install the matching CUDA wheel from https://pytorch.org instead.
+# If the CPU index is unreachable, plain `pip install torch==2.14.1` from PyPI works too (it pulls the CUDA
+# libraries, several GB); conda-forge's `pytorch-cpu` is a lighter alternative.
+torch==2.14.1
+numpy>=2.0            # reproduced with 2.5.4
+scipy>=1.11           # reproduced with 1.18.1
+pillow>=10.1          # fine-text patterns use ImageFont.load_default(size); reproduced with 12.3.0
+matplotlib>=3.8       # sample sheet only; reproduced with 3.11.2
+safetensors==0.8.0    # weights files (the writer is our own, deterministic; the reader is theirs)
+onnx==1.23.2          # ONNX export, op-set checks
+onnxruntime==1.31.0   # parity of PyTorch vs ONNX Runtime
+onnxscript>=0.7       # only used if torch's legacy ONNX exporter is gone (dynamo=True fallback)
+pytest>=8             # reproduced with 9.1.1
+# Optional, evaluation only: colour-demosaicing (BSD-3) enables `--baseline menon`; rawpy reads PixelShift200 ARW frames.

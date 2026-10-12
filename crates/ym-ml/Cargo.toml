@@ -8,3 +8,34 @@ repository.workspace = true
 rust-version.workspace = true
 authors.workspace = true
 publish = false
+
+[features]
+default = []
+# Optional GPU/ONNX backends behind `TileModel` (docs/07 section Runtime). Both are OFF by default and are
+# not compiled (nor downloaded) unless asked for: `cargo build -p ym-ml --features burn,ort`.
+burn = ["dep:burn"]
+ort = ["dep:ort"]
+# CoreML execution provider for ONNX Runtime on macOS (cannot be built or tested on Linux).
+coreml = ["ort", "ort/coreml"]
+
+[dependencies]
+thiserror.workspace = true
+rayon.workspace = true
+half.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+hex.workspace = true
+safetensors = "0.8"
+burn = { version = "0.22", default-features = false, features = ["std", "wgpu"], optional = true }
+# `load-dynamic`: ONNX Runtime is loaded at run time from ORT_DYLIB_PATH (nothing is downloaded at build time).
+ort = { version = "=2.0.0-rc.13", default-features = false, features = ["std", "load-dynamic"], optional = true }
+
+[dev-dependencies]
+approx.workspace = true
+libc = "0.2"
+tempfile.workspace = true
+
+[[example]]
+name = "bench"
+path = "examples/bench.rs"

@@ -1,0 +1,19 @@
+{
+  "name": "jdd-default",
+  "seed": 20261012,
+  "device": "auto",
+  "deterministic": true,
+  "model": {"channels": [32, 64, 96], "convs_per_level": 2, "up_kernel": 1, "head_kernel": 1, "head_init_scale": 0.1},
+  "data": {
+    "patch_half": 128,
+    "n_train": 200000,
+    "n_val": 512,
+    "pixelshift200_root": "testdata/pixelshift200",
+    "pixelshift200_weight": 0.8,
+    "synthetic_weight": 0.2
+  },
+  "sampler": {},
+  "optim": {"lr": 0.001, "weight_decay": 0.0, "betas": [0.9, 0.99], "warmup_steps": 1000, "final_lr_fraction": 0.05, "grad_clip": 1.0},
+  "loss": {"w_ssim": 0.2, "w_grad": 0.5},
+  "train": {"steps": 200000, "batch_size": 16, "num_workers": 4, "log_every": 100, "eval_every": 5000, "ckpt_every": 5000}
+}
