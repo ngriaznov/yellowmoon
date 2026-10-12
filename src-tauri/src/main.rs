@@ -1,25 +1,32 @@
 //! Yellowmoon desktop app: the Tauri 2 shell around `ym-core`.
 //!
 //! Hides the extra console window on Windows release builds (unused on macOS, kept for
-//! completeness) and otherwise only wires plugins and commands together. All image processing
-//! lives in the `ym-*` crates.
+//! completeness) and otherwise only wires the window, the plugins, the menu and the commands
+//! together (`app`). All image processing lives in the `ym-*` crates; `api` is the one place the
+//! commands meet the core, `viewport` draws the photo and `wire` is the shape of everything that
+//! crosses the bridge.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod about;
+mod api;
+mod app;
+mod bindings;
+mod cli_link;
 mod commands;
+mod events;
+mod logging;
+mod menu;
+#[cfg(target_os = "macos")]
+mod native;
+mod system;
+#[cfg(test)]
+mod testing;
+mod thumbs;
+mod viewport;
+mod wire;
+mod wizard;
 
 fn main() {
-    let builder = commands::builder();
-
-    tauri::Builder::default()
-        .plugin(tauri_plugin_updater::Builder::new().build())
-        .plugin(tauri_plugin_process::init())
-        .plugin(tauri_plugin_dialog::init())
-        .invoke_handler(builder.invoke_handler())
-        .setup(move |app| {
-            builder.mount_events(app);
-            Ok(())
-        })
-        .run(tauri::generate_context!())
-        .expect("error while running Yellowmoon");
+    app::run();
 }

@@ -1,0 +1,1747 @@
+//! The types that cross the bridge between the webview and the Rust core, as `specta` sees them.
+//!
+//! `src/api/types.ts` is the contract the screens are written against; this module is its Rust side,
+//! and `src/api/bindings.ts` (generated from it by `tauri-specta`) is what the two have to agree
+//! on. The core's own types (`ym_core::session::SessionState` and the rest) have the same serde
+//! shape but do not derive `specta::Type`, so each one has a mirror here and
+//! [`convert`] turns one into the other through serde. A test per type checks that the round trip
+//! loses nothing (`tests::core_types_convert_without_loss`), and another that every field name of
+//! `types.ts` is a field name here (`tests::field_names_match_the_typescript_contract`).
+//!
+//! # Where the generated TypeScript differs from `types.ts`
+//!
+//! * Ids are named numbers and strings (`PhotoId`, `LookId`, `ExportJobId`), as in `types.ts`.
+//! * `Orientation` and `BitDepth` are the literal unions of `types.ts` (`0 | 90 | 180 | 270`,
+//!   `8 | 16`).
+//! * `SettingsPatch` is the core's patch, a little more generous than `Partial<DevelopSettings>`:
+//!   nested objects (`decode`, `rolloff`, `color_balance`, `curve`) and a manual `white_balance`,
+//!   `sharpen` or `noise_reduction` may leave parts out, and `crop` and `white_pick` may be `null`
+//!   to clear them. Everything `Partial<DevelopSettings>` accepts is accepted.
+//! * `MatchKind` has no `forced` variant (only the CLI's `--profile` makes one).
+//! * `UpdateState` is the flat object of `docs/01` with `percent` and `message` optional, as
+//!   `types.ts` has it.
+
+use std::path::PathBuf;
+
+use serde::de::DeserializeOwned;
+use serde::{Deserialize, Deserializer, Serialize};
+use specta::Type;
+use specta::datatype::DataType;
+use tauri_specta::Event;
+
+// ---------------------------------------------------------------------------------------------
+// Errors
+// ---------------------------------------------------------------------------------------------
+
+/// Where an error came from (`ErrorScope` in `types.ts`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum ErrorScope {
+    /// Opening files.
+    Open,
+    /// Decoding a raw file.
+    Decode,
+    /// Rendering.
+    Render,
+    /// Exporting.
+    Export,
+    /// The look library.
+    Looks,
+    /// The preferences.
+    Preferences,
+    /// The viewport.
+    Viewport,
+    /// Anything else.
+    App,
+}
+
+impl ErrorScope {
+    /// The scope for the name `ym_core::app::CoreError::scope` gives.
+    #[must_use]
+    pub fn from_name(name: &str) -> Self {
+        match name {
+            "open" => Self::Open,
+            "decode" => Self::Decode,
+            "render" => Self::Render,
+            "export" => Self::Export,
+            "looks" => Self::Looks,
+            "preferences" => Self::Preferences,
+            "viewport" => Self::Viewport,
+            _ => Self::App,
+        }
+    }
+}
+
+/// An error that reaches the UI: a plain message that also says what to do next. Commands reject
+/// with it and the `error` event carries it (`AppError` in `types.ts`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type, thiserror::Error)]
+#[error("{message}")]
+pub struct AppError {
+    /// Where it came from.
+    pub scope: ErrorScope,
+    /// What went wrong and what to do.
+    pub message: String,
+}
+
+impl AppError {
+    /// An error of `scope` with a plain message.
+    pub fn new(scope: ErrorScope, message: impl Into<String>) -> Self {
+        Self {
+            scope,
+            message: message.into(),
+        }
+    }
+
+    /// A mistake the shell itself made (a type that did not convert, a thread that died).
+    pub fn internal(what: impl std::fmt::Display) -> Self {
+        tracing::error!("internal error: {what}");
+        Self::new(
+            ErrorScope::App,
+            "Something unexpected went wrong inside Yellowmoon. Try again, or restart the app.",
+        )
+    }
+}
+
+impl From<ym_core::app::CoreError> for AppError {
+    fn from(e: ym_core::app::CoreError) -> Self {
+        Self::new(ErrorScope::from_name(e.scope()), e.to_string())
+    }
+}
+
+impl From<ym_core::session::SessionError> for AppError {
+    fn from(e: ym_core::session::SessionError) -> Self {
+        use ym_core::session::SessionError as E;
+        let scope = match &e {
+            E::Decode(_) | E::Estimate(_) => ErrorScope::Decode,
+            E::Settings(_) => ErrorScope::Render,
+            E::Data(_) => ErrorScope::App,
+            _ => ErrorScope::Open,
+        };
+        Self::new(scope, e.to_string())
+    }
+}
+
+impl From<ym_core::looks::LooksError> for AppError {
+    fn from(e: ym_core::looks::LooksError) -> Self {
+        Self::new(ErrorScope::Looks, e.to_string())
+    }
+}
+
+impl From<ym_core::pipeline::RenderError> for AppError {
+    fn from(e: ym_core::pipeline::RenderError) -> Self {
+        let scope = match &e {
+            ym_core::pipeline::RenderError::Look(_) => ErrorScope::Looks,
+            _ => ErrorScope::Render,
+        };
+        Self::new(scope, e.to_string())
+    }
+}
+
+/// Converts between two types with the same serde shape (a core type and its mirror here).
+///
+/// # Errors
+///
+/// [`AppError::internal`] when the shapes do not match: a bug, caught by the tests of this module.
+pub fn convert<A: Serialize, B: DeserializeOwned>(from: &A) -> Result<B, AppError> {
+    let value = serde_json::to_value(from).map_err(AppError::internal)?;
+    serde_json::from_value(value).map_err(AppError::internal)
+}
+
+/// A finite number on the bridge. TypeScript sees `number`.
+///
+/// `specta` describes a Rust `f64` as `number | null`, because `serde_json` writes a NaN or an
+/// infinity as `null`. The core never sends one (every setting is clamped, every measurement is
+/// finite), so the bridge says `number`, like `types.ts` does.
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Default, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Num(pub f64);
+
+impl Type for Num {
+    fn definition(types: &mut specta::Types) -> DataType {
+        <specta_typescript::Number as Type>::definition(types)
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Identifiers
+// ---------------------------------------------------------------------------------------------
+
+/// Identifies a photo for the lifetime of the session only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Type)]
+#[serde(transparent)]
+pub struct PhotoId(pub u32);
+
+/// Identifies a look: `builtin:neutral`, `arri:<group>:<slug>` or `user:<slug>`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Type)]
+#[serde(transparent)]
+pub struct LookId(pub String);
+
+/// Identifies a queued export job.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Type)]
+#[serde(transparent)]
+pub struct ExportJobId(pub u32);
+
+// ---------------------------------------------------------------------------------------------
+// Camera and photo summary
+// ---------------------------------------------------------------------------------------------
+
+/// Why a camera profile was chosen. Anything but `exact` gets the STAND-IN tag.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum MatchKind {
+    /// The body's own measured profile.
+    Exact,
+    /// Borrowed from a body with the same sensor; `via` names it.
+    SensorFamily {
+        /// The body whose profile is used.
+        via: String,
+    },
+    /// The A7R IV stand-in.
+    Default,
+}
+
+/// The detected body and the profile used for it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct CameraInfo {
+    /// Body as shown in the UI: "Sony A1".
+    pub body: String,
+    /// The camera's own model string, "ILCE-1". Empty when the file has none.
+    pub model: String,
+    /// Sony's model ID (maker note 0xB001), when the file has one.
+    pub model_id: Option<u32>,
+    /// Display name of the profile used: "A7R IV".
+    pub profile: String,
+    /// Profile id: "sony-ilce-7rm4".
+    pub profile_id: String,
+    /// Profile version (semver).
+    pub profile_version: String,
+    /// How the profile was chosen.
+    pub match_kind: MatchKind,
+}
+
+/// Stages of the background job that develops a freshly opened photo.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum PhotoStage {
+    /// The metadata probe.
+    Probe,
+    /// Decoding the raw data.
+    Decode,
+    /// The automatic estimates.
+    Estimate,
+    /// The thumbnail render.
+    Thumbnail,
+}
+
+/// A photo's place in the development pipeline.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PhotoStatus {
+    /// Probed, waiting for a decode thread.
+    Waiting,
+    /// A stage is running.
+    Developing {
+        /// The stage in flight.
+        stage: PhotoStage,
+    },
+    /// Developed.
+    Ready,
+    /// Can't be developed; the plain-words reason.
+    Skipped {
+        /// What went wrong and what to do next.
+        reason: String,
+    },
+}
+
+/// What the UI needs to know about one photo without asking for its settings.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
+pub struct PhotoSummary {
+    /// The photo.
+    pub id: PhotoId,
+    /// File name with its extension: "DSC04204.ARW".
+    pub file_name: String,
+    /// The detected body and the profile used.
+    pub camera: CameraInfo,
+    /// ISO, 0 when the file does not say.
+    pub iso: u32,
+    /// Exposure time in seconds: 0.008 for 1/125.
+    pub shutter_s: Num,
+    /// F-number: 2.8.
+    pub aperture_f: Num,
+    /// Capture time as local ISO 8601 without a zone: "2026-10-04T17:42:10".
+    pub captured_at: String,
+    /// Width in pixels after the camera's orientation.
+    pub width_px: u32,
+    /// Height in pixels after the camera's orientation.
+    pub height_px: u32,
+    /// Where the photo is in development.
+    pub status: PhotoStatus,
+    /// Picked for the batch actions.
+    pub picked: bool,
+    /// Lossless M or S: the camera already processed it, so colour emulation is approximate.
+    pub reduced: bool,
+}
+
+/// The session as the webview mirrors it (`session_state`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
+pub struct SessionState {
+    /// Name of the folder the photos came from, for the header cell.
+    pub folder_name: Option<String>,
+    /// The photos in filmstrip order.
+    pub photos: Vec<PhotoSummary>,
+    /// Index into `photos` of the current photo; null when the session is empty.
+    pub current_index: Option<u32>,
+    /// Ids of the picked photos.
+    pub picked: Vec<PhotoId>,
+    /// Where Export saves by default: "<source folder> export".
+    pub default_export_folder: Option<String>,
+}
+
+// ---------------------------------------------------------------------------------------------
+// Develop settings
+// ---------------------------------------------------------------------------------------------
+
+/// `exposure`: Auto, or an absolute value in stops. The JSON is `{ "kind": "auto" }` or
+/// `{ "kind": "manual", "ev": 0.3 }`.
+///
+/// (`types.ts` has one generic `AutoOr<M>`; specta cannot check that a generic payload merges with
+/// the tag, so each setting has its own enum with the same JSON.)
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Type)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ExposureSetting {
+    /// Resolve from the photo's automatic estimates.
+    Auto,
+    /// The user's value.
+    Manual {
+        /// Absolute exposure in stops, -4 to +4.
+        ev: Num,
+    },
+}
+
+/// `white_balance`: Auto, or Kelvin and tint.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Type)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum WhiteBalanceSetting {
+    /// Resolve from the photo's automatic estimates.
+    Auto,
+    /// The user's value.
+    Manual {
+        /// Colour temperature, 2000 to 11000 K.
+        kelvin: Num,
+        /// Tint, -50 to 50, positive towards magenta.
+        tint: Num,
+    },
+}
+
+/// `sharpen`: Auto, or amount and radius.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Type)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SharpenSetting {
+    /// Resolve from the photo's automatic estimates.
+    Auto,
+    /// The user's value.
+    Manual {
+        /// Amount, 0 to 300.
+        amount: Num,
+        /// PSF radius in pixels, 0.3 to 2.5.
+        radius_px: Num,
+    },
+}
+
+/// `noise_reduction`: Auto, or the three strengths.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Type)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum NoiseReductionSetting {
+    /// Resolve from the photo's automatic estimates.
+    Auto,
+    /// The user's value.
+    Manual {
+        /// Luminance strength, 0 to 100.
+        luminance: Num,
+        /// Colour strength, 0 to 100.
+        color: Num,
+        /// Detail strength, 0 to 100.
+        detail: Num,
+    },
+}
+
+/// The sharpening in effect.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Type)]
+pub struct SharpenValue {
+    /// Amount, 0 to 300.
+    pub amount: Num,
+    /// PSF radius in pixels, 0.3 to 2.5.
+    pub radius_px: Num,
+}
+
+/// The noise reduction in effect.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Type)]
+pub struct NoiseReductionValue {
+    /// Luminance strength, 0 to 100.
+    pub luminance: Num,
+    /// Colour strength, 0 to 100.
+    pub color: Num,
+    /// Detail strength, 0 to 100.
+    pub detail: Num,
+}
+
+/// `light_source`: Colour › White balance, the segmented control.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum LightSource {
+    /// Estimated from the scene.
+    Auto,
+    /// Daylight, 5500 K.
+    Day,
+    /// Shade, 7500 K.
+    Shade,
+    /// Tungsten, 3200 K.
+    Tungsten,
+    /// LED.
+    Led,
+    /// Fluorescent.
+    Fluorescent,
+}
+
+/// Colour balance wheels; each point is `[a, b]` within the unit disc and `[0, 0]` by default.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Type)]
+pub struct ColorBalance {
+    /// The shadows wheel.
+    pub shadows: [Num; 2],
+    /// The midtones wheel.
+    pub midtones: [Num; 2],
+    /// The highlights wheel.
+    pub highlights: [Num; 2],
+}
+
+/// Luma plus R, G and B curves, 2 to 16 control points `[x, y]` within [0, 1]² each.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
+pub struct Curves {
+    /// The luma curve.
+    pub luma: Vec<[Num; 2]>,
+    /// The red curve.
+    pub red: Vec<[Num; 2]>,
+    /// The green curve.
+    pub green: Vec<[Num; 2]>,
+    /// The blue curve.
+    pub blue: Vec<[Num; 2]>,
+}
+
+/// RAW › Decode switches; all true by default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct DecodeOptions {
+    /// Neural demosaic and denoise.
+    pub neural_demosaic: bool,
+    /// Highlight reconstruction.
+    pub highlight_recovery: bool,
+    /// Vignetting and distortion corrections from the camera's tags.
+    pub lens_corrections: bool,
+    /// Lateral chromatic-aberration correction.
+    pub chromatic_aberration: bool,
+}
+
+/// RAW › Roll-off, each 0 to 1; 0.5 by default.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Type)]
+pub struct Rolloff {
+    /// Highlight shoulder length.
+    pub highlights: Num,
+    /// Low-light toe strength.
+    pub low_light: Num,
+}
+
+/// A rectangle in image coordinates normalised to [0, 1]².
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Type)]
+pub struct NormRect {
+    /// Left edge.
+    pub x: Num,
+    /// Top edge.
+    pub y: Num,
+    /// Width.
+    pub width: Num,
+    /// Height.
+    pub height: Num,
+}
+
+/// Crop aspect presets: Free, Original, 1:1, 4:5, 16:9.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum CropAspect {
+    /// No constraint.
+    Free,
+    /// The photo's own shape.
+    Original,
+    /// 1:1.
+    Square,
+    /// 4:5.
+    FourByFive,
+    /// 16:9.
+    SixteenByNine,
+}
+
+/// The crop (per photo, in memory only): a rectangle, a straighten angle and an aspect.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Type)]
+pub struct Crop {
+    /// The frame.
+    pub rect: NormRect,
+    /// Straighten angle, -45 to 45 degrees.
+    pub angle_deg: Num,
+    /// The aspect preset the frame follows.
+    pub aspect: CropAspect,
+}
+
+/// Orientation applied after the camera's EXIF orientation, in degrees: `0 | 90 | 180 | 270`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Orientation(pub u16);
+
+impl Type for Orientation {
+    fn definition(_: &mut specta::Types) -> DataType {
+        DataType::Reference(specta_typescript::define("0 | 90 | 180 | 270"))
+    }
+}
+
+/// Every control in the UI and every CLI flag maps to one field. Defaults reproduce the
+/// automatic development.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
+pub struct DevelopSettings {
+    /// Look tab.
+    pub look: LookId,
+    /// 0 to 100 percent.
+    pub look_intensity: Num,
+    /// Light › Exposure: Auto or an absolute value, -4 to +4 EV.
+    pub exposure: ExposureSetting,
+    /// -100 to 100.
+    pub contrast: Num,
+    /// -100 to 100.
+    pub brightness: Num,
+    /// Light › High dynamic range, -100 to 100.
+    pub highlights: Num,
+    /// -100 to 100.
+    pub shadows: Num,
+    /// -100 to 100.
+    pub white: Num,
+    /// -100 to 100.
+    pub black: Num,
+    /// Colour › White balance, the light presets.
+    pub light_source: LightSource,
+    /// Colour › White balance: Auto or Kelvin and tint.
+    pub white_balance: WhiteBalanceSetting,
+    /// The three colour-balance wheels.
+    pub color_balance: ColorBalance,
+    /// Colour › Colour balance, -100 to 100.
+    pub saturation: Num,
+    /// Detail › Sharpening: Auto or amount and radius.
+    pub sharpen: SharpenSetting,
+    /// Detail › Noise reduction: Auto or the three strengths.
+    pub noise_reduction: NoiseReductionSetting,
+    /// Luma, red, green and blue curves.
+    pub curve: Curves,
+    /// RAW › Decode switches.
+    pub decode: DecodeOptions,
+    /// RAW › Roll-off.
+    pub rolloff: Rolloff,
+    /// Crop; null when the photo isn't cropped.
+    pub crop: Option<Crop>,
+    /// Orientation after the camera's EXIF orientation.
+    pub orientation: Orientation,
+    /// Pick white: the sampled point `[x, y]` in [0, 1]², measured on the photo as the camera
+    /// oriented it.
+    pub white_pick: Option<[Num; 2]>,
+}
+
+/// Reads a field that may be absent (leave it), `null` (clear it) or a value (set it).
+fn double_option<'de, D, T>(d: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(d).map(Some)
+}
+
+/// `white_balance` in a patch: Auto, or a manual value that may leave out Kelvin or tint (the
+/// missing part keeps its current value).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Type)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum WhiteBalancePatch {
+    /// Back to Auto.
+    Auto,
+    /// Manual, with the parts to change.
+    Manual {
+        /// New Kelvin.
+        #[serde(default)]
+        kelvin: Option<Num>,
+        /// New tint.
+        #[serde(default)]
+        tint: Option<Num>,
+    },
+}
+
+/// `sharpen` in a patch: Auto, or a manual value that may leave out a part.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Type)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SharpenPatch {
+    /// Back to Auto.
+    Auto,
+    /// Manual, with the parts to change.
+    Manual {
+        /// New amount.
+        #[serde(default)]
+        amount: Option<Num>,
+        /// New radius in pixels.
+        #[serde(default)]
+        radius_px: Option<Num>,
+    },
+}
+
+/// `noise_reduction` in a patch: Auto, or a manual value that may leave out a part.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Type)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum NoiseReductionPatch {
+    /// Back to Auto.
+    Auto,
+    /// Manual, with the parts to change.
+    Manual {
+        /// New luminance strength.
+        #[serde(default)]
+        luminance: Option<Num>,
+        /// New colour strength.
+        #[serde(default)]
+        color: Option<Num>,
+        /// New detail strength.
+        #[serde(default)]
+        detail: Option<Num>,
+    },
+}
+
+/// Decode switches to change.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(deny_unknown_fields)]
+pub struct DecodePatch {
+    /// New neural demosaic switch.
+    #[serde(default)]
+    pub neural_demosaic: Option<bool>,
+    /// New highlight recovery switch.
+    #[serde(default)]
+    pub highlight_recovery: Option<bool>,
+    /// New lens corrections switch.
+    #[serde(default)]
+    pub lens_corrections: Option<bool>,
+    /// New chromatic aberration switch.
+    #[serde(default)]
+    pub chromatic_aberration: Option<bool>,
+}
+
+/// Roll-off amounts to change.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize, Type)]
+#[serde(deny_unknown_fields)]
+pub struct RolloffPatch {
+    /// New highlight shoulder.
+    #[serde(default)]
+    pub highlights: Option<Num>,
+    /// New low-light toe.
+    #[serde(default)]
+    pub low_light: Option<Num>,
+}
+
+/// Colour-balance wheels to change.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize, Type)]
+#[serde(deny_unknown_fields)]
+pub struct ColorBalancePatch {
+    /// New shadows wheel.
+    #[serde(default)]
+    pub shadows: Option<[Num; 2]>,
+    /// New midtones wheel.
+    #[serde(default)]
+    pub midtones: Option<[Num; 2]>,
+    /// New highlights wheel.
+    #[serde(default)]
+    pub highlights: Option<[Num; 2]>,
+}
+
+/// Curves to replace.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, Type)]
+#[serde(deny_unknown_fields)]
+pub struct CurvesPatch {
+    /// New luma curve.
+    #[serde(default)]
+    pub luma: Option<Vec<[Num; 2]>>,
+    /// New red curve.
+    #[serde(default)]
+    pub red: Option<Vec<[Num; 2]>>,
+    /// New green curve.
+    #[serde(default)]
+    pub green: Option<Vec<[Num; 2]>>,
+    /// New blue curve.
+    #[serde(default)]
+    pub blue: Option<Vec<[Num; 2]>>,
+}
+
+/// A partial update: only the fields present change (`update_settings(photo_id, patch)`).
+///
+/// Serialising leaves absent fields out (so that `crop: null`, which clears the crop, is told
+/// apart from no `crop` at all); the derive cannot do that without `skip_serializing_if`, which
+/// the unified TypeScript export refuses, hence the manual `Serialize`.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Type)]
+#[serde(deny_unknown_fields)]
+pub struct SettingsPatch {
+    /// New look.
+    #[serde(default)]
+    pub look: Option<LookId>,
+    /// New look intensity.
+    #[serde(default)]
+    pub look_intensity: Option<Num>,
+    /// New exposure (Manual to set it, Auto to reset it).
+    #[serde(default)]
+    pub exposure: Option<ExposureSetting>,
+    /// New contrast.
+    #[serde(default)]
+    pub contrast: Option<Num>,
+    /// New brightness.
+    #[serde(default)]
+    pub brightness: Option<Num>,
+    /// New highlights.
+    #[serde(default)]
+    pub highlights: Option<Num>,
+    /// New shadows.
+    #[serde(default)]
+    pub shadows: Option<Num>,
+    /// New white.
+    #[serde(default)]
+    pub white: Option<Num>,
+    /// New black.
+    #[serde(default)]
+    pub black: Option<Num>,
+    /// New light preset.
+    #[serde(default)]
+    pub light_source: Option<LightSource>,
+    /// New white balance; a manual one may leave out Kelvin or tint.
+    #[serde(default)]
+    pub white_balance: Option<WhiteBalancePatch>,
+    /// Colour-balance wheels to change.
+    #[serde(default)]
+    pub color_balance: Option<ColorBalancePatch>,
+    /// New saturation.
+    #[serde(default)]
+    pub saturation: Option<Num>,
+    /// New sharpening; a manual one may leave out a part.
+    #[serde(default)]
+    pub sharpen: Option<SharpenPatch>,
+    /// New noise reduction; a manual one may leave out a part.
+    #[serde(default)]
+    pub noise_reduction: Option<NoiseReductionPatch>,
+    /// Curves to replace.
+    #[serde(default)]
+    pub curve: Option<CurvesPatch>,
+    /// Decode switches to change.
+    #[serde(default)]
+    pub decode: Option<DecodePatch>,
+    /// Roll-off amounts to change.
+    #[serde(default)]
+    pub rolloff: Option<RolloffPatch>,
+    /// New crop; `null` removes it.
+    #[serde(default, deserialize_with = "double_option")]
+    #[specta(type = Option<Crop>)]
+    pub crop: Option<Option<Crop>>,
+    /// New orientation.
+    #[serde(default)]
+    pub orientation: Option<Orientation>,
+    /// New white pick; `null` clears it. A pick also sets `light_source` and `white_balance` to
+    /// Auto unless the same patch says otherwise.
+    #[serde(default, deserialize_with = "double_option")]
+    #[specta(type = Option<[Num; 2]>)]
+    pub white_pick: Option<Option<[Num; 2]>>,
+}
+
+impl Serialize for SettingsPatch {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        // One entry per field that is present; `Some(None)` is a present `null`.
+        fn entry<M: SerializeMap, T: Serialize>(
+            map: &mut M,
+            key: &str,
+            value: &Option<T>,
+        ) -> Result<(), M::Error> {
+            match value {
+                Some(v) => map.serialize_entry(key, v),
+                None => Ok(()),
+            }
+        }
+        let mut map = serializer.serialize_map(None)?;
+        entry(&mut map, "look", &self.look)?;
+        entry(&mut map, "look_intensity", &self.look_intensity)?;
+        entry(&mut map, "exposure", &self.exposure)?;
+        entry(&mut map, "contrast", &self.contrast)?;
+        entry(&mut map, "brightness", &self.brightness)?;
+        entry(&mut map, "highlights", &self.highlights)?;
+        entry(&mut map, "shadows", &self.shadows)?;
+        entry(&mut map, "white", &self.white)?;
+        entry(&mut map, "black", &self.black)?;
+        entry(&mut map, "light_source", &self.light_source)?;
+        entry(&mut map, "white_balance", &self.white_balance)?;
+        entry(&mut map, "color_balance", &self.color_balance)?;
+        entry(&mut map, "saturation", &self.saturation)?;
+        entry(&mut map, "sharpen", &self.sharpen)?;
+        entry(&mut map, "noise_reduction", &self.noise_reduction)?;
+        entry(&mut map, "curve", &self.curve)?;
+        entry(&mut map, "decode", &self.decode)?;
+        entry(&mut map, "rolloff", &self.rolloff)?;
+        entry(&mut map, "crop", &self.crop)?;
+        entry(&mut map, "orientation", &self.orientation)?;
+        entry(&mut map, "white_pick", &self.white_pick)?;
+        map.end()
+    }
+}
+
+/// Which `Auto` fields are still automatic; the UI shows the AUTO tag for these.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct AutoFlags {
+    /// `exposure` is Auto.
+    pub exposure: bool,
+    /// `light_source` is Auto.
+    pub light_source: bool,
+    /// `white_balance` is Auto.
+    pub white_balance: bool,
+    /// `sharpen` is Auto.
+    pub sharpen: bool,
+    /// `noise_reduction` is Auto.
+    pub noise_reduction: bool,
+}
+
+/// Light classes of the illuminant estimate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum LightClass {
+    /// Daylight.
+    Daylight,
+    /// Tungsten.
+    Tungsten,
+    /// Fluorescent.
+    Fluorescent,
+    /// LED.
+    Led,
+}
+
+/// Poisson–Gaussian noise model, `variance = a · signal + b`.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Type)]
+pub struct NoiseModel {
+    /// Shot-noise gain.
+    pub a: Num,
+    /// Read-noise variance.
+    pub b: Num,
+}
+
+/// Per-photo automatic estimates (`AutoEstimates` in `types.ts`).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Type)]
+pub struct AutoEstimates {
+    /// `EV_auto`.
+    pub exposure_ev: Num,
+    /// The Auto Kelvin.
+    pub kelvin: Num,
+    /// The Auto tint.
+    pub tint: Num,
+    /// The most probable light class.
+    pub light_class: LightClass,
+    /// Confidence of the light estimate, 0 to 1.
+    pub light_confidence: Num,
+    /// The noise model.
+    pub noise: NoiseModel,
+    /// What `sharpen: Auto` resolves to.
+    pub sharpen: SharpenValue,
+    /// What `noise_reduction: Auto` resolves to.
+    pub noise_reduction: NoiseReductionValue,
+}
+
+/// `DevelopSettings` with every `Auto` replaced by the number it resolves to.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
+pub struct ResolvedValues {
+    /// `look`.
+    pub look: LookId,
+    /// `look_intensity`.
+    pub look_intensity: Num,
+    /// The exposure in stops.
+    pub exposure_ev: Num,
+    /// `contrast`.
+    pub contrast: Num,
+    /// `brightness`.
+    pub brightness: Num,
+    /// `highlights`.
+    pub highlights: Num,
+    /// `shadows`.
+    pub shadows: Num,
+    /// `white`.
+    pub white: Num,
+    /// `black`.
+    pub black: Num,
+    /// `light_source`.
+    pub light_source: LightSource,
+    /// The Kelvin the White balance row shows.
+    pub kelvin: Num,
+    /// The tint the White balance row shows.
+    pub tint: Num,
+    /// `color_balance`.
+    pub color_balance: ColorBalance,
+    /// `saturation`.
+    pub saturation: Num,
+    /// The sharpening in effect.
+    pub sharpen: SharpenValue,
+    /// The noise reduction in effect.
+    pub noise_reduction: NoiseReductionValue,
+    /// `curve`.
+    pub curve: Curves,
+    /// `decode`.
+    pub decode: DecodeOptions,
+    /// `rolloff`.
+    pub rolloff: Rolloff,
+    /// `crop`.
+    pub crop: Option<Crop>,
+    /// `orientation`.
+    pub orientation: Orientation,
+    /// `white_pick`.
+    pub white_pick: Option<[Num; 2]>,
+}
+
+/// What `get_settings` and `update_settings` return: the panel's whole state for one photo.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
+pub struct ResolvedSettings {
+    /// The photo.
+    pub photo_id: PhotoId,
+    /// The stored settings, with `Auto` kept as `Auto`.
+    pub settings: DevelopSettings,
+    /// The same settings with every `Auto` resolved.
+    pub values: ResolvedValues,
+    /// Which fields are still automatic.
+    pub auto: AutoFlags,
+    /// The automatic estimates the `Auto`s resolved against.
+    pub estimates: AutoEstimates,
+}
+
+/// "Apply to" on the Look card, and the scope of `apply_look` and of an export.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum ApplyScope {
+    /// The current photo.
+    This,
+    /// The picked photos.
+    Picked,
+    /// Every photo.
+    All,
+}
+
+// ---------------------------------------------------------------------------------------------
+// Looks
+// ---------------------------------------------------------------------------------------------
+
+/// Where a look comes from. ARRI looks keep their numbered group ("3000 Film").
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum LookGroup {
+    /// Shipped with the app.
+    BuiltIn,
+    /// One of ARRI's groups.
+    Arri {
+        /// The four-digit group number.
+        no: u32,
+        /// The group's name.
+        name: String,
+    },
+    /// Imported by the user.
+    User,
+}
+
+/// What a look's LUT expects as input.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum LookInput {
+    /// LogC4 in ARRI Wide Gamut 4.
+    Logc4,
+    /// LogC3 (EI 800) in ARRI Wide Gamut 3.
+    Logc3Ei800,
+    /// LogC3 with Rec.709 output baked in.
+    Logc3ToRec709,
+}
+
+/// One entry of the look library.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct Look {
+    /// The id.
+    pub id: LookId,
+    /// The display name.
+    pub name: String,
+    /// Where it is listed.
+    pub group: LookGroup,
+    /// What its LUT expects as input.
+    pub input: LookInput,
+    /// The user's default look.
+    pub is_default: bool,
+    /// The look's file is gone or its hash changed.
+    pub missing: bool,
+}
+
+/// What `looks_import` reports.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct LooksImportResult {
+    /// Looks added by this import; empty when everything was already there.
+    pub added: Vec<Look>,
+    /// Display LUTs added.
+    pub display_luts_added: u32,
+    /// Files whose hash matched a look or display LUT that was already imported.
+    pub unchanged: u32,
+}
+
+/// The five free packages ARRI publishes (the ids of `data/looks/arri-packages.json`, with
+/// underscores).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum PackageId {
+    /// Look Library, LogC4 log-to-log.
+    LookLibraryLogc4,
+    /// Display LUTs, LogC4.
+    DisplayLutsLogc4,
+    /// Look Library, LogC3 log-to-log.
+    LookLibraryLogc3,
+    /// Look Library, LogC3 to Rec.709.
+    LookLibraryLogc3ToRec709,
+    /// Display LUTs, LogC3.
+    DisplayLutsLogc3,
+}
+
+impl PackageId {
+    /// The id the package has in `data/looks/arri-packages.json`.
+    #[must_use]
+    pub fn data_id(self) -> &'static str {
+        match self {
+            Self::LookLibraryLogc4 => "look-library-logc4",
+            Self::DisplayLutsLogc4 => "display-luts-logc4",
+            Self::LookLibraryLogc3 => "look-library-logc3",
+            Self::LookLibraryLogc3ToRec709 => "look-library-logc3-rec709",
+            Self::DisplayLutsLogc3 => "display-luts-logc3",
+        }
+    }
+
+    /// The package for an id of `arri-packages.json`.
+    #[must_use]
+    pub fn from_data_id(id: &str) -> Option<Self> {
+        [
+            Self::LookLibraryLogc4,
+            Self::DisplayLutsLogc4,
+            Self::LookLibraryLogc3,
+            Self::LookLibraryLogc3ToRec709,
+            Self::DisplayLutsLogc3,
+        ]
+        .into_iter()
+        .find(|p| p.data_id() == id)
+    }
+}
+
+/// What a chosen source is: a zip, an unpacked folder, or a single `.cube` file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceKind {
+    /// A zip archive.
+    Zip,
+    /// A folder.
+    Folder,
+    /// One `.cube` file.
+    File,
+}
+
+/// What the recogniser made of one source (`looks_recognise`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Recognition {
+    /// One of the five packages.
+    Package {
+        /// Which one.
+        package_id: PackageId,
+        /// "Look Library · LogC4".
+        title: String,
+        /// "Look Library · LogC4 · log to log".
+        what: String,
+        /// "87 .cube · 65-point".
+        contents: String,
+        /// Files that will be copied.
+        file_count: u32,
+        /// A remark that does not stop the import.
+        note: Option<String>,
+    },
+    /// `.cube` files that match no package: the person says what they expect as input.
+    NeedsAnswer {
+        /// Files that need the answer.
+        file_count: u32,
+        /// The LUT size when every file has the same one.
+        lut_size: Option<u32>,
+        /// What the names suggest.
+        suggestion: Option<LookInput>,
+        /// Why the question is asked.
+        note: String,
+    },
+    /// Nothing can be imported.
+    Unusable {
+        /// The plain explanation.
+        reason: String,
+        /// The package, when it is known but damaged.
+        package_id: Option<PackageId>,
+    },
+    /// The file is not there.
+    Missing {
+        /// The plain explanation.
+        reason: String,
+    },
+}
+
+/// `looks_recognise(path)`: one source and what it is. Nothing is copied.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
+pub struct SourceRecognition {
+    /// The path asked about.
+    pub path: String,
+    /// File or folder name.
+    pub name: String,
+    /// Zip, folder or file.
+    pub source: SourceKind,
+    /// Size on disk; null for a folder or a missing file.
+    pub size_bytes: Option<Num>,
+    /// What it is.
+    pub recognition: Recognition,
+}
+
+/// `looks_import_progress`: files copied so far from one source.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type, Event)]
+#[tauri_specta(event_name = "looks_import_progress")]
+pub struct LooksImportProgress {
+    /// The source being imported.
+    pub path: String,
+    /// Files done.
+    pub done: u32,
+    /// Files in the source.
+    pub total: u32,
+    /// The file just copied, when known.
+    pub file: Option<String>,
+}
+
+/// What a display LUT expects as input.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum DisplayLutInput {
+    /// LogC4.
+    Logc4,
+    /// LogC3 (EI 800).
+    Logc3Ei800,
+}
+
+/// An imported display LUT (ARRI's display rendering).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct DisplayLut {
+    /// "arri-display:logc4:rec709-g24".
+    pub id: String,
+    /// "Rec.709 · Gamma 2.4".
+    pub name: String,
+    /// What it expects as input.
+    pub input: DisplayLutInput,
+    /// "rec709-g24", "p3-d65", "rec2020", "hlg", "pq".
+    pub target: String,
+}
+
+/// `looks_watch_downloads(enabled)`: whether the watcher is running, and why not when it was asked to.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct WatchStatus {
+    /// The watcher is running.
+    pub watching: bool,
+    /// Plain words, when macOS did not allow access to the Downloads folder.
+    pub problem: Option<String>,
+}
+
+/// `download_found`: a zip whose name matches one of the packages has landed in Downloads and its
+/// size has been stable for 2 s.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type, Event)]
+#[tauri_specta(event_name = "download_found")]
+pub struct DownloadFound {
+    /// Where the zip is.
+    pub path: String,
+    /// Its file name.
+    pub file_name: String,
+    /// Its size.
+    pub size_bytes: Num,
+    /// The package the name suggests, if exactly one.
+    pub package_hint: Option<PackageId>,
+}
+
+// ---------------------------------------------------------------------------------------------
+// Viewport
+// ---------------------------------------------------------------------------------------------
+
+/// The photo cell's rectangle in CSS pixels.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Type)]
+pub struct ViewportRect {
+    /// Left edge in the window.
+    pub x: Num,
+    /// Top edge in the window.
+    pub y: Num,
+    /// Width in CSS pixels.
+    pub width: Num,
+    /// Height in CSS pixels.
+    pub height: Num,
+    /// Device pixels per CSS pixel.
+    pub scale: Num,
+}
+
+/// Pointer input over the photo, forwarded to the core. Coordinates are CSS pixels in the cell.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Type)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ViewportInput {
+    /// Wheel or pinch: multiply the zoom by `factor` about the point.
+    Zoom {
+        /// The factor, above 1 zooms in.
+        factor: Num,
+        /// Pointer x.
+        x: Num,
+        /// Pointer y.
+        y: Num,
+    },
+    /// Drag: move the image with the pointer.
+    Pan {
+        /// Horizontal movement.
+        dx: Num,
+        /// Vertical movement.
+        dy: Num,
+    },
+    /// Double click: toggle between Fit and 100 %.
+    ToggleZoom {
+        /// Pointer x.
+        x: Num,
+        /// Pointer y.
+        y: Num,
+    },
+    /// Click in Pick white mode.
+    PickWhite {
+        /// Pointer x.
+        x: Num,
+        /// Pointer y.
+        y: Num,
+    },
+}
+
+/// Fit to the cell, or a fixed zoom (50, 100, 200 %).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Type)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ViewportMode {
+    /// The whole image in the cell.
+    Fit,
+    /// A fixed zoom in percent.
+    Percent {
+        /// 50, 100, 200, ...
+        value: Num,
+    },
+}
+
+/// Display values under the pointer, 0 to 255 per channel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct PixelSample {
+    /// Red.
+    pub r: u8,
+    /// Green.
+    pub g: u8,
+    /// Blue.
+    pub b: u8,
+}
+
+/// Per-channel histogram of the current render, for the Light tab and the Curve plot.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
+pub struct HistogramData {
+    /// Red bins, black first.
+    pub red: Vec<Num>,
+    /// Green bins.
+    pub green: Vec<Num>,
+    /// Blue bins.
+    pub blue: Vec<Num>,
+}
+
+/// Colour spaces the viewport and the exports can use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum ColorSpace {
+    /// sRGB.
+    Srgb,
+    /// Display P3.
+    DisplayP3,
+    /// Rec.2020.
+    Rec2020,
+}
+
+/// Demosaic path of the last render.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum RenderPath {
+    /// The learned demosaic.
+    Neural,
+    /// The classical demosaic.
+    Classical,
+}
+
+// ---------------------------------------------------------------------------------------------
+// Export
+// ---------------------------------------------------------------------------------------------
+
+/// The four export formats.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum ExportFormat {
+    /// JPEG.
+    Jpeg,
+    /// TIFF.
+    Tiff,
+    /// PNG.
+    Png,
+    /// DNG.
+    Dng,
+}
+
+/// TIFF compression.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum TiffCompression {
+    /// None.
+    None,
+    /// LZW.
+    Lzw,
+    /// Deflate, shown as "ZIP".
+    Zip,
+}
+
+/// Bits per channel of a TIFF or PNG: `8 | 16`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct BitDepth(pub u8);
+
+impl Type for BitDepth {
+    fn definition(_: &mut specta::Types) -> DataType {
+        DataType::Reference(specta_typescript::define("8 | 16"))
+    }
+}
+
+/// What to do when the target file exists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum IfExists {
+    /// Leave the existing file alone.
+    Skip,
+    /// Replace it.
+    Replace,
+    /// Keep both: add " 2", " 3" to the new name.
+    KeepBoth,
+}
+
+/// Export size: the full frame, or the long edge in pixels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ExportSize {
+    /// The full frame.
+    Full,
+    /// Resize so the long edge is `px` pixels.
+    LongEdge {
+        /// The long edge.
+        px: u32,
+    },
+}
+
+/// The export options of `docs/09`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct ExportOptions {
+    /// The file format.
+    pub format: ExportFormat,
+    /// JPEG quality, 50 to 100.
+    pub jpeg_quality: u8,
+    /// TIFF and PNG bit depth.
+    pub bit_depth: BitDepth,
+    /// TIFF compression.
+    pub tiff_compression: TiffCompression,
+    /// The colour space (not for DNG).
+    pub color_space: ColorSpace,
+    /// The size (not for DNG).
+    pub size: ExportSize,
+    /// Destination folder; null means the default.
+    pub destination: Option<String>,
+    /// Template with `{name}`, `{look}`, `{date}`, `{seq}`, `{camera}`.
+    pub name_template: String,
+    /// What to do when the file exists.
+    pub if_exists: IfExists,
+}
+
+/// What to export and how.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct ExportJob {
+    /// This photo, the picked photos, or all.
+    pub scope: ApplyScope,
+    /// The options.
+    pub options: ExportOptions,
+}
+
+/// `export_estimate(job)`: the size and time shown in the Export panel.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
+pub struct ExportEstimate {
+    /// Total size of the files in bytes.
+    pub bytes: Num,
+    /// Time the job will take, in seconds.
+    pub seconds: Num,
+    /// Photos with adjustments beyond the look.
+    pub adjusted_photos: u32,
+    /// A photo uses a look with its own display rendering, which cannot go into a DNG.
+    pub dng_unavailable: bool,
+}
+
+// ---------------------------------------------------------------------------------------------
+// Preferences
+// ---------------------------------------------------------------------------------------------
+
+/// Display rendering: our ACES 2 transform, or an imported ARRI display LUT.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum DisplayRendering {
+    /// Our ACES 2 output transform.
+    Aces2,
+    /// An imported ARRI display LUT.
+    ArriDisplay {
+        /// The display LUT.
+        id: String,
+    },
+}
+
+/// Folders remembered between runs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct LastUsedFolders {
+    /// Where files were last opened from.
+    pub open: Option<String>,
+    /// Where files were last exported to.
+    pub export: Option<String>,
+    /// Where looks were last imported from.
+    pub looks_import: Option<String>,
+}
+
+/// Everything that persists besides imported looks.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct Preferences {
+    /// The look new photos get.
+    pub default_look: LookId,
+    /// ACES 2, or an imported ARRI display LUT.
+    pub display_rendering: DisplayRendering,
+    /// Export defaults.
+    pub export_defaults: ExportOptions,
+    /// Leave the location out of exported files.
+    pub remove_location_from_exports: bool,
+    /// Check for updates in the background.
+    pub check_for_updates_automatically: bool,
+    /// Watch Downloads while the import wizard waits for a zip.
+    pub watch_downloads_during_import: bool,
+    /// Folders remembered between runs.
+    pub last_used_folders: LastUsedFolders,
+}
+
+/// A partial update of the preferences.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(deny_unknown_fields)]
+pub struct PreferencesPatch {
+    /// New default look.
+    #[serde(default)]
+    pub default_look: Option<LookId>,
+    /// New display rendering.
+    #[serde(default)]
+    pub display_rendering: Option<DisplayRendering>,
+    /// New export defaults.
+    #[serde(default)]
+    pub export_defaults: Option<ExportOptions>,
+    /// New value of "Remove location from exports".
+    #[serde(default)]
+    pub remove_location_from_exports: Option<bool>,
+    /// New value of "Check for updates automatically".
+    #[serde(default)]
+    pub check_for_updates_automatically: Option<bool>,
+    /// New value of "Watch Downloads during import".
+    #[serde(default)]
+    pub watch_downloads_during_import: Option<bool>,
+    /// New remembered folders.
+    #[serde(default)]
+    pub last_used_folders: Option<LastUsedFolders>,
+}
+
+// ---------------------------------------------------------------------------------------------
+// System
+// ---------------------------------------------------------------------------------------------
+
+/// `install_cli_link` result: where the `ym` link was created.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct CliLinkResult {
+    /// The link.
+    pub path: String,
+}
+
+/// `cli_link_status`: whether "Install Command-Line Tool…" has been done.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct CliLinkStatus {
+    /// A working `ym` link exists.
+    pub installed: bool,
+    /// Where the link is, when installed.
+    pub path: Option<String>,
+}
+
+/// What the app knows about itself, for About.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct AppInfo {
+    /// The app and CLI version: "0.1.0".
+    pub version: String,
+    /// The pipeline version written into exports.
+    pub pipeline_version: String,
+}
+
+/// What `open_dialog` offers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum OpenKind {
+    /// One or more ARW files.
+    Files,
+    /// A folder.
+    Folder,
+}
+
+/// The items of the native menu bar that need the webview. The shell sends `menu_action` with one
+/// of them; the items it handles itself (About, Show Looks Folder, the Help links, Quit) are not
+/// listed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum MenuAction {
+    /// The in-window About dialog (Preferences' footer link; the menu's About item opens the
+    /// system's About panel).
+    About,
+    /// Preferences.
+    Preferences,
+    /// Check for Updates.
+    CheckForUpdates,
+    /// Install Command-Line Tool.
+    InstallCli,
+    /// Open Files.
+    OpenFiles,
+    /// Open Folder.
+    OpenFolder,
+    /// Export.
+    Export,
+    /// Close Session.
+    CloseSession,
+    /// Undo.
+    Undo,
+    /// Redo.
+    Redo,
+    /// Toggle the pick of the current photo.
+    Pick,
+    /// Pick all photos.
+    PickAll,
+    /// Clear the picks.
+    ClearPicks,
+    /// Before / after.
+    BeforeAfter,
+    /// Fit.
+    Fit,
+    /// 100 %.
+    #[serde(rename = "zoom_100")]
+    Zoom100,
+    /// Zoom in.
+    ZoomIn,
+    /// Zoom out.
+    ZoomOut,
+    /// Next photo.
+    NextPhoto,
+    /// Previous photo.
+    PreviousPhoto,
+    /// Import ARRI looks.
+    ImportArriLooks,
+    /// Import a .cube file.
+    ImportCube,
+    /// Make the current look the default.
+    MakeDefaultLook,
+}
+
+// ---------------------------------------------------------------------------------------------
+// Events
+// ---------------------------------------------------------------------------------------------
+
+/// `photo_progress { id, stage, done, error }`: a stage of a photo's development started or finished.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type, Event)]
+#[tauri_specta(event_name = "photo_progress")]
+pub struct PhotoProgress {
+    /// The photo.
+    pub id: PhotoId,
+    /// The stage that started or finished.
+    pub stage: PhotoStage,
+    /// True when the stage has finished. A photo is ready when `thumbnail` is done.
+    pub done: bool,
+    /// Plain-words reason when the photo can't be developed.
+    pub error: Option<String>,
+}
+
+/// `thumbnail_ready { id, png_bytes }`: a PNG of at most 240 px on its long edge.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type, Event)]
+#[tauri_specta(event_name = "thumbnail_ready")]
+pub struct ThumbnailReady {
+    /// The photo.
+    pub id: PhotoId,
+    /// The PNG file as byte values.
+    pub png_bytes: Vec<u8>,
+}
+
+/// `render_stats { ms, path, space }`: the header's status text.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Type, Event)]
+#[tauri_specta(event_name = "render_stats")]
+pub struct RenderStats {
+    /// Milliseconds the last render took.
+    pub ms: Num,
+    /// The demosaic path.
+    pub path: RenderPath,
+    /// The output colour space.
+    pub space: ColorSpace,
+}
+
+/// `export_progress { job_id, file, done, total, file_percent, error, skipped }`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type, Event)]
+#[tauri_specta(event_name = "export_progress")]
+pub struct ExportProgress {
+    /// The job.
+    pub job_id: ExportJobId,
+    /// Output file name now being written.
+    pub file: String,
+    /// Files finished.
+    pub done: u32,
+    /// Files in the job.
+    pub total: u32,
+    /// Progress of `file`, 0 to 100.
+    pub file_percent: Option<Num>,
+    /// Plain-words error for `file`, when it failed.
+    pub error: Option<String>,
+    /// `file` already existed and "If it exists" is Skip.
+    pub skipped: bool,
+}
+
+/// `looks_changed`: the look list, the default look or a look's file changed. No data.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type, Event)]
+#[tauri_specta(event_name = "looks_changed")]
+pub struct LooksChanged;
+
+/// `update_state { phase, version?, percent?, message? }` (the updater's phases, `docs/12`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type, Event)]
+#[serde(tag = "phase", rename_all = "snake_case")]
+#[tauri_specta(event_name = "update_state")]
+pub enum UpdateState {
+    /// Nothing to report.
+    Idle,
+    /// An update exists.
+    Available {
+        /// Its version.
+        version: String,
+    },
+    /// An update is downloading.
+    Downloading {
+        /// Its version.
+        version: String,
+        /// 0 to 100; absent when the server sends no content length.
+        #[serde(default)]
+        percent: Option<u8>,
+    },
+    /// The update is installed; restarting finishes it.
+    Ready {
+        /// Its version.
+        version: String,
+    },
+    /// The check or the download failed.
+    Error {
+        /// The reason, shown on hover.
+        message: String,
+    },
+}
+
+/// `error { scope, message }`: an error that did not come back from a command (a background job).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type, Event)]
+#[tauri_specta(event_name = "error")]
+pub struct ErrorEvent {
+    /// Where it came from.
+    pub scope: ErrorScope,
+    /// What went wrong and what to do.
+    pub message: String,
+}
+
+impl From<AppError> for ErrorEvent {
+    fn from(e: AppError) -> Self {
+        Self {
+            scope: e.scope,
+            message: e.message,
+        }
+    }
+}
+
+/// `menu_action { action }`: a menu item that needs the webview was chosen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type, Event)]
+#[tauri_specta(event_name = "menu_action")]
+pub struct MenuActionEvent {
+    /// Which item.
+    pub action: MenuAction,
+}
+
+/// `settings_changed { photo_id }` (addition): the core changed a photo's settings by itself, after
+/// a `viewport_input` Pick white click. Ask `get_settings` again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type, Event)]
+#[tauri_specta(event_name = "settings_changed")]
+pub struct SettingsChanged {
+    /// The photo.
+    pub photo_id: PhotoId,
+}
+
+/// `export_busy { busy }` (addition): an export is queued or running. "Update ready" waits while
+/// this is true (`docs/12`). Also available as the command `export_busy`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type, Event)]
+#[tauri_specta(event_name = "export_busy")]
+pub struct ExportBusy {
+    /// An export is queued or running.
+    pub busy: bool,
+}
+
+/// `viewport_frame` (addition, fallback viewport only): a new frame of the photo cell is ready.
+/// Show `url` in an `<img>` laid over the cell (the cell's rectangle, `width` and `height` are its
+/// size in device pixels).
+///
+/// An empty `url` (with `width` and `height` 0) says there is no picture any more: the session was
+/// closed, or the photo now selected can't be developed. Take the image away; the cell shows only
+/// the paper.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type, Event)]
+#[tauri_specta(event_name = "viewport_frame")]
+pub struct ViewportFrame {
+    /// Counts up with every frame; also in `url`, so a changed frame is a new address.
+    pub seq: u32,
+    /// Width in device pixels.
+    pub width: u32,
+    /// Height in device pixels.
+    pub height: u32,
+    /// False when the frame was made from a coarser image while sharper tiles render; a sharp
+    /// frame follows.
+    pub sharp: bool,
+    /// Where the PNG is (the `ym-frame://` scheme, `http://ym-frame.localhost/` on Windows).
+    pub url: String,
+}
+
+/// Which viewport backend draws the photo.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum ViewportBackendKind {
+    /// A wgpu surface behind the transparent webview (macOS).
+    Native,
+    /// Frames sent to the webview as images (`viewport_frame` events).
+    Fallback,
+}
+
+/// `viewport_info` (addition): which backend draws the photo, so the photo cell knows whether to
+/// stay transparent or to show `viewport_frame` images.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct ViewportInfo {
+    /// The backend in use.
+    pub backend: ViewportBackendKind,
+}
+
+/// Paths are strings on the bridge; this is where they become paths.
+#[must_use]
+pub fn path_of(s: &str) -> PathBuf {
+    PathBuf::from(s)
+}

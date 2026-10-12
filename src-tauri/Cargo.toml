@@ -1,6 +1,6 @@
 [package]
 name = "yellowmoon-app"
-description = "Yellowmoon desktop app shell (Tauri 2): window, commands, events, updater."
+description = "Yellowmoon desktop app shell (Tauri 2): window, commands, events, menus, viewport, updater."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -20,7 +20,17 @@ tauri-build.workspace = true
 
 [dependencies]
 ym-core.workspace = true
+ym-color.workspace = true
+ym-export.workspace = true
+ym-gpu.workspace = true
+ym-looks.workspace = true
+serde.workspace = true
 serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+# The fallback viewport sends each frame to the webview as a PNG (MIT OR Apache-2.0).
+png.workspace = true
 specta.workspace = true
 tauri.workspace = true
 tauri-plugin-dialog.workspace = true
@@ -29,5 +39,25 @@ tauri-plugin-updater.workspace = true
 tauri-specta.workspace = true
 specta-typescript.workspace = true
 
+# The native viewport (docs/01 Native viewport): an NSView behind the transparent webview with a wgpu
+# surface in it. macOS only; nothing below is built on Linux. The versions are the ones Tauri, wry and
+# wgpu already pull in on macOS, so the lock file gains edges but no new crates.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSGeometry"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSView", "NSResponder", "NSGraphics"] }
+raw-window-handle = "0.6"
+wgpu.workspace = true
+pollster.workspace = true
+
 [dev-dependencies]
 tempfile.workspace = true
+# `tauri::test`: a mock runtime, so commands are called through the real IPC handler without a webview.
+tauri = { workspace = true, features = ["test"] }
+# Parses the menu shortcuts the way the system menu does (the menu ignores one it cannot parse).
+muda = "0.20"
+# Builds the zips of the wizard tests and reads the TypeScript contract in the bindings test.
+zip.workspace = true
+regex = "1"
+# Synthetic ARW files for the command tests.
+ym-raw = { workspace = true, features = ["testgen"] }

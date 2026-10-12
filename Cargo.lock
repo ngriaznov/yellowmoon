@@ -2954,7 +2954,20 @@ name = "dngfit"
 version = "0.0.1"
 dependencies = [
  "anyhow",
+ "assert_cmd",
  "clap",
+ "golden",
+ "hex",
+ "predicates",
+ "rayon",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tempfile",
+ "tiff",
+ "ym-color",
+ "ym-export",
+ "zune-jpeg",
 ]
 
 [[package]]
@@ -4046,12 +4059,15 @@ dependencies = [
  "assert_cmd",
  "clap",
  "hex",
+ "png 0.18.1",
  "predicates",
  "rayon",
  "serde",
  "serde_json",
  "sha2 0.11.0",
  "tempfile",
+ "ym-color",
+ "ym-export",
  "ym-raw",
 ]
 

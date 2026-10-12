@@ -32,7 +32,7 @@ The biggest risk is the ALEXA target itself. Most open decisions are settled by 
 
 | Decision | Options | Decided by | Status |
 |---|---|---|---|
-| Native viewport approach | Metal layer behind transparent webview, or native child view | M0-06 spike | open: needs the Mac check (M0-H4) |
+| Native viewport approach | Metal layer behind transparent webview, or native child view; fallback: frames streamed to the webview | M0-06 spike | open: both backends are built (native `NSView` + wgpu surface in Display P3 behind the webview, `src-tauri/src/native.rs`, type-checked for macOS but never run; fallback of PNG frames with a Display P3 profile over `ym-frame://`, tested on Linux). Decided only after the Mac check (M0-H4; checklist in `docs/11-ui.md`). The fallback deviates from "full images never cross the bridge" (`docs/01`): it exists for non-macOS development and as the fallback if the native view fails checks 1 to 6 |
 | ML runtime | burn on wgpu, or ort with CoreML | M0-08 benchmark | open: harness ready (`crates/ym-ml/examples/bench.rs`); Linux CPU numbers not decision-grade; needs the Mac run (M0-H4) |
 | Illuminant estimator | FFCC, C5 or DMCC style | M1-06 gates | decided: FFCC-style (2026-10-12; log below) |
 | Sensor map form | table blend, or tiny MLP | M1-05 (MLP only if ≥ 0.05 ΔE00 better) | table blend, Lab-optimal fit (2026-10-12); MLP not tried (headroom analysis: free/root-poly maps only reach LED-V2 ≈ 0.51) |
