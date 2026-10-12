@@ -11101,6 +11101,7 @@ version = "0.0.1"
 dependencies = [
  "half",
  "jsonschema",
+ "png 0.18.1",
  "rayon",
  "serde",
  "serde_json",

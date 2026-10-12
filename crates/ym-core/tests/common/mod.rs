@@ -232,3 +232,64 @@ pub fn estimates_of_file(
     .expect("estimates");
     (raw, est, profile)
 }
+
+// ---------------------------------------------------------------------------------------------
+// Rendering helpers
+// ---------------------------------------------------------------------------------------------
+
+/// A developed session with one synthetic photo, ready to render.
+pub struct Developed {
+    pub session: Session,
+    pub id: ym_core::session::PhotoId,
+    pub dir: tempfile::TempDir,
+}
+
+impl Developed {
+    /// Writes `scene` as an ARW of `model`, opens it, waits for the estimates.
+    pub fn new(scene: &Scene, model: &str) -> Self {
+        let dir = tempfile::tempdir().expect("temp dir");
+        scene.write(dir.path(), "DSC00001.ARW", model);
+        Self::open(dir)
+    }
+
+    /// Opens the single ARW in `dir`.
+    pub fn open(dir: tempfile::TempDir) -> Self {
+        let session = Session::new(base_env());
+        let out = session.open(
+            &[dir.path().to_path_buf()],
+            ym_core::session::OpenOptions::default(),
+        );
+        assert_eq!(out.added.len(), 1, "one photo added");
+        settle(&session);
+        let id = out.added[0];
+        Self { session, id, dir }
+    }
+
+    /// The photo as the renderer takes it, with the session's current settings.
+    pub fn source(&self) -> ym_core::pipeline::PhotoSource {
+        let view = self.session.view(self.id).expect("view");
+        let raw = self.session.raw_image(self.id).expect("raw image");
+        ym_core::pipeline::PhotoSource::from_view(&view, raw)
+    }
+}
+
+/// The mean of channel `c` (0 R, 1 G, 2 B) of an RGBA frame over the pixels of a rectangle.
+pub fn mean_rgba(
+    frame: &ym_core::pipeline::RenderedFrame,
+    x0: usize,
+    y0: usize,
+    w: usize,
+    h: usize,
+) -> [f64; 3] {
+    let mut sum = [0.0f64; 3];
+    for y in y0..y0 + h {
+        for x in x0..x0 + w {
+            let p = &frame.rgba[(y * frame.width + x) * 4..][..3];
+            for c in 0..3 {
+                sum[c] += f64::from(p[c]);
+            }
+        }
+    }
+    let n = (w * h) as f64;
+    [sum[0] / n, sum[1] / n, sum[2] / n]
+}
