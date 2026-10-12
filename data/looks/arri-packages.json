@@ -1,5 +1,96 @@
 {
   "version": 1,
   "note": "Recognition rules and fingerprints for ARRI's free look packages. Names, sizes, LUT sizes and SHA-256 only; never LUT data. Filled by tools/looks/fingerprint.py in M3-09 (HUMAN M3-H2). See docs/08-looks.md.",
-  "packages": []
+  "patterns_note": "The name patterns and markers below are written from ARRI's public package descriptions (counts, LUT sizes, encodings) and were not checked against the real downloads. Where a pattern misses, the wizard asks the generic input question instead of guessing. Once tools/looks/fingerprint.py has filled 'fingerprints' (HUMAN M3-H2), files are identified by hash and these patterns only cover files that are not in a fingerprint list.",
+  "page_url": "https://www.arri.com/en/learn/camera-systems/image-science/look-files",
+  "display_names": ["gamma24", "rec709", "bt709", "p3", "dcip3", "rec2020", "bt2020", "hlg", "pq", "srgb"],
+  "packages": [
+    {
+      "id": "look-library-logc4",
+      "title": "Look Library · LogC4",
+      "role": "looks",
+      "input": "logc4",
+      "download_mb": 181,
+      "zip_name": [
+        { "all_of": ["look", "logc4"], "none_of": ["logc3", "rec709"] }
+      ],
+      "expected": { "cube_files": 87, "groups": 9, "lut_sizes": [65] },
+      "markers": {
+        "encoding": { "any_of": ["logc4"], "none_of": ["logc3"] },
+        "display_rendering": "absent",
+        "group_folders": "required"
+      },
+      "fingerprints": []
+    },
+    {
+      "id": "display-luts-logc4",
+      "title": "Display LUTs · LogC4",
+      "role": "display_luts",
+      "input": "logc4",
+      "download_mb": 32,
+      "zip_name": [
+        { "all_of": ["display", "logc4"], "none_of": ["logc3"] },
+        { "all_of": ["lut", "logc4"], "none_of": ["look", "logc3"] }
+      ],
+      "expected": { "cube_files": 22, "lut_sizes": [] },
+      "markers": {
+        "encoding": { "any_of": ["logc4"], "none_of": ["logc3"] },
+        "display_rendering": "required",
+        "group_folders": "absent"
+      },
+      "fingerprints": []
+    },
+    {
+      "id": "look-library-logc3",
+      "title": "Look Library · LogC3",
+      "role": "looks",
+      "input": "logc3",
+      "download_mb": 30,
+      "zip_name": [
+        { "all_of": ["look", "logc3"], "none_of": ["logc4", "rec709"] }
+      ],
+      "expected": { "cube_files": 87, "groups": 9, "lut_sizes": [33] },
+      "markers": {
+        "encoding": { "any_of": ["logc3"], "none_of": ["logc4"] },
+        "display_rendering": "absent",
+        "group_folders": "required"
+      },
+      "fingerprints": []
+    },
+    {
+      "id": "look-library-logc3-rec709",
+      "title": "Look Library · LogC3 to Rec.709",
+      "role": "looks",
+      "input": "logc3_to_rec709",
+      "download_mb": 32,
+      "zip_name": [
+        { "all_of": ["look", "logc3", "rec709"], "none_of": ["logc4"] }
+      ],
+      "expected": { "cube_files": 87, "groups": 9, "lut_sizes": [] },
+      "markers": {
+        "encoding": { "any_of": ["logc3"], "none_of": ["logc4"] },
+        "display_rendering": "required",
+        "group_folders": "required"
+      },
+      "fingerprints": []
+    },
+    {
+      "id": "display-luts-logc3",
+      "title": "Display LUTs · LogC3",
+      "role": "display_luts",
+      "input": "logc3",
+      "download_mb": 46,
+      "zip_name": [
+        { "all_of": ["display", "logc3"], "none_of": ["logc4"] },
+        { "all_of": ["lut", "logc3"], "none_of": ["look", "logc4"] }
+      ],
+      "expected": { "cube_files": 48, "lut_sizes": [] },
+      "markers": {
+        "encoding": { "any_of": ["logc3"], "none_of": ["logc4"] },
+        "display_rendering": "required",
+        "group_folders": "absent"
+      },
+      "fingerprints": []
+    }
+  ]
 }

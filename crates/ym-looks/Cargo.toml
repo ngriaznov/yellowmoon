@@ -11,3 +11,19 @@ publish = false
 
 [dependencies]
 ym-color.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+hex.workspace = true
+time.workspace = true
+# Streaming zip reader for look packages (MIT).
+zip.workspace = true
+# Cross-process file lock for `looks/.lock` (MIT OR Apache-2.0).
+fs4.workspace = true
+# Recoverable "Move to Trash" for the downloaded zip (MIT).
+trash = "5"
+
+[dev-dependencies]
+tempfile.workspace = true
+proptest.workspace = true
