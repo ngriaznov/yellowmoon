@@ -1,0 +1,4 @@
+# Extra dependency of the illuminant training (training/illum/train.py): automatic differentiation of the FFCC filter.
+# Not shipped (the Rust inference has no dependencies beyond serde and sha2). Apache-2.0.
+-r ../requirements.txt
+jax>=0.4.30          # reproduced with 0.11.2 (CPU)

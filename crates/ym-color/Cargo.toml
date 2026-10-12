@@ -13,11 +13,11 @@ publish = false
 thiserror.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+# SHA-256 check of the illuminant model's tensors at load (illum). MIT OR Apache-2.0, already in the workspace.
+sha2.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
-# SHA-256 of data files in the spectral tests (reference file freshness, curve provenance).
-sha2.workspace = true
 # JPEG decoder for the auto-exposure gate's embedded-JPEG comparison tests (licence MIT OR Apache-2.0 OR Zlib;
 # already in the build through ym-export's tests). Tests only.
 zune-jpeg = "0.5"
