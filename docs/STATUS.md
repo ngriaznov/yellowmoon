@@ -21,6 +21,7 @@ Two facts shape every number below:
 
 | Task | Commit | Notes |
 |---|---|---|
+| M1-15 golden runner, M3-12 dngfit and DNG gates | [4de91f6](https://github.com/ngriaznov/yellowmoon/commit/4de91f6) | 61 synthetic files hashed; DNG gates pass with the fitted profile applied by the gate tool (the writer adopts it next) |
 | M3-02…M3-04 Tauri app: IPC, bindings, fallback viewport, menus, updater | [8244118](https://github.com/ngriaznov/yellowmoon/commit/8244118) | native macOS viewport type-checked only (M0-H4); app and `ym` give identical JPEG bytes on real files |
 | M1-14 `ym` CLI (render, info, looks, doctor) and the `ym` rename | [49e8cee](https://github.com/ngriaznov/yellowmoon/commit/49e8cee) | 109 synthetic files render; `--jobs 1` vs `--jobs 4` byte-identical |
 | ym-core part 3: export queue, preferences, looks service, Core API | [dc9d8c3](https://github.com/ngriaznov/yellowmoon/commit/dc9d8c3) | M3-11, M3-13, M3-14 core half |
@@ -71,8 +72,10 @@ CI jobs enabled: frontend, e2e, rust (macOS), deny, deny-selftest, fetch-tools, 
 | Camera detection on the corpus (M1-04) | — | corpus unreachable; all 28 registry bodies tested synthetically | blocked |
 | Noise, noise-on-noise (M2-02) | 2026-10-12 | increment median 1.8 %, p90 5.6 % (≤ 15 % / 30 %), synthetic | yes (synthetic) |
 | Auto exposure vs embedded JPEG (M1-08) | — | needs the golden set | blocked |
-| DNG passes dng_validate (M3-12) | 2026-10-12 | Adobe dng_validate 1.7.1 accepts every variant (local build) | yes (local) |
-| DNG render vs our JPEG ΔE00 ≤ 1.5 (M3-12) | — | needs dngfit (in progress) | pending |
+| DNG passes dng_validate (M3-12) | 2026-10-12 | Adobe dng_validate 1.7.1 accepts every variant, all 61 synthetic and 9 real exports (local build) | yes (local) |
+| DNG render vs our JPEG ΔE00 ≤ 1.5 (M3-12) | 2026-10-12 | fitted profile, every file's median: synthetic 0.60–1.04 (61 files), real 0.45–1.06 (9 files); against the 16-bit PNG 0.03–0.10 | yes (profile applied by `dngfit gate`; writer adoption pending) |
+| End-to-end colour vs ALEXA-estimate truth (M1-15 report, no gate) | 2026-10-12 | scene-linear AWG4, 190 chart patches: median 0.73 ΔE00, p95 2.05 over 37 scenes (Sony-through-ARRI-matrix baseline 1.72); A7R IV ISO 400 single lights 0.68 / 1.61; ISO 12800 2.24 | reported |
+| Golden images (M1-15) | 2026-10-12 | 61 synthetic files identical on re-run, thread-count independent; a saturation +3 change fails at ΔE00 3.6 | yes (synthetic tier) |
 | Demosaic + denoise network (M2) | — | no trained weights (M2-H4) | blocked |
 | Performance (docs/05) | 2026-10-12 | Linux x86 only: Lossless L 50 MP decode 333 ms on 4 cores; classical chain ~64–69 CPU-s per 50 MP; Mac numbers are M0-H4 | reported |
 
@@ -104,6 +107,7 @@ CI jobs enabled: frontend, e2e, rust (macOS), deny, deny-selftest, fetch-tools, 
 6. **Robust as-shot prior for the illuminant.** A two-component prior that discounts a wrong white-balance preset improves p90 4.93 → 4.16° and wrong-preset scenes 5.9 → 3.1°, but the worst case rises 22 → 33°. Adopt (needs a retrain)?
 7. **Tint readout near 4000 K.** The blackbody and daylight locus branches meet with a 0.04 log-chroma gap, so small magenta tints on ~4100 K lights read with the wrong sign. Fix with one Planckian readout locus or a blend over 3500–4500 K (changes `profile.json`)?
 8. **IJG licence.** JPEG export uses `jpeg-encoder`, whose forward DCT is IJG-licensed (permissive, needs "This software is based in part on the work of the Independent JPEG Group." in docs and About). It's allowed in `deny.toml` now; please confirm.
+9. **DNG brightness outside Adobe apps.** Adobe's renderer applies a highlight shoulder rather than a scale for a negative `BaselineExposure`, so the fitted profile stores scene values up to 16 with the white level there and `BaselineExposure` about 0. Adobe apps render it to match our JPEG; RawTherapee and darktable show the stored linear image about 4 EV darker until their own exposure handling. The alternative (per-photo white level) risks Adobe's shoulder. Recommended: keep the floor and say so in the export help. OK?
 
 ## Known issues
 
