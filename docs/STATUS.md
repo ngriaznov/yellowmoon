@@ -4,38 +4,113 @@ Keep this file current (`AGENTS.md`). Newest first within each section.
 
 ## Project
 
-Repository: github.com/ngriaznov/yellowmoon · Domain: (from the handover message)
+Repository: github.com/ngriaznov/yellowmoon · Domain: not given yet (the handover message didn't include one; `docs/12` and the app have no domain-dependent setting yet).
+
+Work so far is on branch `claude/yellowmoon-v1` (one commit per task or task group, no PR yet). Commits are authored as ngriaznov; links below are to commits.
 
 ## Current milestone
 
-M0 · Foundations. Not started.
+M0–M3 were built in parallel by task lanes in one session (2026-10-12), each lane implemented and then independently reviewed. Integration (ym-core render pipeline, export queue, the `ym` CLI, the Tauri app, frontend wiring, golden runner, dngfit) is in progress. M4 hasn't started.
+
+Two facts shape every number below:
+
+- **No Mac.** The agent ran on Linux x86_64 (4 cores). GPU code was checked on Mesa lavapipe (software Vulkan); Metal, the native viewport, timings on M1/M3 and the release/updater flow need a Mac (M0-H4).
+- **No CC0 corpus.** rawdb.dnglab.org and raw.pixls.us were unreachable, so the decoder, golden and noise gates run on (a) a physically based synthetic ARW set with ALEXA ground truth and (b) nine real ARW files from a public GitHub test-image repository, used for local evaluation only (never committed). The CC0 gates are blocked, not passed.
 
 ## Done
 
-| Task | PR | Notes |
+| Task | Commit | Notes |
 |---|---|---|
-| — | — | — |
+| M1-06 illuminant estimator | [2b50516](https://github.com/ngriaznov/yellowmoon/commit/2b50516) | FFCC-style, 11 per-profile models; gate passes on synthetic scenes; Cube++/NUS-8 blocked |
+| Synthetic golden set | [283038a](https://github.com/ngriaznov/yellowmoon/commit/283038a) | 61 ARWs × 5 variants with ALEXA ground truth; stand-in for the CC0 tier |
+| ym-core part 1 (settings, auto estimates, session) | [cd92c88](https://github.com/ngriaznov/yellowmoon/commit/cd92c88) | integration in progress |
+| M0-04, M0-05, M2-03, M2-09 ARW container and decoders | [55bc009](https://github.com/ngriaznov/yellowmoon/commit/55bc009) | every V1 variant except ARW 6.0 (gated); 9/9 real files identical to LibRaw |
+| M0-07, GPU halves of M1-09/10/11, C11, C13 | [defd910](https://github.com/ngriaznov/yellowmoon/commit/defd910) | lavapipe only; Metal is M0-H4 |
+| M3-01, M3-05…M3-08 UI, M3-09/11/13 UI, M3-15 | [deebc1c](https://github.com/ngriaznov/yellowmoon/commit/deebc1c) | frontend against the mock; wiring to the real backend in progress |
+| Profile locus in camera raw scale (defect fix) | [e432ddd](https://github.com/ngriaznov/yellowmoon/commit/e432ddd) | real as-shot whites now Duv −0.0065 (A7 III), −0.0008 (A7 IV) |
+| M1-07, M1-08 WB, fused C1–C6 chain, auto exposure | [132ba6b](https://github.com/ngriaznov/yellowmoon/commit/132ba6b) | M1-08 gate needs the golden set |
+| M2-04, M2-05, M2-07 runtime, M0-08 harness | [47b2685](https://github.com/ngriaznov/yellowmoon/commit/47b2685) | no trained weights (M2-H4); classical path ships |
+| Display transform + CPU colour chain (C7–C13) | [b7d6732](https://github.com/ngriaznov/yellowmoon/commit/b7d6732) | |
+| M1-02, M1-04, M1-05 Rust runtime (ym-profiles, spectral, sensor map) | [7eeaf61](https://github.com/ngriaznov/yellowmoon/commit/7eeaf61) | |
+| M1-10 library, M3-09 core (ym-looks) | [b91cc83](https://github.com/ngriaznov/yellowmoon/commit/b91cc83) | fingerprints wait for M3-H2 |
+| M2-02 noise estimator | [e71a8c0](https://github.com/ngriaznov/yellowmoon/commit/e71a8c0) | synthetic validation; per-body priors need the corpus (M2-01) |
+| M1-13, M3-12 writer (export) | [59a25da](https://github.com/ngriaznov/yellowmoon/commit/59a25da) | dng_validate passes locally; dngfit in progress |
+| M1-12 CPU raw processing R1–R9 | [d232c3c](https://github.com/ngriaznov/yellowmoon/commit/d232c3c) | lens maths corrected against darktable-cli |
+| M1-11 CPU ACES 2 | [f0f40a3](https://github.com/ngriaznov/yellowmoon/commit/f0f40a3) | |
+| M1-01, M1-09/M1-10 CPU, C11, C13 (ym-color core) | [36515b2](https://github.com/ngriaznov/yellowmoon/commit/36515b2) | |
+| M1-05 sensor map in CIE Lab (your decision) | [f402f7d](https://github.com/ngriaznov/yellowmoon/commit/f402f7d) | LED-V2 stays a reported gate failure |
+| M0-01 Rust workspace, Tauri shell, CLI stub, data lookup | [fe74202](https://github.com/ngriaznov/yellowmoon/commit/fe74202) | |
+| M1-02, M1-03, M1-04 fits, profiles, registry, ALEXA validation | [c10f0e7](https://github.com/ngriaznov/yellowmoon/commit/c10f0e7) | |
+| M0-02, M0-03 (repo side), M0-09, M0-10 | [93e91e2](https://github.com/ngriaznov/yellowmoon/commit/93e91e2) | signing key is yours (M0-03) |
+| M0-01 frontend skeleton | [131a619](https://github.com/ngriaznov/yellowmoon/commit/131a619) | |
+
+CI jobs enabled: frontend, e2e, rust (macOS), deny, deny-selftest, fetch-tools, gpu-lavapipe, oracle, lens-oracle, data-checks, synthetic-set, training-dry-run, alexa-curve. CI runs on pushes to `main` and on pull requests, so none of them has run on GitHub yet (no PR exists).
 
 ## Gate results
 
 | Gate | Date | Numbers | Pass |
 |---|---|---|---|
-| — | — | — | — |
+| ALEXA curve, leave-one-camera-out (M1-03) | 2026-10-12 | median RFSE 2.17 % (≤ 3 %), emulation ΔE00 median 0.233 (≤ 0.3); reproduces the published 2.2 % / 0.23 | yes |
+| Camera profiles vs Python (M1-04) | 2026-10-12 | Rust reproduces `sony_profiles.csv` within 0.0005 (±0.02) | yes |
+| Sensor map, A7R IV, 99 CES × 9 held-out lights (M1-05) | 2026-10-12 | 8 of 9 lights pass; **LED-V2 median 0.759 / p95 1.515** (≤ 0.5 / ≤ 1.2), with the Lab objective you chose | no (LED-V2, reported) |
+| Illuminant, held-out synthetic (M1-06) | 2026-10-12 | median 1.22–1.30° on all 11 profiles (≤ 2°) | yes |
+| Illuminant, Cube++ (M1-06) | — | host unreachable | blocked |
+| Sensor map with estimated lights (M1-06) | 2026-10-12 | end to end worst median 3.04 (white error dominates: 1° ≈ 1.2–1.9 ΔE00); map-only increase +0.15 median | no — see Questions |
+| ARRI colour step, LogC, matrices (M1-01) | 2026-10-12 | every docs/02 constant to 5e-11; colour-science 1e-14 | yes |
+| Display transform, ACES 2 vs OCIO 2.6 (M1-11) | 2026-10-12 | CPU max 0.03 code values at 10 bits (≤ 1); WGSL 0.05 (f32 storage) | yes |
+| LUT path vs OCIO tetrahedral (M1-10) | 2026-10-12 | 0.0002 code values at 10 bits (≤ 1) | yes |
+| GPU parity on lavapipe (M0-07, M1-09) | 2026-10-12 | C7–C11 ≤ 1.2e-5 LogC4 (≤ 2e-4); spike 50 MP 7.9e-4 (≤ 1e-3); peak GPU memory 0.28 GiB (≤ 1.5 GiB) | yes (lavapipe) — f16 caveat in Questions |
+| Lens corrections vs darktable-cli (M1-12) | 2026-10-12 | distortion and CA ≤ 0.009 px (≤ 0.2 px), gain ≤ 0.09 % (≤ 0.5 %), synthetic Sony files | yes (synthetic) |
+| Highlights (M1-12) | 2026-10-12 | chroma ΔE00 ≤ 4.66 on 10 synthetic scenes (≤ 5); blind review is yours | partial |
+| Demosaic PSNR (M1-12) | 2026-10-12 | Kodak 29.82 / 38.88 / 39.16 dB, McMaster 32.31 / 34.21 / 35.09 dB (bilinear / Menon / LMMSE) | reported |
+| Decoder vs LibRaw (M0-05) | 2026-10-12 | 9/9 real files and 46/46 readable synthetic files identical; cRAW within rawler's dither | synthetic + 9 real; corpus blocked |
+| Camera detection on the corpus (M1-04) | — | corpus unreachable; all 28 registry bodies tested synthetically | blocked |
+| Noise, noise-on-noise (M2-02) | 2026-10-12 | increment median 1.8 %, p90 5.6 % (≤ 15 % / 30 %), synthetic | yes (synthetic) |
+| Auto exposure vs embedded JPEG (M1-08) | — | needs the golden set | blocked |
+| DNG passes dng_validate (M3-12) | 2026-10-12 | Adobe dng_validate 1.7.1 accepts every variant (local build) | yes (local) |
+| DNG render vs our JPEG ΔE00 ≤ 1.5 (M3-12) | — | needs dngfit (in progress) | pending |
+| Demosaic + denoise network (M2) | — | no trained weights (M2-H4) | blocked |
+| Performance (docs/05) | 2026-10-12 | Linux x86 only: Lossless L 50 MP decode 333 ms on 4 cores; classical chain ~64–69 CPU-s per 50 MP; Mac numbers are M0-H4 | reported |
 
 ## Waiting on Mykyta
 
 | ID | What | Needed for |
 |---|---|---|
-| — | Nothing yet. Mac-only checks (M0-H4) go here if the agent isn't on a Mac. | — |
+| M0-03 | Generate the updater signing key and set the two GitHub secrets; put the public key in `src-tauri/tauri.conf.json` (exact commands in `docs/release-signing.md`). Also decide whether the release bot may push the cask update to `main`. | first release |
+| M0-H4 | Mac checks: native viewport (M0-06 checklist), Metal parity and timings (`cargo test -p ym-gpu`, `crates/ym-ml/examples/bench.rs` for the ML runtime choice), decode/render timings, the 0.0.1 → 0.0.2 self-update, `brew install --cask`. | M0 gate |
+| M0-09 | On a machine with open internet: `tools/fetch/samples.sh --refresh`, review and commit `tools/fetch/manifest.json`; promote raw.pixls.us files after a licence check; collect Play Raw tier-2 files. | decoder, detection, golden, noise gates |
+| M1-H3 | Email HdM about the SXT curve. | ALEXA curve check |
+| M1-H4 | Confirm that shipping coefficients fitted with CIE SPDs (CC BY-SA 4.0) is acceptable (profiles, illuminant models). | M1 |
+| M1-H5 | Visual review of renders once the CLI renders the golden set. | M1 gate |
+| M2-H3 | Email Sony about RDD 34 / ARW 6.0. | ARW 6.0 |
+| M2-H4 | GPU time and PixelShift200 to train `jdd` (`make -C training/jdd train-jdd`). | M2 |
+| M2-H5, M4-H1 | Blind A/B tests. | M2, M4 |
+| M3-H1 | Design and name the Signature look (`docs/08` parametric look format is ready). | M3 |
+| M3-H2 | Download the five ARRI packages and run `tools/looks/fingerprint.py`. | wizard recognition by hash |
+| M3-H4, M3-H5, M3-H6 | App review on a Mac; a real shoot; DNGs in Lightroom, RawTherapee, darktable, Capture One, Apple Photos. | M3 gate |
+| — | A real Lossless M or S file (A7R V, A9 III, A1 II or RX1R III) to confirm the M/S scale. | M2-09 |
 
 ## Questions for Mykyta
 
-None yet.
+1. **Sensor-map gate with estimated lights (docs/02, M1-06).** As worded it can't pass: any white-balance error dominates (1° ≈ 1.2–1.9 ΔE00, while the gate needs the white right to about 0.3°). Proposal in docs/02: gate the estimator by angular error only, and state the estimated-light check as the map-only increase (≤ +0.2 median, ≤ +0.7 p95 — measured +0.15 / +0.69, so these thresholds are post-hoc). Accept, or another wording?
+2. **GPU storage precision.** The spec says f16 tiles. f16 storage alone can exceed the 1e-3 spike gate on white-noise data (up to 6e-3) and the 1-code DRT gate on 3–4 of 898 extreme vectors; f32 storage meets both and doubles GPU memory (50 MP peak ~0.28 → ~0.56 GiB, gate 1.5 GiB). Options: f32 by default; keep f16 and accept a data-dependent gate; f16 only when memory-bound.
+3. **16-bit TIFF default.** On a real 24 MP frame 16-bit LZW was 26 % larger than uncompressed and 38 % larger than ZIP. Switch the default to ZIP?
+4. **Spec error in M1-07.** docs/15 says "3200 K under daylight renders warmer than Auto"; physically it renders bluer. The test checks the ALEXA-maths amount with the correct sign. OK to fix the wording?
+5. **M1-02 tolerance.** "Runtime values match to 1e-6 on a test grid" holds on grid; off grid the 10 K tables reach 5e-6 (blackbody) and 4e-4 (daylight, because colour-science rounds the D-series M1/M2 coefficients). Accept these tolerances, or use a 1 K blackbody grid (1.4e-7) and unrounded daylight?
+6. **Robust as-shot prior for the illuminant.** A two-component prior that discounts a wrong white-balance preset improves p90 4.93 → 4.16° and wrong-preset scenes 5.9 → 3.1°, but the worst case rises 22 → 33°. Adopt (needs a retrain)?
+7. **Tint readout near 4000 K.** The blackbody and daylight locus branches meet with a 0.04 log-chroma gap, so small magenta tints on ~4100 K lights read with the wrong sign. Fix with one Planckian readout locus or a blend over 3500–4500 K (changes `profile.json`)?
+8. **IJG licence.** JPEG export uses `jpeg-encoder`, whose forward DCT is IJG-licensed (permissive, needs "This software is based in part on the work of the Independent JPEG Group." in docs and About). It's allowed in `deny.toml` now; please confirm.
 
 ## Known issues
 
-None yet.
+- C9 grade controls can fold the neutral ramp when two are combined at opposite extremes (e.g. Highlights +100 with White −100); each alone is monotone. Needs a UI limit or a constants refit in M3.
+- Day/Shade/Tungsten presets carry the 3.5–6 % difference between the Weta curves' white and the camera ColorMatrix white (A7 III/A7 IV); a per-body raw-white calibration would need data.
+- Noise estimator over-reads `a` on busy low-ISO scenes (median 14 %, p90 38 %); borderline against the 15 % gate.
+- The illuminant's synthetic brightness range stops at Bv 13; real sunlit files read 14.3–14.6. LED and fluorescent class recognition is weak on independent chart scenes.
+- Kelvin readout rounded to 50 K leaves up to 1.6 % red/blue imbalance below 2300 K.
+- The GPU memory budget isn't scaled to system RAM; device loss isn't handled.
+- `docs/02` §C10/§C11 still say "rgba16float 3D texture" and "1D textures"; the code uses f32 storage buffers for precision.
 
 ## Environment
 
-Record where the agent runs (macOS with Metal, or Linux) and which checks therefore need a Mac.
+Linux x86_64 container, 4 vCPUs, Rust 1.97.0, Node 22, Python 3.13; Mesa lavapipe for wgpu; darktable-cli 4.6.1 (lens oracle, separate process); LibRaw 0.22.1 via rawpy, rawler 0.8 and libjpeg as decoder oracles; OpenColorIO 2.6 for test vectors; Adobe DNG SDK 1.7.1 `dng_validate` built from the GrapheneOS AOSP mirror. No Mac: every Metal, native-viewport, timing and release check is listed under M0-H4.
