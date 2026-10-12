@@ -11,3 +11,19 @@ publish = false
 
 [dependencies]
 ym-color.workspace = true
+thiserror.workspace = true
+rayon.workspace = true
+
+[dev-dependencies]
+png.workspace = true
+tiff.workspace = true
+serde_json.workspace = true
+
+# Plain-main benchmarks (no external harness): `cargo bench -p ym-gpu --bench cpu_stages`.
+[[bench]]
+name = "cpu_stages"
+harness = false
+
+[[bench]]
+name = "cpu_demosaic"
+harness = false

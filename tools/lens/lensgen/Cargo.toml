@@ -1,0 +1,14 @@
+# Standalone helper (its own workspace root, not a member of the repository workspace): writes the
+# synthetic flat-field and grid ARW files that tools/lens/darktable_oracle.sh renders.
+# Run: CARGO_TARGET_DIR=target/lensgen cargo run --release --manifest-path tools/lens/lensgen/Cargo.toml -- build/lens-fixtures
+[package]
+name = "lensgen"
+version = "0.0.0"
+edition = "2024"
+publish = false
+license = "Apache-2.0"
+
+[dependencies]
+ym-raw = { path = "../../../crates/ym-raw", features = ["testgen"] }
+
+[workspace]

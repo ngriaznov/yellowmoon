@@ -1,0 +1,190 @@
+{
+ "source": "gen_reference.py: independent NumPy implementations of docs/05 R5-R8",
+ "arrays": {
+  "r5_RGGB_mosaic": {
+   "shape": [
+    28,
+    32
+   ],
+   "width": 32,
+   "height": 28,
+   "pattern": "RGGB",
+   "offset": 0
+  },
+  "r5_RGGB_mask": {
+   "shape": [
+    28,
+    32
+   ],
+   "offset": 896
+  },
+  "r5_RGGB_out": {
+   "shape": [
+    28,
+    32
+   ],
+   "offset": 1792
+  },
+  "r5_RGGB_offsets": {
+   "shape": [
+    6
+   ],
+   "offset": 2688
+  },
+  "r5_GRBG_mosaic": {
+   "shape": [
+    28,
+    32
+   ],
+   "width": 32,
+   "height": 28,
+   "pattern": "GRBG",
+   "offset": 2694
+  },
+  "r5_GRBG_mask": {
+   "shape": [
+    28,
+    32
+   ],
+   "offset": 3590
+  },
+  "r5_GRBG_out": {
+   "shape": [
+    28,
+    32
+   ],
+   "offset": 4486
+  },
+  "r5_GRBG_offsets": {
+   "shape": [
+    6
+   ],
+   "offset": 5382
+  },
+  "r5_GBRG_mosaic": {
+   "shape": [
+    28,
+    32
+   ],
+   "width": 32,
+   "height": 28,
+   "pattern": "GBRG",
+   "offset": 5388
+  },
+  "r5_GBRG_mask": {
+   "shape": [
+    28,
+    32
+   ],
+   "offset": 6284
+  },
+  "r5_GBRG_out": {
+   "shape": [
+    28,
+    32
+   ],
+   "offset": 7180
+  },
+  "r5_GBRG_offsets": {
+   "shape": [
+    6
+   ],
+   "offset": 8076
+  },
+  "r5_BGGR_mosaic": {
+   "shape": [
+    28,
+    32
+   ],
+   "width": 32,
+   "height": 28,
+   "pattern": "BGGR",
+   "offset": 8082
+  },
+  "r5_BGGR_mask": {
+   "shape": [
+    28,
+    32
+   ],
+   "offset": 8978
+  },
+  "r5_BGGR_out": {
+   "shape": [
+    28,
+    32
+   ],
+   "offset": 9874
+  },
+  "r5_BGGR_offsets": {
+   "shape": [
+    6
+   ],
+   "offset": 10770
+  },
+  "rgb": {
+   "shape": [
+    3,
+    27,
+    33
+   ],
+   "width": 33,
+   "height": 27,
+   "offset": 10776
+  },
+  "sigma": {
+   "shape": [
+    27,
+    33
+   ],
+   "offset": 13449
+  },
+  "guided_30": {
+   "shape": [
+    3,
+    27,
+    33
+   ],
+   "color": 30,
+   "offset": 14340
+  },
+  "guided_100": {
+   "shape": [
+    3,
+    27,
+    33
+   ],
+   "color": 100,
+   "offset": 17013
+  },
+  "bilateral": {
+   "shape": [
+    3,
+    27,
+    33
+   ],
+   "offset": 19686
+  },
+  "rl_90": {
+   "shape": [
+    3,
+    27,
+    33
+   ],
+   "amount": 90,
+   "radius": 0.8,
+   "noise": 0.01,
+   "offset": 22359
+  },
+  "rl_150": {
+   "shape": [
+    3,
+    27,
+    33
+   ],
+   "amount": 150,
+   "radius": 1.3,
+   "noise": 0.0,
+   "offset": 25032
+  }
+ }
+}
