@@ -1,0 +1,9 @@
+# Python dependencies of the offline training, fitting and validation scripts (training/).
+# Not shipped. colour-science is pinned: the published leave-one-out numbers, the fitted
+# sensor-map tables and the Rust cross-check fixtures were produced with 0.4.7. The other
+# packages are lower-bounded; the versions the numbers were last reproduced with are noted.
+colour-science==0.4.7
+numpy>=1.26         # reproduced with 2.5.3
+scipy>=1.11         # reproduced with 1.18.1
+matplotlib>=3.8     # reproduced with 3.11.2 (plots only)
+jsonschema>=4.18    # validate_profiles; reproduced with 4.26.0

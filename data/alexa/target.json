@@ -1,0 +1,47 @@
+{
+  "id": "alexa-alev3-estimate",
+  "version": "1.0.0",
+  "display_name": "ALEXA ALEV III (estimate)",
+  "kind": "estimate",
+  "spectral_curves": "alexa/alexa_alev3_estimate_380_780_5.json",
+  "ensemble_csv": "alexa/alexa_alev3_estimate_380_780_5.csv",
+  "variants_csv": "alexa/variants.csv",
+  "provenance": {
+    "summary": "Estimated spectral sensitivity of the ALEXA ALEV III sensor (SUP 3.x processing; ALEXA Classic through Mini LF). An estimate, not a measurement.",
+    "method": "Curves whose own optimal Academy P-2013-001-style matrices equal ARRI's published native-to-ACES AP0 matrices at 17 CCTs (2000-11000 K), under a 4-component PCA prior built from the 52 measured camera curves in rawtoaces-data (all 52, penalty 1, rawtoaces illuminants). 24-variant ensemble in variants.csv.",
+    "inputs": [
+      "ARRI ALEXA SUP 3.x native-to-ACES AP0 matrices, 17 CCTs, 13 Nov 2013 (aces-dev v1.3.1, ARRI-supplied, AMPAS licence, data/arri/AMPAS-LICENSE.md)",
+      "52 measured camera spectral sensitivities and 190 training reflectances (rawtoaces-data, Apache-2.0)"
+    ],
+    "licence": "Apache-2.0 (ours), derived from AMPAS-licensed and Apache-2.0 data; see NOTICE",
+    "fit_script": "research/alexa-ssf/scripts/estimate_alexa.py (copied unchanged to training/alexa/estimate_alexa.py)",
+    "recommended_variant": {
+      "prior": "all",
+      "K": 4,
+      "lam": 1.0,
+      "conv": "rta"
+    },
+    "validation": {
+      "method": "leave-one-camera-out over the 52 measured cameras (training/alexa/validate_loo.py, checked by training/alexa/check_loo.py in .github/workflows/alexa-curve.yml)",
+      "published": {
+        "rfse_median_pct": 2.2,
+        "rfse_p90_pct": 3.6,
+        "emulation_dE00_median": 0.23,
+        "emulation_dE00_p95_median_over_cameras": 0.63
+      },
+      "tolerance": 0.1,
+      "gate": "median RFSE <= 3 %, emulation dE00 median <= 0.3 (docs/13)"
+    },
+    "caveats": [
+      "Expected accuracy 3-5 % RFSE for this camera, not the 2.2 % LOO median (research/alexa-ssf/README.md).",
+      "Beyond about 660 nm the curve is mostly the prior; treat 660-720 nm as unknown.",
+      "Represents ALEXA SUP 3.x / ALEV III processing; not the ALEXA 35 or REVEAL.",
+      "Assumes ARRI made its matrices the P-2013-001 way; a different recipe adds error not captured by the leave-one-out test."
+    ],
+    "sha256": {
+      "alexa_alev3_estimate_380_780_5.json": "3d09bc262c47a76622a936e4b416ccfe459a0012e161109b6145916febbf32c6",
+      "alexa_alev3_estimate_380_780_5.csv": "0e6d7c3dd9292b3eeb53d1bdaae8dc7cd14baff9e9738494311cd7f8321c3ed2",
+      "variants.csv": "41aca43b9215b8b50dcaca9310f56862880205981aec3ab31c270ac015606066"
+    }
+  }
+}

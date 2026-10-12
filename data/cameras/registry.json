@@ -1,0 +1,338 @@
+{
+  "version": "1.0.0",
+  "default_profile": "sony-ilce-7rm4",
+  "sources": {
+    "model_ids": "exiftool/exiftool lib/Image/ExifTool/Sony.pm @ 2200871d9cef988051d2a99d67df3bda6cbb30a8 (SonyModelID table)",
+    "table": "docs/03-camera-profiles.md, 'Which profile each camera gets'"
+  },
+  "profiles": [
+    {
+      "id": "sony-ilce-7m3",
+      "path": "profiles/sony-ilce-7m3/profile.json"
+    },
+    {
+      "id": "sony-ilce-7m4",
+      "path": "profiles/sony-ilce-7m4/profile.json"
+    },
+    {
+      "id": "sony-ilce-7cm2",
+      "path": "profiles/sony-ilce-7cm2/profile.json"
+    },
+    {
+      "id": "sony-ilce-7rm2",
+      "path": "profiles/sony-ilce-7rm2/profile.json"
+    },
+    {
+      "id": "sony-ilce-7rm3",
+      "path": "profiles/sony-ilce-7rm3/profile.json"
+    },
+    {
+      "id": "sony-ilce-7rm4",
+      "path": "profiles/sony-ilce-7rm4/profile.json"
+    },
+    {
+      "id": "sony-ilce-7sm2",
+      "path": "profiles/sony-ilce-7sm2/profile.json"
+    },
+    {
+      "id": "sony-ilce-7sm3",
+      "path": "profiles/sony-ilce-7sm3/profile.json"
+    },
+    {
+      "id": "sony-ilce-9",
+      "path": "profiles/sony-ilce-9/profile.json"
+    },
+    {
+      "id": "sony-ilce-6400",
+      "path": "profiles/sony-ilce-6400/profile.json"
+    },
+    {
+      "id": "sony-dsc-rx100m4",
+      "path": "profiles/sony-dsc-rx100m4/profile.json"
+    }
+  ],
+  "bodies": [
+    {
+      "model_id": 363,
+      "model": "ILCE-7M3",
+      "body": "Sony A7 III",
+      "profile": "sony-ilce-7m3",
+      "match": "exact",
+      "via": null,
+      "notes": "Measured by Weta (rawtoaces-data): sony/Sony_ILCE-7M3_380_780_5.json."
+    },
+    {
+      "model_id": 381,
+      "model": "ILCE-7C",
+      "body": "Sony A7C",
+      "profile": "sony-ilce-7m3",
+      "match": "sensor_family",
+      "via": "Sony A7 III",
+      "notes": "Same sensor as Sony A7 III; shares its profile. ColorMatrix sibling check: pending: no converted samples available (docs/03)."
+    },
+    {
+      "model_id": 388,
+      "model": "ILCE-7M4",
+      "body": "Sony A7 IV",
+      "profile": "sony-ilce-7m4",
+      "match": "exact",
+      "via": null,
+      "notes": "Measured by Weta (rawtoaces-data): sony/Sony_ILCE-7M4_380_780_5.json."
+    },
+    {
+      "model_id": 397,
+      "model": "ILCE-7CM2",
+      "body": "Sony A7C II",
+      "profile": "sony-ilce-7cm2",
+      "match": "exact",
+      "via": null,
+      "notes": "Measured by Weta (rawtoaces-data): sony/Sony_ILCE-7CM2_380_780_5.json."
+    },
+    {
+      "model_id": 347,
+      "model": "ILCE-7RM2",
+      "body": "Sony A7R II",
+      "profile": "sony-ilce-7rm2",
+      "match": "exact",
+      "via": null,
+      "notes": "Measured by Weta (rawtoaces-data): sony/Sony_ILCE-7RM2_380_780_5.json."
+    },
+    {
+      "model_id": 362,
+      "model": "ILCE-7RM3",
+      "body": "Sony A7R III",
+      "profile": "sony-ilce-7rm3",
+      "match": "exact",
+      "via": null,
+      "notes": "Measured by Weta (rawtoaces-data): sony/Sony_ILCE-7RM3_380_780_5.json."
+    },
+    {
+      "model_id": 386,
+      "model": "ILCE-7RM3A",
+      "body": "Sony A7R IIIA",
+      "profile": "sony-ilce-7rm3",
+      "match": "sensor_family",
+      "via": "Sony A7R III",
+      "notes": "Same sensor as Sony A7R III; shares its profile. ColorMatrix sibling check: pending: no converted samples available (docs/03)."
+    },
+    {
+      "model_id": 375,
+      "model": "ILCE-7RM4",
+      "body": "Sony A7R IV",
+      "profile": "sony-ilce-7rm4",
+      "match": "exact",
+      "via": null,
+      "notes": "Measured by Weta (rawtoaces-data): sony/Sony_ILCE-7RM4_380_780_5.json."
+    },
+    {
+      "model_id": 387,
+      "model": "ILCE-7RM4A",
+      "body": "Sony A7R IVA",
+      "profile": "sony-ilce-7rm4",
+      "match": "sensor_family",
+      "via": "Sony A7R IV",
+      "notes": "Same sensor as Sony A7R IV; shares its profile. ColorMatrix sibling check: pending: no converted samples available (docs/03)."
+    },
+    {
+      "model_id": 390,
+      "model": "ILCE-7RM5",
+      "body": "Sony A7R V",
+      "profile": "sony-ilce-7rm4",
+      "match": "sensor_family",
+      "via": "Sony A7R IV",
+      "notes": "Same sensor as Sony A7R IV; shares its profile. ColorMatrix sibling check: pending: no converted samples available (docs/03)."
+    },
+    {
+      "model_id": 396,
+      "model": "ILCE-7CR",
+      "body": "Sony A7CR",
+      "profile": "sony-ilce-7rm4",
+      "match": "sensor_family",
+      "via": "Sony A7R IV",
+      "notes": "Same sensor as Sony A7R IV; shares its profile. ColorMatrix sibling check: pending: no converted samples available (docs/03)."
+    },
+    {
+      "model_id": 350,
+      "model": "ILCE-7SM2",
+      "body": "Sony A7S II",
+      "profile": "sony-ilce-7sm2",
+      "match": "exact",
+      "via": null,
+      "notes": "Measured by Weta (rawtoaces-data): sony/Sony_ILCE-7SM2_380_780_5.json."
+    },
+    {
+      "model_id": 383,
+      "model": "ILCE-7SM3",
+      "body": "Sony A7S III",
+      "profile": "sony-ilce-7sm3",
+      "match": "exact",
+      "via": null,
+      "notes": "Measured by Weta (rawtoaces-data): sony/Sony_ILCE-7SM3_380_780_5.json."
+    },
+    {
+      "model_id": 385,
+      "model": "ILME-FX3",
+      "body": "Sony FX3",
+      "profile": "sony-ilce-7sm3",
+      "match": "sensor_family",
+      "via": "Sony A7S III",
+      "notes": "Same sensor as Sony A7S III; shares its profile. ColorMatrix sibling check: pending: no converted samples available (docs/03)."
+    },
+    {
+      "model_id": 393,
+      "model": "ZV-E1",
+      "body": "Sony ZV-E1",
+      "profile": "sony-ilce-7sm3",
+      "match": "sensor_family",
+      "via": "Sony A7S III",
+      "notes": "Same sensor as Sony A7S III; shares its profile. ColorMatrix sibling check: pending: no converted samples available (docs/03)."
+    },
+    {
+      "model_id": 358,
+      "model": "ILCE-9",
+      "body": "Sony A9",
+      "profile": "sony-ilce-9",
+      "match": "exact",
+      "via": null,
+      "notes": "Measured by Weta (rawtoaces-data): sony/Sony_ILCE-9_380_780_5.json."
+    },
+    {
+      "model_id": 376,
+      "model": "ILCE-9M2",
+      "body": "Sony A9 II",
+      "profile": "sony-ilce-9",
+      "match": "sensor_family",
+      "via": "Sony A9",
+      "notes": "Same sensor as Sony A9; shares its profile. ColorMatrix sibling check: pending: no converted samples available (docs/03)."
+    },
+    {
+      "model_id": 371,
+      "model": "ILCE-6400",
+      "body": "Sony A6400",
+      "profile": "sony-ilce-6400",
+      "match": "exact",
+      "via": null,
+      "notes": "Measured by Weta (rawtoaces-data): sony/Sony_ILCE-6400_380_780_5.json."
+    },
+    {
+      "model_id": 379,
+      "model": "ILCE-6100",
+      "body": "Sony A6100",
+      "profile": "sony-ilce-6400",
+      "match": "sensor_family",
+      "via": "Sony A6400",
+      "notes": "Same sensor as Sony A6400; shares its profile. ColorMatrix sibling check: pending: no converted samples available (docs/03)."
+    },
+    {
+      "model_id": 378,
+      "model": "ILCE-6600",
+      "body": "Sony A6600",
+      "profile": "sony-ilce-6400",
+      "match": "sensor_family",
+      "via": "Sony A6400",
+      "notes": "Same sensor as Sony A6400; shares its profile. ColorMatrix sibling check: pending: no converted samples available (docs/03)."
+    },
+    {
+      "model_id": 402,
+      "model": "ILCE-6400A",
+      "body": "Sony A6400A",
+      "profile": "sony-ilce-6400",
+      "match": "sensor_family",
+      "via": "Sony A6400",
+      "notes": "Same sensor as Sony A6400; shares its profile. ColorMatrix sibling check: pending: no converted samples available (docs/03)."
+    },
+    {
+      "model_id": 403,
+      "model": "ILCE-6100A",
+      "body": "Sony A6100A",
+      "profile": "sony-ilce-6400",
+      "match": "sensor_family",
+      "via": "Sony A6400",
+      "notes": "Same sensor as Sony A6400; shares its profile. ColorMatrix sibling check: pending: no converted samples available (docs/03)."
+    },
+    {
+      "model_id": 341,
+      "model": "DSC-RX100M4",
+      "body": "Sony RX100 IV",
+      "profile": "sony-dsc-rx100m4",
+      "match": "exact",
+      "via": null,
+      "notes": "Measured by Weta (rawtoaces-data): sony/Sony_DSC-RX100M4_380_780_5.json."
+    },
+    {
+      "model_id": 384,
+      "model": "ILCE-1",
+      "body": "Sony A1",
+      "profile": "sony-ilce-7rm4",
+      "match": "default",
+      "via": null,
+      "notes": "No measured profile; uses the Sony A7R IV stand-in (docs/03). A Sony file is never refused for lack of a profile."
+    },
+    {
+      "model_id": 400,
+      "model": "ILCE-1M2",
+      "body": "Sony A1 II",
+      "profile": "sony-ilce-7rm4",
+      "match": "default",
+      "via": null,
+      "notes": "No measured profile; uses the Sony A7R IV stand-in (docs/03). A Sony file is never refused for lack of a profile."
+    },
+    {
+      "model_id": 392,
+      "model": "ILCE-9M3",
+      "body": "Sony A9 III",
+      "profile": "sony-ilce-7rm4",
+      "match": "default",
+      "via": null,
+      "notes": "No measured profile; uses the Sony A7R IV stand-in (docs/03). A Sony file is never refused for lack of a profile."
+    },
+    {
+      "model_id": 407,
+      "model": "ILCE-7M5",
+      "body": "Sony A7 V",
+      "profile": "sony-ilce-7rm4",
+      "match": "default",
+      "via": null,
+      "notes": "No measured profile; uses the Sony A7R IV stand-in (docs/03). A Sony file is never refused for lack of a profile."
+    },
+    {
+      "model_id": 410,
+      "model": "ILCE-7RM6",
+      "body": "Sony A7R VI",
+      "profile": "sony-ilce-7rm4",
+      "match": "default",
+      "via": null,
+      "notes": "No measured profile; uses the Sony A7R IV stand-in (docs/03). A Sony file is never refused for lack of a profile."
+    }
+  ],
+  "model_strings": {
+    "DSC-RX100M4": 341,
+    "ILCE-1": 384,
+    "ILCE-1M2": 400,
+    "ILCE-6100": 379,
+    "ILCE-6100A": 403,
+    "ILCE-6400": 371,
+    "ILCE-6400A": 402,
+    "ILCE-6600": 378,
+    "ILCE-7C": 381,
+    "ILCE-7CM2": 397,
+    "ILCE-7CR": 396,
+    "ILCE-7M3": 363,
+    "ILCE-7M4": 388,
+    "ILCE-7M5": 407,
+    "ILCE-7RM2": 347,
+    "ILCE-7RM3": 362,
+    "ILCE-7RM3A": 386,
+    "ILCE-7RM4": 375,
+    "ILCE-7RM4A": 387,
+    "ILCE-7RM5": 390,
+    "ILCE-7RM6": 410,
+    "ILCE-7SM2": 350,
+    "ILCE-7SM3": 383,
+    "ILCE-9": 358,
+    "ILCE-9M2": 376,
+    "ILCE-9M3": 392,
+    "ILME-FX3": 385,
+    "ZV-E1": 393
+  }
+}
