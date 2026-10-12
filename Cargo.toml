@@ -98,10 +98,13 @@ rawler = "0.8"
 
 [profile.dev]
 opt-level = 1
+# Line tables keep file:line in backtraces; full debug info made every test binary ~200 MB.
+debug = "line-tables-only"
 
 # Dependencies are optimized even in dev builds so image tests do not crawl in debug.
 [profile.dev.package."*"]
 opt-level = 3
+debug = false
 
 [profile.release]
 lto = "thin"
