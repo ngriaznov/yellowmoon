@@ -64,7 +64,7 @@ cargo deny check
 npm ci && npm test && npm run build      # frontend (vitest, tsc, vite)
 npm run e2e                               # Playwright against the mocked API
 npm run tauri dev                         # run the app
-cargo run -p ym-cli -- render <file.ARW> # run the CLI
+cargo run -p ym-cli -- render <file.ARW> # run the CLI (the binary is called `ym`)
 tools/fetch/samples.sh                    # download CC0 sample ARWs into testdata/
 ```
 

@@ -1,0 +1,20 @@
+---
+source: crates/ym-cli/tests/cli.rs
+expression: "help(&[\"looks\"])"
+---
+Manage the look library
+
+Usage: ym looks [OPTIONS] <COMMAND>
+
+Commands:
+  list     List the built-in and imported looks, with ids, names, groups and inputs; the default look is marked
+  import   Import ARRI look packages, folders of looks or `.cube` files into the look library
+  verify   Re-hash every imported look and report missing or changed files
+  default  Set the look new photos get
+  bake     Developer tool: bake a parametric look to a 33-point LUT and render a contact sheet
+  help     Print this message or the help of the given subcommand(s)
+
+Options:
+  -q, --quiet    Print only errors on stderr
+  -v, --verbose  Print what is happening on stderr: stages, timings and notes
+  -h, --help     Print help

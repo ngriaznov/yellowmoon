@@ -3,6 +3,26 @@ source: crates/ym-cli/tests/info.rs
 expression: v
 ---
 {
+  "auto": {
+    "exposure_ev": -0.8639,
+    "kelvin": 3450.0,
+    "light_class": "daylight",
+    "light_confidence": 0.2839,
+    "noise": {
+      "a": 0.00008857,
+      "b": 0.00000007845
+    },
+    "noise_reduction": {
+      "color": 50.0,
+      "detail": 50.0,
+      "luminance": 30.0
+    },
+    "sharpen": {
+      "amount": 102.9,
+      "radius_px": 0.8
+    },
+    "tint": -24.96
+  },
   "black": [
     512.0,
     512.0,
@@ -11,11 +31,17 @@ expression: v
   ],
   "camera": {
     "arw_version": "ARW 2.2",
-    "body": "ILCE-7RM4",
+    "body": "Sony A7R IV",
     "firmware": "ILCE-7RM4 v1.00",
     "make": "SONY",
+    "match": "exact",
     "model": "ILCE-7RM4",
-    "model_id": 375
+    "model_id": 375,
+    "profile": "sony-ilce-7rm4",
+    "profile_name": "A7R IV",
+    "profile_version": "1.0.0",
+    "reduced": false,
+    "stand_in": false
   },
   "dimensions": {
     "active_area": null,
@@ -48,6 +74,11 @@ expression: v
     "wb": "sr2",
     "white": "sr2"
   },
+  "look": {
+    "id": "builtin:neutral",
+    "intensity": 100
+  },
+  "notes": [],
   "pipeline_version": "0.1.0",
   "preview": "[preview location]",
   "raw": {
@@ -60,6 +91,105 @@ expression: v
     "samples_per_pixel": 1,
     "subsampling": null,
     "supported": true
+  },
+  "settings": {
+    "black": 0.0,
+    "brightness": 0.0,
+    "color_balance": {
+      "highlights": [
+        0.0,
+        0.0
+      ],
+      "midtones": [
+        0.0,
+        0.0
+      ],
+      "shadows": [
+        0.0,
+        0.0
+      ]
+    },
+    "contrast": 0.0,
+    "crop": null,
+    "curve": {
+      "blue": [
+        [
+          0.0,
+          0.0
+        ],
+        [
+          1.0,
+          1.0
+        ]
+      ],
+      "green": [
+        [
+          0.0,
+          0.0
+        ],
+        [
+          1.0,
+          1.0
+        ]
+      ],
+      "luma": [
+        [
+          0.0,
+          0.0
+        ],
+        [
+          1.0,
+          1.0
+        ]
+      ],
+      "red": [
+        [
+          0.0,
+          0.0
+        ],
+        [
+          1.0,
+          1.0
+        ]
+      ]
+    },
+    "decode": {
+      "chromatic_aberration": true,
+      "highlight_recovery": true,
+      "lens_corrections": true,
+      "neural_demosaic": true
+    },
+    "exposure": {
+      "ev": -0.8639,
+      "kind": "manual"
+    },
+    "highlights": 0.0,
+    "light_source": "auto",
+    "look": "builtin:neutral",
+    "look_intensity": 100.0,
+    "noise_reduction": {
+      "color": 50.0,
+      "detail": 50.0,
+      "kind": "manual",
+      "luminance": 30.0
+    },
+    "orientation": 0,
+    "rolloff": {
+      "highlights": 0.5,
+      "low_light": 0.5
+    },
+    "saturation": 0.0,
+    "shadows": 0.0,
+    "sharpen": {
+      "amount": 102.9,
+      "kind": "manual",
+      "radius_px": 0.8
+    },
+    "white": 0.0,
+    "white_balance": {
+      "kind": "auto"
+    },
+    "white_pick": null
   },
   "status": "ok",
   "tone_curve": null,

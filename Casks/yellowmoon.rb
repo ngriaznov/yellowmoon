@@ -16,7 +16,7 @@ cask "yellowmoon" do
   depends_on macos: ">= :monterey"
 
   app "Yellowmoon.app"
-  binary "#{appdir}/Yellowmoon.app/Contents/MacOS/yellowmoon-cli", target: "yellowmoon"
+  binary "#{appdir}/Yellowmoon.app/Contents/MacOS/ym"
 
   zap trash: [
     "~/Library/Application Support/app.yellowmoon",

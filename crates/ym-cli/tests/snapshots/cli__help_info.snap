@@ -1,0 +1,17 @@
+---
+source: crates/ym-cli/tests/cli.rs
+expression: "help(&[\"info\"])"
+---
+Print metadata and the automatic estimates without rendering
+
+Usage: ym info [OPTIONS] <FILES>...
+
+Arguments:
+  <FILES>...  ARW files to inspect
+
+Options:
+      --json          Print one JSON object per file instead of text (the shape of `render --json` without `output` and `timings_ms`)
+  -q, --quiet         Print only errors on stderr
+      --profile <ID>  Force a camera profile, for comparisons (for example `sony-ilce-7rm4`)
+  -v, --verbose       Print what is happening on stderr: stages, timings and notes
+  -h, --help          Print help

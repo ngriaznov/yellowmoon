@@ -32,7 +32,7 @@ body:
         - Noise, detail or sharpening
         - Export formats
         - The app (layout, controls, copy)
-        - The yellowmoon command
+        - The ym command
         - Installing or updating
         - Something else
     validations:

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Builds the `ym-cli` binary and copies it to src-tauri/binaries/yellowmoon-cli-<host triple>, where
+# Builds the `ym-cli` package (binary `ym`) and copies it to src-tauri/binaries/ym-<host triple>, where
 # Tauri expects the sidecar declared in bundle.externalBin (docs/01-architecture.md, "Building the
 # app crate"). tauri-build checks that this file exists on every build of src-tauri.
 #
@@ -47,14 +47,17 @@ cargo build -p ym-cli ${cargo_args[@]+"${cargo_args[@]}"}
 target_dir="$(cargo metadata --format-version 1 --no-deps | sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p')"
 target_dir="${target_dir:-${CARGO_TARGET_DIR:-$repo_root/target}}"
 
-source_bin="$target_dir/$profile_dir/yellowmoon"
+source_bin="$target_dir/$profile_dir/ym"
 if [[ ! -x "$source_bin" ]]; then
   echo "Expected the CLI binary at $source_bin, but it is missing." >&2
   exit 1
 fi
 
 dest_dir="$repo_root/src-tauri/binaries"
-dest_bin="$dest_dir/yellowmoon-cli-$host_triple"
+dest_bin="$dest_dir/ym-$host_triple"
 mkdir -p "$dest_dir"
+# The sidecar was called yellowmoon-cli before the command became `ym`; drop a stale copy so it cannot
+# be mistaken for the current one.
+rm -f "$dest_dir"/yellowmoon-cli-*
 cp -f "$source_bin" "$dest_bin"
 echo "Sidecar ready: ${dest_bin#"$repo_root"/}"

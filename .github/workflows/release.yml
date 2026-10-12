@@ -87,17 +87,18 @@ jobs:
           cargo build -p ym-cli --release --target aarch64-apple-darwin
           cargo build -p ym-cli --release --target x86_64-apple-darwin
           mkdir -p src-tauri/binaries
-          # Tauri sidecar naming: <name>-<target triple>. The sidecar is called yellowmoon-cli inside the
-          # bundle because macOS file systems are case-insensitive and the app binary is "Yellowmoon".
+          # Tauri sidecar naming: <name>-<target triple>. The sidecar is called ym: it is the command, and
+          # inside the bundle it is Contents/MacOS/ym, which cannot collide with the app binary "Yellowmoon"
+          # on a case-insensitive file system.
           # The universal build runs one cargo build per architecture, and each one's tauri-build checks
           # for its own triple, so place all three.
-          cp target/aarch64-apple-darwin/release/yellowmoon src-tauri/binaries/yellowmoon-cli-aarch64-apple-darwin
-          cp target/x86_64-apple-darwin/release/yellowmoon src-tauri/binaries/yellowmoon-cli-x86_64-apple-darwin
+          cp target/aarch64-apple-darwin/release/ym src-tauri/binaries/ym-aarch64-apple-darwin
+          cp target/x86_64-apple-darwin/release/ym src-tauri/binaries/ym-x86_64-apple-darwin
           lipo -create \
-            target/aarch64-apple-darwin/release/yellowmoon \
-            target/x86_64-apple-darwin/release/yellowmoon \
-            -output src-tauri/binaries/yellowmoon-cli-universal-apple-darwin
-          lipo -info src-tauri/binaries/yellowmoon-cli-universal-apple-darwin
+            target/aarch64-apple-darwin/release/ym \
+            target/x86_64-apple-darwin/release/ym \
+            -output src-tauri/binaries/ym-universal-apple-darwin
+          lipo -info src-tauri/binaries/ym-universal-apple-darwin
 
       - name: Build universal macOS bundle
         if: steps.check_tag.outputs.exists == 'false'

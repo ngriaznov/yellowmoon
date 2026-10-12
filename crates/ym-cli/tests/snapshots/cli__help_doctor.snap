@@ -1,0 +1,13 @@
+---
+source: crates/ym-cli/tests/cli.rs
+expression: "help(&[\"doctor\"])"
+---
+Print the diagnostics that go into a bug report
+
+Usage: ym doctor [OPTIONS]
+
+Options:
+      --json     Print the report as JSON
+  -q, --quiet    Print only errors on stderr
+  -v, --verbose  Print what is happening on stderr: stages, timings and notes
+  -h, --help     Print help

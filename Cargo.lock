@@ -1928,6 +1928,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "ctrlc"
+version = "3.5.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e0b1fab2ae45819af2d0731d60f2afe17227ebb1a1538a236da84c93e9a60162"
+dependencies = [
+ "dispatch2",
+ "nix",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "cubecl"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5381,6 +5392,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "libxdo"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "00333b8756a3d28e78def82067a377de7fa61b24909000aeaa2b446a948d14db"
+dependencies = [
+ "libxdo-sys",
+]
+
+[[package]]
+name = "libxdo-sys"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "db23b9e7e2b7831bbd8aac0bbeeeb7b68cbebc162b227e7052e8e55829a09212"
+dependencies = [
+ "libc",
+ "x11",
+]
+
+[[package]]
 name = "linkme"
 version = "0.3.37"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5675,6 +5705,7 @@ dependencies = [
  "dpi",
  "gtk",
  "keyboard-types",
+ "libxdo",
  "objc2",
  "objc2-app-kit",
  "objc2-core-foundation",
@@ -11055,6 +11086,15 @@ checksum = "7a5a4b21e1a62b67a2970e6831bc091d7b87e119e7f9791aef9702e3bef04448"
 name = "yellowmoon-app"
 version = "0.0.1"
 dependencies = [
+ "muda",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-foundation",
+ "png 0.18.1",
+ "pollster",
+ "raw-window-handle",
+ "regex",
+ "serde",
  "serde_json",
  "specta",
  "specta-typescript",
@@ -11065,7 +11105,17 @@ dependencies = [
  "tauri-plugin-updater",
  "tauri-specta",
  "tempfile",
+ "thiserror 2.0.21",
+ "tracing",
+ "tracing-subscriber",
+ "wgpu",
+ "ym-color",
  "ym-core",
+ "ym-export",
+ "ym-gpu",
+ "ym-looks",
+ "ym-raw",
+ "zip 9.0.2",
 ]
 
 [[package]]
@@ -11075,11 +11125,20 @@ dependencies = [
  "anyhow",
  "assert_cmd",
  "clap",
+ "ctrlc",
  "insta",
+ "png 0.18.1",
  "predicates",
  "serde_json",
  "tempfile",
+ "tracing",
+ "tracing-subscriber",
+ "ym-color",
  "ym-core",
+ "ym-export",
+ "ym-gpu",
+ "ym-looks",
+ "ym-profiles",
  "ym-raw",
 ]
 

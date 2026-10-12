@@ -26,7 +26,7 @@ We don't intend to compete with existing raw processors or to replace any of the
 - Learned demosaic and noise reduction, tuned for every ISO.
 - Built-in looks, and a guided import of ARRI's free Look Library.
 - Exports JPEG, TIFF, PNG, and DNG with your look baked in.
-- A command-line tool, `yellowmoon`, with the same results as the app, for scripts and batch jobs.
+- A command-line tool, `ym`, with the same results as the app, for scripts and batch jobs.
 
 ## Install
 
@@ -42,9 +42,9 @@ The app updates itself.
 ## Command line
 
 ```
-yellowmoon render ~/Pictures/2026-10-04 --look neutral --format jpeg --long-edge 3000
-yellowmoon info DSC04204.ARW --json
-yellowmoon looks import ~/Downloads/<ARRI look package>.zip
+ym render ~/Pictures/2026-10-04 --look neutral --format jpeg --long-edge 3000
+ym info DSC04204.ARW --json
+ym looks import ~/Downloads/<ARRI look package>.zip
 ```
 
 ## Licence and credits

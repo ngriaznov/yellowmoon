@@ -1,4 +1,4 @@
-//! Embeds the short git commit hash as `YM_GIT_SHA` for `yellowmoon --version`.
+//! Embeds the short git commit hash as `YM_GIT_SHA` for `ym --version`.
 //!
 //! Falls back to `unknown` when git or the repository is not available (for example when building
 //! from a source archive).

@@ -1,6 +1,6 @@
 [package]
 name = "ym-cli"
-description = "The `yellowmoon` command-line tool: the same core as the app, bit-identical exports."
+description = "The `ym` command-line tool: the same core as the app, bit-identical exports."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -10,18 +10,29 @@ authors.workspace = true
 publish = false
 
 [[bin]]
-name = "yellowmoon"
+name = "ym"
 path = "src/main.rs"
 
 [dependencies]
 ym-core.workspace = true
 ym-raw.workspace = true
+ym-color.workspace = true
+ym-export.workspace = true
+ym-gpu.workspace = true
+ym-looks.workspace = true
+ym-profiles.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 serde_json.workspace = true
+png.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+# Ctrl-C (and SIGTERM): finish the current tile, delete the partial file, exit 130 (docs/10).
+# MIT OR Apache-2.0.
+ctrlc = { version = "3", features = ["termination"] }
 
 [dev-dependencies]
-# `testgen` writes the synthetic ARW files the `info` tests run on.
+# `testgen` writes the synthetic ARW files the tests run on.
 ym-raw = { workspace = true, features = ["testgen"] }
 assert_cmd.workspace = true
 predicates.workspace = true

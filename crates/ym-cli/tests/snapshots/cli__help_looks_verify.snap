@@ -1,0 +1,12 @@
+---
+source: crates/ym-cli/tests/cli.rs
+expression: "help(&[\"looks\", \"verify\"])"
+---
+Re-hash every imported look and report missing or changed files
+
+Usage: ym looks verify [OPTIONS]
+
+Options:
+  -q, --quiet    Print only errors on stderr
+  -v, --verbose  Print what is happening on stderr: stages, timings and notes
+  -h, --help     Print help

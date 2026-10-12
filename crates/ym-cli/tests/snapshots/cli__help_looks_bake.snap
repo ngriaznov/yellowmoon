@@ -1,0 +1,17 @@
+---
+source: crates/ym-cli/tests/cli.rs
+expression: "help(&[\"looks\", \"bake\"])"
+---
+Developer tool: bake a parametric look to a 33-point LUT and render a contact sheet
+
+Usage: ym looks bake [OPTIONS] <LOOK_JSON>
+
+Arguments:
+  <LOOK_JSON>  The parametric look file to bake (for example `signature.json`)
+
+Options:
+      --preview <ARW>...  ARW files to render into a contact sheet: each row shows Neutral on the left and the baked look on the right
+  -q, --quiet             Print only errors on stderr
+      --out <DIR>         Folder for the `.cube` file and the contact sheet (default: the look file's folder)
+  -v, --verbose           Print what is happening on stderr: stages, timings and notes
+  -h, --help              Print help

@@ -98,7 +98,7 @@ Four tiers, so CI works for everyone:
 
 
 - `tools/golden/manifest.json` lists files, settings (JSON, same schema as `ym:Settings`) and the expected output hash and a reference image (16-bit PNG, stored outside git with the test data). Each entry also has `tier` (`synthetic`, `synthetic-eval`, and for the real files `cc0`, `free`, `eval`), `id`, `file` (relative to `testdata/`) and, for generated files, `sidecar` (the scene's ground truth), `scene`, `light`, `body`, `model_id`, `iso`, `cfa`, `bits`, `variant`, `group` and `set` (`default`: a plain `synthetic.sh` run writes the file, 61 of them; `full`: only with `--full`, 35; `eval`: only with `--full`, the CIE scene, 18). A runner that takes `set == "default"` therefore finds exactly the files of the default run. The synthetic entries are written by `python3 -m training.synth.make_scenes --write-manifest tools/golden/manifest.json` (one per ARW file, with `settings: {}`, i.e. everything Auto, and empty `expected_hash` and `reference` until the runner exists); a test checks the committed file against the recipes. Entries of other tiers are left alone by that command.
-- The runner renders through `yellowmoon render --json --settings <manifest entry>`, compares with the reference: ΔE00 per pixel on a 1/4-resolution downsample; reports median, p99 and max.
+- The runner renders through `ym render --json --settings <manifest entry>`, compares with the reference: ΔE00 per pixel on a 1/4-resolution downsample; reports median, p99 and max.
 - When a change is intended, the PR updates the references with a note and (if pixels changed) bumps `pipeline_version`.
 
 ## Blind A/B protocol [HUMAN]

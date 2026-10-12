@@ -1,4 +1,6 @@
-//! End-to-end tests of `yellowmoon info` on synthetic ARW files written with `ym_raw::testgen`.
+//! End-to-end tests of `ym info` on synthetic ARW files written with `ym_raw::testgen`.
+
+mod common;
 
 use std::path::{Path, PathBuf};
 
@@ -9,8 +11,17 @@ use serde_json::Value;
 use ym_raw::layout::ChromaSubsampling;
 use ym_raw::testgen::{ArwBuilder, ContainerOnly, GpsSpec, Sr2Variant, gradient_mosaic, tiny_jpeg};
 
-fn yellowmoon() -> Command {
-    cargo_bin_cmd!("yellowmoon")
+/// The binary with the shipped data folder and an app folder that does not exist (`info` reads
+/// the preferences for the default look and writes nothing).
+fn ym() -> Command {
+    let mut cmd = cargo_bin_cmd!("ym");
+    cmd.env("YELLOWMOON_DATA", common::data_dir())
+        .env(
+            "YELLOWMOON_HOME",
+            std::env::temp_dir().join("ym-cli-info-tests-no-such-home"),
+        )
+        .env_remove("RUST_LOG");
+    cmd
 }
 
 fn write(dir: &Path, name: &str, builder: &ArwBuilder, w: u32, h: u32) -> PathBuf {
@@ -42,7 +53,7 @@ fn json_lines(stdout: &[u8]) -> Vec<Value> {
 fn text_output_names_the_camera_exposure_image_and_levels() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = a7r4(dir.path());
-    let assert = yellowmoon().arg("info").arg(&path).assert().success();
+    let assert = ym().arg("info").arg(&path).assert().success();
     let out = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
     for expected in [
         "DSC00001.ARW",
@@ -67,11 +78,7 @@ fn text_output_names_the_camera_exposure_image_and_levels() {
 fn json_output_has_one_object_per_file_in_the_documented_shape() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = a7r4(dir.path());
-    let assert = yellowmoon()
-        .args(["info", "--json"])
-        .arg(&path)
-        .assert()
-        .success();
+    let assert = ym().args(["info", "--json"]).arg(&path).assert().success();
     let lines = json_lines(&assert.get_output().stdout);
     assert_eq!(lines.len(), 1);
     let v = &lines[0];
@@ -81,7 +88,10 @@ fn json_output_has_one_object_per_file_in_the_documented_shape() {
     assert_eq!(v["camera"]["make"], "SONY");
     assert_eq!(v["camera"]["model"], "ILCE-7RM4");
     assert_eq!(v["camera"]["model_id"], 375);
-    assert_eq!(v["camera"]["body"], "ILCE-7RM4");
+    assert_eq!(v["camera"]["body"], "Sony A7R IV");
+    assert_eq!(v["camera"]["profile"], "sony-ilce-7rm4");
+    assert_eq!(v["camera"]["match"], "exact");
+    assert_eq!(v["camera"]["stand_in"], false);
     assert_eq!(v["exposure"]["iso"], 400);
     assert_eq!(v["exposure"]["iso_source"], "sony_maker_note");
     assert_eq!(v["exposure"]["aperture"], 4.0);
@@ -107,20 +117,139 @@ fn json_output_has_one_object_per_file_in_the_documented_shape() {
     assert!(v["pipeline_version"].is_string());
 }
 
+/// Rounds every non-integer number to four significant digits, so the snapshot does not depend on
+/// the last digits of the estimates (which differ between platforms' maths libraries).
+fn round_floats(v: &mut Value) {
+    match v {
+        Value::Number(n) if n.is_f64() => {
+            let x = n.as_f64().expect("f64");
+            if x != 0.0 && x.is_finite() {
+                let rounded: f64 = format!("{x:.3e}").parse().expect("number");
+                *v = serde_json::json!(rounded);
+            }
+        }
+        Value::Array(items) => items.iter_mut().for_each(round_floats),
+        Value::Object(map) => map.values_mut().for_each(round_floats),
+        _ => {}
+    }
+}
+
 #[test]
 fn json_snapshot_of_a_synthetic_a7r_iv() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = a7r4(dir.path());
-    let assert = yellowmoon()
-        .args(["info", "--json"])
-        .arg(&path)
-        .assert()
-        .success();
+    let assert = ym().args(["info", "--json"]).arg(&path).assert().success();
     let mut v = json_lines(&assert.get_output().stdout).remove(0);
     // The path differs per run and the JPEG encoder's output size may change with its version.
     v["input"] = Value::from("[path]");
     v["preview"] = Value::from("[preview location]");
+    round_floats(&mut v);
     insta::assert_json_snapshot!(v);
+}
+
+#[test]
+fn the_estimates_are_the_ones_render_json_reports_for_the_same_file() {
+    let sb = common::Sandbox::new();
+    let arw = sb.arw("DSC00001.ARW");
+    let info = sb
+        .ym()
+        .args(["info", "--json"])
+        .arg(&arw)
+        .assert()
+        .success();
+    let info = json_lines(&info.get_output().stdout).remove(0);
+    // Reading the estimates writes nothing.
+    assert!(!sb.default_export().exists());
+    let render = sb
+        .ym()
+        .args(["render", "--json"])
+        .arg(&arw)
+        .assert()
+        .success();
+    let render = json_lines(&render.get_output().stdout).remove(0);
+    for key in ["camera", "look", "auto", "settings"] {
+        assert!(!info[key].is_null(), "{key}");
+        // `info` has the metadata fields of the camera too; the rest is the same object.
+        if key != "camera" {
+            assert_eq!(info[key], render[key], "{key}");
+        }
+    }
+    for (k, v) in render["camera"].as_object().expect("camera") {
+        assert_eq!(&info["camera"][k], v, "camera.{k}");
+    }
+    assert_eq!(info["status"], "ok");
+    assert_eq!(info["input"], render["input"]);
+    assert_eq!(info["notes"], serde_json::json!([]));
+    assert!(info.get("output").is_none() && info.get("timings_ms").is_none());
+}
+
+#[test]
+fn a_forced_profile_is_reported_as_forced_and_a_stand_in() {
+    let sb = common::Sandbox::new();
+    let arw = sb.arw("a.ARW");
+    let out = sb
+        .ym()
+        .args(["info", "--json", "--profile", "sony-ilce-7m3"])
+        .arg(&arw)
+        .assert()
+        .success();
+    let v = json_lines(&out.get_output().stdout).remove(0);
+    assert_eq!(v["camera"]["profile"], "sony-ilce-7m3");
+    assert_eq!(v["camera"]["match"], "forced");
+    assert_eq!(v["camera"]["stand_in"], true);
+    sb.ym()
+        .args(["info", "--profile", "nope"])
+        .arg(&arw)
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "There is no camera profile called nope",
+        ));
+}
+
+#[test]
+fn a_body_without_a_profile_of_its_own_uses_the_default_one_and_says_so() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = write(
+        dir.path(),
+        "A1.ARW",
+        &ArwBuilder::new("ILCE-1", 128, 96),
+        128,
+        96,
+    );
+    let out = ym().args(["info", "--json"]).arg(&path).assert().success();
+    let v = json_lines(&out.get_output().stdout).remove(0);
+    assert_eq!(v["camera"]["body"], "Sony A1");
+    assert_eq!(v["camera"]["profile"], "sony-ilce-7rm4");
+    assert_ne!(v["camera"]["match"], "exact");
+    assert_eq!(v["camera"]["stand_in"], true);
+    let text = ym().arg("info").arg(&path).assert().success();
+    let text = String::from_utf8_lossy(&text.get_output().stdout).into_owned();
+    assert!(text.contains("stand-in"), "{text}");
+}
+
+#[test]
+fn a_file_that_cannot_be_developed_says_why_and_has_no_estimates() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = write(
+        dir.path(),
+        "craw.ARW",
+        &ArwBuilder::new("ILCE-7M3", 1024, 768).container_only(ContainerOnly::craw()),
+        1024,
+        768,
+    );
+    let out = ym().args(["info", "--json"]).arg(&path).assert().success();
+    let v = json_lines(&out.get_output().stdout).remove(0);
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["auto"], Value::Null);
+    assert_eq!(v["settings"], Value::Null);
+    assert_eq!(v["look"], Value::Null);
+    assert_eq!(v["camera"]["body"], "Sony A7 III");
+    let notes = v["notes"].as_array().expect("notes");
+    assert_eq!(notes.len(), 1, "{notes:?}");
+    let text = ym().arg("info").arg(&path).assert().success();
+    let text = String::from_utf8_lossy(&text.get_output().stdout).into_owned();
+    assert!(text.contains("Development"), "{text}");
 }
 
 #[test]
@@ -133,7 +262,7 @@ fn several_files_with_one_failure_exit_1_and_still_report_every_file() {
     std::fs::write(&jpeg, tiny_jpeg(16, 16, 1)).expect("write");
     let missing = dir.path().join("missing.ARW");
 
-    let assert = yellowmoon()
+    let assert = ym()
         .args(["info", "--json"])
         .arg(&good)
         .arg(&junk)
@@ -167,8 +296,7 @@ fn text_mode_reports_failures_on_stderr_and_successes_on_stdout() {
     let good = a7r4(dir.path());
     let junk = dir.path().join("notes.txt");
     std::fs::write(&junk, "not a raw file").expect("write");
-    yellowmoon()
-        .arg("info")
+    ym().arg("info")
         .arg(&good)
         .arg(&junk)
         .assert()
@@ -182,8 +310,7 @@ fn text_mode_reports_failures_on_stderr_and_successes_on_stdout() {
 #[test]
 fn a_folder_is_reported_as_an_error_not_read() {
     let dir = tempfile::tempdir().expect("tempdir");
-    yellowmoon()
-        .arg("info")
+    ym().arg("info")
         .arg(dir.path())
         .assert()
         .code(1)
@@ -205,7 +332,7 @@ fn arq_and_truncated_files_get_their_messages() {
     let cut = dir.path().join("cut.ARW");
     std::fs::write(&cut, &bytes[..bytes.len() - 500]).expect("write");
 
-    let assert = yellowmoon()
+    let assert = ym()
         .args(["info", "--json"])
         .arg(&arq)
         .arg(&cut)
@@ -242,11 +369,7 @@ fn info_works_on_every_variant_even_those_that_cannot_be_decoded_yet() {
             1024,
             768,
         );
-        let assert = yellowmoon()
-            .args(["info", "--json"])
-            .arg(&path)
-            .assert()
-            .success();
+        let assert = ym().args(["info", "--json"]).arg(&path).assert().success();
         let v = json_lines(&assert.get_output().stdout).remove(0);
         assert_eq!(v["raw"]["decode"], decode, "{name}");
         // Only Lossless M and S are reduced; only ARW 6.0 has no decoder.
@@ -266,15 +389,11 @@ fn lossless_ms_is_shown_as_reduced_with_its_subsampling() {
         1024,
         768,
     );
-    let assert = yellowmoon()
-        .args(["info", "--json"])
-        .arg(&path)
-        .assert()
-        .success();
+    let assert = ym().args(["info", "--json"]).arg(&path).assert().success();
     let v = json_lines(&assert.get_output().stdout).remove(0);
     assert_eq!(v["raw"]["reduced"], true);
     assert_eq!(v["raw"]["subsampling"], "4:2:2");
-    let text = yellowmoon().arg("info").arg(&path).assert().success();
+    let text = ym().arg("info").arg(&path).assert().success();
     let out = String::from_utf8_lossy(&text.get_output().stdout).into_owned();
     assert!(out.contains("Lossless M or S"), "{out}");
     assert!(out.contains("Reduced"), "{out}");
@@ -287,7 +406,7 @@ fn lossless_ms_is_shown_as_reduced_with_its_subsampling() {
         64,
         48,
     );
-    let text = yellowmoon().arg("info").arg(&plain).assert().success();
+    let text = ym().arg("info").arg(&plain).assert().success();
     let out = String::from_utf8_lossy(&text.get_output().stdout).into_owned();
     assert!(!out.contains("Reduced"), "{out}");
 }
@@ -302,7 +421,7 @@ fn arw6_is_flagged_as_not_decodable_yet() {
         1024,
         768,
     );
-    let text = yellowmoon().arg("info").arg(&path).assert().success();
+    let text = ym().arg("info").arg(&path).assert().success();
     let out = String::from_utf8_lossy(&text.get_output().stdout).into_owned();
     assert!(out.contains("ARW 6.0 compressed"), "{out}");
     assert!(out.contains("not available yet"), "{out}");
@@ -318,7 +437,7 @@ fn a_craw_file_does_not_claim_a_bit_depth_the_data_does_not_have() {
         1024,
         768,
     );
-    let text = yellowmoon().arg("info").arg(&path).assert().success();
+    let text = ym().arg("info").arg(&path).assert().success();
     let out = String::from_utf8_lossy(&text.get_output().stdout).into_owned();
     assert!(
         out.contains("1024 x 768, compressed (lossy cRAW) (RGGB)"),
@@ -349,11 +468,7 @@ fn optional_fields_are_null_or_absent_when_the_file_lacks_them() {
         64,
         48,
     );
-    let assert = yellowmoon()
-        .args(["info", "--json"])
-        .arg(&path)
-        .assert()
-        .success();
+    let assert = ym().args(["info", "--json"]).arg(&path).assert().success();
     let v = json_lines(&assert.get_output().stdout).remove(0);
     assert_eq!(v["wb_as_shot"], Value::Null);
     assert_eq!(v["preview"], Value::Null);
@@ -361,7 +476,7 @@ fn optional_fields_are_null_or_absent_when_the_file_lacks_them() {
     assert_eq!(v["exposure"]["lens_model"], Value::Null);
     assert_eq!(v["levels_source"]["black"], "default");
 
-    let text = yellowmoon().arg("info").arg(&path).assert().success();
+    let text = ym().arg("info").arg(&path).assert().success();
     let out = String::from_utf8_lossy(&text.get_output().stdout).into_owned();
     assert!(out.contains("Lens data"), "{out}");
     assert!(out.contains("none"), "{out}");
@@ -381,8 +496,7 @@ fn gps_location_is_shown_when_the_file_has_a_fix() {
         64,
         48,
     );
-    yellowmoon()
-        .arg("info")
+    ym().arg("info")
         .arg(&path)
         .assert()
         .success()
@@ -391,8 +505,7 @@ fn gps_location_is_shown_when_the_file_has_a_fix() {
 
 #[test]
 fn no_files_is_a_usage_error() {
-    yellowmoon()
-        .arg("info")
+    ym().arg("info")
         .assert()
         .code(2)
         .stderr(predicate::str::contains("Usage"));
@@ -409,7 +522,7 @@ fn two_files_in_text_mode_are_separated_by_a_blank_line() {
         128,
         96,
     );
-    let assert = yellowmoon().arg("info").arg(&a).arg(&b).assert().success();
+    let assert = ym().arg("info").arg(&a).arg(&b).assert().success();
     let out = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
     assert!(out.contains("\n\n"), "{out}");
     assert!(
@@ -436,7 +549,7 @@ fn shutter_speeds_between_a_quarter_second_and_one_second_are_decimals() {
             64,
             48,
         );
-        let assert = yellowmoon().arg("info").arg(&path).assert().success();
+        let assert = ym().arg("info").arg(&path).assert().success();
         let out = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
         let line = out
             .lines()
@@ -449,7 +562,7 @@ fn shutter_speeds_between_a_quarter_second_and_one_second_are_decimals() {
     }
 }
 
-/// `yellowmoon info *.ARW --json | head -n 1`: the reader goes away after the first line. The
+/// `ym info *.ARW --json | head -n 1`: the reader goes away after the first line. The
 /// tool stops without a panic message and without an error exit.
 #[cfg(unix)]
 #[test]
@@ -460,13 +573,13 @@ fn a_reader_that_goes_away_ends_the_run_quietly() {
     let path = a7r4(dir.path());
     // Enough output that the writes after the close cannot all sit in a pipe buffer.
     let files: Vec<&Path> = std::iter::repeat_n(path.as_path(), 2000).collect();
-    let mut child = std::process::Command::new(assert_cmd::cargo::cargo_bin!("yellowmoon"))
+    let mut child = std::process::Command::new(assert_cmd::cargo::cargo_bin!("ym"))
         .args(["info", "--json"])
         .args(&files)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .expect("spawn yellowmoon");
+        .expect("spawn ym");
     // Close the read end without reading anything.
     drop(child.stdout.take());
     let output = child.wait_with_output().expect("wait");

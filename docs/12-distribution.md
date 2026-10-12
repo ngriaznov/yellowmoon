@@ -12,13 +12,13 @@ We copy github.com/ngriaznov/plugout's setup: every version bump on main becomes
 ## Release pipeline (`release.yml`, GitHub Actions on macOS, on push to main)
 
 1. Read the version with `cargo metadata` (package `yellowmoon-app`). If tag `v<version>` exists, stop: the push was not a release. Otherwise, before any build, stop with an explicit error if either signing secret is empty or `tauri.conf.json` still holds the `REPLACE_WITH_MINISIGN_PUBLIC_KEY` placeholder (setup: `docs/release-signing.md`). A release that cannot be signed fails in seconds, not after the full macOS build. `rust-toolchain.toml` pins the toolchain, so the job runs `rustup target add` for both Apple targets on the pinned one.
-2. Build `ym-cli` for aarch64 and x86_64 and place three sidecars: `yellowmoon-cli-aarch64-apple-darwin`, `yellowmoon-cli-x86_64-apple-darwin` (each per-arch cargo build of `src-tauri` checks for its own) and the `lipo`-merged `yellowmoon-cli-universal-apple-darwin` (bundled).
+2. Build `ym-cli` for aarch64 and x86_64 and place three sidecars: `ym-aarch64-apple-darwin`, `ym-x86_64-apple-darwin` (each per-arch cargo build of `src-tauri` checks for its own) and the `lipo`-merged `ym-universal-apple-darwin` (bundled).
 3. `npm run tauri build -- --target universal-apple-darwin` with `TAURI_SIGNING_PRIVATE_KEY` (and its password) from repository secrets; `createUpdaterArtifacts` produces `.app.tar.gz` and `.sig`.
 4. Write `latest.json` with `jq`: version, publication date, URL and signature for `darwin-aarch64` and `darwin-x86_64` (the same universal tarball).
 5. Publish release `v<version>` with the `.dmg`, the `.app.tar.gz` and `latest.json`, with generated release notes (`softprops/action-gh-release@v2`).
 6. Update `Casks/yellowmoon.rb` (version, SHA-256 of the dmg) and push to main.
 
-**Bundle naming detail:** the app's main binary is `Yellowmoon` and macOS file systems are usually case-insensitive, so the sidecar can't be called `yellowmoon` inside `Contents/MacOS`. It is `yellowmoon-cli` there; the cask and the "Install Command-Line Tool…" menu link it as `yellowmoon`.
+**Bundle naming detail:** the app's main binary is `Yellowmoon` and macOS file systems are usually case-insensitive, so a sidecar called `yellowmoon` would collide with it inside `Contents/MacOS`. The command is `ym` (decision 2026-10-12), so the sidecar is `Contents/MacOS/ym` and there is nothing to rename: the cask's `binary` stanza and the "Install Command-Line Tool…" menu link it as `ym`.
 
 ## In the app
 
@@ -64,7 +64,7 @@ App, sidecar CLI, `data/` (ALEXA curve, ARRI matrices with notice, camera profil
 |---|---|---|
 | Workspace | single crate in `src-tauri` | Cargo workspace at the root; `src-tauri` is one member |
 | Version source | `src-tauri/Cargo.toml` via grep | `cargo metadata` (workspace version) |
-| Sidecar | none | `yellowmoon-cli` universal binary |
+| Sidecar | none | `ym` universal binary |
 | Bundle data | none | `data/` resources |
 | Window | normal webview | transparent webview over a native Metal layer (`macOSPrivateApi`) |
 | CI | fmt, clippy, test, vitest, playwright | plus cargo-deny, npm licence check, decoder oracle, golden images, dng_validate, training dry run |

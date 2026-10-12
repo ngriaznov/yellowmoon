@@ -1,0 +1,15 @@
+---
+source: crates/ym-cli/tests/cli.rs
+expression: "help(&[\"looks\", \"default\"])"
+---
+Set the look new photos get
+
+Usage: ym looks default [OPTIONS] <LOOK>
+
+Arguments:
+  <LOOK>  The look: its full id, the part after the colon, or its name
+
+Options:
+  -q, --quiet    Print only errors on stderr
+  -v, --verbose  Print what is happening on stderr: stages, timings and notes
+  -h, --help     Print help

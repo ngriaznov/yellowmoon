@@ -1,73 +1,183 @@
-//! `yellowmoon info <file…> [--json]`: what the file says about itself, without rendering
-//! (`docs/10-cli.md`).
+//! `ym info <file…> [--json]`: what the file says about itself and what the automatic
+//! development makes of it, without rendering (`docs/10-cli.md`).
 //!
-//! Only metadata is shown for now: camera, exposure, lens, dimensions, the raw layout and
-//! levels, which lens-correction tables the file carries and where its preview is. The
-//! automatic estimates (white balance, exposure, light class, noise) and the camera profile are
-//! added when the colour and profile crates land; `--json` already uses the object shape from
-//! `docs/10` ("`info --json` prints the same object without `output` and `timings_ms`") with the
-//! fields that exist today.
+//! Each file is read twice over: its metadata (container, EXIF, Sony maker note, SR2: camera,
+//! exposure, lens, dimensions, the raw layout and levels, which lens-correction tables it carries,
+//! where its preview is) and, when the file can be developed, the estimates the app shows on the
+//! Automatic card: the camera profile and why it was chosen, the exposure, white balance and light
+//! class, the noise model, the Auto sharpening and noise reduction, and the look and settings a
+//! `render` would start from. A file that has metadata but cannot be developed yet (ARW 6.0, a
+//! layout without a decoder) still prints its metadata and says why the rest is missing.
 //!
 //! Text output goes to stdout, one block per file. In `--json` mode every file produces one JSON
-//! object on its own line of stdout, also when it fails (`"status": "error"`). In text mode a
-//! failure is reported on stderr as `<path>: <message>`.
+//! object on its own line of stdout, also when it fails (`"status": "error"`): the object of
+//! `render --json` without `output` and `timings_ms`, plus the metadata blocks. In text mode a
+//! failure is reported on stderr as `Error: <path>: <message>`.
 //!
-//! Exit code: 0 when every file was read, 1 when at least one failed. Usage errors are code 2 and
-//! are reported by clap before this module runs.
+//! Exit code: 0 when every file was read, 1 when at least one failed, 2 when the data folder is
+//! missing. Usage errors are code 2 and are reported by clap before this module runs.
 
+use std::collections::HashMap;
 use std::io::{self, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
+use ym_core::camera::PhotoCamera;
+use ym_core::session::{OpenOptions, PhotoId, PhotoView};
+use ym_core::settings::ResolvedSettings;
 use ym_core::version::PIPELINE_VERSION;
 use ym_raw::error::RawError;
 use ym_raw::layout::{DecodeKind, Rect};
 use ym_raw::metadata::{LensTags, LevelSource, RawMetadata, probe};
 
 use crate::cli::InfoArgs;
-use crate::exit;
+use crate::console::Console;
+use crate::exit::{self, Failure};
+use crate::report::{Object, camera_json, develop_fields, error_value, match_word};
+use crate::runtime::{CoreSettings, Runtime, interrupted};
 
-/// Runs `yellowmoon info` and returns the exit code.
+/// Why `run_to` stopped early.
+#[derive(Debug)]
+enum Stop {
+    /// stdout could not be written.
+    Io(io::Error),
+    /// The command cannot go on.
+    Failure(Failure),
+}
+
+impl From<io::Error> for Stop {
+    fn from(e: io::Error) -> Self {
+        Self::Io(e)
+    }
+}
+
+impl From<Failure> for Stop {
+    fn from(f: Failure) -> Self {
+        Self::Failure(f)
+    }
+}
+
+/// Runs `ym info` and returns the exit code.
 ///
-/// A reader that goes away (`yellowmoon info *.ARW --json | head -n 1`) ends the run quietly
-/// instead of panicking like `println!` would.
-pub fn run(args: &InfoArgs) -> u8 {
+/// A reader that goes away (`ym info *.ARW --json | head -n 1`) ends the run quietly instead of
+/// panicking like `println!` would.
+pub fn run(args: &InfoArgs, console: &mut Console) -> u8 {
     let mut stdout = io::stdout().lock();
-    let mut stderr = io::stderr().lock();
-    match run_to(args, &mut stdout, &mut stderr) {
+    match run_to(args, console, &mut stdout) {
         Ok(code) => code,
-        Err(error) if error.kind() == io::ErrorKind::BrokenPipe => exit::OK,
-        Err(error) => {
-            let _ = writeln!(stderr, "Error: couldn't write the result ({error}).");
+        Err(Stop::Io(error)) if error.kind() == io::ErrorKind::BrokenPipe => exit::OK,
+        Err(Stop::Io(error)) => {
+            console.error(&format!("Couldn't write the result ({error})."));
             exit::SOME_FAILED
+        }
+        Err(Stop::Failure(failure)) => {
+            console.failure(&failure);
+            failure.code
         }
     }
 }
 
-/// [`run`] with explicit output streams. Fails only when `out` cannot be written.
-fn run_to(args: &InfoArgs, out: &mut dyn Write, err: &mut dyn Write) -> io::Result<u8> {
+/// One file given on the command line.
+struct Entry {
+    path: PathBuf,
+    probe: Result<RawMetadata, RawError>,
+    photo: Option<PhotoId>,
+}
+
+/// [`run`] with an explicit output stream. Fails only when `out` cannot be written or the data
+/// folder is missing.
+fn run_to(args: &InfoArgs, console: &mut Console, out: &mut dyn Write) -> Result<u8, Stop> {
+    let mut entries: Vec<Entry> = args
+        .files
+        .iter()
+        .map(|path| Entry {
+            path: path.clone(),
+            probe: probe_file(path),
+            photo: None,
+        })
+        .collect();
+
+    // The estimates need the core; files that cannot even be read do not.
+    let runtime = if entries.iter().any(|e| e.probe.is_ok()) {
+        Some(Runtime::open(&CoreSettings {
+            jobs: None,
+            forced_profile: args.profile.clone(),
+        })?)
+    } else {
+        None
+    };
+    if let Some(rt) = &runtime {
+        let mut opened: HashMap<PathBuf, Option<PhotoId>> = HashMap::new();
+        for e in entries.iter_mut().filter(|e| e.probe.is_ok()) {
+            let key = std::fs::canonicalize(&e.path).unwrap_or_else(|_| e.path.clone());
+            e.photo = *opened.entry(key).or_insert_with(|| {
+                is_arw_name(&e.path)
+                    .then(|| {
+                        rt.core
+                            .session
+                            .open(std::slice::from_ref(&e.path), OpenOptions::default())
+                            .added
+                            .first()
+                            .copied()
+                    })
+                    .flatten()
+            });
+        }
+        let finished = rt.wait_developed(|ready, total| {
+            console.progress(format!("Reading {ready}/{total}"));
+        });
+        console.finish_progress();
+        if !finished {
+            console.info("Interrupted.");
+            return Ok(exit::INTERRUPTED);
+        }
+    }
+
     let mut failures = 0usize;
     let mut printed_text = false;
-    for path in &args.files {
-        let result = probe_file(path);
-        if result.is_err() {
-            failures += 1;
+    for entry in &entries {
+        if interrupted() {
+            return Ok(exit::INTERRUPTED);
         }
-        if args.json {
-            writeln!(out, "{}", json_line(path, &result))?;
-        } else {
-            match &result {
-                Ok(meta) => {
+        match &entry.probe {
+            Err(error) => {
+                failures += 1;
+                if args.json {
+                    writeln!(out, "{}", json_error(&entry.path, error).to_line())?;
+                } else {
+                    out.flush()?;
+                    console.error(&format!("{}: {error}", entry.path.display()));
+                }
+            }
+            Ok(meta) => {
+                let rt = runtime
+                    .as_ref()
+                    .expect("a runtime exists when a file probed");
+                let camera = PhotoCamera::new(
+                    &rt.core.session.env().profiles,
+                    meta,
+                    args.profile.as_deref(),
+                );
+                let developed = match entry.photo {
+                    Some(id) => develop(rt, id),
+                    None => Err("Only files with the extension .ARW are developed.".to_owned()),
+                };
+                let shown: Result<Developed<'_>, &str> = match &developed {
+                    Ok((view, resolved)) => Ok((view, resolved)),
+                    Err(reason) => Err(reason.as_str()),
+                };
+                if args.json {
+                    writeln!(
+                        out,
+                        "{}",
+                        json_ok(&entry.path, meta, &camera, shown).to_line()
+                    )?;
+                } else {
                     if printed_text {
                         writeln!(out)?;
                     }
-                    write!(out, "{}", render_text(path, meta))?;
+                    write!(out, "{}", render_text(&entry.path, meta, &camera, shown))?;
                     printed_text = true;
-                }
-                Err(error) => {
-                    // Keep the two streams in order when both go to the same terminal.
-                    out.flush()?;
-                    let _ = writeln!(err, "{}: {error}", path.display());
                 }
             }
         }
@@ -78,6 +188,18 @@ fn run_to(args: &InfoArgs, out: &mut dyn Write, err: &mut dyn Write) -> io::Resu
     } else {
         exit::SOME_FAILED
     })
+}
+
+/// The session's view of a developed photo with its settings resolved, or why there is none.
+fn develop(rt: &Runtime, id: PhotoId) -> Result<(PhotoView, ResolvedSettings), String> {
+    let view = rt.core.session.view(id).map_err(|e| e.to_string())?;
+    let resolved = view.resolved().map_err(|e| e.to_string())?;
+    Ok((view, resolved))
+}
+
+fn is_arw_name(path: &Path) -> bool {
+    path.extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("arw"))
 }
 
 /// Probes one input. A folder is an error, not a read attempt.
@@ -91,41 +213,54 @@ fn probe_file(path: &Path) -> Result<RawMetadata, RawError> {
     probe(path)
 }
 
-/// The JSON text for one file: the success object or the error object.
-pub fn json_line(path: &Path, result: &Result<RawMetadata, RawError>) -> String {
-    let value = match result {
-        Ok(meta) => json_ok(path, meta),
-        Err(error) => json_error(path, error),
-    };
-    value.to_string()
-}
-
 /// The `status: "error"` object for a file that could not be read.
-pub fn json_error(path: &Path, error: &RawError) -> Value {
-    json!({
-        "input": path.display().to_string(),
-        "status": "error",
-        "error": { "kind": error.kind(), "message": error.to_string() },
-        "pipeline_version": PIPELINE_VERSION,
-    })
+pub fn json_error(path: &Path, error: &RawError) -> Object {
+    let mut obj = Object::new();
+    obj.insert("input", absolute(path));
+    obj.insert("status", "error");
+    obj.insert("error", error_value(error.kind(), &error.to_string()));
+    obj.insert("pipeline_version", PIPELINE_VERSION);
+    obj
 }
 
-/// The `status: "ok"` object for a file.
-pub fn json_ok(path: &Path, meta: &RawMetadata) -> Value {
-    json!({
-        "input": path.display().to_string(),
-        "status": "ok",
-        "camera": {
-            "make": meta.make,
-            "model": meta.model,
-            "model_id": meta.model_id,
-            // The registry (docs/03) names the body once ym-profiles lands; until then it is the
-            // Model string from the file.
-            "body": meta.model,
-            "firmware": meta.software,
-            "arw_version": meta.arw_version_name(),
-        },
-        "exposure": {
+/// The path as an absolute one (symbolic links are not resolved), for the `input` of the JSON.
+fn absolute(path: &Path) -> String {
+    std::path::absolute(path)
+        .unwrap_or_else(|_| path.to_path_buf())
+        .display()
+        .to_string()
+}
+
+/// The `status: "ok"` object for a file: the shape of `render --json` without `output` and
+/// `timings_ms`, plus the metadata blocks.
+///
+/// `developed` is the photo's view and resolved settings, or the reason it was not developed
+/// (then `look`, `auto` and `settings` are null and the reason is in `notes`).
+pub fn json_ok(
+    path: &Path,
+    meta: &RawMetadata,
+    camera: &PhotoCamera,
+    developed: Result<Developed<'_>, &str>,
+) -> Object {
+    let mut obj = Object::new();
+    obj.insert("input", absolute(path));
+    obj.insert("status", json!("ok"));
+    match developed {
+        Ok((view, resolved)) => {
+            obj.extend(develop_fields(view, resolved));
+            obj.insert("notes", json!([]));
+        }
+        Err(reason) => {
+            obj.insert("camera", camera_json(camera, meta));
+            obj.insert("look", Value::Null);
+            obj.insert("auto", Value::Null);
+            obj.insert("settings", Value::Null);
+            obj.insert("notes", json!([reason]));
+        }
+    }
+    obj.insert(
+        "exposure",
+        json!({
             "iso": meta.iso,
             "iso_source": meta.iso_source.map(|s| s.name()),
             "shutter_s": meta.exposure_time_s,
@@ -136,14 +271,20 @@ pub fn json_ok(path: &Path, meta: &RawMetadata) -> Value {
             "lens_model": meta.lens_model,
             "captured": meta.capture_time.map(|t| t.to_iso8601()),
             "orientation": meta.orientation,
-        },
-        "dimensions": {
+        }),
+    );
+    obj.insert(
+        "dimensions",
+        json!({
             "width": meta.width,
             "height": meta.height,
             "active_area": meta.active_area.map(rect_json),
             "crop": meta.crop.map(rect_json),
-        },
-        "raw": {
+        }),
+    );
+    obj.insert(
+        "raw",
+        json!({
             "decode": meta.decode.id(),
             "description": meta.decode.describe(),
             "compression": meta.compression,
@@ -158,27 +299,127 @@ pub fn json_ok(path: &Path, meta: &RawMetadata) -> Value {
             },
             // False for ARW 6.0 and layouts no decoder reads yet.
             "supported": is_supported(meta.decode),
-        },
-        "black": meta.black,
-        "white": meta.white,
-        "wb_as_shot": meta.wb_as_shot,
-        "levels_source": {
+        }),
+    );
+    obj.insert("black", json!(meta.black));
+    obj.insert("white", json!(meta.white));
+    obj.insert("wb_as_shot", json!(meta.wb_as_shot));
+    obj.insert(
+        "levels_source",
+        json!({
             "black": meta.black_source.name(),
             "white": meta.white_source.name(),
             "wb": meta.wb_source.map(LevelSource::name),
-        },
-        "lens_corrections": meta.lens_corrections.as_ref().map(lens_json),
-        "tone_curve": meta.tone_curve,
-        "preview": meta.preview.map(|p| json!({ "offset": p.offset, "length": p.length })),
-        "gps": meta.gps.as_ref().map(|g| json!({
+        }),
+    );
+    obj.insert(
+        "lens_corrections",
+        json!(meta.lens_corrections.as_ref().map(lens_json)),
+    );
+    obj.insert("tone_curve", json!(meta.tone_curve));
+    obj.insert(
+        "preview",
+        json!(
+            meta.preview
+                .map(|p| json!({ "offset": p.offset, "length": p.length }))
+        ),
+    );
+    obj.insert(
+        "gps",
+        json!(meta.gps.as_ref().map(|g| json!({
             "latitude_deg": g.latitude_deg,
             "longitude_deg": g.longitude_deg,
             "altitude_m": g.altitude_m,
             "utc_time": g.utc_time,
-        })),
-        "pipeline_version": PIPELINE_VERSION,
-        "error": Value::Null,
-    })
+        }))),
+    );
+    obj.insert("pipeline_version", json!(PIPELINE_VERSION));
+    obj.insert("error", Value::Null);
+    obj
+}
+
+/// The Profile row: the short name of the profile and how it was chosen.
+fn profile_text(camera: &PhotoCamera) -> String {
+    let m = &camera.matched;
+    let how = match &m.how {
+        ym_profiles::detect::MatchKind::Exact => "measured on this body".to_owned(),
+        ym_profiles::detect::MatchKind::SensorFamily { via } => {
+            format!("stand-in: same sensor as {via}")
+        }
+        ym_profiles::detect::MatchKind::Default => "stand-in: no profile of its own".to_owned(),
+        ym_profiles::detect::MatchKind::Forced { .. } => "forced with --profile".to_owned(),
+    };
+    format!(
+        "{} {}  ({how}; {})",
+        camera.copy.profile,
+        m.profile_version,
+        match_word(&m.how)
+    )
+}
+
+/// The rows of what the automatic development makes of a photo.
+fn develop_rows(view: &PhotoView, resolved: &ResolvedSettings) -> Vec<(&'static str, String)> {
+    let e = &resolved.estimates;
+    vec![
+        (
+            "Look",
+            format!(
+                "{} at {}%",
+                view.settings.look,
+                trim_number(view.settings.look_intensity, 1)
+            ),
+        ),
+        (
+            "Auto exposure",
+            format!("{} EV", format_signed_ev(e.exposure_ev)),
+        ),
+        (
+            "Auto light",
+            format!(
+                "{}, {}% sure",
+                e.light_class.name(),
+                (e.light_confidence * 100.0).round()
+            ),
+        ),
+        (
+            "Auto white",
+            format!(
+                "{} K, tint {}",
+                trim_number(e.kelvin, 0),
+                trim_number(e.tint, 1)
+            ),
+        ),
+        (
+            "Noise model",
+            format!("a = {:.3e}, b = {:.3e}", e.noise.a, e.noise.b),
+        ),
+        (
+            "Auto sharpen",
+            format!(
+                "amount {}, radius {} px",
+                trim_number(e.sharpen.amount, 0),
+                trim_number(e.sharpen.radius_px, 2)
+            ),
+        ),
+        (
+            "Auto noise red.",
+            format!(
+                "luminance {}, colour {}, detail {}",
+                trim_number(e.noise_reduction.luminance, 0),
+                trim_number(e.noise_reduction.color, 0),
+                trim_number(e.noise_reduction.detail, 0)
+            ),
+        ),
+    ]
+}
+
+/// "+0.3", "-1.2", "0.0": a signed number of stops with one decimal.
+fn format_signed_ev(ev: f64) -> String {
+    if ev >= 0.0 {
+        format!("+{ev:.2}")
+    } else {
+        format!("{ev:.2}")
+    }
 }
 
 /// True for the camera-processed files (Lossless M and S) that take the REDUCED path.
@@ -203,19 +444,29 @@ fn lens_json(lens: &LensTags) -> Value {
     })
 }
 
-/// The text block for one file.
-pub fn render_text(path: &Path, meta: &RawMetadata) -> String {
+/// What the session worked out for a photo that developed: its view and its settings resolved.
+pub type Developed<'a> = (&'a PhotoView, &'a ResolvedSettings);
+
+/// The text block for one file. `camera` is the profile match; `developed` is `Ok` with the
+/// photo's estimates when it developed, else the reason it did not.
+pub fn render_text(
+    path: &Path,
+    meta: &RawMetadata,
+    camera: &PhotoCamera,
+    developed: Result<Developed<'_>, &str>,
+) -> String {
     let mut rows: Vec<(&str, String)> = Vec::new();
 
-    let mut camera = if meta.make.is_empty() {
+    let mut body = if meta.make.is_empty() {
         meta.model.clone()
     } else {
         format!("{} {}", meta.make, meta.model)
     };
     if let Some(id) = meta.model_id {
-        camera.push_str(&format!(" (model ID {id})"));
+        body.push_str(&format!(" (model ID {id})"));
     }
-    rows.push(("Camera", camera));
+    rows.push(("Camera", body));
+    rows.push(("Profile", profile_text(camera)));
     if let Some(software) = &meta.software {
         let version = meta
             .arw_version_name()
@@ -337,6 +588,16 @@ pub fn render_text(path: &Path, meta: &RawMetadata) -> String {
         && let (Some(lat), Some(lon)) = (gps.latitude_deg, gps.longitude_deg)
     {
         rows.push(("Location", format!("{lat:.5}, {lon:.5}")));
+    }
+
+    match developed {
+        Ok((view, resolved)) => rows.extend(develop_rows(view, resolved)),
+        Err(reason) => {
+            // ARW 6.0 and unknown layouts already said so above.
+            if !matches!(meta.decode, DecodeKind::Arw6 | DecodeKind::Unknown { .. }) {
+                rows.push(("Development", format!("not available: {reason}")));
+            }
+        }
     }
 
     let width = rows.iter().map(|(label, _)| label.len()).max().unwrap_or(0);
@@ -472,48 +733,51 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_closed_stdout_is_reported_to_the_caller_not_a_panic() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("a.ARW");
+    fn write_arw(dir: &Path, name: &str) -> PathBuf {
+        let path = dir.join(name);
         ym_raw::testgen::ArwBuilder::new("ILCE-7M3", 32, 32)
             .write_to(&path, &[1000u16; 32 * 32])
             .expect("write");
+        path
+    }
+
+    #[test]
+    fn a_closed_stdout_is_reported_to_the_caller_not_a_panic() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = write_arw(dir.path(), "a.ARW");
         for json in [false, true] {
             let args = InfoArgs {
                 files: vec![path.clone()],
                 json,
+                profile: None,
             };
-            let mut err = Vec::new();
-            let result = run_to(&args, &mut Closed, &mut err);
-            assert_eq!(
-                result.expect_err("closed pipe").kind(),
-                io::ErrorKind::BrokenPipe,
-                "json {json}"
-            );
+            let mut console = Console::new(true, false, true);
+            let result = run_to(&args, &mut console, &mut Closed);
+            match result {
+                Err(Stop::Io(e)) => assert_eq!(e.kind(), io::ErrorKind::BrokenPipe, "json {json}"),
+                other => panic!("json {json}: {other:?}"),
+            }
         }
     }
 
     #[test]
     fn the_blank_line_separates_printed_blocks_only() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let good = dir.path().join("good.ARW");
-        ym_raw::testgen::ArwBuilder::new("ILCE-7M3", 32, 32)
-            .write_to(&good, &[1000u16; 32 * 32])
-            .expect("write");
+        let good = write_arw(dir.path(), "good.ARW");
         let bad = dir.path().join("bad.txt");
         std::fs::write(&bad, "x").expect("write");
         let args = InfoArgs {
             files: vec![bad, good.clone()],
             json: false,
+            profile: None,
         };
-        let (mut out, mut err) = (Vec::new(), Vec::new());
-        let code = run_to(&args, &mut out, &mut err).expect("write to memory");
+        let mut out = Vec::new();
+        let mut console = Console::new(true, false, true);
+        let code = run_to(&args, &mut console, &mut out).expect("write to memory");
         assert_eq!(code, exit::SOME_FAILED);
         // The failed file wrote nothing to stdout, so the first block starts with no blank line.
         let text = String::from_utf8(out).expect("utf-8");
         assert!(text.starts_with(&good.display().to_string()), "{text:?}");
-        assert!(String::from_utf8_lossy(&err).contains("bad.txt"));
     }
 
     #[test]
