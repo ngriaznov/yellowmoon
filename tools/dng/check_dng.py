@@ -20,6 +20,7 @@ rawpy, and exiftool on PATH.
 import argparse
 import json
 import math
+import re
 import subprocess
 import sys
 
@@ -84,7 +85,15 @@ def exiftool_warnings(path):
         ["exiftool", "-validate", "-warning", "-error", "-a", "-s3", path], capture_output=True, text=True
     )
     lines = [line.strip() for line in (out.stdout + out.stderr).splitlines() if line.strip()]
-    return [line for line in lines if line != "OK"]
+    lines = [line for line in lines if line != "OK"]
+    # exiftool declines to decode an array of more than a thousand values (the 36 x 16 x 16 look table of the fitted
+    # profile has 27648) and says so as a minor warning; the file is not at fault.
+    known = [line for line in lines if "Not decoding some large array" in line]
+    if known:
+        lines = [line for line in lines if line not in known]
+        if all(re.fullmatch(r"\d+ Warnings? \(minor\)", line) for line in lines):
+            lines = []
+    return lines
 
 
 def main():
@@ -111,10 +120,17 @@ def main():
     def tag(name):
         return tags.get(name)
 
-    def expect(name, expected, tol=0.0):
+    # exiftool prints long float arrays (a fitted ProfileToneCurve has more than 100 values) as "(Binary data ...)"; those are
+    # compared through tifffile below.
+    binary_tags = {}
+
+    def expect(name, expected, tol=0.0, tiff_tag=None):
         got = tag(name)
         if got is None:
             rep.check(name, False, "missing")
+            return
+        if isinstance(got, str) and got.startswith("(Binary") and tiff_tag is not None:
+            binary_tags[name] = (tiff_tag, [float(v) for v in expected], tol)
             return
         g, e = numbers(got), [float(v) for v in expected]
         ok = len(g) == len(e) and all(abs(a - b) <= tol for a, b in zip(g, e))
@@ -135,7 +151,7 @@ def main():
     expect_text("IFD0:ProfileName", "Yellowmoon")
     expect("IFD0:ProfileEmbedPolicy", [3])
     expect_text("IFD0:ProfileCopyright", "Yellowmoon contributors")
-    expect("IFD0:ProfileToneCurve", numbers(args.tone_curve), tol=1e-6)  # float32 values
+    expect("IFD0:ProfileToneCurve", numbers(args.tone_curve), tol=1e-6, tiff_tag=50940)  # float32 values
     expect("IFD0:ProfileLookTableDims", numbers(args.look_dims))
     expect("IFD0:ProfileLookTableEncoding", [1])
     expect("IFD0:DefaultBlackRender", [1])
@@ -146,7 +162,13 @@ def main():
     rep.check("IFD0:RawDataUniqueID", len(str(tag("IFD0:RawDataUniqueID") or "")) == 32, tag("IFD0:RawDataUniqueID"))
     dims = numbers(tag("IFD0:ProfileLookTableDims") or "0 0 0")
     n_look = int(dims[0] * dims[1] * dims[2] * 3)
-    rep.check("IFD0:ProfileLookTableData length", len(numbers(tag("IFD0:ProfileLookTableData") or "")) == n_look, n_look)
+    look_data = tag("IFD0:ProfileLookTableData") or ""
+    if isinstance(look_data, str) and look_data.startswith("(large array of "):
+        # exiftool abbreviates arrays of more than 1000 values: "(large array of 27648 float values)"
+        look_count = int(look_data.split()[3])
+    else:
+        look_count = len(numbers(look_data))
+    rep.check("IFD0:ProfileLookTableData length", look_count == n_look, f"{look_count} values, want {n_look}")
     if args.expect_make:
         expect_text("IFD0:Make", args.expect_make)
     if args.expect_model:
@@ -187,6 +209,17 @@ def main():
     raw_pixels = None
     with tifffile.TiffFile(args.dng) as tf:
         top = tf.pages[0]
+        for name, (code, want, tol) in binary_tags.items():
+            entry = top.tags.get(code)
+            got = [] if entry is None else [float(v) for v in np.asarray(entry.value, dtype=np.float64).ravel()]
+            rep.check(name + " (tifffile)", len(got) == len(want) and all(abs(a - b) <= tol for a, b in zip(got, want)),
+                      f"{len(got)} values, want {len(want)}")
+        look_dims = numbers(args.look_dims)
+        data_tag = top.tags.get(50982)
+        if data_tag is not None:
+            count = int(np.asarray(data_tag.value).size)
+            rep.check("IFD0:ProfileLookTableData (tifffile): 3 values per entry", count == 3 * int(np.prod(look_dims)),
+                      f"{count} values for dims {look_dims}")
         rep.check("IFD0 is the 8-bit RGB thumbnail", top.dtype == np.uint8 and top.shape[-1] == 3 and max(top.shape[:2]) <= 256, (top.shape, top.dtype))
         subs = list(top.pages) if top.pages else []
         rep.check("two SubIFDs", len(subs) == 2, len(subs))

@@ -1,4 +1,4 @@
-//! The `golden` binary: `synth` end to end, and the stub runner.
+//! The `golden` binary: `synth` end to end, and the command list.
 
 use std::fs;
 
@@ -9,12 +9,13 @@ use sha2::{Digest, Sha256};
 use ym_raw::testgen::{gradient_mosaic, tiny_jpeg};
 
 #[test]
-fn golden_without_a_subcommand_is_the_stub() {
+fn golden_without_a_subcommand_prints_the_commands_and_exits_with_2() {
     Command::cargo_bin("golden")
         .unwrap()
         .assert()
         .code(2)
-        .stderr(predicate::str::contains("Not implemented yet"));
+        .stderr(predicate::str::contains("check").and(predicate::str::contains("update")))
+        .stderr(predicate::str::contains("truth"));
 }
 
 #[test]

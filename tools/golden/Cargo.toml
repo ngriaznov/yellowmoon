@@ -1,6 +1,6 @@
 [package]
 name = "golden"
-description = "Golden-image tooling: writes the synthetic ARW set from training/synth scenes (`synth`); the render and compare runner is a stub."
+description = "Golden-image tooling: the render-and-compare runner (`check`, `update`), the end-to-end colour truth report (`truth`) and the synthetic ARW writer (`synth`)."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -25,10 +25,15 @@ rayon.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
+tempfile.workspace = true
+# The runner reads the 16-bit PNGs `ym render` writes and compares them with CIEDE2000 (ym-color's `deltae`).
+png.workspace = true
+ym-color.workspace = true
 # Test tooling, never shipped: the synthetic ARW writer lives behind this feature.
 ym-raw = { workspace = true, features = ["testgen"] }
 
 [dev-dependencies]
 assert_cmd.workspace = true
 predicates.workspace = true
-tempfile.workspace = true
+# Writes DNG files with known pixels for the DNG reader of `truth`.
+ym-export.workspace = true

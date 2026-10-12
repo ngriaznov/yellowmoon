@@ -1,6 +1,6 @@
 [package]
 name = "dngfit"
-description = "Fits the DNG profile for the baked-look LinearRaw export against ACES 2 (stub)."
+description = "Fits the DNG profile (tone curve, look table, BaselineExposure offset) of the baked-look LinearRaw export against ACES 2 with Adobe's reference renderer, and checks the DNG gates."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -9,6 +9,32 @@ rust-version.workspace = true
 authors.workspace = true
 publish = false
 
+[lib]
+name = "dngfit"
+path = "src/lib.rs"
+
+[[bin]]
+name = "dngfit"
+path = "src/main.rs"
+
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
+rayon.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+hex.workspace = true
+tempfile.workspace = true
+tiff.workspace = true
+ym-color.workspace = true
+ym-export.workspace = true
+# Test tooling, never shipped: the golden runner's picture maths (ΔE00 on a downsample), its `ym` runner and its DNG
+# reader are reused for the DNG gates.
+golden = { path = "../golden" }
+# Decodes our JPEG for the DNG gate (the same decoder crate ym-export's tests use).
+zune-jpeg = "0.5"
+
+[dev-dependencies]
+assert_cmd.workspace = true
+predicates.workspace = true
