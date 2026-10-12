@@ -1,0 +1,6 @@
+# Python dependencies of training/synth (not shipped). colour-science is pinned like the rest of training/.
+colour-science==0.4.7
+numpy>=1.26      # reproduced with 2.5.3
+scipy>=1.11      # Gaussian PSF
+pillow>=10       # the synthetic camera JPEG
+rawpy>=0.21      # only for the optional LibRaw oracle check (tools/golden/oracle_check.py)
