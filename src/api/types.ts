@@ -50,6 +50,8 @@ export type MatchKind =
 export interface CameraInfo {
   /** Body as shown in the UI, from the registry or the Model string: "Sony A1". */
   body: string;
+  /** The camera's own model string, "ILCE-1", for the RAW tab's "Detected" row (addition). Empty when the file has none. */
+  model: string;
   /** Sony's model ID (maker note 0xB001), when the file has one. */
   model_id: number | null;
   /** Display name of the profile used: "A7R IV". */
@@ -313,6 +315,113 @@ export interface LooksImportResult {
   added: Look[];
   /** Display LUTs added (ARRI's display rendering, not looks). */
   display_luts_added: number;
+  /** Files whose hash matched a look or display LUT that was already imported (a re-import adds nothing, `docs/08`). */
+  unchanged: number;
+}
+
+// ---------------------------------------------------------------------------
+// The ARRI import wizard (docs/08 §Wizard, §Recognition rules, §Any other .cube). Additions to
+// `docs/01`: the wizard needs to ask what a file is before anything is copied.
+// ---------------------------------------------------------------------------
+
+/**
+ * The five free packages ARRI publishes (`docs/08` §What users can import). The ids are the ones
+ * of `data/looks/arri-packages.json`.
+ */
+export type PackageId =
+  | "look_library_logc4"
+  | "display_luts_logc4"
+  | "look_library_logc3"
+  | "look_library_logc3_to_rec709"
+  | "display_luts_logc3";
+
+/** What a chosen source is: a zip, an unpacked folder, or a single `.cube` file. */
+export type SourceKind = "zip" | "folder" | "file";
+
+/**
+ * What the recogniser made of one source (`looks_recognise`):
+ *  - `package`: one of the five packages (an exact hash match, or by names and headers). `contents`
+ *    reads "87 .cube · 65-point"; `note` carries a remark that does not stop the import (more files than
+ *    expected).
+ *  - `needs_answer`: `.cube` files that match no package. The person says what they expect as input
+ *    (`looks_import` takes it as `input`); `note` says why, and `suggestion` is what the names suggest.
+ *  - `unusable`: nothing can be imported. `reason` is the plain explanation, for example "This zip has ARRI
+ *    Look Files (.alf4) but no .cube files. Download the 'LUT (.cube)' version from ARRI's page." When the
+ *    package is known but damaged (`package_id` set), the reason says what to download again.
+ *  - `missing`: the file is not there (moved or deleted since it arrived).
+ */
+export type Recognition =
+  | {
+      kind: "package";
+      package_id: PackageId;
+      /** "Look Library · LogC4". */
+      title: string;
+      /** "Look Library · LogC4 · log to log". */
+      what: string;
+      /** "87 .cube · 65-point". */
+      contents: string;
+      /** Files that will be copied. */
+      file_count: number;
+      note: string | null;
+    }
+  | {
+      kind: "needs_answer";
+      file_count: number;
+      /** The LUT size when every file has the same one. */
+      lut_size: number | null;
+      suggestion: LookInput | null;
+      note: string;
+    }
+  | { kind: "unusable"; reason: string; package_id: PackageId | null }
+  | { kind: "missing"; reason: string };
+
+/** `looks_recognise(path)`: one source and what it is. Nothing is copied. */
+export interface SourceRecognition {
+  path: string;
+  /** File or folder name: "ARRI_LookLibrary_LogC4.zip". */
+  name: string;
+  source: SourceKind;
+  /** Size on disk; null for a folder or a missing file. */
+  size_bytes: number | null;
+  recognition: Recognition;
+}
+
+/** `looks_import_progress`: files copied so far from one source. */
+export interface LooksImportProgress {
+  path: string;
+  done: number;
+  total: number;
+  /** The file just copied, when known. */
+  file: string | null;
+}
+
+/** An imported display LUT (ARRI's display rendering). Looks are `Look`s; these are chosen in Preferences. */
+export interface DisplayLut {
+  /** "arri-display:logc4:rec709-g24". */
+  id: string;
+  name: string;
+  input: "logc4" | "logc3_ei800";
+  /** "rec709-g24", "p3-d65", "rec2020", "hlg", "pq". */
+  target: string;
+}
+
+/** `looks_watch_downloads(enabled)`: whether the watcher is running, and why not when it was asked to. */
+export interface WatchStatus {
+  watching: boolean;
+  /** Plain words, when macOS did not allow access to the Downloads folder. */
+  problem: string | null;
+}
+
+/**
+ * `download_found`: a zip whose name matches one of the packages has landed in Downloads and its size has been
+ * stable for 2 s (`docs/08` §Wizard step 2).
+ */
+export interface DownloadFound {
+  path: string;
+  file_name: string;
+  size_bytes: number;
+  /** The package the name suggests, if exactly one. */
+  package_hint: PackageId | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -344,6 +453,18 @@ export interface PixelSample {
   r: number;
   g: number;
   b: number;
+}
+
+/**
+ * Per-channel histogram of the current render, for the Light tab and the Curve plot
+ * (addition: `docs/01` lists no command for it; see `Api.histogram`). Each array holds the
+ * same number of bins from black (first) to white (last), normalised so the tallest bin of
+ * any channel is 1.
+ */
+export interface HistogramData {
+  red: number[];
+  green: number[];
+  blue: number[];
 }
 
 /** Colour spaces the viewport and the exports can use. */
@@ -402,6 +523,17 @@ export interface ExportJob {
 export interface ExportEstimate {
   bytes: number;
   seconds: number;
+  /**
+   * Photos in the job with adjustments beyond the look. The command line preview cannot carry
+   * them on one line, so the panel says "N photos have adjustments this command doesn't include."
+   * (addition, `docs/09` §Options).
+   */
+  adjusted_photos: number;
+  /**
+   * A photo in the job uses a look with its own display rendering (LogC3 to Rec.709), which cannot go into
+   * a DNG: DNG is disabled (addition, `docs/09` §Pixel pipeline per format).
+   */
+  dng_unavailable: boolean;
 }
 
 /** `export_progress` event payload. */
@@ -414,8 +546,13 @@ export interface ExportProgress {
   total: number;
   /** Progress of `file`, 0–100 (addition: the panel's "45%" per-file tag). */
   file_percent: number | null;
-  /** Plain-words error for this file, when it failed. */
+  /**
+   * Plain-words error for `file`, when it failed. A failed file counts in `done`, so the event that
+   * reports it names that file and carries the new count; the queue goes on with the next one.
+   */
   error: string | null;
+  /** `file` already existed and "If it exists" is Skip: it counts in `done` but was not written (addition). */
+  skipped: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -513,6 +650,55 @@ export interface CliLinkResult {
 /** What `open_dialog` offers. */
 export type OpenKind = "files" | "folder";
 
+/** What the app knows about itself, for About (addition). */
+export interface AppInfo {
+  /** The app and CLI version: "0.1.0". */
+  version: string;
+  /** The pipeline version written into exports (`docs/01` §Versions written into outputs). */
+  pipeline_version: string;
+}
+
+/** `cli_link_status`: whether "Install Command-Line Tool…" has been done (addition, Preferences). */
+export interface CliLinkStatus {
+  installed: boolean;
+  /** Where the `yellowmoon` link is, when installed. */
+  path: string | null;
+}
+
+/**
+ * The items of the native menu bar (`docs/11` §Menus) that need the webview. The core sends `menu_action` with one
+ * of them; the items it handles itself (Show Looks Folder, the Help links) are not listed.
+ */
+export type MenuAction =
+  | "about"
+  | "preferences"
+  | "check_for_updates"
+  | "install_cli"
+  | "open_files"
+  | "open_folder"
+  | "export"
+  | "close_session"
+  | "undo"
+  | "redo"
+  | "pick"
+  | "pick_all"
+  | "clear_picks"
+  | "before_after"
+  | "fit"
+  | "zoom_100"
+  | "zoom_in"
+  | "zoom_out"
+  | "next_photo"
+  | "previous_photo"
+  | "import_arri_looks"
+  | "import_cube"
+  | "make_default_look";
+
+/** `menu_action` event payload. */
+export interface MenuActionEvent {
+  action: MenuAction;
+}
+
 /** Event name → payload type, for the typed `on()`. `looks_changed` carries no data. */
 export interface ApiEvents {
   photo_progress: PhotoProgress;
@@ -522,6 +708,12 @@ export interface ApiEvents {
   looks_changed: null;
   update_state: UpdateState;
   error: AppError;
+  /** Files of one source copied so far during `looks_import` (the wizard's Import step). */
+  looks_import_progress: LooksImportProgress;
+  /** The Downloads watcher found a package zip (`looks_watch_downloads`). */
+  download_found: DownloadFound;
+  /** A menu item that needs the webview was chosen. */
+  menu_action: MenuActionEvent;
 }
 
 /** Names of the events the core emits. */

@@ -31,19 +31,31 @@ const calls: Array<[string, () => Promise<unknown>, string, Record<string, unkno
   ["openPaths", () => tauriApi.openPaths(["/a.ARW"]), "open_paths", { paths: ["/a.ARW"] }],
   ["openDialog", () => tauriApi.openDialog("folder"), "open_dialog", { kind: "folder" }],
   ["sessionState", () => tauriApi.sessionState(), "session_state", undefined],
+  ["closeSession", () => tauriApi.closeSession(), "close_session", undefined],
   ["setCurrent", () => tauriApi.setCurrent(3), "set_current", { photoId: 3 }],
   ["setPicked", () => tauriApi.setPicked(3, true), "set_picked", { photoId: 3, picked: true }],
   ["getSettings", () => tauriApi.getSettings(3), "get_settings", { photoId: 3 }],
   ["updateSettings", () => tauriApi.updateSettings(3, { contrast: 4 }), "update_settings", { photoId: 3, patch: { contrast: 4 } }],
   ["applyLook", () => tauriApi.applyLook("all", "builtin:neutral", 80), "apply_look", { scope: "all", lookId: "builtin:neutral", intensity: 80 }],
   ["rerunAuto", () => tauriApi.rerunAuto(3), "rerun_auto", { photoId: 3 }],
+  ["histogram", () => tauriApi.histogram(3), "histogram", { photoId: 3 }],
   ["viewportSetRect", () => tauriApi.viewportSetRect(rect), "viewport_set_rect", { rect }],
   ["viewportInput", () => tauriApi.viewportInput({ kind: "pan", dx: 1, dy: 2 }), "viewport_input", { event: { kind: "pan", dx: 1, dy: 2 } }],
   ["viewportSetMode", () => tauriApi.viewportSetMode({ kind: "fit" }), "viewport_set_mode", { mode: { kind: "fit" } }],
   ["setBefore", () => tauriApi.setBefore(true), "set_before", { before: true }],
   ["samplePixel", () => tauriApi.samplePixel(10, 20), "sample_pixel", { x: 10, y: 20 }],
   ["looksList", () => tauriApi.looksList(), "looks_list", undefined],
-  ["looksImport", () => tauriApi.looksImport("/x.zip"), "looks_import", { path: "/x.zip" }],
+  ["lookThumbnail", () => tauriApi.lookThumbnail(3, "builtin:signature"), "look_thumbnail", { photoId: 3, lookId: "builtin:signature" }],
+  ["looksImport", () => tauriApi.looksImport("/x.zip"), "looks_import", { path: "/x.zip", input: null }],
+  ["looksImport (answered)", () => tauriApi.looksImport("/x.cube", "logc3_ei800"), "looks_import", { path: "/x.cube", input: "logc3_ei800" }],
+  ["looksRecognise", () => tauriApi.looksRecognise("/x.zip"), "looks_recognise", { path: "/x.zip" }],
+  ["looksDisplayLuts", () => tauriApi.looksDisplayLuts(), "looks_display_luts", undefined],
+  ["looksWatchDownloads", () => tauriApi.looksWatchDownloads(true), "looks_watch_downloads", { enabled: true }],
+  ["chooseFolder", () => tauriApi.chooseFolder("~/Pictures"), "choose_folder", { start: "~/Pictures" }],
+  ["chooseLookFiles", () => tauriApi.chooseLookFiles(), "choose_look_files", undefined],
+  ["openUrl", () => tauriApi.openUrl("https://example.com/"), "open_url", { url: "https://example.com/" }],
+  ["revealInFinder", () => tauriApi.revealInFinder("~/Pictures/Lisbon export"), "reveal_in_finder", { path: "~/Pictures/Lisbon export" }],
+  ["trashPath", () => tauriApi.trashPath("~/Downloads/x.zip"), "trash_path", { path: "~/Downloads/x.zip" }],
   ["looksSetDefault", () => tauriApi.looksSetDefault("builtin:signature"), "looks_set_default", { id: "builtin:signature" }],
   ["looksRemove", () => tauriApi.looksRemove("user:x"), "looks_remove", { id: "user:x" }],
   ["exportEstimate", () => tauriApi.exportEstimate(job), "export_estimate", { job }],
@@ -53,6 +65,8 @@ const calls: Array<[string, () => Promise<unknown>, string, Record<string, unkno
   ["preferencesGet", () => tauriApi.preferencesGet(), "preferences_get", undefined],
   ["preferencesSet", () => tauriApi.preferencesSet({ remove_location_from_exports: true }), "preferences_set", { patch: { remove_location_from_exports: true } }],
   ["installCliLink", () => tauriApi.installCliLink(), "install_cli_link", undefined],
+  ["cliLinkStatus", () => tauriApi.cliLinkStatus(), "cli_link_status", undefined],
+  ["appInfo", () => tauriApi.appInfo(), "app_info", undefined],
 ];
 
 beforeEach(() => {
@@ -68,11 +82,11 @@ describe("tauriApi commands", () => {
   });
 
   it("covers every method of the mock, so the two can't drift apart", () => {
-    const mockOnly = ["options", "configure", "reset", "flush", "failNext", "cancelNextDialog", "fixtureUrl", "viewport"];
+    const mockOnly = ["options", "configure", "reset", "flush", "failNext", "cancelNextDialog", "fixtureUrl", "viewport", "system", "queueChoice", "addSource", "removeSource", "simulateDownload", "emitEvent"];
     const mock = createMockApi();
     const contract = Object.keys(mock).filter((k) => !mockOnly.includes(k)).sort();
     expect(Object.keys(tauriApi).sort()).toEqual(contract);
-    expect(calls.map(([name]) => name).sort()).toEqual(contract.filter((k) => k !== "on"));
+    expect(calls.map(([name]) => name.replace(/ \(.*\)$/, "")).filter((name, i, all) => all.indexOf(name) === i).sort()).toEqual(contract.filter((k) => k !== "on"));
     mock.reset();
   });
 

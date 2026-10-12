@@ -1,33 +1,102 @@
-import { useState } from "react";
-import { ScreenPlaceholder } from "./screens/ScreenPlaceholder";
+import { useEffect, useMemo } from "react";
+import { getApi } from "./api";
+import type { Api } from "./api";
+import { Overlays } from "./screens/dialogs/Overlays";
+import { ErrorBar } from "./screens/ErrorBar";
+import { ImportLooks } from "./screens/ImportLooks";
+import { Photos } from "./screens/Photos";
 import { Start } from "./screens/Start";
+import { StoreProvider, useAppState, useStore } from "./state/context";
+import { runMenuAction } from "./state/menu";
+import { useShortcuts } from "./state/useShortcuts";
+import { createStore } from "./state/store";
+import type { AppStore, Screen } from "./state/store";
 
-/** The screens of the app (`docs/11-ui.md` §Screens that have a window of their own). */
-export type Screen = "start" | "photos" | "import-looks";
+export type { Screen };
 
 /** Every routed screen, in navigation order. */
 export const SCREENS: readonly Screen[] = ["start", "photos", "import-looks"];
 
 interface Props {
-  /** Screen to show first; Start in the app, anything in tests. */
-  initialScreen?: Screen;
+  /** The core's API. The app uses `getApi()`; tests pass a mock of their own. */
+  api?: Api;
+  /** A store to use instead of making one for `api`. */
+  store?: AppStore;
+}
+
+/** Shortcuts that work on every screen. The Photos screen adds its own. */
+function GlobalShortcuts() {
+  const store = useStore();
+  const screen = useAppState((s) => s.screen);
+  const overlay = useAppState((s) => s.overlay);
+  // Preferences opens from every screen, also over a dialog.
+  useShortcuts((shortcut) => {
+    if (shortcut.action !== "preferences") return false;
+    store.openOverlay("preferences");
+    return true;
+  });
+  useShortcuts(
+    (shortcut) => {
+      switch (shortcut.action) {
+        case "open-files":
+          void store.openDialog("files");
+          return true;
+        case "open-folder":
+          void store.openDialog("folder");
+          return true;
+        case "close-session":
+          if (!store.getState().session) return false;
+          void store.requestCloseSession();
+          return true;
+        default:
+          return false;
+      }
+    },
+    {},
+    // The Photos screen handles these too, with the rest of its shortcuts; a dialog takes the keyboard.
+    screen !== "photos" && overlay === null,
+  );
+  return null;
+}
+
+/** Hands the menu bar's items to the store's handler for as long as the app is on screen. */
+function MenuBridge() {
+  const store = useStore();
+  useEffect(() => {
+    store.menuHandler = (action) => void runMenuAction(store, action);
+    return () => {
+      store.menuHandler = null;
+    };
+  }, [store]);
+  return null;
+}
+
+function Screens() {
+  const screen = useAppState((s) => s.screen);
+  const hasSession = useAppState((s) => s.session !== null);
+  switch (screen) {
+    case "photos":
+      return hasSession ? <Photos /> : <Start />;
+    case "import-looks":
+      return <ImportLooks />;
+    default:
+      return <Start />;
+  }
 }
 
 /**
- * Screen routing. The state is a single value, as in the plan: Start until files are open,
- * then Photos, with the ARRI look wizard as a full-window detour. Only the Start placeholder
- * is built so far; nothing navigates away from it yet.
+ * Screen routing. State lives in the store: Start until files are open, then Photos, with the ARRI
+ * look wizard as a full-window detour.
  */
-export default function App({ initialScreen = "start" }: Props) {
-  const [screen, setScreen] = useState<Screen>(initialScreen);
-  const backToStart = () => setScreen("start");
-
-  switch (screen) {
-    case "start":
-      return <Start />;
-    case "photos":
-      return <ScreenPlaceholder screen="photos" title="Photos" task="M3-06" onBack={backToStart} />;
-    case "import-looks":
-      return <ScreenPlaceholder screen="import-looks" title="Import ARRI looks" task="M3-09" onBack={backToStart} />;
-  }
+export default function App({ api, store: given }: Props) {
+  const store = useMemo(() => given ?? createStore(api ?? getApi()), [given, api]);
+  return (
+    <StoreProvider store={store}>
+      <GlobalShortcuts />
+      <MenuBridge />
+      <Screens />
+      <Overlays />
+      <ErrorBar />
+    </StoreProvider>
+  );
 }

@@ -63,8 +63,8 @@ const NEAR_HEIGHT = 0.26;
 /** Rounds to three decimals so that floating-point noise never reaches a file. */
 const num = (x: number): string => String(Math.round(x * 1000) / 1000);
 
-/** The scene as an SVG document, 3:2, using the geometry of the mockup's photo cell. */
-export function sceneSvg(scene: Scene, sunFraction: number = SUN_FRACTION_PHOTO): string {
+/** The shapes of the scene as SVG elements, one per line, in the frame of `SVG_WIDTH` × `SVG_HEIGHT`. */
+export function sceneBody(scene: Scene, sunFraction: number = SUN_FRACTION_PHOTO): string[] {
   const w = SVG_WIDTH;
   const h = SVG_HEIGHT;
   const r = (sunFraction * w) / 2;
@@ -77,11 +77,20 @@ export function sceneSvg(scene: Scene, sunFraction: number = SUN_FRACTION_PHOTO)
   const farBase = h - FAR_BOTTOM * h;
   const nearTop = h - NEAR_HEIGHT * h;
   return [
-    `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">`,
     `<rect width="${w}" height="${h}" fill="${scene.sky}"/>`,
     `<circle cx="${num(cx)}" cy="${num(cy)}" r="${num(r)}" fill="${scene.sun}"/>`,
     `<path d="M${num(farX0)} ${num(farBase)}A${num(farRx)} ${num(farRy)} 0 0 1 ${num(farX1)} ${num(farBase)}Z" fill="${scene.far}"/>`,
     `<rect y="${num(nearTop)}" width="${w}" height="${num(h - nearTop)}" fill="${scene.near}"/>`,
+  ];
+}
+
+/** The scene as an SVG document, 3:2, using the geometry of the mockup's photo cell. */
+export function sceneSvg(scene: Scene, sunFraction: number = SUN_FRACTION_PHOTO): string {
+  const w = SVG_WIDTH;
+  const h = SVG_HEIGHT;
+  return [
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">`,
+    ...sceneBody(scene, sunFraction),
     `</svg>`,
     ``,
   ].join("\n");

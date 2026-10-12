@@ -1,0 +1,85 @@
+/* The Export panel (design/mockups/export.html, docs/11 §Export). Component styles live in components.css;
+   this file only places the panel's own rows. */
+
+.ym-export { position: relative; }
+/* Progress of a running export, along the foot of the header's Export cell. */
+.ym-export__strip { position: absolute; right: 0; bottom: 0; left: 0; height: 4px; background: transparent; }
+.ym-export__strip > span { display: block; height: 100%; background: var(--brand); transition: width var(--t-med) linear; }
+.ym-export[aria-current="true"] .ym-export__strip > span { background: var(--brand); }
+
+.ym-export__slider { margin-top: 6px; }
+.ym-export__sub { margin-top: 10px; }
+.ym-export__sub--roomy { margin-top: 12px; }
+.ym-export__save { display: flex; align-items: center; gap: 12px; }
+.ym-export__folder {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  height: 40px;
+  box-sizing: border-box;
+  padding: 0 10px;
+  border: var(--rule) solid var(--ink);
+  font-size: var(--fs-body);
+  white-space: nowrap;
+  overflow: hidden;
+}
+.ym-export__folder-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.ym-export__template {
+  width: 100%;
+  min-width: 0;
+  height: 34px;
+  box-sizing: border-box;
+  padding: 0 10px;
+  border: var(--rule-control) solid var(--ink);
+  border-radius: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+}
+.ym-export__template[aria-invalid="true"] { background: var(--status-error); }
+.ym-export__example {
+  display: grid;
+  grid-template-columns: var(--label-col) minmax(0, 1fr);
+  column-gap: var(--gap-row);
+  margin-top: 6px;
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+}
+.ym-export__example > span:last-child { min-width: 0; overflow-wrap: anywhere; }
+.ym-export__problem { font-weight: var(--fw-bold); }
+.ym-export__warning { color: var(--muted); }
+.ym-export__cli { padding-bottom: 20px; }
+.ym-export__code {
+  display: block;
+  padding: 10px 12px;
+  border: var(--rule-control) solid var(--ink);
+  background: var(--code-bg);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.ym-export__legal { font-size: 12.5px; }
+.ym-export__queue { padding: 20px var(--pad-panel); }
+.ym-export__list { margin-top: 20px; }
+.ym-export__queue-note { margin-top: 16px; }
+.ym-export__footer-pair { display: grid; flex: 1; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.ym-export__footer-pair .ym-btn { min-width: 0; padding: 0; }
+.ym-export__footer-pair .ym-btn[data-variant="secondary"] { font-size: 14px; }
+
+/* Text for assistive technology only. */
+.ym-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}

@@ -1,3 +1,4 @@
+import { resolve } from "node:path";
 import react from "@vitejs/plugin-react";
 import { configDefaults, defineConfig } from "vitest/config";
 
@@ -34,6 +35,14 @@ export default defineConfig({
   envPrefix: ["VITE_", "TAURI_ENV_*"],
 
   build: {
+    // Two pages: the app, and the component dev page (docs/15 M3-01: "a Storybook-free
+    // components.html dev page shows every component state").
+    rollupOptions: {
+      input: {
+        main: resolve(import.meta.dirname, "index.html"),
+        components: resolve(import.meta.dirname, "components.html"),
+      },
+    },
     // macOS 12 ships Safari 15, the oldest WebKit the app supports.
     target: "safari15",
     minify: process.env.TAURI_ENV_DEBUG ? false : "esbuild",
@@ -46,5 +55,8 @@ export default defineConfig({
     setupFiles: ["./src/test/setup.ts"],
     exclude: [...configDefaults.exclude, "e2e/**"],
     css: false,
+    // The screens render whole panels in jsdom; give a busy machine room before a test is called slow.
+    testTimeout: 20_000,
+    hookTimeout: 20_000,
   },
 });

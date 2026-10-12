@@ -18,7 +18,7 @@ body {
   color: var(--ink);
   font-family: var(--font);
   font-size: var(--fs-body);
-  line-height: 1.4;
+  line-height: normal; /* the mockups never set a base line height */
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
 }
@@ -75,6 +75,26 @@ summary:focus-visible,
 [role="slider"]:focus-visible {
   outline: 3px solid var(--focus);
   outline-offset: 2px;
+}
+
+/* Safari before 15.4 (macOS 12 can still be on it) has no :focus-visible, and drops a rule whose selector list holds one it cannot read,
+   so the rule above never applies there. Those browsers get the same ring on :focus. */
+@supports not selector(:focus-visible) {
+  a[href]:focus,
+  button:focus,
+  input:focus,
+  select:focus,
+  textarea:focus,
+  summary:focus,
+  [tabindex]:focus,
+  [role="button"]:focus,
+  [role="switch"]:focus,
+  [role="radio"]:focus,
+  [role="tab"]:focus,
+  [role="slider"]:focus {
+    outline: 3px solid var(--focus);
+    outline-offset: 2px;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

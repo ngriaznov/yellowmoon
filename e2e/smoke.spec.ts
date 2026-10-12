@@ -1,9 +1,9 @@
 import { expect, test } from "@playwright/test";
 
-// Smoke test of the M0-01 skeleton: the app boots in a browser on the mocked API and shows the
-// Start placeholder with the moon mark, in Figtree.
+// Smoke test of the app shell: it boots in a browser on the mocked API and shows the Start screen
+// with the moon mark, in Figtree. The screens themselves are tested in start.spec.ts and photos.spec.ts.
 
-test("shows the Start placeholder", async ({ page }) => {
+test("shows the Start screen", async ({ page }) => {
   const problems: string[] = [];
   page.on("pageerror", (error) => problems.push(error.message));
   page.on("console", (message) => {
@@ -13,8 +13,8 @@ test("shows the Start placeholder", async ({ page }) => {
   await page.goto("/");
 
   await expect(page).toHaveTitle("Yellowmoon");
-  const title = page.getByRole("heading", { level: 1, name: "Yellowmoon" });
-  await expect(title).toBeVisible();
+  const title = page.locator(".ym-brand-title");
+  await expect(title).toHaveText("Yellowmoon");
   await expect(title).toHaveCSS("font-weight", "800");
 
   // The sub-line is written in sentence case and drawn in capitals, as in the mockup.
@@ -22,7 +22,7 @@ test("shows the Start placeholder", async ({ page }) => {
   await expect(subline).toBeVisible();
   await expect(subline).toHaveCSS("text-transform", "uppercase");
 
-  await expect(page.getByRole("note")).toContainText("placeholder");
+  await expect(page.getByRole("heading", { level: 1, name: "Drop Sony ARW files." })).toBeVisible();
 
   // The moon: a yellow circle with a 2 px ink border.
   const moon = title.locator(".ym-moon");
@@ -49,11 +49,11 @@ test("uses the bundled Figtree font on a white page", async ({ page }) => {
 
 test("keyboard focus shows the 3 px focus ring", async ({ page }) => {
   await page.goto("/");
-  // Start has no interactive element yet, so check the global rule on a probe button.
+  // The global rule applies to any button: check it on a probe that comes first in the tab order.
   await page.evaluate(() => {
     const button = document.createElement("button");
     button.textContent = "Probe";
-    document.body.append(button);
+    document.body.prepend(button);
   });
   await page.keyboard.press("Tab");
   const probe = page.getByRole("button", { name: "Probe" });

@@ -18,6 +18,7 @@ import { relaunch } from "@tauri-apps/plugin-process";
 import { check, type DownloadEvent, type Update } from "@tauri-apps/plugin-updater";
 import { useCallback, useSyncExternalStore } from "react";
 import type { UpdateState } from "./api/types";
+import { getApi } from "./api";
 import { isTauri } from "./env";
 
 /** First quiet check after launch. */
@@ -251,6 +252,15 @@ export function createUpdater(deps: UpdaterDeps): Updater {
 const realDeps: UpdaterDeps = {
   check: async () => (isTauri() ? await check() : null),
   relaunch: () => relaunch(),
+  // "Check for updates automatically" (Preferences, default on): read before every quiet check. If the preference can't be
+  // read, the check goes ahead, as the default says.
+  autoCheck: async () => {
+    try {
+      return (await getApi().preferencesGet()).check_for_updates_automatically;
+    } catch {
+      return true;
+    }
+  },
 };
 
 /** The app's updater, wired to the Tauri plugins. Call `updater.start()` once at launch. */

@@ -1,43 +1,61 @@
-import { render, screen } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
-import { describe, expect, it } from "vitest";
-import App, { SCREENS } from "./App";
+import { act, screen, waitFor } from "@testing-library/react";
+import { afterEach, describe, expect, it } from "vitest";
+import { SCREENS } from "./App";
+import { openPhotos, renderApp } from "./test/harness";
+import type { Harness } from "./test/harness";
+
+let h: Harness | undefined;
+afterEach(() => {
+  h?.unmount();
+  h = undefined;
+});
+
+const current = (container: HTMLElement): string | null => container.querySelector("[data-screen]")?.getAttribute("data-screen") ?? null;
 
 describe("App", () => {
-  it("renders the Start placeholder first", () => {
-    const { container } = render(<App />);
-    expect(container.querySelector("[data-screen]")).toHaveAttribute("data-screen", "start");
-    expect(screen.getByRole("heading", { level: 1, name: "Yellowmoon" })).toBeInTheDocument();
-    expect(screen.getByText(/drop arw files to start/i)).toBeInTheDocument();
-  });
-
-  it("says plainly that the screen is a placeholder", () => {
-    render(<App />);
-    expect(screen.getByRole("note")).toHaveTextContent(/placeholder/i);
+  it("opens on the Start screen", () => {
+    h = renderApp();
+    expect(current(h.container)).toBe("start");
+    expect(screen.getByRole("heading", { level: 1, name: "Drop Sony ARW files." })).toBeInTheDocument();
+    expect(screen.getByText("Drop ARW files to start")).toBeInTheDocument();
   });
 
   it("shows the moon mark next to the name, hidden from assistive technology", () => {
-    const { container } = render(<App />);
-    const title = screen.getByRole("heading", { level: 1 });
-    const moon = title.querySelector(".ym-moon");
+    h = renderApp();
+    const moon = h.container.querySelector(".ym-brand-title .ym-moon");
     expect(moon).not.toBeNull();
     expect(moon).toHaveAttribute("aria-hidden", "true");
-    expect(container.querySelectorAll(".ym-moon")).toHaveLength(1);
+    expect(h.container.querySelectorAll(".ym-moon")).toHaveLength(1);
   });
 
-  it("routes between the three screens", async () => {
+  it("routes Start, Photos and the wizard", async () => {
     expect(SCREENS).toEqual(["start", "photos", "import-looks"]);
-    const user = userEvent.setup();
+    h = renderApp();
+    await openPhotos(h);
+    expect(current(h.container)).toBe("photos");
+    await h.user.click(screen.getByRole("button", { name: "Import ARRI looks →" }));
+    expect(current(h.container)).toBe("import-looks");
+    expect(screen.getByRole("heading", { level: 1, name: "Choose what to import" })).toBeInTheDocument();
+    await h.user.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(current(h?.container as HTMLElement)).toBe("photos"));
+  });
 
-    const { container, unmount } = render(<App initialScreen="photos" />);
-    expect(container.querySelector("[data-screen]")).toHaveAttribute("data-screen", "photos");
-    expect(screen.getByText(/M3-06/)).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Back to Start" }));
-    expect(container.querySelector("[data-screen]")).toHaveAttribute("data-screen", "start");
-    unmount();
+  it("goes back to Start when the session closes", async () => {
+    h = renderApp();
+    await openPhotos(h);
+    await act(async () => {
+      await h?.store.closeSession();
+    });
+    expect(current(h.container)).toBe("start");
+  });
 
-    const second = render(<App initialScreen="import-looks" />);
-    expect(second.container.querySelector("[data-screen]")).toHaveAttribute("data-screen", "import-looks");
-    expect(screen.getByRole("heading", { level: 1, name: "Import ARRI looks" })).toBeInTheDocument();
+  it("shows an error from the core on any screen and lets it be dismissed", async () => {
+    h = renderApp();
+    await openPhotos(h);
+    h.api.failNext("looksList", { scope: "looks", message: "The looks folder can't be read. Check its permissions." });
+    await act(async () => {
+      await h?.store.refreshLooks();
+    });
+    expect(await screen.findByRole("alert")).toHaveTextContent("The looks folder can't be read. Check its permissions.");
   });
 });

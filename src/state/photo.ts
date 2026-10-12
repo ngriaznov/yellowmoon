@@ -1,0 +1,70 @@
+/** Small helpers that turn a photo's summary into the words and pictures the screens show. */
+import type { PhotoStatus, PhotoSummary, SessionState } from "../api/types";
+
+/** "DSC04204.ARW" gives "DSC04204". */
+export const photoName = (fileName: string): string => fileName.replace(/\.[^./\\]+$/, "");
+
+/** "1/125" for 0.008 s, "2 s" for two seconds, "1/2" for half a second. */
+export function shutterLabel(seconds: number): string {
+  if (!(seconds > 0)) return "";
+  if (seconds >= 1) return `${Number.isInteger(seconds) ? seconds : Math.round(seconds * 10) / 10} s`;
+  return `1/${Math.round(1 / seconds)}`;
+}
+
+/**
+ * The camera line under the photo: "Sony A1 · DSC04204 · ISO 400 · 1/125 · f/2.8". The Export screen leaves the body out
+ * (`body: false`), as its mockup does: "DSC04204 · ISO 400 · 1/125 · f/2.8".
+ */
+export function cameraLine(photo: PhotoSummary, { body = true }: { body?: boolean } = {}): string {
+  const aperture = String(Math.round(photo.aperture_f * 10) / 10);
+  return [body ? photo.camera.body : "", photoName(photo.file_name), `ISO ${photo.iso}`, shutterLabel(photo.shutter_s), `f/${aperture}`]
+    .filter(Boolean)
+    .join(" · ");
+}
+
+/** The capture date of a photo, "2026-10-04". */
+export const captureDate = (photo: PhotoSummary): string => photo.captured_at.slice(0, 10);
+
+/** "2026-10-04 · 12 photos" for the folder cell: the first photo's date and the count. */
+export function folderSubline(session: Pick<SessionState, "photos">): string {
+  const first = session.photos[0];
+  const count = session.photos.length;
+  const noun = count === 1 ? "photo" : "photos";
+  return first ? `${captureDate(first)} · ${count} ${noun}` : `0 photos`;
+}
+
+/** True when a photo can be shown and edited. */
+export const isReady = (photo: Pick<PhotoSummary, "status">): boolean => photo.status.kind === "ready";
+
+/**
+ * How far a photo is on its way, 0–1, for the Start screen's progress bar. The stages are weighted
+ * so that a photo that has been decoded counts for a fifth, one that has its estimates for two
+ * fifths, and a ready or skipped one for all of it.
+ */
+export function developFraction(status: PhotoStatus): number {
+  switch (status.kind) {
+    case "waiting":
+      return 0;
+    case "developing":
+      return { probe: 0.1, decode: 0.2, estimate: 0.4, thumbnail: 0.8 }[status.stage];
+    case "ready":
+    case "skipped":
+      return 1;
+  }
+}
+
+/** A PNG's bytes as an image URL: an object URL where the browser has them, else a data URL. */
+export function bytesToUrl(bytes: readonly number[]): string {
+  const data = Uint8Array.from(bytes);
+  if (typeof URL !== "undefined" && typeof URL.createObjectURL === "function") {
+    return URL.createObjectURL(new Blob([data], { type: "image/png" }));
+  }
+  let binary = "";
+  for (let i = 0; i < data.length; i += 8192) binary += String.fromCharCode(...data.subarray(i, i + 8192));
+  return `data:image/png;base64,${btoa(binary)}`;
+}
+
+/** Frees a URL made by `bytesToUrl`. */
+export function releaseUrl(url: string): void {
+  if (url.startsWith("blob:") && typeof URL !== "undefined" && typeof URL.revokeObjectURL === "function") URL.revokeObjectURL(url);
+}

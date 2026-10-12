@@ -1,0 +1,34 @@
+import type { AutoOr, PhotoSummary, ResolvedSettings } from "../../api/types";
+import type { AppStore } from "../../state/store";
+
+/** What every tab needs: the store, the photo and its resolved settings. */
+export interface TabProps {
+  store: AppStore;
+  photo: PhotoSummary;
+  rs: ResolvedSettings;
+}
+
+const near = (a: number, b: number): boolean => Math.abs(a - b) < 1e-9;
+
+/** True when every field of `a` equals the same field of `b`. */
+export function sameNumbers<T extends object>(a: T, b: T): boolean {
+  return (Object.keys(a) as Array<keyof T>).every((key) => near(Number(a[key]), Number(b[key])));
+}
+
+/**
+ * A manual value for a setting that can also be Automatic. A value equal to what Automatic
+ * resolves to *is* Automatic: a slider dropped on its detent, or reset by hand, gets the AUTO tag
+ * back instead of a manual value that happens to match.
+ */
+export function manualOrAuto<M extends object>(manual: M, auto: M): AutoOr<M> {
+  return sameNumbers(manual, auto) ? { kind: "auto" } : ({ kind: "manual", ...manual } as AutoOr<M>);
+}
+
+/** The reset of `docs/11`: Auto for these fields. */
+export const AUTO = { kind: "auto" } as const;
+
+/** Shows a tint: "0", "+4", "−3" (with a true minus). */
+export function tintLabel(tint: number): string {
+  if (tint === 0) return "0";
+  return `${tint > 0 ? "+" : "−"}${Math.abs(Math.round(tint))}`;
+}

@@ -1,0 +1,78 @@
+import { AutoToggle, Card, formats, ResetLink, Slider } from "../../components";
+import { AUTO, manualOrAuto } from "./shared";
+import type { TabProps } from "./shared";
+
+/** Detail: Sharpening (Amount, Radius) and Noise reduction (Luminance, Colour, Detail, with the AUTO tag). */
+export function DetailTab({ store, rs }: TabProps) {
+  const { values, estimates, auto } = rs;
+  const sharp = values.sharpen;
+  const nr = values.noise_reduction;
+  const setSharpen = (amount: number, radius_px: number, final: boolean): void =>
+    void store.update({ sharpen: manualOrAuto({ amount, radius_px }, estimates.sharpen) }, final);
+  const setNoise = (luminance: number, color: number, detail: number, final: boolean): void =>
+    void store.update({ noise_reduction: manualOrAuto({ luminance, color, detail }, estimates.noise_reduction) }, final);
+
+  return (
+    <>
+      <Card title="Sharpening" action={<ResetLink size="card" onClick={() => void store.update({ sharpen: AUTO })} />}>
+        <Slider
+          label="Amount"
+          value={sharp.amount}
+          min={0}
+          max={300}
+          defaultValue={estimates.sharpen.amount}
+          format={formats.integer}
+          onChange={(amount, final) => setSharpen(amount, sharp.radius_px, final)}
+          onReset={() => setSharpen(estimates.sharpen.amount, sharp.radius_px, true)}
+        />
+        <Slider
+          label="Radius"
+          value={sharp.radius_px}
+          min={0.3}
+          max={2.5}
+          step={0.1}
+          defaultValue={estimates.sharpen.radius_px}
+          format={formats.px1}
+          onChange={(radius, final) => setSharpen(sharp.amount, radius, final)}
+          onReset={() => setSharpen(sharp.amount, estimates.sharpen.radius_px, true)}
+        />
+      </Card>
+      <Card
+        title="Noise reduction"
+        tag={<AutoToggle isAuto={auto.noise_reduction} onAuto={() => void store.update({ noise_reduction: AUTO })} />}
+        action={<ResetLink size="card" onClick={() => void store.update({ noise_reduction: AUTO })} />}
+      >
+        <Slider
+          label="Luminance"
+          value={nr.luminance}
+          min={0}
+          max={100}
+          defaultValue={estimates.noise_reduction.luminance}
+          format={formats.integer}
+          onChange={(v, final) => setNoise(v, nr.color, nr.detail, final)}
+          onReset={() => setNoise(estimates.noise_reduction.luminance, nr.color, nr.detail, true)}
+        />
+        <Slider
+          label="Colour"
+          value={nr.color}
+          min={0}
+          max={100}
+          defaultValue={estimates.noise_reduction.color}
+          format={formats.integer}
+          onChange={(v, final) => setNoise(nr.luminance, v, nr.detail, final)}
+          onReset={() => setNoise(nr.luminance, estimates.noise_reduction.color, nr.detail, true)}
+        />
+        <Slider
+          label="Detail"
+          value={nr.detail}
+          min={0}
+          max={100}
+          defaultValue={estimates.noise_reduction.detail}
+          format={formats.integer}
+          onChange={(v, final) => setNoise(nr.luminance, nr.color, v, final)}
+          onReset={() => setNoise(nr.luminance, nr.color, estimates.noise_reduction.detail, true)}
+        />
+      </Card>
+    </>
+  );
+}

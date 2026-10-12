@@ -2,19 +2,25 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import App from "./App";
 import { getApi } from "./api";
+import { mockApi } from "./api.mock";
 import { isTauri } from "./env";
+import { installTestHooks } from "./testHooks";
 import { updater } from "./updater";
 import "./styles/tokens.css";
 import "./styles/global.css";
+import "./styles/components.css";
 import "./styles/app.css";
+import "./styles/screens.css";
+import "./styles/export.css";
+import "./styles/wizard.css";
+import "./styles/dialogs.css";
 
+// The core mirrors its own updater messages (for example from the app menu) as events; the mock
+// sends them too, so a browser can show every state of the update cell.
+getApi().on("update_state", (state) => updater.applyExternal(state));
 // Quiet update checks run only inside the app; in a browser there is nothing to update.
-if (isTauri()) {
-  const api = getApi();
-  updater.start();
-  // The core mirrors its own updater messages (for example from the app menu) as events.
-  api.on("update_state", (state) => updater.applyExternal(state));
-}
+if (isTauri()) updater.start();
+else installTestHooks({ mockApi, updater });
 
 const root = document.getElementById("root");
 if (!root) throw new Error("index.html has no #root element");

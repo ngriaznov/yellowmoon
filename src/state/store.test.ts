@@ -1,0 +1,589 @@
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { createMockApi } from "../api.mock";
+import type { MockApi, MockOptions } from "../api.mock";
+import type { ResolvedSettings, SettingsPatch } from "../api/types";
+import { applyDirect, createStore, NO_ARW_NOTICE } from "./store";
+import type { AppStore } from "./store";
+
+const stops: Array<() => void> = [];
+afterEach(() => {
+  for (const stop of stops.splice(0)) stop();
+});
+
+/** A store on a fast mock, connected, with nothing open. */
+async function connected(options: MockOptions = {}): Promise<{ api: MockApi; store: AppStore }> {
+  const api = createMockApi({ speed: Number.POSITIVE_INFINITY, ...options });
+  const store = createStore(api, 0);
+  stops.push(store.connect());
+  await store.load();
+  return { api, store };
+}
+
+/** A store with the twelve photos open and developed, and the current photo's settings loaded. */
+async function opened(options: MockOptions = {}): Promise<{ api: MockApi; store: AppStore }> {
+  const ctx = await connected(options);
+  await ctx.store.openDialog("files");
+  ctx.api.flush();
+  await vi.waitFor(() => {
+    const photos = ctx.store.getState().session?.photos ?? [];
+    expect(photos).toHaveLength(12);
+    expect(photos.every((p) => p.status.kind === "ready" || p.status.kind === "skipped")).toBe(true);
+  });
+  await vi.waitFor(() => expect(ctx.store.currentSettings()).not.toBeNull());
+  return ctx;
+}
+
+const currentId = (store: AppStore): number => store.currentPhoto()?.id ?? -1;
+const settingsOf = (store: AppStore): ResolvedSettings => {
+  const rs = store.currentSettings();
+  if (!rs) throw new Error("no settings");
+  return rs;
+};
+
+describe("connecting", () => {
+  it("loads the look library", async () => {
+    const { store } = await connected();
+    const looks = store.getState().looks;
+    expect(looks?.map((l) => l.name).slice(0, 2)).toEqual(["Neutral", "Signature"]);
+    expect(looks).toHaveLength(9);
+  });
+
+  it("starts on the Start screen with nothing open", async () => {
+    const { store } = await connected();
+    const s = store.getState();
+    expect([s.screen, s.session, s.before, s.zoom, s.applyScope]).toEqual(["start", null, false, { kind: "fit" }, "all"]);
+  });
+
+  it("goes straight to Photos when the core already has a session (a reloaded window)", async () => {
+    const api = createMockApi({ speed: Number.POSITIVE_INFINITY });
+    await api.openDialog("files");
+    api.flush();
+    const store = createStore(api, 0);
+    stops.push(store.connect());
+    await vi.waitFor(() => expect(store.getState().screen).toBe("photos"));
+    expect(store.getState().session?.photos).toHaveLength(12);
+  });
+
+  it("reloads the looks when the core says they changed", async () => {
+    const { api, store } = await connected({ looksImported: false });
+    expect(store.getState().looks).toHaveLength(2);
+    await api.looksImport("~/Downloads/ARRI_LookLibrary_LogC4.zip");
+    await vi.waitFor(() => expect(store.getState().looks).toHaveLength(89));
+  });
+
+  it("shows an error the core reports, until it is dismissed", async () => {
+    const { api, store } = await connected();
+    api.failNext("looksList", { scope: "looks", message: "The looks folder can't be read. Check its permissions." });
+    await store.refreshLooks();
+    expect(store.getState().error).toEqual({ scope: "looks", message: "The looks folder can't be read. Check its permissions." });
+    store.dismissError();
+    expect(store.getState().error).toBeNull();
+  });
+});
+
+describe("opening photos", () => {
+  it("opens the session and follows development through the events", async () => {
+    const { api, store } = await connected();
+    await store.openDialog("files");
+    const first = store.getState().session;
+    expect(first?.photos).toHaveLength(12);
+    expect(first?.folder_name).toBe("Lisbon");
+    api.flush();
+    await vi.waitFor(() => expect(store.getState().session?.photos.every((p) => p.status.kind === "ready")).toBe(true));
+    expect(Object.keys(store.getState().thumbnails)).toHaveLength(12);
+  });
+
+  it("draws a burst of events together instead of once per event", async () => {
+    const api = createMockApi({ speed: Number.POSITIVE_INFINITY });
+    const store = createStore(api, 20);
+    stops.push(store.connect());
+    await store.load();
+    await store.openDialog("files");
+    let notifications = 0;
+    store.subscribe(() => notifications++);
+    let events = 0;
+    api.on("photo_progress", () => events++);
+    api.on("thumbnail_ready", () => events++);
+    api.flush();
+    await vi.waitFor(() => expect(store.getState().session?.photos.every((p) => p.status.kind === "ready")).toBe(true));
+    expect(events).toBeGreaterThan(40);
+    expect(notifications).toBeLessThan(events / 5);
+    expect(Object.keys(store.getState().thumbnails)).toHaveLength(12);
+  });
+
+  it("applies statuses that arrive before the session does", async () => {
+    // The mock sends the first photo's first event ahead of the command's own result.
+    const { store } = await connected({ speed: 1000 });
+    await store.openDialog("files");
+    await vi.waitFor(() => expect(store.getState().session?.photos[0]?.status.kind).not.toBe("waiting"));
+  });
+
+  it("opens dropped ARW files and folders and ignores anything else", async () => {
+    const { api, store } = await connected();
+    const spy = vi.spyOn(api, "openPaths");
+    await store.openPaths(["/a/DSC1.ARW", "/a/notes.txt", "/a/photo.JPG", "/a/Folder"]);
+    expect(spy).toHaveBeenCalledWith(["/a/DSC1.ARW", "/a/Folder"]);
+    expect(store.getState().session?.photos).toHaveLength(12);
+  });
+
+  it("says so when a drop holds nothing to open, and clears the notice on the next open", async () => {
+    const { api, store } = await connected();
+    const spy = vi.spyOn(api, "openPaths");
+    await store.openPaths(["/a/notes.txt", "/a/photo.jpg"]);
+    expect(spy).not.toHaveBeenCalled();
+    expect(store.getState().dropNotice).toBe(NO_ARW_NOTICE);
+    expect(store.getState().session).toBeNull();
+    await store.openPaths(["/a/DSC1.ARW"]);
+    expect(store.getState().dropNotice).toBeNull();
+  });
+
+  it("changes nothing when the dialog is cancelled", async () => {
+    const { api, store } = await connected();
+    api.cancelNextDialog();
+    await store.openDialog("folder");
+    expect(store.getState().session).toBeNull();
+    expect(store.getState().opening).toBe(false);
+  });
+
+  it("shows an open error and stops waiting", async () => {
+    const { api, store } = await connected();
+    api.failNext("openDialog", { scope: "open", message: "That folder can't be read. Choose another." });
+    await store.openDialog("folder");
+    expect(store.getState().error?.message).toBe("That folder can't be read. Choose another.");
+    expect(store.getState().opening).toBe(false);
+  });
+
+  it("keeps a file that can't be developed in the session with its reason", async () => {
+    const { store } = await opened({ skipped: { DSC04207: "This file is from a camera mode we can't read yet." } });
+    const bad = store.getState().session?.photos[6];
+    expect(bad?.status).toEqual({ kind: "skipped", reason: "This file is from a camera mode we can't read yet." });
+    expect(store.getState().session?.photos.filter((p) => p.status.kind === "ready")).toHaveLength(11);
+  });
+
+  it("Open photos goes to the first photo that is ready when the current one is not", async () => {
+    const { api, store } = await connected({ skipped: { DSC04201: "Can't read this one." } });
+    await store.openDialog("files");
+    api.flush();
+    await vi.waitFor(() => expect(store.getState().session?.photos[1]?.status.kind).toBe("ready"));
+    await store.openPhotos();
+    expect(store.getState().screen).toBe("photos");
+    expect(currentId(store)).toBe(2);
+  });
+});
+
+describe("the current photo, picks and navigation", () => {
+  it("loads the settings of the photo that is shown", async () => {
+    const { store } = await opened({ current: 3 });
+    expect(currentId(store)).toBe(4);
+    expect(settingsOf(store).photo_id).toBe(4);
+  });
+
+  it("moves with step() and stops at both ends", async () => {
+    const { api, store } = await opened();
+    const spy = vi.spyOn(api, "setCurrent");
+    await store.step(-1);
+    expect(currentId(store)).toBe(1);
+    await store.step(1);
+    expect(currentId(store)).toBe(2);
+    expect(spy).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(settingsOf(store).photo_id).toBe(2));
+  });
+
+  it("toggles a pick and mirrors the picked ids", async () => {
+    const { api, store } = await opened();
+    const spy = vi.spyOn(api, "setPicked");
+    await store.togglePick();
+    expect(store.getState().session?.picked).toEqual([1]);
+    expect(spy).toHaveBeenCalledWith(1, true);
+    await store.togglePick();
+    expect(store.getState().session?.picked).toEqual([]);
+  });
+
+  it("picks every photo that is ready with pickAll, and none that failed", async () => {
+    const { store } = await opened({ skipped: { DSC04203: "Can't read this one." } });
+    await store.pickAll();
+    const picked = store.getState().session?.picked ?? [];
+    expect(picked).toHaveLength(11);
+    expect(picked).not.toContain(3);
+  });
+
+  it("does not pick a photo that can't be opened", async () => {
+    const { api, store } = await opened({ skipped: { DSC04203: "Can't read this one." } });
+    const spy = vi.spyOn(api, "setPicked");
+    await store.setPicked(3, true);
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it("goes to the wizard and back to where it came from", async () => {
+    const { store } = await opened();
+    store.go("photos");
+    store.go("import-looks");
+    expect(store.getState().screen).toBe("import-looks");
+    store.back();
+    expect(store.getState().screen).toBe("photos");
+  });
+});
+
+describe("applyDirect", () => {
+  it("shows a patch at once for the fields that need no resolving", async () => {
+    const { store } = await opened();
+    const rs = settingsOf(store);
+    const next = applyDirect(rs, { contrast: 12, light_source: "tungsten", exposure: { kind: "manual", ev: 1 } });
+    expect(next.settings.contrast).toBe(12);
+    expect(next.values.contrast).toBe(12);
+    expect(next.auto.light_source).toBe(false);
+    // Exposure has to be resolved by the core.
+    expect(next.settings.exposure).toEqual({ kind: "auto" });
+    expect(next.values.exposure_ev).toBe(rs.values.exposure_ev);
+  });
+});
+
+describe("changing settings", () => {
+  it("sends the patch for the current photo and mirrors the resolved reply", async () => {
+    const { api, store } = await opened({ current: 3 });
+    const spy = vi.spyOn(api, "updateSettings");
+    await store.update({ exposure: { kind: "manual", ev: 1.25 } });
+    expect(spy).toHaveBeenCalledWith(4, { exposure: { kind: "manual", ev: 1.25 } });
+    const rs = settingsOf(store);
+    expect(rs.values.exposure_ev).toBe(1.25);
+    expect(rs.auto.exposure).toBe(false);
+  });
+
+  it("does nothing before the settings have arrived", async () => {
+    const { api, store } = await connected();
+    const spy = vi.spyOn(api, "updateSettings");
+    await store.update({ contrast: 4 });
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it("folds a drag's patches into one while the core is busy, and the last value always arrives", async () => {
+    const { api, store } = await opened();
+    const calls: SettingsPatch[] = [];
+    const real = api.updateSettings.bind(api);
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    vi.spyOn(api, "updateSettings").mockImplementation(async (id, patch) => {
+      calls.push(patch);
+      if (calls.length === 1) await gate;
+      return real(id, patch);
+    });
+    const first = store.update({ contrast: 10 }, false);
+    const second = store.update({ contrast: 20 }, false);
+    const third = store.update({ contrast: 30, brightness: 5 }, false);
+    const last = store.update({ contrast: 40 }, true);
+    release();
+    await Promise.all([first, second, third, last]);
+    // One in flight, then everything that came after it, as one patch.
+    expect(calls).toEqual([{ contrast: 10 }, { contrast: 40, brightness: 5 }]);
+    expect(settingsOf(store).values.contrast).toBe(40);
+    expect(settingsOf(store).values.brightness).toBe(5);
+  });
+
+  it("does not fold a new gesture into the patch that ends the last one", async () => {
+    const { api, store } = await opened();
+    const calls: SettingsPatch[] = [];
+    const real = api.updateSettings.bind(api);
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    vi.spyOn(api, "updateSettings").mockImplementation(async (id, patch) => {
+      calls.push(patch);
+      if (calls.length === 1) await gate;
+      return real(id, patch);
+    });
+    const a = store.update({ contrast: 10 }, true);
+    const b = store.update({ contrast: 20 }, true);
+    const c = store.update({ brightness: 7 }, false);
+    release();
+    await Promise.all([a, b, c]);
+    expect(calls).toEqual([{ contrast: 10 }, { contrast: 20 }, { brightness: 7 }]);
+  });
+
+  it("shows the error and asks the core again when a patch fails", async () => {
+    const { api, store } = await opened();
+    api.failNext("updateSettings", { scope: "render", message: "The photo couldn't be drawn. Try the change again." });
+    await store.update({ contrast: 33 });
+    expect(store.getState().error?.message).toBe("The photo couldn't be drawn. Try the change again.");
+    // The optimistic value was taken back by asking the core.
+    await vi.waitFor(() => expect(settingsOf(store).values.contrast).toBe(0));
+  });
+
+  it("keeps each photo's settings apart", async () => {
+    const { store } = await opened();
+    await store.update({ contrast: 9 });
+    await store.step(1);
+    await vi.waitFor(() => expect(settingsOf(store).photo_id).toBe(2));
+    expect(settingsOf(store).values.contrast).toBe(0);
+    await store.step(-1);
+    expect(settingsOf(store).values.contrast).toBe(9);
+  });
+});
+
+describe("undo and redo", () => {
+  it("takes back a change and puts it back, for the current photo", async () => {
+    const { api, store } = await opened();
+    await store.update({ contrast: 25 });
+    expect(store.getState().canUndo).toBe(true);
+    const spy = vi.spyOn(api, "updateSettings");
+    await store.undo();
+    expect(spy).toHaveBeenLastCalledWith(1, { contrast: 0 });
+    expect(settingsOf(store).values.contrast).toBe(0);
+    expect(store.getState().canRedo).toBe(true);
+    await store.redo();
+    expect(spy).toHaveBeenLastCalledWith(1, { contrast: 25 });
+    expect(settingsOf(store).values.contrast).toBe(25);
+    expect(store.getState().canRedo).toBe(false);
+  });
+
+  it("records a whole drag as one step", async () => {
+    const { store } = await opened();
+    await store.update({ highlights: -5 }, false);
+    await store.update({ highlights: -12 }, false);
+    await store.update({ highlights: -18 }, true);
+    await store.undo();
+    expect(settingsOf(store).values.highlights).toBe(0);
+    expect(store.getState().canUndo).toBe(false);
+  });
+
+  it("takes an Auto field back to Auto, not to the number it resolved to", async () => {
+    const { store } = await opened();
+    await store.update({ exposure: { kind: "manual", ev: 1 } });
+    await store.undo();
+    expect(settingsOf(store).settings.exposure).toEqual({ kind: "auto" });
+    expect(settingsOf(store).auto.exposure).toBe(true);
+  });
+
+  it("has a history for each photo", async () => {
+    const { store } = await opened();
+    await store.update({ contrast: 25 });
+    await store.step(1);
+    await vi.waitFor(() => expect(settingsOf(store).photo_id).toBe(2));
+    expect(store.getState().canUndo).toBe(false);
+    await store.undo();
+    await store.step(-1);
+    expect(settingsOf(store).values.contrast).toBe(25);
+    expect(store.getState().canUndo).toBe(true);
+  });
+
+  it("a new change ends the redo chain", async () => {
+    const { store } = await opened();
+    await store.update({ contrast: 5 });
+    await store.undo();
+    await store.update({ brightness: 6 });
+    expect(store.getState().canRedo).toBe(false);
+  });
+
+  it("does nothing when there is nothing to undo", async () => {
+    const { api, store } = await opened();
+    const spy = vi.spyOn(api, "updateSettings");
+    await store.undo();
+    await store.redo();
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it("keeps 100 steps", async () => {
+    const { store } = await opened();
+    // Values cycle between 2 and 90, so every change differs from the one before.
+    const value = (i: number): number => (i % 90) + 1;
+    for (let i = 1; i <= 105; i++) await store.update({ contrast: value(i) });
+    for (let i = 0; i < 120; i++) await store.undo();
+    // 105 changes, the oldest five forgotten: the oldest step left takes contrast back to what change 5 made it.
+    expect(settingsOf(store).values.contrast).toBe(value(5));
+  });
+
+  it("undoes Re-run", async () => {
+    const { store } = await opened();
+    await store.update({ exposure: { kind: "manual", ev: 2 }, noise_reduction: { kind: "manual", luminance: 80, color: 50, detail: 50 } });
+    await store.rerunAuto();
+    expect(settingsOf(store).auto.exposure).toBe(true);
+    expect(settingsOf(store).auto.noise_reduction).toBe(true);
+    await store.undo();
+    expect(settingsOf(store).values.exposure_ev).toBe(2);
+    expect(settingsOf(store).values.noise_reduction.luminance).toBe(80);
+  });
+
+  it("waits for a patch in flight before it undoes", async () => {
+    const { store } = await opened();
+    void store.update({ contrast: 14 }, true);
+    await store.undo();
+    expect(settingsOf(store).values.contrast).toBe(0);
+  });
+});
+
+describe("Re-run", () => {
+  it("calls rerun_auto for the current photo and mirrors the answer", async () => {
+    const { api, store } = await opened({ current: 2 });
+    await store.update({ exposure: { kind: "manual", ev: 2 } });
+    const spy = vi.spyOn(api, "rerunAuto");
+    await store.rerunAuto();
+    expect(spy).toHaveBeenCalledWith(3);
+    expect(settingsOf(store).auto.exposure).toBe(true);
+  });
+});
+
+describe("looks", () => {
+  it("picks a look for this photo only", async () => {
+    const { api, store } = await opened();
+    store.setApplyScope("this");
+    const update = vi.spyOn(api, "updateSettings");
+    const apply = vi.spyOn(api, "applyLook");
+    await store.chooseLook("arri:3000:teal-and-orange");
+    expect(update).toHaveBeenCalledWith(1, { look: "arri:3000:teal-and-orange", look_intensity: 100 });
+    expect(apply).not.toHaveBeenCalled();
+    expect(settingsOf(store).values.look).toBe("arri:3000:teal-and-orange");
+  });
+
+  it.each([["picked"], ["all"]] as const)("copies the look to the %s photos through apply_look", async (scope) => {
+    const { api, store } = await opened({ picked: [2, 3] });
+    store.setApplyScope(scope);
+    const apply = vi.spyOn(api, "applyLook");
+    await store.chooseLook("builtin:signature", 60);
+    expect(apply).toHaveBeenCalledWith(scope, "builtin:signature", 60);
+    const state = await api.sessionState();
+    expect(state.photos).toHaveLength(12);
+    // The other photos now carry it, and the store asks again when one is shown.
+    await store.step(1);
+    await vi.waitFor(() => expect(settingsOf(store).photo_id).toBe(2));
+    if (scope === "all") expect(settingsOf(store).values.look).toBe("builtin:signature");
+  });
+
+  it("does not copy a look to the other photos when the current photo could not take it", async () => {
+    const { api, store } = await opened();
+    store.setApplyScope("all");
+    const apply = vi.spyOn(api, "applyLook");
+    api.failNext("updateSettings", { scope: "render", message: "The photo couldn't be drawn. Try the change again." });
+    await store.chooseLook("arri:3000:teal-and-orange");
+    expect(store.getState().error).not.toBeNull();
+    expect(apply).not.toHaveBeenCalled();
+    // The same for the end of an Intensity drag.
+    store.dismissError();
+    api.failNext("updateSettings", { scope: "render", message: "The photo couldn't be drawn. Try the change again." });
+    await store.setLookIntensity(40, true);
+    expect(apply).not.toHaveBeenCalled();
+    // And a later change goes through.
+    await store.chooseLook("builtin:signature");
+    expect(apply).toHaveBeenCalledWith("all", "builtin:signature", 100);
+  });
+
+  it("refuses a look that is missing", async () => {
+    const { api, store } = await opened({ missingLooks: ["film-warm"] });
+    const spy = vi.spyOn(api, "updateSettings");
+    await store.chooseLook("arri:3000:film-warm");
+    expect(spy).not.toHaveBeenCalled();
+    expect(settingsOf(store).values.look).toBe("builtin:neutral");
+  });
+
+  it("changes the intensity while dragging and copies it when the drag ends", async () => {
+    const { api, store } = await opened();
+    store.setApplyScope("all");
+    const update = vi.spyOn(api, "updateSettings");
+    const apply = vi.spyOn(api, "applyLook");
+    await store.setLookIntensity(80, false);
+    await store.setLookIntensity(65, false);
+    expect(apply).not.toHaveBeenCalled();
+    await store.setLookIntensity(60, true);
+    expect(update).toHaveBeenLastCalledWith(1, { look_intensity: 60 });
+    expect(apply).toHaveBeenCalledWith("all", "builtin:neutral", 60);
+  });
+
+  it("makes a look the default and reloads the library", async () => {
+    const { store } = await opened();
+    await store.makeDefault("builtin:signature");
+    expect(store.getState().looks?.find((l) => l.is_default)?.id).toBe("builtin:signature");
+  });
+
+  it("makes look thumbnails once per photo, look and settings", async () => {
+    const { api, store } = await opened();
+    const spy = vi.spyOn(api, "lookThumbnail");
+    const a = await store.lookThumbnail(1, "builtin:signature", "k1");
+    const b = await store.lookThumbnail(1, "builtin:signature", "k1");
+    expect(a).toBe(b);
+    expect(spy).toHaveBeenCalledTimes(1);
+    await store.lookThumbnail(1, "builtin:neutral", "k1");
+    expect(spy).toHaveBeenCalledTimes(2);
+    await store.lookThumbnail(1, "builtin:signature", "k2");
+    expect(spy).toHaveBeenCalledTimes(3);
+  });
+
+  it("forgets a failed look thumbnail so it can be asked for again", async () => {
+    const { api, store } = await opened({ missingLooks: ["film-warm"] });
+    await expect(store.lookThumbnail(1, "arri:3000:film-warm", "k")).rejects.toMatchObject({ message: "File missing or changed. Import again." });
+    const spy = vi.spyOn(api, "lookThumbnail");
+    await expect(store.lookThumbnail(1, "arri:3000:film-warm", "k")).rejects.toBeDefined();
+    expect(spy).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("the viewport", () => {
+  it("flips Before, and takes it back when the core refuses", async () => {
+    const { api, store } = await opened();
+    const spy = vi.spyOn(api, "setBefore");
+    await store.toggleBefore();
+    expect(store.getState().before).toBe(true);
+    expect(spy).toHaveBeenCalledWith(true);
+    api.failNext("setBefore", { scope: "viewport", message: "The viewport isn't ready." });
+    await store.toggleBefore();
+    expect(store.getState().before).toBe(true);
+    expect(store.getState().error?.scope).toBe("viewport");
+  });
+
+  it("sets the zoom and mirrors a double click toggle", async () => {
+    const { api, store } = await opened();
+    await store.setZoom({ kind: "percent", value: 50 });
+    expect(api.viewport.mode).toEqual({ kind: "percent", value: 50 });
+    await store.setZoom({ kind: "fit" });
+    await store.viewportInput({ kind: "toggle_zoom", x: 10, y: 10 });
+    expect(store.getState().zoom).toEqual({ kind: "percent", value: 100 });
+    await store.viewportInput({ kind: "toggle_zoom", x: 10, y: 10 });
+    expect(store.getState().zoom).toEqual({ kind: "fit" });
+  });
+
+  it("reports the cell's rectangle to the core and samples a point of the cell", async () => {
+    const { api, store } = await opened();
+    store.setViewportRect({ x: 0, y: 75, width: 1000, height: 666, scale: 2 });
+    await vi.waitFor(() => expect(api.viewport.rect?.width).toBe(1000));
+    const spy = vi.spyOn(api, "samplePixel");
+    await store.samplePixelAt(0.5, 0.25);
+    expect(spy).toHaveBeenCalledWith(500, 166.5);
+  });
+
+  it("updates the status line from render_stats", async () => {
+    const { store } = await opened();
+    await store.update({ contrast: 3 });
+    await vi.waitFor(() => expect(store.getState().stats).toEqual({ ms: 42, path: "neural", space: "display_p3" }));
+  });
+
+  it("collapses requests for the histogram", async () => {
+    const { api, store } = await opened();
+    const spy = vi.spyOn(api, "histogram");
+    await Promise.all([store.requestHistogram(), store.requestHistogram(), store.requestHistogram()]);
+    expect(spy.mock.calls.length).toBeLessThanOrEqual(2);
+    expect(store.getState().histogram?.red.length).toBeGreaterThan(8);
+  });
+});
+
+describe("closing the session", () => {
+  it("returns to a clean Start and keeps the looks", async () => {
+    const { api, store } = await opened({ picked: [1] });
+    await store.update({ contrast: 4 });
+    await store.setZoom({ kind: "percent", value: 100 });
+    await store.toggleBefore();
+    await store.closeSession();
+    const s = store.getState();
+    expect([s.screen, s.session, s.zoom, s.before, s.canUndo]).toEqual(["start", null, { kind: "fit" }, false, false]);
+    expect(Object.keys(s.thumbnails)).toHaveLength(0);
+    expect(Object.keys(s.settings)).toHaveLength(0);
+    expect(s.looks).toHaveLength(9);
+    expect((await api.sessionState()).photos).toHaveLength(0);
+  });
+
+  it("can open again afterwards, with fresh history", async () => {
+    const { api, store } = await opened();
+    await store.update({ contrast: 4 });
+    await store.closeSession();
+    await store.openDialog("files");
+    api.flush();
+    await vi.waitFor(() => expect(store.currentSettings()).not.toBeNull());
+    expect(store.getState().canUndo).toBe(false);
+    expect(settingsOf(store).values.contrast).toBe(0);
+  });
+});

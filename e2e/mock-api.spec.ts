@@ -8,7 +8,7 @@ const MOCK = "/src/api.mock.ts";
 test.beforeEach(async ({ page }) => {
   // Fifty times faster than the mockups: 12 photos develop in about 80 ms.
   await page.goto("/?mockSpeed=50");
-  await expect(page.getByRole("heading", { level: 1, name: "Yellowmoon" })).toBeVisible();
+  await expect(page.locator(".ym-brand-title")).toHaveText("Yellowmoon");
 });
 
 test("develops twelve photos and sends thumbnails Chromium can decode", async ({ page }) => {

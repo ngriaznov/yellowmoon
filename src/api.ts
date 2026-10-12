@@ -19,12 +19,17 @@ import type {
   ApiEvents,
   AppError,
   ApplyScope,
+  AppInfo,
   CliLinkResult,
+  CliLinkStatus,
+  DisplayLut,
   ExportEstimate,
   ExportJob,
   ExportJobId,
+  HistogramData,
   LookId,
   Look,
+  LookInput,
   LooksImportResult,
   OpenKind,
   PhotoId,
@@ -34,9 +39,11 @@ import type {
   ResolvedSettings,
   SessionState,
   SettingsPatch,
+  SourceRecognition,
   ViewportInput,
   ViewportMode,
   ViewportRect,
+  WatchStatus,
 } from "./api/types";
 
 export { isTauri } from "./env";
@@ -54,6 +61,12 @@ export interface Api {
   openDialog(kind: OpenKind): Promise<SessionState | null>;
   /** `session_state`: photos, current index, picked set and per-photo summaries. */
   sessionState(): Promise<SessionState>;
+  /**
+   * `close_session`: forget the session (⌘W, "Start over"). Cancels development that is still
+   * running; running exports keep going. Addition to `docs/01`: the Start screen is shown "after
+   * closing a session" (`docs/11`), which needs a command.
+   */
+  closeSession(): Promise<void>;
   /** `set_current`. */
   setCurrent(photoId: PhotoId): Promise<void>;
   /** `set_picked`. */
@@ -69,6 +82,11 @@ export interface Api {
   applyLook(scope: ApplyScope, lookId: LookId, intensity: number): Promise<void>;
   /** `rerun_auto`: recompute the automatic estimates and reset exposure, white balance and noise to Auto. */
   rerunAuto(photoId: PhotoId): Promise<ResolvedSettings>;
+  /**
+   * `histogram`: the RGB histogram of the photo as it is rendered now (Light tab, Curve plot).
+   * Addition to `docs/01`; ask again after every `render_stats` event.
+   */
+  histogram(photoId: PhotoId): Promise<HistogramData>;
 
   // --- Native viewport -----------------------------------------------------
 
@@ -87,8 +105,33 @@ export interface Api {
 
   /** `looks_list`. */
   looksList(): Promise<Look[]>;
-  /** `looks_import`: import a zip, a folder or a `.cube` file. */
-  looksImport(path: string): Promise<LooksImportResult>;
+  /**
+   * `look_thumbnail`: the photo as it is developed now (its exposure, white balance and so on)
+   * through one look at 100 %, as PNG bytes of at most 240 px on the long edge, for the Look
+   * tab's tiles (`docs/08` §Look tab behaviour: rendered lazily, cached for the session).
+   * Addition to `docs/01`. Rejects with scope `looks` when the look's file is missing.
+   */
+  lookThumbnail(photoId: PhotoId, lookId: LookId): Promise<number[]>;
+  /**
+   * `looks_import`: import a zip, a folder or a `.cube` file. `input` answers the generic question for
+   * `.cube` files that match no ARRI package (`docs/08` §Any other .cube); leave it out for a recognised
+   * package. Progress arrives as `looks_import_progress` events. Same importer as `yellowmoon looks import`.
+   */
+  looksImport(path: string, input?: LookInput): Promise<LooksImportResult>;
+  /**
+   * `looks_recognise`: what a zip, a folder or a `.cube` file is, before anything is copied
+   * (`docs/08` §Recognition rules). Never rejects for a bad file: it answers with `unusable` or `missing`.
+   * Addition to `docs/01`.
+   */
+  looksRecognise(path: string): Promise<SourceRecognition>;
+  /** `looks_display_luts`: the display LUTs imported so far (Preferences › Display rendering, the wizard's Finish step). Addition. */
+  looksDisplayLuts(): Promise<DisplayLut[]>;
+  /**
+   * `looks_watch_downloads`: start or stop the Downloads watcher (FSEvents, `docs/08` §Wizard step 2). Asks
+   * macOS for access the first time; `problem` says so when it is refused. Found zips arrive as `download_found`.
+   * Addition.
+   */
+  looksWatchDownloads(enabled: boolean): Promise<WatchStatus>;
   /** `looks_set_default`. */
   looksSetDefault(id: LookId): Promise<void>;
   /** `looks_remove`. */
@@ -105,7 +148,20 @@ export interface Api {
   /** `cli_preview`: the equivalent `yellowmoon render …` command. */
   cliPreview(job: ExportJob): Promise<string>;
 
-  // --- Preferences and CLI -------------------------------------------------
+  // --- The system: dialogs, Finder, the browser ------------------------------
+
+  /** `choose_folder`: the system's folder chooser, starting at `start`. Resolves `null` when cancelled. Addition (Save to › Choose…). */
+  chooseFolder(start: string | null): Promise<string | null>;
+  /** `choose_look_files`: the system's file chooser for zips and `.cube` files, several allowed. Resolves `null` when cancelled. Addition (wizard › Choose file…). */
+  chooseLookFiles(): Promise<string[] | null>;
+  /** `open_url`: open a page in the system browser (ARRI's page, GitHub). Addition. */
+  openUrl(url: string): Promise<void>;
+  /** `reveal_in_finder`: show a file or folder in Finder (Export › Show in Finder). Addition. */
+  revealInFinder(path: string): Promise<void>;
+  /** `trash_path`: move a file to the Trash, recoverable (the wizard's "Move to Trash"; the `trash` crate). Addition. */
+  trashPath(path: string): Promise<void>;
+
+  // --- Preferences, About and CLI --------------------------------------------
 
   /** `preferences_get`. */
   preferencesGet(): Promise<Preferences>;
@@ -113,6 +169,10 @@ export interface Api {
   preferencesSet(patch: PreferencesPatch): Promise<Preferences>;
   /** `install_cli_link`: the "Install Command-Line Tool…" menu item. */
   installCliLink(): Promise<CliLinkResult>;
+  /** `cli_link_status`: whether the link exists and where (Preferences › Command-line tool). Addition. */
+  cliLinkStatus(): Promise<CliLinkStatus>;
+  /** `app_info`: version numbers for About. Addition. */
+  appInfo(): Promise<AppInfo>;
 
   // --- Events --------------------------------------------------------------
 
@@ -145,6 +205,7 @@ export const tauriApi: Api = {
   openPaths: (paths) => invoke("open_paths", { paths }),
   openDialog: (kind) => invoke("open_dialog", { kind }),
   sessionState: () => invoke("session_state"),
+  closeSession: () => invoke("close_session"),
   setCurrent: (photoId) => invoke("set_current", { photoId }),
   setPicked: (photoId, picked) => invoke("set_picked", { photoId, picked }),
 
@@ -152,6 +213,7 @@ export const tauriApi: Api = {
   updateSettings: (photoId, patch) => invoke("update_settings", { photoId, patch }),
   applyLook: (scope, lookId, intensity) => invoke("apply_look", { scope, lookId, intensity }),
   rerunAuto: (photoId) => invoke("rerun_auto", { photoId }),
+  histogram: (photoId) => invoke("histogram", { photoId }),
 
   viewportSetRect: (rect) => invoke("viewport_set_rect", { rect }),
   viewportInput: (event) => invoke("viewport_input", { event }),
@@ -160,7 +222,11 @@ export const tauriApi: Api = {
   samplePixel: (x, y) => invoke("sample_pixel", { x, y }),
 
   looksList: () => invoke("looks_list"),
-  looksImport: (path) => invoke("looks_import", { path }),
+  lookThumbnail: (photoId, lookId) => invoke("look_thumbnail", { photoId, lookId }),
+  looksImport: (path, input) => invoke("looks_import", { path, input: input ?? null }),
+  looksRecognise: (path) => invoke("looks_recognise", { path }),
+  looksDisplayLuts: () => invoke("looks_display_luts"),
+  looksWatchDownloads: (enabled) => invoke("looks_watch_downloads", { enabled }),
   looksSetDefault: (id) => invoke("looks_set_default", { id }),
   looksRemove: (id) => invoke("looks_remove", { id }),
 
@@ -169,9 +235,17 @@ export const tauriApi: Api = {
   exportCancel: (jobId) => invoke("export_cancel", { jobId }),
   cliPreview: (job) => invoke("cli_preview", { job }),
 
+  chooseFolder: (start) => invoke("choose_folder", { start }),
+  chooseLookFiles: () => invoke("choose_look_files"),
+  openUrl: (url) => invoke("open_url", { url }),
+  revealInFinder: (path) => invoke("reveal_in_finder", { path }),
+  trashPath: (path) => invoke("trash_path", { path }),
+
   preferencesGet: () => invoke("preferences_get"),
   preferencesSet: (patch) => invoke("preferences_set", { patch }),
   installCliLink: () => invoke("install_cli_link"),
+  cliLinkStatus: () => invoke("cli_link_status"),
+  appInfo: () => invoke("app_info"),
 
   on(event, handler) {
     // `listen` is asynchronous but `on` hands back its unsubscribe at once, so a call to

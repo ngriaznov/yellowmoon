@@ -64,6 +64,17 @@ describe("session", () => {
     });
   });
 
+  it("opens a folder of any length: the fixtures repeat under new names", async () => {
+    api.reset({ photoCount: 30 });
+    const state = await api.openPaths(ARW);
+    expect(state.photos).toHaveLength(30);
+    expect(new Set(state.photos.map((p) => p.file_name)).size).toBe(30);
+    expect(state.photos[11]!.file_name).toBe("DSC04212.ARW");
+    expect(state.photos[12]!.file_name).toBe("DSC04213.ARW");
+    expect(state.photos[29]!.file_name).toBe("DSC04230.ARW");
+    expect(state.photos.map((p) => p.id)).toEqual(Array.from({ length: 30 }, (_, i) => i + 1));
+  });
+
   it("opens the twelve Lisbon photos from the mockups", async () => {
     const state = await api.openPaths(ARW);
     expect(state.folder_name).toBe("Lisbon");
@@ -333,13 +344,19 @@ describe("looks", () => {
     expect(await api.looksList()).toHaveLength(2);
     const events: unknown[] = [];
     api.on("looks_changed", (e) => events.push(e));
-    const first = await api.looksImport("~/Downloads/looks.zip");
-    expect(first.added).toHaveLength(7);
-    expect(await api.looksList()).toHaveLength(9);
+    const zip = "~/Downloads/ARRI_LookLibrary_LogC4.zip";
+    const importing = api.looksImport(zip);
+    await vi.advanceTimersByTimeAsync(3500);
+    const first = await importing;
+    expect(first.added).toHaveLength(87);
+    expect(first.unchanged).toBe(0);
+    expect(await api.looksList()).toHaveLength(89);
     await vi.advanceTimersByTimeAsync(1);
     expect(events).toEqual([null]);
-    expect((await api.looksImport("~/Downloads/looks.zip")).added).toEqual([]);
-    expect(await api.looksList()).toHaveLength(9);
+    const again = api.looksImport(zip);
+    await vi.advanceTimersByTimeAsync(3500);
+    expect(await again).toMatchObject({ added: [], unchanged: 87 });
+    expect(await api.looksList()).toHaveLength(89);
   });
 
   it("sets the default look, which new sessions then use", async () => {
@@ -676,5 +693,175 @@ describe("pure helpers", () => {
     const r = resolveSettings(9, defaultSettings(), MOCK_ESTIMATES);
     expect(r.values.exposure_ev).toBe(MOCK_ESTIMATES.exposure_ev);
     expect(r.photo_id).toBe(9);
+  });
+});
+
+describe("what the screens need beyond docs/01", () => {
+  const open = async (api: ReturnType<typeof createMockApi>) => {
+    await api.openDialog("files");
+    api.flush();
+  };
+
+  it("closes the session: development stops, the photos go, preferences and looks stay", async () => {
+    const api = createMockApi({ speed: 1 });
+    await api.preferencesSet({ default_look: "builtin:signature" });
+    await api.openDialog("files");
+    await api.closeSession();
+    expect((await api.sessionState()).photos).toEqual([]);
+    expect((await api.preferencesGet()).default_look).toBe("builtin:signature");
+    expect(await api.looksList()).toHaveLength(9);
+    // A new session starts from scratch.
+    await api.openDialog("folder");
+    expect((await api.sessionState()).photos).toHaveLength(12);
+    api.reset();
+  });
+
+  it("makes look thumbnails: a PNG of 240 × 160 through the look, different for each look", async () => {
+    const api = createMockApi({ speed: Number.POSITIVE_INFINITY });
+    await open(api);
+    const neutral = await api.lookThumbnail(4, "builtin:neutral");
+    const teal = await api.lookThumbnail(4, "arri:3000:teal-and-orange");
+    expect(neutral.slice(0, 8)).toEqual([137, 80, 78, 71, 13, 10, 26, 10]);
+    expect(teal).not.toEqual(neutral);
+    expect(neutral.slice(16, 24)).toEqual([0, 0, 0, 240, 0, 0, 0, 160]); // IHDR: width, height
+  });
+
+  it("refuses a look thumbnail for a look that is missing or unknown", async () => {
+    const api = createMockApi({ speed: Number.POSITIVE_INFINITY, missingLooks: ["film-warm"] });
+    await open(api);
+    await expect(api.lookThumbnail(4, "arri:3000:film-warm")).rejects.toEqual({ scope: "looks", message: "File missing or changed. Import again." });
+    await expect(api.lookThumbnail(4, "arri:3000:nope")).rejects.toMatchObject({ scope: "looks" });
+  });
+
+  it("lists a missing look with missing: true", async () => {
+    const api = createMockApi({ missingLooks: ["film-warm", "night-blue"] });
+    const looks = await api.looksList();
+    expect(looks.filter((l) => l.missing).map((l) => l.name)).toEqual(["Film warm", "Night blue"]);
+    expect(await api.looksList()).toHaveLength(9);
+  });
+
+  it("builds a histogram that follows exposure", async () => {
+    const api = createMockApi({ speed: Number.POSITIVE_INFINITY });
+    await open(api);
+    const flat = await api.histogram(4);
+    expect(flat.red).toHaveLength(64);
+    expect(Math.max(...flat.red, ...flat.green, ...flat.blue)).toBe(1);
+    await api.updateSettings(4, { exposure: { kind: "manual", ev: 2 } });
+    const bright = await api.histogram(4);
+    expect(bright.green).not.toEqual(flat.green);
+    expect(await api.histogram(4)).toEqual(bright);
+  });
+
+  it("resolves a light preset to a kelvin while white balance is Auto, and a manual kelvin wins", async () => {
+    const api = createMockApi({ speed: Number.POSITIVE_INFINITY });
+    await open(api);
+    let rs = await api.updateSettings(4, { light_source: "tungsten" });
+    expect([rs.values.kelvin, rs.auto.white_balance, rs.auto.light_source]).toEqual([3200, true, false]);
+    rs = await api.updateSettings(4, { white_balance: { kind: "manual", kelvin: 6000, tint: 2 } });
+    expect([rs.values.kelvin, rs.values.tint]).toEqual([6000, 2]);
+    rs = await api.updateSettings(4, { white_balance: { kind: "auto" }, light_source: "auto" });
+    expect(rs.values.kelvin).toBe(5450);
+  });
+
+  it("resolves a picked white to a manual white balance from the colour under the point", async () => {
+    const api = createMockApi({ speed: Number.POSITIVE_INFINITY });
+    await open(api);
+    const sky = await api.updateSettings(4, { white_pick: [0.5, 0.05] });
+    expect(sky.settings.white_pick).toEqual([0.5, 0.05]);
+    expect(sky.settings.white_balance.kind).toBe("manual");
+    // The sky of DSC04204 is blue: calling it neutral means the light is cooler (a higher kelvin) than Automatic assumed.
+    expect(sky.values.kelvin).toBeGreaterThan(5450);
+    // The ground of DSC04201 is dark and bluish too; a warm scene (DSC04202's sky) gives a lower kelvin.
+    const warm = await api.updateSettings(2, { white_pick: [0.5, 0.05] });
+    expect(warm.values.kelvin).toBeLessThan(5450);
+    // Clearing the pick leaves the white balance as it was.
+    const cleared = await api.updateSettings(4, { white_pick: null });
+    expect(cleared.settings.white_pick).toBeNull();
+    expect(cleared.settings.white_balance.kind).toBe("manual");
+  });
+
+  it("re-sends a photo's thumbnail after its look changed, once for a burst of changes", async () => {
+    const api = createMockApi({ speed: Number.POSITIVE_INFINITY });
+    await open(api);
+    const seen: number[] = [];
+    api.on("thumbnail_ready", (e) => seen.push(e.id));
+    await api.updateSettings(4, { look: "arri:3000:teal-and-orange" });
+    await api.updateSettings(4, { look_intensity: 50 });
+    await api.updateSettings(4, { contrast: 3 });
+    await vi.advanceTimersByTimeAsync(200);
+    expect(seen).toEqual([4]);
+  });
+
+  it("opens photos with the initial settings and summary overrides given", async () => {
+    const api = createMockApi({
+      speed: Number.POSITIVE_INFINITY,
+      initialSettings: { DSC04204: { highlights: -18, saturation: 6 } },
+      photoOverrides: { DSC04204: { reduced: true, camera: { match_kind: { kind: "sensor_family", via: "Sony A7 IV" } } } },
+    });
+    await open(api);
+    const rs = await api.getSettings(4);
+    expect([rs.values.highlights, rs.values.saturation]).toEqual([-18, 6]);
+    expect((await api.getSettings(5)).values.highlights).toBe(0);
+    const photo = (await api.sessionState()).photos[3];
+    expect(photo?.reduced).toBe(true);
+    expect(photo?.camera.match_kind).toEqual({ kind: "sensor_family", via: "Sony A7 IV" });
+    expect(photo?.camera.body).toBe("Sony A1");
+  });
+
+  it("holds development at a fraction of the photos and resumes on flush", async () => {
+    const api = createMockApi({ speed: Number.POSITIVE_INFINITY, holdAt: 5.4 });
+    await api.openDialog("files");
+    await vi.advanceTimersByTimeAsync(200);
+    const kinds = (await api.sessionState()).photos.map((p) => p.status.kind);
+    expect(kinds.filter((k) => k === "ready")).toHaveLength(5);
+    expect(kinds.filter((k) => k === "developing")).toHaveLength(1);
+    expect(kinds.filter((k) => k === "waiting")).toHaveLength(6);
+    api.flush();
+    expect((await api.sessionState()).photos.every((p) => p.status.kind === "ready")).toBe(true);
+  });
+
+  it("reports render_stats when the photo cell is placed", async () => {
+    const api = createMockApi({ speed: Number.POSITIVE_INFINITY });
+    const stats: unknown[] = [];
+    api.on("render_stats", (s) => stats.push(s));
+    await api.viewportSetRect({ x: 0, y: 75, width: 1000, height: 666, scale: 2 });
+    await Promise.resolve();
+    expect(stats).toEqual([{ ms: 42, path: "neural", space: "display_p3" }]);
+  });
+
+  it("clamps a crop, an orientation and a colour balance point", async () => {
+    const api = createMockApi({ speed: Number.POSITIVE_INFINITY });
+    await open(api);
+    const rs = await api.updateSettings(4, {
+      crop: { rect: { x: -1, y: 0.5, width: 5, height: 5 }, angle_deg: 90, aspect: "free" },
+      orientation: 450 as never,
+      color_balance: { shadows: [3, 4], midtones: [0, 0], highlights: [0, 0] },
+    });
+    expect(rs.settings.crop?.angle_deg).toBe(45);
+    expect(rs.settings.crop?.rect).toEqual({ x: 0, y: 0.5, width: 1, height: 0.5 });
+    expect(rs.settings.orientation).toBe(90);
+    expect(Math.hypot(...(rs.settings.color_balance.shadows as [number, number]))).toBeCloseTo(1, 6);
+  });
+});
+
+describe("optionsFromLocation", () => {
+  it("reads every option the end-to-end tests set from the URL", async () => {
+    const { optionsFromLocation } = await import("./api.mock");
+    expect(
+      optionsFromLocation("?mockSpeed=Infinity&mockSkipped=DSC04207:Bad file.,DSC04209&mockPicked=2,3,4&mockCurrent=3&mockLooks=0&mockMissing=film-warm&mockHold=5.4"),
+    ).toEqual({
+      speed: Number.POSITIVE_INFINITY,
+      skipped: { DSC04207: "Bad file.", DSC04209: "This file is from a camera mode we can't read yet." },
+      picked: [2, 3, 4],
+      current: 3,
+      looksImported: false,
+      missingLooks: ["film-warm"],
+      holdAt: 5.4,
+    });
+    expect(optionsFromLocation("?mockPhotos=500")).toEqual({ photoCount: 500 });
+    expect(optionsFromLocation("?mockPhotos=0")).toEqual({});
+    expect(optionsFromLocation("")).toEqual({});
+    expect(optionsFromLocation("?mockSpeed=-3&mockHold=x")).toEqual({});
+    expect(optionsFromLocation(undefined as never)).toEqual({});
   });
 });

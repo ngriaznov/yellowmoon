@@ -1,15 +1,6 @@
 /* App shell and the placeholder screens. Component styles arrive with the components (M3). */
 
-/* The Yellowmoon mark: a yellow circle with a 2 px ink border (design/mockups/start.html). */
-.ym-moon {
-  display: inline-block;
-  flex-shrink: 0;
-  width: var(--moon-size);
-  height: var(--moon-size);
-  border-radius: 50%;
-  background: var(--brand);
-  border: var(--rule-control) solid var(--ink);
-}
+/* The Yellowmoon mark (.ym-moon) lives with the components in components.css. */
 
 /* A full-window screen: header row, then the content. */
 .ym-screen {
@@ -44,11 +35,19 @@
 .ym-brand-title {
   display: flex;
   align-items: center;
+  min-width: 0;
   gap: 8px;
   font-size: var(--fs-h2);
   font-weight: var(--fw-heavy);
   letter-spacing: -0.02em;
   line-height: 1;
+}
+
+.ym-brand-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .ym-brand-sub {
@@ -70,31 +69,6 @@
   justify-content: center;
   min-height: 0;
   padding: 40px;
-}
-
-/* The honest placeholder: a dashed box, like the drop zone it stands in for. */
-.ym-placeholder {
-  max-width: 520px;
-  padding: 32px;
-  border: var(--rule) dashed var(--ink);
-  text-align: center;
-}
-
-.ym-placeholder-title {
-  margin-bottom: 12px;
-  font-size: var(--fs-h2);
-  font-weight: var(--fw-heavy);
-  letter-spacing: -0.02em;
-  line-height: 1.1;
-}
-
-.ym-placeholder-text {
-  font-size: var(--fs-body-l);
-  line-height: 1.55;
-}
-
-.ym-placeholder-actions {
-  margin-top: 20px;
 }
 
 .ym-button {
