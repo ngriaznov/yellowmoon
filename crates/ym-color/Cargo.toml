@@ -16,6 +16,11 @@ serde_json.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
+# SHA-256 of data files in the spectral tests (reference file freshness, curve provenance).
+sha2.workspace = true
+# JPEG decoder for the auto-exposure gate's embedded-JPEG comparison tests (licence MIT OR Apache-2.0 OR Zlib;
+# already in the build through ym-export's tests). Tests only.
+zune-jpeg = "0.5"
 
 # Plain timing harness (no criterion): `cargo bench -p ym-color --bench color_cpu`.
 [[bench]]

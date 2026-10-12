@@ -1,0 +1,703 @@
+//! M1-04: the shipped data files. Every `profile.json`, the registry and the target validate against their
+//! JSON schemas (`crates/ym-profiles/schema/`) and load into the Rust types; the registry round-trips
+//! (every model ID maps to exactly one profile, every referenced profile exists and loads, the default is
+//! present); the registry equals the table in `docs/03`.
+
+mod common;
+
+use std::path::Path;
+
+use common::{data_root, docs_table, read_json, repo_root, store};
+use jsonschema::Validator;
+use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
+use ym_profiles::profile::{Profile, ProfileError, Target};
+use ym_profiles::registry::{BodyMatch, ProfileStore, Registry, RegistryError};
+
+fn validator(schema_file: &str) -> Validator {
+    let path = repo_root()
+        .join("crates/ym-profiles/schema")
+        .join(schema_file);
+    let schema = read_json(&path);
+    jsonschema::validator_for(&schema)
+        .unwrap_or_else(|e| panic!("{schema_file} is not a valid schema: {e}"))
+}
+
+fn errors(v: &Validator, instance: &Value) -> Vec<String> {
+    v.iter_errors(instance)
+        .take(8)
+        .map(|e| format!("{}: {e}", e.instance_path()))
+        .collect()
+}
+
+fn assert_valid(v: &Validator, instance: &Value, label: &str) {
+    let errs = errors(v, instance);
+    assert!(
+        errs.is_empty(),
+        "{label} does not validate:\n{}",
+        errs.join("\n")
+    );
+}
+
+fn sha256_file(path: &Path) -> String {
+    let bytes = std::fs::read(path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    Sha256::digest(bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+fn profile_files() -> Vec<std::path::PathBuf> {
+    let mut files: Vec<_> = std::fs::read_dir(data_root().join("cameras/profiles"))
+        .unwrap()
+        .map(|e| e.unwrap().path().join("profile.json"))
+        .collect();
+    files.sort();
+    files
+}
+
+#[test]
+fn every_shipped_profile_validates_against_the_schema() {
+    let v = validator("profile.schema.json");
+    let files = profile_files();
+    assert_eq!(files.len(), 11);
+    for file in files {
+        let doc = read_json(&file);
+        assert_valid(&v, &doc, &file.display().to_string());
+    }
+}
+
+#[test]
+fn the_registry_and_the_target_validate_against_their_schemas() {
+    assert_valid(
+        &validator("registry.schema.json"),
+        &read_json(&data_root().join("cameras/registry.json")),
+        "registry.json",
+    );
+    assert_valid(
+        &validator("target.schema.json"),
+        &read_json(&data_root().join("alexa/target.json")),
+        "target.json",
+    );
+}
+
+#[test]
+fn the_schemas_reject_broken_documents() {
+    // Proves the validator is live: each mutation of a shipped file must be refused.
+    let pv = validator("profile.schema.json");
+    let profile = read_json(&data_root().join("cameras/profiles/sony-ilce-7rm4/profile.json"));
+    type Mutation = Box<dyn Fn(&mut Value)>;
+    let mutations: Vec<(&str, Mutation)> = vec![
+        (
+            "missing locus",
+            Box::new(|d| {
+                d.as_object_mut().unwrap().remove("locus");
+            }),
+        ),
+        (
+            "unknown top-level field",
+            Box::new(|d| {
+                d["extra"] = json!(1);
+            }),
+        ),
+        (
+            "wrong method",
+            Box::new(|d| {
+                d["sensor_map"]["method"] = json!("mlp");
+            }),
+        ),
+        (
+            "green not 1 in w_A",
+            Box::new(|d| {
+                d["alexa_white"]["led"][0]["w"][1] = json!(0.99);
+            }),
+        ),
+        (
+            "short matrix",
+            Box::new(|d| {
+                d["sensor_map"]["classes"]["led"][0]["m"] = json!([[1, 0, 0], [0, 1, 0]]);
+            }),
+        ),
+        (
+            "one-entry class",
+            Box::new(|d| {
+                let c = d["sensor_map"]["classes"]["tungsten"]
+                    .as_array_mut()
+                    .unwrap();
+                c.truncate(1);
+            }),
+        ),
+        (
+            "bad version",
+            Box::new(|d| {
+                d["version"] = json!("1.0");
+            }),
+        ),
+        (
+            "bad id",
+            Box::new(|d| {
+                d["id"] = json!("Sony ILCE");
+            }),
+        ),
+        (
+            "sign convention",
+            Box::new(|d| {
+                d["locus"]["duv_sign"] = json!("positive toward green");
+            }),
+        ),
+        (
+            "negative Duv scale",
+            Box::new(|d| {
+                d["locus"]["duv_scale"]["daylight"]["values"][0] = json!(-0.1);
+            }),
+        ),
+        (
+            "curves outside sony/",
+            Box::new(|d| {
+                d["spectral_curves"] = json!("../etc/passwd");
+            }),
+        ),
+        (
+            "decode quirks not strings",
+            Box::new(|d| {
+                d["decode"]["quirks"] = json!([1]);
+            }),
+        ),
+    ];
+    for (name, mutate) in mutations {
+        let mut doc = profile.clone();
+        mutate(&mut doc);
+        assert!(!pv.is_valid(&doc), "the profile schema accepted: {name}");
+    }
+    let rv = validator("registry.schema.json");
+    let registry = read_json(&data_root().join("cameras/registry.json"));
+    let mut doc = registry.clone();
+    doc["bodies"][0]["match"] = json!("similar");
+    assert!(!rv.is_valid(&doc));
+    let mut doc = registry.clone();
+    doc["bodies"][1]["via"] = Value::Null; // a sensor_family body needs `via`
+    assert!(!rv.is_valid(&doc));
+    let mut doc = registry;
+    doc["bodies"][0]["via"] = json!("Sony A7 III"); // an exact body must have null `via`
+    assert!(!rv.is_valid(&doc));
+    let tv = validator("target.schema.json");
+    let mut doc = read_json(&data_root().join("alexa/target.json"));
+    doc["kind"] = json!("guess");
+    assert!(!tv.is_valid(&doc));
+}
+
+#[test]
+fn the_rust_types_write_back_documents_the_schemas_accept() {
+    // Typed round trip: parse -> serialise -> validate. Catches a field the types drop or rename.
+    let pv = validator("profile.schema.json");
+    for file in profile_files() {
+        let profile = Profile::from_path(&file).unwrap_or_else(|e| panic!("{e}"));
+        let value = serde_json::to_value(&profile).unwrap();
+        assert_valid(&pv, &value, &format!("{} (re-serialised)", profile.id));
+        // And the typed form of the written document is the same profile (floats may differ by an ulp).
+        let again: Profile = serde_json::from_value(value).unwrap();
+        assert_eq!(again.id, profile.id);
+        assert_eq!(again.version, profile.version);
+        assert_eq!(
+            again.sensor_map.classes.led.len(),
+            profile.sensor_map.classes.led.len()
+        );
+    }
+    let registry = Registry::parse(
+        &std::fs::read_to_string(data_root().join("cameras/registry.json")).unwrap(),
+    )
+    .unwrap();
+    assert_valid(
+        &validator("registry.schema.json"),
+        &serde_json::to_value(&registry).unwrap(),
+        "registry (re-serialised)",
+    );
+    let target = Target::from_path(data_root().join("alexa/target.json")).unwrap();
+    assert_valid(
+        &validator("target.schema.json"),
+        &serde_json::to_value(&target).unwrap(),
+        "target (re-serialised)",
+    );
+}
+
+#[test]
+fn the_store_loads_everything_once() {
+    let started = std::time::Instant::now();
+    let s = ProfileStore::load(data_root()).unwrap();
+    eprintln!(
+        "ProfileStore::load: {} profiles in {:.1} ms",
+        s.profiles().count(),
+        started.elapsed().as_secs_f64() * 1e3
+    );
+    assert_eq!(s.profiles().count(), 11);
+    assert_eq!(s.own_profile_count(), 11);
+    assert_eq!(s.default_profile().id.as_str(), "sony-ilce-7rm4");
+    assert_eq!(s.default_profile().display_name, "A7R IV");
+    assert_eq!(s.registry().default_profile, s.default_profile().id);
+    assert!(s.target().is_estimate());
+    assert_eq!(s.target().id, "alexa-alev3-estimate");
+    assert_eq!(s.data_root(), data_root());
+    // Ordered by id; lookups by id and by name agree.
+    let ids: Vec<&str> = s.profile_ids().map(|i| i.as_str()).collect();
+    let mut sorted = ids.clone();
+    sorted.sort_unstable();
+    assert_eq!(ids, sorted);
+    for p in s.profiles() {
+        assert!(std::sync::Arc::ptr_eq(
+            s.profile(&p.id).unwrap(),
+            s.profile_by_name(p.id.as_str()).unwrap()
+        ));
+    }
+    assert!(s.profile_by_name("sony-ilce-1").is_none());
+}
+
+#[test]
+fn registry_round_trip() {
+    let s = store();
+    let reg = s.registry();
+    // Every model ID maps to exactly one profile, and model IDs are unique.
+    let mut ids: Vec<u16> = reg.bodies.iter().map(|b| b.model_id).collect();
+    ids.sort_unstable();
+    let n = ids.len();
+    ids.dedup();
+    assert_eq!(ids.len(), n, "duplicate model IDs");
+    assert_eq!(n, 28);
+    for b in &reg.bodies {
+        let hits = reg
+            .bodies
+            .iter()
+            .filter(|o| o.model_id == b.model_id)
+            .count();
+        assert_eq!(hits, 1);
+        // The referenced profile exists, is listed, and loads with the id the registry gives it.
+        let p = s
+            .profile(&b.profile)
+            .unwrap_or_else(|| panic!("{} uses missing profile {}", b.model, b.profile));
+        assert_eq!(p.id, b.profile);
+        assert!(reg.profile_entry(&b.profile).is_some());
+        // The model string resolves back to the same ID, and so does the ID to the same body.
+        assert_eq!(reg.model_strings[&b.model], b.model_id);
+        assert_eq!(reg.body_by_model_id(b.model_id).unwrap().model, b.model);
+        assert_eq!(
+            reg.body_by_model_string(&b.model).unwrap().model_id,
+            b.model_id
+        );
+    }
+    // Every listed profile has a file whose folder is its id, exactly one exact body, and is used.
+    for entry in &reg.profiles {
+        assert!(
+            data_root().join("cameras").join(&entry.path).is_file(),
+            "{}",
+            entry.path
+        );
+        assert_eq!(
+            Path::new(&entry.path)
+                .parent()
+                .unwrap()
+                .file_name()
+                .unwrap(),
+            entry.id.as_str()
+        );
+        let exact = reg
+            .bodies
+            .iter()
+            .filter(|b| b.profile == entry.id && b.match_kind == BodyMatch::Exact)
+            .count();
+        assert_eq!(exact, 1, "{}", entry.id);
+    }
+    // Defaults are present: the default profile is listed and loaded, and every `default` body uses it.
+    assert!(s.profile(&reg.default_profile).is_some());
+    for b in reg
+        .bodies
+        .iter()
+        .filter(|b| b.match_kind == BodyMatch::Default)
+    {
+        assert_eq!(b.profile, reg.default_profile, "{}", b.model);
+    }
+    // The five default bodies of docs/03.
+    let defaults: Vec<u16> = reg
+        .bodies
+        .iter()
+        .filter(|b| b.match_kind == BodyMatch::Default)
+        .map(|b| b.model_id)
+        .collect();
+    assert_eq!(defaults, vec![384, 400, 392, 407, 410]);
+}
+
+#[test]
+fn the_registry_equals_the_table_in_docs_03() {
+    let table = docs_table();
+    assert!(
+        table.len() >= 25,
+        "parsed only {} rows of docs/03",
+        table.len()
+    );
+    let reg = store().registry();
+    let ours: std::collections::BTreeMap<u16, (String, String)> = reg
+        .bodies
+        .iter()
+        .map(|b| {
+            let kind = match b.match_kind {
+                BodyMatch::Exact => "exact",
+                BodyMatch::SensorFamily => "sensor_family",
+                BodyMatch::Default => "default",
+            };
+            (b.model_id, (b.profile.to_string(), kind.to_string()))
+        })
+        .collect();
+    assert_eq!(ours, table);
+}
+
+#[test]
+fn files_named_by_the_profiles_exist_and_match_their_provenance() {
+    let s = store();
+    let root = data_root();
+    for p in s.profiles() {
+        let curves = p.curves_path(&root);
+        assert_eq!(
+            sha256_file(&curves),
+            p.provenance.curves_source.sha256,
+            "{}: curves hash",
+            p.id
+        );
+        assert_eq!(
+            sha256_file(&root.join(&p.provenance.target.file)),
+            p.provenance.target.sha256,
+            "{}: target hash",
+            p.id
+        );
+        assert_eq!(p.sensor_map.target, "alexa/target.json");
+        assert!(root.join(&p.sensor_map.target).is_file());
+        // The curve file is the body's own measurement: its model matches the profile.
+        let curves = p.load_curves(&root).unwrap();
+        assert_eq!(curves.len(), 81);
+        let exact = s.registry().exact_body(&p.id).unwrap();
+        assert_eq!(curves.model(), exact.model, "{}", p.id);
+        assert_eq!(p.version, semver::Version::new(1, 0, 0));
+    }
+    // The target's files exist and match the hashes it records.
+    let t = s.target();
+    assert_eq!(t.version, semver::Version::new(1, 0, 0));
+    for (name, digest) in &t.provenance.sha256 {
+        assert_eq!(
+            &sha256_file(&root.join("alexa").join(name)),
+            digest,
+            "{name}"
+        );
+    }
+    assert!(t.curves_path(&root).is_file());
+    assert!(root.join(&t.ensemble_csv).is_file() && root.join(&t.variants_csv).is_file());
+    assert!(!t.provenance.caveats.is_empty());
+}
+
+#[test]
+fn every_same_sensor_pairing_has_a_recorded_check() {
+    // docs/03: "Record the check in the profile's `provenance`."
+    let s = store();
+    let mut pairings = 0;
+    for b in s
+        .registry()
+        .bodies
+        .iter()
+        .filter(|b| b.match_kind == BodyMatch::SensorFamily)
+    {
+        let p = s.profile(&b.profile).unwrap();
+        let needle = format!("{} ({})", b.model, b.model_id);
+        let check = p
+            .provenance
+            .checks
+            .iter()
+            .find(|c| c.pairing.starts_with(&needle))
+            .unwrap_or_else(|| panic!("{}: no provenance check for {needle}", p.id));
+        assert!(
+            check.result.starts_with("pending"),
+            "{needle}: {}",
+            check.result
+        ); // no converted samples in V1
+        pairings += 1;
+    }
+    assert_eq!(pairings, 12);
+}
+
+/// Copies the shipped registry, target and profile files into a temporary data root.
+fn copy_data(dest: &Path) {
+    let src = data_root();
+    std::fs::create_dir_all(dest.join("cameras/profiles")).unwrap();
+    std::fs::create_dir_all(dest.join("alexa")).unwrap();
+    std::fs::copy(
+        src.join("cameras/registry.json"),
+        dest.join("cameras/registry.json"),
+    )
+    .unwrap();
+    std::fs::copy(
+        src.join("alexa/target.json"),
+        dest.join("alexa/target.json"),
+    )
+    .unwrap();
+    for entry in std::fs::read_dir(src.join("cameras/profiles")).unwrap() {
+        let entry = entry.unwrap();
+        let to = dest.join("cameras/profiles").join(entry.file_name());
+        std::fs::create_dir_all(&to).unwrap();
+        std::fs::copy(entry.path().join("profile.json"), to.join("profile.json")).unwrap();
+    }
+}
+
+#[test]
+fn loading_reports_what_is_wrong() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    copy_data(root);
+    // The copy loads.
+    ProfileStore::load(root).unwrap();
+
+    // A missing data root and a missing profile file are I/O errors that name the file.
+    let err = ProfileStore::load(root.join("nowhere")).unwrap_err();
+    assert!(
+        matches!(&err, ProfileError::Io { path, .. } if path.ends_with("registry.json")),
+        "{err}"
+    );
+    let victim = root.join("cameras/profiles/sony-ilce-9/profile.json");
+    let original = std::fs::read_to_string(&victim).unwrap();
+    std::fs::remove_file(&victim).unwrap();
+    let err = ProfileStore::load(root).unwrap_err();
+    assert!(
+        matches!(&err, ProfileError::Io { path, .. } if path.ends_with("sony-ilce-9/profile.json")),
+        "{err}"
+    );
+
+    // Truncated JSON is a JSON error with the path.
+    std::fs::write(&victim, &original[..original.len() / 2]).unwrap();
+    let err = ProfileStore::load(root).unwrap_err();
+    assert!(
+        matches!(&err, ProfileError::Json { path, .. } if path.ends_with("sony-ilce-9/profile.json")),
+        "{err}"
+    );
+
+    // A profile that is not white preserving is refused by validation, naming the profile.
+    let mut doc: Value = serde_json::from_str(&original).unwrap();
+    doc["sensor_map"]["classes"]["led"][0]["m"][1][1] = json!(1.001);
+    std::fs::write(&victim, serde_json::to_string(&doc).unwrap()).unwrap();
+    let err = ProfileStore::load(root).unwrap_err();
+    assert!(
+        matches!(&err, ProfileError::Invalid { id, reason } if id == "sony-ilce-9" && reason.contains("white")),
+        "{err}"
+    );
+
+    // A profile file holding another profile's id disagrees with the registry.
+    let mut doc: Value = serde_json::from_str(&original).unwrap();
+    doc["id"] = json!("sony-ilce-6400");
+    std::fs::write(&victim, serde_json::to_string(&doc).unwrap()).unwrap();
+    let err = ProfileStore::load(root).unwrap_err();
+    assert!(
+        matches!(
+            &err,
+            ProfileError::Registry(RegistryError::IdMismatch { .. })
+        ),
+        "{err}"
+    );
+
+    // Restoring the file restores the store.
+    std::fs::write(&victim, &original).unwrap();
+    ProfileStore::load(root).unwrap();
+
+    // A registry that lists a body twice is refused.
+    let reg_path = root.join("cameras/registry.json");
+    let mut reg: Value = read_json(&reg_path);
+    let first = reg["bodies"][0].clone();
+    reg["bodies"].as_array_mut().unwrap().push(first);
+    std::fs::write(&reg_path, serde_json::to_string(&reg).unwrap()).unwrap();
+    let err = ProfileStore::load(root).unwrap_err();
+    assert!(
+        matches!(
+            &err,
+            ProfileError::Registry(RegistryError::DuplicateModelId(363))
+        ),
+        "{err}"
+    );
+
+    // A truncated registry is a JSON error that names the file; a missing target is an I/O error that
+    // names its file too.
+    let original_registry =
+        std::fs::read_to_string(data_root().join("cameras/registry.json")).unwrap();
+    std::fs::write(&reg_path, &original_registry[..original_registry.len() / 2]).unwrap();
+    let err = ProfileStore::load(root).unwrap_err();
+    assert!(
+        matches!(&err, ProfileError::Json { path, .. } if path.ends_with("registry.json")),
+        "{err}"
+    );
+    std::fs::write(&reg_path, &original_registry).unwrap();
+    ProfileStore::load(root).unwrap();
+    std::fs::remove_file(root.join("alexa/target.json")).unwrap();
+    let err = ProfileStore::load(root).unwrap_err();
+    assert!(
+        matches!(&err, ProfileError::Io { path, .. } if path.ends_with("target.json")),
+        "{err}"
+    );
+}
+
+#[test]
+fn the_target_parser_refuses_malformed_documents() {
+    let text = std::fs::read_to_string(data_root().join("alexa/target.json")).unwrap();
+    Target::parse(&text).unwrap();
+    assert!(matches!(
+        Target::parse("{}"),
+        Err(ProfileError::Json { .. })
+    ));
+    type Mutation = Box<dyn Fn(&mut Value)>;
+    let mutations: Vec<(&str, Mutation)> = vec![
+        ("unknown field", Box::new(|d| d["extra"] = json!(1))),
+        (
+            "kind outside the enum",
+            Box::new(|d| d["kind"] = json!("guess")),
+        ),
+        (
+            "version not semver",
+            Box::new(|d| d["version"] = json!("1.0")),
+        ),
+        (
+            "missing provenance",
+            Box::new(|d| {
+                d.as_object_mut().unwrap().remove("provenance");
+            }),
+        ),
+    ];
+    for (name, mutate) in mutations {
+        let mut doc: Value = serde_json::from_str(&text).unwrap();
+        mutate(&mut doc);
+        assert!(
+            matches!(
+                Target::parse(&doc.to_string()),
+                Err(ProfileError::Json { .. })
+            ),
+            "{name}"
+        );
+    }
+    assert!(matches!(
+        Target::from_path("/nonexistent/target.json"),
+        Err(ProfileError::Io { .. })
+    ));
+}
+
+#[test]
+fn profile_tables_work_through_the_profile_type() {
+    use ym_color::spectral::{ClassProbabilities, LightClass};
+    let p = store().default_profile();
+    // The sensor map keeps white white.
+    let probs = ClassProbabilities::new(0.2, 0.3, 0.1, 0.4).unwrap();
+    let m = p.sensor_map(&probs, 1e6 / 4300.0);
+    for row in m {
+        assert!((row.iter().sum::<f64>() - 1.0).abs() < 1e-12);
+    }
+    // w_A of the scene and user whites have green exactly 1; daylight class at 6500 K equals the user white.
+    let w = p.scene_white(6500.0, &ClassProbabilities::only(LightClass::Daylight));
+    assert_eq!(w, p.user_white(6500.0));
+    assert_eq!(w[1], 1.0);
+    // CCT/Duv round trip through the profile.
+    let rgb = p.cct_duv_to_rgb(5200.0, 0.002);
+    let back = p.rgb_to_cct_duv(rgb).unwrap();
+    // (The foot of the perpendicular moves a little along the curved locus: 2e-7 Duv at 0.002.)
+    assert!(
+        (back.cct_k - 5200.0).abs() < 1e-3 && (back.duv - 0.002).abs() < 1e-6,
+        "{back:?}"
+    );
+    assert!(p.rgb_to_cct_duv([0.0, 1.0, 1.0]).is_err());
+}
+
+#[test]
+fn profile_validation_rejects_rule_violations() {
+    // Each mutation parses (the shape is right) but breaks a rule the schema cannot express.
+    let original =
+        std::fs::read_to_string(data_root().join("cameras/profiles/sony-ilce-6400/profile.json"))
+            .unwrap();
+    Profile::parse(&original).unwrap();
+    let base: Value = serde_json::from_str(&original).unwrap();
+    type Mutation = Box<dyn Fn(&mut Value)>;
+    let cases: Vec<(&str, &str, Mutation)> = vec![
+        (
+            "rows do not sum to 1",
+            "preserve white",
+            Box::new(|d| d["sensor_map"]["classes"]["daylight"][3]["m"][2][0] = json!(0.5)),
+        ),
+        (
+            "mired out of order",
+            "mired",
+            Box::new(|d| {
+                let c = d["sensor_map"]["classes"]["fluorescent"]
+                    .as_array_mut()
+                    .unwrap();
+                c.swap(0, 1);
+            }),
+        ),
+        (
+            "green not 1 in a fluorescent w_A",
+            "green",
+            Box::new(|d| d["alexa_white"]["fluorescent"][2]["w"][1] = json!(1.0001)),
+        ),
+        (
+            "daylight w_A starts at the wrong temperature",
+            "4000",
+            Box::new(|d| d["alexa_white"]["daylight"]["start_k"] = json!(4010)),
+        ),
+        (
+            "locus runs the wrong way",
+            "locus.blackbody",
+            Box::new(|d| {
+                let v = d["locus"]["blackbody"]["values"].as_array_mut().unwrap();
+                v.reverse();
+            }),
+        ),
+        (
+            "a reference light is renamed",
+            "reference_lights",
+            Box::new(|d| d["provenance"]["reference_lights"]["led"][0] = json!("LED-X")),
+        ),
+        (
+            "a formula light's mired is off",
+            "1e6/",
+            Box::new(|d| d["sensor_map"]["classes"]["tungsten"][0]["mired"] = json!(251.0)),
+        ),
+        (
+            "the fluorescent w_A list drifts from the maps",
+            "alexa_white.fluorescent",
+            Box::new(|d| d["alexa_white"]["fluorescent"][0]["mired"] = json!(153.0)),
+        ),
+        (
+            "method changed",
+            "method",
+            Box::new(|d| d["sensor_map"]["method"] = json!("mlp")),
+        ),
+        (
+            "quirks in V1",
+            "quirks",
+            Box::new(|d| d["decode"]["quirks"] = json!(["q"])),
+        ),
+    ];
+    for (name, expect, mutate) in cases {
+        let mut doc = base.clone();
+        mutate(&mut doc);
+        match Profile::parse(&serde_json::to_string(&doc).unwrap()) {
+            Err(ProfileError::Invalid { id, reason }) => {
+                assert_eq!(id, "sony-ilce-6400", "{name}");
+                assert!(reason.contains(expect), "{name}: {reason}");
+            }
+            other => panic!(
+                "{name}: expected a validation error, got {:?}",
+                other.map(|p| p.id)
+            ),
+        }
+    }
+    // Shape errors are JSON errors, not validation errors: an unknown field, a bad id, a bad version.
+    for mutate in [
+        Box::new(|d: &mut Value| d["extra"] = json!(1)) as Mutation,
+        Box::new(|d| d["id"] = json!("Not An Id")),
+        Box::new(|d| d["version"] = json!("one")),
+        Box::new(|d| d["locus"]["blackbody"]["values"] = json!([[0.0, 0.0]])),
+    ] {
+        let mut doc = base.clone();
+        mutate(&mut doc);
+        assert!(matches!(
+            Profile::parse(&serde_json::to_string(&doc).unwrap()),
+            Err(ProfileError::Json { .. })
+        ));
+    }
+}

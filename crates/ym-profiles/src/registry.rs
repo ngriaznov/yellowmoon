@@ -1,1 +1,614 @@
-//! The registry (`data/cameras/registry.json`): model ID to body, profile and match kind, plus Model-string aliases (`docs/03-camera-profiles.md` sections Lookup and Profile files).
+//! The registry (`data/cameras/registry.json`): model ID to body, profile and match kind, plus
+//! Model-string aliases (`docs/03-camera-profiles.md` sections "Lookup" and "Profile files"), and the
+//! [`ProfileStore`] that loads the registry and every profile it lists, once.
+//!
+//! Lookup order is exact model ID, then same-sensor sibling, then the default profile (the A7R IV
+//! stand-in): see [`crate::detect`]. A Sony file is never refused for lack of a profile.
+//!
+//! The data root is the folder that holds `cameras/` and `alexa/`. Callers pass `ym_core::data_dir()`'s
+//! result; this crate does not locate it itself.
+
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use serde::{Deserialize, Serialize};
+
+use crate::profile::{Profile, ProfileError, ProfileId, Target};
+
+/// Why a registry (or its agreement with the profile files) was refused.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum RegistryError {
+    /// Two bodies share a model ID.
+    #[error("model ID {0} appears twice")]
+    DuplicateModelId(u16),
+    /// Two bodies share a model string.
+    #[error("model string {0:?} appears twice")]
+    DuplicateModel(String),
+    /// Two profile entries share an id.
+    #[error("profile {0} is listed twice")]
+    DuplicateProfile(String),
+    /// A body, or the default, names a profile that is not listed.
+    #[error("{what} uses profile {profile}, which is not listed in `profiles`")]
+    UnknownProfile {
+        /// Who refers to it (`default_profile` or a body).
+        what: String,
+        /// The missing profile id.
+        profile: String,
+    },
+    /// A profile has no `exact` body, or more than one.
+    #[error("profile {profile} has {count} exact bodies, expected exactly 1")]
+    ExactBodies {
+        /// The profile id.
+        profile: String,
+        /// How many bodies claim an exact match.
+        count: usize,
+    },
+    /// A `sensor_family` body's `via` is missing or is not its profile's measured body.
+    #[error("{model} (model ID {model_id}): `via` is {via:?}, expected {expected:?}")]
+    BadVia {
+        /// The model string.
+        model: String,
+        /// The model ID.
+        model_id: u16,
+        /// What the entry says.
+        via: Option<String>,
+        /// What it should say (the display name of the profile's measured body, or none).
+        expected: Option<String>,
+    },
+    /// A `default` body uses a profile other than `default_profile`.
+    #[error(
+        "{model} (model ID {model_id}) has match `default` but uses profile {profile}, not the default profile"
+    )]
+    DefaultBodyProfile {
+        /// The model string.
+        model: String,
+        /// The model ID.
+        model_id: u16,
+        /// The profile it uses.
+        profile: String,
+    },
+    /// `model_strings` and `bodies` disagree.
+    #[error("model_strings maps {model:?} to {mapped}, but `bodies` says {actual:?}")]
+    ModelStringMismatch {
+        /// The model string.
+        model: String,
+        /// The ID in `model_strings`.
+        mapped: u16,
+        /// The ID in `bodies`, if the model is listed there.
+        actual: Option<u16>,
+    },
+    /// A body is missing from `model_strings`.
+    #[error("{model:?} (model ID {model_id}) is missing from model_strings")]
+    ModelStringMissing {
+        /// The model string.
+        model: String,
+        /// The model ID.
+        model_id: u16,
+    },
+    /// A profile entry's path does not point into `profiles/<id>/profile.json`.
+    #[error("profile {id} has path {path:?}, expected profiles/{id}/profile.json")]
+    BadPath {
+        /// The profile id.
+        id: String,
+        /// The path in the registry.
+        path: String,
+    },
+    /// A profile file's own id differs from the registry's.
+    #[error("{path} holds profile {found}, the registry lists it as {expected}")]
+    IdMismatch {
+        /// The profile file.
+        path: String,
+        /// The id in the registry.
+        expected: String,
+        /// The id inside the file.
+        found: String,
+    },
+}
+
+/// How a body relates to its profile.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BodyMatch {
+    /// The profile was measured on this body.
+    Exact,
+    /// The body shares its sensor with the profile's measured body.
+    SensorFamily,
+    /// No profile of its own or a sibling's: the default (A7R IV) is borrowed.
+    Default,
+}
+
+/// A profile entry of the registry: its id and file.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RegistryProfile {
+    /// Profile id.
+    pub id: ProfileId,
+    /// File relative to `data/cameras/`, `profiles/<id>/profile.json`.
+    pub path: String,
+}
+
+/// Where the registry's model IDs and table come from.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RegistrySources {
+    /// The ExifTool table the model IDs were checked against.
+    pub model_ids: String,
+    /// The table in `docs/03` the registry is generated from.
+    pub table: String,
+}
+
+/// One camera body of the registry.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Body {
+    /// Sony maker-note model ID (tag 0xB001).
+    pub model_id: u16,
+    /// IFD0 Model string, as ExifTool names the ID (`ILCE-7RM4`).
+    pub model: String,
+    /// Display name (`Sony A7R IV`).
+    pub body: String,
+    /// The profile this body uses.
+    pub profile: ProfileId,
+    /// How it relates to that profile.
+    #[serde(rename = "match")]
+    pub match_kind: BodyMatch,
+    /// For `sensor_family`: the display name of the profile's measured body; null otherwise.
+    pub via: Option<String>,
+    /// Free-text notes (measurement source, pending checks).
+    pub notes: String,
+}
+
+/// `data/cameras/registry.json`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Registry {
+    /// Semver of the registry.
+    pub version: semver::Version,
+    /// Profile for every body without an entry of its own (the A7R IV stand-in).
+    pub default_profile: ProfileId,
+    /// Origin of the table.
+    pub sources: RegistrySources,
+    /// The profiles and their files.
+    pub profiles: Vec<RegistryProfile>,
+    /// The known bodies, one per model ID.
+    pub bodies: Vec<Body>,
+    /// Model string to model ID, for files without a usable maker-note ID.
+    pub model_strings: BTreeMap<String, u16>,
+}
+
+/// Normalises a Model string for comparison: trimmed of whitespace and NULs, a leading `Sony ` removed,
+/// ASCII case folded.
+fn normalize_model(s: &str) -> String {
+    let t = s.trim_matches(|c: char| c.is_whitespace() || c == '\0');
+    let t = match t.get(..5) {
+        Some(prefix) if prefix.eq_ignore_ascii_case("sony ") => &t[5..],
+        _ => t,
+    };
+    t.trim().to_ascii_lowercase()
+}
+
+impl Registry {
+    /// Parses and validates the text of a `registry.json`.
+    ///
+    /// # Errors
+    ///
+    /// [`ProfileError::Json`] for malformed JSON, [`ProfileError::Registry`] when
+    /// [`Registry::validate`] fails.
+    pub fn parse(text: &str) -> Result<Self, ProfileError> {
+        let registry: Registry =
+            serde_json::from_str(text).map_err(|source| ProfileError::Json {
+                path: PathBuf::from("<text>"),
+                source,
+            })?;
+        registry.validate()?;
+        Ok(registry)
+    }
+
+    /// Checks what the schema cannot express (the Rust twin of `validate_profiles.check_registry`):
+    /// model IDs, model strings and profile ids unique; the default and every body's profile listed;
+    /// every profile has exactly one `exact` body; `via` names that body for `sensor_family` and is null
+    /// otherwise; every `default` body uses `default_profile`; `model_strings` agrees with `bodies`
+    /// (each body once, nothing else); profile paths are `profiles/<id>/profile.json`.
+    ///
+    /// # Errors
+    ///
+    /// The first problem found, as a [`RegistryError`].
+    pub fn validate(&self) -> Result<(), RegistryError> {
+        let mut seen_profiles = Vec::new();
+        for p in &self.profiles {
+            if seen_profiles.contains(&&p.id) {
+                return Err(RegistryError::DuplicateProfile(p.id.to_string()));
+            }
+            seen_profiles.push(&p.id);
+            if p.path != format!("profiles/{}/profile.json", p.id) {
+                return Err(RegistryError::BadPath {
+                    id: p.id.to_string(),
+                    path: p.path.clone(),
+                });
+            }
+        }
+        let listed = |id: &ProfileId| self.profiles.iter().any(|p| &p.id == id);
+        if !listed(&self.default_profile) {
+            return Err(RegistryError::UnknownProfile {
+                what: "default_profile".to_string(),
+                profile: self.default_profile.to_string(),
+            });
+        }
+        for (i, b) in self.bodies.iter().enumerate() {
+            if self.bodies[..i].iter().any(|o| o.model_id == b.model_id) {
+                return Err(RegistryError::DuplicateModelId(b.model_id));
+            }
+            if self.bodies[..i]
+                .iter()
+                .any(|o| normalize_model(&o.model) == normalize_model(&b.model))
+            {
+                return Err(RegistryError::DuplicateModel(b.model.clone()));
+            }
+            if !listed(&b.profile) {
+                return Err(RegistryError::UnknownProfile {
+                    what: format!("{} (model ID {})", b.model, b.model_id),
+                    profile: b.profile.to_string(),
+                });
+            }
+            if b.match_kind == BodyMatch::Default && b.profile != self.default_profile {
+                return Err(RegistryError::DefaultBodyProfile {
+                    model: b.model.clone(),
+                    model_id: b.model_id,
+                    profile: b.profile.to_string(),
+                });
+            }
+        }
+        for p in &self.profiles {
+            let exact: Vec<&Body> = self
+                .bodies
+                .iter()
+                .filter(|b| b.profile == p.id && b.match_kind == BodyMatch::Exact)
+                .collect();
+            if exact.len() != 1 {
+                return Err(RegistryError::ExactBodies {
+                    profile: p.id.to_string(),
+                    count: exact.len(),
+                });
+            }
+        }
+        for b in &self.bodies {
+            let expected = if b.match_kind == BodyMatch::SensorFamily {
+                self.exact_body(&b.profile).map(|e| e.body.clone())
+            } else {
+                None
+            };
+            if b.via != expected {
+                return Err(RegistryError::BadVia {
+                    model: b.model.clone(),
+                    model_id: b.model_id,
+                    via: b.via.clone(),
+                    expected,
+                });
+            }
+            if self.model_strings.get(&b.model) != Some(&b.model_id) {
+                return Err(RegistryError::ModelStringMissing {
+                    model: b.model.clone(),
+                    model_id: b.model_id,
+                });
+            }
+        }
+        for (model, &mapped) in &self.model_strings {
+            let actual = self
+                .bodies
+                .iter()
+                .find(|b| &b.model == model)
+                .map(|b| b.model_id);
+            if actual != Some(mapped) {
+                return Err(RegistryError::ModelStringMismatch {
+                    model: model.clone(),
+                    mapped,
+                    actual,
+                });
+            }
+        }
+        Ok(())
+    }
+
+    /// The body with this Sony model ID.
+    #[must_use]
+    pub fn body_by_model_id(&self, model_id: u16) -> Option<&Body> {
+        self.bodies.iter().find(|b| b.model_id == model_id)
+    }
+
+    /// The body a Model string names, through `model_strings`. Case and surrounding whitespace do not
+    /// matter, and a leading `Sony ` is ignored.
+    #[must_use]
+    pub fn body_by_model_string(&self, model: &str) -> Option<&Body> {
+        let wanted = normalize_model(model);
+        let (_, &id) = self
+            .model_strings
+            .iter()
+            .find(|(k, _)| normalize_model(k) == wanted)?;
+        self.body_by_model_id(id)
+    }
+
+    /// The one body whose profile was measured on it.
+    #[must_use]
+    pub fn exact_body(&self, profile: &ProfileId) -> Option<&Body> {
+        self.bodies
+            .iter()
+            .find(|b| &b.profile == profile && b.match_kind == BodyMatch::Exact)
+    }
+
+    /// The registry entry of a profile.
+    #[must_use]
+    pub fn profile_entry(&self, id: &ProfileId) -> Option<&RegistryProfile> {
+        self.profiles.iter().find(|p| &p.id == id)
+    }
+}
+
+/// The registry, the ALEXA target and every camera profile, loaded once from a data root.
+///
+/// Profiles are shared (`Arc`) so a photo can keep the one it was developed with. Loading validates
+/// everything ([`Profile::validate`], [`Registry::validate`]) and checks that each profile file holds the
+/// id the registry lists it under.
+#[derive(Debug, Clone)]
+pub struct ProfileStore {
+    data_root: PathBuf,
+    registry: Registry,
+    target: Target,
+    profiles: BTreeMap<ProfileId, Arc<Profile>>,
+}
+
+impl ProfileStore {
+    /// Loads `cameras/registry.json`, every profile it lists and `alexa/target.json` from `data_root`.
+    ///
+    /// # Errors
+    ///
+    /// [`ProfileError`] for a missing or malformed file, a registry or profile that breaks the format's
+    /// rules, or a profile file whose id differs from the registry's.
+    pub fn load(data_root: impl AsRef<Path>) -> Result<Self, ProfileError> {
+        let data_root = data_root.as_ref();
+        let cameras = data_root.join("cameras");
+        let registry_path = cameras.join("registry.json");
+        let text = std::fs::read_to_string(&registry_path).map_err(|source| ProfileError::Io {
+            path: registry_path.clone(),
+            source,
+        })?;
+        let registry: Registry =
+            serde_json::from_str(&text).map_err(|source| ProfileError::Json {
+                path: registry_path.clone(),
+                source,
+            })?;
+        registry.validate()?;
+        let mut profiles = BTreeMap::new();
+        for entry in &registry.profiles {
+            let profile = Profile::from_path(cameras.join(&entry.path))?;
+            if profile.id != entry.id {
+                return Err(RegistryError::IdMismatch {
+                    path: entry.path.clone(),
+                    expected: entry.id.to_string(),
+                    found: profile.id.to_string(),
+                }
+                .into());
+            }
+            profiles.insert(entry.id.clone(), Arc::new(profile));
+        }
+        let target = Target::from_path(data_root.join("alexa").join("target.json"))?;
+        Ok(Self {
+            data_root: data_root.to_path_buf(),
+            registry,
+            target,
+            profiles,
+        })
+    }
+
+    /// The data root this store was loaded from.
+    #[must_use]
+    pub fn data_root(&self) -> &Path {
+        &self.data_root
+    }
+
+    /// The registry.
+    #[must_use]
+    pub fn registry(&self) -> &Registry {
+        &self.registry
+    }
+
+    /// The emulation target description.
+    #[must_use]
+    pub fn target(&self) -> &Target {
+        &self.target
+    }
+
+    /// A profile by id.
+    #[must_use]
+    pub fn profile(&self, id: &ProfileId) -> Option<&Arc<Profile>> {
+        self.profiles.get(id)
+    }
+
+    /// A profile by id text, for example from a command-line flag.
+    #[must_use]
+    pub fn profile_by_name(&self, id: &str) -> Option<&Arc<Profile>> {
+        self.profiles.get(id)
+    }
+
+    /// The default profile (A7R IV): always present, checked at load.
+    ///
+    /// # Panics
+    ///
+    /// Never for a store built by [`ProfileStore::load`]: the registry's default is checked to be listed
+    /// and every listed profile is loaded.
+    #[must_use]
+    pub fn default_profile(&self) -> &Arc<Profile> {
+        // Invariant of `load`: `default_profile` is listed and every listed profile was loaded.
+        &self.profiles[&self.registry.default_profile]
+    }
+
+    /// All profiles, ordered by id.
+    pub fn profiles(&self) -> impl Iterator<Item = &Arc<Profile>> {
+        self.profiles.values()
+    }
+
+    /// The ids of all profiles, ordered.
+    pub fn profile_ids(&self) -> impl Iterator<Item = &ProfileId> {
+        self.profiles.keys()
+    }
+
+    /// Number of cameras with a profile of their own (the "Eleven Sony cameras have their own" of the
+    /// camera card): one per profile, since each has exactly one `exact` body.
+    #[must_use]
+    pub fn own_profile_count(&self) -> usize {
+        self.profiles.len()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tiny_registry() -> Registry {
+        let id = |s: &str| ProfileId::new(s).unwrap();
+        let body =
+            |model_id, model: &str, name: &str, profile: &str, kind, via: Option<&str>| Body {
+                model_id,
+                model: model.to_string(),
+                body: name.to_string(),
+                profile: id(profile),
+                match_kind: kind,
+                via: via.map(str::to_string),
+                notes: String::new(),
+            };
+        Registry {
+            version: semver::Version::new(1, 0, 0),
+            default_profile: id("p-a"),
+            sources: RegistrySources {
+                model_ids: String::new(),
+                table: String::new(),
+            },
+            profiles: vec![
+                RegistryProfile {
+                    id: id("p-a"),
+                    path: "profiles/p-a/profile.json".to_string(),
+                },
+                RegistryProfile {
+                    id: id("p-b"),
+                    path: "profiles/p-b/profile.json".to_string(),
+                },
+            ],
+            bodies: vec![
+                body(1, "AA-1", "Sony A1", "p-a", BodyMatch::Exact, None),
+                body(2, "BB-2", "Sony B2", "p-b", BodyMatch::Exact, None),
+                body(
+                    3,
+                    "BB-3",
+                    "Sony B3",
+                    "p-b",
+                    BodyMatch::SensorFamily,
+                    Some("Sony B2"),
+                ),
+                body(4, "NEW-4", "Sony N4", "p-a", BodyMatch::Default, None),
+            ],
+            model_strings: [("AA-1", 1), ("BB-2", 2), ("BB-3", 3), ("NEW-4", 4)]
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v))
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn a_consistent_registry_validates_and_looks_up() {
+        let r = tiny_registry();
+        r.validate().unwrap();
+        assert_eq!(r.body_by_model_id(3).unwrap().model, "BB-3");
+        assert!(r.body_by_model_id(99).is_none());
+        for spelling in ["BB-3", " bb-3 ", "Sony BB-3", "SONY bb-3\0"] {
+            assert_eq!(
+                r.body_by_model_string(spelling).unwrap().model_id,
+                3,
+                "{spelling:?}"
+            );
+        }
+        assert!(r.body_by_model_string("BB-33").is_none());
+        assert_eq!(
+            r.exact_body(&ProfileId::new("p-b").unwrap())
+                .unwrap()
+                .model_id,
+            2
+        );
+    }
+
+    #[test]
+    fn inconsistent_registries_are_refused() {
+        let mut r = tiny_registry();
+        r.bodies[3].model_id = 1;
+        assert_eq!(r.validate(), Err(RegistryError::DuplicateModelId(1)));
+
+        let mut r = tiny_registry();
+        r.bodies[1].profile = ProfileId::new("p-zzz").unwrap();
+        assert!(matches!(
+            r.validate(),
+            Err(RegistryError::UnknownProfile { .. })
+        ));
+
+        let mut r = tiny_registry();
+        r.bodies[2].match_kind = BodyMatch::Exact;
+        r.bodies[2].via = None;
+        assert!(matches!(
+            r.validate(),
+            Err(RegistryError::ExactBodies { count: 2, .. })
+        ));
+
+        let mut r = tiny_registry();
+        r.bodies[2].via = Some("Sony Q1".to_string());
+        assert!(matches!(r.validate(), Err(RegistryError::BadVia { .. })));
+
+        let mut r = tiny_registry();
+        r.bodies[3].via = Some("Sony A1".to_string());
+        assert!(matches!(r.validate(), Err(RegistryError::BadVia { .. })));
+
+        let mut r = tiny_registry();
+        r.bodies[3].profile = ProfileId::new("p-b").unwrap();
+        assert!(matches!(
+            r.validate(),
+            Err(RegistryError::DefaultBodyProfile { .. })
+        ));
+
+        let mut r = tiny_registry();
+        r.model_strings.insert("BB-3".to_string(), 2);
+        assert!(matches!(
+            r.validate(),
+            Err(RegistryError::ModelStringMissing { .. })
+        ));
+
+        let mut r = tiny_registry();
+        r.model_strings.insert("EXTRA".to_string(), 1);
+        assert!(matches!(
+            r.validate(),
+            Err(RegistryError::ModelStringMismatch { .. })
+        ));
+
+        let mut r = tiny_registry();
+        r.profiles[0].path = "profiles/other/profile.json".to_string();
+        assert!(matches!(r.validate(), Err(RegistryError::BadPath { .. })));
+
+        let mut r = tiny_registry();
+        r.default_profile = ProfileId::new("p-q").unwrap();
+        assert!(matches!(
+            r.validate(),
+            Err(RegistryError::UnknownProfile { .. })
+        ));
+
+        let mut r = tiny_registry();
+        r.profiles.push(r.profiles[0].clone());
+        assert!(matches!(
+            r.validate(),
+            Err(RegistryError::DuplicateProfile(_))
+        ));
+    }
+
+    #[test]
+    fn model_normalisation_is_forgiving_but_not_loose() {
+        assert_eq!(normalize_model("  ILCE-7M3\0"), "ilce-7m3");
+        assert_eq!(normalize_model("Sony ILCE-7M3"), "ilce-7m3");
+        assert_eq!(normalize_model("SONYILCE"), "sonyilce");
+        assert_eq!(normalize_model("é"), "é");
+        assert_eq!(normalize_model(""), "");
+    }
+}

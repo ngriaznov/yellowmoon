@@ -8,3 +8,18 @@ repository.workspace = true
 rust-version.workspace = true
 authors.workspace = true
 publish = false
+
+[dependencies]
+ym-color.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+semver.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+# JSON Schema validation of every shipped data file (MIT). Default features (HTTP and file reference
+# resolution, TLS) are off: the schemas are self-contained and nothing here touches the network.
+jsonschema = { version = "0.58", default-features = false }
+# SHA-256 of the curve files against profile provenance.
+sha2.workspace = true
+tempfile.workspace = true
