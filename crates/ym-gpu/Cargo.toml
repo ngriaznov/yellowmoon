@@ -13,11 +13,18 @@ publish = false
 ym-color.workspace = true
 thiserror.workspace = true
 rayon.workspace = true
+wgpu.workspace = true
+pollster.workspace = true
+bytemuck.workspace = true
+half.workspace = true
+tracing.workspace = true
 
 [dev-dependencies]
 png.workspace = true
 tiff.workspace = true
 serde_json.workspace = true
+# Offline WGSL validation and translation to MSL and SPIR-V (no GPU needed); MIT OR Apache-2.0, already in the tree via wgpu.
+naga = { version = "30", features = ["wgsl-in", "msl-out", "spv-out"] }
 
 # Plain-main benchmarks (no external harness): `cargo bench -p ym-gpu --bench cpu_stages`.
 [[bench]]

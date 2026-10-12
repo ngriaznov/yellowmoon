@@ -1,0 +1,310 @@
+//! M1-09 monotonicity on the GPU: C7 (roll-off and toe) and every C9 control behave as the CPU
+//! reference promises (`docs/02` sections C7 and C9, `ym-color` tests `tone.rs` and `grade.rs`).
+//!
+//! Runs on the f32-storage device (strict ramps need unrounded inputs) and, for the C9 control
+//! sweeps, on every device.
+
+mod common;
+
+use common::chains::identity_tone;
+use common::{TestGpu, gpus};
+use ym_color::consts::LOGC4_GRAY;
+use ym_color::consts::linalg::IDENTITY;
+use ym_color::display::{ChainParams, ColorChain};
+use ym_color::grade::{ColorBalance, GradeParams};
+use ym_color::tone::ToneParams;
+use ym_gpu::cpu::RgbImage;
+use ym_gpu::device::StorageMode;
+use ym_gpu::kernels::PixelData;
+use ym_gpu::kernels::color::{ColorOutput, PreparedChain, Stop};
+use ym_gpu::queue::{JobSpec, Priority};
+
+fn image_of(px: &[[f32; 3]]) -> RgbImage {
+    let inter: Vec<f32> = px.iter().flatten().copied().collect();
+    RgbImage::from_interleaved(px.len(), 1, &inter).expect("image")
+}
+
+fn run(dev: &TestGpu, params: &ChainParams, px: &[[f32; 3]], stop: Stop) -> Vec<[f32; 3]> {
+    let chain = ColorChain::new(params).expect("chain");
+    let img = image_of(px);
+    let n = px.len();
+    let out = dev
+        .gpu
+        .run(JobSpec::new(Priority::Viewport), move |ctx, _| {
+            PreparedChain::new(ctx, &chain)?.render(ctx, &img, (0, 0), ColorOutput::Stage(stop))
+        })
+        .expect("render");
+    let PixelData::F32Planar(v) = out.data else {
+        panic!()
+    };
+    (0..n).map(|i| [v[i], v[n + i], v[2 * n + i]]).collect()
+}
+
+fn f32_device() -> Option<&'static TestGpu> {
+    gpus().iter().find(|d| d.mode == StorageMode::F32)
+}
+
+#[test]
+fn the_roll_off_and_toe_never_decrease_with_the_input() {
+    let Some(dev) = f32_device() else { return };
+    // A grey ramp from slightly negative to 60 (log spaced above 0), and one channel ramped while
+    // the others stay fixed.
+    let mut ramp: Vec<f32> = vec![-0.01, -0.001, 0.0];
+    // 4000 log-spaced points from 1e-5 to 60 (2^22.5 apart): the ramp must run through the knee of
+    // every parameter set below (the knee is at most `clip * 2^-0.5`, 11.3 for clip 16), or the
+    // shoulder's tanh would go untested.
+    ramp.extend((0..4000).map(|i| 1e-5 * (i as f32 * 0.005_630_54).exp2()));
+    ramp.retain(|v| *v <= 60.0);
+    ramp.sort_by(|a, b| a.partial_cmp(b).expect("finite"));
+    assert!(
+        ramp.last().is_some_and(|&top| top > 50.0),
+        "the ramp must reach the highlights: top {:?}",
+        ramp.last()
+    );
+    let grey: Vec<[f32; 3]> = ramp.iter().map(|&v| [v, v, v]).collect();
+    let chroma: Vec<[f32; 3]> = ramp.iter().map(|&v| [v, 0.4, 0.05]).collect();
+    let mut checked = 0;
+    for highlights in [0.0, 0.3, 0.5, 1.0] {
+        for low_light in [0.0, 0.25, 0.5, 1.0] {
+            for clip in [1.0, 16.0] {
+                for floor in [0.0, 0.002, 0.02] {
+                    let tone = ToneParams::new(highlights, low_light, clip, floor).expect("tone");
+                    let params = ChainParams::new(IDENTITY, tone);
+                    for (label, px) in [("grey", &grey), ("one channel", &chroma)] {
+                        let out = run(dev, &params, px, Stop::C7);
+                        for i in 1..out.len() {
+                            for (ch, (&a, &b)) in out[i - 1].iter().zip(&out[i]).enumerate() {
+                                if label == "one channel" && ch != 0 {
+                                    continue;
+                                }
+                                // f32 rounding of the scale may wiggle the last bits.
+                                assert!(
+                                    b >= a - 6e-7 * a.abs().max(1e-3),
+                                    "{label} h={highlights} l={low_light} clip={clip} floor={floor}: output fell from {a} to {b} at input {:?}",
+                                    px[i]
+                                );
+                            }
+                        }
+                        checked += 1;
+                    }
+                }
+            }
+        }
+    }
+    eprintln!(
+        "C7 monotone over {checked} parameter sets x {} ramp points",
+        grey.len()
+    );
+}
+
+fn grade_chain(g: GradeParams) -> ChainParams {
+    let mut p = ChainParams::new(IDENTITY, identity_tone());
+    p.grade = g;
+    p
+}
+
+/// Camera values: a grey ramp over 13 stops and a set of colours.
+fn probe_pixels() -> Vec<[f32; 3]> {
+    let mut v: Vec<[f32; 3]> = (-9..=4)
+        .map(|s| {
+            let x = 0.18 * (s as f32).exp2();
+            [x, x, x]
+        })
+        .collect();
+    v.extend([
+        [0.5, 0.2, 0.1],
+        [0.1, 0.4, 0.2],
+        [0.05, 0.1, 0.6],
+        [0.9, 0.7, 0.05],
+        [0.02, 0.01, 0.015],
+        [0.3, 0.3, 0.05],
+    ]);
+    v
+}
+
+#[test]
+fn every_tonal_control_raises_or_keeps_every_channel() {
+    type Setter = fn(&mut GradeParams, f64);
+    let controls: [(&str, Setter); 5] = [
+        ("brightness", |g, x| g.brightness = x),
+        ("shadows", |g, x| g.shadows = x),
+        ("highlights", |g, x| g.highlights = x),
+        ("black", |g, x| g.black = x),
+        ("white", |g, x| g.white = x),
+    ];
+    let px = probe_pixels();
+    for dev in gpus() {
+        for (name, set) in controls {
+            let mut prev: Option<Vec<[f32; 3]>> = None;
+            for step in 0..=20 {
+                let mut g = GradeParams::default();
+                set(&mut g, -100.0 + 10.0 * f64::from(step));
+                let out = run(dev, &grade_chain(g), &px, Stop::C9);
+                if let Some(p) = &prev {
+                    for (i, (a, b)) in p.iter().zip(&out).enumerate() {
+                        for ch in 0..3 {
+                            assert!(
+                                b[ch] >= a[ch] - 2e-6,
+                                "{:?} {name}: channel {ch} of pixel {i} fell from {} to {} at step {step}",
+                                dev.mode,
+                                a[ch],
+                                b[ch]
+                            );
+                        }
+                    }
+                }
+                prev = Some(out);
+            }
+        }
+    }
+}
+
+#[test]
+fn contrast_saturation_and_colour_balance_are_monotone_in_their_control() {
+    let px = probe_pixels();
+    let gray = LOGC4_GRAY as f32;
+    for dev in gpus() {
+        // Contrast moves a channel away from grey: up above it, down below it.
+        let base = run(dev, &grade_chain(GradeParams::default()), &px, Stop::C9);
+        let mut prev = base.clone();
+        for step in 1..=10 {
+            let g = GradeParams {
+                contrast: 10.0 * f64::from(step),
+                ..GradeParams::default()
+            };
+            let out = run(dev, &grade_chain(g), &px, Stop::C9);
+            for (i, (a, b)) in prev.iter().zip(&out).enumerate() {
+                for ch in 0..3 {
+                    if base[i][ch] > gray {
+                        assert!(b[ch] >= a[ch] - 2e-6, "contrast up: pixel {i} ch {ch}");
+                    } else {
+                        assert!(b[ch] <= a[ch] + 2e-6, "contrast down: pixel {i} ch {ch}");
+                    }
+                }
+            }
+            prev = out;
+        }
+        // Saturation scales the distance from the pixel's own luma: |v - L| never shrinks.
+        let neutral = run(dev, &grade_chain(GradeParams::default()), &px, Stop::C9);
+        let mut prev_dist: Vec<f32> = vec![0.0; px.len()];
+        for step in 0..=20 {
+            let g = GradeParams {
+                saturation: -100.0 + 10.0 * f64::from(step),
+                ..GradeParams::default()
+            };
+            let out = run(dev, &grade_chain(g), &px, Stop::C9);
+            for i in 0..px.len() {
+                // With L unchanged by saturation (L is the pre-grade luma), measure around the mean
+                // of the ungraded channels' luma: use the distance between channels instead.
+                let spread = (out[i][0] - out[i][1]).abs()
+                    + (out[i][1] - out[i][2]).abs()
+                    + (out[i][0] - out[i][2]).abs();
+                assert!(
+                    spread >= prev_dist[i] - 3e-6,
+                    "{:?} saturation: pixel {i} lost spread",
+                    dev.mode
+                );
+                prev_dist[i] = spread;
+            }
+            let _ = &neutral;
+        }
+        // Colour balance displaces along a fixed direction; the displacement grows with the radius.
+        for angle in [0.3f64, 1.9, 4.0] {
+            let mut prev_len = 0.0f32;
+            let zero = run(dev, &grade_chain(GradeParams::default()), &px, Stop::C9);
+            for step in 1..=5 {
+                let r = f64::from(step) / 5.0;
+                let b = ColorBalance {
+                    a: r * angle.cos(),
+                    b: r * angle.sin(),
+                };
+                let g = GradeParams {
+                    balance_midtones: b,
+                    ..GradeParams::default()
+                };
+                let out = run(dev, &grade_chain(g), &px, Stop::C9);
+                let probe = 3; // a mid-grey sample, where the midtone zone is strongest
+                let len: f32 = (0..3)
+                    .map(|ch| (out[probe][ch] - zero[probe][ch]).powi(2))
+                    .sum::<f32>()
+                    .sqrt();
+                assert!(
+                    len >= prev_len - 1e-6,
+                    "{:?} balance: angle {angle} radius {r}",
+                    dev.mode
+                );
+                prev_len = len;
+            }
+            assert!(
+                prev_len > 1e-3,
+                "colour balance did nothing at the mid-grey probe"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_single_control_at_its_extremes_keeps_the_neutral_ramp_increasing() {
+    let Some(dev) = f32_device() else { return };
+    let ramp: Vec<[f32; 3]> = (0..1024)
+        .map(|i| {
+            let x = 0.18 * (-8.0 + 14.0 * i as f32 / 1023.0).exp2();
+            [x, x, x]
+        })
+        .collect();
+    let mut gs: Vec<(String, GradeParams)> = Vec::new();
+    for v in [-100.0, 100.0] {
+        gs.push((
+            format!("contrast {v}"),
+            GradeParams {
+                contrast: v,
+                ..Default::default()
+            },
+        ));
+        gs.push((
+            format!("brightness {v}"),
+            GradeParams {
+                brightness: v,
+                ..Default::default()
+            },
+        ));
+        gs.push((
+            format!("shadows {v}"),
+            GradeParams {
+                shadows: v,
+                ..Default::default()
+            },
+        ));
+        gs.push((
+            format!("highlights {v}"),
+            GradeParams {
+                highlights: v,
+                ..Default::default()
+            },
+        ));
+        gs.push((
+            format!("black {v}"),
+            GradeParams {
+                black: v,
+                ..Default::default()
+            },
+        ));
+        gs.push((
+            format!("white {v}"),
+            GradeParams {
+                white: v,
+                ..Default::default()
+            },
+        ));
+    }
+    for (name, g) in gs {
+        let out = run(dev, &grade_chain(g), &ramp, Stop::C9);
+        let mut min_slope = f32::MAX;
+        for i in 1..out.len() {
+            let d = out[i][1] - out[i - 1][1];
+            assert!(d > 0.0, "{name}: the neutral ramp folds at point {i}");
+            min_slope = min_slope.min(d);
+        }
+        eprintln!("{name}: smallest step {min_slope:.2e}");
+    }
+}
