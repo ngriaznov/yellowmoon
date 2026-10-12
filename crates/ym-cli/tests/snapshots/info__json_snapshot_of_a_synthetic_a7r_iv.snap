@@ -1,0 +1,78 @@
+---
+source: crates/ym-cli/tests/info.rs
+expression: v
+---
+{
+  "black": [
+    512.0,
+    512.0,
+    512.0,
+    512.0
+  ],
+  "camera": {
+    "arw_version": "ARW 2.2",
+    "body": "ILCE-7RM4",
+    "firmware": "ILCE-7RM4 v1.00",
+    "make": "SONY",
+    "model": "ILCE-7RM4",
+    "model_id": 375
+  },
+  "dimensions": {
+    "active_area": null,
+    "crop": null,
+    "height": 96,
+    "width": 128
+  },
+  "error": null,
+  "exposure": {
+    "aperture": 4.0,
+    "captured": "2026-10-04T12:03:44.070+02:00",
+    "exposure_comp_ev": -0.7,
+    "focal_length_35mm": 35,
+    "focal_length_mm": 35.0,
+    "iso": 400,
+    "iso_source": "sony_maker_note",
+    "lens_model": "FE 24-70mm F2.8 GM",
+    "orientation": 1,
+    "shutter_s": 0.004
+  },
+  "gps": null,
+  "input": "[path]",
+  "lens_corrections": {
+    "chromatic_aberration": true,
+    "distortion": true,
+    "vignetting": true
+  },
+  "levels_source": {
+    "black": "sr2",
+    "wb": "sr2",
+    "white": "sr2"
+  },
+  "pipeline_version": "0.1.0",
+  "preview": "[preview location]",
+  "raw": {
+    "bits_per_sample": 14,
+    "cfa": "RGGB",
+    "compression": 1,
+    "decode": "uncompressed14",
+    "description": "14-bit uncompressed",
+    "reduced": false,
+    "samples_per_pixel": 1,
+    "subsampling": null,
+    "supported": true
+  },
+  "status": "ok",
+  "tone_curve": null,
+  "wb_as_shot": [
+    2043.0,
+    1024.0,
+    1024.0,
+    1755.0
+  ],
+  "white": [
+    16300.0,
+    16300.0,
+    16300.0,
+    16300.0
+  ]
+}

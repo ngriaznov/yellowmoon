@@ -15,9 +15,16 @@ path = "src/main.rs"
 
 [dependencies]
 ym-core.workspace = true
+ym-raw.workspace = true
 anyhow.workspace = true
 clap.workspace = true
+serde_json.workspace = true
 
 [dev-dependencies]
+# `testgen` writes the synthetic ARW files the `info` tests run on.
+ym-raw = { workspace = true, features = ["testgen"] }
 assert_cmd.workspace = true
 predicates.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+insta.workspace = true

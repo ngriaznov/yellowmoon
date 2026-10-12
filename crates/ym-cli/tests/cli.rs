@@ -36,7 +36,6 @@ fn version_reports_the_workspace_and_pipeline_versions() {
 fn stub_subcommands_exit_with_code_2_and_say_so_on_stderr() {
     let invocations: &[&[&str]] = &[
         &["render", "photo.ARW"],
-        &["info", "photo.ARW"],
         &["looks", "list"],
         &["looks", "import", "pack.zip"],
         &["looks", "verify"],

@@ -15,8 +15,12 @@ rawler.workspace = true
 ym-raw = { workspace = true, features = ["testgen"] }
 anyhow.workspace = true
 clap.workspace = true
+half.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
+hex.workspace = true
+tempfile.workspace = true
 
 [dev-dependencies]
-tempfile.workspace = true
 assert_cmd.workspace = true
+predicates.workspace = true

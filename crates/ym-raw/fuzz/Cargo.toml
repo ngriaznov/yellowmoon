@@ -1,0 +1,71 @@
+[package]
+name = "ym-raw-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+license = "Apache-2.0"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+# The testgen feature builds the synthetic ARW writer; the M/S and decode_any targets use it to make templates.
+ym-raw = { path = "..", features = ["testgen"] }
+
+# This project is its own workspace on purpose: it needs the nightly toolchain and must not be a
+# member of the root workspace (docs/04-raw-decoding.md, docs/13-testing.md).
+[workspace]
+members = ["."]
+
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "tiff_walker"
+path = "fuzz_targets/tiff_walker.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "sr2"
+path = "fuzz_targets/sr2.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "probe"
+path = "fuzz_targets/probe.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "craw"
+path = "fuzz_targets/craw.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ljpeg"
+path = "fuzz_targets/ljpeg.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ycbcr"
+path = "fuzz_targets/ycbcr.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "decode_any"
+path = "fuzz_targets/decode_any.rs"
+test = false
+doc = false
+bench = false

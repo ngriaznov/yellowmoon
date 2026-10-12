@@ -3,6 +3,7 @@
 
 mod cli;
 mod exit;
+mod info;
 
 use std::process::ExitCode;
 
@@ -24,8 +25,8 @@ fn main() -> ExitCode {
 /// Runs the chosen command and returns its exit code.
 fn run(cli: Cli) -> anyhow::Result<u8> {
     match cli.command {
+        Command::Info(args) => Ok(info::run(&args)),
         Command::Render(_)
-        | Command::Info(_)
         | Command::Looks(
             LooksCommand::List
             | LooksCommand::Import(_)

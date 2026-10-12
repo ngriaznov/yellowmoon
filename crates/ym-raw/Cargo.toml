@@ -14,3 +14,37 @@ publish = false
 testgen = []
 # ARW 6.0 Compressed RAW 2 decoder; stays off in release builds until the Sony gate clears (docs/04).
 arw6 = []
+
+[dependencies]
+thiserror.workspace = true
+serde.workspace = true
+half.workspace = true
+rayon.workspace = true
+bytemuck.workspace = true
+
+[dev-dependencies]
+# Turns the `testgen` feature on for this crate's own integration tests (tests/*.rs), which see
+# the library as an ordinary dependency and so do not get `cfg(test)`.
+ym-raw = { workspace = true, features = ["testgen"] }
+serde_json.workspace = true
+tempfile.workspace = true
+proptest.workspace = true
+
+[[example]]
+name = "gen_arw"
+required-features = ["testgen"]
+
+[[example]]
+name = "gen_seeds"
+required-features = ["testgen"]
+
+[[example]]
+name = "gen_corpus"
+required-features = ["testgen"]
+
+[[example]]
+name = "decode_bench"
+required-features = ["testgen"]
+
+[[example]]
+name = "decode_dump"
