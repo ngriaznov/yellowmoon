@@ -11,3 +11,19 @@ publish = false
 
 [dependencies]
 ym-color.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+rayon.workspace = true
+sha2.workspace = true
+# Image container and codec crates (docs/14: MIT / Apache-2.0; jpeg-encoder is "(MIT OR Apache-2.0) AND IJG").
+# The `dng` crate (AGPL) and rawler's writer (LGPL) are banned; the DNG writer is ours, on top of `tiff`.
+tiff.workspace = true
+png.workspace = true
+jpeg-encoder.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+tempfile.workspace = true
+# Decoders for round-trip tests only (already in the build through `tiff`).
+zune-jpeg = "0.5"

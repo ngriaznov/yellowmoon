@@ -32,6 +32,7 @@ allow = [
   "MPL-2.0",          # file-level copyleft; allowed for unmodified dependencies only (review each)
   "OFL-1.1",          # fonts
   "CDLA-Permissive-2.0", # data licence of webpki-root-certs (Mozilla root certificates); permissive, no copyleft
+  "IJG",              # jpeg-encoder (forward DCT from mozjpeg): permissive; needs the IJG acknowledgement in NOTICE, docs and About
 ]
 confidence-threshold = 0.9
 unused-allowed-license = "allow"

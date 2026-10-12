@@ -85,8 +85,10 @@ UNDISCLOSED.
    Apache License 2.0 (data/cameras/sony/LICENSE-rawtoaces-data).
 
 4. ACES 2.0 output transform
-   Ported from https://github.com/aces-aswf/aces-output, Apache License 2.0.
-   Copyright Contributors to the Academy Color Encoding System.
+   Rust port of the CTL reference in https://github.com/aces-aswf/aces-core
+   (commit 069b0bc) with the output presets of
+   https://github.com/aces-aswf/aces-output (commit 6d8f907).
+   Apache License 2.0. Copyright Contributors to the ACES Project.
 
 5. Figtree typeface
    Copyright The Figtree Project Authors. SIL Open Font License 1.1
@@ -97,6 +99,15 @@ UNDISCLOSED.
    Cube++ (CC BY 4.0), https://zenodo.org/records/4153431
    See data/models/*/MODEL_CARD.md for per-model provenance.
 
-7. Rust and JavaScript dependencies
+7. Independent JPEG Group
+   This software is based in part on the work of the Independent JPEG Group.
+   (The jpeg-encoder crate's forward DCT derives from IJG/mozjpeg code.)
+
+8. Colour-demosaicing (Menon 2007 demosaic)
+   The Menon DDFAPD demosaic in crates/ym-gpu/src/cpu/demosaic.rs is ported
+   from colour-demosaicing (https://github.com/colour-science/colour-demosaicing),
+   BSD 3-Clause, Copyright 2015 Colour Developers.
+
+9. Rust and JavaScript dependencies
    Listed with their licences in the generated THIRD-PARTY file produced at
    release time (cargo-about / license-checker).

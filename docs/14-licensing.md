@@ -36,6 +36,9 @@ The project is Apache-2.0. Everything shipped must be compatible with it. Everyt
 | `colorimetry` crate | MIT / Apache-2.0 (embeds CIE datasets) | dev/test and fitting dependency only, so no CIE data is compiled into shipped binaries (`docs/02`) |
 | colour-science, OpenColorIO | BSD-3 | training and test-vector generation |
 | Figtree font | OFL-1.1 | bundle with its licence text |
+| `jpeg-encoder` crate (JPEG export) | (MIT OR Apache-2.0) AND IJG | dependency; IJG allowed in `deny.toml` (permissive); the IJG acknowledgement goes in `NOTICE`, docs and the About window (decision 2026-10-12) |
+| colour-demosaicing (Menon port) | BSD-3-Clause | ported into `ym-gpu::cpu::demosaic` with the licence text in the module docs and `NOTICE` |
+| darktable `lens.cc` | GPL-3.0 | read (not copied) to learn Sony's embedded lens-correction conventions; darktable-cli also runs as a separate-process lens oracle |
 | US patent 11948279 (joint demosaic+denoise with a lightweight U-Net) | patent | [HUMAN M4-H4] freedom-to-operate check before 1.0 |
 
 ## Rules for the codebase
