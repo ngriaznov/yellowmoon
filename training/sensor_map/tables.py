@@ -8,11 +8,17 @@ All tables sit on a uniform 10 K grid (``GRID_STEP_K``) and are stored as
   component, as ``[r, 1, b]``. Blackbody 1500-25000 K and CIE D series 4000-25000 K.
 * camera locus: ``(ln R/G, ln B/G)`` of the Sony response ``S_P^T E`` to blackbody 1500-4000 K
   and CIE D 4000-25000 K (the rawtoaces rule: blackbody below 4000 K, D series from 4000 K).
+  **``S_P`` must be in the camera's own raw scale** (the published Weta curves, clipped at 0, not
+  normalised per channel: ``fit.sony_curves_raw``): the scene white at runtime comes from raw data
+  (as-shot gains, Pick white, the illuminant estimator), so the locus is the raw white of the light.
+  The curves of the maps and ``w_A`` tables are scale-free (every response is divided by the white
+  response) and stay peak-normalised; see ``fit.load_curves_raw`` and docs/02 C1.
 * ``xy``: CIE 1931 xy of the same lights, from ``CMF^T E`` on the same 5 nm grid.
 * ``duv_scale``: CIE 1960 uv distance per unit of log-chroma distance **across** the locus, as a
   function of temperature (100 K grid per branch), measured on lights with a smooth green excess /
   deficit (see :func:`duv_scale_at`). It varies by about 50 % from 2000 K to 20000 K, so a single
-  number would misread tint by 25 % at the ends.
+  number would misread tint by 25 % at the ends. Measured with the raw-scale curves like the locus
+  (the log-chroma distance it converts is a distance in the raw locus space).
 """
 
 from __future__ import annotations
@@ -32,6 +38,24 @@ DECIMALS = 9  # table values are rounded to 1e-9 when written
 
 def _grid(kind: str, lo: int, hi: int) -> tuple[np.ndarray, np.ndarray]:
     return (lt.blackbody_grid if kind == "blackbody" else lt.daylight_grid)(lo, hi, GRID_STEP_K)
+
+
+def require_raw_scale(S_P: np.ndarray) -> np.ndarray:
+    """Return ``S_P`` unchanged, or raise if it looks peak-normalised per channel.
+
+    The locus tables are only valid for the camera's own raw channel balance (the curves as
+    published, ``fit.sony_curves_raw``). Curves whose three channels all peak at 1 are what
+    ``ssf_core.load_cameras`` returns; building a locus from them is the defect of docs/02 C1 (red
+    off by x1.6, blue by x1.2). A measured camera never has three equal peaks (Weta's red peaks at
+    0.57-0.62 of its green), so equal peaks identify the mistake.
+    """
+    peaks = np.asarray(S_P, dtype=float).max(axis=0)
+    if np.allclose(peaks, peaks[0], rtol=0.0, atol=1e-9):
+        raise ValueError(
+            "locus tables need the camera curves in the published raw scale (fit.sony_curves_raw), "
+            f"but all three channels peak at {peaks[0]:.6g}: these look peak-normalised per channel"
+        )
+    return S_P
 
 
 def responses(E: np.ndarray, S: np.ndarray) -> np.ndarray:
@@ -76,7 +100,11 @@ def w_a_tables(S_A: np.ndarray) -> dict[str, dict]:
 
 
 def locus_tables(S_P: np.ndarray) -> dict[str, dict]:
-    """Camera log-chroma and CIE xy grids (floats, unrounded) for the locus."""
+    """Camera log-chroma and CIE xy grids (floats, unrounded) for the locus.
+
+    ``S_P`` is the camera's curves in the raw scale (``fit.sony_curves_raw``, :func:`require_raw_scale`).
+    """
+    require_raw_scale(S_P)
     chroma, xy = {}, {}
     for kind, (lo, hi) in (("blackbody", LOCUS_BLACKBODY_K), ("daylight", LOCUS_DAYLIGHT_K)):
         ts, es = _grid(kind, lo, hi)
@@ -138,7 +166,11 @@ def duv_scale_at(S_P: np.ndarray, kind: str, t_k: float, amounts=DUV_TINT_AMOUNT
 
 
 def duv_scale_tables(S_P: np.ndarray) -> dict[str, dict]:
-    """``{"blackbody": grid, "daylight": grid}`` of the Duv scale, 100 K step, scalar ``values``."""
+    """``{"blackbody": grid, "daylight": grid}`` of the Duv scale, 100 K step, scalar ``values``.
+
+    ``S_P`` is the camera's curves in the raw scale (``fit.sony_curves_raw``, :func:`require_raw_scale`).
+    """
+    require_raw_scale(S_P)
     out = {}
     for kind, (lo, hi) in DUV_SCALE_RANGES_K.items():
         ts = np.arange(lo, hi + 1, DUV_SCALE_STEP_K, dtype=float)

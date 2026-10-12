@@ -18,6 +18,9 @@ Conventions
     two bracketing entries, clamped at the ends; ``w`` and ``M`` are interpolated linearly.
 
 * **Which table** for a CCT: blackbody below 4000 K, CIE daylight from 4000 K (the rawtoaces rule).
+* **Camera RGB scale:** the locus is the camera's **raw** white of each light (the published curves, clipped at 0,
+  not normalised per channel; docs/02 C1), so ``rgb`` arguments must be whites in the scale of the raw data
+  (as-shot gains inverted, Pick white, the illuminant estimate). Only the overall scale is free.
 * **RGB -> (CCT, Duv):** :func:`rgb_to_cct_duv`. **(CCT, Duv) -> RGB:** :func:`cct_duv_to_rgb`.
   Duv is signed, positive toward magenta, in CIE 1960 uv units (the ``duv_scale`` table, looked up
   at the foot point's CCT, converts the log-chroma distance). That is the opposite sign of CIE's
@@ -181,7 +184,7 @@ def duv_scale_at(profile: Profile, t_k: float) -> float:
 
 
 def rgb_to_cct_duv(profile: Profile, rgb) -> tuple[float, float]:
-    """Camera RGB of the light (any scale) -> (CCT in K, Duv, positive toward magenta).
+    """Camera RGB of the light in the camera's raw balance (overall scale free) -> (CCT in K, Duv, positive toward magenta).
 
     1. ``p = (ln R/G, ln B/G)``.
     2. For each branch (blackbody 1500-4000 K, daylight 4000-25000 K) find the nearest point on

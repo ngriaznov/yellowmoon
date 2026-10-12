@@ -160,7 +160,7 @@ def build(profile_path: Path | None = None) -> dict:
     prof_doc = json.loads(profile_path.read_text())
     profile = rr.Profile.from_dict(prof_doc)
     prof_meta = next(p for p in PROFILES if p.id == prof_doc["id"])
-    S_P = fit.sony_curves()[prof_meta.curves_name]
+    S_P = fit.sony_curves_raw()[prof_meta.curves_name]  # the camera's own raw scale: what the locus is built from
     S_A = fit.alexa_curves()
 
     # --- w_A and locus at grid points and off grid ---------------------------
@@ -241,6 +241,11 @@ def build(profile_path: Path | None = None) -> dict:
             "colour_science": colour.__version__,
             "conventions": "training/alexa/ssf_core.py: 380-780 nm at 5 nm, blackbody below 4000 K, CIE D series "
                            "(M1, M2 rounded to 3 decimals) from 4000 K with CCT correction 1.4388/1.4380",
+            "camera_curve_scale": "camera_locus, cct_duv: the camera's curves in the published raw scale (data/cameras/sony/*.json "
+                                  "clipped at 0, not normalised per channel; fit.sony_curves_raw). alexa_w_a: the ALEXA "
+                                  "estimate, peak-normalised by construction. camera_rgb values are therefore raw whites "
+                                  "(R/G, 1, B/G), not peak-normalised ones (docs/02 C1).",
+            "camera_curves_sha256": hashlib.sha256((paths.SONY_CURVES_DIR / prof_meta.curves_file).read_bytes()).hexdigest(),
         },
         "interpolation": {
             "grid": "values[i] is at T_i = start_k + i * step_k; queries are clamped to the table",
@@ -388,7 +393,7 @@ def main(argv: list[str] | None = None) -> int:
         S_A = fit.alexa_curves()
         for prof_meta in PROFILES:
             doc = json.loads((paths.PROFILES_DIR / prof_meta.id / "profile.json").read_text())
-            study = interp_error_study(rr.Profile.from_dict(doc), fit.sony_curves()[prof_meta.curves_name], S_A)
+            study = interp_error_study(rr.Profile.from_dict(doc), fit.sony_curves_raw()[prof_meta.curves_name], S_A)
             print(prof_meta.id)
             for k, v in study.items():
                 print(f"  {k:<22} " + "  ".join(f"{m}={x:.2e}" for m, x in v.items()))

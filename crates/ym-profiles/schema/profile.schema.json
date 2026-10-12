@@ -62,7 +62,7 @@
       }
     },
     "locus": {
-      "description": "Camera locus of the scene-light models (docs/02 'Camera RGB <-> CCT and Duv'): camera RGB (green = 1) of blackbody 1500-4000 K and CIE daylight 4000-25000 K every 10 K, as log-chroma, with the matching CIE 1931 xy and the Duv scale.",
+      "description": "Camera locus of the scene-light models (docs/02 'Camera RGB <-> CCT and Duv'): camera RGB (green = 1) of blackbody 1500-4000 K and CIE daylight 4000-25000 K every 10 K, as log-chroma, with the matching CIE 1931 xy and the Duv scale. The camera RGB is in the camera's own RAW scale: the response of the published spectral curves (clipped at 0, NOT normalised per channel) to the light, divided by its green component, so it is directly comparable with raw white-balance data (as-shot gains, Pick white, the illuminant estimator); see provenance.light_conventions and docs/02 C1.",
       "type": "object",
       "additionalProperties": false,
       "required": ["axes", "interpolation", "blackbody", "daylight", "xy", "duv_scale", "duv_sign"],
@@ -94,7 +94,7 @@
           }
         },
         "duv_scale": {
-          "description": "CIE 1960 uv distance per unit of log-chroma distance measured across the locus (provenance.duv_scale_method), as a function of temperature: blackbody 1500-4000 K and daylight 4000-25000 K, 100 K step, scalar values, interpolated linearly in mired like the locus. Duv = signed log-chroma distance to the locus * scale(CCT of the foot point).",
+          "description": "CIE 1960 uv distance per unit of log-chroma distance measured across the locus (provenance.duv_scale_method), as a function of temperature: blackbody 1500-4000 K and daylight 4000-25000 K, 100 K step, scalar values, interpolated linearly in mired like the locus. Duv = signed log-chroma distance to the locus * scale(CCT of the foot point). Measured in the same raw scale as the locus.",
           "type": "object",
           "additionalProperties": false,
           "required": ["blackbody", "daylight"],
@@ -201,7 +201,10 @@
           }
         },
         "duv_scale_method": { "type": "string" },
-        "light_conventions": { "type": "string" },
+        "light_conventions": {
+          "description": "Conventions for light SPDs and CCTs, and which curve scale each table was computed in (locus and duv_scale: the published raw scale; sensor_map and alexa_white: scale-free, from peak-normalised curves).",
+          "type": "string"
+        },
         "cie_data": {
           "description": "States that CIE SPDs were used at fit time only; pending HUMAN M1-H4.",
           "type": "string",

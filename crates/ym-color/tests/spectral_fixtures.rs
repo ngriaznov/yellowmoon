@@ -37,12 +37,12 @@ fn load_profile(id: &str) -> Profile {
         .join("data/cameras")
         .join(v["spectral_curves"].as_str().unwrap());
     Profile {
-        // The fit clips measurement noise below zero and normalises each channel to its peak.
+        // The locus is the camera white in the raw scale (docs/02 C1): the curves as published, with the
+        // measurement noise below zero clipped and NOT normalised per channel. (The maps and `w_A` come from
+        // peak-normalised curves, which only works because every response there is divided by the white's.)
         curves: SpectralCurves::from_path(curves_path)
             .unwrap()
-            .clipped_at_zero()
-            .peak_normalized()
-            .unwrap(),
+            .clipped_at_zero(),
         locus: serde_json::from_value(v["locus"].clone()).unwrap(),
         white: serde_json::from_value(v["alexa_white"].clone()).unwrap(),
         maps: serde_json::from_value(v["sensor_map"]["classes"].clone()).unwrap(),

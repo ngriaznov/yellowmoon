@@ -568,7 +568,6 @@ fn planck_380_780(t_k: f64) -> Vec<f64> {
 }
 
 #[test]
-#[ignore = "known defect, found in review: the profile locus is built from peak-normalised curves (docs/02 C1); run with --ignored after the profiles are rebuilt"]
 fn the_profile_locus_is_the_camera_white_in_the_cameras_own_raw_scale() {
     // The scene light is a camera white in the scale of the raw data (the mosaic after black subtraction and
     // normalisation, balanced with the initial gains). Pick white, the as-shot gains and the illuminant

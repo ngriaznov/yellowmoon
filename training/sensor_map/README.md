@@ -7,13 +7,13 @@ of M1-05. The Rust runtime is a later task; this file is its specification, toge
 
 | File | Role |
 |---|---|
-| `fit.py` | the shipped Lab-optimal white-preserving 3×3 fit (`fit_map_lab`), the superseded weighted-RGB fit (`fit_map_weighted_rgb` = `sony_profiles.fit_map`), the per-class `(mired, M)` tables, the runtime blend |
+| `fit.py` | the shipped Lab-optimal white-preserving 3×3 fit (`fit_map_lab`), the superseded weighted-RGB fit (`fit_map_weighted_rgb` = `sony_profiles.fit_map`), the per-class `(mired, M)` tables, the runtime blend; the two curve loaders: `sony_curves()` (peak-normalised per channel, for the maps) and `sony_curves_raw()` (the published raw scale, for the locus; see "Which scale the curves are in") |
 | `lights.py` | reference and gate lights (SPDs from colour-science, `ssf_core` conventions) |
-| `tables.py` | `w_A` tables, camera locus, CIE xy, Duv scale |
+| `tables.py` | `w_A` tables, camera locus (raw-scale curves only: `require_raw_scale`), CIE xy, Duv scale |
 | `build_profiles.py` | writes `data/cameras/profiles/<id>/profile.json` ×11 |
 | `registry_data.py`, `build_registry.py` | the `docs/03` camera table → `data/cameras/registry.json` |
 | `build_target.py` | `data/alexa/target.json` |
-| `validate_profiles.py` | schemas + white preservation + mired order + grids + registry vs `docs/03` |
+| `validate_profiles.py` | schemas + white preservation + mired order + grids + locus scale (raw-scale curves, 1e-6) + registry vs `docs/03` |
 | `runtime_ref.py` | reference implementation of every runtime rule below |
 | `evaluate.py` | port of `sony_profiles.py` evaluation (reproduces `sony_profiles.csv`) |
 | `gate.py`, `gate_diagnostics.py` | the sensor-map gate and the capacity analysis behind its numbers |
@@ -44,6 +44,19 @@ python3 -m training.sensor_map.gate --objective weighted_rgb  # the same run wit
 python3 -m training.sensor_map.gate_diagnostics    # capacity of the map families per gate light
 python3 -m training.sensor_map.fit --stability     # reproducibility of the Lab fit (495 fits)
 ```
+
+## Which scale the curves are in (docs/02 §C1; fix of 2026-10-12)
+
+Two scales of the Weta curves are in use, on purpose:
+
+| Table | Curves | Why |
+|---|---|---|
+| `locus` (log-chroma), `duv_scale` | **published raw scale**: `fit.sony_curves_raw()` = `data/cameras/sony/*.json` clipped at 0, **not normalised** (one common factor per camera, green peak exactly 1.0, red peak 0.57–0.62, blue peak 0.78–0.87 of it) | the scene white at runtime is raw data (as-shot gains, Pick white, the illuminant estimator), so a locus point must be the raw white `S^T E / (S_G^T E)` of its light |
+| `sensor_map` matrices | `fit.sony_curves()` = `ssf_core.load_cameras`: clipped, each channel divided by its own peak | scale-free: `src` and `dst` are each divided by their response to the white, so any per-channel scale cancels; kept so the maps are byte for byte what the research LOO and gate numbers use |
+| `alexa_white` | the ALEXA estimate, peak-normalised by construction | only ratios enter C3·C4 |
+| `locus.xy` | none (CIE only) | |
+
+Peak-normalising the locus (the first version) multiplied the red response by 1.6–1.8 and the blue by 1.15–1.3 (A7 III blackbody 6504 K: raw `[0.371, 1, 0.767]`, peak-normalised `[0.623, 1, 0.915]`, its ColorMatrix `[0.386, 1, 0.762]`) and made real as-shot whites read Duv −0.022 to −0.052. The two locus versions differ by a constant vector per camera in log-chroma, `(ln(peak_R/peak_G), ln(peak_B/peak_G))`, the same at every temperature, so **`duv_scale` and the chord geometry are identical** in both (the rebuild reproduced the old `duv_scale` tables and `spectral_reference.json` tolerances exactly); only the position of the locus moved. `tables.locus_tables` and `tables.duv_scale_tables` raise if the three channels of the curves peak at the same value (the signature of the old input). Anything compared with raw data (the illuminant estimator's training lights, a test white) must use `sony_curves_raw()` or an equivalent unnormalised reading of the same files. `provenance.light_conventions` states the scale of every table.
 
 ## The fit (docs/02 §C2)
 
@@ -109,7 +122,7 @@ blackbody `w_A` table also extends to 25000 K (Planckian whites at any temperatu
 
 **RGB → (CCT, Duv)** (`runtime_ref.rgb_to_cct_duv`):
 
-1. `p = (ln R/G, ln B/G)` of the camera RGB (any scale).
+1. `p = (ln R/G, ln B/G)` of the camera RGB. The overall scale does not matter, **the balance between the channels does**: it must be the camera's raw balance (the camera RGB of a white, as-shot gains inverted, Pick white, the estimator's `w_scene`; see "Which scale the curves are in").
 2. For each branch (blackbody 1500–4000 K, daylight 4000–25000 K) take the polyline of its table entries and find the
    nearest point to `p`: project `p` on every chord, clamp to the chord, keep the chord with the smallest distance (first
    on ties). **Skip chords of zero length** (the D-series staircase can repeat a row exactly).

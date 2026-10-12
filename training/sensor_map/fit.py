@@ -33,6 +33,7 @@ import argparse
 import json
 from dataclasses import dataclass
 from functools import lru_cache
+from pathlib import Path
 
 import numpy as np
 import scipy
@@ -59,12 +60,60 @@ def alexa_curves() -> np.ndarray:
     return arr / arr.max(axis=0, keepdims=True)
 
 
+def load_curves_raw(path) -> np.ndarray:
+    """One Weta curve file, **in the scale of the published data**: (81, 3), 380-780 nm at 5 nm.
+
+    The ``main`` R, G, B columns of the rawtoaces-data JSON, clipped at 0 (measurement noise below
+    zero; the same clip ``ssf_core.load_cameras`` and ``ym_color::spectral::SpectralCurves::clipped_at_zero``
+    apply) and **not normalised**. This is the camera's raw channel balance, and it is the only scale
+    in which a camera white (the response ``S^T E`` of a light, divided by its green component) equals
+    what the raw data of that light looks like: the channels of a real sensor are not equally
+    sensitive, and the raw white balance (as-shot gains, Pick white, the illuminant estimator, all
+    working on the raw mosaic) lives in that ratio.
+
+    The exact scale of the published files: one common factor per camera, chosen so that the green
+    channel peaks at exactly 1.0 (all 11 Sony files); red peaks at 0.5675-0.6212 and blue at
+    0.7805-0.8678 of that, so the channel ratios are preserved. Only ratios between channels enter
+    the locus (``tables.log_chroma`` divides by green), so the common factor is immaterial.
+
+    ``ssf_core.load_cameras`` instead divides each channel by its own peak (red x1.6-1.8, blue x1.15-1.3).
+    That is harmless wherever every response is divided by the response to the white of the same
+    curves (the sensor-map fit, the ALEXA ``w_A`` ratios) and wrong for anything compared with raw data
+    (the locus and the Duv scale, defect of docs/02 C1 found in review).
+    """
+    doc = json.loads(Path(path).read_text())
+    data = {float(k): v for k, v in doc["spectral_data"]["data"]["main"].items()}
+    arr = np.array([data[w] for w in s.WL], dtype=float)
+    return np.clip(arr, 0.0, None)
+
+
+@lru_cache(maxsize=1)
+def sony_curves_raw() -> dict[str, np.ndarray]:
+    """The 11 shipped Sony curves in the published scale: ``{"Sony ILCE-7RM4": (81, 3), ...}``.
+
+    Read from the shipped ``data/cameras/sony/*.json`` (the files the runtime reads through
+    ``profile.spectral_curves`` and whose SHA-256 is in ``provenance.curves_source``) with
+    :func:`load_curves_raw`: clipped at 0, **not peak-normalised**. Use these for everything that is
+    compared with raw camera data (``tables.locus_tables``, ``tables.duv_scale_tables``); the maps and
+    ``w_A`` tables keep using :func:`sony_curves`.
+    """
+    out = {}
+    for path in sorted(paths.SONY_CURVES_DIR.glob("Sony_*_380_780_5.json")):
+        doc = json.loads(path.read_text())
+        hdr = doc["header"]
+        out[f"{hdr['manufacturer']} {hdr['model']}"] = load_curves_raw(path)
+    return out
+
+
 @lru_cache(maxsize=1)
 def sony_curves() -> dict[str, np.ndarray]:
-    """The measured Sony curves {"Sony ILCE-7RM4": (81, 3), ...} from rawtoaces-data.
+    """The measured Sony curves {"Sony ILCE-7RM4": (81, 3), ...} from rawtoaces-data, **peak-normalised per channel**.
 
     Loaded with ``ssf_core.load_cameras`` (clip at 0, peak-normalise per channel), restricted to
-    the 11 bodies whose files ship in ``data/cameras/sony/``.
+    the 11 bodies whose files ship in ``data/cameras/sony/``. Valid for the sensor-map fit and the
+    ALEXA ``w_A`` tables (every response there is divided by the response to the white of the same
+    curves, so the per-channel scale cancels) and for the research validation; **not** for the camera
+    locus, which needs :func:`sony_curves_raw`.
     """
     shipped = {p.name for p in paths.SONY_CURVES_DIR.glob("Sony_*_380_780_5.json")}
     cams = s.load_cameras()

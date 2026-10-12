@@ -787,7 +787,9 @@ fn the_clip_level_is_the_first_neutral_clip_mapped_through_the_matrix() {
             }
         }
     }
-    // Daylight on a Sony sensor clips green first; a red tungsten light clips red first.
+    // Daylight on a Sony sensor clips green first. A light so red that red clips first has to be warmer than
+    // about 1800 K (the A7R IV raw white is `[0.88, 1, 0.24]` at 2000 K, `[1.19, 1, 0.17]` at 1600 K; the
+    // locus is in the raw scale, docs/02 C1; the red channel of a Sony body is the least sensitive).
     let p = load("sony-ilce-7rm4");
     let day = estimate_at(
         &p,
@@ -804,7 +806,7 @@ fn the_clip_level_is_the_first_neutral_clip_mapped_through_the_matrix() {
     );
     let tungsten = estimate_at(
         &p,
-        2000.0,
+        1600.0,
         0.0,
         ClassProbabilities::only(LightClass::Tungsten),
     );

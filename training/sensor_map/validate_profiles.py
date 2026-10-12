@@ -15,6 +15,9 @@ Needs only the committed files (no fetched sources, no colour-science), so it ca
   log-chroma monotone along each branch, ``w_A`` positive, xy plausible;
 * the curves file exists and matches ``provenance.curves_source.sha256``; the target file matches
   ``provenance.target.sha256``;
+* **locus scale** (docs/02 C1): the blackbody locus equals the camera white of Planck's law integrated against
+  the shipped curve file as published (clipped at 0, not normalised per channel) to 1e-6 at 1500-3900 K, so a
+  locus built from peak-normalised curves (off by x1.6 in red, x1.2 in blue) fails;
 * registry: every model ID once, one ``exact`` body per profile, ``via`` and ``default`` rules,
   ``model_strings`` agree with ``bodies``, and the model-ID table equals the table in
   ``docs/03-camera-profiles.md`` (when that file is present).
@@ -36,6 +39,9 @@ from jsonschema import Draft202012Validator
 from training.common import paths
 
 WHITE_TOL = 1e-12
+LOCUS_SCALE_TOL = 1e-6  # |ln(R/G) or ln(B/G) of the table - the same from the published curves|
+LOCUS_SCALE_CHECK_K = (1500, 2000, 2500, 3200, 3900)
+PLANCK_C2 = 0.014388  # m K, colour-science's value (the fit scripts' convention)
 GRID_SPECS = {
     # (table path in the profile) -> (start_k, end_k)
     ("alexa_white", "blackbody"): (1500, 25000),
@@ -79,6 +85,34 @@ def _get(d: dict, path: tuple[str, ...]):
     for k in path:
         d = d[k]
     return d
+
+
+def planck_380_780(t_k: float) -> np.ndarray:
+    """Planck's law on the 380-780 nm / 5 nm grid of the curve files (peak-normalisation is irrelevant here)."""
+    lam = (380.0 + 5.0 * np.arange(81)) * 1e-9
+    return 1.0 / (lam**5 * np.expm1(PLANCK_C2 / (lam * t_k)))
+
+
+def published_curves(path: Path) -> np.ndarray:
+    """A curve file as published: (81, 3), clipped at 0, **not** normalised (``fit.load_curves_raw`` without the import)."""
+    doc = json.loads(path.read_text())
+    data = {float(k): v for k, v in doc["spectral_data"]["data"]["main"].items()}
+    return np.clip(np.array([data[380.0 + 5.0 * i] for i in range(81)], dtype=float), 0.0, None)
+
+
+def check_locus_scale(rep: Report, doc: dict, label: str, curves: Path) -> None:
+    """The profile's blackbody locus is the raw camera white of Planck's law through the published curves."""
+    S = published_curves(curves)
+    grid = doc["locus"]["blackbody"]
+    worst = 0.0
+    for t in LOCUS_SCALE_CHECK_K:
+        i = (t - grid["start_k"]) // grid["step_k"]
+        r = planck_380_780(float(t)) @ S
+        want = np.log([r[0] / r[1], r[2] / r[1]])
+        worst = max(worst, float(np.abs(np.array(grid["values"][i]) - want).max()))
+    rep.check(worst <= LOCUS_SCALE_TOL,
+              f"{label}: locus.blackbody differs from the camera white of the published curves by {worst:.2e} "
+              f"(> {LOCUS_SCALE_TOL:g}): built from normalised curves? (docs/02 C1)")
 
 
 def check_profile(rep: Report, path: Path, doc: dict) -> None:
@@ -155,6 +189,7 @@ def check_profile(rep: Report, path: Path, doc: dict) -> None:
     if curves.exists():
         rep.check(sha256_file(curves) == doc["provenance"]["curves_source"]["sha256"],
                   f"{label}: curves SHA-256 differs from provenance.curves_source.sha256")
+        check_locus_scale(rep, doc, label, curves)
     if paths.ALEXA_CURVES_JSON.exists():
         rep.check(sha256_file(paths.ALEXA_CURVES_JSON) == doc["provenance"]["target"]["sha256"],
                   f"{label}: target curves SHA-256 differs from provenance.target.sha256")

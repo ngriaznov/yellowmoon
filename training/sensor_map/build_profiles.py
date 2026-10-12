@@ -13,6 +13,11 @@ and ``provenance.fit_solver`` record the fit objective (Lab-optimal white-preser
 2026-10-12) and the scipy/numpy versions that solved it. ``--check`` ignores the commit in
 ``fit_script`` and the versions in ``fit_solver``.
 
+Curve scales (docs/02 C1; ``CURVE_SCALES``, recorded in ``provenance.light_conventions``): the camera ``locus``
+and ``duv_scale`` use the curves in the **published raw scale** (``fit.sony_curves_raw``: clipped at 0, not
+normalised per channel), because the scene white at runtime comes from raw data; the ``sensor_map`` and the
+``alexa_white`` tables are scale-free and keep the peak-normalised path they were fitted with, bit for bit.
+
 Format: ``crates/ym-profiles/schema/profile.schema.json``; rules: ``training/sensor_map/README.md``.
 """
 
@@ -43,6 +48,17 @@ FIT_SOURCES = (
     "training/sensor_map/tables.py",
     "training/sensor_map/registry_data.py",
     "training/sensor_map/build_profiles.py",
+)
+#: Which curve scale each table of the profile was computed in (recorded in ``provenance.light_conventions``;
+#: docs/02 C1). The locus and Duv scale are compared with RAW data, so they use the published scale; the
+#: maps and ``w_A`` divide every response by the response to the white, so the scale cancels.
+CURVE_SCALES = (
+    "camera RGB scale: locus (log-chroma) and duv_scale tables are computed from the camera's spectral curves in the "
+    "published raw scale (clipped at 0, NOT normalised per channel; one common factor per camera, green peak 1.0, "
+    "red and blue peaks as published) so a locus point is the raw white of the light and compares directly with "
+    "as-shot gains, Pick white and the illuminant estimator; sensor_map matrices are computed from the same curves "
+    "peak-normalised per channel (scale-free: every response is divided by the response to the white of the same curves); "
+    "alexa_white tables are from the ALEXA estimate, peak-normalised by construction (only ratios enter the chain)"
 )
 CIE_NOTE = (
     "CIE SPDs (D series, F1-F12, LED-B1..B5, LED-BH1, LED-RGB1, LED-V1, LED-V2; CC BY-SA 4.0, "
@@ -161,7 +177,8 @@ def _checks_json(prof: Profile) -> list[dict]:
 
 
 def build_profile(prof: Profile, git_sha: str) -> dict:
-    S_P = fit.sony_curves()[prof.curves_name]
+    S_P = fit.sony_curves()[prof.curves_name]  # peak-normalised: scale-free, for the maps
+    S_raw = fit.sony_curves_raw()[prof.curves_name]  # published raw scale: for the locus and the Duv scale
     S_A = fit.alexa_curves()
     tables = fit.fit_tables(S_P, S_A)
     curves_path = paths.SONY_CURVES_DIR / prof.curves_file
@@ -172,7 +189,7 @@ def build_profile(prof: Profile, git_sha: str) -> dict:
         "display_name": prof.display_name,
         "spectral_curves": prof.spectral_curves,
         "sensor_map": _sensor_map_json(tables),
-        "locus": _locus_json(S_P),
+        "locus": _locus_json(S_raw),
         "alexa_white": _alexa_white_json(S_A),
         "decode": {"quirks": []},
         "provenance": {
@@ -198,10 +215,11 @@ def build_profile(prof: Profile, git_sha: str) -> dict:
             "reference_lights": {k: [L.name for L in v] for k, v in refs.items()},
             "duv_scale_method": "at every 100 K: median over green excess/deficit tilts of +-5 % and +-10 % "
                                 "(training/sensor_map/lights.py tint_spd) of the locus light, of |CIE 1960 uv offset| / "
-                                "|log-chroma offset|, both perpendicular to the locus (tangent from lights 3 % either side)",
+                                "|log-chroma offset|, both perpendicular to the locus (tangent from lights 3 % either side); "
+                                "log-chroma of the camera curves in the published raw scale (see light_conventions)",
             "light_conventions": "blackbody below 4000 K and CIE D series from 4000 K (rawtoaces); mired = 1e6/CCT "
                                  "with CCT the generating temperature for blackbody and D series and the Ohno (2013) "
-                                 "CCT of the SPD for F and LED lights; SPDs 380-780 nm at 5 nm, peak-normalised",
+                                 "CCT of the SPD for F and LED lights; SPDs 380-780 nm at 5 nm, peak-normalised; " + CURVE_SCALES,
             "cie_data": CIE_NOTE,
             "checks": _checks_json(prof),
         },

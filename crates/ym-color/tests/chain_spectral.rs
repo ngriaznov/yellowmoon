@@ -62,12 +62,11 @@ fn load(id: &str) -> Profile {
         .join("data/cameras")
         .join(v["spectral_curves"].as_str().unwrap());
     Profile {
-        // The fit clips measurement noise below zero and normalises each channel to its peak.
-        sony: SpectralCurves::from_path(curves)
-            .unwrap()
-            .clipped_at_zero()
-            .peak_normalized()
-            .unwrap(),
+        // The camera in the raw scale of its data (docs/02 C1): the curves as published, noise below zero
+        // clipped, not normalised per channel. The scene white read from them is compared with the profile
+        // locus, which is in that scale; the g0-balanced patches below divide by the white of the same
+        // curves, so they do not depend on the scale.
+        sony: SpectralCurves::from_path(curves).unwrap().clipped_at_zero(),
         locus: serde_json::from_value(v["locus"].clone()).unwrap(),
         white: serde_json::from_value(v["alexa_white"].clone()).unwrap(),
         maps: serde_json::from_value(v["sensor_map"]["classes"].clone()).unwrap(),

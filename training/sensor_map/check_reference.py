@@ -45,6 +45,12 @@ def main() -> int:
     check(hashlib.sha256(paths.ALEXA_CURVES_JSON.read_bytes()).hexdigest() == ref["sources"]["alexa_curves_sha256"],
           "reference is stale: the ALEXA curves changed")
     profile = rr.Profile.load(prof_path)
+    # the camera locus in the file is computed from the shipped curve file in its published raw scale (docs/02 C1)
+    curves_path = paths.CAMERAS_DIR / json.loads(prof_path.read_text())["spectral_curves"]
+    check(hashlib.sha256(curves_path.read_bytes()).hexdigest() == ref["sources"]["camera_curves_sha256"],
+          "reference is stale: the camera curves changed")
+    check("raw scale" in ref["sources"]["camera_curve_scale"],
+          "reference was generated without the raw-scale camera curves (docs/02 C1)")
     tol = ref["tolerances"]
     on_grid, interp_tol, off = tol["on_grid_abs"], tol["interpolated_abs"], tol["off_grid_vs_exact_abs"]
 
