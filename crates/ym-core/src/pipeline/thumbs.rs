@@ -334,7 +334,25 @@ impl Renderer {
         let id = src.id;
         self.scheduler()
             .submit(Priority::Export, Some(id), move |token| {
-                r.render_full_with(&src, &request, token, true)
+                r.render_full_with(&src, &request, token, true, None)
+            })
+    }
+
+    /// [`Renderer::spawn_full`] that also calls `progress` with the fraction of tiles done (0 to 1)
+    /// after each tile, from the export worker's thread. The export queue shows it as the
+    /// per-file percentage.
+    #[must_use]
+    pub fn spawn_full_reporting(
+        &self,
+        src: PhotoSource,
+        request: FullRequest,
+        progress: Arc<dyn Fn(f32) + Send + Sync>,
+    ) -> JobHandle<Result<FullImage, RenderError>> {
+        let r = self.clone();
+        let id = src.id;
+        self.scheduler()
+            .submit(Priority::Export, Some(id), move |token| {
+                r.render_full_with(&src, &request, token, true, Some(&*progress))
             })
     }
 

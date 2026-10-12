@@ -2,6 +2,8 @@
 //! with a known light, a known brightness and a known noise model.
 #![allow(dead_code)]
 
+pub mod tiffmini;
+
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
@@ -292,4 +294,27 @@ pub fn mean_rgba(
     }
     let n = (w * h) as f64;
     [sum[0] / n, sum[1] / n, sum[2] / n]
+}
+
+// ---------------------------------------------------------------------------------------------
+// Export helpers
+// ---------------------------------------------------------------------------------------------
+
+/// An export context over a renderer that knows only the Neutral look, with `home` as the home
+/// folder (so the fallback destination stays inside the test's temporary folder).
+pub fn export_context(home: &Path) -> ym_core::export::ExportContext {
+    ym_core::export::ExportContext::new(
+        ym_core::pipeline::Renderer::neutral_only().expect("render thread"),
+    )
+    .with_home(Some(home.to_path_buf()))
+}
+
+/// The files directly inside `dir`, sorted by name (names only).
+pub fn names_in(dir: &Path) -> Vec<String> {
+    let mut v: Vec<String> = std::fs::read_dir(dir)
+        .expect("read dir")
+        .map(|e| e.expect("entry").file_name().to_string_lossy().into_owned())
+        .collect();
+    v.sort();
+    v
 }

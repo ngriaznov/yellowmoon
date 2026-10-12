@@ -437,6 +437,12 @@ impl JobScheduler {
         self.foreground.cancel_all() + self.background.cancel_all()
     }
 
+    /// Cancels the viewport, tile and thumbnail jobs, pending and running, and leaves the export
+    /// jobs alone: what closing the session does (an export that was queued keeps going).
+    pub fn cancel_foreground(&self) -> usize {
+        self.foreground.cancel_all()
+    }
+
     /// Jobs waiting, not counting the ones that run.
     #[must_use]
     pub fn pending(&self) -> usize {

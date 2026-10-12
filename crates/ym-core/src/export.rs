@@ -1,0 +1,1177 @@
+//! The one function that exports a photo: [`export_photo`] (`docs/09-export.md`: "App and CLI share
+//! one code path, so the same inputs and settings give byte-identical files").
+//!
+//! The app's export queue ([`crate::export_queue`]) and the command-line tool (`ym render`) both
+//! call it with an [`ExportPhoto`] (a photo as the render sees it, settings included), the
+//! [`ExportParams`] of the job and an [`ExportControl`] (cancel and progress). Everything that
+//! decides the bytes is in here or below it: the render, the metadata, the file name, the writer.
+//! The front ends only choose the photos and the settings, so a job exported through the app and
+//! the same job through the CLI are the same bytes (`tests/export.rs` checks it, across threads and
+//! across processes).
+//!
+//! # What an export does
+//!
+//! 1. **Checks** that the look (and the imported display LUT, if one is chosen) can be loaded: an
+//!    export never quietly falls back to Neutral the way the viewport does, because the file's XMP
+//!    says which look made it. A DNG is refused for a look with its own display rendering.
+//! 2. **Names** the file from the template and resolves the destination folder (`docs/09` Options).
+//!    With "If the file exists: Skip" and a file in the way nothing is rendered at all.
+//! 3. **Renders** at full resolution, tile by tile, on the render scheduler's export worker, which
+//!    gives way to the viewport between tiles ([`Renderer::spawn_full_reporting`]):
+//!    * JPEG, TIFF and PNG: C1 to C12 in the primaries of the chosen colour space with the
+//!      camera's and the user's orientation, straighten and crop baked in
+//!      ([`FullTarget::DisplayLinear`]). The writer resizes in linear light (Lanczos-3) when a long
+//!      edge is asked for and does C13 (the transfer function and, for 8 bit, the dither).
+//!    * DNG: C1 to C11 decoded to linear AWG4 in the sensor's orientation
+//!      ([`FullTarget::DngLinearAwg4`]) and the sRGB preview of what the user sees
+//!      ([`FullTarget::DngPreview`]). The `Orientation` tag carries the camera's and the user's
+//!      turns, the default crop tags the user's crop, so other editors can undo both.
+//! 4. **Writes** through `ym_export::write_export`: a temporary file in the destination folder, then
+//!    a rename; a cancel or an error deletes the temporary file.
+//!
+//! # Metadata
+//!
+//! EXIF comes from the probe's [`RawMetadata`] (never copied from the
+//! file), with the GPS position left out when the preference "Remove location from exports" is on.
+//! The XMP carries the `ym:` properties of `docs/09`: the pipeline version, the camera profile with
+//! its version and how it was matched, the look with its SHA-256 and intensity, the display
+//! transform, the models (none yet: the classical demosaic has none) and the **pinned settings** as
+//! JSON ([`ResolvedSettings::pinned_settings`]: exposure, sharpening and noise reduction as the
+//! numbers they resolved to, white balance as it was set). All dates are the capture time, never
+//! "now".
+//!
+//! # Time and size estimates
+//!
+//! [`ExportSpeed`] keeps the render and encode speed in seconds per megapixel, starting from the
+//! numbers measured in `docs/01` and `docs/09` and replaced by what this machine measures as photos
+//! are exported; [`estimate`] turns it and `ym_export::estimate_bytes` into the "≈ 120 MB" and the
+//! seconds of the Export panel.
+
+use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
+use std::time::{Duration, Instant};
+
+use ym_color::display::OutputTarget;
+use ym_export::dng::{BaselineExposure, CropRect, DngProfile, DngReport, compose_orientation};
+use ym_export::exif::{CaptureTime, ExifInfo, Gps};
+use ym_export::naming::{self, NameFields, Placement};
+use ym_export::xmp::{XmpInfo, YmInfo};
+use ym_export::{
+    ColorSpace, DngInputs, ExportDestination, ExportFormat, ExportHooks, ExportOptions,
+    ExportRequest, FormatKind, IfExists, ImageRef, Metadata, PixelEncoding, estimate_bytes,
+    write_export,
+};
+use ym_gpu::queue::{CancelToken, JobError};
+use ym_looks::library::LookId;
+use ym_profiles::detect::MatchKind;
+use ym_raw::decode::RawImage;
+use ym_raw::metadata::RawMetadata;
+
+use crate::auto::meta_image_size;
+use crate::camera::PhotoCamera;
+use crate::pipeline::{
+    DisplayChoice, FullImage, FullRequest, FullTarget, PhotoSource, RenderError, Renderer,
+};
+use crate::session::{PhotoId, PhotoView, Session, SessionError};
+use crate::settings::{DevelopSettings, ResolvedSettings, SettingsError};
+use crate::version::{PIPELINE_VERSION, app_version};
+
+/// The message of a DNG export with a look that has its own display rendering (`docs/09`).
+pub const DNG_BLOCKED_MESSAGE: &str = "This look includes its own display rendering, so it can't go into a DNG. Pick another look or export TIFF.";
+
+/// Why a photo could not be exported. The text is plain words with a next step.
+#[derive(Debug, thiserror::Error)]
+pub enum ExportError {
+    /// The job was cancelled; the partial file was removed.
+    #[error("The export was cancelled and the partial file was removed.")]
+    Cancelled,
+    /// The look or the display LUT cannot be used ("File missing or changed. Import again.").
+    #[error("{0}")]
+    Look(String),
+    /// A DNG was asked for with a look that has its own display rendering.
+    #[error("{DNG_BLOCKED_MESSAGE}")]
+    DngUnavailable,
+    /// The photo could not be rendered.
+    #[error(transparent)]
+    Render(RenderError),
+    /// The file could not be written.
+    #[error(transparent)]
+    Write(ym_export::ExportError),
+    /// The photo is not in the session, is still being developed or was skipped.
+    #[error(transparent)]
+    Session(#[from] SessionError),
+    /// The settings could not be resolved.
+    #[error(transparent)]
+    Settings(#[from] SettingsError),
+    /// The options cannot be used.
+    #[error("{0}")]
+    Options(String),
+    /// The photo's file could not be decoded again.
+    #[error("{0}")]
+    Decode(String),
+}
+
+impl From<ym_export::ExportError> for ExportError {
+    fn from(e: ym_export::ExportError) -> Self {
+        match e {
+            ym_export::ExportError::Cancelled => Self::Cancelled,
+            other => Self::Write(other),
+        }
+    }
+}
+
+impl From<RenderError> for ExportError {
+    fn from(e: RenderError) -> Self {
+        match e {
+            RenderError::Cancelled => Self::Cancelled,
+            RenderError::Look(m) => Self::Look(m),
+            other => Self::Render(other),
+        }
+    }
+}
+
+impl ExportError {
+    /// Whether the export was cancelled rather than failed.
+    #[must_use]
+    pub fn is_cancelled(&self) -> bool {
+        matches!(self, Self::Cancelled)
+    }
+
+    /// A short machine-readable kind, for the CLI's JSON (`"error": { "kind": … }`).
+    #[must_use]
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::Cancelled => "cancelled",
+            Self::Look(_) => "look",
+            Self::DngUnavailable => "unsupported",
+            Self::Render(_) => "render",
+            Self::Write(_) => "write",
+            Self::Session(SessionError::Skipped(_)) => "unsupported",
+            Self::Session(_) => "session",
+            Self::Settings(_) | Self::Options(_) => "usage",
+            Self::Decode(_) => "decode",
+        }
+    }
+
+    /// The CLI exit code: 3 for a look that is missing, 2 for a mistake in what was asked, else 1.
+    #[must_use]
+    pub fn exit_code(&self) -> i32 {
+        match self {
+            Self::Look(_) => 3,
+            Self::Options(_) | Self::Settings(_) => 2,
+            _ => 1,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Speed
+// ---------------------------------------------------------------------------------------------
+
+/// Starting render speed in seconds per megapixel of output: 17.44 s for a 24 MP frame, the CPU
+/// render measured in `docs/01` (section Preview strategy, "Measured"). Replaced by the measured
+/// speed of this machine after the first exported photo.
+pub const RENDER_S_PER_MP_PRIOR: f64 = 17.44 / 24.0;
+
+/// Starting encode speed per format in seconds per megapixel of output, from the 24 MP release
+/// timings in `docs/09` (review notes: JPEG q92 5.9 s, TIFF 16-bit LZW 10 s, PNG 16-bit 9.9 s);
+/// DNG (uncompressed 16-bit strips and a JPEG preview) is taken as the mean of the three.
+pub const ENCODE_S_PER_MP_PRIOR: [f64; 4] = [5.9 / 24.0, 10.0 / 24.0, 9.9 / 24.0, 0.35];
+
+fn format_index(kind: FormatKind) -> usize {
+    match kind {
+        FormatKind::Jpeg => 0,
+        FormatKind::Tiff => 1,
+        FormatKind::Png => 2,
+        FormatKind::Dng => 3,
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SpeedState {
+    render_s_per_mp: f64,
+    render_samples: u32,
+    encode_s_per_mp: [f64; 4],
+    encode_samples: [u32; 4],
+}
+
+/// How fast this machine renders and encodes, in seconds per megapixel.
+///
+/// Starts from the numbers measured on the development machine ([`RENDER_S_PER_MP_PRIOR`],
+/// [`ENCODE_S_PER_MP_PRIOR`]); every exported photo then replaces them: the first sample outright,
+/// later ones as a running mean that weighs the newest half.
+#[derive(Debug)]
+pub struct ExportSpeed {
+    state: Mutex<SpeedState>,
+}
+
+impl Default for ExportSpeed {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Samples smaller than this say nothing about speed (start-up costs dominate).
+const MIN_SAMPLE_MP: f64 = 0.05;
+
+impl ExportSpeed {
+    /// The starting speed.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            state: Mutex::new(SpeedState {
+                render_s_per_mp: RENDER_S_PER_MP_PRIOR,
+                render_samples: 0,
+                encode_s_per_mp: ENCODE_S_PER_MP_PRIOR,
+                encode_samples: [0; 4],
+            }),
+        }
+    }
+
+    fn st(&self) -> std::sync::MutexGuard<'_, SpeedState> {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn blend(old: f64, samples: u32, new: f64) -> f64 {
+        if samples == 0 {
+            new
+        } else {
+            0.5 * old + 0.5 * new
+        }
+    }
+
+    /// Records that rendering `megapixels` took `seconds`.
+    pub fn record_render(&self, megapixels: f64, seconds: f64) {
+        if megapixels >= MIN_SAMPLE_MP && seconds.is_finite() && seconds > 0.0 {
+            let mut st = self.st();
+            st.render_s_per_mp =
+                Self::blend(st.render_s_per_mp, st.render_samples, seconds / megapixels);
+            st.render_samples += 1;
+        }
+    }
+
+    /// Records that encoding `megapixels` of `format` took `seconds`.
+    pub fn record_encode(&self, format: FormatKind, megapixels: f64, seconds: f64) {
+        if megapixels >= MIN_SAMPLE_MP && seconds.is_finite() && seconds > 0.0 {
+            let i = format_index(format);
+            let mut st = self.st();
+            st.encode_s_per_mp[i] = Self::blend(
+                st.encode_s_per_mp[i],
+                st.encode_samples[i],
+                seconds / megapixels,
+            );
+            st.encode_samples[i] += 1;
+        }
+    }
+
+    /// The render speed now, in seconds per megapixel.
+    #[must_use]
+    pub fn render_s_per_mp(&self) -> f64 {
+        self.st().render_s_per_mp
+    }
+
+    /// The encode speed of a format now, in seconds per megapixel.
+    #[must_use]
+    pub fn encode_s_per_mp(&self, format: FormatKind) -> f64 {
+        self.st().encode_s_per_mp[format_index(format)]
+    }
+
+    /// Whether any photo has been measured yet (otherwise the numbers are the starting ones).
+    #[must_use]
+    pub fn is_measured(&self) -> bool {
+        self.st().render_samples > 0
+    }
+
+    /// Seconds to export one photo: `render_mp` megapixels to render (twice for a DNG, which
+    /// renders the raw pixels and the preview) and `out_mp` to encode.
+    #[must_use]
+    pub fn seconds_for(&self, render_mp: f64, out_mp: f64, format: FormatKind) -> f64 {
+        let st = self.st();
+        let renders = if format == FormatKind::Dng { 2.0 } else { 1.0 };
+        renders * render_mp * st.render_s_per_mp + out_mp * st.encode_s_per_mp[format_index(format)]
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Context, photo, parameters
+// ---------------------------------------------------------------------------------------------
+
+/// What an export needs besides the photo: the renderer (which knows the looks and the display
+/// rendering), the folder used when the default destination cannot be written, the app version
+/// and the DNG profile.
+#[derive(Debug)]
+pub struct ExportContext {
+    renderer: Renderer,
+    home: Option<PathBuf>,
+    app_version: String,
+    dng_profile: DngProfile,
+    speed: ExportSpeed,
+}
+
+impl ExportContext {
+    /// A context over `renderer`. The home folder is `$HOME` and the version the application's.
+    #[must_use]
+    pub fn new(renderer: Renderer) -> Self {
+        Self {
+            renderer,
+            home: naming::home_dir(),
+            app_version: app_version().to_owned(),
+            // `tools/dngfit` has not fitted the tone curve and look table yet (`docs/09`): the
+            // identity profile is for structure; Adobe's apps show such a DNG flat and dark.
+            dng_profile: DngProfile::identity(),
+            speed: ExportSpeed::new(),
+        }
+    }
+
+    /// Replaces the home folder (where `Pictures/Yellowmoon export` is). `None`: no fallback.
+    #[must_use]
+    pub fn with_home(mut self, home: Option<PathBuf>) -> Self {
+        self.home = home;
+        self
+    }
+
+    /// Replaces the version written into `xmp:CreatorTool`.
+    #[must_use]
+    pub fn with_app_version(mut self, version: impl Into<String>) -> Self {
+        self.app_version = version.into();
+        self
+    }
+
+    /// Replaces the DNG profile (the fitted tone curve and look table).
+    #[must_use]
+    pub fn with_dng_profile(mut self, profile: DngProfile) -> Self {
+        self.dng_profile = profile;
+        self
+    }
+
+    /// The renderer.
+    #[must_use]
+    pub fn renderer(&self) -> &Renderer {
+        &self.renderer
+    }
+
+    /// The home folder used for the fallback destination.
+    #[must_use]
+    pub fn home(&self) -> Option<&Path> {
+        self.home.as_deref()
+    }
+
+    /// The measured speed of this machine (for estimates).
+    #[must_use]
+    pub fn speed(&self) -> &ExportSpeed {
+        &self.speed
+    }
+}
+
+/// What the queue keeps of a photo when a job is queued: its settings, estimates, camera and
+/// metadata at that moment, without the decoded image (which is read when the photo's turn comes).
+#[derive(Debug, Clone)]
+pub struct PhotoSnapshot {
+    /// The session's view of the photo.
+    pub view: PhotoView,
+    /// The settings resolved against the estimates, for the XMP.
+    pub resolved: ResolvedSettings,
+}
+
+impl PhotoSnapshot {
+    /// Snapshots a photo of the session.
+    ///
+    /// # Errors
+    ///
+    /// [`ExportError::Session`] for an unknown, skipped or not yet developed photo.
+    pub fn take(session: &Session, id: PhotoId) -> Result<Self, ExportError> {
+        Self::of_view(session.view(id)?)
+    }
+
+    /// Snapshots a view.
+    ///
+    /// # Errors
+    ///
+    /// [`ExportError::Settings`] when the settings cannot be resolved.
+    pub fn of_view(view: PhotoView) -> Result<Self, ExportError> {
+        let resolved = view.resolved()?;
+        Ok(Self { view, resolved })
+    }
+
+    /// The file name the template gives this photo as number `seq` of a job.
+    #[must_use]
+    pub fn planned_file_name(&self, options: &ExportOptions, seq: u32) -> String {
+        let v = &self.view;
+        planned_file_name_of(&v.path, &v.meta, &v.camera, &v.settings.look, options, seq)
+    }
+
+    /// The snapshot with the decoded image attached.
+    #[must_use]
+    pub fn with_raw(self, raw: Arc<RawImage>) -> ExportPhoto {
+        ExportPhoto {
+            id: self.view.id,
+            path: self.view.path.clone(),
+            meta: Arc::clone(&self.view.meta),
+            camera: self.view.camera.clone(),
+            resolved: self.resolved,
+            source: PhotoSource::from_view(&self.view, raw),
+        }
+    }
+}
+
+/// A photo ready to export: the render's source (decoded image, profile, estimates, settings) and
+/// what the metadata and the file name need.
+#[derive(Debug, Clone)]
+pub struct ExportPhoto {
+    /// The photo in its session.
+    pub id: PhotoId,
+    /// The original file (never written).
+    pub path: PathBuf,
+    /// The probe's metadata, for EXIF.
+    pub meta: Arc<RawMetadata>,
+    /// The camera match, for the XMP and `{camera}`.
+    pub camera: PhotoCamera,
+    /// The settings resolved against the estimates, for the XMP.
+    pub resolved: ResolvedSettings,
+    /// The render's input; its `settings` are the ones exported.
+    pub source: PhotoSource,
+}
+
+impl ExportPhoto {
+    /// A photo of the session with its current settings. Decodes the file again when the session
+    /// no longer holds its mosaic.
+    ///
+    /// # Errors
+    ///
+    /// [`ExportError::Session`] (unknown, skipped, still developing, or undecodable) and
+    /// [`ExportError::Settings`].
+    pub fn from_session(session: &Session, id: PhotoId) -> Result<Self, ExportError> {
+        let snapshot = PhotoSnapshot::take(session, id)?;
+        let raw = session.raw_image(id)?;
+        Ok(snapshot.with_raw(raw))
+    }
+
+    /// The look the photo is exported with.
+    #[must_use]
+    pub fn look(&self) -> &LookId {
+        &self.source.settings.look
+    }
+}
+
+/// The parameters of one photo's export that come from the job.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExportParams {
+    /// Format, quality, bits, compression, colour space, size, destination, name template and what
+    /// to do when the file exists.
+    pub options: ExportOptions,
+    /// The preference "Remove location from exports".
+    pub remove_location: bool,
+    /// The number of this photo in the job, 1-based: the `{seq}` of the name template.
+    pub seq: u32,
+}
+
+impl ExportParams {
+    /// Parameters for the first photo of a job.
+    #[must_use]
+    pub fn new(options: ExportOptions) -> Self {
+        Self {
+            options,
+            remove_location: false,
+            seq: 1,
+        }
+    }
+
+    /// Sets the number of the photo in the job.
+    #[must_use]
+    pub fn seq(mut self, seq: u32) -> Self {
+        self.seq = seq;
+        self
+    }
+
+    /// Sets "Remove location from exports".
+    #[must_use]
+    pub fn remove_location(mut self, remove: bool) -> Self {
+        self.remove_location = remove;
+        self
+    }
+}
+
+/// Cancel and progress for one export.
+pub struct ExportControl<'a> {
+    /// Cancelling stops the export after the current tile (rendering) or band (encoding) and
+    /// deletes the partial file.
+    pub cancel: CancelToken,
+    /// Called with the fraction done, 0 to 1, from any thread; not always in order.
+    pub progress: Option<&'a (dyn Fn(f32) + Sync)>,
+}
+
+impl ExportControl<'_> {
+    /// No cancellation, no progress.
+    #[must_use]
+    pub fn none() -> ExportControl<'static> {
+        ExportControl {
+            cancel: CancelToken::new(),
+            progress: None,
+        }
+    }
+}
+
+/// Where the time of an export went.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct ExportTimings {
+    /// Rendering the pixels (for a DNG, both renders), in milliseconds.
+    pub render_ms: f64,
+    /// Resizing, encoding and writing, in milliseconds.
+    pub encode_ms: f64,
+}
+
+/// What [`export_photo`] did.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExportReport {
+    /// The file written, or the existing file when it was skipped.
+    pub path: PathBuf,
+    /// What happened to the file.
+    pub placement: Placement,
+    /// "If the file exists: Skip" and it did: nothing was rendered or written.
+    pub skipped: bool,
+    /// Bytes written (0 for a skip).
+    pub bytes: u64,
+    /// Width of the written image (0 for a skip).
+    pub width: u32,
+    /// Height of the written image (0 for a skip).
+    pub height: u32,
+    /// Size of the rendered picture before any resize.
+    pub rendered: (u32, u32),
+    /// DNG scaling and clipping details.
+    pub dng: Option<DngReport>,
+    /// Where the time went.
+    pub timings: ExportTimings,
+    /// Plain-words notes from the render (a classical demosaic, lens tables that were ignored).
+    pub notes: Vec<String>,
+}
+
+// ---------------------------------------------------------------------------------------------
+// Names, destination, metadata
+// ---------------------------------------------------------------------------------------------
+
+/// The fields of the file name template for a photo, from what a snapshot holds.
+#[must_use]
+pub fn name_fields_of(
+    path: &Path,
+    meta: &RawMetadata,
+    camera: &PhotoCamera,
+    look: &LookId,
+    seq: u32,
+) -> NameFields {
+    NameFields {
+        name: path
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default(),
+        look: look.slug().to_owned(),
+        date: meta
+            .capture_time
+            .map(|t| format!("{:04}-{:02}-{:02}", t.year, t.month, t.day)),
+        seq,
+        camera: naming::slugify(&camera.matched.body),
+    }
+}
+
+/// The file name (with extension) the template gives a photo, before any "Keep both" number.
+#[must_use]
+pub fn planned_file_name_of(
+    path: &Path,
+    meta: &RawMetadata,
+    camera: &PhotoCamera,
+    look: &LookId,
+    options: &ExportOptions,
+    seq: u32,
+) -> String {
+    format!(
+        "{}.{}",
+        naming::file_stem(
+            &options.name_template,
+            &name_fields_of(path, meta, camera, look, seq)
+        ),
+        options.format.extension()
+    )
+}
+
+/// The fields of the file name template for a photo.
+#[must_use]
+pub fn name_fields(photo: &ExportPhoto, seq: u32) -> NameFields {
+    name_fields_of(&photo.path, &photo.meta, &photo.camera, photo.look(), seq)
+}
+
+/// The file name (with extension) the template gives a photo, before any "Keep both" number.
+#[must_use]
+pub fn planned_file_name(photo: &ExportPhoto, options: &ExportOptions, seq: u32) -> String {
+    planned_file_name_of(
+        &photo.path,
+        &photo.meta,
+        &photo.camera,
+        photo.look(),
+        options,
+        seq,
+    )
+}
+
+/// The EXIF content for a photo (`docs/09` Metadata): camera, lens, exposure, capture time and,
+/// unless `remove_location`, the GPS position.
+#[must_use]
+pub fn exif_of(meta: &RawMetadata, remove_location: bool) -> ExifInfo {
+    let gps = if remove_location {
+        None
+    } else {
+        meta.gps.as_ref().and_then(|g| {
+            Some(Gps {
+                latitude_deg: g.latitude_deg?,
+                longitude_deg: g.longitude_deg?,
+                altitude_m: g.altitude_m,
+            })
+        })
+    };
+    ExifInfo {
+        make: Some(meta.make.clone()).filter(|s| !s.is_empty()),
+        model: Some(meta.model.clone()).filter(|s| !s.is_empty()),
+        lens_make: None,
+        lens_model: meta.lens_model.clone(),
+        exposure_time_s: meta.exposure_time_s,
+        f_number: meta.f_number,
+        iso: meta.iso,
+        focal_length_mm: meta.focal_length_mm,
+        focal_length_35mm: meta.focal_length_35mm,
+        exposure_bias_ev: meta.exposure_comp_ev,
+        capture_time: meta.capture_time.map(|t| CaptureTime {
+            year: t.year,
+            month: t.month,
+            day: t.day,
+            hour: t.hour,
+            minute: t.minute,
+            second: t.second,
+            millisecond: t.subsec_ms,
+            utc_offset_minutes: t.utc_offset_minutes,
+        }),
+        gps,
+    }
+}
+
+/// How the profile was matched, as `ym:ProfileMatch` says it: `exact`, `sensor family`, `default`
+/// (or `forced` for the CLI's `--profile`).
+#[must_use]
+pub fn profile_match_text(kind: &MatchKind) -> &'static str {
+    match kind {
+        MatchKind::Exact => "exact",
+        MatchKind::SensorFamily { .. } => "sensor family",
+        MatchKind::Default => "default",
+        MatchKind::Forced { .. } => "forced",
+    }
+}
+
+/// The id of the display transform that makes the picture: `aces2-sdr100-rec709lim` for sRGB,
+/// `aces2-sdr100-p3lim` for Display P3, `aces2-sdr100-p3lim-rec2020` for Rec.2020 (the limiting
+/// primaries and, where it differs from them, the encoding), or the id of the imported ARRI
+/// display LUT (`arri-display:logc4:rec709-g24`).
+#[must_use]
+pub fn display_transform_id(choice: &DisplayChoice, space: ColorSpace) -> String {
+    match choice {
+        DisplayChoice::ArriLut(id) => id.to_string(),
+        DisplayChoice::Aces2 => match space {
+            ColorSpace::Srgb => "aces2-sdr100-rec709lim".to_owned(),
+            ColorSpace::DisplayP3 => "aces2-sdr100-p3lim".to_owned(),
+            ColorSpace::Rec2020 => "aces2-sdr100-p3lim-rec2020".to_owned(),
+        },
+    }
+}
+
+fn output_target(space: ColorSpace) -> OutputTarget {
+    match space {
+        ColorSpace::Srgb => OutputTarget::Srgb,
+        ColorSpace::DisplayP3 => OutputTarget::DisplayP3,
+        ColorSpace::Rec2020 => OutputTarget::Rec2020,
+    }
+}
+
+fn rounded_percent(x: f64) -> u32 {
+    x.round().clamp(0.0, 100.0) as u32
+}
+
+// ---------------------------------------------------------------------------------------------
+// The export
+// ---------------------------------------------------------------------------------------------
+
+/// Shares of one photo's progress: rendering and the rest.
+const RASTER_RENDER_SHARE: f32 = 0.75;
+/// A DNG renders twice (raw pixels, then the preview) and then writes.
+const DNG_RAW_SHARE: f32 = 0.35;
+const DNG_PREVIEW_SHARE: f32 = 0.70;
+
+fn report(control: &ExportControl<'_>, fraction: f32) {
+    if let Some(p) = control.progress {
+        p(fraction.clamp(0.0, 1.0));
+    }
+}
+
+/// Renders one target on the export worker and waits for it, passing the render's tile progress
+/// on (scaled into `lo..hi` of the photo's progress) and its own cancellation to the job.
+fn render(
+    ctx: &ExportContext,
+    photo: &ExportPhoto,
+    target: FullTarget,
+    control: &ExportControl<'_>,
+    (lo, hi): (f32, f32),
+) -> Result<FullImage, ExportError> {
+    control.cancel.check().map_err(|_| ExportError::Cancelled)?;
+    let tiles = Arc::new(AtomicU32::new(0));
+    let sink = {
+        let tiles = Arc::clone(&tiles);
+        Arc::new(move |f: f32| tiles.store(f.to_bits(), Ordering::Relaxed))
+    };
+    let handle =
+        ctx.renderer
+            .spawn_full_reporting(photo.source.clone(), FullRequest { target }, sink);
+    let mut last = f32::NAN;
+    loop {
+        if control.cancel.is_cancelled() {
+            handle.cancel();
+        }
+        match handle.wait_timeout(Duration::from_millis(20)) {
+            None => {
+                let f = f32::from_bits(tiles.load(Ordering::Relaxed));
+                if f != last {
+                    last = f;
+                    report(control, lo + (hi - lo) * f);
+                }
+            }
+            Some(Ok(Ok(image))) => {
+                report(control, hi);
+                return Ok(image);
+            }
+            Some(Ok(Err(e))) => return Err(e.into()),
+            Some(Err(JobError::Cancelled)) => return Err(ExportError::Cancelled),
+            Some(Err(JobError::Shutdown)) => return Err(RenderError::Shutdown.into()),
+            Some(Err(e)) => {
+                return Err(ExportError::Render(RenderError::Image(format!(
+                    "This photo can't be rendered: {e}."
+                ))));
+            }
+        }
+    }
+}
+
+/// Exports one photo: the single code path of the app and the CLI (see the module documentation).
+///
+/// # Errors
+///
+/// [`ExportError::Look`] for a look or display LUT that cannot be loaded, or that was replaced,
+/// removed or switched while the photo was rendering ([`CHANGED_DURING_EXPORT_MESSAGE`]; nothing is
+/// written under a look the pixels were not made with),
+/// [`ExportError::DngUnavailable`], [`ExportError::Render`] (memory, an unusable photo, a panic
+/// below this function, which is caught and logged),
+/// [`ExportError::Write`] (the folder, the disk, the original in the way), and
+/// [`ExportError::Cancelled`] after `control.cancel` fired, with the partial file removed. A photo
+/// whose file exists with "Skip" is not an error: the report says `skipped`.
+pub fn export_photo(
+    ctx: &ExportContext,
+    photo: &ExportPhoto,
+    params: &ExportParams,
+    control: &ExportControl<'_>,
+) -> Result<ExportReport, ExportError> {
+    // A bug below this function (a writer, a look provider) is this photo's error, not an
+    // unwinding queue thread that leaves the panel waiting for a file that never comes. The
+    // writers delete their temporary file when they unwind.
+    catch_unwind(AssertUnwindSafe(|| {
+        export_photo_unguarded(ctx, photo, params, control)
+    }))
+    .unwrap_or_else(|payload| {
+        let what = payload
+            .downcast_ref::<&str>()
+            .map(|s| (*s).to_owned())
+            .or_else(|| payload.downcast_ref::<String>().cloned())
+            .unwrap_or_default();
+        tracing::error!(photo = %photo.id, panic = %what, "an export panicked");
+        Err(ExportError::Render(RenderError::Image(
+            "This photo can't be exported because of an unexpected problem. Try again, or export it in another format."
+                .to_owned(),
+        )))
+    })
+}
+
+/// The message of a photo whose look or display rendering changed while it was exporting.
+pub const CHANGED_DURING_EXPORT_MESSAGE: &str =
+    "The look or the display rendering changed while this photo was exporting. Export it again.";
+
+/// What the render reads from the look library and from Preferences › Display rendering, for
+/// noticing that either changed between the start of an export and the file being written: the
+/// file's XMP says which look and transform made it, so it must say it truthfully.
+#[derive(Debug, PartialEq, Eq)]
+struct RenderInputs {
+    /// The look's fingerprint (the SHA-256 of its LUT, or its id for a built-in look).
+    look: String,
+    /// The display rendering in effect.
+    display: DisplayChoice,
+    /// The fingerprint of the chosen display LUT.
+    display_lut: Option<String>,
+}
+
+/// The look and display rendering as they are now, and whether the look has its own display
+/// rendering. An error when either cannot be loaded: an export never falls back.
+fn render_inputs(
+    ctx: &ExportContext,
+    photo: &ExportPhoto,
+) -> Result<(RenderInputs, bool), ExportError> {
+    let looks = ctx.renderer.looks();
+    let look = looks
+        .look(photo.look())
+        .map_err(|e| ExportError::Look(e.to_string()))?;
+    let display = ctx.renderer.display();
+    let display_lut = match &display {
+        DisplayChoice::ArriLut(id) => Some(
+            looks
+                .display_transform(id)
+                .map_err(|e| ExportError::Look(e.to_string()))?
+                .1,
+        ),
+        DisplayChoice::Aces2 => None,
+    };
+    let own_rendering = look.transform.includes_display_rendering();
+    Ok((
+        RenderInputs {
+            look: look.fingerprint,
+            display,
+            display_lut,
+        },
+        own_rendering,
+    ))
+}
+
+fn export_photo_unguarded(
+    ctx: &ExportContext,
+    photo: &ExportPhoto,
+    params: &ExportParams,
+    control: &ExportControl<'_>,
+) -> Result<ExportReport, ExportError> {
+    let started = Instant::now();
+    let options = &params.options;
+    options
+        .validate()
+        .map_err(|e| ExportError::Options(e.to_string()))?;
+    control.cancel.check().map_err(|_| ExportError::Cancelled)?;
+
+    // 1. The look and the display rendering must be usable: an export does not fall back.
+    let looks = ctx.renderer.looks();
+    let (inputs, own_display_rendering) = render_inputs(ctx, photo)?;
+    let display = inputs.display.clone();
+    let is_dng = options.format == FormatKind::Dng;
+    if is_dng && own_display_rendering {
+        return Err(ExportError::DngUnavailable);
+    }
+    let look_sha256 = looks.look_sha256(photo.look());
+    // Checked again once the pixels are rendered (which takes seconds to minutes).
+    let still_the_same = || -> Result<(), ExportError> {
+        if render_inputs(ctx, photo)?.0 == inputs {
+            Ok(())
+        } else {
+            Err(ExportError::Look(CHANGED_DURING_EXPORT_MESSAGE.to_owned()))
+        }
+    };
+
+    // 2. The file name and the folder; a skipped file costs nothing.
+    let fields = name_fields(photo, params.seq);
+    let dest =
+        ExportDestination::resolve(options, &fields, Some(&photo.path), ctx.home.as_deref())?;
+    if let Some(placement) = naming::plan_output(
+        &dest.dir,
+        &dest.file_stem,
+        options.format.extension(),
+        dest.if_exists,
+        Some(&photo.path),
+    )? {
+        report(control, 1.0);
+        return Ok(ExportReport {
+            path: placement.path().to_path_buf(),
+            skipped: matches!(placement, Placement::Skipped(_)),
+            placement,
+            bytes: 0,
+            width: 0,
+            height: 0,
+            rendered: (0, 0),
+            dng: None,
+            timings: ExportTimings::default(),
+            notes: Vec::new(),
+        });
+    }
+
+    // 3. The metadata every format carries.
+    let camera = &photo.camera;
+    let space = if is_dng {
+        ColorSpace::Srgb
+    } else {
+        options.color_space
+    };
+    let exif = exif_of(&photo.meta, params.remove_location);
+    let metadata = Metadata {
+        xmp: XmpInfo {
+            app_version: ctx.app_version.clone(),
+            capture_time: exif.capture_time,
+            ym: YmInfo {
+                pipeline_version: Some(PIPELINE_VERSION.to_owned()),
+                profile: Some(photo.source.profile.id.to_string()),
+                profile_version: Some(photo.source.profile.version.to_string()),
+                profile_match: Some(profile_match_text(&camera.matched.how).to_owned()),
+                look: Some(photo.look().to_string()),
+                look_sha256,
+                look_intensity_pct: Some(rounded_percent(photo.source.settings.look_intensity)),
+                display_transform: Some(display_transform_id(&display, space)),
+                models: None,
+                settings: serde_json::to_value(photo.resolved.pinned_settings()).ok(),
+            },
+        },
+        exif,
+    };
+
+    // 4. Render and write.
+    let cancel_flag = || control.cancel.is_cancelled();
+    let progress_fn = |f: f32| report(control, f);
+    let hooks = ExportHooks::new(Some(&cancel_flag), Some(&progress_fn));
+    let mut notes: Vec<String> = Vec::new();
+    let render_ms;
+    let outcome;
+    let rendered;
+    let encode_started;
+    if is_dng {
+        let raw = render(
+            ctx,
+            photo,
+            FullTarget::DngLinearAwg4,
+            control,
+            (0.0, DNG_RAW_SHARE),
+        )?;
+        let preview = render(
+            ctx,
+            photo,
+            FullTarget::DngPreview,
+            control,
+            (DNG_RAW_SHARE, DNG_PREVIEW_SHARE),
+        )?;
+        render_ms = raw.report.ms + preview.report.ms;
+        ctx.speed
+            .record_render(megapixels(raw.width, raw.height), raw.report.ms / 1000.0);
+        ctx.speed.record_render(
+            megapixels(preview.width, preview.height),
+            preview.report.ms / 1000.0,
+        );
+        for n in raw.report.notes.iter().chain(&preview.report.notes) {
+            if !notes.contains(n) {
+                notes.push(n.clone());
+            }
+        }
+        rendered = (raw.width as u32, raw.height as u32);
+        let orientation = compose_orientation(
+            photo.source.exif_orientation(),
+            photo.source.settings.orientation.degrees(),
+        )
+        .unwrap_or(1);
+        let crop = raw.window.map(|w| CropRect {
+            x: w.x as u32,
+            y: w.y as u32,
+            width: w.width as u32,
+            height: w.height as u32,
+        });
+        still_the_same()?;
+        let raw_ref = ImageRef::new(
+            raw.width as u32,
+            raw.height as u32,
+            &raw.rgb,
+            PixelEncoding::SceneLinearAwg4,
+        )?;
+        let preview_ref = ImageRef::new(
+            preview.width as u32,
+            preview.height as u32,
+            &preview.rgb,
+            PixelEncoding::DisplayLinear,
+        )?;
+        let request = ExportRequest {
+            pixels: raw_ref,
+            format: ExportFormat::Dng,
+            color_space: ColorSpace::Srgb,
+            size: ym_export::Size::Full,
+            metadata: &metadata,
+            remove_location: params.remove_location,
+            dng: Some(DngInputs {
+                preview: preview_ref,
+                orientation,
+                crop,
+                baseline_exposure: BaselineExposure::default(),
+                profile: &ctx.dng_profile,
+            }),
+        };
+        encode_started = Instant::now();
+        outcome = write_export(&request, &dest, &hooks.stage(DNG_PREVIEW_SHARE, 1.0))?;
+    } else {
+        let image = render(
+            ctx,
+            photo,
+            FullTarget::DisplayLinear(output_target(options.color_space)),
+            control,
+            (0.0, RASTER_RENDER_SHARE),
+        )?;
+        render_ms = image.report.ms;
+        ctx.speed.record_render(
+            megapixels(image.width, image.height),
+            image.report.ms / 1000.0,
+        );
+        notes.extend(image.report.notes.iter().cloned());
+        still_the_same()?;
+        rendered = (image.width as u32, image.height as u32);
+        let pixels = ImageRef::new(
+            image.width as u32,
+            image.height as u32,
+            &image.rgb,
+            PixelEncoding::DisplayLinear,
+        )?;
+        let request =
+            ExportRequest::new(pixels, options, &metadata).remove_location(params.remove_location);
+        encode_started = Instant::now();
+        outcome = write_export(&request, &dest, &hooks.stage(RASTER_RENDER_SHARE, 1.0))?;
+    }
+    let encode_ms = encode_started.elapsed().as_secs_f64() * 1000.0;
+    ctx.speed.record_encode(
+        options.format,
+        megapixels(outcome.width as usize, outcome.height as usize),
+        encode_ms / 1000.0,
+    );
+    report(control, 1.0);
+    if let Some(dng) = &outcome.dng {
+        // `docs/09`: the clipped fractions go in the export log.
+        tracing::info!(
+            photo = %photo.id,
+            x_white = dng.x_white,
+            baseline_exposure_ev = dng.baseline_exposure_ev,
+            negative_clipped_fraction = dng.negative_clipped_fraction,
+            highlight_clipped_fraction = dng.highlight_clipped_fraction,
+            "DNG scaling"
+        );
+    }
+    tracing::info!(
+        photo = %photo.id,
+        format = options.format.display_name(),
+        bytes = outcome.bytes,
+        render_ms,
+        encode_ms,
+        total_ms = started.elapsed().as_secs_f64() * 1000.0,
+        "exported"
+    );
+    let skipped = matches!(outcome.placement, Placement::Skipped(_));
+    Ok(ExportReport {
+        path: outcome.path().to_path_buf(),
+        skipped,
+        placement: outcome.placement,
+        bytes: outcome.bytes,
+        width: outcome.width,
+        height: outcome.height,
+        rendered,
+        dng: outcome.dng,
+        timings: ExportTimings {
+            render_ms,
+            encode_ms,
+        },
+        notes,
+    })
+}
+
+fn megapixels(w: usize, h: usize) -> f64 {
+    w as f64 * h as f64 / 1e6
+}
+
+// ---------------------------------------------------------------------------------------------
+// Estimates
+// ---------------------------------------------------------------------------------------------
+
+/// The size in pixels of the picture a photo exports at full size, worked out from the probe alone
+/// (the camera's crop, the orientation, the user's turn and crop; the lens correction's few percent
+/// of auto crop and the straightening are not counted). For an estimate, not for the render.
+#[must_use]
+pub fn estimated_output_size(meta: &RawMetadata, settings: &DevelopSettings) -> (u32, u32) {
+    let (mut w, mut h) = meta_image_size(meta);
+    if matches!(settings.orientation.degrees(), 90 | 270) {
+        std::mem::swap(&mut w, &mut h);
+    }
+    if let Some(crop) = &settings.crop {
+        w = ((w as f64 * crop.rect.width).round() as usize).max(1);
+        h = ((h as f64 * crop.rect.height).round() as usize).max(1);
+    }
+    (w as u32, h as u32)
+}
+
+/// What `export_estimate` answers for a set of photos (`ExportEstimate` in `src/api/types.ts`,
+/// without the two counts the queue adds).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Estimate {
+    /// Total size of the files in bytes.
+    pub bytes: u64,
+    /// Time to export them in seconds.
+    pub seconds: f64,
+}
+
+/// Estimates the files of `photos` (each photo's probe metadata and settings) for `options`.
+#[must_use]
+pub fn estimate<'a>(
+    ctx: &ExportContext,
+    photos: impl IntoIterator<Item = (&'a RawMetadata, &'a DevelopSettings)>,
+    options: &ExportOptions,
+) -> Estimate {
+    let format = options.format_spec();
+    let mut bytes = 0u64;
+    let mut seconds = 0.0;
+    for (meta, settings) in photos {
+        let (w, h) = estimated_output_size(meta, settings);
+        bytes += estimate_bytes(w, h, format, options.size);
+        let (ow, oh) = if options.format == FormatKind::Dng {
+            (w, h)
+        } else {
+            options.size.output_dimensions(w, h)
+        };
+        seconds += ctx.speed.seconds_for(
+            megapixels(w as usize, h as usize),
+            megapixels(ow as usize, oh as usize),
+            options.format,
+        );
+    }
+    Estimate { bytes, seconds }
+}
+
+/// The destination folder an export of `photo` would use, worked out without touching the disk:
+/// the folder the options name, else `<source folder> export`, else `~/Pictures/Yellowmoon export`.
+#[must_use]
+pub fn planned_destination(
+    ctx: &ExportContext,
+    photo: &Path,
+    options: &ExportOptions,
+) -> Option<PathBuf> {
+    options
+        .destination
+        .clone()
+        .or_else(|| naming::default_destination(photo))
+        .or_else(|| ctx.home().map(naming::fallback_destination))
+}
+
+/// Whether "Keep both" would add a number to this name, and which: the first free of `name.ext`,
+/// `name 2.ext`, `name 3.ext` in `dir`. A prediction for the panel; the writer decides atomically.
+#[must_use]
+pub fn predicted_name_in(dir: &Path, file_name: &str, if_exists: IfExists) -> String {
+    if if_exists != IfExists::KeepBoth || !dir.join(file_name).exists() {
+        return file_name.to_owned();
+    }
+    let (stem, ext) = file_name
+        .rsplit_once('.')
+        .map_or((file_name, ""), |(s, e)| (s, e));
+    for n in 2..10_000 {
+        let candidate = if ext.is_empty() {
+            format!("{stem} {n}")
+        } else {
+            format!("{stem} {n}.{ext}")
+        };
+        if !dir.join(&candidate).exists() {
+            return candidate;
+        }
+    }
+    file_name.to_owned()
+}

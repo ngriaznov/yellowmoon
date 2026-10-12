@@ -74,6 +74,13 @@ pub trait LookProvider: Send + Sync {
     /// [`LookProblem`] when the LUT is unknown, unusable or renders to a display the viewport cannot
     /// show.
     fn display_transform(&self, id: &LookId) -> Result<(DisplayTransform, String), LookProblem>;
+
+    /// The SHA-256 (lower-case hex) of the look's file: the `ym:LookSHA256` an export records, so a
+    /// file can be traced to the exact LUT that made it. `None` for a look that has no file of its
+    /// own or when the provider does not know it (the property is then left out).
+    fn look_sha256(&self, _id: &LookId) -> Option<String> {
+        None
+    }
 }
 
 /// Only the built-in Neutral look, no display LUTs (tests, and a core with no library).
@@ -100,6 +107,11 @@ impl LookProvider for NeutralOnly {
 }
 
 impl LookProvider for Library {
+    fn look_sha256(&self, id: &LookId) -> Option<String> {
+        self.get(id)
+            .and_then(|l| l.lut.as_ref().map(|r| r.sha256.clone()))
+    }
+
     fn look(&self, id: &LookId) -> Result<ResolvedLook, LookProblem> {
         let transform = self.transform(id).map_err(|e| LookProblem(e.to_string()))?;
         let fingerprint = self
@@ -132,6 +144,10 @@ impl LookProvider for Library {
 }
 
 impl<T: LookProvider + ?Sized> LookProvider for Arc<T> {
+    fn look_sha256(&self, id: &LookId) -> Option<String> {
+        (**self).look_sha256(id)
+    }
+
     fn look(&self, id: &LookId) -> Result<ResolvedLook, LookProblem> {
         (**self).look(id)
     }
@@ -142,6 +158,12 @@ impl<T: LookProvider + ?Sized> LookProvider for Arc<T> {
 }
 
 impl LookProvider for RwLock<Library> {
+    fn look_sha256(&self, id: &LookId) -> Option<String> {
+        self.read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .look_sha256(id)
+    }
+
     fn look(&self, id: &LookId) -> Result<ResolvedLook, LookProblem> {
         self.read().unwrap_or_else(PoisonError::into_inner).look(id)
     }
@@ -154,6 +176,12 @@ impl LookProvider for RwLock<Library> {
 }
 
 impl LookProvider for Mutex<Library> {
+    fn look_sha256(&self, id: &LookId) -> Option<String> {
+        self.lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .look_sha256(id)
+    }
+
     fn look(&self, id: &LookId) -> Result<ResolvedLook, LookProblem> {
         self.lock().unwrap_or_else(PoisonError::into_inner).look(id)
     }

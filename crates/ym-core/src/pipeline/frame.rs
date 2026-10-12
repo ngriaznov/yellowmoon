@@ -789,17 +789,19 @@ impl Renderer {
         request: &FullRequest,
         cancel: &CancelToken,
     ) -> Result<FullImage, RenderError> {
-        self.render_full_with(src, request, cancel, false)
+        self.render_full_with(src, request, cancel, false, None)
     }
 
     /// [`Renderer::render_full`], optionally waiting for the foreground (viewport frames, tile
-    /// passes, thumbnails) to be idle before it starts and before every tile.
+    /// passes, thumbnails) to be idle before it starts and before every tile, and reporting the
+    /// fraction of tiles done (0 to 1) after each one.
     pub(crate) fn render_full_with(
         &self,
         src: &PhotoSource,
         request: &FullRequest,
         cancel: &CancelToken,
         yield_to_foreground: bool,
+        progress: Option<&(dyn Fn(f32) + Sync)>,
     ) -> Result<FullImage, RenderError> {
         let gate = || -> Result<(), RenderError> {
             if yield_to_foreground {
@@ -866,6 +868,8 @@ impl Renderer {
         let grid = geom.grid((plan.out_w, plan.out_h), (fw, fh));
         let mut rgb = vec![0.0f32; fw * fh * 3];
         let threads = self.options().threads;
+        let tiles_total = (fw.div_ceil(tile) * fh.div_ceil(tile)).max(1);
+        let mut tiles_done = 0usize;
         let mut oy = 0;
         while oy < fh {
             let th = tile.min(fh - oy);
@@ -912,6 +916,10 @@ impl Renderer {
                         let d = ((oy + y) * fw + ox) * 3;
                         rgb[d..d + 3 * tw].copy_from_slice(&out[y * tw * 3..(y + 1) * tw * 3]);
                     }
+                }
+                tiles_done += 1;
+                if let Some(report) = progress {
+                    report(tiles_done as f32 / tiles_total as f32);
                 }
                 ox += tw;
             }
