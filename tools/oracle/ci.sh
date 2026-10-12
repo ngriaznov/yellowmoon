@@ -23,10 +23,10 @@ python3 -c "import rawpy, numpy, libjpeg" 2>/dev/null || {
 }
 
 # 1. The synthetic corpus: every variant on several bodies, written by the test-only encoders.
-rm -rf testdata/synthetic
-cargo run -p ym-raw --features testgen --release --example gen_corpus -- testdata/synthetic
-python3 -c 'import json, sys; json.load(open(sys.argv[1]))' testdata/synthetic/manifest.json
-cargo run -p oracle --release -- --corpus testdata/synthetic --report "$out/oracle-synthetic.json"
+rm -rf testdata/oracle-synthetic
+cargo run -p ym-raw --features testgen --release --example gen_corpus -- testdata/oracle-synthetic
+python3 -c 'import json, sys; json.load(open(sys.argv[1]))' testdata/oracle-synthetic/manifest.json
+cargo run -p oracle --release -- --corpus testdata/oracle-synthetic --report "$out/oracle-synthetic.json"
 
 # 2. The Rust tests that call LibRaw on synthetic files.
 cargo test -p ym-raw --test oracle_decode --test oracle_libraw --release

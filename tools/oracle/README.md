@@ -16,8 +16,8 @@ and ExifTool (Perl) run as separate programs, or, for rawler, from the excluded 
 ## The decoder oracle (M0-05)
 
 ```
-cargo run -p ym-raw --features testgen --release --example gen_corpus -- testdata/synthetic
-cargo run -p oracle --release -- --corpus testdata/synthetic --report oracle-synthetic.json
+cargo run -p ym-raw --features testgen --release --example gen_corpus -- testdata/oracle-synthetic
+cargo run -p oracle --release -- --corpus testdata/oracle-synthetic --report oracle-synthetic.json
 cargo run -p oracle --release -- --corpus testdata/real/files --report oracle-real.json   # real files, if any
 ```
 
@@ -67,7 +67,7 @@ tools/oracle/ci.sh                      # synthetic corpus, the two Rust oracle 
 ORACLE_OUT=out tools/oracle/ci.sh --synthetic    # synthetic corpus only; reports go to out/ (default: the current folder)
 ```
 
-The script sets `YM_REQUIRE_ORACLE=1`, regenerates `testdata/synthetic`, writes `oracle-synthetic.json` and (with a real corpus) `oracle-report.json`, and exits with the code of `oracle`.
+The script sets `YM_REQUIRE_ORACLE=1`, regenerates `testdata/oracle-synthetic`, writes `oracle-synthetic.json` and (with a real corpus) `oracle-report.json`, and exits with the code of `oracle`.
 The synthetic corpus is 48 files: ARW 1, packed 12-bit, 12-bit and 14-bit uncompressed, cRAW, Lossless L (every predictor, restart intervals, three tile sizes, partial tiles, skewed Huffman tables) and Lossless M/S (4:2:0, 4:2:2, 4:4:4), on several bodies.
 
 Rust integration tests that use the same oracles on synthetic files:

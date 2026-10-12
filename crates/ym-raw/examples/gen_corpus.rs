@@ -1,10 +1,10 @@
 //! Writes the synthetic oracle corpus: every raw variant on several bodies, with different image
-//! content, into a folder (default `testdata/synthetic`, git-ignored). The oracle
+//! content, into a folder (default `testdata/oracle-synthetic`, git-ignored). The oracle
 //! (`tools/oracle`) then compares our decoder with rawler and LibRaw on every file.
 //!
 //! ```text
-//! cargo run -p ym-raw --features testgen --release --example gen_corpus -- testdata/synthetic
-//! cargo run -p oracle --release -- --corpus testdata/synthetic --report /tmp/oracle-report.json
+//! cargo run -p ym-raw --features testgen --release --example gen_corpus -- testdata/oracle-synthetic
+//! cargo run -p oracle --release -- --corpus testdata/oracle-synthetic --report /tmp/oracle-report.json
 //! ```
 //!
 //! File names are `variant__model__content__details.ARW`. A `manifest.json` next to the files
@@ -83,7 +83,7 @@ impl Writer<'_> {
 fn main() {
     let dir = std::env::args()
         .nth(1)
-        .unwrap_or_else(|| "testdata/synthetic".to_owned());
+        .unwrap_or_else(|| "testdata/oracle-synthetic".to_owned());
     std::fs::create_dir_all(&dir).expect("create the output folder");
     let mut out = Writer {
         dir: Path::new(&dir),

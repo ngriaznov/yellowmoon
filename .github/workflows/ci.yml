@@ -105,32 +105,90 @@ jobs:
       - name: fetch tool tests
         run: python3 -I -m unittest discover -s tools/fetch -p 'test_*.py' -v
 
-  # enable in M0-07: WGSL kernels against CPU references on software Vulkan (correctness only)
-  # gpu-lavapipe:
-  #   runs-on: ubuntu-latest
-  #   env: { YM_REQUIRE_GPU: "1", WGPU_BACKEND: vulkan }
-  #   steps:
-  #     - uses: actions/checkout@v4
-  #     - run: sudo apt-get update && sudo apt-get install -y mesa-vulkan-drivers libvulkan1
-  #     - uses: dtolnay/rust-toolchain@stable
-  #     - uses: Swatinem/rust-cache@v2
-  #     - run: cargo test -p ym-gpu -p ym-ml --release
+  # M0-07: WGSL kernels against their CPU references on Mesa lavapipe (software Vulkan): correctness
+  # only, speed means nothing here. Metal behaviour and timings are checked on a Mac (HUMAN M0-H4).
+  gpu-lavapipe:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      YM_REQUIRE_GPU: "1"
+      WGPU_BACKEND: vulkan
+    steps:
+      - uses: actions/checkout@v4
+      - name: Mesa lavapipe (software Vulkan)
+        run: sudo apt-get update && sudo apt-get install -y mesa-vulkan-drivers libvulkan1 vulkan-tools
+      - name: Show the adapter
+        run: vulkaninfo --summary || true
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Kernel parity, queue, pool, tiles
+        run: cargo test -p ym-gpu --release
+      - name: 50 MP spike and the GPU memory gate (peak under 1.5 GiB)
+        run: cargo test -p ym-gpu --release --test gpu_spike -- --ignored --nocapture gpu_spike_50mp
 
-  # enable in M0-05: decoder oracle (rawler via tools/oracle, LibRaw via rawpy). Test-only, never shipped.
-  # oracle:
-  #   runs-on: ubuntu-latest
-  #   steps:
-  #     - uses: actions/checkout@v4
-  #     - uses: dtolnay/rust-toolchain@stable
-  #     - uses: Swatinem/rust-cache@v2
-  #     - uses: actions/cache@v4
-  #       with: { path: testdata, key: testdata-${{ hashFiles('tools/fetch/manifest.json') }} }
-  #     - run: tools/fetch/samples.sh
-  #     - run: pip install rawpy numpy
-  #     - run: cargo run -p oracle --release -- --corpus testdata/arw --report oracle-report.json
-  #     - uses: actions/upload-artifact@v4
-  #       if: always()
-  #       with: { name: oracle-report, path: oracle-report.json }
+  # M0-05: decoder oracle. LibRaw (rawpy), rawler (tools/oracle) and libjpeg compare ym-raw's pixels,
+  # levels and white balance. Test-only: none of them is ever linked into a shipped crate. Until the
+  # CC0 corpus is fetchable (tools/fetch/samples.sh) this runs on the synthetic corpus every variant
+  # writes through the test-only encoders; the real corpus joins automatically once it exists.
+  oracle:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install rawpy numpy pylibjpeg-libjpeg
+      - uses: actions/cache@v4
+        with:
+          path: testdata/arw
+          key: testdata-${{ hashFiles('tools/fetch/manifest.json') }}
+      - run: tools/fetch/samples.sh --allow-empty
+      - run: ORACLE_OUT="$RUNNER_TEMP/oracle" tools/oracle/ci.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: oracle-reports
+          path: ${{ runner.temp }}/oracle
+
+  # M1-12: Sony embedded lens corrections against darktable-cli, run as a separate process (GPL tool,
+  # never linked or shipped). Synthetic Sony files with lens tags; gates: gain 0.5 %, 0.2 px.
+  lens-oracle:
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'lens')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: sudo apt-get update && sudo apt-get install -y darktable && pip3 install numpy scipy
+      - run: tools/lens/run_oracle_suite.sh build/lens-oracle
+
+  # Data, fits and test vectors stay reproducible: camera profiles and registry (M1-04), the spectral
+  # reference for the Rust runtime (M1-02), the research reproduction and the sensor-map gate with its
+  # one reported failure (M1-05, LED-V2), LUT and ACES 2 vectors against OpenColorIO (M1-10, M1-11),
+  # the illuminant estimator (M1-06) and the noise-prior fitting (M2-01).
+  data-checks:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install -r training/requirements.txt opencolorio==2.6.0
+      - run: tools/fetch/spectral.sh
+      - run: python3 -m training.sensor_map.validate_profiles
+      - run: python3 -m training.sensor_map.check_reference
+      - run: python3 -m training.sensor_map.evaluate
+      - run: python3 -m training.sensor_map.build_profiles --check
+      - run: python3 -m training.sensor_map.gate --expect-failing LED-V2
+      - run: python3 -I tools/vectors/lut_vectors.py --check
+      - run: python3 -I tools/vectors/aces2_vectors.py --check
+      - run: pip install -r training/illum/requirements.txt && python3 -m unittest training.illum.test_illum
+      - run: python3 -m unittest training.noise.test_public_priors
 
   # enable in M1-15: golden images through the CLI
   # golden:
@@ -152,12 +210,16 @@ jobs:
   #     - run: tools/dng/build_dng_validate.sh   # builds dng_validate from the DNG SDK at a pinned commit
   #     - run: cargo run -p golden --release -- --dng-validate
 
-  # enable in M2-05: training scripts stay runnable
-  # training-dry-run:
-  #   runs-on: ubuntu-latest
-  #   steps:
-  #     - uses: actions/checkout@v4
-  #     - uses: actions/setup-python@v5
-  #       with: { python-version: "3.12" }
-  #     - run: pip install -r training/requirements.txt
-  #     - run: python -m training.jdd.train --dry-run --steps 50 --device cpu
+  # M2-05: the jdd training code stays runnable (50 steps on CPU, synthetic data only), plus its unit
+  # tests and the golden-tile parity check. Real training needs a GPU and PixelShift200 (HUMAN M2-H4).
+  training-dry-run:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install torch==2.14.1 --index-url https://download.pytorch.org/whl/cpu
+      - run: pip install -r training/jdd/requirements.txt
+      - run: make -C training/jdd dry-run test golden-check
