@@ -11,9 +11,11 @@ Data that ships inside the app bundle (via `bundle.resources` in `tauri.conf.jso
 | `arri/alexa_native_to_awg3_17cct.json` | derived native → AWG3 matrices (`inv(AWG3→AP0) · M`), rows sum to 1 | AMPAS licence (derived) | computed in f64 from the published primaries (`docs/02`) |
 | `cameras/sony/Sony_<model>_380_780_5.json` | measured spectral sensitivities of 11 Sony bodies: ILCE-7M3, 7M4, 7CM2, 7RM2, 7RM3, 7RM4, 7SM2, 7SM3, ILCE-9, ILCE-6400, DSC-RX100M4 | Apache-2.0 (`cameras/sony/LICENSE-rawtoaces-data`) | Weta Digital via rawtoaces-data |
 
-To be added by tasks:
+| `alexa/target.json` | the ALEXA target definition: curve file, version, provenance | as `alexa/` | `training/sensor_map/build_target.py` |
+| `cameras/registry.json` | 28 Sony model IDs → body name, profile, match kind (exact / same sensor / default); model-string aliases | ours (Apache-2.0) | `training/sensor_map/build_registry.py` from `docs/03` and ExifTool's model-ID table |
+| `cameras/profiles/<id>/profile.json` | per-profile sensor maps (Lab-optimal white-preserving 3×3 per light class and mired), camera locus and Duv tables (camera raw scale), ALEXA white tables; 11 profiles | ours (Apache-2.0); fitted coefficients derived at fit time from CIE SPDs (CC BY-SA 4.0) — HUMAN M1-H4 | `training/sensor_map/build_profiles.py` |
+| `cameras/noise/gain-regimes.json` | conversion-gain switch ISO per body (docs/06 table, to be confirmed on samples) and schemas | ours | `docs/06` |
+| `models/illum/<id>.json` | illuminant estimator per profile (FFCC-style filter, class head, confidence; 13 k parameters each), `MODEL_CARD.md`, `SHA256SUMS` | ours (Apache-2.0); trained on synthetic scenes from rawtoaces reflectances (Apache-2.0) and CIE SPDs at fit time (HUMAN M1-H4) | `training/illum/` |
+| `looks/arri-packages.json` | recognition patterns for ARRI's five free look packages (names, counts, LUT sizes; fingerprints empty until HUMAN M3-H2) — never LUT data | ours | `tools/looks/fingerprint.py` |
 
-- `cameras/registry.json`, `cameras/profiles/<id>/profile.json` (M1-04), `cameras/noise/384-ilce-1.json` and `cameras/noise/gain-regimes.json` (M2-01).
-- `looks/builtin/neutral.json`, `looks/builtin/signature.json` (M1-10, M3-10); `looks/arri-packages.json` exists as a placeholder and gets fingerprints (never LUT data) in M3-09.
-- `models/<name>/` weights, ONNX and `MODEL_CARD.md` (M2-06; the folder exists now with a README so the bundle config resolves).
-- `alexa/target.json` (curve, version, provenance) (M1-02).
+Still to come: per-body noise priors `cameras/noise/<model-id>-<model>.json` (M2-01, needs the CC0 corpus), `looks/builtin/signature.json` (HUMAN M3-H1), and `models/jdd/` weights with their model card (M2-06, needs GPU training — HUMAN M2-H4; the classical demosaic ships until then).

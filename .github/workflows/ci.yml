@@ -210,6 +210,24 @@ jobs:
   #     - run: tools/dng/build_dng_validate.sh   # builds dng_validate from the DNG SDK at a pinned commit
   #     - run: cargo run -p golden --release -- --dng-validate
 
+  # The synthetic golden set (stand-in for the CC0 corpus): generator unit tests, the ARW writer's round
+  # trips for every variant, and LibRaw reading the written files.
+  synthetic-set:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install -r training/requirements.txt -r training/synth/requirements.txt rawpy
+      - run: tools/fetch/spectral.sh
+      - run: python3 -m unittest training.synth.test_synth
+      - run: tools/fetch/synthetic.sh --oracle
+      - run: cargo test -p golden
+
   # M2-05: the jdd training code stays runnable (50 steps on CPU, synthetic data only), plus its unit
   # tests and the golden-tile parity check. Real training needs a GPU and PixelShift200 (HUMAN M2-H4).
   training-dry-run:

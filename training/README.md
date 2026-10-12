@@ -23,6 +23,10 @@ Python 3.12 is what CI uses; 3.13 gives the same numbers. Set `YM_TESTDATA` to m
 | `common/jsonfmt.py` | deterministic compact JSON writer for the generated data files |
 | `alexa/` | the ALEXA curve pipeline (M1-03): `ssf_core.py` (spectral model), `validate_loo.py` (leave-one-camera-out), `check_loo.py` (compare with the published numbers), `estimate_alexa.py` + `compare_estimate.py` (regenerate the shipped curve) |
 | `sensor_map/` | sensor-map fit, profiles, registry, gate, reference values (M1-02, M1-04, M1-05): see `sensor_map/README.md` |
+| `illum/` | illuminant estimator: synthetic scenes, FFCC-style training, class head, gates, Cube++ evaluation (M1-06): see `illum/README.md` |
+| `noise/` | per-body noise priors from public files (M2-01): see `noise/README.md` |
+| `jdd/` | joint demosaic + denoise network: data generator, training, export, model card (M2-04, M2-05): see `jdd/README.md` |
+| `synth/` | the synthetic golden set: spectral scenes, noise, ground truth (stand-in for the CC0 corpus): see `synth/README.md` |
 
 `alexa/ssf_core.py`, `validate_loo.py` and `estimate_alexa.py` are copies of `research/alexa-ssf/scripts/` with only the
 input and output locations changed; `research/` stays as it is.
