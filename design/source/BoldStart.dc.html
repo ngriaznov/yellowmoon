@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Start</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Figtree:wght@400..900&amp;display=swap">
+<style>
+body{margin:0;background:#FFFFFF;-webkit-font-smoothing:antialiased}
+button:focus-visible,a:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
+</style>
+</helmet>
+<div style="--ink: #000000; --paper: #FFFFFF; --muted: #6B6B6B; --focus: #0B5CC2; color-scheme: light; height: 100vh; min-height: 760px; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); grid-template-rows: 75px minmax(0, 1fr) 124px; overflow: hidden; background: var(--paper); color: var(--ink); font-family: 'Figtree', system-ui, sans-serif; font-size: 14px">
+
+  <header style="grid-column: 1 / -1; grid-row: 1; display: flex; align-items: stretch; border-bottom: 3px solid var(--ink); box-sizing: border-box; min-width: 0">
+    <div style="width: 300px; flex-shrink: 0; box-sizing: border-box; padding: 0 20px 0 84px; border-right: 3px solid var(--ink); display: flex; flex-direction: column; justify-content: center; gap: 5px">
+      <span style="display: flex; align-items: center; gap: 8px; font-size: 24px; font-weight: 800; letter-spacing: -0.02em; line-height: 1"><span aria-hidden="true" style="width: 16px; height: 16px; box-sizing: border-box; border-radius: 50%; background: #FFC20E; border: 2px solid var(--ink); flex-shrink: 0"></span>{{headTitle}}</span>
+      <span style="font-size: 12px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; line-height: 1">{{headSub}}</span>
+    </div>
+    <nav aria-label="Open" style="flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; padding: 0 20px">
+      <button type="button" onClick="{{openFiles}}" style="height: 36px; padding: 0 10px; border: 0; background: transparent; color: var(--ink); font: inherit; font-size: 14px; font-weight: 800; letter-spacing: 0.02em; text-transform: uppercase; cursor: pointer; display: inline-flex; align-items: center; gap: 8px">Open files<span style="font-size: 11px; font-weight: 700; padding: 3px 5px; border: 2px solid var(--ink); line-height: 1">⌘O</span></button>
+      <button type="button" onClick="{{openFiles}}" style="height: 36px; padding: 0 10px; border: 0; background: transparent; color: var(--ink); font: inherit; font-size: 14px; font-weight: 800; letter-spacing: 0.02em; text-transform: uppercase; cursor: pointer; display: inline-flex; align-items: center; gap: 8px">Open folder<span style="font-size: 11px; font-weight: 700; padding: 3px 5px; border: 2px solid var(--ink); line-height: 1">⇧⌘O</span></button>
+    </nav>
+    <div style="width: 400px; flex-shrink: 0; display: flex; border-left: 3px solid var(--ink); box-sizing: border-box">
+      <div style="flex: 1; display: flex; align-items: center; gap: 8px; padding: 0 18px; border-right: 3px solid var(--ink); font-size: 12px; font-weight: 800; letter-spacing: 0.03em; text-transform: uppercase; white-space: nowrap">
+        <span aria-hidden="true" style="width: 8px; height: 8px; background: #77E05A; border: 2px solid var(--ink)"></span>Update ready
+      </div>
+      <span aria-disabled="true" style="display: flex; align-items: center; gap: 10px; padding: 0 22px; color: var(--muted); font-size: 15px; font-weight: 800; letter-spacing: 0.02em; text-transform: uppercase; white-space: nowrap">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="square" aria-hidden="true"><path d="M12 3v12"></path><path d="M6.5 9.5L12 15l5.5-5.5"></path><path d="M4 20h16"></path></svg>
+        Export
+        <span style="font-size: 11px; font-weight: 700; padding: 3px 5px; border: 2px solid var(--muted); line-height: 1">⌘E</span>
+      </span>
+    </div>
+  </header>
+
+  <section aria-label="About" style="grid-column: 1; grid-row: 2; background: #FFC20E; color: #000; border-right: 3px solid var(--ink); padding: 56px 56px 40px; box-sizing: border-box; display: flex; flex-direction: column; min-height: 0; overflow: hidden">
+    <h1 style="margin: 0; font-size: 64px; font-weight: 800; letter-spacing: -0.035em; line-height: 0.98; max-width: 560px">Drop Sony ARW files.</h1>
+    <p style="margin: 24px 0 0; font-size: 18px; line-height: 1.55; max-width: 520px">Every photo is developed automatically: exposure, white balance, noise and cinema colour. Adjust if you want, then export. Your original files are never changed.</p>
+    <div style="margin-top: auto; border-top: 3px solid #000; max-width: 560px">
+      <div style="display: grid; grid-template-columns: 140px minmax(0, 1fr); align-items: center; min-height: 48px; border-bottom: 2px solid #000; font-size: 15px">
+        <span style="font-size: 12px; font-weight: 800; letter-spacing: 0.05em; text-transform: uppercase">Camera</span>
+        <span>Any Sony camera · every kind of ARW</span>
+      </div>
+      <div style="display: grid; grid-template-columns: 140px minmax(0, 1fr) auto; align-items: center; min-height: 48px; border-bottom: 2px solid #000; font-size: 15px">
+        <span style="font-size: 12px; font-weight: 800; letter-spacing: 0.05em; text-transform: uppercase">Default look</span>
+        <span>Neutral</span>
+        <a href="Bold.dc.html" style="color: #000; font-weight: 800; text-decoration: underline; text-decoration-thickness: 2px; text-underline-offset: 4px">Change</a>
+      </div>
+      <div style="display: grid; grid-template-columns: 140px minmax(0, 1fr) auto; align-items: center; min-height: 48px; border-bottom: 2px solid #000; font-size: 15px">
+        <span style="font-size: 12px; font-weight: 800; letter-spacing: 0.05em; text-transform: uppercase">ARRI looks</span>
+        <span>Not imported yet</span>
+        <a href="BoldWizard.dc.html" style="color: #000; font-weight: 800; text-decoration: underline; text-decoration-thickness: 2px; text-underline-offset: 4px">Import →</a>
+      </div>
+    </div>
+  </section>
+
+  <section aria-label="Drop files" style="grid-column: 2; grid-row: 2; padding: 40px; box-sizing: border-box; display: flex; min-height: 0; overflow: hidden">
+    <sc-if value="{{idle}}" hint-placeholder-val="{{true}}">
+      <div style="flex: 1; border: 3px dashed var(--ink); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 18px; text-align: center; padding: 32px">
+        <span aria-hidden="true" style="width: 88px; height: 88px; background: var(--ink); color: var(--paper); display: flex; align-items: center; justify-content: center">
+          <svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="square"><path d="M12 3v13"></path><path d="M6 10.5L12 16.5l6-6"></path><path d="M4 21h16"></path></svg>
+        </span>
+        <span style="font-size: 32px; font-weight: 800; letter-spacing: -0.02em; line-height: 1.1">Drop files or a folder</span>
+        <span style="font-size: 15px">ARW only, as many as you like</span>
+        <div style="display: flex; gap: 12px; margin-top: 8px">
+          <button type="button" onClick="{{openFiles}}" style="height: 48px; padding: 0 22px; border: 3px solid var(--ink); background: var(--ink); color: var(--paper); font: inherit; font-size: 15px; font-weight: 800; letter-spacing: 0.02em; text-transform: uppercase; cursor: pointer">Open files…</button>
+          <button type="button" onClick="{{openFiles}}" style="height: 48px; padding: 0 22px; border: 3px solid var(--ink); background: var(--paper); color: var(--ink); font: inherit; font-size: 15px; font-weight: 800; letter-spacing: 0.02em; text-transform: uppercase; cursor: pointer">Open folder…</button>
+        </div>
+      </div>
+    </sc-if>
+    <sc-if value="{{busy}}" hint-placeholder-val="{{false}}">
+      <div style="flex: 1; min-width: 0; display: flex; flex-direction: column; min-height: 0">
+        <div style="display: flex; align-items: baseline; justify-content: space-between; gap: 16px">
+          <h2 style="margin: 0; font-size: 32px; font-weight: 800; letter-spacing: -0.02em; line-height: 1.1">{{busyTitle}}</h2>
+          <button type="button" onClick="{{startOver}}" style="padding: 0; border: 0; background: transparent; color: var(--ink); font: inherit; font-size: 14px; font-weight: 700; text-decoration: underline; text-decoration-thickness: 2px; text-underline-offset: 4px; cursor: pointer">Start over</button>
+        </div>
+        <div role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{{pct}}" style="position: relative; height: 24px; margin-top: 16px; border: 3px solid var(--ink); box-sizing: border-box">
+          <div style="position: absolute; left: 0; top: 0; bottom: 0; width: {{pct}}%; background: #FFC20E; border-right: {{barEdge}}px solid var(--ink)"></div>
+        </div>
+        <div style="margin-top: 20px; border-top: 2px solid var(--ink); overflow-y: auto; min-height: 0">
+          <sc-for list="{{files}}" as="f" hint-placeholder-count="12">
+            <div style="display: grid; grid-template-columns: 112px minmax(0, 1fr) auto; align-items: center; column-gap: 16px; min-height: 36px; border-bottom: 2px solid var(--ink)">
+              <span style="font-size: 14px; font-weight: 800; font-variant-numeric: tabular-nums">{{f.name}}</span>
+              <span style="font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{{f.note}}</span>
+              <span style="height: 22px; display: inline-flex; align-items: center; padding: 0 6px; box-sizing: border-box; border: 2px solid var(--ink); background: {{f.tagBg}}; color: {{f.tagFg}}; font-size: 10.5px; font-weight: 800; letter-spacing: 0.05em; text-transform: uppercase">{{f.tag}}</span>
+            </div>
+          </sc-for>
+        </div>
+        <div style="display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-top: auto; padding-top: 20px">
+          <span style="font-size: 13px; max-width: 360px">{{busyHint}}</span>
+          <a href="Bold.dc.html" style="height: 48px; display: inline-flex; align-items: center; padding: 0 22px; background: var(--ink); color: var(--paper); text-decoration: none; font-size: 15px; font-weight: 800; letter-spacing: 0.02em; text-transform: uppercase; white-space: nowrap">Open photos →</a>
+        </div>
+      </div>
+    </sc-if>
+  </section>
+
+  <section aria-label="How it works" style="grid-column: 1 / -1; grid-row: 3; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border-top: 3px solid var(--ink); box-sizing: border-box">
+    <sc-for list="{{steps}}" as="s" hint-placeholder-count="3">
+      <div style="display: flex; align-items: center; gap: 20px; padding: 0 32px; background: {{s.bg}}; color: {{s.fg}}; border-right: {{s.edge}}px solid var(--ink)">
+        <span style="font-size: 48px; font-weight: 800; letter-spacing: -0.03em; line-height: 1; font-variant-numeric: tabular-nums">{{s.n}}</span>
+        <span style="display: flex; flex-direction: column; gap: 4px">
+          <span style="font-size: 18px; font-weight: 800">{{s.title}}</span>
+          <span style="font-size: 14px; line-height: 1.4">{{s.text}}</span>
+        </span>
+      </div>
+    </sc-for>
+  </section>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":900}}'>
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    this.names = ['DSC04201', 'DSC04202', 'DSC04203', 'DSC04204', 'DSC04205', 'DSC04206', 'DSC04207', 'DSC04208', 'DSC04209', 'DSC04210', 'DSC04211', 'DSC04212'];
+    this.skipped = {};
+    this.state = { busy: false, prog: 0 };
+    this.timer = null;
+  }
+  tick() {
+    const p = this.state.prog + 0.35;
+    if (p >= this.names.length) {
+      clearInterval(this.timer);
+      this.timer = null;
+      this.setState({ prog: this.names.length });
+    } else {
+      this.setState({ prog: p });
+    }
+  }
+  renderVals() {
+    const st = this.state;
+    const N = this.names.length;
+    const doneCount = Math.min(N, Math.floor(st.prog));
+    const skippedCount = Object.keys(this.skipped).filter(i => Number(i) < doneCount).length;
+    const files = this.names.map((name, i) => {
+      const skip = this.skipped[i];
+      let tag = 'Waiting', note = '', tagBg = 'var(--paper)', tagFg = 'var(--ink)';
+      if (i < doneCount) {
+        if (skip) { tag = 'Skipped'; note = skip; tagBg = '#FF5A1F'; tagFg = '#000000'; }
+        else { tag = 'Ready'; note = 'Auto exposure, white balance and noise'; tagBg = 'var(--ink)'; tagFg = 'var(--paper)'; }
+      } else if (i === doneCount && st.prog < N) {
+        tag = 'Developing'; note = 'Decoding and demosaicing'; tagBg = '#FFC20E'; tagFg = '#000000';
+      }
+      return { name, note, tag, tagBg, tagFg };
+    });
+    const finished = st.prog >= N;
+    const ready = doneCount - skippedCount;
+    const openFiles = () => {
+      if (this.timer) clearInterval(this.timer);
+      this.setState({ busy: true, prog: 0 });
+      this.timer = setInterval(() => this.tick(), 120);
+    };
+    const startOver = () => {
+      if (this.timer) clearInterval(this.timer);
+      this.timer = null;
+      this.setState({ busy: false, prog: 0 });
+    };
+    const pct = Math.round(Math.min(st.prog, N) / N * 100);
+    const steps = [
+      { n: '1', title: 'Open', text: 'Drop ARW files or a whole folder.' },
+      { n: '2', title: 'Adjust, if you want', text: 'Pick a look. The rest is automatic.' },
+      { n: '3', title: 'Export', text: 'JPEG, TIFF, PNG or DNG. Done.' }
+    ].map((s, i) => {
+      const on = (!st.busy && i === 0) || (st.busy && i === 1);
+      return Object.assign({}, s, { bg: on ? 'var(--ink)' : 'var(--paper)', fg: on ? 'var(--paper)' : 'var(--ink)', edge: i < 2 ? 3 : 0 });
+    });
+    return {
+      idle: !st.busy,
+      busy: st.busy,
+      files, steps, pct,
+      barEdge: pct > 0 && pct < 100 ? 3 : 0,
+      openFiles, startOver,
+      headTitle: st.busy ? 'Lisbon' : 'Yellowmoon',
+      headSub: st.busy ? '2026-10-04 · ' + N + ' photos' : 'Drop ARW files to start',
+      busyTitle: finished ? ready + ' photos ready' : 'Developing ' + N + ' photos',
+      busyHint: finished
+        ? (skippedCount ? skippedCount + ' file skipped. Everything else is developed and ready to export.' : 'Everything is developed and ready to export.')
+        : 'You can start looking while the rest finishes.'
+    };
+  }
+}
+</script>
+</body>
+</html>

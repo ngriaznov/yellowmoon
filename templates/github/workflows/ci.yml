@@ -1,0 +1,119 @@
+# CI: adapted from github.com/ngriaznov/plugout, extended with licence checks, golden images,
+# decoder oracles, DNG validation and a training dry run. Install as .github/workflows/ci.yml in M0-02.
+# Jobs marked "enable in" are added as their milestone lands; keep them commented until then.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "17 3 * * *"   # nightly: full oracle corpus, private golden tier, fuzzing
+
+jobs:
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+      - name: npm licence check
+        run: npx --yes license-checker --production --onlyAllow "MIT;ISC;BSD-2-Clause;BSD-3-Clause;Apache-2.0;0BSD;CC0-1.0;Unlicense;BlueOak-1.0.0;Python-2.0"
+
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npm run e2e
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report
+          path: playwright-report
+
+  rust:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt,clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: tools/dev/prepare-sidecar.sh   # tauri-build needs the sidecar to exist (docs/01)
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+
+  deny:
+    runs-on: ubuntu-latest   # cargo-deny-action is a container action: Linux runners only
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+
+  # enable in M0-07: WGSL kernels against CPU references on software Vulkan (correctness only)
+  # gpu-lavapipe:
+  #   runs-on: ubuntu-latest
+  #   env: { YM_REQUIRE_GPU: "1", WGPU_BACKEND: vulkan }
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - run: sudo apt-get update && sudo apt-get install -y mesa-vulkan-drivers libvulkan1
+  #     - uses: dtolnay/rust-toolchain@stable
+  #     - uses: Swatinem/rust-cache@v2
+  #     - run: cargo test -p ym-gpu -p ym-ml --release
+
+  # enable in M0-05: decoder oracle (rawler via tools/oracle, LibRaw via rawpy). Test-only, never shipped.
+  # oracle:
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - uses: dtolnay/rust-toolchain@stable
+  #     - uses: Swatinem/rust-cache@v2
+  #     - uses: actions/cache@v4
+  #       with: { path: testdata, key: testdata-${{ hashFiles('tools/fetch/manifest.json') }} }
+  #     - run: tools/fetch/samples.sh
+  #     - run: pip install rawpy numpy
+  #     - run: cargo run -p oracle --release -- --corpus testdata/arw --report oracle-report.json
+  #     - uses: actions/upload-artifact@v4
+  #       if: always()
+  #       with: { name: oracle-report, path: oracle-report.json }
+
+  # enable in M1-15: golden images through the CLI
+  # golden:
+  #   runs-on: macos-latest
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - uses: dtolnay/rust-toolchain@stable
+  #     - uses: Swatinem/rust-cache@v2
+  #     - uses: actions/cache@v4
+  #       with: { path: testdata, key: testdata-${{ hashFiles('tools/fetch/manifest.json') }} }
+  #     - run: tools/fetch/samples.sh && tools/fetch/golden.sh
+  #     - run: cargo run -p golden --release -- --check
+
+  # enable in M3-12: every exported DNG passes Adobe's dng_validate
+  # dng:
+  #   runs-on: macos-latest
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - run: tools/dng/build_dng_validate.sh   # builds dng_validate from the DNG SDK at a pinned commit
+  #     - run: cargo run -p golden --release -- --dng-validate
+
+  # enable in M2-05: training scripts stay runnable
+  # training-dry-run:
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - uses: actions/setup-python@v5
+  #       with: { python-version: "3.12" }
+  #     - run: pip install -r training/requirements.txt
+  #     - run: python -m training.jdd.train --dry-run --steps 50 --device cpu

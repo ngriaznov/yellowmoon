@@ -1,0 +1,102 @@
+Yellowmoon
+Copyright 2026 Mykyta Hriaznov and Yellowmoon contributors
+
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+Yellowmoon is not affiliated with, endorsed by or sponsored by ARRI or Sony.
+ARRI and ALEXA are trademarks of ARRI AG. Sony is a trademark of Sony Group
+Corporation. These names are used only to describe compatibility and data
+sources.
+
+This product includes DNG technology under license by Adobe.
+
+------------------------------------------------------------------------------
+Third-party components and data
+------------------------------------------------------------------------------
+
+1. ARRI ALEXA colour matrices (data/arri/)
+   ARRI-supplied ALEXA SUP 3.x camera-native to ACES AP0 matrices,
+   Alexa_aces_matrix.txt (13 Nov 2013), from https://github.com/ampas/aces-dev
+   (tag v1.3.1), and matrices derived from them. Distributed under the
+   following licence:
+
+# License Terms for Academy Color Encoding System Components #
+
+Academy Color Encoding System (ACES) software and tools are provided by the
+Academy under the following terms and conditions: A worldwide, royalty-free,
+non-exclusive right to copy, modify, create derivatives, and use, in source and
+binary forms, is hereby granted, subject to acceptance of this license.
+
+Copyright © 2015 Academy of Motion Picture Arts and Sciences (A.M.P.A.S.).
+Portions contributed by others as indicated. All rights reserved.
+
+Performance of any of the aforementioned acts indicates acceptance to be bound
+by the following terms and conditions:
+
+* Copies of source code, in whole or in part, must retain the above copyright
+notice, this list of conditions and the Disclaimer of Warranty.
+
+* Use in binary form must retain the above copyright notice, this list of
+conditions and the Disclaimer of Warranty in the documentation and/or other
+materials provided with the distribution.
+
+* Nothing in this license shall be deemed to grant any rights to trademarks,
+copyrights, patents, trade secrets or any other intellectual property of
+A.M.P.A.S. or any contributors, except as expressly stated herein.
+
+* Neither the name "A.M.P.A.S." nor the name of any other contributors to this
+software may be used to endorse or promote products derivative of or based on
+this software without express prior written permission of A.M.P.A.S. or the
+contributors, as appropriate.
+
+This license shall be construed pursuant to the laws of the State of
+California, and any disputes related thereto shall be subject to the
+jurisdiction of the courts therein.
+
+Disclaimer of Warranty: THIS SOFTWARE IS PROVIDED BY A.M.P.A.S. AND CONTRIBUTORS
+"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
+THE IMPLIED WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND
+NON-INFRINGEMENT ARE DISCLAIMED. IN NO EVENT SHALL A.M.P.A.S., OR ANY
+CONTRIBUTORS OR DISTRIBUTORS, BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+SPECIAL, EXEMPLARY, RESITUTIONARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
+PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
+LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE
+OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF
+ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+WITHOUT LIMITING THE GENERALITY OF THE FOREGOING, THE ACADEMY SPECIFICALLY
+DISCLAIMS ANY REPRESENTATIONS OR WARRANTIES WHATSOEVER RELATED TO PATENT OR
+OTHER INTELLECTUAL PROPERTY RIGHTS IN THE ACADEMY COLOR ENCODING SYSTEM, OR
+APPLICATIONS THEREOF, HELD BY PARTIES OTHER THAN A.M.P.A.S.,WHETHER DISCLOSED OR
+UNDISCLOSED.
+
+   No endorsement by A.M.P.A.S. or ARRI is implied.
+
+2. ALEXA ALEV III spectral sensitivity estimate (data/alexa/)
+   Our own estimate (Apache-2.0), fitted to the ARRI matrices above (AMPAS
+   licence, see 1) with a spectral prior built from rawtoaces-data (see 3).
+   It is an estimate, not a measurement.
+
+3. rawtoaces-data (data/cameras/sony/)
+   Sony camera spectral sensitivity measurements by Weta Digital and the
+   190-patch training reflectance set, from
+   https://github.com/AcademySoftwareFoundation/rawtoaces-data,
+   Apache License 2.0 (data/cameras/sony/LICENSE-rawtoaces-data).
+
+4. ACES 2.0 output transform
+   Ported from https://github.com/aces-aswf/aces-output, Apache License 2.0.
+   Copyright Contributors to the Academy Color Encoding System.
+
+5. Figtree typeface
+   Copyright The Figtree Project Authors. SIL Open Font License 1.1
+   (design/fonts/OFL.txt; shipped with the app).
+
+6. Training data for shipped model weights (add when weights ship)
+   PixelShift200 (CC BY 4.0), https://huggingface.co/datasets/guochengqian/PixelShift200
+   Cube++ (CC BY 4.0), https://zenodo.org/records/4153431
+   See data/models/*/MODEL_CARD.md for per-model provenance.
+
+7. Rust and JavaScript dependencies
+   Listed with their licences in the generated THIRD-PARTY file produced at
+   release time (cargo-about / license-checker).

@@ -1,0 +1,47 @@
+# cargo-deny policy. Install at the repository root in M0-02.
+# Shipped crates must be Apache-2.0 compatible. LGPL/GPL/AGPL are never allowed in shipped crates.
+# tools/oracle (test-only, links rawler under LGPL-2.1) is excluded from these checks
+# and must never be a dependency of anything under crates/ or src-tauri/.
+
+[graph]
+exclude = ["oracle"]
+all-features = false
+
+[licenses]
+version = 2
+allow = [
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "MIT",
+  "MIT-0",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Zlib",
+  "Unicode-3.0",
+  "Unicode-DFS-2016",
+  "CC0-1.0",
+  "0BSD",
+  "BSL-1.0",
+  "MPL-2.0",          # file-level copyleft; allowed for unmodified dependencies only (review each)
+  "OFL-1.1",          # fonts
+]
+confidence-threshold = 0.9
+
+[bans]
+multiple-versions = "warn"
+deny = [
+  { name = "dng" },        # AGPL-3.0
+  { name = "rawler" },     # LGPL-2.1: test oracle only (tools/oracle)
+  { name = "rawloader" },  # LGPL-2.1
+  { name = "ljpeg" },      # LGPL-2.1
+  { name = "jpegxl-rs" },  # GPL-3.0
+]
+
+[advisories]
+version = 2
+yanked = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

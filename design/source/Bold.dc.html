@@ -1,0 +1,541 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Bold grid</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Figtree:wght@400..900&amp;display=swap">
+<style>
+body{margin:0;background:#FFFFFF;-webkit-font-smoothing:antialiased}
+button:focus-visible,a:focus-visible,input[type=search]:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
+input[type=search]::placeholder{color:var(--muted)}
+input[type=search]::-webkit-search-decoration,input[type=search]::-webkit-search-cancel-button{-webkit-appearance:none}
+</style>
+</helmet>
+<div style="--ink: #000000; --paper: #FFFFFF; --muted: #6B6B6B; --focus: #0B5CC2; color-scheme: light; height: 100vh; min-height: 760px; display: grid; grid-template-columns: minmax(0, 1fr) 400px; grid-template-rows: 75px auto minmax(124px, 1fr); overflow: hidden; background: var(--paper); color: var(--ink); font-family: 'Figtree', system-ui, sans-serif; font-size: 14px">
+
+  <header style="grid-column: 1 / -1; grid-row: 1; display: flex; align-items: stretch; border-bottom: 3px solid var(--ink); box-sizing: border-box; min-width: 0">
+    <div style="width: 300px; flex-shrink: 0; box-sizing: border-box; padding: 0 20px 0 84px; border-right: 3px solid var(--ink); display: flex; flex-direction: column; justify-content: center; gap: 5px">
+      <span style="display: flex; align-items: center; gap: 8px; font-size: 24px; font-weight: 800; letter-spacing: -0.02em; line-height: 1"><span aria-hidden="true" style="width: 16px; height: 16px; box-sizing: border-box; border-radius: 50%; background: #FFC20E; border: 2px solid var(--ink); flex-shrink: 0"></span>Lisbon</span>
+      <span style="font-size: 12px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; line-height: 1">2026-10-04 · {{total}} photos</span>
+    </div>
+    <nav aria-label="View" style="flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; padding: 0 20px">
+      <button type="button" onClick="{{toggleBefore}}" aria-pressed="{{before}}" style="height: 36px; padding: 0 10px; border: 0; background: {{beforeBg}}; color: {{beforeFg}}; font: inherit; font-size: 14px; font-weight: 800; letter-spacing: 0.02em; text-transform: uppercase; cursor: pointer">Before</button>
+      <button type="button" style="height: 36px; padding: 0 10px; border: 0; background: transparent; color: var(--ink); font: inherit; font-size: 14px; font-weight: 800; letter-spacing: 0.02em; text-transform: uppercase; cursor: pointer">Crop</button>
+      <button type="button" style="height: 36px; padding: 0 10px; border: 0; background: transparent; color: var(--ink); font: inherit; font-size: 14px; font-weight: 800; letter-spacing: 0.02em; text-transform: uppercase; cursor: pointer">Pick white</button>
+      <button type="button" aria-haspopup="menu" style="height: 36px; padding: 0 10px; border: 0; background: transparent; color: var(--ink); font: inherit; font-size: 14px; font-weight: 800; letter-spacing: 0.02em; text-transform: uppercase; font-variant-numeric: tabular-nums; cursor: pointer; display: inline-flex; align-items: center; gap: 8px">Fit 34%<span aria-hidden="true" style="width: 0; height: 0; border-left: 5px solid transparent; border-right: 5px solid transparent; border-top: 6px solid var(--ink)"></span></button>
+      <span style="margin-left: auto; font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap">Neural · 42 ms · Display P3</span>
+    </nav>
+    <div style="width: 400px; flex-shrink: 0; display: flex; border-left: 3px solid var(--ink); box-sizing: border-box">
+      <div style="flex: 1; display: flex; align-items: center; gap: 8px; padding: 0 18px; border-right: 3px solid var(--ink); font-size: 12px; font-weight: 800; letter-spacing: 0.03em; text-transform: uppercase; white-space: nowrap">
+        <span aria-hidden="true" style="width: 8px; height: 8px; background: #77E05A; border: 2px solid var(--ink)"></span>Update ready
+      </div>
+      <a href="BoldExport.dc.html" style="display: flex; align-items: center; gap: 10px; padding: 0 22px; color: var(--ink); text-decoration: none; font-size: 15px; font-weight: 800; letter-spacing: 0.02em; text-transform: uppercase; white-space: nowrap">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="square" aria-hidden="true"><path d="M12 3v12"></path><path d="M6.5 9.5L12 15l5.5-5.5"></path><path d="M4 20h16"></path></svg>
+        {{exportLabel}}
+        <span style="font-size: 11px; font-weight: 700; padding: 3px 5px; border: 2px solid var(--ink); line-height: 1">⌘E</span>
+      </a>
+    </div>
+  </header>
+
+  <section aria-label="Photo" style="grid-column: 1; grid-row: 2; position: relative; justify-self: center; width: min(100%, calc((max(100vh, 760px) - 199px) * 1.5)); aspect-ratio: 3 / 2; background: var(--paper); overflow: hidden; min-width: 0">
+    <div style="position: absolute; inset: 0; container-type: size; display: flex; align-items: center; justify-content: center">
+      <div role="img" aria-label="Photo {{cur.name}}, {{lookChip}}" style="position: relative; width: 100%; height: 100%; overflow: hidden; background: {{view.sky}}">
+        <div style="position: absolute; width: 9%; aspect-ratio: 1; border-radius: 50%; left: {{cur.sx}}%; top: {{cur.sy}}%; background: {{view.sun}}"></div>
+        <div style="position: absolute; left: -10%; right: -10%; bottom: 18%; height: 42%; border-radius: 50% 50% 0 0 / 100% 100% 0 0; background: {{view.far}}"></div>
+        <div style="position: absolute; left: 0; right: 0; bottom: 0; height: 26%; background: {{view.near}}"></div>
+        <sc-if value="{{before}}" hint-placeholder-val="{{false}}">
+          <span style="position: absolute; left: 0; top: 0; padding: 8px 12px; background: #FFC20E; color: #000; border-right: 3px solid #000; border-bottom: 3px solid #000; font-size: 13px; font-weight: 800; letter-spacing: 0.03em; text-transform: uppercase">Before · camera log</span>
+        </sc-if>
+        <sc-if value="{{showChip}}" hint-placeholder-val="{{true}}">
+          <span style="position: absolute; left: 0; bottom: 0; padding: 8px 12px; background: #000; color: #FFF; font-size: 13px; font-weight: 800; letter-spacing: 0.03em; text-transform: uppercase; font-variant-numeric: tabular-nums">{{lookChip}}</span>
+        </sc-if>
+        <span style="position: absolute; right: 12px; bottom: 10px; color: #FFF; font-size: 12px; font-weight: 700; text-shadow: 0 1px 3px rgba(0,0,0,0.45); font-variant-numeric: tabular-nums">Sony A1 · {{cur.name}} · ISO 400 · 1/125 · f/2.8</span>
+      </div>
+    </div>
+  </section>
+
+  <nav aria-label="Photos" style="grid-column: 1; grid-row: 3; display: flex; align-items: stretch; border-top: 3px solid var(--ink); box-sizing: border-box; min-width: 0">
+    <div style="flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; overflow-x: auto; padding: 0 24px">
+      <sc-for list="{{photos}}" as="p" hint-placeholder-count="12">
+        <button type="button" onClick="{{p.pick}}" aria-label="Show {{p.name}}" aria-current="{{p.isCur}}" style="position: relative; flex-shrink: 0; box-sizing: border-box; width: {{p.w}}px; height: {{p.h}}px; padding: 0; border: {{p.bw}}px solid var(--ink); overflow: hidden; background: {{p.sky}}; cursor: pointer">
+          <span style="position: absolute; width: 12%; aspect-ratio: 1; border-radius: 50%; left: {{p.sx}}%; top: {{p.sy}}%; background: {{p.sun}}"></span>
+          <span style="position: absolute; left: -10%; right: -10%; bottom: 18%; height: 42%; border-radius: 50% 50% 0 0 / 100% 100% 0 0; background: {{p.far}}"></span>
+          <span style="position: absolute; left: 0; right: 0; bottom: 0; height: 26%; background: {{p.near}}"></span>
+          <sc-if value="{{p.picked}}" hint-placeholder-val="{{false}}"><span aria-label="picked" style="position: absolute; right: 0; top: 0; width: 10px; height: 10px; background: #FFC20E; border-left: 2px solid #000; border-bottom: 2px solid #000"></span></sc-if>
+        </button>
+      </sc-for>
+    </div>
+    <div style="flex-shrink: 0; width: 132px; box-sizing: border-box; padding: 0 20px; border-left: 3px solid var(--ink); display: flex; flex-direction: column; justify-content: center; gap: 6px">
+      <span style="font-size: 26px; font-weight: 800; letter-spacing: -0.02em; line-height: 1; font-variant-numeric: tabular-nums">{{counter}}</span>
+      <span style="font-size: 12px; font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase">{{pickedLabel}}</span>
+    </div>
+  </nav>
+
+  <aside aria-label="Tools" style="grid-column: 2; grid-row: 2 / 4; display: flex; flex-direction: column; min-height: 0; border-left: 3px solid var(--ink); box-sizing: border-box">
+    <div role="tablist" aria-label="Tool tabs" style="flex-shrink: 0; display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 3px; background: var(--ink); border-bottom: 3px solid var(--ink)">
+      <sc-for list="{{tabs}}" as="t" hint-placeholder-count="6">
+        <button type="button" role="tab" aria-selected="{{t.active}}" onClick="{{t.pick}}" style="height: 46px; padding: 0; border: 0; background: {{t.bg}}; color: {{t.fg}}; font: inherit; font-size: 12px; font-weight: 800; letter-spacing: 0.03em; text-transform: uppercase; cursor: pointer">{{t.label}}</button>
+      </sc-for>
+    </div>
+
+    <div style="flex: 1; min-height: 0; overflow-y: auto">
+      <div style="padding: 22px 24px 22px; background: {{tabBg}}; color: {{tabFg}}; border-bottom: 3px solid var(--ink)">
+        <h2 style="margin: 0; font-size: 40px; font-weight: 800; letter-spacing: -0.025em; line-height: 1">{{tabTitle}}</h2>
+        <p style="margin: 12px 0 0; font-size: 15px; line-height: 1.5; max-width: 330px">{{tabBlurb}}</p>
+      </div>
+
+      <sc-if value="{{tabLight}}" hint-placeholder-val="{{false}}">
+        <div style="padding: 18px 24px 16px; border-bottom: 3px solid var(--ink)">
+          <div style="position: relative; height: 88px; border: 2px solid var(--ink); box-sizing: border-box; overflow: hidden">
+            <svg viewBox="0 0 320 84" width="100%" height="84" preserveAspectRatio="none" role="img" aria-label="Histogram"><path d="M0 84 L0 78 C26 72 44 40 74 42 C106 44 124 22 156 28 C186 34 206 52 236 58 C262 62 286 70 320 76 L320 84 Z" fill="#FF5A1F" fill-opacity="0.55"></path><path d="M0 84 L0 80 C28 70 48 32 80 34 C110 36 130 14 162 22 C192 30 212 48 242 56 C266 60 290 68 320 74 L320 84 Z" fill="#77E05A" fill-opacity="0.55"></path><path d="M0 84 L0 76 C24 68 44 46 76 50 C108 54 128 36 158 40 C188 44 208 62 238 66 C264 70 288 74 320 80 L320 84 Z" fill="#0DB7E8" fill-opacity="0.55"></path></svg>
+          </div>
+          <div style="display: flex; justify-content: space-between; margin-top: 8px; font-size: 12px; font-weight: 700; font-variant-numeric: tabular-nums"><span>R 182  G 164  B 140</span><span>ISO 400 · 1/125 · f/2.8</span></div>
+        </div>
+      </sc-if>
+
+      <sc-for list="{{tools}}" as="tool" hint-placeholder-count="2">
+        <section aria-label="{{tool.title}}" style="padding: 16px 24px 20px; border-bottom: 3px solid var(--ink)">
+          <div style="display: flex; align-items: center; gap: 12px; height: 28px; margin-bottom: 10px">
+            <h3 style="margin: 0; flex: 1; font-size: 13px; font-weight: 800; letter-spacing: 0.05em; text-transform: uppercase">{{tool.title}}</h3>
+            <sc-if value="{{tool.hasAuto}}" hint-placeholder-val="{{false}}">
+              <button type="button" onClick="{{tool.reset}}" aria-pressed="{{tool.isAuto}}" style="height: 26px; padding: 0 8px; border: 2px solid var(--ink); background: {{tool.autoBg}}; color: {{tool.autoFg}}; font: inherit; font-size: 11px; font-weight: 800; letter-spacing: 0.05em; text-transform: uppercase; cursor: pointer">Auto</button>
+            </sc-if>
+            <sc-if value="{{tool.hasReset}}" hint-placeholder-val="{{true}}">
+              <button type="button" onClick="{{tool.reset}}" style="padding: 0; border: 0; background: transparent; color: var(--ink); font: inherit; font-size: 13px; font-weight: 700; text-decoration: underline; text-decoration-thickness: 2px; text-underline-offset: 3px; cursor: pointer">{{tool.resetText}}</button>
+            </sc-if>
+          </div>
+
+          <sc-if value="{{tool.hasAutoCard}}" hint-placeholder-val="{{false}}">
+            <div style="border-top: 2px solid var(--ink)">
+              <sc-for list="{{autoRows}}" as="r" hint-placeholder-count="4">
+                <button type="button" onClick="{{r.go}}" aria-label="{{r.label}} {{r.value}}, {{r.tag}}. Open {{r.tabLabel}}" style="display: grid; grid-template-columns: 104px minmax(0, 1fr) auto 16px; align-items: center; column-gap: 10px; width: 100%; height: 42px; padding: 0; border: 0; border-bottom: 2px solid var(--ink); background: transparent; color: var(--ink); font: inherit; text-align: left; cursor: pointer">
+                  <span style="font-size: 13px; font-weight: 800">{{r.label}}</span>
+                  <span style="font-size: 14px; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{{r.value}}</span>
+                  <span style="height: 22px; display: inline-flex; align-items: center; padding: 0 6px; box-sizing: border-box; border: 2px solid var(--ink); background: {{r.tagBg}}; color: {{r.tagFg}}; font-size: 10.5px; font-weight: 800; letter-spacing: 0.05em; text-transform: uppercase">{{r.tag}}</span>
+                  <span aria-hidden="true" style="font-size: 16px; font-weight: 800">→</span>
+                </button>
+              </sc-for>
+            </div>
+          </sc-if>
+
+          <sc-if value="{{tool.hasProfile}}" hint-placeholder-val="{{false}}">
+            <div style="border-top: 2px solid var(--ink)">
+              <div style="display: grid; grid-template-columns: 104px minmax(0, 1fr); align-items: center; column-gap: 10px; min-height: 42px; border-bottom: 2px solid var(--ink)">
+                <span style="font-size: 13px; font-weight: 800">Detected</span>
+                <span style="font-size: 14px">{{camera.detected}}</span>
+              </div>
+              <div style="display: grid; grid-template-columns: 104px minmax(0, 1fr) auto; align-items: center; column-gap: 10px; min-height: 42px; border-bottom: 2px solid var(--ink)">
+                <span style="font-size: 13px; font-weight: 800">Profile</span>
+                <span style="font-size: 14px">{{camera.profile}}</span>
+                <span style="height: 22px; display: inline-flex; align-items: center; padding: 0 6px; box-sizing: border-box; border: 2px solid var(--ink); font-size: 10.5px; font-weight: 800; letter-spacing: 0.05em; text-transform: uppercase">Stand-in</span>
+              </div>
+            </div>
+            <p style="margin: 10px 0 0; font-size: 13px; line-height: 1.5">{{camera.note}}</p>
+          </sc-if>
+
+          <sc-if value="{{tool.hasSegment}}" hint-placeholder-val="{{false}}">
+            <div role="radiogroup" aria-label="Light type" style="display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 2px; background: var(--ink); border: 2px solid var(--ink); margin-bottom: 12px">
+              <sc-for list="{{lights}}" as="lt" hint-placeholder-count="6">
+                <button type="button" role="radio" aria-checked="{{lt.active}}" onClick="{{lt.pick}}" style="height: 32px; padding: 0; border: 0; background: {{lt.bg}}; color: {{lt.fg}}; font: inherit; font-size: 11px; font-weight: 800; letter-spacing: 0.03em; text-transform: uppercase; cursor: pointer">{{lt.label}}</button>
+              </sc-for>
+            </div>
+          </sc-if>
+
+          <sc-if value="{{tool.hasWheels}}" hint-placeholder-val="{{false}}">
+            <div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-bottom: 12px">
+              <sc-for list="{{wheels}}" as="w" hint-placeholder-count="3">
+                <div style="display: flex; flex-direction: column; align-items: center; gap: 8px">
+                  <div role="img" aria-label="{{w.label}} colour balance" style="position: relative; width: 92px; height: 92px; box-sizing: border-box; border-radius: 50%; border: 2px solid var(--ink); background: conic-gradient(from 90deg, #FF5A1F, #FFC20E, #77E05A, #0DB7E8, #0B5CC2, #C36BD9, #FF5A1F)">
+                    <div style="position: absolute; inset: 0; border-radius: 50%; background: radial-gradient(circle, var(--paper) 0%, color-mix(in srgb, var(--paper) 90%, transparent) 34%, color-mix(in srgb, var(--paper) 20%, transparent) 72%, transparent 100%)"></div>
+                    <div style="position: absolute; left: 50%; top: 10%; bottom: 10%; width: 2px; margin-left: -1px; background: color-mix(in srgb, var(--ink) 22%, transparent)"></div>
+                    <div style="position: absolute; top: 50%; left: 10%; right: 10%; height: 2px; margin-top: -1px; background: color-mix(in srgb, var(--ink) 22%, transparent)"></div>
+                    <div style="position: absolute; width: 14px; height: 14px; box-sizing: border-box; left: calc({{w.x}}% - 7px); top: calc({{w.y}}% - 7px); background: var(--paper); border: 3px solid var(--ink)"></div>
+                  </div>
+                  <span style="font-size: 11px; font-weight: 800; letter-spacing: 0.05em; text-transform: uppercase">{{w.label}}</span>
+                </div>
+              </sc-for>
+            </div>
+          </sc-if>
+
+          <sc-if value="{{tool.hasCurve}}" hint-placeholder-val="{{false}}">
+            <div style="display: flex; flex-direction: column; gap: 10px; margin-bottom: 12px">
+              <div role="tablist" aria-label="Curve channel" style="display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 2px; background: var(--ink); border: 2px solid var(--ink)">
+                <sc-for list="{{curveTabs}}" as="ct" hint-placeholder-count="4">
+                  <button type="button" role="tab" aria-selected="{{ct.active}}" onClick="{{ct.pick}}" style="height: 32px; padding: 0; border: 0; background: {{ct.bg}}; color: {{ct.fg}}; font: inherit; font-size: 11px; font-weight: 800; letter-spacing: 0.03em; text-transform: uppercase; cursor: pointer">{{ct.label}}</button>
+                </sc-for>
+              </div>
+              <svg viewBox="0 0 320 220" width="100%" role="img" aria-label="{{curveLabel}}" style="display: block; box-sizing: border-box; border: 2px solid var(--ink); background: var(--paper)">
+                <path d="M80 0V220M160 0V220M240 0V220M0 55H320M0 110H320M0 165H320" style="stroke: color-mix(in srgb, var(--ink) 16%, transparent); stroke-width: 1.5; fill: none"></path>
+                <path d="M0 220 L320 0" style="stroke: color-mix(in srgb, var(--ink) 32%, transparent); stroke-width: 1.5; stroke-dasharray: 4 5; fill: none"></path>
+                <path d="{{curvePath}}" style="stroke: {{curveColor}}; stroke-width: 3; fill: none"></path>
+                <rect x="75" y="{{curveP1m}}" width="10" height="10" style="fill: var(--paper); stroke: var(--ink); stroke-width: 2.5"></rect>
+                <rect x="154" y="{{curveP2m}}" width="12" height="12" style="fill: var(--ink); stroke: var(--ink); stroke-width: 2"></rect>
+                <rect x="235" y="{{curveP3m}}" width="10" height="10" style="fill: var(--paper); stroke: var(--ink); stroke-width: 2.5"></rect>
+              </svg>
+              <div style="display: flex; gap: 20px; font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums"><span>Input <b style="font-weight: 800">128</b></span><span>Output <b style="font-weight: 800">{{curveOut}}</b></span></div>
+            </div>
+          </sc-if>
+
+          <sc-for list="{{tool.sliders}}" as="s" hint-placeholder-count="3">
+            <div style="display: grid; grid-template-columns: 92px minmax(0, 1fr) 72px 40px; align-items: center; column-gap: 10px; height: 38px">
+              <label for="{{s.uid}}" style="font-size: 13px; font-weight: 800; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{{s.label}}</label>
+              <div style="position: relative; height: 38px">
+                <div style="position: absolute; left: 0; right: 0; top: 18px; height: 2px; background: var(--ink)"></div>
+                <div style="position: absolute; top: 14px; height: 10px; box-sizing: border-box; left: {{s.fillL}}%; width: {{s.fillW}}%; border: 2px solid var(--ink); background: {{s.fillBg}}; opacity: {{s.fillOp}}"></div>
+                <div style="position: absolute; top: 11px; left: calc({{s.detent}}% - 1px); width: 2px; height: 16px; background: var(--ink)"></div>
+                <div style="position: absolute; top: 8px; left: calc({{s.pos}}% - 4px); width: 8px; height: 22px; background: var(--ink)"></div>
+                <input id="{{s.uid}}" type="range" min="{{s.min}}" max="{{s.max}}" step="{{s.step}}" value="{{s.value}}" onChange="{{s.set}}" style="position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: ew-resize">
+              </div>
+              <span style="height: 30px; box-sizing: border-box; display: flex; align-items: center; justify-content: flex-end; padding: 0 8px; border: 2px solid var(--ink); background: {{s.valBg}}; color: {{s.valFg}}; font-size: 14px; font-weight: 800; font-variant-numeric: tabular-nums; white-space: nowrap">{{s.display}}</span>
+              <sc-if value="{{s.changed}}" hint-placeholder-val="{{false}}">
+                <button type="button" onClick="{{s.reset}}" aria-label="Reset {{s.label}}" style="padding: 0; border: 0; background: transparent; color: var(--ink); font: inherit; font-size: 12px; font-weight: 700; text-decoration: underline; text-decoration-thickness: 2px; text-underline-offset: 3px; cursor: pointer">Reset</button>
+              </sc-if>
+            </div>
+          </sc-for>
+
+          <sc-if value="{{tool.hasApply}}" hint-placeholder-val="{{false}}">
+            <div style="display: grid; grid-template-columns: 92px minmax(0, 1fr); align-items: center; column-gap: 10px; margin-top: 8px">
+              <span style="font-size: 13px; font-weight: 800">Apply to</span>
+              <div role="radiogroup" aria-label="Apply look to" style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 2px; background: var(--ink); border: 2px solid var(--ink)">
+                <sc-for list="{{applyOpts}}" as="ao" hint-placeholder-count="3">
+                  <button type="button" role="radio" aria-checked="{{ao.active}}" onClick="{{ao.pick}}" style="height: 32px; padding: 0 4px; border: 0; background: {{ao.bg}}; color: {{ao.fg}}; font: inherit; font-size: 11px; font-weight: 800; letter-spacing: 0.03em; text-transform: uppercase; font-variant-numeric: tabular-nums; white-space: nowrap; cursor: pointer">{{ao.label}}</button>
+                </sc-for>
+              </div>
+            </div>
+          </sc-if>
+
+          <sc-if value="{{tool.hasLooks}}" hint-placeholder-val="{{false}}">
+            <div style="margin-top: 16px">
+              <div style="position: relative; margin-bottom: 16px">
+                <input type="search" value="{{q}}" onChange="{{setQ}}" placeholder="Search looks…" aria-label="Search looks" style="width: 100%; box-sizing: border-box; height: 44px; padding: 0 44px 0 12px; border: 3px solid var(--ink); border-radius: 0; background: var(--paper); color: var(--ink); font: inherit; font-size: 15px; -webkit-appearance: none; appearance: none">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" aria-hidden="true" style="position: absolute; right: 13px; top: 12px; color: var(--ink)"><circle cx="10.5" cy="10.5" r="6.5"></circle><path d="M15.5 15.5L21 21"></path></svg>
+              </div>
+              <sc-for list="{{lookGroups}}" as="g" hint-placeholder-count="2">
+                <div style="margin-bottom: 18px">
+                  <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px">
+                    <span style="font-size: 12px; font-weight: 800; letter-spacing: 0.05em; text-transform: uppercase">{{g.label}}</span>
+                    <span style="font-size: 12px; font-weight: 700; font-variant-numeric: tabular-nums">{{g.count}}</span>
+                  </div>
+                  <div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px 12px">
+                    <sc-for list="{{g.looks}}" as="l" hint-placeholder-count="3">
+                      <button type="button" onClick="{{l.pick}}" aria-pressed="{{l.active}}" aria-label="{{l.name}} look{{l.keyLabel}}" style="min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 6px; padding: 0; border: 0; background: transparent; color: var(--ink); font: inherit; text-align: left; cursor: pointer">
+                        <span style="position: relative; display: block; width: 100%; aspect-ratio: 3 / 2; box-sizing: border-box; border: 2px solid var(--ink); overflow: hidden; background: {{l.sky}}; box-shadow: 0 0 0 {{l.ringW}}px var(--ink)">
+                          <span style="position: absolute; width: 12%; aspect-ratio: 1; border-radius: 50%; left: {{cur.sx}}%; top: {{cur.sy}}%; background: {{l.sun}}"></span>
+                          <span style="position: absolute; left: -10%; right: -10%; bottom: 18%; height: 42%; border-radius: 50% 50% 0 0 / 100% 100% 0 0; background: {{l.far}}"></span>
+                          <span style="position: absolute; left: 0; right: 0; bottom: 0; height: 26%; background: {{l.near}}"></span>
+                          <sc-if value="{{l.hasKey}}" hint-placeholder-val="{{true}}">
+                            <span aria-hidden="true" style="position: absolute; left: 0; top: 0; min-width: 16px; height: 16px; padding: 0 3px; box-sizing: border-box; display: flex; align-items: center; justify-content: center; background: #000; color: #FFF; font-size: 10px; font-weight: 800; font-variant-numeric: tabular-nums">{{l.key}}</span>
+                          </sc-if>
+                          <sc-if value="{{l.isDefault}}" hint-placeholder-val="{{false}}">
+                            <span style="position: absolute; right: 0; bottom: 0; height: 16px; display: flex; align-items: center; padding: 0 4px; background: #FFC20E; color: #000; border-left: 2px solid #000; border-top: 2px solid #000; font-size: 9.5px; font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase">Default</span>
+                          </sc-if>
+                        </span>
+                        <span style="max-width: 100%; padding: 1px 4px; margin-left: -4px; background: {{l.labelBg}}; color: {{l.labelFg}}; font-size: 13px; font-weight: {{l.weight}}; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{{l.name}}</span>
+                      </button>
+                    </sc-for>
+                  </div>
+                </div>
+              </sc-for>
+              <sc-if value="{{noLooks}}" hint-placeholder-val="{{false}}">
+                <p style="margin: 0 0 16px; font-size: 14px">No looks match “{{q}}”.</p>
+              </sc-if>
+              <a href="BoldWizard.dc.html" style="display: inline-flex; align-items: center; gap: 8px; margin-bottom: 4px; color: var(--ink); font-size: 14px; font-weight: 800; text-decoration: underline; text-decoration-thickness: 2px; text-underline-offset: 4px">Import ARRI looks →</a>
+            </div>
+          </sc-if>
+
+          <sc-if value="{{tool.hasSwitches}}" hint-placeholder-val="{{false}}">
+            <div style="display: flex; flex-direction: column; margin-bottom: 8px; border-top: 2px solid var(--ink)">
+              <sc-for list="{{switches}}" as="sw" hint-placeholder-count="4">
+                <div style="height: 44px; display: flex; align-items: center; justify-content: space-between; border-bottom: 2px solid var(--ink)">
+                  <span style="font-size: 14px; font-weight: 700">{{sw.label}}</span>
+                  <button type="button" role="switch" aria-checked="{{sw.on}}" aria-label="{{sw.label}}" onClick="{{sw.toggle}}" style="position: relative; width: 44px; height: 24px; box-sizing: border-box; padding: 0; border: 2px solid var(--ink); background: {{sw.bg}}; cursor: pointer">
+                    <span style="position: absolute; top: 2px; left: {{sw.knob}}px; width: 16px; height: 16px; background: {{sw.knobBg}}"></span>
+                  </button>
+                </div>
+              </sc-for>
+            </div>
+          </sc-if>
+        </section>
+      </sc-for>
+    </div>
+  </aside>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":900}}'>
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    const DARK = false;
+    this.dark = DARK;
+    const S = (id, label, min, max, step, def, fmt, start) => ({ id, label, min, max, step, def, fmt, start: start === undefined ? def : start });
+    const ev = v => (v > 0 ? '+' : v < 0 ? '−' : '') + Math.abs(v).toFixed(2);
+    const sg = v => (v > 0 ? '+' : v < 0 ? '−' : '') + Math.abs(v);
+    const n0 = v => String(Math.round(v));
+    this.ev = ev;
+    this.sg = sg;
+    this.tabMeta = {
+      look: { label: 'Look', bg: '#FFC20E', fg: '#000000', blurb: 'Every photo is developed automatically. Pick a look and how strongly to apply it.' },
+      light: { label: 'Light', bg: '#0DB7E8', fg: '#000000', blurb: 'Exposure is set for each photo automatically. Adjust it from there.' },
+      color: { label: 'Colour', bg: '#77E05A', fg: '#000000', blurb: 'White balance comes from the light in the scene. Set it by hand when you want a different mood.' },
+      detail: { label: 'Detail', bg: '#F2B8AA', fg: '#000000', blurb: 'Sharpening and noise reduction, tuned for each ISO of your camera.' },
+      curve: { label: 'Curve', bg: '#FF5A1F', fg: '#000000', blurb: 'Fine contrast, for all channels or one at a time.' },
+      raw: { label: 'RAW', bg: '#0B5CC2', fg: '#FFFFFF', blurb: 'How the sensor data is decoded before any colour is applied.' }
+    };
+    this.toolDefs = {
+      look: [
+        { title: 'Automatic', hasAutoCard: true, sliders: [], resetIds: ['exp', 'kel', 'tint', 'nrl', 'nrc', 'nrd'], resetText: 'Re-run' },
+        { title: 'Look', hasLooks: true, hasApply: true, resetLook: true, sliders: [S('int', 'Intensity', 0, 100, 1, 100, v => Math.round(v) + '%')] }
+      ],
+      light: [
+        { title: 'Exposure', hasAuto: true, sliders: [S('exp', 'Exposure', -4, 4, 0.01, 0.3, ev), S('con', 'Contrast', -100, 100, 1, 0, sg), S('bri', 'Brightness', -100, 100, 1, 0, sg)] },
+        { title: 'High dynamic range', sliders: [S('hi', 'Highlights', -100, 100, 1, 0, sg, -18), S('sh', 'Shadows', -100, 100, 1, 0, sg, 12), S('wh', 'White', -100, 100, 1, 0, sg), S('bl', 'Black', -100, 100, 1, 0, sg)] }
+      ],
+      color: [
+        { title: 'White balance', hasAuto: true, hasSegment: true, sliders: [S('kel', 'Kelvin', 2000, 11000, 50, 5450, v => v + ' K'), S('tint', 'Tint', -50, 50, 1, 0, sg)] },
+        { title: 'Colour balance', hasWheels: true, sliders: [S('sat', 'Saturation', -100, 100, 1, 0, sg, 6)] }
+      ],
+      detail: [
+        { title: 'Sharpening', sliders: [S('amt', 'Amount', 0, 300, 1, 120, n0), S('rad', 'Radius', 0.3, 2.5, 0.1, 0.8, v => v.toFixed(1) + ' px')] },
+        { title: 'Noise reduction', hasAuto: true, sliders: [S('nrl', 'Luminance', 0, 100, 1, 30, n0), S('nrc', 'Colour', 0, 100, 1, 50, n0), S('nrd', 'Detail', 0, 100, 1, 50, n0)] }
+      ],
+      curve: [
+        { title: 'Curve', hasCurve: true, sliders: [] }
+      ],
+      raw: [
+        { title: 'Camera', hasProfile: true, noReset: true, sliders: [] },
+        { title: 'Decode', hasSwitches: true, noReset: true, sliders: [] },
+        { title: 'Roll-off', sliders: [S('hro', 'Highlights', 0, 1, 0.01, 0.5, v => v.toFixed(2)), S('lro', 'Low light', 0, 1, 0.01, 0.5, v => v.toFixed(2))] }
+      ]
+    };
+    this.defs = {};
+    const vals = {};
+    Object.values(this.toolDefs).forEach(list => list.forEach(t => t.sliders.forEach(s => { vals[s.id] = s.start; this.defs[s.id] = s.def; })));
+    this.lookDefs = [
+      ['neutral', 'Neutral', 'builtin', { hi: '#FFFFFF', ha: 0, sh: '#000000', sa: 0, ds: 0 }],
+      ['signature', 'Signature', 'builtin', { hi: '#E9C49A', ha: 0.10, sh: '#2A3B44', sa: 0.18, ds: 0.08 }],
+      ['warm', 'Film warm', 'arri', { hi: '#F0B37A', ha: 0.22, sh: '#4A3424', sa: 0.20, ds: 0.05 }],
+      ['cool', 'Film cool', 'arri', { hi: '#BFD3E6', ha: 0.18, sh: '#1E3448', sa: 0.28, ds: 0.05 }],
+      ['bleach', 'Bleach bypass', 'arri', { hi: '#F2F2F0', ha: 0.12, sh: '#1A1C1E', sa: 0.25, ds: 0.6 }],
+      ['teal', 'Teal and orange', 'arri', { hi: '#F0A86A', ha: 0.25, sh: '#0F4A57', sa: 0.40, ds: 0 }],
+      ['soft', 'Soft print', 'arri', { hi: '#F4E6D2', ha: 0.25, sh: '#5A5A60', sa: 0.25, ds: 0.15 }],
+      ['night', 'Night blue', 'arri', { hi: '#6C88B8', ha: 0.35, sh: '#0E1A33', sa: 0.45, ds: 0.2 }],
+      ['mono', 'Monochrome', 'arri', { hi: '#FFFFFF', ha: 0, sh: '#000000', sa: 0.05, ds: 1 }]
+    ];
+    this.state = { current: 3, tab: 'look', vals: vals, light: 'auto', look: 'neutral', curve: 'L', before: false, q: '', scope: 'all',
+      sw: { neural: true, hlr: true, lens: true, ca: true },
+      picked: [false, false, true, true, true, false, false, false, false, false, false, false] };
+  }
+  renderVals() {
+    const base = [
+      { name: 'DSC04201', sky: '#5B7088', far: '#34465A', near: '#1F2A36', sun: '#E8B47A', sx: 70, sy: 22 },
+      { name: 'DSC04202', sky: '#C99A63', far: '#7A5A3A', near: '#3E2F22', sun: '#F3D49A', sx: 30, sy: 28 },
+      { name: 'DSC04203', sky: '#9DB0A4', far: '#4C6450', near: '#2A3A2C', sun: '#E9E3C8', sx: 78, sy: 18 },
+      { name: 'DSC04204', sky: '#7FA6C7', far: '#E6ECF2', near: '#3F5468', sun: '#FFF6E0', sx: 66, sy: 12 },
+      { name: 'DSC04205', sky: '#8FB3C9', far: '#5E7F94', near: '#C8B79A', sun: '#F6EED8', sx: 60, sy: 14 },
+      { name: 'DSC04206', sky: '#241B33', far: '#3A2350', near: '#120E1C', sun: '#E86FA0', sx: 74, sy: 30 },
+      { name: 'DSC04207', sky: '#D7A877', far: '#A86F45', near: '#6E4630', sun: '#F5D9A8', sx: 45, sy: 20 },
+      { name: 'DSC04208', sky: '#6A5141', far: '#8C6A50', near: '#3A2C22', sun: '#F2C98B', sx: 50, sy: 30 },
+      { name: 'DSC04209', sky: '#8E959C', far: '#5F676E', near: '#3B4045', sun: '#C9CDD1', sx: 82, sy: 26 },
+      { name: 'DSC04210', sky: '#8C86A8', far: '#5B5677', near: '#2F2C40', sun: '#EAD2C0', sx: 36, sy: 24 },
+      { name: 'DSC04211', sky: '#1B2230', far: '#2B3446', near: '#12161F', sun: '#D9C9A0', sx: 20, sy: 16 },
+      { name: 'DSC04212', sky: '#B9C7D4', far: '#7E9A5E', near: '#4F6B35', sun: '#FBF2D5', sx: 24, sy: 18 }
+    ];
+    const INK = 'var(--ink)', PAPER = 'var(--paper)';
+    const st = this.state;
+    const v = st.vals;
+    const N = base.length;
+    const cur = base[st.current];
+    const ev = this.ev, sg = this.sg;
+    const meta = this.tabMeta[st.tab];
+
+    const hx = h => { const n = parseInt(h.slice(1), 16); return [(n >> 16) & 255, (n >> 8) & 255, n & 255]; };
+    const toHex = c => '#' + c.map(x => Math.max(0, Math.min(255, Math.round(x))).toString(16).padStart(2, '0')).join('');
+    const mix = (a, b, t) => { const A = hx(a), B = hx(b); return toHex(A.map((x, i) => x + (B[i] - x) * t)); };
+    const grey = a => { const A = hx(a); const y = 0.2126 * A[0] + 0.7152 * A[1] + 0.0722 * A[2]; return toHex([y, y, y]); };
+    const lookById = {};
+    this.lookDefs.forEach(d => { lookById[d[0]] = d; });
+    const grade = (p, lookId, k, adj) => {
+      const out = { sky: p.sky, far: p.far, near: p.near, sun: p.sun };
+      const keys = ['sky', 'far', 'near', 'sun'];
+      if (adj) {
+        const dk = (adj.kel - this.defs.kel) / 4000;
+        const wt = dk > 0 ? '#FFB46B' : '#6BA6FF';
+        const wa = Math.min(Math.abs(dk) * 0.35, 0.45);
+        const tt = adj.tint > 0 ? '#E070C8' : '#60D080';
+        const ta = Math.min(Math.abs(adj.tint) / 50 * 0.25, 0.25);
+        const de = adj.exp - this.defs.exp;
+        const et = de > 0 ? '#FFFFFF' : '#000000';
+        const ea = Math.min(Math.abs(de) * 0.22, 0.75);
+        keys.forEach(key => { let c = out[key]; c = mix(c, wt, wa); c = mix(c, tt, ta); c = mix(c, et, ea); out[key] = c; });
+      }
+      const L = lookId ? lookById[lookId][3] : null;
+      if (L) {
+        keys.forEach(key => { out[key] = mix(out[key], grey(out[key]), L.ds * k); });
+        out.sky = mix(out.sky, L.hi, L.ha * k);
+        out.sun = mix(out.sun, L.hi, L.ha * k * 0.5);
+        out.far = mix(mix(out.far, L.hi, L.ha * k * 0.6), L.sh, L.sa * k * 0.3);
+        out.near = mix(out.near, L.sh, L.sa * k);
+      }
+      return out;
+    };
+    const k = v.int / 100;
+    const adj = { kel: v.kel, tint: v.tint, exp: v.exp };
+    const flat = c => mix(c, '#7A7F84', 0.45);
+    const view = st.before
+      ? { sky: flat(cur.sky), far: flat(cur.far), near: flat(cur.near), sun: flat(cur.sun) }
+      : grade(cur, st.look, k, adj);
+
+    const np = st.picked.filter(Boolean).length;
+    const applied = i => st.scope === 'all' || i === st.current || (st.scope === 'picked' && !!st.picked[i]);
+    const photos = base.map((p, i) => {
+      const g = applied(i) ? grade(p, st.look, k, i === st.current ? adj : null) : grade(p, 'neutral', 1, null);
+      const isCur = i === st.current;
+      return {
+        name: p.name, sx: p.sx, sy: p.sy, sky: g.sky, far: g.far, near: g.near, sun: g.sun,
+        isCur: isCur ? 'true' : 'false',
+        w: isCur ? 90 : 60, h: isCur ? 60 : 40, bw: isCur ? 4 : 2,
+        picked: !!st.picked[i],
+        pick: () => this.setState({ current: i })
+      };
+    });
+
+    const tabOrder = ['look', 'light', 'color', 'detail', 'curve', 'raw'];
+    const tabs = tabOrder.map(id => {
+      const m = this.tabMeta[id];
+      const on = id === st.tab;
+      return { label: m.label, active: on, bg: on ? m.bg : PAPER, fg: on ? m.fg : INK, pick: () => this.setState({ tab: id }) };
+    });
+
+    const mk = s => {
+      const val = v[s.id];
+      const pos = (val - s.min) / (s.max - s.min) * 100;
+      const dp = (s.def - s.min) / (s.max - s.min) * 100;
+      const changed = Math.abs(val - s.def) > 1e-9;
+      return {
+        uid: 'bg-' + s.id, label: s.label, min: s.min, max: s.max, step: s.step, value: val,
+        display: s.fmt(val), pos: pos.toFixed(2), detent: dp.toFixed(2),
+        fillL: Math.min(pos, dp).toFixed(2), fillW: Math.abs(pos - dp).toFixed(2),
+        fillBg: meta.bg, fillOp: changed ? 1 : 0,
+        changed,
+        valBg: changed ? meta.bg : PAPER, valFg: changed ? meta.fg : INK,
+        set: e => { const nv = parseFloat(e.target.value); this.setState({ vals: Object.assign({}, this.state.vals, { [s.id]: nv }) }); },
+        reset: () => this.setState({ vals: Object.assign({}, this.state.vals, { [s.id]: s.def }) })
+      };
+    };
+    const tools = this.toolDefs[st.tab].map(t => {
+      const ids = (t.resetIds || []).concat(t.sliders.map(s => s.id));
+      const isAuto = t.sliders.every(s => Math.abs(v[s.id] - s.def) < 1e-9);
+      return {
+        title: t.title,
+        hasAuto: !!t.hasAuto, hasSegment: !!t.hasSegment, hasWheels: !!t.hasWheels, hasLooks: !!t.hasLooks, hasCurve: !!t.hasCurve,
+        hasSwitches: !!t.hasSwitches, hasAutoCard: !!t.hasAutoCard, hasApply: !!t.hasApply, hasProfile: !!t.hasProfile, hasReset: !t.noReset,
+        isAuto,
+        autoBg: isAuto ? INK : PAPER,
+        autoFg: isAuto ? PAPER : INK,
+        resetText: t.resetText || 'Reset',
+        reset: () => {
+          const nv = Object.assign({}, this.state.vals);
+          ids.forEach(id => { nv[id] = this.defs[id]; });
+          const patch = { vals: nv };
+          if (t.resetLook) patch.look = 'neutral';
+          if (t.hasSegment) patch.light = 'auto';
+          this.setState(patch);
+        },
+        sliders: t.sliders.map(mk)
+      };
+    });
+
+    const near = (a, b) => Math.abs(a - b) < 1e-9;
+    const rowDefs = [
+      { label: 'Exposure', value: ev(v.exp) + ' EV', auto: near(v.exp, this.defs.exp), tab: 'light' },
+      { label: 'White balance', value: v.kel + ' K · tint ' + (v.tint === 0 ? '0' : sg(v.tint)), auto: near(v.kel, this.defs.kel) && v.tint === 0 && st.light === 'auto', tab: 'color' },
+      { label: 'Noise', value: 'Luminance ' + Math.round(v.nrl), auto: near(v.nrl, this.defs.nrl) && near(v.nrc, this.defs.nrc) && near(v.nrd, this.defs.nrd), tab: 'detail' },
+      { label: 'Camera', value: 'A1 · A7R IV profile', auto: true, tab: 'raw' }
+    ];
+    const autoRows = rowDefs.map(r => ({
+      label: r.label, value: r.value, tabLabel: this.tabMeta[r.tab].label,
+      tag: r.fixed || (r.auto ? 'Auto' : 'Edited'),
+      tagBg: r.auto ? PAPER : INK,
+      tagFg: r.auto ? INK : PAPER,
+      go: () => this.setState({ tab: r.tab })
+    }));
+
+    const q = (st.q || '').trim().toLowerCase();
+    let keyN = 0;
+    const tile = d => {
+      keyN += 1;
+      const g = grade(cur, d[0], 1, adj);
+      const active = d[0] === st.look;
+      return {
+        name: d[1], sky: g.sky, far: g.far, near: g.near, sun: g.sun,
+        active, ringW: active ? 3 : 0,
+        labelBg: active ? meta.bg : 'transparent',
+        labelFg: active ? meta.fg : INK,
+        weight: active ? 800 : 600,
+        isDefault: d[0] === 'neutral',
+        hasKey: keyN <= 9, key: String(keyN), keyLabel: keyN <= 9 ? ', key ' + keyN : '',
+        pick: () => this.setState({ look: d[0] })
+      };
+    };
+    const allTiles = this.lookDefs.map(d => ({ d, t: tile(d) }));
+    const groupDefs = [['builtin', 'Built in'], ['arri', 'ARRI looks · imported']];
+    const lookGroups = groupDefs.map(([gid, label]) => {
+      const inGroup = allTiles.filter(x => x.d[2] === gid);
+      const shown = inGroup.filter(x => !q || x.d[1].toLowerCase().indexOf(q) !== -1);
+      return { label, count: q ? shown.length + ' of ' + inGroup.length : String(inGroup.length), looks: shown.map(x => x.t) };
+    }).filter(g => g.looks.length > 0);
+
+    const seg = (id, curId) => ({ bg: id === curId ? INK : PAPER, fg: id === curId ? PAPER : INK, active: id === curId });
+    const lights = [['auto', 'Auto'], ['day', 'Day'], ['shade', 'Shade'], ['tung', 'Tung.'], ['led', 'LED'], ['fluo', 'Fluor.']].map(([id, label]) => Object.assign({ label, pick: () => this.setState({ light: id }) }, seg(id, st.light)));
+    const applyOpts = [['this', 'This photo'], ['picked', 'Picked · ' + np], ['all', 'All · ' + N]].map(([id, label]) => Object.assign({ label, pick: () => this.setState({ scope: id }) }, seg(id, st.scope)));
+    const wheels = [{ label: 'Shadows', x: 46, y: 56 }, { label: 'Midtones', x: 50, y: 50 }, { label: 'Highlights', x: 56, y: 44 }];
+    const rgb = this.dark ? ['#FF6A3D', '#77E05A', '#2EC4F0'] : ['#E8361E', '#1F9D3A', '#0B5CC2'];
+    const curves = {
+      L: { label: 'Luma', path: 'M0 220 C 50 216, 90 182, 160 104 S 270 12, 320 0', color: INK, p: [178, 104, 34], out: 141 },
+      R: { label: 'Red', path: 'M0 220 C 60 196, 100 150, 160 98 S 270 16, 320 0', color: rgb[0], p: [168, 98, 30], out: 146 },
+      G: { label: 'Green', path: 'M0 220 L 320 0', color: rgb[1], p: [165, 110, 55], out: 128 },
+      B: { label: 'Blue', path: 'M0 220 C 60 216, 110 160, 160 120 S 270 22, 320 0', color: rgb[2], p: [190, 120, 40], out: 116 }
+    };
+    const c = curves[st.curve];
+    const curveTabs = Object.keys(curves).map(key => Object.assign({ label: curves[key].label, pick: () => this.setState({ curve: key }) }, seg(key, st.curve)));
+    const swDefs = [['neural', 'Neural demosaic'], ['hlr', 'Highlight recovery'], ['lens', 'Lens corrections from camera'], ['ca', 'Chromatic aberration']];
+    const switches = swDefs.map(([id, label]) => ({
+      label, on: !!st.sw[id],
+      bg: st.sw[id] ? meta.bg : PAPER,
+      knobBg: st.sw[id] ? '#FFFFFF' : INK,
+      knob: st.sw[id] ? 22 : 2,
+      toggle: () => this.setState({ sw: Object.assign({}, this.state.sw, { [id]: !this.state.sw[id] }) })
+    }));
+    const lookName = lookById[st.look][1];
+    return {
+      camera: { detected: 'Sony A1 (ILCE-1)', profile: 'A7R IV', note: 'The A1 has no measured profile yet, so it borrows the A7R IV. Eleven Sony cameras have their own, and cameras that share their sensors use them.' },
+      cur, view, photos, tabs, tools, lights, wheels, curveTabs, switches, autoRows, lookGroups, applyOpts,
+      tabBg: meta.bg, tabFg: meta.fg, tabTitle: meta.label, tabBlurb: meta.blurb,
+      q: st.q,
+      setQ: e => this.setState({ q: e.target.value }),
+      noLooks: lookGroups.length === 0,
+      tabLight: st.tab === 'light',
+      curvePath: c.path, curveColor: c.color, curveLabel: c.label + ' curve',
+      curveP1m: c.p[0] - 5, curveP2m: c.p[1] - 6, curveP3m: c.p[2] - 5, curveOut: c.out,
+      before: st.before,
+      showChip: !st.before,
+      lookChip: lookName + ' · ' + Math.round(v.int) + '%',
+      beforeBg: st.before ? '#FFC20E' : 'transparent',
+      beforeFg: st.before ? '#000000' : INK,
+      toggleBefore: () => this.setState({ before: !st.before }),
+      total: String(N),
+      counter: (st.current + 1) + ' / ' + N,
+      pickedLabel: np + ' picked',
+      exportLabel: np > 1 ? 'Export ' + np : 'Export'
+    };
+  }
+}
+</script>
+</body>
+</html>

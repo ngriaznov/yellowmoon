@@ -1,0 +1,327 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Import ARRI looks</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Figtree:wght@400..900&amp;display=swap">
+<style>
+body{margin:0;background:#FFFFFF;-webkit-font-smoothing:antialiased}
+button:focus-visible,a:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
+</style>
+</helmet>
+<div style="--ink: #000000; --paper: #FFFFFF; --muted: #6B6B6B; --focus: #0B5CC2; color-scheme: light; height: 100vh; min-height: 760px; display: grid; grid-template-columns: 360px minmax(0, 1fr); grid-template-rows: 75px minmax(0, 1fr) 96px; overflow: hidden; background: var(--paper); color: var(--ink); font-family: 'Figtree', system-ui, sans-serif; font-size: 14px">
+
+  <header style="grid-column: 1 / -1; grid-row: 1; display: flex; align-items: stretch; border-bottom: 3px solid var(--ink); box-sizing: border-box; min-width: 0">
+    <div style="width: 360px; flex-shrink: 0; box-sizing: border-box; padding: 0 20px 0 84px; border-right: 3px solid var(--ink); display: flex; flex-direction: column; justify-content: center; gap: 5px">
+      <span style="display: flex; align-items: center; gap: 8px; font-size: 24px; font-weight: 800; letter-spacing: -0.02em; line-height: 1"><span aria-hidden="true" style="width: 16px; height: 16px; box-sizing: border-box; border-radius: 50%; background: #FFC20E; border: 2px solid var(--ink); flex-shrink: 0"></span>ARRI looks</span>
+      <span style="font-size: 12px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; line-height: 1">Import · step {{stepNo}} of 5</span>
+    </div>
+    <div style="flex: 1; min-width: 0; display: flex; align-items: center; padding: 0 24px; font-size: 14px">Free from ARRI. Imported to this Mac only, never shared or uploaded.</div>
+    <a href="Bold.dc.html" style="display: flex; align-items: center; padding: 0 28px; border-left: 3px solid var(--ink); color: var(--ink); font-size: 15px; font-weight: 800; letter-spacing: 0.02em; text-transform: uppercase; text-decoration: none">Cancel</a>
+  </header>
+
+  <nav aria-label="Steps" style="grid-column: 1; grid-row: 2 / 4; border-right: 3px solid var(--ink); display: flex; flex-direction: column; min-height: 0; overflow-y: auto">
+    <sc-for list="{{steps}}" as="s" hint-placeholder-count="5">
+      <button type="button" onClick="{{s.go}}" aria-current="{{s.current}}" aria-disabled="{{s.locked}}" style="display: grid; grid-template-columns: 52px minmax(0, 1fr); align-items: start; column-gap: 12px; padding: 20px 24px; border: 0; border-bottom: 3px solid var(--ink); background: {{s.bg}}; color: {{s.fg}}; font: inherit; text-align: left; cursor: {{s.cursor}}">
+        <span style="font-size: 36px; font-weight: 800; letter-spacing: -0.03em; line-height: 1; font-variant-numeric: tabular-nums">{{s.mark}}</span>
+        <span style="display: flex; flex-direction: column; gap: 4px; padding-top: 2px">
+          <span style="font-size: 17px; font-weight: 800">{{s.title}}</span>
+          <span style="font-size: 13px; line-height: 1.45; opacity: {{s.op}}">{{s.text}}</span>
+        </span>
+      </button>
+    </sc-for>
+  </nav>
+
+  <main style="grid-column: 2; grid-row: 2; min-height: 0; overflow-y: auto; padding: 40px 56px 32px; box-sizing: border-box">
+    <h1 style="margin: 0; font-size: 48px; font-weight: 800; letter-spacing: -0.03em; line-height: 1">{{h1}}</h1>
+    <p style="margin: 16px 0 0; font-size: 17px; line-height: 1.55; max-width: 640px">{{lead}}</p>
+
+    <sc-if value="{{s1}}" hint-placeholder-val="{{true}}">
+      <div style="margin-top: 32px; display: flex; flex-direction: column; gap: 12px; max-width: 760px">
+        <sc-for list="{{packages}}" as="p" hint-placeholder-count="2">
+          <button type="button" role="checkbox" aria-checked="{{p.on}}" onClick="{{p.toggle}}" style="display: grid; grid-template-columns: 32px minmax(0, 1fr) auto; column-gap: 16px; align-items: start; padding: 18px 20px; border: 3px solid var(--ink); background: {{p.bg}}; color: #000; font: inherit; text-align: left; cursor: pointer">
+            <span style="width: 28px; height: 28px; box-sizing: border-box; border: 3px solid #000; background: {{p.boxBg}}; display: flex; align-items: center; justify-content: center">
+              <sc-if value="{{p.on}}" hint-placeholder-val="{{true}}"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#FFF" stroke-width="4" stroke-linecap="square" aria-hidden="true"><path d="M4 12.5l5 5L20 6.5"></path></svg></sc-if>
+            </span>
+            <span style="display: flex; flex-direction: column; gap: 6px">
+              <span style="font-size: 19px; font-weight: 800">{{p.name}}</span>
+              <span style="font-size: 14px; line-height: 1.5; max-width: 520px">{{p.desc}}</span>
+              <span style="font-size: 12px; font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase; font-variant-numeric: tabular-nums">{{p.meta}}</span>
+            </span>
+            <sc-if value="{{p.recommended}}" hint-placeholder-val="{{false}}">
+              <span style="height: 22px; display: inline-flex; align-items: center; padding: 0 6px; border: 2px solid #000; background: #FFC20E; font-size: 10.5px; font-weight: 800; letter-spacing: 0.05em; text-transform: uppercase">Recommended</span>
+            </sc-if>
+          </button>
+        </sc-for>
+        <button type="button" onClick="{{toggleOlder}}" style="align-self: flex-start; margin-top: 4px; padding: 0; border: 0; background: transparent; color: var(--ink); font: inherit; font-size: 14px; font-weight: 800; text-decoration: underline; text-decoration-thickness: 2px; text-underline-offset: 4px; cursor: pointer">{{olderLabel}}</button>
+      </div>
+    </sc-if>
+
+    <sc-if value="{{s2}}" hint-placeholder-val="{{false}}">
+      <div style="margin-top: 32px; max-width: 760px; display: flex; flex-direction: column; gap: 20px">
+        <div style="display: flex; align-items: center; gap: 16px; flex-wrap: wrap">
+          <button type="button" style="height: 56px; padding: 0 24px; border: 0; background: var(--ink); color: var(--paper); font: inherit; font-size: 16px; font-weight: 800; letter-spacing: 0.02em; text-transform: uppercase; cursor: pointer">Open ARRI's page ↗</button>
+          <span style="font-size: 14px; line-height: 1.5; max-width: 340px">Opens in your browser. Download {{wantList}} there.</span>
+        </div>
+        <div style="display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px 0; border-top: 2px solid var(--ink); border-bottom: 2px solid var(--ink)">
+          <span style="display: flex; flex-direction: column; gap: 3px">
+            <span style="font-size: 15px; font-weight: 800">Watch my Downloads folder</span>
+            <span style="font-size: 13px">Picks up the zip as soon as it lands. Only while this window is open.</span>
+          </span>
+          <button type="button" role="switch" aria-checked="{{watch}}" aria-label="Watch my Downloads folder" onClick="{{toggleWatch}}" style="position: relative; flex-shrink: 0; width: 44px; height: 24px; box-sizing: border-box; padding: 0; border: 2px solid var(--ink); background: {{watchBg}}; cursor: pointer">
+            <span style="position: absolute; top: 2px; left: {{watchKnob}}px; width: 16px; height: 16px; background: {{watchKnobBg}}"></span>
+          </button>
+        </div>
+        <div style="border: 3px dashed var(--ink); padding: 28px; display: flex; align-items: center; justify-content: space-between; gap: 16px">
+          <span style="display: flex; flex-direction: column; gap: 4px">
+            <span style="font-size: 20px; font-weight: 800">Or drop the zip here</span>
+            <span style="font-size: 13px">A zip or an unpacked folder both work.</span>
+          </span>
+          <button type="button" style="padding: 0; border: 0; background: transparent; color: var(--ink); font: inherit; font-size: 14px; font-weight: 800; text-decoration: underline; text-decoration-thickness: 2px; text-underline-offset: 4px; cursor: pointer">Choose file…</button>
+        </div>
+        <div style="display: flex; align-items: center; gap: 12px; padding: 12px 16px; background: #0DB7E8; border: 3px solid #000; color: #000">
+          <span aria-hidden="true" style="width: 10px; height: 10px; background: #000"></span>
+          <span style="font-size: 14px; font-weight: 700">{{waitingText}}</span>
+        </div>
+      </div>
+    </sc-if>
+
+    <sc-if value="{{s3}}" hint-placeholder-val="{{false}}">
+      <div style="margin-top: 32px; max-width: 820px">
+        <div style="display: grid; grid-template-columns: 1.1fr 1.2fr 0.9fr 72px; column-gap: 16px; padding-bottom: 8px; border-bottom: 3px solid var(--ink); font-size: 12px; font-weight: 800; letter-spacing: 0.05em; text-transform: uppercase">
+          <span>File</span><span>Recognised as</span><span>Contents</span><span></span>
+        </div>
+        <sc-for list="{{found}}" as="f" hint-placeholder-count="2">
+          <div style="display: grid; grid-template-columns: 1.1fr 1.2fr 0.9fr 72px; column-gap: 16px; align-items: center; min-height: 56px; border-bottom: 2px solid var(--ink); font-size: 14px">
+            <span style="font-weight: 700">{{f.file}}</span>
+            <span>{{f.what}}</span>
+            <span style="font-variant-numeric: tabular-nums">{{f.contents}}</span>
+            <span style="justify-self: end; height: 22px; display: inline-flex; align-items: center; padding: 0 6px; border: 2px solid #000; background: #77E05A; color: #000; font-size: 10.5px; font-weight: 800; letter-spacing: 0.05em; text-transform: uppercase">Match</span>
+          </div>
+        </sc-for>
+        <div style="margin-top: 24px; padding: 16px 20px; border: 3px solid var(--ink); background: #F2B8AA; color: #000; font-size: 14px; line-height: 1.55; max-width: 640px">If a package isn't the one you chose, for example LogC3 instead of LogC4, the wizard says what it is and what to download instead. Nothing is copied until you continue.</div>
+      </div>
+    </sc-if>
+
+    <sc-if value="{{s4}}" hint-placeholder-val="{{false}}">
+      <div style="margin-top: 32px; max-width: 760px">
+        <div style="display: flex; align-items: baseline; justify-content: space-between">
+          <span style="font-size: 56px; font-weight: 800; letter-spacing: -0.03em; line-height: 1; font-variant-numeric: tabular-nums">{{importCount}}</span>
+          <span style="font-size: 14px; font-weight: 700; font-variant-numeric: tabular-nums">{{importOf}}</span>
+        </div>
+        <div role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{{importPct}}" style="position: relative; height: 28px; margin-top: 16px; border: 3px solid var(--ink); box-sizing: border-box">
+          <div style="position: absolute; left: 0; top: 0; bottom: 0; width: {{importPct}}%; background: #FFC20E; border-right: {{importEdge}}px solid var(--ink)"></div>
+        </div>
+        <div style="margin-top: 28px; border-top: 2px solid var(--ink)">
+          <div style="display: grid; grid-template-columns: 180px minmax(0, 1fr); min-height: 44px; align-items: center; border-bottom: 2px solid var(--ink); font-size: 14px"><span style="font-weight: 800">Copied</span><span>Only the .cube files, into the app's looks folder</span></div>
+          <div style="display: grid; grid-template-columns: 180px minmax(0, 1fr); min-height: 44px; align-items: center; border-bottom: 2px solid var(--ink); font-size: 14px"><span style="font-weight: 800">Grouped</span><span>The way ARRI groups them</span></div>
+          <div style="display: grid; grid-template-columns: 180px minmax(0, 1fr); min-height: 44px; align-items: center; border-bottom: 2px solid var(--ink); font-size: 14px"><span style="font-weight: 800">Recorded per file</span><span>Source address, date and SHA-256 checksum</span></div>
+        </div>
+      </div>
+    </sc-if>
+
+    <sc-if value="{{s5}}" hint-placeholder-val="{{false}}">
+      <div style="margin-top: 24px; max-width: 720px">
+        <div style="display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px 14px">
+          <sc-for list="{{tiles}}" as="t" hint-placeholder-count="8">
+            <div style="display: flex; flex-direction: column; gap: 6px; min-width: 0">
+              <span style="position: relative; display: block; width: 100%; aspect-ratio: 3 / 2; box-sizing: border-box; border: 2px solid var(--ink); overflow: hidden; background: {{t.sky}}">
+                <span style="position: absolute; width: 12%; aspect-ratio: 1; border-radius: 50%; left: 66%; top: 12%; background: {{t.sun}}"></span>
+                <span style="position: absolute; left: -10%; right: -10%; bottom: 18%; height: 42%; border-radius: 50% 50% 0 0 / 100% 100% 0 0; background: {{t.far}}"></span>
+                <span style="position: absolute; left: 0; right: 0; bottom: 0; height: 26%; background: {{t.near}}"></span>
+                <sc-if value="{{t.more}}" hint-placeholder-val="{{false}}">
+                  <span style="position: absolute; inset: 0; background: #000; color: #FFF; display: flex; align-items: center; justify-content: center; font-size: 22px; font-weight: 800">{{t.moreLabel}}</span>
+                </sc-if>
+              </span>
+              <span style="font-size: 13px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{{t.name}}</span>
+            </div>
+          </sc-for>
+        </div>
+        <div style="margin-top: 28px; border-top: 3px solid var(--ink)">
+          <div style="display: grid; grid-template-columns: 200px minmax(0, 1fr); align-items: center; column-gap: 16px; padding: 10px 0; border-bottom: 2px solid var(--ink)">
+            <span style="display: flex; flex-direction: column; gap: 3px"><span style="font-size: 15px; font-weight: 800">Default look</span><span style="font-size: 12.5px">For every photo you open</span></span>
+            <div role="radiogroup" aria-label="Default look" style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 2px; background: var(--ink); border: 2px solid var(--ink); max-width: 480px">
+              <sc-for list="{{defaultOpts}}" as="o" hint-placeholder-count="3">
+                <button type="button" role="radio" aria-checked="{{o.active}}" onClick="{{o.pick}}" style="height: 36px; padding: 0 4px; border: 0; background: {{o.bg}}; color: {{o.fg}}; font: inherit; font-size: 12px; font-weight: 800; letter-spacing: 0.03em; text-transform: uppercase; white-space: nowrap; cursor: pointer">{{o.label}}</button>
+              </sc-for>
+            </div>
+          </div>
+          <sc-if value="{{hasDisplay}}" hint-placeholder-val="{{false}}">
+            <div style="display: grid; grid-template-columns: 200px minmax(0, 1fr); align-items: center; column-gap: 16px; padding: 10px 0; border-bottom: 2px solid var(--ink)">
+              <span style="display: flex; flex-direction: column; gap: 3px"><span style="font-size: 15px; font-weight: 800">Display rendering</span><span style="font-size: 12.5px">How log becomes a picture</span></span>
+              <div role="radiogroup" aria-label="Display rendering" style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 2px; background: var(--ink); border: 2px solid var(--ink); max-width: 480px">
+                <sc-for list="{{drtOpts}}" as="o" hint-placeholder-count="2">
+                  <button type="button" role="radio" aria-checked="{{o.active}}" onClick="{{o.pick}}" style="height: 36px; padding: 0 4px; border: 0; background: {{o.bg}}; color: {{o.fg}}; font: inherit; font-size: 12px; font-weight: 800; letter-spacing: 0.03em; text-transform: uppercase; white-space: nowrap; cursor: pointer">{{o.label}}</button>
+                </sc-for>
+              </div>
+            </div>
+          </sc-if>
+          <div style="display: grid; grid-template-columns: 200px minmax(0, 1fr); align-items: center; column-gap: 16px; padding: 10px 0; border-bottom: 2px solid var(--ink)">
+            <span style="display: flex; flex-direction: column; gap: 3px"><span style="font-size: 15px; font-weight: 800">Downloaded zip</span><span style="font-size: 12.5px">No longer needed</span></span>
+            <div role="radiogroup" aria-label="Downloaded zip" style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 2px; background: var(--ink); border: 2px solid var(--ink); max-width: 480px">
+              <sc-for list="{{zipOpts}}" as="o" hint-placeholder-count="2">
+                <button type="button" role="radio" aria-checked="{{o.active}}" onClick="{{o.pick}}" style="height: 36px; padding: 0 4px; border: 0; background: {{o.bg}}; color: {{o.fg}}; font: inherit; font-size: 12px; font-weight: 800; letter-spacing: 0.03em; text-transform: uppercase; white-space: nowrap; cursor: pointer">{{o.label}}</button>
+              </sc-for>
+            </div>
+          </div>
+        </div>
+      </div>
+    </sc-if>
+  </main>
+
+  <footer style="grid-column: 2; grid-row: 3; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 0 56px; border-top: 3px solid var(--ink); box-sizing: border-box">
+    <button type="button" onClick="{{back}}" aria-disabled="{{atStart}}" style="padding: 0; border: 0; background: transparent; color: {{backColor}}; font: inherit; font-size: 15px; font-weight: 800; text-decoration: underline; text-decoration-thickness: 2px; text-underline-offset: 4px; cursor: pointer">← Back</button>
+    <span style="flex: 1; font-size: 14px; text-align: right">{{footNote}}</span>
+    <sc-if value="{{notLast}}" hint-placeholder-val="{{true}}">
+      <button type="button" onClick="{{next}}" aria-disabled="{{nextDisabled}}" style="height: 56px; padding: 0 28px; border: 0; background: {{nextBg}}; color: var(--paper); font: inherit; font-size: 16px; font-weight: 800; letter-spacing: 0.02em; text-transform: uppercase; cursor: pointer">{{nextLabel}}</button>
+    </sc-if>
+    <sc-if value="{{isLast}}" hint-placeholder-val="{{false}}">
+      <a href="Bold.dc.html" style="height: 56px; display: inline-flex; align-items: center; padding: 0 28px; background: var(--ink); color: var(--paper); text-decoration: none; font-size: 16px; font-weight: 800; letter-spacing: 0.02em; text-transform: uppercase">Done →</a>
+    </sc-if>
+  </footer>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":900}}'>
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    this.pkgDefs = [
+      { id: 'll4', name: 'Look Library · LogC4', desc: '87 creative looks, log to log. They run before the display transform, so the automatic development still applies.', meta: '87 looks · 65-point · 181 MB', recommended: true, older: false, what: 'Look Library · LogC4 · log to log', contents: '87 .cube · 65-point', mb: 181, n: 87 },
+      { id: 'dl4', name: 'Display LUTs · LogC4', desc: "ARRI's own display rendering for Rec.709, P3, Rec.2020, HLG and PQ. Optional: use it instead of our display transform.", meta: '22 LUTs · 32 MB', recommended: false, older: false, what: 'Display LUTs · LogC4', contents: '22 .cube', mb: 32, n: 22 },
+      { id: 'll3', name: 'Look Library · LogC3', desc: 'The same 87 looks for the older LogC3 encoding. They run in LogC3.', meta: '87 looks · 33-point · 30 MB', recommended: false, older: true, what: 'Look Library · LogC3 · log to log', contents: '87 .cube · 33-point', mb: 30, n: 87 },
+      { id: 'll3r', name: 'Look Library · LogC3 to Rec.709', desc: 'Looks with the display rendering baked in. They replace our display transform.', meta: '87 looks · 32 MB', recommended: false, older: true, what: 'Look Library · LogC3 to Rec.709', contents: '87 .cube', mb: 32, n: 87 },
+      { id: 'dl3', name: 'Display LUTs · LogC3', desc: 'Classic ALEXA display rendering, including the classic Rec.709.', meta: '48 LUTs · 46 MB', recommended: false, older: true, what: 'Display LUTs · LogC3', contents: '48 .cube', mb: 46, n: 48 }
+    ];
+    this.lookDefs = [
+      ['Film warm', { hi: '#F0B37A', ha: 0.22, sh: '#4A3424', sa: 0.20, ds: 0.05 }],
+      ['Film cool', { hi: '#BFD3E6', ha: 0.18, sh: '#1E3448', sa: 0.28, ds: 0.05 }],
+      ['Bleach bypass', { hi: '#F2F2F0', ha: 0.12, sh: '#1A1C1E', sa: 0.25, ds: 0.6 }],
+      ['Teal and orange', { hi: '#F0A86A', ha: 0.25, sh: '#0F4A57', sa: 0.40, ds: 0 }],
+      ['Soft print', { hi: '#F4E6D2', ha: 0.25, sh: '#5A5A60', sa: 0.25, ds: 0.15 }],
+      ['Night blue', { hi: '#6C88B8', ha: 0.35, sh: '#0E1A33', sa: 0.45, ds: 0.2 }],
+      ['Monochrome', { hi: '#FFFFFF', ha: 0, sh: '#000000', sa: 0.05, ds: 1 }]
+    ];
+    this.state = { step: 0, sel: { ll4: true, dl4: false, ll3: false, ll3r: false, dl3: false }, older: false, watch: true, imp: 0, def: 'neutral', drt: 'ours', zip: 'trash' };
+    this.timer = null;
+  }
+  renderVals() {
+    const st = this.state;
+    const INK = 'var(--ink)', PAPER = 'var(--paper)';
+    const chosen = this.pkgDefs.filter(p => st.sel[p.id]);
+    const totalLooks = chosen.filter(p => p.id.indexOf('ll') === 0).reduce((a, p) => a + p.n, 0);
+    const totalFiles = chosen.reduce((a, p) => a + p.n, 0);
+    const totalMb = chosen.reduce((a, p) => a + p.mb, 0);
+    const stepDefs = [
+      ['Choose', 'Pick the ARRI packages you want.'],
+      ['Get the files', "Download them from ARRI's site."],
+      ['Recognise', 'We check what each package is.'],
+      ['Import', 'Copy the looks into the app.'],
+      ['Finish', 'Pick a default and clean up.']
+    ];
+    const go = i => {
+      if (i === 3) this.startImport(totalFiles);
+      this.setState({ step: i });
+    };
+    const steps = stepDefs.map(([title, text], i) => {
+      const cur = i === st.step, done = i < st.step;
+      return {
+        title, text, current: cur ? 'step' : 'false', locked: i > st.step ? 'true' : 'false',
+        mark: done ? '✓' : String(i + 1),
+        bg: cur ? '#FFC20E' : PAPER, fg: cur ? '#000000' : INK,
+        op: cur || done ? 1 : 0.7,
+        cursor: done ? 'pointer' : 'default',
+        go: () => { if (done) go(i); }
+      };
+    });
+    const packages = this.pkgDefs.filter(p => !p.older || st.older).map(p => {
+      const on = !!st.sel[p.id];
+      return {
+        name: p.name, desc: p.desc, meta: p.meta, recommended: p.recommended, on,
+        bg: on ? '#FFF4CF' : '#FFFFFF', boxBg: on ? '#000000' : '#FFFFFF',
+        toggle: () => this.setState({ sel: Object.assign({}, this.state.sel, { [p.id]: !this.state.sel[p.id] }) })
+      };
+    });
+    const hx = h => { const n = parseInt(h.slice(1), 16); return [(n >> 16) & 255, (n >> 8) & 255, n & 255]; };
+    const toHex = c => '#' + c.map(x => Math.max(0, Math.min(255, Math.round(x))).toString(16).padStart(2, '0')).join('');
+    const mix = (a, b, t) => { const A = hx(a), B = hx(b); return toHex(A.map((x, i) => x + (B[i] - x) * t)); };
+    const grey = a => { const A = hx(a); const y = 0.2126 * A[0] + 0.7152 * A[1] + 0.0722 * A[2]; return toHex([y, y, y]); };
+    const photo = { sky: '#7FA6C7', far: '#E6ECF2', near: '#3F5468', sun: '#FFF6E0' };
+    const grade = L => {
+      const o = {};
+      ['sky', 'far', 'near', 'sun'].forEach(k => { o[k] = mix(photo[k], grey(photo[k]), L.ds); });
+      o.sky = mix(o.sky, L.hi, L.ha); o.sun = mix(o.sun, L.hi, L.ha * 0.5);
+      o.far = mix(mix(o.far, L.hi, L.ha * 0.6), L.sh, L.sa * 0.3); o.near = mix(o.near, L.sh, L.sa);
+      return o;
+    };
+    const tiles = this.lookDefs.map(([name, L]) => Object.assign({ name, more: false, moreLabel: '' }, grade(L)));
+    const extra = Math.max(0, totalLooks - this.lookDefs.length);
+    tiles.push(Object.assign({ name: 'And ' + extra + ' more', more: true, moreLabel: '+' + extra }, photo));
+    const seg = (cur, opts, key) => opts.map(([id, label]) => ({ label, active: id === cur, bg: id === cur ? INK : PAPER, fg: id === cur ? PAPER : INK, pick: () => this.setState({ [key]: id }) }));
+    const hasDisplay = !!(st.sel.dl4 || st.sel.dl3);
+    const impDone = Math.min(totalFiles, Math.floor(st.imp));
+    const importPct = totalFiles ? Math.round(impDone / totalFiles * 100) : 0;
+    const wantNames = chosen.map(p => p.name);
+    const wantList = wantNames.length ? wantNames.join(' and ') : 'the packages you chose';
+    const h1s = ['Choose what to import', "Download from ARRI", 'Found it', impDone >= totalFiles ? 'Imported' : 'Importing', totalLooks + ' looks ready'];
+    const leads = [
+      "ARRI publishes these looks for free. We can't include them in the app, so you download them from ARRI and the app imports them.",
+      'Your browser opens ARRI\'s Look Files page. Download the package there and the app picks it up.',
+      'Each package is identified from its folder names, file names and LUT sizes.',
+      'Nothing leaves this Mac. The looks are ready the moment this finishes.',
+      'Here they are on your current photo. Pick a default and you are done.'
+    ];
+    const notes = [
+      chosen.length ? 'Download total: ' + totalMb + ' MB' : 'Choose at least one package',
+      'Next unlocks when the zip arrives. For this mock, it is already here.',
+      chosen.length + (chosen.length === 1 ? ' package matches' : ' packages match') + ' what you chose',
+      impDone >= totalFiles ? 'All files copied and checked' : 'This takes a few seconds',
+      'You can change the default look any time'
+    ];
+    const nextLabels = ['Next', 'Next', 'Import', 'Next', 'Done'];
+    const nextOk = st.step === 0 ? chosen.length > 0 : st.step === 3 ? impDone >= totalFiles : true;
+    return {
+      steps, packages, tiles,
+      stepNo: String(st.step + 1),
+      s1: st.step === 0, s2: st.step === 1, s3: st.step === 2, s4: st.step === 3, s5: st.step === 4,
+      h1: h1s[st.step], lead: leads[st.step], footNote: notes[st.step],
+      olderLabel: st.older ? 'Hide the older LogC3 packages' : 'Show 3 older LogC3 packages',
+      toggleOlder: () => this.setState({ older: !st.older }),
+      wantList,
+      watch: st.watch, watchBg: st.watch ? '#FFC20E' : PAPER, watchKnob: st.watch ? 22 : 2, watchKnobBg: st.watch ? '#FFFFFF' : INK,
+      toggleWatch: () => this.setState({ watch: !st.watch }),
+      waitingText: st.watch ? 'Watching Downloads for ' + wantList + '…' : 'Waiting for ' + wantList + '…',
+      found: chosen.map(p => ({ file: p.name.split(' · ')[0] + ' zip · ' + p.mb + ' MB', what: p.what, contents: p.contents })),
+      importCount: String(impDone),
+      importOf: 'of ' + totalFiles + ' files',
+      importPct, importEdge: importPct > 0 && importPct < 100 ? 3 : 0,
+      hasDisplay,
+      defaultOpts: seg(st.def, [['neutral', 'Neutral'], ['signature', 'Signature'], ['warm', 'Film warm']], 'def'),
+      drtOpts: seg(st.drt, [['ours', 'Ours · ACES 2'], ['arri', "ARRI's"]], 'drt'),
+      zipOpts: seg(st.zip, [['keep', 'Keep it'], ['trash', 'Move to Trash']], 'zip'),
+      atStart: st.step === 0 ? 'true' : 'false',
+      backColor: st.step === 0 ? 'var(--muted)' : INK,
+      back: () => { if (st.step > 0) this.setState({ step: st.step - 1 }); },
+      notLast: st.step < 4, isLast: st.step === 4,
+      nextLabel: nextLabels[st.step], nextBg: nextOk ? INK : 'var(--muted)', nextDisabled: nextOk ? 'false' : 'true',
+      next: () => { if (nextOk && st.step < 4) go(st.step + 1); }
+    };
+  }
+  startImport(total) {
+    if (this.timer) clearInterval(this.timer);
+    this.state.imp = 0;
+    this.timer = setInterval(() => {
+      const p = this.state.imp + Math.max(1, total / 30);
+      if (p >= total) { clearInterval(this.timer); this.timer = null; this.setState({ imp: total }); }
+      else this.setState({ imp: p });
+    }, 100);
+  }
+}
+</script>
+</body>
+</html>

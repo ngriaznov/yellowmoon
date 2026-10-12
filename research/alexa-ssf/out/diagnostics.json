@@ -1,0 +1,758 @@
+{
+  "recommended_variant": {
+    "prior": "all",
+    "K": 4,
+    "lam": 1.0,
+    "conv": "rta"
+  },
+  "peaks_nm": {
+    "estimate": {
+      "R": 590,
+      "G": 530,
+      "B": 460
+    },
+    "Sony ILCE-7RM4": {
+      "R": 590,
+      "G": 530,
+      "B": 460
+    },
+    "ARRI D21": {
+      "R": 590,
+      "G": 540,
+      "B": 470
+    }
+  },
+  "ensemble": {
+    "n_variants": 24,
+    "rfse_vs_recommended_pct": {
+      "median": 1.663347741282149,
+      "max": 2.609807674497631
+    },
+    "matrix_rms_per_variant": [
+      {
+        "prior": "all",
+        "K": 3,
+        "lam": 0.1,
+        "conv": "rta",
+        "matrix_rms": 0.0074223036835506144
+      },
+      {
+        "prior": "all",
+        "K": 3,
+        "lam": 0.1,
+        "conv": "planck",
+        "matrix_rms": 0.007479137939793935
+      },
+      {
+        "prior": "all",
+        "K": 3,
+        "lam": 1.0,
+        "conv": "rta",
+        "matrix_rms": 0.007407860035013988
+      },
+      {
+        "prior": "all",
+        "K": 3,
+        "lam": 1.0,
+        "conv": "planck",
+        "matrix_rms": 0.007465462854683891
+      },
+      {
+        "prior": "all",
+        "K": 4,
+        "lam": 0.1,
+        "conv": "rta",
+        "matrix_rms": 0.006415692263358631
+      },
+      {
+        "prior": "all",
+        "K": 4,
+        "lam": 0.1,
+        "conv": "planck",
+        "matrix_rms": 0.006793822282337381
+      },
+      {
+        "prior": "all",
+        "K": 4,
+        "lam": 1.0,
+        "conv": "rta",
+        "matrix_rms": 0.006720061079525992
+      },
+      {
+        "prior": "all",
+        "K": 4,
+        "lam": 1.0,
+        "conv": "planck",
+        "matrix_rms": 0.007001603127420854
+      },
+      {
+        "prior": "no_sony",
+        "K": 3,
+        "lam": 0.1,
+        "conv": "rta",
+        "matrix_rms": 0.008761144268320668
+      },
+      {
+        "prior": "no_sony",
+        "K": 3,
+        "lam": 0.1,
+        "conv": "planck",
+        "matrix_rms": 0.00925706378950067
+      },
+      {
+        "prior": "no_sony",
+        "K": 3,
+        "lam": 1.0,
+        "conv": "rta",
+        "matrix_rms": 0.008701807496663298
+      },
+      {
+        "prior": "no_sony",
+        "K": 3,
+        "lam": 1.0,
+        "conv": "planck",
+        "matrix_rms": 0.009228911343826864
+      },
+      {
+        "prior": "no_sony",
+        "K": 4,
+        "lam": 0.1,
+        "conv": "rta",
+        "matrix_rms": 0.008250396994157881
+      },
+      {
+        "prior": "no_sony",
+        "K": 4,
+        "lam": 0.1,
+        "conv": "planck",
+        "matrix_rms": 0.008325510464137209
+      },
+      {
+        "prior": "no_sony",
+        "K": 4,
+        "lam": 1.0,
+        "conv": "rta",
+        "matrix_rms": 0.007931447932423988
+      },
+      {
+        "prior": "no_sony",
+        "K": 4,
+        "lam": 1.0,
+        "conv": "planck",
+        "matrix_rms": 0.008159754627215566
+      },
+      {
+        "prior": "no_d21",
+        "K": 3,
+        "lam": 0.1,
+        "conv": "rta",
+        "matrix_rms": 0.007995715542239667
+      },
+      {
+        "prior": "no_d21",
+        "K": 3,
+        "lam": 0.1,
+        "conv": "planck",
+        "matrix_rms": 0.008662046051244578
+      },
+      {
+        "prior": "no_d21",
+        "K": 3,
+        "lam": 1.0,
+        "conv": "rta",
+        "matrix_rms": 0.007956433889105857
+      },
+      {
+        "prior": "no_d21",
+        "K": 3,
+        "lam": 1.0,
+        "conv": "planck",
+        "matrix_rms": 0.00861500952684037
+      },
+      {
+        "prior": "no_d21",
+        "K": 4,
+        "lam": 0.1,
+        "conv": "rta",
+        "matrix_rms": 0.006671298673310852
+      },
+      {
+        "prior": "no_d21",
+        "K": 4,
+        "lam": 0.1,
+        "conv": "planck",
+        "matrix_rms": 0.007074375514779203
+      },
+      {
+        "prior": "no_d21",
+        "K": 4,
+        "lam": 1.0,
+        "conv": "rta",
+        "matrix_rms": 0.006658854976685711
+      },
+      {
+        "prior": "no_d21",
+        "K": 4,
+        "lam": 1.0,
+        "conv": "planck",
+        "matrix_rms": 0.007096257652787929
+      }
+    ]
+  },
+  "rfse_between_curves_pct": {
+    "estimate_vs_Sony_ILCE-7RM4": 4.384952369304773,
+    "estimate_vs_ARRI_D21": 8.864817350900644,
+    "Sony_ILCE-7RM4_vs_ARRI_D21": 9.439919763396809
+  },
+  "typicality": {
+    "arri_matrix_rms": 0.006720061079525992,
+    "loo_matrix_rms_median": 0.002136761640314969,
+    "loo_matrix_rms_p90": 0.005050524820877885,
+    "arri_percentile_among_held_out_cameras": 94.23076923076923,
+    "held_out_cameras_with_most_similar_residual": [
+      {
+        "camera": "Canon Digital Rebel XTi",
+        "matrix_rms": 0.0052994936583863,
+        "rfse": 4.915062158142045
+      },
+      {
+        "camera": "Sony ILCE-7SM2",
+        "matrix_rms": 0.005206111350661562,
+        "rfse": 5.3118030283199165
+      },
+      {
+        "camera": "Fujifilm GFX 100",
+        "matrix_rms": 0.005064969423950144,
+        "rfse": 3.1685428313560733
+      },
+      {
+        "camera": "Fujifilm X-T4",
+        "matrix_rms": 0.004920523393227555,
+        "rfse": 3.551089099397858
+      },
+      {
+        "camera": "Fujifilm X-T3",
+        "matrix_rms": 0.004547944641092862,
+        "rfse": 3.634724799913606
+      }
+    ],
+    "all_held_out": [
+      {
+        "camera": "ARRI D21",
+        "matrix_rms": 0.10083185000098001,
+        "rfse": 9.727830948016365
+      },
+      {
+        "camera": "Arashi Vision Insta360 X5",
+        "matrix_rms": 0.002417380591298694,
+        "rfse": 3.4882554124426917
+      },
+      {
+        "camera": "Canon Digital Rebel XTi",
+        "matrix_rms": 0.0052994936583863,
+        "rfse": 4.915062158142045
+      },
+      {
+        "camera": "Canon EOS-1D X Mark II",
+        "matrix_rms": 0.0012289836373837698,
+        "rfse": 1.4694870210642466
+      },
+      {
+        "camera": "Canon EOS-1Ds Mark III",
+        "matrix_rms": 0.0021820238652723724,
+        "rfse": 2.5881620842997055
+      },
+      {
+        "camera": "Canon EOS-1Ds Mark II",
+        "matrix_rms": 0.0025436274344169518,
+        "rfse": 2.6987611969009473
+      },
+      {
+        "camera": "Canon EOS 100D",
+        "matrix_rms": 0.0007959553945666264,
+        "rfse": 1.2921878161062226
+      },
+      {
+        "camera": "Canon EOS 200D",
+        "matrix_rms": 0.001816031413058735,
+        "rfse": 2.543746777452245
+      },
+      {
+        "camera": "Canon EOS 200D II",
+        "matrix_rms": 0.0025834330241430894,
+        "rfse": 2.6566809291957147
+      },
+      {
+        "camera": "Canon EOS 5DS",
+        "matrix_rms": 0.0006605794195349803,
+        "rfse": 1.4609609190007908
+      },
+      {
+        "camera": "Canon EOS 5D",
+        "matrix_rms": 0.0027197641247527003,
+        "rfse": 3.554253872399507
+      },
+      {
+        "camera": "Canon EOS 5D Mark III",
+        "matrix_rms": 0.00098726693251587,
+        "rfse": 1.7192507889260216
+      },
+      {
+        "camera": "Canon EOS 5D Mark II",
+        "matrix_rms": 0.0016075834354921455,
+        "rfse": 2.120506844275598
+      },
+      {
+        "camera": "Canon EOS 5D Mark IV",
+        "matrix_rms": 0.0026412934794881405,
+        "rfse": 1.7975207044662198
+      },
+      {
+        "camera": "Canon EOS 600D",
+        "matrix_rms": 0.0013339161041065043,
+        "rfse": 1.8556964171271488
+      },
+      {
+        "camera": "Canon EOS M",
+        "matrix_rms": 0.0008128210013876513,
+        "rfse": 1.1558854606637203
+      },
+      {
+        "camera": "Canon EOS R10",
+        "matrix_rms": 0.07409200199270691,
+        "rfse": 5.627095442900332
+      },
+      {
+        "camera": "Canon EOS R5",
+        "matrix_rms": 0.001275773435517768,
+        "rfse": 2.857264039995892
+      },
+      {
+        "camera": "Canon EOS R5m2",
+        "matrix_rms": 0.001810820883895982,
+        "rfse": 2.150790057547509
+      },
+      {
+        "camera": "Canon EOS R6",
+        "matrix_rms": 0.0008899320038340611,
+        "rfse": 1.1199211165874197
+      },
+      {
+        "camera": "Canon EOS R6m2",
+        "matrix_rms": 0.0007701045917401109,
+        "rfse": 1.3568020389529196
+      },
+      {
+        "camera": "Canon EOS RP",
+        "matrix_rms": 0.0006890644213355925,
+        "rfse": 1.4741293049347899
+      },
+      {
+        "camera": "Canon EOS R",
+        "matrix_rms": 0.002787772334089596,
+        "rfse": 2.2735351351587973
+      },
+      {
+        "camera": "Canon PowerShot S90",
+        "matrix_rms": 0.021650629857048076,
+        "rfse": 7.603723486489389
+      },
+      {
+        "camera": "Fujifilm GFX 100",
+        "matrix_rms": 0.005064969423950144,
+        "rfse": 3.1685428313560733
+      },
+      {
+        "camera": "Fujifilm X-T3",
+        "matrix_rms": 0.004547944641092862,
+        "rfse": 3.634724799913606
+      },
+      {
+        "camera": "Fujifilm X-T4",
+        "matrix_rms": 0.004920523393227555,
+        "rfse": 3.551089099397858
+      },
+      {
+        "camera": "Hasselblad L1D-20c",
+        "matrix_rms": 0.00324407889793222,
+        "rfse": 3.0429804328156234
+      },
+      {
+        "camera": "Hasselblad L2D-20c",
+        "matrix_rms": 0.0021953617792555553,
+        "rfse": 2.5806864113081893
+      },
+      {
+        "camera": "Nikon D200",
+        "matrix_rms": 0.00220429583546235,
+        "rfse": 2.575309507893356
+      },
+      {
+        "camera": "Nikon D3300",
+        "matrix_rms": 0.0008542676772175538,
+        "rfse": 2.0753711119514917
+      },
+      {
+        "camera": "Nikon D5100",
+        "matrix_rms": 0.002255108967866697,
+        "rfse": 2.5696798797911384
+      },
+      {
+        "camera": "Nikon D5300",
+        "matrix_rms": 0.0020914994153575658,
+        "rfse": 2.5352659527226065
+      },
+      {
+        "camera": "Nikon D7000",
+        "matrix_rms": 0.002057146483550619,
+        "rfse": 2.1784010548428943
+      },
+      {
+        "camera": "Nikon D700",
+        "matrix_rms": 0.0031409060148532186,
+        "rfse": 2.5631252761549166
+      },
+      {
+        "camera": "Nikon D70",
+        "matrix_rms": 0.0027468930300139183,
+        "rfse": 3.656657232306467
+      },
+      {
+        "camera": "Nikon D800E",
+        "matrix_rms": 0.001824238389491981,
+        "rfse": 2.166466620918192
+      },
+      {
+        "camera": "Nikon D810",
+        "matrix_rms": 0.0013946412700800445,
+        "rfse": 1.5646412626050994
+      },
+      {
+        "camera": "Nikon D850",
+        "matrix_rms": 0.004307666723016116,
+        "rfse": 3.369965335141741
+      },
+      {
+        "camera": "Nikon Z f",
+        "matrix_rms": 0.0010935607880946806,
+        "rfse": 1.666132165600247
+      },
+      {
+        "camera": "Panasonic DC-GX9",
+        "matrix_rms": 0.0020065929236104747,
+        "rfse": 1.5725179375643388
+      },
+      {
+        "camera": "Sony DSC-RX100M4",
+        "matrix_rms": 0.00316286004678149,
+        "rfse": 2.918353143002801
+      },
+      {
+        "camera": "Sony ILCE-6400",
+        "matrix_rms": 0.004259690209105272,
+        "rfse": 2.0379214202303952
+      },
+      {
+        "camera": "Sony ILCE-7CM2",
+        "matrix_rms": 0.002277515879857358,
+        "rfse": 1.2835013815276182
+      },
+      {
+        "camera": "Sony ILCE-7M3",
+        "matrix_rms": 0.0016981034246824453,
+        "rfse": 1.1142228772524605
+      },
+      {
+        "camera": "Sony ILCE-7M4",
+        "matrix_rms": 0.0019558182948470008,
+        "rfse": 1.4432571304412667
+      },
+      {
+        "camera": "Sony ILCE-7RM2",
+        "matrix_rms": 0.0011853639053851373,
+        "rfse": 1.192079202973206
+      },
+      {
+        "camera": "Sony ILCE-7RM3",
+        "matrix_rms": 0.0012841885760399728,
+        "rfse": 1.1816878486268965
+      },
+      {
+        "camera": "Sony ILCE-7RM4",
+        "matrix_rms": 0.0019431407153375911,
+        "rfse": 1.542324712175696
+      },
+      {
+        "camera": "Sony ILCE-7SM2",
+        "matrix_rms": 0.005206111350661562,
+        "rfse": 5.3118030283199165
+      },
+      {
+        "camera": "Sony ILCE-7SM3",
+        "matrix_rms": 0.0013514351901831962,
+        "rfse": 1.1756336619777217
+      },
+      {
+        "camera": "Sony ILCE-9",
+        "matrix_rms": 0.003253420174703418,
+        "rfse": 2.21579129408045
+      }
+    ]
+  },
+  "colorimetric_mean_dE00_with_ARRI_matrices": {
+    "ALEXA estimate (this work)": 1.4548043679391693,
+    "Canon EOS-1Ds Mark II": 1.661891801393192,
+    "Sony ILCE-7RM2": 1.6804521452689791,
+    "Sony ILCE-7M4": 1.7012388446981783,
+    "Sony ILCE-9": 1.7644824877006369,
+    "Nikon D810": 1.7652932938817665,
+    "Sony ILCE-7RM4": 1.7719751776588324,
+    "Sony ILCE-7M3": 1.787199649080508,
+    "Sony ILCE-7RM3": 1.7930121613764896,
+    "Sony ILCE-7SM3": 1.8247203791471216,
+    "Sony ILCE-7CM2": 1.8518892447989124,
+    "Nikon D7000": 1.8980792420653607,
+    "Nikon Z f": 1.9099917448583081,
+    "Nikon D800E": 1.9448037220534262,
+    "Mean of 52 cameras": 1.9489797435958705,
+    "Nikon D5100": 2.0833339888974,
+    "Nikon D5300": 2.0930696415029955,
+    "Canon EOS M": 2.14120290193073,
+    "Hasselblad L1D-20c": 2.1548711845757462,
+    "Canon Digital Rebel XTi": 2.1621900592823713,
+    "Nikon D850": 2.1660549109883513,
+    "Sony DSC-RX100M4": 2.17535720850343,
+    "Nikon D3300": 2.1922292731910136,
+    "Arashi Vision Insta360 X5": 2.1989843470914945,
+    "Canon EOS R5m2": 2.2234691136388407,
+    "Canon EOS 600D": 2.238469889512922,
+    "Canon EOS 5D Mark II": 2.252028122007701,
+    "Canon EOS-1Ds Mark III": 2.2985077780404954,
+    "Canon EOS 5D Mark III": 2.334266219132743,
+    "Canon EOS R5": 2.3406176422052205,
+    "Canon EOS R6m2": 2.3547596954281125,
+    "Canon EOS 100D": 2.371872848849659,
+    "Nikon D70": 2.3834500264696357,
+    "Canon EOS 5D": 2.389700530488099,
+    "Canon EOS RP": 2.4414429428320195,
+    "Nikon D700": 2.5171634987157883,
+    "Canon EOS 5DS": 2.5458792964687884,
+    "Sony ILCE-6400": 2.5563588680142306,
+    "Fujifilm GFX 100": 2.5651835111520835,
+    "Fujifilm X-T3": 2.580684056197725,
+    "Nikon D200": 2.6216188551069832,
+    "Canon EOS R6": 2.680304224480561,
+    "Fujifilm X-T4": 2.743899834329663,
+    "Hasselblad L2D-20c": 2.8642320137386794,
+    "Canon EOS-1D X Mark II": 2.94822343195152,
+    "Panasonic DC-GX9": 3.043094286336751,
+    "Canon EOS 200D": 3.2602559564162905,
+    "Canon EOS R": 3.365529235652949,
+    "Canon EOS R10": 3.379332753669846,
+    "Canon EOS 200D II": 3.3927294811587863,
+    "Sony ILCE-7SM2": 3.43276507232914,
+    "Canon EOS 5D Mark IV": 3.4760934558097576,
+    "ARRI D21": 3.9463081424455524,
+    "Canon PowerShot S90": 4.1572675422252745
+  },
+  "sony_7rm4_to_alexa_estimate_mapping_dE00": {
+    "Tungsten (A)": {
+      "no mapping (Sony RGB used as ALEXA RGB)": {
+        "median": 1.393002584207959,
+        "p95": 2.882220044884894,
+        "max": 4.050975277207134
+      },
+      "one global 3x3 (fitted at 5500 K)": {
+        "median": 1.192702312215717,
+        "p95": 2.6211007398259185,
+        "max": 3.167087822298775
+      },
+      "3x3 per illuminant": {
+        "median": 0.35832216556514074,
+        "p95": 0.8476413156637095,
+        "max": 1.1524346055976973
+      },
+      "root-polynomial per illuminant": {
+        "median": 0.3344083869693204,
+        "p95": 0.8161863341228948,
+        "max": 1.1525973744881803
+      }
+    },
+    "Studio tungsten (ISO 7589)": {
+      "no mapping (Sony RGB used as ALEXA RGB)": {
+        "median": 1.376678640498078,
+        "p95": 2.712722742022629,
+        "max": 3.5556875942269297
+      },
+      "one global 3x3 (fitted at 5500 K)": {
+        "median": 1.0051056480032277,
+        "p95": 2.249629025934751,
+        "max": 2.738511765194506
+      },
+      "3x3 per illuminant": {
+        "median": 0.3633082055572502,
+        "p95": 0.8614383530585253,
+        "max": 1.181776895243223
+      },
+      "root-polynomial per illuminant": {
+        "median": 0.3334345084796188,
+        "p95": 0.8248158623849577,
+        "max": 1.1764678668205586
+      }
+    },
+    "D55": {
+      "no mapping (Sony RGB used as ALEXA RGB)": {
+        "median": 1.4277150314146978,
+        "p95": 2.9301026240619175,
+        "max": 3.7275060217881806
+      },
+      "one global 3x3 (fitted at 5500 K)": {
+        "median": 0.4190399471102779,
+        "p95": 1.0602049458949967,
+        "max": 1.3751893193724731
+      },
+      "3x3 per illuminant": {
+        "median": 0.41904085195100266,
+        "p95": 1.0602052903466295,
+        "max": 1.3751897289190054
+      },
+      "root-polynomial per illuminant": {
+        "median": 0.3120517968546574,
+        "p95": 0.9293392568401867,
+        "max": 1.3576663147287023
+      }
+    },
+    "D65": {
+      "no mapping (Sony RGB used as ALEXA RGB)": {
+        "median": 1.5924350463799075,
+        "p95": 3.260714960820528,
+        "max": 4.08267775986165
+      },
+      "one global 3x3 (fitted at 5500 K)": {
+        "median": 0.49137660859562615,
+        "p95": 1.1504111881540449,
+        "max": 1.6867491242083348
+      },
+      "3x3 per illuminant": {
+        "median": 0.45297786833040077,
+        "p95": 1.087203546558926,
+        "max": 1.6671796156891718
+      },
+      "root-polynomial per illuminant": {
+        "median": 0.315753328970532,
+        "p95": 0.9830074953066956,
+        "max": 1.5788956784248922
+      }
+    },
+    "Fluorescent FL2": {
+      "no mapping (Sony RGB used as ALEXA RGB)": {
+        "median": 1.3457155395484708,
+        "p95": 2.6290337390340994,
+        "max": 3.4091912467373993
+      },
+      "one global 3x3 (fitted at 5500 K)": {
+        "median": 0.6513172591304857,
+        "p95": 1.054647694313819,
+        "max": 1.3958084388414467
+      },
+      "3x3 per illuminant": {
+        "median": 0.2820340412751945,
+        "p95": 0.9071718604962803,
+        "max": 1.1162070441541043
+      },
+      "root-polynomial per illuminant": {
+        "median": 0.21154673227924936,
+        "p95": 0.877295293675413,
+        "max": 1.1002849750657155
+      }
+    },
+    "Tri-band fluorescent FL11": {
+      "no mapping (Sony RGB used as ALEXA RGB)": {
+        "median": 1.2987107638126711,
+        "p95": 2.233220646518181,
+        "max": 2.999465427382888
+      },
+      "one global 3x3 (fitted at 5500 K)": {
+        "median": 0.6748168037520009,
+        "p95": 1.0319640061016895,
+        "max": 1.4845443713769202
+      },
+      "3x3 per illuminant": {
+        "median": 0.16423343959584644,
+        "p95": 0.527489180782755,
+        "max": 0.7052700005077426
+      },
+      "root-polynomial per illuminant": {
+        "median": 0.11928427747328972,
+        "p95": 0.49189838123348245,
+        "max": 0.6401361735013864
+      }
+    },
+    "White LED (LED-B3)": {
+      "no mapping (Sony RGB used as ALEXA RGB)": {
+        "median": 1.3701494056617678,
+        "p95": 2.588304883055579,
+        "max": 3.4659079357340365
+      },
+      "one global 3x3 (fitted at 5500 K)": {
+        "median": 0.6449604176263782,
+        "p95": 1.1587831439736116,
+        "max": 1.4516687147226177
+      },
+      "3x3 per illuminant": {
+        "median": 0.2384467083316916,
+        "p95": 0.9329138839633047,
+        "max": 1.2544256034398316
+      },
+      "root-polynomial per illuminant": {
+        "median": 0.22982137419098,
+        "p95": 0.8153695720383111,
+        "max": 1.1983104370777853
+      }
+    },
+    "Hybrid LED (LED-BH1)": {
+      "no mapping (Sony RGB used as ALEXA RGB)": {
+        "median": 1.432494475313027,
+        "p95": 2.7246515730519687,
+        "max": 4.007418737405454
+      },
+      "one global 3x3 (fitted at 5500 K)": {
+        "median": 1.159045577045225,
+        "p95": 2.7718440925906727,
+        "max": 3.5117863525116
+      },
+      "3x3 per illuminant": {
+        "median": 0.20393328436960725,
+        "p95": 0.6818916370788007,
+        "max": 0.914021005846006
+      },
+      "root-polynomial per illuminant": {
+        "median": 0.20201458013940998,
+        "p95": 0.6351323148337973,
+        "max": 0.9011601696505224
+      }
+    },
+    "RGB LED (LED-RGB1)": {
+      "no mapping (Sony RGB used as ALEXA RGB)": {
+        "median": 1.3905663756749806,
+        "p95": 3.3289952545712445,
+        "max": 4.372617464044651
+      },
+      "one global 3x3 (fitted at 5500 K)": {
+        "median": 1.126674841001861,
+        "p95": 2.7304465258866677,
+        "max": 3.3428693439379864
+      },
+      "3x3 per illuminant": {
+        "median": 0.2515925618865004,
+        "p95": 0.8019935567423189,
+        "max": 1.1093752937528882
+      },
+      "root-polynomial per illuminant": {
+        "median": 0.2233625766267625,
+        "p95": 0.7221928759252011,
+        "max": 1.0479586473001634
+      }
+    }
+  }
+}

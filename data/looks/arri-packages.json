@@ -1,0 +1,5 @@
+{
+  "version": 1,
+  "note": "Recognition rules and fingerprints for ARRI's free look packages. Names, sizes, LUT sizes and SHA-256 only; never LUT data. Filled by tools/looks/fingerprint.py in M3-09 (HUMAN M3-H2). See docs/08-looks.md.",
+  "packages": []
+}

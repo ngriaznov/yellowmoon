@@ -1,0 +1,395 @@
+<!doctype html>
+<!-- Yellowmoon UI mockup, generated from the BoldExport board in ../source/. Static prototype: all data and progress are simulated. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Yellowmoon · Export</title>
+<style>
+@font-face{font-family:'Figtree';font-style:normal;font-display:swap;font-weight:300 900;src:url("fonts/figtree-latin-ext-wght-normal.woff2") format("woff2");unicode-range:U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+0304,U+0308,U+0329,U+1D00-1DBF,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,U+20AD-20C0,U+2113,U+2C60-2C7F,U+A720-A7FF}
+@font-face{font-family:'Figtree';font-style:normal;font-display:swap;font-weight:300 900;src:url("fonts/figtree-latin-wght-normal.woff2") format("woff2");unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD}
+</style>
+<style>
+body{margin:0;background:#FFFFFF;-webkit-font-smoothing:antialiased}
+button:focus-visible,a:focus-visible,input:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
+</style>
+</head>
+<body>
+<template id="tpl">
+
+<div style="--ink: #000000; --paper: #FFFFFF; --muted: #6B6B6B; --focus: #0B5CC2; color-scheme: light; height: 100vh; min-height: 760px; display: grid; grid-template-columns: minmax(0, 1fr) 400px; grid-template-rows: 75px auto minmax(124px, 1fr); overflow: hidden; background: var(--paper); color: var(--ink); font-family: 'Figtree', system-ui, sans-serif; font-size: 14px">
+
+  <header style="grid-column: 1 / -1; grid-row: 1; display: flex; align-items: stretch; border-bottom: 3px solid var(--ink); box-sizing: border-box; min-width: 0">
+    <div style="width: 300px; flex-shrink: 0; box-sizing: border-box; padding: 0 20px 0 84px; border-right: 3px solid var(--ink); display: flex; flex-direction: column; justify-content: center; gap: 5px">
+      <span style="display: flex; align-items: center; gap: 8px; font-size: 24px; font-weight: 800; letter-spacing: -0.02em; line-height: 1"><span aria-hidden="true" style="width: 16px; height: 16px; box-sizing: border-box; border-radius: 50%; background: #FFC20E; border: 2px solid var(--ink); flex-shrink: 0"></span>Lisbon</span>
+      <span style="font-size: 12px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; line-height: 1">2026-10-04 · {{total}} photos</span>
+    </div>
+    <nav aria-label="View" style="flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; padding: 0 20px">
+      <a href="photos.html" style="height: 36px; display: inline-flex; align-items: center; padding: 0 10px; color: var(--ink); text-decoration: none; font-size: 14px; font-weight: 800; letter-spacing: 0.02em; text-transform: uppercase">← Back to photos</a>
+      <span style="margin-left: auto; font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap">Neural · Display P3</span>
+    </nav>
+    <div style="width: 400px; flex-shrink: 0; display: flex; border-left: 3px solid var(--ink); box-sizing: border-box">
+      <div style="flex: 1; display: flex; align-items: center; gap: 8px; padding: 0 18px; border-right: 3px solid var(--ink); font-size: 12px; font-weight: 800; letter-spacing: 0.03em; text-transform: uppercase; white-space: nowrap">
+        <span aria-hidden="true" style="width: 8px; height: 8px; background: #77E05A; border: 2px solid var(--ink)"></span>Update ready
+      </div>
+      <span aria-current="page" style="display: flex; align-items: center; gap: 10px; padding: 0 22px; background: var(--ink); color: var(--paper); font-size: 15px; font-weight: 800; letter-spacing: 0.02em; text-transform: uppercase; white-space: nowrap">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="square" aria-hidden="true"><path d="M12 3v12"></path><path d="M6.5 9.5L12 15l5.5-5.5"></path><path d="M4 20h16"></path></svg>
+        Export
+        <span style="font-size: 11px; font-weight: 700; padding: 3px 5px; border: 2px solid var(--paper); line-height: 1">⌘E</span>
+      </span>
+    </div>
+  </header>
+
+  <section aria-label="Photo" style="grid-column: 1; grid-row: 2; position: relative; justify-self: center; width: min(100%, calc((max(100vh, 760px) - 199px) * 1.5)); aspect-ratio: 3 / 2; background: var(--paper); overflow: hidden; min-width: 0">
+    <div style="position: absolute; inset: 0; container-type: size; display: flex; align-items: center; justify-content: center">
+      <div role="img" aria-label="Photo {{cur.name}}" style="position: relative; width: 100%; height: 100%; overflow: hidden; background: {{cur.sky}}">
+        <div style="position: absolute; width: 9%; aspect-ratio: 1; border-radius: 50%; left: {{cur.sx}}%; top: {{cur.sy}}%; background: {{cur.sun}}"></div>
+        <div style="position: absolute; left: -10%; right: -10%; bottom: 18%; height: 42%; border-radius: 50% 50% 0 0 / 100% 100% 0 0; background: {{cur.far}}"></div>
+        <div style="position: absolute; left: 0; right: 0; bottom: 0; height: 26%; background: {{cur.near}}"></div>
+        <span style="position: absolute; left: 0; bottom: 0; padding: 8px 12px; background: #000; color: #FFF; font-size: 13px; font-weight: 800; letter-spacing: 0.03em; text-transform: uppercase">Neutral · 100%</span>
+        <span style="position: absolute; right: 12px; bottom: 10px; color: #FFF; font-size: 12px; font-weight: 700; text-shadow: 0 1px 3px rgba(0,0,0,0.45); font-variant-numeric: tabular-nums">{{cur.name}} · ISO 400 · 1/125 · f/2.8</span>
+      </div>
+    </div>
+  </section>
+
+  <nav aria-label="Photos to export" style="grid-column: 1; grid-row: 3; display: flex; align-items: stretch; border-top: 3px solid var(--ink); box-sizing: border-box; min-width: 0">
+    <div style="flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; overflow-x: auto; padding: 0 24px">
+      <sc-for list="{{photos}}" as="p" hint-placeholder-count="12">
+        <span aria-label="{{p.name}}{{p.inLabel}}" style="position: relative; flex-shrink: 0; box-sizing: border-box; width: {{p.w}}px; height: {{p.h}}px; border: {{p.bw}}px solid var(--ink); overflow: hidden; background: {{p.sky}}; opacity: {{p.op}}">
+          <span style="position: absolute; width: 12%; aspect-ratio: 1; border-radius: 50%; left: {{p.sx}}%; top: {{p.sy}}%; background: {{p.sun}}"></span>
+          <span style="position: absolute; left: -10%; right: -10%; bottom: 18%; height: 42%; border-radius: 50% 50% 0 0 / 100% 100% 0 0; background: {{p.far}}"></span>
+          <span style="position: absolute; left: 0; right: 0; bottom: 0; height: 26%; background: {{p.near}}"></span>
+          <sc-if value="{{p.picked}}" hint-placeholder-val="{{false}}"><span aria-label="picked" style="position: absolute; right: 0; top: 0; width: 10px; height: 10px; background: #FFC20E; border-left: 2px solid #000; border-bottom: 2px solid #000"></span></sc-if>
+        </span>
+      </sc-for>
+    </div>
+    <div style="flex-shrink: 0; width: 132px; box-sizing: border-box; padding: 0 20px; border-left: 3px solid var(--ink); display: flex; flex-direction: column; justify-content: center; gap: 6px">
+      <span style="font-size: 26px; font-weight: 800; letter-spacing: -0.02em; line-height: 1; font-variant-numeric: tabular-nums">{{count}}</span>
+      <span style="font-size: 12px; font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase">to export</span>
+    </div>
+  </nav>
+
+  <aside aria-label="Export" style="grid-column: 2; grid-row: 2 / 4; display: flex; flex-direction: column; min-height: 0; border-left: 3px solid var(--ink); box-sizing: border-box">
+    <div style="flex-shrink: 0; padding: 22px 24px; background: #000; color: #FFF; border-bottom: 3px solid var(--ink)">
+      <h2 style="margin: 0; font-size: 40px; font-weight: 800; letter-spacing: -0.025em; line-height: 1">{{panelTitle}}</h2>
+      <p style="margin: 12px 0 0; font-size: 15px; line-height: 1.5; max-width: 330px">{{panelBlurb}}</p>
+    </div>
+
+    <div style="flex: 1; min-height: 0; overflow-y: auto">
+      <sc-if value="{{editing}}" hint-placeholder-val="{{true}}">
+        <div>
+          <sc-for list="{{segRows}}" as="row" hint-placeholder-count="3">
+            <section aria-label="{{row.title}}" style="padding: 16px 24px 18px; border-bottom: 3px solid var(--ink)">
+              <h3 style="margin: 0 0 10px; font-size: 13px; font-weight: 800; letter-spacing: 0.05em; text-transform: uppercase">{{row.title}}</h3>
+              <div role="radiogroup" aria-label="{{row.title}}" style="display: grid; grid-template-columns: repeat({{row.cols}}, minmax(0, 1fr)); gap: 2px; background: var(--ink); border: 2px solid var(--ink)">
+                <sc-for list="{{row.opts}}" as="o" hint-placeholder-count="3">
+                  <button type="button" role="radio" aria-checked="{{o.active}}" onClick="{{o.pick}}" style="height: 36px; padding: 0 4px; border: 0; background: {{o.bg}}; color: {{o.fg}}; font: inherit; font-size: 12px; font-weight: 800; letter-spacing: 0.03em; text-transform: uppercase; font-variant-numeric: tabular-nums; white-space: nowrap; cursor: pointer">{{o.label}}</button>
+                </sc-for>
+              </div>
+              <sc-if value="{{row.hasNote}}" hint-placeholder-val="{{false}}">
+                <p style="margin: 10px 0 0; font-size: 13px; line-height: 1.5">{{row.note}}</p>
+              </sc-if>
+              <sc-for list="{{row.subs}}" as="sub" hint-placeholder-count="0">
+                <div style="display: grid; grid-template-columns: 92px minmax(0, 1fr); align-items: center; column-gap: 10px; margin-top: 10px">
+                  <span style="font-size: 13px; font-weight: 800">{{sub.label}}</span>
+                  <div role="radiogroup" aria-label="{{sub.label}}" style="display: grid; grid-template-columns: repeat({{sub.cols}}, minmax(0, 1fr)); gap: 2px; background: var(--ink); border: 2px solid var(--ink)">
+                    <sc-for list="{{sub.opts}}" as="o" hint-placeholder-count="2">
+                      <button type="button" role="radio" aria-checked="{{o.active}}" onClick="{{o.pick}}" style="height: 30px; padding: 0 4px; border: 0; background: {{o.bg}}; color: {{o.fg}}; font: inherit; font-size: 11px; font-weight: 800; letter-spacing: 0.03em; text-transform: uppercase; white-space: nowrap; cursor: pointer">{{o.label}}</button>
+                    </sc-for>
+                  </div>
+                </div>
+              </sc-for>
+              <sc-for list="{{row.sliders}}" as="s" hint-placeholder-count="0">
+                <div style="display: grid; grid-template-columns: 92px minmax(0, 1fr) 72px; align-items: center; column-gap: 10px; height: 38px; margin-top: 6px">
+                  <label for="{{s.uid}}" style="font-size: 13px; font-weight: 800">{{s.label}}</label>
+                  <div style="position: relative; height: 38px">
+                    <div style="position: absolute; left: 0; right: 0; top: 18px; height: 2px; background: var(--ink)"></div>
+                    <div style="position: absolute; top: 14px; height: 10px; box-sizing: border-box; left: 0; width: {{s.pos}}%; border: 2px solid var(--ink); background: #FFC20E"></div>
+                    <div style="position: absolute; top: 8px; left: calc({{s.pos}}% - 4px); width: 8px; height: 22px; background: var(--ink)"></div>
+                    <input id="{{s.uid}}" type="range" min="{{s.min}}" max="{{s.max}}" step="{{s.step}}" value="{{s.value}}" onChange="{{s.set}}" style="position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: ew-resize">
+                  </div>
+                  <span style="height: 30px; box-sizing: border-box; display: flex; align-items: center; justify-content: flex-end; padding: 0 8px; border: 2px solid var(--ink); font-size: 14px; font-weight: 800; font-variant-numeric: tabular-nums; white-space: nowrap">{{s.display}}</span>
+                </div>
+              </sc-for>
+            </section>
+          </sc-for>
+
+          <section aria-label="Save to" style="padding: 16px 24px 18px; border-bottom: 3px solid var(--ink)">
+            <h3 style="margin: 0 0 10px; font-size: 13px; font-weight: 800; letter-spacing: 0.05em; text-transform: uppercase">Save to</h3>
+            <div style="display: flex; align-items: center; gap: 12px">
+              <span style="flex: 1; min-width: 0; height: 40px; box-sizing: border-box; display: flex; align-items: center; gap: 8px; padding: 0 10px; border: 3px solid var(--ink); font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true" style="flex-shrink: 0"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path></svg>
+                ~/Pictures/Lisbon export
+              </span>
+              <button type="button" style="padding: 0; border: 0; background: transparent; color: var(--ink); font: inherit; font-size: 13px; font-weight: 800; text-decoration: underline; text-decoration-thickness: 2px; text-underline-offset: 4px; cursor: pointer">Choose…</button>
+            </div>
+            <div style="display: grid; grid-template-columns: 92px minmax(0, 1fr); align-items: center; column-gap: 10px; margin-top: 12px">
+              <span style="font-size: 13px; font-weight: 800">File name</span>
+              <span style="height: 34px; box-sizing: border-box; display: flex; align-items: center; padding: 0 10px; border: 2px solid var(--ink); font-family: 'SF Mono', ui-monospace, Menlo, monospace; font-size: 12.5px">{name}_{look}</span>
+            </div>
+            <div style="display: grid; grid-template-columns: 92px minmax(0, 1fr); column-gap: 10px; margin-top: 6px">
+              <span></span>
+              <span style="font-size: 12.5px; font-variant-numeric: tabular-nums">{{fileExample}}</span>
+            </div>
+            <div style="display: grid; grid-template-columns: 92px minmax(0, 1fr); align-items: center; column-gap: 10px; margin-top: 12px">
+              <span style="font-size: 13px; font-weight: 800; line-height: 1.2">If it exists</span>
+              <div role="radiogroup" aria-label="If the file exists" style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 2px; background: var(--ink); border: 2px solid var(--ink)">
+                <sc-for list="{{existsOpts}}" as="o" hint-placeholder-count="3">
+                  <button type="button" role="radio" aria-checked="{{o.active}}" onClick="{{o.pick}}" style="height: 30px; padding: 0 4px; border: 0; background: {{o.bg}}; color: {{o.fg}}; font: inherit; font-size: 11px; font-weight: 800; letter-spacing: 0.03em; text-transform: uppercase; white-space: nowrap; cursor: pointer">{{o.label}}</button>
+                </sc-for>
+              </div>
+            </div>
+          </section>
+
+          <section aria-label="Command line" style="padding: 16px 24px 20px">
+            <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px">
+              <h3 style="margin: 0; font-size: 13px; font-weight: 800; letter-spacing: 0.05em; text-transform: uppercase">Same thing from the command line</h3>
+              <button type="button" onClick="{{copyCli}}" style="padding: 0; border: 0; background: transparent; color: var(--ink); font: inherit; font-size: 13px; font-weight: 800; text-decoration: underline; text-decoration-thickness: 2px; text-underline-offset: 4px; cursor: pointer">{{copyLabel}}</button>
+            </div>
+            <code style="display: block; padding: 10px 12px; border: 2px solid var(--ink); background: #F2F2F2; font-family: 'SF Mono', ui-monospace, Menlo, monospace; font-size: 12px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere">{{cli}}</code>
+          </section>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{running}}" hint-placeholder-val="{{false}}">
+        <div style="padding: 20px 24px">
+          <div role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{{pct}}" style="position: relative; height: 24px; border: 3px solid var(--ink); box-sizing: border-box">
+            <div style="position: absolute; left: 0; top: 0; bottom: 0; width: {{pct}}%; background: #FFC20E; border-right: {{barEdge}}px solid var(--ink)"></div>
+          </div>
+          <div style="margin-top: 20px; border-top: 2px solid var(--ink)">
+            <sc-for list="{{jobs}}" as="j" hint-placeholder-count="3">
+              <div style="display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; column-gap: 12px; min-height: 52px; border-bottom: 2px solid var(--ink)">
+                <span style="display: flex; flex-direction: column; gap: 3px; min-width: 0">
+                  <span style="font-size: 14px; font-weight: 800; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{{j.file}}</span>
+                  <span style="font-size: 12.5px">{{j.note}}</span>
+                </span>
+                <span style="height: 22px; display: inline-flex; align-items: center; padding: 0 6px; box-sizing: border-box; border: 2px solid var(--ink); background: {{j.tagBg}}; color: {{j.tagFg}}; font-size: 10.5px; font-weight: 800; letter-spacing: 0.05em; text-transform: uppercase">{{j.tag}}</span>
+              </div>
+            </sc-for>
+          </div>
+          <p style="margin: 16px 0 0; font-size: 13px; line-height: 1.5">{{runNote}}</p>
+        </div>
+      </sc-if>
+    </div>
+
+    <div style="flex-shrink: 0; border-top: 3px solid var(--ink); padding: 16px 24px; display: flex; align-items: center; gap: 12px">
+      <sc-if value="{{editing}}" hint-placeholder-val="{{true}}">
+        <button type="button" onClick="{{start}}" style="flex: 1; height: 56px; display: flex; align-items: center; justify-content: space-between; padding: 0 18px; border: 0; background: var(--ink); color: var(--paper); font: inherit; font-size: 16px; font-weight: 800; letter-spacing: 0.02em; text-transform: uppercase; cursor: pointer"><span>{{goLabel}}</span><span style="font-size: 12px; font-weight: 700; text-transform: none; letter-spacing: 0; opacity: 0.8; font-variant-numeric: tabular-nums">{{estimate}} · ⌘↩</span></button>
+      </sc-if>
+      <sc-if value="{{runningBusy}}" hint-placeholder-val="{{false}}">
+        <button type="button" onClick="{{cancel}}" style="flex: 1; height: 56px; border: 3px solid var(--ink); background: var(--paper); color: var(--ink); font: inherit; font-size: 16px; font-weight: 800; letter-spacing: 0.02em; text-transform: uppercase; cursor: pointer">Cancel</button>
+      </sc-if>
+      <sc-if value="{{finished}}" hint-placeholder-val="{{false}}">
+        <div style="flex: 1; display: grid; grid-template-columns: 1fr 1fr; gap: 12px">
+          <button type="button" style="height: 56px; border: 3px solid var(--ink); background: var(--paper); color: var(--ink); font: inherit; font-size: 14px; font-weight: 800; letter-spacing: 0.02em; text-transform: uppercase; cursor: pointer">Show in Finder</button>
+          <a href="photos.html" style="height: 56px; display: flex; align-items: center; justify-content: center; background: var(--ink); color: var(--paper); text-decoration: none; font-size: 16px; font-weight: 800; letter-spacing: 0.02em; text-transform: uppercase">Done</a>
+        </div>
+      </sc-if>
+    </div>
+  </aside>
+</div>
+</template><div id="root"></div>
+<script>
+window.__errors = [];
+window.addEventListener('error', e => window.__errors.push(String(e.message)));
+class DCLogic { constructor(p){ this.props = p; } setState(p){ Object.assign(this.state, typeof p === 'function' ? p(this.state) : p); render(); } }
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    this.base = [
+      { name: 'DSC04201', sky: '#5B7088', far: '#34465A', near: '#1F2A36', sun: '#E8B47A', sx: 70, sy: 22 },
+      { name: 'DSC04202', sky: '#C99A63', far: '#7A5A3A', near: '#3E2F22', sun: '#F3D49A', sx: 30, sy: 28 },
+      { name: 'DSC04203', sky: '#9DB0A4', far: '#4C6450', near: '#2A3A2C', sun: '#E9E3C8', sx: 78, sy: 18 },
+      { name: 'DSC04204', sky: '#7FA6C7', far: '#E6ECF2', near: '#3F5468', sun: '#FFF6E0', sx: 66, sy: 12 },
+      { name: 'DSC04205', sky: '#8FB3C9', far: '#5E7F94', near: '#C8B79A', sun: '#F6EED8', sx: 60, sy: 14 },
+      { name: 'DSC04206', sky: '#241B33', far: '#3A2350', near: '#120E1C', sun: '#E86FA0', sx: 74, sy: 30 },
+      { name: 'DSC04207', sky: '#D7A877', far: '#A86F45', near: '#6E4630', sun: '#F5D9A8', sx: 45, sy: 20 },
+      { name: 'DSC04208', sky: '#6A5141', far: '#8C6A50', near: '#3A2C22', sun: '#F2C98B', sx: 50, sy: 30 },
+      { name: 'DSC04209', sky: '#8E959C', far: '#5F676E', near: '#3B4045', sun: '#C9CDD1', sx: 82, sy: 26 },
+      { name: 'DSC04210', sky: '#8C86A8', far: '#5B5677', near: '#2F2C40', sun: '#EAD2C0', sx: 36, sy: 24 },
+      { name: 'DSC04211', sky: '#1B2230', far: '#2B3446', near: '#12161F', sun: '#D9C9A0', sx: 20, sy: 16 },
+      { name: 'DSC04212', sky: '#B9C7D4', far: '#7E9A5E', near: '#4F6B35', sun: '#FBF2D5', sx: 24, sy: 18 }
+    ];
+    this.picked = [false, false, true, true, true, false, false, false, false, false, false, false];
+    this.current = 3;
+    this.state = { scope: 'picked', fmt: 'jpeg', quality: 92, bits: '16', comp: 'lzw', cs: 'srgb', size: 'full', edge: 3000, exists: 'both', running: false, prog: 0, copied: false };
+    this.timer = null;
+  }
+  renderVals() {
+    const st = this.state;
+    const INK = 'var(--ink)', PAPER = 'var(--paper)';
+    const N = this.base.length;
+    const included = i => st.scope === 'all' || (st.scope === 'picked' ? this.picked[i] : i === this.current);
+    const idx = this.base.map((_, i) => i).filter(included);
+    const count = idx.length;
+    const seg = (cur, opts, set) => opts.map(([id, label]) => ({ label, active: id === cur, bg: id === cur ? INK : PAPER, fg: id === cur ? PAPER : INK, pick: () => this.setState({ [set]: id }) }));
+    const ext = { jpeg: 'jpg', tiff: 'tif', png: 'png', dng: 'dng' }[st.fmt];
+    const np = this.picked.filter(Boolean).length;
+
+    const formatRow = { title: 'Format', cols: 4, opts: seg(st.fmt, [['jpeg', 'JPEG'], ['tiff', 'TIFF'], ['png', 'PNG'], ['dng', 'DNG']], 'fmt'), subs: [], sliders: [], hasNote: false, note: '' };
+    if (st.fmt === 'jpeg') {
+      formatRow.sliders = [{ uid: 'ex-q', label: 'Quality', min: 50, max: 100, step: 1, value: st.quality, pos: ((st.quality - 50) / 50 * 100).toFixed(2), display: String(st.quality), set: e => this.setState({ quality: parseInt(e.target.value, 10) }) }];
+    } else if (st.fmt === 'tiff') {
+      formatRow.subs = [
+        { label: 'Bit depth', cols: 2, opts: seg(st.bits, [['8', '8-bit'], ['16', '16-bit']], 'bits') },
+        { label: 'Compression', cols: 3, opts: seg(st.comp, [['none', 'None'], ['lzw', 'LZW'], ['zip', 'ZIP']], 'comp') }
+      ];
+    } else if (st.fmt === 'png') {
+      formatRow.subs = [{ label: 'Bit depth', cols: 2, opts: seg(st.bits, [['8', '8-bit'], ['16', '16-bit']], 'bits') }];
+    } else {
+      formatRow.hasNote = true;
+      formatRow.note = 'Linear DNG with your look baked in. Opens in Lightroom close to this render, with room to adjust exposure, highlights and white balance.';
+    }
+    const segRows = [
+      { title: 'Photos', cols: 3, opts: seg(st.scope, [['this', 'This photo'], ['picked', 'Picked · ' + np], ['all', 'All · ' + N]], 'scope'), subs: [], sliders: [], hasNote: false, note: '' },
+      formatRow
+    ];
+    if (st.fmt !== 'dng') {
+      segRows.push({ title: 'Colour space', cols: 3, opts: seg(st.cs, [['srgb', 'sRGB'], ['p3', 'Display P3'], ['rec2020', 'Rec.2020']], 'cs'), subs: [], sliders: [], hasNote: st.cs === 'srgb', note: 'Best for sharing and the web.' });
+      const sizeRow = { title: 'Size', cols: 2, opts: seg(st.size, [['full', 'Full · 8640 px'], ['edge', 'Long edge']], 'size'), subs: [], sliders: [], hasNote: false, note: '' };
+      if (st.size === 'edge') {
+        sizeRow.sliders = [{ uid: 'ex-edge', label: 'Long edge', min: 1000, max: 8640, step: 20, value: st.edge, pos: ((st.edge - 1000) / 7640 * 100).toFixed(2), display: st.edge + ' px', set: e => this.setState({ edge: parseInt(e.target.value, 10) }) }];
+      }
+      segRows.push(sizeRow);
+    }
+
+    const scale = st.fmt === 'dng' || st.size === 'full' ? 1 : Math.pow(st.edge / 8640, 2);
+    const perPhoto = { jpeg: 6 + (st.quality - 50) * 0.45, tiff: (st.bits === '16' ? 298 : 149) * (st.comp === 'none' ? 1 : 0.68), png: st.bits === '16' ? 210 : 105, dng: 300 }[st.fmt] * scale;
+    const total = perPhoto * count;
+    const estimate = '≈ ' + (total >= 1000 ? (total / 1000).toFixed(1) + ' GB' : Math.max(1, Math.round(total)) + ' MB');
+
+    const files = idx.map(i => this.base[i].name + '.ARW');
+    const flags = ['--look neutral', '--format ' + st.fmt];
+    if (st.fmt === 'jpeg') flags.push('--quality ' + st.quality);
+    if (st.fmt === 'tiff' || st.fmt === 'png') flags.push('--bits ' + st.bits);
+    if (st.fmt !== 'dng') flags.push('--colour-space ' + st.cs);
+    if (st.fmt !== 'dng' && st.size === 'edge') flags.push('--long-edge ' + st.edge);
+    flags.push('--out "~/Pictures/Lisbon export"');
+    const inputs = st.scope === 'all' ? '~/Pictures/Lisbon' : files.join(' ');
+    const cli = 'yellowmoon render ' + inputs + ' \\\n  ' + flags.join(' \\\n  ');
+
+    const doneCount = Math.min(count, Math.floor(st.prog));
+    const jobs = idx.map((i, k) => {
+      const file = this.base[i].name + '_neutral.' + ext;
+      let tag = 'Waiting', note = 'Queued', tagBg = PAPER, tagFg = INK;
+      if (k < doneCount) { tag = 'Done'; note = 'Saved'; tagBg = INK; tagFg = PAPER; }
+      else if (k === doneCount && st.prog < count) { tag = Math.round((st.prog - k) * 100) + '%'; note = 'Rendering at full quality'; tagBg = '#FFC20E'; tagFg = '#000000'; }
+      return { file, note, tag, tagBg, tagFg };
+    });
+    const pct = count ? Math.round(Math.min(st.prog, count) / count * 100) : 0;
+    const finished = st.running && st.prog >= count;
+    const start = () => {
+      if (this.timer) clearInterval(this.timer);
+      this.setState({ running: true, prog: 0 });
+      this.timer = setInterval(() => {
+        const p = this.state.prog + 0.08;
+        if (p >= count) { clearInterval(this.timer); this.timer = null; this.setState({ prog: count }); }
+        else this.setState({ prog: p });
+      }, 100);
+    };
+    const cancel = () => { if (this.timer) clearInterval(this.timer); this.timer = null; this.setState({ running: false, prog: 0 }); };
+
+    const photos = this.base.map((p, i) => ({
+      name: p.name, sx: p.sx, sy: p.sy, sky: p.sky, far: p.far, near: p.near, sun: p.sun,
+      w: i === this.current ? 90 : 60, h: i === this.current ? 60 : 40,
+      bw: included(i) ? (i === this.current ? 4 : 3) : 2,
+      op: included(i) ? 1 : 0.3,
+      inLabel: included(i) ? ', will be exported' : '',
+      picked: !!this.picked[i]
+    }));
+    const noun = count === 1 ? 'photo' : 'photos';
+    return {
+      cur: this.base[this.current],
+      photos, segRows, jobs, cli, estimate, pct,
+      barEdge: pct > 0 && pct < 100 ? 3 : 0,
+      total: String(N),
+      count: String(count),
+      editing: !st.running,
+      running: st.running,
+      runningBusy: st.running && !finished,
+      finished,
+      runNote: finished ? 'Originals are never changed. Open the folder or go back to your photos.' : 'Originals are never changed. You can keep working while this runs; an update waits until the export is finished.',
+      start, cancel,
+      existsOpts: seg(st.exists, [['skip', 'Skip'], ['replace', 'Replace'], ['both', 'Keep both']], 'exists'),
+      fileExample: this.base[idx[0] === undefined ? this.current : idx[0]].name + '_neutral.' + ext,
+      copyLabel: st.copied ? 'Copied' : 'Copy',
+      copyCli: () => this.setState({ copied: true }),
+      goLabel: 'Export ' + count + ' ' + noun,
+      panelTitle: finished ? 'Exported' : st.running ? 'Exporting' : 'Export',
+      panelBlurb: finished ? count + ' ' + noun + ' saved to Lisbon export.' : st.running ? doneCount + ' of ' + count + ' done.' : count + ' ' + noun + ' from Lisbon. Nothing is saved besides the exported files.'
+    };
+  }
+}
+const inst = new Component({});
+function resolve(scope, expr){
+  expr = expr.trim();
+  const parts = expr.split('.');
+  let v = scope[parts[0]];
+  for (let i = 1; i < parts.length; i++) { if (v == null) { window.__errors.push('unresolved ' + expr); return undefined; } v = v[parts[i]]; }
+  if (v === undefined) window.__errors.push('undefined ' + expr);
+  return v;
+}
+function interp(scope, s){ return s.replace(/\{\{([^}]+)\}\}/g, (_, e) => { const v = resolve(scope, e); return v == null ? '' : String(v); }); }
+// Handlers live in el.__h and are called through one listener per event type, so a
+// patched element can take over the new closures without re-adding listeners.
+function dispatch(e){ const h = this.__h && this.__h[e.type]; if (h) h(e); }
+function bind(el){ if (!el.__h) return; el.__b = el.__b || {}; for (const t in el.__h) if (!el.__b[t]) { el.addEventListener(t, dispatch); el.__b[t] = true; } }
+function proc(node, scope, outParent){
+  if (node.nodeType === 3) { outParent.appendChild(document.createTextNode(interp(scope, node.nodeValue))); return; }
+  if (node.nodeType !== 1) return;
+  const tag = node.tagName.toLowerCase();
+  if (tag === 'sc-for') {
+    const listExpr = node.getAttribute('list').replace(/[{}]/g, '');
+    const as = node.getAttribute('as');
+    const list = resolve(scope, listExpr) || [];
+    list.forEach(item => { const s = Object.assign({}, scope, { [as]: item }); node.childNodes.forEach(c => proc(c, s, outParent)); });
+    return;
+  }
+  if (tag === 'sc-if') {
+    const v = resolve(scope, node.getAttribute('value').replace(/[{}]/g, ''));
+    if (v && v !== 'false') node.childNodes.forEach(c => proc(c, scope, outParent));
+    return;
+  }
+  const el = node.namespaceURI === 'http://www.w3.org/2000/svg' ? document.createElementNS(node.namespaceURI, tag) : document.createElement(tag);
+  for (const a of node.attributes) {
+    if (/^on[a-z]/i.test(a.name)) {
+      const fn = resolve(scope, a.value.replace(/[{}]/g, ''));
+      const ev = a.name.slice(2).toLowerCase();
+      if (typeof fn === 'function') (el.__h = el.__h || {})[ev === 'change' ? 'input' : ev] = fn;
+      continue;
+    }
+    el.setAttribute(a.name, interp(scope, a.value));
+  }
+  bind(el);
+  const kids = tag === 'template' ? node.content.childNodes : node.childNodes;
+  kids.forEach(c => proc(c, scope, el));
+  if (tag === 'input' && el.hasAttribute('value')) el.value = el.getAttribute('value');
+  outParent.appendChild(el);
+}
+function morph(oldP, newP){
+  const olds = Array.from(oldP.childNodes), news = Array.from(newP.childNodes);
+  news.forEach((n, i) => {
+    const o = olds[i];
+    if (!o) { oldP.appendChild(n); return; }
+    if (o.nodeType !== n.nodeType || (o.nodeType === 1 && (o.tagName !== n.tagName || o.namespaceURI !== n.namespaceURI))) { oldP.replaceChild(n, o); return; }
+    if (o.nodeType === 3) { if (o.nodeValue !== n.nodeValue) o.nodeValue = n.nodeValue; return; }
+    if (o.nodeType !== 1) return;
+    for (const a of Array.from(o.attributes)) if (!n.hasAttribute(a.name)) o.removeAttribute(a.name);
+    for (const a of Array.from(n.attributes)) if (o.getAttribute(a.name) !== a.value) o.setAttribute(a.name, a.value);
+    o.__h = n.__h; bind(o);
+    if (o.tagName === 'INPUT' && n.hasAttribute('value') && o.value !== n.getAttribute('value')) o.value = n.getAttribute('value');
+    morph(o, n);
+  });
+  for (let i = olds.length - 1; i >= news.length; i--) oldP.removeChild(olds[i]);
+}
+function render(){
+  const scope = inst.renderVals();
+  const fresh = document.createElement('div');
+  document.getElementById('tpl').content.childNodes.forEach(c => proc(c, scope, fresh));
+  morph(document.getElementById('root'), fresh);
+}
+window.__inst = inst;
+render();
+</script>
+</body>
+</html>
