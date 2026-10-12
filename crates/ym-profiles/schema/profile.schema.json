@@ -38,12 +38,13 @@
           "type": "string"
         },
         "fit": {
+          "description": "How the maps were fitted (docs/02 C2). The objective is the CIE Lab error, after ARRI's matrix at the light's CCT to AP0 (Lab with the ACES white), of the white-balanced Sony rendering through M against the white-balanced ALEXA rendering, summed over the training reflectances (decision 2026-10-12; the earlier Y^(-2/3) weighted RGB least squares is only the start of the fit). Informational for the runtime; it does not change how the maps are used.",
           "type": "object",
           "additionalProperties": false,
-          "required": ["white_preserving", "weights", "training_reflectances"],
+          "required": ["white_preserving", "objective", "training_reflectances"],
           "properties": {
             "white_preserving": { "const": true },
-            "weights": { "const": "Y^(-2/3)" },
+            "objective": { "const": "cie-lab-after-arri-matrix" },
             "training_reflectances": { "type": "integer", "minimum": 1 }
           }
         },
@@ -142,7 +143,7 @@
     "provenance": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["curves", "curves_source", "target", "fit_script", "fit_sources_sha256", "colour_science", "training_reflectances", "reference_lights", "duv_scale_method", "light_conventions", "cie_data", "checks"],
+      "required": ["curves", "curves_source", "target", "fit_script", "fit_sources_sha256", "sensor_map_objective", "fit_solver", "colour_science", "training_reflectances", "reference_lights", "duv_scale_method", "light_conventions", "cie_data", "checks"],
       "properties": {
         "curves": { "type": "string", "minLength": 1 },
         "curves_source": {
@@ -174,6 +175,16 @@
         "fit_sources_sha256": {
           "description": "SHA-256 over the fit script sources (see build_profiles.FIT_SOURCES); identifies the code even when the tree was not committed.",
           "$ref": "#/$defs/sha256"
+        },
+        "sensor_map_objective": {
+          "description": "The objective the sensor-map matrices were fitted with and the decision that chose it, e.g. 'lab-optimal white-preserving 3x3 (docs/02 §C2, decision 2026-10-12)'.",
+          "type": "string",
+          "minLength": 1
+        },
+        "fit_solver": {
+          "description": "Solver, its fixed options and the scipy and numpy versions that produced the maps (provenance only; build_profiles --check does not compare it).",
+          "type": "string",
+          "minLength": 1
         },
         "colour_science": { "type": "string" },
         "training_reflectances": { "type": "string" },

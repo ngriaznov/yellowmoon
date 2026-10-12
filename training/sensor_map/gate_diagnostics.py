@@ -6,14 +6,16 @@ For each gate light (docs/02 §C2), fitted on the 190 training reflectances **at
 itself** (so no table interpolation is involved) and scored on the 99 CES, ΔE00 median / p95 through
 ARRI's matrix at the light's CCT:
 
-``spec``        the shipped fit: white-preserving 3x3, weights Y^(-2/3), linear least squares
-``lab``         white-preserving 3x3 minimising the CIE Lab error after ARRI's matrix directly
-``free3x3``     unconstrained 3x3, same weights (does NOT keep white white; reference only)
-``rootpoly``    unconstrained second-order root-polynomial (6 terms), same weights (reference only)
+``lab``          the shipped fit since the decision of 2026-10-12: white-preserving 3x3 minimising the CIE
+                 Lab error after ARRI's matrix (``fit.fit_map_lab``)
+``weighted_rgb`` the superseded M1-02 fit: white-preserving 3x3, weights Y^(-2/3), linear least squares
+                 (``fit.fit_map_weighted_rgb``; the start of the Lab fit)
+``free3x3``      unconstrained 3x3, same weights (does NOT keep white white; reference only)
+``rootpoly``     unconstrained second-order root-polynomial (6 terms), same weights (reference only)
 
-Only ``spec`` is what the product ships. The other columns say how much headroom a different
-objective or a non-linear map would have, and whether the gate threshold (median <= 0.5,
-p95 <= 1.2) is reachable at all for a light. Nothing here changes the gate, which uses ``spec``.
+Only ``lab`` is what the product ships. The other columns say how much headroom another objective or a
+non-linear map would have, and whether the gate threshold (median <= 0.5, p95 <= 1.2) is reachable at
+all for a light. Nothing here changes the gate.
 """
 
 from __future__ import annotations
@@ -22,20 +24,12 @@ import argparse
 import sys
 
 import numpy as np
-from scipy.optimize import least_squares
 
 from training.alexa import ssf_core as s
 from training.sensor_map import evaluate as ev
 from training.sensor_map import fit
 from training.sensor_map import lights as lt
 from training.sensor_map.registry_data import PROFILES
-
-
-def _wp(p: np.ndarray) -> np.ndarray:
-    M = np.zeros((3, 3))
-    M[:, :2] = p.reshape(3, 2)
-    M[:, 2] = 1 - M[:, 0] - M[:, 1]
-    return M
 
 
 def _root_poly(x: np.ndarray) -> np.ndarray:
@@ -51,11 +45,10 @@ def diagnose(profile_id: str) -> list[dict]:
     for L in lt.gate_lights():
         E = L.spd
         src_tr = s.camera_rgb_wb(S, E, ctx.r_train)
-        dst_tr = s.camera_rgb_wb(ctx.alexa, E, ctx.r_train)
+        dst_tr = s.camera_rgb_wb(ctx.alexa, E, ctx.r_train)  # for the reference families
         src_te = s.camera_rgb_wb(S, E, ctx.r_ces)
         dst_te = s.camera_rgb_wb(ctx.alexa, E, ctx.r_ces)
         M_arri = s.interpolate_matrix(ctx.arri_ccts, ctx.arri_mats, L.cct_k)
-        lab_tr = s.ap0_to_Lab(dst_tr @ M_arri.T)
         lab_te = s.ap0_to_Lab(dst_te @ M_arri.T)
         w = np.clip(s.target_XYZ(E, ctx.r_train)[:, 1], 1e-3, None) ** (-2 / 3)
 
@@ -63,15 +56,14 @@ def diagnose(profile_id: str) -> list[dict]:
             d = s.delta_E00(s.ap0_to_Lab(pred_rgb @ M_arri.T), lab_te)
             return float(np.median(d)), float(np.percentile(d, 95))
 
-        M_spec = fit.fit_map(S, ctx.alexa, E, ctx.r_train)
-        lab_fit = least_squares(lambda p: (s.ap0_to_Lab((src_tr @ _wp(p).T) @ M_arri.T) - lab_tr).ravel(),
-                                M_spec[:, :2].ravel(), method="lm")
+        M_weighted = fit.fit_map_weighted_rgb(S, ctx.alexa, E, ctx.r_train)
+        M_lab = fit.fit_map_lab(S, ctx.alexa, E, L.cct_k, ctx.r_train)
         P3, *_ = np.linalg.lstsq(src_tr * w[:, None], dst_tr * w[:, None], rcond=None)
         Pr, *_ = np.linalg.lstsq(_root_poly(src_tr) * w[:, None], dst_tr * w[:, None], rcond=None)
         rows.append({
             "light": L.name,
-            "spec": score(src_te @ M_spec.T),
-            "lab": score(src_te @ _wp(lab_fit.x).T),
+            "lab": score(src_te @ M_lab.T),
+            "weighted_rgb": score(src_te @ M_weighted.T),
             "free3x3": score(src_te @ P3),
             "rootpoly": score(_root_poly(src_te) @ Pr),
         })
@@ -84,9 +76,9 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
     rows = diagnose(args.profile)
     print(f"{args.profile}: fitted at the gate light itself, median/p95 dE00 on the 99 CES (gate: 0.5 / 1.2)")
-    print(f"  {'light':<18} {'spec':>12} {'lab':>12} {'free3x3':>12} {'rootpoly':>12}")
+    print(f"  {'light':<18} {'lab (shipped)':>13} {'weighted_rgb':>13} {'free3x3':>13} {'rootpoly':>13}")
     for r in rows:
-        print(f"  {r['light']:<18} " + " ".join(f"{r[k][0]:5.3f}/{r[k][1]:5.3f}  " for k in ("spec", "lab", "free3x3", "rootpoly")))
+        print(f"  {r['light']:<18} " + " ".join(f"{r[k][0]:5.3f}/{r[k][1]:5.3f}  " for k in ("lab", "weighted_rgb", "free3x3", "rootpoly")))
     return 0
 
 

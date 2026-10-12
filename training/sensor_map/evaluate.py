@@ -6,6 +6,10 @@ per-light 3x3, median / p95 over 138 colours (CIE 99 CES, ColorChecker (Ohta) 24
 VS 15) under 9 lights. The 3x3 is fitted at the test light itself on the 190 training
 reflectances, with the body's own curves ("own") or the A7R IV curves (stand-in).
 
+The fit here is the **research objective** (``fit.fit_map_weighted_rgb``, weights ``Y^(-2/3)``), not the
+shipped Lab-optimal one (``fit.fit_map_lab``, decision 2026-10-12): this module exists to reproduce the
+published ``sony_profiles.csv``, which was produced with the research objective.
+
 Both images go through ARRI's matrix at the light's CCT (``ssf_core.interpolate_matrix``).
 
     python3 -m training.sensor_map.evaluate           # reproduces research/.../sony_profiles.csv
@@ -83,10 +87,13 @@ def render_error_with_matrix(
 
 
 def map_error(S_true: np.ndarray, S_fit: np.ndarray, ctx: EvalContext) -> dict[str, np.ndarray]:
-    """``sony_profiles.map_error``: per light, X's RGB through a map fitted on ``S_fit`` at that light."""
+    """``sony_profiles.map_error``: per light, X's RGB through a map fitted on ``S_fit`` at that light.
+
+    Uses the research objective (weighted RGB least squares), whatever the shipped objective is.
+    """
     res = {}
     for name, E in ctx.illums.items():
-        M = fit.fit_map(S_fit, ctx.alexa, E, ctx.r_train)
+        M = fit.fit_map_weighted_rgb(S_fit, ctx.alexa, E, ctx.r_train)  # research objective, see module doc
         res[name] = render_error_with_matrix(S_true, M, E, s.illuminant_cct(E), ctx.r_test, ctx)
     return res
 

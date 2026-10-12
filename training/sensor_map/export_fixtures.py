@@ -104,7 +104,11 @@ def export_constants(out: Path) -> None:
         "conventions": {
             "camera_rgb_wb": "raw = (E o R)^T S; white = E^T S; rgb = raw / white",
             "target_XYZ": "XYZ = (E o R)^T CMF / (CMF_y . E); CAT02 von Kries from the light's white to the ACES white",
-            "fit_weights": "clip(Y_target, 1e-3)^(-2/3), Y from target_XYZ",
+            "fit_weights": "clip(Y_target, 1e-3)^(-2/3), Y from target_XYZ; the research objective of "
+                           "sony_profiles (evaluate.py) and the start of the shipped Lab fit",
+            "fit_objective": "shipped (gate.py, build_profiles): the white-preserving 3x3 minimising "
+                             "sum_n |Lab(M_arri(cct) M c_s[n]) - Lab(M_arri(cct) c_a[n])|^2 over the 190 training "
+                             "patches (fit.fit_map_lab, decision 2026-10-12)",
             "lab": "CIE Lab with the ACES white (xy 0.32168, 0.33767) on AP0 -> XYZ",
             "arri_matrix": "linear in mired between bracketing table entries at the light's CCT; native -> AP0",
         },

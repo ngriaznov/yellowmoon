@@ -122,7 +122,7 @@ Rows of this matrix sum to 1 within 1e-15. Don't take AP0 from a library that st
 
 Maps white-balanced Sony RGB to white-balanced emulated ALEV III RGB for the scene light. Exposure-invariant (linear) and white-preserving (`M·[1,1,1]ᵀ = [1,1,1]ᵀ`) by construction.
 
-**Offline fit** (Python in `training/sensor_map/`, port of `research/alexa-ssf/scripts/sony_profiles.py::fit_map`):
+**Offline fit** (Python in `training/sensor_map/fit.py`; the earlier objective is a port of `research/alexa-ssf/scripts/sony_profiles.py::fit_map`, see step 3):
 
 1. Inputs: the camera profile's spectral curves `S_P`, the ALEXA estimate `S_A` (`data/alexa/alexa_alev3_estimate_380_780_5.json`), the 190 rawtoaces training reflectances (Apache-2.0), and reference light SPDs.
 2. Reference lights per class:
@@ -134,15 +134,30 @@ Maps white-balanced Sony RGB to white-balanced emulated ALEV III RGB for the sce
    SPDs come from the `colour-science` datasets at fit time. Only the fitted coefficients ship (`docs/14-licensing.md`).
 
 **Gate lights (held out of the gate fit):** blackbody 2850 K, CIE daylight 5250 K and 6750 K, CIE FL3.1, FL3.8 and FL3.15, LED-B3, LED-RGB1 and LED-V2. The first three and the FL3 series fall between or outside the fit grid by construction; for the gate run, refit with LED-B3, LED-RGB1 and LED-V2 removed from the LED class. The shipped fit uses all lights. The reference numbers in `research/alexa-ssf/README.md` were measured on lights inside the fit grid, so they are a lower bound, not a target.
-3. For each light `E`: Sony responses `c_s = S_P·(E∘R)`, ALEXA responses `c_a = S_A·(E∘R)`, each divided by its own response to the white (`R = 1`). Fit the white-preserving 3×3 by weighted least squares with weights `Y^(−2/3)`:
+3. For each light `E`: Sony responses `c_s[n] = S_P·(E∘R_n)`, ALEXA responses `c_a[n] = S_A·(E∘R_n)`, each divided by its own response to the white (`R = 1`), for the 190 training reflectances `R_n`. Fit the white-preserving 3×3 that minimises the **CIE Lab error after ARRI's matrix**. Let `T_E` be the light's CCT for the ARRI lookup (the generating temperature for blackbody and CIE daylight lights, the Ohno 2013 CCT of the SPD for fluorescent and LED lights), `A(T)` ARRI's native → AP0 matrix interpolated linearly in mired between the bracketing table entries (clamped to 2000–11000 K, see C5), and `Lab(·)` the CIE Lab of an AP0 triple with the ACES white (AP0 → XYZ, white = ACES white). The parameters are the 6 free coefficients `m = (m0 … m5)` of
+
+   `M(m) = [[m0, m1, 1−m0−m1], [m2, m3, 1−m2−m3], [m4, m5, 1−m4−m5]]`
+
+   (rows sum to 1, so `M·[1,1,1]ᵀ = [1,1,1]ᵀ`), and the objective is
+
+   `J(m) = Σₙ ‖ Lab(A(T_E)·M(m)·c_s[n]) − Lab(A(T_E)·c_a[n]) ‖²`   (Euclidean distance in Lab, 190 patches, no weights).
+
+   `J` is minimised by Levenberg–Marquardt with an analytic Jacobian and a Gauss–Newton polish, started from the linear solution of the previous objective (weights `Y_target^(−2/3)`, which approximate `J` and are kept in the code as `fit_map_weighted_rgb`, the objective that reproduces `research/alexa-ssf/out/sony_profiles.csv`). Start, solver and options are fixed, so the fit is deterministic; the coefficients agree to ~1e-13 whatever the start (`python3 -m training.sensor_map.fit --stability`), and the shipped tables are checked to 5e-9 (`build_profiles --check`).
 
 ```python
-w = clip(Y_target, 1e-3, None) ** (-2/3)
-A = stack([src[:,0] - src[:,2], src[:,1] - src[:,2]], axis=1) * w[:,None]
+def residuals(m):                       # 190 × 3 Lab differences, flattened
+    M = white_preserving(m)             # rows [m0, m1, 1 - m0 - m1], ...
+    return (ap0_to_Lab((src @ M.T) @ A.T) - ap0_to_Lab(dst @ A.T)).ravel()    # A = A(T_E)
+
+w = clip(Y_target, 1e-3, None) ** (-2/3)                       # start: weighted RGB least squares
+Aw = stack([src[:,0] - src[:,2], src[:,1] - src[:,2]], axis=1) * w[:,None]
 for r in range(3):
-    m, *_ = lstsq(A, (dst[:, r] - src[:, 2]) * w)
-    M[r] = [m[0], m[1], 1 - m[0] - m[1]]
+    m, *_ = lstsq(Aw, (dst[:, r] - src[:, 2]) * w)
+    M0[r] = [m[0], m[1], 1 - m[0] - m[1]]
+m = levenberg_marquardt(residuals, start=M0[:, :2].ravel(), jac="analytic")    # then Gauss-Newton polish
 ```
+
+   Decision 2026-10-12 (Mykyta): Lab-optimal objective adopted after the M1-05 gate; LED-V2 remains a reported gate failure.
 
 4. Store per profile: for each class, a list of `(mired, M)` sorted by mired.
 

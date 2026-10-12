@@ -8,8 +8,10 @@ The output is a deterministic function of the fetched inputs, the scripts and co
 0.4.7: no timestamps, tables rounded to 1e-9, matrices to 1e-12 (rows sum to 1 exactly up to
 float rounding). ``provenance.fit_script`` names the commit the working tree is based on;
 ``provenance.fit_sources_sha256`` is a hash of the script sources themselves, which is what
-identifies the code that produced the numbers when the tree is dirty. ``--check`` ignores the
-commit in ``fit_script``.
+identifies the code that produced the numbers when the tree is dirty. ``provenance.sensor_map_objective``
+and ``provenance.fit_solver`` record the fit objective (Lab-optimal white-preserving 3x3, decision
+2026-10-12) and the scipy/numpy versions that solved it. ``--check`` ignores the commit in
+``fit_script`` and the versions in ``fit_solver``.
 
 Format: ``crates/ym-profiles/schema/profile.schema.json``; rules: ``training/sensor_map/README.md``.
 """
@@ -101,7 +103,7 @@ def _sensor_map_json(tables: dict[str, list[fit.MapEntry]]) -> dict:
         "target": "alexa/target.json",
         "fit": {
             "white_preserving": True,
-            "weights": "Y^(-2/3)",
+            "objective": "cie-lab-after-arri-matrix",
             "training_reflectances": 190,
         },
         "classes": {
@@ -188,6 +190,8 @@ def build_profile(prof: Profile, git_sha: str) -> dict:
             },
             "fit_script": f"training/sensor_map/fit.py@{git_sha}",
             "fit_sources_sha256": fit_sources_sha256(),
+            "sensor_map_objective": fit.SHIPPED_OBJECTIVE_TEXT,
+            "fit_solver": fit.solver_description(),
             "colour_science": colour.__version__,
             "training_reflectances": "rawtoaces 190-patch set (Apache-2.0), colour.characterisation.aces_it."
                                      "read_training_data_rawtoaces_v1, 380-780 nm at 5 nm",
@@ -224,8 +228,14 @@ def _close(a, b, tol: float = 5e-9) -> bool:
 
 
 def _strip_sha(profile: dict) -> dict:
+    """Drop what ``--check`` ignores: the stamped commit and the numpy/scipy versions in ``fit_solver``.
+
+    The library versions are recorded for provenance only; a different (compatible) numpy or scipy
+    is covered by the numeric tolerance of the comparison, not by a string match.
+    """
     p = json.loads(json.dumps(profile))
     p["provenance"]["fit_script"] = "training/sensor_map/fit.py"
+    p["provenance"]["fit_solver"] = ""
     return p
 
 

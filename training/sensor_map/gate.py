@@ -18,8 +18,18 @@ under 9 held-out lights. For each profile:
    with ``M``, and compare with the same reflectances rendered through ``S_A`` directly (white
    balanced to the light). Both go through ARRI's matrix at ``cct_k``. ΔE00, ACES white.
 
-Gate: per light median <= 0.5 and p95 <= 1.2 for the A7R IV profile. The other ten profiles
-are reported.
+Gate: per light median <= 0.5 and p95 <= 1.2 for the A7R IV profile, never loosened. The other ten
+profiles are reported.
+
+The fit objective is the shipped one, the Lab-optimal white-preserving 3x3 (``fit.fit_map_lab``,
+decision 2026-10-12), in the gate refit and in the "fitted at the light" and "shipped" columns alike.
+``--objective weighted_rgb`` repeats the whole run with the superseded Y^(-2/3) weighted RGB fit, which
+reproduces the numbers of the M1-05 report that preceded the decision.
+
+Mykyta's decision of 2026-10-12: the gate stays as specified and LED-V2 stays a reported failure
+(narrow violet-pump LED spike, beyond a white-preserving 3x3). The gate therefore still returns a
+non-zero status for A7R IV while LED-V2 is over; ``gate_status`` lists which lights are over, and
+``--expect-failing LED-V2`` makes the exit status 0 when exactly those lights (and no others) fail.
 
 Extra columns for context (not gated): ``identity`` (no mapping, M = I) and ``fit_at_light``
 (the 3x3 fitted at the gate light itself, the lower bound a better blend could reach), and the
@@ -53,13 +63,20 @@ def _stats(d: np.ndarray) -> dict[str, float]:
     return {"median": float(np.median(d)), "p95": float(np.percentile(d, 95)), "max": float(np.max(d))}
 
 
-def run_profile(profile_id: str, ctx: ev.EvalContext | None = None) -> dict:
+def _fit_at_light(S_P: np.ndarray, L: lt.Light, ctx: ev.EvalContext, objective: str) -> np.ndarray:
+    """The 3x3 fitted at the gate light itself (no table interpolation)."""
+    if objective == fit.OBJECTIVE_LAB:
+        return fit.fit_map_lab(S_P, ctx.alexa, L.spd, L.cct_k, ctx.r_train)
+    return fit.fit_map_weighted_rgb(S_P, ctx.alexa, L.spd, ctx.r_train)
+
+
+def run_profile(profile_id: str, ctx: ev.EvalContext | None = None, objective: str = fit.OBJECTIVE_LAB) -> dict:
     """Gate numbers for one profile: {light: {...}} plus pass/fail."""
     ctx = ev.context() if ctx is None else ctx
     prof = next(p for p in PROFILES if p.id == profile_id)
     S_P = fit.sony_curves()[prof.curves_name]
-    gate_tables = fit.fit_tables(S_P, exclude=lt.GATE_LED)
-    shipped_tables = fit.fit_tables(S_P)
+    gate_tables = fit.fit_tables(S_P, exclude=lt.GATE_LED, objective=objective)
+    shipped_tables = fit.fit_tables(S_P, objective=objective)
 
     per_light = {}
     for L in lt.gate_lights():
@@ -72,7 +89,7 @@ def run_profile(profile_id: str, ctx: ev.EvalContext | None = None) -> dict:
             "gate": _stats(ev.render_error_with_matrix(S_P, M, L.spd, L.cct_k, ctx.r_ces, ctx)),
             "identity": _stats(ev.render_error_with_matrix(S_P, np.eye(3), L.spd, L.cct_k, ctx.r_ces, ctx)),
             "fit_at_light": _stats(ev.render_error_with_matrix(
-                S_P, fit.fit_map(S_P, ctx.alexa, L.spd, ctx.r_train), L.spd, L.cct_k, ctx.r_ces, ctx)),
+                S_P, _fit_at_light(S_P, L, ctx, objective), L.spd, L.cct_k, ctx.r_ces, ctx)),
             "shipped_fit": _stats(ev.render_error_with_matrix(
                 S_P, fit.blend_map(shipped_tables, probs, L.mired), L.spd, L.cct_k, ctx.r_ces, ctx)),
         }
@@ -81,15 +98,22 @@ def run_profile(profile_id: str, ctx: ev.EvalContext | None = None) -> dict:
     worst_p95 = max(r["gate"]["p95"] for r in per_light.values())
     return {
         "profile": profile_id,
+        "objective": objective,
         "lights": per_light,
         "worst_median": worst_median,
         "worst_p95": worst_p95,
+        "lights_over": gate_status(per_light),
         "pass": bool(worst_median <= MEDIAN_MAX and worst_p95 <= P95_MAX),
     }
 
 
+def gate_status(per_light: dict) -> list[str]:
+    """Names of the lights over the gate (median > 0.5 or p95 > 1.2), in gate-light order."""
+    return [n for n, r in per_light.items() if not (r["gate"]["median"] <= MEDIAN_MAX and r["gate"]["p95"] <= P95_MAX)]
+
+
 def format_table(res: dict) -> str:
-    lines = [f"{res['profile']}  (gate: median <= {MEDIAN_MAX}, p95 <= {P95_MAX})",
+    lines = [f"{res['profile']}  (gate: median <= {MEDIAN_MAX}, p95 <= {P95_MAX}; fit objective: {res['objective']})",
              f"  {'light':<18} {'class':<12} {'cct_k':>8} | {'gate med':>8} {'gate p95':>8} | "
              f"{'ident med':>9} {'ident p95':>9} | {'atlight med':>11} {'atlight p95':>11} | "
              f"{'shipped med':>11} {'shipped p95':>11}"]
@@ -100,8 +124,9 @@ def format_table(res: dict) -> str:
             f"{r['identity']['median']:9.3f} {r['identity']['p95']:9.3f} | "
             f"{r['fit_at_light']['median']:11.3f} {r['fit_at_light']['p95']:11.3f} | "
             f"{r['shipped_fit']['median']:11.3f} {r['shipped_fit']['p95']:11.3f}{flag}")
+    over = f" (over: {', '.join(res['lights_over'])})" if res["lights_over"] else ""
     lines.append(f"  worst median {res['worst_median']:.3f}, worst p95 {res['worst_p95']:.3f}: "
-                 f"{'PASS' if res['pass'] else 'FAIL'}")
+                 f"{'PASS' if res['pass'] else 'FAIL'}{over}")
     return "\n".join(lines)
 
 
@@ -109,6 +134,11 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--profile", help="only this profile id (default: all 11)")
     ap.add_argument("--json", type=Path, default=paths.OUT / "sensor_map" / "gate.json", help="write results here")
+    ap.add_argument("--objective", choices=fit.OBJECTIVES, default=fit.OBJECTIVE_LAB,
+                    help="fit objective of every fit in the run (default: the shipped Lab objective)")
+    ap.add_argument("--expect-failing", nargs="*", default=[], metavar="LIGHT",
+                    help="gate lights of the gate profile that are known, reported failures (docs/02 §C2 decision "
+                         "2026-10-12: LED-V2); exit 0 if exactly these are over the gate and no other light is")
     args = ap.parse_args(argv)
     paths.require_sources()
 
@@ -116,7 +146,7 @@ def main(argv: list[str] | None = None) -> int:
     ids = [args.profile] if args.profile else [p.id for p in PROFILES]
     results = {}
     for pid in ids:
-        results[pid] = run_profile(pid, ctx)
+        results[pid] = run_profile(pid, ctx, args.objective)
         print(format_table(results[pid]), flush=True)
 
     args.json.parent.mkdir(parents=True, exist_ok=True)
@@ -128,8 +158,15 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  {pid:<18} worst median {r['worst_median']:.3f}  worst p95 {r['worst_p95']:.3f}  "
               f"{'pass' if r['pass'] else 'over threshold'}")
     if GATE_PROFILE in results:
-        ok = results[GATE_PROFILE]["pass"]
-        print(f"\nGATE ({GATE_PROFILE}): {'PASS' if ok else 'FAIL'}")
+        res = results[GATE_PROFILE]
+        ok = res["pass"]
+        print(f"\nGATE ({GATE_PROFILE}): {'PASS' if ok else 'FAIL'}"
+              + (f", lights over: {', '.join(res['lights_over'])}" if res["lights_over"] else ""))
+        if args.expect_failing:
+            as_expected = sorted(res["lights_over"]) == sorted(args.expect_failing)
+            print(f"expected failures ({', '.join(args.expect_failing)}): "
+                  f"{'exactly those are over' if as_expected else 'MISMATCH with the lights that are over'}")
+            return 0 if as_expected else 1
         return 0 if ok else 1
     return 0
 
