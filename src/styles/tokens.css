@@ -1,0 +1,129 @@
+/* Yellowmoon design tokens · "Bold grid, white" (V1)
+   Copied from design/tokens.css (the source of truth); keep the two in step.
+   Values come from design/mockups/*.html. Figtree is OFL-1.1: the woff2 files and
+   OFL.txt sit in ./fonts/ and are bundled with the app. The URLs below are relative
+   to this file, so Vite hashes and copies the fonts into the build. */
+
+@font-face {
+  font-family: "Figtree";
+  font-style: normal;
+  font-weight: 300 900;
+  font-display: swap;
+  src: url("./fonts/figtree-latin-wght-normal.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
+    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "Figtree";
+  font-style: normal;
+  font-weight: 300 900;
+  font-display: swap;
+  src: url("./fonts/figtree-latin-ext-wght-normal.woff2") format("woff2");
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329,
+    U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
+:root {
+  color-scheme: light;
+
+  /* Core colours */
+  --ink: #000000;            /* text, rules, active segments, slider thumbs */
+  --paper: #ffffff;          /* backgrounds, letterbox around the photo */
+  --muted: #6b6b6b;          /* secondary text, disabled labels */
+  --focus: #0b5cc2;          /* keyboard focus ring (3px outline, 2px offset) */
+  --code-bg: #f2f2f2;        /* CLI preview block */
+
+  /* Brand */
+  --brand: #ffc20e;          /* moon mark, start screen hero, Look tab, progress fill, current wizard step */
+  --brand-ink: #000000;
+
+  /* Tab colours: the active tab, its title block, slider fills and changed value boxes */
+  --tab-look: #ffc20e;    --tab-look-ink: #000000;
+  --tab-light: #0db7e8;   --tab-light-ink: #000000;
+  --tab-colour: #77e05a;  --tab-colour-ink: #000000;
+  --tab-detail: #f2b8aa;  --tab-detail-ink: #000000;
+  --tab-curve: #ff5a1f;   --tab-curve-ink: #000000;
+  --tab-raw: #0b5cc2;     --tab-raw-ink: #ffffff;
+
+  /* Curve channels */
+  --curve-r: #e8361e;
+  --curve-g: #1f9d3a;
+  --curve-b: #0b5cc2;
+
+  /* Status */
+  --status-ok: #77e05a;      /* "Update ready" square */
+  --status-error: #f2b8aa;   /* error tag background (ink text) */
+
+  /* Typography */
+  --font: "Figtree", system-ui, -apple-system, sans-serif;
+  --font-mono: "SF Mono", ui-monospace, Menlo, monospace;
+  --fs-hero: 64px;           /* start screen headline; letter-spacing -0.035em, line-height 0.98 */
+  --fs-display: 40px;        /* tab title ("Look"), panel title ("Export"); letter-spacing -0.025em */
+  --fs-step: 36px;           /* wizard step numbers */
+  --fs-h1: 32px;
+  --fs-h2: 24px;             /* folder name in the header, filmstrip counter; -0.02em */
+  --fs-h3: 18px;
+  --fs-body-l: 16px;         /* blurbs */
+  --fs-body: 14px;           /* default */
+  --fs-label: 13px;          /* slider labels (800) */
+  --fs-small: 12px;          /* tab labels, caps labels */
+  --fs-caps: 11px;           /* segmented control labels */
+  --fs-tag: 10.5px;          /* AUTO / EDITED / ON / STAND-IN tags */
+  --fw-regular: 400;
+  --fw-semibold: 600;
+  --fw-bold: 700;
+  --fw-heavy: 800;
+  --ls-caps: 0.03em;         /* uppercase labels; tags use 0.05em */
+  --ls-tag: 0.05em;
+  --ls-display: -0.025em;
+
+  /* Rules and borders */
+  --rule: 3px;               /* grid lines between cells, panel separators */
+  --rule-control: 2px;       /* boxes, segmented controls, tags, switches */
+
+  /* Layout */
+  --header-h: 75px;
+  --panel-w: 400px;          /* right tool panel */
+  --folder-cell-w: 300px;    /* header cell with the moon mark and folder name */
+  --filmstrip-min-h: 124px;
+  --tab-h: 46px;
+  --pad-panel: 24px;         /* panel inner padding */
+  --gap-row: 10px;
+  --min-window-w: 1180px;
+  --min-window-h: 760px;
+  --photo-aspect: 3 / 2;     /* the photo cell is always exactly 3:2, edge to edge */
+
+  /* Controls */
+  --row-h: 38px;             /* slider row */
+  --label-col: 92px;         /* slider label column */
+  --value-w: 72px;           /* value box */
+  --value-h: 30px;
+  --track-h: 2px;
+  --fill-h: 10px;            /* tab-colour bar between detent and value, 2px ink border */
+  --detent-w: 2px;  --detent-h: 16px;
+  --thumb-w: 8px;   --thumb-h: 22px;
+  --segment-h: 32px;         /* "Apply to", light presets */
+  --switch-w: 44px; --switch-h: 24px; --switch-knob: 16px;
+  --tag-h: 22px;
+  --button-h: 56px;          /* primary actions (Export, Next) */
+  --moon-size: 16px;         /* yellow circle, 2px ink border */
+  --thumb-strip-w: 60px; --thumb-strip-h: 40px;   /* filmstrip */
+  --thumb-strip-current-w: 90px; --thumb-strip-current-h: 60px;
+
+  /* Motion: keep it minimal */
+  --t-fast: 80ms;
+  --t-med: 160ms;
+}
+
+/* Dark variant: explored in research, not part of V1. Kept so the tokens stay complete. */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --ink: #f2f2f2;
+  --paper: #0f0f10;
+  --muted: #8c8c8c;
+  --focus: #0db7e8;
+  --code-bg: #1c1c1e;
+  --curve-r: #ff6a3d;
+  --curve-g: #77e05a;
+  --curve-b: #2ec4f0;
+}
