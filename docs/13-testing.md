@@ -15,7 +15,8 @@ Every stage gets a measurable gate. The numbers below are starting targets; tigh
 | DNG | `dng_validate` from the DNG SDK | every push touching `ym-export` |
 | End-to-end UI | Playwright against `api.mock.ts` | every push |
 | Fuzzing | `cargo fuzz` (TIFF walker, SR2, cRAW, LJPEG, M/S, `.cube` parser) | nightly, 10 min per target |
-| Licences | `cargo deny`, npm licence check | every push |
+| Licences | `cargo deny`, npm licence check; the `deny-selftest` job (`.github/scripts/deny-selftest.sh`) proves with local fixture crates that `deny.toml` rejects GPL, LGPL and banned crates and still lets the excluded `oracle` use `rawler` | every push |
+| Test-data scripts | `fetch-tools` job: shellcheck and the unit tests in `tools/fetch/test_ymfetch.py` (local mock server, no network) | every push |
 | Human review | blind A/B, visual checks | at gates [HUMAN] |
 
 ## GPU tests without a GPU
@@ -24,7 +25,9 @@ GitHub-hosted macOS runners may not expose a Metal device. GPU tests look for an
 
 ## Test data
 
-Never commit raw files or large data. `tools/fetch/` downloads into `testdata/` (git-ignored) and checks SHA-256 against `tools/fetch/manifest.json`. CI caches `testdata/` keyed on the manifest hash.
+Never commit raw files or large data. `tools/fetch/` downloads into `testdata/` (git-ignored) and checks SHA-256 against `tools/fetch/manifest.json`. CI caches `testdata/` keyed on the manifest hash. Usage, manifest format, licence rules and exit codes: `tools/fetch/README.md`. Which data backs which gate, where it may be stored and what is reachable from the agent environment: `docs/validation-data.md`.
+
+**Status of the corpus (M0-09).** rawdb.dnglab.org, raw.pixls.us and discuss.pixls.us were blocked where the scripts were written, so `manifest.json` ships with the body list and an empty file list; `samples.sh --refresh` on a machine with open internet fills it. Until then decoder, detection and pipeline tests run on synthetic ARW files from the test-only writer (`ym-raw`, feature `testgen`) with LibRaw (rawpy) and rawler as independent oracles. Results obtained that way are reported as "synthetic only" and do not close a corpus gate.
 
 | Set | Source | Licence | Use |
 |---|---|---|---|

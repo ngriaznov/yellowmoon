@@ -1,0 +1,166 @@
+# Release: every version bump on main becomes a GitHub release with updater artefacts (docs/12).
+# Adapted from github.com/ngriaznov/plugout. Installed in M0-03.
+#
+# Needs two repository secrets before the first release: TAURI_SIGNING_PRIVATE_KEY and
+# TAURI_SIGNING_PRIVATE_KEY_PASSWORD, and the matching public key in src-tauri/tauri.conf.json
+# (plugins.updater.pubkey). Setup steps: docs/release-signing.md. Until then this workflow stops early
+# with an explicit error instead of burning macOS minutes on a build that cannot be signed.
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: macos-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Add both macOS targets to the pinned toolchain
+        # rust-toolchain.toml (if it pins a version) overrides the toolchain installed above.
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+
+      - name: Read version
+        id: version
+        run: |
+          VERSION=$(cargo metadata --no-deps --format-version 1 \
+            | jq -r '.packages[] | select(.name == "yellowmoon-app") | .version')
+          if [ -z "$VERSION" ] || [ "$VERSION" = "null" ]; then
+            echo "::error title=No version::cargo metadata has no package named yellowmoon-app"
+            exit 1
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Check if tag exists
+        id: check_tag
+        run: |
+          if git ls-remote --exit-code --tags origin "refs/tags/v${{ steps.version.outputs.version }}"; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Require the updater signing setup
+        if: steps.check_tag.outputs.exists == 'false'
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ] || [ -z "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD" ]; then
+            echo "::error title=Signing secrets missing::Set TAURI_SIGNING_PRIVATE_KEY and TAURI_SIGNING_PRIVATE_KEY_PASSWORD as repository secrets (docs/release-signing.md)."
+            exit 1
+          fi
+          if grep -q 'REPLACE_WITH_MINISIGN_PUBLIC_KEY' src-tauri/tauri.conf.json; then
+            echo "::error title=Updater public key missing::Put the minisign public key into src-tauri/tauri.conf.json plugins.updater.pubkey (docs/release-signing.md)."
+            exit 1
+          fi
+
+      - uses: actions/setup-node@v4
+        if: steps.check_tag.outputs.exists == 'false'
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: Swatinem/rust-cache@v2
+        if: steps.check_tag.outputs.exists == 'false'
+
+      - name: Install frontend dependencies
+        if: steps.check_tag.outputs.exists == 'false'
+        run: npm ci
+
+      - name: Build the command-line tool (universal)
+        if: steps.check_tag.outputs.exists == 'false'
+        run: |
+          cargo build -p ym-cli --release --target aarch64-apple-darwin
+          cargo build -p ym-cli --release --target x86_64-apple-darwin
+          mkdir -p src-tauri/binaries
+          # Tauri sidecar naming: <name>-<target triple>. The sidecar is called yellowmoon-cli inside the
+          # bundle because macOS file systems are case-insensitive and the app binary is "Yellowmoon".
+          # The universal build runs one cargo build per architecture, and each one's tauri-build checks
+          # for its own triple, so place all three.
+          cp target/aarch64-apple-darwin/release/yellowmoon src-tauri/binaries/yellowmoon-cli-aarch64-apple-darwin
+          cp target/x86_64-apple-darwin/release/yellowmoon src-tauri/binaries/yellowmoon-cli-x86_64-apple-darwin
+          lipo -create \
+            target/aarch64-apple-darwin/release/yellowmoon \
+            target/x86_64-apple-darwin/release/yellowmoon \
+            -output src-tauri/binaries/yellowmoon-cli-universal-apple-darwin
+          lipo -info src-tauri/binaries/yellowmoon-cli-universal-apple-darwin
+
+      - name: Build universal macOS bundle
+        if: steps.check_tag.outputs.exists == 'false'
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # Uncomment once Apple Developer ID signing is decided (docs/16, open decision "Code signing for 1.0"):
+          # APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          # APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          # APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          # APPLE_ID: ${{ secrets.APPLE_ID }}
+          # APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          # APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: npm run tauri build -- --target universal-apple-darwin
+
+      - name: Write updater manifest
+        if: steps.check_tag.outputs.exists == 'false'
+        run: |
+          BUNDLE_DIR="target/universal-apple-darwin/release/bundle/macos"
+          TARBALL=$(ls "$BUNDLE_DIR"/*.app.tar.gz)
+          SIGNATURE=$(cat "$BUNDLE_DIR"/*.app.tar.gz.sig)
+          VERSION="${{ steps.version.outputs.version }}"
+          URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/v${VERSION}/$(basename "$TARBALL")"
+          jq -n \
+            --arg version "$VERSION" \
+            --arg pub_date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --arg url "$URL" \
+            --arg signature "$SIGNATURE" \
+            '{
+              version: $version,
+              pub_date: $pub_date,
+              platforms: {
+                "darwin-aarch64": { url: $url, signature: $signature },
+                "darwin-x86_64": { url: $url, signature: $signature }
+              }
+            }' > latest.json
+          cat latest.json
+
+      - name: Publish release
+        if: steps.check_tag.outputs.exists == 'false'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: "v${{ steps.version.outputs.version }}"
+          name: "Yellowmoon v${{ steps.version.outputs.version }}"
+          files: |
+            target/universal-apple-darwin/release/bundle/dmg/*.dmg
+            target/universal-apple-darwin/release/bundle/macos/*.app.tar.gz
+            latest.json
+          generate_release_notes: true
+
+      - name: Update Homebrew cask
+        if: steps.check_tag.outputs.exists == 'false'
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          SHA=$(shasum -a 256 target/universal-apple-darwin/release/bundle/dmg/*.dmg | cut -d' ' -f1)
+          git fetch origin main
+          git checkout -B main origin/main
+          sed -i '' \
+            -e "s/^  version \".*\"/  version \"${VERSION}\"/" \
+            -e "s/^  sha256 \".*\"/  sha256 \"${SHA}\"/" \
+            Casks/yellowmoon.rb
+          git config user.name "Nikita Griaznov"
+          git config user.email "17167893+ngriaznov@users.noreply.github.com"
+          git add Casks/yellowmoon.rb
+          git commit -m "Update Homebrew cask to ${VERSION}"
+          git push origin main

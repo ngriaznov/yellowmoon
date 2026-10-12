@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Known issues and project status
+    url: https://github.com/ngriaznov/yellowmoon/blob/main/docs/STATUS.md
+    about: Check here first. Known issues, open questions and what is waiting on the maintainer are listed.

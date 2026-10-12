@@ -1,0 +1,341 @@
+{
+  "schema_version": 1,
+  "description": "Test data manifest for tools/fetch/samples.sh and golden.sh (docs/13-testing.md, docs/test-photo-sources.md). Files are CC0 (corpus, golden tier 1) or freely licensed (golden tier 2). The file list is filled by `samples.sh --refresh` on a machine that can reach the hosts; it ships empty because rawdb.dnglab.org and raw.pixls.us were blocked where this manifest was written.",
+  "policy": {
+    "corpus_licenses": [
+      "CC0-1.0"
+    ],
+    "tier2_licenses": [
+      "CC-BY-2.0",
+      "CC-BY-3.0",
+      "CC-BY-4.0",
+      "CC-BY-SA-2.0",
+      "CC-BY-SA-3.0",
+      "CC-BY-SA-4.0",
+      "CC0-1.0"
+    ],
+    "note": "Mirrors the constants in ymfetch.py, which enforces them. Anything else (CC BY-NC-SA, unknown, unverified) is excluded."
+  },
+  "sources": {
+    "rawdb": {
+      "name": "RawDB",
+      "homepage": "https://rawdb.dnglab.org/",
+      "api_base": "https://rawdb.dnglab.org/api/sets",
+      "make": "Sony",
+      "hosts": [
+        "rawdb.dnglab.org"
+      ],
+      "extra_hosts": [],
+      "file_url_template": null,
+      "licence_rule": "CC0 1.0 only, read per file from the 'license' field of the API answer.",
+      "status": "UNVERIFIED against the live host (blocked from the authoring environment). The answer layout (path, size, sha256, license per file) comes from docs/test-photo-sources.md; the download URL comes from a url field in the answer, an absolute /path, or file_url_template. `--refresh` probes the first URL before writing anything."
+    },
+    "pixls": {
+      "name": "raw.pixls.us",
+      "homepage": "https://raw.pixls.us/",
+      "data_base": "https://raw.pixls.us/data",
+      "make": "Sony",
+      "hosts": [
+        "raw.pixls.us"
+      ],
+      "extra_hosts": [],
+      "licence_rule": "CC0 only. Some older files are CC BY-NC-SA and must be excluded. The directory listing does not state a licence, so listed files go to 'pending' and join the corpus only after a manual check (`samples.sh --promote`).",
+      "status": "UNVERIFIED against the live host (blocked from the authoring environment). Fetch politely: one connection, identified user agent."
+    },
+    "playraw": {
+      "name": "discuss.pixls.us, Play Raw category",
+      "api_base": "https://discuss.pixls.us",
+      "hosts": [
+        "discuss.pixls.us"
+      ],
+      "extra_hosts": [],
+      "search_models": [
+        "ILCE-1",
+        "ILCE-1M2",
+        "ILCE-7RM4",
+        "ILCE-7RM5",
+        "ILCE-7CR"
+      ],
+      "licence_rule": "CC0, CC BY or CC BY-SA, read by a person from the post, then added with `golden.sh --add-tier2`.",
+      "status": "UNVERIFIED against the live host (blocked from the authoring environment)."
+    }
+  },
+  "bodies": [
+    {
+      "model": "ILCE-7RM2",
+      "name": "A7R II",
+      "model_id": 347,
+      "group": "required"
+    },
+    {
+      "model": "ILCE-7RM3",
+      "name": "A7R III",
+      "model_id": 362,
+      "group": "required"
+    },
+    {
+      "model": "ILCE-7RM4",
+      "name": "A7R IV",
+      "model_id": 375,
+      "group": "required",
+      "note": "default profile body; A1 borrows its profile"
+    },
+    {
+      "model": "ILCE-7RM5",
+      "name": "A7R V",
+      "model_id": 390,
+      "group": "required",
+      "note": "research/notes/sony-arw-formats.md: RawDB has Lossless L and Lossless M/S ('yuv') sets"
+    },
+    {
+      "model": "ILCE-7M3",
+      "name": "A7 III",
+      "model_id": 363,
+      "group": "required"
+    },
+    {
+      "model": "ILCE-7M4",
+      "name": "A7 IV",
+      "model_id": 388,
+      "group": "required"
+    },
+    {
+      "model": "ILCE-7M5",
+      "name": "A7 V",
+      "model_id": 407,
+      "group": "required",
+      "note": "ARW 6.0 (Compressed RAW 2): Compressed and Compressed HQ; no uncompressed, no M/S"
+    },
+    {
+      "model": "ILCE-7RM6",
+      "name": "A7R VI",
+      "model_id": 410,
+      "group": "required",
+      "note": "ARW 6.0 (Compressed RAW 2): Compressed and HD, plus Lossless"
+    },
+    {
+      "model": "ILCE-7SM2",
+      "name": "A7S II",
+      "model_id": 350,
+      "group": "required"
+    },
+    {
+      "model": "ILCE-7SM3",
+      "name": "A7S III",
+      "model_id": 383,
+      "group": "required"
+    },
+    {
+      "model": "ILCE-9",
+      "name": "A9",
+      "model_id": 358,
+      "group": "required"
+    },
+    {
+      "model": "ILCE-9M3",
+      "name": "A9 III",
+      "model_id": 392,
+      "group": "required",
+      "note": "Lossless M/S sets per research notes"
+    },
+    {
+      "model": "ILCE-1",
+      "name": "A1",
+      "model_id": 384,
+      "group": "required",
+      "note": "golden tier 1: 3 CC0 files at ISO 500 (docs/test-photo-sources.md)"
+    },
+    {
+      "model": "ILCE-1M2",
+      "name": "A1 II",
+      "model_id": 400,
+      "group": "required",
+      "note": "golden tier 1: 9 CC0 files at ISO 100 incl. Lossless L/M/S (docs/test-photo-sources.md)"
+    },
+    {
+      "model": "ILCE-6400",
+      "name": "A6400",
+      "model_id": 371,
+      "group": "required"
+    },
+    {
+      "model": "ILCE-6700",
+      "name": "A6700",
+      "model_id": null,
+      "group": "required",
+      "note": "model ID not in docs/03; profile is the A7R IV default"
+    },
+    {
+      "model": "DSC-RX100M4",
+      "name": "RX100 IV",
+      "model_id": 341,
+      "group": "required"
+    },
+    {
+      "model": "ZV-E1",
+      "name": "ZV-E1",
+      "model_id": 393,
+      "group": "required"
+    },
+    {
+      "model": "ILME-FX3",
+      "name": "FX3",
+      "model_id": 385,
+      "group": "required"
+    },
+    {
+      "model": "ILCE-7C",
+      "name": "A7C",
+      "model_id": 381,
+      "group": "sibling"
+    },
+    {
+      "model": "ILCE-7CM2",
+      "name": "A7C II",
+      "model_id": 397,
+      "group": "sibling"
+    },
+    {
+      "model": "ILCE-7CR",
+      "name": "A7CR",
+      "model_id": 396,
+      "group": "sibling"
+    },
+    {
+      "model": "ILCE-7RM3A",
+      "name": "A7R III A",
+      "model_id": 386,
+      "group": "sibling"
+    },
+    {
+      "model": "ILCE-7RM4A",
+      "name": "A7R IV A",
+      "model_id": 387,
+      "group": "sibling"
+    },
+    {
+      "model": "ILCE-9M2",
+      "name": "A9 II",
+      "model_id": 376,
+      "group": "sibling"
+    },
+    {
+      "model": "ILCE-6100",
+      "name": "A6100",
+      "model_id": 379,
+      "group": "sibling"
+    },
+    {
+      "model": "ILCE-6600",
+      "name": "A6600",
+      "model_id": 378,
+      "group": "sibling"
+    },
+    {
+      "model": "DSC-RX1RM3",
+      "name": "RX1R III",
+      "model_id": null,
+      "group": "recent",
+      "note": "Lossless M/S set per research notes"
+    },
+    {
+      "model": "DSC-RX10M5",
+      "name": "RX10 V",
+      "model_id": null,
+      "group": "recent",
+      "note": "docs/04 lists it as a sample gap; research notes say RawDB has a set"
+    },
+    {
+      "model": "DSLR-A100",
+      "name": "A100",
+      "model_id": null,
+      "group": "legacy",
+      "note": "ARW 1.0, 12-bit Huffman; RawDB set per research notes"
+    },
+    {
+      "model": "DSLR-A700",
+      "name": "A700",
+      "model_id": null,
+      "group": "legacy",
+      "note": "ARW 2.x 12-bit uncompressed and cRAW era"
+    },
+    {
+      "model": "DSLR-A900",
+      "name": "A900",
+      "model_id": null,
+      "group": "legacy",
+      "note": "ARW 2.x 12-bit uncompressed era"
+    },
+    {
+      "model": "ILCE-7",
+      "name": "A7",
+      "model_id": null,
+      "group": "legacy"
+    },
+    {
+      "model": "ILCE-7R",
+      "name": "A7R",
+      "model_id": null,
+      "group": "legacy"
+    },
+    {
+      "model": "ILCE-7S",
+      "name": "A7S",
+      "model_id": null,
+      "group": "legacy"
+    },
+    {
+      "model": "ILCE-7M2",
+      "name": "A7 II",
+      "model_id": null,
+      "group": "legacy"
+    },
+    {
+      "model": "ILCE-6000",
+      "name": "A6000",
+      "model_id": null,
+      "group": "legacy"
+    },
+    {
+      "model": "DSC-RX100M3",
+      "name": "RX100 III",
+      "model_id": null,
+      "group": "legacy"
+    }
+  ],
+  "files": [],
+  "pending": [],
+  "excluded": [],
+  "golden": {
+    "tier1_bodies": [
+      "ILCE-1",
+      "ILCE-1M2",
+      "ILCE-7RM4",
+      "ILCE-7RM5",
+      "ILCE-7CR"
+    ],
+    "tier1_note": "Corpus files of these bodies are also tagged 'golden' by --refresh (the A1 and the bodies that share the A1's profile). Edit this list to change the public golden tier.",
+    "tier3": [
+      {
+        "id": "photographylife-a1",
+        "provider": "Photography Life",
+        "body": "ILCE-1",
+        "page_url": "https://photographylife.com/sony-a1-sample-images-raws",
+        "files_expected": 22,
+        "terms": "The author keeps the copyright. Personal use only, no republishing. Downloads work only from the page itself.",
+        "local_dir": "golden/tier3/photographylife-a1",
+        "fetch": false
+      },
+      {
+        "id": "imaging-resource-a1",
+        "provider": "Imaging Resource",
+        "body": "ILCE-1",
+        "page_url": "https://www.imaging-resource.com/news/2021/02/26/sony-alpha-1-gallery-images-real-world-sample-images-from-sonys-flagship",
+        "files_expected": null,
+        "terms": "Copyrighted; personal evaluation only. Do not scrape the galleries or script around download restrictions.",
+        "local_dir": "golden/tier3/imaging-resource-a1",
+        "fetch": false
+      }
+    ]
+  }
+}

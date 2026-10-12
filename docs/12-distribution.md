@@ -11,7 +11,7 @@ We copy github.com/ngriaznov/plugout's setup: every version bump on main becomes
 
 ## Release pipeline (`release.yml`, GitHub Actions on macOS, on push to main)
 
-1. Read the version with `cargo metadata` (package `yellowmoon-app`). If tag `v<version>` exists, stop: the push was not a release.
+1. Read the version with `cargo metadata` (package `yellowmoon-app`). If tag `v<version>` exists, stop: the push was not a release. Otherwise, before any build, stop with an explicit error if either signing secret is empty or `tauri.conf.json` still holds the `REPLACE_WITH_MINISIGN_PUBLIC_KEY` placeholder (setup: `docs/release-signing.md`). A release that cannot be signed fails in seconds, not after the full macOS build. `rust-toolchain.toml` pins the toolchain, so the job runs `rustup target add` for both Apple targets on the pinned one.
 2. Build `ym-cli` for aarch64 and x86_64 and place three sidecars: `yellowmoon-cli-aarch64-apple-darwin`, `yellowmoon-cli-x86_64-apple-darwin` (each per-arch cargo build of `src-tauri` checks for its own) and the `lipo`-merged `yellowmoon-cli-universal-apple-darwin` (bundled).
 3. `npm run tauri build -- --target universal-apple-darwin` with `TAURI_SIGNING_PRIVATE_KEY` (and its password) from repository secrets; `createUpdaterArtifacts` produces `.app.tar.gz` and `.sig`.
 4. Write `latest.json` with `jq`: version, publication date, URL and signature for `darwin-aarch64` and `darwin-x86_64` (the same universal tarball).
@@ -50,6 +50,7 @@ App, sidecar CLI, `data/` (ALEXA curve, ARRI matrices with notice, camera profil
   3. Put only the public key (`~/.tauri/yellowmoon.key.pub`) into `tauri.conf.json` and commit it.
   4. Write the password next to the key (`~/.tauri/yellowmoon.key.password`, mode 600) and tell Mykyta in `STATUS.md` where both files are, so he can move them to his password manager. Losing the key means installed copies can never auto-update again; leaking it lets anyone ship updates.
   The private key and password never appear in the repository, logs, PR text or `STATUS.md`.
+  **Decision (M0-03): do not generate the key in a throwaway environment.** If the agent has no authenticated `gh` with admin rights, or runs in a container that is discarded at the end of the session, it must not create the key: a key it cannot set as a secret and cannot hand over safely is lost on exit, and handing it over through a transcript leaks it. Instead the agent keeps `release.yml` and `tauri.conf.json` ready, writes the exact commands to `docs/release-signing.md` (no secrets in it) and lists the step under "Waiting on Mykyta". The M0 build did this. In that case Mykyta, not the agent, holds the only copy of the key (steps 1 to 4 above, run by him), and the password file in step 4 is replaced by his password manager.
 - Apple code signing and notarisation: open decision for 1.0 (`docs/16`). plugout ships unsigned with an `xattr -cr` caveat; that's acceptable for betas. If adopted [HUMAN M4-H2]: Apple Developer ID certificate and an app-specific password as secrets; uncomment the `APPLE_*` variables in `release.yml`; remove the cask caveat.
 
 ## Repository and name

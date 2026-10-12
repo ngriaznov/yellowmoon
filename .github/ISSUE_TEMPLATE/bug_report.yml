@@ -1,0 +1,80 @@
+name: Bug report
+description: Something in Yellowmoon or the yellowmoon command does not work as it should.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting this. Yellowmoon keeps no logs and sends nothing anywhere, so the details below are
+        the only way for us to see what happened.
+
+        Please do not attach raw files you do not have the right to share. If a particular file triggers the
+        problem, say which camera and which RAW file type setting made it, and we will find a public sample.
+  - type: input
+    id: version
+    attributes:
+      label: Yellowmoon version
+      description: The app's About window, or the output of `yellowmoon --version`.
+      placeholder: "0.0.1"
+    validations:
+      required: true
+  - type: dropdown
+    id: where
+    attributes:
+      label: Where does it happen?
+      options:
+        - The app
+        - The yellowmoon command
+        - Both
+        - Installing or updating (dmg, Homebrew, auto-update)
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Output of `yellowmoon doctor`
+      description: |
+        Run `yellowmoon doctor` in a terminal and paste everything it prints. It lists the GPU, the runtime in
+        use, the model weights, the camera profiles and the version, and nothing about your photos. In the app,
+        Help > Report a Problem copies the same text for you.
+      render: text
+    validations:
+      required: true
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version and Mac
+      description: For example macOS 15.5 on a MacBook Pro with M3, or macOS 12.7 on an Intel iMac.
+      placeholder: "macOS 15.5, MacBook Pro M3"
+    validations:
+      required: true
+  - type: input
+    id: camera
+    attributes:
+      label: Camera and RAW file type
+      description: The Sony body and the RAW setting, if a particular photo is involved. Leave blank if it is not about a photo.
+      placeholder: "Sony A7 IV, Lossless compressed L"
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open the app and drop in a folder of ARW files
+        2. Choose the Neutral look
+        3. Press Export
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happened instead
+      description: Include the exact text of any error message. Screenshots are welcome.
+    validations:
+      required: true

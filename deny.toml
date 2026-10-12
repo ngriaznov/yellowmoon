@@ -1,0 +1,62 @@
+# cargo-deny policy (docs/14-licensing.md). Installed in M0-02 from templates/deny.toml.
+# Shipped crates must be Apache-2.0 compatible. LGPL/GPL/AGPL are never allowed in shipped crates.
+# tools/oracle (test-only, links rawler under LGPL-2.1) is excluded from these checks
+# and must never be a dependency of anything under crates/ or src-tauri/.
+#
+# Changes from the template, all inside the docs/14 policy:
+#   * CDLA-Permissive-2.0 is allowed (webpki-root-certs, Mozilla's CA list, pulled in by the updater's TLS stack).
+#   * Two RustSec "unmaintained" notices are ignored with reasons (see [advisories]).
+#   * unused-allowed-license = "allow": the allow list below is the policy; it is not trimmed to the current graph.
+# Run locally with `cargo deny check` (the CI action adds --all-features).
+
+[graph]
+exclude = ["oracle"]
+all-features = false
+
+[licenses]
+version = 2
+allow = [
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "MIT",
+  "MIT-0",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Zlib",
+  "Unicode-3.0",
+  "Unicode-DFS-2016",
+  "CC0-1.0",
+  "0BSD",
+  "BSL-1.0",
+  "MPL-2.0",          # file-level copyleft; allowed for unmodified dependencies only (review each)
+  "OFL-1.1",          # fonts
+  "CDLA-Permissive-2.0", # data licence of webpki-root-certs (Mozilla root certificates); permissive, no copyleft
+]
+confidence-threshold = 0.9
+unused-allowed-license = "allow"
+
+[bans]
+multiple-versions = "warn"
+deny = [
+  { name = "dng" },        # AGPL-3.0
+  { name = "rawler" },     # LGPL-2.1: test oracle only (tools/oracle)
+  { name = "rawloader" },  # LGPL-2.1
+  { name = "ljpeg" },      # LGPL-2.1
+  { name = "jpegxl-rs" },  # GPL-3.0
+]
+
+[advisories]
+version = 2
+yanked = "deny"
+# Both are "unmaintained" notices, not vulnerabilities, and both crates are procedural macros that run only at
+# build time, so nothing from them is linked into the app or the CLI. Revisit when tauri-specta and the gtk-rs
+# 0.18 crates move on (cargo update, then delete the entries).
+ignore = [
+  { id = "RUSTSEC-2024-0436", reason = "paste is unmaintained; compile-time proc macro only, pulled in by specta/tauri-specta, which we do not control. No safe upgrade exists." },
+  { id = "RUSTSEC-2024-0370", reason = "proc-macro-error is unmaintained; compile-time proc macro only, pulled in by the gtk-rs 0.18 crates that Tauri uses on Linux (not part of the macOS app). No safe upgrade exists." },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

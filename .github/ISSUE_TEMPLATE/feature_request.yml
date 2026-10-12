@@ -1,0 +1,44 @@
+name: Feature request
+description: Suggest a change or an addition to Yellowmoon.
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Yellowmoon is deliberately small: open, adjust, export, done. It has no catalogue, no sidecar files, no
+        masks and no saved edits, and those will not be added. Ideas that keep the app simple are the most likely
+        to be taken up. The scope is in `docs/00-overview.md`.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: Describe the situation, not the solution. What is hard or impossible today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would you like to happen?
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which part is it about?
+      options:
+        - Colour or looks
+        - Raw decoding or a camera that is not handled well
+        - Noise, detail or sharpening
+        - Export formats
+        - The app (layout, controls, copy)
+        - The yellowmoon command
+        - Installing or updating
+        - Something else
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What do you do instead today?
+      description: Other tools or workarounds you use, and what they do better.
