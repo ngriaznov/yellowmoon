@@ -1,0 +1,16 @@
+[package]
+name = "ym-raw"
+description = "Sony ARW container parsing, metadata and decoders (own implementation; no LGPL code)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+publish = false
+
+[features]
+# Builds the synthetic ARW writer in `testgen` for use by other crates' tests.
+testgen = []
+# ARW 6.0 Compressed RAW 2 decoder; stays off in release builds until the Sony gate clears (docs/04).
+arw6 = []

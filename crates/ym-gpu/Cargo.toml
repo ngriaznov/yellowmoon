@@ -1,0 +1,13 @@
+[package]
+name = "ym-gpu"
+description = "GPU device ownership, tiling, buffer pools and WGSL kernels, with CPU reference implementations."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+publish = false
+
+[dependencies]
+ym-color.workspace = true

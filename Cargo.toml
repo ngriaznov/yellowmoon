@@ -1,0 +1,107 @@
+# Yellowmoon workspace. Members are listed explicitly (docs/01-architecture.md).
+# Script-only folders under tools/ (fetch, looks, dng, abtest, dev) are not members.
+
+[workspace]
+resolver = "3"
+members = [
+    "crates/ym-core",
+    "crates/ym-raw",
+    "crates/ym-profiles",
+    "crates/ym-color",
+    "crates/ym-gpu",
+    "crates/ym-noise",
+    "crates/ym-ml",
+    "crates/ym-looks",
+    "crates/ym-export",
+    "crates/ym-cli",
+    "src-tauri",
+    "tools/oracle",
+    "tools/golden",
+    "tools/dngfit",
+]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2024"
+license = "Apache-2.0"
+repository = "https://github.com/ngriaznov/yellowmoon"
+rust-version = "1.97"
+authors = ["Yellowmoon contributors"]
+
+[workspace.dependencies]
+# Internal crates.
+ym-core = { path = "crates/ym-core", version = "0.0.1" }
+ym-raw = { path = "crates/ym-raw", version = "0.0.1" }
+ym-profiles = { path = "crates/ym-profiles", version = "0.0.1" }
+ym-color = { path = "crates/ym-color", version = "0.0.1" }
+ym-gpu = { path = "crates/ym-gpu", version = "0.0.1" }
+ym-noise = { path = "crates/ym-noise", version = "0.0.1" }
+ym-ml = { path = "crates/ym-ml", version = "0.0.1" }
+ym-looks = { path = "crates/ym-looks", version = "0.0.1" }
+ym-export = { path = "crates/ym-export", version = "0.0.1" }
+ym-cli = { path = "crates/ym-cli", version = "0.0.1" }
+
+# Errors, serialization, numerics.
+thiserror = "2"
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+half = { version = "2", features = ["serde", "bytemuck"] }
+bytemuck = { version = "1", features = ["derive"] }
+rayon = "1"
+semver = { version = "1", features = ["serde"] }
+sha2 = "0.11"
+hex = "0.4"
+time = { version = "0.3", features = ["formatting", "parsing", "macros"] }
+rand = "0.10"
+rand_chacha = "0.10"
+
+# Logging.
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# CLI.
+clap = { version = "4", features = ["derive"] }
+
+# GPU.
+wgpu = "30"
+pollster = "1"
+
+# Files and images.
+tempfile = "3"
+zip = { version = "9", default-features = false, features = ["deflate"] }
+tiff = "0.11"
+png = "0.18"
+jpeg-encoder = "0.7"
+fs4 = "1"
+
+# Tests.
+approx = "0.5"
+proptest = "1"
+assert_cmd = "2"
+predicates = "3"
+insta = { version = "1", features = ["json"] }
+
+# App shell (Tauri 2 stable line; 3.x is alpha and is not used).
+tauri = { version = "2", features = ["macos-private-api"] }
+tauri-build = "2"
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
+tauri-plugin-dialog = "2"
+# Typed IPC. The rc line is pinned exactly: specta, tauri-specta and specta-typescript must move together.
+specta = "=2.0.0-rc.25"
+tauri-specta = { version = "=2.0.0-rc.25", features = ["derive", "typescript"] }
+specta-typescript = "=0.0.12"
+
+# Test-only oracle (LGPL). Used by tools/oracle only; never by a shipped crate (docs/14-licensing.md).
+rawler = "0.8"
+
+[profile.dev]
+opt-level = 1
+
+# Dependencies are optimized even in dev builds so image tests do not crawl in debug.
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.release]
+lto = "thin"

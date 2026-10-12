@@ -1,0 +1,23 @@
+# Rust
+target/
+
+# Node
+node_modules/
+dist/
+playwright-report/
+test-results/
+
+# Downloaded test data (tools/fetch fills it)
+testdata/
+
+# Tauri
+src-tauri/binaries/
+src-tauri/gen/schemas/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# macOS
+.DS_Store

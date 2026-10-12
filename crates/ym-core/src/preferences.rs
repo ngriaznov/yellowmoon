@@ -1,0 +1,1 @@
+//! `preferences.json` under the app data folder: default look, display rendering, export defaults and the other persisted choices; the exhaustive list of what persists (`docs/01-architecture.md` section Persistence).

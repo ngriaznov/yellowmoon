@@ -1,0 +1,1 @@
+//! Tile scheduler: tile rectangles, halos computed by walking the stages backwards, seam-free reassembly (`docs/01-architecture.md` section GPU tiling, `docs/05-raw-processing.md` section Tiling and halos).

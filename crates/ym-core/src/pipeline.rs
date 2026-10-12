@@ -1,0 +1,1 @@
+//! The render graph: the fixed chain of raw and colour stages with per-stage cache keys and invalidation by setting (`docs/01-architecture.md` section Render graph, `docs/02-colour-pipeline.md`, `docs/05-raw-processing.md`).

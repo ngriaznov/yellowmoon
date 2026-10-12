@@ -1,0 +1,13 @@
+[package]
+name = "ym-looks"
+description = "Look library, ARRI package recognition, importer and manifest."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+publish = false
+
+[dependencies]
+ym-color.workspace = true

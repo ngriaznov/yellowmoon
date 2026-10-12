@@ -1,0 +1,24 @@
+[package]
+name = "ym-core"
+description = "Yellowmoon core: session, settings, automatic development, render graph, scheduler and export queue."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+publish = false
+
+[dependencies]
+ym-raw.workspace = true
+ym-profiles.workspace = true
+ym-color.workspace = true
+ym-gpu.workspace = true
+ym-noise.workspace = true
+ym-ml.workspace = true
+ym-looks.workspace = true
+ym-export.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

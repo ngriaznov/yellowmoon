@@ -1,0 +1,1 @@
+//! Test-only synthetic ARW writer (uncompressed, cRAW and LJPEG encoders) that produces files for decoder, oracle and pipeline tests; compiled for tests or with the `testgen` feature (`docs/04-raw-decoding.md` section Tests, `docs/13-testing.md`).

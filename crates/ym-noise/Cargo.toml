@@ -1,0 +1,10 @@
+[package]
+name = "ym-noise"
+description = "Per-image noise estimation, priors and sigma maps for the denoise network."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+publish = false

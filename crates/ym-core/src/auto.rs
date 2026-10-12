@@ -1,0 +1,1 @@
+//! `AutoEstimates`: illuminant, exposure, white balance, noise model and sharpening, computed once per photo and re-runnable (`docs/01-architecture.md` section Session, `docs/02-colour-pipeline.md`, `docs/06-noise.md`).

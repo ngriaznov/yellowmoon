@@ -1,0 +1,33 @@
+[package]
+name = "yellowmoon-app"
+description = "Yellowmoon desktop app shell (Tauri 2): window, commands, events, updater."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+publish = false
+
+[features]
+# Set by the Tauri CLI for production builds (and when no dev server is configured): the frontend
+# is embedded from `frontendDist`. Plain `cargo build/test/clippy` leaves it off, so debug builds
+# use `devUrl` and do not need `../dist` to exist. DO NOT REMOVE.
+custom-protocol = ["tauri/custom-protocol"]
+
+[build-dependencies]
+tauri-build.workspace = true
+
+[dependencies]
+ym-core.workspace = true
+serde_json.workspace = true
+specta.workspace = true
+tauri.workspace = true
+tauri-plugin-dialog.workspace = true
+tauri-plugin-process.workspace = true
+tauri-plugin-updater.workspace = true
+tauri-specta.workspace = true
+specta-typescript.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

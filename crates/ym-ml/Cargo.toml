@@ -1,0 +1,10 @@
+[package]
+name = "ym-ml"
+description = "Learned-model runtime: model loading and tiled inference behind one trait."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+publish = false

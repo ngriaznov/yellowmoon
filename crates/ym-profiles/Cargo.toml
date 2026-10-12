@@ -1,0 +1,10 @@
+[package]
+name = "ym-profiles"
+description = "Camera profile registry and profile data loading (data/cameras)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+publish = false

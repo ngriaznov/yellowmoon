@@ -1,0 +1,10 @@
+[package]
+name = "ym-color"
+description = "Colour maths: LogC, ARRI Wide Gamut, sensor map, looks, LUTs and the ACES 2 output transform (CPU reference)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+publish = false
