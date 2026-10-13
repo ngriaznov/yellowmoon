@@ -33,7 +33,7 @@ Mykyta's handover package (`docs/algorithms/`; tasks in `docs/algorithms/TASKS.m
 | RA-07 | done | [ddca8d3](https://github.com/ngriaznov/yellowmoon/commit/ddca8d3) | Diffraction deconvolution and the pixel pitch in the registry (27 of 28 bodies). Richardson–Lucy stays the default; RA-H2 is open. |
 | RA-08 | done | [ddca8d3](https://github.com/ngriaznov/yellowmoon/commit/ddca8d3) | Output sharpening: Output slider 0–200 %, default 100, `ym render --output-sharpening`; every picture, never a DNG. |
 | RA-09 | done on lavapipe | [ddca8d3](https://github.com/ngriaznov/yellowmoon/commit/ddca8d3), [1bcaef7](https://github.com/ngriaznov/yellowmoon/commit/1bcaef7), [fdab64d](https://github.com/ngriaznov/yellowmoon/commit/fdab64d) | WGSL kernels for all four algorithms, parity tests pass. None is wired into a render path; Metal is unchecked. |
-| RA-10 | done | this pass | `docs/05`, `docs/09`, `docs/01`, `docs/16`, `docs/algorithms/*`, `CHANGELOG.md` and this file match the code. |
+| RA-10 | done | [e7dd7fd](https://github.com/ngriaznov/yellowmoon/commit/e7dd7fd) | `docs/05`, `docs/09`, `docs/01`, `docs/16`, `docs/algorithms/*`, `CHANGELOG.md` and this file match the code. |
 | R6 default | done | [e0ca394](https://github.com/ngriaznov/yellowmoon/commit/e0ca394) | `DEFAULT_METHOD` is `AdaptiveRatio`; a missing or unusable noise model renders as zero noise instead of failing. |
 | Tone card | done | [ddca8d3](https://github.com/ngriaznov/yellowmoon/commit/ddca8d3) | Look › Tone: Temperature, Contrast and Saturation, mirrored from the Colour and Light tabs; saturation is subtractive (`docs/02` C9). |
 | Lateral CA (R5b) | built, pending your OK | | CA corrected on the mosaic before the demosaic at full resolution; real-file renders with a CA table change (question 11). |
@@ -62,7 +62,7 @@ Mykyta's handover package (`docs/algorithms/`; tasks in `docs/algorithms/TASKS.m
 | ym-core part 1 (settings, auto estimates, session) | [cd92c88](https://github.com/ngriaznov/yellowmoon/commit/cd92c88) | |
 | M0-04, M0-05, M2-03, M2-09 ARW container and decoders | [55bc009](https://github.com/ngriaznov/yellowmoon/commit/55bc009) | every V1 variant except ARW 6.0 (gated); 9/9 real files identical to LibRaw |
 | M0-07, GPU halves of M1-09/10/11, C11, C13 | [defd910](https://github.com/ngriaznov/yellowmoon/commit/defd910) | lavapipe only; Metal is M0-H4 |
-| M3-01, M3-05…M3-08 UI, M3-09/11/13 UI, M3-15 | [deebc1c](https://github.com/ngriaznov/yellowmoon/commit/deebc1c) | frontend against the mock; wiring to the real backend in progress |
+| M3-01, M3-05…M3-08 UI, M3-09/11/13 UI, M3-15 | [deebc1c](https://github.com/ngriaznov/yellowmoon/commit/deebc1c) | frontend against the mock; wired to the real backend in the M3-02…M3-04 row above |
 | Profile locus in camera raw scale (defect fix) | [e432ddd](https://github.com/ngriaznov/yellowmoon/commit/e432ddd) | real as-shot whites now Duv −0.0065 (A7 III), −0.0008 (A7 IV) |
 | M1-07, M1-08 WB, fused C1–C6 chain, auto exposure | [132ba6b](https://github.com/ngriaznov/yellowmoon/commit/132ba6b) | M1-08 gate needs the golden set |
 | M2-04, M2-05, M2-07 runtime, M0-08 harness | [47b2685](https://github.com/ngriaznov/yellowmoon/commit/47b2685) | no trained weights (M2-H4); classical path ships |
@@ -70,7 +70,7 @@ Mykyta's handover package (`docs/algorithms/`; tasks in `docs/algorithms/TASKS.m
 | M1-02, M1-04, M1-05 Rust runtime (ym-profiles, spectral, sensor map) | [7eeaf61](https://github.com/ngriaznov/yellowmoon/commit/7eeaf61) | |
 | M1-10 library, M3-09 core (ym-looks) | [b91cc83](https://github.com/ngriaznov/yellowmoon/commit/b91cc83) | fingerprints wait for M3-H2 |
 | M2-02 noise estimator (partial) | [e71a8c0](https://github.com/ngriaznov/yellowmoon/commit/e71a8c0) | synthetic validation; per-body priors need the corpus (M2-01); filtered-file detector passes on smooth scenes only; σ map CPU only |
-| M1-13, M3-12 writer (export) | [59a25da](https://github.com/ngriaznov/yellowmoon/commit/59a25da) | dng_validate passes locally; dngfit in progress |
+| M1-13, M3-12 writer (export) | [59a25da](https://github.com/ngriaznov/yellowmoon/commit/59a25da) | dng_validate passes locally; dngfit and the DNG gates are in the M1-15 and M3-12 rows above |
 | M1-12 CPU raw processing R1–R9 | [d232c3c](https://github.com/ngriaznov/yellowmoon/commit/d232c3c) | lens maths corrected against darktable-cli |
 | M1-11 CPU ACES 2 | [f0f40a3](https://github.com/ngriaznov/yellowmoon/commit/f0f40a3) | |
 | M1-01, M1-09/M1-10 CPU, C11, C13 (ym-color core) | [36515b2](https://github.com/ngriaznov/yellowmoon/commit/36515b2) | |
