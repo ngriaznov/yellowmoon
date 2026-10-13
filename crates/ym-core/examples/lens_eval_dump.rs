@@ -5,10 +5,10 @@
 //! committed); not part of the product.
 //!
 //! ```text
-//! cargo run -p ym-core --example lens_eval_dump -- <file.ARW> <out-dir> [adaptive|menon|lmmse|bilinear] [--ca-scale A]
+//! cargo run -p ym-core --example lens_eval_dump -- <file.ARW> <out-dir> [adaptive|menon|lmmse|bilinear] [--r9] [--ca-scale A]
 //! ```
 //!
-//! Writes `<out-dir>/<stem>.<method>.{demosaic,r9,r9noca}.f32`: `u32` width, `u32` height, then the
+//! Writes `<out-dir>/<stem>.<method>.demosaic.f32` and, with `--r9`, `.r9.f32` and `.r9noca.f32`: `u32` width, `u32` height, then the
 //! red, green and blue planes as little-endian `f32`. The balance `g0` is the as-shot one (SR2
 //! 0x7313) and the noise model a flat guess: only the CA the stages leave matters here. With
 //! `--ca-scale A` every CA knot is multiplied by `A` before R9 (a sensitivity check of the table's
@@ -30,7 +30,63 @@ fn write_f32(path: &PathBuf, img: &RgbImage) {
     let mut f = std::io::BufWriter::new(std::fs::File::create(path).expect("create output"));
     f.write_all(&(img.width as u32).to_le_bytes()).expect("write");
     f.write_all(&(img.height as u32).to_le_bytes()).expect("write");
-    f.write_all(bytemuck::cast_slice(&img.data)).expect("write");
+    let bytes: Vec<u8> = img.data.iter().flat_map(|v| v.to_le_bytes()).collect();
+    f.write_all(&bytes).expect("write");
+}
+
+
+/// Catmull-Rom weights for the fractional position `t` between the middle two of four taps.
+fn catmull_rom(t: f64) -> [f64; 4] {
+    let t2 = t * t;
+    let t3 = t2 * t;
+    [
+        0.5 * (-t3 + 2.0 * t2 - t),
+        0.5 * (3.0 * t3 - 5.0 * t2 + 2.0),
+        0.5 * (-3.0 * t3 + 4.0 * t2 + t),
+        0.5 * (t3 - t2),
+    ]
+}
+
+/// Prototype of a mosaic-level CA correction (evaluation only): every red and blue photosite takes
+/// the value its colour has at the position the CA curves say its feature sits at, interpolated
+/// (Catmull-Rom) from the sites of its own colour. Green is the reference and is not touched.
+/// Whole-frame mosaics with an RGGB pattern at (0, 0).
+fn correct_mosaic_ca(m: &mut ym_gpu::cpu::Mosaic, curves: &ym_gpu::cpu::demosaic::CaCurves) {
+    let (w, h) = (m.width, m.height);
+    let src = m.data.clone();
+    for (colour, (ox, oy), curve) in [
+        (0usize, (0usize, 0usize), &curves.red),
+        (2usize, (1usize, 1usize), &curves.blue),
+    ] {
+        let _ = colour;
+        let (nw, nh) = ((w - ox).div_ceil(2), (h - oy).div_ceil(2));
+        for y in (oy..h).step_by(2) {
+            for x in (ox..w).step_by(2) {
+                let (px, py) = (x as f64 + 0.5, y as f64 + 0.5);
+                let (dx, dy) = (px - curves.centre_x, py - curves.centre_y);
+                let r = dx.hypot(dy);
+                if r < 1e-9 {
+                    continue;
+                }
+                let s = curve.shift_at(r);
+                let (qx, qy) = (px + s * dx / r, py + s * dy / r);
+                // The colour's own lattice: site i of the lattice is the pixel `ox + 2 i`.
+                let fx = (qx - 0.5 - ox as f64) / 2.0;
+                let fy = (qy - 0.5 - oy as f64) / 2.0;
+                let (ix, iy) = (fx.floor(), fy.floor());
+                let (wx, wy) = (catmull_rom(fx - ix), catmull_rom(fy - iy));
+                let mut acc = 0.0;
+                for (j, wyj) in wy.iter().enumerate() {
+                    let yy = (iy as isize + j as isize - 1).clamp(0, nh as isize - 1) as usize;
+                    for (i, wxi) in wx.iter().enumerate() {
+                        let xx = (ix as isize + i as isize - 1).clamp(0, nw as isize - 1) as usize;
+                        acc += wxi * wyj * f64::from(src[(oy + 2 * yy) * w + ox + 2 * xx]);
+                    }
+                }
+                m.data[y * w + x] = acc as f32;
+            }
+        }
+    }
 }
 
 fn main() {
@@ -39,12 +95,16 @@ fn main() {
     let out_dir = PathBuf::from(args.next().expect("an output directory"));
     let mut method_name = "adaptive".to_owned();
     let mut ca_scale = 1.0f64;
+    let mut with_r9 = false;
     let rest: Vec<String> = args.collect();
     let mut i = 0;
     while i < rest.len() {
         if rest[i] == "--ca-scale" {
             ca_scale = rest[i + 1].parse().expect("a number");
             i += 2;
+        } else if rest[i] == "--r9" {
+            with_r9 = true;
+            i += 1;
         } else {
             method_name.clone_from(&rest[i]);
             i += 1;
@@ -117,6 +177,13 @@ fn main() {
     };
     let crop = plan.lens.as_ref().map(LensGeometry::crop);
     if let Some(crop) = crop {
+        let json = format!(
+            "{{\"frame\":[{fw},{fh}],\"crop\":[{},{},{},{}]}}\n",
+            crop.x, crop.y, crop.w, crop.h
+        );
+        std::fs::write(out_dir.join(format!("{stem}.{method_name}.json")), json).expect("write");
+    }
+    if let Some(crop) = crop.filter(|_| with_r9) {
         let geo = LensGeometry::new(fw, fh, &tags, LensSwitches::default())
             .expect("lens")
             .with_crop(crop);
@@ -136,11 +203,30 @@ fn main() {
         let r9n =
             resample::resample_lens(&img, &no_ca, Rect::new(0, 0, crop.w, crop.h)).expect("R9");
         write_f32(&out_dir.join(format!("{stem}.{method_name}.r9noca.f32")), &r9n);
+        if let Ok(Some(curves)) = LensGeometry::new(fw, fh, &tags, LensSwitches::default())
+            .expect("lens")
+            .ca_curves()
+        {
+            let mut mc = m.clone();
+            correct_mosaic_ca(&mut mc, &curves);
+            let img_mc = demosaic::demosaic_whole_with(
+                &mc,
+                method,
+                &DemosaicInputs {
+                    gains: g0,
+                    noise: NoiseDn::from_model(&params.noise),
+                    ca: None,
+                },
+            );
+            let r9m = resample::resample_lens(&img_mc, &no_ca, Rect::new(0, 0, crop.w, crop.h))
+                .expect("R9");
+            write_f32(&out_dir.join(format!("{stem}.{method_name}.r9mosaic.f32")), &r9m);
+        }
         println!(
             "{stem}: frame {fw}x{fh}, crop {}x{} at {},{}",
             crop.w, crop.h, crop.x, crop.y
         );
-    } else {
+    } else if crop.is_none() {
         println!("{stem}: frame {fw}x{fh}, no lens geometry");
     }
 }

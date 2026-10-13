@@ -601,3 +601,501 @@ fn lateral_ca_matches_darktable() {
         "{worst:?} px (docs/13: 0.2 px)"
     );
 }
+
+// ---------------------------------------------------------------------------------------------
+// Lateral CA corrected on the mosaic (stage R5b) against R9 after a green-guided demosaic
+// ---------------------------------------------------------------------------------------------
+
+mod mosaic_ca {
+    use ym_gpu::cpu::demosaic::{CaCurves, DemosaicInputs, Method, demosaic_whole_with};
+    use ym_gpu::cpu::lens::{
+        LensGeometry, LensSwitches, LensTags, correct_mosaic_ca, mosaic_ca_halo_px,
+    };
+    use ym_gpu::cpu::metrics::{CaResidualOptions, lateral_ca_residual};
+    use ym_gpu::cpu::resample::{resample_lens, sample_catmull_rom};
+    use ym_gpu::cpu::synth;
+    use ym_gpu::cpu::tiling::Rect;
+    use ym_gpu::cpu::{Cfa, Mosaic};
+
+    /// A frame of `w x h` with a lateral CA of red `+corner` px and blue `-0.8 corner` px at the
+    /// corner (quadratic in the radius) and, optionally, 1.5% of barrel distortion.
+    fn tags(w: usize, h: usize, corner_px: f64, distortion: bool) -> LensTags {
+        let hd = 0.5 * (w as f64).hypot(h as f64);
+        let n = 8usize;
+        let rho = |j: usize| (j as f64 + 0.5) / (n as f64 - 1.0);
+        let knot = |amount_px: f64, j: usize| -> i16 {
+            (amount_px / hd * rho(j) * rho(j) * 2f64.powi(21)).round() as i16
+        };
+        let mut ca: Vec<i16> = (0..n).map(|j| knot(corner_px, j)).collect();
+        ca.extend((0..n).map(|j| knot(-0.8 * corner_px, j)));
+        let distortion = if distortion {
+            (0..n)
+                .map(|j| (0.015 * rho(j) * rho(j) * 2f64.powi(14)).round() as i16)
+                .collect()
+        } else {
+            vec![]
+        };
+        LensTags {
+            vignetting: vec![],
+            ca,
+            distortion,
+        }
+    }
+
+    /// A smooth scene with a wavelength of about 60 px (a gradient of 0.02 per pixel): red and blue
+    /// displaced by a few pixels differ from it by several per cent, and the Catmull-Rom
+    /// interpolation of a lattice with a step of 2 px is accurate to 1e-4.
+    fn smooth(x: f64, y: f64) -> f32 {
+        (0.5 + 0.22 * (0.1 * x + 0.04 * y).sin() + 0.18 * (0.05 * x - 0.09 * y + 1.0).sin()) as f32
+    }
+
+    /// A mosaic of the smooth scene in which red and blue show the scene displaced by the curves:
+    /// the red feature that green shows at radius `rho` sits at `rho + shift(rho)`, so the
+    /// photosite at radius `r` holds the scene at the radius `rho` with `rho + shift(rho) = r`.
+    /// This is what the lens makes.
+    fn lens_mosaic(w: usize, h: usize, cfa: Cfa, curves: &CaCurves) -> Mosaic {
+        let mut m = Mosaic::new(w, h, cfa);
+        for y in 0..h {
+            for x in 0..w {
+                let (px, py) = (x as f64 + 0.5, y as f64 + 0.5);
+                let (dx, dy) = (px - curves.centre_x, py - curves.centre_y);
+                let r = dx.hypot(dy).max(1e-9);
+                let curve = match cfa.color_at(x, y) {
+                    ym_gpu::cpu::CfaColor::Red => Some(&curves.red),
+                    ym_gpu::cpu::CfaColor::Blue => Some(&curves.blue),
+                    ym_gpu::cpu::CfaColor::Green => None,
+                };
+                let rho = curve.map_or(r, |c| {
+                    let mut rho = r;
+                    for _ in 0..12 {
+                        rho = r - c.shift_at(rho);
+                    }
+                    rho
+                });
+                m.data[y * w + x] = smooth(
+                    curves.centre_x + dx * rho / r,
+                    curves.centre_y + dy * rho / r,
+                );
+            }
+        }
+        m
+    }
+
+    #[test]
+    fn red_and_blue_photosites_come_back_to_where_green_has_the_scene() {
+        let (w, h) = (300usize, 200usize);
+        let geo = LensGeometry::new(w, h, &tags(w, h, 3.0, true), LensSwitches::default())
+            .expect("lens");
+        let curves = geo.ca_curves().expect("curves").expect("the table has CA");
+        assert!(curves.misregistration_px(0.5 * (w as f64).hypot(h as f64)) > 4.0);
+        for cfa in Cfa::ALL {
+            let mut m = lens_mosaic(w, h, cfa, &curves);
+            let before = m.clone();
+            correct_mosaic_ca(&mut m, &curves).expect("correct");
+            let (mut worst_after, mut worst_before) = (0.0f32, 0.0f32);
+            for y in 12..h - 12 {
+                for x in 12..w - 12 {
+                    let i = y * w + x;
+                    if cfa.color_at(x, y) == ym_gpu::cpu::CfaColor::Green {
+                        assert_eq!(m.data[i].to_bits(), before.data[i].to_bits(), "green moved");
+                        continue;
+                    }
+                    let truth = smooth(x as f64 + 0.5, y as f64 + 0.5);
+                    worst_after = worst_after.max((m.data[i] - truth).abs());
+                    worst_before = worst_before.max((before.data[i] - truth).abs());
+                }
+            }
+            assert!(worst_before > 0.04, "the lens moved nothing: {worst_before}");
+            assert!(
+                worst_after < 2.0e-3,
+                "{cfa:?}: red and blue are {worst_after} off the scene after the correction ({worst_before} before)"
+            );
+        }
+    }
+
+    #[test]
+    fn a_tile_with_its_halo_gives_the_whole_frame_result_bit_for_bit() {
+        let (w, h) = (240usize, 160usize);
+        let geo = LensGeometry::new(w, h, &tags(w, h, 4.0, false), LensSwitches::default())
+            .expect("lens");
+        let curves = geo.ca_curves().expect("curves").expect("CA");
+        let halo = mosaic_ca_halo_px(&curves);
+        assert_eq!(halo % 2, 0, "tiles stay on the 2 x 2 pattern");
+        assert!(halo >= 6 + 4, "a 4 px shift needs at least that much context: {halo}");
+        let mut whole = lens_mosaic(w, h, Cfa::RGGB, &curves);
+        let source = whole.clone();
+        correct_mosaic_ca(&mut whole, &curves).expect("whole");
+        for core in [
+            Rect::new(100, 60, 40, 30),
+            Rect::new(0, 0, 50, 50),
+            Rect::new(190, 110, 50, 50),
+            Rect::new(1, 1, 37, 41),
+        ] {
+            let x0 = core.x.saturating_sub(halo) & !1;
+            let y0 = core.y.saturating_sub(halo) & !1;
+            let x1 = (core.x1() + halo).min(w);
+            let y1 = (core.y1() + halo).min(h);
+            let region = Rect::new(x0, y0, x1 - x0, y1 - y0);
+            let mut tile = source.extract(region);
+            correct_mosaic_ca(&mut tile, &curves).expect("tile");
+            let rel = core.relative_to(&region);
+            let tile_core = tile.extract(rel);
+            let want = whole.extract(core);
+            let a: Vec<u32> = tile_core.data.iter().map(|v| v.to_bits()).collect();
+            let b: Vec<u32> = want.data.iter().map(|v| v.to_bits()).collect();
+            assert_eq!(a, b, "tile {core:?} differs from the whole frame");
+        }
+    }
+
+    #[test]
+    fn the_stage_does_not_depend_on_the_thread_count() {
+        let (w, h) = (200usize, 120usize);
+        let geo = LensGeometry::new(w, h, &tags(w, h, 3.0, true), LensSwitches::default())
+            .expect("lens");
+        let curves = geo.ca_curves().expect("curves").expect("CA");
+        let source = lens_mosaic(w, h, Cfa::RGGB, &curves);
+        let run = |threads: usize| {
+            let pool = rayon_pool(threads);
+            let mut m = source.clone();
+            pool.install(|| correct_mosaic_ca(&mut m, &curves).expect("correct"));
+            m.data.iter().map(|v| v.to_bits()).collect::<Vec<u32>>()
+        };
+        assert_eq!(run(1), run(4));
+    }
+
+    fn rayon_pool(threads: usize) -> rayon::ThreadPool {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .expect("pool")
+    }
+
+    #[test]
+    fn a_geometry_with_ca_on_the_mosaic_resamples_the_distortion_alone() {
+        let (w, h) = (300usize, 200usize);
+        let full_tags = tags(w, h, 3.0, true);
+        let full = LensGeometry::new(w, h, &full_tags, LensSwitches::default()).expect("lens");
+        let crop = full.auto_crop();
+        let full = full.with_crop(crop);
+        let moved = full.clone().with_ca_on_mosaic();
+        assert!(moved.ca_on_mosaic() && !full.ca_on_mosaic());
+        assert_eq!(moved.crop(), crop, "the crop is the one of the full geometry");
+        assert_eq!(moved.output_size(), full.output_size());
+        let distortion_only = LensGeometry::new(
+            w,
+            h,
+            &full_tags,
+            LensSwitches {
+                lens_corrections: true,
+                chromatic_aberration: false,
+            },
+        )
+        .expect("lens");
+        for &(x, y) in &[(10.5, 7.5), (150.5, 100.5), (290.5, 190.5), (40.5, 180.5)] {
+            let p = moved.source_positions(x, y);
+            let q = distortion_only.source_positions(x, y);
+            assert_eq!(p, q, "R9 of the moved geometry is the distortion alone at ({x}, {y})");
+            assert_eq!(p[0], p[1]);
+            assert_eq!(p[2], p[1]);
+        }
+        // The curves are the same, and the geometry hands them to the chain only when moved.
+        assert_eq!(moved.mosaic_ca_curves(), full.ca_curves().expect("curves"));
+        assert!(full.mosaic_ca_curves().is_none());
+        // Without CA there is nothing to move; with CA but no distortion R9 becomes the identity.
+        let none = LensGeometry::new(
+            w,
+            h,
+            &LensTags {
+                ca: vec![],
+                ..full_tags.clone()
+            },
+            LensSwitches::default(),
+        )
+        .expect("lens");
+        assert!(!none.clone().with_ca_on_mosaic().ca_on_mosaic());
+        let ca_only = LensGeometry::new(
+            w,
+            h,
+            &LensTags {
+                distortion: vec![],
+                ..full_tags
+            },
+            LensSwitches::default(),
+        )
+        .expect("lens");
+        assert!(!ca_only.is_identity());
+        let ca_only = ca_only.with_auto_crop().with_ca_on_mosaic();
+        assert!(ca_only.is_identity() && ca_only.ca_on_mosaic());
+    }
+
+    /// The mosaic a lens with `geo` makes of a natural scene (luma): the site of colour `c` at
+    /// source position `q` holds the scene at the output position `p` with
+    /// `source_position(c, p) = q`.
+    fn consistent_mosaic(w: usize, h: usize, geo: &LensGeometry, seed: u64) -> Mosaic {
+        let rgb = synth::natural(w, h, seed);
+        let scene: Vec<f32> = (0..w * h)
+            .map(|i| 0.3 * rgb.plane(0)[i] + 0.55 * rgb.plane(1)[i] + 0.15 * rgb.plane(2)[i])
+            .collect();
+        let cfa = Cfa::RGGB;
+        let mut m = Mosaic::new(w, h, cfa);
+        for y in 0..h {
+            for x in 0..w {
+                let c = cfa.color_at(x, y).plane();
+                let q = (x as f64 + 0.5, y as f64 + 0.5);
+                let mut p = q;
+                for _ in 0..8 {
+                    let s = geo.source_position(c, p.0, p.1);
+                    p = (p.0 + (q.0 - s.0), p.1 + (q.1 - s.1));
+                }
+                m.data[y * w + x] = sample_catmull_rom(&scene, w, h, p.0, p.1).clamp(0.0, 1.0);
+            }
+        }
+        m
+    }
+
+    /// RMS (px) of red and blue against green left in `rgb` over the patches that count.
+    fn residual(
+        rgb: &ym_gpu::cpu::RgbImage,
+        centre: (f64, f64),
+        hd: f64,
+    ) -> (f64, f64, usize) {
+        let opts = CaResidualOptions {
+            patch_px: 32,
+            stride_px: 16,
+            min_radius: 0.3,
+            band_edges: vec![0.6, 0.8, 1.0],
+            ..CaResidualOptions::default()
+        };
+        let r = lateral_ca_residual(rgb, centre, hd, &opts);
+        (r.red_rms_px, r.blue_rms_px, r.patches)
+    }
+
+    /// Demosaic then R9 with the CA (what the chain did) against CA on the mosaic then R9 with the
+    /// distortion alone, on a mosaic that is consistent with its own tables (so the right answer
+    /// has no fringes at all).
+    fn compare(method: Method, seed: u64) -> ((f64, f64), (f64, f64), (f64, f64)) {
+        let (w, h) = (420usize, 280usize);
+        let hd = 0.5 * (w as f64).hypot(h as f64);
+        let geo_full = LensGeometry::new(w, h, &tags(w, h, 3.0, true), LensSwitches::default())
+            .expect("lens");
+        let crop = geo_full.auto_crop();
+        let geo_full = geo_full.with_crop(crop);
+        let m = consistent_mosaic(w, h, &geo_full, seed);
+        let inputs = DemosaicInputs::UNIT;
+        let img = demosaic_whole_with(&m, method, &inputs);
+        let out = Rect::new(0, 0, crop.w, crop.h);
+        let centre = (w as f64 / 2.0 - crop.x as f64, h as f64 / 2.0 - crop.y as f64);
+        // (a) the old order
+        let a = resample_lens(&img, &geo_full, out).expect("R9");
+        // (b) CA on the mosaic, R9 with the distortion alone
+        let curves = geo_full.ca_curves().expect("curves").expect("CA");
+        let mut m2 = m.clone();
+        correct_mosaic_ca(&mut m2, &curves).expect("correct");
+        let img2 = demosaic_whole_with(&m2, method, &inputs);
+        let geo_mosaic = geo_full.clone().with_ca_on_mosaic();
+        let b = resample_lens(&img2, &geo_mosaic, out).expect("R9");
+        // (c) no CA correction at all
+        let no_ca = LensGeometry::new(
+            w,
+            h,
+            &tags(w, h, 3.0, true),
+            LensSwitches {
+                lens_corrections: true,
+                chromatic_aberration: false,
+            },
+        )
+        .expect("lens")
+        .with_crop(crop);
+        let c = resample_lens(&img, &no_ca, out).expect("R9");
+        let (ar, ab, na) = residual(&a, centre, hd);
+        let (br, bb, nb) = residual(&b, centre, hd);
+        let (cr, cb, nc) = residual(&c, centre, hd);
+        assert!(na > 30 && nb > 30 && nc > 30, "patches {na} {nb} {nc}");
+        ((ar, ab), (br, bb), (cr, cb))
+    }
+
+    #[test]
+    fn on_the_mosaic_the_ca_is_corrected_where_a_green_guided_demosaic_would_over_correct_it() {
+        for method in [Method::Menon, Method::Lmmse] {
+            let (old, mosaic, none) = compare(method, 11);
+            eprintln!("{method:?}: R9 after demosaic {old:?}, on the mosaic {mosaic:?}, no CA correction {none:?}");
+            // The new order leaves less CA than the old one and than none at all, red and blue.
+            assert!(mosaic.0 < 0.7 * old.0 && mosaic.1 < 0.7 * old.1, "{method:?}: {mosaic:?} vs {old:?}");
+            assert!(mosaic.0 < 0.5 * none.0 && mosaic.1 < 0.5 * none.1, "{method:?}: {mosaic:?} vs {none:?}");
+        }
+    }
+
+    #[test]
+    fn with_a_demosaic_that_does_not_follow_green_the_order_makes_no_difference_that_matters() {
+        // Bilinear interpolates each colour from its own photosites, so R9 after it is right too:
+        // the mosaic correction must not be worse (it resamples the same lattice).
+        let (old, mosaic, none) = compare(Method::Bilinear, 12);
+        eprintln!("Bilinear: R9 after demosaic {old:?}, on the mosaic {mosaic:?}, no CA correction {none:?}");
+        assert!(mosaic.0 < 0.5 * none.0 && mosaic.1 < 0.5 * none.1, "{mosaic:?} vs {none:?}");
+        assert!(mosaic.0 < old.0 + 0.05 && mosaic.1 < old.1 + 0.05, "{mosaic:?} vs {old:?}");
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // The chain
+    // -----------------------------------------------------------------------------------------
+
+    use ym_gpu::cpu::chain::{Chain, RawFrame};
+    use ym_gpu::cpu::detail::NoiseReduction;
+    use ym_gpu::cpu::normalize::{self, Levels};
+    use ym_gpu::cpu::tiling::{Stage, tile_grid};
+    use ym_gpu::cpu::{NoiseDn, RgbImage, gains};
+
+    const GAINS: [f32; 3] = [2.0, 1.0, 1.6];
+
+    fn chain_with(method: Method, lens: Option<LensGeometry>) -> Chain {
+        Chain {
+            levels: Levels {
+                black: [512.0, 514.0, 513.0, 511.0],
+                white: [16000.0; 4],
+            },
+            vignette: None,
+            gains: GAINS,
+            highlight_recovery: false,
+            method,
+            denoise: None,
+            noise_reduction: NoiseReduction {
+                luminance: 0.0,
+                color: 0.0,
+                detail: 0.0,
+            },
+            iso: 100.0,
+            sigma: 0.01,
+            sigma_map: None,
+            noise: Some(NoiseDn::new(1.311, 6.56)),
+            sharpen: None,
+            lens,
+        }
+    }
+
+    fn raw_data(w: usize, h: usize, seed: u64) -> Vec<u16> {
+        let img = synth::natural(w, h, seed);
+        let m = synth::mosaic_from_rgb(&img, Cfa::RGGB);
+        m.data
+            .iter()
+            .map(|&v| (512.0 + v * 15488.0).clamp(0.0, 16000.0) as u16)
+            .collect()
+    }
+
+    fn bits(img: &RgbImage) -> Vec<u32> {
+        img.data.iter().map(|v| v.to_bits()).collect()
+    }
+
+    /// R1, R4, R5b (when `curves`), the demosaic and R9 by hand over the whole frame.
+    fn by_hand(
+        chain: &Chain,
+        raw: &RawFrame<'_>,
+        curves: Option<&CaCurves>,
+        geo: &LensGeometry,
+    ) -> RgbImage {
+        let (mut m, _) = normalize::normalize(
+            raw.data,
+            raw.width,
+            raw.height,
+            raw.cfa,
+            &chain.levels,
+            None,
+        )
+        .expect("normalize");
+        gains::apply_gains(&mut m, chain.gains);
+        if let Some(c) = curves {
+            correct_mosaic_ca(&mut m, c).expect("R5b");
+        }
+        let img = demosaic_whole_with(
+            &m,
+            chain.method,
+            &DemosaicInputs {
+                gains: chain.gains,
+                noise: chain.noise.unwrap_or(NoiseDn::ZERO),
+                ca: None,
+            },
+        );
+        let (ow, oh) = geo.output_size();
+        resample_lens(&img, geo, Rect::whole(ow, oh)).expect("R9")
+    }
+
+    #[test]
+    fn the_chain_corrects_the_ca_on_the_mosaic_when_the_lens_takes_it_out_of_r9() {
+        let (w, h) = (210usize, 140usize);
+        let lens_tags = tags(w, h, 4.0, true);
+        let full = LensGeometry::new(w, h, &lens_tags, LensSwitches::default())
+            .expect("lens")
+            .with_auto_crop();
+        let moved = full.clone().with_ca_on_mosaic();
+        let data = raw_data(w, h, 21);
+        let raw = RawFrame {
+            width: w,
+            height: h,
+            cfa: Cfa::RGGB,
+            data: &data,
+            qstep: None,
+        };
+        let curves = full.ca_curves().expect("curves").expect("CA");
+        for method in [Method::Menon, Method::AdaptiveRatio] {
+            // CA on the mosaic: R5b is in the stage list and the output is R1, R4, R5b, R6, R9.
+            let chain = chain_with(method, Some(moved.clone()));
+            assert!(
+                chain
+                    .stages()
+                    .iter()
+                    .any(|s| matches!(s, Stage::MosaicCa { .. })),
+                "{method:?}: no R5b stage"
+            );
+            let (ow, oh) = chain.output_size(w, h);
+            let got = chain.run(&raw).expect("run");
+            let want = by_hand(&chain, &raw, Some(&curves), &moved);
+            assert_eq!(bits(&got), bits(&want), "{method:?}: the chain is not R1, R4, R5b, R6, R9");
+            // Tiles reproduce the whole frame (the halo of R5b is part of the bookkeeping).
+            let prepared = chain.prepare(&raw).expect("prepare");
+            let mut tiled = RgbImage::new(ow, oh);
+            for core in tile_grid(ow, oh, 61, 47, 1) {
+                let t = chain.run_tile(&raw, &prepared, core).expect("tile");
+                tiled.paste(&t, Rect::whole(core.w, core.h), core.x, core.y);
+            }
+            assert!(
+                got.max_abs_diff(&tiled) <= 1e-4,
+                "{method:?}: tiles differ by {}",
+                got.max_abs_diff(&tiled)
+            );
+            // CA left in R9: no R5b stage, and the output is the old R1, R4, R6, R9.
+            let old = chain_with(method, Some(full.clone()));
+            assert!(
+                !old.stages()
+                    .iter()
+                    .any(|s| matches!(s, Stage::MosaicCa { .. })),
+                "{method:?}: a lens that keeps its CA in R9 has no R5b stage"
+            );
+        }
+        // The default of the chain is unchanged for the lens of `LensGeometry::new`.
+        let old = chain_with(Method::Menon, Some(full.clone()));
+        assert_eq!(
+            bits(&old.run(&raw).expect("run")),
+            bits(&by_hand(&old, &raw, None, &full)),
+            "R9 with the CA, as before"
+        );
+        // `decode.chromatic_aberration` off: no curves, so nothing to move and no R5b.
+        let off = LensGeometry::new(
+            w,
+            h,
+            &lens_tags,
+            LensSwitches {
+                lens_corrections: true,
+                chromatic_aberration: false,
+            },
+        )
+        .expect("lens")
+        .with_auto_crop()
+        .with_ca_on_mosaic();
+        assert!(!off.ca_on_mosaic());
+        assert!(
+            !chain_with(Method::Menon, Some(off))
+                .stages()
+                .iter()
+                .any(|s| matches!(s, Stage::MosaicCa { .. }))
+        );
+    }
+}

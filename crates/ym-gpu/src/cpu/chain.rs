@@ -7,7 +7,8 @@
 //! what the next stage needs, and returns the core. A whole-frame run is one tile.
 //!
 //! Stage order: R1 normalise, R3 vignetting, R4 gains, R5 highlights (with chroma offsets
-//! computed once per frame by [`Chain::prepare`]), R6 demosaic then the light bilateral denoise,
+//! computed once per frame by [`Chain::prepare`]), R5b lateral CA on the mosaic (only when the lens
+//! takes its CA out of R9, [`LensGeometry::with_ca_on_mosaic`]), R6 demosaic then the light bilateral denoise,
 //! R7 colour guided filter and detail re-injection, R8 capture sharpening (Richardson-Lucy or
 //! diffraction deconvolution, [`CaptureSharpen`]), R9 lens resample. The
 //! neural path replaces R6 and the luminance part of R7 (`ym-ml`); everything else is shared.
@@ -22,7 +23,7 @@ use super::denoise::{self, BilateralParams};
 use super::detail::{self, NoiseReduction};
 use super::gains;
 use super::highlights::{self, ChromaOffsets};
-use super::lens::LensGeometry;
+use super::lens::{self, LensGeometry};
 use super::normalize::{self, Levels};
 use super::sharpen::diffraction::{DiffractionPlan, SPEC_LUMA};
 use super::sharpen::{self, CaptureSharpen};
@@ -108,6 +109,11 @@ impl Chain {
         if self.highlight_recovery {
             s.push(Stage::Highlights);
         }
+        if let Some(curves) = self.mosaic_ca_curves() {
+            s.push(Stage::MosaicCa {
+                halo_px: lens::mosaic_ca_halo_px(&curves),
+            });
+        }
         s.push(Stage::Demosaic(self.method));
         if let Some(d) = &self.denoise {
             s.push(Stage::Denoise {
@@ -172,7 +178,21 @@ impl Chain {
         if self.method != Method::AdaptiveRatio {
             return None;
         }
-        self.lens.as_ref()?.ca_curves().ok().flatten()
+        let lens = self.lens.as_ref()?;
+        // A lens whose CA is corrected on the mosaic (R5b) leaves nothing for the demosaic to
+        // allow for.
+        if lens.ca_on_mosaic() {
+            return None;
+        }
+        lens.ca_curves().ok().flatten()
+    }
+
+    /// The curves of R5b, the lateral CA corrected on the mosaic before the demosaic, when the lens
+    /// of this chain takes its CA out of R9 ([`LensGeometry::with_ca_on_mosaic`]); `None` for a
+    /// chain without a lens or whose lens leaves its CA to R9. They belong to the frame, so every
+    /// tile of a frame sees the same ones.
+    fn mosaic_ca_curves(&self) -> Option<CaCurves> {
+        self.lens.as_ref()?.mosaic_ca_curves()
     }
 
     /// R1 for `rect` of the frame, then R3 and R4 (all pointwise).
@@ -328,6 +348,7 @@ impl Chain {
             need[i] = stages[i].input_rect(need[i + 1], frame);
         }
 
+        let mosaic_ca = self.mosaic_ca_curves();
         let mut cur = need[0];
         let (mut mosaic, mut mask) = self.mosaic_of(raw, cur, false)?; // R1 (+ R3 when the profile is set)
         let mut rgb: Option<RgbImage> = None;
@@ -343,6 +364,12 @@ impl Chain {
                 Stage::Gains => gains::apply_gains(&mut mosaic, self.gains),
                 Stage::Highlights => {
                     highlights::apply_offsets(&mut mosaic, &mask, &prepared.offsets)?
+                }
+                Stage::MosaicCa { .. } => {
+                    // R5b: the stage is on the list only when the curves exist.
+                    if let Some(curves) = &mosaic_ca {
+                        lens::correct_mosaic_ca(&mut mosaic, curves)?;
+                    }
                 }
                 Stage::Demosaic(method) => {
                     // R6 hands the balanced mosaic of R4/R5 to every method; the adaptive ratio

@@ -23,9 +23,12 @@
 //!
 //! The factors come from public reverse-engineering, not a Sony document (`docs/05`).
 
+use rayon::prelude::*;
+
 use super::demosaic::{CaCurveError, CaCurves, RadialCurve};
+use super::resample::sample_catmull_rom;
 use super::spline::LinearKnots;
-use super::{CpuError, Placement, Rect};
+use super::{CfaColor, CpuError, Mosaic, Placement, Rect};
 
 /// Spacing in pixels of output radius between the knots of the curves
 /// [`LensGeometry::ca_curves`] samples (`docs/algorithms/01-adaptive-ratio-demosaic.md`
@@ -127,6 +130,9 @@ pub struct LensGeometry {
     distortion: Option<LinearKnots>,
     ca_red: Option<LinearKnots>,
     ca_blue: Option<LinearKnots>,
+    /// Whether the R9 resample applies the CA (the default) or the chain has already applied it to
+    /// the mosaic ([`LensGeometry::with_ca_on_mosaic`], [`correct_mosaic_ca`]).
+    ca_in_r9: bool,
     crop: Rect,
 }
 
@@ -180,6 +186,7 @@ impl LensGeometry {
             distortion,
             ca_red,
             ca_blue,
+            ca_in_r9: true,
             crop: Rect::whole(frame_w, frame_h),
         })
     }
@@ -192,13 +199,48 @@ impl LensGeometry {
             distortion: None,
             ca_red: None,
             ca_blue: None,
+            ca_in_r9: true,
             crop: Rect::whole(frame_w, frame_h),
         }
     }
 
-    /// Whether the geometry moves any pixel.
+    /// Whether the R9 resample of this geometry moves any pixel. With the CA moved to the mosaic
+    /// ([`with_ca_on_mosaic`](Self::with_ca_on_mosaic)) only the distortion counts.
     pub fn is_identity(&self) -> bool {
-        self.distortion.is_none() && self.ca_red.is_none()
+        self.distortion.is_none() && (self.ca_red.is_none() || !self.ca_in_r9)
+    }
+
+    /// Moves the lateral CA out of the R9 resample: the chain corrects it on the mosaic before the
+    /// demosaic ([`correct_mosaic_ca`]) and R9 then moves the three colours by the distortion
+    /// alone. Call it *after* [`with_auto_crop`](Self::with_auto_crop) so that the crop still
+    /// leaves out the output pixels whose red or blue source lies outside the frame (the crop and
+    /// the size of the output do not change). Has no effect on a geometry without usable CA
+    /// ([`ca_curves`](Self::ca_curves) is not `Ok(Some(_))`): the CA then stays where it is.
+    ///
+    /// Why: a green-guided demosaic pulls red and blue towards green, so about half of a lens's CA
+    /// is gone by the time R9 runs and the full table then over-corrects it (`docs/05` section R9,
+    /// "Real files"). On the mosaic the red and blue photosites are still where the lens put them.
+    pub fn with_ca_on_mosaic(mut self) -> LensGeometry {
+        if matches!(self.ca_curves(), Ok(Some(_))) {
+            self.ca_in_r9 = false;
+        }
+        self
+    }
+
+    /// Whether the CA of this geometry is corrected on the mosaic instead of in R9: the lens has CA
+    /// and [`with_ca_on_mosaic`](Self::with_ca_on_mosaic) took it out of the R9 resample.
+    pub fn ca_on_mosaic(&self) -> bool {
+        !self.ca_in_r9 && self.ca_red.is_some()
+    }
+
+    /// The curves of [`correct_mosaic_ca`] when this geometry corrects its CA on the mosaic, else
+    /// `None`.
+    pub fn mosaic_ca_curves(&self) -> Option<CaCurves> {
+        if self.ca_on_mosaic() {
+            self.ca_curves().ok().flatten()
+        } else {
+            None
+        }
     }
 
     /// Source frame width in pixels.
@@ -246,10 +288,12 @@ impl LensGeometry {
         let (dx, dy) = (px - cx, py - cy);
         let r = dx.hypot(dy) / place.half_diagonal();
         let mut scale = self.distortion.as_ref().map_or(1.0, |t| t.eval(r));
-        match c {
-            0 => scale *= self.ca_red.as_ref().map_or(1.0, |t| t.eval(r)),
-            2 => scale *= self.ca_blue.as_ref().map_or(1.0, |t| t.eval(r)),
-            _ => {}
+        if self.ca_in_r9 {
+            match c {
+                0 => scale *= self.ca_red.as_ref().map_or(1.0, |t| t.eval(r)),
+                2 => scale *= self.ca_blue.as_ref().map_or(1.0, |t| t.eval(r)),
+                _ => {}
+            }
         }
         (cx + dx * scale, cy + dy * scale)
     }
@@ -263,8 +307,14 @@ impl LensGeometry {
         let (dx, dy) = (px - cx, py - cy);
         let r = dx.hypot(dy) / place.half_diagonal();
         let f = self.distortion.as_ref().map_or(1.0, |t| t.eval(r));
-        let kr = self.ca_red.as_ref().map_or(1.0, |t| t.eval(r));
-        let kb = self.ca_blue.as_ref().map_or(1.0, |t| t.eval(r));
+        let (kr, kb) = if self.ca_in_r9 {
+            (
+                self.ca_red.as_ref().map_or(1.0, |t| t.eval(r)),
+                self.ca_blue.as_ref().map_or(1.0, |t| t.eval(r)),
+            )
+        } else {
+            (1.0, 1.0)
+        };
         [
             (cx + dx * f * kr, cy + dy * f * kr),
             (cx + dx * f, cy + dy * f),
@@ -459,6 +509,118 @@ impl LensGeometry {
         }
         worst
     }
+}
+
+/// The context, in pixels, that [`correct_mosaic_ca`] needs around a part of the mosaic: the
+/// largest shift of either colour, rounded up, plus the Catmull-Rom support of the lattice of one
+/// colour (two lattice steps, i.e. four pixels, on each side) and one more lattice step for the
+/// phase, made even so that tiles stay aligned to the 2 x 2 pattern.
+pub fn mosaic_ca_halo_px(curves: &CaCurves) -> usize {
+    let max_shift = curves
+        .red
+        .shift_px()
+        .iter()
+        .chain(curves.blue.shift_px())
+        .fold(0.0f64, |a, s| a.max(s.abs()));
+    let px = max_shift.ceil() as usize + 4 + 2;
+    px + (px % 2)
+}
+
+/// Lateral chromatic aberration corrected on the mosaic (stage R5b, `docs/05` section R9): every
+/// red and every blue photosite takes the value its colour has at the position where the lens put
+/// the feature that green shows at the photosite, interpolated (Catmull-Rom, the weights of R9)
+/// from the photosites of its own colour. Green is the reference and is not touched.
+///
+/// `curves` give, per colour, the shift (pixels, outward positive) of the colour's image against
+/// green at a *source* radius from the optical centre ([`LensGeometry::ca_curves`]; the centre is
+/// in frame pixels, and the position of `m` in the frame comes from its placement). A site at
+/// frame position `p` with radius `r` from the centre takes its colour from
+/// `p + shift(r) * (p - centre) / r`: the red (blue) feature that sits `shift` further out than the
+/// green one comes back to where green has it. Sites at the centre are left alone.
+///
+/// Red and blue are sparse (one photosite per 2 x 2 cell), so each colour is interpolated on its own
+/// lattice, never from green: nothing here can pull one colour towards another, which is the point
+/// (a demosaic that follows green's edges removes part of the CA by itself and a correction after
+/// it over-corrects). The price is that the resampled colour is a little smoother than the
+/// photosites it came from, which a colour-difference demosaic does not use for detail anyway.
+///
+/// `m` must contain the context [`mosaic_ca_halo_px`] asks for around the part the caller keeps;
+/// the values within that distance of the buffer's edge are not reliable (they read lattice sites
+/// beyond the buffer, which are replicated). A tile with the halo gives the whole-frame result for
+/// its core, bit for bit; the rows are independent, so the result does not depend on the thread
+/// count.
+///
+/// # Errors
+///
+/// [`CpuError::Mismatch`] when the pattern of `m` has no red or no blue photosite in its first 2 x 2
+/// cell.
+pub fn correct_mosaic_ca(m: &mut Mosaic, curves: &CaCurves) -> Result<(), CpuError> {
+    let (w, h) = (m.width, m.height);
+    if w == 0 || h == 0 {
+        return Ok(());
+    }
+    // The lattice of each colour: its phase in the buffer and its own plane.
+    struct Lattice<'a> {
+        ox: usize,
+        oy: usize,
+        nx: usize,
+        ny: usize,
+        plane: Vec<f32>,
+        curve: &'a RadialCurve,
+    }
+    let mut lattices: Vec<Lattice<'_>> = Vec::with_capacity(2);
+    for (colour, curve) in [(CfaColor::Red, &curves.red), (CfaColor::Blue, &curves.blue)] {
+        let phase = (0..2usize)
+            .flat_map(|dy| (0..2usize).map(move |dx| (dx, dy)))
+            .find(|&(dx, dy)| m.cfa.color_at(dx, dy) == colour);
+        let Some((ox, oy)) = phase else {
+            return Err(CpuError::Mismatch(format!(
+                "the colour filter pattern has no {colour:?} photosite"
+            )));
+        };
+        let (nx, ny) = ((w.saturating_sub(ox)).div_ceil(2), (h.saturating_sub(oy)).div_ceil(2));
+        if nx == 0 || ny == 0 {
+            continue;
+        }
+        let mut plane = Vec::with_capacity(nx * ny);
+        for j in 0..ny {
+            let row = &m.data[(oy + 2 * j) * w..(oy + 2 * j + 1) * w];
+            plane.extend((0..nx).map(|i| row[ox + 2 * i]));
+        }
+        lattices.push(Lattice {
+            ox,
+            oy,
+            nx,
+            ny,
+            plane,
+            curve,
+        });
+    }
+    let (x0, y0) = (m.place.x0 as f64, m.place.y0 as f64);
+    let (cx, cy) = (curves.centre_x, curves.centre_y);
+    m.data.par_chunks_mut(w).enumerate().for_each(|(y, row)| {
+        let Some(l) = lattices.iter().find(|l| y >= l.oy && (y - l.oy) % 2 == 0) else {
+            return;
+        };
+        let py = y0 + y as f64 + 0.5;
+        for x in (l.ox..w).step_by(2) {
+            let px = x0 + x as f64 + 0.5;
+            let (dx, dy) = (px - cx, py - cy);
+            let r = dx.hypot(dy);
+            if r < 1e-9 {
+                continue;
+            }
+            let s = l.curve.shift_at(r);
+            // The source position in buffer coordinates, then in the lattice's own plane, where
+            // site i sits at index i (centre i + 0.5 for `sample_catmull_rom`).
+            let bx = x as f64 + 0.5 + s * dx / r;
+            let by = y as f64 + 0.5 + s * dy / r;
+            let sx = (bx - 0.5 - l.ox as f64) / 2.0 + 0.5;
+            let sy = (by - 0.5 - l.oy as f64) / 2.0 + 0.5;
+            row[x] = sample_catmull_rom(&l.plane, l.nx, l.ny, sx, sy);
+        }
+    });
+    Ok(())
 }
 
 #[cfg(test)]

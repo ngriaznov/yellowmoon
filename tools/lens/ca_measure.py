@@ -206,6 +206,7 @@ def measure_rgb(
     max_se_px: float = 0.25,
     margin_px: int = 16,
     highpass_sigma_px: float = 5.0,
+    min_energy: float = 0.0,
 ) -> dict[str, list[BlockFit]]:
     """The same measurement on full `h x w x 3` planes (a render, a decoded JPEG).  The high-pass
     sigma is in the pixels of `rgb`."""
@@ -222,7 +223,7 @@ def measure_rgb(
             if (blk >= clip_level).any():
                 continue
             gwin = rgb[by - pad : by + block_px + pad, bx - pad : bx + block_px + pad, 1]
-            if np.ptp(gwin) < 1e-9:
+            if np.ptp(gwin) < 1e-9 or float(gwin.std()) < min_energy:
                 continue
             px = (xs0 + bx + 0.5).ravel().astype(np.float64)
             py = (ys0 + by + 0.5).ravel().astype(np.float64)

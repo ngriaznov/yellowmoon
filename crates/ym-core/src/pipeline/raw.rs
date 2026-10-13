@@ -625,9 +625,14 @@ impl RawPlan {
         let (lens, out_w, out_h) = if geometry.is_identity() {
             (None, w, h)
         } else {
+            // The crop is the one of the whole geometry (CA included); then the lateral CA moves
+            // to the mosaic (R5b), where red and blue are still where the lens put them: a
+            // green-guided demosaic pulls them towards green and R9 would over-correct what is left
+            // (`docs/05` R9, "Real files"). The reduced path (`lens_at(k)`) bins each colour on its
+            // own, which does not do that, and keeps the CA in its R9.
             let g = geometry.with_auto_crop();
             let (ow, oh) = g.output_size();
-            (Some(g), ow, oh)
+            (Some(g.with_ca_on_mosaic()), ow, oh)
         };
         let has_clipped = !frame.reduced && frame_has_clipped(frame, &levels);
         Ok(Self {

@@ -193,6 +193,12 @@ pub enum Stage<'a> {
     Gains,
     /// R5 highlight reconstruction (needs the global chroma offsets precomputed).
     Highlights,
+    /// R5b lateral CA corrected on the mosaic ([`super::lens::correct_mosaic_ca`]), with the
+    /// context [`super::lens::mosaic_ca_halo_px`] asks for.
+    MosaicCa {
+        /// Context needed on each side, in pixels (even).
+        halo_px: usize,
+    },
     /// R6 classical demosaic with the given method.
     Demosaic(super::demosaic::Method),
     /// R6 bilateral denoise of window radius `radius_px`.
@@ -233,6 +239,7 @@ impl Stage<'_> {
             // Exact need is 2 px (one superpixel) when the chroma offsets are precomputed; the
             // documented 4 px (two superpixels) also covers computing them from the tile.
             Stage::Highlights => 4,
+            Stage::MosaicCa { halo_px } => halo_px,
             Stage::Demosaic(m) => m.halo(),
             Stage::Denoise { radius_px } => radius_px,
             Stage::Detail {
@@ -259,6 +266,7 @@ impl Stage<'_> {
                 | Stage::Vignette
                 | Stage::Gains
                 | Stage::Highlights
+                | Stage::MosaicCa { .. }
                 | Stage::Demosaic(_)
         )
     }
