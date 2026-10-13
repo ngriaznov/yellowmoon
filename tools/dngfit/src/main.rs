@@ -15,7 +15,7 @@ use clap::{Parser, Subcommand};
 use dngfit::adobe::Adobe;
 use dngfit::check::{self, GateOptions, MEDIAN_LIMIT, Reprofile};
 use dngfit::fit::{self, FitConfig, SetResult};
-use dngfit::profile_file::ProfileFile;
+use dngfit::profile_file::{self, ProfileFile};
 use golden::manifest::{Manifest, SetChoice, select};
 use golden::ymrun::{YmBinary, find_ym, workspace_root};
 
@@ -242,7 +242,7 @@ fn run_fit(adobe: &Adobe, a: FitArgs) -> Result<ExitCode> {
         summary.clone(),
     );
     let out = a.out.unwrap_or_else(default_profile_path);
-    file.save(&out)?;
+    profile_file::save(&file, &out)?;
     eprintln!("wrote {}", out.display());
     if let Some(r) = &a.report {
         write_json(r, &summary)?;
@@ -252,7 +252,7 @@ fn run_fit(adobe: &Adobe, a: FitArgs) -> Result<ExitCode> {
 
 fn run_eval(adobe: &Adobe, a: EvalArgs) -> Result<ExitCode> {
     let path = a.profile.unwrap_or_else(default_profile_path);
-    let file = ProfileFile::load(&path)?;
+    let file = profile_file::load(&path)?;
     let scenes = a.scenes.or_else(default_scenes);
     let sets = fit::test_sets(scenes.as_deref());
     let results = fit::evaluate_sets(adobe, &file.to_profile(), file.fit_offset_ev, &sets)?;
@@ -324,9 +324,9 @@ fn run_gate(adobe: &Adobe, a: GateArgs) -> Result<ExitCode> {
     let reprofile = if a.as_written {
         Reprofile::Never
     } else if let Some(path) = &a.profile {
-        Reprofile::Always(ProfileFile::load(path)?)
+        Reprofile::Always(profile_file::load(path)?)
     } else {
-        Reprofile::IfIdentity(ProfileFile::load(&default_profile_path())?)
+        Reprofile::IfIdentity(profile_file::load(&default_profile_path())?)
     };
     let opts = GateOptions {
         ym: YmBinary {

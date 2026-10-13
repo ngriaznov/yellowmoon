@@ -27,9 +27,9 @@ x * 2^offset --ForwardMatrix1--> linear ProPhoto --> HSV --ProfileLookTable--> -
 1. **Scale.** The tone curve's input range is `[0, 1]` after the exposure gain, and ACES 2 reaches 94 % of display light
    only at a scene value of 16 (it reaches white asymptotically). The curve therefore covers scene values `0` to `x_min = 16`:
    `fit_offset_ev` is `-log2(x_min)` = -4, and the stored values are divided by `x_white`, with `BaselineExposure` =
-   `log2(x_white) + fit_offset_ev`. **`x_white` must be at least `x_min`** (the writer floors it at 1.0 today): for a
-   *negative* `BaselineExposure` the DNG SDK's renderer does not scale, it applies a highlight shoulder (linear below 0.25
-   of the range, then a quadratic ending at 1), so the same profile would render a photo with `x_white` 2 differently
+   `log2(x_white) + fit_offset_ev`. **`x_white` must be at least `x_min`** (the writer floors it at `2^-fit_offset_ev`,
+   `BaselineExposure::white_floor`): for a *negative* `BaselineExposure` the DNG SDK's renderer does not scale, it applies a
+   highlight shoulder (linear below 0.25 of the range, then a quadratic ending at 1), so the same profile would render a photo with `x_white` 2 differently
    from one with `x_white` 8. Measured with `b = -3` and an identity profile: scene 0.40 renders at 0.086 of display
    light instead of 0.050, and 0.84 at 0.654 instead of 0.105. With the floor, `BaselineExposure` is zero for nearly
    every photo and positive for the few whose 99.99th percentile is above 16.
@@ -53,9 +53,12 @@ x * 2^offset --ForwardMatrix1--> linear ProPhoto --> HSV --ProfileLookTable--> -
 4. **Report.** Four test sets that the fit does not use, rendered with `dng_validate` and compared with ACES 2 in CIEDE2000
    (printed, and kept in the `fit` object of the profile file).
 
-The profile file (`data/dng/profile.json`, schema in `src/profile_file.rs`) holds `fit_offset_ev`, `tone_curve`,
-`look_table` (`dims`, `encoding` 1, `data` as hue shift in degrees, saturation scale and value scale per entry, value-major
-then hue then saturation) and the provenance. `ym-export` embeds it (`docs/09`, As built, dngfit).
+The profile file (`data/dng/profile.json`) holds `fit_offset_ev`, `tone_curve`, `look_table` (`dims`, `encoding` 1,
+`data` as hue shift in degrees, saturation scale and value scale per entry, value-major then hue then saturation) and the
+provenance. Its schema, validation and text format live in `ym-export` (`ym_export::dng::fitted`, which also embeds the
+committed file with `include_str!` for `ym`); `src/profile_file.rs` re-exports them and adds `load` and `save`. `ym`
+therefore writes exactly this profile into every DNG (`docs/09`, As built, dngfit): run `dngfit fit` and commit the file,
+and the next build of `ym` carries it.
 
 ## Gates (`dngfit gate`, `tools/dng/run_gates.sh`)
 
@@ -64,15 +67,21 @@ For each golden file the real `ym` writes the DNG and the JPEG (quality 92, sRGB
 DNG's `Orientation`) must be within a median CIEDE2000 of 1.5 of our JPEG, **for every file**. `--png` adds the 16-bit PNG
 (no JPEG coding or dither), which shows what the profile alone costs.
 
-Until `ym-core` writes the fitted profile itself, `ym` writes the identity profile, so `dngfit gate` writes each DNG again:
-`reprofile` reads the pixels back, writes them with the product's DNG writer (`ym-export`), the fitted profile and the
-`x_white` floor, and renders that. The last rows of such a file are white pixels that set the writer's white level; they are
-left out of the comparison. The DNG `ym` really wrote (EXIF, XMP, orientation, crop) is validated too (`dng_validate -v`,
-no render), so the first gate is about the real export. Which DNGs are written again is decided per file by the DNG's
-`ProfileLookTableDims`: the identity profile has 2 x 2 x 2, so a `ym` that already writes the fitted profile is checked as
-it is without any change to the command line (`--profile FILE` on such a `ym` is an error: re-profiling would scale its
-pixels by the wrong exposure). `--as-written` checks the DNGs exactly as `ym` writes them. `--require-all` (set by
-`tools/dng/run_gates.sh` unless `--filter` is given) fails when a file of the selection is not on disk.
+`ym` writes the fitted profile itself (`ym-export` embeds `data/dng/profile.json`, `ym-core` passes it with
+`BaselineExposure::Auto`), so the gate checks each DNG **as written** (`--as-written`, the default of
+`tools/dng/run_gates.sh`): no step of the gate changes the file. The first gate is about the real export, EXIF, XMP,
+orientation and crop included. `--png` adds the 16-bit PNG, which shows what the profile alone costs.
+
+`tools/dng/run_gates.sh --files testdata/real/files/*.ARW` runs the same checks on real photographs (local evaluation).
+
+*Re-profiling* remains for a `ym` that still writes the identity profile (an old build, a bisect): the plain `dngfit gate`
+(no `--as-written`) writes such a DNG again with `data/dng/profile.json` first (`reprofile` reads the pixels back and
+writes them with the product's DNG writer, the fitted profile and the `x_white` floor; the last rows of such a file are white
+pixels that set the writer's white level and are left out of the comparison), and `tools/dng/run_gates.sh --reprofile`
+passes that on. Which DNGs are written again is decided per file by the DNG's `ProfileLookTableDims`: the identity profile
+has 2 x 2 x 2, so a DNG that already carries the fitted profile is checked as it is (`--profile FILE` on such a `ym` is an
+error: re-profiling would scale its pixels by the wrong exposure). `--require-all` (set by `tools/dng/run_gates.sh` unless
+`--filter` or `--files` is given) fails when a file of the selection is not on disk.
 
 ## Tests
 

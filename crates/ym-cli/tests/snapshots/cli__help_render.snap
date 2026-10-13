@@ -113,7 +113,7 @@ Output:
           - jpeg: JPEG
           - tiff: TIFF
           - png:  PNG
-          - dng:  DNG with the look baked in
+          - dng:  DNG with the look baked in. Apps other than Adobe's show the stored linear image darker until their own exposure handling is applied
 
       --quality <N>
           JPEG quality, 50 to 100 (default 92)

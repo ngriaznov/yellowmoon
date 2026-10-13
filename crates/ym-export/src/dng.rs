@@ -24,17 +24,28 @@
 //!
 //! # Pixel scaling
 //!
-//! `stored = round(65535 * clamp(x / x_white, 0, 1))` with `x_white = max(p99.99 of max(R, G, B), 1.0)`.
-//! The percentile is taken over the photo's pixels with negative values counted as 0, as the upper
+//! `stored = round(65535 * clamp(x / x_white, 0, 1))` with `x_white = max(p99.99 of max(R, G, B), floor)`,
+//! where the floor is [`BaselineExposure::white_floor`]: 1.0, or `2^-fit_offset_ev` for the fitted profile
+//! (16), so that `BaselineExposure` is never negative (Adobe's renderer shoulders the highlights instead of
+//! scaling for a negative one). The percentile is taken over the photo's pixels with negative values counted as 0, as the upper
 //! edge of the matching bin of a histogram with 2048 bins per octave (a relative resolution of
 //! 0.05 %), so at least 99.99 % of the pixels are at or below it and the result does not depend on
 //! the thread count. Negative values are clipped to 0 and the clipped fractions are reported in
 //! [`DngReport`]. `BaselineExposure` is `log2(x_white)` plus a fitted offset
-//! ([`BaselineExposure`]), so a reader sees the original scene-linear values.
+//! ([`BaselineExposure`]), so Adobe's renderer sees the original scene-linear values. A reader that
+//! ignores `BaselineExposure` and the profile shows the stored image darker by the white level (4 EV for
+//! the usual 16).
+//!
+//! # The fitted profile
+//!
+//! [`fitted::FittedProfile::embedded`] is `data/dng/profile.json`, compiled into the binary: the tone curve
+//! and look table fitted to ACES 2 with Adobe's renderer, and the offset `-4`. The app and the CLI both
+//! write it, with `BaselineExposure::Auto { fit_offset_ev }`.
 //!
 //! The 90-degree orientation steps go into the TIFF `Orientation` tag; pixels are not rotated, and
 //! the preview and thumbnail must be in the same (unrotated) orientation as the raw pixels.
 
+pub mod fitted;
 pub mod profile;
 
 use std::io::{Seek, Write};
@@ -51,10 +62,19 @@ use crate::options::JpegQuality;
 use crate::pixels::{ExportHooks, ImageRef, PixelEncoding, band_rows, encode_rows_u8};
 use crate::resize::resize_lanczos3;
 
-pub use profile::{BaselineExposure, DngProfile, LookTable, compose_orientation};
+pub use fitted::{FittedProfile, ProfileFile, ProfileFileError};
+pub use profile::{
+    BaselineExposure, DngProfile, FIT_OFFSET_RANGE_EV, LookTable, compose_orientation,
+};
 
 /// The notice Adobe's licence requires.
 pub const ADOBE_NOTICE: &str = "This product includes DNG technology under license by Adobe.";
+
+/// One sentence for the DNG export help text of the CLI, the export panel and `docs/09`.
+///
+/// The writer floors the white level at 16, so the stored 16-bit image is the scene divided by at least 16: Adobe's apps
+/// undo that through `BaselineExposure` and the profile, other apps show the stored image as it is.
+pub const OTHER_APPS_NOTE: &str = "Apps other than Adobe's show the stored linear image darker until their own exposure handling is applied.";
 
 /// `UniqueCameraModel`: keeps Lightroom from substituting Adobe's Sony profiles.
 pub const UNIQUE_CAMERA_MODEL: &str = "Yellowmoon AWG4";
@@ -176,7 +196,8 @@ pub struct DngParams<'a> {
 /// What the writer measured while writing.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DngReport {
-    /// The white level used for scaling: `max(p99.99, 1.0)`.
+    /// The white level used for scaling: `max(p99.99, floor)`, with the floor of
+    /// [`BaselineExposure::white_floor`].
     pub x_white: f32,
     /// The `BaselineExposure` written, in EV.
     pub baseline_exposure_ev: f64,
@@ -212,9 +233,9 @@ fn bin_upper_edge(bin: usize) -> f32 {
     if edge.is_finite() { edge } else { f32::MAX }
 }
 
-/// `x_white`, the fraction of pixels with a negative channel, and the largest channel value of a
-/// scene-linear image.
-fn analyse(raw: &ImageRef<'_>) -> (f32, f64, f32) {
+/// `x_white` (at least `white_floor`), the fraction of pixels with a negative channel, and the largest
+/// channel value of a scene-linear image.
+fn analyse(raw: &ImageRef<'_>, white_floor: f32) -> (f32, f64, f32) {
     let w = raw.width as usize;
     let (hist, negatives, max) = raw
         .rgb
@@ -255,7 +276,7 @@ fn analyse(raw: &ImageRef<'_>) -> (f32, f64, f32) {
             break;
         }
     }
-    let x_white = bin_upper_edge(bin).max(1.0);
+    let x_white = bin_upper_edge(bin).max(white_floor);
     (x_white, negatives as f64 / pixels as f64, max)
 }
 
@@ -275,10 +296,33 @@ fn store(x: f32, inv_white: f64) -> u16 {
     scaled.round() as u16
 }
 
-/// `x_white` for an image (exposed for tests and for callers that want to know it before writing).
-pub fn white_level(raw: &ImageRef<'_>) -> Result<f32, ExportError> {
+/// `x_white` for an image written with `baseline_exposure` (exposed for tests and for callers that want to
+/// know it before writing).
+pub fn white_level(
+    raw: &ImageRef<'_>,
+    baseline_exposure: BaselineExposure,
+) -> Result<f32, ExportError> {
     raw.validate()?;
-    Ok(analyse(raw).0)
+    check_baseline_exposure(baseline_exposure)?;
+    Ok(analyse(raw, baseline_exposure.white_floor()).0)
+}
+
+fn check_baseline_exposure(b: BaselineExposure) -> Result<(), ExportError> {
+    match b {
+        BaselineExposure::Fixed(v) if !v.is_finite() => {
+            Err(ExportError::invalid("the baseline exposure isn't a number"))
+        }
+        BaselineExposure::Auto { fit_offset_ev }
+            if !fit_offset_ev.is_finite() || !FIT_OFFSET_RANGE_EV.contains(&fit_offset_ev) =>
+        {
+            Err(ExportError::invalid(format!(
+                "the baseline exposure offset {fit_offset_ev} EV is outside {} to {}",
+                FIT_OFFSET_RANGE_EV.start(),
+                FIT_OFFSET_RANGE_EV.end()
+            )))
+        }
+        _ => Ok(()),
+    }
 }
 
 fn rational(v: f64) -> Rational {
@@ -324,11 +368,7 @@ fn validate_params(p: &DngParams<'_>) -> Result<(), ExportError> {
         }
     }
     p.profile.validate().map_err(ExportError::invalid)?;
-    if let BaselineExposure::Fixed(v) = p.baseline_exposure
-        && !v.is_finite()
-    {
-        return Err(ExportError::invalid("the baseline exposure isn't a number"));
-    }
+    check_baseline_exposure(p.baseline_exposure)?;
     Ok(())
 }
 
@@ -352,7 +392,8 @@ pub fn write_dng<W: Write + Seek>(
     }
 
     // Pass 1: the white level and the clipped fractions.
-    let (x_white, negative_fraction, max_value) = analyse(&p.raw);
+    let (x_white, negative_fraction, max_value) =
+        analyse(&p.raw, p.baseline_exposure.white_floor());
     let pixels = (w * h) as f64;
     let over_count = count_over(&p.raw, x_white);
     let baseline_ev = p.baseline_exposure.resolve_ev(x_white);
@@ -658,15 +699,16 @@ mod tests {
     #[test]
     fn white_level_is_one_for_dim_images_and_the_percentile_for_bright_ones() {
         let (w, h) = (100_u32, 100_u32);
+        let none = BaselineExposure::default();
         let dim = raw_image(w, h, |x, _| [x as f32 / 200.0, 0.1, 0.0]);
         let img = ImageRef::new(w, h, &dim, PixelEncoding::SceneLinearAwg4).unwrap();
-        assert_eq!(white_level(&img).unwrap(), 1.0);
+        assert_eq!(white_level(&img, none).unwrap(), 1.0);
 
         // 10,000 pixels: p99.99 is the 9,999th smallest, so one pixel may be above x_white.
         let mut bright = raw_image(w, h, |_, _| [2.0, 1.0, 0.5]);
         bright[0] = 50.0; // one outlier
         let img = ImageRef::new(w, h, &bright, PixelEncoding::SceneLinearAwg4).unwrap();
-        let x = white_level(&img).unwrap();
+        let x = white_level(&img, none).unwrap();
         assert!(
             (2.0..=2.0 * (1.0 + 1.0 / 1024.0)).contains(&x),
             "outlier ignored: {x}"
@@ -675,7 +717,40 @@ mod tests {
         // Two outliers out of 10,000 are 0.02 %: the percentile reaches the outlier's bin.
         bright[3] = 50.0;
         let img = ImageRef::new(w, h, &bright, PixelEncoding::SceneLinearAwg4).unwrap();
-        assert!(white_level(&img).unwrap() >= 50.0);
+        assert!(white_level(&img, none).unwrap() >= 50.0);
+    }
+
+    #[test]
+    fn the_white_level_is_floored_where_the_fitted_offset_cancels() {
+        let (w, h) = (100_u32, 100_u32);
+        let fitted = BaselineExposure::Auto {
+            fit_offset_ev: -4.0,
+        };
+        // A dim photo: x_white is the floor, 16, and BaselineExposure log2(16) - 4 = 0.
+        let dim = raw_image(w, h, |x, _| [x as f32 / 200.0, 0.1, 0.0]);
+        let img = ImageRef::new(w, h, &dim, PixelEncoding::SceneLinearAwg4).unwrap();
+        let x = white_level(&img, fitted).unwrap();
+        assert_eq!(x, 16.0);
+        assert_eq!(fitted.resolve_ev(x), 0.0);
+        // The same photo with a fixed exposure keeps the old floor of 1.0.
+        assert_eq!(
+            white_level(&img, BaselineExposure::Fixed(0.0)).unwrap(),
+            1.0
+        );
+        // A photo with highlights well above the floor keeps its own percentile and gets a positive exposure.
+        let bright = raw_image(w, h, |_, y| [if y < 10 { 40.0 } else { 0.5 }, 0.2, 0.1]);
+        let img = ImageRef::new(w, h, &bright, PixelEncoding::SceneLinearAwg4).unwrap();
+        let x = white_level(&img, fitted).unwrap();
+        assert!(
+            (40.0..=40.0 * (1.0 + 1.0 / 1024.0)).contains(&x),
+            "above the floor: {x}"
+        );
+        assert!(fitted.resolve_ev(x) > 1.3);
+        // An offset the writer cannot use is refused.
+        for bad in [f64::NAN, f64::INFINITY, -30.0, 9.0] {
+            let b = BaselineExposure::Auto { fit_offset_ev: bad };
+            assert!(white_level(&img, b).is_err(), "{bad}");
+        }
     }
 
     #[test]
@@ -715,8 +790,8 @@ mod tests {
             [(x * 3 + y) as f32 / 100.0, -((x % 5) as f32) * 0.01, 0.3]
         });
         let img = ImageRef::new(w, h, &data, PixelEncoding::SceneLinearAwg4).unwrap();
-        let a = analyse(&img);
-        let b = analyse(&img);
+        let a = analyse(&img, 1.0);
+        let b = analyse(&img, 1.0);
         assert_eq!(a, b);
         // Negative samples: x % 5 != 0 in 4 of 5 columns.
         assert!((a.1 - 0.8).abs() < 0.02, "{}", a.1);

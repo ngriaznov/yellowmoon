@@ -7,8 +7,11 @@
 //!   (1, 1, 1) maps to the D50 white exactly, as the DNG specification requires (XYZ D50 out).
 //! * `AsShotNeutral` is (1, 1, 1).
 //!
-//! The tone curve and the look table are inputs: `tools/dngfit` will fit them to the ACES 2
-//! display transform (`docs/09`); until then [`DngProfile::identity`] writes identities.
+//! The tone curve and the look table are inputs: `tools/dngfit` fits them to the ACES 2 display
+//! transform (`docs/09`) and the product embeds the result ([`super::fitted::FittedProfile`]);
+//! [`DngProfile::identity`] writes identities, for structure tests.
+
+use std::ops::RangeInclusive;
 
 use ym_color::consts::{D65_XY, Mat3, Vec3, linalg, xy_to_xyz};
 use ym_color::gamut;
@@ -143,6 +146,10 @@ impl LookTable {
 /// How far from 1.0 the value scale of a zero-saturation look table entry may be (float rounding).
 const ZERO_SATURATION_VALUE_TOLERANCE: f32 = 1e-4;
 
+/// The `BaselineExposure` offsets a fitted profile may carry, in EV (a tone curve that covers scene values from
+/// `2^-4` up to `2^12` at the most).
+pub const FIT_OFFSET_RANGE_EV: RangeInclusive<f64> = -12.0..=4.0;
+
 /// The fitted parts of the profile. The same for every photo; computed once by `tools/dngfit`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DngProfile {
@@ -190,7 +197,9 @@ impl Default for DngProfile {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum BaselineExposure {
     /// `log2(x_white) + fit_offset_ev`: undoes the 1/`x_white` scaling of the stored values, plus the
-    /// constant `tools/dngfit` found for the profile (0 until it exists).
+    /// constant `tools/dngfit` found for the profile (`-4` for the embedded one, 0 for the identity profile).
+    ///
+    /// `x_white` is floored at [`BaselineExposure::white_floor`], so the value is never negative.
     Auto {
         /// The fitted offset in EV.
         fit_offset_ev: f64,
@@ -206,6 +215,22 @@ impl Default for BaselineExposure {
 }
 
 impl BaselineExposure {
+    /// The lowest white level `x_white` the writer may use: `max(2^-fit_offset_ev, 1.0)` for [`Auto`](Self::Auto),
+    /// 1.0 for [`Fixed`](Self::Fixed).
+    ///
+    /// Adobe's renderer does not scale by a negative `BaselineExposure`: it applies a highlight shoulder, which depends on
+    /// the exposure and so on the photo, and a fitted profile cannot be made for that (`docs/09`, As built, `tools/dngfit`).
+    /// With the white level floored at `2^-fit_offset_ev` the exposure is zero for every photo whose 99.99th percentile
+    /// is below that (scene 16 for the embedded profile, nearly all of them) and positive for the rest. The cost is shadow
+    /// precision: the stored codes are scene value / `x_white` * 65535.
+    #[must_use]
+    pub fn white_floor(self) -> f32 {
+        match self {
+            Self::Auto { fit_offset_ev } => (-fit_offset_ev).exp2().max(1.0) as f32,
+            Self::Fixed(_) => 1.0,
+        }
+    }
+
     /// The value to write for a photo whose stored values were scaled by `1 / x_white`.
     #[must_use]
     pub fn resolve_ev(self, x_white: f32) -> f64 {
@@ -343,6 +368,24 @@ mod tests {
         };
         assert!(flat(1).validate().is_err());
         assert!(flat(0).validate().is_ok());
+    }
+
+    #[test]
+    fn the_white_floor_cancels_a_negative_offset_and_is_at_least_one() {
+        let auto = |fit_offset_ev| BaselineExposure::Auto { fit_offset_ev };
+        assert_eq!(BaselineExposure::default().white_floor(), 1.0);
+        assert_eq!(auto(-4.0).white_floor(), 16.0);
+        assert_eq!(auto(-0.5).white_floor(), 0.5_f64.exp2() as f32);
+        // a positive offset (a profile fitted for a bright tone curve) never lowers the floor below 1
+        assert_eq!(auto(2.0).white_floor(), 1.0);
+        assert_eq!(BaselineExposure::Fixed(-3.0).white_floor(), 1.0);
+        // the exposure of a photo at the floor is zero, whatever the offset
+        for offset in [-4.0, -2.5, -0.25, 0.0] {
+            let b = auto(offset);
+            assert!(b.resolve_ev(b.white_floor()).abs() < 1e-6, "{offset}");
+        }
+        // and above it the exposure is positive
+        assert!(auto(-4.0).resolve_ev(32.0) > 0.99);
     }
 
     #[test]

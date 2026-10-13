@@ -106,6 +106,8 @@ def main():
     ap.add_argument("--orientation", type=int, default=1)
     ap.add_argument("--crop", help="x,y,w,h of the default crop", default=None)
     ap.add_argument("--baseline-offset-ev", type=float, default=0.0)
+    ap.add_argument("--white-floor", type=float, default=1.0,
+                    help="the lowest x_white the writer may use: 1, or 2^-offset (16 for the fitted profile) for a profile with a negative BaselineExposure offset")
     ap.add_argument("--tone-curve", default="0 0 1 1")
     ap.add_argument("--look-dims", default="2 2 2")
     ap.add_argument("--expect-make", default=None)
@@ -265,8 +267,9 @@ def main():
         q = order[math.ceil(0.9999 * n) - 1]
         base = float(tag("IFD0:BaselineExposure"))
         x_white = 2.0 ** (base - args.baseline_offset_ev)
-        lo, hi = max(q, 1.0), max(q * (1 + 2 ** -11), 1.0) * (1 + 1e-6)
-        rep.check("x_white is p99.99 of max(R,G,B), at least 1", lo * (1 - 1e-5) <= x_white <= hi, f"x_white {x_white}, p99.99 {q}, allowed [{lo}, {hi}]")
+        floor = args.white_floor
+        lo, hi = max(q, floor), max(q * (1 + 2 ** -11), floor) * (1 + 1e-6)
+        rep.check(f"x_white is p99.99 of max(R,G,B), at least {floor:g}", lo * (1 - 1e-5) <= x_white <= hi, f"x_white {x_white}, p99.99 {q}, allowed [{lo}, {hi}]")
         expected = np.floor(np.clip(x / x_white, 0.0, 1.0) * 65535.0 + 0.5).astype(np.uint16)
         diff = np.abs(expected.astype(np.int32) - raw_pixels.astype(np.int32))
         rep.check("stored = round(65535 clamp(x / x_white, 0, 1))", diff.max() <= 1, f"max difference {int(diff.max())}")

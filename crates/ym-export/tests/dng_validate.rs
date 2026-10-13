@@ -8,7 +8,7 @@
 
 mod common;
 
-use ym_export::dng::{BaselineExposure, CropRect, DngProfile, LookTable};
+use ym_export::dng::{BaselineExposure, CropRect, DngProfile, FittedProfile, LookTable};
 use ym_export::*;
 
 struct Built {
@@ -519,6 +519,254 @@ fn libraw_exiftool_and_tifffile_agree_with_the_writer() {
             "0.25",
             "--tone-curve",
             "0 0 0.3 0.45 1 1",
+        ],
+    );
+}
+
+/// The DNG the product writes: the embedded fitted profile with the `BaselineExposure` rule that goes with it.
+fn with_embedded_profile(w: u32, h: u32, scene: Option<Vec<f32>>) -> Built {
+    let fitted = FittedProfile::embedded();
+    let raw = scene.unwrap_or_else(|| common::awg4_scene(w, h));
+    let preview = common::display_scene(w, h);
+    let meta = common::metadata();
+    let req = ExportRequest {
+        pixels: ImageRef::new(w, h, &raw, PixelEncoding::SceneLinearAwg4).unwrap(),
+        format: ExportFormat::Dng,
+        color_space: ColorSpace::Srgb,
+        size: Size::Full,
+        metadata: &meta,
+        remove_location: false,
+        dng: Some(DngInputs {
+            preview: ImageRef::new(w, h, &preview, PixelEncoding::DisplayLinear).unwrap(),
+            orientation: 1,
+            crop: None,
+            baseline_exposure: fitted.baseline_exposure(),
+            profile: &fitted.profile,
+        }),
+    };
+    let (bytes, summary) = encode_to_vec(&req, &ExportHooks::none()).unwrap();
+    Built {
+        bytes,
+        raw,
+        report: summary.dng.expect("a DNG report"),
+    }
+}
+
+/// A DNG with the embedded profile and a photo that stays below the white floor: `x_white` is 16 and
+/// `BaselineExposure` is zero, so Adobe's renderer applies no gain and no highlight shoulder.
+#[test]
+fn a_dim_photo_with_the_embedded_profile_has_a_baseline_exposure_of_zero() {
+    let built = with_embedded_profile(128, 96, None);
+    assert_eq!(built.report.x_white, 16.0, "the floor of the fitted offset");
+    assert_eq!(built.report.baseline_exposure_ev, 0.0);
+    let ifd0 = common::ifd0(&built.bytes);
+    assert_eq!(ifd0.get(50730).f64s(), vec![0.0], "BaselineExposure");
+    // The profile that went in is the one the file carries.
+    let fitted = FittedProfile::embedded();
+    assert_eq!(
+        ifd0.get(50981).u32s(),
+        fitted.profile.look_table.dims.to_vec(),
+        "ProfileLookTableDims"
+    );
+    assert_eq!(
+        ifd0.get(50940).f64s().len(),
+        fitted.profile.tone_curve.len() * 2,
+        "ProfileToneCurve"
+    );
+    // A stored code is the scene value over 16: mid grey 0.18 is code 737.
+    let raw_ifd = common::read_ifd(&built.bytes, ifd0.get(330).u32s()[0] as usize);
+    let first_strip = raw_ifd.get(273).u32s()[0] as usize;
+    let sample = |i: usize| {
+        u16::from_le_bytes([
+            built.bytes[first_strip + 2 * i],
+            built.bytes[first_strip + 2 * i + 1],
+        ])
+    };
+    for i in 0..30 {
+        let want = (f64::from(built.raw[i]) / 16.0).clamp(0.0, 1.0) * 65535.0;
+        assert!(
+            (f64::from(sample(i)) - want).abs() <= 0.5 + 1e-9,
+            "sample {i}"
+        );
+    }
+}
+
+/// Renders a DNG with `dng_validate` to 32-bit float sRGB.
+fn render_srgb(binary: &std::path::Path, bytes: &[u8], name: &str) -> Vec<f32> {
+    let dir = tempfile::tempdir().unwrap();
+    let dng = dir.path().join(format!("{name}.dng"));
+    std::fs::write(&dng, bytes).unwrap();
+    let base = dir.path().join("render");
+    let out = std::process::Command::new(binary)
+        .args(["-v", "-32", "-cs1", "-tif"])
+        .arg(&base)
+        .arg(&dng)
+        .output()
+        .unwrap();
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(out.status.success(), "{name}: dng_validate failed:\n{text}");
+    assert!(
+        text.contains("Validation complete")
+            && !text.contains("Warning")
+            && !text.contains("Error"),
+        "{name}: dng_validate complained:\n{text}"
+    );
+    let file = std::fs::File::open(base.with_extension("tif")).unwrap();
+    let mut decoder = tiff::decoder::Decoder::new(std::io::BufReader::new(file)).unwrap();
+    let tiff::decoder::DecodingResult::F32(pixels) = decoder.read_image().unwrap() else {
+        panic!("expected a float render");
+    };
+    pixels
+}
+
+/// The product's DNG, rendered by Adobe's reference renderer, shows what Yellowmoon shows (ACES 2): flat patches of a
+/// photo below the white floor (`BaselineExposure` 0) and of a photo above it (`BaselineExposure` positive) land within
+/// a CIEDE2000 of 1.5 of the ACES 2 output transform, greys up to scene 16 within 0.2. This is the end-to-end check of the white
+/// floor, the embedded profile and `BaselineExposure::Auto`; the full fit report is `dngfit eval`.
+#[test]
+fn adobes_renderer_shows_the_product_dng_as_aces_2_does() {
+    use ym_color::consts::linalg;
+    use ym_color::deltae::{d65_white_xyz, delta_e_2000, xyz_to_lab};
+    use ym_color::encode::srgb_decode;
+
+    let Some(binary) = dng_validate_binary() else {
+        assert!(
+            std::env::var_os("YM_REQUIRE_EXTERNAL_TOOLS").is_none(),
+            "dng_validate is required: run tools/dng/build_dng_validate.sh"
+        );
+        eprintln!("SKIPPED: dng_validate not built and $DNG_VALIDATE not set");
+        return;
+    };
+    let greys = [0.01_f32, 0.02, 0.05, 0.18, 0.5, 1.0, 4.0];
+    let colors: [[f32; 3]; 8] = [
+        [0.4, 0.1, 0.05],
+        [0.05, 0.4, 0.1],
+        [0.1, 0.05, 0.4],
+        [0.3, 0.3, 0.05],
+        [0.05, 0.3, 0.3],
+        [0.3, 0.05, 0.3],
+        [0.6, 0.3, 0.15],
+        [0.15, 0.3, 0.6],
+    ];
+    let lab = |code: [f64; 3]| {
+        let linear = code.map(|c| srgb_decode(c.clamp(0.0, 1.0)));
+        xyz_to_lab(
+            linalg::mul_vec(&ym_color::gamut::matrices().rec709_to_xyz, linear),
+            d65_white_xyz(),
+        )
+    };
+    let aces2 = ym_color::aces2::Aces2Transform::shared(ym_color::aces2::Aces2Output::Srgb);
+    // (name, the brightest patch, the BaselineExposure that follows)
+    for (name, brightest, bright_baseline) in [
+        ("below the floor", 10.0_f32, false),
+        ("above it", 40.0, true),
+    ] {
+        let mut patches: Vec<[f32; 3]> = greys.iter().map(|&g| [g; 3]).collect();
+        patches.push([brightest; 3]);
+        let n_grey = patches.len();
+        patches.extend(colors);
+        patches.push([brightest, brightest * 0.9, brightest * 0.8]);
+        assert_eq!(patches.len(), 17);
+        let (w, h) = (32_u32, 40_u32); // 4 x 5 patches of 8 x 8 pixels, the last three repeat the brightest
+        let mut raw = Vec::new();
+        for y in 0..h {
+            for x in 0..w {
+                let i = ((y / 8) * 4 + x / 8) as usize;
+                raw.extend_from_slice(&patches[i.min(patches.len() - 1)]);
+            }
+        }
+        let built = with_embedded_profile(w, h, Some(raw));
+        if bright_baseline {
+            assert!(
+                built.report.baseline_exposure_ev > 1.0,
+                "{name}: {}",
+                built.report.baseline_exposure_ev
+            );
+        } else {
+            assert_eq!(built.report.baseline_exposure_ev, 0.0, "{name}");
+        }
+        let pixels = render_srgb(&binary, &built.bytes, "product");
+        let (mut worst_grey, mut worst_color) = (0.0_f64, 0.0_f64);
+        for (i, p) in patches.iter().enumerate() {
+            let (px, py) = ((i % 4) * 8 + 4, (i / 4) * 8 + 4);
+            let got = &pixels[(py * w as usize + px) * 3..][..3];
+            let ap0 = linalg::mul_vec(&ym_color::gamut::matrices().awg4_to_ap0, p.map(f64::from));
+            let want = aces2.transform_ap0(ap0);
+            let d = delta_e_2000(lab([got[0], got[1], got[2]].map(f64::from)), lab(want));
+            // The profile's tone curve covers scene values up to 16 (`2^-fit_offset_ev`): a patch above that is
+            // clipped to the display value of 16 (code 0.975 against ACES 2's 0.992 at 40), a dE00 of about 0.9.
+            let in_range = p.iter().all(|&v| v <= 16.0);
+            if i < n_grey && in_range {
+                worst_grey = worst_grey.max(d);
+                assert!(
+                    d < 0.2,
+                    "{name}: grey {p:?}: Adobe {got:?}, ACES 2 {want:?}, dE00 {d}"
+                );
+            } else {
+                worst_color = worst_color.max(d);
+                assert!(
+                    d < 1.5,
+                    "{name}: patch {p:?}: Adobe {got:?}, ACES 2 {want:?}, dE00 {d}"
+                );
+            }
+        }
+        eprintln!(
+            "product DNG, {name} (x_white {:.3}, BaselineExposure {:.3} EV): worst dE00 against ACES 2 {worst_grey:.3} for greys, {worst_color:.3} for colours",
+            built.report.x_white, built.report.baseline_exposure_ev
+        );
+    }
+}
+
+#[test]
+fn independent_readers_accept_a_dng_with_the_embedded_profile() {
+    if !common::require_python_modules(&["numpy", "PIL", "tifffile", "rawpy"]) {
+        return;
+    }
+    if !common::tool_exists("exiftool") {
+        assert!(
+            std::env::var_os("YM_REQUIRE_EXTERNAL_TOOLS").is_none(),
+            "exiftool is required (Debian/Ubuntu: libimage-exiftool-perl)"
+        );
+        eprintln!("SKIPPED: exiftool is not installed");
+        return;
+    }
+    let fitted = FittedProfile::embedded();
+    let (w, h) = (192, 128);
+    let built = with_embedded_profile(w, h, None);
+    let curve: Vec<String> = fitted
+        .profile
+        .tone_curve
+        .iter()
+        .flatten()
+        .map(|v| format!("{v}"))
+        .collect();
+    let dims: Vec<String> = fitted
+        .profile
+        .look_table
+        .dims
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    run_check(
+        "embedded-profile",
+        &built,
+        w,
+        h,
+        &[
+            "--preview-size",
+            "192x128",
+            "--baseline-offset-ev",
+            &fitted.fit_offset_ev.to_string(),
+            "--white-floor",
+            &fitted.baseline_exposure().white_floor().to_string(),
+            "--tone-curve",
+            &curve.join(" "),
+            "--look-dims",
+            &dims.join(" "),
         ],
     );
 }

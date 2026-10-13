@@ -9,7 +9,7 @@ use std::process::Command;
 
 use dngfit::adobe::{Adobe, write_dng_image, write_dng_image_with};
 use dngfit::fit::{self, FitConfig};
-use dngfit::profile_file::ProfileFile;
+use dngfit::profile_file::{self, ProfileFile};
 use golden::ymrun::workspace_root;
 use ym_export::dng::DngProfile;
 
@@ -34,7 +34,7 @@ fn adobe() -> Option<Adobe> {
 #[test]
 fn the_committed_profile_loads_and_is_in_the_form_the_tool_writes() {
     let path = profile_path();
-    let file = ProfileFile::load(&path).unwrap();
+    let file = profile_file::load(&path).unwrap();
     assert_eq!(file.name, "Yellowmoon");
     assert_eq!(
         file.fit_offset_ev, -4.0,
@@ -87,7 +87,7 @@ fn the_committed_profile_loads_and_is_in_the_form_the_tool_writes() {
 #[test]
 fn the_committed_profile_matches_aces_2_through_adobes_renderer() {
     let Some(adobe) = adobe() else { return };
-    let file = ProfileFile::load(&profile_path()).unwrap();
+    let file = profile_file::load(&profile_path()).unwrap();
     let profile = file.to_profile();
     let sets = fit::test_sets(None);
     let results = fit::evaluate_sets(&adobe, &profile, file.fit_offset_ev, &sets).unwrap();
@@ -131,7 +131,7 @@ fn the_committed_profile_matches_aces_2_through_adobes_renderer() {
 #[test]
 fn a_dng_with_the_profile_passes_dng_validate_without_a_complaint() {
     let Some(adobe) = adobe() else { return };
-    let file = ProfileFile::load(&profile_path()).unwrap();
+    let file = profile_file::load(&profile_path()).unwrap();
     // a gradient scene that reaches the white level
     let (w, h) = (160_usize, 96_usize);
     let mut px = Vec::new();
@@ -179,7 +179,7 @@ fn independent_readers_accept_a_dng_with_the_fitted_profile() {
         eprintln!("SKIPPED: needs python3 (numpy, tifffile, Pillow, rawpy) and exiftool");
         return;
     }
-    let file = ProfileFile::load(&profile_path()).unwrap();
+    let file = profile_file::load(&profile_path()).unwrap();
     // many pixels above 16, so that x_white is the photo's own 99.99th percentile in the script's rule too
     let (w, h) = (96_usize, 64_usize);
     let mut px = Vec::new();

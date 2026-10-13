@@ -106,14 +106,21 @@ fn the_model_reproduces_adobes_renderer() {
 #[test]
 fn a_negative_baseline_exposure_makes_the_renderer_shoulder_the_highlights() {
     // The reason the fit needs x_white >= 2^-offset: with a negative BaselineExposure Adobe's renderer is not a gain. The
-    // DNG here has x_white = 1 and an offset of -3 (BaselineExposure -3), written without the white anchor that the
-    // fit's own renders use.
+    // writer's `Auto` rule floors x_white so that this never happens, so the DNG here is written with a fixed
+    // BaselineExposure of -3 (x_white = 1, the stored values are the scene values).
     let Some(adobe) = adobe() else { return };
     let values = [0.05_f32, 0.1, 0.2, 0.4, 0.6, 0.84, 1.0];
     let px: Vec<f32> = values.iter().flat_map(|&v| [v; 3]).collect();
-    let (bytes, report) =
-        dngfit::adobe::write_dng_image(values.len(), 1, &px, &DngProfile::identity(), -3.0)
-            .unwrap();
+    let (bytes, report) = dngfit::adobe::write_dng_image_exposure(
+        values.len(),
+        1,
+        &px,
+        &DngProfile::identity(),
+        ym_export::dng::BaselineExposure::Fixed(-3.0),
+        1,
+        &ym_export::Metadata::default(),
+    )
+    .unwrap();
     assert!(
         (report.baseline_exposure_ev + 3.0).abs() < 0.01,
         "{report:?}"

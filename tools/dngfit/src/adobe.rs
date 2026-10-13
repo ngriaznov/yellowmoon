@@ -230,9 +230,10 @@ pub fn write_test_dng(
         .copied()
         .max_by(|a, b| m(a).total_cmp(&m(b)))
         .unwrap_or([0.0; 3]);
-    // The product's rule (docs/09, as dngfit proposes it): x_white is at least 2^-offset, so that BaselineExposure
-    // (log2(x_white) + offset) is never negative. The writer in ym-export floors x_white at 1.0 only, so the floor is
-    // made here by a white pixel.
+    // The product's rule (docs/09): x_white is at least 2^-offset, so that BaselineExposure (log2(x_white) + offset)
+    // is never negative (`BaselineExposure::white_floor`; the writer applies it too). The white pixel below is kept
+    // so that the fit and its numbers are reproduced exactly: with it x_white is the upper edge of the histogram bin
+    // of the floor (16.008), without it the floor itself (16).
     let floor = (-fit_offset_ev).exp2() as f32;
     let brightest = if m(&brightest) < floor {
         [floor; 3]
@@ -279,6 +280,29 @@ pub fn write_dng_image_with(
     fit_offset_ev: f64,
     metadata: &Metadata,
 ) -> Result<(Vec<u8>, DngReport)> {
+    write_dng_image_exposure(
+        width,
+        height,
+        pixels,
+        profile,
+        BaselineExposure::Auto { fit_offset_ev },
+        1,
+        metadata,
+    )
+}
+
+/// Like [`write_dng_image_with`], with the `BaselineExposure` rule given instead of `Auto { fit_offset_ev }` (for a test
+/// that needs the exposure the white floor of `Auto` rules out, such as a negative one: `Fixed`) and the TIFF `Orientation`
+/// of the file (1 to 8; the pixels are not turned).
+pub fn write_dng_image_exposure(
+    width: usize,
+    height: usize,
+    pixels: &[f32],
+    profile: &DngProfile,
+    baseline_exposure: BaselineExposure,
+    orientation: u16,
+    metadata: &Metadata,
+) -> Result<(Vec<u8>, DngReport)> {
     let preview = vec![0.2_f32; pixels.len()];
     let (w, h) = (width as u32, height as u32);
     let request = ExportRequest {
@@ -290,9 +314,9 @@ pub fn write_dng_image_with(
         remove_location: false,
         dng: Some(DngInputs {
             preview: ImageRef::new(w, h, &preview, PixelEncoding::DisplayLinear)?,
-            orientation: 1,
+            orientation,
             crop: None,
-            baseline_exposure: BaselineExposure::Auto { fit_offset_ev },
+            baseline_exposure,
             profile,
         }),
     };

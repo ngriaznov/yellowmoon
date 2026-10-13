@@ -8,7 +8,7 @@ use std::path::PathBuf;
 
 use dngfit::adobe::Adobe;
 use dngfit::check::{GateOptions, MEDIAN_LIMIT, Reprofile, check_file};
-use dngfit::profile_file::ProfileFile;
+use dngfit::profile_file;
 use golden::manifest::Entry;
 use golden::ymrun::{YmBinary, find_ym, workspace_root};
 
@@ -49,7 +49,7 @@ fn real_files_pass_both_dng_gates() {
         eprintln!("SKIPPED: needs the ym binary and dng_validate");
         return;
     };
-    let profile = ProfileFile::load(&workspace_root().join("data/dng/profile.json")).unwrap();
+    let profile = profile_file::load(&workspace_root().join("data/dng/profile.json")).unwrap();
     let opts = GateOptions {
         ym: YmBinary {
             path: ym,

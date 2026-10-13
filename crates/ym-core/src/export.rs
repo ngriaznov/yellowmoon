@@ -54,7 +54,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use ym_color::display::OutputTarget;
-use ym_export::dng::{BaselineExposure, CropRect, DngProfile, DngReport, compose_orientation};
+use ym_export::dng::{CropRect, DngReport, FittedProfile, compose_orientation};
 use ym_export::exif::{CaptureTime, ExifInfo, Gps};
 use ym_export::naming::{self, NameFields, Placement};
 use ym_export::xmp::{XmpInfo, YmInfo};
@@ -306,7 +306,7 @@ pub struct ExportContext {
     renderer: Renderer,
     home: Option<PathBuf>,
     app_version: String,
-    dng_profile: DngProfile,
+    dng_profile: FittedProfile,
     speed: ExportSpeed,
 }
 
@@ -318,9 +318,10 @@ impl ExportContext {
             renderer,
             home: naming::home_dir(),
             app_version: app_version().to_owned(),
-            // `tools/dngfit` has not fitted the tone curve and look table yet (`docs/09`): the
-            // identity profile is for structure; Adobe's apps show such a DNG flat and dark.
-            dng_profile: DngProfile::identity(),
+            // The tone curve and look table `tools/dngfit` fitted to ACES 2 (`data/dng/profile.json`,
+            // embedded in `ym-export`), and the `BaselineExposure` offset they were fitted with.
+            // The app and the CLI both come through here, so their DNGs are the same bytes.
+            dng_profile: FittedProfile::embedded().clone(),
             speed: ExportSpeed::new(),
         }
     }
@@ -339,9 +340,10 @@ impl ExportContext {
         self
     }
 
-    /// Replaces the DNG profile (the fitted tone curve and look table).
+    /// Replaces the DNG profile (the fitted tone curve and look table, and their `BaselineExposure`
+    /// offset). The default is the profile embedded in `ym-export` ([`FittedProfile::embedded`]).
     #[must_use]
-    pub fn with_dng_profile(mut self, profile: DngProfile) -> Self {
+    pub fn with_dng_profile(mut self, profile: FittedProfile) -> Self {
         self.dng_profile = profile;
         self
     }
@@ -1018,8 +1020,8 @@ fn export_photo_unguarded(
                 preview: preview_ref,
                 orientation,
                 crop,
-                baseline_exposure: BaselineExposure::default(),
-                profile: &ctx.dng_profile,
+                baseline_exposure: ctx.dng_profile.baseline_exposure(),
+                profile: &ctx.dng_profile.profile,
             }),
         };
         encode_started = Instant::now();

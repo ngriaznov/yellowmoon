@@ -218,7 +218,7 @@ pub enum FormatArg {
     Tiff,
     /// PNG.
     Png,
-    /// DNG with the look baked in.
+    /// DNG with the look baked in. Apps other than Adobe's show the stored linear image darker until their own exposure handling is applied.
     Dng,
 }
 
@@ -572,6 +572,19 @@ mod tests {
     #[test]
     fn command_definition_is_consistent() {
         Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn the_dng_format_help_says_other_apps_show_it_darker() {
+        let help = FormatArg::Dng
+            .to_possible_value()
+            .and_then(|v| v.get_help().map(ToString::to_string))
+            .expect("the DNG format has help text");
+        assert!(
+            // clap drops the final full stop of a help text
+            help.contains(ym_export::dng::OTHER_APPS_NOTE.trim_end_matches('.')),
+            "the CLI help and ym-export's note differ: {help}"
+        );
     }
 
     #[test]

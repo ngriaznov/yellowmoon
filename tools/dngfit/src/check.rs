@@ -5,18 +5,21 @@
 //!
 //! Both run on the golden set. For each file the real `ym` binary writes the DNG (`--format dng`) and the JPEG (quality
 //! 92, sRGB) with the same settings; `dng_validate` renders the DNG to sRGB; the two pictures are compared pixel by
-//! pixel (the DNG is unrotated and carries its `Orientation` tag, which is applied to the render first).
+//! pixel (`dng_validate` turns its render upright by the DNG's `Orientation` tag and crops it to the default crop; see
+//! [`turn_after_render`]).
 //!
-//! **Re-profiling.** Until the application writes the fitted profile itself (`ym-core` has to load
-//! `data/dng/profile.json`, `ym-export` has to floor `x_white` at `2^-fit_offset_ev`: see `docs/09`), the DNG that
-//! `ym` writes carries the identity profile. With a profile given, [`reprofile`] reads the pixels back from that DNG
-//! and writes them again with the product's DNG writer, the fitted profile and the proposed `BaselineExposure` rule: the
-//! same pixels and the same writer as the product will use. The last rows of such a file are white anchors for the
-//! writer's white level, and are left out of the comparison. Without a profile the DNGs are checked as they are written.
+//! **As written.** `ym` embeds `data/dng/profile.json` and writes it into every DNG (`ym-export` floors `x_white` at
+//! `2^-fit_offset_ev`, `ym-core` passes the profile; see `docs/09`), so the gates check the DNGs exactly as `ym` wrote them
+//! ([`Reprofile::Never`], what `tools/dng/run_gates.sh` runs).
 //!
-//! A `ym` that already writes the fitted profile (a look table with more than the identity's 2 x 2 x 2 divisions) needs
-//! no re-profiling, and re-profiling it would scale its pixels by the wrong exposure, so [`Reprofile::IfIdentity`] (the
-//! default of `dngfit gate`) checks such a file as it is, and [`Reprofile::Always`] refuses it with a message.
+//! **Re-profiling** is for a `ym` that still writes the identity profile (an old build, a bisect). With a profile given,
+//! [`reprofile`] reads the pixels back from that DNG and writes them again with the product's DNG writer, the fitted
+//! profile and its `BaselineExposure` rule. The last rows of such a file are white anchors for the writer's white level, and
+//! are left out of the comparison.
+//!
+//! A `ym` that writes the fitted profile (a look table with more than the identity's 2 x 2 x 2 divisions) must not be
+//! re-profiled: that would scale its pixels by the wrong exposure, so [`Reprofile::IfIdentity`] (the default of
+//! `dngfit gate`) checks such a file as it is, and [`Reprofile::Always`] refuses it with a message.
 
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
@@ -197,7 +200,8 @@ pub struct Reprofiled {
 pub fn reprofile(dng: &[u8], profile: &ProfileFile) -> Result<Reprofiled> {
     let raw = read_linear_raw(dng)?;
     let be = raw.baseline_exposure_ev.unwrap_or(0.0);
-    // The application writes BaselineExposure = log2(x_white) (no profile offset yet), so x = stored / 65535 * 2^BE.
+    // A `ym` that writes the identity profile writes BaselineExposure = log2(x_white) (no profile offset), so
+    // x = stored / 65535 * 2^BE.
     let scale = be.exp2();
     let mut pixels: Vec<f32> = raw
         .data
@@ -222,6 +226,16 @@ pub fn reprofile(dng: &[u8], profile: &ProfileFile) -> Result<Reprofiled> {
         x_white: report.x_white,
         orientation: raw.orientation.unwrap_or(1),
     })
+}
+
+/// The orientation to turn Adobe's render by to make it upright, given the `Orientation` of the DNG `ym` wrote.
+///
+/// `dng_validate` honours the `Orientation` tag of the file it renders: the render of a DNG as `ym` wrote it is upright
+/// already (a portrait photo renders tall), so it is not turned again. A DNG written again by [`reprofile`] carries no
+/// `Orientation`, so its render is in the pixels' orientation and is turned by that of the DNG `ym` wrote.
+#[must_use]
+pub fn turn_after_render(reprofiled: bool, ym_dng_orientation: u16) -> u16 {
+    if reprofiled { ym_dng_orientation } else { 1 }
 }
 
 /// Turns a picture stored in the DNG's orientation into the upright picture (EXIF orientations 1 to 8).
@@ -342,14 +356,14 @@ pub fn check_file(opts: &GateOptions, entry: &Entry) -> Result<FileResult> {
         std::fs::read(&dng.output).with_context(|| format!("reading {}", dng.output.display()))?;
     let written = read_linear_raw(&dng_bytes)?;
     let profile = opts.reprofile.profile_for(written.look_table_dims)?;
-    let (dng_path, anchor_rows, orientation_override) = match profile {
+    let (dng_path, anchor_rows, source_orientation) = match profile {
         Some(profile) => {
             let r = reprofile(&dng_bytes, profile)?;
             let path = work("reprofiled.dng");
             std::fs::write(&path, &r.bytes)?;
-            (path, r.anchor_rows, Some(r.orientation))
+            (path, r.anchor_rows, r.orientation)
         }
-        None => (dng.output.clone(), 0, None),
+        None => (dng.output.clone(), 0, written.orientation.unwrap_or(1)),
     };
     let reprofiled = profile.is_some();
     let rendered = opts.adobe.render_file_verbose(&dng_path)?;
@@ -364,7 +378,7 @@ pub fn check_file(opts: &GateOptions, entry: &Entry) -> Result<FileResult> {
                 .map(|p| format!("ym's own DNG: {p}")),
         );
     }
-    let orientation = orientation_override.unwrap_or_else(|| written.orientation.unwrap_or(1));
+    let orientation = turn_after_render(reprofiled, source_orientation);
     let (w, h, adobe_rgb) = upright(
         rendered.width,
         rendered.height,
@@ -576,6 +590,51 @@ mod tests {
             a.sort_unstable();
             b.sort_unstable();
             assert_eq!(a, b, "orientation {orientation}");
+        }
+    }
+
+    #[test]
+    fn only_a_reprofiled_render_is_turned_upright_by_the_gate() {
+        for orientation in 1..=8 {
+            assert_eq!(turn_after_render(false, orientation), 1, "as written");
+            assert_eq!(turn_after_render(true, orientation), orientation);
+        }
+    }
+
+    /// The reason for [`turn_after_render`]: Adobe's renderer turns the picture by the file's `Orientation` tag.
+    #[test]
+    fn dng_validate_renders_a_file_with_an_orientation_upright() {
+        use crate::adobe::{Adobe, write_dng_image_exposure};
+        use ym_export::dng::{BaselineExposure, DngProfile};
+        let adobe = match Adobe::new(None) {
+            Ok(a) => a,
+            Err(e) => {
+                assert!(
+                    std::env::var_os("YM_REQUIRE_EXTERNAL_TOOLS").is_none(),
+                    "dng_validate is required: {e:#}"
+                );
+                eprintln!("SKIPPED: {e:#}");
+                return;
+            }
+        };
+        let (w, h) = (24_usize, 8_usize);
+        let px = vec![0.2_f32; w * h * 3];
+        let dir = tempfile::tempdir().unwrap();
+        for (orientation, want) in [(1_u16, (w, h)), (6, (h, w)), (3, (w, h)), (8, (h, w))] {
+            let (bytes, _) = write_dng_image_exposure(
+                w,
+                h,
+                &px,
+                &DngProfile::identity(),
+                BaselineExposure::default(),
+                orientation,
+                &ym_export::Metadata::default(),
+            )
+            .unwrap();
+            let path = dir.path().join(format!("o{orientation}.dng"));
+            std::fs::write(&path, bytes).unwrap();
+            let (rw, rh, _) = adobe.render_file(&path).unwrap();
+            assert_eq!((rw, rh), want, "Orientation {orientation}");
         }
     }
 
