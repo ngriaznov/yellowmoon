@@ -142,8 +142,11 @@ impl Chain {
     }
 
     /// The noise model the stages use: [`noise`](Self::noise) when it is known and usable, zero
-    /// noise otherwise (`NoiseDn::or_zero`). Always valid ([`NoiseDn::is_valid`]).
-    fn noise_dn(&self) -> NoiseDn {
+    /// noise otherwise (`NoiseDn::or_zero`). Always valid ([`NoiseDn::is_valid`]). Any other
+    /// implementation of the stages (a GPU path, a tool) reads the noise model through this, so
+    /// that every path treats an unusable model the same way.
+    #[must_use]
+    pub fn noise_dn(&self) -> NoiseDn {
         self.noise.map_or(NoiseDn::ZERO, NoiseDn::or_zero)
     }
 
