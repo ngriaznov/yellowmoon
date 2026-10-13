@@ -22,12 +22,13 @@
 //! keys hold the numbers the group reads, so a burst median that moves only the exposure recomputes
 //! the colour group and leaves the raw group alone.
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 use std::time::Instant;
 
 use serde::Serialize;
-use ym_export::ColorSpace;
+use ym_export::{ColorSpace, DetailStat};
 use ym_gpu::cpu::detail::NoiseReduction;
 use ym_gpu::cpu::sharpen::SharpenParams;
 use ym_gpu::cpu::{Rect, RgbImage};
@@ -343,6 +344,9 @@ struct Inner {
     display: RwLock<DisplayChoice>,
     options: RenderOptions,
     graphs: Mutex<Vec<(PhotoId, Arc<PhotoGraph>)>>,
+    /// The detail statistic of the latest thumbnail of each photo (`thumbs.rs`), for the size
+    /// estimate of the Export panel. A few bytes per photo, so unlike the graphs it is not capped.
+    thumbnail_details: Mutex<HashMap<PhotoId, DetailStat>>,
     /// Photos with an id up to this one belong to a session that was closed (0: none).
     retired_through: AtomicU32,
     scheduler: JobScheduler,
@@ -382,6 +386,7 @@ impl Renderer {
                 display: RwLock::new(DisplayChoice::Aces2),
                 options,
                 graphs: Mutex::new(Vec::new()),
+                thumbnail_details: Mutex::new(HashMap::new()),
                 retired_through: AtomicU32::new(0),
                 scheduler,
                 ledger,
@@ -500,11 +505,44 @@ impl Renderer {
     /// Forgets a photo's caches (it was closed).
     pub fn forget(&self, id: PhotoId) {
         lock(&self.inner.graphs).retain(|(p, _)| *p != id);
+        lock(&self.inner.thumbnail_details).remove(&id);
     }
 
     /// Forgets everything (the session closed).
     pub fn forget_all(&self) {
         lock(&self.inner.graphs).clear();
+        lock(&self.inner.thumbnail_details).clear();
+    }
+
+    /// The detail statistic of the latest thumbnail rendered for a photo
+    /// ([`Renderer::thumbnail_png`]: the photo as it is developed now, at most 240 px, in sRGB),
+    /// `None` while the photo has no thumbnail (or one too small to measure). The Export panel's
+    /// size estimate reads it (`docs/09` Size estimate). A thumbnail of a look tile does not
+    /// count: it is the photo through another look.
+    #[must_use]
+    pub fn thumbnail_detail(&self, id: PhotoId) -> Option<DetailStat> {
+        lock(&self.inner.thumbnail_details).get(&id).copied()
+    }
+
+    /// Records the statistic of a photo's new thumbnail. A thumbnail too small to measure removes
+    /// the old figure, which belongs to a different picture. A photo of a closed session is not
+    /// recorded.
+    pub(crate) fn note_thumbnail_detail(&self, id: PhotoId, detail: Option<DetailStat>) {
+        let mut details = lock(&self.inner.thumbnail_details);
+        // Checked under the lock: `retire_through` marks the photos retired and then clears the map
+        // under the same lock, so a thumbnail that finishes while the session closes either sees
+        // the mark or is cleared after it, and never leaves a figure behind.
+        if self.is_retired(id) {
+            return;
+        }
+        match detail {
+            Some(d) => {
+                details.insert(id, d);
+            }
+            None => {
+                details.remove(&id);
+            }
+        }
     }
 
     /// The session closed: forgets every photo's caches, as [`Renderer::forget_all`] does, and

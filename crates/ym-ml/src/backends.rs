@@ -3,9 +3,9 @@
 //!
 //! Both are optional cargo features, **off by default**, so the default workspace build compiles neither:
 //!
-//! * feature `burn`: [`burn_backend::BurnJdd`], the network written with burn 0.22 tensors on the wgpu
+//! * feature `burn`: `burn_backend::BurnJdd`, the network written with burn 0.22 tensors on the wgpu
 //!   backend, weights from the same safetensors file as the CPU runtime;
-//! * feature `ort`: [`ort_backend::OrtJdd`], ONNX Runtime 2.x loaded dynamically (`ORT_DYLIB_PATH`) running
+//! * feature `ort`: `ort_backend::OrtJdd`, ONNX Runtime 2.x loaded dynamically (`ORT_DYLIB_PATH`) running
 //!   the static-shape ONNX file exported by `training/jdd/export.py`.
 //!
 //! The pure-Rust CPU runtime ([`crate::cpu_runtime`]) is always available.

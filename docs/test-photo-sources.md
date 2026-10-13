@@ -34,6 +34,12 @@ CC BY-SA files may sit in a public test bucket with attribution. They never ship
 
 Use these only on a development machine for visual review and the blind A/B (`docs/13`). Never commit them, upload them, cache them in CI or put them in a test bucket. Download them by hand from the pages; don't scrape the galleries or script around download restrictions.
 
+## Local evaluation · real files with unclear or restricted licences (not a tier of the golden set)
+
+Next to the three tiers there is a fourth source that is **not** golden-set data: `tools/fetch/real-eval.sh` fetches nine real Sony files (DSLR-A300, DSLR-A500, ILCE-5000, ILCE-6300 cRAW, ILCE-7M2 uncompressed 14-bit, ILCE-7M3, ILCE-7M4, NEX-5N, NEX-7) from three public GitHub repositories with plain `git`, each at a pinned commit and each file at a pinned blob id, into `testdata/real/`. It exists because the CC0 hosts above were not reachable from the build environment, and a decoder or a colour chain that has never seen a real file is a guess.
+
+None of the three repositories gives a licence for these files that this project can rely on (the README of one says "You are free to use these media files however you wish" with no author, one records CC BY-NC-SA 4.0, one says "public domain" with no provenance next to an AGPL `LICENSE`; the reasons are in `docs/validation-data.md` and `tools/fetch/README.md`). So the files follow the rules of tier 3: a development machine only, never committed, never uploaded, never cached or run in CI (the script refuses with exit code 2 when `CI` or `GITHUB_ACTIONS` is `true`), no picture made from them in the repository. Unlike tier 3 they need no download by hand. They are used for smoke tests that skip without them, for the auto-exposure study (`tools/eval`) and for looking at real photographs; **no gate and no golden test depends on them**, and a result from them is reported as "local, not corpus data". If the origin of a file is confirmed to be CC0 (the immich repository has a public-domain statement whose origin could be checked), it can be proposed for tier 1 under the usual rules of the manifest, which takes CC0 only; that is Mykyta's decision.
+
 ## No test shoots in V1
 
 V1 doesn't use controlled captures. Where a gate would have used one, it uses instead:

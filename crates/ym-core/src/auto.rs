@@ -21,10 +21,12 @@
 //!    confidence 0.5; a file with neither a model nor an as-shot white balance gets the profile's
 //!    5500 K daylight white with confidence 0. The result is a [`SceneLight`] and the initial
 //!    white `w_scene_initial` that the raw stages balance the mosaic with (`g0 = 1 / w`).
-//! 3. **Auto exposure** (`ym_color::exposure`): the preview, balanced with `g0`, through C1 to C6
-//!    at EV 0, metered with the centre weight and the highlight guard. Burst sharing (step 6) needs
-//!    the other photos, so the session does it ([`burst_frame`]) and stores the shared value in
-//!    [`ExposureResult::ev`] (`own_ev` keeps the photo's own).
+//! 3. **Auto exposure** (`ym_color::exposure`): the preview, balanced with `g0` and brightened by
+//!    the vignetting gain of R3 when the file has a 0x7032 table ([`Preview::metered`]; the
+//!    render applies it, so the exposure is metered on the picture that is rendered), through C1
+//!    to C6 at EV 0, metered with the centre weight and the highlight guard. Burst sharing
+//!    (step 6) needs the other photos, so the session does it ([`burst_frame`]) and stores the
+//!    shared value in [`ExposureResult::ev`] (`own_ev` keeps the photo's own).
 //! 4. **The noise model** ([`NoiseResult`]): `ym_noise::estimate` on the image area with the prior
 //!    of the body and ISO (`data/cameras/noise`), pooled across the session by the session
 //!    (`pool_key`). A Lossless M or S file has no mosaic to measure and gets the prior alone.
@@ -47,7 +49,9 @@ use ym_color::illum::{IllumError, IlluminantEstimate, IlluminantModel, RawPrevie
 use ym_color::spectral::{ClassProbabilities, LightClass};
 use ym_color::wb::{self, SceneLight, WbError, WbReadout};
 use ym_gpu::cpu::detail::NoiseReduction;
+use ym_gpu::cpu::lens::{LensSwitches, LensTags};
 use ym_gpu::cpu::sharpen::auto_sharpen;
+use ym_gpu::cpu::vignette::VignetteProfile;
 use ym_noise::estimate::{
     BatchPool, EstimateInput, EstimatorConfig, NoiseEstimate, PlaneSource, PoolKey, U16Mosaic,
     estimate as estimate_noise_model,
@@ -314,6 +318,12 @@ pub struct Preview {
     pub rgb: Vec<f32>,
     /// One byte per pixel, 1 where a photosite of the block is clipped.
     pub clip: Vec<u8>,
+    /// The R3 gain `1 / G(r)` at the centre of each pixel's block (`docs/05` R3), `None` for a
+    /// file without a usable vignetting table and for Lossless M and S files, which the render
+    /// does not correct either. `rgb` is **without** it: the illuminant estimator reads the
+    /// preview as the sensor saw it ([`Preview::as_raw_preview`]); only the metering applies it
+    /// ([`Preview::metered`]).
+    pub vignette_gain: Option<Vec<f32>>,
 }
 
 impl Preview {
@@ -328,7 +338,7 @@ impl Preview {
         }
     }
 
-    /// The RGB balanced with the initial gains `g0` (a copy), as auto exposure meters it.
+    /// The RGB balanced with the initial gains `g0` (a copy), without the vignetting gain.
     #[must_use]
     pub fn balanced(&self, g0: Vec3) -> Vec<f32> {
         let g = [g0[0] as f32, g0[1] as f32, g0[2] as f32];
@@ -337,6 +347,63 @@ impl Preview {
             .flat_map(|p| [p[0] * g[0], p[1] * g[1], p[2] * g[2]])
             .collect()
     }
+
+    /// The RGB as auto exposure meters it: the vignetting gain of each block (R3, the same for the
+    /// three channels), then the initial gains `g0` (R4), in the order of the raw stages. For a
+    /// file without a vignetting table it is [`Preview::balanced`].
+    ///
+    /// The render divides every photosite by the lens's relative illumination `G(r)`, so its
+    /// corners are brighter than the 1/8 preview's. Metering the preview without the gain read
+    /// lens-corrected files 0.07 to 0.12 EV darker than their render (`docs/02` Auto exposure,
+    /// Evaluation); the gain at the block centre is within 1e-4 of the mean over the block.
+    #[must_use]
+    pub fn metered(&self, g0: Vec3) -> Vec<f32> {
+        let Some(gain) = &self.vignette_gain else {
+            return self.balanced(g0);
+        };
+        let g = [g0[0] as f32, g0[1] as f32, g0[2] as f32];
+        self.rgb
+            .chunks_exact(3)
+            .zip(gain)
+            .flat_map(|(p, &v)| [p[0] * v * g[0], p[1] * v * g[1], p[2] * v * g[2]])
+            .collect()
+    }
+}
+
+/// The R3 gain `1 / G(r)` at the centre of each block of a `pw` x `ph` preview of `raw`'s image
+/// area, `None` when the file has no vignetting table the render would use: none stored, a table
+/// the render ignores, or a camera-processed file (Lossless M and S).
+///
+/// The radius is the one of `VignetteProfile::radius`: from the centre of the image area to the
+/// centre of the block, over half the area's diagonal. It does not depend on the
+/// `decode.lens_corrections` switch: the estimates are made when the photo is opened, before any
+/// setting is changed (the CLI sets its options after the open too), and describe the default
+/// render, which corrects the lens.
+fn vignette_gains(raw: &RawImage, area: &ImageArea, pw: usize, ph: usize) -> Option<Vec<f32>> {
+    if raw.is_reduced() {
+        return None;
+    }
+    let stored = raw
+        .lens
+        .as_ref()
+        .or(raw.meta.lens_corrections.as_ref())?
+        .vignetting
+        .as_ref()?;
+    let tags = LensTags::from_stored(Some(stored.raw.as_slice()), None, None).ok()?;
+    let profile = VignetteProfile::from_tags(&tags, LensSwitches::default()).ok()??;
+    let (w, h) = (area.width as f64, area.height as f64);
+    let inv_half_diagonal = 1.0 / (0.5 * w.hypot(h));
+    // The mean of the photosite centres `x + 0.5` over the block `[xs, xe)` is `(xs + xe) / 2`.
+    let centre = |i: usize, n: usize, len: usize| (i * len / n + (i + 1) * len / n) as f64 * 0.5;
+    let mut gains = Vec::with_capacity(pw * ph);
+    for by in 0..ph {
+        let dy = centre(by, ph, area.height) - 0.5 * h;
+        for bx in 0..pw {
+            let dx = centre(bx, pw, area.width) - 0.5 * w;
+            gains.push(profile.gain_at(dx.hypot(dy) * inv_half_diagonal) as f32);
+        }
+    }
+    Some(gains)
 }
 
 /// Per-photosite normalisation of a raw image: `(raw - black) / (white - black)` per CFA position,
@@ -478,11 +545,13 @@ pub fn build_preview(raw: &RawImage) -> Result<Preview, AutoError> {
                 });
         }
     }
+    let vignette_gain = vignette_gains(raw, &area, pw, ph);
     Ok(Preview {
         width: pw,
         height: ph,
         rgb,
         clip,
+        vignette_gain,
     })
 }
 
@@ -1113,7 +1182,7 @@ impl AutoEstimates {
         let tables = tables_of(inputs.profile);
         let metering = color.metering_chain(tables)?;
         let g0 = wb::initial_gains(w_scene_initial)?;
-        let balanced = preview.balanced(g0);
+        let balanced = preview.metered(g0);
         let meter = auto_exposure(
             &PreviewRgb {
                 width: preview.width,

@@ -598,22 +598,32 @@ impl AppApi {
         convert(&self.core.looks_list())
     }
 
-    /// `look_thumbnail`: the photo as it is developed now through one look, as PNG bytes.
+    /// `look_thumbnail`: the photo as it is developed now through one look. The PNG stays here
+    /// and is served on the `ym-frame` scheme, like the filmstrip's thumbnails; the answer is its
+    /// address.
     ///
     /// # Errors
     ///
     /// [`AppError`] with scope `looks` and "File missing or changed. Import again." when the look's
     /// file is gone.
-    pub fn look_thumbnail(&self, photo: PhotoId, look: &LookId) -> Result<Vec<u8>, AppError> {
+    pub fn look_thumbnail(&self, photo: PhotoId, look: &LookId) -> Result<String, AppError> {
         let id = look_id(look)?;
         let src =
             PhotoSource::from_session(&self.core.session, core_id(photo)).map_err(session_error)?;
-        self.core
+        let png = self
+            .core
             .renderer
             .spawn_look_thumbnail(src, id)
             .wait()
             .map_err(job_error)?
-            .map_err(AppError::from)
+            .map_err(AppError::from)?;
+        // The session closed while the tile was rendering: nobody wants the picture, and the
+        // store was just emptied.
+        self.core
+            .session
+            .view(core_id(photo))
+            .map_err(session_error)?;
+        Ok(self.frames.put_look_tile(photo.0, &look.0, png))
     }
 
     /// `looks_import`: a zip, a folder or a `.cube` file; `input` answers the generic question for

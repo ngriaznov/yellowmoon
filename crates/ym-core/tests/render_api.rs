@@ -711,3 +711,51 @@ fn a_viewport_frame_reports_its_zoom_and_the_fit_zoom_in_the_render_stats() {
         Some(true)
     );
 }
+
+#[test]
+fn a_thumbnail_keeps_its_detail_statistic_for_the_size_estimate_and_a_look_tile_does_not() {
+    use ym_export::DetailStat;
+    let d = Developed::new(&patchwork(), MODEL);
+    let r =
+        Renderer::new(Arc::new(TestLooks::new()), RenderOptions::default()).expect("render thread");
+    let src = d.source();
+    assert_eq!(r.thumbnail_detail(src.id), None, "no thumbnail yet");
+
+    // The statistic is the one of the PNG the thumbnail hands out.
+    let png = r
+        .thumbnail_png(&src, &CancelToken::new())
+        .expect("thumbnail");
+    let (w, h, rgb) = decode_png(&png);
+    let want = DetailStat::measure_rgb8(w as u32, h as u32, &rgb).expect("measurable");
+    assert_eq!(r.thumbnail_detail(src.id), Some(want));
+    assert!(want.gradient() > 0.0 && want.gradient().is_finite());
+
+    // A look tile is the photo through another look: it leaves the figure alone, even for a tile
+    // of a picture that differs (here by 2.5 stops more exposure).
+    let brighter = edit(&src, |s| {
+        s.exposure = AutoOr::Manual(ExposureValue { ev: 2.5 });
+    });
+    let warm = LookId::parse("user:warm").expect("id");
+    r.look_thumbnail_png(&brighter, &warm, &CancelToken::new())
+        .expect("tile");
+    assert_eq!(r.thumbnail_detail(src.id), Some(want));
+
+    // A newer thumbnail (the filmstrip follows a change) replaces it.
+    let png = r
+        .thumbnail_png(&brighter, &CancelToken::new())
+        .expect("thumbnail");
+    let (w, h, rgb) = decode_png(&png);
+    let newer = DetailStat::measure_rgb8(w as u32, h as u32, &rgb).expect("measurable");
+    assert_ne!(newer, want, "the brighter picture has other gradients");
+    assert_eq!(r.thumbnail_detail(src.id), Some(newer));
+
+    // It goes with the photo's caches, and a closed session's photo gets none.
+    r.forget(src.id);
+    assert_eq!(r.thumbnail_detail(src.id), None);
+    r.thumbnail_png(&src, &CancelToken::new()).expect("again");
+    assert!(r.thumbnail_detail(src.id).is_some());
+    r.retire_through(src.id);
+    assert_eq!(r.thumbnail_detail(src.id), None);
+    assert!(r.thumbnail_png(&src, &CancelToken::new()).is_err());
+    assert_eq!(r.thumbnail_detail(src.id), None);
+}

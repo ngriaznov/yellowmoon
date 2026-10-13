@@ -58,7 +58,7 @@ import { templateProblem } from "../export/template";
 import type { ExportRun } from "../export/run";
 import { diffSettings, PhotoHistory } from "./history";
 import type { HistoryEntry } from "./history";
-import { bytesToUrl, isReady, releaseUrl } from "./photo";
+import { isReady, releaseUrl } from "./photo";
 import { fitZoomExact, fitZoomOf, showsWhole, zoomAfter } from "./zoom";
 
 /** The screens of the app (`docs/11-ui.md` §Screens that have a window of their own). */
@@ -1291,7 +1291,7 @@ export class AppStore {
     const cache = entry.urls;
     let url = cache.get(lookId);
     if (!url) {
-      url = this.api.lookThumbnail(photoId, lookId).then(bytesToUrl);
+      url = this.api.lookThumbnail(photoId, lookId);
       cache.set(lookId, url);
       url.catch(() => cache.delete(lookId));
     }

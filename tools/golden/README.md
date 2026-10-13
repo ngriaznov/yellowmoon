@@ -130,10 +130,7 @@ M/S in LibRaw's view: replicated chroma, white balance left in), which `oracle_c
 so it keeps the hash and result of an earlier verified entry with the same file bytes (and has none for new bytes: `oracle_check.py` then compares
 with the mosaic only and says so).
 
-The embedded JPEG: `ArwBuilder` can only write its own tiny gradient JPEG into the maker note, so `src/preview.rs` writes the
-file with a placeholder of the right size, finds it through `ym_raw::metadata::probe_bytes`, and replaces it byte for byte with the
-scene's JPEG padded with `COM` segments to exactly the same length; no offset in the file moves. (A `preview_jpeg` setter on the
-builder would make this unnecessary.) The `Software` tag says the file is synthetic.
+The embedded JPEG: `ArwBuilder::preview_jpeg` writes the scene's own JPEG (`<stem>.jpg`) into the maker note as it is, byte for byte, with nothing added and nothing swapped afterwards; `src/preview.rs` only checks that its frame header has the size the sidecar says. The `Software` tag says the file is synthetic.
 
 ## `oracle_check.py`
 

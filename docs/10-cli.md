@@ -41,7 +41,7 @@ They mirror the app's controls. Anything not given uses the automatic value or t
 | `--rolloff <highlights>,<low-light>` | 0–1 each | |
 | `--profile <id>` | camera profile id | forces a profile, for comparisons |
 | `--display aces2 or arri` | | display transform (arri needs imported display LUTs) |
-| `--format jpeg or tiff or png or dng` | | default from preferences, else jpeg |
+| `--format jpeg or tiff or png or dng` | | default from preferences, else jpeg. The help of `dng` is "DNG with the look baked in. Apps other than Adobe's show the stored linear image darker until their own exposure handling is applied." The second sentence is `ym_export::dng::OTHER_APPS_NOTE`, used word for word by the Export panel's DNG paragraph; tests compare both with the constant (`docs/09`). |
 | `--quality <50–100>` | JPEG | default 92 |
 | `--bits 8 or 16` | TIFF, PNG | |
 | `--compression none or lzw or zip` | TIFF | |

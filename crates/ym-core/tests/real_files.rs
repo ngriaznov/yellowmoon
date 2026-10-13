@@ -190,10 +190,18 @@ fn every_file_of_the_synthetic_variant_set_develops() {
 }
 
 #[test]
-fn auto_exposure_against_the_embedded_jpegs_of_the_real_files() {
-    // The M1-08 gate on what is here: our render at `EV_auto` against the camera's embedded JPEG,
-    // by median luminance in linear light (docs/02 Auto exposure, docs/13 Gates). Nine files are
-    // not the golden set, so this reports the numbers and does not decide the gate.
+fn old_metric_median_luminance_against_the_embedded_jpegs_of_the_real_files_informational() {
+    // INFORMATIONAL: this is NOT the M1-08 gate. It computes the metric the gate used before
+    // Mykyta's decision of 2026-10-13 (`docs/16`): the median luminance in linear light of our
+    // render at `EV_auto` against the median of the camera's embedded JPEG. That metric mixes in
+    // the display transform (ACES 2 puts scene 0.18 at display 0.10, a camera JPEG near 0.18:
+    // about -0.85 EV by design) and the camera's tone curve, so its errors are not all exposure
+    // errors (nine real files: median -0.28 EV, `docs/02` Evaluation).
+    // The gate is G3, `EV_auto` against the camera engine's own gain, measured by
+    // `python3 -I tools/eval/autoexp.py testdata/real/files --label real` (`tools/eval/README.md`,
+    // `docs/02` Auto exposure Evaluation, `docs/13` Gates): 6 of 9 within +-0.5 EV, 9 of 9 within
+    // +-0.75. This test prints the old figures for comparison and asserts nothing about them but
+    // that the report is complete; it never decides the gate.
     use ym_color::exposure::{
         GATE_REQUIRED_FRACTION, GATE_TOLERANCE_EV, GateEntry, PreviewRgb, evaluate_gate,
         exposure_error_ev, jpeg_median_luminance, preview_median_luminance,
@@ -213,7 +221,8 @@ fn auto_exposure_against_the_embedded_jpegs_of_the_real_files() {
         let view = session.view(photo.id).unwrap();
         let raw = session.raw_image(photo.id).unwrap();
         let preview = ym_core::auto::build_preview(&raw).unwrap();
-        let balanced = preview.balanced(view.estimates.initial_gains().unwrap());
+        // The picture the exposure is metered on, with the vignetting gain the render applies.
+        let balanced = preview.metered(view.estimates.initial_gains().unwrap());
         let matrix = *view
             .estimates
             .color
@@ -240,7 +249,7 @@ fn auto_exposure_against_the_embedded_jpegs_of_the_real_files() {
         let pixels = decoder.decode().unwrap();
         let reference = jpeg_median_luminance(&pixels).unwrap().unwrap();
         eprintln!(
-            "{:<22} EV_auto {:>5.2}  our median Y {:.4}  JPEG median Y {:.4}  error {:>5.2} EV",
+            "[old metric] {:<22} EV_auto {:>5.2}  our median Y {:.4}  JPEG median Y {:.4}  error {:>5.2} EV",
             photo.file_name,
             view.estimates.exposure.ev,
             ours,
@@ -255,11 +264,10 @@ fn auto_exposure_against_the_embedded_jpegs_of_the_real_files() {
     }
     let report = evaluate_gate(&entries, GATE_TOLERANCE_EV, GATE_REQUIRED_FRACTION);
     eprintln!(
-        "{} of {} within {GATE_TOLERANCE_EV} EV of the embedded JPEG ({:.0} %, the gate wants {:.0} %); outliers: {:?}",
+        "[old metric, informational; the gate is G3 in tools/eval/autoexp.py] {} of {} within {GATE_TOLERANCE_EV} EV of the embedded JPEG by median luminance in linear light ({:.0} %); outliers: {:?}",
         report.within,
         report.evaluated,
         100.0 * report.fraction,
-        100.0 * GATE_REQUIRED_FRACTION,
         report
             .outliers
             .iter()

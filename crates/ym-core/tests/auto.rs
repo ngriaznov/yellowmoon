@@ -569,3 +569,176 @@ fn a_pooled_fit_that_contradicts_its_members_is_not_used() {
             .all(|r| r.source == NoiseSource::Pooled { files: 3 })
     );
 }
+
+// --- Metering sees the picture the render makes (vignetting) --------------------------------
+
+/// A flat field behind a lens that darkens the corners (`raw = flat * G(r)`, `docs/05` R3), with the
+/// matching 0x7032 table when `table` is set: 512 x 384 at level 0.3.
+fn flat_field_through_a_lens(dir: &Path, name: &str, table: bool) -> std::path::PathBuf {
+    use ym_gpu::cpu::vignette::VignetteProfile;
+    use ym_raw::testgen::LensTables;
+    let (w, h) = (512usize, 384usize);
+    let knots: Vec<i16> = (0..16).map(|i| (i * i * 45) as i16).collect(); // G = 0.65 in the corner
+    let profile = VignetteProfile::from_tag(&knots).unwrap();
+    let scene = Scene::new(
+        w as u32,
+        h as u32,
+        light(PROFILE, 5200.0),
+        Layout::Uniform,
+        0.3,
+    );
+    let mut mosaic = scene.mosaic();
+    if table {
+        let half_diagonal = 0.5 * (w as f64).hypot(h as f64);
+        for y in 0..h {
+            for x in 0..w {
+                let dx = x as f64 + 0.5 - w as f64 / 2.0;
+                let dy = y as f64 + 0.5 - h as f64 / 2.0;
+                let g = profile.attenuation_at(dx.hypot(dy) / half_diagonal);
+                let v = f64::from(mosaic[y * w + x]) - scene.black;
+                mosaic[y * w + x] = (scene.black + v * g).round() as u16;
+            }
+        }
+    }
+    let mut tag = vec![16i16];
+    tag.extend(&knots);
+    let path = dir.join(name);
+    scene
+        .builder(MODEL)
+        .lens_tables(LensTables {
+            vignetting: table.then_some(tag),
+            chromatic_aberration: None,
+            distortion: None,
+        })
+        .write_to(&path, &mosaic)
+        .unwrap();
+    path
+}
+
+#[test]
+fn auto_exposure_meters_the_picture_the_render_makes_when_the_file_has_a_vignetting_table() {
+    use ym_color::exposure::{PreviewRgb, auto_exposure};
+    use ym_core::auto::tables_of;
+    let dir = tempfile::tempdir().unwrap();
+    let env = base_env();
+    // The same flat scene without a lens: what the exposure of the lens-corrected render must be.
+    let flat = estimates_of(
+        &decode(&flat_field_through_a_lens(dir.path(), "flat.ARW", false)),
+        &env,
+    );
+    let raw = decode(&flat_field_through_a_lens(dir.path(), "lens.ARW", true));
+    let lens = estimates_of(&raw, &env);
+    let ev_flat = flat.exposure.own_ev;
+    let ev_lens = lens.exposure.own_ev;
+    assert!(
+        (ev_lens - ev_flat).abs() < 0.02,
+        "metered {ev_lens:.3} EV, the flat field {ev_flat:.3} EV"
+    );
+
+    // The preview keeps the sensor's picture for the illuminant estimator and meters the corrected
+    // one: the corner block is brighter by 1 / G, the centre block is not.
+    let preview = build_preview(&raw).unwrap();
+    let gain = preview.vignette_gain.as_ref().expect("a gain per block");
+    assert_eq!(gain.len(), preview.width * preview.height);
+    let (w, h) = (preview.width, preview.height);
+    assert!((gain[(h / 2) * w + w / 2] - 1.0).abs() < 0.01);
+    assert!(
+        (1.45..1.6).contains(&gain[0]),
+        "corner gain {} (1 / 0.65)",
+        gain[0]
+    );
+    let g0 = lens.initial_gains().unwrap();
+    let (balanced, metered) = (preview.balanced(g0), preview.metered(g0));
+    assert_eq!(
+        balanced[3 * (h / 2 * w + w / 2) + 1],
+        metered[3 * (h / 2 * w + w / 2) + 1]
+    );
+    assert!(metered[1] > 1.4 * balanced[1]);
+    // Metering the preview without the gain (what the estimate did before) is darker in the
+    // corners and reads the photo brighter, as the evaluation found for lens-corrected files.
+    let tables = tables_of(
+        env.profiles
+            .resolve(&PhotoCamera::new(&env.profiles, &raw.meta, None).matched),
+    );
+    let matrix = *lens.color.metering_chain(tables).unwrap().matrix();
+    let ev_of = |rgb: &[f32]| {
+        auto_exposure(
+            &PreviewRgb {
+                width: w,
+                height: h,
+                rgb,
+                clip_mask: Some(&preview.clip),
+            },
+            &matrix,
+            0.0,
+        )
+        .unwrap()
+        .ev_auto
+    };
+    assert!((ev_of(&metered) - ev_lens).abs() < 1e-9);
+    eprintln!(
+        "flat field {ev_flat:.3} EV, vignetted file metered with the gain {ev_lens:.3} EV, without {:.3} EV",
+        ev_of(&balanced)
+    );
+    assert!(
+        ev_of(&balanced) - ev_flat > 0.05,
+        "without the gain {:.3} EV against {ev_flat:.3} EV",
+        ev_of(&balanced)
+    );
+}
+
+#[test]
+fn files_without_a_usable_vignetting_table_meter_the_preview_as_it_was() {
+    use ym_raw::testgen::LensTables;
+    let dir = tempfile::tempdir().unwrap();
+    let scene = Scene::new(512, 384, light(PROFILE, 5200.0), Layout::Patchwork, 0.4);
+    // No table at all (the builder's default file carries a nearly neutral one).
+    let path = dir.path().join("none.ARW");
+    scene
+        .builder(MODEL)
+        .lens_tables(LensTables {
+            vignetting: None,
+            chromatic_aberration: None,
+            distortion: None,
+        })
+        .write_to(&path, &scene.mosaic())
+        .unwrap();
+    let preview = build_preview(&decode(&path)).unwrap();
+    assert!(preview.vignette_gain.is_none());
+    let g0 = [1.7, 1.0, 1.4];
+    assert_eq!(preview.metered(g0), preview.balanced(g0));
+    // A table that corrects nothing (every knot 0 gives G = 1) changes no value: the synthetic
+    // golden set's files are of this kind, so their exposures stay what they were.
+    let mut zero = vec![16i16];
+    zero.extend([0i16; 16]);
+    let path = dir.path().join("zero.ARW");
+    scene
+        .builder(MODEL)
+        .lens_tables(LensTables {
+            vignetting: Some(zero),
+            chromatic_aberration: None,
+            distortion: None,
+        })
+        .write_to(&path, &scene.mosaic())
+        .unwrap();
+    let neutral = build_preview(&decode(&path)).unwrap();
+    assert!(neutral.vignette_gain.is_some());
+    assert_eq!(neutral.metered(g0), neutral.balanced(g0));
+    // A table the render ignores (a count that does not fit the values) is ignored here too.
+    let path = dir.path().join("bad.ARW");
+    scene
+        .builder(MODEL)
+        .lens_tables(LensTables {
+            vignetting: Some(vec![16, 0, 100]),
+            chromatic_aberration: None,
+            distortion: None,
+        })
+        .write_to(&path, &scene.mosaic())
+        .unwrap();
+    assert!(
+        build_preview(&decode(&path))
+            .unwrap()
+            .vignette_gain
+            .is_none()
+    );
+}

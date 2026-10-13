@@ -222,6 +222,33 @@ mod tests {
         }
     }
 
+    /// The sentences the Export panel shows that the Rust side owns are the same text on both
+    /// sides: the webview keeps a copy (it has no way to ask for them before the panel is drawn,
+    /// and the Preferences form shows them without a job), and this fails when a copy drifts.
+    #[test]
+    fn the_export_panel_says_what_the_writer_and_the_cli_say() {
+        let form = read("../src/screens/export/ExportOptionsForm.tsx");
+        let constants = [
+            // The one sentence about other apps: `ym render --help` has it word for word.
+            ("OTHER_APPS_NOTE", ym_export::dng::OTHER_APPS_NOTE),
+            // Adobe's licence notice.
+            ("ADOBE_NOTICE", ym_export::dng::ADOBE_NOTICE),
+            // Why a DNG is refused for a look with its own display rendering.
+            ("DNG_BLOCKED", ym_core::export::DNG_BLOCKED_MESSAGE),
+        ];
+        for (name, text) in constants {
+            let declaration = Regex::new(&format!(
+                r#"export const {name}\s*=\s*"{}";"#,
+                regex::escape(text)
+            ))
+            .expect("regex");
+            assert!(
+                declaration.is_match(&form),
+                "`{name}` in src/screens/export/ExportOptionsForm.tsx is not the Rust text:\n{text}"
+            );
+        }
+    }
+
     #[test]
     fn numeric_unions_are_the_literal_types_of_the_contract() {
         let bindings = generated();

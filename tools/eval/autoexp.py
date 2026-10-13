@@ -3,6 +3,7 @@
 
     python3 -I tools/eval/autoexp.py testdata/real/files --label real
     python3 -I tools/eval/autoexp.py testdata/synthetic/arw --label synthetic --one-per-scene
+    python3 -I tools/eval/autoexp.py testdata/synthetic/arw --label synthetic --one-per-scene --gate   # the M1-08 gate, with an exit code
 
 For every ARW in the folder it runs the real `ym` (default: the dev build `target/debug/ym`, `cargo build -p ym-cli`;
 a release build is not needed), takes the camera's embedded JPEG and computes, per photo:
@@ -23,9 +24,15 @@ the EV scale is exact because the C7 curves scale with the exposure, `docs/02`).
 display render. The photos are never modified: renders go to `--out`, big files are deleted after reduction unless
 `--keep-renders`, and a small cache (`<out>/cache/`) lets `--reuse` redo the arithmetic without rendering again.
 
+`--gate` turns the run into the M1-08 gate (docs/13, docs/15; Mykyta's decision of 2026-10-13): the metric is G3, a file passes
+when |G3| <= `--tolerance-ev` (0.5), and the gate is met when at least `--min-fraction` (0.8) of the files pass. A file that
+failed to analyse, or whose camera gain could not be read, counts as a miss and is listed. The outliers are printed and written
+to `report.md` and `results.json` (`summary.gate`) for the M1-H5 review, whether or not the gate is met.
+
 Needs numpy, Pillow and tifffile (`pip install numpy pillow tifffile`); OpenColorIO (`PyOpenColorIO`) and `exiftool` are
 optional. Nothing is written to the repository: the default `--out` is under `testdata/eval/` (git-ignored).
-Exit code 0 when every file was analysed, 1 when some failed, 2 for a usage error.
+Exit code 0 when every file was analysed (and, with `--gate`, the gate is met), 1 when some failed, 2 for a usage error,
+3 when `--gate` is given and fewer than `--min-fraction` of the files are within the tolerance (this wins over 1).
 """
 
 from __future__ import annotations
@@ -68,6 +75,12 @@ CACHE_SCHEMA = 2
 SYNTH_GAIN_EV = 0.5575
 VARIANT_ORDER = ("uncompressed14", "packed12", "lossless-l", "craw", "lossless-ms")
 AE_PROGRAMS = {2, 3, 4, 5, 6, 7, 8}  # EXIF ExposureProgram: the camera metered (not manual, not undefined)
+#: The M1-08 gate (docs/13 gate table, docs/15, decision 2026-10-13): `EV_auto` within this many EV of the camera engine's gain (G3) ...
+GATE_TOLERANCE_EV = 0.5
+#: ... for at least this fraction of the files.
+GATE_MIN_FRACTION = 0.8
+#: Exit code of `--gate` when the gate is not met (1 stays "some file failed to analyse", 2 "usage").
+EXIT_GATE_NOT_MET = 3
 
 
 #: The three `ym` calls made for each photo (what a report built from the cache shows instead of recorded commands).
@@ -627,6 +640,95 @@ def summarise(entries: list[dict[str, Any]], tolerance_ev: float) -> dict[str, A
     return s
 
 
+def evaluate_gate(entries: list[dict[str, Any]], failures: Sequence[tuple[str, str]] = (), tolerance_ev: float = GATE_TOLERANCE_EV, min_fraction: float = GATE_MIN_FRACTION) -> dict[str, Any]:
+    """The M1-08 gate on G3 (`g3_scene_ev`, our `EV_auto` minus the camera engine's gain, in EV).
+
+    A file passes when |G3| <= `tolerance_ev` (the bound itself passes). The gate is met when at least `min_fraction` of the
+    files pass, and it needs at least one file. The denominator is every file that was tried: a file that failed to analyse
+    (`failures`) or whose G3 is not a finite number counts as a miss and is listed under `unusable`, so a run cannot reach 80 %
+    by losing the files it does badly on. `outliers` are the files outside the tolerance, worst first, with what the M1-H5
+    review needs to tell a deliberately dark or bright scene from a wrong exposure (the camera's own key, its DRO setting).
+    """
+    total = len(entries) + len(failures)
+    needed = math.ceil(min_fraction * total - 1e-9)  # the smallest pass count whose share is at least `min_fraction`
+    within = 0
+    outliers: list[dict[str, Any]] = []
+    unusable: list[dict[str, Any]] = []
+    for e in entries:
+        g3 = e.get("g3_scene_ev")
+        if g3 is None or not math.isfinite(g3):
+            unusable.append({"file": e["file"], "why": "no camera gain could be read from its JPEG"})
+        elif abs(g3) <= tolerance_ev:
+            within += 1
+        else:
+            outliers.append(
+                {
+                    "file": e["file"],
+                    "body": e.get("body"),
+                    "iso": e.get("iso"),
+                    "dro": e.get("dro"),
+                    "jpeg_median": e.get("jpeg_median"),
+                    "ev_auto": e["ev_auto"],
+                    "camera_gain_ev": e.get("camera_gain_ev"),
+                    "g3_ev": float(g3),
+                    "ours": "brighter" if g3 > 0 else "darker",
+                }
+            )
+    unusable += [{"file": name, "why": why} for name, why in failures]
+    outliers.sort(key=lambda o: -abs(o["g3_ev"]))
+    return {
+        "metric": "g3_scene_ev",
+        "tolerance_ev": tolerance_ev,
+        "min_fraction": min_fraction,
+        "files": total,
+        "within": within,
+        "needed": needed,
+        "fraction": within / total if total else 0.0,
+        "passed": total > 0 and within >= needed,
+        "outliers": outliers,
+        "unusable": unusable,
+    }
+
+
+def gate_lines(gate: dict[str, Any]) -> list[str]:
+    """The gate as plain text lines: the statement, the verdict, then the outliers for the M1-H5 review."""
+    tol, frac = gate["tolerance_ev"], gate["min_fraction"]
+    verdict = "MET" if gate["passed"] else "NOT MET"
+    L = [
+        f"M1-08 gate (G3: EV_auto minus the camera engine's gain): within +-{tol:g} EV for at least {frac * 100:g} % of the files",
+        f"  {gate['within']} of {gate['files']} files within ({gate['fraction'] * 100:.1f} %; {gate['needed']} needed): {verdict}",
+    ]
+    if gate["outliers"]:
+        L.append("  outliers for the M1-H5 review, worst first (G3, EV_auto, camera gain, JPEG median = the key the camera rendered, DRO):")
+        for o in gate["outliers"]:
+            L.append(f"    {o['file']}: G3 {_f(o['g3_ev'], 2, True)} (we are {o['ours']}), EV_auto {_f(o['ev_auto'], 2, True)}, camera gain {_f(o['camera_gain_ev'], 2, True)}, JPEG median {_f(o['jpeg_median'], 3)}, DRO {o['dro'] or '-'}, {o['body']}, ISO {o['iso']}")
+    else:
+        L.append("  no outliers")
+    for u in gate["unusable"]:
+        L.append(f"  counted as a miss: {u['file']}: {u['why']}")
+    return L
+
+
+def gate_markdown(gate: dict[str, Any]) -> list[str]:
+    """The `## Gate` section of `report.md`."""
+    tol, frac = gate["tolerance_ev"], gate["min_fraction"]
+    L = ["## Gate (M1-08, metric G3)", ""]
+    L += [(f"The gate (`docs/13`, `docs/15`; decision of 2026-10-13): our `EV_auto` is within +-{tol:g} EV of the camera engine's own gain (G3) for at least "
+           f"{frac * 100:g} % of the files. A file that failed to analyse, or whose camera gain could not be read, counts as a miss."), ""]
+    L += [f"**{'Met' if gate['passed'] else 'Not met'}: {gate['within']} of {gate['files']} files within ({gate['fraction'] * 100:.1f} %, {gate['needed']} needed).**", ""]
+    if gate["outliers"]:
+        L += ["Outliers for the M1-H5 review, worst first. The JPEG cannot tell a deliberately dark or bright scene from a wrong exposure; the key the camera rendered (JPEG median) and its DRO setting are given to help:", "",
+              "| file | body | ISO | DRO | JPEG median | EV_auto | camera gain | G3 | we are |", "|---|---|---|---|---|---|---|---|---|"]
+        for o in gate["outliers"]:
+            L.append(f"| {o['file']} | {o['body']} | {o['iso']} | {o['dro'] or '-'} | {_f(o['jpeg_median'], 3)} | {_f(o['ev_auto'], 2, True)} | {_f(o['camera_gain_ev'], 2, True)} | {_f(o['g3_ev'], 2, True)} | {o['ours']} |")
+        L.append("")
+    else:
+        L += ["No outliers.", ""]
+    if gate["unusable"]:
+        L += ["Counted as misses:", ""] + [f"- {u['file']}: {u['why']}" for u in gate["unusable"]] + [""]
+    return L
+
+
 def key_correlation(entries: list[dict[str, Any]]) -> dict[str, float]:
     """Pearson correlation over photos of each error with the scene's key as the camera rendered it (`log2` of the JPEG
     median): a metric that tracks the key is measuring the scene, not the exposure algorithm. Needs three photos."""
@@ -664,6 +766,8 @@ def markdown(meta: dict[str, Any], entries: list[dict[str, Any]], failures: list
     L += [f"`{meta['ym_version']}`; {len(entries)} photos analysed, {len(failures)} failed; tolerance +-{tol} EV.", ""]
     L += ["Render commands (one `ym` process per photo, empty home folder):", ""]
     L += ["```", *meta["command_examples"], "```", ""]
+    if s.get("gate"):
+        L += gate_markdown(s["gate"])
     L += ["## Per photo", ""]
     L += ["| file | body | prog | DRO | ISO | t | N | EV100 | EV_auto | replica | scene med | JPEG med | G1 gate | G2 display | cam gain | G3 scene | D(0.18) |", "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
     for e in entries:
@@ -790,11 +894,17 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--keep-renders", action="store_true", help="keep the DNG and TIFF renders (they are big)")
     ap.add_argument("--display", default="aces2", help="ym --display (aces2, or arri with an imported display LUT and --ym-home)")
     ap.add_argument("--ym-home", type=Path, default=None, help="YELLOWMOON_HOME for ym (default: an empty folder; needed for --display arri)")
-    ap.add_argument("--tolerance", type=float, default=0.5, help="the gate's tolerance in EV")
+    ap.add_argument("--tolerance-ev", "--tolerance", dest="tolerance", type=float, default=GATE_TOLERANCE_EV, help="the tolerance in EV: for the tallies, and for --gate the bound of |G3| (default %(default)s)")
+    ap.add_argument("--gate", action="store_true", help="run as the M1-08 gate: exit 3 when fewer than --min-fraction of the files have |G3| <= --tolerance-ev; print the outliers")
+    ap.add_argument("--min-fraction", type=float, default=GATE_MIN_FRACTION, help="--gate: the share of files that must be within the tolerance, in (0, 1] (default %(default)s)")
     ap.add_argument("--json", type=Path, default=None, help="where to write the JSON (default: <out>/results.json)")
     args = ap.parse_args(argv)
     if not args.inputs:
         ap.error("give a folder or files")
+    if not (math.isfinite(args.tolerance) and args.tolerance > 0):
+        ap.error("--tolerance-ev must be a positive number of EV")
+    if not (math.isfinite(args.min_fraction) and 0 < args.min_fraction <= 1):
+        ap.error("--min-fraction must be in (0, 1]")
     try:
         files = find_files(args.inputs, args.one_per_scene, args.filter)
     except StudyError as err:
@@ -835,6 +945,9 @@ def _run(args: argparse.Namespace, files: list[Path], work: Path, label: str, ym
         print("error: nothing could be analysed", file=sys.stderr)
         return 1
     summary = summarise(entries, args.tolerance)
+    gate = evaluate_gate(entries, failures, args.tolerance, args.min_fraction) if args.gate else None
+    if gate:
+        summary["gate"] = gate
     meta = {
         "label": label,
         "ym": str(args.ym),
@@ -849,7 +962,11 @@ def _run(args: argparse.Namespace, files: list[Path], work: Path, label: str, ym
     write_csv(work / "results.csv", entries)
     (work / "report.md").write_text(markdown(meta, entries, failures, summary))
     print_table(entries, summary)
+    if gate:
+        print("\n" + "\n".join(gate_lines(gate)))
     print(f"\nreport: {work / 'report.md'}\njson:   {args.json or work / 'results.json'}", file=sys.stderr)
+    if gate and not gate["passed"]:
+        return EXIT_GATE_NOT_MET
     return 1 if failures else 0
 
 

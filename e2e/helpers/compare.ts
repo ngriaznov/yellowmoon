@@ -26,7 +26,7 @@ const DOM_DIR = resolve(OUT, "screenshot-dom");
 const BUDGETS: Readonly<Record<string, number>> = {
   // The Light tab's histogram and the pixel readout are drawn from the photo; the mockup's are made-up numbers.
   "photos-light": 0.01,
-  // The DNG note carries Adobe's notice and the white-balance caveat (docs/09 §Legal): three lines more than the mockup.
+  // The DNG note carries the sentence about other apps, Adobe's notice and the white-balance caveat (docs/09 §Legal): about five lines more than the mockup.
   "export-dng": 0.02,
   // The mockup shows the zip as arrived and Next ready; the app waits for the file, so the footer's line and button differ.
   "import-2-get-files": 0.006,

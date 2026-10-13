@@ -924,14 +924,20 @@ describe("what the screens need beyond docs/01", () => {
     api.reset();
   });
 
-  it("makes look thumbnails: a PNG of 240 × 160 through the look, different for each look", async () => {
+  it("makes look thumbnails: the address of a PNG of 240 × 160 through the look, different for each look", async () => {
     const api = createMockApi({ speed: Number.POSITIVE_INFINITY });
     await open(api);
     const neutral = await api.lookThumbnail(4, "builtin:neutral");
     const teal = await api.lookThumbnail(4, "arri:3000:teal-and-orange");
-    expect(neutral.slice(0, 8)).toEqual([137, 80, 78, 71, 13, 10, 26, 10]);
-    expect(teal).not.toEqual(neutral);
-    expect(neutral.slice(16, 24)).toEqual([0, 0, 0, 240, 0, 0, 0, 160]); // IHDR: width, height
+    // An address, as the shell answers (there `ym-frame://…`; here an object URL, or a data URL where the browser has none).
+    expect(neutral).toMatch(/^(blob:|data:image\/png;base64,)/);
+    expect(teal).toMatch(/^(blob:|data:image\/png;base64,)/);
+    expect(teal).not.toBe(neutral);
+    if (neutral.startsWith("data:")) {
+      const bytes = Uint8Array.from(atob(neutral.split(",")[1] ?? ""), (c) => c.charCodeAt(0));
+      expect(Array.from(bytes.slice(0, 8))).toEqual([137, 80, 78, 71, 13, 10, 26, 10]);
+      expect(Array.from(bytes.slice(16, 24))).toEqual([0, 0, 0, 240, 0, 0, 0, 160]); // IHDR: width, height
+    }
   });
 
   it("refuses a look thumbnail for a look that is missing or unknown", async () => {

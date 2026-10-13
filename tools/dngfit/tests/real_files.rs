@@ -1,6 +1,9 @@
-//! The DNG gates on real Sony raw files, when `testdata/real/files` has some (local evaluation only: the files come from
-//! github.com/drewnoakes/metadata-extractor-images and are never committed or copied). Slow: each file is developed three
-//! times by a debug build of `ym` and rendered by `dng_validate`.
+//! The DNG gates on real Sony raw files, when `testdata/real/files` has some (local evaluation only: `tools/fetch/real-eval.sh`
+//! fetches them from public GitHub repositories whose licences are unclear or restricted, and they are never committed or
+//! copied). The files: an ARW 1 file (DSLR-A300), a cRAW file (NEX-5N) and a portrait cRAW frame of an A7 III (ILCE-7M3, Exif
+//! orientation "Rotate 270 CW": the file on which a DNG whose orientation was applied twice was found, so it guards the
+//! orientation of the DNG against `dng_validate`'s render). Slow: each file is developed three times by a debug build of `ym`
+//! and rendered by `dng_validate`.
 //!
 //! `cargo test -p dngfit --test real_files -- --ignored --nocapture`
 
@@ -32,7 +35,7 @@ fn entry_of(path: &std::path::Path) -> Entry {
 #[ignore = "renders real photographs (minutes in a debug build); run with --ignored"]
 fn real_files_pass_both_dng_gates() {
     let dir = workspace_root().join("testdata/real/files");
-    let files: Vec<PathBuf> = ["DSLR-A300.ARW", "NEX-5N.ARW"]
+    let files: Vec<PathBuf> = ["DSLR-A300.ARW", "NEX-5N.ARW", "ILCE-7M3.ARW"]
         .iter()
         .map(|n| dir.join(n))
         .filter(|p| p.is_file())

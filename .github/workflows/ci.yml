@@ -1,7 +1,8 @@
 # CI: adapted from github.com/ngriaznov/plugout, extended with licence checks, golden images,
 # decoder oracles, DNG validation and a training dry run (docs/12, docs/13). Installed in M0-02.
-# Every job below is live. rust-toolchain.toml pins the Rust toolchain; the jobs that build ym, golden or dngfit install it
-# with a plain `rustup toolchain install` (no argument: the file's channel, profile and components).
+# Every job below is live. rust-toolchain.toml pins the Rust toolchain (channel, profile and components); every job that
+# builds Rust installs it with a plain `rustup toolchain install` (no argument: it reads that file), so the CI toolchain cannot
+# drift from the one developers get, and not from `stable`.
 name: CI
 
 on:
@@ -63,9 +64,8 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt,clippy
+      - name: Rust toolchain from rust-toolchain.toml
+        run: rustup toolchain install   # rustfmt and clippy come from the file's components
       - uses: Swatinem/rust-cache@v2
       - run: tools/dev/prepare-sidecar.sh   # tauri-build needs the sidecar to exist (docs/01)
       - run: cargo fmt --all --check
@@ -138,7 +138,8 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y mesa-vulkan-drivers libvulkan1 vulkan-tools
       - name: Show the adapter
         run: vulkaninfo --summary || true
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Rust toolchain from rust-toolchain.toml
+        run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
       - name: Kernel parity, queue, pool, tiles
         run: cargo test -p ym-gpu --release
@@ -154,7 +155,8 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Rust toolchain from rust-toolchain.toml
+        run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
@@ -179,7 +181,8 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Rust toolchain from rust-toolchain.toml
+        run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
       - run: sudo apt-get update && sudo apt-get install -y darktable && pip3 install numpy scipy
       - run: tools/lens/run_oracle_suite.sh build/lens-oracle
@@ -227,6 +230,7 @@ jobs:
   #    numpy 2.5.4 / scipy 1.18.1 / Pillow 12.3.0 (colour-science is pinned), so the unpinned requirements are enough for now.
   #    If a hash ever differs on a fresh runner with no code change, pin those three first.
   #  - `golden truth` (end-to-end colour against the ground truth of the synthetic scenes) is a report with no threshold.
+  #  - The auto-exposure gate (G3, `tools/eval/autoexp.py --gate`) runs on the same `ym` and the same synthetic set; see the step.
   golden:
     runs-on: ubuntu-24.04
     timeout-minutes: 90
@@ -240,7 +244,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
-      - run: pip install -r training/requirements.txt -r training/synth/requirements.txt
+      - run: pip install -r training/requirements.txt -r training/synth/requirements.txt tifffile   # tifffile: tools/eval reads the renders
       - run: tools/fetch/spectral.sh
       - name: Synthetic ARW set (61 files, a few minutes)
         run: tools/fetch/synthetic.sh --release
@@ -261,6 +265,21 @@ jobs:
         run: |
           target/release/golden truth --ym target/release/ym --report golden-truth.json | tee golden-truth.txt
           { echo '### golden truth (a report, no gate)'; echo '```text'; cat golden-truth.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      # M1-08 gate, metric G3 (docs/13, decision 2026-10-13): `autoexp.py --gate` renders every synthetic scene once (one raw
+      # variant per scene, 37 files) with the `ym` just built, reads the camera's gain from the embedded JPEG and exits 3 when
+      # fewer than 80 % of the files have |EV_auto - camera gain| <= 0.5 EV. THIS CHECKS THE MACHINERY, NOT SONY: the synthetic
+      # JPEG is our own rendering (training/synth/preview.py) with a known gain, so the scenes tell whether the estimator, the
+      # exposure algorithm and the arithmetic still agree, and say nothing about a real camera. The real files and the CC0
+      # tier run the same command locally (tools/eval/run.sh) until a golden corpus exists; outliers there go to M1-H5.
+      - name: Auto-exposure gate (G3) on the synthetic tier - the machinery, not Sony
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          code=0
+          python3 -I tools/eval/autoexp.py testdata/synthetic/arw --ym target/release/ym --label synthetic --one-per-scene \
+            --out autoexp-out --gate --tolerance-ev 0.5 --min-fraction 0.8 | tee autoexp-gate.txt || code=$?
+          { echo '### auto-exposure gate (G3, synthetic tier: the machinery, not Sony)'; echo '```text'; sed -n '/^M1-08 gate/,$p' autoexp-gate.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          exit "$code"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -269,6 +288,9 @@ jobs:
             golden-report.json
             golden-truth.json
             golden-truth.txt
+            autoexp-gate.txt
+            autoexp-out/report.md
+            autoexp-out/results.json
           if-no-files-found: ignore
 
   # M3-12: every exported DNG passes Adobe's dng_validate, and its render is within a median ΔE00 of 1.5 of our JPEG (docs/09
@@ -333,7 +355,8 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Rust toolchain from rust-toolchain.toml
+        run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
@@ -342,6 +365,66 @@ jobs:
       - run: python3 -m unittest training.synth.test_synth
       - run: tools/fetch/synthetic.sh --oracle
       - run: cargo test -p golden
+
+  # tools/eval: the unit tests of the auto-exposure study and of its M1-08 gate logic (G3, `--gate`). Pure numpy/Pillow/tifffile;
+  # the one test that runs `ym` skips itself when there is no binary or no synthetic set. The gate itself runs in the golden job.
+  eval-tools:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install numpy pillow tifffile
+      - run: python3 -I -m unittest discover -s tools/eval -p 'test_*.py'
+
+  # AGENTS.md rule 6, across SEPARATE builds, and rustdoc.
+  #  - Parity. One cargo invocation gives every package the union of the features that any selected package wants, so a test
+  #    that builds the app path and `ym` together (crates/ym-cli/tests/parity.rs) cannot see a difference that only exists
+  #    when they are built apart, which is how they ship (the app bundle gets `ym` from `cargo build -p ym-cli`, the app is
+  #    its own `cargo build`). Here `ym` is built alone (tools/dev/prepare-sidecar.sh: also the app's sidecar) and kept; then
+  #    `cargo test -p yellowmoon-app` builds the app's graph on its own and exports the same synthetic ARW in every format
+  #    (JPEG, TIFF 8/16-bit with LZW, ZIP and none, PNG 8/16-bit, DNG) through `ym_core::app::Core::export_start` (what the
+  #    Tauri commands call) and through that `ym` (src-tauri/tests/app_cli_parity.rs, `YM_BIN`), and compares the bytes. It
+  #    runs headless on Linux with no X server: the test opens no window and starts no Tauri runtime. The in-crate test of the
+  #    command layer (JPEG, the export defaults) runs against the same binary. What stays Mac-only: the real window, the
+  #    native viewport, the Metal path (M0-H4).
+  #  - Rustdoc. `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` (broken intra-doc links, bare URLs, unclosed
+  #    HTML) was never run in CI before; the sidecar and the Tauri libraries it needs are here for the parity test anyway.
+  parity:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust toolchain from rust-toolchain.toml
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - name: Tauri system libraries (the app crate is built here; no window is opened)
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev
+      - name: ym, built by itself (also the app's sidecar)
+        run: tools/dev/prepare-sidecar.sh
+      - name: Keep that ym, and show that the two builds differ in features
+        shell: bash
+        run: |
+          cp target/debug/ym "$RUNNER_TEMP/ym-alone"
+          echo "ym-raw in the build of ym (must not have testgen):"
+          cargo tree -p ym-cli -e normal -i ym-raw -f '{p} [{f}]' | tee "$RUNNER_TEMP/ym-raw-in-ym.txt"
+          if grep -q testgen "$RUNNER_TEMP/ym-raw-in-ym.txt"; then echo "::error::ym is built with the test-only ARW writer"; exit 1; fi
+          echo "ym-raw in the build of the app's tests:"
+          cargo tree -p yellowmoon-app -e normal,dev -i ym-raw -f '{p} [{f}]'
+      - name: App export path in its own build against that ym (every format, byte for byte)
+        env:
+          YM_BIN: ${{ runner.temp }}/ym-alone
+          YM_REQUIRE_PARITY_BIN: "1"
+        run: |
+          cargo test -p yellowmoon-app --test app_cli_parity -- --nocapture
+          cargo test -p yellowmoon-app the_app_and_the_command_line_write_the_same_bytes
+      - name: Rustdoc (warnings are errors)
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --workspace --no-deps
 
   # M2-05: the jdd training code stays runnable (50 steps on CPU, synthetic data only), plus its unit
   # tests and the golden-tile parity check. Real training needs a GPU and PixelShift200 (HUMAN M2-H4).

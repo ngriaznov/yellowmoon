@@ -55,8 +55,12 @@ export const commands = {
 	samplePixel: (x: number, y: number) => __TAURI_INVOKE<PixelSample>("sample_pixel", { x, y }),
 	/**  `looks_list()`. */
 	looksList: () => __TAURI_INVOKE<Look[]>("looks_list"),
-	/**  `look_thumbnail(photo_id, look_id)`: the photo through one look as PNG bytes of at most 240 px. */
-	lookThumbnail: (photoId: PhotoId, lookId: LookId) => __TAURI_INVOKE<number[]>("look_thumbnail", { photoId, lookId }),
+	/**
+	 *  `look_thumbnail(photo_id, look_id)`: the photo through one look. The answer is the address of
+	 *  a PNG of at most 240 px on the `ym-frame` scheme (`ym-frame://localhost/look-<photo>-<n>.png`,
+	 *  `http://ym-frame.localhost/…` on Windows), like `thumbnail_ready`'s.
+	 */
+	lookThumbnail: (photoId: PhotoId, lookId: LookId) => __TAURI_INVOKE<string>("look_thumbnail", { photoId, lookId }),
 	/**  `looks_import(path, input)`: a zip, a folder or a `.cube` file. */
 	looksImport: (path: string, input: 
 /**  LogC4 in ARRI Wide Gamut 4. */

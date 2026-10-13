@@ -86,7 +86,6 @@ insta = { version = "1", features = ["json"] }
 tauri = { version = "2", features = ["macos-private-api"] }
 tauri-build = "2"
 tauri-plugin-updater = "2"
-tauri-plugin-process = "2"
 tauri-plugin-dialog = "2"
 # Typed IPC. The rc line is pinned exactly: specta, tauri-specta and specta-typescript must move together.
 specta = "=2.0.0-rc.25"

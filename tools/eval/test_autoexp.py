@@ -228,6 +228,185 @@ class Reports(unittest.TestCase):
         self.assertTrue(math.isfinite(summary["key_correlation"]["g3_scene_ev"]))  # the dead photo is left out of the fit
 
 
+def g3_entry(name: str, g3: float, **kw) -> dict:
+    """The few fields of an analysed photo that the gate reads."""
+    e = {"file": name, "body": "Sony Test", "iso": 100, "dro": None, "jpeg_median": 0.2, "ev_auto": 1.0 + g3 if g3 is not None and math.isfinite(g3) else 1.0, "camera_gain_ev": 1.0, "g3_scene_ev": g3}
+    e.update(kw)
+    return e
+
+
+class Gate(unittest.TestCase):
+    """The M1-08 gate (docs/13, decision 2026-10-13): |G3| <= 0.5 EV for at least 80 % of the files."""
+
+    def gate(self, g3s, failures=(), **kw):
+        return autoexp.evaluate_gate([g3_entry(f"f{i}.ARW", g) for i, g in enumerate(g3s)], failures, **kw)
+
+    def test_the_defaults_are_the_decision(self):
+        self.assertEqual((autoexp.GATE_TOLERANCE_EV, autoexp.GATE_MIN_FRACTION), (0.5, 0.8))
+        g = self.gate([0.0] * 4 + [1.0])
+        self.assertEqual((g["tolerance_ev"], g["min_fraction"], g["metric"]), (0.5, 0.8, "g3_scene_ev"))
+
+    def test_the_tolerance_bound_itself_passes_for_either_sign(self):
+        self.assertEqual(self.gate([0.5, -0.5, 0.25, -0.25, 0.0])["within"], 5)
+        g = self.gate([0.5000001, -0.5000001, 0.0, 0.0, 0.0])
+        self.assertEqual(g["within"], 3)
+        self.assertFalse(g["passed"])  # 3 of 5 is 60 %
+        self.assertEqual(self.gate([0.74, -0.74, 0.0, 0.0, 0.0], tolerance_ev=0.75)["within"], 5)
+
+    def test_the_fraction_is_at_least_not_more_than(self):
+        self.assertTrue(self.gate([0.0] * 8 + [2.0] * 2)["passed"])  # 80 % exactly
+        self.assertFalse(self.gate([0.0] * 7 + [2.0] * 3)["passed"])
+        self.assertTrue(self.gate([0.0] * 4 + [2.0])["passed"])
+        self.assertFalse(self.gate([0.0] * 3 + [2.0] * 2)["passed"])
+        g = self.gate([0.0] * 28 + [2.0] * 7)  # 0.8 * 35 is not exactly 28 in floating point
+        self.assertEqual((g["needed"], g["passed"]), (28, True))
+        self.assertTrue(self.gate([0.0] * 37)["passed"])
+        self.assertTrue(self.gate([0.0] * 5 + [2.0] * 5, min_fraction=0.5)["passed"])
+        self.assertFalse(self.gate([0.0] * 9 + [2.0], min_fraction=1.0)["passed"])
+
+    def test_a_run_without_files_does_not_pass(self):
+        g = autoexp.evaluate_gate([], [])
+        self.assertEqual((g["files"], g["within"], g["passed"], g["fraction"]), (0, 0, False, 0.0))
+
+    def test_files_that_failed_or_have_no_camera_gain_count_as_misses(self):
+        # 4 of 4 analysed files are within, but two more failed: 4 of 6 is below 80 %
+        g = self.gate([0.0] * 4, failures=[("a.ARW", "no preview"), ("b.ARW", "ym failed")])
+        self.assertEqual((g["files"], g["within"], g["needed"], g["passed"]), (6, 4, 5, False))
+        self.assertEqual([u["file"] for u in g["unusable"]], ["a.ARW", "b.ARW"])
+        self.assertEqual(g["unusable"][0]["why"], "no preview")
+        # a G3 that is not a number (a black preview) is a miss too, and is listed with its name
+        g = self.gate([0.0] * 4 + [math.nan, None])
+        self.assertEqual((g["files"], g["within"], g["passed"]), (6, 4, False))
+        self.assertEqual([u["file"] for u in g["unusable"]], ["f4.ARW", "f5.ARW"])
+        self.assertEqual(g["outliers"], [])
+        self.assertTrue(self.gate([0.0] * 4 + [math.nan])["passed"])  # 4 of 5
+
+    def test_the_outliers_come_worst_first_with_what_the_review_needs(self):
+        entries = [
+            g3_entry("ok.ARW", 0.1),
+            g3_entry("dark_brick.ARW", 0.74, dro="Auto", jpeg_median=0.05, body="Sony A500", iso=200),
+            g3_entry("flash.ARW", -0.72, jpeg_median=0.47),
+            g3_entry("tiles.ARW", 0.52),
+        ]
+        g = autoexp.evaluate_gate(entries)
+        self.assertEqual([o["file"] for o in g["outliers"]], ["dark_brick.ARW", "flash.ARW", "tiles.ARW"])
+        first = g["outliers"][0]
+        self.assertEqual((first["ours"], first["dro"], first["body"], first["iso"], first["jpeg_median"]), ("brighter", "Auto", "Sony A500", 200, 0.05))
+        self.assertAlmostEqual(first["g3_ev"], 0.74)
+        self.assertEqual(g["outliers"][1]["ours"], "darker")
+        self.assertEqual((g["within"], g["files"], g["passed"]), (1, 4, False))
+
+    def test_the_text_and_the_markdown_say_the_statement_the_verdict_and_the_outliers(self):
+        g = autoexp.evaluate_gate([g3_entry("ok.ARW", 0.1), g3_entry("far.ARW", 0.9, dro="Auto")], [("bad.ARW", "no preview")])
+        text = "\n".join(autoexp.gate_lines(g))
+        for part in ("within +-0.5 EV for at least 80 % of the files", "1 of 3 files within (33.3 %; 3 needed): NOT MET", "far.ARW: G3 +0.90 (we are brighter)", "DRO Auto", "counted as a miss: bad.ARW: no preview"):
+            self.assertIn(part, text)
+        md = "\n".join(autoexp.gate_markdown(g))
+        for part in ("## Gate (M1-08, metric G3)", "**Not met: 1 of 3 files within", "| far.ARW |", "M1-H5", "- bad.ARW: no preview"):
+            self.assertIn(part, md)
+        met = "\n".join(autoexp.gate_lines(autoexp.evaluate_gate([g3_entry("ok.ARW", 0.0)])))
+        self.assertIn(": MET", met)
+        self.assertIn("no outliers", met)
+
+    def test_the_gate_section_goes_into_the_report_only_when_there_is_a_gate(self):
+        entries = Reports().entries()
+        meta = {"label": "t", "ym_version": "ym test", "command_examples": ["ym"], "tolerance_ev": 0.5}
+        plain = autoexp.markdown(meta, entries, [], autoexp.summarise(entries, 0.5))
+        self.assertNotIn("## Gate", plain)
+        summary = autoexp.summarise(entries, 0.5)
+        summary["gate"] = autoexp.evaluate_gate(entries)
+        self.assertIn("## Gate (M1-08, metric G3)", autoexp.markdown(meta, entries, [], summary))
+        json.dumps(autoexp._clean({"summary": summary}))
+
+
+class GateCommand(unittest.TestCase):
+    """`main --gate` over made-up photos whose caches are in the work folder (`--reuse`, no `ym` needed): the exit codes and the files."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.photos = self.root / "photos"
+        self.photos.mkdir()
+        self.work = self.root / "work"
+
+    def library(self, g3s):
+        """One made-up ARW per entry of `g3s`, with a cache whose G3 is about that value (the made-up camera gain is 1 EV)."""
+        for i, g3 in enumerate(g3s):
+            arw = self.photos / f"IMG_{i:04d}.ARW"
+            arw.write_bytes(b"not a real raw file %d" % i)
+            info, exif, extras, red = fake_inputs(1.0 + g3, 0.08, seed=i + 1)
+            st = arw.stat()
+            key = {"size": st.st_size, "mtime_ns": st.st_mtime_ns, "schema": autoexp.CACHE_SCHEMA, "display": "aces2"}
+            (self.work / "cache").mkdir(parents=True, exist_ok=True)
+            autoexp.save_cache(self.work / "cache" / f"{arw.stem}.npz", red, {"key": key, "info": info, "exif": exif, "extras": extras})
+
+    def run_main(self, *flags):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = autoexp.main([str(self.photos), "--reuse", "--ym", str(self.root / "no-ym"), "--out", str(self.work), "--label", "t", *flags])
+        return code, out.getvalue(), err.getvalue()
+
+    def test_a_met_gate_exits_0_and_writes_the_gate_into_the_report_and_the_json(self):
+        self.library([0.0, 0.2, -0.2, 0.1, -0.1])
+        code, out, _ = self.run_main("--gate")
+        self.assertEqual(code, 0, out)
+        self.assertIn("5 of 5 files within (100.0 %; 4 needed): MET", out)
+        doc = json.loads((self.work / "results.json").read_text())
+        self.assertTrue(doc["summary"]["gate"]["passed"])
+        self.assertIn("## Gate (M1-08, metric G3)", (self.work / "report.md").read_text())
+
+    def test_an_unmet_gate_exits_3_prints_the_outliers_and_still_writes_the_report(self):
+        self.library([0.0, 0.1, -0.1, 0.9, -0.8])  # 3 of 5: 60 %
+        code, out, _ = self.run_main("--gate", "--tolerance-ev", "0.5", "--min-fraction", "0.8")
+        self.assertEqual(code, autoexp.EXIT_GATE_NOT_MET, out)
+        self.assertEqual(autoexp.EXIT_GATE_NOT_MET, 3)
+        self.assertIn("3 of 5 files within (60.0 %; 4 needed): NOT MET", out)
+        self.assertIn("IMG_0003.ARW: G3 +0.90 (we are brighter)", out)
+        self.assertIn("IMG_0004.ARW: G3 -0.80 (we are darker)", out)
+        self.assertLess(out.index("IMG_0003.ARW: G3"), out.index("IMG_0004.ARW: G3"))  # worst first
+        doc = json.loads((self.work / "results.json").read_text())
+        gate = doc["summary"]["gate"]
+        self.assertFalse(gate["passed"])
+        self.assertEqual([o["file"] for o in gate["outliers"]], ["IMG_0003.ARW", "IMG_0004.ARW"])
+        report = (self.work / "report.md").read_text()
+        self.assertIn("**Not met: 3 of 5 files within", report)
+        self.assertIn("| IMG_0003.ARW |", report)
+
+    def test_the_threshold_options_change_the_verdict(self):
+        self.library([0.0, 0.1, -0.1, 0.9, -0.8])
+        self.assertEqual(self.run_main("--gate", "--min-fraction", "0.6")[0], 0)
+        self.assertEqual(self.run_main("--gate", "--tolerance-ev", "1.0")[0], 0)
+        self.assertEqual(self.run_main("--gate", "--tolerance", "0.25")[0], autoexp.EXIT_GATE_NOT_MET)  # the older option name still works
+
+    def test_without_gate_the_exit_code_does_not_depend_on_the_errors(self):
+        self.library([2.0, -2.0, 1.5, 0.0, 0.0])
+        code, out, _ = self.run_main()
+        self.assertEqual(code, 0)
+        self.assertNotIn("M1-08 gate", out)
+        self.assertNotIn("gate", json.loads((self.work / "results.json").read_text())["summary"])
+        self.assertNotIn("## Gate", (self.work / "report.md").read_text())
+
+    def test_a_file_that_cannot_be_analysed_counts_against_the_gate(self):
+        self.library([0.0, 0.1, -0.1, 0.2])
+        (self.photos / "IMG_9999.ARW").write_bytes(b"no cache for this one and no ym to render it")
+        code, out, _ = self.run_main("--gate")
+        self.assertEqual(code, 1, out)  # 4 of 5 is 80 %: met, but a file failed
+        self.assertIn("4 of 5 files within (80.0 %; 4 needed): MET", out)
+        self.assertIn("counted as a miss: IMG_9999.ARW", out)
+        self.library([0.0, 0.1, -0.1])
+        (self.photos / "IMG_0003.ARW").unlink()
+        code, out, _ = self.run_main("--gate")
+        self.assertEqual(code, autoexp.EXIT_GATE_NOT_MET, out)  # 3 of 4 is 75 %: not met, and that wins over "a file failed"
+
+    def test_bad_thresholds_are_a_usage_error(self):
+        self.library([0.0])
+        for flags in (("--min-fraction", "0"), ("--min-fraction", "1.5"), ("--min-fraction", "nan"), ("--tolerance-ev", "0"), ("--tolerance-ev", "-1")):
+            with self.subTest(flags), contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as raised:
+                self.run_main("--gate", *flags)
+            self.assertEqual(raised.exception.code, 2)
+
+
 YM = Path(os.environ.get("YM", REPO / "target" / "debug" / "ym"))
 SYNTHETIC = REPO / "testdata" / "synthetic" / "arw" / "chart__D6500__DSC-RX100M4__iso400__rggb__14b__uncompressed14.ARW"
 

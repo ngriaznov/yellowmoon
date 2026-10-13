@@ -427,9 +427,14 @@ impl ExportQueue {
             .into_iter()
             .filter_map(|id| session.view(id).ok())
             .collect();
+        // The detail of each photo's newest thumbnail makes the size estimate: a smooth frame and a
+        // busy one of the same pixel count differ by a factor of three or more in a JPEG.
+        let renderer = self.ctx.renderer();
         let est = estimate(
             &self.ctx,
-            views.iter().map(|v| (&*v.meta, &v.settings)),
+            views
+                .iter()
+                .map(|v| (&*v.meta, &v.settings, renderer.thumbnail_detail(v.id))),
             &job.options,
         );
         let settings: Vec<&DevelopSettings> = views.iter().map(|v| &v.settings).collect();

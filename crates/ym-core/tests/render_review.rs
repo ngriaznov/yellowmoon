@@ -172,8 +172,14 @@ fn cancelling_an_export_that_is_waiting_for_the_foreground_stops_it() {
     let export = r.spawn_full(src, srgb_export());
     std::thread::sleep(Duration::from_millis(50));
     export.cancel();
-    match export.wait().expect("the job resolves") {
-        Err(ym_core::pipeline::RenderError::Cancelled) => {}
+    // Either the export worker had already taken the job and was waiting for the foreground (the
+    // job's own `Cancelled`), or, on a machine too busy to have scheduled the worker within the
+    // 50 ms, the job was still in the queue and the scheduler dropped it (`JobError::Cancelled`).
+    // Both stop the export while the gate is still closed; what must never happen is a hang
+    // (`wait` returning only after the gate opens) or a finished render.
+    match export.wait() {
+        Ok(Err(ym_core::pipeline::RenderError::Cancelled))
+        | Err(ym_gpu::queue::JobError::Cancelled) => {}
         other => panic!("{other:?}"),
     }
     tx.send(()).expect("open");

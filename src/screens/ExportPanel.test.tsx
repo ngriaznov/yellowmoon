@@ -117,6 +117,8 @@ describe("the options (design/mockups/export.html)", () => {
     await openExport();
     await h!.user.click(radio("Format", "DNG"));
     expect(screen.getByText("Linear DNG with your look baked in. Opens in Lightroom close to this render, with room to adjust exposure, highlights and white balance.")).toBeInTheDocument();
+    // What other raw editors show: the sentence of `ym render --help` (the Rust side checks the wording).
+    expect(screen.getByText("Apps other than Adobe's show the stored linear image darker until their own exposure handling is applied.")).toBeInTheDocument();
     expect(screen.getByText(/This product includes DNG technology under license by Adobe\./)).toBeInTheDocument();
     expect(screen.getByText(/White balance changes made in another app are approximate/)).toBeInTheDocument();
     expect(screen.queryByRole("region", { name: "Colour space" })).toBeNull();

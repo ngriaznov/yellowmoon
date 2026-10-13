@@ -12,7 +12,8 @@
 //!   Display P3 profile, kept in a [`FrameStore`] and served to the webview at
 //!   `ym-frame://localhost/frame-<seq>.png`; the `viewport_frame` event says when a new one is
 //!   there. The same store and scheme serve the filmstrip's thumbnails
-//!   (`ym-frame://localhost/thumb-<photo>-<version>.png`), whichever sink draws the photo. This breaks the rule "full images never cross the bridge" (`docs/01`), and is meant for
+//!   (`ym-frame://localhost/thumb-<photo>-<version>.png`) and the Look tab's tiles
+//!   (`ym-frame://localhost/look-<photo>-<version>.png`), whichever sink draws the photo. This breaks the rule "full images never cross the bridge" (`docs/01`), and is meant for
 //!   development builds on other systems and as the M0-06 fallback candidate (`docs/16`).
 //!
 //! # Threading
@@ -86,12 +87,13 @@ pub trait FrameSink: Send + Sync + 'static {
     fn clear(&self, seq: u32);
 }
 
-/// The last few frames of the fallback viewport and the latest thumbnail of every photo, as PNG
-/// files, served to the webview by the `ym-frame` scheme.
+/// The last few frames of the fallback viewport, the latest thumbnail of every photo and the look
+/// tiles of the Look tab, as PNG files, served to the webview by the `ym-frame` scheme.
 #[derive(Debug, Default)]
 pub struct FrameStore {
     frames: Mutex<VecDeque<(u32, Arc<Vec<u8>>)>>,
     thumbnails: Mutex<Thumbnails>,
+    look_tiles: Mutex<LookTiles>,
 }
 
 /// A PNG file, shared with the responses that serve it.
@@ -106,12 +108,21 @@ struct Thumbnails {
     by_photo: BTreeMap<u32, Vec<(u32, Png)>>,
 }
 
+/// The look tiles the store holds: a photo through one look, at most 240 px.
+#[derive(Debug, Default)]
+struct LookTiles {
+    /// Counts up with every tile put, so that a new picture is a new address.
+    version: u32,
+    /// Per photo and look, the newest versions (see [`THUMBNAIL_VERSIONS_KEPT`]), oldest first.
+    by_look: BTreeMap<(u32, String), Vec<(u32, Png)>>,
+}
+
 /// How many frames the store keeps: the webview may still be loading the previous one.
 const FRAMES_KEPT: usize = 3;
 
-/// How many versions of one photo's thumbnail the store keeps: the picture the webview is still
-/// showing may be asked for again (a layout that remakes the `<img>`) a moment after a newer one
-/// was announced.
+/// How many versions of one photo's thumbnail (or of one look tile of a photo) the store keeps: the
+/// picture the webview is still showing may be asked for again (a layout that remakes the `<img>`)
+/// a moment after a newer one was announced.
 const THUMBNAIL_VERSIONS_KEPT: usize = 2;
 
 impl FrameStore {
@@ -180,10 +191,38 @@ impl FrameStore {
             .collect()
     }
 
-    /// Forgets every thumbnail (the session closed). Addresses that were handed out answer 404
-    /// from now on; new ones count on from where the old ones stopped.
+    /// Keeps the tile of a photo through one look (a PNG of at most 240 px) and returns the
+    /// address it is served at. Every call gives a new address, so a tile drawn again after the
+    /// photo's settings changed never meets a cached older picture. Only the newest few tiles of
+    /// each (photo, look) are kept, and none survive [`FrameStore::clear_thumbnails`].
+    pub fn put_look_tile(&self, photo: u32, look: &str, png: Vec<u8>) -> String {
+        let mut tiles = lock(&self.look_tiles);
+        tiles.version = tiles.version.wrapping_add(1);
+        let version = tiles.version;
+        let versions = tiles.by_look.entry((photo, look.to_owned())).or_default();
+        versions.push((version, Arc::new(png)));
+        while versions.len() > THUMBNAIL_VERSIONS_KEPT {
+            versions.remove(0);
+        }
+        look_tile_url(photo, version)
+    }
+
+    /// Forgets every thumbnail and look tile (the session closed). Addresses that were handed out
+    /// answer 404 from now on; new ones count on from where the old ones stopped.
     pub fn clear_thumbnails(&self) {
         lock(&self.thumbnails).by_photo.clear();
+        lock(&self.look_tiles).by_look.clear();
+    }
+
+    /// The look tile at `photo` and `version`, if it is still kept.
+    fn look_tile(&self, photo: u32, version: u32) -> Option<Arc<Vec<u8>>> {
+        lock(&self.look_tiles)
+            .by_look
+            .range((photo, String::new())..)
+            .take_while(|((p, _), _)| *p == photo)
+            .flat_map(|(_, versions)| versions)
+            .find(|(v, _)| *v == version)
+            .map(|(_, png)| Arc::clone(png))
     }
 
     /// The thumbnail at `photo` and `version`, if it is still kept.
@@ -196,8 +235,8 @@ impl FrameStore {
             .map(|(_, png)| Arc::clone(png))
     }
 
-    /// The response for a request to `ym-frame://localhost/frame-<seq>.png` or
-    /// `…/thumb-<photo>-<version>.png`: the file, or why not.
+    /// The response for a request to `ym-frame://localhost/frame-<seq>.png`,
+    /// `…/thumb-<photo>-<version>.png` or `…/look-<photo>-<version>.png`: the file, or why not.
     #[must_use]
     pub fn respond(&self, path: &str) -> (u16, &'static str, Cow<'static, [u8]>) {
         let name = path
@@ -209,6 +248,10 @@ impl FrameStore {
         } else if let Some(rest) = name.strip_prefix("thumb-") {
             rest.split_once('-').and_then(|(photo, version)| {
                 self.thumbnail(photo.parse().ok()?, version.parse().ok()?)
+            })
+        } else if let Some(rest) = name.strip_prefix("look-") {
+            rest.split_once('-').and_then(|(photo, version)| {
+                self.look_tile(photo.parse().ok()?, version.parse().ok()?)
             })
         } else {
             None
@@ -230,6 +273,12 @@ pub fn frame_url(seq: u32) -> String {
 #[must_use]
 pub fn thumbnail_url(photo: u32, version: u32) -> String {
     scheme_url(&format!("thumb-{photo}-{version}.png"))
+}
+
+/// The address of version `version` of a look tile of a photo in the webview.
+#[must_use]
+pub fn look_tile_url(photo: u32, version: u32) -> String {
+    scheme_url(&format!("look-{photo}-{version}.png"))
 }
 
 fn scheme_url(file: &str) -> String {
@@ -1014,6 +1063,48 @@ mod tests {
         assert_eq!(store.respond("/frame-x.png").0, 404);
         store.clear();
         assert!(store.latest().is_none());
+    }
+
+    #[test]
+    fn look_tiles_are_kept_per_photo_and_look_and_served_by_address() {
+        let store = FrameStore::new();
+        let path = |url: &str| url[url.rfind('/').expect("a path")..].to_owned();
+        let status = |url: &str| store.respond(&path(url)).0;
+        let neutral = store.put_look_tile(3, "builtin:neutral", vec![1]);
+        let warm = store.put_look_tile(3, "user:warm", vec![2]);
+        let other_photo = store.put_look_tile(4, "builtin:neutral", vec![3]);
+        assert!(neutral.contains("look-3-1.png"), "{neutral}");
+        for (url, byte) in [(&neutral, 1u8), (&warm, 2), (&other_photo, 3)] {
+            let (code, mime, body) = store.respond(&path(url));
+            assert_eq!((code, mime), (200, "image/png"), "{url}");
+            assert_eq!(&*body, &[byte]);
+        }
+        // The newest two tiles of one photo through one look stay; the others are not touched.
+        let second = store.put_look_tile(3, "builtin:neutral", vec![4]);
+        assert_eq!(status(&neutral), 200);
+        let third = store.put_look_tile(3, "builtin:neutral", vec![5]);
+        assert_eq!(status(&neutral), 404, "the oldest of three is dropped");
+        assert_eq!((status(&second), status(&third)), (200, 200));
+        assert_eq!((status(&warm), status(&other_photo)), (200, 200));
+        // A tile is not a thumbnail or a frame, and a version of one photo is not another's.
+        assert_eq!(store.respond("/thumb-3-4.png").0, 404);
+        assert_eq!(store.respond("/frame-4.png").0, 404);
+        assert_eq!(store.respond("/look-4-5.png").0, 404);
+        for bad in [
+            "/look-3.png",
+            "/look-x-1.png",
+            "/look-3-x.png",
+            "/look--.png",
+        ] {
+            assert_eq!(store.respond(bad).0, 404, "{bad}");
+        }
+        // Closing the session drops them all; the next address does not repeat an old one.
+        store.clear_thumbnails();
+        assert_eq!(status(&third), 404);
+        assert_eq!(status(&warm), 404);
+        let fresh = store.put_look_tile(3, "user:warm", vec![6]);
+        assert_ne!(fresh, warm);
+        assert_eq!(status(&fresh), 200);
     }
 
     fn controller() -> (Viewport, Arc<crate::events::Recorder>) {

@@ -101,10 +101,11 @@ test.describe("each format", () => {
     await expect(page.getByRole("button", { name: /^Export 3 photos/ })).toContainText("≈ 630 MB");
   });
 
-  test("DNG: the note, the Adobe notice, and no Colour space or Size", async ({ page }) => {
+  test("DNG: the notes, the Adobe notice, and no Colour space or Size", async ({ page }) => {
     await exportPanel(page);
     await format(page, "DNG");
     await expect(page.getByText("Linear DNG with your look baked in.")).toBeVisible();
+    await expect(page.getByText("Apps other than Adobe's show the stored linear image darker until their own exposure handling is applied.")).toBeVisible();
     await expect(page.getByText(/This product includes DNG technology under license by Adobe\./)).toBeVisible();
     await expect(page.getByRole("region", { name: "Colour space" })).toHaveCount(0);
     await expect(page.getByRole("region", { name: "Size" })).toHaveCount(0);

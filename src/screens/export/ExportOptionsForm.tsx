@@ -14,6 +14,12 @@ export const DNG_BLOCKED = "This look includes its own display rendering, so it 
 const DNG_NOTE =
   "Linear DNG with your look baked in. Opens in Lightroom close to this render, with room to adjust exposure, highlights and white balance.";
 
+/**
+ * Said under the DNG note: what other raw editors show (`docs/09` §Compatibility). The same sentence as `ym render --help`:
+ * it is `ym_export::dng::OTHER_APPS_NOTE`, and a test in `src-tauri/src/bindings.rs` fails if this copy drifts.
+ */
+export const OTHER_APPS_NOTE = "Apps other than Adobe's show the stored linear image darker until their own exposure handling is applied.";
+
 const DNG_LATER_EDITS = "White balance changes made in another app are approximate, because they act after the look.";
 
 const COLOR_NOTES: Record<ColorSpace, string> = {
@@ -198,6 +204,7 @@ export function ExportOptionsForm({ store, options, mode, model, scope, estimate
           ) : (
             <>
               <p className="ym-row-note">{DNG_NOTE}</p>
+              <p className="ym-row-note">{OTHER_APPS_NOTE}</p>
               <p className="ym-row-note ym-export__legal">
                 {DNG_LATER_EDITS} {ADOBE_NOTICE}
               </p>

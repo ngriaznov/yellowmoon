@@ -63,7 +63,7 @@ Don't reopen these without new evidence. The reasoning is in `research/`.
 | Area | Decision |
 |---|---|
 | Platform | macOS only for V1, universal build. |
-| Shell | Tauri 2 (React + TypeScript webview), `tauri-plugin-updater`, `-process`, `-dialog`, as in plugout. |
+| Shell | Tauri 2 (React + TypeScript webview), `tauri-plugin-updater` and `-dialog`, as in plugout. The restart into an installed update is the app's own guarded `restart_app` command, not `tauri-plugin-process` (Tauri's restart cannot be vetoed while an export runs; `docs/12`, `docs/01` IPC). |
 | Viewport | The photo renders in a native wgpu surface on Metal behind a transparent webview. Fallback if compositing fails in M0: a native child view. |
 | Core | Rust workspace; image processing on the GPU (wgpu 30, WGSL compute) in f16 tiles of 1–2k px. CPU reference path for tests and machines without a usable GPU. |
 | Decoder | Our own ARW decoder (Apache-2.0). rawler and LibRaw are CI oracles only. |

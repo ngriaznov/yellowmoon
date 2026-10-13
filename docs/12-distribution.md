@@ -22,9 +22,9 @@ We copy github.com/ngriaznov/plugout's setup: every version bump on main becomes
 
 ## In the app
 
-- `tauri-plugin-updater` with the minisign public key embedded and one endpoint: `https://github.com/ngriaznov/yellowmoon/releases/latest/download/latest.json`. Restart via `tauri-plugin-process`.
+- `tauri-plugin-updater` with the minisign public key embedded and one endpoint: `https://github.com/ngriaznov/yellowmoon/releases/latest/download/latest.json`. The restart into the installed update is the app's own `restart_app` command (`docs/01` IPC), not `tauri-plugin-process`: Tauri's restart cannot be vetoed by the exit handler, so an export in progress could not stop it, while `restart_app` refuses with "An export is still running. Restart after it finishes." The process plugin is not a dependency (neither the crate nor `@tauri-apps/plugin-process`) and its `restart` permission is not granted.
 - A quiet check 10 s after launch and then every 6 hours while running (if "Check for updates automatically" is on). Failures stay silent; an unreachable endpoint never bothers the user. "Check for Updates…" in the app menu checks now and reports the result.
-- The update cell in the header: hidden while idle → "Update available" (click downloads) → "Downloading n%" → "Update ready" (click restarts) → "Update failed" (reason on hover). `src/updater.ts` comes from plugout unchanged except for naming.
+- The update cell in the header: hidden while idle → "Update available" (click downloads) → "Downloading n%" → "Update ready" (click restarts) → "Update failed" (reason on hover). `src/updater.ts` comes from plugout unchanged except for naming and the restart (`restart_app`, above).
 - An update never interrupts an export: "Update ready" stays disabled until the queue is empty.
 
 ## Install paths

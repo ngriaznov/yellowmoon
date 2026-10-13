@@ -190,6 +190,66 @@ fn a_real_file_exports_every_format_and_the_exports_repeat_exactly() {
     assert!(tiff.sub_ifds(tiff.ifd0()).len() >= 2);
 }
 
+/// The detail statistic the size estimate takes from the app's 240 px thumbnails against the one the
+/// estimate was calibrated on, the full-size render box-averaged to 240 px (`docs/09` Size estimate:
+/// "The app's own 240 px thumbnails were not measured; re-check them when the call is wired").
+#[test]
+#[ignore = "full-resolution exports of real files take minutes; run with --ignored --nocapture"]
+fn the_detail_statistic_of_the_apps_thumbnails_matches_the_full_size_render() {
+    use ym_export::DetailStat;
+    let files = files();
+    if files.is_empty() {
+        eprintln!("export_real: testdata/real/files is absent, skipped");
+        return;
+    }
+    let (core, rx, _app) = core_with_events();
+    let out = tempfile::tempdir().expect("out");
+    let added = core.session.open(&files, OpenOptions::default()).added;
+    assert!(core.session.wait_idle(Duration::from_secs(300)));
+    // 16-bit sRGB PNGs at full size: the renders the estimate was calibrated on.
+    let id = core
+        .export_start(&job(FormatKind::Png, out.path()))
+        .expect("queued");
+    wait_idle(&rx);
+    let summary = core.export_summary(id).expect("summary");
+    assert_eq!(summary.failed, 0, "{:?}", summary.errors);
+    let mut log_ratios = Vec::new();
+    for (photo, path) in added.iter().zip(&summary.files) {
+        let thumbnail = core
+            .renderer
+            .thumbnail_detail(*photo)
+            .expect("the thumbnail of a developed photo has a statistic");
+        let decoder = png::Decoder::new(std::io::Cursor::new(std::fs::read(path).expect("read")));
+        let mut reader = decoder.read_info().expect("a PNG");
+        let mut buf = vec![0u8; reader.output_buffer_size().expect("size")];
+        let info = reader.next_frame(&mut buf).expect("frame");
+        assert_eq!(info.bit_depth, png::BitDepth::Sixteen);
+        let encoded: Vec<f32> = buf[..info.buffer_size()]
+            .chunks_exact(2)
+            .map(|b| f32::from(u16::from_be_bytes([b[0], b[1]])) / 65535.0)
+            .collect();
+        let full =
+            DetailStat::measure_encoded_f32(info.width, info.height, &encoded).expect("measurable");
+        let ratio = thumbnail.gradient() / full.gradient();
+        eprintln!(
+            "{:<24} thumbnail {:.5}  full-size render {:.5}  ratio {ratio:.3}",
+            path.file_name().expect("name").to_string_lossy(),
+            thumbnail.gradient(),
+            full.gradient()
+        );
+        assert!(
+            (0.75..1.33).contains(&ratio),
+            "the thumbnail's statistic is {ratio:.2} times the render's"
+        );
+        log_ratios.push(ratio.ln());
+    }
+    let geometric_mean = (log_ratios.iter().sum::<f64>() / log_ratios.len() as f64).exp();
+    eprintln!(
+        "{} files, geometric mean of the ratios {geometric_mean:.3} (a JPEG estimate moves by that to the power 0.46)",
+        log_ratios.len()
+    );
+}
+
 /// The synthetic golden set (`tools/fetch/synthetic.sh` into `testdata/synthetic`, local only):
 /// one scene per raw variant (uncompressed 12 and 14 bit, cRAW, Lossless L in all its layouts,
 /// Lossless M and S) and body.

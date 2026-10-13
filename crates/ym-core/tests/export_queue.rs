@@ -1067,3 +1067,87 @@ fn a_job_waiting_for_estimates_can_be_cancelled_and_survives_the_session_closing
     assert!(queue.wait_idle(Duration::from_secs(60)), "the job goes on");
     assert_eq!(written_files(out.path()).len(), 1);
 }
+
+#[test]
+fn the_estimate_takes_the_detail_of_each_photos_thumbnail_and_a_typical_picture_before_there_is_one()
+ {
+    use ym_core::export::estimated_output_size;
+    use ym_core::pipeline::PhotoSource;
+    use ym_export::{DetailStat, estimate_bytes, estimate_bytes_with_detail};
+
+    let f = folder(2, 600, 400);
+    let (home, out) = (
+        tempfile::tempdir().expect("h"),
+        tempfile::tempdir().expect("o"),
+    );
+    let (ctx, queue, _rx) = neutral_queue(home.path());
+    let jpeg = job(ApplyScope::All, out.path());
+    let format = jpeg.options.format_spec();
+    let sizes: Vec<(u32, u32)> = f
+        .ids
+        .iter()
+        .map(|id| {
+            let v = f.session.view(*id).expect("view");
+            estimated_output_size(&v.meta, &v.settings)
+        })
+        .collect();
+    let sum = |details: &[Option<DetailStat>]| -> u64 {
+        sizes
+            .iter()
+            .zip(details)
+            .map(|(&(w, h), d)| estimate_bytes_with_detail(w, h, format, jpeg.options.size, *d))
+            .sum()
+    };
+
+    // No thumbnail yet: every photo is a picture of typical detail, what `estimate_bytes` says.
+    let typical: u64 = sizes
+        .iter()
+        .map(|&(w, h)| estimate_bytes(w, h, format, jpeg.options.size))
+        .sum();
+    assert_eq!(queue.estimate(&f.session, &jpeg).bytes, typical);
+
+    // One thumbnail: that photo uses its statistic, the other stays typical.
+    let thumbnail = |id: PhotoId| -> DetailStat {
+        let src = PhotoSource::from_session(&f.session, id).expect("source");
+        let png = ctx
+            .renderer()
+            .spawn_thumbnail(src)
+            .wait()
+            .expect("job")
+            .expect("thumbnail");
+        let mut reader = png::Decoder::new(std::io::Cursor::new(png))
+            .read_info()
+            .expect("a PNG");
+        let mut rgb = vec![0u8; reader.output_buffer_size().expect("size")];
+        let info = reader.next_frame(&mut rgb).expect("frame");
+        DetailStat::measure_rgb8(info.width, info.height, &rgb[..info.buffer_size()])
+            .expect("measurable")
+    };
+    let first = thumbnail(f.ids[0]);
+    let est = queue.estimate(&f.session, &jpeg);
+    assert_eq!(est.bytes, sum(&[Some(first), None]));
+    assert_ne!(est.bytes, typical, "a flat patchwork is not typical detail");
+
+    // Both: the sum over the photos, each with its own.
+    let second = thumbnail(f.ids[1]);
+    assert_eq!(
+        queue.estimate(&f.session, &jpeg).bytes,
+        sum(&[Some(first), Some(second)])
+    );
+    // A job over one photo uses that photo's statistic only.
+    let this = ExportJob {
+        scope: ApplyScope::This,
+        ..jpeg.clone()
+    };
+    f.session.set_current(f.ids[1]).expect("current");
+    let (w, h) = sizes[1];
+    assert_eq!(
+        queue.estimate(&f.session, &this).bytes,
+        estimate_bytes_with_detail(w, h, format, jpeg.options.size, Some(second))
+    );
+
+    // The session closes: its photos' figures go, a photo of the next session starts typical.
+    ctx.renderer().retire_through(*f.ids.last().expect("ids"));
+    assert_eq!(ctx.renderer().thumbnail_detail(f.ids[0]), None);
+    assert_eq!(queue.estimate(&f.session, &jpeg).bytes, typical);
+}

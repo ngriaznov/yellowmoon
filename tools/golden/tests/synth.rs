@@ -5,7 +5,7 @@
 use std::fs;
 use std::path::Path;
 
-use golden::preview::{jpeg_size, pad_exact};
+use golden::preview::jpeg_size;
 use golden::scene::Scene;
 use golden::synth::{self, SynthOptions, Variant, Verify};
 use serde_json::json;
@@ -62,18 +62,6 @@ fn write_scene(
     )
     .unwrap();
     mosaic
-}
-
-/// The JPEG without the `COM` padding segments that follow its first segment.
-fn strip_padding(preview: &[u8]) -> Vec<u8> {
-    let first = 4 + usize::from(u16::from_be_bytes([preview[4], preview[5]]));
-    let mut out = preview[..first].to_vec();
-    let mut pos = first;
-    while preview[pos..pos + 2] == [0xFF, 0xFE] {
-        pos += 2 + usize::from(u16::from_be_bytes([preview[pos + 2], preview[pos + 3]]));
-    }
-    out.extend_from_slice(&preview[pos..]);
-    out
 }
 
 fn options() -> SynthOptions {
@@ -144,9 +132,8 @@ fn the_scene_preview_is_embedded_byte_for_byte() {
             "starts like a Sony preview"
         );
         assert_eq!(jpeg_size(&preview), Some(PREVIEW));
-        assert_eq!(preview, pad_exact(&jpeg, preview.len()).unwrap());
-        // padding is the only difference: dropping the COM segments after the first one gives the JPEG back
-        assert_eq!(strip_padding(&preview), jpeg);
+        // `ArwBuilder::preview_jpeg` embeds the scene's JPEG as it is: no padding, no placeholder swap
+        assert_eq!(preview, jpeg);
         let meta = probe_bytes(&fs::read(&path).unwrap()).unwrap();
         assert_eq!(meta.make, "SONY");
         assert_eq!(meta.model, "ILCE-7RM4");

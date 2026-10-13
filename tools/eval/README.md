@@ -10,6 +10,7 @@ tools/eval/run.sh                  # unit tests, then the real files and the syn
 python3 -I tools/eval/autoexp.py testdata/real/files --label real
 python3 -I tools/eval/autoexp.py testdata/synthetic/arw --label synthetic --one-per-scene
 python3 -I tools/eval/autoexp.py testdata/real/files --label real --reuse     # redo the arithmetic from the cache
+python3 -I tools/eval/autoexp.py testdata/synthetic/arw --label synthetic --one-per-scene --gate   # the M1-08 gate: exit code 3 when not met
 python3 -I -m unittest discover -s tools/eval -p 'test_*.py'                  # the unit tests (no ARW needed)
 ```
 
@@ -19,6 +20,19 @@ is the dev build, `cargo build -p ym-cli` (`target/debug/ym`; the dev profile is
 would cost a second profile of disk). Each photo costs two renders (40 to 180 s per photo for 10 to 33 MP on four shared cores, dev build).
 The real files (`testdata/real/files`, local evaluation only) are never copied: renders go to `testdata/eval/<label>/`
 (git-ignored) and the big ones are deleted once reduced (`--keep-renders` keeps them); the cache is a few MB per photo. `--reuse` takes a cache only for the same file (size and modification time), the same cache schema and the same `--display`; a cache of another version of the arithmetic is rendered again. The cache holds the output of the `ym` that made it (its version is in the report), so after rebuilding `ym` run without `--reuse`.
+
+## The M1-08 gate (`--gate`)
+
+The gate of `docs/13` and `docs/15` M1-08, as decided on 2026-10-13 (`docs/16`): the metric is **G3**, a file passes when `|G3| <= 0.5 EV`, and the gate is met when **at least 80 %** of the files pass.
+
+```
+python3 -I tools/eval/autoexp.py <folder or files> --label <name> --gate [--tolerance-ev 0.5] [--min-fraction 0.8] [--one-per-scene]
+```
+
+* **Exit codes.** 0 gate met (and every file analysed), 1 a file could not be analysed (the gate still ran), 2 usage, **3 gate not met** (wins over 1). The report is written in every case.
+* **What counts.** The denominator is every file that was tried. A file that failed to analyse, or whose camera gain could not be read (a black or missing preview, so G3 is not a number), counts as a miss and is listed, so a run cannot reach 80 % by losing the files it does badly on. The bound itself passes (`|G3| = 0.5` is within). `--tolerance-ev` is the older `--tolerance`, which still works.
+* **Outliers for M1-H5.** Printed after the table and written to the `## Gate` section of `report.md` and to `results.json` (`summary.gate`), worst first: file, body, ISO, the camera's DRO setting, the JPEG median (the key the camera rendered), `EV_auto`, the camera gain, G3 and whether we are brighter or darker. The JPEG cannot tell a deliberately dark or bright scene from a wrong exposure (the dark brick wall, the flash portrait against a bright wall), so those need a person (M1-H5); the DRO column marks the files whose camera gain includes a local tone mapping that the quantile match reads as part of the camera's curve.
+* **In CI.** The `golden` job runs it on the synthetic tier (one raw variant per scene, 37 files) with the `ym` it just built. **That checks the machinery, not Sony**: the synthetic JPEG is our own rendering with a known gain (`training/synth/preview.py`, +0.5575 EV), so a pass says the estimator, the exposure algorithm and the arithmetic still agree. The real files (`testdata/real/files`, local only) and the CC0 tier run the same command locally (`tools/eval/run.sh`) until a golden corpus exists; the 80 % bar is a statement about real cameras and can only be closed there.
 
 ## What is run
 
@@ -104,8 +118,8 @@ our luminance is taken at the JPEG's scale) and says nothing about Sony's render
 
 | file | what |
 |---|---|
-| `autoexp.py` | the command: finds files, runs `ym`, reads DNG, TIFF and JPEG, writes `results.json`, `results.csv`, `report.md` |
+| `autoexp.py` | the command: finds files, runs `ym`, reads DNG, TIFF and JPEG, writes `results.json`, `results.csv`, `report.md`; `--gate` evaluates the M1-08 gate (`evaluate_gate`) |
 | `metrics.py` | pure numpy: colour decoding, the algorithm replica, quantile curves, ACES 2 neutral axis |
 | `study.py` | the per-photo numbers and the sweeps over photos |
-| `test_metrics.py`, `test_study.py`, `test_autoexp.py` | unit tests (29, 17 and 14), run without any ARW; one end-to-end test runs `ym` on a synthetic scene when `target/debug/ym` and `testdata/synthetic` exist, and is skipped otherwise |
+| `test_metrics.py`, `test_study.py`, `test_autoexp.py` | unit tests (29, 17 and 30; the gate logic and its exit codes included), run without any ARW; one end-to-end test runs `ym` on a synthetic scene when `target/debug/ym` and `testdata/synthetic` exist, and is skipped otherwise (the `eval-tools` job of `ci.yml` runs them) |
 | `run.sh` | builds `ym`, runs the tests and both sets |

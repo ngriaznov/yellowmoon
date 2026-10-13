@@ -1672,12 +1672,13 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
 
     looksList: () => run("looksList", () => looks),
     lookThumbnail: (photoId, lookId) =>
-      run("lookThumbnail", (): number[] => {
+      run("lookThumbnail", (): string => {
         const rec = photo(photoId);
         const look = findLook(lookId);
         if (!look) fail("looks", "That look isn't in the library any more. Import it again.");
         if (look.missing) fail("looks", "File missing or changed. Import again.");
-        return Array.from(scenePng(developed(rec, lookId, 100)));
+        // The shell answers with an address (`ym-frame://…/look-<photo>-<n>.png`); here a `blob:` URL stands for it, new for every request.
+        return bytesToUrl(Array.from(scenePng(developed(rec, lookId, 100))));
       }),
     looksImport: (path, input) =>
       runAsync("looksImport", async (): Promise<LooksImportResult> => {

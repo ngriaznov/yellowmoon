@@ -117,11 +117,13 @@ export interface Api {
   looksList(): Promise<Look[]>;
   /**
    * `look_thumbnail`: the photo as it is developed now (its exposure, white balance and so on)
-   * through one look at 100 %, as PNG bytes of at most 240 px on the long edge, for the Look
-   * tab's tiles (`docs/08` §Look tab behaviour: rendered lazily, cached for the session).
-   * Addition to `docs/01`. Rejects with scope `looks` when the look's file is missing.
+   * through one look at 100 %, for the Look tab's tiles (`docs/08` §Look tab behaviour: rendered
+   * lazily, cached for the session). The answer is the address of a PNG of at most 240 px on the
+   * long edge, served on the `ym-frame` scheme like `thumbnail_ready`'s (`docs/01` IPC); a new
+   * request is a new address. Addition to `docs/01`. Rejects with scope `looks` when the look's
+   * file is missing.
    */
-  lookThumbnail(photoId: PhotoId, lookId: LookId): Promise<number[]>;
+  lookThumbnail(photoId: PhotoId, lookId: LookId): Promise<string>;
   /**
    * `looks_import`: import a zip, a folder or a `.cube` file. `input` answers the generic question for
    * `.cube` files that match no ARRI package (`docs/08` §Any other .cube); leave it out for a recognised

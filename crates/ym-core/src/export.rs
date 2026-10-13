@@ -44,8 +44,11 @@
 //!
 //! [`ExportSpeed`] keeps the render and encode speed in seconds per megapixel, starting from the
 //! numbers measured in `docs/01` and `docs/09` and replaced by what this machine measures as photos
-//! are exported; [`estimate`] turns it and `ym_export::estimate_bytes` into the "≈ 120 MB" and the
-//! seconds of the Export panel.
+//! are exported; [`estimate`] turns it and `ym_export::estimate_bytes_with_detail` into the "≈ 120 MB"
+//! and the seconds of the Export panel. The size of a file depends on how much fine detail the
+//! picture carries, so each photo brings the detail statistic of its newest thumbnail
+//! ([`Renderer::thumbnail_detail`](crate::pipeline::Renderer::thumbnail_detail)); a photo without a
+//! thumbnail yet is estimated as a picture of typical detail.
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
@@ -59,9 +62,9 @@ use ym_export::exif::{CaptureTime, ExifInfo, Gps};
 use ym_export::naming::{self, NameFields, Placement};
 use ym_export::xmp::{XmpInfo, YmInfo};
 use ym_export::{
-    ColorSpace, DngInputs, ExportDestination, ExportFormat, ExportHooks, ExportOptions,
-    ExportRequest, FormatKind, IfExists, ImageRef, Metadata, PixelEncoding, estimate_bytes,
-    write_export,
+    ColorSpace, DetailStat, DngInputs, ExportDestination, ExportFormat, ExportHooks, ExportOptions,
+    ExportRequest, FormatKind, IfExists, ImageRef, Metadata, PixelEncoding,
+    estimate_bytes_with_detail, write_export,
 };
 use ym_gpu::queue::{CancelToken, JobError};
 use ym_looks::library::LookId;
@@ -1132,19 +1135,21 @@ pub struct Estimate {
     pub seconds: f64,
 }
 
-/// Estimates the files of `photos` (each photo's probe metadata and settings) for `options`.
+/// Estimates the files of `photos` for `options`: each photo's probe metadata, settings and the
+/// detail statistic of its thumbnail (`None` while it has none: the estimate then assumes a
+/// picture of typical detail).
 #[must_use]
 pub fn estimate<'a>(
     ctx: &ExportContext,
-    photos: impl IntoIterator<Item = (&'a RawMetadata, &'a DevelopSettings)>,
+    photos: impl IntoIterator<Item = (&'a RawMetadata, &'a DevelopSettings, Option<DetailStat>)>,
     options: &ExportOptions,
 ) -> Estimate {
     let format = options.format_spec();
     let mut bytes = 0u64;
     let mut seconds = 0.0;
-    for (meta, settings) in photos {
+    for (meta, settings, detail) in photos {
         let (w, h) = estimated_output_size(meta, settings);
-        bytes += estimate_bytes(w, h, format, options.size);
+        bytes += estimate_bytes_with_detail(w, h, format, options.size, detail);
         let (ow, oh) = if options.format == FormatKind::Dng {
             (w, h)
         } else {

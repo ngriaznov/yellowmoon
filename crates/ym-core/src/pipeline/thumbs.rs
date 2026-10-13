@@ -19,6 +19,7 @@ use std::time::Duration;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use ym_color::display::OutputTarget;
+use ym_export::DetailStat;
 use ym_gpu::queue::{CancelToken, JobError, JobHandle, Priority};
 use ym_looks::library::LookId;
 
@@ -120,17 +121,13 @@ impl Renderer {
         Ok((spec, (tw, th)))
     }
 
-    /// The photo as a thumbnail: a PNG of at most 240 px on its long edge (`thumbnail_ready`), in
-    /// sRGB, with the crop, straighten and rotation of the settings applied.
-    ///
-    /// # Errors
-    ///
-    /// [`RenderError`] for unusable data or a cancelled job.
-    pub fn thumbnail_png(
+    /// The thumbnail's pixels: sRGB, 8 bits, `width * height * 3` interleaved, with the crop,
+    /// straighten and rotation of the settings applied.
+    fn thumbnail_rgb(
         &self,
         src: &PhotoSource,
         cancel: &CancelToken,
-    ) -> Result<Vec<u8>, RenderError> {
+    ) -> Result<(usize, usize, Vec<u8>), RenderError> {
         let mut job = Job::new(self, src, cancel)?;
         let (spec, (tw, th)) = self.thumbnail_spec(&mut job)?;
         let frame = render_view(job, &spec)?;
@@ -140,10 +137,31 @@ impl Renderer {
             .for_each(|(d, s)| {
                 d.copy_from_slice(&s[..3]);
             });
+        Ok((tw, th, rgb))
+    }
+
+    /// The photo as a thumbnail: a PNG of at most 240 px on its long edge (`thumbnail_ready`), in
+    /// sRGB, with the crop, straighten and rotation of the settings applied.
+    ///
+    /// The picture's detail statistic is kept for the size estimate of the Export panel
+    /// ([`Renderer::thumbnail_detail`]); it always describes the newest thumbnail rendered here,
+    /// so it follows the look, crop and turn the filmstrip follows.
+    ///
+    /// # Errors
+    ///
+    /// [`RenderError`] for unusable data or a cancelled job.
+    pub fn thumbnail_png(
+        &self,
+        src: &PhotoSource,
+        cancel: &CancelToken,
+    ) -> Result<Vec<u8>, RenderError> {
+        let (tw, th, rgb) = self.thumbnail_rgb(src, cancel)?;
+        self.note_thumbnail_detail(src.id, DetailStat::measure_rgb8(tw as u32, th as u32, &rgb));
         encode_png_rgb8(tw, th, &rgb)
     }
 
-    /// The photo as it is developed now, through one look at 100 % (the Look tab's tiles).
+    /// The photo as it is developed now, through one look at 100 % (the Look tab's tiles). It does
+    /// not touch the photo's detail statistic: a tile is the photo through another look.
     ///
     /// # Errors
     ///
@@ -159,7 +177,8 @@ impl Renderer {
             .look(look)
             .map_err(|e| RenderError::Look(e.to_string()))?;
         let tile = src.with_settings(with_look(&src.settings, look));
-        self.thumbnail_png(&tile, cancel)
+        let (tw, th, rgb) = self.thumbnail_rgb(&tile, cancel)?;
+        encode_png_rgb8(tw, th, &rgb)
     }
 
     /// The histogram of the photo as rendered now (see the module documentation).

@@ -464,18 +464,31 @@ fn rerun_histogram_and_look_thumbnails() {
         "the tallest bin is 1, not {peak}"
     );
 
-    let png = h
-        .api
-        .look_thumbnail(id, &LookId("builtin:neutral".to_owned()))
-        .expect("look tile");
-    let (w, hh) = png_size(&png);
-    assert!(w.max(hh) <= 240);
+    // The tile does not cross the bridge as bytes: the answer is the address of a PNG that the
+    // shell serves on the `ym-frame` scheme, a new address for every request.
+    let neutral = LookId("builtin:neutral".to_owned());
+    let url = h.api.look_thumbnail(id, &neutral).expect("look tile");
+    assert!(url.contains("/look-"), "{url}");
+    let (w, hh) = png_size(&served(&h, &url));
+    assert!(w.max(hh) <= 240 && w.max(hh) > 0, "{w} x {hh}");
+    let again = h.api.look_thumbnail(id, &neutral).expect("look tile");
+    assert_ne!(again, url);
+    // The tile the webview may still be loading stays served for a moment; the one before it is
+    // replaced, and the session closing drops them all.
+    assert_eq!(h.frames.respond(path_of_url(&url)).0, 200);
+    let third = h.api.look_thumbnail(id, &neutral).expect("look tile");
+    assert_eq!(h.frames.respond(path_of_url(&url)).0, 404);
+    assert_eq!(h.frames.respond(path_of_url(&again)).0, 200);
+    assert_eq!(h.frames.respond(path_of_url(&third)).0, 200);
     let err = h
         .api
         .look_thumbnail(id, &LookId("arri:3000:film-warm".to_owned()))
         .expect_err("not imported");
     assert_eq!(err.scope, ErrorScope::Looks);
     assert!(!err.message.is_empty());
+    h.api.close_session();
+    assert_eq!(h.frames.respond(path_of_url(&third)).0, 404);
+    assert_eq!(h.frames.respond(path_of_url(&again)).0, 404);
 }
 
 // --- Viewport ---------------------------------------------------------------------------------

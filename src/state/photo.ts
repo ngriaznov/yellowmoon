@@ -53,7 +53,10 @@ export function developFraction(status: PhotoStatus): number {
   }
 }
 
-/** A PNG's bytes as an image URL: an object URL where the browser has them, else a data URL. */
+/**
+ * A PNG's bytes as an image URL: an object URL where the browser has them, else a data URL. Only the mock API makes pictures this
+ * way; the app's shell keeps its pictures and answers with `ym-frame://` addresses (thumbnails, look tiles, viewport frames).
+ */
 export function bytesToUrl(bytes: readonly number[]): string {
   const data = Uint8Array.from(bytes);
   if (typeof URL !== "undefined" && typeof URL.createObjectURL === "function") {
@@ -64,7 +67,7 @@ export function bytesToUrl(bytes: readonly number[]): string {
   return `data:image/png;base64,${btoa(binary)}`;
 }
 
-/** Frees a URL made by `bytesToUrl`. */
+/** Frees a URL made by `bytesToUrl`; any other address (the shell's `ym-frame://` ones) is left alone. */
 export function releaseUrl(url: string): void {
   if (url.startsWith("blob:") && typeof URL !== "undefined" && typeof URL.revokeObjectURL === "function") URL.revokeObjectURL(url);
 }

@@ -4,7 +4,7 @@ expression: v
 ---
 {
   "auto": {
-    "exposure_ev": -0.8639,
+    "exposure_ev": -0.8609,
     "kelvin": 3450.0,
     "light_class": "daylight",
     "light_confidence": 0.2839,
@@ -160,7 +160,7 @@ expression: v
       "neural_demosaic": true
     },
     "exposure": {
-      "ev": -0.8639,
+      "ev": -0.8609,
       "kind": "manual"
     },
     "highlights": 0.0,

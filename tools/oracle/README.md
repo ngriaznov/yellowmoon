@@ -90,29 +90,11 @@ python3 tools/oracle/compare_metadata.py --report /tmp/report.json /tmp/a.ARW
 ## Real files without the corpus
 
 While `testdata/arw` is empty (the corpus hosts are unreachable from the build machine), nine real ARW
-files are available from public GitHub repositories (`git clone` works; the proxy blocks the corpus hosts and
-GitHub's code search). Their licences are not checked: use them for local evaluation only, never commit them
-and never copy them elsewhere (`testdata/` is git-ignored).
+files are available from public GitHub repositories. `tools/fetch/real-eval.sh` fetches them at pinned
+commits into `testdata/real/files` (the local-evaluation tier; licences and sources in `tools/fetch/README.md`
+and `docs/validation-data.md`). Use them for local evaluation only: never commit them, never copy them
+elsewhere, never use them in CI (the script refuses to run there).
 
-| File | Repository and path | What it is |
-|---|---|---|
-| DSLR-A500, ILCE-5000, ILCE-7M3, ILCE-7M4, NEX-5N, NEX-7 | `drewnoakes/metadata-extractor-images`, `arw/` | five cRAW files and one Lossless L file (A7 IV) |
-| ILCE-6300 (cRAW), ILCE-7M2 (14-bit uncompressed) | `immich-app/test-assets`, `formats/raw/Sony/` | |
-| DSLR-A300 (ARW 1, Huffman) | `AcademySoftwareFoundation/OpenImageIO-images`, `raw/RAW_SONY_A300.ARW` | |
-
-```
-mkdir -p testdata/real/files /tmp/dl && cd /tmp/dl
-git clone --depth 1 --filter=blob:none --no-checkout https://github.com/drewnoakes/metadata-extractor-images.git mei
-git -C mei sparse-checkout init --no-cone && git -C mei sparse-checkout set 'arw/*' && git -C mei checkout HEAD
-git clone --depth 1 --filter=blob:none --no-checkout https://github.com/immich-app/test-assets.git immich
-git -C immich sparse-checkout init --no-cone && git -C immich sparse-checkout set 'formats/raw/Sony/*' && git -C immich checkout HEAD
-git clone --depth 1 --filter=blob:none --no-checkout https://github.com/AcademySoftwareFoundation/OpenImageIO-images.git oiio
-git -C oiio sparse-checkout init --no-cone && git -C oiio sparse-checkout set 'raw/RAW_SONY_A300.ARW' && git -C oiio checkout HEAD
-# copy the nine files into testdata/real/files/, then
-cargo test -p ym-raw --test oracle_decode --release -- --ignored
-cargo run -p oracle --release -- --corpus testdata/real/files --report /tmp/oracle-real.json
-python3 tools/oracle/compare_metadata.py testdata/real/files    # metadata against LibRaw and ExifTool
-```
 
 Result (M0-05): all nine decode; eight are bit-identical to LibRaw 0.22.1 (six cRAW, one Lossless L, one
 14-bit uncompressed), the ninth (ARW 1) too after its extra rows are dropped; the Lossless L file is also

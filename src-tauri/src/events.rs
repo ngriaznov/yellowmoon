@@ -1,7 +1,7 @@
 //! Events from the core to the webview.
 //!
 //! Everything the shell sends goes through [`Emitter`], so the command handlers and the viewport
-//! can be tested without a webview: [`TauriEmitter`] sends the events to the window, [`Recorder`]
+//! can be tested without a webview: [`TauriEmitter`] sends the events to the window, `Recorder` (tests only)
 //! keeps them for a test. The event names and payloads are the ones of `docs/01` §IPC and
 //! `src/api/types.ts` (`ApiEvents`), declared in [`crate::wire`].
 
