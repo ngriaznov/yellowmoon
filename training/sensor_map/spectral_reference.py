@@ -41,7 +41,7 @@ import colour
 import numpy as np
 
 from training.alexa import ssf_core as s
-from training.common import jsonfmt, paths
+from training.common import content_digest, jsonfmt, paths
 from training.sensor_map import fit
 from training.sensor_map import lights as lt
 from training.sensor_map import runtime_ref as rr
@@ -235,7 +235,11 @@ def build(profile_path: Path | None = None) -> dict:
                    "`python3 -m training.sensor_map.spectral_reference`; do not edit by hand.",
         "sources": {
             "profile": f"data/cameras/profiles/{prof_doc['id']}/profile.json",
-            "profile_sha256": hashlib.sha256(profile_path.read_bytes()).hexdigest(),
+            "profile_content_sha256": content_digest.digest(prof_doc, skip_top_level=content_digest.PROFILE_SKIPS),
+            "profile_content": "SHA-256 of the profile.json document without its `provenance` block, hashed value by value "
+                               "(training/common/content_digest.py; the Rust test computes the same). The file's bytes are not "
+                               "pinned: a rebuild of the registry rewrites the provenance (fit script commit, source hashes, "
+                               "sibling checks) and no number the runtime reads.",
             "alexa_curves": "data/alexa/alexa_alev3_estimate_380_780_5.json",
             "alexa_curves_sha256": hashlib.sha256(paths.ALEXA_CURVES_JSON.read_bytes()).hexdigest(),
             "colour_science": colour.__version__,

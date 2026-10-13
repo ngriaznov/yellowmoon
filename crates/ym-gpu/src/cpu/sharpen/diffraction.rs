@@ -310,6 +310,23 @@ impl DiffractionPlan {
         self.gate_factor
     }
 
+    /// The R4 gains `g0` the plan was made with, exactly as they were given to
+    /// [`new`](Self::new). The correction needs them again (the noise floor is `sigma0 = D * r`
+    /// with `D` the luma of the gains), so a consumer that runs the stage elsewhere, like the GPU
+    /// kernel, reads them from the plan and cannot use other ones.
+    #[must_use]
+    pub fn g0(&self) -> [f32; 3] {
+        // They were `f32` values widened to `f64`: narrowing gives them back exactly.
+        self.g0.map(|g| g as f32)
+    }
+
+    /// The luma weights the plan was made with, exactly as they were given to
+    /// [`new`](Self::new) (see [`g0`](Self::g0)).
+    #[must_use]
+    pub fn luma(&self) -> [f32; 3] {
+        self.luma.map(|w| w as f32)
+    }
+
     /// The PSF kernel radius `R`, 1 to 7.
     #[must_use]
     pub fn radius(&self) -> usize {
@@ -586,12 +603,28 @@ fn geometry(pitch_eff_um: f64, f_number: f64) -> Option<Arc<Geometry>> {
             return found;
         }
     }
+    // Planned outside the lock (a few milliseconds): two threads that ask for the same key at the
+    // same time both plan it, and `remember` hands both the entry that got in first.
     let planned = plan_geometry(pitch_eff_um, f_number).map(Arc::new);
     let mut cache = CACHE.lock().unwrap_or_else(PoisonError::into_inner);
-    if !cache.iter().any(|(k, _)| *k == key) {
-        cache.insert(0, (key, planned.clone()));
-        cache.truncate(CACHE_ENTRIES);
+    remember(&mut cache, key, planned)
+}
+
+/// Puts a planned geometry into `cache` (most recent first, at most [`CACHE_ENTRIES`] entries) and
+/// returns the one every caller of `key` must use: the entry that is already there when another
+/// thread planned the same key and got in first, else `planned` itself. Returning `planned` in the
+/// first case would give this thread an `Arc` that is not the cached one, so two plans of the same
+/// geometry would not share their kernel.
+fn remember(
+    cache: &mut Vec<CacheEntry>,
+    key: CacheKey,
+    planned: Option<Arc<Geometry>>,
+) -> Option<Arc<Geometry>> {
+    if let Some((_, existing)) = cache.iter().find(|(k, _)| *k == key) {
+        return existing.clone();
     }
+    cache.insert(0, (key, planned.clone()));
+    cache.truncate(CACHE_ENTRIES);
     planned
 }
 
@@ -1302,6 +1335,54 @@ mod tests {
         // A negative gain reads as no shot noise.
         let plan = DiffractionPlan::new(&p, g0, &NoiseDn::new(-1.0, 5.0), SPEC_LUMA).unwrap();
         assert_eq!(plan.sigma1_dn(), 0.0);
+    }
+
+    #[test]
+    fn the_plan_gives_back_the_gains_and_luma_weights_it_was_made_with() {
+        let p = DiffractionParams::new(3.76, 8.0);
+        let noise = NoiseDn::new(1.0, 5.0);
+        // Values with no exact short form, so that a round trip through f64 and back is tested.
+        let g0 = [2.1_f32, 1.0, 1.7_f32 / 3.0];
+        let luma = [0.2126_f32, 0.7152, 0.0722];
+        let plan = DiffractionPlan::new(&p, g0, &noise, luma).unwrap();
+        assert_eq!(plan.g0().map(f32::to_bits), g0.map(f32::to_bits));
+        assert_eq!(plan.luma().map(f32::to_bits), luma.map(f32::to_bits));
+        // The gate variant keeps them.
+        let gated = plan.with_noise_gate(true);
+        assert_eq!(gated.g0(), g0);
+        assert_eq!(gated.luma(), luma);
+    }
+
+    #[test]
+    fn a_plan_that_lost_the_race_gets_the_cached_geometry() {
+        // Two threads plan the same key; the second to take the lock must use the first one's
+        // entry, not its own. (The race itself is in `tests/cpu_diffraction_cache.rs`.)
+        let key = (3.76_f64.to_bits(), 8.0_f64.to_bits());
+        let first = plan_geometry(3.76, 8.0).map(Arc::new);
+        let second = plan_geometry(3.76, 8.0).map(Arc::new);
+        assert!(!Arc::ptr_eq(
+            first.as_ref().unwrap(),
+            second.as_ref().unwrap()
+        ));
+        let mut cache: Vec<CacheEntry> = Vec::new();
+        let won = remember(&mut cache, key, first.clone());
+        let lost = remember(&mut cache, key, second);
+        assert!(Arc::ptr_eq(won.as_ref().unwrap(), first.as_ref().unwrap()));
+        assert!(
+            Arc::ptr_eq(lost.as_ref().unwrap(), first.as_ref().unwrap()),
+            "the second caller must get the entry that is cached"
+        );
+        assert_eq!(cache.len(), 1, "the loser added nothing");
+        // A geometry that cannot be planned is cached as such, and a later plan does not replace it.
+        let none_key = (0.5_f64.to_bits(), 8.0_f64.to_bits());
+        assert!(remember(&mut cache, none_key, None).is_none());
+        assert!(remember(&mut cache, none_key, first.clone()).is_none());
+        // Most recent first, and no more than the cache holds.
+        for i in 0..20_u64 {
+            remember(&mut cache, (i, i), first.clone());
+        }
+        assert_eq!(cache.len(), CACHE_ENTRIES);
+        assert_eq!(cache[0].0, (19, 19));
     }
 
     #[test]

@@ -19,8 +19,8 @@
 //! With `DevelopSettings::output_sharpening` above 0 (the default is 100) a view takes another
 //! road between steps 4 and 5 (`docs/01` Render graph, `docs/algorithms/04-output-sharpening.md`):
 //! the colour chain stops at C12 and produces display-linear f32 for the view **grown by the
-//! stage's receptive field** on every side ([`ViewSharpening::halo`]); that frame is cached
-//! ([`DisplayFrame`], so moving the slider samples and colours nothing again); the stage then
+//! stage's receptive field** on every side (`ViewSharpening::halo`, private); that frame is cached
+//! (`DisplayFrame`, private, so moving the slider samples and colours nothing again); the stage then
 //! sharpens the photo's own pixels in it at the scale `s = (the long edge shown) / (the long
 //! edge rendered at full resolution)`, the border is cut off, and C13 (the transfer function and
 //! the dither, at the pixel's position in the view) makes the 8-bit frame. The border makes a
@@ -31,7 +31,7 @@
 //! magnified above 100 % runs the stage on the 100 % picture it magnifies (`s = 1`, the pixels an
 //! export holds, over the part of the picture the view covers with a margin) and magnifies the
 //! sharpened picture with the same Catmull-Rom filter, so the stage always sees the pixel grid it
-//! was made for ([`ViewSharpening::frame_geometry`]).
+//! was made for (`ViewSharpening::frame_geometry`, private).
 //!
 //! Because geometry is applied *before* the pointwise colour chain, a crop or a rotation never
 //! re-runs a raw or colour group, and the colour chain only touches the pixels that are shown.

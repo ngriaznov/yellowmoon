@@ -21,6 +21,7 @@ use crate::cli::{DoctorArgs, version_text};
 use crate::console::Console;
 use crate::exit::{self, Failure};
 use crate::runtime::probe_gpu;
+use crate::text::{json_line, lossy, path_text};
 
 /// The sentence at the top of the report: what it includes, and what it leaves out.
 pub const INCLUDES: &str = "This report lists the version, the GPU, the render path, the model weights and their hashes, the camera profiles, how many looks are imported, and the folders Yellowmoon uses. It does not include photos, file names, locations or look names.";
@@ -56,7 +57,7 @@ pub fn run(args: &DoctorArgs, console: &mut Console) -> u8 {
         Ok(report) => {
             let mut out = io::stdout().lock();
             let written = if args.json {
-                writeln!(out, "{}", to_json(&report))
+                writeln!(out, "{}", json_line(&to_json(&report)))
             } else {
                 write!(out, "{}", to_text(&report))
             }
@@ -230,12 +231,12 @@ fn to_json(r: &Report) -> Value {
             "display_luts": r.display_luts,
         },
         "preferences": {
-            "path": r.preferences_path.display().to_string(),
+            "path": lossy(&r.preferences_path),
             "exists": r.preferences_exist,
             "problems": r.preference_warnings,
         },
-        "looks_folder": r.looks_folder.display().to_string(),
-        "data_folder": r.data_folder.display().to_string(),
+        "looks_folder": lossy(&r.looks_folder),
+        "data_folder": lossy(&r.data_folder),
     })
 }
 
@@ -348,7 +349,7 @@ fn to_text(r: &Report) -> String {
         "Preferences",
         format!(
             "{}{}",
-            r.preferences_path.display(),
+            path_text(&r.preferences_path),
             if r.preferences_exist {
                 if r.preference_warnings > 0 {
                     ", has problems and was read with defaults where needed"
@@ -360,8 +361,8 @@ fn to_text(r: &Report) -> String {
             }
         ),
     );
-    row("Looks folder", r.looks_folder.display().to_string());
-    row("Data folder", r.data_folder.display().to_string());
+    row("Looks folder", path_text(&r.looks_folder));
+    row("Data folder", path_text(&r.data_folder));
 
     let width = rows.iter().map(|(l, _)| l.len()).max().unwrap_or(0);
     let mut text = format!("{INCLUDES}\n\n");

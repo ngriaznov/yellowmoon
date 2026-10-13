@@ -6,8 +6,17 @@
 //!
 //! The progress line is drawn only when stderr is a terminal and neither `--json` nor `--quiet` was
 //! given. Any other line printed meanwhile clears it first and draws it again afterwards.
+//!
+//! Every line passes through [`line_text`] on its way out: whatever text from a file ended up in a
+//! message (a name with an escape sequence in it, a path that library code put into an error) is
+//! shown as escapes and does nothing to the terminal. The paths that the commands name themselves
+//! are escaped where they are formatted (`crate::text::path_text`), which also covers the stdout
+//! text of `ym info`; this is the net under all the rest.
 
 use std::io::{self, IsTerminal, Write};
+use std::path::Path;
+
+use crate::text::{data_path, line_text};
 
 /// Where messages for a person go.
 #[derive(Debug)]
@@ -55,7 +64,7 @@ impl Console {
     fn print(&mut self, text: &str) {
         self.clear();
         let mut err = io::stderr().lock();
-        let _ = writeln!(err, "{text}");
+        let _ = writeln!(err, "{}", line_text(text));
         let _ = err.flush();
         drop(err);
         self.redraw();
@@ -102,7 +111,7 @@ impl Console {
         if !self.progress {
             return;
         }
-        self.line = Some(text);
+        self.line = Some(line_text(&text));
         self.redraw();
     }
 
@@ -121,6 +130,13 @@ impl Console {
 pub fn data_line(text: &str) {
     let mut out = io::stdout().lock();
     let _ = writeln!(out, "{text}").and_then(|()| out.flush());
+}
+
+/// Writes a path as a line of data to stdout: exact when stdout is a pipe or a file (the next
+/// program needs the real name), escaped like every other line when it is a terminal
+/// ([`data_path`]).
+pub fn data_path_line(path: &Path) {
+    data_line(&data_path(path, io::stdout().is_terminal()));
 }
 
 /// Shortens `text` to at most `max` characters, ending in an ellipsis when it was cut.

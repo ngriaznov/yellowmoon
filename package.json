@@ -13,6 +13,9 @@
     "test:watch": "vitest",
     "e2e": "playwright test",
     "e2e:shell": "node e2e/real/shell-smoke.mjs",
+    "perf:latency": "npm run perf:latency:shell; code=$?; npm run perf:latency:web || code=$?; exit $code",
+    "perf:latency:shell": "cargo test -p yellowmoon-app --bin yellowmoon-app five_hundred -- --ignored --nocapture",
+    "perf:latency:web": "e2e/perf/run.sh",
     "readme:screenshots": "node tools/readme/screenshots.mjs",
     "tauri": "tauri"
   },

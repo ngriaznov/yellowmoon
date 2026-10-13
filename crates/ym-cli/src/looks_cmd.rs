@@ -25,10 +25,11 @@ use ym_looks::library::{LookId, VerifyOutcome};
 use crate::cli::{
     InputArg, LooksBakeArgs, LooksCommand, LooksDefaultArgs, LooksImportArgs, LooksListArgs,
 };
-use crate::console::{Console, bar, data_line, photos};
+use crate::console::{Console, bar, data_line, data_path_line, photos};
 use crate::exit::{self, Failure};
 use crate::render::{look_failure, resolve_look};
 use crate::runtime::{handle_interrupts, interrupted};
+use crate::text::{json_line, path_text};
 
 /// Runs a `ym looks` command and returns the exit code.
 pub fn run(command: &LooksCommand, console: &mut Console) -> u8 {
@@ -149,7 +150,7 @@ fn list(args: &LooksListArgs) -> Result<u8, Failure> {
     let mut out = io::stdout().lock();
     let written = if args.json {
         let value = json!({ "looks": looks, "display_luts": luts });
-        writeln!(out, "{value}")
+        writeln!(out, "{}", json_line(&value))
     } else {
         write!(out, "{}", list_text(&looks, &luts))
     };
@@ -223,7 +224,7 @@ fn import(args: &LooksImportArgs, console: &mut Console) -> Result<u8, Failure> 
                 }
                 console.detail(&format!(
                     "{}: {} looks, {} display LUTs, {} unchanged.",
-                    path.display(),
+                    path_text(&path),
                     r.added.len(),
                     r.display_luts_added,
                     r.unchanged
@@ -232,7 +233,7 @@ fn import(args: &LooksImportArgs, console: &mut Console) -> Result<u8, Failure> 
             Err(e) => {
                 console.error(&format!(
                     "{}: {}",
-                    path.display(),
+                    path_text(&path),
                     import_failure(&e).message
                 ));
                 first_failure.get_or_insert_with(|| import_failure(&e));
@@ -347,11 +348,11 @@ fn bake(args: &LooksBakeArgs, console: &mut Console) -> Result<u8, Failure> {
     let text = std::fs::read_to_string(&args.look).map_err(|e| {
         Failure::usage(format!(
             "Couldn't read the look file {}: {e}.",
-            args.look.display()
+            path_text(&args.look)
         ))
     })?;
     let look = ParametricLook::from_json(&text)
-        .map_err(|e| Failure::usage(format!("{}: {e}.", args.look.display())))?;
+        .map_err(|e| Failure::usage(format!("{}: {e}.", path_text(&args.look))))?;
     let out_dir = args.out.clone().unwrap_or_else(|| {
         args.look
             .parent()
@@ -359,7 +360,7 @@ fn bake(args: &LooksBakeArgs, console: &mut Console) -> Result<u8, Failure> {
             .map_or_else(|| PathBuf::from("."), Path::to_path_buf)
     });
     std::fs::create_dir_all(&out_dir)
-        .map_err(|e| Failure::failed(format!("Couldn't create {}: {e}.", out_dir.display())))?;
+        .map_err(|e| Failure::failed(format!("Couldn't create {}: {e}.", path_text(&out_dir))))?;
     let stem = args
         .look
         .file_stem()
@@ -370,13 +371,13 @@ fn bake(args: &LooksBakeArgs, console: &mut Console) -> Result<u8, Failure> {
         .map_err(|e| Failure::failed(format!("The look can't be baked: {e}.")))?;
     let cube_path = out_dir.join(format!("{stem}.cube"));
     std::fs::write(&cube_path, cube.to_cube_string(look.name()))
-        .map_err(|e| Failure::failed(format!("Couldn't write {}: {e}.", cube_path.display())))?;
+        .map_err(|e| Failure::failed(format!("Couldn't write {}: {e}.", path_text(&cube_path))))?;
     console.info(&format!(
         "Baked {} to a {BAKE_POINTS}-point LUT: {}",
         look.name(),
-        cube_path.display()
+        path_text(&cube_path)
     ));
-    data_line(&cube_path.display().to_string());
+    data_path_line(&cube_path);
 
     if args.preview.is_empty() {
         return Ok(exit::OK);
@@ -387,9 +388,9 @@ fn bake(args: &LooksBakeArgs, console: &mut Console) -> Result<u8, Failure> {
         "Contact sheet of {}: Neutral on the left, {} on the right: {}",
         photos(used),
         look.name(),
-        sheet_path.display()
+        path_text(&sheet_path)
     ));
-    data_line(&sheet_path.display().to_string());
+    data_path_line(&sheet_path);
     Ok(exit::OK)
 }
 
@@ -434,7 +435,7 @@ fn contact_sheet(
             Some(id) => ids.push((file.clone(), *id)),
             None => console.error(&format!(
                 "{}: not an ARW file, left out of the contact sheet.",
-                file.display()
+                path_text(&file)
             )),
         }
     }
@@ -451,7 +452,7 @@ fn contact_sheet(
             return Err(Failure::new(exit::INTERRUPTED, "Interrupted."));
         }
         if let Some(PhotoStatus::Skipped { reason }) = session.status(*photo) {
-            console.error(&format!("{}: {reason}", path.display()));
+            console.error(&format!("{}: {reason}", path_text(&path)));
             continue;
         }
         let rendered = ym_core::pipeline::PhotoSource::from_session(&session, *photo)
@@ -473,7 +474,7 @@ fn contact_sheet(
             });
         match rendered {
             Ok(pair) => rows.push(pair),
-            Err(message) => console.error(&format!("{}: {message}", path.display())),
+            Err(message) => console.error(&format!("{}: {message}", path_text(&path))),
         }
     }
     if rows.is_empty() {
@@ -484,7 +485,7 @@ fn contact_sheet(
     let (w, h, rgb) = layout(&rows);
     let png = encode_png_rgb8(w, h, &rgb).map_err(|e| Failure::failed(e.to_string()))?;
     std::fs::write(sheet_path, png)
-        .map_err(|e| Failure::failed(format!("Couldn't write {}: {e}.", sheet_path.display())))?;
+        .map_err(|e| Failure::failed(format!("Couldn't write {}: {e}.", path_text(&sheet_path))))?;
     Ok(rows.len())
 }
 

@@ -4,7 +4,8 @@
 
 Needs only committed files (no fetched sources, no colour-science). It verifies
 
-* the file was generated from the current ``profile.json`` (SHA-256 recorded in ``sources``);
+* the file was generated from the current ``profile.json`` (SHA-256 of its content without the ``provenance``
+  block, recorded in ``sources``; the bytes of the file are not pinned);
 * every ``interpolated`` / ``cct_duv`` / ``sensor_map_blend`` field is reproduced by
   ``runtime_ref`` to 1e-9 (the bar the Rust port has to meet);
 * grid-point ``exact`` values agree with the table to ``on_grid_abs`` (1e-6), and off-grid ``exact``
@@ -21,7 +22,7 @@ import sys
 
 import numpy as np
 
-from training.common import paths
+from training.common import content_digest, paths
 from training.sensor_map import runtime_ref as rr
 
 
@@ -40,8 +41,9 @@ def main() -> int:
     def close(a, b, tol: float) -> bool:
         return bool(np.max(np.abs(np.asarray(a, dtype=float) - np.asarray(b, dtype=float))) <= tol)
 
-    check(hashlib.sha256(prof_path.read_bytes()).hexdigest() == ref["sources"]["profile_sha256"],
-          "reference is stale: profile.json changed since spectral_reference.json was generated")
+    check(content_digest.digest(json.loads(prof_path.read_text()), skip_top_level=content_digest.PROFILE_SKIPS)
+          == ref["sources"]["profile_content_sha256"],
+          "reference is stale: the content of profile.json (provenance aside) changed since spectral_reference.json was generated")
     check(hashlib.sha256(paths.ALEXA_CURVES_JSON.read_bytes()).hexdigest() == ref["sources"]["alexa_curves_sha256"],
           "reference is stale: the ALEXA curves changed")
     profile = rr.Profile.load(prof_path)

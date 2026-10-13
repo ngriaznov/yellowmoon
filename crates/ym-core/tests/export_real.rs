@@ -5,6 +5,10 @@
 //! ```text
 //! cargo test -p ym-core --test export_real -- --ignored --nocapture
 //! ```
+//!
+//! The synthetic set (`tools/fetch/synthetic.sh` into `testdata/synthetic/arw`, or `$YM_TESTDATA`)
+//! has its own ignored test. A missing set is a skip with a message, and a failure when
+//! `YM_REQUIRE_SYNTHETIC` is set (not empty, not `0`), as in every test that reads the set.
 mod common;
 
 use std::path::{Path, PathBuf};
@@ -250,12 +254,43 @@ fn the_detail_statistic_of_the_apps_thumbnails_matches_the_full_size_render() {
     );
 }
 
-/// The synthetic golden set (`tools/fetch/synthetic.sh` into `testdata/synthetic`, local only):
-/// one scene per raw variant (uncompressed 12 and 14 bit, cRAW, Lossless L in all its layouts,
-/// Lossless M and S) and body.
-fn synthetic_files() -> Vec<PathBuf> {
-    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../testdata/synthetic");
-    let mut v: Vec<PathBuf> = std::fs::read_dir(&dir)
+/// Whether the environment demands the synthetic set: `YM_REQUIRE_SYNTHETIC` set to something other
+/// than empty or `0`. A missing set is then a failure; otherwise it is a skip with a message. The
+/// same rule in every test that reads the set (`docs/13-testing.md`).
+fn synthetic_required() -> bool {
+    demand_is_on(std::env::var_os("YM_REQUIRE_SYNTHETIC").as_deref())
+}
+
+/// Whether the value of a `YM_REQUIRE_*` variable switches the demand on: set, not empty, not `0`.
+fn demand_is_on(value: Option<&std::ffi::OsStr>) -> bool {
+    value.is_some_and(|v| !v.is_empty() && v != "0")
+}
+
+#[test]
+fn a_demand_is_on_when_the_variable_is_set_to_something_but_nothing_or_zero() {
+    use std::ffi::OsStr;
+    assert!(!demand_is_on(None));
+    assert!(!demand_is_on(Some(OsStr::new(""))));
+    assert!(!demand_is_on(Some(OsStr::new("0"))));
+    assert!(demand_is_on(Some(OsStr::new("1"))));
+}
+
+/// The folder `tools/fetch/synthetic.sh` writes the ARW files to: `synthetic/arw` inside
+/// `testdata` (`$YM_TESTDATA` when it is set and not empty, else `testdata/` of the workspace).
+fn synthetic_arw_dir_in(testdata_env: Option<std::ffi::OsString>) -> PathBuf {
+    testdata_env
+        .filter(|v| !v.is_empty())
+        .map_or_else(
+            || PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../testdata"),
+            PathBuf::from,
+        )
+        .join("synthetic/arw")
+}
+
+/// The ARW files directly inside `dir`, sorted. (`manifest.json` sits there too, and the scenes
+/// are in the folder next to it.)
+fn arw_files_in(dir: &Path) -> Vec<PathBuf> {
+    let mut v: Vec<PathBuf> = std::fs::read_dir(dir)
         .map(|d| {
             d.filter_map(Result::ok)
                 .map(|e| e.path())
@@ -269,12 +304,72 @@ fn synthetic_files() -> Vec<PathBuf> {
     v
 }
 
+/// The synthetic golden set (`tools/fetch/synthetic.sh` into `testdata/synthetic/arw`, local only):
+/// one scene per raw variant (uncompressed 12 and 14 bit, packed, cRAW, Lossless L in all its
+/// layouts, Lossless M and S) and body.
+fn synthetic_files() -> Vec<PathBuf> {
+    arw_files_in(&synthetic_arw_dir_in(std::env::var_os("YM_TESTDATA")))
+}
+
 #[test]
-#[ignore = "exports 48 synthetic files at full size; run with --ignored"]
+fn the_synthetic_folder_is_where_the_generator_writes_it() {
+    // The location logic, without touching the environment.
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../testdata/synthetic/arw");
+    assert_eq!(synthetic_arw_dir_in(None), root);
+    assert_eq!(synthetic_arw_dir_in(Some("".into())), root);
+    assert_eq!(
+        synthetic_arw_dir_in(Some("/somewhere".into())),
+        Path::new("/somewhere/synthetic/arw")
+    );
+    // Only ARW files directly in the folder count (any case of the extension).
+    let dir = tempfile::tempdir().expect("folder");
+    for name in ["b.ARW", "a.arw", "manifest.json", "c.txt"] {
+        std::fs::write(dir.path().join(name), b"x").expect("write");
+    }
+    std::fs::create_dir(dir.path().join("sub.ARW")).expect("folder named like a file");
+    let found: Vec<String> = arw_files_in(dir.path())
+        .iter()
+        .map(|p| p.file_name().expect("name").to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(found, ["a.arw", "b.ARW"]);
+}
+
+#[test]
+fn the_generated_synthetic_set_is_found() {
+    // With the set generated (tools/fetch/synthetic.sh) the helper that the export test uses sees
+    // every ARW file of the folder; a stale path would see none and let that test skip itself.
+    let dir = synthetic_arw_dir_in(std::env::var_os("YM_TESTDATA"));
+    let on_disk = arw_files_in(&dir).len();
+    if on_disk == 0 {
+        assert!(
+            !synthetic_required(),
+            "no ARW files in {} and YM_REQUIRE_SYNTHETIC is set; run tools/fetch/synthetic.sh first",
+            dir.display()
+        );
+        eprintln!(
+            "export_real: no ARW files in {}, skipped (YM_REQUIRE_SYNTHETIC=1 makes this a failure)",
+            dir.display()
+        );
+        return;
+    }
+    assert_eq!(synthetic_files().len(), on_disk);
+}
+
+#[test]
+#[ignore = "exports every file of the synthetic set at full size as JPEG and as DNG; run with --ignored"]
 fn every_synthetic_golden_file_exports_as_jpeg_and_dng() {
     let files = synthetic_files();
     if files.is_empty() {
-        eprintln!("export_real: testdata/synthetic is absent, skipped");
+        let dir = synthetic_arw_dir_in(std::env::var_os("YM_TESTDATA"));
+        assert!(
+            !synthetic_required(),
+            "no ARW files in {} and YM_REQUIRE_SYNTHETIC is set; run tools/fetch/synthetic.sh first",
+            dir.display()
+        );
+        eprintln!(
+            "export_real: no ARW files in {}, skipped (YM_REQUIRE_SYNTHETIC=1 makes this a failure)",
+            dir.display()
+        );
         return;
     }
     let (core, rx, _app) = core_with_events();

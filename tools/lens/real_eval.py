@@ -510,6 +510,33 @@ def cmd_sky_profile(paths, args):
             print(f"    x = {0.5 - frac:.2f} / {0.5 + frac:.2f}   measured even part {even:+.3f}   if uncorrected (table) {model_even:+.3f}   rho {rho_l:.2f}/{rho_r:.2f}")
 
 
+def cmd_pfm_ca(paths, args):
+    """CA before and after darktable's lens module (`darktable_oracle.sh --lens-flags ca`): `paths` are
+    its output directories (`lens_in.pfm.gz`, `lens_out.pfm.gz`), given as DIR:FILE.ARW so that the
+    table can be shown next to the measurement."""
+    import lens_io
+
+    for spec in paths:
+        d, arw = spec.split(":", 1)
+        tags = exif_tags(arw)
+        t = lens_tables(tags)
+        n_ca, ca = split_stored(t["raw"]["ca"])
+        n_d, dist = split_stored(t["raw"]["distortion"])
+        img_in, img_out = lens_io.load_pair(d)
+        for name, img in (("lens module input", img_in), ("lens module output", img_out)):
+            h, w, _ = img.shape
+            hd = 0.5 * math.hypot(w, h)
+            sc = img.max()
+            res = cam.measure_rgb(img / sc, (w / 2.0, h / 2.0), clip_level=0.99, block_px=96, highpass_sigma_px=5.0, min_energy=0.004)
+            print(f"== {Path(arw).stem}  darktable {name}  {w}x{h}  blocks red {len(res['red'])} blue {len(res['blue'])}", flush=True)
+            for chan in ("red", "blue"):
+                prof = cam.radial_profile(res[chan], hd, np.linspace(0.0, 1.0, 11))
+                idx = 0 if chan == "red" else 1
+                pred = (lambda r, idx=idx: predicted_shift(r, ca, dist, hd)[idx]) if ca else None
+                print(f"  {chan}:")
+                print(fmt_profile(prof, pred), flush=True)
+
+
 def main():
     argv = sys.argv[1:]
     if not argv:
@@ -529,6 +556,8 @@ def main():
         cmd_jpeg_ca(files, args)
     elif cmd == "rgb-ca":
         cmd_rgb_ca(files, args)
+    elif cmd == "pfm-ca":
+        cmd_pfm_ca(files, args)
     elif cmd == "vignette":
         cmd_vignette(files, args)
     elif cmd == "sky-profile":

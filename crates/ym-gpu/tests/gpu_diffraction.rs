@@ -178,18 +178,14 @@ impl Cfg {
         .expect("an active plan");
         Setup {
             plan: plan.with_noise_gate(self.noise_gate),
-            g0: self.g0,
-            luma: self.luma,
         }
     }
 }
 
-/// A plan with the gains and luma weights it was made with (the kernel needs them again).
+/// A plan, which carries the gains and luma weights it was made with (the kernel reads them from it).
 #[derive(Clone, Debug)]
 struct Setup {
     plan: DiffractionPlan,
-    g0: [f32; 3],
-    luma: [f32; 3],
 }
 
 /// Runs `job` on the device thread with this setup uploaded.
@@ -203,7 +199,7 @@ where
     let s = s.clone();
     dev.gpu
         .run(JobSpec::new(Priority::Export), move |ctx, token| {
-            let prepared = PreparedDiffraction::new(ctx, &s.plan, s.g0, s.luma)?;
+            let prepared = PreparedDiffraction::new(ctx, &s.plan)?;
             job(ctx, token, &prepared)
         })
 }
@@ -407,11 +403,7 @@ fn setup_of(params: &Value) -> Option<Setup> {
     };
     let g0 = [g0[0], g0[1], g0[2]];
     let luma = [luma[0], luma[1], luma[2]];
-    DiffractionPlan::new(&p, g0, &NoiseDn::from_model(&model), luma).map(|plan| Setup {
-        plan,
-        g0,
-        luma,
-    })
+    DiffractionPlan::new(&p, g0, &NoiseDn::from_model(&model), luma).map(|plan| Setup { plan })
 }
 
 /// The image vectors: name, setup (`None` for an inactive stage), input, expected data, tolerance.
@@ -1280,18 +1272,64 @@ fn bad_inputs_are_refused() {
             "{what}: {e:?}"
         );
     }
-    // Gains the planner would refuse.
-    let s = setup.clone();
-    let bad_gain = dev
+    // Luma weights that are not finite: the planner takes them (its noise floor falls back to the
+    // 1 DN minimum), the upload refuses them. The gains need no such test: a plan with gains that
+    // are not positive and finite does not exist (`DiffractionPlan::new` gives `None`), and the
+    // upload takes both from the plan.
+    let c = cfg(3.76, 8.0);
+    let params = DiffractionParams::new(c.pitch_um, c.f_number);
+    let bad_luma = DiffractionPlan::new(
+        &params,
+        c.g0,
+        &NoiseDn::from_model(&c.model()),
+        [f32::NAN, 0.7152, 0.0722],
+    )
+    .expect("a plan whose luma weights are not finite");
+    let refused = dev
         .gpu
         .run(JobSpec::new(Priority::Export), move |ctx, _| {
-            Ok(PreparedDiffraction::new(ctx, &s.plan, [2.0, 0.0, 1.5], s.luma).err())
+            Ok(PreparedDiffraction::new(ctx, &bad_luma).err())
         })
         .expect("job");
     assert!(
-        matches!(bad_gain, Some(GpuError::InvalidInput(_))),
-        "{bad_gain:?}"
+        matches!(refused, Some(GpuError::InvalidInput(_))),
+        "{refused:?}"
     );
+}
+
+/// The upload reads the gains and the luma weights from the plan: the GPU follows the CPU
+/// reference of the same plan, whatever gains and luma weights the plan was made with (before,
+/// they were passed a second time, and a value that differed from the plan's made the two diverge
+/// without a word), and a plan made with other gains is another stage.
+#[test]
+fn the_gains_and_luma_weights_come_from_the_plan() {
+    let Some(dev) = device() else { return };
+    let c = cfg(3.76, 8.0);
+    let setup = c.setup();
+    assert_eq!(setup.plan.g0(), c.g0);
+    assert_eq!(setup.plan.luma(), c.luma);
+    let img = scene(Kind::Natural, 64, 48, 6, &c, &setup.plan);
+    let got = run_gpu(dev, &setup, &img);
+    let d = diff(&got, &cpu(&setup, &img));
+    assert!(d.max_abs <= FRAME_BOUND, "GPU against CPU: {}", d.max_abs);
+
+    // Gains and luma weights that differ from the usual ones, in the plan: the GPU follows the CPU
+    // of that plan, and the output is not the first plan's.
+    let mut other = c;
+    other.g0 = [3.0, 1.0, 2.2];
+    other.luma = [0.3, 0.6, 0.1];
+    let other_setup = other.setup();
+    assert_eq!(other_setup.plan.g0(), other.g0);
+    assert_eq!(other_setup.plan.luma(), other.luma);
+    let got_other = run_gpu(dev, &other_setup, &img);
+    let d = diff(&got_other, &cpu(&other_setup, &img));
+    assert!(
+        d.max_abs <= FRAME_BOUND,
+        "GPU against CPU with other gains: {}",
+        d.max_abs
+    );
+    let moved = diff(&got_other, &got).max_abs;
+    assert!(moved > 1e-6, "the gains and luma weights had no effect");
 }
 
 #[test]

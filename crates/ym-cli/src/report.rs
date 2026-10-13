@@ -13,6 +13,8 @@ use ym_core::version::PIPELINE_VERSION;
 use ym_profiles::detect::MatchKind;
 use ym_raw::metadata::RawMetadata;
 
+use crate::text::escape_json_controls;
+
 /// A JSON object whose keys keep the order they were added in, so the output reads like the
 /// example in `docs/10` (`input`, `output`, `status`, `camera`, …) and not alphabetically.
 ///
@@ -54,7 +56,9 @@ impl Object {
         self.0.iter().find(|(k, _)| *k == key).map(|(_, v)| v)
     }
 
-    /// The object as one line of JSON, keys in the order they were added.
+    /// The object as one line of JSON, keys in the order they were added. DEL and the C1
+    /// characters are written as `\u` escapes ([`escape_json_controls`]): the line is safe to
+    /// show on a terminal and parses to the same values.
     #[must_use]
     pub fn to_line(&self) -> String {
         let mut out = String::from("{");
@@ -67,7 +71,7 @@ impl Object {
             out.push_str(&value.to_string());
         }
         out.push('}');
-        out
+        escape_json_controls(&out)
     }
 }
 

@@ -8,8 +8,8 @@
 # Tests that need a tool or a fixture the runner may not have print "SKIPPED" and pass on a developer's machine. Where this file
 # is the place that is meant to run them, the job sets the matching YM_REQUIRE_* variable, which turns the skip into a failure:
 # YM_REQUIRE_GPU (gpu-lavapipe, ml-backends), YM_REQUIRE_EXTERNAL_TOOLS (dng), YM_REQUIRE_ORACLE (oracle, dng),
-# YM_REQUIRE_FIXTURES (spectral-fixtures), YM_REQUIRE_SYNTHETIC (synthetic-set), YM_REQUIRE_ORT (ml-backends) and
-# YM_REQUIRE_PARITY_BIN (parity). The macOS `rust` job sets none of them.
+# YM_REQUIRE_FIXTURES (spectral-fixtures), YM_REQUIRE_SYNTHETIC (synthetic-set), YM_REQUIRE_ORT (ml-backends),
+# YM_REQUIRE_PARITY_BIN and YM_REQUIRE_FORCE_DEMOSAIC (parity). The macOS `rust` job sets none of them.
 name: CI
 
 on:
@@ -526,6 +526,20 @@ jobs:
         run: |
           cargo test -p yellowmoon-app --test app_cli_parity -- --nocapture
           cargo test -p yellowmoon-app the_app_and_the_command_line_write_the_same_bytes
+      # The test that forces the R6 demosaic method (Menon, the previous default) on both sides needs a `ym` built with the test-only
+      # `force-demosaic` feature: a plain `ym` ignores YM_FORCE_DEMOSAIC, the test notices and skips itself, which is all that the
+      # step above can do with the plain one. So `ym` is built a second time WITH the feature, after the plain parity checks, and kept
+      # under another name: the plain `ym-alone` (and the sidecar copy in src-tauri/binaries) is not touched. YM_REQUIRE_FORCE_DEMOSAIC
+      # turns the skip into a failure, so a build that lost the feature cannot pass for a green run.
+      - name: ym with the test-only force-demosaic feature; the forced method on both sides (byte for byte)
+        shell: bash
+        env:
+          YM_REQUIRE_PARITY_BIN: "1"
+          YM_REQUIRE_FORCE_DEMOSAIC: "1"
+        run: |
+          cargo build -p ym-cli --features force-demosaic
+          cp target/debug/ym "$RUNNER_TEMP/ym-force-demosaic"
+          YM_BIN="$RUNNER_TEMP/ym-force-demosaic" cargo test -p yellowmoon-app --test app_cli_parity -- --nocapture with_menon_forced
       - name: Rustdoc (warnings are errors)
         env:
           RUSTDOCFLAGS: -D warnings

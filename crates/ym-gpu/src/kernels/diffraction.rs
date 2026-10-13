@@ -4,8 +4,8 @@
 //! notes).
 //!
 //! [`PreparedDiffraction::new`] takes the CPU planner's result (a [`DiffractionPlan`]: the PSF
-//! kernel, `sigma_G`, the radii and the noise constants) and uploads the kernel and the Gaussian taps
-//! once. [`run`](PreparedDiffraction::run) sharpens a whole planar image and
+//! kernel, `sigma_G`, the radii, the noise constants, the gains and the luma weights) and uploads the
+//! kernel and the Gaussian taps once. [`run`](PreparedDiffraction::run) sharpens a whole planar image and
 //! [`run_tiled`](PreparedDiffraction::run_tiled) does it tile by tile with the exact halo of the plan
 //! (`10 + R + r_G`, at most 25 px). Nothing here is wired into the render path: the raw stages still
 //! run the CPU reference, and wiring this one is a later decision.
@@ -329,23 +329,20 @@ fn check_image(image: &RgbImage) -> Result<(), GpuError> {
 impl PreparedDiffraction {
     /// Uploads `plan` (its PSF kernel and the Gaussian taps of its `sigma_G`).
     ///
-    /// `g0` and `luma` must be the gains and luma weights `plan` was made with
-    /// ([`DiffractionPlan::new`] keeps them private; the plan's noise constants, strength, noise-gate
-    /// factor, kernel and radii are read from the plan itself).
+    /// Everything the correction needs comes from the plan: its noise constants, strength, noise-gate
+    /// factor, kernel and radii, and the gains and luma weights it was made with
+    /// ([`DiffractionPlan::g0`], [`DiffractionPlan::luma`]). There is nothing to pass again, so the
+    /// kernel cannot be run with values other than the CPU reference's.
     ///
     /// # Errors
     ///
-    /// [`GpuError::InvalidInput`] for gains that are not positive and finite or luma weights that are
-    /// not finite (the planner refuses the gains too), and allocation errors from the pool.
-    pub fn new(
-        ctx: &GpuContext,
-        plan: &DiffractionPlan,
-        g0: [f32; 3],
-        luma: [f32; 3],
-    ) -> Result<Self, GpuError> {
+    /// [`GpuError::InvalidInput`] for luma weights that are not finite (the planner does not check
+    /// them; its gains are positive and finite by construction), and allocation errors from the pool.
+    pub fn new(ctx: &GpuContext, plan: &DiffractionPlan) -> Result<Self, GpuError> {
+        let (g0, luma) = (plan.g0(), plan.luma());
         if g0.iter().any(|&g| !g.is_finite() || g <= 0.0) || luma.iter().any(|a| !a.is_finite()) {
             return Err(GpuError::InvalidInput(format!(
-                "diffraction deconvolution: gains {g0:?} must be positive and luma weights {luma:?} finite"
+                "diffraction deconvolution: the plan's gains {g0:?} must be positive and its luma weights {luma:?} finite"
             )));
         }
         let kernel = plan.kernel();

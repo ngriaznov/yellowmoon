@@ -46,6 +46,67 @@ fn sha256_hex(bytes: &[u8]) -> String {
         .collect()
 }
 
+/// Feeds a JSON value to the digest in the form `training/common/content_digest.py` documents:
+/// a tag byte, then the value (numbers as little-endian doubles, lengths as little-endian u32,
+/// object keys in sorted order), so that only what the document says counts, not how it is written.
+fn feed(h: &mut Sha256, v: &Value) {
+    let len = |n: usize| {
+        u32::try_from(n)
+            .expect("a length that fits u32")
+            .to_le_bytes()
+    };
+    match v {
+        Value::Null => h.update([0x00]),
+        Value::Bool(false) => h.update([0x01]),
+        Value::Bool(true) => h.update([0x02]),
+        Value::Number(n) => {
+            h.update([0x03]);
+            h.update(n.as_f64().expect("a number that is an f64").to_le_bytes());
+        }
+        Value::String(text) => {
+            h.update([0x04]);
+            h.update(len(text.len()));
+            h.update(text.as_bytes());
+        }
+        Value::Array(items) => {
+            h.update([0x05]);
+            h.update(len(items.len()));
+            for item in items {
+                feed(h, item);
+            }
+        }
+        Value::Object(map) => {
+            h.update([0x06]);
+            h.update(len(map.len()));
+            // UTF-8 byte order, whatever order the map keeps.
+            let mut keys: Vec<&String> = map.keys().collect();
+            keys.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+            for key in keys {
+                feed(h, &Value::String(key.clone()));
+                feed(h, &map[key]);
+            }
+        }
+    }
+}
+
+/// The digest of a document without the listed top-level keys (the Rust twin of
+/// `content_digest.digest` in `training/common/content_digest.py`).
+fn content_digest(v: &Value, skip_top_level: &[&str]) -> String {
+    let mut h = Sha256::new();
+    match v {
+        Value::Object(map) if !skip_top_level.is_empty() => {
+            let kept: serde_json::Map<String, Value> = map
+                .iter()
+                .filter(|(k, _)| !skip_top_level.contains(&k.as_str()))
+                .map(|(k, x)| (k.clone(), x.clone()))
+                .collect();
+            feed(&mut h, &Value::Object(kept));
+        }
+        other => feed(&mut h, other),
+    }
+    h.finalize().iter().map(|b| format!("{b:02x}")).collect()
+}
+
 fn f(v: &Value) -> f64 {
     v.as_f64().unwrap_or_else(|| panic!("{v} is not a number"))
 }
@@ -73,16 +134,22 @@ impl Rng {
     }
 }
 
+/// The top-level key of a `profile.json` that the reference does not depend on.
+const PROFILE_SKIPS: [&str; 1] = ["provenance"];
+
+/// What the reference file is pinned to: the content of `profile.json` without its `provenance`
+/// block (SHA-256 over the values, `content_digest`), and the bytes of the ALEXA curve file. The
+/// bytes of `profile.json` are not pinned: a rebuild of the registry rewrites the provenance (the
+/// commit of the fit script, the hashes of its sources, the sibling checks) and not one number the
+/// runtime reads. Any change to a matrix, a table or the locus does change the digest: regenerate
+/// the reference with `python3 -m training.sensor_map.spectral_reference`.
 #[test]
 fn reference_file_belongs_to_the_shipped_files() {
     let r = reference();
-    let profile =
-        std::fs::read(repo_root().join("data/cameras/profiles/sony-ilce-7rm4/profile.json"))
-            .unwrap();
     assert_eq!(
-        sha256_hex(&profile),
-        r["sources"]["profile_sha256"].as_str().unwrap(),
-        "profile.json changed: rerun `python3 -m training.sensor_map.spectral_reference`"
+        content_digest(&profile_value(PROFILE_ID), &PROFILE_SKIPS),
+        r["sources"]["profile_content_sha256"].as_str().unwrap(),
+        "the content of profile.json changed (provenance aside): rerun `python3 -m training.sensor_map.spectral_reference`"
     );
     let alexa =
         std::fs::read(repo_root().join("data/alexa/alexa_alev3_estimate_380_780_5.json")).unwrap();
@@ -91,6 +158,53 @@ fn reference_file_belongs_to_the_shipped_files() {
         r["sources"]["alexa_curves_sha256"].as_str().unwrap()
     );
     assert_eq!(r["camera_locus"]["profile"], PROFILE_ID);
+}
+
+#[test]
+fn the_content_digest_ignores_how_a_document_is_written_and_its_provenance() {
+    let base: Value = serde_json::from_str(
+        r#"{"id":"x","m":[[1,2.5],[0,-0.0]],"locus":{"a":[1e-5,3],"b":null,"c":true},"provenance":{"commit":"abc"}}"#,
+    )
+    .unwrap();
+    let digest = content_digest(&base, &PROFILE_SKIPS);
+    // Another way to write the same values, another provenance, another order of the keys.
+    let rewritten: Value = serde_json::from_str(
+        r#"{ "provenance": {"commit":"def","checks":[1]}, "locus": {"c": true, "b": null, "a": [0.00001, 3.0]},
+             "m": [[1.0, 2.5], [0.0, -0.0]], "id": "x" }"#,
+    )
+    .unwrap();
+    assert_eq!(content_digest(&rewritten, &PROFILE_SKIPS), digest);
+    // Without leaving the provenance out, it counts.
+    assert_ne!(content_digest(&rewritten, &[]), content_digest(&base, &[]));
+    // Any value that changes does: a number by one part in 1e12, a string, a type, a length, a key.
+    for changed in [
+        r#"{"id":"x","m":[[1,2.5],[0,-0.0]],"locus":{"a":[1.000000000001e-5,3],"b":null,"c":true}}"#,
+        r#"{"id":"y","m":[[1,2.5],[0,-0.0]],"locus":{"a":[1e-5,3],"b":null,"c":true}}"#,
+        r#"{"id":"x","m":[[1,2.5],[0,-0.0]],"locus":{"a":[1e-5,3],"b":null,"c":false}}"#,
+        r#"{"id":"x","m":[[1,2.5],[0,-0.0]],"locus":{"a":[1e-5,3],"b":0,"c":true}}"#,
+        r#"{"id":"x","m":[[1,2.5],[0,-0.0]],"locus":{"a":[1e-5,3,4],"b":null,"c":true}}"#,
+        r#"{"id":"x","m":[[1,2.5],[0,-0.0]],"locus":{"a":[1e-5,3],"b":null,"d":true}}"#,
+        r#"{"id":"x","m":[[1,2.5],[0,-0.0]],"locus":{"a":[1e-5,3],"b":null}}"#,
+    ] {
+        let value: Value = serde_json::from_str(changed).unwrap();
+        assert_ne!(content_digest(&value, &PROFILE_SKIPS), digest, "{changed}");
+    }
+    // The shipped profile: the provenance is not part of it, a table value is.
+    let shipped = profile_value(PROFILE_ID);
+    let mut moved = shipped.clone();
+    moved["provenance"]["fit_script"] = Value::from("another commit");
+    assert_eq!(
+        content_digest(&moved, &PROFILE_SKIPS),
+        content_digest(&shipped, &PROFILE_SKIPS)
+    );
+    let x = moved["alexa_white"]["blackbody"]["values"][0][0]
+        .as_f64()
+        .expect("the first value of the blackbody table");
+    moved["alexa_white"]["blackbody"]["values"][0][0] = Value::from(x + 1e-9);
+    assert_ne!(
+        content_digest(&moved, &PROFILE_SKIPS),
+        content_digest(&shipped, &PROFILE_SKIPS)
+    );
 }
 
 #[test]

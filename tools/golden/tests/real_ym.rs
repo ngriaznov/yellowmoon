@@ -2,9 +2,11 @@
 //! check identical, and that `truth` reads a DNG back and finds the neutral patch neutral.
 //!
 //! Needs `ym` (`cargo build -p ym-cli`) and `testdata/synthetic` (`tools/fetch/synthetic.sh`). Without them the tests
-//! say so and pass, unless `YM_REQUIRE_SYNTHETIC=1` is set.
+//! say so and pass, unless `YM_REQUIRE_SYNTHETIC=1` is set (`docs/13-testing.md`: set, not empty, not `0`).
 
 #![cfg(unix)]
+
+mod common;
 
 use std::path::PathBuf;
 
@@ -14,7 +16,7 @@ use golden::truth;
 use golden::ymrun::{YmBinary, find_ym, workspace_root};
 
 fn bench() -> Option<(YmBinary, PathBuf, Manifest)> {
-    let require = std::env::var_os("YM_REQUIRE_SYNTHETIC").is_some();
+    let require = common::synthetic_required();
     let testdata = std::env::var_os("YM_TESTDATA")
         .map(PathBuf::from)
         .unwrap_or_else(|| workspace_root().join("testdata"));
@@ -27,10 +29,12 @@ fn bench() -> Option<(YmBinary, PathBuf, Manifest)> {
         (ym, files) => {
             assert!(
                 !require,
-                "YM_REQUIRE_SYNTHETIC is set but ym ({:?}) or the synthetic set ({files}) is missing",
+                "YM_REQUIRE_SYNTHETIC is set but ym (found: {}) or the synthetic set (found: {files}) is missing",
                 ym.is_ok()
             );
-            eprintln!("SKIPPED: needs the ym binary and testdata/synthetic");
+            eprintln!(
+                "SKIPPED: needs the ym binary and testdata/synthetic (YM_REQUIRE_SYNTHETIC=1 makes this a failure)"
+            );
             None
         }
     }

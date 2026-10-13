@@ -21,7 +21,16 @@
 //! image up by the largest factor in its table so that it fills the frame; `tools/lens/` fits that
 //! zoom out before comparing.)
 //!
-//! The factors come from public reverse-engineering, not a Sony document (`docs/05`).
+//! **The CA can be corrected on the mosaic instead of in the R9 resample**
+//! ([`LensGeometry::with_ca_on_mosaic`], [`correct_mosaic_ca`], stage R5b of the chain). The render
+//! does: a green-guided demosaic pulls red and blue towards green, about half of a real lens's CA
+//! is gone after it, and the full table then over-corrects what is left (`docs/05` section R9,
+//! "Real files"). The reading of the tables below is unchanged by that.
+//!
+//! The factors come from public reverse-engineering, not a Sony document, and were checked
+//! against real files (`docs/05` sections R3 and R9, `tools/lens/real_eval.py`): the sign, the
+//! knot radii and the scale of the three tags agree with the camera's own corrected JPEGs and
+//! with the lateral CA and the vignetting measured in the raw data of nine bodies.
 
 use rayon::prelude::*;
 
@@ -324,7 +333,8 @@ impl LensGeometry {
 
     /// The lateral CA of this geometry as the two radial curves of the CA-aware green refinement of
     /// the adaptive ratio demosaic (`docs/algorithms/01-adaptive-ratio-demosaic.md` section 3.6,
-    /// `INTEGRATION.md` section 6), or `None` when the geometry has no CA: no 0x7035 table,
+    /// `INTEGRATION.md` section 6) and of the mosaic correction [`correct_mosaic_ca`], or `None`
+    /// when the geometry has no CA: no 0x7035 table,
     /// `decode.chromatic_aberration` off, or a table whose knots are all zero (a neutral table moves
     /// no pixel in R9, and the CA path would only smooth pass 2 for nothing: spec section 7, note 4).
     ///
@@ -578,7 +588,10 @@ pub fn correct_mosaic_ca(m: &mut Mosaic, curves: &CaCurves) -> Result<(), CpuErr
                 "the colour filter pattern has no {colour:?} photosite"
             )));
         };
-        let (nx, ny) = ((w.saturating_sub(ox)).div_ceil(2), (h.saturating_sub(oy)).div_ceil(2));
+        let (nx, ny) = (
+            (w.saturating_sub(ox)).div_ceil(2),
+            (h.saturating_sub(oy)).div_ceil(2),
+        );
         if nx == 0 || ny == 0 {
             continue;
         }

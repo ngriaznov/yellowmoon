@@ -684,8 +684,8 @@ mod mosaic_ca {
     #[test]
     fn red_and_blue_photosites_come_back_to_where_green_has_the_scene() {
         let (w, h) = (300usize, 200usize);
-        let geo = LensGeometry::new(w, h, &tags(w, h, 3.0, true), LensSwitches::default())
-            .expect("lens");
+        let geo =
+            LensGeometry::new(w, h, &tags(w, h, 3.0, true), LensSwitches::default()).expect("lens");
         let curves = geo.ca_curves().expect("curves").expect("the table has CA");
         assert!(curves.misregistration_px(0.5 * (w as f64).hypot(h as f64)) > 4.0);
         for cfa in Cfa::ALL {
@@ -705,7 +705,10 @@ mod mosaic_ca {
                     worst_before = worst_before.max((before.data[i] - truth).abs());
                 }
             }
-            assert!(worst_before > 0.04, "the lens moved nothing: {worst_before}");
+            assert!(
+                worst_before > 0.04,
+                "the lens moved nothing: {worst_before}"
+            );
             assert!(
                 worst_after < 2.0e-3,
                 "{cfa:?}: red and blue are {worst_after} off the scene after the correction ({worst_before} before)"
@@ -721,7 +724,10 @@ mod mosaic_ca {
         let curves = geo.ca_curves().expect("curves").expect("CA");
         let halo = mosaic_ca_halo_px(&curves);
         assert_eq!(halo % 2, 0, "tiles stay on the 2 x 2 pattern");
-        assert!(halo >= 6 + 4, "a 4 px shift needs at least that much context: {halo}");
+        assert!(
+            halo >= 6 + 4,
+            "a 4 px shift needs at least that much context: {halo}"
+        );
         let mut whole = lens_mosaic(w, h, Cfa::RGGB, &curves);
         let source = whole.clone();
         correct_mosaic_ca(&mut whole, &curves).expect("whole");
@@ -750,8 +756,8 @@ mod mosaic_ca {
     #[test]
     fn the_stage_does_not_depend_on_the_thread_count() {
         let (w, h) = (200usize, 120usize);
-        let geo = LensGeometry::new(w, h, &tags(w, h, 3.0, true), LensSwitches::default())
-            .expect("lens");
+        let geo =
+            LensGeometry::new(w, h, &tags(w, h, 3.0, true), LensSwitches::default()).expect("lens");
         let curves = geo.ca_curves().expect("curves").expect("CA");
         let source = lens_mosaic(w, h, Cfa::RGGB, &curves);
         let run = |threads: usize| {
@@ -779,7 +785,11 @@ mod mosaic_ca {
         let full = full.with_crop(crop);
         let moved = full.clone().with_ca_on_mosaic();
         assert!(moved.ca_on_mosaic() && !full.ca_on_mosaic());
-        assert_eq!(moved.crop(), crop, "the crop is the one of the full geometry");
+        assert_eq!(
+            moved.crop(),
+            crop,
+            "the crop is the one of the full geometry"
+        );
         assert_eq!(moved.output_size(), full.output_size());
         let distortion_only = LensGeometry::new(
             w,
@@ -794,7 +804,10 @@ mod mosaic_ca {
         for &(x, y) in &[(10.5, 7.5), (150.5, 100.5), (290.5, 190.5), (40.5, 180.5)] {
             let p = moved.source_positions(x, y);
             let q = distortion_only.source_positions(x, y);
-            assert_eq!(p, q, "R9 of the moved geometry is the distortion alone at ({x}, {y})");
+            assert_eq!(
+                p, q,
+                "R9 of the moved geometry is the distortion alone at ({x}, {y})"
+            );
             assert_eq!(p[0], p[1]);
             assert_eq!(p[2], p[1]);
         }
@@ -831,7 +844,7 @@ mod mosaic_ca {
     /// The mosaic a lens with `geo` makes of a natural scene (luma): the site of colour `c` at
     /// source position `q` holds the scene at the output position `p` with
     /// `source_position(c, p) = q`.
-    fn consistent_mosaic(w: usize, h: usize, geo: &LensGeometry, seed: u64) -> Mosaic {
+    fn consistent_mosaic(w: usize, h: usize, geo: &LensGeometry, seed: u64) -> (Mosaic, Vec<f32>) {
         let rgb = synth::natural(w, h, seed);
         let scene: Vec<f32> = (0..w * h)
             .map(|i| 0.3 * rgb.plane(0)[i] + 0.55 * rgb.plane(1)[i] + 0.15 * rgb.plane(2)[i])
@@ -850,15 +863,29 @@ mod mosaic_ca {
                 m.data[y * w + x] = sample_catmull_rom(&scene, w, h, p.0, p.1).clamp(0.0, 1.0);
             }
         }
-        m
+        (m, scene)
+    }
+
+    /// PSNR (dB, peak 1) of the three planes of `out` against the grey `scene` at the output
+    /// positions, over the part of the output at least 8 px from its edge.
+    fn psnr_against(out: &ym_gpu::cpu::RgbImage, scene: &[f32], w: usize, crop: Rect) -> f64 {
+        let mut sse = 0.0f64;
+        let mut n = 0usize;
+        for y in 8..out.height - 8 {
+            for x in 8..out.width - 8 {
+                let truth = f64::from(scene[(crop.y + y) * w + crop.x + x]);
+                for c in 0..3 {
+                    let d = f64::from(out.plane(c)[y * out.width + x]) - truth;
+                    sse += d * d;
+                    n += 1;
+                }
+            }
+        }
+        10.0 * (1.0 / (sse / n as f64)).log10()
     }
 
     /// RMS (px) of red and blue against green left in `rgb` over the patches that count.
-    fn residual(
-        rgb: &ym_gpu::cpu::RgbImage,
-        centre: (f64, f64),
-        hd: f64,
-    ) -> (f64, f64, usize) {
+    fn residual(rgb: &ym_gpu::cpu::RgbImage, centre: (f64, f64), hd: f64) -> (f64, f64, usize) {
         let opts = CaResidualOptions {
             patch_px: 32,
             stride_px: 16,
@@ -873,18 +900,21 @@ mod mosaic_ca {
     /// Demosaic then R9 with the CA (what the chain did) against CA on the mosaic then R9 with the
     /// distortion alone, on a mosaic that is consistent with its own tables (so the right answer
     /// has no fringes at all).
-    fn compare(method: Method, seed: u64) -> ((f64, f64), (f64, f64), (f64, f64)) {
+    fn compare(method: Method, seed: u64) -> ((f64, f64), (f64, f64), (f64, f64), (f64, f64)) {
         let (w, h) = (420usize, 280usize);
         let hd = 0.5 * (w as f64).hypot(h as f64);
-        let geo_full = LensGeometry::new(w, h, &tags(w, h, 3.0, true), LensSwitches::default())
-            .expect("lens");
+        let geo_full =
+            LensGeometry::new(w, h, &tags(w, h, 3.0, true), LensSwitches::default()).expect("lens");
         let crop = geo_full.auto_crop();
         let geo_full = geo_full.with_crop(crop);
-        let m = consistent_mosaic(w, h, &geo_full, seed);
+        let (m, scene) = consistent_mosaic(w, h, &geo_full, seed);
         let inputs = DemosaicInputs::UNIT;
         let img = demosaic_whole_with(&m, method, &inputs);
         let out = Rect::new(0, 0, crop.w, crop.h);
-        let centre = (w as f64 / 2.0 - crop.x as f64, h as f64 / 2.0 - crop.y as f64);
+        let centre = (
+            w as f64 / 2.0 - crop.x as f64,
+            h as f64 / 2.0 - crop.y as f64,
+        );
         // (a) the old order
         let a = resample_lens(&img, &geo_full, out).expect("R9");
         // (b) CA on the mosaic, R9 with the distortion alone
@@ -911,17 +941,31 @@ mod mosaic_ca {
         let (br, bb, nb) = residual(&b, centre, hd);
         let (cr, cb, nc) = residual(&c, centre, hd);
         assert!(na > 30 && nb > 30 && nc > 30, "patches {na} {nb} {nc}");
-        ((ar, ab), (br, bb), (cr, cb))
+        // The fringes are what the correction removes; the picture itself must not get worse.
+        let psnr = (
+            psnr_against(&a, &scene, w, crop),
+            psnr_against(&b, &scene, w, crop),
+        );
+        ((ar, ab), (br, bb), (cr, cb), psnr)
     }
 
     #[test]
     fn on_the_mosaic_the_ca_is_corrected_where_a_green_guided_demosaic_would_over_correct_it() {
-        for method in [Method::Menon, Method::Lmmse] {
-            let (old, mosaic, none) = compare(method, 11);
-            eprintln!("{method:?}: R9 after demosaic {old:?}, on the mosaic {mosaic:?}, no CA correction {none:?}");
+        for method in [Method::Menon, Method::Lmmse, Method::AdaptiveRatio] {
+            let (old, mosaic, none, psnr) = compare(method, 11);
+            eprintln!(
+                "{method:?}: R9 after demosaic {old:?}, on the mosaic {mosaic:?}, no CA correction {none:?}, PSNR against the scene {psnr:?}"
+            );
+            assert!(psnr.1 > psnr.0, "{method:?}: PSNR {psnr:?}");
             // The new order leaves less CA than the old one and than none at all, red and blue.
-            assert!(mosaic.0 < 0.7 * old.0 && mosaic.1 < 0.7 * old.1, "{method:?}: {mosaic:?} vs {old:?}");
-            assert!(mosaic.0 < 0.5 * none.0 && mosaic.1 < 0.5 * none.1, "{method:?}: {mosaic:?} vs {none:?}");
+            assert!(
+                mosaic.0 < 0.7 * old.0 && mosaic.1 < 0.7 * old.1,
+                "{method:?}: {mosaic:?} vs {old:?}"
+            );
+            assert!(
+                mosaic.0 < 0.5 * none.0 && mosaic.1 < 0.5 * none.1,
+                "{method:?}: {mosaic:?} vs {none:?}"
+            );
         }
     }
 
@@ -929,10 +973,19 @@ mod mosaic_ca {
     fn with_a_demosaic_that_does_not_follow_green_the_order_makes_no_difference_that_matters() {
         // Bilinear interpolates each colour from its own photosites, so R9 after it is right too:
         // the mosaic correction must not be worse (it resamples the same lattice).
-        let (old, mosaic, none) = compare(Method::Bilinear, 12);
-        eprintln!("Bilinear: R9 after demosaic {old:?}, on the mosaic {mosaic:?}, no CA correction {none:?}");
-        assert!(mosaic.0 < 0.5 * none.0 && mosaic.1 < 0.5 * none.1, "{mosaic:?} vs {none:?}");
-        assert!(mosaic.0 < old.0 + 0.05 && mosaic.1 < old.1 + 0.05, "{mosaic:?} vs {old:?}");
+        let (old, mosaic, none, psnr) = compare(Method::Bilinear, 12);
+        eprintln!(
+            "Bilinear: R9 after demosaic {old:?}, on the mosaic {mosaic:?}, no CA correction {none:?}, PSNR against the scene {psnr:?}"
+        );
+        assert!(psnr.1 > psnr.0 - 0.5, "PSNR {psnr:?}");
+        assert!(
+            mosaic.0 < 0.5 * none.0 && mosaic.1 < 0.5 * none.1,
+            "{mosaic:?} vs {none:?}"
+        );
+        assert!(
+            mosaic.0 < old.0 + 0.05 && mosaic.1 < old.1 + 0.05,
+            "{mosaic:?} vs {old:?}"
+        );
     }
 
     // -----------------------------------------------------------------------------------------
@@ -1048,7 +1101,11 @@ mod mosaic_ca {
             let (ow, oh) = chain.output_size(w, h);
             let got = chain.run(&raw).expect("run");
             let want = by_hand(&chain, &raw, Some(&curves), &moved);
-            assert_eq!(bits(&got), bits(&want), "{method:?}: the chain is not R1, R4, R5b, R6, R9");
+            assert_eq!(
+                bits(&got),
+                bits(&want),
+                "{method:?}: the chain is not R1, R4, R5b, R6, R9"
+            );
             // Tiles reproduce the whole frame (the halo of R5b is part of the bookkeeping).
             let prepared = chain.prepare(&raw).expect("prepare");
             let mut tiled = RgbImage::new(ow, oh);

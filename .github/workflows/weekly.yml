@@ -19,8 +19,10 @@ jobs:
   # a runner shared with other jobs. Two halves, each a report with one generous bound; the numbers are in the job summary and in
   # the artifacts, and the trend is what to read.
   #  - The shell's half: the ignored Rust test `five_hundred_files_leave_the_commands_responsive` opens 500 synthetic photos and times
-  #    the commands a person sends while they develop (asserts 100 ms). It opens no window and starts no Tauri runtime, so there is
-  #    no X server (xvfb) here, as in the `parity` job; the Tauri libraries are only there to link the app crate.
+  #    the commands a person sends while they develop. The bound is 100 ms on a developer's machine; this runner is shared with other
+  #    jobs (the slowest command has been 62 to 95 ms on a loaded 4-core machine, one run in five over 100), so the step sets
+  #    YM_PERF_SHELL_MAX_MS=250 below. It opens no window and starts no Tauri runtime, so there is no X server (xvfb) here, as in
+  #    the `parity` job; the Tauri libraries are only there to link the app crate.
   #  - The web view's half: e2e/perf drives the production build on the mock with 500 photos developing and presses keys meanwhile
   #    (asserts p95 < 150 ms; docs/11 has the figures of the run it replaced). The Mac, Metal and the real window stay M3-H4.
   latency-500:
@@ -45,10 +47,13 @@ jobs:
       - run: npx playwright install --with-deps chromium
       - name: Shell side, 500 photos (the ignored test)
         shell: bash
+        env:
+          # The bound on the slowest command, in milliseconds (100 when unset; see the comment at the top of the job).
+          YM_PERF_SHELL_MAX_MS: "250"
         run: |
           code=0
           cargo test -p yellowmoon-app --bin yellowmoon-app five_hundred -- --ignored --nocapture 2>&1 | tee latency-core.txt || code=$?
-          { echo '### Shell side, 500 photos developing (the ignored test of src-tauri)'; echo '```text'; grep -E 'open_paths:|developed after|photo_progress events|test result:' latency-core.txt || true; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          { echo '### Shell side, 500 photos developing (the ignored test of src-tauri)'; echo '```text'; grep -E 'open_paths:|developed after|photo_progress events|bound on the slowest|test result:' latency-core.txt || true; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
           exit "$code"
       - name: Web view side, 500 photos on the mock (production build)
         if: ${{ !cancelled() }}

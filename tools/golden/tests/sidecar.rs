@@ -1,6 +1,9 @@
 //! The sidecars `training/synth` writes, read by the Rust types: the two sides agree on the format, and the ground
 //! truth in them obeys its own rules. The real-data test runs when `testdata/synthetic/scenes` exists (made by
-//! `tools/fetch/synthetic.sh`); without it the test says so and passes, unless `YM_REQUIRE_SYNTHETIC=1`.
+//! `tools/fetch/synthetic.sh`); without it the test says so and passes, unless `YM_REQUIRE_SYNTHETIC=1`
+//! (`docs/13-testing.md`: set, not empty, not `0`).
+
+mod common;
 
 use std::path::PathBuf;
 
@@ -12,6 +15,16 @@ fn scenes_dir() -> PathBuf {
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../testdata"));
     root.join("synthetic/scenes")
+}
+
+#[test]
+fn a_demand_is_on_when_the_variable_is_set_to_something_but_nothing_or_zero() {
+    use std::ffi::OsStr;
+    assert!(!common::demand_is_on(None));
+    assert!(!common::demand_is_on(Some(OsStr::new(""))));
+    assert!(!common::demand_is_on(Some(OsStr::new("0"))));
+    assert!(common::demand_is_on(Some(OsStr::new("1"))));
+    assert!(common::demand_is_on(Some(OsStr::new("true"))));
 }
 
 #[test]
@@ -56,14 +69,21 @@ fn every_generated_sidecar_parses_and_its_truth_obeys_its_rules() {
     let dir = scenes_dir();
     let Ok(sidecars) = list_sidecars(&dir) else {
         assert!(
-            std::env::var_os("YM_REQUIRE_SYNTHETIC").is_none(),
-            "no synthetic scenes in {} (run tools/fetch/synthetic.sh)",
+            !common::synthetic_required(),
+            "no synthetic scenes in {} and YM_REQUIRE_SYNTHETIC is set (run tools/fetch/synthetic.sh)",
             dir.display()
         );
-        eprintln!("skipped: no scenes in {}", dir.display());
+        eprintln!(
+            "skipped: no scenes in {} (YM_REQUIRE_SYNTHETIC=1 makes this a failure)",
+            dir.display()
+        );
         return;
     };
-    assert!(!sidecars.is_empty() || std::env::var_os("YM_REQUIRE_SYNTHETIC").is_none());
+    assert!(
+        !sidecars.is_empty() || !common::synthetic_required(),
+        "no sidecars in {} and YM_REQUIRE_SYNTHETIC is set (run tools/fetch/synthetic.sh)",
+        dir.display()
+    );
     for path in sidecars {
         let scene = Scene::load(&path).unwrap_or_else(|e| panic!("{}: {e:#}", path.display()));
         let id = &scene.sidecar.id;

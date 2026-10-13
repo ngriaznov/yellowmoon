@@ -7,14 +7,18 @@
 //! formats use no tab), and no DEL or C1 control character (U+0080 to U+009F, which a terminal
 //! treats as escape introducers when it reads bytes as Latin-1, and which JSON does not escape).
 //! A newline hidden in a tag must not add a line either: a forged line could pose as another row.
-//! The names of the files are text from outside too and are not covered by the tests that run: see the ignored
-//! test at the end, which pins a known gap.
+//!
+//! The names of the files are text from outside too (a folder unpacked from a downloaded archive).
+//! The tests at the end pin what every command does with a hostile path: lines for a person show
+//! the controls as escapes (`\x1b`, `\u{9b}`, `crate::text`), JSON keeps the exact name and escapes
+//! DEL and the C1 characters as `\u` sequences, and the lines of data on stdout (the files that were
+//! written) are the exact path when stdout is a pipe.
 
 mod common;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use common::{Sandbox, json_lines, lines};
+use common::{Sandbox, json_lines, lines, text as text_of};
 use ym_raw::testgen::{ArwBuilder, gradient_mosaic};
 
 /// Every C0 control, DEL and the C1 range as characters (the UTF-8 form of a C1 control is two
@@ -276,25 +280,230 @@ fn render_json_prints_no_control_bytes_for_a_hostile_file() {
     }
 }
 
-/// A file name is text from outside as well (a folder unpacked from a downloaded zip), and the
-/// commands print it: `ym info` as the first line of its text, both commands in their JSON, and
-/// every command in its error lines. Text mode prints it as it is, so an escape sequence in a name
-/// reaches the terminal (`ym render` is safe for the files it writes: the stem is made safe, see
-/// docs/09). JSON escapes the C0 controls but prints DEL and the C1 characters as they are.
+/// A file name with an escape sequence, a newline (a forged line), DEL and two C1 characters in it.
+const HOSTILE_NAME: &str = "DSC\u{1b}[31mRED\u{1b}[0m\nError: forged.\u{7f} \u{85}\u{9b}.ARW";
+
+/// The way the name shows on a line for a person.
+const HOSTILE_NAME_SHOWN: &str =
+    "DSC\\x1b[31mRED\\x1b[0m\\x0aError: forged.\\x7f \\u{85}\\u{9b}.ARW";
+
+/// A folder name with the same kinds of characters, for the folders the tool prints.
+const HOSTILE_DIR: &str = "out\u{1b}]0;PWNED\u{7}\u{9b}2J";
+
+/// The name of [`HOSTILE_DIR`] as a line for a person shows it.
+const HOSTILE_DIR_SHOWN: &str = "out\\x1b]0;PWNED\\x07\\u{9b}2J";
+
+/// A hostile-named file that is not an ARW file at all (the tool says so, naming the file).
+fn hostile_text_file(sandbox: &Sandbox) -> PathBuf {
+    let path = sandbox.photos().join("not\u{1b}[2J\u{9b}raw.ARW");
+    std::fs::write(&path, b"this is not a raw file").expect("write text file");
+    path
+}
+
+/// Asserts that neither stream of a run holds a control byte, a newline in stdout excepted.
+fn assert_run_clean(what: &str, run: &assert_cmd::assert::Assert) {
+    let output = run.get_output();
+    assert_clean(&format!("{what}, stdout"), &output.stdout);
+    assert_clean(&format!("{what}, stderr"), &output.stderr);
+}
+
+/// The text of `ym info` for a file name that holds controls shows them as escapes, on one row, and
+/// the JSON says the exact name.
 #[test]
-#[ignore = "known gap, found in the review of the control-byte test: the commands print an input path as it is; un-ignore when crates/ym-cli/src prints paths through one function that replaces control characters"]
 fn info_prints_no_control_bytes_for_a_hostile_file_name() {
     let sandbox = Sandbox::new();
-    let path = sandbox.arw("DSC\u{1b}[31mRED\u{1b}[0m \u{85}\u{9b}.ARW");
-    for (what, args) in [("text", vec!["info"]), ("JSON", vec!["info", "--json"])] {
-        let run = sandbox.ym().args(args).arg(&path).assert().success();
-        assert_clean(
-            &format!("`ym info` ({what}) of a hostile file name, stdout"),
-            &run.get_output().stdout,
-        );
-        assert_clean(
-            &format!("`ym info` ({what}) of a hostile file name, stderr"),
-            &run.get_output().stderr,
-        );
+    let clean = sandbox.arw("DSC00009.ARW");
+    let baseline = sandbox
+        .ym()
+        .arg("info")
+        .arg(&clean)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let path = sandbox.arw(HOSTILE_NAME);
+    assert!(path.is_file());
+
+    let run = sandbox.ym().arg("info").arg(&path).assert().success();
+    assert_run_clean("`ym info` (text) of a hostile file name", &run);
+    let out = &run.get_output().stdout;
+    let text = String::from_utf8(out.clone()).expect("utf-8");
+    // The name is on the first line, as escapes, and the newline in it added no line.
+    let first = text.lines().next().expect("a first line");
+    assert!(
+        first.ends_with(HOSTILE_NAME_SHOWN),
+        "the first line is {first:?}"
+    );
+    assert_eq!(lines(out).len(), lines(&baseline).len(), "{text}");
+
+    let run = sandbox
+        .ym()
+        .args(["info", "--json"])
+        .arg(&path)
+        .assert()
+        .success();
+    assert_run_clean("`ym info --json` of a hostile file name", &run);
+    let stdout = text_of(&run.get_output().stdout);
+    // DEL and the C1 characters are escaped, like the C0 controls.
+    for escape in [r"\u001b", r"\u007f", r"\u0085", r"\u009b", r"\n"] {
+        assert!(stdout.contains(escape), "{escape} is not in {stdout}");
     }
+    // The value is the exact name.
+    let objects = json_lines(&run.get_output().stdout);
+    assert_eq!(objects.len(), 1);
+    assert_eq!(objects[0]["status"], "ok");
+    let input = objects[0]["input"].as_str().expect("input");
+    assert!(input.ends_with(HOSTILE_NAME), "{input:?}");
+}
+
+/// `ym render` names the input in its progress and error lines, in the verbose lines and in JSON.
+#[test]
+fn render_prints_no_control_bytes_for_a_hostile_file_name() {
+    let sandbox = Sandbox::new();
+    let path = sandbox.arw(HOSTILE_NAME);
+    for (what, extra) in [
+        ("text", vec!["--verbose"]),
+        ("JSON", vec!["--json"]),
+        ("JSON and verbose", vec!["--json", "--verbose"]),
+    ] {
+        let out_dir = sandbox
+            .root()
+            .join(format!("out-{}", what.replace(' ', "-")));
+        let run = sandbox
+            .ym()
+            .args(["render", "--format", "jpeg", "--out"])
+            .arg(&out_dir)
+            .args(&extra)
+            .arg(&path)
+            .assert()
+            .success();
+        assert_run_clean(
+            &format!("`ym render` ({what}) of a hostile file name"),
+            &run,
+        );
+        let stderr = text_of(&run.get_output().stderr);
+        if what == "text" {
+            // The detail line names the input, with the escapes.
+            assert!(stderr.contains(HOSTILE_NAME_SHOWN), "{stderr}");
+            // Data on stdout: the file that was written, a normal name (the stem is made safe).
+            let written = lines(&run.get_output().stdout);
+            assert_eq!(written.len(), 1, "{written:?}");
+            assert!(Path::new(&written[0]).is_file(), "{written:?}");
+        } else {
+            let objects = json_lines(&run.get_output().stdout);
+            assert_eq!(objects.len(), 1);
+            assert_eq!(objects[0]["status"], "ok", "{}", objects[0]);
+            let input = objects[0]["input"].as_str().expect("input");
+            assert!(input.ends_with(HOSTILE_NAME), "{input:?}");
+            let stdout = text_of(&run.get_output().stdout);
+            for escape in [r"\u001b", r"\u007f", r"\u0085", r"\u009b"] {
+                assert!(stdout.contains(escape), "{escape} is not in {stdout}");
+            }
+        }
+    }
+}
+
+/// A file that cannot be developed, and one that is not there, are named in an error line.
+#[test]
+fn errors_name_a_hostile_path_without_control_bytes() {
+    let sandbox = Sandbox::new();
+    let not_raw = hostile_text_file(&sandbox);
+    let missing = sandbox.photos().join(HOSTILE_NAME);
+    assert!(!missing.exists());
+    for (command, args) in [
+        ("render", vec!["render"]),
+        ("render --json", vec!["render", "--json"]),
+        ("info", vec!["info"]),
+        ("info --json", vec!["info", "--json"]),
+    ] {
+        for path in [&not_raw, &missing] {
+            let run = sandbox.ym().args(&args).arg(path).assert().failure();
+            assert_run_clean(&format!("`ym {command}` of {path:?}"), &run);
+            if !command.ends_with("--json") {
+                // The error line says which file, as escapes.
+                let shown = text_of(&run.get_output().stderr);
+                assert!(
+                    shown.contains("\\x1b") || shown.contains("\\u{9b}"),
+                    "{shown}"
+                );
+            }
+        }
+    }
+}
+
+/// The folder an export went to is named in the summary on stderr; the line of data on stdout is
+/// the exact path of the file when stdout is a pipe.
+#[test]
+fn a_hostile_output_folder_is_escaped_for_a_person_and_exact_for_a_pipe() {
+    let sandbox = Sandbox::new();
+    let path = sandbox.arw("DSC00001.ARW");
+    let out_dir = sandbox.root().join(HOSTILE_DIR);
+    let run = sandbox
+        .ym()
+        .args(["render", "--format", "jpeg", "--out"])
+        .arg(&out_dir)
+        .arg(&path)
+        .assert()
+        .success();
+    let output = run.get_output();
+    assert_clean("`ym render` into a hostile folder, stderr", &output.stderr);
+    let stderr = text_of(&output.stderr);
+    assert!(
+        stderr.contains(&format!(
+            "to {}/{HOSTILE_DIR_SHOWN}",
+            sandbox.root().display()
+        )),
+        "{stderr}"
+    );
+    // The pipe gets the file name as it is: the next program has to find the file.
+    let stdout = text_of(&output.stdout);
+    let written = stdout.trim_end_matches('\n');
+    assert!(written.contains(HOSTILE_DIR), "{stdout:?}");
+    assert!(Path::new(written).is_file(), "{stdout:?}");
+}
+
+/// `ym doctor` prints the folders it uses, and the folder of the app is chosen by the environment.
+#[test]
+fn doctor_prints_no_control_bytes_for_a_hostile_folder() {
+    let sandbox = Sandbox::new();
+    let home = sandbox.root().join(HOSTILE_DIR);
+    std::fs::create_dir_all(&home).expect("home folder");
+    let run = sandbox
+        .ym()
+        .env("YELLOWMOON_HOME", &home)
+        .arg("doctor")
+        .assert()
+        .success();
+    assert_run_clean("`ym doctor` with a hostile app folder", &run);
+    let text = text_of(&run.get_output().stdout);
+    assert!(text.contains(HOSTILE_DIR_SHOWN), "{text}");
+
+    let run = sandbox
+        .ym()
+        .env("YELLOWMOON_HOME", &home)
+        .args(["doctor", "--json"])
+        .assert()
+        .success();
+    assert_run_clean("`ym doctor --json` with a hostile app folder", &run);
+    let objects = json_lines(&run.get_output().stdout);
+    assert_eq!(objects.len(), 1);
+    let folder = objects[0]["looks_folder"].as_str().expect("looks_folder");
+    assert!(folder.contains(HOSTILE_DIR), "{folder:?}");
+}
+
+/// `ym looks import` names the path it could not read.
+#[test]
+fn looks_import_names_a_hostile_path_without_control_bytes() {
+    let sandbox = Sandbox::new();
+    let missing = sandbox.root().join(HOSTILE_DIR).join("look.cube");
+    let run = sandbox
+        .ym()
+        .args(["looks", "import"])
+        .arg(&missing)
+        .assert()
+        .failure();
+    assert_run_clean("`ym looks import` of a hostile path", &run);
+    let stderr = text_of(&run.get_output().stderr);
+    assert!(stderr.contains(HOSTILE_DIR_SHOWN), "{stderr}");
 }

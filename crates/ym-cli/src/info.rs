@@ -35,6 +35,7 @@ use crate::console::Console;
 use crate::exit::{self, Failure};
 use crate::report::{Object, camera_json, develop_fields, error_value, match_word};
 use crate::runtime::{CoreSettings, Runtime, interrupted};
+use crate::text::{lossy, path_text};
 
 /// Why `run_to` stopped early.
 #[derive(Debug)]
@@ -146,7 +147,7 @@ fn run_to(args: &InfoArgs, console: &mut Console, out: &mut dyn Write) -> Result
                     writeln!(out, "{}", json_error(&entry.path, error).to_line())?;
                 } else {
                     out.flush()?;
-                    console.error(&format!("{}: {error}", entry.path.display()));
+                    console.error(&format!("{}: {error}", path_text(&entry.path)));
                 }
             }
             Ok(meta) => {
@@ -225,10 +226,7 @@ pub fn json_error(path: &Path, error: &RawError) -> Object {
 
 /// The path as an absolute one (symbolic links are not resolved), for the `input` of the JSON.
 fn absolute(path: &Path) -> String {
-    std::path::absolute(path)
-        .unwrap_or_else(|_| path.to_path_buf())
-        .display()
-        .to_string()
+    lossy(&std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf()))
 }
 
 /// The `status: "ok"` object for a file: the shape of `render --json` without `output` and
@@ -601,7 +599,7 @@ pub fn render_text(
     }
 
     let width = rows.iter().map(|(label, _)| label.len()).max().unwrap_or(0);
-    let mut text = format!("{}\n", path.display());
+    let mut text = format!("{}\n", path_text(path));
     for (label, value) in rows {
         text.push_str(&format!("  {label:<width$}  {value}\n"));
     }

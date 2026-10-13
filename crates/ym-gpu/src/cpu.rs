@@ -715,6 +715,11 @@ impl RgbImage {
     }
 
     /// Largest absolute difference to `other` over all samples (dimensions must match).
+    ///
+    /// A NaN is not hidden: a sample that is NaN in one image and not in the other is an infinite
+    /// difference (so `diff < tolerance` fails, as it must when one image has a hole the other
+    /// has not). A NaN at the same place in both, and equal infinities, count as no difference:
+    /// the two images agree there.
     pub fn max_abs_diff(&self, other: &RgbImage) -> f32 {
         assert_eq!(
             (self.width, self.height),
@@ -724,8 +729,20 @@ impl RgbImage {
         self.data
             .iter()
             .zip(&other.data)
-            .map(|(a, b)| (a - b).abs())
+            .map(|(&a, &b)| sample_diff(a, b))
             .fold(0.0, f32::max)
+    }
+}
+
+/// The absolute difference of two samples for [`RgbImage::max_abs_diff`]: 0 for equal values
+/// (infinities of one sign and NaN with NaN included), infinity when exactly one is NaN.
+fn sample_diff(a: f32, b: f32) -> f32 {
+    if a == b || (a.is_nan() && b.is_nan()) {
+        0.0
+    } else if a.is_nan() || b.is_nan() {
+        f32::INFINITY
+    } else {
+        (a - b).abs()
     }
 }
 
@@ -802,6 +819,57 @@ mod tests {
             RgbImage::from_interleaved(7, 5, &img.to_interleaved()).unwrap(),
             img
         );
+    }
+
+    #[test]
+    fn max_abs_diff_sees_a_nan_that_the_other_image_does_not_have() {
+        let mut a = RgbImage::new(4, 3);
+        let mut b = RgbImage::new(4, 3);
+        for (i, (x, y)) in a.data.iter_mut().zip(b.data.iter_mut()).enumerate() {
+            *x = i as f32 * 0.25;
+            *y = *x;
+        }
+        assert_eq!(a.max_abs_diff(&b), 0.0);
+        // Ordinary differences are the largest absolute one.
+        b.data[7] += 0.5;
+        b.data[9] -= 0.75;
+        assert_eq!(a.max_abs_diff(&b), 0.75);
+        // A NaN in one image only: infinite, whichever image has it, wherever it is, whatever else differs.
+        for at in [0, 7, a.data.len() - 1] {
+            let mut with_nan = a.clone();
+            with_nan.data[at] = f32::NAN;
+            assert_eq!(with_nan.max_abs_diff(&a), f32::INFINITY, "NaN at {at}");
+            assert_eq!(a.max_abs_diff(&with_nan), f32::INFINITY, "NaN at {at}");
+            assert_eq!(with_nan.max_abs_diff(&b), f32::INFINITY, "NaN at {at}");
+        }
+        // NaN at different places in the two images: both positions mismatch.
+        let (mut c, mut d) = (a.clone(), a.clone());
+        c.data[1] = f32::NAN;
+        d.data[2] = f32::NAN;
+        assert_eq!(c.max_abs_diff(&d), f32::INFINITY);
+        // NaN at the same place in both: the images agree there, so only other samples count.
+        d.data[2] = a.data[2];
+        d.data[1] = f32::NAN;
+        assert_eq!(c.max_abs_diff(&d), 0.0);
+        d.data[5] += 0.125;
+        assert_eq!(c.max_abs_diff(&d), 0.125);
+        // The tolerance check callers write (`diff < tolerance`) fails on a NaN mismatch.
+        let mut e = a.clone();
+        e.data[3] = f32::NAN;
+        assert!(e.max_abs_diff(&a) >= 1e-6);
+    }
+
+    #[test]
+    fn max_abs_diff_treats_infinities_like_numbers() {
+        let mut a = RgbImage::new(2, 2);
+        let mut b = RgbImage::new(2, 2);
+        a.data[0] = f32::INFINITY;
+        b.data[0] = f32::INFINITY;
+        assert_eq!(a.max_abs_diff(&b), 0.0);
+        b.data[0] = f32::NEG_INFINITY;
+        assert_eq!(a.max_abs_diff(&b), f32::INFINITY);
+        b.data[0] = 1.0;
+        assert_eq!(a.max_abs_diff(&b), f32::INFINITY);
     }
 
     #[test]

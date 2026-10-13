@@ -16,6 +16,7 @@ mod looks_cmd;
 mod render;
 mod report;
 mod runtime;
+mod text;
 
 use std::process::ExitCode;
 

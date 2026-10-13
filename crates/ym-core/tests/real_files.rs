@@ -123,7 +123,8 @@ fn the_real_files_develop_with_sensible_estimates() {
 }
 
 /// Whether the environment demands the synthetic set (`YM_REQUIRE_SYNTHETIC=1`, the `synthetic-set`
-/// CI job): a missing set is then a failure, not a skip.
+/// CI job): a missing set is then a failure, not a skip. Set, not empty, not `0`: the one rule of
+/// every test that reads the variable (`docs/13-testing.md`).
 fn synthetic_required() -> bool {
     std::env::var_os("YM_REQUIRE_SYNTHETIC").is_some_and(|v| !v.is_empty() && v != "0")
 }

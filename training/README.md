@@ -43,7 +43,7 @@ input and output locations changed; `research/` stays as it is.
 | `python3 -m training.sensor_map.build_registry` / `build_target` | write `data/cameras/registry.json` / `data/alexa/target.json` | 1 s |
 | `python3 -m training.sensor_map.validate_profiles` | schema + semantic checks of all shipped camera data (needs no fetched sources) | 5 s |
 | `python3 -m training.sensor_map.gate` | sensor-map gate (M1-05) for all 11 profiles | 10 s |
-| `python3 -m training.sensor_map.check_reference` | checks `spectral_reference.json` against the shipped profile (stale hash, `runtime_ref` reproduces every field) | 2 s |
+| `python3 -m training.sensor_map.check_reference` | checks `spectral_reference.json` against the shipped profile (stale content digest of `profile.json` without its provenance block, `runtime_ref` reproduces every field) | 2 s |
 | `python3 -m training.sensor_map.spectral_reference` | regenerates `crates/ym-color/tests/data/spectral_reference.json` (`--study` prints the interpolation study) | 10 s (1 min for `--study`) |
 | `python3 -m training.sensor_map.export_fixtures` | writes `testdata/spectral/` for a Rust port of the evaluation (never committed) | 10 s |
 

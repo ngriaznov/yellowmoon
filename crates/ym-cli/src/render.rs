@@ -32,6 +32,7 @@ use crate::exit::{self, Failure};
 use crate::inputs::{self, Expanded, Problem};
 use crate::report::{Object, develop_fields, render_error, render_ok};
 use crate::runtime::{BackgroundProbe, CoreSettings, Runtime, gpu_line, interrupted, probe_gpu};
+use crate::text::{data_path, line_text, lossy, path_text};
 
 /// The longest file name the progress line shows. With the bar and the counts the line is then
 /// about 70 columns, which fits the 80 of a default terminal window; a longer line would wrap and
@@ -233,6 +234,12 @@ impl Stdout {
             self.open = false;
         }
     }
+
+    /// The path of a file that was written, as a line of data: exact for a pipe, escaped on a
+    /// terminal (`crate::text::data_path`).
+    fn path(&mut self, path: &Path) {
+        self.line(&data_path(path, io::stdout().is_terminal()));
+    }
 }
 
 fn read_settings_text(path: &Path) -> Result<String, Failure> {
@@ -245,7 +252,7 @@ fn read_settings_text(path: &Path) -> Result<String, Failure> {
         std::fs::read_to_string(path).map_err(|e| {
             Failure::usage(format!(
                 "Couldn't read the settings file {}: {e}.",
-                path.display()
+                path_text(path)
             ))
         })
     }
@@ -369,15 +376,7 @@ fn run_checked(args: &RenderArgs, console: &mut Console) -> Result<u8, Failure> 
         message,
     } in &problems
     {
-        report_failure(
-            console,
-            &mut stdout,
-            args.json,
-            &path.display().to_string(),
-            None,
-            kind,
-            message,
-        );
+        report_failure(console, &mut stdout, args.json, path, None, kind, message);
         counts.failed.push((*kind).to_owned());
     }
     if files.is_empty() {
@@ -429,7 +428,7 @@ fn run_checked(args: &RenderArgs, console: &mut Console) -> Result<u8, Failure> 
     // Settings for each photo; photos that cannot be developed end here.
     let mut by_photo: HashMap<PhotoId, usize> = HashMap::new();
     for (i, plan) in plans.iter_mut().enumerate() {
-        let input = plan.input.display().to_string();
+        let input = &plan.input;
         let Some(id) = plan.photo else {
             plan.result = Some(Outcome::Failed {
                 kind: "open".into(),
@@ -439,7 +438,7 @@ fn run_checked(args: &RenderArgs, console: &mut Console) -> Result<u8, Failure> 
                 console,
                 &mut stdout,
                 args.json,
-                &input,
+                input,
                 None,
                 "open",
                 "This file couldn't be opened. Check that it exists and try again.",
@@ -451,13 +450,13 @@ fn run_checked(args: &RenderArgs, console: &mut Console) -> Result<u8, Failure> 
             plan.result = Some(Outcome::Failed { kind: kind.into() });
             plan.photo = None;
             counts.failed.push(kind.into());
-            report_failure(console, &mut stdout, args.json, &input, None, kind, &reason);
+            report_failure(console, &mut stdout, args.json, input, None, kind, &reason);
             continue;
         }
         match apply_settings(&rt, id, &plan.input, settings_file.as_ref(), &overrides) {
             Ok((known, warning)) => {
                 if let Some(warning) = warning {
-                    console.warn(&format!("{input}: {warning}"));
+                    console.warn(&format!("{}: {warning}", path_text(input)));
                 }
                 plan.known = Some(known);
                 by_photo.insert(id, i);
@@ -472,7 +471,7 @@ fn run_checked(args: &RenderArgs, console: &mut Console) -> Result<u8, Failure> 
                     console,
                     &mut stdout,
                     args.json,
-                    &input,
+                    input,
                     None,
                     "settings",
                     &message,
@@ -558,7 +557,7 @@ fn run_checked(args: &RenderArgs, console: &mut Console) -> Result<u8, Failure> 
                     bar(fraction, 20),
                     (p.done + 1).min(p.total),
                     p.total,
-                    shorten(&p.file, PROGRESS_NAME_CHARS)
+                    shorten(&line_text(&p.file), PROGRESS_NAME_CHARS)
                 ));
             }
             Ok(ExportEvent::Busy(false)) | Err(RecvTimeoutError::Disconnected) => break,
@@ -592,7 +591,7 @@ fn run_checked(args: &RenderArgs, console: &mut Console) -> Result<u8, Failure> 
                 console,
                 &mut stdout,
                 args.json,
-                &plan.input.display().to_string(),
+                &plan.input,
                 plan.known.as_ref(),
                 "render",
                 message,
@@ -672,15 +671,15 @@ fn report_failure(
     console: &mut Console,
     stdout: &mut Stdout,
     json: bool,
-    input: &str,
+    input: &Path,
     known: Option<&Object>,
     kind: &str,
     message: &str,
 ) {
     if json {
-        stdout.line(&render_error(input, known, kind, message).to_line());
+        stdout.line(&render_error(&lossy(input), known, kind, message).to_line());
     } else {
-        console.error(&format!("{input}: {message}"));
+        console.error(&format!("{}: {message}", path_text(input)));
     }
 }
 
@@ -703,10 +702,9 @@ fn handle_file(
         return;
     };
     let plan = &mut plans[index];
-    let input = plan.input.display().to_string();
+    let input = &plan.input;
     match done.outcome {
         Ok(report) => {
-            let output = report.path.display().to_string();
             for note in &report.notes {
                 if !notes.contains(note) {
                     notes.push(note.clone());
@@ -715,7 +713,11 @@ fn handle_file(
             if report.skipped {
                 summary.skipped += 1;
                 plan.result = Some(Outcome::Skipped);
-                console.detail(&format!("{input}: {output} already exists, skipped."));
+                console.detail(&format!(
+                    "{}: {} already exists, skipped.",
+                    path_text(input),
+                    path_text(&report.path)
+                ));
             } else {
                 summary.written += 1;
                 plan.result = Some(Outcome::Written);
@@ -725,7 +727,8 @@ fn handle_file(
                     summary.folders.push(dir.to_path_buf());
                 }
                 console.detail(&format!(
-                    "{input}: {}x{} in {} (read {}, render {}, encode {}).",
+                    "{}: {}x{} in {} (read {}, render {}, encode {}).",
+                    path_text(input),
                     report.width,
                     report.height,
                     duration_text((report.timings.render_ms + report.timings.encode_ms) / 1000.0),
@@ -740,8 +743,8 @@ fn handle_file(
                 let known = plan.known.as_ref().unwrap_or(&empty);
                 stdout.line(
                     &render_ok(
-                        &input,
-                        &output,
+                        &lossy(input),
+                        &lossy(&report.path),
                         status,
                         known,
                         (
@@ -754,7 +757,7 @@ fn handle_file(
                     .to_line(),
                 );
             } else if !report.skipped {
-                stdout.line(&output);
+                stdout.path(&report.path);
             }
         }
         Err(failure) => {
@@ -766,7 +769,7 @@ fn handle_file(
                 console,
                 stdout,
                 json,
-                &input,
+                input,
                 plan.known.as_ref(),
                 failure.kind,
                 &failure.message,
@@ -793,7 +796,7 @@ fn summarise(
         ));
     } else if summary.written > 0 {
         let place = match summary.folders.as_slice() {
-            [one] => format!(" to {}", one.display()),
+            [one] => format!(" to {}", path_text(one)),
             [] => String::new(),
             many => format!(" to {} folders", many.len()),
         };
