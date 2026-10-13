@@ -224,7 +224,7 @@ fn import(args: &LooksImportArgs, console: &mut Console) -> Result<u8, Failure> 
                 }
                 console.detail(&format!(
                     "{}: {} looks, {} display LUTs, {} unchanged.",
-                    path_text(&path),
+                    path_text(path),
                     r.added.len(),
                     r.display_luts_added,
                     r.unchanged
@@ -233,7 +233,7 @@ fn import(args: &LooksImportArgs, console: &mut Console) -> Result<u8, Failure> 
             Err(e) => {
                 console.error(&format!(
                     "{}: {}",
-                    path_text(&path),
+                    path_text(path),
                     import_failure(&e).message
                 ));
                 first_failure.get_or_insert_with(|| import_failure(&e));
@@ -435,7 +435,7 @@ fn contact_sheet(
             Some(id) => ids.push((file.clone(), *id)),
             None => console.error(&format!(
                 "{}: not an ARW file, left out of the contact sheet.",
-                path_text(&file)
+                path_text(file)
             )),
         }
     }
@@ -452,7 +452,7 @@ fn contact_sheet(
             return Err(Failure::new(exit::INTERRUPTED, "Interrupted."));
         }
         if let Some(PhotoStatus::Skipped { reason }) = session.status(*photo) {
-            console.error(&format!("{}: {reason}", path_text(&path)));
+            console.error(&format!("{}: {reason}", path_text(path)));
             continue;
         }
         let rendered = ym_core::pipeline::PhotoSource::from_session(&session, *photo)
@@ -474,7 +474,7 @@ fn contact_sheet(
             });
         match rendered {
             Ok(pair) => rows.push(pair),
-            Err(message) => console.error(&format!("{}: {message}", path_text(&path))),
+            Err(message) => console.error(&format!("{}: {message}", path_text(path))),
         }
     }
     if rows.is_empty() {
@@ -485,7 +485,7 @@ fn contact_sheet(
     let (w, h, rgb) = layout(&rows);
     let png = encode_png_rgb8(w, h, &rgb).map_err(|e| Failure::failed(e.to_string()))?;
     std::fs::write(sheet_path, png)
-        .map_err(|e| Failure::failed(format!("Couldn't write {}: {e}.", path_text(&sheet_path))))?;
+        .map_err(|e| Failure::failed(format!("Couldn't write {}: {e}.", path_text(sheet_path))))?;
     Ok(rows.len())
 }
 

@@ -230,6 +230,30 @@ mod tests {
     }
 
     #[test]
+    fn a_line_holds_no_control_character_and_reads_back_the_same() {
+        // serde_json escapes the C0 controls; DEL and the C1 characters (U+0080 to U+009F, which
+        // a terminal may obey) are written as \u escapes by `to_line`.
+        let hostile = "a\u{1b}b\u{7f}c\u{85}d\u{9b}e\u{2014}f";
+        let mut o = Object::new();
+        o.insert("input", hostile);
+        o.insert("error", error_value("open", hostile));
+        let line = o.to_line();
+        assert!(
+            !line.chars().any(|c| c.is_control()),
+            "a control character in {line:?}"
+        );
+        for escape in ["\\u001b", "\\u007f", "\\u0085", "\\u009b"] {
+            assert!(line.contains(escape), "{escape} is not in {line}");
+        }
+        let back: Value = serde_json::from_str(&line).expect("valid JSON");
+        assert_eq!(back["input"], hostile);
+        assert_eq!(back["error"]["message"], hostile);
+        // A key with such a character is escaped too.
+        let line = Object(vec![("a\u{9b}", json!(1))]).to_line();
+        assert_eq!(line, "{\"a\\u009b\":1}");
+    }
+
+    #[test]
     fn a_failure_has_no_output_and_names_the_error() {
         let v = render_error("/a/b.ARW", None, "look", "File missing or changed.");
         assert_eq!(v.get("status"), Some(&json!("error")));

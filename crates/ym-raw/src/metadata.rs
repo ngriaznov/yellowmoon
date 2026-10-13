@@ -116,10 +116,12 @@ pub struct JpegRef {
 /// The raw table of one lens-correction tag: the tag's signed 16-bit values exactly as stored.
 ///
 /// Sony writes a count followed by the knots: tag 0x7032 (vignetting) and 0x7037 (distortion)
-/// hold 17 values (the count `n` = 16 and 16 knots), tag 0x7035 (chromatic aberration) holds 33
-/// (the count `2n` = 32 and 32 knots: `n` for red, then `n` for blue; read from the one real file
-/// with this tag we have, not checked against a second body). The maths lives in
-/// `docs/05-raw-processing.md`.
+/// hold 17 values (the count `n` and `n` knots, zero padded to 16), tag 0x7035 (chromatic
+/// aberration) holds 33 (the count `2n` and `2n` knots: `n` for red, then `n` for blue). `n` is
+/// 16 for a full-frame lens and 11 for an APS-C lens or an APS-C crop mode, on one physical radial
+/// grid. Checked on real files of six bodies (eight files) against the cameras' own corrected JPEGs and the raw
+/// data (`docs/04` section Lens tags, `docs/05` section R9). The maker note and the SR2 sub-IFD
+/// hold other copies that are not read here. The maths lives in `docs/05-raw-processing.md`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LensTable {
     /// The stored values: `raw[0]` is the count, `raw[1..]` the knots.

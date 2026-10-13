@@ -858,8 +858,8 @@ wired into the render path: the raw stages still run the CPU reference.
 
 - **Split.** The planner stays on the CPU (it runs once per `(pitch, f-number)` and is cached there). `PreparedDiffraction::new`
   takes the `DiffractionPlan` and uploads its `f32` kernel and the Gaussian taps (computed in `f64` with the CPU's expression,
-  rounded to `f32`); `sigma0^2`, `sigma1`, the strength and the gate factor come from the plan, the gains `g0` and the luma weights
-  are passed again because the plan keeps them private. Eleven dispatches over nine pipelines, as §5 lists them: luma, `w` and `Pc`;
+  rounded to `f32`); `sigma0^2`, `sigma1`, the strength, the gate factor, the gains `g0` and the luma weights all come from the
+  plan (`DiffractionPlan::g0()` and `luma()` give back the `f32` values it was made with), so the kernel cannot be run with others than the CPU's. Eleven dispatches over nine pipelines, as §5 lists them: luma, `w` and `Pc`;
   envelopes; layers; Gaussian rows and columns (for `Y`, then for `Z = F1 + F2`); PSF convolutions and the residual; the 9 x 9 moments
   as a row pass (the ten products `(w u) v` are formed at each tap, never stored) and a column pass fused with the solve; the 5 x 5
   coefficient averages, the correction and the transfer over the tile's core. 124 bytes per pixel of compute rectangle, planes `f32`

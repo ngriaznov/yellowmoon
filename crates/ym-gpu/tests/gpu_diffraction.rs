@@ -1272,29 +1272,38 @@ fn bad_inputs_are_refused() {
             "{what}: {e:?}"
         );
     }
-    // Luma weights that are not finite: the planner takes them (its noise floor falls back to the
-    // 1 DN minimum), the upload refuses them. The gains need no such test: a plan with gains that
-    // are not positive and finite does not exist (`DiffractionPlan::new` gives `None`), and the
-    // upload takes both from the plan.
+    // Gains and luma weights that are not finite. The planner refuses most of them (a noise floor
+    // made from them would not be finite; -inf in a luma weight still gives a plan, because the
+    // floor is clamped from below). The upload takes both from the plan, so whatever plan exists
+    // has the values the CPU reference would use, and one whose values are not usable is refused.
     let c = cfg(3.76, 8.0);
     let params = DiffractionParams::new(c.pitch_um, c.f_number);
-    let bad_luma = DiffractionPlan::new(
-        &params,
-        c.g0,
-        &NoiseDn::from_model(&c.model()),
+    let noise = NoiseDn::from_model(&c.model());
+    for luma in [
         [f32::NAN, 0.7152, 0.0722],
-    )
-    .expect("a plan whose luma weights are not finite");
-    let refused = dev
-        .gpu
-        .run(JobSpec::new(Priority::Export), move |ctx, _| {
-            Ok(PreparedDiffraction::new(ctx, &bad_luma).err())
-        })
-        .expect("job");
-    assert!(
-        matches!(refused, Some(GpuError::InvalidInput(_))),
-        "{refused:?}"
-    );
+        [0.2126, f32::INFINITY, 0.0722],
+        [0.2126, 0.7152, f32::NEG_INFINITY],
+    ] {
+        let Some(plan) = DiffractionPlan::new(&params, c.g0, &noise, luma) else {
+            continue;
+        };
+        let refused = dev
+            .gpu
+            .run(JobSpec::new(Priority::Export), move |ctx, _| {
+                Ok(PreparedDiffraction::new(ctx, &plan).err())
+            })
+            .expect("job");
+        assert!(
+            matches!(refused, Some(GpuError::InvalidInput(_))),
+            "luma {luma:?}: {refused:?}"
+        );
+    }
+    for g0 in [[0.0, 1.0, 1.5], [2.0, -1.0, 1.5], [2.0, 1.0, f32::NAN]] {
+        assert!(
+            DiffractionPlan::new(&params, g0, &noise, c.luma).is_none(),
+            "gains {g0:?}: no plan to upload"
+        );
+    }
 }
 
 /// The upload reads the gains and the luma weights from the plan: the GPU follows the CPU

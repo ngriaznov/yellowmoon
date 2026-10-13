@@ -11,7 +11,7 @@
 //! # Units
 //!
 //! The constants of the algorithm are tuned for a 16-bit scale, so every sample is read as
-//! `x_dn = S * x` with `S = 65535` ([`WORKING_SCALE`](crate::cpu::noise::WORKING_SCALE)) and the
+//! `x_dn = S * x` with `S = 65535` ([`WORKING_SCALE`]) and the
 //! result is written back as `out = in * k + off / S` (spec section 1.4), so identities (flat
 //! fields, `strength = 0`, an inactive stage) are bit-exact. The noise weight is built from
 //! [`NoiseDn`] (spec section 2.3). Following the specs of the package, a `NaN` or infinite

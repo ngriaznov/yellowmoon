@@ -336,8 +336,10 @@ impl PreparedDiffraction {
     ///
     /// # Errors
     ///
-    /// [`GpuError::InvalidInput`] for luma weights that are not finite (the planner does not check
-    /// them; its gains are positive and finite by construction), and allocation errors from the pool.
+    /// [`GpuError::InvalidInput`] for gains that are not positive and finite or luma weights that are
+    /// not finite (a plan from [`DiffractionPlan::new`] never has them, the planner refuses them; the
+    /// check is kept because the values go straight into the shader), and allocation errors from the
+    /// pool.
     pub fn new(ctx: &GpuContext, plan: &DiffractionPlan) -> Result<Self, GpuError> {
         let (g0, luma) = (plan.g0(), plan.luma());
         if g0.iter().any(|&g| !g.is_finite() || g <= 0.0) || luma.iter().any(|a| !a.is_finite()) {

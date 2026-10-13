@@ -67,6 +67,7 @@ fn is_control(c: char) -> bool {
 /// `bytes` as text: valid UTF-8 as [`line_text`] does it, every byte that is not part of a UTF-8
 /// character as `\x` and two hex digits.
 #[must_use]
+#[cfg_attr(not(unix), allow(dead_code, reason = "paths are bytes on Unix only"))]
 pub fn bytes_text(bytes: &[u8]) -> String {
     let mut out = String::with_capacity(bytes.len() + 8);
     for chunk in bytes.utf8_chunks() {
@@ -196,7 +197,7 @@ mod tests {
         every.extend((0u32..0xa0).filter_map(char::from_u32));
         let shown = line_text(&every);
         assert!(
-            !shown.chars().any(|c| is_control(c)),
+            !shown.chars().any(is_control),
             "a control character is left in {shown:?}"
         );
         // Printable ASCII keeps its place.

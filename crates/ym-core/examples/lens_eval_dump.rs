@@ -28,12 +28,13 @@ use ym_noise::model::NoiseModel;
 
 fn write_f32(path: &PathBuf, img: &RgbImage) {
     let mut f = std::io::BufWriter::new(std::fs::File::create(path).expect("create output"));
-    f.write_all(&(img.width as u32).to_le_bytes()).expect("write");
-    f.write_all(&(img.height as u32).to_le_bytes()).expect("write");
+    f.write_all(&(img.width as u32).to_le_bytes())
+        .expect("write");
+    f.write_all(&(img.height as u32).to_le_bytes())
+        .expect("write");
     let bytes: Vec<u8> = img.data.iter().flat_map(|v| v.to_le_bytes()).collect();
     f.write_all(&bytes).expect("write");
 }
-
 
 /// Catmull-Rom weights for the fractional position `t` between the middle two of four taps.
 fn catmull_rom(t: f64) -> [f64; 4] {
@@ -164,7 +165,10 @@ fn main() {
     );
     // Undo the gains so that every plane has the scale of the scene again (the demosaic output of
     // the chain is balanced; the measurement only needs a common scale per plane).
-    write_f32(&out_dir.join(format!("{stem}.{method_name}.demosaic.f32")), &img);
+    write_f32(
+        &out_dir.join(format!("{stem}.{method_name}.demosaic.f32")),
+        &img,
+    );
 
     let tags = LensTags {
         ca: plan
@@ -202,7 +206,10 @@ fn main() {
         .with_crop(crop);
         let r9n =
             resample::resample_lens(&img, &no_ca, Rect::new(0, 0, crop.w, crop.h)).expect("R9");
-        write_f32(&out_dir.join(format!("{stem}.{method_name}.r9noca.f32")), &r9n);
+        write_f32(
+            &out_dir.join(format!("{stem}.{method_name}.r9noca.f32")),
+            &r9n,
+        );
         if let Ok(Some(curves)) = LensGeometry::new(fw, fh, &tags, LensSwitches::default())
             .expect("lens")
             .ca_curves()
@@ -220,7 +227,10 @@ fn main() {
             );
             let r9m = resample::resample_lens(&img_mc, &no_ca, Rect::new(0, 0, crop.w, crop.h))
                 .expect("R9");
-            write_f32(&out_dir.join(format!("{stem}.{method_name}.r9mosaic.f32")), &r9m);
+            write_f32(
+                &out_dir.join(format!("{stem}.{method_name}.r9mosaic.f32")),
+                &r9m,
+            );
         }
         println!(
             "{stem}: frame {fw}x{fh}, crop {}x{} at {},{}",

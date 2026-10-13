@@ -897,10 +897,19 @@ mod mosaic_ca {
         (r.red_rms_px, r.blue_rms_px, r.patches)
     }
 
+    /// What [`compare`] measures: the red and blue residual (px) of the old order, of R5b and of no CA
+    /// correction at all, and the PSNR (dB) against the scene of the first two.
+    struct Compared {
+        old: (f64, f64),
+        mosaic: (f64, f64),
+        none: (f64, f64),
+        psnr: (f64, f64),
+    }
+
     /// Demosaic then R9 with the CA (what the chain did) against CA on the mosaic then R9 with the
     /// distortion alone, on a mosaic that is consistent with its own tables (so the right answer
     /// has no fringes at all).
-    fn compare(method: Method, seed: u64) -> ((f64, f64), (f64, f64), (f64, f64), (f64, f64)) {
+    fn compare(method: Method, seed: u64) -> Compared {
         let (w, h) = (420usize, 280usize);
         let hd = 0.5 * (w as f64).hypot(h as f64);
         let geo_full =
@@ -946,13 +955,23 @@ mod mosaic_ca {
             psnr_against(&a, &scene, w, crop),
             psnr_against(&b, &scene, w, crop),
         );
-        ((ar, ab), (br, bb), (cr, cb), psnr)
+        Compared {
+            old: (ar, ab),
+            mosaic: (br, bb),
+            none: (cr, cb),
+            psnr,
+        }
     }
 
     #[test]
     fn on_the_mosaic_the_ca_is_corrected_where_a_green_guided_demosaic_would_over_correct_it() {
         for method in [Method::Menon, Method::Lmmse, Method::AdaptiveRatio] {
-            let (old, mosaic, none, psnr) = compare(method, 11);
+            let Compared {
+                old,
+                mosaic,
+                none,
+                psnr,
+            } = compare(method, 11);
             eprintln!(
                 "{method:?}: R9 after demosaic {old:?}, on the mosaic {mosaic:?}, no CA correction {none:?}, PSNR against the scene {psnr:?}"
             );
@@ -973,7 +992,12 @@ mod mosaic_ca {
     fn with_a_demosaic_that_does_not_follow_green_the_order_makes_no_difference_that_matters() {
         // Bilinear interpolates each colour from its own photosites, so R9 after it is right too:
         // the mosaic correction must not be worse (it resamples the same lattice).
-        let (old, mosaic, none, psnr) = compare(Method::Bilinear, 12);
+        let Compared {
+            old,
+            mosaic,
+            none,
+            psnr,
+        } = compare(Method::Bilinear, 12);
         eprintln!(
             "Bilinear: R9 after demosaic {old:?}, on the mosaic {mosaic:?}, no CA correction {none:?}, PSNR against the scene {psnr:?}"
         );

@@ -30,7 +30,7 @@
 //! The factors come from public reverse-engineering, not a Sony document, and were checked
 //! against real files (`docs/05` sections R3 and R9, `tools/lens/real_eval.py`): the sign, the
 //! knot radii and the scale of the three tags agree with the camera's own corrected JPEGs and
-//! with the lateral CA and the vignetting measured in the raw data of nine bodies.
+//! with the lateral CA and the vignetting measured in the raw data of seven bodies.
 
 use rayon::prelude::*;
 

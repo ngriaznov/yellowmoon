@@ -1628,7 +1628,9 @@ fn latency_bound(setting: Option<&str>) -> Duration {
         None => LATENCY_BOUND_DEFAULT,
         Some(text) => match text.parse::<u64>() {
             Ok(ms) if ms > 0 => Duration::from_millis(ms),
-            _ => panic!("{LATENCY_BOUND_VAR} is {text:?}: give a positive whole number of milliseconds"),
+            _ => panic!(
+                "{LATENCY_BOUND_VAR} is {text:?}: give a positive whole number of milliseconds"
+            ),
         },
     }
 }

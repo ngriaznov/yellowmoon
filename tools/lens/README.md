@@ -16,6 +16,32 @@ repository is ours.
 | `compare_with_darktable.py` | The gates: `vignette` (gain within 0.5%), `distortion` (line positions within 0.2 px, `--horizontal` for horizontal lines), `ca` (red, green, blue within 0.2 px), `selftest` (checks the script on synthetic data, needs no darktable). |
 | `lens_io.py` | Reads the gzipped PFM files. |
 
+## Real-file evaluation (RA-03c; local files only, nothing committed)
+
+The oracle above checks our maths against darktable on *synthetic* files. These scripts check the
+*reading of the tables* against real ARW files (`testdata/real/files`, `testdata/readme-photos/src`;
+never committed, never copied: outputs go to the git-ignored `testdata/lens-eval/`). They need numpy,
+scipy, rawpy (LibRaw only as the pixel oracle), pillow and `exiftool`; the findings are in
+`docs/05-raw-processing.md` section R9 "Real files".
+
+| File | Purpose |
+|---|---|
+| `ca_measure.py` | The estimator: the signed radial shift of red and blue against green (positive outward) on a Bayer mosaic (no demosaic) or on RGB planes, per block, then per radial band. `selftest` checks it on synthetic mosaics with a known shift (no file needed). |
+| `real_eval.py` | The commands: `tables` (the three tags in both copies), `raw-ca` (the mosaic), `jpeg-ca [--full]` (the camera's JPEG), `rgb-ca STEM:METHOD` (images written by the Rust example below), `pfm-ca DIR:FILE.ARW` (darktable's lens module input and output from `darktable_oracle.sh`), `vignette`, `noise-radius`, `sky-profile` (R3). |
+| `fit_ca_readings.py` | Alternative readings of the CA table (knots at `i/(n-1)` or `(i+0.5)/n`, K at the source radius, red and blue swapped, sign flipped, the maker-note copy) fitted to the `raw-ca` output: rms residual with the table as read, best amplitude, best knot-radius scale. |
+| `jpeg_geometry.py` | The camera's JPEG against the raw, block by block: `rho_raw = zeta rho_j F(zeta rho_j)`, fitted for the zoom and the distortion amplitude (`match`, `fit`). |
+| `strip.py` | Side-by-side crops of no CA correction, R9 after the demosaic, and R5b on the mosaic. |
+| `crates/ym-core/examples/lens_eval_dump.rs` | Writes the camera-RGB images the evaluation needs (R1 and R4, the demosaic of any method; with `--r9` also R9 with and without CA and R5b followed by distortion-only R9) as `.f32` for `rgb-ca` and `strip.py`. |
+
+```
+python3 -I tools/lens/ca_measure.py selftest
+python3 -I tools/lens/real_eval.py tables testdata/real/files/ILCE-7M3.ARW
+python3 -I tools/lens/real_eval.py raw-ca testdata/real/files/ILCE-5000.ARW        # about 2 minutes per 24 MP file
+python3 -I tools/lens/fit_ca_readings.py
+cargo run -p ym-core --example lens_eval_dump -- testdata/real/files/ILCE-5000.ARW /tmp/dump adaptive --r9
+python3 -I tools/lens/real_eval.py rgb-ca ILCE-5000:adaptive --dump-dir=/tmp/dump
+```
+
 ## Run
 
 ```
