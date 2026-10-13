@@ -45,7 +45,8 @@ use super::color::{
 use super::geometry::Geometry;
 use super::raw::{
     CaptureMethod, FrameData, FullChain, RawParams, RawParamsKey, RawPlan, SigmaPlane,
-    diffraction_params, reduced_bayer, reduced_rgb, sigma_plane,
+    diffraction_params, noise_model_is_usable, reduced_bayer, reduced_rgb, sigma_plane,
+    usable_noise_model,
 };
 use super::{FrameZoom, NeuralStatus, RenderError, RenderPath, RenderStats};
 use crate::scheduler::{ByteLru, JobScheduler, MemoryBudget, MemoryLedger};
@@ -829,6 +830,15 @@ impl<'a> Job<'a> {
             .iso
             .filter(|i| *i > 0)
             .map_or(100.0, |i| i as f32);
+        // A noise model that cannot be used (a number that is not finite, a negative gain or
+        // variance, a variance that overflows) is read as zero noise for the whole raw group, so
+        // that the sigma map, the denoise, R8 and the adaptive ratio demosaic all see the same
+        // usable model and the photo renders instead of coming out black or being refused
+        // (`docs/algorithms/INTEGRATION.md` section 10). The estimator of `ym-noise` never makes
+        // such a model; this guards against corrupt data. The log carries no file name.
+        if !noise_model_is_usable(&e.noise.model) {
+            tracing::warn!("the noise model of the photo is not usable; rendering with zero noise");
+        }
         let p = RawParams {
             g0: [g0[0] as f32, g0[1] as f32, g0[2] as f32],
             neural_demosaic: s.decode.neural_demosaic,
@@ -845,7 +855,7 @@ impl<'a> Job<'a> {
                 radius_px: sh.radius_px as f32,
             },
             iso,
-            noise: e.noise.model,
+            noise: usable_noise_model(&e.noise.model),
             diffraction: self.diffraction_params(),
         };
         self.params = Some(p);

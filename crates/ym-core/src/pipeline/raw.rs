@@ -15,7 +15,8 @@
 //!   evaluation tools) names another method; the neural switch falls back to it (see
 //!   [`crate::pipeline::NeuralStatus`]). The adaptive ratio demosaic reads the noise model on the
 //!   16-bit working scale ([`RawParams::noise_dn`]); a model that cannot be used is read as zero
-//!   noise, so a photo never fails to render for it.
+//!   noise ([`usable_noise_model`] for the whole raw group, `noise_dn` for the chain), so a photo
+//!   never fails to render for it and never comes out black from a `NaN` sigma map.
 //! * **Reduced resolution** ([`reduced_bayer`]): the fit view and the thumbnails. R1, R4 and R5 run
 //!   on the full mosaic, the photosites are then binned `k x k` per colour (a box filter is the
 //!   demosaic at 1/k scale: every output pixel has its own red, green and blue), the vignetting
@@ -299,6 +300,31 @@ pub fn diffraction_params(
     Some(DiffractionParams::new(pitch_um, f_number).with_scale(scale))
 }
 
+/// Whether `model` can be used by the raw stages: its working-scale form is valid
+/// ([`NoiseDn::is_valid`]: finite, not negative, a variance that stays finite up to white) and the
+/// black-level offsets are finite (the sigma map subtracts them from the signal).
+///
+/// The estimator of `ym-noise` never makes a model that fails this; it guards against corrupt data.
+#[must_use]
+pub fn noise_model_is_usable(model: &NoiseModel) -> bool {
+    NoiseDn::from_model(model).is_valid() && model.delta.iter().all(|d| d.is_finite())
+}
+
+/// The noise model the raw group works with for a photo: `model` when it is usable
+/// ([`noise_model_is_usable`]), the zero-noise model otherwise.
+///
+/// A photo with a model that cannot be used is processed as if its noise were unknown, never
+/// refused and never rendered black from a `NaN` sigma map (`docs/algorithms/INTEGRATION.md`
+/// section 10). A usable model is returned unchanged, bit for bit.
+#[must_use]
+pub fn usable_noise_model(model: &NoiseModel) -> NoiseModel {
+    if noise_model_is_usable(model) {
+        *model
+    } else {
+        NoiseModel::new(0.0, 0.0)
+    }
+}
+
 /// A cache key for [`RawParams`]: the same numbers, bit for bit.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct RawParamsKey(Vec<u64>);
@@ -312,7 +338,9 @@ impl RawParams {
     /// A noise model that cannot be used (a negative or non-finite field, a variance that
     /// overflows at white) never makes a render fail: the photo is processed as if its noise were
     /// unknown, which the algorithms accept (`docs/algorithms/INTEGRATION.md` section 3). The
-    /// sigma map and the cache keys still read [`noise`](Self::noise) itself.
+    /// renderer already replaces such a model by the zero model when it makes the parameters
+    /// ([`usable_noise_model`]), so for those this is the model itself; a `RawParams` made by hand
+    /// with an unusable model gets the same treatment here.
     #[must_use]
     pub fn noise_dn(&self) -> NoiseDn {
         NoiseDn::from_model(&self.noise).or_zero()
@@ -1253,7 +1281,7 @@ impl FullChain {
         debug_assert!(!frame.reduced);
         let scale = detail::network_sigma_scale(params.noise_reduction.luminance, params.iso);
         let noise = params.noise_dn();
-        if !NoiseDn::from_model(&params.noise).is_valid() {
+        if !noise_model_is_usable(&params.noise) {
             // No file name or path in the message (the log carries none at info level and above).
             tracing::warn!("the noise model of the photo is not usable; rendering with zero noise");
         }
@@ -2302,6 +2330,51 @@ mod tests {
             img.max_abs_diff(&zero_img) > 0.0,
             "the model matters to the adaptive ratio"
         );
+    }
+
+    /// The renderer's guard for the whole raw group (`graph.rs`): a usable model is kept bit for
+    /// bit, an unusable one (including a black-level offset that is not finite, which the
+    /// working-scale model does not read but the sigma map does) is the zero model.
+    #[test]
+    fn a_usable_noise_model_is_kept_and_an_unusable_one_is_the_zero_model() {
+        let zero = NoiseModel::new(0.0, 0.0);
+        let full = NoiseModel {
+            a: 3e-5,
+            b: 4e-8,
+            delta: [1e-4, -2e-4, 3e-4, 0.0],
+            sigma_row: 2e-5,
+            q: 6e-5,
+        };
+        for usable in [full, zero, NoiseModel::new(5e-4, 4e-5)] {
+            assert!(noise_model_is_usable(&usable), "{usable:?}");
+            assert_eq!(usable_noise_model(&usable), usable);
+        }
+        let mut nan_offset = full;
+        nan_offset.delta[1] = f64::NAN;
+        let mut infinite_offset = full;
+        infinite_offset.delta[3] = f64::NEG_INFINITY;
+        let mut nan_row = full;
+        nan_row.sigma_row = f64::NAN;
+        let mut nan_q = full;
+        nan_q.q = f64::NAN;
+        for unusable in [
+            NoiseModel::new(f64::NAN, 4e-8),
+            NoiseModel::new(f64::INFINITY, 4e-8),
+            NoiseModel::new(-3e-5, 4e-8),
+            NoiseModel::new(3e-5, -4e-8),
+            NoiseModel::new(1e300, 1e300),
+            nan_offset,
+            infinite_offset,
+            nan_row,
+            nan_q,
+        ] {
+            assert!(!noise_model_is_usable(&unusable), "{unusable:?}");
+            assert_eq!(usable_noise_model(&unusable), zero, "{unusable:?}");
+            assert_eq!(
+                NoiseDn::from_model(&usable_noise_model(&unusable)),
+                NoiseDn::ZERO
+            );
+        }
     }
 
     #[test]
