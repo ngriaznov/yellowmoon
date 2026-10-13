@@ -888,3 +888,27 @@ wired into the render path: the raw stages still run the CPU reference.
   split is decided by rounding. The CPU port itself moves by up to 3.5e-3 when such an input changes by 0.6 ulp, so no port can match
   it there. §4 says flat fields come back exact, which holds; smooth noise-free gradients (a synthetic wedge without noise) are the
   case it does not cover. Real frames and the vectors carry sensor noise (`sigma0 >= 1` DN), and the parity scenes here do too.
+
+### Independent review of RA-09 (2026-10-13)
+
+- **Against the C++ oracle on new scenes.** Six scenes that are not in the vectors (random discs, bars and gradients blurred by the
+  plan's PSF, with model noise; 131 x 97 at 4.3 um f/13, 64 x 73 at scale 0.5 with Rec. 709 luma and strength 1.7, 120 x 89 at 1.9 um
+  f/45, 5 x 3, a 1 x 61 strip, 160 x 110 at f/9 and low ISO): the CPU port equals the oracle bit for bit (difference 0), the GPU is
+  within 1.2e-6 of both.
+- **Luma bits.** 0 differences from the CPU's `f64` luma in 17.3 million further samples (uniform -0.05 to 4, 0 to 1, 0 to 0.05, and
+  14-bit grey, balanced and unbalanced values), in addition to the 240000 of `the_luma_plane_has_the_cpu_bits`.
+- **The ill-conditioned case is real.** On a noise-free scene quantised to 14 bits (a smooth gradient with hard-edged shapes) the GPU
+  differs from the CPU by up to 4.3e-3 in a handful of samples. Changing the last mantissa bit of every input sample moves the C++
+  oracle itself by up to 4.4e-3 on that scene (599 of 36864 samples above 1e-4, 15 above 1e-3), so no port can do better. With one
+  quantisation step of noise the GPU-CPU difference is 1.1e-6, and the oracle's own sensitivity to a one-ulp change of every sample is
+  5e-4 (which also breaks the exact ties that the GPU keeps, because its luma has the CPU's bits). Whoever wires the GPU path into
+  the viewport should keep the export on the CPU path (AGENTS.md rule 6): a preview and an export can differ in the last digits of such
+  regions, though not in the noisy frames measured here.
+- **Metal.** `wgpu-hal` 30.0.1 builds the library with `MTLCompileOptions` that set only the language version and `preserveInvariance`;
+  no math mode is chosen, so Metal's default (fast math) applies. The xor with the runtime zero keeps the expansion intact under
+  re-association and contraction, but this stays unverified until the Mac run (M0-H4: `the_luma_plane_has_the_cpu_bits` and the large
+  frame).
+- **Tests added by the review.** `hostile_values_that_the_stage_acts_on_match_the_cpu` (the existing hostile test is an identity at f/1
+  and f/50, because the clip penalty gates the frame or the fit fades out, so it proved little about the solve: values -0.05 to 0.7 with
+  and without 1 % spikes up to 4, f/1 to f/8, the CPU must change the frame, |gpu - cpu| at most 1.3e-6) and
+  `a_non_finite_sample_stays_local_and_does_not_panic` (a NaN, an infinity or 1e30 changes nothing beyond the halo).

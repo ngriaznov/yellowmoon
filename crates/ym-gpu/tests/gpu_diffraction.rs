@@ -11,6 +11,8 @@
 //! | random frames: natural, edge, text, highlight, dark (negative samples) and clipped (plateaus at white) scenes blurred by the plan's own PSF with Poisson-Gaussian noise, R 2 to 6, r_G 1 to 6, pitches 2.4 to 8.4 um, f/1 to f/50, scales 1, 0.6 and 1/4, strengths 0.5 and 3, both gates, other luma weights and gains | [`FRAME_BOUND`] |
 //! | sizes 1 x 1 to 7 x 7 and frames narrower than the halo (the mirror wraps several times) | [`FRAME_BOUND`] |
 //! | values from -0.05 to 4 (spec 6.2 item 7), zero noise model, strength 3 | [`FRAME_BOUND`] |
+//! | the same hostile idea on frames the stage acts on (values -0.05 to 0.7, with and without 1 % spikes up to 4; the CPU port must change them) | [`FRAME_BOUND`] |
+//! | a NaN, an infinity or 1e30 in one sample (outside the contract): no panic, nothing changes beyond the halo | bit-identical beyond the halo |
 //! | tiles of 32 to 100 px over 203 x 157 with the plan's exact halo, against the whole GPU frame | bit-identical |
 //! | the same tiles against the CPU | [`FRAME_BOUND`] |
 //! | a large frame, 2048 x 1365 through the tiling path | [`FRAME_BOUND`] |
@@ -775,6 +777,124 @@ fn hostile_values_do_not_produce_nan_or_inf_and_match_the_cpu() {
 }
 
 #[test]
+fn hostile_values_that_the_stage_acts_on_match_the_cpu() {
+    // Review of RA-09: in the test above, every 9 x 9 window of the 0.1 fraction of samples up to 4
+    // holds a sample far above white, and at f/1 and f/50 the CPU port returns its input unchanged
+    // (the clip penalty gates the frame, or the fit explains too little and fades out), so that
+    // comparison is an identity there and proves little about the solve. Here the values are
+    // uniform in [-0.05, 0.7] (below the clip threshold, a tenth of them negative), without and with
+    // 1 % of the pixels at up to 4 (windows near a spike are gated, the rest is not), strength 3,
+    // zero noise model. From f/1 to f/8 the stage must change the frame, or the check means nothing
+    // (from f/16 on, pure noise is faded out by the fit and the CPU returns its input, so those
+    // optics are left to the other tests). Measured on lavapipe: changes up to 2.0 (strength 3
+    // extrapolates), |gpu - cpu| at most 1.3e-6.
+    let Some(dev) = device() else { return };
+    let mut worst = 0.0f64;
+    let mut seed = 9500u64;
+    for (pitch, f) in [(3.76, 1.0), (3.76, 2.8), (3.76, 5.6), (3.76, 8.0)] {
+        let c = Cfg {
+            a: 0.0,
+            b: 0.0,
+            sigma_row: 0.0,
+            strength: 3.0,
+            ..cfg(pitch, f)
+        };
+        let setup = c.setup();
+        for spikes in [0.0f32, 0.01] {
+            for (w, h) in [(48usize, 40usize), (31, 17)] {
+                seed += 1;
+                let mut rng = synth::Rng::new(seed);
+                let mut img = RgbImage::new(w, h);
+                let n = w * h;
+                for i in 0..n {
+                    let spike = rng.next_f32() < spikes;
+                    for ch in 0..3 {
+                        let u = rng.next_f32();
+                        img.data[ch * n + i] = if spike {
+                            4.0 * rng.next_f32()
+                        } else if u < 0.1 {
+                            -0.05 * rng.next_f32()
+                        } else {
+                            0.7 * u
+                        };
+                    }
+                }
+                let got = run_gpu(dev, &setup, &img);
+                assert!(
+                    got.data.iter().all(|v| v.is_finite()),
+                    "NaN or Inf at {w}x{h} f/{f}"
+                );
+                let want = cpu(&setup, &img);
+                let d = diff(&got, &want);
+                let effect = diff(&want, &img).max_abs;
+                println!(
+                    "f/{f} {w}x{h} spikes {spikes}: max |gpu - cpu| {:.3e}; the stage changed the frame by up to {effect:.3e}",
+                    d.max_abs
+                );
+                if w == 48 {
+                    assert!(
+                        effect > 1e-3,
+                        "f/{f} {w}x{h} spikes {spikes}: the stage did nothing ({effect:e})"
+                    );
+                }
+                assert!(
+                    d.max_abs <= FRAME_BOUND,
+                    "f/{f} {w}x{h} spikes {spikes}: {} > {FRAME_BOUND}",
+                    d.max_abs
+                );
+                worst = worst.max(d.max_abs);
+            }
+        }
+    }
+    println!("hostile frames the stage acts on, worst |gpu - cpu|: {worst:.3e}");
+}
+
+#[test]
+fn a_non_finite_sample_stays_local_and_does_not_panic() {
+    // Non-finite input is outside the contract (spec 4: not guarded, it propagates), but a bad
+    // sample must neither crash the kernel nor reach farther than the receptive field: every output
+    // sample beyond the halo is bit-identical to the run without it. A huge finite value stays
+    // finite (the clip penalty gates its neighbourhood).
+    let Some(dev) = device() else { return };
+    let c = cfg(3.76, 11.0);
+    let setup = c.setup();
+    let halo = setup.plan.halo_px();
+    let (w, h) = (90usize, 70usize);
+    let clean = scene(Kind::Natural, w, h, 21, &c, &setup.plan);
+    let base = run_gpu(dev, &setup, &clean);
+    let (bx, by) = (40usize, 35usize);
+    for (name, bad) in [
+        ("NaN", f32::NAN),
+        ("+Inf", f32::INFINITY),
+        ("-Inf", f32::NEG_INFINITY),
+        ("1e30", 1e30),
+    ] {
+        let mut dirty = clean.clone();
+        dirty.data[w * h + by * w + bx] = bad;
+        let out = run_gpu(dev, &setup, &dirty);
+        let mut reach = 0usize;
+        for ch in 0..3 {
+            for y in 0..h {
+                for x in 0..w {
+                    let j = ch * w * h + y * w + x;
+                    if out.data[j].to_bits() != base.data[j].to_bits() {
+                        reach = reach.max(x.abs_diff(bx).max(y.abs_diff(by)));
+                    }
+                }
+            }
+        }
+        println!("{name}: the bad sample changes pixels up to {reach} px away (halo {halo})");
+        assert!(reach <= halo, "{name}: reach {reach} > halo {halo}");
+        if bad == 1e30 {
+            assert!(
+                out.data.iter().all(|v| v.is_finite()),
+                "1e30 left a non-finite sample"
+            );
+        }
+    }
+}
+
+#[test]
 fn flipping_and_transposing_the_frame_flips_the_output() {
     // Spec 6.2 item 4: the stage commutes with the symmetries of the square. The GPU sums in f32 in a
     // fixed order, so the flipped run differs from the flipped output by rounding, not by the bit.
@@ -994,7 +1114,7 @@ fn the_luma_plane_has_the_cpu_bits() {
     // that is 1 to 2 ulp off in a third of the pixels (the plain f32 formula) moves counts and, through
     // them, the layers: on a 2048 x 1365 frame that alone gave an error of 9.1e-5. The shader forms the
     // luma with a double-float expansion (`exact_luma`) and gets the correctly rounded f32 of the exact
-    // value, which is what the CPU port's f64 sum rounds to except in about one pixel in 10^8.
+    // value, which is what the CPU port's f64 sum rounds to except in about one pixel in 10^7 or fewer.
     let Some(dev) = device() else { return };
     let mut checked = 0usize;
     for (kind, seed, gains) in [

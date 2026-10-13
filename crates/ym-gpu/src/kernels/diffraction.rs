@@ -64,9 +64,11 @@
 //!   that alone gave a worst error of 9.1e-5 (feeding the CPU port the `f32` luma and nothing else
 //!   reproduced the GPU's worst pixels to 0.5 %). `exact_luma` in the shader forms the sum as an
 //!   exact expansion (Dekker's product, Knuth's sum, `f32` only) and returns the correctly rounded
-//!   `f32` of the exact value, which is what the CPU's `f64` sum rounds to except in about one pixel
-//!   in 10^8: the luma plane has the CPU's bits (`tests/gpu_diffraction.rs` counts 0 differences in
-//!   240000 pixels) and the large frame drops to 4.8e-7. Two things are needed to make it work, and
+//!   `f32` of the exact value, which is what the CPU's `f64` sum rounds to except where the exact
+//!   value lies within about 2^-24 ulp of a rounding boundary (a rate of order one pixel in 10^7):
+//!   the luma plane has the CPU's bits (`tests/gpu_diffraction.rs` counts 0 differences in 240000
+//!   pixels; the RA-09 review counted 0 in a further 17.3 million random, 14-bit and balanced
+//!   lumas) and the large frame drops to 4.8e-7. Two things are needed to make it work, and
 //!   both were found by measurement on lavapipe: every rounded intermediate goes through `opaque`
 //!   (an xor with the uniform `zero`, which the compiler cannot fold), because the optimiser
 //!   otherwise fuses and cancels the error terms of the transformations, and `fma` is not used,

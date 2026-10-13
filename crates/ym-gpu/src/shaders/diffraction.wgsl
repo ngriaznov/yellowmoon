@@ -182,9 +182,11 @@ fn scaled_term(a: f32, v: f32) -> vec2<f32> {
 }
 
 // Y = a_R S R + a_G S G + a_B S B, DN. The CPU port forms it in f64 and rounds once to f32; the
-// expansion above gives the correctly rounded f32 of the exact sum in all but about one pixel in two
-// million, so the luma has the CPU's bits (an f32 sum is 1 to 2 ulp off in a third of the pixels, and
-// the envelope counts of 3.5 compare neighbouring lumas for order and equality).
+// expansion above gives the correctly rounded f32 of the exact sum except where the exact value lies
+// within about 2^-24 ulp of a rounding boundary (a rate of order one pixel in 10^7; 0 differences were
+// counted in 17.6 million lumas of random, 14-bit and balanced frames), so the luma has the CPU's bits
+// (an f32 sum is 1 to 2 ulp off in a third of the pixels, and the envelope counts of 3.5 compare
+// neighbouring lumas for order and equality).
 fn exact_luma(r: f32, g: f32, b: f32) -> f32 {
     let tr = scaled_term(dp.luma_r, r);
     let tg = scaled_term(dp.luma_g, g);
