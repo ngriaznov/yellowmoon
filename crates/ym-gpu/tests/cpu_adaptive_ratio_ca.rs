@@ -611,6 +611,136 @@ fn a_centre_that_is_not_finite_is_refused() {
 }
 
 #[test]
+fn a_flat_field_comes_back_as_gain_times_value_with_ca() {
+    // Spec section 6.2: all four phases x gain sets x levels x shadow matching on and off, with
+    // the CA path on; the placement is deep in a big frame so that the misregistration is large
+    // (the strong curves give 0 to 3 px) and pass 2 runs in every regime of its weight.
+    let big = (2400usize, 1600usize);
+    let curves = strong_curves(big.0, big.1, 3.0);
+    let (w, h) = (23usize, 19usize);
+    let gain_sets = [[1.0f32, 1.0, 1.0], [2.13, 1.0, 1.61], [0.8, 1.0, 3.4]];
+    let colours = [
+        [0.21f32, 0.37, 0.16],
+        [0.004, 0.006, 0.003],
+        [1.7, 2.4, 1.1],
+    ];
+    let mut worst = 0.0f64;
+    let mut runs = 0;
+    for cfa in Cfa::ALL {
+        for gains in gain_sets {
+            for col in colours {
+                for shadow_match in [
+                    adaptive_ratio::ShadowMatch::Off,
+                    adaptive_ratio::ShadowMatch::On,
+                ] {
+                    for at in [(1180usize, 780usize), (2370, 1570)] {
+                        let mut m = Mosaic::new(w, h, cfa);
+                        for y in 0..h {
+                            for x in 0..w {
+                                m.data[y * w + x] = col[cfa.color_at(x, y).plane()];
+                            }
+                        }
+                        m.place = Placement {
+                            x0: at.0,
+                            y0: at.1,
+                            frame_width: big.0,
+                            frame_height: big.1,
+                        };
+                        let params = Params {
+                            shadow_match,
+                            ..Params::default()
+                        };
+                        let inp = DemosaicInputs {
+                            gains,
+                            noise: low_noise(),
+                            ca: Some(&curves),
+                        };
+                        let out = adaptive_ratio::demosaic(&m, &inp, &params).expect("flat field");
+                        for c in 0..3 {
+                            let want = f64::from(col[c]) * f64::from(gains[c]);
+                            for &v in out.plane(c) {
+                                worst = worst.max((f64::from(v) - want).abs() / want);
+                            }
+                        }
+                        runs += 1;
+                    }
+                }
+            }
+        }
+    }
+    println!("flat field with CA: {runs} runs, max relative error {worst:.3e}");
+    assert_eq!(runs, 4 * 3 * 3 * 2 * 2);
+    assert!(worst <= 1.2e-7, "{worst}");
+}
+
+#[test]
+fn the_receptive_field_with_ca_stays_within_the_declared_halo() {
+    // Perturb single photosites of a tile deep in a big frame and see how far the output moves.
+    // The CA field is a function of the position alone, so the path reads the same neighbourhood as
+    // the plain one: at most 11 px (13 with shadow matching), as `Method::halo()` promises.
+    let big = (2400usize, 1600usize);
+    let curves = strong_curves(big.0, big.1, 2.5);
+    let (w, h) = (61usize, 61usize);
+    for (name, noise, level, bump, bound) in [
+        ("plain, bright", low_noise(), 0.5f32, 0.05f32, 11usize),
+        ("plain, dark", low_noise(), 0.02, 0.002, 11),
+        ("shadow matching", high_noise(), 0.05, 0.02, 13),
+    ] {
+        let base = placed_scene(w, h, Cfa::RGGB, 902, level, big, (2200, 1400));
+        let inp = inputs(Some(&curves), noise);
+        let params = Params::default();
+        let reference = adaptive_ratio::demosaic_whole(&base, &inp, &params).expect("reference");
+        let mut reach = 0usize;
+        for (px, py) in [(30usize, 30usize), (31, 30), (30, 31), (31, 31)] {
+            let mut m = base.clone();
+            m.data[py * w + px] += bump;
+            let out = adaptive_ratio::demosaic_whole(&m, &inp, &params).expect("perturbed");
+            for c in 0..3 {
+                for y in 0..h {
+                    for x in 0..w {
+                        if out.plane(c)[y * w + x].to_bits()
+                            != reference.plane(c)[y * w + x].to_bits()
+                        {
+                            reach = reach.max(x.abs_diff(px).max(y.abs_diff(py)));
+                        }
+                    }
+                }
+            }
+        }
+        println!("receptive field with CA, {name}: measured {reach} px, bound {bound} px");
+        assert!(reach <= bound, "{name}: {reach} > {bound}");
+        assert!(
+            reach >= 5,
+            "{name}: the perturbation reached only {reach} px"
+        );
+    }
+}
+
+#[test]
+fn the_ca_path_gives_the_same_bytes_on_one_thread_and_on_four() {
+    // Five bands of 128 rows; the CA field crosses every seam. `--jobs 1` and `--jobs 4` of the
+    // CLI are pools of this size.
+    let frame = (1200usize, 900usize);
+    let curves = strong_curves(frame.0, frame.1, 3.0);
+    for (cfa, noise) in [(Cfa::GBRG, low_noise()), (Cfa::RGGB, high_noise())] {
+        let m = placed_scene(53, 600, cfa, 9, 0.3, frame, (900, 250));
+        let inp = inputs(Some(&curves), noise);
+        let params = Params::default();
+        let run = |threads: usize| {
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .expect("pool")
+                .install(|| adaptive_ratio::demosaic(&m, &inp, &params).expect("demosaic"))
+        };
+        let (one, four) = (run(1), run(4));
+        assert_eq!(bits(&one), bits(&four), "{}", cfa.name());
+        let whole = adaptive_ratio::demosaic_whole(&m, &inp, &params).expect("whole");
+        assert_eq!(bits(&one), bits(&whole), "{}", cfa.name());
+    }
+}
+
+#[test]
 fn curves_whose_evaluation_overflows_give_a_finite_output_and_no_panic() {
     // Finite knots can still extrapolate to infinity: a slope of 1e300 over a radius step of 1e-300
     // is 1e600. Red and blue then differ by inf - inf = NaN (or by an infinity). The misregistration

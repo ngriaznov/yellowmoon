@@ -178,7 +178,7 @@ pub fn chroma(rgb: [f64; 3]) -> f64 {
 pub struct CaResidualOptions {
     /// Side of a square patch in pixels.
     pub patch_px: usize,
-    /// Distance between the origins of neighbouring patches in pixels.
+    /// Distance between the origins of neighbouring patches in pixels (0 counts as 1).
     pub stride_px: usize,
     /// Patches whose centre is closer to the optical centre than this fraction of the half
     /// diagonal are left out: there is nothing to measure where the CA is zero.
@@ -403,6 +403,7 @@ pub fn lateral_ca_residual(
 ) -> CaResidual {
     let (w, h) = (img.width, img.height);
     let side = options.patch_px;
+    let stride = options.stride_px.max(1);
     let margin = 4usize;
     let mut edges = vec![options.min_radius];
     edges.extend(options.band_edges.iter().copied());
@@ -421,7 +422,11 @@ pub fn lateral_ca_residual(
             let (dx, dy) = (cx - centre_px.0, cy - centre_px.1);
             let r = dx.hypot(dy);
             let frac = r / half_diagonal_px;
-            if let Some(b) = (0..nb).find(|&b| frac >= edges[b] && frac < edges[b + 1]) {
+            // A patch centred on the optical centre has no radial direction to measure along.
+            let band = (r > 0.0)
+                .then(|| (0..nb).find(|&b| frac >= edges[b] && frac < edges[b + 1]))
+                .flatten();
+            if let Some(b) = band {
                 let u = (dx / r, dy / r);
                 let red = patch_shift(
                     img.plane(0),
@@ -467,9 +472,9 @@ pub fn lateral_ca_residual(
                     _ => skipped += 1,
                 }
             }
-            x0 += options.stride_px;
+            x0 += stride;
         }
-        y0 += options.stride_px;
+        y0 += stride;
     }
     let bands = (0..nb)
         .map(|b| {
@@ -617,6 +622,33 @@ mod tests {
             zero.red_rms_px < 0.01 && zero.blue_rms_px < 0.01,
             "{zero:?}"
         );
+    }
+
+    #[test]
+    fn a_zero_stride_terminates_and_a_patch_at_the_centre_is_skipped() {
+        let (w, h) = (96usize, 96usize);
+        let mut img = RgbImage::new(w, h);
+        for y in 0..h {
+            for x in 0..w {
+                let v = pattern(x as f64 + 0.5, y as f64 + 0.5) as f32;
+                for c in 0..3 {
+                    img.plane_mut(c)[y * w + x] = v;
+                }
+            }
+        }
+        // Stride 0 would never advance; it counts as 1. The patch whose centre is the optical
+        // centre (r = 0) has no radial direction and does not count, with `min_radius` 0.
+        let opts = CaResidualOptions {
+            patch_px: 32,
+            stride_px: 0,
+            min_radius: 0.0,
+            min_gradient: 0.0,
+            ..CaResidualOptions::default()
+        };
+        let res = lateral_ca_residual(&img, (48.0, 48.0), 68.0, &opts);
+        assert!(res.patches > 100, "{} patches", res.patches);
+        assert!(res.details.iter().all(|p| p.radius > 0.0));
+        assert!(res.red_rms_px < 0.01 && res.blue_rms_px < 0.01, "{res:?}");
     }
 
     #[test]
