@@ -698,7 +698,7 @@ fn misregistration_plane(
     let x0 = m.place.x0 as i64 + core.x as i64 - lay.core.x0 as i64;
     let y0 = m.place.y0 as i64 + core.y as i64 - lay.core.y0 as i64;
     let mut out = if cfg!(debug_assertions) {
-        vec![f64::NAN; pw * lay.ph]
+        vec![UNWRITTEN; pw * lay.ph]
     } else {
         vec![0.0f64; pw * lay.ph]
     };
@@ -733,12 +733,20 @@ fn pass_green(m: &[f32], lay: &Layout, r: Region, d: &Derived, ca: Option<&[f64]
     }
 }
 
-/// The misregistration at flat index `i` of an R or B site: 0 on the plain path.
+/// What a debug build puts into the entries of the misregistration plane it has not computed, so
+/// that a read outside the region a stage wrote is caught. A computed entry is `|a - b|`: never
+/// negative, though it can be NaN when curves with finite knots overflow, so unlike NaN this marker
+/// cannot be mistaken for a computed value.
+const UNWRITTEN: f64 = -1.0;
+
+/// The misregistration at flat index `i` of an R or B site: 0 on the plain path. A NaN (curves that
+/// overflow to infinities) is no relaxation in pass 1 (`NaN >= 0.1` is false) and full weight in pass
+/// 2 (`f64::min` returns the other argument), so the output stays finite.
 #[inline(always)]
 fn ca_at(ca: Option<&[f64]>, i: usize) -> f64 {
     ca.map_or(0.0, |p| {
         debug_assert!(
-            !p[i].is_nan(),
+            p[i] != UNWRITTEN,
             "CA read outside the region it was computed on"
         );
         p[i]

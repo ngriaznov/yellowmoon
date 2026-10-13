@@ -101,7 +101,7 @@ fn tags_for(strength: f64, hd: f64, distortion: bool) -> LensTags {
         (k_minus_1 * 2f64.powi(21)).round() as i16
     };
     let mut ca: Vec<i16> = (0..n).map(|j| knot(1.2 * strength, j)).collect();
-    ca.extend((0..n).map(|j| knot(-1.0 * strength, j)));
+    ca.extend((0..n).map(|j| knot(-strength, j)));
     let dist = if distortion {
         (0..n)
             .map(|j| (0.015 * rho(j) * rho(j) * 2f64.powi(14)).round() as i16)

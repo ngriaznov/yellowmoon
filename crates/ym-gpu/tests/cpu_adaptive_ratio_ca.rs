@@ -611,6 +611,31 @@ fn a_centre_that_is_not_finite_is_refused() {
 }
 
 #[test]
+fn curves_whose_evaluation_overflows_give_a_finite_output_and_no_panic() {
+    // Finite knots can still extrapolate to infinity: a slope of 1e300 over a radius step of 1e-300
+    // is 1e600. Red and blue then differ by inf - inf = NaN (or by an infinity). The misregistration
+    // of such a site is not a number the path can use, but it must neither panic (a debug build
+    // marks the sites it has not computed with a sentinel) nor poison the output.
+    let m = placed_scene(40, 36, Cfa::GRBG, 8, 0.4, (400, 300), (100, 80));
+    let steep = |sign: f64| {
+        RadialCurve::from_knots(&[(0.0, 0.0), (1e-300, sign * 1e300)]).expect("finite knots")
+    };
+    for (name, red, blue) in [
+        ("both infinite", steep(1.0), steep(1.0)),
+        ("opposite infinities", steep(1.0), steep(-1.0)),
+        ("one infinite", steep(1.0), steep(0.0)),
+    ] {
+        let curves = CaCurves::new(200.0, 150.0, red, blue).expect("curves");
+        let inp = inputs(Some(&curves), low_noise());
+        let params = Params::default();
+        let banded = adaptive_ratio::demosaic(&m, &inp, &params).expect(name);
+        let whole = adaptive_ratio::demosaic_whole(&m, &inp, &params).expect(name);
+        assert!(banded.data.iter().all(|v| v.is_finite()), "{name}");
+        assert_eq!(bits(&banded), bits(&whole), "{name}");
+    }
+}
+
+#[test]
 fn demosaic_with_runs_the_ca_path_for_the_adaptive_ratio_method_only() {
     let big = (1800usize, 1200usize);
     let curves = strong_curves(big.0, big.1, 3.0);

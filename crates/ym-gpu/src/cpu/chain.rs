@@ -82,7 +82,9 @@ pub struct Chain {
     /// unchanged; the caller that wants Richardson-Lucy in that case chooses it when it builds the
     /// chain (`docs/algorithms/03-diffraction-deconvolution.md` section 1.2).
     pub sharpen: Option<CaptureSharpen>,
-    /// R9 geometry (`None`: no resample; the output is the whole frame).
+    /// R9 geometry (`None`: no resample; the output is the whole frame). Its lateral CA also
+    /// drives the CA-aware path of the R6 adaptive ratio demosaic (`Chain::ca_curves`): that path
+    /// runs exactly when this geometry has CA.
     pub lens: Option<LensGeometry>,
 }
 

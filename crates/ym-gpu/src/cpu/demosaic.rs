@@ -172,9 +172,11 @@ pub fn demosaic(m: &Mosaic, method: Method) -> RgbImage {
 /// [`Method::AdaptiveRatio`] works on the unbalanced mosaic, so it divides every photosite of `m`
 /// by `inputs.gains` of its colour first (`g0`, the exact inverse of R4:
 /// [`adaptive_ratio::demosaic_balanced`]) and returns the balanced image. It runs its own band
-/// layout (which computes only the core rows of each band). For input it refuses (a non-finite
-/// photosite, unusable gains or noise; see [`adaptive_ratio::Error`]) the result is Menon's on the
-/// same balanced mosaic.
+/// layout (which computes only the core rows of each band). `inputs.ca` selects its CA-aware path
+/// (`docs/algorithms/01-adaptive-ratio-demosaic.md` section 3.6; the position of each photosite in
+/// the frame comes from the mosaic's [`Placement`](super::Placement)). For input it refuses (a
+/// non-finite photosite, unusable gains or noise, a CA centre that is not finite; see
+/// [`adaptive_ratio::Error`]) the result is Menon's on the same balanced mosaic.
 pub fn demosaic_with(m: &Mosaic, method: Method, inputs: &DemosaicInputs<'_>) -> RgbImage {
     if m.width < 2 || m.height < 2 {
         return bilinear(m);

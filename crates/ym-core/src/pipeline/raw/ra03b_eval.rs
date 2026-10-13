@@ -546,6 +546,19 @@ fn write_strip(path: &Path, images: &[&RgbImage], crop: Rect, zoom: usize) {
         .expect("png data");
 }
 
+/// The crop of one window kept for a picture: the patch where the tables change the red and blue
+/// shifts most.
+struct Strip {
+    /// Sum of the changes of the red and blue shifts of that patch, in pixels.
+    difference: f64,
+    /// The crop inside the window.
+    crop: Rect,
+    /// The window without the CA correction, with the tables, with the tables and the CA path.
+    images: [RgbImage; 3],
+    /// Origin of the window in the output.
+    window: (usize, usize),
+}
+
 #[test]
 #[ignore = "local evaluation on testdata/real/files, which is never committed: cargo test -p ym-core --lib ra03b_real_files -- --ignored --nocapture"]
 fn ra03b_real_files_ca_residual() {
@@ -707,7 +720,7 @@ fn ra03b_real_files_ca_residual() {
         let nb = opts.band_edges.len();
         let mut acc = vec![[[0.0f64; 3]; 4]; nb];
         let (mut sharp_on, mut sharp_off) = (0.0f64, 0.0f64);
-        let mut best_strip: Option<(f64, Rect, [RgbImage; 3], (usize, usize))> = None;
+        let mut best_strip: Option<Strip> = None;
         for (ox, oy) in origins {
             let out = Rect::new(ox, oy, WINDOW_PX, WINDOW_PX);
             let win_centre = (centre.0 - ox as f64, centre.1 - oy as f64);
@@ -744,15 +757,15 @@ fn ra03b_real_files_ca_residual() {
             for p in &results[1].details {
                 if let Some(q) = results[2].details.iter().find(|q| (q.x, q.y) == (p.x, p.y)) {
                     let d = (p.red_px - q.red_px).abs() + (p.blue_px - q.blue_px).abs();
-                    if best_strip.as_ref().is_none_or(|(bd, ..)| d > *bd) {
+                    if best_strip.as_ref().is_none_or(|b| d > b.difference) {
                         let cx = (p.x + 24).saturating_sub(48).min(WINDOW_PX - 96);
                         let cy = (p.y + 24).saturating_sub(48).min(WINDOW_PX - 96);
-                        best_strip = Some((
-                            d,
-                            Rect::new(cx, cy, 96, 96),
-                            [reference.clone(), off.clone(), on.clone()],
-                            (ox, oy),
-                        ));
+                        best_strip = Some(Strip {
+                            difference: d,
+                            crop: Rect::new(cx, cy, 96, 96),
+                            images: [reference.clone(), off.clone(), on.clone()],
+                            window: (ox, oy),
+                        });
                     }
                 }
             }
@@ -766,11 +779,13 @@ fn ra03b_real_files_ca_residual() {
             ref_all.extend(c.details);
             inv_all.extend(d.details);
         }
-        if let Some((_, crop_rect, images, at)) = &best_strip {
+        if let Some(strip) = &best_strip {
             let path = out_dir.join(format!("{name}_no_ca__tables__ca_path.png"));
-            write_strip(&path, &[&images[0], &images[1], &images[2]], *crop_rect, 4);
+            let [a, b, c] = &strip.images;
+            write_strip(&path, &[a, b, c], strip.crop, 4);
             eprintln!(
-                "{name}: strip (R9 without CA, R9 with the tables, with the tables and the CA path) of the window at {at:?} in {}",
+                "{name}: strip (R9 without CA, R9 with the tables, with the tables and the CA path) of the window at {:?} in {}",
+                strip.window,
                 path.display()
             );
         }

@@ -8,10 +8,10 @@
 //!
 //! [`CaCurves`] is the *type* of `docs/algorithms/01-adaptive-ratio-demosaic.md` section 3.6 /
 //! `INTEGRATION.md` section 6: two radial shift curves (red and blue against green) and the
-//! optical centre. Building them from the R9 lens knots is RA-03b; this module only defines the
-//! type, checks it (strictly increasing radii, at least two knots, finite numbers: the oracle's
-//! `curve_valid`) and evaluates a curve (linear between knots, linear extrapolation of the first
-//! and last segment).
+//! optical centre. This module defines the type, checks it (strictly increasing radii, at least
+//! two knots, finite numbers: the oracle's `curve_valid`) and evaluates a curve (linear between
+//! knots, linear extrapolation of the first and last segment); `LensGeometry::ca_curves`
+//! (`cpu::lens`) builds them from the R9 lens knots (RA-03b).
 
 use super::super::noise::NoiseDn;
 
