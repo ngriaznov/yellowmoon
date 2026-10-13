@@ -128,7 +128,6 @@ The `synthetic-full` and `synthetic-eval` sets (53 more, the latter with CIE ref
 | M3-H4, M3-H5, M3-H6 | App review on a Mac; a real shoot; DNGs in Lightroom, RawTherapee, darktable, Capture One, Apple Photos. | M3 gate |
 | — | A real Lossless M or S file (A7R V, A9 III, A1 II or RX1R III) to confirm the M/S scale. | M2-09 |
 | M3-H3 | Email ARRI about an in-app download of the free looks (optional). | M3 |
-| RA-H4 | Blind look at the candidate default demosaic (adaptive ratio vs Menon) on the nine local real files and the synthetic golden set, with the RA-05 numbers, before the goldens are re-baselined. | R6 default |
 | RA-H2 | Richardson–Lucy or diffraction deconvolution as the R8 default (A/B numbers and crops after RA-07). | R8 default |
 | M0-H4 (added) | On a Mac: "Move to Trash" for a downloaded look zip goes through Finder (the `trash` crate's default), which may ask for Automation permission the first time (`src-tauri/Info.plist` now carries the usage string). Check that the prompt appears once and the move works. | M3 |
 | M4-H2…M4-H5 | Developer ID signing and notarisation decision; trademark clearance (EUIPO, INPI, WIPO, UK IPO); freedom-to-operate check on US 11948279 and on the patent leads in `research/raw-algorithms-prior-art.md` §2.2 (Kodak, Epson, Sony, Apple, IBM families; diffraction restoration filters); announcement. Not started. | M4 |
