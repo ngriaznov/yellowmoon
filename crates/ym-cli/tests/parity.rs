@@ -17,6 +17,7 @@ use ym_core::export_queue::ExportJob;
 use ym_core::session::{ApplyScope, OpenOptions, PhotoId};
 use ym_core::settings::{AutoOr, DevelopSettings, SettingsPatch};
 use ym_export::{BitDepth, ColorSpace, ExportOptions, FormatKind, Size, TiffCompression};
+use ym_gpu::cpu::demosaic::{DEFAULT_METHOD, Method};
 
 /// The app's side: a core over its own app folder with one photo open.
 struct App {
@@ -27,10 +28,17 @@ struct App {
 
 impl App {
     fn open(files: &[&Path]) -> Self {
+        Self::open_with(files, DEFAULT_METHOD)
+    }
+
+    /// Like [`App::open`] with the R6 demosaic method of the full-resolution renders set the way
+    /// the app's code would (`RenderOptions::demosaic`, an internal switch with no UI).
+    fn open_with(files: &[&Path], method: Method) -> Self {
         let home = tempfile::tempdir().expect("tempdir");
         let mut options = CoreOptions::new(data_dir(), home.path().to_path_buf());
         // What the CLI does: no thumbnail renders competing with the export.
         options.thumbnails = false;
+        options.render.demosaic = method;
         let core = Core::open(options).expect("core");
         let paths: Vec<PathBuf> = files.iter().map(|p| p.to_path_buf()).collect();
         let outcome = core.session.open(&paths, OpenOptions::default());
@@ -73,8 +81,20 @@ fn bytes(path: &Path) -> Vec<u8> {
 
 /// Runs the binary on `inputs` with `flags`, writing to `dir`.
 fn cli_export(sb: &Sandbox, inputs: &[&Path], flags: &[&str], dir: &Path) -> Vec<PathBuf> {
+    cli_export_env(sb, inputs, flags, dir, &[])
+}
+
+/// [`cli_export`] with extra environment variables for the child process.
+fn cli_export_env(
+    sb: &Sandbox,
+    inputs: &[&Path],
+    flags: &[&str],
+    dir: &Path,
+    env: &[(&str, &str)],
+) -> Vec<PathBuf> {
     let out = sb
         .ym()
+        .envs(env.iter().copied())
         .arg("render")
         .args(inputs)
         .args(flags)
@@ -346,6 +366,83 @@ fn settings_given_as_options_are_the_settings_of_the_app() {
     assert_ne!(bytes(&plain[0]), bytes(&from_cli[0]));
 }
 
+/// Output sharpening (Detail › Sharpening › Output) is part of the bit-identity contract: the app
+/// and the CLI write the same bytes with a non-default amount and with none, at full size and
+/// after a resize, whatever the thread layout. The default (100) is what every other case of this
+/// file already runs.
+#[test]
+fn output_sharpening_is_byte_identical_through_the_app_path_and_the_binary() {
+    let sb = Sandbox::new();
+    let arw = sb.arw_sized("big.ARW", 1300, 900, 5);
+    let app = App::open(&[&arw]);
+    for (amount, long_edge) in [
+        (35.0_f64, None),
+        (0.0, None),
+        (150.0, Some(500_u32)),
+        (0.0, Some(500)),
+    ] {
+        app.core
+            .session
+            .update_settings(
+                app.photo,
+                &SettingsPatch {
+                    output_sharpening: Some(amount),
+                    ..SettingsPatch::default()
+                },
+            )
+            .expect("settings");
+        let png = ExportOptions {
+            format: FormatKind::Png,
+            bit_depth: BitDepth::Sixteen,
+            size: long_edge.map_or(Size::Full, |px| Size::LongEdge { px }),
+            ..ExportOptions::default()
+        };
+        let name = format!("{amount}-{long_edge:?}");
+        let from_app = app.export(png, &sb.root().join("app").join(&name));
+        let amount_text = amount.to_string();
+        let edge_text = long_edge.map(|px| px.to_string());
+        let mut flags = vec![
+            "--format",
+            "png",
+            "--bits",
+            "16",
+            "--output-sharpening",
+            &amount_text,
+        ];
+        if let Some(px) = &edge_text {
+            flags.extend(["--long-edge", px]);
+        }
+        let mut one = flags.clone();
+        one.extend(["--jobs", "1"]);
+        let from_cli = cli_export(&sb, &[&arw], &one, &sb.root().join("cli").join(&name));
+        assert_same_files(&from_app, &from_cli, &format!("output sharpening {name}"));
+        let mut four = flags;
+        four.extend(["--jobs", "4"]);
+        let again = cli_export(&sb, &[&arw], &four, &sb.root().join("again").join(&name));
+        assert_same_files(&from_cli, &again, &format!("jobs 1 and 4, {name}"));
+    }
+    // And the amount changes the picture: the same photo at 0 and at 35 differ.
+    let at = |name: &str| bytes(&sb.root().join("cli").join(name).join("big_neutral.png"));
+    assert_ne!(at("35-None"), at("0-None"));
+    // A DNG is the same bytes whatever the amount, apart from the settings the XMP records.
+    let dng = |amount: &str, dir: &str| {
+        cli_export(
+            &sb,
+            &[&arw],
+            &["--format", "dng", "--output-sharpening", amount],
+            &sb.root().join(dir),
+        )
+    };
+    let (d100, d200) = (dng("100", "dng100"), dng("200", "dng200"));
+    let (a, b) = (bytes(&d100[0]), bytes(&d200[0]));
+    assert_eq!(a.len(), b.len(), "the XMP text has the same length");
+    let differing = a.iter().zip(&b).filter(|(x, y)| x != y).count();
+    assert!(
+        differing < 8,
+        "only the recorded number differs, not the pixels ({differing} bytes)"
+    );
+}
+
 #[test]
 fn a_settings_file_is_the_same_settings_as_the_apps() {
     let sb = Sandbox::new();
@@ -440,4 +537,80 @@ fn the_settings_an_export_records_reproduce_the_file() {
             .exposure,
         AutoOr::Manual(_)
     ));
+}
+
+// ---------------------------------------------------------------------------------------------
+// RA-04: the adaptive ratio demosaic forced for the whole render
+// ---------------------------------------------------------------------------------------------
+
+/// The test-only switch: the `ym` binary of this test run reads it (the `force-demosaic` feature of
+/// `ym-core`, enabled by this crate's dev-dependency), and the app's side sets the same method on
+/// `RenderOptions::demosaic`.
+const FORCE: [(&str, &str); 1] = [("YM_FORCE_DEMOSAIC", "adaptive_ratio")];
+
+#[test]
+fn every_format_is_byte_identical_with_the_adaptive_ratio_demosaic_forced() {
+    let sb = Sandbox::new();
+    let arw = sb.arw("DSC00001.ARW");
+    let app = App::open_with(&[&arw], Method::AdaptiveRatio);
+    for case in cases() {
+        let app_dir = sb.root().join("app").join(case.name);
+        let cli_dir = sb.root().join("cli").join(case.name);
+        let from_app = app.export(case.options.clone(), &app_dir);
+        let from_cli = cli_export_env(&sb, &[&arw], case.flags, &cli_dir, &FORCE);
+        assert_same_files(&from_app, &from_cli, case.name);
+        assert_eq!(names_in(&app_dir).len(), 1, "{}", case.name);
+        assert_eq!(names_in(&cli_dir).len(), 1, "{}", case.name);
+    }
+    // The switch did something: the default method gives other bytes for the same photo, and
+    // `YM_FORCE_DEMOSAIC=menon` (the default) gives the default's bytes.
+    let png = ["--format", "png", "--bits", "16"];
+    let forced = cli_export_env(&sb, &[&arw], &png, &sb.root().join("forced"), &FORCE);
+    let default = cli_export(&sb, &[&arw], &png, &sb.root().join("default"));
+    let menon = cli_export_env(
+        &sb,
+        &[&arw],
+        &png,
+        &sb.root().join("menon"),
+        &[("YM_FORCE_DEMOSAIC", "menon")],
+    );
+    assert_ne!(bytes(&forced[0]), bytes(&default[0]), "forced = default?");
+    assert_eq!(bytes(&menon[0]), bytes(&default[0]), "menon is the default");
+}
+
+/// The tile seams and the thread layout are part of the contract for every method: with the
+/// adaptive ratio demosaic (halo 13) a photo of 3 x 2 export tiles is the same bytes through the
+/// app and through the binary at `--jobs 1` and `--jobs 3`.
+#[test]
+fn a_photo_of_several_export_tiles_is_identical_with_the_adaptive_ratio_demosaic_forced() {
+    let sb = Sandbox::new();
+    let arw = sb.arw_sized("big.ARW", 2100, 1100, 9);
+    let app = App::open_with(&[&arw], Method::AdaptiveRatio);
+    let png = ExportOptions {
+        format: FormatKind::Png,
+        bit_depth: BitDepth::Sixteen,
+        ..ExportOptions::default()
+    };
+    let from_app = app.export(png, &sb.root().join("app"));
+    let flags = |jobs: &'static str| ["--format", "png", "--bits", "16", "--jobs", jobs];
+    let one = cli_export_env(&sb, &[&arw], &flags("1"), &sb.root().join("one"), &FORCE);
+    assert_same_files(&from_app, &one, "several tiles, adaptive ratio");
+    let three = cli_export_env(&sb, &[&arw], &flags("3"), &sb.root().join("three"), &FORCE);
+    assert_same_files(&one, &three, "jobs 1 and 3, adaptive ratio");
+}
+
+/// A bad value in the switch is an error, not a silent default (the switch exists only in test
+/// builds, where a typo must show).
+#[test]
+fn the_test_switch_refuses_a_name_that_is_not_a_method() {
+    let sb = Sandbox::new();
+    let arw = sb.arw("DSC00001.ARW");
+    sb.ym()
+        .env("YM_FORCE_DEMOSAIC", "adaptive-ratio")
+        .arg("render")
+        .arg(&arw)
+        .arg("--out")
+        .arg(sb.root().join("out"))
+        .assert()
+        .failure();
 }

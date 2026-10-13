@@ -1,9 +1,10 @@
 {
-  "version": "1.0.0",
+  "version": "1.1.0",
   "default_profile": "sony-ilce-7rm4",
   "sources": {
     "model_ids": "exiftool/exiftool lib/Image/ExifTool/Sony.pm @ 2200871d9cef988051d2a99d67df3bda6cbb30a8 (SonyModelID table)",
-    "table": "docs/03-camera-profiles.md, 'Which profile each camera gets'"
+    "table": "docs/03-camera-profiles.md, 'Which profile each camera gets'",
+    "sensors": "Sony specification pages (sensor size in mm; the width in pixels of the largest 3:2 still image, full frame): read 2026-10-13 from web-search excerpts of the pages named; the pages were not fetched (Sony hosts are not reachable from the build environment); verify against the page before relying on the value. Used for the pixel pitch of docs/algorithms/03 section 2.2; sensor_source_kind is 'maker' when the excerpt came from a Sony page and 'restated' when a retailer or reference site restated the Sony specification."
   },
   "profiles": [
     {
@@ -59,7 +60,11 @@
       "profile": "sony-ilce-7m3",
       "match": "exact",
       "via": null,
-      "notes": "Measured by Weta (rawtoaces-data): sony/Sony_ILCE-7M3_380_780_5.json."
+      "notes": "Measured by Weta (rawtoaces-data): sony/Sony_ILCE-7M3_380_780_5.json.",
+      "sensor_width_mm": 35.6,
+      "active_width_px": 6000,
+      "sensor_source_kind": "restated",
+      "sensor_source": "Sony specification as restated by: en.wikipedia.org/wiki/Sony_%CE%B17_III (35.6 x 23.8 mm, 6000 x 4000); store.sony.co.th ILCE-7M3 specifications (35mm full frame, 24.2 MP effective)"
     },
     {
       "model_id": 381,
@@ -68,7 +73,11 @@
       "profile": "sony-ilce-7m3",
       "match": "sensor_family",
       "via": "Sony A7 III",
-      "notes": "Same sensor as Sony A7 III; shares its profile. ColorMatrix sibling check: pending: no converted samples available (docs/03)."
+      "notes": "Same sensor as Sony A7 III; shares its profile. ColorMatrix sibling check (pass): max |diff| 0.0000 per coefficient against the profile body, limit 0.02, LibRaw 0.22.1 via rawpy 0.27.1 (docs/03).",
+      "sensor_width_mm": 35.6,
+      "active_width_px": 6000,
+      "sensor_source_kind": "maker",
+      "sensor_source": "Sony specification page(s): sony.co.th/en/interchangeable-lens-cameras/products/ilce-7c/spec (L 6000 x 4000 (24M)); store.sony.com.sg/blogs/6821926863003_40202286170267/6821926863003__specifications (35.6 x 23.8 mm)"
     },
     {
       "model_id": 388,
@@ -77,7 +86,11 @@
       "profile": "sony-ilce-7m4",
       "match": "exact",
       "via": null,
-      "notes": "Measured by Weta (rawtoaces-data): sony/Sony_ILCE-7M4_380_780_5.json."
+      "notes": "Measured by Weta (rawtoaces-data): sony/Sony_ILCE-7M4_380_780_5.json.",
+      "sensor_width_mm": 35.9,
+      "active_width_px": 7008,
+      "sensor_source_kind": "restated",
+      "sensor_source": "Sony specification as restated by: bhphotovideo.com Sony a7 IV (35.9 x 23.9 mm, 7008 x 4672); imaging-resource.com Sony a7 IV (35.90 x 23.90 mm, 7008 x 4672)"
     },
     {
       "model_id": 397,
@@ -86,7 +99,11 @@
       "profile": "sony-ilce-7cm2",
       "match": "exact",
       "via": null,
-      "notes": "Measured by Weta (rawtoaces-data): sony/Sony_ILCE-7CM2_380_780_5.json."
+      "notes": "Measured by Weta (rawtoaces-data): sony/Sony_ILCE-7CM2_380_780_5.json.",
+      "sensor_width_mm": 35.9,
+      "active_width_px": 7008,
+      "sensor_source_kind": "restated",
+      "sensor_source": "Sony specification as restated by: bhphotovideo.com Sony a7C II (35.9 x 23.9 mm, 7008 x 4672)"
     },
     {
       "model_id": 347,
@@ -95,7 +112,11 @@
       "profile": "sony-ilce-7rm2",
       "match": "exact",
       "via": null,
-      "notes": "Measured by Weta (rawtoaces-data): sony/Sony_ILCE-7RM2_380_780_5.json."
+      "notes": "Measured by Weta (rawtoaces-data): sony/Sony_ILCE-7RM2_380_780_5.json.",
+      "sensor_width_mm": 35.9,
+      "active_width_px": 7952,
+      "sensor_source_kind": "maker",
+      "sensor_source": "Sony specification page(s): sony.co.id/en/electronics/interchangeable-lens-cameras/ilce-7rm2/specifications (35.9 x 24.0 mm, L 7952 x 5304 (42M))"
     },
     {
       "model_id": 362,
@@ -104,7 +125,11 @@
       "profile": "sony-ilce-7rm3",
       "match": "exact",
       "via": null,
-      "notes": "Measured by Weta (rawtoaces-data): sony/Sony_ILCE-7RM3_380_780_5.json."
+      "notes": "Measured by Weta (rawtoaces-data): sony/Sony_ILCE-7RM3_380_780_5.json.",
+      "sensor_width_mm": 35.9,
+      "active_width_px": 7952,
+      "sensor_source_kind": "maker",
+      "sensor_source": "Sony specification page(s): sony.com.tw/en/electronics/interchangeable-lens-cameras/ilce-7rm3/specifications (35.9 x 24.0 mm, L 7952 x 5304 (42M))"
     },
     {
       "model_id": 386,
@@ -113,7 +138,11 @@
       "profile": "sony-ilce-7rm3",
       "match": "sensor_family",
       "via": "Sony A7R III",
-      "notes": "Same sensor as Sony A7R III; shares its profile. ColorMatrix sibling check: pending: no converted samples available (docs/03)."
+      "notes": "Same sensor as Sony A7R III; shares its profile. ColorMatrix sibling check (pass): max |diff| 0.0000 per coefficient against the profile body, limit 0.02, LibRaw 0.22.1 via rawpy 0.27.1 (docs/03).",
+      "sensor_width_mm": 35.9,
+      "active_width_px": 7952,
+      "sensor_source_kind": "maker",
+      "sensor_source": "Sony specification page(s): sony.ca/en/electronics/interchangeable-lens-cameras/ilce-7rm3a/specifications (35.9 x 24.0 mm, L 7952 x 5304 (42M))"
     },
     {
       "model_id": 375,
@@ -122,7 +151,11 @@
       "profile": "sony-ilce-7rm4",
       "match": "exact",
       "via": null,
-      "notes": "Measured by Weta (rawtoaces-data): sony/Sony_ILCE-7RM4_380_780_5.json."
+      "notes": "Measured by Weta (rawtoaces-data): sony/Sony_ILCE-7RM4_380_780_5.json.",
+      "sensor_width_mm": 35.7,
+      "active_width_px": 9504,
+      "sensor_source_kind": "maker",
+      "sensor_source": "Sony specification page(s): sony.com.tw/en/electronics/interchangeable-lens-cameras/ilce-7rm4/specifications (35.7 x 23.8 mm, L 9504 x 6336 (60M))"
     },
     {
       "model_id": 387,
@@ -131,25 +164,37 @@
       "profile": "sony-ilce-7rm4",
       "match": "sensor_family",
       "via": "Sony A7R IV",
-      "notes": "Same sensor as Sony A7R IV; shares its profile. ColorMatrix sibling check: pending: no converted samples available (docs/03)."
+      "notes": "Same sensor as Sony A7R IV; shares its profile. ColorMatrix sibling check (pass): max |diff| 0.0000 per coefficient against the profile body, limit 0.02, LibRaw 0.22.1 via rawpy 0.27.1 (docs/03).",
+      "sensor_width_mm": 35.7,
+      "active_width_px": 9504,
+      "sensor_source_kind": "maker",
+      "sensor_source": "Sony specification page(s): sony.ca/en/electronics/interchangeable-lens-cameras/ilce-7rm4a/specifications (35.7 x 23.8 mm, L 9504 x 6336 (60M))"
     },
     {
       "model_id": 390,
       "model": "ILCE-7RM5",
       "body": "Sony A7R V",
       "profile": "sony-ilce-7rm4",
-      "match": "sensor_family",
-      "via": "Sony A7R IV",
-      "notes": "Same sensor as Sony A7R IV; shares its profile. ColorMatrix sibling check: pending: no converted samples available (docs/03)."
+      "match": "default",
+      "via": null,
+      "notes": "No measured profile; uses the Sony A7R IV stand-in (docs/03). A Sony file is never refused for lack of a profile. Considered as a same-sensor sibling of the Sony A7R IV, but it did not pass: ColorMatrix sibling check (fail): max |diff| 0.0934 per coefficient against the profile body, limit 0.02, LibRaw 0.22.1 via rawpy 0.27.1.",
+      "sensor_width_mm": 35.7,
+      "active_width_px": 9504,
+      "sensor_source_kind": "maker",
+      "sensor_source": "Sony specification page(s): sony.co.th/en/interchangeable-lens-cameras/products/ilce-7rm5/spec (35.7 x 23.8 mm, L 9504 x 6336 (60M))"
     },
     {
       "model_id": 396,
       "model": "ILCE-7CR",
       "body": "Sony A7CR",
       "profile": "sony-ilce-7rm4",
-      "match": "sensor_family",
-      "via": "Sony A7R IV",
-      "notes": "Same sensor as Sony A7R IV; shares its profile. ColorMatrix sibling check: pending: no converted samples available (docs/03)."
+      "match": "default",
+      "via": null,
+      "notes": "No measured profile; uses the Sony A7R IV stand-in (docs/03). A Sony file is never refused for lack of a profile. Considered as a same-sensor sibling of the Sony A7R IV, but it did not pass: ColorMatrix sibling check (fail): max |diff| 0.0934 per coefficient against the profile body, limit 0.02, LibRaw 0.22.1 via rawpy 0.27.1.",
+      "sensor_width_mm": 35.7,
+      "active_width_px": 9504,
+      "sensor_source_kind": "maker",
+      "sensor_source": "Sony specification page(s): sony.com.my/electronics/interchangeable-lens-cameras/ilce-7cr/specifications (35.7 x 23.8 mm, L 9504 x 6336 (60 M))"
     },
     {
       "model_id": 350,
@@ -158,7 +203,11 @@
       "profile": "sony-ilce-7sm2",
       "match": "exact",
       "via": null,
-      "notes": "Measured by Weta (rawtoaces-data): sony/Sony_ILCE-7SM2_380_780_5.json."
+      "notes": "Measured by Weta (rawtoaces-data): sony/Sony_ILCE-7SM2_380_780_5.json.",
+      "sensor_width_mm": 35.6,
+      "active_width_px": 4240,
+      "sensor_source_kind": "maker",
+      "sensor_source": "Sony specification page(s): sony.co.id/en/electronics/interchangeable-lens-cameras/ilce-7sm2/specifications (35mm full frame 35.6 x 23.8 mm, L 4240 x 2832 (12M))"
     },
     {
       "model_id": 383,
@@ -167,7 +216,11 @@
       "profile": "sony-ilce-7sm3",
       "match": "exact",
       "via": null,
-      "notes": "Measured by Weta (rawtoaces-data): sony/Sony_ILCE-7SM3_380_780_5.json."
+      "notes": "Measured by Weta (rawtoaces-data): sony/Sony_ILCE-7SM3_380_780_5.json.",
+      "sensor_width_mm": 35.6,
+      "active_width_px": 4240,
+      "sensor_source_kind": "restated",
+      "sensor_source": "Sony specification as restated by: bhphotovideo.com Sony a7S III (12.1 MP, 4240 x 2832); en.wikipedia.org/wiki/Sony_%CE%B17S_III (35.6 x 23.8 mm; Sony product page: 35mm full frame (35.6x23.8mm))"
     },
     {
       "model_id": 385,
@@ -176,7 +229,7 @@
       "profile": "sony-ilce-7sm3",
       "match": "sensor_family",
       "via": "Sony A7S III",
-      "notes": "Same sensor as Sony A7S III; shares its profile. ColorMatrix sibling check: pending: no converted samples available (docs/03)."
+      "notes": "Same sensor as Sony A7S III; shares its profile. ColorMatrix sibling check (pass): max |diff| 0.0000 per coefficient against the profile body, limit 0.02, LibRaw 0.22.1 via rawpy 0.27.1 (docs/03)."
     },
     {
       "model_id": 393,
@@ -185,7 +238,11 @@
       "profile": "sony-ilce-7sm3",
       "match": "sensor_family",
       "via": "Sony A7S III",
-      "notes": "Same sensor as Sony A7S III; shares its profile. ColorMatrix sibling check: pending: no converted samples available (docs/03)."
+      "notes": "Same sensor as Sony A7S III; shares its profile. ColorMatrix sibling check (pass): max |diff| 0.0000 per coefficient against the profile body, limit 0.02, LibRaw 0.22.1 via rawpy 0.27.1 (docs/03).",
+      "sensor_width_mm": 35.6,
+      "active_width_px": 4240,
+      "sensor_source_kind": "maker",
+      "sensor_source": "Sony specification page(s): sony-mea.com/en/electronics/support/e-mount-body-zv-e-series/zv-e1/specifications (35.6 x 23.8 mm, L 4240 x 2832 (12 M))"
     },
     {
       "model_id": 358,
@@ -194,7 +251,11 @@
       "profile": "sony-ilce-9",
       "match": "exact",
       "via": null,
-      "notes": "Measured by Weta (rawtoaces-data): sony/Sony_ILCE-9_380_780_5.json."
+      "notes": "Measured by Weta (rawtoaces-data): sony/Sony_ILCE-9_380_780_5.json.",
+      "sensor_width_mm": 35.6,
+      "active_width_px": 6000,
+      "sensor_source_kind": "maker",
+      "sensor_source": "Sony specification page(s): sony.com.tw/en/electronics/interchangeable-lens-cameras/ilce-9/specifications (35mm full frame 35.6 x 23.8 mm, 24.2 MP effective; 16:9 L 6000 x 3376); en.wikipedia.org/wiki/Sony_%CE%B19 (6000 x 4000 at 3:2)"
     },
     {
       "model_id": 376,
@@ -203,7 +264,11 @@
       "profile": "sony-ilce-9",
       "match": "sensor_family",
       "via": "Sony A9",
-      "notes": "Same sensor as Sony A9; shares its profile. ColorMatrix sibling check: pending: no converted samples available (docs/03)."
+      "notes": "Same sensor as Sony A9; shares its profile. ColorMatrix sibling check (pass): max |diff| 0.0000 per coefficient against the profile body, limit 0.02, LibRaw 0.22.1 via rawpy 0.27.1 (docs/03).",
+      "sensor_width_mm": 35.6,
+      "active_width_px": 6000,
+      "sensor_source_kind": "maker",
+      "sensor_source": "Sony specification page(s): sony.co.in/electronics/interchangeable-lens-cameras/ilce-9m2/specifications; sony.com.sg/electronics/interchangeable-lens-cameras/ilce-9m2/specifications (35.6 x 23.8 mm; L 6000 x 4000 (24M))"
     },
     {
       "model_id": 371,
@@ -212,7 +277,11 @@
       "profile": "sony-ilce-6400",
       "match": "exact",
       "via": null,
-      "notes": "Measured by Weta (rawtoaces-data): sony/Sony_ILCE-6400_380_780_5.json."
+      "notes": "Measured by Weta (rawtoaces-data): sony/Sony_ILCE-6400_380_780_5.json.",
+      "sensor_width_mm": 23.5,
+      "active_width_px": 6000,
+      "sensor_source_kind": "maker",
+      "sensor_source": "Sony specification page(s): store.sony.co.th ILCE-6400 specifications (APS-C type 23.5 x 15.6 mm, L 6000 x 4000 (24M))"
     },
     {
       "model_id": 379,
@@ -221,7 +290,11 @@
       "profile": "sony-ilce-6400",
       "match": "sensor_family",
       "via": "Sony A6400",
-      "notes": "Same sensor as Sony A6400; shares its profile. ColorMatrix sibling check: pending: no converted samples available (docs/03)."
+      "notes": "Same sensor as Sony A6400; shares its profile. ColorMatrix sibling check (pass): max |diff| 0.0000 per coefficient against the profile body, limit 0.02, LibRaw 0.22.1 via rawpy 0.27.1 (docs/03).",
+      "sensor_width_mm": 23.5,
+      "active_width_px": 6000,
+      "sensor_source_kind": "maker",
+      "sensor_source": "Sony specification page(s): sony.co.id/en/electronics/interchangeable-lens-cameras/ilce-6100/specifications (APS-C type 23.5 x 15.6 mm, 24.2 MP, L 6000 x 4000)"
     },
     {
       "model_id": 378,
@@ -230,7 +303,11 @@
       "profile": "sony-ilce-6400",
       "match": "sensor_family",
       "via": "Sony A6400",
-      "notes": "Same sensor as Sony A6400; shares its profile. ColorMatrix sibling check: pending: no converted samples available (docs/03)."
+      "notes": "Same sensor as Sony A6400; shares its profile. ColorMatrix sibling check (pass): max |diff| 0.0000 per coefficient against the profile body, limit 0.02, LibRaw 0.22.1 via rawpy 0.27.1 (docs/03).",
+      "sensor_width_mm": 23.5,
+      "active_width_px": 6000,
+      "sensor_source_kind": "maker",
+      "sensor_source": "Sony specification page(s): sony.com.sg/electronics/interchangeable-lens-cameras/ilce-6600/specifications (APS-C type 23.5 x 15.6 mm, L 6000 x 4000 (24M))"
     },
     {
       "model_id": 402,
@@ -239,7 +316,11 @@
       "profile": "sony-ilce-6400",
       "match": "sensor_family",
       "via": "Sony A6400",
-      "notes": "Same sensor as Sony A6400; shares its profile. ColorMatrix sibling check: pending: no converted samples available (docs/03)."
+      "notes": "Same sensor as Sony A6400; shares its profile. ColorMatrix sibling check (pass): max |diff| 0.0000 per coefficient against the profile body, limit 0.02, LibRaw 0.22.1 via rawpy 0.27.1 (docs/03).",
+      "sensor_width_mm": 23.5,
+      "active_width_px": 6000,
+      "sensor_source_kind": "maker",
+      "sensor_source": "Sony specification page(s): sonylatvija.com/electronics/interchangeable-lens-cameras/ilce-6400a/specifications (APS-C type 23.5 x 15.6 mm, L 6000 x 4000 (24M))"
     },
     {
       "model_id": 403,
@@ -248,7 +329,11 @@
       "profile": "sony-ilce-6400",
       "match": "sensor_family",
       "via": "Sony A6400",
-      "notes": "Same sensor as Sony A6400; shares its profile. ColorMatrix sibling check: pending: no converted samples available (docs/03)."
+      "notes": "Same sensor as Sony A6400; shares its profile. ColorMatrix sibling check (pass): max |diff| 0.0000 per coefficient against the profile body, limit 0.02, LibRaw 0.22.1 via rawpy 0.27.1 (docs/03).",
+      "sensor_width_mm": 23.5,
+      "active_width_px": 6000,
+      "sensor_source_kind": "maker",
+      "sensor_source": "Sony specification page(s): sony.fr/electronics/appareils-photo-a-objectifs-interchangeables/ilce-6100a/specifications (APS-C 23.5 x 15.6 mm, 24.2 MP effective, 3:2 L 24M); the 6000 px width is the ILCE-6100 page's (sony.ca/en/electronics/interchangeable-lens-cameras/ilce-6100/specifications)"
     },
     {
       "model_id": 341,
@@ -257,7 +342,11 @@
       "profile": "sony-dsc-rx100m4",
       "match": "exact",
       "via": null,
-      "notes": "Measured by Weta (rawtoaces-data): sony/Sony_DSC-RX100M4_380_780_5.json."
+      "notes": "Measured by Weta (rawtoaces-data): sony/Sony_DSC-RX100M4_380_780_5.json.",
+      "sensor_width_mm": 13.2,
+      "active_width_px": 5472,
+      "sensor_source_kind": "maker",
+      "sensor_source": "Sony specification page(s): sony-asia.com/electronics/support/compact-cameras-dsc-rx-series/dsc-rx100m4/specifications (1.0-type 13.2 x 8.8 mm); sony.co.in/electronics/support/compact-cameras-dsc-rx-series/dsc-rx100m4/specifications (5,472 x 3,648 (20M))"
     },
     {
       "model_id": 384,
@@ -266,7 +355,11 @@
       "profile": "sony-ilce-7rm4",
       "match": "default",
       "via": null,
-      "notes": "No measured profile; uses the Sony A7R IV stand-in (docs/03). A Sony file is never refused for lack of a profile."
+      "notes": "No measured profile; uses the Sony A7R IV stand-in (docs/03). A Sony file is never refused for lack of a profile.",
+      "sensor_width_mm": 35.9,
+      "active_width_px": 8640,
+      "sensor_source_kind": "restated",
+      "sensor_source": "Sony specification as restated by: en.wikipedia.org/wiki/Sony_%CE%B11 (35.9 x 24.0 mm, 8640 x 5760); imaging-resource.com Sony a1 (35.9 x 24.0 mm, 8640 x 5760); sony.co.th/en/interchangeable-lens-cameras/products/ilce-1/spec (50.1 MP effective)"
     },
     {
       "model_id": 400,
@@ -275,7 +368,11 @@
       "profile": "sony-ilce-7rm4",
       "match": "default",
       "via": null,
-      "notes": "No measured profile; uses the Sony A7R IV stand-in (docs/03). A Sony file is never refused for lack of a profile."
+      "notes": "No measured profile; uses the Sony A7R IV stand-in (docs/03). A Sony file is never refused for lack of a profile.",
+      "sensor_width_mm": 35.9,
+      "active_width_px": 8640,
+      "sensor_source_kind": "maker",
+      "sensor_source": "Sony specification page(s): sony.com.tw/en/electronics/interchangeable-lens-cameras/ilce-1m2/specifications (35.9 x 24.0 mm, L 8640 x 5760 (50 M))"
     },
     {
       "model_id": 392,
@@ -284,7 +381,11 @@
       "profile": "sony-ilce-7rm4",
       "match": "default",
       "via": null,
-      "notes": "No measured profile; uses the Sony A7R IV stand-in (docs/03). A Sony file is never refused for lack of a profile."
+      "notes": "No measured profile; uses the Sony A7R IV stand-in (docs/03). A Sony file is never refused for lack of a profile.",
+      "sensor_width_mm": 35.6,
+      "active_width_px": 6000,
+      "sensor_source_kind": "maker",
+      "sensor_source": "Sony specification page(s): sony.com.sg/electronics/interchangeable-lens-cameras/ilce-9m3/specifications (L 6000 x 4000 (24M)); store.sony.com.sg/blogs/7805100327067_43884466143387 (35.6 x 23.8 mm)"
     },
     {
       "model_id": 407,
@@ -293,7 +394,11 @@
       "profile": "sony-ilce-7rm4",
       "match": "default",
       "via": null,
-      "notes": "No measured profile; uses the Sony A7R IV stand-in (docs/03). A Sony file is never refused for lack of a profile."
+      "notes": "No measured profile; uses the Sony A7R IV stand-in (docs/03). A Sony file is never refused for lack of a profile.",
+      "sensor_width_mm": 35.9,
+      "active_width_px": 7008,
+      "sensor_source_kind": "maker",
+      "sensor_source": "Sony specification page(s): sony.com.au/electronics/interchangeable-lens-cameras/ilce-7m5/specifications (35.9 x 23.9 mm, L 7008 x 4672 (33 M))"
     },
     {
       "model_id": 410,
@@ -302,7 +407,11 @@
       "profile": "sony-ilce-7rm4",
       "match": "default",
       "via": null,
-      "notes": "No measured profile; uses the Sony A7R IV stand-in (docs/03). A Sony file is never refused for lack of a profile."
+      "notes": "No measured profile; uses the Sony A7R IV stand-in (docs/03). A Sony file is never refused for lack of a profile.",
+      "sensor_width_mm": 35.9,
+      "active_width_px": 9984,
+      "sensor_source_kind": "maker",
+      "sensor_source": "Sony specification page(s): sony.co.th/en/electronics/interchangeable-lens-cameras/ilce-7rm6/specifications (35.9 x 24.0 mm, L 9984 x 6656 (66 M))"
     }
   ],
   "model_strings": {

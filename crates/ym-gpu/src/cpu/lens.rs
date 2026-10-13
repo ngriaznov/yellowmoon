@@ -23,8 +23,14 @@
 //!
 //! The factors come from public reverse-engineering, not a Sony document (`docs/05`).
 
+use super::demosaic::{CaCurveError, CaCurves, RadialCurve};
 use super::spline::LinearKnots;
 use super::{CpuError, Placement, Rect};
+
+/// Spacing in pixels of output radius between the knots of the curves
+/// [`LensGeometry::ca_curves`] samples (`docs/algorithms/01-adaptive-ratio-demosaic.md`
+/// section 3.6).
+pub const CA_CURVE_STEP_PX: f64 = 8.0;
 
 /// The raw knots of the three Sony lens tags. An empty vector means the tag is absent.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -264,6 +270,59 @@ impl LensGeometry {
             (cx + dx * f, cy + dy * f),
             (cx + dx * f * kb, cy + dy * f * kb),
         ]
+    }
+
+    /// The lateral CA of this geometry as the two radial curves of the CA-aware green refinement of
+    /// the adaptive ratio demosaic (`docs/algorithms/01-adaptive-ratio-demosaic.md` section 3.6,
+    /// `INTEGRATION.md` section 6), or `None` when the geometry has no CA: no 0x7035 table,
+    /// `decode.chromatic_aberration` off, or a table whose knots are all zero (a neutral table moves
+    /// no pixel in R9, and the CA path would only smooth pass 2 for nothing: spec section 7, note 4).
+    ///
+    /// R9 samples colour `c` at the source radius `r * F(r) * K_c(r)` and green at `r * F(r)`, with
+    /// `r` the output radius, `F` the distortion factor (1 when there is no 0x7037 table or
+    /// `decode.lens_corrections` is off) and `K_c` the CA factor. At the *source* (mosaic) radius
+    /// `r_src = r * F(r)` plane `c` is therefore displaced by `r_src * (K_c(r) - 1)`. The curve of a
+    /// colour has a knot every [`CA_CURVE_STEP_PX`] of output radius, from 0 past the corner of the
+    /// frame: knot `j` is `(r_src, r_src * (K_c(r) - 1))` at `r = j * step / hd`, where `hd` is half
+    /// the frame diagonal. Red and blue share the radii. The optical centre is the middle of the
+    /// frame, the R9 centre. The curves are in pixels of the full-resolution mosaic.
+    ///
+    /// The radii are `f64` and computed as the oracle does (`hd` from `sqrt`, not `hypot`), so the
+    /// curves equal the vector `ca_weighting`'s bit for bit.
+    ///
+    /// # Errors
+    ///
+    /// [`CaCurveError::NotIncreasing`] when the distortion table makes the source radius fall
+    /// somewhere (a table that folds the image over itself); the CA path is then off.
+    pub fn ca_curves(&self) -> Result<Option<CaCurves>, CaCurveError> {
+        let (Some(red), Some(blue)) = (&self.ca_red, &self.ca_blue) else {
+            return Ok(None);
+        };
+        let (fw, fh) = (self.frame_w as f64, self.frame_h as f64);
+        let hd = 0.5 * (fw * fw + fh * fh).sqrt();
+        let step = CA_CURVE_STEP_PX;
+        let count = ((hd + 2.0 * step) / step).ceil() as usize + 1;
+        let mut radius_px = Vec::with_capacity(count);
+        let mut red_px = Vec::with_capacity(count);
+        let mut blue_px = Vec::with_capacity(count);
+        for j in 0..count {
+            let r_out = j as f64 * step / hd;
+            let f = self.distortion.as_ref().map_or(1.0, |t| t.eval(r_out));
+            let r_src = hd * r_out * f;
+            radius_px.push(r_src);
+            red_px.push(r_src * (red.eval(r_out) - 1.0));
+            blue_px.push(r_src * (blue.eval(r_out) - 1.0));
+        }
+        if red_px.iter().chain(&blue_px).all(|&shift| shift == 0.0) {
+            return Ok(None);
+        }
+        CaCurves::new(
+            0.5 * fw,
+            0.5 * fh,
+            RadialCurve::new(radius_px.clone(), red_px)?,
+            RadialCurve::new(radius_px, blue_px)?,
+        )
+        .map(Some)
     }
 
     /// Source position for the pixel `(x, y)` of the cropped output.

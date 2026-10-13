@@ -25,9 +25,51 @@
 //! exact radius is within the cap (always for the Auto values), and differ by far less than 1e-4
 //! beyond it for photographic content.
 
+use self::diffraction::DiffractionParams;
 use super::filters::{self, BAND_ROWS};
 use super::tiling::sharpen_halo;
 use super::{LUMA, NoiseSigma, Placement, RgbImage, mirror};
+
+pub mod diffraction;
+
+/// The R8 capture-sharpening method of a frame and its controls: exactly one runs
+/// (`docs/algorithms/03-diffraction-deconvolution.md` section 1.2).
+///
+/// Richardson-Lucy is the default. The choice is internal (no settings-schema change): the caller
+/// that builds a [`Chain`](super::chain::Chain) decides, and falls back to Richardson-Lucy when
+/// the diffraction stage would be inactive (no usable pixel pitch or f-number, spec section 2.2).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum CaptureSharpen {
+    /// Richardson-Lucy with a Gaussian PSF ([`richardson_lucy`]).
+    RichardsonLucy(SharpenParams),
+    /// Diffraction deconvolution ([`diffraction::DiffractionPlan`]).
+    Diffraction(DiffractionParams),
+}
+
+impl CaptureSharpen {
+    /// The halo the tile scheduler uses for this method: Richardson-Lucy's `2 n ceil(3 sigma)`
+    /// capped at [`SHARPEN_HALO_CAP_PX`](super::tiling::SHARPEN_HALO_CAP_PX), or the diffraction
+    /// stage's `10 + R + r_G` (at most 25), which that cap does not apply to.
+    #[must_use]
+    pub fn halo_px(&self) -> usize {
+        match self {
+            CaptureSharpen::RichardsonLucy(p) => p.halo_px(),
+            CaptureSharpen::Diffraction(p) => p.halo_px(),
+        }
+    }
+}
+
+impl From<SharpenParams> for CaptureSharpen {
+    fn from(p: SharpenParams) -> Self {
+        CaptureSharpen::RichardsonLucy(p)
+    }
+}
+
+impl From<DiffractionParams> for CaptureSharpen {
+    fn from(p: DiffractionParams) -> Self {
+        CaptureSharpen::Diffraction(p)
+    }
+}
 
 /// Residuals below this many noise σ are damped (`w = 0.5` at exactly this residual).
 pub const DAMPING_SIGMAS: f32 = 1.0;

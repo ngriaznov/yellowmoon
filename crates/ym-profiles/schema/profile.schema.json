@@ -211,7 +211,7 @@
           "pattern": "M1-H4"
         },
         "checks": {
-          "description": "Checks recorded for this profile, one per same-sensor pairing that uses it. Result 'pending: no converted samples available' until Adobe DNG Converter samples exist.",
+          "description": "Checks recorded for this profile, one per same-sensor pairing that uses it (and one per pairing that was considered and rejected). The result starts with 'pass:' or 'fail:' and records the largest per-coefficient ColorMatrix difference, the tool and its version (docs/03).",
           "type": "array",
           "items": {
             "type": "object",

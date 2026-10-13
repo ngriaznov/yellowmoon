@@ -243,6 +243,13 @@ def check_registry(rep: Report, reg: dict, profile_ids: set[str]) -> None:
             rep.check(b["via"] == exact_body.get(b["profile"]), f"registry: {b['model']}: via {b['via']!r} is not the measured body of {b['profile']}")
     by_model = {b["model"]: b["model_id"] for b in reg["bodies"]}
     rep.check(reg["model_strings"] == by_model, "registry: model_strings disagree with bodies")
+    # sensor geometry (docs/algorithms/03 section 2.2): the fields come together and the pitch is plausible
+    for b in reg["bodies"]:
+        has = [k in b for k in ("sensor_width_mm", "active_width_px", "sensor_source", "sensor_source_kind")]
+        rep.check(all(has) or not any(has), f"registry: {b['model']}: incomplete sensor fields")
+        if all(has):
+            pitch = b.get("pixel_pitch_um", 1000.0 * b["sensor_width_mm"] / b["active_width_px"])
+            rep.check(0.5 <= pitch <= 20.0, f"registry: {b['model']}: pixel pitch {pitch:.3f} um outside 0.5 to 20")
     # the table in docs/03
     table = docs_table()
     if table:
@@ -250,6 +257,22 @@ def check_registry(rep: Report, reg: dict, profile_ids: set[str]) -> None:
         rep.check(ours == table, f"registry: differs from docs/03: only in registry {sorted(set(ours.items()) - set(table.items()))}, "
                                  f"only in docs {sorted(set(table.items()) - set(ours.items()))}")
         rep.check(len(table) >= 25, f"docs/03 table parse found only {len(table)} model IDs")
+
+
+def check_pairings(rep: Report, reg: dict, docs: dict[str, dict]) -> None:
+    """Every same-sensor pairing has a recorded numeric result within the limit; a rejected one is recorded as failed."""
+    for b in reg["bodies"]:
+        checks = docs.get(b["profile"], {}).get("provenance", {}).get("checks", [])
+        needle = f"{b['model']} ({b['model_id']})"
+        found = [c for c in checks if c["pairing"].startswith(needle)]
+        if b["match"] == "sensor_family":
+            rep.check(len(found) == 1, f"pairing {needle}: {len(found)} recorded checks, expected 1")
+            for c in found:
+                m = re.match(r"pass: max \|diff\| ([0-9.]+) per coefficient \(limit ([0-9.]+)\)", c["result"])
+                rep.check(m is not None and float(m.group(1)) <= float(m.group(2)), f"pairing {needle}: result {c['result'][:60]!r}")
+        else:
+            rep.check(not found or all(c["result"].startswith("fail:") for c in found),
+                      f"pairing {needle}: only a failed check may be recorded for a body that is not a sibling")
 
 
 def check_target(rep: Report) -> None:
@@ -267,11 +290,15 @@ def main() -> int:
     profile_files = sorted(paths.PROFILES_DIR.glob("*/profile.json"))
     rep.check(len(profile_files) == 11, f"expected 11 profile files, found {len(profile_files)}")
     ids = set()
+    docs: dict[str, dict] = {}
     for pf in profile_files:
         doc = json.loads(pf.read_text())
         ids.add(pf.parent.name)
+        docs[pf.parent.name] = doc
         check_profile(rep, pf, doc)
-    check_registry(rep, json.loads(paths.REGISTRY_JSON.read_text()), ids)
+    registry = json.loads(paths.REGISTRY_JSON.read_text())
+    check_registry(rep, registry, ids)
+    check_pairings(rep, registry, docs)
     check_target(rep)
 
     print(f"{len(profile_files)} profiles, registry and target: {rep.checked} checks")

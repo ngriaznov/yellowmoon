@@ -126,7 +126,9 @@ fn c9_grade(v: vec3<f32>, l: f32) -> vec3<f32> {
         o = o + w * (CU.bal1.x * E1 + CU.bal1.y * E2);
     }
     if ((CU.flags.x & 2u) != 0u) {
-        o = vec3<f32>(l) + (o - vec3<f32>(l)) * CU.grade0.z;
+        // Saturation is subtractive: about the brightest channel M, so M and neutrals stay put.
+        let m = max(o.x, max(o.y, o.z));
+        o = vec3<f32>(m) + (o - vec3<f32>(m)) * CU.grade0.z;
     }
     return o;
 }

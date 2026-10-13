@@ -27,6 +27,10 @@
 //! tie, the one that comes first. A photo whose settings are not exactly *Auto with that look at
 //! that intensity* is counted as adjusted, so a job in which three photos have another look says
 //! so instead of silently exporting them with the wrong one.
+//!
+//! Output sharpening (`--output-sharpening`, Detail › Sharpening › Output) is carried the same
+//! way: the amount most photos of the job have, written only when it is not the default 100, and a
+//! photo with another amount counts as adjusted.
 
 use std::path::{Path, PathBuf};
 
@@ -38,7 +42,7 @@ use ym_looks::library::LookId;
 use crate::export_queue::ExportJob;
 use crate::looks::LookService;
 use crate::session::Session;
-use crate::settings::DevelopSettings;
+use crate::settings::{DevelopSettings, OUTPUT_SHARPENING_DEFAULT};
 
 /// The command line tool's name.
 pub const COMMAND: &str = "ym";
@@ -98,11 +102,44 @@ pub fn command_look(settings: &[&DevelopSettings]) -> (LookId, f64) {
     )
 }
 
-/// How many of `settings` differ from *automatic development with this look at this intensity*.
+/// The output sharpening amount (percent) a command for these photos carries: the most common
+/// amount, the earliest on a tie, the default 100 for no photos.
+#[must_use]
+pub fn command_output_sharpening(settings: &[&DevelopSettings]) -> f64 {
+    let mut counts: Vec<(f64, usize)> = Vec::new();
+    for s in settings {
+        match counts.iter_mut().find(|(v, _)| *v == s.output_sharpening) {
+            Some(entry) => entry.1 += 1,
+            None => counts.push((s.output_sharpening, 1)),
+        }
+    }
+    let mut best: Option<&(f64, usize)> = None;
+    for entry in &counts {
+        if best.is_none_or(|b| entry.1 > b.1) {
+            best = Some(entry);
+        }
+    }
+    best.map_or(OUTPUT_SHARPENING_DEFAULT, |(v, _)| *v)
+}
+
+/// How many of `settings` differ from *automatic development with this look at this intensity*
+/// (and the default output sharpening).
 #[must_use]
 pub fn adjusted_photos(settings: &[&DevelopSettings], look: &LookId, intensity: f64) -> usize {
+    adjusted_photos_with(settings, look, intensity, OUTPUT_SHARPENING_DEFAULT)
+}
+
+/// [`adjusted_photos`] for a command that also carries an output sharpening amount.
+#[must_use]
+pub fn adjusted_photos_with(
+    settings: &[&DevelopSettings],
+    look: &LookId,
+    intensity: f64,
+    output_sharpening: f64,
+) -> usize {
     let mut plain = DevelopSettings::with_look(look.clone());
     plain.look_intensity = intensity;
+    plain.output_sharpening = output_sharpening;
     settings.iter().filter(|s| ***s != plain).count()
 }
 
@@ -203,6 +240,7 @@ pub fn build(
 ) -> CliPreview {
     let o = &job.options;
     let (look, intensity) = command_look(settings);
+    let output_sharpening = command_output_sharpening(settings);
     let look_word = {
         let slug = look.slug();
         let unambiguous = looks.is_some_and(|l| l.resolve(slug).is_ok_and(|id| id == look));
@@ -216,6 +254,12 @@ pub fn build(
     let mut flags = vec![format!("--look {look_word}")];
     if (intensity - 100.0).abs() > 1e-9 {
         flags.push(format!("--intensity {}", intensity_text(intensity)));
+    }
+    if (output_sharpening - OUTPUT_SHARPENING_DEFAULT).abs() > 1e-9 {
+        flags.push(format!(
+            "--output-sharpening {}",
+            intensity_text(output_sharpening)
+        ));
     }
     let format_word = match o.format {
         FormatKind::Jpeg => "jpeg",
@@ -289,7 +333,7 @@ pub fn build(
     };
     CliPreview {
         command: format!("{head} \\\n  {}", flags.join(" \\\n  ")),
-        adjusted_photos: adjusted_photos(settings, &look, intensity),
+        adjusted_photos: adjusted_photos_with(settings, &look, intensity, output_sharpening),
     }
 }
 
@@ -455,6 +499,62 @@ mod tests {
             None,
         );
         assert!(png.command.contains("--bits 16") && !png.command.contains("--quality"));
+    }
+
+    #[test]
+    fn output_sharpening_is_named_only_when_it_is_not_the_default() {
+        let paths = [
+            PathBuf::from("/a/one/DSC1.ARW"),
+            PathBuf::from("/a/one/DSC2.ARW"),
+            PathBuf::from("/a/one/DSC3.ARW"),
+        ];
+        let plain = with_look("neutral", 100.0);
+        let mut soft = plain.clone();
+        soft.output_sharpening = 35.0;
+        let mut off = plain.clone();
+        off.output_sharpening = 0.0;
+        // The default says nothing, and nothing is adjusted.
+        let p = build(
+            &paths,
+            &[&plain, &plain, &plain],
+            &job(ExportOptions::default()),
+            None,
+            None,
+        );
+        assert!(!p.command.contains("--output-sharpening"), "{}", p.command);
+        assert_eq!(p.adjusted_photos, 0);
+        // The amount most photos have is in the command; the others are adjusted.
+        let p = build(
+            &paths,
+            &[&soft, &soft, &plain],
+            &job(ExportOptions::default()),
+            None,
+            None,
+        );
+        assert!(
+            p.command.contains("--output-sharpening 35"),
+            "{}",
+            p.command
+        );
+        assert_eq!(p.adjusted_photos, 1);
+        // 0 is an amount like any other.
+        let p = build(
+            &paths,
+            &[&off, &off, &off],
+            &job(ExportOptions::default()),
+            None,
+            None,
+        );
+        assert!(p.command.contains("--output-sharpening 0"), "{}", p.command);
+        assert_eq!(p.adjusted_photos, 0);
+        // On a tie the first amount wins, as the look does.
+        assert_eq!(command_output_sharpening(&[&soft, &plain]), 35.0);
+        assert_eq!(command_output_sharpening(&[]), 100.0);
+        // Without the command's amount a photo with another amount is adjusted.
+        assert_eq!(
+            adjusted_photos(&[&soft], &LookId::builtin("neutral"), 100.0),
+            1
+        );
     }
 
     #[test]

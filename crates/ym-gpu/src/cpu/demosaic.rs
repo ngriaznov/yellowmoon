@@ -18,6 +18,17 @@
 //!   vertical colour-difference estimates are Wiener-smoothed with local statistics and fused with
 //!   weights inversely proportional to their estimated error variances. It is not a port of the
 //!   IPOL code and is not expected to be bit-comparable with it.
+//! * [`Method::AdaptiveRatio`]: the three-pass adaptive ratio demosaic of the raw-algorithms
+//!   package ([`adaptive_ratio`]). The algorithm itself works on the *unbalanced* mosaic, so
+//!   [`demosaic_with`] divides the balanced mosaic it is given by the gains first (the exact
+//!   inverse of R4) and takes the gains and the noise model through [`DemosaicInputs`] (see
+//!   below), unlike the three methods above.
+//! * [`Method::LogGuided`]: the log-guided fast demosaic of the raw-algorithms package
+//!   ([`log_guided`]), the all-float form. It works on the balanced mosaic like the classical
+//!   methods but reads the read noise of [`DemosaicInputs::noise`] to set its log offset. About
+//!   half the CPU time of Menon, a little below it in PSNR on the synthetic set (and well below on
+//!   photographs, `docs/algorithms/02-log-guided-demosaic.md` section 9): for previews and
+//!   thumbnails, not for export.
 //!
 //! # Licence notice for the Menon port
 //!
@@ -40,11 +51,31 @@
 //! All methods work for the four Bayer phases, mirror at the borders (parity-preserving), do not
 //! clip, and are tile-consistent with the halos in [`Method::halo`]. The output keeps the input's
 //! [`Placement`](super::Placement).
+//!
+//! # Inputs besides the mosaic (RA-02)
+//!
+//! [`demosaic_with`] takes [`DemosaicInputs`]: the R4 gains, the noise model on the 16-bit working
+//! scale ([`NoiseDn`](super::NoiseDn)) and optional lateral CA curves ([`CaCurves`]). The three
+//! methods above work on a balanced mosaic and ignore them, so `demosaic(m, method)` (unit
+//! gains, zero noise, no CA) and `demosaic_with(m, method, &inputs)` agree for them. Every
+//! method takes the *balanced* mosaic (the chain's R4/R5 output) and returns the balanced image;
+//! the adaptive ratio demosaic undoes R4 itself with `inputs.gains`
+//! (`docs/algorithms/INTEGRATION.md` section 4; with unit gains the division is the identity).
+//! The methods of the raw-algorithms package read the inputs: the adaptive ratio demosaic
+//! ([`adaptive_ratio`], `docs/algorithms/01-adaptive-ratio-demosaic.md`) and the log-guided
+//! demosaic ([`log_guided`], `docs/algorithms/02-log-guided-demosaic.md`). How the package fits
+//! the chain is in `docs/algorithms/INTEGRATION.md`.
 
 use rayon::prelude::*;
 
 use super::filters::{self, BAND_ROWS};
 use super::{CfaColor, Mosaic, RgbImage, mirror};
+
+pub mod adaptive_ratio;
+mod inputs;
+pub mod log_guided;
+
+pub use inputs::{CaCurveError, CaCurves, DemosaicInputError, DemosaicInputs, RadialCurve};
 
 /// A classical demosaic method.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -55,6 +86,16 @@ pub enum Method {
     Menon,
     /// Directional LMMSE colour-difference interpolation (after Zhang and Wu 2005).
     Lmmse,
+    /// Adaptive ratio demosaic (`docs/algorithms/01-adaptive-ratio-demosaic.md`,
+    /// [`adaptive_ratio`]): like every method it takes the *balanced* mosaic of R4/R5 and returns
+    /// the balanced image, but it reads the gains and the noise model of [`DemosaicInputs`]: the
+    /// gains undo R4 on the mosaic (the algorithm itself works on the unbalanced values), the
+    /// noise model sets its offsets and gates. See [`demosaic_with`].
+    AdaptiveRatio,
+    /// Log-guided fast demosaic (`docs/algorithms/02-log-guided-demosaic.md`), the all-float
+    /// form: for previews and thumbnails, not for export. Takes the balanced mosaic and reads the
+    /// read noise of [`DemosaicInputs::noise`].
+    LogGuided,
 }
 
 /// The default classical method: Menon, because the pipeline demosaics linear light, where Menon is
@@ -63,7 +104,13 @@ pub const DEFAULT_METHOD: Method = Method::Menon;
 
 impl Method {
     /// All methods.
-    pub const ALL: [Method; 3] = [Method::Bilinear, Method::Menon, Method::Lmmse];
+    pub const ALL: [Method; 5] = [
+        Method::Bilinear,
+        Method::Menon,
+        Method::Lmmse,
+        Method::AdaptiveRatio,
+        Method::LogGuided,
+    ];
 
     /// Receptive-field radius in pixels: output pixel `p` depends on mosaic pixels within this
     /// Chebyshev distance of `p`. Verified by the perturbation test in `tests/cpu_demosaic.rs`.
@@ -72,6 +119,8 @@ impl Method {
             Method::Bilinear => BILINEAR_HALO,
             Method::Menon => MENON_HALO,
             Method::Lmmse => LMMSE_HALO,
+            Method::AdaptiveRatio => ADAPTIVE_RATIO_HALO,
+            Method::LogGuided => LOG_GUIDED_HALO,
         }
     }
 
@@ -81,7 +130,15 @@ impl Method {
             Method::Bilinear => "bilinear",
             Method::Menon => "menon",
             Method::Lmmse => "lmmse",
+            Method::AdaptiveRatio => "adaptive_ratio",
+            Method::LogGuided => "log_guided",
         }
+    }
+
+    /// The method whose [`name`](Self::name) is `name` (lower case, as `name` writes it), or
+    /// `None`.
+    pub fn from_name(name: &str) -> Option<Method> {
+        Method::ALL.into_iter().find(|m| m.name() == name)
     }
 }
 
@@ -91,23 +148,67 @@ pub const BILINEAR_HALO: usize = 1;
 pub const MENON_HALO: usize = 8;
 /// Receptive-field radius of [`lmmse`].
 pub const LMMSE_HALO: usize = 8;
+/// Halo of [`adaptive_ratio`]: the spec's maximum (13 with shadow matching; 11 without, and the
+/// exact reach is 10 and 12), so a tile that carries it is right in either configuration.
+pub const ADAPTIVE_RATIO_HALO: usize = adaptive_ratio::HALO_MAX_PX;
+/// Receptive-field radius of the log-guided demosaic ([`log_guided::HALO_PX`], spec section 1.4).
+pub const LOG_GUIDED_HALO: usize = log_guided::HALO_PX;
 
 /// Demosaics `m` with `method`, in parallel bands (`halo` rows of context per band).
+///
+/// Same as [`demosaic_with`] with [`DemosaicInputs::default`]: unit gains, zero noise, no CA.
 pub fn demosaic(m: &Mosaic, method: Method) -> RgbImage {
+    demosaic_with(m, method, &DemosaicInputs::default())
+}
+
+/// Demosaics `m` with `method` and the per-frame `inputs`, in parallel bands (`halo` rows of
+/// context per band).
+///
+/// `m` is the *balanced* mosaic, the R4 (and R5) output, for every method, and the result is
+/// balanced. The inputs are read by the methods that need them (see the module documentation);
+/// Bilinear, Menon and LMMSE ignore them. The function cannot fail: callers that take the gains
+/// or the noise model from outside check them with [`DemosaicInputs::validate`] first.
+///
+/// [`Method::AdaptiveRatio`] works on the unbalanced mosaic, so it divides every photosite of `m`
+/// by `inputs.gains` of its colour first (`g0`, the exact inverse of R4:
+/// [`adaptive_ratio::demosaic_balanced`]) and returns the balanced image. It runs its own band
+/// layout (which computes only the core rows of each band). For input it refuses (a non-finite
+/// photosite, unusable gains or noise; see [`adaptive_ratio::Error`]) the result is Menon's on the
+/// same balanced mosaic.
+pub fn demosaic_with(m: &Mosaic, method: Method, inputs: &DemosaicInputs<'_>) -> RgbImage {
     if m.width < 2 || m.height < 2 {
         return bilinear(m);
     }
+    if method == Method::AdaptiveRatio {
+        return adaptive_ratio::demosaic_balanced(m, inputs, &adaptive_ratio::Params::default())
+            .unwrap_or_else(|_| demosaic_with(m, Method::Menon, inputs));
+    }
     filters::run_mosaic_bands(m, method.halo(), BAND_ROWS, |band| {
-        demosaic_whole(band, method)
+        demosaic_whole_with(band, method, inputs)
     })
 }
 
 /// Demosaics a buffer as one piece (no banding). The reference the banded runner must match.
+///
+/// Same as [`demosaic_whole_with`] with [`DemosaicInputs::default`].
 pub fn demosaic_whole(m: &Mosaic, method: Method) -> RgbImage {
+    demosaic_whole_with(m, method, &DemosaicInputs::default())
+}
+
+/// [`demosaic_whole`] with the per-frame `inputs`: one piece, no banding.
+pub fn demosaic_whole_with(m: &Mosaic, method: Method, inputs: &DemosaicInputs<'_>) -> RgbImage {
     match method {
         Method::Bilinear => bilinear(m),
         Method::Menon => menon(m, true),
         Method::Lmmse => lmmse(m),
+        // See `demosaic_with` for the division by the gains and the fallback.
+        Method::AdaptiveRatio => {
+            adaptive_ratio::demosaic_balanced_whole(m, inputs, &adaptive_ratio::Params::default())
+                .unwrap_or_else(|_| menon(m, true))
+        }
+        // The balanced mosaic goes in as it is; only the read noise of the inputs is used (the
+        // gains and the CA curves belong to the adaptive ratio demosaic).
+        Method::LogGuided => log_guided::demosaic(m, inputs.noise),
     }
 }
 
@@ -734,7 +835,19 @@ mod tests {
                         }
                     }
                 }
-                assert!(worst < 2e-3, "{method:?} {}: {worst}", cfa.name());
+                // The adaptive ratio demosaic weights its neighbours by cost and, where a colour
+                // is not dominant over green, penalises high-chroma samples (spec 01 sections
+                // 3.4.2 and 3.4.3). On a ramp whose chroma changes steadily that makes the two
+                // sides of an interpolation unequal, so red and blue at the other sites are off
+                // by up to 1.5 % of the range (0.0152, 0.0119, 0.0120 and 0.0155 for the four
+                // phases; the C++ oracle gives the same numbers). Green and the measured samples
+                // are exact.
+                let tolerance = if method == Method::AdaptiveRatio {
+                    2.5e-2
+                } else {
+                    2e-3
+                };
+                assert!(worst < tolerance, "{method:?} {}: {worst}", cfa.name());
             }
         }
     }
@@ -753,6 +866,16 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    #[test]
+    fn a_method_is_found_by_its_name() {
+        for method in Method::ALL {
+            assert_eq!(Method::from_name(method.name()), Some(method));
+        }
+        for wrong in ["", "Menon", "adaptive-ratio", "adaptive_ratio ", "nope"] {
+            assert_eq!(Method::from_name(wrong), None, "{wrong:?}");
         }
     }
 

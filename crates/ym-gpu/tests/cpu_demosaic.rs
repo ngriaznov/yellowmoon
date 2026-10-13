@@ -9,13 +9,19 @@
 //!   `testdata/demosaic/{kodak,mcmaster}` by `tools/fetch/demosaic-sets.sh` (pinned commits, SHA-256 checked; override the root
 //!   with `YM_TESTDATA`); run with
 //!   `cargo test -p ym-gpu --test cpu_demosaic --release -- --ignored --nocapture`.
+//!
+//! The RA-05 gate of the R6 default (linear light at signal scales 1, 0.1 and 0.01, zipper and
+//! false-colour metrics, noisy inputs, CPU time per 50 MP) is `examples/ra05_gate.rs` and
+//! `examples/ra05_timing.rs`, run by `tools/eval/demosaic/gate.sh`; its metrics are tested in
+//! `tests/cpu_demosaic_metrics.rs`.
 
 use std::path::{Path, PathBuf};
 
-use ym_gpu::cpu::demosaic::{self, Method};
+use ym_gpu::cpu::demosaic::{self, DemosaicInputs, Method};
 use ym_gpu::cpu::metrics::psnr;
 use ym_gpu::cpu::synth;
-use ym_gpu::cpu::{Cfa, Mosaic, RgbImage};
+use ym_gpu::cpu::{Cfa, Mosaic, NoiseDn, RgbImage};
+use ym_noise::model::NoiseModel;
 
 fn fixtures() -> serde_json::Value {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/cpu_data/menon_fixtures.json");
@@ -94,11 +100,22 @@ fn receptive_fields_are_within_the_declared_halos() {
             "{method:?}: measured {worst} > declared {}",
             method.halo()
         );
-        assert!(
-            worst + 2 >= method.halo(),
-            "{method:?}: declared halo {} is far above the measured {worst}",
-            method.halo()
-        );
+        // The adaptive ratio demosaic declares the spec's maximum (13, with shadow matching), and
+        // this test runs it with unit gains and a zero noise model: plain, with the shadow gate
+        // closed. Its reach in each configuration is measured in `tests/cpu_adaptive_ratio.rs`.
+        if method == Method::AdaptiveRatio {
+            // Still a lower bound, so that a perturbation that stopped reaching anything shows.
+            assert!(
+                worst >= 6,
+                "{method:?}: the perturbation test saw only {worst} px"
+            );
+        } else {
+            assert!(
+                worst + 2 >= method.halo(),
+                "{method:?}: declared halo {} is far above the measured {worst}",
+                method.halo()
+            );
+        }
     }
 }
 
@@ -118,48 +135,91 @@ fn synthetic_set() -> Vec<(&'static str, RgbImage)> {
     ]
 }
 
-/// PSNR (dB) of each method on one ground-truth image, border of 10 px excluded.
-fn psnr_row(truth: &RgbImage) -> [f64; 3] {
-    let m = mosaic_of(truth);
-    let mut row = [0.0; 3];
-    for (i, method) in Method::ALL.iter().enumerate() {
-        row[i] = psnr(&demosaic::demosaic(&m, *method), truth, 10, 1.0);
+/// The nominal low-noise model of `docs/algorithms/01-adaptive-ratio-demosaic.md` section 6.3
+/// (`a = 2e-5`, `b = 1e-8`, `q = 1 / 65535`) with unit gains. The adaptive ratio demosaic derives
+/// its offsets K and T from the noise model, so its PSNR depends on it; with the zero model that
+/// `demosaic()` passes, K = T = 1 DN (pure ratio interpolation) is not its operating point.
+fn nominal_inputs() -> DemosaicInputs<'static> {
+    DemosaicInputs {
+        gains: [1.0; 3],
+        noise: NoiseDn::from_model(&NoiseModel {
+            a: 2e-5,
+            b: 1e-8,
+            delta: [0.0; 4],
+            sigma_row: 0.0,
+            q: 1.0 / 65535.0,
+        }),
+        ca: None,
     }
-    row
+}
+
+/// PSNR (dB) of each method of `Method::ALL` (in that order) on one ground-truth image, border of
+/// 10 px excluded. The adaptive ratio demosaic runs with [`nominal_inputs`]; the others do not
+/// read the noise model.
+fn psnr_row(truth: &RgbImage) -> Vec<f64> {
+    let m = mosaic_of(truth);
+    Method::ALL
+        .iter()
+        .map(|method| {
+            let out = if *method == Method::AdaptiveRatio {
+                demosaic::demosaic_with(&m, *method, &nominal_inputs())
+            } else {
+                demosaic::demosaic(&m, *method)
+            };
+            psnr(&out, truth, 10, 1.0)
+        })
+        .collect()
+}
+
+/// The header line of the PSNR tables: one column per method of `Method::ALL`.
+fn psnr_header() -> String {
+    let mut line = format!("{:<16}", "image");
+    for method in Method::ALL {
+        line.push_str(&format!(" {:>10}", method.name()));
+    }
+    line
+}
+
+/// One line of the PSNR tables.
+fn psnr_line(name: &str, row: &[f64]) -> String {
+    let mut line = format!("{name:<16}");
+    for v in row {
+        line.push_str(&format!(" {v:>10.2}"));
+    }
+    line
+}
+
+/// Index of `method` in `Method::ALL` (the column of `psnr_row`).
+fn column(method: Method) -> usize {
+    Method::ALL
+        .iter()
+        .position(|&m| m == method)
+        .expect("a method of Method::ALL")
 }
 
 #[test]
 fn psnr_on_synthetic_images() {
-    println!(
-        "{:<16} {:>9} {:>9} {:>9}",
-        "image", "bilinear", "menon", "lmmse"
-    );
-    let mut mean = [0.0; 3];
+    println!("{}", psnr_header());
+    let mut mean = vec![0.0; Method::ALL.len()];
     let set = synthetic_set();
     for (name, img) in &set {
         let row = psnr_row(img);
-        println!("{name:<16} {:>9.2} {:>9.2} {:>9.2}", row[0], row[1], row[2]);
-        for i in 0..3 {
-            mean[i] += row[i] / set.len() as f64;
+        println!("{}", psnr_line(name, &row));
+        for (m, v) in mean.iter_mut().zip(&row) {
+            *m += v / set.len() as f64;
         }
     }
-    println!(
-        "{:<16} {:>9.2} {:>9.2} {:>9.2}",
-        "mean", mean[0], mean[1], mean[2]
-    );
-    // Both directional methods beat bilinear on average over the procedural set.
-    assert!(
-        mean[1] > mean[0] + 1.0,
-        "menon {} vs bilinear {}",
-        mean[1],
-        mean[0]
-    );
-    assert!(
-        mean[2] > mean[0] + 1.0,
-        "lmmse {} vs bilinear {}",
-        mean[2],
-        mean[0]
-    );
+    println!("{}", psnr_line("mean", &mean));
+    // The directional methods beat bilinear on average over the procedural set.
+    let bilinear = mean[column(Method::Bilinear)];
+    for method in [Method::Menon, Method::Lmmse, Method::AdaptiveRatio] {
+        let got = mean[column(method)];
+        assert!(
+            got > bilinear + 1.0,
+            "{} {got} vs bilinear {bilinear}",
+            method.name()
+        );
+    }
 }
 
 fn load_png(path: &Path) -> RgbImage {
@@ -230,21 +290,15 @@ fn psnr_on_kodak_and_mcmaster() {
             continue;
         }
         println!("== {set}: {} images", images.len());
-        println!(
-            "{:<16} {:>9} {:>9} {:>9}",
-            "image", "bilinear", "menon", "lmmse"
-        );
-        let mut mean = [0.0; 3];
+        println!("{}", psnr_header());
+        let mut mean = vec![0.0; Method::ALL.len()];
         for (name, img) in &images {
             let row = psnr_row(img);
-            println!("{name:<16} {:>9.2} {:>9.2} {:>9.2}", row[0], row[1], row[2]);
-            for i in 0..3 {
-                mean[i] += row[i] / images.len() as f64;
+            println!("{}", psnr_line(name, &row));
+            for (m, v) in mean.iter_mut().zip(&row) {
+                *m += v / images.len() as f64;
             }
         }
-        println!(
-            "{:<16} {:>9.2} {:>9.2} {:>9.2}",
-            "mean", mean[0], mean[1], mean[2]
-        );
+        println!("{}", psnr_line("mean", &mean));
     }
 }

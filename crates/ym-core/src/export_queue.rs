@@ -446,14 +446,16 @@ impl ExportQueue {
         );
         let settings: Vec<&DevelopSettings> = views.iter().map(|v| &v.settings).collect();
         let (command_look, command_intensity) = crate::cli_preview::command_look(&settings);
+        let command_output_sharpening = crate::cli_preview::command_output_sharpening(&settings);
         let looks = self.ctx.renderer().looks();
         ExportEstimate {
             bytes: est.bytes,
             seconds: est.seconds,
-            adjusted_photos: crate::cli_preview::adjusted_photos(
+            adjusted_photos: crate::cli_preview::adjusted_photos_with(
                 &settings,
                 &command_look,
                 command_intensity,
+                command_output_sharpening,
             ),
             dng_unavailable: views.iter().any(|v| {
                 looks

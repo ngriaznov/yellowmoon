@@ -278,6 +278,7 @@ export function defaultSettings(look: LookId = NEUTRAL): DevelopSettings {
     color_balance: { shadows: [0, 0], midtones: [0, 0], highlights: [0, 0] },
     saturation: 0,
     sharpen: { kind: "auto" },
+    output_sharpening: 100,
     noise_reduction: { kind: "auto" },
     curve: {
       luma: [[0, 0], [1, 1]],
@@ -314,6 +315,7 @@ export function clampSettings(s: DevelopSettings): DevelopSettings {
     white: pct(s.white),
     black: pct(s.black),
     saturation: pct(s.saturation),
+    output_sharpening: clamp(s.output_sharpening, 0, 200),
     rolloff: { highlights: clamp(s.rolloff.highlights, 0, 1), low_light: clamp(s.rolloff.low_light, 0, 1) },
     color_balance: {
       shadows: unitDisc(s.color_balance.shadows),

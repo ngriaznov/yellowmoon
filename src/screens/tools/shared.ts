@@ -28,5 +28,8 @@ export function manualOrAuto<M extends object>(manual: M, auto: M): AutoOr<M> {
 /** The reset of `docs/11`: Auto for these fields. */
 export const AUTO = { kind: "auto" } as const;
 
+/** The default of Detail › Sharpening › Output, in percent (`DevelopSettings.output_sharpening`). */
+export const OUTPUT_SHARPENING_DEFAULT = 100;
+
 /** Shows a tint: "0", "+4", "−3" (with a true minus). The automatic tint is not a whole number: 0.3 reads "0", not "+0". */
 export const tintLabel = (tint: number): string => formats.signed(tint);

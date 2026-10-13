@@ -14,6 +14,12 @@
 //! test says so and passes, unless `YM_REQUIRE_PARITY_BIN` is set (the CI job sets it).
 //!
 //! `YM_BIN=$PWD/target/debug/ym cargo test -p yellowmoon-app --test app_cli_parity`
+//!
+//! The R6 demosaic method forced (RA-04, `docs/algorithms/01-adaptive-ratio-demosaic.md` section 10): the second test
+//! gives the app's renderer `RenderOptions::demosaic = adaptive_ratio` and starts `ym` with `YM_FORCE_DEMOSAIC=adaptive_ratio`.
+//! That variable is read only by a `ym` built with the test-only `force-demosaic` feature, so the binary for this test must be
+//! built `cargo build -p ym-cli --features force-demosaic` (a plain build ignores the variable: the test notices that, says so
+//! and passes, unless `YM_REQUIRE_FORCE_DEMOSAIC` is set, which the CI job sets once it builds the binary that way).
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -25,6 +31,7 @@ use ym_core::session::{ApplyScope, OpenOptions};
 use ym_export::{
     BitDepth, ColorSpace, ExportOptions, FormatKind, JpegQuality, Size, TiffCompression,
 };
+use ym_gpu::cpu::demosaic::{DEFAULT_METHOD, Method};
 use ym_raw::testgen::{ArwBuilder, gradient_mosaic};
 
 /// The `ym` binary under test, or `None` (with a message) when `YM_BIN` is not set.
@@ -161,13 +168,15 @@ fn cases() -> Vec<Case> {
     ]
 }
 
-/// Exports `arw` once with the app's path and once with `ym render`, and returns the two lists of files.
+/// Exports `arw` once with the app's path and once with `ym render` (started with the extra
+/// environment `env`), and returns the two lists of files.
 fn export_both(
     core: &Core,
     ym: &Path,
     arw: &Path,
     root: &Path,
     case: &Case,
+    env: &[(&str, &str)],
 ) -> (Vec<PathBuf>, Vec<PathBuf>) {
     let app_dir = root.join("app").join(case.name);
     let job = ExportJob {
@@ -191,6 +200,7 @@ fn export_both(
         .arg("render")
         .arg(arw)
         .args(case.flags)
+        .envs(env.iter().copied())
         .arg("--out")
         .arg(&cli_dir)
         .env("YELLOWMOON_HOME", root.join("cli-home"))
@@ -214,11 +224,8 @@ fn export_both(
     (summary.files, from_cli)
 }
 
-#[test]
-fn every_format_is_byte_identical_between_the_app_graph_and_a_separately_built_ym() {
-    let Some(ym) = command_line_tool() else {
-        return;
-    };
+/// The sandbox of one test: a folder with one synthetic photo and the CLI's home folder.
+fn sandbox() -> (tempfile::TempDir, PathBuf) {
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
     std::fs::create_dir_all(root.join("photos")).expect("photos");
@@ -227,21 +234,38 @@ fn every_format_is_byte_identical_between_the_app_graph_and_a_separately_built_y
     ArwBuilder::new("ILCE-7RM4", 160, 120)
         .write_to(&arw, &gradient_mosaic(160, 120, 512, 16_000, 11))
         .expect("write a synthetic ARW");
+    (dir, arw)
+}
 
-    // The app's side: a core over its own app folder, with one photo open and developed. No thumbnails, as in the CLI.
+/// The app's side: a core over its own app folder, with one photo open and developed, whose
+/// full-resolution renders use the R6 demosaic `method`. No thumbnails, as in the CLI.
+fn open_core(arw: &Path, method: Method) -> (Core, tempfile::TempDir) {
     let app_home = tempfile::tempdir().expect("app home");
     let mut options = CoreOptions::new(data_dir(), app_home.path().to_path_buf());
     options.thumbnails = false;
+    options.render.demosaic = method;
     let core = Core::open(options).expect("core");
-    let outcome = core
-        .session
-        .open(std::slice::from_ref(&arw), OpenOptions::default());
+    let outcome = core.session.open(
+        std::slice::from_ref(&arw.to_path_buf()),
+        OpenOptions::default(),
+    );
     assert_eq!(outcome.added.len(), 1, "{outcome:?}");
     assert!(
         core.session.wait_idle(Duration::from_secs(120)),
         "the photo develops"
     );
+    (core, app_home)
+}
 
+/// Every case of [`cases`] through the app and through `ym` (with `env` added to its environment),
+/// byte for byte.
+fn assert_every_format_is_identical(
+    core: &Core,
+    ym: &Path,
+    arw: &Path,
+    root: &Path,
+    env: &[(&str, &str)],
+) {
     let cases = cases();
     assert_eq!(
         cases.len(),
@@ -249,7 +273,7 @@ fn every_format_is_byte_identical_between_the_app_graph_and_a_separately_built_y
         "JPEG (2), TIFF (5), PNG (3) and DNG, as in crates/ym-cli/tests/parity.rs"
     );
     for case in &cases {
-        let (from_app, from_cli) = export_both(&core, &ym, &arw, root, case);
+        let (from_app, from_cli) = export_both(core, ym, arw, root, case, env);
         assert_eq!(
             from_app.len(),
             1,
@@ -283,4 +307,72 @@ fn every_format_is_byte_identical_between_the_app_graph_and_a_separately_built_y
             c.len()
         );
     }
+}
+
+#[test]
+fn every_format_is_byte_identical_between_the_app_graph_and_a_separately_built_ym() {
+    let Some(ym) = command_line_tool() else {
+        return;
+    };
+    let (dir, arw) = sandbox();
+    let (core, _app_home) = open_core(&arw, DEFAULT_METHOD);
+    assert_every_format_is_identical(&core, &ym, &arw, dir.path(), &[]);
+}
+
+/// The same with the adaptive ratio demosaic forced on both sides.
+#[test]
+fn every_format_is_byte_identical_with_the_adaptive_ratio_demosaic_forced() {
+    let Some(ym) = command_line_tool() else {
+        return;
+    };
+    let (dir, arw) = sandbox();
+    let force = [("YM_FORCE_DEMOSAIC", "adaptive_ratio")];
+
+    // Does this `ym` read the switch? A binary without the `force-demosaic` feature ignores the
+    // variable and gives the default method's bytes.
+    let probe = |name: &str, env: &[(&str, &str)]| {
+        let out = dir.path().join("probe").join(name);
+        let output = Command::new(&ym)
+            .args(["render"])
+            .arg(&arw)
+            .args(["--format", "png", "--bits", "16", "--out"])
+            .arg(&out)
+            .envs(env.iter().copied())
+            .env("YELLOWMOON_HOME", dir.path().join("cli-home"))
+            .env("YELLOWMOON_DATA", data_dir())
+            .env("HOME", dir.path())
+            .env_remove("RUST_LOG")
+            .env_remove("XDG_DATA_HOME")
+            .current_dir(dir.path())
+            .output()
+            .expect("run ym");
+        assert!(
+            output.status.success(),
+            "probe {name}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let file = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .next()
+            .map(PathBuf::from)
+            .expect("one file");
+        std::fs::read(file).expect("read the probe's file")
+    };
+    let plain = probe("plain", &[]);
+    let forced = probe("forced", &force);
+    if plain == forced {
+        assert!(
+            std::env::var_os("YM_REQUIRE_FORCE_DEMOSAIC").is_none(),
+            "YM_REQUIRE_FORCE_DEMOSAIC is set but this ym ignores YM_FORCE_DEMOSAIC \
+             (build it with `cargo build -p ym-cli --features force-demosaic`)"
+        );
+        eprintln!(
+            "skipped: this ym was built without the test-only force-demosaic feature \
+             (cargo build -p ym-cli --features force-demosaic)"
+        );
+        return;
+    }
+
+    let (core, _app_home) = open_core(&arw, Method::AdaptiveRatio);
+    assert_every_format_is_identical(&core, &ym, &arw, dir.path(), &force);
 }

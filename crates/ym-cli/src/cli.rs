@@ -135,7 +135,7 @@ pub struct RenderArgs {
     /// Light preset instead of the estimated light.
     #[arg(long, value_enum, ignore_case = true, value_name = "LIGHT", help_heading = H_COLOR)]
     pub light: Option<LightArg>,
-    /// Saturation, -100 to 100.
+    /// Saturation, -100 to 100 (subtractive: more makes colours denser and darker, less makes them paler).
     #[arg(long, value_name = "N", value_parser = signed_percent, allow_negative_numbers = true, help_heading = H_COLOR)]
     pub saturation: Option<f64>,
 
@@ -145,6 +145,10 @@ pub struct RenderArgs {
     /// Sharpening: `auto`, or amount (0 to 300) and radius in pixels (0.3 to 2.5).
     #[arg(long, value_name = "auto|AMOUNT,RADIUS", value_parser = sharpen, help_heading = H_DETAIL)]
     pub sharpen: Option<SharpenArg>,
+    /// Output sharpening, 0 to 200 percent (default 100, 0 is off). It sharpens JPEG, TIFF and PNG
+    /// files at the size they are written, after the resize; a DNG is never sharpened.
+    #[arg(long, value_name = "PERCENT", value_parser = output_sharpening, allow_negative_numbers = true, help_heading = H_DETAIL)]
+    pub output_sharpening: Option<f64>,
 
     /// Use the classical demosaic instead of the learned one.
     #[arg(long, help_heading = H_RAW)]
@@ -449,6 +453,10 @@ fn sharpen(text: &str) -> Result<SharpenArg, String> {
     })
 }
 
+fn output_sharpening(text: &str) -> Result<f64, String> {
+    in_range(text, "the output sharpening", 0.0, 200.0)
+}
+
 fn rolloff(text: &str) -> Result<RolloffArg, String> {
     let p = parts(text, 2, "`HIGHLIGHTS,LOW-LIGHT`")?;
     Ok(RolloffArg {
@@ -644,6 +652,12 @@ mod tests {
                 radius_px: 1.2
             })
         );
+        assert_eq!(output_sharpening("0"), Ok(0.0));
+        assert_eq!(output_sharpening(" 35 "), Ok(35.0));
+        assert_eq!(output_sharpening("200"), Ok(200.0));
+        for bad in ["-1", "200.5", "300", "nan", "inf", "much", ""] {
+            assert!(output_sharpening(bad).is_err(), "{bad:?}");
+        }
         assert!(rolloff("0.5").is_err() && rolloff("0.5,1.5").is_err());
         assert!(bits("12").is_err());
         assert_eq!(bits("16"), Ok(BitDepth::Sixteen));

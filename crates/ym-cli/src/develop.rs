@@ -57,6 +57,8 @@ pub struct Overrides {
     pub nr: Option<NrArg>,
     /// `--sharpen`.
     pub sharpen: Option<SharpenArg>,
+    /// `--output-sharpening`.
+    pub output_sharpening: Option<f64>,
     /// `--no-neural`.
     pub no_neural: bool,
     /// `--no-highlight-recovery`.
@@ -88,6 +90,7 @@ impl Overrides {
             light: args.light,
             nr: args.nr,
             sharpen: args.sharpen,
+            output_sharpening: args.output_sharpening,
             no_neural: args.no_neural,
             no_highlight_recovery: args.no_highlight_recovery,
             no_lens: args.no_lens,
@@ -109,6 +112,7 @@ impl Overrides {
             white: self.white,
             black: self.black,
             saturation: self.saturation,
+            output_sharpening: self.output_sharpening,
             ..SettingsPatch::default()
         };
         p.exposure = match (self.exposure, self.exposure_offset) {
@@ -659,5 +663,33 @@ mod tests {
         let decode = p.decode.expect("decode patch");
         assert_eq!(decode.chromatic_aberration, Some(false));
         assert_eq!(decode.neural_demosaic, None);
+    }
+
+    #[test]
+    fn the_output_sharpening_option_is_a_plain_number_patch() {
+        let o = Overrides {
+            output_sharpening: Some(35.0),
+            ..Overrides::default()
+        };
+        assert!(!o.is_empty());
+        let p = o.patch(0.0);
+        assert_eq!(p.output_sharpening, Some(35.0));
+        let mut s = DevelopSettings::default();
+        s.apply_patch(&p, None).expect("applies");
+        assert_eq!(s.output_sharpening, 35.0);
+        // Without the option the patch says nothing and the default 100 stands.
+        let none = Overrides::default().patch(0.0);
+        assert_eq!(none.output_sharpening, None);
+        let mut d = DevelopSettings::default();
+        d.apply_patch(&none, None).expect("applies");
+        assert_eq!(d.output_sharpening, 100.0);
+        // A settings file may carry it too, and the option wins over it.
+        let loaded = SettingsFile::parse(r#"{"output_sharpening": 60}"#, &neutral()).expect("file");
+        let SettingsFile::Global(mut from_file) = loaded.file else {
+            panic!("global");
+        };
+        assert_eq!(from_file.output_sharpening, 60.0);
+        from_file.apply_patch(&p, None).expect("applies");
+        assert_eq!(from_file.output_sharpening, 35.0);
     }
 }

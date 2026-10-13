@@ -7,6 +7,14 @@
 //!   roll-off and toe, C8 LogC4, C9 grade, C10 CDL and tetrahedral LUT, C11 curves, C12 ACES 2 or an
 //!   ARRI display LUT, C13 encode and dither), mirroring `ym_color::display::ColorChain` stage by
 //!   stage.
+//! * [`diffraction`]: the RA-09 R8 diffraction deconvolution (nine passes of `diffraction.wgsl`,
+//!   f32 planes in every storage mode, the planner stays on the CPU), GPU against
+//!   `cpu::sharpen::diffraction`.
+//! * [`log_guided`]: the RA-09 log-guided fast demosaic (all-float form, four dispatches), GPU
+//!   against `cpu::demosaic::log_guided::demosaic_float`.
+//! * [`output_sharpen`]: the RA-09 output sharpening stage (luma unsharp mask with three threshold
+//!   methods and the halo limiter), eight passes of `output_sharpen.wgsl`, f32 planes in every
+//!   storage mode, GPU against `cpu::output_sharpen`.
 //!
 //! WGSL sources are generated at start-up: the storage mode of the device decides how f16 image data
 //! is declared and accessed ([`StorageMode`]), and the constants (LogC, gamut matrices, grade
@@ -14,6 +22,9 @@
 //! [`shader_source`] returns the final text for offline validation.
 
 pub mod color;
+pub mod diffraction;
+pub mod log_guided;
+pub mod output_sharpen;
 pub mod raw;
 pub mod spike;
 

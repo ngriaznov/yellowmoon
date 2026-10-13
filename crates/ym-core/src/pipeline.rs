@@ -18,6 +18,7 @@
 //! | Colour | C1 to C8 | [`color::ColorPlan`] (fused matrix, tone) | light, white balance, pick, exposure, roll-off |
 //! | Grade | C9 to C13 | [`color::GradePlan`] (the prepared `ColorChain`) | everything else, and the colour key |
 //! | Geometry | crop, straighten, orientation | nothing: applied when sampling | `crop`, `orientation` |
+//! | Output | output sharpening of the finished picture, then C13 | the display-linear frame of a view ([`frame`] module documentation) | `output_sharpening` (and every group above) |
 //!
 //! The raw group is the expensive one (seconds at full resolution); the others are matrices and
 //! tables. Colour and grade work per pixel, so a colour edit re-runs one pass over the viewport's

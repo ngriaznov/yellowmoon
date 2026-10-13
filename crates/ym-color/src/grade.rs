@@ -11,7 +11,7 @@
 //! | Brightness `b` | -100..100 | `v += (b / 100) S bump(L; g, 2.5 S)` |
 //! | Shadows, Highlights, Black, White | -100..100 | `v += (x / 100) 1.5 S bump(L; centre, 1.5 S)`, centres at grey -3, +3, -6, +6 stops |
 //! | Colour balance (shadows, midtones, highlights) | `(a, b)` in the unit disc | `v += 0.03 (a e1 + b e2) zone(L)` |
-//! | Saturation `s` | -100..100 | `v = L + (v - L) (1 + s / 100)` |
+//! | Saturation `s` | -100..100 | `v = M + (v - M) (1 + s / 100)`, `M = max(r, g, b)` of the pixel at this point |
 //!
 //! with `bump(L; mu, sigma) = exp(-(L - mu)^2 / (2 sigma^2))`, `e1 = (1, -1/2, -1/2) / sqrt(1.5)` and
 //! `e2 = (0, 1, -1) / sqrt(2)`. All constants are starting values (`docs/02`).
@@ -24,6 +24,14 @@
 //! * **Zone shape.** `zone(L)` is `bump(L; centre, ZONE_SIGMA)` with `ZONE_SIGMA = 1.5 S`, centred at
 //!   -3, 0 and +3 stops. The zones are Gaussian bumps, not a partition of unity, so colour balance
 //!   leaves the extremes of the range alone.
+//! * **Saturation is subtractive.** The pivot is `M`, the brightest channel of the pixel after the
+//!   controls above it (owner's decision of 2026-10-13, `docs/16`), not the luma `L`. More
+//!   saturation makes a colour denser and darker, less makes it paler and lighter, and the brightest
+//!   channel and every neutral pixel stay where they are. At `s = -100` every channel equals `M`
+//!   (a neutral at the pixel's brightest channel). Saturation does not clamp, as nothing else in C9
+//!   does: a channel that goes below LogC4 black at `s > 0` is passed on as it is (C8 and the DRT
+//!   take negatives). The ASC CDL saturation inside looks (C10, Rec.709 weights) is a standard and
+//!   is not changed.
 //! * **Sign.** For Shadows, Highlights, Black and White a positive value raises the pixel (brighter),
 //!   a negative value lowers it. Positive brightness brightens.
 //! * Out-of-range control values are clamped to their range; a colour-balance vector longer than 1
@@ -34,8 +42,10 @@
 //! * *Per pixel, in the control value:* contrast moves `v` away from `g` more the higher the value
 //!   (for `v > g` the output is non-decreasing in `c`, for `v < g` non-increasing). Brightness,
 //!   Shadows, Highlights, Black and White add a non-negative bump times the control, so every
-//!   output channel is non-decreasing in the control. Saturation scales the distance from `L` by a
-//!   non-decreasing factor, so `|v - L|` is non-decreasing in `s`. Colour balance displaces `v` by
+//!   output channel is non-decreasing in the control. Saturation scales `v - M` by a
+//!   non-decreasing factor, so `|v - M|` is non-decreasing in `s` for every channel; `M` and neutral
+//!   pixels are unchanged, and for `s > 0` each non-maximum channel goes down (for `s < 0`, up
+//!   toward `M`). Colour balance displaces `v` by
 //!   `0.03 r zone(L)` along a fixed direction, so the displacement length is non-decreasing in the
 //!   radius `r`.
 //! * *As a tone map on a neutral ramp:* with one control moved over its full range, the output for
@@ -239,10 +249,11 @@ impl Grade {
                 }
             }
         }
-        // 5. Saturation about L.
+        // 5. Saturation, subtractive: about the brightest channel M, so M and neutrals stay put.
         if self.saturation_gain != 1.0 {
+            let m = out[0].max(out[1]).max(out[2]);
             for c in &mut out {
-                *c = l + (*c - l) * self.saturation_gain;
+                *c = m + (*c - m) * self.saturation_gain;
             }
         }
         LogC4(out)

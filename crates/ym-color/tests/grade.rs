@@ -6,8 +6,9 @@ use proptest::prelude::*;
 use ym_color::consts::{LOGC4_GRAY, LOGC4_STOP, Vec3};
 use ym_color::gamut::LinearAwg4;
 use ym_color::grade::{
-    BRIGHTNESS_SIGMA, COLOR_BALANCE_STRENGTH, ColorBalance, E1, E2, Grade, GradeParams,
-    ZONE_CONTROL_SIGMA, ZONE_SIGMA, bump, grade_luma, logc4_at_stops,
+    BALANCE_CENTER_STOPS, BRIGHTNESS_SIGMA, COLOR_BALANCE_STRENGTH, CONTRAST_EXPONENT,
+    ColorBalance, E1, E2, Grade, GradeParams, ZONE_CENTER_STOPS, ZONE_CONTROL_SIGMA, ZONE_SIGMA,
+    bump, grade_luma, logc4_at_stops,
 };
 use ym_color::logc::{LogC4, logc4_decode, logc4_encode};
 
@@ -50,8 +51,10 @@ fn reference(p: &GradeParams, v: Vec3, l: f64) -> Vec3 {
             v[k] += 0.03 * (bal.a * e1[k] + bal.b * e2[k]) * zone;
         }
     }
+    // Saturation is subtractive: about the brightest channel of the pixel at this point.
+    let m = v[0].max(v[1]).max(v[2]);
     for x in &mut v {
-        *x = l + (*x - l) * (1.0 + p.saturation / 100.0);
+        *x = m + (*x - m) * (1.0 + p.saturation / 100.0);
     }
     v
 }
@@ -242,33 +245,73 @@ fn color_balance_displacement() {
 }
 
 #[test]
-fn saturation_pivots_on_l() {
+fn saturation_pivots_on_the_brightest_channel() {
+    // M = 0.5 is the red channel; L (0.33) plays no part.
     let v = [0.5, 0.3, 0.1];
     let l = 0.33;
-    let gray = Grade::new(&GradeParams {
+    let m = 0.5;
+    let sat = |s: f64| {
+        Grade::new(&GradeParams {
+            saturation: s,
+            ..Default::default()
+        })
+        .apply(LogC4(v), l)
+        .0
+    };
+    // -100: every channel equals M, a neutral at the pixel's brightest channel.
+    assert_eq!(sat(-100.0), [m, m, m]);
+    // +100: the distance below M doubles, M stays.
+    let double = sat(100.0);
+    assert_eq!(double[0], m);
+    for k in 0..3 {
+        assert!((double[k] - (m + 2.0 * (v[k] - m))).abs() < 1e-15);
+    }
+    assert!((double[1] - 0.1).abs() < 1e-15 && (double[2] - (-0.3)).abs() < 1e-15);
+    // -50: halfway to M.
+    let half = sat(-50.0);
+    for k in 0..3 {
+        assert!((half[k] - (m + 0.5 * (v[k] - m))).abs() < 1e-15);
+    }
+    // More saturation makes the colour denser and darker, less makes it paler and lighter.
+    assert!(double[1] < v[1] && double[2] < v[2]);
+    assert!(half[1] > v[1] && half[2] > v[2]);
+    assert!(half[1] < m && half[2] < m);
+    // The pivot does not depend on L.
+    for l in [0.0, 0.2, 0.9, 5.0] {
+        let g = Grade::new(&GradeParams {
+            saturation: 63.0,
+            ..Default::default()
+        });
+        assert_eq!(g.apply(LogC4(v), l), g.apply(LogC4(v), 0.33));
+    }
+}
+
+#[test]
+fn saturation_pivots_on_the_brightest_channel_after_the_controls_before_it() {
+    // M is the brightest channel at this point of C9: with contrast on, it is the contrasted one.
+    let v = [0.55, 0.20, 0.35];
+    let p = GradeParams {
+        contrast: 60.0,
         saturation: -100.0,
         ..Default::default()
-    })
-    .apply(LogC4(v), l)
-    .0;
-    assert_eq!(gray, [l, l, l]);
-    let double = Grade::new(&GradeParams {
-        saturation: 100.0,
-        ..Default::default()
-    })
-    .apply(LogC4(v), l)
-    .0;
-    for k in 0..3 {
-        assert!((double[k] - (l + 2.0 * (v[k] - l))).abs() < 1e-15);
+    };
+    let out = Grade::new(&p).apply(LogC4(v), 0.4).0;
+    let gain = (CONTRAST_EXPONENT * 0.6).exp2();
+    let m = LOGC4_GRAY + (0.55 - LOGC4_GRAY) * gain;
+    for c in out {
+        assert!((c - m).abs() < 1e-14, "{out:?} vs {m}");
     }
-    let half = Grade::new(&GradeParams {
-        saturation: -50.0,
+    // And a lift from brightness moves M with the pixel.
+    let p = GradeParams {
+        brightness: 80.0,
+        saturation: -100.0,
         ..Default::default()
-    })
-    .apply(LogC4(v), l)
-    .0;
-    for k in 0..3 {
-        assert!((half[k] - (l + 0.5 * (v[k] - l))).abs() < 1e-15);
+    };
+    let l = LOGC4_GRAY;
+    let out = Grade::new(&p).apply(LogC4(v), l).0;
+    let m = 0.55 + 0.8 * LOGC4_STOP;
+    for c in out {
+        assert!((c - m).abs() < 1e-14, "{out:?} vs {m}");
     }
 }
 
@@ -385,15 +428,22 @@ fn every_scalar_control_is_monotone_in_its_value() {
             prev = cur;
         }
     }
-    // Saturation: the distance from L grows with the control.
+    // Saturation: the distance of each channel from M (the brightest channel) grows with the
+    // control; M and neutral pixels do not move.
     let grades = sweep(|p, x| p.saturation = x);
     for (v, l) in sample_pixels() {
-        let mut prev = f64::NEG_INFINITY;
-        for g in &grades {
+        let m = v[0].max(v[1]).max(v[2]);
+        let mut prev = [0.0; 3];
+        for (i, g) in grades.iter().enumerate() {
             let o = g.apply(LogC4(v), l).0;
-            let dist = (0..3).map(|k| (o[k] - l).abs()).fold(0.0, f64::max);
-            assert!(dist >= prev - 1e-15, "saturation: {v:?}");
-            prev = dist;
+            assert_eq!(o[0].max(o[1]).max(o[2]), m, "saturation moved M: {v:?}");
+            for k in 0..3 {
+                let dist = (o[k] - m).abs();
+                if i > 0 {
+                    assert!(dist >= prev[k] - 1e-15, "saturation: {v:?} channel {k}");
+                }
+                prev[k] = dist;
+            }
         }
     }
 }
@@ -562,4 +612,251 @@ fn infinite_color_balance_vectors_stay_finite_and_inside_the_unit_disc() {
     }
     .clamped();
     assert!((c.a - 1.0).abs() < 1e-12 && c.b == 0.0);
+}
+
+// ---- Subtractive saturation (owner's decision of 2026-10-13, docs/16) ---------------------------
+
+/// The grade as it was before that decision, copied from the old `Grade::apply`: saturation about
+/// the luma `L`. At `s = 0` the new code must give the same bytes.
+fn legacy_apply(p: &GradeParams, v: Vec3, l: f64) -> Vec3 {
+    let clamp = |x: f64| {
+        if x.is_nan() {
+            0.0
+        } else {
+            x.clamp(-100.0, 100.0)
+        }
+    };
+    let contrast_gain = (CONTRAST_EXPONENT * clamp(p.contrast) / 100.0).exp2();
+    let brightness = clamp(p.brightness) / 100.0;
+    let zone_amounts = [p.shadows, p.highlights, p.black, p.white].map(|x| clamp(x) / 100.0);
+    let zone_centers = ZONE_CENTER_STOPS.map(logc4_at_stops);
+    let balance = [
+        p.balance_shadows.clamped(),
+        p.balance_midtones.clamped(),
+        p.balance_highlights.clamped(),
+    ];
+    let balance_centers = BALANCE_CENTER_STOPS.map(logc4_at_stops);
+    let saturation_gain = 1.0 + clamp(p.saturation) / 100.0;
+
+    let mut out = v;
+    if contrast_gain != 1.0 {
+        for c in &mut out {
+            *c = LOGC4_GRAY + (*c - LOGC4_GRAY) * contrast_gain;
+        }
+    }
+    let lift = brightness * LOGC4_STOP * bump(l, LOGC4_GRAY, BRIGHTNESS_SIGMA);
+    let mut shift = lift;
+    for (amount, center) in zone_amounts.iter().zip(&zone_centers) {
+        if *amount != 0.0 {
+            shift += amount * ZONE_CONTROL_SIGMA * bump(l, *center, ZONE_CONTROL_SIGMA);
+        }
+    }
+    for c in &mut out {
+        *c += shift;
+    }
+    for (bal, center) in balance.iter().zip(&balance_centers) {
+        if bal.a != 0.0 || bal.b != 0.0 {
+            let w = COLOR_BALANCE_STRENGTH * bump(l, *center, ZONE_SIGMA);
+            for k in 0..3 {
+                out[k] += w * (bal.a * E1[k] + bal.b * E2[k]);
+            }
+        }
+    }
+    if saturation_gain != 1.0 {
+        for c in &mut out {
+            *c = l + (*c - l) * saturation_gain;
+        }
+    }
+    out
+}
+
+fn bits(v: Vec3) -> [u64; 3] {
+    v.map(f64::to_bits)
+}
+
+fn max3(v: Vec3) -> f64 {
+    v[0].max(v[1]).max(v[2])
+}
+
+/// Every control but Saturation (which is 0), at random values.
+fn any_params() -> impl Strategy<Value = GradeParams> {
+    let c = || -100.0f64..=100.0;
+    let w = || -0.7f64..=0.7;
+    (
+        (c(), c(), c(), c(), c(), c()),
+        (w(), w(), w(), w(), w(), w()),
+    )
+        .prop_map(
+            |(
+                (contrast, brightness, shadows, highlights, black, white),
+                (a1, b1, a2, b2, a3, b3),
+            )| {
+                GradeParams {
+                    contrast,
+                    brightness,
+                    shadows,
+                    highlights,
+                    black,
+                    white,
+                    balance_shadows: ColorBalance { a: a1, b: b1 },
+                    balance_midtones: ColorBalance { a: a2, b: b2 },
+                    balance_highlights: ColorBalance { a: a3, b: b3 },
+                    saturation: 0.0,
+                }
+            },
+        )
+}
+
+fn any_logc4() -> impl Strategy<Value = Vec3> {
+    prop::array::uniform3(-0.2f64..1.3)
+}
+
+#[test]
+fn the_legacy_copy_differs_from_the_new_grade_when_saturation_is_on() {
+    // Guards the byte-identity test below against being vacuous.
+    let p = GradeParams {
+        saturation: 50.0,
+        ..Default::default()
+    };
+    let v = [0.5, 0.3, 0.1];
+    let new = Grade::new(&p).apply(LogC4(v), 0.33).0;
+    let old = legacy_apply(&p, v, 0.33);
+    assert_ne!(bits(new), bits(old));
+    // The old pivot was L: the old code moved the pixel's brightest channel.
+    assert!((old[0] - 0.5).abs() > 1e-3 && new[0] == 0.5);
+}
+
+proptest! {
+    /// Saturation 0 renders exactly as before the change, for every other control and any pixel.
+    #[test]
+    fn saturation_zero_is_byte_identical_to_the_old_grade(
+        p in any_params(), v in any_logc4(), l in -0.2f64..1.3, negative_zero in any::<bool>(),
+    ) {
+        let p = GradeParams { saturation: if negative_zero { -0.0 } else { 0.0 }, ..p };
+        let got = Grade::new(&p).apply(LogC4(v), l).0;
+        prop_assert_eq!(bits(got), bits(legacy_apply(&p, v, l)));
+    }
+
+    /// With only Saturation moved, the brightest channel stays and no channel crosses it.
+    #[test]
+    fn saturation_keeps_the_brightest_channel_and_the_others_move_one_way(
+        p in any_params(), s in -100.0f64..=100.0, v in any_logc4(), l in -0.2f64..1.3,
+    ) {
+        let without = Grade::new(&p).apply(LogC4(v), l).0;
+        let with = Grade::new(&GradeParams { saturation: s, ..p }).apply(LogC4(v), l).0;
+        let m = max3(without);
+        prop_assert_eq!(max3(with), m);
+        let gain = 1.0 + s / 100.0;
+        for k in 0..3 {
+            // The formula, from the pixel the controls before Saturation produced.
+            prop_assert!(((with[k] - m) - (without[k] - m) * gain).abs() < 1e-12);
+            if without[k] == m {
+                prop_assert_eq!(with[k], m);
+            }
+            if s > 0.0 {
+                prop_assert!(with[k] <= without[k] + 1e-13, "s={s}: {without:?} -> {with:?}");
+            } else if s < 0.0 {
+                prop_assert!(with[k] >= without[k] - 1e-13 && with[k] <= m + 1e-13, "s={s}: {without:?} -> {with:?}");
+            }
+        }
+    }
+
+    /// Neutral pixels (after the tonal controls, which keep a neutral neutral) are unchanged.
+    #[test]
+    fn neutral_pixels_are_unchanged_by_saturation_at_any_setting(
+        p in any_params(), s in -100.0f64..=100.0, x in -0.2f64..1.3, l in -0.2f64..1.3,
+    ) {
+        let p = GradeParams {
+            balance_shadows: ColorBalance::default(),
+            balance_midtones: ColorBalance::default(),
+            balance_highlights: ColorBalance::default(),
+            ..p
+        };
+        let without = Grade::new(&p).apply(LogC4([x; 3]), l).0;
+        let with = Grade::new(&GradeParams { saturation: s, ..p }).apply(LogC4([x; 3]), l).0;
+        prop_assert_eq!(without[0], without[1]);
+        prop_assert_eq!(without[1], without[2]);
+        prop_assert_eq!(with, without);
+    }
+
+    /// s = -100 makes every channel equal to M, whatever came before.
+    #[test]
+    fn minus_100_collapses_every_channel_onto_the_brightest(
+        p in any_params(), v in any_logc4(), l in -0.2f64..1.3,
+    ) {
+        let without = Grade::new(&p).apply(LogC4(v), l).0;
+        let with = Grade::new(&GradeParams { saturation: -100.0, ..p }).apply(LogC4(v), l).0;
+        prop_assert_eq!(with, [max3(without); 3]);
+    }
+}
+
+#[test]
+fn neutral_ramp_is_unchanged_for_every_saturation_value() {
+    for s in -100..=100 {
+        let g = Grade::new(&GradeParams {
+            saturation: f64::from(s),
+            ..Default::default()
+        });
+        for k in 0..=60 {
+            let x = -0.1 + 1.4 * f64::from(k) / 60.0;
+            for l in [0.0, x, 0.8] {
+                assert_eq!(g.apply(LogC4([x; 3]), l).0, [x; 3], "s={s} x={x}");
+            }
+        }
+    }
+}
+
+#[test]
+fn saturation_does_not_raise_luma_on_saturated_patches() {
+    // Rec.709 luma of the linear values the LogC4 triple stands for.
+    let luma = |v: Vec3| {
+        0.2126 * logc4_decode(v[0]) + 0.7152 * logc4_decode(v[1]) + 0.0722 * logc4_decode(v[2])
+    };
+    let patches: [Vec3; 10] = [
+        [0.80, 0.05, 0.03],
+        [0.04, 0.60, 0.06],
+        [0.03, 0.08, 0.70],
+        [0.55, 0.50, 0.02],
+        [0.03, 0.45, 0.50],
+        [0.60, 0.04, 0.55],
+        [0.35, 0.18, 0.12],
+        [0.020, 0.010, 0.004],
+        [6.0, 1.2, 0.3],
+        [0.40, 0.02, -0.003],
+    ];
+    for lin in patches {
+        let v = LinearAwg4(lin).to_logc4().0;
+        let l = grade_luma(LinearAwg4(lin));
+        let neutral = luma([max3(v); 3]);
+        let base = luma(v);
+        let mut prev = f64::INFINITY;
+        // Luma falls as the control rises, everywhere on the scale.
+        for s in (-100..=100).step_by(10) {
+            let out = Grade::new(&GradeParams {
+                saturation: f64::from(s),
+                ..Default::default()
+            })
+            .apply(LogC4(v), l)
+            .0;
+            let y = luma(out);
+            assert!(y <= prev + 1e-12, "{lin:?}: luma rose at s={s}");
+            prev = y;
+            if s > 0 {
+                assert!(
+                    y < base,
+                    "{lin:?}: luma did not fall at s={s}: {y} vs {base}"
+                );
+            } else if s < 0 {
+                assert!(y > base && y <= neutral + 1e-12, "{lin:?}: s={s}");
+            }
+        }
+        // s = -100 is the neutral at the brightest channel, the lightest the pixel gets.
+        let out = Grade::new(&GradeParams {
+            saturation: -100.0,
+            ..Default::default()
+        })
+        .apply(LogC4(v), l)
+        .0;
+        assert!((luma(out) - neutral).abs() < 1e-12 * neutral.abs().max(1.0));
+    }
 }

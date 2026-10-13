@@ -77,7 +77,7 @@ Colour:
           - fluorescent: Fluorescent light at the estimated colour
 
       --saturation <N>
-          Saturation, -100 to 100
+          Saturation, -100 to 100 (subtractive: more makes colours denser and darker, less makes them paler)
 
 Detail:
       --nr <auto|L,C,D>
@@ -85,6 +85,9 @@ Detail:
 
       --sharpen <auto|AMOUNT,RADIUS>
           Sharpening: `auto`, or amount (0 to 300) and radius in pixels (0.3 to 2.5)
+
+      --output-sharpening <PERCENT>
+          Output sharpening, 0 to 200 percent (default 100, 0 is off). It sharpens JPEG, TIFF and PNG files at the size they are written, after the resize; a DNG is never sharpened
 
 RAW:
       --no-neural

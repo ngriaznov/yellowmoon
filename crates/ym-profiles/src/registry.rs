@@ -94,6 +94,16 @@ pub enum RegistryError {
         /// The path in the registry.
         path: String,
     },
+    /// A body's sensor fields are incomplete or give an implausible pixel pitch.
+    #[error("{model} (model ID {model_id}): {reason}")]
+    BadSensor {
+        /// The model string.
+        model: String,
+        /// The model ID.
+        model_id: u16,
+        /// What is wrong.
+        reason: String,
+    },
     /// A profile file's own id differs from the registry's.
     #[error("{path} holds profile {found}, the registry lists it as {expected}")]
     IdMismatch {
@@ -136,10 +146,43 @@ pub struct RegistrySources {
     pub model_ids: String,
     /// The table in `docs/03` the registry is generated from.
     pub table: String,
+    /// Where the sensor geometry of the bodies comes from and how it was read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sensors: Option<String>,
+}
+
+/// How the sensor fields of a body were read (`sensor_source_kind`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SensorSourceKind {
+    /// From an excerpt of the maker's specification page.
+    Maker,
+    /// The maker's specification as restated by a retailer or reference site (the maker's page was
+    /// not seen).
+    Restated,
+}
+
+/// The pixel pitch of the smallest and the largest sensor the registry may hold, micrometres: the
+/// sanity range of `docs/algorithms/03-diffraction-deconvolution.md` section 2.2.
+pub const PIXEL_PITCH_RANGE_UM: std::ops::RangeInclusive<f64> = 0.5..=20.0;
+
+/// The published geometry of a body's sensor (`docs/algorithms/03` section 2.2): what the diffraction
+/// deconvolution needs to turn an f-number into a blur in pixels.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SensorGeometry {
+    /// Width of the full sensor, millimetres.
+    pub sensor_width_mm: f64,
+    /// Width in pixels of the largest 3:2 still recorded from the full sensor. A crop mode does not
+    /// change it, and it is what a Lossless M or S file was reduced from.
+    pub active_width_px: u32,
+    /// The pixel pitch, micrometres: the registry's `pixel_pitch_um` when the maker states one, else
+    /// `1000 * sensor_width_mm / active_width_px`. Square pixels.
+    pub pixel_pitch_um: f64,
 }
 
 /// One camera body of the registry.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Body {
     /// Sony maker-note model ID (tag 0xB001).
@@ -155,12 +198,87 @@ pub struct Body {
     pub match_kind: BodyMatch,
     /// For `sensor_family`: the display name of the profile's measured body; null otherwise.
     pub via: Option<String>,
-    /// Free-text notes (measurement source, pending checks).
+    /// Free-text notes (measurement source, the sibling check).
     pub notes: String,
+    /// Width of the full sensor in millimetres, from the maker's specification.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sensor_width_mm: Option<f64>,
+    /// Width in pixels of the largest 3:2 still from the full sensor.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_width_px: Option<u32>,
+    /// The pixel pitch in micrometres when the maker states it (overrides the computed one).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pixel_pitch_um: Option<f64>,
+    /// How the sensor fields were read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sensor_source_kind: Option<SensorSourceKind>,
+    /// The pages the sensor fields were read from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sensor_source: Option<String>,
+}
+
+impl Body {
+    /// Checks the sensor fields: width, pixel count and source come together, and the pixel pitch is
+    /// in [`PIXEL_PITCH_RANGE_UM`].
+    fn validate_sensor(&self) -> Result<(), RegistryError> {
+        let bad = |reason: &str| RegistryError::BadSensor {
+            model: self.model.clone(),
+            model_id: self.model_id,
+            reason: reason.to_string(),
+        };
+        let complete = self.sensor_width_mm.is_some()
+            && self.active_width_px.is_some()
+            && self.sensor_source_kind.is_some()
+            && self.sensor_source.as_deref().is_some_and(|s| !s.is_empty());
+        let any = self.sensor_width_mm.is_some()
+            || self.active_width_px.is_some()
+            || self.pixel_pitch_um.is_some()
+            || self.sensor_source_kind.is_some()
+            || self.sensor_source.is_some();
+        if !any {
+            return Ok(());
+        }
+        if !complete {
+            return Err(bad(
+                "sensor_width_mm, active_width_px, sensor_source_kind and sensor_source come together",
+            ));
+        }
+        let Some(sensor) = self.sensor() else {
+            return Err(bad("incomplete sensor fields"));
+        };
+        if !(sensor.sensor_width_mm.is_finite() && sensor.sensor_width_mm > 0.0)
+            || sensor.active_width_px == 0
+        {
+            return Err(bad("the sensor width and the pixel count must be positive"));
+        }
+        if !PIXEL_PITCH_RANGE_UM.contains(&sensor.pixel_pitch_um) {
+            return Err(bad(&format!(
+                "pixel pitch {:.3} um is outside {} to {} um",
+                sensor.pixel_pitch_um,
+                PIXEL_PITCH_RANGE_UM.start(),
+                PIXEL_PITCH_RANGE_UM.end()
+            )));
+        }
+        Ok(())
+    }
+
+    /// The published sensor geometry, `None` when the registry has none for this body (the EXIF
+    /// crop-factor fallback then applies). A body whose fields are incomplete is refused by
+    /// [`Registry::validate`], so for a validated registry this is all or nothing.
+    #[must_use]
+    pub fn sensor(&self) -> Option<SensorGeometry> {
+        let (width_mm, width_px) = (self.sensor_width_mm?, self.active_width_px?);
+        let computed = 1000.0 * width_mm / f64::from(width_px);
+        Some(SensorGeometry {
+            sensor_width_mm: width_mm,
+            active_width_px: width_px,
+            pixel_pitch_um: self.pixel_pitch_um.unwrap_or(computed),
+        })
+    }
 }
 
 /// `data/cameras/registry.json`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Registry {
     /// Semver of the registry.
@@ -258,6 +376,7 @@ impl Registry {
                     profile: b.profile.to_string(),
                 });
             }
+            b.validate_sensor()?;
         }
         for p in &self.profiles {
             let exact: Vec<&Body> = self
@@ -474,6 +593,11 @@ mod tests {
                 match_kind: kind,
                 via: via.map(str::to_string),
                 notes: String::new(),
+                sensor_width_mm: None,
+                active_width_px: None,
+                pixel_pitch_um: None,
+                sensor_source_kind: None,
+                sensor_source: None,
             };
         Registry {
             version: semver::Version::new(1, 0, 0),
@@ -481,6 +605,7 @@ mod tests {
             sources: RegistrySources {
                 model_ids: String::new(),
                 table: String::new(),
+                sensors: None,
             },
             profiles: vec![
                 RegistryProfile {

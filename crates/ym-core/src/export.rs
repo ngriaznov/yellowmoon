@@ -21,8 +21,12 @@
 //!    * JPEG, TIFF and PNG: C1 to C12 in the primaries of the chosen colour space with the
 //!      camera's and the user's orientation, straighten and crop baked in
 //!      ([`FullTarget::DisplayLinear`]). The writer resizes in linear light (Lanczos-3) when a long
-//!      edge is asked for and does C13 (the transfer function and, for 8 bit, the dither).
-//!    * DNG: C1 to C11 decoded to linear AWG4 in the sensor's orientation
+//!      edge is asked for, **sharpens the picture at the size it writes** (output sharpening,
+//!      `DevelopSettings::output_sharpening`, default 100 %, `docs/algorithms/04`: the screen
+//!      preset at the scale of the written long edge over the rendered one; 0 is no stage and the
+//!      bytes of an export without it) and does C13 (the transfer function and, for 8 bit, the
+//!      dither).
+//!    * DNG (never sharpened): C1 to C11 decoded to linear AWG4 in the sensor's orientation
 //!      ([`FullTarget::DngLinearAwg4`]) and the sRGB preview of what the user sees
 //!      ([`FullTarget::DngPreview`]). The `Orientation` tag carries the camera's and the user's
 //!      turns, the default crop tags the user's crop, so other editors can undo both.
@@ -60,6 +64,7 @@ use ym_color::display::OutputTarget;
 use ym_export::dng::{CropRect, DngReport, FittedProfile, compose_orientation};
 use ym_export::exif::{CaptureTime, ExifInfo, Gps};
 use ym_export::naming::{self, NameFields, Placement};
+use ym_export::request::{PictureStages, write_export_with};
 use ym_export::xmp::{XmpInfo, YmInfo};
 use ym_export::{
     ColorSpace, DetailStat, DngInputs, ExportDestination, ExportFormat, ExportHooks, ExportOptions,
@@ -1167,7 +1172,16 @@ fn export_photo_unguarded(
         let request =
             ExportRequest::new(pixels, options, &metadata).remove_location(params.remove_location);
         encode_started = Instant::now();
-        outcome = write_export(&request, &dest, &hooks.stage(RASTER_RENDER_SHARE, 1.0))?;
+        // Output sharpening (Detail › Sharpening › Output) runs in the writer, right after the
+        // Lanczos-3 resize, on the picture at the size it is written. Never for a DNG.
+        let stages =
+            PictureStages::output_sharpening(photo.source.settings.output_sharpening as f32);
+        outcome = write_export_with(
+            &request,
+            &dest,
+            &hooks.stage(RASTER_RENDER_SHARE, 1.0),
+            &stages,
+        )?;
     }
     let encode_ms = encode_started.elapsed().as_secs_f64() * 1000.0;
     ctx.speed.record_encode(

@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { AutoRow, Card, Field, formats, LinkButton, LookTile, ResetLink, Rows, SearchField, Segmented, Slider } from "../../components";
+import { AutoRow, AutoToggle, Card, Field, formats, LinkButton, LookTile, ResetLink, Rows, SearchField, Segmented, Slider, Tag } from "../../components";
 import type { TabId } from "../../components";
-import type { ApplyScope, Look } from "../../api/types";
+import type { ApplyScope, Look, ResolvedSettings } from "../../api/types";
 import { useAppState, useStore } from "../../state/context";
+import type { AppStore } from "../../state/store";
 import { useLookThumbnail } from "../../state/useLookThumbnail";
 import { shortBody } from "./RawTab";
-import { tintLabel } from "./shared";
+import { ContrastSlider, KelvinSlider, SaturationSlider, whiteBalanceState, whiteBalanceToAuto } from "./controls";
+import { AUTO, tintLabel } from "./shared";
 import type { TabProps } from "./shared";
 
 /** Said on a tile whose look file is gone or changed (`docs/08-looks.md` §Missing looks). */
@@ -88,14 +90,46 @@ function LazyLookTile({ look, index, selected, photoId, thumbKey, onSelect }: La
   );
 }
 
+/**
+ * The Tone card: Temperature, Contrast and Saturation, under the Look card (owner's decision of
+ * 2026-10-13, `docs/16`; the mockup has no such card). The rows are the same settings as Colour ›
+ * White balance › Kelvin, Light › Exposure › Contrast and Colour › Colour balance › Saturation,
+ * built from the same controls (`controls.tsx`): moving one copy moves the other, with undo, redo
+ * and Reset. Temperature keeps the Kelvin control's Auto semantics: it shows the photo's Auto Kelvin,
+ * moving it makes the white balance Manual at that Kelvin with the Auto tint, and its Reset goes
+ * back to Auto. As on the Exposure card, the AUTO button speaks for the white balance only. Tint
+ * stays on the Colour tab. The card's Reset sends Auto for the white balance (a picked white and a
+ * light preset go with it, as on the Colour tab) and puts Contrast and Saturation at 0.
+ */
+export function ToneCard({ store, rs }: { store: AppStore; rs: ResolvedSettings }) {
+  const { picked, isAuto } = whiteBalanceState(rs);
+  return (
+    <Card
+      title="Tone"
+      tag={
+        <>
+          {picked ? <Tag variant="edited" title="White picked from the photo" /> : null}
+          <AutoToggle isAuto={isAuto} onAuto={() => whiteBalanceToAuto(store)} aria-label="Auto temperature" />
+        </>
+      }
+      action={<ResetLink size="card" onClick={() => void store.update({ white_balance: AUTO, light_source: "auto", white_pick: null, contrast: 0, saturation: 0 })} />}
+    >
+      <KelvinSlider store={store} rs={rs} label="Temperature" />
+      <ContrastSlider store={store} rs={rs} />
+      <SaturationSlider store={store} rs={rs} />
+    </Card>
+  );
+}
+
 export interface LookTabProps extends TabProps {
   /** The Automatic card's arrows open the tab that owns the value. */
   onOpenTab: (tab: TabId) => void;
 }
 
 /**
- * Look: the Automatic card (what was worked out for this photo, and where to change it) and the
- * Look card (strength, "Apply to", search and the grid of looks with lazy thumbnails).
+ * Look: the Automatic card (what was worked out for this photo, and where to change it), the
+ * Look card (strength, "Apply to", search and the grid of looks with lazy thumbnails) and the Tone
+ * card (Temperature, Contrast, Saturation).
  */
 export function LookTab({ store, photo, rs, onOpenTab }: LookTabProps) {
   const looks = useAppState((s) => s.looks);
@@ -242,6 +276,7 @@ export function LookTab({ store, photo, rs, onOpenTab }: LookTabProps) {
           </div>
         </div>
       </Card>
+      <ToneCard store={store} rs={rs} />
     </>
   );
 }

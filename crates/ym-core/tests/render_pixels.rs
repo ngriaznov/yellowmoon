@@ -602,7 +602,9 @@ fn an_exported_full_render_matches_the_viewport_pixel_for_pixel_at_100_percent()
         Scene::new(800, 600, light(PROFILE, 5500.0), Layout::Patchwork, 0.4).noise(2e-4, 1e-6);
     let d = Developed::new(&scene, MODEL);
     let r = Renderer::neutral_only().expect("render thread");
-    let src = d.source();
+    // With the output sharpening off: the same camera pixels through the same chain. (With it on,
+    // the viewport shows the sharpened picture the export writes; `tests/render_sharpen.rs`.)
+    let src = edit(&d.source(), |s| s.output_sharpening = 0.0);
     let full = r
         .render_full(
             &src,

@@ -8,7 +8,8 @@
 //!
 //! Stage order: R1 normalise, R3 vignetting, R4 gains, R5 highlights (with chroma offsets
 //! computed once per frame by [`Chain::prepare`]), R6 demosaic then the light bilateral denoise,
-//! R7 colour guided filter and detail re-injection, R8 Richardson-Lucy, R9 lens resample. The
+//! R7 colour guided filter and detail re-injection, R8 capture sharpening (Richardson-Lucy or
+//! diffraction deconvolution, [`CaptureSharpen`]), R9 lens resample. The
 //! neural path replaces R6 and the luminance part of R7 (`ym-ml`); everything else is shared.
 //!
 //! In the classical path the "network output" of R7 is the denoised image and `Y_classical` is
@@ -16,17 +17,18 @@
 //! denoise removed. The Luminance control scales the denoise strength with the same
 //! `(L / L_auto)^1.5` rule that scales the network's σ.
 
-use super::demosaic::{self, Method};
+use super::demosaic::{self, CaCurves, DemosaicInputs, Method};
 use super::denoise::{self, BilateralParams};
 use super::detail::{self, NoiseReduction};
 use super::gains;
 use super::highlights::{self, ChromaOffsets};
 use super::lens::LensGeometry;
 use super::normalize::{self, Levels};
-use super::sharpen::{self, SharpenParams};
+use super::sharpen::diffraction::{DiffractionPlan, SPEC_LUMA};
+use super::sharpen::{self, CaptureSharpen};
 use super::tiling::{Rect, Stage};
 use super::vignette::{self, VignetteProfile};
-use super::{Cfa, ClipMask, CpuError, Mosaic, NoiseSigma, Placement, RgbImage};
+use super::{Cfa, ClipMask, CpuError, Mosaic, NoiseDn, NoiseSigma, Placement, RgbImage};
 
 /// A raw frame (the active area) as the decoder delivers it.
 #[derive(Clone, Copy, Debug)]
@@ -54,7 +56,10 @@ pub struct Chain {
     pub gains: [f32; 3],
     /// R5 on or off (`decode.highlight_recovery`).
     pub highlight_recovery: bool,
-    /// R6 classical method.
+    /// R6 classical method. [`Method::AdaptiveRatio`] reads [`gains`](Self::gains) and
+    /// [`noise`](Self::noise): R6 gets the balanced mosaic of R4/R5 and the method undoes R4
+    /// itself (`docs/algorithms/INTEGRATION.md` section 4), so the output is balanced for every
+    /// method.
     pub method: Method,
     /// R6 bilateral denoise (`None`: skipped).
     pub denoise: Option<BilateralParams>,
@@ -66,8 +71,17 @@ pub struct Chain {
     pub sigma: f32,
     /// Optional σ map for the whole frame (`width * height`), used instead of `sigma` when present.
     pub sigma_map: Option<Vec<f32>>,
-    /// R8 parameters (`None`: skipped).
-    pub sharpen: Option<SharpenParams>,
+    /// The noise model of the shot on the 16-bit working scale
+    /// ([`NoiseDn::from_model`], `docs/algorithms/INTEGRATION.md` section 3), `None` when it is not
+    /// known (read as zero noise). It is for the methods of the raw-algorithms package that derive
+    /// their constants from the noise: the R6 adaptive ratio demosaic (and the log-guided one,
+    /// which takes its read noise from it) and R8 diffraction deconvolution.
+    pub noise: Option<NoiseDn>,
+    /// R8 capture sharpening: the method and its controls (`None`: skipped). A diffraction stage
+    /// that is inactive for these controls and gains (no usable pitch or f-number) leaves the image
+    /// unchanged; the caller that wants Richardson-Lucy in that case chooses it when it builds the
+    /// chain (`docs/algorithms/03-diffraction-deconvolution.md` section 1.2).
+    pub sharpen: Option<CaptureSharpen>,
     /// R9 geometry (`None`: no resample; the output is the whole frame).
     pub lens: Option<LensGeometry>,
 }
@@ -101,11 +115,8 @@ impl Chain {
             chroma_radius_px: self.noise_reduction.chroma_radius_px(),
             needs_classical: false,
         });
-        if let Some(p) = &self.sharpen {
-            s.push(Stage::Sharpen {
-                iterations: p.iterations(),
-                sigma_max_px: p.sigma_max_px(),
-            });
+        if let Some(method) = self.sharpen {
+            s.push(Stage::Sharpen(method));
         }
         if let Some(l) = &self.lens {
             s.push(Stage::Lens(l));
@@ -124,6 +135,30 @@ impl Chain {
     pub fn required_raw_rect(&self, frame_w: usize, frame_h: usize, out: Rect) -> Rect {
         let stages = self.stages();
         super::tiling::required_input_rect(&stages, out, Rect::whole(frame_w, frame_h))
+    }
+
+    /// What R6 gets besides the mosaic: the R4 gains, the noise model (zero when it is not known)
+    /// and the lateral CA curves `ca` ([`ca_curves`](Self::ca_curves)).
+    fn demosaic_inputs<'a>(&self, ca: Option<&'a CaCurves>) -> DemosaicInputs<'a> {
+        DemosaicInputs {
+            gains: self.gains,
+            noise: self.noise.unwrap_or(NoiseDn::ZERO),
+            ca,
+        }
+    }
+
+    /// The lateral CA curves for the CA-aware green refinement of the adaptive ratio demosaic
+    /// (`docs/algorithms/01-adaptive-ratio-demosaic.md` section 3.6, RA-03b): the R9 CA of
+    /// [`lens`](Self::lens), sampled by [`LensGeometry::ca_curves`]. `None` (the plain path) for
+    /// every other method, for a chain without a lens stage, for a lens without CA (no 0x7035
+    /// table, or `decode.chromatic_aberration` off, which `LensGeometry::new` already applied) and
+    /// for a distortion table the curves cannot be sampled from. The curves belong to the frame, not
+    /// the tile, so every tile of a frame sees the same ones.
+    fn ca_curves(&self) -> Option<CaCurves> {
+        if self.method != Method::AdaptiveRatio {
+            return None;
+        }
+        self.lens.as_ref()?.ca_curves().ok().flatten()
     }
 
     /// R1 for `rect` of the frame, then R3 and R4 (all pointwise).
@@ -200,6 +235,16 @@ impl Chain {
                 l.frame_height(),
                 raw.width,
                 raw.height
+            )));
+        }
+        // The adaptive ratio demosaic divides by the gains and derives its constants from the
+        // noise model. `demosaic_with` cannot fail (it would quietly run Menon instead), so a
+        // chain that asks for it checks the numbers here, once, and says what is wrong.
+        if self.method == Method::AdaptiveRatio
+            && let Err(e) = self.demosaic_inputs(None).validate()
+        {
+            return Err(CpuError::Mismatch(format!(
+                "the adaptive ratio demosaic cannot run: {e}"
             )));
         }
         self.levels.validate()
@@ -283,7 +328,18 @@ impl Chain {
                 Stage::Highlights => {
                     highlights::apply_offsets(&mut mosaic, &mask, &prepared.offsets)?
                 }
-                Stage::Demosaic(method) => rgb = Some(demosaic::demosaic(&mosaic, *method)),
+                Stage::Demosaic(method) => {
+                    // R6 hands the balanced mosaic of R4/R5 to every method; the adaptive ratio
+                    // demosaic undoes R4 inside `demosaic_with` (INTEGRATION.md section 4). The
+                    // gains and the noise are per frame, never per tile, so every tile of a
+                    // frame sees the same inputs. `Y_classical` of R7 is a copy of this output.
+                    let ca = self.ca_curves();
+                    rgb = Some(demosaic::demosaic_with(
+                        &mosaic,
+                        *method,
+                        &self.demosaic_inputs(ca.as_ref()),
+                    ));
+                }
                 Stage::Denoise { .. } => {
                     let img = take(&mut rgb)?;
                     let scale =
@@ -314,17 +370,26 @@ impl Chain {
                     }
                     rgb = Some(colored);
                 }
-                Stage::Sharpen { .. } => {
+                Stage::Sharpen(CaptureSharpen::RichardsonLucy(params)) => {
                     let img = take(&mut rgb)?;
                     let (plane, scalar) = self.sigma_tile(raw.width, cur, 1.0);
                     let ns = plane
                         .as_deref()
                         .map_or(NoiseSigma::Scalar(scalar), NoiseSigma::Plane);
-                    let params = self.sharpen.unwrap_or(SharpenParams {
-                        amount: 0.0,
-                        radius_px: 1.0,
-                    });
-                    rgb = Some(sharpen::richardson_lucy(&img, &params, &ns));
+                    rgb = Some(sharpen::richardson_lucy(&img, params, &ns));
+                }
+                Stage::Sharpen(CaptureSharpen::Diffraction(params)) => {
+                    let img = take(&mut rgb)?;
+                    let noise = self.noise.unwrap_or(NoiseDn::ZERO);
+                    // The plan comes from the controls, the gains and the noise model, none of which
+                    // depends on the tile, so every tile of a frame gets the same plan. Inactive
+                    // (a bad gain): the stage is an identity.
+                    rgb = Some(
+                        match DiffractionPlan::new(params, self.gains, &noise, SPEC_LUMA) {
+                            Some(plan) => plan.apply(&img),
+                            None => img,
+                        },
+                    );
                 }
                 Stage::Lens(geo) => {
                     let img = take(&mut rgb)?;
@@ -358,6 +423,7 @@ impl Chain {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cpu::sharpen::SharpenParams;
     use crate::cpu::synth;
     use crate::cpu::tiling::tile_grid;
 
@@ -394,10 +460,14 @@ mod tests {
             iso: 800.0,
             sigma: 0.01,
             sigma_map: None,
-            sharpen: Some(SharpenParams {
-                amount: 90.0,
-                radius_px: 0.8,
-            }),
+            noise: None,
+            sharpen: Some(
+                SharpenParams {
+                    amount: 90.0,
+                    radius_px: 0.8,
+                }
+                .into(),
+            ),
             lens,
         }
     }

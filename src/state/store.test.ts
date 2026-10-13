@@ -307,9 +307,18 @@ describe("applyDirect", () => {
   it("shows a patch at once for the fields that need no resolving", async () => {
     const { store } = await opened();
     const rs = settingsOf(store);
-    const next = applyDirect(rs, { contrast: 12, light_source: "tungsten", exposure: { kind: "manual", ev: 1 } });
+    const next = applyDirect(rs, {
+      contrast: 12,
+      output_sharpening: 35,
+      light_source: "tungsten",
+      exposure: { kind: "manual", ev: 1 },
+    });
     expect(next.settings.contrast).toBe(12);
     expect(next.values.contrast).toBe(12);
+    // The output sharpening is a plain number: the slider shows it at once, without waiting for the
+    // core (whose answer comes after the stage has run on the new amount).
+    expect(next.settings.output_sharpening).toBe(35);
+    expect(next.values.output_sharpening).toBe(35);
     expect(next.auto.light_source).toBe(false);
     // Exposure has to be resolved by the core.
     expect(next.settings.exposure).toEqual({ kind: "auto" });
@@ -318,6 +327,26 @@ describe("applyDirect", () => {
 });
 
 describe("changing settings", () => {
+  it("shows an output sharpening change at once, while the core is still working on it", async () => {
+    const { api, store } = await opened();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const real = api.updateSettings.bind(api);
+    vi.spyOn(api, "updateSettings").mockImplementation(async (id, patch) => {
+      await gate;
+      return real(id, patch);
+    });
+    const done = store.update({ output_sharpening: 35 });
+    // Not answered yet: the mirror already holds the new amount, so the slider does not jump back.
+    expect(settingsOf(store).values.output_sharpening).toBe(35);
+    expect(settingsOf(store).settings.output_sharpening).toBe(35);
+    release();
+    await done;
+    expect(settingsOf(store).values.output_sharpening).toBe(35);
+  });
+
   it("sends the patch for the current photo and mirrors the resolved reply", async () => {
     const { api, store } = await opened({ current: 3 });
     const spy = vi.spyOn(api, "updateSettings");
@@ -411,6 +440,25 @@ describe("undo and redo", () => {
     expect(spy).toHaveBeenLastCalledWith(1, { contrast: 25 });
     expect(settingsOf(store).values.contrast).toBe(25);
     expect(store.getState().canRedo).toBe(false);
+  });
+
+  it("undoes the output sharpening like any other field, back to 100", async () => {
+    const { api, store } = await opened();
+    await store.update({ output_sharpening: 35 });
+    expect(settingsOf(store).values.output_sharpening).toBe(35);
+    const spy = vi.spyOn(api, "updateSettings");
+    await store.undo();
+    expect(spy).toHaveBeenLastCalledWith(1, { output_sharpening: 100 });
+    expect(settingsOf(store).values.output_sharpening).toBe(100);
+    await store.redo();
+    expect(spy).toHaveBeenLastCalledWith(1, { output_sharpening: 35 });
+    expect(settingsOf(store).values.output_sharpening).toBe(35);
+    // A whole drag of the slider is one step.
+    await store.update({ output_sharpening: 60 }, false);
+    await store.update({ output_sharpening: 80 }, false);
+    await store.update({ output_sharpening: 150 }, true);
+    await store.undo();
+    expect(settingsOf(store).values.output_sharpening).toBe(35);
   });
 
   it("records a whole drag as one step", async () => {

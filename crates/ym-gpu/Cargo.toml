@@ -11,6 +11,9 @@ publish = false
 
 [dependencies]
 ym-color.workspace = true
+# `NoiseDn::from_model` converts the noise model of the sigma map (`cpu::noise`, RA-02). ym-noise
+# does not depend on this crate.
+ym-noise.workspace = true
 thiserror.workspace = true
 rayon.workspace = true
 wgpu.workspace = true
@@ -18,6 +21,10 @@ pollster.workspace = true
 bytemuck.workspace = true
 half.workspace = true
 tracing.workspace = true
+# Full-precision `erf` for the pixel-integrated Gaussian kernels of output sharpening
+# (`cpu::output_sharpen`, spec 04 section 2.3: "any libm erf, or the libm crate"). MIT, a port of
+# the FreeBSD msun routines; already in the shipped tree through naga (wgpu), so no new licence.
+libm = "0.2"
 
 [dev-dependencies]
 png.workspace = true

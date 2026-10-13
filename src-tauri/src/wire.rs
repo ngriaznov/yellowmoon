@@ -532,6 +532,9 @@ pub struct DevelopSettings {
     pub saturation: Num,
     /// Detail › Sharpening: Auto or amount and radius.
     pub sharpen: SharpenSetting,
+    /// Detail › Sharpening › Output: the strength of the sharpening of the picture at the size it
+    /// is shown and written, in percent, 0 to 200, default 100 (a plain number, not Auto).
+    pub output_sharpening: Num,
     /// Detail › Noise reduction: Auto or the three strengths.
     pub noise_reduction: NoiseReductionSetting,
     /// Luma, red, green and blue curves.
@@ -726,6 +729,9 @@ pub struct SettingsPatch {
     /// New sharpening; a manual one may leave out a part.
     #[serde(default)]
     pub sharpen: Option<SharpenPatch>,
+    /// New output sharpening amount, percent.
+    #[serde(default)]
+    pub output_sharpening: Option<Num>,
     /// New noise reduction; a manual one may leave out a part.
     #[serde(default)]
     pub noise_reduction: Option<NoiseReductionPatch>,
@@ -781,6 +787,7 @@ impl Serialize for SettingsPatch {
         entry(&mut map, "color_balance", &self.color_balance)?;
         entry(&mut map, "saturation", &self.saturation)?;
         entry(&mut map, "sharpen", &self.sharpen)?;
+        entry(&mut map, "output_sharpening", &self.output_sharpening)?;
         entry(&mut map, "noise_reduction", &self.noise_reduction)?;
         entry(&mut map, "curve", &self.curve)?;
         entry(&mut map, "decode", &self.decode)?;
@@ -884,6 +891,8 @@ pub struct ResolvedValues {
     pub saturation: Num,
     /// The sharpening in effect.
     pub sharpen: SharpenValue,
+    /// `output_sharpening`.
+    pub output_sharpening: Num,
     /// The noise reduction in effect.
     pub noise_reduction: NoiseReductionValue,
     /// `curve`.

@@ -66,6 +66,7 @@ fn rich() -> DevelopSettings {
         amount: 150.0,
         radius_px: 1.1,
     });
+    s.output_sharpening = 140.0;
     s.noise_reduction = AutoOr::Manual(NoiseReductionValue {
         luminance: 35.0,
         color: 60.0,
@@ -114,6 +115,7 @@ fn typescript_defaults() -> Value {
         "color_balance": { "shadows": [0, 0], "midtones": [0, 0], "highlights": [0, 0] },
         "saturation": 0,
         "sharpen": { "kind": "auto" },
+        "output_sharpening": 100,
         "noise_reduction": { "kind": "auto" },
         "curve": {
             "luma": [[0, 0], [1, 1]], "red": [[0, 0], [1, 1]],
@@ -493,6 +495,18 @@ fn the_schema_refuses_what_the_core_refuses() {
         ("contrast above range", json!({ "contrast": 101 })),
         ("intensity above range", json!({ "look_intensity": 120 })),
         (
+            "output sharpening above range",
+            json!({ "output_sharpening": 201 }),
+        ),
+        (
+            "output sharpening below range",
+            json!({ "output_sharpening": -1 }),
+        ),
+        (
+            "output sharpening is not Auto",
+            json!({ "output_sharpening": { "kind": "auto" } }),
+        ),
+        (
             "rolloff above range",
             json!({ "rolloff": { "highlights": 1.5 } }),
         ),
@@ -556,6 +570,11 @@ fn the_schema_ranges_are_the_ranges_the_core_clamps_to() {
     let props = &s["properties"];
     let defs = &s["$defs"];
     assert_eq!(range(&props["look_intensity"]), LOOK_INTENSITY_RANGE);
+    assert_eq!(range(&props["output_sharpening"]), OUTPUT_SHARPENING_RANGE);
+    assert_eq!(
+        props["output_sharpening"]["default"].as_f64(),
+        Some(OUTPUT_SHARPENING_DEFAULT)
+    );
     assert_eq!(range(&defs["percent"]), PERCENT_RANGE);
     let manual = |def: &str, field: &str| range(&defs[def]["oneOf"][1]["properties"][field]);
     assert_eq!(manual("exposure", "ev"), EXPOSURE_RANGE_EV);
@@ -1054,6 +1073,80 @@ fn reset_restores_every_field_to_its_default() {
     assert!(s.white_pick.is_none());
     assert!(!s.sharpen.is_auto(), "sharpening is not part of Re-run");
     assert_eq!(s.contrast, 12.0);
+}
+
+#[test]
+fn output_sharpening_is_a_plain_number_in_a_patch_with_its_own_stage_group() {
+    let look = LookId::builtin("neutral");
+    let mut s = DevelopSettings::default();
+    assert_eq!(s.output_sharpening, 100.0);
+    // Moving the slider sends a number; only that field changes, and only the last stage group
+    // is affected, so nothing before it re-runs.
+    let report = apply(&mut s, parse_patch(r#"{"output_sharpening": 35}"#));
+    assert_eq!(s.output_sharpening, 35.0);
+    assert_eq!(report.changed, vec![SettingsField::OutputSharpening]);
+    assert_eq!(report.first_group(), Some(StageGroup::Output));
+    // The same patch again changes nothing.
+    assert!(
+        apply(&mut s, parse_patch(r#"{"output_sharpening": 35}"#))
+            .changed
+            .is_empty()
+    );
+    // 0 is a value (no stage), not a reset.
+    apply(&mut s, parse_patch(r#"{"output_sharpening": 0}"#));
+    assert_eq!(s.output_sharpening, 0.0);
+    // Out of range is clamped and reported, in both directions.
+    let report = apply(&mut s, parse_patch(r#"{"output_sharpening": 900}"#));
+    assert_eq!(s.output_sharpening, 200.0);
+    assert!(report.clamped.contains(&SettingsField::OutputSharpening));
+    apply(&mut s, parse_patch(r#"{"output_sharpening": -20}"#));
+    assert_eq!(s.output_sharpening, 0.0);
+    // NaN is refused and changes nothing.
+    let before = s.clone();
+    let nan = SettingsPatch {
+        output_sharpening: Some(f64::NAN),
+        ..SettingsPatch::default()
+    };
+    assert_eq!(
+        s.apply_patch(&nan, None).unwrap_err(),
+        SettingsError::NotFinite("output_sharpening")
+    );
+    assert_eq!(s, before);
+    // Reset returns to 100, not to Auto.
+    let report = apply(
+        &mut s,
+        SettingsPatch::reset(SettingsField::OutputSharpening, &look),
+    );
+    assert_eq!(s.output_sharpening, 100.0);
+    assert_eq!(report.changed, vec![SettingsField::OutputSharpening]);
+    // It changes with a Grade field: the first group is the earliest of them.
+    let report = apply(
+        &mut s,
+        parse_patch(r#"{"output_sharpening": 50, "contrast": 10}"#),
+    );
+    assert_eq!(report.first_group(), Some(StageGroup::Grade));
+    // The patch that takes the field of another photo carries it (copy and paste of one field).
+    let mut other = DevelopSettings::default();
+    apply(
+        &mut other,
+        SettingsPatch::of_field(&s, SettingsField::OutputSharpening),
+    );
+    assert_eq!(other.output_sharpening, 50.0);
+    assert_eq!(other.contrast, 0.0);
+}
+
+#[test]
+fn an_older_document_without_output_sharpening_reads_as_100() {
+    // A settings file, a golden manifest or the ym:Settings of an export made before the field.
+    let mut doc = serde_json::to_value(rich()).unwrap();
+    doc.as_object_mut().unwrap().remove("output_sharpening");
+    let (s, clamped) =
+        DevelopSettings::from_value(doc, &LookId::builtin("neutral")).expect("reads");
+    assert_eq!(s.output_sharpening, 100.0);
+    assert!(!clamped.contains(&SettingsField::OutputSharpening));
+    // And the full document writes it back.
+    let text = serde_json::to_string(&s).unwrap();
+    assert!(text.contains("\"output_sharpening\":100"), "{text}");
 }
 
 #[test]

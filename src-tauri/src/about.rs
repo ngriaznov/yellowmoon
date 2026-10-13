@@ -45,7 +45,9 @@ pub fn about_text() -> String {
         text.push_str(credit);
         text.push('\n');
     }
-    text.push_str("The full licence texts are in the NOTICE and THIRD-PARTY.md files inside the app.\n\n");
+    text.push_str(
+        "The full licence texts are in the NOTICE and THIRD-PARTY.md files inside the app.\n\n",
+    );
     text.push_str(IJG_NOTICE);
     text.push('\n');
     text.push_str(DNG_NOTICE);

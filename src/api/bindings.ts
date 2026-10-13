@@ -368,6 +368,11 @@ export type DevelopSettings = {
 	saturation: number,
 	/**  Detail › Sharpening: Auto or amount and radius. */
 	sharpen: SharpenSetting,
+	/**
+	 *  Detail › Sharpening › Output: the strength of the sharpening of the picture at the size it
+	 *  is shown and written, in percent, 0 to 200, default 100 (a plain number, not Auto).
+	 */
+	output_sharpening: number,
 	/**  Detail › Noise reduction: Auto or the three strengths. */
 	noise_reduction: NoiseReductionSetting,
 	/**  Luma, red, green and blue curves. */
@@ -1062,6 +1067,8 @@ export type ResolvedValues = {
 	saturation: number,
 	/**  The sharpening in effect. */
 	sharpen: SharpenValue,
+	/**  `output_sharpening`. */
+	output_sharpening: number,
 	/**  The noise reduction in effect. */
 	noise_reduction: NoiseReductionValue,
 	/**  `curve`. */
@@ -1153,6 +1160,8 @@ export type SettingsPatch = {
 	saturation?: number | null,
 	/**  New sharpening; a manual one may leave out a part. */
 	sharpen?: SharpenPatch | null,
+	/**  New output sharpening amount, percent. */
+	output_sharpening?: number | null,
 	/**  New noise reduction; a manual one may leave out a part. */
 	noise_reduction?: NoiseReductionPatch | null,
 	/**  Curves to replace. */

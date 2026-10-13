@@ -216,6 +216,34 @@ test.describe("controls with the real mouse", () => {
     await expect(valueBox(page, "Exposure")).toHaveValue("+0.30");
   });
 
+  test("Detail: the Output slider sits in the Sharpening card, snaps to steps of 5 and resets to 100, not to Auto", async ({ page }) => {
+    await photos(page);
+    await tabs(page).getByRole("tab", { name: "Detail" }).click();
+    const card = page.getByRole("region", { name: "Sharpening" });
+    for (const name of ["Amount", "Radius", "Output"]) await expect(card.getByRole("slider", { name })).toBeVisible();
+    await expect(valueBox(page, "Output")).toHaveValue("100%");
+    await expect(valueBox(page, "Output")).not.toHaveAttribute("data-changed", "true");
+    const calls = await recordCalls(page, "updateSettings");
+    await dragSlider(page, "Output", 0.2, 6);
+    const patches = (await calls()).map((c) => c.args[1] as { output_sharpening: number });
+    expect(patches.length).toBeGreaterThanOrEqual(2);
+    // Every patch is a plain number on the grid of 5 inside 0 to 200, and the last one is on screen.
+    expect(patches.every((p) => Number.isInteger(p.output_sharpening / 5) && p.output_sharpening >= 0 && p.output_sharpening <= 200)).toBe(true);
+    await expect(valueBox(page, "Output")).toHaveValue(`${patches.at(-1)!.output_sharpening}%`);
+    await expect(valueBox(page, "Output")).toHaveAttribute("data-changed", "true");
+    // Typing, then the row's own Reset: back to 100 as a number.
+    await setValue(page, "Output", "35");
+    await expect(valueBox(page, "Output")).toHaveValue("35%");
+    await page.getByRole("button", { name: "Reset Output" }).click();
+    await expect(valueBox(page, "Output")).toHaveValue("100%");
+    expect((await calls()).at(-1)!.args[1]).toEqual({ output_sharpening: 100 });
+    // The card's Reset puts the whole card back, Output included.
+    await setValue(page, "Output", "60");
+    await card.getByRole("button", { name: "Reset" }).first().click();
+    await expect(valueBox(page, "Output")).toHaveValue("100%");
+    expect((await calls()).at(-1)!.args[1]).toEqual({ sharpen: { kind: "auto" }, output_sharpening: 100 });
+  });
+
   test("a change on one tab is shown on the Look tab's Automatic card as EDITED", async ({ page }) => {
     await photos(page);
     await tabs(page).getByRole("tab", { name: "Colour" }).click();

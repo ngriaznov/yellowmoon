@@ -15,7 +15,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::profile::{ProfileError, ProfileId};
-use crate::registry::{Body, BodyMatch, ProfileStore};
+use crate::registry::{Body, BodyMatch, ProfileStore, SensorGeometry};
 
 /// Why a profile was chosen.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -41,7 +41,7 @@ pub enum MatchKind {
 }
 
 /// The result of camera detection: who the body is and which profile it gets.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CameraMatch {
     /// IFD0 Make, as read and trimmed (`SONY`).
     pub make: String,
@@ -59,6 +59,13 @@ pub struct CameraMatch {
     pub profile_version: semver::Version,
     /// Why this profile.
     pub how: MatchKind,
+    /// The published geometry of the body's sensor (pixel pitch and width), when the registry has it
+    /// for this body: the diffraction deconvolution reads it (`docs/algorithms/03` section 2.2).
+    /// It belongs to the body, not to the profile, so a forced profile keeps it. `None` for a body
+    /// the registry does not list or has no published pixel width for (the EXIF crop-factor
+    /// fallback then applies).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sensor: Option<SensorGeometry>,
 }
 
 impl CameraMatch {
@@ -202,6 +209,7 @@ impl ProfileStore {
             profile: profile.id.clone(),
             profile_version: profile.version.clone(),
             how,
+            sensor: None,
         }
     }
 
@@ -244,14 +252,16 @@ impl ProfileStore {
                 } else {
                     make
                 };
-                self.camera_match(
+                let mut found = self.camera_match(
                     make,
                     body.model.clone(),
                     model_id,
                     body.body.clone(),
                     &body.profile,
                     how,
-                )
+                );
+                found.sensor = body.sensor();
+                found
             }
             None => {
                 let body = display_body(&make, &model);

@@ -604,3 +604,80 @@ Where an implementation could reasonably differ, the reference makes the followi
 12. **Gradient symmetry.** The gradient's y component is the exact transpose of the x component (§3.3).
 13. **Halo parameter.** The output stage's halo suppression is a parameter with preset values (60 screen, 0 print), not tied to the mode.
 14. **Validation.** Out-of-range and NaN parameters and unknown method values are rejected. An unknown method never silently skips stages.
+
+## 9. Rust port notes (RA-08 part 1, `ym-gpu/src/cpu/output_sharpen.rs`)
+
+Decisions made while porting (the module's doc comment repeats the numerical ones):
+
+1. **API.** `OutputSharpen` holds the user parameters of §2.1 (`mode`, `method`, `amount_pct`, `radius_px`, `threshold_levels`, `halo_pct`, `print_distance`, `luma_weights`, `extra_stages`) with `screen()`, `print()` and `with_amount_pct()`. `plan(scale)` derives the stages (`SharpenPlan`, `StagePlan`), `halo_px(scale)` gives the exact receptive field, `max_halo_px()` the mode bound (21 px screen, 41 px print), and `apply`, `apply_in_place`, `apply_interleaved`, `apply_interleaved_in_place` run the stage. The planar and the interleaved forms give the same bits (the luma plane and the ratio plane are shared).
+2. **`scale` is an argument**, not a parameter field (§2.1 lists it among the parameters): the settings do not know the output size. It is validated in (0, 1]. `scale_for_edges(out_long_edge, rendered_long_edge)` is the `f64` division of §2.4 rounded to `f32`, at most 1.
+3. **Radius cap, not rejection.** `radius_px` above 2.5 in Screen mode is capped, and `print_distance` is capped through the 15 px radius cap; validation rejects only NaN, infinity and negative values (the oracle's `validate()`; §2.1 says "values above 2.5 are capped"). Extra stages are limited to 0 to 15 px.
+4. **`erf`** comes from the `libm` crate (§2.3 allows it). The kernel taps differ from the vectors' `%.17g` kernels by at most 1.7e-16.
+5. **Bands.** The run processes bands of 128 core rows plus the exact `halo_px` above and below, in parallel (§5.2 and §5.3). The result is bit-identical for every band height from 1 row to the whole frame and for every thread count (both are tested).
+6. **Not ported:** the reference's f32-accumulation mode (`Accumulation::F32`, §5.4). It is an aid for the GPU port (RA-09), which can compare against a CPU run written for it.
+
+Measured (Linux x86-64, 4 shared cores, load average 6 to 8; `opt-level = 3`, no LTO; synthetic noisy 3:2 frame, interleaved in-place run, `cargo run -p ym-gpu --example output_sharpen_bench`):
+
+| 24 MP (6000 x 4000) | 1 thread | 4 threads (shared machine) |
+|---|---|---|
+| Screen preset, full size | 450 ms/MP | 318 ms/MP |
+| Screen preset, 2048 px from 6000 | 299 ms/MP | 218 ms/MP |
+| Screen preset, halo 0, full size | 83 ms/MP | 51 ms/MP |
+| Print preset, full size | 117 ms/MP | 73 ms/MP |
+
+The C++ oracle at -O2 took 626, 461, 216 and 227 ms/MP for the same four cases on a 6 MP frame on the same machine at the same time (the port gave 488, 304, 90 and 127 on that frame). The halo limiter's 5 x 5 window pass is about half of the cost of the screen preset (110 ns/px of about 230 ns/px when the machine is quiet).
+
+Checks against the oracle: the 16 vectors match bit for bit (maximum difference 0), and 310 further cases generated with the oracle (the self-test's seven parameter sets on four image shapes, scales 0.03 to 0.9, a grid over amount, threshold, halo, method, radius and luma weights, 1 x 1 to 14 x 16 images, a print radius of 15 px) are bit-identical, with the same `halo_px`.
+
+Edge profile (§2.5, §6.3), reproduced with a soft edge at 5 degrees whose pixels are the mean of 4 x 4 samples of a Gaussian (sigma 0.8 px) from 0.1 to 0.5, the 10 to 90 % rise along the middle row with linear interpolation, and overshoot and undershoot from the edge-spread function binned by distance to the edge (0.1 px bins):
+
+| | rise before | rise after (spec) | overshoot / undershoot (spec) |
+|---|---|---|---|
+| Screen, full size | 2.49 px (2.51) | 1.91 px (1.94) | 3.2 % / 3.2 % (3.0 %) |
+| Screen, `s = 0.4` | 2.49 px | 2.27 px (2.30) | 0.4 % / 0.4 % (0.3 %) |
+| Print, full size | 2.49 px | 1.10 px (1.13) | 21.1 % / 21.1 % (20.7 %) |
+
+Noise on a flat patch (sigma 0.004): x1.030 with the 1-level threshold (spec x1.03), x1.375 with threshold 0 (spec x1.38). Halo suppression on the hard 0.1 to 0.5 step at amount 300 and R 1.5: overshoot 0.4265 to 0.0069, undershoot 0.1000 to 0.0069 (spec 0.43 to 0.007 and 0.10 to 0.007). The spec's rise figures sit 0.02 to 0.03 px above these, which is what moving the edge by a fraction of a pixel does to a one-row measurement.
+
+## 10. As built (RA-09, GPU kernel)
+
+`ym-gpu/src/shaders/output_sharpen.wgsl` with the wrapper `ym-gpu/src/kernels/output_sharpen.rs` (`PreparedSharpen`) port `cpu::output_sharpen` to WGSL. Nothing is wired into the render or export path; the raw stages and the export run the CPU reference. The parity tests are `tests/gpu_output_sharpen.rs`, run on Mesa lavapipe (`WGPU_BACKEND=vulkan YM_REQUIRE_GPU=1`; without an adapter they skip with a notice, with `YM_REQUIRE_GPU=1` that is a failure), plus unit tests in the wrapper and `tests/shaders_naga.rs` (all eight passes validate and translate to MSL and SPIR-V in the three storage modes).
+
+**Structure.** Eight passes, one pipeline each, all in one WGSL file of plain functions; the wrapper appends the `main` of each pass (`KernelId::OutputSharpen*`). The auto-generated layout of a pipeline holds exactly the buffers its pass touches, and a unit test pins the host's binding table against the shader with naga. Per tile: luma; per stage the high-pass in difference form (rows, then columns), for methods 1 and 2 with `T > 0` the gain terms `P`, `Q` and their separable blur (rows, then columns), and the accumulation `D += a_free s`, `Hacc += a_halo s`; with a limited share the 5 x 5 window (25 reads per pixel) and the blur of the four maps; then the limiter's clamp and the ratio transfer over the core. `PreparedSharpen::run` does a whole frame, `run_tiled` does tiles (core plus the exact `halo_px(plan)` of section 1.4, cores handed to a sink in raster order, `depth` tiles in flight, cancellable), `run_traced` also returns `L`, `D` and `Hacc` for diagnostics. 76 bytes per pixel of compute rectangle (`BYTES_PER_PIXEL`).
+
+**Decisions.**
+
+1. **Planes are f32 in every storage mode.** The colour kernels keep image intermediates in f16; here the limiter compares luma values exactly (section 5.4), so the kernel never uses `ST_ELEM`, the accessors or f16. The three storage-mode devices give the same bits (tested).
+2. **f32 accumulation, spec order.** Taps are the CPU's `f64` kernels rounded to `f32`; convolutions, window sums and the envelope formula accumulate in `f32`, taps left to right, window row by row, as the C++ reference's `Accumulation::F32` mode. `erf`, the threshold rescale and method 2's `g0` and `inv` stay on the CPU in `f64` (the same code as the CPU port) and arrive as taps and uniforms. `min` and `max` are the reference's `std::` forms written with `select`. No constant outside this spec; the limiter's `0.04`, `0.5`, `6`, `1e-10`, `1e-20` and `16` are the spec's.
+3. **A tile gives the whole frame's bits.** Every pixel's arithmetic depends only on its receptive field, with no reductions or atomics; tiles of 16 to 512 px with 1 to 4 in flight equal the whole frame bit for bit (tested for the seven parameter sets, noisy and periodic content, and the 2048 x 1365 frame), and two runs are bit-identical.
+4. **Not applicable:** the four CFA phases (this is an RGB stage after the demosaic, section 4.8). Instead: flip and transpose equivariance (at most 7.2e-7), frames from 1 x 1 to 17 x 31 with kernels longer than the frame, flat fields bit-exact.
+
+**Parity numbers** (lavapipe, llvmpipe on LLVM 20.1.2, Mesa 25.2.8; maximum absolute error against the CPU port unless stated):
+
+| Content | Result |
+|---|---|
+| The 16 vectors | 7.15e-7 against the oracle's expected pixels (`hdr_values_and_negatives`); the CPU port gives the same figures; flat fields, amount 0 and the hard-threshold edge are bit-exact (0) |
+| Noisy and photographic frames (71 x 66 to 150 x 113, seven parameter sets of the self-test) | 1.43e-6 (99.9th percentile 1.19e-6), no sample over 1e-5 |
+| White noise in [-0.05, 3] (outputs up to tens) | 4.9e-6 relative to `max(1, abs(value))` |
+| Frames 1 x 1 to 17 x 31, every mode and method | 1.13e-6 |
+| 2048 x 1365 photographic frame, tiled in 512 px, no limiter | 7.2e-7 |
+| Same, print preset (no limiter) | 9.5e-7 |
+| Same, screen preset with the limiter | 4.3e-5 (26 of 8.4 million samples over 1e-5); 99.9th percentile 2.4e-7 |
+| Same, 2048 px export from 6000 px | 4.6e-5 (6 samples over 1e-5) |
+| Isolated clean vertical and horizontal edges, limiter on | 3.0e-7 |
+| Isolated clean diagonal edge, limiter on | 3.7e-5 (screen preset, 0.5 % of the samples over 1e-5) to 3.7e-4 (print distance 30000, method 2, halo 40: 9 % over 1e-5) |
+| Noiseless bars and checkerboards, limiter on | 1.5e-4 to 8.3e-3 (0.3 to 19 % of the pixels have a different rank count); the same frames without the limiter 4.8e-7 |
+
+**What is not bit-exact, and why.**
+
+* **f32 against f64 accumulation.** Every difference from the CPU port is this one. The GPU is **bit-identical to the C++ reference's `Accumulation::F32` run** (a scratch driver around `output_sharpening.cpp`, built with `-ffp-contract=off`): 0 differing samples in 37 cases (the seven self-test parameter sets on the noiseless bars scene, the same with noise, a checkerboard and diagonals scene, a photographic frame and white noise, from 71 x 59 to 150 x 113, plus the 2048 x 1365 frame at two scales, 17.5 million samples in all), and the CPU port is bit-identical to the oracle's f64 run. The GPU therefore reproduces the arithmetic spec 5.4 expects of a port.
+* **Transcendentals.** None on the GPU except `sqrt` (luma, gradient magnitude) and the `f32` divisions; both are correctly rounded on lavapipe. `erf` runs on the CPU.
+* **The luma** has the CPU's bits on lavapipe (tested on four images and three weight sets, 0 of 18,852 luma values differ), so the limiter compares the same `L`. A hardware driver may contract the luma into fused multiply-adds; the test then allows 2 ulp.
+* **Rank flips in the limiter.** Where `L` or `S = L + Hacc` ties in exact arithmetic (reflected or transposed neighbourhoods), the f64 path rounds both to the same f32 and the f32 path may not, so a window count changes. Measured against the oracle's f64 trace (`L`, `D`, `Hacc`; 5-by-5 counts of the four comparisons recomputed on both): noisy busy scene, photographic frame, white noise: **0 pixels flip** in all 15 limiter-on cases; the 2048 x 1365 frame: **2 pixels** (screen preset) and **4 pixels** (2048 px export) of 2.8 million; noiseless bars scene: 14 to 265 of 4,686 (0.3 to 5.7 %); noiseless checkerboard and diagonals: 41 to 1,114 of 5,760 (0.7 to 19.3 %). **Every output sample over 1e-5 lies within 8 px of a flipped pixel** (the 5 x 5 window plus the 13-tap halo blur); there are no unexplained differences. A flipped count moves a pixel by up to 8.3e-3 on the periodic content (spec 5.4: "up to about 1e-2").
+* **Summation order was tried.** Summing symmetric tap pairs first (so reflected neighbourhoods round alike) moved the flip counts both ways (busy scene 265 to 100, checkerboard 1,114 to 305, but checkerboard at s = 0.37 118 to 267) and was dropped: it breaks the bit-identity with the f32 reference without a consistent gain. Removing the discontinuity itself (spec 7.1 item 5, or double-float sums) is the only fix; neither is needed for photographs.
+
+**For a Mac (Waiting on Mykyta, M0-H4).** Metal compiles with fast math by default, which may fuse the luma's multiplications and additions and reorder the sums: run `luma_has_the_cpu_bits` and the parity tests there, expect the 99.9th-percentile figures of spec 5.4 and look at the luma ulp report first. Square root and division are not guaranteed correctly rounded on hardware. Lavapipe timings (1.2 to 2.7 s for 2.8 MP) say nothing about a real GPU.
+
+**Host limits.** `PreparedSharpen::run` needs a working buffer of four `f32` planes in one storage binding (128 MiB on the default limits, so about 8 million pixels): a larger frame is refused with `GpuError::BufferTooLarge`, and goes through `run_tiled` (tiles of `TILE_SIZES`, at most 2048 px plus the 41 px halo, need 73 MB). A side of more than `16 x max_compute_workgroups_per_dimension` pixels (1,048,560 on the default limits; a 1 x N column) is refused with `GpuError::InvalidInput` before any device work; without that check wgpu raised a validation panic inside the worker. `raw::recommended_tile_px` checks the binding limit for three planes of the colour storage mode, not for this kernel's four `f32` planes, which is safe for the default limits and the tile sizes in use but must be checked by a caller on a device with a smaller binding limit.
+
+**Independent review (RA-09).** The reviewer ran 75 cases of its own through the GPU, the CPU port and the C++ reference (a scratch driver, `Accumulation::F64` and `F32`; seeded images unlike the implementer's: glyph-like fine text, a specular highlight to 6.0 with exact black and slight negatives, saturated red-on-blue and green-on-magenta edges, a Lanczos-ringing step, a 257 x 129 textured frame and 1 x 40, 40 x 1, 2 x 2, 3 x 200, 201 x 3, 17 x 1, 1 x 17 images; eight parameter sets with methods 0 to 2, halo 0 to 100 %, thresholds 0 to 100 levels, scales 0.1 to 1, the P3 and Rec.2020 luma rows, print distance 12000, an extra-stage set; 1,889,679 samples). The GPU is bit-identical to the oracle's `F32` run (0 differing samples), the CPU port is bit-identical to the oracle's `F64` run, and GPU against CPU port has a maximum error of 5.6e-6 with no sample over 1e-5. Added tests (`tests/gpu_output_sharpen.rs`): a collapsed kernel is a bit-exact no-op for all three methods, with and without the limiter; `f(2x) = 2 f(x)` and `f(x/4) = f(x)/4` hold bit for bit on the GPU without a threshold (three methods, limiter on and off, scales 1 and 0.37); channel ratios survive (worst relative error 1.1e-7); NaN and Inf samples do not panic and are classified as on the CPU (software adapters); and the dispatch limit above.

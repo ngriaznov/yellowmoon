@@ -324,6 +324,23 @@ describe("settings", () => {
     expect(r.values.rolloff).toEqual({ highlights: 1, low_light: 0 });
   });
 
+  it("keeps the output sharpening as a plain number: 100 by default, clamped to 0 to 200, kept by Re-run", async () => {
+    const before = await api.getSettings(1);
+    expect(before.settings.output_sharpening).toBe(100);
+    expect(before.values.output_sharpening).toBe(100);
+    expect(defaultSettings().output_sharpening).toBe(100);
+    const set = await api.updateSettings(1, { output_sharpening: 35 });
+    expect(set.settings.output_sharpening).toBe(35);
+    expect(set.values.output_sharpening).toBe(35);
+    // Another photo is untouched.
+    expect((await api.getSettings(2)).values.output_sharpening).toBe(100);
+    expect((await api.updateSettings(1, { output_sharpening: 900 })).values.output_sharpening).toBe(200);
+    expect((await api.updateSettings(1, { output_sharpening: -4 })).values.output_sharpening).toBe(0);
+    // Re-run resets exposure, white balance and noise: not this.
+    await api.updateSettings(1, { output_sharpening: 60 });
+    expect((await api.rerunAuto(1)).values.output_sharpening).toBe(60);
+  });
+
   it("rerunAuto resets exposure, white balance and noise to Auto", async () => {
     await api.updateSettings(1, {
       exposure: { kind: "manual", ev: 1 },

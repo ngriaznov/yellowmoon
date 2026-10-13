@@ -208,7 +208,8 @@ fn finish(
         iso: 800.0,
         sigma: 0.01,
         sigma_map: None,
-        sharpen: Some(sharpen::auto_sharpen(800.0, 100.0, Some(5.6))),
+        noise: None,
+        sharpen: Some(sharpen::auto_sharpen(800.0, 100.0, Some(5.6)).into()),
         lens: Some(geo),
     };
     let frame = RawFrame {

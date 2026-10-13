@@ -669,6 +669,9 @@ fn exit_code_2_for_usage_errors() {
             "There is no camera profile",
         ),
         (vec!["--long-edge", "5"], "16..=65535"),
+        (vec!["--output-sharpening", "201"], "between 0 and 200"),
+        (vec!["--output-sharpening", "-5"], "between 0 and 200"),
+        (vec!["--output-sharpening", "a lot"], "is not a number"),
         (vec!["--no-such-flag"], "unexpected argument"),
     ];
     for (flags, needle) in cases {
@@ -704,6 +707,8 @@ fn options_that_do_not_apply_to_the_format_are_warned_about() {
             "70",
             "--long-edge",
             "50",
+            "--output-sharpening",
+            "40",
         ])
         .arg(&arw)
         .assert()
@@ -713,7 +718,40 @@ fn options_that_do_not_apply_to_the_format_are_warned_about() {
         ))
         .stderr(predicate::str::contains(
             "--long-edge (not for DNG): ignored for DNG files.",
+        ))
+        .stderr(predicate::str::contains(
+            "--output-sharpening (not for DNG): ignored for DNG files.",
         ));
+}
+
+#[test]
+fn the_output_sharpening_option_is_in_the_settings_the_json_reports() {
+    let sb = Sandbox::new();
+    let arw = sb.arw("a.ARW");
+    let run = |flags: &[&str], dir: &str| {
+        let out = sb
+            .ym()
+            .args([
+                "render", "--json", "--format", "png", "--bits", "8", "--out",
+            ])
+            .arg(sb.root().join(dir))
+            .args(flags)
+            .arg(&arw)
+            .assert()
+            .success();
+        json_lines(&out.get_output().stdout).remove(0)
+    };
+    // The default is 100, and it is in the settings an export records.
+    let default = run(&[], "default");
+    assert_eq!(default["settings"]["output_sharpening"], json!(100.0));
+    let set = run(&["--output-sharpening", "35"], "set");
+    assert_eq!(set["settings"]["output_sharpening"], json!(35.0));
+    let off = run(&["--output-sharpening", "0"], "off");
+    assert_eq!(off["settings"]["output_sharpening"], json!(0.0));
+    // The three files have three different pictures.
+    let file = |dir: &str| std::fs::read(sb.root().join(dir).join("a_neutral.png")).expect("png");
+    let (a, b, c) = (file("default"), file("set"), file("off"));
+    assert!(a != b && a != c && b != c);
 }
 
 #[test]

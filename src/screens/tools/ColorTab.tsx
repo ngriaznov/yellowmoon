@@ -1,6 +1,6 @@
 import { AutoToggle, Card, formats, ResetLink, Segmented, Slider, Tag, Wheel, WheelGroup } from "../../components";
 import type { ColorBalance, ColorBalancePoint, LightSource } from "../../api/types";
-import { AUTO, manualOrAuto } from "./shared";
+import { KelvinSlider, SaturationSlider, setWhiteBalance, whiteBalanceState, whiteBalanceToAuto } from "./controls";
 import type { TabProps } from "./shared";
 
 /** The light presets, in the order of the mockup. */
@@ -26,12 +26,9 @@ const ZERO_BALANCE: ColorBalance = { shadows: [0, 0], midtones: [0, 0], highligh
  * Saturation). A picked white shows here with the EDITED tag.
  */
 export function ColorTab({ store, rs }: TabProps) {
-  const { settings, values, estimates, auto } = rs;
-  const picked = settings.white_pick !== null;
-  const whiteIsAuto = auto.white_balance && auto.light_source && !picked;
-  const toAuto = (): void => void store.update({ white_balance: AUTO, light_source: "auto", white_pick: null });
-  const balance = (kelvin: number, tint: number, final: boolean): void =>
-    void store.update({ white_balance: manualOrAuto({ kelvin, tint }, { kelvin: estimates.kelvin, tint: estimates.tint }) }, final);
+  const { settings, values, estimates } = rs;
+  const { picked, isAuto: whiteIsAuto } = whiteBalanceState(rs);
+  const toAuto = (): void => whiteBalanceToAuto(store);
 
   return (
     <>
@@ -53,17 +50,7 @@ export function ColorTab({ store, rs }: TabProps) {
             options={LIGHT_OPTIONS.map(({ value, label, ariaLabel }) => ({ value, label, ariaLabel }))}
           />
         </div>
-        <Slider
-          label="Kelvin"
-          value={values.kelvin}
-          min={2000}
-          max={11000}
-          step={50}
-          defaultValue={estimates.kelvin}
-          format={formats.kelvin}
-          onChange={(kelvin, final) => balance(kelvin, values.tint, final)}
-          onReset={() => void store.update({ white_balance: manualOrAuto({ kelvin: estimates.kelvin, tint: values.tint }, { kelvin: estimates.kelvin, tint: estimates.tint }), light_source: "auto", white_pick: null })}
-        />
+        <KelvinSlider store={store} rs={rs} />
         <Slider
           label="Tint"
           value={values.tint}
@@ -71,8 +58,8 @@ export function ColorTab({ store, rs }: TabProps) {
           max={50}
           defaultValue={estimates.tint}
           format={formats.signed}
-          onChange={(tint, final) => balance(values.kelvin, tint, final)}
-          onReset={() => balance(values.kelvin, estimates.tint, true)}
+          onChange={(tint, final) => setWhiteBalance(store, rs, values.kelvin, tint, final)}
+          onReset={() => setWhiteBalance(store, rs, values.kelvin, estimates.tint, true)}
         />
       </Card>
       <Card
@@ -91,15 +78,7 @@ export function ColorTab({ store, rs }: TabProps) {
             />
           ))}
         </WheelGroup>
-        <Slider
-          label="Saturation"
-          value={values.saturation}
-          min={-100}
-          max={100}
-          defaultValue={0}
-          format={formats.signed}
-          onChange={(saturation, final) => void store.update({ saturation }, final)}
-        />
+        <SaturationSlider store={store} rs={rs} />
       </Card>
     </>
   );

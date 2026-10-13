@@ -86,6 +86,7 @@ The CA-aware green refinement takes two radial curves, `shift_px` against `radiu
 ## 8. Settings, parity and determinism
 
 - **No schema changes in this work.** New switches live in `RawParams` / `Chain` / `ExportOptions`, not in `settings.schema.json`, until Mykyta decides on UI (RA-H2, RA-H3). That keeps the serde-order tests and the app↔CLI parity untouched.
+- **The R6 method switch (RA-04)** is `RenderOptions::demosaic` in `ym-core` (an internal option of the renderer, `DEFAULT_METHOD` unless a test sets it) with a test-only environment variable behind the `force-demosaic` cargo feature; see `01-adaptive-ratio-demosaic.md` section 10.
 - **Determinism.** All four algorithms are pure functions of their inputs and per-frame constants, with no reductions that depend on thread order. Keep f64 where the specs say so. `--jobs 1` and `--jobs 4` must stay byte-identical.
 - **Goldens.** Hashes change only when a default changes (RA-05). Use `golden update --note "…"` with the gate numbers in the note.
 - **GPU.** Every WGSL port needs a CPU reference and a parity test (`AGENTS.md`). Each spec's §5 lists which parts are per-pixel and which need care: decision near-ties in spec/01 and the window counts of the halo limiter in spec/04.

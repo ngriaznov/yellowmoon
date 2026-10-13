@@ -227,11 +227,13 @@ pub struct ReferenceLights {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProvenanceCheck {
-    /// For example `ILCE-7RM4A (387) uses sony-ilce-7rm4`.
+    /// For example `ILCE-7RM4A (387) uses sony-ilce-7rm4`, or `ILCE-7RM5 (390) was considered for
+    /// sony-ilce-7rm4` for a pairing that failed.
     pub pairing: String,
     /// What is compared.
     pub check: String,
-    /// The outcome, `pending: ...` until Adobe DNG Converter samples exist.
+    /// The outcome: `pass: max |diff| 0.0000 per coefficient (limit 0.02); <tool and version>` or
+    /// `fail: ...` (the pairing does not ship).
     pub result: String,
 }
 
@@ -267,7 +269,7 @@ pub struct Provenance {
     pub light_conventions: String,
     /// States that CIE data was used at fit time only (pending HUMAN M1-H4).
     pub cie_data: String,
-    /// Same-sensor pairing checks.
+    /// Same-sensor pairing checks, with their measured results.
     pub checks: Vec<ProvenanceCheck>,
 }
 

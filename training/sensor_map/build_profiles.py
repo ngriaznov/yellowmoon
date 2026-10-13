@@ -37,7 +37,14 @@ from training.common import jsonfmt, paths
 from training.sensor_map import fit
 from training.sensor_map import lights as lt
 from training.sensor_map import tables as tb
-from training.sensor_map.registry_data import PROFILES, SIBLING_CHECK, Profile, siblings_of
+from training.sensor_map.registry_data import (
+    PROFILES,
+    SIBLING_LIMIT,
+    Profile,
+    rejected_siblings_of,
+    sibling_check_result,
+    siblings_of,
+)
 
 PROFILE_VERSION = "1.0.0"
 M_DECIMALS = 12
@@ -165,15 +172,26 @@ def _locus_json(S_P: np.ndarray) -> dict:
 
 
 def _checks_json(prof: Profile) -> list[dict]:
-    return [
+    """One entry per same-sensor pairing, shipped or rejected, with its measured result (docs/03)."""
+    check = (f"LibRaw camera ColorMatrix (rgb_xyz_matrix) of the sibling within {SIBLING_LIMIT} per coefficient "
+             f"of {prof.model} after row normalisation (docs/03)")
+    out = [
         {
             "pairing": f"{b.model} ({b.model_id}) uses {prof.id}",
-            "check": "Adobe DNG Converter ColorMatrix of the sibling within 0.02 per coefficient "
-                     f"of {prof.model} after normalisation (docs/03)",
-            "result": SIBLING_CHECK,
+            "check": check,
+            "result": sibling_check_result(b.model_id),
         }
         for b in siblings_of(prof.id)
     ]
+    out += [
+        {
+            "pairing": f"{b.model} ({b.model_id}) was considered for {prof.id}",
+            "check": check,
+            "result": sibling_check_result(b.model_id),
+        }
+        for b in rejected_siblings_of(prof.id)
+    ]
+    return out
 
 
 def build_profile(prof: Profile, git_sha: str) -> dict:

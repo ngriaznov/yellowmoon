@@ -51,7 +51,7 @@ Files with `Make` other than SONY but a valid ARW structure (Hasselblad Lunar an
 | ILCE-7RM3 A7R III (362) | sony-ilce-7rm3 | exact |
 | ILCE-7RM3A A7R III A (386) | sony-ilce-7rm3 | same sensor |
 | ILCE-7RM4 A7R IV (375) | sony-ilce-7rm4 | exact |
-| ILCE-7RM4A (387), ILCE-7RM5 A7R V (390), ILCE-7CR (396) | sony-ilce-7rm4 | same sensor |
+| ILCE-7RM4A (387) | sony-ilce-7rm4 | same sensor |
 | ILCE-7SM2 A7S II (350) | sony-ilce-7sm2 | exact |
 | ILCE-7SM3 A7S III (383) | sony-ilce-7sm3 | exact |
 | ILME-FX3 (385), ZV-E1 (393) | sony-ilce-7sm3 | same sensor |
@@ -60,9 +60,26 @@ Files with `Make` other than SONY but a valid ARW structure (Hasselblad Lunar an
 | ILCE-6400 (371) | sony-ilce-6400 | exact |
 | ILCE-6100 (379), ILCE-6600 (378), ILCE-6400A (402), ILCE-6100A (403) | sony-ilce-6400 | same sensor |
 | DSC-RX100M4 RX100 IV (341) | sony-dsc-rx100m4 | exact |
-| Everything else, including ILCE-1 A1 (384), ILCE-1M2 (400), ILCE-9M3 (392), ILCE-7M5 A7 V (407), ILCE-7RM6 A7R VI (410) | sony-ilce-7rm4 | default |
+| Everything else, including ILCE-1 A1 (384), ILCE-1M2 (400), ILCE-9M3 (392), ILCE-7M5 A7 V (407), ILCE-7RM6 A7R VI (410), and the two bodies whose same-sensor pairing failed its check, ILCE-7RM5 A7R V (390) and ILCE-7CR (396) | sony-ilce-7rm4 | default |
 
-Model IDs come from ExifTool's Sony tables. Before a same-sensor pairing ships, check it: the sibling's Adobe DNG Converter ColorMatrix (read from a converted sample) must match the profile body's within 0.02 per coefficient after normalisation. Record the check in the profile's `provenance`.
+Model IDs come from ExifTool's Sony tables. Before a same-sensor pairing ships, check it: the sibling's ColorMatrix must match the profile body's within 0.02 per coefficient after normalisation. Record the check, with its measured value, the tool and its version, in the profile's `provenance`. A pairing that fails does not ship: the body gets match kind `default` (the camera card says it borrows the A7R IV, which is also what it renders with) and the failed check stays in the provenance.
+
+*Sibling check, as run (V1, 2026-10-13).* V1 has no Adobe DNG Converter samples (the V1 data rule), so the independent tool is LibRaw: its per-model camera matrix (`rgb_xyz_matrix`, the D65 ColorMatrix from Adobe's tables, keyed by the Sony model ID) read through rawpy 0.27.1 (LibRaw 0.22.1) by `crates/ym-profiles/tests/py/sibling_matrices.py`, rows normalised to sum 1, the largest per-coefficient difference between the sibling and the profile body. LibRaw is a test oracle here; nothing of it ships.
+
+| Pairing | Max \|diff\| | Result |
+|---|---|---|
+| ILCE-7C (381) to ILCE-7M3 | 0.0000 | pass |
+| ILCE-7RM3A (386) to ILCE-7RM3 | 0.0000 | pass |
+| ILCE-7RM4A (387) to ILCE-7RM4 | 0.0000 | pass |
+| ILCE-7RM5 (390) to ILCE-7RM4 | 0.0934 | fail: default |
+| ILCE-7CR (396) to ILCE-7RM4 | 0.0934 | fail: default |
+| ILME-FX3 (385), ZV-E1 (393) to ILCE-7SM3 | 0.0000 | pass |
+| ILCE-9M2 (376) to ILCE-9 | 0.0000 | pass |
+| ILCE-6100 (379), ILCE-6600 (378), ILCE-6400A (402), ILCE-6100A (403) to ILCE-6400 | 0.0000 | pass |
+
+0.0000 means LibRaw holds the same matrix for both bodies, so the check is strict but says only that LibRaw does not tell them apart. The A7R V and the A7CR have a matrix of their own (a newer sensor generation, 0.0934 from the A7R IV's); they render with the A7R IV profile exactly as before, but they are no longer described as sharing its sensor. `sibling_matrices.py --verify` compares the recorded values with a fresh run.
+
+*Sensor geometry (registry 1.1.0).* Each registry body can carry `sensor_width_mm` and `active_width_px` (and an optional `pixel_pitch_um` override), the pixel pitch for the diffraction deconvolution of `docs/algorithms/03-diffraction-deconvolution.md` section 2.2: `1000 * sensor_width_mm / active_width_px` micrometres. They are Sony's published figures (sensor size in mm; the width of the largest 3:2 still image from the full sensor), with the source of every entry in `sensor_source` and `sensor_source_kind` (`maker` for an excerpt of a Sony specification page, `restated` for a retailer or reference site restating Sony's figures). The Sony pages were read through web-search excerpts, not fetched. 27 of the 28 bodies have them (pitches 2.41 um for the RX100 IV to 8.40 um for the A7S II and A7S III); the ILME-FX3 has none, because Sony's page gives its stills only as "12M", and uses the EXIF crop-factor fallback. A body the registry does not list has none either. `ProfileStore::detect` puts them on the `CameraMatch` (`sensor: Option<SensorGeometry>`).
 
 Measured curves for the 11 exact bodies are Weta's (rawtoaces-data, Apache-2.0), copied to `data/cameras/sony/`.
 
@@ -211,7 +228,7 @@ In V1, a camera gets its own profile only if permissively licensed measurements 
 
 **As built (M1-04).** `crates/ym-profiles/tests/`:
 
-- `data_files.rs`: every `profile.json`, the registry and `target.json` validate against `schema/*.schema.json` with the `jsonschema` crate (a dev-dependency only, MIT; the HTTP and file reference resolvers are off), the schemas reject sixteen broken documents, the typed Rust values write back documents the schemas accept, the registry round-trips (model IDs unique, each maps to one profile that exists, loads and has the id the registry gives it, exactly one exact body per profile, defaults present), equals the table in this file (parsed from the Markdown), the curve and target files match the SHA-256 in `provenance`, each of the 12 same-sensor pairings has its `provenance.checks` entry, and loading reports a missing, truncated, non-white-preserving or mislabelled file (profile, registry or target) with the file or profile named.
+- `data_files.rs`: every `profile.json`, the registry and `target.json` validate against `schema/*.schema.json` with the `jsonschema` crate (a dev-dependency only, MIT; the HTTP and file reference resolvers are off), the schemas reject sixteen broken documents, the typed Rust values write back documents the schemas accept, the registry round-trips (model IDs unique, each maps to one profile that exists, loads and has the id the registry gives it, exactly one exact body per profile, defaults present), equals the table in this file (parsed from the Markdown), the curve and target files match the SHA-256 in `provenance`, each of the 10 same-sensor pairings has its `provenance.checks` entry with a numeric result within 0.02, and the two rejected pairings are recorded as failed, and loading reports a missing, truncated, non-white-preserving or mislabelled file (profile, registry or target) with the file or profile named.
 - `detect.rs`: all 28 bodies by model ID (with a wrong Model string), by Model-string alias (case, spacing, NULs, "Sony " prefix), the ID-wins rule, unknown Sony bodies, non-Sony makes, `--profile`, odd strings and all 65536 model IDs (never a panic, always a profile that exists), and the camera-card copy (the sentence is checked against `docs/11` and the mockup).
 - `sensor_map_eval.rs`: the Rust port of `evaluate.py` and `gate.py` (below).
 

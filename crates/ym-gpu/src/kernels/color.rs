@@ -265,6 +265,7 @@ fn push_lut(luts: &mut Vec<f32>, lut: &Lut) -> LutDescU {
 /// The grade parameters as the kernel wants them (the same preparation as `Grade::new`).
 fn grade_uniform(u: &mut ChainU, g: &GradeParams) {
     let contrast_gain = (CONTRAST_EXPONENT * clamp_control(g.contrast) / 100.0).exp2();
+    // Saturation is subtractive: the shader pivots on the pixel's brightest channel (`Grade::apply`).
     let saturation_gain = 1.0 + clamp_control(g.saturation) / 100.0;
     if contrast_gain != 1.0 {
         u.flags[0] |= 1;

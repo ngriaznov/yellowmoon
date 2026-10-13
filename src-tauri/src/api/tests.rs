@@ -280,6 +280,42 @@ fn closing_the_session_cancels_its_queued_renders_and_forgets_what_they_cached()
 // --- Settings ---------------------------------------------------------------------------------
 
 #[test]
+fn the_output_sharpening_crosses_the_bridge_as_a_plain_number() {
+    let h = Harness::new();
+    h.open(1);
+    h.develop();
+    let id = h.first();
+    // The default is 100, in the stored settings and in the resolved values.
+    let before = h.api.get_settings(id).expect("settings");
+    assert_eq!(before.settings.output_sharpening, Num(100.0));
+    assert_eq!(before.values.output_sharpening, Num(100.0));
+    // Moving the slider sends a number; out of range is clamped by the core; 0 is a value.
+    for (sent, shown) in [
+        (35.0, 35.0),
+        (0.0, 0.0),
+        (250.0, 200.0),
+        (-3.0, 0.0),
+        (100.0, 100.0),
+    ] {
+        let patch: SettingsPatch =
+            serde_json::from_value(json!({ "output_sharpening": sent })).expect("patch");
+        let after = h.api.update_settings(id, &patch).expect("update");
+        assert_eq!(after.settings.output_sharpening, Num(shown), "sent {sent}");
+        assert_eq!(after.values.output_sharpening, Num(shown), "sent {sent}");
+    }
+    // A string is not a number: the bridge refuses it before the core sees it.
+    assert!(
+        serde_json::from_value::<SettingsPatch>(json!({ "output_sharpening": "a lot" })).is_err()
+    );
+    // The patch of one field leaves the others alone.
+    let patch: SettingsPatch =
+        serde_json::from_value(json!({ "output_sharpening": 60, "contrast": 5 })).expect("patch");
+    let after = h.api.update_settings(id, &patch).expect("update");
+    assert_eq!(after.settings.output_sharpening, Num(60.0));
+    assert!((after.settings.contrast.0 - 5.0).abs() < 1e-9);
+}
+
+#[test]
 fn settings_round_trip_with_the_json_the_frontend_sends() {
     let h = Harness::new();
     h.open(1);
@@ -1959,6 +1995,7 @@ fn core_types_convert_without_loss() {
         "exposure": { "kind": "manual", "ev": -0.7 },
         "white_balance": { "kind": "manual", "kelvin": 4300, "tint": 5 },
         "sharpen": { "kind": "manual", "amount": 120, "radius_px": 1.1 },
+        "output_sharpening": 35,
         "noise_reduction": { "kind": "manual", "luminance": 30, "color": 40, "detail": 50 },
         "light_source": "tungsten",
         "color_balance": { "midtones": [0.3, 0.1] },

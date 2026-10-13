@@ -452,6 +452,7 @@ mod fully_clipped {
             iso: 100.0,
             sigma: 0.0,
             sigma_map: None,
+            noise: None,
             sharpen: None,
             lens: None,
         }

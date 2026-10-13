@@ -83,6 +83,8 @@ fn the_first_frame_runs_every_group_once_and_the_second_is_a_cache_hit() {
             color_plans: 1,
             grade_plans: 1,
             color_passes: 1,
+            // Output sharpening (default 100 %) is the last stage of every finished frame.
+            output_passes: 1,
             ..none()
         }
     );
@@ -94,7 +96,7 @@ fn the_first_frame_runs_every_group_once_and_the_second_is_a_cache_hit() {
             ..none()
         }
     );
-    // Without the frame cache only the per-pixel pass runs again.
+    // Without the frame cache only the per-pixel pass and the output stage run again.
     let again = rig.runs_with(
         &src,
         &rig.state,
@@ -107,6 +109,7 @@ fn the_first_frame_runs_every_group_once_and_the_second_is_a_cache_hit() {
         again,
         StageRuns {
             color_passes: 1,
+            output_passes: 1,
             ..none()
         }
     );
@@ -319,9 +322,10 @@ fn crop_straighten_and_orientation_re_run_nothing_but_the_pixel_pass() {
             r,
             StageRuns {
                 color_passes: 1,
+                output_passes: 1,
                 ..none()
             },
-            "{name}: only the sampling and the colour pass run"
+            "{name}: only the sampling, the colour pass and the output stage run"
         );
     }
 }

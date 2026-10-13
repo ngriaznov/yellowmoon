@@ -314,14 +314,15 @@ fn registry_round_trip() {
     {
         assert_eq!(b.profile, reg.default_profile, "{}", b.model);
     }
-    // The five default bodies of docs/03.
+    // The default bodies of docs/03: the five without a measured sibling, and the A7R V (390) and
+    // A7CR (396), whose same-sensor pairing with the A7R IV failed the ColorMatrix check.
     let defaults: Vec<u16> = reg
         .bodies
         .iter()
         .filter(|b| b.match_kind == BodyMatch::Default)
         .map(|b| b.model_id)
         .collect();
-    assert_eq!(defaults, vec![384, 400, 392, 407, 410]);
+    assert_eq!(defaults, vec![390, 396, 384, 400, 392, 407, 410]);
 }
 
 #[test]
@@ -390,9 +391,25 @@ fn files_named_by_the_profiles_exist_and_match_their_provenance() {
     assert!(!t.provenance.caveats.is_empty());
 }
 
+/// The largest per-coefficient difference a recorded check states: `pass: max |diff| 0.0000 per
+/// coefficient (limit 0.02); ...` gives 0.0.
+fn recorded_diff(result: &str) -> (bool, f64) {
+    let (verdict, rest) = result
+        .split_once(": max |diff| ")
+        .unwrap_or_else(|| panic!("no recorded value in {result:?}"));
+    let value = rest
+        .split_whitespace()
+        .next()
+        .and_then(|v| v.parse::<f64>().ok())
+        .unwrap_or_else(|| panic!("no number after max |diff| in {result:?}"));
+    (verdict == "pass", value)
+}
+
 #[test]
 fn every_same_sensor_pairing_has_a_recorded_check() {
-    // docs/03: "Record the check in the profile's `provenance`."
+    // docs/03: "Record the check in the profile's `provenance`." V1 runs it with LibRaw's camera
+    // matrices (`tests/py/sibling_matrices.py`, which `--verify`s these numbers against a fresh run):
+    // every same-sensor body needs a numeric result within 0.02, from a named tool and version.
     let s = store();
     let mut pairings = 0;
     for b in s
@@ -410,13 +427,238 @@ fn every_same_sensor_pairing_has_a_recorded_check() {
             .find(|c| c.pairing.starts_with(&needle))
             .unwrap_or_else(|| panic!("{}: no provenance check for {needle}", p.id));
         assert!(
-            check.result.starts_with("pending"),
+            !check.result.starts_with("pending"),
             "{needle}: {}",
             check.result
-        ); // no converted samples in V1
+        );
+        let (passed, diff) = recorded_diff(&check.result);
+        assert!(passed, "{needle}: {}", check.result);
+        assert!((0.0..=0.02).contains(&diff), "{needle}: max |diff| {diff}");
+        assert!(
+            check.result.contains("LibRaw 0.22.1") && check.result.contains("rawpy 0.27.1"),
+            "{needle}: the tool and its version are recorded: {}",
+            check.result
+        );
+        assert!(
+            check.check.contains("0.02"),
+            "{needle}: the limit is recorded: {}",
+            check.check
+        );
         pairings += 1;
     }
-    assert_eq!(pairings, 12);
+    assert_eq!(pairings, 10);
+    // The two pairings that failed (A7R V and A7CR against the A7R IV) do not ship as siblings: the
+    // body has match kind default, and the failed measurement stays in the A7R IV profile.
+    let a7r4 = s.profile_by_name("sony-ilce-7rm4").unwrap();
+    for (model, id) in [("ILCE-7RM5", 390u16), ("ILCE-7CR", 396)] {
+        let body = s.registry().body_by_model_id(id).unwrap();
+        assert_eq!(body.model, model);
+        assert_eq!(body.match_kind, BodyMatch::Default, "{model}");
+        assert_eq!(
+            body.profile, a7r4.id,
+            "{model} still renders with the A7R IV profile"
+        );
+        assert!(
+            body.notes.contains("did not pass") && body.notes.contains("0.0934"),
+            "{}",
+            body.notes
+        );
+        let check = a7r4
+            .provenance
+            .checks
+            .iter()
+            .find(|c| {
+                c.pairing
+                    .starts_with(&format!("{model} ({id}) was considered"))
+            })
+            .unwrap_or_else(|| panic!("no failed check recorded for {model}"));
+        let (passed, diff) = recorded_diff(&check.result);
+        assert!(!passed && diff > 0.02, "{}", check.result);
+        assert!(diff > 0.09 && diff < 0.095, "{}", check.result);
+    }
+}
+
+#[test]
+fn bodies_carry_published_sensor_geometry_with_its_source() {
+    // docs/algorithms/03 section 2.2: `sensor_width_mm` and `active_width_px` per body, the source in
+    // the entry. 27 of 28 bodies have them; the FX3 has none (Sony gives its stills only as "12M").
+    let s = store();
+    let reg = s.registry();
+    let mut with = 0;
+    for b in &reg.bodies {
+        match b.sensor() {
+            None => {
+                assert_eq!(b.model, "ILME-FX3");
+                assert!(b.sensor_source.is_none() && b.sensor_source_kind.is_none());
+            }
+            Some(g) => {
+                with += 1;
+                assert!(
+                    b.sensor_source.as_deref().is_some_and(|t| t.len() > 20),
+                    "{}: the source is recorded",
+                    b.model
+                );
+                assert!(b.sensor_source_kind.is_some());
+                let pitch = 1000.0 * g.sensor_width_mm / f64::from(g.active_width_px);
+                assert_eq!(g.pixel_pitch_um, pitch, "{}", b.model);
+                assert!((0.5..=20.0).contains(&pitch), "{}: {pitch}", b.model);
+            }
+        }
+    }
+    assert_eq!(with, 27);
+    // Known pitches (the maker's figure for the A7R IV is 3.76 um, the A7 III 5.93 um, the A7S III
+    // 8.4 um, the A1 4.16 um, the RX100 IV 2.4 um).
+    let pitch = |id: u16| {
+        reg.body_by_model_id(id)
+            .unwrap()
+            .sensor()
+            .unwrap()
+            .pixel_pitch_um
+    };
+    for (id, want) in [
+        (375u16, 3.76),
+        (363, 5.93),
+        (383, 8.4),
+        (384, 4.16),
+        (341, 2.41),
+        (371, 3.92),
+    ] {
+        assert!(
+            (pitch(id) - want).abs() < 0.01,
+            "{id}: {} vs {want}",
+            pitch(id)
+        );
+    }
+    // Bodies of one sensor agree on its pitch within 2 %.
+    for b in reg
+        .bodies
+        .iter()
+        .filter(|b| b.match_kind == BodyMatch::SensorFamily)
+    {
+        let (Some(own), Some(base)) = (
+            b.sensor(),
+            reg.exact_body(&b.profile).and_then(|e| e.sensor()),
+        ) else {
+            continue;
+        };
+        assert!(
+            (own.pixel_pitch_um / base.pixel_pitch_um - 1.0).abs() < 0.02,
+            "{}",
+            b.model
+        );
+    }
+    // The detection result carries it (and a body without it has none).
+    let m = s.detect("SONY", "ILCE-7RM4", Some(375));
+    assert_eq!(m.sensor.unwrap().active_width_px, 9504);
+    assert!(s.detect("SONY", "ILME-FX3", Some(385)).sensor.is_none());
+    assert!(s.detect("SONY", "ILCE-7M6", Some(60000)).sensor.is_none());
+    // A forced profile keeps the sensor of the body.
+    let forced = s
+        .detect_forced("SONY", "ILCE-7RM4", Some(375), "sony-ilce-7m3")
+        .unwrap();
+    assert_eq!(forced.sensor, m.sensor);
+}
+
+#[test]
+fn the_registry_schema_and_rules_refuse_broken_sensor_fields() {
+    let rv = validator("registry.schema.json");
+    let text = std::fs::read_to_string(data_root().join("cameras/registry.json")).unwrap();
+    let registry: Value = serde_json::from_str(&text).unwrap();
+    let a7r4 = registry["bodies"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .position(|b| b["model_id"] == 375)
+        .unwrap();
+    type Mutation = Box<dyn Fn(&mut Value)>;
+    let broken: Vec<(&str, Mutation)> = vec![
+        (
+            "width without the pixel count",
+            Box::new(|b| {
+                b.as_object_mut().unwrap().remove("active_width_px");
+            }),
+        ),
+        (
+            "pixel count without the width",
+            Box::new(|b| {
+                b.as_object_mut().unwrap().remove("sensor_width_mm");
+            }),
+        ),
+        (
+            "no source",
+            Box::new(|b| {
+                b.as_object_mut().unwrap().remove("sensor_source");
+            }),
+        ),
+        (
+            "no source kind",
+            Box::new(|b| {
+                b.as_object_mut().unwrap().remove("sensor_source_kind");
+            }),
+        ),
+        (
+            "unknown source kind",
+            Box::new(|b| {
+                b["sensor_source_kind"] = json!("guess");
+            }),
+        ),
+        (
+            "empty source",
+            Box::new(|b| {
+                b["sensor_source"] = json!("");
+            }),
+        ),
+        (
+            "negative width",
+            Box::new(|b| {
+                b["sensor_width_mm"] = json!(-35.7);
+            }),
+        ),
+        (
+            "fractional pixel count",
+            Box::new(|b| {
+                b["active_width_px"] = json!(9504.5);
+            }),
+        ),
+        (
+            "pitch override outside 0.5 to 20",
+            Box::new(|b| {
+                b["pixel_pitch_um"] = json!(25.0);
+            }),
+        ),
+    ];
+    for (name, mutate) in broken {
+        let mut doc = registry.clone();
+        mutate(&mut doc["bodies"][a7r4]);
+        assert!(!rv.is_valid(&doc), "the registry schema accepted: {name}");
+    }
+    // The pitch override is allowed and the typed value uses it.
+    let mut doc = registry.clone();
+    doc["bodies"][a7r4]["pixel_pitch_um"] = json!(3.8);
+    assert!(rv.is_valid(&doc));
+    let parsed = Registry::parse(&doc.to_string()).unwrap();
+    assert_eq!(parsed.bodies[a7r4].sensor().unwrap().pixel_pitch_um, 3.8);
+    // A width over the schema's maximum of 100 mm is refused by the schema.
+    let mut doc = registry.clone();
+    doc["bodies"][a7r4]["sensor_width_mm"] = json!(400.0);
+    assert!(!rv.is_valid(&doc), "400 mm");
+    // What the schema cannot say: the pitch the width and pixel count give must be plausible
+    // (100 mm over 2000 px is 50 um).
+    doc["bodies"][a7r4]["sensor_width_mm"] = json!(100.0);
+    doc["bodies"][a7r4]["active_width_px"] = json!(2000);
+    assert!(rv.is_valid(&doc));
+    let err = Registry::parse(&doc.to_string()).unwrap_err().to_string();
+    assert!(
+        err.contains("ILCE-7RM4") && err.contains("pixel pitch"),
+        "{err}"
+    );
+    let mut doc = registry;
+    doc["bodies"][a7r4]
+        .as_object_mut()
+        .unwrap()
+        .remove("active_width_px");
+    let err = Registry::parse(&doc.to_string()).unwrap_err().to_string();
+    assert!(err.contains("come together"), "{err}");
 }
 
 /// Copies the shipped registry, target and profile files into a temporary data root.

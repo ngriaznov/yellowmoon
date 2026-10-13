@@ -11200,6 +11200,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tiff",
  "ym-color",
+ "ym-gpu",
  "zune-jpeg",
 ]
 
@@ -11209,6 +11210,7 @@ version = "0.0.1"
 dependencies = [
  "bytemuck",
  "half",
+ "libm",
  "naga",
  "png 0.18.1",
  "pollster",
@@ -11219,6 +11221,7 @@ dependencies = [
  "tracing",
  "wgpu",
  "ym-color",
+ "ym-noise",
 ]
 
 [[package]]

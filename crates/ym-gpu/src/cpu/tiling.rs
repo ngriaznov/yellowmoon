@@ -7,6 +7,7 @@
 //! chains this over a list of stages, last stage first, to find what must be decoded for one tile.
 
 use super::lens::LensGeometry;
+use super::sharpen::CaptureSharpen;
 
 /// An axis-aligned pixel rectangle: `[x, x + w) x [y, y + h)`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -206,13 +207,9 @@ pub enum Stage<'a> {
         /// Whether the detail term needs a classical demosaic of the same tile.
         needs_classical: bool,
     },
-    /// R8 Richardson-Lucy.
-    Sharpen {
-        /// Iteration count `n`.
-        iterations: usize,
-        /// Largest PSF standard deviation in the frame (the corner value).
-        sigma_max_px: f32,
-    },
+    /// R8 capture sharpening: Richardson-Lucy or diffraction deconvolution, each with its own halo
+    /// ([`CaptureSharpen::halo_px`]).
+    Sharpen(CaptureSharpen),
     /// R9 distortion and CA resample.
     Lens(&'a LensGeometry),
 }
@@ -249,10 +246,7 @@ impl Stage<'_> {
                     guided
                 }
             }
-            Stage::Sharpen {
-                iterations,
-                sigma_max_px,
-            } => sharpen_halo(iterations, sigma_max_px),
+            Stage::Sharpen(method) => method.halo_px(),
             Stage::Lens(_) => 0,
         }
     }
@@ -301,6 +295,7 @@ pub fn required_input_rect(stages: &[Stage<'_>], out: Rect, frame: Rect) -> Rect
 
 #[cfg(test)]
 mod tests {
+    use super::super::sharpen::SharpenParams;
     use super::*;
 
     #[test]
@@ -358,6 +353,40 @@ mod tests {
     }
 
     #[test]
+    fn each_capture_sharpening_method_has_its_own_halo() {
+        use super::super::sharpen::diffraction::DiffractionParams;
+        let rl = |amount| {
+            CaptureSharpen::RichardsonLucy(SharpenParams {
+                amount,
+                radius_px: 0.8,
+            })
+        };
+        // Richardson-Lucy: 2 n ceil(3 sigma_max), capped at 24 px.
+        assert_eq!(Stage::Sharpen(rl(120.0)).halo_px(), 24);
+        assert_eq!(Stage::Sharpen(rl(60.0)).halo_px(), 12);
+        assert_eq!(Stage::Sharpen(rl(300.0)).halo_px(), SHARPEN_HALO_CAP_PX);
+        // Diffraction: 10 + R + r_G of the plan (spec 03 section 1.5), not capped by the RL limit.
+        let d = |pitch, f| {
+            Stage::Sharpen(CaptureSharpen::Diffraction(DiffractionParams::new(
+                pitch, f,
+            )))
+        };
+        assert_eq!(d(3.76, 2.8).halo_px(), 13);
+        assert_eq!(d(3.76, 8.0).halo_px(), 15);
+        assert_eq!(d(3.76, 16.0).halo_px(), 18);
+        assert_eq!(d(3.76, 50.0).halo_px(), 22);
+        assert_eq!(d(2.4, 45.0).halo_px(), 24);
+        // An inactive stage returns its input and needs no context.
+        assert_eq!(d(3.76, 0.0).halo_px(), 0);
+        assert_eq!(d(0.0, 8.0).halo_px(), 0);
+        // The walk back uses the method's halo.
+        let frame = Rect::whole(1000, 800);
+        let out = Rect::new(400, 300, 100, 100);
+        let need = required_input_rect(&[d(3.76, 16.0)], out, frame);
+        assert_eq!(need, Rect::new(382, 282, 136, 136));
+    }
+
+    #[test]
     fn backwards_walk_accumulates_halos() {
         use super::super::demosaic::Method;
         let frame = Rect::whole(1000, 800);
@@ -367,10 +396,10 @@ mod tests {
             Stage::Highlights,
             Stage::Demosaic(Method::Menon),
             Stage::Denoise { radius_px: 2 },
-            Stage::Sharpen {
-                iterations: 2,
-                sigma_max_px: 1.0,
-            },
+            Stage::Sharpen(CaptureSharpen::RichardsonLucy(SharpenParams {
+                amount: 60.0,
+                radius_px: 0.8,
+            })),
         ];
         let out = Rect::new(400, 300, 100, 100);
         let need = required_input_rect(&chain, out, frame);

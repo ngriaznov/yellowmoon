@@ -97,6 +97,7 @@ fn every_stage_matches_the_cpu_trace() {
             all.into_iter()
                 .filter(|(name, _)| {
                     name.starts_with("full/viewport")
+                        || name.starts_with("saturation")
                         || name.starts_with("baked-look/srgb/25")
                         || name.starts_with("display-lut/p3")
                         || name.starts_with("logc3-look/35")

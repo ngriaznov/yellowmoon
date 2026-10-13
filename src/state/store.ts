@@ -201,6 +201,7 @@ const DIRECT_KEYS: ReadonlySet<string> = new Set([
   "light_source",
   "color_balance",
   "saturation",
+  "output_sharpening",
   "curve",
   "decode",
   "rolloff",

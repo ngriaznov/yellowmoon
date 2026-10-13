@@ -191,6 +191,9 @@ fn inapplicable(args: &RenderArgs, format: FormatKind) -> Vec<&'static str> {
         if args.long_edge.is_some() {
             out.push("--long-edge (not for DNG)");
         }
+        if args.output_sharpening.is_some() {
+            out.push("--output-sharpening (not for DNG)");
+        }
     }
     out
 }

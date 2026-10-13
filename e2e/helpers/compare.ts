@@ -28,6 +28,9 @@ const BUDGETS: Readonly<Record<string, number>> = {
   "photos-light": 0.01,
   // The DNG note carries the sentence about other apps, Adobe's notice and the white-balance caveat (docs/09 §Legal): about five lines more than the mockup.
   "export-dng": 0.02,
+  // The Sharpening card has a third row, Output (the owner's decision of 2026-10-13, docs/11): the card is 38 px taller than
+  // the mockup's and the Noise reduction card sits 38 px lower. Measured 1.06 % on 2026-10-13.
+  "photos-detail": 0.02,
   // The mockup shows the zip as arrived and Next ready; the app waits for the file, so the footer's line and button differ.
   "import-2-get-files": 0.006,
 };

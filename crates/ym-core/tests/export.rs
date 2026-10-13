@@ -25,6 +25,7 @@ use ym_core::session::{PhotoId, Session};
 use ym_core::settings::{Crop, CropAspect, NormRect, Orientation, SettingsPatch};
 use ym_export::naming::Placement;
 use ym_export::{BitDepth, ColorSpace, ExportOptions, FormatKind, IfExists, Size, TiffCompression};
+use ym_gpu::cpu::output_sharpen::OutputSharpen;
 use ym_gpu::queue::CancelToken;
 use ym_looks::library::LookId;
 use ym_raw::testgen::{ArwBuilder, GpsSpec};
@@ -142,6 +143,13 @@ fn edit(session: &Session, id: PhotoId, patch: SettingsPatch) {
     session.update_settings(id, &patch).expect("settings");
 }
 
+fn output_sharpening(pct: f64) -> SettingsPatch {
+    SettingsPatch {
+        output_sharpening: Some(pct),
+        ..SettingsPatch::default()
+    }
+}
+
 fn crop_of(x: f64, y: f64, w: f64, h: f64) -> SettingsPatch {
     SettingsPatch {
         crop: Some(Some(Crop {
@@ -180,7 +188,49 @@ fn a_16_bit_tiff_is_the_full_render_encoded_without_a_dither() {
     assert!(report.bytes > 0 && !report.skipped);
     assert!(matches!(report.placement, Placement::Written(_)));
 
-    // The file's samples are exactly the render's display-linear values through C13.
+    // The file's samples are exactly the render's display-linear values, sharpened by the Output
+    // slider's default (100 %, at the full size: scale 1), through C13.
+    let rendered = ctx
+        .renderer()
+        .render_full(
+            &photo.source,
+            &FullRequest {
+                target: FullTarget::DisplayLinear(OutputTarget::Srgb),
+            },
+            &CancelToken::new(),
+        )
+        .expect("render");
+    assert_eq!(photo.source.settings.output_sharpening, 100.0);
+    let sharpened = OutputSharpen::screen()
+        .with_amount_pct(100.0)
+        .apply_interleaved(rendered.width, rendered.height, &rendered.rgb, 1.0)
+        .expect("sharpen");
+    assert_ne!(sharpened, rendered.rgb, "the stage changes this patchwork");
+    let bytes = read(&report.path);
+    let tiff = Tiff::new(&bytes).expect("a TIFF");
+    let (w, h, samples) = tiff.uncompressed_u16_rgb(tiff.ifd0());
+    assert_eq!((w, h), (W as usize, H as usize));
+    assert_eq!((rendered.width, rendered.height), (w, h));
+    for (i, px) in sharpened.chunks_exact(3).enumerate() {
+        let lin = [f64::from(px[0]), f64::from(px[1]), f64::from(px[2])];
+        let want = encode_quantized(lin, OutputSpace::Srgb, 16);
+        assert_eq!(&samples[3 * i..3 * i + 3], &want, "pixel {i}");
+    }
+}
+
+#[test]
+fn with_the_output_slider_at_zero_the_file_is_the_render_encoded_as_it_was_before_the_stage() {
+    let src = tempfile::tempdir().expect("dir");
+    write_photo(src.path(), "DSC00001.ARW", |b| b);
+    let d = open_dir(src);
+    let (home, out) = (
+        tempfile::tempdir().expect("h"),
+        tempfile::tempdir().expect("o"),
+    );
+    let ctx = export_context(home.path());
+    edit(&d.session, d.id, output_sharpening(0.0));
+    let photo = photo_of(&d);
+    let report = export_ok(&ctx, &photo, tiff16(out.path()));
     let rendered = ctx
         .renderer()
         .render_full(
@@ -193,14 +243,42 @@ fn a_16_bit_tiff_is_the_full_render_encoded_without_a_dither() {
         .expect("render");
     let bytes = read(&report.path);
     let tiff = Tiff::new(&bytes).expect("a TIFF");
-    let (w, h, samples) = tiff.uncompressed_u16_rgb(tiff.ifd0());
-    assert_eq!((w, h), (W as usize, H as usize));
-    assert_eq!((rendered.width, rendered.height), (w, h));
+    let (_, _, samples) = tiff.uncompressed_u16_rgb(tiff.ifd0());
     for (i, px) in rendered.rgb.chunks_exact(3).enumerate() {
         let lin = [f64::from(px[0]), f64::from(px[1]), f64::from(px[2])];
         let want = encode_quantized(lin, OutputSpace::Srgb, 16);
         assert_eq!(&samples[3 * i..3 * i + 3], &want, "pixel {i}");
     }
+    // The settings the file records say so.
+    let xmp = xmp_of(&bytes).expect("xmp");
+    let settings = xmp_property(&xmp, "ym:Settings")
+        .expect("settings")
+        .replace("&quot;", "\"")
+        .replace("&amp;", "&");
+    let json: serde_json::Value = serde_json::from_str(&settings).expect("JSON");
+    assert_eq!(json["output_sharpening"], serde_json::json!(0.0));
+}
+
+#[test]
+fn output_sharpening_is_recorded_in_the_xmp_settings() {
+    let src = tempfile::tempdir().expect("dir");
+    write_photo(src.path(), "DSC00001.ARW", |b| b);
+    let d = open_dir(src);
+    let (home, out) = (
+        tempfile::tempdir().expect("h"),
+        tempfile::tempdir().expect("o"),
+    );
+    let ctx = export_context(home.path());
+    edit(&d.session, d.id, output_sharpening(35.0));
+    let report = export_ok(&ctx, &photo_of(&d), tiff16(out.path()));
+    let bytes = read(&report.path);
+    let xmp = xmp_of(&bytes).expect("xmp");
+    let settings = xmp_property(&xmp, "ym:Settings")
+        .expect("settings")
+        .replace("&quot;", "\"")
+        .replace("&amp;", "&");
+    let json: serde_json::Value = serde_json::from_str(&settings).expect("JSON");
+    assert_eq!(json["output_sharpening"], serde_json::json!(35.0));
 }
 
 #[test]
@@ -508,24 +586,60 @@ fn a_crop_is_a_window_on_the_uncropped_export() {
     );
     let ctx = export_context(home.path());
 
+    // With the output sharpening off the window is the same pixels everywhere. (The crop origin is
+    // rounded to a whole pixel.)
+    edit(&d.session, d.id, output_sharpening(0.0));
     let full = export_ok(&ctx, &photo_of(&d), tiff16(&out.path().join("full")));
     edit(&d.session, d.id, crop_of(0.25, 0.125, 0.5, 0.5));
     let cropped = export_ok(&ctx, &photo_of(&d), tiff16(&out.path().join("crop")));
     assert_eq!((cropped.width, cropped.height), (300, 200));
-
-    let (fb, cb) = (read(&full.path), read(&cropped.path));
-    let (ft, ct) = (Tiff::new(&fb).expect("t"), Tiff::new(&cb).expect("t"));
-    let (_, _, full_px) = ft.uncompressed_u16_rgb(ft.ifd0());
-    let (cw, ch, crop_px) = ct.uncompressed_u16_rgb(ct.ifd0());
-    // The crop origin is rounded to a whole pixel: the window is the same pixels.
-    let (x0, y0) = (150usize, 50usize);
-    for y in 0..ch {
-        for x in 0..cw {
-            let a = &crop_px[3 * (y * cw + x)..][..3];
-            let b = &full_px[3 * ((y + y0) * W as usize + x + x0)..][..3];
-            assert_eq!(a, b, "({x},{y})");
+    let window = |full: &ExportReport, cropped: &ExportReport, margin: usize| {
+        let (fb, cb) = (read(&full.path), read(&cropped.path));
+        let (ft, ct) = (Tiff::new(&fb).expect("t"), Tiff::new(&cb).expect("t"));
+        let (_, _, full_px) = ft.uncompressed_u16_rgb(ft.ifd0());
+        let (cw, ch, crop_px) = ct.uncompressed_u16_rgb(ct.ifd0());
+        let (x0, y0) = (150usize, 50usize);
+        let mut same = 0usize;
+        let mut differ = 0usize;
+        for y in 0..ch {
+            for x in 0..cw {
+                let a = &crop_px[3 * (y * cw + x)..][..3];
+                let b = &full_px[3 * ((y + y0) * W as usize + x + x0)..][..3];
+                let inner = x >= margin && y >= margin && x + margin < cw && y + margin < ch;
+                if inner {
+                    assert_eq!(a, b, "({x},{y})");
+                    same += 1;
+                } else if a != b {
+                    differ += 1;
+                }
+            }
         }
-    }
+        (same, differ)
+    };
+    let (same, differ) = window(&full, &cropped, 0);
+    assert_eq!((same, differ), (300 * 200, 0));
+
+    // With the stage on, the crop's own edge is the picture's edge and the stage mirrors there:
+    // the window is still the same pixels further from that edge than the stage's receptive field
+    // (21 px is its bound for the screen preset), and the rim may differ.
+    edit(&d.session, d.id, output_sharpening(100.0));
+    edit(
+        &d.session,
+        d.id,
+        SettingsPatch {
+            crop: Some(None),
+            ..SettingsPatch::default()
+        },
+    );
+    let full = export_ok(&ctx, &photo_of(&d), tiff16(&out.path().join("full-sharp")));
+    edit(&d.session, d.id, crop_of(0.25, 0.125, 0.5, 0.5));
+    let cropped = export_ok(&ctx, &photo_of(&d), tiff16(&out.path().join("crop-sharp")));
+    let (same, differ) = window(&full, &cropped, 21);
+    assert_eq!(same, (300 - 42) * (200 - 42));
+    assert!(
+        differ > 0,
+        "the rim of a sharpened crop mirrors at its own edge"
+    );
 }
 
 #[test]

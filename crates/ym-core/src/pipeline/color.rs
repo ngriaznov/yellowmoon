@@ -33,9 +33,11 @@ use ym_color::look::LookTransform;
 use ym_color::tone::ToneParams;
 use ym_looks::library::{DisplayInput, Library, LookId};
 use ym_profiles::profile::Profile;
+use ym_profiles::registry::SensorGeometry;
 use ym_raw::decode::RawImage;
 
 use super::RenderError;
+use super::raw::{CaptureMethod, DEFAULT_CAPTURE_METHOD};
 use crate::auto::AutoEstimates;
 use crate::session::{PhotoId, PhotoView, PickedWhite, ThumbnailInput};
 use crate::settings::{CurvePoint, DevelopSettings};
@@ -226,6 +228,12 @@ pub struct PhotoSource {
     /// A fingerprint of the decoded pixels and levels: the graph drops its caches when the photo
     /// behind an id is not the one it cached (a second session, or a file that changed).
     pub fingerprint: u64,
+    /// The published geometry of the camera's sensor, when the registry has it for this body
+    /// (`CameraMatch::sensor`): the pixel pitch of R8 diffraction deconvolution.
+    pub sensor: Option<SensorGeometry>,
+    /// Which R8 capture-sharpening method the photo gets: an internal switch (no settings field),
+    /// [`DEFAULT_CAPTURE_METHOD`] until the owner decides. Tests and the evaluation tools set it.
+    pub capture_method: CaptureMethod,
 }
 
 /// A cheap fingerprint of a decoded image: its size, levels, white balance and a few thousand
@@ -269,6 +277,8 @@ impl PhotoSource {
             settings: view.settings.clone(),
             pick: view.pick,
             fingerprint: raw_fingerprint(&raw),
+            sensor: view.camera.matched.sensor,
+            capture_method: DEFAULT_CAPTURE_METHOD,
             raw,
         }
     }
@@ -299,6 +309,8 @@ impl PhotoSource {
             settings: input.settings.clone(),
             pick: None,
             fingerprint: raw_fingerprint(input.raw),
+            sensor: input.camera.matched.sensor,
+            capture_method: DEFAULT_CAPTURE_METHOD,
         }
     }
 

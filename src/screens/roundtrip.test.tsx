@@ -217,11 +217,13 @@ describe("every control round-trips through update_settings", () => {
     await waitFor(() => expect(screen.getByRole("slider", { name: "Shadows colour balance" })).toHaveAttribute("aria-valuetext", "Centred"));
   });
 
-  it("Detail: Amount, Radius and Luminance, Colour, Detail, with Auto and Reset", async () => {
+  it("Detail: Amount, Radius, Output and Luminance, Colour, Detail, with Auto and Reset", async () => {
     const spy = await setup();
     await openTab(h, "Detail");
     expect(valueOf("Amount")).toBe("120");
     expect(valueOf("Radius")).toBe("0.8 px");
+    // The Output slider (the owner's decision of 2026-10-13): a plain percentage, 100 by default.
+    expect(valueOf("Output")).toBe("100%");
     expect(valueOf("Luminance")).toBe("30");
     const nr = within(screen.getByRole("region", { name: "Noise reduction" }));
     expect(nr.getByRole("button", { name: "Auto" })).toHaveAttribute("aria-pressed", "true");
@@ -229,6 +231,11 @@ describe("every control round-trips through update_settings", () => {
     await driveTyped(spy, [
       { label: "Amount", typed: "200", patch: { sharpen: { kind: "manual", amount: 200, radius_px: 0.8 } }, shows: "200" },
       { label: "Radius", typed: "1.5", patch: { sharpen: { kind: "manual", amount: 200, radius_px: 1.5 } }, shows: "1.5 px" },
+      // Output is its own field: a number, not an Auto or Manual pair, and it lands on the grid of 5.
+      { label: "Output", typed: "35", patch: { output_sharpening: 35 }, shows: "35%" },
+      { label: "Output", typed: "52", patch: { output_sharpening: 50 }, shows: "50%" },
+      { label: "Output", typed: "250", patch: { output_sharpening: 200 }, shows: "200%" },
+      { label: "Output", typed: "0", patch: { output_sharpening: 0 }, shows: "0%" },
       { label: "Luminance", typed: "60", patch: { noise_reduction: { kind: "manual", luminance: 60, color: 50, detail: 50 } }, shows: "60" },
       { label: "Colour", typed: "20", patch: { noise_reduction: { kind: "manual", luminance: 60, color: 20, detail: 50 } }, shows: "20" },
       { label: "Detail", typed: "70", patch: { noise_reduction: { kind: "manual", luminance: 60, color: 20, detail: 70 } }, shows: "70" },
@@ -240,11 +247,28 @@ describe("every control round-trips through update_settings", () => {
     expect(await lastPatch(spy, "NR auto")).toEqual({ noise_reduction: { kind: "auto" } });
     await waitFor(() => expect(valueOf("Luminance")).toBe("30"));
 
+    // Output's own Reset goes back to 100, as a number (it has no Auto).
+    spy.mockClear();
+    await h.user.click(screen.getByRole("button", { name: "Reset Output" }));
+    expect(await lastPatch(spy, "Output reset")).toEqual({ output_sharpening: 100 });
+    await waitFor(() => expect(valueOf("Output")).toBe("100%"));
+    // The arrow keys step by 5, Shift by 50, and the ends are 0 and 200.
+    spy.mockClear();
+    sliderOf("Output").focus();
+    await h.user.keyboard("{ArrowRight}");
+    expect(await lastPatch(spy, "Output key")).toEqual({ output_sharpening: 105 });
+    await h.user.keyboard("{End}");
+    await waitFor(() => expect(valueOf("Output")).toBe("200%"));
+    await h.user.keyboard("{Home}");
+    await waitFor(() => expect(valueOf("Output")).toBe("0%"));
+
+    // The card's Reset puts the whole card back: Amount and Radius to Auto, Output to 100.
     spy.mockClear();
     await h.user.click(within(screen.getByRole("region", { name: "Sharpening" })).getByRole("button", { name: "Reset" }));
-    expect(await lastPatch(spy, "Sharpening reset")).toEqual({ sharpen: { kind: "auto" } });
+    expect(await lastPatch(spy, "Sharpening reset")).toEqual({ sharpen: { kind: "auto" }, output_sharpening: 100 });
     await waitFor(() => expect(valueOf("Amount")).toBe("120"));
     expect(valueOf("Radius")).toBe("0.8 px");
+    expect(valueOf("Output")).toBe("100%");
 
     // One slider's own Reset moves only that value.
     await type("Radius", "2");

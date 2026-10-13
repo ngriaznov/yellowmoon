@@ -9,8 +9,10 @@
 //! * [`RawPlan`]: everything fixed by the file and the RAW-tab switches (levels at the area's
 //!   parity, the vignetting profile, the lens maps and their auto crop).
 //! * **Full resolution** ([`FullChain`]): `cpu::chain::Chain` with the real settings, run whole or
-//!   tile by tile (`run_tile`). Demosaic is the classical Menon; the neural switch falls back to it
-//!   (see [`crate::pipeline::NeuralStatus`]).
+//!   tile by tile (`run_tile`). Demosaic is the classical Menon unless an internal switch
+//!   ([`RenderOptions::demosaic`](super::graph::RenderOptions::demosaic), set by tests and
+//!   evaluation tools) names another method; the neural switch falls back to it (see
+//!   [`crate::pipeline::NeuralStatus`]).
 //! * **Reduced resolution** ([`reduced_bayer`]): the fit view and the thumbnails. R1, R4 and R5 run
 //!   on the full mosaic, the photosites are then binned `k x k` per colour (a box filter is the
 //!   demosaic at 1/k scale: every output pixel has its own red, green and blue), the vignetting
@@ -30,15 +32,20 @@ use std::sync::Arc;
 use half::f16;
 use rayon::prelude::*;
 use ym_gpu::cpu::chain::{Chain, Prepared, RawFrame};
-use ym_gpu::cpu::demosaic::DEFAULT_METHOD;
+use ym_gpu::cpu::demosaic::{DEFAULT_METHOD, Method};
 use ym_gpu::cpu::denoise::{self, BilateralParams};
 use ym_gpu::cpu::detail::{self, NoiseReduction};
 use ym_gpu::cpu::highlights::{self, OffsetAccumulator};
 use ym_gpu::cpu::lens::{LensGeometry, LensSwitches, LensTags};
 use ym_gpu::cpu::normalize::{self, Levels};
-use ym_gpu::cpu::sharpen::{self, SharpenParams};
+use ym_gpu::cpu::sharpen::diffraction::{
+    DiffractionParams, DiffractionPlan, F_NUMBER_MAX, F_NUMBER_MIN, SPEC_LUMA,
+};
+use ym_gpu::cpu::sharpen::{self, CaptureSharpen, SharpenParams};
 use ym_gpu::cpu::vignette::VignetteProfile;
-use ym_gpu::cpu::{Cfa, CfaColor as GpuColor, LUMA, Mosaic, NoiseSigma, Placement, Rect, RgbImage};
+use ym_gpu::cpu::{
+    Cfa, CfaColor as GpuColor, LUMA, Mosaic, NoiseDn, NoiseSigma, Placement, Rect, RgbImage,
+};
 use ym_gpu::queue::CancelToken;
 use ym_noise::model::NoiseModel;
 use ym_noise::sigma_map::{HalfPlanes, QstepMap, SigmaParams, sigma_quad};
@@ -189,6 +196,104 @@ pub struct RawParams {
     pub iso: f32,
     /// The noise model (the sigma map).
     pub noise: NoiseModel,
+    /// The controls of R8 diffraction deconvolution, `Some` only when that method was chosen
+    /// ([`CaptureMethod`]) and the photo has what it needs ([`diffraction_params`]: an f-number
+    /// from 1 to 50 and a usable pixel pitch). `None` runs Richardson-Lucy with
+    /// [`sharpen`](Self::sharpen), which is also what a `Some` falls back to when the plan turns
+    /// out inactive ([`capture_sharpen`](Self::capture_sharpen)). Internal: not part of the
+    /// settings.
+    pub diffraction: Option<DiffractionParams>,
+}
+
+/// Which R8 capture-sharpening method a photo is given (`docs/algorithms/03-diffraction-deconvolution.md`
+/// section 1.2). An internal switch with no settings field and no UI: Richardson-Lucy is the
+/// default until the owner decides (RA-H2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CaptureMethod {
+    /// Richardson-Lucy with a Gaussian PSF.
+    #[default]
+    RichardsonLucy,
+    /// Diffraction deconvolution from the f-number and the pixel pitch; Richardson-Lucy when the
+    /// photo has no usable f-number or pitch.
+    Diffraction,
+}
+
+/// The method every photo gets. Changing it changes every render, so it moves only with the
+/// owner's decision (RA-H2).
+pub const DEFAULT_CAPTURE_METHOD: CaptureMethod = CaptureMethod::RichardsonLucy;
+
+/// The 35 mm film diagonal in micrometres, `sqrt(36^2 + 24^2) mm` as the spec writes it
+/// (`docs/algorithms/03-diffraction-deconvolution.md` section 2.2).
+const DIAGONAL_35MM_UM: f64 = 43_266.6;
+/// The smallest pixel pitch the stage accepts, in micrometres (spec section 2.2).
+pub const PITCH_MIN_UM: f64 = 0.5;
+/// The largest pixel pitch the stage accepts, in micrometres (spec section 2.2).
+pub const PITCH_MAX_UM: f64 = 20.0;
+
+/// Where the pixel pitch of a photo came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PitchSource {
+    /// The camera registry (`sensor_width_mm` and `active_width_px`, or the stated pitch).
+    Registry,
+    /// The EXIF crop factor (`focal_length_35mm / focal_length_mm`) and the size of the frame.
+    CropFactor,
+}
+
+/// The pixel pitch of a photo in micrometres and the image pixels per sensor pixel, with where the
+/// pitch came from, or `None` when the photo has neither (spec section 2.2):
+///
+/// 1. the registry's [`SensorGeometry`](ym_profiles::registry::SensorGeometry) of the body: its
+///    pitch, with `scale = frame_width / active_width_px` for a camera-processed reduced file
+///    (Lossless M or S; the camera has downscaled the image) and 1 for every mosaic file (a crop
+///    mode does not change the pitch);
+/// 2. else the EXIF crop factor, `crop = focal_length_35mm / focal_length_mm`, with
+///    `pitch = 43266.6 / (crop * sqrt(W^2 + H^2))` for the `W x H` frame R8 receives; that is
+///    already the pitch of the delivered image, so `scale = 1` also for a reduced file;
+/// 3. a result outside 0.5 to 20 micrometres counts as not available.
+#[must_use]
+pub fn pixel_pitch(
+    meta: &ym_raw::metadata::RawMetadata,
+    sensor: Option<&ym_profiles::registry::SensorGeometry>,
+    frame_width: usize,
+    frame_height: usize,
+    reduced: bool,
+) -> Option<(f64, f64, PitchSource)> {
+    let usable = |pitch: f64| pitch.is_finite() && (PITCH_MIN_UM..=PITCH_MAX_UM).contains(&pitch);
+    if let Some(sensor) = sensor
+        && usable(sensor.pixel_pitch_um)
+        && sensor.active_width_px > 0
+    {
+        let scale = if reduced {
+            frame_width as f64 / f64::from(sensor.active_width_px)
+        } else {
+            1.0
+        };
+        return Some((sensor.pixel_pitch_um, scale, PitchSource::Registry));
+    }
+    let focal = meta.focal_length_mm.filter(|f| f.is_finite() && *f > 0.0)?;
+    let focal_35mm = f64::from(meta.focal_length_35mm.filter(|f| *f > 0)?);
+    let crop = focal_35mm / focal;
+    let diagonal_px = (frame_width as f64).hypot(frame_height as f64);
+    let pitch = DIAGONAL_35MM_UM / (crop * diagonal_px);
+    usable(pitch).then_some((pitch, 1.0, PitchSource::CropFactor))
+}
+
+/// The controls of R8 diffraction deconvolution for a photo, or `None` when the stage is inactive
+/// for it: no f-number, an f-number of 0 (manual lenses often write it), `NaN` or outside 1 to 50,
+/// or no usable pixel pitch ([`pixel_pitch`]). The caller then runs Richardson-Lucy.
+#[must_use]
+pub fn diffraction_params(
+    meta: &ym_raw::metadata::RawMetadata,
+    sensor: Option<&ym_profiles::registry::SensorGeometry>,
+    frame_width: usize,
+    frame_height: usize,
+    reduced: bool,
+) -> Option<DiffractionParams> {
+    let f_number = meta
+        .f_number
+        .filter(|f| (F_NUMBER_MIN..=F_NUMBER_MAX).contains(f))?;
+    let (pitch_um, scale, _) = pixel_pitch(meta, sensor, frame_width, frame_height, reduced)?;
+    Some(DiffractionParams::new(pitch_um, f_number).with_scale(scale))
 }
 
 /// A cache key for [`RawParams`]: the same numbers, bit for bit.
@@ -217,7 +322,29 @@ impl RawParams {
             g(self.iso),
         ];
         k.extend(self.noise_key_parts().map(f));
+        match self.diffraction {
+            None => k.push(0),
+            Some(d) => {
+                k.push(1);
+                k.extend(d.pixel_pitch_um.map(f));
+                k.extend([f(d.f_number), f(d.scale), g(d.strength)]);
+            }
+        }
         RawParamsKey(k)
+    }
+
+    /// The R8 method to run and its controls (`None`: R8 is skipped). Diffraction deconvolution when
+    /// [`diffraction`](Self::diffraction) is set and its plan is active for the gains and the noise
+    /// model; otherwise Richardson-Lucy when [`sharpen`](Self::sharpen) asks for any iteration.
+    #[must_use]
+    pub fn capture_sharpen(&self) -> Option<CaptureSharpen> {
+        if let Some(d) = self.diffraction
+            && DiffractionPlan::new(&d, self.g0, &NoiseDn::from_model(&self.noise), SPEC_LUMA)
+                .is_some()
+        {
+            return Some(CaptureSharpen::Diffraction(d));
+        }
+        (self.sharpen.iterations() > 0).then_some(CaptureSharpen::RichardsonLucy(self.sharpen))
     }
 
     /// The numbers of the noise model that the sigma map reads.
@@ -1037,8 +1164,18 @@ pub fn reduced_rgb(
             img = detail::inject_detail(&img, c, params.noise_reduction.beta())
                 .map_err(RenderError::from_cpu)?;
         }
-        if params.sharpen.iterations() > 0 {
-            img = sharpen::richardson_lucy(&img, &params.sharpen, &ns);
+        match params.capture_sharpen() {
+            Some(CaptureSharpen::RichardsonLucy(p)) => {
+                img = sharpen::richardson_lucy(&img, &p, &ns);
+            }
+            Some(CaptureSharpen::Diffraction(d)) => {
+                // `capture_sharpen` returned it because the plan is active, so this always plans.
+                let noise = NoiseDn::from_model(&params.noise);
+                if let Some(plan) = DiffractionPlan::new(&d, g0, &noise, SPEC_LUMA) {
+                    img = plan.apply(&img);
+                }
+            }
+            None => {}
         }
     }
     Ok(img)
@@ -1063,7 +1200,8 @@ pub struct FullChain {
 }
 
 impl FullChain {
-    /// Builds the chain for a mosaic frame and runs [`Chain::prepare`].
+    /// Builds the chain for a mosaic frame with the default R6 method ([`DEFAULT_METHOD`]) and
+    /// runs [`Chain::prepare`].
     ///
     /// # Errors
     ///
@@ -1075,6 +1213,26 @@ impl FullChain {
         sigma: &SigmaPlane,
         cancel: &CancelToken,
     ) -> Result<Self, RenderError> {
+        Self::with_method(frame, plan, params, sigma, DEFAULT_METHOD, cancel)
+    }
+
+    /// [`FullChain::new`] with the R6 demosaic `method`: the renderer passes
+    /// [`RenderOptions::demosaic`](super::graph::RenderOptions::demosaic). The chain gets the R4
+    /// gains and the noise model of `params`, which the adaptive ratio demosaic reads; it undoes R4
+    /// on each tile itself (`Chain::run_tile`), so every method returns the balanced image.
+    ///
+    /// # Errors
+    ///
+    /// As [`FullChain::new`]; also [`RenderError::Image`] when `method` is the adaptive ratio
+    /// demosaic and the gains or the noise model are unusable.
+    pub fn with_method(
+        frame: &FrameData,
+        plan: &RawPlan,
+        params: &RawParams,
+        sigma: &SigmaPlane,
+        method: Method,
+        cancel: &CancelToken,
+    ) -> Result<Self, RenderError> {
         debug_assert!(!frame.reduced);
         let scale = detail::network_sigma_scale(params.noise_reduction.luminance, params.iso);
         let chain = Chain {
@@ -1082,13 +1240,14 @@ impl FullChain {
             vignette: plan.vignette.clone(),
             gains: params.g0,
             highlight_recovery: params.highlight_recovery && plan.has_clipped,
-            method: DEFAULT_METHOD,
+            method,
             denoise: (scale > 0.0).then(BilateralParams::default),
             noise_reduction: params.noise_reduction,
             iso: params.iso,
             sigma: 0.0,
             sigma_map: Some(full_sigma_map(sigma, plan)),
-            sharpen: (params.sharpen.iterations() > 0).then_some(params.sharpen),
+            noise: Some(NoiseDn::from_model(&params.noise)),
+            sharpen: params.capture_sharpen(),
             lens: plan.lens.clone(),
         };
         cancelled(cancel)?;
@@ -1179,6 +1338,49 @@ mod tests {
         }
     }
 
+    /// The chain runs R5 on the mosaic after R4, where a clipped photosite sits at `g0` of its
+    /// colour: the levels of the three colours are unequal and R5 levels each superpixel up to the
+    /// largest bound. The cases above clip at 1.0 everywhere, so they do not exercise that; this
+    /// one gives the mosaic the gains `[2.0, 1.0, 1.7]` the way R4 does (the case of
+    /// `tiled_reconstruction_equals_whole_with_unequal_clip_levels` in ym-gpu) and asks again that
+    /// the banded run is the whole-frame one.
+    #[test]
+    fn banded_recovery_equals_the_whole_frame_one_with_unequal_clip_levels() {
+        const G0: [f32; 3] = [2.0, 1.0, 1.7];
+        let (w, h) = (210usize, 700usize);
+        for (gain, seed) in [(1.9f32, 3u64), (1.3, 4), (2.6, 5)] {
+            let (mut a, mask) = clipped(w, h, gain, seed);
+            for (i, v) in a.data.iter_mut().enumerate() {
+                *v *= G0[Cfa::RGGB.color_at(i % w, i / w).plane()];
+            }
+            let before = a.clone();
+            let mut b = a.clone();
+            assert!(mask.count() > 100, "the scene must clip");
+            reconstruct_banded(&mut a, &mask).expect("banded");
+            highlights::reconstruct(&mut b, &mask).expect("whole");
+            assert!(
+                max_diff(&a, &b) <= 1e-5,
+                "gain {gain}: banded differs from whole by {}",
+                max_diff(&a, &b)
+            );
+            assert!(
+                max_diff(&a, &before) > 0.01,
+                "gain {gain}: something was reconstructed"
+            );
+            // The levelling is active: some clipped green photosite, whose own clip level is 1.0,
+            // has been raised towards the largest bound, 2.0 (red's level).
+            let leveled = (0..w * h).any(|i| {
+                mask.data[i] != 0
+                    && Cfa::RGGB.color_at(i % w, i / w) == GpuColor::Green
+                    && a.data[i] > 1.5
+            });
+            assert!(
+                leveled,
+                "gain {gain}: no clipped green photosite was levelled"
+            );
+        }
+    }
+
     #[test]
     fn banded_recovery_handles_a_blob_at_a_band_boundary_and_an_untouched_frame() {
         let (w, h) = (96usize, 520usize);
@@ -1241,6 +1443,7 @@ mod tests {
                 },
                 iso: 100.0,
                 noise: NoiseModel::new(1e-4, 1e-6),
+                diffraction: None,
             };
             let plan = RawPlan::new(&raw, &frame, &params).expect("plan");
             assert_eq!(plan.has_clipped, clip);
@@ -1255,6 +1458,60 @@ mod tests {
             .expect("normalize");
             assert_eq!(mask.count() > 0, clip);
         }
+    }
+
+    #[test]
+    fn the_full_chain_carries_the_noise_model_on_the_working_scale() {
+        let (w, h) = (64u32, 48u32);
+        let data = vec![4000u16; (w * h) as usize];
+        let bytes = ym_raw::testgen::ArwBuilder::new("ILCE-7RM4", w, h)
+            .black([512; 4])
+            .white([16300; 3])
+            .build(&data);
+        let raw = std::sync::Arc::new(
+            ym_raw::decode::decode_bytes(&bytes, &ym_raw::decode::DecodeOptions::default())
+                .expect("decode"),
+        );
+        let frame = FrameData::new(&raw).expect("frame");
+        let params = RawParams {
+            g0: [2.0, 1.0, 1.6],
+            neural_demosaic: true,
+            highlight_recovery: true,
+            lens_corrections: true,
+            chromatic_aberration: true,
+            noise_reduction: NoiseReduction {
+                luminance: 0.0,
+                color: 0.0,
+                detail: 0.0,
+            },
+            sharpen: SharpenParams {
+                amount: 0.0,
+                radius_px: 0.8,
+            },
+            iso: 100.0,
+            noise: NoiseModel {
+                a: 2.0e-5,
+                b: 1.0e-8,
+                delta: [0.0; 4],
+                sigma_row: 3.0e-5,
+                q: 1.5e-5,
+            },
+            diffraction: None,
+        };
+        let plan = RawPlan::new(&raw, &frame, &params).expect("plan");
+        let sigma = SigmaPlane {
+            width: w as usize / 2,
+            height: h as usize / 2,
+            data: vec![0.01; (w as usize / 2) * (h as usize / 2)],
+        };
+        let full = FullChain::new(&frame, &plan, &params, &sigma, &CancelToken::new())
+            .expect("full chain");
+        let want = NoiseDn::from_model(&params.noise);
+        assert_eq!(full.chain.noise, Some(want));
+        // The numbers of docs/algorithms/INTEGRATION.md section 3.
+        assert_eq!(want.g, 65535.0 * 2.0e-5);
+        let r = 65535.0 * (1.0e-8 + 3.0e-5 * 3.0e-5 + 1.5e-5 * 1.5e-5 / 12.0_f64).sqrt();
+        assert_eq!(want.r, r);
     }
 
     #[test]
@@ -1465,4 +1722,555 @@ mod tests {
             );
         }
     }
+    // -----------------------------------------------------------------------------------------
+    // R8 diffraction deconvolution: pixel pitch, gate, method choice (RA-07)
+    // -----------------------------------------------------------------------------------------
+
+    use ym_profiles::registry::{ProfileStore, SensorGeometry};
+
+    /// The metadata of a synthetic ARW of `model` with the given f-number and focal lengths.
+    fn meta_of(
+        model: &str,
+        f_number: Option<f64>,
+        focal_mm: Option<f64>,
+        focal_35mm: Option<u16>,
+    ) -> ym_raw::metadata::RawMetadata {
+        let data = vec![4000u16; 16 * 16];
+        let bytes = ym_raw::testgen::ArwBuilder::new(model, 16, 16)
+            .black([512; 4])
+            .white([16300; 3])
+            .build(&data);
+        let mut meta =
+            ym_raw::decode::decode_bytes(&bytes, &ym_raw::decode::DecodeOptions::default())
+                .expect("decode")
+                .meta;
+        meta.f_number = f_number;
+        meta.focal_length_mm = focal_mm;
+        meta.focal_length_35mm = focal_35mm;
+        meta
+    }
+
+    fn sensor(width_mm: f64, width_px: u32) -> SensorGeometry {
+        SensorGeometry {
+            sensor_width_mm: width_mm,
+            active_width_px: width_px,
+            pixel_pitch_um: 1000.0 * width_mm / f64::from(width_px),
+        }
+    }
+
+    #[test]
+    fn the_registry_gives_the_pitch_and_a_reduced_file_its_scale() {
+        let meta = meta_of("ILCE-7RM4", Some(8.0), Some(50.0), Some(50));
+        let a7r4 = sensor(35.7, 9504);
+        // A mosaic file: the pitch of the sensor, scale 1, whatever the frame (a crop mode too).
+        for (w, h) in [(9504, 6336), (6240, 4160)] {
+            let (pitch, scale, source) =
+                pixel_pitch(&meta, Some(&a7r4), w, h, false).expect("pitch");
+            assert!((pitch - 3.7560).abs() < 1e-3, "{pitch}");
+            assert_eq!((scale, source), (1.0, PitchSource::Registry));
+        }
+        // Lossless M (6240 x 4160 from the 9504 px sensor): the camera downscaled the image.
+        let (pitch, scale, source) =
+            pixel_pitch(&meta, Some(&a7r4), 6240, 4160, true).expect("pitch");
+        assert!((pitch - 3.7560).abs() < 1e-3);
+        assert!((scale - 6240.0 / 9504.0).abs() < 1e-12, "{scale}");
+        assert_eq!(source, PitchSource::Registry);
+        // The controls carry both.
+        let d = diffraction_params(&meta, Some(&a7r4), 6240, 4160, true).expect("controls");
+        assert_eq!(d.f_number, 8.0);
+        assert!((d.scale - 6240.0 / 9504.0).abs() < 1e-12);
+        assert!((d.effective_pitch_um() - 3.7560 * 9504.0 / 6240.0).abs() < 2e-3);
+    }
+
+    #[test]
+    fn without_a_registry_sensor_the_crop_factor_gives_the_pitch() {
+        // Full frame at 50 mm: crop 1; pitch = 43266.6 / diagonal in pixels.
+        let meta = meta_of("ILCE-7RM4", Some(8.0), Some(50.0), Some(50));
+        let (pitch, scale, source) = pixel_pitch(&meta, None, 9504, 6336, false).expect("pitch");
+        let want = 43_266.6 / (9504.0f64).hypot(6336.0);
+        assert!((pitch - want).abs() < 1e-9, "{pitch} vs {want}");
+        assert!((pitch - 3.788).abs() < 0.001);
+        assert_eq!((scale, source), (1.0, PitchSource::CropFactor));
+        // The A7R IV's own pitch is 3.756: the formula is within 1 % here.
+        assert!((pitch / 3.756 - 1.0).abs() < 0.01);
+        // For 3:2 frames it equals 36000 / (crop * W).
+        assert!((pitch - 36_000.0 / 9504.0).abs() < 1e-3);
+        // APS-C (crop 1.5, 35 mm equivalent 75 for 50 mm) on a 6000 x 4000 frame: 4.0 um. The real
+        // pitch is 3.92 um (23.5 mm over 6000 px): the nominal crop of 1.5 is really 1.53, so the
+        // fallback is 2 % off, the error the spec expects of it.
+        let aps = meta_of("ILCE-6400", Some(5.6), Some(50.0), Some(75));
+        let (pitch, _, _) = pixel_pitch(&aps, None, 6000, 4000, false).expect("pitch");
+        assert!((pitch - 4.0).abs() < 1e-3, "{pitch}");
+        assert!((pitch / 3.917 - 1.0).abs() < 0.03, "{pitch}");
+        // A reduced file: the formula already gives the pitch of the delivered image, scale 1.
+        let (pitch, scale, source) = pixel_pitch(&meta, None, 6240, 4160, true).expect("pitch");
+        assert!((pitch - 43_266.6 / (6240.0f64).hypot(4160.0)).abs() < 1e-9);
+        assert_eq!((scale, source), (1.0, PitchSource::CropFactor));
+    }
+
+    #[test]
+    fn a_pitch_that_is_missing_or_outside_the_sanity_range_is_not_available() {
+        let meta = meta_of("ILCE-7RM4", Some(8.0), Some(50.0), Some(50));
+        // No registry, no focal lengths.
+        let none = meta_of("ILCE-7RM4", Some(8.0), None, None);
+        assert!(pixel_pitch(&none, None, 9504, 6336, false).is_none());
+        for (mm, eq) in [
+            (Some(0.0), Some(50)),
+            (Some(-5.0), Some(50)),
+            (Some(f64::NAN), Some(50)),
+            (Some(50.0), Some(0)),
+            (Some(50.0), None),
+            (None, Some(50)),
+        ] {
+            let m = meta_of("ILCE-7RM4", Some(8.0), mm, eq);
+            assert!(
+                pixel_pitch(&m, None, 9504, 6336, false).is_none(),
+                "{mm:?} {eq:?}"
+            );
+        }
+        // A tiny frame (100 x 60 px) would be a 371 um pitch; a huge one under 0.5 um.
+        assert!(pixel_pitch(&meta, None, 100, 60, false).is_none());
+        assert!(pixel_pitch(&meta, None, 200_000, 133_000, false).is_none());
+        // The limits themselves are inside (0.5 and 20 um).
+        let at = |pitch: f64| {
+            let diag = 43_266.6 / pitch;
+            let w = (diag * 0.832_050_294_337_843_8).round() as usize; // 3:2
+            let h = (diag * 0.554_700_196_225_229_1).round() as usize;
+            pixel_pitch(&meta, None, w, h, false)
+        };
+        assert!(at(0.6).is_some() && at(19.0).is_some());
+        assert!(at(0.4).is_none() && at(25.0).is_none());
+        // A registry sensor outside the range is ignored (the crop factor takes over).
+        let silly = SensorGeometry {
+            sensor_width_mm: 36.0,
+            active_width_px: 100,
+            pixel_pitch_um: 360.0,
+        };
+        let (_, _, source) = pixel_pitch(&meta, Some(&silly), 9504, 6336, false).expect("fallback");
+        assert_eq!(source, PitchSource::CropFactor);
+    }
+
+    #[test]
+    fn the_f_number_gate_is_one_to_fifty() {
+        let a7r4 = sensor(35.7, 9504);
+        let params = |f: Option<f64>| {
+            let meta = meta_of("ILCE-7RM4", f, Some(50.0), Some(50));
+            diffraction_params(&meta, Some(&a7r4), 9504, 6336, false)
+        };
+        for bad in [
+            None,
+            Some(0.0),
+            Some(0.99),
+            Some(50.01),
+            Some(f64::NAN),
+            Some(-4.0),
+            Some(f64::INFINITY),
+        ] {
+            assert!(params(bad).is_none(), "{bad:?}");
+        }
+        for ok in [1.0, 1.4, 2.8, 8.0, 22.0, 50.0] {
+            let d = params(Some(ok)).expect("active");
+            assert_eq!((d.f_number, d.strength, d.scale), (ok, 1.0, 1.0));
+        }
+    }
+
+    #[test]
+    fn the_registry_of_the_data_folder_gives_every_listed_body_a_pitch_the_chain_accepts() {
+        let store =
+            ProfileStore::load(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data"))
+                .expect("the data folder");
+        let mut with_sensor = 0;
+        for b in &store.registry().bodies {
+            let meta = meta_of(&b.model, Some(8.0), Some(35.0), Some(35));
+            let found = store.detect(&meta.make, &meta.model, meta.model_id);
+            assert_eq!(found.sensor.is_some(), b.sensor().is_some(), "{}", b.model);
+            // With the sensor the registry pitch is used, without it the crop factor (35 mm lens,
+            // crop 1, on a frame of the body's own pixel width and 3:2).
+            let w = b.active_width_px.map_or(6000, |w| w as usize);
+            let (pitch, _, source) =
+                pixel_pitch(&meta, found.sensor.as_ref(), w, w * 2 / 3, false).expect("a pitch");
+            assert!(
+                (PITCH_MIN_UM..=PITCH_MAX_UM).contains(&pitch),
+                "{}: {pitch}",
+                b.model
+            );
+            if let Some(s) = found.sensor {
+                with_sensor += 1;
+                assert_eq!(source, PitchSource::Registry);
+                assert_eq!(pitch, s.pixel_pitch_um);
+            } else {
+                assert_eq!(
+                    (b.model.as_str(), source),
+                    ("ILME-FX3", PitchSource::CropFactor)
+                );
+            }
+        }
+        assert_eq!(with_sensor, 27);
+        // A body the registry does not list has no sensor: the crop factor (or nothing).
+        let meta = meta_of("ILCE-7M6", Some(8.0), Some(50.0), Some(50));
+        let found = store.detect(&meta.make, &meta.model, meta.model_id);
+        assert!(found.sensor.is_none());
+    }
+
+    fn params_for_tests() -> RawParams {
+        RawParams {
+            g0: [2.0, 1.0, 1.6],
+            neural_demosaic: true,
+            highlight_recovery: true,
+            lens_corrections: true,
+            chromatic_aberration: true,
+            noise_reduction: NoiseReduction {
+                luminance: 0.0,
+                color: 0.0,
+                detail: 0.0,
+            },
+            sharpen: SharpenParams {
+                amount: 120.0,
+                radius_px: 0.8,
+            },
+            iso: 400.0,
+            noise: NoiseModel::new(3e-5, 4e-8),
+            diffraction: None,
+        }
+    }
+
+    #[test]
+    fn richardson_lucy_is_the_default_and_the_fallback() {
+        assert_eq!(DEFAULT_CAPTURE_METHOD, CaptureMethod::RichardsonLucy);
+        assert_eq!(CaptureMethod::default(), CaptureMethod::RichardsonLucy);
+        let mut p = params_for_tests();
+        // No diffraction controls: Richardson-Lucy with the resolved amount and radius.
+        assert_eq!(
+            p.capture_sharpen(),
+            Some(CaptureSharpen::RichardsonLucy(p.sharpen))
+        );
+        // Amount 0: R8 is skipped.
+        p.sharpen.amount = 0.0;
+        assert_eq!(p.capture_sharpen(), None);
+        // Diffraction controls with an active plan: Diffraction, whatever the RL amount.
+        let d = DiffractionParams::new(3.76, 11.0);
+        p.diffraction = Some(d);
+        assert_eq!(p.capture_sharpen(), Some(CaptureSharpen::Diffraction(d)));
+        p.sharpen.amount = 120.0;
+        assert_eq!(p.capture_sharpen(), Some(CaptureSharpen::Diffraction(d)));
+        // A plan that is inactive (a bad gain) falls back to Richardson-Lucy.
+        p.g0 = [2.0, f32::NAN, 1.6];
+        assert_eq!(
+            p.capture_sharpen(),
+            Some(CaptureSharpen::RichardsonLucy(p.sharpen))
+        );
+        // The cache key tells the two apart, and tells controls apart.
+        let mut q = params_for_tests();
+        let key_rl = q.key();
+        q.diffraction = Some(d);
+        let key_d = q.key();
+        assert_ne!(key_rl, key_d);
+        q.diffraction = Some(d.with_scale(0.5));
+        assert_ne!(key_d, q.key());
+        q.diffraction = Some(d);
+        assert_eq!(key_d, q.key());
+    }
+
+    /// A frame with a step edge and some texture, exposed to half scale, as a raw file.
+    fn edge_frame(w: u32, h: u32) -> (Arc<RawImage>, FrameData) {
+        let mut data = vec![0u16; (w * h) as usize];
+        let mut rng = synth::Rng::new(5);
+        for y in 0..h {
+            for x in 0..w {
+                // A soft vertical edge at x = w / 2 (blurred over about 3 px) and a tilted one.
+                let t = ((f64::from(x) - f64::from(w) / 2.0) / 3.0).tanh() * 0.5 + 0.5;
+                let u = ((f64::from(x) + 0.6 * f64::from(y) - f64::from(w) / 3.0) / 4.0).tanh()
+                    * 0.5
+                    + 0.5;
+                let v = 0.05 + 0.35 * t + 0.1 * u + 0.002 * f64::from(rng.gaussian());
+                data[(y * w + x) as usize] = (512.0 + v.clamp(0.0, 1.0) * 15788.0) as u16;
+            }
+        }
+        let bytes = ym_raw::testgen::ArwBuilder::new("ILCE-7RM4", w, h)
+            .black([512; 4])
+            .white([16300; 3])
+            .build(&data);
+        let raw = Arc::new(
+            ym_raw::decode::decode_bytes(&bytes, &ym_raw::decode::DecodeOptions::default())
+                .expect("decode"),
+        );
+        let frame = FrameData::new(&raw).expect("frame");
+        (raw, frame)
+    }
+
+    #[test]
+    fn the_full_chain_runs_the_chosen_method_and_tiles_equal_the_whole_frame() {
+        let (w, h) = (160u32, 120u32);
+        let (raw, frame) = edge_frame(w, h);
+        let sigma = SigmaPlane {
+            width: w as usize / 2,
+            height: h as usize / 2,
+            data: vec![0.004; (w as usize / 2) * (h as usize / 2)],
+        };
+        let mut params = params_for_tests();
+        params.highlight_recovery = false;
+        let plan = RawPlan::new(&raw, &frame, &params).expect("plan");
+        let run = |p: &RawParams| {
+            let full =
+                FullChain::new(&frame, &plan, p, &sigma, &CancelToken::new()).expect("chain");
+            let whole = full
+                .run_tile(&frame, Rect::whole(full.out_w, full.out_h))
+                .expect("whole frame");
+            (full, whole)
+        };
+        let (rl_chain, rl) = run(&params);
+        assert!(matches!(
+            rl_chain.chain.sharpen,
+            Some(CaptureSharpen::RichardsonLucy(_))
+        ));
+        let mut with_d = params;
+        with_d.diffraction = Some(DiffractionParams::new(3.76, 16.0));
+        let (d_chain, d) = run(&with_d);
+        assert!(matches!(
+            d_chain.chain.sharpen,
+            Some(CaptureSharpen::Diffraction(_))
+        ));
+        assert!(
+            rl.max_abs_diff(&d) > 1e-4,
+            "the two methods give different pixels"
+        );
+        // Without R8 the output differs from both.
+        let mut off = params;
+        off.sharpen.amount = 0.0;
+        let (_, plain) = run(&off);
+        assert!(plain.max_abs_diff(&d) > 1e-4 && plain.max_abs_diff(&rl) > 1e-4);
+        // Inactive controls (f/0, a pitch of 0): Richardson-Lucy, the same bits as the default.
+        for bad in [
+            DiffractionParams::new(3.76, 0.0),
+            DiffractionParams::new(0.0, 8.0),
+        ] {
+            let mut p = params;
+            p.diffraction = Some(bad);
+            let (chain, img) = run(&p);
+            assert!(matches!(
+                chain.chain.sharpen,
+                Some(CaptureSharpen::RichardsonLucy(_))
+            ));
+            assert_eq!(img, rl);
+        }
+        // Tiles with the plan's halo give the whole frame (the R8 stage is exact; the rest is 1e-4).
+        let tiles = ym_gpu::cpu::tiling::tile_grid(d_chain.out_w, d_chain.out_h, 64, 48, 2);
+        let mut tiled = RgbImage::new(d_chain.out_w, d_chain.out_h);
+        for core in tiles {
+            let t = d_chain.run_tile(&frame, core).expect("tile");
+            tiled.paste(&t, Rect::whole(core.w, core.h), core.x, core.y);
+        }
+        assert!(d.max_abs_diff(&tiled) <= 1e-4, "{}", d.max_abs_diff(&tiled));
+    }
+
+    /// RA-04: a full render with the adaptive ratio demosaic forced (what
+    /// `RenderOptions::demosaic` does) is the whole-frame `demosaic_with` call.
+    ///
+    /// How it is compared: every stage but R1, R4 and R6 is off (no denoise, no R7 control, no R8,
+    /// no lens, no vignetting, no highlight recovery), so the chain's whole-frame output must be
+    /// the demosaic of the balanced mosaic that R1 and R4 make, done by hand here over the whole
+    /// frame, bit for bit; and so must every tile of a grid (tile versus whole).
+    #[test]
+    fn a_full_render_with_the_adaptive_ratio_demosaic_is_the_whole_frame_demosaic() {
+        let (w, h) = (160u32, 120u32);
+        let (raw, frame) = edge_frame(w, h);
+        let sigma = SigmaPlane {
+            width: w as usize / 2,
+            height: h as usize / 2,
+            data: vec![0.004; (w as usize / 2) * (h as usize / 2)],
+        };
+        let models = [
+            // SNR at 18 % grey above 25 dB: shadow matching off, halo 11.
+            NoiseModel::new(3e-5, 4e-8),
+            // 23.9 dB: shadow matching on, halo 13.
+            NoiseModel {
+                a: 5e-4,
+                b: 4e-5,
+                delta: [0.0; 4],
+                sigma_row: 1e-3,
+                q: 0.0,
+            },
+        ];
+        let mut default_bits = None;
+        for model in models {
+            let mut params = params_for_tests();
+            params.highlight_recovery = false;
+            params.lens_corrections = false;
+            params.chromatic_aberration = false;
+            params.sharpen.amount = 0.0;
+            params.noise = model;
+            let plan = RawPlan::new(&raw, &frame, &params).expect("plan");
+            let build = |method: Method| {
+                FullChain::with_method(&frame, &plan, &params, &sigma, method, &CancelToken::new())
+                    .expect("chain")
+            };
+            let full = build(Method::AdaptiveRatio);
+            let c = &full.chain;
+            assert_eq!(c.method, Method::AdaptiveRatio);
+            assert!(
+                c.vignette.is_none()
+                    && c.lens.is_none()
+                    && c.denoise.is_none()
+                    && c.sharpen.is_none(),
+                "only R1, R4 and R6 are left in this chain: vignette {:?}, lens {:?}, denoise {:?}, sharpen {:?}",
+                c.vignette.is_some(),
+                c.lens.is_some(),
+                c.denoise,
+                c.sharpen
+            );
+            assert_eq!(c.gains, params.g0);
+            assert_eq!(c.noise, Some(NoiseDn::from_model(&model)));
+            let whole = full
+                .run_tile(&frame, Rect::whole(full.out_w, full.out_h))
+                .expect("whole frame");
+
+            // By hand: R1 and R4 over the whole frame, then one whole-frame `demosaic_with`.
+            let (mut m, _) = normalize::normalize(
+                frame.data(),
+                frame.width,
+                frame.height,
+                frame.cfa,
+                &plan.levels,
+                frame.qstep.as_deref(),
+            )
+            .expect("normalize");
+            ym_gpu::cpu::gains::apply_gains(&mut m, params.g0);
+            let inputs = ym_gpu::cpu::demosaic::DemosaicInputs {
+                gains: params.g0,
+                noise: NoiseDn::from_model(&model),
+                ca: None,
+            };
+            let by_hand =
+                ym_gpu::cpu::demosaic::demosaic_whole_with(&m, Method::AdaptiveRatio, &inputs);
+            assert_eq!(whole, by_hand, "the chain is the whole-frame demosaic");
+
+            // Tile versus whole: tiles of a grid that does not divide the frame.
+            for (tw, th) in [(64, 48), (50, 38)] {
+                let mut tiled = RgbImage::new(full.out_w, full.out_h);
+                for core in ym_gpu::cpu::tiling::tile_grid(full.out_w, full.out_h, tw, th, 2) {
+                    let t = full.run_tile(&frame, core).expect("tile");
+                    tiled.paste(&t, Rect::whole(core.w, core.h), core.x, core.y);
+                }
+                assert_eq!(tiled, whole, "tiles of {tw} x {th} against the whole frame");
+            }
+
+            // The default method is untouched by the new constructor, and is another picture.
+            let default = FullChain::new(&frame, &plan, &params, &sigma, &CancelToken::new())
+                .expect("default chain");
+            assert_eq!(default.chain.method, DEFAULT_METHOD);
+            let menon = build(DEFAULT_METHOD)
+                .run_tile(&frame, Rect::whole(full.out_w, full.out_h))
+                .expect("default whole frame");
+            let default_whole = default
+                .run_tile(&frame, Rect::whole(full.out_w, full.out_h))
+                .expect("default whole frame");
+            assert_eq!(default_whole, menon);
+            assert!(whole.max_abs_diff(&menon) > 1e-4, "the methods differ");
+            default_bits.get_or_insert(menon);
+        }
+        // Menon ignores the noise model, so both runs of the default method are the same picture.
+        assert!(default_bits.is_some());
+    }
+
+    #[test]
+    fn the_adaptive_ratio_chain_refuses_gains_it_cannot_divide_by() {
+        let (w, h) = (64u32, 48u32);
+        let (raw, frame) = edge_frame(w, h);
+        let sigma = SigmaPlane {
+            width: w as usize / 2,
+            height: h as usize / 2,
+            data: vec![0.004; (w as usize / 2) * (h as usize / 2)],
+        };
+        let mut params = params_for_tests();
+        params.highlight_recovery = false;
+        let plan = RawPlan::new(&raw, &frame, &params).expect("plan");
+        params.g0 = [2.0, 1.0, 0.0];
+        let refused = FullChain::with_method(
+            &frame,
+            &plan,
+            &params,
+            &sigma,
+            Method::AdaptiveRatio,
+            &CancelToken::new(),
+        );
+        assert!(matches!(refused, Err(RenderError::Image(m)) if m.contains("adaptive ratio")));
+        // A method that does not divide is not asked.
+        FullChain::with_method(
+            &frame,
+            &plan,
+            &params,
+            &sigma,
+            Method::Menon,
+            &CancelToken::new(),
+        )
+        .expect("Menon runs");
+    }
+
+    #[test]
+    fn a_reduced_camera_file_runs_the_chosen_method_too() {
+        // The camera-processed path (Lossless M and S) has its own R8 call, in `reduced_rgb`.
+        let (w, h) = (96u32, 64u32);
+        let mut rgb = Vec::new();
+        for _y in 0..h {
+            for x in 0..w {
+                let t = ((f64::from(x) - 48.0) / 2.5).tanh() * 0.5 + 0.5;
+                for c in 0..3 {
+                    rgb.push((1024.0 + (0.05 + 0.4 * t) * (1.0 + 0.1 * c as f64) * 14000.0) as u16);
+                }
+            }
+        }
+        let bytes = ym_raw::testgen::ArwBuilder::new("ILCE-7RM4", w, h)
+            .lossless_ms(ym_raw::testgen::LosslessMs::new(
+                ym_raw::layout::ChromaSubsampling::Yuv420,
+                rgb,
+                w,
+                h,
+                [1.0, 1.0, 1.0],
+            ))
+            .build(&[]);
+        let raw = Arc::new(
+            ym_raw::decode::decode_bytes(&bytes, &ym_raw::decode::DecodeOptions::default())
+                .expect("decode"),
+        );
+        assert!(raw.is_reduced());
+        let frame = FrameData::new(&raw).expect("frame");
+        let mut params = params_for_tests();
+        params.g0 = [1.0, 1.0, 1.0];
+        let plan = RawPlan::new(&raw, &frame, &params).expect("plan");
+        let run = |p: &RawParams| {
+            reduced_rgb(&frame, &plan, p, 1, &CancelToken::new()).expect("reduced render")
+        };
+        let rl = run(&params);
+        let mut with_d = params;
+        with_d.diffraction = Some(DiffractionParams::new(3.76, 16.0).with_scale(0.66));
+        let d = run(&with_d);
+        assert!(
+            rl.max_abs_diff(&d) > 1e-4,
+            "the two methods give different pixels"
+        );
+        // Inactive controls give the Richardson-Lucy bits of the default.
+        let mut inactive = params;
+        inactive.diffraction = Some(DiffractionParams::new(3.76, 0.0));
+        assert_eq!(run(&inactive), rl);
+        // R8 off: neither.
+        let mut off = params;
+        off.sharpen.amount = 0.0;
+        let plain = run(&off);
+        assert!(plain.max_abs_diff(&d) > 1e-4 && plain.max_abs_diff(&rl) > 1e-4);
+        // The diffraction result is the plan applied to the R7 output (here: plain).
+        let plan_d = DiffractionPlan::new(
+            &DiffractionParams::new(3.76, 16.0).with_scale(0.66),
+            params.g0,
+            &NoiseDn::from_model(&params.noise),
+            SPEC_LUMA,
+        )
+        .expect("active");
+        assert_eq!(plan_d.apply(&plain), d);
+    }
 }
+
+#[cfg(test)]
+mod ra03b_eval;
+
+#[cfg(test)]
+mod ra07_eval;

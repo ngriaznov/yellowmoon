@@ -29,6 +29,16 @@ tracing.workspace = true
 # PNG bytes of the thumbnails and look tiles (MIT OR Apache-2.0, already in the workspace).
 png.workspace = true
 
+[features]
+# TEST-ONLY. Lets the environment variable `YM_FORCE_DEMOSAIC=<method name>` choose the R6 demosaic
+# method of the full-resolution render (`pipeline::forced_demosaic`), so that tests can start the
+# `ym` binary with another method and compare it with the app's path
+# (`docs/algorithms/01-adaptive-ratio-demosaic.md` section 9). Off by default and never enabled by a
+# build of the app or of `ym` that ships: only by the dev-dependencies of `ym-cli` and by an explicit
+# `cargo build -p ym-cli --features force-demosaic` for the separately built parity binary. Without
+# the feature no code reads the variable.
+force-demosaic = []
+
 [dev-dependencies]
 tempfile.workspace = true
 # Captures what the code logs, to check that no file path reaches the log at info level and above

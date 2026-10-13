@@ -153,6 +153,9 @@ fn main() {
             let (t, _) = frame(&src.with_settings(s), &st);
             println!("  white-balance edit (colour and grade groups): {t:.0} ms");
         }
+        if label == "CPU" {
+            output_sharpening_rows(&r, &src, &cancel);
+        }
         // 100 % view of a 1440 x 960 cell.
         let image = r.final_size(&src, &cancel).expect("size");
         let mut st = ViewportState::new(ViewportRect::cell(1440.0, 960.0, 1.0));
@@ -198,5 +201,66 @@ fn main() {
                 r.ledger().peak() as f64 / 1048576.0
             );
         }
+    }
+}
+
+/// Output sharpening, the last stage (`docs/01` Render graph, `docs/algorithms/04`): what moving the
+/// Output slider costs on a viewport frame whose display-linear picture is cached (the stage, then
+/// C13 and the letterbox), for a 2 MP fit frame and for a 512 px tile of the 100 % view, against
+/// the same frame with the stage off. The default amount is 100, so every other number of this
+/// example includes the stage; this section is the only one that separates it.
+fn output_sharpening_rows(r: &Renderer, src: &PhotoSource, cancel: &CancelToken) {
+    println!("\n-- output sharpening (CPU; the stage and C13 on a cached display-linear frame) --");
+    let with_amount = |pct: f64| {
+        let mut s = src.settings.clone();
+        s.output_sharpening = pct;
+        src.with_settings(s)
+    };
+    let cached = |s: &PhotoSource, st: &ViewportState| {
+        let t = Instant::now();
+        let f = r
+            .viewport_frame(s, st, &FrameOptions::default(), cancel)
+            .expect("frame");
+        (ms(t.elapsed()), f)
+    };
+    let image = r.final_size(src, cancel).expect("size");
+    let fit = ViewportState::new(ViewportRect::cell(1730.0, 1155.0, 1.0));
+    let mut tile = ViewportState::new(ViewportRect::cell(512.0, 512.0, 1.0));
+    tile.set_mode(ViewportMode::Percent { value: 100.0 }, image);
+    for (name, st) in [
+        ("2 MP fit frame, 1730 x 1155", &fit),
+        ("512 px tile at 100 %", &tile),
+    ] {
+        let (cold, f) = cached(&with_amount(100.0), st);
+        println!(
+            "{name}: first frame {cold:.0} ms (1/{} resolution, frame {} x {})",
+            f.report.scale, f.width, f.height
+        );
+        // Moving the slider: the display-linear frame is served from its cache.
+        let mut times = Vec::new();
+        let mut stage = Vec::new();
+        for pct in [95.0, 90.0, 85.0, 80.0, 75.0] {
+            let (t, f) = cached(&with_amount(pct), st);
+            assert_eq!(
+                (f.report.runs.display_hits, f.report.runs.output_passes),
+                (1, 1)
+            );
+            assert_eq!(f.report.runs.raw_work() + f.report.runs.color_passes, 0);
+            times.push(t);
+            stage.push(f.report.timings.output_ms);
+        }
+        let mean = |v: &[f64]| v.iter().sum::<f64>() / v.len() as f64;
+        println!(
+            "  slider move: {:.0} ms per frame ({:.0} ms in the stage and C13), {:.0} to {:.0} ms",
+            mean(&times),
+            mean(&stage),
+            times.iter().copied().fold(f64::MAX, f64::min),
+            times.iter().copied().fold(0.0, f64::max)
+        );
+        let (off, f) = cached(&with_amount(0.0), st);
+        println!(
+            "  the same frame with the stage off (the plain road: sample and colour pass): {off:.0} ms, colour pass {:.0} ms",
+            f.report.timings.pass_ms
+        );
     }
 }

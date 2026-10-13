@@ -2,7 +2,7 @@
 //! the WGSL compute kernels.
 //!
 //! Every kernel has a CPU reference in [`cpu`] and a parity test with a stated maximum absolute
-//! error. Depends on `ym-color` only for constants and reference functions used in parity tests.
+//! error. Depends on `ym-color` (constants and reference functions used in parity tests) and `ym-noise` (the noise model the raw algorithms take on the 16-bit working scale, `cpu::NoiseDn`).
 //! WGSL sources live in `src/shaders/`.
 //!
 //! Specs: `docs/01-architecture.md` sections GPU tiling and Scheduling and threads,

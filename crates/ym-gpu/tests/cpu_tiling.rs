@@ -9,7 +9,7 @@ use ym_gpu::cpu::denoise::{self, BilateralParams};
 use ym_gpu::cpu::detail::{self, NoiseReduction};
 use ym_gpu::cpu::gains;
 use ym_gpu::cpu::normalize::{self, Levels};
-use ym_gpu::cpu::sharpen::{self, SharpenParams};
+use ym_gpu::cpu::sharpen::{self, CaptureSharpen, SharpenParams};
 use ym_gpu::cpu::synth;
 use ym_gpu::cpu::tiling::{Halo, Rect, Stage, required_input_rect, sharpen_halo, tile_grid};
 use ym_gpu::cpu::vignette::{self, VignetteProfile};
@@ -136,11 +136,76 @@ fn demosaic_tiles_match_for_every_method_and_phase() {
                     |t| demosaic::demosaic_whole(t, method),
                     |o, r, from, x, y| o.paste(r, from, x, y),
                 );
+                // `max_abs_diff` ignores a NaN, so a tile that was read outside its region (the
+                // adaptive ratio demosaic fills what it has not written with NaN in debug builds)
+                // is checked for finiteness as well.
+                assert!(
+                    tiled.data.iter().all(|v| v.is_finite()),
+                    "R6 {} {} tile {:?}: not finite",
+                    method.name(),
+                    cfa.name(),
+                    tile
+                );
                 report(
                     &format!("R6 {} {} tile {:?}", method.name(), cfa.name(), tile),
                     whole.max_abs_diff(&tiled),
                     TOL,
                 );
+            }
+        }
+    }
+}
+
+/// The same with the per-frame inputs the chain passes (RA-04): unequal gains and a noise model
+/// whose SNR at 18 % grey is below 25 dB, so that the adaptive ratio demosaic runs with shadow
+/// colour matching (halo 13). The mosaic is the *balanced* one, as in the chain; the method
+/// divides by the gains inside, which is pointwise, so tiles still equal the whole frame.
+#[test]
+fn demosaic_tiles_match_with_the_gains_and_the_noise_of_the_chain() {
+    use ym_gpu::cpu::NoiseDn;
+    use ym_gpu::cpu::demosaic::DemosaicInputs;
+    const GAINS: [f32; 3] = [2.0, 1.0, 1.6];
+    let img = scene();
+    for cfa in Cfa::ALL {
+        let mut m = synth::mosaic_from_rgb(&img, cfa);
+        for (i, v) in m.data.iter_mut().enumerate() {
+            *v *= GAINS[cfa.color_at(i % W, i / W).plane()];
+        }
+        for (name, noise) in [
+            ("low", NoiseDn::new(1.311, 6.56)),
+            ("high", NoiseDn::new(32.77, 419.6)),
+        ] {
+            let inputs = DemosaicInputs {
+                gains: GAINS,
+                noise,
+                ca: None,
+            };
+            for method in Method::ALL {
+                let whole = demosaic::demosaic_whole_with(&m, method, &inputs);
+                for tile in [(64, 48), (33, 21)] {
+                    let tiled = mosaic_tiled(
+                        &m,
+                        method.halo(),
+                        tile,
+                        |t| demosaic::demosaic_whole_with(t, method, &inputs),
+                        |o, r, from, x, y| o.paste(r, from, x, y),
+                    );
+                    assert!(
+                        tiled.data.iter().all(|v| v.is_finite()),
+                        "R6 {} {} {name} tile {tile:?}: not finite",
+                        method.name(),
+                        cfa.name()
+                    );
+                    report(
+                        &format!(
+                            "R6 {} {} {name} noise tile {tile:?}",
+                            method.name(),
+                            cfa.name()
+                        ),
+                        whole.max_abs_diff(&tiled),
+                        TOL,
+                    );
+                }
             }
         }
     }
@@ -258,10 +323,10 @@ fn required_input_rect_covers_every_dependency() {
         Stage::Highlights,
         Stage::Demosaic(Method::Lmmse),
         Stage::Denoise { radius_px: 2 },
-        Stage::Sharpen {
-            iterations: 2,
-            sigma_max_px: 1.0,
-        },
+        Stage::Sharpen(CaptureSharpen::RichardsonLucy(SharpenParams {
+            amount: 60.0,
+            radius_px: 0.8,
+        })),
     ];
     let frame = Rect::whole(W, H);
     let p = SharpenParams {

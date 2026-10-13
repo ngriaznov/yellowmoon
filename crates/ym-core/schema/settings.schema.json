@@ -38,6 +38,13 @@
     },
     "saturation": { "$ref": "#/$defs/percent" },
     "sharpen": { "$ref": "#/$defs/sharpen" },
+    "output_sharpening": {
+      "description": "Detail > Sharpening > Output: the strength of the sharpening applied to the picture at the size it is shown or written, in percent (0 is off). A plain number, not Auto; the UI steps by 5. A document without it reads as 100.",
+      "type": "number",
+      "minimum": 0,
+      "maximum": 200,
+      "default": 100
+    },
     "noise_reduction": { "$ref": "#/$defs/noise_reduction" },
     "curve": {
       "description": "Luma, red, green and blue curves, 2 to 16 control points each.",

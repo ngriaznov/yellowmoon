@@ -14,6 +14,25 @@
 //!    of `ym-gpu`), and
 //! 5. paint the letterbox where the grid found no photo.
 //!
+//! # Output sharpening (the last stage)
+//!
+//! With `DevelopSettings::output_sharpening` above 0 (the default is 100) a view takes another
+//! road between steps 4 and 5 (`docs/01` Render graph, `docs/algorithms/04-output-sharpening.md`):
+//! the colour chain stops at C12 and produces display-linear f32 for the view **grown by the
+//! stage's receptive field** on every side ([`ViewSharpening::halo`]); that frame is cached
+//! ([`DisplayFrame`], so moving the slider samples and colours nothing again); the stage then
+//! sharpens the photo's own pixels in it at the scale `s = (the long edge shown) / (the long
+//! edge rendered at full resolution)`, the border is cut off, and C13 (the transfer function and
+//! the dither, at the pixel's position in the view) makes the 8-bit frame. The border makes a
+//! view at 100 % or a pan of it equal the corresponding part of the whole picture; where the
+//! photo itself ends (the letterbox) the stage mirrors at the photo's edge, as it does at the
+//! edge of an export. Thumbnails and look tiles take the same road at their own `s`. The Before
+//! view, the histogram and pixel readouts do not (they are not the finished picture). A view
+//! magnified above 100 % runs the stage on the 100 % picture it magnifies (`s = 1`, the pixels an
+//! export holds, over the part of the picture the view covers with a margin) and magnifies the
+//! sharpened picture with the same Catmull-Rom filter, so the stage always sees the pixel grid it
+//! was made for ([`ViewSharpening::frame_geometry`]).
+//!
 //! Because geometry is applied *before* the pointwise colour chain, a crop or a rotation never
 //! re-runs a raw or colour group, and the colour chain only touches the pixels that are shown.
 
@@ -22,9 +41,11 @@ use std::sync::Arc;
 use rayon::prelude::*;
 use ym_color::consts::Vec3;
 use ym_color::display::{ColorChain, Frame, Layout, OutputTarget, View};
+use ym_gpu::cpu::output_sharpen::{OutputSharpen, scale_for_edges};
 use ym_gpu::cpu::resample::sample_catmull_rom;
 use ym_gpu::cpu::{Rect, RgbImage};
-use ym_gpu::kernels::color::{ColorOutput, PreparedChain};
+use ym_gpu::kernels::PixelData;
+use ym_gpu::kernels::color::{ColorOutput, PreparedChain, Stop};
 use ym_gpu::queue::{CancelToken, JobSpec, Priority};
 
 use super::color::{GradePlan, PhotoSource};
@@ -356,6 +377,578 @@ pub(crate) fn color_pass(
 }
 
 // ---------------------------------------------------------------------------------------------
+// Output sharpening
+// ---------------------------------------------------------------------------------------------
+
+/// The output sharpening in effect for one view: the stage, the scale of the view and the
+/// receptive field the view is grown by (see the module documentation).
+#[derive(Debug, Clone)]
+pub(crate) struct ViewSharpening {
+    /// The screen preset at the photo's amount.
+    pub stage: OutputSharpen,
+    /// `s = long edge shown / long edge rendered`, at most 1.
+    pub scale: f32,
+    /// The receptive field at that scale, in pixels of the view.
+    pub halo: usize,
+}
+
+impl ViewSharpening {
+    /// The stage for a view that maps device pixels to the final image with `view_to_final`
+    /// (`fw x fh` pixels at full resolution), `None` when it creates no stage: the amount is 0 (or
+    /// below 0.1 %), or the view is the Before view.
+    pub(crate) fn of_view(
+        amount_pct: f64,
+        view_to_final: &Affine,
+        (fw, fh): (usize, usize),
+        before: bool,
+    ) -> Result<Option<Self>, RenderError> {
+        if before || amount_pct.is_nan() || amount_pct <= 0.0 || fw == 0 || fh == 0 {
+            return Ok(None);
+        }
+        // The long edge of the photo as shown: its full-resolution long edge times the zoom (device
+        // pixels per final pixel), measured on the long side (a thumbnail's two sides round
+        // differently).
+        let long = fw.max(fh);
+        let step = if fw >= fh {
+            view_to_final.m[0][0]
+        } else {
+            view_to_final.m[1][1]
+        };
+        let shown = if step.is_finite() && step > 0.0 {
+            ((long as f64 / step).round().max(1.0)) as usize
+        } else {
+            long
+        };
+        let scale = scale_for_edges(shown, long);
+        let stage = OutputSharpen::screen().with_amount_pct(amount_pct as f32);
+        let plan = stage
+            .plan(scale)
+            .map_err(|e| RenderError::Image(format!("This photo can't be rendered: {e}.")))?;
+        if plan.stages().is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(Self {
+            stage,
+            scale,
+            halo: plan.halo_px(),
+        }))
+    }
+
+    /// The frame the stage reads for a view of `(w, h)` device pixels that maps to the final image
+    /// (`fw x fh` pixels) with `view_to_final`; `None` when nothing of the photo is in view.
+    ///
+    /// * A view at 100 % or below is read **grown by the halo** on every side: the frame has
+    ///   `w + 2 halo` by `h + 2 halo` pixels and the stage's receptive field is real picture.
+    /// * A view **magnified above 100 %** shows the picture at 100 % made bigger, so the stage runs
+    ///   on the 100 % picture (`s = 1`, the pixels an export holds) over the part of the final image
+    ///   the view covers, with a margin of the halo and the 2 px of the magnifying filter, clipped
+    ///   to the final image (where the photo ends the stage mirrors, as it does in an export); the
+    ///   sharpened picture is magnified to the view afterwards ([`magnify_and_encode`]).
+    fn frame_geometry(
+        &self,
+        view_to_final: &Affine,
+        (w, h): (usize, usize),
+        (fw, fh): (usize, usize),
+    ) -> Option<FrameGeometry> {
+        let step = view_to_final.m[0][0];
+        if step.is_finite() && step < 1.0 - 1e-9 {
+            let (ax, ay) = view_to_final.apply(0.0, 0.0);
+            let (bx, by) = view_to_final.apply(w as f64, h as f64);
+            let margin = (2 + self.halo) as f64;
+            let x0 = (ax.min(bx) - margin).floor().max(0.0);
+            let y0 = (ay.min(by) - margin).floor().max(0.0);
+            let x1 = (ax.max(bx) + margin).ceil().min(fw as f64);
+            let y1 = (ay.max(by) + margin).ceil().min(fh as f64);
+            if x1 <= x0 || y1 <= y0 {
+                return None;
+            }
+            let (x0, y0) = (x0 as usize, y0 as usize);
+            return Some(FrameGeometry {
+                view_to_final: Affine::scale_translate(1.0, 1.0, x0 as f64, y0 as f64),
+                width: x1 as usize - x0,
+                height: y1 as usize - y0,
+                origin: Some((x0, y0)),
+            });
+        }
+        let h_px = self.halo;
+        Some(FrameGeometry {
+            view_to_final: Affine::scale_translate(1.0, 1.0, -(h_px as f64), -(h_px as f64))
+                .then(view_to_final),
+            width: w + 2 * h_px,
+            height: h + 2 * h_px,
+            origin: None,
+        })
+    }
+}
+
+/// The frame a sharpened view reads ([`ViewSharpening::frame_geometry`]).
+#[derive(Debug, Clone)]
+struct FrameGeometry {
+    /// Pixels of the frame to pixels of the final image at full resolution.
+    view_to_final: Affine,
+    /// Width of the frame.
+    width: usize,
+    /// Height of the frame.
+    height: usize,
+    /// For a magnified view: the pixel of the final image the frame starts at (its pixels are those
+    /// of the final image). `None` for the view grown by the halo.
+    origin: Option<(usize, usize)>,
+}
+
+/// A view before output sharpening: display-linear f32 (C1 to C12), interleaved, over the frame the
+/// stage reads ([`ViewSharpening::frame_geometry`]: the view grown by the stage's receptive field,
+/// or the 100 % picture under a magnified view). Cached per photo, so that a change of the amount
+/// sharpens the same pixels again and nothing else runs.
+#[derive(Debug)]
+pub(crate) struct DisplayFrame {
+    /// Width of the frame.
+    pub width: usize,
+    /// Height of the frame.
+    pub height: usize,
+    /// `3 * width * height` samples; pixels outside the photo are zero.
+    pub rgb: Vec<f32>,
+    /// 1 where the pixel is outside the photo; `None` when every pixel is inside.
+    pub outside: Option<Vec<u8>>,
+    /// The reduction of the raw group the pixels came from.
+    pub scale: usize,
+    /// False when the view was made from a coarser image than its zoom asks for.
+    pub sharp: bool,
+    /// Where the colour chain ran.
+    pub device: ComputeDevice,
+}
+
+impl DisplayFrame {
+    /// Bytes the frame holds.
+    pub(crate) fn bytes(&self) -> usize {
+        self.rgb.len() * 4 + self.outside.as_ref().map_or(0, Vec::len)
+    }
+}
+
+/// What [`display_linear_pass`] made.
+struct DisplayPass {
+    /// Display-linear f32, interleaved, zero outside the photo.
+    rgb: Vec<f32>,
+    /// 1 where the pixel is outside the photo; `None` when every pixel is inside.
+    outside: Option<Vec<u8>>,
+    /// Where the colour chain ran.
+    device: ComputeDevice,
+}
+
+/// Runs the colour chain to C12 over `sampled`: display-linear f32, interleaved, zero outside the
+/// photo. The GPU does it when there is one (on any GPU error the CPU path runs and the report's
+/// notes say why).
+fn display_linear_pass(
+    job: &mut Job<'_>,
+    sampled: Sampled,
+    grade: &GradePlan,
+    priority: Priority,
+) -> Result<DisplayPass, RenderError> {
+    job.check()?;
+    let started = std::time::Instant::now();
+    let (w, h) = (sampled.img.width, sampled.img.height);
+    let n = w * h;
+    let mut rgb: Option<Vec<f32>> = None;
+    let mut device = ComputeDevice::Cpu;
+    if let Some(gpu) = job.r.options().gpu.clone() {
+        let chain = Arc::clone(&grade.chain);
+        let img = Arc::new(sampled.img.clone());
+        let id = u64::from(job.src.id.0);
+        let result = gpu.run(JobSpec::new(priority).owned_by(id), move |ctx, cancel| {
+            cancel.check()?;
+            let prepared = PreparedChain::new(ctx, &chain)?;
+            prepared.render(ctx, &img, (0, 0), ColorOutput::Stage(Stop::C12))
+        });
+        match result {
+            Ok(out) => {
+                if let PixelData::F32Planar(planar) = out.data
+                    && planar.len() == 3 * n
+                {
+                    let mut inter = vec![0.0f32; 3 * n];
+                    let (r, rest) = planar.split_at(n);
+                    let (g, b) = rest.split_at(n);
+                    inter.par_chunks_mut(3).enumerate().for_each(|(i, d)| {
+                        d[0] = r[i];
+                        d[1] = g[i];
+                        d[2] = b[i];
+                    });
+                    rgb = Some(inter);
+                    device = ComputeDevice::Gpu;
+                }
+            }
+            Err(e) => job.notes.push(format!(
+                "The graphics card could not render this frame, so the CPU did: {e}."
+            )),
+        }
+    }
+    let mut rgb = match rgb {
+        Some(v) => v,
+        None => {
+            let frame = Frame::planar(w, h, &sampled.img.data)
+                .map_err(|e| RenderError::Color(e.to_string()))?;
+            let mut out = vec![0.0f32; 3 * n];
+            grade
+                .chain
+                .render_display_linear_f32(
+                    &frame,
+                    Layout::Interleaved,
+                    &mut out,
+                    job.r.options().threads,
+                )
+                .map_err(|e| RenderError::Color(e.to_string()))?;
+            out
+        }
+    };
+    if let Some(outside) = &sampled.outside {
+        rgb.par_chunks_mut(3)
+            .zip(outside.par_iter())
+            .for_each(|(d, &o)| {
+                if o != 0 {
+                    d.fill(0.0);
+                }
+            });
+    }
+    job.runs.color_passes += 1;
+    job.timings.pass_ms += started.elapsed().as_secs_f64() * 1000.0;
+    Ok(DisplayPass {
+        rgb,
+        outside: sampled.outside,
+        device,
+    })
+}
+
+/// The smallest rectangle `(x0, y0, x1, y1)` (exclusive ends) that holds every pixel inside the
+/// photo, or `None` when none is.
+fn inside_bounds(
+    outside: Option<&[u8]>,
+    w: usize,
+    h: usize,
+) -> Option<(usize, usize, usize, usize)> {
+    let Some(mask) = outside else {
+        return (w > 0 && h > 0).then_some((0, 0, w, h));
+    };
+    let (mut x0, mut y0, mut x1, mut y1) = (w, h, 0, 0);
+    for (y, row) in mask.chunks_exact(w.max(1)).enumerate() {
+        let Some(first) = row.iter().position(|&o| o == 0) else {
+            continue;
+        };
+        // `rposition` exists because `first` does.
+        let last = row.iter().rposition(|&o| o == 0).unwrap_or(first);
+        x0 = x0.min(first);
+        x1 = x1.max(last + 1);
+        y0 = y0.min(y);
+        y1 = y1.max(y + 1);
+    }
+    (x0 < x1 && y0 < y1).then_some((x0, y0, x1, y1))
+}
+
+/// The part of a display-linear frame the stage sharpened: the bounding box of the pixels inside the
+/// photo (so the stage mirrors at the photo's edge and never reads the letterbox), at `(x0, y0)` of
+/// the frame, `w x h`, interleaved.
+struct Sharpened {
+    x0: usize,
+    y0: usize,
+    w: usize,
+    h: usize,
+    rgb: Vec<f32>,
+}
+
+/// Runs the stage on the photo's pixels of `display`; `None` when no pixel is inside the photo.
+fn sharpen_photo(
+    display: &DisplayFrame,
+    sharpening: &ViewSharpening,
+) -> Result<Option<Sharpened>, RenderError> {
+    let Some((x0, y0, x1, y1)) =
+        inside_bounds(display.outside.as_deref(), display.width, display.height)
+    else {
+        return Ok(None);
+    };
+    let (w, h) = (x1 - x0, y1 - y0);
+    let ew = display.width;
+    let mut rgb = vec![0.0f32; 3 * w * h];
+    rgb.par_chunks_mut(3 * w).enumerate().for_each(|(y, row)| {
+        let at = ((y0 + y) * ew + x0) * 3;
+        row.copy_from_slice(&display.rgb[at..at + 3 * w]);
+    });
+    sharpening
+        .stage
+        .apply_interleaved_in_place(w, h, &mut rgb, sharpening.scale)
+        .map_err(|e| RenderError::Image(format!("This photo can't be rendered: {e}.")))?;
+    Ok(Some(Sharpened { x0, y0, w, h, rgb }))
+}
+
+/// C13 and the letterbox: encodes a display-linear `w x h` view to RGBA8 (the dither at the pixel's
+/// place in the view) and paints the paper where `letterbox` is 1.
+fn encode_view(
+    job: &mut Job<'_>,
+    view: &[f32],
+    (w, h): (usize, usize),
+    letterbox: Option<&[u8]>,
+    grade: &GradePlan,
+    background: [u8; 3],
+) -> Result<Vec<u8>, RenderError> {
+    let frame = Frame::interleaved(w, h, view).map_err(|e| RenderError::Color(e.to_string()))?;
+    let mut rgb8 = vec![0u8; 3 * w * h];
+    grade
+        .chain
+        .encode_display_linear_u8(&frame, (0, 0), &mut rgb8, job.r.options().threads)
+        .map_err(|e| RenderError::Color(e.to_string()))?;
+    let mut rgba = vec![255u8; 4 * w * h];
+    rgba.par_chunks_mut(4)
+        .zip(rgb8.par_chunks(3))
+        .for_each(|(d, s)| d[..3].copy_from_slice(s));
+    if let Some(mask) = letterbox {
+        rgba.par_chunks_mut(4)
+            .zip(mask.par_iter())
+            .for_each(|(d, &o)| {
+                if o != 0 {
+                    d[..3].copy_from_slice(&background);
+                }
+            });
+    }
+    Ok(rgba)
+}
+
+/// The output-sharpening stage and C13 over a display-linear frame of the grown view: sharpens
+/// the photo's pixels, cuts the border off and encodes the view to RGBA8 with the letterbox
+/// painted.
+fn sharpen_and_encode(
+    job: &mut Job<'_>,
+    display: &DisplayFrame,
+    sharpening: &ViewSharpening,
+    grade: &GradePlan,
+    (w, h): (usize, usize),
+    background: [u8; 3],
+) -> Result<Vec<u8>, RenderError> {
+    job.check()?;
+    let started = std::time::Instant::now();
+    let halo = sharpening.halo;
+    let ew = display.width;
+    debug_assert_eq!(
+        (display.width, display.height),
+        (w + 2 * halo, h + 2 * halo)
+    );
+    // The view's own rows (without the border), unsharpened.
+    let mut view = vec![0.0f32; 3 * w * h];
+    view.par_chunks_mut(3 * w.max(1))
+        .enumerate()
+        .for_each(|(y, row)| {
+            let at = ((y + halo) * ew + halo) * 3;
+            row.copy_from_slice(&display.rgb[at..at + 3 * w]);
+        });
+    if let Some(s) = sharpen_photo(display, sharpening)? {
+        // Put the sharpened pixels back where they fall inside the view.
+        let (vx0, vx1) = (s.x0.max(halo), (s.x0 + s.w).min(halo + w));
+        if vx0 < vx1 {
+            view.par_chunks_mut(3 * w.max(1))
+                .enumerate()
+                .for_each(|(y, row)| {
+                    let ey = y + halo;
+                    if ey < s.y0 || ey >= s.y0 + s.h {
+                        return;
+                    }
+                    let src = ((ey - s.y0) * s.w + (vx0 - s.x0)) * 3;
+                    let dst = (vx0 - halo) * 3;
+                    let len = (vx1 - vx0) * 3;
+                    row[dst..dst + len].copy_from_slice(&s.rgb[src..src + len]);
+                });
+        }
+    }
+    let letterbox = display.outside.as_ref().map(|outside| {
+        let mut mask = vec![0u8; w * h];
+        mask.par_chunks_mut(w.max(1))
+            .enumerate()
+            .for_each(|(y, row)| row.copy_from_slice(&outside[(y + halo) * ew + halo..][..w]));
+        mask
+    });
+    let rgba = encode_view(job, &view, (w, h), letterbox.as_deref(), grade, background)?;
+    job.runs.output_passes += 1;
+    job.timings.output_ms += started.elapsed().as_secs_f64() * 1000.0;
+    Ok(rgba)
+}
+
+/// A view magnified above 100 %: the stage has run on the 100 % picture `display` (the final
+/// image's pixels from `origin`, `s = 1`), and that sharpened picture is magnified to the view with
+/// the Catmull-Rom filter every magnified view uses, then encoded. Device pixels that fall outside
+/// the final image, or on pixels of it that are outside the straightened photo, are the paper.
+fn magnify_and_encode(
+    job: &mut Job<'_>,
+    display: &DisplayFrame,
+    origin: (usize, usize),
+    sharpening: &ViewSharpening,
+    grade: &GradePlan,
+    spec: &ViewSpec,
+    (fw, fh): (usize, usize),
+) -> Result<Vec<u8>, RenderError> {
+    job.check()?;
+    let started = std::time::Instant::now();
+    let (nw, nh) = (display.width, display.height);
+    let n = nw * nh;
+    let (w, h) = (spec.out_w, spec.out_h);
+    // The sharpened 100 % picture, as three planes (what the filter reads).
+    let mut native = display.rgb.clone();
+    if let Some(s) = sharpen_photo(display, sharpening)? {
+        for y in 0..s.h {
+            let dst = ((s.y0 + y) * nw + s.x0) * 3;
+            native[dst..dst + 3 * s.w].copy_from_slice(&s.rgb[y * s.w * 3..(y + 1) * s.w * 3]);
+        }
+    }
+    let mut planes = vec![0.0f32; 3 * n];
+    {
+        let (r, rest) = planes.split_at_mut(n);
+        let (g, b) = rest.split_at_mut(n);
+        r.par_iter_mut()
+            .zip(g.par_iter_mut())
+            .zip(b.par_iter_mut())
+            .zip(native.par_chunks(3))
+            .for_each(|(((r, g), b), p)| {
+                *r = p[0];
+                *g = p[1];
+                *b = p[2];
+            });
+    }
+    drop(native);
+    let mut view = vec![0.0f32; 3 * w * h];
+    let mut letterbox = vec![0u8; w * h];
+    let (ox, oy) = (origin.0 as f64, origin.1 as f64);
+    view.par_chunks_mut(3 * w.max(1))
+        .zip(letterbox.par_chunks_mut(w.max(1)))
+        .enumerate()
+        .for_each(|(y, (row, mask))| {
+            for x in 0..w {
+                let (fx, fy) = spec.view_to_final.apply(x as f64 + 0.5, y as f64 + 0.5);
+                let inside = fx >= 0.0 && fy >= 0.0 && fx < fw as f64 && fy < fh as f64;
+                let (px, py) = (fx - ox, fy - oy);
+                let empty = !inside
+                    || display.outside.as_ref().is_some_and(|o| {
+                        let (ix, iy) = (
+                            (px.max(0.0) as usize).min(nw - 1),
+                            (py.max(0.0) as usize).min(nh - 1),
+                        );
+                        o[iy * nw + ix] != 0
+                    });
+                if empty {
+                    mask[x] = 1;
+                    continue;
+                }
+                for c in 0..3 {
+                    row[3 * x + c] =
+                        sample_catmull_rom(&planes[c * n..(c + 1) * n], nw, nh, px, py);
+                }
+            }
+        });
+    let rgba = encode_view(job, &view, (w, h), Some(&letterbox), grade, spec.background)?;
+    job.runs.output_passes += 1;
+    job.timings.output_ms += started.elapsed().as_secs_f64() * 1000.0;
+    Ok(rgba)
+}
+
+/// The road of a view with output sharpening (see the module documentation): the display-linear
+/// frame the stage reads (from the display cache when `spec.cache`, else made), then the stage and
+/// C13. Returns the RGBA8 frame, where the colour chain ran, the raw scale and whether the frame is
+/// sharp.
+fn sharpened_pass(
+    job: &mut Job<'_>,
+    spec: &ViewSpec,
+    grade: &GradePlan,
+    sharpening: &ViewSharpening,
+) -> Result<(Vec<u8>, ComputeDevice, usize, bool), RenderError> {
+    let image = job.final_size()?;
+    let Some(geometry) =
+        sharpening.frame_geometry(&spec.view_to_final, (spec.out_w, spec.out_h), image)
+    else {
+        // Nothing of the photo is in view: all paper.
+        let mut rgba = vec![255u8; 4 * spec.out_w * spec.out_h];
+        rgba.par_chunks_mut(4)
+            .for_each(|d| d[..3].copy_from_slice(&spec.background));
+        return Ok((rgba, ComputeDevice::Cpu, 1, true));
+    };
+    let read = ViewSpec {
+        out_w: geometry.width,
+        out_h: geometry.height,
+        view_to_final: geometry.view_to_final,
+        ..spec.clone()
+    };
+    let key = spec
+        .cache
+        .then(|| display_key(job, &read, grade, sharpening))
+        .transpose()?;
+    let cached = key
+        .as_ref()
+        .and_then(|k| job.g.cached_display(k))
+        .filter(|d| {
+            // A frame made from a coarser image than asked for is not served to a request that wants
+            // the tiles (same rule as the finished frames).
+            !(spec.coarse_only && !d.sharp)
+        });
+    let display = match cached {
+        Some(d) => {
+            job.runs.display_hits += 1;
+            d
+        }
+        None => {
+            let SampledView {
+                sampled,
+                scale,
+                sharp,
+            } = sample_view(job, &read)?;
+            let DisplayPass {
+                rgb,
+                outside,
+                device,
+            } = display_linear_pass(job, sampled, grade, spec.gpu_priority)?;
+            let d = Arc::new(DisplayFrame {
+                width: read.out_w,
+                height: read.out_h,
+                rgb,
+                outside,
+                scale,
+                sharp,
+                device,
+            });
+            if let Some(k) = key {
+                job.g.store_display(k, Arc::clone(&d));
+            }
+            d
+        }
+    };
+    let rgba = match geometry.origin {
+        None => sharpen_and_encode(
+            job,
+            &display,
+            sharpening,
+            grade,
+            (spec.out_w, spec.out_h),
+            spec.background,
+        )?,
+        Some(origin) => magnify_and_encode(job, &display, origin, sharpening, grade, spec, image)?,
+    };
+    Ok((rgba, display.device, display.scale, display.sharp))
+}
+
+fn display_key(
+    job: &mut Job<'_>,
+    grown: &ViewSpec,
+    grade: &GradePlan,
+    sharpening: &ViewSharpening,
+) -> Result<String, RenderError> {
+    let params = job.params()?;
+    // The sharpening amount is not part of it: the frame is what the amount is applied to. The
+    // halo is (it is what the view was grown by).
+    Ok(format!(
+        "display|{:?}|{:?}|{:?}|{:?}|{}x{}|{:?}|{}|{}",
+        params.key(),
+        grade.key,
+        job.geometry(),
+        grown.view_to_final,
+        grown.out_w,
+        grown.out_h,
+        grown.k,
+        grown.coarse_only,
+        sharpening.halo
+    ))
+}
+
+// ---------------------------------------------------------------------------------------------
 // Views
 // ---------------------------------------------------------------------------------------------
 
@@ -459,9 +1052,10 @@ pub(crate) fn sample_view(job: &mut Job<'_>, spec: &ViewSpec) -> Result<SampledV
 /// A whole view: sample, colour pass, report. Frames of a viewport go through the frame cache.
 pub(crate) fn render_view(mut job: Job<'_>, spec: &ViewSpec) -> Result<RenderedFrame, RenderError> {
     let grade = job.grade(spec.target, true)?;
+    let sharpening = view_sharpening(&mut job, spec)?;
     let cache_key = spec
         .cache
-        .then(|| frame_key(&mut job, spec, &grade))
+        .then(|| frame_key(&mut job, spec, &grade, sharpening.as_ref()))
         .transpose()?;
     if let Some(key) = &cache_key
         && let Some(hit) = job.g.cached_frame(key)
@@ -473,16 +1067,20 @@ pub(crate) fn render_view(mut job: Job<'_>, spec: &ViewSpec) -> Result<RenderedF
         frame.report = job.finish(scale, device, spec.target);
         return Ok(frame);
     }
-    let view = sample_view(&mut job, spec)?;
-    let (rgba, device) = color_pass(
-        &mut job,
-        view.sampled,
-        &grade,
-        spec.before,
-        spec.background,
-        spec.gpu_priority,
-    )?;
-    let (scale, sharp) = (view.scale, view.sharp);
+    let (rgba, device, scale, sharp) = if let Some(sh) = &sharpening {
+        sharpened_pass(&mut job, spec, &grade, sh)?
+    } else {
+        let view = sample_view(&mut job, spec)?;
+        let (rgba, device) = color_pass(
+            &mut job,
+            view.sampled,
+            &grade,
+            spec.before,
+            spec.background,
+            spec.gpu_priority,
+        )?;
+        (rgba, device, view.scale, view.sharp)
+    };
     let graph = Arc::clone(&job.g);
     let report = job.finish(scale, device, spec.target);
     let frame = RenderedFrame {
@@ -498,9 +1096,27 @@ pub(crate) fn render_view(mut job: Job<'_>, spec: &ViewSpec) -> Result<RenderedF
     Ok(frame)
 }
 
-fn frame_key(job: &mut Job<'_>, spec: &ViewSpec, grade: &GradePlan) -> Result<String, RenderError> {
+/// The output sharpening of a view, if it has any (see [`ViewSharpening::of_view`]).
+fn view_sharpening(
+    job: &mut Job<'_>,
+    spec: &ViewSpec,
+) -> Result<Option<ViewSharpening>, RenderError> {
+    let amount = job.src.settings.output_sharpening;
+    if spec.before || amount.is_nan() || amount <= 0.0 {
+        return Ok(None);
+    }
+    let image = job.final_size()?;
+    ViewSharpening::of_view(amount, &spec.view_to_final, image, spec.before)
+}
+
+fn frame_key(
+    job: &mut Job<'_>,
+    spec: &ViewSpec,
+    grade: &GradePlan,
+    sharpening: Option<&ViewSharpening>,
+) -> Result<String, RenderError> {
     let params = job.params()?;
-    Ok(format!(
+    let mut key = format!(
         "{:?}|{:?}|{:?}|{:?}|{}x{}|{:?}|{}|{}",
         params.key(),
         grade.key,
@@ -511,7 +1127,12 @@ fn frame_key(job: &mut Job<'_>, spec: &ViewSpec, grade: &GradePlan) -> Result<St
         spec.k,
         spec.before,
         spec.coarse_only
-    ))
+    );
+    // The amount belongs to the finished frame, not to the display-linear one under it.
+    if sharpening.is_some() {
+        key.push_str(&format!("|os{:?}", job.src.settings.output_sharpening));
+    }
+    Ok(key)
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -594,11 +1215,28 @@ impl Renderer {
         if plan.reduced || scale_for_zoom(state.zoom(image)) != 1 {
             return Ok(0);
         }
+        // The tiles the frame will read. With output sharpening the frame is the view grown by the
+        // stage's receptive field, or, magnified above 100 %, the part of the 100 % picture it
+        // covers with its margin ([`ViewSharpening::frame_geometry`]): the tiles under those are
+        // needed too, or the frame would stay coarse for want of tiles that nothing computes.
+        let to_final = state.view_to_final(image);
         let (dw, dh) = state.device_size();
+        let (to_final, dw, dh) = match ViewSharpening::of_view(
+            src.settings.output_sharpening,
+            &to_final,
+            image,
+            state.before,
+        )? {
+            None => (to_final, dw, dh),
+            Some(sh) => match sh.frame_geometry(&to_final, (dw, dh), image) {
+                Some(g) => (g.view_to_final, g.width, g.height),
+                None => return Ok(0),
+            },
+        };
         let grid = job
             .geometry()
             .at_full_resolution()
-            .grid_from((plan.out_w, plan.out_h), state.view_to_final(image));
+            .grid_from((plan.out_w, plan.out_h), to_final);
         let Some((x0, y0, x1, y1)) = grid.source_bounds(0, 0, dw, dh, 3) else {
             return Ok(0);
         };
@@ -609,7 +1247,9 @@ impl Renderer {
     }
 
     /// Display values (0 to 255) under a point of the cell, as the viewport shows them (the Before
-    /// view included), without the dither. `None` outside the photo (the letterbox).
+    /// view included), without the dither and **before output sharpening** (a readout is of the
+    /// colour at a point; the stage needs the neighbourhood of a whole view). `None` outside the
+    /// photo (the letterbox).
     ///
     /// # Errors
     ///
@@ -879,3 +1519,154 @@ fn pixel_rgb(img: &RgbImage) -> Vec3 {
 /// `ColorChain` is referenced in doc links above.
 #[allow(dead_code)]
 fn _link(_: &ColorChain) {}
+
+#[cfg(test)]
+mod sharpening_tests {
+    use super::*;
+
+    fn to_final(step: f64, tx: f64, ty: f64) -> Affine {
+        Affine::scale_translate(step, step, tx, ty)
+    }
+
+    fn of(amount: f64, step: f64, image: (usize, usize), before: bool) -> Option<ViewSharpening> {
+        ViewSharpening::of_view(amount, &to_final(step, 0.0, 0.0), image, before).expect("a plan")
+    }
+
+    #[test]
+    fn the_scale_is_the_long_edge_shown_over_the_long_edge_rendered() {
+        // 6000 x 4000 shown 3 final pixels to a device pixel: 2000 px on the long edge.
+        let sh = of(100.0, 3.0, (6000, 4000), false).expect("a stage");
+        assert_eq!(sh.scale, scale_for_edges(2000, 6000));
+        // The same for a portrait photo (the long side is the vertical one).
+        let sh = of(100.0, 3.0, (4000, 6000), false).expect("a stage");
+        assert_eq!(sh.scale, scale_for_edges(2000, 6000));
+        // 100 % and every magnification sharpen the picture an export holds: s = 1.
+        for step in [1.0, 0.999, 0.5, 0.125] {
+            let sh = of(100.0, step, (6000, 4000), false).expect("a stage");
+            assert_eq!(sh.scale, 1.0, "step {step}");
+        }
+        // At s = 1 the border is the stage's own receptive field, never more than its bound.
+        let sh = of(100.0, 1.0, (6000, 4000), false).expect("a stage");
+        let plan = OutputSharpen::screen().plan(1.0).expect("plan");
+        assert_eq!(sh.halo, plan.halo_px());
+        assert!(sh.halo <= OutputSharpen::screen().max_halo_px());
+        // A smaller picture needs a smaller border.
+        let small = of(100.0, 6.0, (6000, 4000), false).expect("a stage");
+        assert!(small.halo < sh.halo, "{} against {}", small.halo, sh.halo);
+    }
+
+    #[test]
+    fn no_amount_the_before_view_and_a_collapsed_stage_make_no_stage() {
+        assert!(of(0.0, 1.0, (600, 400), false).is_none());
+        // Below a tenth of a percent the stage has no amount (spec 04: A < 0.001).
+        assert!(of(0.05, 1.0, (600, 400), false).is_none());
+        assert!(of(f64::NAN, 1.0, (600, 400), false).is_none());
+        assert!(of(-3.0, 1.0, (600, 400), false).is_none());
+        assert!(of(100.0, 1.0, (600, 400), true).is_none());
+        assert!(of(100.0, 1.0, (0, 0), false).is_none());
+        // A step that is not a number falls back to the full size, not to a panic.
+        assert_eq!(
+            of(100.0, f64::NAN, (600, 400), false)
+                .expect("a stage")
+                .scale,
+            1.0
+        );
+        // The smallest thumbnails still plan: a 1 px long edge of a 6000 px photo.
+        assert!(of(200.0, 6000.0, (6000, 4000), false).is_some());
+    }
+
+    #[test]
+    fn a_view_at_100_percent_or_below_is_grown_by_the_halo_on_every_side() {
+        let image = (6000, 4000);
+        let map = to_final(2.0, 300.0, 200.0);
+        let sh = ViewSharpening::of_view(100.0, &map, image, false)
+            .expect("plan")
+            .expect("a stage");
+        let g = sh.frame_geometry(&map, (200, 100), image).expect("a frame");
+        let halo = sh.halo;
+        assert_eq!((g.width, g.height), (200 + 2 * halo, 100 + 2 * halo));
+        assert!(g.origin.is_none());
+        // The frame's pixel (halo, halo) is the view's pixel (0, 0): the same place in the picture.
+        let h = halo as f64;
+        assert_eq!(g.view_to_final.apply(h, h), map.apply(0.0, 0.0));
+        assert_eq!(
+            g.view_to_final.apply(h + 200.0, h + 100.0),
+            map.apply(200.0, 100.0)
+        );
+        // Exactly 100 % is this road too.
+        let map = to_final(1.0, 10.0, 20.0);
+        let sh = ViewSharpening::of_view(100.0, &map, image, false)
+            .expect("plan")
+            .expect("a stage");
+        let g = sh.frame_geometry(&map, (64, 48), image).expect("a frame");
+        assert!(g.origin.is_none());
+        assert_eq!((g.width, g.height), (64 + 2 * sh.halo, 48 + 2 * sh.halo));
+    }
+
+    #[test]
+    fn a_magnified_view_reads_the_100_percent_picture_it_covers_with_a_margin() {
+        let image = (800, 600);
+        // 200 %: a 200 x 100 view covers 100 x 50 pixels of the picture from (300, 200).
+        let map = to_final(0.5, 300.0, 200.0);
+        let sh = ViewSharpening::of_view(100.0, &map, image, false)
+            .expect("plan")
+            .expect("a stage");
+        let g = sh.frame_geometry(&map, (200, 100), image).expect("a frame");
+        let (x0, y0) = g.origin.expect("the 100 % picture");
+        let margin = 2 + sh.halo;
+        // The frame is the picture's own pixels from its origin.
+        assert_eq!(
+            g.view_to_final,
+            Affine::scale_translate(1.0, 1.0, x0 as f64, y0 as f64)
+        );
+        assert!(x0 + margin <= 300 && y0 + margin <= 200, "({x0}, {y0})");
+        assert!(x0 + g.width >= 400 + margin && y0 + g.height >= 250 + margin);
+        // Inside the picture.
+        assert!(x0 + g.width <= image.0 && y0 + g.height <= image.1);
+        // Over the edge: clipped to the picture, where the stage mirrors as it does in an export.
+        let map = to_final(0.5, -50.0, -25.0);
+        let g = sh.frame_geometry(&map, (200, 100), image).expect("a frame");
+        assert_eq!(g.origin, Some((0, 0)));
+        assert_eq!((g.width, g.height), (50 + margin, 25 + margin));
+        let map = to_final(0.5, 700.0, 560.0);
+        let g = sh.frame_geometry(&map, (200, 100), image).expect("a frame");
+        let (x0, y0) = g.origin.expect("origin");
+        assert_eq!((x0 + g.width, y0 + g.height), image);
+        // Nothing of the photo in view: no frame at all.
+        assert!(
+            sh.frame_geometry(&to_final(0.5, 5000.0, 5000.0), (200, 100), image)
+                .is_none()
+        );
+        assert!(
+            sh.frame_geometry(&to_final(0.5, -5000.0, 0.0), (200, 100), image)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn the_bounding_box_of_the_photo_ignores_the_paper() {
+        // No mask: the whole frame.
+        assert_eq!(inside_bounds(None, 5, 4), Some((0, 0, 5, 4)));
+        assert_eq!(inside_bounds(None, 0, 4), None);
+        // Paper (1) all round a 2 x 2 photo.
+        #[rustfmt::skip]
+        let mask = [
+            1, 1, 1, 1, 1,
+            1, 0, 0, 1, 1,
+            1, 0, 0, 1, 1,
+            1, 1, 1, 1, 1,
+        ];
+        assert_eq!(inside_bounds(Some(&mask), 5, 4), Some((1, 1, 3, 3)));
+        // A tilted photo: the box holds its corners (the empty corners of the box are in it).
+        #[rustfmt::skip]
+        let tilted = [
+            1, 1, 0, 1,
+            1, 0, 0, 0,
+            0, 0, 0, 1,
+            1, 0, 1, 1,
+        ];
+        assert_eq!(inside_bounds(Some(&tilted), 4, 4), Some((0, 0, 4, 4)));
+        // Nothing of the photo in view.
+        assert_eq!(inside_bounds(Some(&[1; 12]), 4, 3), None);
+    }
+}

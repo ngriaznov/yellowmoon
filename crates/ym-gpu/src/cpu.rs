@@ -57,7 +57,9 @@ pub mod gains;
 pub mod highlights;
 pub mod lens;
 pub mod metrics;
+pub mod noise;
 pub mod normalize;
+pub mod output_sharpen;
 pub mod resample;
 pub mod sharpen;
 pub mod spline;
@@ -65,6 +67,7 @@ pub mod synth;
 pub mod tiling;
 pub mod vignette;
 
+pub use noise::NoiseDn;
 pub use tiling::{Halo, Rect};
 
 /// Luma weights used wherever a stage needs a luminance (R6 denoise, R7, R8): the Rec. 709 / sRGB

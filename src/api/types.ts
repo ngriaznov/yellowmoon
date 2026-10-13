@@ -220,6 +220,13 @@ export interface DevelopSettings {
   saturation: number;
   /** Detail › Sharpening: `Auto` or `{ amount 0–300, radius_px 0.3–2.5 }`. */
   sharpen: AutoOr<{ amount: number; radius_px: number }>;
+  /**
+   * Detail › Sharpening › Output: the strength in percent of the sharpening applied to the picture
+   * at the size it is shown or written (every viewport frame, thumbnail and JPEG, TIFF or PNG
+   * export; never a DNG). 0–200, step 5, default 100; a plain number, not Auto; 0 is off. The
+   * owner's decision of 2026-10-13 (`docs/algorithms/04-output-sharpening.md`).
+   */
+  output_sharpening: number;
   /** Detail › Noise reduction: `Auto` or `{ luminance, color, detail }`, each 0–100. */
   noise_reduction: AutoOr<{ luminance: number; color: number; detail: number }>;
   curve: Curves;

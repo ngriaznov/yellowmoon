@@ -184,7 +184,8 @@ fn contrast_saturation_and_color_balance_are_monotone_in_their_control() {
             }
             prev = out;
         }
-        // Saturation scales the distance from the pixel's own luma: |v - L| never shrinks.
+        // Saturation scales every difference between channels (v - M) by 1 + s/100, so the spread
+        // between the channels never shrinks as the control rises.
         let neutral = run(dev, &grade_chain(GradeParams::default()), &px, Stop::C9);
         let mut prev_dist: Vec<f32> = vec![0.0; px.len()];
         for step in 0..=20 {
@@ -194,8 +195,8 @@ fn contrast_saturation_and_color_balance_are_monotone_in_their_control() {
             };
             let out = run(dev, &grade_chain(g), &px, Stop::C9);
             for i in 0..px.len() {
-                // With L unchanged by saturation (L is the pre-grade luma), measure around the mean
-                // of the ungraded channels' luma: use the distance between channels instead.
+                // The pivot M is not known here without a second render, so measure the spread: the
+                // sum of the distances between channels.
                 let spread = (out[i][0] - out[i][1]).abs()
                     + (out[i][1] - out[i][2]).abs()
                     + (out[i][0] - out[i][2]).abs();
@@ -306,5 +307,66 @@ fn a_single_control_at_its_extremes_keeps_the_neutral_ramp_increasing() {
             min_slope = min_slope.min(d);
         }
         eprintln!("{name}: smallest step {min_slope:.2e}");
+    }
+}
+
+/// Saturation is subtractive (`docs/02` C9, owner's decision of 2026-10-13): the pivot is the
+/// pixel's brightest channel M. Checked on the kernel's own C9 output, not only against the CPU:
+/// M and neutral pixels stay, `s > 0` pushes the other channels down, `s < 0` pulls them up to M,
+/// and `s = -100` makes every channel equal to M.
+#[test]
+fn saturation_is_subtractive_on_the_gpu() {
+    let mut px = probe_pixels();
+    px.extend([
+        [0.8, 0.05, 0.03],
+        [0.04, 0.6, 0.06],
+        [0.03, 0.08, 0.7],
+        [4.0, 1.0, 0.2],
+        [0.2, 0.2, 0.05],
+    ]);
+    for dev in gpus() {
+        let base = run(dev, &grade_chain(GradeParams::default()), &px, Stop::C9);
+        let mut coloured = 0;
+        for s in [-100.0f64, -60.0, -25.0, 25.0, 60.0, 100.0] {
+            let g = GradeParams {
+                saturation: s,
+                ..GradeParams::default()
+            };
+            let out = run(dev, &grade_chain(g), &px, Stop::C9);
+            let gain = (1.0 + s / 100.0) as f32;
+            for (i, (a, b)) in base.iter().zip(&out).enumerate() {
+                let m = a[0].max(a[1]).max(a[2]);
+                let ctx = format!("{:?} s={s} pixel {i} {:?}: {a:?} -> {b:?}", dev.mode, px[i]);
+                assert!(
+                    (b[0].max(b[1]).max(b[2]) - m).abs() <= 1e-7,
+                    "M moved, {ctx}"
+                );
+                let neutral = (a[0] - a[1]).abs() <= 1e-7 && (a[1] - a[2]).abs() <= 1e-7;
+                if !neutral {
+                    coloured += 1;
+                }
+                for ch in 0..3 {
+                    let want = m + (a[ch] - m) * gain;
+                    assert!((b[ch] - want).abs() <= 3e-6, "formula, {ctx}");
+                    if neutral {
+                        assert!((b[ch] - a[ch]).abs() <= 1e-7, "neutral moved, {ctx}");
+                    } else if s > 0.0 {
+                        assert!(
+                            b[ch] <= a[ch] + 2e-6,
+                            "s > 0 must not raise a channel, {ctx}"
+                        );
+                    } else {
+                        assert!(
+                            b[ch] >= a[ch] - 2e-6 && b[ch] <= m + 2e-6,
+                            "s < 0 must move a channel up toward M, {ctx}"
+                        );
+                    }
+                    if s == -100.0 {
+                        assert!((b[ch] - m).abs() <= 1e-6, "s = -100 gives M, {ctx}");
+                    }
+                }
+            }
+        }
+        assert!(coloured >= 6 * 8, "the probe must hold coloured pixels");
     }
 }

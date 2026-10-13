@@ -60,6 +60,10 @@ pub const TINT_RANGE: (f64, f64) = (-50.0, 50.0);
 pub const SHARPEN_AMOUNT_RANGE: (f64, f64) = (0.0, 300.0);
 /// Range of the manual sharpening radius (pixels).
 pub const SHARPEN_RADIUS_RANGE_PX: (f64, f64) = (0.3, 2.5);
+/// Range of the output sharpening amount (percent): Detail › Sharpening › Output. The UI steps by 5.
+pub const OUTPUT_SHARPENING_RANGE: (f64, f64) = (0.0, 200.0);
+/// Default output sharpening amount (percent). 0 creates no stage (`docs/algorithms/04`).
+pub const OUTPUT_SHARPENING_DEFAULT: f64 = 100.0;
 /// Range of each manual noise-reduction strength.
 pub const NOISE_REDUCTION_RANGE: (f64, f64) = (0.0, 100.0);
 /// Range of both roll-off amounts.
@@ -122,7 +126,8 @@ pub enum SettingsError {
 /// The render-graph group of stages a setting first affects (`docs/01` section Render graph).
 ///
 /// A change invalidates its group and every later one: `Raw` before `Colour` before `Grade`.
-/// `Geometry` is applied when sampling for display and export, so no pixel stage re-runs.
+/// `Geometry` is applied when sampling for display and export, so no pixel stage re-runs, and
+/// `Output` (sharpening) is the last: it re-runs only its own pass over the rendered frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StageGroup {
@@ -135,6 +140,10 @@ pub enum StageGroup {
     Grade,
     /// Crop, straighten and orientation.
     Geometry,
+    /// Output sharpening of the rendered display-linear frame (`docs/01` section Render graph).
+    /// It follows geometry because it works on the pixels at the size they are shown or written,
+    /// and nothing before it re-runs when it changes.
+    Output,
 }
 
 /// One field of [`DevelopSettings`], for change reports and Reset.
@@ -169,6 +178,8 @@ pub enum SettingsField {
     Saturation,
     /// `sharpen`.
     Sharpen,
+    /// `output_sharpening`.
+    OutputSharpening,
     /// `noise_reduction`.
     NoiseReduction,
     /// `curve`.
@@ -187,7 +198,7 @@ pub enum SettingsField {
 
 impl SettingsField {
     /// Every field, in the order of the settings table.
-    pub const ALL: [SettingsField; 21] = [
+    pub const ALL: [SettingsField; 22] = [
         SettingsField::Look,
         SettingsField::LookIntensity,
         SettingsField::Exposure,
@@ -202,6 +213,7 @@ impl SettingsField {
         SettingsField::ColorBalance,
         SettingsField::Saturation,
         SettingsField::Sharpen,
+        SettingsField::OutputSharpening,
         SettingsField::NoiseReduction,
         SettingsField::Curve,
         SettingsField::Decode,
@@ -229,6 +241,7 @@ impl SettingsField {
             Self::ColorBalance => "color_balance",
             Self::Saturation => "saturation",
             Self::Sharpen => "sharpen",
+            Self::OutputSharpening => "output_sharpening",
             Self::NoiseReduction => "noise_reduction",
             Self::Curve => "curve",
             Self::Decode => "decode",
@@ -250,6 +263,7 @@ impl SettingsField {
             | Self::Exposure
             | Self::Rolloff => StageGroup::Color,
             Self::Crop | Self::Orientation => StageGroup::Geometry,
+            Self::OutputSharpening => StageGroup::Output,
             Self::Look
             | Self::LookIntensity
             | Self::Contrast
@@ -628,7 +642,7 @@ pub struct DevelopSettings {
     pub look_intensity: f64,
     /// Light › Exposure: Auto or an absolute value, -4 to +4 EV.
     pub exposure: ExposureSetting,
-    /// -100 to 100.
+    /// Light › Exposure and Look › Tone, -100 to 100.
     pub contrast: f64,
     /// -100 to 100.
     pub brightness: f64,
@@ -642,14 +656,17 @@ pub struct DevelopSettings {
     pub black: f64,
     /// Colour › White balance, the light presets.
     pub light_source: LightSource,
-    /// Colour › White balance: Auto or Kelvin and tint.
+    /// Colour › White balance: Auto or Kelvin and tint (the Kelvin also as Look › Tone › Temperature).
     pub white_balance: WhiteBalanceSetting,
     /// The three colour-balance wheels.
     pub color_balance: ColorBalance,
-    /// Colour › Colour balance, -100 to 100.
+    /// Colour › Colour balance and Look › Tone, -100 to 100; subtractive (docs/02 C9).
     pub saturation: f64,
     /// Detail › Sharpening: Auto or amount and radius.
     pub sharpen: SharpenSetting,
+    /// Detail › Sharpening › Output: the strength of the output sharpening in percent, 0 to 200,
+    /// default 100 (a plain number, not Auto; 0 is off). A document without the field reads as 100.
+    pub output_sharpening: f64,
     /// Detail › Noise reduction: Auto or luminance, colour and detail.
     pub noise_reduction: NoiseReductionSetting,
     /// Luma, red, green and blue curves.
@@ -694,6 +711,7 @@ impl DevelopSettings {
             color_balance: ColorBalance::default(),
             saturation: 0.0,
             sharpen: AutoOr::Auto,
+            output_sharpening: OUTPUT_SHARPENING_DEFAULT,
             noise_reduction: AutoOr::Auto,
             curve: Curves::default(),
             decode: DecodeOptions::default(),
@@ -729,6 +747,7 @@ impl DevelopSettings {
             SettingsField::ColorBalance => self.color_balance == o.color_balance,
             SettingsField::Saturation => self.saturation == o.saturation,
             SettingsField::Sharpen => self.sharpen == o.sharpen,
+            SettingsField::OutputSharpening => self.output_sharpening == o.output_sharpening,
             SettingsField::NoiseReduction => self.noise_reduction == o.noise_reduction,
             SettingsField::Curve => self.curve == o.curve,
             SettingsField::Decode => self.decode == o.decode,
@@ -758,6 +777,7 @@ impl DevelopSettings {
             SettingsField::ColorBalance => self.color_balance = d.color_balance,
             SettingsField::Saturation => self.saturation = d.saturation,
             SettingsField::Sharpen => self.sharpen = d.sharpen,
+            SettingsField::OutputSharpening => self.output_sharpening = d.output_sharpening,
             SettingsField::NoiseReduction => self.noise_reduction = d.noise_reduction,
             SettingsField::Curve => self.curve = d.curve,
             SettingsField::Decode => self.decode = d.decode,
@@ -883,6 +903,13 @@ impl DevelopSettings {
             (m.amount, m.radius_px) = (a, r);
             note(SettingsField::Sharpen, ca || cr);
         }
+        let (v, c) = clamp_to(
+            "output_sharpening",
+            self.output_sharpening,
+            OUTPUT_SHARPENING_RANGE,
+        )?;
+        self.output_sharpening = v;
+        note(SettingsField::OutputSharpening, c);
         if let AutoOr::Manual(m) = &mut self.noise_reduction {
             let mut changed = false;
             for (name, v) in [
@@ -1199,6 +1226,9 @@ pub struct SettingsPatch {
     /// New sharpening.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sharpen: Option<AutoOr<SharpenManualPatch>>,
+    /// New output sharpening amount, percent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_sharpening: Option<f64>,
     /// New noise reduction.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub noise_reduction: Option<AutoOr<NoiseReductionManualPatch>>,
@@ -1371,6 +1401,7 @@ impl SettingsPatch {
                     }),
                 });
             }
+            SettingsField::OutputSharpening => p.output_sharpening = Some(from.output_sharpening),
             SettingsField::NoiseReduction => {
                 p.noise_reduction = Some(match from.noise_reduction {
                     AutoOr::Auto => AutoOr::Auto,
@@ -1526,6 +1557,9 @@ impl DevelopSettings {
                 }
             };
         }
+        if let Some(v) = patch.output_sharpening {
+            next.output_sharpening = v;
+        }
         if let Some(n) = &patch.noise_reduction {
             next.noise_reduction = match n {
                 AutoOr::Auto => AutoOr::Auto,
@@ -1634,6 +1668,7 @@ fn patch_touches(p: &SettingsPatch, field: SettingsField) -> bool {
         SettingsField::ColorBalance => p.color_balance.is_some(),
         SettingsField::Saturation => p.saturation.is_some(),
         SettingsField::Sharpen => p.sharpen.is_some(),
+        SettingsField::OutputSharpening => p.output_sharpening.is_some(),
         SettingsField::NoiseReduction => p.noise_reduction.is_some(),
         SettingsField::Curve => p.curve.is_some(),
         SettingsField::Decode => p.decode.is_some(),
@@ -1698,6 +1733,8 @@ pub struct ResolvedValues {
     pub saturation: f64,
     /// The sharpening in effect.
     pub sharpen: SharpenValue,
+    /// `output_sharpening`.
+    pub output_sharpening: f64,
     /// The noise reduction in effect.
     pub noise_reduction: NoiseReductionValue,
     /// `curve`.
@@ -1772,6 +1809,7 @@ impl ResolvedSettings {
             color_balance: settings.color_balance,
             saturation: settings.saturation,
             sharpen: settings.sharpen.manual().copied().unwrap_or(auto_sharpen),
+            output_sharpening: settings.output_sharpening,
             noise_reduction: settings
                 .noise_reduction
                 .manual()
@@ -1858,6 +1896,37 @@ mod tests {
         assert!(s.decode.neural_demosaic && s.decode.chromatic_aberration);
         assert!(s.crop.is_none() && s.white_pick.is_none());
         assert_eq!(s.orientation, Orientation::Deg0);
+        assert_eq!(s.output_sharpening, 100.0);
+    }
+
+    #[test]
+    fn output_sharpening_is_a_plain_number_that_clamps_and_defaults_to_100() {
+        // A document without the field reads as 100 (older settings, older XMP).
+        let (s, clamped) =
+            DevelopSettings::from_json("{}", &LookId::builtin("neutral")).expect("reads");
+        assert_eq!(s.output_sharpening, 100.0);
+        assert!(clamped.is_empty());
+        let (s, clamped) = DevelopSettings::from_json(
+            r#"{ "output_sharpening": 250 }"#,
+            &LookId::builtin("neutral"),
+        )
+        .expect("reads");
+        assert_eq!(s.output_sharpening, 200.0);
+        assert_eq!(clamped, vec![SettingsField::OutputSharpening]);
+        let (s, _) = DevelopSettings::from_json(
+            r#"{ "output_sharpening": -5 }"#,
+            &LookId::builtin("neutral"),
+        )
+        .expect("reads");
+        assert_eq!(s.output_sharpening, 0.0);
+        // A value that is not a number is refused, like every other field.
+        assert!(
+            DevelopSettings::from_json(
+                r#"{ "output_sharpening": "a lot" }"#,
+                &LookId::builtin("neutral")
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -1898,6 +1967,9 @@ mod tests {
         for f in [SettingsField::Crop, SettingsField::Orientation] {
             assert_eq!(f.group(), StageGroup::Geometry);
         }
+        // Output sharpening is the last stage: it follows geometry and re-runs nothing before it.
+        assert_eq!(SettingsField::OutputSharpening.group(), StageGroup::Output);
+        assert!(StageGroup::Geometry < StageGroup::Output);
         assert_eq!(SettingsField::Contrast.group(), StageGroup::Grade);
         assert_eq!(SettingsField::Look.group(), StageGroup::Grade);
         assert!(StageGroup::Raw < StageGroup::Color && StageGroup::Color < StageGroup::Grade);

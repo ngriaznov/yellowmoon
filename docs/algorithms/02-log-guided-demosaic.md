@@ -417,3 +417,97 @@ The reference implements this specification as written. Where the behaviour coul
 - **CFA phase** by site class rather than by shifting the buffer (the two are equivalent).
 - **Native samples** are copied from the f32 input, so they are not quantised and keep negatives and values above H.
 - **Parameter mapping.** `p` from the noise model per 2.2. `k` by exact integer arithmetic, which equals the single-precision product `trunc(P·(−0.002)·1024)` for every P in −200 … 200.
+
+---
+
+## 9. As built (RA-06)
+
+Decisions and measurements recorded when the method was implemented (`crates/ym-gpu/src/cpu/demosaic/log_guided.rs`). The specification above is unchanged.
+
+### 9.1 API and choices
+
+- **`Method::LogGuided`** runs the **all-float form** (3.9) with `guide_detail = 0`. The noise model comes from `DemosaicInputs::noise`; `demosaic(m, method)` therefore uses the zero-noise model (`p = 1`). The gains and the CA curves of `DemosaicInputs` are ignored. The input is the balanced mosaic: nothing is divided out.
+- **Entry points** in `log_guided`: `demosaic(m, noise)` (float, detail 0), `demosaic_float(m, noise, guide_detail)`, `demosaic_fixed(m, noise, guide_detail, headroom_log2)`, `derive`, `log2_fixed`, `exp2_fixed`, and `LogGuidedParams` with the default headroom rule of 2.4 (`LogGuidedParams::for_mosaic` reads the frame maximum; the fixed form is not used by any render path, so no caller computes it yet).
+- **Halo** `Method::LogGuided.halo() = LOG_GUIDED_HALO = 5`; the perturbation test finds a reach of exactly 5 in both forms.
+- **Invalid noise** (`NoiseDn::r` NaN, infinite or negative, which `NoiseDn::from_model` gives for a negative or infinite variance) reads as 0, so `p = 1`, as 2.2 says. `derive` does this, not `NoiseDn`.
+- **Where the Rust differs from the oracle's text** (none of it changes a vector): the 5x5 box is a vertical 5-sum then a horizontal one (every partial sum is exact in `f64`, so the order cannot matter); the structure weights are computed only at red and blue sites, the only place 3.7 reads them; `log2` and `exp2` are the platform's `f64` functions rounded to `f32`. Nothing is fused (`mul_add` is not used).
+- **Output rule** for a mosaic whose data length does not match its size: a black image of the stated size (the oracle returns an empty one). Buffers under 2x2 still go to bilinear in `demosaic_with`; `log_guided::*` itself accepts any size from 1x1.
+
+### 9.2 Results
+
+- **Vectors**: all 16, both forms, difference 0.0 against `expected` and `expected_float` (tolerances: one code and 1e-4). Property tests of 6.2 (flat fields, tiling, phase and mirror equivariance, receptive field, scale, passthrough, headroom, fixed against float, the exhaustive log2 and exp2 bounds) and the determinism checks (banded against whole, 1 against 4 threads, byte for byte) pass: `crates/ym-gpu/tests/cpu_log_guided.rs`.
+- **Fixed against float** on the 40x40 scenes: max 1.6e-3 (zone plate), mean at most 3.9e-5, inside the bounds of 3.9.
+- **PSNR** (`cargo run --release -p ym-gpu --example log_guided_eval -- psnr`; 10 px border, peak scaled with the signal, `p = 1`). Mean dB, log-guided against Menon:
+
+| Set | Scale | Bilinear | Menon | LMMSE | Log-guided | Log-guided minus Menon |
+|---|---|---|---|---|---|---|
+| Synthetic (7 images) | 1 | 29.28 | 31.60 | 32.00 | 30.76 | -0.84 |
+| Synthetic | 0.1 | 29.28 | 31.60 | 31.37 | 30.80 | -0.80 |
+| Synthetic | 0.01 | 29.28 | 31.60 | 30.16 | 30.87 | -0.73 |
+| Kodak (24) | 1 | 29.82 | 38.88 | 39.16 | 31.94 | -6.95 |
+| Kodak | 0.1 | 29.82 | 38.89 | 38.34 | 32.19 | -6.69 |
+| Kodak | 0.01 | 29.82 | 38.88 | 38.13 | 32.43 | -6.46 |
+| McMaster (18) | 1 | 32.31 | 34.21 | 35.09 | 33.48 | -0.74 |
+| McMaster | 0.1 | 32.31 | 34.21 | 34.61 | 33.54 | -0.68 |
+| McMaster | 0.01 | 32.31 | 34.21 | 33.60 | 33.66 | -0.55 |
+
+  The gate (within 1 dB of Menon on the synthetic set) holds at every scale. On Kodak, whose images are saturated and gamma-encoded photographs, the method is 6.5 to 7 dB below Menon, and only 2.1 to 2.6 dB above bilinear; at scale 1 the per-image gap on the synthetic set ranges from +1.9 (zone plate) to -3.1 dB (natural 3). PixelShift200 is not available here.
+- **CPU time** (`... -- timing`, release build, mosaic of 1/4, 1/2 and full resolution of a 24 MP (6000x4000) and a 61 MP (9504x6336) frame, 4 shared x86-64 cores at load average 8 to 12, so wall times are inflated and CPU seconds are the dependable number). CPU time relative to bilinear and Menon, float form of this method:
+
+| Frame | Resolution | CPU vs bilinear | CPU vs Menon |
+|---|---|---|---|
+| 24 MP | 1/4 (1500x1000) | 1.7 to 1.8 | 0.49 to 0.51 |
+| 61 MP | 1/4 (2376x1584) | 1.7 to 1.8 | 0.40 to 0.54 |
+| 24 MP | 1/2 | 1.6 | 0.40 |
+| 61 MP | 1/2 | 1.7 | 0.53 |
+| 24 MP | full | 1.4 | 0.48 |
+
+  On one thread the 1/4-resolution frame of a 24 MP photo takes about 75 ms wall (90 CPU ms) against 165 to 200 ms for Menon and 42 to 58 ms for bilinear. The fixed form costs 1.0 to 1.6 times the float form. (LMMSE costs 1.1 to 1.8 times Menon.)
+
+### 9.3 Use for the fit view and thumbnails
+
+The numbers meet the targets (within 1 dB on the synthetic set, about twice as fast as Menon), but **no preview render demosaics today**, so there is no preview method to switch: the fit view and the thumbnails at `k >= 2` bin the mosaic (`bin_mosaic`) and never run R6. Only `k = 1` renders do (thumbnails of small photos or small crops), and those read the tiles of the full-resolution chain: the tiles are cached under the same key as the 100 % view, and exports run the same chain. Using this method there needs a second chain with its own cache key, so that its pixels cannot reach the 100 % view or an export, and it would only speed up a rare case. The comparison of 7.1 note 6 (demosaic then downsample against binning at `k = 2`) was not evaluated. `ym-core` is therefore unchanged. The gap on Kodak (-6.95 dB) is a further reason to keep Menon wherever a real photograph is shown at full resolution. The GPU port (RA-09) is the place where this method pays off.
+
+---
+
+## 10. As built (RA-09)
+
+The GPU port of the all-float form (3.9), recorded when it was implemented. The specification above is unchanged. Files: `crates/ym-gpu/src/shaders/log_guided.wgsl`, `crates/ym-gpu/src/kernels/log_guided.rs` (wrapper, `KernelId::LogGuided`), `crates/ym-gpu/tests/gpu_log_guided.rs` (parity tests).
+
+### 10.1 Layout
+
+- **One shader, one pipeline, four dispatches** in the split of section 5, selected by a `pass` field of the uniform: (0) the log taken on the fly at ±2 and the horizontal guide filter, `Lh`; (1) the vertical filter and `exp2`, `C = 2^max(Lv, 0)`; (2) the structure measures `Dh`, `Dv` from `C` and their horizontal 5-sums `SH`, `SV`; (3) the vertical 5-sums, the box means, the weights and the reconstruction. Each dispatch is per pixel over a small neighbourhood; there are no reductions and no barriers. The receptive field found by perturbing single photosites is exactly 5 px, so `Method::LogGuided.halo() = 5` holds for the kernel too.
+- **Storage.** `Lh`, `C`, `SH`, `SV` are four `f32` planes of one scratch buffer (16 bytes per pixel) in **every** storage mode: the guide is a logarithm and an `f16` plane of it has steps of 0.008 to 0.016 stop. The mosaic (input) and the three output planes use the device's storage type, as the other raw kernels do, so the kernel can sit between the front end and the colour chain later. With `f16` storage the input and output are rounded to `f16` (the open question on `f16` against `f32` storage, `docs/STATUS.md` question 2, therefore applies to the planes, not to the guide). The `f32` bounds below are for `f32` storage.
+- **Entry points** in `ym_gpu::kernels::log_guided`: `demosaic(ctx, &Mosaic, NoiseDn, guide_detail)` (one rectangle, mirrored at its edges), `demosaic_tiled(ctx, &Mosaic, NoiseDn, guide_detail, tile_px, &CancelToken)` and `demosaic_planned(.., &TilePlan, ..)` (tiles with 5 px of context, even left and top edges). They upload, run and read back. `p` and the kernel taps come from `cpu::demosaic::log_guided::derive`, so the numbers are not typed twice. The scratch must fit one storage binding (128 MiB by default, 8 million pixels): a 2048 px tile with its halo needs 68 MB.
+- **Not wired into the render path.** The raw stages still run the CPU reference; this task adds the kernel, its wrapper and the registry entry (`KernelId::ALL`, `tests/shaders_naga.rs` validates the module in all storage modes).
+
+### 10.2 Where it is not bit-exact
+
+`f32` against the CPU's `f64`, with the same order of operations except for two exact rewrites.
+
+- `log2` and `exp2` are the GPU's `f32` instructions (a few ulp on lavapipe), not the `f64` library functions rounded to `f32`.
+- The guide filters, the box sums and the reconstruction accumulate in `f32`. The filters are evaluated about the centre value (`Lh = Lc + Σ t_i (L_i − Lc)`; the taps sum to exactly 1) and the second differences as `|((C_a − C) + (C_b − C))/2|`. Both are the same function in real arithmetic. They keep the `f32` error relative to the differences of neighbouring values instead of to the values (the log is about 14, `C` is up to 10^5, an ulp of 0.008 against `p = 1`). Without them the weights of a perfectly flat guide differed by rounding noise: on a 1×2 mosaic the green sample was off by 1.1e-3. With them the same case agrees to the last bit.
+- The green blend is the `f32` form of 3.9 divided through by the **larger** of the two weights `max(D̄,1)³`, `max(Ē,1)³` instead of always by `w_h`: with `r = min/max` of `max(D̄,1)` and `max(Ē,1)` and `k = r³ ≤ 1`, the weights are `(w_h, w_v) = (1, k)` when `D̄ ≤ Ē` (exactly the spec's `t = (D̄/Ē)³` form) and `(k, 1)` when `D̄ > Ē`, and `green = C (w_h·HA + w_v·VA)/(w_h·HC + w_v·VC)`. It is the same blend. The single `t` form reached `t ≈ 10¹⁵` on a strong horizontal edge (`D̄ ≫ Ē ≈ p`) and `t·VC` overflowed `f32` for mosaic values above about 10⁵, giving NaN where the CPU's `f64` is finite (the review found it with vertical stripes; `huge_values_in_strongly_directional_frames_stay_finite_and_match` guards it).
+- The box mean is `Σ/25` (the float form has no floor, so the `floor(Σ·(1/25))` of section 8 does not arise).
+- The mosaic is not padded once by 5 px: every read of the mosaic or of a plane is mirrored into the rectangle (period 2(n−1), the edge sample not repeated). Section 3.0 shows this is the same function. Tiles with 5 px of context and the whole frame give the same pixels bit for bit.
+- `f32` range: the kernel stays finite up to mosaic values of about 3e32 and overflows near 1e33, where the 25-sample box sum of the structure measures leaves the `f32` range (the CPU's `f32` planes: between 1e33 and 3e33; `A = 65535·v` itself overflows at 5e33). A balanced mosaic is a few times white at most.
+
+### 10.3 Results (lavapipe, `WGPU_BACKEND=vulkan`, Mesa 25.2.8, LLVM 20.1.2; `cargo test -p ym-gpu --test gpu_log_guided`)
+
+Max |GPU − CPU reference|, `f32` storage, in normalised units:
+
+| Case | Asserted | Measured |
+|---|---|---|
+| 16 vectors against `expected_float` | 2e-5 (the vectors' own tolerance, 1e-4, holds too) | 3.1e-6 (`highlights_*`, values up to 3.4), 1.8e-6 (`zone_plate`), ≤ 8.4e-7 elsewhere |
+| random frames in 0..1.3, all four phases, odd and even sizes, `guide_detail` −50, 0, 100, several noise models | 5e-5 | 4.8e-6 |
+| frames from −0.05 to 20 with NaN and infinity samples, four phases | 1e-5 of the peak | 1.3e-6 of the peak (native samples bit-exact, interpolated ≥ 0) |
+| 1×1 to 7×7, two phases (the mirror wraps inside the halo) | 5e-5 | 1.5e-5 (1×3) |
+| 203×157, tiles of 32, 50, 64, 100, two phases | bit-identical to the whole GPU frame; 5e-5 against the CPU | 0; 2.4e-6 |
+| 2048×1365 in four tiles of 1024 | 5e-5 | 3.2e-6 |
+| crops by one row or column (the phase flips), flips of the mosaic | 5e-5 | 0; 1.2e-7 |
+| `f16` storage (packed and native), random frames in 0..1.3 | 5e-5 plus half an `f16` ulp of the value | 4.9e-4 (the half ulp at 1.0) |
+| `f16` storage, the 16 vectors (values up to 3.4) | the same | 9.6e-4 (the half ulp at 3.4 is 9.8e-4) |
+| stripes of one direction (one structure measure at `p`, the other as large as the signal), values from 4e2 to 4e30, both directions | 1e-5 of the peak, every sample finite | 1.1e-6 of the peak |
+| 14 extra inputs of the review against the C++ oracle's `demosaic_float` (sizes 1x1 to 128x96, all four phases, `guide_detail` -50 to 100, several noise models, values from 1e-5 to 136; run outside the repository) | the CPU bound | the Rust CPU port: 0.0 on all; the GPU: at most 2.1e-6 of the peak (9.9e-5 absolute at a peak of 136; 7e-6 on a 97x63 texture with values up to 12) |
+
+Also asserted: flat fields come back within 1e-6 relative in all four phases; a zero field and an all-negative field give zero interpolated samples and unchanged natives; out-of-range `guide_detail` is clamped like the CPU; a plan without context, a plan for another size, an empty mosaic and a cancelled token are refused; two runs (whole and tiled) are bit-identical in every storage mode. Metal and real-GPU runs, and timings on a real GPU, are not done (no Mac or GPU here; `M0-H4`). The 2048×1365 frame takes 1 to 3 s on lavapipe (a CPU rasteriser on shared cores), which says nothing about a GPU.

@@ -34,9 +34,10 @@ They mirror the app's controls. Anything not given uses the automatic value or t
 | `--intensity <0–100>` | percent | default 100 |
 | `--exposure auto or <EV>` | absolute EV −4…+4, or `auto` | `--exposure-offset <EV>` adds to auto: resolved per file to `Manual(EV_auto + offset)`, so there's no extra settings field |
 | `--wb auto or <K>[,<tint>]` | 2000–11000, tint −50…50 | `--light day or shade or tungsten or led or fluorescent` sets the light preset |
-| `--contrast`, `--brightness`, `--highlights`, `--shadows`, `--white`, `--black`, `--saturation` | −100…100 | |
+| `--contrast`, `--brightness`, `--highlights`, `--shadows`, `--white`, `--black`, `--saturation` | −100…100 | `--saturation` is subtractive (`docs/02` C9): more makes colours denser and darker, less makes them paler, and the brightest channel and neutrals stay. |
 | `--nr auto or <L>,<C>,<D>` | 0–100 each | |
-| `--sharpen auto or <amount>,<radius>` | 0–300, 0.3–2.5 | |
+| `--sharpen auto or <amount>,<radius>` | 0–300, 0.3–2.5 | capture sharpening (R8) |
+| `--output-sharpening <0–200>` | percent, default 100 | Detail › Sharpening › Output (`docs/algorithms/04`): sharpens JPEG, TIFF and PNG files at the size they are written, right after the resize; 0 is off and leaves the bytes of an export without the stage; a value outside 0–200 is a usage error (exit 2); a DNG is never sharpened (`--output-sharpening` with `--format dng` is warned about and ignored). It is the field `output_sharpening` of the settings object. |
 | `--no-neural`, `--no-highlight-recovery`, `--no-lens`, `--no-ca` | flags | RAW › Decode switches |
 | `--rolloff <highlights>,<low-light>` | 0–1 each | |
 | `--profile <id>` | camera profile id | forces a profile, for comparisons |
@@ -93,6 +94,7 @@ On failure: `"status": "error"`, `"output": null`, `"error": { "kind": "unsuppor
 
 - Nothing is saved per photo. Each run starts from the automatic development and the default look.
 - Same inputs, settings and version give the same output bytes.
+- JPEG, TIFF and PNG files are sharpened at the size they are written, after the resize (Detail › Sharpening › Output, `docs/algorithms/04`; `--output-sharpening`, default 100 %); `--output-sharpening 0` writes the picture without that stage. A DNG is never sharpened. The amount is part of the `settings` the JSON reports and the file records, so feeding that back with `--settings` writes the same file, and a settings file from before the option reads as 100.
 - Runs headless through wgpu's Metal backend with no window or surface. Falls back to the CPU path when no GPU is available (with a warning on stderr), unless `--require-gpu`.
 - Safe to run while the app is open: both use the same library folder; imports take a lock.
 - Progress bar on stderr when stderr is a TTY and `--json`/`--quiet` aren't set.

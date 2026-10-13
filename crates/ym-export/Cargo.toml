@@ -11,6 +11,9 @@ publish = false
 
 [dependencies]
 ym-color.workspace = true
+# Output sharpening of the picture after the resize (`ym_gpu::cpu::output_sharpen`, RA-08). ym-gpu
+# depends on ym-color and ym-noise only, so there is no cycle; the stage is CPU code and uses no GPU.
+ym-gpu.workspace = true
 thiserror.workspace = true
 serde.workspace = true
 serde_json.workspace = true

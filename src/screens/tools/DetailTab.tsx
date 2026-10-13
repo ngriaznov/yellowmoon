@@ -1,8 +1,13 @@
 import { AutoToggle, Card, formats, ResetLink, Slider } from "../../components";
-import { AUTO, manualOrAuto } from "./shared";
+import { AUTO, manualOrAuto, OUTPUT_SHARPENING_DEFAULT } from "./shared";
 import type { TabProps } from "./shared";
 
-/** Detail: Sharpening (Amount, Radius) and Noise reduction (Luminance, Colour, Detail, with the AUTO tag). */
+/**
+ * Detail: Sharpening (Amount, Radius, Output) and Noise reduction (Luminance, Colour, Detail, with the
+ * AUTO tag). Amount and Radius are the capture sharpening and resolve from Automatic; Output is the
+ * sharpening of the picture at the size it is shown and written (the owner's decision of 2026-10-13,
+ * `docs/11-ui.md`): a plain percentage, 100 by default, so Reset goes back to 100 and not to Auto.
+ */
 export function DetailTab({ store, rs }: TabProps) {
   const { values, estimates, auto } = rs;
   const sharp = values.sharpen;
@@ -14,7 +19,15 @@ export function DetailTab({ store, rs }: TabProps) {
 
   return (
     <>
-      <Card title="Sharpening" action={<ResetLink size="card" onClick={() => void store.update({ sharpen: AUTO })} />}>
+      <Card
+        title="Sharpening"
+        action={
+          <ResetLink
+            size="card"
+            onClick={() => void store.update({ sharpen: AUTO, output_sharpening: OUTPUT_SHARPENING_DEFAULT })}
+          />
+        }
+      >
         <Slider
           label="Amount"
           value={sharp.amount}
@@ -35,6 +48,16 @@ export function DetailTab({ store, rs }: TabProps) {
           format={formats.px1}
           onChange={(radius, final) => setSharpen(sharp.amount, radius, final)}
           onReset={() => setSharpen(sharp.amount, estimates.sharpen.radius_px, true)}
+        />
+        <Slider
+          label="Output"
+          value={values.output_sharpening}
+          min={0}
+          max={200}
+          step={5}
+          defaultValue={OUTPUT_SHARPENING_DEFAULT}
+          format={formats.percent}
+          onChange={(output_sharpening, final) => void store.update({ output_sharpening }, final)}
         />
       </Card>
       <Card

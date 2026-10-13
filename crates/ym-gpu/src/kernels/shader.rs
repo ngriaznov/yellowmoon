@@ -23,15 +23,69 @@ pub enum KernelId {
     SpikeMatrix,
     /// The whole colour chain C1 to C13.
     Color,
+    /// RA-09: the log-guided fast demosaic (four dispatches of one entry point).
+    LogGuided,
+    /// RA-09 output sharpening, pass 1: the luma plane `L`.
+    OutputSharpenLuma,
+    /// RA-09 output sharpening: the horizontal part `t` of the difference-form high-pass.
+    OutputSharpenHighpassRows,
+    /// RA-09 output sharpening: the vertical part `h` of the difference-form high-pass.
+    OutputSharpenHighpassCols,
+    /// RA-09 output sharpening: the numerator and denominator planes of the gain maps.
+    OutputSharpenGainTerms,
+    /// RA-09 output sharpening: one half of a separable blur of 1 to 4 planes.
+    OutputSharpenBlur,
+    /// RA-09 output sharpening: the stage's delta, added to `D` and `Hacc`.
+    OutputSharpenAccumulate,
+    /// RA-09 output sharpening: the halo limiter's 5 x 5 envelope window.
+    OutputSharpenWindow,
+    /// RA-09 output sharpening: the limiter's clamp and the ratio transfer to RGB.
+    OutputSharpenTransfer,
+    /// RA-09 diffraction deconvolution: luma, inverse noise variance and clip penalty.
+    DiffractionLuma,
+    /// RA-09 diffraction deconvolution: the 5 x 5 lower and upper envelope estimates.
+    DiffractionEnvelope,
+    /// RA-09 diffraction deconvolution: the dark and bright layers.
+    DiffractionLayers,
+    /// RA-09 diffraction deconvolution: the horizontal half of the Gaussian high-pass.
+    DiffractionGaussRows,
+    /// RA-09 diffraction deconvolution: the vertical half of the Gaussian high-pass.
+    DiffractionGaussCols,
+    /// RA-09 diffraction deconvolution: the PSF convolutions of the layers and the residual.
+    DiffractionPsf,
+    /// RA-09 diffraction deconvolution: the horizontal sums of the weighted moments.
+    DiffractionMomentRows,
+    /// RA-09 diffraction deconvolution: the vertical sums of the moments and the per-pixel solve.
+    DiffractionSolve,
+    /// RA-09 diffraction deconvolution: the coefficient smoothing, the correction and the transfer.
+    DiffractionOutput,
 }
 
 impl KernelId {
     /// All kernels.
-    pub const ALL: [KernelId; 4] = [
+    pub const ALL: [KernelId; 22] = [
         KernelId::SpikeNormalize,
         KernelId::SpikeDemosaic,
         KernelId::SpikeMatrix,
         KernelId::Color,
+        KernelId::LogGuided,
+        KernelId::OutputSharpenLuma,
+        KernelId::OutputSharpenHighpassRows,
+        KernelId::OutputSharpenHighpassCols,
+        KernelId::OutputSharpenGainTerms,
+        KernelId::OutputSharpenBlur,
+        KernelId::OutputSharpenAccumulate,
+        KernelId::OutputSharpenWindow,
+        KernelId::OutputSharpenTransfer,
+        KernelId::DiffractionLuma,
+        KernelId::DiffractionEnvelope,
+        KernelId::DiffractionLayers,
+        KernelId::DiffractionGaussRows,
+        KernelId::DiffractionGaussCols,
+        KernelId::DiffractionPsf,
+        KernelId::DiffractionMomentRows,
+        KernelId::DiffractionSolve,
+        KernelId::DiffractionOutput,
     ];
 
     /// Stable name (also the pipeline label).
@@ -41,6 +95,24 @@ impl KernelId {
             KernelId::SpikeDemosaic => "spike_demosaic",
             KernelId::SpikeMatrix => "spike_matrix",
             KernelId::Color => "color_chain",
+            KernelId::LogGuided => "log_guided",
+            KernelId::OutputSharpenLuma => "output_sharpen_luma",
+            KernelId::OutputSharpenHighpassRows => "output_sharpen_highpass_rows",
+            KernelId::OutputSharpenHighpassCols => "output_sharpen_highpass_cols",
+            KernelId::OutputSharpenGainTerms => "output_sharpen_gain_terms",
+            KernelId::OutputSharpenBlur => "output_sharpen_blur",
+            KernelId::OutputSharpenAccumulate => "output_sharpen_accumulate",
+            KernelId::OutputSharpenWindow => "output_sharpen_window",
+            KernelId::OutputSharpenTransfer => "output_sharpen_transfer",
+            KernelId::DiffractionLuma => "diffraction_luma",
+            KernelId::DiffractionEnvelope => "diffraction_envelope",
+            KernelId::DiffractionLayers => "diffraction_layers",
+            KernelId::DiffractionGaussRows => "diffraction_gauss_rows",
+            KernelId::DiffractionGaussCols => "diffraction_gauss_cols",
+            KernelId::DiffractionPsf => "diffraction_psf",
+            KernelId::DiffractionMomentRows => "diffraction_moment_rows",
+            KernelId::DiffractionSolve => "diffraction_solve",
+            KernelId::DiffractionOutput => "diffraction_output",
         }
     }
 
@@ -54,6 +126,24 @@ impl KernelId {
                 include_str!("../shaders/aces2.wgsl"),
                 include_str!("../shaders/color.wgsl")
             ),
+            KernelId::LogGuided => include_str!("../shaders/log_guided.wgsl").to_string(),
+            KernelId::OutputSharpenLuma
+            | KernelId::OutputSharpenHighpassRows
+            | KernelId::OutputSharpenHighpassCols
+            | KernelId::OutputSharpenGainTerms
+            | KernelId::OutputSharpenBlur
+            | KernelId::OutputSharpenAccumulate
+            | KernelId::OutputSharpenWindow
+            | KernelId::OutputSharpenTransfer => super::output_sharpen::body(self),
+            KernelId::DiffractionLuma
+            | KernelId::DiffractionEnvelope
+            | KernelId::DiffractionLayers
+            | KernelId::DiffractionGaussRows
+            | KernelId::DiffractionGaussCols
+            | KernelId::DiffractionPsf
+            | KernelId::DiffractionMomentRows
+            | KernelId::DiffractionSolve
+            | KernelId::DiffractionOutput => super::diffraction::body(self),
         }
     }
 }

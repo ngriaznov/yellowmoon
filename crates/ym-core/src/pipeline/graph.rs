@@ -16,7 +16,8 @@
 //! | `tiles` | 512 px tiles of the full-resolution raw group | [`RawParams`] and the tile |
 //! | `color` | the fused matrix and C7 | [`ColorKey`] |
 //! | `grade` | the prepared `ColorChain` | [`GradeKey`] |
-//! | `frames` | finished viewport frames | everything above plus geometry and the cell |
+//! | `display` | the display-linear frame of a view before output sharpening | everything above plus geometry and the cell, not the sharpening amount |
+//! | `frames` | finished viewport frames | everything above plus geometry, the cell and the output sharpening amount |
 //!
 //! The estimates' version (`PhotoView::estimates_version`) is deliberately not part of any key: the
 //! keys hold the numbers the group reads, so a burst median that moves only the exposure recomputes
@@ -29,8 +30,10 @@ use std::time::Instant;
 
 use serde::Serialize;
 use ym_export::{ColorSpace, DetailStat};
+use ym_gpu::cpu::demosaic::{DEFAULT_METHOD, Method};
 use ym_gpu::cpu::detail::NoiseReduction;
 use ym_gpu::cpu::sharpen::SharpenParams;
+use ym_gpu::cpu::sharpen::diffraction::DiffractionParams;
 use ym_gpu::cpu::{Rect, RgbImage};
 use ym_gpu::device::{Gpu, GpuInfo};
 use ym_gpu::queue::CancelToken;
@@ -41,8 +44,8 @@ use super::color::{
 };
 use super::geometry::Geometry;
 use super::raw::{
-    FrameData, FullChain, RawParams, RawParamsKey, RawPlan, SigmaPlane, reduced_bayer, reduced_rgb,
-    sigma_plane,
+    CaptureMethod, FrameData, FullChain, RawParams, RawParamsKey, RawPlan, SigmaPlane,
+    diffraction_params, reduced_bayer, reduced_rgb, sigma_plane,
 };
 use super::{FrameZoom, NeuralStatus, RenderError, RenderPath, RenderStats};
 use crate::scheduler::{ByteLru, JobScheduler, MemoryBudget, MemoryLedger};
@@ -73,6 +76,52 @@ pub struct RenderOptions {
     pub background: [u8; 3],
     /// Longest edge of a thumbnail in pixels (`docs/01`: 240).
     pub thumbnail_px: usize,
+    /// The R6 demosaic method of the full-resolution render (the 100 % view and every export). An
+    /// internal switch with no settings field and no UI: [`DEFAULT_METHOD`] until the owner
+    /// decides (`docs/algorithms/01-adaptive-ratio-demosaic.md` section 10), set by tests and
+    /// evaluation tools. The reduced renders (fit view, thumbnails) bin the mosaic and do not
+    /// demosaic. It is a property of the renderer, fixed when it is made, so it is not part of the
+    /// cache keys.
+    ///
+    /// Builds with the `force-demosaic` feature (tests only, never a shipped build) read the
+    /// initial value from the environment variable `YM_FORCE_DEMOSAIC`
+    /// ([`forced_demosaic`]); other builds always start at [`DEFAULT_METHOD`].
+    pub demosaic: Method,
+}
+
+/// The method the test-only switch asks for: the value of `YM_FORCE_DEMOSAIC` (a
+/// [`Method::name`], such as `adaptive_ratio`), or `None` when the variable is not set.
+///
+/// Only builds with the `force-demosaic` cargo feature have this switch. The feature is off in
+/// every normal build and is switched on only by the dev-dependencies of the test crates that
+/// start `ym` as a child process (`crates/ym-cli`) and by `cargo build -p ym-cli --features
+/// force-demosaic` for the separately built parity binary. Without it this function is a constant
+/// `None` and nothing reads the environment.
+///
+/// # Panics
+///
+/// With the feature on, when the variable is set to something that is not a method name: a typo in
+/// a test setup must not run the default method unnoticed.
+#[cfg(feature = "force-demosaic")]
+#[must_use]
+pub fn forced_demosaic() -> Option<Method> {
+    let value = std::env::var_os("YM_FORCE_DEMOSAIC")?;
+    let name = value.to_string_lossy();
+    let method = Method::from_name(&name).unwrap_or_else(|| {
+        panic!(
+            "YM_FORCE_DEMOSAIC={name:?} is not a demosaic method (one of {:?})",
+            Method::ALL.map(Method::name)
+        )
+    });
+    Some(method)
+}
+
+/// The method the test-only switch asks for. This build has no switch (the `force-demosaic`
+/// feature is off): always `None`.
+#[cfg(not(feature = "force-demosaic"))]
+#[must_use]
+pub const fn forced_demosaic() -> Option<Method> {
+    None
 }
 
 impl std::fmt::Debug for RenderOptions {
@@ -83,6 +132,7 @@ impl std::fmt::Debug for RenderOptions {
             .field("full_tile_px", &self.full_tile_px)
             .field("budget", &self.budget)
             .field("neural", &self.neural)
+            .field("demosaic", &self.demosaic)
             .field("gpu", &self.gpu.as_ref().map(|g| g.info().name.clone()))
             .finish_non_exhaustive()
     }
@@ -99,6 +149,7 @@ impl Default for RenderOptions {
             gpu: None,
             background: [255, 255, 255],
             thumbnail_px: 240,
+            demosaic: forced_demosaic().unwrap_or(DEFAULT_METHOD),
         }
     }
 }
@@ -132,6 +183,12 @@ pub struct StageRuns {
     pub grade_plans: u64,
     /// Per-pixel colour passes over a sampled image.
     pub color_passes: u64,
+    /// Output-sharpening passes (the last stage: sharpen the display-linear frame of a view and
+    /// encode it).
+    pub output_passes: u64,
+    /// Display-linear frames served from the display cache (a sharpening pass that did not need to
+    /// sample or run the colour chain again).
+    pub display_hits: u64,
     /// Finished frames served from the frame cache.
     pub frame_hits: u64,
 }
@@ -152,6 +209,8 @@ impl StageRuns {
         self.color_plans += other.color_plans;
         self.grade_plans += other.grade_plans;
         self.color_passes += other.color_passes;
+        self.output_passes += other.output_passes;
+        self.display_hits += other.display_hits;
         self.frame_hits += other.frame_hits;
     }
 }
@@ -171,6 +230,8 @@ pub struct StageTimings {
     pub sample_ms: f64,
     /// The per-pixel colour pass (CPU or GPU) and the readback.
     pub pass_ms: f64,
+    /// The output-sharpening stage and the final encode (zero when the frame has none).
+    pub output_ms: f64,
 }
 
 /// Running totals of a graph's [`StageRuns`].
@@ -240,6 +301,8 @@ struct GraphState {
     color: Option<Arc<ColorPlan>>,
     grade: Option<ByteLru<GradeKey, Arc<GradePlan>>>,
     frames: Option<ByteLru<String, Arc<super::frame::RenderedFrame>>>,
+    /// Display-linear frames of views, before output sharpening (`frame::DisplayFrame`).
+    display: Option<ByteLru<String, Arc<super::frame::DisplayFrame>>>,
     stats: Option<RenderStats>,
 }
 
@@ -291,6 +354,7 @@ impl PhotoGraph {
             + st.full.as_ref().map_or(0, |(_, f)| f.bytes())
             + st.tiles.as_ref().map_or(0, ByteLru::used)
             + st.frames.as_ref().map_or(0, ByteLru::used)
+            + st.display.as_ref().map_or(0, ByteLru::used)
     }
 
     /// Drops the full-resolution intermediates (tiles and the prepared chain), keeping the small
@@ -324,6 +388,23 @@ impl PhotoGraph {
         let budget = (self.budget.cpu_bytes / 32) as usize;
         lock(&self.state)
             .frames
+            .get_or_insert_with(|| ByteLru::new(budget))
+            .insert(key, frame, bytes);
+    }
+
+    /// A display-linear frame (a view before output sharpening) with this key, if one is cached.
+    pub(crate) fn cached_display(&self, key: &str) -> Option<Arc<super::frame::DisplayFrame>> {
+        let mut st = lock(&self.state);
+        st.display.as_mut()?.get(&key.to_owned()).cloned()
+    }
+
+    /// Keeps a display-linear frame. Only the newest few are worth keeping (a slider drag asks for
+    /// the same one again and again), so the budget is that of the finished frames.
+    pub(crate) fn store_display(&self, key: String, frame: Arc<super::frame::DisplayFrame>) {
+        let bytes = frame.bytes();
+        let budget = (self.budget.cpu_bytes / 32) as usize;
+        lock(&self.state)
+            .display
             .get_or_insert_with(|| ByteLru::new(budget))
             .insert(key, frame, bytes);
     }
@@ -705,6 +786,24 @@ impl<'a> Job<'a> {
         report
     }
 
+    /// The controls of R8 diffraction deconvolution for this photo: `Some` when the internal
+    /// switch ([`PhotoSource::capture_method`]) asks for it and the photo has an f-number and a
+    /// pixel pitch (`docs/algorithms/03-diffraction-deconvolution.md` section 2.2), else `None`
+    /// (Richardson-Lucy).
+    fn diffraction_params(&self) -> Option<DiffractionParams> {
+        if self.src.capture_method != CaptureMethod::Diffraction {
+            return None;
+        }
+        let raw = &self.src.raw;
+        diffraction_params(
+            &raw.meta,
+            self.src.sensor.as_ref(),
+            raw.data.width,
+            raw.data.height,
+            raw.is_reduced(),
+        )
+    }
+
     /// The numbers the raw group reads from the settings and the estimates.
     pub fn params(&mut self) -> Result<RawParams, RenderError> {
         if let Some(p) = &self.params {
@@ -747,6 +846,7 @@ impl<'a> Job<'a> {
             },
             iso,
             noise: e.noise.model,
+            diffraction: self.diffraction_params(),
         };
         self.params = Some(p);
         Ok(p)
@@ -868,7 +968,14 @@ impl<'a> Job<'a> {
         let plan = self.plan()?;
         let sigma = self.sigma()?;
         let t = Instant::now();
-        let full = Arc::new(FullChain::new(&frame, &plan, &params, &sigma, self.cancel)?);
+        let full = Arc::new(FullChain::with_method(
+            &frame,
+            &plan,
+            &params,
+            &sigma,
+            self.r.inner.options.demosaic,
+            self.cancel,
+        )?);
         self.runs.full_chains += 1;
         self.timings.raw_ms += t.elapsed().as_secs_f64() * 1000.0;
         if keep {
@@ -1062,5 +1169,30 @@ pub(crate) fn color_space_of(target: OutputTarget) -> ColorSpace {
         OutputTarget::Viewport | OutputTarget::DisplayP3 => ColorSpace::DisplayP3,
         OutputTarget::Srgb => ColorSpace::Srgb,
         OutputTarget::Rec2020 => ColorSpace::Rec2020,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A build without the `force-demosaic` feature has no switch: nothing reads the environment
+    /// and a renderer made from the default options demosaics with the default method.
+    #[cfg(not(feature = "force-demosaic"))]
+    #[test]
+    fn without_the_test_feature_nothing_can_force_the_method() {
+        assert_eq!(forced_demosaic(), None);
+        assert_eq!(RenderOptions::default().demosaic, DEFAULT_METHOD);
+    }
+
+    /// With the feature on and the variable unset (the normal state of every test run), the
+    /// options still start at the default method.
+    #[cfg(feature = "force-demosaic")]
+    #[test]
+    fn the_test_feature_changes_nothing_while_the_variable_is_unset() {
+        if std::env::var_os("YM_FORCE_DEMOSAIC").is_none() {
+            assert_eq!(forced_demosaic(), None);
+            assert_eq!(RenderOptions::default().demosaic, DEFAULT_METHOD);
+        }
     }
 }

@@ -16,6 +16,7 @@ use std::f64::consts::PI;
 
 use rayon::prelude::*;
 use ym_color::encode::OutputSpace;
+use ym_gpu::cpu::output_sharpen::OutputSharpen;
 
 use crate::error::ExportError;
 use crate::pixels::{ExportHooks, ImageRef, LinearImage, PixelEncoding};
@@ -181,6 +182,87 @@ pub fn resize_lanczos3(
         height: out_height,
         rgb: out,
     })
+}
+
+/// Core rows of one strip of [`sharpen_output`]: enough for the stage's own bands (128 rows each)
+/// to fill every core, few enough that a cancel is noticed within a second or two and that the
+/// working planes stay a few tens of megabytes at 8000 px wide.
+const SHARPEN_STRIP_ROWS: usize = 1024;
+
+/// Output sharpening of the picture at the size it is written (`docs/algorithms/04`, the Detail
+/// tab's "Output" slider): the screen preset at `amount_pct`, run right after the resize.
+///
+/// `scale` is `out_long_edge / rendered_long_edge` ([`ym_gpu::cpu::output_sharpen::scale_for_edges`]:
+/// 1 for a full-size export). `src` is display-linear, or display-encoded in `space` (decoded to
+/// linear light first, as the resize does); the result is display-linear, interleaved, the size of
+/// `src`. `None` when the amount creates no stage (0, or below 0.1 %): the caller then keeps
+/// `src`, so the bytes are exactly those of an export without the stage.
+///
+/// The stage runs in strips of rows with the stage's own receptive field of context above and
+/// below ([`OutputSharpen::halo_px`], the tiling contract of spec section 5.2), which gives the
+/// whole-frame result bit for bit, a cancel check and a progress report per strip, and no
+/// full-frame working planes.
+///
+/// # Errors
+///
+/// [`ExportError::InvalidInput`] for an amount or a scale outside the stage's range,
+/// [`ExportError::Cancelled`] when the hooks say so.
+pub fn sharpen_output(
+    src: &ImageRef<'_>,
+    amount_pct: f32,
+    scale: f32,
+    space: OutputSpace,
+    hooks: &ExportHooks<'_>,
+) -> Result<Option<LinearImage>, ExportError> {
+    src.validate()?;
+    if src.encoding == PixelEncoding::SceneLinearAwg4 {
+        return Err(ExportError::invalid(
+            "scene-linear AWG4 pixels can't be sharpened as a display image",
+        ));
+    }
+    let sharpen = OutputSharpen::screen().with_amount_pct(amount_pct);
+    let invalid =
+        |e: ym_gpu::cpu::output_sharpen::OutputSharpenError| ExportError::invalid(e.to_string());
+    let plan = sharpen.plan(scale).map_err(invalid)?;
+    if plan.stages().is_empty() {
+        return Ok(None);
+    }
+    let halo = plan.halo_px();
+    let (w, h) = (src.width as usize, src.height as usize);
+    let row_len = w * 3;
+    let mut out = vec![0.0_f32; row_len * h];
+    let mut tmp: Vec<f32> = Vec::new();
+    let mut y0 = 0;
+    while y0 < h {
+        hooks.check()?;
+        let y1 = (y0 + SHARPEN_STRIP_ROWS).min(h);
+        let (top, bottom) = (y0.saturating_sub(halo), (y1 + halo).min(h));
+        tmp.clear();
+        for y in top..bottom {
+            let row = src.row(y);
+            if src.encoding == PixelEncoding::DisplayEncoded {
+                tmp.extend(
+                    row.iter()
+                        .map(|&v| space.decode_channel(f64::from(v)) as f32),
+                );
+            } else {
+                tmp.extend_from_slice(row);
+            }
+        }
+        sharpen
+            .apply_interleaved_in_place(w, bottom - top, &mut tmp, scale)
+            .map_err(invalid)?;
+        out[y0 * row_len..y1 * row_len]
+            .copy_from_slice(&tmp[(y0 - top) * row_len..(y1 - top) * row_len]);
+        y0 = y1;
+        hooks.report(y0 as f32 / h as f32);
+    }
+    hooks.check()?;
+    Ok(Some(LinearImage {
+        width: src.width,
+        height: src.height,
+        rgb: out,
+    }))
 }
 
 #[cfg(test)]

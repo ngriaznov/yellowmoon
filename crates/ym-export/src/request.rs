@@ -15,6 +15,7 @@ use std::io::{Cursor, Seek, Write};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+use ym_gpu::cpu::output_sharpen::scale_for_edges;
 
 use crate::dng::{self, BaselineExposure, CropRect, DngParams, DngProfile, DngReport};
 use crate::error::ExportError;
@@ -25,7 +26,7 @@ use crate::naming::{self, NameFields, Placement};
 use crate::options::{ColorSpace, ExportFormat, ExportOptions, IfExists, Size};
 use crate::pixels::{ExportHooks, ImageRef, PixelEncoding};
 use crate::png_writer::{self, PngMetadata};
-use crate::resize::resize_lanczos3;
+use crate::resize::{resize_lanczos3, sharpen_output};
 use crate::tiff_writer::{self, TiffMetadata};
 use crate::xmp::{self, XmpInfo};
 
@@ -73,6 +74,46 @@ pub struct ExportRequest<'a> {
     pub remove_location: bool,
     /// Required for [`ExportFormat::Dng`].
     pub dng: Option<DngInputs<'a>>,
+}
+
+/// The largest `output_sharpening_pct` of [`PictureStages`] (the range of
+/// `DevelopSettings::output_sharpening`).
+pub const OUTPUT_SHARPENING_MAX_PCT: f32 = 200.0;
+
+/// The processing of a raster picture between the render and the writer that depends on the photo's
+/// settings rather than on the export options (`docs/09` section Pixel pipeline per format). Passed
+/// to [`encode_to_writer_with`] and [`write_export_with`]; the plain [`encode_to_writer`] and
+/// [`write_export`] use the default (nothing).
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct PictureStages {
+    /// Output sharpening (Detail › Sharpening › Output) in percent, 0 to
+    /// [`OUTPUT_SHARPENING_MAX_PCT`]: the screen preset of
+    /// `docs/algorithms/04-output-sharpening.md` run on the picture at the size it is written,
+    /// right after the resize (so on the resized image for a long-edge export and on the rendered
+    /// image for a full-size one), with the scale `s = out_long_edge / rendered_long_edge`. 0, and
+    /// any amount below 0.1 %, creates no stage and the bytes are exactly those without it. Never
+    /// applied to a DNG: the raw data stays unsharpened and so does its preview.
+    pub output_sharpening_pct: f32,
+}
+
+impl PictureStages {
+    /// Output sharpening of `pct` percent and nothing else.
+    #[must_use]
+    pub fn output_sharpening(pct: f32) -> Self {
+        Self {
+            output_sharpening_pct: pct,
+        }
+    }
+
+    /// Checks the amount.
+    fn validate(&self) -> Result<(), ExportError> {
+        if !(0.0..=OUTPUT_SHARPENING_MAX_PCT).contains(&self.output_sharpening_pct) {
+            return Err(ExportError::invalid(format!(
+                "the output sharpening amount must be from 0 to {OUTPUT_SHARPENING_MAX_PCT} percent"
+            )));
+        }
+        Ok(())
+    }
 }
 
 impl<'a> ExportRequest<'a> {
@@ -240,7 +281,18 @@ pub fn encode_to_writer<W: Write + Seek>(
     out: &mut W,
     hooks: &ExportHooks<'_>,
 ) -> Result<EncodeSummary, ExportError> {
+    encode_to_writer_with(req, out, hooks, &PictureStages::default())
+}
+
+/// [`encode_to_writer`] with the photo's [`PictureStages`] (output sharpening after the resize).
+pub fn encode_to_writer_with<W: Write + Seek>(
+    req: &ExportRequest<'_>,
+    out: &mut W,
+    hooks: &ExportHooks<'_>,
+    stages: &PictureStages,
+) -> Result<EncodeSummary, ExportError> {
     req.validate()?;
+    stages.validate()?;
     hooks.check()?;
 
     let mut xmp_info: XmpInfo = req.metadata.xmp.clone();
@@ -299,13 +351,38 @@ pub fn encode_to_writer<W: Write + Seek>(
 
     let space = req.color_space.output_space();
     let (out_w, out_h) = req.output_dimensions();
+    // The pixels the writers take, made in up to three stages (each with its share of the progress):
+    // the Lanczos-3 resize, when the size differs, then the output sharpening, when the amount
+    // creates a stage, then the encode.
+    let resizes = (out_w, out_h) != (req.pixels.width, req.pixels.height);
     let resized;
-    let (image, encode_hooks) = if (out_w, out_h) == (req.pixels.width, req.pixels.height) {
-        (req.pixels, *hooks)
-    } else {
+    let sharpened;
+    let mut image = req.pixels;
+    let mut done = 0.0_f32;
+    if resizes {
         resized = resize_lanczos3(&req.pixels, out_w, out_h, space, &hooks.stage(0.0, 0.3))?;
-        (resized.as_ref(), hooks.stage(0.3, 1.0))
-    };
+        image = resized.as_ref();
+        done = 0.3;
+    }
+    if stages.output_sharpening_pct > 0.0 {
+        // `s` is the long edge written over the long edge rendered (1 for a full-size export).
+        let scale = scale_for_edges(
+            out_w.max(out_h) as usize,
+            req.pixels.width.max(req.pixels.height) as usize,
+        );
+        if let Some(out) = sharpen_output(
+            &image,
+            stages.output_sharpening_pct,
+            scale,
+            space,
+            &hooks.stage(done, done + 0.35),
+        )? {
+            sharpened = out;
+            image = sharpened.as_ref();
+            done += 0.35;
+        }
+    }
+    let encode_hooks = hooks.stage(done, 1.0);
 
     let facts = OutputFacts {
         width: out_w,
@@ -378,8 +455,17 @@ pub fn encode_to_vec(
     req: &ExportRequest<'_>,
     hooks: &ExportHooks<'_>,
 ) -> Result<(Vec<u8>, EncodeSummary), ExportError> {
+    encode_to_vec_with(req, hooks, &PictureStages::default())
+}
+
+/// [`encode_to_vec`] with the photo's [`PictureStages`].
+pub fn encode_to_vec_with(
+    req: &ExportRequest<'_>,
+    hooks: &ExportHooks<'_>,
+    stages: &PictureStages,
+) -> Result<(Vec<u8>, EncodeSummary), ExportError> {
     let mut cursor = Cursor::new(Vec::new());
-    let summary = encode_to_writer(req, &mut cursor, hooks)?;
+    let summary = encode_to_writer_with(req, &mut cursor, hooks, stages)?;
     Ok((cursor.into_inner(), summary))
 }
 
@@ -393,7 +479,18 @@ pub fn write_export(
     dest: &ExportDestination,
     hooks: &ExportHooks<'_>,
 ) -> Result<ExportOutcome, ExportError> {
+    write_export_with(req, dest, hooks, &PictureStages::default())
+}
+
+/// [`write_export`] with the photo's [`PictureStages`] (output sharpening after the resize).
+pub fn write_export_with(
+    req: &ExportRequest<'_>,
+    dest: &ExportDestination,
+    hooks: &ExportHooks<'_>,
+    stages: &PictureStages,
+) -> Result<ExportOutcome, ExportError> {
     req.validate()?;
+    stages.validate()?;
     let ext = req.format.extension();
     let source = dest.source_path.as_deref();
     if let Some(skipped) =
@@ -415,7 +512,7 @@ pub fn write_export(
         dest.if_exists,
         source,
         |writer| {
-            summary = Some(encode_to_writer(req, writer, hooks)?);
+            summary = Some(encode_to_writer_with(req, writer, hooks, stages)?);
             Ok(())
         },
     )?;

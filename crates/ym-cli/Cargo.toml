@@ -31,7 +31,19 @@ tracing-subscriber.workspace = true
 # MIT OR Apache-2.0.
 ctrlc = { version = "3", features = ["termination"] }
 
+[features]
+# TEST-ONLY. Builds `ym` so that the environment variable `YM_FORCE_DEMOSAIC=<method name>` picks the
+# R6 demosaic method of full-resolution renders (`ym-core`'s `force-demosaic` feature). Off by
+# default and not part of any shipped build; the tests of this crate get it through their
+# dev-dependency on `ym-core`, and the parity job that builds `ym` on its own can ask for it with
+# `cargo build -p ym-cli --features force-demosaic` (`src-tauri/tests/app_cli_parity.rs`).
+force-demosaic = ["ym-core/force-demosaic"]
+
 [dev-dependencies]
+# The test-only demosaic switch, so that the binary the tests start can be told to use another
+# method (the switch reads an environment variable that is never set outside the tests). Only
+# `cargo test` sees this: `cargo build -p ym-cli` and the sidecar build do not.
+ym-core = { workspace = true, features = ["force-demosaic"] }
 # `testgen` writes the synthetic ARW files the tests run on.
 ym-raw = { workspace = true, features = ["testgen"] }
 assert_cmd.workspace = true

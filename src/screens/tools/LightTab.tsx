@@ -3,6 +3,7 @@ import { AutoToggle, Card, formats, Histogram, ResetLink, Slider } from "../../c
 import type { SettingsPatch } from "../../api/types";
 import { useAppState } from "../../state/context";
 import { shutterLabel } from "../../state/photo";
+import { ContrastSlider } from "./controls";
 import { AUTO, manualOrAuto } from "./shared";
 import type { TabProps } from "./shared";
 
@@ -60,15 +61,7 @@ export function LightTab({ store, photo, rs }: TabProps) {
           onChange={exposure}
           onReset={() => void store.update({ exposure: AUTO })}
         />
-        <Slider
-          label="Contrast"
-          value={values.contrast}
-          min={-100}
-          max={100}
-          defaultValue={0}
-          format={formats.signed}
-          onChange={(v, final) => send({ contrast: v })(final)}
-        />
+        <ContrastSlider store={store} rs={rs} />
         <Slider
           label="Brightness"
           value={values.brightness}
