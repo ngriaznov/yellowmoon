@@ -1,6 +1,7 @@
 # CI: adapted from github.com/ngriaznov/plugout, extended with licence checks, golden images,
 # decoder oracles, DNG validation and a training dry run (docs/12, docs/13). Installed in M0-02.
-# Jobs marked "enable in" are added as their milestone lands; keep them commented until then.
+# Every job below is live. rust-toolchain.toml pins the Rust toolchain; the jobs that build ym, golden or dngfit install it
+# with a plain `rustup toolchain install` (no argument: the file's channel, profile and components).
 name: CI
 
 on:
@@ -90,6 +91,23 @@ jobs:
           tool: cargo-deny
       - run: shellcheck .github/scripts/*.sh
       - run: .github/scripts/deny-selftest.sh
+
+  # AGENTS.md rule 6: the app and the CLI write the same bytes. serde_json keeps object keys sorted (a BTreeMap) unless its
+  # `preserve_order` feature is on, and the key order decides the bytes of the `ym:Settings` document inside every exported file.
+  # Cargo unifies features, so one dependency anywhere in the graph could switch it on without any line of ours changing. The
+  # guard reads the resolved feature graph of ym-core, ym-cli, yellowmoon-app and the whole workspace (all features, all
+  # platforms; it compiles nothing, but cargo downloads the sources of the graph first); the self-test proves it fails when the feature is on.
+  serde-order:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust toolchain from rust-toolchain.toml
+        run: rustup toolchain install
+      - run: shellcheck tools/ci/*.sh
+      - run: tools/ci/check_serde_order_selftest.sh
+      - run: tools/ci/check_serde_order.sh
 
   # Scripts under tools/fetch: shellcheck plus the stdlib unit tests, which run against a local HTTP
   # server and never touch the network (the corpus hosts are not needed to prove the script logic).
@@ -190,25 +208,122 @@ jobs:
       - run: pip install -r training/illum/requirements.txt && python3 -m unittest training.illum.test_illum
       - run: python3 -m unittest training.noise.test_public_priors
 
-  # enable in M1-15: golden images through the CLI
-  # golden:
-  #   runs-on: macos-latest
-  #   steps:
-  #     - uses: actions/checkout@v4
-  #     - uses: dtolnay/rust-toolchain@stable
-  #     - uses: Swatinem/rust-cache@v2
-  #     - uses: actions/cache@v4
-  #       with: { path: testdata, key: testdata-${{ hashFiles('tools/fetch/manifest.json') }} }
-  #     - run: tools/fetch/samples.sh && tools/fetch/golden.sh
-  #     - run: cargo run -p golden --release -- --check
+  # M1-15: golden images. The real `ym` renders every file of the default synthetic set (61 ARW files, generated here: no
+  # download) and `golden check` compares each picture with tools/golden/expected.json (docs/13, "As built (M1-15)").
+  #  - ubuntu-24.04 (not macOS, and not `ubuntu-latest`): the renders are CPU code and expected.json was written on Linux x86_64
+  #    with glibc 2.39, the libm of Ubuntu 24.04. A render calls the platform libm (sin, exp, pow), so a hash can move by one
+  #    code on another libm (docs/13, "Platform"). The moving `ubuntu-latest` label would change that without a commit here.
+  #  - `ym` and `golden` are built in two cargo invocations. `golden` switches on ym-raw's test-only `testgen` feature, and one
+  #    build gives every package the union of the features: `-p ym-cli -p golden` would put the test writer into the `ym`
+  #    under test. (`cargo tree -p ym-cli -p golden -e normal -i ym-raw` shows it.) tools/fetch/synthetic.sh builds golden too,
+  #    and that is another invocation again.
+  #  - `--require-all`: a file that is not on disk fails the run instead of being skipped, so a half generated set cannot pass.
+  #  - The reference pictures (testdata/golden/refs, about 280 MB) live in a cache keyed on expected.json. `--write-missing-refs`
+  #    gives every identical picture without a reference file one, so a green run fills the cache; a changed picture is
+  #    measured against its reference (a change above ΔE00 0.5 fails). GitHub evicts a cache that nobody has used for seven days,
+  #    which is why this job also runs on the nightly schedule.
+  #  - The nightly runs the default set, like every push: `--set synthetic-full` has no entries in expected.json yet.
+  #  - The synthetic generator gave byte-identical scenes with numpy 2.2.6 / scipy 1.15.3 / Pillow 11.3.0 and with
+  #    numpy 2.5.4 / scipy 1.18.1 / Pillow 12.3.0 (colour-science is pinned), so the unpinned requirements are enough for now.
+  #    If a hash ever differs on a fresh runner with no code change, pin those three first.
+  #  - `golden truth` (end-to-end colour against the ground truth of the synthetic scenes) is a report with no threshold.
+  golden:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      # a release `ym` looks for its data folder next to the executable in an app bundle (docs/01); here it is the checkout's
+      YELLOWMOON_DATA: ${{ github.workspace }}/data
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust toolchain from rust-toolchain.toml
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install -r training/requirements.txt -r training/synth/requirements.txt
+      - run: tools/fetch/spectral.sh
+      - name: Synthetic ARW set (61 files, a few minutes)
+        run: tools/fetch/synthetic.sh --release
+      - name: Build ym (the binary under test; no testgen feature)
+        run: cargo build --release -p ym-cli
+      - name: Build golden (a separate invocation, see above)
+        run: cargo build --release -p golden
+      - name: Reference pictures
+        uses: actions/cache@v4
+        with:
+          path: testdata/golden/refs
+          key: golden-refs-${{ hashFiles('tools/golden/expected.json') }}
+      - name: Golden check
+        run: target/release/golden check --ym target/release/ym --require-all --write-missing-refs --report golden-report.json
+      - name: End-to-end colour against the ground truth (a report, no gate)
+        if: ${{ !cancelled() }}   # also after a failed check: the numbers help to see what moved
+        shell: bash
+        run: |
+          target/release/golden truth --ym target/release/ym --report golden-truth.json | tee golden-truth.txt
+          { echo '### golden truth (a report, no gate)'; echo '```text'; cat golden-truth.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: golden-reports
+          path: |
+            golden-report.json
+            golden-truth.json
+            golden-truth.txt
+          if-no-files-found: ignore
 
-  # enable in M3-12: every exported DNG passes Adobe's dng_validate
-  # dng:
-  #   runs-on: macos-latest
-  #   steps:
-  #     - uses: actions/checkout@v4
-  #     - run: tools/dng/build_dng_validate.sh   # builds dng_validate from the DNG SDK at a pinned commit
-  #     - run: cargo run -p golden --release -- --dng-validate
+  # M3-12: every exported DNG passes Adobe's dng_validate, and its render is within a median ΔE00 of 1.5 of our JPEG (docs/09
+  # Gates). tools/dng/run_gates.sh is the same script a developer runs: it builds `ym` and `dngfit` (two cargo invocations, for
+  # the reason given at the golden job), runs `dngfit eval` and `dngfit gate --require-all`. dng_validate is built from the DNG SDK
+  # at a pinned commit (about 10 minutes) and the binary is cached; the key has the Ubuntu release because the binary links the
+  # system libjpeg and zlib. The image is pinned to ubuntu-24.04, the one this was run on (libjpeg-turbo 2.1.5, the libjxl 0.7
+  # headers): the SDK build and the stub in tools/dng/dng_jxl_stub.cpp are not known to build against the headers of a newer
+  # libjxl. The tests run apart from the gates: `cargo test -p ym-export --test dng_validate` runs that one test
+  # target only, so `-p dngfit` needs its own command. YM_REQUIRE_EXTERNAL_TOOLS turns "SKIPPED: tool missing" into a failure.
+  dng:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      YM_REQUIRE_EXTERNAL_TOOLS: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust toolchain from rust-toolchain.toml
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - name: System libraries and ExifTool
+        run: sudo apt-get update && sudo apt-get install -y libjpeg-dev zlib1g-dev libjxl-dev libimage-exiftool-perl
+      - run: pip install -r training/requirements.txt -r training/synth/requirements.txt tifffile
+      - name: Ubuntu release (part of the dng_validate cache key)
+        id: os
+        run: echo "release=$(. /etc/os-release && echo "$VERSION_ID")" >> "$GITHUB_OUTPUT"
+      - name: dng_validate (cached binary)
+        id: dng_sdk
+        uses: actions/cache/restore@v4
+        with:
+          path: testdata/dng_sdk/dng_validate
+          key: dng-validate-ubuntu-${{ steps.os.outputs.release }}-${{ hashFiles('tools/dng/build_dng_validate.sh', 'tools/dng/dng_jxl_stub.cpp') }}
+      - name: Build dng_validate from the DNG SDK
+        if: steps.dng_sdk.outputs.cache-hit != 'true'
+        run: tools/dng/build_dng_validate.sh testdata/dng_sdk
+      # Saved here and not by the cache action's post step, which runs only when the whole job passed: a gate that fails
+      # further down would otherwise throw the 10 minute build away on every push until the gate is fixed.
+      - name: Keep the built dng_validate
+        if: steps.dng_sdk.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: testdata/dng_sdk/dng_validate
+          key: ${{ steps.dng_sdk.outputs.cache-primary-key }}
+      - run: tools/fetch/spectral.sh
+      - name: Synthetic ARW set
+        run: tools/fetch/synthetic.sh --release
+      - name: Writer tests against dng_validate, LibRaw, ExifTool and tifffile
+        run: cargo test --release -p ym-export --test dng_validate
+      - name: Profile fit tests
+        run: cargo test --release -p dngfit
+      - name: DNG gates on the golden set
+        run: tools/dng/run_gates.sh --png
 
   # The synthetic golden set (stand-in for the CC0 corpus): generator unit tests, the ARW writer's round
   # trips for every variant, and LibRaw reading the written files.

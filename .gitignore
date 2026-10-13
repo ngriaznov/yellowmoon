@@ -9,6 +9,9 @@ test-results/
 
 # Downloaded test data (tools/fetch fills it)
 testdata/
+# Local-evaluation files of unclear licence (tools/fetch/real-eval.sh): never committed. testdata/ already covers them; the
+# separate line keeps them ignored even if part of testdata/ is ever un-ignored.
+testdata/real/
 
 # Tauri
 src-tauri/binaries/

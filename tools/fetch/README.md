@@ -12,6 +12,7 @@ Scripts that download test data into `testdata/` (git-ignored) and check it agai
 | `spectral.sh` | Not part of this tool: fetches the spectral inputs (rawtoaces-data, aces-dev) for the colour scripts |
 | `synthetic.sh` | Not part of this tool: generates the synthetic golden set (physically based ARW scenes with ALEXA ground truth) into `testdata/synthetic/` — the CI-safe stand-in while the CC0 corpus is unreachable (`training/synth/`, `tools/golden synth`) |
 | `cubepp.sh` | Not part of this tool: Cube++ (CC BY 4.0) for the illuminant estimator's M1-06 gate; needs zenodo.org, unreachable from the build environment |
+| `real-eval.sh` | Not part of this tool, and a different tier: **local-eval**. Six real Sony ARW files (`arw/` of github.com/drewnoakes/metadata-extractor-images, pinned commit, sparse checkout) into `testdata/real/`, linked as `testdata/real/files/<Model>.ARW` where the local-only tests read them. **The licence is unclear**: local evaluation only, never committed, never in CI (the script refuses to run there), never redistributed. Tests: `test_real_eval.py` (a local fixture repository, no network) |
 
 ## Status
 
@@ -83,6 +84,8 @@ testdata/golden/tier2/<model>/<name>.ARW    golden tier 2 (free licence, attribu
 testdata/golden/tier3/<provider>/...        copyrighted, put there by hand, local only
 testdata/.cache/api/                        raw API answers saved by --refresh
 testdata/sources/                           spectral.sh checkouts
+testdata/real/files/<Model>.ARW                local-eval tier: links to the checkout below (real-eval.sh); other files you put there are never touched
+testdata/real/metadata-extractor-images/    real-eval.sh's sparse checkout of arw/ (about 270 MB with git's own copy)
 ```
 
 `<name>` is the file's path inside the model's folder on the server with `/` replaced by `__`, other characters outside `A-Za-z0-9._+()-` replaced by `_`. This keeps names flat and unique, and means a manifest can never write outside `testdata/`.
@@ -112,3 +115,15 @@ A `files` entry: `id` (`rawdb:ILCE-1/<name>`), `source`, `body`, `name`, `source
 ## Tier 2: finding Play Raw files
 
 `golden.sh --candidates ILCE-1 ILCE-7RM5` queries the discuss.pixls.us search API (Play Raw category) and saves posts that have ARW attachments to `testdata/golden/tier2-candidates.json` with the licence words found in the post. These are candidates, marked `unreviewed`. A person reads each post's licence, then pins the file with `golden.sh --add-tier2 ...`, which downloads it, records the hash and attribution, and only accepts CC0, CC BY or CC BY-SA. If the forum refuses automated access, list the candidate posts in `docs/STATUS.md` and ask Mykyta to download them by hand.
+
+## Local-eval tier: real files with an unclear licence (`real-eval.sh`)
+
+The CC0 corpus and the golden tiers need hosts this repository's build environment cannot always reach (`Status` above). For a look at real Sony files on a development machine there is one more source that works with plain `git`:
+
+```
+tools/fetch/real-eval.sh             fetch (or verify) the files and list them: model, size, where from
+tools/fetch/real-eval.sh --list      list testdata/real/files; no network
+tools/fetch/real-eval.sh --force     replace a file in testdata/real/files that is not the pinned one
+```
+
+It fetches `arw/` of github.com/drewnoakes/metadata-extractor-images at one pinned commit (a shallow, blob-less clone with a sparse checkout, about 12 s on a good line): DSLR-A500, ILCE-5000, ILCE-7M3, ILCE-7M4, NEX-5N and NEX-7, 139.5 MB. The repository's README says "You are free to use these media files however you wish", but it names no author and no licence for the individual files, so they are **not** corpus data: local evaluation only. Never commit them, never use them in CI (the script exits with code 2 when `CI` or `GITHUB_ACTIONS` is `true`), never upload, cache or redistribute them or pictures made from them, and make no gate depend on them. `testdata/` is git-ignored, and `testdata/real/` is listed on its own line in `.gitignore` as well. Files are checked against the git blob ids of the pinned commit; a file in `testdata/real/files` that is not the pinned one (your own, or from another source) is reported and left alone. Exit codes: 0 ok, 1 a file or the checkout does not match the pin, 2 usage error or CI, 3 nothing found (`--list`), 4 the source cannot be fetched.
