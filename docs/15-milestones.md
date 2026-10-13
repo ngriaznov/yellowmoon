@@ -94,7 +94,7 @@ C1–C6 as one matrix per photo; Auto WB, Kelvin/tint, light presets, Pick white
 
 **M1-08 · Auto exposure** (M1-07)
 Algorithm in `docs/02`; burst consistency.
-*Done when:* on the golden set, auto exposure lands within ±0.5 EV of the camera's embedded JPEG (median luminance, compared in linear light) for ≥ 80% of photos; outliers listed for Mykyta's review (M1-H5).
+*Done when:* on the golden set, auto exposure lands within ±0.5 EV of the camera's own exposure for ≥ 80% of photos, measured with G3 (decision 2026-10-13): our `EV_auto` minus the camera engine's gain, where the gain is `log2(0.18 / x)` and `x` is the scene-linear level the embedded JPEG renders as mid grey (quantile match of the JPEG against our scene-linear render at the JPEG's size; `tools/eval/autoexp.py`). This keeps the display transform and the camera's tone curve out of the exposure check. Outliers listed for Mykyta's review (M1-H5).
 
 **M1-09 · Tone stages** (M1-07, M0-07)
 C7 roll-off and toe, C8 LogC4, C9 primary grade; CPU + WGSL.

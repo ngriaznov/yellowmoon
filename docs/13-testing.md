@@ -71,7 +71,7 @@ Independent readers check the set: LibRaw (rawpy) reproduces the mosaic exactly 
 | Sensor map | 99 CES samples × 9 held-out lights | per-light ΔE00 median ≤ 0.5, p95 ≤ 1.2 | M1 |
 | Illuminant estimate | held-out synthetic scenes; Cube++ test split; NUS-8 Sony (report only) | median angular error ≤ 2° synthetic, ≤ 3° Cube++; sensor-map gate holds with estimated lights | M1 |
 | Lens corrections | darktable-cli oracle; DNG Converter opcodes; line and flatness checks (`docs/05`) | gain within 0.5%, corner displacement within 0.2 px | M1 |
-| Auto exposure | camera's embedded JPEG as reference | within ±0.5 EV of the JPEG's median luminance for ≥ 80% of the golden set | M1 |
+| Auto exposure | camera's embedded JPEG as reference, metric G3 (`tools/eval/autoexp.py`, decision 2026-10-13) | `EV_auto` within ±0.5 EV of the camera engine's gain for ≥ 80% of the golden set | M1 |
 | ARRI colour step | LogC3/4 and matrices vs colour-science and ARRI reference values | ≤ 1e-5 | M1 |
 | Display transform | our ACES 2 vs OCIO vectors | ≤ 1 code value at 10 bits | M1 |
 | LUT path | our tetrahedral vs OCIO vectors (and Resolve renders [HUMAN] optional) | ≤ 1 code value at 10 bits | M1 |
