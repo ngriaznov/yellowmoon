@@ -168,7 +168,7 @@ fn max_abs_diff(got: &RgbImage, want: &[f32]) -> f64 {
 }
 
 /// Largest absolute difference between two images of the same size; NaN when either holds a NaN
-/// (unlike [`RgbImage::max_abs_diff`], which ignores NaN).
+/// (unlike [`RgbImage::max_abs_diff`], which takes a NaN at the same place in both for agreement).
 fn image_diff(a: &RgbImage, b: &RgbImage) -> f64 {
     assert_eq!((a.width, a.height), (b.width, b.height), "dimensions");
     max_strict(

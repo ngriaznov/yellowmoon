@@ -273,7 +273,8 @@ def read_f32(path):
 
 def cmd_rgb_ca(paths, args):
     """CA left in the camera-RGB images `lens_eval_dump` wrote (demosaic only, after R9 with and
-    without the CA correction), against what the mosaic itself shows (`raw-ca` output)."""
+    without the CA correction, after R5b, and with `--chain` the shipped chain in three orders),
+    against what the mosaic itself shows (`raw-ca` output)."""
     for p in paths:  # p: the dump directory prefix, STEM:METHOD
         stem, method = p.split(":")
         base = Path(args["dump_dir"])
@@ -282,7 +283,11 @@ def cmd_rgb_ca(paths, args):
         cx0, cy0, cw, ch = meta["crop"]
         hd = 0.5 * math.hypot(fw, fh)
         print(f"== {stem} {method}  frame {fw}x{fh} crop {cw}x{ch} at {cx0},{cy0}", flush=True)
-        for kind, centre in (("demosaic", (fw / 2.0, fh / 2.0)), ("r9noca", (fw / 2.0 - cx0, fh / 2.0 - cy0)), ("r9", (fw / 2.0 - cx0, fh / 2.0 - cy0)), ("r9mosaic", (fw / 2.0 - cx0, fh / 2.0 - cy0))):
+        out_centre = (fw / 2.0 - cx0, fh / 2.0 - cy0)
+        # `demosaic` is the whole frame; the others are the cropped output of R9. `chain`,
+        # `chainold` and `chainnoca` (`lens_eval_dump --chain`) are the shipped full-resolution chain
+        # with R5b, with the CA left in R9 (the order before R5b) and with no CA correction.
+        for kind, centre in (("demosaic", (fw / 2.0, fh / 2.0)), ("r9noca", out_centre), ("r9", out_centre), ("r9mosaic", out_centre), ("chainnoca", out_centre), ("chainold", out_centre), ("chain", out_centre)):
             if not (base / f"{stem}.{method}.{kind}.f32").exists():
                 continue
             img = read_f32(base / f"{stem}.{method}.{kind}.f32")

@@ -136,9 +136,10 @@ fn demosaic_tiles_match_for_every_method_and_phase() {
                     |t| demosaic::demosaic_whole(t, method),
                     |o, r, from, x, y| o.paste(r, from, x, y),
                 );
-                // `max_abs_diff` ignores a NaN, so a tile that was read outside its region (the
-                // adaptive ratio demosaic fills what it has not written with NaN in debug builds)
-                // is checked for finiteness as well.
+                // `max_abs_diff` sees a NaN that only one of the two images has, but takes a NaN
+                // at the same place in both for agreement; a tile that was read outside its region
+                // (the adaptive ratio demosaic fills what it has not written with NaN in debug
+                // builds) is checked for finiteness as well.
                 assert!(
                     tiled.data.iter().all(|v| v.is_finite()),
                     "R6 {} {} tile {:?}: not finite",

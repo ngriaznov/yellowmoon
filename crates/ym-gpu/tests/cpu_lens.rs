@@ -1179,4 +1179,118 @@ mod mosaic_ca {
                 .any(|s| matches!(s, Stage::MosaicCa { .. }))
         );
     }
+
+    /// The curves of a 300 x 200 frame with 3 px of CA at the corner, applied to mosaics that are
+    /// much smaller than the shifts and the context the stage asks for.
+    fn corner_curves() -> CaCurves {
+        LensGeometry::new(
+            300,
+            200,
+            &tags(300, 200, 3.0, true),
+            LensSwitches::default(),
+        )
+        .expect("lens")
+        .ca_curves()
+        .expect("curves")
+        .expect("CA")
+    }
+
+    #[test]
+    fn mosaics_one_photosite_wide_odd_or_empty_are_handled_for_every_pattern() {
+        let curves = corner_curves();
+        for cfa in Cfa::ALL {
+            for (w, h) in [
+                (0, 5),
+                (5, 0),
+                (1, 1),
+                (1, 2),
+                (2, 1),
+                (2, 2),
+                (1, 9),
+                (9, 1),
+                (3, 3),
+                (5, 4),
+                (17, 13),
+            ] {
+                let mut m = Mosaic::new(w, h, cfa);
+                for (i, v) in m.data.iter_mut().enumerate() {
+                    *v = 0.1 + 0.01 * (i % 7) as f32;
+                }
+                let before = m.clone();
+                correct_mosaic_ca(&mut m, &curves)
+                    .unwrap_or_else(|e| panic!("{cfa:?} {w}x{h}: {e}"));
+                for y in 0..h {
+                    for x in 0..w {
+                        let i = y * w + x;
+                        assert!(m.data[i].is_finite(), "{cfa:?} {w}x{h} at ({x}, {y})");
+                        if cfa.color_at(x, y) == ym_gpu::cpu::CfaColor::Green {
+                            assert_eq!(
+                                m.data[i].to_bits(),
+                                before.data[i].to_bits(),
+                                "{cfa:?} {w}x{h}: green moved at ({x}, {y})"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_flat_mosaic_stays_flat_up_to_the_rounding_of_the_weights() {
+        // The Catmull-Rom weights sum to one, also at the edges where the taps replicate: the stage
+        // adds no gain and no offset.
+        let curves = corner_curves();
+        for cfa in Cfa::ALL {
+            let mut m = Mosaic::new(120, 80, cfa);
+            m.data.fill(0.37);
+            correct_mosaic_ca(&mut m, &curves).expect("correct");
+            let worst = m.data.iter().fold(0.0f32, |a, v| a.max((v - 0.37).abs()));
+            assert!(worst < 2e-6, "{cfa:?}: a flat field moved by {worst}");
+        }
+    }
+
+    #[test]
+    fn a_non_finite_photosite_reaches_only_its_own_colour_within_the_halo() {
+        // The mosaic of a frame never holds NaN (R1 clamps), but a bad site must not spread: red and
+        // blue are resampled from their own lattices alone, so only sites of the same colour, and
+        // only within the context the stage asks for, can see it.
+        let curves = corner_curves();
+        let halo = mosaic_ca_halo_px(&curves) as isize;
+        let (w, h) = (120usize, 80usize);
+        let (bx, by) = (60usize, 40usize);
+        for cfa in Cfa::ALL {
+            let bad_colour = cfa.color_at(bx, by);
+            let mut m = Mosaic::new(w, h, cfa);
+            m.data.fill(0.4);
+            m.data[by * w + bx] = f32::NAN;
+            correct_mosaic_ca(&mut m, &curves).expect("correct");
+            let mut spread = 0usize;
+            for y in 0..h {
+                for x in 0..w {
+                    if m.data[y * w + x].is_finite() {
+                        continue;
+                    }
+                    spread += 1;
+                    assert!(
+                        cfa.color_at(x, y) == bad_colour,
+                        "{cfa:?}: a {bad_colour:?} site leaked into the {:?} site ({x}, {y})",
+                        cfa.color_at(x, y)
+                    );
+                    assert!(
+                        (x as isize - bx as isize).abs() <= halo
+                            && (y as isize - by as isize).abs() <= halo,
+                        "{cfa:?}: the bad site reached ({x}, {y}), more than the halo {halo} away"
+                    );
+                }
+            }
+            // Green (the reference) never reads red or blue, and the NaN site itself is green here
+            // only when the pattern puts green there; in that case nothing is resampled from it.
+            if bad_colour == ym_gpu::cpu::CfaColor::Green {
+                assert_eq!(spread, 1, "{cfa:?}: a green site is nobody's input");
+            } else {
+                assert!(spread >= 1, "{cfa:?}: the NaN went nowhere");
+            }
+        }
+    }
 }

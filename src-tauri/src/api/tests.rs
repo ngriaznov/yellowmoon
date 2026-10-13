@@ -1616,8 +1616,9 @@ const LATENCY_BOUND_DEFAULT: Duration = Duration::from_millis(100);
 
 /// The environment variable that moves that bound, in whole milliseconds. A developer's machine
 /// keeps the 100 ms; the `latency-500` job of `weekly.yml` sets a larger value because its runner
-/// is shared with other jobs (on a loaded 4-core machine the slowest command took 62 to 95 ms and
-/// one run in five went over 100). The numbers are printed either way, so the trend stays visible.
+/// is shared with other jobs and the margin is thin (the slowest command took 92.6 ms in one run
+/// and 61 ms in another, against 100). The numbers are printed either way, so the trend stays
+/// visible.
 const LATENCY_BOUND_VAR: &str = "YM_PERF_SHELL_MAX_MS";
 
 /// The bound for the value of [`LATENCY_BOUND_VAR`] (`None` when it is not set). An empty value is

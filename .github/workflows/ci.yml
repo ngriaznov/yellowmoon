@@ -435,6 +435,12 @@ jobs:
         env:
           YM_REQUIRE_SYNTHETIC: "1"
         run: cargo test -p ym-core --test real_files every_file_of_the_synthetic_variant_set_develops -- --nocapture
+      # The export test of ym-core (ignored: it takes minutes) reads the same folder; this cheap one fails when its path stops
+      # matching where tools/fetch/synthetic.sh writes the files, which would otherwise make the export test skip itself.
+      - name: The export test finds the generated set (ym-core)
+        env:
+          YM_REQUIRE_SYNTHETIC: "1"
+        run: cargo test -p ym-core --test export_real the_generated_synthetic_set_is_found -- --nocapture
 
   # tools/eval: the unit tests of the auto-exposure study and of its M1-08 gate logic (G3, `--gate`). Pure numpy/Pillow/tifffile;
   # the one test that runs `ym` skips itself when there is no binary or no synthetic set. The gate itself runs in the golden job.
@@ -539,7 +545,9 @@ jobs:
         run: |
           cargo build -p ym-cli --features force-demosaic
           cp target/debug/ym "$RUNNER_TEMP/ym-force-demosaic"
-          YM_BIN="$RUNNER_TEMP/ym-force-demosaic" cargo test -p yellowmoon-app --test app_cli_parity -- --nocapture with_menon_forced
+          YM_BIN="$RUNNER_TEMP/ym-force-demosaic" cargo test -p yellowmoon-app --test app_cli_parity -- --nocapture with_menon_forced 2>&1 | tee "$RUNNER_TEMP/forced-demosaic.txt"
+          # A name filter that matches no test ends green with "0 passed"; the one test has to have run (bash -eo pipefail).
+          grep -q 'test result: ok\. 1 passed' "$RUNNER_TEMP/forced-demosaic.txt"
       - name: Rustdoc (warnings are errors)
         env:
           RUSTDOCFLAGS: -D warnings

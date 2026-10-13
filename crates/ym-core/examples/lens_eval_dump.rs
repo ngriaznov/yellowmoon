@@ -227,7 +227,10 @@ fn main() {
                 .with_crop(crop);
                 full.chain.lens = Some(geo);
                 let img = full.run_tile(&frame, whole).expect("chain");
-                write_f32(&out_dir.join(format!("{stem}.{method_name}.{name}.f32")), &img);
+                write_f32(
+                    &out_dir.join(format!("{stem}.{method_name}.{name}.f32")),
+                    &img,
+                );
             }
         }
     }
