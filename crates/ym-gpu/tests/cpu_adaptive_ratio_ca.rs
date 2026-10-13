@@ -172,7 +172,10 @@ fn the_ca_vector_matches_the_oracle() {
     let whole = adaptive_ratio::demosaic_whole(&v.mosaic, &inputs, &params).expect("whole");
     let banded = adaptive_ratio::demosaic(&v.mosaic, &inputs, &params).expect("banded");
     assert_eq!(bits(&whole), bits(&banded), "banded differs from whole");
-    assert_eq!(whole.place, v.mosaic.place, "the output keeps the placement");
+    assert_eq!(
+        whole.place, v.mosaic.place,
+        "the output keeps the placement"
+    );
     let worst = whole
         .data
         .iter()
@@ -184,15 +187,9 @@ fn the_ca_vector_matches_the_oracle() {
     assert!(worst <= tolerance, "{worst} > {tolerance}");
     // The plain path must give a visibly different answer on this tile, or the vector would not
     // exercise the CA path at all (the misregistration here is 0.68 to 0.72 px).
-    let plain = adaptive_ratio::demosaic_whole(
-        &v.mosaic,
-        &DemosaicInputs {
-            ca: None,
-            ..inputs
-        },
-        &params,
-    )
-    .expect("plain");
+    let plain =
+        adaptive_ratio::demosaic_whole(&v.mosaic, &DemosaicInputs { ca: None, ..inputs }, &params)
+            .expect("plain");
     let d = image_diff(&plain, &whole);
     println!("ca_weighting: plain path differs from the CA path by up to {d:.3e}");
     assert!(d > 1e-3, "the CA path changes nothing on the vector: {d}");
@@ -280,7 +277,9 @@ fn the_curves_follow_the_r9_model() {
     let (fw, fh) = (3000usize, 2000usize);
     let tags = LensTags {
         vignetting: vec![],
-        ca: vec![0, 600, 2200, 4800, 8200, 12600, 0, -400, -1800, -4200, -7600, -12000],
+        ca: vec![
+            0, 600, 2200, 4800, 8200, 12600, 0, -400, -1800, -4200, -7600, -12000,
+        ],
         distortion: vec![0, 40, 160, 380, 700, 1100, 1600],
     };
     for (name, switches) in [
@@ -343,8 +342,13 @@ fn no_ca_no_curves_and_a_folded_distortion_table_is_refused() {
         distortion,
     };
     // No 0x7035 table: none; distortion alone is not CA.
-    let geo = LensGeometry::new(fw, fh, &only(vec![], distortion.clone()), LensSwitches::default())
-        .expect("lens");
+    let geo = LensGeometry::new(
+        fw,
+        fh,
+        &only(vec![], distortion.clone()),
+        LensSwitches::default(),
+    )
+    .expect("lens");
     assert_eq!(geo.ca_curves(), Ok(None));
     assert_eq!(LensGeometry::identity(fw, fh).ca_curves(), Ok(None));
     // A neutral table (every knot zero: R9 moves nothing) is no CA either; one knot is enough.
@@ -408,7 +412,15 @@ fn strong_curves(fw: usize, fh: usize, corner_px: f64) -> CaCurves {
 
 /// A textured scene on the sub-rectangle of a big frame that starts at (`x0`, `y0`), with the
 /// placement set.
-fn placed_scene(w: usize, h: usize, cfa: Cfa, seed: u64, level: f32, frame: (usize, usize), at: (usize, usize)) -> Mosaic {
+fn placed_scene(
+    w: usize,
+    h: usize,
+    cfa: Cfa,
+    seed: u64,
+    level: f32,
+    frame: (usize, usize),
+    at: (usize, usize),
+) -> Mosaic {
     let mut m = synth::mosaic_from_rgb(&synth::natural(w, h, seed), cfa);
     for v in &mut m.data {
         *v *= level;
@@ -443,7 +455,8 @@ fn banded_equals_whole_and_the_ca_path_changes_the_result() {
         let banded = adaptive_ratio::demosaic(&m, &with, &params).expect("banded");
         assert_eq!(bits(&whole), bits(&banded), "{}", cfa.name());
         assert!(whole.data.iter().all(|v| v.is_finite()));
-        let plain = adaptive_ratio::demosaic_whole(&m, &inputs(None, noise), &params).expect("plain");
+        let plain =
+            adaptive_ratio::demosaic_whole(&m, &inputs(None, noise), &params).expect("plain");
         let d = image_diff(&plain, &whole);
         println!("{}: CA path vs plain, max |diff| {d:.3e}", cfa.name());
         assert!(d > 1e-3, "{}: the CA path did nothing ({d})", cfa.name());
@@ -470,7 +483,10 @@ fn tiles_with_the_declared_halo_equal_the_whole_frame_with_ca() {
             let params = Params::default();
             let whole = adaptive_ratio::demosaic_whole(&m, &inp, &params).expect("whole");
             for halo in [adaptive_ratio::HALO_PLAIN_PX, Method::AdaptiveRatio.halo()] {
-                if halo < adaptive_ratio::Derived::new(inp.gains, noise, &params).expect("d").halo_px
+                if halo
+                    < adaptive_ratio::Derived::new(inp.gains, noise, &params)
+                        .expect("d")
+                        .halo_px
                 {
                     continue;
                 }
@@ -494,7 +510,10 @@ fn crops_at_every_phase_give_the_identical_interior_with_ca() {
     let big = (2400usize, 1600usize);
     let (fw, fh) = (64usize, 56usize);
     let curves = strong_curves(big.0, big.1, 2.5);
-    for (name, noise, level) in [("plain", low_noise(), 0.4), ("matching", high_noise(), 0.05)] {
+    for (name, noise, level) in [
+        ("plain", low_noise(), 0.4),
+        ("matching", high_noise(), 0.05),
+    ] {
         let frame = placed_scene(fw, fh, Cfa::RGGB, 77, level, big, (1900, 1200));
         let inp = inputs(Some(&curves), noise);
         let params = Params::default();
@@ -513,7 +532,11 @@ fn crops_at_every_phase_give_the_identical_interior_with_ca() {
                         for x in halo..crop.width - halo {
                             let a = part.plane(c)[y * crop.width + x];
                             let b = whole.plane(c)[(y + oy) * fw + x + ox];
-                            assert_eq!(a.to_bits(), b.to_bits(), "{name} crop ({ox},{oy}) c{c} ({x},{y})");
+                            assert_eq!(
+                                a.to_bits(),
+                                b.to_bits(),
+                                "{name} crop ({ox},{oy}) c{c} ({x},{y})"
+                            );
                             compared += 1;
                         }
                     }
@@ -580,7 +603,10 @@ fn a_centre_that_is_not_finite_is_refused() {
         }
         // The infallible entry point falls back to Menon, like for every refused input.
         let fallback = demosaic::demosaic_with(&m, Method::AdaptiveRatio, &inp);
-        assert_eq!(bits(&fallback), bits(&demosaic::demosaic(&m, Method::Menon)));
+        assert_eq!(
+            bits(&fallback),
+            bits(&demosaic::demosaic(&m, Method::Menon))
+        );
     }
 }
 
@@ -593,10 +619,24 @@ fn demosaic_with_runs_the_ca_path_for_the_adaptive_ratio_method_only() {
     let without = inputs(None, low_noise());
     let a = demosaic::demosaic_with(&m, Method::AdaptiveRatio, &with);
     let b = demosaic::demosaic_whole_with(&m, Method::AdaptiveRatio, &with);
-    assert_eq!(bits(&a), bits(&b), "banded and whole agree through demosaic_with");
-    assert!(image_diff(&a, &demosaic::demosaic_with(&m, Method::AdaptiveRatio, &without)) > 1e-3);
+    assert_eq!(
+        bits(&a),
+        bits(&b),
+        "banded and whole agree through demosaic_with"
+    );
+    assert!(
+        image_diff(
+            &a,
+            &demosaic::demosaic_with(&m, Method::AdaptiveRatio, &without)
+        ) > 1e-3
+    );
     // Every other method ignores the curves.
-    for method in [Method::Bilinear, Method::Menon, Method::Lmmse, Method::LogGuided] {
+    for method in [
+        Method::Bilinear,
+        Method::Menon,
+        Method::Lmmse,
+        Method::LogGuided,
+    ] {
         assert_eq!(
             bits(&demosaic::demosaic_with(&m, method, &with)),
             bits(&demosaic::demosaic_with(&m, method, &without)),
@@ -611,7 +651,15 @@ fn random_input_with_ca_gives_finite_output_for_every_size_and_phase() {
     let big = (1000usize, 800usize);
     let mut rng = Rng::new(404);
     let mut runs = 0;
-    for (w, h) in [(2usize, 2usize), (2, 5), (3, 3), (5, 2), (7, 5), (13, 11), (30, 17)] {
+    for (w, h) in [
+        (2usize, 2usize),
+        (2, 5),
+        (3, 3),
+        (5, 2),
+        (7, 5),
+        (13, 11),
+        (30, 17),
+    ] {
         for cfa in Cfa::ALL {
             for cfg in 0..3 {
                 let data: Vec<f32> = (0..w * h)
@@ -724,8 +772,9 @@ fn by_hand(
     ca: Option<&CaCurves>,
     noise: NoiseDn,
 ) -> RgbImage {
-    let (mut m, _) = normalize::normalize(raw.data, raw.width, raw.height, raw.cfa, &levels(), None)
-        .expect("normalize");
+    let (mut m, _) =
+        normalize::normalize(raw.data, raw.width, raw.height, raw.cfa, &levels(), None)
+            .expect("normalize");
     gains::apply_gains(&mut m, G0);
     let img = demosaic::demosaic_whole_with(
         &m,
@@ -770,7 +819,11 @@ fn the_chain_runs_the_ca_path_when_the_lens_has_ca_and_only_then() {
         let curves = on.ca_curves().expect("ok").expect("this lens has CA");
         // The corner misregistration is more than a pixel, or the test would not mean much.
         let hd = (((w * w + h * h) as f64).sqrt()) / 2.0;
-        assert!(curves.misregistration_px(hd) > 1.0, "{}", curves.misregistration_px(hd));
+        assert!(
+            curves.misregistration_px(hd) > 1.0,
+            "{}",
+            curves.misregistration_px(hd)
+        );
 
         // CA tag and switch on: the CA path.
         let chain = chain_with(Method::AdaptiveRatio, Some(on.clone()), noise);
@@ -786,7 +839,10 @@ fn the_chain_runs_the_ca_path_when_the_lens_has_ca_and_only_then() {
 
         // A lens with distortion only: no CA, the plain path.
         let no_tag = geo(&strong_tags(false), LensSwitches::default());
-        let got = run_whole(&chain_with(Method::AdaptiveRatio, Some(no_tag.clone()), noise), &raw);
+        let got = run_whole(
+            &chain_with(Method::AdaptiveRatio, Some(no_tag.clone()), noise),
+            &raw,
+        );
         let want = by_hand(&raw, Method::AdaptiveRatio, &no_tag, None, noise);
         assert_eq!(bits(&got), bits(&want), "{}: no CA tag", cfa.name());
 
@@ -798,7 +854,10 @@ fn the_chain_runs_the_ca_path_when_the_lens_has_ca_and_only_then() {
             },
             LensSwitches::default(),
         );
-        let got = run_whole(&chain_with(Method::AdaptiveRatio, Some(neutral.clone()), noise), &raw);
+        let got = run_whole(
+            &chain_with(Method::AdaptiveRatio, Some(neutral.clone()), noise),
+            &raw,
+        );
         let want = by_hand(&raw, Method::AdaptiveRatio, &neutral, None, noise);
         assert_eq!(bits(&got), bits(&want), "{}: neutral CA table", cfa.name());
 
@@ -810,7 +869,10 @@ fn the_chain_runs_the_ca_path_when_the_lens_has_ca_and_only_then() {
                 chromatic_aberration: false,
             },
         );
-        let got = run_whole(&chain_with(Method::AdaptiveRatio, Some(off.clone()), noise), &raw);
+        let got = run_whole(
+            &chain_with(Method::AdaptiveRatio, Some(off.clone()), noise),
+            &raw,
+        );
         let want = by_hand(&raw, Method::AdaptiveRatio, &off, None, noise);
         assert_eq!(bits(&got), bits(&want), "{}: CA switched off", cfa.name());
 

@@ -24,7 +24,9 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 use ym_gpu::cpu::demosaic::{self, CaCurves, DemosaicInputs};
-use ym_gpu::cpu::metrics::{CaResidual, CaResidualOptions, lateral_ca_residual, sample_catmull_rom};
+use ym_gpu::cpu::metrics::{
+    CaResidual, CaResidualOptions, lateral_ca_residual, sample_catmull_rom,
+};
 use ym_gpu::cpu::{gains, resample, synth};
 use ym_raw::testgen::{ArwBuilder, LensTables};
 
@@ -255,7 +257,11 @@ fn ca_tables_in_the_file_drive_the_ca_path_of_the_full_chain() {
     let off = bare_params(false);
     let (frame_o, plan_o, full_o) = build(&raw, &off, Method::AdaptiveRatio);
     assert_eq!(
-        plan_o.lens.as_ref().expect("distortion remains").ca_curves(),
+        plan_o
+            .lens
+            .as_ref()
+            .expect("distortion remains")
+            .ca_curves(),
         Ok(None)
     );
     let got_o = full_o
@@ -263,7 +269,13 @@ fn ca_tables_in_the_file_drive_the_ca_path_of_the_full_chain() {
         .expect("off");
     assert_eq!(
         bits(&got_o),
-        bits(&by_hand(&frame_o, &plan_o, &off, Method::AdaptiveRatio, None))
+        bits(&by_hand(
+            &frame_o,
+            &plan_o,
+            &off,
+            Method::AdaptiveRatio,
+            None
+        ))
     );
 
     // A neutral table (every knot zero): no CA either.
@@ -279,7 +291,11 @@ fn ca_tables_in_the_file_drive_the_ca_path_of_the_full_chain() {
     let raw_n = build_file(neutral);
     let (frame_n, plan_n, full_n) = build(&raw_n, &params, Method::AdaptiveRatio);
     assert_eq!(
-        plan_n.lens.as_ref().expect("distortion remains").ca_curves(),
+        plan_n
+            .lens
+            .as_ref()
+            .expect("distortion remains")
+            .ca_curves(),
         Ok(None)
     );
     let got_n = full_n
@@ -287,7 +303,13 @@ fn ca_tables_in_the_file_drive_the_ca_path_of_the_full_chain() {
         .expect("neutral");
     assert_eq!(
         bits(&got_n),
-        bits(&by_hand(&frame_n, &plan_n, &params, Method::AdaptiveRatio, None))
+        bits(&by_hand(
+            &frame_n,
+            &plan_n,
+            &params,
+            Method::AdaptiveRatio,
+            None
+        ))
     );
 
     // Tiles of the chain equal the whole frame (the curves belong to the frame).
@@ -326,14 +348,16 @@ fn whole_frame_variants(raw: &Arc<RawImage>, params: &RawParams) -> Variants {
         frame.width as f64 / 2.0 - crop.x as f64,
         frame.height as f64 / 2.0 - crop.y as f64,
     );
-    let on = full
-        .run_tile(&frame, Rect::whole(ow, oh))
-        .expect("CA path");
+    let on = full.run_tile(&frame, Rect::whole(ow, oh)).expect("CA path");
     // Without the CA path: the chain without its lens stage (so `ca = None`), then R9 by hand.
     let mut chain = full.chain.clone();
     chain.lens = None;
     let src = chain
-        .run_tile(&frame.as_raw_frame(), &full.prepared, Rect::whole(frame.width, frame.height))
+        .run_tile(
+            &frame.as_raw_frame(),
+            &full.prepared,
+            Rect::whole(frame.width, frame.height),
+        )
         .expect("source");
     let off = resample::resample_lens(&src, &geo, Rect::whole(ow, oh)).expect("R9");
     // R9 without the CA correction: the scale of what there was to correct.
@@ -434,7 +458,10 @@ fn window_origins(ow: usize, oh: usize, centre: (f64, f64), hd: f64) -> Vec<(usi
     out
 }
 
-fn paired_stats(on: &[ym_gpu::cpu::metrics::CaPatch], off: &[ym_gpu::cpu::metrics::CaPatch]) -> Value {
+fn paired_stats(
+    on: &[ym_gpu::cpu::metrics::CaPatch],
+    off: &[ym_gpu::cpu::metrics::CaPatch],
+) -> Value {
     // Patches of the same place (the grid of every window is the same for both variants).
     let (mut n, mut d_red, mut d_blue, mut better_red, mut better_blue) = (0usize, 0.0, 0.0, 0, 0);
     for a in on {
@@ -456,6 +483,22 @@ fn paired_stats(on: &[ym_gpu::cpu::metrics::CaPatch], off: &[ym_gpu::cpu::metric
     })
 }
 
+/// Sum of the squared central differences of the green plane over the interior of `img`, and the
+/// number of samples: the gradient energy (a plain sharpness measure; compare two renderings of
+/// the same window).
+fn gradient_energy(img: &RgbImage) -> (f64, usize) {
+    let (w, h) = (img.width, img.height);
+    let g = img.plane(1);
+    let mut e = 0.0f64;
+    for y in 1..h - 1 {
+        for x in 1..w - 1 {
+            let dx = f64::from(g[y * w + x + 1] - g[y * w + x - 1]) * 0.5;
+            let dy = f64::from(g[(y + 1) * w + x] - g[(y - 1) * w + x]) * 0.5;
+            e += dx * dx + dy * dy;
+        }
+    }
+    (e, (w - 2) * (h - 2))
+}
 
 fn to_srgb(v: f64) -> u8 {
     let v = v.clamp(0.0, 1.0);
@@ -524,7 +567,9 @@ fn ra03b_real_files_ca_residual() {
     let cancel = CancelToken::new();
     let opts = residual_options();
     let mut records = Vec::new();
-    println!("| file | lens | CA at corner px | patches | R9 without CA (R/B rms px) | R9 flipped sign (R/B) | plain (R/B) | CA path (R/B) | paired |");
+    println!(
+        "| file | lens | CA at corner px | patches | R9 without CA (R/B rms px) | R9 flipped sign (R/B) | plain (R/B) | CA path (R/B) | paired |"
+    );
     println!("|---|---|---|---|---|---|---|---|---|");
     for path in files {
         let name = path
@@ -591,7 +636,9 @@ fn ra03b_real_files_ca_residual() {
         let curves = match geo.ca_curves() {
             Ok(Some(c)) => c,
             other => {
-                println!("| {name} | {lens} | none | | | | | | no usable CA table ({tag_summary}; {other:?}) |");
+                println!(
+                    "| {name} | {lens} | none | | | | | | no usable CA table ({tag_summary}; {other:?}) |"
+                );
                 records.push(json!({"file": name, "lens": lens, "ca": null, "tags": tag_summary}));
                 continue;
             }
@@ -609,13 +656,26 @@ fn ra03b_real_files_ca_residual() {
                 )
             })
             .collect();
-        eprintln!("{name}: the tables move red/blue (px, at source radius) {}", predicted.join("  "));
+        eprintln!(
+            "{name}: the tables move red/blue (px, at source radius) {}",
+            predicted.join("  ")
+        );
         let (ow, oh) = geo.output_size();
         let crop = geo.crop();
-        let centre = (fw as f64 / 2.0 - crop.x as f64, fh as f64 / 2.0 - crop.y as f64);
+        let centre = (
+            fw as f64 / 2.0 - crop.x as f64,
+            fh as f64 / 2.0 - crop.y as f64,
+        );
         let sigma = sigma_plane(&frame, &plan, &params, &cancel).expect("sigma");
-        let full = FullChain::with_method(&frame, &plan, &params, &sigma, Method::AdaptiveRatio, &cancel)
-            .expect("chain");
+        let full = FullChain::with_method(
+            &frame,
+            &plan,
+            &params,
+            &sigma,
+            Method::AdaptiveRatio,
+            &cancel,
+        )
+        .expect("chain");
         let mut plain_chain = full.chain.clone();
         plain_chain.lens = None;
         let no_ca = LensGeometry::new(
@@ -646,6 +706,7 @@ fn ra03b_real_files_ca_residual() {
         // Per band accumulators over the windows: (patches, sum r2, sum b2) per variant.
         let nb = opts.band_edges.len();
         let mut acc = vec![[[0.0f64; 3]; 4]; nb];
+        let (mut sharp_on, mut sharp_off) = (0.0f64, 0.0f64);
         let mut best_strip: Option<(f64, Rect, [RgbImage; 3], (usize, usize))> = None;
         for (ox, oy) in origins {
             let out = Rect::new(ox, oy, WINDOW_PX, WINDOW_PX);
@@ -681,11 +742,7 @@ fn ra03b_real_files_ca_residual() {
             }
             // The patch where the tables change the red-green shift most: its crop is saved.
             for p in &results[1].details {
-                if let Some(q) = results[2]
-                    .details
-                    .iter()
-                    .find(|q| (q.x, q.y) == (p.x, p.y))
-                {
+                if let Some(q) = results[2].details.iter().find(|q| (q.x, q.y) == (p.x, p.y)) {
                     let d = (p.red_px - q.red_px).abs() + (p.blue_px - q.blue_px).abs();
                     if best_strip.as_ref().is_none_or(|(bd, ..)| d > *bd) {
                         let cx = (p.x + 24).saturating_sub(48).min(WINDOW_PX - 96);
@@ -699,6 +756,10 @@ fn ra03b_real_files_ca_residual() {
                     }
                 }
             }
+            let (ge_on, _) = gradient_energy(&on);
+            let (ge_off, _) = gradient_energy(&off);
+            sharp_on += ge_on;
+            sharp_off += ge_off;
             let [a, b, c, d] = results;
             on_all.extend(a.details);
             off_all.extend(b.details);
@@ -740,6 +801,10 @@ fn ra03b_real_files_ca_residual() {
             100.0 * paired["share_blue_closer_to_zero"].as_f64().unwrap_or(0.0),
             paired["paired_patches"],
         );
+        println!(
+            "|   | green gradient energy, CA path over plain | {:.4} | | | | | | |",
+            sharp_on / sharp_off.max(1e-30)
+        );
         let bands_json: Vec<Value> = (0..nb)
             .map(|b| {
                 let f = |k: usize| {
@@ -764,6 +829,7 @@ fn ra03b_real_files_ca_residual() {
                 "r9_flipped_sign": {"red": inv_rms.0, "blue": inv_rms.1},
             },
             "paired_ca_path_vs_plain": paired,
+            "green_gradient_energy_ca_path_over_plain": sharp_on / sharp_off.max(1e-30),
             "bands": bands_json,
         }));
     }

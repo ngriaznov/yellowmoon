@@ -5,7 +5,7 @@
 //! ```text
 //! CARGO_INCREMENTAL=0 cargo run -p ym-gpu --example ra03b_ca_residual \
 //!     --config 'profile.dev.package.ym-gpu.opt-level=3' \
-//!     [-- [--size WxH] [--noise SIGMA] [--seed N] [--out DIR]]
+//!     [-- [--size WxH] [--noise SIGMA] [--seed N] [--diagnose] [--out DIR]]
 //! ```
 //!
 //! The scene is a grey (R = G = B) analytic field of edges at every orientation and softness of
@@ -25,6 +25,13 @@
 //! * the colour error where the scene has edges: mean `|R - G|` and `|B - G|` (the truth has none),
 //! * the PSNR of the green plane and of all three planes against the ideal scene, 16 px border off,
 //! * the CPU time of the demosaic per megapixel.
+//!
+//! `--diagnose` also prints, per radial band, the displacement of red against green in the
+//! demosaiced image *before* R9 next to what the tags say it is (`amount * rho^3` for these tables),
+//! and the signed means after R9: a demosaic that interpolates red and blue as differences from
+//! green pulls their edges toward green's (about a quarter to a third of the displacement here), so
+//! R9, which corrects the full tag value afterwards, over-corrects, and the residual it leaves has
+//! the opposite sign.
 //!
 //! The output folder (default `testdata/ra03b`, git-ignored) gets `synthetic_seed<N>_noise<S>.md`.
 
@@ -115,21 +122,18 @@ fn mosaic_of_scene(scene: &Scene, geo: &LensGeometry, cfa: Cfa, noise_sigma: f32
     let (w, h) = (geo.frame_width(), geo.frame_height());
     let mut m = Mosaic::new(w, h, cfa);
     m.place = Placement::whole(w, h);
-    m.data
-        .par_chunks_mut(w)
-        .enumerate()
-        .for_each(|(y, row)| {
-            for (x, v) in row.iter_mut().enumerate() {
-                let c = cfa.color_at(x, y).plane();
-                let q = (x as f64 + 0.5, y as f64 + 0.5);
-                let mut p = q;
-                for _ in 0..8 {
-                    let s = geo.source_position(c, p.0, p.1);
-                    p = (p.0 + (q.0 - s.0), p.1 + (q.1 - s.1));
-                }
-                *v = scene.eval(p.0, p.1) as f32;
+    m.data.par_chunks_mut(w).enumerate().for_each(|(y, row)| {
+        for (x, v) in row.iter_mut().enumerate() {
+            let c = cfa.color_at(x, y).plane();
+            let q = (x as f64 + 0.5, y as f64 + 0.5);
+            let mut p = q;
+            for _ in 0..8 {
+                let s = geo.source_position(c, p.0, p.1);
+                p = (p.0 + (q.0 - s.0), p.1 + (q.1 - s.1));
             }
-        });
+            *v = scene.eval(p.0, p.1) as f32;
+        }
+    });
     if noise_sigma > 0.0 {
         let mut rng = Rng::new(99);
         for v in &mut m.data {
@@ -200,6 +204,7 @@ fn main() {
     let mut size = (1800usize, 1200usize);
     let mut noise_sigma = 0.0f32;
     let mut seed = 2024u64;
+    let mut diagnose = false;
     let mut out_dir = PathBuf::from("testdata/ra03b");
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut i = 0;
@@ -215,6 +220,7 @@ fn main() {
                 noise_sigma = args[i + 1].parse().expect("sigma");
                 i += 1;
             }
+            "--diagnose" => diagnose = true,
             "--seed" => {
                 seed = args[i + 1].parse().expect("seed");
                 i += 1;
@@ -285,7 +291,10 @@ fn main() {
             .with_crop(geo.crop());
         let curves = geo.ca_curves().expect("curves").expect("the lens has CA");
         let crop = geo.crop();
-        let centre = (fw as f64 / 2.0 - crop.x as f64, fh as f64 / 2.0 - crop.y as f64);
+        let centre = (
+            fw as f64 / 2.0 - crop.x as f64,
+            fh as f64 / 2.0 - crop.y as f64,
+        );
         let corner_px = curves.misregistration_px(hd);
         let mosaic = mosaic_of_scene(&scene, &geo_src, Cfa::RGGB, noise_sigma);
         // Ideal output: the scene at the output pixel centres of the cropped output.
@@ -336,7 +345,7 @@ fn main() {
         sep.push_str("---|---|---|---|---|");
         say(head);
         say(sep);
-        if std::env::var_os("RA03B_DIAGNOSE").is_some() {
+        if diagnose {
             // The displacement before R9 against what the tags say it is: amount * rho^3.
             let raw_img = demosaic::demosaic_with(
                 &mosaic,
@@ -366,14 +375,17 @@ fn main() {
                 );
             }
         }
-        if std::env::var_os("RA03B_DIAGNOSE").is_some() {
+        if diagnose {
             for ((name, _), r) in rows.iter().zip(&res) {
                 let means: Vec<String> = r
                     .bands
                     .iter()
                     .map(|b| format!("{:+.3}/{:+.3}", b.red_mean_px, b.blue_mean_px))
                     .collect();
-                println!("diagnose signed mean R/B after R9, {name}: {}", means.join("  "));
+                println!(
+                    "diagnose signed mean R/B after R9, {name}: {}",
+                    means.join("  ")
+                );
             }
         }
         let truth_g = grey_of(&truth, 1);

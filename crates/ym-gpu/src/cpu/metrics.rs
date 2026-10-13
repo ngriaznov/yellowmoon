@@ -352,20 +352,10 @@ fn patch_shift(
         let mut gx: Vec<f64> = pos
             .iter()
             .map(|&(px, py)| {
-                let a = sample_catmull_rom(
-                    x_plane,
-                    w,
-                    h,
-                    px + (s + 0.5) * u.0,
-                    py + (s + 0.5) * u.1,
-                );
-                let b = sample_catmull_rom(
-                    x_plane,
-                    w,
-                    h,
-                    px + (s - 0.5) * u.0,
-                    py + (s - 0.5) * u.1,
-                );
+                let a =
+                    sample_catmull_rom(x_plane, w, h, px + (s + 0.5) * u.0, py + (s + 0.5) * u.1);
+                let b =
+                    sample_catmull_rom(x_plane, w, h, px + (s - 0.5) * u.0, py + (s - 0.5) * u.1);
                 a - b
             })
             .collect();
@@ -557,7 +547,8 @@ mod tests {
     /// A smooth test pattern with edges at many orientations, analytic so that a plane can be
     /// sampled at any shifted position.
     fn pattern(x: f64, y: f64) -> f64 {
-        let g = (0.071 * x + 0.043 * y).sin() + (0.031 * x - 0.089 * y + 1.0).sin()
+        let g = (0.071 * x + 0.043 * y).sin()
+            + (0.031 * x - 0.089 * y + 1.0).sin()
             + (0.113 * x + 0.017 * y + 2.0).sin()
             + 0.7 * (0.052 * (x + y) + 0.5).sin();
         0.5 + 0.35 * (g * 1.3).tanh()
@@ -576,7 +567,11 @@ mod tests {
                 let (px, py) = (x as f64 + 0.5, y as f64 + 0.5);
                 let (dx, dy) = (px - cx, py - cy);
                 let r = dx.hypot(dy);
-                let u = if r > 0.0 { (dx / r, dy / r) } else { (0.0, 0.0) };
+                let u = if r > 0.0 {
+                    (dx / r, dy / r)
+                } else {
+                    (0.0, 0.0)
+                };
                 let shift = |amount: f64| amount * r / hd;
                 let sr = shift(0.6);
                 let sb = shift(-0.4);
@@ -618,7 +613,10 @@ mod tests {
         }
         let zero = lateral_ca_residual(&img, (cx, cy), hd, &opts);
         assert!(zero.patches > 20);
-        assert!(zero.red_rms_px < 0.01 && zero.blue_rms_px < 0.01, "{zero:?}");
+        assert!(
+            zero.red_rms_px < 0.01 && zero.blue_rms_px < 0.01,
+            "{zero:?}"
+        );
     }
 
     #[test]

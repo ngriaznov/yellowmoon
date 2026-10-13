@@ -646,7 +646,8 @@ fn compute_core(
     let n = lay.pw * lay.ph;
 
     // The CA path (spec 3.6): the R/B misregistration at every R and B site both passes read.
-    let ca_plane = ca.map(|curves| misregistration_plane(m, core, &lay, curves, lay.around(mg.green1)));
+    let ca_plane =
+        ca.map(|curves| misregistration_plane(m, core, &lay, curves, lay.around(mg.green1)));
     let ca_plane = ca_plane.as_deref();
 
     // Pass 1: green at R and B sites.
@@ -717,14 +718,7 @@ fn misregistration_plane(
 /// Pass 1: `G1 = M` at G sites; at R and B sites the regularised colour-ratio estimate along the
 /// classified direction (spec 3.2). `ca` is the misregistration plane of the CA path (`None`: plain
 /// path, read as 0 everywhere).
-fn pass_green(
-    m: &[f32],
-    lay: &Layout,
-    r: Region,
-    d: &Derived,
-    ca: Option<&[f64]>,
-    g1: &mut [f32],
-) {
+fn pass_green(m: &[f32], lay: &Layout, r: Region, d: &Derived, ca: Option<&[f64]>, g1: &mut [f32]) {
     let pw = lay.pw;
     for y in r.y0..r.y1 {
         let row = y * pw;
@@ -743,7 +737,10 @@ fn pass_green(
 #[inline(always)]
 fn ca_at(ca: Option<&[f64]>, i: usize) -> f64 {
     ca.map_or(0.0, |p| {
-        debug_assert!(!p[i].is_nan(), "CA read outside the region it was computed on");
+        debug_assert!(
+            !p[i].is_nan(),
+            "CA read outside the region it was computed on"
+        );
         p[i]
     })
 }
@@ -903,14 +900,7 @@ fn wide_direction(px: &Window<'_, 11>, rho: f64, d: [f64; 4]) -> Direction {
 /// Pass 2 (spec 3.3): at G sites `G2 = G1`; at R and B sites the vertical and horizontal scores are
 /// compared with two diagonals and four knight-move directions. `ca` is the misregistration plane
 /// of the CA path (spec 3.6), whose pass-2 weight is `min(ca, 1)`; `None` is the plain path.
-fn pass_refine(
-    m: &[f32],
-    g1: &[f32],
-    lay: &Layout,
-    r: Region,
-    ca: Option<&[f64]>,
-    g2: &mut [f32],
-) {
+fn pass_refine(m: &[f32], g1: &[f32], lay: &Layout, r: Region, ca: Option<&[f64]>, g2: &mut [f32]) {
     let pw = lay.pw;
     for y in r.y0..r.y1 {
         let row = y * pw;
