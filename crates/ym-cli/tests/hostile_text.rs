@@ -507,3 +507,51 @@ fn looks_import_names_a_hostile_path_without_control_bytes() {
     let stderr = text_of(&run.get_output().stderr);
     assert!(stderr.contains(HOSTILE_DIR_SHOWN), "{stderr}");
 }
+
+/// The name of an imported `.cube` is its file name, so a name with controls in it reaches the
+/// table of `ym looks list`: escaped for a person, exact (and `\u`-escaped) in JSON.
+#[test]
+fn looks_list_names_from_a_hostile_file_name_are_escaped() {
+    let sandbox = Sandbox::new();
+    let dir = sandbox.root().join("cubes");
+    std::fs::create_dir_all(&dir).expect("folder");
+    let path = dir.join("ev\u{1b}[2Jil\u{9b}.cube");
+    let mut cube = String::from("TITLE \"Plain\"\nLUT_3D_SIZE 2\n");
+    for b in 0..2 {
+        for g in 0..2 {
+            for r in 0..2 {
+                cube.push_str(&format!("{r} {g} {b}\n"));
+            }
+        }
+    }
+    std::fs::write(&path, cube).expect("write cube");
+    let run = sandbox
+        .ym()
+        .args(["looks", "import", "--input", "logc4"])
+        .arg(&path)
+        .assert()
+        .success();
+    assert_run_clean("`ym looks import` of a hostile file name", &run);
+
+    let run = sandbox.ym().args(["looks", "list"]).assert().success();
+    assert_run_clean("`ym looks list` with a hostile look name", &run);
+    let shown = text_of(&run.get_output().stdout);
+    assert!(shown.contains("ev\\x1b[2Jil\\u{9b}"), "{shown}");
+    // The escape added no row: the header, the built-in look and the imported one.
+    assert_eq!(lines(&run.get_output().stdout).len(), 3, "{shown}");
+
+    let run = sandbox
+        .ym()
+        .args(["looks", "list", "--json"])
+        .assert()
+        .success();
+    assert_run_clean("`ym looks list --json` with a hostile look name", &run);
+    let stdout = text_of(&run.get_output().stdout);
+    assert!(
+        stdout.contains(r"\u001b") && stdout.contains(r"\u009b"),
+        "{stdout}"
+    );
+    let objects = json_lines(&run.get_output().stdout);
+    let name = objects[0]["looks"][1]["name"].as_str().expect("name");
+    assert_eq!(name, "ev\u{1b}[2Jil\u{9b}");
+}

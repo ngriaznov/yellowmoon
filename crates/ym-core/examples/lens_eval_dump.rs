@@ -5,25 +5,29 @@
 //! committed); not part of the product.
 //!
 //! ```text
-//! cargo run -p ym-core --example lens_eval_dump -- <file.ARW> <out-dir> [adaptive|menon|lmmse|bilinear] [--r9] [--ca-scale A]
+//! cargo run -p ym-core --example lens_eval_dump -- <file.ARW> <out-dir> [adaptive|menon|lmmse|bilinear] [--r9] [--chain] [--ca-scale A]
 //! ```
 //!
 //! Writes `<out-dir>/<stem>.<method>.demosaic.f32` and, with `--r9`, `.r9.f32` and `.r9noca.f32`: `u32` width, `u32` height, then the
 //! red, green and blue planes as little-endian `f32`. The balance `g0` is the as-shot one (SR2
 //! 0x7313) and the noise model a flat guess: only the CA the stages leave matters here. With
 //! `--ca-scale A` every CA knot is multiplied by `A` before R9 (a sensitivity check of the table's
-//! amplitude).
+//! amplitude). The R5b of `.r9mosaic.f32` is `ym_gpu::cpu::lens::correct_mosaic_ca`, the function
+//! the render uses. With `--chain` it also writes the output of the shipped full-resolution chain
+//! as `RawPlan` builds it (`.chain.f32`), the same chain with the CA left in R9 (`.chainold.f32`,
+//! the order before R5b) and with no CA correction (`.chainnoca.f32`).
 
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use ym_core::pipeline::raw::{FrameData, RawParams, RawPlan};
+use ym_core::pipeline::raw::{FrameData, FullChain, RawParams, RawPlan, sigma_plane};
 use ym_gpu::cpu::demosaic::{self, DemosaicInputs, Method};
 use ym_gpu::cpu::detail::NoiseReduction;
-use ym_gpu::cpu::lens::{LensGeometry, LensSwitches, LensTags};
+use ym_gpu::cpu::lens::{LensGeometry, LensSwitches, LensTags, correct_mosaic_ca};
 use ym_gpu::cpu::sharpen::SharpenParams;
 use ym_gpu::cpu::{NoiseDn, Rect, RgbImage, gains, normalize, resample};
+use ym_gpu::queue::CancelToken;
 use ym_noise::model::NoiseModel;
 
 fn write_f32(path: &PathBuf, img: &RgbImage) {
@@ -36,60 +40,6 @@ fn write_f32(path: &PathBuf, img: &RgbImage) {
     f.write_all(&bytes).expect("write");
 }
 
-/// Catmull-Rom weights for the fractional position `t` between the middle two of four taps.
-fn catmull_rom(t: f64) -> [f64; 4] {
-    let t2 = t * t;
-    let t3 = t2 * t;
-    [
-        0.5 * (-t3 + 2.0 * t2 - t),
-        0.5 * (3.0 * t3 - 5.0 * t2 + 2.0),
-        0.5 * (-3.0 * t3 + 4.0 * t2 + t),
-        0.5 * (t3 - t2),
-    ]
-}
-
-/// Prototype of a mosaic-level CA correction (evaluation only): every red and blue photosite takes
-/// the value its colour has at the position the CA curves say its feature sits at, interpolated
-/// (Catmull-Rom) from the sites of its own colour. Green is the reference and is not touched.
-/// Whole-frame mosaics with an RGGB pattern at (0, 0).
-fn correct_mosaic_ca(m: &mut ym_gpu::cpu::Mosaic, curves: &ym_gpu::cpu::demosaic::CaCurves) {
-    let (w, h) = (m.width, m.height);
-    let src = m.data.clone();
-    for (colour, (ox, oy), curve) in [
-        (0usize, (0usize, 0usize), &curves.red),
-        (2usize, (1usize, 1usize), &curves.blue),
-    ] {
-        let _ = colour;
-        let (nw, nh) = ((w - ox).div_ceil(2), (h - oy).div_ceil(2));
-        for y in (oy..h).step_by(2) {
-            for x in (ox..w).step_by(2) {
-                let (px, py) = (x as f64 + 0.5, y as f64 + 0.5);
-                let (dx, dy) = (px - curves.centre_x, py - curves.centre_y);
-                let r = dx.hypot(dy);
-                if r < 1e-9 {
-                    continue;
-                }
-                let s = curve.shift_at(r);
-                let (qx, qy) = (px + s * dx / r, py + s * dy / r);
-                // The colour's own lattice: site i of the lattice is the pixel `ox + 2 i`.
-                let fx = (qx - 0.5 - ox as f64) / 2.0;
-                let fy = (qy - 0.5 - oy as f64) / 2.0;
-                let (ix, iy) = (fx.floor(), fy.floor());
-                let (wx, wy) = (catmull_rom(fx - ix), catmull_rom(fy - iy));
-                let mut acc = 0.0;
-                for (j, wyj) in wy.iter().enumerate() {
-                    let yy = (iy as isize + j as isize - 1).clamp(0, nh as isize - 1) as usize;
-                    for (i, wxi) in wx.iter().enumerate() {
-                        let xx = (ix as isize + i as isize - 1).clamp(0, nw as isize - 1) as usize;
-                        acc += wxi * wyj * f64::from(src[(oy + 2 * yy) * w + ox + 2 * xx]);
-                    }
-                }
-                m.data[y * w + x] = acc as f32;
-            }
-        }
-    }
-}
-
 fn main() {
     let mut args = std::env::args().skip(1);
     let file = PathBuf::from(args.next().expect("a .ARW file"));
@@ -97,6 +47,7 @@ fn main() {
     let mut method_name = "adaptive".to_owned();
     let mut ca_scale = 1.0f64;
     let mut with_r9 = false;
+    let mut with_chain = false;
     let rest: Vec<String> = args.collect();
     let mut i = 0;
     while i < rest.len() {
@@ -105,6 +56,9 @@ fn main() {
             i += 2;
         } else if rest[i] == "--r9" {
             with_r9 = true;
+            i += 1;
+        } else if rest[i] == "--chain" {
+            with_chain = true;
             i += 1;
         } else {
             method_name.clone_from(&rest[i]);
@@ -215,7 +169,7 @@ fn main() {
             .ca_curves()
         {
             let mut mc = m.clone();
-            correct_mosaic_ca(&mut mc, &curves);
+            correct_mosaic_ca(&mut mc, &curves).expect("R5b");
             let img_mc = demosaic::demosaic_whole_with(
                 &mc,
                 method,
@@ -238,5 +192,43 @@ fn main() {
         );
     } else if crop.is_none() {
         println!("{stem}: frame {fw}x{fh}, no lens geometry");
+    }
+    if with_chain {
+        // The shipped full-resolution chain (R1, R3, R4, R5b, R6, R9) as `RawPlan` builds it, and the
+        // same chain with the CA left in R9 (the order before R5b) and with no CA correction at all.
+        let cancel = CancelToken::new();
+        let sigma = sigma_plane(&frame, &plan, &params, &cancel).expect("sigma");
+        let mut full =
+            FullChain::with_method(&frame, &plan, &params, &sigma, method, &cancel).expect("chain");
+        let whole = Rect::new(0, 0, full.out_w, full.out_h);
+        let shipped = full.run_tile(&frame, whole).expect("chain");
+        write_f32(
+            &out_dir.join(format!("{stem}.{method_name}.chain.f32")),
+            &shipped,
+        );
+        println!(
+            "{stem}: chain output {}x{}, R5b {}",
+            full.out_w,
+            full.out_h,
+            plan.lens.as_ref().is_some_and(LensGeometry::ca_on_mosaic)
+        );
+        if let Some(crop) = crop {
+            for (name, ca) in [("chainold", true), ("chainnoca", false)] {
+                let geo = LensGeometry::new(
+                    fw,
+                    fh,
+                    &tags,
+                    LensSwitches {
+                        lens_corrections: true,
+                        chromatic_aberration: ca,
+                    },
+                )
+                .expect("lens")
+                .with_crop(crop);
+                full.chain.lens = Some(geo);
+                let img = full.run_tile(&frame, whole).expect("chain");
+                write_f32(&out_dir.join(format!("{stem}.{method_name}.{name}.f32")), &img);
+            }
+        }
     }
 }

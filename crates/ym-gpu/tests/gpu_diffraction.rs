@@ -1279,6 +1279,7 @@ fn bad_inputs_are_refused() {
     let c = cfg(3.76, 8.0);
     let params = DiffractionParams::new(c.pitch_um, c.f_number);
     let noise = NoiseDn::from_model(&c.model());
+    let mut uploads_refused = 0;
     for luma in [
         [f32::NAN, 0.7152, 0.0722],
         [0.2126, f32::INFINITY, 0.0722],
@@ -1287,6 +1288,7 @@ fn bad_inputs_are_refused() {
         let Some(plan) = DiffractionPlan::new(&params, c.g0, &noise, luma) else {
             continue;
         };
+        uploads_refused += 1;
         let refused = dev
             .gpu
             .run(JobSpec::new(Priority::Export), move |ctx, _| {
@@ -1298,6 +1300,12 @@ fn bad_inputs_are_refused() {
             "luma {luma:?}: {refused:?}"
         );
     }
+    // The loop must have reached the upload at least once, or it tests nothing (the planner decides
+    // which of these weights still give a plan).
+    assert!(
+        uploads_refused > 0,
+        "no luma weights gave a plan: the upload check is not reached"
+    );
     for g0 in [[0.0, 1.0, 1.5], [2.0, -1.0, 1.5], [2.0, 1.0, f32::NAN]] {
         assert!(
             DiffractionPlan::new(&params, g0, &noise, c.luma).is_none(),

@@ -29,7 +29,7 @@ use crate::console::{Console, bar, data_line, data_path_line, photos};
 use crate::exit::{self, Failure};
 use crate::render::{look_failure, resolve_look};
 use crate::runtime::{handle_interrupts, interrupted};
-use crate::text::{json_line, path_text};
+use crate::text::{json_line, line_text, path_text};
 
 /// Runs a `ym looks` command and returns the exit code.
 pub fn run(command: &LooksCommand, console: &mut Console) -> u8 {
@@ -121,8 +121,9 @@ fn list_text(looks: &[LookEntry], luts: &[ym_core::looks::DisplayLutEntry]) -> S
         }
         rows.push(vec![
             l.id.to_string(),
-            l.name.clone(),
-            group_text(&l.group),
+            // The name of an imported .cube is its file name: text from outside.
+            line_text(&l.name),
+            line_text(&group_text(&l.group)),
             input_word(l.input).to_owned(),
             flags.join(", "),
         ]);
@@ -134,7 +135,7 @@ fn list_text(looks: &[LookEntry], luts: &[ym_core::looks::DisplayLutEntry]) -> S
         for d in luts {
             rows.push(vec![
                 d.id.to_string(),
-                d.name.clone(),
+                line_text(&d.name),
                 input_word(d.input).to_owned(),
             ]);
         }
