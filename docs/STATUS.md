@@ -50,10 +50,29 @@ Two facts shape every number below:
 | M1-05 sensor map in CIE Lab (your decision) | [f402f7d](https://github.com/ngriaznov/yellowmoon/commit/f402f7d) | LED-V2 stays a reported gate failure |
 | M0-01 Rust workspace, Tauri shell, CLI stub, data lookup | [fe74202](https://github.com/ngriaznov/yellowmoon/commit/fe74202) | |
 | M1-02, M1-03, M1-04 fits, profiles, registry, ALEXA validation | [c10f0e7](https://github.com/ngriaznov/yellowmoon/commit/c10f0e7) | |
-| M0-02, M0-03 (repo side), M0-09, M0-10 | [93e91e2](https://github.com/ngriaznov/yellowmoon/commit/93e91e2) | signing key is yours (M0-03) |
+| M0-02, M0-03 (repo side), M0-09 (scripts; corpus blocked), M0-10 | [93e91e2](https://github.com/ngriaznov/yellowmoon/commit/93e91e2) | signing key is yours (M0-03); coverage and golden-set tables below |
 | M0-01 frontend skeleton | [131a619](https://github.com/ngriaznov/yellowmoon/commit/131a619) | |
 
-CI jobs enabled: frontend, e2e, rust (macOS), deny, deny-selftest, fetch-tools, gpu-lavapipe, oracle, lens-oracle, data-checks, synthetic-set, golden, dng, serde-order, training-dry-run, alexa-curve. CI runs on pushes to `main` and on pull requests, so none of them has run on GitHub yet (no PR exists).
+CI jobs enabled: frontend, e2e, rust (macOS), deny, deny-selftest, fetch-tools, gpu-lavapipe, oracle, lens-oracle, data-checks, synthetic-set, golden, dng, serde-order, eval-tools, parity, training-dry-run, alexa-curve. CI runs on pushes to `main` and on pull requests, so none of them has run on GitHub yet (no PR exists).
+
+## Corpus and golden set (M0-09)
+
+**Corpus coverage.** `tools/fetch/manifest.json` has no files yet (rawdb.dnglab.org and raw.pixls.us are unreachable from the build machine; M0-09 HUMAN), so every cell of the body × variant table is a gap: 0 files for all 38 bodies (19 required, 8 same-sensor siblings, 2 recent, 9 legacy). `tools/fetch/samples.sh --coverage` prints the table once the manifest is filled.
+
+**Golden set, synthetic tier** (`tools/golden/manifest.json`, default set: 61 files, ours, CI-safe; 14-bit unless noted, packed12 is 12-bit):
+
+| Body | cRAW | Lossless L | Lossless M/S | 12-bit packed | Uncompressed 14 | Lights | ISO |
+|---|---|---|---|---|---|---|---|
+| ILCE-7RM4 | 4 | 16 | 1 | 1 | 4 | D5500, D6500, D7500, F11, LED-B3, LED-V2, 2850 K, 3200 K, mixed | 100, 400, 800, 3200, 12800 |
+| ILCE-7M3 | 1 | 1 | 1 | 1 | 3 | D6500, LED-B3, 2850 K | 400 |
+| ILCE-7SM3 | 1 | 3 | 1 | 1 | 1 | D6500, LED-B3, 2850 K | 400 |
+| ILCE-6400 | 3 | 1 | 1 | 1 | 1 | D6500, LED-B3, 2850 K | 400 |
+| DSC-RX100M4 | 3 | 1 | 1 | 1 | 1 | D6500, LED-B3, 2850 K | 400 |
+| ILCE-1 | 1 | 3 | 1 | 1 | 1 | D6500, LED-B3, 2850 K | 400 |
+
+The `synthetic-full` and `synthetic-eval` sets (53 more, the latter with CIE reflectances, local only) and the CC0, free and Play Raw tiers have no entries yet.
+
+**Local evaluation tier** (`tools/fetch/real-eval.sh`, never committed or used in CI): DSLR-A300 (ARW 1), DSLR-A500, ILCE-5000, ILCE-7M3, NEX-5N, NEX-7 (cRAW), ILCE-7M4 (Lossless L), ILCE-6300 (cRAW), ILCE-7M2 (14-bit uncompressed). Sources and licence notes in `docs/validation-data.md`.
 
 ## Gate results
 
@@ -69,12 +88,15 @@ CI jobs enabled: frontend, e2e, rust (macOS), deny, deny-selftest, fetch-tools, 
 | Display transform, ACES 2 vs OCIO 2.6 (M1-11) | 2026-10-12 | CPU max 0.03 code values at 10 bits (≤ 1); WGSL 0.05 (f32 storage) | yes |
 | LUT path vs OCIO tetrahedral (M1-10) | 2026-10-12 | 0.0002 code values at 10 bits (≤ 1) | yes |
 | GPU parity on lavapipe (M0-07, M1-09) | 2026-10-12 | C7–C11 ≤ 1.2e-5 LogC4 (≤ 2e-4); spike 50 MP 7.9e-4 (≤ 1e-3); peak GPU memory 0.28 GiB (≤ 1.5 GiB) | yes (lavapipe) — f16 caveat in Questions |
-| Lens corrections vs darktable-cli (M1-12) | 2026-10-12 | distortion and CA ≤ 0.009 px (≤ 0.2 px), gain ≤ 0.09 % (≤ 0.5 %), synthetic Sony files | yes (synthetic) |
+| Lens corrections vs darktable-cli (M1-12) | 2026-10-12 | distortion and CA ≤ 0.009 px (≤ 0.2 px), gain ≤ 0.008 % (≤ 0.5 %), synthetic Sony files | yes (synthetic) |
 | Highlights (M1-12) | 2026-10-12 | chroma ΔE00 ≤ 4.66 on 10 synthetic scenes (≤ 5); blind review is yours | partial |
 | Demosaic PSNR (M1-12) | 2026-10-12 | Kodak 29.82 / 38.88 / 39.16 dB, McMaster 32.31 / 34.21 / 35.09 dB (bilinear / Menon / LMMSE) | reported |
 | Decoder vs LibRaw (M0-05) | 2026-10-12 | 9/9 real files and 46/46 readable synthetic files identical; cRAW within rawler's dither | synthetic + 9 real; corpus blocked |
 | Camera detection on the corpus (M1-04) | — | corpus unreachable; all 28 registry bodies tested synthetically | blocked |
 | Noise, noise-on-noise (M2-02) | 2026-10-12 | increment median 1.8 %, p90 5.6 % (≤ 15 % / 30 %), synthetic | yes (synthetic) |
+| Noise, absolute `a` on A1 files within 15 % (docs/06) | — | needs the CC0 corpus | blocked |
+| Noise, ELD A7S II `a` within 15 % (docs/06) | — | ELD dataset not fetched (host unreachable) | blocked |
+| Noise, filtered-file detector ≥ 90 % flagged, ≤ 5 % false positives (docs/06) | 2026-10-12 | synthetic: smooth scenes 8/8 flagged, 0/8 false positives on every scene kind; mixed scenes 40 % (median 3×3) / 85 % (box), busy scenes 17.5 % / 57.5 % | no (only on smooth scenes) |
 | Noise batch pooling (docs/06) | 2026-10-13 | 18 synthetic scenes of 2–4 frames: pooled `a` within 2.2 % of the single-file fits (was 65 % low on 3 frames) | yes (synthetic) |
 | Auto exposure vs embedded JPEG (M1-08) | 2026-10-13 | 9 real files (local only, not the golden set): gate as built 5 of 9 within ±0.5 EV; DRT-neutral metric G3 (our exposure vs the camera's own gain) 6 of 9 within ±0.5, 9 of 9 within ±0.75, median −0.17 EV; misses are key-extreme scenes (two with DRO). G3 is the gate metric from 2026-10-13 (your decision) | no (6 of 9 < 80 %; outliers for M1-H5) |
 | Export size estimate (docs/09) | 2026-10-13 | 9 real renders × 4 sizes, estimate/actual median 0.98–1.06, p90 error ≤ 0.30 in-sample (JPEG q80–q100, TIFF, PNG), leave-one-out up to 0.46 at q50–q89; low (≈ 0.66) with noise reduction off | median yes; p90 over the ±35 % target in leave-one-out |
@@ -83,6 +105,7 @@ CI jobs enabled: frontend, e2e, rust (macOS), deny, deny-selftest, fetch-tools, 
 | End-to-end colour vs ALEXA-estimate truth (M1-15 report, no gate) | 2026-10-12 | scene-linear AWG4, 190 chart patches: median 0.73 ΔE00, p95 2.05 over 37 scenes (Sony-through-ARRI-matrix baseline 1.72); A7R IV ISO 400 single lights 0.68 / 1.61; ISO 12800 2.24 | reported |
 | Golden images (M1-15) | 2026-10-12 | 61 synthetic files identical on re-run, thread-count independent; a saturation +3 change fails at ΔE00 3.6 | yes (synthetic tier) |
 | Demosaic + denoise network (M2) | — | no trained weights (M2-H4) | blocked |
+| 500 files, commands < 100 ms (M3-03) | 2026-10-13 | `open_paths` 31 ms, slowest of 5112 commands while developing 62.5 ms (ignored test, local, busy machine); webview keypress on screen in 5–72 ms (median 16), one manual run | yes (local; not run in CI) |
 | Performance (docs/05) | 2026-10-12 | Linux x86 only: Lossless L 50 MP decode 333 ms on 4 cores; classical chain ~64–69 CPU-s per 50 MP; Mac numbers are M0-H4 | reported |
 
 ## Waiting on Mykyta
@@ -102,6 +125,8 @@ CI jobs enabled: frontend, e2e, rust (macOS), deny, deny-selftest, fetch-tools, 
 | M3-H2 | Download the five ARRI packages and run `tools/looks/fingerprint.py`. | wizard recognition by hash |
 | M3-H4, M3-H5, M3-H6 | App review on a Mac; a real shoot; DNGs in Lightroom, RawTherapee, darktable, Capture One, Apple Photos. | M3 gate |
 | — | A real Lossless M or S file (A7R V, A9 III, A1 II or RX1R III) to confirm the M/S scale. | M2-09 |
+| M3-H3 | Email ARRI about an in-app download of the free looks (optional). | M3 |
+| M4-H2…M4-H5 | Developer ID signing and notarisation decision; trademark clearance (EUIPO, INPI, WIPO, UK IPO); freedom-to-operate check on US 11948279; announcement. Not started. | M4 |
 
 ## Questions for Mykyta
 
@@ -123,6 +148,7 @@ CI jobs enabled: frontend, e2e, rust (macOS), deny, deny-selftest, fetch-tools, 
 - The illuminant's synthetic brightness range stops at Bv 13; real sunlit files read 14.3–14.6. LED and fluorescent class recognition is weak on independent chart scenes.
 - Kelvin readout rounded to 50 K leaves up to 1.6 % red/blue imbalance below 2300 K.
 - The GPU memory budget isn't scaled to system RAM; device loss isn't handled.
+- M1-12's WGSL half is open: only R1 + R4 (normalise, gains) and the colour chain have GPU kernels; R3, R5, R6 (Menon/LMMSE), R8 and R9 run on the CPU reference. The fit-preview and 100 % performance targets depend on them (and on a Mac, M0-H4). The noise σ map (M2-02 "on GPU") is CPU only too.
 
 ## Environment
 
