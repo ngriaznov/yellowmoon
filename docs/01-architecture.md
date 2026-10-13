@@ -81,7 +81,7 @@ Script-only folders under `tools/` (`fetch/`, `looks/`, `dng/`, `abtest/`, `dev/
 ### Dependency rules
 
 - `ym-core` depends on all other `ym-*` library crates. Nothing depends on `ym-core` except `src-tauri` and `ym-cli`.
-- `ym-color` is pure maths with no GPU dependency. `ym-gpu` depends on `ym-color` only for constants and CPU reference functions used in parity tests.
+- `ym-color` is pure maths with no GPU dependency. `ym-gpu` depends on `ym-color` for constants and CPU reference functions used in parity tests, and on `ym-noise` for the noise model the raw algorithms take (`docs/algorithms/INTEGRATION.md` §3).
 - `ym-raw` has no GPU dependency; it returns CPU buffers.
 - No crate under `crates/` depends on Tauri, the webview, or `tools/oracle`.
 - `ym-cli` does not depend on Tauri.
