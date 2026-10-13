@@ -21,8 +21,8 @@ Two facts shape every number below:
 
 | Task | Commit | Notes |
 |---|---|---|
-| Adversarial review (42 findings, 40 confirmed) and fixes: neutral clipped highlights, licence notices and THIRD-PARTY.md in the bundle, same-name exports, terminal-safe `ym info`, dialog focus, folder drops with dots, nightly fuzzing, CI coverage | REVIEW_COMMIT | goldens re-baselined (55 of 61, clipped patches only), pipeline 0.1.1 |
-| RA-01 raw-algorithms package in (specs, integration notes, test vectors; C++ kept outside the repository) | REVIEW_COMMIT | RA-02 to RA-10 in progress |
+| Adversarial review (42 findings, 40 confirmed) and fixes: neutral clipped highlights, licence notices and THIRD-PARTY.md in the bundle, same-name exports, terminal-safe `ym info`, dialog focus, folder drops with dots, nightly fuzzing, CI coverage | [09144fe](https://github.com/ngriaznov/yellowmoon/commit/09144fe) | goldens re-baselined (55 of 61, clipped patches only), pipeline 0.1.1 |
+| RA-01 raw-algorithms package in (specs, integration notes, test vectors; C++ kept outside the repository) | [09144fe](https://github.com/ngriaznov/yellowmoon/commit/09144fe) | RA-02 to RA-10 in progress |
 | M3-12 product side: `ym` writes the fitted DNG profile | [7197d04](https://github.com/ngriaznov/yellowmoon/commit/7197d04) | white level floored at scene 16 (Question 9); Lightroom and other apps are M3-H6 |
 | CI golden, dng and serde-order jobs; local-eval fetch tier; M1-08 auto-exposure study | [5ac59a5](https://github.com/ngriaznov/yellowmoon/commit/5ac59a5) | study only, no algorithm change (see Gate results and Questions) |
 | Review follow-ups: American identifiers, noise pooling fix, early-export parity, thumbnails via `ym-frame://`, guarded update restart, size estimate refit | [425485f](https://github.com/ngriaznov/yellowmoon/commit/425485f) | |
