@@ -871,6 +871,8 @@ span.ym-filmstrip__thumb { cursor: default; }
 .ym-photo-cell[data-native="true"] { background: transparent; }
 .ym-photo-cell__view { position: absolute; inset: 0; overflow: hidden; }
 .ym-photo-cell__image { width: 100%; height: 100%; object-fit: contain; user-select: none; -webkit-user-drag: none; }
+/* The fallback viewport's picture: the whole cell already, drawn pixel for pixel from the corner. */
+.ym-photo-cell__frame { position: absolute; top: 0; left: 0; max-width: none; user-select: none; -webkit-user-drag: none; }
 .ym-photo-cell__before {
   position: absolute;
   top: 0;

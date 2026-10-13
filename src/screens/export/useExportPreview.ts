@@ -6,7 +6,7 @@ import type { AppStore } from "../../state/store";
 export interface ExportPreview {
   /** Size and time ("≈ 120 MB"), once the core has answered. */
   estimate: ExportEstimate | null;
-  /** The equivalent `yellowmoon render …` command. */
+  /** The equivalent `ym render …` command. */
   cli: string | null;
 }
 

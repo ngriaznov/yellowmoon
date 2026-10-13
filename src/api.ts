@@ -3,16 +3,18 @@
  *
  * `Api` has one method per Tauri command and a typed `on()` for the events. Two
  * implementations exist:
- *  - `tauriApi`, which calls `invoke` / `listen` (snake_case command names, camelCase args);
+ *  - `tauriApi`, which calls the commands `tauri-specta` generated from the Rust side
+ *    (`api/bindings.ts`: snake_case command names, camelCase argument keys, rejections are the
+ *    core's `AppError`) and listens to events with `listen`;
  *  - the in-memory mock in `api.mock.ts`, which lets the app run in a plain browser, in Vitest
  *    and in Playwright without Tauri.
  *
- * `getApi()` picks one. Every payload type lives in `api/types.ts`, so generated bindings
- * (tauri-specta, task M3-02) can replace that file without touching the code here.
+ * `getApi()` picks one. Every payload type lives in `api/types.ts`; `api/contract.ts` makes `tsc`
+ * fail when those types and the generated ones disagree.
  */
-import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { mockApi } from "./api.mock";
+import { commands } from "./api/bindings";
 import { isTauri } from "./env";
 import type {
   ApiEventName,
@@ -40,6 +42,7 @@ import type {
   SessionState,
   SettingsPatch,
   SourceRecognition,
+  ViewportInfo,
   ViewportInput,
   ViewportMode,
   ViewportRect,
@@ -90,6 +93,12 @@ export interface Api {
 
   // --- Native viewport -----------------------------------------------------
 
+  /**
+   * `viewport_info` (addition): which backend draws the photo, `native` (a wgpu surface behind the transparent
+   * webview) or `fallback` (PNG frames sent as `viewport_frame` events). Resolves `null` when the API has no viewport
+   * of its own, as the browser mock does: the screen then draws the mock's fixture picture itself.
+   */
+  viewportInfo(): Promise<ViewportInfo | null>;
   /** `viewport_set_rect`: where the photo cell is, on mount, resize and layout change. */
   viewportSetRect(rect: ViewportRect): Promise<void>;
   /** `viewport_input`: pointer input over the photo. */
@@ -115,7 +124,7 @@ export interface Api {
   /**
    * `looks_import`: import a zip, a folder or a `.cube` file. `input` answers the generic question for
    * `.cube` files that match no ARRI package (`docs/08` §Any other .cube); leave it out for a recognised
-   * package. Progress arrives as `looks_import_progress` events. Same importer as `yellowmoon looks import`.
+   * package. Progress arrives as `looks_import_progress` events. Same importer as `ym looks import`.
    */
   looksImport(path: string, input?: LookInput): Promise<LooksImportResult>;
   /**
@@ -145,8 +154,13 @@ export interface Api {
   exportStart(job: ExportJob): Promise<ExportJobId>;
   /** `export_cancel`: stop after the current tile and delete the partial file. */
   exportCancel(jobId: ExportJobId): Promise<void>;
-  /** `cli_preview`: the equivalent `yellowmoon render …` command. */
+  /** `cli_preview`: the equivalent `ym render …` command. */
   cliPreview(job: ExportJob): Promise<string>;
+  /**
+   * `export_busy` (addition): an export is queued or running in the core, also one this window did not start
+   * (after a reload). "Update ready" waits while it is; the `export_busy` event says when it changes.
+   */
+  exportBusy(): Promise<boolean>;
 
   // --- The system: dialogs, Finder, the browser ------------------------------
 
@@ -197,55 +211,60 @@ export function toAppError(value: unknown): AppError {
   return { scope: "app", message };
 }
 
+/** The unit commands answer `null` on the wire; the interface says `void`. */
+const unit = (call: Promise<null>): Promise<void> => call.then(() => undefined);
+
 /**
- * Calls the Rust commands. Command names are snake_case, argument keys camelCase: Tauri 2
- * maps `photoId` to the Rust parameter `photo_id`.
+ * Calls the Rust commands through the generated `commands` (`api/bindings.ts`), so a command that is renamed, or whose arguments or
+ * answer change, is a compile error here (the types of `api/types.ts` are checked against the generated ones in `api/contract.ts`).
  */
 export const tauriApi: Api = {
-  openPaths: (paths) => invoke("open_paths", { paths }),
-  openDialog: (kind) => invoke("open_dialog", { kind }),
-  sessionState: () => invoke("session_state"),
-  closeSession: () => invoke("close_session"),
-  setCurrent: (photoId) => invoke("set_current", { photoId }),
-  setPicked: (photoId, picked) => invoke("set_picked", { photoId, picked }),
+  openPaths: (paths) => commands.openPaths(paths),
+  openDialog: (kind) => commands.openDialog(kind),
+  sessionState: () => commands.sessionState(),
+  closeSession: () => unit(commands.closeSession()),
+  setCurrent: (photoId) => unit(commands.setCurrent(photoId)),
+  setPicked: (photoId, picked) => unit(commands.setPicked(photoId, picked)),
 
-  getSettings: (photoId) => invoke("get_settings", { photoId }),
-  updateSettings: (photoId, patch) => invoke("update_settings", { photoId, patch }),
-  applyLook: (scope, lookId, intensity) => invoke("apply_look", { scope, lookId, intensity }),
-  rerunAuto: (photoId) => invoke("rerun_auto", { photoId }),
-  histogram: (photoId) => invoke("histogram", { photoId }),
+  getSettings: (photoId) => commands.getSettings(photoId),
+  updateSettings: (photoId, patch) => commands.updateSettings(photoId, patch),
+  applyLook: (scope, lookId, intensity) => unit(commands.applyLook(scope, lookId, intensity)),
+  rerunAuto: (photoId) => commands.rerunAuto(photoId),
+  histogram: (photoId) => commands.histogram(photoId),
 
-  viewportSetRect: (rect) => invoke("viewport_set_rect", { rect }),
-  viewportInput: (event) => invoke("viewport_input", { event }),
-  viewportSetMode: (mode) => invoke("viewport_set_mode", { mode }),
-  setBefore: (before) => invoke("set_before", { before }),
-  samplePixel: (x, y) => invoke("sample_pixel", { x, y }),
+  viewportInfo: () => commands.viewportInfo(),
+  viewportSetRect: (rect) => unit(commands.viewportSetRect(rect)),
+  viewportInput: (event) => unit(commands.viewportInput(event)),
+  viewportSetMode: (mode) => unit(commands.viewportSetMode(mode)),
+  setBefore: (before) => unit(commands.setBefore(before)),
+  samplePixel: (x, y) => commands.samplePixel(x, y),
 
-  looksList: () => invoke("looks_list"),
-  lookThumbnail: (photoId, lookId) => invoke("look_thumbnail", { photoId, lookId }),
-  looksImport: (path, input) => invoke("looks_import", { path, input: input ?? null }),
-  looksRecognise: (path) => invoke("looks_recognise", { path }),
-  looksDisplayLuts: () => invoke("looks_display_luts"),
-  looksWatchDownloads: (enabled) => invoke("looks_watch_downloads", { enabled }),
-  looksSetDefault: (id) => invoke("looks_set_default", { id }),
-  looksRemove: (id) => invoke("looks_remove", { id }),
+  looksList: () => commands.looksList(),
+  lookThumbnail: (photoId, lookId) => commands.lookThumbnail(photoId, lookId),
+  looksImport: (path, input) => commands.looksImport(path, input ?? null),
+  looksRecognise: (path) => commands.looksRecognise(path),
+  looksDisplayLuts: () => commands.looksDisplayLuts(),
+  looksWatchDownloads: (enabled) => commands.looksWatchDownloads(enabled),
+  looksSetDefault: (id) => unit(commands.looksSetDefault(id)),
+  looksRemove: (id) => unit(commands.looksRemove(id)),
 
-  exportEstimate: (job) => invoke("export_estimate", { job }),
-  exportStart: (job) => invoke("export_start", { job }),
-  exportCancel: (jobId) => invoke("export_cancel", { jobId }),
-  cliPreview: (job) => invoke("cli_preview", { job }),
+  exportEstimate: (job) => commands.exportEstimate(job),
+  exportStart: (job) => commands.exportStart(job),
+  exportCancel: (jobId) => unit(commands.exportCancel(jobId)),
+  cliPreview: (job) => commands.cliPreview(job),
+  exportBusy: () => commands.exportBusy(),
 
-  chooseFolder: (start) => invoke("choose_folder", { start }),
-  chooseLookFiles: () => invoke("choose_look_files"),
-  openUrl: (url) => invoke("open_url", { url }),
-  revealInFinder: (path) => invoke("reveal_in_finder", { path }),
-  trashPath: (path) => invoke("trash_path", { path }),
+  chooseFolder: (start) => commands.chooseFolder(start),
+  chooseLookFiles: () => commands.chooseLookFiles(),
+  openUrl: (url) => unit(commands.openUrl(url)),
+  revealInFinder: (path) => unit(commands.revealInFinder(path)),
+  trashPath: (path) => unit(commands.trashPath(path)),
 
-  preferencesGet: () => invoke("preferences_get"),
-  preferencesSet: (patch) => invoke("preferences_set", { patch }),
-  installCliLink: () => invoke("install_cli_link"),
-  cliLinkStatus: () => invoke("cli_link_status"),
-  appInfo: () => invoke("app_info"),
+  preferencesGet: () => commands.preferencesGet(),
+  preferencesSet: (patch) => commands.preferencesSet(patch),
+  installCliLink: () => commands.installCliLink(),
+  cliLinkStatus: () => commands.cliLinkStatus(),
+  appInfo: () => commands.appInfo(),
 
   on(event, handler) {
     // `listen` is asynchronous but `on` hands back its unsubscribe at once, so a call to

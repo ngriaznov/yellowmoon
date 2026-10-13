@@ -41,7 +41,7 @@ export type { HistogramData, HistogramProps } from "./Histogram";
 export { Filmstrip } from "./Filmstrip";
 export type { FilmstripPhoto, FilmstripProps, FilmstripStatus } from "./Filmstrip";
 export { PhotoCell } from "./PhotoCell";
-export type { PhotoCellProps, PhotoProbe } from "./PhotoCell";
+export type { PhotoCellFrame, PhotoCellProps, PhotoProbe } from "./PhotoCell";
 export { UpdatePill } from "./UpdatePill";
 export type { UpdatePillProps } from "./UpdatePill";
 export { DevelopList, ExportQueueList } from "./ExportQueueList";

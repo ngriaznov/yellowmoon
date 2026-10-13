@@ -74,6 +74,7 @@ export function ExportReplica({ initialFormat = "jpeg", initialProgress, initial
   if (fmt !== "dng") flags.push(`--colour-space ${cs}`);
   if (fmt !== "dng" && size === "edge") flags.push(`--long-edge ${edge}`);
   flags.push('--out "~/Pictures/Lisbon export"');
+  // The mockup (`design/mockups/export.html`) still names the command `yellowmoon`; this page reproduces the mockup, the app says `ym`.
   const cli = `yellowmoon render ${scope === "all" ? "~/Pictures/Lisbon" : files.join(" ")} \\\n  ${flags.join(" \\\n  ")}`;
 
   const doneCount = Math.min(count, Math.floor(prog ?? 0));

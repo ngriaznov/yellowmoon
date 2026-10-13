@@ -45,6 +45,8 @@ import type {
   SettingsPatch,
   SourceRecognition,
   ThumbnailReady,
+  ViewportBackendKind,
+  ViewportFrame,
   ViewportInput,
   ViewportMode,
   ViewportRect,
@@ -57,6 +59,7 @@ import type { ExportRun } from "../export/run";
 import { diffSettings, PhotoHistory } from "./history";
 import type { HistoryEntry } from "./history";
 import { bytesToUrl, isReady, releaseUrl } from "./photo";
+import { fitZoomExact, fitZoomPercent, showsWhole, zoomAfter } from "./zoom";
 
 /** The screens of the app (`docs/11-ui.md` §Screens that have a window of their own). */
 export type Screen = "start" | "photos" | "import-looks";
@@ -137,6 +140,15 @@ export interface AppState {
   cubeImport: CubeImport | null;
   /** A short message that is not an error ("Yellowmoon is up to date."), until dismissed. */
   notice: string | null;
+  /**
+   * Which viewport backend draws the photo (`viewport_info`): `native` leaves the photo cell transparent, `fallback` shows the
+   * frames below. Null while unknown, and for an API that has none (the browser mock), where the screen draws its own picture.
+   */
+  viewportBackend: ViewportBackendKind | null;
+  /** The fallback viewport's latest frame (`viewport_frame`); null when it has none or took the picture away. */
+  viewportFrame: ViewportFrame | null;
+  /** An export is queued or running in the core (`export_busy`), also one this window did not start. */
+  exportBusy: boolean;
 }
 
 /** The state of an app with nothing open. */
@@ -169,6 +181,9 @@ export function initialState(): AppState {
     overlay: null,
     cubeImport: null,
     notice: null,
+    viewportBackend: null,
+    viewportFrame: null,
+    exportBusy: false,
   };
 }
 
@@ -220,6 +235,9 @@ interface Sender {
   idle: Array<() => void>;
 }
 
+/** A frame of the fallback viewport smaller than this, in device pixels on either side, is not a picture of the cell. */
+const MIN_FRAME_PX = 16;
+
 /** Milliseconds a replaced look thumbnail's URL is kept, so a tile never shows a broken picture. */
 const URL_GRACE_MS = 3000;
 
@@ -235,6 +253,10 @@ export class AppStore {
   private readonly gestures = new Map<PhotoId, { base: DevelopSettings }>();
   private readonly senders = new Map<PhotoId, Sender>();
   private readonly settingsRequests = new Map<PhotoId, Promise<void>>();
+  /** The number of the newest `viewport_frame` heard, whether it showed a picture or took it away; null before the first. */
+  private newestFrame: number | null = null;
+  /** Photos with a Pick white click on its way to the core: their settings are read when the click is answered. */
+  private readonly picks = new Set<PhotoId>();
   private readonly lookThumbs = new Map<PhotoId, { key: string; urls: Map<LookId, Promise<string>> }>();
   private rect: ViewportRect | null = null;
   private histogramBusy = false;
@@ -313,6 +335,9 @@ export class AppStore {
       api.on("error", (error) => this.set({ error })),
       api.on("export_progress", (e) => this.onExportProgress(e)),
       api.on("menu_action", (e) => this.menuHandler?.(e.action)),
+      api.on("viewport_frame", (frame) => this.onFrame(frame)),
+      api.on("settings_changed", (e) => void this.onSettingsChanged(e.photo_id)),
+      api.on("export_busy", (e) => this.set({ exportBusy: e.busy })),
     ];
     void this.load();
     return () => this.disconnect();
@@ -325,7 +350,38 @@ export class AppStore {
 
   /** Loads the look library and any session the core already has (after a reload of the window). */
   async load(): Promise<void> {
-    await Promise.all([this.refreshLooks(), this.refreshSession(), this.refreshPreferences(), this.refreshDisplayLuts()]);
+    await Promise.all([
+      this.refreshLooks(),
+      this.refreshSession(),
+      this.refreshPreferences(),
+      this.refreshDisplayLuts(),
+      this.refreshViewportInfo(),
+      this.refreshExportBusy(),
+    ]);
+  }
+
+  /** Asks which viewport backend draws the photo. A core that can't say leaves the screen drawing its own picture. */
+  private async refreshViewportInfo(): Promise<void> {
+    try {
+      const info = await this.api.viewportInfo();
+      this.set({ viewportBackend: info?.backend ?? null });
+    } catch {
+      this.set({ viewportBackend: null });
+    }
+  }
+
+  /**
+   * Asks the core whether an export is queued or running, which it knows after a reload of the window and for exports this window
+   * did not start. Resolves to the answer, false when the core can't say.
+   */
+  async refreshExportBusy(): Promise<boolean> {
+    try {
+      const busy = await this.api.exportBusy();
+      if (busy !== this.state.exportBusy) this.set({ exportBusy: busy });
+      return busy;
+    } catch {
+      return this.state.exportBusy;
+    }
   }
 
   private async refreshSession(): Promise<void> {
@@ -397,6 +453,25 @@ export class AppStore {
       if (old) releaseUrl(old);
       return { ...s, thumbnails: { ...s.thumbnails, [e.id]: url } };
     });
+  }
+
+  /**
+   * A frame of the fallback viewport, or (an empty address) the news that the picture is gone. Drawn at once, never batched. The shell
+   * can draw a frame before the webview has said where the cell is (it uses a 1 × 1 cell then); a frame that small is no picture.
+   */
+  private onFrame(frame: ViewportFrame): void {
+    // Frames can arrive out of order (the shell numbers a frame before it encodes it, and the news that the picture is gone is sent from
+    // another thread): an older one never replaces a newer one, and never brings back a picture that was taken away.
+    if (this.newestFrame !== null && frame.seq < this.newestFrame) return;
+    this.newestFrame = frame.seq;
+    const none = frame.url === "" || frame.width < MIN_FRAME_PX || frame.height < MIN_FRAME_PX;
+    this.set({ viewportFrame: none ? null : frame });
+  }
+
+  /** The core changed a photo's settings by itself (a Pick white click): ask for them again. */
+  private async onSettingsChanged(id: PhotoId): Promise<void> {
+    if (this.picks.has(id) || !this.state.settings[id]) return;
+    await this.resyncSettings(id);
   }
 
   // --- Session ------------------------------------------------------------------------------
@@ -488,6 +563,8 @@ export class AppStore {
       overlay: this.state.overlay === "confirm-close" ? null : this.state.overlay,
       cubeImport: this.state.cubeImport,
       notice: this.state.notice,
+      viewportBackend: this.state.viewportBackend,
+      exportBusy: this.state.exportBusy,
     };
     for (const listener of [...this.listeners]) listener();
     // A fresh session starts at Fit with the camera view off.
@@ -511,7 +588,8 @@ export class AppStore {
     if (!session) return;
     const index = session.photos.findIndex((p) => p.id === id);
     if (index < 0 || index === session.current_index) return;
-    this.set({ session: { ...session, current_index: index }, histogram: null });
+    // A new photo opens at Fit with the camera view off, in the core and here.
+    this.set({ session: { ...session, current_index: index }, histogram: null, zoom: { kind: "fit" }, before: false });
     this.syncHistoryFlags();
     if (isReady(session.photos[index] as PhotoSummary)) void this.ensureSettings(id);
     try {
@@ -629,7 +707,7 @@ export class AppStore {
     }
   }
 
-  /** "Install Command-Line Tool…": links `yellowmoon` onto the PATH and says where. */
+  /** "Install Command-Line Tool…": links `ym` onto the PATH and says where. */
   async installCli(): Promise<void> {
     try {
       const result = await this.api.installCliLink();
@@ -884,16 +962,80 @@ export class AppStore {
     }
   }
 
-  /** Forwards pointer input over the photo. A double click also flips the mirrored zoom between Fit and 100 %. */
+  /**
+   * Forwards pointer input over the photo. A double click flips the mirrored zoom between Fit and 100 %, and a wheel zoom moves it by
+   * the same factor as the core does (an estimate: the core keeps the real zoom and does not report it), so the header and the drag
+   * to pan follow what the photo does.
+   */
   async viewportInput(event: ViewportInput): Promise<void> {
     if (event.kind === "toggle_zoom") {
-      const zoom: ViewportMode = this.state.zoom.kind === "fit" ? { kind: "percent", value: 100 } : { kind: "fit" };
-      this.set({ zoom });
+      this.set({ zoom: this.toggledZoom() });
+    } else if (event.kind === "zoom") {
+      this.set({ zoom: zoomAfter(this.state.zoom, event.factor, this.fitPercentExact()) });
     }
     try {
       await this.api.viewportInput(event);
     } catch (error) {
       this.fail(error);
+    }
+  }
+
+  /** The zoom that fits the whole picture in the cell, in percent of the photo's pixels; null before the cell has reported. */
+  fitPercent(): number | null {
+    const photo = this.currentPhoto();
+    return this.rect && photo ? fitZoomPercent(this.rect, photo, this.currentSettings()?.values ?? null) : null;
+  }
+
+  /** `fitPercent` not rounded: what the core compares a zoom with to tell whether it shows the whole picture. */
+  fitPercentExact(): number | null {
+    const photo = this.currentPhoto();
+    return this.rect && photo ? fitZoomExact(this.rect, photo, this.currentSettings()?.values ?? null) : null;
+  }
+
+  /**
+   * True when the photo cell shows the whole picture: at Fit, or at a fixed zoom no larger than the Fit zoom, which the core draws as Fit
+   * (50 % on a big display where Fit is 62 %). The picture is letterboxed then, there is nothing to pan, and a double click zooms in.
+   */
+  showsWholePhoto(): boolean {
+    return showsWhole(this.state.zoom, this.fitPercentExact());
+  }
+
+  /** Fit becomes 100 %, any other zoom becomes Fit (a double click, Z). Where 100 % is no more than the Fit zoom, it stays Fit. */
+  private toggledZoom(): ViewportMode {
+    const hundred: ViewportMode = { kind: "percent", value: 100 };
+    if (!this.showsWholePhoto()) return { kind: "fit" };
+    return showsWhole(hundred, this.fitPercentExact()) ? { kind: "fit" } : hundred;
+  }
+
+  /** Z: Fit and 100 % in turn. */
+  toggleZoom(): Promise<void> {
+    return this.setZoom(this.toggledZoom());
+  }
+
+  /**
+   * Pick white: sends a click on the photo cell (CSS pixels from its corner) to the core, which finds the spot of the photo under it
+   * through the straightening, the turn and the lens maps (only the core knows them), sets `white_pick` and the white balance that
+   * follows from it, and says so with `settings_changed`. The settings are read again here and the change is one undo step. A click on
+   * the paper around the photo picks nothing; a spot that can't be a white (too bright, too dark) is an error from the core.
+   */
+  async pickWhite(x: number, y: number): Promise<void> {
+    const id = this.currentId();
+    if (id === null) return;
+    // Patches in flight land first, so the undo step starts from the settings the core has.
+    await this.whenIdle(id);
+    const base = this.state.settings[id]?.settings;
+    this.picks.add(id);
+    try {
+      await this.api.viewportInput({ kind: "pick_white", x, y });
+      const reply = await this.api.getSettings(id);
+      this.setSettings(id, reply);
+      const entry = base ? diffSettings(base, reply.settings) : null;
+      if (entry) this.historyOf(id).push(entry);
+      this.syncHistoryFlags();
+    } catch (error) {
+      this.fail(error);
+    } finally {
+      this.picks.delete(id);
     }
   }
 

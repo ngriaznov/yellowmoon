@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import { KeyHint, MoonMark, UpdatePill } from "../components";
-import { useAppState } from "../state/context";
+import { useAppState, useStore } from "../state/context";
 import { useUpdater } from "../updater";
 
 export interface HeaderProps {
@@ -19,15 +19,29 @@ export interface HeaderProps {
 /**
  * The header of Start and Photos (`docs/11-ui.md` §Photos, header cells): the folder cell, an
  * area for actions, the update cell and the export cell. The update cell is hidden while idle.
- * The folder cell keeps 84 px of left padding for the traffic lights.
+ * The folder cell keeps 84 px of left padding for the traffic lights; the window is dragged by it and by the gaps between the
+ * cells (`data-tauri-drag-region`; a button never drags). Without a title bar (`titleBarStyle: Overlay`) there is no other handle.
  */
 export function Header({ title, subline, titleAs: Title = "span", children, export: exportCell }: HeaderProps) {
-  // "Update ready" can't restart the app while an export is running (`docs/12` §In the app).
-  const exportRunning = useAppState((s) => s.exportRun?.phase === "running");
+  const store = useStore();
+  // "Update ready" can't restart the app while an export is running (`docs/12` §In the app): one this window started, or one the
+  // core says is busy (`export_busy`: after a reload, or from another window).
+  const exportRunning = useAppState((s) => s.exportRun?.phase === "running" || s.exportBusy);
   const update = useUpdater(exportRunning);
+  // Restarting goes through the process plugin, past the shell's question about a running export, so the core is asked again at
+  // the click, and a restart waits if it says an export began meanwhile.
+  const activate = (): void => {
+    if (update.state.phase !== "ready") {
+      update.activate();
+      return;
+    }
+    void store.refreshExportBusy().then((busy) => {
+      if (!busy) update.activate();
+    });
+  };
   return (
-    <header className="ym-header">
-      <div className="ym-brand">
+    <header className="ym-header" data-tauri-drag-region="">
+      <div className="ym-brand" data-tauri-drag-region="deep">
         <Title className="ym-brand-title">
           <MoonMark />
           {/* One line: a long folder name ends in an ellipsis, and the whole name is the tooltip. */}
@@ -42,7 +56,7 @@ export function Header({ title, subline, titleAs: Title = "span", children, expo
         {children}
       </nav>
       <div className="ym-header__right">
-        <UpdatePill state={update.state} exportRunning={exportRunning} onActivate={update.activate} />
+        <UpdatePill state={update.state} exportRunning={exportRunning} onActivate={activate} />
         {exportCell}
       </div>
     </header>

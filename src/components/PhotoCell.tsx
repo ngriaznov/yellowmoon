@@ -11,9 +11,22 @@ export interface PhotoProbe {
   y: number;
 }
 
+/**
+ * A picture of the whole cell made by the shell (the fallback viewport, `docs/11` §Shell notes): the photo already letterboxed on paper,
+ * `widthPx` × `heightPx` device pixels. It is drawn at that size from the cell's corner, one picture pixel to one device pixel, so
+ * a 100 % view is not resampled by the browser.
+ */
+export interface PhotoCellFrame {
+  src: string;
+  widthPx: number;
+  heightPx: number;
+}
+
 export interface PhotoCellProps extends Omit<HTMLAttributes<HTMLElement>, "children" | "className"> {
-  /** URL of the photo, drawn as an `<img>` in the browser and the mock. Ignored in the app. */
+  /** URL of the photo, drawn as an `<img>` in the browser and the mock. Ignored with `native`, and when there is a `frame`. */
   imageSrc?: string;
+  /** The shell's picture of the cell, instead of `imageSrc`, when the fallback viewport draws the photo. Ignored with `native`. */
+  frame?: PhotoCellFrame;
   /** What the picture shows, for `role="img"`: "Photo DSC04204, Neutral · 100%". */
   imageLabel?: string;
   /** Bottom-left black chip: the look and its intensity ("Neutral · 100%"). Hidden in Before mode. */
@@ -27,8 +40,8 @@ export interface PhotoCellProps extends Omit<HTMLAttributes<HTMLElement>, "child
   /** Pixel readout shown at the top right while ⌥ is held ("R 182 G 164 B 140"). */
   pixelReadout?: string | null;
   /**
-   * True inside the app: the native layer draws the photo behind a transparent cell and no
-   * `<img>` is made. Defaults to `isTauri()`.
+   * True when a native layer draws the photo behind a transparent cell (the app on a Mac): no `<img>` is made. Defaults to
+   * `isTauri()`; the Photos screen sets it from `viewport_info`, since the fallback viewport draws in the webview.
    */
   native?: boolean;
   /**
@@ -57,11 +70,13 @@ const sameRect = (a: ViewportRect, b: ViewportRect): boolean =>
  * The photo cell: always exactly 3:2, `width: min(100%, calc((max(100vh, 760px) − 199px) · 1.5))`,
  * centred, no surround. It carries `data-viewport` and reports its rectangle through `onRect`,
  * which is what the native viewport follows (`docs/01` §Native viewport). In the browser and the
- * mock it draws the photo as an `<img>` letterboxed on paper; in the app the cell is transparent.
+ * mock it draws the photo as an `<img>` letterboxed on paper; with the native viewport the cell is
+ * transparent; with the fallback viewport it shows the shell's picture of the cell (`frame`).
  * Overlays: look chip, camera line, the Before label and the ⌥ pixel readout.
  */
 export function PhotoCell({
   imageSrc,
+  frame,
   imageLabel = "Photo",
   lookChip,
   cameraLine,
@@ -103,9 +118,23 @@ export function PhotoCell({
     observer?.observe(el);
     // The cell can move without resizing (the window gets wider and the cell stays centred).
     window.addEventListener("resize", report);
+    // Dragging the window to a display of another scale changes `scale` but not the cell's size in CSS pixels, and not every web view
+    // sends `resize` for it: the media query for the current scale stops matching.
+    let scaleQuery: MediaQueryList | null = null;
+    const onScale = (): void => {
+      report();
+      watchScale();
+    };
+    const watchScale = (): void => {
+      scaleQuery?.removeEventListener("change", onScale);
+      scaleQuery = typeof window.matchMedia === "function" ? window.matchMedia(`(resolution: ${window.devicePixelRatio || 1}dppx)`) : null;
+      scaleQuery?.addEventListener?.("change", onScale);
+    };
+    watchScale();
     return () => {
       observer?.disconnect();
       window.removeEventListener("resize", report);
+      scaleQuery?.removeEventListener?.("change", onScale);
     };
   }, [onRectRef]);
 
@@ -165,7 +194,18 @@ export function PhotoCell({
       onPointerLeave={onPointerLeave}
     >
       <div className="ym-photo-cell__view" role="img" aria-label={imageLabel}>
-        {!native && imageSrc ? <img className="ym-photo-cell__image" src={imageSrc} alt="" draggable={false} /> : null}
+        {!native && frame ? (
+          <img
+            className="ym-photo-cell__frame"
+            src={frame.src}
+            alt=""
+            draggable={false}
+            decoding="sync"
+            style={{ width: frame.widthPx / (window.devicePixelRatio || 1), height: frame.heightPx / (window.devicePixelRatio || 1) }}
+          />
+        ) : !native && imageSrc ? (
+          <img className="ym-photo-cell__image" src={imageSrc} alt="" draggable={false} />
+        ) : null}
         {before ? <span className="ym-photo-cell__before">{beforeLabel}</span> : null}
         {!before && lookChip ? <span className="ym-photo-cell__chip">{lookChip}</span> : null}
         {cameraLine ? <span className="ym-photo-cell__camera">{cameraLine}</span> : null}

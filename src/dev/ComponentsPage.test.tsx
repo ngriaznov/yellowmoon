@@ -57,6 +57,16 @@ describe("components.html page", () => {
     expect(document.querySelectorAll("#tabbar [role=tablist]").length).toBeGreaterThanOrEqual(TAB_IDS.length);
   });
 
+  it("shows the photo cell in each of the three ways it can be drawn: the mock's image, the fallback viewport's frame, the native layer", () => {
+    render(<ComponentsPage />);
+    const photo = document.getElementById("photo") as HTMLElement;
+    expect(photo.querySelectorAll("img.ym-photo-cell__image").length).toBeGreaterThan(0);
+    const frame = photo.querySelector("img.ym-photo-cell__frame") as HTMLImageElement | null;
+    expect(frame).not.toBeNull();
+    expect(frame?.style.width).not.toBe("");
+    expect(photo.querySelector('[data-native="true"]')).not.toBeNull();
+  });
+
   it("answers ⌘1–⌘6 on the tab shortcut demo", () => {
     render(<ComponentsPage />);
     const bar = screen.getByRole("tablist", { name: "Shortcut tabs" });

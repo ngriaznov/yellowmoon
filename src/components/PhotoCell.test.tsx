@@ -46,6 +46,28 @@ describe("PhotoCell", () => {
     expect(container.firstChild).toHaveAttribute("data-native", "true");
   });
 
+  it("draws the shell's picture of the cell one picture pixel to one device pixel (the fallback viewport)", () => {
+    vi.stubGlobal("devicePixelRatio", 2);
+    const { container } = render(<PhotoCell frame={{ src: "ym-frame://localhost/frame-4.png", widthPx: 2040, heightPx: 1360 }} native={false} />);
+    const img = container.querySelector("img") as HTMLImageElement;
+    expect(img).toHaveAttribute("src", "ym-frame://localhost/frame-4.png");
+    expect(img).toHaveClass("ym-photo-cell__frame");
+    expect(img.style.width).toBe("1020px");
+    expect(img.style.height).toBe("680px");
+    // The cell is paper, not transparent: nothing draws behind a webview that shows the picture itself.
+    expect(container.firstChild).not.toHaveAttribute("data-native");
+    expect(container.querySelectorAll("img")).toHaveLength(1);
+  });
+
+  it("prefers the shell's picture to the mock's, and draws neither natively", () => {
+    const { container, rerender } = render(<PhotoCell imageSrc="photo.svg" frame={{ src: "frame.png", widthPx: 100, heightPx: 50 }} native={false} />);
+    expect(container.querySelector("img")).toHaveAttribute("src", "frame.png");
+    rerender(<PhotoCell imageSrc="photo.svg" frame={{ src: "frame.png", widthPx: 100, heightPx: 50 }} native />);
+    expect(container.querySelector("img")).toBeNull();
+    rerender(<PhotoCell imageSrc="photo.svg" native={false} />);
+    expect(container.querySelector("img")).toHaveAttribute("src", "photo.svg");
+  });
+
   it("shows the look chip and the camera line", () => {
     render(<PhotoCell lookChip="Neutral · 100%" cameraLine="Sony A1 · DSC04204 · ISO 400 · 1/125 · f/2.8" native={false} />);
     expect(screen.getByText("Neutral · 100%")).toHaveClass("ym-photo-cell__chip");
@@ -118,6 +140,53 @@ describe("PhotoCell rectangle", () => {
     const { unmount } = render(<PhotoCell onRect={() => undefined} native={false} />);
     unmount();
     expect(FakeResizeObserver.instances[0]?.disconnect).toHaveBeenCalled();
+  });
+
+  describe("when the window is dragged to a display of another scale", () => {
+    // The cell keeps its size in CSS pixels, so no ResizeObserver or `resize` event is certain; the media query for the scale is.
+    class FakeQuery {
+      static all: FakeQuery[] = [];
+      listeners = new Set<() => void>();
+      constructor(readonly media: string) {
+        FakeQuery.all.push(this);
+      }
+      addEventListener = (_type: string, listener: () => void): void => void this.listeners.add(listener);
+      removeEventListener = (_type: string, listener: () => void): void => void this.listeners.delete(listener);
+      fire(): void {
+        for (const listener of [...this.listeners]) listener();
+      }
+    }
+    beforeEach(() => {
+      FakeQuery.all = [];
+      vi.stubGlobal("matchMedia", (media: string) => new FakeQuery(media));
+    });
+
+    it("reports the new scale, and watches for the next change", () => {
+      vi.spyOn(Element.prototype, "getBoundingClientRect").mockReturnValue(box(0, 75, 1000, 666));
+      vi.stubGlobal("devicePixelRatio", 2);
+      const onRect = vi.fn();
+      render(<PhotoCell onRect={onRect} native={false} />);
+      expect(onRect).toHaveBeenLastCalledWith(expect.objectContaining({ scale: 2 }));
+      expect(FakeQuery.all.at(-1)?.media).toBe("(resolution: 2dppx)");
+      vi.stubGlobal("devicePixelRatio", 1);
+      act(() => FakeQuery.all.at(-1)?.fire());
+      expect(onRect).toHaveBeenCalledTimes(2);
+      expect(onRect).toHaveBeenLastCalledWith({ x: 0, y: 75, width: 1000, height: 666, scale: 1 });
+      // The query is now the one for 1×, and the old one is no longer listened to.
+      expect(FakeQuery.all.at(-1)?.media).toBe("(resolution: 1dppx)");
+      expect(FakeQuery.all[0]?.listeners.size).toBe(0);
+      vi.stubGlobal("devicePixelRatio", 2);
+      act(() => FakeQuery.all.at(-1)?.fire());
+      expect(onRect).toHaveBeenLastCalledWith(expect.objectContaining({ scale: 2 }));
+    });
+
+    it("stops listening when it unmounts", () => {
+      const { unmount } = render(<PhotoCell onRect={() => undefined} native={false} />);
+      const query = FakeQuery.all.at(-1);
+      expect(query?.listeners.size).toBe(1);
+      unmount();
+      expect(query?.listeners.size).toBe(0);
+    });
   });
 
   it("still reports once where there is no ResizeObserver", () => {

@@ -729,7 +729,7 @@ function PhotoSection() {
   const [probe, setProbe] = useState<string | null>(null);
   const camera = "Sony A1 · DSC04204 · ISO 400 · 1/125 · f/2.8";
   return (
-    <Section id="photo" title="PhotoCell" lead="Always 3:2. It reports its rectangle (resize the window to see it change). Hold ⌥ over the photo for the pixel readout. In the app the cell is transparent and the native layer draws behind it.">
+    <Section id="photo" title="PhotoCell" lead="Always 3:2. It reports its rectangle (resize the window to see it change). Hold ⌥ over the photo for the pixel readout. In the app the native viewport leaves the cell transparent and draws behind it; the fallback viewport sends a picture of the whole cell.">
       <Demo title="Look chip and camera line · reports its rect" frame="free">
         <div className="dev-photo-frame">
           <PhotoCell imageSrc={photoUrl("DSC04204")} imageLabel="Photo DSC04204, Neutral · 100%" lookChip="Neutral · 100%" cameraLine={camera} native={false} onRect={(r) => setRect(`x ${r.x.toFixed(1)}  y ${r.y.toFixed(1)}  ${r.width.toFixed(1)} × ${r.height.toFixed(1)}  @${r.scale}×`)} />
@@ -753,6 +753,17 @@ function PhotoSection() {
             native={false}
             pixelReadout={probe}
             onPixelProbe={(p) => setProbe(p ? `R ${Math.round(p.x * 255)} G ${Math.round(p.y * 255)} B 140` : null)}
+          />
+        </div>
+      </Demo>
+      <Demo title="Fallback viewport: the shell's picture of the whole cell, drawn pixel for pixel on paper" frame="free">
+        <div className="dev-photo-frame">
+          <PhotoCell
+            frame={{ src: photoUrl("DSC04204"), widthPx: 1000, heightPx: 667 }}
+            imageLabel="Photo DSC04204, drawn by the fallback viewport"
+            lookChip="Neutral · 100%"
+            cameraLine={camera}
+            native={false}
           />
         </div>
       </Demo>

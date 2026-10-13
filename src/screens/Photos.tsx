@@ -7,7 +7,7 @@ import type { FilmstripPhoto, TabId } from "../components";
 import { useAppState, useCurrentPhoto, useCurrentSettings, useStore } from "../state/context";
 import { folderSubline, isReady, photoName } from "../state/photo";
 import { useShortcuts } from "../state/useShortcuts";
-import { ZOOMS, zoomKey } from "../state/zoom";
+import { fitZoomExact, showsWhole, ZOOMS, zoomKey, zoomStep } from "../state/zoom";
 import { CropPanel } from "./crop/CropPanel";
 import { useCropSession } from "./crop/useCropSession";
 import { ExportPanel } from "./export/ExportPanel";
@@ -62,7 +62,7 @@ export function Photos() {
   const overlay = useAppState((s) => s.overlay);
   const [tab, setTab] = useState<TabId>("look");
   const [picking, setPicking] = useState(false);
-  const [cell, setCell] = useState<{ width: number; scale: number } | null>(null);
+  const [cell, setCell] = useState<{ width: number; height: number; scale: number } | null>(null);
   const crop = useCropSession(store, photo, rs);
 
   const ordered = useMemo(() => looksInDisplayOrder(looks ?? []), [looks]);
@@ -116,12 +116,10 @@ export function Photos() {
   };
   useTabShortcuts(showTab, !cropping);
 
-  const zoomIndex = Math.max(0, ZOOMS.findIndex((z) => z.key === zoomKey(zoom)));
-  const zoomBy = (delta: number): void => {
-    const next = ZOOMS[Math.min(ZOOMS.length - 1, Math.max(0, zoomIndex + delta))];
-    if (next) void store.setZoom(next.mode);
-  };
-  const toggleZoom = (): void => void store.setZoom(zoom.kind === "fit" ? { kind: "percent", value: 100 } : { kind: "fit" });
+  // The Fit zoom, not rounded: a fixed zoom no larger than it is Fit to the core (50 % where Fit is 62 %).
+  const fitExact = cell && photo ? fitZoomExact(cell, photo, rs?.values ?? null) : null;
+  const zoomBy = (delta: number): void => void store.setZoom(zoomStep(zoom, delta, fitExact));
+  const toggleZoom = (): void => void store.toggleZoom();
 
   const startCrop = (): void => {
     if (!rs || !photo || !isReady(photo)) return;
@@ -133,10 +131,10 @@ export function Photos() {
     if (!rs || !photo || !isReady(photo) || cropping) return;
     setPicking((on) => !on);
   };
-  const onPicked = (point: [number, number]): void => {
+  const onPicked = (point: { x: number; y: number }): void => {
     setPicking(false);
     setTab("color");
-    void store.update({ white_pick: point }, true);
+    void store.pickWhite(point.x, point.y);
   };
 
   useShortcuts(
@@ -212,8 +210,9 @@ export function Photos() {
     overlay === null,
   );
 
-  const fitPercent = cell && photo ? Math.round(((cell.width * cell.scale) / photo.width_px) * 100) : null;
-  const zoomLabel = zoom.kind === "fit" ? (fitPercent === null ? "Fit" : `Fit ${fitPercent}%`) : `${zoom.value}%`;
+  const whole = showsWhole(zoom, fitExact);
+  const fitPercent = fitExact === null ? null : Math.round(fitExact);
+  const zoomLabel = whole || zoom.kind === "fit" ? (fitPercent === null ? "Fit" : `Fit ${fitPercent}%`) : `${Math.round(zoom.value)}%`;
 
   let panelNode;
   if (crop.session) {
@@ -285,7 +284,7 @@ export function Photos() {
             <Menu
               label="Zoom"
               options={ZOOMS.map((z) => ({ value: z.key, label: z.label }))}
-              value={zoomKey(zoom)}
+              value={zoomKey(whole ? { kind: "fit" } : zoom)}
               onSelect={(key) => {
                 const z = ZOOMS.find((item) => item.key === key);
                 if (z) void store.setZoom(z.mode);
@@ -318,7 +317,7 @@ export function Photos() {
         picking={picking}
         onPicked={onPicked}
         crop={crop.session}
-        onRect={(rect) => setCell({ width: rect.width, scale: rect.scale })}
+        onRect={(rect) => setCell({ width: rect.width, height: rect.height, scale: rect.scale })}
       />
 
       <PhotoStrip mode={exporting ? "export" : "browse"} photos={strip} currentId={photo?.id ?? null} onSelect={select} onTogglePick={togglePickOf} />

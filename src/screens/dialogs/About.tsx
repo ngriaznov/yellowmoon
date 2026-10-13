@@ -8,6 +8,9 @@ import { Dialog } from "./Dialog";
 /** The project's home, opened in the system browser (`docs/12`). */
 export const GITHUB_URL = "https://github.com/ngriaznov/yellowmoon";
 
+/** The acknowledgement the IJG licence of the JPEG encoder's forward DCT asks for (`docs/14`, `NOTICE`); the system's About panel says it too. */
+export const IJG_NOTICE = "This software is based in part on the work of the Independent JPEG Group.";
+
 /** Said in About (`docs/11-ui.md` §Menus: "Not affiliated with ARRI or Sony"; `NOTICE`). */
 export const TRADEMARK_NOTICE =
   "Not affiliated with ARRI or Sony. ARRI and ALEXA are trademarks of ARRI AG; Sony is a trademark of Sony Group Corporation.";
@@ -22,7 +25,8 @@ export const CREDITS: ReadonlyArray<string> = [
 
 /**
  * About Yellowmoon (`docs/11-ui.md` §Menus): the version, the licence, what is built on what, the Adobe DNG notice that
- * Adobe's patent licence asks for (`docs/09` §Legal), and the line that says the project is not affiliated with ARRI or Sony.
+ * Adobe's patent licence asks for (`docs/09` §Legal), the Independent JPEG Group's acknowledgement, and the line that says the project
+ * is not affiliated with ARRI or Sony.
  */
 export function About() {
   const store = useStore();
@@ -83,6 +87,7 @@ export function About() {
         <p style={{ marginTop: 8 }}>The full licence texts are in the NOTICE file inside the app.</p>
       </section>
       <p className="ym-about-dialog__adobe">{ADOBE_NOTICE}</p>
+      <p className="ym-about-dialog__legal">{IJG_NOTICE}</p>
       <p className="ym-about-dialog__legal">{TRADEMARK_NOTICE}</p>
     </Dialog>
   );

@@ -262,8 +262,8 @@ describe("the system", () => {
 
   it("tracks the command-line link and reports the version", async () => {
     expect(await api.cliLinkStatus()).toEqual({ installed: false, path: null });
-    expect(await api.installCliLink()).toEqual({ path: "/usr/local/bin/yellowmoon" });
-    expect(await api.cliLinkStatus()).toEqual({ installed: true, path: "/usr/local/bin/yellowmoon" });
+    expect(await api.installCliLink()).toEqual({ path: "/usr/local/bin/ym" });
+    expect(await api.cliLinkStatus()).toEqual({ installed: true, path: "/usr/local/bin/ym" });
     expect(await api.appInfo()).toEqual({ version: expect.stringMatching(/^\d+\.\d+\.\d+/), pipeline_version: "1.0.0" });
   });
 });

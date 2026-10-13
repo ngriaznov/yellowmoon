@@ -31,8 +31,8 @@ export function ImportLooks() {
 
   return (
     <div className="ym-screen ym-wizard" data-screen="import-looks" data-step={state.step}>
-      <header className="ym-header ym-wizard__header">
-        <div className="ym-brand">
+      <header className="ym-header ym-wizard__header" data-tauri-drag-region="">
+        <div className="ym-brand" data-tauri-drag-region="deep">
           <span className="ym-brand-title">
             <MoonMark />
             ARRI looks

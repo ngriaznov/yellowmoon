@@ -109,6 +109,50 @@ describe("applyProgress", () => {
   });
 });
 
+describe("the sequence the core's queue sends (docs/01 §Export, preferences and looks)", () => {
+  it("is folded into the rows the panel shows: percentages, a failed file reported once, a skipped one, and a last event", () => {
+    const names = ["DSC04203_neutral.jpg", "DSC04204_neutral.jpg", "DSC04205_neutral.jpg"];
+    // When a photo starts: `{ file, done: i, total, file_percent: 0 }`; whole percents; a failed or skipped photo once, as it finishes, with
+    // the new count; the next photo starts; a last event with `done == total`.
+    const sequence: ExportProgress[] = [
+      event({ file: names[0]!, done: 0, file_percent: 0 }),
+      event({ file: names[0]!, done: 0, file_percent: 40 }),
+      event({ file: names[0]!, done: 0, file_percent: 75 }),
+      event({ file: names[1]!, done: 1, file_percent: 0 }),
+      event({ file: names[1]!, done: 2, file_percent: 100, error: "The disk is full. Free some space, then export again." }),
+      event({ file: names[2]!, done: 2, file_percent: 0 }),
+      event({ file: names[2]!, done: 3, file_percent: 100, skipped: true }),
+      event({ file: names[2]!, done: 3, file_percent: 100 }),
+    ];
+    let run = startRun(1, names, "~/Pictures/Lisbon export");
+    const states: string[] = [];
+    for (const e of sequence) {
+      run = applyProgress(run, e);
+      states.push(run.rows.map((r) => r.state).join(","));
+    }
+    expect(states).toEqual([
+      "running,waiting,waiting",
+      "running,waiting,waiting",
+      "running,waiting,waiting",
+      "done,running,waiting",
+      "done,failed,waiting",
+      "done,failed,running",
+      "done,failed,skipped",
+      "done,failed,skipped",
+    ]);
+    expect(run.phase).toBe("finished");
+    expect(runBlurb(run)).toBe("1 photo saved to Lisbon export. 1 photo could not be saved. 1 photo skipped because the file already exists.");
+    expect(queueItems(run)[1]).toMatchObject({ state: "failed", note: "The disk is full. Free some space, then export again." });
+  });
+
+  it("takes an event for an export that began before export_start answered, once the store has the job", () => {
+    // The store keeps events that arrive while `export_start` is answering and folds them in with the job id it gets.
+    let run = startRun(7, NAMES, "~/x");
+    for (const e of [event({ job_id: 7, done: 0, file_percent: 0 }), event({ job_id: 7, done: 0, file_percent: 30 })]) run = applyProgress(run, e);
+    expect(run.rows[0]).toMatchObject({ state: "running", percent: 30 });
+  });
+});
+
 describe("the cell in the header", () => {
   it("counts files while running", () => {
     const run = applyProgress(fresh(), event({ done: 1, file: "DSC04204_neutral.jpg", file_percent: 10 }));

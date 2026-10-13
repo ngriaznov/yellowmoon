@@ -167,7 +167,7 @@ test.describe("Save to, the file name and the command line", () => {
     await page.getByRole("region", { name: "Same thing from the command line" }).getByRole("button", { name: "Copy" }).click();
     await expect(page.getByRole("button", { name: "Copied" })).toBeVisible();
     const text = await page.evaluate(() => navigator.clipboard.readText());
-    expect(text).toContain("yellowmoon render DSC04203.ARW DSC04204.ARW DSC04205.ARW");
+    expect(text).toContain("ym render DSC04203.ARW DSC04204.ARW DSC04205.ARW");
     expect(text).toContain("--out");
   });
 

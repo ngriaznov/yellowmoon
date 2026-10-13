@@ -246,7 +246,7 @@ describe("the command line", () => {
   it("shows the equivalent command, as the mockup does", async () => {
     await openExport();
     const card = screen.getByRole("region", { name: "Same thing from the command line" });
-    await waitFor(() => expect(within(card).getByLabelText("Command line")).toHaveTextContent("yellowmoon render DSC04203.ARW DSC04204.ARW DSC04205.ARW"));
+    await waitFor(() => expect(within(card).getByLabelText("Command line")).toHaveTextContent("ym render DSC04203.ARW DSC04204.ARW DSC04205.ARW"));
     const text = within(card).getByLabelText("Command line").textContent ?? "";
     for (const flag of ["--look neutral", "--format jpeg", "--quality 92", "--colour-space srgb", '--out "~/Pictures/Lisbon export"']) expect(text).toContain(flag);
   });
@@ -256,7 +256,7 @@ describe("the command line", () => {
     const card = screen.getByRole("region", { name: "Same thing from the command line" });
     await waitFor(() => expect(within(card).getByRole("button", { name: "Copy" })).not.toHaveAttribute("aria-disabled"));
     await h!.user.click(within(card).getByRole("button", { name: "Copy" }));
-    expect(await navigator.clipboard.readText()).toContain("yellowmoon render DSC04203.ARW DSC04204.ARW DSC04205.ARW");
+    expect(await navigator.clipboard.readText()).toContain("ym render DSC04203.ARW DSC04204.ARW DSC04205.ARW");
     expect(await within(card).findByRole("button", { name: "Copied" })).toBeInTheDocument();
   });
 

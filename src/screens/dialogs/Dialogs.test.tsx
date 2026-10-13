@@ -38,7 +38,7 @@ describe("Preferences (⌘,)", () => {
     expect(sw(dialog, "Remove location from exports")).toHaveAttribute("aria-checked", "false");
     expect(sw(dialog, "Watch Downloads during import")).toHaveAttribute("aria-checked", "false");
     expect(sw(dialog, "Check for updates automatically")).toHaveAttribute("aria-checked", "true");
-    expect(within(dialog).getByText("Not installed. It lets you run yellowmoon from Terminal.")).toBeInTheDocument();
+    expect(within(dialog).getByText("Not installed. It lets you run ym from Terminal.")).toBeInTheDocument();
   });
 
   it("also opens over the photos, and Esc closes it and gives the keyboard back", async () => {
@@ -154,9 +154,9 @@ describe("Preferences (⌘,)", () => {
   it("installs the command-line tool and says where", async () => {
     const dialog = await openPreferences();
     await h!.user.click(within(dialog).getByRole("button", { name: "Install…" }));
-    expect(await within(dialog).findByText("Installed at /usr/local/bin/yellowmoon")).toBeInTheDocument();
+    expect(await within(dialog).findByText("Installed at /usr/local/bin/ym")).toBeInTheDocument();
     expect(within(dialog).getByRole("button", { name: "Reinstall…" })).toBeInTheDocument();
-    expect(await screen.findByText("The command-line tool is installed at /usr/local/bin/yellowmoon.")).toBeInTheDocument();
+    expect(await screen.findByText("The command-line tool is installed at /usr/local/bin/ym.")).toBeInTheDocument();
   });
 
   it("links to About", async () => {
@@ -184,9 +184,11 @@ describe("About", () => {
     expect(within(dialog).getByRole("region", { name: "Built with" })).toHaveTextContent("AMPAS");
   });
 
-  it("carries the Adobe DNG notice and says it is not affiliated with ARRI or Sony", async () => {
+  it("carries the Adobe DNG notice, the Independent JPEG Group's acknowledgement and says it is not affiliated with ARRI or Sony", async () => {
     const dialog = await openAbout();
     expect(within(dialog).getByText("This product includes DNG technology under license by Adobe.")).toBeInTheDocument();
+    // The same sentence as the system's About panel (`src-tauri/src/about.rs`).
+    expect(within(dialog).getByText("This software is based in part on the work of the Independent JPEG Group.")).toBeInTheDocument();
     expect(
       within(dialog).getByText("Not affiliated with ARRI or Sony. ARRI and ALEXA are trademarks of ARRI AG; Sony is a trademark of Sony Group Corporation."),
     ).toBeInTheDocument();
@@ -223,8 +225,8 @@ describe("the menu bar", () => {
   it("Install Command-Line Tool… installs it", async () => {
     await start();
     await menu("install_cli");
-    expect(await screen.findByText("The command-line tool is installed at /usr/local/bin/yellowmoon.")).toBeInTheDocument();
-    expect(await h!.api.cliLinkStatus()).toEqual({ installed: true, path: "/usr/local/bin/yellowmoon" });
+    expect(await screen.findByText("The command-line tool is installed at /usr/local/bin/ym.")).toBeInTheDocument();
+    expect(await h!.api.cliLinkStatus()).toEqual({ installed: true, path: "/usr/local/bin/ym" });
   });
 
   it("Import ARRI Looks… opens the wizard", async () => {

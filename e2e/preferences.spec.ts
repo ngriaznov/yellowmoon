@@ -112,7 +112,7 @@ test.describe("Preferences", () => {
     const dialog = page.getByRole("dialog", { name: "Preferences" });
     await expect(dialog.getByText("Not installed.")).toBeVisible();
     await dialog.getByRole("button", { name: "Install…" }).click();
-    await expect(dialog.getByText("Installed at /usr/local/bin/yellowmoon")).toBeVisible();
+    await expect(dialog.getByText("Installed at /usr/local/bin/ym")).toBeVisible();
   });
 
   test("the export defaults are the Export panel's options without photos", async ({ page }) => {
@@ -159,7 +159,7 @@ test.describe("the menu bar", () => {
   test("Install Command-Line Tool… says where it is installed", async ({ page }) => {
     await openApp(page);
     await menu(page, "install_cli");
-    await expect(page.getByText("The command-line tool is installed at /usr/local/bin/yellowmoon.")).toBeVisible();
+    await expect(page.getByText("The command-line tool is installed at /usr/local/bin/ym.")).toBeVisible();
   });
 
   test("Import ARRI Looks… and Import .cube… open the wizard and the dialog", async ({ page }) => {

@@ -16,7 +16,10 @@
  *    grading (`fixtures/grade.ts`).
  *
  * What it does not do: render anything real. Settings change stored values; the pictures it
- * returns only show the effect the way the mockups fake it.
+ * returns only show the effect the way the mockups fake it. It has no viewport of its own: the
+ * Photos screen draws the fixture picture itself (`viewportInfo()` answers `null`), unless a test
+ * asks it to behave like the app's two backends (`viewport: "native"` or `"fallback"`, which also
+ * sends `viewport_frame` events with a cell-sized picture).
  *
  * Tests control it through the extra methods of `MockApi`: `speed` scales the timers,
  * `flush()` finishes running work at once, `failNext()` makes a command reject, and `reset()`
@@ -62,6 +65,8 @@ import type {
   SettingsPatch,
   SourceKind,
   SourceRecognition,
+  ViewportBackendKind,
+  ViewportInfo,
   ViewportInput,
   ViewportMode,
   ViewportRect,
@@ -70,11 +75,12 @@ import type {
 import { expandNameTemplate, FILE_EXTENSION, slugify } from "./export/template";
 import { version as APP_VERSION } from "../package.json";
 import { fixtureUrl } from "./fixtures";
-import { developScene } from "./fixtures/grade";
+import { developScene, previewSvg } from "./fixtures/grade";
 import type { Adjustment } from "./fixtures/grade";
 import { sceneHistogram } from "./fixtures/histogram";
 import { scenePng, hexToRgb } from "./fixtures/png";
 import { layerAt, SCENES, type Scene } from "./fixtures/scenes";
+import { fitInCell, imageAspectOf } from "./screens/crop/cropMath";
 
 // ---------------------------------------------------------------------------
 // Fixture constants
@@ -187,6 +193,12 @@ export interface MockOptions {
   importHoldAt?: number;
   /** Keep the preferences in `localStorage` so a reload of the page keeps them (`?mockPersist=1`). Default false. */
   persistPreferences?: boolean;
+  /**
+   * The viewport backend the mock claims to be (`?mockViewport=native|fallback`). `null` (the default): none, and the Photos screen
+   * draws the fixture picture itself, as a browser build does. `native`: the screen leaves the cell transparent, as in the app on a
+   * Mac. `fallback`: the mock sends `viewport_frame` events with a picture of the cell's size, which the screen shows.
+   */
+  viewport?: ViewportBackendKind | null;
 }
 
 /** What the viewport commands have recorded, for tests. */
@@ -458,6 +470,7 @@ const DEFAULT_OPTIONS: Required<MockOptions> = {
   exportHoldAt: Number.POSITIVE_INFINITY,
   importHoldAt: Number.POSITIVE_INFINITY,
   persistPreferences: false,
+  viewport: null,
 };
 
 /** Fills in defaults, ignoring `undefined` values and a speed that isn't a positive number. */
@@ -479,7 +492,7 @@ function withDefaults(...layers: MockOptions[]): Required<MockOptions> {
  * looks), `mockMissing=film-warm,film-cool`, `mockHold=5.4`, `mockDownloads=ARRI_LookLibrary_LogC4.zip` (zips that
  * land in Downloads while the wizard watches), `mockDownloadsDenied=1`, `mockExisting=DSC04204_neutral.jpg`,
  * `mockExportFails=DSC04204:reason`, `mockExportHold=1.45` (an export waits there until `flush()`), `mockImportHold=40` (a look import waits at 40 files until `flush()`) and `mockPersist=1`
- * (preferences survive a reload).
+ * (preferences survive a reload) and `mockViewport=native` or `fallback` (the mock behaves like that viewport backend of the app).
  */
 export function optionsFromLocation(search: string | undefined = typeof location === "undefined" ? undefined : location.search): MockOptions {
   if (search === undefined) return {};
@@ -533,6 +546,8 @@ export function optionsFromLocation(search: string | undefined = typeof location
   const importHold = params.get("mockImportHold");
   if (importHold !== null && Number(importHold) >= 0) out.importHoldAt = Number(importHold);
   if (params.get("mockPersist") === "1") out.persistPreferences = true;
+  const viewportBackend = params.get("mockViewport");
+  if (viewportBackend === "native" || viewportBackend === "fallback") out.viewport = viewportBackend;
   return out;
 }
 
@@ -862,6 +877,11 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
   const system: MockSystemLog = { opened: [], revealed: [], trashed: [] };
   let cliLink: string | null = null;
   const viewport: MockViewportState = { rect: null, mode: { kind: "fit" }, before: false, inputs: [] };
+  /** The fallback viewport's frame counter, and whether it has a picture on show. */
+  let frameSeq = 0;
+  let frameShown = false;
+  /** Whether an `export_busy` event has said the queue is busy. */
+  let busyAnnounced = false;
 
   // --- Events ---------------------------------------------------------------
 
@@ -881,6 +901,78 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
   /** Events sent from inside a command arrive after the command's own result, like the bridge. */
   function emitSoon<E extends ApiEventName>(event: E, payload: ApiEvents[E]): void {
     queueMicrotask(() => emit(event, payload));
+  }
+
+  // --- The viewport ------------------------------------------------------------
+
+  /** The photo cell as the page reported it; a cell with no size (a test with no layout) is taken to be 1200 × 800 at 2×. */
+  function cellRect(): ViewportRect {
+    const rect = viewport.rect;
+    return rect && rect.width > 0 && rect.height > 0 ? rect : { x: 0, y: 0, width: 1200, height: 800, scale: 2 };
+  }
+
+  /**
+   * The spot of the photo (as a share of the whole photo as the camera had it, 0–1 across and down) under a point of the cell in CSS
+   * pixels, or null on the paper around a letterboxed picture: what the core's `pick_point_at` and `sample_pixel` find. The picture is
+   * the photo turned by `orientation` (clockwise) and cut to its crop, fitted in the cell: a point of the picture goes through the crop
+   * (a rectangle of the turned photo), then back through the turn. Straightening is not modelled.
+   */
+  function photoPointAt(rec: PhotoRecord, x: number, y: number): [number, number] | null {
+    const rect = cellRect();
+    const { orientation, crop } = rec.settings;
+    const crossed = crop ? crop.rect.width / crop.rect.height : 1;
+    const aspect = imageAspectOf(rec.summary.width_px, rec.summary.height_px, orientation) * crossed;
+    const picture = fitInCell(rect.width / rect.height, aspect);
+    const u = (x / rect.width - picture.x) / picture.width;
+    const v = (y / rect.height - picture.y) / picture.height;
+    if (!(u >= 0 && u <= 1 && v >= 0 && v <= 1)) return null;
+    // The spot of the turned photo.
+    const cx = crop ? crop.rect.x + u * crop.rect.width : u;
+    const cy = crop ? crop.rect.y + v * crop.rect.height : v;
+    // A quarter turn clockwise takes the photo's (x, y) to (1 − y, x); undo it.
+    switch (((orientation % 360) + 360) % 360) {
+      case 90:
+        return [cy, 1 - cx];
+      case 180:
+        return [1 - cx, 1 - cy];
+      case 270:
+        return [1 - cy, cx];
+      default:
+        return [cx, cy];
+    }
+  }
+
+  /** The picture of the cell the fallback viewport would send: the developed scene letterboxed on paper, as many pixels as the cell has. */
+  function frameImage(rec: PhotoRecord): { url: string; width: number; height: number } {
+    const rect = cellRect();
+    const width = Math.round(rect.width * rect.scale);
+    const height = Math.round(rect.height * rect.scale);
+    const { values } = resolveSettings(rec.summary.id, rec.settings, MOCK_ESTIMATES);
+    const picture = previewSvg(developed(rec), {
+      orientation: values.orientation,
+      angle_deg: values.crop?.angle_deg ?? 0,
+      crop: values.crop?.rect ?? null,
+    }).replace(/^<svg ([^>]*?) width="[^"]*" height="[^"]*"/, '<svg $1 width="100%" height="100%"');
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}"><rect width="100%" height="100%" fill="#FFFFFF"/>${picture}</svg>`;
+    return { url: `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`, width, height };
+  }
+
+  /**
+   * With `viewport: "fallback"`, tells the page what the cell shows now, as the shell does after every change: a frame of the current
+   * photo, or no picture while it is not ready or the session is closed.
+   */
+  function sendFrame(): void {
+    if (options.viewport !== "fallback") return;
+    const rec = photos[current];
+    if (!rec || rec.phase < 3 || rec.skipReason || viewport.rect === null) {
+      if (!frameShown) return;
+      frameShown = false;
+      emitSoon("viewport_frame", { seq: ++frameSeq, width: 0, height: 0, sharp: true, url: "" });
+      return;
+    }
+    frameShown = true;
+    const frame = frameImage(rec);
+    emitSoon("viewport_frame", { seq: ++frameSeq, width: frame.width, height: frame.height, sharp: true, url: frame.url });
   }
 
   // --- Looks and preferences ---------------------------------------------------
@@ -1035,6 +1127,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
       progress(rec, "estimate", true);
       emitThumbnail(rec);
       progress(rec, "thumbnail", true);
+      if (photos[current] === rec) sendFrame();
     }
   }
 
@@ -1229,6 +1322,20 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
       error: null,
       skipped: false,
     });
+    announceBusy();
+  }
+
+  /** Whether any export still has files to write. */
+  function exportsBusy(): boolean {
+    return [...exportRuns.values()].some((run) => run.progress < run.files.length);
+  }
+
+  /** Sends `export_busy` when the queue goes busy or quiet, as the core does. */
+  function announceBusy(): void {
+    const busy = exportsBusy();
+    if (busy === busyAnnounced) return;
+    busyAnnounced = busy;
+    emitSoon("export_busy", { busy });
   }
 
   function stopExport(run: ExportRun): void {
@@ -1253,7 +1360,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     if (o.if_exists === "replace") flags.push("--overwrite");
     flags.push(`--out "${o.destination ?? `${folderPath()} export`}"`);
     const inputs = job.scope === "all" ? folderPath() : recs.map((r) => r.summary.file_name).join(" ");
-    return `yellowmoon render ${inputs} \\\n  ${flags.join(" \\\n  ")}`;
+    return `ym render ${inputs} \\\n  ${flags.join(" \\\n  ")}`;
   }
 
   // --- The ARRI wizard ----------------------------------------------------------------------
@@ -1352,6 +1459,9 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     viewport.mode = { kind: "fit" };
     viewport.before = false;
     viewport.inputs = [];
+    frameSeq = 0;
+    frameShown = false;
+    busyAnnounced = false;
     nextJobId = 1;
   }
 
@@ -1421,13 +1531,17 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
         developProgress = 0;
         viewport.mode = { kind: "fit" };
         viewport.before = false;
+        sendFrame();
       }),
     setCurrent: (photoId) =>
       run("setCurrent", () => {
         const index = photos.findIndex((p) => p.summary.id === photoId);
         if (index < 0) fail("app", "That photo is no longer open. Open it again.");
         current = index;
+        viewport.mode = { kind: "fit" };
+        viewport.before = false;
         emitSoon("render_stats", RENDER_STATS);
+        sendFrame();
       }),
     setPicked: (photoId, picked) =>
       run("setPicked", () => {
@@ -1448,6 +1562,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
         rec.settings = clampSettings(merged as unknown as DevelopSettings);
         emitSoon("render_stats", RENDER_STATS);
         scheduleThumbnail(rec);
+        if (rec === photos[current]) sendFrame();
         return resolveSettings(photoId, rec.settings, MOCK_ESTIMATES);
       }),
     applyLook: (scope, lookId, intensity) =>
@@ -1459,6 +1574,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
           scheduleThumbnail(rec);
         }
         emitSoon("render_stats", RENDER_STATS);
+        sendFrame();
       }),
     rerunAuto: (photoId) =>
       run("rerunAuto", () => {
@@ -1474,6 +1590,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
         };
         emitSoon("render_stats", RENDER_STATS);
         scheduleThumbnail(rec);
+        if (rec === photos[current]) sendFrame();
         return resolveSettings(photoId, rec.settings, MOCK_ESTIMATES);
       }),
     histogram: (photoId) =>
@@ -1485,11 +1602,13 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
         return sceneHistogram(developed(rec), shift);
       }),
 
+    viewportInfo: () => run("viewportInfo", (): ViewportInfo | null => (options.viewport === null ? null : { backend: options.viewport })),
     viewportSetRect: (rect) =>
       run("viewportSetRect", () => {
         viewport.rect = rect;
         // The core draws a frame when the cell is placed or resized, and reports it.
         emitSoon("render_stats", RENDER_STATS);
+        sendFrame();
       }),
     viewportInput: (event) =>
       run("viewportInput", () => {
@@ -1498,27 +1617,41 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
         if (event.kind === "toggle_zoom") {
           viewport.mode = viewport.mode.kind === "fit" ? { kind: "percent", value: 100 } : { kind: "fit" };
         } else if (event.kind === "pick_white" && rec) {
-          const rect = viewport.rect ?? { x: 0, y: 0, width: 1200, height: 800, scale: 2 };
-          rec.settings = {
-            ...rec.settings,
-            white_pick: [clamp(event.x / rect.width, 0, 1), clamp(event.y / rect.height, 0, 1)],
-          };
+          // The core finds the spot of the photo under the click (straightening, turns and lens crop included) and sets the pick; a click
+          // on the paper picks nothing. Like `update_settings` with a pick, the mock sets the white balance by hand from the colour there.
+          const point = photoPointAt(rec, event.x, event.y);
+          if (point) {
+            rec.settings = clampSettings({
+              ...rec.settings,
+              white_pick: point,
+              light_source: "auto",
+              white_balance: { kind: "manual", ...whiteFromPick(rec.scene, point) },
+            });
+            emitSoon("settings_changed", { photo_id: rec.summary.id });
+            emitSoon("render_stats", RENDER_STATS);
+            scheduleThumbnail(rec);
+            sendFrame();
+          }
         }
       }),
     viewportSetMode: (mode) =>
       run("viewportSetMode", () => {
         viewport.mode = mode;
+        sendFrame();
       }),
     setBefore: (before) =>
       run("setBefore", () => {
         viewport.before = before;
+        sendFrame();
       }),
     samplePixel: (x, y) =>
       run("samplePixel", (): PixelSample => {
         const rec = photos[current];
         if (!rec) fail("viewport", "Open a photo first.");
-        const rect = viewport.rect ?? { x: 0, y: 0, width: 1200, height: 800, scale: 2 };
-        const layer = layerAt(rec.scene, clamp(x / rect.width, 0, 1), clamp(y / rect.height, 0, 1));
+        // On the paper around a letterboxed picture there is nothing to read.
+        const point = photoPointAt(rec, x, y);
+        if (!point) fail("viewport", "That point is outside the photo.");
+        const layer = layerAt(rec.scene, clamp(point[0], 0, 1), clamp(point[1], 0, 1));
         const [r, g, b] = hexToRgb(rec.scene[layer]);
         return { r, g, b };
       }),
@@ -1637,6 +1770,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
           timer: null,
         };
         exportRuns.set(exportRun.id, exportRun);
+        announceBusy();
         queueMicrotask(() => {
           if (exportRun.timer !== null) emitExportProgress(exportRun);
         });
@@ -1654,8 +1788,10 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
         if (!found) return;
         stopExport(found);
         exportRuns.delete(jobId);
+        announceBusy();
       }),
     cliPreview: (job) => run("cliPreview", () => cliCommand(job)),
+    exportBusy: () => run("exportBusy", exportsBusy),
 
     preferencesGet: () => run("preferencesGet", () => preferences),
     preferencesSet: (patch: PreferencesPatch) =>
@@ -1682,7 +1818,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
       }),
     installCliLink: () =>
       run("installCliLink", (): CliLinkResult => {
-        cliLink = "/usr/local/bin/yellowmoon";
+        cliLink = "/usr/local/bin/ym";
         persist();
         return { path: cliLink };
       }),

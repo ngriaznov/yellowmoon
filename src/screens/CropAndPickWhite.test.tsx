@@ -299,18 +299,22 @@ describe("Pick white", () => {
     expect(spy).not.toHaveBeenCalled();
   });
 
-  it("a click sends white_pick as a point of the photo, ends the mode and shows the result as EDITED on the Colour tab", async () => {
+  it("a click goes to the core as a point of the cell, which finds the spot; the mode ends and the result shows as EDITED on the Colour tab", async () => {
     const spy = await setup();
+    const input = vi.spyOn(h!.api, "viewportInput");
     await h!.user.keyboard("w");
     const layer = await within(photo()).findByRole("application");
     mockRect(layer, { left: 0, top: 0, width: 900, height: 600 });
+    await h!.api.viewportSetRect({ x: 0, y: 0, width: 900, height: 600, scale: 2 });
     spy.mockClear();
     fireEvent.click(layer, { clientX: 450, clientY: 150 });
-    await waitFor(() => expect(spy).toHaveBeenCalled());
-    expect(spy.mock.calls.at(-1)).toEqual([4, { white_pick: [0.5, 0.25] }]);
+    await waitFor(() => expect(input).toHaveBeenCalled());
+    expect(input.mock.calls.at(-1)).toEqual([{ kind: "pick_white", x: 450, y: 150 }]);
     await waitFor(() => expect(within(photo()).queryByRole("application")).toBeNull());
     expect(screen.getByRole("tab", { name: "Colour" })).toHaveAttribute("aria-selected", "true");
     await waitFor(() => expect(settings().settings.white_pick).toEqual([0.5, 0.25]));
+    // The screen did not work out the spot itself, and did not send it as a setting: the core set it and the screen read it back.
+    expect(spy).not.toHaveBeenCalled();
     const card = within(screen.getByRole("region", { name: "White balance" }));
     expect(card.getByText("Edited")).toBeInTheDocument();
     expect(card.getByRole("button", { name: "Auto" })).toHaveAttribute("aria-pressed", "false");
@@ -324,33 +328,65 @@ describe("Pick white", () => {
   });
 
   it("works from the keyboard: arrows move the crosshair, Return picks", async () => {
-    const spy = await setup();
+    await setup();
+    const input = vi.spyOn(h!.api, "viewportInput");
     await h!.user.keyboard("w");
     const layer = await within(photo()).findByRole("application");
+    mockRect(layer, { left: 0, top: 0, width: 900, height: 600 });
     expect(layer).toHaveFocus();
-    spy.mockClear();
     await h!.user.keyboard("{ArrowLeft}{ArrowUp}");
     await h!.user.keyboard("{Shift>}{ArrowRight}{/Shift}");
     await h!.user.keyboard("{Enter}");
-    await waitFor(() => expect(spy).toHaveBeenCalled());
-    const [, patch] = spy.mock.calls.at(-1) as [number, { white_pick: [number, number] }];
-    expect(patch.white_pick[0]).toBeCloseTo(0.5 - 0.01 + 0.1, 5);
-    expect(patch.white_pick[1]).toBeCloseTo(0.5 - 0.01, 5);
+    await waitFor(() => expect(input).toHaveBeenCalled());
+    const [event] = input.mock.calls.at(-1) as [{ kind: string; x: number; y: number }];
+    expect(event.kind).toBe("pick_white");
+    expect(event.x).toBeCloseTo((0.5 - 0.01 + 0.1) * 900, 5);
+    expect(event.y).toBeCloseTo((0.5 - 0.01) * 600, 5);
   });
 
   it("ignores a click on the paper around a letterboxed photo", async () => {
-    const spy = await setup();
+    await setup();
+    const input = vi.spyOn(h!.api, "viewportInput");
     await h!.store.update({ orientation: 90 });
     await h!.user.keyboard("w");
     const layer = await within(photo()).findByRole("application");
     mockRect(layer, { left: 0, top: 0, width: 900, height: 600 });
-    spy.mockClear();
-    // A portrait photo in a 3:2 cell: the picture spans the middle 44 % across.
+    await h!.api.viewportSetRect({ x: 0, y: 0, width: 900, height: 600, scale: 2 });
+    input.mockClear();
+    // A portrait photo in a 3:2 cell: the picture spans the middle 44 % across. The mode stays on.
     fireEvent.click(layer, { clientX: 20, clientY: 300 });
-    expect(spy).not.toHaveBeenCalled();
+    expect(input).not.toHaveBeenCalled();
+    expect(within(photo()).getByRole("application")).toBeInTheDocument();
     fireEvent.click(layer, { clientX: 450, clientY: 300 });
-    await waitFor(() => expect(spy).toHaveBeenCalled());
-    expect(spy.mock.calls.at(-1)?.[1]).toEqual({ white_pick: [0.5, 0.5] });
+    await waitFor(() => expect(input).toHaveBeenCalledWith({ kind: "pick_white", x: 450, y: 300 }));
+    await waitFor(() => expect(settings().settings.white_pick).not.toBeNull());
+    expect(settings().settings.white_pick?.map((v) => Math.round(v * 1000) / 1000)).toEqual([0.5, 0.5]);
+  });
+
+  it("at a fixed zoom the picture fills the cell and every click counts", async () => {
+    await setup();
+    const input = vi.spyOn(h!.api, "viewportInput");
+    await h!.store.update({ orientation: 90 });
+    await h!.store.setZoom({ kind: "percent", value: 100 });
+    await h!.user.keyboard("w");
+    const layer = await within(photo()).findByRole("application");
+    mockRect(layer, { left: 0, top: 0, width: 900, height: 600 });
+    input.mockClear();
+    fireEvent.click(layer, { clientX: 20, clientY: 300 });
+    await waitFor(() => expect(input).toHaveBeenCalledWith({ kind: "pick_white", x: 20, y: 300 }));
+  });
+
+  it("a spot the core can't use shows its words, ends the mode and changes nothing", async () => {
+    await setup();
+    await h!.user.keyboard("w");
+    const layer = await within(photo()).findByRole("application");
+    mockRect(layer, { left: 0, top: 0, width: 900, height: 600 });
+    h!.api.failNext("viewportInput", { scope: "render", message: "That spot is too bright to be a white. Click something grey." });
+    fireEvent.click(layer, { clientX: 450, clientY: 300 });
+    expect(await screen.findByText("That spot is too bright to be a white. Click something grey.")).toBeInTheDocument();
+    expect(within(photo()).queryByRole("application")).toBeNull();
+    expect(settings().settings.white_pick).toBeNull();
+    expect(h!.store.getState().canUndo).toBe(false);
   });
 
   it("can't start while the photo is being cropped, and the button is off", async () => {
@@ -368,8 +404,12 @@ describe("Pick white", () => {
     mockRect(layer, { left: 0, top: 0, width: 900, height: 600 });
     fireEvent.click(layer, { clientX: 450, clientY: 300 });
     await waitFor(() => expect(settings().settings.white_pick).not.toBeNull());
+    expect(h!.store.getState().canUndo).toBe(true);
     await h!.user.keyboard("{Meta>}z{/Meta}");
     await waitFor(() => expect(settings().settings.white_pick).toBeNull());
     expect(settings().auto.white_balance).toBe(true);
+    // Redo asks the core for the same pick again.
+    await h!.user.keyboard("{Meta>}{Shift>}z{/Shift}{/Meta}");
+    await waitFor(() => expect(settings().settings.white_pick).not.toBeNull());
   });
 });

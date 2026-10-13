@@ -55,30 +55,18 @@ mod tests {
     }
 
     #[test]
-    fn every_command_and_event_of_the_frontend_is_in_the_bindings() {
-        // `src/api.ts` calls each of these by name; a missing one would fail only at run time.
+    fn every_event_of_the_frontend_is_in_the_bindings() {
+        // Commands are checked at compile time: `tauriApi` in `src/api.ts` calls the generated
+        // `commands`, and `src/api/contract.ts` makes `tsc -b` fail when a payload, an event or a
+        // command argument drifts. Events are subscribed by name, so check those here.
         let api =
             std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../src/api.ts"))
                 .expect("api.ts");
-        let bindings = generated();
-        let mut commands: Vec<&str> = api
-            .split("invoke(\"")
-            .skip(1)
-            .filter_map(|rest| rest.split('"').next())
-            .collect();
-        commands.sort_unstable();
-        commands.dedup();
         assert!(
-            commands.len() >= 35,
-            "found {} commands in api.ts",
-            commands.len()
+            api.contains("commands."),
+            "src/api.ts no longer calls the generated `commands`; restore the command check"
         );
-        for name in commands {
-            assert!(
-                bindings.contains(&format!("\"{name}\"")),
-                "api.ts calls `{name}`, which is not a registered command"
-            );
-        }
+        let bindings = generated();
         for event in [
             "photo_progress",
             "thumbnail_ready",
@@ -90,6 +78,9 @@ mod tests {
             "looks_import_progress",
             "download_found",
             "menu_action",
+            "viewport_frame",
+            "settings_changed",
+            "export_busy",
         ] {
             assert!(
                 bindings.contains(&format!("\"{event}\"")),

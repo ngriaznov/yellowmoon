@@ -71,10 +71,10 @@ export async function runMenuAction(store: AppStore, action: MenuAction): Promis
       await store.setZoom({ kind: "percent", value: 100 });
       return;
     case "zoom_in":
-      await store.setZoom(zoomStep(state.zoom, 1));
+      await store.setZoom(zoomStep(state.zoom, 1, store.fitPercentExact()));
       return;
     case "zoom_out":
-      await store.setZoom(zoomStep(state.zoom, -1));
+      await store.setZoom(zoomStep(state.zoom, -1, store.fitPercentExact()));
       return;
     case "next_photo":
       await store.step(1);

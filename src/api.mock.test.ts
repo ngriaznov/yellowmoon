@@ -500,10 +500,33 @@ describe("export", () => {
     });
   });
 
+  it("says whether an export is busy: by command, and by export_busy when the queue goes busy and quiet", async () => {
+    const api = createMockApi({ speed: Number.POSITIVE_INFINITY });
+    const busy: boolean[] = [];
+    api.on("export_busy", (e) => busy.push(e.busy));
+    await api.openPaths(ARW);
+    api.flush();
+    await expect(api.exportBusy()).resolves.toBe(false);
+    const id = await api.exportStart(job("all"));
+    await Promise.resolve();
+    await expect(api.exportBusy()).resolves.toBe(true);
+    expect(busy).toEqual([true]);
+    api.flush();
+    await Promise.resolve();
+    await expect(api.exportBusy()).resolves.toBe(false);
+    expect(busy).toEqual([true, false]);
+    // A cancelled run is quiet too.
+    const second = await api.exportStart(job("this"));
+    await api.exportCancel(second);
+    await Promise.resolve();
+    expect(busy).toEqual([true, false, true, false]);
+    expect(id).not.toBe(second);
+  });
+
   it("writes the equivalent command line, as the mockup does", async () => {
     expect(await api.cliPreview(job("picked"))).toBe(
       [
-        "yellowmoon render DSC04203.ARW DSC04204.ARW DSC04205.ARW \\",
+        "ym render DSC04203.ARW DSC04204.ARW DSC04205.ARW \\",
         "  --look neutral \\",
         "  --format jpeg \\",
         "  --quality 92 \\",
@@ -522,7 +545,7 @@ describe("export", () => {
         if_exists: "skip",
       }),
     );
-    expect(tiff).toContain("yellowmoon render ~/Pictures/Lisbon \\");
+    expect(tiff).toContain("ym render ~/Pictures/Lisbon \\");
     for (const flag of ["--format tiff", "--bits 8", "--compression zip", "--colour-space p3", "--long-edge 3000", "--skip-existing", '--out "~/Exports"']) {
       expect(tiff).toContain(flag);
     }
@@ -555,7 +578,7 @@ describe("preferences", () => {
   });
 
   it("installs the command-line tool link", async () => {
-    expect(await api.installCliLink()).toEqual({ path: "/usr/local/bin/yellowmoon" });
+    expect(await api.installCliLink()).toEqual({ path: "/usr/local/bin/ym" });
   });
 });
 
@@ -592,10 +615,164 @@ describe("viewport", () => {
     expect(await api.samplePixel(750, 950)).toEqual({ r: 0x3f, g: 0x54, b: 0x68 });
   });
 
-  it("stores a white pick as a point in image coordinates", async () => {
+  it("stores a white pick as a point in image coordinates: the click is found on the picture, not on the paper around it", async () => {
+    // A 3:2 photo in a 2:1 cell: the picture spans the middle three quarters across.
     await api.viewportSetRect({ x: 0, y: 0, width: 1000, height: 500, scale: 2 });
     await api.viewportInput({ kind: "pick_white", x: 250, y: 100 });
-    expect((await api.getSettings(1)).values.white_pick).toEqual([0.25, 0.2]);
+    const pick = (await api.getSettings(1)).values.white_pick;
+    expect(pick?.[0]).toBeCloseTo((0.25 - 0.125) / 0.75, 9);
+    expect(pick?.[1]).toBeCloseTo(0.2, 9);
+  });
+
+  it("a pick sets the white balance by hand, the light preset to Auto, and says settings_changed", async () => {
+    const changed: unknown[] = [];
+    api.on("settings_changed", (e) => changed.push(e));
+    await api.updateSettings(1, { light_source: "tungsten" });
+    await api.viewportSetRect({ x: 0, y: 0, width: 1500, height: 1000, scale: 1 });
+    await api.viewportInput({ kind: "pick_white", x: 750, y: 40 });
+    await Promise.resolve();
+    const rs = await api.getSettings(1);
+    expect(rs.settings.light_source).toBe("auto");
+    expect(rs.settings.white_balance.kind).toBe("manual");
+    expect(rs.settings.white_pick).toEqual([0.5, 0.04]);
+    expect(changed).toEqual([{ photo_id: 1 }]);
+  });
+
+  it("a click on the paper picks nothing and sends nothing", async () => {
+    const changed: unknown[] = [];
+    api.on("settings_changed", (e) => changed.push(e));
+    await api.updateSettings(1, { orientation: 90 });
+    await api.viewportSetRect({ x: 0, y: 0, width: 900, height: 600, scale: 2 });
+    // A portrait photo in a 3:2 cell: the picture spans the middle 44 % across.
+    await api.viewportInput({ kind: "pick_white", x: 20, y: 300 });
+    await Promise.resolve();
+    expect((await api.getSettings(1)).settings.white_pick).toBeNull();
+    expect(changed).toEqual([]);
+    await api.viewportInput({ kind: "pick_white", x: 450, y: 300 });
+    expect((await api.getSettings(1)).settings.white_pick?.map((v) => Math.round(v * 1000) / 1000)).toEqual([0.5, 0.5]);
+  });
+
+  it.each([
+    [0, [0.3, 0.2]],
+    [90, [0.2, 0.7]],
+    [180, [0.7, 0.8]],
+    [270, [0.8, 0.3]],
+  ] as const)("maps a click through a quarter turn of %i° back to the photo as the camera had it", async (orientation, want) => {
+    // The picture's (0.3, 0.2): the photo turned clockwise takes (x, y) to (1 − y, x), so (0.3, 0.2) of a 90° picture is (0.2, 0.7) of the photo.
+    await api.updateSettings(1, { orientation });
+    await api.viewportSetRect({ x: 0, y: 0, width: 900, height: 600, scale: 2 });
+    const aspect = orientation % 180 === 0 ? 1.5 : 1 / 1.5;
+    const width = Math.min(1, aspect / 1.5);
+    const height = Math.min(1, 1.5 / aspect);
+    const click = { x: 900 * ((1 - width) / 2 + 0.3 * width), y: 600 * ((1 - height) / 2 + 0.2 * height) };
+    await api.viewportInput({ kind: "pick_white", ...click });
+    const pick = (await api.getSettings(1)).settings.white_pick;
+    expect(pick?.[0]).toBeCloseTo(want[0], 6);
+    expect(pick?.[1]).toBeCloseTo(want[1], 6);
+  });
+
+  it("reads the colour of the spot the click is on, also on a turned photo (the pixel readout and the pick agree with the picture)", async () => {
+    await api.setCurrent(4); // DSC04204: sky #7FA6C7, near #3F5468 along the bottom edge of the photo
+    await api.updateSettings(4, { orientation: 90 });
+    await api.viewportSetRect({ x: 0, y: 0, width: 900, height: 600, scale: 1 });
+    // Turned clockwise, the bottom of the photo is the left edge of the picture (which spans the middle 44 % of the cell).
+    expect(await api.samplePixel(450 - 0.22 * 900 + 6, 300)).toEqual({ r: 0x3f, g: 0x54, b: 0x68 });
+    expect(await api.samplePixel(450 + 0.22 * 900 - 6, 300)).toMatchObject({ r: 0x7f, g: 0xa6, b: 0xc7 });
+  });
+
+  it("maps a click through the crop to the whole photo", async () => {
+    await api.updateSettings(1, { crop: { rect: { x: 0.25, y: 0.5, width: 0.5, height: 0.5 }, angle_deg: 0, aspect: "free" } });
+    // A crop of half the width and half the height keeps the photo's 3:2 shape, so the cropped picture fills the 3:2 cell.
+    await api.viewportSetRect({ x: 0, y: 0, width: 900, height: 600, scale: 2 });
+    await api.viewportInput({ kind: "pick_white", x: 450, y: 300 });
+    const pick = (await api.getSettings(1)).settings.white_pick;
+    expect(pick?.[0]).toBeCloseTo(0.5, 6);
+    expect(pick?.[1]).toBeCloseTo(0.75, 6);
+  });
+
+  it("a pixel readout on the paper fails, as the core's does", async () => {
+    await api.updateSettings(1, { orientation: 90 });
+    await api.viewportSetRect({ x: 0, y: 0, width: 900, height: 600, scale: 2 });
+    expect(await rejection(api.samplePixel(20, 300))).toEqual({ scope: "viewport", message: "That point is outside the photo." });
+    await expect(api.samplePixel(450, 300)).resolves.toMatchObject({ r: expect.any(Number) });
+  });
+
+  it("has no viewport backend unless asked: the page draws the picture itself", async () => {
+    await expect(api.viewportInfo()).resolves.toBeNull();
+    api.configure({ viewport: "native" });
+    await expect(api.viewportInfo()).resolves.toEqual({ backend: "native" });
+    api.configure({ viewport: "fallback" });
+    await expect(api.viewportInfo()).resolves.toEqual({ backend: "fallback" });
+  });
+
+  it("sends no frames as native or without a backend", async () => {
+    const api = createMockApi({ speed: Number.POSITIVE_INFINITY, viewport: "native" });
+    const frames: unknown[] = [];
+    api.on("viewport_frame", (f) => frames.push(f));
+    await api.openPaths(ARW);
+    api.flush();
+    await api.viewportSetRect({ x: 0, y: 75, width: 1000, height: 666, scale: 2 });
+    await Promise.resolve();
+    expect(frames).toEqual([]);
+  });
+
+  describe("as the fallback viewport", () => {
+    it("sends a picture of the cell's size when the cell is placed and the photo is ready, and takes it away when the session closes", async () => {
+      const api = createMockApi({ speed: Number.POSITIVE_INFINITY, viewport: "fallback" });
+      const frames: Array<{ seq: number; width: number; height: number; sharp: boolean; url: string }> = [];
+      api.on("viewport_frame", (f) => frames.push(f));
+      await api.openPaths(ARW);
+      await api.viewportSetRect({ x: 0, y: 75, width: 1000, height: 666, scale: 2 });
+      await Promise.resolve();
+      // The photo is not ready yet: there is nothing to draw.
+      expect(frames).toEqual([]);
+      api.flush();
+      await Promise.resolve();
+      expect(frames).toHaveLength(1);
+      expect(frames[0]).toMatchObject({ width: 2000, height: 1332, sharp: true });
+      const svg = decodeURIComponent(frames[0]!.url.replace(/^data:image\/svg\+xml;charset=utf-8,/, ""));
+      expect(svg).toContain('width="2000" height="1332"');
+      expect(svg).toContain('<rect width="100%" height="100%" fill="#FFFFFF"/>');
+      // A change of settings, the photo, Before and the zoom each send a new, newer frame.
+      await api.updateSettings(1, { contrast: 10 });
+      await api.setCurrent(2);
+      await api.setBefore(true);
+      await api.viewportSetMode({ kind: "percent", value: 100 });
+      await Promise.resolve();
+      expect(frames.map((f) => f.seq)).toEqual([1, 2, 3, 4, 5]);
+      await api.closeSession();
+      await Promise.resolve();
+      expect(frames.at(-1)).toEqual({ seq: 6, width: 0, height: 0, sharp: true, url: "" });
+      // Nothing more is said while there is nothing to take away.
+      await api.viewportSetRect({ x: 0, y: 75, width: 1010, height: 670, scale: 2 });
+      await Promise.resolve();
+      expect(frames).toHaveLength(6);
+    });
+
+    it("sends no picture for a photo that can't be developed, and takes the previous one away", async () => {
+      const api = createMockApi({ speed: Number.POSITIVE_INFINITY, viewport: "fallback", skipped: { DSC04202: "Not readable." } });
+      const frames: Array<{ url: string }> = [];
+      api.on("viewport_frame", (f) => frames.push(f));
+      await api.openPaths(ARW);
+      api.flush();
+      await api.viewportSetRect({ x: 0, y: 75, width: 1000, height: 666, scale: 2 });
+      await Promise.resolve();
+      expect(frames.at(-1)?.url).not.toBe("");
+      await api.setCurrent(2);
+      await Promise.resolve();
+      expect(frames.at(-1)?.url).toBe("");
+      await api.setCurrent(3);
+      await Promise.resolve();
+      expect(frames.at(-1)?.url).not.toBe("");
+    });
+  });
+
+  it("a new photo opens at Fit with the camera view off, as the core's does", async () => {
+    await api.viewportSetMode({ kind: "percent", value: 200 });
+    await api.setBefore(true);
+    await api.setCurrent(2);
+    expect(api.viewport.mode).toEqual({ kind: "fit" });
+    expect(api.viewport.before).toBe(false);
   });
 
   it("exposes each photo's SVG fixture", async () => {
@@ -859,6 +1036,9 @@ describe("optionsFromLocation", () => {
       holdAt: 5.4,
     });
     expect(optionsFromLocation("?mockPhotos=500")).toEqual({ photoCount: 500 });
+    expect(optionsFromLocation("?mockViewport=fallback")).toEqual({ viewport: "fallback" });
+    expect(optionsFromLocation("?mockViewport=native")).toEqual({ viewport: "native" });
+    expect(optionsFromLocation("?mockViewport=metal")).toEqual({});
     expect(optionsFromLocation("?mockPhotos=0")).toEqual({});
     expect(optionsFromLocation("")).toEqual({});
     expect(optionsFromLocation("?mockSpeed=-3&mockHold=x")).toEqual({});

@@ -139,7 +139,7 @@ export function Preferences() {
           </Row>
           <Row
             title="Command-line tool"
-            hint={cli === null ? "Checking…" : cli.installed ? `Installed at ${cli.path}` : "Not installed. It lets you run yellowmoon from Terminal."}
+            hint={cli === null ? "Checking…" : cli.installed ? `Installed at ${cli.path}` : "Not installed. It lets you run ym from Terminal."}
           >
             <LinkButton onClick={() => void store.installCli()}>{cli?.installed ? "Reinstall…" : "Install…"}</LinkButton>
           </Row>

@@ -73,6 +73,7 @@
 .ym-about-dialog__section li + li { margin-top: 4px; }
 .ym-about-dialog__adobe { padding: 14px 24px; border-bottom: var(--rule-control) solid var(--ink); background: var(--brand); color: #000000; font-size: var(--fs-body); font-weight: var(--fw-heavy); line-height: 1.5; }
 .ym-about-dialog__legal { padding: 16px 24px; font-size: 12.5px; line-height: 1.5; }
+.ym-about-dialog__legal + .ym-about-dialog__legal { padding-top: 0; }
 
 /* The .cube import dialog. */
 .ym-cube-list { margin: 0; padding: 0; list-style: none; }
