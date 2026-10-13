@@ -1,5 +1,5 @@
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { MockOptions } from "../api.mock";
 import { FAILURE_ZIPS, PACKAGE_ZIPS } from "../api.mock";
 import { openPhotos, renderApp } from "../test/harness";
@@ -364,6 +364,32 @@ describe("steps 4 and 5 · Import and Finish", () => {
     expect(await screen.findByRole("tab", { name: "Look" })).toBeInTheDocument();
     expect((await h.api.preferencesGet()).default_look).toBe("arri:3000:film-warm");
     expect(h.api.system.trashed).toEqual([LL4]);
+  }, 30_000);
+
+  it("asks for another picture when one of the Finish tiles does not load (the shell dropped it)", async () => {
+    h = renderApp({ looksImported: false, current: 3 });
+    await openPhotos(h);
+    await h.user.click(screen.getByRole("button", { name: "Import ARRI looks →" }));
+    await screen.findByRole("heading", { level: 1, name: "Choose what to import" });
+    await toRecognise(LL4);
+    await h.user.click(next());
+    await screen.findByRole("heading", { level: 1, name: "Imported" }, { timeout: 5000 });
+    await h.user.click(next());
+    await screen.findByRole("heading", { level: 1, name: "87 looks ready" });
+    const pictures = (): HTMLImageElement[] => [...document.querySelectorAll<HTMLImageElement>(".ym-wizard__tile-picture img")];
+    await waitFor(() => expect(pictures()).toHaveLength(7));
+    const ask = vi.spyOn(h.api, "lookThumbnail");
+    const first = pictures()[0] as HTMLImageElement;
+    const before = first.getAttribute("src");
+    fireEvent.error(first);
+    await waitFor(() => expect(ask).toHaveBeenCalledTimes(1));
+    await waitFor(() => {
+      const now = pictures()[0]?.getAttribute("src");
+      expect(now).toMatch(/^(data:image\/png|blob:)/);
+      expect(now).not.toBe(before);
+    });
+    // The other tiles were left alone.
+    expect(ask).toHaveBeenCalledTimes(1);
   }, 30_000);
 
   it("keeps the zip when asked to", async () => {

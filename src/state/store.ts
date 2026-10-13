@@ -242,6 +242,12 @@ const MIN_FRAME_PX = 16;
 /** Milliseconds a replaced look thumbnail's URL is kept, so a tile never shows a broken picture. */
 const URL_GRACE_MS = 3000;
 
+/** A look tile's request: the address it will have (or has), so a tile that fails to load it can be recognised. */
+interface LookThumb {
+  promise: Promise<string>;
+  url: string | null;
+}
+
 /** The store. Create one per window with the `Api` to use. */
 export class AppStore {
   private state: AppState = initialState();
@@ -258,7 +264,7 @@ export class AppStore {
   private newestFrame: number | null = null;
   /** Photos with a Pick white click on its way to the core: their settings are read when the click is answered. */
   private readonly picks = new Set<PhotoId>();
-  private readonly lookThumbs = new Map<PhotoId, { key: string; urls: Map<LookId, Promise<string>> }>();
+  private readonly lookThumbs = new Map<PhotoId, { key: string; urls: Map<LookId, LookThumb> }>();
   private rect: ViewportRect | null = null;
   private histogramBusy = false;
   private histogramAgain = false;
@@ -1288,34 +1294,61 @@ export class AppStore {
   /**
    * The photo through one look, as an image URL, for a tile of the Look card. `key` stands for
    * everything about the photo except its look (its other settings): tiles are drawn again when
-   * it changes. Thumbnails are kept for the session.
+   * it changes. Thumbnails are kept for the session, except that a request that failed is not kept
+   * (the core cancels a tile when the person leaves its photo, and a tile that asks again after
+   * coming back is handed the same request, which then fails), and a tile whose address stopped
+   * answering is dropped by {@link forgetLookThumbnail}.
    */
   lookThumbnail(photoId: PhotoId, lookId: LookId, key: string): Promise<string> {
     let entry = this.lookThumbs.get(photoId);
     if (!entry || entry.key !== key) {
-      if (entry) this.releaseLater(entry.urls);
+      if (entry) this.releaseLater([...entry.urls.values()]);
       entry = { key, urls: new Map() };
       this.lookThumbs.set(photoId, entry);
     }
     const cache = entry.urls;
-    let url = cache.get(lookId);
-    if (!url) {
-      url = this.api.lookThumbnail(photoId, lookId);
-      cache.set(lookId, url);
-      url.catch(() => cache.delete(lookId));
+    let thumb = cache.get(lookId);
+    if (!thumb) {
+      const made: LookThumb = { promise: this.api.lookThumbnail(photoId, lookId), url: null };
+      thumb = made;
+      cache.set(lookId, made);
+      // Registered before anyone else sees the promise, so it runs first: a caller that hears the failure and asks again gets a new request.
+      made.promise.then(
+        (url) => {
+          made.url = url;
+        },
+        () => {
+          if (cache.get(lookId) === made) cache.delete(lookId);
+        },
+      );
     }
-    return url;
+    return thumb.promise;
   }
 
-  private releaseLater(urls: Map<LookId, Promise<string>>): void {
-    const pending = [...urls.values()];
+  /**
+   * Drops the address a tile was given because its picture did not load: the shell keeps a bounded
+   * amount of tiles and answers 404 for the addresses of the photos used least recently. The next
+   * {@link lookThumbnail} for it asks for a new picture. Does nothing when the address held now is a
+   * different one (another tile of the same look has asked again already).
+   */
+  forgetLookThumbnail(photoId: PhotoId, lookId: LookId, key: string, url: string): void {
+    const entry = this.lookThumbs.get(photoId);
+    if (entry?.key !== key) return;
+    const thumb = entry.urls.get(lookId);
+    if (thumb?.url !== url) return;
+    entry.urls.delete(lookId);
+    this.releaseLater([thumb]);
+  }
+
+  private releaseLater(thumbs: LookThumb[]): void {
+    const pending = thumbs.map((t) => t.promise);
     setTimeout(() => {
       for (const url of pending) void url.then(releaseUrl, () => {});
     }, URL_GRACE_MS);
   }
 
   private releaseLookThumbs(): void {
-    for (const entry of this.lookThumbs.values()) for (const url of entry.urls.values()) void url.then(releaseUrl, () => {});
+    for (const entry of this.lookThumbs.values()) for (const thumb of entry.urls.values()) void thumb.promise.then(releaseUrl, () => {});
     this.lookThumbs.clear();
   }
 

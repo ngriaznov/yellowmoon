@@ -3,6 +3,7 @@ import { AutoRow, Card, Field, formats, LinkButton, LookTile, ResetLink, Rows, S
 import type { TabId } from "../../components";
 import type { ApplyScope, Look } from "../../api/types";
 import { useAppState, useStore } from "../../state/context";
+import { useLookThumbnail } from "../../state/useLookThumbnail";
 import { shortBody } from "./RawTab";
 import { tintLabel } from "./shared";
 import type { TabProps } from "./shared";
@@ -47,12 +48,14 @@ interface LazyTileProps {
   onSelect: () => void;
 }
 
-/** A look tile that asks for its thumbnail when it scrolls into view, and again when the photo's other settings change. */
+/**
+ * A look tile that asks for its thumbnail when it scrolls into view, and again when the photo's other settings change, when the
+ * request it was handed failed, and when the picture it was given does not load (`useLookThumbnail`).
+ */
 function LazyLookTile({ look, index, selected, photoId, thumbKey, onSelect }: LazyTileProps) {
   const store = useStore();
   const button = useRef<HTMLButtonElement>(null);
   const [visible, setVisible] = useState(typeof IntersectionObserver === "undefined");
-  const [src, setSrc] = useState<string | undefined>();
 
   useEffect(() => {
     const el = button.current;
@@ -67,19 +70,7 @@ function LazyLookTile({ look, index, selected, photoId, thumbKey, onSelect }: La
     return () => observer.disconnect();
   }, []);
 
-  useEffect(() => {
-    if (!visible || look.missing) return;
-    let live = true;
-    store
-      .lookThumbnail(photoId, look.id, thumbKey)
-      .then((url) => {
-        if (live) setSrc(url);
-      })
-      .catch(() => {});
-    return () => {
-      live = false;
-    };
-  }, [store, visible, look.id, look.missing, photoId, thumbKey]);
+  const { src, onImageError } = useLookThumbnail(store, photoId, look.id, thumbKey, visible && !look.missing);
 
   return (
     <LookTile
@@ -92,6 +83,7 @@ function LazyLookTile({ look, index, selected, photoId, thumbKey, onSelect }: La
       disabled={look.missing}
       note={look.missing ? MISSING_LOOK_NOTE : undefined}
       onSelect={onSelect}
+      onImageError={onImageError}
     />
   );
 }

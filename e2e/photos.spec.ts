@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 import type { Page } from "@playwright/test";
-import { configureMock, failNext, openApp, openPhotos, recordCalls, setUpdateState, setValue, settle, showUpdateReady, watchErrors } from "./helpers/app";
+import { configureMock, failNext, lookTilesLoaded, openApp, openPhotos, recordCalls, setUpdateState, setValue, settle, showUpdateReady, watchErrors } from "./helpers/app";
 
 // Photos screen (tasks M3-06, M3-07, M3-08 UI) in a real browser against the mocked API: layout, the
 // flow Start → open → look → every tab, keyboard shortcuts, Crop and Pick white by mouse, and the error
@@ -146,6 +146,38 @@ test.describe("the flow", () => {
     await expect(page.getByRole("button", { name: / look, key \d/ })).toHaveCount(2);
     await page.getByRole("searchbox", { name: "Search looks" }).fill("nothing like this");
     await expect(page.getByText("No looks match “nothing like this”.")).toBeVisible();
+  });
+
+  test("a look tile whose request the core cancelled is asked for again", async ({ page }) => {
+    // The core cancels the tiles of a photo when the person moves to another one; a tile that comes back meanwhile gets that failure.
+    await openApp(page, MOCKUP);
+    const calls = await recordCalls(page, "lookThumbnail");
+    await failNext(page, "lookThumbnail", { scope: "render", message: "The render was cancelled." });
+    await openPhotos(page);
+    await lookTilesLoaded(page);
+    const asked = (await calls()).map((c) => `${c.args[0]} ${c.args[1]}`);
+    expect(asked.length).toBeGreaterThan(new Set(asked).size);
+  });
+
+  test("a look tile whose picture the shell dropped is made again when the photo is visited again", async ({ page }) => {
+    // The shell keeps 256 MiB of tiles and answers 404 for the addresses of the photos used least recently. The mock's addresses are
+    // `blob:` URLs, so revoking them makes the next load of the same address fail the same way.
+    await photos(page);
+    await lookTilesLoaded(page);
+    const srcs = () => page.locator(".ym-look-tile img").evaluateAll((images) => (images as HTMLImageElement[]).map((i) => i.src));
+    const first = await srcs();
+    expect(first.length).toBeGreaterThanOrEqual(2);
+    await page.getByRole("button", { name: "Show DSC04206" }).click();
+    await expect(page.getByRole("img", { name: /^Photo DSC04206/ })).toBeVisible();
+    await expect.poll(async () => (await srcs()).some((src) => first.includes(src))).toBe(false);
+    await lookTilesLoaded(page);
+    await page.evaluate((urls) => urls.forEach((u) => URL.revokeObjectURL(u)), first);
+    await page.getByRole("button", { name: /^Show DSC04204/ }).click();
+    await expect(page.getByRole("img", { name: /^Photo DSC04204/ })).toBeVisible();
+    await lookTilesLoaded(page);
+    const again = await srcs();
+    expect(again.length).toBeGreaterThanOrEqual(first.length);
+    expect(again.filter((src) => first.includes(src))).toEqual([]);
   });
 });
 

@@ -122,14 +122,42 @@ fn the_real_files_develop_with_sensible_estimates() {
     }
 }
 
+/// Whether the environment demands the synthetic set (`YM_REQUIRE_SYNTHETIC=1`, the `synthetic-set`
+/// CI job): a missing set is then a failure, not a skip.
+fn synthetic_required() -> bool {
+    std::env::var_os("YM_REQUIRE_SYNTHETIC").is_some_and(|v| !v.is_empty() && v != "0")
+}
+
+/// The folder `tools/fetch/synthetic.sh` writes the ARW files to: `$YM_TESTDATA/synthetic/arw`, else
+/// `<workspace root>/testdata/synthetic/arw`.
+fn synthetic_arw_dir() -> PathBuf {
+    let testdata = std::env::var_os("YM_TESTDATA")
+        .filter(|v| !v.is_empty())
+        .map_or_else(
+            || data_root().parent().unwrap().join("testdata"),
+            PathBuf::from,
+        );
+    testdata.join("synthetic/arw")
+}
+
+/// Says why the synthetic set cannot be used: a skip, or with `YM_REQUIRE_SYNTHETIC=1` a failure.
+fn synthetic_missing(why: &str) {
+    assert!(
+        !synthetic_required(),
+        "{why} and YM_REQUIRE_SYNTHETIC is set; run tools/fetch/synthetic.sh first"
+    );
+    eprintln!("{why}; skipping (YM_REQUIRE_SYNTHETIC=1 makes this a failure)");
+}
+
 #[test]
 fn every_file_of_the_synthetic_variant_set_develops() {
-    // `testdata/synthetic/*.ARW` (tools/fetch/synthetic.sh): every raw variant of the decoders,
+    // `testdata/synthetic/arw/*.ARW` (tools/fetch/synthetic.sh): every raw variant of the decoders,
     // with gradient, noise, clipped and dark content. Dark and clipped frames are the extremes
-    // the estimates must survive.
-    let dir = data_root().parent().unwrap().join("testdata/synthetic");
+    // the estimates must survive. (The files directly in `testdata/synthetic/` are leftovers of an
+    // older generator and are not read.)
+    let dir = synthetic_arw_dir();
     let Ok(read) = std::fs::read_dir(&dir) else {
-        eprintln!("no testdata/synthetic; skipping");
+        synthetic_missing(&format!("no {}", dir.display()));
         return;
     };
     let count = read
@@ -141,7 +169,7 @@ fn every_file_of_the_synthetic_variant_set_develops() {
         })
         .count();
     if count == 0 {
-        eprintln!("no ARW files in testdata/synthetic; skipping");
+        synthetic_missing(&format!("no ARW files in {}", dir.display()));
         return;
     }
     let mut env = base_env();

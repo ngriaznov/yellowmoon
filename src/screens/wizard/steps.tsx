@@ -1,9 +1,10 @@
-import { useEffect, useId, useState } from "react";
+import { useId } from "react";
 import type { Look } from "../../api/types";
 import { Button, DropZone, LinkButton, ProgressBar, Segmented, Switch, Tag } from "../../components";
 import type { TagVariant } from "../../components";
 import { useAppState, useStore } from "../../state/context";
 import { isReady } from "../../state/photo";
+import { useLookThumbnail } from "../../state/useLookThumbnail";
 import { looksInDisplayOrder } from "../tools/LookTab";
 import {
   anyChecking,
@@ -300,23 +301,10 @@ export function ImportStep({ wizard }: { wizard: Wizard }) {
 /** One look of the Finish step on the current photo, with its name below. */
 function WizardTile({ look, photoId }: { look: Look; photoId: number | null }) {
   const store = useStore();
-  const [src, setSrc] = useState<string | undefined>();
-  useEffect(() => {
-    if (photoId === null) return;
-    let live = true;
-    store
-      .lookThumbnail(photoId, look.id, "wizard")
-      .then((url) => {
-        if (live) setSrc(url);
-      })
-      .catch(() => {});
-    return () => {
-      live = false;
-    };
-  }, [store, photoId, look.id]);
+  const { src, onImageError } = useLookThumbnail(store, photoId, look.id, "wizard");
   return (
     <div className="ym-wizard__tile">
-      <span className="ym-wizard__tile-picture">{src ? <img src={src} alt="" /> : null}</span>
+      <span className="ym-wizard__tile-picture">{src ? <img src={src} alt="" onError={onImageError} /> : null}</span>
       <span className="ym-wizard__tile-name">{look.name}</span>
     </div>
   );

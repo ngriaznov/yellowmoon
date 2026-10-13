@@ -590,6 +590,61 @@ describe("looks", () => {
     await expect(store.lookThumbnail(1, "arri:3000:film-warm", "k")).rejects.toBeDefined();
     expect(spy).toHaveBeenCalledTimes(1);
   });
+
+  it("hands a tile that asks again after a cancelled request a new request, not the cancelled one", async () => {
+    // Photo A, then B, then A again before A's tile was made: the core cancelled A's tile when the person left, and the tile that
+    // comes back is handed the request that is still pending.
+    const { api, store } = await opened();
+    const cancelled = { scope: "render", message: "The render was cancelled." };
+    let reject: (error: unknown) => void = () => {};
+    const spy = vi.spyOn(api, "lookThumbnail").mockImplementationOnce(() => new Promise<string>((_, no) => (reject = no)));
+    const first = store.lookThumbnail(1, "builtin:signature", "k");
+    const second = store.lookThumbnail(1, "builtin:signature", "k");
+    expect(second).toBe(first);
+    reject(cancelled);
+    await expect(second).rejects.toEqual(cancelled);
+    expect(spy).toHaveBeenCalledTimes(1);
+    const again = store.lookThumbnail(1, "builtin:signature", "k");
+    expect(again).not.toBe(first);
+    expect(await again).toMatch(/^blob:|^data:|^ym-frame:/);
+    expect(spy).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not let an old failure remove a newer request", async () => {
+    const { api, store } = await opened();
+    let reject: (error: unknown) => void = () => {};
+    vi.spyOn(api, "lookThumbnail").mockImplementationOnce(() => new Promise<string>((_, no) => (reject = no)));
+    const old = store.lookThumbnail(1, "builtin:signature", "k");
+    // The cache is emptied by other means (the picture was found not to load) and a newer request takes its place.
+    const oldCache = (store as unknown as { lookThumbs: Map<number, { urls: Map<string, unknown> }> }).lookThumbs.get(1)!.urls;
+    oldCache.clear();
+    const newer = store.lookThumbnail(1, "builtin:signature", "k");
+    reject({ scope: "render", message: "The render was cancelled." });
+    await expect(old).rejects.toBeDefined();
+    expect(store.lookThumbnail(1, "builtin:signature", "k")).toBe(newer);
+  });
+
+  it("forgets the address of a tile that did not load, so the next ask makes a new picture", async () => {
+    // The shell dropped the tiles of photos used least recently and answers 404 for their addresses.
+    const { api, store } = await opened();
+    const spy = vi.spyOn(api, "lookThumbnail");
+    const url = await store.lookThumbnail(1, "builtin:signature", "k");
+    store.forgetLookThumbnail(1, "builtin:signature", "k", url);
+    const fresh = await store.lookThumbnail(1, "builtin:signature", "k");
+    expect(spy).toHaveBeenCalledTimes(2);
+    expect(fresh).not.toBe(url);
+  });
+
+  it("forgets only the address it was told about", async () => {
+    const { api, store } = await opened();
+    const spy = vi.spyOn(api, "lookThumbnail");
+    const url = await store.lookThumbnail(1, "builtin:signature", "k");
+    store.forgetLookThumbnail(1, "builtin:signature", "k", "ym-frame://localhost/look-1-0.png");
+    store.forgetLookThumbnail(1, "builtin:signature", "other settings", url);
+    store.forgetLookThumbnail(2, "builtin:signature", "k", url);
+    expect(await store.lookThumbnail(1, "builtin:signature", "k")).toBe(url);
+    expect(spy).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("the viewport", () => {

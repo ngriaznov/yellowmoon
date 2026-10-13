@@ -260,6 +260,43 @@ describe("the Look tab", () => {
     await waitFor(() => expect(document.querySelectorAll(".ym-look-tile img[src]").length).toBe(9));
   });
 
+  it("draws a tile again when the request it came back to was cancelled (photo A, B, then A before A's tile was made)", async () => {
+    h = renderApp(MOCKUP);
+    // The first tile's request stays pending; the core cancels it when the person moves to another photo.
+    let cancel: (error: unknown) => void = () => {};
+    const ask = vi.spyOn(h.api, "lookThumbnail").mockImplementationOnce(() => new Promise<string>((_, no) => (cancel = no)));
+    await openPhotos(h);
+    await waitFor(() => expect(document.querySelectorAll(".ym-look-tile img[src]").length).toBe(8));
+    await h.user.click(screen.getByRole("button", { name: "Show DSC04206" }));
+    await waitFor(() => expect(h!.store.currentPhoto()?.file_name).toBe("DSC04206.ARW"));
+    await h.user.click(screen.getByRole("button", { name: /^Show DSC04204/ }));
+    await waitFor(() => expect(h!.store.currentPhoto()?.file_name).toBe("DSC04204.ARW"));
+    const neutral = (): number => ask.mock.calls.filter(([photo, look]) => photo === 4 && look === "builtin:neutral").length;
+    // The tile that came back was handed the request that is still pending: nothing was asked of the core.
+    expect(neutral()).toBe(1);
+    cancel({ scope: "render", message: "The render was cancelled." });
+    await waitFor(() => expect(neutral()).toBe(2));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Neutral look, key 1" }).querySelector("img")?.getAttribute("src")).toMatch(/^(data:image\/png|blob:)/));
+  });
+
+  it("asks for a new picture when a tile's does not load (the shell dropped the tiles of that photo)", async () => {
+    await setup();
+    const ask = vi.spyOn(h!.api, "lookThumbnail");
+    await waitFor(() => expect(document.querySelectorAll(".ym-look-tile img[src]").length).toBe(9));
+    const img = screen.getByRole("button", { name: "Neutral look, key 1" }).querySelector("img")!;
+    const before = img.getAttribute("src");
+    fireEvent.error(img);
+    await waitFor(() => expect(ask).toHaveBeenCalledTimes(1));
+    expect(ask).toHaveBeenCalledWith(4, "builtin:neutral");
+    await waitFor(() => {
+      const now = screen.getByRole("button", { name: "Neutral look, key 1" }).querySelector("img")?.getAttribute("src");
+      expect(now).toMatch(/^(data:image\/png|blob:)/);
+      expect(now).not.toBe(before);
+    });
+    // The other tiles were not asked for again.
+    expect(ask).toHaveBeenCalledTimes(1);
+  });
+
   it("filters by name and counts the matches in each group", async () => {
     await setup();
     await h!.user.type(screen.getByRole("searchbox", { name: "Search looks" }), "film");
@@ -339,6 +376,15 @@ describe("the Look tab", () => {
     await h!.user.click(tile);
     await h!.user.keyboard("3");
     expect(lookOf()).toBe("builtin:neutral");
+  });
+
+  it("does not ask for the thumbnail of a look whose file is missing, and loads the others", async () => {
+    h = renderApp({ ...MOCKUP, missingLooks: ["film-warm"] });
+    const ask = vi.spyOn(h.api, "lookThumbnail");
+    await openPhotos(h);
+    await waitFor(() => expect(document.querySelectorAll(".ym-look-tile img[src]").length).toBe(8));
+    expect(ask).toHaveBeenCalledTimes(8);
+    expect(ask.mock.calls.map(([, look]) => look)).not.toContain("arri:3000:film-warm");
   });
 
   it("offers the wizard in place of the ARRI looks when none are imported", async () => {

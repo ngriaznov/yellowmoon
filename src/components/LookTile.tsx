@@ -20,6 +20,8 @@ export interface LookTileProps {
   /** Why it is disabled; part of the accessible name. */
   note?: string;
   onSelect: () => void;
+  /** The `src` picture did not load; the screen may ask for another and pass its address. */
+  onImageError?: () => void;
   /** The tile's button, for a screen that watches it scroll into view (lazy thumbnails). */
   ref?: Ref<HTMLButtonElement>;
   /** Tab whose colour labels the selected tile; normally inherited. */
@@ -42,6 +44,7 @@ export function LookTile({
   disabled = false,
   note,
   onSelect,
+  onImageError,
   ref,
   tab,
   className,
@@ -63,7 +66,7 @@ export function LookTile({
       }}
     >
       <span className="ym-look-tile__picture">
-        {thumbnail ?? (src ? <img src={src} alt="" draggable={false} /> : null)}
+        {thumbnail ?? (src ? <img src={src} alt="" draggable={false} onError={onImageError} /> : null)}
         {badge ? (
           <span className="ym-look-tile__badge" aria-hidden="true">
             {badge}
