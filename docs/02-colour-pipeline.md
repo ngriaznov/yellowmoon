@@ -21,8 +21,8 @@ Input to this chain is the output of `docs/05-raw-processing.md`: demosaiced, de
 | C7 | Highlight roll-off and low-light toe | linear AWG4 → linear AWG4 | per pixel |
 | C8 | LogC4 encode | linear AWG4 → LogC4 | per pixel |
 | C9 | Primary grade (contrast, brightness, zones, colour balance, saturation) | LogC4 → LogC4 | per pixel |
-| C10 | Look: CDL, then 3D LUT, blended by intensity | LogC4 → LogC4 (LogC3 looks via exact conversion) | per pixel + 3D texture |
-| C11 | Curve | LogC4 → LogC4 | 1D textures |
+| C10 | Look: CDL, then 3D LUT, blended by intensity | LogC4 → LogC4 (LogC3 looks via exact conversion) | per pixel + f32 LUT storage buffer |
+| C11 | Curve | LogC4 → LogC4 | f32 curve tables (storage buffer) |
 | C12 | Display transform: ACES 2 (default) or an imported ARRI display LUT | LogC4 → display linear or display code values | per pixel |
 | C13 | Display encode | → Display P3 (viewport) or the export colour space | per pixel |
 
@@ -291,7 +291,7 @@ v'  = in + k · (out − in)        k = intensity / 100, blended in LogC4
 ```
 
 - **CDL** (ASC v1.2): `x = max(x·slope + offset, 0)^power` per channel, then saturation with Rec.709 weights (0.2126, 0.7152, 0.0722): `L = w·x; x = L + sat·(x − L)`.
-- **3D LUT:** `.cube` (Resolve/Adobe format: `LUT_3D_SIZE`, optional `DOMAIN_MIN/MAX`, optional `LUT_1D_SIZE` shaper, red varies fastest). Tetrahedral interpolation. Inputs are clamped to the domain. Upload as a 3D texture (rgba16float); interpolate manually in the shader (tetrahedral), never with hardware trilinear.
+- **3D LUT:** `.cube` (Resolve/Adobe format: `LUT_3D_SIZE`, optional `DOMAIN_MIN/MAX`, optional `LUT_1D_SIZE` shaper, red varies fastest). Tetrahedral interpolation. Inputs are clamped to the domain. Upload as an **f32 storage buffer** (one `vec4<f32>` per node, red varying fastest) and interpolate by hand in the shader (tetrahedral), never with hardware trilinear. Not a texture: a LUT texture stored as rgba16float rounds values in [0.5, 1) by up to 2.4e-4, which alone is more than the 2e-4 parity target between the GPU kernel and the CPU reference. A 65-point cube costs 4.4 MB and a 129-point one 34 MB as f32, which is acceptable for one look at a time. Only image intermediates are f16 (`ym_gpu::kernels::color`, section Precision decision).
 - **LogC4 log-to-log looks** (ARRI LogC4 Look Library, our built-ins): apply directly.
 - **LogC3 log-to-log looks:** LogC4 → linear AWG4 → AWG3 → LogC3 EI 800 → LUT → linear AWG3 → AWG4 → LogC4. The blend happens in LogC4 after converting back.
 - **LogC3-to-Rec.709 looks** (look and rendering baked together) **replace** C12: the chain is C9 → C11 (the curve runs before the look in this case) → LogC4 to LogC3 conversion → LUT → display Rec.709 (gamma 2.4). Intensity blends between our C12 output (from the same C11 output) and the LUT output in display-linear Rec.709. The UI marks these looks "includes display rendering". DNG export is unavailable with these looks (`docs/09`).
@@ -307,9 +307,9 @@ v'  = in + k · (out − in)        k = intensity / 100, blended in LogC4
 
 ## C11 · Curve
 
-Applied in LogC4 after the look and before the display transform, so it travels into DNG export and behaves the same under every display transform. Four monotone cubic splines (Fritsch–Carlson) on [0,1]: luma (applied as `v += curve(L) − L`) and R, G, B (per channel). Baked into four 1024-entry 1D textures. The histogram in the Curve tab is of LogC4 values. Numbers in the UI show code values × 255, rounded.
+Applied in LogC4 after the look and before the display transform, so it travels into DNG export and behaves the same under every display transform. Four monotone cubic splines (Fritsch–Carlson) on [0,1]: luma (applied as `v += curve(L) − L`) and R, G, B (per channel). Baked into four 1024-entry tables, uploaded as **f32 storage buffers** and looked up by hand with linear interpolation in the shader, not as 1D textures (an f16 texture would round the values in [0.5, 1) by up to 2.4e-4, more than the 2e-4 parity target). The histogram in the Curve tab is of LogC4 values. Numbers in the UI show code values × 255, rounded.
 
-**As built (M1-09).** `ym_color::curve::{Curve, CurveSet, BakedCurves}`. Fritsch–Carlson tangents (mean of the neighbouring secants, zero at extrema and flat segments, one-sided at the ends, then the `α² + β² ≤ 9` limiter); 2 to 16 control points, `x` strictly increasing, all in [0, 1]; invalid input is a typed `CurveError`. The spline is C1 and never overshoots the data of a segment. Between 0 and the first point and between the last point and 1 it holds the end value. The 1024-entry table (`CurveTable`, sampled at `i/1023`, linear interpolation; worst deviation from the exact spline 5.9e-7) continues with slope 1 outside [0, 1] (`eval_extended`: `x + table[0]` below 0, `x − 1 + table[1023]` above 1), so the map stays monotone for LogC4 values beyond the unit range; a shader sampling a 1D texture needs this extension explicitly. The luma curve uses `L = encode(Y(decode(v)))` of the pixel entering C11 and is applied before the R, G, B curves.
+**As built (M1-09).** `ym_color::curve::{Curve, CurveSet, BakedCurves}`. Fritsch–Carlson tangents (mean of the neighbouring secants, zero at extrema and flat segments, one-sided at the ends, then the `α² + β² ≤ 9` limiter); 2 to 16 control points, `x` strictly increasing, all in [0, 1]; invalid input is a typed `CurveError`. The spline is C1 and never overshoots the data of a segment. Between 0 and the first point and between the last point and 1 it holds the end value. The 1024-entry table (`CurveTable`, sampled at `i/1023`, linear interpolation; worst deviation from the exact spline 5.9e-7) continues with slope 1 outside [0, 1] (`eval_extended`: `x + table[0]` below 0, `x − 1 + table[1023]` above 1), so the map stays monotone for LogC4 values beyond the unit range; the shader's `curve_eval` applies the same extension explicitly. The luma curve uses `L = encode(Y(decode(v)))` of the pixel entering C11 and is applied before the R, G, B curves.
 
 ## C12 · Display transform
 

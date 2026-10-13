@@ -12,7 +12,7 @@ use serde_json::json;
 use ym_color::look::{LookInput, ParametricLook};
 use ym_core::data_dir::find_data_dir;
 use ym_core::looks::{ImportRequest, LookEntry, LookGroupInfo, LookService, LooksError};
-use ym_core::pipeline::colour::{LookProblem, LookProvider, NeutralOnly, ResolvedLook};
+use ym_core::pipeline::color::{LookProblem, LookProvider, NeutralOnly, ResolvedLook};
 use ym_core::pipeline::thumbs::encode_png_rgb8;
 use ym_core::pipeline::{RenderOptions, Renderer};
 use ym_core::preferences::PreferencesStore;

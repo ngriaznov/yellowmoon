@@ -7,7 +7,7 @@ use ym_color::encode::{
 };
 
 #[test]
-fn srgb_matches_colour_science() {
+fn srgb_matches_color_science() {
     // colour-science 0.4.7 eotf_inverse_sRGB / eotf_sRGB (pasted from a local run).
     for (x, want) in [
         (0.0, 0.0),

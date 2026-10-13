@@ -185,16 +185,47 @@ describe("development", () => {
     expect(progress.every((e) => e.error === null)).toBe(true);
   });
 
-  it("sends each thumbnail as a PNG of at most 240 px", async () => {
+  it("announces each thumbnail by its address: a PNG of at most 240 px is behind it", async () => {
     const { thumbnails } = listen();
     await api.openPaths(ARW);
     await vi.advanceTimersByTimeAsync(4500);
     expect(thumbnails.map((t) => t.id)).toEqual(Array.from({ length: 12 }, (_, i) => i + 1));
-    for (const { png_bytes } of thumbnails) {
-      expect(png_bytes.slice(0, 8)).toEqual([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
-      const width = new DataView(new Uint8Array(png_bytes).buffer).getUint32(16);
-      expect(width).toBeLessThanOrEqual(240);
+    for (const { url } of thumbnails) {
+      // The picture does not travel in the event (the shell serves it on `ym-frame://`); the mock's address holds it.
+      expect(url).toMatch(/^(blob:|data:image\/png;base64,)/);
+      expect(url.length).toBeLessThan(2 ** 20);
+      if (url.startsWith("data:")) {
+        const bytes = Uint8Array.from(atob(url.split(",")[1] ?? ""), (c) => c.charCodeAt(0));
+        expect(Array.from(bytes.slice(0, 8))).toEqual([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+        expect(new DataView(bytes.buffer).getUint32(16)).toBeLessThanOrEqual(240);
+      }
     }
+  });
+
+  it("gives the thumbnails again on request, as a webview that reloaded needs them", async () => {
+    const { thumbnails } = listen();
+    await api.openPaths(ARW);
+    await vi.advanceTimersByTimeAsync(4500);
+    const again = await api.thumbnails();
+    expect(again.map((t) => t.id)).toEqual(thumbnails.map((t) => t.id));
+    expect(again.map((t) => t.url)).toEqual(thumbnails.map((t) => t.url));
+    await api.closeSession();
+    expect(await api.thumbnails()).toEqual([]);
+  });
+
+  it("refuses to restart while an export is running, as the shell does", async () => {
+    api.reset({ exportHoldAt: 1 });
+    await api.openPaths(ARW);
+    await vi.advanceTimersByTimeAsync(4500);
+    await api.exportStart(job("all"));
+    expect(await api.exportBusy()).toBe(true);
+    await expect(api.restartApp()).rejects.toMatchObject({ scope: "export" });
+    expect(api.system.restarts).toBe(0);
+    api.flush();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(await api.exportBusy()).toBe(false);
+    await api.restartApp();
+    expect(api.system.restarts).toBe(1);
   });
 
   it("marks files that can't be developed as skipped, with the reason", async () => {
@@ -311,7 +342,7 @@ describe("settings", () => {
     api.on("render_stats", (e) => stats.push(e));
     await api.updateSettings(1, { contrast: 5 });
     await vi.advanceTimersByTimeAsync(1);
-    expect(stats).toEqual([{ ms: 42, path: "neural", space: "display_p3" }]);
+    expect(stats).toEqual([{ ms: 42, path: "neural", space: "display_p3", zoom_percent: null, fit_percent: null }]);
   });
 
   it("rejects an unknown photo", async () => {
@@ -839,12 +870,12 @@ describe("test controls", () => {
     const seen: ThumbnailReady[] = [];
     api.on("thumbnail_ready", (e) => {
       seen.push(e);
-      e.png_bytes.length = 0;
+      e.url = "";
     });
     api.on("thumbnail_ready", (e) => seen.push(e));
     await api.openPaths(ARW);
     api.flush();
-    expect(seen.filter((e) => e.png_bytes.length > 0)).toHaveLength(12);
+    expect(seen.filter((e) => e.url.length > 0)).toHaveLength(12);
   });
 });
 
@@ -1003,7 +1034,7 @@ describe("what the screens need beyond docs/01", () => {
     api.on("render_stats", (s) => stats.push(s));
     await api.viewportSetRect({ x: 0, y: 75, width: 1000, height: 666, scale: 2 });
     await Promise.resolve();
-    expect(stats).toEqual([{ ms: 42, path: "neural", space: "display_p3" }]);
+    expect(stats).toEqual([{ ms: 42, path: "neural", space: "display_p3", zoom_percent: null, fit_percent: null }]);
   });
 
   it("clamps a crop, an orientation and a colour balance point", async () => {

@@ -42,6 +42,7 @@ import type {
   SessionState,
   SettingsPatch,
   SourceRecognition,
+  ThumbnailReady,
   ViewportInfo,
   ViewportInput,
   ViewportMode,
@@ -161,6 +162,17 @@ export interface Api {
    * (after a reload). "Update ready" waits while it is; the `export_busy` event says when it changes.
    */
   exportBusy(): Promise<boolean>;
+  /**
+   * `restart_app` (addition): restarts into the update that was installed. Refused with a plain sentence while an export is queued or
+   * running (the guard is the core's; the webview's own check, `restartAvailability`, is a courtesy). Resolves only if the app is not
+   * replaced.
+   */
+  restartApp(): Promise<void>;
+  /**
+   * `thumbnails` (addition): the address of the thumbnail of every photo that has one. The core announces each thumbnail once
+   * (`thumbnail_ready`), so a webview that reloaded asks for them again. Only addresses cross the bridge.
+   */
+  thumbnails(): Promise<ThumbnailReady[]>;
 
   // --- The system: dialogs, Finder, the browser ------------------------------
 
@@ -253,6 +265,8 @@ export const tauriApi: Api = {
   exportCancel: (jobId) => unit(commands.exportCancel(jobId)),
   cliPreview: (job) => commands.cliPreview(job),
   exportBusy: () => commands.exportBusy(),
+  restartApp: () => unit(commands.restartApp()),
+  thumbnails: () => commands.thumbnails(),
 
   chooseFolder: (start) => commands.chooseFolder(start),
   chooseLookFiles: () => commands.chooseLookFiles(),

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { fitZoomExact, fitZoomPercent, MAX_ZOOM_PERCENT, showsWhole, zoomAfter, zoomKey, zoomStep } from "./zoom";
+import { fitZoomExact, fitZoomOf, fitZoomPercent, MAX_ZOOM_PERCENT, showsWhole, zoomAfter, zoomKey, zoomStep } from "./zoom";
 
 const photo = { width_px: 8640, height_px: 5760 };
 const cell = { width: 1020, height: 680, scale: 2 };
@@ -142,5 +142,18 @@ describe("the menu steps", () => {
     // A zoom the core shows as Fit counts as Fit.
     expect(zoomStep(at(50), 1, 62)).toEqual(at(100));
     expect(zoomStep(at(50), -1, 62)).toEqual({ kind: "fit" });
+  });
+});
+
+describe("fitZoomOf", () => {
+  it("takes the core's Fit zoom when a frame has reported one, else the estimate", () => {
+    expect(fitZoomOf({ fit_percent: 31.2 }, 33)).toBe(31.2);
+    expect(fitZoomOf({ fit_percent: null }, 33)).toBe(33);
+    expect(fitZoomOf(null, 33)).toBe(33);
+    expect(fitZoomOf(undefined, null)).toBeNull();
+    // Nonsense from a sender is not a Fit zoom.
+    expect(fitZoomOf({ fit_percent: 0 }, 33)).toBe(33);
+    expect(fitZoomOf({ fit_percent: Number.NaN }, 33)).toBe(33);
+    expect(fitZoomOf({ fit_percent: -4 }, null)).toBeNull();
   });
 });

@@ -162,7 +162,7 @@ pub fn bilinear(m: &Mosaic) -> RgbImage {
                 let horiz = || 0.5 * (at(xi - 1, yi) + at(xi + 1, yi));
                 let vert = || 0.5 * (at(xi, yi - 1) + at(xi, yi + 1));
                 // The colour found left/right of a green photosite is the one that owns its row.
-                let row_colour = |xx: isize| col[y * w + mirror(xx, w)];
+                let row_color = |xx: isize| col[y * w + mirror(xx, w)];
                 match col[y * w + x] {
                     R => {
                         rr[x] = v;
@@ -176,7 +176,7 @@ pub fn bilinear(m: &Mosaic) -> RgbImage {
                     }
                     _ => {
                         gg[x] = v;
-                        if row_colour(xi + 1) == R {
+                        if row_color(xi + 1) == R {
                             rr[x] = horiz();
                             bb[x] = vert();
                         } else {

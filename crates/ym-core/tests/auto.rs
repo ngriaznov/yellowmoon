@@ -65,7 +65,7 @@ fn the_as_shot_fallback_reads_the_light_back_from_the_white_balance() {
         assert_eq!(s.light_confidence, 0.5);
         assert!(s.tint.abs() < 3.0, "tint {}", s.tint);
         // The white the mosaic is balanced with is the true light (green = 1).
-        let w = est.colour.w_scene_initial;
+        let w = est.color.w_scene_initial;
         for c in 0..3 {
             let want = scene.white[c];
             assert!(
@@ -471,5 +471,101 @@ fn the_container_only_arw6_file_is_still_probed_for_its_camera() {
             .unsupported_message()
             .unwrap()
             .starts_with("ARW 6.0 compressed files from the A7 V and A7R VI")
+    );
+}
+
+// ---------------------------------------------------------------------------------------------
+// Pooling (docs/06 Batch pooling)
+
+/// The per-photo noise results (own estimates, unpooled) of ramp frames written at ISO 800.
+fn ramp_frame_noise(
+    dir: &Path,
+    env: &SessionEnv,
+    frames: &[(f64, u64)],
+) -> Vec<(ym_core::auto::NoiseResult, ym_noise::priors::NoisePrior)> {
+    frames
+        .iter()
+        .enumerate()
+        .map(|(i, (a, seed))| {
+            let s = Scene::new(768, 512, light(PROFILE, 5200.0), Layout::Ramp, 0.8)
+                .noise(*a, 2e-6)
+                .seed(*seed);
+            let path = dir.join(format!("f{i}.ARW"));
+            s.builder(MODEL)
+                .iso(800)
+                .write_to(&path, &s.mosaic())
+                .unwrap();
+            let raw = decode(&path);
+            let est = estimates_of(&raw, env);
+            (
+                est.noise.clone(),
+                ym_core::auto::noise_prior(&env.priors, &raw.meta),
+            )
+        })
+        .collect()
+}
+
+fn key_of_frames(dir: &Path) -> ym_noise::estimate::PoolKey {
+    ym_core::auto::pool_key(&decode(&dir.join("f0.ARW")).meta)
+}
+
+#[test]
+fn frames_of_one_scene_pool_by_their_own_fit_and_not_by_the_guard() {
+    // The reproduction of the pooling defect: three frames of one ramp scene (true a = 5e-4; their
+    // own fits 5.03e-4 to 5.13e-4) used to pool to 1.77e-4, the centre of the prior, and only
+    // `POOL_AGREEMENT_FACTOR` kept the members' own estimates. With the pooling maths of
+    // `ym_noise::BatchPool` fixed the pooled fit is accepted: `Pooled`, not the file's own.
+    let dir = tempfile::tempdir().unwrap();
+    let env = base_env();
+    let members = ramp_frame_noise(dir.path(), &env, &[(5e-4, 1), (5e-4, 2), (5e-4, 3)]);
+    let key = key_of_frames(dir.path());
+    let refs: Vec<_> = members.iter().map(|(n, p)| (n, p)).collect();
+    let out = ym_core::auto::pool_group(&key, &refs);
+    for ((own, _), pooled) in members.iter().zip(&out) {
+        assert_eq!(pooled.source, NoiseSource::Pooled { files: 3 });
+        assert!(
+            (pooled.model.a / own.model.a - 1.0).abs() < 0.04,
+            "own a {:.3e}, pooled a {:.3e}",
+            own.model.a,
+            pooled.model.a
+        );
+        assert!(
+            (pooled.model.a / 5e-4 - 1.0).abs() < 0.06,
+            "pooled a {:.3e}",
+            pooled.model.a
+        );
+    }
+}
+
+#[test]
+fn a_pooled_fit_that_contradicts_its_members_is_not_used() {
+    // The guard stays as the last word against a pool that disagrees with its members' own
+    // models by more than `POOL_AGREEMENT_FACTOR` in variance: here the members' models say 1.4
+    // times the sigma that their own points support (as for files that a filter scaled, whose
+    // group mixes them with plain ones), the refit over the points says 1.96 times less, and every
+    // photo keeps its own estimate.
+    let dir = tempfile::tempdir().unwrap();
+    let env = base_env();
+    let mut members = ramp_frame_noise(dir.path(), &env, &[(5e-4, 1), (5e-4, 2), (5e-4, 3)]);
+    for (n, _) in &mut members {
+        n.model = n.model.with_sigma_scaled(1.4);
+    }
+    let key = key_of_frames(dir.path());
+    let refs: Vec<_> = members.iter().map(|(n, p)| (n, p)).collect();
+    let out = ym_core::auto::pool_group(&key, &refs);
+    for ((own, _), pooled) in members.iter().zip(&out) {
+        assert_eq!(pooled.source, NoiseSource::Image);
+        assert_eq!(pooled.model, own.model);
+    }
+    // Within the agreement factor the same members would have pooled.
+    let mut mild = members.clone();
+    for (n, _) in &mut mild {
+        n.model = n.model.with_sigma_scaled(1.0 / 1.4 * 1.2);
+    }
+    let refs: Vec<_> = mild.iter().map(|(n, p)| (n, p)).collect();
+    let out = ym_core::auto::pool_group(&key, &refs);
+    assert!(
+        out.iter()
+            .all(|r| r.source == NoiseSource::Pooled { files: 3 })
     );
 }

@@ -130,7 +130,7 @@ pub enum StageGroup {
     /// (R3 to R9).
     Raw,
     /// White balance, sensor map, ARRI matrix, AWG4, exposure, roll-off and toe, LogC4 (C1 to C8).
-    Colour,
+    Color,
     /// Primary grade, look, curve, display transform and encode (C9 to C13).
     Grade,
     /// Crop, straighten and orientation.
@@ -248,7 +248,7 @@ impl SettingsField {
             | Self::WhiteBalance
             | Self::WhitePick
             | Self::Exposure
-            | Self::Rolloff => StageGroup::Colour,
+            | Self::Rolloff => StageGroup::Color,
             Self::Crop | Self::Orientation => StageGroup::Geometry,
             Self::Look
             | Self::LookIntensity
@@ -1893,14 +1893,14 @@ mod tests {
             SettingsField::Exposure,
             SettingsField::Rolloff,
         ] {
-            assert_eq!(f.group(), StageGroup::Colour, "{f:?}");
+            assert_eq!(f.group(), StageGroup::Color, "{f:?}");
         }
         for f in [SettingsField::Crop, SettingsField::Orientation] {
             assert_eq!(f.group(), StageGroup::Geometry);
         }
         assert_eq!(SettingsField::Contrast.group(), StageGroup::Grade);
         assert_eq!(SettingsField::Look.group(), StageGroup::Grade);
-        assert!(StageGroup::Raw < StageGroup::Colour && StageGroup::Colour < StageGroup::Grade);
+        assert!(StageGroup::Raw < StageGroup::Color && StageGroup::Color < StageGroup::Grade);
         // Every field has a name that is the serde name.
         for f in SettingsField::ALL {
             assert_eq!(

@@ -40,20 +40,37 @@ pub struct BatchPool {
     entries: HashMap<PoolKey, Entry>,
 }
 
-/// Merges two points of the same (plane, bin, kind), weighted by their counts.
+/// Merges two points of the same (plane, bin, kind).
+///
+/// The mean and the variance are the means weighted by the counts (docs/06 "weighted by bin
+/// counts"), and the counts add. **The relative variance is that of the better member, not the
+/// `1 / N` of independent samples.** Files of one session do not give independent samples of a
+/// bin: the scatter of a bin about the noise line comes largely from what the scene does to it (the
+/// position of the bin's mean, the gradients the Haar coefficients still see, the little texture
+/// the selection lets through), and a second frame of the same scene repeats that scatter instead
+/// of averaging it away. The first version divided the relative variance by the number of files;
+/// three frames of one ramp scene then had bins that looked three times as precise as their
+/// scatter allowed, every point sat several nominal errors from its line, and the robust refit
+/// threw them all away and fell back to the prior (1.77e-4 for a true 5e-4, with the members' own
+/// fits at 5.0 to 5.1e-4). Pooling averages the bins and widens the range they cover; it does not
+/// tighten them. As a consequence pooling copies of one estimate returns that estimate.
 fn merge(a: &BinPoint, b: &BinPoint) -> BinPoint {
     let (na, nb) = (f64::from(a.count), f64::from(b.count));
     let n = na + nb;
-    // Var(pooled) = sum n_i^2 Var(v_i) / N^2 with Var(v_i) = k_i v^2 / n_i  =>  k = sum n_i k_i / N.
-    let k = (na * a.rel_var * na + nb * b.rel_var * nb) / n;
+    if n <= 0.0 {
+        return *a;
+    }
     BinPoint {
         plane: a.plane,
         bin: a.bin,
         kind: a.kind,
-        mean: (na * a.mean + nb * b.mean) / n,
-        var: (na * a.var + nb * b.var) / n,
+        // The weighted means in the form `a + (b - a) * w`: two equal points give exactly that
+        // point (`(na * x + nb * x) / n` can miss `x` by a rounding step), so pooling copies of one
+        // estimate hands the fit exactly the points it had.
+        mean: a.mean + (b.mean - a.mean) * (nb / n),
+        var: a.var + (b.var - a.var) * (nb / n),
         count: (a.count).saturating_add(b.count),
-        rel_var: k / n,
+        rel_var: a.rel_var.min(b.rel_var),
     }
 }
 
@@ -247,7 +264,26 @@ mod tests {
         assert_eq!(m.count, 1600);
         assert!((m.mean - (400.0 * 0.10 + 1200.0 * 0.12) / 1600.0).abs() < 1e-12);
         assert!((m.var - (400.0 * p1.var + 1200.0 * p2.var) / 1600.0).abs() < 1e-15);
-        assert!((m.rel_var - 5.5 / 1600.0).abs() < 1e-9);
+        // The relative variance is the better member's: no 1/N for samples that share a scene.
+        assert!((m.rel_var - 5.5 / 1200.0).abs() < 1e-12);
+        // Merging is symmetric and associative where it can be: order does not matter.
+        let m2 = merge(&p2, &p1);
+        assert!((m2.mean - m.mean).abs() < 1e-15 && (m2.var - m.var).abs() < 1e-18);
+        assert_eq!(m2.rel_var, m.rel_var);
+    }
+
+    #[test]
+    fn pooling_copies_of_a_point_changes_nothing_but_the_count() {
+        let p = point(2, 9, 0.17, 1e-3, 1e-6, 700);
+        let mut m = p;
+        for _ in 0..5 {
+            m = merge(&m, &p);
+        }
+        assert_eq!(m.count, 4200);
+        // Exactly the point, not "to a rounding step": `(na * x + nb * x) / n` misses 0.17 by one.
+        assert_eq!(m.mean, p.mean);
+        assert_eq!(m.var, p.var);
+        assert_eq!(m.rel_var, p.rel_var);
     }
 
     #[test]

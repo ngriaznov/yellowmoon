@@ -27,11 +27,11 @@ use ym_gpu::cpu::{Rect, RgbImage};
 use ym_gpu::kernels::color::{ColorOutput, PreparedChain};
 use ym_gpu::queue::{CancelToken, JobSpec, Priority};
 
-use super::RenderError;
-use super::colour::{GradePlan, PhotoSource};
+use super::color::{GradePlan, PhotoSource};
 use super::geometry::{Affine, Grid, oriented_to_sensor, sensor_to_oriented};
 use super::graph::{ComputeDevice, Job, RenderReport, Renderer};
 use super::viewport::ViewportState;
+use super::{FrameZoom, RenderError};
 
 /// A finished 8-bit frame: RGBA, Display P3 for the viewport, sRGB for thumbnails.
 #[derive(Debug, Clone, PartialEq)]
@@ -281,7 +281,7 @@ pub(crate) fn sample_to_camera(
 /// Runs the colour chain over `sampled` and returns RGBA8 with the letterbox painted, and where it
 /// ran. The GPU is used for the final view when there is one; on any GPU error the CPU path runs
 /// instead and the note says why.
-pub(crate) fn colour_pass(
+pub(crate) fn color_pass(
     job: &mut Job<'_>,
     sampled: Sampled,
     grade: &GradePlan,
@@ -322,13 +322,13 @@ pub(crate) fn colour_pass(
     }
     if !done {
         let frame = Frame::planar(w, h, &sampled.img.data)
-            .map_err(|e| RenderError::Colour(e.to_string()))?;
+            .map_err(|e| RenderError::Color(e.to_string()))?;
         let mut rgb = vec![0u8; 3 * n];
         let view = if before { View::Before } else { View::Final };
         grade
             .chain
             .render_u8(view, &frame, (0, 0), &mut rgb, job.r.options().threads)
-            .map_err(|e| RenderError::Colour(e.to_string()))?;
+            .map_err(|e| RenderError::Color(e.to_string()))?;
         rgba.par_chunks_mut(4)
             .zip(rgb.par_chunks(3))
             .for_each(|(d, s)| {
@@ -338,7 +338,7 @@ pub(crate) fn colour_pass(
                 d[3] = 255;
             });
     }
-    job.runs.colour_passes += 1;
+    job.runs.color_passes += 1;
     job.timings.pass_ms += started.elapsed().as_secs_f64() * 1000.0;
     if let Some(outside) = &sampled.outside {
         rgba.par_chunks_mut(4)
@@ -474,7 +474,7 @@ pub(crate) fn render_view(mut job: Job<'_>, spec: &ViewSpec) -> Result<RenderedF
         return Ok(frame);
     }
     let view = sample_view(&mut job, spec)?;
-    let (rgba, device) = colour_pass(
+    let (rgba, device) = color_pass(
         &mut job,
         view.sampled,
         &grade,
@@ -530,7 +530,7 @@ impl Renderer {
         src: &PhotoSource,
         cancel: &CancelToken,
     ) -> Result<(usize, usize), RenderError> {
-        Job::new(self, src, cancel).final_size()
+        Job::new(self, src, cancel)?.final_size()
     }
 
     /// The frame of a viewport state: the photo in the cell at the zoom and pan of `state`, in
@@ -546,7 +546,7 @@ impl Renderer {
         options: &FrameOptions,
         cancel: &CancelToken,
     ) -> Result<RenderedFrame, RenderError> {
-        let mut job = Job::new(self, src, cancel);
+        let mut job = Job::new(self, src, cancel)?;
         let image = job.final_size()?;
         let (dw, dh) = state.device_size();
         let zoom = state.zoom(image);
@@ -562,7 +562,13 @@ impl Renderer {
             background: self.options().background,
             gpu_priority: Priority::Viewport,
         };
-        let frame = render_view(job, &spec)?;
+        let mut frame = render_view(job, &spec)?;
+        // The zoom belongs to the request, not to the pixels (a cached frame is served for the
+        // same view): say what this request asked for.
+        frame.report.zoom = Some(FrameZoom {
+            zoom,
+            fit_zoom: state.fit_zoom(image),
+        });
         // The header's status text is the last *viewport* render: a thumbnail, a look tile, a pixel
         // readout or an export of the same photo must not replace it.
         self.note_stats(src.id, frame.report.stats());
@@ -582,7 +588,7 @@ impl Renderer {
         state: &ViewportState,
         cancel: &CancelToken,
     ) -> Result<usize, RenderError> {
-        let mut job = Job::new(self, src, cancel);
+        let mut job = Job::new(self, src, cancel)?;
         let plan = job.plan()?;
         let image = job.final_size()?;
         if plan.reduced || scale_for_zoom(state.zoom(image)) != 1 {
@@ -615,7 +621,7 @@ impl Renderer {
         css: (f64, f64),
         cancel: &CancelToken,
     ) -> Result<Option<PixelSample>, RenderError> {
-        let mut job = Job::new(self, src, cancel);
+        let mut job = Job::new(self, src, cancel)?;
         let image = job.final_size()?;
         let Some((fx, fy)) = state.final_point_at(image, css) else {
             return Ok(None);
@@ -669,7 +675,7 @@ impl Renderer {
         css: (f64, f64),
         cancel: &CancelToken,
     ) -> Result<Option<[f64; 2]>, RenderError> {
-        let mut job = Job::new(self, src, cancel);
+        let mut job = Job::new(self, src, cancel)?;
         let plan = job.plan()?;
         let image = job.final_size()?;
         let Some((fx, fy)) = state.final_point_at(image, css) else {
@@ -695,79 +701,6 @@ impl Renderer {
             (ay / plan.height as f64).clamp(0.0, 1.0),
         ];
         Ok(Some(sensor_to_oriented(geom.exif_orientation, area)))
-    }
-
-    /// The 5 x 5 median of the demosaiced, `g0`-balanced camera RGB at a Pick white point (the
-    /// space of `white_pick`), the sample `wb::picked_scene_white` takes, **without the vignetting gain**
-    /// (the contract of the session's own sample, `auto::pick_white_sample`: a gain of 1.3 at the
-    /// edge of the frame would make an unclipped grey look clipped to the "too bright" check, and
-    /// it scales all three channels alike, so it carries no colour). Unlike the session's sample,
-    /// which reads the raw data directly, this one comes from the classical render, so it sees
-    /// what the viewport shows; the session's is the one the chain uses.
-    ///
-    /// # Errors
-    ///
-    /// [`RenderError`] for unusable data, a photo smaller than 5 x 5 pixels, or a spot with no
-    /// usable colour.
-    pub fn pick_white_sample(
-        &self,
-        src: &PhotoSource,
-        point: [f64; 2],
-        cancel: &CancelToken,
-    ) -> Result<Vec3, RenderError> {
-        let mut job = Job::new(self, src, cancel);
-        let plan = job.plan()?;
-        if plan.out_w < 5 || plan.out_h < 5 {
-            return Err(RenderError::Image(
-                "This photo is too small to pick a white from.".to_owned(),
-            ));
-        }
-        let geom = job.geometry();
-        let s = oriented_to_sensor(
-            geom.exif_orientation,
-            [point[0].clamp(0.0, 1.0), point[1].clamp(0.0, 1.0)],
-        );
-        let target = (s[0] * plan.width as f64, s[1] * plan.height as f64);
-        // Find the pixel of the corrected image whose source is that sensor position.
-        let (mut px, mut py) = target;
-        let crop = plan
-            .lens
-            .as_ref()
-            .map_or(Rect::whole(plan.out_w, plan.out_h), |l| l.crop());
-        if let Some(lens) = &plan.lens {
-            for _ in 0..4 {
-                let (sx, sy) = lens.source_position(1, px, py);
-                px += target.0 - sx;
-                py += target.1 - sy;
-            }
-        }
-        let cx = (px - crop.x as f64)
-            .floor()
-            .clamp(2.0, plan.out_w as f64 - 3.0) as usize;
-        let cy = (py - crop.y as f64)
-            .floor()
-            .clamp(2.0, plan.out_h as f64 - 3.0) as usize;
-        let region = job.region(Rect::new(cx - 2, cy - 2, 5, 5), false)?;
-        // Undo R3 where it was applied (the gain of the radius of the sensor position).
-        let gain = plan.vignette.as_ref().map_or(1.0, |v| {
-            let (w, h) = (plan.width as f64, plan.height as f64);
-            let r = (target.0 - w * 0.5).hypot(target.1 - h * 0.5) / (0.5 * w.hypot(h));
-            v.gain_at(r).max(1e-4)
-        });
-        let pixels: Vec<Vec3> = (0..25)
-            .map(|i| {
-                let p = region.pixel(i % 5, i / 5);
-                [
-                    f64::from(p[0]) / gain,
-                    f64::from(p[1]) / gain,
-                    f64::from(p[2]) / gain,
-                ]
-            })
-            .collect();
-        job.finish(1, ComputeDevice::Cpu, OutputTarget::Viewport);
-        ym_color::wb::median_rgb(&pixels).ok_or_else(|| {
-            RenderError::Image("That spot has no usable colour. Pick another one.".to_owned())
-        })
     }
 
     /// Renders the photo at full resolution (`docs/01` "Export: full resolution"), tile by tile: the
@@ -812,7 +745,7 @@ impl Renderer {
             Ok(())
         };
         gate()?;
-        let mut job = Job::new(self, src, cancel);
+        let mut job = Job::for_export(self, src, cancel);
         let plan = job.plan()?;
         // Which geometry the target asks for (see [`FullTarget`]).
         let baked = job.geometry().at_full_resolution();
@@ -860,7 +793,7 @@ impl Renderer {
         };
         let grade = job.grade(target_out, false)?;
         if matches!(request.target, FullTarget::DngLinearAwg4) && !grade.chain.dng_available() {
-            return Err(RenderError::Colour(
+            return Err(RenderError::Color(
                 "This look includes its own display rendering, so it can't go into a DNG; pick another look or export TIFF."
                     .to_owned(),
             ));
@@ -883,7 +816,7 @@ impl Renderer {
                     let region = job.region(rect, false)?;
                     let sampled = sample_to_camera(&region, (x0, y0), &grid, (ox, oy), tw, th);
                     let frame = Frame::planar(tw, th, &sampled.img.data)
-                        .map_err(|e| RenderError::Colour(e.to_string()))?;
+                        .map_err(|e| RenderError::Color(e.to_string()))?;
                     let mut out = vec![0.0f32; 3 * tw * th];
                     match request.target {
                         FullTarget::DisplayLinear(_) | FullTarget::DngPreview => grade
@@ -894,7 +827,7 @@ impl Renderer {
                                 &mut out,
                                 threads,
                             )
-                            .map_err(|e| RenderError::Colour(e.to_string()))?,
+                            .map_err(|e| RenderError::Color(e.to_string()))?,
                         FullTarget::DngLinearAwg4 => grade
                             .chain
                             .render_dng_linear_awg4_f32(
@@ -903,7 +836,7 @@ impl Renderer {
                                 &mut out,
                                 threads,
                             )
-                            .map_err(|e| RenderError::Colour(e.to_string()))?,
+                            .map_err(|e| RenderError::Color(e.to_string()))?,
                     }
                     if let Some(outside) = &sampled.outside {
                         for (i, &o) in outside.iter().enumerate() {

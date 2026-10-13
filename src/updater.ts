@@ -6,15 +6,17 @@
  *    automatically" is on. Failures stay silent: an unreachable endpoint never bothers the user.
  *  - "Check for Updates…" checks now and reports the result.
  *  - Updates come from `@tauri-apps/plugin-updater` (`check`, `downloadAndInstall`) and the app
- *    restarts through `@tauri-apps/plugin-process` (`relaunch`).
+ *    restarts through the `restart_app` command (`Api.restartApp`), not the process plugin's `relaunch`: a restart
+ *    Tauri makes cannot be vetoed by the shell's exit handler, so the command is where the shell refuses it while an
+ *    export is queued or running.
  *  - An update never interrupts an export: "Update ready" can't restart while one is running
- *    (`restartAvailability`).
+ *    (`restartAvailability`), and the shell refuses a restart that gets through (an export started a moment ago,
+ *    another window); the update then stays ready.
  *
  * `createUpdater` holds the state machine and takes its collaborators as arguments so tests can
  * fake them; `updater` is the instance the app uses, wired to the real plugins. `useUpdater` is
  * the React hook, built on `useSyncExternalStore`.
  */
-import { relaunch } from "@tauri-apps/plugin-process";
 import { check, type DownloadEvent, type Update } from "@tauri-apps/plugin-updater";
 import { useCallback, useSyncExternalStore } from "react";
 import type { UpdateState } from "./api/types";
@@ -33,7 +35,7 @@ export type UpdateHandle = Pick<Update, "version" | "downloadAndInstall">;
 export interface UpdaterDeps {
   /** Asks the update endpoint; resolves `null` when this version is current. */
   check: () => Promise<UpdateHandle | null>;
-  /** Restarts the app into the new version. */
+  /** Restarts the app into the new version (`Api.restartApp`; rejects with an `export` error while an export runs). */
   relaunch: () => Promise<void>;
   /** Whether "Check for updates automatically" is on; read before every quiet check. */
   autoCheck?: () => boolean | Promise<boolean>;
@@ -119,8 +121,17 @@ export function updateCell(state: UpdateState, exportRunning: boolean): UpdateCe
   }
 }
 
-const messageOf = (error: unknown): string =>
-  error instanceof Error ? error.message : typeof error === "string" ? error : "The update could not be checked.";
+/** The shell refused a restart because an export is queued or running (an `AppError` of scope `export`). */
+const isExportRunning = (error: unknown): boolean =>
+  typeof error === "object" && error !== null && (error as { scope?: unknown }).scope === "export";
+
+const messageOf = (error: unknown): string => {
+  if (error instanceof Error) return error.message;
+  if (typeof error === "string") return error;
+  // An `AppError` of the shell: `{ scope, message }`.
+  const message = typeof error === "object" && error !== null ? (error as { message?: unknown }).message : undefined;
+  return typeof message === "string" ? message : "The update could not be checked.";
+};
 
 /** Creates an updater. Nothing runs until `start()` or one of the actions is called. */
 export function createUpdater(deps: UpdaterDeps): Updater {
@@ -203,6 +214,9 @@ export function createUpdater(deps: UpdaterDeps): Updater {
       await deps.relaunch();
       return true;
     } catch (error) {
+      // The shell's own guard said an export is running: the update is still installed and ready, and the cell enables when the
+      // export is done. Anything else is a restart that failed.
+      if (isExportRunning(error)) return false;
       setState({ phase: "error", message: messageOf(error) });
       return false;
     }
@@ -251,7 +265,7 @@ export function createUpdater(deps: UpdaterDeps): Updater {
 /** Outside a Tauri window there is no updater: a check finds nothing. */
 const realDeps: UpdaterDeps = {
   check: async () => (isTauri() ? await check() : null),
-  relaunch: () => relaunch(),
+  relaunch: () => getApi().restartApp(),
   // "Check for updates automatically" (Preferences, default on): read before every quiet check. If the preference can't be
   // read, the check goes ahead, as the default says.
   autoCheck: async () => {

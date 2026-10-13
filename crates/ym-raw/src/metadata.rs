@@ -116,9 +116,9 @@ pub struct JpegRef {
 /// The raw table of one lens-correction tag: the tag's signed 16-bit values exactly as stored.
 ///
 /// Sony writes a count followed by the knots: tag 0x7032 (vignetting) and 0x7037 (distortion)
-/// hold 17 values (the count and 16 knots), tag 0x7035 (chromatic aberration) holds 33 (the count
-/// and 32 knots, presumably the red and the blue channel of 16 each; not yet checked against a
-/// real file). The maths lives in
+/// hold 17 values (the count `n` = 16 and 16 knots), tag 0x7035 (chromatic aberration) holds 33
+/// (the count `2n` = 32 and 32 knots: `n` for red, then `n` for blue; read from the one real file
+/// with this tag we have, not checked against a second body). The maths lives in
 /// `docs/05-raw-processing.md`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LensTable {

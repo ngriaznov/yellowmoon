@@ -578,7 +578,7 @@ fn a_burst_shares_one_exposure_and_a_lone_frame_keeps_its_own() {
     assert!((shared(3) - own(3)).abs() < 1e-9);
     // The colour estimates the render uses carry the shared value.
     let est = session.estimates(ids[0]).unwrap();
-    assert!((est.colour.ev_auto - own(1)).abs() < 1e-9);
+    assert!((est.color.ev_auto - own(1)).abs() < 1e-9);
     // Whoever finished first was told when the median moved.
     let changed: Vec<PhotoId> = rx
         .try_iter()
@@ -694,10 +694,12 @@ fn photos_of_one_body_and_iso_pool_their_noise_estimate() {
 }
 
 #[test]
-fn a_pooled_fit_that_disagrees_with_its_members_is_not_used() {
-    // Three frames of the same scene have identical bins; the pooled refit of ym-noise reads that as
-    // overwhelming evidence and slides to 1.77e-4 for a true 5e-4 (docs/06, the review note in
-    // docs/01 section Session). Each file keeps its own estimate, which is right.
+fn three_frames_of_one_scene_pool_to_their_own_fit() {
+    // Three frames of the same scene have the same bins up to independent noise. The first
+    // version of `ym_noise::BatchPool` read that as overwhelming evidence and slid to 1.77e-4 for
+    // a true 5e-4 (each file's own fit: 5.0 to 5.1e-4), and the agreement guard of the session
+    // (`POOL_AGREEMENT_FACTOR`) was what kept the files' own estimates. The pooling maths is fixed:
+    // the pooled fit is accepted by the guard and is the files' own to a few percent.
     let dir = tempfile::tempdir().unwrap();
     write_noise_group(
         dir.path(),
@@ -715,19 +717,101 @@ fn a_pooled_fit_that_disagrees_with_its_members_is_not_used() {
     for id in session.photo_ids() {
         let e = session.estimates(id).unwrap();
         assert!(
-            (e.noise.model.a / 5e-4 - 1.0).abs() < 0.12,
+            (e.noise.model.a / 5e-4 - 1.0).abs() < 0.06,
             "photo {id}: a {}",
             e.noise.model.a
         );
-        assert!(
-            matches!(
-                e.noise.source,
-                NoiseSource::Image | NoiseSource::Pooled { .. }
-            ),
-            "{:?}",
-            e.noise.source
+        assert_eq!(
+            e.noise.source,
+            NoiseSource::Pooled { files: 3 },
+            "photo {id}"
         );
     }
+}
+
+/// Four frames: a, b, c a burst (the same second, identical settings), d ten seconds later.
+/// `d_iso` is the ISO of d: the same as the others puts d in their noise pool, another does not.
+fn write_burst_and_a_lone_frame(dir: &Path, d_iso: u32) {
+    let frame = |name: &str, sec: &str, level: f64, iso: u32| {
+        let s = scene(level);
+        s.builder(MODEL)
+            .iso(iso)
+            .capture_time(&format!("2026:10:04 12:03:{sec}"), "00", None)
+            .write_to(&dir.join(name), &s.mosaic())
+            .unwrap();
+    };
+    frame("a.ARW", "10", 0.10, 400);
+    frame("b.ARW", "10", 0.20, 400);
+    frame("c.ARW", "11", 0.40, 400);
+    frame("d.ARW", "40", 0.10, d_iso);
+}
+
+#[test]
+fn estimates_are_final_when_the_photos_they_depend_on_are_estimated() {
+    // One decode thread and a thumbnail hook that parks the third thumbnail: a, b and c are
+    // estimated, d is still waiting. a's burst is {a, b, c}; whether d is in its noise pool
+    // depends on d's ISO.
+    for (d_iso, d_in_pool) in [(800, false), (400, true)] {
+        let dir = tempfile::tempdir().unwrap();
+        write_burst_and_a_lone_frame(dir.path(), d_iso);
+        let gate = common::GateThumbnails::new(3);
+        let session = Session::new(
+            base_env()
+                .with_decode_threads(1)
+                .with_thumbnails(gate.clone()),
+        );
+        session.open(&[dir.path().to_path_buf()], OpenOptions::default());
+        gate.wait_parked();
+        let ids = session.photo_ids();
+        let est = |i: usize| session.estimates(ids[i]).is_some();
+        assert!(est(0) && est(1) && est(2) && !est(3), "a, b, c done; d not");
+        // A photo that has no estimates of its own yet is not final.
+        assert!(!session.estimates_final(ids[3]).unwrap());
+        // The burst is complete; the pool is complete only without d.
+        for i in 0..3 {
+            assert_eq!(
+                session.estimates_final(ids[i]).unwrap(),
+                !d_in_pool,
+                "photo {i}, d at ISO {d_iso}"
+            );
+        }
+        // Unknown photos are an error, not "not final".
+        assert!(matches!(
+            session.estimates_final(PhotoId(999)),
+            Err(SessionError::UnknownPhoto(_))
+        ));
+        gate.release();
+        settle(&session);
+        for id in &ids {
+            assert!(
+                session.estimates_final(*id).unwrap(),
+                "after everything is developed"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_burst_member_that_is_still_waiting_keeps_the_whole_burst_open() {
+    // Same setup, but the parked photo is the first one (a): b and c have not been estimated. The
+    // burst {a, b, c} is incomplete although a has its estimates, and d (alone, another ISO) is
+    // not final either since it has none.
+    let dir = tempfile::tempdir().unwrap();
+    write_burst_and_a_lone_frame(dir.path(), 800);
+    let gate = common::GateThumbnails::new(1);
+    let session = Session::new(
+        base_env()
+            .with_decode_threads(1)
+            .with_thumbnails(gate.clone()),
+    );
+    session.open(&[dir.path().to_path_buf()], OpenOptions::default());
+    gate.wait_parked();
+    let ids = session.photo_ids();
+    assert!(session.estimates(ids[0]).is_some() && session.estimates(ids[1]).is_none());
+    assert!(!session.estimates_final(ids[0]).unwrap());
+    gate.release();
+    settle(&session);
+    assert!(session.estimates_final(ids[0]).unwrap());
 }
 
 #[test]
@@ -913,8 +997,8 @@ fn rerun_recomputes_the_estimates_and_resets_exposure_white_balance_and_noise() 
         before.estimates.summary().exposure_ev
     );
     assert_eq!(
-        after.estimates.colour.w_scene_initial,
-        before.estimates.colour.w_scene_initial
+        after.estimates.color.w_scene_initial,
+        before.estimates.color.w_scene_initial
     );
 }
 

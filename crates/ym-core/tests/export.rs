@@ -204,7 +204,7 @@ fn a_16_bit_tiff_is_the_full_render_encoded_without_a_dither() {
 }
 
 #[test]
-fn every_format_and_colour_space_writes_a_file_of_the_right_size() {
+fn every_format_and_color_space_writes_a_file_of_the_right_size() {
     let src = tempfile::tempdir().expect("dir");
     write_photo(src.path(), "DSC00001.ARW", |b| b);
     let d = open_dir(src);
@@ -342,7 +342,7 @@ fn the_xmp_records_how_the_file_was_made() {
 }
 
 #[test]
-fn the_display_transform_follows_the_colour_space() {
+fn the_display_transform_follows_the_color_space() {
     let src = tempfile::tempdir().expect("dir");
     write_photo(src.path(), "DSC00001.ARW", |b| b);
     let d = open_dir(src);

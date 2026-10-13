@@ -11,7 +11,8 @@
 //! * the **fallback** sink ([`FallbackSink`], everywhere): the frame is encoded as a PNG with the
 //!   Display P3 profile, kept in a [`FrameStore`] and served to the webview at
 //!   `ym-frame://localhost/frame-<seq>.png`; the `viewport_frame` event says when a new one is
-//!   there. This breaks the rule "full images never cross the bridge" (`docs/01`), and is meant for
+//!   there. The same store and scheme serve the filmstrip's thumbnails
+//!   (`ym-frame://localhost/thumb-<photo>-<version>.png`), whichever sink draws the photo. This breaks the rule "full images never cross the bridge" (`docs/01`), and is meant for
 //!   development builds on other systems and as the M0-06 fallback candidate (`docs/16`).
 //!
 //! # Threading
@@ -25,7 +26,7 @@
 //! queues frames behind each other.
 
 use std::borrow::Cow;
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError, Weak};
 use std::thread::JoinHandle;
@@ -47,6 +48,10 @@ use crate::wire::{
 
 /// The URI scheme the fallback viewport serves frames on.
 pub const FRAME_SCHEME: &str = "ym-frame";
+
+/// The smallest side, in CSS pixels, of a photo cell that counts as the webview having reported
+/// one: the first frame waits for it.
+const MIN_CELL_PX: f64 = 2.0;
 
 /// How long a reader waits for the worker to apply what the webview asked for before it uses the
 /// state as it is.
@@ -81,14 +86,33 @@ pub trait FrameSink: Send + Sync + 'static {
     fn clear(&self, seq: u32);
 }
 
-/// The last few frames of the fallback viewport, as PNG files.
+/// The last few frames of the fallback viewport and the latest thumbnail of every photo, as PNG
+/// files, served to the webview by the `ym-frame` scheme.
 #[derive(Debug, Default)]
 pub struct FrameStore {
     frames: Mutex<VecDeque<(u32, Arc<Vec<u8>>)>>,
+    thumbnails: Mutex<Thumbnails>,
+}
+
+/// A PNG file, shared with the responses that serve it.
+type Png = Arc<Vec<u8>>;
+
+/// The thumbnails the store holds.
+#[derive(Debug, Default)]
+struct Thumbnails {
+    /// Counts up with every thumbnail put, so that a new picture is a new address.
+    version: u32,
+    /// Per photo, the newest versions (see [`THUMBNAIL_VERSIONS_KEPT`]), oldest first.
+    by_photo: BTreeMap<u32, Vec<(u32, Png)>>,
 }
 
 /// How many frames the store keeps: the webview may still be loading the previous one.
 const FRAMES_KEPT: usize = 3;
+
+/// How many versions of one photo's thumbnail the store keeps: the picture the webview is still
+/// showing may be asked for again (a layout that remakes the `<img>`) a moment after a newer one
+/// was announced.
+const THUMBNAIL_VERSIONS_KEPT: usize = 2;
 
 impl FrameStore {
     /// An empty store.
@@ -127,15 +151,69 @@ impl FrameStore {
         lock(&self.frames).clear();
     }
 
-    /// The response for a request to `ym-frame://localhost/frame-<seq>.png`: the file, or why not.
+    /// Keeps the thumbnail of a photo (a PNG of at most 240 px) and returns the address it is
+    /// served at. Every call gives a new address, so a refreshed thumbnail never meets a cached
+    /// older picture.
+    pub fn put_thumbnail(&self, photo: u32, png: Vec<u8>) -> String {
+        let mut thumbs = lock(&self.thumbnails);
+        thumbs.version = thumbs.version.wrapping_add(1);
+        let version = thumbs.version;
+        let versions = thumbs.by_photo.entry(photo).or_default();
+        versions.push((version, Arc::new(png)));
+        while versions.len() > THUMBNAIL_VERSIONS_KEPT {
+            versions.remove(0);
+        }
+        thumbnail_url(photo, version)
+    }
+
+    /// The address of the newest thumbnail of every photo that has one, in photo order.
+    #[must_use]
+    pub fn thumbnail_urls(&self) -> Vec<(u32, String)> {
+        lock(&self.thumbnails)
+            .by_photo
+            .iter()
+            .filter_map(|(photo, versions)| {
+                versions
+                    .last()
+                    .map(|(version, _)| (*photo, thumbnail_url(*photo, *version)))
+            })
+            .collect()
+    }
+
+    /// Forgets every thumbnail (the session closed). Addresses that were handed out answer 404
+    /// from now on; new ones count on from where the old ones stopped.
+    pub fn clear_thumbnails(&self) {
+        lock(&self.thumbnails).by_photo.clear();
+    }
+
+    /// The thumbnail at `photo` and `version`, if it is still kept.
+    fn thumbnail(&self, photo: u32, version: u32) -> Option<Arc<Vec<u8>>> {
+        lock(&self.thumbnails)
+            .by_photo
+            .get(&photo)?
+            .iter()
+            .find(|(v, _)| *v == version)
+            .map(|(_, png)| Arc::clone(png))
+    }
+
+    /// The response for a request to `ym-frame://localhost/frame-<seq>.png` or
+    /// `…/thumb-<photo>-<version>.png`: the file, or why not.
     #[must_use]
     pub fn respond(&self, path: &str) -> (u16, &'static str, Cow<'static, [u8]>) {
-        let seq = path
+        let name = path
             .trim_start_matches('/')
-            .strip_prefix("frame-")
-            .and_then(|rest| rest.strip_suffix(".png"))
-            .and_then(|n| n.parse::<u32>().ok());
-        match seq.and_then(|s| self.get(s)) {
+            .strip_suffix(".png")
+            .unwrap_or("");
+        let png = if let Some(seq) = name.strip_prefix("frame-") {
+            seq.parse::<u32>().ok().and_then(|s| self.get(s))
+        } else if let Some(rest) = name.strip_prefix("thumb-") {
+            rest.split_once('-').and_then(|(photo, version)| {
+                self.thumbnail(photo.parse().ok()?, version.parse().ok()?)
+            })
+        } else {
+            None
+        };
+        match png {
             Some(png) => (200, "image/png", Cow::Owned(png.as_ref().clone())),
             None => (404, "text/plain", Cow::Borrowed(b"No such frame.")),
         }
@@ -145,10 +223,20 @@ impl FrameStore {
 /// The address of frame `seq` in the webview.
 #[must_use]
 pub fn frame_url(seq: u32) -> String {
+    scheme_url(&format!("frame-{seq}.png"))
+}
+
+/// The address of version `version` of a photo's thumbnail in the webview.
+#[must_use]
+pub fn thumbnail_url(photo: u32, version: u32) -> String {
+    scheme_url(&format!("thumb-{photo}-{version}.png"))
+}
+
+fn scheme_url(file: &str) -> String {
     if cfg!(windows) {
-        format!("http://{FRAME_SCHEME}.localhost/frame-{seq}.png")
+        format!("http://{FRAME_SCHEME}.localhost/{file}")
     } else {
-        format!("{FRAME_SCHEME}://localhost/frame-{seq}.png")
+        format!("{FRAME_SCHEME}://localhost/{file}")
     }
 }
 
@@ -252,6 +340,9 @@ enum Op {
 
 struct VState {
     vp: ViewportState,
+    /// The webview has reported the photo cell with a usable size. Until it has there is nothing
+    /// to draw into: the state starts with a 1 x 1 cell, and a frame of that size is no picture.
+    has_rect: bool,
     photo: Option<CorePhotoId>,
     ops: Vec<Op>,
     /// The worker has taken `ops` and not yet applied them.
@@ -346,9 +437,10 @@ impl Shared {
             if self.shutdown.load(Ordering::SeqCst) {
                 return None;
             }
+            // Nothing is drawn, and nothing applied, before the webview has said where the cell is.
             // Operations parked for a photo that is still developing (`awaiting`) wait for its
             // `photo_ready`; taking them again at once would spin.
-            if st.dirty || (!st.ops.is_empty() && !st.awaiting) {
+            if st.has_rect && (st.dirty || (!st.ops.is_empty() && !st.awaiting)) {
                 st.dirty = false;
                 st.busy = true;
                 st.applying = !st.ops.is_empty();
@@ -628,6 +720,7 @@ impl Viewport {
     pub fn new(emitter: Arc<dyn Emitter>, sink: Arc<dyn FrameSink>) -> Self {
         let state = VState {
             vp: ViewportState::new(CoreRect::cell(1.0, 1.0, 1.0)),
+            has_rect: false,
             photo: None,
             ops: Vec::new(),
             applying: false,
@@ -729,6 +822,11 @@ impl Viewport {
         let core_rect: CoreRect = convert(rect)?;
         self.shared.sink.set_rect(rect);
         let mut st = lock(&self.shared.state);
+        // A cell with no area (a hidden screen, a layout that has not run) is not the rectangle
+        // the first frame waits for.
+        if rect.width.0 >= MIN_CELL_PX && rect.height.0 >= MIN_CELL_PX {
+            st.has_rect = true;
+        }
         st.ops.push(Op::Rect(core_rect));
         self.shared.request(&mut st);
         Ok(())
@@ -779,7 +877,10 @@ impl Viewport {
         let deadline = Instant::now() + SYNC_TIMEOUT;
         let mut st = lock(&self.shared.state);
         // Operations parked for a photo that is still developing are not coming.
-        while ((!st.ops.is_empty() && !st.awaiting) || st.applying) && Instant::now() < deadline {
+        while st.has_rect
+            && ((!st.ops.is_empty() && !st.awaiting) || st.applying)
+            && Instant::now() < deadline
+        {
             let left = deadline.saturating_duration_since(Instant::now());
             st = self
                 .shared
@@ -797,7 +898,8 @@ impl Viewport {
     pub fn wait_idle(&self, timeout: Duration) -> bool {
         let deadline = Instant::now() + timeout;
         let mut st = lock(&self.shared.state);
-        while st.dirty || st.busy || (!st.ops.is_empty() && !st.awaiting) {
+        // Before the first rectangle nothing runs, so there is nothing to wait for.
+        while st.has_rect && (st.dirty || st.busy || (!st.ops.is_empty() && !st.awaiting)) {
             let now = Instant::now();
             if now >= deadline {
                 return false;
@@ -860,6 +962,7 @@ mod tests {
                 runs: ym_core::pipeline::StageRuns::default(),
                 timings: ym_core::pipeline::StageTimings::default(),
                 notes: Vec::new(),
+                zoom: None,
             },
         }
     }
@@ -979,12 +1082,15 @@ mod tests {
         let shared = vp.shared();
         let photo = CorePhotoId(1);
         vp.set_photo(Some(photo));
+        // Nothing runs before the first rectangle (`nothing_is_drawn_before...` in the API tests).
+        vp.set_rect(&cell(100.0, 80.0)).expect("rect");
         let work = shared.next_work().expect("round");
         shared.park_state(work.ops, photo, work.epoch);
-        // The window is resized while the photo develops: one more round, then quiet again.
+        // The window is resized while the photo develops: one more round, then quiet again. The
+        // parked rectangle comes back in front of the new one.
         vp.set_rect(&cell(120.0, 90.0)).expect("rect");
         let work = shared.next_work().expect("a round for the new cell");
-        assert_eq!(work.ops.len(), 1);
+        assert_eq!(work.ops.len(), 2);
         shared.park_state(work.ops, photo, work.epoch);
         let rx = take_work_on_a_thread(&shared);
         assert!(rx.recv_timeout(Duration::from_millis(300)).is_err());
@@ -1074,6 +1180,9 @@ mod tests {
         h.develop();
         let photo = CorePhotoId(h.first().0);
         let vp = h.api.viewport();
+        // The cell has been reported (nothing is drawn before it is), and the photo drawn into it.
+        h.rect(200.0, 150.0);
+        h.frame_of_size(200, 150);
         assert!(vp.wait_idle(WAIT));
         let shared = vp.shared();
         let epoch = lock(&shared.state).epoch;

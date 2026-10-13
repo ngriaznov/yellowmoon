@@ -519,7 +519,7 @@ mod tests {
     }
 
     #[test]
-    fn a_colour_shift_shows_and_a_clipped_patch_is_left_out() {
+    fn a_color_shift_shows_and_a_clipped_patch_is_left_out() {
         let mut truth = two_patch_truth([0.4, 0.2, 0.1]);
         let raw = picture([0.18; 3], [0.4, 0.2, 0.16]);
         let (_, patches) = compare(&raw, &truth).unwrap();

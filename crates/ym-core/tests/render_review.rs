@@ -522,51 +522,80 @@ fn pick_white_sample_has_no_vignetting_gain_in_it() {
         .write_to(&dir.path().join("DSC00001.ARW"), &mosaic)
         .expect("write");
     let d = Developed::open(dir);
-    let r = Renderer::neutral_only().expect("render thread");
-    // Pick a spot near the corner, where the gain is large.
-    let point = [0.9, 0.88];
-    d.session
-        .update_settings(
-            d.id,
-            &ym_core::settings::SettingsPatch {
-                white_pick: Some(Some(point)),
-                ..ym_core::settings::SettingsPatch::default()
-            },
-        )
-        .expect("pick white");
-    let src = d.source();
-    let theirs = src.pick.expect("the session took a sample").sample;
-    let ours = r
-        .pick_white_sample(&src, point, &CancelToken::new())
-        .expect("sample");
-    let g = profile
-        .attenuation_at(((point[0] - 0.5) * w as f64).hypot((point[1] - 0.5) * h as f64) / hd);
+    // The session's sample is the one the chain uses (the render has no sample of its own). Pick a
+    // spot near the corner, where the gain is large, and the middle, where it is 1.
+    let sample_at = |point: [f64; 2]| {
+        d.session
+            .update_settings(
+                d.id,
+                &ym_core::settings::SettingsPatch {
+                    white_pick: Some(Some(point)),
+                    ..ym_core::settings::SettingsPatch::default()
+                },
+            )
+            .expect("pick white");
+        d.source().pick.expect("the session took a sample").sample
+    };
+    let corner_at = [0.9, 0.88];
+    let corner = sample_at(corner_at);
+    let middle = sample_at([0.5, 0.5]);
+    let g = profile.attenuation_at(
+        ((corner_at[0] - 0.5) * w as f64).hypot((corner_at[1] - 0.5) * h as f64) / hd,
+    );
     assert!(g < 0.8, "the spot is darkened by the lens ({g:.2})");
     for c in 0..3 {
+        // The sample is the data as the lens left it (darker by `g`), with no gain put back in...
         assert!(
-            (ours[c] / theirs[c] - 1.0).abs() < 0.02,
-            "channel {c}: {ours:?} vs {theirs:?}"
+            (corner[c] / middle[c] - g).abs() < 0.03 * g,
+            "channel {c}: corner {corner:?}, middle {middle:?}, attenuation {g:.3}"
+        );
+        // ...and the lens carries no colour: the three channels are darkened alike.
+        assert!(
+            ((corner[c] / corner[1]) / (middle[c] / middle[1]) - 1.0).abs() < 0.03,
+            "channel {c} against green: corner {corner:?}, middle {middle:?}"
         );
     }
 }
 
 #[test]
-fn pick_white_on_a_photo_smaller_than_the_window_is_an_error_not_a_panic() {
+fn pick_white_on_a_photo_smaller_than_the_window_is_an_answer_not_a_panic() {
     let scene = Scene::new(4, 4, light(PROFILE, 5500.0), Layout::Uniform, 0.3);
     let dir = tempfile::tempdir().expect("dir");
     scene.write(dir.path(), "DSC00001.ARW", MODEL);
     let session = Session::new(base_env());
     let out = session.open(&[dir.path().to_path_buf()], OpenOptions::default());
     settle(&session);
-    let Ok(src) = PhotoSource::from_session(&session, out.added[0]) else {
-        // The session refuses a photo this small before it can be rendered: nothing to pick from.
-        return;
+    let id = out.added[0];
+    let patch = ym_core::settings::SettingsPatch {
+        white_pick: Some(Some([0.5, 0.5])),
+        ..ym_core::settings::SettingsPatch::default()
     };
-    let r = Renderer::neutral_only().expect("render thread");
-    assert!(
-        r.pick_white_sample(&src, [0.5, 0.5], &CancelToken::new())
-            .is_err()
-    );
+    // The 5 x 5 window of the sample is kept inside the photo, so a 4 x 4 photo gives a sample of
+    // what there is (this is the branch that runs); a pick that cannot be taken is refused in words
+    // and leaves no sample behind. (The render's own sample, which refused a photo under 5 x 5, is
+    // gone: the chain never read it.)
+    match session.update_settings(id, &patch) {
+        Ok(_) => {
+            let sample = session
+                .view(id)
+                .expect("a photo that took a pick can be viewed")
+                .picked_white()
+                .expect("the sample of the pick");
+            assert!(
+                sample.iter().all(|v| v.is_finite() && *v > 0.0),
+                "{sample:?}"
+            );
+        }
+        Err(e) => {
+            assert!(!e.to_string().is_empty(), "an error says what went wrong");
+            if let Ok(view) = session.view(id) {
+                assert!(
+                    view.picked_white().is_none(),
+                    "no sample after a refused pick"
+                );
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------------------------

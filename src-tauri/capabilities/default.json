@@ -1,12 +1,11 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Permissions of the main window: core APIs and events, dragging the window by its header (titleBarStyle Overlay), and the updater and process plugins (restart only). Dialogs, Finder, the Trash and the browser are commands of the app itself (src-tauri/src/commands.rs), not plugin permissions.",
+  "description": "Permissions of the main window: core APIs and events, dragging the window by its header (titleBarStyle Overlay), and the updater plugin (check, download and install). Restarting into the update is a command of the app itself, `restart_app`, which refuses while an export runs (the process plugin's restart cannot be vetoed, so its permission is not granted); so are dialogs, Finder, the Trash and the browser (src-tauri/src/commands.rs), not plugin permissions.",
   "windows": ["main"],
   "permissions": [
     "core:default",
     "core:window:allow-start-dragging",
-    "updater:default",
-    "process:allow-restart"
+    "updater:default"
   ]
 }

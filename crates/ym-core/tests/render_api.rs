@@ -210,17 +210,6 @@ fn pick_white_turns_a_wrong_as_shot_balance_neutral_end_to_end() {
         (m[0] - m[1]).abs() < 2.0 && (m[2] - m[1]).abs() < 2.0,
         "picked patch is neutral: {m:?}"
     );
-    // The render's own 5 x 5 median (from the classical demosaic) agrees with the session's sample.
-    let ours = r
-        .pick_white_sample(&src, point, &CancelToken::new())
-        .expect("sample");
-    let theirs = src.pick.expect("the session took a sample").sample;
-    for c in 0..3 {
-        assert!(
-            (ours[c] / theirs[c] - 1.0).abs() < 0.01,
-            "channel {c}: {ours:?} vs {theirs:?}"
-        );
-    }
 }
 
 #[test]
@@ -377,9 +366,9 @@ fn look_tiles_apply_one_look_to_the_current_render_and_share_the_raw_group() {
         "{after_tile:?}"
     );
     assert_eq!(after_tile.sigma_planes, after_neutral.sigma_planes);
-    assert_eq!(after_tile.colour_plans, after_neutral.colour_plans);
+    assert_eq!(after_tile.color_plans, after_neutral.color_plans);
     assert_eq!(after_tile.grade_plans, after_neutral.grade_plans + 1);
-    assert_eq!(after_tile.colour_passes, after_neutral.colour_passes + 1);
+    assert_eq!(after_tile.color_passes, after_neutral.color_passes + 1);
     // A look that is gone is an error with the library's words, not a Neutral tile.
     let gone = LookId::parse("user:gone").expect("id");
     match r.look_thumbnail_png(&src, &gone, &CancelToken::new()) {
@@ -513,7 +502,7 @@ fn a_cancelled_request_stops_with_cancelled_and_does_no_work() {
     }
     let c = r.counters(src.id);
     assert_eq!(
-        (c.raw_groups, c.sigma_planes, c.colour_passes),
+        (c.raw_groups, c.sigma_planes, c.color_passes),
         (0, 0, 0),
         "{c:?}"
     );
@@ -626,5 +615,99 @@ fn full_renders_apply_crop_straighten_and_turns() {
         &f.rgba[..4],
         &[255, 255, 255, 255],
         "the viewport paints the empty corner"
+    );
+}
+
+#[test]
+fn a_viewport_frame_reports_its_zoom_and_the_fit_zoom_in_the_render_stats() {
+    // The webview used to estimate these from the photo's size and the cell; only the core knows
+    // the lens crop, the straighten angle and the crop that lie between them.
+    let scene = Scene::new(900, 600, light(PROFILE, 5500.0), Layout::Patchwork, 0.4);
+    let r = Renderer::neutral_only().expect("render thread");
+    let d = Developed::new(&scene, MODEL);
+    let src = d.source();
+    let cancel = CancelToken::new();
+    let image = r.final_size(&src, &cancel).expect("final size");
+    let mut st = state(300.0, 200.0);
+    let fit = (300.0 / image.0 as f64).min(200.0 / image.1 as f64) * 100.0;
+
+    let frame = r
+        .viewport_frame(&src, &st, &FrameOptions::default(), &cancel)
+        .expect("frame");
+    let stats = frame.report.stats();
+    assert!(
+        (stats.zoom_percent.expect("zoom") - fit).abs() < 1e-9,
+        "{stats:?}"
+    );
+    assert!(
+        (stats.fit_percent.expect("fit") - fit).abs() < 1e-9,
+        "{stats:?}"
+    );
+    // The header's status text is the last viewport frame's, zoom included.
+    assert_eq!(r.last_stats(src.id), Some(stats));
+
+    // 100 %: the zoom is 100, the Fit zoom does not move.
+    st.set_mode(ViewportMode::Percent { value: 100.0 }, image);
+    let frame = r
+        .viewport_frame(&src, &st, &FrameOptions::default(), &cancel)
+        .expect("frame");
+    let stats = frame.report.stats();
+    assert!(
+        (stats.zoom_percent.expect("zoom") - 100.0).abs() < 1e-9,
+        "{stats:?}"
+    );
+    assert!(
+        (stats.fit_percent.expect("fit") - fit).abs() < 1e-9,
+        "{stats:?}"
+    );
+    // A frame served from the cache says the same (the zoom belongs to the request).
+    let again = r
+        .viewport_frame(&src, &st, &FrameOptions::default(), &cancel)
+        .expect("frame");
+    assert_eq!(again.report.stats().zoom_percent, stats.zoom_percent);
+
+    // A fixed zoom below Fit is Fit: the frame says what it drew, and the Fit zoom beside it.
+    st.set_mode(ViewportMode::Percent { value: 1.0 }, image);
+    let frame = r
+        .viewport_frame(&src, &st, &FrameOptions::default(), &cancel)
+        .expect("frame");
+    let stats = frame.report.stats();
+    assert!(
+        (stats.zoom_percent.expect("zoom") - fit).abs() < 1e-9,
+        "{stats:?}"
+    );
+
+    // A crop changes the final image and with it the Fit zoom, which the core alone can say.
+    let cropped = edit(&src, |s| {
+        s.crop = Some(ym_core::settings::Crop {
+            rect: ym_core::settings::NormRect {
+                x: 0.0,
+                y: 0.0,
+                width: 0.5,
+                height: 1.0,
+            },
+            angle_deg: 0.0,
+            aspect: ym_core::settings::CropAspect::Free,
+        });
+    });
+    let st = state(300.0, 200.0);
+    let image = r.final_size(&cropped, &cancel).expect("final size");
+    let fit = (300.0 / image.0 as f64).min(200.0 / image.1 as f64) * 100.0;
+    let stats = r
+        .viewport_frame(&cropped, &st, &FrameOptions::default(), &cancel)
+        .expect("frame")
+        .report
+        .stats();
+    assert!(
+        (stats.fit_percent.expect("fit") - fit).abs() < 1e-9,
+        "{stats:?}"
+    );
+
+    // Anything but a viewport frame has no zoom.
+    let thumb = r.spawn_thumbnail(src.clone()).wait().expect("job");
+    assert!(thumb.is_ok());
+    assert_eq!(
+        r.last_stats(src.id).map(|s| s.zoom_percent.is_some()),
+        Some(true)
     );
 }

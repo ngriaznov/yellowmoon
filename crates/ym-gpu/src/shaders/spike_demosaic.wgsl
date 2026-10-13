@@ -21,7 +21,7 @@ struct U {
 //@ACCESSORS mosaic ro
 //@ACCESSORS rgb
 
-fn colour_at(x: i32, y: i32) -> u32 {
+fn color_at(x: i32, y: i32) -> u32 {
     return u.cfa[2u * u32(y & 1) + u32(x & 1)];
 }
 
@@ -38,7 +38,7 @@ fn demosaic_px(x: i32, y: i32) -> vec3<f32> {
     let diag = 0.25 * (at(x - 1, y - 1) + at(x + 1, y - 1) + at(x - 1, y + 1) + at(x + 1, y + 1));
     let horiz = 0.5 * (at(x - 1, y) + at(x + 1, y));
     let vert = 0.5 * (at(x, y - 1) + at(x, y + 1));
-    let c = colour_at(x, y);
+    let c = color_at(x, y);
     if (c == 0u) {
         return vec3<f32>(v, cross, diag);
     }
@@ -46,7 +46,7 @@ fn demosaic_px(x: i32, y: i32) -> vec3<f32> {
         return vec3<f32>(diag, cross, v);
     }
     // Green: the colour found left/right of it is the one that owns its row.
-    if (colour_at(mirror_idx(x + 1, w), y) == 0u) {
+    if (color_at(mirror_idx(x + 1, w), y) == 0u) {
         return vec3<f32>(horiz, v, vert);
     }
     return vec3<f32>(vert, v, horiz);

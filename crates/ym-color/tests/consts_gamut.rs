@@ -187,7 +187,7 @@ fn cat02_adapts_between_the_two_whites() {
 /// the AWG4 matrices (stored to 12 digits) agree to 1e-9. Our values follow the documented
 /// derivation from primaries; colour-science's are the rounded library numbers.
 #[test]
-fn cross_check_against_colour_science() {
+fn cross_check_against_color_science() {
     let m = matrices();
     let awg4_to_p3: Mat3 = [
         [1.520502397025, -0.404298662716, -0.116203734308],
@@ -268,4 +268,57 @@ fn mat_from_json(v: &Value) -> Mat3 {
         }
     }
     m
+}
+
+// ACEScg (AP1, ACES white) to XYZ as printed in the ACES documents (S-2014-004, 10 decimals).
+const AP1_TO_XYZ: Mat3 = [
+    [0.6624541811, 0.1340042065, 0.1561876870],
+    [0.2722287168, 0.6740817658, 0.0536895174],
+    [-0.0055746495, 0.0040607335, 1.0103391003],
+];
+
+#[test]
+fn ap1_matches_the_printed_acescg_matrix() {
+    assert_mat(
+        "AP1 to XYZ",
+        &ym_color::consts::AP1.rgb_to_xyz(),
+        &AP1_TO_XYZ,
+        1e-9,
+    );
+}
+
+/// The ACES 2 module names its gamuts `Primaries::AP0` and so on; they are the crate's constants
+/// (one table of chromaticities), and `ym_color::aces2::Primaries` is the same type.
+#[test]
+fn the_aces2_gamut_names_are_the_crate_constants() {
+    use ym_color::aces2::Primaries as Aces2Primaries;
+    use ym_color::consts::{AP1, Primaries};
+    let same_type: Primaries = Aces2Primaries::AP1;
+    assert_eq!(same_type, AP1);
+    assert_eq!(Primaries::AP0, AP0);
+    assert_eq!(Primaries::AP1, AP1);
+    assert_eq!(Primaries::REC709, REC709);
+    assert_eq!(Primaries::P3_D65, DISPLAY_P3);
+    assert_eq!(Primaries::REC2020, REC2020);
+    // The published chromaticities, bit for bit as the ACES 2 module has always had them.
+    assert_eq!(
+        Aces2Primaries::AP1,
+        Aces2Primaries {
+            red: [0.713, 0.293],
+            green: [0.165, 0.830],
+            blue: [0.128, 0.044],
+            white: [0.32168, 0.33767],
+        }
+    );
+    assert_eq!(
+        Aces2Primaries::P3_D65,
+        Aces2Primaries {
+            red: [0.68, 0.32],
+            green: [0.265, 0.69],
+            blue: [0.15, 0.06],
+            white: [0.3127, 0.3290],
+        }
+    );
+    assert_eq!(Aces2Primaries::AP0.white, ACES_WHITE_XY);
+    assert_eq!(Aces2Primaries::REC709.white, D65_XY);
 }

@@ -81,6 +81,7 @@ import { sceneHistogram } from "./fixtures/histogram";
 import { scenePng, hexToRgb } from "./fixtures/png";
 import { layerAt, SCENES, type Scene } from "./fixtures/scenes";
 import { fitInCell, imageAspectOf } from "./screens/crop/cropMath";
+import { bytesToUrl } from "./state/photo";
 
 // ---------------------------------------------------------------------------
 // Fixture constants
@@ -101,7 +102,8 @@ const EXPORT_STEP = 0.08;
 /** Fraction of a photo's development spent decoding before the estimates start. */
 const DECODE_SHARE = 0.4;
 
-const RENDER_STATS: RenderStats = { ms: 42, path: "neural", space: "display_p3" };
+// The mock has no zoom of its own to report: the screen estimates it (`fit_percent: null`).
+const RENDER_STATS: RenderStats = { ms: 42, path: "neural", space: "display_p3", zoom_percent: null, fit_percent: null };
 
 /** What "Auto" resolves to for every photo in the mock. */
 export const MOCK_ESTIMATES: AutoEstimates = {
@@ -251,6 +253,8 @@ export interface MockSystemLog {
   opened: string[];
   revealed: string[];
   trashed: string[];
+  /** How many times `restartApp` was allowed (it is refused while an export runs). */
+  restarts: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -861,6 +865,8 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
   let developProgress = 0;
   let developTimer: ReturnType<typeof setInterval> | null = null;
   const thumbTimers = new Map<PhotoId, ReturnType<typeof setTimeout>>();
+  /** The address of each photo's newest thumbnail (the shell keeps these for `thumbnails()`). */
+  const thumbnailUrls = new Map<PhotoId, string>();
   const exportRuns = new Map<ExportJobId, ExportRun>();
   let nextJobId = 1;
 
@@ -874,7 +880,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
   let downloadTimers: Array<ReturnType<typeof setTimeout>> = [];
   const importRuns = new Set<ImportRun>();
   const choices: { folder: Array<string | null>; files: Array<string[] | null> } = { folder: [], files: [] };
-  const system: MockSystemLog = { opened: [], revealed: [], trashed: [] };
+  const system: MockSystemLog = { opened: [], revealed: [], trashed: [], restarts: 0 };
   let cliLink: string | null = null;
   const viewport: MockViewportState = { rect: null, mode: { kind: "fit" }, before: false, inputs: [] };
   /** The fallback viewport's frame counter, and whether it has a picture on show. */
@@ -1145,9 +1151,15 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     return developScene(rec.scene, { slug: lookSlug(lookId), intensity }, adjustment);
   }
 
-  /** A photo's own thumbnail: its look and its adjustments (the filmstrip shows it). */
+  /**
+   * A photo's own thumbnail: its look and its adjustments (the filmstrip shows it). The picture is announced by its address, as the
+   * shell does (there, `ym-frame://…`; here a `blob:` URL), and the address is kept for `thumbnails()`.
+   */
   function emitThumbnail(rec: PhotoRecord): void {
-    emit("thumbnail_ready", { id: rec.summary.id, png_bytes: Array.from(scenePng(developed(rec))) });
+    const id = rec.summary.id;
+    const url = bytesToUrl(Array.from(scenePng(developed(rec))));
+    thumbnailUrls.set(id, url);
+    emit("thumbnail_ready", { id, url });
   }
 
   /** Re-sends a photo's thumbnail shortly after its look or light changed, once for a burst of changes. */
@@ -1452,6 +1464,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     system.opened = [];
     system.revealed = [];
     system.trashed = [];
+    system.restarts = 0;
     looks = buildLooks();
     failures.clear();
     cancelDialog = false;
@@ -1526,6 +1539,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
         stopDevelopment();
         for (const timer of thumbTimers.values()) clearTimeout(timer);
         thumbTimers.clear();
+        thumbnailUrls.clear();
         photos = [];
         current = 0;
         developProgress = 0;
@@ -1792,6 +1806,13 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
       }),
     cliPreview: (job) => run("cliPreview", () => cliCommand(job)),
     exportBusy: () => run("exportBusy", exportsBusy),
+    restartApp: () =>
+      run("restartApp", () => {
+        // The shell's guard: no restart while an export is queued or running. (The mock has no process to replace.)
+        if (exportsBusy()) fail("export", "An export is still running. Restart after it finishes.");
+        system.restarts += 1;
+      }),
+    thumbnails: () => run("thumbnails", () => [...thumbnailUrls].map(([id, url]) => ({ id, url }))),
 
     preferencesGet: () => run("preferencesGet", () => preferences),
     preferencesSet: (patch: PreferencesPatch) =>

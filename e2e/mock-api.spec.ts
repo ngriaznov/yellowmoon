@@ -16,11 +16,15 @@ test("develops twelve photos and sends thumbnails Chromium can decode", async ({
     const { mockApi } = (await import(/* @vite-ignore */ path)) as typeof import("../src/api.mock");
     const sizes: Array<[number, number]> = [];
     const decoded: Promise<void>[] = [];
-    mockApi.on("thumbnail_ready", ({ png_bytes }) => {
+    mockApi.on("thumbnail_ready", ({ url }) => {
+      // The event carries an address; the picture is behind it (a `blob:` URL here, `ym-frame://` in the app).
       decoded.push(
-        createImageBitmap(new Blob([new Uint8Array(png_bytes)], { type: "image/png" })).then((bitmap) => {
-          sizes.push([bitmap.width, bitmap.height]);
-        }),
+        fetch(url)
+          .then((response) => response.blob())
+          .then((blob) => createImageBitmap(blob))
+          .then((bitmap) => {
+            sizes.push([bitmap.width, bitmap.height]);
+          }),
       );
     });
     const state = await mockApi.openDialog("folder");

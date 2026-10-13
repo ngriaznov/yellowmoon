@@ -12,7 +12,7 @@
 //! look library, the application the log (`crate::logging`).
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use ym_core::app::{Core, CoreOptions};
 use ym_core::export_queue::{ExportEvent, ExportJob as CoreExportJob, ExportSink};
@@ -26,7 +26,7 @@ use ym_looks::library::LookId as CoreLookId;
 use crate::cli_link::{CliLink, Elevate};
 use crate::events::{AppEvent, Emitter};
 use crate::thumbs::Thumbnails;
-use crate::viewport::{FrameSink, Viewport, core_id};
+use crate::viewport::{FrameSink, FrameStore, Viewport, core_id};
 use crate::wire::{
     AppError, AppInfo, ApplyScope, CliLinkResult, CliLinkStatus, DisplayLut, ErrorScope,
     ExportEstimate, ExportJob, ExportJobId, HistogramData, Look, LookId, LookInput,
@@ -94,6 +94,18 @@ pub struct AppApi {
     cli: Option<CliLink>,
     elevate: Box<dyn Elevate + Send + Sync>,
     home: Option<PathBuf>,
+    /// The frames and thumbnails the webview loads from the `ym-frame` scheme.
+    frames: Arc<FrameStore>,
+    /// Orders "queue an export" against "restart the app": see [`AppApi::begin_restart`].
+    lifecycle: Mutex<Lifecycle>,
+}
+
+/// Where the application is in its life, for [`AppApi::begin_restart`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Lifecycle {
+    Running,
+    /// A restart into an update has begun: no export is queued from now on.
+    Restarting,
 }
 
 /// The `AppError` for a session command that failed.
@@ -124,19 +136,6 @@ fn look_id(id: &LookId) -> Result<CoreLookId, AppError> {
     })
 }
 
-/// How many photos are waiting for development or in the middle of it.
-fn developing_photos(photos: &[crate::wire::PhotoSummary]) -> usize {
-    photos
-        .iter()
-        .filter(|p| {
-            matches!(
-                p.status,
-                crate::wire::PhotoStatus::Waiting | crate::wire::PhotoStatus::Developing { .. }
-            )
-        })
-        .count()
-}
-
 /// The fields of a patch that change what a thumbnail shows.
 fn touches_thumbnail(patch: &SettingsPatch) -> bool {
     patch.look.is_some()
@@ -155,6 +154,7 @@ impl AppApi {
         config: AppConfig,
         emitter: Arc<dyn Emitter>,
         sink: Arc<dyn FrameSink>,
+        frames: Arc<FrameStore>,
         elevate: Box<dyn Elevate + Send + Sync>,
         cli: Option<CliLink>,
     ) -> Result<Arc<Self>, AppError> {
@@ -164,6 +164,7 @@ impl AppApi {
         let session_events = {
             let emitter = Arc::clone(&emitter);
             let shared = Arc::clone(&shared);
+            let frames = Arc::clone(&frames);
             EventSink::new(move |event| match event {
                 SessionEvent::PhotoProgress(p) => {
                     // The estimates are in: the photo can be drawn (the thumbnail comes after).
@@ -179,9 +180,11 @@ impl AppApi {
                     }
                 }
                 SessionEvent::ThumbnailReady(t) => {
+                    // The picture stays in the shell; the webview gets its address.
+                    let url = frames.put_thumbnail(t.id.0, t.png_bytes);
                     emitter.emit(AppEvent::ThumbnailReady(ThumbnailReady {
                         id: PhotoId(t.id.0),
-                        png_bytes: t.png_bytes,
+                        url,
                     }));
                 }
                 SessionEvent::EstimatesChanged { id } => shared.estimates_changed(id),
@@ -221,7 +224,7 @@ impl AppApi {
             });
         }
         viewport.attach(&core)?;
-        let thumbs = Thumbnails::new(Arc::clone(&emitter));
+        let thumbs = Thumbnails::new(Arc::clone(&emitter), Arc::clone(&frames));
         thumbs.attach(&core).map_err(AppError::internal)?;
         Ok(Arc::new(Self {
             core,
@@ -233,6 +236,8 @@ impl AppApi {
             cli,
             elevate,
             home: config.home.or_else(ym_export::naming::home_dir),
+            frames,
+            lifecycle: Mutex::new(Lifecycle::Running),
         }))
     }
 
@@ -326,7 +331,23 @@ impl AppApi {
     pub fn close_session(&self) {
         self.core.close_session();
         self.thumbs.clear();
+        self.frames.clear_thumbnails();
         self.viewport.set_photo(None);
+    }
+
+    /// `thumbnails()` (addition): the address of the thumbnail of every photo that has one, to get
+    /// them again after the webview reloaded (the core announces each thumbnail once, with
+    /// `thumbnail_ready`). Only addresses: the pictures stay here.
+    #[must_use]
+    pub fn thumbnails_now(&self) -> Vec<ThumbnailReady> {
+        self.frames
+            .thumbnail_urls()
+            .into_iter()
+            .map(|(id, url)| ThumbnailReady {
+                id: PhotoId(id),
+                url,
+            })
+            .collect()
     }
 
     /// `set_current`.
@@ -712,29 +733,64 @@ impl AppApi {
 
     /// `export_start`: snapshots the photos and queues the job; progress arrives as `export_progress`.
     ///
+    /// The session need not be done developing. A burst's shared exposure and the pooled noise
+    /// model depend on other photos, so the core makes a photo's turn wait until the photos it
+    /// depends on have their estimates (not for thumbnails, prefetching or viewport frames) and
+    /// then reads them, and the file is the one `ym render` writes for the same photos (`docs/01`
+    /// Session, "Estimates the photos share").
+    ///
     /// # Errors
     ///
-    /// [`AppError`] with a plain sentence: no photos in the scope, a photo still developing (any
-    /// photo of the session: the burst median and the pooled noise depend on all of them), a DNG
-    /// of a look with its own display rendering, a display LUT that is gone.
+    /// [`AppError`] with a plain sentence: no photos in the scope, photos of the scope that have
+    /// no estimates yet ("Some photos are still being developed…"), a DNG of a look with its own
+    /// display rendering, a display LUT that is gone.
     pub fn export_start(&self, job: &ExportJob) -> Result<ExportJobId, AppError> {
         let job: CoreExportJob = convert(job)?;
-        // A burst's shared exposure and the pooled noise model depend on which photos have
-        // finished developing. The command line waits for all of them; so does the app, or the
-        // same photo exported twice could differ between the two (`docs/01` Session).
-        let developing = developing_photos(&self.session_state()?.photos);
-        if developing > 0 {
+        // Held while the job is queued: a restart that has begun (and found no export) is not
+        // followed by one that would be cut off by it.
+        let lifecycle = self
+            .lifecycle
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if *lifecycle == Lifecycle::Restarting {
             return Err(AppError::new(
                 ErrorScope::Export,
-                if developing == 1 {
-                    "One photo is still being developed. Wait until it is ready, then export again."
-                } else {
-                    "Some photos are still being developed. Wait until they are ready, then export again."
-                },
+                "Yellowmoon is restarting to finish an update. Export again once it has opened.",
             ));
         }
         let id = self.core.export_start(&job).map_err(AppError::from)?;
         Ok(ExportJobId(u32::try_from(id).unwrap_or(u32::MAX)))
+    }
+
+    /// Begins a restart into an installed update (`docs/12`), if no export is queued or running.
+    ///
+    /// The restart the Tauri way (`AppHandle::restart`) cannot be vetoed: it asks the run loop to
+    /// exit with `RESTART_EXIT_CODE`, and `ExitRequestApi::prevent_exit` is ignored for that code,
+    /// so the question "An export is still running…" never gets its chance and the exit cancels the
+    /// export and deletes its partial file. The webview used to call the process plugin's
+    /// `relaunch` directly, guarded only by what it knew of the queue. The restart is now a
+    /// command of the app (`restart_app`) that asks here first; nothing else can restart the app
+    /// (`process:allow-restart` is not in the capabilities). Once this returns `Ok`, `export_start`
+    /// refuses, so no export is queued between the check and the exit.
+    ///
+    /// # Errors
+    ///
+    /// [`AppError`] with "An export is still running…" while the queue is busy.
+    pub fn begin_restart(&self) -> Result<(), AppError> {
+        let mut lifecycle = self
+            .lifecycle
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if self.core.export_busy() {
+            // Scope `export`: the webview tells this refusal (the update stays "ready") from a
+            // restart that failed.
+            return Err(AppError::new(
+                ErrorScope::Export,
+                "An export is still running. Restart after it finishes.",
+            ));
+        }
+        *lifecycle = Lifecycle::Restarting;
+        Ok(())
     }
 
     /// `export_cancel`.

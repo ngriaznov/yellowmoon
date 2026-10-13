@@ -385,3 +385,112 @@ fn exiftool_finds_the_same_thumbnail_the_reader_does_when_there_is_no_larger_pre
         "ExifTool's ThumbnailImage differs from the reader's preview"
     );
 }
+
+/// The enciphered maker-note tables carry the exposure time, the F-number and (0x9416 only) the
+/// focal length the builder was given, at the offsets ExifTool's `Tag9405b` and `Tag9416` tables
+/// read. ExifTool's `[Sony]` group reports them next to `SonyISO`, which the reader also takes.
+#[test]
+fn exiftool_reads_exposure_and_focal_length_from_the_enciphered_tables() {
+    if !oracle_ready() {
+        return;
+    }
+    let dir = tempfile::tempdir().expect("tempdir");
+    // (name, builder, table has a focal length)
+    let cases: [(&str, ArwBuilder, bool); 4] = [
+        (
+            "ILCE-7M4 (0x9416)",
+            ArwBuilder::new("ILCE-7M4", 96, 64)
+                .iso(3200)
+                .exposure_time(1, 125)
+                .f_number(28, 10)
+                .focal_length(500, 10),
+            true,
+        ),
+        (
+            "ILCE-1 (0x9416), long exposure",
+            ArwBuilder::new("ILCE-1", 96, 64)
+                .iso(100)
+                .exposure_time(30, 1)
+                .f_number(110, 10)
+                .focal_length(1050, 10),
+            true,
+        ),
+        (
+            "ILCE-7M3 (0x9405)",
+            ArwBuilder::new("ILCE-7M3", 96, 64)
+                .iso(800)
+                .exposure_time(1, 4000)
+                .f_number(56, 10)
+                .focal_length(240, 10),
+            false,
+        ),
+        (
+            "ILCE-7RM4 (0x9405), ISO word of a measured sensitivity",
+            ArwBuilder::new("ILCE-7RM4", 96, 64)
+                .iso(2500)
+                .sony_iso_word(2890)
+                .exposure_time(1, 60)
+                .f_number(40, 10)
+                .focal_length(240, 10),
+            false,
+        ),
+    ];
+    for (index, (name, builder, has_focal_length)) in cases.into_iter().enumerate() {
+        let path = dir.path().join(format!("tables{index}.ARW"));
+        builder
+            .write_to(&path, &gradient_mosaic(96, 64, 600, 16_000, 5))
+            .expect("write");
+        let ours = probe(&path).unwrap_or_else(|e| panic!("{name}: {e}"));
+        let t = tags(&path);
+
+        // Our reader and ExifTool agree on the sensitivity, and both read it from the table.
+        assert_eq!(
+            ours.iso_source,
+            Some(ym_raw::exif::IsoSource::SonyMakerNote),
+            "{name}"
+        );
+        assert_eq!(
+            numbers(get(&t, "Sony:SonyISO"))[0].round() as u32,
+            ours.iso.expect("iso"),
+            "{name}: SonyISO"
+        );
+
+        // The exposure time is stored twice: as a 1/256 stop word and as a fraction of 16 bits.
+        let seconds = ours.exposure_time_s.expect("exposure time");
+        let word = numbers(get(&t, "Sony:SonyExposureTime2"))[0];
+        assert!(
+            (word / seconds - 1.0).abs() < 0.0028,
+            "{name}: SonyExposureTime2 {word} s against {seconds} s"
+        );
+        let fraction = numbers(get(&t, "Sony:ExposureTime"))[0];
+        assert!(
+            // ExifTool prints numbers with eight significant digits.
+            (fraction / seconds - 1.0).abs() < 1e-6,
+            "{name}: Sony ExposureTime {fraction} s against {seconds} s"
+        );
+
+        // The F-number is a 1/256 step of 2 * log2(f).
+        let f_number = ours.f_number.expect("f-number");
+        let key = if has_focal_length {
+            "Sony:SonyFNumber2"
+        } else {
+            "Sony:SonyFNumber"
+        };
+        let theirs = numbers(get(&t, key))[0];
+        assert!(
+            (theirs / f_number - 1.0).abs() < 0.003,
+            "{name}: {key} {theirs} against {f_number}"
+        );
+
+        // Tag9416 has a focal length field; Tag9405b has none.
+        if has_focal_length {
+            assert_eq!(
+                numbers(get(&t, "Sony:FocalLength"))[0],
+                ours.focal_length_mm.expect("focal length"),
+                "{name}: Sony FocalLength"
+            );
+        } else {
+            assert!(!t.contains_key("Sony:FocalLength"), "{name}");
+        }
+    }
+}

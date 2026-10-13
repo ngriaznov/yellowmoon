@@ -271,8 +271,9 @@ impl Lut3d {
         out
     }
 
-    /// The entries as RGBA f32 with alpha 1, red fastest: the layout uploaded as a 3D texture
-    /// (`rgba16float` or `rgba32float`, `size^3` texels, no hardware filtering).
+    /// The entries as RGBA f32 with alpha 1, red fastest: the layout uploaded as an f32 storage
+    /// buffer (`size^3` `vec4<f32>` nodes; the shader interpolates by hand, no hardware filtering,
+    /// and f32 because an f16 texture would round by up to 2.4e-4).
     #[must_use]
     pub fn to_rgba_f32(&self) -> Vec<f32> {
         self.data
@@ -389,7 +390,7 @@ impl Lut1d {
         &self.data
     }
 
-    /// The entries as RGBA f32 with alpha 1 (a 1D texture of `size` texels).
+    /// The entries as RGBA f32 with alpha 1 (`size` `vec4<f32>` entries of a storage buffer).
     #[must_use]
     pub fn to_rgba_f32(&self) -> Vec<f32> {
         self.data

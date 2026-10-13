@@ -516,6 +516,24 @@ fn a_file_that_exists_with_skip_is_reported_as_skipped() {
     );
     let s = queue.summary(id).expect("summary");
     assert_eq!((s.saved, s.skipped, s.failed), (1, 1, 0));
+    // `files` lists what was written; the skipped file is counted, not listed, and its folder is
+    // still one of the job's folders.
+    assert_eq!(s.files.len(), 1);
+    assert!(
+        s.files[0].ends_with("DSC00002_neutral.jpg"),
+        "{:?}",
+        s.files
+    );
+    assert_eq!(s.folders, vec![out.path().to_path_buf()]);
+    assert_eq!(s.reveal_path(), Some(s.files[0].clone()));
+
+    // A job that wrote nothing because every file is there: "Show in Finder" opens the folder.
+    let again = queue.start(&f.session, &j, false).expect("queued");
+    until_idle(&rx);
+    let s = queue.summary(again).expect("summary");
+    assert_eq!((s.saved, s.skipped, s.failed), (0, 2, 0));
+    assert!(s.files.is_empty());
+    assert_eq!(s.reveal_path(), Some(out.path().to_path_buf()));
 }
 
 #[test]
@@ -837,4 +855,215 @@ fn each_photo_gets_a_file_event_with_the_report_for_the_clis_json() {
             "the progress event counts the photo just reported"
         );
     }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Exports queued while the photos they depend on are still developing
+
+/// Four frames of `DSC0000n.ARW`: 1 to 3 a burst of different brightness (their own exposures
+/// differ, the burst shares the median), 4 ten seconds later at another ISO (alone in both
+/// respects).
+fn burst_folder() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().expect("dir");
+    for (k, (sec, level, iso)) in [
+        ("10", 0.10, 400),
+        ("10", 0.20, 400),
+        ("11", 0.40, 400),
+        ("40", 0.10, 800),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let s = Scene::new(320, 240, light(PROFILE, 5200.0), Layout::Patchwork, level)
+            .noise(2e-4, 1e-6)
+            .seed(k as u64 + 1);
+        s.builder(MODEL)
+            .iso(iso)
+            .capture_time(&format!("2026:10:04 12:03:{sec}"), "00", None)
+            .write_to(
+                &dir.path().join(format!("DSC{:05}.ARW", k + 1)),
+                &s.mosaic(),
+            )
+            .expect("write");
+    }
+    dir
+}
+
+/// The bytes the command line's path writes for each photo: open, wait for everything, export.
+fn bytes_after_waiting(dir: &Path, scope: ApplyScope) -> Vec<(String, Vec<u8>)> {
+    let session = Arc::new(Session::new(base_env()));
+    session.open(&[dir.to_path_buf()], OpenOptions::default());
+    settle(&session);
+    let (home, out) = (
+        tempfile::tempdir().expect("h"),
+        tempfile::tempdir().expect("o"),
+    );
+    let (_ctx, queue, rx) = neutral_queue(home.path());
+    queue
+        .start(&session, &job(scope, out.path()), false)
+        .expect("queued");
+    until_idle(&rx);
+    written_files(out.path())
+}
+
+fn written_files(dir: &Path) -> Vec<(String, Vec<u8>)> {
+    let mut files: Vec<(String, Vec<u8>)> = std::fs::read_dir(dir)
+        .expect("read_dir")
+        .map(|e| {
+            let p = e.expect("entry").path();
+            (
+                p.file_name().expect("name").to_string_lossy().into_owned(),
+                read(&p),
+            )
+        })
+        .collect();
+    files.sort();
+    files
+}
+
+#[test]
+fn a_job_queued_while_its_burst_is_developing_waits_for_it_and_writes_what_the_command_line_writes()
+{
+    let dir = burst_folder();
+    // The reference: what `ym render` does (wait until everything is developed, then export).
+    let want = bytes_after_waiting(dir.path(), ApplyScope::This);
+    assert_eq!(want.len(), 1);
+
+    // The app: one decode thread, and the first photo's thumbnail is parked. Photo 1 is estimated;
+    // the rest of its burst and its noise pool are still waiting.
+    let gate = GateThumbnails::new(1);
+    let session = Arc::new(Session::new(
+        base_env()
+            .with_decode_threads(1)
+            .with_thumbnails(gate.clone()),
+    ));
+    session.open(&[dir.path().to_path_buf()], OpenOptions::default());
+    gate.wait_parked();
+    let ids = session.photo_ids();
+    assert!(session.estimates(ids[0]).is_some() && session.estimates(ids[1]).is_none());
+    assert!(!session.estimates_final(ids[0]).unwrap());
+
+    let (home, out) = (
+        tempfile::tempdir().expect("h"),
+        tempfile::tempdir().expect("o"),
+    );
+    let (_ctx, queue, rx) = neutral_queue(home.path());
+    let id = queue
+        .start(&session, &job(ApplyScope::This, out.path()), false)
+        .expect("queued: the photo has estimates, they may still move");
+    // The photo's turn has come and it waits: it was announced, nothing is written, the queue is
+    // busy (the updater must not restart now).
+    let first = rx.recv_timeout(Duration::from_secs(30)).expect("busy");
+    assert_eq!(first, ExportEvent::Busy(true));
+    std::thread::sleep(Duration::from_millis(400));
+    assert!(queue.is_busy());
+    assert!(
+        written_files(out.path()).is_empty(),
+        "nothing is written before the estimates are final"
+    );
+    assert_eq!(queue.summary(id).expect("summary").state, JobState::Running);
+
+    // The photos it depends on develop; the parked thumbnail goes. The job finishes.
+    gate.release();
+    let mut events = vec![first];
+    events.extend(until_idle(&rx));
+    let got = written_files(out.path());
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0].0, want[0].0, "same file name");
+    assert!(
+        got[0].1 == want[0].1,
+        "same bytes as after waiting for idle"
+    );
+    // The panel saw the usual sequence: the photo starts at 0 % (while it waits), then finishes.
+    let p = progress(&events);
+    assert_eq!((p[0].done, p[0].total), (0, 1));
+    assert_eq!(p.last().map(|p| (p.done, p.total)), Some((1, 1)));
+}
+
+#[test]
+fn an_export_does_not_wait_for_photos_it_does_not_depend_on() {
+    // Photo 4 (another ISO, ten seconds apart) is neither in the burst of photo 1 nor in its noise
+    // pool: with photos 1 to 3 estimated and 4 still waiting, an export of photo 1 goes ahead.
+    let dir = burst_folder();
+    let want = bytes_after_waiting(dir.path(), ApplyScope::This);
+    let gate = GateThumbnails::new(3);
+    let session = Arc::new(Session::new(
+        base_env()
+            .with_decode_threads(1)
+            .with_thumbnails(gate.clone()),
+    ));
+    session.open(&[dir.path().to_path_buf()], OpenOptions::default());
+    gate.wait_parked();
+    let ids = session.photo_ids();
+    assert!(session.estimates(ids[2]).is_some() && session.estimates(ids[3]).is_none());
+    assert!(session.estimates_final(ids[0]).unwrap());
+
+    let (home, out) = (
+        tempfile::tempdir().expect("h"),
+        tempfile::tempdir().expect("o"),
+    );
+    let (_ctx, queue, rx) = neutral_queue(home.path());
+    queue
+        .start(&session, &job(ApplyScope::This, out.path()), false)
+        .expect("queued");
+    until_idle(&rx);
+    // Done while the decode thread is still stuck on the parked thumbnail.
+    assert_eq!(gate.calls(), 3);
+    assert!(session.estimates(ids[3]).is_none());
+    let got = written_files(out.path());
+    assert_eq!(got.len(), 1);
+    assert!(
+        got[0].1 == want[0].1,
+        "same bytes as after waiting for idle"
+    );
+    gate.release();
+    settle(&session);
+}
+
+#[test]
+fn a_job_waiting_for_estimates_can_be_cancelled_and_survives_the_session_closing() {
+    let dir = burst_folder();
+    let gate = GateThumbnails::new(1);
+    let session = Arc::new(Session::new(
+        base_env()
+            .with_decode_threads(1)
+            .with_thumbnails(gate.clone()),
+    ));
+    session.open(&[dir.path().to_path_buf()], OpenOptions::default());
+    gate.wait_parked();
+    let (home, out) = (
+        tempfile::tempdir().expect("h"),
+        tempfile::tempdir().expect("o"),
+    );
+    let (_ctx, queue, rx) = neutral_queue(home.path());
+
+    // Cancelled while it waits: stops within a moment, writes nothing.
+    let id = queue
+        .start(&session, &job(ApplyScope::This, out.path()), false)
+        .expect("queued");
+    assert_eq!(
+        rx.recv_timeout(Duration::from_secs(30)).expect("busy"),
+        ExportEvent::Busy(true)
+    );
+    queue.cancel(id);
+    assert!(
+        queue.wait_idle(Duration::from_secs(10)),
+        "the cancel is noticed"
+    );
+    assert!(written_files(out.path()).is_empty());
+    assert_eq!(
+        queue.summary(id).expect("summary").state,
+        JobState::Cancelled
+    );
+    while rx.try_recv().is_ok() {}
+
+    // The session closes while a job waits: development stops for good, the job exports its photo
+    // with the estimates it was queued with.
+    queue
+        .start(&session, &job(ApplyScope::This, out.path()), false)
+        .expect("queued");
+    session.close();
+    gate.release();
+    assert!(queue.wait_idle(Duration::from_secs(60)), "the job goes on");
+    assert_eq!(written_files(out.path()).len(), 1);
 }

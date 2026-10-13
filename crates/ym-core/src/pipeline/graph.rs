@@ -14,7 +14,7 @@
 //! | `groups` | the raw group's image at 1/k | [`RawParams`] (all of `decode.*`, noise reduction, sharpening, `g0`, noise) and k |
 //! | `full` | the prepared full-resolution chain | [`RawParams`] |
 //! | `tiles` | 512 px tiles of the full-resolution raw group | [`RawParams`] and the tile |
-//! | `colour` | the fused matrix and C7 | [`ColourKey`] |
+//! | `color` | the fused matrix and C7 | [`ColorKey`] |
 //! | `grade` | the prepared `ColorChain` | [`GradeKey`] |
 //! | `frames` | finished viewport frames | everything above plus geometry and the cell |
 //!
@@ -22,6 +22,7 @@
 //! keys hold the numbers the group reads, so a burst median that moves only the exposure recomputes
 //! the colour group and leaves the raw group alone.
 
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 use std::time::Instant;
 
@@ -33,16 +34,16 @@ use ym_gpu::cpu::{Rect, RgbImage};
 use ym_gpu::device::{Gpu, GpuInfo};
 use ym_gpu::queue::CancelToken;
 
-use super::colour::{
-    ColourKey, ColourPlan, DisplayChoice, GradeKey, GradePlan, GradeRequest, LookProvider,
-    PhotoSource, colour_key, colour_plan, grade_plan,
+use super::color::{
+    ColorKey, ColorPlan, DisplayChoice, GradeKey, GradePlan, GradeRequest, LookProvider,
+    PhotoSource, color_key, color_plan, grade_plan,
 };
 use super::geometry::Geometry;
 use super::raw::{
     FrameData, FullChain, RawParams, RawParamsKey, RawPlan, SigmaPlane, reduced_bayer, reduced_rgb,
     sigma_plane,
 };
-use super::{NeuralStatus, RenderError, RenderPath, RenderStats};
+use super::{FrameZoom, NeuralStatus, RenderError, RenderPath, RenderStats};
 use crate::scheduler::{ByteLru, JobScheduler, MemoryBudget, MemoryLedger};
 use crate::session::PhotoId;
 use ym_color::display::OutputTarget;
@@ -125,11 +126,11 @@ pub struct StageRuns {
     /// Full-resolution tiles (R1, R3 to R9 over 512 px).
     pub tiles: u64,
     /// Colour plans (C1 to C8).
-    pub colour_plans: u64,
+    pub color_plans: u64,
     /// Grade plans (C9 to C13).
     pub grade_plans: u64,
     /// Per-pixel colour passes over a sampled image.
-    pub colour_passes: u64,
+    pub color_passes: u64,
     /// Finished frames served from the frame cache.
     pub frame_hits: u64,
 }
@@ -147,9 +148,9 @@ impl StageRuns {
         self.sigma_planes += other.sigma_planes;
         self.full_chains += other.full_chains;
         self.tiles += other.tiles;
-        self.colour_plans += other.colour_plans;
+        self.color_plans += other.color_plans;
         self.grade_plans += other.grade_plans;
-        self.colour_passes += other.colour_passes;
+        self.color_passes += other.color_passes;
         self.frame_hits += other.frame_hits;
     }
 }
@@ -207,6 +208,9 @@ pub struct RenderReport {
     /// Plain-words notes: why the classical path ran, a look that was replaced by Neutral, lens
     /// tables that were ignored.
     pub notes: Vec<String>,
+    /// The zoom of the frame, for a viewport frame ([`Renderer::viewport_frame`] sets it, also on a
+    /// frame served from the cache); `None` for every other request.
+    pub zoom: Option<FrameZoom>,
 }
 
 impl RenderReport {
@@ -217,6 +221,8 @@ impl RenderReport {
             ms: self.ms,
             path: self.path,
             space: self.space,
+            zoom_percent: self.zoom.map(|z| z.zoom * 100.0),
+            fit_percent: self.zoom.map(|z| z.fit_zoom * 100.0),
         }
     }
 }
@@ -230,7 +236,7 @@ struct GraphState {
     groups: Option<ByteLru<(RawParamsKey, usize), Arc<RgbImage>>>,
     full: Option<(RawParamsKey, Arc<FullChain>)>,
     tiles: Option<ByteLru<(RawParamsKey, usize, usize), Arc<RgbImage>>>,
-    colour: Option<Arc<ColourPlan>>,
+    color: Option<Arc<ColorPlan>>,
     grade: Option<ByteLru<GradeKey, Arc<GradePlan>>>,
     frames: Option<ByteLru<String, Arc<super::frame::RenderedFrame>>>,
     stats: Option<RenderStats>,
@@ -337,6 +343,8 @@ struct Inner {
     display: RwLock<DisplayChoice>,
     options: RenderOptions,
     graphs: Mutex<Vec<(PhotoId, Arc<PhotoGraph>)>>,
+    /// Photos with an id up to this one belong to a session that was closed (0: none).
+    retired_through: AtomicU32,
     scheduler: JobScheduler,
     ledger: Arc<MemoryLedger>,
 }
@@ -374,6 +382,7 @@ impl Renderer {
                 display: RwLock::new(DisplayChoice::Aces2),
                 options,
                 graphs: Mutex::new(Vec::new()),
+                retired_through: AtomicU32::new(0),
                 scheduler,
                 ledger,
             }),
@@ -387,7 +396,7 @@ impl Renderer {
     /// [`RenderError::Thread`] when the operating system cannot start the render thread.
     pub fn neutral_only() -> Result<Self, RenderError> {
         Self::new(
-            Arc::new(super::colour::NeutralOnly),
+            Arc::new(super::color::NeutralOnly),
             RenderOptions::default(),
         )
     }
@@ -498,6 +507,27 @@ impl Renderer {
         lock(&self.inner.graphs).clear();
     }
 
+    /// The session closed: forgets every photo's caches, as [`Renderer::forget_all`] does, and
+    /// from now on refuses viewport, tile, thumbnail, histogram and readout requests for the
+    /// photos up to `last`, the highest id the closed session handed out (ids keep counting across
+    /// sessions, so a photo of the next session is above it). A request that was still on its way
+    /// when the session closed (a command that had read the photo before the close and queued its
+    /// job after the scheduler's cancel) would otherwise run, and make the caches of a photo that
+    /// is gone. **Full-resolution renders for exports are not refused**: they hold their own
+    /// snapshots and go on after the close (`docs/11`).
+    pub fn retire_through(&self, last: PhotoId) {
+        self.inner
+            .retired_through
+            .fetch_max(last.0, Ordering::SeqCst);
+        self.forget_all();
+    }
+
+    /// Whether a photo belongs to a session that was closed ([`Renderer::retire_through`]).
+    #[must_use]
+    pub fn is_retired(&self, id: PhotoId) -> bool {
+        id.0 <= self.inner.retired_through.load(Ordering::SeqCst)
+    }
+
     /// The runs of a photo's graph so far (zero for a photo with no graph).
     #[must_use]
     pub fn counters(&self, id: PhotoId) -> StageRuns {
@@ -528,6 +558,9 @@ impl Renderer {
     }
 
     pub(crate) fn note_stats(&self, id: PhotoId, stats: RenderStats) {
+        if self.is_retired(id) {
+            return;
+        }
         let g = self.graph(id);
         lock(&g.state).stats = Some(stats);
     }
@@ -552,7 +585,22 @@ pub(crate) struct Job<'a> {
 }
 
 impl<'a> Job<'a> {
-    pub fn new(r: &'a Renderer, src: &'a PhotoSource, cancel: &'a CancelToken) -> Self {
+    /// A request for the viewport, a tile, a thumbnail, the histogram or a readout. A photo of a
+    /// closed session ([`Renderer::retire_through`]) is refused as cancelled.
+    pub fn new(
+        r: &'a Renderer,
+        src: &'a PhotoSource,
+        cancel: &'a CancelToken,
+    ) -> Result<Self, RenderError> {
+        if r.is_retired(src.id) {
+            return Err(RenderError::Cancelled);
+        }
+        Ok(Self::for_export(r, src, cancel))
+    }
+
+    /// A request that is not refused for a photo of a closed session: an export, which goes on
+    /// with its snapshot.
+    pub fn for_export(r: &'a Renderer, src: &'a PhotoSource, cancel: &'a CancelToken) -> Self {
         let g = r.graph(src.id);
         g.adopt(src.fingerprint);
         Self {
@@ -606,6 +654,7 @@ impl<'a> Job<'a> {
             runs: self.runs,
             timings: self.timings,
             notes: self.notes,
+            zoom: None,
         };
         tracing::debug!(
             photo = %self.src.id,
@@ -627,7 +676,7 @@ impl<'a> Job<'a> {
         let e = &self.src.estimates;
         let g0 = e
             .initial_gains()
-            .map_err(|err| RenderError::Colour(err.to_string()))?;
+            .map_err(|err| RenderError::Color(err.to_string()))?;
         let nr = match s.noise_reduction.manual() {
             Some(m) => *m,
             None => e.noise_reduction,
@@ -898,18 +947,18 @@ impl<'a> Job<'a> {
     }
 
     /// The colour plan (C1 to C8).
-    pub fn colour(&mut self) -> Result<Arc<ColourPlan>, RenderError> {
-        let key: ColourKey = colour_key(self.src);
-        if let Some(c) = &lock(&self.g.state).colour
+    pub fn color(&mut self) -> Result<Arc<ColorPlan>, RenderError> {
+        let key: ColorKey = color_key(self.src);
+        if let Some(c) = &lock(&self.g.state).color
             && c.key == key
         {
             return Ok(Arc::clone(c));
         }
         let t = Instant::now();
-        let plan = Arc::new(colour_plan(self.src)?);
-        self.runs.colour_plans += 1;
+        let plan = Arc::new(color_plan(self.src)?);
+        self.runs.color_plans += 1;
         self.timings.plans_ms += t.elapsed().as_secs_f64() * 1000.0;
-        lock(&self.g.state).colour = Some(Arc::clone(&plan));
+        lock(&self.g.state).color = Some(Arc::clone(&plan));
         Ok(plan)
     }
 
@@ -919,7 +968,7 @@ impl<'a> Job<'a> {
         target: OutputTarget,
         dither: bool,
     ) -> Result<Arc<GradePlan>, RenderError> {
-        let colour = self.colour()?;
+        let color = self.color()?;
         let display = self.r.display();
         let req = GradeRequest {
             target,
@@ -929,7 +978,7 @@ impl<'a> Job<'a> {
         };
         // Build the plan's key without building the chain: the key is part of the plan, so the
         // cheap way to know whether a cached plan matches is to build the key text first.
-        let wanted = super::colour::grade_key(self.src, &colour, &req);
+        let wanted = super::color::grade_key(self.src, &color, &req);
         let cached = {
             let mut st = lock(&self.g.state);
             let cache = st.grade.get_or_insert_with(|| ByteLru::new(8));
@@ -943,7 +992,7 @@ impl<'a> Job<'a> {
             return Ok(plan);
         }
         let t = Instant::now();
-        let plan = Arc::new(grade_plan(self.src, &colour, &req)?);
+        let plan = Arc::new(grade_plan(self.src, &color, &req)?);
         self.runs.grade_plans += 1;
         self.timings.plans_ms += t.elapsed().as_secs_f64() * 1000.0;
         for w in &plan.warnings {

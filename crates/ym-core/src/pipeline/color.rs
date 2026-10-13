@@ -333,7 +333,7 @@ impl PhotoSource {
 /// Identifies the inputs of the colour group (C1 to C8): when it is equal, the fused matrix and the
 /// tone parameters are the same.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct ColourKey(String);
+pub struct ColorKey(String);
 
 /// Identifies the inputs of the grade group (C9 to C13) on top of the colour group.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -341,14 +341,14 @@ pub struct GradeKey(String);
 
 /// The key of the colour group of a photo.
 #[must_use]
-pub fn colour_key(src: &PhotoSource) -> ColourKey {
+pub fn color_key(src: &PhotoSource) -> ColorKey {
     let s = &src.settings;
     let mut k = String::with_capacity(512);
     // `{:?}` of an f64 is its shortest round-trip form, so equal text is equal bits.
     let _ = write!(
         k,
         "{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}",
-        src.estimates.colour,
+        src.estimates.color,
         s.light_source,
         s.white_balance,
         s.exposure,
@@ -357,7 +357,7 @@ pub fn colour_key(src: &PhotoSource) -> ColourKey {
         s.rolloff,
         (src.estimates.noise.model, src.profile.id.to_string()),
     );
-    ColourKey(k)
+    ColorKey(k)
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -366,30 +366,30 @@ pub fn colour_key(src: &PhotoSource) -> ColourKey {
 
 /// C1 to C6 as one matrix and the parameters of C7.
 #[derive(Debug, Clone)]
-pub struct ColourPlan {
+pub struct ColorPlan {
     /// The fused chain: matrix, factors, Kelvin and tint readout, clip level.
     pub fused: FusedChain,
     /// C7: roll-off and toe.
     pub tone: ToneParams,
     /// What the plan was made from.
-    pub key: ColourKey,
+    pub key: ColorKey,
 }
 
 /// Builds the colour plan of a photo.
 ///
 /// # Errors
 ///
-/// [`RenderError::Colour`] for a Pick white sample the chain refuses ("That spot is too bright to
+/// [`RenderError::Color`] for a Pick white sample the chain refuses ("That spot is too bright to
 /// use ...") or values that cannot make a chain.
-pub fn colour_plan(src: &PhotoSource) -> Result<ColourPlan, RenderError> {
+pub fn color_plan(src: &PhotoSource) -> Result<ColorPlan, RenderError> {
     let fused = src
         .estimates
         .fused_chain(&src.profile, &src.settings, src.picked_white())
-        .map_err(|e| RenderError::Colour(e.to_string()))?;
+        .map_err(|e| RenderError::Color(e.to_string()))?;
     let g0 = src
         .estimates
         .initial_gains()
-        .map_err(|e| RenderError::Colour(e.to_string()))?;
+        .map_err(|e| RenderError::Color(e.to_string()))?;
     let noise = &src.estimates.noise.model;
     let read_sigma = (noise.b + noise.sigma_row * noise.sigma_row + noise.q * noise.q / 12.0)
         .max(0.0)
@@ -406,11 +406,11 @@ pub fn colour_plan(src: &PhotoSource) -> Result<ColourPlan, RenderError> {
         / 3.0;
     let r = &src.settings.rolloff;
     let tone = ToneParams::new(r.highlights, r.low_light, fused.clip().n, floor)
-        .map_err(|e| RenderError::Colour(e.to_string()))?;
-    Ok(ColourPlan {
+        .map_err(|e| RenderError::Color(e.to_string()))?;
+    Ok(ColorPlan {
         fused,
         tone,
-        key: colour_key(src),
+        key: color_key(src),
     })
 }
 
@@ -438,14 +438,14 @@ pub fn grade_params(s: &DevelopSettings) -> GradeParams {
 
 fn curve_of(points: &[CurvePoint]) -> Result<Curve, RenderError> {
     let pts: Vec<(f64, f64)> = points.iter().map(|p| (p[0], p[1])).collect();
-    Curve::new(&pts).map_err(|e| RenderError::Colour(format!("The curve can't be used: {e}.")))
+    Curve::new(&pts).map_err(|e| RenderError::Color(format!("The curve can't be used: {e}.")))
 }
 
 /// The four curves of the settings.
 ///
 /// # Errors
 ///
-/// [`RenderError::Colour`] for a curve `ym_color` refuses (settings validation normally stops
+/// [`RenderError::Color`] for a curve `ym_color` refuses (settings validation normally stops
 /// these earlier).
 pub fn curve_set(s: &DevelopSettings) -> Result<CurveSet, RenderError> {
     Ok(CurveSet {
@@ -513,13 +513,13 @@ fn pieces(src: &PhotoSource, req: &GradeRequest<'_>) -> Pieces {
     }
 }
 
-fn key_of(src: &PhotoSource, colour: &ColourPlan, req: &GradeRequest<'_>, p: &Pieces) -> GradeKey {
+fn key_of(src: &PhotoSource, color: &ColorPlan, req: &GradeRequest<'_>, p: &Pieces) -> GradeKey {
     let s = &src.settings;
     let mut key = String::with_capacity(768);
     let _ = write!(
         key,
         "{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{}|",
-        colour.key,
+        color.key,
         grade_params(s),
         s.curve,
         req.target,
@@ -543,8 +543,8 @@ fn key_of(src: &PhotoSource, colour: &ColourPlan, req: &GradeRequest<'_>, p: &Pi
 
 /// The key a grade plan for these inputs has, without building the chain.
 #[must_use]
-pub fn grade_key(src: &PhotoSource, colour: &ColourPlan, req: &GradeRequest<'_>) -> GradeKey {
-    key_of(src, colour, req, &pieces(src, req))
+pub fn grade_key(src: &PhotoSource, color: &ColorPlan, req: &GradeRequest<'_>) -> GradeKey {
+    key_of(src, color, req, &pieces(src, req))
 }
 
 /// Builds the grade plan: the look and the display transform are fetched from the provider (a
@@ -552,16 +552,16 @@ pub fn grade_key(src: &PhotoSource, colour: &ColourPlan, req: &GradeRequest<'_>)
 ///
 /// # Errors
 ///
-/// [`RenderError::Colour`] when the chain cannot be prepared.
+/// [`RenderError::Color`] when the chain cannot be prepared.
 pub fn grade_plan(
     src: &PhotoSource,
-    colour: &ColourPlan,
+    color: &ColorPlan,
     req: &GradeRequest<'_>,
 ) -> Result<GradePlan, RenderError> {
     let s = &src.settings;
     let p = pieces(src, req);
-    let key = key_of(src, colour, req, &p);
-    let mut params = ChainParams::new(*colour.fused.matrix(), colour.tone);
+    let key = key_of(src, color, req, &p);
+    let mut params = ChainParams::new(*color.fused.matrix(), color.tone);
     params.grade = grade_params(s);
     params.curves = curve_set(s)?;
     params.output = req.target;
@@ -573,7 +573,7 @@ pub fn grade_plan(
     if let Some((transform, _)) = p.display {
         params.display = transform;
     }
-    let chain = ColorChain::new(&params).map_err(|e| RenderError::Colour(e.to_string()))?;
+    let chain = ColorChain::new(&params).map_err(|e| RenderError::Color(e.to_string()))?;
     Ok(GradePlan {
         chain: Arc::new(chain),
         key,

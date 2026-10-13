@@ -63,7 +63,7 @@ use std::time::{Duration, Instant};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use ym_color::consts::Vec3;
-use ym_color::exposure::{BurstFrame, share_burst_ev};
+use ym_color::exposure::{BurstFrame, burst_groups, share_burst_ev};
 use ym_looks::library::LookId;
 use ym_noise::estimate::PoolKey;
 use ym_noise::priors::{NoisePrior, PriorStore};
@@ -848,6 +848,63 @@ impl State {
         react.then_some(photo.id)
     }
 
+    /// Whether the estimates of photo `id` that depend on other photos are final: every photo that
+    /// can still move them has finished its own estimates (or failed and never will).
+    ///
+    /// Two things are shared. The burst median exposure depends on the frames of the photo's burst,
+    /// which are known from the metadata alone: the groups are made over **every** photo with a
+    /// capture record, so a frame that has not been estimated yet is still a member (grouping only
+    /// the estimated photos can split a burst and join it again when the missing frame arrives;
+    /// leaving frames out only ever splits a group, so a group whose members are all resolved is
+    /// final in the served numbers too). The pooled noise depends on the photos of the pool key
+    /// (model, ISO, bit depth, compression), of which the first sixteen estimated ones in id order
+    /// build the pool: all of them must be resolved, which is stricter than needed for a group of
+    /// more than sixteen and simple. A photo with no ISO has no pool.
+    ///
+    /// # Errors
+    ///
+    /// [`SessionError::UnknownPhoto`], and [`SessionError::Skipped`] for a photo that cannot be
+    /// developed. A photo with no estimates of its own yet is `Ok(false)`.
+    fn estimates_final(&self, id: PhotoId) -> Result<bool, SessionError> {
+        let i = *self.index.get(&id).ok_or(SessionError::UnknownPhoto(id))?;
+        let photo = &self.photos[i];
+        if let PhotoStatus::Skipped { reason } = &photo.summary.status {
+            return Err(SessionError::Skipped(reason.clone()));
+        }
+        if photo.own.is_none() {
+            return Ok(false);
+        }
+        let resolved =
+            |p: &Photo| p.own.is_some() || matches!(p.summary.status, PhotoStatus::Skipped { .. });
+        if photo.burst.is_some() {
+            let members: Vec<usize> = (0..self.photos.len())
+                .filter(|&j| self.photos[j].burst.is_some())
+                .collect();
+            let frames: Vec<BurstFrame> = members
+                .iter()
+                .filter_map(|&j| self.photos[j].burst.clone())
+                .collect();
+            let groups = burst_groups(&frames);
+            let mine = members.iter().position(|&j| j == i).map(|k| groups[k]);
+            if members
+                .iter()
+                .zip(&groups)
+                .any(|(&j, &g)| Some(g) == mine && !resolved(&self.photos[j]))
+            {
+                return Ok(false);
+            }
+        }
+        if let Some(key) = &photo.pool_key
+            && self
+                .photos
+                .iter()
+                .any(|p| p.pool_key.as_ref() == Some(key) && !resolved(p))
+        {
+            return Ok(false);
+        }
+        Ok(true)
+    }
+
     /// Rebuilds the noise pool of a photo's group when the set of estimates in it changed; the
     /// group's photos are re-served on their next refresh.
     fn rebuild_pool(&mut self, key: &PoolKey, priors: &PriorStore) {
@@ -1290,6 +1347,25 @@ impl Session {
         self.view(id).ok().map(|v| v.estimates)
     }
 
+    /// Whether the automatic estimates of a photo that depend on other photos, the burst median
+    /// exposure and the pooled noise (`docs/02` Auto exposure step 6, `docs/06` Batch pooling), are
+    /// final: every photo that can still change them has been estimated or has failed. The command
+    /// line waits for the whole session to go idle before it exports, so its files carry final
+    /// estimates; the export queue uses this to give a job started earlier the same ones, waiting
+    /// only for the photos its photos depend on and not for thumbnails, prefetching or viewport work.
+    ///
+    /// Opening more photos or re-running a photo's automatic estimates can make final estimates
+    /// move again; this answers for the photos open now.
+    ///
+    /// # Errors
+    ///
+    /// [`SessionError::UnknownPhoto`] when the photo is gone (the session was closed) and
+    /// [`SessionError::Skipped`] for a photo that cannot be developed. `Ok(false)` while the photo
+    /// has no estimates of its own yet.
+    pub fn estimates_final(&self, id: PhotoId) -> Result<bool, SessionError> {
+        lock(&self.inner.state).estimates_final(id)
+    }
+
     /// `get_settings`: a photo's settings resolved against its estimates.
     ///
     /// # Errors
@@ -1664,6 +1740,15 @@ impl Session {
                 .0;
         }
         true
+    }
+
+    /// The highest photo id the session has handed out, across closes (`None` before the first
+    /// photo). Ids only count up, so every photo of a later session is above it: what a renderer
+    /// needs to tell the photos of a closed session from the next one's.
+    #[must_use]
+    pub fn last_photo_id(&self) -> Option<PhotoId> {
+        let next = lock(&self.inner.state).next_id;
+        (next > 1).then(|| PhotoId(next - 1))
     }
 
     /// Closes the session (`close_session`): cancels every background job, forgets every photo,

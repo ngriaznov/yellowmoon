@@ -272,7 +272,7 @@ mod tests {
     }
 
     #[test]
-    fn decodes_to_the_encoded_colours() {
+    fn decodes_to_the_encoded_colors() {
         let (w, h) = (32_u32, 32_u32);
         // Left half linear 0.18 grey (sRGB code 118), right half linear 0.5 (code 188).
         let mut data = Vec::new();

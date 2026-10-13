@@ -49,7 +49,7 @@ mod tests {
     }
 
     #[test]
-    fn colour_differences_follow_cielab() {
+    fn color_differences_follow_cielab() {
         assert_eq!(delta_e_codes([0.5; 3], [0.5; 3]), 0.0);
         assert!((delta_e_codes([0.0; 3], [1.0; 3]) - 100.0).abs() < 0.5);
     }

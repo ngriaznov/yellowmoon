@@ -1,25 +1,12 @@
-//! Putting the scene's JPEG into the ARW's maker-note preview (tag 0x2001).
+//! The scene's JPEG for the ARW's maker-note preview (tag 0x2001).
 //!
-//! `ym_raw::testgen::ArwBuilder` always writes its own tiny gradient JPEG there; it has no way to take a JPEG from the
-//! caller. This module works around that without changing the container layout: the builder is asked for a preview of
-//! the right size padded to a length that fits the real JPEG, the placeholder is found through the probe, and it is
-//! replaced byte for byte by the real JPEG padded with `COM` segments to exactly the same length. Nothing moves, so
-//! every offset and length in the file stays valid. (A `preview_jpeg` setter on the builder would make this
-//! unnecessary; `docs/13-testing.md` lists it as a follow-up.)
+//! `ym_raw::testgen::ArwBuilder::preview_jpeg` writes the scene's own JPEG into the maker note byte for byte, so this
+//! module only checks that the JPEG is the size the sidecar says ([`ensure_size`]) and offers [`jpeg_size`] and
+//! [`pad_exact`] to the tests. (Before `preview_jpeg` existed the writer asked the builder for a padded placeholder and
+//! swapped the JPEG in after the fact; the files it wrote then carried the JPEG padded with `COM` segments.)
 
-use anyhow::{Result, bail, ensure};
-use ym_raw::metadata::{jpeg_frame_header, probe_bytes};
-use ym_raw::testgen::{pad_jpeg_to, tiny_jpeg};
-
-/// The seed `ArwBuilder` uses for the maker-note preview (`tiny_jpeg(w, h, 2)`).
-const BUILDER_PREVIEW_SEED: u64 = 2;
-
-/// What to ask the builder for so that the placeholder is long enough to be replaced by `jpeg`.
-pub fn placeholder_min_bytes(jpeg: &[u8], width: u16, height: u16) -> usize {
-    jpeg.len()
-        .max(tiny_jpeg(width, height, BUILDER_PREVIEW_SEED).len())
-        + 64
-}
+use anyhow::{Result, ensure};
+use ym_raw::metadata::jpeg_frame_header;
 
 /// `(width, height)` from the frame header of a JPEG, if it has one.
 pub fn jpeg_size(jpeg: &[u8]) -> Option<(u16, u16)> {
@@ -71,38 +58,20 @@ pub fn pad_exact(jpeg: &[u8], target: usize) -> Result<Vec<u8>> {
     Ok(out)
 }
 
-/// Replaces the builder's preview placeholder in `file` by `jpeg`. `(width, height)` and `min_bytes` are what the
-/// builder was given (`preview(Some((width, height)))`, `preview_min_bytes(min_bytes)`).
-pub fn embed(
-    file: &mut [u8],
-    jpeg: &[u8],
-    width: u16,
-    height: u16,
-    min_bytes: usize,
-) -> Result<()> {
+/// Fails unless `jpeg` has a frame header of `width` x `height` pixels (what the sidecar says).
+pub fn ensure_size(jpeg: &[u8], width: u16, height: u16) -> Result<()> {
     ensure!(
         jpeg_size(jpeg) == Some((width, height)),
         "the preview JPEG is {:?}, the sidecar says {width} x {height}",
         jpeg_size(jpeg)
     );
-    let placeholder = pad_jpeg_to(tiny_jpeg(width, height, BUILDER_PREVIEW_SEED), min_bytes);
-    let meta = probe_bytes(file).map_err(|e| anyhow::anyhow!("probing the written file: {e}"))?;
-    let Some(found) = meta.preview else {
-        bail!("the written file has no preview to replace");
-    };
-    let (offset, length) = (found.offset as usize, found.length as usize);
-    ensure!(
-        length == placeholder.len() && file.get(offset..offset + length) == Some(&placeholder[..]),
-        "the probe's preview ({length} bytes at {offset}) is not the builder's placeholder"
-    );
-    let padded = pad_exact(jpeg, length)?;
-    file[offset..offset + length].copy_from_slice(&padded);
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ym_raw::testgen::tiny_jpeg;
 
     #[test]
     fn pad_exact_hits_every_gap_size_and_keeps_the_jpeg_valid() {
@@ -135,13 +104,10 @@ mod tests {
     }
 
     #[test]
-    fn the_placeholder_is_always_long_enough() {
-        let big = vec![0u8; 10];
-        assert!(
-            placeholder_min_bytes(&big, 96, 64)
-                >= tiny_jpeg(96, 64, BUILDER_PREVIEW_SEED).len() + 64
-        );
-        let huge = vec![0u8; 1_000_000];
-        assert!(placeholder_min_bytes(&huge, 96, 64) >= 1_000_064);
+    fn ensure_size_compares_the_frame_header_with_the_sidecar() {
+        let jpeg = tiny_jpeg(96, 64, 5);
+        assert!(ensure_size(&jpeg, 96, 64).is_ok());
+        assert!(ensure_size(&jpeg, 64, 96).is_err());
+        assert!(ensure_size(b"not a jpeg", 96, 64).is_err());
     }
 }

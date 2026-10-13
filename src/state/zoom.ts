@@ -1,5 +1,5 @@
 /** The zoom steps of the Fit menu, from smallest to largest (`docs/11-ui.md` §Photos). */
-import type { PhotoSummary, ResolvedValues, ViewportMode, ViewportRect } from "../api/types";
+import type { PhotoSummary, RenderStats, ResolvedValues, ViewportMode, ViewportRect } from "../api/types";
 
 export const ZOOMS: ReadonlyArray<{ key: string; label: string; mode: ViewportMode }> = [
   { key: "fit", label: "Fit", mode: { kind: "fit" } },
@@ -58,6 +58,16 @@ export function fitZoomExact(
   return Math.min((cell.width * cell.scale) / width, (cell.height * cell.scale) / height) * 100;
 }
 
+/**
+ * The Fit zoom in percent and not rounded: the core's (`render_stats.fit_percent`, which knows the lens crop, the straighten angle and
+ * the crop that `fitZoomExact` cannot see) once a viewport frame has reported it, else `estimate`, this screen's own figure from the
+ * photo and the cell (`fitZoomExact`), which is all the mock can offer.
+ */
+export function fitZoomOf(stats: Pick<RenderStats, "fit_percent"> | null | undefined, estimate: number | null): number | null {
+  const core = stats?.fit_percent;
+  return typeof core === "number" && Number.isFinite(core) && core > 0 ? core : estimate;
+}
+
 /** `fitZoomExact` rounded to a whole percent: "Fit 24%" in the header. */
 export function fitZoomPercent(
   cell: Pick<ViewportRect, "width" | "height" | "scale">,
@@ -69,9 +79,10 @@ export function fitZoomPercent(
 }
 
 /**
- * The zoom after a wheel or pinch step that multiplies the core's zoom by `factor`, as far as the screen can tell: the core does not
- * report its zoom, so this starts from the Fit zoom or the mirrored percentage. Zooming out to the Fit zoom or below is Fit; zooming in
- * stops at 800 %. `fit` is `fitZoomExact`; without it a zoom in from Fit is taken from 25 %.
+ * The zoom after a wheel or pinch step that multiplies the core's zoom by `factor`. A step is mirrored at once, before the core has drawn
+ * a frame to report (`render_stats`), so this starts from the mirrored percentage, or from the Fit zoom at Fit (`fit`: the core's,
+ * `fitZoomOf`). Zooming out to the Fit zoom or below is Fit; zooming in stops at 800 %. Without `fit` a zoom in from Fit is taken
+ * from 25 %.
  */
 export function zoomAfter(mode: ViewportMode, factor: number, fit: number | null): ViewportMode {
   if (!(factor > 0) || !Number.isFinite(factor)) return mode;

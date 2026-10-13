@@ -65,7 +65,7 @@ impl Levels {
     /// pattern `cfa`: each value lands on the photosite position of its colour, whatever the phase of
     /// the pattern (a frame cropped to an odd origin starts with GRBG, say).
     pub fn from_rggb(black_rggb: [f32; 4], white_rggb: [f32; 4], cfa: Cfa) -> Levels {
-        let colour_index = |x: usize, y: usize| match cfa.color_at(x, y) {
+        let color_index = |x: usize, y: usize| match cfa.color_at(x, y) {
             CfaColor::Red => 0,
             CfaColor::Blue => 3,
             CfaColor::Green if cfa.color_at(x ^ 1, y) == CfaColor::Red => 1,
@@ -73,7 +73,7 @@ impl Levels {
         };
         let mut levels = Levels::uniform(0.0, 0.0);
         for p in 0..4 {
-            let i = colour_index(p & 1, p >> 1);
+            let i = color_index(p & 1, p >> 1);
             levels.black[p] = black_rggb[i];
             levels.white[p] = white_rggb[i];
         }
@@ -247,7 +247,7 @@ mod tests {
     }
 
     #[test]
-    fn rggb_levels_follow_the_colours_for_every_phase() {
+    fn rggb_levels_follow_the_colors_for_every_phase() {
         let black = [10.0, 20.0, 30.0, 40.0]; // R, G1 (red rows), G2 (blue rows), B
         let white = [1010.0, 1020.0, 1030.0, 1040.0];
         for cfa in Cfa::ALL {

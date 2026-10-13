@@ -40,7 +40,6 @@ pub fn run() {
 
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_dialog::init())
         .register_uri_scheme_protocol(FRAME_SCHEME, move |_ctx, request| {
             frame_response(&protocol_frames, &request)
@@ -83,7 +82,7 @@ fn start(app: &mut App, frames: &Arc<FrameStore>) -> AppState {
     let cli = CliLink::locate()
         .map_err(|e| tracing::warn!(error = %e, "no command-line tool next to the app"))
         .ok();
-    match AppApi::start(config, emitter, sink, elevator(), cli) {
+    match AppApi::start(config, emitter, sink, Arc::clone(frames), elevator(), cli) {
         Ok(api) => {
             #[cfg(debug_assertions)]
             smoke_test(app.handle().clone(), Arc::clone(&api));
@@ -136,7 +135,8 @@ fn elevator() -> Box<dyn Elevate + Send + Sync> {
     }
 }
 
-/// `ym-frame://localhost/frame-<n>.png`: a frame of the fallback viewport.
+/// `ym-frame://localhost/frame-<n>.png` (a frame of the fallback viewport) or
+/// `ym-frame://localhost/thumb-<photo>-<version>.png` (a thumbnail of the filmstrip).
 fn frame_response(store: &FrameStore, request: &Request<Vec<u8>>) -> Response<Cow<'static, [u8]>> {
     let (status, mime, body) = store.respond(request.uri().path());
     Response::builder()

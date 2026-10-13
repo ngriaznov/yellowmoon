@@ -912,7 +912,7 @@ fn the_four_thousand_kelvin_step_of_w_a_shows_in_manual_white_balance() {
 }
 
 #[test]
-fn colour_estimates_resolve_exposure_and_build_the_metering_chain() {
+fn color_estimates_resolve_exposure_and_build_the_metering_chain() {
     let p = load("sony-ilce-7rm4");
     let scene = estimate_at(
         &p,

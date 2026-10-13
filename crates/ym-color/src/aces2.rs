@@ -97,16 +97,16 @@ mod tonescale;
 
 use std::sync::{Arc, OnceLock};
 
+pub use crate::consts::Primaries;
 pub use cam::{JMhParams, REF_LUMINANCE};
 pub use display::DisplayTransfer;
-pub use matrix::Primaries;
 pub use params::{
     Aces2Params, BASE_INDEX, MAX_PEAK_LUMINANCE_NITS, MIN_PEAK_LUMINANCE_NITS, TABLE_SIZE,
     TOTAL_TABLE_SIZE, UPPER_WRAP_INDEX,
 };
 pub use tonescale::ToneScaleParams;
 
-use matrix::{IDENTITY, M33, mul_mat_mat, mul_vec_mat};
+use matrix::{IDENTITY, M33, ctl_rgb_to_xyz, ctl_xyz_to_rgb, mul_mat_mat, mul_vec_mat};
 
 /// Peak luminance of every Yellowmoon SDR output, in nits.
 pub const SDR_PEAK_LUMINANCE_NITS: f64 = 100.0;
@@ -193,7 +193,10 @@ impl Aces2Transform {
         let limit_to_display = if limiting == encoding {
             IDENTITY
         } else {
-            mul_mat_mat(&limiting.rgb_to_xyz(1.0), &encoding.xyz_to_rgb(1.0))
+            mul_mat_mat(
+                &ctl_rgb_to_xyz(&limiting, 1.0),
+                &ctl_xyz_to_rgb(&encoding, 1.0),
+            )
         };
         Aces2Transform {
             output,

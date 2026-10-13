@@ -104,7 +104,7 @@ fn rgb_input() -> (RgbImage, Vec<f32>) {
 }
 
 #[test]
-fn colour_guided_filter_matches_the_reference() {
+fn color_guided_filter_matches_the_reference() {
     let (img, sigma) = rgb_input();
     for color in [30.0f32, 100.0] {
         let (want, _) = array(&format!("guided_{}", color as i32));

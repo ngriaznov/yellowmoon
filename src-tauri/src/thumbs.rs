@@ -18,6 +18,7 @@ use ym_core::pipeline::PhotoSource;
 use ym_core::session::PhotoId as CorePhotoId;
 
 use crate::events::{AppEvent, Emitter};
+use crate::viewport::FrameStore;
 use crate::wire::{PhotoId, ThumbnailReady};
 
 /// How long requests are collected before the thumbnails are rendered.
@@ -40,6 +41,8 @@ struct Shared {
     wake: Condvar,
     idle: Condvar,
     emitter: Arc<dyn Emitter>,
+    /// Where the pictures are kept for the webview to load (`ym-frame://…/thumb-…`).
+    frames: Arc<FrameStore>,
     core: OnceLock<Weak<Core>>,
     shutdown: AtomicBool,
 }
@@ -51,16 +54,17 @@ pub struct Thumbnails {
 }
 
 impl Thumbnails {
-    /// A refresher that announces thumbnails through `emitter`. It does nothing until
-    /// [`Thumbnails::attach`] gives it the core.
+    /// A refresher that keeps the thumbnails it renders in `frames` and announces their addresses
+    /// through `emitter`. It does nothing until [`Thumbnails::attach`] gives it the core.
     #[must_use]
-    pub fn new(emitter: Arc<dyn Emitter>) -> Self {
+    pub fn new(emitter: Arc<dyn Emitter>, frames: Arc<FrameStore>) -> Self {
         Self {
             shared: Arc::new(Shared {
                 pending: Mutex::new(Pending::default()),
                 wake: Condvar::new(),
                 idle: Condvar::new(),
                 emitter,
+                frames,
                 core: OnceLock::new(),
                 shutdown: AtomicBool::new(false),
             }),
@@ -176,10 +180,17 @@ impl Shared {
                 continue;
             };
             match core.renderer.spawn_thumbnail(src).wait() {
-                Ok(Ok(png)) => self.emitter.emit(AppEvent::ThumbnailReady(ThumbnailReady {
-                    id: PhotoId(id),
-                    png_bytes: png,
-                })),
+                Ok(Ok(png)) => {
+                    // The session closed while this one was rendering: nobody wants the picture.
+                    if core.session.view(CorePhotoId(id)).is_err() {
+                        continue;
+                    }
+                    let url = self.frames.put_thumbnail(id, png);
+                    self.emitter.emit(AppEvent::ThumbnailReady(ThumbnailReady {
+                        id: PhotoId(id),
+                        url,
+                    }));
+                }
                 Ok(Err(e)) => tracing::debug!(photo = id, error = %e, "thumbnail not refreshed"),
                 Err(e) => tracing::debug!(photo = id, error = %e, "thumbnail job did not run"),
             }

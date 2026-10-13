@@ -256,6 +256,7 @@ describe("the system", () => {
       opened: ["https://www.arri.com/en/learn/camera-systems/image-science/look-files"],
       revealed: ["~/Pictures/Lisbon export"],
       trashed: [downloads("ARRI_LookLibrary_LogC4.zip")],
+      restarts: 0,
     });
     expect((await api.looksRecognise(downloads(PACKAGE_ZIPS.look_library_logc4))).recognition.kind).toBe("missing");
   });

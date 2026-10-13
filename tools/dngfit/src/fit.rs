@@ -246,7 +246,7 @@ pub fn fit_tone(adobe: &Adobe, cfg: &FitConfig) -> Result<(Vec<[f32; 2]>, ToneTa
 /// The linear ProPhoto colour at a node of the look table (after the renderer's gain): hue `hi / H` of the circle,
 /// saturation `si / (S - 1)`, value `vi / (V - 1)` in the table's encoding.
 #[must_use]
-pub fn node_colour(dims: [u32; 3], encoding: u32, hi: u32, si: u32, vi: u32) -> Vec3 {
+pub fn node_color(dims: [u32; 3], encoding: u32, hi: u32, si: u32, vi: u32) -> Vec3 {
     let [hd, sd, vd] = dims;
     let h = 6.0 * f64::from(hi) / f64::from(hd);
     let s = f64::from(si) / f64::from(sd - 1);
@@ -311,7 +311,7 @@ pub fn solve_look(cfg: &FitConfig, tone: &ToneTable) -> (LookTable, LookReport) 
         for hi in 0..hd {
             for si in 0..sd {
                 let i = index(vi, hi, si);
-                let p = node_colour(cfg.dims, encoding, hi, si, vi);
+                let p = node_color(cfg.dims, encoding, hi, si, vi);
                 let [h, s, v] = rgb_to_hsv(p);
                 if si == 0 || v <= 0.0 {
                     entries[i] = Some([0.0, 1.0, 1.0]);
@@ -672,15 +672,15 @@ mod tests {
     }
 
     #[test]
-    fn node_colours_cover_the_cone_and_the_neutral_row_is_grey() {
+    fn node_colors_cover_the_cone_and_the_neutral_row_is_grey() {
         let dims = [36, 16, 16];
-        let grey = node_colour(dims, 1, 5, 0, 8);
+        let grey = node_color(dims, 1, 5, 0, 8);
         assert!((grey[0] - grey[1]).abs() < 1e-12 && (grey[1] - grey[2]).abs() < 1e-12);
         // encoded value 8/15 of sRGB
         assert!((grey[0] - srgb_decode(8.0 / 15.0)).abs() < 1e-12);
-        let red = node_colour(dims, 1, 0, 15, 15);
+        let red = node_color(dims, 1, 0, 15, 15);
         assert_eq!(red, [1.0, 0.0, 0.0]);
-        let green = node_colour(dims, 1, 12, 15, 15);
+        let green = node_color(dims, 1, 12, 15, 15);
         assert!((green[1] - 1.0).abs() < 1e-12 && green[0].abs() < 1e-12);
     }
 

@@ -225,9 +225,11 @@ pub fn incompatibility(scene: &Scene, variant: Variant) -> Option<String> {
 }
 
 fn neutral_lens_tables() -> LensTables {
-    let table = |knots: usize| -> Vec<i16> {
-        let mut v = vec![16i16];
-        v.extend(std::iter::repeat_n(0i16, knots));
+    // Every knot is zero (no correction). The count leads each table: n = 16 for vignetting (0x7032) and
+    // distortion (0x7037), 2n = 32 for chromatic aberration (0x7035: n knots for red, then n for blue).
+    let table = |count: i16| -> Vec<i16> {
+        let mut v = vec![count];
+        v.extend(std::iter::repeat_n(0i16, count as usize));
         v
     };
     LensTables {
@@ -288,7 +290,7 @@ pub fn build_arw(scene: &Scene, variant: Variant) -> Result<Vec<u8>> {
     let m = &scene.sidecar.mosaic;
     let (width, height) = (m.width, m.height);
     let (pw, ph) = (w.preview.width, w.preview.height);
-    let min_bytes = preview::placeholder_min_bytes(&scene.preview, pw, ph);
+    preview::ensure_size(&scene.preview, pw, ph)?;
     let comp = ((w.exposure_comp_ev * 10.0).round() as i32, 10);
     let mut builder = ArwBuilder::new(&w.model, width, height)
         .make(&w.make)
@@ -306,8 +308,7 @@ pub fn build_arw(scene: &Scene, variant: Variant) -> Result<Vec<u8>> {
         .wb(Some(w.sr2.wb_rggb))
         .cfa(scene.cfa)
         .lens_tables(neutral_lens_tables())
-        .preview(Some((pw, ph)))
-        .preview_min_bytes(min_bytes)
+        .preview_jpeg(scene.preview.clone())
         // The probe shows the largest JPEG below 1024 px, so a preview of 160 px or less would lose to the builder's
         // 160 x 120 thumbnail: such tiny previews (tests only) go without one.
         .thumbnail(if pw.max(ph) > 160 {
@@ -318,15 +319,13 @@ pub fn build_arw(scene: &Scene, variant: Variant) -> Result<Vec<u8>> {
     if let Some(id) = w.model_id {
         builder = builder.model_id(id);
     }
-    let mut bytes = match variant {
+    Ok(match variant {
         Variant::Uncompressed14 => builder.uncompressed(14).build(&scene.mosaic),
         Variant::Packed12 => builder.payload(Packed12).build(&scene.mosaic),
         Variant::Craw => builder.craw(CrawEncoder::new()).build(&scene.mosaic),
         Variant::LosslessL => builder.payload(LosslessL::new()).build(&scene.mosaic),
         Variant::LosslessMs => builder.lossless_ms(ms_payload(scene)).build(&[]),
-    };
-    preview::embed(&mut bytes, &scene.preview, pw, ph, min_bytes)?;
-    Ok(bytes)
+    })
 }
 
 /// The result of decoding a written file again.
@@ -439,7 +438,7 @@ pub fn verify_round_trip(scene: &Scene, variant: Variant, file: &[u8]) -> Result
         .get(p.offset as usize..(p.offset + p.length) as usize)
         .ok_or_else(|| anyhow!("preview range outside the file"))?;
     ensure!(
-        embedded == preview::pad_exact(&scene.preview, embedded.len())?.as_slice(),
+        embedded == scene.preview.as_slice(),
         "the embedded preview is not the scene's JPEG"
     );
 

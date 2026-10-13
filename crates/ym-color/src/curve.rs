@@ -3,7 +3,7 @@
 //! Four monotone cubic splines on `[0, 1]` (Fritsch and Carlson, 1980): luma and R, G, B. Each has
 //! 2 to [`MAX_CONTROL_POINTS`] control points in `[0, 1]^2` with strictly increasing `x`, is
 //! evaluated exactly by [`Curve::eval`] and baked into a [`TABLE_SIZE`]-entry table
-//! ([`Curve::bake`]) that the GPU samples as a 1D texture with linear filtering.
+//! ([`Curve::bake`]) that the GPU reads from an f32 storage buffer, interpolating linearly by hand.
 //!
 //! # Conventions
 //!
@@ -17,9 +17,11 @@
 //! * **Outside `[0, 1]`.** LogC4 values can leave `[0, 1]` (negative linear light, very bright
 //!   highlights). [`CurveTable::eval_extended`] continues with slope 1 from the end of the table, so
 //!   the curve's offset at 0 (or at 1) carries on as a constant shift and the map stays monotone.
-//! * **Texture sampling.** A 1D texture of [`TABLE_SIZE`] texels with linear filtering and
-//!   clamp-to-edge, sampled at `u = (x * 1023 + 0.5) / 1024` for `x` in `[0, 1]`, gives exactly
+//! * **GPU lookup.** The shader reads the table from an f32 storage buffer at position
+//!   `x * 1023` and interpolates linearly between the two neighbouring entries, which is exactly
 //!   [`CurveTable::lookup`]; the slope-1 extension for `x` outside `[0, 1]` is done in the shader.
+//!   (It is a buffer and not a 1D texture because an f16 texture would round values in
+//!   `[0.5, 1)` by up to 2.4e-4, more than the 2e-4 parity target of `docs/02`.)
 //! * **Luma.** The luma curve is applied as `v += curve(L) - L` on all three channels with `L` the
 //!   LogC4 luma of the pixel before the curve ([`crate::logc::LogC4::luma`]); the R, G and B curves
 //!   then act on the result per channel ([`BakedCurves::apply`]).
@@ -30,7 +32,7 @@ use crate::logc::LogC4;
 /// Most control points one curve may have.
 pub const MAX_CONTROL_POINTS: usize = 16;
 
-/// Entries in a baked table (the 1D texture width).
+/// Entries in a baked table.
 pub const TABLE_SIZE: usize = 1024;
 
 /// Why a curve was rejected.
@@ -313,7 +315,7 @@ impl CurveTable {
         &self.values
     }
 
-    /// The table entries as f32, the form uploaded as a 1D texture.
+    /// The table entries as f32, the form uploaded as a storage buffer.
     #[must_use]
     pub fn to_f32(&self) -> Vec<f32> {
         self.values.iter().map(|&v| v as f32).collect()

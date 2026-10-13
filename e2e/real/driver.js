@@ -136,6 +136,13 @@
     const strip = qa(".ym-filmstrip__thumb img");
     await waitFor("filmstrip thumbnails", () => qa(".ym-filmstrip__thumb img").filter(loaded).length >= 1, 30000);
     record("the filmstrip shows the thumbnails of thumbnail_ready", qa(".ym-filmstrip__thumb img").filter(loaded).length >= 1, `${qa(".ym-filmstrip__thumb img").filter(loaded).length} of ${qa(".ym-filmstrip__thumb").length}`);
+    // The event carries an address, not the picture: the shell serves it on the `ym-frame` scheme (`docs/01` IPC).
+    const thumbSources = qa(".ym-filmstrip__thumb img").filter(loaded).map((img) => img.src);
+    record(
+      "the thumbnails load from the ym-frame scheme, as addresses and not as bytes of the event",
+      thumbSources.length >= 1 && thumbSources.every((src) => /^(ym-frame:\/\/localhost|http:\/\/ym-frame\.localhost)\/thumb-\d+-\d+\.png$/.test(src)),
+      thumbSources[0] || "no thumbnail",
+    );
     await waitFor("look tiles", () => qa(".ym-look-tile img").filter(loaded).length >= 1, config.lookTimeoutMs);
     record("the Look tab's tiles come from look_thumbnail", true, `${qa(".ym-look-tile img").filter(loaded).length} tiles drawn`);
     const automatic = region("Automatic");

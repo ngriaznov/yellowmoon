@@ -231,12 +231,19 @@ impl Core {
         self.looks.on_change(f);
     }
 
-    /// Closes the session (⌘W): drops the photos and cancels the viewport, tile and thumbnail
-    /// renders. Exports that were queued keep going; they hold their own snapshots.
+    /// Closes the session (⌘W): drops the photos and cancels the viewport, tile, thumbnail,
+    /// histogram and look-tile renders, queued and running, then forgets what the renderer cached
+    /// for them and refuses any such request for the closed session's photos that is still on its
+    /// way (a command that read its photo before the close and queues its job after the cancel).
+    /// Exports that were queued keep going; they hold their own snapshots.
     pub fn close_session(&self) {
+        let last = self.session.last_photo_id();
         self.session.close();
         self.renderer.scheduler().cancel_foreground();
-        self.renderer.forget_all();
+        match last {
+            Some(last) => self.renderer.retire_through(last),
+            None => self.renderer.forget_all(),
+        }
     }
 
     /// Quitting: cancels exports and renders.
@@ -363,10 +370,17 @@ impl Core {
     /// folder first, as [`Core::looks_list`] does (and fires `looks_changed` if that changed the
     /// list), so a look or display LUT whose file has gone is noticed now.
     ///
+    /// The session need not have finished developing: the burst median exposure and the pooled
+    /// noise of a photo depend on the photos of its burst and of its noise pool, and a photo whose
+    /// turn comes before they are final waits for them (not for thumbnails, prefetching or
+    /// viewport work) and reads them then, so the file is the one `ym render` writes after
+    /// waiting for the whole session (`ExportQueue::start`).
+    ///
     /// # Errors
     ///
     /// [`CoreError::Looks`] when the display LUT chosen in the preferences is gone,
-    /// [`CoreError::Export`] for the rest.
+    /// [`CoreError::Export`] for the rest (`QueueError::Developing` when photos of the scope have
+    /// no estimates yet).
     pub fn export_start(&self, job: &ExportJob) -> Result<ExportJobId, CoreError> {
         // Look at the library folder first: a look or display LUT whose file has gone since the
         // last look at it is noticed now, and a look the CLI imported is known.

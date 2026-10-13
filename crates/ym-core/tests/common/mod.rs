@@ -9,7 +9,9 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use ym_core::auto::IlluminantModels;
-use ym_core::session::{EventSink, Session, SessionEnv, SessionEvent};
+use ym_core::session::{
+    EventSink, Session, SessionEnv, SessionEvent, ThumbnailInput, ThumbnailRenderer,
+};
 use ym_profiles::registry::ProfileStore;
 use ym_raw::testgen::{ArwBuilder, SplitMix64};
 
@@ -84,7 +86,7 @@ pub struct Scene {
 }
 
 /// The colours of the coloured patches of `Layout::Patchwork` (reflectance per channel).
-const COLOURED: [[f64; 3]; 4] = [
+const COLORED: [[f64; 3]; 4] = [
     [1.0, 0.55, 0.40],
     [0.35, 0.80, 0.35],
     [0.40, 0.50, 0.90],
@@ -133,7 +135,7 @@ impl Scene {
                 let k = (py * 6 + px) as usize;
                 let m = 0.12 + 0.88 * ((k * 7 % 24) as f64 / 23.0);
                 let rho = if k % 5 == 3 {
-                    COLOURED[(k / 5) % COLOURED.len()]
+                    COLORED[(k / 5) % COLORED.len()]
                 } else {
                     [1.0; 3]
                 };
@@ -317,4 +319,65 @@ pub fn names_in(dir: &Path) -> Vec<String> {
         .collect();
     v.sort();
     v
+}
+
+/// A thumbnail hook that parks the `hold`-th thumbnail it is asked for (1-based, in call order)
+/// until [`GateThumbnails::release`]. With one decode thread the thread is stuck there, so exactly
+/// the photos before that one are estimated and the rest are still waiting.
+pub struct GateThumbnails {
+    hold: usize,
+    calls: std::sync::atomic::AtomicUsize,
+    open: std::sync::Mutex<bool>,
+    changed: std::sync::Condvar,
+}
+
+impl GateThumbnails {
+    pub fn new(hold: usize) -> Arc<Self> {
+        Arc::new(Self {
+            hold,
+            calls: std::sync::atomic::AtomicUsize::new(0),
+            open: std::sync::Mutex::new(false),
+            changed: std::sync::Condvar::new(),
+        })
+    }
+
+    /// Thumbnails asked for so far (the parked one included).
+    pub fn calls(&self) -> usize {
+        self.calls.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Lets the parked thumbnail go.
+    pub fn release(&self) {
+        *self.open.lock().unwrap() = true;
+        self.changed.notify_all();
+    }
+
+    /// Waits until the `hold`-th thumbnail is parked (fails the test after a minute).
+    pub fn wait_parked(&self) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(60);
+        while self.calls() < self.hold {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "no thumbnail was parked"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+}
+
+impl ThumbnailRenderer for GateThumbnails {
+    fn render(&self, input: &ThumbnailInput<'_>) -> Result<Vec<u8>, String> {
+        let n = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+        if n == self.hold {
+            let mut open = self.open.lock().unwrap();
+            while !*open && !(input.cancelled)() {
+                open = self
+                    .changed
+                    .wait_timeout(open, Duration::from_millis(20))
+                    .unwrap()
+                    .0;
+            }
+        }
+        Ok(vec![0])
+    }
 }

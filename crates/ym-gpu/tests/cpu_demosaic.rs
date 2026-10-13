@@ -109,7 +109,7 @@ fn synthetic_set() -> Vec<(&'static str, RgbImage)> {
     vec![
         ("zone plate", synth::zone_plate(192, 192)),
         ("edges", synth::edges(192, 192)),
-        ("colour patches", synth::colour_patches(192, 192)),
+        ("colour patches", synth::color_patches(192, 192)),
         ("fine text", synth::fine_text(192, 192, 1)),
         ("natural 1", synth::natural(192, 192, 1)),
         ("natural 2", synth::natural(192, 192, 2)),

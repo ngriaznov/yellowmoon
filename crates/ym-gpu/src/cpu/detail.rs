@@ -223,10 +223,10 @@ pub fn apply(
     nr: &NoiseReduction,
     sigma_est: &NoiseSigma,
 ) -> Result<RgbImage, CpuError> {
-    let coloured = chroma_guided_filter(net, sigma_est, nr.color);
+    let colored = chroma_guided_filter(net, sigma_est, nr.color);
     match classical {
-        Some(c) if nr.needs_classical() => inject_detail(&coloured, c, nr.beta()),
-        _ => Ok(coloured),
+        Some(c) if nr.needs_classical() => inject_detail(&colored, c, nr.beta()),
+        _ => Ok(colored),
     }
 }
 
@@ -328,7 +328,7 @@ mod tests {
     }
 
     #[test]
-    fn zero_colour_is_a_no_op_and_stronger_colour_smooths_more() {
+    fn zero_color_is_a_no_op_and_stronger_color_smooths_more() {
         let (_, noisy) = chroma_noise_image(2);
         assert_eq!(
             chroma_guided_filter(&noisy, &NoiseSigma::Scalar(0.03), 0.0),

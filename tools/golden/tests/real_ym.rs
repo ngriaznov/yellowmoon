@@ -67,7 +67,7 @@ fn two_real_renders_are_stored_and_checked_identical() {
 }
 
 #[test]
-fn the_colour_truth_of_one_scene_reads_back_and_beats_the_baseline() {
+fn the_color_truth_of_one_scene_reads_back_and_beats_the_baseline() {
     let Some((ym, testdata, manifest)) = bench() else {
         return;
     };

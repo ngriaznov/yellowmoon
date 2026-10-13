@@ -395,6 +395,25 @@ impl PhotoSnapshot {
         Ok(Self { view, resolved })
     }
 
+    /// The snapshot with the estimates of `fresh` (the session's view of the same photo, taken
+    /// now) in place of the ones it was taken with. The settings, the Pick white sample and
+    /// everything else stay as they were when the job was queued; only what the session shares
+    /// between photos (the burst median exposure, the pooled noise) is read again, so a job
+    /// queued while the photos it depends on were still developing exports with the numbers the
+    /// command line would have used.
+    ///
+    /// # Errors
+    ///
+    /// [`ExportError::Settings`] when the settings cannot be resolved against the new estimates.
+    pub fn with_estimates_of(&self, fresh: PhotoView) -> Result<Self, ExportError> {
+        let view = PhotoView {
+            estimates: fresh.estimates,
+            estimates_version: fresh.estimates_version,
+            ..self.view.clone()
+        };
+        Self::of_view(view)
+    }
+
     /// The file name the template gives this photo as number `seq` of a job.
     #[must_use]
     pub fn planned_file_name(&self, options: &ExportOptions, seq: u32) -> String {

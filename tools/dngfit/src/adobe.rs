@@ -341,7 +341,7 @@ mod tests {
     }
 
     #[test]
-    fn the_identity_profile_renders_the_srgb_of_the_colour() {
+    fn the_identity_profile_renders_the_srgb_of_the_color() {
         let Some(adobe) = adobe() else { return };
         let m = ym_color::gamut::matrices();
         let colors: Vec<[f32; 3]> = vec![
@@ -393,7 +393,7 @@ mod tests {
     }
 
     #[test]
-    fn a_bright_colour_is_not_clipped_by_the_writers_white_level() {
+    fn a_bright_color_is_not_clipped_by_the_writers_white_level() {
         let Some(adobe) = adobe() else { return };
         // 40 grey pixels and one at 6: x_white must reach 6, and a fit offset of -3 EV scales it back by 8 for the renderer.
         let mut colors = vec![[0.1_f32; 3]; 40];

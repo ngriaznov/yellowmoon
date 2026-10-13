@@ -68,6 +68,8 @@ const calls: Row[] = [
   ["exportCancel", () => tauriApi.exportCancel(7), "export_cancel", { jobId: 7 }, true],
   ["cliPreview", () => tauriApi.cliPreview(job), "cli_preview", { job }],
   ["exportBusy", () => tauriApi.exportBusy(), "export_busy", undefined],
+  ["restartApp", () => tauriApi.restartApp(), "restart_app", undefined, true],
+  ["thumbnails", () => tauriApi.thumbnails(), "thumbnails", undefined],
   ["preferencesGet", () => tauriApi.preferencesGet(), "preferences_get", undefined],
   ["preferencesSet", () => tauriApi.preferencesSet({ remove_location_from_exports: true }), "preferences_set", { patch: { remove_location_from_exports: true } }],
   ["installCliLink", () => tauriApi.installCliLink(), "install_cli_link", undefined],
@@ -175,8 +177,8 @@ describe("tauriApi.on", () => {
     tauriApi.on("render_stats", (stats) => seen.push(stats));
     expect(listen.mock.calls[0]?.[0]).toBe("render_stats");
     await Promise.resolve();
-    deliver({ payload: { ms: 42, path: "neural", space: "display_p3" } });
-    expect(seen).toEqual([{ ms: 42, path: "neural", space: "display_p3" }]);
+    deliver({ payload: { ms: 42, path: "neural", space: "display_p3", zoom_percent: null, fit_percent: null } });
+    expect(seen).toEqual([{ ms: 42, path: "neural", space: "display_p3", zoom_percent: null, fit_percent: null }]);
   });
 
   it("unsubscribes through the function listen resolved with", async () => {

@@ -379,7 +379,7 @@ fn a_manual_white_balance_below_the_scene_light_cools_and_above_it_warms() {
 }
 
 #[test]
-fn coloured_patches_follow_the_simulation_up_to_the_sensor_map_error() {
+fn colored_patches_follow_the_simulation_up_to_the_sensor_map_error() {
     let Some(fx) = Fixtures::load_or_skip() else {
         return;
     };

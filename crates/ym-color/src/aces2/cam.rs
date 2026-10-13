@@ -8,7 +8,10 @@
 //! to a pseudo-cone space, through the post-adaptation compression, to A, a, b and then to
 //! J (lightness), M (colourfulness) and h (hue angle in degrees).
 
-use super::matrix::{IDENTITY, M33, Primaries, V3, invert, mul_mat_mat, mul_vec_mat};
+use super::matrix::{
+    CAM16, IDENTITY, M33, V3, ctl_rgb_to_xyz, ctl_xyz_to_rgb, invert, mul_mat_mat, mul_vec_mat,
+};
+use crate::consts::Primaries;
 
 /// Luminance (nits) that RGB (1, 1, 1) represents in the model.
 pub const REF_LUMINANCE: f64 = 100.0;
@@ -107,7 +110,7 @@ fn j_to_achromatic_n(j: f64, inv_cz: f64) -> f64 {
 impl JMhParams {
     /// `init_JMhParams(prims)`.
     pub fn new(prims: &Primaries) -> Self {
-        let matrix_16 = Primaries::CAM16.xyz_to_rgb(1.0);
+        let matrix_16 = ctl_xyz_to_rgb(&CAM16, 1.0);
 
         let base_cone_response_to_aab: M33 = [
             [2.0, 1.0, 1.0 / 9.0],
@@ -115,7 +118,7 @@ impl JMhParams {
             [1.0 / 20.0, 1.0 / 11.0, -2.0 / 9.0],
         ];
 
-        let rgb_to_xyz = prims.rgb_to_xyz(1.0);
+        let rgb_to_xyz = ctl_rgb_to_xyz(prims, 1.0);
         let xyz_w = mul_vec_mat([REF_LUMINANCE; 3], &rgb_to_xyz);
         let y_w = xyz_w[1];
 
@@ -315,7 +318,7 @@ mod tests {
     }
 
     #[test]
-    fn neutral_axis_has_no_colourfulness() {
+    fn neutral_axis_has_no_colorfulness() {
         for prims in [
             Primaries::AP0,
             Primaries::AP1,

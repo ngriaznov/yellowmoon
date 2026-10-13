@@ -31,7 +31,10 @@ impl Rig {
         Self {
             developed: Developed::new(&scene, "ILCE-7RM4"),
             renderer: Renderer::neutral_only().expect("render thread"),
-            state: ViewportState::new(ViewportRect::cell(600.0, 400.0, 1.0)),
+            // A little under half the photo: the fit zoom must not sit on the 50 % boundary between the
+            // half-size and the full-size image, or switching the lens corrections off (the photo
+            // loses its auto-cropped border, a pixel or two) tips the view over to full-size tiles.
+            state: ViewportState::new(ViewportRect::cell(576.0, 384.0, 1.0)),
         }
     }
 
@@ -77,9 +80,9 @@ fn the_first_frame_runs_every_group_once_and_the_second_is_a_cache_hit() {
             frame_data: 1,
             raw_groups: 1,
             sigma_planes: 1,
-            colour_plans: 1,
+            color_plans: 1,
             grade_plans: 1,
-            colour_passes: 1,
+            color_passes: 1,
             ..none()
         }
     );
@@ -103,20 +106,20 @@ fn the_first_frame_runs_every_group_once_and_the_second_is_a_cache_hit() {
     assert_eq!(
         again,
         StageRuns {
-            colour_passes: 1,
+            color_passes: 1,
             ..none()
         }
     );
     // The totals of the graph add up.
     let total = rig.renderer.counters(src.id);
     assert_eq!(
-        (total.raw_groups, total.colour_plans, total.grade_plans),
+        (total.raw_groups, total.color_plans, total.grade_plans),
         (1, 1, 1)
     );
 }
 
 #[test]
-fn a_curve_change_does_not_rerun_demosaic_or_the_colour_group() {
+fn a_curve_change_does_not_rerun_demosaic_or_the_color_group() {
     let rig = Rig::new();
     let src = rig.source();
     rig.runs(&src);
@@ -127,10 +130,10 @@ fn a_curve_change_does_not_rerun_demosaic_or_the_colour_group() {
     assert_eq!(r.raw_work(), 0, "no raw stage ran: {r:?}");
     assert_eq!(r.sigma_planes, 0);
     assert_eq!(
-        r.colour_plans, 0,
+        r.color_plans, 0,
         "the colour group is untouched by the curve"
     );
-    assert_eq!((r.grade_plans, r.colour_passes), (1, 1));
+    assert_eq!((r.grade_plans, r.color_passes), (1, 1));
 }
 
 #[test]
@@ -159,7 +162,7 @@ fn every_grade_control_and_the_look_only_rebuild_the_grade_group() {
     for (name, f) in edits {
         let r = rig.runs(&edit(&src, f));
         assert_eq!(r.raw_work(), 0, "{name}: {r:?}");
-        assert_eq!(r.colour_plans, 0, "{name}: {r:?}");
+        assert_eq!(r.color_plans, 0, "{name}: {r:?}");
         assert_eq!(r.grade_plans, 1, "{name}: {r:?}");
     }
 }
@@ -204,9 +207,9 @@ fn a_white_balance_change_does_not_rerun_r3_to_r9() {
         let r = rig.runs(&edit(&src, f));
         assert_eq!(r.raw_work(), 0, "{name}: {r:?}");
         assert_eq!(r.sigma_planes, 0, "{name}");
-        assert_eq!(r.colour_plans, 1, "{name}: {r:?}");
+        assert_eq!(r.color_plans, 1, "{name}: {r:?}");
         assert_eq!(r.grade_plans, 1, "{name}: {r:?}");
-        assert_eq!(r.colour_passes, 1, "{name}");
+        assert_eq!(r.color_passes, 1, "{name}");
     }
 }
 
@@ -257,7 +260,7 @@ fn a_decode_switch_noise_reduction_or_sharpening_reruns_the_raw_group() {
         let r = rig.runs(&edit(&src, f));
         assert_eq!(r.raw_groups, 1, "{name} must re-run the raw group: {r:?}");
         assert_eq!(
-            r.colour_plans, 0,
+            r.color_plans, 0,
             "{name}: the colour group does not depend on it"
         );
         assert!(
@@ -315,7 +318,7 @@ fn crop_straighten_and_orientation_re_run_nothing_but_the_pixel_pass() {
         assert_eq!(
             r,
             StageRuns {
-                colour_passes: 1,
+                color_passes: 1,
                 ..none()
             },
             "{name}: only the sampling and the colour pass run"
@@ -364,7 +367,7 @@ fn a_crop_that_needs_a_finer_image_runs_the_raw_group_once_at_the_new_scale() {
 }
 
 #[test]
-fn a_shared_exposure_from_the_burst_moves_only_the_colour_group() {
+fn a_shared_exposure_from_the_burst_moves_only_the_color_group() {
     let rig = Rig::new();
     let src = rig.source();
     rig.runs(&src);
@@ -378,7 +381,7 @@ fn a_shared_exposure_from_the_burst_moves_only_the_colour_group() {
     };
     let r = rig.runs(&moved);
     assert_eq!(r.raw_work(), 0, "{r:?}");
-    assert_eq!((r.colour_plans, r.grade_plans), (1, 1), "{r:?}");
+    assert_eq!((r.color_plans, r.grade_plans), (1, 1), "{r:?}");
 }
 
 #[test]
@@ -402,7 +405,7 @@ fn a_pooled_noise_model_reruns_the_raw_group_but_not_the_decoded_area() {
 }
 
 #[test]
-fn at_100_percent_tiles_are_cached_across_pans_and_colour_edits() {
+fn at_100_percent_tiles_are_cached_across_pans_and_color_edits() {
     let rig = Rig::new();
     let src = rig.source();
     let mut state = rig.state.clone();

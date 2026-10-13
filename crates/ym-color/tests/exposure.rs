@@ -38,7 +38,7 @@ const GREY_JPEG_HEX: &str = concat!(
     "c5c6c7c8c9cad2d3d4d5d6d7d8d9dae2e3e4e5e6e7e8e9eaf2f3f4f5f6f7f8f9faffda000c03010002110311003f00fe",
     "3be803f782803f782803f782803fffd9"
 );
-const COLOUR_JPEG_HEX: &str = concat!(
+const COLOR_JPEG_HEX: &str = concat!(
     "ffd8ffe000104a46494600010100000100010000ffdb0043000101010101010101010101010101010101010101010101",
     "0101010101010101010101010101010101010101010101010101010101010101010101010101010101ffdb0043010101",
     "010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101",
@@ -929,7 +929,7 @@ fn the_median_luminance_of_a_jpeg_is_in_linear_light() {
     assert!((srgb_to_linear(120.0 / 255.0) / expect - 1.0).abs() > 0.05);
 
     // Colours: Rec.709 luminance of the decoded channels.
-    let (_, _, pixels) = decode_jpeg(&from_hex(COLOUR_JPEG_HEX));
+    let (_, _, pixels) = decode_jpeg(&from_hex(COLOR_JPEG_HEX));
     let lum = |c: [f64; 3]| {
         0.2126 * srgb_to_linear(c[0] / 255.0)
             + 0.7152 * srgb_to_linear(c[1] / 255.0)

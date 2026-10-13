@@ -7,7 +7,7 @@ import type { FilmstripPhoto, TabId } from "../components";
 import { useAppState, useCurrentPhoto, useCurrentSettings, useStore } from "../state/context";
 import { folderSubline, isReady, photoName } from "../state/photo";
 import { useShortcuts } from "../state/useShortcuts";
-import { fitZoomExact, showsWhole, ZOOMS, zoomKey, zoomStep } from "../state/zoom";
+import { fitZoomExact, fitZoomOf, showsWhole, ZOOMS, zoomKey, zoomStep } from "../state/zoom";
 import { CropPanel } from "./crop/CropPanel";
 import { useCropSession } from "./crop/useCropSession";
 import { ExportPanel } from "./export/ExportPanel";
@@ -116,8 +116,10 @@ export function Photos() {
   };
   useTabShortcuts(showTab, !cropping);
 
-  // The Fit zoom, not rounded: a fixed zoom no larger than it is Fit to the core (50 % where Fit is 62 %).
-  const fitExact = cell && photo ? fitZoomExact(cell, photo, rs?.values ?? null) : null;
+  // The Fit zoom, not rounded: a fixed zoom no larger than it is Fit to the core (50 % where Fit is 62 %). The core's own figure
+  // (`render_stats.fit_percent`, which counts the lens crop, the straighten angle and the crop) once it has drawn a frame, else the
+  // estimate from the photo and the cell, which is all the mock has.
+  const fitExact = fitZoomOf(stats, cell && photo ? fitZoomExact(cell, photo, rs?.values ?? null) : null);
   const zoomBy = (delta: number): void => void store.setZoom(zoomStep(zoom, delta, fitExact));
   const toggleZoom = (): void => void store.toggleZoom();
 

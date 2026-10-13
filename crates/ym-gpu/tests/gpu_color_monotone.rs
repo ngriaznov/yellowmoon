@@ -160,7 +160,7 @@ fn every_tonal_control_raises_or_keeps_every_channel() {
 }
 
 #[test]
-fn contrast_saturation_and_colour_balance_are_monotone_in_their_control() {
+fn contrast_saturation_and_color_balance_are_monotone_in_their_control() {
     let px = probe_pixels();
     let gray = LOGC4_GRAY as f32;
     for dev in gpus() {

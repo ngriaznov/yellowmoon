@@ -67,7 +67,7 @@ pub enum Command {
 const H_INPUT: &str = "Photos";
 const H_LOOK: &str = "Look and display";
 const H_LIGHT: &str = "Light";
-const H_COLOUR: &str = "Colour";
+const H_COLOR: &str = "Colour";
 const H_DETAIL: &str = "Detail";
 const H_RAW: &str = "RAW";
 const H_OUTPUT: &str = "Output";
@@ -130,13 +130,13 @@ pub struct RenderArgs {
 
     /// White balance: `auto`, or a temperature in kelvin (2000 to 11000) with an optional tint
     /// (-50 to 50), as `5200` or `5200,4`.
-    #[arg(long, value_name = "auto|K[,TINT]", value_parser = white_balance, allow_negative_numbers = true, help_heading = H_COLOUR)]
+    #[arg(long, value_name = "auto|K[,TINT]", value_parser = white_balance, allow_negative_numbers = true, help_heading = H_COLOR)]
     pub wb: Option<WbArg>,
     /// Light preset instead of the estimated light.
-    #[arg(long, value_enum, ignore_case = true, value_name = "LIGHT", help_heading = H_COLOUR)]
+    #[arg(long, value_enum, ignore_case = true, value_name = "LIGHT", help_heading = H_COLOR)]
     pub light: Option<LightArg>,
     /// Saturation, -100 to 100.
-    #[arg(long, value_name = "N", value_parser = signed_percent, allow_negative_numbers = true, help_heading = H_COLOUR)]
+    #[arg(long, value_name = "N", value_parser = signed_percent, allow_negative_numbers = true, help_heading = H_COLOR)]
     pub saturation: Option<f64>,
 
     /// Noise reduction: `auto`, or luminance, colour and detail strengths (0 to 100 each).
@@ -178,8 +178,8 @@ pub struct RenderArgs {
     #[arg(long, value_enum, ignore_case = true, value_name = "METHOD", help_heading = H_OUTPUT)]
     pub compression: Option<CompressionArg>,
     /// Colour space of JPEG, TIFF and PNG files (default srgb).
-    #[arg(long, visible_alias = "color-space", value_enum, ignore_case = true, value_name = "SPACE", help_heading = H_OUTPUT)]
-    pub colour_space: Option<ColourSpaceArg>,
+    #[arg(long = "colour-space", visible_alias = "color-space", value_enum, ignore_case = true, value_name = "SPACE", help_heading = H_OUTPUT)]
+    pub color_space: Option<ColorSpaceArg>,
     /// Scale JPEG, TIFF and PNG files so the long edge has this many pixels (never enlarges).
     #[arg(long, value_name = "PX", value_parser = clap::value_parser!(u32).range(16..=65535), help_heading = H_OUTPUT)]
     pub long_edge: Option<u32>,
@@ -257,7 +257,7 @@ impl From<CompressionArg> for TiffCompression {
 
 /// `--colour-space`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-pub enum ColourSpaceArg {
+pub enum ColorSpaceArg {
     /// sRGB.
     Srgb,
     /// Display P3.
@@ -267,12 +267,12 @@ pub enum ColourSpaceArg {
     Rec2020,
 }
 
-impl From<ColourSpaceArg> for ColorSpace {
-    fn from(c: ColourSpaceArg) -> Self {
+impl From<ColorSpaceArg> for ColorSpace {
+    fn from(c: ColorSpaceArg) -> Self {
         match c {
-            ColourSpaceArg::Srgb => Self::Srgb,
-            ColourSpaceArg::P3 => Self::DisplayP3,
-            ColourSpaceArg::Rec2020 => Self::Rec2020,
+            ColorSpaceArg::Srgb => Self::Srgb,
+            ColorSpaceArg::P3 => Self::DisplayP3,
+            ColorSpaceArg::Rec2020 => Self::Rec2020,
         }
     }
 }

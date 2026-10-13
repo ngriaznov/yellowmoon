@@ -173,7 +173,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn delta_e_2000_matches_colour_science_reference_pairs() {
+    fn delta_e_2000_matches_color_science_reference_pairs() {
         // Pairs and expected values computed with colour-science 0.4.7 `colour.delta_E(.., method='CIE 2000')`.
         let cases: [([f64; 3], [f64; 3], f64); 6] = [
             ([50.0, 2.6772, -79.7751], [50.0, 0.0, -82.7485], 2.0424596),

@@ -73,7 +73,7 @@ fn run(
         IlluminantSource::Model { .. }
     ));
     (
-        angle_deg(est.colour.w_scene_initial, truth),
+        angle_deg(est.color.w_scene_initial, truth),
         est.summary().kelvin,
         used_prior,
     )

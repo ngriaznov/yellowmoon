@@ -23,7 +23,7 @@ use ym_gpu::queue::{CancelToken, JobError, JobHandle, Priority};
 use ym_looks::library::LookId;
 
 use super::RenderError;
-use super::colour::{PhotoSource, with_look};
+use super::color::{PhotoSource, with_look};
 use super::frame::{
     FrameOptions, FullImage, FullRequest, RenderedFrame, ViewSpec, render_view, sample_view,
 };
@@ -131,7 +131,7 @@ impl Renderer {
         src: &PhotoSource,
         cancel: &CancelToken,
     ) -> Result<Vec<u8>, RenderError> {
-        let mut job = Job::new(self, src, cancel);
+        let mut job = Job::new(self, src, cancel)?;
         let (spec, (tw, th)) = self.thumbnail_spec(&mut job)?;
         let frame = render_view(job, &spec)?;
         let mut rgb = vec![0u8; 3 * tw * th];
@@ -172,7 +172,7 @@ impl Renderer {
         src: &PhotoSource,
         cancel: &CancelToken,
     ) -> Result<HistogramData, RenderError> {
-        let mut job = Job::new(self, src, cancel);
+        let mut job = Job::new(self, src, cancel)?;
         let image = job.final_size()?;
         let (tw, th) = thumbnail_size(image, HISTOGRAM_LONG_EDGE_PX);
         let spec = ViewSpec {

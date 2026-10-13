@@ -304,16 +304,15 @@ impl Chain {
                     let ns = plane
                         .as_deref()
                         .map_or(NoiseSigma::Scalar(scalar), NoiseSigma::Plane);
-                    let mut coloured = if self.noise_reduction.color > 0.0 {
+                    let mut colored = if self.noise_reduction.color > 0.0 {
                         detail::chroma_guided_filter(&img, &ns, self.noise_reduction.color)
                     } else {
                         img
                     };
                     if let Some(cl) = classical.as_ref() {
-                        coloured =
-                            detail::inject_detail(&coloured, cl, self.noise_reduction.beta())?;
+                        colored = detail::inject_detail(&colored, cl, self.noise_reduction.beta())?;
                     }
-                    rgb = Some(coloured);
+                    rgb = Some(colored);
                 }
                 Stage::Sharpen { .. } => {
                     let img = take(&mut rgb)?;

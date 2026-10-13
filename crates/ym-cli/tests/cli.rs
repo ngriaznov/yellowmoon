@@ -97,7 +97,7 @@ fn the_help_names_the_command_ym_and_never_the_old_name() {
 }
 
 #[test]
-fn the_colour_space_option_has_both_spellings() {
+fn the_color_space_option_has_both_spellings() {
     let text = help(&["render"]);
     assert!(text.contains("--colour-space"), "{text}");
     assert!(text.contains("color-space"), "{text}");

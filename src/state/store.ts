@@ -59,7 +59,7 @@ import type { ExportRun } from "../export/run";
 import { diffSettings, PhotoHistory } from "./history";
 import type { HistoryEntry } from "./history";
 import { bytesToUrl, isReady, releaseUrl } from "./photo";
-import { fitZoomExact, fitZoomPercent, showsWhole, zoomAfter } from "./zoom";
+import { fitZoomExact, fitZoomOf, showsWhole, zoomAfter } from "./zoom";
 
 /** The screens of the app (`docs/11-ui.md` §Screens that have a window of their own). */
 export type Screen = "start" | "photos" | "import-looks";
@@ -387,7 +387,10 @@ export class AppStore {
   private async refreshSession(): Promise<void> {
     try {
       const session = await this.api.sessionState();
-      if (session.photos.length > 0) this.adoptSession(session, true);
+      if (session.photos.length > 0) {
+        this.adoptSession(session, true);
+        await this.refreshThumbnails();
+      }
     } catch (error) {
       this.fail(error);
     }
@@ -447,12 +450,30 @@ export class AppStore {
   }
 
   private onThumbnail(e: ThumbnailReady): void {
-    const url = bytesToUrl(e.png_bytes);
     this.later((s) => {
       const old = s.thumbnails[e.id];
+      if (old === e.url) return s;
+      // The shell's addresses are not ours to free; the mock's `blob:` ones are.
       if (old) releaseUrl(old);
-      return { ...s, thumbnails: { ...s.thumbnails, [e.id]: url } };
+      return { ...s, thumbnails: { ...s.thumbnails, [e.id]: e.url } };
     });
+  }
+
+  /**
+   * Asks the core for the thumbnails it already announced. It announces each one once (`thumbnail_ready`), so a webview that
+   * reloaded would show an empty filmstrip; only the addresses come back. A thumbnail an event brought meanwhile is newer and stays.
+   */
+  async refreshThumbnails(): Promise<void> {
+    try {
+      const known = await this.api.thumbnails();
+      if (known.length === 0) return;
+      this.later((s) => {
+        const fresh = known.filter((t) => !s.thumbnails[t.id]);
+        return fresh.length === 0 ? s : { ...s, thumbnails: { ...s.thumbnails, ...Object.fromEntries(fresh.map((t) => [t.id, t.url])) } };
+      });
+    } catch {
+      // The filmstrip waits for the next thumbnail the core announces.
+    }
   }
 
   /**
@@ -588,8 +609,11 @@ export class AppStore {
     if (!session) return;
     const index = session.photos.findIndex((p) => p.id === id);
     if (index < 0 || index === session.current_index) return;
-    // A new photo opens at Fit with the camera view off, in the core and here.
-    this.set({ session: { ...session, current_index: index }, histogram: null, zoom: { kind: "fit" }, before: false });
+    // A new photo opens at Fit with the camera view off, in the core and here. The zoom figures of the last frame (`render_stats`)
+    // belong to the photo that is left: a portrait after a landscape has another Fit zoom, so they are dropped until the first
+    // frame of the new photo reports its own (the status text stays, and the screen estimates the Fit zoom meanwhile).
+    const stats = this.state.stats && { ...this.state.stats, zoom_percent: null, fit_percent: null };
+    this.set({ session: { ...session, current_index: index }, histogram: null, zoom: { kind: "fit" }, before: false, stats });
     this.syncHistoryFlags();
     if (isReady(session.photos[index] as PhotoSummary)) void this.ensureSettings(id);
     try {
@@ -964,8 +988,8 @@ export class AppStore {
 
   /**
    * Forwards pointer input over the photo. A double click flips the mirrored zoom between Fit and 100 %, and a wheel zoom moves it by
-   * the same factor as the core does (an estimate: the core keeps the real zoom and does not report it), so the header and the drag
-   * to pan follow what the photo does.
+   * the same factor as the core does, at once (the core's own zoom and Fit zoom come back with the next `render_stats`: the Fit zoom
+   * is used from there, `fitPercentExact`), so the header and the drag to pan follow what the photo does.
    */
   async viewportInput(event: ViewportInput): Promise<void> {
     if (event.kind === "toggle_zoom") {
@@ -982,14 +1006,19 @@ export class AppStore {
 
   /** The zoom that fits the whole picture in the cell, in percent of the photo's pixels; null before the cell has reported. */
   fitPercent(): number | null {
-    const photo = this.currentPhoto();
-    return this.rect && photo ? fitZoomPercent(this.rect, photo, this.currentSettings()?.values ?? null) : null;
+    const exact = this.fitPercentExact();
+    return exact === null ? null : Math.round(exact);
   }
 
-  /** `fitPercent` not rounded: what the core compares a zoom with to tell whether it shows the whole picture. */
+  /**
+   * `fitPercent` not rounded: what the core compares a zoom with to tell whether it shows the whole picture. The core's own figure
+   * once a viewport frame has reported it (`render_stats.fit_percent`: it counts the lens crop, the straighten angle and the crop), else
+   * this screen's estimate from the photo and the cell, which is what the mock has.
+   */
   fitPercentExact(): number | null {
     const photo = this.currentPhoto();
-    return this.rect && photo ? fitZoomExact(this.rect, photo, this.currentSettings()?.values ?? null) : null;
+    const estimate = this.rect && photo ? fitZoomExact(this.rect, photo, this.currentSettings()?.values ?? null) : null;
+    return fitZoomOf(this.state.stats, estimate);
   }
 
   /**

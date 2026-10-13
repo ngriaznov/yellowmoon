@@ -200,7 +200,7 @@ fn pair_14_tie_break_is_the_published_one() {
 }
 
 /// colour-science 0.4.7 `delta_E_CIE2000` on random pairs (seeded numpy generator), 12 digits.
-const COLOUR_DE2000: [([f64; 3], [f64; 3], f64); 8] = [
+const COLOR_DE2000: [([f64; 3], [f64; 3], f64); 8] = [
     (
         [60.9961306497, -4.0552769610, 23.0438545058],
         [61.3788212952, -11.4056119195, 23.5006958881],
@@ -244,8 +244,8 @@ const COLOUR_DE2000: [([f64; 3], [f64; 3], f64); 8] = [
 ];
 
 #[test]
-fn matches_colour_science_to_1e_9() {
-    for (lab1, lab2, want) in COLOUR_DE2000 {
+fn matches_color_science_to_1e_9() {
+    for (lab1, lab2, want) in COLOR_DE2000 {
         let got = delta_e_2000(lab1, lab2);
         assert!(
             (got - want).abs() < 1e-9,
@@ -255,7 +255,7 @@ fn matches_colour_science_to_1e_9() {
 }
 
 /// colour-science `XYZ_to_Lab` with the D65 white xy (0.3127, 0.3290).
-const COLOUR_XYZ_LAB: [([f64; 3], [f64; 3]); 6] = [
+const COLOR_XYZ_LAB: [([f64; 3], [f64; 3]); 6] = [
     (
         [0.6288445119, 0.8982416630, 0.7779288333],
         [95.923784744570, -46.743942749276, 14.189003721420],
@@ -283,9 +283,9 @@ const COLOUR_XYZ_LAB: [([f64; 3], [f64; 3]); 6] = [
 ];
 
 #[test]
-fn xyz_lab_matches_colour_science_and_round_trips() {
+fn xyz_lab_matches_color_science_and_round_trips() {
     let white = d65_white_xyz();
-    for (xyz, want) in COLOUR_XYZ_LAB {
+    for (xyz, want) in COLOR_XYZ_LAB {
         let lab = xyz_to_lab(xyz, white);
         for k in 0..3 {
             assert!(

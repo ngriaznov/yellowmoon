@@ -216,7 +216,7 @@ fn auto_exposure_against_the_embedded_jpegs_of_the_real_files() {
         let balanced = preview.balanced(view.estimates.initial_gains().unwrap());
         let matrix = *view
             .estimates
-            .colour
+            .color
             .metering_chain(ym_core::auto::tables_of(&view.profile))
             .unwrap()
             .matrix();

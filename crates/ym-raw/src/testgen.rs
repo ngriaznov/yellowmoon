@@ -18,8 +18,10 @@
 //!          DateTimeOriginal and offsets, ExposureBiasValue, FocalLength, MakerNote, LensModel, ...
 //! GPS IFD  (optional)
 //! MakerNote IFD without a header (older layouts add "SONY DSC \0\0\0" in front): PreviewImage
-//!          0x2001 (32-byte header + JPEG), FileFormat 0xB000, SonyModelID 0xB001, enciphered
-//!          table 0x9405 or 0x9416 holding SonyISO
+//!          0x2001 (32-byte header + JPEG, a generated gradient or the caller's own JPEG),
+//!          FileFormat 0xB000, SonyModelID 0xB001, enciphered table 0x9405 or 0x9416 holding
+//!          SonyISO, the exposure time (as a 1/256-stop word and as a fraction), the F-number and,
+//!          in 0x9416, the focal length
 //! SR2Private  0x7200 offset, 0x7201 length, 0x7221 key
 //! raw IFD  NewSubFileType 0, size, BitsPerSample, Compression, Photometric 32803, strips or
 //!          tiles, CFARepeatPatternDim, CFAPattern, 0x7000, 0x7010, 0x7032, 0x7035, 0x7037,
@@ -204,6 +206,15 @@ pub fn pad_jpeg_to(jpeg: Vec<u8>, min_len: usize) -> Vec<u8> {
     }
     out.extend_from_slice(&jpeg[split..]);
     out
+}
+
+/// `(width, height)` from the first frame header of a JPEG, or `None` when it has none.
+fn jpeg_dimensions(jpeg: &[u8]) -> Option<(u16, u16)> {
+    // `pos` is the length field of the frame header, then the precision (1 byte), height and width.
+    let (_, pos) = crate::metadata::jpeg_frame_header(jpeg)?;
+    let height = u16::from_be_bytes([*jpeg.get(pos + 3)?, *jpeg.get(pos + 4)?]);
+    let width = u16::from_be_bytes([*jpeg.get(pos + 5)?, *jpeg.get(pos + 6)?]);
+    Some((width, height))
 }
 
 /// Writes bits most significant first with JPEG byte stuffing (`FF` is followed by `00`).
@@ -615,13 +626,17 @@ pub enum ThumbnailIfd {
 }
 
 /// Lens-correction tables as stored: a count followed by the knots.
+///
+/// Tags 0x7032 and 0x7037 lead with `n`, the number of knots (16). Tag 0x7035 leads with `2n`
+/// (32): `n` knots for red, then `n` for blue (`ym_gpu::cpu::lens::LensTags::from_stored` reads it
+/// that way).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LensTables {
-    /// Tag 0x7032: 17 values.
+    /// Tag 0x7032: the count `n` and `n` knots (17 values by default).
     pub vignetting: Option<Vec<i16>>,
-    /// Tag 0x7035: 33 values.
+    /// Tag 0x7035: the count `2n` and `2n` knots (33 values by default).
     pub chromatic_aberration: Option<Vec<i16>>,
-    /// Tag 0x7037: 17 values.
+    /// Tag 0x7037: the count `n` and `n` knots (17 values by default).
     pub distortion: Option<Vec<i16>>,
 }
 
@@ -634,8 +649,9 @@ impl Default for LensTables {
         };
         Self {
             vignetting: Some(ramp(16, -120, 9)),
+            // The count is 2n (32): n knots for red, then n for blue, as the ILCE-9 dump stores them.
             chromatic_aberration: Some({
-                let mut v = vec![16];
+                let mut v = vec![32];
                 v.extend((0..32).map(|i| (i as i16 - 16) * 3));
                 v
             }),
@@ -690,6 +706,17 @@ pub fn model_id_for(model: &str) -> Option<u16> {
     })
 }
 
+/// What the maker note's `PreviewImage` (tag 0x2001) holds.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum MakerPreview {
+    /// No tag.
+    Omitted,
+    /// A gradient from [`tiny_jpeg`] of this width and height.
+    Generated(u16, u16),
+    /// This JPEG, byte for byte.
+    Custom(Vec<u8>),
+}
+
 /// Builds a synthetic ARW file the way a Sony body lays it out. See the module documentation.
 ///
 /// Every setter returns `self`. Only the fields set explicitly differ from the defaults, which
@@ -726,7 +753,7 @@ pub struct ArwBuilder {
     crop: Option<Rect>,
     thumbnail: Option<(u16, u16)>,
     thumbnail_ifd: ThumbnailIfd,
-    preview: Option<(u16, u16)>,
+    preview: MakerPreview,
     preview_min_bytes: usize,
     iso_table: Option<SonyIsoTable>,
     sony_iso_word: Option<u16>,
@@ -775,7 +802,7 @@ impl ArwBuilder {
             crop: None,
             thumbnail: Some((160, 120)),
             thumbnail_ifd: ThumbnailIfd::Ifd1,
-            preview: Some((320, 214)),
+            preview: MakerPreview::Generated(320, 214),
             preview_min_bytes: 0,
             iso_table: None,
             sony_iso_word: None,
@@ -954,9 +981,24 @@ impl ArwBuilder {
         self
     }
 
-    /// Sets the size of the larger JPEG in maker note tag 0x2001 (`None` omits it).
+    /// Sets the size of the larger JPEG in maker note tag 0x2001 (`None` omits it). The picture is
+    /// a gradient from [`tiny_jpeg`]. The last call of `preview` and [`ArwBuilder::preview_jpeg`]
+    /// wins.
     pub fn preview(mut self, size: Option<(u16, u16)>) -> Self {
-        self.preview = size;
+        self.preview = match size {
+            Some((width, height)) => MakerPreview::Generated(width, height),
+            None => MakerPreview::Omitted,
+        };
+        self
+    }
+
+    /// Puts this JPEG in maker note tag 0x2001 instead of a generated gradient, byte for byte
+    /// (after [`ArwBuilder::preview_min_bytes`] padding, which only applies when the JPEG starts
+    /// `FF D8 FF DB` as Sony previews do and is shorter than the minimum). The 32-byte header in
+    /// front of it gets the JPEG's own length, width and height. The last call of
+    /// [`ArwBuilder::preview`] and `preview_jpeg` wins.
+    pub fn preview_jpeg(mut self, jpeg: Vec<u8>) -> Self {
+        self.preview = MakerPreview::Custom(jpeg);
         self
     }
 
@@ -1632,6 +1674,91 @@ fn sr2_plain(b: &ArwBuilder, at: usize) -> Vec<u8> {
     block
 }
 
+/// The word Sony stores for an exposure time: `round(256 * (16 - log2(seconds)))`, so that
+/// `2^(16 - word / 256)` is the time (ExifTool's `SonyExposureTime2`). A zero time (bulb) is 0.
+fn sony_exposure_word(numerator: u32, denominator: u32) -> u16 {
+    if numerator == 0 {
+        return 0;
+    }
+    let seconds = f64::from(numerator) / f64::from(denominator.max(1));
+    (256.0 * (16.0 - seconds.log2()))
+        .round()
+        .clamp(0.0, f64::from(u16::MAX)) as u16
+}
+
+/// The word Sony stores for an F-number: `round(256 * (16 + 2 * log2(f)))` (ExifTool's
+/// `SonyFNumber`: `2^((word / 256 - 16) / 2)`).
+fn sony_f_number_word(numerator: u32, denominator: u32) -> u16 {
+    let f = f64::from(numerator.max(1)) / f64::from(denominator.max(1));
+    (256.0 * (16.0 + 2.0 * f.log2()))
+        .round()
+        .clamp(0.0, f64::from(u16::MAX)) as u16
+}
+
+/// A fraction squeezed into two 16-bit words (ExifTool's `rational32u`): reduced, and scaled down
+/// together when either part is above 65535.
+fn rational_u16(numerator: u32, denominator: u32) -> (u16, u16) {
+    fn gcd(a: u32, b: u32) -> u32 {
+        if b == 0 { a } else { gcd(b, a % b) }
+    }
+    // A zero denominator is read as 1, as in `sony_exposure_word`.
+    let denominator = denominator.max(1);
+    let g = gcd(numerator, denominator).max(1);
+    let (mut n, mut d) = (numerator / g, denominator / g);
+    let largest = n.max(d);
+    if largest > u32::from(u16::MAX) {
+        let scale = f64::from(u16::MAX) / f64::from(largest);
+        n = (f64::from(n) * scale).round() as u32;
+        d = ((f64::from(d) * scale).round() as u32).max(1);
+    }
+    (n as u16, d as u16)
+}
+
+/// The enciphered table 0x9405 (`older` is true) or 0x9416, as stored: the plain bytes at the
+/// offsets ExifTool's `Tag9405b` and `Tag9416` tables read, every byte put through Sony's cipher
+/// ([`encipher_byte`]); the reader undoes it with [`crate::makernote::decipher_byte`].
+///
+/// | Field | `Tag9405b` | `Tag9416` | Value |
+/// |---|---|---|---|
+/// | `SonyISO` | 0x04 | 0x04 | `u16`, [`sony_word_for_iso`] of the builder's ISO (or its [`ArwBuilder::sony_iso_word`]) |
+/// | `SonyExposureTime2` | 0x0e | 0x0a | `u16`, [`sony_exposure_word`] |
+/// | `ExposureTime` | 0x10 | 0x0c | two `u16`, numerator and denominator |
+/// | `SonyFNumber` | 0x14 | 0x10 | `u16`, [`sony_f_number_word`] |
+/// | `FocalLength` | none | 0x71 | `u16`, tenths of a millimetre |
+///
+/// The older table has no focal length field. Bytes not listed are zero, and the first byte of
+/// 0x9405 is the one that tells the reader (and ExifTool) which layout it is.
+fn sony_table(b: &ArwBuilder, older: bool) -> Vec<u8> {
+    let mut plain = vec![0u8; if older { 0x100 } else { 0x200 }];
+    let mut put = |at: usize, value: u16| plain[at..at + 2].copy_from_slice(&value.to_le_bytes());
+    let iso_word = b.sony_iso_word.unwrap_or_else(|| sony_word_for_iso(b.iso));
+    let time_word = sony_exposure_word(b.exposure_time.0, b.exposure_time.1);
+    let (time_num, time_den) = rational_u16(b.exposure_time.0, b.exposure_time.1);
+    let f_word = sony_f_number_word(b.f_number.0, b.f_number.1);
+    let focal_tenths = (f64::from(b.focal_length.0) * 10.0 / f64::from(b.focal_length.1.max(1)))
+        .round()
+        .clamp(0.0, f64::from(u16::MAX)) as u16;
+    if older {
+        put(0x04, iso_word);
+        put(0x0E, time_word);
+        put(0x10, time_num);
+        put(0x12, time_den);
+        put(0x14, f_word);
+    } else {
+        put(0x04, iso_word);
+        put(0x0A, time_word);
+        put(0x0C, time_num);
+        put(0x0E, time_den);
+        put(0x10, f_word);
+        put(0x71, focal_tenths);
+    }
+    if older {
+        // Stored first byte 0x8B (the layout of the A7 III to A7R IV and A9 bodies).
+        plain[0] = crate::makernote::decipher_byte(0x8B);
+    }
+    plain.iter().map(|byte| encipher_byte(*byte)).collect()
+}
+
 /// The maker note value: 12-byte header, the directory, then its out-of-line values. Offsets are
 /// absolute, so the block's own file position matters.
 fn maker_note(b: &ArwBuilder, plan: &Plan) -> Vec<u8> {
@@ -1640,8 +1767,16 @@ fn maker_note(b: &ArwBuilder, plan: &Plan) -> Vec<u8> {
         entries.push(Ent::short(0xB001, &[id]));
     }
     entries.push(Ent::byte(0xB000, &b.file_format));
-    if let Some((w, h)) = b.preview {
-        let jpeg = pad_jpeg_to(tiny_jpeg(w, h, 2), b.preview_min_bytes);
+    let preview = match &b.preview {
+        MakerPreview::Omitted => None,
+        MakerPreview::Generated(w, h) => Some((tiny_jpeg(*w, *h, 2), *w, *h)),
+        MakerPreview::Custom(jpeg) => {
+            let (w, h) = jpeg_dimensions(jpeg).unwrap_or((0, 0));
+            Some((jpeg.clone(), w, h))
+        }
+    };
+    if let Some((jpeg, w, h)) = preview {
+        let jpeg = pad_jpeg_to(jpeg, b.preview_min_bytes);
         let mut data = Vec::with_capacity(32 + jpeg.len());
         data.extend_from_slice(&(jpeg.len() as u32).to_le_bytes());
         data.extend_from_slice(&u32::from(w).to_le_bytes());
@@ -1653,24 +1788,9 @@ fn maker_note(b: &ArwBuilder, plan: &Plan) -> Vec<u8> {
         data.extend_from_slice(&jpeg);
         entries.push(Ent::undefined(0x2001, &data));
     }
-    let word = b
-        .sony_iso_word
-        .unwrap_or_else(|| sony_word_for_iso(b.iso))
-        .to_le_bytes();
     match b.resolved_iso_table() {
-        SonyIsoTable::Tag9405 => {
-            let mut table = vec![0u8; 0x100];
-            table[0] = 0x8B; // stored (enciphered) first byte of a layout with SonyISO at byte 4
-            table[4] = encipher_byte(word[0]);
-            table[5] = encipher_byte(word[1]);
-            entries.push(Ent::undefined(0x9405, &table));
-        }
-        SonyIsoTable::Tag9416 => {
-            let mut table = vec![0u8; 0x200];
-            table[4] = encipher_byte(word[0]);
-            table[5] = encipher_byte(word[1]);
-            entries.push(Ent::undefined(0x9416, &table));
-        }
+        SonyIsoTable::Tag9405 => entries.push(Ent::undefined(0x9405, &sony_table(b, true))),
+        SonyIsoTable::Tag9416 => entries.push(Ent::undefined(0x9416, &sony_table(b, false))),
         SonyIsoTable::None => {}
     }
     let header_len = b.maker_note_header.len();
@@ -2548,6 +2668,183 @@ mod tests {
         assert_eq!(meta.black, [40.0, 20.0, 30.0, 10.0]);
         assert_eq!(meta.white, [16200.0, 16100.0, 16100.0, 16000.0]);
         assert_eq!(meta.wb_as_shot, Some([1800.0, 1000.0, 1010.0, 2000.0]));
+    }
+
+    #[test]
+    fn the_default_lens_tables_lead_with_n_and_the_ca_table_with_2n() {
+        let tables = LensTables::default();
+        let ca = tables.chromatic_aberration.as_ref().expect("ca");
+        // 0x7035 holds red then blue: the count is 2n, and so is the number of knots after it.
+        assert_eq!((ca[0], ca.len()), (32, 33));
+        for table in [&tables.vignetting, &tables.distortion] {
+            let table = table.as_ref().expect("table");
+            assert_eq!((table[0], table.len()), (16, 17));
+        }
+        // The reader hands the table back as stored: count 2n = 32 and 32 knots.
+        let file = ArwBuilder::new("ILCE-7RM4", 64, 48).build(&mosaic(64, 48));
+        let found = probe_bytes(&file)
+            .expect("probe")
+            .lens_corrections
+            .expect("lens tables");
+        let ca = found.chromatic_aberration.expect("ca");
+        assert_eq!((ca.count(), ca.knots().len()), (Some(32), 32));
+        assert_eq!(ca.raw, tables.chromatic_aberration.unwrap());
+    }
+
+    /// Finds the stored (enciphered) bytes of the maker-note table `plain_len` bytes long that
+    /// starts with `stored_prefix`, and returns them deciphered.
+    fn table_in(file: &[u8], stored_prefix: &[u8], len: usize) -> Vec<u8> {
+        let at = file
+            .windows(stored_prefix.len())
+            .position(|w| w == stored_prefix)
+            .expect("the table is in the file");
+        file[at..at + len]
+            .iter()
+            .map(|b| crate::makernote::decipher_byte(*b))
+            .collect()
+    }
+
+    fn word(table: &[u8], at: usize) -> u16 {
+        u16::from_le_bytes([table[at], table[at + 1]])
+    }
+
+    #[test]
+    fn the_9416_table_holds_iso_exposure_time_f_number_and_focal_length() {
+        let builder = ArwBuilder::new("ILCE-7M4", 64, 48)
+            .iso(3200)
+            .exposure_time(1, 125)
+            .f_number(28, 10)
+            .focal_length(500, 10);
+        assert_eq!(builder.resolved_iso_table(), SonyIsoTable::Tag9416);
+        let file = builder.build(&mosaic(64, 48));
+        let stored = sony_table(&builder, false);
+        assert_eq!(stored.len(), 0x200);
+        // The file carries the stored bytes, and deciphering them gives the fields.
+        let plain = table_in(&file, &stored[..0x80], 0x200);
+        assert_eq!(word(&plain, 0x04), sony_word_for_iso(3200));
+        let seconds = 2f64.powf(16.0 - f64::from(word(&plain, 0x0A)) / 256.0);
+        assert!((seconds * 125.0 - 1.0).abs() < 0.003, "{seconds}");
+        assert_eq!((word(&plain, 0x0C), word(&plain, 0x0E)), (1, 125));
+        let f = 2f64.powf((f64::from(word(&plain, 0x10)) / 256.0 - 16.0) / 2.0);
+        assert!((f - 2.8).abs() < 0.01, "{f}");
+        assert_eq!(word(&plain, 0x71), 500);
+        // The reader takes the ISO from it.
+        let meta = probe_bytes(&file).expect("probe");
+        assert_eq!(meta.iso, Some(3200));
+        assert_eq!(meta.iso_source, Some(crate::exif::IsoSource::SonyMakerNote));
+        // Only enciphered bytes are in the file: the plain focal length is not.
+        assert!(
+            !file
+                .windows(0x80)
+                .any(|w| w == &plain[..0x80] && plain[..0x80] != stored[..0x80])
+        );
+    }
+
+    #[test]
+    fn the_9405_table_holds_iso_exposure_time_and_f_number() {
+        let builder = ArwBuilder::new("ILCE-7M3", 64, 48)
+            .iso(800)
+            .exposure_time(1, 4000)
+            .f_number(56, 10)
+            .focal_length(240, 10);
+        assert_eq!(builder.resolved_iso_table(), SonyIsoTable::Tag9405);
+        let file = builder.build(&mosaic(64, 48));
+        let stored = sony_table(&builder, true);
+        assert_eq!(stored.len(), 0x100);
+        // The first stored byte is one of the layouts the reader and ExifTool accept.
+        assert_eq!(stored[0], 0x8B);
+        let plain = table_in(&file, &stored[..0x80], 0x100);
+        assert_eq!(word(&plain, 0x04), sony_word_for_iso(800));
+        let seconds = 2f64.powf(16.0 - f64::from(word(&plain, 0x0E)) / 256.0);
+        assert!((seconds * 4000.0 - 1.0).abs() < 0.01, "{seconds}");
+        assert_eq!((word(&plain, 0x10), word(&plain, 0x12)), (1, 4000));
+        let f = 2f64.powf((f64::from(word(&plain, 0x14)) / 256.0 - 16.0) / 2.0);
+        assert!((f - 5.6).abs() < 0.02, "{f}");
+        let meta = probe_bytes(&file).expect("probe");
+        assert_eq!(meta.iso, Some(800));
+        assert_eq!(meta.iso_source, Some(crate::exif::IsoSource::SonyMakerNote));
+    }
+
+    #[test]
+    fn exposure_words_and_fractions_cover_the_extremes() {
+        // Whole stops: 1 s is 16 * 256, each halving adds 256.
+        assert_eq!(sony_exposure_word(1, 1), 4096);
+        assert_eq!(sony_exposure_word(1, 2), 4096 + 256);
+        assert_eq!(sony_exposure_word(30, 1), 2840); // 256 * (16 - log2(30)) = 2839.9
+        assert_eq!(sony_exposure_word(0, 1), 0, "bulb");
+        assert_eq!(sony_f_number_word(1, 1), 4096);
+        assert_eq!(sony_f_number_word(4, 1), 4096 + 1024);
+        // Fractions that do not fit 16 bits are scaled down together.
+        assert_eq!(rational_u16(1, 250), (1, 250));
+        assert_eq!(rational_u16(30, 1), (30, 1));
+        // A zero time is bulb; a zero denominator is read as 1 and never leaves a zero denominator behind.
+        assert_eq!(rational_u16(0, 1), (0, 1));
+        assert_eq!(rational_u16(7, 0), (7, 1));
+        assert_eq!(rational_u16(4, 8000), (1, 2000));
+        let (n, d) = rational_u16(100_000, 4_000_000);
+        assert_eq!((n, d), (1, 40));
+        let (n, d) = rational_u16(1, 200_000);
+        assert_eq!(n, 0, "a time below 1/65535 s rounds to zero");
+        assert_eq!(d, 65_535);
+    }
+
+    #[test]
+    fn a_custom_preview_jpeg_is_embedded_byte_for_byte() {
+        let jpeg = tiny_jpeg(222, 111, 77);
+        let file = ArwBuilder::new("ILCE-7M4", 64, 48)
+            .preview_jpeg(jpeg.clone())
+            .build(&mosaic(64, 48));
+        let meta = probe_bytes(&file).expect("probe");
+        let found = meta.preview.expect("preview");
+        assert_eq!(
+            &file[found.offset as usize..][..found.length as usize],
+            &jpeg[..]
+        );
+        // The 32-byte header in front of it carries the JPEG's own length, width and height.
+        let header = &file[found.offset as usize - 32..found.offset as usize];
+        let field = |at: usize| u32::from_le_bytes(header[at..at + 4].try_into().unwrap());
+        assert_eq!(
+            (field(0), field(4), field(8)),
+            (jpeg.len() as u32, 222, 111)
+        );
+        assert_eq!((field(20), field(24)), (222, 111));
+        // The last call wins: dropping the preview, or asking for a generated one.
+        let none = ArwBuilder::new("ILCE-7M4", 64, 48)
+            .preview_jpeg(jpeg.clone())
+            .preview(None)
+            .thumbnail(None)
+            .build(&mosaic(64, 48));
+        assert_eq!(probe_bytes(&none).expect("probe").preview, None);
+        let generated = ArwBuilder::new("ILCE-7M4", 64, 48)
+            .preview_jpeg(jpeg.clone())
+            .preview(Some((222, 111)))
+            .build(&mosaic(64, 48));
+        let found = probe_bytes(&generated)
+            .expect("probe")
+            .preview
+            .expect("preview");
+        assert_eq!(
+            &generated[found.offset as usize..][..found.length as usize],
+            &tiny_jpeg(222, 111, 2)[..]
+        );
+        // A padded size minimum applies to a custom JPEG too, and keeps it a valid JPEG.
+        let padded = ArwBuilder::new("ILCE-7M4", 64, 48)
+            .preview_jpeg(jpeg.clone())
+            .preview_min_bytes(jpeg.len() + 5000)
+            .build(&mosaic(64, 48));
+        let found = probe_bytes(&padded)
+            .expect("probe")
+            .preview
+            .expect("preview");
+        assert!(found.length as usize >= jpeg.len() + 5000);
+        let bytes = &padded[found.offset as usize..][..found.length as usize];
+        assert_eq!(super::jpeg_dimensions(bytes), Some((222, 111)));
+        assert_eq!(&bytes[bytes.len() - 2..], &[0xFF, 0xD9]);
+        // A JPEG without a frame header still embeds; its header sizes are zero.
+        let odd = ArwBuilder::new("ILCE-7M4", 64, 48)
+            .preview_jpeg(vec![0xFF, 0xD8, 0xFF, 0xDB, 0, 2, 0xFF, 0xD9])
+            .build(&mosaic(64, 48));
+        assert!(probe_bytes(&odd).is_ok());
     }
 
     #[test]

@@ -1575,17 +1575,25 @@ pub struct PhotoProgress {
     pub error: Option<String>,
 }
 
-/// `thumbnail_ready { id, png_bytes }`: a PNG of at most 240 px on its long edge.
+/// `thumbnail_ready { id, url }`: the photo's thumbnail, a PNG of at most 240 px on its long edge,
+/// is at `url`.
+///
+/// The picture does not cross the bridge: the shell keeps it and serves it on the `ym-frame`
+/// scheme (`ym-frame://localhost/thumb-<id>-<version>.png`, `http://ym-frame.localhost/…` on
+/// Windows), so an `<img>` loads it. Every new thumbnail of a photo (a look, a crop or a turn was
+/// applied) has a new address. Also the answer of `thumbnails()` for every photo that has one, to
+/// get them again after the webview reloaded.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type, Event)]
 #[tauri_specta(event_name = "thumbnail_ready")]
 pub struct ThumbnailReady {
     /// The photo.
     pub id: PhotoId,
-    /// The PNG file as byte values.
-    pub png_bytes: Vec<u8>,
+    /// Where the PNG is.
+    pub url: String,
 }
 
-/// `render_stats { ms, path, space }`: the header's status text.
+/// `render_stats { ms, path, space, zoom_percent, fit_percent }`: the header's status text and the
+/// zoom the last viewport frame was drawn at.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Type, Event)]
 #[tauri_specta(event_name = "render_stats")]
 pub struct RenderStats {
@@ -1595,6 +1603,11 @@ pub struct RenderStats {
     pub path: RenderPath,
     /// The output colour space.
     pub space: ColorSpace,
+    /// The zoom of the frame in percent (device pixels per pixel of the final image, times 100),
+    /// not rounded; the core's own, which knows the lens crop, the straighten angle and the crop.
+    pub zoom_percent: Option<Num>,
+    /// The zoom at which the whole final image fits the cell, in percent and not rounded.
+    pub fit_percent: Option<Num>,
 }
 
 /// `export_progress { job_id, file, done, total, file_percent, error, skipped }`.

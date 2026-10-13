@@ -528,6 +528,14 @@ export interface RenderStats {
   ms: number;
   path: RenderPath;
   space: ColorSpace;
+  /**
+   * The zoom the last viewport frame was drawn at, in percent (device pixels per pixel of the final image, times 100), not rounded.
+   * The core's own, which knows the lens crop, the straighten angle and the crop that the screen can only guess. `null` when the
+   * sender has none (the mock): the screen then estimates it from the photo and the cell (`fitZoomExact`).
+   */
+  zoom_percent: number | null;
+  /** The zoom at which the whole final image fits the cell, in percent and not rounded; `null` as `zoom_percent`. */
+  fit_percent: number | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -648,11 +656,16 @@ export interface PhotoProgress {
   error: string | null;
 }
 
-/** `thumbnail_ready { id, png_bytes }`: a PNG of at most 240 px on its long edge. */
+/**
+ * `thumbnail_ready { id, url }`: the photo's thumbnail, a PNG of at most 240 px on its long edge, is at `url`. The picture does not
+ * cross the bridge (as an array of byte values it was four times its size in JSON, 125 MB for 500 photos): the shell serves it on the
+ * `ym-frame` scheme and an `<img>` loads it. A new thumbnail of the same photo (a look, a crop or a turn was applied) has a new
+ * address. `url` is any address an `<img>` can load: the mock makes `blob:` ones.
+ */
 export interface ThumbnailReady {
   id: PhotoId;
-  /** Tauri serialises `Vec<u8>` as an array of byte values. */
-  png_bytes: number[];
+  /** Where the PNG is (`ym-frame://localhost/thumb-<id>-<version>.png`, `http://ym-frame.localhost/…` on Windows). */
+  url: string;
 }
 
 /** Updater phases (`docs/12` §In the app). */

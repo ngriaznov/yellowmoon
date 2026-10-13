@@ -634,7 +634,7 @@ fn adobes_dng_validate_accepts_every_variant() {
 /// Display P3 (to 1e-3 in encoded values). This checks `ColorMatrix1`, `ForwardMatrix1`,
 /// `AsShotNeutral`, the D50 white and the Bradford adaptation against Adobe's code instead of ours.
 #[test]
-fn adobes_renderer_reproduces_the_expected_colours() {
+fn adobes_renderer_reproduces_the_expected_colors() {
     let Some(binary) = dng_validate_binary() else {
         assert!(
             std::env::var_os("YM_REQUIRE_EXTERNAL_TOOLS").is_none(),

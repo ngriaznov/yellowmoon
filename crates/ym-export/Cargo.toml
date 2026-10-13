@@ -21,6 +21,12 @@ sha2.workspace = true
 tiff.workspace = true
 png.workspace = true
 jpeg-encoder.workspace = true
+# Pins the deflate backend of PNG (IDAT, iCCP) and TIFF-ZIP to zlib-rs. Cargo features are additive: `ym-looks` pulls
+# `zip` with `deflate-flate2-zlib-rs`, so every workspace build already deflates with zlib-rs, while a build of this
+# crate alone (cargo test -p ym-export) would use miniz_oxide and write other bytes. Declaring the feature here makes
+# both the same, as the CLI and the app need (same inputs, same bytes). Not used in code. Licence: MIT OR Apache-2.0
+# (flate2), Zlib (zlib-rs); both are already in the build.
+flate2 = { version = "1.1", default-features = false, features = ["zlib-rs"] }
 
 [dev-dependencies]
 proptest.workspace = true

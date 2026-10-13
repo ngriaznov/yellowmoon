@@ -253,8 +253,10 @@ pub struct Provenance {
     pub sensor_map_objective: String,
     /// Solver, options and library versions.
     pub fit_solver: String,
-    /// colour-science version used at fit time.
-    pub colour_science: String,
+    /// colour-science version used at fit time. The profile files keep the British key, as the
+    /// package is called `colour-science`.
+    #[serde(rename = "colour_science")]
+    pub color_science: String,
     /// The training reflectance set.
     pub training_reflectances: String,
     /// Reference lights per class.

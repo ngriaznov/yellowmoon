@@ -221,7 +221,12 @@ pub enum QueueError {
     /// The options cannot be used.
     #[error("{0}")]
     Options(String),
-    /// A photo could not be snapshotted (it is still developing, or was skipped).
+    /// Photos of the scope have no estimates yet, so there is nothing to snapshot. (A photo whose
+    /// estimates exist but may still move, because a photo of its burst or its noise pool is not
+    /// done, is queued and waits.)
+    #[error("{}", developing_message(*.0))]
+    Developing(usize),
+    /// A photo could not be snapshotted (it was skipped, or is gone).
     #[error(transparent)]
     Photo(#[from] ExportError),
     /// The queue was shut down.
@@ -274,16 +279,21 @@ pub struct JobSummary {
     pub skipped: usize,
     /// Photos that failed.
     pub failed: usize,
-    /// The files written, in order.
+    /// The files written, in order. A photo skipped because its file exists writes nothing and is
+    /// counted in `skipped`, not listed here (the CLI prints the same: a skipped file prints
+    /// nothing, `docs/10`).
     pub files: Vec<PathBuf>,
-    /// The folders they are in, each once.
+    /// The folders of the job's files, each once: those of the files written and also those of the
+    /// files that were skipped, so that "Show in Finder" opens the destination of a job that wrote
+    /// nothing because everything was already there.
     pub folders: Vec<PathBuf>,
     /// The photos that failed, with the reasons.
     pub errors: Vec<FileError>,
 }
 
 impl JobSummary {
-    /// What "Show in Finder" opens: the file when the job wrote exactly one, else the first folder.
+    /// What "Show in Finder" opens: the file when the job wrote exactly one, else the first folder
+    /// (a job that wrote nothing, every file being there already, opens its destination).
     #[must_use]
     pub fn reveal_path(&self) -> Option<PathBuf> {
         match self.files.as_slice() {
@@ -295,6 +305,9 @@ impl JobSummary {
 
 struct Item {
     snapshot: PhotoSnapshot,
+    /// The estimates in the snapshot were final when the job was queued (`Session::estimates_final`):
+    /// nothing to wait for. When false, the photo's turn waits for them and reads them again.
+    settled: bool,
 }
 
 struct Job {
@@ -329,6 +342,18 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 
 /// How many finished jobs the queue remembers.
 const KEPT_SUMMARIES: usize = 16;
+
+/// How often a job that waits for the estimates of its photo to become final looks again.
+const SETTLE_POLL: Duration = Duration::from_millis(25);
+
+/// The sentence for [`QueueError::Developing`].
+fn developing_message(count: usize) -> &'static str {
+    if count == 1 {
+        "One photo is still being developed. Wait until it is ready, then export again."
+    } else {
+        "Some photos are still being developed. Wait until they are ready, then export again."
+    }
+}
 
 /// The export queue (see the module documentation).
 pub struct ExportQueue {
@@ -432,12 +457,19 @@ impl ExportQueue {
     /// progress arrives as [`ExportEvent::Progress`]. `remove_location` is the preference "Remove
     /// location from exports" as it is now.
     ///
+    /// The burst median exposure and the pooled noise depend on the other photos of the session
+    /// (`docs/01` Session). A photo whose estimates are not final yet (a photo of its burst or of
+    /// its noise pool is still being developed) is queued all the same: when its turn comes the job
+    /// waits until they are (`Session::estimates_final`) and then takes them, so the file is the
+    /// one `ym render` writes for the same photos. The wait is for the photos it depends on, not for
+    /// thumbnails, prefetching or viewport work.
+    ///
     /// # Errors
     ///
     /// [`QueueError::NoPhotos`] for an empty scope, [`QueueError::DngUnavailable`] for a DNG of a
-    /// look with its own display rendering, [`QueueError::Options`] for options the writers refuse
-    /// and [`QueueError::Photo`] for a photo that is not ready (the first one found; nothing is
-    /// queued).
+    /// look with its own display rendering, [`QueueError::Options`] for options the writers refuse,
+    /// [`QueueError::Developing`] when photos of the scope have no estimates yet and
+    /// [`QueueError::Photo`] for a photo that cannot be exported (nothing is queued).
     pub fn start(
         &self,
         session: &Arc<Session>,
@@ -474,10 +506,19 @@ impl ExportQueue {
             }));
         }
         let mut items = Vec::with_capacity(ids.len());
+        let mut developing = 0;
         for id in ids {
-            items.push(Item {
-                snapshot: PhotoSnapshot::take(session, id)?,
-            });
+            // Asked before the snapshot is taken: estimates that are final now stay final, those
+            // that are not are read again when the photo's turn comes.
+            let settled = session.estimates_final(id).unwrap_or(true);
+            match PhotoSnapshot::take(session, id) {
+                Ok(snapshot) => items.push(Item { snapshot, settled }),
+                Err(ExportError::Session(SessionError::NotReady(_))) => developing += 1,
+                Err(e) => return Err(e.into()),
+            }
+        }
+        if developing > 0 {
+            return Err(QueueError::Developing(developing));
         }
         if job.options.format == FormatKind::Dng {
             let looks = self.ctx.renderer().looks();
@@ -705,6 +746,51 @@ fn load_raw(session: &Session, snapshot: &PhotoSnapshot) -> Result<(Arc<RawImage
     Ok((raw, started.elapsed().as_secs_f64() * 1000.0))
 }
 
+/// How waiting for the final estimates of a photo ended.
+enum Settled {
+    /// The job was cancelled meanwhile.
+    Cancelled,
+    /// The snapshot with the final estimates in it.
+    Fresh(Box<PhotoSnapshot>),
+    /// The photo cannot be asked about any more (the session was closed, which stops development,
+    /// or the photo was skipped): the job goes on with the snapshot it was queued with.
+    AsQueued,
+}
+
+/// Waits until the estimates of the snapshot's photo are final in `session` and returns the
+/// snapshot with them. Looks again every [`SETTLE_POLL`], so a cancel is noticed within that.
+fn wait_for_final_estimates(
+    session: &Session,
+    cancel: &CancelToken,
+    snapshot: &PhotoSnapshot,
+) -> Settled {
+    let id = snapshot.view.id;
+    loop {
+        if cancel.is_cancelled() {
+            return Settled::Cancelled;
+        }
+        match session.estimates_final(id) {
+            Ok(true) => break,
+            Ok(false) => std::thread::sleep(SETTLE_POLL),
+            Err(e) => {
+                tracing::info!(photo = id.0, reason = %e, "exporting with the estimates the job was queued with");
+                return Settled::AsQueued;
+            }
+        }
+    }
+    match session
+        .view(id)
+        .map_err(ExportError::from)
+        .and_then(|fresh| snapshot.with_estimates_of(fresh))
+    {
+        Ok(fresh) => Settled::Fresh(Box::new(fresh)),
+        Err(e) => {
+            tracing::warn!(photo = id.0, error = %e, "the final estimates could not be read; exporting with the queued ones");
+            Settled::AsQueued
+        }
+    }
+}
+
 fn update_summary(shared: &Shared, id: ExportJobId, f: impl FnOnce(&mut JobSummary)) {
     if let Some(s) = lock(&shared.state)
         .summaries
@@ -774,6 +860,24 @@ fn run_job(ctx: &Arc<ExportContext>, sink: &ExportSink, shared: &Arc<Shared>, jo
         };
         event(i, &predicted, Some(0.0), None, false);
 
+        // A job queued while the photos this one depends on were still developing waits here for
+        // their estimates, then reads the shared ones (burst median, pooled noise) again.
+        let refreshed = if item.settled {
+            None
+        } else {
+            match wait_for_final_estimates(&job.session, &job.cancel, &item.snapshot) {
+                Settled::Cancelled => {
+                    if let Some(Ok(h)) = next_load.take() {
+                        let _ = h.join();
+                    }
+                    return;
+                }
+                Settled::Fresh(snapshot) => Some(*snapshot),
+                Settled::AsQueued => None,
+            }
+        };
+        let snapshot = refreshed.as_ref().unwrap_or(&item.snapshot);
+
         let result = raw.map_err(ExportError::Decode).and_then(|(raw, _)| {
             let photo = snapshot.clone().with_raw(raw);
             let last = Mutex::new(0u32);
@@ -818,8 +922,8 @@ fn run_job(ctx: &Arc<ExportContext>, sink: &ExportSink, shared: &Arc<Shared>, jo
                         s.skipped += 1;
                     } else {
                         s.saved += 1;
+                        s.files.push(report.path.clone());
                     }
-                    s.files.push(report.path.clone());
                     if let Some(dir) = report.path.parent()
                         && !s.folders.iter().any(|f| f == dir)
                     {

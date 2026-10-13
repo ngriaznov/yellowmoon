@@ -243,11 +243,22 @@ fn the_rust_types_have_the_fields_of_the_typescript_interfaces() {
         })
         .unwrap(),
     );
+    // `ThumbnailReady` is not here: the core's event still carries the PNG (`png_bytes`), and the
+    // shell turns it into the `{ id, url }` of `types.ts` (the picture is served on the `ym-frame`
+    // scheme, `docs/01` IPC); the shell's `bindings` tests compare that wire type with the interface.
+    let _ = ThumbnailReady {
+        id: PhotoId(1),
+        png_bytes: vec![1],
+    };
+    // The status text's payload goes to the webview as it is, zoom included.
     check(
-        "ThumbnailReady",
-        serde_json::to_value(ThumbnailReady {
-            id: PhotoId(1),
-            png_bytes: vec![1],
+        "RenderStats",
+        serde_json::to_value(ym_core::pipeline::RenderStats {
+            ms: 1.0,
+            path: ym_core::pipeline::RenderPath::Classical,
+            space: ym_export::ColorSpace::DisplayP3,
+            zoom_percent: Some(50.0),
+            fit_percent: None,
         })
         .unwrap(),
     );
@@ -611,7 +622,7 @@ fn moving_a_slider_sends_a_manual_value_and_reset_sends_auto() {
         ym_core::settings::ExposureSetting::manual_ev(0.3)
     );
     assert_eq!(report.changed, vec![SettingsField::Exposure]);
-    assert_eq!(report.first_group(), Some(StageGroup::Colour));
+    assert_eq!(report.first_group(), Some(StageGroup::Color));
     // The same patch again changes nothing.
     assert!(
         apply(&mut s, SettingsPatch::exposure_ev(0.3))
@@ -726,7 +737,7 @@ fn a_patch_that_cannot_be_applied_changes_nothing() {
 }
 
 #[test]
-fn colour_balance_points_are_scaled_back_into_the_unit_disc() {
+fn color_balance_points_are_scaled_back_into_the_unit_disc() {
     let mut s = DevelopSettings::default();
     let report = apply(
         &mut s,

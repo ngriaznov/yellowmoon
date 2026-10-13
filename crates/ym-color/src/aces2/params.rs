@@ -11,12 +11,13 @@ use super::compress::{
     CHROMA_COMPRESS, CHROMA_COMPRESS_FACT, CHROMA_EXPAND, CHROMA_EXPAND_FACT, CHROMA_EXPAND_THR,
     FOCUS_DISTANCE, FOCUS_DISTANCE_SCALING,
 };
-use super::matrix::{M33, Primaries, V3, mul_mat_mat, mul_vec_mat};
+use super::matrix::{M33, V3, ctl_rgb_to_xyz, ctl_xyz_to_rgb, mul_mat_mat, mul_vec_mat};
 use super::tables::{
     determine_hue_linearity_search_range, make_reach_m_table, make_uniform_hue_gamut_table,
     make_upper_hull_gamma_table,
 };
 use super::tonescale::ToneScaleParams;
+use crate::consts::Primaries;
 
 /// Smallest peak luminance, in nits, the transform is defined for.
 ///
@@ -149,10 +150,10 @@ impl Aces2Params {
             &limit,
         );
 
-        let ap0_to_xyz = Primaries::AP0.rgb_to_xyz(1.0);
-        let ap1_to_xyz = Primaries::AP1.rgb_to_xyz(1.0);
-        let ap0_to_ap1 = mul_mat_mat(&ap0_to_xyz, &Primaries::AP1.xyz_to_rgb(1.0));
-        let ap1_to_ap0 = mul_mat_mat(&ap1_to_xyz, &Primaries::AP0.xyz_to_rgb(1.0));
+        let ap0_to_xyz = ctl_rgb_to_xyz(&Primaries::AP0, 1.0);
+        let ap1_to_xyz = ctl_rgb_to_xyz(&Primaries::AP1, 1.0);
+        let ap0_to_ap1 = mul_mat_mat(&ap0_to_xyz, &ctl_xyz_to_rgb(&Primaries::AP1, 1.0));
+        let ap1_to_ap0 = mul_mat_mat(&ap1_to_xyz, &ctl_xyz_to_rgb(&Primaries::AP0, 1.0));
 
         Aces2Params {
             peak_luminance_nits,

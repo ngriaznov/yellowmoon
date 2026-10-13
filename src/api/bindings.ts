@@ -85,6 +85,18 @@ export const commands = {
 	cliPreview: (job: ExportJob) => __TAURI_INVOKE<string>("cli_preview", { job }),
 	/**  `export_busy()` (addition): an export is queued or running. "Update ready" waits while it is. */
 	exportBusy: () => __TAURI_INVOKE<boolean>("export_busy"),
+	/**
+	 *  `restart_app()` (addition): restarts into the update that was installed ("Update ready"). Refused
+	 *  with "An export is still running. Restart after it finishes." while an export is queued or
+	 *  running; the webview's own check is a courtesy, this is the guard (`AppApi::begin_restart`).
+	 *  Does not return when it works: the process is replaced.
+	 */
+	restartApp: () => __TAURI_INVOKE<null>("restart_app"),
+	/**
+	 *  `thumbnails()` (addition): the address of the thumbnail of every photo that has one, so that a
+	 *  webview that reloaded can show the filmstrip again.
+	 */
+	thumbnails: () => __TAURI_INVOKE<ThumbnailReady[]>("thumbnails"),
 	/**  `choose_folder(start)`: the system's folder chooser. `null` when cancelled. */
 	chooseFolder: (start: string | null) => __TAURI_INVOKE<string | null>("choose_folder", { start }),
 	/**  `choose_look_files()`: the system's file chooser for zips and `.cube` files. `null` when cancelled. */
@@ -980,7 +992,10 @@ export type RenderPath =
 /**  The classical demosaic. */
 "classical";
 
-/**  `render_stats { ms, path, space }`: the header's status text. */
+/**
+ *  `render_stats { ms, path, space, zoom_percent, fit_percent }`: the header's status text and the
+ *  zoom the last viewport frame was drawn at.
+ */
 export type RenderStats = {
 	/**  Milliseconds the last render took. */
 	ms: number,
@@ -988,6 +1003,13 @@ export type RenderStats = {
 	path: RenderPath,
 	/**  The output colour space. */
 	space: ColorSpace,
+	/**
+	 *  The zoom of the frame in percent (device pixels per pixel of the final image, times 100),
+	 *  not rounded; the core's own, which knows the lens crop, the straighten angle and the crop.
+	 */
+	zoom_percent: number | null,
+	/**  The zoom at which the whole final image fits the cell, in percent and not rounded. */
+	fit_percent: number | null,
 };
 
 /**  What `get_settings` and `update_settings` return: the panel's whole state for one photo. */
@@ -1199,12 +1221,21 @@ export type SourceRecognition = {
 	recognition: Recognition,
 };
 
-/**  `thumbnail_ready { id, png_bytes }`: a PNG of at most 240 px on its long edge. */
+/**
+ *  `thumbnail_ready { id, url }`: the photo's thumbnail, a PNG of at most 240 px on its long edge,
+ *  is at `url`.
+ * 
+ *  The picture does not cross the bridge: the shell keeps it and serves it on the `ym-frame`
+ *  scheme (`ym-frame://localhost/thumb-<id>-<version>.png`, `http://ym-frame.localhost/…` on
+ *  Windows), so an `<img>` loads it. Every new thumbnail of a photo (a look, a crop or a turn was
+ *  applied) has a new address. Also the answer of `thumbnails()` for every photo that has one, to
+ *  get them again after the webview reloaded.
+ */
 export type ThumbnailReady = {
 	/**  The photo. */
 	id: PhotoId,
-	/**  The PNG file as byte values. */
-	png_bytes: number[],
+	/**  Where the PNG is. */
+	url: string,
 };
 
 /**  TIFF compression. */

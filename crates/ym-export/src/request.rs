@@ -4,7 +4,9 @@
 //!   encodes into a temporary file in the destination folder, fsyncs and renames it. On an error or a
 //!   cancel the temporary file is deleted. Originals are never opened for writing.
 //! * [`encode_to_writer`] / [`encode_to_vec`] do the encoding into any writer (tests, hashes, previews).
-//! * [`estimate_bytes`] is the "≈ 120 MB" of the export panel.
+//! * [`estimate_bytes`](crate::estimate::estimate_bytes) and
+//!   [`estimate_bytes_with_detail`](crate::estimate::estimate_bytes_with_detail) (in [`crate::estimate`]) give the
+//!   "≈ 120 MB" of the export panel.
 //!
 //! The same code path serves the app and the CLI, so the same pixels, options and metadata give
 //! byte-identical files.
@@ -20,9 +22,7 @@ use crate::exif::{self, ExifInfo, OutputFacts};
 use crate::icc;
 use crate::jpeg::{self, JpegMetadata};
 use crate::naming::{self, NameFields, Placement};
-use crate::options::{
-    BitDepth, ColorSpace, ExportFormat, ExportOptions, IfExists, Size, TiffCompression,
-};
+use crate::options::{ColorSpace, ExportFormat, ExportOptions, IfExists, Size};
 use crate::pixels::{ExportHooks, ImageRef, PixelEncoding};
 use crate::png_writer::{self, PngMetadata};
 use crate::resize::resize_lanczos3;
@@ -428,165 +428,4 @@ pub fn write_export(
         height: summary.map_or(0, |s| s.height),
         dng: summary.and_then(|s| s.dng),
     })
-}
-
-// ---- size estimate --------------------------------------------------------------------
-
-/// JPEG bits per pixel by quality: `(quality, bits per pixel)`. Measured on the 24 Kodak images
-/// (`tests/calibrate_estimate.rs`) with this crate's encoder: 4:4:4 from quality 90, 4:2:0 below, optimised
-/// tables. Film scans of 0.4 MP are not camera frames: a full-size, un-denoised 24 MP frame came out
-/// 1.5 times larger than this table says at quality 92 (while the table is 25 % too high at quality 50),
-/// so it is to be re-measured on Yellowmoon renders (`docs/09`, review notes).
-const JPEG_BPP_TABLE: [(f64, f64); 9] = [
-    (50.0, 0.99),
-    (60.0, 1.13),
-    (75.0, 1.48),
-    (85.0, 2.00),
-    (89.0, 2.35),
-    (90.0, 2.95),
-    (92.0, 3.28),
-    (95.0, 4.25),
-    (100.0, 10.2),
-];
-
-/// Compressed size over raw size for TIFF and PNG, `[8-bit, 16-bit]`. The 8-bit values are measured on the
-/// Kodak images after the dither; the 16-bit values on the same images with a noise of sigma 1.2e-4
-/// (about one LSB of 13 bits) added, because a rendered 16-bit frame is not 256 levels scaled up. LZW
-/// does poorly on noisy 16-bit samples (the file can be as big as the uncompressed one); Deflate and PNG do better.
-const LZW_RATIO: [f64; 2] = [0.70, 0.90];
-const ZIP_RATIO: [f64; 2] = [0.63, 0.74];
-const PNG_RATIO: [f64; 2] = [0.60, 0.72];
-
-fn interpolate(table: &[(f64, f64)], x: f64) -> f64 {
-    let first = table[0];
-    let last = table[table.len() - 1];
-    if x <= first.0 {
-        return first.1;
-    }
-    if x >= last.0 {
-        return last.1;
-    }
-    for pair in table.windows(2) {
-        let (a, b) = (pair[0], pair[1]);
-        if x <= b.0 {
-            return a.1 + (b.1 - a.1) * (x - a.0) / (b.0 - a.0);
-        }
-    }
-    last.1
-}
-
-/// The expected file size in bytes of an export of a `width` x `height` frame: the number behind
-/// "≈ 120 MB" in the export panel. It is an estimate from compression ratios measured on film scans
-/// (within about 30 % on content like those, and 0.65 to 1.25 times the real size on a noisy camera
-/// frame); the metadata and profile add under 4 KB.
-#[must_use]
-pub fn estimate_bytes(width: u32, height: u32, format: ExportFormat, size: Size) -> u64 {
-    let (w, h) = if format == ExportFormat::Dng {
-        (width, height)
-    } else {
-        size.output_dimensions(width, height)
-    };
-    let pixels = f64::from(w) * f64::from(h);
-    let bits_index = |bits: BitDepth| usize::from(bits == BitDepth::Sixteen);
-    let bytes = match format {
-        ExportFormat::Jpeg { quality } => {
-            pixels * interpolate(&JPEG_BPP_TABLE, f64::from(quality.get())) / 8.0
-        }
-        ExportFormat::Tiff { bits, compression } => {
-            let raw = pixels * 3.0 * f64::from(bits.bits()) / 8.0;
-            raw * match compression {
-                TiffCompression::None => 1.0,
-                TiffCompression::Lzw => LZW_RATIO[bits_index(bits)],
-                TiffCompression::Zip => ZIP_RATIO[bits_index(bits)],
-            }
-        }
-        ExportFormat::Png { bits } => {
-            pixels * 3.0 * f64::from(bits.bits()) / 8.0 * PNG_RATIO[bits_index(bits)]
-        }
-        ExportFormat::Dng => {
-            // 16-bit raw, plus the full-size q92 JPEG preview and a 256 px thumbnail.
-            pixels * 6.0
-                + pixels * interpolate(&JPEG_BPP_TABLE, f64::from(dng::PREVIEW_QUALITY)) / 8.0
-                + 200_000.0
-        }
-    };
-    (bytes + 4096.0).round() as u64
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::options::JpegQuality;
-
-    #[test]
-    fn estimate_is_monotone_and_sane() {
-        let jpeg = |q: u8| {
-            estimate_bytes(
-                8640,
-                5760,
-                ExportFormat::Jpeg {
-                    quality: JpegQuality::new(q).unwrap(),
-                },
-                Size::Full,
-            )
-        };
-        let mut last = 0;
-        for q in 50..=100 {
-            let e = jpeg(q);
-            assert!(e >= last, "q{q}");
-            last = e;
-        }
-        // 50 MP at quality 92: tens of megabytes.
-        assert!((15_000_000..40_000_000).contains(&jpeg(92)), "{}", jpeg(92));
-        let tiff16 = estimate_bytes(
-            8640,
-            5760,
-            ExportFormat::Tiff {
-                bits: BitDepth::Sixteen,
-                compression: TiffCompression::None,
-            },
-            Size::Full,
-        );
-        assert!((tiff16 as i64 - 8640 * 5760 * 6).abs() < 10_000);
-        let lzw = estimate_bytes(
-            8640,
-            5760,
-            ExportFormat::Tiff {
-                bits: BitDepth::Sixteen,
-                compression: TiffCompression::Lzw,
-            },
-            Size::Full,
-        );
-        assert!(lzw < tiff16);
-        // Smaller long edge, smaller file; DNG ignores the size.
-        let small = estimate_bytes(
-            8640,
-            5760,
-            ExportFormat::Png {
-                bits: BitDepth::Eight,
-            },
-            Size::LongEdge { px: 2000 },
-        );
-        let full = estimate_bytes(
-            8640,
-            5760,
-            ExportFormat::Png {
-                bits: BitDepth::Eight,
-            },
-            Size::Full,
-        );
-        assert!(small * 10 < full);
-        let dng_full = estimate_bytes(8640, 5760, ExportFormat::Dng, Size::Full);
-        let dng_small = estimate_bytes(8640, 5760, ExportFormat::Dng, Size::LongEdge { px: 2000 });
-        assert_eq!(dng_full, dng_small);
-        assert!(dng_full > 8640 * 5760 * 6);
-    }
-
-    #[test]
-    fn interpolation_is_clamped_and_linear() {
-        let t = [(0.0, 1.0), (10.0, 3.0)];
-        assert_eq!(interpolate(&t, -5.0), 1.0);
-        assert_eq!(interpolate(&t, 5.0), 2.0);
-        assert_eq!(interpolate(&t, 50.0), 3.0);
-    }
 }

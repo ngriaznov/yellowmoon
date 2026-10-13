@@ -245,7 +245,7 @@ fn the_bytes_do_not_depend_on_the_number_of_threads() {
 }
 
 #[test]
-fn every_colour_space_and_format_gives_different_bytes() {
+fn every_color_space_and_format_gives_different_bytes() {
     let h = hashes();
     let values: std::collections::BTreeSet<&String> = h.values().collect();
     assert_eq!(

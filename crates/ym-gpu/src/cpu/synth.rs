@@ -126,7 +126,7 @@ pub fn edges(w: usize, h: usize) -> RgbImage {
 }
 
 /// A grid of flat colour patches (neutrals, primaries, secondaries, skin-like tones).
-pub fn colour_patches(w: usize, h: usize) -> RgbImage {
+pub fn color_patches(w: usize, h: usize) -> RgbImage {
     const PATCHES: [[f32; 3]; 24] = [
         [0.17, 0.10, 0.07],
         [0.58, 0.36, 0.28],
@@ -430,7 +430,7 @@ mod tests {
         for img in [
             zone_plate(64, 48),
             edges(64, 48),
-            colour_patches(64, 48),
+            color_patches(64, 48),
             fine_text(96, 64, 1),
             natural(64, 48, 5),
         ] {
@@ -442,7 +442,7 @@ mod tests {
 
     #[test]
     fn mosaic_samples_the_right_channel() {
-        let img = colour_patches(16, 16);
+        let img = color_patches(16, 16);
         let m = mosaic_from_rgb(&img, Cfa::GBRG);
         for y in 0..16 {
             for x in 0..16 {

@@ -420,7 +420,7 @@ mod tests {
     }
 
     #[test]
-    fn rggb_values_map_to_raster_positions_by_colour() {
+    fn rggb_values_map_to_raster_positions_by_color() {
         let v = [10, 20, 30, 40]; // R, G1, G2, B
         assert_eq!(CfaPattern::RGGB.rggb_to_positions(v), [10, 20, 30, 40]);
         assert_eq!(CfaPattern::BGGR.rggb_to_positions(v), [40, 20, 30, 10]);

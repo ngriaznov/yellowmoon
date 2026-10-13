@@ -129,7 +129,7 @@ fn intensity_text(intensity: f64) -> String {
     }
 }
 
-fn colour_space_word(c: ColorSpace) -> &'static str {
+fn color_space_word(c: ColorSpace) -> &'static str {
     match c {
         ColorSpace::Srgb => "srgb",
         ColorSpace::DisplayP3 => "p3",
@@ -240,7 +240,7 @@ pub fn build(
     if o.format != FormatKind::Dng {
         flags.push(format!(
             "--colour-space {}",
-            colour_space_word(o.color_space)
+            color_space_word(o.color_space)
         ));
         if let Size::LongEdge { px } = o.size {
             flags.push(format!("--long-edge {px}"));

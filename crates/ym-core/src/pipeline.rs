@@ -4,10 +4,10 @@
 //!
 //! # Shape
 //!
-//! A [`Renderer`] is the shared engine: it knows where looks come from ([`colour::LookProvider`]),
+//! A [`Renderer`] is the shared engine: it knows where looks come from ([`color::LookProvider`]),
 //! which display rendering is chosen, whether a GPU is available for the per-pixel colour stages,
 //! and it owns one [`graph::PhotoGraph`] (the stage caches) per photo. Every call takes a
-//! [`colour::PhotoSource`], a snapshot of one photo (decoded image, profile, estimates, settings),
+//! [`color::PhotoSource`], a snapshot of one photo (decoded image, profile, estimates, settings),
 //! so a settings change is just a new source: the graph compares cache keys and recomputes only the
 //! groups the change reaches.
 //!
@@ -15,8 +15,8 @@
 //! |---|---|---|---|
 //! | Decode | black, white, clip mask | [`raw::FrameData`] (the area copy) | the photo |
 //! | Raw | R1, R3 to R9 | an `RgbImage` per scale, or the tiles at 100 % | `decode.*`, noise reduction, sharpening, the gains `g0`, the noise model |
-//! | Colour | C1 to C8 | [`colour::ColourPlan`] (fused matrix, tone) | light, white balance, pick, exposure, roll-off |
-//! | Grade | C9 to C13 | [`colour::GradePlan`] (the prepared `ColorChain`) | everything else, and the colour key |
+//! | Colour | C1 to C8 | [`color::ColorPlan`] (fused matrix, tone) | light, white balance, pick, exposure, roll-off |
+//! | Grade | C9 to C13 | [`color::GradePlan`] (the prepared `ColorChain`) | everything else, and the colour key |
 //! | Geometry | crop, straighten, orientation | nothing: applied when sampling | `crop`, `orientation` |
 //!
 //! The raw group is the expensive one (seconds at full resolution); the others are matrices and
@@ -44,7 +44,7 @@
 use serde::{Deserialize, Serialize};
 use ym_export::ColorSpace;
 
-pub mod colour;
+pub mod color;
 pub mod frame;
 pub mod geometry;
 pub mod graph;
@@ -52,9 +52,7 @@ pub mod raw;
 pub mod thumbs;
 pub mod viewport;
 
-pub use colour::{
-    DisplayChoice, LookProblem, LookProvider, NeutralOnly, PhotoSource, ResolvedLook,
-};
+pub use color::{DisplayChoice, LookProblem, LookProvider, NeutralOnly, PhotoSource, ResolvedLook};
 pub use frame::{
     FitFrame, FrameOptions, FullImage, FullRequest, FullTarget, PixelSample, PixelWindow,
     RenderedFrame, ViewportFrame,
@@ -77,7 +75,7 @@ pub enum RenderError {
     Image(String),
     /// The colour settings cannot make a chain (a refused Pick white, a bad curve).
     #[error("{0}")]
-    Colour(String),
+    Color(String),
     /// A look or display LUT cannot be used.
     #[error("{0}")]
     Look(String),
@@ -136,6 +134,26 @@ pub struct RenderStats {
     pub path: RenderPath,
     /// The output colour space.
     pub space: ColorSpace,
+    /// The zoom of the frame in percent: device pixels per pixel of the final image times 100, not
+    /// rounded (`docs/01` Native viewport, "Zoom"). Only a viewport frame has one.
+    #[serde(default)]
+    pub zoom_percent: Option<f64>,
+    /// The zoom at which the whole final image fits the cell, in percent and not rounded: what the
+    /// header's "Fit 24%" and the decision whether a fixed zoom shows the whole picture are made
+    /// from. Only a viewport frame has one.
+    #[serde(default)]
+    pub fit_percent: Option<f64>,
+}
+
+/// How far a viewport frame is zoomed: device pixels per pixel of the final image (after the lens
+/// crop, orientation, straighten and crop, at full resolution), as `ViewportState::zoom` and
+/// `ViewportState::fit_zoom` work them out.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FrameZoom {
+    /// The zoom in effect.
+    pub zoom: f64,
+    /// The zoom at which the whole final image fits the cell.
+    pub fit_zoom: f64,
 }
 
 impl RenderStats {

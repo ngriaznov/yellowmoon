@@ -149,7 +149,7 @@ fn export_options(
     if let Some(c) = args.compression {
         o.tiff_compression = c.into();
     }
-    if let Some(c) = args.colour_space {
+    if let Some(c) = args.color_space {
         o.color_space = c.into();
     }
     if let Some(px) = args.long_edge {
@@ -185,7 +185,7 @@ fn inapplicable(args: &RenderArgs, format: FormatKind) -> Vec<&'static str> {
         out.push("--compression (TIFF only)");
     }
     if format == FormatKind::Dng {
-        if args.colour_space.is_some() {
+        if args.color_space.is_some() {
             out.push("--colour-space (not for DNG)");
         }
         if args.long_edge.is_some() {

@@ -2,6 +2,7 @@
 //! (`docs/01` §IPC). The harness is in `crate::testing`.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 use serde_json::json;
@@ -67,10 +68,87 @@ fn opening_a_folder_lists_the_photos_and_develops_them_with_events() {
     }
     for e in &events {
         if let AppEvent::ThumbnailReady(t) = e {
-            let (w, hh) = png_size(&t.png_bytes);
+            // The event carries an address, not the picture; the picture is served at it.
+            let (w, hh) = png_size(&served(&h, &t.url));
             assert!(w.max(hh) <= 240 && w.max(hh) > 0, "{w} x {hh}");
         }
     }
+}
+
+/// What the `ym-frame` scheme answers for an address the shell announced (200 and the PNG).
+fn served(h: &Harness, url: &str) -> Vec<u8> {
+    let (status, mime, body) = h.frames.respond(path_of_url(url));
+    assert_eq!((status, mime), (200, "image/png"), "{url}");
+    body.into_owned()
+}
+
+fn path_of_url(url: &str) -> &str {
+    assert!(url.contains("ym-frame"), "{url}");
+    &url[url.rfind('/').expect("a path")..]
+}
+
+#[test]
+fn thumbnails_cross_the_bridge_as_addresses_and_can_be_asked_for_again() {
+    let h = Harness::new();
+    h.open(4);
+    let state = h.develop();
+    let ids: Vec<_> = state.photos.iter().map(|p| p.id).collect();
+    wait_until("four thumbnails", || {
+        h.events
+            .events()
+            .iter()
+            .filter(|e| matches!(e, AppEvent::ThumbnailReady(_)))
+            .count()
+            >= 4
+    });
+    // The event is small: an id and an address, whatever the size of the picture.
+    let announced: Vec<ThumbnailReady> = h
+        .events
+        .events()
+        .into_iter()
+        .filter_map(|e| match e {
+            AppEvent::ThumbnailReady(t) => Some(t),
+            _ => None,
+        })
+        .collect();
+    for t in &announced {
+        assert!(t.url.len() < 100, "{}", t.url);
+        assert!(serde_json::to_string(t).expect("json").len() < 150);
+    }
+    // A webview that reloaded asks again and gets every photo's address, the newest ones.
+    let again = h.api.thumbnails_now();
+    assert_eq!(again.iter().map(|t| t.id).collect::<Vec<_>>(), ids);
+    for t in &again {
+        let newest = announced
+            .iter()
+            .rev()
+            .find(|a| a.id == t.id)
+            .expect("announced");
+        assert_eq!(t.url, newest.url);
+        assert!(png_size(&served(&h, &t.url)).0 > 0);
+    }
+
+    // A new look makes a new thumbnail at a new address; the one before still loads for a moment.
+    let before = again[0].clone();
+    h.api
+        .apply_look(ApplyScope::All, &LookId("builtin:neutral".to_owned()), 40.0)
+        .expect("apply");
+    h.api
+        .thumbnails()
+        .refresh(ids.iter().map(|id| ym_core::session::PhotoId(id.0)));
+    assert!(h.api.thumbnails().wait_idle(WAIT));
+    let after = h.api.thumbnails_now();
+    assert_ne!(after[0].url, before.url, "a new picture is a new address");
+    assert!(png_size(&served(&h, &after[0].url)).0 > 0);
+    assert!(
+        png_size(&served(&h, &before.url)).0 > 0,
+        "the older one is still served"
+    );
+
+    // Closing the session forgets them: nothing to get again, and the addresses are gone.
+    h.api.close_session();
+    assert!(h.api.thumbnails_now().is_empty());
+    assert_eq!(h.frames.respond(path_of_url(&after[0].url)).0, 404);
 }
 
 #[test]
@@ -119,6 +197,84 @@ fn navigation_picking_and_closing() {
     assert!(state.photos.is_empty() && state.current_index.is_none());
     // A photo of the closed session is gone for good, also for the commands that name it.
     assert!(h.api.get_settings(ids[0]).is_err());
+}
+
+#[test]
+fn closing_the_session_cancels_its_queued_renders_and_forgets_what_they_cached() {
+    let h = Harness::new();
+    h.open(8);
+    let state = h.develop();
+    let ids: Vec<_> = state.photos.iter().map(|p| p.id).collect();
+    h.rect(300.0, 200.0);
+    assert!(h.api.viewport().wait_idle(WAIT));
+    let core = Arc::clone(h.api.core());
+    assert!(
+        core.renderer.cached_bytes() > 0,
+        "the viewport and the thumbnails cached something"
+    );
+
+    // A pile of renders behind each other: look tiles and histograms of every photo (each call
+    // waits for its job, as the webview's requests do), thumbnails refreshes and viewport frames.
+    let look = LookId("builtin:neutral".to_owned());
+    let calls: Vec<_> = ids
+        .iter()
+        .flat_map(|id| {
+            let (a, b) = (Arc::clone(&h.api), Arc::clone(&h.api));
+            let (id, look) = (*id, look.clone());
+            [
+                std::thread::spawn(move || a.look_thumbnail(id, &look).map(|png| png.len())),
+                std::thread::spawn(move || b.histogram(id).map(|_| 0)),
+            ]
+        })
+        .collect();
+    h.api
+        .thumbnails()
+        .refresh(ids.iter().map(|id| ym_core::session::PhotoId(id.0)));
+    h.api.close_session();
+
+    // Every call returns (an answer or a plain error), none hangs behind a queue of renders that
+    // are no longer wanted.
+    for call in calls {
+        let _ = call.join().expect("the call did not panic");
+    }
+    // Nothing is queued or running in the render scheduler, nothing was kept, nothing is asked
+    // for by the thumbnail refresher, and the cell shows no picture.
+    wait_until("the render queue to drain", || {
+        core.renderer.scheduler().foreground_load() == 0 && core.renderer.scheduler().pending() == 0
+    });
+    assert_eq!(core.renderer.cached_bytes(), 0, "the caches were forgotten");
+    assert!(h.api.thumbnails().wait_idle(WAIT));
+    assert!(h.api.viewport().wait_idle(WAIT));
+    let (photo, _) = h.api.viewport().snapshot_synced();
+    assert_eq!(photo, None);
+    let last_frame = h.events.events().into_iter().rev().find_map(|e| match e {
+        AppEvent::ViewportFrame(f) => Some(f),
+        _ => None,
+    });
+    assert!(
+        last_frame.is_some_and(|f| f.url.is_empty() && f.width == 0),
+        "the last thing the cell was told is that there is no picture"
+    );
+    // The closed session's photos stay closed: no event for them follows, whatever was queued.
+    let seen = h.events.events().len();
+    std::thread::sleep(Duration::from_millis(500));
+    let later: Vec<_> = h.events.events().split_off(seen);
+    assert!(
+        later
+            .iter()
+            .all(|e| !matches!(e, AppEvent::ThumbnailReady(_) | AppEvent::PhotoProgress(_))),
+        "events after the close: {later:?}"
+    );
+
+    // A new session starts from nothing: its photos have their own ids and render.
+    h.api
+        .open_paths(&[h.photos.path().to_string_lossy().into_owned()])
+        .expect("open again");
+    let state = h.develop();
+    assert!(state.photos.iter().all(|p| !ids.contains(&p.id)));
+    h.rect(310.0, 210.0);
+    assert!(h.api.viewport().wait_idle(WAIT));
+    assert!(core.renderer.cached_bytes() > 0);
 }
 
 // --- Settings ---------------------------------------------------------------------------------
@@ -544,6 +700,91 @@ fn choosing_photos_while_everything_else_changes_never_stalls_the_viewport() {
     assert!(h.api.session_state().is_ok());
     h.api.close_session();
     assert!(h.api.viewport().wait_idle(WAIT));
+}
+
+#[test]
+fn nothing_is_drawn_before_the_webview_has_said_where_the_photo_cell_is() {
+    // The controller starts with a 1 x 1 cell. A photo that develops before the first
+    // `viewport_set_rect` used to be drawn into it: a frame of one pixel, sent to the webview and
+    // to the native layer, which the screen then had to throw away.
+    let h = Harness::new();
+    h.open(1);
+    h.develop();
+    std::thread::sleep(Duration::from_millis(400));
+    assert_eq!(h.api.viewport().frames_presented(), 0);
+    assert!(
+        !h.events
+            .events()
+            .iter()
+            .any(|e| matches!(e, AppEvent::ViewportFrame(_) | AppEvent::RenderStats(_))),
+        "a frame was drawn without a cell"
+    );
+    // A cell with no area (a screen that is hidden, a layout that has not run) is not the cell.
+    h.rect(0.0, 0.0);
+    std::thread::sleep(Duration::from_millis(200));
+    assert_eq!(h.api.viewport().frames_presented(), 0);
+    // Waiting for the idle viewport does not wait for a rectangle that has not come.
+    assert!(h.api.viewport().wait_idle(Duration::from_secs(1)));
+
+    // The first real rectangle draws the photo, and the first frame is the size of the cell.
+    h.rect(300.0, 200.0);
+    let first = h.frame_of_size(300, 200);
+    let frames: Vec<_> = h
+        .events
+        .events()
+        .into_iter()
+        .filter_map(|e| match e {
+            AppEvent::ViewportFrame(f) if !f.url.is_empty() => Some((f.width, f.height)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(frames.first(), Some(&(300, 200)), "{frames:?}");
+    assert!(first.width == 300 && first.height == 200);
+}
+
+#[test]
+fn the_render_stats_of_a_frame_carry_its_zoom_and_the_fit_zoom() {
+    // The webview used to estimate these; the core knows the lens crop, the straighten angle and
+    // the crop between the photo's size and the picture.
+    let h = Harness::new();
+    h.open(1);
+    h.develop();
+    h.rect(100.0, 100.0);
+    h.frame_of_size(100, 100);
+    assert!(h.api.viewport().wait_idle(WAIT));
+    let last_stats = || {
+        h.events
+            .events()
+            .into_iter()
+            .rev()
+            .find_map(|e| match e {
+                AppEvent::RenderStats(s) => Some(s),
+                _ => None,
+            })
+            .expect("render_stats")
+    };
+    let at_fit = last_stats();
+    let fit = at_fit.fit_percent.expect("the Fit zoom").0;
+    // The photo is about 192 x 128 pixels in a 100 x 100 cell: Fit is around 52 %, and the
+    // frame is drawn at it.
+    assert!(fit > 40.0 && fit < 60.0, "Fit {fit}");
+    assert!((at_fit.zoom_percent.expect("the zoom").0 - fit).abs() < 1e-9);
+
+    let n = h.api.viewport().frames_presented();
+    h.api
+        .viewport_set_mode(&ViewportMode::Percent { value: Num(100.0) })
+        .expect("100 %");
+    h.frame_after(n);
+    assert!(h.api.viewport().wait_idle(WAIT));
+    let at_100 = last_stats();
+    assert!(
+        (at_100.zoom_percent.expect("the zoom").0 - 100.0).abs() < 1e-9,
+        "{at_100:?}"
+    );
+    assert!(
+        (at_100.fit_percent.expect("the Fit zoom").0 - fit).abs() < 1e-9,
+        "{at_100:?}"
+    );
 }
 
 #[test]
@@ -1415,72 +1656,83 @@ fn a_cancelled_export_frees_the_queue() {
     assert_eq!(busy.last(), Some(&false));
 }
 
-fn summary(id: u32, status: PhotoStatus) -> PhotoSummary {
-    PhotoSummary {
-        id: PhotoId(id),
-        file_name: format!("DSC{id:05}.ARW"),
-        camera: CameraInfo {
-            body: "Sony A7R IV".to_owned(),
-            model: "ILCE-7RM4".to_owned(),
-            model_id: None,
-            profile: "A7R IV".to_owned(),
-            profile_id: "sony-ilce-7rm4".to_owned(),
-            profile_version: "1.0.0".to_owned(),
-            match_kind: MatchKind::Exact,
-        },
-        iso: 100,
-        shutter_s: Num(0.01),
-        aperture_f: Num(2.8),
-        captured_at: "2026-10-04T17:42:10".to_owned(),
-        width_px: 192,
-        height_px: 128,
-        status,
-        picked: false,
-        reduced: false,
-    }
-}
-
 #[test]
-fn only_waiting_and_developing_photos_hold_an_export_back() {
-    let photos = [
-        summary(1, PhotoStatus::Ready),
-        summary(2, PhotoStatus::Waiting),
-        summary(
-            3,
-            PhotoStatus::Developing {
-                stage: PhotoStage::Decode,
-            },
-        ),
-        summary(
-            4,
-            PhotoStatus::Skipped {
-                reason: "Can't open".to_owned(),
-            },
-        ),
-    ];
-    assert_eq!(developing_photos(&photos), 2);
-    assert_eq!(developing_photos(&photos[..1]), 0);
-    assert_eq!(
-        developing_photos(&photos[3..]),
-        0,
-        "a skipped photo never finishes"
+fn an_export_started_straight_after_opening_writes_what_one_after_developing_writes() {
+    // The burst median and the pooled noise of a photo depend on the others. Straight after
+    // opening the session is still developing; the export of the current photo is queued as soon
+    // as that photo has estimates and its turn waits for the ones it depends on (here: all twelve
+    // share a body and an ISO), so the file is the one an export after everything is developed
+    // writes (and `ym render`, which waits for everything first).
+    let h = Harness::new();
+    h.open(12);
+    let early = tempfile::tempdir().expect("early");
+    let late = tempfile::tempdir().expect("late");
+    let mut job = jpeg_job(early.path());
+    job.scope = ApplyScope::This;
+    // The first attempts can say that this very photo is not ready; once it is, the job is
+    // queued although eleven others may still be developing.
+    let first = h.first();
+    let mut early_id = None;
+    wait_until("the current photo to be exportable", || {
+        match h.api.export_start(&job) {
+            Ok(id) => {
+                early_id = Some(id);
+                true
+            }
+            Err(e) => {
+                assert_eq!(e.scope, ErrorScope::Export);
+                assert!(e.message.contains("still being developed"), "{e}");
+                false
+            }
+        }
+    });
+    let early_id = early_id.expect("queued");
+    wait_until("the early export to finish", || {
+        h.events.events().iter().any(|e| {
+            matches!(e, AppEvent::ExportProgress(p) if p.job_id == early_id && p.done == p.total)
+        })
+    });
+    h.develop();
+    wait_until("the queue to go idle", || !h.api.export_busy());
+    job.options.destination = Some(late.path().to_string_lossy().into_owned());
+    assert_eq!(h.api.session_state().expect("state").photos[0].id, first);
+    let late_id = h
+        .api
+        .export_start(&job)
+        .expect("everything is developed now");
+    wait_until("the late export to finish", || {
+        h.events.events().iter().any(|e| {
+            matches!(e, AppEvent::ExportProgress(p) if p.job_id == late_id && p.done == p.total)
+        })
+    });
+    let bytes_of = |dir: &Path| {
+        let mut files: Vec<_> = std::fs::read_dir(dir)
+            .expect("read_dir")
+            .map(|e| std::fs::read(e.expect("entry").path()).expect("read"))
+            .collect();
+        assert_eq!(files.len(), 1);
+        files.remove(0)
+    };
+    assert!(
+        bytes_of(early.path()) == bytes_of(late.path()),
+        "an early export and a late one write the same bytes"
     );
-    assert_eq!(developing_photos(&[]), 0);
 }
 
 #[test]
-fn an_export_waits_for_every_photo_to_be_developed_like_the_command_line_does() {
+fn photos_without_estimates_are_refused_in_plain_words_and_nothing_is_queued() {
     let h = Harness::new();
     h.open(12);
     let out = tempfile::tempdir().expect("out");
-    let mut job = jpeg_job(out.path());
-    job.scope = ApplyScope::This;
-    // Straight after opening, most photos are still being developed: the answer is the sentence
-    // that says so, or (if this machine is fast enough to have finished already) a job.
-    match h.api.export_start(&job) {
+    // All twelve: straight after opening some have no estimates yet. The answer is the sentence
+    // that says so (or, on a machine that is quick enough, a job).
+    match h.api.export_start(&jpeg_job(out.path())) {
         Err(e) => {
             assert_eq!(e.scope, ErrorScope::Export);
-            assert!(e.message.contains("still being developed"), "{e}");
+            assert!(
+                e.message.contains("still being developed") && e.message.contains("export again"),
+                "{e}"
+            );
             assert!(!h.api.export_busy(), "nothing was queued");
         }
         Ok(id) => {
@@ -1492,16 +1744,70 @@ fn an_export_waits_for_every_photo_to_be_developed_like_the_command_line_does() 
         }
     }
     h.develop();
-    let id = h
-        .api
-        .export_start(&job)
-        .expect("everything is developed now");
-    wait_until("the export to finish", || {
-        h.events.events().iter().any(
-            |e| matches!(e, AppEvent::ExportProgress(p) if p.job_id == id && p.done == p.total),
-        )
-    });
     wait_until("the queue to go idle", || !h.api.export_busy());
+}
+
+#[test]
+fn the_app_does_not_restart_while_an_export_is_queued_or_running() {
+    // "Update ready" restarts through `restart_app`, which asks `begin_restart` first. The
+    // restart Tauri makes cannot be vetoed by the exit handler (`prevent_exit` is ignored for it),
+    // so this is the only guard: an export that is queued or running refuses it.
+    let h = Harness::new();
+    h.open(12);
+    h.develop();
+    let mut refused = 0;
+    let mut began = false;
+    for round in 0..40 {
+        let out = tempfile::tempdir().expect("out");
+        h.api.export_start(&jpeg_job(out.path())).expect("queued");
+        let busy_before = h.api.export_busy();
+        let answer = h.api.begin_restart();
+        let busy_after = h.api.export_busy();
+        match answer {
+            Err(e) => {
+                assert!(
+                    busy_before,
+                    "round {round}: refused although nothing ran: {e}"
+                );
+                assert_eq!(e.scope, ErrorScope::Export);
+                assert_eq!(
+                    e.message,
+                    "An export is still running. Restart after it finishes."
+                );
+                refused += 1;
+                wait_until("the export to finish", || !h.api.export_busy());
+            }
+            Ok(()) => {
+                // The export had finished by the time the question was asked (a very fast machine):
+                // then nothing was running and the restart may begin.
+                assert!(!busy_after, "round {round}: allowed while an export ran");
+                began = true;
+                break;
+            }
+        }
+        if refused >= 3 {
+            break;
+        }
+    }
+    assert!(
+        refused >= 1,
+        "the restart was never refused while an export ran"
+    );
+    if !began {
+        wait_until("the queue to go idle", || !h.api.export_busy());
+        h.api
+            .begin_restart()
+            .expect("nothing runs: the restart may begin");
+    }
+    // Once a restart has begun no export is queued, so none is cut off by it.
+    let out = tempfile::tempdir().expect("out");
+    let err = h
+        .api
+        .export_start(&jpeg_job(out.path()))
+        .expect_err("restarting");
+    assert_eq!(err.scope, ErrorScope::Export);
+    assert!(err.message.contains("restarting"), "{err}");
+    assert!(!h.api.export_busy());
 }
 
 #[test]

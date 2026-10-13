@@ -19,8 +19,8 @@ use crate::wire::{
     self, AppError, AppInfo, ApplyScope, CliLinkResult, CliLinkStatus, DisplayLut, ErrorScope,
     ExportEstimate, ExportJob, ExportJobId, HistogramData, Look, LookId, LookInput,
     LooksImportResult, Num, OpenKind, PhotoId, PixelSample, Preferences, PreferencesPatch,
-    ResolvedSettings, SessionState, SettingsPatch, SourceRecognition, ViewportInfo, ViewportInput,
-    ViewportMode, ViewportRect, WatchStatus,
+    ResolvedSettings, SessionState, SettingsPatch, SourceRecognition, ThumbnailReady, ViewportInfo,
+    ViewportInput, ViewportMode, ViewportRect, WatchStatus,
 };
 
 /// The managed state: the command handlers, or why the application could not start.
@@ -399,6 +399,25 @@ pub async fn export_busy(state: State<'_, AppState>) -> Result<bool, AppError> {
     run(&state, |api| Ok(api.export_busy())).await
 }
 
+/// `restart_app()` (addition): restarts into the update that was installed ("Update ready"). Refused
+/// with "An export is still running. Restart after it finishes." while an export is queued or
+/// running; the webview's own check is a courtesy, this is the guard (`AppApi::begin_restart`).
+/// Does not return when it works: the process is replaced.
+#[tauri::command]
+#[specta::specta]
+pub async fn restart_app(app: AppHandle, state: State<'_, AppState>) -> Result<(), AppError> {
+    run(&state, |api| api.begin_restart()).await?;
+    app.restart()
+}
+
+/// `thumbnails()` (addition): the address of the thumbnail of every photo that has one, so that a
+/// webview that reloaded can show the filmstrip again.
+#[tauri::command]
+#[specta::specta]
+pub async fn thumbnails(state: State<'_, AppState>) -> Result<Vec<ThumbnailReady>, AppError> {
+    run(&state, |api| Ok(api.thumbnails_now())).await
+}
+
 // --- The system -------------------------------------------------------------------------------
 
 /// `choose_folder(start)`: the system's folder chooser. `null` when cancelled.
@@ -566,6 +585,8 @@ pub fn builder() -> Builder<tauri::Wry> {
             export_cancel,
             cli_preview,
             export_busy,
+            restart_app,
+            thumbnails,
             choose_folder,
             choose_look_files,
             open_url,

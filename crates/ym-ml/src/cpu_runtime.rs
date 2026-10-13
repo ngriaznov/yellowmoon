@@ -881,7 +881,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn bilinear_kernel_rows_sum_to_one_per_colour() {
+    fn bilinear_kernel_rows_sum_to_one_per_color() {
         // Every output channel is a convex combination of same-coloured samples: weights sum to 1.
         let w = bilinear_weights();
         for oc in 0..12 {

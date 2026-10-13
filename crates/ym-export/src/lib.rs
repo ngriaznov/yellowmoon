@@ -5,7 +5,7 @@
 //! `ym-core`, so its inputs are plain structs that `ym-core` fills in.
 //!
 //! Start at [`request::write_export`] (one photo to one file, atomically) and
-//! [`request::estimate_bytes`]. The options live in [`options`], the metadata in [`exif`] and [`xmp`].
+//! [`estimate::estimate_bytes_with_detail`]. The options live in [`options`], the metadata in [`exif`] and [`xmp`].
 //!
 //! Specs: `docs/09-export.md` (options, queue, pixel pipeline, colour management, metadata,
 //! DNG with the look baked in).
@@ -21,6 +21,7 @@
 
 pub mod dng;
 pub mod error;
+pub mod estimate;
 pub mod exif;
 pub mod icc;
 pub mod jpeg;
@@ -34,6 +35,7 @@ pub mod tiff_writer;
 pub mod xmp;
 
 pub use error::ExportError;
+pub use estimate::{DetailStat, estimate_bytes, estimate_bytes_with_detail};
 pub use options::{
     BitDepth, ColorSpace, ExportFormat, ExportOptions, FormatKind, IfExists, JpegQuality, Size,
     TiffCompression,
@@ -41,5 +43,5 @@ pub use options::{
 pub use pixels::{ExportHooks, ImageRef, PixelEncoding};
 pub use request::{
     DngInputs, ExportDestination, ExportOutcome, ExportRequest, Metadata, encode_to_vec,
-    encode_to_writer, estimate_bytes, write_export,
+    encode_to_writer, write_export,
 };

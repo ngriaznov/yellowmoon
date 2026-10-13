@@ -46,7 +46,7 @@ use ym_looks::library::{
 use ym_looks::manifest::hash_file;
 use ym_looks::recognize::PackageDb;
 
-use crate::pipeline::colour::{DisplayChoice, LookProblem, LookProvider, ResolvedLook};
+use crate::pipeline::color::{DisplayChoice, LookProblem, LookProvider, ResolvedLook};
 use crate::preferences::{
     DisplayRendering, NEUTRAL_LOOK, Preferences, PreferencesError, PreferencesPatch,
     PreferencesStore,

@@ -51,7 +51,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_flat_colour_stays_flat_for_every_pattern() {
+    fn a_flat_color_stays_flat_for_every_pattern() {
         for cfa in [
             CfaPattern::RGGB,
             CfaPattern::GRBG,

@@ -81,7 +81,7 @@ fn levels_per_cfa_position_follow_the_pixel_when_the_image_area_starts_on_an_odd
 }
 
 #[test]
-fn the_as_shot_white_balance_is_read_by_colour_not_by_position() {
+fn the_as_shot_white_balance_is_read_by_color_not_by_position() {
     // A BGGR sensor (not a Sony layout, but the decoder reads it): `wb_as_shot` is stored per CFA
     // position, so the first value belongs to blue.
     let dir = tempfile::tempdir().unwrap();
@@ -101,7 +101,7 @@ fn the_as_shot_white_balance_is_read_by_colour_not_by_position() {
             ..
         }
     ));
-    let w = est.colour.w_scene_initial;
+    let w = est.color.w_scene_initial;
     for c in 0..3 {
         assert!(
             (w[c] / white[c] - 1.0).abs() < 2e-3,

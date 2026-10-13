@@ -85,8 +85,15 @@ impl Harness {
         let mut cli = CliLink::new(tool, home.path());
         cli.system_link = None;
         cli.other_links.clear();
-        let api = AppApi::start(config, emitter, sink, Box::new(NoElevation), Some(cli))
-            .expect("the app starts");
+        let api = AppApi::start(
+            config,
+            emitter,
+            sink,
+            Arc::clone(&frames),
+            Box::new(NoElevation),
+            Some(cli),
+        )
+        .expect("the app starts");
         Self {
             api,
             events,

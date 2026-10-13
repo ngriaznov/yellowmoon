@@ -801,16 +801,18 @@ pub const POOL_MAX_FILES: usize = 16;
 /// The signal levels (normalised) at which a pooled model is compared with its members' own.
 const AGREEMENT_LEVELS: [f64; 3] = [0.02, 0.1, 0.4];
 
-/// A pooled model is used only if its variance at each of three signal levels (0.02, 0.1 and 0.4 of white) is within this
-/// factor of the median of the members' own variances there.
+/// A pooled model is used only if its variance at each of three signal levels (0.02, 0.1 and 0.4
+/// of white) is within this factor of the median of the members' own variances there.
 ///
-/// `ym_noise`'s pooled refit assumes the merged bins are independent samples, so their nominal
-/// variance shrinks with the number of files while real scatter (the position of a bin's mean, a
-/// little texture) does not; its one-sided robust fit can then read every bin above its line as
-/// texture and slide to the lower envelope. Measured on three synthetic files of one scene
-/// (own fits 5.13e-4, 5.03e-4 and 5.10e-4 for a true 5e-4), the refit over the three came out at
-/// 1.77e-4. A pool that disagrees with its own members that much is not trusted: each file keeps
-/// its own estimate.
+/// This is the last word against a pool that contradicts its members, not the thing that makes
+/// pooling work. Three frames of one scene used to pool to 1.77e-4 for a true 5e-4 (own fits
+/// 5.0 to 5.1e-4) because `ym_noise::BatchPool` divided the relative variance of a merged bin by
+/// the number of files although the scatter of a bin about the noise line is the scene's and
+/// repeats from frame to frame; that is fixed there (a merged bin is as precise as its best member
+/// and no more), and the same frames now pool to their own fit with this check passing. It stays for
+/// what pooling cannot know: members whose own models were adjusted after their points were
+/// measured (the filtered-file factor of a group that mixes filtered and plain frames), or files
+/// that share a body and an ISO but not the in-camera processing behind the noise.
 pub const POOL_AGREEMENT_FACTOR: f64 = 1.6;
 
 /// A pool for [`pool_group`] and for the session's per-group pools.
@@ -1006,7 +1008,7 @@ pub struct AutoEstimates {
     /// The scene light and how it was found.
     pub illuminant: IlluminantResult,
     /// The colour part: scene light, initial white and `EV_auto`, as `ym_color::chain` takes it.
-    pub colour: ColorEstimates,
+    pub color: ColorEstimates,
     /// The automatic exposure.
     pub exposure: ExposureResult,
     /// The noise model.
@@ -1103,13 +1105,13 @@ impl AutoEstimates {
             inputs.profile,
         )?;
         let w_scene_initial = illuminant.scene.w_scene;
-        let mut colour = ColorEstimates {
+        let mut color = ColorEstimates {
             scene: illuminant.scene,
             w_scene_initial,
             ev_auto: 0.0,
         };
         let tables = tables_of(inputs.profile);
-        let metering = colour.metering_chain(tables)?;
+        let metering = color.metering_chain(tables)?;
         let g0 = wb::initial_gains(w_scene_initial)?;
         let balanced = preview.balanced(g0);
         let meter = auto_exposure(
@@ -1122,13 +1124,13 @@ impl AutoEstimates {
             metering.matrix(),
             meta.exposure_comp_ev.unwrap_or(0.0),
         )?;
-        colour.ev_auto = meter.ev_auto;
+        color.ev_auto = meter.ev_auto;
         let noise = estimate_noise(raw, inputs.priors)?;
         let (sharpen, noise_reduction) =
             auto_detail_values(meta.iso, base_iso(inputs.priors, meta), meta.f_number);
         Ok(Self {
             illuminant,
-            colour,
+            color,
             exposure: ExposureResult {
                 ev: meter.ev_auto,
                 own_ev: meter.ev_auto,
@@ -1146,7 +1148,7 @@ impl AutoEstimates {
     pub fn with_shared_ev(&self, ev: f64) -> Self {
         let mut s = self.clone();
         s.exposure.ev = ev;
-        s.colour.ev_auto = ev;
+        s.color.ev_auto = ev;
         s
     }
 
@@ -1164,7 +1166,7 @@ impl AutoEstimates {
     ///
     /// [`WbError::InvalidWhite`] for an unusable white (not possible for a computed estimate).
     pub fn initial_gains(&self) -> Result<Vec3, WbError> {
-        wb::initial_gains(self.colour.w_scene_initial)
+        wb::initial_gains(self.color.w_scene_initial)
     }
 
     /// The fused C1 to C6 chain for a photo's settings: the exposure and white balance resolve
@@ -1180,7 +1182,7 @@ impl AutoEstimates {
         settings: &DevelopSettings,
         picked_white: Option<Vec3>,
     ) -> Result<FusedChain, ChainError> {
-        self.colour.chain(
+        self.color.chain(
             tables_of(profile),
             settings.light_source,
             settings.white_balance.to_color(),

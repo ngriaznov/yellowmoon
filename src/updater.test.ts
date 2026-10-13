@@ -4,9 +4,15 @@ import type { UpdateState } from "./api/types";
 
 // The real plugins, replaced: the default `updater` is wired to these.
 const pluginCheck = vi.fn();
-const pluginRelaunch = vi.fn();
+// The restart is the app's own command (`Api.restartApp`), not the process plugin: the shell refuses it while an export runs.
+const restartApp = vi.fn();
 vi.mock("@tauri-apps/plugin-updater", () => ({ check: (...args: unknown[]) => pluginCheck(...args) }));
-vi.mock("@tauri-apps/plugin-process", () => ({ relaunch: (...args: unknown[]) => pluginRelaunch(...args) }));
+vi.mock("./api", () => ({
+  getApi: () => ({
+    restartApp: (...args: unknown[]) => restartApp(...args),
+    preferencesGet: async () => ({ check_for_updates_automatically: true }),
+  }),
+}));
 
 const {
   CHECK_INTERVAL_MS,
@@ -36,7 +42,7 @@ const IDLE: UpdateState = { phase: "idle" };
 beforeEach(() => {
   vi.useFakeTimers();
   pluginCheck.mockReset();
-  pluginRelaunch.mockReset();
+  restartApp.mockReset();
 });
 
 afterEach(() => {
@@ -436,7 +442,7 @@ describe("the app's updater, wired to the Tauri plugins", () => {
     expect(updater.getState()).toEqual(IDLE);
   });
 
-  it("checks, downloads and relaunches through the plugins inside Tauri", async () => {
+  it("checks and downloads through the updater plugin and restarts through the app's own command inside Tauri", async () => {
     (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__ = {};
     const downloadAndInstall = vi.fn(async (onEvent?: DownloadCallback) => {
       onEvent?.({ event: "Started", data: { contentLength: 100 } });
@@ -444,7 +450,7 @@ describe("the app's updater, wired to the Tauri plugins", () => {
       onEvent?.({ event: "Finished" });
     });
     pluginCheck.mockResolvedValue({ version: "0.0.2", downloadAndInstall });
-    pluginRelaunch.mockResolvedValue(undefined);
+    restartApp.mockResolvedValue(undefined);
 
     await expect(updater.checkNow()).resolves.toEqual({ kind: "available", version: "0.0.2" });
     expect(pluginCheck).toHaveBeenCalledTimes(1);
@@ -452,8 +458,23 @@ describe("the app's updater, wired to the Tauri plugins", () => {
     expect(downloadAndInstall).toHaveBeenCalledTimes(1);
     expect(updater.getState()).toEqual({ phase: "ready", version: "0.0.2" });
     await expect(updater.restart(true)).resolves.toBe(false);
-    expect(pluginRelaunch).not.toHaveBeenCalled();
+    expect(restartApp).not.toHaveBeenCalled();
     await expect(updater.restart(false)).resolves.toBe(true);
-    expect(pluginRelaunch).toHaveBeenCalledTimes(1);
+    expect(restartApp).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the update ready when the shell refuses the restart because an export is running", async () => {
+    (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__ = {};
+    pluginCheck.mockResolvedValue({ version: "0.0.2", downloadAndInstall: vi.fn(async () => {}) });
+    await updater.checkNow();
+    await updater.download();
+    // The webview thought no export ran (one started a moment ago, or in another window): the shell's guard answers.
+    restartApp.mockRejectedValueOnce({ scope: "export", message: "An export is still running. Restart after it finishes." });
+    await expect(updater.restart(false)).resolves.toBe(false);
+    expect(updater.getState()).toEqual({ phase: "ready", version: "0.0.2" });
+    // Any other failure is a restart that failed.
+    restartApp.mockRejectedValueOnce({ scope: "app", message: "The app could not restart." });
+    await expect(updater.restart(false)).resolves.toBe(false);
+    expect(updater.getState()).toEqual({ phase: "error", message: "The app could not restart." });
   });
 });

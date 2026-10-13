@@ -53,6 +53,14 @@ pub const AP0: Primaries = Primaries {
     white: ACES_WHITE_XY,
 };
 
+/// ACES AP1 primaries with the ACES white. Also the "reach" gamut of the ACES 2 output transform.
+pub const AP1: Primaries = Primaries {
+    red: [0.713, 0.293],
+    green: [0.165, 0.830],
+    blue: [0.128, 0.044],
+    white: ACES_WHITE_XY,
+};
+
 /// Rec.709 / sRGB primaries with a D65 white.
 pub const REC709: Primaries = Primaries {
     red: [0.64, 0.33],
@@ -91,6 +99,22 @@ pub const CAT02: Mat3 = [
 #[must_use]
 pub fn xy_to_xyz(xy: [f64; 2]) -> Vec3 {
     [xy[0] / xy[1], 1.0, (1.0 - xy[0] - xy[1]) / xy[1]]
+}
+
+/// The gamuts above under the `Primaries::NAME` spelling the ACES 2 output transform uses
+/// (`ym_color::aces2::Primaries` is this type). They are the same values, not copies: there is one
+/// table of chromaticities, in this module.
+impl Primaries {
+    /// [`AP0`].
+    pub const AP0: Primaries = AP0;
+    /// [`AP1`].
+    pub const AP1: Primaries = AP1;
+    /// [`REC709`].
+    pub const REC709: Primaries = REC709;
+    /// [`DISPLAY_P3`] (P3 primaries, D65 white).
+    pub const P3_D65: Primaries = DISPLAY_P3;
+    /// [`REC2020`].
+    pub const REC2020: Primaries = REC2020;
 }
 
 impl Primaries {

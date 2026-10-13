@@ -64,6 +64,35 @@ describe("connecting", () => {
     expect(store.getState().session?.photos).toHaveLength(12);
   });
 
+  it("gets the thumbnails again when the core already has a session (a reloaded window)", async () => {
+    // The core announces each thumbnail once; a window that reloaded would show an empty filmstrip without asking.
+    const api = createMockApi({ speed: Number.POSITIVE_INFINITY });
+    const before = createStore(api, 0);
+    const stopBefore = before.connect();
+    await before.load();
+    await before.openDialog("files");
+    api.flush();
+    await vi.waitFor(() => expect(Object.keys(before.getState().thumbnails)).toHaveLength(12));
+    const urls = { ...before.getState().thumbnails };
+    stopBefore();
+
+    const after = createStore(api, 0);
+    stops.push(after.connect());
+    await vi.waitFor(() => expect(Object.keys(after.getState().thumbnails)).toHaveLength(12));
+    expect(after.getState().thumbnails).toEqual(urls);
+    // Only addresses came back: no picture crossed the bridge for any of them.
+    for (const url of Object.values(urls)) expect(url).toMatch(/^(blob:|data:image\/png;base64,)/);
+  });
+
+  it("keeps a thumbnail an event brought over the answer to a request that was sent earlier", async () => {
+    const { api, store } = await opened();
+    const [id] = Object.keys(store.getState().thumbnails).map(Number);
+    api.emitEvent("thumbnail_ready", { id: id ?? 1, url: "ym-frame://localhost/thumb-1-999.png" });
+    await vi.waitFor(() => expect(store.getState().thumbnails[id ?? 1]).toBe("ym-frame://localhost/thumb-1-999.png"));
+    await store.refreshThumbnails();
+    expect(store.getState().thumbnails[id ?? 1]).toBe("ym-frame://localhost/thumb-1-999.png");
+  });
+
   it("reloads the looks when the core says they changed", async () => {
     const { api, store } = await connected({ looksImported: false });
     expect(store.getState().looks).toHaveLength(2);
@@ -546,10 +575,48 @@ describe("the viewport", () => {
     expect(spy).toHaveBeenCalledWith(500, 166.5);
   });
 
+  it("takes the Fit zoom from the core once a frame has reported it, and estimates it until then", async () => {
+    const { api, store } = await opened();
+    store.setViewportRect({ x: 0, y: 75, width: 1000, height: 666, scale: 2 });
+    await vi.waitFor(() => expect(api.viewport.rect?.width).toBe(1000));
+    // Until a viewport frame has reported its Fit zoom (the mock never does) the screen works it out from the photo and the cell.
+    const estimate = store.fitPercentExact();
+    expect(estimate).not.toBeNull();
+    // The core's figure counts what the screen cannot see (lens crop, straighten angle); it wins from then on.
+    api.emitEvent("render_stats", { ms: 5, path: "classical", space: "display_p3", zoom_percent: 31.2, fit_percent: 31.2 });
+    await vi.waitFor(() => expect(store.fitPercentExact()).toBe(31.2));
+    expect(store.fitPercent()).toBe(31);
+    // A fixed zoom no larger than it shows the whole picture (the core draws Fit for it).
+    await store.setZoom({ kind: "percent", value: 30 });
+    expect(store.showsWholePhoto()).toBe(true);
+    await store.setZoom({ kind: "percent", value: 32 });
+    expect(store.showsWholePhoto()).toBe(false);
+    // A sender that has no figure (null) leaves the estimate in charge.
+    api.emitEvent("render_stats", { ms: 5, path: "classical", space: "display_p3", zoom_percent: null, fit_percent: null });
+    await vi.waitFor(() => expect(store.fitPercentExact()).toBe(estimate));
+  });
+
+  it("drops the zoom figures of the last frame when another photo opens, and keeps the status text", async () => {
+    const { api, store } = await opened();
+    store.setViewportRect({ x: 0, y: 75, width: 1000, height: 666, scale: 2 });
+    await vi.waitFor(() => expect(api.viewport.rect?.width).toBe(1000));
+    api.emitEvent("render_stats", { ms: 5, path: "classical", space: "display_p3", zoom_percent: 31.2, fit_percent: 31.2 });
+    await vi.waitFor(() => expect(store.fitPercentExact()).toBe(31.2));
+    // The mock answers a navigation with a render_stats of its own (no zoom figures); the core's frame comes later.
+    vi.spyOn(api, "setCurrent").mockResolvedValue(undefined);
+    await store.step(1);
+    // A portrait after a landscape has another Fit zoom: the figure of the photo that was left is not it, whatever the next
+    // frame says. Until that frame reports, the screen estimates; the status text of the last frame stays.
+    expect(store.getState().stats).toEqual({ ms: 5, path: "classical", space: "display_p3", zoom_percent: null, fit_percent: null });
+    expect(store.fitPercentExact()).not.toBe(31.2);
+    api.emitEvent("render_stats", { ms: 7, path: "classical", space: "display_p3", zoom_percent: 24, fit_percent: 24 });
+    await vi.waitFor(() => expect(store.fitPercentExact()).toBe(24));
+  });
+
   it("updates the status line from render_stats", async () => {
     const { store } = await opened();
     await store.update({ contrast: 3 });
-    await vi.waitFor(() => expect(store.getState().stats).toEqual({ ms: 42, path: "neural", space: "display_p3" }));
+    await vi.waitFor(() => expect(store.getState().stats).toEqual({ ms: 42, path: "neural", space: "display_p3", zoom_percent: null, fit_percent: null }));
   });
 
   it("collapses requests for the histogram", async () => {

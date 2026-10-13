@@ -1258,7 +1258,7 @@ mod tests {
     }
 
     #[test]
-    fn binning_averages_each_colour_over_the_block() {
+    fn binning_averages_each_color_over_the_block() {
         let (w, h) = (16usize, 8usize);
         let mut m = Mosaic::new(w, h, Cfa::RGGB);
         for y in 0..h {

@@ -33,7 +33,7 @@ enum Profile {
 struct Scene {
     name: &'static str,
     /// Chromaticity of the source (linear camera RGB, balanced), the largest channel scaled to 1.
-    colour: [f32; 3],
+    color: [f32; 3],
     /// Peak intensity multiplier in units of the brightest channel's clip level.
     peak: f32,
     profile: Profile,
@@ -53,7 +53,7 @@ fn scene_image(s: &Scene) -> RgbImage {
                 Profile::Disc => 1.0 / (1.0 + (((dx * dx + dy * dy).sqrt() - 30.0) / 2.5).exp()),
             };
             let i = s.peak * falloff + 0.03;
-            img.set_pixel(x, y, [s.colour[0] * i, s.colour[1] * i, s.colour[2] * i]);
+            img.set_pixel(x, y, [s.color[0] * i, s.color[1] * i, s.color[2] * i]);
         }
     }
     img
@@ -78,7 +78,7 @@ fn blown_region(mask: &ClipMask) -> Vec<bool> {
     flags.iter().map(|&f| f != 0).collect()
 }
 
-fn mean_colour(img: &RgbImage, select: impl Fn(usize, usize) -> bool) -> [f64; 3] {
+fn mean_color(img: &RgbImage, select: impl Fn(usize, usize) -> bool) -> [f64; 3] {
     let (mut s, mut n) = ([0.0f64; 3], 0usize);
     for y in 0..H {
         for x in 0..W {
@@ -159,9 +159,9 @@ fn evaluate(s: &Scene) -> Result {
             band[y * W + x] = d <= 3;
         }
     }
-    let surround = mean_colour(&truth, |x, y| ring[y * W + x]);
-    let off_mean = mean_colour(&off, |x, y| blown[y * W + x]);
-    let on_mean = mean_colour(&on, |x, y| blown[y * W + x]);
+    let surround = mean_color(&truth, |x, y| ring[y * W + x]);
+    let off_mean = mean_color(&off, |x, y| blown[y * W + x]);
+    let on_mean = mean_color(&on, |x, y| blown[y * W + x]);
     let blown_pixels = blown.iter().filter(|&&b| b).count();
 
     let boundary_hue_err = |img: &RgbImage| {
@@ -214,11 +214,11 @@ fn scenes() -> Vec<Scene> {
     ];
     let mut out = Vec::new();
     for (profile, tag) in [(Profile::Glow, "glow"), (Profile::Disc, "disc")] {
-        for (name, colour, peak) in base {
+        for (name, color, peak) in base {
             let name: &'static str = Box::leak(format!("{tag}: {name}").into_boxed_str());
             out.push(Scene {
                 name,
-                colour,
+                color,
                 peak,
                 profile,
             });
@@ -310,7 +310,7 @@ fn gentle_falloffs_keep_the_boundary_hue_within_15_degrees() {
 }
 
 #[test]
-fn recovery_beats_no_recovery_on_coloured_sources() {
+fn recovery_beats_no_recovery_on_colored_sources() {
     // The metrics must discriminate: without R5, coloured blown regions drift far from the surround
     // and the boundary shows a hue step.
     let mut helped = 0;

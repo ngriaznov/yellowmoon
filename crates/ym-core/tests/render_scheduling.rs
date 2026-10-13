@@ -241,3 +241,72 @@ fn threads_that_render_the_same_photo_together_get_the_same_picture() {
     assert!(frames.windows(2).all(|w| w[0] == w[1]));
     let _ = &t.session;
 }
+
+#[test]
+fn a_retired_session_gets_no_more_viewport_work_but_its_exports_go_on() {
+    // Closing the session cancels the queued foreground jobs, forgets the caches and retires the
+    // ids: a request that was on its way (a command that read its photo before the close and
+    // queued its job after the cancel) is refused instead of making caches for a photo that is
+    // gone, while an export, which holds its own snapshot, still renders.
+    let t = two();
+    let r = Renderer::new(Arc::new(NeutralOnly), RenderOptions::default()).expect("render thread");
+    let frame = r
+        .spawn_viewport_frame(t.a.clone(), cell(), FrameOptions::default())
+        .wait()
+        .expect("job");
+    assert!(frame.is_ok());
+    assert!(r.cached_bytes() > 0);
+
+    let last = t.session.last_photo_id().expect("photos were opened");
+    assert_eq!(last, t.b.id.max(t.a.id));
+    assert!(!r.is_retired(t.a.id));
+    r.retire_through(last);
+    assert!(r.is_retired(t.a.id) && r.is_retired(t.b.id));
+    assert_eq!(r.cached_bytes(), 0, "the caches were forgotten");
+
+    // Every foreground entry point is refused as cancelled, and builds nothing.
+    let never = CancelToken::new();
+    assert!(matches!(
+        r.viewport_frame(&t.a, &cell(), &FrameOptions::default(), &never),
+        Err(RenderError::Cancelled)
+    ));
+    assert!(matches!(
+        r.thumbnail_png(&t.a, &never),
+        Err(RenderError::Cancelled)
+    ));
+    assert!(matches!(
+        r.histogram(&t.a, &never),
+        Err(RenderError::Cancelled)
+    ));
+    assert!(matches!(
+        r.final_size(&t.b, &never),
+        Err(RenderError::Cancelled)
+    ));
+    assert!(matches!(
+        r.spawn_thumbnail(t.b.clone()).wait().expect("job"),
+        Err(RenderError::Cancelled)
+    ));
+    assert_eq!(r.cached_bytes(), 0, "refused requests cache nothing");
+
+    // An export goes on.
+    let full = r
+        .spawn_full(
+            t.a.clone(),
+            FullRequest {
+                target: FullTarget::DisplayLinear(OutputTarget::Srgb),
+            },
+        )
+        .wait()
+        .expect("job")
+        .expect("the export renders after the close");
+    assert_eq!((full.width, full.height), (1200, 800));
+
+    // Photos of the next session (ids above the closed one's) render normally.
+    let next = {
+        let mut src = t.a.clone();
+        src.id = ym_core::session::PhotoId(last.0 + 1);
+        src
+    };
+    assert!(!r.is_retired(next.id));
+    assert!(r.thumbnail_png(&next, &never).is_ok());
+}
