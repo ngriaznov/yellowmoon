@@ -21,6 +21,7 @@
 //! | crops by one photosite (the Bayer phase flips), interior | bit-identical to the uncropped GPU frame | 0 differing samples |
 //! | two runs, runs on recycled (poisoned) buffers for every parameter set, every storage mode | bit-identical | 0 differing samples |
 //! | one perturbed photosite | the same reach as the CPU port and no further than the halo | 8 px plain, 10 px with matching, equal to the CPU's |
+//! | gains or a noise model whose constants leave the f32 range (shot-noise gain 1e50, read noise 1e40, gain 1e30 or 3e38) | `InvalidInput` for the GPU where the CPU is finite, never an `Ok` image of NaN | refused in all eight cases |
 //!
 //! # Why the GPU is not bit-exact, and what the differences are
 //!
@@ -32,8 +33,11 @@
 //! two sums that are equal or nearly equal in exact arithmetic can compare the other way round after
 //! `f32` rounding, and the pixel takes the other of two equally plausible estimates: a difference of
 //! `1e-4` to `1e-3` of the signal at that pixel and its neighbours. Noise-free synthetic content (the
-//! edge vectors: exact ties along a 2:1 or 45 degree edge) is full of such ties; noisy content has
-//! few. The CPU port is itself that sensitive: `cpu_is_as_sensitive_as_the_gpu_is_different` runs the
+//! edge vectors: exact ties along a 2:1 or 45 degree edge) is full of such ties, and so is real raw
+//! data, whose quantised ADC values tie exactly (on crops of real mosaics 4e-6 to 4.5e-4 of the
+//! samples flip, up to 1.5 % of white; spec section 12), while the noisy synthetic scenes below have
+//! few: the fractions asserted here are bounds for synthetic content. The CPU port is itself that
+//! sensitive: `cpu_is_as_sensitive_as_the_gpu_is_different` runs the
 //! CPU reference on inputs perturbed by 1 ulp and counts the samples it moves by more than `1e-4`;
 //! the GPU/CPU difference counts below are of the same size, which is the evidence that they are
 //! decision flips and not a defect of the port. (`over` is the number of samples differing by more
@@ -1073,6 +1077,86 @@ fn nan_infinity_and_overflowing_values_are_refused_without_a_panic() {
     // The device still works afterwards, with the same result as before.
     let again = base.gpu(dev);
     assert!(compare(&again, &cpu_ok).max_abs <= FRAME_BOUND);
+}
+
+#[test]
+fn constants_beyond_the_f32_range_are_refused_not_turned_into_a_nan_image() {
+    // The CPU reference runs in f64 and accepts these: a shot-noise gain of 1e50 DN per DN, a read
+    // noise of 1e40 DN, a gain of 1e30 against a read noise of a few DN (all valid by
+    // `NoiseDn::is_valid` and the gain check). Rounded to f32 the per-frame constants (g g_c,
+    // (r g_c)^2, rho, 4 g_c, r) are infinities, and the kernel used to return `Ok` with every sample
+    // NaN. It refuses them once per frame instead, like a sample beyond the kernel's limit.
+    let Some(dev) = f32_device() else { return };
+    let zero = Mosaic::new(30, 24, Cfa::RGGB);
+    let dark = scene(30, 24, Cfa::RGGB, 12, 0.5);
+    for (what, mosaic, gains, noise) in [
+        (
+            "shot-noise gain 1e50",
+            &dark,
+            [1.9, 1.0, 1.4],
+            NoiseDn::new(1.0e50, 1.0),
+        ),
+        (
+            "read noise 1e40",
+            &dark,
+            [1.9, 1.0, 1.4],
+            NoiseDn::new(1.0, 1.0e40),
+        ),
+        (
+            "gain 1e30 against read noise 6",
+            &zero,
+            [1.0e30, 1.0, 1.0],
+            NoiseDn::new(1.0, 6.0),
+        ),
+        (
+            "gain 3e38",
+            &zero,
+            [1.0, 1.0, 3.0e38],
+            NoiseDn::new(0.0, 0.0),
+        ),
+    ] {
+        for params in [
+            Params::default(),
+            Params {
+                shadow_match: ShadowMatch::On,
+                ..Params::default()
+            },
+        ] {
+            let mut c = Case::new(mosaic.clone(), noise);
+            c.gains = gains;
+            c.params = params;
+            let cpu = c
+                .try_cpu()
+                .unwrap_or_else(|e| panic!("{what}: the CPU refuses: {e}"));
+            assert!(
+                cpu.data.iter().all(|v| v.is_finite()),
+                "{what}: the CPU is not finite"
+            );
+            let e = c.try_gpu(dev);
+            assert!(
+                matches!(e, Err(GpuError::InvalidInput(_))),
+                "{what}, matching {:?}: {e:?}",
+                params.shadow_match
+            );
+        }
+    }
+    // Large constants that do fit f32 are not refused and still match the CPU: gains of 1e4 and 1e-4
+    // around green and a read noise ten times the high model's, on a scene of a few thousand DN (a
+    // signal below one DN is below the resolution of the offset-ratio forms at `k` = 65535 DN in
+    // f32, which is not what this checks).
+    let mut c = Case::new(
+        scene(30, 24, Cfa::RGGB, 12, 0.05),
+        NoiseDn::new(30.0, 4.0e3),
+    );
+    c.gains = [1.0e4, 1.0, 1.0e-4];
+    c.params.shadow_match = ShadowMatch::On;
+    let s = compare(&c.gpu(dev), &c.cpu());
+    assert!(
+        s.peak > 100.0 && s.max_abs <= FRAME_BOUND * s.peak,
+        "{} of the peak {}",
+        s.max_abs,
+        s.peak
+    );
 }
 
 #[test]

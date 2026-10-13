@@ -78,13 +78,16 @@
 //!
 //! # Inputs the kernel accepts
 //!
-//! The same as the CPU reference, plus one limit of the `f32` range. The host checks the whole
+//! The same as the CPU reference, plus two limits of the `f32` range. The host checks the whole
 //! mosaic once (a scan per frame, not per tile): both sides at least 2 photosites ([`Error::BadSize`]
 //! of the CPU), no NaN or infinity, gains positive and finite, a valid noise model, finite
 //! parameters and a finite optical centre; every error is [`GpuError::InvalidInput`]. A sample whose
 //! balanced magnitude `S |m_u| max(g)` exceeds [`MAX_BALANCED_DN`] (1e17 DN, about 1.5e12 times white)
 //! is refused too, where the CPU reference accepts up to about 5e33: the squares of the matching step
-//! would overflow `f32` and give NaN. Negative samples are handled as the spec says (clamped at 0, the
+//! would overflow `f32` and give NaN. So are gains or a noise model whose per-frame constants
+//! (`rho`, `4 g_c`, `g g_c`, `(r g_c)^2`, `K`, `T`, `r`) do not fit `f32`, which the CPU accepts in
+//! `f64` (a shot-noise gain of 1e50 DN per DN, a read noise of 1e40 DN): rounded to `f32` they would
+//! be infinities and the image NaN. Negative samples are handled as the spec says (clamped at 0, the
 //! residual restored in the photosite's own channel at the exit).
 //!
 //! # Memory and tiles
@@ -366,9 +369,76 @@ impl CaUpload {
     }
 }
 
+/// The per-frame constants of the uniform block, rounded to `f32` once.
+#[derive(Clone, Copy)]
+struct Constants {
+    /// `g_R, g_G, g_B` and the working scale `S`.
+    gains: [f32; 4],
+    /// `rho_R, rho_B, K, k`.
+    cst: [f32; 4],
+    /// `T`, `r`.
+    cst2: [f32; 4],
+    /// `(4 g_R, 2 g_G, 4 g_B)`.
+    mult: [f32; 4],
+    /// `g g_c`.
+    vg: [f32; 4],
+    /// `(r g_c)^2`.
+    vr2: [f32; 4],
+}
+
+impl Constants {
+    /// Rounds the CPU reference's `f64` constants to `f32`.
+    ///
+    /// The CPU reference runs in `f64` and accepts a noise model or gains whose products leave the
+    /// `f32` range (a shot-noise gain of 1e50 DN per DN, a read noise of 1e40 DN, a gain of 1e30
+    /// against a read noise of a few DN). Rounded to `f32` those become infinities, and the shader
+    /// turns the whole image into NaN; so they are refused here, once per frame, like a sample beyond
+    /// [`MAX_BALANCED_DN`].
+    fn new(d: &Derived) -> Result<Constants, GpuError> {
+        let g = d.gains;
+        let per_channel =
+            |f: &dyn Fn(usize) -> f64| -> [f32; 4] { [f(0) as f32, f(1) as f32, f(2) as f32, 0.0] };
+        let c = Constants {
+            gains: [g[0] as f32, g[1] as f32, g[2] as f32, WORKING_SCALE as f32],
+            cst: [
+                d.rho_r as f32,
+                d.rho_b as f32,
+                d.offset1_dn as f32,
+                d.offset3_dn as f32,
+            ],
+            cst2: [d.gate_dn as f32, d.r_dn as f32, 0.0, 0.0],
+            mult: [
+                (4.0 * g[0]) as f32,
+                (2.0 * g[1]) as f32,
+                (4.0 * g[2]) as f32,
+                0.0,
+            ],
+            vg: per_channel(&|c| d.g_dn * g[c]),
+            vr2: per_channel(&|c| {
+                let rc = d.r_dn * g[c];
+                rc * rc
+            }),
+        };
+        let fits = [c.gains, c.cst, c.cst2, c.mult, c.vg, c.vr2]
+            .iter()
+            .flatten()
+            .all(|v| v.is_finite());
+        if fits {
+            Ok(c)
+        } else {
+            Err(GpuError::InvalidInput(format!(
+                "adaptive ratio demosaic: the gains {:?} and the noise model (g {:e}, r {:e} DN) give \
+                 constants that do not fit f32",
+                d.gains, d.g_dn, d.r_dn
+            )))
+        }
+    }
+}
+
 /// What the host checks and derives once per frame.
 struct Frame {
     derived: Derived,
+    constants: Constants,
     ca: Option<CaUpload>,
 }
 
@@ -391,6 +461,7 @@ fn prepare(
     }
     let derived =
         Derived::new(inputs.gains, inputs.noise, params).map_err(|e| invalid(e.to_string()))?;
+    let constants = Constants::new(&derived)?;
     let ca = inputs.ca.map(CaUpload::new).transpose()?;
     let gain_max = derived.gains.iter().copied().fold(0.0f64, f64::max);
     for (y, row) in m.data.chunks_exact(m.width).enumerate() {
@@ -411,7 +482,11 @@ fn prepare(
             }
         }
     }
-    Ok(Frame { derived, ca })
+    Ok(Frame {
+        derived,
+        constants,
+        ca,
+    })
 }
 
 /// Everything a dispatch of one rectangle needs besides the buffers.
@@ -426,10 +501,7 @@ struct RectJob<'a> {
 /// The uniform block shared by the passes of one rectangle; the region and the channel are set per
 /// pass.
 fn base_uniform(job: &RectJob<'_>, lay: &Layout) -> ArU {
-    let d = &job.frame.derived;
-    let g = d.gains;
-    let per_channel =
-        |f: &dyn Fn(usize) -> f64| -> [f32; 4] { [f(0) as f32, f(1) as f32, f(2) as f32, 0.0] };
+    let k = job.frame.constants;
     let (cai, caf) = match &job.frame.ca {
         Some(ca) => {
             let place = job.m.place;
@@ -471,25 +543,12 @@ fn base_uniform(job: &RectJob<'_>, lay: &Layout) -> ArU {
             job.m.height as i32,
             0,
         ],
-        gains: [g[0] as f32, g[1] as f32, g[2] as f32, WORKING_SCALE as f32],
-        cst: [
-            d.rho_r as f32,
-            d.rho_b as f32,
-            d.offset1_dn as f32,
-            d.offset3_dn as f32,
-        ],
-        cst2: [d.gate_dn as f32, d.r_dn as f32, 0.0, 0.0],
-        mult: [
-            (4.0 * g[0]) as f32,
-            (2.0 * g[1]) as f32,
-            (4.0 * g[2]) as f32,
-            0.0,
-        ],
-        vg: per_channel(&|c| d.g_dn * g[c]),
-        vr2: per_channel(&|c| {
-            let rc = d.r_dn * g[c];
-            rc * rc
-        }),
+        gains: k.gains,
+        cst: k.cst,
+        cst2: k.cst2,
+        mult: k.mult,
+        vg: k.vg,
+        vr2: k.vr2,
         cai,
         caf,
     }
@@ -689,8 +748,9 @@ fn run_rect(ctx: &GpuContext, job: &RectJob<'_>) -> Result<RgbImage, GpuError> {
 /// # Errors
 ///
 /// [`GpuError::InvalidInput`] for a mosaic below 2 x 2 photosites, a value that is not finite or above
-/// [`MAX_BALANCED_DN`], unusable gains, an invalid noise model, non-finite parameters, an unusable CA
-/// centre or knots, or a padded plane that needs more workgroups on one side than the device allows;
+/// [`MAX_BALANCED_DN`], unusable gains, an invalid noise model, gains or a noise model whose constants
+/// do not fit `f32`, non-finite parameters, an unusable CA centre or knots, or a padded plane that
+/// needs more workgroups on one side than the device allows;
 /// [`GpuError::BufferTooLarge`] and [`GpuError::OutOfBudget`] when the buffers do not fit the device;
 /// shader and readback errors.
 pub fn demosaic(
