@@ -131,7 +131,7 @@ The `synthetic-full` and `synthetic-eval` sets (53 more, the latter with CIE ref
 | RA-H4 | Blind look at the candidate default demosaic (adaptive ratio vs Menon) on the nine local real files and the synthetic golden set, with the RA-05 numbers, before the goldens are re-baselined. | R6 default |
 | RA-H2 | Richardson–Lucy or diffraction deconvolution as the R8 default (A/B numbers and crops after RA-07). | R8 default |
 | M0-H4 (added) | On a Mac: "Move to Trash" for a downloaded look zip goes through Finder (the `trash` crate's default), which may ask for Automation permission the first time (`src-tauri/Info.plist` now carries the usage string). Check that the prompt appears once and the move works. | M3 |
-| M4-H2…M4-H5 | Developer ID signing and notarisation decision; trademark clearance (EUIPO, INPI, WIPO, UK IPO); freedom-to-operate check on US 11948279; announcement. Not started. | M4 |
+| M4-H2…M4-H5 | Developer ID signing and notarisation decision; trademark clearance (EUIPO, INPI, WIPO, UK IPO); freedom-to-operate check on US 11948279 and on the patent leads in `research/raw-algorithms-prior-art.md` §2.2 (Kodak, Epson, Sony, Apple, IBM families; diffraction restoration filters); announcement. Not started. | M4 |
 
 ## Questions for Mykyta
 
@@ -144,6 +144,7 @@ The `synthetic-full` and `synthetic-eval` sets (53 more, the latter with CIE ref
 7. **Tint readout near 4000 K.** The blackbody and daylight locus branches meet with a 0.04 log-chroma gap, so small magenta tints on ~4100 K lights read with the wrong sign. Fix with one Planckian readout locus or a blend over 3500–4500 K (changes `profile.json`)?
 8. **IJG licence.** JPEG export uses `jpeg-encoder`, whose forward DCT is IJG-licensed (permissive, needs "This software is based in part on the work of the Independent JPEG Group." in docs and About). It's allowed in `deny.toml` now; please confirm.
 9. **DNG brightness outside Adobe apps.** Adobe's renderer applies a highlight shoulder rather than a scale for a negative `BaselineExposure`, so the fitted profile stores scene values up to 16 with the white level there and `BaselineExposure` about 0. Adobe apps render it to match our JPEG; RawTherapee and darktable show the stored linear image about 4 EV darker until their own exposure handling. The alternative (per-photo white level) risks Adobe's shoulder. Recommended: keep the floor and say so in the export help. OK?
+10. **Raw-algorithms constants.** The prior-art record (`research/raw-algorithms-prior-art.md`) traces 55 of 74 pieces to known work, but public sources don't explain some constants (spec 01: 1.6, 2.5, 18 and 102, 121/123, 0.03, 0.75, 5, 3; spec 02: the log2/exp2 cubics; specs 03/04: the constants paragraphs of §3.3/§3.4), and spec 01 §8 reads as if an integer variant exists elsewhere. Where do they come from (tuned by you, fitted, taken from another program)? The answer goes into `docs/14`. Patent leads from the record are added to M4-H4.
 
 ## Known issues
 
