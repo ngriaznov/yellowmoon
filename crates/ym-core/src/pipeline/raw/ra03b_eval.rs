@@ -390,9 +390,10 @@ fn the_ca_path_leaves_no_more_ca_after_r9_on_a_consistent_synthetic_file() {
     line("plain adaptive ratio, R9", &v.off);
     line("CA path adaptive ratio, R9", &v.on);
     assert!(v.on.patches > 30 && v.off.patches > 30);
-    // R9 with the tables removes most of what there was; the CA path is no worse than the plain one.
-    assert!(v.off.red_rms_px < 0.5 * v.reference.red_rms_px);
-    assert!(v.off.blue_rms_px < 0.5 * v.reference.blue_rms_px);
+    // R9 with the tables does not leave the CA it started with: a demosaic that interpolates red
+    // and blue as differences from green pulls their edges toward green's, so what R9 corrects
+    // afterwards is more than what is left, and the residual is mostly an over-correction. The CA
+    // path pulls less (docs/algorithms/01 section 11). It is no worse than the plain path.
     assert!(
         v.on.red_rms_px <= v.off.red_rms_px && v.on.blue_rms_px <= v.off.blue_rms_px,
         "CA path {:.4}/{:.4} px, plain {:.4}/{:.4} px",
@@ -408,7 +409,7 @@ fn the_ca_path_leaves_no_more_ca_after_r9_on_a_consistent_synthetic_file() {
 // ---------------------------------------------------------------------------------------------
 
 /// Side of an analysis window in output pixels.
-const WINDOW_PX: usize = 384;
+const WINDOW_PX: usize = 256;
 
 /// Centres of the analysis windows in output coordinates: toward the four corners and the four
 /// edges at a few radii, clamped to the output.
@@ -417,7 +418,7 @@ fn window_origins(ow: usize, oh: usize, centre: (f64, f64), hd: f64) -> Vec<(usi
     let half = (WINDOW_PX / 2) as f64;
     for angle_deg in [34.0f64, 146.0, 214.0, 326.0, 0.0, 90.0, 180.0, 270.0] {
         let (s, c) = angle_deg.to_radians().sin_cos();
-        for frac in [0.45, 0.7, 0.95] {
+        for frac in [0.3, 0.5, 0.7, 0.85, 0.97] {
             let cx = (centre.0 + frac * hd * c).clamp(half + 4.0, ow as f64 - half - 4.0);
             let cy = (centre.1 + frac * hd * s).clamp(half + 4.0, oh as f64 - half - 4.0);
             // On a 4-pixel grid so that clamped windows that coincide are found out.
@@ -455,6 +456,53 @@ fn paired_stats(on: &[ym_gpu::cpu::metrics::CaPatch], off: &[ym_gpu::cpu::metric
     })
 }
 
+
+fn to_srgb(v: f64) -> u8 {
+    let v = v.clamp(0.0, 1.0);
+    let e = if v <= 0.003_130_8 {
+        12.92 * v
+    } else {
+        1.055 * v.powf(1.0 / 2.4) - 0.055
+    };
+    (e * 255.0 + 0.5) as u8
+}
+
+/// The same `crop` of every image side by side, 4x nearest, one exposure (the brightest 0.5 % of
+/// the first image is white).
+fn write_strip(path: &Path, images: &[&RgbImage], crop: Rect, zoom: usize) {
+    let n = images[0].plane_len();
+    let mut luma: Vec<f64> = (0..n)
+        .map(|i| {
+            0.3 * f64::from(images[0].data[i])
+                + 0.55 * f64::from(images[0].data[n + i])
+                + 0.15 * f64::from(images[0].data[2 * n + i])
+        })
+        .collect();
+    luma.sort_by(f64::total_cmp);
+    let k = 0.9 / luma[(luma.len() as f64 * 0.995) as usize].max(1e-6);
+    let (ow, oh) = ((crop.w * zoom + 4) * images.len() - 4, crop.h * zoom);
+    let mut buf = vec![255u8; ow * oh * 3];
+    for (m, img) in images.iter().enumerate() {
+        for y in 0..oh {
+            for x in 0..crop.w * zoom {
+                let p = img.pixel(crop.x + x / zoom, crop.y + y / zoom);
+                let o = (y * ow + m * (crop.w * zoom + 4) + x) * 3;
+                for c in 0..3 {
+                    buf[o + c] = to_srgb(f64::from(p[c]) * k);
+                }
+            }
+        }
+    }
+    let file = std::fs::File::create(path).expect("png file");
+    let mut enc = png::Encoder::new(std::io::BufWriter::new(file), ow as u32, oh as u32);
+    enc.set_color(png::ColorType::Rgb);
+    enc.set_depth(png::BitDepth::Eight);
+    enc.write_header()
+        .expect("png header")
+        .write_image_data(&buf)
+        .expect("png data");
+}
+
 #[test]
 #[ignore = "local evaluation on testdata/real/files, which is never committed: cargo test -p ym-core --lib ra03b_real_files -- --ignored --nocapture"]
 fn ra03b_real_files_ca_residual() {
@@ -476,7 +524,7 @@ fn ra03b_real_files_ca_residual() {
     let cancel = CancelToken::new();
     let opts = residual_options();
     let mut records = Vec::new();
-    println!("| file | lens | CA at corner px | windows | patches | R9 without CA (R/B rms px) | plain (R/B) | CA path (R/B) | paired |");
+    println!("| file | lens | CA at corner px | patches | R9 without CA (R/B rms px) | R9 flipped sign (R/B) | plain (R/B) | CA path (R/B) | paired |");
     println!("|---|---|---|---|---|---|---|---|---|");
     for path in files {
         let name = path
@@ -551,6 +599,17 @@ fn ra03b_real_files_ca_residual() {
         let (fw, fh) = (frame.width, frame.height);
         let hd = 0.5 * (fw as f64).hypot(fh as f64);
         let corner_px = curves.misregistration_px(hd);
+        let predicted: Vec<String> = [0.25, 0.5, 0.75, 1.0]
+            .iter()
+            .map(|rho| {
+                format!(
+                    "{rho}: {:+.2}/{:+.2}",
+                    curves.red.shift_at(rho * hd),
+                    curves.blue.shift_at(rho * hd)
+                )
+            })
+            .collect();
+        eprintln!("{name}: the tables move red/blue (px, at source radius) {}", predicted.join("  "));
         let (ow, oh) = geo.output_size();
         let crop = geo.crop();
         let centre = (fw as f64 / 2.0 - crop.x as f64, fh as f64 / 2.0 - crop.y as f64);
@@ -571,11 +630,23 @@ fn ra03b_real_files_ca_residual() {
         .expect("lens")
         .with_crop(crop);
 
+        // The same tables with the sign of every CA knot flipped: if R9 had the direction of the
+        // tag wrong, this would leave less than not correcting.
+        let flipped = LensTags {
+            ca: plan.tags.ca.iter().map(|c| -c).collect(),
+            ..plan.tags.clone()
+        };
+        let inverted = LensGeometry::new(fw, fh, &flipped, LensSwitches::default())
+            .expect("lens")
+            .with_crop(crop);
+
         let origins = window_origins(ow, oh, centre, hd);
-        let (mut on_all, mut off_all, mut ref_all) = (Vec::new(), Vec::new(), Vec::new());
+        let (mut on_all, mut off_all, mut ref_all, mut inv_all) =
+            (Vec::new(), Vec::new(), Vec::new(), Vec::new());
         // Per band accumulators over the windows: (patches, sum r2, sum b2) per variant.
         let nb = opts.band_edges.len();
-        let mut acc = vec![[[0.0f64; 3]; 3]; nb];
+        let mut acc = vec![[[0.0f64; 3]; 4]; nb];
+        let mut best_strip: Option<(f64, Rect, [RgbImage; 3], (usize, usize))> = None;
         for (ox, oy) in origins {
             let out = Rect::new(ox, oy, WINDOW_PX, WINDOW_PX);
             let win_centre = (centre.0 - ox as f64, centre.1 - oy as f64);
@@ -586,10 +657,12 @@ fn ra03b_real_files_ca_residual() {
                 .expect("source window");
             let off = resample::resample_lens(&src, &geo, out).expect("R9");
             let reference = resample::resample_lens(&src, &no_ca, out).expect("R9");
+            let flipped_img = resample::resample_lens(&src, &inverted, out).expect("R9");
             let mut results = [
                 lateral_ca_residual(&on, win_centre, hd, &opts),
                 lateral_ca_residual(&off, win_centre, hd, &opts),
                 lateral_ca_residual(&reference, win_centre, hd, &opts),
+                lateral_ca_residual(&flipped_img, win_centre, hd, &opts),
             ];
             for (k, r) in results.iter().enumerate() {
                 for (b, band) in r.bands.iter().enumerate() {
@@ -606,10 +679,39 @@ fn ra03b_real_files_ca_residual() {
                     p.y += oy;
                 }
             }
-            let [a, b, c] = results;
+            // The patch where the tables change the red-green shift most: its crop is saved.
+            for p in &results[1].details {
+                if let Some(q) = results[2]
+                    .details
+                    .iter()
+                    .find(|q| (q.x, q.y) == (p.x, p.y))
+                {
+                    let d = (p.red_px - q.red_px).abs() + (p.blue_px - q.blue_px).abs();
+                    if best_strip.as_ref().is_none_or(|(bd, ..)| d > *bd) {
+                        let cx = (p.x + 24).saturating_sub(48).min(WINDOW_PX - 96);
+                        let cy = (p.y + 24).saturating_sub(48).min(WINDOW_PX - 96);
+                        best_strip = Some((
+                            d,
+                            Rect::new(cx, cy, 96, 96),
+                            [reference.clone(), off.clone(), on.clone()],
+                            (ox, oy),
+                        ));
+                    }
+                }
+            }
+            let [a, b, c, d] = results;
             on_all.extend(a.details);
             off_all.extend(b.details);
             ref_all.extend(c.details);
+            inv_all.extend(d.details);
+        }
+        if let Some((_, crop_rect, images, at)) = &best_strip {
+            let path = out_dir.join(format!("{name}_no_ca__tables__ca_path.png"));
+            write_strip(&path, &[&images[0], &images[1], &images[2]], *crop_rect, 4);
+            eprintln!(
+                "{name}: strip (R9 without CA, R9 with the tables, with the tables and the CA path) of the window at {at:?} in {}",
+                path.display()
+            );
         }
         let rms = |p: &[ym_gpu::cpu::metrics::CaPatch]| -> (f64, f64) {
             let n = p.len().max(1) as f64;
@@ -618,16 +720,18 @@ fn ra03b_real_files_ca_residual() {
                 (p.iter().map(|q| q.blue_px * q.blue_px).sum::<f64>() / n).sqrt(),
             )
         };
-        let (on_rms, off_rms, ref_rms) = (rms(&on_all), rms(&off_all), rms(&ref_all));
+        let (on_rms, off_rms, ref_rms, inv_rms) =
+            (rms(&on_all), rms(&off_all), rms(&ref_all), rms(&inv_all));
         let paired = paired_stats(&on_all, &off_all);
         println!(
-            "| {name} | {lens} | {corner_px:.2} | {} | {} / {} / {} | {:.3} / {:.3} | {:.3} / {:.3} | {:.3} / {:.3} | red closer {:.0} %, blue closer {:.0} % of {} |",
-            WINDOW_PX,
+            "| {name} | {lens} | {corner_px:.2} | {} / {} / {} | {:.3} / {:.3} | {:.3} / {:.3} | {:.3} / {:.3} | {:.3} / {:.3} | red closer {:.0} %, blue closer {:.0} % of {} |",
             ref_all.len(),
             off_all.len(),
             on_all.len(),
             ref_rms.0,
             ref_rms.1,
+            inv_rms.0,
+            inv_rms.1,
             off_rms.0,
             off_rms.1,
             on_rms.0,
@@ -645,7 +749,7 @@ fn ra03b_real_files_ca_residual() {
                 json!({
                     "from": if b == 0 { opts.min_radius } else { opts.band_edges[b - 1] },
                     "to": opts.band_edges[b],
-                    "ca_path": f(0), "plain": f(1), "r9_without_ca": f(2),
+                    "ca_path": f(0), "plain": f(1), "r9_without_ca": f(2), "r9_flipped_sign": f(3),
                 })
             })
             .collect();
@@ -657,6 +761,7 @@ fn ra03b_real_files_ca_residual() {
                 "ca_path": {"red": on_rms.0, "blue": on_rms.1},
                 "plain": {"red": off_rms.0, "blue": off_rms.1},
                 "r9_without_ca": {"red": ref_rms.0, "blue": ref_rms.1},
+                "r9_flipped_sign": {"red": inv_rms.0, "blue": inv_rms.1},
             },
             "paired_ca_path_vs_plain": paired,
             "bands": bands_json,

@@ -366,6 +366,16 @@ fn main() {
                 );
             }
         }
+        if std::env::var_os("RA03B_DIAGNOSE").is_some() {
+            for ((name, _), r) in rows.iter().zip(&res) {
+                let means: Vec<String> = r
+                    .bands
+                    .iter()
+                    .map(|b| format!("{:+.3}/{:+.3}", b.red_mean_px, b.blue_mean_px))
+                    .collect();
+                println!("diagnose signed mean R/B after R9, {name}: {}", means.join("  "));
+            }
+        }
         let truth_g = grey_of(&truth, 1);
         for ((name, run), r) in rows.iter().zip(&res) {
             let mut line = format!("| {name} |");
