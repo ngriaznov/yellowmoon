@@ -835,7 +835,8 @@ DEFAULT_CAPTURE_METHOD, RawParams::{diffraction, capture_sharpen}}` and `PhotoSo
   x1.08). Not used by the product; for the A/B.
 - **A/B** (`cargo run -p ym-gpu --example ra07_ab`, and the ignored `ra07_real_files_ab` of `ym-core`; crops and
   `index.html` in `testdata/ra07/`, git-ignored). On synthetic scenes at 3.76 um the suggested acceptance of §6.3 is met
-  for MTF50 only from f/16 up, and by neither variant as a whole: at f/16 and f/22 the stage has more
+  for MTF50 only from f/16 up at ISO 100 (from f/11 at ISO 800 and from f/8 at ISO 6400, where the Auto amount of
+  Richardson-Lucy is lower), and by neither variant as a whole: at f/16 and f/22 the stage has more
   overshoot (3 to 10 % against 0.6 to 3.5 %) and, with the specified gate, more flat noise (x1.58 to x1.90 against
   x1.14 to x1.26) than Richardson-Lucy Auto; the gate variant fixes the noise (x1.08 to x1.12) and not the overshoot.
   *[Corrected by the RA-07 review: the first text said the overshoot and noise criteria were met by the gate variant;

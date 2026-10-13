@@ -9,11 +9,13 @@ It exists so that a finding of `real_eval.py` can be checked by a method that ca
 mistakes (RA-03c review).  Local evaluation only (real files, never committed).
 
     python3 -I tools/lens/ca_xcorr.py selftest
-    python3 -I tools/lens/ca_xcorr.py rgb DUMP.f32 META.json [--full]     # a `lens_eval_dump` image
-    python3 -I tools/lens/ca_xcorr.py mosaic FILE.ARW                     # the mosaic itself, own-colour bilinear planes
+    python3 -I tools/lens/ca_xcorr.py rgb DUMP.f32 META.json [--full] [--coarse]   # a `lens_eval_dump` image
+    python3 -I tools/lens/ca_xcorr.py mosaic FILE.ARW [--coarse]      # the mosaic itself, own-colour bilinear planes
 
 `DUMP.f32` is `u32 w, u32 h` and the R, G, B planes as little-endian `f32`; `META.json` is the
-`{"frame": [w, h], "crop": [x, y, w, h]}` file next to it; `--full` for the uncropped demosaic.
+`{"frame": [w, h], "crop": [x, y, w, h]}` file next to it; `--full` for the uncropped demosaic;
+`--coarse` measures the colour structure (bands of 3 px to 14 px, blocks of 128 px, fewer blocks and a
+higher noise floor) instead of the edges.
 Output: per radial band (r = distance over half the frame diagonal) the median radial shift in px, and
 the rms over r >= 0.25.  Blocks whose correlation peak is below 0.45, or at the edge of the +-4 px
 search window, are dropped.  Checked on synthetic shifts: within about 5% of the true value up to
@@ -38,9 +40,11 @@ def load_f32(path: str) -> np.ndarray:
     return np.fromfile(path, dtype="<f4", offset=8, count=w * h * 3).reshape(3, h, w)
 
 
-def bandpass(plane: np.ndarray) -> np.ndarray:
-    """Keeps the edges: a difference of Gaussians (1 px and 6 px)."""
-    return ndi.gaussian_filter(plane, 1.0) - ndi.gaussian_filter(plane, 6.0)
+def bandpass(plane: np.ndarray, fine_px: float = 1.0, coarse_px: float = 6.0) -> np.ndarray:
+    """A difference of Gaussians. The default (1 px and 6 px) keeps the edges; `--coarse` (3 px and 14 px,
+    blocks of 128) keeps only the colour structure, where a green-guided demosaic has not moved red and
+    blue towards green."""
+    return ndi.gaussian_filter(plane, fine_px) - ndi.gaussian_filter(plane, coarse_px)
 
 
 def _subpixel(m1: float, m0: float, p1: float) -> float:
@@ -49,15 +53,16 @@ def _subpixel(m1: float, m0: float, p1: float) -> float:
 
 
 def measure(img: np.ndarray, centre: tuple[float, float], half_diagonal: float, block: int = 64,
-            r_min: float = 0.15, r_max: float = 1.2) -> dict[int, np.ndarray]:
+            r_min: float = 0.15, r_max: float = 1.2, fine_px: float = 1.0,
+            coarse_px: float = 6.0) -> dict[int, np.ndarray]:
     """Per block (radius, radial shift, tangential shift) of red (key 0) and blue (key 2) against green."""
     _, h, w = img.shape
-    green = bandpass(img[1])
+    green = bandpass(img[1], fine_px, coarse_px)
     window = np.outer(np.hanning(block), np.hanning(block)).astype(np.float32)
     pad = 2 * block
     out: dict[int, list[tuple[float, float, float]]] = {0: [], 2: []}
     for c in (0, 2):
-        plane = bandpass(img[c])
+        plane = bandpass(img[c], fine_px, coarse_px)
         for y0 in range(0, h - block + 1, block):
             for x0 in range(0, w - block + 1, block):
                 cx, cy = x0 + block / 2 - centre[0], y0 + block / 2 - centre[1]
@@ -156,6 +161,11 @@ def selftest() -> int:
     return 0
 
 
+def _scale(argv: list[str]) -> dict:
+    """The band and the block size of `--coarse`, or the defaults."""
+    return dict(block=128, fine_px=3.0, coarse_px=14.0) if "--coarse" in argv else {}
+
+
 def main(argv: list[str]) -> int:
     if len(argv) >= 2 and argv[1] == "selftest":
         return selftest()
@@ -164,12 +174,12 @@ def main(argv: list[str]) -> int:
         fw, fh = meta["frame"]
         x0, y0 = meta["crop"][:2]
         centre = (fw / 2, fh / 2) if "--full" in argv else (fw / 2 - x0, fh / 2 - y0)
-        show(summarise(measure(load_f32(argv[2]), centre, 0.5 * float(np.hypot(fw, fh)))))
+        show(summarise(measure(load_f32(argv[2]), centre, 0.5 * float(np.hypot(fw, fh)), **_scale(argv))))
         return 0
     if len(argv) >= 3 and argv[1] == "mosaic":
         img = own_colour_planes(argv[2])
         _, h, w = img.shape
-        show(summarise(measure(img, (w / 2, h / 2), 0.5 * float(np.hypot(w, h)))))
+        show(summarise(measure(img, (w / 2, h / 2), 0.5 * float(np.hypot(w, h)), **_scale(argv))))
         return 0
     print(__doc__)
     return 2
