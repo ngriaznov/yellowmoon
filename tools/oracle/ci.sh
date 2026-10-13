@@ -5,7 +5,8 @@
 #   tools/oracle/ci.sh              synthetic corpus, then testdata/arw when it holds files
 #   tools/oracle/ci.sh --synthetic  synthetic corpus only
 #
-# Needs: Rust, python3 with `pip install rawpy numpy pylibjpeg-libjpeg`. Writes oracle-synthetic.json and
+# Needs: Rust, python3 with `pip install rawpy numpy pylibjpeg-libjpeg`, and ExifTool (`apt install libimage-exiftool-perl`, or
+# YM_EXIFTOOL=/path/to/exiftool for a clone of github.com/exiftool/exiftool). Writes oracle-synthetic.json and
 # oracle-report.json (one per corpus) into $ORACLE_OUT (default: the folder the script was started
 # from). Exit codes follow `oracle`: 0 identical, 1 a mismatch, 2 an oracle could not run.
 set -euo pipefail
@@ -22,14 +23,23 @@ python3 -c "import rawpy, numpy, libjpeg" 2>/dev/null || {
   exit 2
 }
 
+# ExifTool is the second metadata oracle; without it oracle_exiftool would print SKIP and pass, so refuse to start.
+if ! command -v exiftool >/dev/null 2>&1 && [ -z "${YM_EXIFTOOL:-}" ]; then
+  echo "error: ExifTool is required (apt install libimage-exiftool-perl, or set YM_EXIFTOOL)" >&2
+  exit 2
+fi
+
 # 1. The synthetic corpus: every variant on several bodies, written by the test-only encoders.
 rm -rf testdata/oracle-synthetic
 cargo run -p ym-raw --features testgen --release --example gen_corpus -- testdata/oracle-synthetic
 python3 -c 'import json, sys; json.load(open(sys.argv[1]))' testdata/oracle-synthetic/manifest.json
 cargo run -p oracle --release -- --corpus testdata/oracle-synthetic --report "$out/oracle-synthetic.json"
 
-# 2. The Rust tests that call LibRaw on synthetic files.
-cargo test -p ym-raw --test oracle_decode --test oracle_libraw --release
+# 2. The Rust tests that call LibRaw and ExifTool on synthetic files (M0-04: metadata equals LibRaw and ExifTool), and the tests
+#    of the oracle program itself (tools/oracle/tests/report.rs: LibRaw end to end, a LibRaw that refuses every file). No other
+#    job runs the latter against LibRaw: the macOS `rust` job has no rawpy and prints SKIP.
+cargo test -p ym-raw --test oracle_decode --test oracle_libraw --test oracle_exiftool --release
+cargo test -p oracle --release
 
 # 3. The real corpus, when tools/fetch/samples.sh has filled it.
 if [ "${1:-}" != "--synthetic" ] && find testdata/arw -iname '*.ARW' -print -quit 2>/dev/null | grep -q .; then

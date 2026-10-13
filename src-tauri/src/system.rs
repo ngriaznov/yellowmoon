@@ -86,7 +86,33 @@ pub fn open_url(url: &str) -> Result<(), AppError> {
         .map_err(|e| failed("The page could not be opened in your browser", e))
 }
 
-/// Shows a file in Finder (selected), or opens a folder.
+/// The arguments the system opener gets to show `path`. `bundle_like` is true when the folder (or
+/// what a link to it points at) has an extension, as `.app`, `.bundle` and `.photoslibrary` do.
+fn reveal_arguments(
+    path: &Path,
+    is_dir: bool,
+    bundle_like: bool,
+    macos: bool,
+) -> Vec<std::ffi::OsString> {
+    if macos {
+        // `open <dir>` starts an application bundle, which is a directory, so a folder that might
+        // be one is shown in its parent instead of being opened.
+        if is_dir && !bundle_like {
+            vec![path.into()]
+        } else {
+            vec!["-R".into(), path.into()]
+        }
+    } else if is_dir {
+        vec![path.into()]
+    } else {
+        path.parent()
+            .map(|parent| vec![parent.into()])
+            .unwrap_or_default()
+    }
+}
+
+/// Shows a file in Finder (selected), or opens a folder. A folder that could be an application or
+/// another bundle is shown, never launched.
 ///
 /// # Errors
 ///
@@ -94,19 +120,16 @@ pub fn open_url(url: &str) -> Result<(), AppError> {
 pub fn reveal_in_finder(path: &Path) -> Result<(), AppError> {
     let meta = std::fs::metadata(path)
         .map_err(|_| AppError::new(ErrorScope::App, "That file or folder isn't there any more."))?;
-    let mut command = Command::new(opener());
-    if cfg!(target_os = "macos") {
-        if meta.is_dir() {
-            command.arg(path);
-        } else {
-            command.arg("-R").arg(path);
-        }
-    } else if meta.is_dir() {
-        command.arg(path);
-    } else if let Some(parent) = path.parent() {
-        command.arg(parent);
-    }
-    command
+    // A link called "Pictures" that points at "Calculator.app" is the application.
+    let bundle_like = path.extension().is_some()
+        || std::fs::canonicalize(path).is_ok_and(|real| real.extension().is_some());
+    Command::new(opener())
+        .args(reveal_arguments(
+            path,
+            meta.is_dir(),
+            bundle_like,
+            cfg!(target_os = "macos"),
+        ))
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -116,19 +139,22 @@ pub fn reveal_in_finder(path: &Path) -> Result<(), AppError> {
 }
 
 /// Moves a downloaded zip to the Trash (recoverable). Only `.zip` files: that is all the import
-/// wizard offers to trash (`docs/11`).
+/// wizard offers to trash (`docs/11`). A folder or a link that happens to be called `x.zip` is
+/// refused.
 ///
 /// # Errors
 ///
-/// [`AppError`] when the file is not a zip, is not there, or the system refuses.
+/// [`AppError`] when the path is not a zip file, is not there, or the system refuses.
 pub fn trash_path(path: &Path) -> Result<(), AppError> {
     let is_zip = path
         .extension()
         .is_some_and(|e| e.eq_ignore_ascii_case("zip"));
-    if !is_zip {
+    // A path that is not there falls through: the Trash reports it in its own words.
+    let is_file = std::fs::symlink_metadata(path).map_or(true, |m| m.file_type().is_file());
+    if !is_zip || !is_file {
         return Err(AppError::new(
             ErrorScope::App,
-            "Only the zip you downloaded can be moved to the Trash from here.",
+            "Only .zip files can be moved to the Trash from here.",
         ));
     }
     ym_looks::import::trash::move_to_trash(path)
@@ -241,6 +267,92 @@ mod tests {
         assert!(doc.exists());
         let missing = trash_path(&dir.path().join("gone.zip")).expect_err("missing");
         assert_eq!(missing.scope, ErrorScope::Looks);
+    }
+
+    #[test]
+    fn the_bundle_says_why_it_talks_to_finder() {
+        // The Trash goes through Finder (the `trash` crate's default on macOS sends it an Apple
+        // event). A bundle without NSAppleEventsUsageDescription gets the event refused (-1743)
+        // or a prompt that does not say why, and "Move to Trash" fails. Tauri merges
+        // `src-tauri/Info.plist` into the app's Info.plist.
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("Info.plist");
+        let text = std::fs::read_to_string(&path).expect("src-tauri/Info.plist");
+        assert!(
+            text.trim_start().starts_with("<?xml"),
+            "an XML property list"
+        );
+        let (_, after_key) = text
+            .split_once("<key>NSAppleEventsUsageDescription</key>")
+            .expect("the usage description key");
+        let sentence = after_key
+            .trim_start()
+            .strip_prefix("<string>")
+            .and_then(|rest| rest.split_once("</string>"))
+            .map(|(sentence, _)| sentence.trim())
+            .expect("a string value");
+        assert!(
+            sentence.ends_with('.') && sentence.contains("Finder"),
+            "{sentence}"
+        );
+        assert!(
+            !sentence.contains('!'),
+            "plain sentences, no exclamation marks"
+        );
+    }
+
+    #[test]
+    fn a_folder_or_a_link_named_like_a_zip_is_not_trashed() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // The name alone is not enough: a folder called x.zip holds the person's files.
+        let folder = dir.path().join("Holiday.zip");
+        std::fs::create_dir(&folder).expect("folder");
+        std::fs::write(folder.join("keep.txt"), b"keep me").expect("write");
+        let err = trash_path(&folder).expect_err("a folder");
+        assert!(err.message.contains(".zip"), "{err}");
+        assert!(folder.join("keep.txt").exists());
+        #[cfg(unix)]
+        {
+            let link = dir.path().join("link.zip");
+            std::os::unix::fs::symlink(folder.join("keep.txt"), &link).expect("link");
+            assert!(trash_path(&link).is_err(), "a link is not a downloaded zip");
+            assert!(link.symlink_metadata().is_ok(), "and it was not moved");
+        }
+    }
+
+    #[test]
+    fn on_a_mac_a_folder_that_could_be_an_application_is_revealed_not_opened() {
+        // `open <dir>` starts an application bundle, which is a directory.
+        let os = |args: Vec<std::ffi::OsString>| -> Vec<String> {
+            args.iter()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect()
+        };
+        let dir = Path::new("/Users/me/Pictures/Lisbon export");
+        let app = Path::new("/Applications/Calculator.app");
+        let file = Path::new("/Users/me/Pictures/Lisbon export/DSC00001_neutral.jpg");
+        // A plain folder is opened, a file is selected in its folder.
+        assert_eq!(
+            os(reveal_arguments(dir, true, false, true)),
+            [dir.to_string_lossy()]
+        );
+        assert_eq!(
+            os(reveal_arguments(file, false, true, true)),
+            ["-R".to_owned(), file.to_string_lossy().into_owned()]
+        );
+        // A folder with an extension may be a bundle (.app, .bundle, .photoslibrary): revealed.
+        assert_eq!(
+            os(reveal_arguments(app, true, true, true)),
+            ["-R".to_owned(), app.to_string_lossy().into_owned()]
+        );
+        // Elsewhere the opener has no such launch, and a file shows its folder.
+        assert_eq!(
+            os(reveal_arguments(app, true, true, false)),
+            [app.to_string_lossy()]
+        );
+        assert_eq!(
+            os(reveal_arguments(file, false, false, false)),
+            [dir.to_string_lossy()]
+        );
     }
 
     #[test]

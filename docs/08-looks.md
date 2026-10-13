@@ -1,6 +1,6 @@
 # 08 · Looks, defaults and the ARRI import wizard
 
-Crate: `ym-looks`. UI: Look tab, the wizard (`design/mockups/import-looks.html`). CLI: `yellowmoon looks …`.
+Crate: `ym-looks`. UI: Look tab, the wizard (`design/mockups/import-looks.html`). CLI: `ym looks …`.
 
 ## Look model
 
@@ -21,7 +21,7 @@ Application maths is in `docs/02-colour-pipeline.md` (C10). Intensity 0–100% p
 ## Built-in looks (shipped, Apache-2.0)
 
 - **Neutral** (default out of the box): identity. Emulated ALEXA colour through our display transform, no creative look.
-- **Signature**: parameters designed by Mykyta in M3 [HUMAN M3-H1] as JSON in `data/looks/builtin/signature.json`: CDL (slope, offset, power, saturation), plus hue-vs-saturation and hue-vs-hue curves and a luma-vs-saturation curve, all evaluated in LogC4. The loader bakes it into a 33³ LUT. Its final name describes its character and avoids ARRI and film-stock names. The agent provides a tuning tool: `yellowmoon looks bake signature.json --preview <ARW>…` that renders a contact sheet.
+- **Signature**: parameters designed by Mykyta in M3 [HUMAN M3-H1] as JSON in `data/looks/builtin/signature.json`: CDL (slope, offset, power, saturation), plus hue-vs-saturation and hue-vs-hue curves and a luma-vs-saturation curve, all evaluated in LogC4. The loader bakes it into a 33³ LUT. Its final name describes its character and avoids ARRI and film-stock names. The agent provides a tuning tool: `ym looks bake signature.json --preview <ARW>…` that renders a contact sheet.
 
 **Parametric look files (M1-10).** `data/looks/builtin/<name>.json`, loaded by `ym_color::look::ParametricLook::from_json` and baked into a 33³ cube (`bake`, `to_transform`). Schema `yellowmoon.parametric-look/1`; every field except `schema` and `name` is optional, unknown fields are rejected, and `{"schema": "yellowmoon.parametric-look/1", "name": "Neutral"}` is the identity:
 

@@ -18,7 +18,7 @@ use ym_core::app::{Core, CoreOptions};
 use ym_core::export_queue::{ExportEvent, ExportJob as CoreExportJob, ExportSink};
 use ym_core::pipeline::PhotoSource;
 use ym_core::session::{EventSink, OpenOptions, PhotoId as CorePhotoId, SessionEvent};
-use ym_gpu::queue::{CancelToken, Priority};
+use ym_gpu::queue::CancelToken;
 use ym_looks::import::Stage;
 use ym_looks::import::watch::WatchConfig;
 use ym_looks::library::LookId as CoreLookId;
@@ -314,7 +314,8 @@ impl AppApi {
             prefs.last_used_folders.open = Some(folder);
             Ok(())
         }) {
-            tracing::warn!(error = %e, "could not remember the folder");
+            tracing::warn!(kind = e.kind(), "could not remember the folder");
+            tracing::debug!(error = %e, "could not remember the folder: details");
         }
     }
 
@@ -484,14 +485,10 @@ impl AppApi {
     pub fn histogram(&self, id: PhotoId) -> Result<HistogramData, AppError> {
         let id = core_id(id);
         let src = PhotoSource::from_session(&self.core.session, id).map_err(session_error)?;
-        let renderer = self.core.renderer.clone();
         let histogram = self
             .core
             .renderer
-            .scheduler()
-            .submit(Priority::Thumbnail, Some(id), move |token| {
-                renderer.histogram(&src, token)
-            })
+            .spawn_histogram(src)
             .wait()
             .map_err(job_error)?
             .map_err(AppError::from)?;

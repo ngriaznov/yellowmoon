@@ -68,6 +68,15 @@ Output: `data/cameras/noise/<model-id>-<model>.json` per body that qualifies, an
 | Second body | ELD's released Sony A7S II parameters (evaluation-only data) on A7S II test photos | `a` within 15% median |
 | Filtered files | A7R II/A7 III long exposures with and without star-eater conditions | detector flags ≥ 90% of filtered, ≤ 5% false positives |
 
+**Status of the four gates in a V1 build (no corpus, no A1 series, no A7S II files).** Only the first has any evidence, and that is synthetic; none of the four is passed on real files.
+
+| Gate | Status | Evidence / blocker |
+|---|---|---|
+| Noise on noise | synthetic only: met (see *Synthetic validation*) | increment `a` within 15% median / 30% p90 on mixed, busy and smooth procedural scenes; the real-file run needs M2-01's corpus |
+| A1 absolute level | blocked | needs the A1 studio series (evaluation tier, local only); the V1 data rule forbids our own captures |
+| Second body (ELD A7S II) | blocked | needs ELD's released A7S II parameters (`tools/fetch/eld-params.sh` is not written) and A7S II test photos |
+| Filtered files | synthetic stand-in only: met on smooth scenes, **not met on textured scenes** | smooth scenes: 97.5% (median3), 100% (box) flagged, 0 false positives; mixed scenes 40% / 85%; busy scenes 17.5% / 57.5% to 92.5%. The gate (≥ 90% flagged, ≤ 5% false positives) holds for smooth scenes only; real star-eater captures are not available |
+
 darktable's `noiseprofiles.json` (GPL-3.0) may be read offline for sanity checks; never ship or commit it.
 
 ## DNG NoiseProfile
@@ -77,6 +86,8 @@ Our DNGs are denoised LinearRaw, so either omit `NoiseProfile` or write the re-e
 ## Performance
 
 Estimation on the 2 MP grid: < 80 ms per file on CPU. Refinement: < 50 ms on GPU.
+
+*As built (review).* **Estimation:** measured with `cargo run -p ym-noise --example bench_estimate -- 5 4` on a 4-core x86-64 machine (shared, load average about 1.5), 50 MP synthetic mosaic: **minimum 54.1 ms, median 74.8 ms, maximum 89.8 ms over 5 runs on 4 threads**, 116 ms of CPU time per estimate (read 3.0, windows 7.8, passes 22.0, fallback 7.7, extras 11.3 ms in the best run). The target is for an Apple M1 (HUMAN M0-H4); here the median is inside it and the maximum is not, so treat it as met with little margin and re-measure on the Mac. An independent re-run of the same command on the same machine with nothing else running (reviewer, same day) gave minimum 50.8 ms, median 52.9 ms, maximum 73.8 ms and 96 ms of CPU time, all inside 80 ms; the spread between the two runs is machine load, so quote the idle figures as the estimator's cost and the loaded ones as the worst case. **Refinement and the σ map on the GPU are not built.** `ym_noise::sigma_map` and `estimate::refine` are CPU code: `SigmaParams` is a 48-byte uniform layout for a future kernel and no WGSL exists (`crates/ym-gpu/src/shaders` has none), so "σ map on GPU" (M2-02) and "Refinement < 50 ms on GPU" are open. Nothing consumes them yet (the denoise network has no trained weights, M2-H4), and the classical path takes the σ map from the CPU reference; the kernel, when written, is checked against `sigma_map` with a parity test like the other kernels.
 
 ## Implementation notes (ym-noise, M2-02)
 

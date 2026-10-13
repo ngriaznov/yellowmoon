@@ -1,11 +1,11 @@
-//! Version constants written into outputs and shown by `yellowmoon --version`
+//! Version constants written into outputs and shown by `ym --version`
 //! (`docs/01-architecture.md` section Versions written into outputs).
 
 /// Semver of the processing chain.
 ///
 /// Bump it whenever the output pixels change for the same input and settings. It is written into
-/// every export's XMP (`ym:PipelineVersion`) and printed by `yellowmoon --version`.
-pub const PIPELINE_VERSION: &str = "0.1.0";
+/// every export's XMP (`ym:PipelineVersion`) and printed by `ym --version`.
+pub const PIPELINE_VERSION: &str = "0.1.1";
 
 /// Version of the application and the command-line tool: the workspace package version.
 pub fn app_version() -> &'static str {

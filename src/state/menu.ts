@@ -3,10 +3,23 @@
  * `menu_action` with one of these names and this file does the work, with the same store calls the keyboard shortcuts and the
  * buttons use. Items the shell handles by itself (Show Looks Folder, the Help links) never arrive.
  */
-import type { MenuAction } from "../api/types";
+import type { MenuAction, UpdateState } from "../api/types";
 import { updater } from "../updater";
+import type { CheckResult } from "../updater";
 import type { AppStore } from "./store";
 import { zoomStep } from "./zoom";
+
+/**
+ * What "Check for Updates…" tells the person. An update that is found says what the header's update cell does next; one that is
+ * already downloading or ready (the check keeps it as the answer) must not point at a button that is no longer on screen.
+ */
+export function checkNotice(result: CheckResult, state: UpdateState): string {
+  if (result.kind === "up_to_date") return "Yellowmoon is up to date.";
+  if (result.kind === "error") return "Yellowmoon couldn't check for updates. Check your internet connection and try again.";
+  if (state.phase === "ready") return `Version ${result.version} is ready. Press Update ready to restart.`;
+  if (state.phase === "downloading") return `Version ${result.version} is downloading.`;
+  return `Version ${result.version} is available. It downloads when you press Update available.`;
+}
 
 /** Runs one menu item. */
 export async function runMenuAction(store: AppStore, action: MenuAction): Promise<void> {
@@ -20,13 +33,7 @@ export async function runMenuAction(store: AppStore, action: MenuAction): Promis
       return;
     case "check_for_updates": {
       const result = await updater.checkNow();
-      store.showNotice(
-        result.kind === "available"
-          ? `Version ${result.version} is available. It downloads when you press Update available.`
-          : result.kind === "up_to_date"
-            ? "Yellowmoon is up to date."
-            : "Yellowmoon couldn't check for updates. Check your internet connection and try again.",
-      );
+      store.showNotice(checkNotice(result, updater.getState()));
       return;
     }
     case "install_cli":

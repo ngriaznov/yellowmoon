@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import importlib.util
+import subprocess
+import sys
 import unittest
 from pathlib import Path
 
@@ -49,6 +51,33 @@ class Verdicts(unittest.TestCase):
         self.assertIsNone(judge("f", "lossless-l", "ILCE-7RM4", MOSAIC, "bayer", None, MOSAIC)["libraw_equals_ours"])
         self.assertTrue(judge("f", "craw", "ILCE-7RM4", OTHER, "bayer", None, MOSAIC)["ok"])  # nothing to compare
         self.assertFalse(judge("f", "lossless-l", "ILCE-7RM4", OTHER, "bayer", None, MOSAIC)["ok"])  # the mosaic is known
+
+
+class WithoutTheThirdPartyModules(unittest.TestCase):
+    """The ``fetch-tools`` CI job runs this folder on a bare Python (no numpy, no rawpy): the module must still import."""
+
+    SCRIPT = Path(__file__).with_name("oracle_check.py")
+
+    def run_bare(self, code: str) -> subprocess.CompletedProcess:
+        # ``sys.modules[name] = None`` makes ``import name`` fail, whatever is installed on this machine
+        prelude = (
+            "import sys, importlib.util\n"
+            "sys.modules['numpy'] = None\n"
+            "sys.modules['rawpy'] = None\n"
+            f"spec = importlib.util.spec_from_file_location('oracle_check', {str(self.SCRIPT)!r})\n"
+            "m = importlib.util.module_from_spec(spec)\n"
+            "spec.loader.exec_module(m)\n"
+        )
+        return subprocess.run([sys.executable, "-I", "-c", prelude + code], capture_output=True, text=True)
+
+    def test_the_verdict_logic_imports_and_runs_without_them(self):
+        done = self.run_bare("assert m.judge('f', 'uncompressed14', 'ILCE-7RM4', 'a' * 64, 'bayer', 'a' * 64, 'a' * 64)['ok']\n")
+        self.assertEqual(done.returncode, 0, done.stderr)
+
+    def test_running_the_check_without_them_says_what_to_install(self):
+        done = self.run_bare("m.main([])\n")
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn("needs rawpy and numpy", done.stderr)
 
 
 if __name__ == "__main__":

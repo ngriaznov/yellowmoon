@@ -81,6 +81,22 @@ jobs:
         if: steps.check_tag.outputs.exists == 'false'
         run: npm ci
 
+      # NOTICE item 9 and the About dialog promise the licence texts of every dependency, and a binary release must carry them.
+      # The generator reads Cargo.lock and the npm package folders (hence after `npm ci`), fails when a package has no text, and
+      # check_bundle.py fails when src-tauri/tauri.conf.json would not put the file (and NOTICE with the BSD conditions) into the
+      # bundle. The CI job `licences` runs the same two commands on every change. tools/licences/README.md.
+      - name: cargo-about
+        if: steps.check_tag.outputs.exists == 'false'
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-about@0.9.2
+
+      - name: Licence texts of the dependencies (THIRD-PARTY.md, bundled next to NOTICE)
+        if: steps.check_tag.outputs.exists == 'false'
+        run: |
+          python3 tools/licences/generate.py
+          python3 tools/licences/check_bundle.py
+
       - name: Build the command-line tool (universal)
         if: steps.check_tag.outputs.exists == 'false'
         run: |

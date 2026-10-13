@@ -21,6 +21,8 @@ Two facts shape every number below:
 
 | Task | Commit | Notes |
 |---|---|---|
+| Adversarial review (42 findings, 40 confirmed) and fixes: neutral clipped highlights, licence notices and THIRD-PARTY.md in the bundle, same-name exports, terminal-safe `ym info`, dialog focus, folder drops with dots, nightly fuzzing, CI coverage | REVIEW_COMMIT | goldens re-baselined (55 of 61, clipped patches only), pipeline 0.1.1 |
+| RA-01 raw-algorithms package in (specs, integration notes, test vectors; C++ kept outside the repository) | REVIEW_COMMIT | RA-02 to RA-10 in progress |
 | M3-12 product side: `ym` writes the fitted DNG profile | [7197d04](https://github.com/ngriaznov/yellowmoon/commit/7197d04) | white level floored at scene 16 (Question 9); Lightroom and other apps are M3-H6 |
 | CI golden, dng and serde-order jobs; local-eval fetch tier; M1-08 auto-exposure study | [5ac59a5](https://github.com/ngriaznov/yellowmoon/commit/5ac59a5) | study only, no algorithm change (see Gate results and Questions) |
 | Review follow-ups: American identifiers, noise pooling fix, early-export parity, thumbnails via `ym-frame://`, guarded update restart, size estimate refit | [425485f](https://github.com/ngriaznov/yellowmoon/commit/425485f) | |
@@ -42,7 +44,7 @@ Two facts shape every number below:
 | Display transform + CPU colour chain (C7–C13) | [b7d6732](https://github.com/ngriaznov/yellowmoon/commit/b7d6732) | |
 | M1-02, M1-04, M1-05 Rust runtime (ym-profiles, spectral, sensor map) | [7eeaf61](https://github.com/ngriaznov/yellowmoon/commit/7eeaf61) | |
 | M1-10 library, M3-09 core (ym-looks) | [b91cc83](https://github.com/ngriaznov/yellowmoon/commit/b91cc83) | fingerprints wait for M3-H2 |
-| M2-02 noise estimator | [e71a8c0](https://github.com/ngriaznov/yellowmoon/commit/e71a8c0) | synthetic validation; per-body priors need the corpus (M2-01) |
+| M2-02 noise estimator (partial) | [e71a8c0](https://github.com/ngriaznov/yellowmoon/commit/e71a8c0) | synthetic validation; per-body priors need the corpus (M2-01); filtered-file detector passes on smooth scenes only; σ map CPU only |
 | M1-13, M3-12 writer (export) | [59a25da](https://github.com/ngriaznov/yellowmoon/commit/59a25da) | dng_validate passes locally; dngfit in progress |
 | M1-12 CPU raw processing R1–R9 | [d232c3c](https://github.com/ngriaznov/yellowmoon/commit/d232c3c) | lens maths corrected against darktable-cli |
 | M1-11 CPU ACES 2 | [f0f40a3](https://github.com/ngriaznov/yellowmoon/commit/f0f40a3) | |
@@ -53,7 +55,7 @@ Two facts shape every number below:
 | M0-02, M0-03 (repo side), M0-09 (scripts; corpus blocked), M0-10 | [93e91e2](https://github.com/ngriaznov/yellowmoon/commit/93e91e2) | signing key is yours (M0-03); coverage and golden-set tables below |
 | M0-01 frontend skeleton | [131a619](https://github.com/ngriaznov/yellowmoon/commit/131a619) | |
 
-CI jobs enabled: frontend, e2e, rust (macOS), deny, deny-selftest, fetch-tools, gpu-lavapipe, oracle, lens-oracle, data-checks, synthetic-set, golden, dng, serde-order, eval-tools, parity, training-dry-run, alexa-curve. CI runs on pushes to `main` and on pull requests, so none of them has run on GitHub yet (no PR exists).
+CI jobs enabled: frontend, e2e, rust (macOS), deny, deny-selftest, fetch-tools, gpu-lavapipe, oracle, lens-oracle, data-checks, synthetic-set, golden, dng, serde-order, eval-tools, parity, licences, spectral-fixtures, ml-backends, training-dry-run, alexa-curve; nightly: fuzz. CI runs on pushes to `main` and on pull requests, so none of them has run on GitHub yet (no PR exists).
 
 ## Corpus and golden set (M0-09)
 
@@ -126,6 +128,9 @@ The `synthetic-full` and `synthetic-eval` sets (53 more, the latter with CIE ref
 | M3-H4, M3-H5, M3-H6 | App review on a Mac; a real shoot; DNGs in Lightroom, RawTherapee, darktable, Capture One, Apple Photos. | M3 gate |
 | — | A real Lossless M or S file (A7R V, A9 III, A1 II or RX1R III) to confirm the M/S scale. | M2-09 |
 | M3-H3 | Email ARRI about an in-app download of the free looks (optional). | M3 |
+| RA-H4 | Blind look at the candidate default demosaic (adaptive ratio vs Menon) on the nine local real files and the synthetic golden set, with the RA-05 numbers, before the goldens are re-baselined. | R6 default |
+| RA-H2 | Richardson–Lucy or diffraction deconvolution as the R8 default (A/B numbers and crops after RA-07). | R8 default |
+| M0-H4 (added) | On a Mac: "Move to Trash" for a downloaded look zip goes through Finder (the `trash` crate's default), which may ask for Automation permission the first time (`src-tauri/Info.plist` now carries the usage string). Check that the prompt appears once and the move works. | M3 |
 | M4-H2…M4-H5 | Developer ID signing and notarisation decision; trademark clearance (EUIPO, INPI, WIPO, UK IPO); freedom-to-operate check on US 11948279; announcement. Not started. | M4 |
 
 ## Questions for Mykyta
@@ -141,6 +146,8 @@ The `synthetic-full` and `synthetic-eval` sets (53 more, the latter with CIE ref
 9. **DNG brightness outside Adobe apps.** Adobe's renderer applies a highlight shoulder rather than a scale for a negative `BaselineExposure`, so the fitted profile stores scene values up to 16 with the white level there and `BaselineExposure` about 0. Adobe apps render it to match our JPEG; RawTherapee and darktable show the stored linear image about 4 EV darker until their own exposure handling. The alternative (per-photo white level) risks Adobe's shoulder. Recommended: keep the floor and say so in the export help. OK?
 
 ## Known issues
+
+- README's feature list said the demosaic and noise reduction are learned models trained partly on "our own captures"; V1 ships the classical path and takes no captures. Corrected to say the models are planned and trained on openly licensed data only (review finding); reword if you prefer.
 
 - C9 grade controls can fold the neutral ramp when two are combined at opposite extremes (e.g. Highlights +100 with White −100); each alone is monotone. Needs a UI limit or a constants refit in M3.
 - Day/Shade/Tungsten presets carry the 3.5–6 % difference between the Weta curves' white and the camera ColorMatrix white (A7 III/A7 IV); a per-body raw-white calibration would need data.

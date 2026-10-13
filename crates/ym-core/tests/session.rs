@@ -464,6 +464,107 @@ fn only_the_current_photo_and_its_neighbours_keep_their_mosaics() {
 }
 
 #[test]
+fn callers_that_ask_for_one_uncached_mosaic_at_once_share_one_decode() {
+    // The app asks for a photo's pixels from many commands at once (the viewport frame, the
+    // histogram, a tile for each look of the Look tab, the prefetch); each used to decode the file
+    // for itself, a transient mosaic apiece (122 MB at 61 MP), against the budget of three.
+    let dir = tempfile::tempdir().unwrap();
+    for i in 0..3 {
+        Scene::new(
+            4000,
+            3000,
+            light(PROFILE, 5200.0),
+            Layout::Patchwork,
+            0.25 + 0.01 * f64::from(i),
+        )
+        .noise(2e-4, 1e-6)
+        .write(dir.path(), &format!("p{i}.ARW"), MODEL);
+    }
+    let (session, _rx) = session_with_events();
+    let session = Arc::new(session);
+    session.open(&[dir.path().to_path_buf()], OpenOptions::default());
+    settle(&session);
+    let ids = session.photo_ids();
+    assert!(!session.cached_ids().contains(&ids[2]), "not decoded yet");
+
+    // Moving to the third photo is the jump: its window is not cached, and every command asks.
+    let third = ids[2];
+    session.set_current(third).unwrap();
+    const CALLERS: usize = 12;
+    let barrier = Arc::new(std::sync::Barrier::new(CALLERS));
+    let threads: Vec<_> = (0..CALLERS)
+        .map(|_| {
+            let (session, barrier) = (Arc::clone(&session), Arc::clone(&barrier));
+            std::thread::spawn(move || {
+                barrier.wait();
+                session.raw_image(third).unwrap()
+            })
+        })
+        .collect();
+    let images: Vec<Arc<ym_raw::decode::RawImage>> =
+        threads.into_iter().map(|t| t.join().unwrap()).collect();
+    settle(&session);
+
+    let cached = session.raw_image(third).unwrap();
+    let distinct = images.iter().filter(|i| !Arc::ptr_eq(i, &cached)).count();
+    assert_eq!(
+        distinct, 0,
+        "{CALLERS} callers, {distinct} got an image of their own"
+    );
+    assert_eq!(
+        session.raw_decodes(),
+        1,
+        "the file was read once (the first photo's window was cached by its development)"
+    );
+    assert!(session.max_cached() <= 3);
+}
+
+#[test]
+fn a_prefetch_queued_for_a_photo_the_person_has_left_decodes_nothing() {
+    // Stepping through photos faster than they decode used to decode every photo passed, once
+    // each, to keep two or three mosaics at the end. One decode thread, parked on the development
+    // of a photo opened last, so that the steps are taken while the prefetches wait in the queue.
+    let dir = tempfile::tempdir().unwrap();
+    for i in 0..12 {
+        write_plain(
+            dir.path(),
+            &format!("p{i:02}.ARW"),
+            0.25 + 0.01 * f64::from(i),
+        );
+    }
+    let later = tempfile::tempdir().unwrap();
+    write_plain(later.path(), "z.ARW", 0.3);
+    let gate = common::GateThumbnails::new(13);
+    let session = Session::new(
+        base_env()
+            .with_decode_threads(1)
+            .with_thumbnails(gate.clone()),
+    );
+    session.open(&[dir.path().to_path_buf()], OpenOptions::default());
+    settle(&session);
+    session.open(&[later.path().to_path_buf()], OpenOptions::default());
+    gate.wait_parked();
+    let ids = session.photo_ids();
+    assert_eq!(ids.len(), 13);
+
+    let before = session.raw_decodes();
+    for id in &ids[..12] {
+        session.set_current(*id).unwrap();
+    }
+    gate.release();
+    settle(&session);
+
+    let decoded = session.raw_decodes() - before;
+    assert!(
+        decoded <= 3,
+        "12 steps decoded {decoded} photos; only the last window is worth decoding"
+    );
+    let mut cached = session.cached_ids();
+    cached.sort();
+    assert_eq!(cached, vec![ids[10], ids[11], ids[12]], "the last window");
+}
+
+#[test]
 fn closing_cancels_the_jobs_and_nothing_is_announced_afterwards() {
     let dir = tempfile::tempdir().unwrap();
     for i in 0..12 {

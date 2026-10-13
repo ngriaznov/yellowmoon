@@ -13,6 +13,9 @@ testdata/
 # separate line keeps them ignored even if part of testdata/ is ever un-ignored.
 testdata/real/
 
+# Generated at release time by tools/licences/generate.py (a development stub from tools/dev/prepare-sidecar.sh otherwise)
+THIRD-PARTY.md
+
 # Tauri
 src-tauri/binaries/
 src-tauri/gen/schemas/

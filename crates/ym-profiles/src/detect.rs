@@ -10,7 +10,7 @@
 //!
 //! [`CameraMatch`] does not carry the decoder's `DecodeKind` (it lives in `ym_raw::RawMetadata`);
 //! `ym-core` composes the two for the UI and the CLI. The display copy of the camera card is here too
-//! ([`CameraCopy`]), so the app and `yellowmoon info` say the same thing.
+//! ([`CameraCopy`]), so the app and `ym info` say the same thing.
 
 use serde::{Deserialize, Serialize};
 

@@ -499,6 +499,14 @@ describe("export", () => {
     expect(files[0]).toBe("2026-10-04_DSC04204_film-warm_001.tif");
   });
 
+  it("makes the file stem safe, as the core does", async () => {
+    const files: string[] = [];
+    api.on("export_progress", (e) => files.push(e.file));
+    await api.exportStart(job("this", { name_template: "{name}*final?" }));
+    await vi.advanceTimersByTimeAsync(1);
+    expect(files[0]).toBe("DSC04204_final_.jpg");
+  });
+
   it("cancels a running job", async () => {
     const events: ExportProgress[] = [];
     api.on("export_progress", (e) => events.push(e));

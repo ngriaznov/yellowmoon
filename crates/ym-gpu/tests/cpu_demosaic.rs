@@ -5,8 +5,9 @@
 //! * `receptive_fields_are_within_the_declared_halos`: perturbs single photosites and measures how
 //!   far the output changes; the declared halo must cover it.
 //! * `psnr_on_synthetic_images`: ranking of the methods on procedural images (always runs).
-//! * `psnr_on_kodak_and_mcmaster` (ignored): the public sets, fetched locally into
-//!   `testdata/demosaic/{kodak,mcmaster}` (override the root with `YM_TESTDATA`); run with
+//! * `psnr_on_kodak_and_mcmaster` (ignored): the public sets, fetched into
+//!   `testdata/demosaic/{kodak,mcmaster}` by `tools/fetch/demosaic-sets.sh` (pinned commits, SHA-256 checked; override the root
+//!   with `YM_TESTDATA`); run with
 //!   `cargo test -p ym-gpu --test cpu_demosaic --release -- --ignored --nocapture`.
 
 use std::path::{Path, PathBuf};

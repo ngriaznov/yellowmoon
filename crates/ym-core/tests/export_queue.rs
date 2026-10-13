@@ -710,6 +710,60 @@ fn the_estimate_counts_bytes_seconds_and_what_a_command_cannot_carry() {
 }
 
 #[test]
+fn a_failed_export_logs_its_kind_and_job_but_no_folder_or_file_name() {
+    captured_log(); // installs the capture before the work starts
+    let f = folder(1, 200, 150);
+    let (home, out) = (
+        tempfile::tempdir().expect("h"),
+        tempfile::tempdir().expect("o"),
+    );
+    let (_ctx, queue, rx) = neutral_queue(home.path());
+    // A file where the folder should be: the error message names the path.
+    let blocker = out.path().join("blocker-of-the-folder-to-find-in-the-log");
+    std::fs::write(&blocker, b"x").expect("blocker");
+    let id = queue
+        .start(
+            &f.session,
+            &job(ApplyScope::All, &blocker.join("Lisbon export")),
+            false,
+        )
+        .expect("queued");
+    let events = until_idle(&rx);
+    let message = progress(&events)
+        .iter()
+        .find_map(|e| e.error.clone())
+        .expect("the photo failed");
+    assert!(
+        message.contains("blocker-of-the-folder-to-find-in-the-log"),
+        "the person is told where: {message}"
+    );
+
+    // The application's log can end up in a bug report: it says what happened, not where. (Tests
+    // that run at the same time log into the same capture, so every such line is checked.)
+    let log = captured_log();
+    let lines: Vec<&str> = log
+        .lines()
+        .filter(|l| l.contains("export failed"))
+        .collect();
+    assert!(
+        lines.iter().any(|l| l.contains(&format!("job={id}"))),
+        "a line for the failed export in:\n{log}"
+    );
+    for line in lines {
+        assert!(
+            line.contains("kind="),
+            "the line says what kind of failure it was: {line}"
+        );
+        for private in ["/", "\\", ".jpg", ".ARW", "DSC0", "Lisbon", "blocker"] {
+            assert!(
+                !line.contains(private),
+                "{private:?} reached the log: {line}"
+            );
+        }
+    }
+}
+
+#[test]
 fn a_destination_that_cannot_be_written_fails_each_photo_with_a_plain_message() {
     let f = folder(2, 200, 150);
     let (home, out) = (
@@ -786,6 +840,143 @@ fn photos_with_the_same_name_from_two_folders_keep_both() {
     for f in &s.folders {
         let _ = std::fs::remove_dir_all(f);
     }
+}
+
+/// One session over two folders that each hold a `DSC00001.ARW`: two different pictures with one
+/// name (two cards of one body, two bodies that both count from 1).
+fn two_pictures_with_one_name() -> (Vec<tempfile::TempDir>, Arc<Session>) {
+    let dirs: Vec<tempfile::TempDir> = (0..2u32)
+        .map(|k| {
+            let dir = tempfile::tempdir().expect("dir");
+            Scene::new(
+                200,
+                150,
+                light(PROFILE, 4500.0 + 1500.0 * f64::from(k)),
+                Layout::Patchwork,
+                0.3 + 0.3 * f64::from(k),
+            )
+            .noise(2e-4, 1e-5)
+            .seed(u64::from(k) + 1)
+            .write(dir.path(), "DSC00001.ARW", MODEL);
+            dir
+        })
+        .collect();
+    let session = Arc::new(Session::new(base_env()));
+    for dir in &dirs {
+        session.open(&[dir.path().to_path_buf()], OpenOptions::default());
+    }
+    settle(&session);
+    assert_eq!(session.state().photos.len(), 2);
+    (dirs, session)
+}
+
+#[test]
+fn two_photos_of_one_job_with_one_name_never_overwrite_each_other_whatever_if_exists_says() {
+    let (_dirs, session) = two_pictures_with_one_name();
+    let home = tempfile::tempdir().expect("h");
+    let (_ctx, queue, rx) = neutral_queue(home.path());
+    let both = ["DSC00001_neutral 2.jpg", "DSC00001_neutral.jpg"];
+
+    // Keep both is the reference: the second photo is numbered.
+    let reference_dir = tempfile::tempdir().expect("o");
+    queue
+        .start(&session, &job(ApplyScope::All, reference_dir.path()), false)
+        .expect("queued");
+    until_idle(&rx);
+    assert_eq!(names_in(reference_dir.path()), both);
+    let first = read(&reference_dir.path().join("DSC00001_neutral.jpg"));
+    let second = read(&reference_dir.path().join("DSC00001_neutral 2.jpg"));
+    assert_ne!(first, second, "the two photos are different pictures");
+
+    for if_exists in [IfExists::Replace, IfExists::Skip] {
+        let out = tempfile::tempdir().expect("o");
+        let mut j = job(ApplyScope::All, out.path());
+        j.options.if_exists = if_exists;
+        let id = queue.start(&session, &j, false).expect("queued");
+        let events = until_idle(&rx);
+
+        assert_eq!(names_in(out.path()), both, "{if_exists:?}");
+        assert_eq!(
+            read(&out.path().join("DSC00001_neutral.jpg")),
+            first,
+            "{if_exists:?}: the first photo's file"
+        );
+        assert_eq!(
+            read(&out.path().join("DSC00001_neutral 2.jpg")),
+            second,
+            "{if_exists:?}: the second photo's file"
+        );
+        let s = queue.summary(id).expect("summary");
+        assert_eq!(
+            (s.saved, s.skipped, s.failed),
+            (2, 0, 0),
+            "{if_exists:?}: both were written"
+        );
+        assert_eq!(s.files.len(), 2);
+        assert_ne!(
+            s.files[0], s.files[1],
+            "{if_exists:?}: two files, not one twice"
+        );
+        // The panel is told the name the second photo will have.
+        let started: Vec<&str> = progress(&events)
+            .iter()
+            .filter(|e| e.file_percent == Some(0.0))
+            .map(|e| e.file.as_str())
+            .collect();
+        assert_eq!(
+            started,
+            ["DSC00001_neutral.jpg", "DSC00001_neutral 2.jpg"],
+            "{if_exists:?}"
+        );
+        assert!(
+            progress(&events).iter().all(|e| !e.skipped),
+            "{if_exists:?}"
+        );
+    }
+}
+
+#[test]
+fn replace_still_replaces_a_file_from_before_the_job_and_skip_still_skips_it() {
+    let (_dirs, session) = two_pictures_with_one_name();
+    let home = tempfile::tempdir().expect("h");
+    let (_ctx, queue, rx) = neutral_queue(home.path());
+
+    // Replace: the file that was there is replaced by the first photo; the second is numbered.
+    let out = tempfile::tempdir().expect("o");
+    std::fs::write(out.path().join("DSC00001_neutral.jpg"), b"from yesterday").expect("old");
+    let mut j = job(ApplyScope::All, out.path());
+    j.options.if_exists = IfExists::Replace;
+    let id = queue.start(&session, &j, false).expect("queued");
+    until_idle(&rx);
+    assert_eq!(
+        names_in(out.path()),
+        ["DSC00001_neutral 2.jpg", "DSC00001_neutral.jpg"]
+    );
+    assert_ne!(
+        read(&out.path().join("DSC00001_neutral.jpg")),
+        b"from yesterday"
+    );
+    let s = queue.summary(id).expect("summary");
+    assert_eq!((s.saved, s.skipped, s.failed), (2, 0, 0));
+
+    // Skip: the file from before the job stays, and both photos are skipped because of it (the job
+    // wrote nothing, so no file of this job is in the way of anything).
+    let out = tempfile::tempdir().expect("o");
+    std::fs::write(out.path().join("DSC00001_neutral.jpg"), b"from yesterday").expect("old");
+    let mut j = job(ApplyScope::All, out.path());
+    j.options.if_exists = IfExists::Skip;
+    let id = queue.start(&session, &j, false).expect("queued");
+    until_idle(&rx);
+    assert_eq!(
+        read(&out.path().join("DSC00001_neutral.jpg")),
+        b"from yesterday"
+    );
+    let s = queue.summary(id).expect("summary");
+    assert_eq!(
+        (s.saved, s.skipped, s.failed),
+        (0, 2, 0),
+        "both names are taken by the file from before the job"
+    );
 }
 
 fn jpeg_default_destination() -> ExportJob {

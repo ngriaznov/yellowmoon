@@ -19,15 +19,15 @@ Cargo workspace with the crates and package names in `docs/01` (empty APIs with 
 *Done when:* on a clean checkout, `tools/dev/prepare-sidecar.sh && cargo test --workspace`, `npm test` and `npm run build` pass; `npm run tauri dev` on a Mac opens a window showing a placeholder Start screen in Figtree with the moon mark.
 
 **M0-02 · CI and licence policy** (M0-01)
-Install `templates/github/workflows/ci.yml` and `templates/deny.toml`; add `CHANGELOG.md`, issue templates (bug report asks for `yellowmoon doctor` output).
+Install `templates/github/workflows/ci.yml` and `templates/deny.toml`; add `CHANGELOG.md`, issue templates (bug report asks for `ym doctor` output).
 *Done when:* CI is green on a PR; a test PR adding a GPL crate fails `cargo deny`.
 
 **M0-03 · Release pipeline and updater** (M0-02)
 Generate the updater signing key and set the secrets (`docs/12` §Signing); install `release.yml` and `Casks/yellowmoon.rb` with the repository from the handover message; wire `updater.ts` (from plugout) and the update cell placeholder; sidecar build step with a stub `ym-cli`.
-*Done when:* merging a version bump publishes `v0.0.1` with dmg, tarball, signature and `latest.json`, updates the cask; an installed 0.0.1 updates itself to 0.0.2 [checked on a Mac]; `brew install --cask` from the tap installs app and `yellowmoon --version`.
+*Done when:* merging a version bump publishes `v0.0.1` with dmg, tarball, signature and `latest.json`, updates the cask; an installed 0.0.1 updates itself to 0.0.2 [checked on a Mac]; `brew install --cask` from the tap installs app and `ym --version`.
 
 **M0-04 · ARW container and metadata** (M0-01, M0-09)
-`ym-raw`: TIFF/IFD walker, EXIF, Sony maker note (model ID 0xB001, ISO), SR2 decryption and tags (0x7310/0x7300, 0x787F, 0x7313/0x7303), lens tags (0x7032/0x7035/0x7037), tone curve (0x7010), embedded preview location, compression and bit depth detection, `RawMetadata`. `yellowmoon info` (text and `--json`, metadata only).
+`ym-raw`: TIFF/IFD walker, EXIF, Sony maker note (model ID 0xB001, ISO), SR2 decryption and tags (0x7310/0x7300, 0x787F, 0x7313/0x7303), lens tags (0x7032/0x7035/0x7037), tone curve (0x7010), embedded preview location, compression and bit depth detection, `RawMetadata`. `ym info` (text and `--json`, metadata only).
 *Done when:* on the corpus, metadata fields (make, model, model ID, ISO, exposure, dimensions, compression, black, white, WB) equal LibRaw/ExifTool values; fuzz targets run 10 min without panics.
 
 **M0-05 · Decoders and oracle CI** (M0-04, M0-09)
@@ -101,7 +101,7 @@ C7 roll-off and toe, C8 LogC4, C9 primary grade; CPU + WGSL.
 *Done when:* GPU/CPU parity ≤ 2e-4; monotonicity tests for C7 and every C9 control.
 
 **M1-10 · Looks engine** (M1-09)
-CDL, `.cube` parser (fuzzed), tetrahedral interpolation on CPU and GPU, intensity blend, LogC3 path, Rec.709-baked path; built-in Neutral; `yellowmoon looks import <.cube> --input …` and `looks list`; library folder and manifest with locking.
+CDL, `.cube` parser (fuzzed), tetrahedral interpolation on CPU and GPU, intensity blend, LogC3 path, Rec.709-baked path; built-in Neutral; `ym looks import <.cube> --input …` and `looks list`; library folder and manifest with locking.
 *Done when:* LUT parity gate vs OCIO vectors; importer tests incl. concurrent CLI imports.
 
 **M1-11 · ACES 2 display transform** (M1-01)

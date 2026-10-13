@@ -8,7 +8,7 @@
 //! 2. For a clipped channel `c` of superpixel `p`, the **opposed estimate** is the cube-root mean
 //!    of the *unclipped other channels* over the 3x3 superpixel neighbourhood:
 //!    `y = (mean(x^(1/3)))^3`. If the neighbourhood holds no unclipped other channel there is no
-//!    estimate and the photosite keeps its value.
+//!    estimate and the photosite keeps its value (a fully clipped quad is then levelled by step 5).
 //! 3. **Global chroma correction.** For every channel `c`, over all superpixels with no clipped
 //!    channel that have a superpixel with channel `c` clipped in their 3x3 neighbourhood, average
 //!    `x_c - y_c` (with `y_c` the opposed estimate computed for `c` as if it were clipped). That
@@ -17,7 +17,12 @@
 //! 4. The reconstructed value is `max(original, y_c + offset_c)`, written back to the clipped
 //!    photosites of that channel in the quad. The clip mask is not modified: later stages still
 //!    know these values are estimates.
-//! 5. `decode.highlight_recovery = false` means not calling this module.
+//! 5. **Fully clipped quads** (all four photosites clipped) carry no colour of their own, and
+//!    after the gains `g0` their photosites sit at different levels (`g0_c` times the vignetting
+//!    gain), which would render a neutral source as a colour cast. Their photosites are raised
+//!    to the largest value among them, a neutral at the brightest bound, before the tone mapping
+//!    rolls it off. The estimates of step 4 can still lift a channel higher.
+//! 6. `decode.highlight_recovery = false` means not calling this module.
 //!
 //! The chroma offsets are a global reduction. For tiled processing run
 //! [`accumulate_offsets`] over the cores of all tiles first, merge the accumulators with
@@ -315,15 +320,31 @@ pub fn apply_offsets(
                         *e = sp.opposed(i, j, c).map(|y| y + off[c] as f32);
                     }
                 }
+                // Step 5: with all four photosites clipped the colour is unknown. They sit at
+                // their own clip levels after R4 (`g0_c`, so [2.0, 1, 1.7] for an as-shot balance),
+                // a cast that C7 would keep; level them to the brightest of them. A quad with one
+                // green still measured has a colour, so it is left to step 4.
+                let all_clipped = [(0usize, 0usize), (0, 1), (1, 0), (1, 1)]
+                    .iter()
+                    .all(|&(dy, dx)| mask.data[(2 * j + dy) * width + 2 * i + dx] != 0);
+                let floor = all_clipped.then(|| {
+                    [(0usize, 0usize), (0, 1), (1, 0), (1, 1)]
+                        .iter()
+                        .map(|&(dy, dx)| rows[dy * width + 2 * i + dx])
+                        .fold(f32::NEG_INFINITY, f32::max)
+                });
                 for (dy, dx) in [(0usize, 0usize), (0, 1), (1, 0), (1, 1)] {
                     let (x, y) = (2 * i + dx, 2 * j + dy);
                     if mask.data[y * width + x] == 0 {
                         continue;
                     }
                     let c = cfa.color_at(x, y).plane();
+                    let v = &mut rows[dy * width + x];
                     if let Some(e) = est[c] {
-                        let v = &mut rows[dy * width + x];
                         *v = v.max(e);
+                    }
+                    if let Some(f) = floor {
+                        *v = v.max(f);
                     }
                 }
             }
@@ -409,6 +430,72 @@ mod tests {
             m.get(30, 10)
         );
         assert!(m.get(30, 10) < 1.8);
+    }
+
+    #[test]
+    fn a_fully_clipped_superpixel_is_levelled_to_its_brightest_clip_bound() {
+        // After R1 and R4 the clipped photosites sit at g0 = [2.0, 1.0, 1.7]. With nothing else to go
+        // on (every neighbour is clipped as well) the whole quad becomes a neutral at 2.0.
+        let (w, h) = (16, 16);
+        let g0 = [2.0f32, 1.0, 1.7];
+        let mut m = Mosaic::new(w, h, Cfa::RGGB);
+        let mut mask = ClipMask::new(w, h);
+        for y in 0..h {
+            for x in 0..w {
+                m.data[y * w + x] = g0[m.cfa.color_at(x, y).plane()];
+                mask.data[y * w + x] = 1;
+            }
+        }
+        reconstruct(&mut m, &mask).unwrap();
+        assert!(m.data.iter().all(|&v| v == 2.0), "{:?}", &m.data[..8]);
+    }
+
+    #[test]
+    fn a_partly_clipped_superpixel_is_not_levelled() {
+        // Red and green clipped, blue measured: the opposed estimate rules, not the flat level.
+        let (w, h) = (16, 16);
+        let g0 = [2.0f32, 1.0, 1.7];
+        let mut m = Mosaic::new(w, h, Cfa::RGGB);
+        let mut mask = ClipMask::new(w, h);
+        for y in 0..h {
+            for x in 0..w {
+                let c = m.cfa.color_at(x, y).plane();
+                if c == 2 {
+                    m.data[y * w + x] = 0.4; // blue, below its clip level
+                } else {
+                    m.data[y * w + x] = g0[c];
+                    mask.data[y * w + x] = 1;
+                }
+            }
+        }
+        reconstruct(&mut m, &mask).unwrap();
+        // Green stays at its clip level: levelling it to 2.0 would be wrong for a blue-ish pixel.
+        assert_eq!(m.get(1, 0), 1.0);
+        assert_eq!(m.get(1, 1), 0.4);
+    }
+
+    #[test]
+    fn a_quad_with_a_measured_green_is_not_levelled() {
+        // One of the two greens is measured (0.9 < clip 1.0): the quad still has a colour, so the
+        // clipped green must not jump to the red level next to it.
+        let (w, h) = (4, 4);
+        let g0 = [2.0f32, 1.0, 1.7];
+        let mut m = Mosaic::new(w, h, Cfa::RGGB);
+        let mut mask = ClipMask::new(w, h);
+        for y in 0..h {
+            for x in 0..w {
+                m.data[y * w + x] = g0[m.cfa.color_at(x, y).plane()];
+                mask.data[y * w + x] = 1;
+            }
+        }
+        m.data[1] = 0.9;
+        mask.data[1] = 0;
+        reconstruct(&mut m, &mask).unwrap();
+        assert_eq!(m.data[1], 0.9);
+        assert_eq!(m.data[w], 1.0, "the clipped green keeps its value");
+        // The neighbouring quads are fully clipped and level to 2.0.
+        assert_eq!(m.data[2], 2.0);
+        assert_eq!(m.data[2 * w + 2], 2.0);
     }
 
     #[test]

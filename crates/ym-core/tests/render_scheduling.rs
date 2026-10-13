@@ -15,6 +15,7 @@ use ym_core::pipeline::{
 };
 use ym_core::scheduler::{CancelToken, JobError, Priority};
 use ym_core::session::{OpenOptions, Session};
+use ym_looks::library::LookId;
 
 const MODEL: &str = "ILCE-7RM4";
 
@@ -148,6 +149,109 @@ fn navigating_away_cancels_viewport_and_tile_jobs_but_not_thumbnails_or_exports(
         export_a.wait().expect("job").is_ok(),
         "exports are never cancelled by navigation"
     );
+}
+
+#[test]
+fn navigating_away_supersedes_the_look_tiles_and_histogram_of_the_photo_left_and_lets_go_of_its_mosaic()
+ {
+    // The Look tab asks for a tile per look and the Light tab for a histogram, for every photo the
+    // person steps to. Each queued job holds the photo's decoded mosaic; run after run for photos
+    // that have been left, they used to pile up (about 120 ms a tile at 24 MP, 122 MB a mosaic at
+    // 61 MP) and the current photo's own tiles waited behind them.
+    let t = two();
+    let r = Renderer::new(Arc::new(NeutralOnly), RenderOptions::default()).expect("render thread");
+    r.navigate(t.a.id);
+    let (gate, gate_job) = block(&r);
+    let neutral = LookId::builtin("neutral");
+    let holders_before = Arc::strong_count(&t.a.raw);
+
+    let tiles_a: Vec<_> = (0..10)
+        .map(|_| r.spawn_look_thumbnail(t.a.clone(), neutral.clone()))
+        .collect();
+    let histogram_a = r.spawn_histogram(t.a.clone());
+    let thumbnail_a = r.spawn_thumbnail(t.a.clone());
+    let tile_b = r.spawn_look_thumbnail(t.b.clone(), neutral.clone());
+    assert_eq!(
+        Arc::strong_count(&t.a.raw),
+        holders_before + 12,
+        "each queued job holds the mosaic"
+    );
+
+    // The person steps to photo B: what was asked of photo A for the panels is no longer wanted.
+    assert_eq!(r.navigate(t.b.id), 11, "ten tiles and the histogram");
+    assert_eq!(
+        Arc::strong_count(&t.a.raw),
+        holders_before + 1,
+        "only the filmstrip thumbnail still holds it; the cancelled jobs let go at once"
+    );
+
+    gate.send(()).expect("open");
+    gate_job.wait().expect("gate");
+    for tile in tiles_a {
+        assert!(
+            matches!(tile.wait(), Err(JobError::Cancelled)),
+            "a superseded tile is a cancelled job, like a viewport frame of the photo left"
+        );
+    }
+    assert!(matches!(histogram_a.wait(), Err(JobError::Cancelled)));
+    assert!(
+        tile_b.wait().expect("job").is_ok(),
+        "the new photo's tile runs"
+    );
+    assert!(
+        thumbnail_a.wait().expect("job").is_ok(),
+        "the filmstrip thumbnail is not a panel request and is kept"
+    );
+    assert_eq!(Arc::strong_count(&t.a.raw), holders_before);
+}
+
+#[test]
+fn a_tile_that_is_already_running_when_the_person_moves_on_is_told_to_stop() {
+    let t = two();
+    let r = Renderer::new(Arc::new(NeutralOnly), RenderOptions::default()).expect("render thread");
+    r.navigate(t.a.id);
+    let (started_tx, started_rx) = mpsc::channel::<()>();
+    let (stop_tx, stop_rx) = mpsc::channel::<()>();
+    let running = r.scheduler().submit_superseded(
+        Priority::Thumbnail,
+        t.a.id,
+        move |token| {
+            started_tx.send(()).expect("started");
+            stop_rx.recv().expect("stop");
+            token.is_cancelled()
+        },
+        || false,
+    );
+    started_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("running");
+    assert_eq!(r.navigate(t.b.id), 1);
+    stop_tx.send(()).expect("stop");
+    assert_eq!(running.wait(), Ok(true), "the job saw its token set");
+    // Moving on to the same photo again, or to a third, finds nothing left to cancel.
+    assert_eq!(r.navigate(t.b.id), 0);
+}
+
+#[test]
+fn a_panel_request_for_the_photo_being_moved_to_is_never_cancelled_whatever_the_order_of_arrival() {
+    // The webview asks for the new photo's tiles and tells the core about the move in two commands
+    // that may be handled in either order.
+    let t = two();
+    let r = Renderer::new(Arc::new(NeutralOnly), RenderOptions::default()).expect("render thread");
+    r.navigate(t.a.id);
+    let (gate, gate_job) = block(&r);
+    let tile_b = r.spawn_look_thumbnail(t.b.clone(), LookId::builtin("neutral"));
+    let histogram_b = r.spawn_histogram(t.b.clone());
+    assert_eq!(r.navigate(t.b.id), 0, "nothing of A is waiting");
+    assert_eq!(
+        r.navigate(t.b.id),
+        0,
+        "and the same photo again changes nothing"
+    );
+    gate.send(()).expect("open");
+    gate_job.wait().expect("gate");
+    assert!(tile_b.wait().expect("job").is_ok());
+    assert!(histogram_b.wait().expect("job").is_ok());
 }
 
 #[test]

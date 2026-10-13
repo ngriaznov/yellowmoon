@@ -147,7 +147,9 @@ export const isArwPath = (path: string): boolean => /\.arw$/i.test(path);
 /**
  * True for a file name that ends in a file extension: letters or digits after the last dot, at least
  * one a letter, and no spaces. A folder called "Lisbon 2026.10" or "Trip. Day 2" has none, so it is
- * handed to the core, which opens it and keeps the ARW files in it.
+ * handed on. A name is only a guess: a folder called "Sony.A7C" looks like it has an extension. That is
+ * why this is used only where there are names and no paths (a browser); in the app every dropped path
+ * goes to the core, which looks at the disk.
  */
 const hasExtension = (path: string): boolean => {
   const name = path.split(/[\\/]/).filter(Boolean).pop() ?? "";
@@ -156,10 +158,11 @@ const hasExtension = (path: string): boolean => {
 };
 
 /**
- * Splits a drop for the Start screen: `accepted` holds `.ARW` files and anything without an
- * extension (a folder, which the core opens and filters itself); `ignored` holds the rest,
- * which are neither opened nor listed. When `accepted` is empty the drop zone says
- * "No ARW files in what you dropped."
+ * Splits a drop of file names for a browser, where the mock API stands in for the core: `accepted`
+ * holds `.ARW` files and anything without an extension (a folder, which the core opens and filters
+ * itself); `ignored` holds the rest, which are neither opened nor listed. When `accepted` is empty
+ * the drop zone says "No ARW files in what you dropped." In the app the paths are real and are not
+ * filtered here (`store.openPaths`).
  */
 export function filterArwPaths(paths: readonly string[]): { accepted: string[]; ignored: string[] } {
   const accepted: string[] = [];

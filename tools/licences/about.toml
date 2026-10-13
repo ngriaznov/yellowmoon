@@ -1,0 +1,28 @@
+# cargo-about configuration for THIRD-PARTY.md (tools/licences/README.md). The accepted list is the allow list of deny.toml
+# (docs/14-licensing.md); tools/licences/test_licences.py keeps the two in step.
+accepted = [
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "MIT",
+  "MIT-0",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Zlib",
+  "Unicode-3.0",
+  "Unicode-DFS-2016",
+  "CC0-1.0",
+  "0BSD",
+  "BSL-1.0",
+  "MPL-2.0",
+  "OFL-1.1",
+  "CDLA-Permissive-2.0",
+  "IJG",
+]
+
+# What reaches a user is the macOS app and the `ym` command (docs/12). Other platforms' crates (gtk, windows) are not shipped.
+targets = ["aarch64-apple-darwin", "x86_64-apple-darwin"]
+
+# Build scripts, proc macros and test code do not end up in the binaries.
+ignore-build-dependencies = true
+ignore-dev-dependencies = true

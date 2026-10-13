@@ -265,6 +265,12 @@ fn out_name_and_the_if_exists_options_decide_the_file_names() {
     assert_eq!(names_in(&out).len(), 2);
     let quiet = run(&["--skip-existing"]).success();
     assert!(quiet.get_output().stdout.is_empty());
+    // The summary agrees with the number: one photo existed and was skipped.
+    let said = text(&quiet.get_output().stderr);
+    assert!(
+        said.contains("1 photo already existed and was skipped."),
+        "{said}"
+    );
     // Replace writes over the first file and adds nothing.
     let before = std::fs::metadata(out.join("DSC00001-001.jpg"))
         .expect("meta")
@@ -275,6 +281,82 @@ fn out_name_and_the_if_exists_options_decide_the_file_names() {
         .expect("meta")
         .len();
     assert!(after < before, "quality 60 is smaller: {after} < {before}");
+}
+
+#[test]
+fn two_photos_that_map_to_one_name_are_both_written_whatever_the_exists_option_says() {
+    let sb = Sandbox::new();
+    let a = sb.arw_sized("card1/DSC00001.ARW", 160, 120, 11);
+    let b = sb.arw_sized("card2/DSC00001.ARW", 160, 120, 12);
+    // `--overwrite` and `--skip-existing` look at the disk; the file the first photo wrote a moment
+    // ago is not "a file that existed", and must not be replaced or taken for one.
+    for (n, flag) in ["--overwrite", "--skip-existing", "--keep-both"]
+        .into_iter()
+        .enumerate()
+    {
+        let out = sb.root().join(format!("out{n}"));
+        let mut cmd = sb.ym();
+        cmd.args(["render", "--json", "--format", "jpeg", "--out"])
+            .arg(&out);
+        if flag != "--keep-both" {
+            cmd.arg(flag);
+        }
+        let run = cmd.arg(&a).arg(&b).assert().success();
+        let objects = json_lines(&run.get_output().stdout);
+        let statuses: Vec<&str> = objects
+            .iter()
+            .map(|o| o["status"].as_str().expect("status"))
+            .collect();
+        assert_eq!(statuses, ["ok", "ok"], "{flag}");
+        let outputs: Vec<&str> = objects
+            .iter()
+            .map(|o| o["output"].as_str().expect("output"))
+            .collect();
+        assert_ne!(outputs[0], outputs[1], "{flag}: two files, not one twice");
+        // The run says why the second photo has a number, once for the one photo; with "keep both"
+        // numbering is what was asked for and there is nothing to explain.
+        let noted: Vec<bool> = objects
+            .iter()
+            .map(|o| {
+                o["notes"].as_array().expect("notes").iter().any(|n| {
+                    n.as_str()
+                        .is_some_and(|n| n.contains("has the same file name"))
+                })
+            })
+            .collect();
+        let expected: [bool; 2] = if flag == "--keep-both" {
+            [false, false]
+        } else {
+            [false, true]
+        };
+        assert_eq!(noted, expected, "{flag}");
+        assert_eq!(
+            names_in(&out),
+            ["DSC00001_neutral 2.jpg", "DSC00001_neutral.jpg"],
+            "{flag}"
+        );
+        let said = text(&run.get_output().stderr);
+        assert!(!said.contains("skipped"), "{flag}: {said}");
+    }
+    // A name template that two photos of a day share (no {name}, no {seq}) is the same case.
+    let out = sb.root().join("by_date");
+    let run = sb
+        .ym()
+        .args([
+            "render",
+            "--json",
+            "--overwrite",
+            "--name",
+            "{date}",
+            "--out",
+        ])
+        .arg(&out)
+        .arg(&a)
+        .arg(&b)
+        .assert()
+        .success();
+    assert_eq!(json_lines(&run.get_output().stdout).len(), 2);
+    assert_eq!(names_in(&out).len(), 2, "{:?}", names_in(&out));
 }
 
 #[test]
@@ -368,6 +450,50 @@ fn flags_become_settings_and_the_exposure_offset_is_relative_to_each_photos_auto
         .map(|o| o["settings"]["exposure"]["ev"].as_f64().expect("ev"))
         .collect();
     assert!((evs[0] - evs[1]).abs() > 1e-6, "{evs:?}");
+}
+
+#[test]
+fn the_remaining_flags_of_docs_10_reach_the_settings_of_the_file() {
+    // The flags above are checked in the test before; these six are the rest of the table.
+    let sb = Sandbox::new();
+    let arw = sb.arw("a.ARW");
+    let out = sb
+        .ym()
+        .args([
+            "render",
+            "--json",
+            "--brightness",
+            "11",
+            "--shadows",
+            "22",
+            "--white",
+            "33",
+            "--no-neural",
+            "--no-highlight-recovery",
+            "--no-lens",
+        ])
+        .arg(&arw)
+        .assert()
+        .success();
+    let objects = json_lines(&out.get_output().stdout);
+    assert_eq!(objects.len(), 1);
+    let s = &objects[0]["settings"];
+    assert_eq!(s["brightness"], 11.0);
+    assert_eq!(s["shadows"], 22.0);
+    assert_eq!(s["white"], 33.0);
+    assert_eq!(
+        s["decode"],
+        json!({
+            "neural_demosaic": false,
+            "highlight_recovery": false,
+            "lens_corrections": false,
+            "chromatic_aberration": true
+        })
+    );
+    // Untouched, they are what the photo opens with.
+    for key in ["contrast", "highlights", "black", "saturation"] {
+        assert_eq!(s[key], 0.0, "{key}");
+    }
 }
 
 #[test]

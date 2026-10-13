@@ -1,0 +1,236 @@
+{
+  "about": "Demosaic evaluation sets for docs/05 (M1-12 PSNR) and docs/13 (demosaic gate): Kodak (24 images) and McMaster (18 images). Evaluation only: never committed, never shipped, no picture made from them goes into the repository. tools/fetch/demosaic-sets.sh reads this table; the table, not the network, says what a file must be.",
+  "raw_base": "https://raw.githubusercontent.com",
+  "sources": [
+    {
+      "id": "kodak",
+      "repo": "cszn/FFDNet",
+      "commit": "e787f46df2f374ff3591186706229cb9a0591fea",
+      "dir": "testsets/Kodak24",
+      "dest": "kodak",
+      "licence_note": "Kodak Lossless True Color Image Suite: Eastman Kodak released the images for unrestricted use (r0k.us/graphics/kodak). The 500 x 500 crops distributed with cszn/FFDNet, which records no licence of its own.",
+      "files": [
+        {
+          "name": "kodim01.png",
+          "size": 517565,
+          "sha256": "4a3ad3164284407659c8c61154303ca45c37995ce8e2fe140640c2a32b6b899b"
+        },
+        {
+          "name": "kodim02.png",
+          "size": 408630,
+          "sha256": "3b62bcf7f4260d53d396114a945eebe455603a89c130f7036e3ee220d8d1fb81"
+        },
+        {
+          "name": "kodim03.png",
+          "size": 342179,
+          "sha256": "7d5601f79ba851dc1d415fbd918caf32accd24cd7e862f2810074dcd6324ca8c"
+        },
+        {
+          "name": "kodim04.png",
+          "size": 405773,
+          "sha256": "042ed626e69fc09398716b1e20e63b26baf2b73db58bc0938b0fbfb2a9715409"
+        },
+        {
+          "name": "kodim05.png",
+          "size": 537788,
+          "sha256": "2f128530bf758fd58b0ecfa90ea220155c328a3f87aa3b24b86f838631fa4ae9"
+        },
+        {
+          "name": "kodim06.png",
+          "size": 438502,
+          "sha256": "32b9f94b92ad11eb224dcd919313f49cae6d1b5798ce5bb52c317b506354b91e"
+        },
+        {
+          "name": "kodim07.png",
+          "size": 365218,
+          "sha256": "d40ec78671a3c98404e779bf8e657774380a27afe3ecb4a7110df2d8744cbdd0"
+        },
+        {
+          "name": "kodim08.png",
+          "size": 510308,
+          "sha256": "9b9e698a981a76afd86a5c457ddb215b3e2fce2028708541a634d57b6b105fb3"
+        },
+        {
+          "name": "kodim09.png",
+          "size": 383183,
+          "sha256": "939c71160c267dc4d289cdd35828c746714b782eeb2fc47d3e7b03f69799e00d"
+        },
+        {
+          "name": "kodim10.png",
+          "size": 383311,
+          "sha256": "2d4ebf3090813f9495719e250ebd3d7ceb73f49317b2f397ef805d80640e05ca"
+        },
+        {
+          "name": "kodim11.png",
+          "size": 434736,
+          "sha256": "d09010f8a454e5677e3a26525c27f5d20f4b58e70af8b3b95624997985f012d9"
+        },
+        {
+          "name": "kodim12.png",
+          "size": 381593,
+          "sha256": "eed4a8201bd276b433510eccdb3436d67ee78f1776f765dcd8113ded445e903d"
+        },
+        {
+          "name": "kodim13.png",
+          "size": 573488,
+          "sha256": "92928cebe24964b4f72e4c8cd7edbefbaa2db67e1c9b405a627a81cf191b6214"
+        },
+        {
+          "name": "kodim14.png",
+          "size": 488093,
+          "sha256": "0bc7a76fd3667cfce1496defd662f4a68643684f4b919d432fc654f1b63b5756"
+        },
+        {
+          "name": "kodim15.png",
+          "size": 433080,
+          "sha256": "18c3e450f5e6c1c0bf00bca5de391dd225456df3164e61f10914b7806ba85a5e"
+        },
+        {
+          "name": "kodim16.png",
+          "size": 377516,
+          "sha256": "da1879efd30bdf25e311fa8c2d628c140619946bb86e3807f9a2ba4562b2064b"
+        },
+        {
+          "name": "kodim17.png",
+          "size": 433560,
+          "sha256": "a114a6e48f8246dde5eb50b2402fe3bd0888140382a469f21d7527eb2c271997"
+        },
+        {
+          "name": "kodim18.png",
+          "size": 499018,
+          "sha256": "a400f54584a1212d26002970f15e2abfdf334c56a0e02bfe569f4a16515ed731"
+        },
+        {
+          "name": "kodim19.png",
+          "size": 436647,
+          "sha256": "cf256bed5534f84904dfef2e30d70c74429399de18d7a223740c67cb9ae83dbd"
+        },
+        {
+          "name": "kodim20.png",
+          "size": 319338,
+          "sha256": "a078fa791a56f78e3c8fb79726a5a4056f0ce3f357a40e13e4f0cfe1452e2ecb"
+        },
+        {
+          "name": "kodim21.png",
+          "size": 441266,
+          "sha256": "3bb598b987256ef353e167f78d771588167f029b49900f8197b649fa2d265497"
+        },
+        {
+          "name": "kodim22.png",
+          "size": 436357,
+          "sha256": "46f108a13fd37e864bf080c4b78e0b127034fc6f07ba8e45d7e581cc7f6a8290"
+        },
+        {
+          "name": "kodim23.png",
+          "size": 379284,
+          "sha256": "8d7d1e2df33a9ac3b1f8ce1bd65dde74a2c5f244612a123f8e73b80bdc3a54f1"
+        },
+        {
+          "name": "kodim24.png",
+          "size": 437232,
+          "sha256": "27708263419c77eed6b3b1e64f5224acd8536d1fa0406b8d1ba4fe6a6794ffb9"
+        }
+      ]
+    },
+    {
+      "id": "mcmaster",
+      "repo": "JingyunLiang/SwinIR",
+      "commit": "6545850fbf8df298df73d81f3e8cba638787c8bd",
+      "dir": "testsets/McMaster",
+      "dest": "mcmaster",
+      "licence_note": "McMaster (Zhang, Wu, Buades, Li, Journal of Electronic Imaging 2011): for academic research; cite the paper. The copy in JingyunLiang/SwinIR (byte-identical to the one in cszn/FFDNet), which records no licence of its own.",
+      "files": [
+        {
+          "name": "1.tif",
+          "size": 753926,
+          "sha256": "bcd4625afae223d5d3f584a06ddfd31efa49b6b5109c8b30da641473b570ad52"
+        },
+        {
+          "name": "2.tif",
+          "size": 756958,
+          "sha256": "a10ab6554b87af3ef9b042123345e4ca40201db9a3595ba12de90db91c4768ad"
+        },
+        {
+          "name": "3.tif",
+          "size": 753750,
+          "sha256": "28cf21bbce11fc4e6b912430ff37ed3e80b4a514bb103c07b9b7ea2ea1e9ffad"
+        },
+        {
+          "name": "4.tif",
+          "size": 748756,
+          "sha256": "65b3e43209617cd2c359c03cae88a214c237cf29a2d874f904c2e9d69f90dd82"
+        },
+        {
+          "name": "5.tif",
+          "size": 757032,
+          "sha256": "1e5066dcc3a5ed94d54d3f2976c08a01953b3a29642ddb959def635c0e3ab9f6"
+        },
+        {
+          "name": "6.tif",
+          "size": 756426,
+          "sha256": "58ba584574f603fa0e174ce2544afb8e9a3f93f174e05462f2737921eafb1d46"
+        },
+        {
+          "name": "7.tif",
+          "size": 756940,
+          "sha256": "df66d86b3e1c33c65084c5607c650de207a062b4f23c8eed331cacb17dd82779"
+        },
+        {
+          "name": "8.tif",
+          "size": 757236,
+          "sha256": "fd873cad65ab0680c393dd30f400506aa09cffb90df2e82589dd128ec2e84487"
+        },
+        {
+          "name": "9.tif",
+          "size": 756920,
+          "sha256": "8b274e2745ed5249c72f884a190bde06901d88a0f162ec40bb23899e8ef9531a"
+        },
+        {
+          "name": "10.tif",
+          "size": 756880,
+          "sha256": "9b9c1d3f31d6771fd02164bb00f96bcfef8cb7159288e6ad5a638e0ca5119ec2"
+        },
+        {
+          "name": "11.tif",
+          "size": 756848,
+          "sha256": "933d28336dcf3a60f306de2c1b30ba31e08679ebd0f45e4c34dec12682d456a4"
+        },
+        {
+          "name": "12.tif",
+          "size": 757004,
+          "sha256": "802b2fcf6c8f9e1455042ee973966110704b035b24c8fd431babceca56ebdbf2"
+        },
+        {
+          "name": "13.tif",
+          "size": 757002,
+          "sha256": "944a604d609aab0e90596fa1e75a6f0ce2040fc01dc37b0a536ff685b25f0991"
+        },
+        {
+          "name": "14.tif",
+          "size": 756870,
+          "sha256": "e0825be5f3095ce352cfb90b926e98aa5fddd2618f73910c3b2e23cf2e086860"
+        },
+        {
+          "name": "15.tif",
+          "size": 756686,
+          "sha256": "a0f65704a820f0c9431e81a357d1ad0a8998e93f238f2f81827963286dc8cfe7"
+        },
+        {
+          "name": "16.tif",
+          "size": 757004,
+          "sha256": "8927c35e1b331ad71479fe5a15624ee06eec7c44e635c3f82d74cc6adffc5602"
+        },
+        {
+          "name": "17.tif",
+          "size": 756984,
+          "sha256": "dae258efd7a6fc34717fa423a784771dda5f5bdd20b29874029077e6d54aebe9"
+        },
+        {
+          "name": "18.tif",
+          "size": 756920,
+          "sha256": "450fd784e1c042ade47e8efc9be378b85d4ed3efbb3209ee93e5a633a54f24e2"
+        }
+      ]
+    }
+  ]
+}

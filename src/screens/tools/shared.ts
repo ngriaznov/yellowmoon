@@ -1,4 +1,5 @@
 import type { AutoOr, PhotoSummary, ResolvedSettings } from "../../api/types";
+import { formats } from "../../components/format";
 import type { AppStore } from "../../state/store";
 
 /** What every tab needs: the store, the photo and its resolved settings. */
@@ -27,8 +28,5 @@ export function manualOrAuto<M extends object>(manual: M, auto: M): AutoOr<M> {
 /** The reset of `docs/11`: Auto for these fields. */
 export const AUTO = { kind: "auto" } as const;
 
-/** Shows a tint: "0", "+4", "−3" (with a true minus). */
-export function tintLabel(tint: number): string {
-  if (tint === 0) return "0";
-  return `${tint > 0 ? "+" : "−"}${Math.abs(Math.round(tint))}`;
-}
+/** Shows a tint: "0", "+4", "−3" (with a true minus). The automatic tint is not a whole number: 0.3 reads "0", not "+0". */
+export const tintLabel = (tint: number): string => formats.signed(tint);

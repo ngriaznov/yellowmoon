@@ -708,6 +708,12 @@ impl<'a> Tiff<'a> {
 
     /// Reads a text tag: the bytes up to the first NUL, as UTF-8 (lossy), with surrounding
     /// whitespace removed. Values longer than 4 KiB are cut.
+    ///
+    /// The text comes from the file and ends up in a terminal (`ym info`), in the UI and in the
+    /// metadata of exports, so control characters never get through: every C0 control, DEL, C1
+    /// control, line or paragraph separator and bidirectional formatting character inside the
+    /// value becomes U+FFFD (the character a damaged byte already turns into). Printable text,
+    /// including non-ASCII letters, is unchanged.
     pub fn ascii(&self, entry: &Entry) -> Result<String, RawError> {
         if !matches!(
             entry.ty,
@@ -717,7 +723,17 @@ impl<'a> Tiff<'a> {
         }
         let bytes = self.entry_prefix(entry, 4096)?;
         let end = bytes.iter().position(|b| *b == 0).unwrap_or(bytes.len());
-        Ok(String::from_utf8_lossy(&bytes[..end]).trim().to_owned())
+        Ok(String::from_utf8_lossy(&bytes[..end])
+            .trim()
+            .chars()
+            .map(|c| {
+                if is_unsafe_text_char(c) {
+                    '\u{FFFD}'
+                } else {
+                    c
+                }
+            })
+            .collect())
     }
 
     /// Walks IFD0, its "next IFD" chain and every SubIFD, EXIF and GPS directory below them.
@@ -804,6 +820,22 @@ impl<'a> Tiff<'a> {
         }
         Ok(nodes.into_iter().map(|(node, _)| node).collect())
     }
+}
+
+/// True for characters that must not reach a terminal, a window title or an export from a text
+/// tag: C0 and C1 controls, DEL, line and paragraph separators, and the invisible bidirectional
+/// and formatting characters that can reorder or hide text.
+pub(crate) fn is_unsafe_text_char(c: char) -> bool {
+    c.is_control()
+        || matches!(
+            c,
+            '\u{061C}'
+                | '\u{200B}'..='\u{200F}'
+                | '\u{2028}'..='\u{202E}'
+                | '\u{2060}'..='\u{2064}'
+                | '\u{2066}'..='\u{206F}'
+                | '\u{FEFF}'
+        )
 }
 
 #[cfg(test)]
@@ -1154,6 +1186,66 @@ mod tests {
         let (tiff, first) = Tiff::open(&raw.0).expect("header");
         let ifd = tiff.read_ifd(first).expect("ifd");
         assert_eq!(tiff.ascii(ifd.get(1).expect("t1")).unwrap(), "ILCE-1");
+    }
+
+    /// One text tag holding `bytes` (a NUL is appended), read through [`Tiff::ascii`].
+    fn read_text(bytes: &[u8]) -> String {
+        // More than four bytes, so the value lives at an offset, not inside the entry.
+        let mut value = bytes.to_vec();
+        value.push(0);
+        value.resize(value.len().max(8), 0);
+        let mut raw = Raw::header(8);
+        let base = 8 + 2 + 12 + 4;
+        raw.ifd(
+            &[(1, field_type::ASCII, value.len() as u32, long(base as u32))],
+            0,
+        );
+        raw.0.extend_from_slice(&value);
+        let (tiff, first) = Tiff::open(&raw.0).expect("header");
+        let ifd = tiff.read_ifd(first).expect("ifd");
+        tiff.ascii(ifd.get(1).expect("t1")).unwrap()
+    }
+
+    #[test]
+    fn ascii_replaces_terminal_control_characters() {
+        // A file can put anything into a text tag, and the CLI prints these strings: no escape
+        // sequence, bell, DEL, C1 control or bidi override may reach a terminal or an EXIF block.
+        let hostile = "FE \u{1b}[31mRED\u{1b}[0m\u{1b}]0;PWNED\u{7}\u{1b}[2J lens";
+        let text = read_text(hostile.as_bytes());
+        assert!(
+            text.chars().all(|c| !is_unsafe_text_char(c)),
+            "control characters survived: {text:?}"
+        );
+        assert!(text.starts_with("FE "), "{text:?}");
+        assert!(text.contains("PWNED"), "printable text is kept: {text:?}");
+        // DEL, C1 (as UTF-8: U+009B is the single-character CSI), bidi overrides, line separators.
+        let more = read_text("a\u{7f}b\u{9b}31mc\u{202e}d\u{2066}e\u{2028}f\tg\nh".as_bytes());
+        assert!(more.chars().all(|c| !is_unsafe_text_char(c)), "{more:?}");
+        assert!(more.starts_with('a') && more.ends_with('h'), "{more:?}");
+        // Every C0 control (a NUL ends the value, as before) and the whole C1 range.
+        for code in (1u32..0x20).chain(0x7f..0xa0) {
+            let c = char::from_u32(code).unwrap();
+            let text = read_text(format!("x{c}y").as_bytes());
+            assert_eq!(text.chars().count(), 3, "U+{code:04X}: {text:?}");
+            assert!(text.starts_with('x') && text.ends_with('y'), "U+{code:04X}");
+            assert!(
+                !text.chars().any(is_unsafe_text_char),
+                "U+{code:04X} survived: {text:?}"
+            );
+        }
+        // The same input always gives the same text.
+        assert_eq!(read_text(hostile.as_bytes()), text);
+    }
+
+    #[test]
+    fn ascii_keeps_ordinary_text_and_non_ascii_letters() {
+        assert_eq!(read_text(b"FE 24-70mm F2.8 GM II"), "FE 24-70mm F2.8 GM II");
+        assert_eq!(
+            read_text("Tamron 28-75mm \u{f8}ptik".as_bytes()),
+            "Tamron 28-75mm \u{f8}ptik"
+        );
+        // Surrounding whitespace is still trimmed, including a trailing newline.
+        assert_eq!(read_text(b"  ILCE-1 \r\n"), "ILCE-1");
     }
 
     #[test]

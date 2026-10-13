@@ -38,6 +38,13 @@
 //! A cancelled job sends nothing more: the panel that asked for the cancel closes the run itself.
 //! [`ExportEvent::Busy`] says when the queue becomes busy or idle, for the updater (below).
 //!
+//! # Names
+//!
+//! A name that an earlier photo of the same job has written is numbered ("Keep both") whatever the
+//! job's "If the file exists" says: Replace would overwrite that photo and Skip would take it for a
+//! file from before the job ([`WrittenFiles`]). A file that was there before the job is still
+//! replaced or skipped as asked.
+//!
 //! # Cancel
 //!
 //! [`ExportQueue::cancel`] stops after the current tile (rendering) or band (encoding), deletes the
@@ -69,7 +76,7 @@ use ym_raw::decode::RawImage;
 
 use crate::export::{
     DNG_BLOCKED_MESSAGE, ExportContext, ExportControl, ExportError, ExportParams, ExportReport,
-    PhotoSnapshot, estimate, export_photo, planned_destination, predicted_name_in,
+    PhotoSnapshot, WrittenFiles, estimate, export_photo, planned_destination, predicted_name_in,
 };
 use crate::session::{ApplyScope, PhotoId, PhotoStatus, Session, SessionError};
 use crate::settings::DevelopSettings;
@@ -808,6 +815,9 @@ fn update_summary(shared: &Shared, id: ExportJobId, f: impl FnOnce(&mut JobSumma
 
 fn run_job(ctx: &Arc<ExportContext>, sink: &ExportSink, shared: &Arc<Shared>, job: &Job) {
     let total = job.items.len();
+    // The files this job has written: a later photo with the same name is numbered, whatever
+    // "If the file exists" says, instead of replacing or being skipped for an earlier photo.
+    let written = WrittenFiles::new();
     let spawn_load = |i: usize| {
         let session = Arc::clone(&job.session);
         let snapshot = job.items[i].snapshot.clone();
@@ -844,7 +854,11 @@ fn run_job(ctx: &Arc<ExportContext>, sink: &ExportSink, shared: &Arc<Shared>, jo
         let predicted = {
             let name = snapshot.planned_file_name(&job.options, i as u32 + 1);
             match &dest_dir {
-                Some(dir) => predicted_name_in(dir, &name, job.options.if_exists),
+                Some(dir) => predicted_name_in(
+                    dir,
+                    &name,
+                    written.if_exists_for(dir, &name, job.options.if_exists),
+                ),
                 None => name,
             }
         };
@@ -907,6 +921,7 @@ fn run_job(ctx: &Arc<ExportContext>, sink: &ExportSink, shared: &Arc<Shared>, jo
                     options: job.options.clone(),
                     remove_location: job.remove_location,
                     seq: i as u32 + 1,
+                    written: Some(written.clone()),
                 },
                 &ExportControl {
                     cancel: job.cancel.clone(),
@@ -963,7 +978,10 @@ fn run_job(ctx: &Arc<ExportContext>, sink: &ExportSink, shared: &Arc<Shared>, jo
                         message: message.clone(),
                     });
                 });
-                tracing::warn!(job = job.id, file = %predicted, error = %message, "export failed");
+                // The log can end up in a bug report (`docs/01`): the kind of failure and the job at
+                // warn level, the file name and the message (which names the folder) at debug.
+                tracing::warn!(job = job.id, kind = e.kind(), "export failed");
+                tracing::debug!(job = job.id, file = %predicted, error = %message, "export failure details");
                 sink.send(ExportEvent::File(FileDone {
                     job_id: job.id,
                     photo: snapshot.view.id,

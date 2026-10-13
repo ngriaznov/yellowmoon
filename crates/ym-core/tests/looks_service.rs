@@ -556,3 +556,39 @@ fn imported_display_luts_can_be_chosen_as_the_display_rendering() {
     );
     assert_eq!(f.service.display_luts().len(), 1);
 }
+
+#[test]
+fn a_damaged_looks_list_is_logged_without_the_path_of_the_persons_folder() {
+    // The problem's own text names the looks list in the person's library, and the application's
+    // log can end up in a bug report (`docs/01`): the warning says what is wrong, not where.
+    captured_log(); // installs the capture before the work starts
+    let root = tempfile::tempdir().expect("app root");
+    let looks = root.path().join("looks");
+    std::fs::create_dir_all(&looks).expect("looks folder");
+    std::fs::write(looks.join("manifest.json"), b"{ not json").expect("damaged list");
+
+    let service = service_in(root.path());
+    assert!(
+        service
+            .list()
+            .iter()
+            .all(|l| l.id.as_str().starts_with("builtin:")),
+        "the built-in looks are listed, no imported one"
+    );
+
+    let log = captured_log();
+    let mine: Vec<&str> = log
+        .lines()
+        .filter(|l| l.contains("the look library has a problem"))
+        .collect();
+    assert!(
+        mine.iter().any(|l| l.contains("manifest")),
+        "the problem is logged in:\n{log}"
+    );
+    let folder = root.path().display().to_string();
+    assert!(
+        !log.contains(&folder),
+        "the person's folder reached the log:\n{log}"
+    );
+    assert!(!log.contains("manifest.json"), "{log}");
+}

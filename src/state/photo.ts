@@ -22,15 +22,19 @@ export function cameraLine(photo: PhotoSummary, { body = true }: { body?: boolea
     .join(" · ");
 }
 
-/** The capture date of a photo, "2026-10-04". */
+/** The capture date of a photo, "2026-10-04"; empty when the file has none (the core sends "" for a file it could not probe). */
 export const captureDate = (photo: PhotoSummary): string => photo.captured_at.slice(0, 10);
 
-/** "2026-10-04 · 12 photos" for the folder cell: the first photo's date and the count. */
+/**
+ * "2026-10-04 · 12 photos" for the folder cell: the date of the first photo that has one, and the count. Without any date it is
+ * just "12 photos".
+ */
 export function folderSubline(session: Pick<SessionState, "photos">): string {
-  const first = session.photos[0];
   const count = session.photos.length;
   const noun = count === 1 ? "photo" : "photos";
-  return first ? `${captureDate(first)} · ${count} ${noun}` : `0 photos`;
+  if (count === 0) return "0 photos";
+  const date = session.photos.map(captureDate).find((d) => d !== "");
+  return date ? `${date} · ${count} ${noun}` : `${count} ${noun}`;
 }
 
 /** True when a photo can be shown and edited. */

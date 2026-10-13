@@ -1,0 +1,29 @@
+{
+  "name": "plan_f_out_of_range",
+  "description": "Planner: f/64 is outside [1, 50]; the stage is disabled (active 0).",
+  "params": {
+    "pixel_pitch_x_um": 3.76,
+    "pixel_pitch_y_um": 3.76,
+    "f_number": 64,
+    "scale": 1,
+    "g0": [2, 1, 1.5],
+    "luma": [0.298999995, 0.587000012, 0.114],
+    "noise": {"a": 2.5e-05, "b": 4e-08, "sigma_row": 5e-05, "q": 0},
+    "strength": 1,
+    "working_scale": 65535
+  },
+  "input": null,
+  "expected": {
+    "active": 0,
+    "radius": 0,
+    "gauss_sigma": 0,
+    "gauss_radius": 0,
+    "halo_px": 0,
+    "sigma0_dn": 0,
+    "sigma1_dn": 0,
+    "r80_um": 0,
+    "support_um": 0,
+    "kernel": []
+  },
+  "tolerance": 1e-06
+}

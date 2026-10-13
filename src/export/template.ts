@@ -1,8 +1,9 @@
 /**
  * File name templates of the Export panel (`docs/09-export.md` §Options): `{name}`, `{look}`, `{date}`,
  * `{seq}` and `{camera}`. The panel previews the first file name with `previewFileName`, checks what the
- * person typed with `templateProblem`, and the mock API names its files with `expandNameTemplate`. The
- * core has the last word on the real names (it also adds " 2", " 3" when "If it exists" is Keep both).
+ * person typed with `templateProblem`, and the mock API names its files with `expandNameTemplate` and
+ * `sanitizeStem`. The core has the last word on the real names (it also adds " 2", " 3" when "If it exists" is
+ * Keep both).
  */
 import type { ExportFormat } from "../api/types";
 
@@ -37,9 +38,44 @@ export function expandNameTemplate(template: string, parts: TemplateParts): stri
   );
 }
 
-/** The file name a template gives one photo, with the extension of the format. */
+/** The longest stem the core writes, in UTF-8 bytes (`MAX_STEM_BYTES` in `ym-export`'s `naming.rs`). */
+export const MAX_STEM_BYTES = 200;
+
+/** What `char::is_whitespace` is in Rust (Unicode White_Space). JavaScript's `\s` differs: it counts U+FEFF and Rust does not. */
+const WHITESPACE = "\\t-\\r \\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000";
+const EDGE_DOTS_AND_SPACES = new RegExp(`^[.${WHITESPACE}]+|[.${WHITESPACE}]+$`, "g");
+const TRAILING_DOTS_AND_SPACES = new RegExp(`[.${WHITESPACE}]+$`);
+
+/** UTF-8 length of one code point (a lone surrogate counts 3, as the replacement character the core would hold). */
+const utf8Length = (codePoint: number): number => (codePoint < 0x80 ? 1 : codePoint < 0x800 ? 2 : codePoint < 0x10000 ? 3 : 4);
+
+/**
+ * Makes an expanded template safe as a file name stem, exactly as the core does (`sanitize_stem`, `docs/09` §Names and folders):
+ * `/ \ : * ? " < > |` and control characters become `_`, leading and trailing dots and spaces are dropped, at most 200 bytes are
+ * kept (never half a character), and a stem with nothing left is "export".
+ */
+export function sanitizeStem(text: string): string {
+  // Control characters (Rust's `is_control`: categories Cc) go before the trim, so a tab is an underscore and not an edge space.
+  const replaced = text.replace(/[/\\:*?"<>|\u0000-\u001f\u007f-\u009f]/g, "_");
+  const trimmed = replaced.replace(EDGE_DOTS_AND_SPACES, "");
+  let out = "";
+  let bytes = 0;
+  for (const ch of trimmed) {
+    const size = utf8Length(ch.codePointAt(0) ?? 0);
+    if (bytes + size > MAX_STEM_BYTES) break;
+    out += ch;
+    bytes += size;
+  }
+  out = out.replace(TRAILING_DOTS_AND_SPACES, "");
+  return out === "" ? "export" : out;
+}
+
+/**
+ * The file name a template gives one photo, with the extension of the format: the name the core writes (it sanitises the stem the
+ * same way), though not the " 2" it adds when "If it exists" is Keep both.
+ */
 export function previewFileName(template: string, parts: TemplateParts, format: ExportFormat): string {
-  return `${expandNameTemplate(template, parts)}.${FILE_EXTENSION[format]}`;
+  return `${sanitizeStem(expandNameTemplate(template, parts))}.${FILE_EXTENSION[format]}`;
 }
 
 /** "Sony A1" gives "sony-a1": the `{camera}` token and the look slug are lower case words joined by hyphens. */

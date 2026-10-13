@@ -109,7 +109,7 @@ pub fn write_jpeg<W: Write>(
     let interleaved = interleave::interleave_scans(&scans)?;
     drop(scans);
     out.write_all(&interleaved)
-        .map_err(|e| ExportError::encode("JPEG", e))?;
+        .map_err(|e| ExportError::write("JPEG", e))?;
     hooks.report(1.0);
     Ok(())
 }

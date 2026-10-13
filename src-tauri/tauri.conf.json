@@ -46,7 +46,8 @@
       "../data/looks/arri-packages.json": "data/looks/arri-packages.json",
       "../data/models": "data/models",
       "../NOTICE": "NOTICE",
-      "../LICENSE": "LICENSE"
+      "../LICENSE": "LICENSE",
+      "../THIRD-PARTY.md": "THIRD-PARTY.md"
     },
     "macOS": {
       "minimumSystemVersion": "12.0"

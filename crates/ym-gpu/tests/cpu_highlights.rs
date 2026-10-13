@@ -392,3 +392,221 @@ fn tiled_reconstruction_equals_whole() {
     }
     assert_eq!(out.data, whole.data, "tiled R5 differs from whole-frame R5");
 }
+
+// ---- Fully clipped pixels (review finding: a neutral blown core rendered pink) ----------------
+
+/// A neutral ramp seen through the real R1 then R4 order: each channel clips at its own white
+/// (1.0 after R1), then the gains `g0` move the clipped photosites to `g0_c`. A neutral source of
+/// balanced intensity `s` therefore clips green at `s = g0_G`, blue at `g0_B` and red at `g0_R`.
+mod fully_clipped {
+    use ym_gpu::cpu::chain::{Chain, RawFrame};
+    use ym_gpu::cpu::demosaic::Method;
+    use ym_gpu::cpu::denoise::BilateralParams;
+    use ym_gpu::cpu::detail::NoiseReduction;
+    use ym_gpu::cpu::normalize::Levels;
+    use ym_gpu::cpu::{Cfa, RgbImage};
+
+    const W: usize = 240;
+    const H: usize = 32;
+    const BLACK: f32 = 512.0;
+    const WHITE: f32 = 16300.0;
+    /// As-shot style gains: red and blue need boosting, so their clip level after R4 is above 1.
+    const G0: [f32; 3] = [2.0, 1.0, 1.7];
+    const S_MIN: f32 = 0.2;
+    const S_MAX: f32 = 3.0;
+
+    /// Balanced scene intensity of column `x`.
+    fn s_of(x: usize) -> f32 {
+        S_MIN + (S_MAX - S_MIN) * x as f32 / (W - 1) as f32
+    }
+
+    fn raw_ramp() -> Vec<u16> {
+        let mut data = vec![0u16; W * H];
+        for y in 0..H {
+            for x in 0..W {
+                let g = G0[Cfa::RGGB.color_at(x, y).plane()];
+                // Balanced value s is raw (s / g0) of the range above black; the sensor clips at white.
+                let v = BLACK + s_of(x) / g * (WHITE - BLACK);
+                data[y * W + x] = v.min(WHITE).round() as u16;
+            }
+        }
+        data
+    }
+
+    fn chain(recovery: bool) -> Chain {
+        Chain {
+            levels: Levels {
+                black: [BLACK; 4],
+                white: [WHITE; 4],
+            },
+            vignette: None,
+            gains: G0,
+            highlight_recovery: recovery,
+            method: Method::Bilinear,
+            denoise: None::<BilateralParams>,
+            noise_reduction: NoiseReduction {
+                luminance: 0.0,
+                color: 0.0,
+                detail: 0.0,
+            },
+            iso: 100.0,
+            sigma: 0.0,
+            sigma_map: None,
+            sharpen: None,
+            lens: None,
+        }
+    }
+
+    fn render(recovery: bool) -> RgbImage {
+        let data = raw_ramp();
+        let raw = RawFrame {
+            width: W,
+            height: H,
+            cfa: Cfa::RGGB,
+            data: &data,
+            qstep: None,
+        };
+        chain(recovery).run(&raw).expect("run")
+    }
+
+    /// sRGB code value of a linear value (the display encoding the review measured in).
+    fn srgb(v: f32) -> f32 {
+        let v = v.clamp(0.0, 1.0);
+        if v <= 0.003_130_8 {
+            12.92 * v
+        } else {
+            1.055 * v.powf(1.0 / 2.4) - 0.055
+        }
+    }
+
+    fn code_spread(p: [f32; 3]) -> f32 {
+        // Scale so the brightest balanced value (3.0) sits at the top of the code range.
+        let c = p.map(|v| srgb(v / S_MAX));
+        c.iter().cloned().fold(f32::MIN, f32::max) - c.iter().cloned().fold(f32::MAX, f32::min)
+    }
+
+    /// First column where every channel is clipped (balanced s at or above the largest `g0`).
+    fn first_fully_clipped_column() -> usize {
+        (0..W)
+            .find(|&x| s_of(x) >= G0[0])
+            .expect("ramp passes the red clip")
+    }
+
+    #[test]
+    fn a_neutral_ramp_that_clips_every_channel_stays_neutral() {
+        let img = render(true);
+        let x0 = first_fully_clipped_column();
+        let y = H / 2;
+        let mut worst = 0.0f32;
+        // Leave a margin for the demosaic footprint around the transition.
+        for x in (x0 + 4)..W - 4 {
+            let p = img.pixel(x, y);
+            worst = worst.max(code_spread(p));
+            assert!(
+                p.iter().all(|v| (v - p[0]).abs() <= 0.01 * p[0].max(1.0)),
+                "column {x} (s = {:.2}) is not neutral: {p:?}",
+                s_of(x)
+            );
+        }
+        assert!(worst <= 0.01, "display code spread {worst}");
+        // Before the red clip, where at least one channel is unclipped, recovery already worked.
+        for x in 8..x0 - 6 {
+            let p = img.pixel(x, y);
+            assert!(code_spread(p) <= 0.02, "column {x}: {p:?}");
+        }
+    }
+
+    #[test]
+    fn luminance_never_falls_as_the_source_gets_brighter() {
+        let img = render(true);
+        let y = H / 2;
+        let mut prev = 0.0f32;
+        for x in 8..W - 8 {
+            let l = ym_gpu::cpu::luma(img.pixel(x, y));
+            assert!(
+                l >= prev - 2e-3,
+                "luminance fell at column {x} (s = {:.2}): {l} after {prev}",
+                s_of(x)
+            );
+            prev = prev.max(l);
+        }
+    }
+
+    #[test]
+    fn the_blown_level_is_the_brightest_clip_bound() {
+        // A fully clipped pixel carries no colour, so it sits at the largest g0-scaled clip level.
+        let img = render(true);
+        let p = img.pixel(W - 10, H / 2);
+        for v in p {
+            assert!((v - G0[0]).abs() < 1e-3, "{p:?}");
+        }
+    }
+
+    #[test]
+    fn switching_recovery_off_still_leaves_the_clipped_values_alone() {
+        // docs/05 R5 step 5: with recovery off the clipped values stay at their clip level.
+        let img = render(false);
+        let p = img.pixel(W - 10, H / 2);
+        for (v, want) in p.iter().zip(G0) {
+            assert!((v - want).abs() < 1e-3, "{p:?}");
+        }
+    }
+}
+
+/// Review addition: the tiles-equal-whole check above clips every channel at 1.0, where levelling a
+/// fully clipped quad to its brightest member changes nothing. After R4 the clip levels differ
+/// (`g0_c`), so this one runs the same two passes on a mosaic that sits at `[2.0, 1.0, 1.7]` where
+/// it is clipped: the per-quad levelling must not depend on how the frame is cut.
+#[test]
+fn tiled_reconstruction_equals_whole_with_unequal_clip_levels() {
+    use ym_gpu::cpu::tiling::{Halo, Rect, tile_grid};
+    const G0: [f32; 3] = [2.0, 1.0, 1.7];
+    let scene = Scene {
+        name: "neutral disc",
+        color: [1.0, 1.0, 1.0],
+        peak: 3.0,
+        profile: Profile::Disc,
+    };
+    let (mut m, mask) = clipped_mosaic(&scene_image(&scene));
+    for (i, v) in m.data.iter_mut().enumerate() {
+        let (x, y) = (i % W, i / W);
+        *v *= G0[Cfa::RGGB.color_at(x, y).plane()];
+    }
+    assert!(mask.count() > 1000, "the {} must clip", scene.name);
+
+    let mut whole = m.clone();
+    let offsets = highlights::reconstruct(&mut whole, &mask).unwrap();
+    // The levelling is active: the green and blue photosites of the core quad have left their own
+    // clip levels (1.0 and 1.7) for the largest bound, 2.0.
+    let (cx, cy) = (W / 2, H / 2);
+    for (dx, dy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+        let v = whole.data[(cy + dy) * W + cx + dx];
+        assert_eq!(
+            v, G0[0],
+            "core photosite ({dx}, {dy}) is at the largest bound"
+        );
+    }
+
+    let frame = Rect::whole(W, H);
+    let tiles = tile_grid(W, H, 48, 64, 2);
+    let mut acc = highlights::OffsetAccumulator::default();
+    for tile_core in &tiles {
+        let ext = tile_core.grow_aligned(Halo::uniform(4), frame, 2);
+        let tile = m.extract(ext);
+        let tmask = mask.extract(ext);
+        acc.merge(
+            &highlights::accumulate_offsets(&tile, &tmask, tile_core.relative_to(&ext)).unwrap(),
+        );
+    }
+    let merged = acc.finish();
+    assert_eq!(merged.offset, offsets.offset);
+    let mut out = m.clone();
+    for tile_core in &tiles {
+        let ext = tile_core.grow_aligned(Halo::uniform(4), frame, 2);
+        let mut tile = m.extract(ext);
+        let tmask = mask.extract(ext);
+        highlights::apply_offsets(&mut tile, &tmask, &merged).unwrap();
+        out.paste(&tile, tile_core.relative_to(&ext), tile_core.x, tile_core.y);
+    }
+    assert_eq!(out.data, whole.data, "tiled R5 differs from whole-frame R5");
+}

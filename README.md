@@ -10,7 +10,7 @@ Yellowmoon is a free, open-source raw processor for macOS. Drop in ARW files fro
 
 I like how ARRI looks, but I can't afford an ALEXA. I've used LUTs that smart people make, and they're hit-or-miss: a LUT is static, and it can't know what light a photo was taken in.
 
-So we built a tool that does know. Yellowmoon models how a Sony sensor and an ALEXA sensor each respond to light, estimates the light in every photo, and maps one to the other for that light. Small learned models handle the rest of the raw work: demosaicing, noise and detail. We trained them from scratch, on openly licensed data and our own captures.
+So we built a tool that does know. Yellowmoon models how a Sony sensor and an ALEXA sensor each respond to light, estimates the light in every photo, and maps one to the other for that light. Small learned models are planned for the rest of the raw work: demosaicing, noise and detail. Until their weights are trained, classical algorithms do that work. The models are trained from scratch, on openly licensed data only.
 
 It's free, and it's simple: open your files, export, and never look back. Nothing to catalogue, nothing to maintain. It's how I process photos of my family and our trips.
 
@@ -23,7 +23,7 @@ We don't intend to compete with existing raw processors or to replace any of the
 - Opens ARW files from every Sony camera: uncompressed, lossless and compressed.
 - Detects your camera and uses its colour profile, built from published sensor measurements of 11 Sony bodies (plus the cameras that share their sensors).
 - Estimates the light in each photo and renders it the way an ALEXA (ALEV III sensor) would have seen it.
-- Learned demosaic and noise reduction, tuned for every ISO.
+- Demosaic and noise reduction tuned for every ISO: classical algorithms today, learned models once their weights are trained.
 - Built-in looks, and a guided import of ARRI's free Look Library.
 - Exports JPEG, TIFF, PNG, and DNG with your look baked in.
 - A command-line tool, `ym`, with the same results as the app, for scripts and batch jobs.

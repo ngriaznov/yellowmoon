@@ -54,8 +54,11 @@ export function editText(value: number, step: number): string {
 
 /** Value formats for `Slider` and `ValueBox`, as in the mockups. */
 export const formats = {
-  /** 0 → "0", 18 → "+18", -18 → "−18". */
-  signed: (value: number): string => (value > 0 ? "+" : value < 0 ? MINUS : "") + Math.abs(Math.round(value)),
+  /** 0 → "0", 18 → "+18", -18 → "−18". The sign follows the rounded value, so 0.3 and -0.3 are both "0", never "+0" or "−0". */
+  signed: (value: number): string => {
+    const rounded = Math.round(value);
+    return rounded === 0 ? "0" : (rounded > 0 ? "+" : MINUS) + Math.abs(rounded);
+  },
   /** 0.3 → "+0.30", -1.25 → "−1.25", 0 → "0.00". Exposure in EV. */
   ev: (value: number): string => {
     const text = Math.abs(value).toFixed(2);

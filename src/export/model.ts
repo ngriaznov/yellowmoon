@@ -4,10 +4,13 @@
  * (`model.test.ts`).
  */
 import type { ApplyScope, ExportOptions, Look, PhotoSummary, Preferences, ResolvedSettings, SessionState } from "../api/types";
-import { photoName } from "../state/photo";
+import { captureDate, photoName } from "../state/photo";
 import { fullLongEdge, photosInScope, isExportable } from "./options";
 import { previewFileName, slugify, templateProblem, templateWarning } from "./template";
 import type { TemplateParts } from "./template";
+
+/** What `{date}` becomes for a photo with no capture time: the word the core writes (`docs/09` §Names and folders). */
+export const UNDATED = "undated";
 
 /** Where files go when nothing says otherwise and the session has no folder of its own. */
 export const FALLBACK_DESTINATION = "~/Pictures/Yellowmoon export";
@@ -63,7 +66,7 @@ export function exportModel(input: ExportModelInput, scope: ApplyScope, options:
   const parts = (photo: PhotoSummary, index: number): TemplateParts => ({
     name: photoName(photo.file_name),
     look: slugOfLookId(lookIdFor(photo, input)),
-    date: photo.captured_at.slice(0, 10),
+    date: captureDate(photo) || UNDATED,
     seq: index + 1,
     camera: slugify(photo.camera.body),
   });

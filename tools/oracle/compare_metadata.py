@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Compare `yellowmoon info --json` with LibRaw (rawpy) and ExifTool on a set of ARW files.
+"""Compare `ym info --json` with LibRaw (rawpy) and ExifTool on a set of ARW files.
 
 This is the M0-04 corpus gate: "metadata fields (make, model, model ID, ISO, exposure, dimensions,
 compression, black, white, WB) equal LibRaw/ExifTool values". It runs
 
-    yellowmoon info --json FILE            (our reader)
+    ym info --json FILE                    (our reader)
     tools/oracle/rawpy_meta.py FILE        (LibRaw 0.22 through rawpy)
     exiftool -j -n -G1 -a -u FILE          (ExifTool, optional)
 
@@ -13,10 +13,11 @@ differences, 1 otherwise, 2 for usage errors. LibRaw and ExifTool are test oracl
 as separate processes and are never linked into anything we ship (docs/14-licensing.md).
 
 Usage:
-    python3 tools/oracle/compare_metadata.py [--yellowmoon PATH] [--exiftool PATH] \
+    python3 tools/oracle/compare_metadata.py [--ym PATH] [--exiftool PATH] \
         [--report report.json] FILE_OR_DIR...
 
-`--exiftool` is the path of the `exiftool` script (run with perl) or the name of an installed
+`--ym` is the command-line tool (default: target/debug/ym, what `cargo build -p ym-cli` writes; `--yellowmoon`
+is the old name of the option and still works). `--exiftool` is the path of the `exiftool` script (run with perl) or the name of an installed
 binary; without it ExifTool is used when `exiftool` is on PATH, and skipped otherwise. Folders are
 searched recursively for *.ARW.
 
@@ -61,8 +62,9 @@ def find_files(paths):
     return sorted(out)
 
 
-def ours(yellowmoon, path):
-    proc = subprocess.run([yellowmoon, "info", "--json", path], capture_output=True, text=True)
+def ours(ym, path):
+    """Our reader's view of a file: the first line `ym info --json` prints, parsed (None when it prints nothing)."""
+    proc = subprocess.run([ym, "info", "--json", path], capture_output=True, text=True)
     lines = proc.stdout.strip().splitlines()
     if not lines:
         return None
@@ -186,16 +188,21 @@ def compare(path, mine, lr, et):
     return diffs
 
 
-def main(argv):
+def build_parser():
+    """The command line. The binary is `ym` (decision 2026-10-12); `--yellowmoon` is kept as an alias of `--ym`."""
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("paths", nargs="+")
-    parser.add_argument("--yellowmoon", default=os.path.join(REPO, "target", "debug", "yellowmoon"))
+    parser.add_argument("--ym", "--yellowmoon", dest="ym", default=os.path.join(REPO, "target", "debug", "ym"))
     parser.add_argument("--exiftool", default=None)
     parser.add_argument("--report", default=None)
-    args = parser.parse_args(argv)
+    return parser
 
-    if not os.path.exists(args.yellowmoon):
-        print(f"yellowmoon binary not found at {args.yellowmoon} (build it or pass --yellowmoon)")
+
+def main(argv):
+    args = build_parser().parse_args(argv)
+
+    if not os.path.exists(args.ym):
+        print(f"ym binary not found at {args.ym} (build it with `cargo build -p ym-cli` or pass --ym)")
         return 2
     et_cmd = exiftool_command(args.exiftool)
     files = find_files(args.paths)
@@ -206,7 +213,7 @@ def main(argv):
     report = {"files": [], "exiftool": bool(et_cmd)}
     failed = 0
     for path in files:
-        mine = ours(args.yellowmoon, path)
+        mine = ours(args.ym, path)
         lr = libraw(path)
         et = exiftool(et_cmd, path) if et_cmd else None
         entry = {"path": path}
@@ -216,7 +223,7 @@ def main(argv):
             # LibRaw reading what we refuse is worth knowing; both failing is consistent.
             if lr and "error" not in lr:
                 failed += 1
-                entry["note"] = "LibRaw reads this file but yellowmoon info does not"
+                entry["note"] = "LibRaw reads this file but ym info does not"
         else:
             diffs = compare(path, mine, lr, et)
             entry["differences"] = [

@@ -20,7 +20,7 @@ pub struct Candidate {
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ResolveError {
     /// Nothing matches.
-    #[error("No look called \"{query}\". Run `yellowmoon looks list` to see the ids and names.")]
+    #[error("No look called \"{query}\". Run `ym looks list` to see the ids and names.")]
     NotFound {
         /// The query as given.
         query: String,

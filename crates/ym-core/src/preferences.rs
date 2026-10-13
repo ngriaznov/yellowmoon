@@ -199,6 +199,20 @@ pub enum PreferencesError {
     Invalid(String),
 }
 
+impl PreferencesError {
+    /// A short machine-readable kind, for the log: its text names the preferences file, whose path
+    /// holds the user's name.
+    #[must_use]
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::NoHome(_) => "no_home",
+            Self::Write { .. } => "write",
+            Self::Encode(_) => "encode",
+            Self::Invalid(_) => "invalid",
+        }
+    }
+}
+
 /// A preferences file after reading: the values and what was wrong with the file.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ParsedPreferences {
@@ -368,9 +382,12 @@ fn read_file(path: &Path) -> ParsedPreferences {
     }
 }
 
+/// Logs what was wrong with the file. The path holds the user's name and a bug report may carry the
+/// log (`docs/01`), so it goes at debug level only.
 fn log_warnings(path: &Path, warnings: &[String]) {
     for w in warnings {
-        tracing::warn!(file = %path.display(), "{w}");
+        tracing::warn!("{w}");
+        tracing::debug!(file = %path.display(), "the preferences file in question");
     }
 }
 
@@ -676,6 +693,54 @@ mod tests {
         let again = PreferencesStore::open(dir.path());
         assert!(again.get().watch_downloads_during_import);
         assert!(again.warnings().is_empty());
+    }
+
+    /// Runs `f` and returns what it logged at info level and above (the application's default).
+    fn logged(f: impl FnOnce()) -> String {
+        use std::sync::{Arc, Mutex, PoisonError};
+
+        struct Sink(Arc<Mutex<Vec<u8>>>);
+        impl std::io::Write for Sink {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let buffer = Arc::new(Mutex::new(Vec::new()));
+        let shared = Arc::clone(&buffer);
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .with_max_level(tracing::Level::INFO)
+            .with_writer(move || Sink(Arc::clone(&shared)))
+            .finish();
+        tracing::subscriber::with_default(subscriber, f);
+        let bytes = buffer.lock().unwrap_or_else(PoisonError::into_inner);
+        String::from_utf8_lossy(&bytes).into_owned()
+    }
+
+    #[test]
+    fn the_warning_about_a_damaged_file_does_not_put_its_path_in_the_log() {
+        // The path holds the user's name, and a bug report may carry the log (`docs/01`).
+        let dir = root();
+        std::fs::write(dir.path().join(FILE_NAME), b"{ not json").expect("write junk");
+        let log = logged(|| {
+            let store = PreferencesStore::open(dir.path());
+            assert_eq!(store.warnings().len(), 1);
+        });
+        assert!(
+            log.contains("The preferences file is damaged"),
+            "the warning is logged: {log:?}"
+        );
+        let folder = dir.path().display().to_string();
+        assert!(!log.contains(&folder), "the folder reached the log: {log}");
+        assert!(!log.contains(FILE_NAME), "the file reached the log: {log}");
     }
 
     #[test]

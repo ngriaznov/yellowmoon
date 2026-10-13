@@ -14,6 +14,7 @@ export function CubeImport() {
   if (!dialog) return null;
   const importable = dialog.items.filter((i) => i.found.recognition.kind === "package" || (i.found.recognition.kind === "needs_answer" && i.answer));
   const unanswered = dialog.items.some((i) => i.found.recognition.kind === "needs_answer" && !i.answer);
+  const locked = importable.length === 0 || unanswered;
   return (
     <Dialog
       title="Import LUTs"
@@ -27,8 +28,9 @@ export function CubeImport() {
             Cancel
           </Button>
           <Button
-            data-autofocus=""
-            disabled={dialog.busy || importable.length === 0 || unanswered}
+            // Focus starts on Import only when it can be pressed; while it is locked it starts on the first question, the next thing to do.
+            data-autofocus={locked ? undefined : ""}
+            disabled={dialog.busy || locked}
             title={unanswered ? "Say what each LUT expects as input." : importable.length === 0 ? "Nothing here can be imported." : undefined}
             onClick={() => void store.confirmCubeImport()}
           >

@@ -166,6 +166,56 @@ describe("opening photos", () => {
     expect(store.getState().dropNotice).toBeNull();
   });
 
+  describe("in the app", () => {
+    // Inside Tauri the webview gets real paths, so a name says nothing about whether a path is a folder.
+    const inApp = (): void => {
+      (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__ = {};
+    };
+    afterEach(() => {
+      delete (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__;
+    });
+
+    it("hands every dropped path to the core, also a folder whose name has a dot and letters", async () => {
+      inApp();
+      const { api, store } = await connected();
+      const spy = vi.spyOn(api, "openPaths");
+      const paths = ["/Users/me/Sony.A7C", "/Users/me/2026.Lisbon", "/Users/me/Photos/Trip.Day2", "/Users/me/2026.10.04_Lisbon", "/Users/me/notes.txt"];
+      await store.openPaths(paths);
+      expect(spy).toHaveBeenCalledWith(paths);
+      expect(store.getState().dropNotice).toBeNull();
+    });
+
+    it("shows the core's \"No ARW files\" answer as the drop notice, not as an error", async () => {
+      inApp();
+      const { api, store } = await connected();
+      api.failNext("openPaths", { scope: "open", message: NO_ARW_NOTICE });
+      const spy = vi.spyOn(api, "openPaths");
+      await store.openPaths(["/Users/me/Trip.Day2"]);
+      expect(spy).toHaveBeenCalledTimes(1);
+      expect(store.getState().dropNotice).toBe(NO_ARW_NOTICE);
+      expect(store.getState().error).toBeNull();
+      expect(store.getState().opening).toBe(false);
+    });
+
+    it("still shows any other open error in the error bar", async () => {
+      inApp();
+      const { api, store } = await connected();
+      api.failNext("openPaths", { scope: "open", message: "That file isn't there any more. Check that its drive is connected, then open it again." });
+      await store.openPaths(["/Volumes/Gone/DSC1.ARW"]);
+      expect(store.getState().dropNotice).toBeNull();
+      expect(store.getState().error?.message).toContain("isn't there");
+    });
+
+    it("says so at once when the drop holds no paths", async () => {
+      inApp();
+      const { api, store } = await connected();
+      const spy = vi.spyOn(api, "openPaths");
+      await store.openPaths([]);
+      expect(spy).not.toHaveBeenCalled();
+      expect(store.getState().dropNotice).toBe(NO_ARW_NOTICE);
+    });
+  });
+
   it("changes nothing when the dialog is cancelled", async () => {
     const { api, store } = await connected();
     api.cancelNextDialog();

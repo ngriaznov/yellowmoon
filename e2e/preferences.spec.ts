@@ -52,6 +52,30 @@ test.describe("Preferences", () => {
     await expect(focused).toHaveCSS("outline-offset", "2px");
   });
 
+  test("Import LUTs keeps the keyboard inside while its question is unanswered, and Esc still closes it", async ({ page }) => {
+    await openApp(page);
+    await page.evaluate(() => window.__yellowmoon!.mockApi.queueChoice("files", ["~/LUTs/Warm_Film.cube"]));
+    await menu(page, "import_cube");
+    const dialog = page.getByRole("dialog", { name: "Import LUTs" });
+    await expect(dialog).toBeVisible();
+    // Nothing says what Warm_Film.cube expects, so Import is locked (aria-disabled, still in the tab order).
+    await expect(dialog.getByRole("button", { name: "Import" })).toHaveAttribute("aria-disabled", "true");
+    const inside = (): Promise<boolean> => page.evaluate(() => !!document.activeElement?.closest("[role=dialog]"));
+    expect(await inside()).toBe(true);
+    for (let i = 0; i < 12; i++) {
+      await page.keyboard.press("Tab");
+      expect(await inside()).toBe(true);
+    }
+    for (let i = 0; i < 12; i++) {
+      await page.keyboard.press("Shift+Tab");
+      expect(await inside()).toBe(true);
+    }
+    // The first Tab used to leave the dialog, and Esc did nothing from there.
+    await page.keyboard.press("Tab");
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+  });
+
   test("switches save at once and survive closing the dialog", async ({ page }) => {
     await openApp(page);
     await page.keyboard.press("Meta+,");

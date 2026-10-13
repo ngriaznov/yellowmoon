@@ -468,6 +468,177 @@ mod tests {
     }
 
     #[test]
+    fn each_option_changes_its_own_setting_and_nothing_else() {
+        // Every flag alone: the patch holds exactly the field it names (a swapped pair, such as
+        // `--no-neural` feeding `highlight_recovery`, would otherwise go unnoticed).
+        let decode = |d: DecodePatch| SettingsPatch {
+            decode: Some(d),
+            ..SettingsPatch::default()
+        };
+        let cases: Vec<(&str, Overrides, SettingsPatch)> = vec![
+            (
+                "--intensity",
+                Overrides {
+                    intensity: Some(80.0),
+                    ..Overrides::default()
+                },
+                SettingsPatch {
+                    look_intensity: Some(80.0),
+                    ..SettingsPatch::default()
+                },
+            ),
+            (
+                "--contrast",
+                Overrides {
+                    contrast: Some(21.0),
+                    ..Overrides::default()
+                },
+                SettingsPatch {
+                    contrast: Some(21.0),
+                    ..SettingsPatch::default()
+                },
+            ),
+            (
+                "--brightness",
+                Overrides {
+                    brightness: Some(11.0),
+                    ..Overrides::default()
+                },
+                SettingsPatch {
+                    brightness: Some(11.0),
+                    ..SettingsPatch::default()
+                },
+            ),
+            (
+                "--highlights",
+                Overrides {
+                    highlights: Some(-12.0),
+                    ..Overrides::default()
+                },
+                SettingsPatch {
+                    highlights: Some(-12.0),
+                    ..SettingsPatch::default()
+                },
+            ),
+            (
+                "--shadows",
+                Overrides {
+                    shadows: Some(22.0),
+                    ..Overrides::default()
+                },
+                SettingsPatch {
+                    shadows: Some(22.0),
+                    ..SettingsPatch::default()
+                },
+            ),
+            (
+                "--white",
+                Overrides {
+                    white: Some(33.0),
+                    ..Overrides::default()
+                },
+                SettingsPatch {
+                    white: Some(33.0),
+                    ..SettingsPatch::default()
+                },
+            ),
+            (
+                "--black",
+                Overrides {
+                    black: Some(-44.0),
+                    ..Overrides::default()
+                },
+                SettingsPatch {
+                    black: Some(-44.0),
+                    ..SettingsPatch::default()
+                },
+            ),
+            (
+                "--saturation",
+                Overrides {
+                    saturation: Some(-15.0),
+                    ..Overrides::default()
+                },
+                SettingsPatch {
+                    saturation: Some(-15.0),
+                    ..SettingsPatch::default()
+                },
+            ),
+            (
+                "--no-neural",
+                Overrides {
+                    no_neural: true,
+                    ..Overrides::default()
+                },
+                decode(DecodePatch {
+                    neural_demosaic: Some(false),
+                    ..DecodePatch::default()
+                }),
+            ),
+            (
+                "--no-highlight-recovery",
+                Overrides {
+                    no_highlight_recovery: true,
+                    ..Overrides::default()
+                },
+                decode(DecodePatch {
+                    highlight_recovery: Some(false),
+                    ..DecodePatch::default()
+                }),
+            ),
+            (
+                "--no-lens",
+                Overrides {
+                    no_lens: true,
+                    ..Overrides::default()
+                },
+                decode(DecodePatch {
+                    lens_corrections: Some(false),
+                    ..DecodePatch::default()
+                }),
+            ),
+            (
+                "--no-ca",
+                Overrides {
+                    no_ca: true,
+                    ..Overrides::default()
+                },
+                decode(DecodePatch {
+                    chromatic_aberration: Some(false),
+                    ..DecodePatch::default()
+                }),
+            ),
+        ];
+        for (flag, overrides, expected) in cases {
+            assert_eq!(overrides.patch(0.0), expected, "{flag}");
+        }
+        // Together they add up, field by field.
+        let all = Overrides {
+            brightness: Some(11.0),
+            shadows: Some(22.0),
+            white: Some(33.0),
+            no_neural: true,
+            no_highlight_recovery: true,
+            no_lens: true,
+            ..Overrides::default()
+        };
+        let p = all.patch(0.0);
+        assert_eq!(
+            (p.brightness, p.shadows, p.white),
+            (Some(11.0), Some(22.0), Some(33.0))
+        );
+        assert_eq!(
+            p.decode,
+            Some(DecodePatch {
+                neural_demosaic: Some(false),
+                highlight_recovery: Some(false),
+                lens_corrections: Some(false),
+                chromatic_aberration: None,
+            })
+        );
+    }
+
+    #[test]
     fn a_wb_without_a_tint_leaves_the_tint_out_of_the_patch() {
         let o = Overrides {
             wb: Some(WbArg::Manual {

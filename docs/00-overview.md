@@ -6,8 +6,8 @@ A desktop raw processor for photos from Sony cameras. It reads ARW files, develo
 
 - Platform: macOS 12 or later, universal binary (Apple silicon and Intel). The photo is drawn by a native GPU view (wgpu on Metal).
 - Licence: Apache-2.0. A personal art project on Mykyta's GitHub account (`github.com/ngriaznov/yellowmoon`), set up like github.com/ngriaznov/plugout: GitHub Releases, a Homebrew cask in the same repo, and in-app auto-update.
-- Two front ends on one Rust core: the Tauri app, and a command-line tool `yellowmoon` that gives bit-identical results.
-- Name: Yellowmoon, one word. The command is `yellowmoon`. Brand colour #FFC20E, the yellow moon mark.
+- Two front ends on one Rust core: the Tauri app, and a command-line tool `ym` that gives bit-identical results.
+- Name: Yellowmoon, one word. The command is `ym` (decision 2026-10-12). Brand colour #FFC20E, the yellow moon mark.
 
 **Who it's for.** People who shoot Sony and want cinema-like colour without grading every photo: family, travel, everyday shooting. They expect it to "just work" and to look better than the camera JPEG and a generic LUT.
 
@@ -78,7 +78,7 @@ Don't reopen these without new evidence. The reasoning is in `research/`.
 | Noise | Per-image Poisson–Gaussian estimate for every body, with priors fitted from public files. No calibration shoots in V1. Nothing stored. |
 | Lens | Sony's embedded correction tags (vignetting, distortion, CA). No Lensfun. |
 | Export | JPEG, TIFF, PNG; DNG as LinearRaw AWG4 with the look baked into pixels and a profile fitted to ACES 2. |
-| CLI | `yellowmoon` binary in the same workspace, shipped inside the app bundle, bit-identical to app exports. |
+| CLI | `ym` binary in the same workspace, shipped inside the app bundle, bit-identical to app exports. |
 | Persistence | Nothing per photo. Only imported looks and preferences (default look, display rendering choice, export defaults, watch-Downloads permission). |
 | UI | "Bold grid, white": Figtree, 3 px black rules, flat colour block per tab, square boxed controls, photo edge to edge. Yellow is the brand colour. A dark variant exists in research but is not V1. |
 | Distribution | plugout's release pipeline: version bump on main → signed updater artefacts → GitHub release → cask update. |

@@ -615,7 +615,7 @@ _VARIANT_RULES: List[Tuple[str, str]] = [
 
 
 def guess_variant(text: str) -> str:
-    """Best-effort variant hint from API text or file names. Authoritative variants come from ``yellowmoon info``."""
+    """Best-effort variant hint from API text or file names. Authoritative variants come from ``ym info``."""
     t = text.lower()
     for pattern, label in _VARIANT_RULES:
         if re.search(pattern, t):
@@ -1002,7 +1002,7 @@ def print_coverage(m: Dict[str, Any]) -> None:
         if not files:
             gaps.append(b["model"])
     print()
-    print("Variant columns are hints guessed from the API text and file names (not authoritative; `yellowmoon info` is).")
+    print("Variant columns are hints guessed from the API text and file names (not authoritative; `ym info` is).")
     print(f"Bodies with no corpus file: {', '.join(gaps) if gaps else 'none'}")
 
 

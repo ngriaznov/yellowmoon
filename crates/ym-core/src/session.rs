@@ -41,7 +41,9 @@
 //! At most [`MOSAIC_CACHE_LEN`] decoded mosaics are kept: the current photo and its neighbours. A
 //! mosaic outside that window is dropped when its job is done, and [`Session::raw_image`] decodes
 //! again when something needs one (a render, Pick white, Re-run). Moving the current photo queues
-//! the new window for decoding.
+//! the new window for decoding; a queued prefetch is dropped unless its photo is still in the window
+//! when it runs. Callers that ask for a photo while it is being decoded wait for that decode and
+//! share its image: one decode per photo at a time.
 //!
 //! # Shared estimates
 //!
@@ -90,6 +92,118 @@ pub const NO_ARW_MESSAGE: &str = "No ARW files in what you dropped.";
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// One run at a time per key. The first caller for a key runs the work (the leader); callers that
+/// arrive while it runs wait for its result and share it, instead of repeating the work.
+///
+/// A leader that fails, or panics, leaves the waiters with nothing: each looks again and may lead
+/// a run of its own, so every caller still gets its own error.
+struct SingleFlight<K, V> {
+    flights: Mutex<HashMap<K, Arc<Flight<V>>>>,
+}
+
+/// A run in progress and, once it is over, what came of it.
+struct Flight<V> {
+    outcome: Mutex<Outcome<V>>,
+    done: Condvar,
+}
+
+enum Outcome<V> {
+    Running,
+    Done(V),
+    Failed,
+}
+
+/// What a caller of [`SingleFlight::join`] is to do.
+enum Role<'a, K: std::hash::Hash + Eq + Copy, V: Clone> {
+    /// Another caller is running it: [`Flight::wait`] for the result.
+    Wait(Arc<Flight<V>>),
+    /// This caller runs it and ends it with [`Lead::finish`].
+    Lead(Lead<'a, K, V>),
+}
+
+/// The leader's end of a run. Dropped without [`Lead::finish`] (an error, a panic), it ends the run
+/// as failed, so the waiters never wait for ever.
+struct Lead<'a, K: std::hash::Hash + Eq + Copy, V: Clone> {
+    owner: &'a SingleFlight<K, V>,
+    key: K,
+    flight: Arc<Flight<V>>,
+    ended: bool,
+}
+
+impl<K: std::hash::Hash + Eq + Copy, V: Clone> SingleFlight<K, V> {
+    fn new() -> Self {
+        Self {
+            flights: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Joins the run for `key`, or starts one.
+    fn join(&self, key: K) -> Role<'_, K, V> {
+        let mut flights = lock(&self.flights);
+        if let Some(flight) = flights.get(&key) {
+            return Role::Wait(Arc::clone(flight));
+        }
+        let flight = Arc::new(Flight {
+            outcome: Mutex::new(Outcome::Running),
+            done: Condvar::new(),
+        });
+        flights.insert(key, Arc::clone(&flight));
+        Role::Lead(Lead {
+            owner: self,
+            key,
+            flight,
+            ended: false,
+        })
+    }
+}
+
+impl<V: Clone> Flight<V> {
+    /// Waits for the leader; `None` when it failed.
+    fn wait(&self) -> Option<V> {
+        let mut outcome = lock(&self.outcome);
+        loop {
+            match &*outcome {
+                Outcome::Running => {
+                    outcome = self
+                        .done
+                        .wait(outcome)
+                        .unwrap_or_else(PoisonError::into_inner);
+                }
+                Outcome::Done(value) => return Some(value.clone()),
+                Outcome::Failed => return None,
+            }
+        }
+    }
+}
+
+impl<K: std::hash::Hash + Eq + Copy, V: Clone> Lead<'_, K, V> {
+    /// Ends the run with its result (`None` for a failure) and wakes the waiters.
+    fn finish(mut self, value: Option<V>) {
+        self.end(value);
+    }
+
+    fn end(&mut self, value: Option<V>) {
+        if std::mem::replace(&mut self.ended, true) {
+            return;
+        }
+        *lock(&self.flight.outcome) = value.map_or(Outcome::Failed, Outcome::Done);
+        self.flight.done.notify_all();
+        let mut flights = lock(&self.owner.flights);
+        if flights
+            .get(&self.key)
+            .is_some_and(|f| Arc::ptr_eq(f, &self.flight))
+        {
+            flights.remove(&self.key);
+        }
+    }
+}
+
+impl<K: std::hash::Hash + Eq + Copy, V: Clone> Drop for Lead<'_, K, V> {
+    fn drop(&mut self) {
+        self.end(None);
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -994,6 +1108,11 @@ struct Inner {
     idle: Condvar,
     /// Jobs started, for tests and `doctor`-style diagnostics.
     jobs_started: AtomicU64,
+    /// Files decoded by [`Session::raw_image`] (not by the development jobs), for tests.
+    raw_decodes: AtomicU64,
+    /// The decodes of [`Session::raw_image`] in progress: callers that ask for a photo that is
+    /// being decoded wait for that decode instead of reading the file again.
+    decoding: SingleFlight<PhotoId, Arc<RawImage>>,
 }
 
 /// The session: photos in memory, the current photo, the picked set, the decode pool.
@@ -1072,6 +1191,8 @@ impl Session {
             work: Condvar::new(),
             idle: Condvar::new(),
             jobs_started: AtomicU64::new(0),
+            raw_decodes: AtomicU64::new(0),
+            decoding: SingleFlight::new(),
         });
         let workers: Vec<JoinHandle<()>> = (0..threads)
             .filter_map(|n| {
@@ -1722,6 +1843,13 @@ impl Session {
         self.inner.jobs_started.load(Ordering::SeqCst)
     }
 
+    /// Files [`Session::raw_image`] has decoded since the session was created, prefetching
+    /// included (the development jobs decode on their own and are not counted). For tests.
+    #[must_use]
+    pub fn raw_decodes(&self) -> u64 {
+        self.inner.raw_decodes.load(Ordering::SeqCst)
+    }
+
     /// Waits until no job is queued or running; false when `timeout` ran out first.
     #[must_use]
     pub fn wait_idle(&self, timeout: Duration) -> bool {
@@ -1981,9 +2109,7 @@ impl Inner {
                 let run =
                     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match job.kind {
                         JobKind::Develop => self.develop(&job),
-                        JobKind::Prefetch => {
-                            let _ = self.raw_image(job.photo);
-                        }
+                        JobKind::Prefetch => self.prefetch(job.photo),
                     }));
                 if let Err(payload) = run {
                     let message = payload
@@ -2031,6 +2157,21 @@ impl Inner {
             .or_else(|| q.jobs.iter().position(|j| j.photo.0 == current))
             .or_else(|| (!q.jobs.is_empty()).then_some(0))?;
         q.jobs.remove(pos)
+    }
+
+    /// Decodes a photo so that its mosaic is cached, if it still belongs in the cache. The job
+    /// was queued when the photo was in the window of the current photo; stepping through photos
+    /// faster than they decode leaves jobs for photos the person has already passed, and
+    /// decoding those would only be thrown away again (`cache_offer` keeps nothing outside the
+    /// window) while the photo they reached waits for the same cores.
+    fn prefetch(&self, id: PhotoId) {
+        let wanted = {
+            let st = lock(&self.state);
+            st.in_window(id) && st.cache_get(id).is_none()
+        };
+        if wanted {
+            let _ = self.raw_image(id);
+        }
     }
 
     /// Decode, estimate, thumbnail for one photo.
@@ -2168,22 +2309,154 @@ impl Inner {
         // Before anything is read: a session closed while the file is decoded must not receive
         // the image.
         let epoch = self.epoch.load(Ordering::SeqCst);
-        let path = {
-            let st = lock(&self.state);
-            let p = st.photo(id).ok_or(SessionError::UnknownPhoto(id))?;
-            if let PhotoStatus::Skipped { reason } = &p.summary.status {
-                return Err(SessionError::Skipped(reason.clone()));
-            }
-            if let Some(raw) = st.cache_get(id) {
+        loop {
+            let path = {
+                let st = lock(&self.state);
+                let p = st.photo(id).ok_or(SessionError::UnknownPhoto(id))?;
+                if let PhotoStatus::Skipped { reason } = &p.summary.status {
+                    return Err(SessionError::Skipped(reason.clone()));
+                }
+                if let Some(raw) = st.cache_get(id) {
+                    return Ok(raw);
+                }
+                p.path.clone()
+            };
+            // One decode per photo at a time: the viewport, the histogram, a tile for each look and
+            // the prefetch all ask at once, and each holds a whole mosaic (122 MB at 61 MP) while
+            // it works. The others wait for the leader's image and share it.
+            let lead = match self.decoding.join(id) {
+                Role::Wait(flight) => match flight.wait() {
+                    Some(raw) => return Ok(raw),
+                    // The leader failed: look again, and lead (and fail with our own error).
+                    None => continue,
+                },
+                Role::Lead(lead) => lead,
+            };
+            // A decode that finished between our look at the cache and our turn to lead.
+            if let Some(raw) = lock(&self.state).cache_get(id) {
+                lead.finish(Some(raw.clone()));
                 return Ok(raw);
             }
-            p.path.clone()
-        };
-        let raw = Arc::new(ym_raw::decode::decode(&path)?);
-        let mut st = lock(&self.state);
-        if self.epoch.load(Ordering::SeqCst) == epoch {
-            st.cache_offer(id, raw.clone());
+            self.raw_decodes.fetch_add(1, Ordering::SeqCst);
+            let decoded = Arc::new(ym_raw::decode::decode(&path)?);
+            let raw = {
+                let mut st = lock(&self.state);
+                // The development job may have cached it while we read the file: one image.
+                let raw = st.cache_get(id).unwrap_or(decoded);
+                if self.epoch.load(Ordering::SeqCst) == epoch {
+                    st.cache_offer(id, raw.clone());
+                }
+                raw
+            };
+            lead.finish(Some(raw.clone()));
+            return Ok(raw);
         }
-        Ok(raw)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Barrier;
+
+    /// Runs `work` for `key` the way `Inner::raw_image` does: lead it, or wait for the leader's
+    /// result and lead again if the leader failed.
+    fn run(
+        flights: &SingleFlight<u32, Arc<String>>,
+        key: u32,
+        work: impl Fn() -> Option<Arc<String>>,
+    ) -> Option<Arc<String>> {
+        loop {
+            match flights.join(key) {
+                Role::Wait(flight) => match flight.wait() {
+                    Some(value) => return Some(value),
+                    None => continue,
+                },
+                Role::Lead(lead) => {
+                    let value = work();
+                    lead.finish(value.clone());
+                    return value;
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn callers_of_one_key_share_the_result_of_one_run() {
+        // The leader takes a while, so that every other caller arrives while it runs.
+        let flights = Arc::new(SingleFlight::new());
+        let runs = Arc::new(AtomicU64::new(0));
+        let barrier = Arc::new(Barrier::new(8));
+        let threads: Vec<_> = (0..8)
+            .map(|_| {
+                let (flights, runs, barrier) = (
+                    Arc::clone(&flights),
+                    Arc::clone(&runs),
+                    Arc::clone(&barrier),
+                );
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    run(&flights, 7, || {
+                        runs.fetch_add(1, Ordering::SeqCst);
+                        std::thread::sleep(Duration::from_millis(400));
+                        Some(Arc::new("decoded".to_owned()))
+                    })
+                })
+            })
+            .collect();
+        let results: Vec<Arc<String>> = threads
+            .into_iter()
+            .map(|t| t.join().expect("thread").expect("a result"))
+            .collect();
+        assert_eq!(runs.load(Ordering::SeqCst), 1, "one run for eight callers");
+        assert!(results.iter().all(|r| Arc::ptr_eq(r, &results[0])));
+        // The run is over: the next caller starts a new one, and another key is independent.
+        run(&flights, 7, || {
+            runs.fetch_add(1, Ordering::SeqCst);
+            Some(Arc::new("again".to_owned()))
+        });
+        assert_eq!(runs.load(Ordering::SeqCst), 2);
+        assert!(
+            lock(&flights.flights).is_empty(),
+            "nothing is left in flight"
+        );
+    }
+
+    #[test]
+    fn a_leader_that_fails_or_panics_does_not_leave_the_others_waiting() {
+        let flights = Arc::new(SingleFlight::<u32, Arc<String>>::new());
+        // A failure: the waiter leads its own run, which succeeds.
+        let Role::Lead(lead) = flights.join(1) else {
+            panic!("the first caller leads");
+        };
+        let waiter = {
+            let flights = Arc::clone(&flights);
+            std::thread::spawn(move || run(&flights, 1, || Some(Arc::new("mine".to_owned()))))
+        };
+        std::thread::sleep(Duration::from_millis(100));
+        lead.finish(None);
+        assert_eq!(
+            waiter
+                .join()
+                .expect("thread")
+                .as_deref()
+                .map(String::as_str),
+            Some("mine")
+        );
+
+        // A panic: the lead is dropped while unwinding and ends the run as failed.
+        let panicked = {
+            let flights = Arc::clone(&flights);
+            std::thread::spawn(move || {
+                let Role::Lead(_lead) = flights.join(2) else {
+                    panic!("the first caller leads");
+                };
+                panic!("the decode panicked");
+            })
+        };
+        assert!(panicked.join().is_err());
+        let value = run(&flights, 2, || Some(Arc::new("after".to_owned())));
+        assert_eq!(value.as_deref().map(String::as_str), Some("after"));
+        assert!(lock(&flights.flights).is_empty());
     }
 }

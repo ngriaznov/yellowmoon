@@ -17,12 +17,25 @@ export interface DialogProps {
   children?: ReactNode;
 }
 
-const FOCUSABLE = 'button:not([aria-disabled="true"]), [href], input:not([disabled]), select, textarea, [tabindex]:not([tabindex="-1"])';
+/**
+ * What Tab reaches. A button locked with `aria-disabled` is still in the tab order (`Button` keeps it there so it can explain itself), so
+ * it counts here: leaving it out made the real last stop look like the one before it, and Tab walked out of the dialog. A radio that is
+ * not the one selected has `tabindex="-1"`, and Tab skips it.
+ */
+const FOCUSABLE = [
+  'button:not([disabled]):not([tabindex="-1"])',
+  '[href]:not([tabindex="-1"])',
+  'input:not([disabled]):not([tabindex="-1"])',
+  'select:not([disabled]):not([tabindex="-1"])',
+  'textarea:not([disabled]):not([tabindex="-1"])',
+  '[tabindex]:not([tabindex="-1"])',
+].join(", ");
 
 /**
  * A square, boxed dialog over a dimmed window (Preferences, About, the question before closing a session during an export).
  * `role="dialog"` and `aria-modal`; focus moves into it when it opens (to the control marked `data-autofocus`, else the first
- * one), Tab stays inside, Esc closes it and focus goes back to where it was.
+ * one), Tab stays inside, Esc closes it and focus goes back to where it was. If the focus is somewhere behind the dialog anyway
+ * (a click on the dimmed window), Tab brings it back in and Esc still closes the dialog.
  */
 export function Dialog({ title, blurb, onClose, dismissable = true, footer, width = 560, children }: DialogProps) {
   const titleId = useId();
@@ -40,22 +53,30 @@ export function Dialog({ title, blurb, onClose, dismissable = true, footer, widt
     };
   }, []);
 
-  const onKeyDown = (event: KeyboardEvent<HTMLDivElement>): void => {
+  const dismissableRef = useRef(dismissable);
+  dismissableRef.current = dismissable;
+
+  /** Esc closes the dialog (unless it can't be dismissed), Tab wraps. `outside` is true when the focus is not in the dialog. */
+  const handleKey = (event: Pick<globalThis.KeyboardEvent, "key" | "shiftKey" | "preventDefault" | "stopPropagation">, outside: boolean): void => {
     if (event.key === "Escape") {
       event.stopPropagation();
       event.preventDefault();
-      if (dismissable) closeRef.current();
+      if (dismissableRef.current) closeRef.current();
       return;
     }
     if (event.key !== "Tab") return;
     const items = Array.from(root.current?.querySelectorAll<HTMLElement>(FOCUSABLE) ?? []).filter((el) => el.offsetParent !== null || el === document.activeElement);
     if (items.length === 0) {
       event.preventDefault();
+      root.current?.focus({ preventScroll: true });
       return;
     }
     const firstItem = items[0] as HTMLElement;
     const lastItem = items[items.length - 1] as HTMLElement;
-    if (event.shiftKey && (document.activeElement === firstItem || document.activeElement === root.current)) {
+    if (outside) {
+      event.preventDefault();
+      (event.shiftKey ? lastItem : firstItem).focus();
+    } else if (event.shiftKey && (document.activeElement === firstItem || document.activeElement === root.current)) {
       event.preventDefault();
       lastItem.focus();
     } else if (!event.shiftKey && document.activeElement === lastItem) {
@@ -63,6 +84,22 @@ export function Dialog({ title, blurb, onClose, dismissable = true, footer, widt
       firstItem.focus();
     }
   };
+  const handleKeyRef = useRef(handleKey);
+  handleKeyRef.current = handleKey;
+
+  // Keys pressed while the focus is not in the dialog (a click on the dimmed window left it on the page behind): the dialog's own
+  // handler never sees them.
+  useEffect(() => {
+    const onDocumentKeyDown = (event: globalThis.KeyboardEvent): void => {
+      const node = root.current;
+      if (!node || (event.target instanceof Node && node.contains(event.target))) return;
+      handleKeyRef.current(event, true);
+    };
+    document.addEventListener("keydown", onDocumentKeyDown);
+    return () => document.removeEventListener("keydown", onDocumentKeyDown);
+  }, []);
+
+  const onKeyDown = (event: KeyboardEvent<HTMLDivElement>): void => handleKey(event, false);
 
   return (
     <div

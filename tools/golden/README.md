@@ -12,6 +12,7 @@ Golden-image tooling (`docs/13-testing.md`, section Golden images). Test tooling
 | `manifest.json` | the golden entries: the synthetic ones are generated, the others come with the fetch scripts |
 | `expected.json` | the SHA-256 of every golden picture's pixels and the log of explained updates (committed) |
 | `oracle_check.py` | LibRaw (rawpy) and ExifTool against the written files |
+| `manifest_table.py` | prints the golden-set table of `docs/15` M0-09 (file, body, light, ISO, variant, licence tier; `--summary` for one row per body) as Markdown, from `manifest.json`; tests: `test_manifest_table.py`, `test_oracle_check.py` (stdlib only, `python3 -I -m unittest discover -s tools/golden`; the `fetch-tools` CI job runs them) |
 
 ## `golden check` and `golden update`
 

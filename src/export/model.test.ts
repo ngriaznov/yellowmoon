@@ -103,6 +103,12 @@ describe("exportModel", () => {
     expect(m.names).toEqual(["2026-10-04_001_sony-a1.tif", "2026-10-04_002_sony-a1.tif", "2026-10-04_003_sony-a1.tif"]);
   });
 
+  it("names a photo with no capture time 'undated', as the core does", () => {
+    const undated = session([photo(1, { captured_at: "" }), photo(2)]);
+    const m = exportModel({ ...input, session: undated }, "all", { ...defaultExportOptions(), name_template: "{name}_{date}" });
+    expect(m.names).toEqual(["DSC04201_undated.jpg", "DSC04202_2026-10-04.jpg"]);
+  });
+
   it("names the look a photo has, else the default look", () => {
     const withLook = {
       ...input,

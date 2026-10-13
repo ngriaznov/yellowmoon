@@ -84,7 +84,7 @@ export function About() {
             <li key={credit}>{credit}</li>
           ))}
         </ul>
-        <p style={{ marginTop: 8 }}>The full licence texts are in the NOTICE file inside the app.</p>
+        <p style={{ marginTop: 8 }}>The full licence texts are in the NOTICE and THIRD-PARTY.md files inside the app.</p>
       </section>
       <p className="ym-about-dialog__adobe">{ADOBE_NOTICE}</p>
       <p className="ym-about-dialog__legal">{IJG_NOTICE}</p>

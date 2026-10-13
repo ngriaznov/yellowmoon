@@ -1246,6 +1246,46 @@ fn opening_remembers_the_folder() {
 // --- Export -----------------------------------------------------------------------------------
 
 #[test]
+fn quitting_while_an_export_is_writing_deletes_the_partial_file_before_the_process_ends() {
+    // `RunEvent::Exit` calls `AppApi::shutdown`, and the process ends as soon as that returns: a
+    // worker that was still writing would never delete its hidden `.yellowmoon-*.tmp`.
+    let h = Harness::new();
+    let (w, hh) = (2400_u32, 1600_u32);
+    ym_raw::testgen::ArwBuilder::new("ILCE-7RM4", w, hh)
+        .black([512; 4])
+        .white([16_300; 3])
+        .wb(Some([2_100, 1_024, 1_024, 1_600]))
+        .iso(400)
+        .write_to(
+            &h.photos.path().join("DSC00001.ARW"),
+            &ym_raw::testgen::gradient_mosaic(w, hh, 512, 12_000, 7),
+        )
+        .expect("write the ARW");
+    h.api
+        .open_paths(&[h.photos.path().to_string_lossy().into_owned()])
+        .expect("open");
+    h.develop();
+    let out = tempfile::tempdir().expect("out");
+    let mut job = jpeg_job(out.path());
+    job.options.format = ExportFormat::Png;
+    job.options.bit_depth = BitDepth(16);
+    h.api.export_start(&job).expect("start");
+
+    let names = || -> Vec<String> {
+        std::fs::read_dir(out.path())
+            .expect("dir")
+            .map(|e| e.expect("entry").file_name().to_string_lossy().into_owned())
+            .collect()
+    };
+    wait_until("the encoder to start writing", || {
+        names().iter().any(|n| n.starts_with(".yellowmoon-"))
+    });
+    h.api.shutdown();
+    assert_eq!(names(), Vec::<String>::new(), "nothing is left behind");
+    assert!(!h.api.export_busy());
+}
+
+#[test]
 fn an_export_runs_in_the_background_and_reports_its_progress() {
     let h = Harness::new();
     h.open(2);

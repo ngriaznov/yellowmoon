@@ -40,8 +40,8 @@ use serde::{Deserialize, Serialize};
 use ym_color::look::LookInput;
 use ym_looks::import::{CancelToken, ImportError, ImportOptions, ImportReport, Progress};
 use ym_looks::library::{
-    DISABLED_MESSAGE, DisplayInput, DisplayLut, Library, LibraryError, LoadError, Look, LookGroup,
-    LookId, ResolveError, VerifyReport,
+    DISABLED_MESSAGE, DisplayInput, DisplayLut, Library, LibraryError, LibraryProblem, LoadError,
+    Look, LookGroup, LookId, ResolveError, VerifyReport,
 };
 use ym_looks::manifest::hash_file;
 use ym_looks::recognize::PackageDb;
@@ -311,12 +311,20 @@ impl LookService {
         let builtin_dir = builtin_dir.is_dir().then_some(builtin_dir);
         let library = Library::open(app_root, builtin_dir.as_deref())?;
         for problem in library.problems() {
-            tracing::warn!(?problem, "the look library has a problem");
+            // The text of a problem names the looks list in the person's folder, and the log can
+            // end up in a bug report (`docs/01`): the kind at warn level, the text at debug.
+            let kind = match &problem {
+                LibraryProblem::Builtin(_) => "builtin",
+                LibraryProblem::Manifest(_) => "manifest",
+            };
+            tracing::warn!(kind, "the look library has a problem");
+            tracing::debug!(?problem, "the look library has a problem: details");
         }
         let packages = match PackageDb::load_from_data_dir(data_root) {
             Ok(db) => db,
             Err(e) => {
-                tracing::warn!(error = %e, "the list of ARRI packages could not be read");
+                tracing::warn!("the list of ARRI packages could not be read");
+                tracing::debug!(error = %e, "the list of ARRI packages could not be read: details");
                 PackageDb::empty()
             }
         };
@@ -597,7 +605,11 @@ impl LookService {
         if patch != PreferencesPatch::default() {
             // Failing to save a preference must not undo a removal that has happened.
             if let Err(e) = self.prefs.update(&patch) {
-                tracing::warn!(error = %e, "could not reset a preference after removing {id}");
+                tracing::warn!(
+                    kind = e.kind(),
+                    "could not reset a preference after removing {id}"
+                );
+                tracing::debug!(error = %e, "could not reset a preference: details");
             }
         }
         // The removal is done; the shared library re-reads it and `looks_changed` fires.

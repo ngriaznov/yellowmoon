@@ -17,6 +17,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use ym_color::look::LookInput;
 use ym_looks::import::Progress;
@@ -39,6 +40,11 @@ use crate::preferences::{
 use crate::session::{
     ApplyScope, EventSink, PhotoId, Session, SessionEnv, SessionError, default_decode_threads,
 };
+
+/// How long [`Core::shutdown`] waits for a cancelled export to delete its partial file. A cancel is
+/// noticed between render tiles and writer bands (a few tenths of a second at 24 MP); this is the
+/// bound for a tile that takes much longer, after which the application quits anyway.
+pub const SHUTDOWN_EXPORT_WAIT: Duration = Duration::from_secs(5);
 
 /// Why a command failed. [`CoreError::scope`] is the `AppError.scope` the webview shows it under.
 #[derive(Debug, thiserror::Error)]
@@ -246,11 +252,23 @@ impl Core {
         }
     }
 
-    /// Quitting: cancels exports and renders.
+    /// Quitting: cancels exports and renders, and waits (up to [`SHUTDOWN_EXPORT_WAIT`]) for the
+    /// export queue to stop.
+    ///
+    /// The process ends as soon as this returns, so a worker that was still writing would never
+    /// get to delete its temporary file, and a hidden `.yellowmoon-*.tmp` of tens or hundreds of
+    /// megabytes would stay in the person's export folder for good. A cancel is noticed between
+    /// render tiles and writer bands, a fraction of a second away.
     pub fn shutdown(&self) {
         self.exports.cancel_all();
         self.close_session();
         self.renderer.scheduler().cancel_all();
+        if !self.exports.wait_idle(SHUTDOWN_EXPORT_WAIT) {
+            tracing::warn!(
+                "an export did not stop within {} s; quitting anyway",
+                SHUTDOWN_EXPORT_WAIT.as_secs()
+            );
+        }
     }
 
     // --- Preferences ----------------------------------------------------------------------
@@ -444,7 +462,8 @@ impl Core {
             set(&mut prefs.last_used_folders);
             Ok(())
         }) {
-            tracing::warn!(error = %e, "could not remember the folder");
+            tracing::warn!(kind = e.kind(), "could not remember the folder");
+            tracing::debug!(error = %e, "could not remember the folder: details");
         }
     }
 }

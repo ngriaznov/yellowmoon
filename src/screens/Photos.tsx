@@ -114,7 +114,7 @@ export function Photos() {
     store.setPanel("tools");
     setTab(next);
   };
-  useTabShortcuts(showTab, !cropping);
+  useTabShortcuts(showTab, !cropping && overlay === null);
 
   // The Fit zoom, not rounded: a fixed zoom no larger than it is Fit to the core (50 % where Fit is 62 %). The core's own figure
   // (`render_stats.fit_percent`, which counts the lens crop, the straighten angle and the crop) once it has drawn a frame, else the

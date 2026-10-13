@@ -7,11 +7,12 @@ and ExifTool (Perl) run as separate programs, or, for rawler, from the excluded 
 | Tool | What it does |
 |---|---|
 | `rawpy_meta.py FILE [--pixels] [--thumb-tail N]` | Prints LibRaw's view of a file as one JSON object: make, model, ISO, shutter, aperture, raw size, CFA pattern, black and white levels, white balance, an SHA-256 of `raw_image`, and the tail of the extracted thumbnail. Needs `rawpy` (`pip install rawpy`). |
-| `compare_metadata.py FILE_OR_DIR...` | Runs `yellowmoon info --json`, `rawpy_meta.py` and (optionally) ExifTool on each file and reports every field that differs. This is the M0-04 corpus gate. Exit 0 = no differences. |
+| `compare_metadata.py FILE_OR_DIR...` | Runs `ym info --json`, `rawpy_meta.py` and (optionally) ExifTool on each file and reports every field that differs. This is the M0-04 corpus gate. Exit 0 = no differences. |
 | `rawpy_compare.py FILE --out RAW.bin` | Writes LibRaw's `raw_image` (undithered, the whole sensor, little-endian `u16`) and prints its levels as JSON. For Lossless M and S it writes LibRaw's pseudo-raw RGB (see below). |
 | `libjpeg_dump.py FILE --out RAW.bin` | Decodes the Lossless L tiles with libjpeg (`pip install pylibjpeg-libjpeg numpy`), a third implementation that has nothing in common with LibRaw or rawler. Covers every predictor and restart interval. |
 | `src/main.rs` (crate `oracle`) | `oracle --corpus DIR --report FILE` compares ym-raw's decode of every `*.ARW` with LibRaw, libjpeg (Lossless L) and rawler (in process) and writes a JSON report plus a table; `oracle dump FILE --out RAW.bin` writes our decode and a JSON sidecar (never committed). |
 | `ci.sh` | What the CI `oracle` job runs (see below). |
+| `test_compare_metadata.py` | Unit tests of `compare_metadata.py`'s command line (stdlib only; the `fetch-tools` CI job runs them): `python3 -I -m unittest discover -s tools/oracle` |
 
 ## The decoder oracle (M0-05)
 
@@ -39,31 +40,14 @@ Differences that are the oracle's, not ours, are reported as `oracle_error` or `
 - **cRAW and the 14-bit scale.** LibRaw 0.22.1 (`sony_arw2_load_raw`) and rawler return the tone-curve output unshifted: `curve[code << 1]`, on the 14-bit scale of the other ARW modes (black 512; the white level is the SR2 value, 15360 on the real files; values up to 17204 are legal and not clamped). The 12-bit scale of dcraw and old LibRaw releases (`>> 2`, black 128, white 4095) is not used by either. ym-raw returns the same numbers, so for cRAW the samples, black and white are compared for equality with LibRaw (`raw_image`; LibRaw does not dither). rawler adds a dither of up to about a quarter of the local curve step, so against rawler cRAW is compared inside that window (`base + ((delta * r + 1024) >> 12)`, `r` in 0..2048). Six real cRAW files confirm both statements.
 - **Lossless M and S against LibRaw.** The file holds white-balanced, demosaiced, chroma-subsampled YCbCr. LibRaw's `raw_image` for it is already RGB (`sony_ycbcr_load_raw`: replicated chroma, BT.601 `ycc2rgb`, black 1024, maximum 17536, white balance still in the data). ym-raw's shipped default differs on purpose (linear chroma, white balance divided out, camera RGB). The oracle therefore decodes ours with `ChromaUpsampling::Replicate` and `undo_white_balance: false` for the comparison, which must be bit-identical; `oracle dump --replicate-chroma --keep-white-balance` writes that variant, and a plain `oracle dump` writes the shipped default. Whether LibRaw's scale and ceiling match a real camera is not verified: no real M or S file was available (HUMAN, `docs/04`).
 
-The CI job (`oracle`, in the nightly and pull-request workflows of `docs/13-testing.md`) runs
-`tools/oracle/ci.sh`; it needs Rust and `python3` with `rawpy`, `numpy` and `pylibjpeg-libjpeg` (the script refuses to run without any of them; the `oracle` binary alone skips the libjpeg column when the module is missing). The job is still commented out in `.github/workflows/ci.yml`, which the decoder task does not own; this is the job to put there (it also serves the nightly run, the schedule trigger only adds the real corpus once `tools/fetch/samples.sh` can fill it):
-
-```yaml
-  oracle:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - uses: actions/setup-python@v5
-        with: { python-version: "3.12" }
-      - run: pip install rawpy numpy pylibjpeg-libjpeg
-      - uses: actions/cache@v4
-        with: { path: testdata, key: "testdata-${{ hashFiles('tools/fetch/manifest.json') }}" }
-      - run: ORACLE_OUT="$RUNNER_TEMP/oracle" tools/oracle/ci.sh
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with: { name: oracle-reports, path: "${{ runner.temp }}/oracle" }
-```
-
+The CI job (`oracle` in `.github/workflows/ci.yml`; it runs on every push and pull request and on the nightly schedule) installs ExifTool
+(`libimage-exiftool-perl`), rawpy, numpy and pylibjpeg-libjpeg and runs `tools/oracle/ci.sh`. The script refuses to run without any of
+them: with `YM_REQUIRE_ORACLE=1` a missing oracle is a failure and not a skipped test. It also needs Rust. The `oracle` binary alone skips the
+libjpeg column when the module is missing. The nightly run adds the real corpus once `tools/fetch/samples.sh` can fill it.
 
 ```
 pip install rawpy numpy pylibjpeg-libjpeg
-tools/oracle/ci.sh                      # synthetic corpus, the two Rust oracle tests, then testdata/arw if it holds *.ARW files
+tools/oracle/ci.sh                      # synthetic corpus, the Rust oracle tests (LibRaw and ExifTool, and `cargo test -p oracle`), then testdata/arw if it holds *.ARW files
 ORACLE_OUT=out tools/oracle/ci.sh --synthetic    # synthetic corpus only; reports go to out/ (default: the current folder)
 ```
 
@@ -78,13 +62,13 @@ Rust integration tests that use the same oracles on synthetic files:
 - `crates/ym-raw/tests/oracle_exiftool.rs` (skips without ExifTool; set `YM_EXIFTOOL` to the path of
   an `exiftool` script from a clone of github.com/exiftool/exiftool to run it with `perl`)
 
-`YM_REQUIRE_ORACLE=1` turns a skip into a failure (use it in the oracle CI job).
+`YM_REQUIRE_ORACLE=1` turns a skip into a failure (the `oracle` CI job sets it through `ci.sh`; the `dng` job sets it for `oracle_exiftool`).
 
 ```
 # synthetic files, then compare
 cargo run -p ym-raw --features testgen --example gen_arw -- ILCE-7RM4 128 96 /tmp/a.ARW iso=800
 cargo build -p ym-cli
-python3 tools/oracle/compare_metadata.py --report /tmp/report.json /tmp/a.ARW
+python3 tools/oracle/compare_metadata.py --report /tmp/report.json /tmp/a.ARW   # --ym PATH selects the binary (default target/debug/ym)
 ```
 
 ## Real files without the corpus

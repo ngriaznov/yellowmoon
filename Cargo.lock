@@ -11172,6 +11172,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tracing",
+ "tracing-subscriber",
  "ym-color",
  "ym-export",
  "ym-gpu",

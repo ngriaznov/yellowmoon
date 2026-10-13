@@ -109,13 +109,92 @@ struct Thumbnails {
 }
 
 /// The look tiles the store holds: a photo through one look, at most 240 px.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct LookTiles {
     /// Counts up with every tile put, so that a new picture is a new address.
     version: u32,
     /// Per photo and look, the newest versions (see [`THUMBNAIL_VERSIONS_KEPT`]), oldest first.
     by_look: BTreeMap<(u32, String), Vec<(u32, Png)>>,
+    /// The bytes of the PNGs in `by_look`.
+    bytes: usize,
+    /// The most bytes kept (see [`LOOK_TILE_BUDGET_BYTES`]).
+    budget: usize,
+    /// Counts up whenever a photo's tiles are put or served.
+    clock: u64,
+    /// When each photo's tiles were last put or served, by `clock`.
+    last_used: BTreeMap<u32, u64>,
 }
+
+impl Default for LookTiles {
+    fn default() -> Self {
+        Self::with_budget(LOOK_TILE_BUDGET_BYTES)
+    }
+}
+
+impl LookTiles {
+    fn with_budget(budget: usize) -> Self {
+        Self {
+            version: 0,
+            by_look: BTreeMap::new(),
+            bytes: 0,
+            budget,
+            clock: 0,
+            last_used: BTreeMap::new(),
+        }
+    }
+
+    fn touch(&mut self, photo: u32) {
+        self.clock += 1;
+        self.last_used.insert(photo, self.clock);
+    }
+
+    /// Forgets the tiles of the photos used least recently until the budget holds. The photo that
+    /// was just given a tile stays, even if its tiles alone pass the budget.
+    fn enforce_budget(&mut self, newest: u32) {
+        while self.bytes > self.budget {
+            let Some(victim) = self
+                .last_used
+                .iter()
+                .filter(|(photo, _)| **photo != newest)
+                .min_by_key(|(_, used)| **used)
+                .map(|(photo, _)| *photo)
+            else {
+                break;
+            };
+            self.forget_photo(victim);
+        }
+    }
+
+    fn forget_photo(&mut self, photo: u32) {
+        let keys: Vec<(u32, String)> = self
+            .by_look
+            .range((photo, String::new())..)
+            .take_while(|((p, _), _)| *p == photo)
+            .map(|(key, _)| key.clone())
+            .collect();
+        for key in keys {
+            if let Some(versions) = self.by_look.remove(&key) {
+                self.bytes -= versions.iter().map(|(_, png)| png.len()).sum::<usize>();
+            }
+        }
+        self.last_used.remove(&photo);
+    }
+
+    /// Forgets every tile; the version counter goes on, so no old address is handed out again.
+    fn clear(&mut self) {
+        self.by_look.clear();
+        self.last_used.clear();
+        self.bytes = 0;
+    }
+}
+
+/// How many bytes of look tiles the store keeps: about 4,500 tiles of 57 KB (a 240 px PNG), which is
+/// every tile of a 450-photo session with ten looks on show. Past it the photos used least recently
+/// lose their tiles. (With ARRI looks imported and the whole grid scrolled, each photo asks for a
+/// tile per look, 5 to 11 MB a photo, and a session of hundreds of photos would otherwise keep
+/// gigabytes until it closes.) A photo whose tiles are gone answers 404 for the addresses it was
+/// given; the webview asks for new ones when the photo's settings change.
+pub const LOOK_TILE_BUDGET_BYTES: usize = 256 << 20;
 
 /// How many frames the store keeps: the webview may still be loading the previous one.
 const FRAMES_KEPT: usize = 3;
@@ -130,6 +209,17 @@ impl FrameStore {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// An empty store that keeps at most `bytes` of look tiles (the tests' way to reach the limit
+    /// with a few bytes; the application uses [`LOOK_TILE_BUDGET_BYTES`]).
+    #[cfg(test)]
+    #[must_use]
+    pub fn with_look_tile_budget(bytes: usize) -> Self {
+        Self {
+            look_tiles: Mutex::new(LookTiles::with_budget(bytes)),
+            ..Self::default()
+        }
     }
 
     /// Keeps the PNG of frame `seq`.
@@ -194,16 +284,22 @@ impl FrameStore {
     /// Keeps the tile of a photo through one look (a PNG of at most 240 px) and returns the
     /// address it is served at. Every call gives a new address, so a tile drawn again after the
     /// photo's settings changed never meets a cached older picture. Only the newest few tiles of
-    /// each (photo, look) are kept, and none survive [`FrameStore::clear_thumbnails`].
+    /// each (photo, look) are kept, the photos used least recently lose all theirs when the tiles
+    /// together pass [`LOOK_TILE_BUDGET_BYTES`], and none survive [`FrameStore::clear_thumbnails`].
     pub fn put_look_tile(&self, photo: u32, look: &str, png: Vec<u8>) -> String {
         let mut tiles = lock(&self.look_tiles);
         tiles.version = tiles.version.wrapping_add(1);
         let version = tiles.version;
+        let added = png.len();
+        let mut dropped = 0;
         let versions = tiles.by_look.entry((photo, look.to_owned())).or_default();
         versions.push((version, Arc::new(png)));
         while versions.len() > THUMBNAIL_VERSIONS_KEPT {
-            versions.remove(0);
+            dropped += versions.remove(0).1.len();
         }
+        tiles.bytes = tiles.bytes + added - dropped;
+        tiles.touch(photo);
+        tiles.enforce_budget(photo);
         look_tile_url(photo, version)
     }
 
@@ -211,18 +307,22 @@ impl FrameStore {
     /// answer 404 from now on; new ones count on from where the old ones stopped.
     pub fn clear_thumbnails(&self) {
         lock(&self.thumbnails).by_photo.clear();
-        lock(&self.look_tiles).by_look.clear();
+        lock(&self.look_tiles).clear();
     }
 
-    /// The look tile at `photo` and `version`, if it is still kept.
+    /// The look tile at `photo` and `version`, if it is still kept. Serving a tile counts as using
+    /// its photo.
     fn look_tile(&self, photo: u32, version: u32) -> Option<Arc<Vec<u8>>> {
-        lock(&self.look_tiles)
+        let mut tiles = lock(&self.look_tiles);
+        let png = tiles
             .by_look
             .range((photo, String::new())..)
             .take_while(|((p, _), _)| *p == photo)
             .flat_map(|(_, versions)| versions)
             .find(|(v, _)| *v == version)
-            .map(|(_, png)| Arc::clone(png))
+            .map(|(_, png)| Arc::clone(png))?;
+        tiles.touch(photo);
+        Some(png)
     }
 
     /// The thumbnail at `photo` and `version`, if it is still kept.
@@ -1105,6 +1205,61 @@ mod tests {
         let fresh = store.put_look_tile(3, "user:warm", vec![6]);
         assert_ne!(fresh, warm);
         assert_eq!(status(&fresh), 200);
+    }
+
+    #[test]
+    fn look_tiles_are_bounded_by_bytes_and_the_photos_least_recently_used_go_first() {
+        // A session of hundreds of photos with the Look tab open would otherwise keep every tile
+        // of every photo it ever showed until the session closed.
+        let store = FrameStore::with_look_tile_budget(600);
+        let path = |url: &str| url[url.rfind('/').expect("a path")..].to_owned();
+        let status = |url: &str| store.respond(&path(url)).0;
+        let mut urls = Vec::new();
+        for photo in 1..=4 {
+            urls.push(store.put_look_tile(photo, "builtin:neutral", vec![photo as u8; 100]));
+            urls.push(store.put_look_tile(photo, "user:warm", vec![photo as u8; 25]));
+        }
+        // 4 x 125 bytes fit in 600: nothing is dropped. Loading the tiles of photo 2, then 3, 4
+        // and 1 (the webview loads a photo's tiles when it is shown) makes 2 the least recently
+        // used.
+        for photo in [2usize, 3, 4, 1] {
+            for url in &urls[2 * (photo - 1)..2 * photo] {
+                assert_eq!(status(url), 200, "photo {photo}");
+            }
+        }
+
+        // Photo 5 takes the store to 650 bytes: photo 2 goes, whole, and that is enough.
+        let five = store.put_look_tile(5, "builtin:neutral", vec![5; 150]);
+        assert_eq!(status(&urls[2]), 404, "photo 2's neutral tile");
+        assert_eq!(status(&urls[3]), 404, "photo 2's warm tile");
+        for kept in [0, 1, 4, 5, 6, 7] {
+            assert_eq!(status(&urls[kept]), 200, "{kept}");
+        }
+        assert_eq!(status(&five), 200);
+
+        // The photo that was just given a tile is kept even when its tiles alone pass the budget.
+        let big = store.put_look_tile(9, "builtin:neutral", vec![9; 1000]);
+        assert_eq!(status(&big), 200);
+        for u in urls.iter().chain([&five]) {
+            assert_eq!(status(u), 404, "everything older went: {u}");
+        }
+    }
+
+    #[test]
+    fn a_look_tile_that_was_replaced_stops_counting_against_the_budget() {
+        // Only the newest two tiles of a photo through one look are kept, so asking again for the
+        // same tile does not grow the store: 3 x 300 bytes put, 600 held.
+        let store = FrameStore::with_look_tile_budget(700);
+        let path = |url: &str| url[url.rfind('/').expect("a path")..].to_owned();
+        let status = |url: &str| store.respond(&path(url)).0;
+        let first = store.put_look_tile(1, "builtin:neutral", vec![1; 300]);
+        store.put_look_tile(1, "builtin:neutral", vec![1; 300]);
+        let third = store.put_look_tile(1, "builtin:neutral", vec![1; 300]);
+        assert_eq!(status(&first), 404, "the oldest of three is dropped");
+        // 600 held + 50 = 650: within 700, so photo 1 stays. (Counting the dropped 300 as well
+        // would make 950 and send photo 1 away.)
+        let other = store.put_look_tile(2, "builtin:neutral", vec![2; 50]);
+        assert_eq!((status(&third), status(&other)), (200, 200));
     }
 
     fn controller() -> (Viewport, Arc<crate::events::Recorder>) {

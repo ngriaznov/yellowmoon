@@ -52,6 +52,7 @@ import type {
   ViewportRect,
 } from "../api/types";
 import { filterArwPaths } from "../components/useWindowDrop";
+import { isTauri } from "../env";
 import { defaultExportOptions, defaultScope, sameOptions } from "../export/options";
 import { applyProgress, startRun } from "../export/run";
 import { templateProblem } from "../export/template";
@@ -510,19 +511,27 @@ export class AppStore {
     this.syncHistoryFlags();
   }
 
-  /** Opens dropped or chosen paths. Anything that isn't an ARW file or a folder is ignored. */
+  /**
+   * Opens dropped or chosen paths. Anything that isn't an ARW file or a folder is ignored.
+   *
+   * In the app the paths are real and the core sorts them out (it opens a folder and keeps the ARW files in it, whatever the folder is
+   * called) and answers "No ARW files in what you dropped." itself, which shows in the drop zone. In a browser the names stand in for
+   * paths, so a name that looks like a file of another kind is left out here.
+   */
   async openPaths(paths: string[]): Promise<void> {
-    const { accepted } = filterArwPaths(paths);
-    if (accepted.length === 0) {
+    const toOpen = isTauri() ? paths : filterArwPaths(paths).accepted;
+    if (toOpen.length === 0) {
       this.set({ dropNotice: NO_ARW_NOTICE });
       return;
     }
     this.set({ dropNotice: null, opening: true });
     try {
-      const session = await this.api.openPaths(accepted);
+      const session = await this.api.openPaths(toOpen);
       this.adoptSession(session);
     } catch (error) {
-      this.fail(error);
+      const failure = toAppError(error);
+      if (failure.scope === "open" && failure.message === NO_ARW_NOTICE) this.set({ dropNotice: NO_ARW_NOTICE });
+      else this.fail(failure);
     } finally {
       this.set({ opening: false });
     }

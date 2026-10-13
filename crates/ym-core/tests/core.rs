@@ -787,3 +787,59 @@ fn a_look_imported_by_the_cli_appears_in_the_list_and_looks_changed_fires_once()
     let _ = r.core.looks_list();
     assert_eq!(changed.load(Ordering::SeqCst), 1);
 }
+
+#[test]
+fn quitting_while_an_export_is_writing_leaves_no_partial_file() {
+    // The process ends right after `shutdown` returns, so the worker must have taken its
+    // temporary file away by then ("the file being written is deleted", `docs/09`).
+    let r = rig();
+    let root = tempfile::tempdir().expect("root");
+    let folder = root.path().join("Shoot");
+    std::fs::create_dir(&folder).expect("folder");
+    Scene::new(2400, 1600, light(PROFILE, 5200.0), Layout::Patchwork, 0.35)
+        .noise(2e-4, 1e-5)
+        .write(&folder, "DSC00001.ARW", MODEL);
+    open_all(&r.core, &folder);
+    let out = tempfile::tempdir().expect("out");
+    let id = r
+        .core
+        .export_start(&ExportJob {
+            scope: ApplyScope::All,
+            options: ExportOptions {
+                format: FormatKind::Png,
+                bit_depth: ym_export::BitDepth::Sixteen,
+                destination: Some(out.path().to_path_buf()),
+                ..ExportOptions::default()
+            },
+        })
+        .expect("queued");
+
+    // Wait for the write phase: the render is over and the encoder has its temporary file.
+    let has_partial = || {
+        names_in(out.path())
+            .iter()
+            .any(|n| n.starts_with(".yellowmoon-"))
+    };
+    let deadline = std::time::Instant::now() + Duration::from_secs(120);
+    while !has_partial() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the export never began to write"
+        );
+        assert!(r.core.exports.is_busy(), "the export ended before it wrote");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+
+    r.core.shutdown();
+    assert_eq!(
+        names_in(out.path()),
+        Vec::<String>::new(),
+        "no partial file and no finished one is left when shutdown returns"
+    );
+    assert!(!r.core.exports.is_busy());
+    assert_eq!(
+        r.core.exports.summary(id).map(|s| s.saved),
+        Some(0),
+        "the photo was not saved"
+    );
+}

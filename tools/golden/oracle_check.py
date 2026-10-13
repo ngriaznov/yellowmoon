@@ -42,11 +42,16 @@ import tempfile
 from collections import defaultdict
 from pathlib import Path
 
+# numpy and rawpy are needed to run the check (``main``), not to import the module: the verdict logic (``judge``,
+# ``lossless_l_gate``) is unit-tested with the standard library only, in the ``fetch-tools`` CI job.
 try:
     import numpy as np
     import rawpy
+
+    MISSING_MODULES = ""
 except ImportError as exc:  # pragma: no cover
-    sys.exit(f"oracle_check.py needs rawpy and numpy: {exc}")
+    np = rawpy = None
+    MISSING_MODULES = str(exc)
 
 REPO = Path(__file__).resolve().parents[2]
 EXACT = {"uncompressed14", "packed12", "lossless-l"}
@@ -158,6 +163,8 @@ def judge(file: str, variant: str, model: str, digest: str | None, kind: str, ou
 
 
 def main(argv=None) -> int:
+    if MISSING_MODULES:
+        sys.exit(f"oracle_check.py needs rawpy and numpy: {MISSING_MODULES}")
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--arw", type=Path, default=REPO / "testdata" / "synthetic" / "arw")
     ap.add_argument("--scenes", type=Path, default=REPO / "testdata" / "synthetic" / "scenes")

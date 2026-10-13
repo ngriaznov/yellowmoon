@@ -61,3 +61,11 @@ mkdir -p "$dest_dir"
 rm -f "$dest_dir"/yellowmoon-cli-*
 cp -f "$source_bin" "$dest_bin"
 echo "Sidecar ready: ${dest_bin#"$repo_root"/}"
+
+# bundle.resources lists THIRD-PARTY.md, the licence texts of the dependencies, and tauri-build wants every resource to exist.
+# A release writes the real file (tools/licences/generate.py, release.yml); a development build gets a stub that says so, and
+# the generator refuses to accept it as the real one. Nothing is written while the app does not list the file.
+if grep -q 'THIRD-PARTY.md' "$repo_root/src-tauri/tauri.conf.json" && [[ ! -f "$repo_root/THIRD-PARTY.md" ]]; then
+  cp "$repo_root/tools/licences/THIRD-PARTY.stub.md" "$repo_root/THIRD-PARTY.md"
+  echo "THIRD-PARTY.md: development stub (tools/licences/generate.py writes the real one)"
+fi

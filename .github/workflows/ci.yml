@@ -2,7 +2,14 @@
 # decoder oracles, DNG validation and a training dry run (docs/12, docs/13). Installed in M0-02.
 # Every job below is live. rust-toolchain.toml pins the Rust toolchain (channel, profile and components); every job that
 # builds Rust installs it with a plain `rustup toolchain install` (no argument: it reads that file), so the CI toolchain cannot
-# drift from the one developers get, and not from `stable`.
+# drift from the one developers get, and not from `stable`. The one exception is `fuzz`, which needs a nightly compiler for
+# cargo-fuzz's sanitizers and runs only on the nightly schedule.
+#
+# Tests that need a tool or a fixture the runner may not have print "SKIPPED" and pass on a developer's machine. Where this file
+# is the place that is meant to run them, the job sets the matching YM_REQUIRE_* variable, which turns the skip into a failure:
+# YM_REQUIRE_GPU (gpu-lavapipe, ml-backends), YM_REQUIRE_EXTERNAL_TOOLS (dng), YM_REQUIRE_ORACLE (oracle, dng),
+# YM_REQUIRE_FIXTURES (spectral-fixtures), YM_REQUIRE_SYNTHETIC (synthetic-set), YM_REQUIRE_ORT (ml-backends) and
+# YM_REQUIRE_PARITY_BIN (parity). The macOS `rust` job sets none of them.
 name: CI
 
 on:
@@ -110,7 +117,9 @@ jobs:
       - run: tools/ci/check_serde_order.sh
 
   # Scripts under tools/fetch: shellcheck plus the stdlib unit tests, which run against a local HTTP
-  # server and never touch the network (the corpus hosts are not needed to prove the script logic).
+  # server and never touch the network (the corpus hosts are not needed to prove the script logic). The same job runs the other
+  # stdlib-only Python tool tests: tools/oracle (the metadata gate's command line), tools/looks (the ARRI package fingerprints)
+  # and tools/golden (the LibRaw oracle verdicts), and shellchecks the developer and oracle scripts.
   fetch-tools:
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
@@ -119,9 +128,14 @@ jobs:
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
       - name: shellcheck
-        run: shellcheck tools/fetch/*.sh
+        run: shellcheck tools/fetch/*.sh tools/dev/*.sh tools/oracle/ci.sh
       - name: fetch tool tests
         run: python3 -I -m unittest discover -s tools/fetch -p 'test_*.py' -v
+      - name: oracle, looks and golden tool tests (stdlib only)
+        run: |
+          python3 -I -m unittest discover -s tools/oracle -p 'test_*.py' -v
+          python3 -I -m unittest discover -s tools/looks -p 'test_*.py' -v
+          python3 -I -m unittest discover -s tools/golden -p 'test_*.py' -v
 
   # M0-07: WGSL kernels against their CPU references on Mesa lavapipe (software Vulkan): correctness
   # only, speed means nothing here. Metal behaviour and timings are checked on a Mac (HUMAN M0-H4).
@@ -145,6 +159,11 @@ jobs:
         run: cargo test -p ym-gpu --release
       - name: 50 MP spike and the GPU memory gate (peak under 1.5 GiB)
         run: cargo test -p ym-gpu --release --test gpu_spike -- --ignored --nocapture gpu_spike_50mp
+      # The renderer's GPU colour pass against its CPU reference (ym-core). The test's header says this job runs it, but only
+      # `-p ym-gpu` was run here; the one other place was the macOS `rust` job, where the test skips itself and passes when
+      # the runner opens no Metal adapter. YM_REQUIRE_GPU (above) makes a missing adapter a failure.
+      - name: Renderer colour pass on the GPU against the CPU reference
+        run: cargo test -p ym-core --release --test render_gpu
 
   # M0-05: decoder oracle. LibRaw (rawpy), rawler (tools/oracle) and libjpeg compare ym-raw's pixels,
   # levels and white balance. Test-only: none of them is ever linked into a shipped crate. Until the
@@ -161,6 +180,8 @@ jobs:
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
       - run: pip install rawpy numpy pylibjpeg-libjpeg
+      - name: ExifTool (the metadata oracle, tools/oracle/ci.sh runs oracle_exiftool against it)
+        run: sudo apt-get update && sudo apt-get install -y libimage-exiftool-perl
       - uses: actions/cache@v4
         with:
           path: testdata/arw
@@ -210,6 +231,31 @@ jobs:
       - run: python3 -I tools/vectors/aces2_vectors.py --check
       - run: pip install -r training/illum/requirements.txt && python3 -m unittest training.illum.test_illum
       - run: python3 -m unittest training.noise.test_public_priors
+
+  # The Rust halves of the colour-science gates: M1-02 (spectral tables against the spectra they came from), M1-04 (Rust
+  # reproduces sony_profiles.csv within 0.02), M1-05 (the sensor-map gate numbers) and M1-07 (3200 K under daylight differs from
+  # Auto by the amount a spectral simulation predicts). They read testdata/spectral, which the exporter writes from colour-science
+  # (CIE data is CC BY-SA 4.0: generated here, never committed). Without it every one of those tests prints SKIPPED and passes,
+  # which is what the macOS `rust` job does; YM_REQUIRE_FIXTURES turns a missing folder into a failure. About a minute of tests.
+  spectral-fixtures:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      YM_REQUIRE_FIXTURES: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust toolchain from rust-toolchain.toml
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install -r training/requirements.txt
+      - run: tools/fetch/spectral.sh
+      - name: Export the fixtures (testdata/spectral)
+        run: python3 -m training.sensor_map.export_fixtures
+      - name: ym-color and ym-profiles tests with the fixtures required
+        run: cargo test -p ym-color -p ym-profiles
 
   # M1-15: golden images. The real `ym` renders every file of the default synthetic set (61 ARW files, generated here: no
   # download) and `golden check` compares each picture with tools/golden/expected.json (docs/13, "As built (M1-15)").
@@ -344,15 +390,27 @@ jobs:
         run: cargo test --release -p ym-export --test dng_validate
       - name: Profile fit tests
         run: cargo test --release -p dngfit
+      # M1-13 (docs/09 Tests): ICC profiles read back by LittleCMS (Pillow), Lanczos in linear light against Pillow, and the
+      # TIFF, PNG and JPEG structure read by independent decoders. They share this job's tools; with YM_REQUIRE_EXTERNAL_TOOLS
+      # a missing module is a failure, not "SKIPPED". The macOS `rust` job has none of the tools and skips them.
+      - name: Writer tests against LittleCMS, Pillow and tifffile (ICC, resize, structure)
+        run: cargo test --release -p ym-export --test icc_lcms --test resize_reference --test structure
+      # M0-04 (docs/04): the metadata of synthetic Sony files against ExifTool. YM_REQUIRE_ORACLE makes a missing ExifTool fail.
+      - name: Metadata against ExifTool
+        env:
+          YM_REQUIRE_ORACLE: "1"
+        run: cargo test --release -p ym-raw --test oracle_exiftool
       - name: DNG gates on the golden set
         run: tools/dng/run_gates.sh --png
 
   # The synthetic golden set (stand-in for the CC0 corpus): generator unit tests, the ARW writer's round
-  # trips for every variant, and LibRaw reading the written files.
+  # trips for every variant, and LibRaw reading the written files. `cargo test -p golden` also renders two files with the
+  # real `ym` (tools/golden/tests/real_ym.rs) and reads every sidecar (sidecar.rs); `ym` is built first, in its own cargo
+  # invocation (see the golden job for why), and YM_REQUIRE_SYNTHETIC turns "SKIPPED: needs the ym binary" into a failure.
   synthetic-set:
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 75   # a cold cache also builds ym (debug) for the smoke tests
     steps:
       - uses: actions/checkout@v4
       - name: Rust toolchain from rust-toolchain.toml
@@ -364,7 +422,12 @@ jobs:
       - run: tools/fetch/spectral.sh
       - run: python3 -m unittest training.synth.test_synth
       - run: tools/fetch/synthetic.sh --oracle
-      - run: cargo test -p golden
+      - name: ym, the binary the smoke tests render with
+        run: cargo build -p ym-cli
+      - name: Golden runner tests (writer, sidecars, two real renders)
+        env:
+          YM_REQUIRE_SYNTHETIC: "1"
+        run: cargo test -p golden
 
   # tools/eval: the unit tests of the auto-exposure study and of its M1-08 gate logic (G3, `--gate`). Pure numpy/Pillow/tifffile;
   # the one test that runs `ym` skips itself when there is no binary or no synthetic set. The gate itself runs in the golden job.
@@ -378,6 +441,41 @@ jobs:
         with: { python-version: "3.12" }
       - run: pip install numpy pillow tifffile
       - run: python3 -I -m unittest discover -s tools/eval -p 'test_*.py'
+
+  # THIRD-PARTY.md (NOTICE item 9, the About dialog): the licence texts of the Rust crates, npm packages and fonts that ship.
+  # The release workflow generates it before `tauri build`; this job runs the same generator on every change, so a new
+  # dependency without a licence text, a broken cargo-about config or a bundle that stops carrying the file fails here and not on
+  # the day of a release. `check_bundle.py` also holds NOTICE to the BSD 3-Clause conditions of the ported Menon demosaic.
+  # cargo-about 0.9.2 comes as a prebuilt binary; the generator fetches the crates of the two macOS targets and reads their
+  # LICENSE files offline. tools/licences/README.md has the details.
+  licences:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust toolchain from rust-toolchain.toml
+        run: rustup toolchain install
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-about@0.9.2
+      - run: npm ci
+      - name: Generator and bundle-check tests
+        run: python3 -I -m unittest discover -s tools/licences -p 'test_*.py' -v
+      - name: Generate THIRD-PARTY.md (fails on a package without a licence text)
+        run: python3 tools/licences/generate.py
+      - name: The bundle carries THIRD-PARTY.md, NOTICE and LICENSE, and NOTICE carries the BSD conditions
+        run: python3 tools/licences/check_bundle.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: third-party
+          path: THIRD-PARTY.md
 
   # AGENTS.md rule 6, across SEPARATE builds, and rustdoc.
   #  - Parity. One cargo invocation gives every package the union of the features that any selected package wants, so a test
@@ -439,3 +537,102 @@ jobs:
       - run: pip install torch==2.14.1 --index-url https://download.pytorch.org/whl/cpu
       - run: pip install -r training/jdd/requirements.txt
       - run: make -C training/jdd dry-run test golden-check
+
+  # M2-07: the two optional model runtimes behind `TileModel` (docs/07), each against PyTorch's golden tiles within 2e-3: burn on
+  # wgpu (Mesa lavapipe here) and ONNX Runtime (the library comes from the Python wheel; ym-ml loads it at run time). Both are
+  # off by default, so no other job compiles, lints or runs them; the CPU runtime that ships is covered by `cargo test
+  # --workspace`. They are candidates (the runtime choice is still open, docs/16), and this keeps them from rotting. burn is a
+  # large dependency: the first run is slow and the cache keeps the rest. YM_REQUIRE_GPU and YM_REQUIRE_ORT make a missing
+  # adapter or library a failure instead of "skipped".
+  ml-backends:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      YM_REQUIRE_GPU: "1"
+      YM_REQUIRE_ORT: "1"
+      WGPU_BACKEND: vulkan
+    steps:
+      - uses: actions/checkout@v4
+      - name: Mesa lavapipe (software Vulkan)
+        run: sudo apt-get update && sudo apt-get install -y mesa-vulkan-drivers libvulkan1 vulkan-tools
+      - name: Rust toolchain from rust-toolchain.toml
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - name: ONNX Runtime library (the version the tests were run with)
+        run: |
+          pip install onnxruntime==1.29.0
+          lib=$(python3 -c "import glob, os, onnxruntime; print(sorted(glob.glob(os.path.join(os.path.dirname(onnxruntime.__file__), 'capi', 'libonnxruntime.so*')))[0])")
+          echo "ORT_DYLIB_PATH=$lib" >> "$GITHUB_ENV"
+      - run: cargo clippy -p ym-ml --all-targets --features burn,ort -- -D warnings
+      - run: cargo test -p ym-ml --features burn,ort
+
+  # Fuzzing (docs/13): every cargo-fuzz target runs for 10 minutes each night (property: no panic, no unbounded allocation, a
+  # typed error for any input). One job per target, so a crash names its target and the others still run. The targets are
+  # crates/ym-raw/fuzz (the ARW container and the decoders, docs/04) and crates/ym-color/fuzz (the `.cube` parser and the look
+  # JSON, docs/02); each is its own workspace and needs a nightly compiler, which is why this is the one job that does not use
+  # the pinned toolchain. ym-raw's seeds are valid synthetic files from `gen_seeds`; ym-color's are in the repository. Each
+  # night continues from the corpus of the last one (the cache). A crash is uploaded; turn it into a unit test in the crate before
+  # fixing it. The longer campaign is M4-05.
+  fuzz:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { crate: ym-raw, target: tiff_walker, dict: fuzz/dictionaries/tiff.dict }
+          - { crate: ym-raw, target: sr2 }
+          - { crate: ym-raw, target: probe, dict: fuzz/dictionaries/tiff.dict }
+          - { crate: ym-raw, target: craw }
+          - { crate: ym-raw, target: ljpeg }
+          - { crate: ym-raw, target: ycbcr }
+          - { crate: ym-raw, target: decode_any, dict: fuzz/dictionaries/tiff.dict }
+          - { crate: ym-color, target: cube_parse }
+          - { crate: ym-color, target: look_json }
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust toolchain from rust-toolchain.toml (the seed generator is an ordinary workspace example)
+        run: rustup toolchain install
+      - name: Nightly compiler for cargo-fuzz
+        run: rustup toolchain install nightly --profile minimal
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            crates/${{ matrix.crate }}/fuzz -> target
+      - name: cargo-fuzz
+        run: cargo install cargo-fuzz --version 0.13.2 --locked
+      - name: Corpus of the last night
+        uses: actions/cache/restore@v4
+        with:
+          path: crates/${{ matrix.crate }}/fuzz/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.crate }}-${{ matrix.target }}-${{ github.run_id }}
+          restore-keys: fuzz-corpus-${{ matrix.crate }}-${{ matrix.target }}-
+      - name: Seeds from valid synthetic files
+        if: matrix.crate == 'ym-raw'
+        run: cargo run -p ym-raw --features testgen --example gen_seeds -- --fuzz-root crates/ym-raw/fuzz/corpus
+      - name: Fuzz for 10 minutes
+        working-directory: crates/${{ matrix.crate }}
+        env:
+          TARGET: ${{ matrix.target }}
+          DICT: ${{ matrix.dict }}
+        run: |
+          args=(-max_total_time=600 -rss_limit_mb=2048 -timeout=20)
+          if [ -n "$DICT" ]; then args+=("-dict=$DICT"); fi
+          cargo +nightly fuzz run "$TARGET" -- "${args[@]}"
+      - name: Keep the corpus
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: crates/${{ matrix.crate }}/fuzz/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.crate }}-${{ matrix.target }}-${{ github.run_id }}
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: fuzz-crash-${{ matrix.crate }}-${{ matrix.target }}
+          path: crates/${{ matrix.crate }}/fuzz/artifacts
+          if-no-files-found: ignore

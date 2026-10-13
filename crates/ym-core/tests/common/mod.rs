@@ -15,6 +15,46 @@ use ym_core::session::{
 use ym_profiles::registry::ProfileStore;
 use ym_raw::testgen::{ArwBuilder, SplitMix64};
 
+/// A writer that appends to a shared buffer (the log capture below).
+struct LogWriter(Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl std::io::Write for LogWriter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Everything the process has logged at info level and above (the application's default level)
+/// since the first call, as the application's log file would hold it. The first call installs the
+/// subscriber, so a test calls it before the work it wants to look at. Global, because the export
+/// worker logs on its own thread; tests that run at the same time share it, so look for what is
+/// yours (a temporary folder's name is unique).
+pub fn captured_log() -> String {
+    static LOG: OnceLock<Arc<std::sync::Mutex<Vec<u8>>>> = OnceLock::new();
+    let buffer = LOG.get_or_init(|| {
+        let buffer = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let shared = Arc::clone(&buffer);
+        let _ = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .with_max_level(tracing::Level::INFO)
+            .with_writer(move || LogWriter(Arc::clone(&shared)))
+            .try_init();
+        buffer
+    });
+    let bytes = buffer
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
 /// The workspace `data/` folder (debug builds find it through `CARGO_MANIFEST_DIR`).
 pub fn data_root() -> PathBuf {
     ym_core::data_dir::find_data_dir().expect("the data folder")

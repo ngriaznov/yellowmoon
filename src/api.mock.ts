@@ -72,7 +72,7 @@ import type {
   ViewportRect,
   WatchStatus,
 } from "./api/types";
-import { expandNameTemplate, FILE_EXTENSION, slugify } from "./export/template";
+import { expandNameTemplate, FILE_EXTENSION, sanitizeStem, slugify } from "./export/template";
 import { version as APP_VERSION } from "../package.json";
 import { fixtureUrl } from "./fixtures";
 import { developScene, previewSvg } from "./fixtures/grade";
@@ -1279,13 +1279,15 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     const skips: boolean[] = [];
     const errors: Array<string | null> = [];
     recs.forEach((rec, i) => {
-      let name = `${expandNameTemplate(job.options.name_template, {
-        name: rec.scene.name,
-        look: lookSlug(rec.settings.look),
-        date: rec.summary.captured_at.slice(0, 10),
-        seq: i + 1,
-        camera: "sony-a1",
-      })}.${ext}`;
+      let name = `${sanitizeStem(
+        expandNameTemplate(job.options.name_template, {
+          name: rec.scene.name,
+          look: lookSlug(rec.settings.look),
+          date: rec.summary.captured_at.slice(0, 10),
+          seq: i + 1,
+          camera: "sony-a1",
+        }),
+      )}.${ext}`;
       let skip = false;
       if (taken.has(name)) {
         if (job.options.if_exists === "skip") skip = true;

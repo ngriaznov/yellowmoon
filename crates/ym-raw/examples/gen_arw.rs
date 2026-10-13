@@ -1,5 +1,5 @@
 //! Writes a synthetic ARW file for manual experiments (the LibRaw oracle script, ExifTool, the
-//! `yellowmoon info` command).
+//! `ym info` command).
 //!
 //! ```text
 //! cargo run -p ym-raw --features testgen --example gen_arw -- ILCE-7RM4 128 96 /tmp/a.ARW \

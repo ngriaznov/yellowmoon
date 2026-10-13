@@ -1,8 +1,10 @@
 # 09 · Export
 
-Crate: `ym-export` (writers), `ym-core` (export queue). UI: `design/mockups/export.html`. CLI: `yellowmoon render` (`docs/10-cli.md`). App and CLI share one code path, so the same inputs and settings give byte-identical files (apart from the XMP timestamp, which both write as the capture time, not "now").
+Crate: `ym-export` (writers), `ym-core` (export queue). UI: `design/mockups/export.html`. CLI: `ym render` (`docs/10-cli.md`). App and CLI share one code path, so the same inputs and settings give byte-identical files (apart from the XMP timestamp, which both write as the capture time, not "now").
 
 ## Options
+
+**Output sharpening (2026-10-13, owner's decision).** Every raster export (JPEG, TIFF, PNG; never DNG) is sharpened after the resize by a linear-light luma unsharp mask with halo control (`docs/algorithms/04-output-sharpening.md`, RA-08). It is a per-photo develop setting, not an export option: Detail › Sharpening › Output, 0–200 %, default 100 %, with the spec's screen preset otherwise (radius 1 px, threshold 1 level, halo suppression 60 %). The same setting applies to the viewport, tiles and thumbnails at their own size.
 
 | Option | Values | Default |
 |---|---|---|
@@ -190,6 +192,7 @@ Crate `ym-export`. It depends on `ym-color` only (not on `ym-raw` or `ym-core`):
 - **`BaselineExposure`.** Checked against Adobe's renderer, not only against our arithmetic: a scene with `x_white` 2.6 renders to the colours `ym-color` computes from the original scene-linear values with `BaselineExposure = log2(x_white)` (worst difference 2.9e-4 in encoded values), and a fitted offset of -1 EV halves the light as expected.
 - **Exif pixel dimensions of a DNG** are the size of the default crop when there is one (the meaningful image), not of the whole raw frame.
 - **`{camera}` and `{look}`** are slugs, exactly as the export panel previews them (`Sony A1` gives `sony-a1`); `naming::slugify` is the same function as `slugify` in `src/export/template.ts`, so `ym-core` and the CLI should pass `slugify(body)`.
+- **Disk-full and other write errors (review fix).** An encoder that cannot write its output (a full disk, a folder that went away) used to say "Encoding the PNG failed: No space left on device" with no next step, and a DNG said "TIFF" because the `tiff` crate writes it. The I/O errors of the JPEG, PNG and TIFF encoders now map to `ExportError::Write { format, source }` ("Couldn't write the PNG: No space left on device (os error 28). Check that the folder exists, is writable and has free space."), the same advice as `ExportError::Io`; `write_dng` relabels the TIFF encoder's errors as DNG. Non-I/O encoder failures keep "Encoding the X failed". The temporary file is still removed and a failed Replace keeps the old file. Test: `tests/disk_full.rs` (a sink that fails with ENOSPC after N bytes, for every format).
 - **GPS seconds** are computed on whole ten-thousandths of an arc second, so a latitude a hair below a minute carries into the minute instead of writing "60 seconds".
 - **Open question for M3-H6: undoable crop.** `DefaultCropOrigin` and `DefaultCropSize` are, for Adobe's apps, the bounds of the final image; they do not give the user an adjustable crop. DNG 1.4's `DefaultUserCrop` (tag 51125, four rationals relative to the default crop) is the tag Lightroom and Camera Raw show as an initial, adjustable crop. This document says `DefaultCropOrigin/Size` and the writer does that; try `DefaultUserCrop` when the DNG is opened in Lightroom (M3-H6).
 - **Licence acknowledgement for the JPEG encoder.** `jpeg-encoder` is `(MIT OR Apache-2.0) AND IJG` (its forward DCT is ported from the Independent JPEG Group's software). `cargo deny check licenses` fails until `IJG` is added to `deny.toml`, and the IJG licence asks that documentation accompanying a binary says "This software is based in part on the work of the Independent JPEG Group." (`NOTICE`, the About window, `docs/14`).

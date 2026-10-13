@@ -106,7 +106,7 @@ pub fn write_png<W: Write>(
 }
 
 fn png_io(e: std::io::Error) -> ExportError {
-    ExportError::encode("PNG", e)
+    ExportError::write("PNG", e)
 }
 
 #[cfg(test)]

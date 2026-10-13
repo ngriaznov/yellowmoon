@@ -91,13 +91,20 @@ UNDISCLOSED.
    Apache License 2.0. Copyright Contributors to the ACES Project.
 
 5. Figtree typeface
-   Copyright The Figtree Project Authors. SIL Open Font License 1.1
-   (design/fonts/OFL.txt; shipped with the app).
+   Copyright 2022 The Figtree Project Authors
+   (https://github.com/erikdkennedy/figtree). SIL Open Font License 1.1; the
+   licence text is in THIRD-PARTY.md inside the app (design/fonts/OFL.txt in
+   the repository).
 
-6. Training data for shipped model weights (add when weights ship)
-   PixelShift200 (CC BY 4.0), https://huggingface.co/datasets/guochengqian/PixelShift200
-   Cube++ (CC BY 4.0), https://zenodo.org/records/4153431
-   See data/models/*/MODEL_CARD.md for per-model provenance.
+6. Training data for shipped model weights
+   The weights that ship (data/models/illum, the illuminant estimators) are
+   fitted on synthetic scenes only: reflectances from rawtoaces-data (see 3),
+   illuminant spectra from the CIE (CC BY-SA 4.0) and spectra we generate,
+   seen through the published camera curves. No shipped weights are trained
+   on photographs.
+   See data/models/*/MODEL_CARD.md for per-model provenance. Datasets such as
+   PixelShift200 and Cube++ (both CC BY 4.0) are credited here when weights
+   trained on them ship.
 
 7. Independent JPEG Group
    This software is based in part on the work of the Independent JPEG Group.
@@ -106,8 +113,37 @@ UNDISCLOSED.
 8. Colour-demosaicing (Menon 2007 demosaic)
    The Menon DDFAPD demosaic in crates/ym-gpu/src/cpu/demosaic.rs is ported
    from colour-demosaicing (https://github.com/colour-science/colour-demosaicing),
-   BSD 3-Clause, Copyright 2015 Colour Developers.
+   distributed under the following licence:
 
-9. Rust and JavaScript dependencies
-   Listed with their licences in the generated THIRD-PARTY file produced at
-   release time (cargo-about / license-checker).
+   Copyright 2015 Colour Developers
+
+   Redistribution and use in source and binary forms, with or without
+   modification, are permitted provided that the following conditions are met:
+
+   1. Redistributions of source code must retain the above copyright notice,
+      this list of conditions and the following disclaimer.
+
+   2. Redistributions in binary form must reproduce the above copyright
+      notice, this list of conditions and the following disclaimer in the
+      documentation and/or other materials provided with the distribution.
+
+   3. Neither the name of the copyright holder nor the names of its
+      contributors may be used to endorse or promote products derived from
+      this software without specific prior written permission.
+
+   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+   AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+   IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+   ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+   LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+   CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+   SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+   INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+   CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+   ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+   POSSIBILITY OF SUCH DAMAGE.
+
+9. Rust and JavaScript dependencies and the Figtree font
+   Listed, each with its licence text, in THIRD-PARTY.md inside the app. The
+   file is generated for every release from Cargo.lock and package-lock.json
+   (tools/licences/generate.py: cargo-about and license-checker).

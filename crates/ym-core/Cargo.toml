@@ -31,6 +31,9 @@ png.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+# Captures what the code logs, to check that no file path reaches the log at info level and above
+# (MIT, already in the workspace).
+tracing-subscriber.workspace = true
 # The synthetic ARW writer (`ym_raw::testgen`) behind the session and estimate tests.
 ym-raw = { workspace = true, features = ["testgen"] }
 # JSON Schema validation of settings documents against `schema/settings.schema.json` (MIT; default

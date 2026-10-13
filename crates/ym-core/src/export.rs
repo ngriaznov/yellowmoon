@@ -81,6 +81,10 @@ use crate::session::{PhotoId, PhotoView, Session, SessionError};
 use crate::settings::{DevelopSettings, ResolvedSettings, SettingsError};
 use crate::version::{PIPELINE_VERSION, app_version};
 
+/// The note on a photo that was numbered because an earlier photo of the same job has the name its
+/// template gives (see [`WrittenFiles`]).
+pub const SAME_NAME_IN_JOB_NOTE: &str = "Another photo of this export has the same file name, so this one was saved with a number instead of replacing it.";
+
 /// The message of a DNG export with a look that has its own display rendering (`docs/09`).
 pub const DNG_BLOCKED_MESSAGE: &str = "This look includes its own display rendering, so it can't go into a DNG. Pick another look or export TIFF.";
 
@@ -479,6 +483,94 @@ impl ExportPhoto {
     }
 }
 
+/// What a file is on disk, whatever name it is reached by.
+#[cfg(unix)]
+type FileKey = (u64, u64);
+/// What a file is on disk, whatever name it is reached by.
+#[cfg(not(unix))]
+type FileKey = PathBuf;
+
+/// The identity of the file at `path`: its device and inode where there are such (a name that
+/// differs only in case on a case-insensitive volume reaches the same file), else its canonical
+/// path. `None` when there is no file.
+fn file_key(path: &Path) -> Option<FileKey> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let meta = std::fs::metadata(path).ok()?;
+        Some((meta.dev(), meta.ino()))
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::canonicalize(path).ok()
+    }
+}
+
+/// The files one job has written so far.
+///
+/// "If the file exists: Replace" and "Skip" look at the disk, and a file the same job wrote a moment
+/// ago is on the disk too. Two photos of a job that map to one name (two cards that both hold
+/// `DSC00001.ARW`, or a template with `{date}` and no `{seq}`) would otherwise replace each other
+/// with both reported as saved, or have the second skipped as "already there". [`export_photo`]
+/// asks this set before it plans a photo's file: a name that this job has already written is
+/// numbered as "Keep both" numbers it, whatever the job's choice is. A file that was there before
+/// the job is still replaced or skipped as asked.
+///
+/// Clones share one set, so one is made per job and handed to every photo of it through
+/// [`ExportParams::written`].
+#[derive(Debug, Clone, Default)]
+pub struct WrittenFiles(Arc<Mutex<std::collections::HashSet<FileKey>>>);
+
+impl WrittenFiles {
+    /// An empty set for a new job.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Whether the file now at `path` is one this job has written (also when `path` spells its name
+    /// in another case on a volume that does not tell the two apart).
+    #[must_use]
+    pub fn contains(&self, path: &Path) -> bool {
+        file_key(path).is_some_and(|key| {
+            self.0
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .contains(&key)
+        })
+    }
+
+    /// Records the file at `path`, which has just been written.
+    pub fn insert(&self, path: &Path) {
+        if let Some(key) = file_key(path) {
+            self.0
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .insert(key);
+        }
+    }
+
+    /// What "If the file exists" means for `file_name` in `dir`: the job's choice, except that a
+    /// name this job has already written is always numbered ([`IfExists::KeepBoth`]).
+    #[must_use]
+    pub fn if_exists_for(&self, dir: &Path, file_name: &str, chosen: IfExists) -> IfExists {
+        if chosen != IfExists::KeepBoth && self.contains(&dir.join(file_name)) {
+            IfExists::KeepBoth
+        } else {
+            chosen
+        }
+    }
+}
+
+impl PartialEq for WrittenFiles {
+    /// Two handles are equal when they are the same set.
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for WrittenFiles {}
+
 /// The parameters of one photo's export that come from the job.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExportParams {
@@ -489,6 +581,9 @@ pub struct ExportParams {
     pub remove_location: bool,
     /// The number of this photo in the job, 1-based: the `{seq}` of the name template.
     pub seq: u32,
+    /// The files the job has written so far (one set for all photos of a job), so that a photo
+    /// never replaces, or is skipped for, a file its own job made. `None` for a single export.
+    pub written: Option<WrittenFiles>,
 }
 
 impl ExportParams {
@@ -499,7 +594,15 @@ impl ExportParams {
             options,
             remove_location: false,
             seq: 1,
+            written: None,
         }
+    }
+
+    /// Shares the job's set of written files (see [`WrittenFiles`]).
+    #[must_use]
+    pub fn written(mut self, written: WrittenFiles) -> Self {
+        self.written = Some(written);
+        self
     }
 
     /// Sets the number of the photo in the job.
@@ -899,8 +1002,19 @@ fn export_photo_unguarded(
 
     // 2. The file name and the folder; a skipped file costs nothing.
     let fields = name_fields(photo, params.seq);
-    let dest =
+    let mut dest =
         ExportDestination::resolve(options, &fields, Some(&photo.path), ctx.home.as_deref())?;
+    // A name this job has already written is numbered whatever "If the file exists" says: Replace
+    // would overwrite the job's own earlier photo and Skip would take it for a file from before.
+    let mut notes: Vec<String> = Vec::new();
+    if let Some(written) = &params.written {
+        let file_name = format!("{}.{}", dest.file_stem, options.format.extension());
+        let chosen = dest.if_exists;
+        dest.if_exists = written.if_exists_for(&dest.dir, &file_name, chosen);
+        if dest.if_exists != chosen {
+            notes.push(SAME_NAME_IN_JOB_NOTE.to_owned());
+        }
+    }
     if let Some(placement) = naming::plan_output(
         &dest.dir,
         &dest.file_stem,
@@ -919,7 +1033,7 @@ fn export_photo_unguarded(
             rendered: (0, 0),
             dng: None,
             timings: ExportTimings::default(),
-            notes: Vec::new(),
+            notes,
         });
     }
 
@@ -955,7 +1069,6 @@ fn export_photo_unguarded(
     let cancel_flag = || control.cancel.is_cancelled();
     let progress_fn = |f: f32| report(control, f);
     let hooks = ExportHooks::new(Some(&cancel_flag), Some(&progress_fn));
-    let mut notes: Vec<String> = Vec::new();
     let render_ms;
     let outcome;
     let rendered;
@@ -1084,6 +1197,9 @@ fn export_photo_unguarded(
         "exported"
     );
     let skipped = matches!(outcome.placement, Placement::Skipped(_));
+    if !skipped && let Some(written) = &params.written {
+        written.insert(outcome.path());
+    }
     Ok(ExportReport {
         path: outcome.path().to_path_buf(),
         skipped,

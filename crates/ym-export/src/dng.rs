@@ -377,7 +377,18 @@ fn too_large() -> ExportError {
 }
 
 /// Writes a DNG.
+///
+/// A DNG is a TIFF file, so the TIFF encoder's errors are raised under its name; they leave here
+/// as DNG errors.
 pub fn write_dng<W: Write + Seek>(
+    out: W,
+    p: &DngParams<'_>,
+    hooks: &ExportHooks<'_>,
+) -> Result<DngReport, ExportError> {
+    write_dng_file(out, p, hooks).map_err(|e| e.labelled("DNG"))
+}
+
+fn write_dng_file<W: Write + Seek>(
     out: W,
     p: &DngParams<'_>,
     hooks: &ExportHooks<'_>,

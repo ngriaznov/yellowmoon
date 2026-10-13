@@ -1,8 +1,9 @@
 import { act, screen, waitFor, within } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { MockOptions } from "../../api.mock";
 import { FAILURE_ZIPS, PACKAGE_ZIPS } from "../../api.mock";
 import { openPhotos, renderApp } from "../../test/harness";
+import { updater } from "../../updater";
 import type { Harness } from "../../test/harness";
 
 let h: Harness | undefined;
@@ -53,6 +54,23 @@ describe("Preferences (⌘,)", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
     await h.user.keyboard("p");
     await waitFor(() => expect(h!.store.currentPhoto()?.picked).toBe(false));
+  });
+
+  it("leaves the panel behind alone when ⌘1 to ⌘6 are pressed over it", async () => {
+    h = renderApp({ current: 3 });
+    await openPhotos(h);
+    await h.user.keyboard("{Meta>}e{/Meta}");
+    expect(await screen.findByRole("complementary", { name: "Export" })).toBeInTheDocument();
+    await h.user.keyboard("{Meta>},{/Meta}");
+    await screen.findByRole("dialog", { name: "Preferences" });
+    await h.user.keyboard("{Meta>}3{/Meta}");
+    expect(h.store.getState().panel).toBe("export");
+    expect(screen.getByRole("complementary", { name: "Export" })).toBeInTheDocument();
+    // Once the dialog is closed the shortcut works again.
+    await h.user.keyboard("{Escape}");
+    await h.user.keyboard("{Meta>}3{/Meta}");
+    await waitFor(() => expect(h!.store.getState().panel).toBe("tools"));
+    expect(screen.getByRole("tab", { name: "Colour", selected: true })).toBeInTheDocument();
   });
 
   it("keeps the keyboard inside while it is open, and gives it back on Done", async () => {
@@ -222,6 +240,27 @@ describe("the menu bar", () => {
     expect(screen.queryByText("Yellowmoon is up to date.")).toBeNull();
   });
 
+  describe("when an update is already on its way", () => {
+    afterEach(() => {
+      updater.applyExternal({ phase: "idle" });
+    });
+
+    it("says it is ready, not that 'Update available' downloads it", async () => {
+      await start();
+      act(() => updater.applyExternal({ phase: "ready", version: "0.1.1" }));
+      await menu("check_for_updates");
+      expect(await screen.findByText("Version 0.1.1 is ready. Press Update ready to restart.")).toBeInTheDocument();
+      expect(screen.queryByText(/press Update available/)).toBeNull();
+    });
+
+    it("says it is downloading", async () => {
+      await start();
+      act(() => updater.applyExternal({ phase: "downloading", version: "0.1.1", percent: 30 }));
+      await menu("check_for_updates");
+      expect(await screen.findByText("Version 0.1.1 is downloading.")).toBeInTheDocument();
+    });
+  });
+
   it("Install Command-Line Tool… installs it", async () => {
     await start();
     await menu("install_cli");
@@ -301,6 +340,51 @@ describe("Import .cube…", () => {
     expect(await screen.findByText("1 LUT added to Your LUTs.")).toBeInTheDocument();
     expect(screen.queryByRole("dialog")).toBeNull();
     expect((await h!.api.looksList()).find((l) => l.id === "user:warm-film")).toMatchObject({ name: "Warm Film", input: "logc4", group: { kind: "user" } });
+  });
+
+  it("keeps the keyboard inside while the question is unanswered, and Esc closes it from anywhere", async () => {
+    // jsdom has no layout: every element reports no offsetParent, which the focus trap reads as "not shown".
+    const layout = vi.spyOn(HTMLElement.prototype, "offsetParent", "get").mockImplementation(function (this: HTMLElement) {
+      return this.parentElement;
+    });
+    try {
+      const dialog = await chooseCube(FAILURE_ZIPS.ownCube);
+      const importButton = within(dialog).getByRole("button", { name: "Import" });
+      expect(importButton).toHaveAttribute("aria-disabled", "true");
+      // Focus starts on the question, not on the button that is locked until it is answered.
+      expect(dialog.contains(document.activeElement)).toBe(true);
+      expect(document.activeElement).not.toBe(importButton);
+      expect(within(dialog).getByRole("radiogroup", { name: "Input of Warm_Film.cube" }).contains(document.activeElement)).toBe(true);
+      const visited = new Set<Element | null>();
+      for (let i = 0; i < 12; i++) {
+        await h!.user.tab();
+        expect(dialog.contains(document.activeElement)).toBe(true);
+        visited.add(document.activeElement);
+      }
+      expect(visited.has(importButton)).toBe(true);
+      for (let i = 0; i < 12; i++) {
+        await h!.user.tab({ shift: true });
+        expect(dialog.contains(document.activeElement)).toBe(true);
+      }
+      // A locked Import still takes the Tab from the last place and starts again at the first.
+      importButton.focus();
+      await h!.user.tab();
+      expect(within(dialog).getByRole("radiogroup", { name: "Input of Warm_Film.cube" }).contains(document.activeElement)).toBe(true);
+      // With the focus on the page behind (a click on the dimmed window, say) Tab comes back in and Esc still closes the dialog.
+      (document.activeElement as HTMLElement).blur();
+      await h!.user.tab();
+      expect(dialog.contains(document.activeElement)).toBe(true);
+      (document.activeElement as HTMLElement).blur();
+      await h!.user.keyboard("{Escape}");
+      expect(screen.queryByRole("dialog")).toBeNull();
+    } finally {
+      layout.mockRestore();
+    }
+  });
+
+  it("starts on the Import button once there is nothing left to answer", async () => {
+    const dialog = await chooseCube(PACKAGE_ZIPS.display_luts_logc4);
+    expect(within(dialog).getByRole("button", { name: "Import" })).toHaveFocus();
   });
 
   it("imports an ARRI package without asking, and lists a file that can't be used with the reason", async () => {

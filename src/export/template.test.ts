@@ -3,8 +3,10 @@ import {
   DEFAULT_TEMPLATE,
   expandNameTemplate,
   FILE_EXTENSION,
+  MAX_STEM_BYTES,
   MAX_TEMPLATE_LENGTH,
   previewFileName,
+  sanitizeStem,
   slugify,
   templateProblem,
   templateWarning,
@@ -30,6 +32,57 @@ describe("previewFileName", () => {
     expect(previewFileName(DEFAULT_TEMPLATE, parts, "png")).toBe("DSC04204_film-warm.png");
     expect(previewFileName(DEFAULT_TEMPLATE, parts, "dng")).toBe("DSC04204_film-warm.dng");
     expect(Object.keys(FILE_EXTENSION)).toEqual(["jpeg", "tiff", "png", "dng"]);
+  });
+});
+
+describe("sanitizeStem", () => {
+  // The cases of `stems_are_made_safe` in crates/ym-export/src/naming.rs: the panel promises the name the core writes.
+  it("turns what a file name can't hold into underscores", () => {
+    expect(sanitizeStem('a/b\\c:d*e?f"g<h>i|j')).toBe("a_b_c_d_e_f_g_h_i_j");
+    expect(sanitizeStem("tab\there")).toBe("tab_here");
+    expect(sanitizeStem("bell\u0007\u0085\u007f")).toBe("bell___");
+  });
+
+  it("drops leading dots and spaces and trailing dots and spaces", () => {
+    expect(sanitizeStem("..hidden")).toBe("hidden");
+    expect(sanitizeStem("  spaced out.  ")).toBe("spaced out");
+    expect(sanitizeStem("\u00a0\u3000x. .")).toBe("x");
+  });
+
+  it("falls back to 'export' when nothing is left", () => {
+    expect(sanitizeStem("")).toBe("export");
+    expect(sanitizeStem("...")).toBe("export");
+    expect(sanitizeStem(" . ")).toBe("export");
+  });
+
+  it("keeps at most 200 bytes, never cuts a character in two, and trims what the cut leaves at the end", () => {
+    const long = sanitizeStem("é".repeat(300));
+    expect(new TextEncoder().encode(long).length).toBeLessThanOrEqual(MAX_STEM_BYTES);
+    expect(long).toBe("é".repeat(100));
+    expect(sanitizeStem("😀".repeat(80))).toBe("😀".repeat(50));
+    expect(sanitizeStem(`${"a".repeat(199)} b`)).toBe("a".repeat(199));
+  });
+
+  it("leaves a safe name alone", () => {
+    expect(sanitizeStem("DSC04204_film-warm (2) é")).toBe("DSC04204_film-warm (2) é");
+  });
+});
+
+describe("previewFileName and the core's sanitising", () => {
+  it("shows the name the core writes for characters a file name can't hold", () => {
+    expect(previewFileName("{name}*final", parts, "jpeg")).toBe("DSC04204_final.jpg");
+    expect(previewFileName("{name}?{look}|{seq}", parts, "tiff")).toBe("DSC04204_film-warm_007.tif");
+    expect(templateProblem("{name}*final")).toBeNull();
+  });
+
+  it("drops a trailing dot or space, so the extension follows the name", () => {
+    expect(previewFileName("{name}.", parts, "png")).toBe("DSC04204.png");
+    expect(previewFileName("{name} ", parts, "jpeg")).toBe("DSC04204.jpg");
+  });
+
+  it("cuts a very long expanded name at 200 bytes", () => {
+    const stem = previewFileName(`${"é".repeat(100)}{name}`, parts, "jpeg").replace(/\.jpg$/, "");
+    expect(new TextEncoder().encode(stem).length).toBeLessThanOrEqual(MAX_STEM_BYTES);
   });
 });
 

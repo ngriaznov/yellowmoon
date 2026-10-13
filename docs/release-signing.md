@@ -89,7 +89,7 @@ If `main` is protected, the last step (the cask commit) needs the `github-action
 These are the M0-03 acceptance checks that no Linux container can run:
 
 1. Install 0.0.1 from the dmg, publish 0.0.2 the same way as step 6, and confirm that the installed app finds the update, downloads it and restarts into 0.0.2. A "signature verification failed" message means the public key in the installed app does not match the secret key used in CI: redo steps 3 and 4 with one key pair.
-2. `brew tap ngriaznov/yellowmoon https://github.com/ngriaznov/yellowmoon && brew install --cask yellowmoon`, then `yellowmoon --version`. (Recent Homebrew may ask for `brew trust ngriaznov/yellowmoon` once.)
+2. `brew tap ngriaznov/yellowmoon https://github.com/ngriaznov/yellowmoon && brew install --cask yellowmoon`, then `ym --version`. (Recent Homebrew may ask for `brew trust ngriaznov/yellowmoon` once.)
 
 ## If something goes wrong later
 

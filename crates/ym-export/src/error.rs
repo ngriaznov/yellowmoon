@@ -24,6 +24,18 @@ pub enum ExportError {
         #[source]
         source: std::io::Error,
     },
+    /// An encoder could not write its output (a full disk, a folder that went away). The encoder
+    /// reports it without a path; the advice is the same as for [`ExportError::Io`].
+    #[error(
+        "Couldn't write the {format}: {source}. Check that the folder exists, is writable and has free space."
+    )]
+    Write {
+        /// What was being written ("JPEG", "TIFF", "PNG", "DNG").
+        format: &'static str,
+        /// The operating system error.
+        #[source]
+        source: std::io::Error,
+    },
     /// The job was cancelled; the partial file has been deleted.
     #[error("The export was cancelled and the partial file was removed.")]
     Cancelled,
@@ -55,6 +67,27 @@ impl ExportError {
         }
     }
 
+    /// An [`ExportError::Write`]: the encoder of `format` could not write to its output.
+    pub fn write(format: &'static str, source: std::io::Error) -> Self {
+        Self::Write { format, source }
+    }
+
+    /// Names the file format in an encoder error that was raised under another name. A DNG is
+    /// written by the TIFF encoder, whose errors say "TIFF"; the person asked for a DNG.
+    pub(crate) fn labelled(self, format: &'static str) -> Self {
+        match self {
+            Self::Encode {
+                format: "TIFF",
+                reason,
+            } => Self::Encode { format, reason },
+            Self::Write {
+                format: "TIFF",
+                source,
+            } => Self::Write { format, source },
+            other => other,
+        }
+    }
+
     /// An [`ExportError::Encode`] for `format`.
     pub fn encode(format: &'static str, reason: impl std::fmt::Display) -> Self {
         Self::Encode {
@@ -71,14 +104,17 @@ impl ExportError {
 
 impl From<jpeg_encoder::EncodingError> for ExportError {
     fn from(e: jpeg_encoder::EncodingError) -> Self {
-        Self::encode("JPEG", e)
+        match e {
+            jpeg_encoder::EncodingError::IoError(io) => Self::write("JPEG", io),
+            other => Self::encode("JPEG", other),
+        }
     }
 }
 
 impl From<png::EncodingError> for ExportError {
     fn from(e: png::EncodingError) -> Self {
         match e {
-            png::EncodingError::IoError(io) => Self::encode("PNG", io),
+            png::EncodingError::IoError(io) => Self::write("PNG", io),
             other => Self::encode("PNG", other),
         }
     }
@@ -86,6 +122,49 @@ impl From<png::EncodingError> for ExportError {
 
 impl From<tiff::TiffError> for ExportError {
     fn from(e: tiff::TiffError) -> Self {
-        Self::encode("TIFF", e)
+        match e {
+            tiff::TiffError::IoError(io) => Self::write("TIFF", io),
+            other => Self::encode("TIFF", other),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io;
+
+    fn full() -> io::Error {
+        io::Error::from_raw_os_error(28)
+    }
+
+    #[test]
+    fn io_failures_of_the_encoders_carry_the_next_step() {
+        for (e, format) in [
+            (
+                ExportError::from(png::EncodingError::IoError(full())),
+                "PNG",
+            ),
+            (ExportError::from(tiff::TiffError::IoError(full())), "TIFF"),
+            (
+                ExportError::from(jpeg_encoder::EncodingError::IoError(full())),
+                "JPEG",
+            ),
+        ] {
+            let text = e.to_string();
+            assert!(text.contains(format), "{text}");
+            assert!(text.contains("No space left on device"), "{text}");
+            assert!(text.contains("has free space"), "{text}");
+        }
+    }
+
+    #[test]
+    fn relabelling_only_touches_the_tiff_name() {
+        let tiff_io = ExportError::from(tiff::TiffError::IoError(full())).labelled("DNG");
+        assert!(tiff_io.to_string().starts_with("Couldn't write the DNG"));
+        let tiff_enc = ExportError::encode("TIFF", "bad").labelled("DNG");
+        assert_eq!(tiff_enc.to_string(), "Encoding the DNG failed: bad.");
+        let other = ExportError::encode("XMP", "bad").labelled("DNG");
+        assert_eq!(other.to_string(), "Encoding the XMP failed: bad.");
     }
 }

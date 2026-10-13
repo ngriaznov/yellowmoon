@@ -674,3 +674,46 @@ fn the_shipped_default_returns_a_smooth_image_to_within_rounding() {
         );
     }
 }
+
+#[test]
+fn text_tags_with_terminal_escapes_come_back_printable() {
+    // The model, firmware and lens strings of a downloaded file are printed by `ym info`, shown in
+    // the UI and copied into exports. A crafted file must not smuggle escape sequences through them.
+    let (w, h) = (64, 48);
+    let mosaic = gradient_mosaic(w, h, 512, 16000, 21);
+    let file = ArwBuilder::new("ILCE-7RM4", w, h)
+        .lens_model(Some(
+            "FE \u{1b}[31mRED\u{1b}[0m\u{1b}]0;PWNED\u{7}\u{1b}[2J lens",
+        ))
+        .software("v\u{1b}[1;1Hx\u{9b}2J")
+        .build(&mosaic);
+    let raw = must_decode(&file);
+    for (name, text) in [
+        ("software", raw.meta.software.as_deref()),
+        ("lens_model", raw.meta.lens_model.as_deref()),
+        ("model", Some(raw.meta.model.as_str())),
+        ("make", Some(raw.meta.make.as_str())),
+    ] {
+        let text = text.unwrap_or_else(|| panic!("{name} missing"));
+        assert!(
+            text.chars().all(|c| !c.is_control()),
+            "{name} still holds a control character: {text:?}"
+        );
+    }
+    let lens = raw.meta.lens_model.as_deref().expect("lens");
+    assert!(
+        lens.starts_with("FE ") && lens.contains("PWNED"),
+        "{lens:?}"
+    );
+
+    // The same goes for the camera name inside an error message.
+    let hostile_model = ArwBuilder::new("ILCE-7M5\u{1b}[2J", 64, 64)
+        .container_only(ContainerOnly::arw6(12))
+        .build(&[]);
+    match decode_bytes(&hostile_model, &DecodeOptions::default()) {
+        Err(RawError::Unsupported { camera, .. }) => {
+            assert!(camera.chars().all(|c| !c.is_control()), "{camera:?}");
+        }
+        other => panic!("expected Unsupported, got {other:?}"),
+    }
+}

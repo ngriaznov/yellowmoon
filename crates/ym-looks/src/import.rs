@@ -1,4 +1,4 @@
-//! The importer behind the wizard and `yellowmoon looks import`: zips, folders and `.cube` files (`docs/08-looks.md` sections Wizard and Any other .cube).
+//! The importer behind the wizard and `ym looks import`: zips, folders and `.cube` files (`docs/08-looks.md` sections Wizard and Any other .cube).
 //!
 //! Two steps, matching the wizard:
 //!
@@ -688,7 +688,7 @@ pub fn import(
     Ok(report)
 }
 
-/// [`inspect`] then [`import`]: what `yellowmoon looks import` does.
+/// [`inspect`] then [`import`]: what `ym looks import` does.
 ///
 /// # Errors
 ///

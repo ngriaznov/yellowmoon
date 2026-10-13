@@ -48,6 +48,15 @@ describe("photo helpers", () => {
     expect(folderSubline({ photos: [] })).toBe("0 photos");
   });
 
+  it("takes the folder's date from the first photo that has one, and has no separator without any", () => {
+    // The core sends "" for a file that could not be probed or has no capture time.
+    const undated = photo({ id: 1, captured_at: "", status: { kind: "skipped", reason: "Can't read this." } });
+    expect(captureDate(undated)).toBe("");
+    expect(folderSubline({ photos: [undated, photo({ id: 2 }), photo({ id: 3 })] })).toBe("2026-10-04 · 3 photos");
+    expect(folderSubline({ photos: [undated, photo({ id: 2, captured_at: "" })] })).toBe("2 photos");
+    expect(folderSubline({ photos: [undated] })).toBe("1 photo");
+  });
+
   it("weighs the stages of development for the progress bar", () => {
     const f = (status: PhotoStatus) => developFraction(status);
     expect(f({ kind: "waiting" })).toBe(0);

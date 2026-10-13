@@ -40,7 +40,7 @@ We copy github.com/ngriaznov/plugout's setup: every version bump on main becomes
 
 ## Bundle contents
 
-App, sidecar CLI, `data/` (ALEXA curve, ARRI matrices with notice, camera profiles, built-in looks, model weights: a few MB in total), Figtree fonts with OFL text, `NOTICE`, `LICENSE`. If weights grow beyond ~30 MB, move them to a versioned release asset downloaded on first run with a hash check, and keep a classical-only fallback.
+App, sidecar CLI, `data/` (ALEXA curve, ARRI matrices with notice, camera profiles, built-in looks, model weights: a few MB in total), Figtree fonts, `NOTICE`, `LICENSE` and `THIRD-PARTY.md`. `THIRD-PARTY.md` holds the licence texts of the Rust crates (the app's and the `ym` command's, for macOS), the npm packages and the Figtree OFL text; it is generated at release time by `tools/licences/generate.py` (cargo-about and license-checker; `release.yml` runs it before `tauri build`, the `licences` CI job on every change) and listed in `bundle.resources` next to `NOTICE` and `LICENSE`. `tools/licences/check_bundle.py` fails when the resource is missing. During development `tools/dev/prepare-sidecar.sh` writes a stub of the file (tauri-build wants every resource to exist) that the generator never accepts as the real one. If weights grow beyond ~30 MB, move them to a versioned release asset downloaded on first run with a hash check, and keep a classical-only fallback.
 
 ## Signing
 

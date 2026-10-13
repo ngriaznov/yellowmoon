@@ -801,10 +801,14 @@ fn summarise(
         ));
     }
     if summary.skipped > 0 {
-        parts.push(format!(
-            "{} already existed and were skipped.",
-            photos(summary.skipped)
-        ));
+        parts.push(if summary.skipped == 1 {
+            "1 photo already existed and was skipped.".to_owned()
+        } else {
+            format!(
+                "{} already existed and were skipped.",
+                photos(summary.skipped)
+            )
+        });
     }
     if !counts.failed.is_empty() {
         parts.push(format!("{} failed.", photos(counts.failed.len())));

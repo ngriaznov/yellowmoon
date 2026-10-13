@@ -13,8 +13,11 @@
 //!   every frame for as long as it takes (36 s for 50 MP on four cores). While an export tile
 //!   runs, a foreground job shares the cores with it; that overlap is bounded by one tile.
 //! * **Cancellation.** Every job carries a token. Moving to another photo ([`JobScheduler::navigate`])
-//!   cancels the viewport and tile jobs of the photo being left, pending and running; thumbnail and
-//!   export jobs are never cancelled by navigation. An export stops only through its own handle.
+//!   cancels the viewport and tile jobs of the photo being left, pending and running, and the jobs
+//!   queued with [`JobScheduler::submit_superseded`] (the Look tab's tiles and the histogram: panel
+//!   requests that nobody wants once the person has moved on) for that photo, letting go of what
+//!   they hold at once; the filmstrip's thumbnails and export jobs are never cancelled by
+//!   navigation. An export stops only through its own handle.
 //! * **Memory.** At most [`MemoryBudget::max_mosaics`] decoded mosaics (the current photo and its
 //!   neighbours, kept by the session) and [`MemoryBudget::max_photos`] render graphs. The render
 //!   caches are byte-bounded LRU maps ([`ByteLru`]); a full-resolution render reserves its working
@@ -29,8 +32,8 @@
 //! inside (rayon, scoped threads), so a second *foreground* worker would only compete for the same
 //! cores.
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use ym_gpu::queue::Scheduler;
@@ -323,6 +326,40 @@ impl Drop for LoadGuard {
     }
 }
 
+/// A queued job that moving to another photo supersedes (see [`JobScheduler::submit_superseded`]).
+struct Supersedable {
+    /// The photo the job is for.
+    owner: u64,
+    /// The job has finished or been dropped unrun: there is nothing left to cancel.
+    finished: Arc<AtomicBool>,
+    token: CancelToken,
+    /// Drops the job's closure, and what it captured (the photo's decoded mosaic), if it has not
+    /// started.
+    discard: Box<dyn Fn() + Send + Sync>,
+}
+
+fn locked<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Travels inside the closure of a superseded-able job and ends the job's entry in the registry
+/// when the closure is dropped, however that comes about: the job ran (a panic included), or the
+/// queue dropped it unrun (the session closed, the scheduler shut down, its handle was cancelled).
+/// An unrun job's closure is gone with the queue's copy of it, but the registry's `discard` still
+/// holds the job's slot, and with it what the job captured (the photo's decoded mosaic): the guard
+/// empties the slot so that nothing outlives the job.
+struct Release<F> {
+    finished: Arc<AtomicBool>,
+    slot: Arc<Mutex<Option<F>>>,
+}
+
+impl<F> Drop for Release<F> {
+    fn drop(&mut self) {
+        drop(locked(&self.slot).take());
+        self.finished.store(true, Ordering::SeqCst);
+    }
+}
+
 /// Runs render jobs in priority order (see the module documentation).
 pub struct JobScheduler {
     /// Viewport, tile and thumbnail jobs, one at a time.
@@ -333,6 +370,8 @@ pub struct JobScheduler {
     load: Arc<AtomicUsize>,
     /// The photo being looked at, for [`JobScheduler::navigate`] (0: none).
     current: AtomicU64,
+    /// Queued panel requests that navigation supersedes.
+    superseded: Mutex<Vec<Supersedable>>,
 }
 
 impl std::fmt::Debug for JobScheduler {
@@ -367,6 +406,7 @@ impl JobScheduler {
             background,
             load: Arc::new(AtomicUsize::new(0)),
             current: AtomicU64::new(0),
+            superseded: Mutex::new(Vec::new()),
         })
     }
 
@@ -403,6 +443,85 @@ impl JobScheduler {
         }
     }
 
+    /// Queues a job for `owner` that moving on from that photo supersedes: a request of a panel (a
+    /// look tile, the histogram) for the photo on screen, which nobody wants once the person has
+    /// stepped to the next one. [`JobScheduler::navigate`] away from `owner` takes the job out of
+    /// the queue's hands: its closure, and the decoded mosaic it holds, are dropped at once (a
+    /// queued job otherwise pins its photo's mosaic until its turn comes, and stepping through
+    /// photos faster than the tiles render piled up mosaics and wasted the render worker on
+    /// pictures nobody sees), and the handle resolves with [`JobError::Cancelled`], as for a
+    /// viewport job of the photo left (with `superseded()` instead, in the instant between the
+    /// worker taking the job and running it). A job that is already running has its token set and
+    /// decides when to stop.
+    ///
+    /// Like the viewport and tile jobs, only the photo being left is affected: a request for the
+    /// photo being moved to, which may arrive before the move is recorded, is never cancelled.
+    pub fn submit_superseded<R, F, G>(
+        &self,
+        priority: Priority,
+        owner: PhotoId,
+        job: F,
+        superseded: G,
+    ) -> JobHandle<R>
+    where
+        R: Send + 'static,
+        F: FnOnce(&CancelToken) -> R + Send + 'static,
+        G: FnOnce() -> R + Send + 'static,
+    {
+        let slot = Arc::new(Mutex::new(Some(job)));
+        let finished = Arc::new(AtomicBool::new(false));
+        let handle = {
+            let release = Release {
+                finished: Arc::clone(&finished),
+                slot: Arc::clone(&slot),
+            };
+            self.submit(priority, Some(owner), move |token| {
+                // The whole guard moves in (a type with a destructor is captured whole anyway).
+                let release = release;
+                let job = locked(&release.slot).take();
+                let result = match job {
+                    Some(job) if !token.is_cancelled() => job(token),
+                    _ => superseded(),
+                };
+                // The job is over, and so is its entry in the registry.
+                drop(release);
+                result
+            })
+        };
+        let mut registry = locked(&self.superseded);
+        registry.retain(|e| !e.finished.load(Ordering::SeqCst));
+        registry.push(Supersedable {
+            owner: u64::from(owner.0).max(1),
+            finished,
+            token: handle.token().clone(),
+            discard: Box::new(move || drop(locked(&slot).take())),
+        });
+        drop(registry);
+        handle
+    }
+
+    /// Supersedes the panel requests of `owner`; returns how many were still waiting or running.
+    fn supersede(&self, owner: u64) -> usize {
+        let doomed: Vec<Supersedable> = {
+            let mut registry = locked(&self.superseded);
+            let (doomed, kept) = std::mem::take(&mut *registry)
+                .into_iter()
+                .filter(|e| !e.finished.load(Ordering::SeqCst))
+                .partition(|e| e.owner == owner);
+            *registry = kept;
+            doomed
+        };
+        let mut n = 0;
+        for e in doomed {
+            if !e.token.is_cancelled() {
+                n += 1;
+            }
+            e.token.cancel();
+            (e.discard)();
+        }
+        n
+    }
+
     /// Blocks while a viewport, tile or thumbnail job is queued or running, and returns when the
     /// foreground is idle: the point where a long export job may take its next piece.
     ///
@@ -422,14 +541,15 @@ impl JobScheduler {
     }
 
     /// Records that the user moved to `photo` and cancels the viewport and tile jobs of the photo
-    /// they left. Returns how many jobs were cancelled. Thumbnail and export jobs are untouched.
+    /// they left, and its panel requests ([`JobScheduler::submit_superseded`]). Returns how many
+    /// jobs were cancelled. Filmstrip thumbnail and export jobs are untouched.
     pub fn navigate(&self, photo: PhotoId) -> usize {
         let new = u64::from(photo.0).max(1);
         let old = self.current.swap(new, Ordering::SeqCst);
         if old == 0 || old == new {
             return 0;
         }
-        self.foreground.cancel_navigation(Some(old))
+        self.supersede(old) + self.foreground.cancel_navigation(Some(old))
     }
 
     /// Cancels every pending job and sets the token of the running ones (the session closed).
@@ -740,6 +860,93 @@ mod tests {
         assert_eq!((c.len(), c.used()), (1, 500));
         c.insert(4, "again", 10); // replacing frees the old size
         assert_eq!(c.used(), 10);
+    }
+
+    #[test]
+    fn a_superseded_able_job_dropped_unrun_lets_go_of_what_it_holds_whoever_cancelled_it() {
+        // A queued panel request holds its photo's decoded mosaic. Navigation lets go of it at once
+        // (tested with the renderer); closing the session, shutting down and cancelling the handle
+        // drop the job unrun as well, and the scheduler's own list of such jobs must not keep what
+        // the job captured.
+        let s = JobScheduler::new("test-unrun").expect("scheduler");
+        s.navigate(PhotoId(1));
+        let (gate, gate_job) = block(&s);
+        let held = Arc::new(());
+        let queue = |s: &JobScheduler| {
+            let held = Arc::clone(&held);
+            s.submit_superseded(
+                Priority::Thumbnail,
+                PhotoId(1),
+                move |_| Arc::strong_count(&held),
+                || 0,
+            )
+        };
+
+        // The session closes: the queue drops every pending job.
+        let closed = queue(&s);
+        assert_eq!(Arc::strong_count(&held), 2);
+        s.cancel_foreground();
+        assert_eq!(closed.wait(), Err(JobError::Cancelled));
+        assert_eq!(
+            Arc::strong_count(&held),
+            1,
+            "a job dropped by the session closing let go"
+        );
+        assert!(
+            locked(&s.superseded)
+                .iter()
+                .all(|e| e.finished.load(Ordering::SeqCst)),
+            "and its entry is over, so that the next call prunes it"
+        );
+
+        // The caller gives up on the handle: the job is dropped when the worker reaches it.
+        let given_up = queue(&s);
+        given_up.cancel();
+        gate.send(()).expect("open the gate");
+        gate_job.wait().expect("gate job");
+        assert_eq!(given_up.wait(), Err(JobError::Cancelled));
+        // The worker answers the handle first and drops the job after, on its own thread.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while Arc::strong_count(&held) != 1 && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert_eq!(Arc::strong_count(&held), 1, "a job cancelled by its handle");
+
+        // The scheduler shuts down with a job waiting (the shutdown joins the worker, which is
+        // held by the gate until another thread opens it).
+        let (gate, gate_job) = block(&s);
+        let shut = queue(&s);
+        let opener = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            gate.send(()).expect("open the gate");
+        });
+        s.shutdown();
+        opener.join().expect("opener");
+        gate_job.wait().expect("gate job");
+        assert_eq!(shut.wait(), Err(JobError::Shutdown));
+        assert_eq!(Arc::strong_count(&held), 1, "a job dropped by shutdown");
+    }
+
+    #[test]
+    fn the_list_of_superseded_able_jobs_does_not_grow_with_jobs_that_are_over() {
+        let s = JobScheduler::new("test-list").expect("scheduler");
+        s.navigate(PhotoId(1));
+        for _ in 0..50 {
+            s.submit_superseded(Priority::Thumbnail, PhotoId(1), |_| 1, || 0)
+                .wait()
+                .expect("job");
+        }
+        // One more call prunes the finished ones; a job queued behind a gate is the only live one.
+        let (gate, gate_job) = block(&s);
+        let waiting = s.submit_superseded(Priority::Thumbnail, PhotoId(1), |_| 1, || 0);
+        assert!(
+            locked(&s.superseded).len() <= 2,
+            "{} entries",
+            locked(&s.superseded).len()
+        );
+        gate.send(()).expect("open the gate");
+        gate_job.wait().expect("gate job");
+        waiting.wait().expect("job");
     }
 
     #[test]

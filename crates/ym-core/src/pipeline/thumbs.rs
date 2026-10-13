@@ -324,7 +324,12 @@ impl Renderer {
             })
     }
 
-    /// Queues a look tile at [`Priority::Thumbnail`].
+    /// Queues a look tile at [`Priority::Thumbnail`]. A tile is a request of the Look tab for the
+    /// photo on screen: moving to another photo ([`Renderer::navigate`]) cancels it, pending or
+    /// running, and a pending one lets go of the photo's decoded image at once; the handle then
+    /// resolves with [`JobError::Cancelled`] (a running tile ends with
+    /// [`RenderError::Cancelled`]; see
+    /// [`JobScheduler::submit_superseded`](crate::scheduler::JobScheduler::submit_superseded)).
     #[must_use]
     pub fn spawn_look_thumbnail(
         &self,
@@ -333,10 +338,30 @@ impl Renderer {
     ) -> JobHandle<Result<Vec<u8>, RenderError>> {
         let r = self.clone();
         let id = src.id;
-        self.scheduler()
-            .submit(Priority::Thumbnail, Some(id), move |token| {
-                r.look_thumbnail_png(&src, &look, token)
-            })
+        self.scheduler().submit_superseded(
+            Priority::Thumbnail,
+            id,
+            move |token| r.look_thumbnail_png(&src, &look, token),
+            || Err(RenderError::Cancelled),
+        )
+    }
+
+    /// Queues the histogram of a photo at [`Priority::Thumbnail`]. Like a look tile it is a request
+    /// of a panel for the photo on screen, and moving to another photo cancels it (see
+    /// [`Renderer::spawn_look_thumbnail`]).
+    #[must_use]
+    pub fn spawn_histogram(
+        &self,
+        src: PhotoSource,
+    ) -> JobHandle<Result<HistogramData, RenderError>> {
+        let r = self.clone();
+        let id = src.id;
+        self.scheduler().submit_superseded(
+            Priority::Thumbnail,
+            id,
+            move |token| r.histogram(&src, token),
+            || Err(RenderError::Cancelled),
+        )
     }
 
     /// Queues a full-resolution render at [`Priority::Export`]; navigation never cancels it. It runs
