@@ -835,11 +835,13 @@ DEFAULT_CAPTURE_METHOD, RawParams::{diffraction, capture_sharpen}}` and `PhotoSo
   x1.08). Not used by the product; for the A/B.
 - **A/B** (`cargo run -p ym-gpu --example ra07_ab`, and the ignored `ra07_real_files_ab` of `ym-core`; crops and
   `index.html` in `testdata/ra07/`, git-ignored). On synthetic scenes at 3.76 um the suggested acceptance of §6.3 is met
-  for MTF50 from f/16 up and for overshoot and noise only by the gate variant: at f/16 and f/22 the stage has more
+  for MTF50 only from f/16 up, and by neither variant as a whole: at f/16 and f/22 the stage has more
   overshoot (3 to 10 % against 0.6 to 3.5 %) and, with the specified gate, more flat noise (x1.58 to x1.90 against
-  x1.14 to x1.26) than Richardson-Lucy Auto, and the gate variant fixes the noise (x1.07 to x1.12). At f/8 it has less
+  x1.14 to x1.26) than Richardson-Lucy Auto; the gate variant fixes the noise (x1.08 to x1.12) and not the overshoot.
+  *[Corrected by the RA-07 review: the first text said the overshoot and noise criteria were met by the gate variant;
+  the overshoot criterion is met by neither variant at f/16 and f/22.]* At f/8 it has less
   overshoot (1.7 against 7.0 %) and no flat noise growth (x1.005 against x1.255) but a lower MTF50 (0.340 against 0.380
-  at ISO 100): Richardson-Lucy sharpens more at and below f/8, where the Airy blur is small. Details in STATUS.
+  at ISO 100): Richardson-Lucy sharpens more at and below f/8, where the Airy blur is small. Details in `docs/05` R8.
   On the real files the stage changes little, because the gate is closed on real flat areas (the R6 denoise and R7 leave
   less noise than the raw model says) and real edges are wider than the Airy PSF alone.
 

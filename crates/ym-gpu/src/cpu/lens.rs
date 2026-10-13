@@ -28,9 +28,12 @@
 //! "Real files"). The reading of the tables below is unchanged by that.
 //!
 //! The factors come from public reverse-engineering, not a Sony document, and were checked
-//! against real files (`docs/05` sections R3 and R9, `tools/lens/real_eval.py`): the sign, the
-//! knot radii and the scale of the three tags agree with the camera's own corrected JPEGs and
-//! with the lateral CA and the vignetting measured in the raw data of seven bodies.
+//! against real files (`docs/05` sections R3 and R9, `tools/lens/real_eval.py`): the sign and the
+//! knot radii of the CA tag agree with the lateral CA measured in the raw data of seven bodies
+//! (the measured amplitude is 0.27 to 1.21 of the table's, depending on body and colour; the
+//! estimator reads low, see `docs/05`), the distortion tag with the camera's own corrected JPEGs
+//! (amplitude 0.998 and 1.03), and the vignetting tag with the brightness profile of sky bands on
+//! three bodies.
 
 use rayon::prelude::*;
 

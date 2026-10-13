@@ -29,17 +29,23 @@ scipy, rawpy (LibRaw only as the pixel oracle), pillow and `exiftool`; the findi
 | `ca_measure.py` | The estimator: the signed radial shift of red and blue against green (positive outward) on a Bayer mosaic (no demosaic) or on RGB planes, per block, then per radial band. `selftest` checks it on synthetic mosaics with a known shift (no file needed). |
 | `real_eval.py` | The commands: `tables` (the three tags in both copies), `raw-ca` (the mosaic), `jpeg-ca [--full]` (the camera's JPEG), `rgb-ca STEM:METHOD` (images written by the Rust example below), `pfm-ca DIR:FILE.ARW` (darktable's lens module input and output from `darktable_oracle.sh`), `vignette`, `noise-radius`, `sky-profile` (R3). |
 | `fit_ca_readings.py` | Alternative readings of the CA table (knots at `i/(n-1)` or `(i+0.5)/n`, K at the source radius, red and blue swapped, sign flipped, the maker-note copy) fitted to the `raw-ca` output: rms residual with the table as read, best amplitude, best knot-radius scale. |
+| `ca_xcorr.py` | A second estimator that shares no code with `ca_measure.py` (block cross-correlation of band-passed planes, parabolic sub-pixel peak, radial projection): `selftest` (no file), `rgb` (a `lens_eval_dump` image) and `mosaic` (the raw mosaic with each colour interpolated from its own photosites). It exists to check a finding of `real_eval.py` by a method that cannot share its mistakes. |
 | `jpeg_geometry.py` | The camera's JPEG against the raw, block by block: `rho_raw = zeta rho_j F(zeta rho_j)`, fitted for the zoom and the distortion amplitude (`match`, `fit`). |
 | `strip.py` | Side-by-side crops of no CA correction, R9 after the demosaic, and R5b on the mosaic. |
-| `crates/ym-core/examples/lens_eval_dump.rs` | Writes the camera-RGB images the evaluation needs (R1 and R4, the demosaic of any method; with `--r9` also R9 with and without CA and R5b followed by distortion-only R9) as `.f32` for `rgb-ca` and `strip.py`. |
+| `crates/ym-core/examples/lens_eval_dump.rs` | Writes the camera-RGB images the evaluation needs (R1 and R4, the demosaic of any method; with `--r9` also R9 with and without CA and R5b, the shipped `lens::correct_mosaic_ca`, followed by distortion-only R9; with `--chain` the output of the shipped full-resolution chain as `RawPlan` builds it, the same chain with the CA left in R9 and with none) as `.f32` for `rgb-ca`, `ca_xcorr.py rgb` and `strip.py`. A 24 MP file is about 1.1 GB with `--chain` alone. |
 
 ```
 python3 -I tools/lens/ca_measure.py selftest
+python3 -I tools/lens/ca_xcorr.py selftest
 python3 -I tools/lens/real_eval.py tables testdata/real/files/ILCE-7M3.ARW
 python3 -I tools/lens/real_eval.py raw-ca testdata/real/files/ILCE-5000.ARW        # about 2 minutes per 24 MP file
 python3 -I tools/lens/fit_ca_readings.py
 cargo run -p ym-core --example lens_eval_dump -- testdata/real/files/ILCE-5000.ARW /tmp/dump adaptive --r9
 python3 -I tools/lens/real_eval.py rgb-ca ILCE-5000:adaptive --dump-dir=/tmp/dump
+# the shipped chain in three orders (R5b, CA left in R9, no CA), measured by both estimators
+cargo run -p ym-core --example lens_eval_dump -- testdata/real/files/ILCE-5000.ARW /tmp/dump adaptive --chain
+python3 -I tools/lens/ca_xcorr.py rgb /tmp/dump/ILCE-5000.adaptive.chain.f32 /tmp/dump/ILCE-5000.adaptive.json
+python3 -I tools/lens/ca_xcorr.py mosaic testdata/real/files/ILCE-5000.ARW
 ```
 
 ## Run

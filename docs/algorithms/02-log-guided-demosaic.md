@@ -21,7 +21,7 @@ A fast Bayer demosaic for previews and thumbnails. It builds a luminance guide i
 Where it runs in Yellowmoon:
 
 - **R6, classical family**, selectable as `Method::LogGuided` next to `Bilinear`, `Menon` and `Lmmse`. The bilateral denoise that follows classical R6 (`denoise::bilateral_opponent`) is unchanged.
-- **Renders**: the fit view, thumbnails and look tiles wherever they demosaic at full resolution. That covers thumbnails of small photos or small crops (`k = 1`) and the coarse frame shown while full-resolution tiles are computed. The as-built raw group bins the mosaic at `k ≥ 2` (`bin_mosaic`) and does not run R6 there. Whether to replace binning at `k = 2` with "this method, then a 2× downsample" is an evaluation question (section 7.1, note 6), not part of this spec.
+- **Renders**: the fit view, thumbnails and look tiles wherever they demosaic at full resolution. That covers thumbnails of small photos or small crops (`k = 1`) and the coarse frame shown while full-resolution tiles are computed. The as-built raw group bins the mosaic at `k ≥ 2` (`bin_mosaic`) and does not run R6 there. Whether to replace binning at `k = 2` with "this method, then a 2× downsample" is an evaluation question (section 7.1, note 6), not part of this spec. *[As built, 2026-10-13: no render uses this method. It is reachable through the test-only switch `RenderOptions::demosaic` only; section 9.3 says why. R6's default is the adaptive ratio demosaic, `docs/05`.]*
 - **Input**: the **balanced** mosaic that R6 already receives, after R4 (gains `g0`) and R5 (highlight reconstruction). Do not divide by `g0` (section 1.3).
 
 ### 1.2 Input and output
@@ -377,7 +377,7 @@ The reference's `-DSELF_TEST` runs all of them.
 
 - **PSNR**: 10 px border excluded, `metrics::psnr`, mosaicked as RGGB. Compare against Bilinear, Menon and LMMSE on the synthetic set of `tests/cpu_demosaic.rs`, and on Kodak, McMaster and PixelShift200 where they can be fetched. Run in linear light and at signal scales 1.0, 0.1 and 0.01, as `docs/05` did for LMMSE. Use the float form and p from a zero-noise model (p = 1).
 - **What the reference shows** (40×40 scenes, float form): edges +4.6 dB over bilinear (36.4 vs 31.9 dB), diagonal edge +1.8, zone plate +3.5, texture +1.5. Its position against Menon was not measured here. The RA-06 gate (within 1 dB of Menon on the synthetic set, < 300 ms for the 1/4-resolution fit preview on M1) decides whether it replaces the current preview path. Report the numbers either way.
-- **Visual**: zipper and false-colour metrics (`cpu/metrics.rs`) against Menon, and the fit view of the nine local real files at `guide_detail` 0.
+- **Visual**: zipper and false-colour metrics against Menon, and the fit view of the nine local real files at `guide_detail` 0. *[As built the two metrics are not in `cpu/metrics.rs`: they are defined in `crates/ym-gpu/tests/common/ra05_metrics.rs`, tested in `tests/cpu_demosaic_metrics.rs` and run by `examples/ra05_gate.rs`. At signal scale 1 log-guided has 46.5, 56.9 and 41.3 % zipper pixels on the procedural set, Kodak and McMaster against Menon's 39.1, 34.3 and 41.8 %, and 15.9, 15.2 and 9.3 % false-colour pixels against 15.3, 7.6 and 11.2 % (`docs/05` R6).]*
 
 ---
 
@@ -398,7 +398,7 @@ The reference's `-DSELF_TEST` runs all of them.
 
 | Question | Default meanwhile |
 |---|---|
-| Which renders switch to this method? | `k = 1` preview renders (thumbnails of small photos or crops, the coarse frame before full-resolution tiles), after the RA-06 gate passes. Binning stays for `k ≥ 2` until note 6 is measured. |
+| Which renders switch to this method? | `k = 1` preview renders (thumbnails of small photos or crops, the coarse frame before full-resolution tiles), after the RA-06 gate passes. Binning stays for `k ≥ 2` until note 6 is measured. *[As built: none. The gate passed, but no render switched; section 9.3. The method is reachable through the test-only switch only.]* |
 | Fixed or float form in the product? | Float form on CPU and GPU. Fixed form for the vectors and as an integer-only fallback. |
 | How is H chosen when the frame maximum is unknown? | H = 4 (headroom_log2 = 2). |
 | Does `p` follow the pooled noise model or the photo's own? | Whatever `RawParams::noise` carries (the pooled model when it is used). |
@@ -451,7 +451,7 @@ Decisions and measurements recorded when the method was implemented (`crates/ym-
 | McMaster | 0.1 | 32.31 | 34.21 | 34.61 | 33.54 | -0.68 |
 | McMaster | 0.01 | 32.31 | 34.21 | 33.60 | 33.66 | -0.55 |
 
-  The gate (within 1 dB of Menon on the synthetic set) holds at every scale. On Kodak, whose images are saturated and gamma-encoded photographs, the method is 6.5 to 7 dB below Menon, and only 2.1 to 2.6 dB above bilinear; at scale 1 the per-image gap on the synthetic set ranges from +1.9 (zone plate) to -3.1 dB (natural 3). PixelShift200 is not available here.
+  The gate (within 1 dB of Menon on the synthetic set) holds at every scale. On Kodak, whose images are saturated and gamma-encoded photographs, the method is 6.5 to 7 dB below Menon, and only 2.1 to 2.6 dB above bilinear; at scale 1 the per-image gap on the synthetic set ranges from +1.9 (zone plate) to -3.1 dB (natural 3). PixelShift200 is not available here. *[Note from RA-05: the Kodak and McMaster rows of this table are the gamma-encoded protocol (the sRGB codes mosaicked as they are), not the linear light that section 6.4 asks for. In linear light, `docs/05` R6, log-guided is 3.4 to 3.6 dB below Menon on Kodak (32.53 against 36.14 dB at scale 1) and 0.5 to 1.0 dB below on McMaster (34.54 against 35.54); the synthetic rows are linear already.]*
 - **CPU time** (`... -- timing`, release build, mosaic of 1/4, 1/2 and full resolution of a 24 MP (6000x4000) and a 61 MP (9504x6336) frame, 4 shared x86-64 cores at load average 8 to 12, so wall times are inflated and CPU seconds are the dependable number). CPU time relative to bilinear and Menon, float form of this method:
 
 | Frame | Resolution | CPU vs bilinear | CPU vs Menon |

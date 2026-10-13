@@ -4,7 +4,7 @@ Crate: `ym-export` (writers), `ym-core` (export queue). UI: `design/mockups/expo
 
 ## Options
 
-**Output sharpening (2026-10-13, owner's decision).** Every raster export (JPEG, TIFF, PNG; never DNG) is sharpened after the resize by a linear-light luma unsharp mask with halo control (`docs/algorithms/04-output-sharpening.md`, RA-08). It is a per-photo develop setting, not an export option: Detail › Sharpening › Output, 0–200 %, default 100 %, with the spec's screen preset otherwise (radius 1 px, threshold 1 level, halo suppression 60 %). The same setting applies to the viewport, tiles and thumbnails at their own size.
+**Output sharpening (2026-10-13, owner's decision).** Every raster export (JPEG, TIFF, PNG; never DNG) is sharpened after the resize by a linear-light luma unsharp mask with halo control (`docs/algorithms/04-output-sharpening.md`, RA-08). It is a per-photo develop setting, not an export option: Detail › Sharpening › Output, 0–200 %, default 100 %, with the spec's screen preset otherwise (radius 1 px, threshold 1 level, halo suppression 60 %). The same setting applies to the viewport, tiles and thumbnails at their own size. There is no export switch for it (the Export panel and `ym render` have no on/off option beyond the amount, and 0 is off), and no print preset in the app or in `ym`: the spec's print preset exists only in the code (`ym_gpu::cpu::output_sharpen::OutputSharpen::print`). An earlier plan shipped the stage off behind `ExportOptions::output_sharpen`; the owner's decision of 2026-10-13 replaced it (`docs/16`).
 
 | Option | Values | Default |
 |---|---|---|
@@ -87,7 +87,7 @@ IFD0:
 | ColorMatrix1, CalibrationIlluminant1, ForwardMatrix1 | XYZ(D65)→AWG4, 21 (D65), AWG4→XYZ(D50) via Bradford |
 | AsShotNeutral | 1, 1, 1 |
 | BaselineExposure | `log2(x_white) + fit_offset_ev` (`x_white` at least 16, `fit_offset_ev` -4): 0 for nearly every photo, positive for the rest |
-| BaselineSharpness | 1.0 (already sharpened; adjust if Lightroom over-sharpens) |
+| BaselineSharpness | 1.0 (the pixels carry capture sharpening, R8; output sharpening is never applied to a DNG; adjust if Lightroom over-sharpens) |
 | ProfileName, ProfileEmbedPolicy, ProfileCopyright | `Yellowmoon`, 3, `Yellowmoon contributors` |
 | ProfileToneCurve, ProfileLookTableDims, ProfileLookTableData, ProfileLookTableEncoding | fitted, 1 |
 | DefaultBlackRender | 1 (no further black subtraction) |

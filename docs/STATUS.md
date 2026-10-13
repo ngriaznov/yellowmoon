@@ -10,19 +10,44 @@ Work so far is on branch `claude/yellowmoon-v1` (one commit per task or task gro
 
 ## Current milestone
 
-M0–M3 were built in parallel by task lanes in one session (2026-10-12), each lane implemented and then independently reviewed. Integration is done: ym-core (session, render pipeline, export queue), the `ym` CLI, the Tauri app, the frontend wired to it, the golden runner and dngfit. A polish and review pass is running. M4 hasn't started.
+M0–M3 were built in parallel by task lanes in one session (2026-10-12), each lane implemented and then independently reviewed. Integration is done: ym-core (session, render pipeline, export queue), the `ym` CLI, the Tauri app, the frontend wired to it, the golden runner and dngfit. A review pass followed, and on 2026-10-13 the raw-algorithms wave (below) changed the R6 and sharpening defaults. M4 hasn't started.
 
 Two facts shape every number below:
 
 - **No Mac.** The agent ran on Linux x86_64 (4 cores). GPU code was checked on Mesa lavapipe (software Vulkan); Metal, the native viewport, timings on M1/M3 and the release/updater flow need a Mac (M0-H4).
 - **No CC0 corpus.** rawdb.dnglab.org and raw.pixls.us were unreachable, so the decoder, golden and noise gates run on (a) a physically based synthetic ARW set with ALEXA ground truth and (b) nine real ARW files from a public GitHub test-image repository, used for local evaluation only (never committed). The CC0 gates are blocked, not passed.
 
+## Raw algorithms (RA wave, 2026-10-13)
+
+Mykyta's handover package (`docs/algorithms/`; tasks in `docs/algorithms/TASKS.md`). Decisions in force (`docs/16`): the adaptive ratio demosaic is the R6 default; R8 stays Richardson–Lucy; output sharpening is a per-photo setting, default 100 %; no C++ in the repository. The choice of R6 or R8 method is internal: no setting, no UI control, no CLI flag.
+
+| Task | State | Commit | In one line |
+|---|---|---|---|
+| RA-01 | done | [09144fe](https://github.com/ngriaznov/yellowmoon/commit/09144fe) | Specs, vectors and the prior-art record are in. The C++ references stay outside the repository. |
+| RA-02 | done | [ddca8d3](https://github.com/ngriaznov/yellowmoon/commit/ddca8d3) | Shared plumbing: `NoiseDn`, `DemosaicInputs`, `Chain::noise`. No render changed. |
+| RA-03 | done | [ddca8d3](https://github.com/ngriaznov/yellowmoon/commit/ddca8d3) | Adaptive ratio demosaic: 13 of 17 vectors bit-identical, the other four 1.2e-7 off; equal to the C++ oracle on thousands of random cases. |
+| RA-03b | done | [01f025f](https://github.com/ngriaznov/yellowmoon/commit/01f025f) | CA-aware refinement, vector-exact. The chain no longer reaches it: lateral CA is corrected on the mosaic instead (R5b, question 11). |
+| RA-04 | done | [ddca8d3](https://github.com/ngriaznov/yellowmoon/commit/ddca8d3) | `demosaic_with` takes the balanced mosaic and divides by `g0` itself; test-only method switch; the app and `ym` give identical bytes. |
+| RA-05 | done, two sets blocked | [ddca8d3](https://github.com/ngriaznov/yellowmoon/commit/ddca8d3) | Adaptive ratio wins the PSNR rule; the owner made it the default after the blind look (RA-H4). Gharbi and PixelShift200 could not be fetched. |
+| RA-06 | done | [ddca8d3](https://github.com/ngriaznov/yellowmoon/commit/ddca8d3) | Log-guided demosaic, within 1 dB of Menon on the synthetic set. No render path uses it. |
+| RA-07 | done | [ddca8d3](https://github.com/ngriaznov/yellowmoon/commit/ddca8d3) | Diffraction deconvolution and the pixel pitch in the registry (27 of 28 bodies). Richardson–Lucy stays the default; RA-H2 is open. |
+| RA-08 | done | [ddca8d3](https://github.com/ngriaznov/yellowmoon/commit/ddca8d3) | Output sharpening: Output slider 0–200 %, default 100, `ym render --output-sharpening`; every picture, never a DNG. |
+| RA-09 | done on lavapipe | [ddca8d3](https://github.com/ngriaznov/yellowmoon/commit/ddca8d3), [1bcaef7](https://github.com/ngriaznov/yellowmoon/commit/1bcaef7), [fdab64d](https://github.com/ngriaznov/yellowmoon/commit/fdab64d) | WGSL kernels for all four algorithms, parity tests pass. None is wired into a render path; Metal is unchecked. |
+| RA-10 | done | this pass | `docs/05`, `docs/09`, `docs/01`, `docs/16`, `docs/algorithms/*`, `CHANGELOG.md` and this file match the code. |
+| R6 default | done | [e0ca394](https://github.com/ngriaznov/yellowmoon/commit/e0ca394) | `DEFAULT_METHOD` is `AdaptiveRatio`; a missing or unusable noise model renders as zero noise instead of failing. |
+| Tone card | done | [ddca8d3](https://github.com/ngriaznov/yellowmoon/commit/ddca8d3) | Look › Tone: Temperature, Contrast and Saturation, mirrored from the Colour and Light tabs; saturation is subtractive (`docs/02` C9). |
+| Lateral CA (R5b) | built, pending your OK | | CA corrected on the mosaic before the demosaic at full resolution; real-file renders with a CA table change (question 11). |
+
+**Golden set.** RA-02 to RA-07 only added code behind switches: the 61 synthetic files stayed identical where it was checked (all 61 after RA-02, RA-04, RA-06 and the lens work; a 7-file subset after RA-07), and so did all 61 with RA-08's amount at 0. At the new defaults (adaptive ratio, Output 100 %) all 61 move: per-file ΔE00 median 0.007 to 1.04, p99 3.6 to 9.3, maximum 6.6 to 26.3, mostly ringing at the charts' hard patch edges. `tools/golden/expected.json` is re-baselined once, at the end of the wave, with one `golden update --note` and `PIPELINE_VERSION` 0.1.2; until that lands, `golden check` fails 61 of 61.
+
+**Costs, CPU only.** The new default takes the demosaic stage 1.5 to 1.7 times Menon's time: +3 to +13 % CPU time for a whole export, +15 to +40 % wall time for the 100 % view and a full render. The Output stage costs 825 ms per 2 MP fit frame and 178 ms per 512 px tile at 100 %, and re-runs after every edit. The GPU wave (`docs/16`, the owner's direction) is meant to remove both costs.
+
 ## Done
 
 | Task | Commit | Notes |
 |---|---|---|
 | Adversarial review (42 findings, 40 confirmed) and fixes: neutral clipped highlights, licence notices and THIRD-PARTY.md in the bundle, same-name exports, terminal-safe `ym info`, dialog focus, folder drops with dots, nightly fuzzing, CI coverage | [09144fe](https://github.com/ngriaznov/yellowmoon/commit/09144fe) | goldens re-baselined (55 of 61, clipped patches only), pipeline 0.1.1 |
-| RA-01 raw-algorithms package in (specs, integration notes, test vectors; C++ kept outside the repository) | [09144fe](https://github.com/ngriaznov/yellowmoon/commit/09144fe) | RA-02 to RA-10 in progress |
+| RA-01 raw-algorithms package in (specs, integration notes, test vectors; C++ kept outside the repository) | [09144fe](https://github.com/ngriaznov/yellowmoon/commit/09144fe) | RA-02 to RA-10: see Raw algorithms above |
 | M3-12 product side: `ym` writes the fitted DNG profile | [7197d04](https://github.com/ngriaznov/yellowmoon/commit/7197d04) | white level floored at scene 16 (Question 9); Lightroom and other apps are M3-H6 |
 | CI golden, dng and serde-order jobs; local-eval fetch tier; M1-08 auto-exposure study | [5ac59a5](https://github.com/ngriaznov/yellowmoon/commit/5ac59a5) | study only, no algorithm change (see Gate results and Questions) |
 | Review follow-ups: American identifiers, noise pooling fix, early-export parity, thumbnails via `ym-frame://`, guarded update restart, size estimate refit | [425485f](https://github.com/ngriaznov/yellowmoon/commit/425485f) | |
@@ -55,7 +80,7 @@ Two facts shape every number below:
 | M0-02, M0-03 (repo side), M0-09 (scripts; corpus blocked), M0-10 | [93e91e2](https://github.com/ngriaznov/yellowmoon/commit/93e91e2) | signing key is yours (M0-03); coverage and golden-set tables below |
 | M0-01 frontend skeleton | [131a619](https://github.com/ngriaznov/yellowmoon/commit/131a619) | |
 
-CI jobs enabled: frontend, e2e, rust (macOS), deny, deny-selftest, fetch-tools, gpu-lavapipe, oracle, lens-oracle, data-checks, synthetic-set, golden, dng, serde-order, eval-tools, parity, licences, spectral-fixtures, ml-backends, training-dry-run, alexa-curve; nightly: fuzz. CI runs on pushes to `main` and on pull requests, so none of them has run on GitHub yet (no PR exists).
+CI jobs enabled: frontend, e2e, rust (macOS), deny, deny-selftest, fetch-tools, gpu-lavapipe, oracle, lens-oracle, data-checks, synthetic-set, golden, dng, serde-order, eval-tools, parity (also builds `ym` with the `force-demosaic` feature for the forced-method test), licences, spectral-fixtures, ml-backends, training-dry-run, alexa-curve; nightly: fuzz; weekly: the 500-photo latency check. CI runs on pushes to `main` and on pull requests, so none of them has run on GitHub yet (no PR exists).
 
 ## Corpus and golden set (M0-09)
 
@@ -92,7 +117,13 @@ The `synthetic-full` and `synthetic-eval` sets (53 more, the latter with CIE ref
 | GPU parity on lavapipe (M0-07, M1-09) | 2026-10-12 | C7–C11 ≤ 1.2e-5 LogC4 (≤ 2e-4); spike 50 MP 7.9e-4 (≤ 1e-3); peak GPU memory 0.28 GiB (≤ 1.5 GiB) | yes (lavapipe) — f16 caveat in Questions |
 | Lens corrections vs darktable-cli (M1-12) | 2026-10-12 | distortion and CA ≤ 0.009 px (≤ 0.2 px), gain ≤ 0.008 % (≤ 0.5 %), synthetic Sony files | yes (synthetic) |
 | Highlights (M1-12) | 2026-10-12 | chroma ΔE00 ≤ 4.66 on 10 synthetic scenes (≤ 5); blind review is yours | partial |
-| Demosaic PSNR (M1-12) | 2026-10-12 | Kodak 29.82 / 38.88 / 39.16 dB, McMaster 32.31 / 34.21 / 35.09 dB (bilinear / Menon / LMMSE) | reported |
+| Demosaic PSNR, gamma-encoded (M1-12) | 2026-10-12 | Kodak 29.82 / 38.88 / 39.16 dB, McMaster 32.31 / 34.21 / 35.09 dB (bilinear / Menon / LMMSE); reproduced by RA-05 | reported; the R6 rule now uses linear light (next row) |
+| Demosaic PSNR, linear light, 9 cells (RA-05, `docs/05` R6) | 2026-10-13 | adaptive ratio 36.05 dB, Menon 34.43, LMMSE 34.28; best in 7 of 9 cells (5 of 9 with the noise model scaled, mean 35.45; the six photographic cells level with Menon and LMMSE); zipper 20.3 against 39.1 % of edge pixels (procedural set); CPU 1.5–1.7× Menon | yes by the R6 rule; Gharbi and PixelShift200 blocked |
+| Log-guided within 1 dB of Menon, synthetic set (RA-06) | 2026-10-13 | −0.84 / −0.80 / −0.73 dB at signal scales 1 / 0.1 / 0.01; about half of Menon's CPU time; 3.4–3.6 dB below Menon on Kodak | yes; no render uses it; the 300 ms fit-preview target needs the Mac |
+| Diffraction deconvolution against Richardson–Lucy (RA-07, spec 03 §6.3) | 2026-10-13 | ISO 100: MTF50 at f/8 0.340 against 0.380, at f/22 0.196 against 0.180; flat-patch noise ×1.005 (f/8), ×1.577 (f/16), ×1.759 (f/22) against ×1.255, with the noise gate ×1.085 and ×1.080; overshoot 3.0 and 4.6 % against 1.0 and 0.6 % at f/16 and f/22; real files change little | no, as a selectable method; Richardson–Lucy stays the default (RA-H2 open) |
+| Output sharpening (RA-08) | 2026-10-13 | edge rise 2.49 → 1.91 px, overshoot 3.2 %, flat noise ×1.030; JPEG q92 +1.27 / +4.29 / +1.70 % at full size; CPU slider move 825 ms (2 MP fit frame), 178 ms (512 px tile at 100 %) | yes; the cost waits for the GPU kernel |
+| RA-09 kernels against the CPU reference, lavapipe | 2026-10-13 | adaptive ratio 1.4e-6 on the vectors, 7.4e-6 on random frames, isolated tie flips up to 1.55e-2 of white on real mosaics; log-guided 3.1e-6; diffraction 8.9e-7; output sharpening 7.2e-7 on the vectors, 4.3e-5 on 2048 × 1365 (`docs/05` GPU stages) | yes (lavapipe); Metal is M0-H4 |
+| Lateral CA residual after R5b, real files (`docs/05` R9) | 2026-10-13 | rms radial red/blue shift over r ≥ 0.25. `ca_measure.py`, 5 files: 0.03–0.28 px after R5b against 0.06–0.77 for R9 after the demosaic. `ca_xcorr.py` (independent estimator, review), 6 files: 0.11–0.38 px against 0.17–1.22; its noise floor is 0.10–0.15 px. R5b is the lowest or level on every file with either estimator (the A7 III and the A7 IV blue do not gain over no correction at all) | reported; question 11 |
 | Decoder vs LibRaw (M0-05) | 2026-10-12 | 9/9 real files and 46/46 readable synthetic files identical; cRAW within rawler's dither | synthetic + 9 real; corpus blocked |
 | Camera detection on the corpus (M1-04) | — | corpus unreachable; all 28 registry bodies tested synthetically | blocked |
 | Noise, noise-on-noise (M2-02) | 2026-10-12 | increment median 1.8 %, p90 5.6 % (≤ 15 % / 30 %), synthetic | yes (synthetic) |
@@ -105,17 +136,17 @@ The `synthetic-full` and `synthetic-eval` sets (53 more, the latter with CIE ref
 | DNG passes dng_validate (M3-12) | 2026-10-12 | Adobe dng_validate 1.7.1 accepts every variant, all 61 synthetic and 9 real exports (local build) | yes (local) |
 | DNG render vs our JPEG ΔE00 ≤ 1.5 (M3-12) | 2026-10-13 | DNGs as `ym` writes them (fitted profile), every file's median: synthetic 0.57–1.04 (61 files, median 0.69), real 0.45–1.06 (9 files, median 0.73, portrait A7 III 1.02); against the 16-bit PNG 0.03–0.10 | yes |
 | End-to-end colour vs ALEXA-estimate truth (M1-15 report, no gate) | 2026-10-12 | scene-linear AWG4, 190 chart patches: median 0.73 ΔE00, p95 2.05 over 37 scenes (Sony-through-ARRI-matrix baseline 1.72); A7R IV ISO 400 single lights 0.68 / 1.61; ISO 12800 2.24 | reported |
-| Golden images (M1-15) | 2026-10-12 | 61 synthetic files identical on re-run, thread-count independent; a saturation +3 change fails at ΔE00 3.6 | yes (synthetic tier) |
+| Golden images (M1-15) | 2026-10-12 | 61 synthetic files identical on re-run, thread-count independent; a saturation +3 change fails at ΔE00 3.6. At the RA defaults (2026-10-13) all 61 move until the re-baseline (Raw algorithms above) | yes (synthetic tier) |
 | Demosaic + denoise network (M2) | — | no trained weights (M2-H4) | blocked |
 | 500 files, commands < 100 ms (M3-03) | 2026-10-13 | `open_paths` 31 ms, slowest of 5112 commands while developing 62.5 ms (ignored test, local, busy machine); webview keypress on screen in 5–72 ms (median 16), one manual run | yes (local; not run in CI) |
-| Performance (docs/05) | 2026-10-12 | Linux x86 only: Lossless L 50 MP decode 333 ms on 4 cores; classical chain ~64–69 CPU-s per 50 MP; Mac numbers are M0-H4 | reported |
+| Performance (docs/05) | 2026-10-12 | Linux x86 only: Lossless L 50 MP decode 333 ms on 4 cores; classical chain ~64–69 CPU-s per 50 MP (with LMMSE; the adaptive ratio default adds about 2); Mac numbers are M0-H4 | reported |
 
 ## Waiting on Mykyta
 
 | ID | What | Needed for |
 |---|---|---|
 | M0-03 | Generate the updater signing key and set the two GitHub secrets; put the public key in `src-tauri/tauri.conf.json` (exact commands in `docs/release-signing.md`). Also decide whether the release bot may push the cask update to `main`. | first release |
-| M0-H4 | Mac checks: native viewport (M0-06 checklist), Metal parity and timings (`cargo test -p ym-gpu`, `crates/ym-ml/examples/bench.rs` for the ML runtime choice), decode/render timings, the 0.0.1 → 0.0.2 self-update, `brew install --cask`. | M0 gate |
+| M0-H4 | Mac checks: native viewport (M0-06 checklist), Metal parity and timings (`cargo test -p ym-gpu`, `crates/ym-ml/examples/bench.rs` for the ML runtime choice), decode/render timings, the 0.0.1 → 0.0.2 self-update, `brew install --cask`. Added by the RA wave: run `gpu_adaptive_ratio`, `gpu_log_guided`, `gpu_diffraction` and `gpu_output_sharpen` on Metal (fast-math `log2` and `exp2`, fused multiply-add, the exact-luma tests `the_luma_plane_has_the_cpu_bits` and `luma_has_the_cpu_bits`; the tie-flip bounds were calibrated on lavapipe), and time the Output slider on a retina fit frame. | M0 gate |
 | M0-09 | On a machine with open internet: `tools/fetch/samples.sh --refresh`, review and commit `tools/fetch/manifest.json`; promote raw.pixls.us files after a licence check; collect Play Raw tier-2 files. | decoder, detection, golden, noise gates |
 | M1-H3 | Email HdM about the SXT curve. | ALEXA curve check |
 | M1-H4 | Confirm that shipping coefficients fitted with CIE SPDs (CC BY-SA 4.0) is acceptable (profiles, illuminant models). | M1 |
@@ -128,7 +159,9 @@ The `synthetic-full` and `synthetic-eval` sets (53 more, the latter with CIE ref
 | M3-H4, M3-H5, M3-H6 | App review on a Mac; a real shoot; DNGs in Lightroom, RawTherapee, darktable, Capture One, Apple Photos. | M3 gate |
 | — | A real Lossless M or S file (A7R V, A9 III, A1 II or RX1R III) to confirm the M/S scale. | M2-09 |
 | M3-H3 | Email ARRI about an in-app download of the free looks (optional). | M3 |
-| RA-H2 | Richardson–Lucy or diffraction deconvolution as the R8 default (A/B numbers and crops after RA-07). | R8 default |
+| RA-H2 | Richardson–Lucy or diffraction deconvolution as the R8 default. Look at the 25 crops in `testdata/ra07` (open `testdata/ra07/index.html`; the folder is local and git-ignored: `cargo run -p ym-gpu --example ra07_ab` rebuilds the synthetic crops and `testdata/ra07/make_index.py` the page). Evidence so far favours Richardson–Lucy: MTF50 at f/8 0.380 against 0.340 on synthetic scenes, and on the real files it sharpens clean edges more (ILCE-6300 f/8: 0.205 against 0.148); diffraction is better only from f/16, with more overshoot and, ungated, ×1.58 to ×1.90 flat noise. Also open: which noise gate, and whether to stack the two (`docs/05` R8). | R8 default |
+| RA-05 | The Gharbi hard and moiré sets and PixelShift200 for the demosaic gate: on a machine with open internet put them in `testdata/demosaic/{gharbi_hard,gharbi_moire,pixelshift200}` and run `tools/eval/demosaic/gate.sh`. The build environment's proxy refuses their hosts. | demosaic gate |
+| RA-07 | Check the sensor widths and pixel counts in `data/cameras/registry.json` against Sony's pages. All came from search excerpts, because the Sony hosts could not be fetched; the five bodies marked `restated` (A7 III, A7 IV, A7C II, A7S III, A1) are the least certain. The ILME-FX3 has none. The A7R V and A7CR fail the LibRaw sibling check and use the A7R IV profile (`docs/03`). | pixel pitch for R8 diffraction |
 | M0-H4 (added) | On a Mac: "Move to Trash" for a downloaded look zip goes through Finder (the `trash` crate's default), which may ask for Automation permission the first time (`src-tauri/Info.plist` now carries the usage string). Check that the prompt appears once and the move works. | M3 |
 | M4-H2…M4-H5 | Developer ID signing and notarisation decision; trademark clearance (EUIPO, INPI, WIPO, UK IPO); freedom-to-operate check on US 11948279 and on the patent leads in `research/raw-algorithms-prior-art.md` §2.2 (Kodak, Epson, Sony, Apple, IBM families; diffraction restoration filters); announcement. Not started. | M4 |
 
@@ -145,9 +178,10 @@ The `synthetic-full` and `synthetic-eval` sets (53 more, the latter with CIE ref
 9. **DNG brightness outside Adobe apps.** Adobe's renderer applies a highlight shoulder rather than a scale for a negative `BaselineExposure`, so the fitted profile stores scene values up to 16 with the white level there and `BaselineExposure` about 0. Adobe apps render it to match our JPEG; RawTherapee and darktable show the stored linear image about 4 EV darker until their own exposure handling. The alternative (per-photo white level) risks Adobe's shoulder. Recommended: keep the floor and say so in the export help. OK?
 10. **Raw-algorithms constants.** The prior-art record (`research/raw-algorithms-prior-art.md`) traces 55 of 74 pieces to known work, but public sources don't explain some constants (spec 01: 1.6, 2.5, 18 and 102, 121/123, 0.03, 0.75, 5, 3; spec 02: the log2/exp2 cubics; specs 03/04: the constants paragraphs of §3.3/§3.4), and spec 01 §8 reads as if an integer variant exists elsewhere. Where do they come from (tuned by you, fitted, taken from another program)? The answer goes into `docs/14`. Patent leads from the record are added to M4-H4.
 
-## Known issues
+11. **Lateral CA on the mosaic (R5b, `docs/05` R9, `docs/16`).** On real Sony files, correcting CA in R9 after the demosaic made the red/blue shift larger (0.04–0.2 px before, 0.3–0.7 px after) because a green-guided demosaic keeps only about half of the CA and R9 then applies the full table. The tables are right; the cause is the order of the stages. The correction now runs on the mosaic before the demosaic, at full resolution only (the binned fit view and thumbnails keep it in R9), and leaves less red/blue misregistration than the old order on every real file measured, with two independent estimators (`docs/05` R9 has the numbers; the amplitude of a table is known to about a factor of two). It changes every real-file render that has a CA table; the synthetic goldens have neutral tables and do not move. Recommended: keep it on by default, as built. Alternative: `decode.chromatic_aberration` off by default. A blind look at a few photos is the natural check.
+12. **NEX-5N and NEX-7 lens data.** Their vignetting, distortion and CA tables are only in the encrypted SR2 sub-IFD, which `ym-raw` does not read, so they show "Lens data: none". Reading them is a few lines and switches all three corrections on for NEX files (the NEX-5N's CA table is the best fit of the files tested, rms 0.16 px). Read them?
 
-- README's feature list said the demosaic and noise reduction are learned models trained partly on "our own captures"; V1 ships the classical path and takes no captures. Corrected to say the models are planned and trained on openly licensed data only (review finding); reword if you prefer.
+## Known issues
 
 - C9 grade controls can fold the neutral ramp when two are combined at opposite extremes (e.g. Highlights +100 with White −100); each alone is monotone. Needs a UI limit or a constants refit in M3.
 - Day/Shade/Tungsten presets carry the 3.5–6 % difference between the Weta curves' white and the camera ColorMatrix white (A7 III/A7 IV); a per-body raw-white calibration would need data.
@@ -155,8 +189,12 @@ The `synthetic-full` and `synthetic-eval` sets (53 more, the latter with CIE ref
 - The illuminant's synthetic brightness range stops at Bv 13; real sunlit files read 14.3–14.6. LED and fluorescent class recognition is weak on independent chart scenes.
 - Kelvin readout rounded to 50 K leaves up to 1.6 % red/blue imbalance below 2300 K.
 - The GPU memory budget isn't scaled to system RAM; device loss isn't handled.
-- M1-12's WGSL half is open: only R1 + R4 (normalise, gains) and the colour chain have GPU kernels; R3, R5, R6 (Menon/LMMSE), R8 and R9 run on the CPU reference. The fit-preview and 100 % performance targets depend on them (and on a Mac, M0-H4). The noise σ map (M2-02 "on GPU") is CPU only too.
+- The raw chain runs on the CPU. GPU kernels exist for R1 + R4, the colour chain, and (RA-09, not wired) the adaptive ratio demosaic, the log-guided demosaic, diffraction deconvolution and output sharpening; R3, R5, R5b, the bilateral denoise, R7, Richardson–Lucy and R9 have none, and nothing in the raw chain calls a kernel. The fit-preview and 100 % performance targets depend on them (and on a Mac, M0-H4). The noise σ map (M2-02 "on GPU") is CPU only too. The owner's GPU direction of 2026-10-13 (`docs/16`) puts every stage on the GPU next.
+- The GPU adaptive ratio demosaic is not bit-identical to the CPU port (f32 against f64 where a direction test ties): on real mosaics 1.65e-4 of the samples differ by more than 1e-4, worst 1.55e-2 of white. A GPU export will differ from the CPU fallback by such isolated samples.
+- Output sharpening runs on the CPU in the viewport: it cannot be cancelled once started (0.5 to 2.6 s per frame on a retina fit frame) and re-runs after every edit above it. Filmstrip thumbnails do not follow the Output slider, and a 100 % view differs from the export within about 21 px of a crop edge (the view reads photo pixels beyond the crop, the export mirrors at it).
+- The colour plan (`pipeline/color.rs`) still reads the photo's raw noise model, so a finite but absurd read-noise variance (`b` of 1e300) blackens the frame there. The estimator never produces one; the raw group already reads such a model as zero noise.
+- A cropped photo in a cell larger than the crop shows uncropped photo content in the letterbox of the viewport (also with Output at 0). Check against `docs/11`.
 
 ## Environment
 
-Linux x86_64 container, 4 vCPUs, Rust 1.97.0, Node 22, Python 3.13; Mesa lavapipe for wgpu; darktable-cli 4.6.1 (lens oracle, separate process); LibRaw 0.22.1 via rawpy, rawler 0.8 and libjpeg as decoder oracles; OpenColorIO 2.6 for test vectors; Adobe DNG SDK 1.7.1 `dng_validate` built from the GrapheneOS AOSP mirror. No Mac: every Metal, native-viewport, timing and release check is listed under M0-H4.
+Linux x86_64 container, 4 vCPUs, Rust 1.97.0, Node 22, Python 3.13; Mesa lavapipe for wgpu; darktable-cli 4.6.1 (lens oracle, separate process); LibRaw 0.22.1 via rawpy, rawler 0.8 and libjpeg as decoder oracles; OpenColorIO 2.6 for test vectors; g++ (C++17) for the owner's C++ references of the raw algorithms, used outside the repository only (no C++ is committed); Adobe DNG SDK 1.7.1 `dng_validate` built from the GrapheneOS AOSP mirror. No Mac: every Metal, native-viewport, timing and release check is listed under M0-H4.

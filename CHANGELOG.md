@@ -9,10 +9,13 @@ moves the entries below from Unreleased into a dated section for that version.
 
 ## [Unreleased]
 
-The M0 skeleton (`docs/15-milestones.md`, milestone M0). Nothing here is a user-facing feature yet.
+Nothing has been released yet. These entries cover what is in the repository so far: the M0 skeleton, the `ym` command-line tool and the raw-algorithms wave (`docs/algorithms/`) with its owner decisions (`docs/16`).
 
 ### Changed
 
+- The classical demosaic (R6) is now the adaptive ratio demosaic (`docs/05`, RA-05; the owner's decision of 2026-10-13 after a blind look). In linear light its mean PSNR over nine cells is 36.05 dB against 34.43 for Menon, the previous default, and 20 % of edge pixels show zipper artefacts against 39 %. The demosaic stage takes 1.5 to 1.7 times Menon's CPU time, which adds 3 to 13 % to an export. Menon, LMMSE, bilinear and the log-guided demosaic stay available to tests through a switch; the method is not a setting. A photo whose noise model is missing or unusable renders as if it had no noise, instead of failing. Every default render changes, so the pipeline version is bumped and the golden images are re-baselined.
+- Lateral chromatic aberration is corrected on the mosaic before the demosaic (R5b), not in the lens resample after it. On the real files measured, with two independent estimators, it leaves less red/blue misregistration than correcting after the demosaic (`docs/05`, R9, has the numbers). The binned fit view and the thumbnails still correct it in R9 (`docs/05`).
+- Saturation is subtractive: more saturation makes colours denser and darker, less makes them paler, and neutrals and the brightest channel stay (`docs/02`, C9). Renders at 0 are unchanged.
 - The command-line tool is called `ym` everywhere (decision 2026-10-12): the binary, `--version`
   (`ym <version> (pipeline <v>, <sha>)`), the help text, the sidecar (`Contents/MacOS/ym`, so it cannot
   collide with the app's `Yellowmoon` binary), the Homebrew cask's `binary` stanza, the issue forms
@@ -21,6 +24,12 @@ The M0 skeleton (`docs/15-milestones.md`, milestone M0). Nothing here is a user-
 
 ### Added
 
+- Output sharpening: the develop setting `output_sharpening` (0 to 200 %, default 100), the Output slider in Detail › Sharpening and `ym render --output-sharpening`. A linear-light luma unsharp mask with halo control, applied to every picture at the size it is shown or written, in JPEG, TIFF and PNG exports after the resize, never in a DNG; 0 switches it off. It makes a quality 92 JPEG 0.4 to 4.3 % larger (three real files, full size and 2048 px; RA-08).
+- The Tone card on the Look tab: Temperature, Contrast and Saturation, the same settings as on the Colour and Light tabs.
+- Diffraction deconvolution for capture sharpening (R8), an Airy-pattern PSF from the f-number and the pixel pitch, with sensor widths in the camera registry for 27 of 28 bodies. It is not the default and has no setting; Richardson–Lucy stays until the owner decides (RA-07).
+- A log-guided fast demosaic, internal and not used by any render (RA-06).
+- WGSL kernels with parity tests on software Vulkan for the adaptive ratio demosaic, the log-guided demosaic, diffraction deconvolution and output sharpening. None is wired into a render yet (RA-09).
+- `docs/algorithms/`: the four algorithm specifications of the raw-algorithms package, the integration guide, the task list and the test vectors (RA-01).
 - `ym render` with every option of `docs/10-cli.md`: files, folders (`--recursive`) and `-` for paths on
   stdin; look, intensity, exposure (`--exposure`, `--exposure-offset`), white balance and light presets, the
   grade, noise reduction, sharpening, the RAW switches, roll-off, a forced profile and the display rendering;

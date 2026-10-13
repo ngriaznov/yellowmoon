@@ -5,7 +5,7 @@
 | Reference | `reference/output_sharpening.cpp` (namespace `output_sharpening`) |
 | Vectors | `vectors/output_sharpening/*.json` (16 files) |
 | Rust home | new `ym-gpu/src/cpu/output_sharpen.rs`, called from the export path right after the resize |
-| Ships | off (`ExportOptions::output_sharpen = None`) until the presets are signed off (RA-H3) |
+| Ships | off (`ExportOptions::output_sharpen = None`) until the presets are signed off (RA-H3). **Superseded by the owner's decision of 2026-10-13 (`docs/16`): on by default as a per-photo setting, section 9 (Wired).** |
 
 ## 1. Purpose and placement
 
@@ -41,8 +41,8 @@ render C1..C12 (display-linear) -> [Lanczos-3 resize if Long edge] -> OUTPUT SHA
 
 Wiring:
 
-- `ExportOptions::output_sharpen: Option<OutputSharpen>`, default `None`. `ExportRequest` carries it into `encode_to_writer`.
-- With `None`, the code path and the bytes are exactly as today. RA-08 includes a test for this.
+- `ExportOptions::output_sharpen: Option<OutputSharpen>`, default `None`. `ExportRequest` carries it into `encode_to_writer`. *[Superseded by the owner's decision of 2026-10-13 (`docs/16`): there is no export option. The amount is `DevelopSettings.output_sharpening` (0 to 200 %, default 100) and reaches the writer as `PictureStages`; section 9, Wired.]*
+- With `None`, the code path and the bytes are exactly as today. RA-08 includes a test for this. *[As built the same holds for an amount of 0 (or below 0.1 %): no stage is made and the bytes are those of the plain call.]*
 - `ym-export` does not depend on `ym-gpu` today. Adding the dependency creates no cycle, because `ym-gpu` depends only on `ym-color`.
 - Progress and cancel follow the resize: check `hooks.is_cancelled()` every 64 rows, and report a share of the encode stage (for example 0.3 to 0.4 when there is a resize).
 - The stage is deterministic, so the app and the CLI still write byte-identical files.
@@ -190,6 +190,8 @@ Example, R = 1.0, threshold 1 level:
 A 6000 px frame exported at a 2048 px long edge (`s = 0.341`) with the screen preset gets σ = 0.440 and T = 0.523 levels.
 
 ### 2.5 Presets (need Mykyta's sign-off, RA-H3)
+
+*Superseded by the owner's decision of 2026-10-13 (`docs/16`): the screen preset is used as it is below, at the amount of the photo's Output slider (`amount_pct`, 0 to 200, default 100), for every display-referred picture; the print preset stays in the code and is not reachable from the app or `ym`; the stage is on by default.*
 
 The presets, their numbers and whether the Export screen offers them are UI decisions and Mykyta's call. Until he decides, the stage ships off.
 
@@ -556,7 +558,7 @@ Every vector is also checked by the generator against the reference's f32-accumu
 There is no PSNR target, because sharpening is a look.
 
 - **Edge profiles.** As in §6.3, at full size and at long edges of 3000, 2048 and 1000 px. Compare halo 60 with halo 0, and the three methods.
-- **Visual.** 100 % crops of the nine local real ARWs exported for screen (2048 px) and print (full size), with and without output sharpening, laid out under "Waiting on Mykyta" for RA-H3. Look for halos on high-contrast edges (branches against sky), sharpened noise in skies and shadows, and stair-stepping on fine diagonals.
+- **Visual.** 100 % crops of the nine local real ARWs exported for screen (2048 px) and print (full size), with and without output sharpening, laid out under "Waiting on Mykyta" for RA-H3 *[RA-H3 was answered by the owner's decision of 2026-10-13; these crops were not produced]*. Look for halos on high-contrast edges (branches against sky), sharpened noise in skies and shadows, and stair-stepping on fine diagonals.
 
 ## 7. Evaluation notes and open questions
 
@@ -579,11 +581,11 @@ There is no PSNR target, because sharpening is a look.
 
 | Question | Default meanwhile |
 |---|---|
-| Ship output sharpening on by default, which presets the Export screen offers, and their numbers (RA-H3) | Off (`None`); presets as in §2.5, not exposed in UI or CLI |
+| Ship output sharpening on by default, which presets the Export screen offers, and their numbers (RA-H3) | Off (`None`); presets as in §2.5, not exposed in UI or CLI. *[Superseded by the owner's decision of 2026-10-13 (`docs/16`): on by default at 100 %, the screen preset, one slider; no preset choice in the UI.]* |
 | How the UI expresses print distance | Keep `print_distance` as the parameter. A natural mapping from viewing distance `D` (mm) and print resolution `ppi` makes the radius one arcminute of visual angle: `R = D · ppi / 25.4 · tan(1/60°)`, `print_distance = 2500 · R`. The default 5000 (R = 2 px) corresponds to about 580 mm at 300 ppi. |
 | Luma weights | Reference weights; per-space Y row under evaluation (§7.1 item 1) |
 | Sharpen the DNG's embedded preview? | No |
-| Record the setting in the export's XMP (`ym:Settings` or a new `ym:` property, `docs/09`) | Not recorded until the UI exists. When it ships, add the preset name and the five numbers to `ym:Settings`. |
+| Record the setting in the export's XMP (`ym:Settings` or a new `ym:` property, `docs/09`) | Not recorded until the UI exists. When it ships, add the preset name and the five numbers to `ym:Settings`. *[As built: `output_sharpening` is one field of the settings JSON that `ym:Settings` already holds, for a DNG too although a DNG is never sharpened (`docs/09`).]* |
 | Expose `method` and `halo_pct` in the UI | Not exposed; preset values only |
 
 ## 8. Reference notes
@@ -615,6 +617,7 @@ Decisions made while porting (the module's doc comment repeats the numerical one
 4. **`erf`** comes from the `libm` crate (§2.3 allows it). The kernel taps differ from the vectors' `%.17g` kernels by at most 1.7e-16.
 5. **Bands.** The run processes bands of 128 core rows plus the exact `halo_px` above and below, in parallel (§5.2 and §5.3). The result is bit-identical for every band height from 1 row to the whole frame and for every thread count (both are tested).
 6. **Not ported:** the reference's f32-accumulation mode (`Accumulation::F32`, §5.4). It is an aid for the GPU port (RA-09), which can compare against a CPU run written for it.
+7. **Kernel caps (review).** `gaussian_kernel(sigma, max_taps)` rounds a cap down to an odd number of at least 3, so a cap of 0 or an even cap cannot panic or lose the centre tap; the spec's caps of 13 and 33 are untouched. A test compares FNV-1a digests of the oracle's output on frames taller than one 128-row band (173 x 300 across the seven parameter sets, 1 x 300 with the 41 px print halo, 5 x 259 with three stages), so the band path is checked against the oracle and not only against the port.
 
 Measured (Linux x86-64, 4 shared cores, load average 6 to 8; `opt-level = 3`, no LTO; synthetic noisy 3:2 frame, interleaved in-place run, `cargo run -p ym-gpu --example output_sharpen_bench`):
 
@@ -638,6 +641,12 @@ Edge profile (§2.5, §6.3), reproduced with a soft edge at 5 degrees whose pixe
 | Print, full size | 2.49 px | 1.10 px (1.13) | 21.1 % / 21.1 % (20.7 %) |
 
 Noise on a flat patch (sigma 0.004): x1.030 with the 1-level threshold (spec x1.03), x1.375 with threshold 0 (spec x1.38). Halo suppression on the hard 0.1 to 0.5 step at amount 300 and R 1.5: overshoot 0.4265 to 0.0069, undershoot 0.1000 to 0.0069 (spec 0.43 to 0.007 and 0.10 to 0.007). The spec's rise figures sit 0.02 to 0.03 px above these, which is what moving the edge by a fraction of a pixel does to a one-row measurement.
+
+### Wired (RA-08 part 2, the owner's decision of 2026-10-13)
+
+The stage is not an export option; it is a per-photo develop setting, `DevelopSettings.output_sharpening`: 0 to 200 %, default 100 %, the slider "Output" in Detail › Sharpening, `ym render --output-sharpening`. It is the screen preset above at `amount_pct` = the setting, with `s = long edge shown or written / long edge rendered at full resolution`. It runs on display-linear f32 between C12 and C13 in every viewport frame, 100 % tile, thumbnail and look tile at their own size, and in every JPEG, TIFF and PNG export after the Lanczos-3 resize (strips of 1024 core rows with the exact halo, so the result equals the whole-frame run bit for bit), never for a DNG. An amount of 0 makes no stage. The Before view, the histogram and the pixel readout are not sharpened. Where the code is and how it caches: `docs/01` *Output sharpening*, `docs/09` *As built*.
+
+Measured, CPU only (RA-08 part 2): the JPEG at quality 92 grows by +1.27 % (ILCE-7M3), +4.29 % (NEX-7) and +1.70 % (DSLR-A300) at full size, and by +0.50, +0.35 and +1.38 % at a 2048 px long edge, so the size estimate has no factor for it. Moving the slider on a cached frame costs the stage plus C13: 825 ms for a 2 MP fit frame and 178 ms for a 512 px tile at 100 % on four shared cores at load 5 to 9 (a quieter machine gave 492 and 69 ms); every edit above it re-runs the stage, so the colour-only target of `docs/05` needs the GPU kernel (section 10) wired in. Golden check at the default amount: all 61 synthetic files move (maximum ΔE00 per file 6.65 to 13.10, median per file 0.007 to 0.114, from ringing at the hard patch edges of the charts); with the amount at 0 all 61 are identical. Known gaps: the viewport stage cannot be cancelled once it has started (0.5 to 2.6 s per frame on the CPU), filmstrip thumbnails do not follow the slider, and a 100 % view differs from the export within about 21 px of a crop edge (the view reads photo pixels beyond the crop, the export mirrors at it).
 
 ## 10. As built (RA-09, GPU kernel)
 

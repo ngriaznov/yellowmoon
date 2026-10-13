@@ -1180,6 +1180,59 @@ mod mosaic_ca {
         );
     }
 
+    #[test]
+    fn a_lens_that_keeps_its_ca_in_r9_still_reaches_the_ca_aware_demosaic() {
+        // Since R5b the render never takes this path (`RawPlan` moves the CA to the mosaic), but a
+        // geometry from `LensGeometry::new` keeps its CA in R9 and the chain still hands the adaptive
+        // ratio demosaic the curves for it (`docs/algorithms/01` section 3.6): the code is live and
+        // must keep working until the CA-aware path is retired.
+        let (w, h) = (210usize, 140usize);
+        let full = LensGeometry::new(w, h, &tags(w, h, 4.0, true), LensSwitches::default())
+            .expect("lens")
+            .with_auto_crop();
+        let data = raw_data(w, h, 22);
+        let raw = RawFrame {
+            width: w,
+            height: h,
+            cfa: Cfa::RGGB,
+            data: &data,
+            qstep: None,
+        };
+        let curves = full.ca_curves().expect("curves").expect("CA");
+        let chain = chain_with(Method::AdaptiveRatio, Some(full.clone()));
+        assert!(
+            !chain
+                .stages()
+                .iter()
+                .any(|s| matches!(s, Stage::MosaicCa { .. }))
+        );
+        let got = chain.run(&raw).expect("run");
+        let (mut m, _) = normalize::normalize(
+            raw.data,
+            raw.width,
+            raw.height,
+            raw.cfa,
+            &chain.levels,
+            None,
+        )
+        .expect("normalize");
+        gains::apply_gains(&mut m, chain.gains);
+        let aware = demosaic_whole_with(
+            &m,
+            Method::AdaptiveRatio,
+            &DemosaicInputs {
+                gains: chain.gains,
+                noise: chain.noise.unwrap_or(NoiseDn::ZERO),
+                ca: Some(&curves),
+            },
+        );
+        let (ow, oh) = full.output_size();
+        let want = resample_lens(&aware, &full, Rect::whole(ow, oh)).expect("R9");
+        assert_eq!(bits(&got), bits(&want), "R1, R4, the CA-aware demosaic, R9");
+        let plain = by_hand(&chain, &raw, None, &full);
+        assert_ne!(bits(&got), bits(&plain), "the curves change the image");
+    }
+
     /// The curves of a 300 x 200 frame with 3 px of CA at the corner, applied to mosaics that are
     /// much smaller than the shifts and the context the stage asks for.
     fn corner_curves() -> CaCurves {
