@@ -21,6 +21,8 @@ Two facts shape every number below:
 
 | Task | Commit | Notes |
 |---|---|---|
+| CI golden, dng and serde-order jobs; local-eval fetch tier; M1-08 auto-exposure study | [5ac59a5](https://github.com/ngriaznov/yellowmoon/commit/5ac59a5) | study only, no algorithm change (see Gate results and Questions) |
+| Review follow-ups: American identifiers, noise pooling fix, early-export parity, thumbnails via `ym-frame://`, guarded update restart, size estimate refit | [425485f](https://github.com/ngriaznov/yellowmoon/commit/425485f) | |
 | M3-02…M3-04 frontend wired to the real backend | [fd62641](https://github.com/ngriaznov/yellowmoon/commit/fd62641) | generated bindings with a compile-time contract; real-shell smoke test on 9 real + 48 synthetic files; native viewport needs a Mac |
 | M1-15 golden runner, M3-12 dngfit and DNG gates | [4de91f6](https://github.com/ngriaznov/yellowmoon/commit/4de91f6) | 61 synthetic files hashed; DNG gates pass with the fitted profile applied by the gate tool (the writer adopts it next) |
 | M3-02…M3-04 Tauri app: IPC, bindings, fallback viewport, menus, updater | [8244118](https://github.com/ngriaznov/yellowmoon/commit/8244118) | native macOS viewport type-checked only (M0-H4); app and `ym` give identical JPEG bytes on real files |
@@ -50,7 +52,7 @@ Two facts shape every number below:
 | M0-02, M0-03 (repo side), M0-09, M0-10 | [93e91e2](https://github.com/ngriaznov/yellowmoon/commit/93e91e2) | signing key is yours (M0-03) |
 | M0-01 frontend skeleton | [131a619](https://github.com/ngriaznov/yellowmoon/commit/131a619) | |
 
-CI jobs enabled: frontend, e2e, rust (macOS), deny, deny-selftest, fetch-tools, gpu-lavapipe, oracle, lens-oracle, data-checks, synthetic-set, training-dry-run, alexa-curve. CI runs on pushes to `main` and on pull requests, so none of them has run on GitHub yet (no PR exists).
+CI jobs enabled: frontend, e2e, rust (macOS), deny, deny-selftest, fetch-tools, gpu-lavapipe, oracle, lens-oracle, data-checks, synthetic-set, golden, dng, serde-order, training-dry-run, alexa-curve. CI runs on pushes to `main` and on pull requests, so none of them has run on GitHub yet (no PR exists).
 
 ## Gate results
 
@@ -72,7 +74,9 @@ CI jobs enabled: frontend, e2e, rust (macOS), deny, deny-selftest, fetch-tools, 
 | Decoder vs LibRaw (M0-05) | 2026-10-12 | 9/9 real files and 46/46 readable synthetic files identical; cRAW within rawler's dither | synthetic + 9 real; corpus blocked |
 | Camera detection on the corpus (M1-04) | — | corpus unreachable; all 28 registry bodies tested synthetically | blocked |
 | Noise, noise-on-noise (M2-02) | 2026-10-12 | increment median 1.8 %, p90 5.6 % (≤ 15 % / 30 %), synthetic | yes (synthetic) |
-| Auto exposure vs embedded JPEG (M1-08) | — | needs the golden set | blocked |
+| Noise batch pooling (docs/06) | 2026-10-13 | 18 synthetic scenes of 2–4 frames: pooled `a` within 2.2 % of the single-file fits (was 65 % low on 3 frames) | yes (synthetic) |
+| Auto exposure vs embedded JPEG (M1-08) | 2026-10-13 | 9 real files (local only, not the golden set): gate as built 5 of 9 within ±0.5 EV; DRT-neutral metric G3 (our exposure vs the camera's own gain) 6 of 9 within ±0.5, 9 of 9 within ±0.75, median −0.17 EV; misses are key-extreme scenes (two with DRO) | no (80 % bar; see Questions) |
+| Export size estimate (docs/09) | 2026-10-13 | 9 real renders × 4 sizes, estimate/actual median 0.98–1.06, p90 error ≤ 0.30 in-sample (JPEG q80–q100, TIFF, PNG), leave-one-out up to 0.46 at q50–q89; low (≈ 0.66) with noise reduction off | median yes; p90 over the ±35 % target in leave-one-out |
 | DNG passes dng_validate (M3-12) | 2026-10-12 | Adobe dng_validate 1.7.1 accepts every variant, all 61 synthetic and 9 real exports (local build) | yes (local) |
 | DNG render vs our JPEG ΔE00 ≤ 1.5 (M3-12) | 2026-10-12 | fitted profile, every file's median: synthetic 0.60–1.04 (61 files), real 0.45–1.06 (9 files); against the 16-bit PNG 0.03–0.10 | yes (profile applied by `dngfit gate`; writer adoption pending) |
 | End-to-end colour vs ALEXA-estimate truth (M1-15 report, no gate) | 2026-10-12 | scene-linear AWG4, 190 chart patches: median 0.73 ΔE00, p95 2.05 over 37 scenes (Sony-through-ARRI-matrix baseline 1.72); A7R IV ISO 400 single lights 0.68 / 1.61; ISO 12800 2.24 | reported |
@@ -109,6 +113,7 @@ CI jobs enabled: frontend, e2e, rust (macOS), deny, deny-selftest, fetch-tools, 
 7. **Tint readout near 4000 K.** The blackbody and daylight locus branches meet with a 0.04 log-chroma gap, so small magenta tints on ~4100 K lights read with the wrong sign. Fix with one Planckian readout locus or a blend over 3500–4500 K (changes `profile.json`)?
 8. **IJG licence.** JPEG export uses `jpeg-encoder`, whose forward DCT is IJG-licensed (permissive, needs "This software is based in part on the work of the Independent JPEG Group." in docs and About). It's allowed in `deny.toml` now; please confirm.
 9. **DNG brightness outside Adobe apps.** Adobe's renderer applies a highlight shoulder rather than a scale for a negative `BaselineExposure`, so the fitted profile stores scene values up to 16 with the white level there and `BaselineExposure` about 0. Adobe apps render it to match our JPEG; RawTherapee and darktable show the stored linear image about 4 EV darker until their own exposure handling. The alternative (per-photo white level) risks Adobe's shoulder. Recommended: keep the floor and say so in the export help. OK?
+10. **M1-08 gate metric.** As worded ("median luminance, compared in linear light"), the gate mixes the display transform and the camera's tone curve into the exposure check: ACES 2 puts scene 0.18 at display 0.10 where camera JPEGs put it near 0.18, about −0.85 EV by design. The study in `tools/eval` proposes G3: our exposure against the camera engine's own gain (found by matching the JPEG to our scene-linear render). Same ±0.5 EV and 80 % bar. On the 9 real files G3 gives 6 of 9; the misses are a high-key flash portrait and two dark scenes shot with DRO, which only your review (M1-H5) can call. Adopt G3 for the gate? An optional damped exposure (half way to a fixed anchor) would pass 9 of 9 but changes dark and bright scenes, so it waits for the blind review.
 
 ## Known issues
 
@@ -118,7 +123,6 @@ CI jobs enabled: frontend, e2e, rust (macOS), deny, deny-selftest, fetch-tools, 
 - The illuminant's synthetic brightness range stops at Bv 13; real sunlit files read 14.3–14.6. LED and fluorescent class recognition is weak on independent chart scenes.
 - Kelvin readout rounded to 50 K leaves up to 1.6 % red/blue imbalance below 2300 K.
 - The GPU memory budget isn't scaled to system RAM; device loss isn't handled.
-- `docs/02` §C10/§C11 still say "rgba16float 3D texture" and "1D textures"; the code uses f32 storage buffers for precision.
 
 ## Environment
 
