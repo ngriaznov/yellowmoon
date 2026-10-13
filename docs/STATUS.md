@@ -10,7 +10,7 @@ Work so far is on branch `claude/yellowmoon-v1` (one commit per task or task gro
 
 ## Current milestone
 
-M0–M3 were built in parallel by task lanes in one session (2026-10-12), each lane implemented and then independently reviewed. Integration (ym-core render pipeline, export queue, the `ym` CLI, the Tauri app, frontend wiring, golden runner, dngfit) is in progress. M4 hasn't started.
+M0–M3 were built in parallel by task lanes in one session (2026-10-12), each lane implemented and then independently reviewed. Integration is done: ym-core (session, render pipeline, export queue), the `ym` CLI, the Tauri app, the frontend wired to it, the golden runner and dngfit. A polish and review pass is running. M4 hasn't started.
 
 Two facts shape every number below:
 
@@ -21,6 +21,7 @@ Two facts shape every number below:
 
 | Task | Commit | Notes |
 |---|---|---|
+| M3-02…M3-04 frontend wired to the real backend | [fd62641](https://github.com/ngriaznov/yellowmoon/commit/fd62641) | generated bindings with a compile-time contract; real-shell smoke test on 9 real + 48 synthetic files; native viewport needs a Mac |
 | M1-15 golden runner, M3-12 dngfit and DNG gates | [4de91f6](https://github.com/ngriaznov/yellowmoon/commit/4de91f6) | 61 synthetic files hashed; DNG gates pass with the fitted profile applied by the gate tool (the writer adopts it next) |
 | M3-02…M3-04 Tauri app: IPC, bindings, fallback viewport, menus, updater | [8244118](https://github.com/ngriaznov/yellowmoon/commit/8244118) | native macOS viewport type-checked only (M0-H4); app and `ym` give identical JPEG bytes on real files |
 | M1-14 `ym` CLI (render, info, looks, doctor) and the `ym` rename | [49e8cee](https://github.com/ngriaznov/yellowmoon/commit/49e8cee) | 109 synthetic files render; `--jobs 1` vs `--jobs 4` byte-identical |
