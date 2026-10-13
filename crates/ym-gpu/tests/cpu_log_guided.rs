@@ -213,7 +213,10 @@ fn the_default_method_is_the_adaptive_ratio_demosaic_and_log_guided_is_listed_on
     // the log-guided demosaic is a preview method and never the default.
     assert_eq!(demosaic::DEFAULT_METHOD, Method::AdaptiveRatio);
     assert_ne!(demosaic::DEFAULT_METHOD, Method::LogGuided);
-    assert!(Method::ALL.contains(&Method::Menon), "Menon stays selectable");
+    assert!(
+        Method::ALL.contains(&Method::Menon),
+        "Menon stays selectable"
+    );
     assert_eq!(
         Method::ALL
             .iter()

@@ -3,18 +3,24 @@
 //! `docs/algorithms/01-adaptive-ratio-demosaic.md`; RA-03 plain path, RA-03b CA path).
 //!
 //! What is compared, with which bound (each asserted, each printed with `--nocapture`) and what
-//! was measured on lavapipe (Mesa 25.2, LLVM 20.1):
+//! was measured on lavapipe (Mesa 25.2, LLVM 20.1). "Over" counts samples that differ from the CPU
+//! by more than 1e-4 (the spec's "fraction of samples above 1e-4"), "fine" those over 2e-5.
 //!
 //! | Case | Asserted bound | Measured |
 //! |---|---|---|
-//! | the 16 stable vectors against the oracle's `expected` | the vectors' own tolerance, 1e-5 | 1.4e-6 (`highlights_and_negatives`, values to 3), 2.4e-7 on the others |
-//! | the 2 tie-sensitive vectors (`edge_knight`, `ca_weighting`) | [`TIE_VECTORS`]: at most 20 / 100 samples over 1e-4, 2e-3 | 10 / 58 samples, 4.2e-4 / 6.1e-4 (the CPU port moves by 6.6e-4 / 1.1e-3 under 1-ulp noise) |
-//! | random frames, 4 phases x 3 noise models x 5 parameter sets, 9 x 7 to 67 x 41 | [`FRAME_FRACTION`] of the samples over 1e-4, [`FRAME_BOUND`] | see the test's output |
-//! | the same, balanced entry | as above | |
-//! | a large frame, 2048 x 1365 through tiles of 1024 | [`LARGE_FRACTION`], [`FRAME_BOUND`] | see the test's output |
-//! | CA path, random curves and placements | as the random frames | |
-//! | tiles of 24 to 100 px on odd frames, all phases, CA, matching | bit-identical to the whole GPU frame | 0 |
-//! | two runs, a run on recycled (poisoned) buffers, every storage mode | bit-identical | 0 |
+//! | the 16 stable vectors against the oracle's `expected` | the vectors' own tolerance, 1e-5 | 1.4e-6 (`highlights_and_negatives`, values to 3), 3e-7 on the others |
+//! | the 2 tie-sensitive vectors (`edge_knight`, `ca_weighting`) | [`TIE_VECTORS`]: at most 20 / 100 samples over, 2e-3 | 10 / 58 samples over, 4.2e-4 / 6.1e-4 (the CPU port moves 8 / 26 samples by up to 6.6e-4 / 1.1e-3 under 1 ulp of input noise) |
+//! | random frames: 4 phases x 3 noise models x 5 parameter sets x 4 sizes (240 runs, 894 240 samples) | [`FRAME_FRACTION`] over, [`FRAME_FINE_FRACTION`] fine, [`FRAME_BOUND`] | 0 over, 0 fine, worst 7.4e-6 |
+//! | the same on the balanced entry (R6's), and against the unbalanced entry | as above | 0 over, worst 1.7e-6 (CPU), 1.4e-6 (unbalanced GPU) |
+//! | CA path: random curves, off-centre optical centres, placements anywhere in a 6000 x 4000 frame (32 runs) | as above | 0 over, 0 fine, worst 2.4e-6 |
+//! | 2 x 2 to 15 x 15, strips of two, all phases (44 runs) | 5 x [`FRAME_FRACTION`] | 0 over, worst 2.3e-6 |
+//! | values from -0.05 to 3e11 (up to the kernel's limit), 4 phases | 5e-2 of the peak | 2.7e-6 of the peak |
+//! | flat fields, 4 phases x 3 gain sets x 4 levels | 4e-7 relative plus a floor | 6.0e-7 relative / 4.2e-7 absolute (low noise), 4.8e-7 absolute (high noise, matching) |
+//! | 2048 x 1365 through tiles of 1024, balanced | [`LARGE_FRACTION`], [`FRAME_BOUND`], at most 8 x the CPU's own response to 1 ulp + 64 | 70 / 18 of 8 386 560 over (8.3e-6 / 2.1e-6), worst 1.2e-2 / 4.0e-3; the CPU under 1-ulp jitter: 344 / 118 over, worst 1.8e-2 / 1.3e-2 |
+//! | tiles of 32 to 100 px on 203 x 157 (all three kinds of frame), plans with exactly 11 / 13 px of context | bit-identical to the whole GPU frame | 0 differing samples |
+//! | crops by one photosite (the Bayer phase flips), interior | bit-identical to the uncropped GPU frame | 0 differing samples |
+//! | two runs, runs on recycled (poisoned) buffers for every parameter set, every storage mode | bit-identical | 0 differing samples |
+//! | one perturbed photosite | the same reach as the CPU port and no further than the halo | 8 px plain, 10 px with matching, equal to the CPU's |
 //!
 //! # Why the GPU is not bit-exact, and what the differences are
 //!
@@ -60,14 +66,18 @@ const VECTOR_TOLERANCE: f64 = 1e-5;
 /// The two vectors that sit on exact ties (`edge_knight`: a 2:1 edge; `ca_weighting`: a 45 degree
 /// edge with a position-dependent CA weight): the most samples over 1e-4 and the largest difference
 /// allowed. Measured: 10 and 58 samples, 4.2e-4 and 6.1e-4.
-const TIE_VECTORS: [(&str, usize, f64); 2] = [("edge_knight", 20, 2e-3), ("ca_weighting", 100, 2e-3)];
-/// Random frames: the fraction of samples that may differ from the CPU by more than 1e-4.
-const FRAME_FRACTION: f64 = 2e-3;
+const TIE_VECTORS: [(&str, usize, f64); 2] =
+    [("edge_knight", 20, 2e-3), ("ca_weighting", 100, 2e-3)];
+/// Random frames: the fraction of samples that may differ from the CPU by more than 1e-4 (measured:
+/// 0 of 894 240 on the sweep, 0 of 178 224 with CA).
+const FRAME_FRACTION: f64 = 1e-4;
+/// Random frames: the fraction over 2e-5, where a systematic error would show first (measured 0).
+const FRAME_FINE_FRACTION: f64 = 1e-4;
 /// Random frames: the largest difference allowed anywhere. A flipped decision moves one pixel by the
 /// difference of two plausible estimates, here at most a few percent of the signal.
 const FRAME_BOUND: f64 = 5e-2;
-/// The large frame: the fraction over 1e-4.
-const LARGE_FRACTION: f64 = 2e-4;
+/// The large frame: the fraction over 1e-4 (measured 8.3e-6 and 2.1e-6).
+const LARGE_FRACTION: f64 = 5e-5;
 
 // ---------------------------------------------------------------------------------------------
 // Devices and runners
@@ -165,6 +175,9 @@ struct Stats {
     at: (usize, usize, usize),
     /// Samples that differ by more than `1e-4` (spec 5: the fraction to report).
     over: usize,
+    /// Samples that differ by more than `2e-5`: a systematic error shows here before it shows in
+    /// `over`.
+    fine: usize,
     total: usize,
     /// Largest finite value of the reference.
     peak: f64,
@@ -186,6 +199,7 @@ fn compare(gpu: &RgbImage, cpu: &RgbImage) -> Stats {
         max_abs: 0.0,
         at: (0, 0, 0),
         over: 0,
+        fine: 0,
         total: gpu.data.len(),
         peak: 0.0,
     };
@@ -197,9 +211,8 @@ fn compare(gpu: &RgbImage, cpu: &RgbImage) -> Stats {
                 s.max_abs = e;
                 s.at = (c, i % gpu.width, i / gpu.width);
             }
-            if e > 1e-4 {
-                s.over += 1;
-            }
+            s.over += usize::from(e > 1e-4);
+            s.fine += usize::from(e > 2e-5);
             s.peak = s.peak.max(f64::from(r.abs()));
         }
     }
@@ -306,7 +319,7 @@ fn param_sets() -> [Params; 5] {
 /// `off` px.
 fn random_curves(rng: &mut Rng, fw: usize, fh: usize, max_shift: f64, off: f64) -> CaCurves {
     let hd = ((fw * fw + fh * fh) as f64).sqrt() / 2.0;
-    let mut curve = |rng: &mut Rng| {
+    let curve = |rng: &mut Rng| {
         let n = 2 + (rng.next_u64() % 10) as usize;
         let mut r = -rng.range(0.0, 50.0);
         let mut knots = Vec::new();
@@ -511,6 +524,7 @@ struct Totals {
     runs: usize,
     samples: usize,
     over: usize,
+    fine: usize,
     worst: f64,
     worst_label: String,
 }
@@ -520,6 +534,7 @@ impl Totals {
         self.runs += 1;
         self.samples += s.total;
         self.over += s.over;
+        self.fine += s.fine;
         if s.max_abs > self.worst {
             self.worst = s.max_abs;
             self.worst_label = label;
@@ -530,13 +545,18 @@ impl Totals {
         self.over as f64 / self.samples as f64
     }
 
+    fn fine_fraction(&self) -> f64 {
+        self.fine as f64 / self.samples as f64
+    }
+
     fn report(&self, what: &str) {
         println!(
-            "{what}: {} runs, {} of {} samples over 1e-4 ({:.2e}), worst |gpu - cpu| {:.3e} ({})",
+            "{what}: {} runs, {} of {} samples over 1e-4 ({:.2e}), {} over 2e-5, worst |gpu - cpu| {:.3e} ({})",
             self.runs,
             self.over,
             self.samples,
             self.fraction(),
+            self.fine,
             self.worst,
             self.worst_label
         );
@@ -562,7 +582,12 @@ fn random_frames_match_in_all_phases_noise_models_and_parameters() {
                     c.params = params;
                     let s = compare(&c.gpu(dev), &c.cpu());
                     let label = format!("{} {w}x{h} noise {n} params {k}", cfa.name());
-                    assert!(s.max_abs <= FRAME_BOUND, "{label}: {} at {:?}", s.max_abs, s.at);
+                    assert!(
+                        s.max_abs <= FRAME_BOUND,
+                        "{label}: {} at {:?}",
+                        s.max_abs,
+                        s.at
+                    );
                     totals.add(label, &s);
                 }
             }
@@ -570,6 +595,11 @@ fn random_frames_match_in_all_phases_noise_models_and_parameters() {
     }
     totals.report("random frames");
     assert!(totals.fraction() <= FRAME_FRACTION, "{}", totals.fraction());
+    assert!(
+        totals.fine_fraction() <= FRAME_FINE_FRACTION,
+        "{}",
+        totals.fine_fraction()
+    );
 }
 
 #[test]
@@ -599,7 +629,11 @@ fn the_balanced_entry_matches_the_cpu_and_the_unbalanced_entry() {
             assert!(s.max_abs <= FRAME_BOUND, "{label}: {}", s.max_abs);
             totals.add(label.clone(), &s);
             let e = compare(&from_balanced, &plain.gpu(dev));
-            assert!(e.max_abs <= FRAME_BOUND, "{label} against unbalanced {}", e.max_abs);
+            assert!(
+                e.max_abs <= FRAME_BOUND,
+                "{label} against unbalanced {}",
+                e.max_abs
+            );
             against_unbalanced.add(label, &e);
         }
     }
@@ -645,6 +679,11 @@ fn the_ca_path_matches_the_cpu_with_random_curves_and_placements() {
     }
     totals.report("CA path");
     assert!(totals.fraction() <= FRAME_FRACTION, "{}", totals.fraction());
+    assert!(
+        totals.fine_fraction() <= FRAME_FINE_FRACTION,
+        "{}",
+        totals.fine_fraction()
+    );
 }
 
 #[test]
@@ -668,9 +707,11 @@ fn a_ca_curve_with_a_constant_misregistration_does_not_depend_on_the_placement()
         bits_equal(&a, &b),
         "a constant misregistration depends on the placement"
     );
-    let ramp = || CaCurves::new(3000.0, 2000.0, curve(0.0, 0.0), curve(0.0, 3.0)).expect("ramp");
-    let c = run(ramp(), 100, 100);
-    let d = run(ramp(), 5000, 3000);
+    // |R - B| grows from 0 at the centre to 0.8 px at r = 4000: 0.22 px at (1100, 600) from the
+    // centre and 0.03 px at (100, 100) from it, so the weights differ between the two tiles.
+    let ramp = || CaCurves::new(3000.0, 2000.0, curve(0.0, 0.0), curve(0.0, 0.8)).expect("ramp");
+    let c = run(ramp(), 3900, 2500);
+    let d = run(ramp(), 2900, 1900);
     assert!(
         !bits_equal(&c, &d),
         "a growing misregistration ignores the placement"
@@ -800,9 +841,48 @@ fn a_plan_without_context_or_for_another_size_is_refused_and_a_cancel_stops_the_
         })
         .expect("job");
     for (what, e) in [("no context", errs.0), ("wrong size", errs.1)] {
-        assert!(matches!(e, Some(GpuError::InvalidInput(_))), "{what}: {e:?}");
+        assert!(
+            matches!(e, Some(GpuError::InvalidInput(_))),
+            "{what}: {e:?}"
+        );
     }
     assert!(matches!(errs.2, Some(GpuError::Cancelled)), "{:?}", errs.2);
+}
+
+#[test]
+fn plans_with_exactly_the_declared_context_work_and_less_is_refused() {
+    // The plain configuration needs 11 px of context (the spec's bound; the exact reach is 10), the
+    // one with shadow matching 13 (exact 12): a plan with that much gives the whole-frame bits, a
+    // plan with one pixel less is refused.
+    let Some(dev) = f32_device() else { return };
+    for (noise, halo) in [(low_noise(), 11usize), (high_noise(), 13)] {
+        let c = Case::new(scene_for(noise, 120, 97, Cfa::GRBG, 14), noise);
+        let whole = c.gpu(dev);
+        let run = |plan_halo: usize| {
+            let cc = c.clone();
+            let plan = TilePlan::with_halo(120, 97, 40, plan_halo);
+            dev.gpu
+                .run(JobSpec::new(Priority::Export), move |ctx, token| {
+                    gpu_ar::demosaic_planned(
+                        ctx,
+                        &cc.mosaic,
+                        cc.balance,
+                        &cc.inputs(),
+                        &cc.params,
+                        &plan,
+                        token,
+                    )
+                })
+        };
+        let tiled = run(halo).expect("a plan with the declared context");
+        assert!(bits_equal(&tiled, &whole), "halo {halo}");
+        let e = run(halo - 1);
+        assert!(
+            matches!(e, Err(GpuError::InvalidInput(_))),
+            "halo {}: {e:?}",
+            halo - 1
+        );
+    }
 }
 
 #[test]
@@ -845,6 +925,18 @@ fn a_large_frame_through_the_tiling_path_matches_the_cpu() {
         );
         assert!(s.max_abs <= FRAME_BOUND, "{}", s.max_abs);
         assert!(s.fraction() <= LARGE_FRACTION, "{}", s.fraction());
+        // The CPU's own response to 1 ulp of input noise, for scale (see the module documentation).
+        let cpu_jitter = compare(&jitter(&c, 7, 1.2e-7).cpu(), &reference);
+        println!(
+            "  the CPU reference under 1-ulp jitter: {} of {} samples over 1e-4, max {:.3e}",
+            cpu_jitter.over, cpu_jitter.total, cpu_jitter.max_abs
+        );
+        assert!(
+            s.over <= 8 * cpu_jitter.over + 64,
+            "{label}: the GPU differs at {} samples, the CPU moves at {} under 1 ulp",
+            s.over,
+            cpu_jitter.over
+        );
         totals.add(label.to_owned(), &s);
     }
     totals.report("large frames");
@@ -889,7 +981,10 @@ fn tiny_odd_and_strip_sizes_match_the_cpu_and_sizes_below_two_are_refused() {
                 // The CPU reference says `BadSize`; the GPU refuses the same sizes.
                 assert!(c.try_cpu().is_err(), "{w}x{h}");
                 let e = c.try_gpu(dev);
-                assert!(matches!(e, Err(GpuError::InvalidInput(_))), "{w}x{h}: {e:?}");
+                assert!(
+                    matches!(e, Err(GpuError::InvalidInput(_))),
+                    "{w}x{h}: {e:?}"
+                );
                 continue;
             }
             let s = compare(&c.gpu(dev), &c.cpu());
@@ -921,8 +1016,9 @@ fn nan_infinity_and_overflowing_values_are_refused_without_a_panic() {
     ] {
         let mut c = base.clone();
         c.mosaic.data[7 * 30 + 11] = value;
-        // The CPU refuses NaN, infinity and 1e38; it accepts 2e12 and the GPU does not.
-        if what != "beyond the kernel's limit" {
+        // The CPU refuses NaN, infinity and 1e38; it accepts 2e12 and -1e38 (the negative part is
+        // clamped and restored at the exit), which the GPU refuses (the limit holds for both signs).
+        if !what.starts_with("beyond") && what != "-1e38" {
             assert!(c.try_cpu().is_err(), "{what}: the CPU accepts it");
         }
         let e = c.try_gpu(dev);
@@ -1091,6 +1187,29 @@ fn a_side_beyond_the_dispatch_limit_is_refused_not_panicked() {
     assert!(compare(&ok.gpu(dev), &ok.cpu()).max_abs <= FRAME_BOUND);
 }
 
+#[test]
+fn a_frame_too_big_for_one_binding_is_refused_and_a_tile_of_it_is_not() {
+    // The planes of one run live in one storage binding (128 MiB by default). A frame whose padded
+    // planes do not fit is refused with `BufferTooLarge` instead of failing in the driver; the tiled
+    // entry point is for such frames.
+    let Some(dev) = f32_device() else { return };
+    let limit = dev.gpu.info().limits.max_storage_buffer_binding_size as usize;
+    if limit > (1 << 30) {
+        eprintln!("skipped: the device allows a binding of {limit} bytes");
+        return;
+    }
+    let w = 1000usize;
+    let h = limit / (20 * w) + 200; // 5 planes of 4 bytes: more than the binding allows
+    let mut c = Case::new(Mosaic::new(w, h, Cfa::RGGB), low_noise());
+    c.mosaic.data.fill(0.1);
+    let e = c.try_gpu(dev);
+    assert!(matches!(e, Err(GpuError::BufferTooLarge { .. })), "{e:?}");
+    // A tile of the same frame is fine and gives what the CPU gives.
+    let sub = c.mosaic.extract(Rect::new(0, 0, 200, 150));
+    let ok = Case::new(sub, low_noise());
+    assert!(compare(&ok.gpu(dev), &ok.cpu()).max_abs <= 1e-5);
+}
+
 // ---------------------------------------------------------------------------------------------
 // Determinism
 // ---------------------------------------------------------------------------------------------
@@ -1108,13 +1227,17 @@ fn two_runs_and_runs_on_recycled_buffers_are_bit_identical_in_every_storage_mode
         assert!(bits_equal(&a, &b), "storage {}", dev.mode.name());
         // Poison the pool: run other frames of the same and larger size classes so that the next run
         // gets recycled buffers full of someone else's data. A pass that read a value no earlier
-        // pass wrote would show here.
-        for seed in 0..3u64 {
+        // pass wrote would show here, for every combination of the optional passes (the
+        // sharpening, the matching, the CA path).
+        let poison = |seed: u64| {
             let mut other = Case::new(scene(97, 61, Cfa::RGGB, 50 + seed, 3.0), low_noise());
             other.params = param_sets()[(1 + seed as usize) % 5];
             let _ = other.gpu(dev);
             let big = Case::new(dark_scene(130, 90, Cfa::BGGR, 60 + seed), high_noise());
             let _ = big.gpu(dev);
+        };
+        for seed in 0..3u64 {
+            poison(seed);
         }
         let after = c.gpu(dev);
         assert!(
@@ -1122,6 +1245,24 @@ fn two_runs_and_runs_on_recycled_buffers_are_bit_identical_in_every_storage_mode
             "recycled buffers, storage {}",
             dev.mode.name()
         );
+        for (k, params) in param_sets().into_iter().enumerate() {
+            for (noise, ca) in [(low_noise(), false), (high_noise(), true)] {
+                let mut m = scene_for(noise, 70, 52, Cfa::GBRG, 700 + k as u64);
+                place(&mut m, 3000, 1500, 6000, 4000);
+                let mut c = Case::new(m, noise);
+                c.params = params;
+                if ca {
+                    c.ca = Some(random_curves(&mut Rng(9), 6000, 4000, 1.5, 100.0));
+                }
+                let first = c.gpu(dev);
+                poison(10 + k as u64);
+                assert!(
+                    bits_equal(&first, &c.gpu(dev)),
+                    "params {k}, CA {ca}, storage {}: a pass read a value that no pass wrote",
+                    dev.mode.name()
+                );
+            }
+        }
         let ta = c.gpu_tiled(dev, 40);
         let tb = c.gpu_tiled(dev, 40);
         assert!(bits_equal(&ta, &tb), "tiled, storage {}", dev.mode.name());
@@ -1148,23 +1289,31 @@ fn two_runs_and_runs_on_recycled_buffers_are_bit_identical_in_every_storage_mode
 
 #[test]
 fn flat_fields_come_back_as_gain_times_value_in_all_four_phases() {
-    // Spec 6.2 item 1: constant colour in, gain * value out (the reference measures 6.4e-8
-    // relative; f32 allows a few ulp).
+    // Spec 6.2 item 1: constant colour in, gain * value out. The reference measures 6.4e-8 relative
+    // in f64. In f32 the offset-ratio forms `(x + k) r - k` of passes 1 and 3 lose the low bits of
+    // `x + k`, where `k` is 555 DN for the low noise model and 17202 DN for the high one: an absolute
+    // error of about `k * 6e-8`, whatever the level. Measured: 6e-7 relative (4e-7 absolute, at white
+    // times 6.5) for the low model, and for the high one 4.8e-7 absolute (1.4e-5 relative, at level
+    // 0.003), which is 0.03 DN of a 16-bit scale.
     let Some(dev) = f32_device() else { return };
-    let mut worst = 0.0f64;
-    for cfa in Cfa::ALL {
-        for gains in [[1.0f32; 3], [1.9, 1.0, 1.4], [2.7, 1.0, 1.1]] {
-            for level in [0.003f32, 0.18, 1.0, 2.4] {
-                for (noise, params) in [
-                    (low_noise(), Params::default()),
-                    (
-                        high_noise(),
-                        Params {
-                            shadow_match: ShadowMatch::On,
-                            ..Params::default()
-                        },
-                    ),
-                ] {
+    // (noise, parameters, allowed absolute error in units of white, label)
+    let configs = [
+        (low_noise(), Params::default(), 1e-8, "low noise"),
+        (
+            high_noise(),
+            Params {
+                shadow_match: ShadowMatch::On,
+                ..Params::default()
+            },
+            2e-7,
+            "high noise, matching",
+        ),
+    ];
+    for (noise, params, floor, label) in configs {
+        let (mut worst_rel, mut worst_abs) = (0.0f64, 0.0f64);
+        for cfa in Cfa::ALL {
+            for gains in [[1.0f32; 3], [1.9, 1.0, 1.4], [2.7, 1.0, 1.1]] {
+                for level in [0.003f32, 0.18, 1.0, 2.4] {
                     let (w, h) = (23usize, 18usize);
                     let mut m = Mosaic::new(w, h, cfa);
                     m.data.fill(level);
@@ -1175,11 +1324,12 @@ fn flat_fields_come_back_as_gain_times_value_in_all_four_phases() {
                     for ch in 0..3 {
                         let want = f64::from(gains[ch]) * f64::from(level);
                         for &v in out.plane(ch) {
-                            let rel = (f64::from(v) - want).abs() / want;
-                            worst = worst.max(rel);
+                            let abs = (f64::from(v) - want).abs();
+                            worst_abs = worst_abs.max(abs);
+                            worst_rel = worst_rel.max(abs / want);
                             assert!(
-                                rel <= 4e-7,
-                                "{} gains {gains:?} level {level}: plane {ch} has {v}, want {want}",
+                                abs <= 4e-7 * want + floor,
+                                "{label} {} gains {gains:?} level {level}: plane {ch} has {v}, want {want}",
                                 cfa.name()
                             );
                         }
@@ -1187,8 +1337,10 @@ fn flat_fields_come_back_as_gain_times_value_in_all_four_phases() {
                 }
             }
         }
+        println!(
+            "flat fields, {label}: worst absolute error {worst_abs:.3e}, worst relative {worst_rel:.3e}"
+        );
     }
-    println!("flat fields, worst relative error {worst:.3e}");
 }
 
 #[test]
@@ -1230,7 +1382,8 @@ fn cropping_by_one_row_or_column_changes_the_phase_and_keeps_the_interior() {
 fn one_photosite_reaches_the_exact_receptive_field_and_no_further() {
     // Spec 1.5 and 6.2 item 5: perturbing one photosite changes the output within the declared halo
     // (11 px, 13 with shadow matching); the CPU port measures a reach of 9 px plain with the
-    // sharpening active and 10 px with matching. Every sample farther than the halo is bit-identical.
+    // sharpening active and 10 px with matching. Every sample farther than the halo is bit-identical,
+    // and the GPU reach equals the CPU's for the same perturbations.
     let Some(dev) = f32_device() else { return };
     let (w, h) = (61usize, 55usize);
     // A dark scene against a noise model whose shadow gate is open (T = 24 DN here), matching off;
@@ -1240,8 +1393,7 @@ fn one_photosite_reaches_the_exact_receptive_field_and_no_further() {
         (plain_noise, 11usize, "plain, sharpening on"),
         (high_noise(), 13, "shadow matching on"),
     ] {
-        let mut reach = 0usize;
-        let mut peak = 0.0f32;
+        let (mut reach, mut cpu_reach) = (0usize, 0usize);
         for cfa in [Cfa::RGGB, Cfa::GBRG] {
             let mut m = scene_for(noise, w, h, cfa, 55);
             if halo == 11 {
@@ -1249,21 +1401,21 @@ fn one_photosite_reaches_the_exact_receptive_field_and_no_further() {
                     *v *= 1.0e-4;
                 }
             }
-            peak = m.data.iter().copied().fold(0.0, f32::max);
+            let peak = m.data.iter().copied().fold(0.0, f32::max);
             let c = Case::new(m, noise);
-            let base = c.gpu(dev);
+            let (base, cpu_base) = (c.gpu(dev), c.cpu());
             for (px, py) in [(0usize, 0usize), (1, 0), (0, 1), (1, 1)] {
                 let (cx, cy) = (30 + px, 26 + py);
                 let mut bumped = c.clone();
                 let i = cy * w + cx;
                 bumped.mosaic.data[i] = bumped.mosaic.data[i] * 2.0 + 0.5 * peak;
-                let out = bumped.gpu(dev);
+                let (out, cpu_out) = (bumped.gpu(dev), bumped.cpu());
                 for ch in 0..3 {
                     for y in 0..h {
                         for x in 0..w {
                             let j = y * w + x;
+                            let r = x.abs_diff(cx).max(y.abs_diff(cy));
                             if out.plane(ch)[j].to_bits() != base.plane(ch)[j].to_bits() {
-                                let r = x.abs_diff(cx).max(y.abs_diff(cy));
                                 assert!(
                                     r <= halo,
                                     "{label} {} ({cx}, {cy}) changed plane {ch} at ({x}, {y}), {r} px away",
@@ -1271,13 +1423,22 @@ fn one_photosite_reaches_the_exact_receptive_field_and_no_further() {
                                 );
                                 reach = reach.max(r);
                             }
+                            if cpu_out.plane(ch)[j].to_bits() != cpu_base.plane(ch)[j].to_bits() {
+                                cpu_reach = cpu_reach.max(r);
+                            }
                         }
                     }
                 }
             }
         }
-        println!("{label}: receptive-field radius on the GPU {reach} px (halo {halo}, scene peak {peak:.2e})");
-        assert!((8..=halo).contains(&reach), "{label}: reach {reach}");
+        println!(
+            "{label}: receptive-field radius {reach} px on the GPU, {cpu_reach} px on the CPU (halo {halo})"
+        );
+        assert!(reach <= halo, "{label}: reach {reach}");
+        assert_eq!(
+            reach, cpu_reach,
+            "{label}: the GPU and the CPU port reach differently"
+        );
     }
 }
 

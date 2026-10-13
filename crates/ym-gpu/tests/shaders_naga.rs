@@ -66,3 +66,26 @@ fn constants_are_generated_from_ym_color_not_typed() {
     );
     assert!(src.contains("const AWG4_TO_AP0_0: vec3<f32>"));
 }
+
+#[test]
+fn the_adaptive_ratio_passes_share_one_source_and_each_has_one_entry_point() {
+    // RA-09: eleven pipelines of `adaptive_ratio.wgsl`, f32 planes in every storage mode, so the text
+    // of a pass differs between storage modes only by the generated prelude (and not at all in its
+    // buffers: no f16 anywhere).
+    let passes: Vec<KernelId> = KernelId::ALL
+        .into_iter()
+        .filter(|id| id.name().starts_with("adaptive_ratio"))
+        .collect();
+    assert_eq!(passes.len(), 11);
+    for id in passes {
+        for mode in [StorageMode::F32, StorageMode::F16Native] {
+            let src = shader_source(mode, id);
+            assert_eq!(src.matches("@compute").count(), 1, "{id:?}");
+            assert!(src.contains("struct ArParams"), "{id:?}");
+            assert!(
+                !src.contains("array<f16>") && !src.contains("2x16float"),
+                "{id:?}"
+            );
+        }
+    }
+}

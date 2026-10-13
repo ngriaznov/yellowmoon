@@ -46,16 +46,22 @@ fn main() {
         .position(|a| a == "--mp")
         .map_or(24.0, |i| args[i + 1].parse().expect("megapixels"));
     let use_gpu = args.iter().any(|a| a == "--gpu");
-    let demosaic = args.iter().position(|a| a == "--demosaic").map_or(
-        DEFAULT_METHOD,
-        |i| {
+    let demosaic = args
+        .iter()
+        .position(|a| a == "--demosaic")
+        .map_or(DEFAULT_METHOD, |i| {
             let name = args.get(i + 1).expect("a demosaic method name");
             Method::from_name(name).unwrap_or_else(|| {
-                panic!("{name:?} is not a demosaic method (one of {:?})", Method::ALL.map(Method::name))
+                panic!(
+                    "{name:?} is not a demosaic method (one of {:?})",
+                    Method::ALL.map(Method::name)
+                )
             })
-        },
+        });
+    println!(
+        "R6 demosaic method of the full-resolution renders: {}",
+        demosaic.name()
     );
-    println!("R6 demosaic method of the full-resolution renders: {}", demosaic.name());
     let (w, h) = {
         let w = ((mp * 1e6 * 1.5).sqrt() / 2.0).round() as u32 * 2;
         (w, w * 2 / 3 / 2 * 2)

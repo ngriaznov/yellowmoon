@@ -89,13 +89,15 @@
 //!
 //! # Memory and tiles
 //!
-//! For a core of `n` pixels with the margin `mg` (10, or 12 with shadow matching) a run needs 5 planes
-//! of `(w + 2 mg + 1) (h + 2 mg + 1)` `f32` (12 with shadow matching) in one scratch binding, the input
-//! rectangle (4 bytes per photosite) and the output (12 bytes per core pixel). The scratch must fit the
-//! device's `max_storage_buffer_binding_size` (128 MiB by default: 2.2 million padded pixels with
-//! matching, 6.5 million without): use [`demosaic_tiled`] for frames. A tile of 1024 px needs 53 MB with
-//! matching. Tiles carry [`Derived::halo_px`] pixels of real context (11, 13 with matching) and give the
-//! whole-frame pixels bit for bit.
+//! For a core of `w x h` pixels with the margin `mg` (10, or 12 with shadow matching) a run needs 5
+//! planes (12 with shadow matching) of `(w + 2 mg + 1) (h + 2 mg + 1)` `f32` in one scratch binding,
+//! the input rectangle (4 bytes per photosite) and the output (12 bytes per core pixel):
+//! [`BYTES_PER_PIXEL`] per pixel at most. The scratch must fit the device's
+//! `max_storage_buffer_binding_size` (128 MiB by default: 2.8 million padded pixels with matching, 6.7
+//! million without; a larger one is refused with [`GpuError::BufferTooLarge`]): use [`demosaic_tiled`]
+//! for frames. A tile of 1024 px needs 53 MB of planes with matching. Tiles carry
+//! [`Derived::halo_px`] pixels of real context (11, 13 with matching) and give the whole-frame pixels
+//! bit for bit.
 //!
 //! [`Error::BadSize`]: crate::cpu::demosaic::adaptive_ratio::Error::BadSize
 
@@ -121,6 +123,11 @@ use crate::tiles::TilePlan;
 /// range with a factor of 100 to spare. A sample above it is refused with
 /// [`GpuError::InvalidInput`]; the CPU reference accepts values up to about 5e33.
 pub const MAX_BALANCED_DN: f64 = 1.0e17;
+
+/// Device bytes one padded pixel needs at most: the 12 planes of shadow colour matching, the input and
+/// the three output planes, all `f32`. For choosing a tile size; the binding limit applies to the
+/// 12 planes alone (48 bytes per padded pixel).
+pub const BYTES_PER_PIXEL: u64 = 4 * (12 + 1 + 3);
 
 /// Planes of the scratch buffer without shadow colour matching: `M`, `G1` (later the luma), red,
 /// green, blue.
@@ -191,7 +198,7 @@ pub(super) fn body(id: KernelId) -> String {
     s
 }
 
-/// The uniform block of `adaptive_ratio.wgsl` (`ArParams`): the same fields in the same order, twelve
+/// The uniform block of `adaptive_ratio.wgsl` (`ArParams`): the same fields in the same order, thirteen
 /// `vec4`s.
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -321,11 +328,16 @@ struct CaUpload {
 impl CaUpload {
     fn new(curves: &CaCurves) -> Result<CaUpload, GpuError> {
         let refuse = |what: &str| {
-            GpuError::InvalidInput(format!("adaptive ratio demosaic: the CA {what} do not fit f32"))
+            GpuError::InvalidInput(format!(
+                "adaptive ratio demosaic: the CA {what} do not fit f32"
+            ))
         };
         let cx = curves.centre_x.floor();
         let cy = curves.centre_y.floor();
-        if !(cx.abs() < 1.0e9 && cy.abs() < 1.0e9) {
+        // The shader forms the frame position in `i32`; a centre further out than half its range is
+        // not a lens centre.
+        let limit = f64::from(i32::MAX / 2);
+        if !(cx.abs() < limit && cy.abs() < limit) {
             return Err(GpuError::InvalidInput(format!(
                 "adaptive ratio demosaic: the optical centre ({}, {}) is out of range",
                 curves.centre_x, curves.centre_y
@@ -377,7 +389,8 @@ fn prepare(
             m.data.len()
         )));
     }
-    let derived = Derived::new(inputs.gains, inputs.noise, params).map_err(|e| invalid(e.to_string()))?;
+    let derived =
+        Derived::new(inputs.gains, inputs.noise, params).map_err(|e| invalid(e.to_string()))?;
     let ca = inputs.ca.map(CaUpload::new).transpose()?;
     let gain_max = derived.gains.iter().copied().fold(0.0f64, f64::max);
     for (y, row) in m.data.chunks_exact(m.width).enumerate() {
@@ -415,9 +428,8 @@ struct RectJob<'a> {
 fn base_uniform(job: &RectJob<'_>, lay: &Layout) -> ArU {
     let d = &job.frame.derived;
     let g = d.gains;
-    let per_channel = |f: &dyn Fn(usize) -> f64| -> [f32; 4] {
-        [f(0) as f32, f(1) as f32, f(2) as f32, 0.0]
-    };
+    let per_channel =
+        |f: &dyn Fn(usize) -> f64| -> [f32; 4] { [f(0) as f32, f(1) as f32, f(2) as f32, 0.0] };
     let (cai, caf) = match &job.frame.ca {
         Some(ca) => {
             let place = job.m.place;
@@ -467,7 +479,12 @@ fn base_uniform(job: &RectJob<'_>, lay: &Layout) -> ArU {
             d.offset3_dn as f32,
         ],
         cst2: [d.gate_dn as f32, d.r_dn as f32, 0.0, 0.0],
-        mult: [(4.0 * g[0]) as f32, (2.0 * g[1]) as f32, (4.0 * g[2]) as f32, 0.0],
+        mult: [
+            (4.0 * g[0]) as f32,
+            (2.0 * g[1]) as f32,
+            (4.0 * g[2]) as f32,
+            0.0,
+        ],
         vg: per_channel(&|c| d.g_dn * g[c]),
         vr2: per_channel(&|c| {
             let rc = d.r_dn * g[c];
@@ -576,11 +593,9 @@ fn run_rect(ctx: &GpuContext, job: &RectJob<'_>) -> Result<RgbImage, GpuError> {
     }
 
     let m = job.m;
-    let input = ctx.pool().acquire(
-        "adaptive ratio mosaic",
-        m.data.len() as u64 * 4,
-        STORAGE_IN,
-    )?;
+    let input = ctx
+        .pool()
+        .acquire("adaptive ratio mosaic", m.data.len() as u64 * 4, STORAGE_IN)?;
     ctx.queue
         .write_buffer(&input, 0, bytemuck::cast_slice(&m.data));
     let scratch = ctx.pool().acquire(
@@ -637,9 +652,7 @@ fn run_rect(ctx: &GpuContext, job: &RectJob<'_>) -> Result<RgbImage, GpuError> {
     } else {
         passes.run(KernelId::AdaptiveRatioExit, lay.around(0), 0)?;
     }
-    let Passes {
-        encoder, held, ..
-    } = passes;
+    let Passes { encoder, held, .. } = passes;
 
     let bytes = core_px * 3 * 4;
     let readback = submit_with_readback(ctx, encoder, &out, bytes)?;
@@ -927,7 +940,12 @@ mod tests {
                     assert!(lay.pad_x >= margin && lay.pw - lay.pad_x - core.w >= margin);
                     assert!(lay.pad_y >= margin && lay.ph - lay.pad_y - core.h >= margin);
                     let r = lay.around(margin);
-                    assert!(r[0] <= 1 && r[1] <= 1 && r[2] as usize <= lay.pw && r[3] as usize <= lay.ph);
+                    assert!(
+                        r[0] <= 1
+                            && r[1] <= 1
+                            && r[2] as usize <= lay.pw
+                            && r[3] as usize <= lay.ph
+                    );
                 }
             }
         }

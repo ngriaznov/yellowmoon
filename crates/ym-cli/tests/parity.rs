@@ -553,7 +553,11 @@ const FORCE_ADAPTIVE_RATIO: [(&str, &str); 1] = [("YM_FORCE_DEMOSAIC", "adaptive
 
 #[test]
 fn every_format_is_byte_identical_with_menon_forced() {
-    assert_eq!(DEFAULT_METHOD, Method::AdaptiveRatio, "Menon is not the default");
+    assert_eq!(
+        DEFAULT_METHOD,
+        Method::AdaptiveRatio,
+        "Menon is not the default"
+    );
     let sb = Sandbox::new();
     let arw = sb.arw("DSC00001.ARW");
     let app = App::open_with(&[&arw], Method::Menon);
@@ -613,7 +617,13 @@ fn a_photo_of_several_export_tiles_is_identical_with_menon_forced() {
     };
     let from_app = app.export(png, &sb.root().join("app"));
     let flags = |jobs: &'static str| ["--format", "png", "--bits", "16", "--jobs", jobs];
-    let one = cli_export_env(&sb, &[&arw], &flags("1"), &sb.root().join("one"), &FORCE_MENON);
+    let one = cli_export_env(
+        &sb,
+        &[&arw],
+        &flags("1"),
+        &sb.root().join("one"),
+        &FORCE_MENON,
+    );
     assert_same_files(&from_app, &one, "several tiles, Menon");
     let three = cli_export_env(
         &sb,

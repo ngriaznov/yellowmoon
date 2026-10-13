@@ -2185,7 +2185,10 @@ mod tests {
             let default_whole = default
                 .run_tile(&frame, Rect::whole(full.out_w, full.out_h))
                 .expect("default whole frame");
-            assert_eq!(default_whole, whole, "the default is the adaptive ratio demosaic");
+            assert_eq!(
+                default_whole, whole,
+                "the default is the adaptive ratio demosaic"
+            );
             let menon = build(Method::Menon)
                 .run_tile(&frame, Rect::whole(full.out_w, full.out_h))
                 .expect("Menon whole frame");
@@ -2295,7 +2298,10 @@ mod tests {
         let (dn, chain_noise, img) = render(usable);
         assert_eq!(dn, NoiseDn::from_model(&usable));
         assert_eq!(chain_noise, dn);
-        assert!(img.max_abs_diff(&zero_img) > 0.0, "the model matters to the adaptive ratio");
+        assert!(
+            img.max_abs_diff(&zero_img) > 0.0,
+            "the model matters to the adaptive ratio"
+        );
     }
 
     #[test]

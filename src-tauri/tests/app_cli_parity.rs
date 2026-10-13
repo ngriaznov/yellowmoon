@@ -325,7 +325,8 @@ fn every_format_is_byte_identical_between_the_app_graph_and_a_separately_built_y
 /// The same with Menon, the previous default, forced on both sides; and the switch itself: forcing the
 /// adaptive ratio demosaic by name is the default, forcing Menon is another picture.
 #[test]
-fn every_format_is_byte_identical_with_menon_forced_and_the_default_is_the_adaptive_ratio_demosaic() {
+fn every_format_is_byte_identical_with_menon_forced_and_the_default_is_the_adaptive_ratio_demosaic()
+{
     let Some(ym) = command_line_tool() else {
         return;
     };

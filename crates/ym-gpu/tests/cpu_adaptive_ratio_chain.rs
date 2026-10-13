@@ -24,8 +24,8 @@ use ym_gpu::cpu::detail::{self, NoiseReduction};
 use ym_gpu::cpu::gains;
 use ym_gpu::cpu::lens::{LensGeometry, LensSwitches, LensTags};
 use ym_gpu::cpu::normalize::{self, Levels};
-use ym_gpu::cpu::sharpen::{CaptureSharpen, SharpenParams};
 use ym_gpu::cpu::sharpen::diffraction::DiffractionParams;
+use ym_gpu::cpu::sharpen::{CaptureSharpen, SharpenParams};
 use ym_gpu::cpu::synth;
 use ym_gpu::cpu::tiling::{Rect, tile_grid};
 use ym_gpu::cpu::vignette::VignetteProfile;
@@ -533,7 +533,10 @@ fn the_default_method_chain_is_the_adaptive_ratio_chain() {
     let ar = minimal_chain(Method::AdaptiveRatio, G0, Some(LOW_NOISE));
     let menon = minimal_chain(Method::Menon, G0, Some(LOW_NOISE));
     assert_eq!(default.run(&raw).expect("run"), ar.run(&raw).expect("run"));
-    assert_ne!(default.run(&raw).expect("run"), menon.run(&raw).expect("run"));
+    assert_ne!(
+        default.run(&raw).expect("run"),
+        menon.run(&raw).expect("run")
+    );
 }
 
 #[test]
