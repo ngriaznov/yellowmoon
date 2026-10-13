@@ -13,6 +13,7 @@
     "test:watch": "vitest",
     "e2e": "playwright test",
     "e2e:shell": "node e2e/real/shell-smoke.mjs",
+    "readme:screenshots": "node tools/readme/screenshots.mjs",
     "tauri": "tauri"
   },
   "dependencies": {

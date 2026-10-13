@@ -6,8 +6,9 @@
 //   npm run build && cargo build -p yellowmoon-app
 //   node e2e/real/shell-smoke.mjs [folder-with-ARW-files]
 //
-// How it works: the debug app loads its frontend from `devUrl` (http://localhost:1420). This script serves `dist/` there, with `driver.js`
-// added to index.html; the driver runs inside the webview, drives the app and reports each check back as an image request. Nothing is
+// How it works: the debug app loads its frontend from `devUrl` (http://localhost:1420). This script serves `dist/` there, with `kit.js` (the
+// helpers) and `driver.js` added to index.html; the driver runs inside the webview, drives the app and reports each check back as an image
+// request. The server, the Xvfb screen, the app and the screenshot are in `host.mjs`, which `tools/readme/screenshots.mjs` uses too. Nothing is
 // written next to the photos: the app's folder (`YELLOWMOON_HOME`) and the export folder are temporary. The ARW files are only read, in
 // place (the real ones of `testdata/real` are for local evaluation and are never copied).
 //
@@ -16,17 +17,18 @@
 // Environment: `YM_SMOKE_SCALE=2` runs the app at a device scale of 2, like a Retina display (a CSS pixel is then two device pixels, and the
 // frame twice the cell); `YM_SMOKE_ONLY=geometry` runs only the failure-path folder with its Pick white checks, for a quick run;
 // `YM_SMOKE_TIMEOUT_MS`, `YM_SMOKE_OUT` and `YM_SMOKE_DISPLAY` change the time budget, the report folder and the X display.
-import { spawn, spawnSync } from "node:child_process";
-import { createServer } from "node:http";
+import { spawnSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, extname, join, normalize, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
+// The server, the Xvfb screen, the app and the screenshot are shared with `tools/readme/screenshots.mjs`.
+import { PORT, captureScreen, listen, serveFrontend, spawnApp, startXvfb } from "./host.mjs";
 
 const root = resolve(import.meta.dirname, "../..");
 const dist = join(root, "dist");
 const binary = join(root, "target/debug/yellowmoon-app");
 const folder = resolve(process.argv[2] ?? (existsSync(join(root, "testdata/real/files")) ? join(root, "testdata/real/files") : join(root, "testdata/synthetic/arw")));
-const port = 1420;
+const port = PORT;
 let display = process.env.YM_SMOKE_DISPLAY ?? "";
 const out = process.env.YM_SMOKE_OUT ?? join(root, "node_modules/.cache/yellowmoon-e2e/shell-smoke");
 const budgetMs = Number(process.env.YM_SMOKE_TIMEOUT_MS ?? 15 * 60 * 1000);
@@ -34,8 +36,11 @@ const budgetMs = Number(process.env.YM_SMOKE_TIMEOUT_MS ?? 15 * 60 * 1000);
 // then twice the cell's size in device pixels, and a CSS pixel is two device pixels, which 1 can't tell apart.
 const scale = Math.max(1, Math.round(Number(process.env.YM_SMOKE_SCALE ?? 1)) || 1);
 
+// The temporary folders of this run: a run that cannot start (the port is taken, Xvfb is missing) removes them, so that it leaves nothing behind.
+const temporary = [];
 function cannot(reason) {
   console.error(`shell-smoke: cannot run: ${reason}`);
+  for (const dir of temporary) rmSync(dir, { recursive: true, force: true });
   process.exit(2);
 }
 if (process.platform !== "linux") cannot("it needs Linux with Xvfb");
@@ -51,14 +56,14 @@ const listedBefore = new Set(listing());
 
 const home = mkdtempSync(join(tmpdir(), "ym-smoke-home-"));
 const exportDir = mkdtempSync(join(tmpdir(), "ym-smoke-export-"));
+temporary.push(home, exportDir);
 const checks = [];
-const pieces = new Map();
 let finished = null;
 
-const MIME = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".woff2": "font/woff2", ".svg": "image/svg+xml", ".png": "image/png", ".json": "application/json", ".ico": "image/x-icon" };
 // A second folder for the failure paths: two of the synthetic files (made by our own writer, so copying them is fine), a file that is
 // not a raw file at all, and a text file. Never made from the real files.
 const brokenDir = mkdtempSync(join(tmpdir(), "ym-smoke-broken-"));
+temporary.push(brokenDir);
 const synthetic = join(root, "testdata/synthetic");
 const goodFiles = existsSync(synthetic) ? readdirSync(synthetic).filter((f) => /\.arw$/i.test(f)).slice(0, 2) : [];
 for (const f of goodFiles) copyFileSync(join(synthetic, f), join(brokenDir, f));
@@ -79,61 +84,28 @@ const driver = readFileSync(join(import.meta.dirname, "driver.js"), "utf8");
 
 function screenshot(name) {
   const file = join(out, `${name}.png`);
-  const result = spawnSync("import", ["-display", display, "-window", "root", file], { stdio: "ignore" });
-  console.log(result.status === 0 ? `shell-smoke: screenshot ${file}` : "shell-smoke: no screenshot (ImageMagick `import` failed)");
+  console.log(captureScreen({ display, file }) ? `shell-smoke: screenshot ${file}` : "shell-smoke: no screenshot (ImageMagick `import` failed)");
 }
 
-const server = createServer((request, response) => {
-  const url = new URL(request.url ?? "/", `http://localhost:${port}`);
-  if (url.pathname === "/__report") {
-    const kind = url.searchParams.get("kind");
-    const id = url.searchParams.get("id");
-    const i = Number(url.searchParams.get("i"));
-    const n = Number(url.searchParams.get("n"));
-    const list = pieces.get(id) ?? [];
-    list[i] = url.searchParams.get("data") ?? "";
-    pieces.set(id, list);
-    if (list.filter((p) => p !== undefined).length === n) {
-      pieces.delete(id);
-      const payload = JSON.parse(list.join(""));
-      if (kind === "check") {
-        checks.push(payload);
-        console.log(`${payload.ok ? "  ok  " : " FAIL "} ${payload.name}${payload.detail ? `: ${payload.detail}` : ""}`);
-      } else if (kind === "screenshot") screenshot(payload.name);
-      else if (kind === "done") finished = payload;
-    }
-    response.writeHead(204).end();
-    return;
-  }
-  if (url.pathname === "/__driver.js") {
-    response.writeHead(200, { "content-type": MIME[".js"] }).end(driver);
-    return;
-  }
-  let path = normalize(decodeURIComponent(url.pathname)).replace(/^(\.\.[/\\])+/, "");
-  if (path === "/" || path === "") path = "/index.html";
-  const file = join(dist, path);
-  if (!file.startsWith(dist) || !existsSync(file) || !statSync(file).isFile()) {
-    response.writeHead(404).end("Not found");
-    return;
-  }
-  let body = readFileSync(file);
-  if (path === "/index.html") {
-    body = Buffer.from(body.toString("utf8").replace("</head>", `<script>window.__SMOKE__ = ${JSON.stringify(config)};</script><script src="/__driver.js"></script></head>`));
-  }
-  response.writeHead(200, { "content-type": MIME[extname(file)] ?? "application/octet-stream" }).end(body);
+const server = serveFrontend({
+  dist,
+  port,
+  driver,
+  config,
+  onReport(kind, payload) {
+    if (kind === "check") {
+      checks.push(payload);
+      console.log(`${payload.ok ? "  ok  " : " FAIL "} ${payload.name}${payload.detail ? `: ${payload.detail}` : ""}`);
+    } else if (kind === "screenshot") screenshot(payload.name);
+    else if (kind === "done") finished = payload;
+  },
 });
+await listen(server, port).catch((error) => cannot(error.message));
 
-await new Promise((resolveListen, reject) => {
-  server.once("error", (error) => reject(new Error(`port ${port} is not free (${error.message}); stop the vite dev server first`)));
-  server.listen(port, "127.0.0.1", resolveListen);
-}).catch((error) => cannot(error.message));
-
-// Xvfb picks a free display itself and says which on file descriptor 3.
-const xvfb = spawn("Xvfb", ["-displayfd", "3", "-screen", "0", `${1600 * scale}x${1000 * scale}x24`, "-nolisten", "tcp"], { stdio: ["ignore", "ignore", "ignore", "pipe"] });
-display = `:${await new Promise((resolveDisplay, reject) => {
-  xvfb.stdio[3].once("data", (chunk) => resolveDisplay(String(chunk).trim()));
-  xvfb.once("exit", () => reject(new Error("Xvfb did not start")));
-}).catch((error) => cannot(error.message))}`;
+// Xvfb picks a free display itself.
+const screen = await startXvfb(scale).catch((error) => cannot(error.message));
+const xvfb = screen.xvfb;
+display = screen.display;
 let app = null;
 // However this script ends, nothing it started stays behind: a leftover app would go on reporting to the next run.
 const cleanup = () => {
@@ -146,13 +118,9 @@ process.on("uncaughtException", (error) => {
   console.error(error);
   process.exit(2);
 });
-app = spawn(binary, [], {
-  env: { ...process.env, DISPLAY: display, YELLOWMOON_HOME: home, WEBKIT_DISABLE_COMPOSITING_MODE: "1", YELLOWMOON_LOG: "debug", NO_AT_BRIDGE: "1", ...(scale > 1 ? { GDK_SCALE: String(scale) } : {}) },
-  stdio: ["ignore", "pipe", "pipe"],
-});
-let appLog = "";
-app.stdout.on("data", (d) => (appLog += d));
-app.stderr.on("data", (d) => (appLog += d));
+const spawned = spawnApp({ binary, display, home, scale });
+app = spawned.app;
+const appOutput = spawned.log;
 console.log(`shell-smoke: ${folder} (${readdirSync(folder).filter((f) => /\.arw$/i.test(f)).length} ARW files), app folder ${home}, export folder ${exportDir}, device scale ${scale}`);
 
 const started = Date.now();
@@ -175,10 +143,10 @@ app.kill("SIGTERM");
 await new Promise((r) => setTimeout(r, 1000));
 const logFile = join(home, "logs", "yellowmoon.log");
 const fileLog = existsSync(logFile) ? readFileSync(logFile, "utf8") : "";
-writeFileSync(join(out, "report.json"), JSON.stringify({ folder, checks, appLog: appLog.slice(-20000), fileLog: fileLog.slice(-20000) }, null, 2));
+writeFileSync(join(out, "report.json"), JSON.stringify({ folder, checks, appLog: appOutput().slice(-20000), fileLog: fileLog.slice(-20000) }, null, 2));
 const failed = checks.filter((c) => !c.ok);
 console.log(`shell-smoke: ${checks.length - failed.length} of ${checks.length} checks passed; report in ${join(out, "report.json")}`);
-if (failed.length > 0) console.log(`shell-smoke: last lines of the app's output and log:\n${appLog.split("\n").slice(-15).join("\n")}\n${fileLog.split("\n").slice(-25).join("\n")}`);
+if (failed.length > 0) console.log(`shell-smoke: last lines of the app's output and log:\n${appOutput().split("\n").slice(-15).join("\n")}\n${fileLog.split("\n").slice(-25).join("\n")}`);
 // The temporary folders go with a passing run; after a failing one they stay, for a look at what the app wrote.
 if (failed.length === 0) for (const dir of [home, exportDir, brokenDir]) rmSync(dir, { recursive: true, force: true });
 else console.log(`shell-smoke: kept ${home}, ${exportDir} and ${brokenDir}`);

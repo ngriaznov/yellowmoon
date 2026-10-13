@@ -7,56 +7,15 @@
 (function () {
   "use strict";
   const config = window.__SMOKE__;
-  const invoke = (command, args) => window.__TAURI_INTERNALS__.invoke(command, args);
-  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  // The helpers shared with the other drivers of the real shell (`kit.js`).
+  const { invoke, sleep, send, waitFor, q, qa, loaded, textOf, key, frame, region, zoomLabel, emit, dropPaths } = window.__YM_KIT__;
   const results = [];
-
-  function send(kind, payload) {
-    // A long payload is cut into pieces a URL can carry; each piece is encoded on its own (cut by character, never inside one).
-    const characters = Array.from(JSON.stringify(payload));
-    const id = Math.random().toString(36).slice(2);
-    const size = 400;
-    const pieces = Math.max(1, Math.ceil(characters.length / size));
-    for (let i = 0; i < pieces; i++) {
-      const piece = encodeURIComponent(characters.slice(i * size, (i + 1) * size).join(""));
-      new Image().src = `/__report?kind=${kind}&id=${id}&i=${i}&n=${pieces}&data=${piece}`;
-    }
-  }
 
   function record(name, ok, detail) {
     const entry = { name, ok: !!ok, detail: detail === undefined ? "" : String(detail) };
     results.push(entry);
     send("check", entry);
   }
-
-  async function waitFor(label, test, timeoutMs) {
-    const started = Date.now();
-    for (;;) {
-      let value;
-      try {
-        value = await test();
-      } catch (error) {
-        value = undefined;
-      }
-      if (value) return value;
-      if (Date.now() - started > timeoutMs) throw new Error(`timed out after ${timeoutMs} ms: ${label}`);
-      await sleep(100);
-    }
-  }
-
-  const q = (selector, root) => (root || document).querySelector(selector);
-  const qa = (selector, root) => [...(root || document).querySelectorAll(selector)];
-  const loaded = (img) => img && img.complete && img.naturalWidth > 0;
-  const textOf = (selector) => (q(selector) ? q(selector).textContent : "");
-  const key = (k, extra) => window.dispatchEvent(new KeyboardEvent("keydown", Object.assign({ key: k, bubbles: true, cancelable: true }, extra || {})));
-  const frame = () => q("[data-viewport] img.ym-photo-cell__frame");
-  /** A card (a section named by its title), by its title. */
-  const region = (name) =>
-    qa("section[aria-labelledby]").find((s) => {
-      const title = document.getElementById(s.getAttribute("aria-labelledby"));
-      return title && title.textContent.trim().toLowerCase() === name.toLowerCase();
-    });
-  const zoomLabel = () => (qa("header button").find((b) => /^(Fit|\d+%)/.test(b.textContent.trim())) || { textContent: "" }).textContent.trim();
 
   window.addEventListener("error", (e) => record("no uncaught error", false, e.message));
   /** While a check expects a promise to be rejected (the drag script of Tauri does not wait for its commands), rejections are collected here. */
@@ -67,22 +26,8 @@
     else record("no unhandled rejection", false, reason);
   });
 
-  /** Sends a Tauri event from the page, as the shell would (a drop of files, the news that the looks changed). */
-  const emit = (event, payload) => invoke("plugin:event|emit", { event, payload });
-
-  /**
-   * Drops a folder on the window, as the shell sends it. The Start screen starts listening for drops a moment after it appears (the
-   * listener is registered through the bridge), and an event sent before that is lost, as it would be for a person who drops that fast;
-   * the drop is sent again every few seconds until the Start screen reacts. Opening the same files twice is harmless (the core knows them).
-   */
-  async function dropFolder(path) {
-    const reacts = () => /^Developing \d+ photos?$|photos? ready$|^No ARW files/.test(textOf("[data-screen=start] h2"));
-    for (let attempt = 0; attempt < 10 && !reacts(); attempt++) {
-      await emit("tauri://drag-drop", { paths: [path], position: { x: 10, y: 10 } });
-      const until = Date.now() + 4000;
-      while (Date.now() < until && !reacts()) await sleep(100);
-    }
-  }
+  /** Drops a folder on the window, as the shell sends it (see `dropPaths` of the kit). */
+  const dropFolder = (path) => dropPaths([path]);
 
   async function photos() {
     const info = await invoke("viewport_info");
