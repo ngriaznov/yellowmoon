@@ -15,11 +15,14 @@
 //!
 //! `YM_BIN=$PWD/target/debug/ym cargo test -p yellowmoon-app --test app_cli_parity`
 //!
-//! The R6 demosaic method forced (RA-04, `docs/algorithms/01-adaptive-ratio-demosaic.md` section 10): the second test
-//! gives the app's renderer `RenderOptions::demosaic = adaptive_ratio` and starts `ym` with `YM_FORCE_DEMOSAIC=adaptive_ratio`.
-//! That variable is read only by a `ym` built with the test-only `force-demosaic` feature, so the binary for this test must be
-//! built `cargo build -p ym-cli --features force-demosaic` (a plain build ignores the variable: the test notices that, says so
-//! and passes, unless `YM_REQUIRE_FORCE_DEMOSAIC` is set, which the CI job sets once it builds the binary that way).
+//! The R6 demosaic method forced (RA-04, `docs/algorithms/01-adaptive-ratio-demosaic.md` section 10). The default is the
+//! adaptive ratio demosaic, which the first test runs on both sides. The second test keeps the method that is no longer the
+//! default honest: it gives the app's renderer `RenderOptions::demosaic = menon` and starts `ym` with
+//! `YM_FORCE_DEMOSAIC=menon`, and it checks that forcing the adaptive ratio demosaic by name gives the default's bytes while
+//! forcing Menon gives other bytes. That variable is read only by a `ym` built with the test-only `force-demosaic` feature, so
+//! the binary for this test must be built `cargo build -p ym-cli --features force-demosaic` (a plain build ignores the
+//! variable: the test notices that, says so and passes, unless `YM_REQUIRE_FORCE_DEMOSAIC` is set, which the CI job sets once
+//! it builds the binary that way).
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -319,14 +322,17 @@ fn every_format_is_byte_identical_between_the_app_graph_and_a_separately_built_y
     assert_every_format_is_identical(&core, &ym, &arw, dir.path(), &[]);
 }
 
-/// The same with the adaptive ratio demosaic forced on both sides.
+/// The same with Menon, the previous default, forced on both sides; and the switch itself: forcing the
+/// adaptive ratio demosaic by name is the default, forcing Menon is another picture.
 #[test]
-fn every_format_is_byte_identical_with_the_adaptive_ratio_demosaic_forced() {
+fn every_format_is_byte_identical_with_menon_forced_and_the_default_is_the_adaptive_ratio_demosaic() {
     let Some(ym) = command_line_tool() else {
         return;
     };
+    assert_eq!(DEFAULT_METHOD, Method::AdaptiveRatio);
     let (dir, arw) = sandbox();
-    let force = [("YM_FORCE_DEMOSAIC", "adaptive_ratio")];
+    let force_menon = [("YM_FORCE_DEMOSAIC", "menon")];
+    let force_adaptive_ratio = [("YM_FORCE_DEMOSAIC", "adaptive_ratio")];
 
     // Does this `ym` read the switch? A binary without the `force-demosaic` feature ignores the
     // variable and gives the default method's bytes.
@@ -359,8 +365,8 @@ fn every_format_is_byte_identical_with_the_adaptive_ratio_demosaic_forced() {
         std::fs::read(file).expect("read the probe's file")
     };
     let plain = probe("plain", &[]);
-    let forced = probe("forced", &force);
-    if plain == forced {
+    let forced_menon = probe("menon", &force_menon);
+    if plain == forced_menon {
         assert!(
             std::env::var_os("YM_REQUIRE_FORCE_DEMOSAIC").is_none(),
             "YM_REQUIRE_FORCE_DEMOSAIC is set but this ym ignores YM_FORCE_DEMOSAIC \
@@ -372,7 +378,13 @@ fn every_format_is_byte_identical_with_the_adaptive_ratio_demosaic_forced() {
         );
         return;
     }
+    // The switch works: Menon is another picture than the default, and the default is what
+    // forcing the adaptive ratio demosaic by name gives.
+    assert!(
+        plain == probe("adaptive_ratio", &force_adaptive_ratio),
+        "forcing the adaptive ratio demosaic gives the default's bytes"
+    );
 
-    let (core, _app_home) = open_core(&arw, Method::AdaptiveRatio);
-    assert_every_format_is_identical(&core, &ym, &arw, dir.path(), &force);
+    let (core, _app_home) = open_core(&arw, Method::Menon);
+    assert_every_format_is_identical(&core, &ym, &arw, dir.path(), &force_menon);
 }

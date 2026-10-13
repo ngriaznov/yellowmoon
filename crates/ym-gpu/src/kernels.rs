@@ -3,6 +3,10 @@
 //!
 //! * [`spike`]: the M0-07 chain, R1 normalise and R4 gains, bilinear demosaic, a fixed 3x3 matrix and
 //!   the sRGB transfer, tiled with halos, GPU against the CPU reference within 1e-3.
+//! * [`adaptive_ratio`]: the RA-09 adaptive ratio demosaic (R6's classical method: green with the
+//!   noise-regularised ratio, green refinement with the optional CA weighting, chroma, shadow
+//!   sharpening and shadow colour matching), eleven pipelines of `adaptive_ratio.wgsl`, f32 planes in
+//!   every storage mode, GPU against `cpu::demosaic::adaptive_ratio`.
 //! * [`color`]: the whole per-pixel colour chain C1 to C13 as one compute pass (fused matrix, C7
 //!   roll-off and toe, C8 LogC4, C9 grade, C10 CDL and tetrahedral LUT, C11 curves, C12 ACES 2 or an
 //!   ARRI display LUT, C13 encode and dither), mirroring `ym_color::display::ColorChain` stage by
@@ -21,6 +25,7 @@
 //! constants, table offsets) are written from `ym_color::consts` so no number is typed twice.
 //! [`shader_source`] returns the final text for offline validation.
 
+pub mod adaptive_ratio;
 pub mod color;
 pub mod diffraction;
 pub mod log_guided;

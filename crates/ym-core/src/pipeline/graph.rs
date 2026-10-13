@@ -77,11 +77,11 @@ pub struct RenderOptions {
     /// Longest edge of a thumbnail in pixels (`docs/01`: 240).
     pub thumbnail_px: usize,
     /// The R6 demosaic method of the full-resolution render (the 100 % view and every export). An
-    /// internal switch with no settings field and no UI: [`DEFAULT_METHOD`] until the owner
-    /// decides (`docs/algorithms/01-adaptive-ratio-demosaic.md` section 10), set by tests and
-    /// evaluation tools. The reduced renders (fit view, thumbnails) bin the mosaic and do not
-    /// demosaic. It is a property of the renderer, fixed when it is made, so it is not part of the
-    /// cache keys.
+    /// internal switch with no settings field and no UI: [`DEFAULT_METHOD`], the adaptive ratio
+    /// demosaic (the owner's decision of 2026-10-13, `docs/05` section R6), unless a test or an
+    /// evaluation tool sets another (`docs/algorithms/01-adaptive-ratio-demosaic.md` section 10).
+    /// The reduced renders (fit view, thumbnails) bin the mosaic and do not demosaic. It is a
+    /// property of the renderer, fixed when it is made, so it is not part of the cache keys.
     ///
     /// Builds with the `force-demosaic` feature (tests only, never a shipped build) read the
     /// initial value from the environment variable `YM_FORCE_DEMOSAIC`

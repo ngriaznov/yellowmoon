@@ -59,11 +59,33 @@ pub enum KernelId {
     DiffractionSolve,
     /// RA-09 diffraction deconvolution: the coefficient smoothing, the correction and the transfer.
     DiffractionOutput,
+    /// RA-09 adaptive ratio demosaic, pass 0: the padded, scaled mosaic and the native samples.
+    AdaptiveRatioPrepare,
+    /// RA-09 adaptive ratio demosaic, pass 1: green at the R and B sites.
+    AdaptiveRatioGreen,
+    /// RA-09 adaptive ratio demosaic, pass 2: the green refinement (with the CA weighting).
+    AdaptiveRatioRefine,
+    /// RA-09 adaptive ratio demosaic, pass 3 step 1: B at R sites and R at B sites.
+    AdaptiveRatioStep1,
+    /// RA-09 adaptive ratio demosaic, pass 3 step 2: R and B at G sites.
+    AdaptiveRatioStep2,
+    /// RA-09 adaptive ratio demosaic, pass 3 step 3: the luma proxy of the shadow sharpening.
+    AdaptiveRatioLuma,
+    /// RA-09 adaptive ratio demosaic, pass 3 step 3: the diagonal shadow sharpening.
+    AdaptiveRatioSharpen,
+    /// RA-09 adaptive ratio demosaic, shadow colour matching: the bilinear demosaic of one channel.
+    AdaptiveRatioSimple,
+    /// RA-09 adaptive ratio demosaic, shadow colour matching: the low-pass and squared error of one channel.
+    AdaptiveRatioLowErr,
+    /// RA-09 adaptive ratio demosaic, shadow colour matching: the noise-adaptive blend and the exit.
+    AdaptiveRatioMatch,
+    /// RA-09 adaptive ratio demosaic: the exit without shadow colour matching.
+    AdaptiveRatioExit,
 }
 
 impl KernelId {
     /// All kernels.
-    pub const ALL: [KernelId; 22] = [
+    pub const ALL: [KernelId; 33] = [
         KernelId::SpikeNormalize,
         KernelId::SpikeDemosaic,
         KernelId::SpikeMatrix,
@@ -86,6 +108,17 @@ impl KernelId {
         KernelId::DiffractionMomentRows,
         KernelId::DiffractionSolve,
         KernelId::DiffractionOutput,
+        KernelId::AdaptiveRatioPrepare,
+        KernelId::AdaptiveRatioGreen,
+        KernelId::AdaptiveRatioRefine,
+        KernelId::AdaptiveRatioStep1,
+        KernelId::AdaptiveRatioStep2,
+        KernelId::AdaptiveRatioLuma,
+        KernelId::AdaptiveRatioSharpen,
+        KernelId::AdaptiveRatioSimple,
+        KernelId::AdaptiveRatioLowErr,
+        KernelId::AdaptiveRatioMatch,
+        KernelId::AdaptiveRatioExit,
     ];
 
     /// Stable name (also the pipeline label).
@@ -113,6 +146,17 @@ impl KernelId {
             KernelId::DiffractionMomentRows => "diffraction_moment_rows",
             KernelId::DiffractionSolve => "diffraction_solve",
             KernelId::DiffractionOutput => "diffraction_output",
+            KernelId::AdaptiveRatioPrepare => "adaptive_ratio_prepare",
+            KernelId::AdaptiveRatioGreen => "adaptive_ratio_green",
+            KernelId::AdaptiveRatioRefine => "adaptive_ratio_refine",
+            KernelId::AdaptiveRatioStep1 => "adaptive_ratio_step1",
+            KernelId::AdaptiveRatioStep2 => "adaptive_ratio_step2",
+            KernelId::AdaptiveRatioLuma => "adaptive_ratio_luma",
+            KernelId::AdaptiveRatioSharpen => "adaptive_ratio_sharpen",
+            KernelId::AdaptiveRatioSimple => "adaptive_ratio_simple",
+            KernelId::AdaptiveRatioLowErr => "adaptive_ratio_low_err",
+            KernelId::AdaptiveRatioMatch => "adaptive_ratio_match",
+            KernelId::AdaptiveRatioExit => "adaptive_ratio_exit",
         }
     }
 
@@ -144,6 +188,17 @@ impl KernelId {
             | KernelId::DiffractionMomentRows
             | KernelId::DiffractionSolve
             | KernelId::DiffractionOutput => super::diffraction::body(self),
+            KernelId::AdaptiveRatioPrepare
+            | KernelId::AdaptiveRatioGreen
+            | KernelId::AdaptiveRatioRefine
+            | KernelId::AdaptiveRatioStep1
+            | KernelId::AdaptiveRatioStep2
+            | KernelId::AdaptiveRatioLuma
+            | KernelId::AdaptiveRatioSharpen
+            | KernelId::AdaptiveRatioSimple
+            | KernelId::AdaptiveRatioLowErr
+            | KernelId::AdaptiveRatioMatch
+            | KernelId::AdaptiveRatioExit => super::adaptive_ratio::body(self),
         }
     }
 }

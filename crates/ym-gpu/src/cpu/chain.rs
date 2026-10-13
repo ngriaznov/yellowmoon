@@ -73,9 +73,11 @@ pub struct Chain {
     pub sigma_map: Option<Vec<f32>>,
     /// The noise model of the shot on the 16-bit working scale
     /// ([`NoiseDn::from_model`], `docs/algorithms/INTEGRATION.md` section 3), `None` when it is not
-    /// known (read as zero noise). It is for the methods of the raw-algorithms package that derive
-    /// their constants from the noise: the R6 adaptive ratio demosaic (and the log-guided one,
-    /// which takes its read noise from it) and R8 diffraction deconvolution.
+    /// known. A model that is not usable ([`NoiseDn::is_valid`]) is read like `None`: as zero noise
+    /// (`NoiseDn::or_zero`), so that a photo whose model is broken still renders. It is for the
+    /// methods of the raw-algorithms package that derive their constants from the noise: the R6
+    /// adaptive ratio demosaic (and the log-guided one, which takes its read noise from it) and R8
+    /// diffraction deconvolution.
     pub noise: Option<NoiseDn>,
     /// R8 capture sharpening: the method and its controls (`None`: skipped). A diffraction stage
     /// that is inactive for these controls and gains (no usable pitch or f-number) leaves the image
@@ -139,12 +141,19 @@ impl Chain {
         super::tiling::required_input_rect(&stages, out, Rect::whole(frame_w, frame_h))
     }
 
-    /// What R6 gets besides the mosaic: the R4 gains, the noise model (zero when it is not known)
-    /// and the lateral CA curves `ca` ([`ca_curves`](Self::ca_curves)).
+    /// The noise model the stages use: [`noise`](Self::noise) when it is known and usable, zero
+    /// noise otherwise (`NoiseDn::or_zero`). Always valid ([`NoiseDn::is_valid`]).
+    fn noise_dn(&self) -> NoiseDn {
+        self.noise.map_or(NoiseDn::ZERO, NoiseDn::or_zero)
+    }
+
+    /// What R6 gets besides the mosaic: the R4 gains, the noise model ([`noise_dn`](Self::noise_dn):
+    /// zero when it is not known or not usable) and the lateral CA curves `ca`
+    /// ([`ca_curves`](Self::ca_curves)).
     fn demosaic_inputs<'a>(&self, ca: Option<&'a CaCurves>) -> DemosaicInputs<'a> {
         DemosaicInputs {
             gains: self.gains,
-            noise: self.noise.unwrap_or(NoiseDn::ZERO),
+            noise: self.noise_dn(),
             ca,
         }
     }
@@ -239,9 +248,11 @@ impl Chain {
                 raw.height
             )));
         }
-        // The adaptive ratio demosaic divides by the gains and derives its constants from the
-        // noise model. `demosaic_with` cannot fail (it would quietly run Menon instead), so a
-        // chain that asks for it checks the numbers here, once, and says what is wrong.
+        // The adaptive ratio demosaic divides by the gains, so gains that are not positive and
+        // finite are refused here, once, with the reason: `demosaic_with` cannot fail (it would
+        // quietly run Menon instead), and a chain with such gains has no meaningful R4 either. The
+        // noise model is never a reason to refuse: `demosaic_inputs` reads one that is not usable
+        // as zero noise, so a photo whose model is broken still renders.
         if self.method == Method::AdaptiveRatio
             && let Err(e) = self.demosaic_inputs(None).validate()
         {
@@ -382,7 +393,7 @@ impl Chain {
                 }
                 Stage::Sharpen(CaptureSharpen::Diffraction(params)) => {
                     let img = take(&mut rgb)?;
-                    let noise = self.noise.unwrap_or(NoiseDn::ZERO);
+                    let noise = self.noise_dn();
                     // The plan comes from the controls, the gains and the noise model, none of which
                     // depends on the tile, so every tile of a frame gets the same plan. Inactive
                     // (a bad gain): the stage is an identity.

@@ -540,52 +540,72 @@ fn the_settings_an_export_records_reproduce_the_file() {
 }
 
 // ---------------------------------------------------------------------------------------------
-// RA-04: the adaptive ratio demosaic forced for the whole render
+// RA-04: the R6 method forced for the whole render (the default is the adaptive ratio demosaic)
 // ---------------------------------------------------------------------------------------------
 
 /// The test-only switch: the `ym` binary of this test run reads it (the `force-demosaic` feature of
 /// `ym-core`, enabled by this crate's dev-dependency), and the app's side sets the same method on
-/// `RenderOptions::demosaic`.
-const FORCE: [(&str, &str); 1] = [("YM_FORCE_DEMOSAIC", "adaptive_ratio")];
+/// `RenderOptions::demosaic`. The default method is the adaptive ratio demosaic, which every other
+/// test of this file runs; these tests keep the methods that are no longer the default honest.
+const FORCE_MENON: [(&str, &str); 1] = [("YM_FORCE_DEMOSAIC", "menon")];
+/// The default method forced by name.
+const FORCE_ADAPTIVE_RATIO: [(&str, &str); 1] = [("YM_FORCE_DEMOSAIC", "adaptive_ratio")];
 
 #[test]
-fn every_format_is_byte_identical_with_the_adaptive_ratio_demosaic_forced() {
+fn every_format_is_byte_identical_with_menon_forced() {
+    assert_eq!(DEFAULT_METHOD, Method::AdaptiveRatio, "Menon is not the default");
     let sb = Sandbox::new();
     let arw = sb.arw("DSC00001.ARW");
-    let app = App::open_with(&[&arw], Method::AdaptiveRatio);
+    let app = App::open_with(&[&arw], Method::Menon);
     for case in cases() {
         let app_dir = sb.root().join("app").join(case.name);
         let cli_dir = sb.root().join("cli").join(case.name);
         let from_app = app.export(case.options.clone(), &app_dir);
-        let from_cli = cli_export_env(&sb, &[&arw], case.flags, &cli_dir, &FORCE);
+        let from_cli = cli_export_env(&sb, &[&arw], case.flags, &cli_dir, &FORCE_MENON);
         assert_same_files(&from_app, &from_cli, case.name);
         assert_eq!(names_in(&app_dir).len(), 1, "{}", case.name);
         assert_eq!(names_in(&cli_dir).len(), 1, "{}", case.name);
     }
-    // The switch did something: the default method gives other bytes for the same photo, and
-    // `YM_FORCE_DEMOSAIC=menon` (the default) gives the default's bytes.
+}
+
+/// The default of R6 is the adaptive ratio demosaic: the binary without the switch gives the bytes
+/// of `YM_FORCE_DEMOSAIC=adaptive_ratio`, and Menon, forced, gives other bytes for the same photo
+/// (so the switch does something).
+#[test]
+fn the_default_export_is_the_adaptive_ratio_demosaic_and_menon_is_another_picture() {
+    let sb = Sandbox::new();
+    let arw = sb.arw("DSC00001.ARW");
     let png = ["--format", "png", "--bits", "16"];
-    let forced = cli_export_env(&sb, &[&arw], &png, &sb.root().join("forced"), &FORCE);
     let default = cli_export(&sb, &[&arw], &png, &sb.root().join("default"));
-    let menon = cli_export_env(
+    let forced_ar = cli_export_env(
         &sb,
         &[&arw],
         &png,
-        &sb.root().join("menon"),
-        &[("YM_FORCE_DEMOSAIC", "menon")],
+        &sb.root().join("adaptive_ratio"),
+        &FORCE_ADAPTIVE_RATIO,
     );
-    assert_ne!(bytes(&forced[0]), bytes(&default[0]), "forced = default?");
-    assert_eq!(bytes(&menon[0]), bytes(&default[0]), "menon is the default");
+    let forced_menon = cli_export_env(&sb, &[&arw], &png, &sb.root().join("menon"), &FORCE_MENON);
+    assert_eq!(
+        bytes(&forced_ar[0]),
+        bytes(&default[0]),
+        "the adaptive ratio demosaic is the default"
+    );
+    assert_ne!(
+        bytes(&forced_menon[0]),
+        bytes(&default[0]),
+        "forced Menon = default?"
+    );
 }
 
-/// The tile seams and the thread layout are part of the contract for every method: with the
-/// adaptive ratio demosaic (halo 13) a photo of 3 x 2 export tiles is the same bytes through the
-/// app and through the binary at `--jobs 1` and `--jobs 3`.
+/// The tile seams and the thread layout are part of the contract for every method: with Menon
+/// forced a photo of 3 x 2 export tiles is the same bytes through the app and through the binary
+/// at `--jobs 1` and `--jobs 3`. (`a_photo_of_several_export_tiles_is_identical_whatever_the_thread_layout`
+/// above is the same photo with the default method, the adaptive ratio demosaic with its halo of 13.)
 #[test]
-fn a_photo_of_several_export_tiles_is_identical_with_the_adaptive_ratio_demosaic_forced() {
+fn a_photo_of_several_export_tiles_is_identical_with_menon_forced() {
     let sb = Sandbox::new();
     let arw = sb.arw_sized("big.ARW", 2100, 1100, 9);
-    let app = App::open_with(&[&arw], Method::AdaptiveRatio);
+    let app = App::open_with(&[&arw], Method::Menon);
     let png = ExportOptions {
         format: FormatKind::Png,
         bit_depth: BitDepth::Sixteen,
@@ -593,10 +613,16 @@ fn a_photo_of_several_export_tiles_is_identical_with_the_adaptive_ratio_demosaic
     };
     let from_app = app.export(png, &sb.root().join("app"));
     let flags = |jobs: &'static str| ["--format", "png", "--bits", "16", "--jobs", jobs];
-    let one = cli_export_env(&sb, &[&arw], &flags("1"), &sb.root().join("one"), &FORCE);
-    assert_same_files(&from_app, &one, "several tiles, adaptive ratio");
-    let three = cli_export_env(&sb, &[&arw], &flags("3"), &sb.root().join("three"), &FORCE);
-    assert_same_files(&one, &three, "jobs 1 and 3, adaptive ratio");
+    let one = cli_export_env(&sb, &[&arw], &flags("1"), &sb.root().join("one"), &FORCE_MENON);
+    assert_same_files(&from_app, &one, "several tiles, Menon");
+    let three = cli_export_env(
+        &sb,
+        &[&arw],
+        &flags("3"),
+        &sb.root().join("three"),
+        &FORCE_MENON,
+    );
+    assert_same_files(&one, &three, "jobs 1 and 3, Menon");
 }
 
 /// A bad value in the switch is an error, not a silent default (the switch exists only in test

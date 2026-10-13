@@ -1,6 +1,7 @@
-//! R6 classical demosaic, the preview and fallback path (`docs/05-raw-processing.md` section R6).
+//! R6 classical demosaic (`docs/05-raw-processing.md` section R6).
 //!
-//! Three methods, selectable with [`Method`]:
+//! Five methods, selectable with [`Method`]; the default is [`DEFAULT_METHOD`], the adaptive ratio
+//! demosaic:
 //!
 //! * [`Method::Bilinear`]: plain bilinear interpolation. Cheap, soft, zippers on edges; it exists
 //!   for the GPU spike (M0-07) and as the PSNR floor.
@@ -98,9 +99,19 @@ pub enum Method {
     LogGuided,
 }
 
-/// The default classical method: Menon, because the pipeline demosaics linear light, where Menon is
-/// scale-invariant and LMMSE loses PSNR in dark images (see `docs/05-raw-processing.md` section R6).
-pub const DEFAULT_METHOD: Method = Method::Menon;
+/// The default classical method: the adaptive ratio demosaic ([`Method::AdaptiveRatio`]).
+///
+/// The owner's decision of 2026-10-13, after the RA-05 measurement and the blind look RA-H4
+/// (`docs/05-raw-processing.md` section R6, `docs/16-risks-and-decisions.md`): the R6 rule picks
+/// the method with the best PSNR on linear light, which is the adaptive ratio demosaic, and the
+/// owner accepted its extra CPU time. Until then the default was [`Method::Menon`], which stays
+/// selectable together with LMMSE, bilinear and the log-guided demosaic (the test-only switch of
+/// `ym_core::pipeline::graph::RenderOptions::demosaic`).
+///
+/// Because the adaptive ratio demosaic reads the R4 gains and the noise model, a chain that runs
+/// it passes both (`Chain::gains`, `Chain::noise`); a noise model it cannot use is read as zero
+/// noise, so a render never fails for it.
+pub const DEFAULT_METHOD: Method = Method::AdaptiveRatio;
 
 impl Method {
     /// All methods.

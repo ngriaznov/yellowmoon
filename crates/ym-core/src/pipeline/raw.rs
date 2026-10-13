@@ -9,10 +9,13 @@
 //! * [`RawPlan`]: everything fixed by the file and the RAW-tab switches (levels at the area's
 //!   parity, the vignetting profile, the lens maps and their auto crop).
 //! * **Full resolution** ([`FullChain`]): `cpu::chain::Chain` with the real settings, run whole or
-//!   tile by tile (`run_tile`). Demosaic is the classical Menon unless an internal switch
+//!   tile by tile (`run_tile`). Demosaic is the classical adaptive ratio method
+//!   ([`DEFAULT_METHOD`]) unless an internal switch
 //!   ([`RenderOptions::demosaic`](super::graph::RenderOptions::demosaic), set by tests and
 //!   evaluation tools) names another method; the neural switch falls back to it (see
-//!   [`crate::pipeline::NeuralStatus`]).
+//!   [`crate::pipeline::NeuralStatus`]). The adaptive ratio demosaic reads the noise model on the
+//!   16-bit working scale ([`RawParams::noise_dn`]); a model that cannot be used is read as zero
+//!   noise, so a photo never fails to render for it.
 //! * **Reduced resolution** ([`reduced_bayer`]): the fit view and the thumbnails. R1, R4 and R5 run
 //!   on the full mosaic, the photosites are then binned `k x k` per colour (a box filter is the
 //!   demosaic at 1/k scale: every output pixel has its own red, green and blue), the vignetting
@@ -301,6 +304,20 @@ pub fn diffraction_params(
 pub struct RawParamsKey(Vec<u64>);
 
 impl RawParams {
+    /// The noise model on the 16-bit working scale that the raw-algorithm stages read (the R6
+    /// adaptive ratio demosaic, R8 diffraction deconvolution): [`NoiseDn::from_model`] of
+    /// [`noise`](Self::noise) when that is usable ([`NoiseDn::is_valid`]), the zero-noise model
+    /// otherwise.
+    ///
+    /// A noise model that cannot be used (a negative or non-finite field, a variance that
+    /// overflows at white) never makes a render fail: the photo is processed as if its noise were
+    /// unknown, which the algorithms accept (`docs/algorithms/INTEGRATION.md` section 3). The
+    /// sigma map and the cache keys still read [`noise`](Self::noise) itself.
+    #[must_use]
+    pub fn noise_dn(&self) -> NoiseDn {
+        NoiseDn::from_model(&self.noise).or_zero()
+    }
+
     /// The key that says two sets of parameters give the same pixels.
     #[must_use]
     pub fn key(&self) -> RawParamsKey {
@@ -339,8 +356,7 @@ impl RawParams {
     #[must_use]
     pub fn capture_sharpen(&self) -> Option<CaptureSharpen> {
         if let Some(d) = self.diffraction
-            && DiffractionPlan::new(&d, self.g0, &NoiseDn::from_model(&self.noise), SPEC_LUMA)
-                .is_some()
+            && DiffractionPlan::new(&d, self.g0, &self.noise_dn(), SPEC_LUMA).is_some()
         {
             return Some(CaptureSharpen::Diffraction(d));
         }
@@ -1170,7 +1186,7 @@ pub fn reduced_rgb(
             }
             Some(CaptureSharpen::Diffraction(d)) => {
                 // `capture_sharpen` returned it because the plan is active, so this always plans.
-                let noise = NoiseDn::from_model(&params.noise);
+                let noise = params.noise_dn();
                 if let Some(plan) = DiffractionPlan::new(&d, g0, &noise, SPEC_LUMA) {
                     img = plan.apply(&img);
                 }
@@ -1224,7 +1240,8 @@ impl FullChain {
     /// # Errors
     ///
     /// As [`FullChain::new`]; also [`RenderError::Image`] when `method` is the adaptive ratio
-    /// demosaic and the gains or the noise model are unusable.
+    /// demosaic and the gains are unusable. A noise model that is unusable is no error: it is read
+    /// as zero noise ([`RawParams::noise_dn`]).
     pub fn with_method(
         frame: &FrameData,
         plan: &RawPlan,
@@ -1235,6 +1252,11 @@ impl FullChain {
     ) -> Result<Self, RenderError> {
         debug_assert!(!frame.reduced);
         let scale = detail::network_sigma_scale(params.noise_reduction.luminance, params.iso);
+        let noise = params.noise_dn();
+        if !NoiseDn::from_model(&params.noise).is_valid() {
+            // No file name or path in the message (the log carries none at info level and above).
+            tracing::warn!("the noise model of the photo is not usable; rendering with zero noise");
+        }
         let chain = Chain {
             levels: plan.levels,
             vignette: plan.vignette.clone(),
@@ -1246,7 +1268,7 @@ impl FullChain {
             iso: params.iso,
             sigma: 0.0,
             sigma_map: Some(full_sigma_map(sigma, plan)),
-            noise: Some(NoiseDn::from_model(&params.noise)),
+            noise: Some(noise),
             sharpen: params.capture_sharpen(),
             lens: plan.lens.clone(),
         };
@@ -2091,7 +2113,7 @@ mod tests {
                 q: 0.0,
             },
         ];
-        let mut default_bits = None;
+        let mut menon_pictures = Vec::new();
         for model in models {
             let mut params = params_for_tests();
             params.highlight_recovery = false;
@@ -2154,22 +2176,25 @@ mod tests {
                 assert_eq!(tiled, whole, "tiles of {tw} x {th} against the whole frame");
             }
 
-            // The default method is untouched by the new constructor, and is another picture.
+            // The default method is the adaptive ratio demosaic (owner's decision, 2026-10-13):
+            // `FullChain::new` is the forced chain, bit for bit, and Menon is another picture.
+            assert_eq!(DEFAULT_METHOD, Method::AdaptiveRatio);
             let default = FullChain::new(&frame, &plan, &params, &sigma, &CancelToken::new())
                 .expect("default chain");
             assert_eq!(default.chain.method, DEFAULT_METHOD);
-            let menon = build(DEFAULT_METHOD)
-                .run_tile(&frame, Rect::whole(full.out_w, full.out_h))
-                .expect("default whole frame");
             let default_whole = default
                 .run_tile(&frame, Rect::whole(full.out_w, full.out_h))
                 .expect("default whole frame");
-            assert_eq!(default_whole, menon);
+            assert_eq!(default_whole, whole, "the default is the adaptive ratio demosaic");
+            let menon = build(Method::Menon)
+                .run_tile(&frame, Rect::whole(full.out_w, full.out_h))
+                .expect("Menon whole frame");
             assert!(whole.max_abs_diff(&menon) > 1e-4, "the methods differ");
-            default_bits.get_or_insert(menon);
+            menon_pictures.push(menon);
         }
-        // Menon ignores the noise model, so both runs of the default method are the same picture.
-        assert!(default_bits.is_some());
+        // Menon ignores the noise model, so both runs of it are the same picture.
+        assert_eq!(menon_pictures.len(), models.len());
+        assert_eq!(menon_pictures[0], menon_pictures[1]);
     }
 
     #[test]
@@ -2204,6 +2229,73 @@ mod tests {
             &CancelToken::new(),
         )
         .expect("Menon runs");
+    }
+
+    /// A photo whose noise model cannot be used still renders, with the default adaptive ratio
+    /// demosaic: it is read as zero noise (`RawParams::noise_dn`), the same picture as a photo
+    /// whose model is exactly zero.
+    #[test]
+    fn an_unusable_noise_model_renders_as_zero_noise_instead_of_failing() {
+        let (w, h) = (96u32, 64u32);
+        let (raw, frame) = edge_frame(w, h);
+        let sigma = SigmaPlane {
+            width: w as usize / 2,
+            height: h as usize / 2,
+            data: vec![0.004; (w as usize / 2) * (h as usize / 2)],
+        };
+        let render = |model: NoiseModel| {
+            let mut params = params_for_tests();
+            params.highlight_recovery = false;
+            params.lens_corrections = false;
+            params.chromatic_aberration = false;
+            params.sharpen.amount = 0.0;
+            params.noise = model;
+            let plan = RawPlan::new(&raw, &frame, &params).expect("plan");
+            // The default constructor: the adaptive ratio demosaic.
+            let full = FullChain::new(&frame, &plan, &params, &sigma, &CancelToken::new())
+                .expect("a photo with this noise model renders");
+            assert_eq!(full.chain.method, Method::AdaptiveRatio);
+            let noise = full.chain.noise.expect("the chain carries a noise model");
+            assert!(noise.is_valid(), "{noise:?}");
+            let img = full
+                .run_tile(&frame, Rect::whole(full.out_w, full.out_h))
+                .expect("whole frame");
+            (params.noise_dn(), noise, img)
+        };
+        let zero_model = NoiseModel {
+            a: 0.0,
+            b: 0.0,
+            delta: [0.0; 4],
+            sigma_row: 0.0,
+            q: 0.0,
+        };
+        let (zero_dn, zero_chain_noise, zero_img) = render(zero_model);
+        assert_eq!(zero_dn, NoiseDn::ZERO);
+        assert_eq!(zero_chain_noise, NoiseDn::ZERO);
+        let nan_model = NoiseModel::new(f64::NAN, 4e-8);
+        let negative_model = NoiseModel::new(-3e-5, 4e-8);
+        let negative_variance = NoiseModel::new(3e-5, -1e-6);
+        let overflow_model = NoiseModel::new(1e300, 1e300);
+        let infinite_model = NoiseModel::new(f64::INFINITY, 4e-8);
+        for (name, model) in [
+            ("NaN gain", nan_model),
+            ("negative gain", negative_model),
+            ("negative variance", negative_variance),
+            ("variance overflow", overflow_model),
+            ("infinite gain", infinite_model),
+        ] {
+            let (dn, chain_noise, img) = render(model);
+            assert_eq!(dn, NoiseDn::ZERO, "{name}");
+            assert_eq!(chain_noise, NoiseDn::ZERO, "{name}");
+            assert_eq!(img, zero_img, "{name}: the picture of a zero noise model");
+        }
+        // A usable model is not touched, and it is another picture than the zero model (the
+        // noise gates of the demosaic move).
+        let usable = NoiseModel::new(3e-5, 4e-8);
+        let (dn, chain_noise, img) = render(usable);
+        assert_eq!(dn, NoiseDn::from_model(&usable));
+        assert_eq!(chain_noise, dn);
+        assert!(img.max_abs_diff(&zero_img) > 0.0, "the model matters to the adaptive ratio");
     }
 
     #[test]

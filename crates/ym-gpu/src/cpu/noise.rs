@@ -74,9 +74,15 @@ impl NoiseDn {
         }
     }
 
-    /// Whether both numbers are finite and not negative, which is what the algorithms accept
+    /// Whether the two numbers are finite and not negative and the variance stays finite over the
+    /// working range, which is what the algorithms accept
     /// (`docs/algorithms/01-adaptive-ratio-demosaic.md` section 4: a negative or non-finite noise
     /// field is `BadNoise`).
+    ///
+    /// The working range is `0..=`[`WORKING_SCALE`] (black to white), so the variance
+    /// `g * x_dn + r^2` at white, `g * S + r * r`, must be finite, and so must `g * g`, which the
+    /// derived constants of the adaptive ratio demosaic square. A model of `a = b = 1e300` has
+    /// finite `g` and `r` but no finite variance at white, and is invalid.
     ///
     /// This checks the two numbers, not the four fields of the model they came from: a negative
     /// `b` that a positive `sigma_row` or `q` outweighs, or a negative `sigma_row`, still gives a
@@ -87,7 +93,23 @@ impl NoiseDn {
     /// that follows them maps a `NaN` or infinite `r` to 0 itself.
     #[must_use]
     pub fn is_valid(&self) -> bool {
-        self.g.is_finite() && self.g >= 0.0 && self.r.is_finite() && self.r >= 0.0
+        self.g.is_finite()
+            && self.g >= 0.0
+            && self.r.is_finite()
+            && self.r >= 0.0
+            && (self.g * WORKING_SCALE + self.r * self.r).is_finite()
+            && (self.g * self.g).is_finite()
+    }
+
+    /// This model when it is [valid](Self::is_valid), the zero-noise model ([`NoiseDn::ZERO`])
+    /// otherwise.
+    ///
+    /// This is what a render does with a noise model it cannot use: the photo is processed as if
+    /// its noise were unknown, never refused. A zero model is valid input for every algorithm of
+    /// the package (constants that derive from the noise sit at their documented floors).
+    #[must_use]
+    pub fn or_zero(self) -> NoiseDn {
+        if self.is_valid() { self } else { NoiseDn::ZERO }
     }
 
     /// Whether this is the zero-noise model (`g == 0` and `r == 0`).
@@ -196,5 +218,44 @@ mod tests {
         assert!(!n.is_valid());
         // A negative gain stays negative.
         assert!(!NoiseDn::from_model(&model(-1.0e-5, 0.0, 0.0, 0.0)).is_valid());
+    }
+
+    #[test]
+    fn a_model_without_a_finite_variance_over_the_working_range_is_invalid() {
+        // Both numbers are finite, but g * S and r^2 overflow at white.
+        let huge = NoiseDn::from_model(&model(1.0e300, 1.0e300, 0.0, 0.0));
+        assert!(huge.g.is_finite() && huge.r.is_finite());
+        assert!(!huge.is_valid(), "{huge:?}");
+        // The shot term alone overflows at white.
+        assert!(!NoiseDn::new(1.0e304, 0.0).is_valid());
+        // The read term alone overflows.
+        assert!(!NoiseDn::new(0.0, 1.0e160).is_valid());
+        // The gain is squared by the derived constants of the adaptive ratio demosaic.
+        assert!(!NoiseDn::new(1.0e200, 0.0).is_valid());
+        // Large but finite everywhere is still valid.
+        assert!(NoiseDn::new(1.0e100, 1.0e100).is_valid());
+        assert!(NoiseDn::new(1.0e6, 1.0e6).is_valid());
+        // The nominal models of the tests and the specs are untouched.
+        assert!(NoiseDn::new(1.311, 6.56).is_valid());
+        assert!(NoiseDn::new(32.77, 419.6).is_valid());
+        assert!(NoiseDn::from_model(&model(2.0e-5, 1.0e-8, 0.0, 1.0 / 65535.0)).is_valid());
+    }
+
+    #[test]
+    fn an_unusable_model_becomes_the_zero_model_and_a_usable_one_stays() {
+        let good = NoiseDn::new(1.311, 6.56);
+        assert_eq!(good.or_zero(), good);
+        assert_eq!(NoiseDn::ZERO.or_zero(), NoiseDn::ZERO);
+        for bad in [
+            NoiseDn::new(-1.0, 1.0),
+            NoiseDn::new(1.0, f64::NAN),
+            NoiseDn::new(f64::INFINITY, 1.0),
+            NoiseDn::from_model(&model(1.0e300, 1.0e300, 0.0, 0.0)),
+            NoiseDn::from_model(&model(1.0e-5, -1.0e-6, 0.0, 0.0)),
+        ] {
+            assert!(!bad.is_valid(), "{bad:?}");
+            assert_eq!(bad.or_zero(), NoiseDn::ZERO, "{bad:?}");
+            assert!(bad.or_zero().is_valid());
+        }
     }
 }

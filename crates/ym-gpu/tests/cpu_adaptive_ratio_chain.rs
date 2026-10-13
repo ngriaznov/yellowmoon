@@ -24,11 +24,13 @@ use ym_gpu::cpu::detail::{self, NoiseReduction};
 use ym_gpu::cpu::gains;
 use ym_gpu::cpu::lens::{LensGeometry, LensSwitches, LensTags};
 use ym_gpu::cpu::normalize::{self, Levels};
-use ym_gpu::cpu::sharpen::SharpenParams;
+use ym_gpu::cpu::sharpen::{CaptureSharpen, SharpenParams};
+use ym_gpu::cpu::sharpen::diffraction::DiffractionParams;
 use ym_gpu::cpu::synth;
 use ym_gpu::cpu::tiling::{Rect, tile_grid};
 use ym_gpu::cpu::vignette::VignetteProfile;
 use ym_gpu::cpu::{Cfa, CpuError, NoiseDn, NoiseSigma, RgbImage};
+use ym_noise::model::NoiseModel;
 
 /// A low-noise model (SNR at 18 % grey above 25 dB: shadow matching off, halo 11).
 const LOW_NOISE: NoiseDn = NoiseDn::new(1.311, 6.56);
@@ -371,8 +373,20 @@ fn one_thread_and_four_give_the_same_bytes() {
     assert_eq!(one_tiled, four_tiled, "tiles: --jobs 1 against --jobs 4");
 }
 
+/// Noise models that cannot be used: negative, not a number, infinite, and finite numbers whose
+/// variance overflows at white (`a = b = 1e300`).
+fn unusable_noise() -> [NoiseDn; 5] {
+    [
+        NoiseDn::new(-1.0, 1.0),
+        NoiseDn::new(1.0, f64::NAN),
+        NoiseDn::new(f64::INFINITY, 1.0),
+        NoiseDn::from_model(&NoiseModel::new(1.0e300, 1.0e300)),
+        NoiseDn::from_model(&NoiseModel::new(1.0e-5, -1.0e-6)),
+    ]
+}
+
 #[test]
-fn a_chain_with_unusable_gains_or_noise_for_this_method_is_refused() {
+fn a_chain_with_unusable_gains_for_this_method_is_refused() {
     let (w, h) = (32, 32);
     let data = raw_of(w, h, Cfa::RGGB, 1, 1.0);
     let raw = frame(&data, w, h, Cfa::RGGB);
@@ -391,22 +405,6 @@ fn a_chain_with_unusable_gains_or_noise_for_this_method_is_refused() {
                 .expect("Menon does not read the gains");
         }
     }
-    for noise in [
-        NoiseDn::new(-1.0, 1.0),
-        NoiseDn::new(1.0, f64::NAN),
-        NoiseDn::new(f64::INFINITY, 1.0),
-    ] {
-        let chain = minimal_chain(Method::AdaptiveRatio, G0, Some(noise));
-        assert!(chain.run(&raw).is_err(), "{noise:?}");
-        // Every other method keeps its behaviour with the same noise field.
-        for method in [Method::Bilinear, Method::Menon, Method::Lmmse] {
-            let with = minimal_chain(method, G0, Some(noise))
-                .run(&raw)
-                .expect("run");
-            let without = minimal_chain(method, G0, None).run(&raw).expect("run");
-            assert_eq!(with, without, "{method:?} ignores the noise");
-        }
-    }
     // A usable chain runs.
     minimal_chain(Method::AdaptiveRatio, G0, Some(LOW_NOISE))
         .run(&raw)
@@ -416,9 +414,131 @@ fn a_chain_with_unusable_gains_or_noise_for_this_method_is_refused() {
         .expect("a missing noise model is zero noise");
 }
 
+/// A photo whose noise model is not usable still renders: the chain reads it as zero noise (the
+/// floors of the specs), whole and tile by tile, for every method that reads the noise and for
+/// those that do not. It is never an error.
+#[test]
+fn an_unusable_noise_model_is_read_as_zero_noise_and_the_chain_renders() {
+    let (w, h) = (90, 70);
+    for cfa in [Cfa::RGGB, Cfa::GBRG] {
+        let data = raw_of(w, h, cfa, 5, 1.1);
+        let raw = frame(&data, w, h, cfa);
+        for method in Method::ALL {
+            let zero = minimal_chain(method, G0, Some(NoiseDn::ZERO));
+            let missing = minimal_chain(method, G0, None);
+            let want = zero.run(&raw).expect("zero noise");
+            assert_eq!(missing.run(&raw).expect("no model"), want, "{method:?}");
+            for noise in unusable_noise() {
+                assert!(!noise.is_valid(), "{noise:?}");
+                let chain = minimal_chain(method, G0, Some(noise));
+                chain
+                    .prepare(&raw)
+                    .unwrap_or_else(|e| panic!("{method:?} {noise:?}: {e}"));
+                let got = chain.run(&raw).expect("an unusable model still renders");
+                assert_eq!(got, want, "{method:?} {noise:?}: the picture of zero noise");
+                let tiled = run_tiled(&chain, &raw, (41, 33));
+                assert_eq!(tiled, run_tiled(&zero, &raw, (41, 33)), "{method:?} tiled");
+            }
+        }
+    }
+    // And with the whole chain (denoise, R7, R8, lens) on, with Richardson-Lucy and with the
+    // diffraction deconvolution, which reads the noise model too.
+    let data = raw_of(120, 90, Cfa::RGGB, 2, 1.2);
+    let raw = frame(&data, 120, 90, Cfa::RGGB);
+    let diffraction = CaptureSharpen::Diffraction(DiffractionParams::new(3.76, 8.0));
+    for sharpen in [None, Some(diffraction)] {
+        let make = |noise: NoiseDn| {
+            let mut chain = full_chain(120, 90, Method::AdaptiveRatio, Some(noise), true);
+            if let Some(s) = sharpen {
+                chain.sharpen = Some(s);
+            }
+            chain
+        };
+        let zero = make(NoiseDn::ZERO).run(&raw).expect("renders");
+        for noise in unusable_noise() {
+            assert_eq!(
+                make(noise).run(&raw).expect("renders"),
+                zero,
+                "{noise:?}, sharpen {sharpen:?}"
+            );
+        }
+    }
+}
+
+/// The infallible entry point (`demosaic_with`, what the chain would call without its own check)
+/// does not fail either: input the adaptive ratio demosaic refuses gives Menon's result on the
+/// same mosaic, bit for bit, banded and whole. That includes the noise models the tightened
+/// [`NoiseDn::is_valid`] now refuses (a variance that overflows at white).
+#[test]
+fn the_infallible_entry_point_falls_back_to_menon_bits_for_unusable_gains_or_noise() {
+    let (w, h) = (70, 54);
+    let data = raw_of(w, h, Cfa::RGGB, 4, 1.0);
+    let raw = frame(&data, w, h, Cfa::RGGB);
+    let chain = minimal_chain(Method::Menon, G0, Some(LOW_NOISE));
+    let m = balanced_mosaic(&chain, &raw);
+    let mut bad_inputs = Vec::new();
+    for gains in [
+        [0.0, 1.0, 1.6],
+        [2.0, f32::NAN, 1.6],
+        [-1.0, 1.0, 1.0],
+        [2.0, 1.0, f32::INFINITY],
+    ] {
+        bad_inputs.push(DemosaicInputs {
+            gains,
+            noise: LOW_NOISE,
+            ca: None,
+        });
+    }
+    for noise in unusable_noise() {
+        bad_inputs.push(DemosaicInputs {
+            gains: G0,
+            noise,
+            ca: None,
+        });
+    }
+    for bad in bad_inputs {
+        assert!(bad.validate().is_err(), "{bad:?}");
+        assert_eq!(
+            demosaic::demosaic_with(&m, Method::AdaptiveRatio, &bad),
+            demosaic::demosaic_with(&m, Method::Menon, &bad),
+            "{bad:?}"
+        );
+        assert_eq!(
+            demosaic::demosaic_whole_with(&m, Method::AdaptiveRatio, &bad),
+            demosaic::demosaic_whole_with(&m, Method::Menon, &bad),
+            "{bad:?}"
+        );
+    }
+    // The same mosaic with usable inputs is not Menon's picture.
+    let good = DemosaicInputs {
+        gains: G0,
+        noise: LOW_NOISE,
+        ca: None,
+    };
+    assert_ne!(
+        demosaic::demosaic_with(&m, Method::AdaptiveRatio, &good),
+        demosaic::demosaic_with(&m, Method::Menon, &good)
+    );
+}
+
+#[test]
+fn the_default_method_chain_is_the_adaptive_ratio_chain() {
+    // Whatever builds a chain with `DEFAULT_METHOD` gets the adaptive ratio demosaic: it divides
+    // by the gains and reads the noise model, so it differs from the same chain with Menon.
+    assert_eq!(demosaic::DEFAULT_METHOD, Method::AdaptiveRatio);
+    let (w, h) = (64, 48);
+    let data = raw_of(w, h, Cfa::RGGB, 7, 1.0);
+    let raw = frame(&data, w, h, Cfa::RGGB);
+    let default = minimal_chain(demosaic::DEFAULT_METHOD, G0, Some(LOW_NOISE));
+    let ar = minimal_chain(Method::AdaptiveRatio, G0, Some(LOW_NOISE));
+    let menon = minimal_chain(Method::Menon, G0, Some(LOW_NOISE));
+    assert_eq!(default.run(&raw).expect("run"), ar.run(&raw).expect("run"));
+    assert_ne!(default.run(&raw).expect("run"), menon.run(&raw).expect("run"));
+}
+
 #[test]
 fn the_other_methods_are_not_changed_by_the_gains_of_the_chain() {
-    // The default method (Menon), Bilinear and LMMSE take the balanced mosaic and ignore the
+    // Menon, Bilinear and LMMSE take the balanced mosaic and ignore the
     // inputs, so the chain gives what `demosaic(m, method)` gives, as before RA-04.
     let (w, h) = (90, 70);
     let data = raw_of(w, h, Cfa::RGGB, 8, 1.0);

@@ -208,9 +208,12 @@ fn vectors_through_the_method_dispatch_with_the_default_detail() {
 }
 
 #[test]
-fn the_default_method_is_unchanged_and_log_guided_is_listed_once() {
-    // RA-06 adds a method; it does not change the default of R6 (the owner decides, RA-H4).
-    assert_eq!(demosaic::DEFAULT_METHOD, Method::Menon);
+fn the_default_method_is_the_adaptive_ratio_demosaic_and_log_guided_is_listed_once() {
+    // The default of R6 is the adaptive ratio demosaic (the owner's decision of 2026-10-13, RA-H4);
+    // the log-guided demosaic is a preview method and never the default.
+    assert_eq!(demosaic::DEFAULT_METHOD, Method::AdaptiveRatio);
+    assert_ne!(demosaic::DEFAULT_METHOD, Method::LogGuided);
+    assert!(Method::ALL.contains(&Method::Menon), "Menon stays selectable");
     assert_eq!(
         Method::ALL
             .iter()

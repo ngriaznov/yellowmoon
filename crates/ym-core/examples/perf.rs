@@ -4,11 +4,18 @@
 //! ```text
 //! CARGO_PROFILE_DEV_OPT_LEVEL=3 CARGO_PROFILE_DEV_DEBUG_ASSERTIONS=false \
 //! CARGO_PROFILE_DEV_OVERFLOW_CHECKS=false \
-//!   cargo run -p ym-core --example perf -- [--mp 24] [--gpu] [--keep]
+//!   cargo run -p ym-core --example perf -- [--mp 24] [--gpu] [--keep <folder>] [--demosaic <method>]
 //! ```
 //!
+//! `--demosaic <method>` sets the R6 method of the full-resolution renders (the 100 % view, the
+//! full render; the fit view and the thumbnails bin the mosaic and do not demosaic) by its name
+//! (`adaptive_ratio`, `menon`, ...). The default is the renderer's default, the adaptive ratio
+//! demosaic; running the example once with `--demosaic menon` gives the numbers from before the
+//! default changed (`docs/05` section R6, owner's decision of 2026-10-13).
+//!
 //! Writes one uncompressed 14-bit ARW (a gradient with noise, lens tables, ISO 400) into a
-//! temporary folder, develops it, and times: the fit preview (cold and warm), a colour-only edit,
+//! temporary folder (`--keep <folder>` writes it there instead and leaves it, for timing `ym
+//! render` on the same file), develops it, and times: the fit preview (cold and warm), a colour-only edit,
 //! a white-balance edit, the 100 % view, a thumbnail and the full-resolution render. `--gpu` also
 //! runs the colour pass on the first wgpu adapter (Mesa lavapipe here: its numbers say nothing
 //! about Metal).
@@ -23,6 +30,7 @@ use ym_core::pipeline::{
 };
 use ym_core::session::{OpenOptions, Session, SessionEnv};
 use ym_core::settings::{AutoOr, WhiteBalanceValue};
+use ym_gpu::cpu::demosaic::{DEFAULT_METHOD, Method};
 use ym_gpu::device::{Gpu, GpuConfig};
 use ym_gpu::queue::CancelToken;
 use ym_raw::testgen::{ArwBuilder, LensTables, gradient_mosaic};
@@ -38,14 +46,32 @@ fn main() {
         .position(|a| a == "--mp")
         .map_or(24.0, |i| args[i + 1].parse().expect("megapixels"));
     let use_gpu = args.iter().any(|a| a == "--gpu");
+    let demosaic = args.iter().position(|a| a == "--demosaic").map_or(
+        DEFAULT_METHOD,
+        |i| {
+            let name = args.get(i + 1).expect("a demosaic method name");
+            Method::from_name(name).unwrap_or_else(|| {
+                panic!("{name:?} is not a demosaic method (one of {:?})", Method::ALL.map(Method::name))
+            })
+        },
+    );
+    println!("R6 demosaic method of the full-resolution renders: {}", demosaic.name());
     let (w, h) = {
         let w = ((mp * 1e6 * 1.5).sqrt() / 2.0).round() as u32 * 2;
         (w, w * 2 / 3 / 2 * 2)
     };
-    let dir = tempfile::tempdir().expect("temp dir");
+    let temp = tempfile::tempdir().expect("temp dir");
+    let dir_path = args.iter().position(|a| a == "--keep").map_or_else(
+        || temp.path().to_path_buf(),
+        |i| {
+            let folder = std::path::PathBuf::from(args.get(i + 1).expect("a folder after --keep"));
+            std::fs::create_dir_all(&folder).expect("create the --keep folder");
+            folder
+        },
+    );
     let t = Instant::now();
     let mosaic = gradient_mosaic(w, h, 512, 15500, 7);
-    let path = dir.path().join("DSC00001.ARW");
+    let path = dir_path.join("DSC00001.ARW");
     ArwBuilder::new("ILCE-7M3", w, h)
         .black([512; 4])
         .white([16300; 3])
@@ -63,7 +89,7 @@ fn main() {
 
     let session = Session::new(SessionEnv::from_data_dir().expect("data folder"));
     let t = Instant::now();
-    let out = session.open(&[dir.path().to_path_buf()], OpenOptions::default());
+    let out = session.open(std::slice::from_ref(&dir_path), OpenOptions::default());
     assert!(session.wait_idle(Duration::from_secs(600)));
     println!(
         "open and develop (decode, estimates): {:.0} ms",
@@ -91,6 +117,7 @@ fn main() {
             Arc::new(NeutralOnly),
             RenderOptions {
                 gpu,
+                demosaic,
                 ..RenderOptions::default()
             },
         )
