@@ -2,10 +2,14 @@
 //! (`docs/algorithms/01-adaptive-ratio-demosaic.md` section 3.6, `INTEGRATION.md` section 6).
 //!
 //! * `ca_tables_in_the_file_drive_the_ca_path_of_the_full_chain`: a synthetic ARW with CA tables
-//!   (made by `ym_raw::testgen`) goes through `RawPlan` and `FullChain`; the chain runs the CA path
-//!   exactly when the file has a non-neutral 0x7035 table *and* `decode.chromatic_aberration` is on
-//!   (checked against R1, R4, a whole-frame `demosaic_whole_with` and R9 done by hand), and for the
-//!   adaptive ratio demosaic only.
+//!   (made by `ym_raw::testgen`) goes through `RawPlan` and `FullChain`. Since the real-file
+//!   evaluation of R9 (`docs/05` R9, "Real files") the plan takes the CA out of R9 and the chain
+//!   corrects it on the mosaic (R5b, `lens::correct_mosaic_ca`) before the demosaic, for every
+//!   method, exactly when the file has a non-neutral 0x7035 table *and*
+//!   `decode.chromatic_aberration` is on (checked against R1, R4, R5b, a whole-frame
+//!   `demosaic_whole_with` and R9 done by hand). The demosaic then gets no CA curves: the CA-aware
+//!   path of the adaptive ratio demosaic (section 3.6) is not reached from the chain any more, and
+//!   stays covered by its own tests (`ym-gpu/tests/cpu_adaptive_ratio_ca.rs`).
 //! * `the_ca_path_leaves_no_more_ca_after_r9_on_a_consistent_synthetic_file`: the mosaic of that
 //!   file is made *consistent with its tables* (every site holds the scene at the position R9
 //!   will move it from), so the correct output has no colour fringes at all. The displacement of
@@ -160,14 +164,27 @@ fn build(
     (frame, plan, full)
 }
 
-/// R1, R4, the whole-frame demosaic of `method` with `ca`, and R9 over the whole output: the chain
-/// of a file without vignetting, R5, denoise, R7 and R8, by hand.
+/// R1, R4, R5b (when the plan's lens corrects its CA on the mosaic), the whole-frame demosaic of
+/// `method` with `ca`, and R9 over the whole output: the chain of a file without vignetting, R5,
+/// denoise, R7 and R8, by hand.
 fn by_hand(
     frame: &FrameData,
     plan: &RawPlan,
     params: &RawParams,
     method: Method,
     ca: Option<&CaCurves>,
+) -> RgbImage {
+    by_hand_with(frame, plan, params, method, ca, true)
+}
+
+/// [`by_hand`] with R5b switched on or off.
+fn by_hand_with(
+    frame: &FrameData,
+    plan: &RawPlan,
+    params: &RawParams,
+    method: Method,
+    ca: Option<&CaCurves>,
+    r5b: bool,
 ) -> RgbImage {
     let (mut m, _) = normalize::normalize(
         frame.data(),
@@ -179,6 +196,9 @@ fn by_hand(
     )
     .expect("normalize");
     gains::apply_gains(&mut m, params.g0);
+    if r5b && let Some(curves) = plan.lens.as_ref().and_then(LensGeometry::mosaic_ca_curves) {
+        ym_gpu::cpu::lens::correct_mosaic_ca(&mut m, &curves).expect("R5b");
+    }
     let img = demosaic::demosaic_whole_with(
         &m,
         method,
@@ -235,15 +255,22 @@ fn ca_tables_in_the_file_drive_the_ca_path_of_the_full_chain() {
     let got = full
         .run_tile(&frame, Rect::whole(ow, oh))
         .expect("whole frame");
-    let want = by_hand(&frame, &plan, &params, Method::AdaptiveRatio, Some(&curves));
-    assert_eq!(bits(&got), bits(&want), "the full chain runs the CA path");
-    let plain = by_hand(&frame, &plan, &params, Method::AdaptiveRatio, None);
+    // The plan took the CA out of R9: the chain corrects it on the mosaic (R5b) and the demosaic
+    // gets no curves.
+    assert!(plan.lens.as_ref().expect("R9 geometry").ca_on_mosaic());
+    let want = by_hand(&frame, &plan, &params, Method::AdaptiveRatio, None);
+    assert_eq!(
+        bits(&got),
+        bits(&want),
+        "the full chain corrects the CA on the mosaic"
+    );
+    let no_r5b = by_hand_with(&frame, &plan, &params, Method::AdaptiveRatio, None, false);
     assert!(
-        got.max_abs_diff(&plain) > 1e-3,
-        "the plain path would give a different image"
+        got.max_abs_diff(&no_r5b) > 1e-3,
+        "without R5b the image would differ"
     );
 
-    // Another method with the same file ignores the curves.
+    // Another method with the same file gets the same R5b.
     let (frame_m, plan_m, full_m) = build(&raw, &params, Method::Menon);
     let got_m = full_m
         .run_tile(&frame_m, Rect::whole(full_m.out_w, full_m.out_h))
