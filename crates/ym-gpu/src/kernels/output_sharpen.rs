@@ -94,7 +94,7 @@ use crate::device::{GpuContext, GpuError};
 use crate::image::GpuImage;
 use crate::pool::PooledBuffer;
 use crate::queue::CancelToken;
-use crate::stream::{Pending, PassList, ReadId};
+use crate::stream::{PassList, Pending, ReadId};
 use crate::tiles::{Tile, TilePlan};
 
 /// Device bytes one pixel of a compute rectangle needs at most: the input (3 planes), `L`, `t`, `h`,
@@ -333,10 +333,7 @@ fn push_taps(taps: &mut Vec<f32>, kernel: &[f64]) -> TapRange {
 /// Whether a kernel has collapsed to its centre tap: every other tap is exactly 0.
 fn is_collapsed(kernel: &[f64]) -> bool {
     let c = kernel.len() / 2;
-    kernel
-        .iter()
-        .enumerate()
-        .all(|(j, &t)| j == c || t == 0.0)
+    kernel.iter().enumerate().all(|(j, &t)| j == c || t == 0.0)
 }
 
 /// Method 2's constants (spec 3.3): `g0 = T ((k_c + k_{c+1}) / 2) / left` in `f64` then `f32`,
@@ -508,8 +505,15 @@ impl PreparedSharpen {
                 core.w, core.h, dst.width, dst.height
             )));
         }
-        self.encode_to(passes, src, window, core, &Target::Planes { dst, at: dst_at }, None)
-            .map(|_| ())
+        self.encode_to(
+            passes,
+            src,
+            window,
+            core,
+            &Target::Planes { dst, at: dst_at },
+            None,
+        )
+        .map(|_| ())
     }
 
     /// Like [`encode`](Self::encode), with C13, the dither and the letterbox fused into the last
@@ -639,8 +643,10 @@ impl PreparedSharpen {
             // A traced run reads Hacc back, so it exists (as zeros) even without a limiter.
             let hacc_bytes = if limiter || tracing { plane_bytes } else { 16 };
             hacc = passes.keep(pool.acquire("sharpen Hacc", hacc_bytes, STORAGE_PLANE)?);
-            work_a = passes.scratch("sharpen work A", (work_planes as u64 * plane_bytes).max(16))?;
-            work_b = passes.scratch("sharpen work B", (work_planes as u64 * plane_bytes).max(16))?;
+            work_a =
+                passes.scratch("sharpen work A", (work_planes as u64 * plane_bytes).max(16))?;
+            work_b =
+                passes.scratch("sharpen work B", (work_planes as u64 * plane_bytes).max(16))?;
         }
 
         let weights = self.plan.luma_weights();
@@ -691,9 +697,9 @@ impl PreparedSharpen {
         let dither_buf = &dither;
 
         let run = |passes: &mut PassList<'_>,
-                       id: KernelId,
-                       p: &ParamsU,
-                       z: u32|
+                   id: KernelId,
+                   p: &ParamsU,
+                   z: u32|
          -> Result<(), GpuError> {
             let ub = passes.uniform("sharpen params", p)?;
             let slots = pass_of(id).map_or(&[][..], |(_, s)| s);
@@ -1036,7 +1042,10 @@ impl PreparedSharpen {
             &src,
             window,
             core.relative_to(&compute),
-            &Target::Planes { dst: &dst, at: (0, 0) },
+            &Target::Planes {
+                dst: &dst,
+                at: (0, 0),
+            },
             trace.then_some(()),
         )?;
         let out = dst.encode_read(&mut passes)?;
@@ -1106,6 +1115,7 @@ mod tests {
     use naga::valid::{Capabilities, ValidationFlags, Validator};
 
     use super::*;
+    use crate::device::StorageMode;
     use crate::kernels::shader_source;
 
     /// Every output sharpening pass, as registered in [`KernelId`].

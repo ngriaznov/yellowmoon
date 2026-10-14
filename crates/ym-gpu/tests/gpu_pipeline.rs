@@ -494,3 +494,446 @@ fn the_tile_size_follows_the_device_budget() {
         .expect("tile size");
     assert_eq!(tile, 1024, "a 160 MiB budget falls back to 1024 px tiles");
 }
+
+// ------------------------------------------------------------------------------------------------
+// G-04: the view tail on the device: sampler, colour, output sharpening and C13 as device images
+// ------------------------------------------------------------------------------------------------
+
+use common::chains::camera_image;
+use ym_color::consts::Vec3;
+use ym_color::encode::{self as c13, OutputSpace};
+use ym_gpu::cpu::RgbImage;
+use ym_gpu::cpu::output_sharpen::OutputSharpen;
+use ym_gpu::cpu::sampler::SamplerGrid;
+use ym_gpu::cpu::tiling::Rect;
+use ym_gpu::image::GpuImage;
+use ym_gpu::kernels::encode::{self, C13, Encoding, band_bytes, encode_host, row_words};
+use ym_gpu::kernels::output_sharpen::PreparedSharpen;
+use ym_gpu::kernels::sampler::{encode_sample, sample};
+use ym_gpu::stream::PassList;
+
+/// A display-linear image: values from a little below 0 to above 1 (the encode clamps), a few exact
+/// zeros and ones.
+fn linear_image(w: usize, h: usize, seed: u64) -> RgbImage {
+    let mut rng = Rng(seed);
+    let mut img = RgbImage::new(w, h);
+    for v in &mut img.data {
+        *v = rng.range(-0.1, 1.4) as f32;
+    }
+    img.set_pixel(0, 0, [0.0, 0.0, 0.0]);
+    img.set_pixel(1, 0, [1.0, 1.0, 1.0]);
+    img.set_pixel(2, 0, [0.0031308, 0.04, 0.18]);
+    img
+}
+
+fn on_gpu<R: Send + 'static>(
+    body: impl FnOnce(&ym_gpu::device::GpuContext) -> Result<R, ym_gpu::device::GpuError>
+    + Send
+    + 'static,
+) -> Option<R> {
+    let dev = gpus().first()?;
+    Some(
+        dev.gpu
+            .run(JobSpec::new(Priority::Viewport), move |ctx, _| body(ctx))
+            .expect("GPU job"),
+    )
+}
+
+#[test]
+fn the_encode_kernel_matches_the_cpu_c13() {
+    // `ym_color::encode::encode_8bit_dithered` and `quantize` are the CPU's C13: the 8-bit codes must
+    // be within one code and 99 % exact (f32 against f64 moves a value across a dither threshold now
+    // and then), the 16-bit codes within 8 (docs/gpu-plan.md G-08 states the same).
+    let (w, h) = (131usize, 47usize);
+    let img = linear_image(w, h, 0xC13);
+    for (space, origin) in [
+        (OutputSpace::Srgb, (0usize, 0usize)),
+        (OutputSpace::DisplayP3, (37, 1010)),
+        (OutputSpace::Rec2020, (4093, 8191)),
+    ] {
+        let i2 = img.clone();
+        let (rgb8, rgba8, rgb16, rgb10) = on_gpu(move |ctx| {
+            let whole = Rect::whole(w, h);
+            let c = C13 {
+                space,
+                dither: true,
+                origin,
+            };
+            let bg = [0, 0, 0];
+            Ok((
+                encode_host(ctx, &i2, None, whole, Encoding::Rgb8 { background: bg }, c)?,
+                encode_host(ctx, &i2, None, whole, Encoding::Rgba8 { background: bg }, c)?,
+                encode_host(ctx, &i2, None, whole, Encoding::Rgb16 { bits: 16 }, c)?,
+                encode_host(ctx, &i2, None, whole, Encoding::Rgb16 { bits: 10 }, c)?,
+            ))
+        })
+        .expect("device");
+        let n = w * h;
+        let (mut off8, mut worst8, mut worst16, mut worst10) = (0usize, 0i32, 0i32, 0i32);
+        for i in 0..n {
+            let (x, y) = (i % w, i / w);
+            let lin: Vec3 = [
+                f64::from(img.data[i]),
+                f64::from(img.data[n + i]),
+                f64::from(img.data[2 * n + i]),
+            ];
+            let cpu8 = c13::encode_8bit_dithered(lin, space, origin.0 + x, origin.1 + y);
+            let enc = space.encode_clamped(lin);
+            for c in 0..3 {
+                let g = i32::from(rgb8.bytes[3 * i + c]);
+                let d = (g - i32::from(cpu8[c])).abs();
+                worst8 = worst8.max(d);
+                off8 += usize::from(d != 0);
+                assert_eq!(
+                    rgba8.bytes[4 * i + c],
+                    rgb8.bytes[3 * i + c],
+                    "RGBA8 and RGB8 differ at pixel {i}"
+                );
+                let g16 = i32::from(u16::from_le_bytes([
+                    rgb16.bytes[6 * i + 2 * c],
+                    rgb16.bytes[6 * i + 2 * c + 1],
+                ]));
+                worst16 = worst16.max((g16 - i32::from(c13::quantize(enc[c], 16))).abs());
+                let g10 = i32::from(u16::from_le_bytes([
+                    rgb10.bytes[6 * i + 2 * c],
+                    rgb10.bytes[6 * i + 2 * c + 1],
+                ]));
+                worst10 = worst10.max((g10 - i32::from(c13::quantize(enc[c], 10))).abs());
+            }
+            assert_eq!(rgba8.bytes[4 * i + 3], 255);
+        }
+        eprintln!(
+            "{space:?}: 8-bit worst {worst8} code, {off8} of {} differ; 16-bit worst {worst16}; 10-bit worst {worst10}",
+            3 * n
+        );
+        assert!(worst8 <= 1, "{space:?}: 8-bit codes off by {worst8}");
+        assert!(
+            off8 * 100 <= 3 * n,
+            "{space:?}: {off8} of {} codes differ",
+            3 * n
+        );
+        assert!(worst16 <= 8, "{space:?}: 16-bit codes off by {worst16}");
+        assert!(worst10 <= 1, "{space:?}: 10-bit codes off by {worst10}");
+    }
+}
+
+#[test]
+fn bands_of_rows_give_the_bytes_of_the_whole_picture() {
+    // The dither is at absolute positions: a picture encoded in bands (each band's origin is its first
+    // row) equals the picture encoded at once, for every layout.
+    let (w, h) = (53usize, 61usize);
+    let img = linear_image(w, h, 0xBA1D);
+    for encoding in [
+        Encoding::Rgba8 {
+            background: [1, 2, 3],
+        },
+        Encoding::Rgb8 {
+            background: [1, 2, 3],
+        },
+        Encoding::Rgb16 { bits: 16 },
+    ] {
+        let i2 = img.clone();
+        let (whole, bands) = on_gpu(move |ctx| {
+            let c = |y: usize| C13 {
+                space: OutputSpace::DisplayP3,
+                dither: true,
+                origin: (100, 7 + y),
+            };
+            let whole = encode_host(ctx, &i2, None, Rect::whole(w, h), encoding, c(0))?;
+            let mut bytes = Vec::new();
+            for (y0, rows) in [(0usize, 17usize), (17, 20), (37, 24)] {
+                let band = encode_host(ctx, &i2, None, Rect::new(0, y0, w, rows), encoding, c(y0))?;
+                bytes.extend_from_slice(&band.bytes);
+            }
+            Ok((whole.bytes, bytes))
+        })
+        .expect("device");
+        assert_eq!(
+            whole, bands,
+            "{encoding:?}: bands differ from the whole picture"
+        );
+    }
+}
+
+#[test]
+fn the_encode_kernel_agrees_with_the_colour_kernels_own_c13() {
+    // Colour to C12 on the device, then the encode kernel, against the colour kernel's own RGBA8.
+    let (w, h) = (73usize, 39usize);
+    let img = camera_image(w, h, 0xE0C);
+    for target in [
+        OutputTarget::Viewport,
+        OutputTarget::Srgb,
+        OutputTarget::Rec2020,
+    ] {
+        for dither in [true, false] {
+            let chain = ColorChain::new(&chains::full(target)).expect("chain");
+            let space = chain.space();
+            let i2 = img.clone();
+            let (own, encoded) = on_gpu(move |ctx| {
+                let prepared = PreparedChain::new(ctx, &chain)?;
+                let own = prepared.render(ctx, &i2, (5, 9), ColorOutput::Rgba8 { dither })?;
+                let src = GpuImage::upload_rgb(ctx, "c12", &i2)?;
+                let c12 = GpuImage::alloc(ctx, "c12 out", w, h, 3, i2.place)?;
+                let bytes = band_bytes(Encoding::Rgba8 { background: [0; 3] }, w, h);
+                let band = ctx.pool().acquire(
+                    "band",
+                    bytes,
+                    wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+                )?;
+                let mut passes = PassList::new(ctx, "c12 then c13");
+                prepared.encode_stage(
+                    &mut passes,
+                    &src,
+                    Rect::whole(w, h),
+                    Stop::C12,
+                    &c12,
+                    (0, 0),
+                )?;
+                encode::encode_c13(
+                    &mut passes,
+                    &c12,
+                    Rect::whole(w, h),
+                    Encoding::Rgba8 { background: [0; 3] },
+                    C13 {
+                        space,
+                        dither,
+                        origin: (5, 9),
+                    },
+                    &band,
+                    0,
+                    0,
+                )?;
+                let id = passes.read(&band, 0, bytes)?;
+                let done = passes.submit()?.finish()?;
+                Ok((own, done.read(id).to_vec()))
+            })
+            .expect("device");
+            let PixelData::Rgba8(own) = own.data else {
+                panic!("not RGBA8")
+            };
+            assert_eq!(own, encoded, "{target:?} dither {dither}");
+        }
+    }
+}
+
+#[test]
+fn the_letterbox_is_painted_by_the_encode_kernel() {
+    let (w, h) = (30usize, 20usize);
+    let img = linear_image(w, h, 0x1E7);
+    let mask: Vec<u8> = (0..w * h).map(|i| u8::from(i % 7 == 0 || i < 40)).collect();
+    let (m2, i2) = (mask.clone(), img.clone());
+    let (rgba, rgb8, rgb16) = on_gpu(move |ctx| {
+        let whole = Rect::whole(w, h);
+        let c = C13 {
+            space: OutputSpace::Srgb,
+            dither: true,
+            origin: (0, 0),
+        };
+        let bg = [11, 22, 33];
+        Ok((
+            encode_host(
+                ctx,
+                &i2,
+                Some(&m2),
+                whole,
+                Encoding::Rgba8 { background: bg },
+                c,
+            )?,
+            encode_host(
+                ctx,
+                &i2,
+                Some(&m2),
+                whole,
+                Encoding::Rgb8 { background: bg },
+                c,
+            )?,
+            encode_host(ctx, &i2, Some(&m2), whole, Encoding::Rgb16 { bits: 16 }, c)?,
+        ))
+    })
+    .expect("device");
+    let mut painted = 0;
+    for i in 0..w * h {
+        if mask[i] != 0 {
+            painted += 1;
+            assert_eq!(
+                &rgba.bytes[4 * i..4 * i + 4],
+                &[11, 22, 33, 255],
+                "RGBA8 pixel {i}"
+            );
+            assert_eq!(
+                &rgb8.bytes[3 * i..3 * i + 3],
+                &[11, 22, 33],
+                "RGB8 pixel {i}"
+            );
+            assert_eq!(&rgb16.bytes[6 * i..6 * i + 6], &[0; 6], "RGB16 pixel {i}");
+        } else {
+            assert_ne!(
+                &rgba.bytes[4 * i..4 * i + 3],
+                &[11, 22, 33],
+                "pixel {i} is inside"
+            );
+        }
+    }
+    assert!(painted > 80);
+}
+
+#[test]
+fn the_encode_binding_and_row_sizes_are_what_the_writers_expect() {
+    common::limits::assert_max_binding_bytes(
+        "encode",
+        Rect::new(0, 0, 2000, 1250),
+        encode::max_binding_bytes,
+    );
+    // 8658 pixels of RGB8 are 2165 groups of four pixels, three words each.
+    assert_eq!(
+        row_words(Encoding::Rgb8 { background: [0; 3] }, 8658),
+        2165 * 3
+    );
+    assert_eq!(row_words(Encoding::Rgb16 { bits: 16 }, 8658), 4329 * 3);
+}
+
+/// A grid for an output pixel `q` -> canvas `R(-angle) (scale q + t - c) + c`.
+fn rotated_grid(bw: usize, bh: usize, angle_deg: f64, scale: f64, t: (f64, f64)) -> SamplerGrid {
+    let (s, c) = (-angle_deg).to_radians().sin_cos();
+    let (cx, cy) = (bw as f64 * 0.5, bh as f64 * 0.5);
+    SamplerGrid::new(
+        [
+            [c * scale, -s * scale, c * (t.0 - cx) - s * (t.1 - cy) + cx],
+            [s * scale, c * scale, s * (t.0 - cx) + c * (t.1 - cy) + cy],
+        ],
+        (bw as f64, bh as f64),
+        (bw as f64, bh as f64),
+        1,
+        0,
+        SamplerGrid::is_unrotated_angle(angle_deg),
+    )
+}
+
+#[test]
+fn the_device_view_road_equals_the_host_wrapper_road_bit_for_bit() {
+    // Sampler, colour pass to C12, output sharpening on the photo's bounding box (the stage mirrors at
+    // the photo's edge, the letterbox is zero), C13 with the letterbox painted: all on the device as
+    // device images, against the same four steps through the host wrappers (upload and readback
+    // between each). The two roads run the same kernels with the same inputs, so the bytes must be
+    // equal; what this catches is a stride, an offset, a mask or a window that the entry points mix up.
+    let (bw, bh) = (240usize, 180usize);
+    let camera = camera_image(bw, bh, 0x71E);
+    let grid = rotated_grid(bw, bh, 7.0, 0.8, (-30.0, -20.0));
+    let (w, h) = (260usize, 200usize);
+    let bounds = grid.inside_bounds((0, 0), w, h).expect("a photo in view");
+    let window = Rect::new(bounds.0, bounds.1, bounds.2 - bounds.0, bounds.3 - bounds.1);
+    assert!(
+        window.w < w || window.h < h,
+        "the scene must have a letterbox ({window:?} in {w}x{h})"
+    );
+    let chain = ColorChain::new(&chains::full(OutputTarget::Viewport)).expect("chain");
+    let sharpen = OutputSharpen::screen();
+    let bg = [231u8, 231, 231];
+    let (c2, cam2, sh2) = (chain.clone(), camera.clone(), sharpen.clone());
+    let (device, host) = on_gpu(move |ctx| {
+        let space = c2.space();
+        let tail = C13 {
+            space,
+            dither: true,
+            origin: (0, 0),
+        };
+        let prepared = PreparedChain::new(ctx, &c2)?;
+        let sharp = PreparedSharpen::new(ctx, &sh2, 1.0)?;
+
+        // The device road: no readback until the end.
+        let src = GpuImage::upload_rgb(ctx, "camera", &cam2)?;
+        let bytes = band_bytes(Encoding::Rgba8 { background: bg }, w, h);
+        let band = ctx.pool().acquire(
+            "view",
+            bytes,
+            wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+        )?;
+        let mut passes = PassList::new(ctx, "view");
+        let sampled = encode_sample(&mut passes, &src, (0, 0), &grid, (0, 0), w, h)?;
+        let c12 = GpuImage::alloc(ctx, "c12", w, h, 4, sampled.place)?;
+        prepared.encode_stage(
+            &mut passes,
+            &sampled,
+            Rect::whole(w, h),
+            Stop::C12,
+            &c12,
+            (0, 0),
+        )?;
+        let sharpened = GpuImage::alloc(ctx, "sharpened", w, h, 4, sampled.place)?;
+        passes
+            .encoder()
+            .copy_buffer_to_buffer(&c12.buf, 0, &sharpened.buf, 0, c12.byte_len());
+        sharp.encode(
+            &mut passes,
+            &c12,
+            window,
+            window,
+            &sharpened,
+            (window.x, window.y),
+        )?;
+        encode::encode_c13(
+            &mut passes,
+            &sharpened,
+            Rect::whole(w, h),
+            Encoding::Rgba8 { background: bg },
+            tail,
+            &band,
+            0,
+            0,
+        )?;
+        let id = passes.read(&band, 0, bytes)?;
+        let _keep = passes.keep(src.buf);
+        let done = passes.submit()?.finish()?;
+        let device = done.read(id).to_vec();
+
+        // The host road: every step reads its input from the host and returns to it.
+        let sampled = sample(ctx, &cam2, (0, 0), &grid, (0, 0), w, h)?;
+        let mut display = prepared
+            .render(ctx, &sampled.img, (0, 0), ColorOutput::Stage(Stop::C12))?
+            .data;
+        let PixelData::F32Planar(planes) = &mut display else {
+            panic!("not planes");
+        };
+        let mask = sampled.outside.clone().expect("a letterbox");
+        for c in 0..3 {
+            for i in 0..w * h {
+                if mask[i] != 0 {
+                    planes[c * w * h + i] = 0.0;
+                }
+            }
+        }
+        let c12 = RgbImage::from_planar(w, h, planes.clone()).expect("image");
+        let inner = sharp.run(ctx, &c12.extract(window))?;
+        let mut merged = c12.clone();
+        merged.paste(&inner, Rect::whole(window.w, window.h), window.x, window.y);
+        let host = encode_host(
+            ctx,
+            &merged,
+            Some(&mask),
+            Rect::whole(w, h),
+            Encoding::Rgba8 { background: bg },
+            tail,
+        )?
+        .bytes;
+        Ok((device, host))
+    })
+    .expect("device");
+    assert_eq!(device.len(), host.len());
+    let diffs: Vec<usize> = (0..device.len() / 4)
+        .filter(|&i| device[4 * i..4 * i + 4] != host[4 * i..4 * i + 4])
+        .collect();
+    assert!(
+        diffs.is_empty(),
+        "{} pixels differ between the device road and the host road, first at ({}, {})",
+        diffs.len(),
+        diffs[0] % w,
+        diffs[0] / w
+    );
+    // The scene is not trivial: some pixels are the letterbox, some are the picture.
+    let paper = device.chunks_exact(4).filter(|p| p[..3] == bg).count();
+    assert!(
+        paper > 100 && paper < w * h - 1000,
+        "{paper} paper pixels of {}",
+        w * h
+    );
+}

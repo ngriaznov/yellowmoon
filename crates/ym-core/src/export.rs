@@ -156,13 +156,15 @@ impl ExportError {
         matches!(self, Self::Cancelled)
     }
 
-    /// A short machine-readable kind, for the CLI's JSON (`"error": { "kind": … }`).
+    /// A short machine-readable kind, for the CLI's JSON (`"error": { "kind": … }`). A photo that a
+    /// strict policy (`--require-gpu`) refused to render on the CPU after a device error is `gpu`.
     #[must_use]
     pub fn kind(&self) -> &'static str {
         match self {
             Self::Cancelled => "cancelled",
             Self::Look(_) => "look",
             Self::DngUnavailable => "unsupported",
+            Self::Render(RenderError::Gpu(_)) => "gpu",
             Self::Render(_) => "render",
             Self::Write(_) => "write",
             Self::Session(SessionError::Skipped(_)) => "unsupported",

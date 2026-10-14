@@ -84,7 +84,11 @@ fn swaps(exif: u16, turns: u8) -> bool {
 /// The grid of an exact output: one buffer pixel per output pixel, the canvas is the buffer with its
 /// sides swapped by the turns. Returns the canvas size too.
 fn exact_grid(bw: usize, bh: usize, exif: u16, turns: u8) -> (SamplerGrid, usize, usize) {
-    let (cw, ch) = if swaps(exif, turns) { (bh, bw) } else { (bw, bh) };
+    let (cw, ch) = if swaps(exif, turns) {
+        (bh, bw)
+    } else {
+        (bw, bh)
+    };
     let grid = SamplerGrid::new(
         [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
         (cw as f64, ch as f64),
@@ -107,7 +111,11 @@ fn general_grid(
     scale: f64,
     t: (f64, f64),
 ) -> (SamplerGrid, usize, usize) {
-    let (cw, ch) = if swaps(exif, turns) { (bh, bw) } else { (bw, bh) };
+    let (cw, ch) = if swaps(exif, turns) {
+        (bh, bw)
+    } else {
+        (bw, bh)
+    };
     let (s, c) = (-angle_deg).to_radians().sin_cos();
     let (cx, cy) = (cw as f64 * 0.5, ch as f64 * 0.5);
     // p = R (scale q + t - c) + c
@@ -154,7 +162,11 @@ fn assert_masks_equal(what: &str, gpu: &Sampled, cpu: &Sampled) {
             let plane = gpu.img.plane(c);
             for i in 0..n {
                 if mask[i] != 0 {
-                    assert_eq!(plane[i].to_bits(), 0, "{what}: an outside pixel is not zero");
+                    assert_eq!(
+                        plane[i].to_bits(),
+                        0,
+                        "{what}: an outside pixel is not zero"
+                    );
                 }
             }
         }
@@ -215,7 +227,11 @@ fn rotated_scaled_and_magnified_grids_match_the_cpu_port() {
                 (0.0, 0.45, (0.3, 0.3)),
                 (-12.5, 1.2, (0.0, -0.1)),
             ] {
-                let (cw, ch) = if swaps(exif, turns) { (bh, bw) } else { (bw, bh) };
+                let (cw, ch) = if swaps(exif, turns) {
+                    (bh, bw)
+                } else {
+                    (bw, bh)
+                };
                 let (grid, _, _) = general_grid(
                     bw,
                     bh,
@@ -231,8 +247,7 @@ fn rotated_scaled_and_magnified_grids_match_the_cpu_port() {
                 );
                 let cpu = sample_to_camera(&img, (0, 0), &grid, (0, 0), w, h);
                 let gpu = gpu_sample(dev, &img, (0, 0), grid, (0, 0), w, h);
-                let what =
-                    format!("exif {exif} turns {turns} angle {angle} scale {scale} {w}x{h}");
+                let what = format!("exif {exif} turns {turns} angle {angle} scale {scale} {w}x{h}");
                 assert!(all_finite(&gpu.img), "{what}: non-finite");
                 assert_masks_equal(&what, &gpu, &cpu);
                 let d = max_diff(&gpu.img, &cpu.img);
@@ -251,7 +266,10 @@ fn rotated_scaled_and_magnified_grids_match_the_cpu_port() {
     eprintln!(
         "sampler vs CPU port: {cases} cases ({bicubics} Catmull-Rom, {boxes} box, {with_mask} with a letterbox), worst error {worst:.3e}"
     );
-    assert!(boxes > 40 && bicubics > 40, "the matrix must cover both kernels");
+    assert!(
+        boxes > 40 && bicubics > 40,
+        "the matrix must cover both kernels"
+    );
     assert!(with_mask > 40, "and grids with a letterbox");
 }
 
@@ -262,10 +280,30 @@ fn a_tile_equals_the_same_pixels_of_the_whole_output_bit_for_bit() {
     let img = scene(bw, bh, 3);
     for (name, (grid, cw, ch), w, h) in [
         ("exact", exact_grid(bw, bh, 6, 1), 131usize, 173usize),
-        ("rotated", general_grid(bw, bh, 1, 0, 9.0, 1.0, (4.5, -3.25)), 190, 150),
-        ("box 2", general_grid(bw, bh, 3, 2, -3.0, 1.7, (0.0, 0.0)), 100, 80),
-        ("box 3", general_grid(bw, bh, 8, 0, 20.0, 2.6, (10.0, 5.0)), 70, 52),
-        ("magnified", general_grid(bw, bh, 1, 0, -5.0, 0.37, (0.0, 0.0)), 300, 220),
+        (
+            "rotated",
+            general_grid(bw, bh, 1, 0, 9.0, 1.0, (4.5, -3.25)),
+            190,
+            150,
+        ),
+        (
+            "box 2",
+            general_grid(bw, bh, 3, 2, -3.0, 1.7, (0.0, 0.0)),
+            100,
+            80,
+        ),
+        (
+            "box 3",
+            general_grid(bw, bh, 8, 0, 20.0, 2.6, (10.0, 5.0)),
+            70,
+            52,
+        ),
+        (
+            "magnified",
+            general_grid(bw, bh, 1, 0, -5.0, 0.37, (0.0, 0.0)),
+            300,
+            220,
+        ),
     ] {
         let _ = (cw, ch);
         let whole = gpu_sample(dev, &img, (0, 0), grid, (0, 0), w, h);
@@ -399,7 +437,10 @@ fn the_far_corner_of_a_50_mp_frame_is_as_exact_as_the_near_one() {
     } else {
         VALUE_BOUND_HARDWARE
     };
-    assert!(errors.iter().all(|&e| e <= bound), "{errors:?} above {bound:e}");
+    assert!(
+        errors.iter().all(|&e| e <= bound),
+        "{errors:?} above {bound:e}"
+    );
 }
 
 #[test]
@@ -408,7 +449,11 @@ fn poison_and_a_plain_device_give_the_same_bits() {
     let (bw, bh) = (97usize, 71usize);
     let img = scene(bw, bh, 6);
     for (grid, w, h) in [
-        (general_grid(bw, bh, 6, 3, 14.0, 1.0, (3.0, 2.0)).0, 90usize, 70usize),
+        (
+            general_grid(bw, bh, 6, 3, 14.0, 1.0, (3.0, 2.0)).0,
+            90usize,
+            70usize,
+        ),
         (general_grid(bw, bh, 2, 1, -9.0, 2.3, (0.0, 0.0)).0, 44, 38),
     ] {
         let img = img.clone();
@@ -435,7 +480,11 @@ fn poison_and_a_plain_device_give_the_same_bits() {
 
 #[test]
 fn the_binding_stays_inside_the_design_size() {
-    common::limits::assert_max_binding_bytes("sampler", Rect::new(0, 0, 2000, 1250), max_binding_bytes);
+    common::limits::assert_max_binding_bytes(
+        "sampler",
+        Rect::new(0, 0, 2000, 1250),
+        max_binding_bytes,
+    );
 }
 
 #[test]

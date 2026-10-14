@@ -1380,7 +1380,8 @@ fn bad_inputs_are_refused_and_buffers_return_to_the_pool() {
         }
     });
     assert_eq!(
-        in_use, base,
+        in_use,
+        base,
         "{live} live buffers, {} bytes still in use after the runs",
         in_use - base
     );
@@ -1715,7 +1716,14 @@ fn encode_rgba(
     let img = img.clone();
     run_gpu(dev, move |ctx| {
         let window = Rect::whole(img.width, img.height);
-        encode_host(ctx, &img, mask.as_deref(), window, Encoding::Rgba8 { background: bg }, c13)
+        encode_host(
+            ctx,
+            &img,
+            mask.as_deref(),
+            window,
+            Encoding::Rgba8 { background: bg },
+            c13,
+        )
     })
     .bytes
 }
@@ -1777,7 +1785,12 @@ fn the_fused_c13_tail_equals_the_chained_pair_bit_for_bit() {
         let ym_gpu::kernels::PixelData::Rgba8(fused) = fused.data else {
             panic!("not RGBA8");
         };
-        assert_bytes_equal(&format!("{space:?} dither {dither}: fused against chained"), &fused, &chained, 97);
+        assert_bytes_equal(
+            &format!("{space:?} dither {dither}: fused against chained"),
+            &fused,
+            &chained,
+            97,
+        );
     }
 }
 
@@ -1792,7 +1805,9 @@ fn the_fused_tail_paints_the_letterbox_and_leaves_the_rest_of_the_view_alone() {
     let mask: Vec<f32> = (0..w * h)
         .map(|i| {
             let (x, y) = (i % w, i / w);
-            f32::from(u8::from(x < 12 || x >= 80 || y < 9 || y >= 62 || x + y < 40))
+            f32::from(u8::from(
+                x < 12 || x >= 80 || y < 9 || y >= 62 || x + y < 40,
+            ))
         })
         .collect();
     // The bounding box of the unmasked pixels.
@@ -1859,7 +1874,9 @@ fn the_fused_tail_paints_the_letterbox_and_leaves_the_rest_of_the_view_alone() {
             bytes,
             wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
         )?;
-        let fill: Vec<u8> = (0..w * h).flat_map(|_| [bg[0], bg[1], bg[2], 255]).collect();
+        let fill: Vec<u8> = (0..w * h)
+            .flat_map(|_| [bg[0], bg[1], bg[2], 255])
+            .collect();
         ym_gpu::stream::upload_bytes(ctx, &view, 0, &fill)?;
         let mut passes = PassList::new(ctx, "fused");
         // The tail's origin is the picture position of the *core's* (0, 0): the frame's, moved by the
@@ -1882,7 +1899,12 @@ fn the_fused_tail_paints_the_letterbox_and_leaves_the_rest_of_the_view_alone() {
         let done = passes.submit()?.finish()?;
         Ok((chained, done.read(b).to_vec()))
     });
-    assert_bytes_equal("the fused tail against the chained pair", &fused, &chained, w);
+    assert_bytes_equal(
+        "the fused tail against the chained pair",
+        &fused,
+        &chained,
+        w,
+    );
     // Spot checks: the masked corner is the background, an inside pixel is not.
     assert_eq!(&fused[..4], &[bg[0], bg[1], bg[2], 255]);
     let inside = (35 * w + 45) * 4;
@@ -1909,7 +1931,9 @@ fn a_setup_without_a_stage_copies_its_core_on_the_device() {
     });
     let want = cut(&img, core);
     assert!(
-        got.iter().zip(&want).all(|(a, b)| a.to_bits() == b.to_bits()),
+        got.iter()
+            .zip(&want)
+            .all(|(a, b)| a.to_bits() == b.to_bits()),
         "a setup without a stage must copy bit for bit"
     );
 }
@@ -1929,7 +1953,10 @@ fn collapsed_stages_are_dropped_and_the_rest_runs() {
         Ok((p.is_noop(), p.halo_px()))
     });
     assert!(noop.0, "the collapsed stage must be dropped");
-    assert!(noop.1 > 0, "the receptive field is the plan's, so tiles keep their halo");
+    assert!(
+        noop.1 > 0,
+        "the receptive field is the plan's, so tiles keep their halo"
+    );
     assert!(bit_equal(&gpu_sharpen(dev, &collapsed, 1.0, &img), &img));
     // Together with a stage that works, the collapsed one changes nothing.
     let mut both = OutputSharpen::screen();
@@ -1944,8 +1971,18 @@ fn collapsed_stages_are_dropped_and_the_rest_runs() {
     let cpu = both.apply(&img, 1.0).expect("cpu");
     let gpu = gpu_sharpen(dev, &both, 1.0, &img);
     let alone = gpu_sharpen(dev, &OutputSharpen::screen(), 1.0, &img);
-    assert!(bit_equal(&gpu, &alone), "the collapsed extra stage changed the result");
-    assert!(ErrStats::of_images(&gpu, &cpu).max <= if hardware(dev) { HW_NOISY_MAX } else { NOISY_BOUND });
+    assert!(
+        bit_equal(&gpu, &alone),
+        "the collapsed extra stage changed the result"
+    );
+    assert!(
+        ErrStats::of_images(&gpu, &cpu).max
+            <= if hardware(dev) {
+                HW_NOISY_MAX
+            } else {
+                NOISY_BOUND
+            }
+    );
 }
 
 #[test]
@@ -1968,7 +2005,12 @@ fn a_flat_patch_inside_a_busy_frame_comes_back_bit_for_bit() {
         if patch.w <= 2 * halo + 4 || patch.h <= 2 * halo + 4 {
             continue; // the receptive field leaves no interior
         }
-        let inner = Rect::new(patch.x + halo, patch.y + halo, patch.w - 2 * halo, patch.h - 2 * halo);
+        let inner = Rect::new(
+            patch.x + halo,
+            patch.y + halo,
+            patch.w - 2 * halo,
+            patch.h - 2 * halo,
+        );
         let (a, b) = (cut(&out, inner), cut(&img, inner));
         assert!(
             a.iter().zip(&b).all(|(x, y)| x.to_bits() == y.to_bits()),

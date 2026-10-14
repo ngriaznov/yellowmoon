@@ -77,7 +77,7 @@ use crate::device::{GpuContext, GpuError, StorageMode};
 use crate::image::GpuImage;
 use crate::pool::PooledBuffer;
 use crate::queue::CancelToken;
-use crate::stream::{Counters, Pending, PassList, ReadId, upload_bytes};
+use crate::stream::{Counters, PassList, Pending, ReadId, upload_bytes};
 use crate::tiles::{Tile, TilePlan};
 
 /// The stage whose value is written (the stop of the chain).
@@ -682,7 +682,11 @@ impl ChainTables {
         }
         let (data, desc) = lut_data(lut);
         let bytes = (data.len() * 4) as u64;
-        let buf = Arc::new(storage_buffer(ctx, "chain lut", bytemuck::cast_slice(&data))?);
+        let buf = Arc::new(storage_buffer(
+            ctx,
+            "chain lut",
+            bytemuck::cast_slice(&data),
+        )?);
         self.luts.push(LutEntry {
             ptr,
             _owner: owner,
@@ -1020,7 +1024,12 @@ impl PreparedChain {
             offset.0 as u32,
             offset.1 as u32,
         ];
-        u.origin = [origin.0 as u32, origin.1 as u32, dst.at.0 as u32, dst.at.1 as u32];
+        u.origin = [
+            origin.0 as u32,
+            origin.1 as u32,
+            dst.at.0 as u32,
+            dst.at.1 as u32,
+        ];
         u.sp[1] = u32::from(mask.has_mask);
         u.sp[2] = mask.background;
         let (stop, kind, bits, dither) = match output {
@@ -1481,7 +1490,11 @@ mod tests {
 
     #[test]
     fn the_uniform_block_has_the_layout_of_the_wgsl_struct() {
-        for mode in [StorageMode::F32, StorageMode::F16Native, StorageMode::F16Packed] {
+        for mode in [
+            StorageMode::F32,
+            StorageMode::F16Native,
+            StorageMode::F16Packed,
+        ] {
             let source = shader_source(mode, KernelId::Color);
             let module = naga::front::wgsl::parse_str(&source)
                 .unwrap_or_else(|e| panic!("{}", e.emit_to_string(&source)));

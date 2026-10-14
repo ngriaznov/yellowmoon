@@ -68,10 +68,10 @@ impl GpuStages {
     /// Initially the colour pass, which has run on the device since M0-07.
     pub const SIGNED_OFF: Self = Self::COLOR;
 
-    /// The stages of an export that run on the device in this version (none: the export render is
-    /// the CPU reference until the wiring tasks land). Decides whether `ym` warms the kernels up
+    /// The stages of an export that run on the device in this version: the raw chain (the R6
+    /// demosaic of every full-resolution tile, G-03). Decides whether `ym` warms the kernels up
     /// while photos decode; **the wiring tasks add their stages here**.
-    pub const USED_BY_EXPORTS: Self = Self::NONE;
+    pub const USED_BY_EXPORTS: Self = Self::RAW_CHAIN;
 
     /// Whether every stage of `other` is in this set.
     #[must_use]
@@ -1266,8 +1266,10 @@ mod tests {
     }
 
     #[test]
-    fn nothing_of_an_export_runs_on_the_device_yet() {
-        assert!(GpuStages::USED_BY_EXPORTS.is_empty());
+    fn the_raw_chain_is_the_stage_of_an_export_on_the_device() {
+        // G-03: the R6 demosaic of every export tile. The wiring tasks that follow add theirs.
+        assert!(GpuStages::USED_BY_EXPORTS.contains(GpuStages::RAW_CHAIN));
+        assert!(!GpuStages::USED_BY_EXPORTS.contains(GpuStages::EXPORT_TAIL));
     }
 
     // --- the real stack -----------------------------------------------------------------------
@@ -1350,8 +1352,16 @@ mod tests {
             );
             return;
         }
-        // Today no export stage is on the device, so there is nothing worth warming up for.
-        assert!(slot.warm_up_for_exports().is_none());
+        // The raw chain is on the device for an export under `On`, so `ym` warms the kernels up
+        // while the photos develop; cancelled at once here (the job itself is tested above).
+        let started = slot.warm_up_for_exports().expect("the raw chain is on the device");
+        started.cancel();
+        let _ = started.wait();
+        // `Auto` runs the colour pass only (the signed-off stages), which no export uses: no warm-up.
+        let auto = open_gpu(GpuPolicy::Auto, MemoryBudget::default());
+        if auto.is_using() {
+            assert!(auto.warm_up_for_exports().is_none());
+        }
     }
 
     #[test]

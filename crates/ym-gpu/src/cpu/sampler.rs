@@ -659,7 +659,9 @@ mod tests {
                 if mask[y * w + x] == 0 {
                     want = Some(match want {
                         None => (x, y, x + 1, y + 1),
-                        Some((x0, y0, x1, y1)) => (x0.min(x), y0.min(y), x1.max(x + 1), y1.max(y + 1)),
+                        Some((x0, y0, x1, y1)) => {
+                            (x0.min(x), y0.min(y), x1.max(x + 1), y1.max(y + 1))
+                        }
                     });
                 }
             }

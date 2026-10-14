@@ -595,12 +595,7 @@ fn a_device_destroyed_in_the_middle_of_a_job_fails_its_transfers_and_never_hangs
                     .into_iter()
                     .find(|k| k.is_placeholder())
                     .expect("a kernel that is still a placeholder");
-                passes.dispatch(
-                    any,
-                    "doomed",
-                    &[(0, buf.binding())],
-                    (1, 1, 1),
-                )?;
+                passes.dispatch(any, "doomed", &[(0, buf.binding())], (1, 1, 1))?;
                 let id = passes.read(&buf, 0, 16);
                 let list = passes.submit().and_then(|p| p.finish()).map(|_| ());
                 drop(buf);

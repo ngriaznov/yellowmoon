@@ -179,7 +179,12 @@ pub fn encode_sample(
     let inside_buf = table("sampler inside", bytemuck::cast_slice(&inside))?;
     let out = GpuImage::alloc(ctx, "sampled", w, h, 4, Placement::whole(w, h))?;
     let u = SamplerU {
-        dims: [w as u32, h as u32, out.stride as u32, out.plane_len() as u32],
+        dims: [
+            w as u32,
+            h as u32,
+            out.stride as u32,
+            out.plane_len() as u32,
+        ],
         src: [
             src.width as u32,
             src.height as u32,
@@ -230,7 +235,10 @@ pub fn sample(
     let planar = out.take(&done, id)?;
     let n = w * h;
     let img = RgbImage::from_planar(w, h, planar[..3 * n].to_vec())?;
-    let mask: Vec<u8> = planar[3 * n..].iter().map(|&v| u8::from(v != 0.0)).collect();
+    let mask: Vec<u8> = planar[3 * n..]
+        .iter()
+        .map(|&v| u8::from(v != 0.0))
+        .collect();
     let any = mask.iter().any(|&v| v != 0);
     Ok(Sampled {
         img,

@@ -239,10 +239,7 @@ pub fn encode_c13_strided(
         )));
     }
     let limit = ctx.info().limits.max_compute_workgroups_per_dimension as usize;
-    let gx = window
-        .w
-        .div_ceil(encoding.pixels_per_thread())
-        .div_ceil(16);
+    let gx = window.w.div_ceil(encoding.pixels_per_thread()).div_ceil(16);
     let gy = window.h.div_ceil(16);
     if gx > limit || gy > limit {
         return Err(GpuError::InvalidInput(format!(
@@ -371,12 +368,8 @@ mod tests {
 
     #[test]
     fn rows_are_padded_to_whole_groups() {
-        let rgba = Encoding::Rgba8 {
-            background: [0; 3],
-        };
-        let rgb8 = Encoding::Rgb8 {
-            background: [0; 3],
-        };
+        let rgba = Encoding::Rgba8 { background: [0; 3] };
+        let rgb8 = Encoding::Rgb8 { background: [0; 3] };
         let rgb16 = Encoding::Rgb16 { bits: 16 };
         assert_eq!(row_words(rgba, 7), 7);
         assert_eq!([1, 4, 5, 8].map(|w| row_words(rgb8, w)), [3, 3, 6, 6]);

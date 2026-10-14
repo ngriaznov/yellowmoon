@@ -649,7 +649,11 @@ fn on_f32<R: Send + 'static>(
     body: impl FnOnce(&GpuContext) -> Result<R, ym_gpu::device::GpuError> + Send + 'static,
 ) -> Option<R> {
     let dev = gpus().first()?;
-    assert_eq!(dev.mode, StorageMode::F32, "the automatic device stores f32");
+    assert_eq!(
+        dev.mode,
+        StorageMode::F32,
+        "the automatic device stores f32"
+    );
     Some(
         dev.gpu
             .run(JobSpec::new(Priority::Viewport), move |ctx, _| body(ctx))
@@ -778,7 +782,14 @@ fn the_mask_plane_keeps_the_letterbox_out_of_the_colour_pass() {
             wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
         )?;
         let mut passes = PassList::new(ctx, "masked");
-        prepared.encode_stage(&mut passes, &src, Rect::whole(w, h), Stop::C12, &dst, (0, 0))?;
+        prepared.encode_stage(
+            &mut passes,
+            &src,
+            Rect::whole(w, h),
+            Stop::C12,
+            &dst,
+            (0, 0),
+        )?;
         prepared.encode_rgba8(
             &mut passes,
             &src,
@@ -813,14 +824,22 @@ fn the_mask_plane_keeps_the_letterbox_out_of_the_colour_pass() {
             if gone {
                 assert_eq!(got.to_bits(), 0, "pixel {i} plane {c}: outside is zero");
             } else {
-                assert_eq!(got.to_bits(), plain[c * n + i].to_bits(), "pixel {i} plane {c}");
+                assert_eq!(
+                    got.to_bits(),
+                    plain[c * n + i].to_bits(),
+                    "pixel {i} plane {c}"
+                );
             }
         }
         assert_eq!(stage[3 * n + i], mask[i], "pixel {i}: the mask follows");
         if gone {
             assert_eq!(&rgba[4 * i..4 * i + 4], &[200, 100, 50, 255], "pixel {i}");
         } else {
-            assert_eq!(&rgba[4 * i..4 * i + 4], &plain_rgba[4 * i..4 * i + 4], "pixel {i}");
+            assert_eq!(
+                &rgba[4 * i..4 * i + 4],
+                &plain_rgba[4 * i..4 * i + 4],
+                "pixel {i}"
+            );
         }
     }
 }
@@ -903,9 +922,7 @@ fn other_look(bump: f64) -> Arc<LookTransform> {
         let t = tweak(c);
         [t[0] + bump, t[1], t[2]]
     });
-    Arc::new(
-        LookTransform::new(ym_color::look::LookInput::LogC4, None, Some(lut)).expect("look"),
-    )
+    Arc::new(LookTransform::new(ym_color::look::LookInput::LogC4, None, Some(lut)).expect("look"))
 }
 
 #[test]
@@ -916,9 +933,8 @@ fn an_unchanged_chain_uploads_nothing_a_curve_edit_16_kb_and_a_look_one_cube_onc
         luma: Curve::new(&[(0.0, 0.0), (0.5, 0.45), (1.0, 1.0)]).expect("curve"),
         ..CurveSet::default()
     };
-    let cube_bytes = |l: &LookTransform| {
-        (l.lut().expect("lut").cube.to_rgba_f32().len() * 4) as u64
-    };
+    let cube_bytes =
+        |l: &LookTransform| (l.lut().expect("lut").cube.to_rgba_f32().len() * 4) as u64;
     let (ba, bb) = (cube_bytes(&look_a), cube_bytes(&look_b));
     let measured = on_f32(move |ctx| {
         let mut t = ChainTables::new();
@@ -946,27 +962,69 @@ fn an_unchanged_chain_uploads_nothing_a_curve_edit_16_kb_and_a_look_one_cube_onc
         let none = chain_with(None, CurveSet::default());
         let look_none = prepare_cost(ctx, &mut t, &none);
         Ok((
-            first, again, cloned, graded, curve, curve_again, look_new, look_back,
-            look_reloaded, look_none, t.lut_count(), t.curve_set_count(),
+            first,
+            again,
+            cloned,
+            graded,
+            curve,
+            curve_again,
+            look_new,
+            look_back,
+            look_reloaded,
+            look_none,
+            t.lut_count(),
+            t.curve_set_count(),
         ))
     })
     .expect("device");
-    let (first, again, cloned, graded, curve, curve_again, look_new, look_back, reloaded, none, luts, sets) =
-        measured;
-    eprintln!("first prepare: {} uploads, {} bytes", first.uploads, first.uploaded_bytes);
-    assert!(first.uploaded_bytes > ba, "the first chain makes the tables");
-    for (what, c) in [("the same chain", again), ("a clone", cloned), ("a grade edit", graded)] {
+    let (
+        first,
+        again,
+        cloned,
+        graded,
+        curve,
+        curve_again,
+        look_new,
+        look_back,
+        reloaded,
+        none,
+        luts,
+        sets,
+    ) = measured;
+    eprintln!(
+        "first prepare: {} uploads, {} bytes",
+        first.uploads, first.uploaded_bytes
+    );
+    assert!(
+        first.uploaded_bytes > ba,
+        "the first chain makes the tables"
+    );
+    for (what, c) in [
+        ("the same chain", again),
+        ("a clone", cloned),
+        ("a grade edit", graded),
+    ] {
         assert_eq!(c.uploads, 0, "{what}: uploads");
         assert_eq!(c.uploaded_bytes, 0, "{what}: bytes");
         assert_eq!(c.submissions, 0, "{what}: submissions");
     }
-    assert_eq!(curve.uploaded_bytes, 4 * 1024 * 4, "a curve edit uploads the 16 KB of the curves");
+    assert_eq!(
+        curve.uploaded_bytes,
+        4 * 1024 * 4,
+        "a curve edit uploads the 16 KB of the curves"
+    );
     assert_eq!(curve.uploads, 1);
     assert_eq!(curve_again.uploaded_bytes, 0);
-    assert_eq!(look_new.uploaded_bytes, bb, "a new look uploads its cube, once");
+    assert_eq!(
+        look_new.uploaded_bytes, bb,
+        "a new look uploads its cube, once"
+    );
     assert_eq!(look_new.uploads, 1);
     assert_eq!(look_back.uploaded_bytes, 0, "the first look is still there");
-    assert_eq!(reloaded.uploaded_bytes, 0, "the same cube under another Arc is found by content");
+    assert_eq!(
+        reloaded.uploaded_bytes, 0,
+        "the same cube under another Arc is found by content"
+    );
     assert_eq!(none.uploaded_bytes, 0);
     assert_eq!(luts, 2, "two distinct cubes are held");
     assert_eq!(sets, 2, "and two distinct curve sets");
@@ -995,11 +1053,19 @@ fn a_prepared_chain_from_the_cache_renders_the_bits_of_a_fresh_one() {
         release_tables(ctx);
         let mut out = Vec::new();
         for chain in &sequence {
-            let cached = PreparedChain::new(ctx, chain)?
-                .render(ctx, &img, (0, 0), ColorOutput::Stage(Stop::C13))?;
+            let cached = PreparedChain::new(ctx, chain)?.render(
+                ctx,
+                &img,
+                (0, 0),
+                ColorOutput::Stage(Stop::C13),
+            )?;
             let mut fresh_tables = ChainTables::new();
-            let fresh = PreparedChain::with_tables(ctx, &mut fresh_tables, chain)?
-                .render(ctx, &img, (0, 0), ColorOutput::Stage(Stop::C13))?;
+            let fresh = PreparedChain::with_tables(ctx, &mut fresh_tables, chain)?.render(
+                ctx,
+                &img,
+                (0, 0),
+                ColorOutput::Stage(Stop::C13),
+            )?;
             out.push((cached, fresh));
         }
         release_tables(ctx);
@@ -1008,7 +1074,10 @@ fn a_prepared_chain_from_the_cache_renders_the_bits_of_a_fresh_one() {
     .expect("device");
     let mut distinct = std::collections::BTreeSet::new();
     for (i, (cached, fresh)) in result.iter().enumerate() {
-        assert_eq!(cached, fresh, "step {i}: the cached tables gave other pixels");
+        assert_eq!(
+            cached, fresh,
+            "step {i}: the cached tables gave other pixels"
+        );
         distinct.insert(
             planar(cached)
                 .iter()
@@ -1056,7 +1125,14 @@ fn device_images_need_an_f32_device() {
                 let src = GpuImage::upload_rgb(ctx, "f16 device", &img)?;
                 let dst = GpuImage::alloc(ctx, "f16 device out", 8, 8, 3, img.place)?;
                 let mut passes = PassList::new(ctx, "f16");
-                prepared.encode_stage(&mut passes, &src, Rect::whole(8, 8), Stop::C12, &dst, (0, 0))
+                prepared.encode_stage(
+                    &mut passes,
+                    &src,
+                    Rect::whole(8, 8),
+                    Stop::C12,
+                    &dst,
+                    (0, 0),
+                )
             });
         assert!(
             matches!(r, Err(ym_gpu::device::GpuError::InvalidInput(_))),
@@ -1088,12 +1164,47 @@ fn device_entry_points_refuse_bad_windows_and_planes() {
         let mut passes = PassList::new(ctx, "bad");
         // A window outside the source, an empty one, one that does not fit the destination, a
         // destination with another number of planes, a one-plane source.
-        results.push(prepared.encode_stage(&mut passes, &src, Rect::new(8, 8, 16, 16), Stop::C12, &dst, (0, 0)));
-        results.push(prepared.encode_stage(&mut passes, &src, Rect::new(0, 0, 0, 4), Stop::C12, &dst, (0, 0)));
-        results.push(prepared.encode_stage(&mut passes, &src, Rect::whole(16, 16), Stop::C12, &dst, (1, 0)));
-        results.push(prepared.encode_stage(&mut passes, &src, Rect::whole(16, 16), Stop::C12, &four, (0, 0)));
+        results.push(prepared.encode_stage(
+            &mut passes,
+            &src,
+            Rect::new(8, 8, 16, 16),
+            Stop::C12,
+            &dst,
+            (0, 0),
+        ));
+        results.push(prepared.encode_stage(
+            &mut passes,
+            &src,
+            Rect::new(0, 0, 0, 4),
+            Stop::C12,
+            &dst,
+            (0, 0),
+        ));
+        results.push(prepared.encode_stage(
+            &mut passes,
+            &src,
+            Rect::whole(16, 16),
+            Stop::C12,
+            &dst,
+            (1, 0),
+        ));
+        results.push(prepared.encode_stage(
+            &mut passes,
+            &src,
+            Rect::whole(16, 16),
+            Stop::C12,
+            &four,
+            (0, 0),
+        ));
         let one = GpuImage::alloc(ctx, "bad one", 16, 16, 1, img.place)?;
-        results.push(prepared.encode_stage(&mut passes, &one, Rect::whole(16, 16), Stop::C12, &one, (0, 0)));
+        results.push(prepared.encode_stage(
+            &mut passes,
+            &one,
+            Rect::whole(16, 16),
+            Stop::C12,
+            &one,
+            (0, 0),
+        ));
         Ok(results.into_iter().map(|r| r.is_err()).collect::<Vec<_>>())
     })
     .expect("device");

@@ -276,9 +276,10 @@ fn report_gpu(console: &mut Console, slot: &GpuSlot) {
 }
 
 /// Where the images of an export are made, for `device` in the JSON: `gpu` when the device is open
-/// and runs a stage of the export render ([`GpuStages::USED_BY_EXPORTS`], none in this version), else
-/// `cpu`. The export queue's own report will carry the answer per photo once stages move to the
-/// device (a photo that fell back to the CPU reports `cpu`).
+/// and runs a stage of the export render ([`GpuStages::USED_BY_EXPORTS`]: the raw chain), else `cpu`.
+/// A photo that a device error sent back to the CPU still says `gpu` here and carries the note
+/// ("The graphics card could not render this photo, so the CPU did: …"); the export queue's own
+/// report will carry the answer per photo when the export tail moves to the device.
 fn export_device(slot: Option<&GpuSlot>) -> &'static str {
     match slot {
         Some(slot) if slot.is_using() && slot.stages().intersects(GpuStages::USED_BY_EXPORTS) => {
@@ -357,7 +358,7 @@ fn run_checked(args: &RenderArgs, console: &mut Console) -> Result<u8, Failure> 
             return Err(Failure::new(exit::NO_GPU, no_gpu_message(&choice, reason)));
         }
         // As `BackgroundGpu` does for the other policies: the kernels an export will use compile
-        // while the photos develop (nothing yet: `GpuStages::USED_BY_EXPORTS` is empty).
+        // while the photos develop (`GpuStages::USED_BY_EXPORTS`: the raw chain).
         drop(slot.warm_up_for_exports());
         gpu_slot = Some(slot);
     } else if choice.policy == GpuPolicy::Off {
