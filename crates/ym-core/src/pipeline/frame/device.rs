@@ -156,19 +156,19 @@ impl ViewRoute {
         D: Send + 'static,
         R: Send + 'static,
     {
-        let handle = self
-            .gpu
-            .submit_with_token(self.spec, self.token.clone(), move |ctx, token| {
-                ctx.check_alive()?;
-                match work(ctx, token, &data) {
-                    Err(GpuError::OutOfBudget { .. } | GpuError::BufferTooLarge { .. }) => {
-                        ctx.pool().trim();
-                        release_tables(ctx);
-                        work(ctx, token, &data)
+        let handle =
+            self.gpu
+                .submit_with_token(self.spec, self.token.clone(), move |ctx, token| {
+                    ctx.check_alive()?;
+                    match work(ctx, token, &data) {
+                        Err(GpuError::OutOfBudget { .. } | GpuError::BufferTooLarge { .. }) => {
+                            ctx.pool().trim();
+                            release_tables(ctx);
+                            work(ctx, token, &data)
+                        }
+                        other => other,
                     }
-                    other => other,
-                }
-            });
+                });
         loop {
             if let Some(done) = handle.wait_timeout(POLL) {
                 return done?;
@@ -618,7 +618,9 @@ pub(super) fn interleave_display(
     });
     let outside = (planes == 4).then(|| {
         let mask = &planar[3 * n..4 * n];
-        mask.iter().map(|&m| u8::from(m != 0.0)).collect::<Vec<u8>>()
+        mask.iter()
+            .map(|&m| u8::from(m != 0.0))
+            .collect::<Vec<u8>>()
     });
     let any = outside.as_ref().is_some_and(|o| o.iter().any(|&v| v != 0));
     (rgb, outside.filter(|_| any))
@@ -653,7 +655,8 @@ pub(super) fn bands_of(spec: &ViewSpec, rows: usize) -> Vec<ViewSpec> {
         let h = rows.min(spec.out_h - y);
         bands.push(ViewSpec {
             out_h: h,
-            view_to_final: Affine::scale_translate(1.0, 1.0, 0.0, y as f64).then(&spec.view_to_final),
+            view_to_final: Affine::scale_translate(1.0, 1.0, 0.0, y as f64)
+                .then(&spec.view_to_final),
             dither_origin: (spec.dither_origin.0, spec.dither_origin.1 + y),
             ..spec.clone()
         });
@@ -734,10 +737,7 @@ mod tests {
             dither_origin: (0, 0),
         };
         let bands = bands_of(&spec, 8);
-        assert_eq!(
-            bands.iter().map(|b| b.out_h).collect::<Vec<_>>(),
-            [8, 8, 7]
-        );
+        assert_eq!(bands.iter().map(|b| b.out_h).collect::<Vec<_>>(), [8, 8, 7]);
         let mut row = 0;
         for b in &bands {
             assert_eq!((b.out_w, b.k, b.cache), (40, 2, true));

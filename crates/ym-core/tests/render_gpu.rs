@@ -770,7 +770,12 @@ mod view {
             let a = frame(&cpu, &src, &st);
             let b = frame(&dev, &src, &st);
             assert_eq!(a.report.device, ComputeDevice::Cpu);
-            assert_eq!(b.report.device, ComputeDevice::Gpu, "{name}: {:?}", b.report.notes);
+            assert_eq!(
+                b.report.device,
+                ComputeDevice::Gpu,
+                "{name}: {:?}",
+                b.report.notes
+            );
             assert!(no_gpu_note(&b), "{name}: {:?}", b.report.notes);
             assert_eq!(b.report.timings.sample_ms, 0.0, "{name}: the CPU sampled");
             assert_eq!((a.width, a.height), (b.width, b.height), "{name}");
@@ -784,7 +789,10 @@ mod view {
                 median <= 0.02 && p99 <= 0.05 && max <= 0.5,
                 "{name}: {median} {p99} {max}"
             );
-            assert!(worst <= 2 && mean < 0.25, "{name}: {worst} codes, mean {mean}");
+            assert!(
+                worst <= 2 && mean < 0.25,
+                "{name}: {worst} codes, mean {mean}"
+            );
             // The view stages alone come in far below them on lavapipe: twice the first measured
             // values (ΔE00 max 0.082, one code at worst, mean 7.1e-5 codes). A hardware adapter has
             // its own f32 rounding (fast-math on Metal), so it keeps the gates above and prints its
@@ -821,7 +829,10 @@ mod view {
         );
         // One device job for the whole frame: one submission, and one readback, of the RGBA8 frame.
         assert_eq!(cold.submissions, 1, "{cold:?}");
-        assert_eq!((cold.readbacks, cold.readback_bytes), (1, (w * h * 4) as u64));
+        assert_eq!(
+            (cold.readbacks, cold.readback_bytes),
+            (1, (w * h * 4) as u64)
+        );
         // The display-linear frame (the view and the stage's border, four f32 planes) stays resident
         // and is on the pool's ledger, and in the cache's byte count.
         let resident = in_use(&gpu) - before;
@@ -847,14 +858,21 @@ mod view {
         assert_eq!((t.sample_ms, t.pass_ms), (0.0, 0.0));
         assert!(t.output_ms > 0.0, "the move reports its time: {t:?}");
         assert_eq!(slide.submissions, 1, "{slide:?}");
-        assert_eq!((slide.readbacks, slide.readback_bytes), (1, (w * h * 4) as u64));
+        assert_eq!(
+            (slide.readbacks, slide.readback_bytes),
+            (1, (w * h * 4) as u64)
+        );
         assert!(
             slide.uploaded_bytes < 16 << 10,
             "a slider move uploaded {} bytes",
             slide.uploaded_bytes
         );
         assert_eq!(moved.report.device, ComputeDevice::Gpu);
-        assert_eq!(in_use(&gpu) - before, resident, "the move made no new resident frame");
+        assert_eq!(
+            in_use(&gpu) - before,
+            resident,
+            "the move made no new resident frame"
+        );
 
         // Back to the first value: the finished frame, no device work at all.
         let c2 = gpu.counters();
@@ -892,8 +910,8 @@ mod view {
                 [c[0] * 0.95 + 0.02, c[1], (c[2] * 1.04).min(1.0)]
             })
             .expect("cube");
-            let transform =
-                LookTransform::new(LookInput::LogC4, None, Some(Lut::from_cube(cube))).expect("look");
+            let transform = LookTransform::new(LookInput::LogC4, None, Some(Lut::from_cube(cube)))
+                .expect("look");
             Self {
                 transform: Arc::new(transform),
             }
@@ -946,8 +964,16 @@ mod view {
         let c0 = gpu.counters();
         let cold = frame(&r, &src, &st);
         let uploaded_cold = gpu.counters().since(c0).uploaded_bytes;
-        assert_eq!(cold.report.device, ComputeDevice::Gpu, "{:?}", cold.report.notes);
-        assert!(uploaded_cold >= cube_bytes, "the cube went up once: {uploaded_cold}");
+        assert_eq!(
+            cold.report.device,
+            ComputeDevice::Gpu,
+            "{:?}",
+            cold.report.notes
+        );
+        assert!(
+            uploaded_cold >= cube_bytes,
+            "the cube went up once: {uploaded_cold}"
+        );
         assert!(cold.report.runs.raw_work() > 0);
         // Edits of the grade: a control, a curve, the look's intensity, white balance.
         let edits: Vec<(&str, Box<dyn Fn(&mut DevelopSettings)>)> = vec![
@@ -1044,7 +1070,11 @@ mod view {
                 || matches!(result, Ok(Err(RenderError::Cancelled))),
             "{result:?}"
         );
-        assert_eq!(gpu.scheduler().pending(), 0, "nothing of the photo is left queued");
+        assert_eq!(
+            gpu.scheduler().pending(),
+            0,
+            "nothing of the photo is left queued"
+        );
         gate.send(()).expect("open the gate");
         job.wait().expect("gate job");
 
@@ -1053,7 +1083,10 @@ mod view {
         assert_eq!(f.report.device, ComputeDevice::Gpu);
         r.forget(other.id);
         r.forget(src.id);
-        assert!(in_use(&gpu) <= before + (1 << 20), "the ledger returns to its baseline");
+        assert!(
+            in_use(&gpu) <= before + (1 << 20),
+            "the ledger returns to its baseline"
+        );
     }
 
     #[test]
@@ -1093,18 +1126,20 @@ mod view {
                 } else {
                     ComputeDevice::Cpu
                 };
-                assert_eq!(b.report.device, want, "{name} {stages}: {:?}", b.report.notes);
+                assert_eq!(
+                    b.report.device, want,
+                    "{name} {stages}: {:?}",
+                    b.report.notes
+                );
                 assert_eq!(ran > 0, sampler || colour, "{name} {stages}: {ran} jobs");
                 assert!(no_gpu_note(&b), "{name} {stages}: {:?}", b.report.notes);
                 assert_eq!(
-                    b.report.runs.color_passes,
-                    1,
+                    b.report.runs.color_passes, 1,
                     "{name} {stages}: {:?}",
                     b.report.runs
                 );
                 assert_eq!(
-                    b.report.runs.output_passes,
-                    a.report.runs.output_passes,
+                    b.report.runs.output_passes, a.report.runs.output_passes,
                     "{name} {stages}"
                 );
                 let (median, p99, max) = golden(&a, &b);
@@ -1114,7 +1149,10 @@ mod view {
                     "{name} {stages}: ΔE00 {median} {p99} {max}, {worst} codes, mean {mean}"
                 );
                 if !sampler && !colour {
-                    assert_eq!(b.rgba, a.rgba, "{name} {stages}: no device, the CPU's bytes");
+                    assert_eq!(
+                        b.rgba, a.rgba,
+                        "{name} {stages}: no device, the CPU's bytes"
+                    );
                 }
             }
         }
@@ -1157,7 +1195,12 @@ mod view {
             let jobs = gpu.counters().submissions;
             let b = fresh(&banded, &photo, &st);
             let ran = gpu.counters().submissions - jobs;
-            assert_eq!(b.report.device, ComputeDevice::Gpu, "{name}: {:?}", b.report.notes);
+            assert_eq!(
+                b.report.device,
+                ComputeDevice::Gpu,
+                "{name}: {:?}",
+                b.report.notes
+            );
             assert!(ran >= 3, "{name}: the view was cut into {ran} jobs");
             assert!(
                 a.rgba == b.rgba,
@@ -1193,7 +1236,9 @@ mod view {
         // Warm up everything that is not a device job (the raw group, the plans), so that the two
         // requests below go straight to the device.
         let _ = frame(&r, &src, &st);
-        let _ = r.thumbnail_png(&src, &CancelToken::new()).expect("thumbnail");
+        let _ = r
+            .thumbnail_png(&src, &CancelToken::new())
+            .expect("thumbnail");
         let (gate_tx, gate_rx) = std::sync::mpsc::channel::<()>();
         let (ready_tx, ready_rx) = std::sync::mpsc::channel::<()>();
         let hold = gpu.submit(
@@ -1218,7 +1263,8 @@ mod view {
         let thumb = {
             let (r, src, order) = (r.clone(), src.clone(), Arc::clone(&order));
             std::thread::spawn(move || {
-                r.thumbnail_png(&src, &CancelToken::new()).expect("thumbnail");
+                r.thumbnail_png(&src, &CancelToken::new())
+                    .expect("thumbnail");
                 order.lock().expect("order").push("thumbnail");
             })
         };
@@ -1285,10 +1331,14 @@ mod view {
         assert_eq!(gpu.counters().submissions, jobs);
         assert_eq!(a.report.device, ComputeDevice::Cpu);
         // The thumbnail and the look tile too.
-        let t = off.thumbnail_png(&src, &CancelToken::new()).expect("thumbnail");
+        let t = off
+            .thumbnail_png(&src, &CancelToken::new())
+            .expect("thumbnail");
         assert_eq!(
             t,
-            on_cpu().thumbnail_png(&src, &CancelToken::new()).expect("thumbnail")
+            on_cpu()
+                .thumbnail_png(&src, &CancelToken::new())
+                .expect("thumbnail")
         );
         assert_eq!(gpu.counters().submissions, jobs);
     }
@@ -1676,18 +1726,21 @@ mod faults {
                 ("lost device", GpuFault::Lost),
             ] {
                 let Some(gpu) = gpu() else { return };
-                let strict = renderer_with(Some(Arc::clone(&gpu)), VIEW, true, Method::AdaptiveRatio);
+                let strict =
+                    renderer_with(Some(Arc::clone(&gpu)), VIEW, true, Method::AdaptiveRatio);
                 gpu.set_fault(Some(fault));
-                let frame = strict.viewport_frame(
-                    &src,
-                    &st,
-                    &FrameOptions::default(),
-                    &CancelToken::new(),
-                );
+                let frame =
+                    strict.viewport_frame(&src, &st, &FrameOptions::default(), &CancelToken::new());
                 let thumb = strict.thumbnail_png(&src, &CancelToken::new());
                 gpu.set_fault(None);
-                assert!(matches!(frame, Err(RenderError::Gpu(_))), "{name}: {frame:?}");
-                assert!(matches!(thumb, Err(RenderError::Gpu(_))), "{name}: {thumb:?}");
+                assert!(
+                    matches!(frame, Err(RenderError::Gpu(_))),
+                    "{name}: {frame:?}"
+                );
+                assert!(
+                    matches!(thumb, Err(RenderError::Gpu(_))),
+                    "{name}: {thumb:?}"
+                );
             }
         }
 

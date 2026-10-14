@@ -1390,10 +1390,7 @@ impl<'a> Job<'a> {
         let reason = error.to_string();
         tracing::warn!(error = %reason, "the device failed on a view; the CPU takes over");
         if matches!(error, GpuError::Shader(_)) {
-            self.r
-                .inner
-                .view_gpu_disabled
-                .store(true, Ordering::SeqCst);
+            self.r.inner.view_gpu_disabled.store(true, Ordering::SeqCst);
         }
         if self.opts.gpu_strict {
             return Err(RenderError::Gpu(reason));

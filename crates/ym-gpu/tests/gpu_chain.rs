@@ -43,6 +43,7 @@ use ym_gpu::cpu::vignette::VignetteProfile;
 use ym_gpu::cpu::{Cfa, Mosaic, NoiseDn, RgbImage};
 use ym_gpu::device::{GpuContext, GpuError, StorageMode};
 use ym_gpu::kernels::adaptive_ratio::{self, Balance, PreparedDemosaic};
+use ym_gpu::kernels::bilateral::SigmaHalf;
 use ym_gpu::queue::{CancelToken, JobSpec, Priority};
 
 /// The device with `f32` storage (the automatic one, since the device foundation).
@@ -210,22 +211,106 @@ fn light_chain_of(scene: &Scene, tags: &LensTags, noise: NoiseDn) -> Chain {
 // Running
 // ---------------------------------------------------------------------------------------------
 
+/// The half-resolution noise sigma of a photo and the gain at the centre of each cell, owned (what
+/// `ym-core` builds from `SigmaPlane` and `gain_plane`).
+struct HalfSigma {
+    width: usize,
+    height: usize,
+    data: Vec<f32>,
+    gains: Option<Vec<f32>>,
+}
+
+impl HalfSigma {
+    /// A smooth plane of sigmas around `level` with some texture, and (with `vignette`) a gain that
+    /// grows from 1 at the centre to about 1.8 at the corners.
+    fn new(frame_w: usize, frame_h: usize, level: f32, vignette: bool, seed: u64) -> HalfSigma {
+        let (width, height) = (frame_w / 2, frame_h / 2);
+        let mut rng = synth::Rng::new(seed);
+        let data = (0..width * height)
+            .map(|i| level * (0.6 + 0.8 * ((i % width) as f32 / width as f32)) + 0.0005 * rng.next_f32())
+            .collect();
+        let gains = vignette.then(|| {
+            (0..width * height)
+                .map(|i| {
+                    let (x, y) = ((i % width) as f32 / width as f32 - 0.5, (i / width) as f32 / height as f32 - 0.5);
+                    1.0 + 1.6 * (x * x + y * y)
+                })
+                .collect()
+        });
+        HalfSigma {
+            width,
+            height,
+            data,
+            gains,
+        }
+    }
+
+    fn view(&self) -> SigmaHalf<'_> {
+        SigmaHalf {
+            width: self.width,
+            height: self.height,
+            data: &self.data,
+            gains: self.gains.as_deref(),
+        }
+    }
+
+    /// The full-resolution map of the CPU chain by the rule of `ym-core`'s `full_sigma_map`.
+    fn full_map(&self, w: usize, h: usize) -> Vec<f32> {
+        let half = self.view();
+        let mut map = Vec::with_capacity(w * h);
+        for y in 0..h {
+            for x in 0..w {
+                map.push(half.at(x, y));
+            }
+        }
+        map
+    }
+}
+
 /// Everything one run needs, owned so that it can move to the device thread.
 #[derive(Clone)]
 struct Setup {
     scene: Arc<Scene>,
+    /// The CPU chain.
     chain: Arc<Chain>,
+    /// The chain the device walks: the CPU chain, or (with a half-resolution sigma) the same chain
+    /// without its full-resolution sigma map.
+    gpu_chain: Arc<Chain>,
     prepared: Prepared,
+    range: StageRange,
+    half: Option<Arc<HalfSigma>>,
 }
 
 impl Setup {
     fn new(scene: Scene, chain: Chain) -> Setup {
         let prepared = chain.prepare(&scene.raw()).expect("prepare");
+        let chain = Arc::new(chain);
         Setup {
             scene: Arc::new(scene),
-            chain: Arc::new(chain),
+            gpu_chain: Arc::clone(&chain),
+            chain,
             prepared,
+            range: StageRange::DEMOSAIC,
+            half: None,
         }
+    }
+
+    /// The same, run on the range R6 to R8.
+    fn raw_group(mut self) -> Setup {
+        self.range = StageRange::DEMOSAIC_TO_SHARPEN;
+        self
+    }
+
+    /// The chain gets its noise sigma from `half`: the CPU chain through the expanded map, the device
+    /// chain through the half-resolution plane (and has no map at all).
+    fn with_half(scene: Scene, mut chain: Chain, half: HalfSigma) -> Setup {
+        chain.sigma_map = Some(half.full_map(scene.width, scene.height));
+        let mut setup = Setup::new(scene, chain).raw_group();
+        let mut gpu_chain = (*setup.chain).clone();
+        gpu_chain.sigma_map = None;
+        setup.gpu_chain = Arc::new(gpu_chain);
+        setup.half = Some(Arc::new(half));
+        setup
     }
 
     fn output_size(&self) -> (usize, usize) {
@@ -248,13 +333,16 @@ impl Setup {
         let s = self.clone();
         dev.gpu
             .run(JobSpec::new(Priority::Viewport), move |ctx, cancel| {
-                GpuChain::new(&s.chain, &s.prepared, StageRange::DEMOSAIC)?.run_tile(
-                    ctx,
-                    &s.scene.raw(),
-                    out,
-                    cancel,
-                )
+                s.device_chain()?.run_tile(ctx, &s.scene.raw(), out, cancel)
             })
+    }
+
+    fn device_chain(&self) -> Result<GpuChain<'_>, GpuError> {
+        let g = GpuChain::new(&self.gpu_chain, &self.prepared, self.range)?;
+        match &self.half {
+            Some(h) => g.with_sigma(h.view()),
+            None => Ok(g),
+        }
     }
 }
 
@@ -606,7 +694,11 @@ fn the_chain_refuses_what_the_device_does_not_run() {
     for range in [
         StageRange {
             first: RawStage::Demosaic,
-            last: RawStage::Sharpen,
+            last: RawStage::Detail,
+        },
+        StageRange {
+            first: RawStage::Demosaic,
+            last: RawStage::Lens,
         },
         StageRange {
             first: RawStage::Normalize,
@@ -621,8 +713,24 @@ fn the_chain_refuses_what_the_device_does_not_run() {
         assert!(matches!(err, GpuError::InvalidInput(_)), "{err}");
     }
     assert_eq!(StageRange::DEMOSAIC.label(), "R6");
+    assert_eq!(StageRange::DEMOSAIC_TO_SHARPEN.label(), "R6..R8");
     assert!(StageRange::DEMOSAIC.contains(RawStage::Demosaic));
     assert!(!StageRange::DEMOSAIC.contains(RawStage::Denoise));
+    for stage in [RawStage::Denoise, RawStage::Detail, RawStage::Sharpen] {
+        assert!(StageRange::DEMOSAIC_TO_SHARPEN.contains(stage));
+    }
+    assert!(!StageRange::DEMOSAIC_TO_SHARPEN.contains(RawStage::Lens));
+    assert!(StageRange::DEMOSAIC_TO_SHARPEN.covers_sigma_stages());
+    assert!(!StageRange::DEMOSAIC.covers_sigma_stages());
+    // A half-resolution sigma only replaces the chain's map when no CPU stage reads the sigma.
+    let half = HalfSigma::new(64, 48, 0.01, false, 1);
+    let r6 = GpuChain::new(&chain, &prepared, StageRange::DEMOSAIC).expect("R6");
+    assert!(matches!(
+        r6.with_sigma(half.view()),
+        Err(GpuError::InvalidInput(_))
+    ));
+    let r8 = GpuChain::new(&chain, &prepared, StageRange::DEMOSAIC_TO_SHARPEN).expect("R6..R8");
+    assert!(r8.with_sigma(half.view()).is_ok());
     // Every other R6 method runs on the CPU only.
     for method in [
         Method::Menon,

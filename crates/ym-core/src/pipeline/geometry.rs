@@ -925,7 +925,12 @@ mod tests {
                         let sg = grid.sampler_grid();
                         assert_eq!(sg.is_pixel_copy(), grid.is_pixel_copy());
                         assert_eq!(sg.step_lengths(), grid.step_lengths());
-                        for (x, y) in [(0, 0), (out.0 - 1, 3), (7, out.1 - 1), (out.0 / 2, out.1 / 2)] {
+                        for (x, y) in [
+                            (0, 0),
+                            (out.0 - 1, 3),
+                            (7, out.1 - 1),
+                            (out.0 / 2, out.1 / 2),
+                        ] {
                             assert_eq!(
                                 sg.source(x, y),
                                 grid.source(x, y),

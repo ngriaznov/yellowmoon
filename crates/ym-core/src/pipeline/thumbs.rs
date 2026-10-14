@@ -26,8 +26,7 @@ use ym_looks::library::LookId;
 use super::RenderError;
 use super::color::{PhotoSource, with_look};
 use super::frame::{
-    FrameOptions, FullImage, FullRequest, RenderedFrame, ViewSpec, render_view,
-    sample_view_routed,
+    FrameOptions, FullImage, FullRequest, RenderedFrame, ViewSpec, render_view, sample_view_routed,
 };
 use super::geometry::Affine;
 use super::graph::{Job, Renderer};

@@ -548,7 +548,9 @@ impl DisplayFrame {
     /// alive, and the pool's ledger counts the device's).
     pub(crate) fn bytes(&self) -> usize {
         match &self.data {
-            DisplayData::Host { rgb, outside } => rgb.len() * 4 + outside.as_ref().map_or(0, Vec::len),
+            DisplayData::Host { rgb, outside } => {
+                rgb.len() * 4 + outside.as_ref().map_or(0, Vec::len)
+            }
             DisplayData::Device(d) => d.bytes(),
         }
     }
@@ -1041,11 +1043,7 @@ fn build_display(
 }
 
 /// The tail of a view as the device runs it: the stage's inputs and the encode's.
-fn tail_work(
-    grade: &GradePlan,
-    sharpening: &ViewSharpening,
-    spec: &ViewSpec,
-) -> TailWork {
+fn tail_work(grade: &GradePlan, sharpening: &ViewSharpening, spec: &ViewSpec) -> TailWork {
     TailWork {
         sharpen: sharpening.stage.clone(),
         scale: sharpening.scale,
@@ -2110,7 +2108,13 @@ mod sharpening_tests {
         // Frames shorter than a strip, as tall as one, a little taller, and three strips; two
         // receptive fields (full size and shrunk); with paper round the photo, so that the box is
         // not the frame.
-        for (w, h) in [(64usize, 5usize), (90, 255), (90, 256), (90, 300), (130, 700)] {
+        for (w, h) in [
+            (64usize, 5usize),
+            (90, 255),
+            (90, 256),
+            (90, 300),
+            (130, 700),
+        ] {
             for (step, border) in [(1.0, 0usize), (3.0, 2)] {
                 let (rgb, mask) = picture_with_paper(w, h, border);
                 let outside = (border > 0).then_some(mask.as_slice());
@@ -2181,7 +2185,11 @@ mod sharpening_tests {
             &sh,
         );
         assert!(matches!(result, Err(RenderError::Cancelled)));
-        assert_eq!(calls.get(), 2, "nothing is looked at, or computed, after the cancel");
+        assert_eq!(
+            calls.get(),
+            2,
+            "nothing is looked at, or computed, after the cancel"
+        );
     }
 
     #[test]
@@ -2223,126 +2231,128 @@ mod reference_sampler {
 
     use crate::pipeline::geometry::Grid;
 
-/// The sampling kernel the grid asks for.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Kernel {
-    /// Read the pixel the grid points at.
-    Copy,
-    /// Catmull-Rom bicubic.
-    Bicubic,
-    /// Bilinear averaged over `n x n` sub-samples per output pixel (shrinking).
-    Box(usize),
-}
-
-fn kernel_for(grid: &Grid) -> Kernel {
-    if grid.is_pixel_copy() {
-        return Kernel::Copy;
+    /// The sampling kernel the grid asks for.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Kernel {
+        /// Read the pixel the grid points at.
+        Copy,
+        /// Catmull-Rom bicubic.
+        Bicubic,
+        /// Bilinear averaged over `n x n` sub-samples per output pixel (shrinking).
+        Box(usize),
     }
-    let (sx, sy) = grid.step_lengths();
-    let ratio = sx.max(sy);
-    if ratio <= 1.25 {
-        Kernel::Bicubic
-    } else {
-        Kernel::Box((ratio - 0.25).ceil().clamp(2.0, 4.0) as usize)
+
+    fn kernel_for(grid: &Grid) -> Kernel {
+        if grid.is_pixel_copy() {
+            return Kernel::Copy;
+        }
+        let (sx, sy) = grid.step_lengths();
+        let ratio = sx.max(sy);
+        if ratio <= 1.25 {
+            Kernel::Bicubic
+        } else {
+            Kernel::Box((ratio - 0.25).ceil().clamp(2.0, 4.0) as usize)
+        }
     }
-}
 
-#[inline]
-fn bilinear(plane: &[f32], w: usize, h: usize, sx: f64, sy: f64) -> f32 {
-    let (ux, uy) = (
-        (sx - 0.5).clamp(0.0, w as f64 - 1.0),
-        (sy - 0.5).clamp(0.0, h as f64 - 1.0),
-    );
-    let (x0, y0) = (ux.floor() as usize, uy.floor() as usize);
-    let (x1, y1) = ((x0 + 1).min(w - 1), (y0 + 1).min(h - 1));
-    let (fx, fy) = ((ux - x0 as f64) as f32, (uy - y0 as f64) as f32);
-    let a = plane[y0 * w + x0] * (1.0 - fx) + plane[y0 * w + x1] * fx;
-    let b = plane[y1 * w + x0] * (1.0 - fx) + plane[y1 * w + x1] * fx;
-    a * (1.0 - fy) + b * fy
-}
+    #[inline]
+    fn bilinear(plane: &[f32], w: usize, h: usize, sx: f64, sy: f64) -> f32 {
+        let (ux, uy) = (
+            (sx - 0.5).clamp(0.0, w as f64 - 1.0),
+            (sy - 0.5).clamp(0.0, h as f64 - 1.0),
+        );
+        let (x0, y0) = (ux.floor() as usize, uy.floor() as usize);
+        let (x1, y1) = ((x0 + 1).min(w - 1), (y0 + 1).min(h - 1));
+        let (fx, fy) = ((ux - x0 as f64) as f32, (uy - y0 as f64) as f32);
+        let a = plane[y0 * w + x0] * (1.0 - fx) + plane[y0 * w + x1] * fx;
+        let b = plane[y1 * w + x0] * (1.0 - fx) + plane[y1 * w + x1] * fx;
+        a * (1.0 - fy) + b * fy
+    }
 
-/// Samples the `w x h` output pixels at offset `off` of `grid` from `src`, an image whose pixel
-/// `(0, 0)` is buffer pixel `origin`.
-pub(super) fn reference_sample_to_camera(
-    src: &RgbImage,
-    origin: (usize, usize),
-    grid: &Grid,
-    off: (usize, usize),
-    w: usize,
-    h: usize,
-) -> Sampled {
-    let kernel = kernel_for(grid);
-    let mut img = RgbImage::new(w, h);
-    let mut outside = vec![0u8; w * h];
-    let n = w * h;
-    let (rp, rest) = img.data.split_at_mut(n);
-    let (gp, bp) = rest.split_at_mut(n);
-    let (sw, sh) = (src.width, src.height);
-    let planes = [src.plane(0), src.plane(1), src.plane(2)];
-    let (ox, oy) = (origin.0 as f64, origin.1 as f64);
-    (
-        rp.par_chunks_mut(w.max(1)),
-        gp.par_chunks_mut(w.max(1)),
-        bp.par_chunks_mut(w.max(1)),
-        outside.par_chunks_mut(w.max(1)),
-    )
-        .into_par_iter()
-        .enumerate()
-        .for_each(|(y, (r, g, b, out))| {
-            let rows = [r, g, b];
-            for x in 0..w {
-                let (gx, gy) = (off.0 + x, off.1 + y);
-                match kernel {
-                    Kernel::Copy | Kernel::Bicubic => {
-                        let Some((sx, sy)) = grid.source(gx, gy) else {
-                            out[x] = 1;
-                            continue;
-                        };
-                        let (px, py) = (sx - ox, sy - oy);
-                        for c in 0..3 {
-                            rows[c][x] = if kernel == Kernel::Copy {
-                                let ix = (px.floor() as isize).clamp(0, sw as isize - 1) as usize;
-                                let iy = (py.floor() as isize).clamp(0, sh as isize - 1) as usize;
-                                planes[c][iy * sw + ix]
-                            } else {
-                                sample_catmull_rom(planes[c], sw, sh, px, py)
+    /// Samples the `w x h` output pixels at offset `off` of `grid` from `src`, an image whose pixel
+    /// `(0, 0)` is buffer pixel `origin`.
+    pub(super) fn reference_sample_to_camera(
+        src: &RgbImage,
+        origin: (usize, usize),
+        grid: &Grid,
+        off: (usize, usize),
+        w: usize,
+        h: usize,
+    ) -> Sampled {
+        let kernel = kernel_for(grid);
+        let mut img = RgbImage::new(w, h);
+        let mut outside = vec![0u8; w * h];
+        let n = w * h;
+        let (rp, rest) = img.data.split_at_mut(n);
+        let (gp, bp) = rest.split_at_mut(n);
+        let (sw, sh) = (src.width, src.height);
+        let planes = [src.plane(0), src.plane(1), src.plane(2)];
+        let (ox, oy) = (origin.0 as f64, origin.1 as f64);
+        (
+            rp.par_chunks_mut(w.max(1)),
+            gp.par_chunks_mut(w.max(1)),
+            bp.par_chunks_mut(w.max(1)),
+            outside.par_chunks_mut(w.max(1)),
+        )
+            .into_par_iter()
+            .enumerate()
+            .for_each(|(y, (r, g, b, out))| {
+                let rows = [r, g, b];
+                for x in 0..w {
+                    let (gx, gy) = (off.0 + x, off.1 + y);
+                    match kernel {
+                        Kernel::Copy | Kernel::Bicubic => {
+                            let Some((sx, sy)) = grid.source(gx, gy) else {
+                                out[x] = 1;
+                                continue;
                             };
-                        }
-                    }
-                    Kernel::Box(taps) => {
-                        let mut acc = [0.0f32; 3];
-                        let mut count = 0u32;
-                        for j in 0..taps {
-                            for i in 0..taps {
-                                let (fx, fy) = (
-                                    gx as f64 + (i as f64 + 0.5) / taps as f64,
-                                    gy as f64 + (j as f64 + 0.5) / taps as f64,
-                                );
-                                if let Some((sx, sy)) = grid.source_at(fx, fy) {
-                                    for c in 0..3 {
-                                        acc[c] += bilinear(planes[c], sw, sh, sx - ox, sy - oy);
-                                    }
-                                    count += 1;
-                                }
+                            let (px, py) = (sx - ox, sy - oy);
+                            for c in 0..3 {
+                                rows[c][x] = if kernel == Kernel::Copy {
+                                    let ix =
+                                        (px.floor() as isize).clamp(0, sw as isize - 1) as usize;
+                                    let iy =
+                                        (py.floor() as isize).clamp(0, sh as isize - 1) as usize;
+                                    planes[c][iy * sw + ix]
+                                } else {
+                                    sample_catmull_rom(planes[c], sw, sh, px, py)
+                                };
                             }
                         }
-                        if count == 0 {
-                            out[x] = 1;
-                        } else {
-                            for c in 0..3 {
-                                rows[c][x] = acc[c] / count as f32;
+                        Kernel::Box(taps) => {
+                            let mut acc = [0.0f32; 3];
+                            let mut count = 0u32;
+                            for j in 0..taps {
+                                for i in 0..taps {
+                                    let (fx, fy) = (
+                                        gx as f64 + (i as f64 + 0.5) / taps as f64,
+                                        gy as f64 + (j as f64 + 0.5) / taps as f64,
+                                    );
+                                    if let Some((sx, sy)) = grid.source_at(fx, fy) {
+                                        for c in 0..3 {
+                                            acc[c] += bilinear(planes[c], sw, sh, sx - ox, sy - oy);
+                                        }
+                                        count += 1;
+                                    }
+                                }
+                            }
+                            if count == 0 {
+                                out[x] = 1;
+                            } else {
+                                for c in 0..3 {
+                                    rows[c][x] = acc[c] / count as f32;
+                                }
                             }
                         }
                     }
                 }
-            }
-        });
-    let any_outside = outside.iter().any(|&v| v != 0);
-    Sampled {
-        img,
-        outside: any_outside.then_some(outside),
+            });
+        let any_outside = outside.iter().any(|&v| v != 0);
+        Sampled {
+            img,
+            outside: any_outside.then_some(outside),
+        }
     }
-}
 }
 
 #[cfg(test)]

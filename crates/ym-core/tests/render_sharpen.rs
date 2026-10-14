@@ -197,7 +197,9 @@ fn moving_the_slider_re_runs_only_the_stage_and_zero_runs_no_stage_with(r: &Rend
 
 #[test]
 fn moving_the_slider_re_runs_only_the_stage_and_zero_runs_no_stage() {
-    moving_the_slider_re_runs_only_the_stage_and_zero_runs_no_stage_with(&Renderer::neutral_only().expect("render thread"));
+    moving_the_slider_re_runs_only_the_stage_and_zero_runs_no_stage_with(
+        &Renderer::neutral_only().expect("render thread"),
+    );
 }
 
 #[test]
@@ -243,7 +245,9 @@ fn the_amount_changes_the_picture_and_zero_is_the_unsharpened_one_with(r: &Rende
 
 #[test]
 fn the_amount_changes_the_picture_and_zero_is_the_unsharpened_one() {
-    the_amount_changes_the_picture_and_zero_is_the_unsharpened_one_with(&Renderer::neutral_only().expect("render thread"));
+    the_amount_changes_the_picture_and_zero_is_the_unsharpened_one_with(
+        &Renderer::neutral_only().expect("render thread"),
+    );
 }
 
 #[test]
@@ -326,7 +330,9 @@ fn a_view_at_100_percent_is_the_sharpened_picture_the_export_writes_with(r: &Ren
 
 #[test]
 fn a_view_at_100_percent_is_the_sharpened_picture_the_export_writes() {
-    a_view_at_100_percent_is_the_sharpened_picture_the_export_writes_with(&Renderer::neutral_only().expect("render thread"));
+    a_view_at_100_percent_is_the_sharpened_picture_the_export_writes_with(
+        &Renderer::neutral_only().expect("render thread"),
+    );
 }
 
 #[test]
@@ -368,7 +374,9 @@ fn a_pan_at_100_percent_is_a_window_of_the_whole_picture_with(r: &Renderer) {
 
 #[test]
 fn a_pan_at_100_percent_is_a_window_of_the_whole_picture() {
-    a_pan_at_100_percent_is_a_window_of_the_whole_picture_with(&Renderer::neutral_only().expect("render thread"));
+    a_pan_at_100_percent_is_a_window_of_the_whole_picture_with(
+        &Renderer::neutral_only().expect("render thread"),
+    );
 }
 
 #[test]
@@ -414,7 +422,9 @@ fn a_letterbox_changes_nothing_inside_the_photo_with(r: &Renderer) {
 
 #[test]
 fn a_letterbox_changes_nothing_inside_the_photo() {
-    a_letterbox_changes_nothing_inside_the_photo_with(&Renderer::neutral_only().expect("render thread"));
+    a_letterbox_changes_nothing_inside_the_photo_with(
+        &Renderer::neutral_only().expect("render thread"),
+    );
 }
 
 #[test]
@@ -444,7 +454,9 @@ fn thumbnails_and_look_tiles_are_sharpened_at_their_own_scale_with(r: &Renderer)
 
 #[test]
 fn thumbnails_and_look_tiles_are_sharpened_at_their_own_scale() {
-    thumbnails_and_look_tiles_are_sharpened_at_their_own_scale_with(&Renderer::neutral_only().expect("render thread"));
+    thumbnails_and_look_tiles_are_sharpened_at_their_own_scale_with(
+        &Renderer::neutral_only().expect("render thread"),
+    );
 }
 
 #[test]
@@ -453,7 +465,9 @@ fn thumbnails_and_look_tiles_are_sharpened_at_their_own_scale_on_the_device() {
     thumbnails_and_look_tiles_are_sharpened_at_their_own_scale_with(&device(&gpu));
 }
 
-fn a_view_magnified_above_100_percent_is_the_sharpened_export_picture_made_bigger_with(r: &Renderer) {
+fn a_view_magnified_above_100_percent_is_the_sharpened_export_picture_made_bigger_with(
+    r: &Renderer,
+) {
     // The stage runs on the picture at 100 % (the pixels an export holds, s = 1) and the sharpened
     // picture is magnified: the view at 200 % is the sharpened export, Catmull-Rom filtered.
     let d = developed(800, 600);
@@ -512,13 +526,17 @@ fn a_view_magnified_above_100_percent_is_the_sharpened_export_picture_made_bigge
 
 #[test]
 fn a_view_magnified_above_100_percent_is_the_sharpened_export_picture_made_bigger() {
-    a_view_magnified_above_100_percent_is_the_sharpened_export_picture_made_bigger_with(&Renderer::neutral_only().expect("render thread"));
+    a_view_magnified_above_100_percent_is_the_sharpened_export_picture_made_bigger_with(
+        &Renderer::neutral_only().expect("render thread"),
+    );
 }
 
 #[test]
 fn a_view_magnified_above_100_percent_is_the_sharpened_export_picture_made_bigger_on_the_device() {
     let Some(gpu) = gpu() else { return };
-    a_view_magnified_above_100_percent_is_the_sharpened_export_picture_made_bigger_with(&device(&gpu));
+    a_view_magnified_above_100_percent_is_the_sharpened_export_picture_made_bigger_with(&device(
+        &gpu,
+    ));
 }
 
 fn moving_the_slider_on_a_magnified_view_re_runs_only_the_stage_with(r: &Renderer) {
@@ -545,7 +563,9 @@ fn moving_the_slider_on_a_magnified_view_re_runs_only_the_stage_with(r: &Rendere
 
 #[test]
 fn moving_the_slider_on_a_magnified_view_re_runs_only_the_stage() {
-    moving_the_slider_on_a_magnified_view_re_runs_only_the_stage_with(&Renderer::neutral_only().expect("render thread"));
+    moving_the_slider_on_a_magnified_view_re_runs_only_the_stage_with(
+        &Renderer::neutral_only().expect("render thread"),
+    );
 }
 
 #[test]
@@ -589,7 +609,9 @@ fn a_magnified_view_pans_and_letterboxes_like_the_whole_picture_with(r: &Rendere
 
 #[test]
 fn a_magnified_view_pans_and_letterboxes_like_the_whole_picture() {
-    a_magnified_view_pans_and_letterboxes_like_the_whole_picture_with(&Renderer::neutral_only().expect("render thread"));
+    a_magnified_view_pans_and_letterboxes_like_the_whole_picture_with(
+        &Renderer::neutral_only().expect("render thread"),
+    );
 }
 
 #[test]
@@ -629,7 +651,9 @@ fn the_tiles_of_a_magnified_sharpened_view_are_prepared_with_it_with(r: &Rendere
 }
 #[test]
 fn the_tiles_of_a_magnified_sharpened_view_are_prepared_with_it() {
-    the_tiles_of_a_magnified_sharpened_view_are_prepared_with_it_with(&Renderer::neutral_only().expect("render thread"));
+    the_tiles_of_a_magnified_sharpened_view_are_prepared_with_it_with(
+        &Renderer::neutral_only().expect("render thread"),
+    );
 }
 
 #[test]
@@ -637,4 +661,3 @@ fn the_tiles_of_a_magnified_sharpened_view_are_prepared_with_it_on_the_device() 
     let Some(gpu) = gpu() else { return };
     the_tiles_of_a_magnified_sharpened_view_are_prepared_with_it_with(&device(&gpu));
 }
-
