@@ -88,6 +88,16 @@ pub const UNIFIED_GPU_MAX_BYTES: u64 = DEFAULT_GPU_BUDGET_BYTES;
 /// 4 GiB up; the unit tests assert it.
 pub const UNIFIED_TOTAL_RAM_SHARE: (u64, u64) = (3, 5);
 
+/// What the CPU may take of `ram` bytes when the GPU takes `gpu_bytes` of the same memory:
+/// [`UNIFIED_TOTAL_RAM_SHARE`] of the RAM minus the GPU's share (zero when that is negative).
+fn shared_cpu_limit(ram: u64, gpu_bytes: u64) -> u64 {
+    let (num, den) = UNIFIED_TOTAL_RAM_SHARE;
+    (u128::from(ram) * u128::from(num) / u128::from(den))
+        .saturating_sub(u128::from(gpu_bytes))
+        .try_into()
+        .unwrap_or(u64::MAX)
+}
+
 impl MemoryBudget {
     /// The defaults scaled down to the machine: the CPU budget is at most half of the installed RAM.
     /// The GPU budget stays at its default (a GPU with its own memory, or no GPU); a GPU that shares
@@ -111,12 +121,18 @@ impl MemoryBudget {
     /// Metal on Apple silicon, an integrated GPU elsewhere), given the budgets it would have with
     /// separate memories and its `ram_bytes`.
     ///
-    /// The GPU gets `clamp(RAM / 4, 512 MiB, 4 GiB)` and the CPU budget is lowered by the same
-    /// amount (never below [`MIN_CPU_BUDGET_BYTES`]), so the two together stay under 0.6 of the RAM
-    /// ([`UNIFIED_TOTAL_RAM_SHARE`]): 8 GB gives 2 GiB and 2 GiB, 16 GB 4 GiB and 2 GiB, 64 GB
-    /// 4 GiB and 2 GiB. With the RAM unknown nothing changes. The proposal of `docs/gpu-plan.md`
-    /// section 4.8, pending the owner's answer (STATUS question 16); the whole rule is this
-    /// function and the constants above.
+    /// The GPU gets `clamp(RAM / 4, 512 MiB, 4 GiB)` and the CPU budget becomes
+    /// `min(cpu, 0.6 * RAM - gpu)` (never below [`MIN_CPU_BUDGET_BYTES`]), so the two together stay
+    /// under 0.6 of the RAM ([`UNIFIED_TOTAL_RAM_SHARE`]) and the CPU keeps everything the bound
+    /// leaves it: 8 GB gives 2 GiB and 2.8 GiB, 16 GB 4 GiB and 5.6 GiB, 64 GB 4 GiB and 6 GiB. With
+    /// the RAM unknown nothing changes.
+    ///
+    /// *History.* The first form of the rule (`docs/gpu-plan.md` section 4.8, G-01) lowered the CPU
+    /// budget by the whole GPU amount, which cut every Apple-silicon Mac to 2 GiB of CPU budget
+    /// while only the colour pass used the device (the graph caches fall to a third and the finished
+    /// frames to a third with it). The GPU rule is unchanged; the CPU rule only claims what the 0.6
+    /// bound still allows. Proposal pending the owner's answer (STATUS question 16); the whole rule
+    /// is this function and the constants above.
     #[must_use]
     pub fn for_unified_memory(self, ram_bytes: Option<u64>) -> Self {
         let Some(ram) = ram_bytes else {
@@ -128,7 +144,7 @@ impl MemoryBudget {
             gpu_bytes,
             cpu_bytes: self
                 .cpu_bytes
-                .saturating_sub(gpu_bytes)
+                .min(shared_cpu_limit(ram, gpu_bytes))
                 .max(MIN_CPU_BUDGET_BYTES),
             ..self
         }
@@ -1034,12 +1050,18 @@ mod tests {
     }
 
     #[test]
-    fn a_gpu_that_shares_the_ram_takes_a_quarter_of_it_out_of_the_cpu_budget() {
-        // 8, 16 and 64 GB unified machines (docs/gpu-plan.md section 4.8).
-        for (ram, gpu, cpu) in [(8, 2, 2), (16, 4, 2), (64, 4, 2)] {
+    fn a_gpu_that_shares_the_ram_takes_a_quarter_of_it_and_the_cpu_keeps_what_the_bound_leaves() {
+        // 8, 16 and 64 GB unified machines (docs/gpu-plan.md section 4.8): the CPU budget is
+        // min(its own, 0.6 x RAM - GPU), not its own minus the whole GPU amount (which cut every
+        // Mac to 2 GiB).
+        for (ram, gpu, cpu) in [
+            (8, 2 * GIB, 8 * GIB * 3 / 5 - 2 * GIB),
+            (16, 4 * GIB, 16 * GIB * 3 / 5 - 4 * GIB),
+            (64, 4 * GIB, 6 * GIB),
+        ] {
             let b = MemoryBudget::for_ram(Some(ram * GIB)).for_unified_memory(Some(ram * GIB));
-            assert_eq!(b.gpu_bytes, gpu * GIB, "{ram} GB: GPU");
-            assert_eq!(b.cpu_bytes, cpu * GIB, "{ram} GB: CPU");
+            assert_eq!(b.gpu_bytes, gpu, "{ram} GB: GPU");
+            assert_eq!(b.cpu_bytes, cpu, "{ram} GB: CPU");
             assert_eq!(b.max_mosaics, MemoryBudget::default().max_mosaics);
             assert_eq!(b.max_photos, MemoryBudget::default().max_photos);
         }
@@ -1065,7 +1087,28 @@ mod tests {
             );
             assert!(b.gpu_bytes >= UNIFIED_GPU_MIN_BYTES && b.gpu_bytes <= UNIFIED_GPU_MAX_BYTES);
             assert!(b.cpu_bytes >= MIN_CPU_BUDGET_BYTES);
+            // The CPU gives up only what the bound makes it: it keeps its own budget when that
+            // fits, and otherwise takes exactly what 0.6 of the RAM leaves after the GPU.
+            let own = MemoryBudget::for_ram(Some(ram)).cpu_bytes;
+            assert!(b.cpu_bytes <= own, "{ram} bytes of RAM");
+            assert!(
+                b.cpu_bytes == own || b.cpu_bytes == ram * num / den - b.gpu_bytes,
+                "{ram} bytes of RAM: CPU {} is neither its own {own} nor the bound's remainder",
+                b.cpu_bytes
+            );
         }
+    }
+
+    #[test]
+    fn a_unified_mac_with_plenty_of_ram_keeps_most_of_its_cpu_budget() {
+        // The literal rule (lowering the CPU budget by the whole GPU amount) left every Apple-silicon
+        // Mac 2 GiB of CPU budget while only the colour pass used the device.
+        for ram in [16u64, 24, 32, 64, 128] {
+            let b = MemoryBudget::for_ram(Some(ram * GIB)).for_unified_memory(Some(ram * GIB));
+            assert!(b.cpu_bytes > 2 * GIB + GIB / 2, "{ram} GB: {}", b.cpu_bytes);
+        }
+        let b = MemoryBudget::for_ram(Some(24 * GIB)).for_unified_memory(Some(24 * GIB));
+        assert_eq!(b.cpu_bytes, 6 * GIB, "24 GB and up: the CPU default is untouched");
     }
 
     #[test]

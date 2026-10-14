@@ -1029,11 +1029,17 @@ mod tests {
     #[test]
     fn a_unified_adapter_gets_the_unified_budgets_and_is_opened_again_only_when_they_differ() {
         for (ram, opens, gpu, cpu) in [
-            // 16 GB: the GPU share is the default 4 GiB, so one open; the CPU budget is lowered.
-            (16, vec![Some(4 * GIB)], 4, 2),
+            // 16 GB: the GPU share is the default 4 GiB, so one open; the CPU budget is what 0.6 of
+            // the RAM leaves (`min(cpu, 0.6 * RAM - GPU)`, `MemoryBudget::for_unified_memory`).
+            (16, vec![Some(4 * GIB)], 4 * GIB, 16 * GIB * 3 / 5 - 4 * GIB),
             // 8 GB: 2 GiB differs from the 4 GiB the first open asked for, so a second open.
-            (8, vec![Some(4 * GIB), Some(2 * GIB)], 2, 2),
-            (64, vec![Some(4 * GIB)], 4, 2),
+            (
+                8,
+                vec![Some(4 * GIB), Some(2 * GIB)],
+                2 * GIB,
+                8 * GIB * 3 / 5 - 2 * GIB,
+            ),
+            (64, vec![Some(4 * GIB)], 4 * GIB, 6 * GIB),
         ] {
             let probe = FakeProbe::new(Adapter::Unified);
             let slot = GpuOpener::new(GpuPolicy::Auto, MemoryBudget::for_ram(Some(ram * GIB)))
@@ -1041,8 +1047,8 @@ mod tests {
                 .with_probe(probe.clone())
                 .open();
             assert_eq!(*probe.budgets.lock().expect("b"), opens, "{ram} GB");
-            assert_eq!(slot.budget().gpu_bytes, gpu * GIB, "{ram} GB: GPU");
-            assert_eq!(slot.budget().cpu_bytes, cpu * GIB, "{ram} GB: CPU");
+            assert_eq!(slot.budget().gpu_bytes, gpu, "{ram} GB: GPU");
+            assert_eq!(slot.budget().cpu_bytes, cpu, "{ram} GB: CPU");
             assert!(slot.shares_memory());
             assert!(slot.is_using());
             // Exactly one device is left open: the first was closed before the second started.

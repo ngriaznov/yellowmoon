@@ -163,7 +163,8 @@ impl Chain {
     /// What R6 gets besides the mosaic: the R4 gains, the noise model ([`noise_dn`](Self::noise_dn):
     /// zero when it is not known or not usable) and the lateral CA curves `ca`
     /// ([`ca_curves`](Self::ca_curves)).
-    fn demosaic_inputs<'a>(&self, ca: Option<&'a CaCurves>) -> DemosaicInputs<'a> {
+    #[must_use]
+    pub fn demosaic_inputs<'a>(&self, ca: Option<&'a CaCurves>) -> DemosaicInputs<'a> {
         DemosaicInputs {
             gains: self.gains,
             noise: self.noise_dn(),
@@ -178,7 +179,8 @@ impl Chain {
     /// table, or `decode.chromatic_aberration` off, which `LensGeometry::new` already applied) and
     /// for a distortion table the curves cannot be sampled from. The curves belong to the frame, not
     /// the tile, so every tile of a frame sees the same ones.
-    fn ca_curves(&self) -> Option<CaCurves> {
+    #[must_use]
+    pub fn ca_curves(&self) -> Option<CaCurves> {
         if self.method != Method::AdaptiveRatio {
             return None;
         }
@@ -195,7 +197,8 @@ impl Chain {
     /// of this chain takes its CA out of R9 ([`LensGeometry::with_ca_on_mosaic`]); `None` for a
     /// chain without a lens or whose lens leaves its CA to R9. They belong to the frame, so every
     /// tile of a frame sees the same ones.
-    fn mosaic_ca_curves(&self) -> Option<CaCurves> {
+    #[must_use]
+    pub fn mosaic_ca_curves(&self) -> Option<CaCurves> {
         self.lens.as_ref()?.mosaic_ca_curves()
     }
 
@@ -329,12 +332,36 @@ impl Chain {
 
     /// Runs the part of the output covered by `out` (output coordinates: those of the lens crop,
     /// or of the frame when there is no lens stage) and returns exactly that rectangle.
+    ///
+    /// This is [`begin_tile`](Self::begin_tile) followed by every stage in turn
+    /// ([`TileRun::run_to_end`]) and [`TileRun::finish`]; a caller that runs some stages elsewhere
+    /// (the GPU chain) steps the same sequence and takes over where it wants to.
     pub fn run_tile(
         &self,
         raw: &RawFrame<'_>,
         prepared: &Prepared,
         out: Rect,
     ) -> Result<RgbImage, CpuError> {
+        let mut run = self.begin_tile(raw, prepared, out)?;
+        run.run_to_end()?;
+        run.finish()
+    }
+
+    /// Starts the tile `out` (output coordinates, as [`run_tile`](Self::run_tile)): validates the
+    /// inputs, walks the stages backwards to find the rectangle each one must receive, cuts the first
+    /// out of the raw frame and runs R1 (and R3 when the profile is set). The returned [`TileRun`]
+    /// has run no further stage; step it with [`TileRun::step`] or [`TileRun::run_until`].
+    ///
+    /// # Errors
+    ///
+    /// [`CpuError`] for inputs of the wrong size, a tile outside the output, or levels the
+    /// normalisation refuses.
+    pub fn begin_tile<'c, 'r>(
+        &'c self,
+        raw: &RawFrame<'r>,
+        prepared: &Prepared,
+        out: Rect,
+    ) -> Result<TileRun<'c, 'r>, CpuError> {
         self.validate(raw)?;
         let frame = Rect::whole(raw.width, raw.height);
         let (ow, oh) = self.output_size(raw.width, raw.height);
@@ -351,119 +378,325 @@ impl Chain {
         for i in (0..stages.len()).rev() {
             need[i] = stages[i].input_rect(need[i + 1], frame);
         }
-
         let mosaic_ca = self.mosaic_ca_curves();
-        let mut cur = need[0];
-        let (mut mosaic, mut mask) = self.mosaic_of(raw, cur, false)?; // R1 (+ R3 when the profile is set)
-        let mut rgb: Option<RgbImage> = None;
-        let mut classical: Option<RgbImage> = None;
+        let cur = need[0];
+        let (mosaic, mask) = self.mosaic_of(raw, cur, false)?; // R1 (+ R3 when the profile is set)
+        Ok(TileRun {
+            chain: self,
+            raw: *raw,
+            prepared: *prepared,
+            out,
+            stages,
+            need,
+            next: 0,
+            cur,
+            mosaic,
+            mask,
+            rgb: None,
+            classical: None,
+            mosaic_ca,
+            result: None,
+        })
+    }
+}
 
+/// What the demosaic stage of a [`TileRun`] is about to receive: the balanced mosaic of the tile and
+/// the rectangle of its output (see [`TileRun::demosaic_input`]).
+#[derive(Debug)]
+pub struct DemosaicInput<'a> {
+    /// The mosaic R6 receives (R1, R3, R4, R5 and R5b done), balanced with the R4 gains.
+    pub mosaic: &'a Mosaic,
+    /// The rectangle of the output the next stage needs, in the coordinates of [`mosaic`](Self::mosaic):
+    /// the demosaic is asked for these pixels only, the rest of the mosaic is their context.
+    pub core: Rect,
+    /// The demosaic method of the chain.
+    pub method: Method,
+}
+
+/// One tile of a [`Chain`] in progress: the stages run one at a time, so that a stage can be run
+/// somewhere else (the GPU) and the tile continued from its result. [`Chain::run_tile`] is a
+/// `TileRun` stepped to the end.
+///
+/// The state is what the old single loop kept in local variables: the rectangle each stage must
+/// receive, the current rectangle, the mosaic with its clip mask until the demosaic, then the planar
+/// image (and the classical copy the detail term needs). Stepping all the way gives the bits
+/// `Chain::run_tile` always gave; the golden set pins that.
+#[derive(Debug)]
+pub struct TileRun<'c, 'r> {
+    chain: &'c Chain,
+    raw: RawFrame<'r>,
+    prepared: Prepared,
+    out: Rect,
+    stages: Vec<Stage<'c>>,
+    need: Vec<Rect>,
+    next: usize,
+    cur: Rect,
+    mosaic: Mosaic,
+    mask: ClipMask,
+    rgb: Option<RgbImage>,
+    classical: Option<RgbImage>,
+    mosaic_ca: Option<CaCurves>,
+    /// The tile's output, set by the last stage (R9 returns the tile, not an image to crop).
+    result: Option<RgbImage>,
+}
+
+impl<'c> TileRun<'c, '_> {
+    /// The stages of the chain in processing order ([`Chain::stages`]).
+    #[must_use]
+    pub fn stages(&self) -> &[Stage<'c>] {
+        &self.stages
+    }
+
+    /// Index of the stage that runs next (`stages().len()` once every stage has run).
+    #[must_use]
+    pub fn next_stage(&self) -> usize {
+        self.next
+    }
+
+    /// Whether every stage has run.
+    #[must_use]
+    pub fn is_finished(&self) -> bool {
+        self.next >= self.stages.len()
+    }
+
+    /// The rectangle (output coordinates for the lens stage, frame coordinates before it) that
+    /// stage `i` receives; `i == stages().len()` is the output rectangle.
+    #[must_use]
+    pub fn need(&self, i: usize) -> Rect {
+        self.need[i]
+    }
+
+    /// The rectangle the current data covers (the input of the next stage).
+    #[must_use]
+    pub fn current_rect(&self) -> Rect {
+        self.cur
+    }
+
+    /// The output rectangle of the tile.
+    #[must_use]
+    pub fn out(&self) -> Rect {
+        self.out
+    }
+
+    /// The mosaic as it is now (before the demosaic stage has run).
+    #[must_use]
+    pub fn mosaic(&self) -> &Mosaic {
+        &self.mosaic
+    }
+
+    /// The planar image as it is now (after the demosaic stage has run).
+    #[must_use]
+    pub fn image(&self) -> Option<&RgbImage> {
+        self.rgb.as_ref()
+    }
+
+    /// The input of the demosaic stage when it is the next one to run: the balanced mosaic, the
+    /// rectangle of the output that is wanted from it, and the method. `None` at any other point.
+    #[must_use]
+    pub fn demosaic_input(&self) -> Option<DemosaicInput<'_>> {
+        let Some(Stage::Demosaic(method)) = self.stages.get(self.next).copied() else {
+            return None;
+        };
+        Some(DemosaicInput {
+            mosaic: &self.mosaic,
+            core: self.need[self.next + 1].relative_to(&self.cur),
+            method,
+        })
+    }
+
+    /// Runs the next stage and crops the data to what the one after it needs. Does nothing once
+    /// every stage has run.
+    ///
+    /// # Errors
+    ///
+    /// [`CpuError`] from the stage.
+    pub fn step(&mut self) -> Result<(), CpuError> {
+        let i = self.next;
+        let Some(stage) = self.stages.get(i).copied() else {
+            return Ok(());
+        };
+        let chain = self.chain;
+        let raw = self.raw;
         let take = |rgb: &mut Option<RgbImage>| -> Result<RgbImage, CpuError> {
             rgb.take()
                 .ok_or_else(|| CpuError::Mismatch("a stage ran before the demosaic".into()))
         };
-        for (i, stage) in stages.iter().enumerate() {
-            match stage {
-                Stage::Normalize | Stage::Vignette => {} // done in mosaic_of
-                Stage::Gains => gains::apply_gains(&mut mosaic, self.gains),
-                Stage::Highlights => {
-                    highlights::apply_offsets(&mut mosaic, &mask, &prepared.offsets)?
-                }
-                Stage::MosaicCa { .. } => {
-                    // R5b: the stage is on the list only when the curves exist.
-                    if let Some(curves) = &mosaic_ca {
-                        lens::correct_mosaic_ca(&mut mosaic, curves)?;
-                    }
-                }
-                Stage::Demosaic(method) => {
-                    // R6 hands the balanced mosaic of R4/R5 to every method; the adaptive ratio
-                    // demosaic undoes R4 inside `demosaic_with` (INTEGRATION.md section 4). The
-                    // gains and the noise are per frame, never per tile, so every tile of a
-                    // frame sees the same inputs. `Y_classical` of R7 is a copy of this output.
-                    let ca = self.ca_curves();
-                    rgb = Some(demosaic::demosaic_with(
-                        &mosaic,
-                        *method,
-                        &self.demosaic_inputs(ca.as_ref()),
-                    ));
-                }
-                Stage::Denoise { .. } => {
-                    let img = take(&mut rgb)?;
-                    let scale =
-                        detail::network_sigma_scale(self.noise_reduction.luminance, self.iso);
-                    let (plane, scalar) = self.sigma_tile(raw.width, cur, scale);
-                    let ns = plane
-                        .as_deref()
-                        .map_or(NoiseSigma::Scalar(scalar), NoiseSigma::Plane);
-                    if self.noise_reduction.needs_classical() {
-                        classical = Some(img.clone());
-                    }
-                    let params = self.denoise.unwrap_or_default();
-                    rgb = Some(denoise::bilateral_opponent(&img, &ns, &params));
-                }
-                Stage::Detail { .. } => {
-                    let img = take(&mut rgb)?;
-                    let (plane, scalar) = self.sigma_tile(raw.width, cur, 1.0);
-                    let ns = plane
-                        .as_deref()
-                        .map_or(NoiseSigma::Scalar(scalar), NoiseSigma::Plane);
-                    let mut colored = if self.noise_reduction.color > 0.0 {
-                        detail::chroma_guided_filter(&img, &ns, self.noise_reduction.color)
-                    } else {
-                        img
-                    };
-                    if let Some(cl) = classical.as_ref() {
-                        colored = detail::inject_detail(&colored, cl, self.noise_reduction.beta())?;
-                    }
-                    rgb = Some(colored);
-                }
-                Stage::Sharpen(CaptureSharpen::RichardsonLucy(params)) => {
-                    let img = take(&mut rgb)?;
-                    let (plane, scalar) = self.sigma_tile(raw.width, cur, 1.0);
-                    let ns = plane
-                        .as_deref()
-                        .map_or(NoiseSigma::Scalar(scalar), NoiseSigma::Plane);
-                    rgb = Some(sharpen::richardson_lucy(&img, params, &ns));
-                }
-                Stage::Sharpen(CaptureSharpen::Diffraction(params)) => {
-                    let img = take(&mut rgb)?;
-                    let noise = self.noise_dn();
-                    // The plan comes from the controls, the gains and the noise model, none of which
-                    // depends on the tile, so every tile of a frame gets the same plan. Inactive
-                    // (a bad gain): the stage is an identity.
-                    rgb = Some(
-                        match DiffractionPlan::new(params, self.gains, &noise, SPEC_LUMA) {
-                            Some(plan) => plan.apply(&img),
-                            None => img,
-                        },
-                    );
-                }
-                Stage::Lens(geo) => {
-                    let img = take(&mut rgb)?;
-                    return super::resample::resample_lens(&img, geo, out);
+        match stage {
+            Stage::Normalize | Stage::Vignette => {} // done in mosaic_of
+            Stage::Gains => gains::apply_gains(&mut self.mosaic, chain.gains),
+            Stage::Highlights => {
+                highlights::apply_offsets(&mut self.mosaic, &self.mask, &self.prepared.offsets)?
+            }
+            Stage::MosaicCa { .. } => {
+                // R5b: the stage is on the list only when the curves exist.
+                if let Some(curves) = &self.mosaic_ca {
+                    lens::correct_mosaic_ca(&mut self.mosaic, curves)?;
                 }
             }
-            // Crop to what the next stage needs (its input rectangle).
-            let next = need[i + 1];
-            if next != cur {
-                let r = next.relative_to(&cur);
-                match rgb.as_mut() {
-                    None => {
-                        mosaic = mosaic.extract(r);
-                        mask = mask.extract(r);
-                    }
-                    Some(img) => {
-                        *img = img.extract(r);
-                        if let Some(cl) = classical.as_mut() {
-                            *cl = cl.extract(r);
-                        }
-                    }
+            Stage::Demosaic(method) => {
+                // R6 hands the balanced mosaic of R4/R5 to every method; the adaptive ratio
+                // demosaic undoes R4 inside `demosaic_with` (INTEGRATION.md section 4). The
+                // gains and the noise are per frame, never per tile, so every tile of a
+                // frame sees the same inputs. `Y_classical` of R7 is a copy of this output.
+                let ca = chain.ca_curves();
+                self.rgb = Some(demosaic::demosaic_with(
+                    &self.mosaic,
+                    method,
+                    &chain.demosaic_inputs(ca.as_ref()),
+                ));
+            }
+            Stage::Denoise { .. } => {
+                let img = take(&mut self.rgb)?;
+                let scale = detail::network_sigma_scale(chain.noise_reduction.luminance, chain.iso);
+                let (plane, scalar) = chain.sigma_tile(raw.width, self.cur, scale);
+                let ns = plane
+                    .as_deref()
+                    .map_or(NoiseSigma::Scalar(scalar), NoiseSigma::Plane);
+                if chain.noise_reduction.needs_classical() {
+                    self.classical = Some(img.clone());
                 }
-                cur = next;
+                let params = chain.denoise.unwrap_or_default();
+                self.rgb = Some(denoise::bilateral_opponent(&img, &ns, &params));
+            }
+            Stage::Detail { .. } => {
+                let img = take(&mut self.rgb)?;
+                let (plane, scalar) = chain.sigma_tile(raw.width, self.cur, 1.0);
+                let ns = plane
+                    .as_deref()
+                    .map_or(NoiseSigma::Scalar(scalar), NoiseSigma::Plane);
+                let mut colored = if chain.noise_reduction.color > 0.0 {
+                    detail::chroma_guided_filter(&img, &ns, chain.noise_reduction.color)
+                } else {
+                    img
+                };
+                if let Some(cl) = self.classical.as_ref() {
+                    colored = detail::inject_detail(&colored, cl, chain.noise_reduction.beta())?;
+                }
+                self.rgb = Some(colored);
+            }
+            Stage::Sharpen(CaptureSharpen::RichardsonLucy(params)) => {
+                let img = take(&mut self.rgb)?;
+                let (plane, scalar) = chain.sigma_tile(raw.width, self.cur, 1.0);
+                let ns = plane
+                    .as_deref()
+                    .map_or(NoiseSigma::Scalar(scalar), NoiseSigma::Plane);
+                self.rgb = Some(sharpen::richardson_lucy(&img, &params, &ns));
+            }
+            Stage::Sharpen(CaptureSharpen::Diffraction(params)) => {
+                let img = take(&mut self.rgb)?;
+                let noise = chain.noise_dn();
+                // The plan comes from the controls, the gains and the noise model, none of which
+                // depends on the tile, so every tile of a frame gets the same plan. Inactive
+                // (a bad gain): the stage is an identity.
+                self.rgb = Some(
+                    match DiffractionPlan::new(&params, chain.gains, &noise, SPEC_LUMA) {
+                        Some(plan) => plan.apply(&img),
+                        None => img,
+                    },
+                );
+            }
+            Stage::Lens(geo) => {
+                let img = take(&mut self.rgb)?;
+                self.result = Some(super::resample::resample_lens(&img, geo, self.out)?);
+                self.next = self.stages.len();
+                return Ok(());
             }
         }
-        debug_assert_eq!(cur, out);
-        rgb.ok_or_else(|| CpuError::Mismatch("chain produced no image".into()))
+        self.next = i + 1;
+        self.crop_to(self.need[i + 1]);
+        Ok(())
+    }
+
+    /// Crops the data to `next`, the rectangle the stage after the one that just ran needs.
+    fn crop_to(&mut self, next: Rect) {
+        if next == self.cur {
+            return;
+        }
+        let r = next.relative_to(&self.cur);
+        match self.rgb.as_mut() {
+            None => {
+                self.mosaic = self.mosaic.extract(r);
+                self.mask = self.mask.extract(r);
+            }
+            Some(img) => {
+                *img = img.extract(r);
+                if let Some(cl) = self.classical.as_mut() {
+                    *cl = cl.extract(r);
+                }
+            }
+        }
+        self.cur = next;
+    }
+
+    /// Runs stages until the next one to run is stage `stop` (or the end if `stop` is beyond it).
+    ///
+    /// # Errors
+    ///
+    /// [`CpuError`] from a stage.
+    pub fn run_until(&mut self, stop: usize) -> Result<(), CpuError> {
+        while self.next < stop.min(self.stages.len()) {
+            self.step()?;
+        }
+        Ok(())
+    }
+
+    /// Runs every remaining stage.
+    ///
+    /// # Errors
+    ///
+    /// [`CpuError`] from a stage.
+    pub fn run_to_end(&mut self) -> Result<(), CpuError> {
+        self.run_until(self.stages.len())
+    }
+
+    /// Takes the place of the demosaic stage: `rgb` is its output for the rectangle
+    /// [`demosaic_input`](Self::demosaic_input) named (`core`), computed elsewhere. The tile
+    /// continues with the stage after it exactly as if the demosaic had run here and been cropped.
+    ///
+    /// # Errors
+    ///
+    /// [`CpuError::Mismatch`] when the demosaic is not the next stage or `rgb` is not the size of
+    /// the wanted rectangle.
+    pub fn supply_demosaic(&mut self, rgb: RgbImage) -> Result<(), CpuError> {
+        let i = self.next;
+        if !matches!(self.stages.get(i), Some(Stage::Demosaic(_))) {
+            return Err(CpuError::Mismatch(
+                "the demosaic is not the next stage of the tile".into(),
+            ));
+        }
+        let want = self.need[i + 1];
+        if (rgb.width, rgb.height) != (want.w, want.h) {
+            return Err(CpuError::Mismatch(format!(
+                "the supplied demosaic is {} x {}, the tile needs {} x {}",
+                rgb.width, rgb.height, want.w, want.h
+            )));
+        }
+        self.rgb = Some(rgb);
+        self.next = i + 1;
+        // The data now covers the rectangle the next stage needs; the mosaic is not read again.
+        self.cur = want;
+        Ok(())
+    }
+
+    /// The tile's output.
+    ///
+    /// # Errors
+    ///
+    /// [`CpuError::Mismatch`] when a stage is still to run, or the chain produced no image.
+    pub fn finish(mut self) -> Result<RgbImage, CpuError> {
+        if !self.is_finished() {
+            return Err(CpuError::Mismatch(format!(
+                "stage {} of {} has not run",
+                self.next,
+                self.stages.len()
+            )));
+        }
+        if let Some(r) = self.result.take() {
+            return Ok(r);
+        }
+        debug_assert_eq!(self.cur, self.out);
+        self.rgb
+            .ok_or_else(|| CpuError::Mismatch("chain produced no image".into()))
     }
 }
 
@@ -563,6 +796,130 @@ mod tests {
                 "lens={with_lens}: tiled chain differs from whole by {diff}"
             );
         }
+    }
+
+    fn adaptive_chain(w: usize, h: usize, with_lens: bool) -> Chain {
+        let mut chain = test_chain(w, h, with_lens);
+        chain.method = Method::AdaptiveRatio;
+        chain.noise = Some(NoiseDn { g: 1.3, r: 4.0 });
+        chain
+    }
+
+    #[test]
+    fn stepping_stage_by_stage_is_run_tile() {
+        let (w, h) = (150, 110);
+        let data = raw_of(w, h, 11);
+        let raw = RawFrame {
+            width: w,
+            height: h,
+            cfa: Cfa::RGGB,
+            data: &data,
+            qstep: None,
+        };
+        for with_lens in [false, true] {
+            let chain = adaptive_chain(w, h, with_lens);
+            let prepared = chain.prepare(&raw).expect("prepare");
+            let (ow, oh) = chain.output_size(w, h);
+            for out in [
+                Rect::whole(ow, oh),
+                Rect::new(33, 21, 41, 37),
+                Rect::new(0, 0, 17, 9),
+            ] {
+                let want = chain.run_tile(&raw, &prepared, out).expect("run_tile");
+                let mut run = chain.begin_tile(&raw, &prepared, out).expect("begin");
+                assert_eq!(run.next_stage(), 0);
+                assert!(!run.is_finished());
+                while !run.is_finished() {
+                    run.step().expect("step");
+                }
+                // A finished run steps no more.
+                run.step().expect("step after the end");
+                let got = run.finish().expect("finish");
+                assert_eq!(got.data, want.data, "lens={with_lens} {out:?}");
+                assert_eq!(got.place, want.place);
+            }
+        }
+    }
+
+    #[test]
+    fn a_demosaic_made_elsewhere_continues_the_tile_exactly() {
+        // The hand-off the GPU chain makes: run the stages before R6, take the mosaic and the wanted
+        // rectangle, demosaic it elsewhere (here: the CPU method over the whole mosaic, then the core
+        // cut out, which is what the device kernel computes for the core), supply it, finish.
+        let (w, h) = (150, 110);
+        let data = raw_of(w, h, 12);
+        let raw = RawFrame {
+            width: w,
+            height: h,
+            cfa: Cfa::RGGB,
+            data: &data,
+            qstep: None,
+        };
+        for with_lens in [false, true] {
+            let chain = adaptive_chain(w, h, with_lens);
+            let prepared = chain.prepare(&raw).expect("prepare");
+            let (ow, oh) = chain.output_size(w, h);
+            for out in [Rect::whole(ow, oh), Rect::new(40, 30, 50, 33)] {
+                let want = chain.run_tile(&raw, &prepared, out).expect("run_tile");
+                let mut run = chain.begin_tile(&raw, &prepared, out).expect("begin");
+                let first = run
+                    .stages()
+                    .iter()
+                    .position(|s| matches!(s, Stage::Demosaic(_)))
+                    .expect("a demosaic stage");
+                assert!(run.demosaic_input().is_none(), "R1 is next, not R6");
+                run.run_until(first).expect("stages before R6");
+                assert_eq!(run.next_stage(), first);
+                let input = run.demosaic_input().expect("the demosaic is next");
+                assert_eq!(input.method, Method::AdaptiveRatio);
+                let ca = chain.ca_curves();
+                let whole = demosaic::demosaic_with(
+                    input.mosaic,
+                    input.method,
+                    &chain.demosaic_inputs(ca.as_ref()),
+                );
+                let core = whole.extract(input.core);
+                assert_eq!((core.width, core.height), (input.core.w, input.core.h));
+                run.supply_demosaic(core).expect("supply");
+                assert_eq!(run.next_stage(), first + 1);
+                run.run_to_end().expect("the rest");
+                let got = run.finish().expect("finish");
+                assert_eq!(got.data, want.data, "lens={with_lens} {out:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn supplying_a_demosaic_at_the_wrong_moment_or_size_is_an_error() {
+        let (w, h) = (64, 48);
+        let data = raw_of(w, h, 13);
+        let raw = RawFrame {
+            width: w,
+            height: h,
+            cfa: Cfa::RGGB,
+            data: &data,
+            qstep: None,
+        };
+        let chain = adaptive_chain(w, h, false);
+        let prepared = chain.prepare(&raw).expect("prepare");
+        let mut run = chain
+            .begin_tile(&raw, &prepared, Rect::new(10, 10, 20, 20))
+            .expect("begin");
+        assert!(
+            run.supply_demosaic(RgbImage::new(20, 20)).is_err(),
+            "R1 is next"
+        );
+        assert!(run.finish().is_err(), "a tile with stages left has no output");
+        let mut run = chain
+            .begin_tile(&raw, &prepared, Rect::new(10, 10, 20, 20))
+            .expect("begin");
+        let first = run
+            .stages()
+            .iter()
+            .position(|s| matches!(s, Stage::Demosaic(_)))
+            .expect("demosaic");
+        run.run_until(first).expect("run");
+        assert!(run.supply_demosaic(RgbImage::new(3, 3)).is_err(), "wrong size");
     }
 
     #[test]
