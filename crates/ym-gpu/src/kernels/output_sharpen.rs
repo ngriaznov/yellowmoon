@@ -1,18 +1,26 @@
-//! Output sharpening on the GPU (RA-09): the WGSL port of [`crate::cpu::output_sharpen`], specified in
-//! `docs/algorithms/04-output-sharpening.md`.
+//! Output sharpening on the GPU (RA-09, device entry points G-04): the WGSL port of
+//! [`crate::cpu::output_sharpen`], specified in `docs/algorithms/04-output-sharpening.md`.
 //!
 //! [`PreparedSharpen::new`] derives the stages of an [`OutputSharpen`] for an output scale with the
-//! CPU reference's own plan code, rounds the CPU's `f64` kernel taps to `f32` and uploads them once;
-//! [`run`](PreparedSharpen::run) sharpens a whole planar image and
-//! [`run_tiled`](PreparedSharpen::run_tiled) does it tile by tile (core plus the exact receptive field
-//! of the plan, `docs/algorithms/04-output-sharpening.md` section 1.4) with the cores handed to a sink
-//! in raster order, like the colour kernel. Nothing here is wired into the render or export path: the
-//! raw stages and the export run the CPU reference, and wiring this one is a later decision.
+//! CPU reference's own plan code, rounds the CPU's `f64` kernel taps to `f32` and uploads them once.
+//! Two layers use it:
+//!
+//! * **Device in, device out** ([`encode`](PreparedSharpen::encode),
+//!   [`encode_rgba8`](PreparedSharpen::encode_rgba8)): record the passes into a
+//!   [`PassList`](crate::stream::PassList). The input is a [`GpuImage`] (three planes, optionally a
+//!   fourth one that marks the letterbox) and a `window` of it, the rectangle the stage reads: the
+//!   photo's bounding box, where the stage mirrors at its edge, exactly as the CPU does. The `core`
+//!   inside the window is what is written, either as three f32 planes of a destination image or, fused
+//!   with C13, the dither and the letterbox, as RGBA8 words.
+//! * **Host wrappers** ([`run`](PreparedSharpen::run), [`run_traced`](PreparedSharpen::run_traced),
+//!   [`run_tiled`](PreparedSharpen::run_tiled)): upload a planar host image, call the device entry
+//!   point, read the core back. They are thin layers on the first, so the two cannot differ
+//!   (`tests/gpu_output_sharpen.rs` checks the fused tail against the chained pair as well).
 //!
 //! # Passes
 //!
 //! One compute dispatch per pass over `output_sharpen.wgsl`, each with its own pipeline (the passes
-//! are separate [`KernelId`]s that share one source file). For each tile:
+//! are separate [`KernelId`]s that share one source file). For each compute rectangle:
 //!
 //! 1. luma `L` (per pixel, `f32`, the exact operation order of spec 3.1);
 //! 2. per stage: the high-pass in difference form (two passes), for methods 1 and 2 with a threshold
@@ -29,10 +37,10 @@
 //! # Precision decisions
 //!
 //! * **Storage is `f32` whatever the device's storage mode.** The colour kernels keep image
-//!   intermediates in f16, but the halo limiter compares luma values for equality and order (spec
-//!   5.4), and an f16 round trip would turn most of its ties into different counts. Every plane (`L`,
-//!   `t`, `h`, `D`, `Hacc`, gain terms, envelope maps) and the input and output pixels are `f32`
-//!   buffers; the sharpened pixels go back to the caller as `f32` planes.
+//!   intermediates in f16 in the legacy modes, but the halo limiter compares luma values for equality
+//!   and order (spec 5.4), and an f16 round trip would turn most of its ties into different counts.
+//!   Every plane (`L`, `t`, `h`, `D`, `Hacc`, gain terms, envelope maps) and the input and output
+//!   pixels are `f32` buffers.
 //! * **Accumulation is `f32`.** WGSL has no `f64`, so convolutions, window sums and the envelope
 //!   formula accumulate in `f32` (taps left to right, window row by row), the model of the C++
 //!   reference's `Accumulation::F32` mode, where the CPU port uses `f64`. The taps are the CPU's `f64`
@@ -51,21 +59,42 @@
 //!   numbers, and the proof that the kernel is bit-identical to the C++ reference's
 //!   `Accumulation::F32` mode (so every difference from the CPU is the accumulation precision), are in
 //!   `docs/algorithms/04-output-sharpening.md` section 10.
+//!
+//! # Fast-math (Metal, K8)
+//!
+//! Metal compiles with fast-math by default and `wgpu` 30 has no switch for it (`wgpu-hal` sets only
+//! the language version), so the kernel is written so that fast-math cannot change what matters:
+//!
+//! * **Identities are exact by construction.** A stage whose kernel has collapsed to one tap has an
+//!   exactly zero delta (every side tap is 0, the centre term is `L - L`), so [`PreparedSharpen::new`]
+//!   drops it; a setup with no stage left copies its input, bit for bit, on every device. The
+//!   transfer takes the ratio `(L + D) / max(L, floor)` as exactly 1 when `D == 0` instead of
+//!   dividing: Metal's `a / b` is `a * (1 / b)`, which is not 1 for many `a == b`.
+//! * **The luma cannot be fused.** Each product `(w c) c` of the luma goes through `abs` (a no-op for
+//!   the positive weights) so that no compiler can contract it with the following addition; the rank
+//!   counts then see the luma bits of the CPU port.
+//! * **What fast-math still changes** is the last bit of a division or square root, and the rounding
+//!   of accumulations it fuses (`fma`). Those move a sample by an ulp of its own size (1.5e-5 at the
+//!   ratio cap on a value of 8: the HDR vector), and flip rank counts at a handful of ties per
+//!   million pixels. Both are inherent to `f32` decisions and have their own columns in the tests
+//!   (`tests/gpu_output_sharpen.rs`, hardware adapters only); no lavapipe bound is loosened.
+
+use std::sync::Arc;
 
 use bytemuck::{Pod, Zeroable};
+use ym_color::encode::OutputSpace;
 
-use super::color::ColorImage;
+use super::color::{ColorImage, dither_table};
 use super::shader::KernelId;
-use super::util::{
-    OutKind, PixelData, Readback, STAGING, STORAGE_IN, STORAGE_OUT, STORAGE_SCRATCH, bind,
-    image_samples, storage_buffer, submit_with_readback, uniform_buffer, unpack,
-};
-use crate::cpu::RgbImage;
+use super::util::{OutKind, PixelData, STORAGE_IN, even, unpack};
 use crate::cpu::output_sharpen::{Method, OutputSharpen, SharpenPlan};
 use crate::cpu::tiling::{Halo, Rect};
-use crate::device::{GpuContext, GpuError, StorageMode};
+use crate::cpu::{Placement, RgbImage};
+use crate::device::{GpuContext, GpuError};
+use crate::image::GpuImage;
 use crate::pool::PooledBuffer;
 use crate::queue::CancelToken;
+use crate::stream::{Pending, PassList, ReadId};
 use crate::tiles::{Tile, TilePlan};
 
 /// Device bytes one pixel of a compute rectangle needs at most: the input (3 planes), `L`, `t`, `h`,
@@ -77,6 +106,13 @@ use crate::tiles::{Tile, TilePlan};
 /// device with a smaller binding limit must be checked by the caller (an oversized tile is refused
 /// with [`GpuError::BufferTooLarge`], not run).
 pub const BYTES_PER_PIXEL: u64 = 4 * (3 + 1 + 1 + 1 + 1 + 1 + 4 + 4 + 3);
+
+/// The size of the largest storage binding a run over the `compute` rectangle makes (K4 of
+/// `docs/gpu-plan.md`): four `f32` planes, either the limiter's working buffers or a source image
+/// with a mask plane.
+pub fn max_binding_bytes(compute: Rect) -> u64 {
+    16 * even(compute.w) as u64 * compute.h as u64
+}
 
 /// Threads per workgroup side (the shader's `@workgroup_size(16, 16, 1)`).
 const GROUP: u32 = 16;
@@ -99,6 +135,7 @@ enum Slot {
     WorkA = 8,
     WorkB = 9,
     Out = 10,
+    Dither = 11,
 }
 
 /// The WGSL `main` that runs `function`, appended after the shared source.
@@ -112,7 +149,7 @@ fn entry(function: &str) -> String {
 /// The pass of `id`: its WGSL function and the bindings its entry point uses (the auto-generated
 /// bind group layout holds exactly these).
 fn pass_of(id: KernelId) -> Option<(&'static str, &'static [Slot])> {
-    use Slot::{Dacc, Hacc, Hp, Img, Lum, Out, Params, Taps, Tmp, WorkA, WorkB};
+    use Slot::{Dacc, Dither, Hacc, Hp, Img, Lum, Out, Params, Taps, Tmp, WorkA, WorkB};
     Some(match id {
         KernelId::OutputSharpenLuma => ("sharpen_luma", &[Params, Img, Lum]),
         KernelId::OutputSharpenHighpassRows => ("sharpen_highpass_rows", &[Params, Taps, Lum, Tmp]),
@@ -127,25 +164,28 @@ fn pass_of(id: KernelId) -> Option<(&'static str, &'static [Slot])> {
         KernelId::OutputSharpenWindow => ("sharpen_window", &[Params, Lum, Hacc, WorkA]),
         KernelId::OutputSharpenTransfer => (
             "sharpen_transfer",
-            &[Params, Img, Lum, Dacc, Hacc, WorkA, Out],
+            &[Params, Img, Lum, Dacc, Hacc, WorkA, Out, Dither],
         ),
         _ => return None,
     })
 }
 
-/// The kernel body of an output sharpening pass: the shared WGSL plus the pass's `main`. Called by
-/// [`super::shader::shader_source`]; any other id is a programming error and gets an empty body.
+/// The kernel body of an output sharpening pass: the shared WGSL, the C13 helpers and the pass's
+/// `main`. Called by [`super::shader::shader_source`]; any other id is a programming error and gets
+/// an empty body.
 pub(super) fn body(id: KernelId) -> String {
     let Some((function, _)) = pass_of(id) else {
         return String::new();
     };
     let mut s = String::from(include_str!("../shaders/output_sharpen.wgsl"));
+    s.push('\n');
+    s.push_str(include_str!("../shaders/c13.wgsl"));
     s.push_str(&entry(function));
     s
 }
 
 /// The uniform block of `output_sharpen.wgsl` (`SharpenParams`): the same fields in the same order,
-/// 24 scalars of 4 bytes. Every pass reads the fields it needs.
+/// 40 scalars of 4 bytes. Every pass reads the fields it needs.
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable, Default)]
 struct ParamsU {
@@ -173,6 +213,22 @@ struct ParamsU {
     use_ramp: u32,
     halo_acc: u32,
     limiter: u32,
+    in_stride: u32,
+    in_plane: u32,
+    in_x: u32,
+    in_y: u32,
+    out_stride: u32,
+    out_plane: u32,
+    out_x: u32,
+    out_y: u32,
+    out_kind: u32,
+    space: u32,
+    dither: u32,
+    has_mask: u32,
+    org_x: u32,
+    org_y: u32,
+    bg: u32,
+    copy_only: u32,
 }
 
 /// A kernel in the tap table.
@@ -200,15 +256,48 @@ struct StageGpu {
     ramp: bool,
 }
 
+/// The C13 tail fused into the last pass of the sharpening ([`PreparedSharpen::encode_rgba8`]): the
+/// transfer function of the output, the blue-noise dither at the pixel's place in the picture, and
+/// the colour of the letterbox where the source's mask plane says the pixel is outside the photo.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FusedC13 {
+    /// The output colour space (its transfer function).
+    pub space: OutputSpace,
+    /// Whether the 8-bit codes are dithered; otherwise they are rounded.
+    pub dither: bool,
+    /// The absolute position of the core's pixel (0, 0) in the picture, which selects the dither
+    /// texel, so tiles and the whole picture agree.
+    pub origin: (usize, usize),
+    /// The letterbox colour (RGB), painted where the mask is set.
+    pub background: [u8; 3],
+}
+
+impl FusedC13 {
+    /// `1` for the BT.1886 transfer of Rec.2020, `0` for sRGB (also Display P3).
+    fn transfer_code(self) -> u32 {
+        u32::from(self.space == OutputSpace::Rec2020)
+    }
+
+    fn background_word(self) -> u32 {
+        u32::from(self.background[0])
+            | (u32::from(self.background[1]) << 8)
+            | (u32::from(self.background[2]) << 16)
+            | 0xff00_0000
+    }
+}
+
 /// An output sharpening setup uploaded to the GPU: immutable, reusable for any number of tiles and
 /// images of the same scale.
 #[derive(Debug)]
 pub struct PreparedSharpen {
     plan: SharpenPlan,
+    /// The stages that change something (a collapsed kernel has an exactly zero delta and is
+    /// dropped; see the module notes).
     stages: Vec<StageGpu>,
+    /// The halo limiter's kernel, present when a remaining stage sends part of its delta to it.
     halo_kernel: Option<TapRange>,
     halo_px: usize,
-    taps: PooledBuffer,
+    taps: Arc<PooledBuffer>,
 }
 
 /// Intermediate planes of a run over a whole compute rectangle, read back for diagnostics (see
@@ -241,6 +330,15 @@ fn push_taps(taps: &mut Vec<f32>, kernel: &[f64]) -> TapRange {
     range
 }
 
+/// Whether a kernel has collapsed to its centre tap: every other tap is exactly 0.
+fn is_collapsed(kernel: &[f64]) -> bool {
+    let c = kernel.len() / 2;
+    kernel
+        .iter()
+        .enumerate()
+        .all(|(j, &t)| j == c || t == 0.0)
+}
+
 /// Method 2's constants (spec 3.3): `g0 = T ((k_c + k_{c+1}) / 2) / left` in `f64` then `f32`,
 /// `inv = 0.25 / g0` in `f64` then `f32`, with `left` the sum of the taps left of the centre. A
 /// kernel that has collapsed to one tap (`left == 0`) has no ramp. These are the preamble of the CPU
@@ -256,6 +354,25 @@ fn ramp_constants(kernel: &[f64], threshold: f32) -> (bool, f32, f32) {
     }
 }
 
+/// Where a run writes its core.
+enum Target<'a> {
+    /// Three f32 planes of an image, the core's (0, 0) at `at`.
+    Planes {
+        dst: &'a GpuImage,
+        at: (usize, usize),
+    },
+    /// RGBA8 words, `stride` per row, the core's (0, 0) at `at`, C13 fused.
+    Rgba8 {
+        dst: &'a PooledBuffer,
+        stride: usize,
+        at: (usize, usize),
+        tail: FusedC13,
+    },
+}
+
+/// The scratch planes of a run that tests read back: `(luma, free delta, halo delta)`.
+type TraceIds = (ReadId, ReadId, ReadId);
+
 impl PreparedSharpen {
     /// Derives the stages of `params` for an output `scale` times the rendered size (use
     /// [`crate::cpu::output_sharpen::scale_for_edges`]) and uploads the kernels.
@@ -270,6 +387,12 @@ impl PreparedSharpen {
         let mut stages = Vec::with_capacity(plan.stages().len());
         for (i, st) in plan.stages().iter().enumerate() {
             let k = plan.kernel(i);
+            if is_collapsed(&k) {
+                // High-pass 0 exactly, so d = 0, s = 0 and both accumulators gain +0: the stage
+                // is the identity in every arithmetic, and dropping it keeps that exact under
+                // fast-math (module notes).
+                continue;
+            }
             let kernel = push_taps(&mut taps, &k);
             let has_gain = st.method != Method::HardThreshold && st.threshold > 0.0;
             let gain = has_gain.then(|| push_taps(&mut taps, &plan.gain_kernel(i)));
@@ -302,13 +425,21 @@ impl PreparedSharpen {
                 ramp,
             });
         }
-        let halo_kernel = plan
-            .halo_enabled()
+        // The limiter exists when a stage that remains sends part of its delta to it. (The plan's
+        // `halo_enabled` also counts a dropped stage, whose limited share is exactly zero and which
+        // therefore leaves the limiter with nothing to do.)
+        let halo_kernel = stages
+            .iter()
+            .any(|s| s.a_halo > 0.0)
             .then(|| push_taps(&mut taps, &plan.halo_kernel()));
         if taps.is_empty() {
             taps.push(0.0);
         }
-        let taps_buf = storage_buffer(ctx, "sharpen taps", bytemuck::cast_slice(&taps))?;
+        let taps_buf = Arc::new(crate::kernels::util::storage_buffer(
+            ctx,
+            "sharpen taps",
+            bytemuck::cast_slice(&taps),
+        )?);
         let halo_px = plan.halo_px();
         Ok(Self {
             plan,
@@ -324,7 +455,8 @@ impl PreparedSharpen {
         &self.plan
     }
 
-    /// Whether no stage exists (amount or radius too small): a run copies its input.
+    /// Whether no stage changes anything (amount or radius too small, or every kernel collapsed): a
+    /// run copies its input, bit for bit.
     pub fn is_noop(&self) -> bool {
         self.stages.is_empty()
     }
@@ -339,6 +471,408 @@ impl PreparedSharpen {
         TilePlan::with_halo(width, height, tile_px, self.halo_px)
     }
 
+    // ---- device in, device out ----------------------------------------------------------------
+
+    /// Records the passes that sharpen the `window` of `src` and write its `core` as three f32
+    /// planes into `dst`, the core's pixel (0, 0) at `dst_at`.
+    ///
+    /// `src` has three planes (a fourth one, a letterbox mask, is ignored here). The stage reads
+    /// the whole `window` and mirrors at its edge, so the window is the photo's own pixels: the
+    /// caller passes the bounding box of the pixels inside the photo, grown by nothing (a tile of a
+    /// larger picture passes core plus [`halo_px`](Self::halo_px)). `core` lies inside `window`, both
+    /// in pixels of `src`. Nothing is read back.
+    ///
+    /// # Errors
+    ///
+    /// [`GpuError::InvalidInput`] when a rectangle is empty or outside its image, when `src` has
+    /// fewer than three planes or `dst` is not a three- or four-plane image, or when a side needs
+    /// more workgroups than the device allows; the pool's errors for the scratch planes.
+    pub fn encode(
+        &self,
+        passes: &mut PassList<'_>,
+        src: &GpuImage,
+        window: Rect,
+        core: Rect,
+        dst: &GpuImage,
+        dst_at: (usize, usize),
+    ) -> Result<(), GpuError> {
+        if dst.planes < 3 {
+            return Err(GpuError::InvalidInput(format!(
+                "output sharpening writes three planes, the destination has {}",
+                dst.planes
+            )));
+        }
+        if dst_at.0 + core.w > dst.width || dst_at.1 + core.h > dst.height {
+            return Err(GpuError::InvalidInput(format!(
+                "a {} x {} core at {dst_at:?} does not fit the {} x {} destination",
+                core.w, core.h, dst.width, dst.height
+            )));
+        }
+        self.encode_to(passes, src, window, core, &Target::Planes { dst, at: dst_at }, None)
+            .map(|_| ())
+    }
+
+    /// Like [`encode`](Self::encode), with C13, the dither and the letterbox fused into the last
+    /// pass: the core is written as RGBA8 words (`stride` words per row, `dst` of at least
+    /// `stride * (at.1 + core.h)` words), pixel (0, 0) of the core at `dst_at`. Where `src` has a
+    /// fourth plane and it is not 0 the pixel is `tail.background` instead. Equal to
+    /// [`encode`](Self::encode) followed by the encode kernel, bit for bit.
+    ///
+    /// # Errors
+    ///
+    /// As [`encode`](Self::encode); [`GpuError::InvalidInput`] when `dst` is too small.
+    pub fn encode_rgba8(
+        &self,
+        passes: &mut PassList<'_>,
+        src: &GpuImage,
+        window: Rect,
+        core: Rect,
+        dst: &PooledBuffer,
+        stride: usize,
+        dst_at: (usize, usize),
+        tail: FusedC13,
+    ) -> Result<(), GpuError> {
+        let words = (dst_at.1 + core.h) as u64 * stride as u64;
+        if dst_at.0 + core.w > stride || dst.size() < words * 4 {
+            return Err(GpuError::InvalidInput(format!(
+                "a {} x {} core at {dst_at:?} does not fit {stride} words per row in a {} byte buffer",
+                core.w,
+                core.h,
+                dst.size()
+            )));
+        }
+        self.encode_to(
+            passes,
+            src,
+            window,
+            core,
+            &Target::Rgba8 {
+                dst,
+                stride,
+                at: dst_at,
+                tail,
+            },
+            None,
+        )
+        .map(|_| ())
+    }
+
+    /// The common recording: validates the rectangles, allocates the scratch planes, records the
+    /// passes. With `trace` the three diagnostic planes are asked for from the list.
+    fn encode_to(
+        &self,
+        passes: &mut PassList<'_>,
+        src: &GpuImage,
+        window: Rect,
+        core: Rect,
+        target: &Target<'_>,
+        trace: Option<()>,
+    ) -> Result<Option<TraceIds>, GpuError> {
+        let ctx = passes.context();
+        if src.planes < 3 {
+            return Err(GpuError::InvalidInput(format!(
+                "output sharpening reads three planes, the source has {}",
+                src.planes
+            )));
+        }
+        if window.is_empty() || core.is_empty() {
+            return Err(GpuError::InvalidInput(
+                "output sharpening: the window and the core must not be empty".into(),
+            ));
+        }
+        if window.x1() > src.width || window.y1() > src.height {
+            return Err(GpuError::InvalidInput(format!(
+                "the window {window:?} is outside the {} x {} source",
+                src.width, src.height
+            )));
+        }
+        if !window.contains(&core) {
+            return Err(GpuError::InvalidInput(format!(
+                "the core {core:?} is not inside the window {window:?}"
+            )));
+        }
+        let (w, h) = (window.w, window.h);
+        // One workgroup covers GROUP x GROUP pixels; a side of more than `limit` workgroups is a
+        // validation error that wgpu raises as a panic, so refuse it here (a 1 x N frame with
+        // N > 65535 * 16 on the default limits).
+        let limit = ctx.info().limits.max_compute_workgroups_per_dimension as usize;
+        let groups = |side: usize| side.div_ceil(GROUP as usize);
+        if groups(w) > limit || groups(h) > limit {
+            return Err(GpuError::InvalidInput(format!(
+                "output sharpening: a {w} x {h} compute rectangle needs more than {limit} \
+                 workgroups of {GROUP} px on one side; use run_tiled with smaller tiles"
+            )));
+        }
+        let n = w * h;
+        let plane_bytes = (n * 4) as u64;
+        let noop = self.is_noop();
+        let limiter = self.halo_kernel.is_some();
+        let tracing = trace.is_some() && !noop;
+        let gain_planes = if self.stages.iter().any(|s| s.gain.is_some()) {
+            2
+        } else {
+            0
+        };
+        let work_planes = if limiter { 4 } else { gain_planes };
+
+        let pool = ctx.pool();
+        let tiny = |label: &str| -> Result<Arc<PooledBuffer>, GpuError> {
+            Ok(passes_keep(passes, pool.acquire(label, 16, super::util::STORAGE_SCRATCH)?))
+        };
+        let scratch = |passes: &mut PassList<'_>, label: &str, planes: usize| {
+            if planes == 0 {
+                tiny(label)
+            } else {
+                passes.scratch(label, planes as u64 * plane_bytes)
+            }
+        };
+        let _ = tiny; // (rebuilt below with the list borrowed afresh)
+        let dither = dither_table(ctx)?;
+        let (lum, tmp, hp, dacc, hacc, work_a, work_b);
+        if noop {
+            // The transfer alone copies the core: it binds these, nothing reads them.
+            let t = passes.scratch("sharpen unused", 16)?;
+            (lum, tmp, hp, dacc, hacc, work_a, work_b) = (
+                Arc::clone(&t),
+                Arc::clone(&t),
+                Arc::clone(&t),
+                Arc::clone(&t),
+                Arc::clone(&t),
+                Arc::clone(&t),
+                t,
+            );
+        } else {
+            lum = {
+                let b = pool.acquire("sharpen luma", plane_bytes, STORAGE_PLANE)?;
+                passes.keep(b)
+            };
+            tmp = passes.scratch("sharpen t", plane_bytes)?;
+            hp = passes.scratch("sharpen h", plane_bytes)?;
+            dacc = {
+                let b = pool.acquire("sharpen D", plane_bytes, STORAGE_PLANE)?;
+                passes.keep(b)
+            };
+            // A traced run reads Hacc back, so it exists (as zeros) even without a limiter.
+            hacc = if limiter || tracing {
+                let b = pool.acquire("sharpen Hacc", plane_bytes, STORAGE_PLANE)?;
+                passes.keep(b)
+            } else {
+                let b = pool.acquire("sharpen Hacc (unused)", 16, STORAGE_PLANE)?;
+                passes.keep(b)
+            };
+            work_a = scratch(passes, "sharpen work A", work_planes)?;
+            work_b = scratch(passes, "sharpen work B", work_planes)?;
+        }
+
+        let weights = self.plan.luma_weights();
+        let (core_w, core_h) = (core.w, core.h);
+        let (dx, dy) = (core.x - window.x, core.y - window.y);
+        let mut base = ParamsU {
+            width: w as u32,
+            height: h as u32,
+            plane: n as u32,
+            luma_r: weights[0],
+            luma_g: weights[1],
+            luma_b: weights[2],
+            in_stride: src.stride as u32,
+            in_plane: src.plane_len() as u32,
+            in_x: window.x as u32,
+            in_y: window.y as u32,
+            has_mask: u32::from(src.planes == 4),
+            ..ParamsU::default()
+        };
+        match target {
+            Target::Planes { dst, at } => {
+                base.out_stride = dst.stride as u32;
+                base.out_plane = dst.plane_len() as u32;
+                base.out_x = at.0 as u32;
+                base.out_y = at.1 as u32;
+                base.out_kind = 0;
+            }
+            Target::Rgba8 {
+                stride, at, tail, ..
+            } => {
+                base.out_stride = *stride as u32;
+                base.out_x = at.0 as u32;
+                base.out_y = at.1 as u32;
+                base.out_kind = 1;
+                base.space = tail.transfer_code();
+                base.dither = u32::from(tail.dither);
+                base.org_x = tail.origin.0 as u32;
+                base.org_y = tail.origin.1 as u32;
+                base.bg = tail.background_word();
+            }
+        }
+        let out_binding: &PooledBuffer = match target {
+            Target::Planes { dst, .. } => &dst.buf,
+            Target::Rgba8 { dst, .. } => dst,
+        };
+        let src_buf = &src.buf;
+        let taps = &self.taps;
+        let dither_buf = &dither;
+
+        let mut run = |passes: &mut PassList<'_>,
+                       id: KernelId,
+                       p: &ParamsU,
+                       z: u32|
+         -> Result<(), GpuError> {
+            let ub = passes.uniform("sharpen params", p)?;
+            let slots = pass_of(id).map_or(&[][..], |(_, s)| s);
+            let entries: Vec<(u32, wgpu::BindingResource<'_>)> = slots
+                .iter()
+                .map(|&s| {
+                    let resource = match s {
+                        Slot::Params => ub.binding(),
+                        Slot::Taps => taps.binding(),
+                        Slot::Img => src_buf.binding(),
+                        Slot::Lum => lum.binding(),
+                        Slot::Tmp => tmp.binding(),
+                        Slot::Hp => hp.binding(),
+                        Slot::Dacc => dacc.binding(),
+                        Slot::Hacc => hacc.binding(),
+                        Slot::WorkA => work_a.binding(),
+                        Slot::WorkB => work_b.binding(),
+                        Slot::Out => out_binding.binding(),
+                        Slot::Dither => dither_buf.binding(),
+                    };
+                    (s as u32, resource)
+                })
+                .collect();
+            let (gw, gh) = if id == KernelId::OutputSharpenTransfer {
+                (p.core_w, p.core_h)
+            } else {
+                (p.width, p.height)
+            };
+            passes.dispatch(
+                id,
+                id.name(),
+                &entries,
+                (gw.div_ceil(GROUP), gh.div_ceil(GROUP), z),
+            )
+        };
+
+        if !noop {
+            // Pooled buffers keep their old contents: the accumulators start from zero.
+            passes.encoder().clear_buffer(&dacc, 0, Some(plane_bytes));
+            if limiter || tracing {
+                passes.encoder().clear_buffer(&hacc, 0, Some(plane_bytes));
+            }
+            run(passes, KernelId::OutputSharpenLuma, &base, 1)?;
+            for st in &self.stages {
+                let mut p = ParamsU {
+                    method: st.method,
+                    threshold: st.threshold,
+                    tap_off: st.kernel.offset,
+                    tap_n: st.kernel.count,
+                    ..base
+                };
+                run(passes, KernelId::OutputSharpenHighpassRows, &p, 1)?;
+                run(passes, KernelId::OutputSharpenHighpassCols, &p, 1)?;
+                if let Some(gain) = st.gain {
+                    p.use_ramp = u32::from(st.ramp);
+                    p.g0 = st.g0;
+                    p.inv = st.inv;
+                    run(passes, KernelId::OutputSharpenGainTerms, &p, 1)?;
+                    let blur = ParamsU {
+                        tap_off: gain.offset,
+                        tap_n: gain.count,
+                        planes: 2,
+                        ..base
+                    };
+                    run(passes, KernelId::OutputSharpenBlur, &blur, 2)?;
+                    let cols = ParamsU {
+                        direction: 1,
+                        ..blur
+                    };
+                    run(passes, KernelId::OutputSharpenBlur, &cols, 2)?;
+                    p.use_gain = 1;
+                }
+                p.a_free = st.a_free;
+                p.a_halo = st.a_halo;
+                p.halo_acc = u32::from(st.a_halo > 0.0);
+                run(passes, KernelId::OutputSharpenAccumulate, &p, 1)?;
+            }
+            if let Some(halo) = self.halo_kernel {
+                run(passes, KernelId::OutputSharpenWindow, &base, 1)?;
+                let blur = ParamsU {
+                    tap_off: halo.offset,
+                    tap_n: halo.count,
+                    planes: 4,
+                    ..base
+                };
+                run(passes, KernelId::OutputSharpenBlur, &blur, 4)?;
+                run(
+                    passes,
+                    KernelId::OutputSharpenBlur,
+                    &ParamsU {
+                        direction: 1,
+                        ..blur
+                    },
+                    4,
+                )?;
+            }
+        }
+        let transfer = ParamsU {
+            core_x: dx as u32,
+            core_y: dy as u32,
+            core_w: core_w as u32,
+            core_h: core_h as u32,
+            limiter: u32::from(limiter),
+            copy_only: u32::from(noop),
+            ..base
+        };
+        run(passes, KernelId::OutputSharpenTransfer, &transfer, 1)?;
+
+        if tracing {
+            let l = passes.read(&lum, 0, plane_bytes)?;
+            let d = passes.read(&dacc, 0, plane_bytes)?;
+            let hh = passes.read(&hacc, 0, plane_bytes)?;
+            return Ok(Some((l, d, hh)));
+        }
+        Ok(None)
+    }
+}
+
+// ---- host wrappers ----------------------------------------------------------------------------
+
+/// A host run in flight: the submission, what to read back, and the destination image (its
+/// metadata decodes the readback).
+struct PendingRun {
+    pending: Pending,
+    out: ReadId,
+    dst: GpuImage,
+    trace: Option<(TraceIds, (usize, usize))>,
+}
+
+impl PendingRun {
+    fn finish(self) -> Result<(ColorImage, Option<SharpenTrace>), GpuError> {
+        let done = self.pending.finish()?;
+        let data = self.dst.take(&done, self.out)?;
+        let image = ColorImage {
+            width: self.dst.width,
+            height: self.dst.height,
+            data: PixelData::F32Planar(data),
+        };
+        let trace = self.trace.map(|((l, d, h), (w, ht))| {
+            let plane = |id: ReadId| -> Vec<f32> {
+                done.read(id)
+                    .chunks_exact(4)
+                    .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                    .collect()
+            };
+            SharpenTrace {
+                width: w,
+                height: ht,
+                luma: plane(l),
+                free_delta: plane(d),
+                halo_delta: plane(h),
+            }
+        });
+        Ok((image, trace))
+    }
+}
+
+impl PreparedSharpen {
     /// Sharpens `image` in one set of dispatches over the whole frame. A frame needs
     /// [`BYTES_PER_PIXEL`] bytes of device memory, and the four-plane working buffers of the halo
     /// limiter must fit one storage binding (128 MiB by default: about 8 million pixels); larger
@@ -356,9 +890,7 @@ impl PreparedSharpen {
             return Ok(image.clone());
         }
         let whole = Rect::whole(image.width, image.height);
-        let done = self
-            .dispatch(ctx, image, whole, whole, false)?
-            .finish(ctx)?;
+        let done = self.start(ctx, image, whole, whole, false)?.finish()?;
         into_rgb(done.0)
     }
 
@@ -393,10 +925,43 @@ impl PreparedSharpen {
             return Ok((image.clone(), trace));
         }
         let whole = Rect::whole(w, h);
-        let (image_out, trace) = self.dispatch(ctx, image, whole, whole, true)?.finish(ctx)?;
+        let (image_out, trace) = self.start(ctx, image, whole, whole, true)?.finish()?;
         let trace =
             trace.ok_or_else(|| GpuError::Readback("the trace was not read back".into()))?;
         Ok((into_rgb(image_out)?, trace))
+    }
+
+    /// Sharpens `image` and encodes it with the fused C13 tail ([`FusedC13`]) into RGBA8, one set of
+    /// dispatches over the whole frame (the letterbox mask is absent in a host image, so no pixel is
+    /// painted). The test of the fused tail against the chained pair uses it.
+    ///
+    /// # Errors
+    ///
+    /// The errors of [`run`](Self::run).
+    pub fn run_rgba8(
+        &self,
+        ctx: &GpuContext,
+        image: &RgbImage,
+        tail: FusedC13,
+    ) -> Result<ColorImage, GpuError> {
+        check_image(image)?;
+        let (w, h) = (image.width, image.height);
+        let src = GpuImage::upload_rgb(ctx, "sharpen input", image)?;
+        let bytes = (w * h * 4) as u64;
+        let dst = ctx
+            .pool()
+            .acquire("sharpen rgba8", bytes, super::util::STORAGE_OUT)?;
+        let mut passes = PassList::new(ctx, "output sharpening (fused C13)");
+        let whole = Rect::whole(w, h);
+        self.encode_rgba8(&mut passes, &src, whole, whole, &dst, w, (0, 0), tail)?;
+        let id = passes.read(&dst, 0, bytes)?;
+        let _src = passes.keep(src.buf);
+        let done = passes.submit()?.finish()?;
+        Ok(ColorImage {
+            width: w,
+            height: h,
+            data: unpack(OutKind::Rgba8, done.read(id), w, h, w),
+        })
     }
 
     /// Sharpens `image` tile by tile over `plan` with up to `depth` tiles in flight and hands each
@@ -437,7 +1002,7 @@ impl PreparedSharpen {
             }
         }
         let depth = depth.max(1);
-        let mut queue: std::collections::VecDeque<(Tile, Pending)> =
+        let mut queue: std::collections::VecDeque<(Tile, PendingRun)> =
             std::collections::VecDeque::new();
         for &tile in plan.tiles() {
             cancel.check()?;
@@ -445,334 +1010,65 @@ impl PreparedSharpen {
                 sink(tile, copy_core(image, tile.core))?;
                 continue;
             }
-            let pending = self.dispatch(ctx, image, tile.compute, tile.core, false)?;
+            let pending = self.start(ctx, image, tile.compute, tile.core, false)?;
             queue.push_back((tile, pending));
             if queue.len() >= depth
                 && let Some((t, p)) = queue.pop_front()
             {
-                sink(t, p.finish(ctx)?.0)?;
+                sink(t, p.finish()?.0)?;
             }
         }
         while let Some((t, p)) = queue.pop_front() {
-            sink(t, p.finish(ctx)?.0)?;
+            sink(t, p.finish()?.0)?;
         }
         Ok(())
     }
 
-    /// Encodes every pass for the `compute` rectangle of `image` and the `core` inside it, submits
-    /// the work and returns the pending readback.
-    fn dispatch(
+    /// Uploads the `compute` rectangle of `image`, records the passes for the `core` inside it
+    /// (both in pixels of `image`), submits them and returns the run in flight.
+    fn start(
         &self,
         ctx: &GpuContext,
         image: &RgbImage,
         compute: Rect,
         core: Rect,
         trace: bool,
-    ) -> Result<Pending, GpuError> {
-        let (w, h) = (compute.w, compute.h);
-        // One workgroup covers GROUP x GROUP pixels; a side of more than `limit` workgroups is a
-        // validation error that wgpu raises as a panic, so refuse it here (a 1 x N frame with
-        // N > 65535 * 16 on the default limits).
-        let limit = ctx.info().limits.max_compute_workgroups_per_dimension as usize;
-        let groups = |side: usize| side.div_ceil(GROUP as usize);
-        if groups(w) > limit || groups(h) > limit {
-            return Err(GpuError::InvalidInput(format!(
-                "output sharpening: a {w} x {h} compute rectangle needs more than {limit} \
-                 workgroups of {GROUP} px on one side; use run_tiled with smaller tiles"
-            )));
-        }
-        let n = w * h;
-        let plane_bytes = (n * 4) as u64;
-        let limiter = self.halo_kernel.is_some();
-        let gain_planes = if self.stages.iter().any(|s| s.gain.is_some()) {
-            2
+    ) -> Result<PendingRun, GpuError> {
+        let part;
+        let upload: &RgbImage = if compute == Rect::whole(image.width, image.height) {
+            image
         } else {
-            0
+            part = image.extract(compute);
+            &part
         };
-        let work_planes = if limiter { 4 } else { gain_planes };
-
-        // Input: the compute rectangle's three planes, dense.
-        let mut samples: Vec<f32> = Vec::with_capacity(3 * n);
-        for c in 0..3 {
-            let src = image.plane(c);
-            for y in 0..h {
-                let s = (compute.y + y) * image.width + compute.x;
-                samples.extend_from_slice(&src[s..s + w]);
-            }
-        }
-        let pool = ctx.pool();
-        let img = pool.acquire("sharpen input", 3 * plane_bytes, STORAGE_IN)?;
-        ctx.queue
-            .write_buffer(&img, 0, bytemuck::cast_slice(&samples));
-        drop(samples);
-
-        let tiny = |label: &str| pool.acquire(label, 16, STORAGE_SCRATCH);
-        let scratch = |label: &str, planes: usize| {
-            if planes == 0 {
-                tiny(label)
-            } else {
-                pool.acquire(label, planes as u64 * plane_bytes, STORAGE_SCRATCH)
-            }
-        };
-        let (core_w, core_h) = (core.w, core.h);
-        let out_bytes = (3 * core_w * core_h * 4) as u64;
-        let bufs = Bufs {
-            taps: &self.taps,
-            img,
-            lum: pool.acquire("sharpen luma", plane_bytes, STORAGE_PLANE)?,
-            tmp: scratch("sharpen t", 1)?,
-            hp: scratch("sharpen h", 1)?,
-            dacc: pool.acquire("sharpen D", plane_bytes, STORAGE_PLANE)?,
-            // A traced run reads Hacc back, so it exists (as zeros) even without a limiter.
-            hacc: if limiter || trace {
-                pool.acquire("sharpen Hacc", plane_bytes, STORAGE_PLANE)?
-            } else {
-                pool.acquire("sharpen Hacc (unused)", 16, STORAGE_PLANE)?
-            },
-            work_a: scratch("sharpen work A", work_planes)?,
-            work_b: scratch("sharpen work B", work_planes)?,
-            out: pool.acquire("sharpen out", out_bytes, STORAGE_OUT)?,
-        };
-
-        let mut encoder = ctx
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("output sharpening"),
-            });
-        // Pooled buffers keep their old contents: the accumulators start from zero.
-        encoder.clear_buffer(&bufs.dacc, 0, Some(plane_bytes));
-        if limiter || trace {
-            encoder.clear_buffer(&bufs.hacc, 0, Some(plane_bytes));
-        }
-
-        let weights = self.plan.luma_weights();
-        let base = ParamsU {
-            width: w as u32,
-            height: h as u32,
-            plane: n as u32,
-            luma_r: weights[0],
-            luma_g: weights[1],
-            luma_b: weights[2],
-            ..ParamsU::default()
-        };
-        let mut held: Vec<PooledBuffer> = Vec::new();
-        let mut run = |id: KernelId, p: &ParamsU, z: u32| -> Result<(), GpuError> {
-            let ub = uniform_buffer(ctx, "sharpen params", p)?;
-            let pipeline = ctx.kernels().pipeline(ctx, id)?;
-            let slots = pass_of(id).map_or(&[][..], |(_, s)| s);
-            let entries: Vec<(u32, wgpu::BindingResource<'_>)> = slots
-                .iter()
-                .map(|&s| {
-                    let resource = match s {
-                        Slot::Params => ub.binding(),
-                        Slot::Taps => bufs.taps.binding(),
-                        Slot::Img => bufs.img.binding(),
-                        Slot::Lum => bufs.lum.binding(),
-                        Slot::Tmp => bufs.tmp.binding(),
-                        Slot::Hp => bufs.hp.binding(),
-                        Slot::Dacc => bufs.dacc.binding(),
-                        Slot::Hacc => bufs.hacc.binding(),
-                        Slot::WorkA => bufs.work_a.binding(),
-                        Slot::WorkB => bufs.work_b.binding(),
-                        Slot::Out => bufs.out.binding(),
-                    };
-                    (s as u32, resource)
-                })
-                .collect();
-            let group = bind(ctx, &pipeline, id.name(), &entries);
-            let (gw, gh) = if id == KernelId::OutputSharpenTransfer {
-                (p.core_w, p.core_h)
-            } else {
-                (p.width, p.height)
-            };
-            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some(id.name()),
-                timestamp_writes: None,
-            });
-            pass.set_pipeline(&pipeline);
-            pass.set_bind_group(0, &group, &[]);
-            pass.dispatch_workgroups(gw.div_ceil(GROUP), gh.div_ceil(GROUP), z);
-            drop(pass);
-            held.push(ub);
-            Ok(())
-        };
-
-        run(KernelId::OutputSharpenLuma, &base, 1)?;
-        for st in &self.stages {
-            let mut p = ParamsU {
-                method: st.method,
-                threshold: st.threshold,
-                tap_off: st.kernel.offset,
-                tap_n: st.kernel.count,
-                ..base
-            };
-            run(KernelId::OutputSharpenHighpassRows, &p, 1)?;
-            run(KernelId::OutputSharpenHighpassCols, &p, 1)?;
-            if let Some(gain) = st.gain {
-                p.use_ramp = u32::from(st.ramp);
-                p.g0 = st.g0;
-                p.inv = st.inv;
-                run(KernelId::OutputSharpenGainTerms, &p, 1)?;
-                let blur = ParamsU {
-                    tap_off: gain.offset,
-                    tap_n: gain.count,
-                    planes: 2,
-                    ..base
-                };
-                run(KernelId::OutputSharpenBlur, &blur, 2)?;
-                let cols = ParamsU {
-                    direction: 1,
-                    ..blur
-                };
-                run(KernelId::OutputSharpenBlur, &cols, 2)?;
-                p.use_gain = 1;
-            }
-            p.a_free = st.a_free;
-            p.a_halo = st.a_halo;
-            p.halo_acc = u32::from(st.a_halo > 0.0);
-            run(KernelId::OutputSharpenAccumulate, &p, 1)?;
-        }
-        if let Some(halo) = self.halo_kernel {
-            run(KernelId::OutputSharpenWindow, &base, 1)?;
-            let blur = ParamsU {
-                tap_off: halo.offset,
-                tap_n: halo.count,
-                planes: 4,
-                ..base
-            };
-            run(KernelId::OutputSharpenBlur, &blur, 4)?;
-            run(
-                KernelId::OutputSharpenBlur,
-                &ParamsU {
-                    direction: 1,
-                    ..blur
-                },
-                4,
-            )?;
-        }
-        let (dx, dy) = (core.x - compute.x, core.y - compute.y);
-        let transfer = ParamsU {
-            core_x: dx as u32,
-            core_y: dy as u32,
-            core_w: core_w as u32,
-            core_h: core_h as u32,
-            limiter: u32::from(limiter),
-            ..base
-        };
-        run(KernelId::OutputSharpenTransfer, &transfer, 1)?;
-
-        let (readback, trace_readbacks) = if trace {
-            // The output and the three diagnostic planes share one submission.
-            let mut copies: Vec<(PooledBuffer, u64)> = Vec::new();
-            for (src, bytes) in [
-                (&bufs.out, out_bytes),
-                (&bufs.lum, plane_bytes),
-                (&bufs.dacc, plane_bytes),
-                (&bufs.hacc, plane_bytes),
-            ] {
-                let staging = pool.acquire("sharpen readback", bytes, STAGING)?;
-                encoder.copy_buffer_to_buffer(src, 0, &staging, 0, bytes);
-                copies.push((staging, bytes));
-            }
-            let index = ctx.queue.submit([encoder.finish()]);
-            let mut it = copies
-                .into_iter()
-                .map(|(staging, bytes)| Readback::new(staging, bytes, index.clone()));
-            let main = it
-                .next()
-                .ok_or_else(|| GpuError::Readback("no output readback".into()))?;
-            (main, Some(it.collect::<Vec<_>>()))
-        } else {
-            (
-                submit_with_readback(ctx, encoder, &bufs.out, out_bytes)?,
-                None,
-            )
-        };
-        let Bufs {
-            img,
-            lum,
-            tmp,
-            hp,
-            dacc,
-            hacc,
-            work_a,
-            work_b,
+        let src = GpuImage::upload_rgb(ctx, "sharpen input", upload)?;
+        let dst = GpuImage::alloc(
+            ctx,
+            "sharpen out",
+            core.w,
+            core.h,
+            3,
+            Placement::whole(core.w, core.h),
+        )?;
+        let mut passes = PassList::new(ctx, "output sharpening");
+        let window = Rect::whole(compute.w, compute.h);
+        let ids = self.encode_to(
+            &mut passes,
+            &src,
+            window,
+            core.relative_to(&compute),
+            &Target::Planes { dst: &dst, at: (0, 0) },
+            trace.then_some(()),
+        )?;
+        let out = dst.encode_read(&mut passes)?;
+        let _src = passes.keep(src.buf);
+        let pending = passes.submit()?;
+        Ok(PendingRun {
+            pending,
             out,
-            ..
-        } = bufs;
-        held.extend([img, lum, tmp, hp, dacc, hacc, work_a, work_b, out]);
-        Ok(Pending {
-            readback,
-            trace: trace_readbacks,
-            width: core_w,
-            height: core_h,
-            trace_size: (w, h),
-            _held: held,
+            dst,
+            trace: ids.map(|i| (i, (compute.w, compute.h))),
         })
-    }
-}
-
-/// The buffers of one tile's run. `taps` is shared by every tile.
-struct Bufs<'a> {
-    taps: &'a PooledBuffer,
-    img: PooledBuffer,
-    lum: PooledBuffer,
-    tmp: PooledBuffer,
-    hp: PooledBuffer,
-    dacc: PooledBuffer,
-    hacc: PooledBuffer,
-    work_a: PooledBuffer,
-    work_b: PooledBuffer,
-    out: PooledBuffer,
-}
-
-/// A dispatch whose readback has not been collected yet.
-struct Pending {
-    readback: Readback,
-    trace: Option<Vec<Readback>>,
-    width: usize,
-    height: usize,
-    trace_size: (usize, usize),
-    _held: Vec<PooledBuffer>,
-}
-
-impl Pending {
-    fn finish(self, ctx: &GpuContext) -> Result<(ColorImage, Option<SharpenTrace>), GpuError> {
-        let bytes = self.readback.finish(ctx)?;
-        let data = unpack(
-            OutKind::F32Planar,
-            &bytes,
-            self.width,
-            self.height,
-            self.width,
-        );
-        let image = ColorImage {
-            width: self.width,
-            height: self.height,
-            data,
-        };
-        let trace = match self.trace {
-            Some(readbacks) => {
-                let mut planes = Vec::with_capacity(3);
-                for r in readbacks {
-                    planes.push(image_samples(StorageMode::F32, &r.finish(ctx)?));
-                }
-                let mut it = planes.into_iter();
-                let (luma, free_delta, halo_delta) = match (it.next(), it.next(), it.next()) {
-                    (Some(a), Some(b), Some(c)) => (a, b, c),
-                    _ => return Err(GpuError::Readback("missing trace plane".into())),
-                };
-                Some(SharpenTrace {
-                    width: self.trace_size.0,
-                    height: self.trace_size.1,
-                    luma,
-                    free_delta,
-                    halo_delta,
-                })
-            }
-            None => None,
-        };
-        Ok((image, trace))
     }
 }
 
