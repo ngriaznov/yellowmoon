@@ -1196,3 +1196,40 @@ fn profile_validation_rejects_rule_violations() {
         ));
     }
 }
+
+#[test]
+fn shipped_camera_data_names_no_project_we_cannot_license_as_a_source() {
+    // docs/14 rule 8 (2026-10-14): colour matrices, white-balance coefficients and model IDs may be taken as
+    // numbers from any source, but nothing in the repository or the app refers to a project whose licence we
+    // cannot accept as the source. The registry and the profiles ship in the app bundle, so their notes,
+    // sources and provenance say "the published colour matrix" and "the values the cameras write", not the
+    // tool that read them.
+    const BANNED: [&str; 8] = [
+        "libraw",
+        "rawpy",
+        "exiftool",
+        "dcraw",
+        "rawtherapee",
+        "darktable",
+        "rawler",
+        "rawspeed",
+    ];
+    let cameras = data_root().join("cameras");
+    let mut files = vec![cameras.join("registry.json")];
+    for entry in std::fs::read_dir(cameras.join("profiles")).expect("profiles folder") {
+        files.push(entry.expect("entry").path().join("profile.json"));
+    }
+    assert!(files.len() > 11, "the registry and the 11 profiles");
+    for file in files {
+        let text = std::fs::read_to_string(&file)
+            .unwrap_or_else(|e| panic!("{}: {e}", file.display()))
+            .to_lowercase();
+        for word in BANNED {
+            assert!(
+                !text.contains(word),
+                "{} names {word}: docs/14 rule 8 (say \"the published colour matrix\" instead)",
+                file.display()
+            );
+        }
+    }
+}

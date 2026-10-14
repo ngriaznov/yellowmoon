@@ -1344,7 +1344,6 @@ fn an_export_runs_in_the_background_and_reports_its_progress() {
     });
     wait_until("the queue to go idle", || !h.api.export_busy());
     wait_for_the_free_event(&h);
-    let events = h.events.events();
     let busy = busy_events(&h);
     assert_eq!(
         busy.first(),
