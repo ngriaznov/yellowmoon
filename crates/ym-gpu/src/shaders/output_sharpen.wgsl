@@ -58,6 +58,10 @@ struct SharpenParams {
     org_y: u32,
     bg: u32,         // fused C13: the letterbox colour, RGBA8 packed
     copy_only: u32,  // transfer: ratio 1, no luma, no stages (a setup without a stage)
+    zero: u32,       // always 0 at run time and unknown to the compiler (see `opaque`)
+    pad0: u32,
+    pad1: u32,
+    pad2: u32,
 };
 
 @group(0) @binding(0) var<uniform> sp: SharpenParams;
@@ -103,13 +107,24 @@ fn src_at(c: u32, x: u32, y: u32) -> f32 {
     return img[c * sp.in_plane + (sp.in_y + y) * sp.in_stride + sp.in_x + x];
 }
 
+// Hides a value from algebraic rewriting: XOR with `sp.zero`, which is 0 at run time and unknown to the
+// compiler, puts an integer operation between the producer of a value and its consumers that no
+// floating-point rule can see through (the same device as `opaque` in diffraction.wgsl).
+fn opaque(x: f32) -> f32 {
+    return bitcast<f32>(bitcast<u32>(x) ^ sp.zero);
+}
+
 // L = sqrt(((wR R) R + (wG G) G) + (wB B) B), f32, in exactly this order (spec 3.1).
 //
-// The limiter compares luma values for equality and order, so a driver that fuses `(w r) r + a` into
-// one multiply-add (Metal's fast-math default does) would move the last bit of L and flip rank
-// counts. Every product is therefore passed through `abs`: the weights are positive, so a product
-// `(w c) c` is never negative and `abs` changes nothing, but it sits between the multiplication and
-// the addition, where a compiler cannot fuse them.
+// The limiter compares luma values for equality and order, so a compiler that changes the last bit of
+// L flips rank counts. Metal compiles with fast-math, which does two things to this expression. It
+// fuses `(w c) c + a` into one multiply-add, and it re-associates the product `(w c) c` into
+// `w (c c)`, which rounds differently. Passing each product through `abs` stops the first but not the
+// second: read off the optimised code of clang `-O2 -ffast-math -ffp-contract=fast` (LLVM, as Metal's
+// compiler), `abs` left 16 % of 2 million random lumas one ulp off the strict f32 value (19 % without
+// it). So every factor and every partial sum is hidden behind `opaque`: each is an operand of exactly
+// one operation, and there is nothing left to fuse or re-associate (the same model: 0 of 2 million
+// lumas differ, also with `-O3`). The square root is the one operation left to the driver.
 fn sharpen_luma(gid: vec3<u32>) {
     if (gid.x >= sp.width || gid.y >= sp.height) {
         return;
@@ -118,10 +133,11 @@ fn sharpen_luma(gid: vec3<u32>) {
     let r = src_at(0u, gid.x, gid.y);
     let g = src_at(1u, gid.x, gid.y);
     let b = src_at(2u, gid.x, gid.y);
-    let a0 = abs((sp.luma_r * r) * r);
-    let a1 = abs((sp.luma_g * g) * g);
-    let a2 = abs((sp.luma_b * b) * b);
-    lum[i] = sqrt((a0 + a1) + a2);
+    let a0 = opaque(opaque(sp.luma_r * r) * r);
+    let a1 = opaque(opaque(sp.luma_g * g) * g);
+    let a2 = opaque(opaque(sp.luma_b * b) * b);
+    let s01 = opaque(a0 + a1);
+    lum[i] = sqrt(s01 + a2);
 }
 
 // t(x, y) = sum_j k_j (L(x + j - r, y) - L(x, y))  (spec 3.2)

@@ -502,3 +502,73 @@ fn bad_inputs_are_refused() {
         assert!(matches!(r, Err(GpuError::InvalidInput(_))), "{r:?}");
     }
 }
+
+#[test]
+fn tiny_sources_and_tiny_outputs_match_the_cpu_port() {
+    // 1 x 1, 1 x N, N x 1 and 2 x 2 buffers, outputs of 1 x 1, 1 x N, N x 1 and 3 x 3 at odd offsets,
+    // through every kernel (exact copy, Catmull-Rom by a rotation, the box by a shrink, a
+    // magnification): no panic, the CPU's mask, the CPU's pixels within the bound.
+    let Some(dev) = gpus().first() else { return };
+    let bound = if dev.gpu.info().is_software {
+        VALUE_BOUND
+    } else {
+        VALUE_BOUND_HARDWARE
+    };
+    let (mut cases, mut copies, mut bicubics, mut boxes) = (0usize, 0usize, 0usize, 0usize);
+    for (bw, bh) in [(1usize, 1usize), (1, 5), (5, 1), (2, 2)] {
+        let img = scene(bw, bh, 21);
+        for (exif, turns) in [(1u16, 0u8), (6, 1), (3, 2), (5, 3), (8, 0)] {
+            let (cw, ch) = if swaps(exif, turns) {
+                (bh, bw)
+            } else {
+                (bw, bh)
+            };
+            let mut grids = vec![exact_grid(bw, bh, exif, turns).0];
+            for (angle, scale) in [
+                (0.0, 2.4),
+                (12.0, 1.0),
+                (-30.0, 3.2),
+                (0.0, 0.4),
+                (5.0, 0.6),
+            ] {
+                grids.push(general_grid(bw, bh, exif, turns, angle, scale, (0.25, -0.5)).0);
+            }
+            for grid in grids {
+                for (off, w, h) in [
+                    ((0usize, 0usize), 1usize, 1usize),
+                    ((1, 1), 1, 1),
+                    ((0, 0), 1, 6),
+                    ((0, 1), 6, 1),
+                    ((1, 0), 3, 3),
+                    ((0, 0), cw, ch),
+                ] {
+                    let cpu = sample_to_camera(&img, (0, 0), &grid, off, w, h);
+                    let gpu = gpu_sample(dev, &img, (0, 0), grid, off, w, h);
+                    let what = format!(
+                        "{bw}x{bh} exif {exif} turns {turns} {:?} off {off:?} {w}x{h}",
+                        grid.kernel()
+                    );
+                    assert!(all_finite(&gpu.img), "{what}: non-finite");
+                    assert_masks_equal(&what, &gpu, &cpu);
+                    let d = max_diff(&gpu.img, &cpu.img);
+                    if grid.kernel() == Kernel::Copy {
+                        assert!(bit_equal(&gpu.img, &cpu.img), "{what}: copy differs");
+                    } else {
+                        assert!(d <= bound, "{what}: max error {d:e} above {bound:e}");
+                    }
+                    cases += 1;
+                    match grid.kernel() {
+                        Kernel::Copy => copies += 1,
+                        Kernel::Bicubic => bicubics += 1,
+                        Kernel::Box(_) => boxes += 1,
+                    }
+                }
+            }
+        }
+    }
+    eprintln!("tiny sources: {cases} cases ({copies} copy, {bicubics} Catmull-Rom, {boxes} box)");
+    assert!(
+        copies > 50 && bicubics > 50 && boxes > 50,
+        "the matrix must cover all three kernels"
+    );
+}

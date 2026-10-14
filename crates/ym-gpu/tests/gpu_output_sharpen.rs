@@ -2027,3 +2027,92 @@ fn the_binding_stays_inside_the_design_size() {
         ym_gpu::kernels::output_sharpen::max_binding_bytes,
     );
 }
+
+#[test]
+fn the_fused_tail_equals_the_chained_pair_on_tiny_frames_and_every_parameter_set() {
+    // 1 x 1, 1 x N, N x 1, 2 x 2 and odd frames (the mirror at the edge, the tail on a core of a
+    // single pixel), for every parameter set, with and without the dither, at an absolute origin that
+    // is not a multiple of the dither period.
+    let Some(dev) = gpus().first() else { return };
+    let mut cases = 0usize;
+    for (w, h) in [(1usize, 1usize), (1, 7), (7, 1), (2, 2), (3, 5), (9, 4)] {
+        let img = random_image(w, h, 0.0, 1.3, 300 + (w * 31 + h) as u64);
+        for (set, p, scale) in param_sets() {
+            for dither in [true, false] {
+                let origin = (64 * 5 + 3, 61usize);
+                let sharpened = gpu_sharpen(dev, &p, scale, &img);
+                let chained = encode_rgba(
+                    dev,
+                    &sharpened,
+                    None,
+                    C13 {
+                        space: OutputSpace::Srgb,
+                        dither,
+                        origin,
+                    },
+                    [1, 2, 3],
+                );
+                let (p2, img2) = (p.clone(), img.clone());
+                let fused = run_gpu(dev, move |ctx| {
+                    PreparedSharpen::new(ctx, &p2, scale)?.run_rgba8(
+                        ctx,
+                        &img2,
+                        FusedC13 {
+                            space: OutputSpace::Srgb,
+                            dither,
+                            origin,
+                            background: [1, 2, 3],
+                        },
+                    )
+                });
+                let ym_gpu::kernels::PixelData::Rgba8(fused) = fused.data else {
+                    panic!("not RGBA8");
+                };
+                assert_bytes_equal(
+                    &format!("{w}x{h} {set} dither {dither}: fused against chained"),
+                    &fused,
+                    &chained,
+                    w,
+                );
+                cases += 1;
+            }
+        }
+    }
+    assert!(cases >= 6 * 2, "{cases} cases");
+}
+
+#[test]
+fn the_luma_pass_hides_every_factor_and_partial_sum_from_the_optimiser() {
+    // K8: Metal's fast-math re-associates `(w c) c` and fuses it with the next addition; an `abs` leaves
+    // the first (measured with clang -O2 -ffast-math: 16 % of lumas one ulp off). Each factor, each
+    // product and the partial sum goes through `opaque`, a XOR with a uniform that is 0 at run time.
+    // The luma bits are checked on the device by `luma_has_the_cpu_bits`; this pins the shader text,
+    // because lavapipe cannot show a regression (it does not re-associate).
+    let src = include_str!("../src/shaders/output_sharpen.wgsl");
+    let start = src.find("fn sharpen_luma(").expect("the luma pass");
+    let body = &src[start
+        ..src[start..]
+            .find("\n}\n")
+            .map(|e| start + e)
+            .expect("its end")];
+    for needle in [
+        "opaque(opaque(sp.luma_r * r) * r)",
+        "opaque(opaque(sp.luma_g * g) * g)",
+        "opaque(opaque(sp.luma_b * b) * b)",
+        "opaque(a0 + a1)",
+        "sqrt(s01 + a2)",
+    ] {
+        assert!(
+            body.contains(needle),
+            "the luma pass lost `{needle}`:\n{body}"
+        );
+    }
+    assert!(
+        !body.contains("abs("),
+        "`abs` is not a barrier against re-association"
+    );
+    assert!(
+        src.contains("bitcast<f32>(bitcast<u32>(x) ^ sp.zero)"),
+        "opaque is the XOR with the run-time zero"
+    );
+}

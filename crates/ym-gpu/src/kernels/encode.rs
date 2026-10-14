@@ -7,8 +7,8 @@
 //!   letterbox painted where the source's mask plane says the pixel is outside the photo;
 //! * [`Encoding::Rgb8`]: interleaved bytes `r g b r g b ...`, the rows padded to four pixels
 //!   ([`row_words`]), the format of the JPEG, PNG and TIFF 8-bit bands;
-//! * [`Encoding::Rgb16`]: interleaved little-endian 16-bit samples with 10 to 16 significant bits,
-//!   the rows padded to two pixels, the format of the 16-bit bands.
+//! * [`Encoding::Rgb16`]: interleaved little-endian 16-bit samples with 1 to 16 significant bits, the
+//!   rows padded to two pixels, the format of the 16-bit bands.
 //!
 //! The dither is the CPU's (`ym_color::encode::dither_threshold`) at the absolute position of the
 //! pixel in the picture, so a band, a tile and the whole picture give the same bytes. The functions
@@ -217,6 +217,13 @@ pub fn encode_c13(
 }
 
 /// [`encode_c13`] with an explicit row stride in words (an RGBA8 view wider than the window).
+///
+/// # Errors
+///
+/// As [`encode_c13`]; also [`GpuError::InvalidInput`] when the stride is smaller than the rows the
+/// pass writes (`dst_x + w` words for [`Encoding::Rgba8`], [`row_words`] for the interleaved
+/// encodings: a thread of the pass would write into the next row, where another thread writes too)
+/// or when an interleaved encoding is given a `dst_x`.
 #[allow(clippy::too_many_arguments)] // the natural argument list; a struct would only move them
 pub fn encode_c13_strided(
     passes: &mut PassList<'_>,
@@ -230,6 +237,23 @@ pub fn encode_c13_strided(
     dst_row: usize,
 ) -> Result<(), GpuError> {
     let ctx = passes.context();
+    let interleaved = !matches!(encoding, Encoding::Rgba8 { .. });
+    if dst_x != 0 && interleaved {
+        return Err(GpuError::InvalidInput(
+            "an interleaved band starts at the left edge of its rows".into(),
+        ));
+    }
+    let row_len = if interleaved {
+        row_words(encoding, window.w)
+    } else {
+        dst_x + window.w
+    };
+    if dst_stride_words < row_len {
+        return Err(GpuError::InvalidInput(format!(
+            "{dst_stride_words} words per row do not hold the {row_len} words a {}-pixel row takes",
+            window.w
+        )));
+    }
     let need = ((dst_row + window.h) * dst_stride_words * 4) as u64;
     if dst.size() < need {
         return Err(GpuError::InvalidInput(format!(

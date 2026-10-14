@@ -937,3 +937,127 @@ fn the_device_view_road_equals_the_host_wrapper_road_bit_for_bit() {
         w * h
     );
 }
+
+// ------------------------------------------------------------------------------------------------
+// G-04 review: windows of every width and position, and the stride a band must have
+// ------------------------------------------------------------------------------------------------
+
+#[test]
+fn windows_of_any_width_and_position_encode_the_codes_of_the_whole_picture() {
+    // Widths below one group of the interleaved layouts (1 to 3 pixels), at a group and just past it,
+    // windows cut from the middle of a larger source (the source offset), with and without a mask, with
+    // the dither at absolute positions: every window must equal the same pixels of the whole picture,
+    // in all three layouts.
+    let (sw, sh) = (23usize, 9usize);
+    let img = linear_image(sw, sh, 0x51DE);
+    let mask: Vec<u8> = (0..sw * sh).map(|i| u8::from(i % 5 == 2)).collect();
+    let origin = (64 * 3 + 5, 17usize);
+    let bg = [12u8, 99, 250];
+    let windows = [
+        (0usize, 0usize, 1usize, 1usize),
+        (0, 0, 2, 3),
+        (5, 2, 3, 1),
+        (7, 4, 4, 5),
+        (2, 1, 5, 2),
+        (1, 0, 7, 9),
+        (3, 3, 9, 4),
+        (22, 8, 1, 1),
+        (0, 0, 23, 9),
+    ];
+    for with_mask in [false, true] {
+        for encoding in [
+            Encoding::Rgba8 { background: bg },
+            Encoding::Rgb8 { background: bg },
+            Encoding::Rgb16 { bits: 16 },
+        ] {
+            let (i2, m2) = (img.clone(), mask.clone());
+            let (whole, cuts) = on_gpu(move |ctx| {
+                let m = with_mask.then_some(m2.as_slice());
+                let c = |x: usize, y: usize| C13 {
+                    space: OutputSpace::DisplayP3,
+                    dither: true,
+                    origin: (origin.0 + x, origin.1 + y),
+                };
+                let whole = encode_host(ctx, &i2, m, Rect::whole(sw, sh), encoding, c(0, 0))?;
+                let mut cuts = Vec::new();
+                for (x0, y0, w, h) in windows {
+                    let window = Rect::new(x0, y0, w, h);
+                    cuts.push(encode_host(ctx, &i2, m, window, encoding, c(x0, y0))?);
+                }
+                Ok((whole, cuts))
+            })
+            .expect("device");
+            let bpp = match encoding {
+                Encoding::Rgba8 { .. } => 4,
+                Encoding::Rgb8 { .. } => 3,
+                Encoding::Rgb16 { .. } => 6,
+            };
+            for ((x0, y0, w, h), cut) in windows.into_iter().zip(&cuts) {
+                assert_eq!((cut.width, cut.height), (w, h));
+                assert_eq!(cut.bytes.len(), w * h * bpp, "{encoding:?} {w}x{h}");
+                for y in 0..h {
+                    let got = &cut.bytes[y * w * bpp..(y + 1) * w * bpp];
+                    let at = ((y0 + y) * sw + x0) * bpp;
+                    assert_eq!(
+                        got,
+                        &whole.bytes[at..at + w * bpp],
+                        "{encoding:?} mask {with_mask}: window ({x0}, {y0}) {w}x{h}, row {y}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn a_band_refuses_a_stride_its_rows_do_not_fit() {
+    // Seven pixels of RGB8 take two groups of three words, 6; with a stride of 5 a thread of the pass
+    // would write into the next row, where another thread writes too. The strided entry point must
+    // refuse that, and an `dst_x` the interleaved layouts have no use for, and accept a stride that
+    // fits (wider is fine).
+    let img = linear_image(7, 4, 0x57D);
+    let results = on_gpu(move |ctx| {
+        let src = GpuImage::upload_rgb(ctx, "strided source", &img)?;
+        let dst = ctx.pool().acquire(
+            "strided band",
+            4096,
+            wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+        )?;
+        let c = C13 {
+            space: OutputSpace::Srgb,
+            dither: false,
+            origin: (0, 0),
+        };
+        let whole = Rect::whole(7, 4);
+        let rgb8 = Encoding::Rgb8 { background: [0; 3] };
+        let rgb16 = Encoding::Rgb16 { bits: 16 };
+        let rgba = Encoding::Rgba8 { background: [0; 3] };
+        let mut passes = PassList::new(ctx, "strided");
+        let mut go = |enc, stride: usize, dst_x: usize| {
+            encode::encode_c13_strided(&mut passes, &src, whole, enc, c, &dst, stride, dst_x, 0)
+                .is_ok()
+        };
+        Ok([
+            // refused: 5 words hold neither 6 (RGB8) nor 12 (RGB16) nor 3 + 7 (RGBA8 at x = 3)
+            go(rgb8, 5, 0),
+            go(rgb16, 11, 0),
+            go(rgba, 9, 3),
+            // refused: the interleaved layouts start at the left edge of their rows
+            go(rgb8, 6, 1),
+            go(rgb16, 12, 2),
+            // accepted: exactly fitting and wider
+            go(rgb8, 6, 0),
+            go(rgb16, 12, 0),
+            go(rgba, 10, 3),
+            go(rgb8, 40, 0),
+            go(rgba, 40, 0),
+        ])
+    })
+    .expect("device");
+    assert_eq!(
+        results,
+        [
+            false, false, false, false, false, true, true, true, true, true
+        ]
+    );
+}

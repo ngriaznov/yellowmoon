@@ -70,9 +70,14 @@
 //!   drops it; a setup with no stage left copies its input, bit for bit, on every device. The
 //!   transfer takes the ratio `(L + D) / max(L, floor)` as exactly 1 when `D == 0` instead of
 //!   dividing: Metal's `a / b` is `a * (1 / b)`, which is not 1 for many `a == b`.
-//! * **The luma cannot be fused.** Each product `(w c) c` of the luma goes through `abs` (a no-op for
-//!   the positive weights) so that no compiler can contract it with the following addition; the rank
-//!   counts then see the luma bits of the CPU port.
+//! * **The luma cannot be fused or re-associated.** Fast-math fuses `(w c) c + a` into a multiply-add
+//!   and re-associates the product `(w c) c` into `w (c c)`; both move the last bit of `L`. Passing
+//!   each product through `abs` stops the fusing but not the re-association (the optimised code of
+//!   clang `-O2 -ffast-math`, LLVM like Metal's compiler, left 16 % of 2 million random lumas one ulp
+//!   off the strict value with `abs`, 19 % without it). Every factor and partial sum of the luma
+//!   is therefore XORed with a uniform that is 0 at run time and unknown to the compiler
+//!   (`opaque` in `output_sharpen.wgsl`, the device of the diffraction kernel): the same model gives
+//!   0 of 2 million lumas off. The square root is the one operation left to the driver.
 //! * **What fast-math still changes** is the last bit of a division or square root, and the rounding
 //!   of accumulations it fuses (`fma`). Those move a sample by an ulp of its own size (1.5e-5 at the
 //!   ratio cap on a value of 8: the HDR vector), and flip rank counts at a handful of ties per
@@ -185,7 +190,7 @@ pub(super) fn body(id: KernelId) -> String {
 }
 
 /// The uniform block of `output_sharpen.wgsl` (`SharpenParams`): the same fields in the same order,
-/// 40 scalars of 4 bytes. Every pass reads the fields it needs.
+/// 44 scalars of 4 bytes (a multiple of 16 bytes). Every pass reads the fields it needs.
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable, Default)]
 struct ParamsU {
@@ -229,6 +234,10 @@ struct ParamsU {
     org_y: u32,
     bg: u32,
     copy_only: u32,
+    /// Always 0: the shader XORs the luma terms with it so that no compiler can re-associate or
+    /// fuse them (`opaque` in `output_sharpen.wgsl`). Nothing sets it.
+    zero: u32,
+    pad: [u32; 3],
 }
 
 /// A kernel in the tap table.
@@ -1177,7 +1186,7 @@ mod tests {
         let naga::TypeInner::Struct { members, span } = &module.types[var.ty].inner else {
             panic!("`sp` is not a struct");
         };
-        let fields: [(&str, usize); 40] = [
+        let fields: [(&str, usize); 44] = [
             ("width", offset_of!(ParamsU, width)),
             ("height", offset_of!(ParamsU, height)),
             ("plane", offset_of!(ParamsU, plane)),
@@ -1218,6 +1227,10 @@ mod tests {
             ("org_y", offset_of!(ParamsU, org_y)),
             ("bg", offset_of!(ParamsU, bg)),
             ("copy_only", offset_of!(ParamsU, copy_only)),
+            ("zero", offset_of!(ParamsU, zero)),
+            ("pad0", offset_of!(ParamsU, pad)),
+            ("pad1", offset_of!(ParamsU, pad) + 4),
+            ("pad2", offset_of!(ParamsU, pad) + 8),
         ];
         assert_eq!(members.len(), fields.len());
         for (member, (name, offset)) in members.iter().zip(fields) {

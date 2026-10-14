@@ -1210,3 +1210,142 @@ fn device_entry_points_refuse_bad_windows_and_planes() {
     .expect("device");
     assert_eq!(r, vec![true; 5]);
 }
+
+#[test]
+fn tiny_masked_windows_land_exactly_at_odd_offsets_in_both_outputs() {
+    // The colour pass handles two pixels a thread: windows of 1 x 1, 1 x N, N x 1 and odd widths, cut
+    // from the middle of a masked source and written at odd offsets of a wider destination, as stage
+    // planes (mask plane included) and as RGBA8 words with the dither at the window's absolute
+    // position. Everything outside the window stays untouched.
+    let (w, h) = (9usize, 6usize);
+    let img = camera_image(w, h, 0x7171);
+    let mask: Vec<f32> = (0..w * h)
+        .map(|i| f32::from(u8::from(i % 4 == 1 || i / w == 3)))
+        .collect();
+    let chain = ColorChain::new(&chains::full(OutputTarget::Viewport)).expect("chain");
+    let windows = [
+        Rect::new(0, 0, 1, 1),
+        Rect::new(4, 2, 1, 3),
+        Rect::new(2, 1, 3, 1),
+        Rect::new(1, 0, 7, 5),
+        Rect::new(0, 0, 9, 6),
+    ];
+    let bg = [7u8, 8, 9];
+    let (img2, mask2) = (img.clone(), mask.clone());
+    let (plain_stage, plain_rgba, stages, words) = on_f32(move |ctx| {
+        let prepared = PreparedChain::new(ctx, &chain)?;
+        let plain_stage = prepared.render(ctx, &img2, (0, 0), ColorOutput::Stage(Stop::C12))?;
+        let mut data = img2.data.clone();
+        data.extend_from_slice(&mask2);
+        let src = GpuImage::upload(ctx, "tiny masked", w, h, 4, &data, img2.place)?;
+        let (dw, dh) = (20usize, 14usize);
+        let mut stages = Vec::new();
+        let mut words = Vec::new();
+        let mut plain_rgba = Vec::new();
+        for (k, win) in windows.into_iter().enumerate() {
+            let at = (3 + 2 * (k % 2), 1 + k);
+            // Stage planes.
+            let dst = GpuImage::alloc(ctx, "tiny dst", dw, dh, 4, img2.place)?;
+            let mut passes = PassList::new(ctx, "tiny stage");
+            prepared.encode_stage(&mut passes, &src, win, Stop::C12, &dst, at)?;
+            let id = dst.encode_read(&mut passes)?;
+            let done = passes.submit()?.finish()?;
+            stages.push((win, at, dst.take(&done, id)?));
+            // RGBA8 words in a buffer of 25 words a row.
+            let stride = 25usize;
+            let bytes = (stride * dh * 4) as u64;
+            let buf = ctx.pool().acquire(
+                "tiny rgba",
+                bytes,
+                wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            )?;
+            let mut passes = PassList::new(ctx, "tiny rgba");
+            prepared.encode_rgba8(
+                &mut passes,
+                &src,
+                win,
+                false,
+                true,
+                (win.x, win.y),
+                bg,
+                &buf,
+                stride,
+                at,
+            )?;
+            let id = passes.read(&buf, 0, bytes)?;
+            let done = passes.submit()?.finish()?;
+            words.push((win, at, stride, done.read(id).to_vec()));
+            // The plain render of the same window, for the dither at the same absolute position.
+            let part = img2.extract(win);
+            let r = prepared.render(
+                ctx,
+                &part,
+                (win.x, win.y),
+                ColorOutput::Rgba8 { dither: true },
+            )?;
+            let PixelData::Rgba8(v) = r.data else {
+                panic!("not RGBA8")
+            };
+            plain_rgba.push(v);
+        }
+        Ok((planar_owned(&plain_stage), plain_rgba, stages, words))
+    })
+    .expect("device");
+    let (dw, dh) = (20usize, 14usize);
+    for (win, at, got) in &stages {
+        for c in 0..4 {
+            for y in 0..dh {
+                for x in 0..dw {
+                    let g = got[c * dw * dh + y * dw + x];
+                    let inside =
+                        (at.0..at.0 + win.w).contains(&x) && (at.1..at.1 + win.h).contains(&y);
+                    if !inside {
+                        assert!(g.is_nan(), "{win:?}: plane {c} at ({x}, {y}) was written");
+                        continue;
+                    }
+                    let (sx, sy) = (win.x + x - at.0, win.y + y - at.1);
+                    let gone = mask[sy * w + sx] != 0.0;
+                    let want = match (c, gone) {
+                        (3, _) => mask[sy * w + sx],
+                        (_, true) => 0.0,
+                        (c, false) => plain_stage[c * w * h + sy * w + sx],
+                    };
+                    assert_eq!(
+                        g.to_bits(),
+                        want.to_bits(),
+                        "{win:?}: plane {c} at ({x}, {y})"
+                    );
+                }
+            }
+        }
+    }
+    for ((win, at, stride, got), plain) in words.iter().zip(&plain_rgba) {
+        for y in 0..dh {
+            for x in 0..*stride {
+                let g = &got[4 * (y * stride + x)..4 * (y * stride + x) + 4];
+                let inside = (at.0..at.0 + win.w).contains(&x) && (at.1..at.1 + win.h).contains(&y);
+                if !inside {
+                    // Outside the window the pooled buffer still holds the poison fill.
+                    assert_eq!(
+                        u32::from_le_bytes([g[0], g[1], g[2], g[3]]),
+                        ym_gpu::pool::POISON_WORD,
+                        "{win:?}: the word at ({x}, {y}) was written"
+                    );
+                    continue;
+                }
+                let (lx, ly) = (x - at.0, y - at.1);
+                let (sx, sy) = (win.x + lx, win.y + ly);
+                if mask[sy * w + sx] != 0.0 {
+                    assert_eq!(
+                        g,
+                        &[bg[0], bg[1], bg[2], 255],
+                        "{win:?}: letterbox at ({x}, {y})"
+                    );
+                } else {
+                    let p = &plain[4 * (ly * win.w + lx)..4 * (ly * win.w + lx) + 4];
+                    assert_eq!(g, p, "{win:?}: pixel ({x}, {y})");
+                }
+            }
+        }
+    }
+}
