@@ -327,8 +327,9 @@ fn a_view_at_100_percent_is_the_sharpened_picture_the_export_writes_with(r: &Ren
             }
         }
     }
-    eprintln!(
-        "100 % view against the export: worst {worst:.4} codes at {worst_at:?}, {over_one} samples over 1.0, {moved} samples moved by the stage"
+    let _ = writeln!(
+        std::io::stderr(),
+        "[G-05] 100 % view against the export: worst {worst:.4} codes at {worst_at:?}, {over_one} samples over 1.0, {moved} samples moved by the stage"
     );
     assert!(
         worst <= 1.0 + slack,
@@ -354,15 +355,11 @@ fn a_view_at_100_percent_is_the_sharpened_picture_the_export_writes_on_the_devic
     let dev = device(&gpu);
     // First measured on lavapipe: 1.1011 codes from the exact value at one sample of 1.44 million
     // (the stage's f32 accumulation at a hard edge of the patchwork, `docs/05`); the bound is twice
-    // the excess over the CPU's one code.
-    // A hardware adapter has its own f32 rounding (fast-math on Metal): it gets one more code until
-    // its numbers are in (the CI notes of the Apple runners).
-    let software = gpu.info().is_software;
-    a_view_at_100_percent_is_the_sharpened_picture_the_export_writes_with(
-        &dev,
-        if software { 0.2 } else { 1.2 },
-    );
-    // And the device's frame is the CPU's frame within one code (the dither is the same).
+    // the excess over the CPU's one code. The same bound on every adapter; the Apple runners print
+    // their numbers (`[G-05]`), and a Metal column comes only with them.
+    a_view_at_100_percent_is_the_sharpened_picture_the_export_writes_with(&dev, 0.2);
+    // And the device's frame is the CPU's frame within the codes of the colour pass's parity test
+    // (two; measured: one).
     let d = developed(800, 600);
     let src = d.source();
     let cpu = Renderer::neutral_only().expect("render thread");
@@ -374,7 +371,7 @@ fn a_view_at_100_percent_is_the_sharpened_picture_the_export_writes_on_the_devic
         "[G-05] {}: the 100 % view on the device differs from the CPU's by {worst} codes",
         gpu.info().name
     );
-    assert!(worst <= if software { 1 } else { 3 });
+    assert!(worst <= 2);
 }
 
 fn a_pan_at_100_percent_is_a_window_of_the_whole_picture_with(r: &Renderer) {

@@ -4,28 +4,30 @@
 //! section 3.9, the all-float form).
 //!
 //! What is compared, with which bound (each asserted, each printed with `--nocapture`) and what
-//! was measured on lavapipe (Mesa 25.2, LLVM 20.1):
+//! was measured on lavapipe (Mesa 25.2, LLVM 20.1) with the shader's own `log2` and `exp2` (the
+//! values before them, with the device's: in brackets):
 //!
 //! | Case | Asserted bound on `max |gpu - cpu|` | Measured |
 //! |---|---|---|
-//! | the 16 vectors, `f32` storage, against `expected_float` | [`VECTOR_BOUND`] absolute, and the vectors' own `tolerance_float` of 1e-4 | 3.1e-6 (`highlights_*`, values up to 3.4); 1.8e-6 on `zone_plate`; at most 8.4e-7 elsewhere |
-//! | random frames in `0..=1.3`, all four CFA phases, odd and even sizes, `guide_detail` -50/0/100 | [`FRAME_BOUND`] absolute | 4.8e-6 |
-//! | frames from -0.05 to 20 with NaN and infinity samples | [`WIDE_BOUND`] relative to the frame's peak | 1.3e-6 (2.9e-5 absolute at a peak of 23) |
-//! | stripes of one direction at scales 1e3 to 1e30 (one structure measure at `p`, the other as large as the signal) | [`WIDE_BOUND`] relative to the peak, every sample finite | 1.1e-6 |
-//! | sizes 1 x 1 to 7 x 7 (the mirror wraps inside the halo) | [`FRAME_BOUND`] absolute | 1.5e-5 (1 x 3, a strip whose horizontal neighbours are the pixel itself) |
+//! | the 16 vectors, `f32` storage, against `expected_float` | [`VECTOR_BOUND`] absolute, and the vectors' own `tolerance_float` of 1e-4 | 4.8e-7 (`highlights_*`, values up to 3.4); 2.7e-7 on `zone_plate`; at most 4.2e-7 elsewhere (3.1e-6) |
+//! | random frames in `0..=1.3`, all four CFA phases, odd and even sizes, `guide_detail` -50/0/100 | [`FRAME_BOUND`] absolute | 3.6e-6 (4.8e-6) |
+//! | frames from -0.05 to 20 with NaN and infinity samples | [`WIDE_BOUND`] relative to the frame's peak | 4.2e-7 (1.3e-6) |
+//! | stripes of one direction at scales 1e3 to 1e30 (one structure measure at `p`, the other as large as the signal) | [`WIDE_BOUND`] relative to the peak, every sample finite | 1.25e-7 at every scale (1.1e-6; Metal at b6f2e4b: 1.06e-5 at 1e30) |
+//! | sizes 1 x 1 to 7 x 7 (the mirror wraps inside the halo) | [`FRAME_BOUND`] absolute | 2.1e-6 (1.5e-5, 1 x 3, a strip whose horizontal neighbours are the pixel itself) |
 //! | tiny and odd shapes (1 x 1, 1 x 9, 3 x 33, ...) with tile sizes 0 to 8 | bit-identical to the whole frame | 0 |
 //! | tiles of 32 to 100 px on 203 x 157, tiled against the whole GPU frame | bit-identical | 0 |
-//! | the same, against the CPU | [`FRAME_BOUND`] absolute | 2.4e-6 |
-//! | a large frame, 2048 x 1365 through the tiling path (4 tiles of 1024) | [`FRAME_BOUND`] absolute | 3.2e-6 |
+//! | the same, against the CPU | [`FRAME_BOUND`] absolute | 9.5e-7 (2.4e-6) |
+//! | a large frame, 2048 x 1365 through the tiling path (4 tiles of 1024) | [`FRAME_BOUND`] absolute | 1.6e-6 (3.2e-6) |
 //! | crops by one row or column (the Bayer phase flips), interior | [`FRAME_BOUND`] | 0 |
-//! | flips of the mosaic | [`FRAME_BOUND`] | 1.2e-7 |
+//! | flips of the mosaic | [`FRAME_BOUND`] | 1.8e-7 (1.2e-7) |
 //! | `f16` storage (packed and native), against the CPU on the `f16`-rounded input | [`FRAME_BOUND`] plus half an `f16` ulp of the value | 4.9e-4 (the half ulp at 1.0: output rounding) |
 //!
 //! The receptive field found by perturbing single photosites is exactly 5 px, as the spec says;
 //! two runs, and two tiled runs, are bit-identical in every storage mode.
 //!
-//! Where the kernel is not bit-exact: `log2` and `exp2` are the GPU's `f32` functions (the CPU
-//! rounds the `f64` ones), the guide filters, the box sums and the reconstruction accumulate in
+//! Where the kernel is not bit-exact: `log2` and `exp2` are the shader's own `f32` routines (the
+//! CPU rounds the `f64` ones; the power takes the guide filter's sum as two parts, see
+//! `kernels::log_guided`), the guide filters, the box sums and the reconstruction accumulate in
 //! `f32` (the CPU: `f64`), and the green blend is evaluated in the spec's `f32` form
 //! `t = (D / E)^3`, `C (HA + t VA) / (HC + t VC)`. The box mean is the exact quotient `sum / 25`
 //! in both (the float form has no floor, so the `floor(sum / 25)` question of spec section 8 does
@@ -52,15 +54,16 @@ use ym_gpu::tiles::TilePlan;
 use ym_noise::model::NoiseModel;
 
 /// Vectors, `f32` storage: the GPU against `expected_float`. A fifth of the vectors' own tolerance
-/// (1e-4); measured on lavapipe: 3.1e-6 (`highlights_*`, values up to 3.4), 1e-6 and below
-/// elsewhere.
+/// (1e-4); measured on lavapipe: 4.8e-7 (`highlights_*`, values up to 3.4; 3.1e-6 with the device's
+/// `log2` and `exp2`).
 const VECTOR_BOUND: f64 = 2e-5;
 /// Random frames in `0..=1.3` (and the 1-pixel-wide strips of the tiny-size sweep): absolute.
-/// Measured on lavapipe: 4.8e-6 (random frames), 3.2e-6 (2048 x 1365), 1.5e-5 (1 x 3, a strip whose
-/// horizontal neighbours are the pixel itself).
+/// Measured on lavapipe: 3.6e-6 (random frames), 1.6e-6 (2048 x 1365), 2.1e-6 (sizes 1 x 1 to 7 x 7;
+/// with the device's `log2` and `exp2`: 4.8e-6, 3.2e-6 and 1.5e-5).
 const FRAME_BOUND: f64 = 5e-5;
-/// Frames up to 20 with hostile samples: relative to the frame's largest finite sample. Measured
-/// on lavapipe: 1.3e-6.
+/// Frames up to 20 with hostile samples, and stripes up to 1e30: relative to the frame's largest
+/// finite sample. Measured on lavapipe: 4.2e-7 and 1.25e-7 (1.3e-6 and 1.1e-6 with the device's
+/// `log2` and `exp2`; Metal at b6f2e4b, its fast-math `log2`: 1.06e-5 on the stripes at 1e30).
 const WIDE_BOUND: f64 = 1e-5;
 
 // ---------------------------------------------------------------------------------------------
@@ -419,7 +422,10 @@ fn huge_values_in_strongly_directional_frames_stay_finite_and_match() {
     // the horizontal estimate (the spec's `t` form), `t * vc` overflowed `f32` for values above
     // about 1e5 and gave NaN on the GPU where the CPU's `f64` is finite. The kernel divides through
     // by the larger weight instead; it stays finite until the 25-sample box sum of the structure
-    // measures overflows, near 1e33 (the CPU's `f32` planes: near 3e33).
+    // measures overflows, near 1e33 (the CPU's `f32` planes: near 3e33). The accuracy at large
+    // scales is that of L = log2(p + A / 2) near 116, where an ulp is a relative 5e-6 of the guide:
+    // Metal's fast-math `log2` gave 1.06e-5 of the peak at 1e30 (b6f2e4b); the shader's own `log2`
+    // and two-part `exp2` give 1.25e-7 on lavapipe and, in the clang fast-math model, 1.8e-7.
     let Some(dev) = f32_device() else { return };
     let (w, h) = (40usize, 30usize);
     let mut worst = 0.0f64;

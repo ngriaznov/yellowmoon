@@ -35,6 +35,17 @@
 //!
 //! Because geometry is applied *before* the pointwise colour chain, a crop or a rotation never
 //! re-runs a raw or colour group, and the colour chain only touches the pixels that are shown.
+//!
+//! # On the device (G-05)
+//!
+//! With a GPU and the view stages on (`RenderOptions::gpu_stages`), steps 3 to 5 and the output
+//! sharpening are one device job per frame: sampler, C1 to C12, stage and C13 fused, one readback
+//! of the RGBA8 frame (`device` module). A member of the stage set that is off keeps its host
+//! boundary; a device error makes the whole frame again on the CPU with a note; a view too big for
+//! one storage binding is cut into bands with the same pixels (`banded`). The display-linear frame
+//! under the stage stays resident on the device, so a move of the Output slider is one small job.
+//! The CPU stage, where it runs, is cut into strips that each look at the cancel token
+//! (`sharpen_photo`).
 
 mod device;
 

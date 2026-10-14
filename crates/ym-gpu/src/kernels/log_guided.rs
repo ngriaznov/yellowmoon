@@ -33,8 +33,13 @@
 //!
 //! The same function in `f32` instead of `f64`. Where it is not bit-exact, and why:
 //!
-//! * `log2` and `exp2` are the GPU's `f32` instructions, not the platform's `f64` libm rounded to
-//!   `f32`. On lavapipe their error is a few `f32` ulp.
+//! * `log2` and `exp2` are the shader's own `f32` routines from basic operations (`lg_log2`,
+//!   `lg_exp2`), not the platform's `f64` libm rounded to `f32` and not the device's instructions
+//!   (see the fast-math item below). The logarithm is within an ulp of a large result and within
+//!   1e-8 of a small one; the power takes the filter's sum as two parts, the centre value and the
+//!   small filter term, so that `Lc + acc` is never rounded to an ulp of its size (7.6e-6 near 116,
+//!   a relative 5e-6 of the guide, where the CPU sums in `f64`), and is within 1.7 ulp of
+//!   `2^(Lc + acc)`.
 //! * The guide filters, the box sums and the reconstruction accumulate in `f32` (the CPU: `f64`).
 //!   Two exact rewrites keep the rounding error relative to the *differences* of neighbouring
 //!   values instead of to the values: the filters are evaluated about the centre value
@@ -59,16 +64,28 @@
 //!   near `1e33`, where the 25-sample box sum of the structure measures exceeds the `f32` range (the
 //!   CPU's `f32` planes: between `1e33` and `3e33`, at `A = 65535 v`). Balanced mosaics are a few
 //!   times white at most.
-//! * **Fast-math (Metal).** Metal's compiler re-associates by default, which turns the reconstruction
-//!   `x * (a / b)` into `(x * a) / b`: with `x` and `a` both on the working scale of a very bright
-//!   frame (A above 1.8e19) the product overflows although each factor and the result are finite
-//!   (the Apple runners returned infinity from a mosaic scale of 1e20; 1e10 was fine). Each of the
-//!   four quotients of the reconstruction (`C / HC`, `C / VC`, `C / (blend of HC, VC)`, `C / SC`) is
-//!   therefore a barrier (`lg_opaque`: an xor with the always-zero `ctl.y`), so that it stays one
-//!   rounded ratio near 1. Compiled with clang `-O2 -ffast-math`, these expressions gave infinity
-//!   from a scale of about 3e21 on without the barrier, and the numbers of IEEE arithmetic with it.
-//!   The exact rewrites of the guide filters above are not protected: re-association undoes them
-//!   (a few ulp of `C` in the smooth parts), which the Apple runners passed within the bounds.
+//! * **Fast-math (Metal).** Metal compiles with fast-math. Three things follow:
+//!   * Re-association turns the reconstruction `x * (a / b)` into `(x * a) / b`: with `x` and `a`
+//!     both on the working scale of a very bright frame (A above 1.8e19) the product overflows
+//!     although each factor and the result are finite (the Apple runners returned infinity from a
+//!     mosaic scale of 1e20). Each of the four quotients of the reconstruction (`C / HC`, `C / VC`,
+//!     `C / (blend of HC, VC)`, `C / SC`) is behind a barrier (`lg_opaque`: an xor with the
+//!     always-zero `ctl.y`), so that it stays one rounded ratio near 1.
+//!   * The device's `log2` is up to 3 ulp off (MSL fast-math), and one ulp of `L` near 116 is a
+//!     relative 5e-6 of the guide `C = 2^L`: at b6f2e4b the Apple runners measured 1.6e-6, 4.4e-6
+//!     and 1.06e-5 of the peak at mosaic scales of 1e10, 1e20 and 1e30 (bound 1e-5), and a C port
+//!     of the shader with `log2` 2 ulp off gives 1.6e-6, 2.6e-6 and 1.07e-5. Hence `lg_log2` and
+//!     `lg_exp2` (above).
+//!   * Re-association and multiply-add fusion change the filters' sums and would fold the second
+//!     differences back into `(a + b) - 2 c`. Every partial sum, difference and product of the
+//!     filters, the structure measures and the reconstruction is therefore behind `lg_opaque`.
+//!
+//!   With all three, the C port compiled with clang `-O2` or `-O3 -ffast-math -ffp-contract=fast
+//!   -mfma`, `log2` 2 ulp and a reciprocal 1 ulp off, gives at most 1.8e-7 of the peak on the
+//!   stripes of `huge_values_in_strongly_directional_frames_stay_finite_and_match` at every scale
+//!   (`docs/gpu-plan.md` section 12); the divisions left to the device move a sample by an ulp or
+//!   two and decide nothing discontinuous (where the two box means tie, the two blend weights are
+//!   both 1).
 //!
 //! Not wired into a render path (the log-guided demosaic is a test-switch method on the CPU only,
 //! `docs/gpu-plan.md` section 5). [`encode_demosaic`] is the device-in, device-out entry point of the
@@ -408,19 +425,67 @@ mod tests {
     /// `x` and `a` both on the working scale of a very bright frame (A up to 2e35) the product
     /// overflows although every factor and the result are finite. Compiled with clang
     /// `-O2 -ffast-math`, the reconstruction of this shader gave infinity from a scale of about 3e21
-    /// on and the same numbers as IEEE with a barrier after each quotient (lavapipe does not
-    /// rewrite, so only the text of the shader can pin the barriers here).
+    /// on and the same numbers as IEEE with a barrier after each quotient. The guide's logarithm and
+    /// power are the shader's own and the filters' sums are pinned (module notes). Lavapipe does not
+    /// rewrite, so only the text of the shader can pin the barriers here.
     #[test]
-    fn every_quotient_of_the_reconstruction_is_behind_a_barrier() {
+    fn every_rounding_the_guide_and_the_reconstruction_depend_on_is_pinned() {
         let body = include_str!("../shaders/log_guided.wgsl");
         for line in [
-            "let q = lg_opaque(cc / (wh * hc + wv * vc));",
-            "other = (sa * lg_opaque(cc / sc)) / s;",
-            "chroma = (lg_opaque(cc / hc) * ha) / s;",
-            "other = (lg_opaque(cc / vc) * va) / s;",
+            "let q = lg_opaque(cc / lg_opaque(lg_opaque(wh * hc) + lg_opaque(wv * vc)));",
+            "other = lg_opaque(sa * lg_opaque(cc / sc)) / s;",
+            "chroma = lg_opaque(lg_opaque(cc / hc) * ha) / s;",
+            "other = lg_opaque(lg_opaque(cc / vc) * va) / s;",
             "return bitcast<f32>(bitcast<u32>(x) ^ u.ctl.y);",
+            "return lg_log2(lg_opaque(u.misc.x + lg_opaque(0.5 * lg_a(x, y))));",
+            "acc = lg_opaque(acc + lg_opaque(u.taps.y * lg_opaque(lg_l(x - 1, y) - lc)));",
+            "acc = lg_opaque(acc + lg_opaque(u.taps.x * lg_opaque(lg_plane(0u, x, y + 2) - lc)));",
+            "c = lg_exp2(lc, acc);",
+            "sh = lg_opaque(sh + lg_opaque(abs(0.5 * lg_opaque(lg_opaque(mid[i] - c) + lg_opaque(mid[i + 2] - c))) + p));",
         ] {
             assert!(body.contains(line), "the shader lost `{line}`");
+        }
+        // The device's log2 and exp2 only in the fallbacks for non-finite arguments.
+        let calls = |name: &str| {
+            body.lines()
+                .map(|l| l.split("//").next().unwrap_or(""))
+                .map(|code| code.matches(&format!(" {name}(")).count())
+                .sum::<usize>()
+        };
+        assert_eq!(calls("log2"), 1, "log2 outside lg_log2's fallback");
+        assert_eq!(calls("exp2"), 1, "exp2 outside lg_exp2's fallback");
+    }
+
+    /// The coefficients of `lg_log2` (2 / ln 2 and 1 / (2j + 1)) and of `lg_exp2` (ln(2)^k / k!) are
+    /// typed in the shader; each must be its definition rounded to `f32`.
+    #[test]
+    fn the_series_coefficients_of_the_shader_are_their_definitions() {
+        let body = include_str!("../shaders/log_guided.wgsl");
+        let constant = |name: &str| -> f32 {
+            let start = body
+                .find(&format!("const {name}: f32 = "))
+                .unwrap_or_else(|| panic!("const {name}"));
+            let text = &body[start..];
+            let value = &text[text.find("= ").expect("=") + 2..text.find(';').expect(";")];
+            value.parse::<f32>().expect("a number")
+        };
+        let ln2 = std::f64::consts::LN_2;
+        assert_eq!(constant("LG_TWO_OVER_LN2"), (2.0 / ln2) as f32);
+        for j in [3u32, 5, 7, 9] {
+            assert_eq!(
+                constant(&format!("LG_ATANH_{j}")),
+                (1.0 / f64::from(j)) as f32,
+                "1 / {j}"
+            );
+        }
+        let mut factorial = 1.0f64;
+        for k in 1..=7i32 {
+            factorial *= f64::from(k);
+            assert_eq!(
+                constant(&format!("LG_EXP2_{k}")),
+                (ln2.powi(k) / factorial) as f32,
+                "ln(2)^{k} / {k}!"
+            );
         }
     }
 }

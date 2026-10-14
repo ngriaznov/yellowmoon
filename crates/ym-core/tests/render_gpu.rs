@@ -621,12 +621,11 @@ mod view {
         }
     }
 
-    /// The largest difference in codes a device frame may have from the CPU's: lavapipe's
-    /// (measured: one code), or a hardware adapter's, whose f32 rounding is its own (fast-math on
-    /// Metal; the numbers are in the CI notes and replace this when they are in).
-    pub fn code_bound(gpu: &Gpu) -> u8 {
-        if gpu.info().is_software { 2 } else { 3 }
-    }
+    /// The largest difference in codes a device frame may have from the CPU's: the bound of the
+    /// colour pass's parity test above (`gpu_and_cpu_frames_agree_within_the_parity_tolerance`),
+    /// twice the one code measured on lavapipe with the whole view on the device. The same on every
+    /// adapter: a Metal column comes only with the Apple runners' numbers (the `[G-05]` CI notes).
+    pub const CODE_BOUND: u8 = 2;
 
     pub fn picture(w: u32, h: u32) -> PhotoSource {
         let white = light("sony-ilce-7rm4", 4500.0);
@@ -811,19 +810,17 @@ mod view {
                 "{name}: {median} {p99} {max}"
             );
             assert!(
-                worst <= code_bound(&gpu) && mean < 0.25,
+                worst <= CODE_BOUND && mean < 0.25,
                 "{name}: {worst} codes, mean {mean}"
             );
-            // The view stages alone come in far below them on lavapipe: twice the first measured
-            // values (ΔE00 max 0.082, one code at worst, mean 7.1e-5 codes). A hardware adapter has
-            // its own f32 rounding (fast-math on Metal), so it keeps the gates above and prints its
-            // numbers for the next tightening.
-            if gpu.info().is_software {
-                assert!(
-                    max <= 0.17 && worst <= 2 && over <= 1e-5 && mean < 1.5e-4,
-                    "{name}: max {max}, {worst} codes, over {over}, mean {mean}"
-                );
-            }
+            // The view stages alone come in far below them: twice the first values measured on
+            // lavapipe (ΔE00 max 0.082, one code at worst, none over one code, mean 7.1e-5 codes).
+            // The same on every adapter; a Metal column comes only with the Apple runners' numbers
+            // (the `[G-05]` notes above).
+            assert!(
+                max <= 0.17 && worst <= CODE_BOUND && over <= 1e-5 && mean < 1.5e-4,
+                "{name}: max {max}, {worst} codes, over {over}, mean {mean}"
+            );
         }
     }
 
@@ -1170,7 +1167,7 @@ mod view {
                     median <= 0.02
                         && p99 <= 0.05
                         && max <= 0.5
-                        && worst <= code_bound(&gpu)
+                        && worst <= CODE_BOUND
                         && mean < 0.25,
                     "{name} {stages}: ΔE00 {median} {p99} {max}, {worst} codes, mean {mean}"
                 );

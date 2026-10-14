@@ -1676,3 +1676,101 @@ fn cpu_is_as_sensitive_as_the_gpu_is_different() {
         );
     }
 }
+
+// MODEL-DUMP-BEGIN (temporary, removed before the end of the task)
+#[test]
+#[ignore = "development aid: YM_MODEL_DUMP=<dir> writes the MSL of every kernel for the clang model"]
+fn zz_msl_dump() {
+    let Ok(root) = std::env::var("YM_MODEL_DUMP") else {
+        return;
+    };
+    let root = std::path::Path::new(&root);
+    std::fs::create_dir_all(root).expect("dir");
+    for id in ym_gpu::kernels::KernelId::ALL {
+        let src = ym_gpu::kernels::shader_source(ym_gpu::device::StorageMode::F32, id);
+        let module = naga::front::wgsl::parse_str(&src).expect("parse");
+        let info = naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::all(),
+        )
+        .validate(&module)
+        .expect("valid");
+        let mut resources = naga::back::msl::BindingMap::default();
+        for (_, var) in module.global_variables.iter() {
+            if let Some(rb) = var.binding {
+                let mutable = matches!(var.space, naga::AddressSpace::Storage { access } if access.contains(naga::StorageAccess::STORE));
+                resources.insert(
+                    rb,
+                    naga::back::msl::BindTarget {
+                        buffer: Some(rb.binding as u8),
+                        texture: None,
+                        sampler: None,
+                        external_texture: None,
+                        mutable,
+                    },
+                );
+            }
+        }
+        let mut map = naga::back::msl::EntryPointResourceMap::default();
+        map.insert(
+            "main".to_string(),
+            naga::back::msl::EntryPointResources {
+                resources,
+                immediates_buffer: None,
+                sizes_buffer: Some(30),
+            },
+        );
+        let options = naga::back::msl::Options {
+            lang_version: (2, 4),
+            fake_missing_bindings: false,
+            per_entry_point_map: map,
+            ..naga::back::msl::Options::default()
+        };
+        let (msl, _) = naga::back::msl::write_string(
+            &module,
+            &info,
+            &options,
+            &naga::back::msl::PipelineOptions::default(),
+        )
+        .expect("msl");
+        std::fs::write(root.join(format!("{id:?}.metal")), msl).expect("write");
+    }
+}
+#[test]
+#[ignore = "development aid: YM_AR_DISPATCH_LOG=<file> records the dispatches of the vectors and frames"]
+fn zz_ar_dump() {
+    use ym_gpu::kernels::adaptive_ratio::model_log;
+    if std::env::var_os("YM_AR_DISPATCH_LOG").is_none() {
+        return;
+    }
+    let Some(dev) = f32_device() else { return };
+    let save = |name: &str, c: &Case| {
+        model_log(7, name.as_bytes());
+        let got = c.gpu(dev);
+        model_log(5, bytemuck::cast_slice(&got.data));
+        model_log(6, bytemuck::cast_slice(&c.cpu().data));
+    };
+    for v in load_vectors() {
+        save(&format!("vec {}", v.name), &v.case);
+    }
+    if std::env::var_os("YM_AR_DUMP_FRAMES").is_some() {
+        let mut seed = 100;
+        for cfa in Cfa::ALL {
+            for (w, h) in [(67usize, 41usize), (40, 40), (31, 18), (9, 7)] {
+                for (n, noise) in [
+                    ("zero", NoiseDn::ZERO),
+                    ("low", low_noise()),
+                    ("high", high_noise()),
+                ] {
+                    for (k, params) in param_sets().into_iter().enumerate() {
+                        seed += 1;
+                        let mut c = Case::new(scene_for(noise, w, h, cfa, seed), noise);
+                        c.params = params;
+                        save(&format!("frame {} {w}x{h} {n} {k}", cfa.name()), &c);
+                    }
+                }
+            }
+        }
+    }
+}
+// MODEL-DUMP-END
