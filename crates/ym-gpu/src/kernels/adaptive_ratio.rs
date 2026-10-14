@@ -107,18 +107,16 @@
 use bytemuck::{Pod, Zeroable};
 
 use super::shader::KernelId;
-use super::util::{
-    GROUP, STORAGE_IN, STORAGE_OUT, STORAGE_SCRATCH, bind, image_samples, submit_with_readback,
-    uniform_buffer,
-};
+use super::util::{GROUP, even, storage_buffer};
 use crate::cpu::demosaic::adaptive_ratio::{Derived, Params};
 use crate::cpu::demosaic::{CaCurves, DemosaicInputs, Method};
 use crate::cpu::noise::WORKING_SCALE;
 use crate::cpu::tiling::{Halo, Rect, Stage};
 use crate::cpu::{Cfa, CfaColor, Mosaic, RgbImage};
-use crate::device::{GpuContext, GpuError, StorageMode};
-use crate::pool::PooledBuffer;
+use crate::device::{GpuContext, GpuError};
+use crate::image::GpuImage;
 use crate::queue::CancelToken;
+use crate::stream::PassList;
 use crate::tiles::TilePlan;
 
 /// The largest balanced sample `S |m_u| max(g)` in DN (working scale 65535) the kernel accepts: the
@@ -317,6 +315,7 @@ impl Layout {
 }
 
 /// The CA curves as the shader reads them.
+#[derive(Clone, Debug)]
 struct CaUpload {
     /// Red knots, then blue knots, each `(radius_px, shift_px)` rounded to `f32`.
     knots: Vec<[f32; 2]>,
@@ -370,7 +369,7 @@ impl CaUpload {
 }
 
 /// The per-frame constants of the uniform block, rounded to `f32` once.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 struct Constants {
     /// `g_R, g_G, g_B` and the working scale `S`.
     gains: [f32; 4],
@@ -435,11 +434,113 @@ impl Constants {
     }
 }
 
-/// What the host checks and derives once per frame.
-struct Frame {
+/// The per-frame state of the demosaic, made once on the host: the constants of spec 2.2 derived with
+/// the CPU reference's own code, the same constants rounded to `f32` for the uniform, the CA curves as
+/// the shader reads them, and whether the input is balanced. Every rectangle of the frame (every tile,
+/// every half of a split tile) uses the same value, so tiles agree with the whole frame.
+///
+/// Owned and `Send`: a device job can hold it.
+#[derive(Clone, Debug)]
+pub struct PreparedDemosaic {
     derived: Derived,
     constants: Constants,
     ca: Option<CaUpload>,
+    balance: Balance,
+    shadow_sharpening: bool,
+}
+
+impl PreparedDemosaic {
+    /// Derives the frame constants from the gains, the noise model and the CA curves in `inputs` and
+    /// the tunables in `params`.
+    ///
+    /// # Errors
+    ///
+    /// [`GpuError::InvalidInput`] for unusable gains, an invalid noise model, non-finite parameters,
+    /// gains or a noise model whose constants do not fit `f32`, or an unusable CA centre or knots.
+    pub fn new(
+        balance: Balance,
+        inputs: &DemosaicInputs<'_>,
+        params: &Params,
+    ) -> Result<PreparedDemosaic, GpuError> {
+        let invalid =
+            |what: String| GpuError::InvalidInput(format!("adaptive ratio demosaic: {what}"));
+        let derived =
+            Derived::new(inputs.gains, inputs.noise, params).map_err(|e| invalid(e.to_string()))?;
+        let constants = Constants::new(&derived)?;
+        let ca = inputs.ca.map(CaUpload::new).transpose()?;
+        Ok(PreparedDemosaic {
+            derived,
+            constants,
+            ca,
+            balance,
+            shadow_sharpening: params.shadow_sharpening,
+        })
+    }
+
+    /// The context in pixels a tile needs around its core for the same pixels as the whole frame
+    /// (11, or 13 with shadow colour matching).
+    #[must_use]
+    pub fn halo_px(&self) -> usize {
+        self.derived.halo_px
+    }
+
+    /// Whether shadow colour matching runs for this frame (it needs 12 planes of scratch instead of 5).
+    #[must_use]
+    pub fn shadow_match(&self) -> bool {
+        self.derived.shadow_match
+    }
+
+    /// Whether the input is the balanced mosaic of R4/R5 or the unbalanced one.
+    #[must_use]
+    pub fn balance(&self) -> Balance {
+        self.balance
+    }
+
+    /// Checks the samples of a host mosaic once per frame or tile: the shape, no NaN or infinity, and
+    /// no balanced magnitude above [`MAX_BALANCED_DN`]. A device image cannot be scanned here; the
+    /// host that uploaded it did (this function on its mosaic).
+    ///
+    /// # Errors
+    ///
+    /// [`GpuError::InvalidInput`].
+    pub fn check_mosaic(&self, m: &Mosaic) -> Result<(), GpuError> {
+        check_shape(m)?;
+        let invalid =
+            |what: String| GpuError::InvalidInput(format!("adaptive ratio demosaic: {what}"));
+        let gain_max = self.derived.gains.iter().copied().fold(0.0f64, f64::max);
+        for (y, row) in m.data.chunks_exact(m.width).enumerate() {
+            for (x, &v) in row.iter().enumerate() {
+                let unbalanced = match self.balance {
+                    Balance::Unbalanced => v,
+                    Balance::Balanced => {
+                        (f64::from(v) / self.derived.gains[m.cfa.color_at(x, y).plane()]) as f32
+                    }
+                };
+                let scaled = WORKING_SCALE * f64::from(unbalanced).abs() * gain_max;
+                // The negated comparison also refuses NaN.
+                if !(v.is_finite() && scaled <= MAX_BALANCED_DN) {
+                    return Err(invalid(format!(
+                        "the photosite ({x}, {y}) holds {v}, which is not finite or exceeds the \
+                         {MAX_BALANCED_DN:e} DN the kernel accepts"
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// The shape check of a host mosaic: at least 2 x 2 photosites, one sample each.
+fn check_shape(m: &Mosaic) -> Result<(), GpuError> {
+    if m.width < 2 || m.height < 2 || m.data.len() != m.width * m.height {
+        return Err(GpuError::InvalidInput(format!(
+            "adaptive ratio demosaic: needs a mosaic of at least 2 x 2 photosites with one sample each, got {} x {} with {} samples",
+            m.width,
+            m.height,
+            m.data.len()
+        )));
+    }
+    Ok(())
 }
 
 /// Checks the mosaic, the gains, the noise model, the parameters and the CA curves once for a whole
@@ -449,66 +550,63 @@ fn prepare(
     balance: Balance,
     inputs: &DemosaicInputs<'_>,
     params: &Params,
-) -> Result<Frame, GpuError> {
-    let invalid = |what: String| GpuError::InvalidInput(format!("adaptive ratio demosaic: {what}"));
-    if m.width < 2 || m.height < 2 || m.data.len() != m.width * m.height {
-        return Err(invalid(format!(
-            "needs a mosaic of at least 2 x 2 photosites with one sample each, got {} x {} with {} samples",
-            m.width,
-            m.height,
-            m.data.len()
-        )));
-    }
-    let derived =
-        Derived::new(inputs.gains, inputs.noise, params).map_err(|e| invalid(e.to_string()))?;
-    let constants = Constants::new(&derived)?;
-    let ca = inputs.ca.map(CaUpload::new).transpose()?;
-    let gain_max = derived.gains.iter().copied().fold(0.0f64, f64::max);
-    for (y, row) in m.data.chunks_exact(m.width).enumerate() {
-        for (x, &v) in row.iter().enumerate() {
-            let unbalanced = match balance {
-                Balance::Unbalanced => v,
-                Balance::Balanced => {
-                    (f64::from(v) / derived.gains[m.cfa.color_at(x, y).plane()]) as f32
-                }
-            };
-            let scaled = WORKING_SCALE * f64::from(unbalanced).abs() * gain_max;
-            // The negated comparison also refuses NaN.
-            if !(v.is_finite() && scaled <= MAX_BALANCED_DN) {
-                return Err(invalid(format!(
-                    "the photosite ({x}, {y}) holds {v}, which is not finite or exceeds the \
-                     {MAX_BALANCED_DN:e} DN the kernel accepts"
-                )));
-            }
-        }
-    }
-    Ok(Frame {
-        derived,
-        constants,
-        ca,
-    })
+) -> Result<PreparedDemosaic, GpuError> {
+    check_shape(m)?;
+    let frame = PreparedDemosaic::new(balance, inputs, params)?;
+    frame.check_mosaic(m)?;
+    Ok(frame)
 }
 
-/// Everything a dispatch of one rectangle needs besides the buffers.
-struct RectJob<'a> {
-    m: &'a Mosaic,
-    core: Rect,
-    balance: Balance,
-    frame: &'a Frame,
-    params: &'a Params,
+/// The padded plane of the scratch buffer for a core of `core`: its footprint in the binding the
+/// 128 MiB design limit bounds. At most `(w + 25) (h + 25)` pixels for any configuration (the margin
+/// is 10, or 12 with shadow colour matching, and the left and top pad may add one more).
+#[must_use]
+pub fn padded_pixels(core: Rect) -> u64 {
+    (core.w as u64 + 2 * MAX_MARGIN_PX as u64 + 1) * (core.h as u64 + 2 * MAX_MARGIN_PX as u64 + 1)
 }
+
+/// The largest storage binding (bytes) a run for a core of `core` needs: the 12 planes of the padded
+/// scratch with shadow colour matching (the input, 4 bytes per photosite of the rectangle that
+/// carries [`Derived::halo_px`] pixels of context, and the three output planes of the core are
+/// smaller). A test checks it against the 128 MiB design binding at
+/// [`crate::chain::MAX_PHYS_AREA`] (`docs/gpu-plan.md` K4).
+#[must_use]
+pub fn max_binding_bytes(core: Rect) -> u64 {
+    let scratch = padded_pixels(core) * PLANES_MATCH as u64 * 4;
+    let compute = Rect::new(
+        0,
+        0,
+        core.w + 2 * HALO_MAX_PX,
+        core.h + 2 * HALO_MAX_PX,
+    );
+    let input = even(compute.w) as u64 * compute.h as u64 * 4;
+    let output = 3 * even(core.w) as u64 * core.h as u64 * 4;
+    scratch.max(input).max(output)
+}
+
+/// The most margin around a core the planes ever hold (shadow colour matching).
+const MAX_MARGIN_PX: usize = 12;
+
+/// The halo of a tile with shadow colour matching.
+const HALO_MAX_PX: usize = crate::cpu::demosaic::adaptive_ratio::HALO_MAX_PX;
 
 /// The uniform block shared by the passes of one rectangle; the region and the channel are set per
 /// pass.
-fn base_uniform(job: &RectJob<'_>, lay: &Layout) -> ArU {
-    let k = job.frame.constants;
-    let (cai, caf) = match &job.frame.ca {
+fn base_uniform(
+    input: &GpuImage,
+    core: Rect,
+    frame: &PreparedDemosaic,
+    lay: &Layout,
+    out_stride: usize,
+) -> ArU {
+    let k = frame.constants;
+    let (cai, caf) = match &frame.ca {
         Some(ca) => {
-            let place = job.m.place;
+            let place = input.place;
             (
                 [
-                    place.x0 as i32 + job.core.x as i32 - lay.pad_x as i32 - ca.centre_int[0],
-                    place.y0 as i32 + job.core.y as i32 - lay.pad_y as i32 - ca.centre_int[1],
+                    place.x0 as i32 + core.x as i32 - lay.pad_x as i32 - ca.centre_int[0],
+                    place.y0 as i32 + core.y as i32 - lay.pad_y as i32 - ca.centre_int[1],
                     ca.n_red as i32,
                     ca.n_blue as i32,
                 ],
@@ -522,26 +620,26 @@ fn base_uniform(job: &RectJob<'_>, lay: &Layout) -> ArU {
             lay.pw as u32,
             lay.ph as u32,
             (lay.pw * lay.ph) as u32,
-            job.m.width as u32,
+            input.width as u32,
         ],
         geom: [
             lay.pad_x as u32,
             lay.pad_y as u32,
-            job.core.w as u32,
-            job.core.h as u32,
+            core.w as u32,
+            core.h as u32,
         ],
         region: [0; 4],
         ctl: [
-            u32::from(job.balance == Balance::Balanced),
+            u32::from(frame.balance == Balance::Balanced),
             0,
-            u32::from(job.frame.ca.is_some()),
-            0,
+            u32::from(frame.ca.is_some()),
+            out_stride as u32,
         ],
         org: [
-            job.core.x as i32 - lay.pad_x as i32,
-            job.core.y as i32 - lay.pad_y as i32,
-            job.m.height as i32,
-            0,
+            core.x as i32 - lay.pad_x as i32,
+            core.y as i32 - lay.pad_y as i32,
+            input.height as i32,
+            input.stride as i32,
         ],
         gains: k.gains,
         cst: k.cst,
@@ -554,76 +652,51 @@ fn base_uniform(job: &RectJob<'_>, lay: &Layout) -> ArU {
     }
 }
 
-/// The command encoder and the buffers of one rectangle's passes.
-struct Passes<'a> {
-    ctx: &'a GpuContext,
-    encoder: wgpu::CommandEncoder,
-    base: ArU,
-    input: &'a PooledBuffer,
-    scratch: &'a PooledBuffer,
-    out: &'a PooledBuffer,
-    curves: &'a PooledBuffer,
-    /// The uniform buffers the submitted work reads; kept alive until the readback finished.
-    held: Vec<PooledBuffer>,
-}
-
-impl Passes<'_> {
-    /// Encodes one dispatch of the pass `id` over `region` (plane coordinates, half open) for the
-    /// matching channel `channel`.
-    fn run(&mut self, id: KernelId, region: [u32; 4], channel: u32) -> Result<(), GpuError> {
-        let Some((_, slots)) = pass_of(id) else {
-            return Err(GpuError::InvalidInput(format!(
-                "{id:?} is not an adaptive ratio pass"
-            )));
-        };
-        let pipeline = self.ctx.kernels().pipeline(self.ctx, id)?;
-        let mut u = self.base;
-        u.region = region;
-        u.ctl[1] = channel;
-        let ub = uniform_buffer(self.ctx, "adaptive ratio uniform", &u)?;
-        let group = {
-            let entries: Vec<(u32, wgpu::BindingResource<'_>)> = slots
-                .iter()
-                .map(|&slot| {
-                    let resource = match slot {
-                        Slot::Params => ub.binding(),
-                        Slot::Input => self.input.binding(),
-                        Slot::Scratch => self.scratch.binding(),
-                        Slot::Out => self.out.binding(),
-                        Slot::Curves => self.curves.binding(),
-                    };
-                    (slot as u32, resource)
-                })
-                .collect();
-            bind(self.ctx, &pipeline, id.name(), &entries)
-        };
-        {
-            let mut pass = self
-                .encoder
-                .begin_compute_pass(&wgpu::ComputePassDescriptor {
-                    label: Some(id.name()),
-                    timestamp_writes: None,
-                });
-            pass.set_pipeline(&pipeline);
-            pass.set_bind_group(0, &group, &[]);
-            pass.dispatch_workgroups(
-                (region[2] - region[0]).div_ceil(GROUP),
-                (region[3] - region[1]).div_ceil(GROUP),
-                1,
-            );
-        }
-        self.held.push(ub);
-        Ok(())
+/// Records the passes of the adaptive ratio demosaic for the `core` rectangle of a mosaic that is on
+/// the device, and returns the three planes of the core as a new [`GpuImage`] (device in, device out:
+/// the host wrappers [`demosaic`], [`demosaic_tiled`] and [`demosaic_planned`] are a thin layer on
+/// this).
+///
+/// `input` is the one-plane mosaic of the compute rectangle in `f32` (an even row stride is fine),
+/// `cfa` the pattern at its first photosite, `core` the part of it to compute, in its coordinates:
+/// the rest is context, mirrored at the edge of the rectangle, so a core that is not at the edge of
+/// the frame needs [`PreparedDemosaic::halo_px`] real pixels around it. The output keeps the
+/// mosaic's [`Placement`](crate::cpu::Placement) moved to the core, is balanced like the input
+/// (`balance` of `frame`) and has the even stride of every [`GpuImage`].
+///
+/// Nothing is submitted: the caller adds readbacks or further passes and submits the list. The
+/// samples are not checked here (they are on the device); check the host mosaic with
+/// [`PreparedDemosaic::check_mosaic`] before uploading it.
+///
+/// # Errors
+///
+/// [`GpuError::InvalidInput`] for an input that is not one plane, below 2 x 2, a core outside it or
+/// empty, or a padded plane that needs more workgroups on one side than the device allows;
+/// [`GpuError::BufferTooLarge`] and [`GpuError::OutOfBudget`] when the buffers do not fit the device;
+/// shader errors.
+pub fn encode_demosaic(
+    passes: &mut PassList<'_>,
+    input: &GpuImage,
+    cfa: Cfa,
+    core: Rect,
+    frame: &PreparedDemosaic,
+) -> Result<GpuImage, GpuError> {
+    let ctx = passes.context();
+    if input.planes != 1 || input.width < 2 || input.height < 2 {
+        return Err(GpuError::InvalidInput(format!(
+            "adaptive ratio demosaic: the input must be one plane of at least 2 x 2 photosites, got {} plane(s) of {} x {}",
+            input.planes, input.width, input.height
+        )));
     }
-}
-
-/// Runs the kernel on the `job.core` rectangle of `job.m` and reads the core back. The rectangle
-/// around the core supplies the context (real rows and columns, or the buffer edge, where it
-/// mirrors).
-fn run_rect(ctx: &GpuContext, job: &RectJob<'_>) -> Result<RgbImage, GpuError> {
-    let d = &job.frame.derived;
+    if core.is_empty() || core.x1() > input.width || core.y1() > input.height {
+        return Err(GpuError::InvalidInput(format!(
+            "adaptive ratio demosaic: the core {core:?} is empty or outside the {} x {} input",
+            input.width, input.height
+        )));
+    }
+    let d = &frame.derived;
     let mg = Margins::new(d.shadow_match);
-    let lay = Layout::new(job.m.cfa, job.core, mg.mosaic);
+    let lay = Layout::new(cfa, core, mg.mosaic);
 
     // One workgroup covers GROUP x GROUP positions; a side of more than `limit` workgroups is a
     // validation error that wgpu raises as a panic, so refuse it here (a 2 x N frame with N beyond
@@ -651,83 +724,105 @@ fn run_rect(ctx: &GpuContext, job: &RectJob<'_>) -> Result<RgbImage, GpuError> {
         });
     }
 
-    let m = job.m;
-    let input = ctx
-        .pool()
-        .acquire("adaptive ratio mosaic", m.data.len() as u64 * 4, STORAGE_IN)?;
-    ctx.queue
-        .write_buffer(&input, 0, bytemuck::cast_slice(&m.data));
-    let scratch = ctx.pool().acquire(
-        "adaptive ratio planes",
-        plane_len * planes as u64 * 4,
-        STORAGE_SCRATCH,
+    let scratch = passes.scratch("adaptive ratio planes", plane_len * planes as u64 * 4)?;
+    let out = GpuImage::alloc(
+        ctx,
+        "adaptive ratio rgb",
+        core.w,
+        core.h,
+        3,
+        input.place.offset(core.x, core.y),
     )?;
-    let core_px = (job.core.w * job.core.h) as u64;
-    let out = ctx
-        .pool()
-        .acquire("adaptive ratio rgb", core_px * 3 * 4, STORAGE_OUT)?;
     // The knots; a binding must exist even without CA, and holds one unused knot then.
     let dummy = [[0.0f32; 2]];
-    let knots: &[[f32; 2]] = job.frame.ca.as_ref().map_or(&dummy, |c| &c.knots);
-    let curves = ctx
-        .pool()
-        .acquire("adaptive ratio curves", knots.len() as u64 * 8, STORAGE_IN)?;
-    ctx.queue
-        .write_buffer(&curves, 0, bytemuck::cast_slice(knots));
-
-    let mut passes = Passes {
+    let knots: &[[f32; 2]] = frame.ca.as_ref().map_or(&dummy, |c| &c.knots);
+    let curves = passes.keep(storage_buffer(
         ctx,
-        encoder: ctx
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("adaptive ratio demosaic"),
-            }),
-        base: base_uniform(job, &lay),
-        input: &input,
-        scratch: &scratch,
-        out: &out,
-        curves: &curves,
-        held: Vec::with_capacity(20),
+        "adaptive ratio curves",
+        bytemuck::cast_slice(knots),
+    )?);
+    let base = base_uniform(input, core, frame, &lay, out.stride);
+
+    let mut run = |id: KernelId, region: [u32; 4], channel: u32| -> Result<(), GpuError> {
+        let Some((_, slots)) = pass_of(id) else {
+            return Err(GpuError::InvalidInput(format!(
+                "{id:?} is not an adaptive ratio pass"
+            )));
+        };
+        let mut u = base;
+        u.region = region;
+        u.ctl[1] = channel;
+        let ub = passes.uniform("adaptive ratio uniform", &u)?;
+        let entries: Vec<(u32, wgpu::BindingResource<'_>)> = slots
+            .iter()
+            .map(|&slot| {
+                let resource = match slot {
+                    Slot::Params => ub.binding(),
+                    Slot::Input => input.buf.binding(),
+                    Slot::Scratch => scratch.binding(),
+                    Slot::Out => out.buf.binding(),
+                    Slot::Curves => curves.binding(),
+                };
+                (slot as u32, resource)
+            })
+            .collect();
+        passes.dispatch(
+            id,
+            id.name(),
+            &entries,
+            (
+                (region[2] - region[0]).div_ceil(GROUP),
+                (region[3] - region[1]).div_ceil(GROUP),
+                1,
+            ),
+        )
     };
-    passes.run(
+    run(
         KernelId::AdaptiveRatioPrepare,
         [0, 0, lay.pw as u32, lay.ph as u32],
         0,
     )?;
-    passes.run(KernelId::AdaptiveRatioGreen, lay.around(mg.green1), 0)?;
-    passes.run(KernelId::AdaptiveRatioRefine, lay.around(mg.green), 0)?;
-    passes.run(KernelId::AdaptiveRatioStep1, lay.around(mg.step1), 0)?;
-    passes.run(KernelId::AdaptiveRatioStep2, lay.around(mg.rgb), 0)?;
-    if job.params.shadow_sharpening {
-        passes.run(KernelId::AdaptiveRatioLuma, lay.around(mg.rgb), 0)?;
-        passes.run(KernelId::AdaptiveRatioSharpen, lay.around(mg.s3), 0)?;
+    run(KernelId::AdaptiveRatioGreen, lay.around(mg.green1), 0)?;
+    run(KernelId::AdaptiveRatioRefine, lay.around(mg.green), 0)?;
+    run(KernelId::AdaptiveRatioStep1, lay.around(mg.step1), 0)?;
+    run(KernelId::AdaptiveRatioStep2, lay.around(mg.rgb), 0)?;
+    if frame.shadow_sharpening {
+        run(KernelId::AdaptiveRatioLuma, lay.around(mg.rgb), 0)?;
+        run(KernelId::AdaptiveRatioSharpen, lay.around(mg.s3), 0)?;
     }
     if d.shadow_match {
         for channel in 0..3 {
-            passes.run(KernelId::AdaptiveRatioSimple, lay.around(2), channel)?;
-            passes.run(KernelId::AdaptiveRatioLowErr, lay.around(1), channel)?;
+            run(KernelId::AdaptiveRatioSimple, lay.around(2), channel)?;
+            run(KernelId::AdaptiveRatioLowErr, lay.around(1), channel)?;
         }
-        passes.run(KernelId::AdaptiveRatioMatch, lay.around(0), 0)?;
+        run(KernelId::AdaptiveRatioMatch, lay.around(0), 0)?;
     } else {
-        passes.run(KernelId::AdaptiveRatioExit, lay.around(0), 0)?;
+        run(KernelId::AdaptiveRatioExit, lay.around(0), 0)?;
     }
-    let Passes { encoder, held, .. } = passes;
+    Ok(out)
+}
 
-    let bytes = core_px * 3 * 4;
-    let readback = submit_with_readback(ctx, encoder, &out, bytes)?;
-    let samples = image_samples(StorageMode::F32, &readback.finish(ctx)?);
-    drop(held);
-    let mut img = RgbImage::new(job.core.w, job.core.h);
-    if samples.len() != img.data.len() {
-        return Err(GpuError::Readback(format!(
-            "adaptive ratio demosaic: read back {} samples, expected {}",
-            samples.len(),
-            img.data.len()
-        )));
-    }
-    img.data.copy_from_slice(&samples);
-    img.place = m.place.offset(job.core.x, job.core.y);
-    Ok(img)
+/// Runs the kernel on the `core` rectangle of the host mosaic `m` and reads the core back: upload,
+/// [`encode_demosaic`], submit, read. The rectangle around the core supplies the context (real rows
+/// and columns, or the buffer edge, where it mirrors).
+fn run_rect(
+    ctx: &GpuContext,
+    m: &Mosaic,
+    core: Rect,
+    frame: &PreparedDemosaic,
+) -> Result<RgbImage, GpuError> {
+    let input = GpuImage::upload(ctx, "adaptive ratio mosaic", m.width, m.height, 1, &m.data, m.place)?;
+    let mut passes = PassList::new(ctx, "adaptive ratio demosaic");
+    let out = encode_demosaic(&mut passes, &input, m.cfa, core, frame)?;
+    let read = out.encode_read(&mut passes)?;
+    let done = passes.submit()?.finish()?;
+    let data = out.take(&done, read)?;
+    Ok(RgbImage {
+        width: out.width,
+        height: out.height,
+        place: out.place,
+        data,
+    })
 }
 
 /// Demosaics `m` in one go: the whole buffer is the core, mirrored at its edges (spec 3.1).
@@ -761,16 +856,7 @@ pub fn demosaic(
     params: &Params,
 ) -> Result<RgbImage, GpuError> {
     let frame = prepare(m, balance, inputs, params)?;
-    run_rect(
-        ctx,
-        &RectJob {
-            m,
-            core: Rect::whole(m.width, m.height),
-            balance,
-            frame: &frame,
-            params,
-        },
-    )
+    run_rect(ctx, m, Rect::whole(m.width, m.height), &frame)
 }
 
 /// Demosaics `m` tile by tile: cores of at most `tile_px` (rounded down to an even number), each
@@ -828,7 +914,7 @@ pub fn demosaic_planned(
             rect.w, rect.h, m.width, m.height
         )));
     }
-    let halo_px = frame.derived.halo_px;
+    let halo_px = frame.halo_px();
     for tile in plan.tiles() {
         let needed = tile.core.grow(Halo::uniform(halo_px), rect);
         if !tile.compute.contains(&needed) {
@@ -844,16 +930,7 @@ pub fn demosaic_planned(
         cancel.check()?;
         let sub = m.extract(tile.compute);
         let core = tile.core_in_compute();
-        let img = run_rect(
-            ctx,
-            &RectJob {
-                m: &sub,
-                core,
-                balance,
-                frame: &frame,
-                params,
-            },
-        )?;
+        let img = run_rect(ctx, &sub, core, &frame)?;
         out.paste(&img, Rect::whole(core.w, core.h), tile.core.x, tile.core.y);
     }
     Ok(out)

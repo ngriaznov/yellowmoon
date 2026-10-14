@@ -32,11 +32,11 @@
 // guard for them beyond the NaN test of the CA field.
 
 struct ArParams {
-    dims: vec4<u32>,    // x: padded width = row stride of every plane, y: padded height, z: plane length (x * y), w: width of the input rectangle
+    dims: vec4<u32>,    // x: padded width = row stride of every plane, y: padded height, z: plane length (x * y), w: width of the input rectangle (the mirror period of a row)
     geom: vec4<u32>,    // x: plane column of core column 0, y: plane row of core row 0, z: core width, w: core height
     region: vec4<u32>,  // x0, y0, x1, y1 of this dispatch in plane coordinates (half open)
-    ctl: vec4<u32>,     // x: 1 when the input is balanced (divide by the gains), y: channel (matching), z: 1 with the CA path
-    org: vec4<i32>,     // x, y: (input column, row) of plane column 0, row 0 (the core corner minus the pad); z: height of the input rectangle
+    ctl: vec4<u32>,     // x: 1 when the input is balanced (divide by the gains), y: channel (matching), z: 1 with the CA path, w: row stride of the output planes
+    org: vec4<i32>,     // x, y: (input column, row) of plane column 0, row 0 (the core corner minus the pad); z: height of the input rectangle; w: row stride of the input
     gains: vec4<f32>,   // g_R, g_G, g_B and the working scale S
     cst: vec4<f32>,     // rho_R, rho_B, K (pass-1 offset), k (pass-3 offset)
     cst2: vec4<f32>,    // T (shadow gate), r (noise sigma in DN)
@@ -48,9 +48,9 @@ struct ArParams {
 };
 
 @group(0) @binding(0) var<uniform> u: ArParams;
-@group(0) @binding(1) var<storage, read> inp: array<f32>;            // the input mosaic of the compute rectangle, row stride = its width
+@group(0) @binding(1) var<storage, read> inp: array<f32>;            // the input mosaic of the compute rectangle, row stride `org.w` (>= its width: a device image has an even stride)
 @group(0) @binding(2) var<storage, read_write> sc: array<f32>;       // the planes below
-@group(0) @binding(3) var<storage, read_write> outp: array<f32>;     // 3 planes of the core, dense
+@group(0) @binding(3) var<storage, read_write> outp: array<f32>;     // 3 planes of the core, row stride `ctl.w`
 @group(0) @binding(4) var<storage, read> curves: array<vec2<f32>>;   // CA knots (radius, shift): red, then blue
 
 // Scratch planes.
@@ -120,7 +120,7 @@ fn ar_prepare(gid: vec3<u32>) {
     let sx = mirror_idx(i32(x) + u.org.x, i32(u.dims.w));
     let sy = mirror_idx(i32(y) + u.org.y, u.org.z);
     let c = ar_site(x, y);
-    var mu = inp[u32(sy) * u.dims.w + u32(sx)];
+    var mu = inp[u32(sy) * u32(u.org.w) + u32(sx)];
     if (u.ctl.x == 1u) {
         mu = mu / u.gains[c];
     }
@@ -770,15 +770,15 @@ fn ar_match(gid: vec3<u32>) {
 // channel, white-balanced. The input pixel is the core pixel's, so no mirroring is needed.
 fn ar_write_out(x: u32, y: u32, p3: vec3<f32>) {
     let c = ar_site(x, y);
-    var mu = inp[u32(i32(y) + u.org.y) * u.dims.w + u32(i32(x) + u.org.x)];
+    var mu = inp[u32(i32(y) + u.org.y) * u32(u.org.w) + u32(i32(x) + u.org.x)];
     if (u.ctl.x == 1u) {
         mu = mu / u.gains[c];
     }
     let removed = min(mu, 0.0) * u.gains.w;
     var v = p3;
     v[c] = v[c] + u.gains[c] * removed;
-    let o = (y - u.geom.y) * u.geom.z + (x - u.geom.x);
-    let n = u.geom.z * u.geom.w;
+    let o = (y - u.geom.y) * u.ctl.w + (x - u.geom.x);
+    let n = u.ctl.w * u.geom.w;
     outp[o] = v.x / u.gains.w;
     outp[n + o] = v.y / u.gains.w;
     outp[2u * n + o] = v.z / u.gains.w;
