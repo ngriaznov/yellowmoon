@@ -31,7 +31,7 @@
 // order, and the two paths part by rounding of the last bit.
 //
 // Every product that is subtracted from a number of its own size, and the luma and the squares that
-// feed the means, are formed behind `opaque` (an xor with a uniform that is zero at run time, the
+// feed the means, are formed behind `opaque` (an OR with a uniform that is zero at run time, the
 // technique of `diffraction.wgsl`): a compiler that contracts `m1 - m0 * m0` into a fused multiply-add
 // (Metal, fast-math) would otherwise change exactly the digits this filter is sensitive to.
 //
@@ -63,10 +63,15 @@ struct GdParams {
 @group(0) @binding(5) var<storage, read_write> dst: array<f32>;
 
 
-// Always 0 at run time, which the optimiser cannot know: xor-ing a value with it hides the value from
+// Always 0 at run time, which the optimiser cannot know: OR-ing a value with it hides the value from
 // reassociation, contraction and algebraic rewrites (see the notes at the top).
+// An OR, not an XOR: two barriers in a row must stay a barrier. An XOR applied twice cancels
+// (x ^ z ^ z == x for every z, and compilers fold it), and fast-math folds a sum that starts at 0
+// (`0 + x` is x), so the first `opaque(acc + opaque(t))` of a running sum becomes the bare `t`, which
+// the next sum then fuses into a multiply-add (seen in clang's code for the adaptive ratio kernel;
+// docs/gpu-plan.md K8). An OR is idempotent: (x | z) | z == x | z, still one barrier.
 fn opaque(x: f32) -> f32 {
-    return bitcast<f32>(bitcast<u32>(x) ^ gp.sig.w);
+    return bitcast<f32>(bitcast<u32>(x) | gp.sig.w);
 }
 
 // a + b = s + e exactly (Knuth), every rounded result and error term hidden.

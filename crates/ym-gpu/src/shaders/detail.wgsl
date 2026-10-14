@@ -31,10 +31,15 @@ struct DtParams {
 @group(0) @binding(2) var<storage, read_write> yc: array<f32>;
 @group(0) @binding(3) var<storage, read_write> dst: array<f32>;
 
-// Always 0 at run time, which the optimiser cannot know: a value xor-ed with it is hidden from
+// Always 0 at run time, which the optimiser cannot know: a value OR-ed with it is hidden from
 // reassociation and from contraction into a fused multiply-add (the technique of `diffraction.wgsl`).
+// An OR, not an XOR: two barriers in a row must stay a barrier. An XOR applied twice cancels
+// (x ^ z ^ z == x for every z, and compilers fold it), and fast-math folds a sum that starts at 0
+// (`0 + x` is x), so the first `opaque(acc + opaque(t))` of a running sum becomes the bare `t`, which
+// the next sum then fuses into a multiply-add (seen in clang's code for the adaptive ratio kernel;
+// docs/gpu-plan.md K8). An OR is idempotent: (x | z) | z == x | z, still one barrier.
 fn opaque(x: f32) -> f32 {
-    return bitcast<f32>(bitcast<u32>(x) ^ dt.org.w);
+    return bitcast<f32>(bitcast<u32>(x) | dt.org.w);
 }
 
 // The luma as the CPU forms it: three rounded products added left to right, every intermediate hidden

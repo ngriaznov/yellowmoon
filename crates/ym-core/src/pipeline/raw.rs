@@ -909,7 +909,7 @@ fn full_sigma_map(sigma: &SigmaPlane, plan: &RawPlan) -> Vec<f32> {
     expand_sigma_map(sigma, gains.as_deref(), plan.width, plan.height)
 }
 
-/// [`full_sigma_map`] from the cell gains: the rule the device's expansion reproduces cell for cell
+/// `full_sigma_map` (a test helper) from the cell gains: the rule the device's expansion reproduces cell for cell
 /// (`ym_gpu::kernels::bilateral::SigmaHalf::at`).
 fn expand_sigma_map(sigma: &SigmaPlane, gains: Option<&[f32]>, w: usize, h: usize) -> Vec<f32> {
     let mut out = vec![0.0f32; w * h];

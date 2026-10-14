@@ -383,7 +383,7 @@ mod tests {
         // so only the text can pin it.
         let src = include_str!("../shaders/guided.wgsl");
         for needle in [
-            "return bitcast<f32>(bitcast<u32>(x) ^ gp.sig.w);",
+            "return bitcast<f32>(bitcast<u32>(x) | gp.sig.w);",
             "let ea = opaque(a - ad);",
             "let eb = opaque(b - bb);",
             "let rem2 = opaque(opaque(rem - p2.x) - p2.y);",

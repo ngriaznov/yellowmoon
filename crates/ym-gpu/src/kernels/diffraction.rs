@@ -70,7 +70,7 @@
 //!   pixels; the RA-09 review counted 0 in a further 17.3 million random, 14-bit and balanced
 //!   lumas) and the large frame drops to 4.8e-7. Two things are needed to make it work, and
 //!   both were found by measurement: every rounded intermediate **and every error term** goes through
-//!   `opaque` (an xor with the uniform `zero`, which the compiler cannot fold), because the optimiser
+//!   `opaque` (an OR with the uniform `zero`, which the compiler cannot fold), because the optimiser
 //!   otherwise fuses and cancels the error terms of the transformations, and `fma` is not used,
 //!   because lavapipe lowers it to a multiply and an add (every error term came out 0). The
 //!   transformations assume round-to-nearest `f32` and no re-association across the barrier.
@@ -227,8 +227,9 @@ struct ParamsU {
     gauss_radius: u32,
     kernel_off: u32,
     gauss_off: u32,
-    /// Always 0. The luma expansion xors its rounded intermediates with it, which hides them from the
+    /// Always 0. The luma expansion ORs its rounded intermediates with it, which hides them from the
     /// shader compiler (it cannot know the value), so that it cannot fuse or cancel the error terms.
+    /// An OR, not an XOR: an XOR applied twice cancels, an OR does not (`docs/gpu-plan.md` K8).
     zero: u32,
     luma_r: f32,
     luma_g: f32,

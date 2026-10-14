@@ -165,8 +165,13 @@ fn blur_source(i: u32) -> f32 {
 // result to stay what it is, but a shader compiler may fuse a product into the sum that consumes it,
 // re-associate, or cancel `a - (s - bb)` as real-number algebra: measured on Mesa's lavapipe, the plain
 // `two_sum` and `two_prod` returned error terms of exactly 0 (and so did one built on `fma`, which
-// lavapipe lowers to a multiply and an add). XOR with dp.zero (always 0, and unknown to the compiler)
+// lavapipe lowers to a multiply and an add). OR with dp.zero (always 0, and unknown to the compiler)
 // puts an integer operation between the producer and its consumers that the compiler cannot see through.
+// An OR, not an XOR: two barriers in a row must stay a barrier. An XOR applied twice cancels
+// (x ^ z ^ z == x for every z, and compilers fold it), and fast-math folds a sum that starts at 0
+// (`0 + x` is x), so the first `opaque(acc + opaque(t))` of a running sum becomes the bare `t`, which
+// the next sum then fuses into a multiply-add (seen in clang's code for the adaptive ratio kernel;
+// docs/gpu-plan.md K8). An OR is idempotent: (x | z) | z == x | z, still one barrier.
 //
 // Every value that a later operation could be rewritten against is hidden, the error terms included.
 // The first version hid only the rounded results and left the error sum `(a - ad) + (b - bb)` of
@@ -179,7 +184,7 @@ fn blur_source(i: u32) -> f32 {
 // `-O3 -ffp-contract=fast`). Each hidden term is an operand of exactly one sum, so there is nothing
 // left to re-associate.
 fn opaque(x: f32) -> f32 {
-    return bitcast<f32>(bitcast<u32>(x) ^ dp.zero);
+    return bitcast<f32>(bitcast<u32>(x) | dp.zero);
 }
 
 // a + b = s + e exactly (Knuth), with every rounded result and both error terms hidden from the

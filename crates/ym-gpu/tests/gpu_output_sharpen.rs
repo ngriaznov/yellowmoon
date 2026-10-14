@@ -2249,3 +2249,53 @@ fn the_passes_pin_every_rounding_the_limiter_sees() {
         );
     }
 }
+
+// MODEL-DUMP-BEGIN (temporary, reviewer; removed after the run)
+#[test]
+#[ignore = "development aid: YM_OS_DISPATCH_LOG=<file> records the dispatches of the cases of the four Metal failures"]
+fn zz_os_dump() {
+    use ym_gpu::kernels::output_sharpen::model_log;
+    if std::env::var_os("YM_OS_DISPATCH_LOG").is_none() {
+        return;
+    }
+    let Some(dev) = gpus().first() else { return };
+    let save = |name: &str, p: &OutputSharpen, scale: f32, img: &RgbImage| {
+        model_log(7, name.as_bytes());
+        let gpu = gpu_sharpen(dev, p, scale, img);
+        model_log(5, bytemuck::cast_slice(&gpu.data));
+        let cpu = p.apply(img, scale).expect("cpu");
+        model_log(6, bytemuck::cast_slice(&cpu.data));
+    };
+    let frames: Vec<(&str, RgbImage)> = vec![
+        ("busy71", busy(71, 66, 21)),
+        ("busy130", busy(130, 97, 22)),
+        ("photo150", photo_like(150, 113, 23)),
+        ("photo33", photo_like(33, 20, 24)),
+    ];
+    for (name, img) in &frames {
+        for (set, p, scale) in param_sets() {
+            save(&format!("noisy {name} {set}"), &p, scale, img);
+        }
+    }
+    let img = busy(53, 41, 61);
+    for (set, p, scale) in param_sets() {
+        save(&format!("flip orig {set}"), &p, scale, &img);
+        save(&format!("flip flipx {set}"), &p, scale, &flip_x(&img));
+        save(&format!("flip transp {set}"), &p, scale, &transpose(&img));
+    }
+    for (name, v) in vectors() {
+        let (os, scale) = params_of(&v);
+        save(&format!("vec {name}"), &os, scale, &image_of(&v["input"]));
+    }
+    if std::env::var_os("YM_MODEL_DUMP_LARGE").is_some() {
+        let img = photo_like(2048, 1365, 71);
+        save("large screen full", &OutputSharpen::screen(), 1.0, &img);
+        save(
+            "large screen 2048 from 6000",
+            &OutputSharpen::screen(),
+            scale_for_edges(2048, 6000),
+            &img,
+        );
+    }
+}
+// MODEL-DUMP-END

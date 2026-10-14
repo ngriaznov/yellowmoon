@@ -754,6 +754,20 @@ pub fn encode_demosaic(
         bytemuck::cast_slice(knots),
     )?);
     let base = base_uniform(input, core, frame, &lay, out.stride);
+    {
+        // MODEL-DUMP (temporary)
+        model_log(2, bytemuck::cast_slice(knots));
+        let mut v = Vec::new();
+        for x in [
+            (plane_len * planes as u64) as u32,
+            core.w as u32,
+            core.h as u32,
+            out.stride as u32,
+        ] {
+            v.extend_from_slice(&x.to_le_bytes());
+        }
+        model_log(3, &v);
+    }
 
     let mut run = |id: KernelId, region: [u32; 4], channel: u32| -> Result<(), GpuError> {
         let Some((_, slots)) = pass_of(id) else {
@@ -765,6 +779,24 @@ pub fn encode_demosaic(
         u.region = region;
         u.ctl[1] = channel;
         let ub = passes.uniform("adaptive ratio uniform", &u)?;
+        {
+            // MODEL-DUMP (temporary)
+            let mut v = Vec::new();
+            let name = format!("{id:?}");
+            v.extend_from_slice(&(name.len() as u32).to_le_bytes());
+            v.extend_from_slice(name.as_bytes());
+            let ubytes = bytemuck::bytes_of(&u);
+            v.extend_from_slice(&(ubytes.len() as u32).to_le_bytes());
+            v.extend_from_slice(ubytes);
+            for g in [
+                (region[2] - region[0]).div_ceil(GROUP),
+                (region[3] - region[1]).div_ceil(GROUP),
+                1,
+            ] {
+                v.extend_from_slice(&g.to_le_bytes());
+            }
+            model_log(4, &v);
+        }
         let entries: Vec<(u32, wgpu::BindingResource<'_>)> = slots
             .iter()
             .map(|&slot| {
@@ -814,6 +846,19 @@ pub fn encode_demosaic(
     Ok(out)
 }
 
+/// MODEL-DUMP (temporary): appends a tagged record to the file named by `YM_AR_DISPATCH_LOG`.
+#[doc(hidden)]
+pub fn model_log(tag: u32, bytes: &[u8]) {
+    use std::io::Write as _;
+    if let Some(path) = std::env::var_os("YM_AR_DISPATCH_LOG")
+        && let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path)
+    {
+        let _ = f.write_all(&tag.to_le_bytes());
+        let _ = f.write_all(&(bytes.len() as u32).to_le_bytes());
+        let _ = f.write_all(bytes);
+    }
+}
+
 /// Runs the kernel on the `core` rectangle of the host mosaic `m` and reads the core back: upload,
 /// [`encode_demosaic`], submit, read. The host path every wrapper and the device chain use; the
 /// samples were checked by the caller ([`PreparedDemosaic::check_mosaic`]). The rectangle around the core supplies the context (real rows
@@ -833,11 +878,28 @@ pub(crate) fn demosaic_core(
         &m.data,
         m.place,
     )?;
+    {
+        // MODEL-DUMP (temporary)
+        static CALLS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let n = CALLS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        model_log(
+            7,
+            format!("call {n} {}x{} core {}x{}", m.width, m.height, core.w, core.h).as_bytes(),
+        );
+        let mut v = Vec::new();
+        for x in [m.width as u32, m.height as u32, input.stride as u32] {
+            v.extend_from_slice(&x.to_le_bytes());
+        }
+        v.extend_from_slice(bytemuck::cast_slice(&m.data));
+        model_log(1, &v);
+    }
     let mut passes = PassList::new(ctx, "adaptive ratio demosaic");
     let out = encode_demosaic(&mut passes, &input, m.cfa, core, frame)?;
     let read = out.encode_read(&mut passes)?;
     let done = passes.submit()?.finish()?;
     let data = out.take(&done, read)?;
+    model_log(5, bytemuck::cast_slice(&data));
+    model_log(6, bytemuck::cast_slice(&data));
     Ok(RgbImage {
         width: out.width,
         height: out.height,
@@ -978,6 +1040,54 @@ mod tests {
             .map(|e| start + e + 3)
             .expect("end");
         &src[start..end]
+    }
+
+    /// K8 (`docs/gpu-plan.md`): every fast-math barrier of every kernel is an OR with a run-time zero,
+    /// never an XOR. An XOR applied twice cancels (`x ^ z ^ z == x`, which a compiler folds) and
+    /// fast-math folds the `0 + x` that starts a running sum, so a product lost its barrier and was
+    /// fused into the next sum (the Metal model of the adaptive ratio: 617 935 samples of 2 638
+    /// demosaic calls off the written order, against 0 with the OR). A barrier is a function whose body
+    /// is `bitcast<f32>(bitcast<u32>(x) OP word)`; the test scans the text of every kernel, and it
+    /// must find the six kernel families that have one (so that it cannot pass by finding none).
+    #[test]
+    fn every_fast_math_barrier_is_an_or_never_an_xor() {
+        let mut families = BTreeSet::new();
+        for id in KernelId::ALL {
+            let src = shader_source(StorageMode::F32, id);
+            for (at, _) in src.match_indices("bitcast<f32>(bitcast<u32>(x)") {
+                let rest = &src[at + "bitcast<f32>(bitcast<u32>(x)".len()..];
+                let op = rest.trim_start().chars().next().expect("an operator");
+                assert_eq!(
+                    op,
+                    '|',
+                    "{id:?}: a barrier must OR the run-time zero, found `{}`",
+                    &src[at..at + 60.min(src.len() - at)]
+                );
+                let name = id.name();
+                families.insert(
+                    ["adaptive_ratio", "output_sharpen", "log_guided", "detail", "guided", "diffraction"]
+                        .into_iter()
+                        .find(|f| name.starts_with(f))
+                        .unwrap_or_else(|| panic!("{name} has a barrier but is in no known family")),
+                );
+            }
+            assert!(
+                !src.contains("bitcast<u32>(x) ^"),
+                "{id:?}: an XOR barrier (x ^ z ^ z cancels)"
+            );
+        }
+        assert_eq!(
+            families.into_iter().collect::<Vec<_>>(),
+            [
+                "adaptive_ratio",
+                "detail",
+                "diffraction",
+                "guided",
+                "log_guided",
+                "output_sharpen"
+            ],
+            "the kernels with a fast-math barrier"
+        );
     }
 
     /// K8 (module notes, "Fast-math"): lavapipe neither fuses nor re-associates, so only the text can

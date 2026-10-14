@@ -1417,28 +1417,23 @@ mod view {
 
     #[test]
     fn a_resident_frame_is_never_served_to_another_device() {
-        // A device that replaces another one (`Renderer::set_gpu`) may be allocated where the first
-        // one was: the resident display-linear frames the photo's caches still hold belong to the
-        // device that made them and must not be given to the new one, whatever its address.
+        // A device that replaces another one (`Renderer::set_gpu`) used to be allocated where the
+        // first one was (the first run of this test on the first implementation: the same address),
+        // and the resident display-linear frame the photo's caches still held was bound in the new
+        // device's passes: a validation error that lost a healthy device and gave the frame to the
+        // CPU. A frame belongs to the device that made it, whatever the next one's address.
         let Some(first) = gpu() else { return };
         let src = picture(600, 400);
         let st = cell(300.0, 200.0, 1.0);
         let r = device_renderer(&first, VIEW);
         let _ = frame(&r, &src, &st);
-        let address = Arc::as_ptr(&first) as usize;
         r.set_gpu(None, GpuStages::NONE);
         drop(first);
-        let mut moved_to_the_same_address = false;
         for i in 0..8 {
             let amount = 60.0 + f64::from(i);
             let Some(next) = gpu() else { return };
-            moved_to_the_same_address |= Arc::as_ptr(&next) as usize == address;
             r.set_gpu(Some(Arc::clone(&next)), VIEW);
             let moved = frame(&r, &with_amount(&src, amount), &st);
-            eprintln!(
-                "iteration {i}: same address {moved_to_the_same_address}, device {:?}, runs {:?}",
-                moved.report.device, moved.report.runs
-            );
             assert_eq!(
                 moved.report.device,
                 ComputeDevice::Gpu,
@@ -1446,6 +1441,7 @@ mod view {
                 moved.report.notes
             );
             assert!(no_gpu_note(&moved), "{:?}", moved.report.notes);
+            assert!(!next.is_lost(), "the new device was lost");
             assert_eq!(
                 moved.report.runs.display_hits, 0,
                 "the frame of another device"
@@ -1460,9 +1456,6 @@ mod view {
             r.set_gpu(None, GpuStages::NONE);
             drop(next);
         }
-        eprintln!(
-            "a new device was allocated at the address of the first one: {moved_to_the_same_address}"
-        );
     }
 
     #[test]

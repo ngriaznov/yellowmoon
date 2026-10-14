@@ -42,7 +42,7 @@
 //!   that alone gave an error of 9.1e-5 at a handful of pixels (feeding the CPU port the `f32` luma
 //!   and nothing else reproduced the GPU's worst pixels to 0.5 %). The shader therefore forms the
 //!   luma as an exact expansion (`exact_luma`: Dekker products and Knuth sums, every rounded result
-//!   hidden from the optimiser by an xor with a runtime zero) and gets the CPU's bits:
+//!   hidden from the optimiser by an OR with a runtime zero) and gets the CPU's bits:
 //!   `the_luma_plane_has_the_cpu_bits` counts 0 differences in 240000 pixels, and the large frame
 //!   drops to 4.8e-7. `fma` is not used for the products: lavapipe lowers it to a multiply and an
 //!   add, which lost every error term;

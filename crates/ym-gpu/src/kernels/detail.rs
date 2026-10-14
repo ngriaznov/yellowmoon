@@ -318,7 +318,7 @@ mod tests {
         // bits. Lavapipe cannot show it, so the text pins it.
         let src = include_str!("../shaders/detail.wgsl");
         for needle in [
-            "return bitcast<f32>(bitcast<u32>(x) ^ dt.org.w);",
+            "return bitcast<f32>(bitcast<u32>(x) | dt.org.w);",
             "return opaque(opaque(r + g) + b);",
             "let d = opaque(dt.k.x * opaque(",
         ] {
