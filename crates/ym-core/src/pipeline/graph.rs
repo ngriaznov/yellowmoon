@@ -24,7 +24,7 @@
 //! the colour group and leaves the raw group alone.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 use std::time::Instant;
 
@@ -34,9 +34,10 @@ use ym_gpu::cpu::demosaic::{DEFAULT_METHOD, Method};
 use ym_gpu::cpu::detail::NoiseReduction;
 use ym_gpu::cpu::sharpen::SharpenParams;
 use ym_gpu::cpu::sharpen::diffraction::DiffractionParams;
+use ym_gpu::chain::StageRange;
 use ym_gpu::cpu::{Rect, RgbImage};
-use ym_gpu::device::{Gpu, GpuInfo};
-use ym_gpu::queue::CancelToken;
+use ym_gpu::device::{Gpu, GpuError, GpuInfo};
+use ym_gpu::queue::{CancelToken, JobSpec, Priority};
 
 use super::color::{
     ColorKey, ColorPlan, DisplayChoice, GradeKey, GradePlan, GradeRequest, LookProvider,
@@ -44,7 +45,7 @@ use super::color::{
 };
 use super::geometry::Geometry;
 use super::raw::{
-    CaptureMethod, FrameData, FullChain, RawParams, RawParamsKey, RawPlan, SigmaPlane,
+    CaptureMethod, FrameData, FullChain, GpuRoute, RawParams, RawParamsKey, RawPlan, SigmaPlane,
     diffraction_params, noise_model_is_usable, reduced_bayer, reduced_rgb, sigma_plane,
     usable_noise_model,
 };
@@ -53,6 +54,11 @@ use crate::app::gpu::GpuStages;
 use crate::scheduler::{ByteLru, JobScheduler, MemoryBudget, MemoryLedger};
 use crate::session::PhotoId;
 use ym_color::display::OutputTarget;
+
+/// The note of a render whose demosaic method is not the adaptive ratio (the test-only switch of
+/// `RenderOptions::demosaic`): the device runs that one only.
+const METHOD_NOT_ON_DEVICE_NOTE: &str =
+    "The graphics card runs the adaptive ratio demosaic only, so the CPU ran the one that was asked for.";
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
@@ -79,9 +85,13 @@ pub struct RenderOptions {
     pub gpu: Option<Arc<Gpu>>,
     /// The stages the device may run (`Auto` runs [`GpuStages::SIGNED_OFF`], `On` and `Require`
     /// run all of them). All of them by default: a renderer given a device and no policy holds
-    /// nothing back. In this version no render code reads it yet; the wiring tasks of the GPU
-    /// wave consult it one stage at a time, and a stage that is off keeps its host boundary.
+    /// nothing back. The raw chain ([`GpuStages::RAW_CHAIN`], the R6 demosaic of full-resolution
+    /// tiles) consults it; the wiring tasks of the GPU wave consult it one stage at a time, and a
+    /// stage that is off keeps its host boundary.
     pub gpu_stages: GpuStages,
+    /// Whether a device error is a failure of the photo (`GpuPolicy::Require`, `--require-gpu`)
+    /// instead of a fall-back to the CPU. Off by default.
+    pub gpu_strict: bool,
     /// The colour of the letterbox around the photo (the paper colour).
     pub background: [u8; 3],
     /// Longest edge of a thumbnail in pixels (`docs/01`: 240).
@@ -145,6 +155,7 @@ impl std::fmt::Debug for RenderOptions {
             .field("demosaic", &self.demosaic)
             .field("gpu", &self.gpu.as_ref().map(|g| g.info().name.clone()))
             .field("gpu_stages", &self.gpu_stages)
+            .field("gpu_strict", &self.gpu_strict)
             .finish_non_exhaustive()
     }
 }
@@ -159,6 +170,7 @@ impl Default for RenderOptions {
             neural: NeuralStatus::unavailable(),
             gpu: None,
             gpu_stages: GpuStages::ALL,
+            gpu_strict: false,
             background: [255, 255, 255],
             thumbnail_px: 240,
             demosaic: forced_demosaic().unwrap_or(DEFAULT_METHOD),
@@ -174,6 +186,16 @@ pub enum ComputeDevice {
     Cpu,
     /// The wgpu device.
     Gpu,
+}
+
+/// Where one range of raw stages ran (`docs/gpu-plan.md` N-6: a render can be both, so the report
+/// has one value per range, next to the single `device` of the colour pass).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RangeDevice {
+    /// The stages (`R6` for the demosaic).
+    pub range: StageRange,
+    /// Where they ran for the tiles of this request.
+    pub device: ComputeDevice,
 }
 
 /// How many times each group did work (for one request, or since the graph was made).
@@ -273,6 +295,11 @@ pub struct RenderReport {
     pub space: ColorSpace,
     /// Where the colour pass ran.
     pub device: ComputeDevice,
+    /// Where the raw stages that can run on the device ran, per range, for the full-resolution
+    /// tiles of this request. Empty when the request ran no such tile (a fit view, a thumbnail, a
+    /// request served from a cache) or the renderer has no device for them. A request that fell
+    /// back to the CPU part-way says [`ComputeDevice::Cpu`] and carries the note.
+    pub ranges: Vec<RangeDevice>,
     /// The reduction of the raw group that was used (1 = full resolution).
     pub scale: usize,
     /// What did work for this request.
@@ -324,6 +351,10 @@ pub struct PhotoGraph {
     state: Mutex<GraphState>,
     counters: StageCounters,
     budget: MemoryBudget,
+    /// A device error ended the GPU route of this photo's raw chain: from then on it renders on the
+    /// CPU (`docs/gpu-plan.md` 4.9). The caches may hold tiles of both devices, which differ within
+    /// the tolerances of the kernels; an export restarts the photo wholly on the CPU.
+    raw_gpu_failed: AtomicBool,
 }
 
 impl std::fmt::Debug for PhotoGraph {
@@ -342,6 +373,7 @@ impl PhotoGraph {
             state: Mutex::new(GraphState::default()),
             counters: StageCounters::default(),
             budget,
+            raw_gpu_failed: AtomicBool::new(false),
         }
     }
 
@@ -446,6 +478,10 @@ struct Inner {
     retired_through: AtomicU32,
     scheduler: JobScheduler,
     ledger: Arc<MemoryLedger>,
+    /// A shader of the raw chain failed to compile on this machine: the device does not run the raw
+    /// chain for the rest of the process (`docs/gpu-plan.md` 4.9, "shader: disable that kernel
+    /// family for the process").
+    raw_gpu_disabled: AtomicBool,
 }
 
 /// The render engine (see the module documentation of [`crate::pipeline`]). Cheap to clone.
@@ -485,6 +521,7 @@ impl Renderer {
                 retired_through: AtomicU32::new(0),
                 scheduler,
                 ledger,
+                raw_gpu_disabled: AtomicBool::new(false),
             }),
         })
     }
@@ -538,6 +575,23 @@ impl Renderer {
             o.gpu = gpu;
             o.gpu_stages = stages;
         });
+    }
+
+    /// Makes a device error a failure of the photo (`GpuPolicy::Require`) or a fall-back to the CPU
+    /// (every other policy). Like [`set_gpu`](Self::set_gpu) it is for the start of a run.
+    pub fn set_gpu_strict(&self, strict: bool) {
+        self.update_options(|o| o.gpu_strict = strict);
+    }
+
+    /// Cancels the queued GPU jobs of the viewport and tile renders of `left`, the photo the person
+    /// moved away from, and sets the token of the one that runs. Without it a queued job keeps the
+    /// photo's decoded mosaic alive behind it until it is popped. Thumbnail and export jobs of the
+    /// device are untouched (`Scheduler::cancel_navigation`). Returns how many were cancelled.
+    pub(crate) fn cancel_gpu_navigation(&self, left: PhotoId) -> usize {
+        self.options().gpu.as_ref().map_or(0, |g| {
+            g.scheduler()
+                .cancel_navigation(Some(u64::from(left.0)))
+        })
     }
 
     /// Changes the memory budget: the ledger of full-resolution renders follows at once, graphs
@@ -757,6 +811,21 @@ pub(crate) struct Job<'a> {
     /// A full-resolution chain built for this request only (`keep = false`), so that a render
     /// that works tile by tile prepares it once.
     transient_full: Option<(RawParamsKey, Arc<FullChain>)>,
+    /// The options of the moment the request began. A render reads them from here and not from
+    /// [`Renderer::options`] again, so a device attached while an export runs ([`Renderer::set_gpu`])
+    /// cannot put the tiles of one export on two devices.
+    opts: Arc<RenderOptions>,
+    /// The priority of the device jobs of this request. Every job of one request has the same
+    /// priority (an export `Export`, any other request `Viewport` unless the caller says), so that
+    /// cancelling a photo's navigation jobs reaches all of the request's queued jobs or none.
+    gpu_priority: Priority,
+    /// An export restarts the whole photo on the CPU after a device error, instead of finishing the
+    /// tiles that are left on the CPU (never a mix of devices in one export, `docs/gpu-plan.md` 4.9).
+    restartable: bool,
+    /// The device error that asked for such a restart ([`Job::take_gpu_restart`]).
+    restart: Option<String>,
+    /// Where the raw stages ran, per range, for the tiles of this request.
+    raw_ranges: Vec<RangeDevice>,
 }
 
 impl<'a> Job<'a> {
@@ -770,7 +839,10 @@ impl<'a> Job<'a> {
         if r.is_retired(src.id) {
             return Err(RenderError::Cancelled);
         }
-        Ok(Self::for_export(r, src, cancel))
+        let mut job = Self::for_export(r, src, cancel);
+        job.gpu_priority = Priority::Viewport;
+        job.restartable = false;
+        Ok(job)
     }
 
     /// A request that is not refused for a photo of a closed session: an export, which goes on
@@ -790,7 +862,25 @@ impl<'a> Job<'a> {
             params: None,
             frame: None,
             transient_full: None,
+            opts: r.options(),
+            gpu_priority: Priority::Export,
+            restartable: true,
+            restart: None,
+            raw_ranges: Vec::new(),
         }
+    }
+
+    /// The device jobs of this request run at `priority` (the request's own: `TileNeural` for the
+    /// 100 % tiles a viewport prefetches, `Thumbnail` for thumbnails and look tiles).
+    #[must_use]
+    pub fn with_gpu_priority(mut self, priority: Priority) -> Self {
+        self.gpu_priority = priority;
+        self
+    }
+
+    /// The options this request runs with: a snapshot taken when it began.
+    pub fn options(&self) -> &RenderOptions {
+        &self.opts
     }
 
     pub fn check(&self) -> Result<(), RenderError> {
@@ -812,8 +902,7 @@ impl<'a> Job<'a> {
         target: OutputTarget,
     ) -> RenderReport {
         self.g.counters.add(&self.runs);
-        let options = self.r.options();
-        let neural = &options.neural;
+        let neural = &self.opts.neural;
         if self.src.settings.decode.neural_demosaic
             && !neural.available
             && let Some(reason) = &neural.reason
@@ -826,6 +915,7 @@ impl<'a> Job<'a> {
             path: RenderPath::Classical,
             space: color_space_of(target),
             device,
+            ranges: self.raw_ranges,
             scale,
             runs: self.runs,
             timings: self.timings,
@@ -1039,7 +1129,7 @@ impl<'a> Job<'a> {
             &plan,
             &params,
             &sigma,
-            self.r.options().demosaic,
+            self.opts.demosaic,
             self.cancel,
         )?);
         self.runs.full_chains += 1;
@@ -1069,7 +1159,7 @@ impl<'a> Job<'a> {
         let plan = self.plan()?;
         let frame = self.frame()?;
         let full = self.full(keep)?;
-        let t = self.r.options().tile_px.max(64);
+        let t = self.opts.tile_px.max(64);
         let rect = Rect::new(
             tx * t,
             ty * t,
@@ -1077,7 +1167,7 @@ impl<'a> Job<'a> {
             t.min(plan.out_h - ty * t),
         );
         let t = Instant::now();
-        let img = Arc::new(full.run_tile(&frame, rect)?);
+        let img = Arc::new(self.run_full_tile(&full, &frame, rect)?);
         self.runs.tiles += 1;
         self.timings.raw_ms += t.elapsed().as_secs_f64() * 1000.0;
         if keep {
@@ -1109,12 +1199,12 @@ impl<'a> Job<'a> {
             let frame = self.frame()?;
             let full = self.full(false)?;
             let t = Instant::now();
-            let img = full.run_tile(&frame, rect)?;
+            let img = self.run_full_tile(&full, &frame, rect)?;
             self.runs.tiles += 1;
             self.timings.raw_ms += t.elapsed().as_secs_f64() * 1000.0;
             return Ok(img);
         }
-        let t = self.r.options().tile_px.max(64);
+        let t = self.opts.tile_px.max(64);
         let mut out = RgbImage::new(rect.w, rect.h);
         for ty in rect.y / t..=(rect.y1() - 1) / t {
             for tx in rect.x / t..=(rect.x1() - 1) / t {
@@ -1133,6 +1223,128 @@ impl<'a> Job<'a> {
         Ok(out)
     }
 
+    /// The route to the device for the raw chain of this request, or `None` when the CPU runs it:
+    /// there is no device, the stage is not on ([`GpuStages::RAW_CHAIN`]), a device error ended the
+    /// route for this photo or for the process, the device is lost, or the demosaic method is not the
+    /// one the device runs (a test switch). Reads the options of the request's snapshot.
+    ///
+    /// # Errors
+    ///
+    /// [`RenderError::Gpu`] when the device is lost and the policy is strict.
+    fn raw_route(&mut self) -> Result<Option<GpuRoute>, RenderError> {
+        let Some(gpu) = self.opts.gpu.clone() else {
+            return Ok(None);
+        };
+        if !self.opts.gpu_stages.contains(GpuStages::RAW_CHAIN) {
+            return Ok(None);
+        }
+        if self.g.raw_gpu_failed.load(Ordering::SeqCst)
+            || self.r.inner.raw_gpu_disabled.load(Ordering::SeqCst)
+        {
+            return Ok(None);
+        }
+        if gpu.is_lost() {
+            let why = gpu
+                .lost_reason()
+                .unwrap_or_else(|| "the device was lost".to_owned());
+            if self.opts.gpu_strict {
+                return Err(RenderError::Gpu(why));
+            }
+            self.note(&format!(
+                "The graphics card stopped working, so the CPU did: {why}."
+            ));
+            return Ok(None);
+        }
+        if self.opts.demosaic != Method::AdaptiveRatio {
+            self.note(METHOD_NOT_ON_DEVICE_NOTE);
+            return Ok(None);
+        }
+        Ok(Some(GpuRoute {
+            gpu,
+            range: StageRange::DEMOSAIC,
+            spec: JobSpec::new(self.gpu_priority).owned_by(u64::from(self.src.id.0)),
+            token: self.cancel.clone(),
+        }))
+    }
+
+    /// Notes where the raw range ran, once per device (the report lists each range once).
+    fn record_range(&mut self, range: StageRange, device: ComputeDevice) {
+        match self.raw_ranges.iter_mut().find(|r| r.range == range) {
+            // A request that ran on both says CPU: the report is about the picture, and a mixed
+            // request is a fall-back.
+            Some(r) if r.device != device => r.device = ComputeDevice::Cpu,
+            Some(_) => {}
+            None => self.raw_ranges.push(RangeDevice { range, device }),
+        }
+    }
+
+    /// Runs one tile of the full-resolution chain: the stages the renderer runs on the device go
+    /// there (the route above), everything else on the CPU. A device error ends the route for the
+    /// photo, never for one tile:
+    ///
+    /// * strict policy (`Require`): the error fails the render ([`RenderError::Gpu`]);
+    /// * an export (`restartable`): the render asks to start again on the CPU
+    ///   ([`Job::take_gpu_restart`]), so that one file is wholly device or wholly CPU;
+    /// * any other request (a 100 % tile, a viewport region): this tile runs on the CPU, with a note,
+    ///   and so does every later request for the photo. The tile cache may then hold tiles of both
+    ///   devices, which differ within the tolerances of the kernels (viewing only).
+    ///
+    /// A cancelled render stays cancelled.
+    fn run_full_tile(
+        &mut self,
+        full: &FullChain,
+        frame: &FrameData,
+        rect: Rect,
+    ) -> Result<RgbImage, RenderError> {
+        let expected = self.opts.gpu.is_some() && self.opts.gpu_stages.contains(GpuStages::RAW_CHAIN);
+        if let Some(route) = self.raw_route()? {
+            match full.run_tile_gpu(frame, rect, &route) {
+                Ok(img) => {
+                    self.record_range(route.range, ComputeDevice::Gpu);
+                    return Ok(img);
+                }
+                Err(GpuError::Cancelled) => return Err(RenderError::Cancelled),
+                Err(e) => {
+                    let reason = e.to_string();
+                    tracing::warn!(error = %reason, "the device failed on a tile; the CPU takes over");
+                    if matches!(e, GpuError::Shader(_)) {
+                        self.r.inner.raw_gpu_disabled.store(true, Ordering::SeqCst);
+                    }
+                    if self.opts.gpu_strict {
+                        return Err(RenderError::Gpu(reason));
+                    }
+                    self.g.raw_gpu_failed.store(true, Ordering::SeqCst);
+                    if self.restartable {
+                        self.raw_ranges.clear();
+                        self.restart = Some(reason.clone());
+                        return Err(RenderError::Gpu(reason));
+                    }
+                    self.note(&format!(
+                        "The graphics card could not render this frame, so the CPU did: {reason}."
+                    ));
+                }
+            }
+        }
+        if expected {
+            self.record_range(StageRange::DEMOSAIC, ComputeDevice::Cpu);
+        }
+        full.run_tile(frame, rect)
+    }
+
+    /// Whether the last error was a device error that asks the export to start again on the CPU
+    /// (see [`Job::run_full_tile`]). Clears the request, drops what the device had made and adds the
+    /// note. The photo's route is already off, so the restart runs on the CPU from the first tile.
+    pub fn take_gpu_restart(&mut self) -> bool {
+        let Some(reason) = self.restart.take() else {
+            return false;
+        };
+        self.raw_ranges.clear();
+        self.note(&format!(
+            "The graphics card could not render this photo, so the CPU did: {reason}."
+        ));
+        true
+    }
+
     /// Whether every tile (or the whole image, for camera-processed photos) that `rect` needs is
     /// cached.
     pub fn tiles_ready(&mut self, rect: Rect) -> Result<bool, RenderError> {
@@ -1143,7 +1355,7 @@ impl<'a> Job<'a> {
         if plan.reduced {
             return Ok(st.groups.as_ref().is_some_and(|g| g.contains(&(key, 1))));
         }
-        let t = self.r.options().tile_px.max(64);
+        let t = self.opts.tile_px.max(64);
         let Some(tiles) = st.tiles.as_ref() else {
             return Ok(false);
         };

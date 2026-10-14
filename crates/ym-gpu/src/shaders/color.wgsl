@@ -8,6 +8,15 @@
 // output format. One thread handles two horizontally adjacent pixels. All maths is f32; image
 // samples are read through the storage accessors (f16 or f32), look cubes and curves are f32
 // storage (never hardware-filtered, never rounded to f16).
+//
+// Persistent tables (G-04): the dither thresholds and the ACES 2 tables (`tables`), the four curve
+// tables (`curves`) and the look and display cubes (`look_luts`, `disp_luts`) are separate buffers the
+// host keeps across frames and refills only when their content changes. What changes every frame is
+// this one uniform block (under 1 KB, the ACES 2 scalars included: K3 allows one uniform buffer).
+//
+// A source with a fourth plane (`sp.y` = 1) carries the letterbox mask of the sampler (1 outside the
+// photo): masked pixels are not computed, they are 0 in a stage output (whose own fourth plane
+// receives the mask) and the background colour in RGBA8.
 
 struct LutDesc {
     cube: vec4<u32>,     // x: offset of the cube in `luts` (vec4 units), y: size (0: no cube), z: has shaper, w: shaper offset
@@ -19,14 +28,14 @@ struct LutDesc {
 };
 
 struct ChainU {
-    dims: vec4<u32>,     // x: out width, y: out height, z: out stride (even), w: out plane length
-    src: vec4<u32>,      // x: src stride, y: src plane length, z: dx, w: dy
-    origin: vec4<u32>,   // x, y: absolute pixel position of output (0, 0), for the dither
+    dims: vec4<u32>,     // x: window width, y: window height, z: destination stride, w: destination plane length
+    src: vec4<u32>,      // x: src stride, y: src plane length, z: dx, w: dy (window origin in the source)
+    origin: vec4<u32>,   // x, y: absolute pixel position of the window's (0, 0), for the dither; z, w: its place in the destination
     mode: vec4<u32>,     // x: stop, y: out kind (0 f32 planar, 1 u8 rgba, 2 u16 planar), z: bits, w: dither
     flags: vec4<u32>,    // x: grade bits (1 contrast, 2 saturation), y: curve bits (1 luma, 2 r, 4 g, 8 b), z: look kind (0 none, 1 log-to-log, 2 display-baked), w: display kind (0 ACES 2, 1 display LUT)
     lk: vec4<u32>,       // x: look input (0 LogC4, 1 LogC3), y: look has CDL, w: before point (0 camera log, 1 after grade)
     dp: vec4<u32>,       // x: display LUT input (0 LogC4, 1 LogC3), y: display LUT transfer (0 sRGB, 1 gamma), z: apply display-LUT primaries matrix, w: apply look-to-output matrix
-    sp: vec4<u32>,       // x: output transfer (0 sRGB, 1 BT.1886)
+    sp: vec4<u32>,       // x: output transfer (0 sRGB, 1 BT.1886), y: the source has a mask plane, z: letterbox colour (RGBA8)
     m0: vec4<f32>,       // fused C1-C6 matrix rows
     m1: vec4<f32>,
     m2: vec4<f32>,
@@ -49,14 +58,16 @@ struct ChainU {
     look_m0: vec4<f32>,  // Rec.709 -> output primaries (display-baked look)
     look_m1: vec4<f32>,
     look_m2: vec4<f32>,
+    aces: AcesU,         // the ACES 2 scalars and matrices (aces2.wgsl)
 };
 
 @group(0) @binding(0) var<uniform> CU: ChainU;
-// binding 1: ACES 2 uniform (aces2.wgsl)
-@group(0) @binding(2) var<storage, read> tables: array<f32>;
-@group(0) @binding(3) var<storage, read> luts: array<vec4<f32>>;
-@group(0) @binding(4) var<storage, read> img: array<ST_ELEM>;
-@group(0) @binding(5) var<storage, read_write> out: array<u32>;
+@group(0) @binding(1) var<storage, read> tables: array<f32>;       // dither thresholds, then the ACES 2 tables
+@group(0) @binding(2) var<storage, read> curves: array<f32>;       // the four 1024-entry curve tables
+@group(0) @binding(3) var<storage, read> look_luts: array<vec4<f32>>;
+@group(0) @binding(4) var<storage, read> disp_luts: array<vec4<f32>>;
+@group(0) @binding(5) var<storage, read> img: array<ST_ELEM>;
+@group(0) @binding(6) var<storage, read_write> out: array<u32>;
 
 //@ACCESSORS img ro
 
@@ -164,12 +175,13 @@ fn grid_pos(x: f32, mn: f32, mx: f32, size: u32) -> f32 {
     return (c - mn) / (mx - mn) * f32(size - 1u);
 }
 
-fn lut_at(d: LutDesc, r: u32, g: u32, b: u32) -> vec3<f32> {
-    return luts[d.cube.x + r + d.cube.y * (g + d.cube.y * b)].xyz;
+//@BEGIN_LUT_FUNCS
+fn lut_at@P@(d: LutDesc, r: u32, g: u32, b: u32) -> vec3<f32> {
+    return @L@[d.cube.x + r + d.cube.y * (g + d.cube.y * b)].xyz;
 }
 
 // Tetrahedral interpolation (ym_color::lut::Lut3d::sample), manual: never hardware trilinear.
-fn cube_sample(d: LutDesc, rgb: vec3<f32>) -> vec3<f32> {
+fn cube_sample@P@(d: LutDesc, rgb: vec3<f32>) -> vec3<f32> {
     let size = d.cube.y;
     let pr = grid_pos(rgb.x, d.dmin.x, d.dmax.x, size);
     let pg = grid_pos(rgb.y, d.dmin.y, d.dmax.y, size);
@@ -180,8 +192,8 @@ fn cube_sample(d: LutDesc, rgb: vec3<f32>) -> vec3<f32> {
     let fr = pr - f32(i);
     let fg = pg - f32(j);
     let fb = pb - f32(k);
-    let c000 = lut_at(d, i, j, k);
-    let c111 = lut_at(d, i + 1u, j + 1u, k + 1u);
+    let c000 = lut_at@P@(d, i, j, k);
+    let c111 = lut_at@P@(d, i + 1u, j + 1u, k + 1u);
     var p1: vec3<f32>;
     var p2: vec3<f32>;
     var w0: f32;
@@ -190,64 +202,66 @@ fn cube_sample(d: LutDesc, rgb: vec3<f32>) -> vec3<f32> {
     if (fr > fg) {
         if (fg > fb) {
             // R > G > B: c000 -> c100 -> c110 -> c111
-            p1 = lut_at(d, i + 1u, j, k);
-            p2 = lut_at(d, i + 1u, j + 1u, k);
+            p1 = lut_at@P@(d, i + 1u, j, k);
+            p2 = lut_at@P@(d, i + 1u, j + 1u, k);
             w0 = fr; w1 = fg; w2 = fb;
         } else if (fr > fb) {
             // R > B >= G: c000 -> c100 -> c101 -> c111
-            p1 = lut_at(d, i + 1u, j, k);
-            p2 = lut_at(d, i + 1u, j, k + 1u);
+            p1 = lut_at@P@(d, i + 1u, j, k);
+            p2 = lut_at@P@(d, i + 1u, j, k + 1u);
             w0 = fr; w1 = fb; w2 = fg;
         } else {
             // B >= R > G: c000 -> c001 -> c101 -> c111
-            p1 = lut_at(d, i, j, k + 1u);
-            p2 = lut_at(d, i + 1u, j, k + 1u);
+            p1 = lut_at@P@(d, i, j, k + 1u);
+            p2 = lut_at@P@(d, i + 1u, j, k + 1u);
             w0 = fb; w1 = fr; w2 = fg;
         }
     } else if (fb > fg) {
         // B > G >= R: c000 -> c001 -> c011 -> c111
-        p1 = lut_at(d, i, j, k + 1u);
-        p2 = lut_at(d, i, j + 1u, k + 1u);
+        p1 = lut_at@P@(d, i, j, k + 1u);
+        p2 = lut_at@P@(d, i, j + 1u, k + 1u);
         w0 = fb; w1 = fg; w2 = fr;
     } else if (fb > fr) {
         // G >= B > R: c000 -> c010 -> c011 -> c111
-        p1 = lut_at(d, i, j + 1u, k);
-        p2 = lut_at(d, i, j + 1u, k + 1u);
+        p1 = lut_at@P@(d, i, j + 1u, k);
+        p2 = lut_at@P@(d, i, j + 1u, k + 1u);
         w0 = fg; w1 = fb; w2 = fr;
     } else {
         // G >= R >= B: c000 -> c010 -> c110 -> c111
-        p1 = lut_at(d, i, j + 1u, k);
-        p2 = lut_at(d, i + 1u, j + 1u, k);
+        p1 = lut_at@P@(d, i, j + 1u, k);
+        p2 = lut_at@P@(d, i + 1u, j + 1u, k);
         w0 = fg; w1 = fr; w2 = fb;
     }
     return c000 + w0 * (p1 - c000) + w1 * (p2 - p1) + w2 * (c111 - p2);
 }
 
-fn shaper_channel(d: LutDesc, x: f32, mn: f32, mx: f32, c: u32) -> f32 {
+fn shaper_channel@P@(d: LutDesc, x: f32, mn: f32, mx: f32, c: u32) -> f32 {
     let size = d.shaper.x;
     let pos = grid_pos(x, mn, mx, size);
     let i = min(u32(floor(pos)), size - 2u);
     let f = pos - f32(i);
-    let a = luts[d.cube.w + i][c];
-    let b = luts[d.cube.w + i + 1u][c];
+    let a = @L@[d.cube.w + i][c];
+    let b = @L@[d.cube.w + i + 1u][c];
     return a + (b - a) * f;
 }
 
 // Shaper (if any), then the cube (if any): ym_color::lut::Lut::sample.
-fn lut_sample(d: LutDesc, rgb: vec3<f32>) -> vec3<f32> {
+fn lut_sample@P@(d: LutDesc, rgb: vec3<f32>) -> vec3<f32> {
     if (d.cube.y == 0u) {
         return rgb;
     }
     var x = rgb;
     if (d.cube.z != 0u) {
         x = vec3<f32>(
-            shaper_channel(d, rgb.x, d.smin.x, d.smax.x, 0u),
-            shaper_channel(d, rgb.y, d.smin.y, d.smax.y, 1u),
-            shaper_channel(d, rgb.z, d.smin.z, d.smax.z, 2u),
+            shaper_channel@P@(d, rgb.x, d.smin.x, d.smax.x, 0u),
+            shaper_channel@P@(d, rgb.y, d.smin.y, d.smax.y, 1u),
+            shaper_channel@P@(d, rgb.z, d.smin.z, d.smax.z, 2u),
         );
     }
-    return cube_sample(d, x);
+    return cube_sample@P@(d, x);
 }
+
+//@END_LUT_FUNCS
 
 // CDL then LUT in the look's own encoding (LookTransform::apply_own_encoding).
 fn look_own(v: vec3<f32>) -> vec3<f32> {
@@ -255,7 +269,7 @@ fn look_own(v: vec3<f32>) -> vec3<f32> {
     if (CU.lk.y != 0u) {
         x = cdl_apply(x);
     }
-    return lut_sample(CU.look_lut, x);
+    return lut_sample_look(CU.look_lut, x);
 }
 
 // C10 for log-to-log looks, blended in LogC4.
@@ -280,18 +294,18 @@ fn c10_look(v: vec3<f32>) -> vec3<f32> {
 
 // Linear interpolation in a 1024-entry table, slope-1 extension outside [0, 1].
 fn curve_eval(c: u32, x: f32) -> f32 {
-    let base = T_CURVES + c * 1024u;
+    let base = c * 1024u;
     if (x < 0.0) {
-        return x + tables[base];
+        return x + curves[base];
     }
     if (x > 1.0) {
-        return x - 1.0 + tables[base + 1023u];
+        return x - 1.0 + curves[base + 1023u];
     }
     let pos = x * 1023.0;
     let i = min(u32(floor(pos)), 1022u);
     let f = pos - f32(i);
-    let a = tables[base + i];
-    let b = tables[base + i + 1u];
+    let a = curves[base + i];
+    let b = curves[base + i + 1u];
     return a + (b - a) * f;
 }
 
@@ -348,7 +362,7 @@ fn display_ours(v: vec3<f32>) -> vec3<f32> {
     if (CU.dp.x == 1u) {
         input = logc4_to_logc3(v);
     }
-    let codes = lut_sample(CU.disp_lut, input);
+    let codes = lut_sample_disp(CU.disp_lut, input);
     let lin = vec3<f32>(disp_decode(codes.x), disp_decode(codes.y), disp_decode(codes.z));
     if (CU.dp.z != 0u) {
         return mv3(CU.disp_m0.xyz, CU.disp_m1.xyz, CU.disp_m2.xyz, lin);
@@ -379,15 +393,8 @@ fn c12_display(v: vec3<f32>) -> vec3<f32> {
 
 // ---- C13 ----------------------------------------------------------------------------------------------
 
-fn encode_one(x: f32) -> f32 {
-    if (CU.sp.x == 1u) {
-        return unit(bt1886_inverse(x));
-    }
-    return unit(srgb_encode(x));
-}
-
-fn c13_encode(lin: vec3<f32>) -> vec3<f32> {
-    return vec3<f32>(encode_one(lin.x), encode_one(lin.y), encode_one(lin.z));
+fn c13_encode_chain(lin: vec3<f32>) -> vec3<f32> {
+    return c13_encode(lin, CU.sp.x);
 }
 
 // ---- the chain -------------------------------------------------------------------------------------------
@@ -436,20 +443,7 @@ fn run_pixel(cam_in: vec3<f32>) -> vec3<f32> {
     if (stop == 7u) {
         return c12;
     }
-    return c13_encode(c12);
-}
-
-fn q8(v: f32) -> u32 {
-    return u32(floor(unit(v) * 255.0 + 0.5));
-}
-
-fn dither8(v: f32, thr: f32) -> u32 {
-    return u32(min(floor(unit(v) * 255.0 + thr), 255.0));
-}
-
-fn qbits(v: f32) -> u32 {
-    let maxv = f32((1u << CU.mode.z) - 1u);
-    return u32(floor(unit(v) * maxv + 0.5));
+    return c13_encode_chain(c12);
 }
 
 fn threshold(ax: u32, ay: u32) -> f32 {
@@ -460,38 +454,70 @@ fn threshold(ax: u32, ay: u32) -> f32 {
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let x = gid.x * 2u;
     let y = gid.y;
-    if (x >= CU.dims.z || y >= CU.dims.y) {
+    if (x >= CU.dims.x || y >= CU.dims.y) {
         return;
     }
+    // The second pixel of the pair exists unless the window has an odd width.
+    let two = x + 1u < CU.dims.x;
     let s = (y + CU.src.w) * CU.src.x + x + CU.src.z;
     let spl = CU.src.y;
-    let a = run_pixel(vec3<f32>(img_ld(s), img_ld(spl + s), img_ld(2u * spl + s)));
-    let b = run_pixel(vec3<f32>(img_ld(s + 1u), img_ld(spl + s + 1u), img_ld(2u * spl + s + 1u)));
-    let o = y * CU.dims.z + x;
+    let masked = CU.sp.y != 0u;
+    var gone_a = false;
+    var gone_b = false;
+    if (masked) {
+        gone_a = img_ld(3u * spl + s) != 0.0;
+        gone_b = two && img_ld(3u * spl + s + 1u) != 0.0;
+    }
+    var a = vec3<f32>(0.0);
+    var b = vec3<f32>(0.0);
+    if (!gone_a) {
+        a = run_pixel(vec3<f32>(img_ld(s), img_ld(spl + s), img_ld(2u * spl + s)));
+    }
+    if (two && !gone_b) {
+        b = run_pixel(vec3<f32>(img_ld(s + 1u), img_ld(spl + s + 1u), img_ld(2u * spl + s + 1u)));
+    }
+    let o = (y + CU.origin.w) * CU.dims.z + x + CU.origin.z;
     let pl = CU.dims.w;
     let kind = CU.mode.y;
     if (kind == 0u) {
         out[o] = bitcast<u32>(a.x);
-        out[o + 1u] = bitcast<u32>(b.x);
         out[pl + o] = bitcast<u32>(a.y);
-        out[pl + o + 1u] = bitcast<u32>(b.y);
         out[2u * pl + o] = bitcast<u32>(a.z);
-        out[2u * pl + o + 1u] = bitcast<u32>(b.z);
+        if (masked) {
+            out[3u * pl + o] = bitcast<u32>(select(0.0, 1.0, gone_a));
+        }
+        if (two) {
+            out[o + 1u] = bitcast<u32>(b.x);
+            out[pl + o + 1u] = bitcast<u32>(b.y);
+            out[2u * pl + o + 1u] = bitcast<u32>(b.z);
+            if (masked) {
+                out[3u * pl + o + 1u] = bitcast<u32>(select(0.0, 1.0, gone_b));
+            }
+        }
     } else if (kind == 1u) {
         let ax = CU.origin.x + x;
         let ay = CU.origin.y + y;
-        if (CU.mode.w != 0u) {
-            let ta = threshold(ax, ay);
-            let tb = threshold(ax + 1u, ay);
-            out[o] = dither8(a.x, ta) | (dither8(a.y, ta) << 8u) | (dither8(a.z, ta) << 16u) | 0xff000000u;
-            out[o + 1u] = dither8(b.x, tb) | (dither8(b.y, tb) << 8u) | (dither8(b.z, tb) << 16u) | 0xff000000u;
-        } else {
-            out[o] = q8(a.x) | (q8(a.y) << 8u) | (q8(a.z) << 16u) | 0xff000000u;
-            out[o + 1u] = q8(b.x) | (q8(b.y) << 8u) | (q8(b.z) << 16u) | 0xff000000u;
+        let dithered = CU.mode.w != 0u;
+        let ta = threshold(ax, ay);
+        let tb = threshold(ax + 1u, ay);
+        var wa = c13_code8(a.x, ta, dithered) | (c13_code8(a.y, ta, dithered) << 8u)
+            | (c13_code8(a.z, ta, dithered) << 16u) | 0xff000000u;
+        if (gone_a) {
+            wa = CU.sp.z;
+        }
+        out[o] = wa;
+        if (two) {
+            var wb = c13_code8(b.x, tb, dithered) | (c13_code8(b.y, tb, dithered) << 8u)
+                | (c13_code8(b.z, tb, dithered) << 16u) | 0xff000000u;
+            if (gone_b) {
+                wb = CU.sp.z;
+            }
+            out[o + 1u] = wb;
         }
     } else {
-        out[o >> 1u] = qbits(a.x) | (qbits(b.x) << 16u);
-        out[(pl + o) >> 1u] = qbits(a.y) | (qbits(b.y) << 16u);
-        out[(2u * pl + o) >> 1u] = qbits(a.z) | (qbits(b.z) << 16u);
+        let bits = CU.mode.z;
+        out[o >> 1u] = c13_qbits(a.x, bits) | (c13_qbits(b.x, bits) << 16u);
+        out[(pl + o) >> 1u] = c13_qbits(a.y, bits) | (c13_qbits(b.y, bits) << 16u);
+        out[(2u * pl + o) >> 1u] = c13_qbits(a.z, bits) | (c13_qbits(b.z, bits) << 16u);
     }
 }

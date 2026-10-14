@@ -227,6 +227,17 @@ impl DeviceWork {
             DeviceWork::Demosaic(w) => w.run(ctx, cancel),
         }
     }
+
+    /// The same as [`run`](Self::run) for work held by reference (tests that run one piece twice).
+    ///
+    /// # Errors
+    ///
+    /// As [`run`](Self::run).
+    pub fn run_ref(&self, ctx: &GpuContext, cancel: &CancelToken) -> Result<RgbImage, GpuError> {
+        match self {
+            DeviceWork::Demosaic(w) => w.run(ctx, cancel),
+        }
+    }
 }
 
 /// R6 of one tile: the balanced mosaic of the compute rectangle, the part of it to demosaic and the
@@ -277,15 +288,24 @@ impl DemosaicWork {
         split_core(self.core)
     }
 
-    fn run(self, ctx: &GpuContext, cancel: &CancelToken) -> Result<RgbImage, GpuError> {
+    /// Runs the work; a device that is out of memory or refuses a buffer is given one more try after
+    /// the pool let go of what it holds unused (`docs/gpu-plan.md` 4.9: "trim the pool, retry once,
+    /// then the CPU"; the integrator answers a second failure with the CPU chain).
+    fn run(&self, ctx: &GpuContext, cancel: &CancelToken) -> Result<RgbImage, GpuError> {
         let parts = split_core(self.core);
-        self.run_split(ctx, cancel, &parts)
+        match self.run_split(ctx, cancel, &parts) {
+            Err(GpuError::OutOfBudget { .. } | GpuError::BufferTooLarge { .. }) => {
+                ctx.pool().trim();
+                self.run_split(ctx, cancel, &parts)
+            }
+            other => other,
+        }
     }
 
     /// Runs the work cut into `parts`, which must tile the core ([`split_core_above`] gives such a
     /// list).
     fn run_split(
-        self,
+        &self,
         ctx: &GpuContext,
         cancel: &CancelToken,
         parts: &[Rect],
@@ -297,10 +317,11 @@ impl DemosaicWork {
             core,
             frame,
         } = self;
+        let core = *core;
         if let [only] = parts
             && *only == core
         {
-            return adaptive_ratio::demosaic_core(ctx, &mosaic, core, &frame);
+            return adaptive_ratio::demosaic_core(ctx, mosaic, core, frame);
         }
         let whole = Rect::whole(mosaic.width, mosaic.height);
         let halo = Halo::uniform(frame.halo_px());
@@ -310,7 +331,7 @@ impl DemosaicWork {
             cancel.check()?;
             let sub_rect = part.grow(halo, whole);
             let sub = mosaic.extract(sub_rect);
-            let img = adaptive_ratio::demosaic_core(ctx, &sub, part.relative_to(&sub_rect), &frame)?;
+            let img = adaptive_ratio::demosaic_core(ctx, &sub, part.relative_to(&sub_rect), frame)?;
             out.paste(
                 &img,
                 Rect::whole(img.width, img.height),
@@ -327,7 +348,7 @@ impl DemosaicWork {
     ///
     /// As [`DeviceWork::run`].
     pub fn run_with_limit(
-        self,
+        &self,
         ctx: &GpuContext,
         cancel: &CancelToken,
         max_padded_pixels: u64,

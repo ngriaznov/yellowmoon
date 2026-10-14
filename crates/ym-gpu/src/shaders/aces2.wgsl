@@ -1,8 +1,9 @@
 // ACES 2.0 output transform (forward, SDR), stage C12 of docs/02. A port of the CPU reference in
 // ym_color::aces2, which is itself a port of the ACES project's CTL (aces-core, Apache-2.0;
 // Copyright Contributors to the ACES Project). The pre-computed tables (reach M, hue, cusp J and M,
-// upper hull gamma) and all matrices are built on the CPU by ym_color and uploaded: `AU` holds the
-// scalars and matrices, `tables` the five 363-entry hue tables at T_ACES.
+// upper hull gamma) and all matrices are built on the CPU by ym_color and uploaded: `CU.aces` (a member
+// of the colour chain's one uniform block, K3) holds the scalars and matrices, `tables` the five
+// 363-entry hue tables at T_ACES.
 //
 // Row-vector matrices of the reference (`v * M`) are uploaded transposed, so every product here is
 // `mv3(row0, row1, row2, v)` with the rows being the columns of the reference matrix.
@@ -37,7 +38,6 @@ struct AcesU {
     hue: vec4<i32>,       // hue_linearity_search_range lo, hi; x != 0 when l2d is not the identity
 };
 
-@group(0) @binding(1) var<uniform> AU: AcesU;
 
 const CAM_NL_OFFSET: f32 = 27.13;
 const SMOOTH_CUSPS: f32 = 0.12;
@@ -94,13 +94,13 @@ fn wrap360(h: f32) -> f32 {
 
 // RGB (AP0, 1.0 = 100 nits) -> (J, M, h).
 fn rgb_to_jmh(rgb: vec3<f32>) -> vec3<f32> {
-    let m = mv3(AU.in_cam0.xyz, AU.in_cam1.xyz, AU.in_cam2.xyz, rgb);
+    let m = mv3(CU.aces.in_cam0.xyz, CU.aces.in_cam1.xyz, CU.aces.in_cam2.xyz, rgb);
     let a = vec3<f32>(pa_fwd(m.x), pa_fwd(m.y), pa_fwd(m.z));
-    let aab = mv3(AU.in_aab0.xyz, AU.in_aab1.xyz, AU.in_aab2.xyz, a);
+    let aab = mv3(CU.aces.in_aab0.xyz, CU.aces.in_aab1.xyz, CU.aces.in_aab2.xyz, a);
     if (aab.x <= 0.0) {
         return vec3<f32>(0.0);
     }
-    let j = 100.0 * pow_pos(aab.x, AU.in_p.y);
+    let j = 100.0 * pow_pos(aab.x, CU.aces.in_p.y);
     let mm = sqrt(aab.y * aab.y + aab.z * aab.z);
     var h = 0.0;
     if (mm > 0.0) {
@@ -112,30 +112,30 @@ fn rgb_to_jmh(rgb: vec3<f32>) -> vec3<f32> {
 // (J, M, h) -> RGB of the limiting primaries.
 fn jmh_to_rgb_limit(jmh: vec3<f32>) -> vec3<f32> {
     let hr = radians(jmh.z);
-    let a = pow_pos(jmh.x * (1.0 / 100.0), AU.lim_p.x);
+    let a = pow_pos(jmh.x * (1.0 / 100.0), CU.aces.lim_p.x);
     let aab = vec3<f32>(a, jmh.y * cos(hr), jmh.y * sin(hr));
-    let cone = mv3(AU.lim_aab0.xyz, AU.lim_aab1.xyz, AU.lim_aab2.xyz, aab);
+    let cone = mv3(CU.aces.lim_aab0.xyz, CU.aces.lim_aab1.xyz, CU.aces.lim_aab2.xyz, aab);
     let m = vec3<f32>(pa_inv(cone.x), pa_inv(cone.y), pa_inv(cone.z));
-    return mv3(AU.lim_cam0.xyz, AU.lim_cam1.xyz, AU.lim_cam2.xyz, m);
+    return mv3(CU.aces.lim_cam0.xyz, CU.aces.lim_cam1.xyz, CU.aces.lim_cam2.xyz, m);
 }
 
 // Luminance (nits) to lightness J of the input space.
 fn y_to_j(y: f32) -> f32 {
-    let ra = pa_fwd_u(abs(y) * AU.in_p.x);
-    let j = 100.0 * pow_pos(ra * AU.in_q.x, AU.in_p.y);
+    let ra = pa_fwd_u(abs(y) * CU.aces.in_p.x);
+    let j = 100.0 * pow_pos(ra * CU.aces.in_q.x, CU.aces.in_p.y);
     return sign_abs(j, y);
 }
 
 // Lightness J of the input space to luminance (nits).
 fn j_to_y(j: f32) -> f32 {
-    let a = pow_pos(abs(j) * (1.0 / 100.0), AU.in_p.z);
-    return pa_inv_u(AU.in_p.w * a) / AU.in_p.x;
+    let a = pow_pos(abs(j) * (1.0 / 100.0), CU.aces.in_p.z);
+    return pa_inv_u(CU.aces.in_p.w * a) / CU.aces.in_p.x;
 }
 
 fn tonescale_fwd(x: f32) -> f32 {
-    let f = AU.ts1.x * pow_pos(max(x, 0.0) / (x + AU.ts0.w), AU.ts0.y);
-    let h = max(f * f / (f + AU.ts0.z), 0.0);
-    return h * AU.ts0.x;
+    let f = CU.aces.ts1.x * pow_pos(max(x, 0.0) / (x + CU.aces.ts0.w), CU.aces.ts0.y);
+    let h = max(f * f / (f + CU.aces.ts0.z), 0.0);
+    return h * CU.aces.ts0.x;
 }
 
 fn reach_m_from_table(h: f32) -> f32 {
@@ -172,7 +172,7 @@ fn chroma_compress_norm(h_deg: f32) -> f32 {
         + -6.37224 * sin_hr2
         + 9.19364 * sin_hr3
         + 77.12896;
-    return m * AU.cc.w;
+    return m * CU.aces.cc.w;
 }
 
 // Tone-scaled lightness and chroma compression: (J, M, h) -> (J_ts, M', h).
@@ -182,17 +182,17 @@ fn chroma_compress_fwd(jmh: vec3<f32>, tonemapped_j: f32) -> vec3<f32> {
     let h = jmh.z;
     var m_compr = m;
     if (m != 0.0) {
-        let limit_j_max = AU.in_q.y;
-        let model_gamma_inv = AU.in_q.z;
+        let limit_j_max = CU.aces.in_q.y;
+        let model_gamma_inv = CU.aces.in_q.z;
         let n_j = tonemapped_j / limit_j_max;
         let sn_j = max(1.0 - n_j, 0.0);
         let m_norm = chroma_compress_norm(h);
         let limit = pow_pos(n_j, model_gamma_inv) * reach_m_from_table(h) / m_norm;
 
         let toe_limit = limit - 0.001;
-        let toe_sn_j_sat = sn_j * AU.cc.x;
-        let toe_sqrt_n_j_sat_thr = sqrt(n_j * n_j + AU.cc.y);
-        let toe_n_j_compr = n_j * AU.cc.z;
+        let toe_sn_j_sat = sn_j * CU.aces.cc.x;
+        let toe_sqrt_n_j_sat_thr = sqrt(n_j * n_j + CU.aces.cc.y);
+        let toe_n_j_compr = n_j * CU.aces.cc.z;
 
         // Rescale M with the tone-scaled J (Hellwig 2022 model gamma), normalise by the cusp M.
         m_compr = m * pow_pos(tonemapped_j / j, model_gamma_inv);
@@ -305,8 +305,8 @@ fn remap_m(m: f32, gamut_boundary_m: f32, reach_boundary_m: f32) -> f32 {
 fn lookup_hue_interval(h: f32) -> u32 {
     let i0 = i32(BASE_INDEX) + i32(h / 360.0 * 360.0);
     var i = i0;
-    var i_lo = max(i0 + AU.hue.x, 0);
-    var i_hi = min(i0 + AU.hue.y, i32(UPPER_WRAP_INDEX));
+    var i_lo = max(i0 + CU.aces.hue.x, 0);
+    var i_hi = min(i0 + CU.aces.hue.y, i32(UPPER_WRAP_INDEX));
     for (var iter = 0; iter < 32; iter++) {
         if (i_lo + 1 >= i_hi) {
             break;
@@ -328,7 +328,7 @@ fn gamut_compress_fwd(jmh: vec3<f32>) -> vec3<f32> {
     if (j <= 0.0) {
         return vec3<f32>(0.0, 0.0, h);
     }
-    let limit_j_max = AU.in_q.y;
+    let limit_j_max = CU.aces.in_q.y;
     if (m < 0.0 || j > limit_j_max) {
         return vec3<f32>(j, 0.0, h);
     }
@@ -339,9 +339,9 @@ fn gamut_compress_fwd(jmh: vec3<f32>) -> vec3<f32> {
     let cusp_j = lerpf(tab(2u, i_lo), tab(2u, i_hi), t);
     let cusp_m = lerpf(tab(3u, i_lo), tab(3u, i_hi), t);
     let gamma_top_inv = lerpf(tab(4u, i_lo), tab(4u, i_hi), t);
-    let gamma_bottom_inv = AU.lim_p.w;
-    let mid_j = AU.lim_p.y;
-    let focus_dist = AU.lim_p.z;
+    let gamma_bottom_inv = CU.aces.lim_p.w;
+    let mid_j = CU.aces.lim_p.y;
+    let focus_dist = CU.aces.lim_p.z;
     let focus_j = compute_focus_j(cusp_j, mid_j, limit_j_max);
     let analytical_threshold = lerpf(cusp_j, limit_j_max, FOCUS_GAIN_BLEND);
 
@@ -358,7 +358,7 @@ fn gamut_compress_fwd(jmh: vec3<f32>) -> vec3<f32> {
     }
     let reach_max_m = reach_m_from_table(h);
     let reach_boundary_m = line_boundary_intersection_m(
-        j_intersect_source, gamut_slope, AU.in_q.z, limit_j_max, reach_max_m, limit_j_max);
+        j_intersect_source, gamut_slope, CU.aces.in_q.z, limit_j_max, reach_max_m, limit_j_max);
     let remapped_m = remap_m(m, gamut_boundary_m, reach_boundary_m);
     return vec3<f32>(j_intersect_source + remapped_m * gamut_slope, remapped_m, h);
 }
@@ -367,7 +367,7 @@ fn gamut_compress_fwd(jmh: vec3<f32>) -> vec3<f32> {
 fn aces2_limit_rgb(ap0_in: vec3<f32>) -> vec3<f32> {
     let ap0 = vec3<f32>(sanitize(ap0_in.x), sanitize(ap0_in.y), sanitize(ap0_in.z));
     let ap1 = mv3(AP0_TO_AP1_0, AP0_TO_AP1_1, AP0_TO_AP1_2, ap0);
-    let clamped = clamp(ap1, vec3<f32>(0.0), vec3<f32>(AU.in_q.w));
+    let clamped = clamp(ap1, vec3<f32>(0.0), vec3<f32>(CU.aces.in_q.w));
     let ap0c = mv3(AP1_TO_AP0_0, AP1_TO_AP0_1, AP1_TO_AP0_2, clamped);
     let jmh = rgb_to_jmh(ap0c);
     // Tone scale on J, then chroma compression.
@@ -380,11 +380,11 @@ fn aces2_limit_rgb(ap0_in: vec3<f32>) -> vec3<f32> {
 
 // Linear AP0 -> display-linear RGB in the output's encoding primaries, clamped to [0, peak].
 fn aces2_display_linear(ap0: vec3<f32>) -> vec3<f32> {
-    let peak = AU.ts1.y;
+    let peak = CU.aces.ts1.y;
     let limited = clamp(aces2_limit_rgb(ap0), vec3<f32>(0.0), vec3<f32>(peak));
     var rgb = limited;
-    if (AU.hue.z != 0) {
-        rgb = mv3(AU.l2d0.xyz, AU.l2d1.xyz, AU.l2d2.xyz, limited);
+    if (CU.aces.hue.z != 0) {
+        rgb = mv3(CU.aces.l2d0.xyz, CU.aces.l2d1.xyz, CU.aces.l2d2.xyz, limited);
     }
     return min(max(rgb, vec3<f32>(0.0)), vec3<f32>(peak));
 }

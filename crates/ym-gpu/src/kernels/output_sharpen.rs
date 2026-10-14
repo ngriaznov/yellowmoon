@@ -616,17 +616,6 @@ impl PreparedSharpen {
         let work_planes = if limiter { 4 } else { gain_planes };
 
         let pool = ctx.pool();
-        let tiny = |label: &str| -> Result<Arc<PooledBuffer>, GpuError> {
-            Ok(passes_keep(passes, pool.acquire(label, 16, super::util::STORAGE_SCRATCH)?))
-        };
-        let scratch = |passes: &mut PassList<'_>, label: &str, planes: usize| {
-            if planes == 0 {
-                tiny(label)
-            } else {
-                passes.scratch(label, planes as u64 * plane_bytes)
-            }
-        };
-        let _ = tiny; // (rebuilt below with the list borrowed afresh)
         let dither = dither_table(ctx)?;
         let (lum, tmp, hp, dacc, hacc, work_a, work_b);
         if noop {
@@ -642,26 +631,16 @@ impl PreparedSharpen {
                 t,
             );
         } else {
-            lum = {
-                let b = pool.acquire("sharpen luma", plane_bytes, STORAGE_PLANE)?;
-                passes.keep(b)
-            };
+            // The planes the host clears or reads back carry COPY_DST / COPY_SRC.
+            lum = passes.keep(pool.acquire("sharpen luma", plane_bytes, STORAGE_PLANE)?);
             tmp = passes.scratch("sharpen t", plane_bytes)?;
             hp = passes.scratch("sharpen h", plane_bytes)?;
-            dacc = {
-                let b = pool.acquire("sharpen D", plane_bytes, STORAGE_PLANE)?;
-                passes.keep(b)
-            };
+            dacc = passes.keep(pool.acquire("sharpen D", plane_bytes, STORAGE_PLANE)?);
             // A traced run reads Hacc back, so it exists (as zeros) even without a limiter.
-            hacc = if limiter || tracing {
-                let b = pool.acquire("sharpen Hacc", plane_bytes, STORAGE_PLANE)?;
-                passes.keep(b)
-            } else {
-                let b = pool.acquire("sharpen Hacc (unused)", 16, STORAGE_PLANE)?;
-                passes.keep(b)
-            };
-            work_a = scratch(passes, "sharpen work A", work_planes)?;
-            work_b = scratch(passes, "sharpen work B", work_planes)?;
+            let hacc_bytes = if limiter || tracing { plane_bytes } else { 16 };
+            hacc = passes.keep(pool.acquire("sharpen Hacc", hacc_bytes, STORAGE_PLANE)?);
+            work_a = passes.scratch("sharpen work A", (work_planes as u64 * plane_bytes).max(16))?;
+            work_b = passes.scratch("sharpen work B", (work_planes as u64 * plane_bytes).max(16))?;
         }
 
         let weights = self.plan.luma_weights();
@@ -711,7 +690,7 @@ impl PreparedSharpen {
         let taps = &self.taps;
         let dither_buf = &dither;
 
-        let mut run = |passes: &mut PassList<'_>,
+        let run = |passes: &mut PassList<'_>,
                        id: KernelId,
                        p: &ParamsU,
                        z: u32|
@@ -1187,7 +1166,7 @@ mod tests {
         let naga::TypeInner::Struct { members, span } = &module.types[var.ty].inner else {
             panic!("`sp` is not a struct");
         };
-        let fields: [(&str, usize); 24] = [
+        let fields: [(&str, usize); 40] = [
             ("width", offset_of!(ParamsU, width)),
             ("height", offset_of!(ParamsU, height)),
             ("plane", offset_of!(ParamsU, plane)),
@@ -1212,6 +1191,22 @@ mod tests {
             ("use_ramp", offset_of!(ParamsU, use_ramp)),
             ("halo_acc", offset_of!(ParamsU, halo_acc)),
             ("limiter", offset_of!(ParamsU, limiter)),
+            ("in_stride", offset_of!(ParamsU, in_stride)),
+            ("in_plane", offset_of!(ParamsU, in_plane)),
+            ("in_x", offset_of!(ParamsU, in_x)),
+            ("in_y", offset_of!(ParamsU, in_y)),
+            ("out_stride", offset_of!(ParamsU, out_stride)),
+            ("out_plane", offset_of!(ParamsU, out_plane)),
+            ("out_x", offset_of!(ParamsU, out_x)),
+            ("out_y", offset_of!(ParamsU, out_y)),
+            ("out_kind", offset_of!(ParamsU, out_kind)),
+            ("space", offset_of!(ParamsU, space)),
+            ("dither", offset_of!(ParamsU, dither)),
+            ("has_mask", offset_of!(ParamsU, has_mask)),
+            ("org_x", offset_of!(ParamsU, org_x)),
+            ("org_y", offset_of!(ParamsU, org_y)),
+            ("bg", offset_of!(ParamsU, bg)),
+            ("copy_only", offset_of!(ParamsU, copy_only)),
         ];
         assert_eq!(members.len(), fields.len());
         for (member, (name, offset)) in members.iter().zip(fields) {

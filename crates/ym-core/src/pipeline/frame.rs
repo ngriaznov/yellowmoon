@@ -1209,7 +1209,7 @@ impl Renderer {
         state: &ViewportState,
         cancel: &CancelToken,
     ) -> Result<usize, RenderError> {
-        let mut job = Job::new(self, src, cancel)?;
+        let mut job = Job::new(self, src, cancel)?.with_gpu_priority(Priority::TileNeural);
         let plan = job.plan()?;
         let image = job.final_size()?;
         if plan.reduced || scale_for_zoom(state.zoom(image)) != 1 {
@@ -1411,7 +1411,9 @@ impl Renderer {
             }
         };
         let (fw, fh) = geom.output_size(plan.out_w, plan.out_h);
-        let tile = self.options().full_tile_px.max(64);
+        // The options of this render are the ones of the moment it began (a device attached while
+        // an export runs cannot move half of it onto another device).
+        let tile = job.options().full_tile_px.max(64);
         let halo_allowance = 160usize;
         let per_px = 12u64 * 12; // twelve f32 planes of working set per tile pixel, a generous bound
         let working = ((tile + halo_allowance) as u64).pow(2) * per_px;
@@ -1440,8 +1442,12 @@ impl Renderer {
         }
         let grid = geom.grid((plan.out_w, plan.out_h), (fw, fh));
         let mut rgb = vec![0.0f32; fw * fh * 3];
-        let threads = self.options().threads;
+        let threads = job.options().threads;
         let tiles_total = (fw.div_ceil(tile) * fh.div_ceil(tile)).max(1);
+        // A device error in the raw chain restarts the whole photo on the CPU (`Job::run_full_tile`):
+        // one file is wholly device or wholly CPU, never a mix of tiles.
+        let mut best_fraction = 0.0f32;
+        'render: loop {
         let mut tiles_done = 0usize;
         let mut oy = 0;
         while oy < fh {
@@ -1453,7 +1459,14 @@ impl Renderer {
                 let tw = tile.min(fw - ox);
                 if let Some((x0, y0, x1, y1)) = grid.source_bounds(ox, oy, tw, th, 3) {
                     let rect = Rect::new(x0, y0, x1 - x0, y1 - y0);
-                    let region = job.region(rect, false)?;
+                    let region = match job.region(rect, false) {
+                        Ok(region) => region,
+                        Err(RenderError::Gpu(_)) if job.take_gpu_restart() => {
+                            rgb.fill(0.0);
+                            continue 'render;
+                        }
+                        Err(e) => return Err(e),
+                    };
                     let sampled = sample_to_camera(&region, (x0, y0), &grid, (ox, oy), tw, th);
                     let frame = Frame::planar(tw, th, &sampled.img.data)
                         .map_err(|e| RenderError::Color(e.to_string()))?;
@@ -1492,11 +1505,18 @@ impl Renderer {
                 }
                 tiles_done += 1;
                 if let Some(report) = progress {
-                    report(tiles_done as f32 / tiles_total as f32);
+                    // Monotone also across a restart on the CPU.
+                    let fraction = tiles_done as f32 / tiles_total as f32;
+                    if fraction > best_fraction {
+                        best_fraction = fraction;
+                        report(fraction);
+                    }
                 }
                 ox += tw;
             }
             oy += th;
+        }
+        break;
         }
         let report = job.finish(1, ComputeDevice::Cpu, target_out);
         Ok(FullImage {

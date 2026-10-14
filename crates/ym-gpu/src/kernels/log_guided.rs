@@ -60,24 +60,26 @@
 //!   CPU's `f32` planes: between `1e33` and `3e33`, at `A = 65535 v`). Balanced mosaics are a few
 //!   times white at most.
 //!
-//! Not wired into the render path: the raw stages still run the CPU reference. The entry points here
-//! upload, run and read back, for tests and for the later decision on the preview path.
+//! Not wired into a render path (the log-guided demosaic is a test-switch method on the CPU only,
+//! `docs/gpu-plan.md` section 5). [`encode_demosaic`] is the device-in, device-out entry point of the
+//! plan's shape (`f32` planes, a [`PassList`](crate::stream::PassList)); the host wrappers upload, run and
+//! read back, for the tests, and still support the `f16` storage modes of the legacy kernels.
 
 use bytemuck::{Pod, Zeroable};
 
-use super::raw::RgbPlanes;
 use super::shader::KernelId;
 use super::util::{
-    GROUP, STORAGE_IN, STORAGE_OUT, STORAGE_SCRATCH, bind, even, groups, image_bytes,
-    image_samples, sample_bytes, submit_with_readback, uniform_buffer,
+    GROUP, STORAGE_IN, STORAGE_OUT, even, groups, image_bytes, image_samples, sample_bytes,
 };
 use crate::cpu::demosaic::log_guided::{HALO_PX, derive};
 use crate::cpu::noise::WORKING_SCALE;
 use crate::cpu::tiling::{Halo, Stage};
-use crate::cpu::{Mosaic, NoiseDn, RgbImage};
-use crate::device::{GpuContext, GpuError};
+use crate::cpu::{Cfa, Mosaic, NoiseDn, RgbImage};
+use crate::device::{GpuContext, GpuError, StorageMode};
+use crate::image::GpuImage;
 use crate::pool::PooledBuffer;
 use crate::queue::CancelToken;
+use crate::stream::{PassList, upload_bytes};
 use crate::tiles::TilePlan;
 
 /// The four `f32` planes of the scratch buffer: `Lh`, `C`, `SH`, `SV`.
@@ -132,22 +134,21 @@ fn upload_mosaic(ctx: &GpuContext, m: &Mosaic) -> Result<PooledBuffer, GpuError>
     let buf = ctx
         .pool()
         .acquire("log-guided mosaic", sample_bytes(mode, plane), STORAGE_IN)?;
-    ctx.queue.write_buffer(&buf, 0, &bytes);
+    upload_bytes(ctx, &buf, 0, &bytes)?;
     Ok(buf)
 }
 
-/// Encodes the four dispatches over `m` (already uploaded as `mosaic`) and returns the encoder,
-/// not yet submitted, with the planes it writes. The planes are allocated with `rgb_usage`.
-fn encode(
-    ctx: &GpuContext,
-    m: &Mosaic,
-    mosaic: PooledBuffer,
+/// Records the four dispatches over the `w x h` mosaic in `mosaic` (samples in the device's storage
+/// mode, even row stride) into `passes`; the three planes are written to `rgb` in the same layout.
+fn record(
+    passes: &mut PassList<'_>,
+    mosaic: &PooledBuffer,
+    rgb: &PooledBuffer,
+    (w, h): (usize, usize),
+    cfa: Cfa,
     noise: NoiseDn,
     guide_detail: i32,
-    rgb_usage: wgpu::BufferUsages,
-) -> Result<(wgpu::CommandEncoder, RgbPlanes), GpuError> {
-    let mode = ctx.storage_mode();
-    let (w, h) = (m.width, m.height);
+) -> Result<(), GpuError> {
     let stride = even(w);
     let plane = stride * h;
     // The float form: no headroom, p from the read noise at H = 1 (spec 2.2).
@@ -155,79 +156,92 @@ fn encode(
     let tap = |i: usize| d.kernel[i] as f32 / KERNEL_SUM;
     let base = LogGuidedU {
         dims: [w as u32, h as u32, stride as u32, plane as u32],
-        cfa: std::array::from_fn(|p| m.cfa.color_at(p & 1, p >> 1).plane() as u32),
+        cfa: std::array::from_fn(|p| cfa.color_at(p & 1, p >> 1).plane() as u32),
         taps: [tap(0), tap(1), tap(2), 0.0],
         misc: [d.p as f32, WORKING_SCALE as f32, 0.0, 0.0],
         ctl: [0; 4],
     };
-
-    let scratch = ctx.pool().acquire(
+    let scratch = passes.scratch(
         "log-guided scratch",
         SCRATCH_PLANES as u64 * plane as u64 * 4,
-        STORAGE_SCRATCH,
     )?;
-    let rgb = ctx
-        .pool()
-        .acquire("log-guided rgb", sample_bytes(mode, 3 * plane), rgb_usage)?;
-    let pipeline = ctx.kernels().pipeline(ctx, KernelId::LogGuided)?;
-    let mut encoder = ctx
-        .device
-        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("log-guided demosaic"),
-        });
-    let mut held = Vec::with_capacity(6);
     let per_pixel = (
         w.div_ceil(GROUP as usize) as u32,
         h.div_ceil(GROUP as usize) as u32,
     );
     let per_pair = groups(stride, h);
+    let labels = [
+        "log-guided Lh",
+        "log-guided C",
+        "log-guided SH SV",
+        "log-guided rgb",
+    ];
     for (pass, dispatch) in [per_pixel, per_pixel, per_pixel, per_pair]
         .into_iter()
         .enumerate()
     {
         let mut u = base;
         u.ctl[0] = pass as u32;
-        let ub = uniform_buffer(ctx, "log-guided uniform", &u)?;
-        let group = bind(
-            ctx,
-            &pipeline,
-            "log-guided",
+        let ub = passes.uniform("log-guided uniform", &u)?;
+        passes.dispatch(
+            KernelId::LogGuided,
+            labels[pass],
             &[
                 (0, ub.binding()),
                 (1, mosaic.binding()),
                 (2, scratch.binding()),
                 (3, rgb.binding()),
             ],
-        );
-        {
-            let mut cp = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some(
-                    [
-                        "log-guided Lh",
-                        "log-guided C",
-                        "log-guided SH SV",
-                        "log-guided rgb",
-                    ][pass],
-                ),
-                timestamp_writes: None,
-            });
-            cp.set_pipeline(&pipeline);
-            cp.set_bind_group(0, &group, &[]);
-            cp.dispatch_workgroups(dispatch.0, dispatch.1, 1);
-        }
-        held.push(ub);
+            (dispatch.0, dispatch.1, 1),
+        )?;
     }
-    held.push(mosaic);
-    held.push(scratch);
-    Ok((
-        encoder,
-        RgbPlanes {
-            rgb,
-            stride,
-            plane,
-            held,
-        },
-    ))
+    Ok(())
+}
+
+/// Records the log-guided demosaic of a mosaic that is on the device and returns the three planes as
+/// a new [`GpuImage`] (device in, device out; the host wrappers [`demosaic`], [`demosaic_tiled`] and
+/// [`demosaic_planned`] are a thin layer on the same passes).
+///
+/// `input` is the one-plane mosaic in `f32` (the planes of the plan are `f32` in every storage mode;
+/// a device opened with an `f16` storage mode for the legacy kernels is refused here), `cfa` the
+/// pattern at its first photosite. The output keeps the input's [`Placement`](crate::cpu::Placement).
+/// Nothing is submitted.
+///
+/// # Errors
+///
+/// [`GpuError::InvalidInput`] for an input that is not one plane, an empty one, or a device that is
+/// not in the `f32` storage mode; the pool's errors; shader errors.
+pub fn encode_demosaic(
+    passes: &mut PassList<'_>,
+    input: &GpuImage,
+    cfa: Cfa,
+    noise: NoiseDn,
+    guide_detail: i32,
+) -> Result<GpuImage, GpuError> {
+    let ctx = passes.context();
+    if ctx.storage_mode() != StorageMode::F32 {
+        return Err(GpuError::InvalidInput(format!(
+            "log-guided demosaic: the device entry point needs f32 storage, this device uses {}",
+            ctx.storage_mode().name()
+        )));
+    }
+    if input.planes != 1 {
+        return Err(GpuError::InvalidInput(format!(
+            "log-guided demosaic: the input must be one plane, got {}",
+            input.planes
+        )));
+    }
+    let out = GpuImage::alloc(ctx, "log-guided rgb", input.width, input.height, 3, input.place)?;
+    record(
+        passes,
+        &input.buf,
+        &out.buf,
+        (input.width, input.height),
+        cfa,
+        noise,
+        guide_detail,
+    )?;
+    Ok(out)
 }
 
 /// Runs the kernel on one mosaic rectangle and reads the planes back.
@@ -239,21 +253,28 @@ fn demosaic_rect(
 ) -> Result<RgbImage, GpuError> {
     check_mosaic(m)?;
     let mode = ctx.storage_mode();
-    let mosaic = upload_mosaic(ctx, m)?;
-    let (encoder, planes) = encode(ctx, m, mosaic, noise, guide_detail, STORAGE_OUT)?;
-    let bytes = 3 * planes.plane as u64 * mode.bytes_per_sample();
-    let readback = submit_with_readback(ctx, encoder, &planes.rgb, bytes)?;
-    let raw = image_samples(mode, &readback.finish(ctx)?);
     let (w, h) = (m.width, m.height);
+    let stride = even(w);
+    let plane = stride * h;
+    let mut passes = PassList::new(ctx, "log-guided demosaic");
+    let mosaic = passes.keep(upload_mosaic(ctx, m)?);
+    let rgb = passes.keep(ctx.pool().acquire(
+        "log-guided rgb",
+        sample_bytes(mode, 3 * plane),
+        STORAGE_OUT,
+    )?);
+    record(&mut passes, &mosaic, &rgb, (w, h), m.cfa, noise, guide_detail)?;
+    let read = passes.read(&rgb, 0, 3 * plane as u64 * mode.bytes_per_sample())?;
+    let done = passes.submit()?.finish()?;
+    let raw = image_samples(mode, done.read(read));
     let mut out = RgbImage::new(w, h);
     out.place = m.place;
     for (c, dst) in out.planes_mut().into_iter().enumerate() {
         for y in 0..h {
-            let s = c * planes.plane + y * planes.stride;
+            let s = c * plane + y * stride;
             dst[y * w..(y + 1) * w].copy_from_slice(&raw[s..s + w]);
         }
     }
-    drop(planes);
     Ok(out)
 }
 

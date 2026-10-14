@@ -142,8 +142,9 @@ fn placeholder_kernels_are_marked_in_name_and_text_and_write_nothing_but_a_nan()
         .into_iter()
         .filter(|id| id.is_placeholder())
         .collect();
-    // One per kernel family the plan still has to write (G-04 x2, G-06 x4, G-07 x7, G-08 x1).
-    assert_eq!(placeholders.len(), 14, "{placeholders:?}");
+    // One per kernel family the plan still has to write (G-06 x4, G-07 x7, G-08 x1; G-04's sampler and
+    // encode kernels are real).
+    assert_eq!(placeholders.len(), 12, "{placeholders:?}");
     for id in &placeholders {
         let owner = id.placeholder_owner().expect("owner");
         let src = shader_source(StorageMode::F32, *id);
@@ -343,11 +344,7 @@ fn lint(mode: StorageMode, src: &str) -> Vec<String> {
 /// Violations of the contract in kernels that predate it, each with the task that removes it. A
 /// listed violation must still be there (`known_violations_are_still_needed`), so a task that fixes
 /// one has to delete its line, and nothing new can hide behind this list.
-const KNOWN_VIOLATIONS: &[(KernelId, &str, &str)] = &[(
-    KernelId::Color,
-    "K3: 2 uniform buffers",
-    "G-04: the per-frame ChainU and the ACES 2 AcesU become one block",
-)];
+const KNOWN_VIOLATIONS: &[(KernelId, &str, &str)] = &[];
 
 fn known(id: KernelId, finding: &str) -> bool {
     KNOWN_VIOLATIONS

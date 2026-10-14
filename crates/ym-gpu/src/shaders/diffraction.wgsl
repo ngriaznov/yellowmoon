@@ -22,11 +22,11 @@
 // WGSL cannot forbid one, so a driver that contracts `a * b + c` can move the last bit.
 //
 // Planes (each `plane` = width * height samples of the compute rectangle):
-//   img   (read)       the three input planes R, G, B, balanced camera RGB, normalised
+//   img   (read)       the three input planes R, G, B, balanced camera RGB, normalised (row stride `in_stride`, plane length `in_plane`)
 //   base  (read/write) Y, W, Pc, D, B, Hp, F1, F2, F3, EPS      (P_Y ... P_EPS)
 //   work  (read/write) lower, upper | tmp | the 11 row sums of the moments
 //   coef  (read/write) the four per-pixel outputs of the solve: uD, uB, uH and the weight
-//   out   (write)      the corrected RGB of the core, dense planar
+//   out   (write)      the corrected RGB of the core, planar (row stride `out_stride`, plane length `out_plane`)
 
 struct DiffParams {
     width: u32,         // compute rectangle, pixels
@@ -54,6 +54,10 @@ struct DiffParams {
     sigma1: f32,        // sigma1 (DN)
     gate_factor: f32,   // factor on the 9 x 9 mean of the clip penalty in the gate (1 = the spec)
     strength: f32,      // blend between input and corrected luma, 0..3
+    in_stride: u32,     // row stride and plane length of `img` (a device image has an even stride)
+    in_plane: u32,
+    out_stride: u32,    // row stride and plane length of `out_px`
+    out_plane: u32,
 };
 
 @group(0) @binding(0) var<uniform> dp: DiffParams;
@@ -204,10 +208,14 @@ fn diffraction_luma(gid: vec3<u32>) {
         return;
     }
     let i = gid.y * dp.width + gid.x;
-    let xr = dp.scale * img[i];
-    let xg = dp.scale * img[dp.plane + i];
-    let xb = dp.scale * img[2u * dp.plane + i];
-    let y = exact_luma(img[i], img[dp.plane + i], img[2u * dp.plane + i]);
+    let ii = gid.y * dp.in_stride + gid.x;
+    let r_in = img[ii];
+    let g_in = img[dp.in_plane + ii];
+    let b_in = img[2u * dp.in_plane + ii];
+    let xr = dp.scale * r_in;
+    let xg = dp.scale * g_in;
+    let xb = dp.scale * b_in;
+    let y = exact_luma(r_in, g_in, b_in);
     let wi = 1.0 / (dp.sigma0_sq + dp.sigma1 * fmax_(y, 0.0));
     // e_c = a_c max(x_c / g0_c - T, 0), sorted ascending.
     var e0 = dp.luma_r * fmax_(xr / dp.g0_r - dp.clip_t, 0.0);
@@ -592,7 +600,7 @@ fn mean5_coef(plane: u32, x: i32, y: i32) -> f32 {
 
 // 3.10 to 3.12: the confidence-weighted 5 x 5 average of the coefficients, the corrected luma, the
 // strength blend and the capped ratio plus additive remainder, over the core of the compute rectangle.
-// Writes the core's RGB planes densely.
+// Writes the core's RGB planes with the row stride of `out_px`.
 fn diffraction_output(gid: vec3<u32>) {
     if (gid.x >= dp.core_w || gid.y >= dp.core_h) {
         return;
@@ -619,9 +627,9 @@ fn diffraction_output(gid: vec3<u32>) {
         k = 1.0;
         off = 0.0;
     }
-    let o = gid.y * dp.core_w + gid.x;
-    let cp = dp.core_w * dp.core_h;
-    out_px[o] = img[i] * k + off;
-    out_px[cp + o] = img[dp.plane + i] * k + off;
-    out_px[2u * cp + o] = img[2u * dp.plane + i] * k + off;
+    let o = gid.y * dp.out_stride + gid.x;
+    let ii = cy * dp.in_stride + cx;
+    out_px[o] = img[ii] * k + off;
+    out_px[dp.out_plane + o] = img[dp.in_plane + ii] * k + off;
+    out_px[2u * dp.out_plane + o] = img[2u * dp.in_plane + ii] * k + off;
 }

@@ -590,8 +590,13 @@ fn a_device_destroyed_in_the_middle_of_a_job_fails_its_transfers_and_never_hangs
                 let up = ym_gpu::stream::upload_bytes(ctx, &buf, 0, &[1u8; 64]);
                 let down = read_bytes(ctx, &buf, 0, 64).map(|_| ());
                 let mut passes = PassList::new(ctx, "doomed");
+                // A placeholder kernel (one storage binding), whichever one the plan has left.
+                let any = KernelId::ALL
+                    .into_iter()
+                    .find(|k| k.is_placeholder())
+                    .expect("a kernel that is still a placeholder");
                 passes.dispatch(
-                    KernelId::Sampler,
+                    any,
                     "doomed",
                     &[(0, buf.binding())],
                     (1, 1, 1),

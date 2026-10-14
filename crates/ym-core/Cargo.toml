@@ -38,6 +38,11 @@ png.workspace = true
 # `cargo build -p ym-cli --features force-demosaic` for the separately built parity binary. Without
 # the feature no code reads the variable.
 force-demosaic = []
+# TEST-ONLY. Turns on `ym-gpu`'s fault injection (`Gpu::set_fault`, `YM_GPU_FAULT`: an allocation that
+# runs out of budget, a shader that does not compile, a lost device, a cancel, a failing tile), so that
+# `tests/render_gpu.rs` can show that a device error ends in the CPU render and never in a wrong
+# picture. Off by default and never enabled by a shipped build.
+fault-injection = ["ym-gpu/fault-injection"]
 
 [dev-dependencies]
 tempfile.workspace = true

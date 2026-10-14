@@ -26,6 +26,16 @@ fn job() -> JobSpec {
     JobSpec::new(Priority::Export)
 }
 
+/// A kernel that is still a placeholder (it writes one NaN into binding 0 and nothing else), for the
+/// tests of the pass list that only need *a* dispatch. The first one in `KernelId::ALL`, so the
+/// tests do not name the kernel of a task that may already have replaced it.
+fn placeholder() -> KernelId {
+    KernelId::ALL
+        .into_iter()
+        .find(|k| k.is_placeholder())
+        .expect("a kernel that is still a placeholder")
+}
+
 fn f32s(bytes: &[u8]) -> Vec<f32> {
     bytes
         .chunks_exact(4)
@@ -49,7 +59,7 @@ fn a_pass_list_dispatches_and_reads_back_in_one_submission_and_counts_it() {
             let before = ctx.counters();
             let mut passes = PassList::new(ctx, "counted");
             passes.dispatch(
-                KernelId::Sampler,
+                placeholder(),
                 "placeholder",
                 &[(0, buf.binding())],
                 (1, 1, 1),
@@ -90,14 +100,14 @@ fn dispatch_refuses_more_workgroups_than_the_limit_and_records_nothing_for_an_em
                 (1, 1, MAX_GROUPS_PER_DIMENSION + 1),
             ] {
                 let err = passes
-                    .dispatch(KernelId::Sampler, "too wide", &[(0, buf.binding())], groups)
+                    .dispatch(placeholder(), "too wide", &[(0, buf.binding())], groups)
                     .expect_err("K4");
                 assert!(matches!(err, GpuError::InvalidInput(_)), "{err:?}");
             }
-            passes.dispatch(KernelId::Sampler, "empty", &[(0, buf.binding())], (0, 4, 1))?;
+            passes.dispatch(placeholder(), "empty", &[(0, buf.binding())], (0, 4, 1))?;
             assert_eq!(passes.dispatch_count(), 0);
             passes.dispatch(
-                KernelId::Sampler,
+                placeholder(),
                 "largest",
                 &[(0, buf.binding())],
                 (MAX_GROUPS_PER_DIMENSION, 1, 1),
@@ -176,7 +186,7 @@ fn pass_timings_are_reported_when_the_adapter_has_timestamp_queries() {
             let buf = ctx.pool().acquire("t", 4096, IMAGE_USAGE)?;
             let mut passes = PassList::new(ctx, "timed");
             for label in ["first", "second"] {
-                passes.dispatch(KernelId::Sampler, label, &[(0, buf.binding())], (4, 4, 1))?;
+                passes.dispatch(placeholder(), label, &[(0, buf.binding())], (4, 4, 1))?;
             }
             Ok(passes.submit()?.finish()?.timings)
         })

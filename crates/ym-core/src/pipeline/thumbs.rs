@@ -128,7 +128,7 @@ impl Renderer {
         src: &PhotoSource,
         cancel: &CancelToken,
     ) -> Result<(usize, usize, Vec<u8>), RenderError> {
-        let mut job = Job::new(self, src, cancel)?;
+        let mut job = Job::new(self, src, cancel)?.with_gpu_priority(Priority::Thumbnail);
         let (spec, (tw, th)) = self.thumbnail_spec(&mut job)?;
         let frame = render_view(job, &spec)?;
         let mut rgb = vec![0u8; 3 * tw * th];
@@ -191,7 +191,7 @@ impl Renderer {
         src: &PhotoSource,
         cancel: &CancelToken,
     ) -> Result<HistogramData, RenderError> {
-        let mut job = Job::new(self, src, cancel)?;
+        let mut job = Job::new(self, src, cancel)?.with_gpu_priority(Priority::Thumbnail);
         let image = job.final_size()?;
         let (tw, th) = thumbnail_size(image, HISTOGRAM_LONG_EDGE_PX);
         let spec = ViewSpec {
@@ -278,6 +278,9 @@ impl Renderer {
             if let Some(g) = self.existing_graph(old) {
                 g.release_full_resolution();
             }
+            // The device jobs of the viewport and tile renders of the photo left are cancelled
+            // too, queued ones at once (they hold the photo's mosaic).
+            self.cancel_gpu_navigation(old);
         }
         self.scheduler().navigate(photo)
     }

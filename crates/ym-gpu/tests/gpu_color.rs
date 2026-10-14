@@ -610,3 +610,492 @@ fn bad_bit_depths_and_mismatched_plans_are_refused() {
         "{r:?}"
     );
 }
+
+// ------------------------------------------------------------------------------------------------
+// G-04: persistent tables, device in / device out, the mask plane, the Before view as RGBA8
+// ------------------------------------------------------------------------------------------------
+
+use std::sync::Arc;
+use std::time::Instant;
+
+use common::chains::{cube_lut, logc4_look, tweak};
+use ym_color::curve::{Curve, CurveSet};
+use ym_color::display::LookSetting;
+use ym_color::look::LookTransform;
+use ym_color::lut::Lut;
+use ym_gpu::device::GpuContext;
+use ym_gpu::image::GpuImage;
+use ym_gpu::kernels::color::{ChainTables, release_tables};
+use ym_gpu::stream::PassList;
+
+/// Chains of different shape for the device-API tests: ACES 2, a log-to-log look, a baked look, a
+/// display LUT with a shaper-less cube, curves.
+fn view_chains() -> Vec<(String, ym_color::display::ChainParams)> {
+    chains::cases()
+        .into_iter()
+        .filter(|(name, _)| {
+            name.starts_with("full/viewport")
+                || name.starts_with("auto/srgb")
+                || name.starts_with("baked-look/srgb/25")
+                || name.starts_with("display-lut/p3")
+                || name.starts_with("logc3-look/35")
+                || name.starts_with("saturation+full/+60")
+        })
+        .collect()
+}
+
+/// Runs `body` on the automatic (f32) test device.
+fn on_f32<R: Send + 'static>(
+    body: impl FnOnce(&GpuContext) -> Result<R, ym_gpu::device::GpuError> + Send + 'static,
+) -> Option<R> {
+    let dev = gpus().first()?;
+    assert_eq!(dev.mode, StorageMode::F32, "the automatic device stores f32");
+    Some(
+        dev.gpu
+            .run(JobSpec::new(Priority::Viewport), move |ctx, _| body(ctx))
+            .expect("GPU job"),
+    )
+}
+
+#[test]
+fn device_to_device_equals_the_host_wrapper_bit_for_bit() {
+    let (w, h) = (67usize, 41usize);
+    let img = camera_image(w, h, 0xD0D0);
+    for (name, params) in view_chains() {
+        let chain = ColorChain::new(&params).expect("chain");
+        let img = img.clone();
+        let out = on_f32(move |ctx| {
+            let prepared = PreparedChain::new(ctx, &chain)?;
+            let src = GpuImage::upload_rgb(ctx, "device test input", &img)?;
+            let mut all = Vec::new();
+            for stop in [Stop::C6, Stop::C11, Stop::C12, Stop::C13, Stop::Before] {
+                let host = prepared.render(ctx, &img, (0, 0), ColorOutput::Stage(stop))?;
+                let dst = GpuImage::alloc(ctx, "device test out", w, h, 3, img.place)?;
+                let mut passes = PassList::new(ctx, "device colour");
+                prepared.encode_stage(&mut passes, &src, Rect::whole(w, h), stop, &dst, (0, 0))?;
+                let id = dst.encode_read(&mut passes)?;
+                let done = passes.submit()?.finish()?;
+                let device = dst.take(&done, id)?;
+                all.push((stop, planar_owned(&host), device));
+            }
+            Ok(all)
+        })
+        .expect("device");
+        for (stop, host, device) in out {
+            assert_eq!(
+                host.len(),
+                device.len(),
+                "{name} {stop:?}: the lengths differ"
+            );
+            for (i, (a, b)) in host.iter().zip(&device).enumerate() {
+                assert_eq!(
+                    a.to_bits(),
+                    b.to_bits(),
+                    "{name} {stop:?}: sample {i} differs between the host wrapper and the device entry point"
+                );
+            }
+        }
+    }
+}
+
+fn planar_owned(img: &ColorImage) -> Vec<f32> {
+    planar(img).to_vec()
+}
+
+#[test]
+fn a_window_lands_at_its_offset_in_a_wider_destination_and_touches_nothing_else() {
+    // The export writes tiles into the slab of their row: the colour pass takes a window of the
+    // source and writes it at an x offset of a wider image, an odd width included (the pair of
+    // pixels a thread handles must not spill into the neighbour).
+    let (w, h) = (53usize, 29usize);
+    let img = camera_image(w, h, 0xA11);
+    let chain = ColorChain::new(&chains::full(OutputTarget::Srgb)).expect("chain");
+    let (img2, chain2) = (img.clone(), chain.clone());
+    let (whole, slab) = on_f32(move |ctx| {
+        let prepared = PreparedChain::new(ctx, &chain2)?;
+        let whole = prepared.render(ctx, &img2, (0, 0), ColorOutput::Stage(Stop::C12))?;
+        let src = GpuImage::upload_rgb(ctx, "slab test input", &img2)?;
+        // A destination of 80 x 40 holding the picture at (10, 5), written in two windows of odd
+        // widths (21 and 32 columns), the rest left alone.
+        let dst = GpuImage::alloc(ctx, "slab", 80, 40, 3, img2.place)?;
+        let mut passes = PassList::new(ctx, "slab");
+        for (x0, wid) in [(0usize, 21usize), (21, 32)] {
+            prepared.encode_stage(
+                &mut passes,
+                &src,
+                Rect::new(x0, 0, wid, h),
+                Stop::C12,
+                &dst,
+                (10 + x0, 5),
+            )?;
+        }
+        let id = dst.encode_read(&mut passes)?;
+        let done = passes.submit()?.finish()?;
+        Ok((planar_owned(&whole), dst.take(&done, id)?))
+    })
+    .expect("device");
+    for c in 0..3 {
+        for y in 0..40usize {
+            for x in 0..80usize {
+                let got = slab[c * 80 * 40 + y * 80 + x];
+                let inside = (10..10 + w).contains(&x) && (5..5 + h).contains(&y);
+                if inside {
+                    let want = whole[c * w * h + (y - 5) * w + (x - 10)];
+                    assert_eq!(got.to_bits(), want.to_bits(), "plane {c} at ({x}, {y})");
+                } else {
+                    assert!(got.is_nan(), "plane {c} at ({x}, {y}) was written: {got}");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn the_mask_plane_keeps_the_letterbox_out_of_the_colour_pass() {
+    // A source with a fourth plane (the sampler's output): masked pixels are 0 in a stage output and
+    // carry the mask on; the others are the plain render. In RGBA8 they are the background colour.
+    let (w, h) = (45usize, 22usize);
+    let img = camera_image(w, h, 0xFACE);
+    let mask: Vec<f32> = (0..w * h)
+        .map(|i| f32::from(u8::from((i % w) < 7 || (i / w) > 17 || i % 11 == 3)))
+        .collect();
+    let chain = ColorChain::new(&chains::full(OutputTarget::Viewport)).expect("chain");
+    let (img2, mask2) = (img.clone(), mask.clone());
+    let (plain, stage, rgba, plain_rgba) = on_f32(move |ctx| {
+        let prepared = PreparedChain::new(ctx, &chain)?;
+        let plain = prepared.render(ctx, &img2, (0, 0), ColorOutput::Stage(Stop::C12))?;
+        let plain_rgba =
+            prepared.render(ctx, &img2, (0, 0), ColorOutput::Rgba8 { dither: true })?;
+        let mut data = img2.data.clone();
+        data.extend_from_slice(&mask2);
+        let src = GpuImage::upload(ctx, "masked input", w, h, 4, &data, img2.place)?;
+        let dst = GpuImage::alloc(ctx, "masked out", w, h, 4, img2.place)?;
+        let words = GpuImage::alloc(ctx, "unused", 2, 2, 3, img2.place)?; // keeps the pool busy
+        drop(words);
+        let rgba_buf = ctx.pool().acquire(
+            "rgba",
+            (w * h * 4) as u64,
+            wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+        )?;
+        let mut passes = PassList::new(ctx, "masked");
+        prepared.encode_stage(&mut passes, &src, Rect::whole(w, h), Stop::C12, &dst, (0, 0))?;
+        prepared.encode_rgba8(
+            &mut passes,
+            &src,
+            Rect::whole(w, h),
+            false,
+            true,
+            (0, 0),
+            [200, 100, 50],
+            &rgba_buf,
+            w,
+            (0, 0),
+        )?;
+        let a = dst.encode_read(&mut passes)?;
+        let b = passes.read(&rgba_buf, 0, (w * h * 4) as u64)?;
+        let done = passes.submit()?.finish()?;
+        Ok((
+            planar_owned(&plain),
+            dst.take(&done, a)?,
+            done.read(b).to_vec(),
+            match plain_rgba.data {
+                PixelData::Rgba8(v) => v,
+                other => panic!("{other:?}"),
+            },
+        ))
+    })
+    .expect("device");
+    let n = w * h;
+    for i in 0..n {
+        let gone = mask[i] != 0.0;
+        for c in 0..3 {
+            let got = stage[c * n + i];
+            if gone {
+                assert_eq!(got.to_bits(), 0, "pixel {i} plane {c}: outside is zero");
+            } else {
+                assert_eq!(got.to_bits(), plain[c * n + i].to_bits(), "pixel {i} plane {c}");
+            }
+        }
+        assert_eq!(stage[3 * n + i], mask[i], "pixel {i}: the mask follows");
+        if gone {
+            assert_eq!(&rgba[4 * i..4 * i + 4], &[200, 100, 50, 255], "pixel {i}");
+        } else {
+            assert_eq!(&rgba[4 * i..4 * i + 4], &plain_rgba[4 * i..4 * i + 4], "pixel {i}");
+        }
+    }
+}
+
+#[test]
+fn the_before_view_is_an_rgba8_stop() {
+    let (w, h) = (58usize, 31usize);
+    let img = camera_image(w, h, 0xBEF0);
+    for (name, params) in view_chains().into_iter().take(3) {
+        let chain = ColorChain::new(&params).expect("chain");
+        for dev in gpus() {
+            let gpu = render(
+                dev,
+                &chain,
+                &img,
+                &[
+                    ColorOutput::BeforeRgba8 { dither: true },
+                    ColorOutput::BeforeRgba8 { dither: false },
+                    ColorOutput::Stage(Stop::Before),
+                ],
+            );
+            let PixelData::Rgba8(dithered) = &gpu[0].data else {
+                panic!("not RGBA8");
+            };
+            let PixelData::Rgba8(rounded) = &gpu[1].data else {
+                panic!("not RGBA8");
+            };
+            // The CPU's Before view, 8-bit with the chain's dither (on) and rounded.
+            let frame = ym_color::display::Frame::planar(w, h, &img.data).expect("frame");
+            let mut cpu = vec![0u8; 3 * w * h];
+            chain
+                .render_u8(View::Before, &frame, (0, 0), &mut cpu, 1)
+                .expect("cpu");
+            let f32s = planar(&gpu[2]);
+            let n = w * h;
+            let (mut off_by_more, mut total) = (0usize, 0usize);
+            for i in 0..n {
+                assert_eq!(dithered[4 * i + 3], 255);
+                for c in 0..3 {
+                    // Rounded codes are the f32 stage, rounded.
+                    let want = (f32s[c * n + i].clamp(0.0, 1.0) * 255.0 + 0.5).floor() as i32;
+                    assert_eq!(i32::from(rounded[4 * i + c]), want, "{name} pixel {i}");
+                    // Dithered codes agree with the CPU's within a code (f32 against f64 moves a
+                    // value across a dither threshold now and then).
+                    let d = (i32::from(dithered[4 * i + c]) - i32::from(cpu[3 * i + c])).abs();
+                    assert!(d <= 1, "{name} pixel {i} channel {c}: {d} codes");
+                    off_by_more += usize::from(d != 0);
+                    total += 1;
+                }
+            }
+            assert!(
+                off_by_more * 100 <= total,
+                "{name}: {off_by_more} of {total} codes differ from the CPU's"
+            );
+        }
+    }
+}
+
+/// A fresh set of tables against a freshly opened counter reading: the uploads a prepare costs.
+fn prepare_cost(
+    ctx: &GpuContext,
+    tables: &mut ChainTables,
+    chain: &ColorChain,
+) -> ym_gpu::stream::CounterSnapshot {
+    let before = ctx.counters();
+    let _ = PreparedChain::with_tables(ctx, tables, chain).expect("prepare");
+    ctx.counters().since(before)
+}
+
+fn chain_with(look: Option<Arc<LookTransform>>, curves: CurveSet) -> ColorChain {
+    let mut p = chains::base(OutputTarget::Viewport);
+    p.grade = chains::grade_params();
+    p.look = look.map(|l| LookSetting::new(l, 80.0));
+    p.curves = curves;
+    ColorChain::new(&p).expect("chain")
+}
+
+fn other_look(bump: f64) -> Arc<LookTransform> {
+    let lut: Lut = cube_lut(17, move |c| {
+        let t = tweak(c);
+        [t[0] + bump, t[1], t[2]]
+    });
+    Arc::new(
+        LookTransform::new(ym_color::look::LookInput::LogC4, None, Some(lut)).expect("look"),
+    )
+}
+
+#[test]
+fn an_unchanged_chain_uploads_nothing_a_curve_edit_16_kb_and_a_look_one_cube_once() {
+    let look_a = other_look(0.0);
+    let look_b = other_look(0.03);
+    let edited = CurveSet {
+        luma: Curve::new(&[(0.0, 0.0), (0.5, 0.45), (1.0, 1.0)]).expect("curve"),
+        ..CurveSet::default()
+    };
+    let cube_bytes = |l: &LookTransform| {
+        (l.lut().expect("lut").cube.to_rgba_f32().len() * 4) as u64
+    };
+    let (ba, bb) = (cube_bytes(&look_a), cube_bytes(&look_b));
+    let measured = on_f32(move |ctx| {
+        let mut t = ChainTables::new();
+        let a = chain_with(Some(Arc::clone(&look_a)), CurveSet::default());
+        let first = prepare_cost(ctx, &mut t, &a);
+        // 1. The same chain again, and a clone of it: nothing is uploaded.
+        let again = prepare_cost(ctx, &mut t, &a);
+        let cloned = prepare_cost(ctx, &mut t, &a.clone());
+        // 2. A grade edit changes the per-frame block only.
+        let mut p = a.params().clone();
+        p.grade.contrast = 33.0;
+        let graded = prepare_cost(ctx, &mut t, &ColorChain::new(&p).expect("chain"));
+        // 3. A curve edit: the 16 KB of the four tables.
+        let c = chain_with(Some(Arc::clone(&look_a)), edited.clone());
+        let curve = prepare_cost(ctx, &mut t, &c);
+        let curve_again = prepare_cost(ctx, &mut t, &c);
+        // 4. A look change: the new cube once; going back finds the old one; the same content under
+        //    another Arc (a reloaded look) is found by its hash.
+        let b = chain_with(Some(Arc::clone(&look_b)), CurveSet::default());
+        let look_new = prepare_cost(ctx, &mut t, &b);
+        let look_back = prepare_cost(ctx, &mut t, &a);
+        let reloaded = chain_with(Some(other_look(0.03)), CurveSet::default());
+        let look_reloaded = prepare_cost(ctx, &mut t, &reloaded);
+        // 5. No look at all: nothing.
+        let none = chain_with(None, CurveSet::default());
+        let look_none = prepare_cost(ctx, &mut t, &none);
+        Ok((
+            first, again, cloned, graded, curve, curve_again, look_new, look_back,
+            look_reloaded, look_none, t.lut_count(), t.curve_set_count(),
+        ))
+    })
+    .expect("device");
+    let (first, again, cloned, graded, curve, curve_again, look_new, look_back, reloaded, none, luts, sets) =
+        measured;
+    eprintln!("first prepare: {} uploads, {} bytes", first.uploads, first.uploaded_bytes);
+    assert!(first.uploaded_bytes > ba, "the first chain makes the tables");
+    for (what, c) in [("the same chain", again), ("a clone", cloned), ("a grade edit", graded)] {
+        assert_eq!(c.uploads, 0, "{what}: uploads");
+        assert_eq!(c.uploaded_bytes, 0, "{what}: bytes");
+        assert_eq!(c.submissions, 0, "{what}: submissions");
+    }
+    assert_eq!(curve.uploaded_bytes, 4 * 1024 * 4, "a curve edit uploads the 16 KB of the curves");
+    assert_eq!(curve.uploads, 1);
+    assert_eq!(curve_again.uploaded_bytes, 0);
+    assert_eq!(look_new.uploaded_bytes, bb, "a new look uploads its cube, once");
+    assert_eq!(look_new.uploads, 1);
+    assert_eq!(look_back.uploaded_bytes, 0, "the first look is still there");
+    assert_eq!(reloaded.uploaded_bytes, 0, "the same cube under another Arc is found by content");
+    assert_eq!(none.uploaded_bytes, 0);
+    assert_eq!(luts, 2, "two distinct cubes are held");
+    assert_eq!(sets, 2, "and two distinct curve sets");
+}
+
+#[test]
+fn a_prepared_chain_from_the_cache_renders_the_bits_of_a_fresh_one() {
+    // No stale table after an edit: render a chain, edit a curve and the look, go back, and compare
+    // every render with the one a private, empty set of tables makes.
+    let img = camera_image(41, 27, 0x5EED);
+    let look_a = other_look(0.0);
+    let look_b = other_look(0.05);
+    let curves_b = CurveSet {
+        r: Curve::new(&[(0.0, 0.0), (0.5, 0.6), (1.0, 1.0)]).expect("curve"),
+        ..chains::curves()
+    };
+    let sequence = vec![
+        chain_with(Some(Arc::clone(&look_a)), chains::curves()),
+        chain_with(Some(Arc::clone(&look_b)), chains::curves()),
+        chain_with(Some(Arc::clone(&look_b)), curves_b.clone()),
+        chain_with(Some(Arc::clone(&look_a)), chains::curves()),
+        chain_with(None, curves_b),
+        chain_with(Some(look_b), chains::curves()),
+    ];
+    let result = on_f32(move |ctx| {
+        release_tables(ctx);
+        let mut out = Vec::new();
+        for chain in &sequence {
+            let cached = PreparedChain::new(ctx, chain)?
+                .render(ctx, &img, (0, 0), ColorOutput::Stage(Stop::C13))?;
+            let mut fresh_tables = ChainTables::new();
+            let fresh = PreparedChain::with_tables(ctx, &mut fresh_tables, chain)?
+                .render(ctx, &img, (0, 0), ColorOutput::Stage(Stop::C13))?;
+            out.push((cached, fresh));
+        }
+        release_tables(ctx);
+        Ok(out)
+    })
+    .expect("device");
+    let mut distinct = std::collections::BTreeSet::new();
+    for (i, (cached, fresh)) in result.iter().enumerate() {
+        assert_eq!(cached, fresh, "step {i}: the cached tables gave other pixels");
+        distinct.insert(
+            planar(cached)
+                .iter()
+                .fold(0u32, |a, v| a.wrapping_add(v.to_bits())),
+        );
+    }
+    assert!(distinct.len() >= 4, "the edits must change the picture");
+}
+
+#[test]
+fn preparing_an_unchanged_chain_costs_microseconds() {
+    // "An unchanged chain costs under 0.2 ms of CPU" (docs/gpu-plan.md G-04): the average over many
+    // prepares of the same chain through the device's own tables.
+    let mut p = chains::full(OutputTarget::Viewport);
+    p.look = Some(LookSetting::new(logc4_look(), 70.0));
+    let chain = ColorChain::new(&p).expect("chain");
+    let ms = on_f32(move |ctx| {
+        let _warm = PreparedChain::new(ctx, &chain)?;
+        let before = ctx.counters();
+        let t = Instant::now();
+        let n = 200;
+        for _ in 0..n {
+            let _ = PreparedChain::new(ctx, &chain)?;
+        }
+        let ms = t.elapsed().as_secs_f64() * 1000.0 / f64::from(n);
+        assert_eq!(ctx.counters().since(before).uploads, 0);
+        Ok(ms)
+    })
+    .expect("device");
+    eprintln!("prepare of an unchanged chain: {ms:.4} ms");
+    assert!(ms < 0.2, "{ms} ms per prepare");
+}
+
+#[test]
+fn device_images_need_an_f32_device() {
+    // The f16 modes are the legacy kernels' (`docs/gpu-plan.md` X-3): a device image cannot be bound
+    // to a kernel that reads f16, and says so instead of reading garbage.
+    for dev in gpus().iter().skip(1) {
+        let img = camera_image(8, 8, 1);
+        let chain = ColorChain::new(&chains::base(OutputTarget::Srgb)).expect("chain");
+        let r = dev
+            .gpu
+            .run(JobSpec::new(Priority::Viewport), move |ctx, _| {
+                let prepared = PreparedChain::new(ctx, &chain)?;
+                let src = GpuImage::upload_rgb(ctx, "f16 device", &img)?;
+                let dst = GpuImage::alloc(ctx, "f16 device out", 8, 8, 3, img.place)?;
+                let mut passes = PassList::new(ctx, "f16");
+                prepared.encode_stage(&mut passes, &src, Rect::whole(8, 8), Stop::C12, &dst, (0, 0))
+            });
+        assert!(
+            matches!(r, Err(ym_gpu::device::GpuError::InvalidInput(_))),
+            "{:?}: {r:?}",
+            dev.mode
+        );
+    }
+}
+
+#[test]
+fn the_binding_stays_inside_the_design_size() {
+    common::limits::assert_max_binding_bytes(
+        "colour",
+        Rect::new(0, 0, 2000, 1250),
+        ym_gpu::kernels::color::max_binding_bytes,
+    );
+}
+
+#[test]
+fn device_entry_points_refuse_bad_windows_and_planes() {
+    let img = camera_image(16, 16, 2);
+    let chain = ColorChain::new(&chains::base(OutputTarget::Srgb)).expect("chain");
+    let r = on_f32(move |ctx| {
+        let prepared = PreparedChain::new(ctx, &chain)?;
+        let src = GpuImage::upload_rgb(ctx, "bad", &img)?;
+        let dst = GpuImage::alloc(ctx, "bad out", 16, 16, 3, img.place)?;
+        let four = GpuImage::alloc(ctx, "bad four", 16, 16, 4, img.place)?;
+        let mut results = Vec::new();
+        let mut passes = PassList::new(ctx, "bad");
+        // A window outside the source, an empty one, one that does not fit the destination, a
+        // destination with another number of planes, a one-plane source.
+        results.push(prepared.encode_stage(&mut passes, &src, Rect::new(8, 8, 16, 16), Stop::C12, &dst, (0, 0)));
+        results.push(prepared.encode_stage(&mut passes, &src, Rect::new(0, 0, 0, 4), Stop::C12, &dst, (0, 0)));
+        results.push(prepared.encode_stage(&mut passes, &src, Rect::whole(16, 16), Stop::C12, &dst, (1, 0)));
+        results.push(prepared.encode_stage(&mut passes, &src, Rect::whole(16, 16), Stop::C12, &four, (0, 0)));
+        let one = GpuImage::alloc(ctx, "bad one", 16, 16, 1, img.place)?;
+        results.push(prepared.encode_stage(&mut passes, &one, Rect::whole(16, 16), Stop::C12, &one, (0, 0)));
+        Ok(results.into_iter().map(|r| r.is_err()).collect::<Vec<_>>())
+    })
+    .expect("device");
+    assert_eq!(r, vec![true; 5]);
+}

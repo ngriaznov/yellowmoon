@@ -1,31 +1,61 @@
 //! The whole per-pixel colour chain C1 to C13 as one compute pass (`docs/02-colour-pipeline.md`).
 //!
-//! [`PreparedChain::new`] turns an immutable `ym_color::display::ColorChain` into the GPU form:
-//! one uniform block (fused matrix, C7, C9, C10 and C12 parameters, flags), the four 1024-entry
-//! curve tables and the dither thresholds in one f32 storage buffer, the look and display cubes in
-//! another (f32, never rounded to f16, never hardware-filtered), and the ACES 2 uniform block built
-//! from the CPU reference's own tables. Nothing here computes colour: every number comes from the
-//! `ym_color` modules the CPU chain uses, so the kernel and `ColorChain` cannot drift apart without
-//! a parity test failing.
+//! [`PreparedChain::new`] turns an immutable `ym_color::display::ColorChain` into the GPU form: the
+//! per-frame uniform block (fused matrix, C7, C9, C10 and C12 parameters, the ACES 2 scalars and the
+//! flags, under 1 KB), and four **persistent tables** that [`ChainTables`] keeps on the device and
+//! refills only when their content changes:
+//!
+//! * the 64 x 64 dither thresholds, once per device;
+//! * the ACES 2 tables, once per device and output;
+//! * the four 1024-entry curve tables (16 KB), once per distinct set of curves;
+//! * the look and the display cubes (f32, never rounded to f16, never hardware-filtered), in an LRU
+//!   keyed by the content of the LUT (a 65-point cube is 4.4 MB, a 129-point one 34 MB).
+//!
+//! Nothing here computes colour: every number comes from the `ym_color` modules the CPU chain uses, so
+//! the kernel and `ColorChain` cannot drift apart without a parity test failing.
+//!
+//! # Persistent tables and their keys
+//!
+//! [`PreparedChain::new`] finds the tables of the device thread's [`ChainTables`] (one per device,
+//! kept in a thread-local of the thread that owns the device, so callers change nothing): preparing a
+//! chain whose curves, look and display are the ones of the previous chain uploads nothing and costs
+//! microseconds; a curve edit uploads the 16 KB of the curves; a look change uploads the new cube once
+//! and finds it again later. The keys are *contents*, never identities that could go stale: the
+//! curves by `CurveSet` equality, a LUT by a 128-bit hash of its entries (with the address of the
+//! `Lut` as a shortcut, valid while the cache holds the `Arc` the `Lut` lives in), the ACES 2 tables
+//! by the output. [`release_tables`] drops the whole set (the pool ledger counts it as resident until
+//! then).
 //!
 //! # Precision decision (LUTs and curves)
 //!
 //! A LUT texture or curve table stored as f16 rounds values in [0.5, 1) by up to 2.4e-4, which alone
 //! exceeds the 2e-4 parity target of `docs/02`. Cubes, shapers and curve tables are therefore **f32
-//! storage buffers** (a 65-point cube is 4.4 MB, a 129-point one 34 MB), and the tetrahedral
-//! interpolation is done by hand in the shader. Only image intermediates are f16.
+//! storage buffers**, and the tetrahedral interpolation is done by hand in the shader. Image
+//! intermediates follow the device's storage mode (f32 by default; the f16 modes belong to the legacy
+//! kernels and their tests, and a device image ([`GpuImage`]) needs the f32 mode).
 //!
 //! # Outputs
 //!
-//! [`ColorOutput`] selects what is written: the value at any stage (for parity checks against
-//! `ColorChain::trace` and for the DNG path), the encoded f32 picture, 8-bit RGBA with the
-//! deterministic blue-noise dither at absolute pixel coordinates (tiles agree with the whole
-//! image), or 10 to 16-bit planes.
+//! [`ColorOutput`] selects what the host wrappers write: the value at any stage (for parity checks
+//! against `ColorChain::trace` and for the DNG path), the encoded f32 picture, 8-bit RGBA with the
+//! deterministic blue-noise dither at absolute pixel coordinates (tiles agree with the whole image),
+//! 10 to 16-bit planes, or the Before view as RGBA8. The device entry points
+//! ([`PreparedChain::encode_stage`], [`PreparedChain::encode_rgba8`]) read a window of a [`GpuImage`]
+//! and write into another one at an offset (a slab of an export), or into an RGBA8 buffer.
+//!
+//! A source image with a **fourth plane** is the sampler's output: that plane marks the pixels
+//! outside the photo (the letterbox). Such pixels are not computed: a stage output has 0 there and
+//! carries the mask into its own fourth plane, an RGBA8 output has the background colour.
+
+use std::any::Any;
+use std::cell::RefCell;
+use std::sync::{Arc, Weak};
 
 use bytemuck::{Pod, Zeroable};
 use ym_color::aces2::{Aces2Transform, REF_LUMINANCE};
+use ym_color::consts::Vec3;
 use ym_color::consts::linalg::{self, Mat3};
-use ym_color::curve::TABLE_SIZE;
+use ym_color::curve::{CurveSet, TABLE_SIZE};
 use ym_color::display::{
     BeforePoint, ChainParams, ColorChain, DisplayLutPrimaries, DisplayLutTransfer,
     DisplayTransform, OutputTarget,
@@ -39,15 +69,15 @@ use ym_color::look::{LookInput, intensity_fraction};
 use ym_color::lut::Lut;
 
 use super::shader::{KernelId, table};
-use super::util::{
-    OutKind, PixelData, STORAGE_IN, STORAGE_OUT, bind, even, groups, image_bytes, sample_bytes,
-    storage_buffer, submit_with_readback, uniform_buffer, unpack,
-};
+use super::util::{OutKind, PixelData, STORAGE_IN, STORAGE_OUT, even, image_bytes, sample_bytes};
+use super::util::{storage_buffer, unpack};
 use crate::cpu::RgbImage;
 use crate::cpu::tiling::Rect;
-use crate::device::{GpuContext, GpuError};
+use crate::device::{GpuContext, GpuError, StorageMode};
+use crate::image::GpuImage;
 use crate::pool::PooledBuffer;
 use crate::queue::CancelToken;
+use crate::stream::{Counters, Pending, PassList, ReadId, upload_bytes};
 use crate::tiles::{Tile, TilePlan};
 
 /// The stage whose value is written (the stop of the chain).
@@ -103,6 +133,11 @@ pub enum ColorOutput {
         /// Whether to dither.
         dither: bool,
     },
+    /// The Before view ([`Stop::Before`]) as 8-bit RGBA, quantised like [`ColorOutput::Rgba8`].
+    BeforeRgba8 {
+        /// Whether to dither.
+        dither: bool,
+    },
     /// The encoded picture as planar u16 with `bits` (1 to 16) significant bits, rounded.
     U16 {
         /// Bits per sample.
@@ -132,6 +167,8 @@ struct LutDescU {
     smax: [f32; 4],
 }
 
+/// The per-frame uniform block of `color.wgsl` (`ChainU`), 992 bytes: window and mode, the chain's
+/// parameters and the ACES 2 scalars. Field for field the WGSL struct (a test pins the offsets).
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable, Default)]
 struct ChainU {
@@ -165,6 +202,7 @@ struct ChainU {
     look_m0: [f32; 4],
     look_m1: [f32; 4],
     look_m2: [f32; 4],
+    aces: AcesU,
 }
 
 #[repr(C)]
@@ -243,8 +281,10 @@ fn primaries_matrix(from: DisplayLutPrimaries, to: OutputSpace) -> Option<Mat3> 
     Some(linalg::mul(&xyz_to, &from_xyz))
 }
 
-/// Appends a LUT (shaper, then cube) to `luts` and returns its descriptor.
-fn push_lut(luts: &mut Vec<f32>, lut: &Lut) -> LutDescU {
+/// The cube of `lut` (shaper first, then the cube) as the vec4 entries of a LUT buffer, and the
+/// descriptor that finds them (offsets in vec4 units from the start of the buffer).
+fn lut_data(lut: &Lut) -> (Vec<f32>, LutDescU) {
+    let mut luts: Vec<f32> = Vec::new();
     let mut d = LutDescU::default();
     if let Some(shaper) = &lut.shaper {
         d.cube[2] = 1;
@@ -259,7 +299,7 @@ fn push_lut(luts: &mut Vec<f32>, lut: &Lut) -> LutDescU {
     d.dmin = f4(lut.cube.domain_min(), 0.0);
     d.dmax = f4(lut.cube.domain_max(), 1.0);
     luts.extend(lut.cube.to_rgba_f32());
-    d
+    (luts, d)
 }
 
 /// The grade parameters as the kernel wants them (the same preparation as `Grade::new`).
@@ -384,34 +424,301 @@ fn aces_tables(target: OutputTarget) -> [Vec<f64>; 5] {
     ]
 }
 
-/// A colour chain uploaded to the GPU: immutable, reusable for any number of tiles and images.
-pub struct PreparedChain {
-    base: ChainU,
-    aces: PooledBuffer,
-    tables: PooledBuffer,
-    luts: PooledBuffer,
-    output: OutputTarget,
-    look: LookKind,
-    before: BeforePoint,
-    dither: bool,
+/// The 64 x 64 dither thresholds as the `tables` section the shaders read (`y * 64 + x`).
+fn dither_section() -> Vec<f32> {
+    let mut v = vec![0.0f32; table::DITHER_ENTRIES];
+    for y in 0..64 {
+        for x in 0..64 {
+            v[y * 64 + x] = dither_threshold(x, y) as f32;
+        }
+    }
+    v
 }
 
-impl std::fmt::Debug for PreparedChain {
+// ---------------------------------------------------------------------------------------------
+// The persistent tables
+// ---------------------------------------------------------------------------------------------
+
+/// Curve sets kept per device (the last ones edited: a curve drag walks through many).
+const CURVE_CACHE_LEN: usize = 12;
+/// LUTs kept per device, by count and by bytes (a look tab renders a handful of looks).
+const LUT_CACHE_LEN: usize = 6;
+const LUT_CACHE_BYTES: u64 = 192 << 20;
+
+/// A 128-bit hash of a stream of words: two independent multiply-rotate mixers. It keys the LUT
+/// cache, so an accidental collision would show the wrong look; 128 bits make that impossible in
+/// practice, and the pointer shortcut avoids hashing a 34 MB cube on every frame.
+struct Hash128(u64, u64);
+
+impl Hash128 {
+    fn new() -> Self {
+        Self(0x243F_6A88_85A3_08D3, 0x1319_8A2E_0370_7344)
+    }
+
+    #[inline]
+    fn word(&mut self, w: u64) {
+        self.0 = (self.0 ^ w)
+            .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+            .rotate_left(29);
+        self.1 = (self.1.rotate_left(23) ^ w.wrapping_mul(0xC2B2_AE3D_27D4_EB4F))
+            .wrapping_mul(0x1656_67B1_9E37_79F9);
+    }
+
+    fn vec3(&mut self, v: Vec3) {
+        for c in v {
+            self.word(c.to_bits());
+        }
+    }
+
+    fn finish(self) -> u128 {
+        let fin = |mut x: u64| {
+            x ^= x >> 33;
+            x = x.wrapping_mul(0xFF51_AFD7_ED55_8CCD);
+            x ^= x >> 33;
+            x = x.wrapping_mul(0xC4CE_B9FE_1A85_EC53);
+            x ^ (x >> 33)
+        };
+        (u128::from(fin(self.0)) << 64) | u128::from(fin(self.1 ^ self.0.rotate_left(32)))
+    }
+}
+
+/// The content hash of a LUT: sizes, domains and every entry of the shaper and the cube.
+fn hash_lut(lut: &Lut) -> u128 {
+    let mut h = Hash128::new();
+    match &lut.shaper {
+        Some(s) => {
+            h.word(1);
+            h.word(s.size() as u64);
+            h.vec3(s.domain_min());
+            h.vec3(s.domain_max());
+            s.data().iter().for_each(|&e| h.vec3(e));
+        }
+        None => h.word(0),
+    }
+    h.word(lut.cube.size() as u64);
+    h.vec3(lut.cube.domain_min());
+    h.vec3(lut.cube.domain_max());
+    lut.cube.data().iter().for_each(|&e| h.vec3(e));
+    h.finish()
+}
+
+struct CurveEntry {
+    set: CurveSet,
+    /// Bit `i` set when table `i` (luma, R, G, B) is not the identity.
+    flags: u32,
+    buf: Arc<PooledBuffer>,
+}
+
+struct LutEntry {
+    /// The address of the `Lut` when it was last seen: a shortcut that is valid while `_owner`
+    /// keeps the allocation alive.
+    ptr: usize,
+    _owner: Arc<dyn Any + Send + Sync>,
+    key: u128,
+    buf: Arc<PooledBuffer>,
+    desc: LutDescU,
+    bytes: u64,
+}
+
+/// The device-resident tables of the colour chain (module notes): one per device, found through
+/// [`PreparedChain::new`]. Create one yourself ([`ChainTables::new`]) to prepare chains against a
+/// private set, for instance in a test that counts uploads.
+#[derive(Default)]
+pub struct ChainTables {
+    dither: Option<Arc<PooledBuffer>>,
+    empty: Option<Arc<PooledBuffer>>,
+    aces: Vec<(OutputTarget, AcesU, Arc<PooledBuffer>)>,
+    curves: Vec<CurveEntry>,
+    luts: Vec<LutEntry>,
+}
+
+impl std::fmt::Debug for ChainTables {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PreparedChain")
-            .field("output", &self.output)
-            .field("look", &self.look)
+        f.debug_struct("ChainTables")
+            .field("aces_outputs", &self.aces.len())
+            .field("curve_sets", &self.curves.len())
+            .field("luts", &self.luts.len())
             .finish_non_exhaustive()
     }
 }
 
-impl PreparedChain {
-    /// Uploads `chain`'s parameters and tables.
+impl ChainTables {
+    /// An empty set; every table is created on first use.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Number of LUTs held.
+    pub fn lut_count(&self) -> usize {
+        self.luts.len()
+    }
+
+    /// Number of distinct curve sets held.
+    pub fn curve_set_count(&self) -> usize {
+        self.curves.len()
+    }
+
+    /// The dither thresholds, created once.
+    fn dither(&mut self, ctx: &GpuContext) -> Result<Arc<PooledBuffer>, GpuError> {
+        if let Some(b) = &self.dither {
+            return Ok(Arc::clone(b));
+        }
+        let buf = Arc::new(storage_buffer(
+            ctx,
+            "dither thresholds",
+            bytemuck::cast_slice(&dither_section()),
+        )?);
+        self.dither = Some(Arc::clone(&buf));
+        Ok(buf)
+    }
+
+    /// The stand-in bound where a chain has no look or display LUT (never read).
+    fn empty(&mut self, ctx: &GpuContext) -> Result<Arc<PooledBuffer>, GpuError> {
+        if let Some(b) = &self.empty {
+            return Ok(Arc::clone(b));
+        }
+        let buf = Arc::new(storage_buffer(
+            ctx,
+            "empty lut",
+            bytemuck::cast_slice(&[0.0f32, 0.0, 0.0, 1.0]),
+        )?);
+        self.empty = Some(Arc::clone(&buf));
+        Ok(buf)
+    }
+
+    /// The ACES 2 scalars and the table buffer (dither, then the five hue tables) of an output.
+    fn aces(
+        &mut self,
+        ctx: &GpuContext,
+        target: OutputTarget,
+    ) -> Result<(AcesU, Arc<PooledBuffer>), GpuError> {
+        if let Some((_, u, b)) = self.aces.iter().find(|(t, _, _)| *t == target) {
+            return Ok((*u, Arc::clone(b)));
+        }
+        let tables = aces_tables(target);
+        let mut data = vec![0.0f32; table::TOTAL];
+        data[..table::DITHER_ENTRIES].copy_from_slice(&dither_section());
+        for (k, t) in tables.iter().enumerate() {
+            if t.len() != table::ACES_ENTRIES {
+                return Err(GpuError::Chain(format!(
+                    "ACES 2 table {k} has {} entries, the kernel is laid out for {}",
+                    t.len(),
+                    table::ACES_ENTRIES
+                )));
+            }
+            let start = table::ACES + k * table::ACES_ENTRIES;
+            for (i, v) in t.iter().enumerate() {
+                data[start + i] = *v as f32;
+            }
+        }
+        let buf = Arc::new(storage_buffer(
+            ctx,
+            "aces2 tables",
+            bytemuck::cast_slice(&data),
+        )?);
+        let u = aces_uniform(target);
+        self.aces.push((target, u, Arc::clone(&buf)));
+        Ok((u, buf))
+    }
+
+    /// The curve tables of `set` and the bits of the tables that are not the identity.
+    fn curves(
+        &mut self,
+        ctx: &GpuContext,
+        set: &CurveSet,
+    ) -> Result<(Arc<PooledBuffer>, u32), GpuError> {
+        if let Some(i) = self.curves.iter().position(|e| e.set == *set) {
+            let e = self.curves.remove(i);
+            let out = (Arc::clone(&e.buf), e.flags);
+            self.curves.push(e);
+            return Ok(out);
+        }
+        let baked = set.bake();
+        let mut data = vec![0.0f32; 4 * TABLE_SIZE];
+        let mut flags = 0u32;
+        for (i, t) in [&baked.luma, &baked.r, &baked.g, &baked.b]
+            .iter()
+            .enumerate()
+        {
+            data[i * TABLE_SIZE..(i + 1) * TABLE_SIZE].copy_from_slice(&t.to_f32());
+            if !t.is_identity() {
+                flags |= 1 << i;
+            }
+        }
+        let buf = Arc::new(storage_buffer(
+            ctx,
+            "chain curves",
+            bytemuck::cast_slice(&data),
+        )?);
+        self.curves.push(CurveEntry {
+            set: set.clone(),
+            flags,
+            buf: Arc::clone(&buf),
+        });
+        while self.curves.len() > CURVE_CACHE_LEN {
+            self.curves.remove(0);
+        }
+        Ok((buf, flags))
+    }
+
+    /// The buffer and descriptor of `lut`, uploaded the first time its content is seen. `owner` is
+    /// the `Arc` the `Lut` lives in (kept so the address stays valid).
+    fn lut(
+        &mut self,
+        ctx: &GpuContext,
+        lut: &Lut,
+        owner: Arc<dyn Any + Send + Sync>,
+    ) -> Result<(Arc<PooledBuffer>, LutDescU), GpuError> {
+        let ptr = std::ptr::from_ref(lut) as usize;
+        if let Some(i) = self.luts.iter().position(|e| e.ptr == ptr) {
+            return Ok(self.touch_lut(i));
+        }
+        let key = hash_lut(lut);
+        if let Some(i) = self.luts.iter().position(|e| e.key == key) {
+            // The same content under another address: remember the new owner.
+            self.luts[i].ptr = ptr;
+            self.luts[i]._owner = owner;
+            return Ok(self.touch_lut(i));
+        }
+        let (data, desc) = lut_data(lut);
+        let bytes = (data.len() * 4) as u64;
+        let buf = Arc::new(storage_buffer(ctx, "chain lut", bytemuck::cast_slice(&data))?);
+        self.luts.push(LutEntry {
+            ptr,
+            _owner: owner,
+            key,
+            buf: Arc::clone(&buf),
+            desc,
+            bytes,
+        });
+        // Evict the least recently used while over the limits, never the one just added.
+        while self.luts.len() > 1
+            && (self.luts.len() > LUT_CACHE_LEN
+                || self.luts.iter().map(|e| e.bytes).sum::<u64>() > LUT_CACHE_BYTES)
+        {
+            self.luts.remove(0);
+        }
+        Ok((buf, desc))
+    }
+
+    fn touch_lut(&mut self, i: usize) -> (Arc<PooledBuffer>, LutDescU) {
+        let e = self.luts.remove(i);
+        let out = (Arc::clone(&e.buf), e.desc);
+        self.luts.push(e);
+        out
+    }
+
+    /// Prepares `chain` against these tables: builds the per-frame block and finds (or uploads) the
+    /// tables it needs.
     ///
     /// # Errors
     ///
     /// Allocation errors from the pool ([`GpuError::OutOfBudget`], [`GpuError::BufferTooLarge`]).
-    pub fn new(ctx: &GpuContext, chain: &ColorChain) -> Result<Self, GpuError> {
+    pub fn prepare(
+        &mut self,
+        ctx: &GpuContext,
+        chain: &ColorChain,
+    ) -> Result<PreparedChain, GpuError> {
         let params = chain.params();
         let space = chain.space();
         let look_kind = classify_look(params);
@@ -431,13 +738,13 @@ impl PreparedChain {
         // C9.
         grade_uniform(&mut u, &params.grade);
 
-        let mut luts: Vec<f32> = Vec::new();
         // C10 and the display-baked look.
         u.flags[2] = match look_kind {
             LookKind::None => 0,
             LookKind::LogToLog => 1,
             LookKind::Baked => 2,
         };
+        let mut look_luts = self.empty(ctx)?;
         if let Some(setting) = &params.look
             && look_kind != LookKind::None
         {
@@ -451,7 +758,11 @@ impl PreparedChain {
                 u.cdl_power = f4(cdl.power, 0.0);
             }
             if let Some(lut) = look.lut() {
-                u.look_lut = push_lut(&mut luts, lut);
+                let owner = Arc::clone(look);
+                let owner: Arc<dyn Any + Send + Sync> = owner;
+                let (buf, desc) = self.lut(ctx, lut, owner)?;
+                u.look_lut = desc;
+                look_luts = buf;
             }
             if look_kind == LookKind::Baked {
                 // Rec.709 (the look's LUT output) to the output primaries.
@@ -465,22 +776,18 @@ impl PreparedChain {
         }
 
         // C11.
-        let baked = params.curves.bake();
-        for (bit, t) in [&baked.luma, &baked.r, &baked.g, &baked.b]
-            .iter()
-            .enumerate()
-        {
-            if !t.is_identity() {
-                u.flags[1] |= 1 << bit;
-            }
-        }
+        let (curves, curve_flags) = self.curves(ctx, &params.curves)?;
+        u.flags[1] = curve_flags;
 
         // C12.
-        let mut aces_tables_data: Option<[Vec<f64>; 5]> = None;
+        let mut disp_luts = self.empty(ctx)?;
+        let tables;
         match &params.display {
             DisplayTransform::Aces2 => {
                 u.flags[3] = 0;
-                aces_tables_data = Some(aces_tables(params.output));
+                let (aces, buf) = self.aces(ctx, params.output)?;
+                u.aces = aces;
+                tables = buf;
             }
             DisplayTransform::ArriDisplayLut(arri) => {
                 u.flags[3] = 1;
@@ -501,61 +808,168 @@ impl PreparedChain {
                     u.disp_m2 = f4(m[2], 0.0);
                     u.dp[2] = 1;
                 }
-                u.disp_lut = push_lut(&mut luts, arri.lut());
+                let lut = arri.lut();
+                let owner = Arc::clone(lut);
+                let owner: Arc<dyn Any + Send + Sync> = owner;
+                let (buf, desc) = self.lut(ctx, lut, owner)?;
+                u.disp_lut = desc;
+                disp_luts = buf;
+                // The ACES 2 section is never read; the dither section is all this chain needs.
+                tables = self.dither(ctx)?;
             }
         }
         // C13.
         u.sp[0] = u32::from(space == OutputSpace::Rec2020);
         u.lk[3] = u32::from(chain.before_point() == BeforePoint::AfterGrade);
 
-        // The ACES 2 uniform exists for every chain (the kernel binds it); it is only read when the
-        // display transform is ACES 2.
-        let aces = uniform_buffer(ctx, "aces2 params", &aces_uniform(params.output))?;
-
-        // Tables: dither thresholds, curves, ACES 2 hue tables.
-        let mut tables = vec![0.0f32; table::TOTAL];
-        for y in 0..64 {
-            for x in 0..64 {
-                tables[table::DITHER + y * 64 + x] = dither_threshold(x, y) as f32;
-            }
-        }
-        for (i, t) in [&baked.luma, &baked.r, &baked.g, &baked.b]
-            .iter()
-            .enumerate()
-        {
-            let start = table::CURVES + i * TABLE_SIZE;
-            tables[start..start + TABLE_SIZE].copy_from_slice(&t.to_f32());
-        }
-        if let Some(data) = aces_tables_data {
-            for (k, t) in data.iter().enumerate() {
-                if t.len() != table::ACES_ENTRIES {
-                    return Err(GpuError::Chain(format!(
-                        "ACES 2 table {k} has {} entries, the kernel is laid out for {}",
-                        t.len(),
-                        table::ACES_ENTRIES
-                    )));
-                }
-                let start = table::ACES + k * table::ACES_ENTRIES;
-                for (i, v) in t.iter().enumerate() {
-                    tables[start + i] = *v as f32;
-                }
-            }
-        }
-        let tables_buf = storage_buffer(ctx, "chain tables", bytemuck::cast_slice(&tables))?;
-        if luts.is_empty() {
-            luts.extend([0.0, 0.0, 0.0, 1.0]);
-        }
-        let luts_buf = storage_buffer(ctx, "chain luts", bytemuck::cast_slice(&luts))?;
-        Ok(Self {
+        Ok(PreparedChain {
             base: u,
-            aces,
-            tables: tables_buf,
-            luts: luts_buf,
+            tables,
+            curves,
+            look_luts,
+            disp_luts,
             output: params.output,
             look: look_kind,
             before: chain.before_point(),
             dither: chain.dither(),
         })
+    }
+}
+
+thread_local! {
+    /// The tables of the devices whose thread this is: one entry per live device.
+    static TABLES: RefCell<Vec<(Weak<Counters>, ChainTables)>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Runs `f` with the persistent tables of `ctx`'s device (created empty the first time). The set
+/// lives in a thread-local of the thread that calls this, which is the device thread: a `GpuContext`
+/// never leaves it. Entries of devices that no longer exist are dropped on the way.
+fn with_tables<R>(
+    ctx: &GpuContext,
+    f: impl FnOnce(&mut ChainTables) -> Result<R, GpuError>,
+) -> Result<R, GpuError> {
+    TABLES.with(|cell| {
+        let mut slots = cell.borrow_mut();
+        slots.retain(|(owner, _)| owner.strong_count() > 0);
+        let id = Arc::as_ptr(ctx.counters_shared());
+        let at = match slots.iter().position(|(owner, _)| owner.as_ptr() == id) {
+            Some(i) => i,
+            None => {
+                slots.push((Arc::downgrade(ctx.counters_shared()), ChainTables::new()));
+                slots.len() - 1
+            }
+        };
+        f(&mut slots[at].1)
+    })
+}
+
+/// Drops the persistent tables of `ctx`'s device (the dither thresholds, the ACES 2 tables, the
+/// curves and the cached LUTs): their buffers go back to the pool and are created again by the next
+/// chain. Call from the device thread; a chain prepared earlier keeps working (it holds its own
+/// references). The pool ledger counts the tables as in use until then, which a test about "the
+/// ledger returns to its baseline" must account for.
+pub fn release_tables(ctx: &GpuContext) {
+    TABLES.with(|cell| {
+        let id = Arc::as_ptr(ctx.counters_shared());
+        cell.borrow_mut()
+            .retain(|(owner, _)| owner.as_ptr() != id && owner.strong_count() > 0);
+    });
+}
+
+/// The dither thresholds buffer of the device (4096 f32, `y * 64 + x`), shared by the encode kernel
+/// and the fused tail of output sharpening.
+pub(crate) fn dither_table(ctx: &GpuContext) -> Result<Arc<PooledBuffer>, GpuError> {
+    with_tables(ctx, |t| t.dither(ctx))
+}
+
+/// The WGSL of the colour kernel: the ACES 2 transform, the chain, the C13 helpers, with the LUT
+/// functions written once for the look cube and once for the display cube.
+pub(super) fn body() -> String {
+    let color = include_str!("../shaders/color.wgsl");
+    let (before, rest) = color
+        .split_once("//@BEGIN_LUT_FUNCS\n")
+        .unwrap_or((color, ""));
+    let (template, after) = rest.split_once("//@END_LUT_FUNCS\n").unwrap_or(("", ""));
+    let mut s = String::with_capacity(color.len() * 2);
+    s.push_str(include_str!("../shaders/aces2.wgsl"));
+    s.push('\n');
+    s.push_str(include_str!("../shaders/c13.wgsl"));
+    s.push('\n');
+    s.push_str(before);
+    for (suffix, buffer) in [("_look", "look_luts"), ("_disp", "disp_luts")] {
+        s.push_str(&template.replace("@P@", suffix).replace("@L@", buffer));
+    }
+    s.push_str(after);
+    s
+}
+
+// ---------------------------------------------------------------------------------------------
+// The prepared chain
+// ---------------------------------------------------------------------------------------------
+
+/// A colour chain prepared for the GPU: the per-frame uniform block and references to the
+/// persistent tables. Immutable, cheap to clone (the tables are shared), reusable for any number of
+/// tiles and images.
+#[derive(Clone)]
+pub struct PreparedChain {
+    base: ChainU,
+    tables: Arc<PooledBuffer>,
+    curves: Arc<PooledBuffer>,
+    look_luts: Arc<PooledBuffer>,
+    disp_luts: Arc<PooledBuffer>,
+    output: OutputTarget,
+    look: LookKind,
+    before: BeforePoint,
+    dither: bool,
+}
+
+impl std::fmt::Debug for PreparedChain {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PreparedChain")
+            .field("output", &self.output)
+            .field("look", &self.look)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Where a dispatch writes: the destination's row stride and plane length (samples), and the place of
+/// the window's (0, 0) in it.
+#[derive(Clone, Copy, Debug)]
+struct DstLayout {
+    stride: usize,
+    plane: usize,
+    at: (usize, usize),
+}
+
+/// What a dispatch needs beyond the window: the letterbox colour and whether the source has a mask.
+#[derive(Clone, Copy, Debug, Default)]
+struct MaskPaint {
+    has_mask: bool,
+    background: u32,
+}
+
+impl PreparedChain {
+    /// Prepares `chain` against the persistent tables of `ctx`'s device (module notes): an unchanged
+    /// chain uploads nothing.
+    ///
+    /// # Errors
+    ///
+    /// Allocation errors from the pool ([`GpuError::OutOfBudget`], [`GpuError::BufferTooLarge`]).
+    pub fn new(ctx: &GpuContext, chain: &ColorChain) -> Result<Self, GpuError> {
+        with_tables(ctx, |t| t.prepare(ctx, chain))
+    }
+
+    /// Prepares `chain` against `tables` instead of the device's own set.
+    ///
+    /// # Errors
+    ///
+    /// As [`PreparedChain::new`].
+    pub fn with_tables(
+        ctx: &GpuContext,
+        tables: &mut ChainTables,
+        chain: &ColorChain,
+    ) -> Result<Self, GpuError> {
+        tables.prepare(ctx, chain)
     }
 
     /// The output this chain encodes for.
@@ -580,22 +994,25 @@ impl PreparedChain {
         self.before
     }
 
+    /// The uniform block of one dispatch over `out.width x out.height` pixels, and the kind of
+    /// output it makes.
     fn uniform_for(
         &self,
         output: ColorOutput,
         src: &SrcWindow,
         out: &OutWindow,
+        dst: DstLayout,
+        mask: MaskPaint,
     ) -> Result<(ChainU, OutKind), GpuError> {
         let (out_w, out_h) = (out.width, out.height);
         let (src_stride, src_plane, offset, origin) =
             (src.stride, src.plane, src.offset, out.origin);
         let mut u = self.base;
-        let out_stride = even(out_w);
         u.dims = [
             out_w as u32,
             out_h as u32,
-            out_stride as u32,
-            (out_stride * out_h) as u32,
+            dst.stride as u32,
+            dst.plane as u32,
         ];
         u.src = [
             src_stride as u32,
@@ -603,10 +1020,13 @@ impl PreparedChain {
             offset.0 as u32,
             offset.1 as u32,
         ];
-        u.origin = [origin.0 as u32, origin.1 as u32, 0, 0];
+        u.origin = [origin.0 as u32, origin.1 as u32, dst.at.0 as u32, dst.at.1 as u32];
+        u.sp[1] = u32::from(mask.has_mask);
+        u.sp[2] = mask.background;
         let (stop, kind, bits, dither) = match output {
             ColorOutput::Stage(s) => (s, OutKind::F32Planar, 0, false),
             ColorOutput::Rgba8 { dither } => (Stop::C13, OutKind::Rgba8, 8, dither),
+            ColorOutput::BeforeRgba8 { dither } => (Stop::Before, OutKind::Rgba8, 8, dither),
             ColorOutput::U16 { bits } => {
                 if !(1..=16).contains(&bits) {
                     return Err(GpuError::InvalidInput(format!(
@@ -620,9 +1040,27 @@ impl PreparedChain {
         Ok((u, kind))
     }
 
+    /// The bindings of one dispatch (the layout of `color.wgsl`).
+    fn entries<'a>(
+        &'a self,
+        ub: &'a PooledBuffer,
+        src: &'a PooledBuffer,
+        out: &'a PooledBuffer,
+    ) -> [(u32, wgpu::BindingResource<'a>); 7] {
+        [
+            (0, ub.binding()),
+            (1, self.tables.binding()),
+            (2, self.curves.binding()),
+            (3, self.look_luts.binding()),
+            (4, self.disp_luts.binding()),
+            (5, src.binding()),
+            (6, out.binding()),
+        ]
+    }
+
     /// Encodes one dispatch of the kernel over an `out_w x out_h` window of `src` (planar image
     /// samples, `src_stride` per row, `src_plane` per plane) starting at `offset`. Returns the
-    /// pending readback and the buffers to keep alive.
+    /// pending readback; the caller keeps `src` alive until it has finished.
     pub(crate) fn dispatch(
         &self,
         ctx: &GpuContext,
@@ -631,49 +1069,35 @@ impl PreparedChain {
         out_window: &OutWindow,
         output: ColorOutput,
     ) -> Result<PendingColor, GpuError> {
-        let (u, kind) = self.uniform_for(output, src_window, out_window)?;
         let (out_w, out_h) = (out_window.width, out_window.height);
         let out_stride = even(out_w);
+        let dst = DstLayout {
+            stride: out_stride,
+            plane: out_stride * out_h,
+            at: (0, 0),
+        };
+        let (u, kind) =
+            self.uniform_for(output, src_window, out_window, dst, MaskPaint::default())?;
         let out_bytes = kind.device_bytes(out_stride, out_h);
-        let ub = uniform_buffer(ctx, "chain uniform", &u)?;
-        let out = ctx.pool().acquire("chain out", out_bytes, STORAGE_OUT)?;
-        let pipeline = ctx.kernels().pipeline(ctx, KernelId::Color)?;
-        let group = bind(
-            ctx,
-            &pipeline,
+        let mut passes = PassList::new(ctx, "color chain");
+        let ub = passes.uniform("chain uniform", &u)?;
+        let out = passes.keep(ctx.pool().acquire("chain out", out_bytes, STORAGE_OUT)?);
+        let (gx, gy) = pair_groups(out_w, out_h);
+        passes.dispatch(
+            KernelId::Color,
             "color chain",
-            &[
-                (0, ub.binding()),
-                (1, self.aces.binding()),
-                (2, self.tables.binding()),
-                (3, self.luts.binding()),
-                (4, src.binding()),
-                (5, out.binding()),
-            ],
-        );
-        let mut encoder = ctx
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("color chain"),
-            });
-        {
-            let (gx, gy) = groups(out_stride, out_h);
-            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("color chain"),
-                timestamp_writes: None,
-            });
-            pass.set_pipeline(&pipeline);
-            pass.set_bind_group(0, &group, &[]);
-            pass.dispatch_workgroups(gx, gy, 1);
-        }
-        let readback = submit_with_readback(ctx, encoder, &out, out_bytes)?;
+            &self.entries(&ub, src, &out),
+            (gx, gy, 1),
+        )?;
+        let read = passes.read(&out, 0, out_bytes)?;
+        let pending = passes.submit()?;
         Ok(PendingColor {
-            readback,
+            pending,
+            read,
             kind,
             width: out_w,
             height: out_h,
             stride: out_stride,
-            _held: vec![ub, out],
         })
     }
 
@@ -777,6 +1201,197 @@ impl PreparedChain {
         }
         Ok(())
     }
+
+    // ---- device in, device out ----------------------------------------------------------------
+
+    /// Records the colour pass over the `window` of `src` (camera RGB, three planes, or four with the
+    /// sampler's letterbox mask) up to `stop`, writing three f32 planes into `dst` (a fourth one,
+    /// holding the mask, when `src` has four), the window's pixel (0, 0) at `dst_at`. Nothing is read
+    /// back and nothing is uploaded but the uniform block.
+    ///
+    /// This is the C1 to C12 stage of the view and of the export: the result stays on the device.
+    ///
+    /// # Errors
+    ///
+    /// [`GpuError::InvalidInput`] when the device does not store f32 images (a legacy f16 mode), when
+    /// the window is empty or outside `src`, when `src` is not a three- or four-plane image or `dst`
+    /// does not have the same number of planes, or when the window does not fit `dst` at `dst_at`.
+    pub fn encode_stage(
+        &self,
+        passes: &mut PassList<'_>,
+        src: &GpuImage,
+        window: Rect,
+        stop: Stop,
+        dst: &GpuImage,
+        dst_at: (usize, usize),
+    ) -> Result<(), GpuError> {
+        if dst.planes != src.planes {
+            return Err(GpuError::InvalidInput(format!(
+                "the destination has {} planes, the source {} (the mask plane follows the pixels)",
+                dst.planes, src.planes
+            )));
+        }
+        if dst_at.0 + window.w > dst.width || dst_at.1 + window.h > dst.height {
+            return Err(GpuError::InvalidInput(format!(
+                "a {} x {} window at {dst_at:?} does not fit the {} x {} destination",
+                window.w, window.h, dst.width, dst.height
+            )));
+        }
+        let layout = DstLayout {
+            stride: dst.stride,
+            plane: dst.plane_len(),
+            at: dst_at,
+        };
+        self.encode_device(
+            passes,
+            src,
+            window,
+            ColorOutput::Stage(stop),
+            layout,
+            &dst.buf,
+            MaskPaint {
+                has_mask: src.planes == 4,
+                background: 0,
+            },
+            (0, 0),
+        )
+    }
+
+    /// Like [`encode_stage`](Self::encode_stage), writing the finished picture (`Stop::C13`, or the
+    /// Before view with `before`) as RGBA8 words into `dst`, `stride` words per row, the window's
+    /// pixel (0, 0) at `dst_at`. `origin` is the absolute position of the window's (0, 0) in the
+    /// picture, which selects the dither texel; pixels the source's mask marks as outside the photo
+    /// are `background`.
+    ///
+    /// # Errors
+    ///
+    /// As [`encode_stage`](Self::encode_stage); [`GpuError::InvalidInput`] when `dst` is too small.
+    #[allow(clippy::too_many_arguments)] // the natural argument list; a struct would only move them
+    pub fn encode_rgba8(
+        &self,
+        passes: &mut PassList<'_>,
+        src: &GpuImage,
+        window: Rect,
+        before: bool,
+        dither: bool,
+        origin: (usize, usize),
+        background: [u8; 3],
+        dst: &PooledBuffer,
+        stride: usize,
+        dst_at: (usize, usize),
+    ) -> Result<(), GpuError> {
+        let words = (dst_at.1 + window.h) as u64 * stride as u64;
+        if dst_at.0 + window.w > stride || dst.size() < words * 4 {
+            return Err(GpuError::InvalidInput(format!(
+                "a {} x {} window at {dst_at:?} does not fit {stride} words per row in a {} byte buffer",
+                window.w,
+                window.h,
+                dst.size()
+            )));
+        }
+        let layout = DstLayout {
+            stride,
+            plane: 0,
+            at: dst_at,
+        };
+        let output = if before {
+            ColorOutput::BeforeRgba8 { dither }
+        } else {
+            ColorOutput::Rgba8 { dither }
+        };
+        self.encode_device(
+            passes,
+            src,
+            window,
+            output,
+            layout,
+            dst,
+            MaskPaint {
+                has_mask: src.planes == 4,
+                background: u32::from(background[0])
+                    | (u32::from(background[1]) << 8)
+                    | (u32::from(background[2]) << 16)
+                    | 0xff00_0000,
+            },
+            origin,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)] // shared by the two public entry points
+    fn encode_device(
+        &self,
+        passes: &mut PassList<'_>,
+        src: &GpuImage,
+        window: Rect,
+        output: ColorOutput,
+        dst: DstLayout,
+        out: &PooledBuffer,
+        mask: MaskPaint,
+        origin: (usize, usize),
+    ) -> Result<(), GpuError> {
+        let ctx = passes.context();
+        if ctx.storage_mode() != StorageMode::F32 {
+            return Err(GpuError::InvalidInput(format!(
+                "device images are f32; this device stores {} images (a legacy test mode)",
+                ctx.storage_mode().name()
+            )));
+        }
+        if !matches!(src.planes, 3 | 4) {
+            return Err(GpuError::InvalidInput(format!(
+                "the colour pass reads a three- or four-plane image, not {} planes",
+                src.planes
+            )));
+        }
+        if window.is_empty() || window.x1() > src.width || window.y1() > src.height {
+            return Err(GpuError::InvalidInput(format!(
+                "the window {window:?} is empty or outside the {} x {} source",
+                src.width, src.height
+            )));
+        }
+        let limit = ctx.info().limits.max_compute_workgroups_per_dimension as usize;
+        let (gx, gy) = pair_groups(window.w, window.h);
+        if gx as usize > limit || gy as usize > limit {
+            return Err(GpuError::InvalidInput(format!(
+                "a {} x {} window needs more workgroups than the device allows ({limit})",
+                window.w, window.h
+            )));
+        }
+        let (u, _) = self.uniform_for(
+            output,
+            &SrcWindow {
+                stride: src.stride,
+                plane: src.plane_len(),
+                offset: (window.x, window.y),
+            },
+            &OutWindow {
+                width: window.w,
+                height: window.h,
+                origin,
+            },
+            dst,
+            mask,
+        )?;
+        let ub = passes.uniform("chain uniform", &u)?;
+        passes.dispatch(
+            KernelId::Color,
+            "color chain",
+            &self.entries(&ub, &src.buf, out),
+            (gx, gy, 1),
+        )
+    }
+}
+
+/// The workgroups of a dispatch over a `w x h` window: one thread per horizontal pair of pixels.
+fn pair_groups(w: usize, h: usize) -> (u32, u32) {
+    let gx = w.div_ceil(2).div_ceil(16) as u32;
+    let gy = h.div_ceil(16) as u32;
+    (gx.max(1), gy.max(1))
+}
+
+/// The size of the largest storage binding a colour pass over the `window` makes (K4 of
+/// `docs/gpu-plan.md`): a four-plane source or destination of f32 samples, 16 bytes a pixel.
+pub fn max_binding_bytes(window: Rect) -> u64 {
+    16 * even(window.w) as u64 * window.h as u64
 }
 
 /// Where the planes of an image sit in a source buffer: row stride, plane length (both in
@@ -799,21 +1414,27 @@ pub(crate) struct OutWindow {
 
 /// A dispatch whose readback has not been collected yet.
 pub(crate) struct PendingColor {
-    readback: super::util::Readback,
+    pending: Pending,
+    read: ReadId,
     kind: OutKind,
     width: usize,
     height: usize,
     stride: usize,
-    _held: Vec<PooledBuffer>,
 }
 
 impl PendingColor {
-    pub(crate) fn finish(self, ctx: &GpuContext) -> Result<ColorImage, GpuError> {
-        let bytes = self.readback.finish(ctx)?;
+    pub(crate) fn finish(self, _ctx: &GpuContext) -> Result<ColorImage, GpuError> {
+        let done = self.pending.finish()?;
         Ok(ColorImage {
             width: self.width,
             height: self.height,
-            data: unpack(self.kind, &bytes, self.width, self.height, self.stride),
+            data: unpack(
+                self.kind,
+                done.read(self.read),
+                self.width,
+                self.height,
+                self.stride,
+            ),
         })
     }
 }
@@ -837,6 +1458,126 @@ fn upload_planar(ctx: &GpuContext, image: &RgbImage, rect: Rect) -> Result<Poole
     let buf = ctx
         .pool()
         .acquire("chain input", sample_bytes(mode, 3 * plane), STORAGE_IN)?;
-    ctx.queue.write_buffer(&buf, 0, &bytes);
+    upload_bytes(ctx, &buf, 0, &bytes)?;
     Ok(buf)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::mem::{offset_of, size_of};
+
+    use naga::valid::{Capabilities, ValidationFlags, Validator};
+
+    use super::*;
+    use crate::kernels::shader_source;
+
+    #[test]
+    fn the_per_frame_block_is_under_1_kb() {
+        // "A per-frame `ChainU` of under 1 KB" (docs/gpu-plan.md G-04): the ACES 2 scalars live in
+        // the one uniform block (K3 allows one), so the block holds the whole chain's parameters.
+        assert!(size_of::<ChainU>() < 1024, "{} bytes", size_of::<ChainU>());
+        assert_eq!(size_of::<ChainU>() % 16, 0);
+    }
+
+    #[test]
+    fn the_uniform_block_has_the_layout_of_the_wgsl_struct() {
+        for mode in [StorageMode::F32, StorageMode::F16Native, StorageMode::F16Packed] {
+            let source = shader_source(mode, KernelId::Color);
+            let module = naga::front::wgsl::parse_str(&source)
+                .unwrap_or_else(|e| panic!("{}", e.emit_to_string(&source)));
+            let caps = if mode == StorageMode::F16Native {
+                Capabilities::SHADER_FLOAT16
+            } else {
+                Capabilities::empty()
+            };
+            Validator::new(ValidationFlags::all(), caps)
+                .validate(&module)
+                .unwrap_or_else(|e| panic!("{mode:?}: {e:?}"));
+            let var = module
+                .global_variables
+                .iter()
+                .map(|(_, v)| v)
+                .find(|v| v.name.as_deref() == Some("CU"))
+                .expect("the uniform CU");
+            let naga::TypeInner::Struct { members, span } = &module.types[var.ty].inner else {
+                panic!("CU is not a struct");
+            };
+            let fields: [(&str, usize); 31] = [
+                ("dims", offset_of!(ChainU, dims)),
+                ("src", offset_of!(ChainU, src)),
+                ("origin", offset_of!(ChainU, origin)),
+                ("mode", offset_of!(ChainU, mode)),
+                ("flags", offset_of!(ChainU, flags)),
+                ("lk", offset_of!(ChainU, lk)),
+                ("dp", offset_of!(ChainU, dp)),
+                ("sp", offset_of!(ChainU, sp)),
+                ("m0", offset_of!(ChainU, m0)),
+                ("m1", offset_of!(ChainU, m1)),
+                ("m2", offset_of!(ChainU, m2)),
+                ("tone", offset_of!(ChainU, tone)),
+                ("grade0", offset_of!(ChainU, grade0)),
+                ("zone_amt", offset_of!(ChainU, zone_amt)),
+                ("zone_ctr", offset_of!(ChainU, zone_ctr)),
+                ("bal0", offset_of!(ChainU, bal0)),
+                ("bal1", offset_of!(ChainU, bal1)),
+                ("bal_ctr", offset_of!(ChainU, bal_ctr)),
+                ("fl", offset_of!(ChainU, fl)),
+                ("cdl_slope", offset_of!(ChainU, cdl_slope)),
+                ("cdl_offset", offset_of!(ChainU, cdl_offset)),
+                ("cdl_power", offset_of!(ChainU, cdl_power)),
+                ("look_lut", offset_of!(ChainU, look_lut)),
+                ("disp_lut", offset_of!(ChainU, disp_lut)),
+                ("disp_m0", offset_of!(ChainU, disp_m0)),
+                ("disp_m1", offset_of!(ChainU, disp_m1)),
+                ("disp_m2", offset_of!(ChainU, disp_m2)),
+                ("look_m0", offset_of!(ChainU, look_m0)),
+                ("look_m1", offset_of!(ChainU, look_m1)),
+                ("look_m2", offset_of!(ChainU, look_m2)),
+                ("aces", offset_of!(ChainU, aces)),
+            ];
+            assert_eq!(members.len(), fields.len());
+            for (member, (name, offset)) in members.iter().zip(fields) {
+                assert_eq!(member.name.as_deref(), Some(name));
+                assert_eq!(member.offset as usize, offset, "offset of {name}");
+            }
+            assert_eq!(*span as usize, size_of::<ChainU>(), "size of the block");
+        }
+    }
+
+    #[test]
+    fn the_kernel_binds_the_buffers_the_host_binds() {
+        // Bindings 0 to 6, one uniform and six storage buffers: the table of `entries`.
+        let source = shader_source(StorageMode::F32, KernelId::Color);
+        let module = naga::front::wgsl::parse_str(&source).expect("color.wgsl");
+        let info = Validator::new(ValidationFlags::all(), Capabilities::empty())
+            .validate(&module)
+            .expect("valid");
+        let used = info.get_entry_point(0);
+        let mut bindings = std::collections::BTreeSet::new();
+        for (handle, var) in module.global_variables.iter() {
+            if let Some(b) = &var.binding
+                && !used[handle].is_empty()
+            {
+                assert_eq!(b.group, 0);
+                bindings.insert(b.binding);
+            }
+        }
+        assert_eq!(bindings, (0..7).collect());
+    }
+
+    #[test]
+    fn the_hash_sees_every_entry() {
+        use ym_color::lut::Lut3d;
+        let make = |bump: f64| {
+            Lut::from_cube(
+                Lut3d::bake(5, [0.0; 3], [1.0; 3], |c| {
+                    [c[0] + bump * c[1], c[1], c[2] * 0.5 + 0.01]
+                })
+                .expect("cube"),
+            )
+        };
+        let a = make(0.0);
+        assert_eq!(hash_lut(&a), hash_lut(&make(0.0)));
+        assert_ne!(hash_lut(&a), hash_lut(&make(1e-9)));
+    }
 }

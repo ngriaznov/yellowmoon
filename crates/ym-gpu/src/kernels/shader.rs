@@ -81,9 +81,9 @@ pub enum KernelId {
     AdaptiveRatioMatch,
     /// RA-09 adaptive ratio demosaic: the exit without shadow colour matching.
     AdaptiveRatioExit,
-    /// PLACEHOLDER (G-04): the geometry sampler (orientation, straighten, crop, resampling kernels).
+    /// G-04: the geometry sampler (orientation, straighten, crop, copy / Catmull-Rom / box).
     Sampler,
-    /// PLACEHOLDER (G-04): C13 with dither to RGBA8 or 16-bit bands.
+    /// G-04: C13 with dither and the letterbox to RGBA8 or 8 / 16-bit interleaved bands.
     Encode,
     /// PLACEHOLDER (G-07): R1 normalise, R3 vignetting, R4 gains, the quantisation step and the clip mask.
     Prep,
@@ -225,7 +225,6 @@ impl KernelId {
     /// `.wgsl` in `KernelId::body` and deletes the id from this match (two small edits, reported).
     pub const fn placeholder_owner(self) -> Option<&'static str> {
         match self {
-            KernelId::Sampler | KernelId::Encode => Some("G-04"),
             KernelId::Bilateral
             | KernelId::Guided
             | KernelId::Detail
@@ -272,11 +271,7 @@ impl KernelId {
             KernelId::SpikeNormalize => include_str!("../shaders/spike_normalize.wgsl").to_string(),
             KernelId::SpikeDemosaic => include_str!("../shaders/spike_demosaic.wgsl").to_string(),
             KernelId::SpikeMatrix => include_str!("../shaders/spike_matrix.wgsl").to_string(),
-            KernelId::Color => format!(
-                "{}\n{}",
-                include_str!("../shaders/aces2.wgsl"),
-                include_str!("../shaders/color.wgsl")
-            ),
+            KernelId::Color => super::color::body(),
             KernelId::LogGuided => include_str!("../shaders/log_guided.wgsl").to_string(),
             KernelId::OutputSharpenLuma
             | KernelId::OutputSharpenHighpassRows
@@ -306,9 +301,9 @@ impl KernelId {
             | KernelId::AdaptiveRatioLowErr
             | KernelId::AdaptiveRatioMatch
             | KernelId::AdaptiveRatioExit => super::adaptive_ratio::body(self),
-            KernelId::Sampler
-            | KernelId::Encode
-            | KernelId::Prep
+            KernelId::Sampler => super::sampler::body(),
+            KernelId::Encode => super::encode::body(),
+            KernelId::Prep
             | KernelId::Highlights
             | KernelId::MosaicCa
             | KernelId::Lens
@@ -382,14 +377,16 @@ fn placeholder_body(id: KernelId) -> String {
     )
 }
 
-/// Offsets (in f32 elements) of the sections of the `tables` storage buffer of the colour kernel.
+/// Offsets (in f32 elements) of the sections of the `tables` storage buffer of the colour kernel
+/// (the dither thresholds, then the ACES 2 tables of one output).
 pub(crate) mod table {
     /// Dither thresholds, 64 x 64.
     pub const DITHER: usize = 0;
-    /// The four 1024-entry curve tables (luma, R, G, B).
-    pub const CURVES: usize = 4096;
-    /// First ACES 2 table: reach M.
-    pub const ACES: usize = CURVES + 4 * 1024;
+    /// Entries of the dither section.
+    pub const DITHER_ENTRIES: usize = 64 * 64;
+    /// First ACES 2 table: reach M. (The four 1024-entry curve tables are a buffer of their own, so
+    /// that a curve edit refills 16 KB and nothing else.)
+    pub const ACES: usize = DITHER_ENTRIES;
     /// Entries per ACES 2 hue table (`ym_color`'s `TOTAL_TABLE_SIZE`: wrap entries included).
     pub const ACES_ENTRIES: usize = ym_color::aces2::TOTAL_TABLE_SIZE;
     /// Total f32 elements.
@@ -456,7 +453,6 @@ fn constants() -> String {
     s.push_str(&rows("AP0_TO_AP1", &aces::ap0_to_ap1()));
     s.push_str(&rows("AP1_TO_AP0", &aces::ap1_to_ap0()));
     let _ = writeln!(s, "const T_DITHER: u32 = {}u;", table::DITHER);
-    let _ = writeln!(s, "const T_CURVES: u32 = {}u;", table::CURVES);
     let _ = writeln!(s, "const T_ACES: u32 = {}u;", table::ACES);
     let _ = writeln!(s, "const T_ACES_N: u32 = {}u;", table::ACES_ENTRIES);
     // The geometry of the ACES 2 hue tables, from the CPU reference that builds them.

@@ -115,18 +115,18 @@
 use bytemuck::{Pod, Zeroable};
 
 use super::shader::KernelId;
-use super::util::{
-    GROUP, Readback, STAGING, STORAGE_IN, STORAGE_OUT, STORAGE_SCRATCH, bind, image_samples,
-    storage_buffer, submit_with_readback, uniform_buffer,
-};
+use super::util::{GROUP, STORAGE_SCRATCH, storage_buffer};
 use crate::cpu::RgbImage;
 use crate::cpu::noise::WORKING_SCALE;
 use crate::cpu::sharpen::diffraction::DiffractionPlan;
 use crate::cpu::tiling::{Halo, Rect};
-use crate::device::{GpuContext, GpuError, StorageMode};
+use crate::device::{GpuContext, GpuError};
+use crate::image::GpuImage;
 use crate::pool::PooledBuffer;
 use crate::queue::CancelToken;
+use crate::stream::PassList;
 use crate::tiles::{TILE_SIZES, TilePlan, tile_size_for_budget};
+use std::sync::Arc;
 
 /// Planes of the `base` buffer: `Y, w, Pc, D, B, Hp, F1, F2, F3, eps`.
 const BASE_PLANES: usize = 10;
@@ -227,6 +227,12 @@ struct ParamsU {
     sigma1: f32,
     gate_factor: f32,
     strength: f32,
+    /// Row stride and plane length of the input image (a device image has an even stride).
+    in_stride: u32,
+    in_plane: u32,
+    /// Row stride and plane length of the output image.
+    out_stride: u32,
+    out_plane: u32,
 }
 
 /// The per-frame constants of a plan as the shader reads them.
@@ -424,9 +430,7 @@ impl PreparedDiffraction {
     pub fn run(&self, ctx: &GpuContext, image: &RgbImage) -> Result<RgbImage, GpuError> {
         check_image(image)?;
         let whole = Rect::whole(image.width, image.height);
-        let mut out = self.dispatch(ctx, image, whole, whole)?.finish(ctx)?;
-        out.place = image.place;
-        Ok(out)
+        Ok(self.run_host(ctx, image, whole, whole, false)?.0)
     }
 
     /// Like [`run`](Self::run), and also returns the intermediate planes of the whole frame
@@ -442,9 +446,8 @@ impl PreparedDiffraction {
     ) -> Result<(RgbImage, DiffractionTrace), GpuError> {
         check_image(image)?;
         let whole = Rect::whole(image.width, image.height);
-        let pending = self.dispatch_with(ctx, image, whole, whole, true)?;
-        let (mut out, trace) = pending.finish_traced(ctx)?;
-        out.place = image.place;
+        let (out, trace) = self.run_host(ctx, image, whole, whole, true)?;
+        let trace = trace.ok_or_else(|| GpuError::Readback("no trace planes".into()))?;
         Ok((out, trace))
     }
 
@@ -510,37 +513,95 @@ impl PreparedDiffraction {
         out.place = image.place;
         for &tile in plan.tiles() {
             cancel.check()?;
-            let core = self
-                .dispatch(ctx, image, tile.compute, tile.core)?
-                .finish(ctx)?;
+            let core = self.run_host(ctx, image, tile.compute, tile.core, false)?.0;
             let at = Rect::new(0, 0, core.width, core.height);
             out.paste(&core, at, tile.core.x, tile.core.y);
         }
         Ok(out)
     }
 
-    /// [`dispatch_with`](Self::dispatch_with) without the trace.
-    fn dispatch(
-        &self,
-        ctx: &GpuContext,
-        image: &RgbImage,
-        compute: Rect,
-        core: Rect,
-    ) -> Result<Pending, GpuError> {
-        self.dispatch_with(ctx, image, compute, core, false)
-    }
-
-    /// Encodes every pass for the `compute` rectangle of `image` and the `core` inside it, submits
-    /// the work and returns the pending readback (with the traced planes when `trace`).
-    fn dispatch_with(
+    /// Uploads the `compute` rectangle of `image`, runs [`encode`](Self::encode) for the `core`
+    /// inside it, submits and reads the core back (and the traced planes when `trace`).
+    fn run_host(
         &self,
         ctx: &GpuContext,
         image: &RgbImage,
         compute: Rect,
         core: Rect,
         trace: bool,
-    ) -> Result<Pending, GpuError> {
-        let (w, h) = (compute.w, compute.h);
+    ) -> Result<(RgbImage, Option<DiffractionTrace>), GpuError> {
+        let sub = if compute == Rect::whole(image.width, image.height) {
+            None
+        } else {
+            Some(image.extract(compute))
+        };
+        let src = sub.as_ref().unwrap_or(image);
+        let input = GpuImage::upload_rgb(ctx, "diffraction input", src)?;
+        let mut passes = PassList::new(ctx, "diffraction deconvolution");
+        let core_in = Rect::new(core.x - compute.x, core.y - compute.y, core.w, core.h);
+        let (out, traced) = self.record(&mut passes, &input, core_in, trace)?;
+        let read = out.encode_read(&mut passes)?;
+        let trace_reads = match &traced {
+            Some(t) => Some((
+                passes.read(&t.base, 0, BASE_PLANES as u64 * t.plane_bytes)?,
+                passes.read(&t.coef, 0, COEF_PLANES as u64 * t.plane_bytes)?,
+            )),
+            None => None,
+        };
+        let done = passes.submit()?.finish()?;
+        let data = out.take(&done, read)?;
+        let mut image_out = RgbImage {
+            width: out.width,
+            height: out.height,
+            place: out.place,
+            data,
+        };
+        image_out.place = image.place.offset(core.x, core.y);
+        let trace = match (traced, trace_reads) {
+            (Some(t), Some((base, coef))) => Some(unpack_trace(
+                (t.width, t.height),
+                &bytes_to_f32(done.read(base)),
+                &bytes_to_f32(done.read(coef)),
+            )?),
+            _ => None,
+        };
+        Ok((image_out, trace))
+    }
+
+    /// Records every pass for the `core` rectangle of `input` (a device image of the compute
+    /// rectangle, three planes) and returns the core's three planes as a new [`GpuImage`]: device in,
+    /// device out. Nothing is submitted.
+    ///
+    /// # Errors
+    ///
+    /// [`GpuError::InvalidInput`] for an input that is not three planes, a core outside it, or a
+    /// compute rectangle that needs more workgroups on one side than the device allows;
+    /// [`GpuError::BufferTooLarge`] and [`GpuError::OutOfBudget`] when the buffers do not fit the
+    /// device; shader errors.
+    pub fn encode(
+        &self,
+        passes: &mut PassList<'_>,
+        input: &GpuImage,
+        core: Rect,
+    ) -> Result<GpuImage, GpuError> {
+        Ok(self.record(passes, input, core, false)?.0)
+    }
+
+    fn record(
+        &self,
+        passes: &mut PassList<'_>,
+        input: &GpuImage,
+        core: Rect,
+        trace: bool,
+    ) -> Result<(GpuImage, Option<TraceBuffers>), GpuError> {
+        let ctx = passes.context();
+        let (w, h) = (input.width, input.height);
+        if input.planes != 3 || core.is_empty() || core.x1() > w || core.y1() > h {
+            return Err(GpuError::InvalidInput(format!(
+                "diffraction deconvolution: the input must be three planes and the core {core:?} must lie inside the {w} x {h} rectangle (got {} planes)",
+                input.planes
+            )));
+        }
         // One workgroup covers GROUP x GROUP pixels; a side of more than `limit` workgroups is a
         // validation error that wgpu raises as a panic, so refuse it here (a 1 x N frame with
         // N > 65535 * 16 on the default limits).
@@ -553,51 +614,41 @@ impl PreparedDiffraction {
             )));
         }
         let n = w * h;
+        if (WORK_PLANES.max(BASE_PLANES) * n) as u64 > u64::from(u32::MAX) {
+            return Err(GpuError::BufferTooLarge {
+                requested: (WORK_PLANES.max(BASE_PLANES) * n) as u64 * 4,
+                limit: u64::from(u32::MAX) * 4,
+            });
+        }
         let plane_bytes = (n * 4) as u64;
         let pool = ctx.pool();
 
-        // Input: the compute rectangle's three planes, dense.
-        let mut samples: Vec<f32> = Vec::with_capacity(3 * n);
-        for c in 0..3 {
-            let src = image.plane(c);
-            for y in 0..h {
-                let s = (compute.y + y) * image.width + compute.x;
-                samples.extend_from_slice(&src[s..s + w]);
-            }
-        }
-        let img = pool.acquire("diffraction input", 3 * plane_bytes, STORAGE_IN)?;
-        ctx.queue
-            .write_buffer(&img, 0, bytemuck::cast_slice(&samples));
-        drop(samples);
-
         // Every pass writes every pixel of the planes it produces before a later pass reads them, so
-        // the pooled buffers need no clearing.
-        let out_bytes = (3 * core.w * core.h * 4) as u64;
-        // A traced run copies two of the buffers out.
-        let traced = if trace {
+        // the pooled buffers need no clearing. A traced run copies two of the buffers out.
+        let traced_usage = if trace {
             STORAGE_SCRATCH.union(wgpu::BufferUsages::COPY_SRC)
         } else {
             STORAGE_SCRATCH
         };
-        let bufs = Bufs {
-            img,
-            base: pool.acquire(
-                "diffraction planes",
-                BASE_PLANES as u64 * plane_bytes,
-                traced,
-            )?,
-            work: pool.acquire(
-                "diffraction work",
-                WORK_PLANES as u64 * plane_bytes,
-                STORAGE_SCRATCH,
-            )?,
-            coef: pool.acquire(
-                "diffraction coefficients",
-                COEF_PLANES as u64 * plane_bytes,
-                traced,
-            )?,
-            out: pool.acquire("diffraction out", out_bytes, STORAGE_OUT)?,
-        };
+        let base_buf = passes.keep(pool.acquire(
+            "diffraction planes",
+            BASE_PLANES as u64 * plane_bytes,
+            traced_usage,
+        )?);
+        let work = passes.scratch("diffraction work", WORK_PLANES as u64 * plane_bytes)?;
+        let coef = passes.keep(pool.acquire(
+            "diffraction coefficients",
+            COEF_PLANES as u64 * plane_bytes,
+            traced_usage,
+        )?);
+        let out = GpuImage::alloc(
+            ctx,
+            "diffraction out",
+            core.w,
+            core.h,
+            3,
+            input.place.offset(core.x, core.y),
+        )?;
 
         let c = &self.constants;
         let base = ParamsU {
@@ -620,18 +671,15 @@ impl PreparedDiffraction {
             sigma1: c.sigma1,
             gate_factor: c.gate_factor,
             strength: c.strength,
+            in_stride: input.stride as u32,
+            in_plane: input.plane_len() as u32,
+            out_stride: out.stride as u32,
+            out_plane: out.plane_len() as u32,
             ..ParamsU::default()
         };
 
-        let mut encoder = ctx
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("diffraction deconvolution"),
-            });
-        let mut held: Vec<PooledBuffer> = Vec::new();
         let mut run = |id: KernelId, p: &ParamsU, size: (usize, usize)| -> Result<(), GpuError> {
-            let ub = uniform_buffer(ctx, "diffraction params", p)?;
-            let pipeline = ctx.kernels().pipeline(ctx, id)?;
+            let ub = passes.uniform("diffraction params", p)?;
             let slots = pass_of(id).map_or(&[][..], |(_, s)| s);
             let entries: Vec<(u32, wgpu::BindingResource<'_>)> = slots
                 .iter()
@@ -639,30 +687,25 @@ impl PreparedDiffraction {
                     let resource = match s {
                         Slot::Params => ub.binding(),
                         Slot::Taps => self.taps.binding(),
-                        Slot::Img => bufs.img.binding(),
-                        Slot::Base => bufs.base.binding(),
-                        Slot::Work => bufs.work.binding(),
-                        Slot::Coef => bufs.coef.binding(),
-                        Slot::Out => bufs.out.binding(),
+                        Slot::Img => input.buf.binding(),
+                        Slot::Base => base_buf.binding(),
+                        Slot::Work => work.binding(),
+                        Slot::Coef => coef.binding(),
+                        Slot::Out => out.buf.binding(),
                     };
                     (s as u32, resource)
                 })
                 .collect();
-            let group = bind(ctx, &pipeline, id.name(), &entries);
-            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some(id.name()),
-                timestamp_writes: None,
-            });
-            pass.set_pipeline(&pipeline);
-            pass.set_bind_group(0, &group, &[]);
-            pass.dispatch_workgroups(
-                size.0.div_ceil(GROUP as usize) as u32,
-                size.1.div_ceil(GROUP as usize) as u32,
-                1,
-            );
-            drop(pass);
-            held.push(ub);
-            Ok(())
+            passes.dispatch(
+                id,
+                id.name(),
+                &entries,
+                (
+                    size.0.div_ceil(GROUP as usize) as u32,
+                    size.1.div_ceil(GROUP as usize) as u32,
+                    1,
+                ),
+            )
         };
 
         let all = (w, h);
@@ -679,124 +722,88 @@ impl PreparedDiffraction {
         run(KernelId::DiffractionMomentRows, &base, all)?;
         run(KernelId::DiffractionSolve, &base, all)?;
         let output = ParamsU {
-            core_x: (core.x - compute.x) as u32,
-            core_y: (core.y - compute.y) as u32,
+            core_x: core.x as u32,
+            core_y: core.y as u32,
             core_w: core.w as u32,
             core_h: core.h as u32,
             ..base
         };
         run(KernelId::DiffractionOutput, &output, (core.w, core.h))?;
-
-        let (readback, trace_readbacks) = if trace {
-            // The output and the two traced buffers share one submission.
-            let mut copies: Vec<(PooledBuffer, u64)> = Vec::new();
-            for (src, bytes) in [
-                (&bufs.out, out_bytes),
-                (&bufs.base, BASE_PLANES as u64 * plane_bytes),
-                (&bufs.coef, COEF_PLANES as u64 * plane_bytes),
-            ] {
-                let staging = pool.acquire("diffraction readback", bytes, STAGING)?;
-                encoder.copy_buffer_to_buffer(src, 0, &staging, 0, bytes);
-                copies.push((staging, bytes));
-            }
-            let index = ctx.queue.submit([encoder.finish()]);
-            let mut it = copies
-                .into_iter()
-                .map(|(staging, bytes)| Readback::new(staging, bytes, index.clone()));
-            let main = it
-                .next()
-                .ok_or_else(|| GpuError::Readback("no output readback".into()))?;
-            (main, Some(it.collect::<Vec<_>>()))
-        } else {
-            (
-                submit_with_readback(ctx, encoder, &bufs.out, out_bytes)?,
-                None,
-            )
-        };
-        let Bufs {
-            img,
-            base,
-            work,
+        let traced = trace.then(|| TraceBuffers {
+            base: base_buf,
             coef,
-            out,
-        } = bufs;
-        held.extend([img, base, work, coef, out]);
-        Ok(Pending {
-            readback,
-            trace: trace_readbacks,
-            width: core.w,
-            height: core.h,
-            trace_size: (w, h),
-            _held: held,
-        })
-    }
-}
-
-/// The buffers of one tile's run. The taps are shared by every tile.
-struct Bufs {
-    img: PooledBuffer,
-    base: PooledBuffer,
-    work: PooledBuffer,
-    coef: PooledBuffer,
-    out: PooledBuffer,
-}
-
-/// A dispatch whose readback has not been collected yet.
-struct Pending {
-    readback: Readback,
-    /// The `base` and `coef` buffers of a traced run.
-    trace: Option<Vec<Readback>>,
-    width: usize,
-    height: usize,
-    trace_size: (usize, usize),
-    _held: Vec<PooledBuffer>,
-}
-
-impl Pending {
-    fn finish(self, ctx: &GpuContext) -> Result<RgbImage, GpuError> {
-        let bytes = self.readback.finish(ctx)?;
-        let samples = image_samples(StorageMode::F32, &bytes);
-        Ok(RgbImage::from_planar(self.width, self.height, samples)?)
-    }
-
-    fn finish_traced(self, ctx: &GpuContext) -> Result<(RgbImage, DiffractionTrace), GpuError> {
-        let bytes = self.readback.finish(ctx)?;
-        let samples = image_samples(StorageMode::F32, &bytes);
-        let image = RgbImage::from_planar(self.width, self.height, samples)?;
-        let (w, h) = self.trace_size;
-        let n = w * h;
-        let mut planes = Vec::new();
-        for r in self.trace.unwrap_or_default() {
-            planes.extend(image_samples(StorageMode::F32, &r.finish(ctx)?));
-        }
-        if planes.len() != (BASE_PLANES + COEF_PLANES) * n {
-            return Err(GpuError::Readback("missing trace planes".into()));
-        }
-        let mut it = planes.chunks_exact(n).map(<[f32]>::to_vec);
-        let mut next = || {
-            it.next()
-                .ok_or_else(|| GpuError::Readback("missing trace plane".into()))
-        };
-        let trace = DiffractionTrace {
+            plane_bytes,
             width: w,
             height: h,
-            luma: next()?,
-            weight: next()?,
-            penalty: next()?,
-            dark: next()?,
-            bright: next()?,
-            highpass: next()?,
-            f1: next()?,
-            f2: next()?,
-            f3: next()?,
-            residual: next()?,
-            coef_dark: next()?,
-            coef_bright: next()?,
-            coef_high: next()?,
-            omega: next()?,
-        };
-        Ok((image, trace))
+        });
+        Ok((out, traced))
     }
+}
+
+/// The two buffers a traced run copies out.
+struct TraceBuffers {
+    base: Arc<PooledBuffer>,
+    coef: Arc<PooledBuffer>,
+    plane_bytes: u64,
+    width: usize,
+    height: usize,
+}
+
+fn bytes_to_f32(bytes: &[u8]) -> Vec<f32> {
+    bytes
+        .chunks_exact(4)
+        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .collect()
+}
+
+/// Splits the copied-out `base` and `coef` planes of a traced run into a [`DiffractionTrace`].
+fn unpack_trace(
+    (w, h): (usize, usize),
+    base: &[f32],
+    coef: &[f32],
+) -> Result<DiffractionTrace, GpuError> {
+    let n = w * h;
+    if base.len() != BASE_PLANES * n || coef.len() != COEF_PLANES * n {
+        return Err(GpuError::Readback("missing trace planes".into()));
+    }
+    let mut it = base.chunks_exact(n).chain(coef.chunks_exact(n)).map(<[f32]>::to_vec);
+    let mut next = || {
+        it.next()
+            .ok_or_else(|| GpuError::Readback("missing trace plane".into()))
+    };
+    Ok(DiffractionTrace {
+        width: w,
+        height: h,
+        luma: next()?,
+        weight: next()?,
+        penalty: next()?,
+        dark: next()?,
+        bright: next()?,
+        highpass: next()?,
+        f1: next()?,
+        f2: next()?,
+        f3: next()?,
+        residual: next()?,
+        coef_dark: next()?,
+        coef_bright: next()?,
+        coef_high: next()?,
+        omega: next()?,
+    })
+}
+
+/// Records the diffraction deconvolution of a device image (device in, device out); see
+/// [`PreparedDiffraction::encode`].
+///
+/// # Errors
+///
+/// As [`PreparedDiffraction::encode`].
+pub fn encode_sharpen(
+    passes: &mut PassList<'_>,
+    plan: &PreparedDiffraction,
+    input: &GpuImage,
+    core: Rect,
+) -> Result<GpuImage, GpuError> {
+    plan.encode(passes, input, core)
 }
 
 #[cfg(test)]
@@ -871,7 +878,7 @@ mod tests {
         let naga::TypeInner::Struct { members, span } = &module.types[var.ty].inner else {
             panic!("`dp` is not a struct");
         };
-        let fields: [(&str, usize); 25] = [
+        let fields: [(&str, usize); 29] = [
             ("width", offset_of!(ParamsU, width)),
             ("height", offset_of!(ParamsU, height)),
             ("plane", offset_of!(ParamsU, plane)),
@@ -897,6 +904,10 @@ mod tests {
             ("sigma1", offset_of!(ParamsU, sigma1)),
             ("gate_factor", offset_of!(ParamsU, gate_factor)),
             ("strength", offset_of!(ParamsU, strength)),
+            ("in_stride", offset_of!(ParamsU, in_stride)),
+            ("in_plane", offset_of!(ParamsU, in_plane)),
+            ("out_stride", offset_of!(ParamsU, out_stride)),
+            ("out_plane", offset_of!(ParamsU, out_plane)),
         ];
         assert_eq!(members.len(), fields.len());
         for (member, (name, offset)) in members.iter().zip(fields) {

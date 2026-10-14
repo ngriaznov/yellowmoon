@@ -50,7 +50,9 @@ use ym_gpu::cpu::vignette::VignetteProfile;
 use ym_gpu::cpu::{
     Cfa, CfaColor as GpuColor, LUMA, Mosaic, NoiseDn, NoiseSigma, Placement, Rect, RgbImage,
 };
-use ym_gpu::queue::CancelToken;
+use ym_gpu::chain::{DeviceRunner, DeviceWork, GpuChain, StageRange};
+use ym_gpu::device::{Gpu, GpuError};
+use ym_gpu::queue::{CancelToken, JobSpec};
 use ym_noise::model::NoiseModel;
 use ym_noise::sigma_map::{HalfPlanes, QstepMap, SigmaParams, sigma_quad};
 use ym_raw::decode::RawImage;
@@ -1329,10 +1331,91 @@ impl FullChain {
             .map_err(RenderError::from_cpu)
     }
 
+    /// Runs the part `out` (output coordinates) of the chain with the stages of `route.range` on
+    /// the device: the CPU runs the stages before the range on the calling thread, the range goes to
+    /// the device as one job (the route's priority, owner and the render's own cancel token), and the
+    /// CPU runs the rest. The same contract as [`run_tile`](Self::run_tile), within the tolerances of
+    /// the kernels (`docs/05`).
+    ///
+    /// # Errors
+    ///
+    /// [`GpuError::Cancelled`] when the render's token was set; any other error is the device's (or a
+    /// CPU stage's) and the caller answers it with [`run_tile`](Self::run_tile).
+    pub fn run_tile_gpu(
+        &self,
+        frame: &FrameData,
+        out: Rect,
+        route: &GpuRoute,
+    ) -> Result<RgbImage, GpuError> {
+        GpuChain::new(&self.chain, &self.prepared, route.range)?.run_tile(
+            route,
+            &frame.as_raw_frame(),
+            out,
+            &route.token,
+        )
+    }
+
     /// Bytes the chain holds (the sigma map).
     #[must_use]
     pub fn bytes(&self) -> usize {
         self.chain.sigma_map.as_ref().map_or(0, |m| m.len() * 4)
+    }
+}
+
+/// How often a render waiting for its device job looks at its cancel token.
+const DEVICE_POLL: std::time::Duration = std::time::Duration::from_millis(5);
+
+/// How the device work of a render's tiles reaches the device: the device, the range of stages it
+/// runs, and what every job of the render carries. One route per render, so all of its jobs have one
+/// priority and one cancel token (cancelling the render, or navigating away from its photo, reaches
+/// the queued ones; `docs/gpu-plan.md` 4.7).
+#[derive(Clone)]
+pub struct GpuRoute {
+    /// The device.
+    pub gpu: Arc<Gpu>,
+    /// The stages that run on it.
+    pub range: StageRange,
+    /// The priority of every job of the render.
+    pub spec: JobSpec,
+    /// The render's cancel token, shared by its jobs.
+    pub token: CancelToken,
+}
+
+impl std::fmt::Debug for GpuRoute {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GpuRoute")
+            .field("range", &self.range)
+            .field("spec", &self.spec)
+            .finish_non_exhaustive()
+    }
+}
+
+impl DeviceRunner for GpuRoute {
+    /// Submits the work as one job of the route (its priority, the render's token) and waits.
+    ///
+    /// A render that is cancelled while its job is still queued behind others (navigation, a closed
+    /// session) stops waiting at once: the job is abandoned, skipped when it is popped (its token is
+    /// set) and its buffers go back to the pool when it is dropped. A job that is already running
+    /// finishes on its own the same way; the render does not wait for it.
+    fn run_device(
+        &self,
+        work: DeviceWork,
+        _cancel: &CancelToken,
+    ) -> Result<RgbImage, GpuError> {
+        let handle = self
+            .gpu
+            .submit_with_token(self.spec, self.token.clone(), move |ctx, token| {
+                ctx.check_alive()?;
+                work.run(ctx, token)
+            });
+        loop {
+            if let Some(done) = handle.wait_timeout(DEVICE_POLL) {
+                return done?;
+            }
+            if self.token.is_cancelled() {
+                return Err(GpuError::Cancelled);
+            }
+        }
     }
 }
 

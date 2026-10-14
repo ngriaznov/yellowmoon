@@ -61,6 +61,7 @@ pub mod noise;
 pub mod normalize;
 pub mod output_sharpen;
 pub mod resample;
+pub mod sampler;
 pub mod sharpen;
 pub mod spline;
 pub mod synth;

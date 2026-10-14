@@ -64,6 +64,7 @@ use ym_gpu::cpu::RgbImage;
 use ym_gpu::cpu::output_sharpen::{ExtraStage, Method, Mode, OutputSharpen, scale_for_edges};
 use ym_gpu::device::{GpuContext, GpuError};
 use ym_gpu::kernels::PixelData;
+use ym_gpu::kernels::color::release_tables;
 use ym_gpu::kernels::output_sharpen::{PreparedSharpen, SharpenTrace};
 use ym_gpu::queue::{CancelToken, JobSpec, Priority};
 
@@ -81,6 +82,68 @@ const DIAGONAL_P999_BOUND: f64 = 1e-3;
 /// pairs a few thousand differ by less than the `f32` rounding of the accumulations, so a handful of
 /// rank counts flip even with noise; measured 4.3e-5 on 26 of 8.4 million samples.
 const LARGE_FRAME_MAX_BOUND: f64 = 2e-4;
+
+// ---- The hardware column (Metal) ------------------------------------------------------------------
+//
+// Metal compiles with fast-math by default and wgpu has no switch for it (docs/gpu-plan.md section 12,
+// docs/algorithms/04 section 10): a division is `a * (1 / b)`, a square root is not correctly rounded,
+// `a * b + c` may be fused, and so the last bit of a sample moves, and a rank count of the halo
+// limiter flips at a tie that f32 rounding leaves between two luma values. None of that exists on a
+// software adapter (lavapipe is correctly rounded and does not fuse), whose bounds above are
+// unchanged. The bounds below apply to hardware adapters only. Each is twice the value measured on
+// the Metal runners at the baseline commit d629dbe (macos-14 and macos-15 agree), before the kernel
+// was made robust (the luma passes through `abs` so that nothing fuses it, a delta of exactly 0 gives
+// a ratio of exactly 1, a collapsed stage is dropped); a run on Metal after the change reports its
+// own numbers in the CI log (`ci_note`) and replaces these when they are better.
+
+/// The vectors on hardware: a sample may differ by this many ulps of its own size on top of the
+/// vector's tolerance (the HDR vector has samples near 128, where one ulp is 1.5e-5, the ratio cap
+/// of 16 times a value of 8: 1.84e-5 measured on Metal).
+const HW_VECTOR_ULPS: f64 = 2.0;
+/// The worst absolute error of the 16 vectors on hardware (measured 1.84e-5).
+const HW_VECTORS_MAX: f64 = 4e-5;
+/// Noisy frame with the limiter on, hardware: 99.9th percentile (measured 5.54e-5), maximum
+/// (measured 8.79e-4) and the share of samples over 1e-5 (measured 0.25 %, 95 of 37830).
+const HW_NOISY_P999: f64 = 1.1e-4;
+const HW_NOISY_MAX: f64 = 1.8e-3;
+const HW_NOISY_OVER_SHARE: f64 = 0.005;
+/// Transposed image with method 2, R 2.5 and the limiter, hardware (measured 8.64e-4).
+const HW_TRANSPOSE_MAX: f64 = 1.8e-3;
+/// The 2048 x 1365 frame with the limiter, hardware: maximum (measured 5.73e-4) and the share of
+/// samples over 1e-5 (measured 1.7e-4, 1450 of 8.4 million; lavapipe 3e-6).
+const HW_LARGE_MAX: f64 = 1.2e-3;
+const HW_LARGE_OVER_SHARE: f64 = 3.5e-4;
+
+fn hardware(dev: &TestGpu) -> bool {
+    !dev.gpu.info().is_software
+}
+
+/// A note that reaches the CI log even when the test passes: written to the process's own stderr
+/// (the harness captures `eprintln!`, not this) and, on GitHub Actions, as an annotation.
+fn ci_note(text: &str) {
+    use std::io::Write as _;
+    let mut err = std::io::stderr();
+    let _ = writeln!(err, "[G-04] {text}");
+    if std::env::var_os("GITHUB_ACTIONS").is_some() {
+        let _ = writeln!(err, "::notice title=G-04 output sharpening::{text}");
+    }
+}
+
+/// The size of one unit in the last place of `x` (an f32).
+fn ulp(x: f32) -> f64 {
+    let a = x.abs();
+    f64::from(f32::from_bits(a.to_bits() + 1)) - f64::from(a)
+}
+
+/// The largest `|got - want|` once `ulps` units in the last place of each reference sample are
+/// forgiven (never below 0).
+fn error_beyond_ulps(got: &RgbImage, want: &RgbImage, ulps: f64) -> f64 {
+    got.data
+        .iter()
+        .zip(&want.data)
+        .map(|(&g, &w)| ((f64::from(g) - f64::from(w)).abs() - ulps * ulp(w)).max(0.0))
+        .fold(0.0, f64::max)
+}
 
 // ------------------------------------------------------------------------------------------------
 // Running the kernel
@@ -539,6 +602,20 @@ fn vectors_match_the_oracle_and_the_cpu_port() {
                     bit_equal(&out, &cpu),
                     "{name}: must equal the CPU port exactly"
                 );
+            } else if hardware(dev) {
+                // The hardware column: forgive the ulps of each sample's own size.
+                let beyond_oracle = error_beyond_ulps(&out, &expected, HW_VECTOR_ULPS);
+                let beyond_cpu = error_beyond_ulps(&out, &cpu, HW_VECTOR_ULPS);
+                assert!(
+                    beyond_oracle <= tol,
+                    "{name}: error {:e} against the oracle is above the tolerance {tol:e} (+{HW_VECTOR_ULPS} ulp)",
+                    vs_expected.max
+                );
+                assert!(
+                    beyond_cpu <= tol,
+                    "{name}: error {:e} against the CPU port is above {tol:e} (+{HW_VECTOR_ULPS} ulp)",
+                    vs_cpu.max
+                );
             } else {
                 assert!(
                     vs_expected.max <= tol,
@@ -558,10 +635,20 @@ fn vectors_match_the_oracle_and_the_cpu_port() {
             "[{}] vectors: max |gpu - oracle| {worst_vs_expected:.3e}, max |gpu - cpu port| {worst_vs_cpu:.3e}",
             dev.mode.name()
         );
-        assert!(
-            worst_vs_expected <= 2e-6,
-            "the 16 vectors must stay within 2e-6 on the GPU, got {worst_vs_expected:e}"
-        );
+        if hardware(dev) {
+            ci_note(&format!(
+                "hardware vectors: max |gpu - oracle| {worst_vs_expected:.3e}, max |gpu - cpu port| {worst_vs_cpu:.3e} (baseline on Metal 1.84e-5)"
+            ));
+            assert!(
+                worst_vs_expected <= HW_VECTORS_MAX,
+                "the 16 vectors must stay within {HW_VECTORS_MAX:e} on hardware, got {worst_vs_expected:e}"
+            );
+        } else {
+            assert!(
+                worst_vs_expected <= 2e-6,
+                "the 16 vectors must stay within 2e-6 on the GPU, got {worst_vs_expected:e}"
+            );
+        }
     }
 }
 
@@ -614,6 +701,12 @@ fn luma_has_the_cpu_bits() {
                     "luma {}x{} weights {w:?}: {differ} of {n} pixels differ (worst {worst_ulps} ulp)",
                     img.width, img.height
                 );
+                if !software {
+                    ci_note(&format!(
+                        "hardware luma {}x{} weights {w:?}: {differ} of {n} pixels differ from the CPU's bits (worst {worst_ulps} ulp)",
+                        img.width, img.height
+                    ));
+                }
                 if software {
                     assert_eq!(
                         differ, 0,
@@ -649,11 +742,28 @@ fn noisy_and_photographic_frames_match_the_cpu_port_within_1e_5() {
             assert!(all_finite(&gpu));
             let e = ErrStats::of_images(&gpu, &cpu);
             eprintln!("{name:<20} {set:<40} {}", e.line());
-            assert!(
-                e.max <= NOISY_BOUND,
-                "{name} / {set}: max error {:e} above {NOISY_BOUND:e}",
-                e.max
-            );
+            if hardware(dev) {
+                // The hardware column: a few rank counts of the limiter flip (module note above).
+                if e.max > NOISY_BOUND {
+                    ci_note(&format!("hardware {name} / {set}: {}", e.line()));
+                }
+                assert!(
+                    e.max <= HW_NOISY_MAX && e.p999 <= HW_NOISY_P999,
+                    "{name} / {set}: {}",
+                    e.line()
+                );
+                assert!(
+                    e.over as f64 <= HW_NOISY_OVER_SHARE * e.total as f64,
+                    "{name} / {set}: {}",
+                    e.line()
+                );
+            } else {
+                assert!(
+                    e.max <= NOISY_BOUND,
+                    "{name} / {set}: max error {:e} above {NOISY_BOUND:e}",
+                    e.max
+                );
+            }
             worst = worst.max(e.max);
             worst_p999 = worst_p999.max(e.p999);
         }
@@ -967,7 +1077,16 @@ fn flip_and_transpose_equivariance_within_1e_5() {
             ef.max, et.max
         );
         assert!(ef.max <= NOISY_BOUND, "{set}: flip {:e}", ef.max);
-        assert!(et.max <= NOISY_BOUND, "{set}: transpose {:e}", et.max);
+        if hardware(dev) {
+            // The hardware column: the transposed image sums in another order, and a rank count of
+            // the limiter may flip (measured 8.64e-4 on Metal at the baseline).
+            if et.max > NOISY_BOUND {
+                ci_note(&format!("hardware transpose, {set}: max {:.3e}", et.max));
+            }
+            assert!(et.max <= HW_TRANSPOSE_MAX, "{set}: transpose {:e}", et.max);
+        } else {
+            assert!(et.max <= NOISY_BOUND, "{set}: transpose {:e}", et.max);
+        }
     }
 }
 
@@ -1015,7 +1134,19 @@ fn a_2048_by_1365_frame_through_the_tiling_path() {
             dev.gpu.info().name
         );
         assert!(all_finite(&tiled));
-        if limiter_on {
+        if limiter_on && hardware(dev) {
+            // The hardware column: more rank counts flip at f32 ties than on a correctly rounded
+            // adapter (measured 1450 samples over 1e-5 and a maximum of 5.73e-4 on Metal at the
+            // baseline, 26 samples and 4.3e-5 on lavapipe); the bulk still meets 1e-5.
+            ci_note(&format!("hardware {name}: {}", e.line()));
+            assert!(e.p999 <= CLEAN_P999_BOUND, "{name}: p99.9 {:e}", e.p999);
+            assert!(e.max <= HW_LARGE_MAX, "{name}: max error {:e}", e.max);
+            assert!(
+                e.over as f64 <= HW_LARGE_OVER_SHARE * e.total as f64,
+                "{name}: {}",
+                e.line()
+            );
+        } else if limiter_on {
             assert!(e.p999 <= CLEAN_P999_BOUND, "{name}: p99.9 {:e}", e.p999);
             assert!(
                 e.max <= LARGE_FRAME_MAX_BOUND,
@@ -1229,23 +1360,29 @@ fn bad_inputs_are_refused_and_buffers_return_to_the_pool() {
             r
         });
     assert!(matches!(r, Err(GpuError::Cancelled)), "{r:?}");
-    // After all that, every buffer a run took is back in the pool.
-    let (in_use, live) = run_gpu(dev, {
+    // After all that, every buffer a run took is back in the pool. (The device keeps its persistent
+    // tables, here the dither thresholds, for as long as it lives: they are released before the
+    // baseline is taken and again before the comparison, so the ledger shows the runs alone.)
+    let (base, in_use, live) = run_gpu(dev, {
         let img = img.clone();
         move |ctx| {
+            release_tables(ctx);
+            let base = ctx.pool().stats().in_use_bytes;
             {
                 let p = PreparedSharpen::new(ctx, &OutputSharpen::print(), 1.0)?;
                 p.run(ctx, &img)?;
                 let plan = p.tile_plan(img.width, img.height, 16);
                 p.run_tiled(ctx, &img, &plan, 3, &CancelToken::new(), &mut |_, _| Ok(()))?;
             }
+            release_tables(ctx);
             let s = ctx.pool().stats();
-            Ok((s.in_use_bytes, s.live_buffers))
+            Ok((base, s.in_use_bytes, s.live_buffers))
         }
     });
     assert_eq!(
-        in_use, 0,
-        "{live} live buffers, {in_use} bytes still in use after the runs"
+        in_use, base,
+        "{live} live buffers, {} bytes still in use after the runs",
+        in_use - base
     );
 }
 
@@ -1467,4 +1604,384 @@ fn a_side_beyond_the_dispatch_limit_is_refused_not_panicked() {
     let ok = flat(5, 5, [0.2, 0.2, 0.2]);
     let out = gpu_sharpen(dev, &OutputSharpen::screen(), 1.0, &ok);
     assert!(bit_equal(&out, &ok));
+}
+
+// ------------------------------------------------------------------------------------------------
+// G-04: device in, device out; the fused C13 tail; identities that are exact by construction
+// ------------------------------------------------------------------------------------------------
+
+use ym_color::encode::OutputSpace;
+use ym_gpu::cpu::tiling::Rect;
+use ym_gpu::image::GpuImage;
+use ym_gpu::kernels::encode::{C13, Encoding, encode_c13, encode_host};
+use ym_gpu::kernels::output_sharpen::FusedC13;
+use ym_gpu::stream::PassList;
+
+/// The planar samples of the rectangle `r` of `img`, dense.
+fn cut(img: &RgbImage, r: Rect) -> Vec<f32> {
+    let n = img.plane_len();
+    let mut v = Vec::with_capacity(3 * r.w * r.h);
+    for c in 0..3 {
+        for y in r.y..r.y1() {
+            v.extend_from_slice(&img.data[c * n + y * img.width + r.x..][..r.w]);
+        }
+    }
+    v
+}
+
+#[test]
+fn the_device_entry_point_sharpens_a_window_and_writes_its_core_at_an_offset() {
+    let Some(dev) = gpus().first() else { return };
+    let img = busy(90, 70, 201);
+    let window = Rect::new(10, 8, 60, 50);
+    let core = Rect::new(20, 15, 30, 25);
+    for (set, p, scale) in param_sets() {
+        // The stage reads the window and mirrors at its edge: the reference is the host wrapper on
+        // the window cut out of the image, and its core.
+        let part = img.extract(window);
+        let host = gpu_sharpen(dev, &p, scale, &part);
+        let want = cut(&host, core.relative_to(&window));
+        let (p2, img2) = (p.clone(), img.clone());
+        let got = run_gpu(dev, move |ctx| {
+            let prepared = PreparedSharpen::new(ctx, &p2, scale)?;
+            let src = GpuImage::upload_rgb(ctx, "device sharpen input", &img2)?;
+            // A destination wider than the core, the core placed at (5, 3); the rest stays poison.
+            let dst = GpuImage::alloc(ctx, "device sharpen out", 41, 33, 3, img2.place)?;
+            let mut passes = PassList::new(ctx, "device sharpen");
+            prepared.encode(&mut passes, &src, window, core, &dst, (5, 3))?;
+            let id = dst.encode_read(&mut passes)?;
+            let done = passes.submit()?.finish()?;
+            dst.take(&done, id)
+        });
+        for c in 0..3 {
+            for y in 0..33usize {
+                for x in 0..41usize {
+                    let g = got[c * 41 * 33 + y * 41 + x];
+                    let inside = (5..5 + core.w).contains(&x) && (3..3 + core.h).contains(&y);
+                    if inside {
+                        let w = want[c * core.w * core.h + (y - 3) * core.w + (x - 5)];
+                        assert_eq!(
+                            g.to_bits(),
+                            w.to_bits(),
+                            "{set}: plane {c} at ({x}, {y}) differs from the host wrapper"
+                        );
+                    } else {
+                        assert!(g.is_nan(), "{set}: plane {c} at ({x}, {y}) was written");
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn the_fourth_plane_of_the_source_is_not_read_by_the_f32_road() {
+    let Some(dev) = gpus().first() else { return };
+    let img = busy(48, 36, 202);
+    let p = OutputSharpen::screen();
+    let plain = gpu_sharpen(dev, &p, 1.0, &img);
+    let mut data = img.data.clone();
+    data.extend((0..48 * 36).map(|i| if i % 5 == 0 { 1.0f32 } else { 0.0 }));
+    let (p2, place) = (p, img.place);
+    let got = run_gpu(dev, move |ctx| {
+        let prepared = PreparedSharpen::new(ctx, &p2, 1.0)?;
+        let src = GpuImage::upload(ctx, "masked", 48, 36, 4, &data, place)?;
+        let dst = GpuImage::alloc(ctx, "out", 48, 36, 3, place)?;
+        let mut passes = PassList::new(ctx, "masked sharpen");
+        let whole = Rect::whole(48, 36);
+        prepared.encode(&mut passes, &src, whole, whole, &dst, (0, 0))?;
+        let id = dst.encode_read(&mut passes)?;
+        let done = passes.submit()?.finish()?;
+        dst.take(&done, id)
+    });
+    assert!(
+        plain
+            .data
+            .iter()
+            .zip(&got)
+            .all(|(a, b)| a.to_bits() == b.to_bits()),
+        "the mask plane changed the sharpened pixels"
+    );
+}
+
+/// Encodes `img` (display-linear, three planes) to RGBA8 with the encode kernel.
+fn encode_rgba(
+    dev: &TestGpu,
+    img: &RgbImage,
+    mask: Option<Vec<u8>>,
+    c13: C13,
+    bg: [u8; 3],
+) -> Vec<u8> {
+    let img = img.clone();
+    run_gpu(dev, move |ctx| {
+        let window = Rect::whole(img.width, img.height);
+        encode_host(ctx, &img, mask.as_deref(), window, Encoding::Rgba8 { background: bg }, c13)
+    })
+    .bytes
+}
+
+/// Panics naming the first RGBA8 pixel (and how many) that differs.
+fn assert_bytes_equal(what: &str, a: &[u8], b: &[u8], width: usize) {
+    assert_eq!(a.len(), b.len(), "{what}: lengths");
+    let diffs: Vec<usize> = (0..a.len() / 4)
+        .filter(|&i| a[4 * i..4 * i + 4] != b[4 * i..4 * i + 4])
+        .collect();
+    if let Some(&i) = diffs.first() {
+        panic!(
+            "{what}: {} pixels differ; first at ({}, {}): {:?} against {:?}",
+            diffs.len(),
+            i % width,
+            i / width,
+            &a[4 * i..4 * i + 4],
+            &b[4 * i..4 * i + 4]
+        );
+    }
+}
+
+#[test]
+fn the_fused_c13_tail_equals_the_chained_pair_bit_for_bit() {
+    let Some(dev) = gpus().first() else { return };
+    let img = photo_like(97, 61, 203);
+    let p = OutputSharpen::screen();
+    for (space, dither, origin) in [
+        (OutputSpace::Srgb, true, (37usize, 101usize)),
+        (OutputSpace::Rec2020, true, (3, 5)),
+        (OutputSpace::DisplayP3, false, (0, 0)),
+    ] {
+        let sharpened = gpu_sharpen(dev, &p, 1.0, &img);
+        let chained = encode_rgba(
+            dev,
+            &sharpened,
+            None,
+            C13 {
+                space,
+                dither,
+                origin,
+            },
+            [9, 9, 9],
+        );
+        let (p2, img2) = (p.clone(), img.clone());
+        let fused = run_gpu(dev, move |ctx| {
+            let prepared = PreparedSharpen::new(ctx, &p2, 1.0)?;
+            prepared.run_rgba8(
+                ctx,
+                &img2,
+                FusedC13 {
+                    space,
+                    dither,
+                    origin,
+                    background: [9, 9, 9],
+                },
+            )
+        });
+        let ym_gpu::kernels::PixelData::Rgba8(fused) = fused.data else {
+            panic!("not RGBA8");
+        };
+        assert_bytes_equal(&format!("{space:?} dither {dither}: fused against chained"), &fused, &chained, 97);
+    }
+}
+
+#[test]
+fn the_fused_tail_paints_the_letterbox_and_leaves_the_rest_of_the_view_alone() {
+    // A four-plane source (colour + mask), the stage on its bounding box, the tail fused: against the
+    // chained road (copy the frame, sharpen the core over it, encode with the mask). The fused pass
+    // writes the core only, so the view is filled with the background first.
+    let Some(dev) = gpus().first() else { return };
+    let (w, h) = (90usize, 70usize);
+    let img = photo_like(w, h, 204);
+    let mask: Vec<f32> = (0..w * h)
+        .map(|i| {
+            let (x, y) = (i % w, i / w);
+            f32::from(u8::from(x < 12 || x >= 80 || y < 9 || y >= 62 || x + y < 40))
+        })
+        .collect();
+    // The bounding box of the unmasked pixels.
+    let bbox = {
+        let (mut x0, mut y0, mut x1, mut y1) = (w, h, 0, 0);
+        for (i, &m) in mask.iter().enumerate() {
+            if m == 0.0 {
+                let (x, y) = (i % w, i / w);
+                x0 = x0.min(x);
+                y0 = y0.min(y);
+                x1 = x1.max(x + 1);
+                y1 = y1.max(y + 1);
+            }
+        }
+        Rect::new(x0, y0, x1 - x0, y1 - y0)
+    };
+    let p = OutputSharpen::screen();
+    let bg = [180u8, 40, 220];
+    let tail = FusedC13 {
+        space: OutputSpace::DisplayP3,
+        dither: true,
+        origin: (11, 7),
+        background: bg,
+    };
+    let mut data = img.data.clone();
+    data.extend_from_slice(&mask);
+    let place = img.place;
+    let (chained, fused) = run_gpu(dev, move |ctx| {
+        let prepared = PreparedSharpen::new(ctx, &p, 1.0)?;
+        let src = GpuImage::upload(ctx, "view", w, h, 4, &data, place)?;
+        // Chained: a copy of the frame, the core sharpened over it, then C13 with the mask.
+        let sharp = GpuImage::alloc(ctx, "sharp", w, h, 4, place)?;
+        let bytes = (w * h * 4) as u64;
+        let band = ctx.pool().acquire(
+            "chained rgba",
+            bytes,
+            wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+        )?;
+        let mut passes = PassList::new(ctx, "chained");
+        passes
+            .encoder()
+            .copy_buffer_to_buffer(&src.buf, 0, &sharp.buf, 0, src.byte_len());
+        prepared.encode(&mut passes, &src, bbox, bbox, &sharp, (bbox.x, bbox.y))?;
+        encode_c13(
+            &mut passes,
+            &sharp,
+            Rect::whole(w, h),
+            Encoding::Rgba8 { background: bg },
+            C13 {
+                space: tail.space,
+                dither: tail.dither,
+                origin: tail.origin,
+            },
+            &band,
+            0,
+            0,
+        )?;
+        let a = passes.read(&band, 0, bytes)?;
+        let done = passes.submit()?.finish()?;
+        let chained = done.read(a).to_vec();
+        // Fused: the view filled with the background, the core written by the sharpening's last pass.
+        let view = ctx.pool().acquire(
+            "fused rgba",
+            bytes,
+            wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+        )?;
+        let fill: Vec<u8> = (0..w * h).flat_map(|_| [bg[0], bg[1], bg[2], 255]).collect();
+        ym_gpu::stream::upload_bytes(ctx, &view, 0, &fill)?;
+        let mut passes = PassList::new(ctx, "fused");
+        // The tail's origin is the picture position of the *core's* (0, 0): the frame's, moved by the
+        // core's offset in it, so that every pixel keeps the dither texel the chained road gives it.
+        let fused_tail = FusedC13 {
+            origin: (tail.origin.0 + bbox.x, tail.origin.1 + bbox.y),
+            ..tail
+        };
+        prepared.encode_rgba8(
+            &mut passes,
+            &src,
+            bbox,
+            bbox,
+            &view,
+            w,
+            (bbox.x, bbox.y),
+            fused_tail,
+        )?;
+        let b = passes.read(&view, 0, bytes)?;
+        let done = passes.submit()?.finish()?;
+        Ok((chained, done.read(b).to_vec()))
+    });
+    assert_bytes_equal("the fused tail against the chained pair", &fused, &chained, w);
+    // Spot checks: the masked corner is the background, an inside pixel is not.
+    assert_eq!(&fused[..4], &[bg[0], bg[1], bg[2], 255]);
+    let inside = (35 * w + 45) * 4;
+    assert_ne!(&fused[inside..inside + 3], &bg);
+}
+
+#[test]
+fn a_setup_without_a_stage_copies_its_core_on_the_device() {
+    let Some(dev) = gpus().first() else { return };
+    let img = random_image(40, 30, -0.05, 2.0, 205);
+    let zero = OutputSharpen::screen().with_amount_pct(0.0);
+    let core = Rect::new(7, 4, 20, 17);
+    let img2 = img.clone();
+    let got = run_gpu(dev, move |ctx| {
+        let prepared = PreparedSharpen::new(ctx, &zero, 1.0)?;
+        assert!(prepared.is_noop());
+        let src = GpuImage::upload_rgb(ctx, "noop", &img2)?;
+        let dst = GpuImage::alloc(ctx, "noop out", 20, 17, 3, img2.place)?;
+        let mut passes = PassList::new(ctx, "noop");
+        prepared.encode(&mut passes, &src, Rect::whole(40, 30), core, &dst, (0, 0))?;
+        let id = dst.encode_read(&mut passes)?;
+        let done = passes.submit()?.finish()?;
+        dst.take(&done, id)
+    });
+    let want = cut(&img, core);
+    assert!(
+        got.iter().zip(&want).all(|(a, b)| a.to_bits() == b.to_bits()),
+        "a setup without a stage must copy bit for bit"
+    );
+}
+
+#[test]
+fn collapsed_stages_are_dropped_and_the_rest_runs() {
+    // A stage whose kernel has collapsed to one tap is the identity (spec 4.6); the setup drops it
+    // and a setup that has nothing else is a no-op. An extra stage that does something survives.
+    let Some(dev) = gpus().first() else { return };
+    let img = busy(60, 44, 206);
+    let mut collapsed = OutputSharpen::screen();
+    collapsed.radius_px = 0.0911;
+    let c2 = collapsed.clone();
+    let noop = run_gpu(dev, move |ctx| {
+        let p = PreparedSharpen::new(ctx, &c2, 1.0)?;
+        assert_eq!(p.plan().stages().len(), 1, "the plan has the stage");
+        Ok((p.is_noop(), p.halo_px()))
+    });
+    assert!(noop.0, "the collapsed stage must be dropped");
+    assert!(noop.1 > 0, "the receptive field is the plan's, so tiles keep their halo");
+    assert!(bit_equal(&gpu_sharpen(dev, &collapsed, 1.0, &img), &img));
+    // Together with a stage that works, the collapsed one changes nothing.
+    let mut both = OutputSharpen::screen();
+    both.extra_stages.push(ExtraStage {
+        method: Method::HardThreshold,
+        auto_method: false,
+        amount_pct: 80.0,
+        radius_px: 0.0911,
+        threshold_levels: 0.0,
+        halo_pct: 40.0,
+    });
+    let cpu = both.apply(&img, 1.0).expect("cpu");
+    let gpu = gpu_sharpen(dev, &both, 1.0, &img);
+    let alone = gpu_sharpen(dev, &OutputSharpen::screen(), 1.0, &img);
+    assert!(bit_equal(&gpu, &alone), "the collapsed extra stage changed the result");
+    assert!(ErrStats::of_images(&gpu, &cpu).max <= if hardware(dev) { HW_NOISY_MAX } else { NOISY_BOUND });
+}
+
+#[test]
+fn a_flat_patch_inside_a_busy_frame_comes_back_bit_for_bit() {
+    // Where the delta is exactly 0 the ratio is exactly 1 (module note: Metal divides by multiplying
+    // with a reciprocal, which is not 1 for many a / a), so a flat patch further from any edge than
+    // the receptive field is untouched, on every device.
+    let Some(dev) = gpus().first() else { return };
+    let (w, h) = (140usize, 120usize);
+    let mut img = busy(w, h, 207);
+    let patch = Rect::new(40, 30, 60, 60);
+    for y in patch.y..patch.y1() {
+        for x in patch.x..patch.x1() {
+            img.set_pixel(x, y, [0.31, 0.22, 0.17]);
+        }
+    }
+    for (set, p, scale) in param_sets() {
+        let halo = p.halo_px(scale).expect("halo");
+        let out = gpu_sharpen(dev, &p, scale, &img);
+        if patch.w <= 2 * halo + 4 || patch.h <= 2 * halo + 4 {
+            continue; // the receptive field leaves no interior
+        }
+        let inner = Rect::new(patch.x + halo, patch.y + halo, patch.w - 2 * halo, patch.h - 2 * halo);
+        let (a, b) = (cut(&out, inner), cut(&img, inner));
+        assert!(
+            a.iter().zip(&b).all(|(x, y)| x.to_bits() == y.to_bits()),
+            "{set}: the flat patch changed"
+        );
+    }
+}
+
+#[test]
+fn the_binding_stays_inside_the_design_size() {
+    common::limits::assert_max_binding_bytes(
+        "output sharpening",
+        Rect::new(0, 0, 2000, 1250),
+        ym_gpu::kernels::output_sharpen::max_binding_bytes,
+    );
 }
