@@ -35,6 +35,8 @@ defaults:
 jobs:
   metal:
     name: Kernels on Metal (${{ matrix.runner }})
+    # Checkpoint commits snapshot work in progress (half-finished lanes) and are not expected to build; skip them.
+    if: ${{ github.event_name != 'push' || !startsWith(github.event.head_commit.message, 'Checkpoint') }}
     strategy:
       fail-fast: false
       matrix:
@@ -80,6 +82,8 @@ jobs:
 
   app:
     name: App and workspace on macOS
+    # Checkpoint commits snapshot work in progress (half-finished lanes) and are not expected to build; skip them.
+    if: ${{ github.event_name != 'push' || !startsWith(github.event.head_commit.message, 'Checkpoint') }}
     runs-on: macos-15
     timeout-minutes: 90
     steps:
