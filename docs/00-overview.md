@@ -13,6 +13,8 @@ A desktop raw processor for photos from Sony cameras. It reads ARW files, develo
 
 **Quality bar.** Raw quality (demosaic, noise, detail, highlights) on par with Capture One at the same ISO, judged in blind A/B tests. Colour that matches what an ALEXA would have recorded of the same scene, judged against the ARRI reference pipeline and synthetic tests.
 
+**The point of the app (Mykyta, 2026-10-14).** Perfect ARRI-like colour on default settings, without fiddling with parameters, and it has to beat a camera raw processor followed by a static ARRI-like LUT (for example Resolve with a commercial emulation LUT). What a static LUT cannot do is what Yellowmoon must do well: follow each photo's light and content (today the per-photo light estimate driving the sensor map; later intelligent automatic settings). It is a photo app, not video: it may be brighter than a cinema LUT's placement of mid grey. How "beats a static LUT" is measured is being defined (STATUS, the dynamic-stage research).
+
 ## Principles
 
 1. **Automatic first.** Every photo opens already developed: exposure, white balance, noise reduction, lens corrections and the default look. Controls are offsets from the automatic result.

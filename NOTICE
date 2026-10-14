@@ -148,7 +148,10 @@ UNDISCLOSED.
    file is generated for every release from Cargo.lock and package-lock.json
    (tools/licences/generate.py: cargo-about and license-checker).
 
-10. README screenshots (docs/images/readme/)
-   The photographs shown in these screenshots are © Mykyta Griaznov, used here
-   with his permission. They are not covered by the Apache License 2.0 and are
+10. Mykyta Griaznov's photographs (README screenshots in docs/images/readme/,
+   the readme-photos branch, test and evaluation images made from them)
+   The photographs, his raw files on the readme-photos branch and every image
+   made from them are © Mykyta Griaznov, used with his permission as README
+   screenshots, test and evaluation data (including CI) and published
+   comparison images. They are not covered by the Apache License 2.0 and are
    not part of the application.

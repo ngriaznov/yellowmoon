@@ -114,6 +114,10 @@ A `files` entry: `id` (`rawdb:ILCE-1/<name>`), `source`, `body`, `name`, `source
 - **Safe:** https only (plain http only to loopback, for the tests); every download and every redirect must stay on a host named in `manifest.sources`; file names are validated; a file whose size or SHA-256 differs from the manifest is deleted, never kept.
 - **Tier 3 is never fetched.** `golden.sh` has no code path that downloads it. The two providers (Photography Life, Imaging Resource) forbid republishing and allow downloads only from their own pages, so the list in the manifest holds page URLs and terms, nothing that could be requested. Download those files by hand into `testdata/golden/tier3/<provider>/`; never commit, upload or cache them in CI. `golden.sh --index-tier3` writes `testdata/golden/tier3/INDEX.json` (size and SHA-256) for local tools.
 
+## Mykyta's own photos (`owner-photos.sh`)
+
+`tools/fetch/owner-photos.sh` clones or updates the `readme-photos` branch into `testdata/readme-photos/src/`, pulls its Git LFS files and checks every file against `tools/fetch/owner-photos.sha256` (`--verify` checks without network). The photos are © Mykyta Griaznov; he permits them as test and evaluation data, in CI and in published images made from them (`docs/test-photo-sources.md`, NOTICE item 10). In CI prefer `actions/checkout` with `ref: readme-photos`, `lfs: true` and a cache keyed on `owner-photos.sha256`: Git LFS bandwidth on a free account is limited.
+
 ## Tier 2: finding Play Raw files
 
 `golden.sh --candidates ILCE-1 ILCE-7RM5` queries the discuss.pixls.us search API (Play Raw category) and saves posts that have ARW attachments to `testdata/golden/tier2-candidates.json` with the licence words found in the post. These are candidates, marked `unreviewed`. A person reads each post's licence, then pins the file with `golden.sh --add-tier2 ...`, which downloads it, records the hash and attribution, and only accepts CC0, CC BY or CC BY-SA. If the forum refuses automated access, list the candidate posts in `docs/STATUS.md` and ask Mykyta to download them by hand.
