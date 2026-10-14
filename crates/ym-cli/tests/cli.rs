@@ -32,7 +32,7 @@ fn version_reports_the_workspace_and_pipeline_versions() {
     ym().arg("--version")
         .assert()
         .success()
-        .stdout(predicate::str::starts_with("ym 0.0.1 (pipeline 0.1.2, "));
+        .stdout(predicate::str::starts_with("ym 0.0.1 (pipeline 0.2.0, "));
 }
 
 #[test]
@@ -120,7 +120,7 @@ fn doctor_says_what_it_includes_and_lists_the_parts() {
     for needle in [
         "does not include photos, file names, locations",
         "Version",
-        "ym 0.0.1 (pipeline 0.1.2, ",
+        "ym 0.0.1 (pipeline 0.2.0, ",
         "GPU",
         "Render path",
         "Model weights",
@@ -149,7 +149,7 @@ fn doctor_json_has_the_same_parts() {
             .expect("includes")
             .contains("does not include")
     );
-    assert_eq!(v["pipeline_version"], "0.1.2");
+    assert_eq!(v["pipeline_version"], "0.2.0");
     assert!(v["gpu"]["available"].is_boolean());
     if v["gpu"]["available"] == true {
         assert!(v["gpu"]["name"].is_string() && v["gpu"]["limits"]["max_buffer_size"].is_u64());

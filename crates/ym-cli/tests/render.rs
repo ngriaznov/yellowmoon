@@ -444,12 +444,16 @@ fn flags_become_settings_and_the_exposure_offset_is_relative_to_each_photos_auto
         assert_eq!(s["rolloff"], json!({ "highlights": 0.3, "low_light": 0.7 }));
         assert_eq!(o["look"]["intensity"], 80);
     }
-    // The two photos have different automatic exposures, so the offset lands on different numbers.
+    // Auto exposure is the camera's gain whatever the photo (docs/02, interim rule of 2026-10-14), so the two photos
+    // have one automatic exposure and the offset lands on one number: the offset is relative to it, not absolute.
     let evs: Vec<f64> = objects
         .iter()
         .map(|o| o["settings"]["exposure"]["ev"].as_f64().expect("ev"))
         .collect();
-    assert!((evs[0] - evs[1]).abs() > 1e-6, "{evs:?}");
+    let want = ym_color::exposure::CAMERA_GAIN_EV - 0.5;
+    for ev in &evs {
+        assert!((ev - want).abs() < 1e-9, "{evs:?}, want {want}");
+    }
 }
 
 #[test]
