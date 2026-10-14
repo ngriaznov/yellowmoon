@@ -516,6 +516,22 @@ fn navigating_away_cancels_the_queued_device_jobs_of_the_photo_left() {
     gate.wait().expect("gate job");
 }
 
+/// A photo a strict policy refused to render on the CPU is the export error kind `gpu` (the JSON of
+/// `ym render` and `docs/10`); every other render error stays `render`.
+#[test]
+fn a_device_error_of_a_strict_render_is_the_export_error_kind_gpu() {
+    use ym_core::export::ExportError;
+    assert_eq!(
+        ExportError::Render(RenderError::Gpu("lost".into())).kind(),
+        "gpu"
+    );
+    assert_eq!(
+        ExportError::Render(RenderError::Image("bad".into())).kind(),
+        "render"
+    );
+    assert_eq!(ExportError::Render(RenderError::Memory).kind(), "render");
+}
+
 #[cfg(feature = "fault-injection")]
 mod faults {
     use super::*;

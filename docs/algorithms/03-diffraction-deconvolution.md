@@ -908,9 +908,15 @@ wired into the render path: the raw stages still run the CPU reference.
   the viewport should keep the export on the CPU path (AGENTS.md rule 6): a preview and an export can differ in the last digits of such
   regions, though not in the noisy frames measured here.
 - **Metal.** `wgpu-hal` 30.0.1 builds the library with `MTLCompileOptions` that set only the language version and `preserveInvariance`;
-  no math mode is chosen, so Metal's default (fast math) applies. The xor with the runtime zero keeps the expansion intact under
-  re-association and contraction, but this stays unverified until the Mac run (M0-H4: `the_luma_plane_has_the_cpu_bits` and the large
-  frame).
+  no math mode is chosen, so Metal's default (fast math) applies. The first Apple-silicon CI run (`docs/gpu-plan.md` section 12) found
+  that the xor with the runtime zero, applied to the rounded results only, was not enough: LLVM rewrote the open error sum of `two_sum`
+  `(a - ad) + (b - bb)` into `(a + b) - (bb + ad)` = 0 and the luma was the plain f32 sum (30,304 of 60,000 off the CPU's). Every error term
+  now goes through the xor too (G-03; the same sequence compiled with clang `-O2 -ffast-math`: 54 % of 2 million lumas off the f64 luma
+  before, none after, also with `-ffp-contract=fast`), and a **finite input sample is bounded** to `+-1e6 DN / (S max(sum |a_c|, 1))`
+  (about 15 times white) in the luma pass, so that no product of the solve can overflow f32 whatever order the compiler evaluates it in
+  (a 1e30 in one sample had left a non-finite sample on Metal). A frame within the bound is untouched; the CPU reference solves a sample
+  beyond it exactly in f64, so that is the one place where the two differ by design. The Mac run (M0-H4) confirms
+  `the_luma_plane_has_the_cpu_bits`, the large frame and `a_finite_sample_beyond_the_bound_acts_like_the_bound`.
 - **Tests added by the review.** `hostile_values_that_the_stage_acts_on_match_the_cpu` (the existing hostile test is an identity at f/1
   and f/50, because the clip penalty gates the frame or the fit fades out, so it proved little about the solve: values -0.05 to 0.7 with
   and without 1 % spikes up to 4, f/1 to f/8, the CPU must change the frame, |gpu - cpu| at most 1.3e-6) and

@@ -182,6 +182,35 @@ fn the_binary_gives_the_same_bytes_twice_and_with_one_and_several_photos_in_flig
     assert_same_files(&first, &several, "--jobs 1 and --jobs 4");
 }
 
+/// The comparison above would also pass if the binary had quietly rendered on the CPU (a JPEG hides
+/// the kernels' last digits), so the binary's own report is checked: the pictures were made on the
+/// device and no fall-back note was written.
+#[test]
+fn the_binary_really_renders_the_raw_chain_on_the_device_under_the_on_policy() {
+    let sb = Sandbox::new();
+    let arw = sb.arw_sized("a.ARW", 1300, 900, 5);
+    if !device_opens() {
+        return;
+    }
+    let out = sb
+        .ym()
+        .env("YELLOWMOON_GPU", "on")
+        .args(["render", "--json", "--quiet"])
+        .arg(&arw)
+        .arg("--out")
+        .arg(sb.root().join("json"))
+        .assert()
+        .success();
+    let text = String::from_utf8(out.get_output().stdout.clone()).expect("utf-8");
+    let v: serde_json::Value = serde_json::from_str(text.trim()).expect("one JSON object");
+    assert_eq!(v["device"], "gpu", "{text}");
+    let notes = v["notes"].to_string();
+    assert!(
+        !notes.contains("graphics card"),
+        "the binary fell back to the CPU: {notes}"
+    );
+}
+
 /// A 16-bit TIFF keeps the pixels the JPEG quantises: the two front ends agree on every one.
 #[test]
 fn a_sixteen_bit_tiff_is_byte_identical_through_the_app_path_and_the_binary_on_the_device() {

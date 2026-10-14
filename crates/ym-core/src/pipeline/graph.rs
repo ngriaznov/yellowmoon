@@ -1244,7 +1244,7 @@ impl<'a> Job<'a> {
             // that into a quiet CPU render of the next photo: it fails that photo too.
             if self.opts.gpu_strict {
                 return Err(RenderError::Gpu(
-                    "an earlier error of the graphics card ended its use for the raw stages, and the strict setting does not let the CPU take over"
+                    "an earlier error ended the use of the graphics card, and the strict setting does not let the CPU take over"
                         .to_owned(),
                 ));
             }
