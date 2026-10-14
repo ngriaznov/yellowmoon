@@ -377,7 +377,7 @@ fn whole_frame_variants(raw: &Arc<RawImage>, params: &RawParams) -> Variants {
     );
     let on = full.run_tile(&frame, Rect::whole(ow, oh)).expect("CA path");
     // Without the CA path: the chain without its lens stage (so `ca = None`), then R9 by hand.
-    let mut chain = full.chain.clone();
+    let mut chain = full.cpu_chain().clone();
     chain.lens = None;
     let src = chain
         .run_tile(
@@ -716,7 +716,7 @@ fn ra03b_real_files_ca_residual() {
             &cancel,
         )
         .expect("chain");
-        let mut plain_chain = full.chain.clone();
+        let mut plain_chain = full.cpu_chain().clone();
         plain_chain.lens = None;
         let no_ca = LensGeometry::new(
             fw,

@@ -19,6 +19,8 @@
 //! `YM_REQUIRE_GPU=1`); the Metal runners run the same file (`mac-gpu.yml`).
 
 mod common;
+#[path = "g06/mod.rs"]
+mod g06;
 
 use std::sync::Arc;
 
@@ -1218,4 +1220,630 @@ fn the_work_refuses_a_bad_mosaic_before_it_reaches_the_device() {
     m.data[100] = 0.2;
     let err = DemosaicWork::new(m, Rect::new(30, 0, 20, 30), frame).expect_err("outside");
     assert!(matches!(err, GpuError::InvalidInput(_)), "{err}");
+}
+
+// ---------------------------------------------------------------------------------------------
+// G-06: the range R6 to R8
+// ---------------------------------------------------------------------------------------------
+
+/// The whole R6..R8 chain on tie-free content against the CPU chain, all cases together (the three
+/// sigma sources). First measured on lavapipe: 214 of 1 228 536 samples over 1e-4 (1.74e-4), 1115
+/// over 2e-5, largest 2.87e-3 (R6..R6: 206, and 3.0e-3: the stages after the demosaic add nothing a
+/// tie flip of the demosaic does not already show; `the_stages_after_the_demosaic_...` isolates them).
+const RAW_GROUP_TIE_FREE: Limits = Limits {
+    over: 3.5e-4,
+    fine: 1.8e-3,
+    largest: 5.8e-3,
+};
+
+/// The same on tie-prone content. First measured: 9205 of 638 232 over 1e-4 (1.44e-2), 21 839 over
+/// 2e-5 (3.42e-2), largest 0.11.
+const RAW_GROUP_TIE_PRONE: Limits = Limits {
+    over: 2.9e-2,
+    fine: 6.9e-2,
+    largest: 0.23,
+};
+
+/// The stages after the demosaic on the very planes the device demosaic made: R6..R8 against R6..R6
+/// (the CPU runs the same stages after the same device demosaic), so a tie flip of the demosaic is
+/// in both and only the kernels of G-06 differ. Largest difference over all 96 cases: first measured
+/// 5.2e-6 (mean of the case maxima 1.2e-6; the stage kernels alone are at 4e-7 to 7e-7), the bound is
+/// twice that.
+const POST_STAGES_LARGEST: f64 = 1.1e-5;
+
+/// Tiles of a chain whose Richardson-Lucy runs past the halo cap (n = 10, radius 1.8: exact radius
+/// 140 px against 24), against the whole frame: twice the first measured value on the device
+/// (1.09e-5; the CPU's own bands part from its whole-frame run by 1.07e-5 there).
+const BEYOND_CAP_CHAIN: f64 = 2.2e-5;
+
+/// A chain variant of the R6..R8 sweep: the sigma source and the stage options.
+#[derive(Clone, Copy, Debug)]
+enum Variant {
+    /// The chain's scalar sigma.
+    Scalar,
+    /// A half-resolution plane without gains (no vignetting profile).
+    Half,
+    /// A half-resolution plane with the gain of every cell.
+    HalfWithGains,
+}
+
+fn setup_for(scene: Scene, lens: Lens, noise: NoiseDn, variant: Variant) -> Setup {
+    let chain = chain_of(&scene, lens, noise);
+    let (w, h) = (scene.width, scene.height);
+    match variant {
+        Variant::Scalar => Setup::new(scene, chain).raw_group(),
+        Variant::Half => Setup::with_half(scene, chain, HalfSigma::new(w, h, 0.01, false, 5)),
+        Variant::HalfWithGains => {
+            Setup::with_half(scene, chain, HalfSigma::new(w, h, 0.008, true, 6))
+        }
+    }
+}
+
+#[test]
+fn r6_to_r8_matches_the_cpu_chain() {
+    let Some(dev) = f32_device_or_skip() else {
+        return;
+    };
+    let (mut free, mut prone) = (Stats::default(), Stats::default());
+    for (n, (cfa, w, h, lens, nname, noise, seed)) in sweep().into_iter().enumerate() {
+        let variant = [Variant::Scalar, Variant::Half, Variant::HalfWithGains][n % 3];
+        let setup = setup_for(Scene::new(w, h, cfa, seed), lens, noise, variant);
+        let (ow, oh) = setup.output_size();
+        for out in [
+            Rect::whole(ow, oh),
+            Rect::new(0, 0, 40.min(ow), 31.min(oh)),
+            Rect::new(
+                ow.saturating_sub(37),
+                oh.saturating_sub(29),
+                37.min(ow),
+                29.min(oh),
+            ),
+            Rect::new(ow / 3, oh / 3, 33.min(ow - ow / 3), 21.min(oh - oh / 3)),
+        ] {
+            let s = compare(&setup.gpu(dev, out), &setup.cpu(out));
+            let label = format!(
+                "{} {w}x{h} lens {lens:?} noise {nname} {variant:?} {out:?}",
+                cfa.name()
+            );
+            assert_within(&label, &s, ONE_CHAIN_CASE);
+            if lens.tie_prone() {
+                prone.add(&s);
+            } else {
+                free.add(&s);
+            }
+        }
+    }
+    free.print("R6..R8 chain, tie-free content");
+    prone.print("R6..R8 chain, tie-prone content");
+    assert_within("R6..R8 chain, tie-free content", &free, RAW_GROUP_TIE_FREE);
+    assert_within("R6..R8 chain, tie-prone content", &prone, RAW_GROUP_TIE_PRONE);
+}
+
+#[test]
+fn the_stages_after_the_demosaic_match_the_cpu_stages_on_the_same_planes() {
+    // R6..R6 and R6..R8 share the device demosaic bit for bit; what differs is who runs the denoise,
+    // R7 and R8. So this difference is the error of the G-06 kernels in the chain, without the tie
+    // flips of the demosaic that the comparison with the CPU chain carries.
+    let Some(dev) = f32_device_or_skip() else {
+        return;
+    };
+    let mut worst = 0.0f64;
+    let mut sum = 0.0f64;
+    let mut n = 0usize;
+    for (k, (cfa, w, h, lens, nname, noise, seed)) in sweep().into_iter().enumerate() {
+        let variant = [Variant::Scalar, Variant::Half, Variant::HalfWithGains][k % 3];
+        let raw8 = setup_for(Scene::new(w, h, cfa, seed), lens, noise, variant);
+        // The same chain on R6..R6: the CPU chain needs the sigma map, which `with_half` made.
+        let mut raw6 = raw8.clone();
+        raw6.range = StageRange::DEMOSAIC;
+        raw6.gpu_chain = Arc::clone(&raw6.chain);
+        raw6.half = None;
+        let (ow, oh) = raw8.output_size();
+        for out in [Rect::whole(ow, oh), Rect::new(ow / 3, oh / 3, 33.min(ow - ow / 3), 21.min(oh - oh / 3))] {
+            let a = raw8.gpu(dev, out);
+            let b = raw6.gpu(dev, out);
+            let s = compare(&a, &b);
+            sum += s.max_abs;
+            n += 1;
+            worst = worst.max(s.max_abs);
+            eprintln!(
+                "post stages {} {w}x{h} lens {lens:?} noise {nname} {variant:?}: largest {:.3e}, {} over 2e-5",
+                cfa.name(),
+                s.max_abs,
+                s.fine
+            );
+        }
+    }
+    eprintln!("[G-06] stages after the demosaic, R6..R8 against R6..R6: worst {worst:.3e}, mean of the maxima {:.3e}", sum / n as f64);
+    assert!(worst <= POST_STAGES_LARGEST, "{worst:e}");
+}
+
+#[test]
+fn tiles_of_the_raw_group_equal_the_whole_chain_bit_for_bit() {
+    let Some(dev) = f32_device_or_skip() else {
+        return;
+    };
+    let mut seed = 1500;
+    for (cfa, lens, noise, variant) in [
+        (Cfa::RGGB, Lens::Full, high_noise(), Variant::HalfWithGains),
+        (Cfa::GRBG, Lens::Bare, low_noise(), Variant::Scalar),
+        (Cfa::BGGR, Lens::Full, low_noise(), Variant::Half),
+    ] {
+        seed += 1;
+        let (w, h) = (171usize, 133usize);
+        let setup = setup_for(Scene::new(w, h, cfa, seed), lens, noise, variant);
+        let (ow, oh) = setup.output_size();
+        assert_tiles_equal_whole(
+            &format!("{} lens {:?} {variant:?}", cfa.name(), lens),
+            ow,
+            oh,
+            3,
+            &[64, 100],
+            |rect| setup.gpu(dev, rect).data,
+        );
+    }
+}
+
+#[test]
+fn the_three_sigma_sources_give_the_same_pixels() {
+    // The chain's scalar, a full-resolution map holding the same value and a half-resolution plane
+    // holding it: one pixel each way, bit for bit.
+    let Some(dev) = f32_device_or_skip() else {
+        return;
+    };
+    let (w, h) = (130usize, 90usize);
+    let value = 0.0123f32;
+    let scene = || Scene::new(w, h, Cfa::RGGB, 41);
+    let mut chain = chain_of(&scene(), Lens::Vignette, high_noise());
+    chain.sigma = value;
+    let scalar = Setup::new(scene(), chain.clone()).raw_group();
+    let mut mapped_chain = chain.clone();
+    mapped_chain.sigma = 0.0;
+    mapped_chain.sigma_map = Some(vec![value; w * h]);
+    let mapped = Setup::new(scene(), mapped_chain.clone()).raw_group();
+    let half = HalfSigma {
+        width: w / 2,
+        height: h / 2,
+        data: vec![value; (w / 2) * (h / 2)],
+        gains: None,
+    };
+    let halved = Setup::with_half(scene(), mapped_chain, half);
+    let (ow, oh) = scalar.output_size();
+    let out = Rect::new(5, 4, ow - 11, oh - 9);
+    let a = scalar.gpu(dev, out);
+    let b = mapped.gpu(dev, out);
+    let c = halved.gpu(dev, out);
+    assert_bit_equal("scalar against a map", &a.data, &b.data);
+    assert_bit_equal("scalar against a half-resolution plane", &a.data, &c.data);
+    // And the three equal the CPU chain (the scalar's) within the chain's own bounds.
+    let s = compare(&a, &scalar.cpu(out));
+    s.print("scalar sigma against the CPU");
+    assert!(s.max_abs < 0.05, "{}", s.max_abs);
+    // The half-resolution plane never builds the full map: the device chain has none.
+    assert!(halved.gpu_chain.sigma_map.is_none());
+    assert!(halved.chain.sigma_map.is_some());
+}
+
+/// Chains that skip stages or keep them as identities: every combination of the switches the settings
+/// have, so that the bookkeeping of the rectangles a skipped stage leaves behind (the next stage's
+/// core is named relative to the image it really gets) is exercised.
+fn option_chains() -> Vec<(&'static str, Box<dyn Fn(&mut Chain)>)> {
+    vec![
+        ("all on", Box::new(|_| {})),
+        ("no denoise", Box::new(|c| c.denoise = None)),
+        (
+            "luminance 0 (no denoise, no classical)",
+            Box::new(|c| {
+                c.denoise = None;
+                c.noise_reduction.luminance = 0.0;
+            }),
+        ),
+        ("no colour filter", Box::new(|c| c.noise_reduction.color = 0.0)),
+        ("no detail re-injection", Box::new(|c| c.noise_reduction.detail = 0.0)),
+        (
+            "no colour filter, no detail",
+            Box::new(|c| {
+                c.noise_reduction.color = 0.0;
+                c.noise_reduction.detail = 0.0;
+            }),
+        ),
+        ("no sharpening", Box::new(|c| c.sharpen = None)),
+        (
+            "sharpening with no iteration",
+            Box::new(|c| {
+                c.sharpen = Some(
+                    SharpenParams {
+                        amount: 10.0,
+                        radius_px: 0.8,
+                    }
+                    .into(),
+                )
+            }),
+        ),
+        (
+            "colour only",
+            Box::new(|c| {
+                c.denoise = None;
+                c.noise_reduction = NoiseReduction {
+                    luminance: 0.0,
+                    color: 80.0,
+                    detail: 0.0,
+                };
+                c.sharpen = None;
+            }),
+        ),
+        (
+            "ten iterations, wide PSF",
+            Box::new(|c| {
+                c.sharpen = Some(
+                    SharpenParams {
+                        amount: 300.0,
+                        radius_px: 1.8,
+                    }
+                    .into(),
+                )
+            }),
+        ),
+        (
+            "strong colour and detail",
+            Box::new(|c| {
+                c.noise_reduction = NoiseReduction {
+                    luminance: 90.0,
+                    color: 100.0,
+                    detail: 100.0,
+                };
+            }),
+        ),
+        (
+            "nothing after the demosaic",
+            Box::new(|c| {
+                c.denoise = None;
+                c.noise_reduction = NoiseReduction {
+                    luminance: 0.0,
+                    color: 0.0,
+                    detail: 0.0,
+                };
+                c.sharpen = None;
+            }),
+        ),
+    ]
+}
+
+#[test]
+fn every_option_of_the_stages_after_the_demosaic_matches_the_cpu_and_the_tiles() {
+    let Some(dev) = f32_device_or_skip() else {
+        return;
+    };
+    let mut seed = 1700;
+    let mut worst_post = 0.0f64;
+    for (name, tweak) in option_chains() {
+        for lens in [Lens::Vignette, Lens::Full] {
+            seed += 1;
+            let (w, h) = (141usize, 103usize);
+            let scene = Scene::new(w, h, Cfa::RGGB, seed);
+            let mut chain = chain_of(&scene, lens, low_noise());
+            tweak(&mut chain);
+            let setup = Setup::with_half(scene, chain, HalfSigma::new(w, h, 0.01, true, seed));
+            let (ow, oh) = setup.output_size();
+            let out = Rect::new(7, 5, ow - 15, oh - 11);
+            // R6..R8 against R6..R6: the same device demosaic, the CPU against the device after it.
+            let mut raw6 = setup.clone();
+            raw6.range = StageRange::DEMOSAIC;
+            raw6.gpu_chain = Arc::clone(&raw6.chain);
+            raw6.half = None;
+            let a = setup.gpu(dev, out);
+            let b = raw6.gpu(dev, out);
+            let s = compare(&a, &b);
+            eprintln!("option '{name}' lens {lens:?}: against R6..R6 {:.3e}", s.max_abs);
+            worst_post = worst_post.max(s.max_abs);
+            assert!(s.max_abs <= POST_STAGES_LARGEST, "'{name}' {lens:?}: {}", s.max_abs);
+            if name.starts_with("ten iterations") {
+                // Beyond the halo cap (exact radius 2 * 10 * 7 = 140 px against 24): a tile differs
+                // from the whole frame, on the CPU's bands as on the device (`docs/05`: about 2e-7 on
+                // photographic content; this scene is noisy and clipped, with n = 10).
+                let tiles_of = |render: &dyn Fn(Rect) -> RgbImage| {
+                    let whole = render(Rect::whole(ow, oh));
+                    let mut tiled = whole.clone();
+                    for core in ym_gpu::cpu::tiling::tile_grid(ow, oh, 48, 48, 2) {
+                        let tile = render(core);
+                        tiled.paste(&tile, Rect::whole(core.w, core.h), core.x, core.y);
+                    }
+                    compare(&tiled, &whole).max_abs
+                };
+                let on_device = tiles_of(&|r| setup.gpu(dev, r));
+                let on_cpu = tiles_of(&|r| setup.cpu(r));
+                eprintln!(
+                    "[G-06] beyond the halo cap ({lens:?}): tiles against whole, device {on_device:.3e}, CPU {on_cpu:.3e}"
+                );
+                assert!(on_device <= BEYOND_CAP_CHAIN, "{on_device:e}");
+            } else {
+                // Tiles equal the whole, whatever the stages do.
+                assert_tiles_equal_whole(
+                    &format!("'{name}' {lens:?}"),
+                    ow,
+                    oh,
+                    3,
+                    &[48, 80],
+                    |rect| setup.gpu(dev, rect).data,
+                );
+            }
+        }
+    }
+    eprintln!("[G-06] stage options against R6..R6: worst {worst_post:.3e}");
+}
+
+#[test]
+fn the_raw_group_is_poison_neutral_and_thread_count_independent() {
+    let Some(dev) = f32_device_or_skip() else {
+        return;
+    };
+    let scene = Scene::new(150, 110, Cfa::RGGB, 77);
+    let chain = chain_of(&scene, Lens::Full, high_noise());
+    let setup = Setup::with_half(scene, chain, HalfSigma::new(150, 110, 0.01, true, 3));
+    let (ow, oh) = setup.output_size();
+    let out = Rect::new(7, 5, ow - 9, oh - 8);
+    let got = assert_poison_neutral("the device chain, R6..R8", |gpu| {
+        let s = setup.clone();
+        gpu.run(JobSpec::new(Priority::Viewport), move |ctx, cancel| {
+            s.device_chain()?.run_tile(ctx, &s.scene.raw(), out, cancel)
+        })
+        .expect("chain")
+        .data
+    });
+    assert!(got.is_some(), "a plain device is available");
+    let _ = dev;
+}
+
+#[test]
+fn thread_count_does_not_change_a_bit() {
+    let Some(dev) = f32_device_or_skip() else {
+        return;
+    };
+    g06::assert_thread_count_independent("thread_count_does_not_change_a_bit", || {
+        let mut h = g06::FNV_START;
+        for (cfa, lens, noise, variant, seed) in [
+            (Cfa::RGGB, Lens::Full, high_noise(), Variant::HalfWithGains, 1801u64),
+            (Cfa::GBRG, Lens::Bare, low_noise(), Variant::Scalar, 1802),
+        ] {
+            let setup = setup_for(Scene::new(120, 90, cfa, seed), lens, noise, variant);
+            let (ow, oh) = setup.output_size();
+            h = g06::fnv(h, &setup.gpu(dev, Rect::new(3, 2, ow - 6, oh - 5)).data);
+        }
+        h
+    });
+}
+
+/// A runner for `RawWork` that cuts the demosaic core at a chosen limit and counts the rectangles.
+struct RawRecording<'a> {
+    ctx: &'a GpuContext,
+    parts: std::cell::RefCell<Vec<usize>>,
+    limit: u64,
+}
+
+impl DeviceRunner for RawRecording<'_> {
+    fn run_device(&self, work: DeviceWork, cancel: &CancelToken) -> Result<RgbImage, GpuError> {
+        let DeviceWork::Raw(w) = work else {
+            panic!("this runner is only given the R6..R8 range");
+        };
+        self.parts.borrow_mut().push(w.demosaic_parts(self.limit));
+        w.run_with_limit(self.ctx, cancel, self.limit)
+    }
+}
+
+#[test]
+fn splitting_the_demosaic_core_of_the_raw_group_changes_no_bit() {
+    let Some(dev) = f32_device_or_skip() else {
+        return;
+    };
+    // A core cut into many rectangles is put together on the host and uploaded once more; the stages
+    // after the demosaic then run on one image. The result is the unsplit run's, bit for bit.
+    let mut seed = 1900;
+    for cfa in [Cfa::RGGB, Cfa::BGGR] {
+        for (w, h, noise) in [(173usize, 131usize, high_noise()), (96, 77, low_noise())] {
+            seed += 1;
+            let setup = setup_for(
+                Scene::new(w, h, cfa, seed),
+                Lens::Full,
+                noise,
+                Variant::HalfWithGains,
+            );
+            let (ow, oh) = setup.output_size();
+            let out = Rect::new(3, 2, ow - 5, oh - 4);
+            let s = setup.clone();
+            let (whole, cut, counts) = dev
+                .gpu
+                .run(JobSpec::new(Priority::Viewport), move |ctx, cancel| {
+                    let g = s.device_chain()?;
+                    let plain = RawRecording {
+                        ctx,
+                        parts: Default::default(),
+                        limit: MAX_PHYS_AREA,
+                    };
+                    let whole = g.run_tile(&plain, &s.scene.raw(), out, cancel)?;
+                    let cutter = RawRecording {
+                        ctx,
+                        parts: Default::default(),
+                        limit: 4_500,
+                    };
+                    let cut = g.run_tile(&cutter, &s.scene.raw(), out, cancel)?;
+                    Ok((whole, cut, (plain.parts.take(), cutter.parts.take())))
+                })
+                .expect("chains");
+            assert_eq!(counts.0, vec![1]);
+            assert!(counts.1.iter().all(|&n| n >= 6), "cut into {:?}", counts.1);
+            assert_bit_equal(
+                &format!("{} {w}x{h}: cut at 4500 padded pixels against whole", cfa.name()),
+                &cut.data,
+                &whole.data,
+            );
+        }
+    }
+}
+
+#[test]
+fn the_raw_group_with_diffraction_deconvolution_matches_the_cpu() {
+    let Some(dev) = f32_device_or_skip() else {
+        return;
+    };
+    use ym_gpu::cpu::sharpen::diffraction::DiffractionParams;
+    let (w, h) = (130usize, 100usize);
+    let scene = Scene::new(w, h, Cfa::RGGB, 61);
+    let mut chain = chain_of(&scene, Lens::Vignette, high_noise());
+    // f/16 on a 3.76 um pixel: the plan is active; Richardson-Lucy is off.
+    chain.sharpen = Some(DiffractionParams::new(3.76, 16.0).into());
+    let setup = Setup::with_half(scene, chain, HalfSigma::new(w, h, 0.01, true, 9));
+    let (ow, oh) = setup.output_size();
+    let out = Rect::new(5, 4, ow - 11, oh - 9);
+    let mut raw6 = setup.clone();
+    raw6.range = StageRange::DEMOSAIC;
+    raw6.gpu_chain = Arc::clone(&raw6.chain);
+    raw6.half = None;
+    let a = setup.gpu(dev, out);
+    let b = raw6.gpu(dev, out);
+    let s = compare(&a, &b);
+    s.print("diffraction in the raw group against the CPU after the same demosaic");
+    // The diffraction kernel's own parity is 5e-6 on random frames (`tests/gpu_diffraction.rs`).
+    assert!(s.max_abs <= 2e-4, "{}", s.max_abs);
+    assert!(compare(&a, &setup.cpu(out)).max_abs.is_finite());
+    // The deconvolution changed the picture (the plan is active).
+    let mut off = setup.clone();
+    let mut no_sharpen = (*setup.chain).clone();
+    no_sharpen.sharpen = None;
+    off.chain = Arc::new(no_sharpen);
+    let mut gpu_off = (*setup.gpu_chain).clone();
+    gpu_off.sharpen = None;
+    off.gpu_chain = Arc::new(gpu_off);
+    let c = off.gpu(dev, out);
+    assert!(compare(&a, &c).max_abs > 1e-4, "the diffraction stage did nothing");
+    // Tiles equal the whole (the plan's halo is exact).
+    assert_tiles_equal_whole("diffraction in the raw group", ow, oh, 3, &[64], |rect| {
+        setup.gpu(dev, rect).data
+    });
+}
+
+/// Small frames through the whole R6..R8 chain: halos far larger than the frame, mosaics below 2 x 2
+/// (the CPU demosaics them, the stages after run on the device), every sample finite. R6..R8 against
+/// R6..R6 on the same device demosaic: only the G-06 kernels differ.
+#[test]
+fn small_frames_through_the_raw_group_match_the_cpu_stages() {
+    let Some(dev) = f32_device_or_skip() else {
+        return;
+    };
+    let mut seed = 2000;
+    let mut worst = 0.0f64;
+    for cfa in [Cfa::RGGB, Cfa::GBRG] {
+        for (w, h) in [
+            (1usize, 1usize),
+            (3, 1),
+            (1, 5),
+            (2, 2),
+            (2, 3),
+            (3, 3),
+            (4, 4),
+            (5, 7),
+            (9, 6),
+            (2, 40),
+            (40, 2),
+            (17, 17),
+            (23, 11),
+        ] {
+            for lens in [Lens::Bare, Lens::Vignette] {
+                seed += 1;
+                let scene = Scene::new(w, h, cfa, seed);
+                let chain = chain_of(&scene, lens, high_noise());
+                let setup = Setup::new(scene, chain).raw_group();
+                let mut raw6 = setup.clone();
+                raw6.range = StageRange::DEMOSAIC;
+                let (ow, oh) = setup.output_size();
+                let a = setup.gpu(dev, Rect::whole(ow, oh));
+                let b = raw6.gpu(dev, Rect::whole(ow, oh));
+                let s = compare(&a, &b);
+                worst = worst.max(s.max_abs);
+                assert!(s.max_abs <= 1e-4, "{} {w}x{h} lens {lens:?}: {}", cfa.name(), s.max_abs);
+            }
+        }
+    }
+    eprintln!("[G-06] small frames, R6..R8 against R6..R6: worst {worst:.3e}");
+}
+
+#[test]
+fn a_cancelled_raw_group_stops_and_leaves_the_pool_at_its_baseline() {
+    let Some(dev) = f32_device_or_skip() else {
+        return;
+    };
+    let scene = Scene::new(150, 110, Cfa::RGGB, 3);
+    let chain = chain_of(&scene, Lens::Full, high_noise());
+    let setup = Setup::with_half(scene, chain, HalfSigma::new(150, 110, 0.01, true, 4));
+    let (ow, oh) = setup.output_size();
+    let s = setup.clone();
+    let (before, after_ok, after_cancel, ran, err) = dev
+        .gpu
+        .run(JobSpec::new(Priority::Viewport), move |ctx, _| {
+            let before = ctx.pool().stats().in_use_bytes;
+            let g = s.device_chain()?;
+            let ok = g.run_tile(ctx, &s.scene.raw(), Rect::whole(ow, oh), &CancelToken::new())?;
+            drop(ok);
+            let after_ok = ctx.pool().stats().in_use_bytes;
+            let token = CancelToken::new();
+            token.cancel();
+            let counters = ctx.counters();
+            let err = g.run_tile(ctx, &s.scene.raw(), Rect::whole(ow, oh), &token);
+            let ran = ctx.counters().since(counters);
+            // A token set as the work is about to run: the job sees it before it records anything.
+            struct CancelsFirst<'a>(&'a GpuContext, CancelToken);
+            impl DeviceRunner for CancelsFirst<'_> {
+                fn run_device(
+                    &self,
+                    work: DeviceWork,
+                    cancel: &CancelToken,
+                ) -> Result<RgbImage, GpuError> {
+                    self.1.cancel();
+                    work.run(self.0, cancel)
+                }
+            }
+            let token = CancelToken::new();
+            let again = g.run_tile(
+                &CancelsFirst(ctx, token.clone()),
+                &s.scene.raw(),
+                Rect::whole(ow, oh),
+                &token,
+            );
+            let after_cancel = ctx.pool().stats().in_use_bytes;
+            Ok((before, after_ok, after_cancel, ran, (err.map(|_| ()), again.map(|_| ()))))
+        })
+        .expect("job");
+    assert_eq!(after_ok, before, "a finished tile releases its buffers");
+    assert_eq!(after_cancel, before, "cancelled tiles release their buffers");
+    assert!(matches!(err.0, Err(GpuError::Cancelled)), "{:?}", err.0);
+    assert!(matches!(err.1, Err(GpuError::Cancelled)), "{:?}", err.1);
+    assert_eq!((ran.dispatches, ran.submissions), (0, 0));
+}
+
+#[test]
+fn the_raw_group_records_one_submission_and_one_readback_per_tile() {
+    let Some(dev) = f32_device_or_skip() else {
+        return;
+    };
+    let scene = Scene::new(150, 110, Cfa::RGGB, 5);
+    let chain = chain_of(&scene, Lens::Full, high_noise());
+    let setup = Setup::with_half(scene, chain, HalfSigma::new(150, 110, 0.01, true, 4));
+    let (ow, oh) = setup.output_size();
+    let s = setup.clone();
+    let (raw8, raw6) = dev
+        .gpu
+        .run(JobSpec::new(Priority::Viewport), move |ctx, cancel| {
+            let g = s.device_chain()?;
+            let before = ctx.counters();
+            g.run_tile(ctx, &s.scene.raw(), Rect::whole(ow, oh), cancel)?;
+            let raw8 = ctx.counters().since(before);
+            let g6 = GpuChain::new(&s.chain, &s.prepared, StageRange::DEMOSAIC)?;
+            let before = ctx.counters();
+            g6.run_tile(ctx, &s.scene.raw(), Rect::whole(ow, oh), cancel)?;
+            Ok((raw8, ctx.counters().since(before)))
+        })
+        .expect("job");
+    eprintln!("[G-06] one tile: R6..R8 {raw8:?}, R6 {raw6:?}");
+    assert_eq!((raw8.submissions, raw8.readbacks), (1, 1));
+    assert_eq!((raw6.submissions, raw6.readbacks), (1, 1));
+    assert!(raw8.dispatches > raw6.dispatches + 10);
 }

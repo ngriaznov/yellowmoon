@@ -408,8 +408,13 @@ fn ra07_real_files_ab() {
         let frame = FrameData::new(&raw).expect("frame");
         let plan = RawPlan::new(&raw, &frame, &params).expect("plan");
         let sigma = sigma_plane(&frame, &plan, &params, &cancel).expect("sigma");
-        let mut full = FullChain::new(&frame, &plan, &params, &sigma, &cancel).expect("chain");
-        full.chain.lens = None; // R8 is the last stage: the variants differ only by it
+        let full = FullChain::new(&frame, &plan, &params, &sigma, &cancel).expect("chain");
+        // R8 is the last stage: the variants differ only by it.
+        let base = {
+            let mut c = full.cpu_chain().clone();
+            c.lens = None;
+            c
+        };
         let (fw, fh) = (frame.width, frame.height);
         let frame_rect = Rect::whole(fw, fh);
 
@@ -417,7 +422,7 @@ fn ra07_real_files_ab() {
         let (rw, rh) = (REGION_PX.0.min(fw & !1), REGION_PX.1.min(fh & !1));
         let region = Rect::new(((fw - rw) / 2) & !1, ((fh - rh) / 2) & !1, rw, rh);
         let r7_region = {
-            let mut c = full.chain.clone();
+            let mut c = base.clone();
             c.sharpen = None;
             c.run_tile(&frame.as_raw_frame(), &full.prepared, region)
                 .expect("region")
@@ -468,7 +473,7 @@ fn ra07_real_files_ab() {
         // The four variants of a window, as tiles of the same rectangle.
         let variants = |core: Rect| -> [RgbImage; 4] {
             let run = |sharpen: Option<CaptureSharpen>| {
-                let mut c = full.chain.clone();
+                let mut c = base.clone();
                 c.sharpen = sharpen;
                 c.run_tile(&frame.as_raw_frame(), &full.prepared, core)
                     .expect("tile")
@@ -479,7 +484,7 @@ fn ra07_real_files_ab() {
             // The gate variant: the R7 tile with context, then the stage, then the core.
             let ext = core.grow(Halo::uniform(CONTEXT_PX), frame_rect);
             let r7 = {
-                let mut c = full.chain.clone();
+                let mut c = base.clone();
                 c.sharpen = None;
                 c.run_tile(&frame.as_raw_frame(), &full.prepared, ext)
                     .expect("context tile")

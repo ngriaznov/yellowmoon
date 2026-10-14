@@ -292,12 +292,13 @@ fn a_full_render_and_a_100_percent_frame_on_the_device_match_the_cpu() {
     );
 
     // The 100 % view: the tiles of 512 px, cached, then sampled and coloured. Two baselines: the CPU
-    // renderer, and a renderer with the device for the colour pass only (the raw chain on the CPU),
-    // which isolates what the raw chain on the device changes from what the GPU colour pass and the
-    // CPU output sharpening already do (`docs/05`: the stage's limiter flips on noiseless content).
+    // renderer, and a renderer with the device for the view stages only (the raw chain on the CPU),
+    // which isolates what the raw chain on the device changes from what the sampler, the colour pass
+    // and output sharpening on the device already do (`docs/05`: the stage's limiter flips on
+    // noiseless content).
     let colour_only = renderer_with(
         Some(Arc::clone(&gpu)),
-        GpuStages::COLOR,
+        view::VIEW,
         false,
         Method::AdaptiveRatio,
     );
@@ -609,6 +610,24 @@ mod view {
         .union(GpuStages::OUTPUT_SHARPEN)
         .union(GpuStages::ENCODE);
 
+    /// A note that reaches the CI log even when the test passes: written to the process's own stderr
+    /// (the harness captures `eprintln!`, not this) and, on GitHub Actions, as an annotation. The
+    /// Apple runners' first numbers are read from these.
+    pub fn ci_note(text: &str) {
+        let mut err = std::io::stderr();
+        let _ = writeln!(err, "[G-05] {text}");
+        if std::env::var_os("GITHUB_ACTIONS").is_some() {
+            let _ = writeln!(err, "::notice title=G-05 view stages::{text}");
+        }
+    }
+
+    /// The largest difference in codes a device frame may have from the CPU's: lavapipe's
+    /// (measured: one code), or a hardware adapter's, whose f32 rounding is its own (fast-math on
+    /// Metal; the numbers are in the CI notes and replace this when they are in).
+    pub fn code_bound(gpu: &Gpu) -> u8 {
+        if gpu.info().is_software { 2 } else { 3 }
+    }
+
     pub fn picture(w: u32, h: u32) -> PhotoSource {
         let white = light("sony-ilce-7rm4", 4500.0);
         let scene = Scene::new(w, h, white, Layout::Patchwork, 0.5).noise(2e-4, 2e-6);
@@ -781,16 +800,18 @@ mod view {
             assert_eq!((a.width, a.height), (b.width, b.height), "{name}");
             let (median, p99, max) = golden(&a, &b);
             let (worst, over, mean) = codes(&a, &b);
-            eprintln!(
+            let line = format!(
                 "{name}: ΔE00 median {median:.4} p99 {p99:.4} max {max:.4}; worst {worst} codes, over 1 code {over:e}, mean {mean:e}"
             );
+            eprintln!("{line}");
+            ci_note(&format!("{} {line}", gpu.info().name));
             // The golden gates of the GPU plan (section 7), which a whole GPU render must meet.
             assert!(
                 median <= 0.02 && p99 <= 0.05 && max <= 0.5,
                 "{name}: {median} {p99} {max}"
             );
             assert!(
-                worst <= 2 && mean < 0.25,
+                worst <= code_bound(&gpu) && mean < 0.25,
                 "{name}: {worst} codes, mean {mean}"
             );
             // The view stages alone come in far below them on lavapipe: twice the first measured
@@ -1145,7 +1166,11 @@ mod view {
                 let (median, p99, max) = golden(&a, &b);
                 let (worst, _, mean) = codes(&a, &b);
                 assert!(
-                    median <= 0.02 && p99 <= 0.05 && max <= 0.5 && worst <= 2 && mean < 0.25,
+                    median <= 0.02
+                        && p99 <= 0.05
+                        && max <= 0.5
+                        && worst <= code_bound(&gpu)
+                        && mean < 0.25,
                     "{name} {stages}: ΔE00 {median} {p99} {max}, {worst} codes, mean {mean}"
                 );
                 if !sampler && !colour {
@@ -1619,10 +1644,10 @@ mod faults {
         let Some(gpu) = gpu() else { return };
         let src = scene();
         let dev = on_device(&gpu);
-        // The baseline: the CPU raw chain with the same GPU colour pass.
+        // The baseline: the CPU raw chain with the same view stages on the device.
         let colour_only = renderer_with(
             Some(Arc::clone(&gpu)),
-            GpuStages::COLOR,
+            view::VIEW,
             false,
             Method::AdaptiveRatio,
         );

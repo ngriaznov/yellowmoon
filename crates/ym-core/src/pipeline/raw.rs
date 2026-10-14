@@ -31,7 +31,7 @@
 //! All parallel loops here split by output row and never reduce across rows, so the result does not
 //! depend on the number of threads.
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use half::f16;
 use rayon::prelude::*;
@@ -52,6 +52,7 @@ use ym_gpu::cpu::{
     Cfa, CfaColor as GpuColor, LUMA, Mosaic, NoiseDn, NoiseSigma, Placement, Rect, RgbImage,
 };
 use ym_gpu::device::{Gpu, GpuError};
+use ym_gpu::kernels::bilateral::SigmaHalf;
 use ym_gpu::queue::{CancelToken, JobSpec};
 use ym_noise::model::NoiseModel;
 use ym_noise::sigma_map::{HalfPlanes, QstepMap, SigmaParams, sigma_quad};
@@ -819,8 +820,20 @@ pub fn sigma_plane(
 /// by `k`, `ow x oh` of them, or `None` without a profile.
 #[must_use]
 pub fn gain_plane(plan: &RawPlan, k: usize, ow: usize, oh: usize) -> Option<Vec<f32>> {
-    let v = plan.vignette.as_ref()?;
-    let (w, h) = (plan.width as f64, plan.height as f64);
+    gain_plane_of(plan.vignette.as_ref(), plan.width, plan.height, k, ow, oh)
+}
+
+/// [`gain_plane`] from the profile and the frame size alone (what [`FullChain`] keeps).
+fn gain_plane_of(
+    vignette: Option<&VignetteProfile>,
+    width: usize,
+    height: usize,
+    k: usize,
+    ow: usize,
+    oh: usize,
+) -> Option<Vec<f32>> {
+    let v = vignette?;
+    let (w, h) = (width as f64, height as f64);
     let (cx, cy) = (w * 0.5, h * 0.5);
     let inv_hd = 1.0 / (0.5 * w.hypot(h));
     let kk = k as f64;
@@ -888,10 +901,17 @@ fn binned_sigma(
 }
 
 /// The full-resolution sigma map for the vignetting-corrected data: each half-resolution sigma
-/// times the gain at its cell's centre, copied to the four photosites of the cell.
+/// times the gain at its cell's centre, copied to the four photosites of the cell. The reference the
+/// lazy map of [`FullChain::cpu_chain`] and the device's expansion are tested against.
+#[cfg(test)]
 fn full_sigma_map(sigma: &SigmaPlane, plan: &RawPlan) -> Vec<f32> {
-    let (w, h) = (plan.width, plan.height);
     let gains = gain_plane(plan, 2, sigma.width, sigma.height);
+    expand_sigma_map(sigma, gains.as_deref(), plan.width, plan.height)
+}
+
+/// [`full_sigma_map`] from the cell gains: the rule the device's expansion reproduces cell for cell
+/// (`ym_gpu::kernels::bilateral::SigmaHalf::at`).
+fn expand_sigma_map(sigma: &SigmaPlane, gains: Option<&[f32]>, w: usize, h: usize) -> Vec<f32> {
     let mut out = vec![0.0f32; w * h];
     out.par_chunks_mut(w.max(1))
         .enumerate()
@@ -899,7 +919,7 @@ fn full_sigma_map(sigma: &SigmaPlane, plan: &RawPlan) -> Vec<f32> {
             let cy = (y / 2).min(sigma.height - 1);
             for (x, d) in row.iter_mut().enumerate() {
                 let cx = (x / 2).min(sigma.width - 1);
-                let g = gains.as_ref().map_or(1.0, |g| g[cy * sigma.width + cx]);
+                let g = gains.map_or(1.0, |g| g[cy * sigma.width + cx]);
                 *d = sigma.data[cy * sigma.width + cx] * g;
             }
         });
@@ -1238,10 +1258,28 @@ pub fn reduced_rgb(
 
 /// The classical chain at full resolution, prepared: `cpu::chain::Chain` with the real settings
 /// and the whole-frame reductions (the R5 chroma offsets) done.
+///
+/// **The full-resolution sigma map is lazy.** The CPU stages read the noise sigma of every photosite
+/// (`Chain::sigma_map`, 4 bytes a pixel: 200 MB at 50 MP), but the device expands it from the
+/// half-resolution plane and the cell gains it already has ([`SigmaHalf`]), tile by tile. So the chain
+/// is built without the map ([`device_chain`](Self::device_chain)) and the map is made the first
+/// time a CPU stage runs ([`cpu_chain`](Self::cpu_chain), [`run_tile`](Self::run_tile)); a photo
+/// whose raw group runs on the device (`StageRange::DEMOSAIC_TO_SHARPEN`) never makes it.
 #[derive(Debug)]
 pub struct FullChain {
-    /// The chain.
-    pub chain: Chain,
+    /// The chain without its full-resolution sigma map (and so with `sigma = 0` for its CPU stages).
+    chain: Chain,
+    /// The half-resolution noise sigma the map is made from.
+    sigma: SigmaPlane,
+    /// The vignetting profile, for the gain at the centre of each cell.
+    vignette: Option<VignetteProfile>,
+    /// Frame size in photosites.
+    frame_w: usize,
+    frame_h: usize,
+    /// The gain of every cell of `sigma` (made the first time the device or the CPU map needs it).
+    gains: OnceLock<Option<Vec<f32>>>,
+    /// The chain with its sigma map, for the CPU stages (made on first use).
+    cpu_chain: OnceLock<Chain>,
     /// The whole-frame reductions.
     pub prepared: Prepared,
     /// Output width (after R9).
@@ -1302,7 +1340,8 @@ impl FullChain {
             noise_reduction: params.noise_reduction,
             iso: params.iso,
             sigma: 0.0,
-            sigma_map: Some(full_sigma_map(sigma, plan)),
+            // Made on first use (`cpu_chain`): the device does not read it.
+            sigma_map: None,
             noise: Some(noise),
             sharpen: params.capture_sharpen(),
             lens: plan.lens.clone(),
@@ -1314,19 +1353,82 @@ impl FullChain {
         let (out_w, out_h) = chain.output_size(frame.width, frame.height);
         Ok(Self {
             chain,
+            sigma: sigma.clone(),
+            vignette: plan.vignette.clone(),
+            frame_w: plan.width,
+            frame_h: plan.height,
+            gains: OnceLock::new(),
+            cpu_chain: OnceLock::new(),
             prepared,
             out_w,
             out_h,
         })
     }
 
-    /// Runs the part `out` (output coordinates) of the chain.
+    /// The gain of every cell of the half-resolution sigma plane, `None` without a vignetting
+    /// profile (a gain of exactly 1).
+    fn cell_gains(&self) -> Option<&[f32]> {
+        self.gains
+            .get_or_init(|| {
+                gain_plane_of(
+                    self.vignette.as_ref(),
+                    self.frame_w,
+                    self.frame_h,
+                    2,
+                    self.sigma.width,
+                    self.sigma.height,
+                )
+            })
+            .as_deref()
+    }
+
+    /// The half-resolution noise sigma and the cell gains, as the device's expansion takes them.
+    #[must_use]
+    pub fn sigma_half(&self) -> SigmaHalf<'_> {
+        SigmaHalf {
+            width: self.sigma.width,
+            height: self.sigma.height,
+            data: &self.sigma.data,
+            gains: self.cell_gains(),
+        }
+    }
+
+    /// The chain with its full-resolution sigma map, for the stages that run on the CPU. The map
+    /// (4 bytes a pixel) is made the first time this is called and kept.
+    #[must_use]
+    pub fn cpu_chain(&self) -> &Chain {
+        self.cpu_chain.get_or_init(|| {
+            let mut chain = self.chain.clone();
+            chain.sigma_map = Some(expand_sigma_map(
+                &self.sigma,
+                self.cell_gains(),
+                self.frame_w,
+                self.frame_h,
+            ));
+            chain
+        })
+    }
+
+    /// The chain as the device walks it: without the full-resolution sigma map, which the device
+    /// expands from [`sigma_half`](Self::sigma_half). A CPU stage run on it would see no noise.
+    #[must_use]
+    pub fn device_chain(&self) -> &Chain {
+        &self.chain
+    }
+
+    /// Whether the full-resolution sigma map has been made (it is when a CPU stage ran).
+    #[must_use]
+    pub fn sigma_map_built(&self) -> bool {
+        self.cpu_chain.get().is_some()
+    }
+
+    /// Runs the part `out` (output coordinates) of the chain on the CPU.
     ///
     /// # Errors
     ///
     /// [`RenderError::Image`] when `out` is outside the output.
     pub fn run_tile(&self, frame: &FrameData, out: Rect) -> Result<RgbImage, RenderError> {
-        self.chain
+        self.cpu_chain()
             .run_tile(&frame.as_raw_frame(), &self.prepared, out)
             .map_err(RenderError::from_cpu)
     }
@@ -1335,7 +1437,9 @@ impl FullChain {
     /// the device: the CPU runs the stages before the range on the calling thread, the range goes to
     /// the device as one job (the route's priority, owner and the render's own cancel token), and the
     /// CPU runs the rest. The same contract as [`run_tile`](Self::run_tile), within the tolerances of
-    /// the kernels (`docs/05`).
+    /// the kernels (`docs/05`). A range that holds every stage that reads the noise sigma
+    /// ([`StageRange::covers_sigma_stages`]) gets it from the half-resolution plane and the full map
+    /// is not made; a shorter range leaves such a stage to the CPU, which reads the map.
     ///
     /// # Errors
     ///
@@ -1347,20 +1451,43 @@ impl FullChain {
         out: Rect,
         route: &GpuRoute,
     ) -> Result<RgbImage, GpuError> {
-        GpuChain::new(&self.chain, &self.prepared, route.range)?.run_tile(
-            route,
-            &frame.as_raw_frame(),
-            out,
-            &route.token,
-        )
+        let raw = frame.as_raw_frame();
+        if route.range.covers_sigma_stages() {
+            GpuChain::new(&self.chain, &self.prepared, route.range)?
+                .with_sigma(self.sigma_half())?
+                .run_tile(route, &raw, out, &route.token)
+        } else {
+            GpuChain::new(self.cpu_chain(), &self.prepared, route.range)?.run_tile(
+                route,
+                &raw,
+                out,
+                &route.token,
+            )
+        }
     }
 
-    /// Bytes the chain holds (the sigma map).
+    /// Bytes the chain holds: the half-resolution sigma and, once made, the cell gains and the
+    /// full-resolution sigma map.
     #[must_use]
     pub fn bytes(&self) -> usize {
-        self.chain.sigma_map.as_ref().map_or(0, |m| m.len() * 4)
+        self.sigma.bytes()
+            + self
+                .gains
+                .get()
+                .and_then(Option::as_ref)
+                .map_or(0, |g| g.len() * 4)
+            + self
+                .cpu_chain
+                .get()
+                .and_then(|c| c.sigma_map.as_ref())
+                .map_or(0, |m| m.len() * 4)
     }
 }
+
+/// The stages the renderer runs on the device for the raw group of a full-resolution photo: the adaptive
+/// ratio demosaic, the bilateral denoise, R7 and capture sharpening (`StageRange::DEMOSAIC_TO_SHARPEN`,
+/// G-06). A route of this range never makes the full-resolution sigma map ([`FullChain::sigma_map_built`]).
+pub const DEVICE_RANGE: StageRange = StageRange::DEMOSAIC_TO_SHARPEN;
 
 /// How often a render waiting for its device job looks at its cancel token.
 const DEVICE_POLL: std::time::Duration = std::time::Duration::from_millis(5);
@@ -2522,6 +2649,205 @@ mod tests {
         .expect("active");
         assert_eq!(plan_d.apply(&plain), d);
     }
+
+    // ------------------------------------------------------------------------------------------
+    // G-06: the lazy full-resolution sigma map and the device's expansion of the half plane
+    // ------------------------------------------------------------------------------------------
+
+    /// A frame with a step edge, the noise reduction on (so that the denoise, R7 and R8 all run), a
+    /// vignetting profile (the synthetic file has none) and a half-resolution sigma that varies.
+    fn full_chain_with_every_stage(w: u32, h: u32) -> (FrameData, RawPlan, SigmaPlane, RawParams) {
+        let (raw, frame) = edge_frame(w, h);
+        let mut params = params_for_tests();
+        params.highlight_recovery = false;
+        params.noise_reduction = NoiseReduction {
+            luminance: 40.0,
+            color: 60.0,
+            detail: 70.0,
+        };
+        let mut plan = RawPlan::new(&raw, &frame, &params).expect("plan");
+        plan.vignette = Some(
+            VignetteProfile::from_tag(&[0, -400, -1500, -3500, -6000]).expect("vignetting profile"),
+        );
+        let (cw, ch) = (w as usize / 2, h as usize / 2);
+        let mut rng = synth::Rng::new(9);
+        let sigma = SigmaPlane {
+            width: cw,
+            height: ch,
+            data: (0..cw * ch)
+                .map(|i| 0.003 + 0.006 * (i % cw) as f32 / cw as f32 + 0.001 * rng.next_f32())
+                .collect(),
+        };
+        (frame, plan, sigma, params)
+    }
+
+    #[test]
+    fn the_full_resolution_sigma_map_is_made_on_the_first_cpu_use_and_is_the_old_one() {
+        // Odd sizes: the last photosite column and row read the last cell.
+        let (w, h) = (161u32, 121u32);
+        let (frame, plan, sigma, params) = full_chain_with_every_stage(w, h);
+        let full = FullChain::new(&frame, &plan, &params, &sigma, &CancelToken::new())
+            .expect("full chain");
+        // Nothing but the half plane is held, and the chain the device walks has no map.
+        assert!(!full.sigma_map_built());
+        assert_eq!(full.bytes(), sigma.bytes());
+        assert!(full.device_chain().sigma_map.is_none());
+        let want = full_sigma_map(&sigma, &plan);
+        // The half-resolution view the device takes is the cells and the gains of the plan.
+        let half = full.sigma_half();
+        assert_eq!((half.width, half.height), (sigma.width, sigma.height));
+        let gains = gain_plane(&plan, 2, sigma.width, sigma.height).expect("gains");
+        assert_eq!(half.gains, Some(gains.as_slice()));
+        for (x, y) in [(0usize, 0usize), (3, 5), (160, 120), (159, 119), (160, 0), (0, 120)] {
+            assert_eq!(half.at(x, y).to_bits(), want[y * w as usize + x].to_bits());
+        }
+        assert!(!full.sigma_map_built(), "the half view makes no map");
+        // The first CPU use makes the map, and it is the one the eager chain had, bit for bit.
+        let tile = Rect::new(7, 5, 80, 70);
+        let a = full.run_tile(&frame, tile).expect("cpu tile");
+        assert!(full.sigma_map_built());
+        let map = full.cpu_chain().sigma_map.as_ref().expect("map");
+        assert_eq!(map.len(), (w * h) as usize);
+        assert!(map.iter().zip(&want).all(|(a, b)| a.to_bits() == b.to_bits()));
+        assert_eq!(full.bytes(), sigma.bytes() + gains.len() * 4 + map.len() * 4);
+        let mut eager = full.device_chain().clone();
+        eager.sigma_map = Some(want);
+        let b = eager
+            .run_tile(&frame.as_raw_frame(), &full.prepared, tile)
+            .expect("eager tile");
+        assert_eq!(a.data, b.data, "the lazy map gives the eager chain's pixels");
+        // The noise reduction was on: the sigma reached the stages (a chain without a map would
+        // have denoised nothing, it has `sigma = 0`).
+        let blind = full
+            .device_chain()
+            .run_tile(&frame.as_raw_frame(), &full.prepared, tile)
+            .expect("blind tile");
+        assert!(a.max_abs_diff(&blind) > 1e-5, "the sigma map has an effect");
+    }
+
+    /// The device: policy `On` through the application's own opener (a device is created nowhere
+    /// else, `tests/gpu_policy.rs`), or `None` without an adapter, loudly unless the environment
+    /// requires one.
+    fn device() -> Option<Arc<Gpu>> {
+        let slot = crate::app::gpu::open_gpu(
+            crate::app::gpu::GpuPolicy::On,
+            crate::scheduler::MemoryBudget::detect(),
+        );
+        match slot.gpu() {
+            Some(gpu) => Some(Arc::clone(gpu)),
+            None => {
+                assert!(
+                    !ym_gpu::device::gpu_required_by_env(),
+                    "YM_REQUIRE_GPU is set but no device opened: {:?}",
+                    slot.failure()
+                );
+                eprintln!("no GPU adapter: the device tests of raw.rs are skipped");
+                None
+            }
+        }
+    }
+
+    #[test]
+    fn the_device_expands_the_half_resolution_sigma_like_the_cpus_full_map_cell_for_cell() {
+        let Some(gpu) = device() else { return };
+        for (w, h) in [(161u32, 121u32), (160, 120)] {
+            let (frame, plan, sigma, params) = full_chain_with_every_stage(w, h);
+            let full = FullChain::new(&frame, &plan, &params, &sigma, &CancelToken::new())
+                .expect("full chain");
+            let want = full_sigma_map(&sigma, &plan);
+            for rect in [
+                Rect::new(0, 0, w as usize, h as usize),
+                Rect::new(1, 3, 77, 61),
+                Rect::new(w as usize - 5, h as usize - 3, 5, 3),
+                Rect::new(40, 0, 1, h as usize),
+            ] {
+                let got = gpu
+                    .run(JobSpec::new(ym_gpu::queue::Priority::Export), {
+                        let (data, gains) = (sigma.data.clone(), full.sigma_half().gains.map(<[f32]>::to_vec));
+                        let (cw, ch) = (sigma.width, sigma.height);
+                        move |ctx, _| {
+                            let half = SigmaHalf {
+                                width: cw,
+                                height: ch,
+                                data: &data,
+                                gains: gains.as_deref(),
+                            };
+                            ym_gpu::kernels::bilateral::expand_sigma(
+                                ctx,
+                                &ym_gpu::kernels::bilateral::SigmaInput::Half(&half),
+                                rect,
+                            )
+                        }
+                    })
+                    .expect("device expansion");
+                let mut cells = Vec::new();
+                for y in rect.y..rect.y1() {
+                    cells.extend_from_slice(&want[y * w as usize + rect.x..y * w as usize + rect.x1()]);
+                }
+                assert!(
+                    got.iter().zip(&cells).all(|(a, b)| a.to_bits() == b.to_bits()),
+                    "{w}x{h} {rect:?}: the device's sigma plane is not the CPU map's"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_route_of_the_raw_group_never_makes_the_full_sigma_map_and_a_shorter_one_does() {
+        let Some(gpu) = device() else { return };
+        let (w, h) = (200u32, 150u32);
+        let (frame, plan, sigma, params) = full_chain_with_every_stage(w, h);
+        let route = |range| GpuRoute {
+            gpu: Arc::clone(&gpu),
+            range,
+            spec: JobSpec::new(ym_gpu::queue::Priority::Export),
+            token: CancelToken::new(),
+        };
+        let full = FullChain::new(&frame, &plan, &params, &sigma, &CancelToken::new())
+            .expect("full chain");
+        let rects = [
+            Rect::new(0, 0, 64, 64),
+            Rect::new(60, 40, 70, 60),
+            Rect::new(full.out_w - 64, full.out_h - 50, 64, 50),
+        ];
+        // R6 to R8: the device stages read the half plane, and no map is made.
+        let on_device: Vec<RgbImage> = rects
+            .iter()
+            .map(|&r| {
+                full.run_tile_gpu(&frame, r, &route(DEVICE_RANGE))
+                    .expect("device tile")
+            })
+            .collect();
+        assert!(!full.sigma_map_built(), "the raw group of the device needs no sigma map");
+        assert_eq!(full.bytes(), sigma.bytes() + full.cell_gains().map_or(0, |g| g.len() * 4));
+        // R6 alone: the CPU denoise, R7 and R8 read the map, which is made now.
+        let hybrid: Vec<RgbImage> = rects
+            .iter()
+            .map(|&r| {
+                full.run_tile_gpu(&frame, r, &route(StageRange::DEMOSAIC))
+                    .expect("hybrid tile")
+            })
+            .collect();
+        assert!(full.sigma_map_built());
+        // The stages after the demosaic agree: same device demosaic, the CPU stages against the
+        // device's (the kernels' bounds, `tests/gpu_chain.rs`).
+        for (a, b) in on_device.iter().zip(&hybrid) {
+            assert!(a.max_abs_diff(b) <= 1.1e-5, "{}", a.max_abs_diff(b));
+        }
+        // And all of it is the CPU chain's picture, up to the demosaic's decisions on exact ties.
+        for (a, &r) in on_device.iter().zip(&rects) {
+            let cpu = full.run_tile(&frame, r).expect("cpu tile");
+            let (mut worst, mut sum) = (0.0f32, 0.0f64);
+            for (x, y) in a.data.iter().zip(&cpu.data) {
+                let d = (x - y).abs();
+                worst = worst.max(d);
+                sum += f64::from(d);
+            }
+            let mean = sum / a.data.len() as f64;
+            assert!(mean < 2e-6 && worst < 0.05, "mean {mean:e}, worst {worst:e}");
+        }
+    }
+
 }
 
 #[cfg(test)]

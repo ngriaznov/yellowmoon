@@ -1,15 +1,47 @@
 //! The render graph's cache rules (`docs/01` section Render graph): a settings change invalidates
 //! only the groups after the first one it affects. Each test reads the stage runs of one request.
+//!
+//! The tests that read the run counts of one request run twice: on the CPU (the reference) and with
+//! the view stages on the device (`*_on_the_device`, G-05: the sampler, the colour chain, output
+//! sharpening and C13 on Mesa lavapipe; the raw chain stays on the CPU). The device road counts what
+//! the CPU road counts, stage for stage.
 mod common;
 
+use std::io::Write as _;
+use std::sync::Arc;
+
 use common::*;
+use ym_core::app::gpu::GpuStages;
 use ym_core::pipeline::{
-    FrameOptions, PhotoSource, RenderOptions, Renderer, StageRuns, ViewportMode, ViewportRect,
-    ViewportState,
+    FrameOptions, NeutralOnly, PhotoSource, RenderOptions, Renderer, StageRuns, ViewportMode,
+    ViewportRect, ViewportState,
 };
 use ym_core::scheduler::MemoryBudget;
 use ym_core::settings::{Crop, CropAspect, DevelopSettings, NormRect, Orientation};
+use ym_gpu::device::{Gpu, GpuConfig, gpu_required_by_env};
 use ym_gpu::queue::CancelToken;
+
+/// The device, in poison mode, or `None` (loudly) when no adapter opens, unless `YM_REQUIRE_GPU=1`
+/// turns that into a failure.
+fn gpu() -> Option<Arc<Gpu>> {
+    match Gpu::start(GpuConfig {
+        poison: true,
+        ..GpuConfig::default()
+    }) {
+        Ok(g) => Some(Arc::new(g)),
+        Err(e) => {
+            assert!(
+                !gpu_required_by_env(),
+                "YM_REQUIRE_GPU is set but no GPU adapter could be opened: {e}"
+            );
+            let _ = writeln!(
+                std::io::stderr(),
+                "\n* GPU TESTS SKIPPED in render_graph: {e}\n"
+            );
+            None
+        }
+    }
+}
 
 /// A 1200 x 800 patchwork photo, developed, with a renderer that has only the Neutral look.
 struct Rig {
@@ -20,6 +52,29 @@ struct Rig {
 
 impl Rig {
     fn new() -> Self {
+        Self::with_renderer(Renderer::neutral_only().expect("render thread"))
+    }
+
+    /// The same rig with the view stages on the device.
+    fn on_device() -> Option<Self> {
+        let gpu = gpu()?;
+        Some(Self::with_renderer(
+            Renderer::new(
+                Arc::new(NeutralOnly),
+                RenderOptions {
+                    gpu: Some(gpu),
+                    gpu_stages: GpuStages::SAMPLER
+                        .union(GpuStages::COLOR)
+                        .union(GpuStages::OUTPUT_SHARPEN)
+                        .union(GpuStages::ENCODE),
+                    ..RenderOptions::default()
+                },
+            )
+            .expect("render thread"),
+        ))
+    }
+
+    fn with_renderer(renderer: Renderer) -> Self {
         let scene = Scene::new(
             1200,
             800,
@@ -30,7 +85,7 @@ impl Rig {
         .noise(2e-4, 1e-6);
         Self {
             developed: Developed::new(&scene, "ILCE-7RM4"),
-            renderer: Renderer::neutral_only().expect("render thread"),
+            renderer,
             // A little under half the photo: the fit zoom must not sit on the 50 % boundary between the
             // half-size and the full-size image, or switching the lens corrections off (the photo
             // loses its auto-cropped border, a pixel or two) tips the view over to full-size tiles.
@@ -69,9 +124,7 @@ fn none() -> StageRuns {
     StageRuns::default()
 }
 
-#[test]
-fn the_first_frame_runs_every_group_once_and_the_second_is_a_cache_hit() {
-    let rig = Rig::new();
+fn the_first_frame_runs_every_group_once_and_the_second_is_a_cache_hit_with(rig: Rig) {
     let src = rig.source();
     let first = rig.runs(&src);
     assert_eq!(
@@ -122,8 +175,17 @@ fn the_first_frame_runs_every_group_once_and_the_second_is_a_cache_hit() {
 }
 
 #[test]
-fn a_curve_change_does_not_rerun_demosaic_or_the_color_group() {
-    let rig = Rig::new();
+fn the_first_frame_runs_every_group_once_and_the_second_is_a_cache_hit() {
+    the_first_frame_runs_every_group_once_and_the_second_is_a_cache_hit_with(Rig::new());
+}
+
+#[test]
+fn the_first_frame_runs_every_group_once_and_the_second_is_a_cache_hit_on_the_device() {
+    let Some(rig) = Rig::on_device() else { return };
+    the_first_frame_runs_every_group_once_and_the_second_is_a_cache_hit_with(rig);
+}
+
+fn a_curve_change_does_not_rerun_demosaic_or_the_color_group_with(rig: Rig) {
     let src = rig.source();
     rig.runs(&src);
     let curved = edit(&src, |s| {
@@ -140,8 +202,17 @@ fn a_curve_change_does_not_rerun_demosaic_or_the_color_group() {
 }
 
 #[test]
-fn every_grade_control_and_the_look_only_rebuild_the_grade_group() {
-    let rig = Rig::new();
+fn a_curve_change_does_not_rerun_demosaic_or_the_color_group() {
+    a_curve_change_does_not_rerun_demosaic_or_the_color_group_with(Rig::new());
+}
+
+#[test]
+fn a_curve_change_does_not_rerun_demosaic_or_the_color_group_on_the_device() {
+    let Some(rig) = Rig::on_device() else { return };
+    a_curve_change_does_not_rerun_demosaic_or_the_color_group_with(rig);
+}
+
+fn every_grade_control_and_the_look_only_rebuild_the_grade_group_with(rig: Rig) {
     let src = rig.source();
     rig.runs(&src);
     let edits: Vec<(&str, Edit)> = vec![
@@ -171,8 +242,17 @@ fn every_grade_control_and_the_look_only_rebuild_the_grade_group() {
 }
 
 #[test]
-fn a_white_balance_change_does_not_rerun_r3_to_r9() {
-    let rig = Rig::new();
+fn every_grade_control_and_the_look_only_rebuild_the_grade_group() {
+    every_grade_control_and_the_look_only_rebuild_the_grade_group_with(Rig::new());
+}
+
+#[test]
+fn every_grade_control_and_the_look_only_rebuild_the_grade_group_on_the_device() {
+    let Some(rig) = Rig::on_device() else { return };
+    every_grade_control_and_the_look_only_rebuild_the_grade_group_with(rig);
+}
+
+fn a_white_balance_change_does_not_rerun_r3_to_r9_with(rig: Rig) {
     let src = rig.source();
     rig.runs(&src);
     let edits: Vec<(&str, Edit)> = vec![
@@ -217,8 +297,17 @@ fn a_white_balance_change_does_not_rerun_r3_to_r9() {
 }
 
 #[test]
-fn a_decode_switch_noise_reduction_or_sharpening_reruns_the_raw_group() {
-    let rig = Rig::new();
+fn a_white_balance_change_does_not_rerun_r3_to_r9() {
+    a_white_balance_change_does_not_rerun_r3_to_r9_with(Rig::new());
+}
+
+#[test]
+fn a_white_balance_change_does_not_rerun_r3_to_r9_on_the_device() {
+    let Some(rig) = Rig::on_device() else { return };
+    a_white_balance_change_does_not_rerun_r3_to_r9_with(rig);
+}
+
+fn a_decode_switch_noise_reduction_or_sharpening_reruns_the_raw_group_with(rig: Rig) {
     let src = rig.source();
     rig.runs(&src);
     let edits: Vec<(&str, Edit)> = vec![
@@ -277,8 +366,17 @@ fn a_decode_switch_noise_reduction_or_sharpening_reruns_the_raw_group() {
 }
 
 #[test]
-fn crop_straighten_and_orientation_re_run_nothing_but_the_pixel_pass() {
-    let rig = Rig::new();
+fn a_decode_switch_noise_reduction_or_sharpening_reruns_the_raw_group() {
+    a_decode_switch_noise_reduction_or_sharpening_reruns_the_raw_group_with(Rig::new());
+}
+
+#[test]
+fn a_decode_switch_noise_reduction_or_sharpening_reruns_the_raw_group_on_the_device() {
+    let Some(rig) = Rig::on_device() else { return };
+    a_decode_switch_noise_reduction_or_sharpening_reruns_the_raw_group_with(rig);
+}
+
+fn crop_straighten_and_orientation_re_run_nothing_but_the_pixel_pass_with(rig: Rig) {
     let src = rig.source();
     // A cell of 330 x 220 (Fit is 27.5 %) at a fixed 30 % zoom: every edit below stays in the
     // 1/2-resolution bucket (above 25 %, up to 50 %), so the same raw group serves them all.
@@ -331,8 +429,17 @@ fn crop_straighten_and_orientation_re_run_nothing_but_the_pixel_pass() {
 }
 
 #[test]
-fn a_crop_that_needs_a_finer_image_runs_the_raw_group_once_at_the_new_scale() {
-    let rig = Rig::new();
+fn crop_straighten_and_orientation_re_run_nothing_but_the_pixel_pass() {
+    crop_straighten_and_orientation_re_run_nothing_but_the_pixel_pass_with(Rig::new());
+}
+
+#[test]
+fn crop_straighten_and_orientation_re_run_nothing_but_the_pixel_pass_on_the_device() {
+    let Some(rig) = Rig::on_device() else { return };
+    crop_straighten_and_orientation_re_run_nothing_but_the_pixel_pass_with(rig);
+}
+
+fn a_crop_that_needs_a_finer_image_runs_the_raw_group_once_at_the_new_scale_with(rig: Rig) {
     let src = rig.source();
     // Fit in a 600 x 400 cell is 50 %: the half-resolution group. Cropping to a third of the
     // photo shows 3x the pixel density, so the full-resolution tiles are needed: that is the
@@ -371,8 +478,17 @@ fn a_crop_that_needs_a_finer_image_runs_the_raw_group_once_at_the_new_scale() {
 }
 
 #[test]
-fn a_shared_exposure_from_the_burst_moves_only_the_color_group() {
-    let rig = Rig::new();
+fn a_crop_that_needs_a_finer_image_runs_the_raw_group_once_at_the_new_scale() {
+    a_crop_that_needs_a_finer_image_runs_the_raw_group_once_at_the_new_scale_with(Rig::new());
+}
+
+#[test]
+fn a_crop_that_needs_a_finer_image_runs_the_raw_group_once_at_the_new_scale_on_the_device() {
+    let Some(rig) = Rig::on_device() else { return };
+    a_crop_that_needs_a_finer_image_runs_the_raw_group_once_at_the_new_scale_with(rig);
+}
+
+fn a_shared_exposure_from_the_burst_moves_only_the_color_group_with(rig: Rig) {
     let src = rig.source();
     rig.runs(&src);
     let moved = {
@@ -389,8 +505,17 @@ fn a_shared_exposure_from_the_burst_moves_only_the_color_group() {
 }
 
 #[test]
-fn a_pooled_noise_model_reruns_the_raw_group_but_not_the_decoded_area() {
-    let rig = Rig::new();
+fn a_shared_exposure_from_the_burst_moves_only_the_color_group() {
+    a_shared_exposure_from_the_burst_moves_only_the_color_group_with(Rig::new());
+}
+
+#[test]
+fn a_shared_exposure_from_the_burst_moves_only_the_color_group_on_the_device() {
+    let Some(rig) = Rig::on_device() else { return };
+    a_shared_exposure_from_the_burst_moves_only_the_color_group_with(rig);
+}
+
+fn a_pooled_noise_model_reruns_the_raw_group_but_not_the_decoded_area_with(rig: Rig) {
     let src = rig.source();
     rig.runs(&src);
     let mut noise = src.estimates.noise.clone();
@@ -409,8 +534,17 @@ fn a_pooled_noise_model_reruns_the_raw_group_but_not_the_decoded_area() {
 }
 
 #[test]
-fn at_100_percent_tiles_are_cached_across_pans_and_color_edits() {
-    let rig = Rig::new();
+fn a_pooled_noise_model_reruns_the_raw_group_but_not_the_decoded_area() {
+    a_pooled_noise_model_reruns_the_raw_group_but_not_the_decoded_area_with(Rig::new());
+}
+
+#[test]
+fn a_pooled_noise_model_reruns_the_raw_group_but_not_the_decoded_area_on_the_device() {
+    let Some(rig) = Rig::on_device() else { return };
+    a_pooled_noise_model_reruns_the_raw_group_but_not_the_decoded_area_with(rig);
+}
+
+fn at_100_percent_tiles_are_cached_across_pans_and_color_edits_with(rig: Rig) {
     let src = rig.source();
     let mut state = rig.state.clone();
     let image = rig
@@ -442,8 +576,17 @@ fn at_100_percent_tiles_are_cached_across_pans_and_color_edits() {
 }
 
 #[test]
-fn a_coarse_frame_never_computes_tiles_and_says_it_is_not_sharp() {
-    let rig = Rig::new();
+fn at_100_percent_tiles_are_cached_across_pans_and_color_edits() {
+    at_100_percent_tiles_are_cached_across_pans_and_color_edits_with(Rig::new());
+}
+
+#[test]
+fn at_100_percent_tiles_are_cached_across_pans_and_color_edits_on_the_device() {
+    let Some(rig) = Rig::on_device() else { return };
+    at_100_percent_tiles_are_cached_across_pans_and_color_edits_with(rig);
+}
+
+fn a_coarse_frame_never_computes_tiles_and_says_it_is_not_sharp_with(rig: Rig) {
     let src = rig.source();
     let mut state = rig.state.clone();
     let image = rig
@@ -492,6 +635,17 @@ fn a_coarse_frame_never_computes_tiles_and_says_it_is_not_sharp() {
         .expect("sharp frame");
     assert!(sharp.sharp);
     assert_eq!((sharp.report.runs.tiles, sharp.report.scale), (0, 1));
+}
+
+#[test]
+fn a_coarse_frame_never_computes_tiles_and_says_it_is_not_sharp() {
+    a_coarse_frame_never_computes_tiles_and_says_it_is_not_sharp_with(Rig::new());
+}
+
+#[test]
+fn a_coarse_frame_never_computes_tiles_and_says_it_is_not_sharp_on_the_device() {
+    let Some(rig) = Rig::on_device() else { return };
+    a_coarse_frame_never_computes_tiles_and_says_it_is_not_sharp_with(rig);
 }
 
 #[test]
@@ -557,9 +711,9 @@ fn the_renderer_keeps_the_graphs_of_the_most_recent_photos_only() {
     assert_eq!(r.raw_groups, 1);
 }
 
-#[test]
-fn leaving_a_photo_frees_its_full_resolution_intermediates_and_keeps_the_small_images() {
-    let rig = Rig::new();
+fn leaving_a_photo_frees_its_full_resolution_intermediates_and_keeps_the_small_images_with(
+    rig: Rig,
+) {
     let src = rig.source();
     rig.renderer.navigate(src.id);
     // The fit image (1/2 resolution) and the 100 % tiles with their prepared chain.
@@ -585,6 +739,20 @@ fn leaving_a_photo_frees_its_full_resolution_intermediates_and_keeps_the_small_i
         },
     );
     assert!(r.full_chains == 1 && r.tiles >= 4, "{r:?}");
+}
+
+#[test]
+fn leaving_a_photo_frees_its_full_resolution_intermediates_and_keeps_the_small_images() {
+    leaving_a_photo_frees_its_full_resolution_intermediates_and_keeps_the_small_images_with(
+        Rig::new(),
+    );
+}
+
+#[test]
+fn leaving_a_photo_frees_its_full_resolution_intermediates_and_keeps_the_small_images_on_the_device()
+ {
+    let Some(rig) = Rig::on_device() else { return };
+    leaving_a_photo_frees_its_full_resolution_intermediates_and_keeps_the_small_images_with(rig);
 }
 
 #[test]
