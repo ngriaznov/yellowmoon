@@ -1035,6 +1035,42 @@ mod tests {
         );
     }
 
+    /// The barrier of the adaptive ratio shader (`ar_op`) ORs the bits of `cst2.z` into every value it
+    /// hides. The host must send `+0.0` there for every frame: any other bit pattern would corrupt
+    /// every pinned value, and `-0.0` would set every sign bit. Nothing but this test reads the word
+    /// back, and lavapipe cannot tell a wrong word from a right one until the shader is changed.
+    #[test]
+    fn the_barrier_word_of_the_uniform_is_plus_zero_for_every_frame() {
+        use crate::cpu::NoiseDn;
+        use crate::cpu::demosaic::adaptive_ratio::ShadowMatch;
+        let noises = [
+            NoiseDn::ZERO,
+            NoiseDn::new(0.07, 3.1),
+            NoiseDn::new(120.0, 17_202.0),
+        ];
+        let gains = [[1.0f32, 1.0, 1.0], [2.1, 1.0, 1.7], [0.5, 0.4, 3.0]];
+        let mut frames = 0;
+        for noise in noises {
+            for g in gains {
+                for shadow_match in [ShadowMatch::Off, ShadowMatch::On] {
+                    let params = Params {
+                        shadow_match,
+                        ..Params::default()
+                    };
+                    let derived = Derived::new(g, noise, &params).expect("derived");
+                    let c = Constants::new(&derived).expect("constants");
+                    assert_eq!(
+                        c.cst2[2].to_bits(),
+                        0,
+                        "the barrier word for {noise:?}, gains {g:?}"
+                    );
+                    frames += 1;
+                }
+            }
+        }
+        assert_eq!(frames, 18);
+    }
+
     /// K8 (module notes, "Fast-math"): lavapipe neither fuses nor re-associates, so only the text can
     /// show that a barrier or an exact routine went missing. The barrier is an OR (an XOR applied
     /// twice cancels), no pass divides or takes a square root with the device's operations except
