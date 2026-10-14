@@ -45,8 +45,8 @@ use super::color::{
 };
 use super::geometry::Geometry;
 use super::raw::{
-    CaptureMethod, FrameData, FullChain, GpuRoute, RawParams, RawParamsKey, RawPlan, SigmaPlane,
-    diffraction_params, noise_model_is_usable, reduced_bayer, reduced_rgb, sigma_plane,
+    CaptureMethod, DEVICE_RANGE, FrameData, FullChain, GpuRoute, RawParams, RawParamsKey, RawPlan,
+    SigmaPlane, diffraction_params, noise_model_is_usable, reduced_bayer, reduced_rgb, sigma_plane,
     usable_noise_model,
 };
 use super::{FrameZoom, NeuralStatus, RenderError, RenderPath, RenderStats};
@@ -88,8 +88,8 @@ pub struct RenderOptions {
     pub gpu: Option<Arc<Gpu>>,
     /// The stages the device may run (`Auto` runs [`GpuStages::SIGNED_OFF`], `On` and `Require`
     /// run all of them). All of them by default: a renderer given a device and no policy holds
-    /// nothing back. The raw chain ([`GpuStages::RAW_CHAIN`], the R6 demosaic of full-resolution
-    /// tiles) consults it; the wiring tasks of the GPU wave consult it one stage at a time, and a
+    /// nothing back. The raw chain ([`GpuStages::RAW_CHAIN`], R6 to R8 of full-resolution
+    /// tiles: the demosaic, the denoise, R7 and capture sharpening) consults it; the wiring tasks of the GPU wave consult it one stage at a time, and a
     /// stage that is off keeps its host boundary.
     pub gpu_stages: GpuStages,
     /// Whether a device error is a failure of the photo (`GpuPolicy::Require`, `--require-gpu`)
@@ -205,7 +205,8 @@ pub enum ComputeDevice {
 /// has one value per range, next to the single `device` of the colour pass).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RangeDevice {
-    /// The stages (`R6` for the demosaic).
+    /// The stages (`R6..R8` for the raw group of the device: [`DEVICE_RANGE`]; `R6` is the demosaic
+    /// alone).
     pub range: StageRange,
     /// Where they ran for the tiles of this request.
     pub device: ComputeDevice,
@@ -1310,7 +1311,7 @@ impl<'a> Job<'a> {
         }
         Ok(Some(GpuRoute {
             gpu,
-            range: StageRange::DEMOSAIC,
+            range: DEVICE_RANGE,
             spec: JobSpec::new(self.gpu_priority).owned_by(u64::from(self.src.id.0)),
             token: self.cancel.clone(),
         }))
@@ -1478,7 +1479,7 @@ impl<'a> Job<'a> {
             }
         }
         if expected {
-            self.record_range(StageRange::DEMOSAIC, ComputeDevice::Cpu);
+            self.record_range(DEVICE_RANGE, ComputeDevice::Cpu);
         }
         full.run_tile(frame, rect)
     }

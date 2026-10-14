@@ -24,8 +24,20 @@
 //     recommendation) instead of the products of the other costs (a product of three costs reaches
 //     1e18 for 1e6 DN data; the inverse form stays below the largest sample);
 //   * the CA field is evaluated per site in f32 from the f32 knots (spec 5), not in f64.
-// No fused multiply-add is used on purpose; WGSL cannot forbid one, so a driver that contracts
-// `a * b + c` can move the last bit.
+// No fused multiply-add is used on purpose.
+//
+// Fast-math (K8). Metal compiles with fast-math: it fuses `a * b + c` into multiply-adds, re-associates
+// sums and products, and its division and square root are not correctly rounded. The decisions above
+// compare sums of absolute differences for order, and a tie in exact arithmetic (an edge at 2:1, a
+// 45 degree edge, a symmetric neighbourhood) is then decided by which rounding each side got; every
+// later value is computed from values a decision chose. So every product that meets a sum, every
+// partial sum and every difference passes through `ar_op` (one operation per barrier: nothing to
+// fuse or re-associate), and every division and the one square root are computed in integer
+// arithmetic, correctly rounded (`ar_div`, `ar_sqrt`). IEEE arithmetic is unchanged by all of that;
+// it also stops the re-association of constants that lavapipe's compiler (NIR) did in a few chains
+// (a few samples moved by 1 to 3 ulp). A model of Apple's compiler (naga's MSL of these passes
+// compiled with clang -O2 -ffast-math -ffp-contract=fast -mfma -mrecip=all) gives the bits of the
+// strict compile on every case it was run on (docs/gpu-plan.md section 12).
 //
 // Inputs. The host refuses a mosaic with NaN, infinity or a value whose scaled magnitude would
 // overflow the squares of the matching step (see `kernels/adaptive_ratio.rs`), so the shader has no
@@ -89,6 +101,104 @@ fn ar_st(pl: u32, i: u32, v: f32) {
     sc[pl * u.dims.z + i] = v;
 }
 
+// Hides a value from algebraic rewriting: an xor with `u.cst2.z`, which is always 0 and which the
+// compiler cannot know (module notes, K8). The identity on the bits.
+fn ar_op(x: f32) -> f32 {
+    return bitcast<f32>(bitcast<u32>(x) ^ bitcast<u32>(u.cst2.z));
+}
+
+// The correctly rounded quotient a / b in integer arithmetic only (a fast-math division is the dividend
+// times an approximate reciprocal). Restoring division of the 24-bit mantissas gives
+// q = floor(ma 2^25 / mb) and the remainder; rounding to nearest, ties to even. A zero dividend gives
+// the signed zero; subnormal, infinite or NaN operands and a quotient outside the normal range take the
+// device's division (the host refuses non-finite and overflowing inputs, and every divisor here is a
+// cost of at least 1, a gain, a count or a sum of positive weights).
+fn ar_div(a: f32, b: f32) -> f32 {
+    let ab = bitcast<u32>(a);
+    let bb = bitcast<u32>(b);
+    let ea = (ab >> 23u) & 0xffu;
+    let eb = (bb >> 23u) & 0xffu;
+    let sign = (ab ^ bb) & 0x80000000u;
+    if (eb == 0u || eb == 0xffu || ea == 0xffu) {
+        return a / b;
+    }
+    if (ea == 0u) {
+        if ((ab & 0x7fffffffu) == 0u) {
+            return bitcast<f32>(sign);
+        }
+        return a / b;
+    }
+    let ma = (ab & 0x7fffffu) | 0x800000u;
+    let mb = (bb & 0x7fffffu) | 0x800000u;
+    var rem = ma;
+    var q = 0u;
+    for (var k = 0u; k < 26u; k = k + 1u) {
+        q = q << 1u;
+        if (rem >= mb) {
+            rem = rem - mb;
+            q = q | 1u;
+        }
+        rem = rem << 1u;
+    }
+    var ex = i32(ea) - i32(eb) + 126;
+    var m = q >> 1u;
+    var round_bit = q & 1u;
+    var sticky = u32(rem != 0u);
+    if (q >= 0x2000000u) {
+        m = q >> 2u;
+        round_bit = (q >> 1u) & 1u;
+        sticky = sticky | (q & 1u);
+        ex = ex + 1;
+    }
+    if (ex < 1 || ex > 254) {
+        return a / b;
+    }
+    m = m + (round_bit & (sticky | (m & 1u)));
+    return bitcast<f32>(sign | ((u32(ex - 1) << 23u) + m));
+}
+
+// The correctly rounded square root in integer arithmetic only: the integer root of N = mp 2^26 digit
+// by digit (mp the mantissa, doubled for an odd exponent), rounding to nearest, ties to even. Zero
+// returns itself; subnormals, infinities, NaN and negatives take the device's `sqrt`.
+fn ar_sqrt(x: f32) -> f32 {
+    let bits = bitcast<u32>(x);
+    if ((bits & 0x7fffffffu) == 0u) {
+        return x;
+    }
+    let e = (bits >> 23u) & 0xffu;
+    if (e == 0u || e == 0xffu || (bits >> 31u) != 0u) {
+        return sqrt(x);
+    }
+    let odd = e & 1u;
+    let mp = ((bits & 0x7fffffu) | 0x800000u) << odd;
+    var rem = 0u;
+    var root = 0u;
+    for (var k = 0u; k < 26u; k = k + 1u) {
+        var two = 0u;
+        if (k < 13u) {
+            two = (mp >> (24u - 2u * k)) & 3u;
+        }
+        rem = (rem << 2u) | two;
+        let trial = (root << 2u) | 1u;
+        if (rem >= trial) {
+            rem = rem - trial;
+            root = (root << 1u) | 1u;
+        } else {
+            root = root << 1u;
+        }
+    }
+    var q = root >> 1u;
+    var round_bit = root & 1u;
+    var sticky = u32(rem != 0u);
+    if (odd == 1u) {
+        q = root >> 2u;
+        round_bit = (root >> 1u) & 1u;
+        sticky = sticky | (root & 1u);
+    }
+    q = q + (round_bit & (sticky | (q & 1u)));
+    return bitcast<f32>(((((e + 127u) >> 1u) - 1u) << 23u) + q);
+}
+
 // The sample (dx, dy) away from flat index `b` of plane `pl`.
 fn ar_at(pl: u32, b: i32, dx: i32, dy: i32) -> f32 {
     return sc[pl * u.dims.z + u32(b + dy * i32(u.dims.x) + dx)];
@@ -122,9 +232,9 @@ fn ar_prepare(gid: vec3<u32>) {
     let c = ar_site(x, y);
     var mu = inp[u32(sy) * u32(u.org.w) + u32(sx)];
     if (u.ctl.x == 1u) {
-        mu = mu / u.gains[c];
+        mu = ar_div(mu, u.gains[c]);
     }
-    let m = u.gains.w * max(mu, 0.0);
+    let m = ar_op(u.gains.w * max(mu, 0.0));
     let i = y * u.dims.x + x;
     ar_st(PL_M, i, m);
     if (c == 0u) {
@@ -163,9 +273,9 @@ fn ar_curve(off: u32, n: u32, r: f32) -> f32 {
     let span = b.x - a.x;
     var t = 0.0;
     if (span > 0.0) {
-        t = (r - a.x) / span;
+        t = ar_div(ar_op(r - a.x), span);
     }
-    return a.y + (b.y - a.y) * t;
+    return a.y + ar_op(ar_op(b.y - a.y) * t);
 }
 
 // ca = |shift_R(r) - shift_B(r)| in pixels at the site (x, y) of the plane (0 on the plain path): r is
@@ -177,7 +287,7 @@ fn ar_misreg(x: u32, y: u32) -> f32 {
     }
     let dx = f32(u.cai.x + i32(x)) + u.caf.x;
     let dy = f32(u.cai.y + i32(y)) + u.caf.y;
-    let r = sqrt(dx * dx + dy * dy);
+    let r = ar_sqrt(ar_op(ar_op(dx * dx) + ar_op(dy * dy)));
     let nr = u32(u.cai.z);
     let nb = u32(u.cai.w);
     return abs(ar_curve(0u, nr, r) - ar_curve(nr, nb, r));
@@ -195,11 +305,11 @@ fn ar_wide(b: i32, rho: f32, dl: f32, dr: f32, du: f32, dd: f32) -> u32 {
     var d5 = 0.0;
     for (var j = -4; j <= 4; j = j + 2) {
         for (var i = -4; i <= 4; i = i + 2) {
-            let q = rho * ar_m(b, i, j);
-            l5 = l5 + abs(dl + ar_m(b, i - 1, j) - q);
-            r5 = r5 + abs(dr + ar_m(b, i + 1, j) - q);
-            u5 = u5 + abs(du + ar_m(b, i, j - 1) - q);
-            d5 = d5 + abs(dd + ar_m(b, i, j + 1) - q);
+            let q = ar_op(rho * ar_m(b, i, j));
+            l5 = ar_op(l5 + abs(ar_op(ar_op(dl + ar_m(b, i - 1, j)) - q)));
+            r5 = ar_op(r5 + abs(ar_op(ar_op(dr + ar_m(b, i + 1, j)) - q)));
+            u5 = ar_op(u5 + abs(ar_op(ar_op(du + ar_m(b, i, j - 1)) - q)));
+            d5 = ar_op(d5 + abs(ar_op(ar_op(dd + ar_m(b, i, j + 1)) - q)));
         }
     }
     if (max(l5, r5) < min(u5, d5)) {
@@ -215,84 +325,91 @@ fn ar_wide(b: i32, rho: f32, dl: f32, dr: f32, du: f32, dd: f32) -> u32 {
 // R/B misregistration at the site.
 fn ar_green_estimate(b: i32, rho: f32, k: f32, ca: f32) -> f32 {
     let c = ar_m(b, 0, 0);
-    let cs = rho * c;
+    let cs = ar_op(rho * c);
     let gu = ar_m(b, 0, -1);
     let gd = ar_m(b, 0, 1);
     let gl = ar_m(b, -1, 0);
     let gr = ar_m(b, 1, 0);
     // Centre colour differences.
-    let du = cs - gu;
-    let dd = cs - gd;
-    let dl = cs - gl;
-    let dr = cs - gr;
-    let w2 = 1.6 * rho;
-    let vbase = abs(gl - ar_m(b, -1, -2)) + abs(gl - ar_m(b, -1, 2))
-        + abs(gr - ar_m(b, 1, -2)) + abs(gr - ar_m(b, 1, 2))
-        + w2 * abs(ar_m(b, 0, -2) - 2.0 * c + ar_m(b, 0, 2));
-    let hbase = abs(gu - ar_m(b, -2, -1)) + abs(gu - ar_m(b, 2, -1))
-        + abs(gd - ar_m(b, -2, 1)) + abs(gd - ar_m(b, 2, 1))
-        + w2 * abs(ar_m(b, -2, 0) - 2.0 * c + ar_m(b, 2, 0));
-    let q_n = rho * ar_m(b, 0, -4);
-    let q_s = rho * ar_m(b, 0, 4);
-    let q_w = rho * ar_m(b, -4, 0);
-    let q_e = rho * ar_m(b, 4, 0);
-    var su = vbase + abs(du + ar_m(b, 0, -5) - q_n) + abs(du + ar_m(b, 0, 3) - q_s);
-    var sd = vbase + abs(dd + ar_m(b, 0, -3) - q_n) + abs(dd + ar_m(b, 0, 5) - q_s);
-    var sv = vbase + abs(ar_m(b, 0, -5) - ar_m(b, 0, -3)) + abs(ar_m(b, 0, 3) - ar_m(b, 0, 5));
-    var sl = hbase + abs(dl + ar_m(b, -5, 0) - q_w) + abs(dl + ar_m(b, 3, 0) - q_e);
-    var sr = hbase + abs(dr + ar_m(b, -3, 0) - q_w) + abs(dr + ar_m(b, 5, 0) - q_e);
-    var sh = hbase + abs(ar_m(b, -5, 0) - ar_m(b, -3, 0)) + abs(ar_m(b, 3, 0) - ar_m(b, 5, 0));
+    let du = ar_op(cs - gu);
+    let dd = ar_op(cs - gd);
+    let dl = ar_op(cs - gl);
+    let dr = ar_op(cs - gr);
+    let w2 = ar_op(1.6 * rho);
+    let c2 = ar_op(2.0 * c);
+    let vbase = ar_op(ar_op(ar_op(ar_op(abs(gl - ar_m(b, -1, -2)) + abs(gl - ar_m(b, -1, 2)))
+        + abs(gr - ar_m(b, 1, -2))) + abs(gr - ar_m(b, 1, 2)))
+        + ar_op(w2 * abs(ar_op(ar_op(ar_m(b, 0, -2) - c2) + ar_m(b, 0, 2)))));
+    let hbase = ar_op(ar_op(ar_op(ar_op(abs(gu - ar_m(b, -2, -1)) + abs(gu - ar_m(b, 2, -1)))
+        + abs(gd - ar_m(b, -2, 1))) + abs(gd - ar_m(b, 2, 1)))
+        + ar_op(w2 * abs(ar_op(ar_op(ar_m(b, -2, 0) - c2) + ar_m(b, 2, 0)))));
+    let q_n = ar_op(rho * ar_m(b, 0, -4));
+    let q_s = ar_op(rho * ar_m(b, 0, 4));
+    let q_w = ar_op(rho * ar_m(b, -4, 0));
+    let q_e = ar_op(rho * ar_m(b, 4, 0));
+    var su = ar_op(ar_op(vbase + abs(ar_op(ar_op(du + ar_m(b, 0, -5)) - q_n)))
+        + abs(ar_op(ar_op(du + ar_m(b, 0, 3)) - q_s)));
+    var sd = ar_op(ar_op(vbase + abs(ar_op(ar_op(dd + ar_m(b, 0, -3)) - q_n)))
+        + abs(ar_op(ar_op(dd + ar_m(b, 0, 5)) - q_s)));
+    var sv = ar_op(ar_op(vbase + abs(ar_m(b, 0, -5) - ar_m(b, 0, -3)))
+        + abs(ar_m(b, 0, 3) - ar_m(b, 0, 5)));
+    var sl = ar_op(ar_op(hbase + abs(ar_op(ar_op(dl + ar_m(b, -5, 0)) - q_w)))
+        + abs(ar_op(ar_op(dl + ar_m(b, 3, 0)) - q_e)));
+    var sr = ar_op(ar_op(hbase + abs(ar_op(ar_op(dr + ar_m(b, -3, 0)) - q_w)))
+        + abs(ar_op(ar_op(dr + ar_m(b, 5, 0)) - q_e)));
+    var sh = ar_op(ar_op(hbase + abs(ar_m(b, -5, 0) - ar_m(b, -3, 0)))
+        + abs(ar_m(b, 3, 0) - ar_m(b, 5, 0)));
     // The 3 x 3 same-colour grid, centre included.
     for (var j = -2; j <= 2; j = j + 2) {
         for (var i = -2; i <= 2; i = i + 2) {
-            let q = rho * ar_m(b, i, j);
+            let q = ar_op(rho * ar_m(b, i, j));
             let ql = ar_m(b, i - 1, j);
             let qr = ar_m(b, i + 1, j);
             let qu = ar_m(b, i, j - 1);
             let qd = ar_m(b, i, j + 1);
-            sl = sl + abs(dl + ql - q);
-            sr = sr + abs(dr + qr - q);
-            su = su + abs(du + qu - q);
-            sd = sd + abs(dd + qd - q);
-            sh = sh + abs(ql - qr);
-            sv = sv + abs(qu - qd);
+            sl = ar_op(sl + abs(ar_op(ar_op(dl + ql) - q)));
+            sr = ar_op(sr + abs(ar_op(ar_op(dr + qr) - q)));
+            su = ar_op(su + abs(ar_op(ar_op(du + qu) - q)));
+            sd = ar_op(sd + abs(ar_op(ar_op(dd + qd) - q)));
+            sh = ar_op(sh + abs(ql - qr));
+            sv = ar_op(sv + abs(qu - qd));
         }
     }
     // The CA relaxation factor: exactly 1 on the plain path and under 0.1 px, unbounded above. A NaN
     // misregistration (curves that overflow) relaxes nothing, as on the CPU.
     var f = 1.0;
     if (!is_nan_f(ca) && ca >= 0.1) {
-        f = 1.0 + 2.5 * (ca * ca * ca);
+        f = ar_op(1.0 + ar_op(2.5 * ar_op(ar_op(ca * ca) * ca)));
     }
     var dir = 2u;
-    if (max(sl, sr) < f * min(su, sd) && sh < sv) {
+    if (max(sl, sr) < ar_op(f * min(su, sd)) && sh < sv) {
         dir = 0u;
-    } else if (f * min(sl, sr) > max(su, sd) && sv < sh) {
+    } else if (ar_op(f * min(sl, sr)) > max(su, sd) && sv < sh) {
         dir = 1u;
     } else {
         // Flat test: the two green-pair means agree within about two sigma of unit-gain Poisson noise.
-        let s_h = gl + gr;
-        let s_v = gu + gd;
-        let half_diff = 0.5 * abs(s_h - s_v);
-        if (half_diff * half_diff < s_h + s_v) {
+        let s_h = ar_op(gl + gr);
+        let s_v = ar_op(gu + gd);
+        let half_diff = ar_op(0.5 * abs(s_h - s_v));
+        if (ar_op(half_diff * half_diff) < ar_op(s_h + s_v)) {
             dir = 2u;
         } else {
             dir = ar_wide(b, rho, dl, dr, du, dd);
         }
     }
     // Costs of the four directions (always >= 1).
-    let w_u = rho * abs(ar_m(b, 0, -2) - c) + abs(ar_m(b, 0, -3) - gu) + abs(ar_m(b, -1, -2) - gl)
-        + abs(ar_m(b, 1, -2) - gr) + abs(gu - gd) + 1.0;
-    let w_d = rho * abs(ar_m(b, 0, 2) - c) + abs(ar_m(b, 0, 3) - gd) + abs(ar_m(b, -1, 2) - gl)
-        + abs(ar_m(b, 1, 2) - gr) + abs(gu - gd) + 1.0;
-    let w_l = rho * abs(ar_m(b, -2, 0) - c) + abs(ar_m(b, -3, 0) - gl) + abs(ar_m(b, -2, -1) - gu)
-        + abs(ar_m(b, -2, 1) - gd) + abs(gl - gr) + 1.0;
-    let w_r = rho * abs(ar_m(b, 2, 0) - c) + abs(ar_m(b, 3, 0) - gr) + abs(ar_m(b, 2, -1) - gu)
-        + abs(ar_m(b, 2, 1) - gd) + abs(gl - gr) + 1.0;
-    let c_u = 0.5 * (ar_m(b, 0, -2) + c);
-    let c_d = 0.5 * (ar_m(b, 0, 2) + c);
-    let c_l = 0.5 * (ar_m(b, -2, 0) + c);
-    let c_r = 0.5 * (ar_m(b, 2, 0) + c);
+    let w_u = ar_op(ar_op(ar_op(ar_op(ar_op(ar_op(rho * abs(ar_m(b, 0, -2) - c)) + abs(ar_m(b, 0, -3) - gu))
+        + abs(ar_m(b, -1, -2) - gl)) + abs(ar_m(b, 1, -2) - gr)) + abs(gu - gd)) + 1.0);
+    let w_d = ar_op(ar_op(ar_op(ar_op(ar_op(ar_op(rho * abs(ar_m(b, 0, 2) - c)) + abs(ar_m(b, 0, 3) - gd))
+        + abs(ar_m(b, -1, 2) - gl)) + abs(ar_m(b, 1, 2) - gr)) + abs(gu - gd)) + 1.0);
+    let w_l = ar_op(ar_op(ar_op(ar_op(ar_op(ar_op(rho * abs(ar_m(b, -2, 0) - c)) + abs(ar_m(b, -3, 0) - gl))
+        + abs(ar_m(b, -2, -1) - gu)) + abs(ar_m(b, -2, 1) - gd)) + abs(gl - gr)) + 1.0);
+    let w_r = ar_op(ar_op(ar_op(ar_op(ar_op(ar_op(rho * abs(ar_m(b, 2, 0) - c)) + abs(ar_m(b, 3, 0) - gr))
+        + abs(ar_m(b, 2, -1) - gu)) + abs(ar_m(b, 2, 1) - gd)) + abs(gl - gr)) + 1.0);
+    let c_u = ar_op(0.5 * ar_op(ar_m(b, 0, -2) + c));
+    let c_d = ar_op(0.5 * ar_op(ar_m(b, 0, 2) + c));
+    let c_l = ar_op(0.5 * ar_op(ar_m(b, -2, 0) + c));
+    let c_r = ar_op(0.5 * ar_op(ar_m(b, 2, 0) + c));
     // The weight of each green is proportional to the inverse of its own cost (the spec's product of
     // the other costs, divided through by the product of all of them); unused directions get 0.
     var a_u = 0.0;
@@ -300,24 +417,24 @@ fn ar_green_estimate(b: i32, rho: f32, k: f32, ca: f32) -> f32 {
     var a_l = 0.0;
     var a_r = 0.0;
     if (dir == 0u) {
-        a_l = 1.0 / w_l;
-        a_r = 1.0 / w_r;
+        a_l = ar_div(1.0, w_l);
+        a_r = ar_div(1.0, w_r);
     } else if (dir == 1u) {
-        a_u = 1.0 / w_u;
-        a_d = 1.0 / w_d;
+        a_u = ar_div(1.0, w_u);
+        a_d = ar_div(1.0, w_d);
     } else {
-        a_u = 1.0 / w_u;
-        a_d = 1.0 / w_d;
-        a_l = 1.0 / w_l;
-        a_r = 1.0 / w_r;
+        a_u = ar_div(1.0, w_u);
+        a_d = ar_div(1.0, w_d);
+        a_l = ar_div(1.0, w_l);
+        a_r = ar_div(1.0, w_r);
     }
-    let sum = a_u + a_d + a_l + a_r;
-    let ng = a_u * gu + a_d * gd + a_l * gl + a_r * gr;
-    let nc = a_u * c_u + a_d * c_d + a_l * c_l + a_r * c_r;
-    let ks = k * sum;
-    let num = max(ks + ng, ks);
-    let den = max(ks + nc, ks);
-    return (c + k) * (num / den) - k;
+    let sum = ar_op(ar_op(ar_op(a_u + a_d) + a_l) + a_r);
+    let ng = ar_op(ar_op(ar_op(ar_op(a_u * gu) + ar_op(a_d * gd)) + ar_op(a_l * gl)) + ar_op(a_r * gr));
+    let nc = ar_op(ar_op(ar_op(ar_op(a_u * c_u) + ar_op(a_d * c_d)) + ar_op(a_l * c_l)) + ar_op(a_r * c_r));
+    let ks = ar_op(k * sum);
+    let num = max(ar_op(ks + ng), ks);
+    let den = max(ar_op(ks + nc), ks);
+    return ar_op(ar_op(c + k) * ar_div(num, den)) - k;
 }
 
 fn ar_green(gid: vec3<u32>) {
@@ -352,12 +469,12 @@ fn ar_refine_site(b: i32, use_ca: bool, kappa: f32) -> f32 {
     let sw = ar_at(PL_A, b, -1, 1);
     let se = ar_at(PL_A, b, 1, 1);
     let c0 = ar_m(b, 0, 0);
-    var v = abs(n - g0) + abs(s - g0);
-    var h = abs(w - g0) + abs(e - g0);
+    var v = ar_op(abs(n - g0) + abs(s - g0));
+    var h = ar_op(abs(w - g0) + abs(e - g0));
     if (use_ca) {
         // The axis scores also see the same-colour gradients two photosites out, weighted by kappa.
-        v = v + kappa * (abs(ar_m(b, 0, -2) - c0) + abs(ar_m(b, 0, 2) - c0));
-        h = h + kappa * (abs(ar_m(b, -2, 0) - c0) + abs(ar_m(b, 2, 0) - c0));
+        v = ar_op(v + ar_op(kappa * ar_op(abs(ar_m(b, 0, -2) - c0) + abs(ar_m(b, 0, 2) - c0))));
+        h = ar_op(h + ar_op(kappa * ar_op(abs(ar_m(b, -2, 0) - c0) + abs(ar_m(b, 2, 0) - c0))));
     }
     let g_4a = ar_at(PL_A, b, -1, 2);
     let g_4b = ar_at(PL_A, b, 1, -2);
@@ -368,14 +485,14 @@ fn ar_refine_site(b: i32, use_ca: bool, kappa: f32) -> f32 {
     let g_7a = ar_at(PL_A, b, -2, -1);
     let g_7b = ar_at(PL_A, b, 2, 1);
     // Scores of the six oblique directions (indices 2 to 7).
-    let s2 = abs(s - e) + abs(n - w) + abs(ar_m(b, 2, -2) - c0) + abs(ar_m(b, -2, 2) - c0)
-        + abs(ar_m(b, -1, 1) - ar_m(b, 1, -1));
-    let s3 = abs(s - w) + abs(n - e) + abs(ar_m(b, -2, -2) - c0) + abs(ar_m(b, 2, 2) - c0)
-        + abs(ar_m(b, -1, -1) - ar_m(b, 1, 1));
-    let s4 = abs(s - ne) + abs(n - sw) + abs(g_4a - g0) + abs(g_4b - g0);
-    let s5 = abs(e - sw) + abs(w - ne) + abs(g_5a - g0) + abs(g_5b - g0);
-    let s6 = abs(n - se) + abs(s - nw) + abs(g_6a - g0) + abs(g_6b - g0);
-    let s7 = abs(w - se) + abs(e - nw) + abs(g_7a - g0) + abs(g_7b - g0);
+    let s2 = ar_op(ar_op(ar_op(ar_op(abs(s - e) + abs(n - w)) + abs(ar_m(b, 2, -2) - c0))
+        + abs(ar_m(b, -2, 2) - c0)) + abs(ar_m(b, -1, 1) - ar_m(b, 1, -1)));
+    let s3 = ar_op(ar_op(ar_op(ar_op(abs(s - w) + abs(n - e)) + abs(ar_m(b, -2, -2) - c0))
+        + abs(ar_m(b, 2, 2) - c0)) + abs(ar_m(b, -1, -1) - ar_m(b, 1, 1)));
+    let s4 = ar_op(ar_op(ar_op(abs(s - ne) + abs(n - sw)) + abs(g_4a - g0)) + abs(g_4b - g0));
+    let s5 = ar_op(ar_op(ar_op(abs(e - sw) + abs(w - ne)) + abs(g_5a - g0)) + abs(g_5b - g0));
+    let s6 = ar_op(ar_op(ar_op(abs(n - se) + abs(s - nw)) + abs(g_6a - g0)) + abs(g_6b - g0));
+    let s7 = ar_op(ar_op(ar_op(abs(w - se) + abs(e - nw)) + abs(g_7a - g0)) + abs(g_7b - g0));
     // Strict comparisons: ties keep the lower index. A tie of V and H selects the horizontal axis.
     var best = 0u;
     var low = v;
@@ -411,31 +528,34 @@ fn ar_refine_site(b: i32, use_ca: bool, kappa: f32) -> f32 {
         return g0;
     }
     var means: array<f32, 8>;
-    means[0] = (g0 + n + s) / 3.0;
-    means[1] = (g0 + w + e) / 3.0;
-    means[2] = (2.0 * g0 + ne + sw) / 4.0;
-    means[3] = (2.0 * g0 + nw + se) / 4.0;
-    means[4] = (g0 + g_4a + g_4b) / 3.0;
-    means[5] = (g0 + g_5a + g_5b) / 3.0;
-    means[6] = (g0 + g_6a + g_6b) / 3.0;
-    means[7] = (g0 + g_7a + g_7b) / 3.0;
+    let g2 = ar_op(2.0 * g0);
+    means[0] = ar_div(ar_op(ar_op(g0 + n) + s), 3.0);
+    means[1] = ar_div(ar_op(ar_op(g0 + w) + e), 3.0);
+    means[2] = ar_div(ar_op(ar_op(g2 + ne) + sw), 4.0);
+    means[3] = ar_div(ar_op(ar_op(g2 + nw) + se), 4.0);
+    means[4] = ar_div(ar_op(ar_op(g0 + g_4a) + g_4b), 3.0);
+    means[5] = ar_div(ar_op(ar_op(g0 + g_5a) + g_5b), 3.0);
+    means[6] = ar_div(ar_op(ar_op(g0 + g_6a) + g_6b), 3.0);
+    means[7] = ar_div(ar_op(ar_op(g0 + g_7a) + g_7b), 3.0);
     let axis = select(means[1], means[0], v < h);
     if (!use_ca) {
-        return 0.5 * (axis + means[best]);
+        return 0.5 * ar_op(axis + means[best]);
     }
     if (best < 2u) {
         // A 3-tap mean along the winning axis, which takes over from G0 as kappa grows; the weight of
         // G0 is 1 + 18 t + 102 t^3 with t = (1 - min(1, 2 kappa))^2.
-        let t0 = 1.0 - min(2.0 * kappa, 1.0);
-        let t = t0 * t0;
-        let wt = 1.0 + 18.0 * t + 102.0 * (t * t * t);
-        var num = wt * g0 + w + e;
+        let t0 = 1.0 - min(ar_op(2.0 * kappa), 1.0);
+        let t = ar_op(t0 * t0);
+        let wt = ar_op(ar_op(1.0 + ar_op(18.0 * t)) + ar_op(102.0 * ar_op(ar_op(t * t) * t)));
+        let wg0 = ar_op(wt * g0);
+        var num = ar_op(ar_op(wg0 + w) + e);
         if (best == 0u) {
-            num = wt * g0 + n + s;
+            num = ar_op(ar_op(wg0 + n) + s);
         }
-        return num / (wt + 2.0);
+        return ar_div(num, ar_op(wt + 2.0));
     }
-    return (axis + (2.0 * kappa + 1.0) * means[best]) / (2.0 * kappa + 2.0);
+    let k2 = ar_op(2.0 * kappa);
+    return ar_div(ar_op(axis + ar_op(ar_op(k2 + 1.0) * means[best])), ar_op(k2 + 2.0));
 }
 
 // Writes the white-balanced green plane: PG = g_G G2 (spec 3.4.1; G2 = G1 at G sites).
@@ -501,19 +621,21 @@ fn ar_step1(gid: vec3<u32>) {
     let g_b = select(g_ur, g_dr, main_diag);
     let c_a = select(ar_at(py, b, -2, 2), ar_at(py, b, -2, -2), main_diag);
     let c_b = select(ar_at(py, b, 2, -2), ar_at(py, b, 2, 2), main_diag);
-    var w_a = 1.0 + abs(g_a - g0) + abs(c_a - y0);
-    var w_b = 1.0 + abs(g_b - g0) + abs(c_b - y0);
+    var w_a = ar_op(ar_op(1.0 + abs(g_a - g0)) + abs(c_a - y0));
+    var w_b = ar_op(ar_op(1.0 + abs(g_b - g0)) + abs(c_b - y0));
     // X not dominant over G: penalise high-chroma samples.
-    if (0.75 * (x_ul + x_ur + x_dl + x_dr) < g_ul + g_ur + g_dl + g_dr) {
-        w_a = w_a * (abs(x_a - g_a) / max(x_a + g_a + 1.0, 1.0) + 0.03);
-        w_b = w_b * (abs(x_b - g_b) / max(x_b + g_b + 1.0, 1.0) + 0.03);
+    let x_sum = ar_op(ar_op(ar_op(x_ul + x_ur) + x_dl) + x_dr);
+    let g_sum = ar_op(ar_op(ar_op(g_ul + g_ur) + g_dl) + g_dr);
+    if (ar_op(0.75 * x_sum) < g_sum) {
+        w_a = ar_op(w_a * ar_op(ar_div(abs(x_a - g_a), max(ar_op(ar_op(x_a + g_a) + 1.0), 1.0)) + 0.03));
+        w_b = ar_op(w_b * ar_op(ar_div(abs(x_b - g_b), max(ar_op(ar_op(x_b + g_b) + 1.0), 1.0)) + 0.03));
     }
-    let i_a = 1.0 / w_a;
-    let i_b = 1.0 / w_b;
-    let t = (i_a + i_b) * k;
-    let den = max(g_b * i_b + g_a * i_a + t, t);
-    let num = x_b * i_b + x_a * i_a + t;
-    ar_st(px, i, (g0 + k) * (num / den) - k);
+    let i_a = ar_div(1.0, w_a);
+    let i_b = ar_div(1.0, w_b);
+    let t = ar_op(ar_op(i_a + i_b) * k);
+    let den = max(ar_op(ar_op(ar_op(g_b * i_b) + ar_op(g_a * i_a)) + t), t);
+    let num = ar_op(ar_op(ar_op(x_b * i_b) + ar_op(x_a * i_a)) + t);
+    ar_st(px, i, ar_op(ar_op(g0 + k) * ar_div(num, den)) - k);
 }
 
 // R or B at a G site (3.4.3) from the four axis neighbours ordered up, down, left, right: `gn` their
@@ -521,21 +643,24 @@ fn ar_step1(gid: vec3<u32>) {
 // the sum of the greens.
 fn ar_step2_channel(g0: f32, k: f32, gn: vec4<f32>, xn: vec4<f32>, cost0: vec4<f32>, sum_g: f32) -> f32 {
     var cost = cost0;
-    if (0.75 * (xn.x + xn.y + xn.z + xn.w) < sum_g) {
-        cost = cost * (abs(gn - xn) / max(gn + xn + vec4<f32>(1.0), vec4<f32>(1.0)) + vec4<f32>(0.03));
+    if (ar_op(0.75 * ar_op(ar_op(ar_op(xn.x + xn.y) + xn.z) + xn.w)) < sum_g) {
+        for (var j = 0; j < 4; j = j + 1) {
+            let chroma = ar_div(abs(gn[j] - xn[j]), max(ar_op(ar_op(gn[j] + xn[j]) + 1.0), 1.0));
+            cost[j] = ar_op(cost[j] * ar_op(chroma + 0.03));
+        }
     }
     var wsum = 0.0;
     var gsum = 0.0;
     var xsum = 0.0;
     for (var j = 0; j < 4; j = j + 1) {
-        let wj = 1.0 / cost[j];
-        wsum = wsum + wj;
-        gsum = gsum + wj * gn[j];
-        xsum = xsum + wj * xn[j];
+        let wj = ar_div(1.0, cost[j]);
+        wsum = ar_op(wsum + wj);
+        gsum = ar_op(gsum + ar_op(wj * gn[j]));
+        xsum = ar_op(xsum + ar_op(wj * xn[j]));
     }
-    let t = k * wsum;
-    let den = max(gsum + t, t);
-    return (g0 + k) * ((xsum + t) / den) - k;
+    let t = ar_op(k * wsum);
+    let den = max(ar_op(gsum + t), t);
+    return ar_op(ar_op(g0 + k) * ar_div(ar_op(xsum + t), den)) - k;
 }
 
 // Step 2 (3.4.3): R and B at a G site from the four axis neighbours (R/B sites that carry both colours
@@ -558,12 +683,12 @@ fn ar_step2(gid: vec3<u32>) {
     let d_v = abs(gn.x - gn.y);
     let d_h = abs(gn.z - gn.w);
     let cost0 = vec4<f32>(
-        1.0 + d_v + abs(ar_at(PL_G, b, 0, -2) - g0),
-        1.0 + d_v + abs(ar_at(PL_G, b, 0, 2) - g0),
-        1.0 + d_h + abs(ar_at(PL_G, b, -2, 0) - g0),
-        1.0 + d_h + abs(ar_at(PL_G, b, 2, 0) - g0),
+        ar_op(ar_op(1.0 + d_v) + abs(ar_at(PL_G, b, 0, -2) - g0)),
+        ar_op(ar_op(1.0 + d_v) + abs(ar_at(PL_G, b, 0, 2) - g0)),
+        ar_op(ar_op(1.0 + d_h) + abs(ar_at(PL_G, b, -2, 0) - g0)),
+        ar_op(ar_op(1.0 + d_h) + abs(ar_at(PL_G, b, 2, 0) - g0)),
     );
-    let sum_g = gn.x + gn.y + gn.z + gn.w;
+    let sum_g = ar_op(ar_op(ar_op(gn.x + gn.y) + gn.z) + gn.w);
     let rn = vec4<f32>(ar_at(PL_R, b, 0, -1), ar_at(PL_R, b, 0, 1), ar_at(PL_R, b, -1, 0), ar_at(PL_R, b, 1, 0));
     let bn = vec4<f32>(ar_at(PL_B, b, 0, -1), ar_at(PL_B, b, 0, 1), ar_at(PL_B, b, -1, 0), ar_at(PL_B, b, 1, 0));
     let r = ar_step2_channel(g0, k, gn, rn, cost0, sum_g);
@@ -578,7 +703,8 @@ fn ar_luma(gid: vec3<u32>) {
         return;
     }
     let i = (u.region.y + gid.y) * u.dims.x + u.region.x + gid.x;
-    let yl = ar_ld(PL_R, i) / u.gains.x + 2.0 * ar_ld(PL_G, i) / u.gains.y + ar_ld(PL_B, i) / u.gains.z + 1.0;
+    let yl = ar_op(ar_op(ar_op(ar_div(ar_ld(PL_R, i), u.gains.x) + ar_div(ar_op(2.0 * ar_ld(PL_G, i)), u.gains.y))
+        + ar_div(ar_ld(PL_B, i), u.gains.z)) + 1.0);
     ar_st(PL_A, i, max(yl, 1.0));
 }
 
@@ -608,26 +734,27 @@ fn ar_sharpen(gid: vec3<u32>) {
         gmax = max(gmax, ar_m(b, 1, 0));
     }
     let t = u.cst2.x;
-    let f = clamp((4.0 * t - gmax) / (3.0 * t), 0.0, 1.0);
+    let f = clamp(ar_div(ar_op(ar_op(4.0 * t) - gmax), ar_op(3.0 * t)), 0.0, 1.0);
     if (f <= 0.0) {
         return;
     }
     let y0 = ar_at(PL_A, b, 0, 0);
-    let pm = ar_at(PL_A, b, -1, -1) + ar_at(PL_A, b, 1, 1);
-    let pa = ar_at(PL_A, b, 1, -1) + ar_at(PL_A, b, -1, 1);
+    let pm = ar_op(ar_at(PL_A, b, -1, -1) + ar_at(PL_A, b, 1, 1));
+    let pa = ar_op(ar_at(PL_A, b, 1, -1) + ar_at(PL_A, b, -1, 1));
     // The diagonal with the smaller second difference.
+    let y2 = ar_op(2.0 * y0);
     var pair = pa;
-    if (abs(2.0 * y0 - pm) < abs(2.0 * y0 - pa)) {
+    if (abs(y2 - pm) < abs(y2 - pa)) {
         pair = pm;
     }
-    let lap = 5.0 * (2.0 * y0 - pair);
+    let lap = ar_op(5.0 * ar_op(y2 - pair));
     let lim = min(y0, u.cst2.y);
-    let den = lim + abs(lap);
+    let den = ar_op(lim + abs(lap));
     var add = 0.0;
     if (den > 0.0) {
-        add = lim * lap / den;
+        add = ar_div(ar_op(lim * lap), den);
     }
-    let gain = (y0 + 0.75 * f * add) / y0;
+    let gain = ar_div(ar_op(y0 + ar_op(ar_op(0.75 * f) * add)), y0);
     ar_st(PL_R, i, ar_ld(PL_R, i) * gain);
     ar_st(PL_G, i, ar_ld(PL_G, i) * gain);
     ar_st(PL_B, i, ar_ld(PL_B, i) * gain);
@@ -647,13 +774,13 @@ fn ar_sparse(c: u32, x: i32, y: i32) -> f32 {
 
 // The horizontal row sum a + 2 b + c of three sparse samples centred on (x, y).
 fn ar_sparse_row(c: u32, x: i32, y: i32) -> f32 {
-    return ar_sparse(c, x - 1, y) + 2.0 * ar_sparse(c, x, y) + ar_sparse(c, x + 1, y);
+    return ar_op(ar_op(ar_sparse(c, x - 1, y) + ar_op(2.0 * ar_sparse(c, x, y))) + ar_sparse(c, x + 1, y));
 }
 
 // The same for the stored plane `pl`.
 fn ar_plane_row(pl: u32, x: i32, y: i32) -> f32 {
     let r = pl * u.dims.z + u32(y) * u.dims.x + u32(x);
-    return sc[r - 1u] + 2.0 * sc[r] + sc[r + 1u];
+    return ar_op(ar_op(sc[r - 1u] + ar_op(2.0 * sc[r])) + sc[r + 1u]);
 }
 
 // simple_c = Gauss3(sparse_c) m_c of the channel `u.ctl.y`: the bilinear demosaic of the native samples.
@@ -666,10 +793,10 @@ fn ar_simple(gid: vec3<u32>) {
     let c = u.ctl.y;
     // acc = 1 row(-1) + 2 row(0) + 1 row(1), top to bottom.
     var acc = 0.0;
-    acc = acc + ar_sparse_row(c, x, y - 1);
-    acc = acc + 2.0 * ar_sparse_row(c, x, y);
-    acc = acc + ar_sparse_row(c, x, y + 1);
-    ar_st(PL_SIMPLE, u32(y) * u.dims.x + u32(x), acc / 16.0 * u.mult[c]);
+    acc = ar_op(acc + ar_sparse_row(c, x, y - 1));
+    acc = ar_op(acc + ar_op(2.0 * ar_sparse_row(c, x, y)));
+    acc = ar_op(acc + ar_sparse_row(c, x, y + 1));
+    ar_st(PL_SIMPLE, u32(y) * u.dims.x + u32(x), ar_op(acc / 16.0) * u.mult[c]);
 }
 
 // L_c = Gauss3(simple_c) and the squared error (S3_c - L_c)^2 of the channel `u.ctl.y`.
@@ -681,13 +808,13 @@ fn ar_low_err(gid: vec3<u32>) {
     let y = i32(u.region.y + gid.y);
     let c = u.ctl.y;
     var acc = 0.0;
-    acc = acc + ar_plane_row(PL_SIMPLE, x, y - 1);
-    acc = acc + 2.0 * ar_plane_row(PL_SIMPLE, x, y);
-    acc = acc + ar_plane_row(PL_SIMPLE, x, y + 1);
-    let low = acc / 16.0;
+    acc = ar_op(acc + ar_plane_row(PL_SIMPLE, x, y - 1));
+    acc = ar_op(acc + ar_op(2.0 * ar_plane_row(PL_SIMPLE, x, y)));
+    acc = ar_op(acc + ar_plane_row(PL_SIMPLE, x, y + 1));
+    let low = ar_op(acc / 16.0);
     let i = u32(y) * u.dims.x + u32(x);
     ar_st(PL_LOW + c, i, low);
-    let e = ar_ld(PL_R + c, i) - low;
+    let e = ar_op(ar_ld(PL_R + c, i) - low);
     ar_st(PL_ERR + c, i, e * e);
 }
 
@@ -710,10 +837,10 @@ fn ar_gauss5(pl: u32, b: i32) -> f32 {
     var acc = 0.0;
     for (var dy = -2; dy <= 2; dy = dy + 1) {
         for (var dx = -2; dx <= 2; dx = dx + 1) {
-            acc = acc + ar_w5(2 - abs(dy), 2 - abs(dx)) * ar_at(pl, b, dx, dy);
+            acc = ar_op(acc + ar_op(ar_w5(2 - abs(dy), 2 - abs(dx)) * ar_at(pl, b, dx, dy)));
         }
     }
-    return acc / 571.0;
+    return ar_div(acc, 571.0);
 }
 
 // Box3 of plane `pl` around flat index `b`, row by row from the top left, over 9.
@@ -721,10 +848,10 @@ fn ar_box3(pl: u32, b: i32) -> f32 {
     var acc = 0.0;
     for (var dy = -1; dy <= 1; dy = dy + 1) {
         for (var dx = -1; dx <= 1; dx = dx + 1) {
-            acc = acc + ar_at(pl, b, dx, dy);
+            acc = ar_op(acc + ar_at(pl, b, dx, dy));
         }
     }
-    return acc / 9.0;
+    return ar_div(acc, 9.0);
 }
 
 // The matched output of the core pixel (x, y): S3_c + w (L_c - Gauss5(S3_c)) with the weight w that
@@ -738,25 +865,25 @@ fn ar_match(gid: vec3<u32>) {
     let i = y * u.dims.x + x;
     let b = i32(i);
     var e = 0.0;
-    e = e + ar_box3(PL_ERR, b);
-    e = e + ar_box3(PL_ERR + 1u, b);
-    e = e + ar_box3(PL_ERR + 2u, b);
+    e = ar_op(e + ar_box3(PL_ERR, b));
+    e = ar_op(e + ar_box3(PL_ERR + 1u, b));
+    e = ar_op(e + ar_box3(PL_ERR + 2u, b));
     // The expected variance of one balanced sample, summed over the channels.
     var vr = 0.0;
     for (var c = 0u; c < 3u; c = c + 1u) {
-        vr = vr + (u.vg[c] * max(ar_ld(PL_LOW + c, i), 0.0) + u.vr2[c]);
+        vr = ar_op(vr + ar_op(ar_op(u.vg[c] * max(ar_ld(PL_LOW + c, i), 0.0)) + u.vr2[c]));
     }
-    let excess = max(e - 0.5 * vr, 0.0);
-    let a = 3.0 * excess + 1.0;
-    let bb = vr + 1.0;
+    let excess = max(ar_op(e - ar_op(0.5 * vr)), 0.0);
+    let a = ar_op(ar_op(3.0 * excess) + 1.0);
+    let bb = ar_op(vr + 1.0);
     let top = max(a, bb);
-    let a2 = max(a - 0.5 * top, 0.0);
-    let b2 = max(bb - 0.5 * top, 0.0);
-    let wt = b2 / (a2 + b2);
+    let a2 = max(ar_op(a - ar_op(0.5 * top)), 0.0);
+    let b2 = max(ar_op(bb - ar_op(0.5 * top)), 0.0);
+    let wt = ar_div(b2, ar_op(a2 + b2));
     var p3 = vec3<f32>(0.0);
     for (var c = 0u; c < 3u; c = c + 1u) {
         let s3 = ar_ld(PL_R + c, i);
-        p3[c] = s3 + wt * (ar_ld(PL_LOW + c, i) - ar_gauss5(PL_R + c, b));
+        p3[c] = s3 + ar_op(wt * ar_op(ar_ld(PL_LOW + c, i) - ar_gauss5(PL_R + c, b)));
     }
     ar_write_out(x, y, p3);
 }
@@ -772,16 +899,16 @@ fn ar_write_out(x: u32, y: u32, p3: vec3<f32>) {
     let c = ar_site(x, y);
     var mu = inp[u32(i32(y) + u.org.y) * u32(u.org.w) + u32(i32(x) + u.org.x)];
     if (u.ctl.x == 1u) {
-        mu = mu / u.gains[c];
+        mu = ar_div(mu, u.gains[c]);
     }
-    let removed = min(mu, 0.0) * u.gains.w;
+    let removed = ar_op(min(mu, 0.0) * u.gains.w);
     var v = p3;
-    v[c] = v[c] + u.gains[c] * removed;
+    v[c] = v[c] + ar_op(u.gains[c] * removed);
     let o = (y - u.geom.y) * u.ctl.w + (x - u.geom.x);
     let n = u.ctl.w * u.geom.w;
-    outp[o] = v.x / u.gains.w;
-    outp[n + o] = v.y / u.gains.w;
-    outp[2u * n + o] = v.z / u.gains.w;
+    outp[o] = ar_div(v.x, u.gains.w);
+    outp[n + o] = ar_div(v.y, u.gains.w);
+    outp[2u * n + o] = ar_div(v.z, u.gains.w);
 }
 
 // The output without shadow colour matching: the pass-3 result over the core.

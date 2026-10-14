@@ -275,7 +275,7 @@ fn a_full_render_and_a_100_percent_frame_on_the_device_match_the_cpu() {
     assert!(a.report.ranges.is_empty(), "no device, no range");
     assert_eq!(
         device_of(&b.report),
-        vec![("R6".to_owned(), ComputeDevice::Gpu)],
+        vec![("R6..R8".to_owned(), ComputeDevice::Gpu)],
         "{:?}",
         b.report.notes
     );
@@ -314,7 +314,7 @@ fn a_full_render_and_a_100_percent_frame_on_the_device_match_the_cpu() {
     assert_eq!(fa.report.scale, 1, "full-resolution tiles");
     assert_eq!(
         device_of(&fb.report),
-        vec![("R6".to_owned(), ComputeDevice::Gpu)]
+        vec![("R6..R8".to_owned(), ComputeDevice::Gpu)]
     );
     assert!(fc.report.ranges.is_empty());
     assert_eq!(fb.report.runs.tiles, fa.report.runs.tiles);
@@ -371,7 +371,7 @@ fn the_device_runs_the_raw_chain_only_when_the_stage_and_the_method_allow_it() {
     assert_eq!(a.rgb, b.rgb);
     assert_eq!(
         device_of(&a.report),
-        vec![("R6".to_owned(), ComputeDevice::Cpu)]
+        vec![("R6..R8".to_owned(), ComputeDevice::Cpu)]
     );
     assert!(
         a.report
@@ -389,7 +389,7 @@ fn the_device_runs_the_raw_chain_only_when_the_stage_and_the_method_allow_it() {
     let a = render_full(&late, &src).expect("render");
     assert_eq!(
         device_of(&a.report),
-        vec![("R6".to_owned(), ComputeDevice::Gpu)]
+        vec![("R6..R8".to_owned(), ComputeDevice::Gpu)]
     );
     late.set_gpu(None, GpuStages::NONE);
     let b = render_full(&late, &src).expect("render");
@@ -422,7 +422,7 @@ fn small_and_odd_photos_render_on_the_device_like_on_the_cpu() {
         assert_eq!((a.width, a.height), (b.width, b.height), "{w}x{h}");
         assert_eq!(
             device_of(&b.report),
-            vec![("R6".to_owned(), ComputeDevice::Gpu)],
+            vec![("R6..R8".to_owned(), ComputeDevice::Gpu)],
             "{w}x{h}: {:?}",
             b.report.notes
         );
@@ -1263,6 +1263,186 @@ mod view {
         assert!(moved.rgba == want.rgba);
     }
 
+    /// A renderer with `stages` on the device whose device passes hold at most `bytes` per binding.
+    fn small_binding(gpu: &Arc<Gpu>, stages: GpuStages, bytes: u64) -> Renderer {
+        Renderer::new(
+            Arc::new(NeutralOnly),
+            RenderOptions {
+                gpu: Some(Arc::clone(gpu)),
+                gpu_stages: stages,
+                view_band_bytes: bytes,
+                full_tile_px: 512,
+                ..RenderOptions::default()
+            },
+        )
+        .expect("render thread")
+    }
+
+    #[test]
+    fn a_move_of_the_slider_gives_the_frame_a_fresh_render_gives_every_time() {
+        // The resident display-linear frame is read by every move and written by none: whatever order
+        // the amounts come in, the frame of a move is the frame of a render from scratch.
+        let Some(gpu) = gpu() else { return };
+        let src = picture(900, 600);
+        let r = device_renderer(&gpu, VIEW);
+        let reference = device_renderer(&gpu, VIEW);
+        let tilted = edit(&src, crop_and_straighten);
+        for (name, photo, st) in [
+            ("fit", src.clone(), cell(576.0, 384.0, 1.0)),
+            ("odd cell with paper", tilted, cell(577.0, 383.0, 1.0)),
+        ] {
+            let _ = frame(&r, &photo, &st);
+            for amount in [60.0, 61.0, 150.0, 200.0, 10.0, 0.5, 99.0] {
+                let moved = frame(&r, &with_amount(&photo, amount), &st);
+                assert_eq!(moved.report.runs.display_hits, 1, "{name} {amount}");
+                assert_eq!(moved.report.runs.color_passes, 0, "{name} {amount}");
+                let want = fresh(&reference, &with_amount(&photo, amount), &st);
+                assert!(
+                    moved.rgba == want.rgba,
+                    "{name}: the move to {amount} % differs from a fresh render ({:?})",
+                    codes(&moved, &want)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_frame_over_one_binding_keeps_the_stages_that_are_on_whichever_they_are() {
+        // The default (`Auto`) runs the colour pass only, the other members of the set are what
+        // `On` adds: whichever members are on, a frame larger than one storage binding is cut and
+        // made by the device, with the pixels of the frame in one piece, and not quietly given to
+        // the CPU (which would be a CPU frame, slow and unannounced, for a big display).
+        let Some(gpu) = gpu() else { return };
+        let src = picture(900, 600);
+        let tilted = edit(&src, crop_and_straighten);
+        let members = [
+            GpuStages::COLOR,
+            GpuStages::COLOR.union(GpuStages::SAMPLER),
+            GpuStages::COLOR
+                .union(GpuStages::OUTPUT_SHARPEN)
+                .union(GpuStages::ENCODE),
+            VIEW,
+        ];
+        for stages in members {
+            let whole = small_binding(&gpu, stages, ym_core::pipeline::graph::VIEW_BAND_BYTES);
+            // About 110 rows of a 576 px view (16 bytes a pixel).
+            let cut = small_binding(&gpu, stages, 1_400_000);
+            for (name, photo) in [
+                ("sharpened", src.clone()),
+                ("tilted crop", tilted.clone()),
+                ("plain", with_amount(&src, 0.0)),
+            ] {
+                let st = cell(576.0, 384.0, 1.0);
+                let a = fresh(&whole, &photo, &st);
+                let jobs = gpu.counters().submissions;
+                let b = fresh(&cut, &photo, &st);
+                let ran = gpu.counters().submissions - jobs;
+                let what = format!("{name} {stages}");
+                assert_eq!(
+                    b.report.device,
+                    ComputeDevice::Gpu,
+                    "{what}: {:?}",
+                    b.report.notes
+                );
+                assert!(ran >= 2, "{what}: {ran} device jobs");
+                assert!(b.rgba == a.rgba, "{what}: {:?}", codes(&a, &b));
+            }
+        }
+    }
+
+    #[test]
+    fn bands_of_a_tilted_photo_with_empty_corners_have_the_pixels_of_the_view_in_one_piece() {
+        // The stage works on the bounding box of the photo's pixels and sharpens the empty corners of
+        // a straightened photo against black: a band must see the same box as the view does, or the
+        // pixels at the slanted edge differ between the cut view and the view in one piece.
+        let Some(gpu) = gpu() else { return };
+        let src = picture(900, 600);
+        let whole = device_renderer(&gpu, VIEW);
+        let cut = small_binding(&gpu, VIEW, 1_400_000);
+        let cpu = on_cpu();
+        for angle in [4.0, 12.0, -17.0, 33.0] {
+            let tilted = edit(&src, |s| {
+                s.crop = Some(Crop {
+                    rect: NormRect {
+                        x: 0.0,
+                        y: 0.0,
+                        width: 1.0,
+                        height: 1.0,
+                    },
+                    angle_deg: angle,
+                    aspect: CropAspect::Free,
+                });
+            });
+            for st in [cell(576.0, 384.0, 1.0), cell(300.0, 520.0, 1.0)] {
+                let a = fresh(&whole, &tilted, &st);
+                let jobs = gpu.counters().submissions;
+                let b = fresh(&cut, &tilted, &st);
+                let ran = gpu.counters().submissions - jobs;
+                assert_eq!(b.report.device, ComputeDevice::Gpu, "{angle}");
+                assert!(ran >= 2, "{angle}: {ran} device jobs");
+                let c = fresh(&cpu, &tilted, &st);
+                eprintln!(
+                    "{angle} degrees: bands against one piece {:?}, one piece against the CPU {:?}",
+                    codes(&a, &b),
+                    codes(&a, &c)
+                );
+                assert!(
+                    a.rgba == b.rgba,
+                    "{angle} degrees: the bands differ from the view in one piece {:?}",
+                    codes(&a, &b)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn tiny_and_odd_cells_render_on_the_device_like_on_the_cpu() {
+        let Some(gpu) = gpu() else { return };
+        let src = picture(300, 200);
+        let (cpu, dev) = (on_cpu(), device_renderer(&gpu, VIEW));
+        let image = cpu.final_size(&src, &CancelToken::new()).expect("size");
+        let cells: [(f64, f64); 9] = [
+            (1.0, 1.0),
+            (1.0, 37.0),
+            (41.0, 1.0),
+            (2.0, 2.0),
+            (3.0, 5.0),
+            (17.0, 9.0),
+            (33.0, 33.0),
+            (64.0, 1.0),
+            (7.0, 120.0),
+        ];
+        for (w, h) in cells {
+            for scale in [1.0, 2.0] {
+                for (name, st) in [
+                    ("fit", cell(w, h, scale)),
+                    ("100 %", {
+                        let mut st = cell(w, h, scale);
+                        st.set_mode(ViewportMode::Percent { value: 100.0 }, image);
+                        st
+                    }),
+                    ("before", {
+                        let mut st = cell(w, h, scale);
+                        st.before = true;
+                        st
+                    }),
+                ] {
+                    for amount in [100.0, 0.0] {
+                        let photo = with_amount(&src, amount);
+                        let a = fresh(&cpu, &photo, &st);
+                        let b = fresh(&dev, &photo, &st);
+                        let what = format!("{w}x{h} @{scale} {name} amount {amount}");
+                        assert_eq!(b.report.device, ComputeDevice::Gpu, "{what}");
+                        assert!(no_gpu_note(&b), "{what}: {:?}", b.report.notes);
+                        assert_eq!((a.width, a.height), (b.width, b.height), "{what}");
+                        let (worst, _, _) = codes(&a, &b);
+                        assert!(worst <= CODE_BOUND, "{what}: {worst} codes");
+                    }
+                }
+            }
+        }
+    }
+
     #[test]
     fn a_thumbnail_and_a_look_tile_run_at_thumbnail_priority_behind_the_viewport() {
         let Some(gpu) = gpu() else { return };
@@ -1430,7 +1610,7 @@ mod faults {
             assert_eq!(img.rgb, cpu.rgb, "{name}: the CPU render, bit for bit");
             assert_eq!(
                 device_of(&img.report),
-                vec![("R6".to_owned(), ComputeDevice::Cpu)],
+                vec![("R6..R8".to_owned(), ComputeDevice::Cpu)],
                 "{name}"
             );
             assert!(
@@ -1488,7 +1668,7 @@ mod faults {
         assert_eq!(gpu.counters().submissions, jobs);
         assert_eq!(
             device_of(&second.report),
-            vec![("R6".to_owned(), ComputeDevice::Cpu)]
+            vec![("R6..R8".to_owned(), ComputeDevice::Cpu)]
         );
     }
 
@@ -1585,7 +1765,7 @@ mod faults {
             );
             assert_eq!(
                 device_of(&img.report),
-                vec![("R6".to_owned(), ComputeDevice::Cpu)],
+                vec![("R6..R8".to_owned(), ComputeDevice::Cpu)],
                 "{how:?}"
             );
             assert!(
@@ -1646,7 +1826,7 @@ mod faults {
         let again = render_full(&dev, &src).expect("render");
         assert_eq!(
             device_of(&again.report),
-            vec![("R6".to_owned(), ComputeDevice::Gpu)]
+            vec![("R6..R8".to_owned(), ComputeDevice::Gpu)]
         );
     }
 
@@ -1687,7 +1867,7 @@ mod faults {
         assert_eq!(f.rgba, baseline.rgba);
         assert_eq!(
             device_of(&f.report),
-            vec![("R6".to_owned(), ComputeDevice::Cpu)]
+            vec![("R6..R8".to_owned(), ComputeDevice::Cpu)]
         );
     }
 
