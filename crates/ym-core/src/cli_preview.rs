@@ -39,7 +39,6 @@ use ym_export::options::DEFAULT_NAME_TEMPLATE;
 use ym_export::{ColorSpace, FormatKind, IfExists, Size, TiffCompression};
 use ym_looks::library::LookId;
 
-use crate::export::default_destination;
 use crate::export_queue::ExportJob;
 use crate::looks::LookService;
 use crate::session::Session;
@@ -306,7 +305,7 @@ pub fn build(
         let first = paths.first()?;
         let same_folder = paths.iter().all(|p| p.parent() == first.parent());
         same_folder.then(|| {
-            default_destination(first)
+            naming::default_destination(first)
                 .or_else(|| {
                     home.map(Path::to_path_buf)
                         .or_else(naming::home_dir)

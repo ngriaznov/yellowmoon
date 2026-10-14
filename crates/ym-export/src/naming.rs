@@ -581,6 +581,85 @@ mod tests {
     }
 
     #[test]
+    fn default_destination_is_named_after_the_folder_the_path_gives() {
+        // Nothing here needs the disk: the path says it.
+        assert_eq!(
+            default_destination(Path::new("/Volumes/./A1/Lisbon/./DSC04204.ARW")),
+            Some(PathBuf::from("/Volumes/A1/Lisbon export"))
+        );
+        assert_eq!(default_destination(Path::new("")), None);
+        assert_eq!(default_destination(Path::new("/")), None);
+        // A file at the root of a volume has no folder to sit next to.
+        assert_eq!(default_destination(Path::new("/DSC04204.ARW")), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn default_destination_keeps_a_folder_name_that_is_not_utf_8() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+        // Only the path is looked at, so this holds on every unix, whatever its file system allows
+        // (APFS refuses such a name, Linux file systems keep it).
+        let source = PathBuf::from(OsStr::from_bytes(b"/Volumes/A1/Li\xffsbon/DSC04204.ARW"));
+        let expected = PathBuf::from(OsStr::from_bytes(b"/Volumes/A1/Li\xffsbon export"));
+        assert_eq!(default_destination(&source), Some(expected));
+    }
+
+    #[test]
+    fn a_folder_without_a_name_in_the_path_takes_the_name_it_resolves_to() {
+        let tmp = tempfile::tempdir().unwrap();
+        let inner = tmp.path().join("Lisbon").join("inner");
+        fs::create_dir_all(&inner).unwrap();
+        // `inner/..` is `Lisbon`, which the path does not say.
+        let canonical = fs::canonicalize(tmp.path().join("Lisbon")).unwrap();
+        assert_eq!(
+            default_destination(&inner.join("..").join("DSC04204.ARW")),
+            Some(canonical.parent().unwrap().join("Lisbon export"))
+        );
+        // No folder part: the working directory (the tests run in the crate's folder).
+        let cwd = std::env::current_dir().unwrap();
+        let name = cwd.file_name().unwrap().to_string_lossy().into_owned();
+        assert_eq!(
+            default_destination(Path::new("DSC04204.ARW")),
+            Some(cwd.parent().unwrap().join(format!("{name} export")))
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symbolic_links_in_the_path_are_not_resolved() {
+        // `via` is a link to the folder that holds the photos, as a Mac's `/var` is to
+        // `/private/var`, or a photos disk linked into `~/Pictures`.
+        let real = tempfile::tempdir().unwrap();
+        let links = tempfile::tempdir().unwrap();
+        let via = links.path().join("via");
+        std::os::unix::fs::symlink(real.path(), &via).unwrap();
+        let folder = via.join("Lisbon");
+        fs::create_dir(&folder).unwrap();
+        let source = folder.join("DSC04204.ARW");
+        fs::write(&source, b"raw").unwrap();
+        let home = links.path().join("home");
+
+        let expected = via.join("Lisbon export");
+        assert_eq!(default_destination(&source), Some(expected.clone()));
+        let dir = resolve_destination_dir(None, Some(&source), Some(&home)).unwrap();
+        assert_eq!(dir, expected);
+        // It is the folder behind the link on the disk.
+        assert!(real.path().join("Lisbon export").is_dir());
+
+        // A source folder that is itself a link is named after the link and sits next to it, not
+        // next to the folder it points to.
+        let target = real.path().join("2024-05-trip");
+        fs::create_dir(&target).unwrap();
+        let link = links.path().join("Shoot");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        assert_eq!(
+            default_destination(&link.join("DSC04204.ARW")),
+            Some(links.path().join("Shoot export"))
+        );
+    }
+
+    #[test]
     fn destination_resolution_and_fallback() {
         let tmp = tempfile::tempdir().unwrap();
         let src_dir = tmp.path().join("Lisbon");
@@ -590,11 +669,10 @@ mod tests {
         let home = tmp.path().join("home");
         fs::create_dir_all(&home).unwrap();
 
+        // The folder is named as the path gives it, not as the disk resolves it (on a Mac the
+        // temporary folder is `/var/…`, which the disk calls `/private/var/…`).
         let dir = resolve_destination_dir(None, Some(&src), Some(&home)).unwrap();
-        assert_eq!(
-            dir,
-            fs::canonicalize(tmp.path()).unwrap().join("Lisbon export")
-        );
+        assert_eq!(dir, tmp.path().join("Lisbon export"));
         assert!(dir.is_dir());
 
         // Explicit folders are created and used as given.

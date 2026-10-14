@@ -119,8 +119,9 @@ fn default_destination_is_the_export_folder_next_to_the_source_folder() {
         &ExportHooks::none(),
     )
     .unwrap();
-    let expected = fs::canonicalize(tmp.path())
-        .unwrap()
+    // Named as the path gives it (on a Mac the temporary folder is `/var/…`, not `/private/var/…`).
+    let expected = tmp
+        .path()
         .join("Lisbon export")
         .join("DSC04204_neutral.jpg");
     assert_eq!(out.path(), expected);
