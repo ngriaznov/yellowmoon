@@ -1742,8 +1742,11 @@ fn the_raw_group_with_diffraction_deconvolution_matches_the_cpu() {
     let b = raw6.gpu(dev, out);
     let s = compare(&a, &b);
     s.print("diffraction in the raw group against the CPU after the same demosaic");
-    // The diffraction kernel's own parity is 5e-6 on random frames (`tests/gpu_diffraction.rs`).
-    assert!(s.max_abs <= 2e-4, "{}", s.max_abs);
+    // First measured on lavapipe: 1.2e-4 at one sample of 32,487 (13 over 2e-5); the bound is twice
+    // that. (The kernel's own parity is 5e-6 on random frames, `tests/gpu_diffraction.rs`; inside the
+    // chain the input is the device's R7 output, whose ulp-level differences the deconvolution's gate
+    // and envelope decisions can amplify at a pixel.)
+    assert!(s.max_abs <= 2.4e-4, "{}", s.max_abs);
     assert!(compare(&a, &setup.cpu(out)).max_abs.is_finite());
     // The deconvolution changed the picture (the plan is active).
     let mut off = setup.clone();
