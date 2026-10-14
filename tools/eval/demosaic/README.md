@@ -1,6 +1,6 @@
 # tools/eval/demosaic: the R6 demosaic gate (RA-05)
 
-Measurement only. Nothing here changes `DEFAULT_METHOD`: the owner decides after the blind look (RA-H4). The numbers are
+Measurement only. Nothing here changes `DEFAULT_METHOD`; the owner chose the adaptive ratio demosaic after the blind look (RA-H4, 2026-10-13) and that is the default now. The numbers are
 summarised in `docs/05-raw-processing.md` (R6, "RA-05 measurement") and the recommendation is in `docs/STATUS.md`.
 
 | File | What |

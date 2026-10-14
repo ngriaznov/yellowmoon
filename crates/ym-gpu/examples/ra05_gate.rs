@@ -1,6 +1,7 @@
 //! RA-05 demosaic gate (`docs/algorithms/TASKS.md` RA-05, `docs/05` R6): PSNR, zipper and
 //! false-colour numbers for Bilinear, Menon, LMMSE, AdaptiveRatio and LogGuided, and the R6 rule's
-//! verdict. Measurement only: nothing here changes `DEFAULT_METHOD`.
+//! verdict. Measurement only: nothing here changes `DEFAULT_METHOD` (the owner chose `AdaptiveRatio`
+//! after the blind look, RA-H4).
 //!
 //! ```text
 //! CARGO_INCREMENTAL=0 cargo run -p ym-gpu --example ra05_gate \

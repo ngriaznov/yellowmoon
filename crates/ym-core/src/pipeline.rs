@@ -111,7 +111,7 @@ impl RenderError {
 pub enum RenderPath {
     /// The learned joint demosaic and denoise.
     Neural,
-    /// The classical demosaic (Menon) and bilateral denoise.
+    /// The classical demosaic (the adaptive ratio demosaic by default, `docs/05` R6) and bilateral denoise.
     Classical,
 }
 
