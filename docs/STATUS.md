@@ -46,6 +46,20 @@ Mykyta's handover package (`docs/algorithms/`; tasks in `docs/algorithms/TASKS.m
 
 **Auto exposure, `ym info` against `ym render` (checked at the end of the wave).** The auto-exposure study once stopped on A1M01749 ("the display render used +0.7229 EV, the study needs +0.6784 EV"). On the current tree the two agree to the last digit on all 12 local ARWs (the 3 readme photos and the 9 real files): `ym info` `auto.exposure_ev`, the render's `auto.exposure_ev` and its `settings.exposure.ev` are the same number (A1M01749: +0.6783832054405404). They cannot differ in one binary: both read `AutoEstimates::compute` through `Session::settings`, the render's exposure is `chain.exposure_ev()` of the all-Auto chain, and the estimate is the same with 1, 2 or 8 threads, on 1 CPU and under load. Pooling and bursts do not move it either (three A1 files opened together read the same exposures as alone). `auto.rs` and `session.rs` are unchanged since the study's commit, and its `info` value (+0.678383) is today's, so the +0.7229 render must have come from another build than the one that answered `ym info`. The cause that fits is the shared `target/debug/ym`, which other lanes rebuilt while the study was running, between its `ym info` and its renders of that photo (the old binary is gone, so this is inferred, not replayed). `tools/eval/autoexp.py` now refuses to go on when the `ym` file changes (inode, size or modification time) during a run and says so, instead of reporting a mismatch of unknown cause (test `test_a_binary_that_is_rebuilt_during_the_run_is_refused`). The auto-exposure target is unchanged.
 
+## GPU wave (2026-10-14, the owner's direction in `docs/16`)
+
+Everything after decoding moves onto the wgpu device (Metal on the Mac), in the app and in `ym`, exports included: `docs/gpu-plan.md` (ten tasks G-01 to G-10 in two lanes and five waves, contracts, tests). Golden hashes stay pinned to the CPU reference. Metal correctness runs in CI on GitHub's Apple-silicon runners (`.github/workflows/mac-gpu.yml`); speed and the screen stay M0-H4.
+
+| Wave | Lane A | Lane B | State |
+|---|---|---|---|
+| 1 | G-01 device policy, flags, goldens on the CPU | G-02 device foundation | running |
+| 2 | G-03 adaptive ratio on a device chain | G-04 view kernels | — |
+| 3 | G-05 view wiring | G-06 denoise, R7, R8 kernels | — |
+| 4 | G-08 export tail | G-07 raw front, lens, fit view | — |
+| 5 | G-09 CI, GPU golden, determinism, ML seam | G-10 device residency | — |
+
+First Metal CI run (2026-10-14): the Metal adapter opens on macos-14 and macos-15; the app builds and its tests pass on macOS (the native Metal viewport compiled for the first time); the frontend build failed on macOS because `wheel.ts` shadowed `Wheel.tsx` on a case-insensitive file system (fixed, guarded by `src/casing.test.ts`); the adaptive ratio vector test fails on Metal (`edge_knight` 40 tie flips against 10 on lavapipe, worst 6.6e-4) and is handed to G-03.
+
 ## Done
 
 | Task | Commit | Notes |
@@ -184,6 +198,16 @@ The `synthetic-full` and `synthetic-eval` sets (53 more, the latter with CIE ref
 
 11. **Lateral CA on the mosaic (R5b, `docs/05` R9, `docs/16`).** On real Sony files, correcting CA in R9 after the demosaic made the red/blue shift larger (0.04–0.2 px before, 0.3–0.7 px after) because a green-guided demosaic keeps only about half of the CA and R9 then applies the full table. The tables are right; the cause is the order of the stages. The correction now runs on the mosaic before the demosaic, at full resolution only (the binned fit view and thumbnails keep it in R9), and leaves less red/blue misregistration than the old order on every real file measured, with two independent estimators (`docs/05` R9 has the numbers; the amplitude of a table is known to about a factor of two). It changes every real-file render that has a CA table; the synthetic goldens have neutral tables and do not move. Recommended: keep it on by default, as built. Alternative: `decode.chromatic_aberration` off by default. A blind look at a few photos is the natural check.
 12. **NEX-5N and NEX-7 lens data.** Their vignetting, distortion and CA tables are only in the encrypted SR2 sub-IFD, which `ym-raw` does not read, so they show "Lens data: none". Reading them is a few lines and switches all three corrections on for NEX files (the NEX-5N's CA table is the best fit of the files tested, rms 0.16 px). Read them?
+
+13. **GPU wave, question 1 (`docs/gpu-plan.md` section 9).** f32 as the default device storage (STATUS question 2, option 1). Cost: twice the plane memory (50 MP spike peak 0.28 to 0.56 GiB, gate 1.5 GiB); nothing in the RA kernels. The wave proceeds with f32 because it is the accurate choice and the RA kernels already require it.
+14. **GPU wave, question 2 (`docs/gpu-plan.md` section 9).** Gate `Auto` per stage: a stage is on in `Auto` once its suites pass on the Metal CI runners (`mac-gpu.yml`, GitHub's Apple-silicon VMs), so nothing unverified on Metal reaches users, and the physical-Mac session (M0-H4) judges speed and the screen? Alternatives: physical-Mac sign-off only (stricter, the wave stays invisible in the app until M0-H4), or every stage on in `Auto` from the first merge.
+15. **GPU wave, question 3 (`docs/gpu-plan.md` section 9).** A GPU render may differ from the CPU reference within the stated tolerances; `PIPELINE_VERSION` does not change and the device is recorded nowhere in a file (AGENTS rule 8 is read as "same machine and device"; the 2026-10-13 direction already says so). Confirm. The alternative (a version or XMP tag per device) would break app = CLI bytes across machines.
+16. **GPU wave, question 4 (`docs/gpu-plan.md` section 9).** Unified-memory budget on Apple silicon: GPU = clamp(RAM/4, 512 MiB, 4 GiB), CPU budget lowered by the same, sum at most 0.6 x RAM. Acceptable on 8 GB Macs?
+17. **GPU wave, question 5 (`docs/gpu-plan.md` section 9).** `Auto` uses the CPU when the only adapter is a software one (lavapipe, WARP). Agreed?
+18. **GPU wave, question 6 (`docs/gpu-plan.md` section 9).** Additive `device` and `notes` in `ym render --json`; no "Use graphics card" preference (the persistence list in `docs/01` is exhaustive; development uses `YELLOWMOON_GPU`).
+19. **GPU wave, question 7 (`docs/gpu-plan.md` section 9).** The CPU-only list of section 8 (histogram counts, the R6 test-switch methods, Lossless M/S, the DNG white, the full-chain R5 offsets) is acceptable for this wave.
+20. **GPU wave, question 8 (`docs/gpu-plan.md` section 9).** Is the 6 s export target a JPEG-only target (`docs/05` says "Full neural export, JPEG")? TIFF and PNG 16-bit encode alone are about twice that on the dev box. A GPU JPEG front end is out of scope; it is revisited only if the Mac shows DCT + Huffman above about 2 s per 50 MP.
+21. **One C++ file in the repository.** `tools/dng/dng_jxl_stub.cpp` (40 lines) is a stand-in that CI compiles with Adobe's DNG SDK to build `dng_validate`; it is unrelated to the raw algorithms. Keep it, or have the CI script write it at build time so the repository holds no C++?
 
 ## Known issues
 
