@@ -275,17 +275,17 @@ it, and reproducing it is the check that the port of the arithmetic is right. Th
 
 ## Registry notes
 
-- The 28 model IDs are the table of `docs/03`; every ID and model string was checked against ExifTool's `Sony.pm`
-  (`SonyModelID`, exiftool/exiftool @ 2200871d9cef). `validate_profiles` also parses `docs/03` and fails if the registry
+- The 28 model IDs are the table of `docs/03`: Sony's `SonyModelID` values and the model strings the cameras write,
+  cross-checked against independent tools (numbers only). `validate_profiles` also parses `docs/03` and fails if the registry
   and the table differ.
-- `model_strings` maps each Model string to its ID. ExifTool's Sony tables show no further regional or kit spellings for
+- `model_strings` maps each Model string to its ID. no further regional or kit spellings are known for
   these bodies beyond the "A" models already in the table (ILCE-7RM3A, 7RM4A, 6100A, 6400A), so none were added. Hasselblad
   Lunar and Stellar (rebadged Sony bodies) have no model ID in the table; they fall through to the default profile.
-- Same-sensor pairings are checked with an independent tool because V1 has no Adobe DNG Converter samples: LibRaw's
-  per-model camera matrix (`crates/ym-profiles/tests/py/sibling_matrices.py`, LibRaw 0.22.1 via rawpy 0.27.1; rows
+- Same-sensor pairings are checked against the bodies' published D65 colour matrices because V1 has no Adobe DNG Converter samples
+  (numbers only, `docs/14` rule 8; `crates/ym-profiles/tests/py/sibling_matrices.py`; rows
   normalised to sum 1; limit 0.02 per coefficient). The measured value of every pairing is in `registry_data.SIBLING_MAX_ABS_DIFF`
   and in the profile's `provenance.checks` (`pass: max |diff| 0.0000 ...`; `--verify` of the script compares them with a fresh
-  run). Ten pairings pass (0.0000: LibRaw holds the same matrix for both bodies). ILCE-7RM5 and ILCE-7CR differ from the
+  run). Ten pairings pass (0.0000: the published matrices of the two bodies are the same). ILCE-7RM5 and ILCE-7CR differ from the
   A7R IV by 0.0934 and do not ship as same-sensor siblings: they have match kind `default` (the A7R IV profile is the default,
   so they render exactly as before) and the failed check is recorded in the A7R IV profile and in their registry notes.
 - `sensor_width_mm`, `active_width_px` (and the optional `pixel_pitch_um` override) on a body give the pixel pitch for

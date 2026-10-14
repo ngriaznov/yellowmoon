@@ -226,6 +226,7 @@ Recogniser from `data/looks/arri-packages.json`, `tools/looks/fingerprint.py`, D
 **M3-10 · Signature look** (M1-10, M3-H1)
 `looks bake` tool and contact sheets; ship `signature.json` once designed.
 *Done when:* Mykyta signs off the look.
+*Status (2026-10-14):* Signature shipped as candidate B (Mykyta's choice from the look preview) and made the default look; the name may change (M3-H1).
 
 **M3-11 · Export panel and queue** (M1-13, M3-06)
 As mocked: options, estimate, CLI preview with Copy, queue states, cancel, Show in Finder, export-aware updater.

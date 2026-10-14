@@ -53,7 +53,7 @@
             "minimum": 0,
             "maximum": 65535
           },
-          "model": { "description": "IFD0 Model string, as ExifTool names the ID.", "type": "string", "minLength": 1 },
+          "model": { "description": "IFD0 Model string, as the camera writes it.", "type": "string", "minLength": 1 },
           "body": { "description": "Display name, for example 'Sony A7R IV'.", "type": "string", "minLength": 1 },
           "profile": { "type": "string" },
           "match": { "enum": ["exact", "sensor_family", "default"] },

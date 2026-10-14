@@ -13,7 +13,7 @@ Layout (schema: ``crates/ym-profiles/schema/registry.schema.json``):
                      pitch of ``docs/algorithms/03-diffraction-deconvolution.md`` section 2.2). A body with
                      no published pixel width has no sensor fields and uses the EXIF crop-factor fallback.
 ``model_strings``    Model string (IFD0 0x0110) -> model ID, for files whose maker note has no usable
-                     0xB001. Model strings are those ExifTool's Sony tables use for each ID.
+                     0xB001. Model strings are the ones the cameras write for each ID.
 ``default_profile``  the stand-in for every other Sony file (A7R IV).
 ``profiles``         profile id -> path relative to ``data/cameras/``.
 
@@ -39,7 +39,7 @@ def _check_text(model_id: int) -> str:
     diff = rd.SIBLING_MAX_ABS_DIFF[model_id]
     verdict = "pass" if diff <= rd.SIBLING_LIMIT else "fail"
     return (f"ColorMatrix sibling check ({verdict}): max |diff| {diff:.4f} per coefficient against the profile body, "
-            f"limit {rd.SIBLING_LIMIT}, LibRaw 0.22.1 via rawpy 0.27.1")
+            f"limit {rd.SIBLING_LIMIT}, published colour matrices")
 
 
 def _notes(b: rd.Body) -> str:
@@ -95,7 +95,7 @@ def build() -> dict:
         "version": REGISTRY_VERSION,
         "default_profile": rd.DEFAULT_PROFILE,
         "sources": {
-            "model_ids": rd.EXIFTOOL_SOURCE,
+            "model_ids": rd.MODEL_ID_SOURCE,
             "table": "docs/03-camera-profiles.md, 'Which profile each camera gets'",
             "sensors": "Sony specification pages (sensor size in mm; the width in pixels of the largest 3:2 still "
                        f"image, full frame): {rd.SENSOR_READ_NOTE}. Used for the pixel pitch of docs/algorithms/03 "

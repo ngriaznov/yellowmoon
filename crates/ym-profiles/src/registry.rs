@@ -153,7 +153,7 @@ pub struct RegistryProfile {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RegistrySources {
-    /// The ExifTool table the model IDs were checked against.
+    /// Where the model IDs and Model strings come from (the values the cameras write).
     pub model_ids: String,
     /// The table in `docs/03` the registry is generated from.
     pub table: String,
@@ -260,7 +260,7 @@ pub struct WhiteScaleSource {
 pub struct Body {
     /// Sony maker-note model ID (tag 0xB001).
     pub model_id: u16,
-    /// IFD0 Model string, as ExifTool names the ID (`ILCE-7RM4`).
+    /// IFD0 Model string, as the camera writes it (`ILCE-7RM4`).
     pub model: String,
     /// Display name (`Sony A7R IV`).
     pub body: String,

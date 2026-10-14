@@ -2939,7 +2939,7 @@
       "note": "ALEV III spectral sensitivity ESTIMATE (not a measurement), data/alexa/target.json"
     },
     "fit_script": "training/sensor_map/fit.py@bcc8aa7161298b86752f44f998f0df198320bac7",
-    "fit_sources_sha256": "b9540c3d20d976ac5a04fc009db78dd710819751dd5d36f8d7f7b3d9a05c2217",
+    "fit_sources_sha256": "99c681770e12c05be794c8e45622b6d3ed6546e4144ff1ca09ad94260b13db0d",
     "sensor_map_objective": "lab-optimal white-preserving 3x3 (docs/02 §C2, decision 2026-10-12)",
     "fit_solver": "scipy 1.18.1 optimize.least_squares(method='lm', analytic Jacobian, xtol=1e-15, ftol=1e-15, gtol=1e-15, max_nfev=500) from the Y^(-2/3) weighted-RGB solution, then up to 8 Gauss-Newton steps (stop below 1e-13); numpy 2.5.3",
     "colour_science": "0.4.7",
@@ -3005,13 +3005,13 @@
     "checks": [
       {
         "pairing": "ILME-FX3 (385) uses sony-ilce-7sm3",
-        "check": "LibRaw camera ColorMatrix (rgb_xyz_matrix) of the sibling within 0.02 per coefficient of ILCE-7SM3 after row normalisation (docs/03)",
-        "result": "pass: max |diff| 0.0000 per coefficient (limit 0.02); LibRaw 0.22.1 camera matrix (rgb_xyz_matrix, D65 ColorMatrix keyed by the Sony model ID) via rawpy 0.27.1, rows normalised to sum 1; crates/ym-profiles/tests/py/sibling_matrices.py"
+        "check": "The published colour matrix (D65 ColorMatrix) of the sibling within 0.02 per coefficient of ILCE-7SM3 after row normalisation (docs/03)",
+        "result": "pass: max |diff| 0.0000 per coefficient (limit 0.02); the bodies' published D65 colour matrices (numbers only, keyed by the Sony model ID), rows normalised to sum 1; crates/ym-profiles/tests/py/sibling_matrices.py"
       },
       {
         "pairing": "ZV-E1 (393) uses sony-ilce-7sm3",
-        "check": "LibRaw camera ColorMatrix (rgb_xyz_matrix) of the sibling within 0.02 per coefficient of ILCE-7SM3 after row normalisation (docs/03)",
-        "result": "pass: max |diff| 0.0000 per coefficient (limit 0.02); LibRaw 0.22.1 camera matrix (rgb_xyz_matrix, D65 ColorMatrix keyed by the Sony model ID) via rawpy 0.27.1, rows normalised to sum 1; crates/ym-profiles/tests/py/sibling_matrices.py"
+        "check": "The published colour matrix (D65 ColorMatrix) of the sibling within 0.02 per coefficient of ILCE-7SM3 after row normalisation (docs/03)",
+        "result": "pass: max |diff| 0.0000 per coefficient (limit 0.02); the bodies' published D65 colour matrices (numbers only, keyed by the Sony model ID), rows normalised to sum 1; crates/ym-profiles/tests/py/sibling_matrices.py"
       }
     ]
   }

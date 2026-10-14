@@ -1343,14 +1343,9 @@ fn an_export_runs_in_the_background_and_reports_its_progress() {
         })
     });
     wait_until("the queue to go idle", || !h.api.export_busy());
+    wait_for_the_free_event(&h);
     let events = h.events.events();
-    let busy: Vec<bool> = events
-        .iter()
-        .filter_map(|e| match e {
-            AppEvent::ExportBusy(b) => Some(*b),
-            _ => None,
-        })
-        .collect();
+    let busy = busy_events(&h);
     assert_eq!(
         busy.first(),
         Some(&true),
@@ -1736,6 +1731,27 @@ fn five_hundred_files_leave_the_commands_responsive() {
     );
 }
 
+/// The `ExportBusy` events seen so far, in order.
+fn busy_events(h: &Harness) -> Vec<bool> {
+    h.events
+        .events()
+        .iter()
+        .filter_map(|e| match e {
+            AppEvent::ExportBusy(b) => Some(*b),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Waits until the app has been told that the queue is free: the worker clears its state first and sends
+/// `ExportBusy(false)` just after, so a test that saw `export_busy()` turn false may still be a moment
+/// ahead of the event.
+fn wait_for_the_free_event(h: &Harness) {
+    wait_until("the app to be told the queue is free", || {
+        busy_events(h).last() != Some(&true)
+    });
+}
+
 #[test]
 fn closing_the_session_does_not_stop_an_export() {
     let h = Harness::new();
@@ -1752,17 +1768,10 @@ fn closing_the_session_does_not_stop_an_export() {
         })
     });
     wait_until("the queue to go idle", || !h.api.export_busy());
+    wait_for_the_free_event(&h);
     let written = std::fs::read_dir(out.path()).expect("dir").count();
     assert_eq!(written, 4, "every photo of the job was written");
-    let busy: Vec<bool> = h
-        .events
-        .events()
-        .iter()
-        .filter_map(|e| match e {
-            AppEvent::ExportBusy(b) => Some(*b),
-            _ => None,
-        })
-        .collect();
+    let busy = busy_events(&h);
     assert_eq!(
         busy.first(),
         Some(&true),
@@ -1780,6 +1789,7 @@ fn a_cancelled_export_frees_the_queue() {
     let id = h.api.export_start(&jpeg_job(out.path())).expect("start");
     h.api.export_cancel(id);
     wait_until("the queue to go idle", || !h.api.export_busy());
+    wait_for_the_free_event(&h);
     // Whatever was written is a whole file, and no temporary file of a photo that was cut short is
     // left behind.
     for entry in std::fs::read_dir(out.path()).expect("dir") {
@@ -1788,16 +1798,9 @@ fn a_cancelled_export_frees_the_queue() {
         assert!(!name.starts_with('.') && !name.ends_with(".tmp"), "{name}");
         assert!(entry.metadata().expect("meta").len() > 0, "{name} is empty");
     }
-    let busy: Vec<bool> = h
-        .events
-        .events()
-        .iter()
-        .filter_map(|e| match e {
-            AppEvent::ExportBusy(b) => Some(*b),
-            _ => None,
-        })
-        .collect();
-    assert_eq!(busy.last(), Some(&false));
+    // A job cancelled before the worker took it never made the queue busy, so there may be no event
+    // at all; if the app was told it is busy, it has been told it is free again.
+    assert_ne!(busy_events(&h).last(), Some(&true));
 }
 
 #[test]

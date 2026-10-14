@@ -173,7 +173,7 @@ def _locus_json(S_P: np.ndarray) -> dict:
 
 def _checks_json(prof: Profile) -> list[dict]:
     """One entry per same-sensor pairing, shipped or rejected, with its measured result (docs/03)."""
-    check = (f"LibRaw camera ColorMatrix (rgb_xyz_matrix) of the sibling within {SIBLING_LIMIT} per coefficient "
+    check = (f"The published colour matrix (D65 ColorMatrix) of the sibling within {SIBLING_LIMIT} per coefficient "
              f"of {prof.model} after row normalisation (docs/03)")
     out = [
         {

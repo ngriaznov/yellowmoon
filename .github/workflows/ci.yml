@@ -237,6 +237,9 @@ jobs:
       - run: python3 -I tools/vectors/aces2_vectors.py --check
       - run: pip install -r training/illum/requirements.txt && python3 -m unittest training.illum.test_illum
       - run: python3 -m unittest training.noise.test_public_priors
+      # The white scale of stand-in bodies (docs/03): our SR2 reader, the two references, the fit, and that registry.json carries
+      # white_scale.json. The tests that need the owner's photos or the synthetic set skip without them.
+      - run: python3 -m unittest training.white_scale.test_white_scale
 
   # The Rust halves of the colour-science gates: M1-02 (spectral tables against the spectra they came from), M1-04 (Rust
   # reproduces sony_profiles.csv within 0.02), M1-05 (the sensor-map gate numbers) and M1-07 (3200 K under daylight differs from

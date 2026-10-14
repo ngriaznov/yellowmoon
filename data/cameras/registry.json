@@ -2,7 +2,7 @@
   "version": "1.2.0",
   "default_profile": "sony-ilce-7rm4",
   "sources": {
-    "model_ids": "exiftool/exiftool lib/Image/ExifTool/Sony.pm @ 2200871d9cef988051d2a99d67df3bda6cbb30a8 (SonyModelID table)",
+    "model_ids": "Sony SonyModelID values (maker-note tag 0xB001) and Model strings as the cameras write them; each pair cross-checked against independent tools (numbers only)",
     "table": "docs/03-camera-profiles.md, 'Which profile each camera gets'",
     "sensors": "Sony specification pages (sensor size in mm; the width in pixels of the largest 3:2 still image, full frame): read 2026-10-13 from web-search excerpts of the pages named; the pages were not fetched (Sony hosts are not reachable from the build environment); verify against the page before relying on the value. Used for the pixel pitch of docs/algorithms/03 section 2.2; sensor_source_kind is 'maker' when the excerpt came from a Sony page and 'restated' when a retailer or reference site restated the Sony specification."
   },
@@ -79,7 +79,7 @@
       "profile": "sony-ilce-7m3",
       "match": "sensor_family",
       "via": "Sony A7 III",
-      "notes": "Same sensor as Sony A7 III; shares its profile. ColorMatrix sibling check (pass): max |diff| 0.0000 per coefficient against the profile body, limit 0.02, LibRaw 0.22.1 via rawpy 0.27.1 (docs/03).",
+      "notes": "Same sensor as Sony A7 III; shares its profile. ColorMatrix sibling check (pass): max |diff| 0.0000 per coefficient against the profile body, limit 0.02, published colour matrices (docs/03).",
       "white_scale": [1.0, 1.0, 1.0],
       "white_scale_source": {
         "kind": "same_sensor",
@@ -174,7 +174,7 @@
       "profile": "sony-ilce-7rm3",
       "match": "sensor_family",
       "via": "Sony A7R III",
-      "notes": "Same sensor as Sony A7R III; shares its profile. ColorMatrix sibling check (pass): max |diff| 0.0000 per coefficient against the profile body, limit 0.02, LibRaw 0.22.1 via rawpy 0.27.1 (docs/03).",
+      "notes": "Same sensor as Sony A7R III; shares its profile. ColorMatrix sibling check (pass): max |diff| 0.0000 per coefficient against the profile body, limit 0.02, published colour matrices (docs/03).",
       "white_scale": [1.0, 1.0, 1.0],
       "white_scale_source": {
         "kind": "same_sensor",
@@ -212,7 +212,7 @@
       "profile": "sony-ilce-7rm4",
       "match": "sensor_family",
       "via": "Sony A7R IV",
-      "notes": "Same sensor as Sony A7R IV; shares its profile. ColorMatrix sibling check (pass): max |diff| 0.0000 per coefficient against the profile body, limit 0.02, LibRaw 0.22.1 via rawpy 0.27.1 (docs/03).",
+      "notes": "Same sensor as Sony A7R IV; shares its profile. ColorMatrix sibling check (pass): max |diff| 0.0000 per coefficient against the profile body, limit 0.02, published colour matrices (docs/03).",
       "white_scale": [1.0, 1.0, 1.0],
       "white_scale_source": {
         "kind": "same_sensor",
@@ -231,7 +231,7 @@
       "profile": "sony-ilce-7rm4",
       "match": "default",
       "via": null,
-      "notes": "No measured profile; uses the Sony A7R IV stand-in (docs/03). A Sony file is never refused for lack of a profile. Considered as a same-sensor sibling of the Sony A7R IV, but it did not pass: ColorMatrix sibling check (fail): max |diff| 0.0934 per coefficient against the profile body, limit 0.02, LibRaw 0.22.1 via rawpy 0.27.1.",
+      "notes": "No measured profile; uses the Sony A7R IV stand-in (docs/03). A Sony file is never refused for lack of a profile. Considered as a same-sensor sibling of the Sony A7R IV, but it did not pass: ColorMatrix sibling check (fail): max |diff| 0.0934 per coefficient against the profile body, limit 0.02, published colour matrices.",
       "white_scale": [1.0, 1.0, 1.0],
       "white_scale_source": {
         "kind": "none",
@@ -250,7 +250,7 @@
       "profile": "sony-ilce-7rm4",
       "match": "default",
       "via": null,
-      "notes": "No measured profile; uses the Sony A7R IV stand-in (docs/03). A Sony file is never refused for lack of a profile. Considered as a same-sensor sibling of the Sony A7R IV, but it did not pass: ColorMatrix sibling check (fail): max |diff| 0.0934 per coefficient against the profile body, limit 0.02, LibRaw 0.22.1 via rawpy 0.27.1.",
+      "notes": "No measured profile; uses the Sony A7R IV stand-in (docs/03). A Sony file is never refused for lack of a profile. Considered as a same-sensor sibling of the Sony A7R IV, but it did not pass: ColorMatrix sibling check (fail): max |diff| 0.0934 per coefficient against the profile body, limit 0.02, published colour matrices.",
       "white_scale": [1.0, 1.0, 1.0],
       "white_scale_source": {
         "kind": "none",
@@ -307,7 +307,7 @@
       "profile": "sony-ilce-7sm3",
       "match": "sensor_family",
       "via": "Sony A7S III",
-      "notes": "Same sensor as Sony A7S III; shares its profile. ColorMatrix sibling check (pass): max |diff| 0.0000 per coefficient against the profile body, limit 0.02, LibRaw 0.22.1 via rawpy 0.27.1 (docs/03).",
+      "notes": "Same sensor as Sony A7S III; shares its profile. ColorMatrix sibling check (pass): max |diff| 0.0000 per coefficient against the profile body, limit 0.02, published colour matrices (docs/03).",
       "white_scale": [1.0, 1.0, 1.0],
       "white_scale_source": {
         "kind": "same_sensor",
@@ -322,7 +322,7 @@
       "profile": "sony-ilce-7sm3",
       "match": "sensor_family",
       "via": "Sony A7S III",
-      "notes": "Same sensor as Sony A7S III; shares its profile. ColorMatrix sibling check (pass): max |diff| 0.0000 per coefficient against the profile body, limit 0.02, LibRaw 0.22.1 via rawpy 0.27.1 (docs/03).",
+      "notes": "Same sensor as Sony A7S III; shares its profile. ColorMatrix sibling check (pass): max |diff| 0.0000 per coefficient against the profile body, limit 0.02, published colour matrices (docs/03).",
       "white_scale": [1.0, 1.0, 1.0],
       "white_scale_source": {
         "kind": "same_sensor",
@@ -360,7 +360,7 @@
       "profile": "sony-ilce-9",
       "match": "sensor_family",
       "via": "Sony A9",
-      "notes": "Same sensor as Sony A9; shares its profile. ColorMatrix sibling check (pass): max |diff| 0.0000 per coefficient against the profile body, limit 0.02, LibRaw 0.22.1 via rawpy 0.27.1 (docs/03).",
+      "notes": "Same sensor as Sony A9; shares its profile. ColorMatrix sibling check (pass): max |diff| 0.0000 per coefficient against the profile body, limit 0.02, published colour matrices (docs/03).",
       "white_scale": [1.0, 1.0, 1.0],
       "white_scale_source": {
         "kind": "same_sensor",
@@ -398,7 +398,7 @@
       "profile": "sony-ilce-6400",
       "match": "sensor_family",
       "via": "Sony A6400",
-      "notes": "Same sensor as Sony A6400; shares its profile. ColorMatrix sibling check (pass): max |diff| 0.0000 per coefficient against the profile body, limit 0.02, LibRaw 0.22.1 via rawpy 0.27.1 (docs/03).",
+      "notes": "Same sensor as Sony A6400; shares its profile. ColorMatrix sibling check (pass): max |diff| 0.0000 per coefficient against the profile body, limit 0.02, published colour matrices (docs/03).",
       "white_scale": [1.0, 1.0, 1.0],
       "white_scale_source": {
         "kind": "same_sensor",
@@ -417,7 +417,7 @@
       "profile": "sony-ilce-6400",
       "match": "sensor_family",
       "via": "Sony A6400",
-      "notes": "Same sensor as Sony A6400; shares its profile. ColorMatrix sibling check (pass): max |diff| 0.0000 per coefficient against the profile body, limit 0.02, LibRaw 0.22.1 via rawpy 0.27.1 (docs/03).",
+      "notes": "Same sensor as Sony A6400; shares its profile. ColorMatrix sibling check (pass): max |diff| 0.0000 per coefficient against the profile body, limit 0.02, published colour matrices (docs/03).",
       "white_scale": [1.0, 1.0, 1.0],
       "white_scale_source": {
         "kind": "same_sensor",
@@ -436,7 +436,7 @@
       "profile": "sony-ilce-6400",
       "match": "sensor_family",
       "via": "Sony A6400",
-      "notes": "Same sensor as Sony A6400; shares its profile. ColorMatrix sibling check (pass): max |diff| 0.0000 per coefficient against the profile body, limit 0.02, LibRaw 0.22.1 via rawpy 0.27.1 (docs/03).",
+      "notes": "Same sensor as Sony A6400; shares its profile. ColorMatrix sibling check (pass): max |diff| 0.0000 per coefficient against the profile body, limit 0.02, published colour matrices (docs/03).",
       "white_scale": [1.0, 1.0, 1.0],
       "white_scale_source": {
         "kind": "same_sensor",
@@ -455,7 +455,7 @@
       "profile": "sony-ilce-6400",
       "match": "sensor_family",
       "via": "Sony A6400",
-      "notes": "Same sensor as Sony A6400; shares its profile. ColorMatrix sibling check (pass): max |diff| 0.0000 per coefficient against the profile body, limit 0.02, LibRaw 0.22.1 via rawpy 0.27.1 (docs/03).",
+      "notes": "Same sensor as Sony A6400; shares its profile. ColorMatrix sibling check (pass): max |diff| 0.0000 per coefficient against the profile body, limit 0.02, published colour matrices (docs/03).",
       "white_scale": [1.0, 1.0, 1.0],
       "white_scale_source": {
         "kind": "same_sensor",

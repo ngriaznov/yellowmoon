@@ -409,9 +409,9 @@ fn recorded_diff(result: &str) -> (bool, f64) {
 
 #[test]
 fn every_same_sensor_pairing_has_a_recorded_check() {
-    // docs/03: "Record the check in the profile's `provenance`." V1 runs it with LibRaw's camera
-    // matrices (`tests/py/sibling_matrices.py`, which `--verify`s these numbers against a fresh run):
-    // every same-sensor body needs a numeric result within 0.02, from a named tool and version.
+    // docs/03: "Record the check in the profile's `provenance`." V1 runs it on the bodies' published
+    // colour matrices (`tests/py/sibling_matrices.py`, which `--verify`s these numbers against a fresh run):
+    // every same-sensor body needs a numeric result within 0.02 and the record of what was compared.
     let s = store();
     let mut pairings = 0;
     for b in s
@@ -437,8 +437,8 @@ fn every_same_sensor_pairing_has_a_recorded_check() {
         assert!(passed, "{needle}: {}", check.result);
         assert!((0.0..=0.02).contains(&diff), "{needle}: max |diff| {diff}");
         assert!(
-            check.result.contains("LibRaw 0.22.1") && check.result.contains("rawpy 0.27.1"),
-            "{needle}: the tool and its version are recorded: {}",
+            check.result.contains("published D65 colour matrices"),
+            "{needle}: what was compared is recorded: {}",
             check.result
         );
         assert!(

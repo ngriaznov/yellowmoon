@@ -4,9 +4,9 @@ Single source of truth for ``build_profiles`` (profile files, sibling-check reco
 ``build_registry`` (``data/cameras/registry.json``). Change the table here and in
 ``docs/03-camera-profiles.md`` together.
 
-Model IDs are Sony's maker-note ``SonyModelID`` (tag 0xB001). All IDs and model strings below
-were checked against ExifTool's ``Sony.pm`` (exiftool/exiftool @ 2200871d9cef, ``%sonyModelID``
-table, read as a data source only): every ID maps to exactly the model string given here.
+Model IDs are Sony's maker-note ``SonyModelID`` (tag 0xB001). Every ID below maps to exactly the model
+string given here: the numbers and strings are the ones the cameras write, cross-checked against independent
+tools (numbers only; no table, code or text of such a tool is in the repository, ``docs/14`` rule 8).
 """
 
 from __future__ import annotations
@@ -17,9 +17,10 @@ DEFAULT_PROFILE = "sony-ilce-7rm4"
 
 #: docs/03: a same-sensor pairing ships only if the sibling's ColorMatrix is within this of the profile body's.
 SIBLING_LIMIT = 0.02
-#: The independent tool of the check (AGENTS.md V1 data rule: no Adobe DNG Converter samples in V1).
+#: What the check compares (AGENTS.md V1 data rule: no Adobe DNG Converter samples in V1): the published D65 colour
+#: matrix of each body, as numbers (``docs/14`` rule 8).
 SIBLING_TOOL = (
-    "LibRaw 0.22.1 camera matrix (rgb_xyz_matrix, D65 ColorMatrix keyed by the Sony model ID) via rawpy 0.27.1, "
+    "the bodies' published D65 colour matrices (numbers only, keyed by the Sony model ID), "
     "rows normalised to sum 1; crates/ym-profiles/tests/py/sibling_matrices.py"
 )
 
@@ -69,7 +70,7 @@ class Body:
     """One Sony model ID and the profile it gets."""
 
     model_id: int
-    model: str          # Model string as the camera writes it (IFD0 0x0110) and ExifTool names it
+    model: str          # Model string as the camera writes it (IFD0 0x0110)
     body: str           # display name
     profile: str        # profile id
     match: str          # "exact" | "sensor_family" | "default"
@@ -120,7 +121,10 @@ BODIES: tuple[Body, ...] = (
 )
 BODY_BY_ID = {b.model_id: b for b in BODIES}
 
-EXIFTOOL_SOURCE = "exiftool/exiftool lib/Image/ExifTool/Sony.pm @ 2200871d9cef988051d2a99d67df3bda6cbb30a8 (SonyModelID table)"
+MODEL_ID_SOURCE = (
+    "Sony SonyModelID values (maker-note tag 0xB001) and Model strings as the cameras write them; each pair "
+    "cross-checked against independent tools (numbers only)"
+)
 
 
 def body_name_of_profile(profile_id: str) -> str:
@@ -134,9 +138,9 @@ def siblings_of(profile_id: str) -> list[Body]:
 
 
 #: The measured result of every pairing that was checked: model ID -> largest per-coefficient difference
-#: between the sibling's and the profile body's LibRaw ColorMatrix after row normalisation
+#: between the sibling's and the profile body's published ColorMatrix after row normalisation
 #: (``crates/ym-profiles/tests/py/sibling_matrices.py``, which also verifies these numbers with ``--verify``).
-#: ``0.0`` means LibRaw holds the same matrix for both bodies.
+#: ``0.0`` means the published matrices of the two bodies are the same.
 SIBLING_MAX_ABS_DIFF: dict[int, float] = {
     381: 0.0,     # ILCE-7C     -> ILCE-7M3
     386: 0.0,     # ILCE-7RM3A  -> ILCE-7RM3
