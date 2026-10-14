@@ -552,6 +552,6 @@ fn looks_list_names_from_a_hostile_file_name_are_escaped() {
         "{stdout}"
     );
     let objects = json_lines(&run.get_output().stdout);
-    let name = objects[0]["looks"][1]["name"].as_str().expect("name");
+    let name = objects[0]["looks"][2]["name"].as_str().expect("name");
     assert_eq!(name, "ev\u{1b}[2Jil\u{9b}");
 }
