@@ -167,6 +167,9 @@ Run:
       --require-gpu
           Stop with exit code 4 when there is no usable GPU, instead of using the CPU
 
+      --cpu
+          Render on the CPU only and open no graphics device. The golden images are made this way. Beats YELLOWMOON_GPU
+
 Examples:
   ym render ~/Pictures/2026-10-04 --look neutral --format jpeg --long-edge 3000 --out ~/Exports
   fd -e ARW . /Volumes/A1 | ym render - --json --format tiff --bits 16 > results.jsonl

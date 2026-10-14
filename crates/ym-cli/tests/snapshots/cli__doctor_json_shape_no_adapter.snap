@@ -1,0 +1,70 @@
+---
+source: crates/ym-cli/tests/cli.rs
+expression: shape(&v)
+---
+{
+  "data_folder": "string",
+  "gpu": {
+    "available": "bool",
+    "reason": "string"
+  },
+  "gpu_policy": {
+    "all_stages": [
+      "string"
+    ],
+    "auto_stages": [
+      "string"
+    ],
+    "reason": "string",
+    "setting": "string",
+    "source": "string",
+    "stages": [],
+    "uses_gpu": "bool",
+    "warning": "null"
+  },
+  "illuminant_models": [
+    {
+      "file": "string",
+      "sha256": "string"
+    }
+  ],
+  "includes": "string",
+  "looks": {
+    "built_in": "number",
+    "display_luts": "number",
+    "imported": "number",
+    "missing": "number"
+  },
+  "looks_folder": "string",
+  "memory_budget": {
+    "cpu_bytes": "number",
+    "gpu_bytes": "number",
+    "shared_memory": "bool"
+  },
+  "model_weights": [],
+  "pipeline_version": "string",
+  "preferences": {
+    "exists": "bool",
+    "path": "string",
+    "problems": "number"
+  },
+  "profiles": [
+    {
+      "id": "string",
+      "name": "string",
+      "version": "string"
+    }
+  ],
+  "render_path": {
+    "demosaic": "string",
+    "device": "string",
+    "neural_available": "bool",
+    "reason": "string"
+  },
+  "system": {
+    "arch": "string",
+    "os": "string"
+  },
+  "version": "string",
+  "version_text": "string"
+}

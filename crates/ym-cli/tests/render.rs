@@ -875,6 +875,249 @@ fn require_gpu_exits_4_when_no_adapter_opens() {
         .stderr(predicate::str::is_empty());
 }
 
+// --- the graphics policy (`docs/gpu-plan.md` G-01) -------------------------------------------
+
+/// Whether a graphics adapter opens on this machine (lavapipe counts), asked of `ym doctor`.
+fn adapter_opens(sb: &Sandbox) -> bool {
+    let out = sb
+        .ym()
+        .env_remove("YELLOWMOON_GPU")
+        .args(["doctor", "--json"])
+        .assert()
+        .success();
+    let v: Value = serde_json::from_slice(&out.get_output().stdout).expect("JSON");
+    v["gpu"]["available"] == true
+}
+
+#[test]
+fn cpu_and_require_gpu_together_are_a_usage_error() {
+    let sb = Sandbox::new();
+    let arw = sb.arw("a.ARW");
+    let out = sb
+        .ym()
+        .args(["render", "--cpu", "--require-gpu"])
+        .arg(&arw)
+        .assert()
+        .code(2);
+    let err = text(&out.get_output().stderr);
+    assert!(
+        err.contains("--cpu") && err.contains("--require-gpu"),
+        "{err}"
+    );
+    assert!(!sb.default_export().exists(), "nothing was rendered");
+}
+
+#[test]
+fn require_gpu_exits_4_only_when_no_device_opens_at_the_start() {
+    let sb = Sandbox::new();
+    let arw = sb.arw("a.ARW");
+    // No adapter: exit 4 and nothing rendered.
+    sb.ym()
+        .env("WGPU_BACKEND", "dx12")
+        .args(["render", "--require-gpu"])
+        .arg(&arw)
+        .assert()
+        .code(4);
+    assert!(!sb.default_export().exists());
+    // An adapter that opens: the run goes on and writes the file.
+    if adapter_opens(&sb) {
+        sb.ym()
+            .args(["render", "--require-gpu"])
+            .arg(&arw)
+            .assert()
+            .success();
+        assert_eq!(names_in(&sb.default_export()), ["a_neutral.jpg"]);
+    }
+}
+
+#[test]
+fn the_environment_asks_for_a_device_as_the_flag_does_and_a_flag_beats_it() {
+    let sb = Sandbox::new();
+    let arw = sb.arw("a.ARW");
+    // YELLOWMOON_GPU=require is --require-gpu, and the message names what was asked.
+    let out = sb
+        .ym()
+        .env("WGPU_BACKEND", "dx12")
+        .env("YELLOWMOON_GPU", "require")
+        .arg("render")
+        .arg(&arw)
+        .assert()
+        .code(4);
+    let err = text(&out.get_output().stderr);
+    assert!(
+        err.contains("YELLOWMOON_GPU=require is set, so nothing was rendered"),
+        "{err}"
+    );
+    // --cpu beats it: no device is asked for, so none is missing.
+    sb.ym()
+        .env("WGPU_BACKEND", "dx12")
+        .env("YELLOWMOON_GPU", "require")
+        .args(["render", "--cpu"])
+        .arg(&arw)
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("No usable GPU").not());
+    // --require-gpu beats YELLOWMOON_GPU=off.
+    sb.ym()
+        .env("WGPU_BACKEND", "dx12")
+        .env("YELLOWMOON_GPU", "off")
+        .args(["render", "--require-gpu", "--overwrite"])
+        .arg(&arw)
+        .assert()
+        .code(4);
+    // `off` in the environment alone is the CPU: nothing to say about a missing device.
+    sb.ym()
+        .env("WGPU_BACKEND", "dx12")
+        .env("YELLOWMOON_GPU", "off")
+        .args(["render", "--overwrite"])
+        .arg(&arw)
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("No usable GPU").not());
+}
+
+#[test]
+fn a_setting_that_is_not_a_policy_is_a_warning_and_the_default() {
+    let sb = Sandbox::new();
+    let arw = sb.arw("a.ARW");
+    sb.ym()
+        .env("YELLOWMOON_GPU", "maybe")
+        .arg("render")
+        .arg(&arw)
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "YELLOWMOON_GPU=maybe is not a graphics setting. Use auto, on, off or require.",
+        ));
+    // `--quiet` leaves errors only.
+    sb.ym()
+        .env("YELLOWMOON_GPU", "maybe")
+        .args(["render", "--quiet", "--overwrite"])
+        .arg(&arw)
+        .assert()
+        .success()
+        .stderr(predicate::str::is_empty());
+}
+
+/// The bytes of the JPEG `ym render` writes for `a.ARW` under the given policy.
+fn export_under(sb: &Sandbox, arw: &std::path::Path, flags: &[&str], gpu: Option<&str>) -> Vec<u8> {
+    let mut cmd = sb.ym();
+    cmd.env_remove("YELLOWMOON_GPU");
+    if let Some(gpu) = gpu {
+        cmd.env("YELLOWMOON_GPU", gpu);
+    }
+    cmd.args(["render", "--quiet", "--overwrite"])
+        .args(flags)
+        .arg(arw)
+        .assert()
+        .success();
+    std::fs::read(sb.default_export().join("a_neutral.jpg")).expect("the export")
+}
+
+#[test]
+fn every_policy_writes_the_bytes_of_the_cpu_reference() {
+    // In this version the export render is the CPU reference whatever device is open, so the
+    // default, `--cpu`, `YELLOWMOON_GPU=off` and the policies that open a device agree to the byte.
+    let sb = Sandbox::new();
+    let arw = sb.arw("a.ARW");
+    let reference = export_under(&sb, &arw, &["--cpu"], None);
+    assert_eq!(&reference[..2], [0xFF, 0xD8]);
+    assert_eq!(
+        export_under(&sb, &arw, &[], None),
+        reference,
+        "default (auto)"
+    );
+    assert_eq!(
+        export_under(&sb, &arw, &[], Some("off")),
+        reference,
+        "YELLOWMOON_GPU=off"
+    );
+    assert_eq!(
+        export_under(&sb, &arw, &[], Some("auto")),
+        reference,
+        "YELLOWMOON_GPU=auto"
+    );
+    assert_eq!(
+        export_under(&sb, &arw, &[], Some("on")),
+        reference,
+        "YELLOWMOON_GPU=on"
+    );
+    if adapter_opens(&sb) {
+        assert_eq!(
+            export_under(&sb, &arw, &["--require-gpu"], None),
+            reference,
+            "--require-gpu"
+        );
+    }
+}
+
+#[test]
+fn json_says_where_the_pictures_were_made_after_the_settings() {
+    let sb = Sandbox::new();
+    let arw = sb.arw("a.ARW");
+    for (flags, gpu) in [(vec!["--cpu"], None), (vec![], Some("on")), (vec![], None)] {
+        let mut cmd = sb.ym();
+        cmd.env_remove("YELLOWMOON_GPU");
+        if let Some(gpu) = gpu {
+            cmd.env("YELLOWMOON_GPU", gpu);
+        }
+        let out = cmd
+            .args(["render", "--json", "--quiet", "--overwrite"])
+            .args(&flags)
+            .arg(&arw)
+            .assert()
+            .success();
+        let line = String::from_utf8(out.get_output().stdout.clone()).expect("utf-8");
+        let v: Value = serde_json::from_str(line.trim()).expect("one JSON object");
+        // This version makes every export on the CPU.
+        assert_eq!(v["device"], "cpu", "{flags:?} {gpu:?}");
+        // Additive: `device` sits between `settings` and `timings_ms`, the rest keep their order.
+        let keys: Vec<&str> = v
+            .as_object()
+            .expect("object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        let at = |key: &str| line.find(&format!("\"{key}\":")).unwrap_or(usize::MAX);
+        let order = [
+            "input",
+            "output",
+            "status",
+            "camera",
+            "look",
+            "auto",
+            "settings",
+            "device",
+            "timings_ms",
+            "notes",
+            "pipeline_version",
+            "error",
+        ];
+        for pair in order.windows(2) {
+            assert!(
+                at(pair[0]) < at(pair[1]),
+                "{} before {}: {line}",
+                pair[0],
+                pair[1]
+            );
+        }
+        for key in order {
+            assert!(keys.contains(&key), "{key} in {keys:?}");
+        }
+    }
+    // A failure has no device: nothing was rendered.
+    let out = sb
+        .ym()
+        .args(["render", "--json", "does-not-exist.ARW"])
+        .assert()
+        .code(5);
+    assert!(
+        json_lines(&out.get_output().stdout)[0]
+            .get("device")
+            .is_none()
+    );
+}
+
 #[test]
 fn quiet_prints_nothing_and_verbose_adds_timings() {
     let sb = Sandbox::new();

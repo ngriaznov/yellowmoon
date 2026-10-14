@@ -167,6 +167,167 @@ fn doctor_json_has_the_same_parts() {
     assert_eq!(v["looks"]["imported"], 0);
 }
 
+/// A JSON document reduced to its shape: every leaf is the name of its type, an array is the shape
+/// of its first element (or nothing). What a snapshot of a report that depends on the machine can
+/// pin without pinning the machine.
+fn shape(v: &Value) -> Value {
+    match v {
+        Value::Null => Value::from("null"),
+        Value::Bool(_) => Value::from("bool"),
+        Value::Number(_) => Value::from("number"),
+        Value::String(_) => Value::from("string"),
+        Value::Array(items) => Value::Array(items.first().map(shape).into_iter().collect()),
+        Value::Object(map) => {
+            Value::Object(map.iter().map(|(k, v)| (k.clone(), shape(v))).collect())
+        }
+    }
+}
+
+#[test]
+fn doctor_json_shape_snapshot_on_a_machine_with_no_adapter() {
+    // No Direct3D 12 here whatever the machine is, so the GPU section is the same everywhere.
+    let sb = Sandbox::new();
+    let out = sb
+        .ym()
+        .env("WGPU_BACKEND", "dx12")
+        .env_remove("YELLOWMOON_GPU")
+        .args(["doctor", "--json"])
+        .assert()
+        .success();
+    let v: Value = serde_json::from_slice(&out.get_output().stdout).expect("JSON");
+    insta::assert_json_snapshot!("doctor_json_shape_no_adapter", shape(&v));
+}
+
+#[test]
+fn doctor_says_what_the_graphics_policy_comes_to() {
+    let sb = Sandbox::new();
+    let doctor = |gpu: Option<&str>, backend: &str| -> (Value, String) {
+        let run = |json: bool| {
+            let mut cmd = sb.ym();
+            cmd.env("WGPU_BACKEND", backend)
+                .env_remove("YELLOWMOON_GPU");
+            if let Some(gpu) = gpu {
+                cmd.env("YELLOWMOON_GPU", gpu);
+            }
+            cmd.arg("doctor");
+            if json {
+                cmd.arg("--json");
+            }
+            let out = cmd.assert().success();
+            String::from_utf8(out.get_output().stdout.clone()).expect("utf-8")
+        };
+        (serde_json::from_str(&run(true)).expect("JSON"), run(false))
+    };
+
+    // Nothing set and no adapter: the default policy, the CPU, and why.
+    let (v, text) = doctor(None, "dx12");
+    assert_eq!(v["gpu_policy"]["setting"], "auto");
+    assert_eq!(v["gpu_policy"]["source"], "default");
+    assert_eq!(v["gpu_policy"]["uses_gpu"], false);
+    assert!(
+        v["gpu_policy"]["reason"]
+            .as_str()
+            .is_some_and(|r| r.contains("no adapter"))
+    );
+    assert_eq!(v["gpu_policy"]["stages"], serde_json::json!([]));
+    assert_eq!(
+        v["gpu_policy"]["auto_stages"],
+        serde_json::json!(["colour"])
+    );
+    assert_eq!(
+        v["gpu_policy"]["all_stages"],
+        serde_json::json!(["raw", "sampler", "colour", "sharpening", "encode", "export"])
+    );
+    assert!(text.contains("GPU policy"), "{text}");
+    assert!(
+        text.contains("auto (default): uses the CPU, no adapter opened"),
+        "{text}"
+    );
+    assert!(text.contains("GPU stages"), "{text}");
+    assert!(
+        text.contains("colour for Auto; On and Require run raw, sampler, colour"),
+        "{text}"
+    );
+    assert!(text.contains("Memory budget"), "{text}");
+    assert!(
+        text.contains("CPU ") && text.contains(" GiB, GPU "),
+        "{text}"
+    );
+
+    // The environment sets the policy; `off` still lists what is there.
+    let (v, text) = doctor(Some("off"), "dx12");
+    assert_eq!(v["gpu_policy"]["setting"], "off");
+    assert_eq!(v["gpu_policy"]["source"], "environment");
+    assert!(
+        text.contains("off (YELLOWMOON_GPU): uses the CPU"),
+        "{text}"
+    );
+    // A setting that is not a policy is read as auto, and the report says so.
+    let (v, text) = doctor(Some("maybe"), "dx12");
+    assert_eq!(v["gpu_policy"]["setting"], "auto");
+    assert_eq!(
+        v["gpu_policy"]["warning"],
+        "YELLOWMOON_GPU=maybe is not a graphics setting. Use auto, on, off or require."
+    );
+    assert!(text.contains("is not a graphics setting"), "{text}");
+
+    // Budgets: numbers, with the GPU's at most the default 4 GiB.
+    let budget = &v["memory_budget"];
+    assert!(budget["cpu_bytes"].as_u64().is_some_and(|b| b >= 512 << 20));
+    assert!(budget["gpu_bytes"].as_u64().is_some_and(|b| b <= 4 << 30));
+    assert!(budget["shared_memory"].is_boolean());
+}
+
+#[test]
+fn doctor_with_an_adapter_reports_it_whatever_the_policy_does_with_it() {
+    let sb = Sandbox::new();
+    let run = |gpu: &str| -> Value {
+        let out = sb
+            .ym()
+            .env("YELLOWMOON_GPU", gpu)
+            .args(["doctor", "--json"])
+            .assert()
+            .success();
+        serde_json::from_slice(&out.get_output().stdout).expect("JSON")
+    };
+    let on = run("on");
+    if on["gpu"]["available"] != true {
+        return; // no adapter on this machine (the GPU jobs set YM_REQUIRE_GPU and have one)
+    }
+    // The adapter is listed under every policy, `off` included.
+    for gpu in ["auto", "on", "off", "require"] {
+        let v = run(gpu);
+        assert_eq!(v["gpu"]["available"], true, "{gpu}");
+        assert_eq!(v["gpu"]["name"], on["gpu"]["name"], "{gpu}");
+    }
+    // `on` and `require` use any adapter and all the stages; `off` none; `auto` only a hardware
+    // adapter and only what is signed off.
+    for gpu in ["on", "require"] {
+        let v = run(gpu);
+        assert_eq!(v["gpu_policy"]["uses_gpu"], true, "{gpu}");
+        assert_eq!(
+            v["gpu_policy"]["stages"], v["gpu_policy"]["all_stages"],
+            "{gpu}"
+        );
+    }
+    assert_eq!(run("off")["gpu_policy"]["uses_gpu"], false);
+    let auto = run("auto");
+    let hardware = on["gpu"]["software"] == false;
+    assert_eq!(auto["gpu_policy"]["uses_gpu"], hardware);
+    if hardware {
+        assert_eq!(
+            auto["gpu_policy"]["stages"],
+            auto["gpu_policy"]["auto_stages"]
+        );
+    } else {
+        assert!(
+            auto["gpu_policy"]["reason"]
+                .as_str()
+                .is_some_and(|r| r.contains("software adapter"))
+        );
+    }
+}
+
 #[test]
 fn doctor_without_a_gpu_says_so() {
     let sb = Sandbox::new();

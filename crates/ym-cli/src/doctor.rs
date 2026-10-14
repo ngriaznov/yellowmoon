@@ -208,9 +208,9 @@ fn gpu_report() -> (Result<GpuInfo, String>, GpuPlan) {
     };
     let reason = match slot.outcome() {
         GpuOutcome::Using | GpuOutcome::Cpu(CpuReason::Disabled) => None,
-        GpuOutcome::Cpu(CpuReason::SoftwareAdapter) => Some(
-            "only a software adapter was found; YELLOWMOON_GPU=on uses it".to_owned(),
-        ),
+        GpuOutcome::Cpu(CpuReason::SoftwareAdapter) => {
+            Some("only a software adapter was found; YELLOWMOON_GPU=on uses it".to_owned())
+        }
         GpuOutcome::Cpu(CpuReason::NoAdapter(reason)) | GpuOutcome::Unavailable(reason) => {
             Some(format!("no adapter opened ({reason})"))
         }
