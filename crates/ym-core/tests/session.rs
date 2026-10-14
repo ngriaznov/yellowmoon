@@ -12,6 +12,7 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 use common::{Layout, Scene, base_env, light, session_with_events, settle};
+use ym_color::exposure::CAMERA_GAIN_EV;
 use ym_core::auto::NoiseSource;
 use ym_core::session::{
     ApplyScope, EventSink, OpenOptions, PhotoId, PhotoProgress, PhotoStage, PhotoStatus, Session,
@@ -669,8 +670,24 @@ fn a_burst_shares_one_exposure_and_a_lone_frame_keeps_its_own() {
     let ids = session.photo_ids();
     let own = |i: usize| session.estimates(ids[i]).unwrap().exposure.own_ev;
     let shared = |i: usize| session.estimates(ids[i]).unwrap().exposure.ev;
-    // Their own exposures differ by the brightness (one stop per doubling).
-    assert!((own(0) - own(1) - 1.0).abs() < 0.1 && (own(1) - own(2) - 1.0).abs() < 0.1);
+    // The exposure is the camera's gain whatever the brightness (docs/02, interim rule of 2026-10-14), so the own
+    // exposures of the four frames are one constant. The key statistic that is still reported follows the brightness
+    // (one stop per doubling), which shows that the frames are not alike. (Own exposures that differ, and the median
+    // of them, are tested on the pure functions in `ym-color`: on a Sony frame only the highlight guard can lower the
+    // constant and it does not fire on a synthetic scene that stays within the raw range.)
+    for i in 0..4 {
+        assert_eq!(own(i), CAMERA_GAIN_EV, "photo {i}");
+    }
+    let key = |i: usize| {
+        session
+            .estimates(ids[i])
+            .unwrap()
+            .exposure
+            .meter
+            .mean_luminance
+    };
+    assert!((key(1) / key(0) - 2.0).abs() < 0.1 && (key(2) / key(1) - 2.0).abs() < 0.1);
+    assert!((key(3) / key(0) - 1.0).abs() < 0.05);
     // The burst a, b, c (b to c is 1 s, a to b 0 s) shares the median, which is b's.
     for i in 0..3 {
         assert!((shared(i) - own(1)).abs() < 1e-9, "photo {i}");

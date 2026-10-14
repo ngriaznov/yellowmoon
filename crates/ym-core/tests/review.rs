@@ -7,6 +7,7 @@
 mod common;
 
 use common::{Layout, Scene, estimates_of_file, light};
+use ym_color::exposure::CAMERA_GAIN_EV;
 use ym_core::auto::{build_preview, pick_white_sample};
 use ym_raw::layout::{CfaPattern, Layout as Layout2, Rect};
 
@@ -908,12 +909,16 @@ mod other_layouts {
         assert!(session.summary(id).unwrap().reduced);
         // The file's white balance was divided out again, so red and blue top out lower than green
         // (docs/04). The data keeps the raw scale of a mosaic: a neutral grey of 0.4 of the green
-        // range balanced by the initial gains is 0.4 * 14000 / 16512 = 0.339 in every channel,
-        // which auto exposure meters as middle grey / 0.339 (it used to meter the camera's own
-        // balance on top of its own, and the colour estimate saw a strong cast).
-        let ev = session.estimates(id).unwrap().summary().exposure_ev;
+        // range balanced by the initial gains is 0.4 * 14000 / 16512 = 0.339 in every channel. The
+        // exposure is the camera's gain whatever the brightness (docs/02, interim rule of 2026-10-14);
+        // the key statistic that is still reported meters middle grey / 0.339 (it used to meter the
+        // camera's own balance on top of its own, and the colour estimate saw a strong cast).
+        let estimates = session.estimates(id).unwrap();
+        assert_eq!(estimates.summary().exposure_ev, CAMERA_GAIN_EV);
+        assert_eq!(estimates.exposure.own_ev, CAMERA_GAIN_EV);
+        let key = (0.18 / estimates.exposure.meter.mean_luminance).log2();
         let want = (0.18f64 / (0.4 * 14000.0 / 16512.0)).log2();
-        assert!((ev - want).abs() < 0.1, "EV {ev}, want {want}");
+        assert!((key - want).abs() < 0.1, "key statistic {key}, want {want}");
         let picked = session
             .update_settings(
                 id,

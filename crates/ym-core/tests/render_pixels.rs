@@ -361,7 +361,9 @@ fn vignetting_is_corrected_when_the_switch_is_on_and_only_then() {
     let profile = VignetteProfile::from_tag(&knots).expect("profile");
     // A flat field darkened by the lens: raw = flat * G(r).
     let white = light(PROFILE, 5500.0);
-    let scene = Scene::new(w as u32, h as u32, white, Layout::Uniform, 0.3);
+    // At 0.1 the flat field is what the camera's gain (+1.11 EV, the constant exposure) renders as middle grey, so the
+    // corner and the centre are compared in the mid-tones and not in the shoulder of the display transform.
+    let scene = Scene::new(w as u32, h as u32, white, Layout::Uniform, 0.1);
     let mut mosaic = scene.mosaic();
     let hd = 0.5 * (w as f64).hypot(h as f64);
     for y in 0..h {

@@ -11,7 +11,8 @@
 #
 # Both sets run as the M1-08 gate (`autoexp.py --gate`: G3 within 0.5 EV for at least 80 % of the files; the outliers are
 # printed for the M1-H5 review). The script runs every set it can, then exits with the worst code: 0 all met, 1 a file could
-# not be analysed, 3 a gate is not met. (The real files do not meet it on nine photos; see docs/02, Auto exposure.)
+# not be analysed, 3 a gate is not met. (Since 2026-10-14 EV_auto is the camera's gain: the gate is met on the twelve local files
+# in-sample and on the synthetic set by construction; see docs/02, Auto exposure.)
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -31,7 +32,10 @@ status=0
 if [ "$what" = all ] || [ "$what" = real ]; then
   if ls testdata/real/files/*.ARW >/dev/null 2>&1; then
     code=0
-    python3 -I tools/eval/autoexp.py testdata/real/files --ym "$ym" --label real --gate || code=$?
+    # the nine public files and, when present, the three A1 photos (all local evaluation data)
+    inputs=(testdata/real/files)
+    [ -d testdata/readme-photos/src ] && inputs+=(testdata/readme-photos/src)
+    python3 -I tools/eval/autoexp.py "${inputs[@]}" --ym "$ym" --label real --gate || code=$?
     [ "$code" -gt "$status" ] && status=$code
   else
     echo "no ARW files in testdata/real/files; skipping the real set" >&2
