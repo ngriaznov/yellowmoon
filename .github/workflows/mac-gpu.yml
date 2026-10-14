@@ -1,0 +1,97 @@
+# Metal on GitHub's Apple-silicon macOS runners (the owner's GPU direction of 2026-10-13, docs/16; docs/13).
+# The hosted runners are virtual machines with Apple's paravirtualised GPU. They check correctness on real Metal:
+# the WGSL kernels translated to MSL by naga and compiled by Apple's compiler, Metal's math (fast-math, FMA contraction,
+# log2/exp2/pow accuracy), parity of every kernel with its CPU reference, tile = whole frame, run-to-run determinism,
+# and that the app (with the native Metal viewport in src-tauri/src/native.rs) builds and its tests pass on macOS.
+# They do not measure speed (shared VM, paravirtual GPU) or how the viewport looks on screen: those stay M0-H4 on a
+# physical Mac. Runs on pushes that touch Rust code, on pull requests, and by hand.
+name: Mac GPU (Metal)
+
+on:
+  push:
+    branches: [main, "claude/**"]
+    paths: ["crates/**", "src-tauri/**", "tools/golden/**", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".github/workflows/mac-gpu.yml"]
+  pull_request:
+    paths: ["crates/**", "src-tauri/**", "tools/golden/**", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".github/workflows/mac-gpu.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mac-gpu-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+defaults:
+  run:
+    shell: bash   # bash -eo pipefail: a failing command before `tee` fails the step
+
+jobs:
+  metal:
+    name: Kernels on Metal (${{ matrix.runner }})
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15, macos-14]   # both Apple silicon (arm64)
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    env:
+      WGPU_BACKEND: metal
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust toolchain from rust-toolchain.toml
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: metal-${{ matrix.runner }}
+      - name: The machine's GPU as macOS reports it
+        run: system_profiler SPDisplaysDataType SPHardwareDataType | tee system-${{ matrix.runner }}.txt
+      - name: The adapter as ym sees it (ym doctor)
+        run: cargo run -p ym-cli --release -- doctor --json | tee doctor-${{ matrix.runner }}.json
+      # YM_REQUIRE_GPU turns "no adapter, skipped" into a failure, so a runner without Metal cannot pass silently.
+      - name: Every GPU kernel against its CPU reference on Metal (ym-gpu)
+        env:
+          YM_REQUIRE_GPU: "1"
+        run: cargo test -p ym-gpu --release -- --test-threads=2 2>&1 | tee ym-gpu-${{ matrix.runner }}.log
+      - name: Renderer colour pass on Metal against the CPU reference (ym-core)
+        env:
+          YM_REQUIRE_GPU: "1"
+        run: cargo test -p ym-core --release --test render_gpu 2>&1 | tee render-gpu-${{ matrix.runner }}.log
+      - name: Keep the logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: metal-${{ matrix.runner }}
+          path: |
+            system-${{ matrix.runner }}.txt
+            doctor-${{ matrix.runner }}.json
+            ym-gpu-${{ matrix.runner }}.log
+            render-gpu-${{ matrix.runner }}.log
+          if-no-files-found: warn
+
+  app:
+    name: App and workspace on macOS
+    runs-on: macos-15
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Frontend build (the app embeds dist/)
+        run: npm ci && npm run build
+      - name: Rust toolchain from rust-toolchain.toml
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: app-macos
+      - run: tools/dev/prepare-sidecar.sh   # tauri-build needs the sidecar to exist (docs/01)
+      - name: Clippy for the macOS-only code (native Metal viewport)
+        run: cargo clippy -p yellowmoon-app --all-targets -- -D warnings
+      - name: App tests on macOS
+        run: cargo test -p yellowmoon-app
