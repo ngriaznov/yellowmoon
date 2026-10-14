@@ -1107,6 +1107,7 @@ mod tests {
                 path: ym_core::pipeline::RenderPath::Classical,
                 space: ym_export::ColorSpace::DisplayP3,
                 device: ym_core::pipeline::ComputeDevice::Cpu,
+                ranges: Vec::new(),
                 scale: 1,
                 runs: ym_core::pipeline::StageRuns::default(),
                 timings: ym_core::pipeline::StageTimings::default(),

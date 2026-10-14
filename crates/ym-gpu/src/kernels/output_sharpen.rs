@@ -525,6 +525,7 @@ impl PreparedSharpen {
     /// # Errors
     ///
     /// As [`encode`](Self::encode); [`GpuError::InvalidInput`] when `dst` is too small.
+    #[allow(clippy::too_many_arguments)] // the natural argument list; a struct would only move them
     pub fn encode_rgba8(
         &self,
         passes: &mut PassList<'_>,

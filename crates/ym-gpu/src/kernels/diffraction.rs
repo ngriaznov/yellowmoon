@@ -69,13 +69,21 @@
 //!   the luma plane has the CPU's bits (`tests/gpu_diffraction.rs` counts 0 differences in 240000
 //!   pixels; the RA-09 review counted 0 in a further 17.3 million random, 14-bit and balanced
 //!   lumas) and the large frame drops to 4.8e-7. Two things are needed to make it work, and
-//!   both were found by measurement on lavapipe: every rounded intermediate goes through `opaque`
-//!   (an xor with the uniform `zero`, which the compiler cannot fold), because the optimiser
+//!   both were found by measurement: every rounded intermediate **and every error term** goes through
+//!   `opaque` (an xor with the uniform `zero`, which the compiler cannot fold), because the optimiser
 //!   otherwise fuses and cancels the error terms of the transformations, and `fma` is not used,
 //!   because lavapipe lowers it to a multiply and an add (every error term came out 0). The
-//!   transformations assume round-to-nearest `f32` and no re-association across the barrier, which
-//!   desktop and Apple GPUs give; a driver that does not would leave the luma 1 to 2 ulp off and the
-//!   parity at the 1e-4 level of the plain sum, which `the_luma_plane_has_the_cpu_bits` reports.
+//!   transformations assume round-to-nearest `f32` and no re-association across the barrier.
+//!   **Fast-math (Metal).** Metal's compiler runs with fast-math by default, and the first version
+//!   of the shader hid only the rounded results: the error sum `(a - ad) + (b - bb)` of the Knuth sum
+//!   was re-associated into `(a + b) - (bb + ad)`, which is 0, and the luma came out as the plain
+//!   `f32` sum (30304 of 60000 lumas off the CPU's on the Apple runners, 0 on lavapipe). The same
+//!   sequence compiled with clang `-O2 -ffast-math` on Linux (the optimised IR shows the rewrite)
+//!   differed from the `f64` luma in 54 % of 2 million random pixels; with every term hidden, in
+//!   none, also under `-O3 -ffp-contract=fast`. The Dekker product needs no more than that: its
+//!   partial products are exact in `f32` (12-bit halves), so a contraction into fused multiply-adds
+//!   cannot change a bit. A driver that still re-associates would leave the luma 1 to 2 ulp off and
+//!   the parity at the 1e-4 level of the plain sum, which `the_luma_plane_has_the_cpu_bits` reports.
 //! * **A noise-free smooth ramp has no stable answer.** Every window is evenly spread, so the
 //!   envelopes collapse to `lower = upper = mid`, `Y` sits within a rounding of both layer thresholds
 //!   (`Lm`, `Hm`) and the dark/bright split is decided by rounding. The CPU port itself moves by up
@@ -86,10 +94,17 @@
 //!   without the `Y + delta - Y` round trip). When `L_s == Y` (a gated pixel, `strength` 0, a flat
 //!   field) the shader writes `in * 1 + 0` without dividing, so those are exact identities whatever
 //!   the accuracy of the driver's divide.
-//! * **Range.** The cofactors multiply three moments, each at most `w F^2`. With `w <= 1` and balanced
-//!   values up to about 40 times white they stay below the `f32` maximum; a frame beyond that is out
-//!   of contract (R7 never produces it). A degenerate solve (a non-finite coefficient) leaves the
-//!   pixel alone, as on the CPU.
+//! * **Range.** The cofactors multiply three moments, each at most `w F^2`, and the clip penalty
+//!   `(w e) e` squares an excess. Overflow in these is no safe thing to rely on (Metal's fast-math
+//!   compiler may assume there are no infinities), so the luma pass bounds every **finite** input
+//!   sample to `+-1e6 DN / (S * max(sum |a_c|, 1))`, about 15 times white: with `w <= 1` every moment
+//!   stays below 1e12 and the determinant below 4e36, the `f32` maximum being 3.4e38, whatever order
+//!   the compiler evaluates the products in. A frame within the bound (R7 never produces more than a
+//!   few times white; the tests go to 4) is untouched; a sample beyond it acts like the bound for the
+//!   stage's decisions while the output pass still scales the sample itself, so a 1e30 in one pixel
+//!   gives a finite image (the CPU's `f64` solves it exactly). NaN and infinities are not bounded:
+//!   they propagate, as the specification says (no further than the halo, tested). A degenerate
+//!   solve (a non-finite coefficient) leaves the pixel alone, as on the CPU.
 //!
 //! # Parity with the CPU reference
 //!
@@ -766,7 +781,10 @@ fn unpack_trace(
     if base.len() != BASE_PLANES * n || coef.len() != COEF_PLANES * n {
         return Err(GpuError::Readback("missing trace planes".into()));
     }
-    let mut it = base.chunks_exact(n).chain(coef.chunks_exact(n)).map(<[f32]>::to_vec);
+    let mut it = base
+        .chunks_exact(n)
+        .chain(coef.chunks_exact(n))
+        .map(<[f32]>::to_vec);
     let mut next = || {
         it.next()
             .ok_or_else(|| GpuError::Readback("missing trace plane".into()))
@@ -814,6 +832,7 @@ mod tests {
     use naga::valid::{Capabilities, ValidationFlags, Validator};
 
     use super::*;
+    use crate::device::StorageMode;
     use crate::kernels::shader_source;
 
     /// Every diffraction pass, as registered in [`KernelId`].
@@ -915,6 +934,52 @@ mod tests {
             assert_eq!(member.offset as usize, offset, "offset of {name}");
         }
         assert_eq!(*span as usize, size_of::<ParamsU>());
+    }
+
+    #[test]
+    fn every_term_of_the_exact_luma_is_hidden_from_a_reassociating_compiler() {
+        // Metal's compiler runs with fast-math and rewrote the unhidden error sum of `two_sum`
+        // (`(a - ad) + (b - bb)` became `(a + b) - (bb + ad)`, which is 0), so the luma came out as the
+        // plain f32 sum (30304 of 60000 lumas off the CPU's). Lavapipe does not do that, so only the
+        // text of the shader can pin the fix here: each error term is its own hidden value, and the
+        // sums that consume them have nothing but hidden operands.
+        let body = include_str!("../shaders/diffraction.wgsl");
+        for line in [
+            "let ea = opaque(a - ad);",
+            "let eb = opaque(b - bb);",
+            "return vec2<f32>(s, ea + eb);",
+            "return vec2<f32>(hi, opaque(a - hi));",
+            "let e3 = opaque(e2 + x.y * y.x);",
+        ] {
+            assert!(body.contains(line), "the shader lost `{line}`");
+        }
+        let code: String = body
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            !code.contains("(a - ad) + (b - bb)"),
+            "the error sum of two_sum is in the open again"
+        );
+    }
+
+    #[test]
+    fn the_luma_pass_bounds_finite_samples_and_leaves_non_finite_ones_alone() {
+        let body = include_str!("../shaders/diffraction.wgsl");
+        assert!(body.contains("let r_in = bounded(img[ii], lim);"));
+        assert!(body.contains("let g_in = bounded(img[dp.in_plane + ii], lim);"));
+        assert!(body.contains("let b_in = bounded(img[2u * dp.in_plane + ii], lim);"));
+        // The bound keeps the determinant of the solve (six powers of the luma) inside f32: with
+        // `w <= 1` a luma of L DN gives moments of L^2, so L^6 times a few must stay below 3.4e38.
+        let limit_dn = 1.0e6f64;
+        assert!(body.contains("const LUMA_LIMIT_DN: f32 = 1.0e6;"));
+        assert!(
+            3.0 * limit_dn.powi(6) < f64::from(f32::MAX) * 0.5,
+            "the bound is too high"
+        );
+        // And the scale the bound is divided by is the one the host passes.
+        assert_eq!(WORKING_SCALE, 65535.0);
     }
 
     #[test]

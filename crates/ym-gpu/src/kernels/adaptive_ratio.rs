@@ -573,12 +573,7 @@ pub fn padded_pixels(core: Rect) -> u64 {
 #[must_use]
 pub fn max_binding_bytes(core: Rect) -> u64 {
     let scratch = padded_pixels(core) * PLANES_MATCH as u64 * 4;
-    let compute = Rect::new(
-        0,
-        0,
-        core.w + 2 * HALO_MAX_PX,
-        core.h + 2 * HALO_MAX_PX,
-    );
+    let compute = Rect::new(0, 0, core.w + 2 * HALO_MAX_PX, core.h + 2 * HALO_MAX_PX);
     let input = even(compute.w) as u64 * compute.h as u64 * 4;
     let output = 3 * even(core.w) as u64 * core.h as u64 * 4;
     scratch.max(input).max(output)
@@ -812,7 +807,15 @@ pub(crate) fn demosaic_core(
     core: Rect,
     frame: &PreparedDemosaic,
 ) -> Result<RgbImage, GpuError> {
-    let input = GpuImage::upload(ctx, "adaptive ratio mosaic", m.width, m.height, 1, &m.data, m.place)?;
+    let input = GpuImage::upload(
+        ctx,
+        "adaptive ratio mosaic",
+        m.width,
+        m.height,
+        1,
+        &m.data,
+        m.place,
+    )?;
     let mut passes = PassList::new(ctx, "adaptive ratio demosaic");
     let out = encode_demosaic(&mut passes, &input, m.cfa, core, frame)?;
     let read = out.encode_read(&mut passes)?;
@@ -945,6 +948,7 @@ mod tests {
     use naga::valid::{Capabilities, ValidationFlags, Validator};
 
     use super::*;
+    use crate::device::StorageMode;
     use crate::kernels::shader_source;
 
     /// Every adaptive ratio pass, as registered in [`KernelId`].

@@ -562,6 +562,7 @@ impl GpuSlot<Gpu> {
         options.budget = self.budget;
         options.gpu = self.gpu.clone();
         options.gpu_stages = self.stages();
+        options.gpu_strict = self.policy.is_strict();
     }
 
     /// Starts the kernel compile on the device as an `Export`-priority job, cancellable between
@@ -1354,7 +1355,9 @@ mod tests {
         }
         // The raw chain is on the device for an export under `On`, so `ym` warms the kernels up
         // while the photos develop; cancelled at once here (the job itself is tested above).
-        let started = slot.warm_up_for_exports().expect("the raw chain is on the device");
+        let started = slot
+            .warm_up_for_exports()
+            .expect("the raw chain is on the device");
         started.cancel();
         let _ = started.wait();
         // `Auto` runs the colour pass only (the signed-off stages), which no export uses: no warm-up.

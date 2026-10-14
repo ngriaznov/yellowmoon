@@ -30,11 +30,11 @@ use std::time::Instant;
 
 use serde::Serialize;
 use ym_export::{ColorSpace, DetailStat};
+use ym_gpu::chain::StageRange;
 use ym_gpu::cpu::demosaic::{DEFAULT_METHOD, Method};
 use ym_gpu::cpu::detail::NoiseReduction;
 use ym_gpu::cpu::sharpen::SharpenParams;
 use ym_gpu::cpu::sharpen::diffraction::DiffractionParams;
-use ym_gpu::chain::StageRange;
 use ym_gpu::cpu::{Rect, RgbImage};
 use ym_gpu::device::{Gpu, GpuError, GpuInfo};
 use ym_gpu::queue::{CancelToken, JobSpec, Priority};
@@ -57,8 +57,7 @@ use ym_color::display::OutputTarget;
 
 /// The note of a render whose demosaic method is not the adaptive ratio (the test-only switch of
 /// `RenderOptions::demosaic`): the device runs that one only.
-const METHOD_NOT_ON_DEVICE_NOTE: &str =
-    "The graphics card runs the adaptive ratio demosaic only, so the CPU ran the one that was asked for.";
+const METHOD_NOT_ON_DEVICE_NOTE: &str = "The graphics card runs the adaptive ratio demosaic only, so the CPU ran the one that was asked for.";
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
@@ -589,8 +588,7 @@ impl Renderer {
     /// device are untouched (`Scheduler::cancel_navigation`). Returns how many were cancelled.
     pub(crate) fn cancel_gpu_navigation(&self, left: PhotoId) -> usize {
         self.options().gpu.as_ref().map_or(0, |g| {
-            g.scheduler()
-                .cancel_navigation(Some(u64::from(left.0)))
+            g.scheduler().cancel_navigation(Some(u64::from(left.0)))
         })
     }
 
@@ -1296,7 +1294,8 @@ impl<'a> Job<'a> {
         frame: &FrameData,
         rect: Rect,
     ) -> Result<RgbImage, RenderError> {
-        let expected = self.opts.gpu.is_some() && self.opts.gpu_stages.contains(GpuStages::RAW_CHAIN);
+        let expected =
+            self.opts.gpu.is_some() && self.opts.gpu_stages.contains(GpuStages::RAW_CHAIN);
         if let Some(route) = self.raw_route()? {
             match full.run_tile_gpu(frame, rect, &route) {
                 Ok(img) => {

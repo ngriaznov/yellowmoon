@@ -22,6 +22,26 @@ use ym_core::session::{ApplyScope, OpenOptions};
 use ym_export::{BitDepth, ExportOptions, FormatKind};
 use ym_gpu::device::gpu_required_by_env;
 
+/// Whether the slot holds a device; says so, loudly, when it does not (and fails when the environment
+/// demands one).
+fn slot_has_device(slot: &GpuSlot) -> bool {
+    if slot.gpu().is_some() {
+        return true;
+    }
+    assert!(
+        !gpu_required_by_env(),
+        "YM_REQUIRE_GPU is set but no device opened: {:?}",
+        slot.missing_device_reason()
+    );
+    eprintln!("\n* GPU TESTS SKIPPED in parity_gpu: no adapter\n");
+    false
+}
+
+/// Whether a device opens under the `On` policy.
+fn device_opens() -> bool {
+    slot_has_device(&open_gpu(GpuPolicy::On, MemoryBudget::detect()))
+}
+
 /// The app's side: a core over its own app folder with the device attached.
 struct App {
     core: Core,
@@ -34,13 +54,7 @@ impl App {
     /// there is no adapter.
     fn open(files: &[&Path]) -> Option<Self> {
         let slot = open_gpu(GpuPolicy::On, MemoryBudget::detect());
-        if slot.gpu().is_none() {
-            assert!(
-                !gpu_required_by_env(),
-                "YM_REQUIRE_GPU is set but no device opened: {:?}",
-                slot.missing_device_reason()
-            );
-            eprintln!("\n* GPU TESTS SKIPPED in parity_gpu: no adapter\n");
+        if !slot_has_device(&slot) {
             return None;
         }
         let home = tempfile::tempdir().expect("tempdir");
@@ -149,9 +163,9 @@ fn a_jpeg_of_several_tiles_is_byte_identical_through_the_app_path_and_the_binary
 #[test]
 fn the_binary_gives_the_same_bytes_twice_and_with_one_and_several_photos_in_flight() {
     let sb = Sandbox::new();
-    let a = sb.arw_sized("a.ARW", 2100, 1100, 9);
-    let b = sb.arw_sized("b.ARW", 1300, 900, 5);
-    if App::open(&[&a]).is_none() {
+    sb.arw_sized("a.ARW", 2100, 1100, 9);
+    sb.arw_sized("b.ARW", 1300, 900, 5);
+    if !device_opens() {
         return;
     }
     let png = ["--format", "png", "--bits", "16"];
@@ -166,7 +180,6 @@ fn the_binary_gives_the_same_bytes_twice_and_with_one_and_several_photos_in_flig
     assert_eq!(first.len(), 2, "{first:?}");
     assert_same_files(&first, &second, "twice");
     assert_same_files(&first, &several, "--jobs 1 and --jobs 4");
-    let _ = (&a, &b);
 }
 
 /// A 16-bit TIFF keeps the pixels the JPEG quantises: the two front ends agree on every one.

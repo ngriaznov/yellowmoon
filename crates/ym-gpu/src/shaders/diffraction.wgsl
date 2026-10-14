@@ -104,6 +104,9 @@ const PULL_GAIN: f32 = 12.5;     // envelope pull-in
 const PULL_BAND: f32 = 0.04;
 const RATIO_CAP: f32 = 1.5;      // cap of the luma-to-RGB gain
 const FLOOR_DN: f32 = 1.0;       // transfer floors, DN
+// A finite input sample is bounded so that the luma of a pixel stays below this many DN (see
+// `bounded`): 1e6 DN is 15 times the white level of the 16-bit working scale.
+const LUMA_LIMIT_DN: f32 = 1.0e6;
 
 // std::max(a, b) and std::min(a, b) of the reference.
 fn fmax_(a: f32, b: f32) -> f32 {
@@ -122,6 +125,24 @@ fn nonneg(m: f32) -> f32 {
 // Finite test that survives fast-math: looks at the exponent bits, not at the value.
 fn finite_f(x: f32) -> bool {
     return (bitcast<u32>(x) & 0x7f800000u) != 0x7f800000u;
+}
+
+// A finite sample bounded to +-`lim`; a NaN or infinity stays what it is (they propagate, spec 4).
+//
+// The stage works in f32 where the reference works in f64, and a sample far outside any photograph
+// overflows f32 in the products of the solve: the moments grow with the square of the luma, the
+// cofactors with the fourth power and the determinant with the sixth, so a luma above about 2e6 DN
+// (with the minimum noise floor) overflows the determinant, and the clip penalty `(w e) e` overflows
+// from 1e19. Whether the result of such an overflow is still caught afterwards depends on the compiler
+// keeping IEEE infinities: Metal's, under fast-math, may assume there are none, and a 1e30 in one
+// sample left non-finite output. Bounding the input instead bounds every product below the f32 range
+// whatever the compiler does. Samples inside the bound (a frame whose white is 1.0 and whose
+// brightest pixel is below 15) are untouched; the output pass still scales the original sample.
+fn bounded(v: f32, lim: f32) -> f32 {
+    if (!finite_f(v)) {
+        return v;
+    }
+    return fmin_(fmax_(v, -lim), lim);
 }
 
 // Mirrored index without repeating the edge sample, with the in-range case first.
@@ -146,16 +167,30 @@ fn blur_source(i: u32) -> f32 {
 // `two_sum` and `two_prod` returned error terms of exactly 0 (and so did one built on `fma`, which
 // lavapipe lowers to a multiply and an add). XOR with dp.zero (always 0, and unknown to the compiler)
 // puts an integer operation between the producer and its consumers that the compiler cannot see through.
+//
+// Every value that a later operation could be rewritten against is hidden, the error terms included.
+// The first version hid only the rounded results and left the error sum `(a - ad) + (b - bb)` of
+// `two_sum` in the open; the compiler of Metal (LLVM, fast-math by default) then gave the plain f32
+// luma: 30304 of 60000 lumas differed from the CPU's, where lavapipe had none. LLVM's reassociation
+// turns that sum into `(a + b) - (bb + ad)`: `a + b` is the very value `s` was made from and `bb + ad`
+// is `s` again, so the error comes out 0 (read off the optimised IR of clang `-O2 -ffast-math` for
+// this sequence). Measured on Linux with that compiler on the whole luma: the first version differed
+// from the f64 luma in 54 % of 2 million random pixels, the version below in none (the same under
+// `-O3 -ffp-contract=fast`). Each hidden term is an operand of exactly one sum, so there is nothing
+// left to re-associate.
 fn opaque(x: f32) -> f32 {
     return bitcast<f32>(bitcast<u32>(x) ^ dp.zero);
 }
 
-// a + b = s + e exactly (Knuth), with every rounded result hidden from the optimiser.
+// a + b = s + e exactly (Knuth), with every rounded result and both error terms hidden from the
+// optimiser.
 fn two_sum(a: f32, b: f32) -> vec2<f32> {
     let s = opaque(a + b);
     let bb = opaque(s - a);
     let ad = opaque(s - bb);
-    return vec2<f32>(s, (a - ad) + (b - bb));
+    let ea = opaque(a - ad);
+    let eb = opaque(b - bb);
+    return vec2<f32>(s, ea + eb);
 }
 
 // a = hi + lo with at most 12 significant bits in each (Veltkamp).
@@ -163,11 +198,12 @@ fn split12(a: f32) -> vec2<f32> {
     let c = opaque(4097.0 * a);
     let t = opaque(c - a);
     let hi = opaque(c - t);
-    return vec2<f32>(hi, a - hi);
+    return vec2<f32>(hi, opaque(a - hi));
 }
 
 // a b = p + e exactly (Dekker). `fma` is not used: it is not guaranteed to be fused on every driver
-// (Mesa's llvmpipe lowers it to a multiply and an add), but the products of 12-bit halves are exact.
+// (Mesa's llvmpipe lowers it to a multiply and an add), but the products of 12-bit halves are exact, so
+// a contraction of the three sums below into fused multiply-adds cannot change a bit either.
 fn two_prod(a: f32, b: f32) -> vec2<f32> {
     let p = opaque(a * b);
     let x = split12(a);
@@ -209,9 +245,11 @@ fn diffraction_luma(gid: vec3<u32>) {
     }
     let i = gid.y * dp.width + gid.x;
     let ii = gid.y * dp.in_stride + gid.x;
-    let r_in = img[ii];
-    let g_in = img[dp.in_plane + ii];
-    let b_in = img[2u * dp.in_plane + ii];
+    let lim = LUMA_LIMIT_DN
+        / (dp.scale * fmax_(abs(dp.luma_r) + abs(dp.luma_g) + abs(dp.luma_b), 1.0));
+    let r_in = bounded(img[ii], lim);
+    let g_in = bounded(img[dp.in_plane + ii], lim);
+    let b_in = bounded(img[2u * dp.in_plane + ii], lim);
     let xr = dp.scale * r_in;
     let xg = dp.scale * g_in;
     let xb = dp.scale * b_in;

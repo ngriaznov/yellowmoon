@@ -1498,10 +1498,10 @@ mod tests {
             let source = shader_source(mode, KernelId::Color);
             let module = naga::front::wgsl::parse_str(&source)
                 .unwrap_or_else(|e| panic!("{}", e.emit_to_string(&source)));
-            let caps = if mode == StorageMode::F16Native {
-                Capabilities::SHADER_FLOAT16
-            } else {
-                Capabilities::empty()
+            let caps = match mode {
+                StorageMode::F16Native => Capabilities::SHADER_FLOAT16,
+                StorageMode::F16Packed => Capabilities::SHADER_FLOAT16_IN_FLOAT32,
+                StorageMode::F32 => Capabilities::empty(),
             };
             Validator::new(ValidationFlags::all(), caps)
                 .validate(&module)

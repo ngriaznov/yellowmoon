@@ -1806,7 +1806,7 @@ fn the_fused_tail_paints_the_letterbox_and_leaves_the_rest_of_the_view_alone() {
         .map(|i| {
             let (x, y) = (i % w, i / w);
             f32::from(u8::from(
-                x < 12 || x >= 80 || y < 9 || y >= 62 || x + y < 40,
+                !(12..80).contains(&x) || !(9..62).contains(&y) || x + y < 40,
             ))
         })
         .collect();

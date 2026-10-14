@@ -35,6 +35,7 @@ use std::sync::Arc;
 
 use half::f16;
 use rayon::prelude::*;
+use ym_gpu::chain::{DeviceRunner, DeviceWork, GpuChain, StageRange};
 use ym_gpu::cpu::chain::{Chain, Prepared, RawFrame};
 use ym_gpu::cpu::demosaic::{DEFAULT_METHOD, Method};
 use ym_gpu::cpu::denoise::{self, BilateralParams};
@@ -50,7 +51,6 @@ use ym_gpu::cpu::vignette::VignetteProfile;
 use ym_gpu::cpu::{
     Cfa, CfaColor as GpuColor, LUMA, Mosaic, NoiseDn, NoiseSigma, Placement, Rect, RgbImage,
 };
-use ym_gpu::chain::{DeviceRunner, DeviceWork, GpuChain, StageRange};
 use ym_gpu::device::{Gpu, GpuError};
 use ym_gpu::queue::{CancelToken, JobSpec};
 use ym_noise::model::NoiseModel;
@@ -1397,17 +1397,13 @@ impl DeviceRunner for GpuRoute {
     /// session) stops waiting at once: the job is abandoned, skipped when it is popped (its token is
     /// set) and its buffers go back to the pool when it is dropped. A job that is already running
     /// finishes on its own the same way; the render does not wait for it.
-    fn run_device(
-        &self,
-        work: DeviceWork,
-        _cancel: &CancelToken,
-    ) -> Result<RgbImage, GpuError> {
-        let handle = self
-            .gpu
-            .submit_with_token(self.spec, self.token.clone(), move |ctx, token| {
-                ctx.check_alive()?;
-                work.run(ctx, token)
-            });
+    fn run_device(&self, work: DeviceWork, _cancel: &CancelToken) -> Result<RgbImage, GpuError> {
+        let handle =
+            self.gpu
+                .submit_with_token(self.spec, self.token.clone(), move |ctx, token| {
+                    ctx.check_alive()?;
+                    work.run(ctx, token)
+                });
         loop {
             if let Some(done) = handle.wait_timeout(DEVICE_POLL) {
                 return done?;

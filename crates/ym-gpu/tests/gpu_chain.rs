@@ -229,8 +229,7 @@ impl Setup {
     }
 
     fn output_size(&self) -> (usize, usize) {
-        self.chain
-            .output_size(self.scene.width, self.scene.height)
+        self.chain.output_size(self.scene.width, self.scene.height)
     }
 
     fn cpu(&self, out: Rect) -> RgbImage {
@@ -456,7 +455,10 @@ fn the_handoff_matches_the_cpu_demosaic_before_the_later_stages() {
             })
             .expect("device");
         let s = compare(&gpu, &cpu);
-        let label = format!("hand-off {} {w}x{h} lens {lens:?} noise {nname}", cfa.name());
+        let label = format!(
+            "hand-off {} {w}x{h} lens {lens:?} noise {nname}",
+            cfa.name()
+        );
         s.print(&label);
         // One case never loses more than a few percent of its samples.
         assert_within(&label, &s, ONE_CASE);
@@ -612,10 +614,18 @@ fn the_chain_refuses_what_the_device_does_not_run() {
     assert!(StageRange::DEMOSAIC.contains(RawStage::Demosaic));
     assert!(!StageRange::DEMOSAIC.contains(RawStage::Denoise));
     // Every other R6 method runs on the CPU only.
-    for method in [Method::Menon, Method::Lmmse, Method::Bilinear, Method::LogGuided] {
+    for method in [
+        Method::Menon,
+        Method::Lmmse,
+        Method::Bilinear,
+        Method::LogGuided,
+    ] {
         chain.method = method;
         let err = GpuChain::new(&chain, &prepared, StageRange::DEMOSAIC).expect_err("method");
-        assert!(matches!(err, GpuError::InvalidInput(_)), "{method:?}: {err}");
+        assert!(
+            matches!(err, GpuError::InvalidInput(_)),
+            "{method:?}: {err}"
+        );
     }
 }
 
@@ -744,7 +754,10 @@ fn splitting_a_core_changes_no_bit() {
                 .expect("chains");
             assert!(counts.iter().all(|&n| n >= 6), "cut into {counts:?}");
             assert_bit_equal(
-                &format!("{} {w}x{h}: cut at 4500 padded pixels against whole", cfa.name()),
+                &format!(
+                    "{} {w}x{h}: cut at 4500 padded pixels against whole",
+                    cfa.name()
+                ),
                 &cut.data,
                 &whole.data,
             );
@@ -789,7 +802,10 @@ fn a_corner_tile_of_a_strong_lens_is_split_and_equals_the_unsplit_run() {
             };
             let unsplit = g.run_tile(&raised, &s.scene.raw(), out, cancel)?;
             // The largest binding any part of the real run needed.
-            let mut run = s.chain.begin_tile(&s.scene.raw(), &s.prepared, out).expect("tile");
+            let mut run = s
+                .chain
+                .begin_tile(&s.scene.raw(), &s.prepared, out)
+                .expect("tile");
             let first = run
                 .stages()
                 .iter()
@@ -802,7 +818,12 @@ fn a_corner_tile_of_a_strong_lens_is_split_and_equals_the_unsplit_run() {
                 .map(adaptive_ratio::max_binding_bytes)
                 .max()
                 .unwrap_or(0);
-            Ok((split, unsplit, (real.parts.take(), raised.parts.take()), (binding, core)))
+            Ok((
+                split,
+                unsplit,
+                (real.parts.take(), raised.parts.take()),
+                (binding, core),
+            ))
         })
         .expect("chains");
     let (real_parts, raised_parts) = counts;
@@ -869,7 +890,12 @@ fn a_cancelled_chain_stops_and_leaves_the_pool_at_its_baseline() {
         .run(JobSpec::new(Priority::Viewport), move |ctx, _| {
             let before = ctx.pool().stats().in_use_bytes;
             let g = GpuChain::new(&s.chain, &s.prepared, StageRange::DEMOSAIC)?;
-            let ok = g.run_tile(ctx, &s.scene.raw(), Rect::whole(ow, oh), &CancelToken::new())?;
+            let ok = g.run_tile(
+                ctx,
+                &s.scene.raw(),
+                Rect::whole(ow, oh),
+                &CancelToken::new(),
+            )?;
             drop(ok);
             let after_ok = ctx.pool().stats().in_use_bytes;
             // A token that is already set stops the tile before any work.
@@ -908,10 +934,16 @@ fn a_cancelled_chain_stops_and_leaves_the_pool_at_its_baseline() {
         })
         .expect("job");
     assert_eq!(after_ok, before, "a finished tile releases its buffers");
-    assert_eq!(after_cancel, before, "cancelled tiles release their buffers");
+    assert_eq!(
+        after_cancel, before,
+        "cancelled tiles release their buffers"
+    );
     assert!(matches!(err.0, Err(GpuError::Cancelled)), "{:?}", err.0);
     assert!(matches!(err.1, Err(GpuError::Cancelled)), "{:?}", err.1);
-    assert_eq!(cancelled_run.dispatches, 0, "no device work for a set token");
+    assert_eq!(
+        cancelled_run.dispatches, 0,
+        "no device work for a set token"
+    );
     assert_eq!(cancelled_run.submissions, 0);
 }
 

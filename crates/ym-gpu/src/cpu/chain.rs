@@ -923,7 +923,10 @@ mod tests {
             run.supply_demosaic(RgbImage::new(20, 20)).is_err(),
             "R1 is next"
         );
-        assert!(run.finish().is_err(), "a tile with stages left has no output");
+        assert!(
+            run.finish().is_err(),
+            "a tile with stages left has no output"
+        );
         let mut run = chain
             .begin_tile(&raw, &prepared, Rect::new(10, 10, 20, 20))
             .expect("begin");
@@ -933,7 +936,10 @@ mod tests {
             .position(|s| matches!(s, Stage::Demosaic(_)))
             .expect("demosaic");
         run.run_until(first).expect("run");
-        assert!(run.supply_demosaic(RgbImage::new(3, 3)).is_err(), "wrong size");
+        assert!(
+            run.supply_demosaic(RgbImage::new(3, 3)).is_err(),
+            "wrong size"
+        );
     }
 
     #[test]

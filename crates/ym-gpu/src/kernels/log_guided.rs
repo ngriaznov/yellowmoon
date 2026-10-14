@@ -59,6 +59,16 @@
 //!   near `1e33`, where the 25-sample box sum of the structure measures exceeds the `f32` range (the
 //!   CPU's `f32` planes: between `1e33` and `3e33`, at `A = 65535 v`). Balanced mosaics are a few
 //!   times white at most.
+//! * **Fast-math (Metal).** Metal's compiler re-associates by default, which turns the reconstruction
+//!   `x * (a / b)` into `(x * a) / b`: with `x` and `a` both on the working scale of a very bright
+//!   frame (A above 1.8e19) the product overflows although each factor and the result are finite
+//!   (the Apple runners returned infinity from a mosaic scale of 1e20; 1e10 was fine). Each of the
+//!   four quotients of the reconstruction (`C / HC`, `C / VC`, `C / (blend of HC, VC)`, `C / SC`) is
+//!   therefore a barrier (`lg_opaque`: an xor with the always-zero `ctl.y`), so that it stays one
+//!   rounded ratio near 1. Compiled with clang `-O2 -ffast-math`, these expressions gave infinity
+//!   from a scale of about 3e21 on without the barrier, and the numbers of IEEE arithmetic with it.
+//!   The exact rewrites of the guide filters above are not protected: re-association undoes them
+//!   (a few ulp of `C` in the smooth parts), which the Apple runners passed within the bounds.
 //!
 //! Not wired into a render path (the log-guided demosaic is a test-switch method on the CPU only,
 //! `docs/gpu-plan.md` section 5). [`encode_demosaic`] is the device-in, device-out entry point of the
@@ -101,7 +111,8 @@ struct LogGuidedU {
     taps: [f32; 4],
     /// The offset `p` and the working scale `S`.
     misc: [f32; 4],
-    /// The pass.
+    /// The pass, then a word that is always 0: the runtime zero of the shader's fast-math barrier
+    /// (`lg_opaque`), which the compiler must not be able to fold.
     ctl: [u32; 4],
 }
 
@@ -231,7 +242,14 @@ pub fn encode_demosaic(
             input.planes
         )));
     }
-    let out = GpuImage::alloc(ctx, "log-guided rgb", input.width, input.height, 3, input.place)?;
+    let out = GpuImage::alloc(
+        ctx,
+        "log-guided rgb",
+        input.width,
+        input.height,
+        3,
+        input.place,
+    )?;
     record(
         passes,
         &input.buf,
@@ -263,7 +281,15 @@ fn demosaic_rect(
         sample_bytes(mode, 3 * plane),
         STORAGE_OUT,
     )?);
-    record(&mut passes, &mosaic, &rgb, (w, h), m.cfa, noise, guide_detail)?;
+    record(
+        &mut passes,
+        &mosaic,
+        &rgb,
+        (w, h),
+        m.cfa,
+        noise,
+        guide_detail,
+    )?;
     let read = passes.read(&rgb, 0, 3 * plane as u64 * mode.bytes_per_sample())?;
     let done = passes.submit()?.finish()?;
     let raw = image_samples(mode, done.read(read));
@@ -374,4 +400,27 @@ pub fn demosaic_planned(
         out.paste(&img, tile.core_in_compute(), tile.core.x, tile.core.y);
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    /// Metal's compiler runs with fast-math, which rewrites `x * (a / b)` into `(x * a) / b`: with
+    /// `x` and `a` both on the working scale of a very bright frame (A up to 2e35) the product
+    /// overflows although every factor and the result are finite. Compiled with clang
+    /// `-O2 -ffast-math`, the reconstruction of this shader gave infinity from a scale of about 3e21
+    /// on and the same numbers as IEEE with a barrier after each quotient (lavapipe does not
+    /// rewrite, so only the text of the shader can pin the barriers here).
+    #[test]
+    fn every_quotient_of_the_reconstruction_is_behind_a_barrier() {
+        let body = include_str!("../shaders/log_guided.wgsl");
+        for line in [
+            "let q = lg_opaque(cc / (wh * hc + wv * vc));",
+            "other = (sa * lg_opaque(cc / sc)) / s;",
+            "chroma = (lg_opaque(cc / hc) * ha) / s;",
+            "other = (lg_opaque(cc / vc) * va) / s;",
+            "return bitcast<f32>(bitcast<u32>(x) ^ u.ctl.y);",
+        ] {
+            assert!(body.contains(line), "the shader lost `{line}`");
+        }
+    }
 }

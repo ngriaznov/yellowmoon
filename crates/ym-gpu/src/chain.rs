@@ -178,14 +178,16 @@ fn split_into(core: Rect, max_padded_pixels: u64, out: &mut Vec<Rect>) {
     }
     // Cut at an even offset when there is room for one, so that the halves keep the Bayer phase of
     // the parent (the kernel does not need it; the planner of the CPU does the same).
-    let half = |len: usize| if len / 2 >= 2 { (len / 2) & !1 } else { len / 2 };
+    let half = |len: usize| {
+        if len / 2 >= 2 {
+            (len / 2) & !1
+        } else {
+            len / 2
+        }
+    };
     if core.w >= core.h {
         let a = half(core.w);
-        split_into(
-            Rect::new(core.x, core.y, a, core.h),
-            max_padded_pixels,
-            out,
-        );
+        split_into(Rect::new(core.x, core.y, a, core.h), max_padded_pixels, out);
         split_into(
             Rect::new(core.x + a, core.y, core.w - a, core.h),
             max_padded_pixels,
@@ -193,11 +195,7 @@ fn split_into(core: Rect, max_padded_pixels: u64, out: &mut Vec<Rect>) {
         );
     } else {
         let a = half(core.h);
-        split_into(
-            Rect::new(core.x, core.y, core.w, a),
-            max_padded_pixels,
-            out,
-        );
+        split_into(Rect::new(core.x, core.y, core.w, a), max_padded_pixels, out);
         split_into(
             Rect::new(core.x, core.y + a, core.w, core.h - a),
             max_padded_pixels,

@@ -33,7 +33,7 @@ struct U {
     cfa: vec4<u32>,    // colour (0 R, 1 G, 2 B) at local position 2 * (y & 1) + (x & 1)
     taps: vec4<f32>,   // guide kernel K / 1024: x: outer tap k, y: inner tap, z: centre tap
     misc: vec4<f32>,   // x: p (log offset and structure floor), y: S (working scale)
-    ctl: vec4<u32>,    // x: pass
+    ctl: vec4<u32>,    // x: pass, y: always 0 (the optimiser cannot know it, see `lg_opaque`)
 };
 
 @group(0) @binding(0) var<uniform> u: U;
@@ -44,6 +44,17 @@ struct U {
 
 //@ACCESSORS mosaic ro
 //@ACCESSORS rgb
+
+// Hides a value from algebraic rewriting: an xor with `u.ctl.y`, which is always 0 and which the
+// compiler cannot know. A shader compiler that runs with fast-math (Metal's does by default:
+// reassociation, reciprocal rewrites) turns `x * (a / b)` into `(x * a) / b`, and with `x` and `a` both
+// on the 16-bit working scale of a very bright frame (A up to 2e35) the product overflows even though
+// every factor and the result are finite. The quotients below are ratios of two values of one scale, close
+// to 1, and a barrier after each keeps them one rounded value that no rewrite can fold into a product
+// of the large factors. Nothing else changes: the barrier is the identity on the bits.
+fn lg_opaque(x: f32) -> f32 {
+    return bitcast<f32>(bitcast<u32>(x) ^ u.ctl.y);
+}
 
 // Infinity and NaN, tested on the bits so that fast-math cannot remove the test.
 fn lg_is_finite(x: f32) -> bool {
@@ -200,21 +211,21 @@ fn lg_pixel(x: i32, y: i32) -> vec3<f32> {
         let k = r * r * r;
         let wh = select(1.0, k, horizontal_is_larger);
         let wv = select(k, 1.0, horizontal_is_larger);
-        let q = cc / (wh * hc + wv * vc);
+        let q = lg_opaque(cc / (wh * hc + wv * vc));
         green = (wh * ha + wv * va) * q;
         let sa = 0.5 * (lg_a(x - 1, y - 1) + lg_a(x - 1, y + 1))
             + 0.5 * (lg_a(x + 1, y - 1) + lg_a(x + 1, y + 1));
         let sc = 0.5 * (lg_c(x - 1, y - 1) + lg_c(x - 1, y + 1))
             + 0.5 * (lg_c(x + 1, y - 1) + lg_c(x + 1, y + 1));
         chroma = nat;
-        other = (sa * (cc / sc)) / s;
+        other = (sa * lg_opaque(cc / sc)) / s;
         green = green / s;
     } else {
         // A green site: the colour that owns the row from the horizontal neighbours, the other
         // colour from the vertical ones.
         green = nat;
-        chroma = ((cc / hc) * ha) / s;
-        other = ((cc / vc) * va) / s;
+        chroma = (lg_opaque(cc / hc) * ha) / s;
+        other = (lg_opaque(cc / vc) * va) / s;
     }
     if (chroma_red) {
         return vec3<f32>(chroma, green, other);

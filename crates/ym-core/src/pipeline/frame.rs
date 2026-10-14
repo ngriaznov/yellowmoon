@@ -1448,75 +1448,75 @@ impl Renderer {
         // one file is wholly device or wholly CPU, never a mix of tiles.
         let mut best_fraction = 0.0f32;
         'render: loop {
-        let mut tiles_done = 0usize;
-        let mut oy = 0;
-        while oy < fh {
-            let th = tile.min(fh - oy);
-            let mut ox = 0;
-            while ox < fw {
-                job.check()?;
-                gate()?;
-                let tw = tile.min(fw - ox);
-                if let Some((x0, y0, x1, y1)) = grid.source_bounds(ox, oy, tw, th, 3) {
-                    let rect = Rect::new(x0, y0, x1 - x0, y1 - y0);
-                    let region = match job.region(rect, false) {
-                        Ok(region) => region,
-                        Err(RenderError::Gpu(_)) if job.take_gpu_restart() => {
-                            rgb.fill(0.0);
-                            continue 'render;
+            let mut tiles_done = 0usize;
+            let mut oy = 0;
+            while oy < fh {
+                let th = tile.min(fh - oy);
+                let mut ox = 0;
+                while ox < fw {
+                    job.check()?;
+                    gate()?;
+                    let tw = tile.min(fw - ox);
+                    if let Some((x0, y0, x1, y1)) = grid.source_bounds(ox, oy, tw, th, 3) {
+                        let rect = Rect::new(x0, y0, x1 - x0, y1 - y0);
+                        let region = match job.region(rect, false) {
+                            Ok(region) => region,
+                            Err(RenderError::Gpu(_)) if job.take_gpu_restart() => {
+                                rgb.fill(0.0);
+                                continue 'render;
+                            }
+                            Err(e) => return Err(e),
+                        };
+                        let sampled = sample_to_camera(&region, (x0, y0), &grid, (ox, oy), tw, th);
+                        let frame = Frame::planar(tw, th, &sampled.img.data)
+                            .map_err(|e| RenderError::Color(e.to_string()))?;
+                        let mut out = vec![0.0f32; 3 * tw * th];
+                        match request.target {
+                            FullTarget::DisplayLinear(_) | FullTarget::DngPreview => grade
+                                .chain
+                                .render_display_linear_f32(
+                                    &frame,
+                                    Layout::Interleaved,
+                                    &mut out,
+                                    threads,
+                                )
+                                .map_err(|e| RenderError::Color(e.to_string()))?,
+                            FullTarget::DngLinearAwg4 => grade
+                                .chain
+                                .render_dng_linear_awg4_f32(
+                                    &frame,
+                                    Layout::Interleaved,
+                                    &mut out,
+                                    threads,
+                                )
+                                .map_err(|e| RenderError::Color(e.to_string()))?,
                         }
-                        Err(e) => return Err(e),
-                    };
-                    let sampled = sample_to_camera(&region, (x0, y0), &grid, (ox, oy), tw, th);
-                    let frame = Frame::planar(tw, th, &sampled.img.data)
-                        .map_err(|e| RenderError::Color(e.to_string()))?;
-                    let mut out = vec![0.0f32; 3 * tw * th];
-                    match request.target {
-                        FullTarget::DisplayLinear(_) | FullTarget::DngPreview => grade
-                            .chain
-                            .render_display_linear_f32(
-                                &frame,
-                                Layout::Interleaved,
-                                &mut out,
-                                threads,
-                            )
-                            .map_err(|e| RenderError::Color(e.to_string()))?,
-                        FullTarget::DngLinearAwg4 => grade
-                            .chain
-                            .render_dng_linear_awg4_f32(
-                                &frame,
-                                Layout::Interleaved,
-                                &mut out,
-                                threads,
-                            )
-                            .map_err(|e| RenderError::Color(e.to_string()))?,
-                    }
-                    if let Some(outside) = &sampled.outside {
-                        for (i, &o) in outside.iter().enumerate() {
-                            if o != 0 {
-                                out[3 * i..3 * i + 3].fill(0.0);
+                        if let Some(outside) = &sampled.outside {
+                            for (i, &o) in outside.iter().enumerate() {
+                                if o != 0 {
+                                    out[3 * i..3 * i + 3].fill(0.0);
+                                }
                             }
                         }
+                        for y in 0..th {
+                            let d = ((oy + y) * fw + ox) * 3;
+                            rgb[d..d + 3 * tw].copy_from_slice(&out[y * tw * 3..(y + 1) * tw * 3]);
+                        }
                     }
-                    for y in 0..th {
-                        let d = ((oy + y) * fw + ox) * 3;
-                        rgb[d..d + 3 * tw].copy_from_slice(&out[y * tw * 3..(y + 1) * tw * 3]);
+                    tiles_done += 1;
+                    if let Some(report) = progress {
+                        // Monotone also across a restart on the CPU.
+                        let fraction = tiles_done as f32 / tiles_total as f32;
+                        if fraction > best_fraction {
+                            best_fraction = fraction;
+                            report(fraction);
+                        }
                     }
+                    ox += tw;
                 }
-                tiles_done += 1;
-                if let Some(report) = progress {
-                    // Monotone also across a restart on the CPU.
-                    let fraction = tiles_done as f32 / tiles_total as f32;
-                    if fraction > best_fraction {
-                        best_fraction = fraction;
-                        report(fraction);
-                    }
-                }
-                ox += tw;
+                oy += th;
             }
-            oy += th;
-        }
-        break;
+            break;
         }
         let report = job.finish(1, ComputeDevice::Cpu, target_out);
         Ok(FullImage {

@@ -752,8 +752,8 @@ fn the_letterbox_is_painted_by_the_encode_kernel() {
     })
     .expect("device");
     let mut painted = 0;
-    for i in 0..w * h {
-        if mask[i] != 0 {
+    for (i, &m) in mask.iter().enumerate().take(w * h) {
+        if m != 0 {
             painted += 1;
             assert_eq!(
                 &rgba.bytes[4 * i..4 * i + 4],

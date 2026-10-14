@@ -18,6 +18,7 @@ use crate::cpu::tiling::Halo;
 use crate::device::{GpuContext, GpuError, StorageMode};
 use crate::pool::PooledBuffer;
 use crate::queue::CancelToken;
+use crate::stream::upload_bytes;
 use crate::tiles::{RowCollector, Tile, TilePlan};
 
 /// What the raw front end needs: the pattern, R1's levels and R4's gains.
@@ -101,8 +102,7 @@ pub(crate) fn run_front(
     let raw_buf = ctx
         .pool()
         .acquire("raw tile", plane as u64 * 2, STORAGE_IN)?;
-    ctx.queue
-        .write_buffer(&raw_buf, 0, bytemuck::cast_slice(&words));
+    upload_bytes(ctx, &raw_buf, 0, bytemuck::cast_slice(&words))?;
     let mosaic = ctx
         .pool()
         .acquire("mosaic", sample_bytes(mode, plane), STORAGE_SCRATCH)?;
@@ -157,7 +157,7 @@ pub(crate) fn run_front(
         pass.set_bind_group(0, group, &[]);
         pass.dispatch_workgroups(gx, gy, 1);
     }
-    ctx.queue.submit([encoder.finish()]);
+    ctx.submit([encoder.finish()])?;
     Ok(RgbPlanes {
         rgb,
         stride,

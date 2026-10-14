@@ -240,8 +240,19 @@ fn core_attach_gpu_gives_the_renderer_the_slot_and_its_budgets() {
         slot.adapter().map(|i| i.name.clone())
     );
     assert_eq!(core.renderer.options().gpu_stages, GpuStages::ALL);
+    assert!(!core.renderer.options().gpu_strict, "`On` falls back");
     assert_eq!(core.renderer.options().budget, slot.budget());
     assert_eq!(core.renderer.ledger().budget(), slot.budget().cpu_bytes);
+
+    // `Require` is strict: a device error fails the photo instead of falling back to the CPU.
+    let strict = GpuOpener::new(GpuPolicy::Require, machine).open();
+    core.attach_gpu(&strict);
+    assert!(core.renderer.options().gpu_strict, "`Require` is strict");
+    let mut options = ym_core::pipeline::RenderOptions::default();
+    strict.apply_to(&mut options);
+    assert!(options.gpu_strict);
+    core.attach_gpu(&slot);
+    assert!(!core.renderer.options().gpu_strict, "`On` is not");
 
     // `Auto` keeps to what is signed off, and a software adapter is not used at all.
     let auto = open_gpu(GpuPolicy::Auto, machine);
@@ -257,13 +268,15 @@ fn core_attach_gpu_gives_the_renderer_the_slot_and_its_budgets() {
 // --- the default render does not change --------------------------------------------------------
 
 #[test]
-fn attaching_the_device_changes_no_byte_of_a_full_render() {
+fn attaching_the_device_changes_no_byte_of_a_full_render_that_runs_no_raw_stage_on_it() {
     let Some(gpu) = device("attaching_the_device_changes_no_byte") else {
         return;
     };
-    // The export render is the CPU reference in this version, whatever device is attached; the
-    // pixels of a full render with a device attached are those of one without (`AGENTS.md` hard
-    // rule 8; `golden check` pins the same thing on the whole synthetic set).
+    // The export render is the CPU reference unless the raw chain is among the stages the device
+    // runs (G-03): with the stages `Auto` runs, or none, the pixels of a full render with a device
+    // attached are those of one without (`AGENTS.md` hard rule 8; `golden check` pins the same
+    // thing on the whole synthetic set). With every stage the demosaic runs on the device, and the
+    // picture agrees with the CPU's within the kernel's tolerances (`tests/render_gpu.rs`).
     let white = light("sony-ilce-7rm4", 4800.0);
     let scene = Scene::new(300, 200, white, Layout::Patchwork, 1.2)
         .noise(3e-4, 2e-6)
@@ -286,10 +299,22 @@ fn attaching_the_device_changes_no_byte_of_a_full_render() {
         Renderer::new(Arc::new(NeutralOnly), RenderOptions::default()).expect("render thread");
     let reference = render(&cpu);
     assert!(!reference.is_empty());
-    for stages in [GpuStages::NONE, GpuStages::SIGNED_OFF, GpuStages::ALL] {
+    for stages in [GpuStages::NONE, GpuStages::SIGNED_OFF] {
         let r =
             Renderer::new(Arc::new(NeutralOnly), RenderOptions::default()).expect("render thread");
         r.set_gpu(Some(Arc::clone(&gpu)), stages);
         assert_eq!(render(&r), reference, "stages: {stages}");
     }
+    // Every stage: the raw chain is on the device, so the bits may differ at a flipped decision,
+    // by very little.
+    let r = Renderer::new(Arc::new(NeutralOnly), RenderOptions::default()).expect("render thread");
+    r.set_gpu(Some(Arc::clone(&gpu)), GpuStages::ALL);
+    let on_device = render(&r);
+    assert_eq!(on_device.len(), reference.len());
+    let worst = on_device
+        .iter()
+        .zip(&reference)
+        .map(|(&a, &b)| (f32::from_bits(a) - f32::from_bits(b)).abs())
+        .fold(0.0f32, f32::max);
+    assert!(worst < 2e-3, "worst difference {worst}");
 }

@@ -887,6 +887,78 @@ fn a_non_finite_sample_stays_local_and_does_not_panic() {
 }
 
 #[test]
+fn a_finite_sample_beyond_the_bound_acts_like_the_bound() {
+    // The luma pass bounds every finite sample to about 15 times white so that no product of the
+    // solve can overflow f32 (module documentation, "Range"); Metal's fast-math compiler may not keep
+    // the infinities that this relied on before. What is asserted, and so what the Apple runners can
+    // confirm: a sample of 1e7, 1e20 or 1e30 (and the same negative) gives the same image everywhere
+    // but at the sample itself, bit for bit; the sample is scaled by the ratio of the stage (at most
+    // 1.5) and stays finite; and nothing changes beyond the halo.
+    let Some(dev) = device() else { return };
+    let c = cfg(3.76, 11.0);
+    let setup = c.setup();
+    let halo = setup.plan.halo_px();
+    let (w, h) = (90usize, 70usize);
+    let clean = scene(Kind::Natural, w, h, 21, &c, &setup.plan);
+    let base = run_gpu(dev, &setup, &clean);
+    let (bx, by) = (40usize, 35usize);
+    let at = |ch: usize| ch * w * h + by * w + bx;
+    let run_with = |v: f32| {
+        let mut dirty = clean.clone();
+        for ch in 0..3 {
+            dirty.data[at(ch)] = v;
+        }
+        run_gpu(dev, &setup, &dirty)
+    };
+    for sign in [1.0f32, -1.0] {
+        let reference = run_with(sign * 1e30);
+        assert!(
+            reference.data.iter().all(|v| v.is_finite()),
+            "{sign} * 1e30 left a non-finite sample"
+        );
+        for ch in 0..3 {
+            let v = reference.data[at(ch)];
+            assert!(
+                f64::from(v).abs() <= 1.5e30 + 1.0 && v.signum() == sign,
+                "the sample itself: {v:e}"
+            );
+        }
+        for bad in [sign * 1e7, sign * 1e20] {
+            let other = run_with(bad);
+            let mut differing = 0usize;
+            for ch in 0..3 {
+                for j in 0..w * h {
+                    let i = ch * w * h + j;
+                    if i != at(ch) && other.data[i].to_bits() != reference.data[i].to_bits() {
+                        differing += 1;
+                    }
+                }
+            }
+            assert_eq!(
+                differing,
+                0,
+                "{bad:e} and {:e} give different images beyond the sample itself",
+                sign * 1e30
+            );
+        }
+        // Local: nothing beyond the halo moved against the run without the sample.
+        let mut reach = 0usize;
+        for ch in 0..3 {
+            for y in 0..h {
+                for x in 0..w {
+                    let j = ch * w * h + y * w + x;
+                    if reference.data[j].to_bits() != base.data[j].to_bits() {
+                        reach = reach.max(x.abs_diff(bx).max(y.abs_diff(by)));
+                    }
+                }
+            }
+        }
+        println!("{sign} * 1e30: changes pixels up to {reach} px away (halo {halo})");
+        assert!(reach <= halo, "reach {reach} > halo {halo}");
+    }
+}
+
+#[test]
 fn flipping_and_transposing_the_frame_flips_the_output() {
     // Spec 6.2 item 4: the stage commutes with the symmetries of the square. The GPU sums in f32 in a
     // fixed order, so the flipped run differs from the flipped output by rounding, not by the bit.

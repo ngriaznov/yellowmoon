@@ -4,6 +4,7 @@ use bytemuck::Pod;
 
 use crate::device::{GpuContext, GpuError, StorageMode};
 use crate::pool::PooledBuffer;
+use crate::stream::upload_bytes;
 
 /// Threads per workgroup side; every kernel uses `@workgroup_size(16, 16)`.
 pub(crate) const GROUP: u32 = 16;
@@ -41,8 +42,7 @@ pub(crate) fn uniform_buffer<T: Pod>(
 ) -> Result<PooledBuffer, GpuError> {
     let bytes = bytemuck::bytes_of(value);
     let buf = ctx.pool().acquire(label, bytes.len() as u64, UNIFORM)?;
-    ctx.queue.write_buffer(&buf, 0, bytes);
-    ctx.counters_shared().count_upload(bytes.len() as u64);
+    upload_bytes(ctx, &buf, 0, bytes)?;
     Ok(buf)
 }
 
@@ -54,14 +54,8 @@ pub(crate) fn storage_buffer(
 ) -> Result<PooledBuffer, GpuError> {
     let len = (data.len() as u64).div_ceil(4).max(1) * 4;
     let buf = ctx.pool().acquire(label, len, STORAGE_IN)?;
-    if data.len().is_multiple_of(4) {
-        ctx.queue.write_buffer(&buf, 0, data);
-    } else {
-        let mut padded = data.to_vec();
-        padded.resize(len as usize, 0);
-        ctx.queue.write_buffer(&buf, 0, &padded);
-    }
-    ctx.counters_shared().count_upload(data.len() as u64);
+    // `upload_bytes` pads a tail that is not a multiple of 4 with zeros and counts the upload.
+    upload_bytes(ctx, &buf, 0, data)?;
     Ok(buf)
 }
 

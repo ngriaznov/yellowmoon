@@ -165,7 +165,12 @@ fn scene() -> PhotoSource {
     Developed::new(&scene, MODEL).source()
 }
 
-fn renderer_with(gpu: Option<Arc<Gpu>>, stages: GpuStages, strict: bool, method: Method) -> Renderer {
+fn renderer_with(
+    gpu: Option<Arc<Gpu>>,
+    stages: GpuStages,
+    strict: bool,
+    method: Method,
+) -> Renderer {
     Renderer::new(
         Arc::new(NeutralOnly),
         RenderOptions {
@@ -181,7 +186,12 @@ fn renderer_with(gpu: Option<Arc<Gpu>>, stages: GpuStages, strict: bool, method:
 }
 
 fn on_device(gpu: &Arc<Gpu>) -> Renderer {
-    renderer_with(Some(Arc::clone(gpu)), GpuStages::ALL, false, Method::AdaptiveRatio)
+    renderer_with(
+        Some(Arc::clone(gpu)),
+        GpuStages::ALL,
+        false,
+        Method::AdaptiveRatio,
+    )
 }
 
 fn on_cpu() -> Renderer {
@@ -238,7 +248,11 @@ fn a_full_render_and_a_100_percent_frame_on_the_device_match_the_cpu() {
     let a = render_full(&cpu, &src).expect("cpu render");
     let before = pool_in_use(&gpu);
     let b = render_full(&dev, &src).expect("device render");
-    assert_eq!(pool_in_use(&gpu), before, "the render hands its buffers back");
+    assert_eq!(
+        pool_in_use(&gpu),
+        before,
+        "the render hands its buffers back"
+    );
     assert_eq!((a.width, a.height), (b.width, b.height));
     assert!(a.report.ranges.is_empty(), "no device, no range");
     assert_eq!(
@@ -250,9 +264,14 @@ fn a_full_render_and_a_100_percent_frame_on_the_device_match_the_cpu() {
     assert_eq!(b.report.runs.tiles, a.report.runs.tiles);
     assert!(b.report.runs.tiles >= 6, "{}", b.report.runs.tiles);
     let (worst, over, mean) = difference(&a.rgb, &b.rgb);
-    eprintln!("full render, device against CPU: worst {worst:e}, share over 1e-3 {over:e}, mean {mean:e}");
+    eprintln!(
+        "full render, device against CPU: worst {worst:e}, share over 1e-3 {over:e}, mean {mean:e}"
+    );
     // Twice the first measured values (worst 4.8e-4, share over 1e-3 zero, mean 2.6e-8).
-    assert!(worst < 1e-3 && over <= 1e-5 && mean < 1e-6, "{worst} {over} {mean}");
+    assert!(
+        worst < 1e-3 && over <= 1e-5 && mean < 1e-6,
+        "{worst} {over} {mean}"
+    );
 
     // The 100 % view: the tiles of 512 px, cached, then sampled and coloured. Two baselines: the CPU
     // renderer, and a renderer with the device for the colour pass only (the raw chain on the CPU),
@@ -274,7 +293,10 @@ fn a_full_render_and_a_100_percent_frame_on_the_device_match_the_cpu() {
     };
     let (fa, fb, fc) = (frame(&cpu), frame(&dev), frame(&colour_only));
     assert_eq!(fa.report.scale, 1, "full-resolution tiles");
-    assert_eq!(device_of(&fb.report), vec![("R6".to_owned(), ComputeDevice::Gpu)]);
+    assert_eq!(
+        device_of(&fb.report),
+        vec![("R6".to_owned(), ComputeDevice::Gpu)]
+    );
     assert!(fc.report.ranges.is_empty());
     assert_eq!(fb.report.runs.tiles, fa.report.runs.tiles);
     let codes = |x: &ym_core::pipeline::RenderedFrame, y: &ym_core::pipeline::RenderedFrame| {
@@ -285,12 +307,18 @@ fn a_full_render_and_a_100_percent_frame_on_the_device_match_the_cpu() {
             over += usize::from(d > 1);
             sum += u64::from(d);
         }
-        (worst, over as f64 / x.rgba.len() as f64, sum as f64 / x.rgba.len() as f64)
+        (
+            worst,
+            over as f64 / x.rgba.len() as f64,
+            sum as f64 / x.rgba.len() as f64,
+        )
     };
     let (w1, o1, m1) = codes(&fa, &fb);
     let (w2, o2, m2) = codes(&fc, &fb);
     eprintln!("100 % frame, device against CPU: worst {w1} codes, over 1 code {o1:e}, mean {m1:e}");
-    eprintln!("100 % frame, device against the CPU raw chain with the same colour pass: worst {w2} codes, over 1 code {o2:e}, mean {m2:e}");
+    eprintln!(
+        "100 % frame, device against the CPU raw chain with the same colour pass: worst {w2} codes, over 1 code {o2:e}, mean {m2:e}"
+    );
     // Twice the first measured values (against the CPU: no sample over 1 code, mean 5.1e-5 codes;
     // against the CPU raw chain with the same colour pass: 2.1e-6 over 1 code, worst 6 codes in
     // three samples where the output sharpening's limiter flips on a flipped demosaic, mean 3.1e-5).
@@ -322,9 +350,15 @@ fn the_device_runs_the_raw_chain_only_when_the_stage_and_the_method_allow_it() {
     let a = render_full(&forced, &src).expect("render");
     let b = render_full(&menon_cpu, &src).expect("render");
     assert_eq!(a.rgb, b.rgb);
-    assert_eq!(device_of(&a.report), vec![("R6".to_owned(), ComputeDevice::Cpu)]);
+    assert_eq!(
+        device_of(&a.report),
+        vec![("R6".to_owned(), ComputeDevice::Cpu)]
+    );
     assert!(
-        a.report.notes.iter().any(|n| n.contains("adaptive ratio demosaic only")),
+        a.report
+            .notes
+            .iter()
+            .any(|n| n.contains("adaptive ratio demosaic only")),
         "{:?}",
         a.report.notes
     );
@@ -334,7 +368,10 @@ fn the_device_runs_the_raw_chain_only_when_the_stage_and_the_method_allow_it() {
     let late = renderer_with(None, GpuStages::NONE, false, Method::AdaptiveRatio);
     late.set_gpu(Some(Arc::clone(&gpu)), GpuStages::ALL);
     let a = render_full(&late, &src).expect("render");
-    assert_eq!(device_of(&a.report), vec![("R6".to_owned(), ComputeDevice::Gpu)]);
+    assert_eq!(
+        device_of(&a.report),
+        vec![("R6".to_owned(), ComputeDevice::Gpu)]
+    );
     late.set_gpu(None, GpuStages::NONE);
     let b = render_full(&late, &src).expect("render");
     assert!(b.report.ranges.is_empty());
@@ -393,7 +430,10 @@ fn cancelling_an_export_stops_within_a_tile_and_hands_the_buffers_back() {
     // Cancel as soon as the first tile is reported.
     let started = std::time::Instant::now();
     while seen.load(std::sync::atomic::Ordering::SeqCst) == 0 {
-        assert!(started.elapsed().as_secs() < 120, "the export never started");
+        assert!(
+            started.elapsed().as_secs() < 120,
+            "the export never started"
+        );
         std::thread::sleep(std::time::Duration::from_millis(2));
     }
     handle.cancel();
@@ -406,9 +446,16 @@ fn cancelling_an_export_stops_within_a_tile_and_hands_the_buffers_back() {
         "{tiles_done} tiles reported after the cancel at {done_at_cancel}"
     );
     assert!(tiles_done < 6, "the export stopped before the last tile");
-    assert_eq!(pool_in_use(&gpu), before, "a cancelled export leaves nothing resident");
+    assert_eq!(
+        pool_in_use(&gpu),
+        before,
+        "a cancelled export leaves nothing resident"
+    );
     let ran = gpu.counters().submissions - jobs;
-    assert!(ran <= 2 * (tiles_done as u64 + 1) + 4, "{ran} submissions for {tiles_done} tiles");
+    assert!(
+        ran <= 2 * (tiles_done as u64 + 1) + 4,
+        "{ran} submissions for {tiles_done} tiles"
+    );
 }
 
 #[test]
@@ -456,10 +503,15 @@ fn navigating_away_cancels_the_queued_device_jobs_of_the_photo_left() {
         .wait_timeout(std::time::Duration::from_secs(30))
         .expect("the render resolved while the device thread was still held");
     assert!(
-        matches!(result, Err(JobError::Cancelled)) || matches!(result, Ok(Err(RenderError::Cancelled))),
+        matches!(result, Err(JobError::Cancelled))
+            || matches!(result, Ok(Err(RenderError::Cancelled))),
         "{result:?}"
     );
-    assert_eq!(gpu.scheduler().pending(), 0, "nothing of the photo is left queued");
+    assert_eq!(
+        gpu.scheduler().pending(),
+        0,
+        "nothing of the photo is left queued"
+    );
     gate_tx.send(()).expect("open the gate");
     gate.wait().expect("gate job");
 }
@@ -495,26 +547,36 @@ mod faults {
                 "{name}"
             );
             assert!(
-                img.report
-                    .notes
-                    .iter()
-                    .any(|n| n.starts_with("The graphics card could not render this photo, so the CPU did")),
+                img.report.notes.iter().any(|n| n
+                    .starts_with("The graphics card could not render this photo, so the CPU did")),
                 "{name}: {:?}",
                 img.report.notes
             );
             if !matches!(fault, GpuFault::Lost) {
-                assert_eq!(pool_in_use(&gpu), before, "{name}: the ledger is back at its baseline");
+                assert_eq!(
+                    pool_in_use(&gpu),
+                    before,
+                    "{name}: the ledger is back at its baseline"
+                );
             }
             // The photo renders on the CPU from then on, quietly: no second attempt, no new note.
             let jobs = gpu.counters().submissions;
             let again = render_full(&dev, &src).unwrap_or_else(|e| panic!("{name}: {e}"));
             assert_eq!(again.rgb, cpu.rgb, "{name}: second render");
             assert!(
-                !again.report.notes.iter().any(|n| n.contains("could not render")),
+                !again
+                    .report
+                    .notes
+                    .iter()
+                    .any(|n| n.contains("could not render")),
                 "{name}: {:?}",
                 again.report.notes
             );
-            assert_eq!(gpu.counters().submissions, jobs, "{name}: the device was not asked again");
+            assert_eq!(
+                gpu.counters().submissions,
+                jobs,
+                "{name}: the device was not asked again"
+            );
         }
     }
 
@@ -526,12 +588,21 @@ mod faults {
         gpu.set_fault(Some(GpuFault::Shader));
         let first = render_full(&dev, &a).expect("render");
         gpu.set_fault(None);
-        assert!(first.report.notes.iter().any(|n| n.contains("could not render")));
+        assert!(
+            first
+                .report
+                .notes
+                .iter()
+                .any(|n| n.contains("could not render"))
+        );
         // Another photo of the same renderer: no attempt on the device any more.
         let jobs = gpu.counters().submissions;
         let second = render_full(&dev, &b).expect("render");
         assert_eq!(gpu.counters().submissions, jobs);
-        assert_eq!(device_of(&second.report), vec![("R6".to_owned(), ComputeDevice::Cpu)]);
+        assert_eq!(
+            device_of(&second.report),
+            vec![("R6".to_owned(), ComputeDevice::Cpu)]
+        );
     }
 
     #[test]
@@ -565,11 +636,18 @@ mod faults {
         gpu.set_fault(Some(GpuFault::CancelAtJob(2)));
         let result = render_full(&dev, &src);
         gpu.set_fault(None);
-        assert!(matches!(result, Err(RenderError::Cancelled)), "{:?}", result.map(|i| i.report));
+        assert!(
+            matches!(result, Err(RenderError::Cancelled)),
+            "{:?}",
+            result.map(|i| i.report)
+        );
         assert_eq!(pool_in_use(&gpu), before);
         // A fresh render with a fresh token works, on the device.
         let again = render_full(&dev, &src).expect("render");
-        assert_eq!(device_of(&again.report), vec![("R6".to_owned(), ComputeDevice::Gpu)]);
+        assert_eq!(
+            device_of(&again.report),
+            vec![("R6".to_owned(), ComputeDevice::Gpu)]
+        );
     }
 
     #[test]
@@ -598,12 +676,18 @@ mod faults {
             .expect("the frame is made");
         gpu.set_fault(None);
         assert!(
-            f.report.notes.iter().any(|n| n
-                .starts_with("The graphics card could not render this frame, so the CPU did")),
+            f.report
+                .notes
+                .iter()
+                .any(|n| n
+                    .starts_with("The graphics card could not render this frame, so the CPU did")),
             "{:?}",
             f.report.notes
         );
         assert_eq!(f.rgba, baseline.rgba);
-        assert_eq!(device_of(&f.report), vec![("R6".to_owned(), ComputeDevice::Cpu)]);
+        assert_eq!(
+            device_of(&f.report),
+            vec![("R6".to_owned(), ComputeDevice::Cpu)]
+        );
     }
 }

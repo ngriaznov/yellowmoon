@@ -1108,7 +1108,11 @@ mod tests {
             assert!(b.cpu_bytes > 2 * GIB + GIB / 2, "{ram} GB: {}", b.cpu_bytes);
         }
         let b = MemoryBudget::for_ram(Some(24 * GIB)).for_unified_memory(Some(24 * GIB));
-        assert_eq!(b.cpu_bytes, 6 * GIB, "24 GB and up: the CPU default is untouched");
+        assert_eq!(
+            b.cpu_bytes,
+            6 * GIB,
+            "24 GB and up: the CPU default is untouched"
+        );
     }
 
     #[test]
