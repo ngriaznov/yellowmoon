@@ -22,6 +22,19 @@
 //! The directories are written before IFD0 (the header's pointer to IFD0 is patched at the end), so
 //! IFD0 is the last directory in the file.
 //!
+//! # What the pixels carry
+//!
+//! Everything the app does to a picture except sharpening (`docs/09`, "What a DNG carries"): white balance,
+//! exposure, highlight handling, lens and chromatic-aberration corrections, denoising, R7, the look, the
+//! curves, the tone controls, crop, straighten and orientation. **No sharpening of any kind**: R8 capture
+//! sharpening is off for both renders of a DNG (the raw pixels and the preview), and output sharpening is
+//! never applied; `BaselineSharpness` is 1.0, the state of any camera's raw data, so the converter's own
+//! sharpening is the only sharpening the photo gets. The display rendering is not in the pixels: Adobe's
+//! renderer applies the fitted profile (ACES 2) and the display placement carried by `BaselineExposure`.
+//! The exception is a picture whose display rendering is not ours (a look with its own, or an imported
+//! display LUT): its pixels are the scene values that ACES 2 turns into that picture, approximately
+//! ([`OWN_DISPLAY_NOTE`]).
+//!
 //! # Pixel scaling
 //!
 //! `stored = round(65535 * clamp(x / x_white, 0, 1))` with `x_white = max(p99.99 of max(R, G, B), floor)`,
@@ -126,7 +139,8 @@ pub mod tags {
     pub const AS_SHOT_NEUTRAL: u16 = 50728;
     /// DNG tag `BaselineExposure`.
     pub const BASELINE_EXPOSURE: u16 = 50730;
-    /// DNG tag `BaselineSharpness`.
+    /// DNG tag `BaselineSharpness`: written as 1.0, because the pixels are an unsharpened demosaic like the
+    /// raw data of any camera (the module documentation, "What the pixels carry").
     pub const BASELINE_SHARPNESS: u16 = 50732;
     /// DNG tag `CalibrationIlluminant1`.
     pub const CALIBRATION_ILLUMINANT_1: u16 = 50778;
@@ -641,6 +655,12 @@ fn write_profile_tags<W: Write + Seek>(
     )?;
     put(dir, tags::AS_SHOT_NEUTRAL, &[one(), one(), one()][..])?;
     put(dir, tags::BASELINE_EXPOSURE, srational(baseline_ev))?;
+    // BaselineSharpness is the sharpness of the raw data relative to what the converter's default
+    // sharpening expects of a camera file (1.0 is "as any camera's"). A Yellowmoon DNG holds no sharpening
+    // of any kind (R8 capture sharpening is off for its pixels and its preview, output sharpening is never
+    // applied, `docs/09` "What a DNG carries"), which is exactly the state of a camera's raw data, so the
+    // value stays 1.0 and the converter's own sharpening is the only sharpening the photo gets. The tag is
+    // not a record of sharpening done.
     put(dir, tags::BASELINE_SHARPNESS, rational(1.0))?;
     put(dir, tags::CALIBRATION_ILLUMINANT_1, 21_u16)?; // D65
     put(dir, tags::RAW_DATA_UNIQUE_ID, &unique_id[..])?;

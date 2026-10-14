@@ -238,6 +238,7 @@ class Component extends DCLogic {
       formatRow.subs = [{ label: 'Bit depth', cols: 2, opts: seg(st.bits, [['8', '8-bit'], ['16', '16-bit']], 'bits') }];
     } else {
       formatRow.hasNote = true;
+      // With a look that includes its own display rendering (LogC3 to Rec.709) DNG stays available and the panel adds one sentence under the note: 'With a look that includes its own display rendering, the DNG is close to, not the same as, the picture you see.' (docs/09, What a DNG carries). The mockup draws the default look, which has none.
       formatRow.note = 'Linear DNG with your look baked in. Opens in Lightroom close to this render, with room to adjust exposure, highlights and white balance.';
     }
     const segRows = [

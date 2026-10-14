@@ -244,7 +244,11 @@ fn the_ev_limit_stays_and_the_guard_can_only_lower_the_gain() {
     // than a stop, so it takes the whole stop it may.
     let r = Image::flat(20, 20, 100.0).meter();
     assert_eq!(r.guard_reduction_ev, 1.0);
-    assert!((r.ev_auto - (CAMERA_GAIN_EV - 1.0)).abs() < 1e-12, "{}", r.ev_auto);
+    assert!(
+        (r.ev_auto - (CAMERA_GAIN_EV - 1.0)).abs() < 1e-12,
+        "{}",
+        r.ev_auto
+    );
     let very = Image::flat(20, 20, 4000.0).meter();
     assert_eq!(very.ev_auto, CAMERA_GAIN_EV - 1.0);
     assert_eq!(very.guard_reduction_ev, 1.0);
@@ -374,9 +378,7 @@ fn metering_agrees_with_a_plain_reimplementation_on_random_scenes() {
             got.ev_auto
         );
         // The guard can only lower the exposure, by at most a stop.
-        assert!(
-            got.ev_auto <= got.ev_before_guard && got.ev_auto >= got.ev_before_guard - 1.0
-        );
+        assert!(got.ev_auto <= got.ev_before_guard && got.ev_auto >= got.ev_before_guard - 1.0);
         assert_eq!(got.guard_reduction_ev, got.ev_before_guard - got.ev_auto);
         guarded += usize::from(got.guard_reduction_ev > 0.0);
     }

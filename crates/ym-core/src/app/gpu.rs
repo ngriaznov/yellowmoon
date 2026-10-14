@@ -64,9 +64,18 @@ impl GpuStages {
 
     /// What `Auto` runs on the device: the stages signed off, that is, the ones whose parity, tile
     /// and determinism suites pass on the Metal CI runners (`.github/workflows/mac-gpu.yml`), the
-    /// rule proposed in STATUS question 14. **The one constant to widen** when a stage joins.
-    /// Initially the colour pass, which has run on the device since M0-07.
-    pub const SIGNED_OFF: Self = Self::COLOR;
+    /// rule of STATUS question 14. **The one constant to widen** when a stage joins.
+    /// Signed off on 2026-10-14 (Mykyta), after every suite passed on macOS 14 and 15 (Metal CI run
+    /// 38557455494, commit 6d277b8): the raw chain (R6 to R8), the sampler, the colour chain,
+    /// output sharpening and C13. The export tail joins when G-08 has passed there too. Before
+    /// that date only the colour pass was signed off (since M0-07).
+    pub const SIGNED_OFF: Self = Self(
+        Self::RAW_CHAIN.0
+            | Self::SAMPLER.0
+            | Self::COLOR.0
+            | Self::OUTPUT_SHARPEN.0
+            | Self::ENCODE.0,
+    );
 
     /// The stages of an export that run on the device in this version: the raw chain (R6 to R8 of
     /// every full-resolution tile: demosaic, denoise, R7 and capture sharpening; G-03, G-06).
@@ -1232,9 +1241,12 @@ mod tests {
         assert_eq!(GpuPolicy::On.stages(), GpuStages::ALL);
         assert_eq!(GpuPolicy::Require.stages(), GpuStages::ALL);
         assert_eq!(GpuPolicy::Off.stages(), GpuStages::NONE);
-        // Initially only the colour pass is signed off.
-        assert_eq!(GpuStages::SIGNED_OFF, GpuStages::COLOR);
-        assert_eq!(GpuStages::SIGNED_OFF.names(), ["colour"]);
+        // Signed off on 2026-10-14: everything but the export tail (G-08).
+        assert_eq!(
+            GpuStages::SIGNED_OFF.names(),
+            ["raw", "sampler", "colour", "sharpening", "encode"]
+        );
+        assert!(!GpuStages::SIGNED_OFF.contains(GpuStages::EXPORT_TAIL));
         assert!(GpuStages::ALL.contains(GpuStages::SIGNED_OFF));
         assert!(!GpuStages::SIGNED_OFF.contains(GpuStages::ALL));
     }

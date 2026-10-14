@@ -311,6 +311,8 @@ def build_sidecar(recipe: rc.Recipe, index: int, rendered: Rendered, mosaic: np.
         "preview": {
             "file": f"{recipe.stem}.jpg", "width": jpeg_size[0], "height": jpeg_size[1], "bytes": len(jpeg),
             "synthetic": True,
+            "gain": pv.PREVIEW_GAIN,
+            "gain_ev": pv.known_gain_ev(),
             "note": "made-up sRGB rendering for auto-exposure comparisons, not a camera rendering (preview.py)",
         },
         "variants": list(recipe.variants),
@@ -349,6 +351,9 @@ def up_to_date(side: Path, binf: Path, jpgf: Path, want_hash: str) -> bool:
             doc["generator"]["recipe_hash"] == want_hash
             and binf.stat().st_size == m["width"] * m["height"] * 2
             and jpgf.stat().st_size == doc["writer"]["preview"]["bytes"]
+            # A JPEG made with another gain is stale: the mosaic does not depend on it, so the recipe hash (which seeds
+            # nothing) does not carry it.
+            and doc["writer"]["preview"].get("gain") == pv.PREVIEW_GAIN
         )
     except (OSError, ValueError, KeyError):
         return False

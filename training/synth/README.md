@@ -91,7 +91,7 @@ automatic white balance (sigma 2 % for daylight and tungsten, 3 % for fluorescen
 tables (all zero: the scene has no lens effects), the embedded JPEG, and `Software` saying the file is synthetic.
 
 **The embedded JPEG** (`preview.py`): the noise-free raw image, as-shot white balance, a colour matrix fitted on the 190 patches
-under the true light, a fixed gain of 1.5, a soft shoulder, the sRGB curve and a mild S-curve. **It is a made-up rendering, not
+under the true light, a fixed gain of 2.2 (`PREVIEW_GAIN`; +1.11 EV, calibrated to `ym_color::exposure::CAMERA_GAIN_EV`, the median gain of the cameras' own JPEG engines: the auto-exposure gate then passes on this tier by construction, `docs/02` Auto exposure), a soft shoulder, the sRGB curve and a mild S-curve. The gain does not touch the mosaics (their seeds depend on the generator version and the file name only); a sidecar whose `writer.preview.gain` is not the module's is regenerated. **It is a made-up rendering, not
 Sony's**: it lets the auto-exposure comparison machinery (preview extraction, median luminance in linear light) run, and says nothing
 about Sony's tone. The sidecar (`writer.preview.synthetic`), a JPEG `COM` segment and the ARW `Software` tag all say so.
 

@@ -345,15 +345,84 @@ fn a_full_render_and_a_100_percent_frame_on_the_device_match_the_cpu() {
     assert!(o2 <= 1e-5 && m2 < 1e-4 && w2 <= 12, "{o2} {m2} {w2}");
 }
 
+/// The two renders of a DNG carry no R8 capture sharpening on the device either (`docs/09`, "What a DNG
+/// carries"): the device chain is made from the same parameters as the CPU's, and a photo whose R8 is
+/// switched off by its setting is the same render on the device as the DNG's preview, bit for bit.
+#[test]
+fn the_renders_of_a_dng_have_no_capture_sharpening_on_the_device_and_match_the_cpu() {
+    let Some(gpu) = gpu() else { return };
+    let src = scene();
+    let off = edit(&src, |s| {
+        s.sharpen = ym_core::settings::AutoOr::Manual(ym_core::settings::SharpenValue {
+            amount: 0.0,
+            radius_px: 1.0,
+        });
+    });
+    let (cpu, dev) = (on_cpu(), on_device(&gpu));
+    let full = |r: &Renderer, s: &PhotoSource, target: FullTarget| {
+        r.render_full(s, &FullRequest { target }, &CancelToken::new())
+            .expect("a render")
+    };
+    let display = FullTarget::DisplayLinear(OutputTarget::Srgb);
+
+    // The control: on the device R8 is on for a picture of the other formats, and it moves this scene.
+    let dev_display_on = full(&dev, &src, display);
+    let dev_display_off = full(&dev, &off, display);
+    assert_eq!(
+        device_of(&dev_display_on.report),
+        vec![("R6..R8".to_owned(), ComputeDevice::Gpu)]
+    );
+    let (effect, _, _) = difference(&dev_display_on.rgb, &dev_display_off.rgb);
+    assert!(effect > 1e-3, "R8 moves the picture by {effect}");
+
+    // The DNG's preview on the device ran the device range and is the render with R8 off, bit for bit.
+    let dev_preview = full(&dev, &src, FullTarget::DngPreview);
+    assert_eq!(
+        device_of(&dev_preview.report),
+        vec![("R6..R8".to_owned(), ComputeDevice::Gpu)],
+        "{:?}",
+        dev_preview.report.notes
+    );
+    assert_eq!(dev_preview.rgb, dev_display_off.rgb);
+    // The raw pixels do not depend on the setting.
+    let dev_raw = full(&dev, &src, FullTarget::DngLinearAwg4);
+    assert_eq!(dev_raw.rgb, full(&dev, &off, FullTarget::DngLinearAwg4).rgb);
+
+    // And the device agrees with the CPU within the kernels' tolerances (`docs/05`), for both.
+    let cpu_preview = full(&cpu, &src, FullTarget::DngPreview);
+    let (worst, over, mean) = difference(&cpu_preview.rgb, &dev_preview.rgb);
+    eprintln!(
+        "DNG preview, device against CPU: worst {worst:e}, share over 1e-3 {over:e}, mean {mean:e}"
+    );
+    // Twice the first measured values (worst 8.3e-4, no sample over 1e-3, mean 4.5e-8): a tie flip of
+    // the demosaic and what the later stages make of it.
+    assert!(
+        worst < 2e-3 && over <= 2e-5 && mean < 1e-6,
+        "{worst} {over} {mean}"
+    );
+    let cpu_raw = full(&cpu, &src, FullTarget::DngLinearAwg4);
+    let (worst, over, mean) = difference(&cpu_raw.rgb, &dev_raw.rgb);
+    eprintln!(
+        "DNG pixels, device against CPU: worst {worst:e}, share over 1e-3 {over:e}, mean {mean:e}"
+    );
+    // The pixels are scene-linear (a wider range than the display's): twice the first measured values
+    // (worst 1.7e-3, share over 1e-3 8.5e-7, mean 7.7e-8).
+    assert!(
+        worst < 4e-3 && over <= 2e-5 && mean < 1e-6,
+        "{worst} {over} {mean}"
+    );
+}
+
 #[test]
 fn the_device_runs_the_raw_chain_only_when_the_stage_and_the_method_allow_it() {
     let Some(gpu) = gpu() else { return };
     let src = scene();
     let cpu = render_full(&on_cpu(), &src).expect("cpu render");
-    // The stage is off (what `Auto` runs today, the colour pass): the CPU runs R6, no range.
+    // The stage is off (the colour pass alone, what `Auto` ran before 2026-10-14): the CPU runs
+    // R6, no range.
     let off = renderer_with(
         Some(Arc::clone(&gpu)),
-        GpuStages::SIGNED_OFF,
+        GpuStages::COLOR,
         false,
         Method::AdaptiveRatio,
     );

@@ -88,10 +88,10 @@ def file_metrics(red: Mapping[str, Any], ev_auto: float, ec_ev: float = 0.0) -> 
     # The scene statistics at EV 0 (replica meter, no clamp): they feed the meter-emulation table.
     stats = {}
     for name in METER_STATS:
-        r = m.meter(red["y0_ds"], 0.0, None, m.MeterConfig(stat=name, ev_limit=99.0, guard_max_reduction_ev=0.0, guard_fraction=1.0))
+        r = m.meter(red["y0_ds"], 0.0, None, m.MeterConfig(rule="metered", stat=name, ev_limit=99.0, guard_max_reduction_ev=0.0, guard_fraction=1.0))
         stats[name] = r.statistic
     out["stats_ev0"] = stats
-    flat = m.meter(red["y0_ds"], 0.0, None, m.MeterConfig(centre_sigma=None, ev_limit=99.0))
+    flat = m.meter(red["y0_ds"], 0.0, None, m.MeterConfig(rule="metered", centre_sigma=None, ev_limit=99.0))
     out["geomean_flat_ev0"] = flat.statistic
     out["scene_contrast_ev"] = math.log2(stats["mean"] / stats["geomean"]) if stats["geomean"] > 0 else math.nan
     out["scene_range_ev"] = math.log2(float(np.quantile(y0, 0.99)) / max(float(np.quantile(y0, 0.01)), 1e-4))
@@ -182,10 +182,17 @@ def placement_sweep(entries: Sequence[Mapping[str, Any]], placements: Sequence[f
 
 
 def variant_ev(entry: Mapping[str, Any], cfg: m.MeterConfig, base: m.MeterConfig | None = None) -> float:
-    """The exposure a variant of the algorithm would choose: the `ym` value moved by what the replica says the
-    variant changes (so the replica's small bias against `ym` cancels)."""
+    """The exposure a variant of the algorithm would choose, by the replica.
+
+    A variant of the previous rule (`cfg.rule == "metered"`, the what-if sweeps of the metering) has no `ym` value any more
+    (`ym` uses the camera's gain), so it is the replica alone: it matched `ym` to 0.03 EV when the rule was ym's. A variant of
+    the current rule moves the `ym` value by what the replica says it changes (so the replica's small bias against `ym`
+    cancels).
+    """
     y0 = entry["_y0_ds"]
     ec = entry["ec_ev"]
+    if cfg.rule == "metered":
+        return m.meter(y0, ec, None, cfg).ev_auto
     base = base or m.MeterConfig()
     return entry["ev_auto"] + m.meter(y0, ec, None, cfg).ev_auto - m.meter(y0, ec, None, base).ev_auto
 
@@ -206,7 +213,7 @@ def target_sweep(entries: Sequence[Mapping[str, Any]], targets: Sequence[float],
     """The metering target (0.18 in the spec) varied, everything else as is."""
     rows = []
     for t in targets:
-        cfg = m.with_target(m.MeterConfig(), t)
+        cfg = m.with_target(m.PREVIOUS_RULE, t)
         row = {"target": t}
         row.update(variant_row(entries, [variant_ev(e, cfg) for e in entries], tolerance_ev))
         rows.append(row)
@@ -214,11 +221,14 @@ def target_sweep(entries: Sequence[Mapping[str, Any]], targets: Sequence[float],
 
 
 def shrink_sweep(entries: Sequence[Mapping[str, Any]], anchor_ev: float, weights: Sequence[float], tolerance_ev: float = 0.5) -> list[dict[str, Any]]:
-    """`ev = anchor + w (ev_auto - anchor)`: partly keeping the camera's placement (w = 1 is the spec, 0 a fixed gain)."""
+    """`ev = anchor + w (ev_previous - anchor)`: partly keeping the camera's placement. The unshrunk exposure is the previous
+    rule's (metering to 0.18, `ev_previous_rule`, a replica value; `ym` no longer chooses it, a file without it falls back to
+    `ev_auto`): w = 1 is that rule, 0 a fixed gain, which is what `ym` does now with the anchor at the camera gain."""
     rows = []
     for w in weights:
         row = {"weight": w, "anchor_ev": anchor_ev}
-        row.update(variant_row(entries, [m.shrunk_ev(e["ev_auto"], anchor_ev, w) for e in entries], tolerance_ev))
+        evs = [m.shrunk_ev(e.get("ev_previous_rule", e["ev_auto"]), anchor_ev, w) for e in entries]
+        row.update(variant_row(entries, evs, tolerance_ev))
         rows.append(row)
     return rows
 
@@ -228,12 +238,12 @@ def statistic_sweep(entries: Sequence[Mapping[str, Any]], tolerance_ev: float = 
     change, so a statistic with a different typical value than the geometric mean has an offset; see `best_offset`)."""
     rows = []
     for name in METER_STATS:
-        cfg = m.MeterConfig(stat=name)
+        cfg = m.MeterConfig(rule="metered", stat=name)
         evs = [variant_ev(e, cfg) for e in entries]
         row = {"statistic": name, "flat_weights": False}
         row.update(variant_row(entries, evs, tolerance_ev))
         rows.append(row)
-    flat = m.MeterConfig(centre_sigma=None)
+    flat = m.MeterConfig(rule="metered", centre_sigma=None)
     row = {"statistic": "geomean", "flat_weights": True}
     row.update(variant_row(entries, [variant_ev(e, flat) for e in entries], tolerance_ev))
     rows.append(row)

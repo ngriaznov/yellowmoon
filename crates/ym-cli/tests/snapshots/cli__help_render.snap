@@ -84,7 +84,7 @@ Detail:
           Noise reduction: `auto`, or luminance, colour and detail strengths (0 to 100 each)
 
       --sharpen <auto|AMOUNT,RADIUS>
-          Sharpening: `auto`, or amount (0 to 300) and radius in pixels (0.3 to 2.5)
+          Sharpening: `auto`, or amount (0 to 300) and radius in pixels (0.3 to 2.5). A DNG is never sharpened
 
       --output-sharpening <PERCENT>
           Output sharpening, 0 to 200 percent (default 100, 0 is off). It sharpens JPEG, TIFF and PNG files at the size they are written, after the resize; a DNG is never sharpened
@@ -116,7 +116,7 @@ Output:
           - jpeg: JPEG
           - tiff: TIFF
           - png:  PNG
-          - dng:  DNG with the look baked in. Apps other than Adobe's show the stored linear image darker until their own exposure handling is applied
+          - dng:  DNG with the look baked in. Apps other than Adobe's show the stored linear image darker until their own exposure handling is applied. With a look that includes its own display rendering, the DNG is close to, not the same as, the picture you see
 
       --quality <N>
           JPEG quality, 50 to 100 (default 92)

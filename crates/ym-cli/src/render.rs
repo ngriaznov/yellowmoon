@@ -199,6 +199,10 @@ fn inapplicable(args: &RenderArgs, format: FormatKind) -> Vec<&'static str> {
         if args.output_sharpening.is_some() {
             out.push("--output-sharpening (not for DNG)");
         }
+        // A DNG carries no sharpening of any kind (`docs/09`): R8 is off for both of its renders.
+        if args.sharpen.is_some() {
+            out.push("--sharpen (not for DNG)");
+        }
     }
     out
 }
@@ -955,13 +959,17 @@ mod tests {
             "8",
             "--compression",
             "zip",
+            "--sharpen",
+            "50,1.2",
         ])
         .expect("parses");
         let crate::cli::Command::Render(args) = cli.command else {
             panic!("render");
         };
         let flags = inapplicable(&args, FormatKind::Dng);
-        assert_eq!(flags.len(), 4, "{flags:?}");
+        assert_eq!(flags.len(), 5, "{flags:?}");
+        assert!(flags.contains(&"--sharpen (not for DNG)"));
+        assert!(!inapplicable(&args, FormatKind::Jpeg).contains(&"--sharpen (not for DNG)"));
         assert!(inapplicable(&args, FormatKind::Jpeg).contains(&"--bits (TIFF and PNG only)"));
     }
 

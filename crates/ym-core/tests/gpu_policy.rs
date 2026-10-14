@@ -299,7 +299,7 @@ fn attaching_the_device_changes_no_byte_of_a_full_render_that_runs_no_raw_stage_
         Renderer::new(Arc::new(NeutralOnly), RenderOptions::default()).expect("render thread");
     let reference = render(&cpu);
     assert!(!reference.is_empty());
-    for stages in [GpuStages::NONE, GpuStages::SIGNED_OFF] {
+    for stages in [GpuStages::NONE, GpuStages::COLOR] {
         let r =
             Renderer::new(Arc::new(NeutralOnly), RenderOptions::default()).expect("render thread");
         r.set_gpu(Some(Arc::clone(&gpu)), stages);

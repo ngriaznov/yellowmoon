@@ -822,6 +822,34 @@ class Preview(unittest.TestCase):
             self.assertFalse(0xE0 <= jpeg[pos + 1] <= 0xEF)
             pos += 2 + int.from_bytes(jpeg[pos + 2 : pos + 4], "big")
 
+    def test_the_engine_gain_is_calibrated_to_the_camera_gain_of_the_gate(self):
+        # Decision 2026-10-14: the synthetic camera's JPEG engine is Sony-like, +1.11 EV (the median of the cameras'
+        # own engines, `ym_color::exposure::CAMERA_GAIN_EV`), so the auto-exposure gate passes by construction.
+        from scipy.optimize import brentq
+
+        self.assertEqual(pv.TARGET_GAIN_EV, 1.11)
+        self.assertAlmostEqual(pv.known_gain_ev(), pv.TARGET_GAIN_EV, delta=1e-3)
+        # Calibrated, not guessed: the gain that gives exactly the target is within 2e-4 of the constant.
+        exact = brentq(lambda g: pv.known_gain_ev(g) - pv.TARGET_GAIN_EV, 1.5, 3.0, xtol=1e-12)
+        self.assertAlmostEqual(pv.PREVIEW_GAIN, exact, delta=2e-4)
+        # known_gain_ev does not leave the module's gain changed
+        self.assertEqual(pv.PREVIEW_GAIN, 2.2)
+        self.assertAlmostEqual(pv.known_gain_ev(1.5), 0.5575, places=4)  # the earlier engine
+        # the same constants as ym and the evaluation harness
+        repo = Path(__file__).resolve().parents[2]
+        rust = (repo / "crates/ym-color/src/exposure.rs").read_text()
+        self.assertIn("pub const CAMERA_GAIN_EV: f64 = 1.11;", rust)
+        harness = (repo / "tools/eval/autoexp.py").read_text()
+        self.assertIn("SYNTH_GAIN_EV = 1.1100", harness)
+
+    def test_the_tone_curve_reads_middle_grey_at_the_known_raw_level(self):
+        # the raw level (balanced white = 1) at which the JPEG shows 0.18 in linear light
+        x = 0.18 / 2.0 ** pv.known_gain_ev()
+        code = float(pv.tone(np.array([x]))[0])
+        lin = code / 12.92 if code <= 0.04045 else ((code + 0.055) / 1.055) ** 2.4
+        self.assertAlmostEqual(lin, 0.18, places=9)
+        self.assertAlmostEqual(x, 0.0834, places=4)
+
     def test_rendering_is_white_preserving_and_monotone(self):
         light = sp.single_lights()["D6500"]
         m = pv.camera_to_srgb_matrix(light.spd, sp.camera_curves(A7R4))
@@ -832,12 +860,17 @@ class Preview(unittest.TestCase):
         self.assertTrue((np.diff(img) >= 0).all())
         self.assertEqual(int(img[-1]), 255)
         self.assertEqual(int(img[0]), 0)
-        # the metered grey (raw 0.12) lands near mid-grey: sRGB code 110-130
+        # the raw level at which the engine shows ISO 12232's 18 % grey (0.0834 of the white level, a Sony-like gain of
+        # +1.11 EV) is sRGB code 118
+        level = 0.18 / 2.0 ** pv.known_gain_ev()
+        iso_grey = pv.render(np.full((1, 1, 3), level, dtype=np.float32), np.ones(3), np.eye(3))[0, 0, 0]
+        self.assertTrue(117 <= int(iso_grey) <= 119, int(iso_grey))
+        # the scene's grey patch (raw 0.12, half a stop above that, as the scenes are exposed) is brighter: code 135-150
         grey = pv.render(np.full((1, 1, 3), sn.GREY_FRACTION, dtype=np.float32), np.ones(3), np.eye(3))[0, 0, 0]
-        self.assertTrue(105 <= int(grey) <= 135, int(grey))
-        # a raw white at the metered exposure is bright but not clipped
+        self.assertTrue(135 <= int(grey) <= 150, int(grey))
+        # a raw white at that exposure (0.6) is above the engine's shoulder: clipped, as a Sony JPEG clips its highlights
         white = pv.render(np.full((1, 1, 3), 0.6, dtype=np.float32), np.ones(3), np.eye(3))[0, 0, 0]
-        self.assertTrue(220 <= int(white) <= 254, int(white))
+        self.assertEqual(int(white), 255)
 
     def test_block_mean(self):
         img = np.arange(4 * 6 * 3, dtype=np.float32).reshape(4, 6, 3)
@@ -878,6 +911,8 @@ class EndToEnd(unittest.TestCase):
         self.assertEqual((w["make"], w["model"], w["model_id"], w["iso"]), ("SONY", "ILCE-7RM4", 375, 800))
         self.assertEqual(w["capture_time"], rc.capture_time(3))
         self.assertTrue(w["preview"]["synthetic"])
+        self.assertEqual(w["preview"]["gain"], pv.PREVIEW_GAIN)
+        self.assertAlmostEqual(w["preview"]["gain_ev"], 1.11, delta=1e-3)
         self.assertEqual(w["variants"], ["lossless-l"])
         self.assertEqual(w["sr2"]["black"], [512] * 4)
         self.assertEqual(w["sr2"]["white"], [16383] * 3)

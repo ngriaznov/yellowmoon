@@ -61,7 +61,7 @@ fn load() -> Vectors {
     v
 }
 
-fn group<'a>(v: &'a Vectors, name: &str) -> std::ops::Range<usize> {
+fn group(v: &Vectors, name: &str) -> std::ops::Range<usize> {
     let (_, start, count) = v
         .groups
         .iter()

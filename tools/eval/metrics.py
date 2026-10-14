@@ -3,8 +3,9 @@
 Nothing here touches a file or a process, so every function is unit tested (`test_metrics.py`). The pieces:
 
 * colour: sRGB and Adobe RGB (1998) decoding of an 8-bit JPEG to linear luminance, the AWG4 `Y` row;
-* a replica of `ym_color::exposure::auto_exposure` (steps 1 to 5 of the spec) with switches for the what-if
-  variants (other target, other statistic, flat weights, shrinking towards a fixed gain);
+* a replica of `ym_color::exposure::auto_exposure` (steps 1 to 5 of the spec: the camera's gain, the highlight guard and
+  the reported key statistic) with switches for the what-if variants of the previous metering rule (other target, other
+  statistic, flat weights, shrinking towards a fixed gain);
 * tone-curve estimation by quantile matching: the camera's own raw-to-JPEG curve (no registration needed) and our
   display transform's curve, read from the pictures themselves;
 * the exposure placed by a display transform (ACES 2 neutral axis through OpenColorIO, when it is installed).
@@ -35,6 +36,9 @@ ADOBE_RGB_GAMMA = 563.0 / 256.0
 D65_XY = (0.3127, 0.3290)
 AWG4_PRIMARIES = ((0.7347, 0.2653), (0.1424, 0.8576), (0.0991, -0.0308))
 MID_GREY = 0.18
+#: `ym_color::exposure::CAMERA_GAIN_EV`: the interim `EV_auto` of every photo (docs/02 Auto exposure, decision 2026-10-14), the
+#: median gain of the cameras' own JPEG engines over the 12 local files (this study measures it as G3's reference).
+CAMERA_GAIN_EV = 1.11
 
 #: The meter calibration of ISO 2720 for reflected light and the constants of ISO 12232's saturation-based speed.
 #: A camera that meters an average (18 %) scene exactly puts the grey at `K q / 78` of the saturation exposure.
@@ -148,10 +152,15 @@ def centre_weights(height: int, width: int, sigma: float = 0.35) -> np.ndarray:
 class MeterConfig:
     """The constants of `docs/02` Auto exposure, with switches for the what-if variants.
 
-    `stat` is `geomean` (the spec), `mean` (arithmetic), `median` or `pNN` (a plain percentile of the unmasked
-    luminances, for example `p90`); `centre_sigma = None` makes the weights flat.
+    `rule` is `camera_gain` (the spec since 2026-10-14: `EV_auto` is `camera_gain_ev` before the highlight guard, whatever the
+    scene and whatever the exposure compensation, which the raw already holds) or `metered` (the previous rule,
+    `log2(target / statistic) + ec_weight * EC`, kept for the what-if studies of `study.py`). `stat` is `geomean` (the spec's
+    reported statistic), `mean` (arithmetic), `median` or `pNN` (a plain percentile of the unmasked luminances, for example
+    `p90`); `centre_sigma = None` makes the weights flat.
     """
 
+    rule: str = "camera_gain"
+    camera_gain_ev: float = CAMERA_GAIN_EV
     target: float = 0.18
     centre_sigma: float | None = 0.35
     low_quantile: float = 0.01
@@ -165,12 +174,16 @@ class MeterConfig:
     stat: str = "geomean"
 
 
+#: The previous rule (metering to 0.18 with half the exposure compensation), for the what-if studies.
+PREVIOUS_RULE = MeterConfig(rule="metered")
+
+
 @dataclass(frozen=True)
 class Meter:
     """The result of metering, like `ym_color::exposure::AutoExposure`."""
 
     ev_auto: float
-    ev_metered: float
+    ev_before_guard: float
     guard_reduction_ev: float
     statistic: float
     unmasked_pixels: int
@@ -187,11 +200,17 @@ def _weighted_median(values: np.ndarray, weights: np.ndarray) -> float:
 def meter(y: np.ndarray, ec_ev: float = 0.0, mask: np.ndarray | None = None, cfg: MeterConfig | None = None) -> Meter:
     """Steps 1 to 5 of the spec on an `(H, W)` luminance image at EV 0 (a replica of `auto_exposure`).
 
+    With the default rule the exposure is the camera's gain, lowered by the highlight guard when the picture would clip; the
+    key statistic is computed and reported and does not move it, and `ec_ev` is not used (the raw already holds the
+    compensation). Only the previous rule (`MeterConfig(rule="metered")`) meters to the target and adds half of `ec_ev`.
+
     The exact Rust code meters the camera's 1/8 preview through the fused matrix; here `y` is the AWG4 luminance
     of the DNG that `ym render --exposure 0` writes (so it has gone through C7, sharpening and the demosaic).
     `tools/eval/autoexp.py` reports how far this replica is from the `ym` value for every file.
     """
     cfg = cfg or MeterConfig()
+    if cfg.rule not in ("camera_gain", "metered"):
+        raise ValueError(f"unknown rule {cfg.rule!r}")
     y = np.asarray(y, dtype=np.float64)
     h, w = y.shape
     ok = np.isfinite(y)
@@ -200,8 +219,9 @@ def meter(y: np.ndarray, ec_ev: float = 0.0, mask: np.ndarray | None = None, cfg
     n = int(ok.sum())
     ec = ec_ev if math.isfinite(ec_ev) else 0.0
     compensation = cfg.ec_weight * ec
+    gain = min(max(cfg.camera_gain_ev, -cfg.ev_limit), cfg.ev_limit)
     if n == 0:
-        ev = min(max(compensation, -cfg.ev_limit), cfg.ev_limit)
+        ev = gain if cfg.rule == "camera_gain" else min(max(compensation, -cfg.ev_limit), cfg.ev_limit)
         return Meter(ev, ev, 0.0, 0.0, 0, 0)
     yv = np.maximum(y[ok], cfg.floor)
     sorted_y = np.sort(yv)
@@ -223,12 +243,15 @@ def meter(y: np.ndarray, ec_ev: float = 0.0, mask: np.ndarray | None = None, cfg
         stat = float(np.quantile(sorted_y, float(cfg.stat[1:]) / 100.0))
     else:
         raise ValueError(f"unknown statistic {cfg.stat!r}")
-    ev_metered = min(max(math.log2(cfg.target / stat) + compensation, -cfg.ev_limit), cfg.ev_limit)
+    if cfg.rule == "camera_gain":
+        ev_before_guard = gain
+    else:
+        ev_before_guard = min(max(math.log2(cfg.target / stat) + compensation, -cfg.ev_limit), cfg.ev_limit)
     allowed = math.floor(cfg.guard_fraction * n)
     threshold = float(sorted_y[n - 1 - min(allowed, n - 1)])
     ev_guard = math.log2(cfg.guard_level / threshold)
-    ev_auto = max(ev_guard, ev_metered - cfg.guard_max_reduction_ev) if ev_metered > ev_guard else ev_metered
-    return Meter(ev_auto, ev_metered, ev_metered - ev_auto, stat, n, int(band.sum()))
+    ev_auto = max(ev_guard, ev_before_guard - cfg.guard_max_reduction_ev) if ev_before_guard > ev_guard else ev_before_guard
+    return Meter(ev_auto, ev_before_guard, ev_before_guard - ev_auto, stat, n, int(band.sum()))
 
 
 def nominal_grey_fraction(k: float = METER_K, q: float = LENS_Q, sat: float = SAT_SPEED_CONSTANT) -> float:

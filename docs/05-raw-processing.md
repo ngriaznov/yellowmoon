@@ -148,6 +148,8 @@ Menon, LMMSE, bilinear and log-guided stay selectable through the test switch. T
 
 Two methods exist and exactly one runs per photo (either/or; stacking them is an open evaluation option, `docs/algorithms/03-diffraction-deconvolution.md` section 7.1 item 8): `CaptureSharpen::{RichardsonLucy(SharpenParams), Diffraction(DiffractionParams)}` in `Chain` and `Stage::Sharpen`, each with its own halo (table below). R8 runs at full resolution only (the 100 % view and exports, and the rare thumbnail made at a reduction of 1), after R7; the binned fit view and the thumbnails made from binned images are not sharpened by it.
 
+**R8 is off for a DNG** (owner's decision of 2026-10-14, `docs/09` "What a DNG carries"): both renders of a DNG, the raw pixels and the preview, run with R8 off (`RawParams::without_capture_sharpening`, set by `Job::without_capture_sharpening` for `FullTarget::DngLinearAwg4` and `DngPreview`: amount 0 and no diffraction controls, so `capture_sharpen()` is `None` and the chain, on the CPU and on the device, has no sharpening stage). It is a render-time switch of the internal chain parameters, not a setting: Detail › Sharpening says nothing to a DNG, the key of the cached chains and tiles changes with it (a render with R8 off never reads a chain made with R8 on), and JPEG, TIFF and PNG are unchanged. The adaptive ratio demosaic's own shadow step (`shadow_sharpening`, part of R6) stays on.
+
 | Method | Default | Reached by | Controls |
 |---|---|---|---|
 | Richardson–Lucy, Gaussian PSF | **yes** (`DEFAULT_CAPTURE_METHOD`) | every photo | the Sharpening card's Amount and Radius, Auto from the ISO and the f-number |

@@ -5,6 +5,15 @@
     python3 -I tools/eval/autoexp.py testdata/synthetic/arw --label synthetic --one-per-scene
     python3 -I tools/eval/autoexp.py testdata/synthetic/arw --label synthetic --one-per-scene --gate   # the M1-08 gate, with an exit code
 
+Since 2026-10-14 `EV_auto` is the camera's own exposure (`ym_color::exposure::CAMERA_GAIN_EV`, +1.11 EV, the median camera
+gain of the 12 local files) lowered by the highlight guard when the picture would clip: no metering of our own moves it
+(`docs/02` Auto exposure). G3 below is therefore `1.11 - camera gain` per file: on the 12 local files it measures how far each
+camera is from the median of the cameras (in-sample: the constant was fitted on these files, so a pass says little about
+other cameras), and on the synthetic tier, whose JPEG engine is made with the same gain, it is zero by construction
+(`training/synth/preview.py`). The synthetic checks that still mean something are the highlight guard (it lowers `EV_auto` only
+on scenes that would clip, by the documented amount: the replica and `ym` agree) and the exposure compensation (a constant
+exposure leaves the compensation, which the raw holds, in the picture in full); see `summary.synthetic_checks`.
+
 For every ARW in the folder it runs the real `ym` (default: the dev build `target/debug/ym`, `cargo build -p ym-cli`;
 a release build is not needed), takes the camera's embedded JPEG and computes, per photo:
 
@@ -69,10 +78,14 @@ FITTED_PROFILE = REPO / "data" / "dng" / "profile.json"
 DNG_BLOCK = 8  # the 1/8 preview's binning
 #: Version of the reduction a cache file holds (bump it when `reduce_photo` stores something else): an older cache
 #: is not reused, so `--reuse` cannot mix numbers from two versions of the arithmetic.
-CACHE_SCHEMA = 2
-# The raw level at which the synthetic JPEG (training/synth/preview.py `tone`: gain 1.5, soft shoulder, sRGB, mild S-curve)
-# reads 0.18 in linear light, as a gain: 0.5575 EV (the nominal gain log2(1.5) is 0.585; the S-curve darkens grey to 0.176).
-SYNTH_GAIN_EV = 0.5575
+CACHE_SCHEMA = 3
+# The raw level at which the synthetic JPEG (training/synth/preview.py `tone`: gain 2.2, soft shoulder, sRGB, mild S-curve)
+# reads 0.18 in linear light, as a gain: 1.1100 EV (the nominal gain log2(2.2) is 1.138; the S-curve darkens grey). The gain
+# was solved so that this equals `ym_color::exposure::CAMERA_GAIN_EV`, the camera gain `EV_auto` is (docs/02, 2026-10-14).
+SYNTH_GAIN_EV = 1.1100
+#: `ym_color::display::DISPLAY_PLACEMENT_EV`, read from the source so that the two cannot drift apart: the ACES 2 path brightens
+#: the scene by this many stops before the transform and the DNG's `BaselineExposure` carries it.
+PLACEMENT_SOURCE = REPO / "crates" / "ym-color" / "src" / "display" / "transform.rs"
 VARIANT_ORDER = ("uncompressed14", "packed12", "lossless-l", "craw", "lossless-ms")
 AE_PROGRAMS = {2, 3, 4, 5, 6, 7, 8}  # EXIF ExposureProgram: the camera metered (not manual, not undefined)
 #: The M1-08 gate (docs/13 gate table, docs/15, decision 2026-10-13): `EV_auto` within this many EV of the camera engine's gain (G3) ...
@@ -258,7 +271,8 @@ def read_linear_dng(path: Path) -> tuple[np.ndarray, float, dict[str, Any]]:
     Without a fitted profile the scene-linear value is `stored / 65535 * 2^BaselineExposure` (`ym-export` `dng.rs`,
     "Pixel scaling": the baseline exposure undoes the scaling by `x_white`). With one (`tags["fitted_profile"]`, which is
     what `ym` writes since the DNG got its Adobe profile) `BaselineExposure` is `log2(x_white)` plus the profile's fit
-    offset, so the caller must take `fitted_profile_offset_ev(tags["tone_curve"])` off it first.
+    offset plus the display placement, so the caller must take `fitted_profile_offset_ev(tags["tone_curve"])` and
+    `display_placement_ev()` off it first.
     """
     tifffile = _tifffile()
     with tifffile.TiffFile(str(path)) as tf:
@@ -301,6 +315,24 @@ def fitted_profile_offset_ev(tone_curve: Sequence[float], profile_path: Path = F
     if dng_curve.shape != curve.shape or not np.allclose(dng_curve, curve, rtol=1e-5, atol=1e-9) or not math.isfinite(offset):
         raise StudyError(f"the DNG's profile is not {profile_path} (build `ym` from this checkout): the fit offset in its BaselineExposure cannot be undone")
     return offset
+
+
+def display_placement_ev(source: Path = PLACEMENT_SOURCE) -> float:
+    """`DISPLAY_PLACEMENT_EV` of `ym-color` (`pub const DISPLAY_PLACEMENT_EV: f64 = 0.85;`), read from its source.
+
+    A DNG with the fitted profile carries it in `BaselineExposure` (`log2(x_white) + fit_offset_ev + placement`), so the study
+    has to take it off to undo the `x_white` scaling.
+    """
+    import re
+
+    try:
+        text = source.read_text()
+    except OSError as err:
+        raise StudyError(f"cannot read {source} to find the display placement: {err}") from err
+    found = re.search(r"pub const DISPLAY_PLACEMENT_EV: f64 = (-?[0-9.]+);", text)
+    if found is None:
+        raise StudyError(f"{source} has no `pub const DISPLAY_PLACEMENT_EV: f64 = ...;`: the DNG's BaselineExposure cannot be undone")
+    return float(found.group(1))
 
 
 def read_tiff16(path: Path) -> np.ndarray:
@@ -448,10 +480,13 @@ def reduce_photo(ym: Ym, path: Path, info: dict[str, Any], exif: dict[str, Any],
     raw16, baseline_ev, dng_tags = read_linear_dng(dng_path)
     extras["dng_baseline_ev"] = baseline_ev
     extras["dng_fitted_profile"] = dng_tags["fitted_profile"]
-    # The stored values are x / x_white; BaselineExposure is log2(x_white), plus the fit offset of a fitted profile.
+    # The stored values are x / x_white; BaselineExposure is log2(x_white), plus the fit offset and the display placement
+    # of a fitted profile.
     fit_offset_ev = fitted_profile_offset_ev(dng_tags["tone_curve"]) if dng_tags["fitted_profile"] else 0.0
+    placement_ev = display_placement_ev() if dng_tags["fitted_profile"] else 0.0
     extras["dng_fit_offset_ev"] = fit_offset_ev
-    x_white_ev = baseline_ev - fit_offset_ev
+    extras["dng_placement_ev"] = placement_ev
+    x_white_ev = baseline_ev - fit_offset_ev - placement_ev
     y0 = _scene_luminance(raw16, x_white_ev)
     extras["dng_size"] = [int(raw16.shape[1]), int(raw16.shape[0])]
     extras["dng_clipped_fraction"] = float((raw16.max(axis=2) == 65535).mean())
@@ -575,6 +610,9 @@ def _entry(path: Path, info: dict[str, Any], exif: dict[str, Any], extras: dict[
     e["ev_replica"] = rep.ev_auto
     e["ev_replica_minus_ym"] = rep.ev_auto - ev_auto
     e["guard_reduction_replica"] = rep.guard_reduction_ev
+    e["key_statistic"] = rep.statistic
+    # What the previous rule (metering to 0.18, half the compensation) would have chosen: reported for the what-if studies only.
+    e["ev_previous_rule"] = m.meter(red["y0_ds"], ec, None, m.PREVIOUS_RULE).ev_auto
 
     # The camera's nominal exposure (ISO 2720 meter, ISO 12232 saturation speed): a reference line only.
     nominal = math.log2(m.MID_GREY / m.nominal_grey_fraction())
@@ -629,6 +667,10 @@ def summarise(entries: list[dict[str, Any]], tolerance_ev: float) -> dict[str, A
     s["placement_sweep"] = study.placement_sweep(entries, tolerance_ev=tolerance_ev)
     aces = m.aces2_neutral_display_y([m.MID_GREY])
     s["aces2_grey_display"] = None if aces is None else float(aces[0])
+    placement = display_placement_ev()
+    s["display_placement_ev"] = placement
+    placed = m.aces2_neutral_display_y([m.MID_GREY * 2.0**placement])
+    s["aces2_grey_display_placed"] = None if placed is None else float(placed[0])
     s["display_of_grey_median"] = float(np.median([e["display_of_grey"] for e in entries]))
     s["tolerance_sweep"] = [{"tolerance_ev": t, **{k: dict(zip(("within", "evaluated"), m.pass_rate([e[k] for e in entries], t))) for k in ("g1_gate_ev", "g2_display_ev", "g3_scene_ev")}} for t in (0.25, 0.5, 0.75, 1.0)]
     s["target_sweep"] = study.target_sweep(entries, (0.10, 0.14, 0.18, 0.22, 0.26, 0.32), tolerance_ev)
@@ -647,12 +689,40 @@ def summarise(entries: list[dict[str, Any]], tolerance_ev: float) -> dict[str, A
     s["contrast_fit"] = study.fit_contrast(entries)
     s["contrast_sweep"] = study.contrast_sweep(entries, (1.0, 1.2, 1.3, 1.4, 1.5, 1.6), tolerance_ev)
     s["replica_minus_ym"] = m.summary([e["ev_replica_minus_ym"] for e in entries])
+    s["guard_check"] = guard_check(entries)
+    s["camera_gain_ev"] = m.CAMERA_GAIN_EV
     s["ev_auto"] = m.summary([e["ev_auto"] for e in entries])
     truth = [e["ev_auto_minus_truth_ev"] for e in entries if "ev_auto_minus_truth_ev" in e]
     if truth:
         s["ev_auto_minus_truth"] = study.tally(truth, tolerance_ev)
         s["camera_gain_minus_synthetic"] = m.summary([e["camera_gain_minus_synthetic_ev"] for e in entries if "camera_gain_minus_synthetic_ev" in e])
     return s
+
+
+def guard_check(entries: list[dict[str, Any]], tolerance_ev: float = 0.03) -> dict[str, Any]:
+    """The highlight guard, the one part of `EV_auto` that still looks at the scene (`docs/02` step 5).
+
+    With the camera's gain as the exposure the only thing that can move `EV_auto` is the guard, and it may only lower it, by at
+    most one stop. This checks `ym` against the replica of the guard on the same scenes: `ym` lowered the exposure exactly on the
+    files the replica says would clip (more than 0.5 % of the pixels above 8.0 after exposure), by the same amount to
+    `tolerance_ev`, never raised it and never by more than the documented stop.
+    """
+    gain = m.CAMERA_GAIN_EV
+    lowered_ym = [e["file"] for e in entries if gain - e["ev_auto"] > 1e-9]
+    lowered_replica = [e["file"] for e in entries if e["guard_reduction_replica"] > 1e-9]
+    diffs = [abs(e["ev_auto"] - e["ev_replica"]) for e in entries]
+    reductions = [gain - e["ev_auto"] for e in entries]
+    return {
+        "files": len(entries),
+        "camera_gain_ev": gain,
+        "lowered_by_ym": lowered_ym,
+        "lowered_by_replica": lowered_replica,
+        "max_abs_replica_minus_ym_ev": max(diffs) if diffs else 0.0,
+        "largest_reduction_ev": max(reductions) if reductions else 0.0,
+        "never_raised": all(r >= -1e-9 for r in reductions),
+        "at_most_one_stop": all(r <= 1.0 + 1e-9 for r in reductions),
+        "agrees_with_replica": bool(diffs) and max(diffs) <= tolerance_ev and set(lowered_ym) == set(lowered_replica),
+    }
 
 
 def evaluate_gate(entries: list[dict[str, Any]], failures: Sequence[tuple[str, str]] = (), tolerance_ev: float = GATE_TOLERANCE_EV, min_fraction: float = GATE_MIN_FRACTION) -> dict[str, Any]:
@@ -827,7 +897,8 @@ def markdown(meta: dict[str, Any], entries: list[dict[str, Any]], failures: list
         L.append(f"| {_f(r['offset_ev'], 2, True)} | {_f(r['g1_median'], 2, True)} | {r['g1_within']}/{r['g1_evaluated']} | {_f(r['g2_median'], 2, True)} | {r['g2_within']}/{r['g2_evaluated']} | {_f(r['g3_median'], 2, True)} | {r['g3_within']}/{r['g3_evaluated']} |")
     L += ["", "## Display placement of mid grey", ""]
     aces = s["aces2_grey_display"]
-    L += [(f"ACES 2 (OpenColorIO neutral axis): scene 0.18 -> display-linear {_f(aces, 4)}; in our renders (median over photos) {_f(s['display_of_grey_median'], 4)}. "
+    L += [(f"ACES 2 (OpenColorIO neutral axis, without the display placement of +{_f(s['display_placement_ev'], 2)} EV that `ym` applies before it): scene 0.18 -> display-linear {_f(aces, 4)}; "
+           f"with the placement {_f(s['aces2_grey_display_placed'], 4)}; in our renders (median over photos) {_f(s['display_of_grey_median'], 4)}. "
           "Other placements scale the display median by `g / D(0.18)`. The 0.12 to 0.14 values stand for an ARRI-style placement (assumed, not measured: no ARRI LUT is read); "
           "0.18 is the ISO 12232 convention that camera JPEGs follow."), ""]
     L += ["| mid grey at | G2 median | G2 within |", "|---|---|---|"]
@@ -859,6 +930,10 @@ def markdown(meta: dict[str, Any], entries: list[dict[str, Any]], failures: list
     rm = s["replica_minus_ym"]
     L += [(f"Python replica of the algorithm minus `ym`'s `EV_auto`: median {_f(rm['median'], 3, True)}, std {_f(rm['std'], 3)}, min {_f(rm['min'], 3, True)}, max {_f(rm['max'], 3, True)} EV "
           "(the replica meters the DNG's 1/8 blocks, ym meters the 1/8 mosaic preview with its clip mask)."), ""]
+    gc = s["guard_check"]
+    L += [(f"Highlight guard (the only part of `EV_auto` that looks at the scene; the exposure is the camera gain {_f(gc['camera_gain_ev'], 2, True)} EV otherwise): `ym` lowered the exposure on "
+          f"{len(gc['lowered_by_ym'])} of {gc['files']} files, the replica says {len(gc['lowered_by_replica'])} would clip; largest reduction {_f(gc['largest_reduction_ev'], 2)} EV, "
+          f"never raised: {gc['never_raised']}, at most one stop: {gc['at_most_one_stop']}, agrees with the replica: {gc['agrees_with_replica']}."), ""]
     if "ev_auto_minus_truth" in s:
         t = s["ev_auto_minus_truth"]
         c = s["camera_gain_minus_synthetic"]

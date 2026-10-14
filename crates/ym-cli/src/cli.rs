@@ -142,7 +142,7 @@ pub struct RenderArgs {
     /// Noise reduction: `auto`, or luminance, colour and detail strengths (0 to 100 each).
     #[arg(long, value_name = "auto|L,C,D", value_parser = noise_reduction, help_heading = H_DETAIL)]
     pub nr: Option<NrArg>,
-    /// Sharpening: `auto`, or amount (0 to 300) and radius in pixels (0.3 to 2.5).
+    /// Sharpening: `auto`, or amount (0 to 300) and radius in pixels (0.3 to 2.5). A DNG is never sharpened.
     #[arg(long, value_name = "auto|AMOUNT,RADIUS", value_parser = sharpen, help_heading = H_DETAIL)]
     pub sharpen: Option<SharpenArg>,
     /// Output sharpening, 0 to 200 percent (default 100, 0 is off). It sharpens JPEG, TIFF and PNG

@@ -15,9 +15,7 @@ use serde_json::Value;
 use ym_color::look::LookInput;
 use ym_color::lut::Lut3d;
 use ym_core::app::{Core, CoreOptions};
-use ym_core::export_queue::{
-    ExportEstimate, ExportEvent, ExportJob, ExportProgress, ExportSink, QueueError,
-};
+use ym_core::export_queue::{ExportEstimate, ExportEvent, ExportJob, ExportProgress, ExportSink};
 use ym_core::looks::{DisplayLutEntry, LookEntry, LooksImportResult};
 use ym_core::preferences::{DisplayRendering, Preferences, PreferencesPatch};
 use ym_core::session::{ApplyScope, OpenOptions, PhotoId};

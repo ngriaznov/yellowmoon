@@ -596,7 +596,7 @@ fn displayed(orientation: u32, w: usize, h: usize, rgb: &[u8]) -> (usize, usize,
 fn a_dngs_window_preview_and_orientation_tag_agree_with_the_baked_export_for_every_orientation_and_turn()
  {
     use common::tiffmini::Tiff;
-    use ym_core::settings::{Crop, CropAspect, NormRect, Orientation};
+    use ym_core::settings::{AutoOr, Crop, CropAspect, NormRect, Orientation, SharpenManualPatch};
 
     let home = tempfile::tempdir().expect("home");
     let ctx = ExportContext::new(Renderer::neutral_only().expect("renderer"))
@@ -623,6 +623,13 @@ fn a_dngs_window_preview_and_orientation_tag_agree_with_the_baked_export_for_eve
                 .update_settings(
                     out.added[0],
                     &SettingsPatch {
+                        // A DNG carries no sharpening (docs/09), so the JPEG it is compared with
+                        // has none either: this test is about where the pixels are, not how sharp.
+                        sharpen: Some(AutoOr::Manual(SharpenManualPatch {
+                            amount: Some(0.0),
+                            radius_px: Some(1.0),
+                        })),
+                        output_sharpening: Some(0.0),
                         orientation: Some(turn),
                         crop: Some(Some(Crop {
                             rect: NormRect {

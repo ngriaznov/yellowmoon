@@ -2,6 +2,7 @@
 //! with a known light, a known brightness and a known noise model.
 #![allow(dead_code)]
 
+pub mod dng_looks;
 pub mod tiffmini;
 
 use std::path::{Path, PathBuf};

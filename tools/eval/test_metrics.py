@@ -111,18 +111,43 @@ def _flat(h: int, w: int, v: float) -> np.ndarray:
 class Meter(unittest.TestCase):
     """The replica against the cases of `crates/ym-color/tests/exposure.rs`."""
 
-    def test_a_flat_image_meters_to_middle_grey(self):
-        for y in (0.03, 0.09, 0.18, 0.5):
+    def test_the_exposure_is_the_cameras_gain_for_scenes_of_any_key(self):
+        for y in (0.0, 1e-5, 0.03, 0.09, 0.18, 0.5, 1.5):
             r = m.meter(_flat(20, 30, y))
-            self.assertAlmostEqual(r.ev_metered, math.log2(0.18 / y), places=9)
-            self.assertAlmostEqual(r.statistic, y, places=12)
+            self.assertEqual(r.ev_auto, m.CAMERA_GAIN_EV, y)
+            self.assertEqual(r.ev_before_guard, m.CAMERA_GAIN_EV)
             self.assertEqual(r.guard_reduction_ev, 0.0)
+            # the key statistic is still reported
+            self.assertAlmostEqual(r.statistic, max(y, 1e-4), places=12)
+        self.assertEqual(m.CAMERA_GAIN_EV, 1.11)
 
-    def test_the_exposure_compensation_counts_at_half_weight_and_the_result_is_clamped(self):
+    def test_the_previous_rule_meters_to_middle_grey_for_the_what_if_studies(self):
+        for y in (0.03, 0.09, 0.18, 0.5):
+            r = m.meter(_flat(20, 30, y), cfg=m.PREVIOUS_RULE)
+            self.assertAlmostEqual(r.ev_before_guard, math.log2(0.18 / y), places=9)
+
+    def test_the_exposure_compensation_is_not_a_term_and_the_previous_rule_counts_it_at_half_weight(self):
         base = m.meter(_flat(20, 20, 0.18)).ev_auto
-        self.assertAlmostEqual(m.meter(_flat(20, 20, 0.18), 2.0).ev_auto - base, 1.0, places=9)
-        self.assertEqual(m.meter(_flat(20, 20, 1e-3)).ev_metered, 3.0)
-        self.assertEqual(m.meter(_flat(20, 20, 50.0)).ev_metered, -3.0)
+        # the raw already holds the compensation: no term in the new rule, whatever the value
+        for ec in (-2.0, 0.7, 2.0, float("nan")):
+            self.assertEqual(m.meter(_flat(20, 20, 0.18), ec).ev_auto, base)
+        # the previous rule: half weight, clamped
+        prev = m.PREVIOUS_RULE
+        b = m.meter(_flat(20, 20, 0.18), cfg=prev).ev_auto
+        self.assertAlmostEqual(m.meter(_flat(20, 20, 0.18), 2.0, cfg=prev).ev_auto - b, 1.0, places=9)
+        self.assertEqual(m.meter(_flat(20, 20, 1e-3), cfg=prev).ev_before_guard, 3.0)
+        self.assertEqual(m.meter(_flat(20, 20, 50.0), cfg=prev).ev_before_guard, -3.0)
+
+    def test_a_scene_exposed_two_to_the_ec_brighter_renders_two_to_the_ec_brighter(self):
+        # raw * 2^EV: the exposure is the same constant, so the picture follows the raw by exactly 2^EC
+        rng = np.random.default_rng(5)
+        scene = np.exp(rng.normal(math.log(0.03), 0.6, (24, 36)))
+        for ec in (-3.0, -1.0, 0.5, 1.0, 2.5):
+            shot = scene * 2.0**ec
+            a, b = m.meter(scene, 0.0), m.meter(shot, ec)
+            self.assertEqual(a.ev_auto, m.CAMERA_GAIN_EV)
+            self.assertEqual(b.ev_auto, a.ev_auto)
+            self.assertAlmostEqual(float(np.mean(shot * 2.0**b.ev_auto) / np.mean(scene * 2.0**a.ev_auto)), 2.0**ec, places=9)
 
     def test_the_highlight_guard_follows_the_half_percent_rule(self):
         def with_bright(count: int, level: float) -> np.ndarray:
@@ -130,10 +155,18 @@ class Meter(unittest.TestCase):
             y.ravel()[:count] = level
             return y
 
-        self.assertEqual(m.meter(with_bright(50, 12.0)).guard_reduction_ev, 0.0)
-        self.assertAlmostEqual(m.meter(with_bright(51, 12.0)).ev_auto, math.log2(8.0 / 12.0), places=5)
+        # 0.5 % (50 pixels) is allowed: no change
+        self.assertEqual(m.meter(with_bright(50, 6.0)).guard_reduction_ev, 0.0)
+        # 51 pixels at 6 (13 after the gain): the 51st brightest must land at 8, log2(8 / 6) = +0.415
+        r = m.meter(with_bright(51, 6.0))
+        self.assertAlmostEqual(r.ev_auto, math.log2(8.0 / 6.0), places=5)
+        self.assertAlmostEqual(r.guard_reduction_ev, m.CAMERA_GAIN_EV - math.log2(8.0 / 6.0), places=5)
+        # a highlight that the gain leaves at or below 8 does not count (3.6 * 2^1.11 = 7.8)
+        self.assertEqual(m.meter(with_bright(300, 3.6)).guard_reduction_ev, 0.0)
+        # very bright: at most one stop
         r = m.meter(with_bright(300, 100.0))
         self.assertAlmostEqual(r.guard_reduction_ev, 1.0, places=9)
+        self.assertAlmostEqual(r.ev_auto, m.CAMERA_GAIN_EV - 1.0, places=9)
         # a mask removes the pixels from the count
         masked = np.zeros((100, 100), dtype=bool)
         masked.ravel()[:300] = True
@@ -186,8 +219,11 @@ class Meter(unittest.TestCase):
         with self.assertRaises(ValueError):
             m.meter(y, cfg=replace(flat, stat="nonsense"))
 
-    def test_nothing_to_meter_gives_only_the_compensation(self):
+    def test_nothing_to_meter_gives_the_same_camera_gain(self):
         r = m.meter(_flat(4, 4, 0.2), 2.0, np.ones((4, 4), dtype=bool))
+        self.assertEqual((r.ev_auto, r.unmasked_pixels), (m.CAMERA_GAIN_EV, 0))
+        # the previous rule had only the compensation to go on
+        r = m.meter(_flat(4, 4, 0.2), 2.0, np.ones((4, 4), dtype=bool), m.PREVIOUS_RULE)
         self.assertEqual((r.ev_auto, r.unmasked_pixels), (1.0, 0))
 
     def test_the_nominal_grey_fraction(self):

@@ -233,3 +233,28 @@ fn a_sixteen_bit_tiff_is_byte_identical_through_the_app_path_and_the_binary_on_t
     );
     assert_same_files(&from_app, &from_cli, "tiff-16 on the device");
 }
+
+/// A DNG (no R8 capture sharpening, `docs/09` "What a DNG carries"; the raw chain on the device): the
+/// two front ends agree on every byte, the XMP, the preview and the 16-bit pixels included.
+#[test]
+fn a_dng_is_byte_identical_through_the_app_path_and_the_binary_on_the_device() {
+    let sb = Sandbox::new();
+    let arw = sb.arw_sized("big.ARW", 1500, 1100, 3);
+    let Some(app) = App::open(&[&arw]) else {
+        return;
+    };
+    let device = app.slot.gpu().expect("a device").clone();
+    let before = device.counters();
+    let dng = ExportOptions {
+        format: FormatKind::Dng,
+        ..ExportOptions::default()
+    };
+    let from_app = app.export(dng, &sb.root().join("app"));
+    let used = device.counters().since(before);
+    assert!(
+        used.dispatches > 0,
+        "the app's export used the device: {used:?}"
+    );
+    let from_cli = cli_export(&sb, &[&arw], &["--format", "dng"], &sb.root().join("cli"));
+    assert_same_files(&from_app, &from_cli, "dng on the device");
+}

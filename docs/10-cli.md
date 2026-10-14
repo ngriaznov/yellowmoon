@@ -37,12 +37,12 @@ They mirror the app's controls. Anything not given uses the automatic value or t
 | `--contrast`, `--brightness`, `--highlights`, `--shadows`, `--white`, `--black`, `--saturation` | −100…100 | `--saturation` is subtractive (`docs/02` C9): more makes colours denser and darker, less makes them paler, and the brightest channel and neutrals stay. |
 | `--nr auto or <L>,<C>,<D>` | 0–100 each | |
 | `--sharpen auto or <amount>,<radius>` | 0–300, 0.3–2.5 | capture sharpening (R8) |
-| `--output-sharpening <0–200>` | percent, default 100 | Detail › Sharpening › Output (`docs/algorithms/04`): sharpens JPEG, TIFF and PNG files at the size they are written, right after the resize; 0 is off and leaves the bytes of an export without the stage; a value outside 0–200 is a usage error (exit 2); a DNG is never sharpened (`--output-sharpening` with `--format dng` is warned about and ignored). It is the field `output_sharpening` of the settings object. |
+| `--output-sharpening <0–200>` | percent, default 100 | Detail › Sharpening › Output (`docs/algorithms/04`): sharpens JPEG, TIFF and PNG files at the size they are written, right after the resize; 0 is off and leaves the bytes of an export without the stage; a value outside 0–200 is a usage error (exit 2); a DNG is never sharpened (`--output-sharpening` and `--sharpen` with `--format dng` are warned about and ignored: a DNG carries no capture sharpening either, `docs/09`). It is the field `output_sharpening` of the settings object. |
 | `--no-neural`, `--no-highlight-recovery`, `--no-lens`, `--no-ca` | flags | RAW › Decode switches |
 | `--rolloff <highlights>,<low-light>` | 0–1 each | |
 | `--profile <id>` | camera profile id | forces a profile, for comparisons |
 | `--display aces2 or arri` | | display transform (arri needs imported display LUTs) |
-| `--format jpeg or tiff or png or dng` | | default from preferences, else jpeg. The help of `dng` is "DNG with the look baked in. Apps other than Adobe's show the stored linear image darker until their own exposure handling is applied." The second sentence is `ym_export::dng::OTHER_APPS_NOTE`, used word for word by the Export panel's DNG paragraph; tests compare both with the constant (`docs/09`). |
+| `--format jpeg or tiff or png or dng` | | default from preferences, else jpeg. The help of `dng` is "DNG with the look baked in. Apps other than Adobe's show the stored linear image darker until their own exposure handling is applied. With a look that includes its own display rendering, the DNG is close to, not the same as, the picture you see." The second and third sentences are `ym_export::dng::OTHER_APPS_NOTE` and `ym_export::dng::OWN_DISPLAY_NOTE`, used word for word by the Export panel's DNG paragraph; tests compare both with the constants (`docs/09`). |
 | `--quality <50–100>` | JPEG | default 92 |
 | `--bits 8 or 16` | TIFF, PNG | |
 | `--compression none or lzw or zip` | TIFF | |

@@ -125,6 +125,23 @@ class FittedProfile(unittest.TestCase):
             with self.assertRaises(autoexp.StudyError):
                 autoexp.fitted_profile_offset_ev(dng_curve, Path(d) / "missing.json")
 
+    def test_the_display_placement_is_read_from_the_rust_constant_and_taken_off_the_baseline_exposure(self):
+        # `BaselineExposure = log2(x_white) + fit_offset_ev + placement` of a fitted DNG: the placement comes from the source
+        # of `ym-color`, so the two cannot drift apart.
+        self.assertEqual(autoexp.display_placement_ev(), 0.85)
+        with tempfile.TemporaryDirectory() as d:
+            src = Path(d) / "transform.rs"
+            src.write_text("/// doc\npub const DISPLAY_PLACEMENT_EV: f64 = 0.5;\n")
+            self.assertEqual(autoexp.display_placement_ev(src), 0.5)
+            src.write_text("pub const OTHER: f64 = 0.5;\n")
+            with self.assertRaises(autoexp.StudyError):
+                autoexp.display_placement_ev(src)
+            with self.assertRaises(autoexp.StudyError):
+                autoexp.display_placement_ev(Path(d) / "missing.rs")
+        # a photo with x_white 16 (the floor): BaselineExposure is the placement alone, and the scene value is stored * 16
+        x_white_ev = 0.85 - (-4.0) - 0.85
+        self.assertAlmostEqual(2.0**x_white_ev, 16.0, places=9)
+
     def test_the_embedded_profile_of_the_repository_is_readable(self):
         profile = json.loads(autoexp.FITTED_PROFILE.read_text())
         flat = tuple(float(v) for v in np.asarray(profile["tone_curve"], dtype=np.float32).ravel())
@@ -251,6 +268,46 @@ def g3_entry(name: str, g3: float, **kw) -> dict:
     e = {"file": name, "body": "Sony Test", "iso": 100, "dro": None, "jpeg_median": 0.2, "ev_auto": 1.0 + g3 if g3 is not None and math.isfinite(g3) else 1.0, "camera_gain_ev": 1.0, "g3_scene_ev": g3}
     e.update(kw)
     return e
+
+
+class GuardCheck(unittest.TestCase):
+    """The highlight guard is the only part of `EV_auto` that looks at the scene (`docs/02` Auto exposure, step 5)."""
+
+    @staticmethod
+    def e(name: str, ev_auto: float, replica: float, replica_reduction: float) -> dict:
+        return {"file": name, "ev_auto": ev_auto, "ev_replica": replica, "guard_reduction_replica": replica_reduction}
+
+    def test_ym_and_the_replica_agree_when_both_leave_the_camera_gain_alone(self):
+        g = autoexp.guard_check([self.e("a", 1.11, 1.11, 0.0), self.e("b", 1.11, 1.11, 0.0)])
+        self.assertEqual((g["lowered_by_ym"], g["lowered_by_replica"]), ([], []))
+        self.assertTrue(g["agrees_with_replica"] and g["never_raised"] and g["at_most_one_stop"])
+        self.assertEqual(g["largest_reduction_ev"], 0.0)
+
+    def test_a_guarded_file_is_lowered_by_both_by_the_same_amount_and_at_most_one_stop(self):
+        g = autoexp.guard_check([self.e("a", 1.11, 1.11, 0.0), self.e("b", 0.41, 0.40, 0.71)])
+        self.assertEqual((g["lowered_by_ym"], g["lowered_by_replica"]), (["b"], ["b"]))
+        self.assertAlmostEqual(g["largest_reduction_ev"], 0.70, places=9)
+        self.assertTrue(g["agrees_with_replica"] and g["never_raised"] and g["at_most_one_stop"])
+
+    def test_a_disagreement_a_raise_and_more_than_a_stop_are_caught(self):
+        # ym lowered a file the replica says is fine
+        self.assertFalse(autoexp.guard_check([self.e("a", 0.9, 1.11, 0.0)])["agrees_with_replica"])
+        # the replica lowered a file ym did not
+        self.assertFalse(autoexp.guard_check([self.e("a", 1.11, 0.9, 0.2)])["agrees_with_replica"])
+        # the replica's value is more than 0.03 EV from ym's
+        self.assertFalse(autoexp.guard_check([self.e("a", 0.50, 0.40, 0.7)])["agrees_with_replica"])
+        # a raise above the camera gain, and a reduction of more than a stop
+        self.assertFalse(autoexp.guard_check([self.e("a", 1.5, 1.5, 0.0)])["never_raised"])
+        self.assertFalse(autoexp.guard_check([self.e("a", -0.2, -0.2, 1.31)])["at_most_one_stop"])
+
+    def test_the_summary_and_the_report_carry_the_guard_check(self):
+        entries = Reports().entries()
+        summary = autoexp.summarise(entries, 0.5)
+        self.assertIn("guard_check", summary)
+        self.assertEqual(summary["camera_gain_ev"], 1.11)
+        text = autoexp.markdown({"label": "t", "ym_version": "ym test", "command_examples": ["ym"], "tolerance_ev": 0.5}, entries, [], summary)
+        self.assertIn("Highlight guard", text)
+        self.assertIn("ev_previous_rule", json.dumps(autoexp._clean({"files": entries})))
 
 
 class Gate(unittest.TestCase):
@@ -432,8 +489,9 @@ SYNTHETIC = REPO / "testdata" / "synthetic" / "arw" / "chart__D6500__DSC-RX100M4
 @unittest.skipUnless(YM.exists() and SYNTHETIC.exists(), "needs a ym binary (cargo build -p ym-cli, or YM=...) and tools/fetch/synthetic.sh")
 class EndToEnd(unittest.TestCase):
     def test_a_synthetic_scene_recovers_the_known_camera_gain_and_exposure(self):
-        # The synthetic JPEG is full size and made from the scene with a known gain (0.5575 EV): at the JPEG's own scale
-        # the quantile-matched gain is exact to a few hundredths (at 8 x 8 block means it read 0.07 to 0.22 EV low).
+        # The synthetic JPEG is full size and made from the scene with a known gain (1.11 EV, the camera gain that
+        # `EV_auto` is): at the JPEG's own scale the quantile-matched gain is exact to a few hundredths (at 8 x 8 block
+        # means it read 0.07 to 0.22 EV low).
         with tempfile.TemporaryDirectory() as d:
             out = Path(d) / "out"
             with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
@@ -442,7 +500,9 @@ class EndToEnd(unittest.TestCase):
             doc = json.loads((out / "results.json").read_text())
             (entry,) = doc["files"]
             self.assertAlmostEqual(entry["camera_gain_ev"], autoexp.SYNTH_GAIN_EV, delta=0.06)
-            self.assertLess(abs(entry["ev_auto_minus_truth_ev"]), 0.3)
+            # EV_auto is the camera gain, so G3 is zero by construction (to the estimator's error)
+            self.assertEqual(entry["ev_auto"], 1.11)
+            self.assertLess(abs(entry["g3_scene_ev"]), 0.06)
             self.assertEqual([p.name for p in out.glob("ym-home-*")], [])  # the empty home folder is removed
             self.assertEqual(list((out / "renders").iterdir()), [])  # and so are the big renders
 
