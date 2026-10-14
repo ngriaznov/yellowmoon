@@ -379,6 +379,45 @@ fn the_device_runs_the_raw_chain_only_when_the_stage_and_the_method_allow_it() {
     assert_eq!(StageRange::DEMOSAIC.label(), "R6");
 }
 
+/// Small and odd photos through the whole render: a frame below one export tile, odd sides (a device
+/// image pads its rows to an even stride), a strip, and the smallest the synthetic writer makes. The
+/// device must neither panic nor refuse them, and must agree with the CPU render (the content is
+/// tie-poor, so a plumbing error moves the mean, a tie flip only a few samples).
+#[test]
+fn small_and_odd_photos_render_on_the_device_like_on_the_cpu() {
+    let Some(gpu) = gpu() else { return };
+    let white = light("sony-ilce-7rm4", 4500.0);
+    for (w, h) in [
+        (66u32, 50u32),
+        (131, 97),
+        (34, 18),
+        (512, 9),
+        (7, 301),
+        (250, 250),
+    ] {
+        let scene = Scene::new(w, h, white, Layout::Patchwork, 0.5).noise(2e-4, 2e-6);
+        let src = Developed::new(&scene, MODEL).source();
+        let a = render_full(&on_cpu(), &src).unwrap_or_else(|e| panic!("{w}x{h} on the CPU: {e}"));
+        let b = render_full(&on_device(&gpu), &src)
+            .unwrap_or_else(|e| panic!("{w}x{h} on the device: {e}"));
+        assert_eq!((a.width, a.height), (b.width, b.height), "{w}x{h}");
+        assert_eq!(
+            device_of(&b.report),
+            vec![("R6".to_owned(), ComputeDevice::Gpu)],
+            "{w}x{h}: {:?}",
+            b.report.notes
+        );
+        let (worst, _, mean) = difference(&a.rgb, &b.rgb);
+        eprintln!("{w}x{h}: worst {worst:e}, mean {mean:e}");
+        // The bounds of the full render above (measured here: worst 1.1e-7 to 6.9e-7, mean 1.4e-8
+        // to 2.2e-8): a plumbing error moves the mean by orders of magnitude.
+        assert!(
+            mean < 1e-6 && worst < 1e-3,
+            "{w}x{h}: worst {worst}, mean {mean}"
+        );
+    }
+}
+
 #[test]
 fn two_renders_and_renders_on_other_thread_counts_are_byte_identical() {
     let Some(gpu) = gpu() else { return };

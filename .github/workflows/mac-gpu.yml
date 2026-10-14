@@ -73,7 +73,13 @@ jobs:
         if: ${{ !cancelled() }}
         env:
           YM_REQUIRE_GPU: "1"
-        run: cargo test -p ym-core --release --no-fail-fast -- --test-threads=2 2>&1 | tee ym-core-${{ matrix.runner }}.log
+        run: cargo test -p ym-core --release --features fault-injection --no-fail-fast -- --test-threads=2 2>&1 | tee ym-core-${{ matrix.runner }}.log
+      - name: The app and ym give the same exports on Metal (ym-cli parity_gpu)
+        if: ${{ !cancelled() }}
+        env:
+          YM_REQUIRE_GPU: "1"
+          YELLOWMOON_GPU: "on"
+        run: cargo test -p ym-cli --release --test parity_gpu 2>&1 | tee ym-cli-parity-gpu-${{ matrix.runner }}.log
       - name: Keep the logs
         if: always()
         uses: actions/upload-artifact@v4
@@ -85,6 +91,7 @@ jobs:
             ym-gpu-${{ matrix.runner }}.log
             ym-core-${{ matrix.runner }}.log
             ym-gpu-features-${{ matrix.runner }}.log
+            ym-cli-parity-gpu-${{ matrix.runner }}.log
           if-no-files-found: warn
 
   app:

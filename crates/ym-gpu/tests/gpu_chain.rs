@@ -1027,6 +1027,67 @@ fn a_mosaic_below_two_by_two_is_the_cpu_stage_and_the_smallest_the_device_takes_
     }
 }
 
+/// Small frames through the whole chain (denoise, R7, Richardson-Lucy and the lens all run, with
+/// halos far larger than the frame): the device must neither panic nor refuse them, every sample
+/// must be finite, and the device must agree with the CPU chain, the kernel's mirror at the edge of
+/// the rectangle included. Measured on lavapipe: 41 of the 44 cases agree to 6e-6 or better (a
+/// tie-prone bare-grid 23 x 11 has 54 samples up to 4.5e-3). The other two are decisions on exact
+/// ties, which the `f32` kernel and the `f64` reference settle differently: a 2 x 2 mosaic (the
+/// mirror makes both neighbours of every site the same sample, so every direction test ties;
+/// `tests/gpu_adaptive_ratio.rs` measures it on white noise) up to 9.1e-4, and a 3 x 3 clipped
+/// plateau with two samples one ulp apart (equal costs everywhere) up to 0.65 on every sample of that
+/// frame. So the bound is on the whole set: at most 2 % of the 9984 samples over 1e-4 (measured
+/// 0.93 %) and a largest difference below 1.3 (measured 0.65), which a plumbing error of the
+/// small-frame paths (a wrong mirror, core or placement moves most frames, not two) would exceed.
+#[test]
+fn small_frames_through_the_whole_chain_match_the_cpu() {
+    let Some(dev) = f32_device_or_skip() else {
+        return;
+    };
+    let mut seed = 900;
+    let mut all = Stats::default();
+    for cfa in [Cfa::RGGB, Cfa::GBRG] {
+        for (w, h) in [
+            (2usize, 2usize),
+            (2, 3),
+            (3, 2),
+            (3, 3),
+            (4, 4),
+            (5, 7),
+            (9, 6),
+            (2, 40),
+            (40, 2),
+            (17, 17),
+            (23, 11),
+        ] {
+            for lens in [Lens::Bare, Lens::Vignette] {
+                seed += 1;
+                let scene = Scene::new(w, h, cfa, seed);
+                let chain = chain_of(&scene, lens, high_noise());
+                let setup = Setup::new(scene, chain);
+                let (ow, oh) = setup.output_size();
+                // `compare` also asserts that every sample of both is finite.
+                let s = compare(
+                    &setup.gpu(dev, Rect::whole(ow, oh)),
+                    &setup.cpu(Rect::whole(ow, oh)),
+                );
+                s.print(&format!("{} {w}x{h} lens {lens:?}", cfa.name()));
+                all.add(&s);
+            }
+        }
+    }
+    all.print("small frames, whole chain");
+    assert_within(
+        "small frames, whole chain",
+        &all,
+        Limits {
+            over: 0.02,
+            fine: 0.03,
+            largest: 1.3,
+        },
+    );
+}
+
 #[test]
 fn the_work_refuses_a_bad_mosaic_before_it_reaches_the_device() {
     let scene = Scene::new(40, 30, Cfa::RGGB, 8);

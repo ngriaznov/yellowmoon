@@ -9,7 +9,7 @@
 //! | Case | Asserted bound | Measured |
 //! |---|---|---|
 //! | the 16 stable vectors against the oracle's `expected` | the vectors' own tolerance, 1e-5 | 1.4e-6 (`highlights_and_negatives`, values to 3), 3e-7 on the others |
-//! | the 2 tie-sensitive vectors (`edge_knight`, `ca_weighting`) | [`TIE_VECTORS`]: at most 20 / 100 samples over, 2e-3 (Metal: [`TIE_VECTORS_METAL`], 80 / 112) | 10 / 58 samples over, 4.2e-4 / 6.1e-4 (the CPU port moves 8 / 26 samples by up to 6.6e-4 / 1.1e-3 under 1 ulp of input noise); Metal 40 / 56, 6.6e-4 / 1.08e-3 |
+//! | the 2 tie-sensitive vectors (`edge_knight`, `ca_weighting`) | [`TIE_VECTORS`]: at most 20 / 100 samples over, 2e-3 (Metal: [`TIE_VECTORS_METAL`], 80 / 100) | 10 / 58 samples over, 4.2e-4 / 6.1e-4 (the CPU port moves 8 / 26 samples by up to 6.6e-4 / 1.1e-3 under 1 ulp of input noise); Metal 40 / 56, 6.6e-4 / 1.08e-3 |
 //! | random frames: 4 phases x 3 noise models x 5 parameter sets x 4 sizes (240 runs, 894 240 samples) | [`FRAME_FRACTION`] over, [`FRAME_FINE_FRACTION`] fine, [`FRAME_BOUND`] | 0 over, 0 fine, worst 7.4e-6 |
 //! | the same on the balanced entry (R6's), and against the unbalanced entry | as above | 0 over, worst 1.7e-6 (CPU), 1.4e-6 (unbalanced GPU) |
 //! | CA path: random curves, off-centre optical centres, placements anywhere in a 6000 x 4000 frame (32 runs) | as above | 0 over, 0 fine, worst 2.4e-6 |
@@ -77,10 +77,12 @@ const TIE_VECTORS: [(&str, usize, f64); 2] =
 /// sums the decisions compare, so a tie in exact arithmetic is decided by different rounding noise
 /// than on lavapipe's separately rounded operations (and than on the CPU's `f64`). Measured there:
 /// `edge_knight` 40 samples over 1e-4 (lavapipe 10), worst 6.6e-4; `ca_weighting` 56 (lavapipe 58),
-/// worst 1.08e-3. The limit is twice the first measurement; the lavapipe limits above are untouched
-/// and the worst-difference limit is the same for both.
+/// worst 1.08e-3. `edge_knight` is the vector that failed there (40 against a limit of 20): its Metal
+/// limit is twice the first measurement. `ca_weighting` passed within the lavapipe limit (56 against
+/// 100), so a column that was looser than lavapipe's would have no evidence behind it: it keeps 100.
+/// The lavapipe limits above are untouched and the worst-difference limit is the same for both.
 const TIE_VECTORS_METAL: [(&str, usize, f64); 2] =
-    [("edge_knight", 80, 2e-3), ("ca_weighting", 112, 2e-3)];
+    [("edge_knight", 80, 2e-3), ("ca_weighting", 100, 2e-3)];
 
 /// The tie-vector limits for `dev`: Metal has its own column, every other backend the lavapipe one.
 fn tie_vectors(dev: &TestGpu) -> &'static [(&'static str, usize, f64); 2] {
@@ -1021,6 +1023,78 @@ fn tiny_odd_and_strip_sizes_match_the_cpu_and_sizes_below_two_are_refused() {
         "{}",
         totals.fraction()
     );
+}
+
+/// White noise: every sample uniform in [0, 1], no structure at all, so no region is flat and no
+/// comparison of the kernel is decided by anything but the data. From 3 x 3 up (and in strips of two)
+/// the device agrees with the CPU to rounding; a 2 x 2 mosaic is the one degenerate size, where the
+/// mirror makes the left and the right neighbour of every site the same sample, and so the top and the
+/// bottom one: every direction test is an exact tie, which `f32` and `f64` break differently (in a
+/// separate run, 20 of 60 random 2 x 2 mosaics differed by more than 1e-4, up to 1.7 of white; the
+/// result stays finite).
+/// The chain never hands the kernel a mosaic that small except as a whole tiny photograph.
+/// Measured: 480 mosaics from 3 x 3 up, none over 1e-4, worst 5.7e-6; the bound is twice that.
+#[test]
+fn white_noise_mosaics_match_the_cpu_from_three_by_three_up_and_two_by_two_stays_finite() {
+    let Some(dev) = f32_device() else { return };
+    let mut rng = Rng(7701);
+    let mut worst = 0.0f64;
+    let mut runs = 0usize;
+    for cfa in Cfa::ALL {
+        for (w, h) in [
+            (3usize, 3usize),
+            (4, 4),
+            (5, 5),
+            (8, 8),
+            (12, 12),
+            (16, 16),
+            (24, 24),
+            (2, 8),
+            (3, 9),
+            (8, 2),
+        ] {
+            for k in 0..12 {
+                let data: Vec<f32> = (0..w * h).map(|_| rng.range(0.0, 1.0) as f32).collect();
+                let mosaic = Mosaic::from_data(w, h, cfa, data).expect("mosaic");
+                let noise = if k % 2 == 0 {
+                    high_noise()
+                } else {
+                    low_noise()
+                };
+                let c = Case::new(mosaic, noise);
+                let s = compare(&c.gpu(dev), &c.cpu());
+                worst = worst.max(s.max_abs);
+                runs += 1;
+                assert!(
+                    s.max_abs <= 1.2e-5,
+                    "{} {w}x{h} #{k}: {:e} at {:?}",
+                    cfa.name(),
+                    s.max_abs,
+                    s.at
+                );
+            }
+        }
+    }
+    println!("white noise from 3 x 3 up: {runs} mosaics, worst |gpu - cpu| {worst:.2e}");
+    // 2 x 2: no panic, a finite picture of the size of the mosaic.
+    for cfa in Cfa::ALL {
+        for k in 0..8 {
+            let data: Vec<f32> = (0..4).map(|_| rng.range(0.0, 1.0) as f32).collect();
+            let mosaic = Mosaic::from_data(2, 2, cfa, data).expect("mosaic");
+            let noise = if k % 2 == 0 {
+                high_noise()
+            } else {
+                low_noise()
+            };
+            let out = Case::new(mosaic, noise).gpu(dev);
+            assert_eq!((out.width, out.height), (2, 2));
+            assert!(
+                out.data.iter().all(|v| v.is_finite()),
+                "{} 2x2 #{k} is not finite",
+                cfa.name()
+            );
+        }
+    }
 }
 
 #[test]

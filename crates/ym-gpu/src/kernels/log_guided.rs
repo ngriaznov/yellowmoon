@@ -72,7 +72,7 @@
 //!
 //! Not wired into a render path (the log-guided demosaic is a test-switch method on the CPU only,
 //! `docs/gpu-plan.md` section 5). [`encode_demosaic`] is the device-in, device-out entry point of the
-//! plan's shape (`f32` planes, a [`PassList`](crate::stream::PassList)); the host wrappers upload, run and
+//! plan's shape (`f32` planes, a [`PassList`]); the host wrappers upload, run and
 //! read back, for the tests, and still support the `f16` storage modes of the legacy kernels.
 
 use bytemuck::{Pod, Zeroable};

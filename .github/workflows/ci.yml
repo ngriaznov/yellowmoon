@@ -164,8 +164,12 @@ jobs:
       # The renderer's GPU colour pass against its CPU reference (ym-core). The test's header says this job runs it, but only
       # `-p ym-gpu` was run here; the one other place was the macOS `rust` job, where the test skips itself and passes when
       # the runner opens no Metal adapter. YM_REQUIRE_GPU (above) makes a missing adapter a failure.
-      - name: Renderer colour pass on the GPU against the CPU reference
-        run: cargo test -p ym-core --release --test render_gpu
+      - name: Renderer on the GPU against the CPU reference, with device faults injected
+        run: cargo test -p ym-core --release --features fault-injection --test render_gpu
+      - name: The app and ym give the same exports on the GPU
+        env:
+          YELLOWMOON_GPU: "on"
+        run: cargo test -p ym-cli --release --test parity_gpu
 
   # M0-05: decoder oracle. LibRaw (rawpy), rawler (tools/oracle) and libjpeg compare ym-raw's pixels,
   # levels and white balance. Test-only: none of them is ever linked into a shipped crate. Until the

@@ -2,7 +2,7 @@
 //! on the CPU stepper, for one tile at a time (`docs/gpu-plan.md` sections 4.3 and 11, task G-03).
 //!
 //! [`GpuChain`] is built from the very `Chain` and `Prepared` the CPU uses, and walks the same
-//! stages with the same rectangles ([`TileRun`]), so the settings, the stage choice and the halos are
+//! stages with the same rectangles ([`TileRun`](crate::cpu::chain::TileRun)), so the settings, the stage choice and the halos are
 //! single-sourced. A [`StageRange`] says which stages run on the device; every stage outside it runs
 //! on the CPU stepper and the boundary is a host copy. This task (G-03) has one range, R6 (the adaptive
 //! ratio demosaic, [`StageRange::DEMOSAIC`]): the CPU runs R1 to R5b exactly as today and hands the
