@@ -936,6 +936,12 @@ fn the_ml_feature_requests_what_cubecl_requests() {
     let want = setup.adapter.features()
         - wgpu::Features::MAPPABLE_PRIMARY_BUFFERS
         - wgpu::Features::all_experimental_mask();
+    eprintln!(
+        "ml device features: {:?}\nadapter features withheld (mappable primary buffers / experimental): {:?}",
+        setup.device.features(),
+        setup.adapter.features()
+            & (wgpu::Features::MAPPABLE_PRIMARY_BUFFERS | wgpu::Features::all_experimental_mask())
+    );
     assert_eq!(setup.device.features(), want);
     assert_eq!(setup.device.limits(), setup.adapter.limits());
     // The device still works for our own kernels.
