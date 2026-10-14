@@ -20,16 +20,22 @@ Application maths is in `docs/02-colour-pipeline.md` (C10). Intensity 0–100% p
 
 ## Built-in looks (shipped, Apache-2.0)
 
-- **Neutral** (default out of the box): identity. Emulated ALEXA colour through our display transform, no creative look.
-- **Signature**: parameters designed by Mykyta in M3 [HUMAN M3-H1] as JSON in `data/looks/builtin/signature.json`: CDL (slope, offset, power, saturation), plus hue-vs-saturation and hue-vs-hue curves and a luma-vs-saturation curve, all evaluated in LogC4. The loader bakes it into a 33³ LUT. Its final name describes its character and avoids ARRI and film-stock names. The agent provides a tuning tool: `ym looks bake signature.json --preview <ARW>…` that renders a contact sheet.
+- **Signature** (the default out of the box): the owner's decision of 2026-10-14 (`docs/16`), shipped as `data/looks/builtin/signature.json`. Its name may change later; only the file's `name` then changes. It is a LogC4 luma tone curve through 15 points, then ASC CDL saturation 1.20 with Rec.709 luma weights on the LogC4 codes:
+  - the curve is applied as `v += T(L) - L` on all three channels, `L` the LogC4 code of the AWG4 luminance of the pixel (the way the Curve tab's luma curve works, `docs/02` C11), through the monotone cubic of `ym_color::curve::Curve` (Fritsch-Carlson tangents); the 15 points are candidate B of the look preview;
+  - **mid grey is unchanged** (LogC4 0.2784 for scene 0.18, moved by less than 1e-6 in code value), neutrals stay neutral, and the tone curve rises everywhere;
+  - against Neutral it darkens the shadows (about -0.4 stop from -3 to -6 stops), lifts the lights (+0.22 stop at +1 stop, +0.42 at +2, +0.52 at +3) and eases the highest lights back (+0.49 at +6). On a neutral ramp at the app's +0.85 EV display placement the 8-bit codes at -2 stops, mid grey and +2 stops are 42, 120 and 204, against 52, 120 and 192 for Neutral;
+  - the constants were chosen by eye on twelve photos. They were never fitted to any LUT, ARRI's or a commercial one.
+  The loader bakes it into a 33³ cube like every parametric look. The cube follows the exact look to under one 8-bit display code (worst 0.96 code over 20 000 random colours, 0.41 on a neutral ramp, 0.69 on a hue sweep; `crates/ym-color/tests/look_signature.rs`). The agent's tuning tool is `ym looks bake signature.json --preview <ARW>…`, which renders a contact sheet against Neutral.
+- **Neutral**: identity. Emulated ALEXA colour through our display transform, no creative look. It stays in the list as the "no look" choice and as the look a missing default falls back to; it is not the default any more.
 
-**Parametric look files (M1-10).** `data/looks/builtin/<name>.json`, loaded by `ym_color::look::ParametricLook::from_json` and baked into a 33³ cube (`bake`, `to_transform`). Schema `yellowmoon.parametric-look/1`; every field except `schema` and `name` is optional, unknown fields are rejected, and `{"schema": "yellowmoon.parametric-look/1", "name": "Neutral"}` is the identity:
+**Parametric look files (M1-10, `luma_curve` added 2026-10-14).** `data/looks/builtin/<name>.json`, loaded by `ym_color::look::ParametricLook::from_json` and baked into a 33³ cube (`bake`, `to_transform`), so the CPU and the GPU read every parametric look as an ordinary cube and need no kernel of their own for it. Schema `yellowmoon.parametric-look/1`; every field except `schema` and `name` is optional, unknown fields are rejected, and `{"schema": "yellowmoon.parametric-look/1", "name": "Neutral"}` is the identity:
 
 ```json
 {
   "schema": "yellowmoon.parametric-look/1",
   "name": "Example",
   "input": "logc4",
+  "luma_curve": [ { "x": 0, "y": 0 }, { "x": 0.2784, "y": 0.2784 }, { "x": 0.6, "y": 0.63 }, { "x": 1, "y": 1 } ],
   "cdl": { "slope": [1, 1, 1], "offset": [0, 0, 0], "power": [1, 1, 1], "saturation": 1 },
   "hue_vs_sat":  [ { "hue_deg": 30, "value": 1.15 }, { "hue_deg": 210, "value": 0.9 } ],
   "hue_vs_hue":  [ { "hue_deg": 60, "value": -6 } ],
@@ -37,7 +43,7 @@ Application maths is in `docs/02-colour-pipeline.md` (C10). Intensity 0–100% p
 }
 ```
 
-`hue_vs_sat` and `luma_vs_sat` values multiply the chroma (0 to 8); `hue_vs_hue` values are degrees (±180, positive turns red towards yellow). Hue is in degrees on the LogC4 hue circle (0 red, 60 yellow, 120 green, 180 cyan, 240 blue, 300 magenta), `luma` is the Rec.709-weighted LogC4 luma in [0, 1]. At most 64 points per curve; the curves are monotone (Fritsch–Carlson) splines, periodic for hue, so they never overshoot the values given. The CDL runs first; hue and luma curves keep the luma of the CDL output. Full details: the module documentation of `crates/ym-color/src/look.rs`.
+`luma_curve` is a tone curve on the luminance of the pixel: 2 to 16 points `{ "x", "y" }` in [0, 1]² with `x` strictly increasing, where `x` is the LogC4 code value of the AWG4 luminance (`LogC4::luma`, the `L` of the Curve tab's luma curve) and `y` what it becomes. It is applied as `v += T(L) - L` on all three channels, so it moves tone and leaves the differences between the channels in LogC4 (hue, chroma) alone. `T` is the monotone cubic of `ym_color::curve::Curve`; it holds its end values between 0 and the first point and between the last point and 1, and continues with slope 1 below 0 and above 1. Points on `y = x` from 0 to 1 are the identity. Its `x` is not the `luma` of `luma_vs_sat`, which is the Rec.709-weighted luma of the codes; the two are never mixed. `hue_vs_sat` and `luma_vs_sat` values multiply the chroma (0 to 8); `hue_vs_hue` values are degrees (±180, positive turns red towards yellow). Hue is in degrees on the LogC4 hue circle (0 red, 60 yellow, 120 green, 180 cyan, 240 blue, 300 magenta), `luma` is the Rec.709-weighted LogC4 luma in [0, 1]. At most 64 points per curve; the curves are monotone (Fritsch–Carlson) splines, periodic for hue, so they never overshoot the values given. The order is `luma_curve`, then the CDL, then the hue and luma-vs-saturation curves, which see the CDL output and keep its luma. Full details: the module documentation of `crates/ym-color/src/look.rs`.
 
 ## Library folder
 
@@ -137,6 +143,8 @@ If a look in the manifest has lost its file, or its hash changed, it's shown dis
 Decisions taken where this spec was silent. The code and tests are in `crates/ym-looks`.
 
 **Where things live.** `Library::open(root, builtin_dir)` takes the *app folder* (`default_root()`: `~/Library/Application Support/app.yellowmoon` on a Mac, `$XDG_DATA_HOME/app.yellowmoon` or `~/.local/share/app.yellowmoon` on Linux; `YELLOWMOON_HOME` replaces it, for tests); the library is its `looks/` folder. `builtin_dir` is `data/looks/builtin` (the crate does not look for `data/` itself; `ym-core` does). Opening creates nothing on disk.
+
+**Default look (2026-10-14).** The default look is the preference `default_look`, `builtin:signature` out of the box (`ym_core::preferences::DEFAULT_LOOK`; `LookId::factory_default()`; Neutral is `LookId::neutral()`). `LookService::effective_default` returns the preference when that look exists and its file is there, else Signature, else Neutral (which exists in code, so a data folder without `signature.json` still renders). Removing the imported look that was the default sets the preference back to Signature. `Core::open` hands the effective default to the session, so new photos, `ym render` and `ym looks list` (the `default` tag) agree. `DevelopSettings::default()` stays the identity development with Neutral, because it needs no library (tests and a core without one); a settings document that names no look, a `--settings` file for example, reads as the user's default look. The wizard's Finish step and Preferences list Neutral, Signature and (in the wizard) the first imported look, and select the one the library marks default. A `preferences.json` written before this change keeps what it saved (V1 is unreleased, so nothing is migrated).
 
 **Ids.** `arri:<group_no>:<slug>` where the slug is the look's name; the two older Look Library packages add `-logc3` and `-logc3-rec709` to it (and to the copied file's name), so the three libraries, which share names, never collide. A display LUT is `arri-display:<logc4|logc3>:<target>`; the target is read from the part of the file name after `-to-` (`Gamma24_Rec709` and `Rec709_Gamma24` both give `rec709-g24`). Two different files that would get the same id get `-2`, `-3`, … so nothing the user imported is ever overwritten.
 

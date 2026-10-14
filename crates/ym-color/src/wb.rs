@@ -322,7 +322,25 @@ impl SceneLight {
         w_scene_initial: Vec3,
         locus: &Locus,
     ) -> Result<Self, PickWhiteError> {
-        let w_scene = picked_scene_white(sample, w_scene_initial)?;
+        self.with_picked_white_scaled(sample, w_scene_initial, IDENTITY_WHITE_SCALE, locus)
+    }
+
+    /// As [`SceneLight::with_picked_white`] for a body whose raw white is on another scale than its profile's:
+    /// the mosaic was balanced with `g0 = white_scale / w_scene_initial` ([`initial_gains_scaled`]), so the sample's
+    /// clip levels are `g0` and the picked white comes out on the profile's scale. See [`picked_scene_white_scaled`].
+    ///
+    /// # Errors
+    ///
+    /// As [`SceneLight::with_picked_white`]; a `white_scale` that is not positive and finite is
+    /// [`WbError::InvalidWhite`].
+    pub fn with_picked_white_scaled(
+        &self,
+        sample: Vec3,
+        w_scene_initial: Vec3,
+        white_scale: Vec3,
+        locus: &Locus,
+    ) -> Result<Self, PickWhiteError> {
+        let w_scene = picked_scene_white_scaled(sample, w_scene_initial, white_scale)?;
         let readout = locus.rgb_to_cct_duv(w_scene).map_err(WbError::from)?;
         Ok(Self {
             w_scene,
@@ -403,8 +421,29 @@ pub fn median_rgb(samples: &[Vec3]) -> Option<Vec3> {
 /// number or is below [`PICK_MIN_FRACTION`] of its clip level; an unusable initial white is
 /// [`WbError::InvalidWhite`].
 pub fn picked_scene_white(sample: Vec3, w_scene_initial: Vec3) -> Result<Vec3, PickWhiteError> {
+    picked_scene_white_scaled(sample, w_scene_initial, IDENTITY_WHITE_SCALE)
+}
+
+/// Pick white for a body with a white scale (`docs/03`, White scale of stand-in bodies).
+///
+/// `white_scale` takes the body's raw white to the white of its profile's curves, `w_profile = w_body (.)
+/// white_scale`, and `w_scene_initial` is the white **on the profile's scale** (the estimator's and the locus'
+/// scale). The mosaic was balanced with `g0 = white_scale / w_scene_initial`, so channel `c` clips at `g0[c]`
+/// (the raw clips at 1.0 before the gains) and the sample is refused above [`PICK_CLIP_FRACTION`] of that level;
+/// the sample times `w_scene_initial` is then already the picked white on the profile's scale, whatever the
+/// scale is. With `white_scale = [1, 1, 1]` this is [`picked_scene_white`] to the last bit.
+///
+/// # Errors
+///
+/// As [`picked_scene_white`]; a `white_scale` that is not positive and finite, or whose green is not 1, is
+/// [`WbError::InvalidWhite`].
+pub fn picked_scene_white_scaled(
+    sample: Vec3,
+    w_scene_initial: Vec3,
+    white_scale: Vec3,
+) -> Result<Vec3, PickWhiteError> {
     let w_init = normalise_green(w_scene_initial)?;
-    let clip = w_init.map(|w| 1.0 / w);
+    let clip = initial_gains_scaled(w_scene_initial, white_scale)?;
     if sample
         .iter()
         .zip(&clip)
@@ -433,8 +472,45 @@ pub fn picked_scene_white(sample: Vec3, w_scene_initial: Vec3) -> Result<Vec3, P
 ///
 /// [`WbError::InvalidWhite`] for an unusable white.
 pub fn initial_gains(w_scene_initial: Vec3) -> Result<Vec3, WbError> {
+    initial_gains_scaled(w_scene_initial, IDENTITY_WHITE_SCALE)
+}
+
+/// The identity white scale: a body whose profile was measured on it (or on its sensor).
+pub const IDENTITY_WHITE_SCALE: Vec3 = [1.0, 1.0, 1.0];
+
+/// Checks a white scale: finite and positive in every channel, green exactly 1.
+fn check_white_scale(white_scale: Vec3) -> Result<Vec3, WbError> {
+    if white_scale.iter().all(|c| c.is_finite() && *c > 0.0) && white_scale[1] == 1.0 {
+        Ok(white_scale)
+    } else {
+        Err(WbError::InvalidWhite(white_scale))
+    }
+}
+
+/// A body's raw white on its profile's scale: `white (.) white_scale` with green = 1 (`docs/03`, White scale of
+/// stand-in bodies). Used for the camera's as-shot white; the illuminant estimator's input is scaled the same way
+/// channel by channel.
+///
+/// # Errors
+///
+/// [`WbError::InvalidWhite`] for an unusable white or white scale.
+pub fn scale_white(white: Vec3, white_scale: Vec3) -> Result<Vec3, WbError> {
+    let s = check_white_scale(white_scale)?;
+    normalise_green([white[0] * s[0], white[1] * s[1], white[2] * s[2]])
+}
+
+/// The initial gains of the raw stages for a body with a white scale, `g0 = white_scale / w_scene_initial`
+/// (green = 1). `w_scene_initial` is on the profile's scale, so the mosaic (the body's own raw scale) balanced
+/// with `g0` is what the profile's curves would have recorded, balanced for that white. With the identity scale
+/// this is [`initial_gains`] to the last bit (`1.0 / c`).
+///
+/// # Errors
+///
+/// [`WbError::InvalidWhite`] for an unusable white or white scale.
+pub fn initial_gains_scaled(w_scene_initial: Vec3, white_scale: Vec3) -> Result<Vec3, WbError> {
+    let s = check_white_scale(white_scale)?;
     let w = normalise_green(w_scene_initial)?;
-    Ok(w.map(|c| 1.0 / c))
+    Ok([s[0] / w[0], s[1] / w[1], s[2] / w[2]])
 }
 
 /// The residual gains of stage C1, `g_res = w_scene_initial / w_scene` element-wise with both

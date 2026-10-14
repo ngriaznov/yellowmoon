@@ -41,7 +41,12 @@ use ym_looks::manifest::atomic_write;
 /// The name of the file inside the app folder.
 pub const FILE_NAME: &str = "preferences.json";
 
-/// The id of the look new photos get out of the box.
+/// The id of the look new photos get out of the box: Signature (owner's decision of 2026-10-14,
+/// `docs/08-looks.md`). `ym_looks::library::LookId::factory_default` is the same id as a value.
+pub const DEFAULT_LOOK: &str = "builtin:signature";
+
+/// The id of Neutral, the identity look. It exists in code whatever the data folder holds, so it is
+/// the look to fall back on when the default look cannot be used.
 pub const NEUTRAL_LOOK: &str = "builtin:neutral";
 
 /// Preferences › Display rendering: our ACES 2 output transform, or an imported ARRI display LUT
@@ -75,7 +80,7 @@ pub struct LastUsedFolders {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Preferences {
-    /// The look new photos get.
+    /// The look new photos get ([`DEFAULT_LOOK`], Signature, out of the box).
     pub default_look: LookId,
     /// ACES 2 or an imported ARRI display LUT.
     pub display_rendering: DisplayRendering,
@@ -95,7 +100,7 @@ pub struct Preferences {
 impl Default for Preferences {
     fn default() -> Self {
         Self {
-            default_look: LookId::builtin("neutral"),
+            default_look: LookId::factory_default(),
             display_rendering: DisplayRendering::Aces2,
             export_defaults: ExportOptions::default(),
             remove_location_from_exports: false,
@@ -526,7 +531,9 @@ mod tests {
     #[test]
     fn defaults_are_the_documented_ones() {
         let p = Preferences::default();
-        assert_eq!(p.default_look.as_str(), NEUTRAL_LOOK);
+        assert_eq!(p.default_look.as_str(), DEFAULT_LOOK);
+        assert_eq!(DEFAULT_LOOK, "builtin:signature");
+        assert_eq!(NEUTRAL_LOOK, "builtin:neutral");
         assert_eq!(p.display_rendering, DisplayRendering::Aces2);
         assert_eq!(p.export_defaults, ExportOptions::default());
         assert!(!p.remove_location_from_exports);
@@ -541,7 +548,7 @@ mod tests {
         assert_eq!(
             json,
             serde_json::json!({
-                "default_look": "builtin:neutral",
+                "default_look": "builtin:signature",
                 "display_rendering": { "kind": "aces2" },
                 "export_defaults": {
                     "format": "jpeg", "jpeg_quality": 92, "bit_depth": 16, "tiff_compression": "lzw",

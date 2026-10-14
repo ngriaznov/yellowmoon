@@ -636,7 +636,8 @@ impl From<Orientation> for u16 {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct DevelopSettings {
-    /// Look tab. The user's default look (Neutral out of the box).
+    /// Look tab. The user's default look (Signature out of the box; a photo a session opens gets it
+    /// through [`DevelopSettings::with_look`]).
     pub look: LookId,
     /// 0 to 100 percent.
     pub look_intensity: f64,
@@ -687,8 +688,15 @@ pub struct DevelopSettings {
 }
 
 impl Default for DevelopSettings {
+    /// Auto everywhere and the look new photos get out of the box, Signature
+    /// (`ym_core::preferences::DEFAULT_LOOK`): what `settings.schema.json` calls the default. A photo
+    /// a session opens starts from [`DevelopSettings::with_look`] with the user's own default look
+    /// instead, and a settings document that names no look reads as that look too
+    /// ([`DevelopSettings::from_json`]). Rendering it needs the look library, which has Signature;
+    /// a core with no library ([`crate::pipeline::color::NeutralOnly`]) shows Neutral for it and says
+    /// so.
     fn default() -> Self {
-        Self::with_look(LookId::builtin("neutral"))
+        Self::with_look(LookId::factory_default())
     }
 }
 

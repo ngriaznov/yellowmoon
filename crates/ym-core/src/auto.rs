@@ -20,7 +20,10 @@
 //!    between, nothing for fluorescent and LED, which the as-shot value cannot tell apart) and
 //!    confidence 0.5; a file with neither a model nor an as-shot white balance gets the profile's
 //!    5500 K daylight white with confidence 0. The result is a [`SceneLight`] and the initial
-//!    white `w_scene_initial` that the raw stages balance the mosaic with (`g0 = 1 / w`).
+//!    white `w_scene_initial` that the raw stages balance the mosaic with (`g0 = white_scale / w`; the
+//!    white scale is `[1, 1, 1]` unless the body borrows a profile it does not match, `docs/03`). A body's
+//!    white scale puts its raw white on the profile's scale before the estimator, the as-shot prior and
+//!    Pick white see it ([`AutoEstimates::compute_scaled`]).
 //! 3. **Auto exposure** (`ym_color::exposure`): the preview, balanced with `g0` and brightened by
 //!    the vignetting gain of R3 when the file has a 0x7032 table ([`Preview::metered`]; the
 //!    render applies it, so the exposure is metered on the picture that is rendered), through C1
@@ -613,8 +616,16 @@ pub fn as_shot_rggb(raw: &RawImage) -> Option<[f32; 4]> {
 /// usable.
 #[must_use]
 pub fn as_shot_white(wb_rggb: Option<[f32; 4]>) -> Option<Vec3> {
+    as_shot_white_scaled(wb_rggb, wb::IDENTITY_WHITE_SCALE)
+}
+
+/// [`as_shot_white`] on the profile's scale: the body's own white times its white scale
+/// (`docs/03`, White scale of stand-in bodies), green = 1. `None` when the levels or the scale are not
+/// usable.
+#[must_use]
+pub fn as_shot_white_scaled(wb_rggb: Option<[f32; 4]>, white_scale: Vec3) -> Option<Vec3> {
     let gains = shot_gains(wb_rggb)?;
-    wb::normalise_green([1.0 / gains[0], 1.0 / gains[1], 1.0 / gains[2]]).ok()
+    wb::scale_white([1.0 / gains[0], 1.0 / gains[1], 1.0 / gains[2]], white_scale).ok()
 }
 
 /// The as-shot gains `[R, G, B]` (green is the mean of the two greens), `None` when unusable.
@@ -629,6 +640,16 @@ fn shot_gains(wb_rggb: Option<[f32; 4]>) -> Option<Vec3> {
         .iter()
         .all(|g| g.is_finite() && *g > 0.0)
         .then_some(gains)
+}
+
+/// As-shot gains on the profile's scale: a white surface records `1 / g`, and the profile's white is that times
+/// `white_scale`, so the gains are divided by it (red and blue; green is 1).
+fn shot_gains_scaled(gains: Vec3, white_scale: Vec3) -> Vec3 {
+    [
+        gains[0] / white_scale[0],
+        gains[1] / white_scale[1],
+        gains[2] / white_scale[2],
+    ]
 }
 
 /// Class probabilities of the as-shot fallback from the CCT alone.
@@ -647,17 +668,35 @@ fn estimate_light(
     meta: &RawMetadata,
     wb_rggb: Option<[f32; 4]>,
     profile: &Profile,
+    white_scale: Vec3,
 ) -> Result<IlluminantResult, AutoError> {
     let locus = &profile.locus;
     if let Some(model) = model {
         let shot = ShotInfo {
-            as_shot_gains: shot_gains(wb_rggb),
+            as_shot_gains: shot_gains(wb_rggb).map(|g| shot_gains_scaled(g, white_scale)),
             f_number: meta.f_number,
             exposure_time_s: meta.exposure_time_s,
             iso: meta.iso.map(f64::from),
         };
+        // The estimator reads the preview on the profile's scale (`docs/03`, White scale of stand-in
+        // bodies): red and blue of the body's raw times the white scale. The identity reads the preview as is.
+        let scaled_rgb = (white_scale != wb::IDENTITY_WHITE_SCALE).then(|| {
+            let s = [white_scale[0] as f32, white_scale[1] as f32, white_scale[2] as f32];
+            preview
+                .rgb
+                .chunks_exact(3)
+                .flat_map(|p| [p[0] * s[0], p[1] * s[1], p[2] * s[2]])
+                .collect::<Vec<f32>>()
+        });
+        let raw_preview = match &scaled_rgb {
+            Some(rgb) => RawPreview {
+                rgb,
+                ..preview.as_raw_preview()
+            },
+            None => preview.as_raw_preview(),
+        };
         match model
-            .estimate(&preview.as_raw_preview(), &shot)
+            .estimate(&raw_preview, &shot)
             .map_err(|e: IllumError| e.to_string())
             .and_then(|est| {
                 est.scene_light(locus)
@@ -679,7 +718,7 @@ fn estimate_light(
             }
         }
     }
-    let (white, source, confidence) = match as_shot_white(wb_rggb) {
+    let (white, source, confidence) = match as_shot_white_scaled(wb_rggb, white_scale) {
         Some(w) => (w, IlluminantSource::AsShotFallback, FALLBACK_CONFIDENCE),
         None => (
             locus.rgb_at(FALLBACK_DEFAULT_K),
@@ -1165,7 +1204,26 @@ impl AutoEstimates {
     /// [`AutoError`] for an image that is too small or has levels with no range, and for a colour
     /// chain that cannot be built (a profile with unusable tables).
     pub fn compute(raw: &RawImage, inputs: &AutoInputs<'_>) -> Result<Self, AutoError> {
+        Self::compute_scaled(raw, inputs, wb::IDENTITY_WHITE_SCALE)
+    }
+
+    /// As [`AutoEstimates::compute`] for a body with a white scale (`CameraMatch::white_scale`, `docs/03`
+    /// White scale of stand-in bodies): the as-shot white, the illuminant estimator's input and the initial
+    /// gains are put on the profile's scale, so a body that borrows a profile reads its whites the way the
+    /// profile's curves would. [`AutoEstimates::compute`] is this with `[1, 1, 1]`, for a body whose profile
+    /// was measured on it.
+    ///
+    /// # Errors
+    ///
+    /// As [`AutoEstimates::compute`]; a `white_scale` that is not positive and finite (green 1) is
+    /// [`AutoError::White`].
+    pub fn compute_scaled(
+        raw: &RawImage,
+        inputs: &AutoInputs<'_>,
+        white_scale: Vec3,
+    ) -> Result<Self, AutoError> {
         let meta = &raw.meta;
+        wb::scale_white([1.0; 3], white_scale)?;
         let preview = build_preview(raw)?;
         let illuminant = estimate_light(
             inputs.illuminant_model,
@@ -1173,16 +1231,18 @@ impl AutoEstimates {
             meta,
             as_shot_rggb(raw),
             inputs.profile,
+            white_scale,
         )?;
         let w_scene_initial = illuminant.scene.w_scene;
         let mut color = ColorEstimates {
             scene: illuminant.scene,
             w_scene_initial,
+            white_scale,
             ev_auto: 0.0,
         };
         let tables = tables_of(inputs.profile);
         let metering = color.metering_chain(tables)?;
-        let g0 = wb::initial_gains(w_scene_initial)?;
+        let g0 = color.initial_gains()?;
         let balanced = preview.metered(g0);
         let meter = auto_exposure(
             &PreviewRgb {
@@ -1229,13 +1289,14 @@ impl AutoEstimates {
         s
     }
 
-    /// The initial gains `g0` of the raw stages, `1 / w_scene_initial` with green = 1.
+    /// The initial gains `g0` of the raw stages, `white_scale / w_scene_initial` with green = 1
+    /// (`1 / w_scene_initial` for a body whose profile was measured on it).
     ///
     /// # Errors
     ///
     /// [`WbError::InvalidWhite`] for an unusable white (not possible for a computed estimate).
     pub fn initial_gains(&self) -> Result<Vec3, WbError> {
-        wb::initial_gains(self.color.w_scene_initial)
+        self.color.initial_gains()
     }
 
     /// The fused C1 to C6 chain for a photo's settings: the exposure and white balance resolve

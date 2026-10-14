@@ -18,14 +18,17 @@
 //!
 //! # Parametric looks (`data/looks/builtin/*.json`)
 //!
-//! A [`ParametricLook`] is a CDL plus three curves, all evaluated in LogC4, and is **baked** into
-//! a 33-point cube ([`ParametricLook::bake`], [`ParametricLook::to_transform`]) when loaded.
+//! A [`ParametricLook`] is a luma tone curve, a CDL and three colour curves, all evaluated in LogC4,
+//! and is **baked** into a 33-point cube ([`ParametricLook::bake`], [`ParametricLook::to_transform`])
+//! when loaded, like every parametric look, so the CPU and the GPU read it as an ordinary cube and
+//! need no kernel of their own for it.
 //!
 //! ```json
 //! {
 //!   "schema": "yellowmoon.parametric-look/1",
 //!   "name": "Example",
 //!   "input": "logc4",
+//!   "luma_curve":  [ { "x": 0.0, "y": 0.0 }, { "x": 0.2784, "y": 0.2784 }, { "x": 0.6, "y": 0.63 }, { "x": 1.0, "y": 1.0 } ],
 //!   "cdl": { "slope": [1.0, 1.0, 1.0], "offset": [0.0, 0.0, 0.0], "power": [1.0, 1.0, 1.0], "saturation": 1.0 },
 //!   "hue_vs_sat":  [ { "hue_deg":  30.0, "value": 1.15 }, { "hue_deg": 210.0, "value": 0.9 } ],
 //!   "hue_vs_hue":  [ { "hue_deg":  60.0, "value": -6.0 } ],
@@ -35,7 +38,20 @@
 //!
 //! * Every field except `schema` and `name` is optional; a missing curve is neutral, so
 //!   `{"schema": "...", "name": "Neutral"}` is the identity look. Unknown fields are rejected.
-//! * `cdl`: the ASC CDL of [`crate::cdl`], applied first (all four fields required inside it).
+//! * `luma_curve`: a tone curve on the pixel's luminance, applied **first**. 2 to
+//!   [`crate::curve::MAX_CONTROL_POINTS`] (16) points `{"x", "y"}` in `[0, 1]^2` with strictly
+//!   increasing `x`; `x` is the LogC4 code value of the luminance of the pixel
+//!   ([`LogC4::luma`]: `encode(Y(decode(rgb)))` with the AWG4 `Y` row), `y` what that luminance
+//!   becomes. It is applied as `v += T(L) - L` on all three channels, the way the Curve tab's
+//!   luma curve is (`docs/02` C11): one shift of the three codes, so it moves tone and leaves the
+//!   differences between the channels in LogC4 (hue and the log ratios of the colour) alone. `T` is
+//!   the monotone cubic of [`crate::curve::Curve`] (Fritsch-Carlson, up to 16 points), flat between
+//!   0 and the first point and between the last point and 1, and continued with slope 1 below 0
+//!   and above 1 (as [`crate::curve::CurveTable::eval_extended`]).
+//!   Points on `y = x` make the identity. The `x` of `luma_vs_sat` below is a different luma (Rec.709
+//!   weights on the LogC4 codes); the two are never mixed.
+//! * `cdl`: the ASC CDL of [`crate::cdl`], applied after the luma curve (all four fields required
+//!   inside it).
 //! * `hue_vs_sat`: multiplies the chroma by `value` (1 is unchanged, 0 is grey, at most 8).
 //!   `hue_deg` in `[0, 360)`, strictly increasing, at most 64 points; the curve wraps around.
 //! * `hue_vs_hue`: rotates the hue by `value` degrees (within +-180; positive turns red towards
@@ -51,12 +67,15 @@
 //!   `p = v . E1`, `q = v . E2`, chroma `hypot(p, q)`, hue `atan2(q, p)` in degrees (0 red, 60
 //!   yellow, 120 green, 180 cyan, 240 blue, 300 magenta). Scaling or rotating `(p, q)` keeps the
 //!   channel mean; the Rec.709 luma is then restored, so these curves never change luma.
+//! * **Order:** `luma_curve`, then `cdl`, then the three colour curves (which see the CDL output).
 
 use serde::{Deserialize, Serialize};
 
 use crate::cdl::{Cdl, CdlError};
 use crate::consts::{REC709_LUMA_WEIGHTS, Vec3};
-use crate::curve::{fritsch_carlson_tangents, fritsch_carlson_tangents_periodic, hermite};
+use crate::curve::{
+    Curve, CurveError, fritsch_carlson_tangents, fritsch_carlson_tangents_periodic, hermite,
+};
 use crate::gamut::LinearRec709;
 use crate::grade::{E1, E2};
 use crate::logc::{LogC3Ei800, LogC4};
@@ -115,7 +134,7 @@ pub enum LookError {
     /// A curve is not valid.
     #[error("{section}: {reason}")]
     BadCurve {
-        /// Which curve (`hue_vs_sat`, `hue_vs_hue` or `luma_vs_sat`).
+        /// Which curve (`luma_curve`, `hue_vs_sat`, `hue_vs_hue` or `luma_vs_sat`).
         section: &'static str,
         /// What is wrong.
         reason: String,
@@ -327,6 +346,16 @@ pub struct LumaPoint {
     pub value: f64,
 }
 
+/// A control point of the `luma_curve` tone curve.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CurvePoint {
+    /// Input: the LogC4 code value of the pixel's luminance ([`LogC4::luma`]), `[0, 1]`.
+    pub x: f64,
+    /// Output: the LogC4 code value that luminance becomes, `[0, 1]`.
+    pub y: f64,
+}
+
 /// The JSON form of a parametric look (see the module documentation).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -338,7 +367,10 @@ pub struct ParametricLookSpec {
     /// Input encoding; only `logc4` is accepted (and it is the default).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input: Option<LookInput>,
-    /// The CDL, applied first.
+    /// The luma tone curve, applied first: 2 to 16 points, `v += T(L) - L`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub luma_curve: Vec<CurvePoint>,
+    /// The CDL, applied after the luma curve.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cdl: Option<CdlSpec>,
     /// Chroma multiplier by hue.
@@ -505,10 +537,12 @@ fn check_points<T: Copy>(
     Ok(())
 }
 
-/// A CDL plus hue-vs-sat, hue-vs-hue and luma-vs-sat curves, evaluated in LogC4.
+/// A luma tone curve, a CDL and hue-vs-sat, hue-vs-hue and luma-vs-sat curves, evaluated in LogC4.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ParametricLook {
     name: String,
+    /// The tone curve on the AWG4 luminance; `None` is neutral (also for points on `y = x`).
+    luma_curve: Option<Curve>,
     cdl: Cdl,
     hue_vs_sat: Profile,
     hue_vs_hue: Profile,
@@ -521,6 +555,7 @@ impl ParametricLook {
     pub fn neutral(name: &str) -> Self {
         Self {
             name: name.to_string(),
+            luma_curve: None,
             cdl: Cdl::identity(),
             hue_vs_sat: Profile::constant(1.0),
             hue_vs_hue: Profile::constant(0.0),
@@ -533,7 +568,8 @@ impl ParametricLook {
     /// # Errors
     ///
     /// [`LookError`]: bad JSON or unknown fields, a different schema, an input other than LogC4,
-    /// an out-of-range CDL, or an invalid curve.
+    /// an out-of-range CDL, or an invalid curve (`luma_curve` included: fewer than 2 or more than 16
+    /// points, a point outside the unit square, an `x` that does not increase).
     pub fn from_json(text: &str) -> Result<Self, LookError> {
         let spec: ParametricLookSpec =
             serde_json::from_str(text).map_err(|e| LookError::Json(e.to_string()))?;
@@ -554,6 +590,17 @@ impl ParametricLook {
         {
             return Err(LookError::UnsupportedInput(input));
         }
+        let luma_curve = if spec.luma_curve.is_empty() {
+            None
+        } else {
+            let points: Vec<(f64, f64)> = spec.luma_curve.iter().map(|p| (p.x, p.y)).collect();
+            let curve = Curve::new(&points).map_err(|e: CurveError| LookError::BadCurve {
+                section: "luma_curve",
+                reason: e.to_string(),
+            })?;
+            // Points on y = x are the identity; keep the look exactly neutral then.
+            (!curve.is_identity()).then_some(curve)
+        };
         let cdl = match &spec.cdl {
             Some(c) => Cdl::new(c.slope, c.offset, c.power, c.saturation)?,
             None => Cdl::identity(),
@@ -592,6 +639,7 @@ impl ParametricLook {
             spec.luma_vs_sat.iter().map(|p| (p.luma, p.value)).collect();
         Ok(Self {
             name: spec.name.clone(),
+            luma_curve,
             cdl,
             hue_vs_sat: Profile::from_points(&hue_points(&spec.hue_vs_sat), true, 1.0),
             hue_vs_hue: Profile::from_points(&hue_points(&spec.hue_vs_hue), true, 0.0),
@@ -611,19 +659,52 @@ impl ParametricLook {
         &self.cdl
     }
 
-    /// Whether the look is exactly the identity (identity CDL and no curves).
+    /// The luma tone curve, if the look has one that is not the identity.
+    #[must_use]
+    pub fn luma_curve(&self) -> Option<&Curve> {
+        self.luma_curve.as_ref()
+    }
+
+    /// Whether the look is exactly the identity (no luma curve, identity CDL and no curves).
     #[must_use]
     pub fn is_identity(&self) -> bool {
-        self.cdl.is_identity()
+        self.luma_curve.is_none()
+            && self.cdl.is_identity()
             && self.hue_vs_sat.is_neutral()
             && self.hue_vs_hue.is_neutral()
             && self.luma_vs_sat.is_neutral()
     }
 
-    /// Evaluates the look exactly (no LUT) on a LogC4 triple: CDL, then the hue and luma curves.
+    /// The luma tone curve of the look applied to a LogC4 triple: `v += T(L) - L` on every
+    /// channel, `L` the LogC4 code of the AWG4 luminance. A look without the curve returns `v`.
+    ///
+    /// `T` is exact here (the spline, not a table); outside `[0, 1]` it continues with slope 1.
+    /// A shift that is not a finite number (an input far outside any LogC4 signal) counts as 0.
+    #[must_use]
+    pub fn apply_luma_curve(&self, v: Vec3) -> Vec3 {
+        let Some(curve) = &self.luma_curve else {
+            return v;
+        };
+        let l = LogC4(v).luma();
+        let t = if l < 0.0 {
+            l + curve.eval(0.0)
+        } else if l > 1.0 {
+            l - 1.0 + curve.eval(1.0)
+        } else {
+            curve.eval(l)
+        };
+        let shift = t - l;
+        if !shift.is_finite() {
+            return v;
+        }
+        [v[0] + shift, v[1] + shift, v[2] + shift]
+    }
+
+    /// Evaluates the look exactly (no LUT) on a LogC4 triple: the luma curve, the CDL, then the hue
+    /// and luma-vs-saturation curves.
     #[must_use]
     pub fn evaluate(&self, v: Vec3) -> Vec3 {
-        let v1 = self.cdl.apply(v);
+        let v1 = self.cdl.apply(self.apply_luma_curve(v));
         if self.hue_vs_sat.is_neutral()
             && self.hue_vs_hue.is_neutral()
             && self.luma_vs_sat.is_neutral()

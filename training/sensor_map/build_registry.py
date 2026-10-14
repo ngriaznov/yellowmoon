@@ -6,7 +6,9 @@ Layout (schema: ``crates/ym-profiles/schema/registry.schema.json``):
 
 ``bodies``           one entry per Sony model ID listed in docs/03 (exact bodies, same-sensor
                      siblings and the named default bodies):
-                     ``{model_id, model, body, profile, match, via, notes}`` and, where Sony publishes them,
+                     ``{model_id, model, body, profile, match, via, notes, white_scale, white_scale_source}``
+                     (the white scale of ``docs/03``, "White scale of stand-in bodies", from
+                     ``training/white_scale/white_scale.json``) and, where Sony publishes them,
                      ``{sensor_width_mm, active_width_px, sensor_source_kind, sensor_source}`` (the pixel
                      pitch of ``docs/algorithms/03-diffraction-deconvolution.md`` section 2.2). A body with
                      no published pixel width has no sensor fields and uses the EXIF crop-factor fallback.
@@ -22,12 +24,15 @@ gets ``default_profile`` with ``match = "default"``.
 from __future__ import annotations
 
 import argparse
+import json
 import sys
+from pathlib import Path
 
 from training.common import jsonfmt, paths
 from training.sensor_map import registry_data as rd
 
-REGISTRY_VERSION = "1.1.0"
+REGISTRY_VERSION = "1.2.0"
+WHITE_SCALE_JSON = Path(__file__).resolve().parents[1] / "white_scale" / "white_scale.json"
 
 
 def _check_text(model_id: int) -> str:
@@ -63,7 +68,15 @@ def _sensor_fields(b: rd.Body) -> dict:
     }
 
 
+def _white_scale_fields(b: rd.Body, table: dict) -> dict:
+    """``white_scale`` and ``white_scale_source`` of a body from ``training/white_scale/white_scale.json``."""
+    entry = table["bodies"][str(b.model_id)]
+    source = dict(entry["source"])
+    return {"white_scale": entry["white_scale"], "white_scale_source": source}
+
+
 def build() -> dict:
+    table = json.loads(WHITE_SCALE_JSON.read_text())
     bodies = []
     for b in rd.BODIES:
         bodies.append({
@@ -74,6 +87,7 @@ def build() -> dict:
             "match": b.match,
             "via": rd.body_name_of_profile(b.profile) if b.match == "sensor_family" else None,
             "notes": _notes(b),
+            **_white_scale_fields(b, table),
             **_sensor_fields(b),
         })
     model_strings = {b.model: b.model_id for b in sorted(rd.BODIES, key=lambda x: x.model)}

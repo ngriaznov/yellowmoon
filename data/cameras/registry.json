@@ -1,5 +1,5 @@
 {
-  "version": "1.1.0",
+  "version": "1.2.0",
   "default_profile": "sony-ilce-7rm4",
   "sources": {
     "model_ids": "exiftool/exiftool lib/Image/ExifTool/Sony.pm @ 2200871d9cef988051d2a99d67df3bda6cbb30a8 (SonyModelID table)",
@@ -61,6 +61,12 @@
       "match": "exact",
       "via": null,
       "notes": "Measured by Weta (rawtoaces-data): sony/Sony_ILCE-7M3_380_780_5.json.",
+      "white_scale": [1.0, 1.0, 1.0],
+      "white_scale_source": {
+        "kind": "own_curves",
+        "files": [],
+        "note": "The profile was measured on this body (curves of the registry's profile); nothing to correct."
+      },
       "sensor_width_mm": 35.6,
       "active_width_px": 6000,
       "sensor_source_kind": "restated",
@@ -74,6 +80,12 @@
       "match": "sensor_family",
       "via": "Sony A7 III",
       "notes": "Same sensor as Sony A7 III; shares its profile. ColorMatrix sibling check (pass): max |diff| 0.0000 per coefficient against the profile body, limit 0.02, LibRaw 0.22.1 via rawpy 0.27.1 (docs/03).",
+      "white_scale": [1.0, 1.0, 1.0],
+      "white_scale_source": {
+        "kind": "same_sensor",
+        "files": [],
+        "note": "Same sensor as the measured body of its profile (the colour-matrix check of docs/03); no scale of its own."
+      },
       "sensor_width_mm": 35.6,
       "active_width_px": 6000,
       "sensor_source_kind": "maker",
@@ -87,6 +99,12 @@
       "match": "exact",
       "via": null,
       "notes": "Measured by Weta (rawtoaces-data): sony/Sony_ILCE-7M4_380_780_5.json.",
+      "white_scale": [1.0, 1.0, 1.0],
+      "white_scale_source": {
+        "kind": "own_curves",
+        "files": [],
+        "note": "The profile was measured on this body (curves of the registry's profile); nothing to correct."
+      },
       "sensor_width_mm": 35.9,
       "active_width_px": 7008,
       "sensor_source_kind": "restated",
@@ -100,6 +118,12 @@
       "match": "exact",
       "via": null,
       "notes": "Measured by Weta (rawtoaces-data): sony/Sony_ILCE-7CM2_380_780_5.json.",
+      "white_scale": [1.0, 1.0, 1.0],
+      "white_scale_source": {
+        "kind": "own_curves",
+        "files": [],
+        "note": "The profile was measured on this body (curves of the registry's profile); nothing to correct."
+      },
       "sensor_width_mm": 35.9,
       "active_width_px": 7008,
       "sensor_source_kind": "restated",
@@ -113,6 +137,12 @@
       "match": "exact",
       "via": null,
       "notes": "Measured by Weta (rawtoaces-data): sony/Sony_ILCE-7RM2_380_780_5.json.",
+      "white_scale": [1.0, 1.0, 1.0],
+      "white_scale_source": {
+        "kind": "own_curves",
+        "files": [],
+        "note": "The profile was measured on this body (curves of the registry's profile); nothing to correct."
+      },
       "sensor_width_mm": 35.9,
       "active_width_px": 7952,
       "sensor_source_kind": "maker",
@@ -126,6 +156,12 @@
       "match": "exact",
       "via": null,
       "notes": "Measured by Weta (rawtoaces-data): sony/Sony_ILCE-7RM3_380_780_5.json.",
+      "white_scale": [1.0, 1.0, 1.0],
+      "white_scale_source": {
+        "kind": "own_curves",
+        "files": [],
+        "note": "The profile was measured on this body (curves of the registry's profile); nothing to correct."
+      },
       "sensor_width_mm": 35.9,
       "active_width_px": 7952,
       "sensor_source_kind": "maker",
@@ -139,6 +175,12 @@
       "match": "sensor_family",
       "via": "Sony A7R III",
       "notes": "Same sensor as Sony A7R III; shares its profile. ColorMatrix sibling check (pass): max |diff| 0.0000 per coefficient against the profile body, limit 0.02, LibRaw 0.22.1 via rawpy 0.27.1 (docs/03).",
+      "white_scale": [1.0, 1.0, 1.0],
+      "white_scale_source": {
+        "kind": "same_sensor",
+        "files": [],
+        "note": "Same sensor as the measured body of its profile (the colour-matrix check of docs/03); no scale of its own."
+      },
       "sensor_width_mm": 35.9,
       "active_width_px": 7952,
       "sensor_source_kind": "maker",
@@ -152,6 +194,12 @@
       "match": "exact",
       "via": null,
       "notes": "Measured by Weta (rawtoaces-data): sony/Sony_ILCE-7RM4_380_780_5.json.",
+      "white_scale": [1.0, 1.0, 1.0],
+      "white_scale_source": {
+        "kind": "own_curves",
+        "files": [],
+        "note": "The profile was measured on this body (curves of the registry's profile); nothing to correct."
+      },
       "sensor_width_mm": 35.7,
       "active_width_px": 9504,
       "sensor_source_kind": "maker",
@@ -165,6 +213,12 @@
       "match": "sensor_family",
       "via": "Sony A7R IV",
       "notes": "Same sensor as Sony A7R IV; shares its profile. ColorMatrix sibling check (pass): max |diff| 0.0000 per coefficient against the profile body, limit 0.02, LibRaw 0.22.1 via rawpy 0.27.1 (docs/03).",
+      "white_scale": [1.0, 1.0, 1.0],
+      "white_scale_source": {
+        "kind": "same_sensor",
+        "files": [],
+        "note": "Same sensor as the measured body of its profile (the colour-matrix check of docs/03); no scale of its own."
+      },
       "sensor_width_mm": 35.7,
       "active_width_px": 9504,
       "sensor_source_kind": "maker",
@@ -178,6 +232,12 @@
       "match": "default",
       "via": null,
       "notes": "No measured profile; uses the Sony A7R IV stand-in (docs/03). A Sony file is never refused for lack of a profile. Considered as a same-sensor sibling of the Sony A7R IV, but it did not pass: ColorMatrix sibling check (fail): max |diff| 0.0934 per coefficient against the profile body, limit 0.02, LibRaw 0.22.1 via rawpy 0.27.1.",
+      "white_scale": [1.0, 1.0, 1.0],
+      "white_scale_source": {
+        "kind": "none",
+        "files": [],
+        "note": "No file with white-balance presets of this body or of a body with the same colour matrix was available; its whites are not corrected."
+      },
       "sensor_width_mm": 35.7,
       "active_width_px": 9504,
       "sensor_source_kind": "maker",
@@ -191,6 +251,12 @@
       "match": "default",
       "via": null,
       "notes": "No measured profile; uses the Sony A7R IV stand-in (docs/03). A Sony file is never refused for lack of a profile. Considered as a same-sensor sibling of the Sony A7R IV, but it did not pass: ColorMatrix sibling check (fail): max |diff| 0.0934 per coefficient against the profile body, limit 0.02, LibRaw 0.22.1 via rawpy 0.27.1.",
+      "white_scale": [1.0, 1.0, 1.0],
+      "white_scale_source": {
+        "kind": "none",
+        "files": [],
+        "note": "No file with white-balance presets of this body or of a body with the same colour matrix was available; its whites are not corrected."
+      },
       "sensor_width_mm": 35.7,
       "active_width_px": 9504,
       "sensor_source_kind": "maker",
@@ -204,6 +270,12 @@
       "match": "exact",
       "via": null,
       "notes": "Measured by Weta (rawtoaces-data): sony/Sony_ILCE-7SM2_380_780_5.json.",
+      "white_scale": [1.0, 1.0, 1.0],
+      "white_scale_source": {
+        "kind": "own_curves",
+        "files": [],
+        "note": "The profile was measured on this body (curves of the registry's profile); nothing to correct."
+      },
       "sensor_width_mm": 35.6,
       "active_width_px": 4240,
       "sensor_source_kind": "maker",
@@ -217,6 +289,12 @@
       "match": "exact",
       "via": null,
       "notes": "Measured by Weta (rawtoaces-data): sony/Sony_ILCE-7SM3_380_780_5.json.",
+      "white_scale": [1.0, 1.0, 1.0],
+      "white_scale_source": {
+        "kind": "own_curves",
+        "files": [],
+        "note": "The profile was measured on this body (curves of the registry's profile); nothing to correct."
+      },
       "sensor_width_mm": 35.6,
       "active_width_px": 4240,
       "sensor_source_kind": "restated",
@@ -229,7 +307,13 @@
       "profile": "sony-ilce-7sm3",
       "match": "sensor_family",
       "via": "Sony A7S III",
-      "notes": "Same sensor as Sony A7S III; shares its profile. ColorMatrix sibling check (pass): max |diff| 0.0000 per coefficient against the profile body, limit 0.02, LibRaw 0.22.1 via rawpy 0.27.1 (docs/03)."
+      "notes": "Same sensor as Sony A7S III; shares its profile. ColorMatrix sibling check (pass): max |diff| 0.0000 per coefficient against the profile body, limit 0.02, LibRaw 0.22.1 via rawpy 0.27.1 (docs/03).",
+      "white_scale": [1.0, 1.0, 1.0],
+      "white_scale_source": {
+        "kind": "same_sensor",
+        "files": [],
+        "note": "Same sensor as the measured body of its profile (the colour-matrix check of docs/03); no scale of its own."
+      }
     },
     {
       "model_id": 393,
@@ -239,6 +323,12 @@
       "match": "sensor_family",
       "via": "Sony A7S III",
       "notes": "Same sensor as Sony A7S III; shares its profile. ColorMatrix sibling check (pass): max |diff| 0.0000 per coefficient against the profile body, limit 0.02, LibRaw 0.22.1 via rawpy 0.27.1 (docs/03).",
+      "white_scale": [1.0, 1.0, 1.0],
+      "white_scale_source": {
+        "kind": "same_sensor",
+        "files": [],
+        "note": "Same sensor as the measured body of its profile (the colour-matrix check of docs/03); no scale of its own."
+      },
       "sensor_width_mm": 35.6,
       "active_width_px": 4240,
       "sensor_source_kind": "maker",
@@ -252,6 +342,12 @@
       "match": "exact",
       "via": null,
       "notes": "Measured by Weta (rawtoaces-data): sony/Sony_ILCE-9_380_780_5.json.",
+      "white_scale": [1.0, 1.0, 1.0],
+      "white_scale_source": {
+        "kind": "own_curves",
+        "files": [],
+        "note": "The profile was measured on this body (curves of the registry's profile); nothing to correct."
+      },
       "sensor_width_mm": 35.6,
       "active_width_px": 6000,
       "sensor_source_kind": "maker",
@@ -265,6 +361,12 @@
       "match": "sensor_family",
       "via": "Sony A9",
       "notes": "Same sensor as Sony A9; shares its profile. ColorMatrix sibling check (pass): max |diff| 0.0000 per coefficient against the profile body, limit 0.02, LibRaw 0.22.1 via rawpy 0.27.1 (docs/03).",
+      "white_scale": [1.0, 1.0, 1.0],
+      "white_scale_source": {
+        "kind": "same_sensor",
+        "files": [],
+        "note": "Same sensor as the measured body of its profile (the colour-matrix check of docs/03); no scale of its own."
+      },
       "sensor_width_mm": 35.6,
       "active_width_px": 6000,
       "sensor_source_kind": "maker",
@@ -278,6 +380,12 @@
       "match": "exact",
       "via": null,
       "notes": "Measured by Weta (rawtoaces-data): sony/Sony_ILCE-6400_380_780_5.json.",
+      "white_scale": [1.0, 1.0, 1.0],
+      "white_scale_source": {
+        "kind": "own_curves",
+        "files": [],
+        "note": "The profile was measured on this body (curves of the registry's profile); nothing to correct."
+      },
       "sensor_width_mm": 23.5,
       "active_width_px": 6000,
       "sensor_source_kind": "maker",
@@ -291,6 +399,12 @@
       "match": "sensor_family",
       "via": "Sony A6400",
       "notes": "Same sensor as Sony A6400; shares its profile. ColorMatrix sibling check (pass): max |diff| 0.0000 per coefficient against the profile body, limit 0.02, LibRaw 0.22.1 via rawpy 0.27.1 (docs/03).",
+      "white_scale": [1.0, 1.0, 1.0],
+      "white_scale_source": {
+        "kind": "same_sensor",
+        "files": [],
+        "note": "Same sensor as the measured body of its profile (the colour-matrix check of docs/03); no scale of its own."
+      },
       "sensor_width_mm": 23.5,
       "active_width_px": 6000,
       "sensor_source_kind": "maker",
@@ -304,6 +418,12 @@
       "match": "sensor_family",
       "via": "Sony A6400",
       "notes": "Same sensor as Sony A6400; shares its profile. ColorMatrix sibling check (pass): max |diff| 0.0000 per coefficient against the profile body, limit 0.02, LibRaw 0.22.1 via rawpy 0.27.1 (docs/03).",
+      "white_scale": [1.0, 1.0, 1.0],
+      "white_scale_source": {
+        "kind": "same_sensor",
+        "files": [],
+        "note": "Same sensor as the measured body of its profile (the colour-matrix check of docs/03); no scale of its own."
+      },
       "sensor_width_mm": 23.5,
       "active_width_px": 6000,
       "sensor_source_kind": "maker",
@@ -317,6 +437,12 @@
       "match": "sensor_family",
       "via": "Sony A6400",
       "notes": "Same sensor as Sony A6400; shares its profile. ColorMatrix sibling check (pass): max |diff| 0.0000 per coefficient against the profile body, limit 0.02, LibRaw 0.22.1 via rawpy 0.27.1 (docs/03).",
+      "white_scale": [1.0, 1.0, 1.0],
+      "white_scale_source": {
+        "kind": "same_sensor",
+        "files": [],
+        "note": "Same sensor as the measured body of its profile (the colour-matrix check of docs/03); no scale of its own."
+      },
       "sensor_width_mm": 23.5,
       "active_width_px": 6000,
       "sensor_source_kind": "maker",
@@ -330,6 +456,12 @@
       "match": "sensor_family",
       "via": "Sony A6400",
       "notes": "Same sensor as Sony A6400; shares its profile. ColorMatrix sibling check (pass): max |diff| 0.0000 per coefficient against the profile body, limit 0.02, LibRaw 0.22.1 via rawpy 0.27.1 (docs/03).",
+      "white_scale": [1.0, 1.0, 1.0],
+      "white_scale_source": {
+        "kind": "same_sensor",
+        "files": [],
+        "note": "Same sensor as the measured body of its profile (the colour-matrix check of docs/03); no scale of its own."
+      },
       "sensor_width_mm": 23.5,
       "active_width_px": 6000,
       "sensor_source_kind": "maker",
@@ -343,6 +475,12 @@
       "match": "exact",
       "via": null,
       "notes": "Measured by Weta (rawtoaces-data): sony/Sony_DSC-RX100M4_380_780_5.json.",
+      "white_scale": [1.0, 1.0, 1.0],
+      "white_scale_source": {
+        "kind": "own_curves",
+        "files": [],
+        "note": "The profile was measured on this body (curves of the registry's profile); nothing to correct."
+      },
       "sensor_width_mm": 13.2,
       "active_width_px": 5472,
       "sensor_source_kind": "maker",
@@ -356,6 +494,25 @@
       "match": "default",
       "via": null,
       "notes": "No measured profile; uses the Sony A7R IV stand-in (docs/03). A Sony file is never refused for lack of a profile.",
+      "white_scale": [0.8675, 1.0, 1.0861],
+      "white_scale_source": {
+        "kind": "presets",
+        "files": [
+          "A1M01454.ARW",
+          "A1M01739.ARW",
+          "A1M01749.ARW"
+        ],
+        "residual": {
+          "mean_preset_angle_before_deg": 3.54,
+          "mean_preset_angle_after_deg": 0.54,
+          "daylight_k_before": 4433,
+          "daylight_k_after": 5212,
+          "matrix_scale": [0.8961, 1.0, 0.991],
+          "matrix_mean_preset_angle_deg": 2.07,
+          "matrix_daylight_k": 4720
+        },
+        "note": "Fitted so the five Kelvin presets of the body's own files (2500, 3200, 4500, 6000, 8500 K) read at their labels on the A7R IV locus (least squares in log chroma). The scale the body's published colour matrix at D65 gives (matrix_scale) leaves a mean preset angle of 2.07 degrees and reads the Daylight preset at 4720 K, outside the limits of docs/03 (at most 2 degrees, Daylight 5000 to 5600 K), so the presets set the scale."
+      },
       "sensor_width_mm": 35.9,
       "active_width_px": 8640,
       "sensor_source_kind": "restated",
@@ -369,6 +526,12 @@
       "match": "default",
       "via": null,
       "notes": "No measured profile; uses the Sony A7R IV stand-in (docs/03). A Sony file is never refused for lack of a profile.",
+      "white_scale": [0.8675, 1.0, 1.0861],
+      "white_scale_source": {
+        "kind": "sibling",
+        "files": [],
+        "note": "Takes the scale of the Sony A1: the published colour matrices of the two bodies agree (largest per-coefficient difference 0.0000, limit 0.02). No file of this body was available, so the presets were not read."
+      },
       "sensor_width_mm": 35.9,
       "active_width_px": 8640,
       "sensor_source_kind": "maker",
@@ -382,6 +545,12 @@
       "match": "default",
       "via": null,
       "notes": "No measured profile; uses the Sony A7R IV stand-in (docs/03). A Sony file is never refused for lack of a profile.",
+      "white_scale": [1.0, 1.0, 1.0],
+      "white_scale_source": {
+        "kind": "none",
+        "files": [],
+        "note": "No file with white-balance presets of this body or of a body with the same colour matrix was available; its whites are not corrected."
+      },
       "sensor_width_mm": 35.6,
       "active_width_px": 6000,
       "sensor_source_kind": "maker",
@@ -395,6 +564,12 @@
       "match": "default",
       "via": null,
       "notes": "No measured profile; uses the Sony A7R IV stand-in (docs/03). A Sony file is never refused for lack of a profile.",
+      "white_scale": [1.0, 1.0, 1.0],
+      "white_scale_source": {
+        "kind": "none",
+        "files": [],
+        "note": "No file with white-balance presets of this body or of a body with the same colour matrix was available; its whites are not corrected."
+      },
       "sensor_width_mm": 35.9,
       "active_width_px": 7008,
       "sensor_source_kind": "maker",
@@ -408,6 +583,12 @@
       "match": "default",
       "via": null,
       "notes": "No measured profile; uses the Sony A7R IV stand-in (docs/03). A Sony file is never refused for lack of a profile.",
+      "white_scale": [1.0, 1.0, 1.0],
+      "white_scale_source": {
+        "kind": "none",
+        "files": [],
+        "note": "No file with white-balance presets of this body or of a body with the same colour matrix was available; its whites are not corrected."
+      },
       "sensor_width_mm": 35.9,
       "active_width_px": 9984,
       "sensor_source_kind": "maker",

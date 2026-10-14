@@ -62,17 +62,44 @@ fn ids(library: &Library) -> Vec<String> {
 }
 
 #[test]
-fn the_shipped_builtin_folder_lists_neutral_and_not_signature() {
+fn the_shipped_builtin_folder_lists_neutral_then_signature() {
     let data = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data/looks/builtin");
     assert!(data.join("neutral.json").exists());
+    assert!(data.join("signature.json").exists());
     let dir = tempfile::tempdir().unwrap();
     let library = Library::open(dir.path(), Some(&data)).unwrap();
-    assert_eq!(ids(&library), vec!["builtin:neutral"]);
+    assert_eq!(ids(&library), vec!["builtin:neutral", "builtin:signature"]);
     assert!(library.problems().is_empty(), "{:?}", library.problems());
+
     let neutral = library.resolve("Neutral").unwrap();
     assert_eq!(neutral.name, "Neutral");
     assert!(matches!(neutral.group, LookGroup::BuiltIn));
     assert!(library.transform(&neutral.id).unwrap().is_identity());
+
+    // Signature is the look new photos get; it is built in, a LogC4 look, and not the identity.
+    assert_eq!(LookId::factory_default().as_str(), "builtin:signature");
+    assert_eq!(LookId::neutral().as_str(), "builtin:neutral");
+    let signature = library.resolve("signature").unwrap();
+    assert_eq!(signature.id, LookId::factory_default());
+    assert_eq!(signature.name, "Signature");
+    assert!(matches!(signature.group, LookGroup::BuiltIn));
+    assert_eq!(signature.input, LookInput::LogC4);
+    let transform = library.transform(&signature.id).unwrap();
+    assert!(!transform.is_identity());
+    assert_eq!(transform.lut().unwrap().cube.size(), 33);
+    // Mid grey stays where it is; a warm colour is moved.
+    let grey = LogC4([0.278_395_836_5; 3]);
+    let out = transform.eval_logc4(grey).unwrap().0;
+    assert!((out[0] - grey.0[0]).abs() < 1e-4, "{out:?}");
+    let warm = LogC4([0.5, 0.4, 0.3]);
+    assert_ne!(transform.eval_logc4(warm).unwrap(), warm);
+    // The same cube as the one ym-color bakes from the file.
+    let text = std::fs::read_to_string(data.join("signature.json")).unwrap();
+    let direct = ym_color::look::ParametricLook::from_json(&text)
+        .unwrap()
+        .to_transform()
+        .unwrap();
+    assert_eq!(*transform, direct);
 }
 
 #[test]

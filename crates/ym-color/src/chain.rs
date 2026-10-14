@@ -90,6 +90,10 @@ pub struct ChainSettings {
     /// The Pick white sample (5x5 median of g0-balanced camera RGB) if a white was picked. It replaces
     /// the estimate's scene light before the preset is applied.
     pub picked_white: Option<Vec3>,
+    /// The body's white scale (`docs/03`, White scale of stand-in bodies): the factor that takes its raw white
+    /// to its profile's, `[1, 1, 1]` for a body whose profile was measured on it. Only Pick white needs it (the
+    /// clip level of the sample); the rest of the chain works on the profile's scale already.
+    pub white_scale: Vec3,
 }
 
 impl Default for ChainSettings {
@@ -99,6 +103,7 @@ impl Default for ChainSettings {
             white_balance: WhiteBalance::Auto,
             exposure_ev: 0.0,
             picked_white: None,
+            white_scale: wb::IDENTITY_WHITE_SCALE,
         }
     }
 }
@@ -123,9 +128,19 @@ pub struct ClipLevel {
 /// The clip level of a chain matrix for a scene light (see [`ClipLevel`]).
 #[must_use]
 pub fn clip_level(matrix: &Mat3, w_scene: Vec3) -> ClipLevel {
+    clip_level_scaled(matrix, w_scene, wb::IDENTITY_WHITE_SCALE)
+}
+
+/// The clip level for a body with a white scale (`docs/03`, White scale of stand-in bodies). The body's raw
+/// clips at 1.0 per channel in its own scale, so a neutral surface of brightness `s` clips channel `c` at
+/// `s = white_scale[c] / w_scene[c]`, `w_scene` being on the profile's scale. With the identity scale this is
+/// [`clip_level`] to the last bit.
+#[must_use]
+pub fn clip_level_scaled(matrix: &Mat3, w_scene: Vec3, white_scale: Vec3) -> ClipLevel {
     let balanced = w_scene
         .iter()
-        .map(|w| 1.0 / w)
+        .zip(&white_scale)
+        .map(|(w, s)| s / w)
         .fold(f64::INFINITY, f64::min);
     let awg4 = linalg::mul_vec(matrix, [balanced; 3]);
     let n = awg4.iter().copied().fold(f64::NEG_INFINITY, f64::max);
@@ -216,7 +231,12 @@ impl FusedChain {
 
         // The scene light: estimate, then Pick white, then the preset.
         let base = match settings.picked_white {
-            Some(sample) => estimate.with_picked_white(sample, w_init, tables.locus)?,
+            Some(sample) => estimate.with_picked_white_scaled(
+                sample,
+                w_init,
+                settings.white_scale,
+                tables.locus,
+            )?,
             None => *estimate,
         };
         let scene = settings.light_source.scene_light(&base, tables.locus);
@@ -267,7 +287,7 @@ impl FusedChain {
             }
         }
 
-        let clip = clip_level(&matrix, scene.w_scene);
+        let clip = clip_level_scaled(&matrix, scene.w_scene, settings.white_scale);
         Ok(Self {
             matrix,
             stages: ChainStages {
@@ -338,9 +358,12 @@ impl FusedChain {
 pub struct ColorEstimates {
     /// The illuminant estimate.
     pub scene: SceneLight,
-    /// The white the mosaic was balanced for, `g0 = 1 / w_scene_initial`. Normally `scene.w_scene` at
-    /// open.
+    /// The white the mosaic was balanced for, on the profile's scale: `g0 = white_scale / w_scene_initial`
+    /// (`1 / w_scene_initial` for a body whose profile was measured on it). Normally `scene.w_scene` at open.
     pub w_scene_initial: Vec3,
+    /// The body's white scale (`docs/03`): `[1, 1, 1]` unless the body borrows a profile it does not match.
+    /// It enters the initial gains ([`ColorEstimates::initial_gains`]) and the clip level of Pick white.
+    pub white_scale: Vec3,
     /// The automatic exposure in stops (`crate::exposure`).
     pub ev_auto: f64,
 }
@@ -369,8 +392,19 @@ impl ColorEstimates {
                 white_balance,
                 exposure_ev: exposure.resolve(self.ev_auto),
                 picked_white,
+                white_scale: self.white_scale,
             },
         )
+    }
+
+    /// The initial gains `g0` of the raw stages, `white_scale / w_scene_initial` with green = 1
+    /// ([`wb::initial_gains_scaled`]).
+    ///
+    /// # Errors
+    ///
+    /// [`WbError::InvalidWhite`] for an unusable white or white scale.
+    pub fn initial_gains(&self) -> Result<Vec3, WbError> {
+        wb::initial_gains_scaled(self.w_scene_initial, self.white_scale)
     }
 
     /// The chain with every colour setting on Auto and the exposure at 0 EV: the chain that the auto
@@ -384,7 +418,10 @@ impl ColorEstimates {
             tables,
             &self.scene,
             self.w_scene_initial,
-            &ChainSettings::default(),
+            &ChainSettings {
+                white_scale: self.white_scale,
+                ..ChainSettings::default()
+            },
         )
     }
 }

@@ -127,7 +127,7 @@ Every control in the UI and every CLI flag maps to one field. Defaults reproduce
 
 | Field | Type / range | Default | UI |
 |---|---|---|---|
-| `look` | `LookId` | user's default look (Neutral out of the box) | Look tab |
+| `look` | `LookId` | user's default look (Signature out of the box) | Look tab |
 | `look_intensity` | 0–100 % | 100 | Look tab |
 | `exposure` | `Auto` or `Manual(ev)` −4…+4, step 0.01 | Auto | Light › Exposure |
 | `contrast`, `brightness` | −100…100 | 0 | Light › Exposure; Contrast also on Look › Tone |

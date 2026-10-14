@@ -118,6 +118,8 @@ export const MOCK_ESTIMATES: AutoEstimates = {
 };
 
 const NEUTRAL: LookId = "builtin:neutral";
+/** The look new photos get out of the box: Signature (owner's decision of 2026-10-14, `docs/08-looks.md`). */
+const DEFAULT_LOOK: LookId = "builtin:signature";
 
 /** What a light preset resolves to while White balance is Auto (kelvin and tint). */
 export const LIGHT_PRESETS: Readonly<Record<Exclude<LightSource, "auto">, { kelvin: number; tint: number }>> = {
@@ -262,7 +264,7 @@ export interface MockSystemLog {
 // ---------------------------------------------------------------------------
 
 /** The settings of a photo nobody has touched: Auto everywhere, the given look at 100 %. */
-export function defaultSettings(look: LookId = NEUTRAL): DevelopSettings {
+export function defaultSettings(look: LookId = DEFAULT_LOOK): DevelopSettings {
   return {
     look,
     look_intensity: 100,
@@ -447,7 +449,7 @@ function defaultExportOptions(): ExportOptions {
 
 function defaultPreferences(): Preferences {
   return {
-    default_look: NEUTRAL,
+    default_look: DEFAULT_LOOK,
     display_rendering: { kind: "aces2" },
     export_defaults: defaultExportOptions(),
     remove_location_from_exports: false,
@@ -1010,8 +1012,8 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
   function rebuildLooks(): void {
     looks = buildLooks();
     if (!looks.some((l) => l.id === preferences.default_look)) {
-      preferences = { ...preferences, default_look: NEUTRAL };
-      looks = looks.map((l) => ({ ...l, is_default: l.id === NEUTRAL }));
+      preferences = { ...preferences, default_look: DEFAULT_LOOK };
+      looks = looks.map((l) => ({ ...l, is_default: l.id === DEFAULT_LOOK }));
     }
   }
 
@@ -1756,7 +1758,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
         if (!look) return;
         if (look.group.kind === "built_in") fail("looks", "Built-in looks can't be removed.");
         looks = looks.filter((l) => l.id !== id);
-        if (preferences.default_look === id) preferences = { ...preferences, default_look: NEUTRAL };
+        if (preferences.default_look === id) preferences = { ...preferences, default_look: DEFAULT_LOOK };
         for (const rec of photos) if (rec.settings.look === id) rec.settings = { ...rec.settings, look: NEUTRAL };
         syncDefaultLook();
         emitSoon("looks_changed", null);

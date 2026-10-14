@@ -1,11 +1,13 @@
 //! Built-in looks: Neutral in code, everything else from `data/looks/builtin/*.json` (`docs/08-looks.md` section Built-in looks).
 //!
 //! A built-in look is a parametric look file (`yellowmoon.parametric-look/1`, parsed and baked by
-//! [`ym_color::look::ParametricLook`]): a CDL plus hue-vs-sat, hue-vs-hue and luma-vs-sat curves
-//! in LogC4, baked into a 33-point cube when the look is first used. The id is
+//! [`ym_color::look::ParametricLook`]): a luma tone curve, a CDL and hue-vs-sat, hue-vs-hue and
+//! luma-vs-sat curves in LogC4, baked into a 33-point cube when the look is first used. The id is
 //! `builtin:<file stem>`. `neutral.json` is the identity; Neutral exists even when the file or the
-//! whole folder is missing. `signature.json` is designed by Mykyta (M3-H1) and is simply picked up
-//! when it is present, and not listed when it is not.
+//! whole folder is missing. `signature.json` is the look new photos get out of the box (owner's
+//! decision of 2026-10-14: a LogC4 luma curve and CDL saturation 1.20). It is read like any other
+//! file here: listed when it is present, not listed when it is not, and a folder without it
+//! leaves the default look at Neutral (`LookService::effective_default` in `ym-core`).
 
 use std::collections::HashSet;
 use std::fs;

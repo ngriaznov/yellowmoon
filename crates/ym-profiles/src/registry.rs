@@ -104,6 +104,17 @@ pub enum RegistryError {
         /// What is wrong.
         reason: String,
     },
+    /// A body's white scale is not a usable `[r, 1, b]`, or does not agree with how the body is matched
+    /// or with its source (`docs/03`, White scale of stand-in bodies).
+    #[error("{model} (model ID {model_id}): white scale: {reason}")]
+    BadWhiteScale {
+        /// The model string.
+        model: String,
+        /// The model ID.
+        model_id: u16,
+        /// What is wrong.
+        reason: String,
+    },
     /// A profile file's own id differs from the registry's.
     #[error("{path} holds profile {found}, the registry lists it as {expected}")]
     IdMismatch {
@@ -181,6 +192,68 @@ pub struct SensorGeometry {
     pub pixel_pitch_um: f64,
 }
 
+/// The white scale that changes nothing: a body whose profile was measured on it.
+pub const IDENTITY_WHITE_SCALE: [f64; 3] = [1.0, 1.0, 1.0];
+
+/// The largest and the smallest factor a white scale may have in red or blue: the bodies Sony makes
+/// differ from one another's curves by tens of percent, not by a factor of four.
+pub const WHITE_SCALE_RANGE: std::ops::RangeInclusive<f64> = 0.25..=4.0;
+
+fn identity_white_scale() -> [f64; 3] {
+    IDENTITY_WHITE_SCALE
+}
+
+/// How a body's white scale was found (`white_scale_source.kind`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WhiteScaleKind {
+    /// The profile was measured on this body: the scale is `[1, 1, 1]`.
+    OwnCurves,
+    /// The body shares the sensor of the profile's measured body: the scale is `[1, 1, 1]`.
+    SameSensor,
+    /// Fitted on the white-balance presets stored in the body's own files.
+    Presets,
+    /// Taken from another body whose published colour matrix is the same.
+    Sibling,
+    /// Nothing was measured: the scale is `[1, 1, 1]` and the body's whites are not corrected.
+    None,
+}
+
+/// The fit of a `presets` white scale against both references (`docs/03`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WhiteScaleResidual {
+    /// Mean angle between the five Kelvin presets and the locus white at their labels, degrees, with no scale.
+    pub mean_preset_angle_before_deg: f64,
+    /// The same with the scale applied.
+    pub mean_preset_angle_after_deg: f64,
+    /// The colour temperature the profile's locus reads for the Daylight preset, with no scale.
+    pub daylight_k_before: f64,
+    /// The same with the scale applied.
+    pub daylight_k_after: f64,
+    /// The scale the body's published colour matrix at D65 would give: `[r, 1, b]`.
+    pub matrix_scale: [f64; 3],
+    /// The mean preset angle with the matrix scale applied, degrees.
+    pub matrix_mean_preset_angle_deg: f64,
+    /// The Daylight preset's reading with the matrix scale applied, kelvin.
+    pub matrix_daylight_k: f64,
+}
+
+/// Where a body's white scale comes from.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WhiteScaleSource {
+    /// How it was found.
+    pub kind: WhiteScaleKind,
+    /// The files whose presets it was fitted on (names), for `presets`; empty otherwise.
+    pub files: Vec<String>,
+    /// The fit's residuals, for `presets`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub residual: Option<WhiteScaleResidual>,
+    /// What was done and why, in words.
+    pub note: String,
+}
+
 /// One camera body of the registry.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -200,6 +273,14 @@ pub struct Body {
     pub via: Option<String>,
     /// Free-text notes (measurement source, the sibling check).
     pub notes: String,
+    /// `[r, 1, b]`: the factor that takes this body's raw white to the white of its profile's curves,
+    /// `w_profile = w_body * white_scale` (`docs/03`, White scale of stand-in bodies). `[1, 1, 1]` for a
+    /// body whose profile was measured on it or on its sensor, and when the file says nothing.
+    #[serde(default = "identity_white_scale")]
+    pub white_scale: [f64; 3],
+    /// Where the white scale comes from; absent in a registry written before the scale existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub white_scale_source: Option<WhiteScaleSource>,
     /// Width of the full sensor in millimetres, from the maker's specification.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sensor_width_mm: Option<f64>,
@@ -258,6 +339,79 @@ impl Body {
                 PIXEL_PITCH_RANGE_UM.start(),
                 PIXEL_PITCH_RANGE_UM.end()
             )));
+        }
+        Ok(())
+    }
+
+    /// Checks the white scale: green exactly 1, red and blue positive and in [`WHITE_SCALE_RANGE`]; `[1, 1, 1]` for
+    /// an `exact` or `sensor_family` body and for kind `none`; a `source` whose kind fits how the body is matched;
+    /// files and residuals only where they belong.
+    fn validate_white_scale(&self) -> Result<(), RegistryError> {
+        let bad = |reason: &str| RegistryError::BadWhiteScale {
+            model: self.model.clone(),
+            model_id: self.model_id,
+            reason: reason.to_string(),
+        };
+        let [r, g, b] = self.white_scale;
+        if g != 1.0
+            || ![r, b]
+                .iter()
+                .all(|v| v.is_finite() && WHITE_SCALE_RANGE.contains(v))
+        {
+            return Err(bad(&format!(
+                "{:?} is not [r, 1, b] with r and b between {} and {}",
+                self.white_scale,
+                WHITE_SCALE_RANGE.start(),
+                WHITE_SCALE_RANGE.end()
+            )));
+        }
+        let identity = self.white_scale == IDENTITY_WHITE_SCALE;
+        let Some(source) = &self.white_scale_source else {
+            // A registry written before the scale existed: only the identity can stand without a source.
+            return if identity {
+                Ok(())
+            } else {
+                Err(bad(
+                    "a scale other than [1, 1, 1] needs a white_scale_source",
+                ))
+            };
+        };
+        if source.note.trim().is_empty() {
+            return Err(bad("the source needs a note"));
+        }
+        let kind_ok = match self.match_kind {
+            BodyMatch::Exact => source.kind == WhiteScaleKind::OwnCurves,
+            BodyMatch::SensorFamily => source.kind == WhiteScaleKind::SameSensor,
+            BodyMatch::Default => matches!(
+                source.kind,
+                WhiteScaleKind::Presets | WhiteScaleKind::Sibling | WhiteScaleKind::None
+            ),
+        };
+        if !kind_ok {
+            return Err(bad(&format!(
+                "source kind {:?} does not fit match {:?}",
+                source.kind, self.match_kind
+            )));
+        }
+        if matches!(
+            source.kind,
+            WhiteScaleKind::OwnCurves | WhiteScaleKind::SameSensor | WhiteScaleKind::None
+        ) && !identity
+        {
+            return Err(bad("this source kind means [1, 1, 1]"));
+        }
+        if matches!(
+            source.kind,
+            WhiteScaleKind::Presets | WhiteScaleKind::Sibling
+        ) && identity
+        {
+            return Err(bad("a fitted or inherited scale is not [1, 1, 1]"));
+        }
+        if (source.kind == WhiteScaleKind::Presets) != source.residual.is_some() {
+            return Err(bad("the residuals belong to kind presets, and only to it"));
+        }
+        if (source.kind == WhiteScaleKind::Presets) == source.files.is_empty() {
+            return Err(bad("files are named for kind presets, and only for it"));
         }
         Ok(())
     }
@@ -327,7 +481,8 @@ impl Registry {
     /// model IDs, model strings and profile ids unique; the default and every body's profile listed;
     /// every profile has exactly one `exact` body; `via` names that body for `sensor_family` and is null
     /// otherwise; every `default` body uses `default_profile`; `model_strings` agrees with `bodies`
-    /// (each body once, nothing else); profile paths are `profiles/<id>/profile.json`.
+    /// (each body once, nothing else); profile paths are `profiles/<id>/profile.json`; each body's white scale
+    /// is usable and agrees with its match kind and source (`docs/03`, White scale of stand-in bodies).
     ///
     /// # Errors
     ///
@@ -377,6 +532,7 @@ impl Registry {
                 });
             }
             b.validate_sensor()?;
+            b.validate_white_scale()?;
         }
         for p in &self.profiles {
             let exact: Vec<&Body> = self
@@ -593,6 +749,8 @@ mod tests {
                 match_kind: kind,
                 via: via.map(str::to_string),
                 notes: String::new(),
+                white_scale: IDENTITY_WHITE_SCALE,
+                white_scale_source: None,
                 sensor_width_mm: None,
                 active_width_px: None,
                 pixel_pitch_um: None,
@@ -726,6 +884,100 @@ mod tests {
             r.validate(),
             Err(RegistryError::DuplicateProfile(_))
         ));
+    }
+
+    fn source(kind: WhiteScaleKind) -> WhiteScaleSource {
+        WhiteScaleSource {
+            kind,
+            files: Vec::new(),
+            residual: None,
+            note: "n".to_string(),
+        }
+    }
+
+    fn presets_source() -> WhiteScaleSource {
+        WhiteScaleSource {
+            files: vec!["a.ARW".to_string()],
+            residual: Some(WhiteScaleResidual {
+                mean_preset_angle_before_deg: 3.0,
+                mean_preset_angle_after_deg: 0.5,
+                daylight_k_before: 4400.0,
+                daylight_k_after: 5200.0,
+                matrix_scale: [0.9, 1.0, 1.0],
+                matrix_mean_preset_angle_deg: 2.0,
+                matrix_daylight_k: 4700.0,
+            }),
+            ..source(WhiteScaleKind::Presets)
+        }
+    }
+
+    #[test]
+    fn white_scales_are_checked_against_how_the_body_is_matched() {
+        let refused =
+            |r: &Registry| matches!(r.validate(), Err(RegistryError::BadWhiteScale { .. }));
+        // Without a source only the identity can stand (a registry written before the scale existed).
+        let mut r = tiny_registry();
+        r.validate().unwrap();
+        r.bodies[3].white_scale = [0.9, 1.0, 1.1];
+        assert!(refused(&r));
+        // A stand-in body with fitted presets.
+        r.bodies[3].white_scale_source = Some(presets_source());
+        r.validate().unwrap();
+        // Sources of the wrong kind for the match.
+        let mut bad = r.clone();
+        bad.bodies[3].white_scale_source = Some(source(WhiteScaleKind::OwnCurves));
+        assert!(refused(&bad));
+        let mut bad = r.clone();
+        bad.bodies[0].white_scale_source = Some(source(WhiteScaleKind::Presets));
+        assert!(refused(&bad));
+        let mut bad = r.clone();
+        bad.bodies[2].white_scale_source = Some(source(WhiteScaleKind::OwnCurves));
+        assert!(refused(&bad));
+        // An exact or same-sensor body, and a body that measured nothing, is [1, 1, 1].
+        let mut bad = r.clone();
+        bad.bodies[0].white_scale = [0.9, 1.0, 1.1];
+        bad.bodies[0].white_scale_source = Some(source(WhiteScaleKind::OwnCurves));
+        assert!(refused(&bad));
+        let mut bad = r.clone();
+        bad.bodies[3].white_scale_source = Some(source(WhiteScaleKind::None));
+        assert!(refused(&bad));
+        // Presets need files and residuals; the others have neither.
+        let mut bad = r.clone();
+        bad.bodies[3].white_scale_source = Some(WhiteScaleSource {
+            files: Vec::new(),
+            ..presets_source()
+        });
+        assert!(refused(&bad));
+        let mut bad = r.clone();
+        bad.bodies[3].white_scale_source = Some(WhiteScaleSource {
+            residual: None,
+            ..presets_source()
+        });
+        assert!(refused(&bad));
+        let mut bad = r.clone();
+        bad.bodies[3].white_scale_source = Some(WhiteScaleSource {
+            files: vec!["a.ARW".to_string()],
+            ..source(WhiteScaleKind::Sibling)
+        });
+        assert!(refused(&bad));
+        // A sibling takes a scale and says so.
+        let mut ok = r.clone();
+        ok.bodies[3].white_scale_source = Some(source(WhiteScaleKind::Sibling));
+        ok.validate().unwrap();
+        // Unusable numbers.
+        for scale in [
+            [0.0, 1.0, 1.0],
+            [-0.9, 1.0, 1.0],
+            [f64::NAN, 1.0, 1.0],
+            [1.0, 1.0, f64::INFINITY],
+            [0.9, 1.01, 1.0],
+            [5.0, 1.0, 1.0],
+            [1.0, 1.0, 0.2],
+        ] {
+            let mut bad = r.clone();
+            bad.bodies[3].white_scale = scale;
+            assert!(refused(&bad), "{scale:?}");
+        }
     }
 
     #[test]

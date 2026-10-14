@@ -165,6 +165,21 @@ impl LookId {
         Self(format!("builtin:{}", slug_or(slug, "look")))
     }
 
+    /// `builtin:neutral`: the identity look (emulated colour through our display transform, no
+    /// creative look). It exists in code, whatever the data folder holds.
+    #[must_use]
+    pub fn neutral() -> Self {
+        Self::builtin("neutral")
+    }
+
+    /// `builtin:signature`: the look new photos get out of the box (`docs/08-looks.md`, decision
+    /// of 2026-10-14). Its file is `data/looks/builtin/signature.json`; a preference can name
+    /// another look, and when the file is missing the default falls back to Neutral.
+    #[must_use]
+    pub fn factory_default() -> Self {
+        Self::builtin("signature")
+    }
+
     /// `arri:<group_no>:<slug>`.
     #[must_use]
     pub fn arri(group_no: u32, slug: &str) -> Self {

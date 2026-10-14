@@ -993,5 +993,75 @@ class EndToEnd(unittest.TestCase):
         self.assertEqual(len(flat), 190 + 24 + 48 + 16 + 1 + 2)
 
 
+class WhiteScale(unittest.TestCase):
+    """A stand-in body's scenes are rendered through its profile's curves, so its raw is the render divided by the
+    registry's white scale and its as-shot gains are multiplied by it (docs/03, White scale of stand-in bodies)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.out = Path(cls.tmp.name)
+        cls.ctx = ms.Context()
+        cls.recipe = rc.Recipe("chart", "D6500", "ILCE-1", 400, variants=("lossless-l",), group="test")
+        ms.generate(cls.recipe, 5, cls.out, cls.ctx, force=False)
+        cls.doc = json.loads((cls.out / f"{cls.recipe.stem}.json").read_text())
+        cls.mosaic = np.fromfile(cls.out / f"{cls.recipe.stem}.bin", dtype="<u2")
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def test_the_bodies_carry_the_registry_scale(self):
+        a1 = sp.BODIES["ILCE-1"]
+        reg = json.loads(paths.REGISTRY_JSON.read_text())
+        entry = next(b for b in reg["bodies"] if b["model_id"] == 384)
+        self.assertEqual(list(a1.white_scale), entry["white_scale"])
+        self.assertNotEqual(a1.white_scale, (1.0, 1.0, 1.0), "the A1 is the stand-in this test is about")
+        for body in sp.BODIES.values():
+            if body.own_curves:
+                self.assertEqual(body.white_scale, (1.0, 1.0, 1.0), body.model)
+
+    def test_a_body_with_its_own_curves_keeps_its_recipe_hash_and_a_stand_in_changes_it(self):
+        own = rc.Recipe("chart", "D6500", "ILCE-7RM4", 400, variants=("lossless-l",), group="test")
+        blob = json.dumps({"recipe": own.to_json(), "version": ms.GENERATOR_VERSION, "index": 5}, sort_keys=True)
+        self.assertEqual(ms.recipe_hash(own, 5), hashlib.sha256(blob.encode()).hexdigest()[:16])
+        blob = json.dumps({"recipe": self.recipe.to_json(), "version": ms.GENERATOR_VERSION, "index": 5}, sort_keys=True)
+        self.assertNotEqual(ms.recipe_hash(self.recipe, 5), hashlib.sha256(blob.encode()).hexdigest()[:16])
+
+    def test_the_as_shot_gains_are_the_bodys_and_the_truth_is_the_profiles(self):
+        a = self.doc["truth"]["as_shot"]
+        light = self.doc["truth"]["light"]
+        scale = np.array(a["white_scale"])
+        np.testing.assert_allclose(scale, sp.BODIES["ILCE-1"].white_scale)
+        w_true = np.array(light["w_true_camera_rgb"])  # the profile's scale: what the estimator must return
+        np.testing.assert_allclose(a["gains_true"], scale / w_true, atol=1e-6)
+        self.assertEqual(light["camera_white_scale"], list(scale))
+        # the pipeline's as-shot white is 1 / gains times the scale: the profile's white again (to the AWB error)
+        got = np.array([a["wb_rggb_1024"][0], 1024.0, a["wb_rggb_1024"][3]]) / 1024.0
+        white_in_profile_scale = scale / got
+        np.testing.assert_allclose(white_in_profile_scale, w_true * np.exp(-np.array([a["log_gain_error_rb"][0], 0.0, a["log_gain_error_rb"][1]])), rtol=2e-3)
+
+    def test_the_raw_of_a_white_patch_is_the_profiles_white_divided_by_the_scale(self):
+        m = self.doc["mosaic"]
+        mosaic = self.mosaic.reshape(m["height"], m["width"]).astype(np.float64) - m["black"]
+        probes = {p["name"]: p for p in self.doc["truth"]["probes"]}
+        white = probes["neutral-0.9"]
+        x, y, w, h = white["interior"]
+        yy, xx = np.mgrid[y : y + h, x : x + w]
+        patch = mosaic[y : y + h, x : x + w]
+        red = patch[(yy % 2 == 0) & (xx % 2 == 0)].mean()  # RGGB
+        green = patch[((yy % 2 == 0) & (xx % 2 == 1)) | ((yy % 2 == 1) & (xx % 2 == 0))].mean()
+        blue = patch[(yy % 2 == 1) & (xx % 2 == 1)].mean()
+        scale = np.array(self.doc["truth"]["as_shot"]["white_scale"])
+        w_true = np.array(self.doc["truth"]["light"]["w_true_camera_rgb"])
+        want = w_true / scale  # body raw white, green = 1
+        self.assertAlmostEqual(red / green / want[0], 1.0, delta=0.02)
+        self.assertAlmostEqual(blue / green / want[2], 1.0, delta=0.02)
+        # the sidecar's response is on the profile's scale, so the mosaic is that divided by the scale
+        dn = np.array(white["camera_dn_above_black"])
+        self.assertAlmostEqual(red / (dn[0] / scale[0]), 1.0, delta=0.02)
+        self.assertAlmostEqual(blue / (dn[2] / scale[2]), 1.0, delta=0.02)
+
+
 if __name__ == "__main__":
     unittest.main()

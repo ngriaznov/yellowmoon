@@ -15,7 +15,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::profile::{ProfileError, ProfileId};
-use crate::registry::{Body, BodyMatch, ProfileStore, SensorGeometry};
+use crate::registry::{Body, BodyMatch, IDENTITY_WHITE_SCALE, ProfileStore, SensorGeometry};
 
 /// Why a profile was chosen.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -66,6 +66,16 @@ pub struct CameraMatch {
     /// fallback then applies).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sensor: Option<SensorGeometry>,
+    /// `[r, 1, b]`: the factor that takes the body's raw white to the white of the profile's curves,
+    /// `w_profile = w_body * white_scale` (`docs/03`, White scale of stand-in bodies; the registry's
+    /// `white_scale`). It belongs to the body *and* the profile the registry gave it: `[1, 1, 1]` for a body
+    /// the registry does not list, and after `--profile` forced another profile.
+    #[serde(default = "identity_white_scale")]
+    pub white_scale: [f64; 3],
+}
+
+fn identity_white_scale() -> [f64; 3] {
+    IDENTITY_WHITE_SCALE
 }
 
 impl CameraMatch {
@@ -210,6 +220,7 @@ impl ProfileStore {
             profile_version: profile.version.clone(),
             how,
             sensor: None,
+            white_scale: IDENTITY_WHITE_SCALE,
         }
     }
 
@@ -261,6 +272,7 @@ impl ProfileStore {
                     how,
                 );
                 found.sensor = body.sensor();
+                found.white_scale = body.white_scale;
                 found
             }
             None => {
@@ -302,6 +314,8 @@ impl ProfileStore {
             };
             found.profile = forced.id.clone();
             found.profile_version = forced.version.clone();
+            // The scale was fitted to the profile the registry chose; it says nothing about another one.
+            found.white_scale = IDENTITY_WHITE_SCALE;
         }
         Ok(found)
     }

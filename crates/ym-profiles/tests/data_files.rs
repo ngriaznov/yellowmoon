@@ -12,7 +12,9 @@ use jsonschema::Validator;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use ym_profiles::profile::{Profile, ProfileError, Target};
-use ym_profiles::registry::{BodyMatch, ProfileStore, Registry, RegistryError};
+use ym_profiles::registry::{
+    BodyMatch, IDENTITY_WHITE_SCALE, ProfileStore, Registry, RegistryError, WhiteScaleKind,
+};
 
 fn validator(schema_file: &str) -> Validator {
     let path = repo_root()
@@ -659,6 +661,257 @@ fn the_registry_schema_and_rules_refuse_broken_sensor_fields() {
         .remove("active_width_px");
     let err = Registry::parse(&doc.to_string()).unwrap_err().to_string();
     assert!(err.contains("come together"), "{err}");
+}
+
+#[test]
+fn white_scales_are_recorded_with_their_source() {
+    // docs/03, White scale of stand-in bodies: a body with a profile of its own or of its sensor has [1, 1, 1];
+    // a stand-in body has the scale fitted on the presets of its own files, a sibling's, or [1, 1, 1] with the
+    // statement that nothing was measured. Every body says which.
+    let reg = store().registry();
+    let (mut own, mut same, mut none) = (0, 0, 0);
+    for b in &reg.bodies {
+        let src = b
+            .white_scale_source
+            .as_ref()
+            .unwrap_or_else(|| panic!("{}: no white_scale_source", b.model));
+        assert!(src.note.len() > 20, "{}: a note", b.model);
+        assert_eq!(b.white_scale[1], 1.0, "{}", b.model);
+        match (b.match_kind, src.kind) {
+            (BodyMatch::Exact, WhiteScaleKind::OwnCurves) => {
+                own += 1;
+                assert_eq!(b.white_scale, IDENTITY_WHITE_SCALE, "{}", b.model);
+            }
+            (BodyMatch::SensorFamily, WhiteScaleKind::SameSensor) => {
+                same += 1;
+                assert_eq!(b.white_scale, IDENTITY_WHITE_SCALE, "{}", b.model);
+            }
+            (BodyMatch::Default, WhiteScaleKind::None) => {
+                none += 1;
+                assert_eq!(b.white_scale, IDENTITY_WHITE_SCALE, "{}", b.model);
+            }
+            (BodyMatch::Default, WhiteScaleKind::Presets | WhiteScaleKind::Sibling) => {}
+            (m, k) => panic!("{}: match {m:?} with white scale source {k:?}", b.model),
+        }
+    }
+    assert_eq!((own, same), (11, 10));
+    assert_eq!(
+        none, 5,
+        "the A7R V, A7CR, A9 III, A7 V and A7R VI have no data"
+    );
+
+    // The A1: fitted on the presets stored in the owner's three photos.
+    let a1 = reg.body_by_model_id(384).unwrap();
+    let src = a1.white_scale_source.as_ref().unwrap();
+    assert_eq!(src.kind, WhiteScaleKind::Presets);
+    let mut files = src.files.clone();
+    files.sort();
+    assert_eq!(files, ["A1M01454.ARW", "A1M01739.ARW", "A1M01749.ARW"]);
+    let [r, g, b] = a1.white_scale;
+    assert!((0.80..0.95).contains(&r) && g == 1.0 && (1.0..1.2).contains(&b));
+    // The limits of docs/03: the presets read within 2 degrees of their labels on average and the Daylight preset
+    // reads between 5000 and 5600 K; the matrix reference does not do either, which is why it did not decide.
+    let res = src.residual.as_ref().unwrap();
+    assert!(res.mean_preset_angle_before_deg > 2.0 * res.mean_preset_angle_after_deg);
+    assert!(res.mean_preset_angle_after_deg <= 2.0);
+    assert!((5000.0..=5600.0).contains(&res.daylight_k_after));
+    assert!(res.daylight_k_before < 4600.0);
+    assert!(res.matrix_mean_preset_angle_deg > 2.0 || res.matrix_daylight_k < 5000.0);
+    assert_eq!(res.matrix_scale[1], 1.0);
+
+    // The A1 II takes the A1's scale: the published colour matrices of the two are the same.
+    let a1m2 = reg.body_by_model_id(400).unwrap();
+    assert_eq!(
+        a1m2.white_scale_source.as_ref().unwrap().kind,
+        WhiteScaleKind::Sibling
+    );
+    assert_eq!(a1m2.white_scale, a1.white_scale);
+}
+
+#[test]
+fn the_registry_schema_and_rules_refuse_broken_white_scales() {
+    let rv = validator("registry.schema.json");
+    let text = std::fs::read_to_string(data_root().join("cameras/registry.json")).unwrap();
+    let registry: Value = serde_json::from_str(&text).unwrap();
+    let index = |id: u64| {
+        registry["bodies"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .position(|b| b["model_id"] == id)
+            .unwrap()
+    };
+    let (a7r4, a1, a7c, rm5) = (index(375), index(384), index(381), index(390));
+    type Mutation = Box<dyn Fn(&mut Value)>;
+    // (name, body index, mutation)
+    let broken: Vec<(&str, usize, Mutation)> = vec![
+        (
+            "no white scale",
+            a1,
+            Box::new(|b| {
+                b.as_object_mut().unwrap().remove("white_scale");
+            }),
+        ),
+        (
+            "no source",
+            a1,
+            Box::new(|b| {
+                b.as_object_mut().unwrap().remove("white_scale_source");
+            }),
+        ),
+        (
+            "green not 1",
+            a1,
+            Box::new(|b| {
+                b["white_scale"] = json!([0.87, 1.02, 1.09]);
+            }),
+        ),
+        (
+            "two numbers",
+            a1,
+            Box::new(|b| {
+                b["white_scale"] = json!([0.87, 1.0]);
+            }),
+        ),
+        (
+            "a string",
+            a1,
+            Box::new(|b| {
+                b["white_scale"] = json!([0.87, 1.0, "1.09"]);
+            }),
+        ),
+        (
+            "zero",
+            a1,
+            Box::new(|b| {
+                b["white_scale"] = json!([0.0, 1.0, 1.09]);
+            }),
+        ),
+        (
+            "negative",
+            a1,
+            Box::new(|b| {
+                b["white_scale"] = json!([0.87, 1.0, -1.09]);
+            }),
+        ),
+        (
+            "five times",
+            a1,
+            Box::new(|b| {
+                b["white_scale"] = json!([5.0, 1.0, 1.09]);
+            }),
+        ),
+        (
+            "an exact body with a scale",
+            a7r4,
+            Box::new(|b| {
+                b["white_scale"] = json!([0.9, 1.0, 1.1]);
+            }),
+        ),
+        (
+            "a same-sensor body with a scale",
+            a7c,
+            Box::new(|b| {
+                b["white_scale"] = json!([0.9, 1.0, 1.1]);
+            }),
+        ),
+        (
+            "an exact body that says presets",
+            a7r4,
+            Box::new(|b| {
+                b["white_scale_source"]["kind"] = json!("presets");
+            }),
+        ),
+        (
+            "a stand-in that says own curves",
+            a1,
+            Box::new(|b| {
+                b["white_scale_source"]["kind"] = json!("own_curves");
+            }),
+        ),
+        (
+            "unknown kind",
+            a1,
+            Box::new(|b| {
+                b["white_scale_source"]["kind"] = json!("guess");
+            }),
+        ),
+        (
+            "none with a scale",
+            rm5,
+            Box::new(|b| {
+                b["white_scale"] = json!([0.9, 1.0, 1.1]);
+            }),
+        ),
+        (
+            "presets without residuals",
+            a1,
+            Box::new(|b| {
+                b["white_scale_source"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("residual");
+            }),
+        ),
+        (
+            "presets without files",
+            a1,
+            Box::new(|b| {
+                b["white_scale_source"]["files"] = json!([]);
+            }),
+        ),
+        (
+            "a residual on a body that measured nothing",
+            rm5,
+            Box::new(|b| {
+                b["white_scale_source"]["residual"] = json!({
+                    "mean_preset_angle_before_deg": 1.0, "mean_preset_angle_after_deg": 1.0,
+                    "daylight_k_before": 5000, "daylight_k_after": 5000, "matrix_scale": [1, 1, 1],
+                    "matrix_mean_preset_angle_deg": 1.0, "matrix_daylight_k": 5000
+                });
+            }),
+        ),
+        (
+            "an unknown field in the source",
+            a1,
+            Box::new(|b| {
+                b["white_scale_source"]["tool"] = json!("x");
+            }),
+        ),
+        (
+            "an empty note",
+            a1,
+            Box::new(|b| {
+                b["white_scale_source"]["note"] = json!("");
+            }),
+        ),
+    ];
+    for (name, body, mutate) in &broken {
+        let mut doc = registry.clone();
+        mutate(&mut doc["bodies"][*body]);
+        assert!(!rv.is_valid(&doc), "the registry schema accepted: {name}");
+        // The Rust rules refuse these too (or the types fail to parse them).
+        assert!(
+            Registry::parse(&doc.to_string()).is_err(),
+            "the typed registry accepted: {name}"
+        );
+    }
+    // A registry written before the scale existed (no fields at all) still loads: every body is the identity.
+    let mut old = registry.clone();
+    for b in old["bodies"].as_array_mut().unwrap() {
+        let o = b.as_object_mut().unwrap();
+        o.remove("white_scale");
+        o.remove("white_scale_source");
+    }
+    let parsed = Registry::parse(&old.to_string()).unwrap();
+    assert!(
+        parsed
+            .bodies
+            .iter()
+            .all(|b| b.white_scale == IDENTITY_WHITE_SCALE && b.white_scale_source.is_none())
+    );
+    // ... and the schema asks for the fields, so the shipped file is never in that form.
+    assert!(!rv.is_valid(&old));
 }
 
 /// Copies the shipped registry, target and profile files into a temporary data root.

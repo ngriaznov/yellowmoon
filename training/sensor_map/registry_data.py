@@ -118,6 +118,7 @@ BODIES: tuple[Body, ...] = (
     _default(407, "ILCE-7M5", "Sony A7 V"),
     _default(410, "ILCE-7RM6", "Sony A7R VI"),
 )
+BODY_BY_ID = {b.model_id: b for b in BODIES}
 
 EXIFTOOL_SOURCE = "exiftool/exiftool lib/Image/ExifTool/Sony.pm @ 2200871d9cef988051d2a99d67df3bda6cbb30a8 (SonyModelID table)"
 

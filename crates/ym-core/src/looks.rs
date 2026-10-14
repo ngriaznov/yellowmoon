@@ -9,9 +9,10 @@
 //! one [`Library`] behind a lock so that the render graph can read it while the UI changes it, and
 //! ties it to the two preferences that belong to looks:
 //!
-//! * the **default look** (`Preferences::default_look`): the look new photos get. A default that has
-//!   been removed or whose file is gone is not used; new photos get Neutral until another is chosen
-//!   ([`LookService::effective_default`]).
+//! * the **default look** (`Preferences::default_look`): the look new photos get, Signature out of
+//!   the box. A default that has been removed or whose file is gone is not used; new photos get
+//!   Signature again (Neutral when the built-in Signature file is missing too) until another is
+//!   chosen ([`LookService::effective_default`]).
 //! * the **display rendering** (`Preferences::display_rendering`): ACES 2 or an imported ARRI display
 //!   LUT ([`LookService::display_choice`]).
 //!
@@ -400,15 +401,21 @@ impl LookService {
     }
 
     /// The look new photos get: the preference if that look exists and its file is there, else
-    /// Neutral.
+    /// Signature (the default out of the box), else Neutral, which exists in code even when the
+    /// data folder has no look files.
     #[must_use]
     pub fn effective_default(&self) -> LookId {
         let wanted = self.prefs.get().default_look;
-        let usable = self.read().get(&wanted).is_some_and(Look::is_enabled);
-        if usable {
-            wanted
+        let lib = self.read();
+        let usable = |id: &LookId| lib.get(id).is_some_and(Look::is_enabled);
+        if usable(&wanted) {
+            return wanted;
+        }
+        let factory = LookId::factory_default();
+        if usable(&factory) {
+            factory
         } else {
-            LookId::builtin("neutral")
+            LookId::neutral()
         }
     }
 
@@ -584,8 +591,8 @@ impl LookService {
     }
 
     /// `looks_remove`: removes an imported look or display LUT and its file. If it was the default
-    /// look, new photos get Neutral again; if it was the chosen display rendering, ACES 2 is used
-    /// again.
+    /// look, new photos get Signature again (the default out of the box); if it was the chosen
+    /// display rendering, ACES 2 is used again.
     ///
     /// # Errors
     ///
@@ -597,7 +604,7 @@ impl LookService {
         let prefs = self.prefs.get();
         let mut patch = PreferencesPatch::default();
         if &prefs.default_look == id {
-            patch.default_look = Some(LookId::builtin("neutral"));
+            patch.default_look = Some(LookId::factory_default());
         }
         if matches!(&prefs.display_rendering, DisplayRendering::ArriDisplay { id: d } if d == id) {
             patch.display_rendering = Some(DisplayRendering::Aces2);
@@ -764,7 +771,7 @@ fn display_entry(d: &DisplayLut) -> DisplayLutEntry {
 /// The id of Neutral, for callers that need a fallback look.
 #[must_use]
 pub fn neutral() -> LookId {
-    LookId::parse(NEUTRAL_LOOK).unwrap_or_else(|_| LookId::builtin("neutral"))
+    LookId::parse(NEUTRAL_LOOK).unwrap_or_else(|_| LookId::neutral())
 }
 
 #[cfg(test)]

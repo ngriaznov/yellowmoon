@@ -16,6 +16,7 @@ All spectra live on the 380-780 nm / 5 nm grid (81 samples) of ``training.alexa.
 
 from __future__ import annotations
 
+import dataclasses
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -144,10 +145,27 @@ class Body:
     focal_mm: float
     typical_variant: str  # the variant this set writes for the body in the cross recipes (the decoder must handle it on every
     # body; of these bodies only the A1 writes lossless L in reality, research/notes/sony-arw-formats.md)
+    white_scale: tuple[float, float, float] = (1.0, 1.0, 1.0)  # the registry's white scale of the body (docs/03): the
+    # factor that takes the body's raw white to its profile's, w_profile = w_body * white_scale. The scenes are rendered
+    # through the profile's curves, so a stand-in body's raw is the render divided by it and its as-shot gains are
+    # multiplied by it; make_scenes does both, so the pipeline's own scaling lands on the render again.
+
+
+def registry_white_scale(model_id: int) -> tuple[float, float, float]:
+    """The white scale of a body in ``data/cameras/registry.json`` (identity for a body the registry does not list)."""
+    import json
+
+    from training.common import paths
+
+    for body in json.loads(paths.REGISTRY_JSON.read_text())["bodies"]:
+        if body["model_id"] == model_id:
+            r, g, b = body["white_scale"]
+            return (float(r), float(g), float(b))
+    return (1.0, 1.0, 1.0)
 
 
 BODIES: dict[str, Body] = {
-    b.model: b
+    b.model: dataclasses.replace(b, white_scale=registry_white_scale(b.model_id))
     for b in (
         Body("ILCE-7RM4", "Sony A7R IV", 375, "Sony ILCE-7RM4", True, 3.76, 3.4, 1.8, 320,
              "FE 24-70mm F2.8 GM", 35.0, "lossless-l"),

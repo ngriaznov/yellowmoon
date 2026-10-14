@@ -199,7 +199,11 @@ class Context:
 # One recipe
 # ----------------------------------------------------------------------------------------------------
 def recipe_hash(recipe: rc.Recipe, index: int) -> str:
-    blob = json.dumps({"recipe": recipe.to_json(), "version": GENERATOR_VERSION, "index": index}, sort_keys=True)
+    content = {"recipe": recipe.to_json(), "version": GENERATOR_VERSION, "index": index}
+    white_scale = sp.BODIES[recipe.body].white_scale
+    if white_scale != (1.0, 1.0, 1.0):  # only a body with a scale carries it in its hash: the others keep their files
+        content["white_scale"] = list(white_scale)
+    blob = json.dumps(content, sort_keys=True)
     return hashlib.sha256(blob.encode()).hexdigest()[:16]
 
 
@@ -251,15 +255,21 @@ def build_sidecar(recipe: rc.Recipe, index: int, rendered: Rendered, mosaic: np.
             "w_true_camera_rgb": lt_.w_true.tolist(),
             "camera_profile": body.curves,
             "camera_profile_is_stand_in": not body.own_curves,
+            "camera_white_scale": list(body.white_scale),
             "w_alexa_native": lt_.w_alexa.tolist(),
             "mixed": left_right,
         },
         "as_shot": {
             "gains_true": gains_true.tolist(),
+            "white_scale": list(body.white_scale),
             "wb_rggb_1024": wb_levels,
             "log_gain_error_rb": awb_err.tolist(),
             "sigma": sigma,
-            "note": "SR2 white balance = the true gains times exp(error), the error drawn like an automatic white balance",
+            "note": (
+                "SR2 white balance = the true gains times exp(error), the error drawn like an automatic white balance. "
+                "The true gains are those of the body's raw: 1 / w_true times the body's white scale (docs/03), so the "
+                "pipeline, which multiplies the as-shot white by the scale, gets w_true (the profile's scale) again."
+            ),
         },
         "noise": nm.to_json(),
         "exposure": {
@@ -380,13 +390,15 @@ def generate(recipe: rc.Recipe, index: int, out: Path, ctx: Context, force: bool
     k14 = sn.exposure_scale(grey_resp[1], sn.MODE_14, recipe.ev_comp)
 
     nm = sn.noise_model(body, recipe.iso, mode)
-    clean = sn.cfa_mosaic(rendered.canvas * np.float32(k_mode), recipe.cfa)
+    # A stand-in body's raw is the render through its profile's curves divided by its white scale (docs/03).
+    body_raw = (np.float32(k_mode) / np.asarray(body.white_scale, dtype=np.float32)).astype(np.float32)
+    clean = sn.cfa_mosaic(rendered.canvas * body_raw, recipe.cfa)
     rng = np.random.default_rng(seed_of(recipe.stem, "noise"))
     mosaic = sn.sample(clean, mode, nm, rng)
     del clean
 
     # as-shot white balance: the true gains perturbed like an automatic white balance
-    gains_true = np.array([1.0 / lt_.w_true[0], 1.0, 1.0 / lt_.w_true[2]])
+    gains_true = np.array([1.0 / lt_.w_true[0], 1.0, 1.0 / lt_.w_true[2]]) * np.asarray(body.white_scale)
     sigma = awb_sigma(rendered.light)
     err = np.random.default_rng(seed_of(recipe.stem, "awb")).normal(0.0, sigma, 2)
     gains = gains_true * np.array([np.exp(err[0]), 1.0, np.exp(err[1])])
@@ -394,7 +406,7 @@ def generate(recipe: rc.Recipe, index: int, out: Path, ctx: Context, force: bool
     gains_used = np.array([wb_levels[0] / 1024.0, 1.0, wb_levels[3] / 1024.0])
 
     # the embedded JPEG
-    raw_small = ctx.small_raw(rendered, k14)
+    raw_small = ctx.small_raw(rendered, k14) / np.asarray(body.white_scale, dtype=np.float32)
     matrix = pv.camera_to_srgb_matrix(rendered.light.spd, sp.camera_curves(body))
     rgb8 = pv.render(raw_small, gains_used, matrix)
     jpeg = pv.encode_jpeg(rgb8)

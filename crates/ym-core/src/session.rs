@@ -1762,13 +1762,14 @@ impl Session {
         let view = self.view(id)?;
         let raw = self.raw_image(id)?;
         let model = self.inner.env.illuminants.get(view.profile.id.as_str());
-        let estimates = AutoEstimates::compute(
+        let estimates = AutoEstimates::compute_scaled(
             &raw,
             &AutoInputs {
                 profile: &view.profile,
                 illuminant_model: model.map(|m| &**m),
                 priors: &self.inner.env.priors,
             },
+            view.camera.matched.white_scale,
         )?;
         let estimates = Arc::new(estimates);
         let changed = {
@@ -2218,13 +2219,14 @@ impl Inner {
         // Estimates.
         let started = Instant::now();
         let model = self.env.illuminants.get(profile.id.as_str());
-        let estimates = match AutoEstimates::compute(
+        let estimates = match AutoEstimates::compute_scaled(
             &raw,
             &AutoInputs {
                 profile: &profile,
                 illuminant_model: model.map(|m| &**m),
                 priors: &self.env.priors,
             },
+            camera.matched.white_scale,
         ) {
             Ok(e) => Arc::new(e),
             Err(e) => return fail(PhotoStage::Estimate, e.to_string()),

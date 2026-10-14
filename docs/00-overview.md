@@ -37,7 +37,7 @@ A desktop raw processor for photos from Sony cameras. It reads ARW files, develo
 - Camera detection on every file. Eleven measured Sony profiles; same-sensor bodies share them; every other body uses the A7R IV profile.
 - ALEXA ALEV III colour: illuminant-conditioned sensor map, ARRI's CCT matrices, LogC4/AWG4 working space.
 - Learned joint demosaic and denoise, with a classical fallback. Per-image noise estimation for every body.
-- Looks: Neutral (default) and Signature built in; ARRI Look Library and display LUTs imported by the user through a wizard; any other `.cube` with one question.
+- Looks: Signature (default) and Neutral (the identity) built in; ARRI Look Library and display LUTs imported by the user through a wizard; any other `.cube` with one question.
 - Export: JPEG, TIFF, PNG, and DNG with the look baked in.
 - Command-line tool with the same features.
 - Auto-update, Homebrew cask, `.dmg`.
@@ -75,7 +75,7 @@ Don't reopen these without new evidence. The reasoning is in `research/`.
 | ARRI colour step | ARRI's 17-CCT matrices (aces-dev v1.3.1, AMPAS licence) interpolated in mired, to AWG3, then exactly to AWG4. |
 | Working space | Linear AWG4 and LogC4. LogC3 looks run in LogC3 (EI 800) through an exact conversion. |
 | Display transform | ACES 2 output transform ported to WGSL as the default. ARRI's display LUTs only after the user imports them. |
-| Looks | ASC CDL then 3D LUT in LogC4, intensity 0–100%. Built-in Neutral (default) and Signature (parametric, ours). |
+| Looks | ASC CDL then 3D LUT in LogC4, intensity 0–100%. Built-in Signature (default; a luma curve and saturation, parametric, ours) and Neutral (the identity). |
 | ML | Joint demosaic+denoise U-Net, 0.2–1 M parameters. Runtime: burn on the shared wgpu device or ort, decided by the M0 benchmark. Training in PyTorch; weights only from CC0/CC BY/Apache data (no own captures in V1). |
 | Noise | Per-image Poisson–Gaussian estimate for every body, with priors fitted from public files. No calibration shoots in V1. Nothing stored. |
 | Lens | Sony's embedded correction tags (vignetting, distortion, CA). No Lensfun. |
