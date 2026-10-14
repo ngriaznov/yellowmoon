@@ -2010,7 +2010,7 @@ fn the_fused_tail_equals_the_chained_pair_on_tiny_frames_and_every_parameter_set
 fn the_luma_pass_hides_every_factor_and_partial_sum_from_the_optimiser() {
     // K8: Metal's fast-math re-associates `(w c) c` and fuses it with the next addition; an `abs` leaves
     // the first (measured with clang -O2 -ffast-math: 16 % of lumas one ulp off). Each factor, each
-    // product and the partial sum goes through `opaque`, a XOR with a uniform that is 0 at run time.
+    // product and the partial sum goes through `opaque`, an OR with a uniform that is 0 at run time.
     // The luma bits are checked on the device by `luma_has_the_cpu_bits`; this pins the shader text,
     // because lavapipe cannot show a regression (it does not re-associate).
     let src = include_str!("../src/shaders/output_sharpen.wgsl");
@@ -2037,8 +2037,8 @@ fn the_luma_pass_hides_every_factor_and_partial_sum_from_the_optimiser() {
         "`abs` is not a barrier against re-association"
     );
     assert!(
-        src.contains("bitcast<f32>(bitcast<u32>(x) ^ sp.zero)"),
-        "opaque is the XOR with the run-time zero"
+        src.contains("bitcast<f32>(bitcast<u32>(x) | sp.zero)"),
+        "opaque is the OR with the run-time zero (an XOR applied twice cancels)"
     );
 }
 
@@ -2460,6 +2460,53 @@ fn zz_model_dump() {
             scale_for_edges(2048, 6000),
             &img,
             true,
+        );
+    }
+}
+#[test]
+#[ignore = "development aid: YM_OS_DISPATCH_LOG=<file> records the dispatches of the cases of the four Metal failures"]
+fn zz_os_dump() {
+    use ym_gpu::kernels::output_sharpen::model_log;
+    if std::env::var_os("YM_OS_DISPATCH_LOG").is_none() {
+        return;
+    }
+    let Some(dev) = gpus().first() else { return };
+    let save = |name: &str, p: &OutputSharpen, scale: f32, img: &RgbImage| {
+        model_log(7, name.as_bytes());
+        let gpu = gpu_sharpen(dev, p, scale, img);
+        model_log(5, bytemuck::cast_slice(&gpu.data));
+        let cpu = p.apply(img, scale).expect("cpu");
+        model_log(6, bytemuck::cast_slice(&cpu.data));
+    };
+    let frames: Vec<(&str, RgbImage)> = vec![
+        ("busy71", busy(71, 66, 21)),
+        ("busy130", busy(130, 97, 22)),
+        ("photo150", photo_like(150, 113, 23)),
+        ("photo33", photo_like(33, 20, 24)),
+    ];
+    for (name, img) in &frames {
+        for (set, p, scale) in param_sets() {
+            save(&format!("noisy {name} {set}"), &p, scale, img);
+        }
+    }
+    let img = busy(53, 41, 61);
+    for (set, p, scale) in param_sets() {
+        save(&format!("flip orig {set}"), &p, scale, &img);
+        save(&format!("flip flipx {set}"), &p, scale, &flip_x(&img));
+        save(&format!("flip transp {set}"), &p, scale, &transpose(&img));
+    }
+    for (name, v) in vectors() {
+        let (os, scale) = params_of(&v);
+        save(&format!("vec {name}"), &os, scale, &image_of(&v["input"]));
+    }
+    if std::env::var_os("YM_MODEL_DUMP_LARGE").is_some() {
+        let img = photo_like(2048, 1365, 71);
+        save("large screen full", &OutputSharpen::screen(), 1.0, &img);
+        save(
+            "large screen 2048 from 6000",
+            &OutputSharpen::screen(),
+            scale_for_edges(2048, 6000),
+            &img,
         );
     }
 }

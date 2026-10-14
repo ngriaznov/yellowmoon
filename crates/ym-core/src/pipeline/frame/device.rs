@@ -40,7 +40,7 @@
 //! thread before it is submitted (the upload planes, the sampler's grid, the bounding box of the
 //! photo), and everything it returns is converted on the render thread afterwards.
 
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use std::time::Duration;
 
 use rayon::prelude::*;
@@ -128,9 +128,13 @@ impl ViewRoute {
         }
     }
 
-    /// Identifies the device a resident frame belongs to.
-    pub(super) fn gpu_id(&self) -> usize {
-        Arc::as_ptr(&self.gpu) as usize
+    /// Identifies the device a resident frame belongs to. A [`Weak`] and not the address: while any
+    /// resident frame holds it the allocation of the device cannot be given to the next one, so
+    /// `Weak::ptr_eq` is true for the device that made the frame and for no other (an address alone
+    /// is reused by the device that replaces a dropped one, and a frame of the old device would then
+    /// be bound in the new device's passes: a validation error that loses a healthy device).
+    pub(super) fn gpu_ref(&self) -> Weak<Gpu> {
+        Arc::downgrade(&self.gpu)
     }
 
     /// Runs `work` over `data` as one job of the route and waits for it.
@@ -289,8 +293,8 @@ pub(crate) struct DeviceDisplay {
     pub image: GpuImage,
     /// The bounding box of the pixels inside the photo, where the stage works.
     pub bounds: Option<Bounds>,
-    /// The device it lives on ([`ViewRoute::gpu_id`]).
-    pub gpu: usize,
+    /// The device it lives on ([`ViewRoute::gpu_ref`]).
+    pub gpu: Weak<Gpu>,
 }
 
 impl DeviceDisplay {
@@ -473,8 +477,8 @@ pub(super) struct DisplayJob {
     pub tail: Option<TailWork>,
     /// Keep the display-linear frame resident (a tail job can sharpen it again).
     pub keep: bool,
-    /// The device's identity, for the resident frame.
-    pub gpu: usize,
+    /// The device's identity, for the resident frame ([`ViewRoute::gpu_ref`]).
+    pub gpu: Weak<Gpu>,
 }
 
 /// What a [`DisplayJob`] made.
@@ -539,7 +543,7 @@ pub(super) fn display_job(
         out.resident = Some(DeviceDisplay {
             image: display,
             bounds: job.bounds,
-            gpu: job.gpu,
+            gpu: job.gpu.clone(),
         });
     }
     Ok(out)

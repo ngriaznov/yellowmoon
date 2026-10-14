@@ -119,11 +119,15 @@ fn src_at(c: u32, x: u32, y: u32) -> f32 {
     return img[c * sp.in_plane + (sp.in_y + y) * sp.in_stride + sp.in_x + x];
 }
 
-// Hides a value from algebraic rewriting: XOR with `sp.zero`, which is 0 at run time and unknown to the
-// compiler, puts an integer operation between the producer of a value and its consumers that no
-// floating-point rule can see through (the same device as `opaque` in diffraction.wgsl).
+// Hides a value from algebraic rewriting: an OR with `sp.zero`, which is 0 at run time and unknown to
+// the compiler, puts an integer operation between the producer of a value and its consumers that no
+// floating-point rule can see through. OR, not XOR: two barriers in a row must stay a barrier. An
+// XOR applied twice cancels (x ^ z ^ z == x for every z, and compilers fold it), and fast-math
+// folds a sum that starts at 0 (`0 + x` is x), so the first `opaque(acc + opaque(t * d))` of a running
+// sum became the bare product, which the next sum then fused into a multiply-add (seen in clang's
+// code for the adaptive ratio kernel). An OR is idempotent: (x | z) | z == x | z, still one barrier.
 fn opaque(x: f32) -> f32 {
-    return bitcast<f32>(bitcast<u32>(x) ^ sp.zero);
+    return bitcast<f32>(bitcast<u32>(x) | sp.zero);
 }
 
 // The correctly rounded square root of `x`, in integer arithmetic only (Metal's fast-math `sqrt` is
@@ -175,13 +179,15 @@ fn sharpen_sqrt(x: f32) -> f32 {
     return bitcast<f32>(((((e + 127u) >> 1u) - 1u) << 23u) + q);
 }
 
-// The correctly rounded quotient a / b, in integer arithmetic only (Metal's fast-math division is
-// `a * (1 / b)` with an approximate reciprocal). Restoring division of the 24-bit mantissas gives
-// q = floor(ma 2^25 / mb), 25 or 26 bits, and the remainder; rounding to nearest, ties to even, as
-// in `sharpen_sqrt`. A zero dividend gives the signed zero; subnormal, infinite or NaN operands and a
-// quotient outside the normal range take the device's division (none occurs on finite images: every
-// divisor here is a count, a blurred weight of at least 1/25, a gain-map denominator of at least 1e-10
-// or a luma of at least 1e-20).
+// The correctly rounded quotient a / b, whatever the device's division does (a fast-math division is
+// the dividend times an approximate reciprocal). The device's quotient of the two 24-bit mantissas
+// gives an estimate q of the quotient's mantissa, a few units off at most; the remainder
+// ma 2^k - q mb is then small (under 2^28), so the low 32 bits of the two products give it exactly in
+// wrapping u32 arithmetic, and up to four steps move q to the nearest value (|2 r| < mb; a quotient of
+// two 24-bit mantissas never lies exactly halfway, so there is no tie). A zero dividend gives the
+// signed zero; subnormal, infinite or NaN operands and a quotient outside the normal range take the
+// device's division. Measured against IEEE on 3.2 10^8 quotients, also compiled with clang
+// -ffast-math -mrecip=all (an approximate reciprocal for the estimate): 0 differ.
 fn sharpen_div(a: f32, b: f32) -> f32 {
     let ab = bitcast<u32>(a);
     let bb = bitcast<u32>(b);
@@ -199,31 +205,28 @@ fn sharpen_div(a: f32, b: f32) -> f32 {
     }
     let ma = (ab & 0x7fffffu) | 0x800000u;
     let mb = (bb & 0x7fffffu) | 0x800000u;
-    var rem = ma;
-    var q = 0u;
-    for (var k = 0u; k < 26u; k = k + 1u) {
-        q = q << 1u;
-        if (rem >= mb) {
-            rem = rem - mb;
-            q = q | 1u;
-        }
-        rem = rem << 1u;
-    }
-    var ex = i32(ea) - i32(eb) + 126;
-    var m = q >> 1u;
-    var round_bit = q & 1u;
-    var sticky = u32(rem != 0u);
-    if (q >= 0x2000000u) {
-        m = q >> 2u;
-        round_bit = (q >> 1u) & 1u;
-        sticky = sticky | (q & 1u);
-        ex = ex + 1;
-    }
+    let big = ma >= mb;
+    let k = select(24u, 23u, big);
+    let ex = i32(ea) - i32(eb) + select(126, 127, big);
     if (ex < 1 || ex > 254) {
         return a / b;
     }
-    m = m + (round_bit & (sticky | (m & 1u)));
-    return bitcast<f32>(sign | ((u32(ex - 1) << 23u) + m));
+    let qf = f32(ma) / f32(mb);
+    var q = u32(qf * bitcast<f32>((127u + k) << 23u) + 0.5);
+    var r = bitcast<i32>((ma << k) - q * mb);
+    let m = i32(mb);
+    for (var i = 0; i < 4; i = i + 1) {
+        if (2 * r > m) {
+            q = q + 1u;
+            r = r - m;
+        } else if (2 * r < -m) {
+            q = q - 1u;
+            r = r + m;
+        }
+    }
+    // q holds the leading bit, so a quotient that rounds up to the next power of two carries into the
+    // exponent.
+    return bitcast<f32>(sign | ((u32(ex - 1) << 23u) + q));
 }
 
 // L = sqrt(((wR R) R + (wG G) G) + (wB B) B), f32, in exactly this order (spec 3.1).

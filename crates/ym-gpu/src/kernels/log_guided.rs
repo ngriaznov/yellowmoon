@@ -69,7 +69,7 @@
 //!     both on the working scale of a very bright frame (A above 1.8e19) the product overflows
 //!     although each factor and the result are finite (the Apple runners returned infinity from a
 //!     mosaic scale of 1e20). Each of the four quotients of the reconstruction (`C / HC`, `C / VC`,
-//!     `C / (blend of HC, VC)`, `C / SC`) is behind a barrier (`lg_opaque`: an xor with the
+//!     `C / (blend of HC, VC)`, `C / SC`) is behind a barrier (`lg_opaque`: an or with the
 //!     always-zero `ctl.y`), so that it stays one rounded ratio near 1.
 //!   * The device's `log2` is up to 3 ulp off (MSL fast-math), and one ulp of `L` near 116 is a
 //!     relative 5e-6 of the guide `C = 2^L`: at b6f2e4b the Apple runners measured 1.6e-6, 4.4e-6
@@ -436,7 +436,7 @@ mod tests {
             "other = lg_opaque(sa * lg_opaque(cc / sc)) / s;",
             "chroma = lg_opaque(lg_opaque(cc / hc) * ha) / s;",
             "other = lg_opaque(lg_opaque(cc / vc) * va) / s;",
-            "return bitcast<f32>(bitcast<u32>(x) ^ u.ctl.y);",
+            "return bitcast<f32>(bitcast<u32>(x) | u.ctl.y);",
             "return lg_log2(lg_opaque(u.misc.x + lg_opaque(0.5 * lg_a(x, y))));",
             "acc = lg_opaque(acc + lg_opaque(u.taps.y * lg_opaque(lg_l(x - 1, y) - lc)));",
             "acc = lg_opaque(acc + lg_opaque(u.taps.x * lg_opaque(lg_plane(0u, x, y + 2) - lc)));",

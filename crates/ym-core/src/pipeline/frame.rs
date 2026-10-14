@@ -49,7 +49,7 @@
 
 mod device;
 
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 use rayon::prelude::*;
 use ym_color::consts::Vec3;
@@ -57,7 +57,7 @@ use ym_color::display::{ColorChain, Frame, Layout, OutputTarget, View};
 use ym_gpu::cpu::output_sharpen::{OutputSharpen, scale_for_edges};
 use ym_gpu::cpu::resample::sample_catmull_rom;
 use ym_gpu::cpu::{Rect, RgbImage};
-use ym_gpu::device::GpuError;
+use ym_gpu::device::{Gpu, GpuError};
 use ym_gpu::queue::{CancelToken, Priority};
 
 use self::device::{
@@ -273,7 +273,9 @@ impl PreparedView {
 
     /// The rectangle [`PreparedView::source_window`] cuts, in buffer pixels, and the rectangle of the
     /// image it is cut from; the two are equal when the view reads the whole image. No pixel is
-    /// copied.
+    /// copied. `None` when the view reads nothing of the photo (a band of a letterbox that is all
+    /// paper): there is nothing to upload, and a window of the whole image would count against the
+    /// binding (and go up to the device) for a frame the sampler leaves empty.
     fn window_rect(&self) -> Option<(Rect, Rect)> {
         let ViewSource::Image {
             image,
@@ -284,9 +286,7 @@ impl PreparedView {
             return None;
         };
         let whole = Rect::new(origin.0, origin.1, image.width, image.height);
-        let Some((x0, y0, x1, y1)) = grid.source_bounds(0, 0, self.width, self.height, 3) else {
-            return Some((whole, whole));
-        };
+        let (x0, y0, x1, y1) = grid.source_bounds(0, 0, self.width, self.height, 3)?;
         let want = Rect::new(x0, y0, x1 - x0, y1 - y0).intersect(&whole);
         Some((if want.is_empty() { whole } else { want }, whole))
     }
@@ -300,13 +300,12 @@ impl PreparedView {
             && let ViewSource::Image { grid, .. } = &self.source
             && let Some((image, origin)) = self.source_window()
         {
-            let grid = grid.sampler_grid();
-            let bounds = grid.inside_bounds((0, 0), w, h);
+            let bounds = self.inside_bounds();
             return (
                 DeviceInput::Camera {
                     image,
                     origin,
-                    grid,
+                    grid: grid.sampler_grid(),
                     width: w,
                     height: h,
                 },
@@ -316,6 +315,19 @@ impl PreparedView {
         let sampled = self.sample_host(job);
         let bounds = inside_bounds(sampled.outside.as_deref(), w, h);
         (DeviceInput::Sampled(Upload::of(&sampled)), bounds)
+    }
+
+    /// The bounding box `(x0, y0, x1, y1)` (exclusive ends) of the pixels of the view that are inside
+    /// the photo, found from the geometry alone (no pixel is touched); `None` when none is. It is
+    /// what the CPU finds in the mask of a sampled view ([`inside_bounds`]).
+    fn inside_bounds(&self) -> Option<Bounds> {
+        match &self.source {
+            ViewSource::Image { grid, .. } => {
+                grid.sampler_grid()
+                    .inside_bounds((0, 0), self.width, self.height)
+            }
+            ViewSource::Empty => None,
+        }
     }
 
     /// Bytes of the camera RGB window an upload of this view would need (3 planes of f32), when the
@@ -592,13 +604,14 @@ impl DisplayFrame {
         }
     }
 
-    /// Whether a request that wants its tail `on_device` (on the device `gpu`) can use this frame as
-    /// it is: a resident frame only for the device it lives on and a tail that runs there, a host
-    /// frame only for a tail on the CPU (the other pairs would read the frame back or upload it, and
-    /// a frame made again on the right side costs about the same as the colour pass it replaces).
-    fn usable(&self, gpu: Option<usize>) -> bool {
+    /// Whether a request that wants its tail on the device `gpu` (`None`: on the CPU) can use this
+    /// frame as it is: a resident frame only for the very device it lives on and a tail that runs
+    /// there, a host frame only for a tail on the CPU (the other pairs would read the frame back or
+    /// upload it, and a frame made again on the right side costs about the same as the colour pass it
+    /// replaces).
+    fn usable(&self, gpu: Option<&Weak<Gpu>>) -> bool {
         match (&self.data, gpu) {
-            (DisplayData::Device(d), Some(id)) => d.gpu == id,
+            (DisplayData::Device(d), Some(device)) => Weak::ptr_eq(&d.gpu, device),
             (DisplayData::Host { .. }, None) => true,
             _ => false,
         }
@@ -895,6 +908,9 @@ struct Done {
     scale: usize,
     /// False when the frame was made from a coarser image than its zoom asks for.
     sharp: bool,
+    /// The frame is paper only (nothing of the photo is in view): no stage ran, on either device. A
+    /// band of a cut view that is nothing but paper is as much the device's as any other band.
+    paper: bool,
 }
 
 /// What a pass of a view came to.
@@ -981,6 +997,7 @@ fn plain_pass(
                 device: ComputeDevice::Gpu,
                 scale,
                 sharp,
+                paper: false,
             }));
         }
     }
@@ -994,7 +1011,32 @@ fn plain_pass(
         device: ComputeDevice::Cpu,
         scale,
         sharp,
+        paper: false,
     }))
+}
+
+/// The window output sharpening works on in the frame a pass makes: the bounding box of the pixels
+/// inside the photo ("the stage works on the bounding box of the pixels inside the photo and mirrors at
+/// its edge", `docs/01`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StageWindow {
+    /// The box of the frame the pass makes (a view in one piece).
+    Own,
+    /// A box found from the whole view, in the frame of this pass: what a band of a cut view hands
+    /// to the stage, so that the stage sees what it sees in the view in one piece. A band's own box
+    /// is narrower where the photo's edge is slanted, and a pixel at the edge would then mirror
+    /// where the view in one piece sees the black of the empty corner. `None`: nothing of the photo.
+    Of(Option<Bounds>),
+}
+
+impl StageWindow {
+    /// The box to give the stage, `own` being the one found from the pass's own frame.
+    fn or(self, own: Option<Bounds>) -> Option<Bounds> {
+        match self {
+            Self::Own => own,
+            Self::Of(b) => b,
+        }
+    }
 }
 
 /// What a display pass made: the display-linear frame (kept, when anything wants it again), the
@@ -1007,37 +1049,49 @@ struct Built {
     device: ComputeDevice,
 }
 
+/// What a display pass does beyond the colour chain.
+struct TailPlan<'a> {
+    /// The tail of the view (the stage and C13) in the same device job as the frame; `None` reads the
+    /// display-linear frame back for the CPU to finish.
+    work: Option<&'a TailWork>,
+    /// Keep the display-linear frame resident (a tail job can sharpen it again): asked for when the
+    /// frame is cached.
+    keep: bool,
+    /// The window the stage works on.
+    window: StageWindow,
+}
+
 /// The display-linear frame of `read` (the view grown by the stage's receptive field): the sampler
 /// (the CPU's, or the device's) and the colour chain C1 to C12, with the tail of the view in the same
-/// device job when `tail` says the device runs it. `keep` asks for the frame to stay resident.
-/// `None` after a device error (answered on the CPU by the caller).
+/// device job when `plan` says the device runs it. `None` after a device error (answered on the CPU by
+/// the caller).
 fn build_display(
     job: &mut Job<'_>,
     route: Option<&ViewRoute>,
     prepared: &PreparedView,
     read: &ViewSpec,
     grade: &GradePlan,
-    tail: Option<&TailWork>,
-    keep: bool,
+    plan: &TailPlan<'_>,
 ) -> Result<Option<Built>, RenderError> {
     let (scale, sharp) = (prepared.scale, prepared.sharp);
     let started = std::time::Instant::now();
     if let Some(r) = route.filter(|r| r.stages.color) {
-        let (input, bounds) = prepared.device_input(job, r.stages.sampler);
+        let (input, own) = prepared.device_input(job, r.stages.sampler);
+        let bounds = plan.window.or(own);
         if input.fits(r) {
             let data = DisplayJob {
                 input,
                 bounds,
                 chain: Arc::clone(&grade.chain),
-                tail: tail.cloned(),
-                keep: keep && tail.is_some(),
-                gpu: r.gpu_id(),
+                tail: plan.work.cloned(),
+                keep: plan.keep && plan.work.is_some(),
+                gpu: r.gpu_ref(),
             };
             let Some(out) = attempt(job, r.run(data, device::display_job))? else {
                 return Ok(None);
             };
             job.runs.color_passes += 1;
-            if tail.is_some() {
+            if plan.work.is_some() {
                 job.runs.output_passes += 1;
             }
             // One job made the frame, and the tail when it was there: its time is the pass's.
@@ -1089,6 +1143,88 @@ fn build_display(
     }))
 }
 
+/// The display-linear frame of `read` made by the device in bands of `rows` rows: for a frame that
+/// does not fit one storage binding and whose tail the CPU runs (the colour pass alone is on, as under
+/// `Auto`). The colour chain is pointwise, so a band is a view of its own and the bands put together
+/// are the frame in one piece, which the CPU stage then works on whole. `None` after a device error
+/// (answered on the CPU by the caller).
+fn build_display_in_bands(
+    job: &mut Job<'_>,
+    route: &ViewRoute,
+    read: &ViewSpec,
+    grade: &GradePlan,
+    rows: usize,
+) -> Result<Option<Built>, RenderError> {
+    let started = std::time::Instant::now();
+    let (w, h) = (read.out_w, read.out_h);
+    let mut rgb: Vec<f32> = Vec::with_capacity(3 * w * h);
+    let mut outside: Option<Vec<u8>> = None;
+    let (mut scale, mut sharp) = (1, true);
+    let mut done_rows = 0;
+    for band in device::bands_of(read, rows) {
+        job.check()?;
+        let prepared = prepare_view(job, &band)?;
+        let (input, _) = prepared.device_input(job, route.stages.sampler);
+        if !input.fits(route) {
+            // The cut is made so that every band fits (`band_split`): a band that does not is the
+            // frame's buffers not fitting, answered as such.
+            let requested = 16 * band.out_w.next_multiple_of(2) as u64 * band.out_h as u64;
+            job.view_gpu_failed(&GpuError::BufferTooLarge {
+                requested,
+                limit: route.band_bytes,
+            })?;
+            return Ok(None);
+        }
+        let data = DisplayJob {
+            input,
+            bounds: None,
+            chain: Arc::clone(&grade.chain),
+            tail: None,
+            keep: false,
+            gpu: route.gpu_ref(),
+        };
+        let Some(out) = attempt(job, route.run(data, device::display_job))? else {
+            return Ok(None);
+        };
+        job.runs.color_passes += 1;
+        // A job without a tail reads the frame back: the invariant of `display_job`.
+        let Some((planes, planar)) = out.planar else {
+            return Ok(None);
+        };
+        let (band_rgb, band_outside) =
+            device::interleave_display(band.out_w, band.out_h, planes, &planar);
+        let band_px = band.out_w * band.out_h;
+        match (band_outside, outside.as_mut()) {
+            (Some(mask), Some(all)) => all.extend_from_slice(&mask),
+            (Some(mask), None) => {
+                let mut all = vec![0u8; w * done_rows];
+                all.extend_from_slice(&mask);
+                outside = Some(all);
+            }
+            (None, Some(all)) => all.resize(all.len() + band_px, 0),
+            (None, None) => {}
+        }
+        rgb.extend_from_slice(&band_rgb);
+        done_rows += band.out_h;
+        (scale, sharp) = (prepared.scale, sharp && prepared.sharp);
+    }
+    job.timings.pass_ms += millis(started);
+    Ok(Some(Built {
+        display: Some(DisplayFrame {
+            width: w,
+            height: h,
+            data: DisplayData::Host { rgb, outside },
+            scale,
+            sharp,
+            device: ComputeDevice::Gpu,
+        }),
+        rgba: None,
+        scale,
+        sharp,
+        device: ComputeDevice::Gpu,
+    }))
+}
+
 /// The tail of a view as the device runs it: the stage's inputs and the encode's.
 fn tail_work(grade: &GradePlan, sharpening: &ViewSharpening, spec: &ViewSpec) -> TailWork {
     TailWork {
@@ -1114,6 +1250,7 @@ fn sharpened_pass(
     grade: &GradePlan,
     sharpening: &ViewSharpening,
     route: Option<&ViewRoute>,
+    window: StageWindow,
 ) -> Result<Flow, RenderError> {
     let image = job.final_size()?;
     let Some(geometry) =
@@ -1128,6 +1265,7 @@ fn sharpened_pass(
             device: ComputeDevice::Cpu,
             scale: 1,
             sharp: true,
+            paper: true,
         }));
     };
     let read = ViewSpec {
@@ -1138,7 +1276,7 @@ fn sharpened_pass(
     };
     let key = spec
         .cache
-        .then(|| display_key(job, &read, grade, sharpening))
+        .then(|| display_key(job, &read, grade, sharpening, window))
         .transpose()?;
     // The tail runs on the device when the route has it and the frame is the view grown by the halo
     // (a magnified view keeps the host road: the stage runs on the 100 % picture and the sharpened
@@ -1146,14 +1284,14 @@ fn sharpened_pass(
     let tail = route
         .filter(|r| r.stages.tail && geometry.origin.is_none())
         .map(|_| tail_work(grade, sharpening, spec));
-    let tail_gpu = tail.as_ref().and(route).map(ViewRoute::gpu_id);
+    let tail_gpu = tail.as_ref().and(route).map(ViewRoute::gpu_ref);
     let cached = key
         .as_ref()
         .and_then(|k| job.g.cached_display(k))
         // A frame made from a coarser image than asked for is not served to a request that wants
         // the tiles (same rule as the finished frames).
         .filter(|d| !(spec.coarse_only && !d.sharp))
-        .filter(|d| d.usable(tail_gpu));
+        .filter(|d| d.usable(tail_gpu.as_ref()));
     let (scale, sharp, device);
     let mut rgba: Option<Vec<u8>> = None;
     let display: Option<Arc<DisplayFrame>>;
@@ -1164,17 +1302,26 @@ fn sharpened_pass(
             display = Some(d);
         }
         None => {
-            let prepared = prepare_view(job, &read)?;
-            let Some(built) = build_display(
-                job,
-                route,
-                &prepared,
-                &read,
-                grade,
-                tail.as_ref(),
-                key.is_some(),
-            )?
-            else {
+            // A frame the device colours that does not fit one binding, and whose tail the CPU runs
+            // (the colour pass alone is on, as under `Auto`): the colour pass is pointwise, so the
+            // device makes it in bands of rows and the CPU gets the whole frame to sharpen.
+            let in_bands = match route {
+                Some(r) if r.stages.color && tail.is_none() => band_split(job, &read, None, r)?,
+                _ => None,
+            };
+            let built = match (in_bands, route) {
+                (Some(rows), Some(r)) => build_display_in_bands(job, r, &read, grade, rows)?,
+                _ => {
+                    let prepared = prepare_view(job, &read)?;
+                    let plan = TailPlan {
+                        work: tail.as_ref(),
+                        keep: key.is_some(),
+                        window,
+                    };
+                    build_display(job, route, &prepared, &read, grade, &plan)?
+                }
+            };
+            let Some(built) = built else {
                 return Ok(Flow::Cpu);
             };
             (scale, sharp, device) = (built.scale, built.sharp, built.device);
@@ -1232,6 +1379,7 @@ fn sharpened_pass(
         device,
         scale,
         sharp,
+        paper: false,
     }))
 }
 
@@ -1246,7 +1394,7 @@ fn render_pass(
     loop {
         let flow = match &route {
             Some(r) => banded(job, spec, grade, sharpening, r)?,
-            None => whole(job, spec, grade, sharpening, None)?,
+            None => whole(job, spec, grade, sharpening, None, StageWindow::Own)?,
         };
         match flow {
             Flow::Done(done) => return Ok(done),
@@ -1263,18 +1411,54 @@ fn render_pass(
     }
 }
 
-/// One pass over `spec` as a whole.
+/// One pass over `spec` as a whole; `window` is the window the stage works on (a frame without the
+/// stage has none).
 fn whole(
     job: &mut Job<'_>,
     spec: &ViewSpec,
     grade: &GradePlan,
     sharpening: Option<&ViewSharpening>,
     route: Option<&ViewRoute>,
+    window: StageWindow,
 ) -> Result<Flow, RenderError> {
     match sharpening {
-        Some(sh) => sharpened_pass(job, spec, grade, sh, route),
+        Some(sh) => sharpened_pass(job, spec, grade, sh, route, window),
         None => plain_pass(job, spec, grade, route),
     }
+}
+
+/// The window the stage works on in the frame of the band of a cut view that starts at row `row` of
+/// the view and is `rows` rows tall, from `whole`, the box of the frame of the view in one piece
+/// (`None`: nothing of the photo is in view). The band's frame is the band grown by `halo` rows
+/// above and below, which are rows `row ..< row + rows + 2 * halo` of the view's frame; the box keeps
+/// its columns and is cut to those rows.
+fn band_window(whole: Option<Bounds>, row: usize, rows: usize, halo: usize) -> Option<Bounds> {
+    let (x0, y0, x1, y1) = whole?;
+    let (top, bottom) = (y0.max(row), y1.min(row + rows + 2 * halo));
+    (top < bottom).then(|| (x0, top - row, x1, bottom - row))
+}
+
+/// The bounding box of the pixels inside the photo in the frame the stage reads for the whole of
+/// `spec` (the view grown by the stage's receptive field), found from the geometry alone: no tile is
+/// assembled and no pixel is sampled. `None` when nothing of the photo is in the frame. For a view
+/// the stage works on in one piece: not for a magnified view, whose frame is the 100 % picture.
+fn whole_window(
+    job: &mut Job<'_>,
+    spec: &ViewSpec,
+    sharpening: &ViewSharpening,
+) -> Result<Option<Bounds>, RenderError> {
+    let image = job.final_size()?;
+    let Some(g) = sharpening.frame_geometry(&spec.view_to_final, (spec.out_w, spec.out_h), image)
+    else {
+        return Ok(None);
+    };
+    let read = ViewSpec {
+        out_w: g.width,
+        out_h: g.height,
+        view_to_final: g.view_to_final,
+        ..spec.clone()
+    };
+    Ok(prepare_view_with(job, &read, false)?.inside_bounds())
 }
 
 /// The view as one pass, or as one pass per band when the device cannot hold its frame in one
@@ -1291,17 +1475,35 @@ fn banded(
     route: &ViewRoute,
 ) -> Result<Flow, RenderError> {
     let Some(rows) = band_split(job, spec, sharpening, route)? else {
-        return whole(job, spec, grade, sharpening, Some(route));
+        return whole(job, spec, grade, sharpening, Some(route), StageWindow::Own);
     };
+    // The stage works on the bounding box of the photo in the view's frame: every band is given
+    // the box of the view in one piece, cut to its rows (a band's own box is narrower where the
+    // photo's edge is slanted, and the stage would mirror there instead of seeing the black of the
+    // empty corner, as it does in the view in one piece).
+    let whole_box = sharpening
+        .map(|sh| whole_window(job, spec, sh))
+        .transpose()?;
+    let halo = sharpening.map_or(0, |s| s.halo);
     let mut rgba = Vec::with_capacity(4 * spec.out_w * spec.out_h);
     let (mut scale, mut sharp) = (1, true);
+    let mut row = 0;
     for band in device::bands_of(spec, rows) {
         job.check()?;
-        match whole(job, &band, grade, sharpening, Some(route))? {
-            Flow::Done(done) if done.device == ComputeDevice::Gpu => {
+        let window = match whole_box {
+            Some(b) => StageWindow::Of(band_window(b, row, band.out_h, halo)),
+            None => StageWindow::Own,
+        };
+        row += band.out_h;
+        match whole(job, &band, grade, sharpening, Some(route), window)? {
+            Flow::Done(done) if done.device == ComputeDevice::Gpu || done.paper => {
                 rgba.extend_from_slice(&done.rgba);
-                scale = done.scale;
-                sharp &= done.sharp;
+                // A band of paper says nothing of the raw group; of the others the coarsest counts,
+                // as `sharp` says that one of them was made from less than the zoom asks for.
+                if !done.paper {
+                    scale = scale.max(done.scale);
+                    sharp &= done.sharp;
+                }
             }
             Flow::Done(_) | Flow::Cpu => return Ok(Flow::Cpu),
         }
@@ -1311,6 +1513,7 @@ fn banded(
         device: ComputeDevice::Gpu,
         scale,
         sharp,
+        paper: false,
     }))
 }
 
@@ -1335,7 +1538,9 @@ fn band_split(
     route: &ViewRoute,
 ) -> Result<Option<usize>, RenderError> {
     let stages = route.stages;
-    if !(stages.sampler && stages.color && (sharpening.is_none() || stages.tail)) {
+    // Only a view the device colours is cut, and with output sharpening only when the device also
+    // runs the stage (the CPU stage takes the whole frame: `build_display_in_bands`).
+    if !(stages.color && (sharpening.is_none() || stages.tail)) {
         return Ok(None);
     }
     let step = spec.view_to_final.m[0][0];
@@ -1350,6 +1555,10 @@ fn band_split(
     // The camera RGB one band reads: the view's own rows, or with output sharpening the band grown
     // by the stage's receptive field (the frame the band's colour pass makes).
     let source_fits = |job: &mut Job<'_>, band: &ViewSpec| -> Result<bool, RenderError> {
+        // The CPU samples: what goes up is the band's frame, which the cut already holds.
+        if !stages.sampler {
+            return Ok(true);
+        }
         let read = match sharpening
             .and_then(|sh| sh.frame_geometry(&band.view_to_final, (band.out_w, band.out_h), image))
         {
@@ -1402,11 +1611,12 @@ fn display_key(
     grown: &ViewSpec,
     grade: &GradePlan,
     sharpening: &ViewSharpening,
+    window: StageWindow,
 ) -> Result<String, RenderError> {
     let params = job.params()?;
     // The sharpening amount is not part of it: the frame is what the amount is applied to. The
     // halo is (it is what the view was grown by).
-    Ok(format!(
+    let mut key = format!(
         "display|{:?}|{:?}|{:?}|{:?}|{}x{}|{:?}|{}|{}",
         params.key(),
         grade.key,
@@ -1417,7 +1627,13 @@ fn display_key(
         grown.k,
         grown.coarse_only,
         sharpening.halo
-    ))
+    );
+    // A band of a cut view keeps the box of the whole view with its frame: the same pixels in the
+    // frame of another view have another box, and a frame resident with one must not serve the other.
+    if let StageWindow::Of(b) = window {
+        key.push_str(&format!("|window{b:?}"));
+    }
+    Ok(key)
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1472,6 +1688,17 @@ pub(crate) fn prepare_view(
     job: &mut Job<'_>,
     spec: &ViewSpec,
 ) -> Result<PreparedView, RenderError> {
+    prepare_view_with(job, spec, true)
+}
+
+/// [`prepare_view`]; with `pixels` false the full-resolution tiles a view reads are not assembled
+/// (the view then holds an empty image: it is for its grid and its scale, the bounding box of the
+/// photo in it, not for sampling).
+fn prepare_view_with(
+    job: &mut Job<'_>,
+    spec: &ViewSpec,
+    pixels: bool,
+) -> Result<PreparedView, RenderError> {
     let plan = job.plan()?;
     let geom = job.geometry();
     let (w, h) = (spec.out_w, spec.out_h);
@@ -1490,7 +1717,11 @@ pub(crate) fn prepare_view(
                 k = plan.effective_scale(2).max(2);
                 sharp = false;
             } else {
-                let region = job.region(rect, true)?;
+                let region = if pixels {
+                    job.region(rect, true)?
+                } else {
+                    RgbImage::new(0, 0)
+                };
                 return Ok(PreparedView {
                     source: ViewSource::Image {
                         image: Arc::new(region),
@@ -2294,6 +2525,28 @@ mod sharpening_tests {
             &sh,
         );
         assert!(matches!(result, Err(RenderError::Cancelled)));
+    }
+
+    #[test]
+    fn a_band_gets_the_box_of_the_whole_view_cut_to_its_rows() {
+        // The view's frame has the box columns 10 to 70 and rows 5 to 95; the halo is 4 rows, so a
+        // band of 20 view rows at row `r` has the frame rows `r ..< r + 28` of the view's frame.
+        let whole = Some((10, 5, 70, 95));
+        // The first band: the box starts inside its frame, at row 5.
+        assert_eq!(band_window(whole, 0, 20, 4), Some((10, 5, 70, 28)));
+        // One in the middle: the frame is inside the box.
+        assert_eq!(band_window(whole, 40, 20, 4), Some((10, 0, 70, 28)));
+        // The last: the box ends inside its frame, at row 95 of the view's frame.
+        assert_eq!(band_window(whole, 80, 20, 4), Some((10, 0, 70, 15)));
+        // A frame the box does not touch has no window (and nothing underflows).
+        assert_eq!(band_window(Some((0, 50, 8, 60)), 0, 10, 2), None);
+        assert_eq!(band_window(Some((0, 5, 8, 10)), 80, 10, 2), None);
+        assert_eq!(band_window(None, 0, 10, 2), None);
+        // The window the pass is given: its own box, or the one handed down.
+        let own = Some((1, 2, 3, 4));
+        assert_eq!(StageWindow::Own.or(own), own);
+        assert_eq!(StageWindow::Of(None).or(own), None);
+        assert_eq!(StageWindow::Of(whole).or(own), whole);
     }
 
     #[test]

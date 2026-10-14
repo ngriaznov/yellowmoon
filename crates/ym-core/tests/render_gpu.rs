@@ -1354,13 +1354,23 @@ mod view {
     fn bands_of_a_tilted_photo_with_empty_corners_have_the_pixels_of_the_view_in_one_piece() {
         // The stage works on the bounding box of the photo's pixels and sharpens the empty corners of
         // a straightened photo against black: a band must see the same box as the view does, or the
-        // pixels at the slanted edge differ between the cut view and the view in one piece.
+        // pixels at the slanted edge differ between the cut view and the view in one piece. The
+        // portrait cell has bands that are nothing but paper (a landscape photo in a tall cell).
         let Some(gpu) = gpu() else { return };
         let src = picture(900, 600);
         let whole = device_renderer(&gpu, VIEW);
-        let cut = small_binding(&gpu, VIEW, 1_400_000);
         let cpu = on_cpu();
-        for angle in [4.0, 12.0, -17.0, 33.0] {
+        // (angle, cell, bytes a binding holds). A band of a rotated view reads the bounding box of a
+        // rotated strip, which is as wide as the photo and `width * tan(angle)` tall even for one
+        // row, so the bytes must hold that.
+        let cases: [(f64, (f64, f64), u64); 5] = [
+            (4.0, (576.0, 384.0), 1_400_000),
+            (12.0, (576.0, 384.0), 3_000_000),
+            (-9.0, (576.0, 384.0), 3_000_000),
+            (4.0, (300.0, 520.0), 1_400_000),
+            (-12.0, (300.0, 520.0), 1_400_000),
+        ];
+        for (angle, (w, h), bytes) in cases {
             let tilted = edit(&src, |s| {
                 s.crop = Some(Crop {
                     rect: NormRect {
@@ -1373,26 +1383,82 @@ mod view {
                     aspect: CropAspect::Free,
                 });
             });
-            for st in [cell(576.0, 384.0, 1.0), cell(300.0, 520.0, 1.0)] {
-                let a = fresh(&whole, &tilted, &st);
-                let jobs = gpu.counters().submissions;
-                let b = fresh(&cut, &tilted, &st);
-                let ran = gpu.counters().submissions - jobs;
-                assert_eq!(b.report.device, ComputeDevice::Gpu, "{angle}");
-                assert!(ran >= 2, "{angle}: {ran} device jobs");
-                let c = fresh(&cpu, &tilted, &st);
-                eprintln!(
-                    "{angle} degrees: bands against one piece {:?}, one piece against the CPU {:?}",
-                    codes(&a, &b),
-                    codes(&a, &c)
-                );
-                assert!(
-                    a.rgba == b.rgba,
-                    "{angle} degrees: the bands differ from the view in one piece {:?}",
-                    codes(&a, &b)
-                );
-            }
+            let cut = small_binding(&gpu, VIEW, bytes);
+            let st = cell(w, h, 1.0);
+            let a = fresh(&whole, &tilted, &st);
+            let jobs = gpu.counters().submissions;
+            let b = fresh(&cut, &tilted, &st);
+            let ran = gpu.counters().submissions - jobs;
+            let what = format!("{angle} degrees, {w}x{h}");
+            assert_eq!(
+                b.report.device,
+                ComputeDevice::Gpu,
+                "{what}: {:?}",
+                b.report.notes
+            );
+            assert!(ran >= 2, "{what}: {ran} device jobs");
+            let c = fresh(&cpu, &tilted, &st);
+            eprintln!(
+                "{what}: {ran} jobs, bands against one piece {:?}, one piece against the CPU {:?}",
+                codes(&a, &b),
+                codes(&a, &c)
+            );
+            assert!(
+                a.rgba == b.rgba,
+                "{what}: the bands differ from the view in one piece {:?}",
+                codes(&a, &b)
+            );
         }
+    }
+
+    #[test]
+    fn a_resident_frame_is_never_served_to_another_device() {
+        // A device that replaces another one (`Renderer::set_gpu`) may be allocated where the first
+        // one was: the resident display-linear frames the photo's caches still hold belong to the
+        // device that made them and must not be given to the new one, whatever its address.
+        let Some(first) = gpu() else { return };
+        let src = picture(600, 400);
+        let st = cell(300.0, 200.0, 1.0);
+        let r = device_renderer(&first, VIEW);
+        let _ = frame(&r, &src, &st);
+        let address = Arc::as_ptr(&first) as usize;
+        r.set_gpu(None, GpuStages::NONE);
+        drop(first);
+        let mut moved_to_the_same_address = false;
+        for i in 0..8 {
+            let amount = 60.0 + f64::from(i);
+            let Some(next) = gpu() else { return };
+            moved_to_the_same_address |= Arc::as_ptr(&next) as usize == address;
+            r.set_gpu(Some(Arc::clone(&next)), VIEW);
+            let moved = frame(&r, &with_amount(&src, amount), &st);
+            eprintln!(
+                "iteration {i}: same address {moved_to_the_same_address}, device {:?}, runs {:?}",
+                moved.report.device, moved.report.runs
+            );
+            assert_eq!(
+                moved.report.device,
+                ComputeDevice::Gpu,
+                "{:?}",
+                moved.report.notes
+            );
+            assert!(no_gpu_note(&moved), "{:?}", moved.report.notes);
+            assert_eq!(
+                moved.report.runs.display_hits, 0,
+                "the frame of another device"
+            );
+            let want = fresh(
+                &device_renderer(&next, VIEW),
+                &with_amount(&src, amount),
+                &st,
+            );
+            assert!(moved.rgba == want.rgba);
+            // The next device takes the place of this one.
+            r.set_gpu(None, GpuStages::NONE);
+            drop(next);
+        }
+        eprintln!(
+            "a new device was allocated at the address of the first one: {moved_to_the_same_address}"
+        );
     }
 
     #[test]

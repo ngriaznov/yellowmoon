@@ -219,7 +219,7 @@ struct ArU {
     gains: [f32; 4],
     /// `rho_R, rho_B, K, k`.
     cst: [f32; 4],
-    /// `T`, `r`, then `0.0`: the shader's fast-math barrier XORs with the bits of the third word
+    /// `T`, `r`, then `0.0`: the shader's fast-math barrier ORs the bits of the third word in
     /// (`ar_op` in `adaptive_ratio.wgsl`), which the compiler cannot know; it must stay `+0.0`.
     cst2: [f32; 4],
     /// `(4 g_R, 2 g_G, 4 g_B)`.
@@ -377,7 +377,7 @@ struct Constants {
     gains: [f32; 4],
     /// `rho_R, rho_B, K, k`.
     cst: [f32; 4],
-    /// `T`, `r`, then `0.0`: the shader's fast-math barrier XORs with the bits of the third word
+    /// `T`, `r`, then `0.0`: the shader's fast-math barrier ORs the bits of the third word in
     /// (`ar_op` in `adaptive_ratio.wgsl`), which the compiler cannot know; it must stay `+0.0`.
     cst2: [f32; 4],
     /// `(4 g_R, 2 g_G, 4 g_B)`.

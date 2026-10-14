@@ -74,15 +74,19 @@ const LG_EXP2_5: f32 = 0.0013333558146428443;
 const LG_EXP2_6: f32 = 0.00015403530393381606;
 const LG_EXP2_7: f32 = 0.00001525273380405984;
 
-// Hides a value from algebraic rewriting: an xor with `u.ctl.y`, which is always 0 and which the
+// Hides a value from algebraic rewriting: an or with `u.ctl.y`, which is always 0 and which the
 // compiler cannot know. A shader compiler that runs with fast-math (Metal's does by default:
 // reassociation, reciprocal rewrites) turns `x * (a / b)` into `(x * a) / b`, and with `x` and `a` both
 // on the 16-bit working scale of a very bright frame (A up to 2e35) the product overflows even though
 // every factor and the result are finite. The quotients below are ratios of two values of one scale, close
 // to 1, and a barrier after each keeps them one rounded value that no rewrite can fold into a product
 // of the large factors. Nothing else changes: the barrier is the identity on the bits.
+//
+// An OR, not an XOR: two barriers in a row must stay a barrier, and an XOR applied twice cancels
+// (x ^ z ^ z == x, which compilers fold; fast-math folds `0 + x` to x, so a running sum that starts at
+// 0 gives two barriers in a row). An OR is idempotent.
 fn lg_opaque(x: f32) -> f32 {
-    return bitcast<f32>(bitcast<u32>(x) ^ u.ctl.y);
+    return bitcast<f32>(bitcast<u32>(x) | u.ctl.y);
 }
 
 // log2(x) of a positive normal x from basic operations: the exponent plus (2 / ln 2) atanh(s) with

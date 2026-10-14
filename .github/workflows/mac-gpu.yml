@@ -68,7 +68,7 @@ jobs:
         if: ${{ !cancelled() }}
         env:
           YM_REQUIRE_GPU: "1"
-        run: cargo test -p ym-gpu --release --features fault-injection,ml --lib --test gpu_device 2>&1 | tee ym-gpu-features-${{ matrix.runner }}.log
+        run: cargo test -p ym-gpu --release --features fault-injection,ml --lib --test gpu_device --test gpu_chain 2>&1 | tee ym-gpu-features-${{ matrix.runner }}.log
       - name: The renderer on Metal (ym-core, every test; the GPU ones against the CPU reference)
         if: ${{ !cancelled() }}
         env:

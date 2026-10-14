@@ -68,8 +68,9 @@ impl GpuStages {
     /// Initially the colour pass, which has run on the device since M0-07.
     pub const SIGNED_OFF: Self = Self::COLOR;
 
-    /// The stages of an export that run on the device in this version: the raw chain (the R6
-    /// demosaic of every full-resolution tile, G-03). Decides whether `ym` warms the kernels up
+    /// The stages of an export that run on the device in this version: the raw chain (R6 to R8 of
+    /// every full-resolution tile: demosaic, denoise, R7 and capture sharpening; G-03, G-06).
+    /// Decides whether `ym` warms the kernels up
     /// while photos decode; **the wiring tasks add their stages here**.
     pub const USED_BY_EXPORTS: Self = Self::RAW_CHAIN;
 

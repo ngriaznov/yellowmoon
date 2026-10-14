@@ -1912,3 +1912,58 @@ fn the_raw_group_records_one_submission_and_one_readback_per_tile() {
     assert_eq!((raw6.submissions, raw6.readbacks), (1, 1));
     assert!(raw8.dispatches > raw6.dispatches + 10);
 }
+
+/// Review of G-06: a tile whose demosaic core is cut (a corner tile of a strong lens) is still one
+/// tile for the `tile@N` fault of the fault-injection feature. The raw group made the hook fire twice
+/// for such a tile (once for the group, once inside the cut demosaic), so `tile@2` failed the first
+/// cut tile and `tile@N` named other tiles than it says.
+#[cfg(feature = "fault-injection")]
+#[test]
+fn a_cut_demosaic_core_is_still_one_tile_for_the_tile_fault() {
+    use ym_gpu::device::{Gpu, GpuConfig, GpuFault};
+
+    let Some(_dev) = f32_device_or_skip() else {
+        return;
+    };
+    // The cut is forced by a small limit: the runner below hands the work to `run_with_limit`.
+    const LIMIT: u64 = 4_000;
+    struct Cutting<'a>(&'a GpuContext);
+    impl DeviceRunner for Cutting<'_> {
+        fn run_device(&self, work: DeviceWork, cancel: &CancelToken) -> Result<RgbImage, GpuError> {
+            match work {
+                DeviceWork::Raw(w) => {
+                    assert!(
+                        w.demosaic_parts(LIMIT) > 1,
+                        "the test needs a demosaic core that is cut"
+                    );
+                    w.run_with_limit(self.0, cancel, LIMIT)
+                }
+                other => other.run(self.0, cancel),
+            }
+        }
+    }
+    let gpu = Gpu::start(GpuConfig {
+        fault: Some(GpuFault::FailTile(2)),
+        ..GpuConfig::default()
+    })
+    .expect("a device with the tile fault armed");
+    let scene = Scene::new(150, 110, Cfa::RGGB, 12);
+    let chain = chain_of(&scene, Lens::Full, high_noise());
+    let setup = Setup::with_half(scene, chain, HalfSigma::new(150, 110, 0.01, true, 4));
+    let (ow, oh) = setup.output_size();
+    let out = Rect::new(7, 5, ow - 9, oh - 8);
+    let s = setup.clone();
+    let (first, second, third) = gpu
+        .run(JobSpec::new(Priority::Viewport), move |ctx, cancel| {
+            let g = s.device_chain()?;
+            let run = || g.run_tile(&Cutting(ctx), &s.scene.raw(), out, cancel);
+            Ok((run(), run(), run()))
+        })
+        .expect("the job itself runs");
+    assert!(first.is_ok(), "tile 1 is not the faulty one: {first:?}");
+    assert!(
+        matches!(second, Err(GpuError::Readback(_))),
+        "tile 2 carries the fault: {second:?}"
+    );
+    assert!(third.is_ok(), "the fault fires once: {third:?}");
+}

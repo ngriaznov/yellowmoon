@@ -101,18 +101,25 @@ fn ar_st(pl: u32, i: u32, v: f32) {
     sc[pl * u.dims.z + i] = v;
 }
 
-// Hides a value from algebraic rewriting: an xor with `u.cst2.z`, which is always 0 and which the
-// compiler cannot know (module notes, K8). The identity on the bits.
+// Hides a value from algebraic rewriting: an OR with the bits of `u.cst2.z`, which is always +0.0 and
+// which the compiler cannot know (module notes, K8). The identity on the bits. OR, not XOR: two
+// barriers in a row must stay a barrier. An XOR applied twice cancels (x ^ z ^ z == x for every z,
+// and compilers fold it), and fast-math folds `0 + x` to x, so in the running sums of step 2 below
+// (which start at 0) the first product was left bare and fused into the next sum (clang's code for
+// this file, -ffast-math -mfma: one ulp in 6 % of the step-2 values). An OR is idempotent.
 fn ar_op(x: f32) -> f32 {
-    return bitcast<f32>(bitcast<u32>(x) ^ bitcast<u32>(u.cst2.z));
+    return bitcast<f32>(bitcast<u32>(x) | bitcast<u32>(u.cst2.z));
 }
 
-// The correctly rounded quotient a / b in integer arithmetic only (a fast-math division is the dividend
-// times an approximate reciprocal). Restoring division of the 24-bit mantissas gives
-// q = floor(ma 2^25 / mb) and the remainder; rounding to nearest, ties to even. A zero dividend gives
-// the signed zero; subnormal, infinite or NaN operands and a quotient outside the normal range take the
-// device's division (the host refuses non-finite and overflowing inputs, and every divisor here is a
-// cost of at least 1, a gain, a count or a sum of positive weights).
+// The correctly rounded quotient a / b, whatever the device's division does (a fast-math division is
+// the dividend times an approximate reciprocal). The device's quotient of the two 24-bit mantissas
+// gives an estimate q of the quotient's mantissa, a few units off at most; the remainder
+// ma 2^k - q mb is then small (under 2^28), so the low 32 bits of the two products give it exactly in
+// wrapping u32 arithmetic, and up to four steps move q to the nearest value (|2 r| < mb; a quotient of
+// two 24-bit mantissas never lies exactly halfway, so there is no tie). A zero dividend gives the
+// signed zero; subnormal, infinite or NaN operands and a quotient outside the normal range take the
+// device's division. Measured against IEEE on 3.2 10^8 quotients, also compiled with clang
+// -ffast-math -mrecip=all (an approximate reciprocal for the estimate): 0 differ.
 fn ar_div(a: f32, b: f32) -> f32 {
     let ab = bitcast<u32>(a);
     let bb = bitcast<u32>(b);
@@ -130,31 +137,28 @@ fn ar_div(a: f32, b: f32) -> f32 {
     }
     let ma = (ab & 0x7fffffu) | 0x800000u;
     let mb = (bb & 0x7fffffu) | 0x800000u;
-    var rem = ma;
-    var q = 0u;
-    for (var k = 0u; k < 26u; k = k + 1u) {
-        q = q << 1u;
-        if (rem >= mb) {
-            rem = rem - mb;
-            q = q | 1u;
-        }
-        rem = rem << 1u;
-    }
-    var ex = i32(ea) - i32(eb) + 126;
-    var m = q >> 1u;
-    var round_bit = q & 1u;
-    var sticky = u32(rem != 0u);
-    if (q >= 0x2000000u) {
-        m = q >> 2u;
-        round_bit = (q >> 1u) & 1u;
-        sticky = sticky | (q & 1u);
-        ex = ex + 1;
-    }
+    let big = ma >= mb;
+    let k = select(24u, 23u, big);
+    let ex = i32(ea) - i32(eb) + select(126, 127, big);
     if (ex < 1 || ex > 254) {
         return a / b;
     }
-    m = m + (round_bit & (sticky | (m & 1u)));
-    return bitcast<f32>(sign | ((u32(ex - 1) << 23u) + m));
+    let qf = f32(ma) / f32(mb);
+    var q = u32(qf * bitcast<f32>((127u + k) << 23u) + 0.5);
+    var r = bitcast<i32>((ma << k) - q * mb);
+    let m = i32(mb);
+    for (var i = 0; i < 4; i = i + 1) {
+        if (2 * r > m) {
+            q = q + 1u;
+            r = r - m;
+        } else if (2 * r < -m) {
+            q = q - 1u;
+            r = r + m;
+        }
+    }
+    // q holds the leading bit, so a quotient that rounds up to the next power of two carries into the
+    // exponent.
+    return bitcast<f32>(sign | ((u32(ex - 1) << 23u) + q));
 }
 
 // The correctly rounded square root in integer arithmetic only: the integer root of N = mp 2^26 digit

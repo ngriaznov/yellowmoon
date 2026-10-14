@@ -346,6 +346,18 @@ impl DemosaicWork {
     ) -> Result<RgbImage, GpuError> {
         cancel.check()?;
         ctx.inject_tile_fault()?;
+        self.run_parts(ctx, cancel, parts)
+    }
+
+    /// [`run_split`](Self::run_split) without the start-of-tile token check and fault hook: for a
+    /// caller that has made both for the tile it belongs to (the raw group's tile, which is one
+    /// tile for the fault counter whether or not its demosaic core is cut).
+    fn run_parts(
+        &self,
+        ctx: &GpuContext,
+        cancel: &CancelToken,
+        parts: &[Rect],
+    ) -> Result<RgbImage, GpuError> {
         let DemosaicWork {
             mosaic,
             core,
@@ -544,6 +556,9 @@ impl RawWork {
         // back to the pool could be handed out again by the next `acquire` of the same list, and the
         // poison fill (a queue write) of that second use runs before the whole submission.
         let mut keep: Vec<GpuImage> = Vec::new();
+        // The diffraction plan's taps (a pool buffer) are read by the recorded passes, so the plan lives
+        // as long as the images do.
+        let mut plans: Vec<PreparedDiffraction> = Vec::new();
         let mut passes;
         let mut cur = match &self.input {
             RawInput::Mosaic(d) => {
@@ -575,7 +590,7 @@ impl RawWork {
                     // A core above MAX_PHYS_AREA is cut in rectangles whose planes are put together on
                     // the host and uploaded once more (a corner tile of a strong lens; the stages that
                     // follow need the whole core in one image).
-                    let rgb = d.run_split(ctx, cancel, &parts)?;
+                    let rgb = d.run_parts(ctx, cancel, &parts)?;
                     passes = PassList::new(ctx, "raw R6 to R8");
                     GpuImage::upload_rgb(ctx, "adaptive ratio rgb", &rgb)?
                 }
@@ -680,7 +695,9 @@ impl RawWork {
                         )?,
                         SharpenKind::Diffraction(plan) => {
                             let prepared = PreparedDiffraction::new(ctx, plan)?;
-                            encode_sharpen(&mut passes, &prepared, &cur, core)?
+                            let out = encode_sharpen(&mut passes, &prepared, &cur, core)?;
+                            plans.push(prepared);
+                            out
                         }
                     };
                     keep.push(std::mem::replace(&mut cur, next));
@@ -692,7 +709,7 @@ impl RawWork {
         let read = cur.encode_read(&mut passes)?;
         let done = passes.submit()?.finish()?;
         let data = cur.take(&done, read)?;
-        drop((keep, sigma, classical));
+        drop((keep, plans, sigma, classical));
         let mut rgb = RgbImage {
             width: cur.width,
             height: cur.height,
