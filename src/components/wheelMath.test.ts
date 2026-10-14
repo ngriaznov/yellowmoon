@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { angleOf, clampToDisc, isCentered, mixHex, pointFromPointer, puckColor, strengthOf, WHEEL_GRADIENT, WHEEL_STOPS, wheelColorAt } from "./wheel";
+import { angleOf, clampToDisc, isCentered, mixHex, pointFromPointer, puckColor, strengthOf, WHEEL_GRADIENT, WHEEL_STOPS, wheelColorAt } from "./wheelMath";
 
 const box = { left: 100, top: 200, width: 92, height: 92 };
 

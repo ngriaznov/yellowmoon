@@ -3,8 +3,8 @@ import type { CSSProperties, KeyboardEvent, PointerEvent as ReactPointerEvent, R
 import { cx } from "./cx";
 import { useDraft, useFrameEmitter, useLatest, usePointerDrag } from "./hooks";
 import type { TabId } from "./tabs";
-import { angleOf, clampToDisc, isCentered, pointFromPointer, puckColor, strengthOf, WHEEL_GRADIENT } from "./wheel";
-import type { ColorBalancePoint } from "./wheel";
+import { angleOf, clampToDisc, isCentered, pointFromPointer, puckColor, strengthOf, WHEEL_GRADIENT } from "./wheelMath";
+import type { ColorBalancePoint } from "./wheelMath";
 
 export interface WheelProps {
   /** "Shadows", "Midtones", "Highlights": drawn under the wheel and in its accessible name. */

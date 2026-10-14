@@ -10,9 +10,9 @@ name: Mac GPU (Metal)
 on:
   push:
     branches: [main, "claude/**"]
-    paths: ["crates/**", "src-tauri/**", "tools/golden/**", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".github/workflows/mac-gpu.yml"]
+    paths: ["crates/**", "src-tauri/**", "src/**", "tools/golden/**", "data/**", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "package.json", "package-lock.json", ".github/workflows/mac-gpu.yml"]
   pull_request:
-    paths: ["crates/**", "src-tauri/**", "tools/golden/**", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".github/workflows/mac-gpu.yml"]
+    paths: ["crates/**", "src-tauri/**", "src/**", "tools/golden/**", "data/**", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "package.json", "package-lock.json", ".github/workflows/mac-gpu.yml"]
   workflow_dispatch:
 
 permissions:
@@ -41,6 +41,8 @@ jobs:
     timeout-minutes: 90
     env:
       WGPU_BACKEND: metal
+      # A release build finds data/ only inside an app bundle (docs/01, "Finding data/"); point it at the repository's.
+      YELLOWMOON_DATA: ${{ github.workspace }}/data
     steps:
       - uses: actions/checkout@v4
       - name: Rust toolchain from rust-toolchain.toml
@@ -57,10 +59,10 @@ jobs:
         env:
           YM_REQUIRE_GPU: "1"
         run: cargo test -p ym-gpu --release -- --test-threads=2 2>&1 | tee ym-gpu-${{ matrix.runner }}.log
-      - name: Renderer colour pass on Metal against the CPU reference (ym-core)
+      - name: The renderer on Metal (ym-core, every test; the GPU ones against the CPU reference)
         env:
           YM_REQUIRE_GPU: "1"
-        run: cargo test -p ym-core --release --test render_gpu 2>&1 | tee render-gpu-${{ matrix.runner }}.log
+        run: cargo test -p ym-core --release -- --test-threads=2 2>&1 | tee ym-core-${{ matrix.runner }}.log
       - name: Keep the logs
         if: always()
         uses: actions/upload-artifact@v4
@@ -70,7 +72,7 @@ jobs:
             system-${{ matrix.runner }}.txt
             doctor-${{ matrix.runner }}.json
             ym-gpu-${{ matrix.runner }}.log
-            render-gpu-${{ matrix.runner }}.log
+            ym-core-${{ matrix.runner }}.log
           if-no-files-found: warn
 
   app:
