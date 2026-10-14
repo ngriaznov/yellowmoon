@@ -24,6 +24,7 @@ use std::sync::{Arc, Mutex, PoisonError, RwLock};
 use ym_color::chain::FusedChain;
 use ym_color::consts::Vec3;
 use ym_color::curve::{Curve, CurveSet};
+use ym_color::exposure::white::WhiteLift;
 use ym_color::display::{
     ArriDisplayLut, BeforePoint, ChainParams, ColorChain, DisplayLutInput, DisplayLutOutput,
     DisplayTransform, LookSetting, OutputTarget,
@@ -525,18 +526,27 @@ fn pieces(src: &PhotoSource, req: &GradeRequest<'_>) -> Pieces {
     }
 }
 
+/// The white lift a photo renders with: the automatic amount and anchor of its estimates plus the
+/// user's offset (`white_offset_ev`), `docs/02` C12 step 1b. It has an effect on the ACES 2 path only;
+/// the chain ignores it for an imported ARRI display LUT.
+#[must_use]
+pub fn white_lift(src: &PhotoSource) -> WhiteLift {
+    src.estimates.white.lift(src.settings.white_offset_ev)
+}
+
 fn key_of(src: &PhotoSource, color: &ColorPlan, req: &GradeRequest<'_>, p: &Pieces) -> GradeKey {
     let s = &src.settings;
     let mut key = String::with_capacity(768);
     let _ = write!(
         key,
-        "{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{}|",
+        "{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{}|",
         color.key,
         grade_params(s),
         s.curve,
         req.target,
         req.dither,
         s.look_intensity,
+        white_lift(src),
         req.display,
         s.look,
     );
@@ -579,6 +589,7 @@ pub fn grade_plan(
     params.output = req.target;
     params.dither = req.dither;
     params.before = BeforePoint::CameraLog;
+    params.white_lift = white_lift(src);
     if let Some(look) = p.look {
         params.look = Some(LookSetting::new(look.transform, s.look_intensity));
     }

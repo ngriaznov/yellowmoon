@@ -3,8 +3,12 @@
 
 use std::fmt::Write as _;
 
-use ym_color::consts::{LOGC3_EI800, LOGC4, LOGC4_GRAY, LOGC4_STOP, linalg::Mat3};
+use ym_color::consts::{
+    LOGC3_EI800, LOGC4, LOGC4_GRAY, LOGC4_STOP, REC709_LUMA_WEIGHTS, linalg::Mat3,
+};
 use ym_color::display::aces2_input_matrix;
+use ym_color::exposure::TARGET_GREY;
+use ym_color::exposure::white;
 use ym_color::gamut::{awg4_luminance_row, matrices};
 use ym_color::grade::{
     BRIGHTNESS_SIGMA, COLOR_BALANCE_STRENGTH, E1, E2, ZONE_CONTROL_SIGMA, ZONE_SIGMA,
@@ -477,9 +481,17 @@ fn constants() -> String {
         ("ZONE_CONTROL_SIGMA", ZONE_CONTROL_SIGMA),
         ("ZONE_SIGMA", ZONE_SIGMA),
         ("BALANCE_STRENGTH", COLOR_BALANCE_STRENGTH),
+        ("WHITE_LIFT_KNEE", white::KNEE_EV),
+        ("WHITE_LIFT_GREY", TARGET_GREY),
     ] {
         let _ = writeln!(s, "const {n}: f32 = {};", f(v));
     }
+    // The luma that drives the white lift (`ym_color::exposure::white::drive_luma`).
+    let _ = writeln!(
+        s,
+        "const LUMA_709: vec3<f32> = {};",
+        vec3_row(&REC709_LUMA_WEIGHTS)
+    );
     let _ = writeln!(s, "const E1: vec3<f32> = {};", vec3_row(&E1));
     let _ = writeln!(s, "const E2: vec3<f32> = {};", vec3_row(&E2));
     let _ = writeln!(

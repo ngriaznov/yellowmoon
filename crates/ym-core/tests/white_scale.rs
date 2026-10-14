@@ -120,8 +120,8 @@ fn the_camera_match_of_a_session_carries_the_scale_the_estimates_need() {
     let dir = tempfile::tempdir().unwrap();
     let env = base_env();
     let scene = Scene::new(64, 48, light(PROFILE, 5500.0), Layout::Uniform, 0.5);
-    let a1 = ym_raw::decode::decode(&scene.write(dir.path(), "a1.ARW", STAND_IN)).unwrap();
-    let own = ym_raw::decode::decode(&scene.write(dir.path(), "own.ARW", OWN)).unwrap();
+    let a1 = ym_raw::decode::decode(scene.write(dir.path(), "a1.ARW", STAND_IN)).unwrap();
+    let own = ym_raw::decode::decode(scene.write(dir.path(), "own.ARW", OWN)).unwrap();
     let a1_camera = PhotoCamera::new(&env.profiles, &a1.meta, None);
     let own_camera = PhotoCamera::new(&env.profiles, &own.meta, None);
     assert!(a1_camera.stand_in && a1_camera.matched.white_scale == registry_scale());

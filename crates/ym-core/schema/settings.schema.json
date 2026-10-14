@@ -19,6 +19,13 @@
     "highlights": { "$ref": "#/$defs/percent" },
     "shadows": { "$ref": "#/$defs/percent" },
     "white": { "$ref": "#/$defs/percent" },
+    "white_offset_ev": {
+      "description": "Light > White lift: stops added to the automatic white lift, the per-photo gain on the tones above +1 stop over middle grey (docs/02 C12 step 1b). 0 is the automatic amount; a negative offset of the automatic amount, or more, gives no lift. A plain number, not Auto; the UI steps by 0.05. A document without it reads as 0.",
+      "type": "number",
+      "minimum": -3,
+      "maximum": 3,
+      "default": 0
+    },
     "black": { "$ref": "#/$defs/percent" },
     "light_source": {
       "description": "Colour > White balance presets.",

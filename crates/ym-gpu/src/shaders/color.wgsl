@@ -46,7 +46,7 @@ struct ChainU {
     bal0: vec4<f32>,     // (a, b) shadows, (a, b) midtones
     bal1: vec4<f32>,     // (a, b) highlights
     bal_ctr: vec4<f32>,  // zone centres
-    fl: vec4<f32>,       // x: look intensity fraction, y: display LUT gamma
+    fl: vec4<f32>,       // x: look intensity fraction, y: display LUT gamma, z: white lift amount (stops, 0: none), w: 1 / the lift's ramp span (1 / stops)
     cdl_slope: vec4<f32>,  // w: saturation
     cdl_offset: vec4<f32>,
     cdl_power: vec4<f32>,
@@ -329,6 +329,30 @@ fn c11_curves(v: vec3<f32>) -> vec3<f32> {
     return o;
 }
 
+// ---- C12 step 1b: the white lift ------------------------------------------------------------------------
+
+// The scene-linear gain of ym_color::exposure::white::WhiteLift: 2^(A * smoothstep((s - knee) / span)) with s the
+// stops over middle grey of the luma (Rec.709 weights on the AWG4 triple). Exactly 1 up to the knee. Only
+// called when the amount is not 0 (`CU.fl.z`), which the host sets for the ACES 2 path alone.
+fn white_lift_gain(lin: vec3<f32>) -> f32 {
+    let y = dot(LUMA_709, lin);
+    if (is_nan_f(y) || y <= 0.0) {
+        return 1.0;
+    }
+    let stops = log2(y * (1.0 / WHITE_LIFT_GREY));
+    let t = clamp((stops - WHITE_LIFT_KNEE) * CU.fl.w, 0.0, 1.0);
+    return exp2(CU.fl.z * (t * t * (3.0 - 2.0 * t)));
+}
+
+// C11 decoded to linear AWG4 and lifted: the scene values ACES 2 takes in (before the placement).
+fn lifted_scene(v: vec3<f32>) -> vec3<f32> {
+    let lin = logc4_decode3(v);
+    if (CU.fl.z == 0.0) {
+        return lin;
+    }
+    return lin * white_lift_gain(lin);
+}
+
 // ---- C12: display transform --------------------------------------------------------------------------
 
 fn srgb_decode(e: f32) -> f32 {
@@ -355,7 +379,7 @@ fn disp_decode(code: f32) -> f32 {
 
 fn display_ours(v: vec3<f32>) -> vec3<f32> {
     if (CU.flags.w == 0u) {
-        let ap0 = mv3(AWG4_TO_AP0_0, AWG4_TO_AP0_1, AWG4_TO_AP0_2, logc4_decode3(v));
+        let ap0 = mv3(AWG4_TO_AP0_0, AWG4_TO_AP0_1, AWG4_TO_AP0_2, lifted_scene(v));
         return aces2_display_linear(ap0);
     }
     var input = v;
@@ -437,7 +461,12 @@ fn run_pixel(cam_in: vec3<f32>) -> vec3<f32> {
         return c11;
     }
     if (stop == 6u) {
-        return logc4_decode3(c11);
+        // The DNG's pixels: C11 decoded, with the white lift when C12 is our ACES 2 (the host sets
+        // the amount only then); a look with its own display rendering has its own highlights.
+        if (CU.flags.z == 2u && CU.fl.x > 0.0) {
+            return logc4_decode3(c11);
+        }
+        return lifted_scene(c11);
     }
     let c12 = c12_display(c11);
     if (stop == 7u) {

@@ -50,6 +50,7 @@ fn rich() -> DevelopSettings {
     s.highlights = -30.0;
     s.shadows = 25.0;
     s.white = 4.0;
+    s.white_offset_ev = 0.4;
     s.black = -9.0;
     s.light_source = LightSource::Tungsten;
     s.white_balance = AutoOr::Manual(ym_core::settings::WhiteBalanceValue {
@@ -110,6 +111,7 @@ fn typescript_defaults() -> Value {
         "look_intensity": 100,
         "exposure": { "kind": "auto" },
         "contrast": 0, "brightness": 0, "highlights": 0, "shadows": 0, "white": 0, "black": 0,
+        "white_offset_ev": 0,
         "light_source": "auto",
         "white_balance": { "kind": "auto" },
         "color_balance": { "shadows": [0, 0], "midtones": [0, 0], "highlights": [0, 0] },
@@ -317,6 +319,7 @@ fn resolved_settings_have_the_shape_of_the_typescript_type() {
     want.extend(
         [
             "exposure_ev",
+            "white_ev",
             "kelvin",
             "tint",
             "sharpen",

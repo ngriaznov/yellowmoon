@@ -35,6 +35,7 @@
 use serde::{Deserialize, Deserializer, Serialize};
 use ym_color::chain::ChainError;
 use ym_color::exposure::ExposureSetting as ColorExposure;
+use ym_color::exposure::white::OFFSET_RANGE_EV;
 use ym_color::wb::{LightSource, WbReadout, WhiteBalance as ColorWhiteBalance};
 use ym_looks::library::LookId;
 use ym_profiles::profile::Profile;
@@ -64,6 +65,9 @@ pub const SHARPEN_RADIUS_RANGE_PX: (f64, f64) = (0.3, 2.5);
 pub const OUTPUT_SHARPENING_RANGE: (f64, f64) = (0.0, 200.0);
 /// Default output sharpening amount (percent). 0 creates no stage (`docs/algorithms/04`).
 pub const OUTPUT_SHARPENING_DEFAULT: f64 = 100.0;
+/// Range of the white lift offset (stops, added to the automatic amount): Light › White lift.
+/// The UI steps by 0.05. A negative offset of the automatic amount (or beyond) gives no lift.
+pub const WHITE_OFFSET_RANGE_EV: (f64, f64) = (-OFFSET_RANGE_EV, OFFSET_RANGE_EV);
 /// Range of each manual noise-reduction strength.
 pub const NOISE_REDUCTION_RANGE: (f64, f64) = (0.0, 100.0);
 /// Range of both roll-off amounts.
@@ -166,6 +170,8 @@ pub enum SettingsField {
     Shadows,
     /// `white`.
     White,
+    /// `white_offset_ev`.
+    WhiteOffset,
     /// `black`.
     Black,
     /// `light_source`.
@@ -198,7 +204,7 @@ pub enum SettingsField {
 
 impl SettingsField {
     /// Every field, in the order of the settings table.
-    pub const ALL: [SettingsField; 22] = [
+    pub const ALL: [SettingsField; 23] = [
         SettingsField::Look,
         SettingsField::LookIntensity,
         SettingsField::Exposure,
@@ -207,6 +213,7 @@ impl SettingsField {
         SettingsField::Highlights,
         SettingsField::Shadows,
         SettingsField::White,
+        SettingsField::WhiteOffset,
         SettingsField::Black,
         SettingsField::LightSource,
         SettingsField::WhiteBalance,
@@ -235,6 +242,7 @@ impl SettingsField {
             Self::Highlights => "highlights",
             Self::Shadows => "shadows",
             Self::White => "white",
+            Self::WhiteOffset => "white_offset_ev",
             Self::Black => "black",
             Self::LightSource => "light_source",
             Self::WhiteBalance => "white_balance",
@@ -271,6 +279,7 @@ impl SettingsField {
             | Self::Highlights
             | Self::Shadows
             | Self::White
+            | Self::WhiteOffset
             | Self::Black
             | Self::ColorBalance
             | Self::Saturation
@@ -653,6 +662,10 @@ pub struct DevelopSettings {
     pub shadows: f64,
     /// -100 to 100.
     pub white: f64,
+    /// Light › White lift: stops added to the automatic white lift (`docs/02` C12 step 1b), -3 to +3,
+    /// default 0 (the automatic amount). A negative offset of the automatic amount or more gives no
+    /// lift. A plain number, not Auto; a settings document without the field reads as 0.
+    pub white_offset_ev: f64,
     /// -100 to 100.
     pub black: f64,
     /// Colour › White balance, the light presets.
@@ -712,6 +725,7 @@ impl DevelopSettings {
             highlights: 0.0,
             shadows: 0.0,
             white: 0.0,
+            white_offset_ev: 0.0,
             black: 0.0,
             light_source: LightSource::Auto,
             white_balance: AutoOr::Auto,
@@ -748,6 +762,7 @@ impl DevelopSettings {
             SettingsField::Highlights => self.highlights == o.highlights,
             SettingsField::Shadows => self.shadows == o.shadows,
             SettingsField::White => self.white == o.white,
+            SettingsField::WhiteOffset => self.white_offset_ev == o.white_offset_ev,
             SettingsField::Black => self.black == o.black,
             SettingsField::LightSource => self.light_source == o.light_source,
             SettingsField::WhiteBalance => self.white_balance == o.white_balance,
@@ -778,6 +793,7 @@ impl DevelopSettings {
             SettingsField::Highlights => self.highlights = d.highlights,
             SettingsField::Shadows => self.shadows = d.shadows,
             SettingsField::White => self.white = d.white,
+            SettingsField::WhiteOffset => self.white_offset_ev = d.white_offset_ev,
             SettingsField::Black => self.black = d.black,
             SettingsField::LightSource => self.light_source = d.light_source,
             SettingsField::WhiteBalance => self.white_balance = d.white_balance,
@@ -917,6 +933,13 @@ impl DevelopSettings {
         )?;
         self.output_sharpening = v;
         note(SettingsField::OutputSharpening, c);
+        let (v, c) = clamp_to(
+            "white_offset_ev",
+            self.white_offset_ev,
+            WHITE_OFFSET_RANGE_EV,
+        )?;
+        self.white_offset_ev = v;
+        note(SettingsField::WhiteOffset, c);
         if let AutoOr::Manual(m) = &mut self.noise_reduction {
             let mut changed = false;
             for (name, v) in [
@@ -1215,6 +1238,9 @@ pub struct SettingsPatch {
     /// New white.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub white: Option<f64>,
+    /// New white lift offset, stops.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub white_offset_ev: Option<f64>,
     /// New black.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub black: Option<f64>,
@@ -1380,6 +1406,7 @@ impl SettingsPatch {
             SettingsField::Highlights => p.highlights = Some(from.highlights),
             SettingsField::Shadows => p.shadows = Some(from.shadows),
             SettingsField::White => p.white = Some(from.white),
+            SettingsField::WhiteOffset => p.white_offset_ev = Some(from.white_offset_ev),
             SettingsField::Black => p.black = Some(from.black),
             SettingsField::LightSource => p.light_source = Some(from.light_source),
             SettingsField::WhiteBalance => {
@@ -1567,6 +1594,9 @@ impl DevelopSettings {
         if let Some(v) = patch.output_sharpening {
             next.output_sharpening = v;
         }
+        if let Some(v) = patch.white_offset_ev {
+            next.white_offset_ev = v;
+        }
         if let Some(n) = &patch.noise_reduction {
             next.noise_reduction = match n {
                 AutoOr::Auto => AutoOr::Auto,
@@ -1669,6 +1699,7 @@ fn patch_touches(p: &SettingsPatch, field: SettingsField) -> bool {
         SettingsField::Highlights => p.highlights.is_some(),
         SettingsField::Shadows => p.shadows.is_some(),
         SettingsField::White => p.white.is_some(),
+        SettingsField::WhiteOffset => p.white_offset_ev.is_some(),
         SettingsField::Black => p.black.is_some(),
         SettingsField::LightSource => p.light_source.is_some(),
         SettingsField::WhiteBalance => p.white_balance.is_some(),
@@ -1725,6 +1756,11 @@ pub struct ResolvedValues {
     pub shadows: f64,
     /// `white`.
     pub white: f64,
+    /// `white_offset_ev`.
+    pub white_offset_ev: f64,
+    /// The white lift in effect in stops: the automatic amount plus `white_offset_ev`, never below 0
+    /// (`docs/02` C12 step 1b).
+    pub white_ev: f64,
     /// `black`.
     pub black: f64,
     /// `light_source`.
@@ -1809,6 +1845,8 @@ impl ResolvedSettings {
             highlights: settings.highlights,
             shadows: settings.shadows,
             white: settings.white,
+            white_offset_ev: settings.white_offset_ev,
+            white_ev: estimates.white.lift(settings.white_offset_ev).amount_ev(),
             black: settings.black,
             light_source: settings.light_source,
             kelvin: kelvin_k,
@@ -1934,6 +1972,47 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn the_white_offset_is_a_plain_number_that_clamps_and_defaults_to_zero() {
+        let neutral = LookId::builtin("neutral");
+        // A document without the field reads as 0, the automatic amount (older settings, older XMP).
+        let (s, clamped) = DevelopSettings::from_json("{}", &neutral).expect("reads");
+        assert_eq!(s.white_offset_ev, 0.0);
+        assert!(clamped.is_empty());
+        let (s, clamped) =
+            DevelopSettings::from_json(r#"{ "white_offset_ev": 5 }"#, &neutral).expect("reads");
+        assert_eq!(s.white_offset_ev, 3.0);
+        assert_eq!(clamped, vec![SettingsField::WhiteOffset]);
+        let (s, _) =
+            DevelopSettings::from_json(r#"{ "white_offset_ev": -9.5 }"#, &neutral).expect("reads");
+        assert_eq!(s.white_offset_ev, -3.0);
+        let (s, clamped) =
+            DevelopSettings::from_json(r#"{ "white_offset_ev": -0.35 }"#, &neutral).expect("reads");
+        assert_eq!(s.white_offset_ev, -0.35);
+        assert!(clamped.is_empty());
+        // Not a number: refused, like every other field.
+        assert!(
+            DevelopSettings::from_json(r#"{ "white_offset_ev": "a lot" }"#, &neutral).is_err()
+        );
+        // The patch sets it, Reset puts it back, and it belongs to the grade group (C12 step 1b).
+        let mut s = DevelopSettings::default();
+        let report = s
+            .apply_patch(
+                &SettingsPatch {
+                    white_offset_ev: Some(0.5),
+                    ..SettingsPatch::default()
+                },
+                None,
+            )
+            .expect("patch");
+        assert_eq!(s.white_offset_ev, 0.5);
+        assert_eq!(report.changed, vec![SettingsField::WhiteOffset]);
+        s.reset_field(SettingsField::WhiteOffset, &neutral);
+        assert_eq!(s.white_offset_ev, 0.0);
+        assert_eq!(SettingsField::WhiteOffset.name(), "white_offset_ev");
+        assert_eq!(SettingsField::WhiteOffset.group(), StageGroup::Grade);
     }
 
     #[test]

@@ -30,6 +30,13 @@
 //!    to C6 at EV 0, metered with the centre weight and the highlight guard. Burst sharing
 //!    (step 6) needs the other photos, so the session does it ([`burst_frame`]) and stores the
 //!    shared value in [`ExposureResult::ev`] (`own_ev` keeps the photo's own).
+//! 3b. **The white lift** (`ym_color::exposure::white`, `docs/02` C12 step 1b): the same preview, through
+//!    the all-Auto chain at the photo's exposure and the default C7, sized for the reference look
+//!    (Signature) by [`estimate_white`]: the amount `A` and the anchor, two scalars per photo
+//!    ([`AutoEstimates::white`]). Estimated at the photo's own exposure; a burst median that replaces
+//!    the exposure does not re-size it (with the constant camera gain that happens only for a frame
+//!    the highlight guard lowered, by at most one stop). No burst rule: the estimate is a function of
+//!    the photo's own preview, so the app and `ym` give the same two numbers for any set of photos.
 //! 4. **The noise model** ([`NoiseResult`]): `ym_noise::estimate` on the image area with the prior
 //!    of the body and ISO (`data/cameras/noise`), pooled across the session by the session
 //!    (`pool_key`). A Lossless M or S file has no mosaic to measure and gets the prior alone.
@@ -45,12 +52,16 @@ use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use ym_color::chain::{ChainError, ColorEstimates, FusedChain, ProfileTables};
 use ym_color::consts::Vec3;
+use ym_color::exposure::white::{WhiteEstimate, estimate_white};
 use ym_color::exposure::{
-    AutoExposure, BurstFrame, ExposureError, PreviewRgb, ShotSettings, auto_exposure,
+    AutoExposure, BurstFrame, ExposureError, ExposureSetting, PreviewRgb, ShotSettings,
+    auto_exposure,
 };
 use ym_color::illum::{IllumError, IlluminantEstimate, IlluminantModel, RawPreview, ShotInfo};
+use ym_color::look::LookTransform;
 use ym_color::spectral::{ClassProbabilities, LightClass};
-use ym_color::wb::{self, SceneLight, WbError, WbReadout};
+use ym_color::tone::ToneParams;
+use ym_color::wb::{self, LightSource, SceneLight, WbError, WbReadout, WhiteBalance};
 use ym_gpu::cpu::detail::NoiseReduction;
 use ym_gpu::cpu::lens::{LensSwitches, LensTags};
 use ym_gpu::cpu::sharpen::auto_sharpen;
@@ -67,7 +78,7 @@ use ym_raw::decode::RawImage;
 use ym_raw::layout::{CfaColor, DecodeKind, Layout, Rect};
 use ym_raw::metadata::RawMetadata;
 
-use crate::settings::{DevelopSettings, NoiseReductionValue, SharpenValue};
+use crate::settings::{DevelopSettings, NoiseReductionValue, Rolloff, SharpenValue};
 
 /// Preview block size: one preview pixel is the mean of this many photosites per side (1/8).
 pub const PREVIEW_BLOCK_PX: usize = 8;
@@ -1128,6 +1139,9 @@ pub struct AutoEstimates {
     pub color: ColorEstimates,
     /// The automatic exposure.
     pub exposure: ExposureResult,
+    /// The white lift: the automatic amount and the anchor (`docs/02` C12 step 1b). Add the user's
+    /// `white_offset_ev` with [`WhiteEstimate::lift`].
+    pub white: WhiteEstimate,
     /// The noise model.
     pub noise: NoiseResult,
     /// What `sharpen: Auto` resolves to.
@@ -1143,6 +1157,9 @@ pub struct AutoEstimates {
 pub struct AutoSummary {
     /// `EV_auto`.
     pub exposure_ev: f64,
+    /// The automatic white lift in stops (0 for a photo with nothing above +1 stop to lift): the
+    /// Automatic card's White row. The lift in effect is this plus `white_offset_ev`.
+    pub white_ev: f64,
     /// The Auto Kelvin (a multiple of 50).
     pub kelvin: f64,
     /// The Auto tint.
@@ -1230,6 +1247,23 @@ impl AutoEstimates {
         inputs: &AutoInputs<'_>,
         white_scale: Vec3,
     ) -> Result<Self, AutoError> {
+        Self::compute_with_look(raw, inputs, white_scale, None)
+    }
+
+    /// As [`AutoEstimates::compute_scaled`], with the white lift sized for `reference_look` (the
+    /// Signature look: the lift's amount is what the picture needs on top of that look, so the two do
+    /// not add up twice; `None` is the identity look). The session passes the Signature look from the
+    /// data folder; the lift does not follow the look a photo is later given.
+    ///
+    /// # Errors
+    ///
+    /// As [`AutoEstimates::compute_scaled`].
+    pub fn compute_with_look(
+        raw: &RawImage,
+        inputs: &AutoInputs<'_>,
+        white_scale: Vec3,
+        reference_look: Option<&LookTransform>,
+    ) -> Result<Self, AutoError> {
         let meta = &raw.meta;
         wb::scale_white([1.0; 3], white_scale)?;
         let preview = build_preview(raw)?;
@@ -1252,16 +1286,15 @@ impl AutoEstimates {
         let metering = color.metering_chain(tables)?;
         let g0 = color.initial_gains()?;
         let balanced = preview.metered(g0);
-        let meter = auto_exposure(
-            &PreviewRgb {
-                width: preview.width,
-                height: preview.height,
-                rgb: &balanced,
-                clip_mask: Some(&preview.clip),
-            },
-            metering.matrix(),
-        )?;
+        let preview_rgb = PreviewRgb {
+            width: preview.width,
+            height: preview.height,
+            rgb: &balanced,
+            clip_mask: Some(&preview.clip),
+        };
+        let meter = auto_exposure(&preview_rgb, metering.matrix())?;
         color.ev_auto = meter.ev_auto;
+        let white = white_lift_estimate(&color, tables, &preview_rgb, reference_look)?;
         let noise = estimate_noise(raw, inputs.priors)?;
         let (sharpen, noise_reduction) =
             auto_detail_values(meta.iso, base_iso(inputs.priors, meta), meta.f_number);
@@ -1273,6 +1306,7 @@ impl AutoEstimates {
                 own_ev: meter.ev_auto,
                 meter,
             },
+            white,
             noise,
             sharpen,
             noise_reduction,
@@ -1342,6 +1376,7 @@ impl AutoEstimates {
             .0;
         AutoSummary {
             exposure_ev: self.exposure.ev,
+            white_ev: self.white.amount_ev,
             kelvin: self.readout.kelvin_k,
             tint: self.readout.tint,
             light_class,
@@ -1354,6 +1389,34 @@ impl AutoEstimates {
             noise_reduction: self.noise_reduction,
         }
     }
+}
+
+/// The white lift of a photo (`docs/02` C12 step 1b): its preview through the all-Auto chain at the
+/// photo's exposure and the default C7 (the shoulder at the default roll-off; no toe, which only acts
+/// near black), sized for `reference_look`.
+fn white_lift_estimate(
+    color: &ColorEstimates,
+    tables: ProfileTables<'_>,
+    preview: &PreviewRgb<'_>,
+    reference_look: Option<&LookTransform>,
+) -> Result<WhiteEstimate, AutoError> {
+    let chain = color.chain(
+        tables,
+        LightSource::Auto,
+        WhiteBalance::Auto,
+        ExposureSetting::Auto,
+        None,
+    )?;
+    let Ok(tone) = ToneParams::new(Rolloff::default().highlights, 0.0, chain.clip().n, 0.0) else {
+        // A clip level that is not a positive number: nothing to size a lift against.
+        return Ok(WhiteEstimate::none());
+    };
+    Ok(estimate_white(
+        preview,
+        chain.matrix(),
+        &tone,
+        reference_look,
+    )?)
 }
 
 /// The three tables of a profile that the colour chain reads.

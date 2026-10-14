@@ -822,6 +822,13 @@ impl ChainTables {
                 tables = self.dither(ctx)?;
             }
         }
+        // C12 step 1b: the white lift (ACES 2 path only: `ColorChain::white_lift` is the identity for a
+        // display LUT). Amount in stops and the reciprocal of the ramp's span; 0 switches it off.
+        let lift = chain.white_lift();
+        if !lift.is_identity() {
+            u.fl[2] = lift.amount_ev() as f32;
+            u.fl[3] = (1.0 / lift.span_ev()) as f32;
+        }
         // C13.
         u.sp[0] = u32::from(space == OutputSpace::Rec2020);
         u.lk[3] = u32::from(chain.before_point() == BeforePoint::AfterGrade);
