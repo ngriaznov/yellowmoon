@@ -23,8 +23,9 @@
 //!   caches are byte-bounded LRU maps ([`ByteLru`]); a full-resolution render reserves its working
 //!   set in the [`MemoryLedger`] first and is refused, rather than started, when the budget would be
 //!   exceeded. Budget defaults follow `docs/01`: 6 GiB of CPU memory scaled down to half the
-//!   machine's RAM, 4 GiB of GPU memory (the caller gives the GPU context its own budget, see
-//!   [`MemoryBudget::gpu_bytes`]).
+//!   machine's RAM, 4 GiB of GPU memory ([`MemoryBudget::gpu_bytes`], the budget the GPU context is
+//!   opened with by [`crate::app::gpu::open_gpu`]). On a machine whose GPU shares the RAM (Apple
+//!   silicon) the two come out of one pool: [`MemoryBudget::for_unified_memory`].
 //!
 //! The queues are `ym_gpu::queue::Scheduler`, the same one that fronts the GPU thread, so the
 //! ordering and cancellation rules are the ones its tests pin; this module adds the photo-aware
@@ -75,15 +76,62 @@ impl Default for MemoryBudget {
     }
 }
 
+/// A GPU that shares the RAM gets this share of it, as a divisor: `RAM / 4` (`docs/gpu-plan.md`
+/// section 4.8, STATUS question 16).
+pub const UNIFIED_GPU_RAM_DIVISOR: u64 = 4;
+/// The least GPU budget on a machine whose GPU shares the RAM.
+pub const UNIFIED_GPU_MIN_BYTES: u64 = 512 << 20;
+/// The most GPU budget on such a machine: the same 4 GiB as everywhere.
+pub const UNIFIED_GPU_MAX_BYTES: u64 = DEFAULT_GPU_BUDGET_BYTES;
+/// What the CPU and GPU budgets of a unified-memory machine may add up to, as a share of the RAM
+/// (3 / 5 = 0.6). The rule of [`MemoryBudget::for_unified_memory`] meets it for every machine from
+/// 4 GiB up; the unit tests assert it.
+pub const UNIFIED_TOTAL_RAM_SHARE: (u64, u64) = (3, 5);
+
 impl MemoryBudget {
     /// The defaults scaled down to the machine: the CPU budget is at most half of the installed RAM.
+    /// The GPU budget stays at its default (a GPU with its own memory, or no GPU); a GPU that shares
+    /// the RAM is accounted for by [`MemoryBudget::for_unified_memory`] once the device is known.
     #[must_use]
     pub fn detect() -> Self {
+        Self::for_ram(total_ram_bytes())
+    }
+
+    /// [`MemoryBudget::detect`] for a machine with `ram_bytes` of RAM (`None`: not known).
+    #[must_use]
+    pub fn for_ram(ram_bytes: Option<u64>) -> Self {
         let mut b = Self::default();
-        if let Some(total) = total_ram_bytes() {
+        if let Some(total) = ram_bytes {
             b.cpu_bytes = b.cpu_bytes.min(total / 2).max(MIN_CPU_BUDGET_BYTES);
         }
         b
+    }
+
+    /// The budgets of a machine whose GPU shares the RAM with the CPU (`DeviceType::IntegratedGpu`:
+    /// Metal on Apple silicon, an integrated GPU elsewhere), given the budgets it would have with
+    /// separate memories and its `ram_bytes`.
+    ///
+    /// The GPU gets `clamp(RAM / 4, 512 MiB, 4 GiB)` and the CPU budget is lowered by the same
+    /// amount (never below [`MIN_CPU_BUDGET_BYTES`]), so the two together stay under 0.6 of the RAM
+    /// ([`UNIFIED_TOTAL_RAM_SHARE`]): 8 GB gives 2 GiB and 2 GiB, 16 GB 4 GiB and 2 GiB, 64 GB
+    /// 4 GiB and 2 GiB. With the RAM unknown nothing changes. The proposal of `docs/gpu-plan.md`
+    /// section 4.8, pending the owner's answer (STATUS question 16); the whole rule is this
+    /// function and the constants above.
+    #[must_use]
+    pub fn for_unified_memory(self, ram_bytes: Option<u64>) -> Self {
+        let Some(ram) = ram_bytes else {
+            return self;
+        };
+        let gpu_bytes =
+            (ram / UNIFIED_GPU_RAM_DIVISOR).clamp(UNIFIED_GPU_MIN_BYTES, UNIFIED_GPU_MAX_BYTES);
+        Self {
+            gpu_bytes,
+            cpu_bytes: self
+                .cpu_bytes
+                .saturating_sub(gpu_bytes)
+                .max(MIN_CPU_BUDGET_BYTES),
+            ..self
+        }
     }
 
     /// The same budget with another CPU limit.
@@ -95,7 +143,8 @@ impl MemoryBudget {
 }
 
 /// Installed RAM in bytes, where the operating system says (Linux `/proc/meminfo`, macOS `sysctl`).
-fn total_ram_bytes() -> Option<u64> {
+#[must_use]
+pub fn total_ram_bytes() -> Option<u64> {
     if let Ok(text) = std::fs::read_to_string("/proc/meminfo") {
         let line = text.lines().find(|l| l.starts_with("MemTotal:"))?;
         let kb: u64 = line.split_whitespace().nth(1)?.parse().ok()?;
@@ -123,7 +172,7 @@ pub struct OverBudget {
 /// Counts the bytes that full-resolution jobs hold while they run.
 #[derive(Debug)]
 pub struct MemoryLedger {
-    budget: u64,
+    budget: AtomicU64,
     used: AtomicU64,
     peak: AtomicU64,
 }
@@ -133,7 +182,7 @@ impl MemoryLedger {
     #[must_use]
     pub fn new(budget: u64) -> Arc<Self> {
         Arc::new(Self {
-            budget,
+            budget: AtomicU64::new(budget),
             used: AtomicU64::new(0),
             peak: AtomicU64::new(0),
         })
@@ -148,11 +197,12 @@ impl MemoryLedger {
         let mut cur = self.used.load(Ordering::SeqCst);
         loop {
             let next = cur.saturating_add(bytes);
-            if next > self.budget {
+            let budget = self.budget();
+            if next > budget {
                 return Err(OverBudget {
                     requested: bytes,
                     used: cur,
-                    budget: self.budget,
+                    budget,
                 });
             }
             match self
@@ -186,7 +236,13 @@ impl MemoryLedger {
     /// The budget.
     #[must_use]
     pub fn budget(&self) -> u64 {
-        self.budget
+        self.budget.load(Ordering::SeqCst)
+    }
+
+    /// Changes the budget (the unified-memory rule lowers it once the GPU is known). Bytes that are
+    /// reserved already stay reserved; only later requests are held to the new figure.
+    pub fn set_budget(&self, bytes: u64) {
+        self.budget.store(bytes, Ordering::SeqCst);
     }
 }
 
@@ -957,5 +1013,83 @@ mod tests {
         assert_eq!(b.gpu_bytes, 4 << 30);
         let d = MemoryBudget::detect();
         assert!(d.cpu_bytes <= b.cpu_bytes && d.cpu_bytes >= MIN_CPU_BUDGET_BYTES);
+    }
+
+    const GIB: u64 = 1 << 30;
+
+    #[test]
+    fn a_gpu_with_its_own_memory_leaves_the_two_budgets_apart() {
+        // A discrete adapter (or none): `detect` as it always was.
+        for (ram, cpu) in [(8, 4), (16, 6), (64, 6)] {
+            let b = MemoryBudget::for_ram(Some(ram * GIB));
+            assert_eq!(b.cpu_bytes, cpu * GIB, "{ram} GB");
+            assert_eq!(b.gpu_bytes, 4 * GIB, "{ram} GB");
+        }
+        // Unknown RAM: the defaults, and the unified rule changes nothing without a RAM figure.
+        assert_eq!(MemoryBudget::for_ram(None), MemoryBudget::default());
+        assert_eq!(
+            MemoryBudget::default().for_unified_memory(None),
+            MemoryBudget::default()
+        );
+    }
+
+    #[test]
+    fn a_gpu_that_shares_the_ram_takes_a_quarter_of_it_out_of_the_cpu_budget() {
+        // 8, 16 and 64 GB unified machines (docs/gpu-plan.md section 4.8).
+        for (ram, gpu, cpu) in [(8, 2, 2), (16, 4, 2), (64, 4, 2)] {
+            let b = MemoryBudget::for_ram(Some(ram * GIB)).for_unified_memory(Some(ram * GIB));
+            assert_eq!(b.gpu_bytes, gpu * GIB, "{ram} GB: GPU");
+            assert_eq!(b.cpu_bytes, cpu * GIB, "{ram} GB: CPU");
+            assert_eq!(b.max_mosaics, MemoryBudget::default().max_mosaics);
+            assert_eq!(b.max_photos, MemoryBudget::default().max_photos);
+        }
+    }
+
+    #[test]
+    fn on_a_unified_machine_cpu_and_gpu_together_stay_under_six_tenths_of_the_ram() {
+        let (num, den) = UNIFIED_TOTAL_RAM_SHARE;
+        assert_eq!((num, den), (3, 5), "the bound of the plan is 0.6");
+        // Every RAM size from 4 GiB to 1 TiB in steps of 1 GiB, and some that are not round.
+        let sizes = (4..=1024u64).map(|g| g * GIB).chain([
+            (6 * GIB) + (123 << 20),
+            (12 * GIB) - 1,
+            24 * GIB + 7,
+        ]);
+        for ram in sizes {
+            let b = MemoryBudget::for_ram(Some(ram)).for_unified_memory(Some(ram));
+            assert!(
+                (b.cpu_bytes + b.gpu_bytes) * den <= ram * num,
+                "{ram} bytes of RAM: CPU {} + GPU {} is over {num}/{den}",
+                b.cpu_bytes,
+                b.gpu_bytes
+            );
+            assert!(b.gpu_bytes >= UNIFIED_GPU_MIN_BYTES && b.gpu_bytes <= UNIFIED_GPU_MAX_BYTES);
+            assert!(b.cpu_bytes >= MIN_CPU_BUDGET_BYTES);
+        }
+    }
+
+    #[test]
+    fn the_unified_gpu_budget_has_a_floor_and_a_ceiling() {
+        let tiny = MemoryBudget::for_ram(Some(GIB)).for_unified_memory(Some(GIB));
+        assert_eq!(tiny.gpu_bytes, UNIFIED_GPU_MIN_BYTES, "1 GB: the floor");
+        assert_eq!(
+            tiny.cpu_bytes, MIN_CPU_BUDGET_BYTES,
+            "and the CPU keeps its own floor"
+        );
+        let huge = MemoryBudget::for_ram(Some(1024 * GIB)).for_unified_memory(Some(1024 * GIB));
+        assert_eq!(huge.gpu_bytes, UNIFIED_GPU_MAX_BYTES, "1 TB: the ceiling");
+    }
+
+    #[test]
+    fn the_ledger_follows_a_new_budget() {
+        let ledger = MemoryLedger::new(100);
+        let first = ledger.try_reserve(60).expect("fits");
+        ledger.set_budget(50);
+        assert_eq!(ledger.budget(), 50);
+        let err = ledger.try_reserve(1).expect_err("over the lowered budget");
+        assert_eq!((err.used, err.budget), (60, 50));
+        drop(first);
+        assert_eq!(ledger.used(), 0, "what was reserved is released as before");
+        ledger.try_reserve(50).expect("fits the new budget");
     }
 }

@@ -24,25 +24,48 @@
 //! is declared and accessed ([`StorageMode`]), and the constants (LogC, gamut matrices, grade
 //! constants, table offsets) are written from `ym_color::consts` so no number is typed twice.
 //! [`shader_source`] returns the final text for offline validation.
+//!
+//! # Kernels registered ahead of their implementation
+//!
+//! The device foundation (G-02) registers a [`KernelId`] for every kernel family the GPU plan
+//! (`docs/gpu-plan.md` section 11) still has to write, each with a stub WGSL module
+//! ([`KernelId::is_placeholder`]) and an empty Rust module below, so the ids, the warm-up sets
+//! ([`KernelSet`]) and the offline checks (`tests/shaders_naga.rs`) exist before the kernels do. The
+//! task that writes a kernel fills its module, replaces the stub in `shader.rs` with its own `.wgsl`
+//! and removes the id from [`KernelId::placeholder_owner`].
 
 pub mod adaptive_ratio;
+pub mod bilateral;
+pub mod bin;
 pub mod color;
+pub mod detail;
 pub mod diffraction;
+pub mod encode;
+pub mod guided;
+pub mod highlights;
+pub mod lens;
 pub mod log_guided;
+pub mod mosaic_ca;
 pub mod output_sharpen;
+pub mod prep;
 pub mod raw;
+pub mod reduce;
+pub mod resize;
+pub mod richardson_lucy;
+pub mod sampler;
+pub mod sigma;
 pub mod spike;
 
 mod aces;
 mod shader;
-mod util;
+pub(crate) mod util;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
 
 use crate::device::{GpuContext, GpuError, StorageMode};
 
-pub use shader::{KernelId, shader_source};
+pub use shader::{KernelId, KernelSet, shader_source};
 pub use util::PixelData;
 
 /// Compiled compute pipelines, created on first use. Owned by the device thread.
@@ -82,6 +105,7 @@ impl Kernels {
         if let Some(p) = self.pipelines.borrow().get(&id) {
             return Ok(p.clone());
         }
+        ctx.fault().on_pipeline(id.name())?;
         let source = shader_source(self.mode, id);
         let scope = ctx.device.push_error_scope(wgpu::ErrorFilter::Validation);
         let module = ctx

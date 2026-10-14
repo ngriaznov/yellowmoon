@@ -14,6 +14,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 
+use ym_core::app::gpu::{GpuOpener, GpuPolicy, GpuSlot};
 use ym_core::app::{Core, CoreOptions};
 use ym_core::export_queue::{ExportEvent, ExportJob as CoreExportJob, ExportSink};
 use ym_core::pipeline::PhotoSource;
@@ -46,7 +47,9 @@ pub struct AppConfig {
     pub app_root: PathBuf,
     /// The home folder, for the export fallback and the Downloads watcher; `None`: `$HOME`.
     pub home: Option<PathBuf>,
-    /// Use the GPU for the colour pass when there is one.
+    /// Open the graphics device as `YELLOWMOON_GPU` says (`auto`, the default: a hardware adapter
+    /// only and the stages signed off; `on`, `off`, `require`; [`GpuPolicy`]). `false`: never open
+    /// one, whatever the variable says (the tests).
     pub gpu: bool,
     /// Render a thumbnail for every photo that finishes developing.
     pub thumbnails: bool,
@@ -57,8 +60,9 @@ pub struct AppConfig {
 }
 
 impl AppConfig {
-    /// The folders of this machine, as the app and the CLI find them. The GPU is used on macOS and
-    /// wherever `YELLOWMOON_GPU=on`; `YELLOWMOON_GPU=off` turns it off.
+    /// The folders of this machine, as the app and the CLI find them. The GPU follows
+    /// `YELLOWMOON_GPU` (`auto` by default, on any system; `off` turns it off), the policy `ym`
+    /// reads too.
     ///
     /// # Errors
     ///
@@ -66,11 +70,7 @@ impl AppConfig {
     /// data folder.
     pub fn from_environment() -> Result<Self, AppError> {
         let options = CoreOptions::from_environment().map_err(AppError::from)?;
-        let gpu = match std::env::var("YELLOWMOON_GPU").as_deref() {
-            Ok("off" | "0") => false,
-            Ok("on" | "1") => true,
-            _ => cfg!(target_os = "macos"),
-        };
+        let gpu = GpuPolicy::from_environment(None).policy != GpuPolicy::Off;
         Ok(Self {
             data_root: options.data_root,
             app_root: options.app_root,
@@ -211,9 +211,10 @@ impl AppApi {
         if let Some(threads) = config.decode_threads {
             options.decode_threads = threads;
         }
-        if config.gpu {
-            options.render.gpu = start_gpu();
-        }
+        // The device is opened here and nowhere else (`ym_core::app::gpu`), as `ym` opens it: the
+        // same policy, the same adapter, the same budgets.
+        let slot = open_app_gpu(config.gpu, options.render.budget);
+        slot.apply_to(&mut options.render);
         let core = Arc::new(Core::open(options).map_err(AppError::from)?);
         {
             let emitter = Arc::clone(&emitter);
@@ -908,27 +909,59 @@ impl AppApi {
     }
 }
 
-/// Starts the GPU context for the colour pass, if there is a usable adapter. A software adapter
-/// (Mesa lavapipe) is not used unless `YELLOWMOON_GPU=on` asks for it: the CPU path is faster than
-/// its first pass and is the reference.
-fn start_gpu() -> Option<Arc<ym_gpu::device::Gpu>> {
-    let config = ym_gpu::device::GpuConfig {
-        pipeline_cache_dir: ym_gpu::device::default_pipeline_cache_dir(),
-        ..ym_gpu::device::GpuConfig::default()
-    };
-    match ym_gpu::device::Gpu::start(config) {
-        Ok(gpu) => {
-            let forced = std::env::var("YELLOWMOON_GPU").is_ok_and(|v| v == "on" || v == "1");
-            if gpu.info().is_software && !forced {
-                tracing::info!(adapter = %gpu.info().name, "software GPU only: using the CPU for the colour pass");
-                return None;
-            }
-            tracing::info!(adapter = %gpu.info().name, backend = %gpu.info().backend, "GPU ready");
-            Some(Arc::new(gpu))
-        }
-        Err(e) => {
-            tracing::info!(error = %e, "no usable GPU: using the CPU for the colour pass");
-            None
+/// The graphics policy of the application: `YELLOWMOON_GPU`, else `auto` (the application has no
+/// flags). A value that is not a policy is logged and read as `auto`.
+fn gpu_policy() -> GpuPolicy {
+    let choice = GpuPolicy::from_environment(None);
+    if let Some(warning) = &choice.warning {
+        tracing::warn!("{warning}");
+    }
+    choice.policy
+}
+
+/// Opens the GPU for the colour pass (and the stages to come) as the policy says. A software
+/// adapter (Mesa lavapipe) is left alone under `auto`: the CPU path is faster than its first pass
+/// and is the reference. `enabled` is false in the tests, which never open a device.
+fn open_app_gpu(enabled: bool, budget: ym_core::scheduler::MemoryBudget) -> GpuSlot {
+    if !enabled {
+        return GpuSlot::off(budget);
+    }
+    GpuOpener::new(gpu_policy(), budget)
+        .with_pipeline_cache_dir(ym_gpu::device::default_pipeline_cache_dir())
+        .open()
+}
+
+#[cfg(test)]
+mod gpu_tests {
+    use super::*;
+    use ym_core::app::gpu::GpuOutcome;
+
+    #[test]
+    fn a_disabled_app_opens_nothing() {
+        let slot = open_app_gpu(false, ym_core::scheduler::MemoryBudget::default());
+        assert_eq!(slot.policy(), GpuPolicy::Off);
+        assert!(slot.gpu().is_none() && slot.adapter().is_none());
+        assert!(matches!(slot.outcome(), GpuOutcome::Cpu(_)));
+        let mut options = ym_core::pipeline::RenderOptions::default();
+        slot.apply_to(&mut options);
+        assert!(options.gpu.is_none());
+        assert!(options.gpu_stages.is_empty());
+    }
+
+    #[test]
+    fn the_app_reads_the_policy_the_way_ym_does() {
+        // The same function, the same words, the same default (`ym_core::app::gpu` has the table).
+        for (env, policy) in [
+            (None, GpuPolicy::Auto),
+            (Some("auto"), GpuPolicy::Auto),
+            (Some("on"), GpuPolicy::On),
+            (Some("1"), GpuPolicy::On),
+            (Some("off"), GpuPolicy::Off),
+            (Some("0"), GpuPolicy::Off),
+            (Some("require"), GpuPolicy::Require),
+            (Some("typo"), GpuPolicy::Auto),
+        ] {
+            assert_eq!(GpuPolicy::resolve(None, env).policy, policy, "{env:?}");
         }
     }
 }

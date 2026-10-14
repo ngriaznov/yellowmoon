@@ -49,6 +49,7 @@ use super::raw::{
     usable_noise_model,
 };
 use super::{FrameZoom, NeuralStatus, RenderError, RenderPath, RenderStats};
+use crate::app::gpu::GpuStages;
 use crate::scheduler::{ByteLru, JobScheduler, MemoryBudget, MemoryLedger};
 use crate::session::PhotoId;
 use ym_color::display::OutputTarget;
@@ -72,7 +73,15 @@ pub struct RenderOptions {
     /// Whether the learned demosaic can run.
     pub neural: NeuralStatus,
     /// The GPU, when there is one: the colour pass of viewport frames and thumbnails runs on it.
+    /// It is opened by [`crate::app::gpu::open_gpu`] and nothing else, and it can be given to a
+    /// renderer that exists already ([`Renderer::set_gpu`]: `ym` opens the device while photos
+    /// decode).
     pub gpu: Option<Arc<Gpu>>,
+    /// The stages the device may run (`Auto` runs [`GpuStages::SIGNED_OFF`], `On` and `Require`
+    /// run all of them). All of them by default: a renderer given a device and no policy holds
+    /// nothing back. In this version no render code reads it yet; the wiring tasks of the GPU
+    /// wave consult it one stage at a time, and a stage that is off keeps its host boundary.
+    pub gpu_stages: GpuStages,
     /// The colour of the letterbox around the photo (the paper colour).
     pub background: [u8; 3],
     /// Longest edge of a thumbnail in pixels (`docs/01`: 240).
@@ -135,6 +144,7 @@ impl std::fmt::Debug for RenderOptions {
             .field("neural", &self.neural)
             .field("demosaic", &self.demosaic)
             .field("gpu", &self.gpu.as_ref().map(|g| g.info().name.clone()))
+            .field("gpu_stages", &self.gpu_stages)
             .finish_non_exhaustive()
     }
 }
@@ -148,6 +158,7 @@ impl Default for RenderOptions {
             budget: MemoryBudget::detect(),
             neural: NeuralStatus::unavailable(),
             gpu: None,
+            gpu_stages: GpuStages::ALL,
             background: [255, 255, 255],
             thumbnail_px: 240,
             demosaic: forced_demosaic().unwrap_or(DEFAULT_METHOD),
@@ -424,7 +435,9 @@ struct Inner {
     current: Mutex<Option<PhotoId>>,
     looks: Arc<dyn LookProvider>,
     display: RwLock<DisplayChoice>,
-    options: RenderOptions,
+    /// The options, replaced as a whole when the GPU or the memory budget is attached later
+    /// ([`Renderer::set_gpu`], [`Renderer::set_budget`]); readers take the `Arc`.
+    options: RwLock<Arc<RenderOptions>>,
     graphs: Mutex<Vec<(PhotoId, Arc<PhotoGraph>)>>,
     /// The detail statistic of the latest thumbnail of each photo (`thumbs.rs`), for the size
     /// estimate of the Export panel. A few bytes per photo, so unlike the graphs it is not capped.
@@ -444,7 +457,7 @@ pub struct Renderer {
 impl std::fmt::Debug for Renderer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Renderer")
-            .field("options", &self.inner.options)
+            .field("options", &self.options())
             .finish_non_exhaustive()
     }
 }
@@ -466,7 +479,7 @@ impl Renderer {
                 current: Mutex::new(None),
                 looks,
                 display: RwLock::new(DisplayChoice::Aces2),
-                options,
+                options: RwLock::new(Arc::new(options)),
                 graphs: Mutex::new(Vec::new()),
                 thumbnail_details: Mutex::new(HashMap::new()),
                 retired_through: AtomicU32::new(0),
@@ -488,10 +501,51 @@ impl Renderer {
         )
     }
 
-    /// The options.
+    /// The options in force now: what the renderer was made with, with the GPU and the memory
+    /// budget it was given since ([`Renderer::set_gpu`], [`Renderer::set_budget`]). A snapshot: it
+    /// does not change under the caller.
     #[must_use]
-    pub fn options(&self) -> &RenderOptions {
-        &self.inner.options
+    pub fn options(&self) -> Arc<RenderOptions> {
+        Arc::clone(
+            &self
+                .inner
+                .options
+                .read()
+                .unwrap_or_else(PoisonError::into_inner),
+        )
+    }
+
+    /// Replaces the options with a copy changed by `change`.
+    fn update_options(&self, change: impl FnOnce(&mut RenderOptions)) {
+        let mut options = self
+            .inner
+            .options
+            .write()
+            .unwrap_or_else(PoisonError::into_inner);
+        let mut next = (**options).clone();
+        change(&mut next);
+        *options = Arc::new(next);
+    }
+
+    /// Gives the renderer a GPU (or takes it away with `None`) and the stages it may run. `ym`
+    /// opens the device in the background while photos decode and calls this before it queues
+    /// the export, so that an export is wholly on the device or wholly on the CPU: it is for the
+    /// start of a run, not for the middle of a render. Renders that are running keep the options
+    /// they started with.
+    pub fn set_gpu(&self, gpu: Option<Arc<Gpu>>, stages: GpuStages) {
+        self.update_options(|o| {
+            o.gpu = gpu;
+            o.gpu_stages = stages;
+        });
+    }
+
+    /// Changes the memory budget: the ledger of full-resolution renders follows at once, graphs
+    /// made from now on get the new figures (a graph keeps the budget it was made with). The
+    /// unified-memory rule lowers the CPU budget when the device turns out to share the RAM
+    /// ([`MemoryBudget::for_unified_memory`]).
+    pub fn set_budget(&self, budget: MemoryBudget) {
+        self.inner.ledger.set_budget(budget.cpu_bytes);
+        self.update_options(|o| o.budget = budget);
     }
 
     /// The job scheduler (priorities, navigation).
@@ -535,7 +589,7 @@ impl Renderer {
     /// The GPU in use, if any.
     #[must_use]
     pub fn gpu_info(&self) -> Option<GpuInfo> {
-        self.inner.options.gpu.as_ref().map(|g| g.info().clone())
+        self.options().gpu.as_ref().map(|g| g.info().clone())
     }
 
     /// The graph of a photo, made on first use. The least recently used graphs beyond
@@ -550,10 +604,10 @@ impl Renderer {
             let e = graphs.remove(i);
             graphs.push(e);
         } else {
-            let g = Arc::new(PhotoGraph::new(id, self.inner.options.budget));
+            let g = Arc::new(PhotoGraph::new(id, self.options().budget));
             graphs.push((id, g));
         }
-        let max = self.inner.options.budget.max_photos.max(1);
+        let max = self.options().budget.max_photos.max(1);
         if graphs.len() > max {
             let current = *lock(&self.inner.current);
             while graphs.len() > max {
@@ -757,7 +811,8 @@ impl<'a> Job<'a> {
         target: OutputTarget,
     ) -> RenderReport {
         self.g.counters.add(&self.runs);
-        let neural = &self.r.inner.options.neural;
+        let options = self.r.options();
+        let neural = &options.neural;
         if self.src.settings.decode.neural_demosaic
             && !neural.available
             && let Some(reason) = &neural.reason
@@ -983,7 +1038,7 @@ impl<'a> Job<'a> {
             &plan,
             &params,
             &sigma,
-            self.r.inner.options.demosaic,
+            self.r.options().demosaic,
             self.cancel,
         )?);
         self.runs.full_chains += 1;
@@ -1013,7 +1068,7 @@ impl<'a> Job<'a> {
         let plan = self.plan()?;
         let frame = self.frame()?;
         let full = self.full(keep)?;
-        let t = self.r.inner.options.tile_px.max(64);
+        let t = self.r.options().tile_px.max(64);
         let rect = Rect::new(
             tx * t,
             ty * t,
@@ -1058,7 +1113,7 @@ impl<'a> Job<'a> {
             self.timings.raw_ms += t.elapsed().as_secs_f64() * 1000.0;
             return Ok(img);
         }
-        let t = self.r.inner.options.tile_px.max(64);
+        let t = self.r.options().tile_px.max(64);
         let mut out = RgbImage::new(rect.w, rect.h);
         for ty in rect.y / t..=(rect.y1() - 1) / t {
             for tx in rect.x / t..=(rect.x1() - 1) / t {
@@ -1087,7 +1142,7 @@ impl<'a> Job<'a> {
         if plan.reduced {
             return Ok(st.groups.as_ref().is_some_and(|g| g.contains(&(key, 1))));
         }
-        let t = self.r.inner.options.tile_px.max(64);
+        let t = self.r.options().tile_px.max(64);
         let Some(tiles) = st.tiles.as_ref() else {
             return Ok(false);
         };

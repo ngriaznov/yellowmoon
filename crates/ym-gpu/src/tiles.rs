@@ -34,6 +34,18 @@ use crate::cpu::tiling::{Halo, Rect, Stage, required_input_rect, tile_grid};
 /// The tile sizes the scheduler normally uses, in pixels (`docs/01`: "tiles of 1024 or 2048 px").
 pub const TILE_SIZES: [usize; 2] = [1024, 2048];
 
+/// The storage binding size every kernel is designed for: 128 MiB, what Mesa lavapipe reports (the
+/// CI adapter; `ym doctor` there prints "storage binding 128 MiB" although the device asks for up to
+/// 2 GiB, `docs/gpu-plan.md` 1.3 N-1). Rectangle splitting, slab sizes and the `max_binding_bytes`
+/// tests use this constant, never the device's own limit, so the app and `ym` cut identically on
+/// every machine; a device that offers more simply does not need the room.
+pub const DESIGN_BINDING_BYTES: u64 = 128 << 20;
+
+/// Whether a buffer of `bytes` bytes fits one binding of [`DESIGN_BINDING_BYTES`].
+pub const fn fits_design_binding(bytes: u64) -> bool {
+    bytes <= DESIGN_BINDING_BYTES
+}
+
 /// One tile of a plan.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Tile {
@@ -437,6 +449,17 @@ mod tests {
             }
         }
         assert_eq!((released, rc.rows_pending()), (4, 0));
+    }
+
+    #[test]
+    fn the_design_binding_is_the_lavapipe_figure() {
+        assert_eq!(DESIGN_BINDING_BYTES, 134_217_728);
+        assert!(fits_design_binding(DESIGN_BINDING_BYTES));
+        assert!(!fits_design_binding(DESIGN_BINDING_BYTES + 1));
+        // The one plane of a 61 MP body (9504 x 6336, two bytes a sample) is the largest the plan
+        // keeps resident; it fits, a 61 MP f32 quantisation-step plane does not.
+        assert!(fits_design_binding(9504 * 6336 * 2));
+        assert!(!fits_design_binding(9504 * 6336 * 4));
     }
 
     #[test]

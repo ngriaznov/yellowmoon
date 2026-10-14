@@ -9,10 +9,15 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use serde_json::{Value, json};
+use ym_core::app::gpu::{
+    CpuReason, GpuOutcome, GpuPolicy, GpuStages, PolicyChoice, PolicySource, open_gpu,
+    probe_adapter,
+};
 use ym_core::data_dir::find_data_dir;
 use ym_core::looks::{LookGroupInfo, LookService};
 use ym_core::pipeline::NeuralStatus;
 use ym_core::preferences::PreferencesStore;
+use ym_core::scheduler::MemoryBudget;
 use ym_core::version::{PIPELINE_VERSION, app_version};
 use ym_gpu::device::GpuInfo;
 use ym_profiles::registry::ProfileStore;
@@ -20,7 +25,6 @@ use ym_profiles::registry::ProfileStore;
 use crate::cli::{DoctorArgs, version_text};
 use crate::console::Console;
 use crate::exit::{self, Failure};
-use crate::runtime::probe_gpu;
 use crate::text::{json_line, lossy, path_text};
 
 /// The sentence at the top of the report: what it includes, and what it leaves out.
@@ -33,9 +37,26 @@ struct ModelFile {
     sha256: String,
 }
 
+/// What the graphics policy comes to on this machine: the setting and where it came from, whether
+/// the device is used, and the budgets that follow.
+struct GpuPlan {
+    choice: PolicyChoice,
+    /// Whether the device would be used for the stages below.
+    uses_gpu: bool,
+    /// Why not, in plain words (`None` when it is used or the policy is `off`).
+    reason: Option<String>,
+    /// The stages that would run on the device.
+    stages: GpuStages,
+    /// The budgets the run would have.
+    budget: MemoryBudget,
+    /// The adapter shares the machine's RAM.
+    shared_memory: bool,
+}
+
 /// Everything the report says.
 struct Report {
     gpu: Result<GpuInfo, String>,
+    plan: GpuPlan,
     neural: NeuralStatus,
     weights: Vec<ModelFile>,
     illuminant_models: Vec<ModelFile>,
@@ -144,8 +165,10 @@ fn build() -> Result<Report, Failure> {
     let service = LookService::open(&app_root, &data_folder, Arc::clone(&prefs))
         .map_err(|e| Failure::failed(e.to_string()))?;
     let looks = service.list();
+    let (gpu, plan) = gpu_report();
     Ok(Report {
-        gpu: probe_gpu(),
+        gpu,
+        plan,
         neural: NeuralStatus::probe(Some(&data_folder)),
         weights,
         illuminant_models,
@@ -169,6 +192,46 @@ fn build() -> Result<Report, Failure> {
             .map_or_else(|p| p.into_inner().looks_dir(), |lib| lib.looks_dir()),
         data_folder,
     })
+}
+
+/// Opens the device the way a run would (`YELLOWMOON_GPU`, else Auto) and says what it found.
+/// The adapter is reported whatever the policy does with it: a software adapter that `Auto`
+/// leaves alone, and the one on a machine where the setting is `off`, are still listed.
+fn gpu_report() -> (Result<GpuInfo, String>, GpuPlan) {
+    let choice = GpuPolicy::from_environment(None);
+    let slot = open_gpu(choice.policy, MemoryBudget::detect());
+    let gpu = match (slot.adapter(), slot.missing_device_reason()) {
+        (Some(info), _) => Ok(info.clone()),
+        (None, Some(reason)) => Err(reason.to_owned()),
+        // `off` opened nothing; look anyway, the report is for finding out what is there.
+        (None, None) => probe_adapter().map_err(|e| e.to_string()),
+    };
+    let reason = match slot.outcome() {
+        GpuOutcome::Using | GpuOutcome::Cpu(CpuReason::Disabled) => None,
+        GpuOutcome::Cpu(CpuReason::SoftwareAdapter) => Some(
+            "only a software adapter was found; YELLOWMOON_GPU=on uses it".to_owned(),
+        ),
+        GpuOutcome::Cpu(CpuReason::NoAdapter(reason)) | GpuOutcome::Unavailable(reason) => {
+            Some(format!("no adapter opened ({reason})"))
+        }
+    };
+    let plan = GpuPlan {
+        uses_gpu: slot.is_using(),
+        reason,
+        stages: slot.stages(),
+        budget: slot.budget(),
+        shared_memory: slot.shares_memory(),
+        choice,
+    };
+    (gpu, plan)
+}
+
+fn source_word(source: PolicySource) -> &'static str {
+    match source {
+        PolicySource::Flag(_) => "flag",
+        PolicySource::Environment => "environment",
+        PolicySource::Default => "default",
+    }
 }
 
 fn gpu_value(gpu: &Result<GpuInfo, String>) -> Value {
@@ -215,6 +278,21 @@ fn to_json(r: &Report) -> Value {
         "pipeline_version": PIPELINE_VERSION,
         "system": { "os": std::env::consts::OS, "arch": std::env::consts::ARCH },
         "gpu": gpu_value(&r.gpu),
+        "gpu_policy": {
+            "setting": r.plan.choice.policy.name(),
+            "source": source_word(r.plan.choice.source),
+            "warning": r.plan.choice.warning,
+            "uses_gpu": r.plan.uses_gpu,
+            "reason": r.plan.reason,
+            "stages": r.plan.stages.names(),
+            "auto_stages": GpuPolicy::Auto.stages().names(),
+            "all_stages": GpuStages::ALL.names(),
+        },
+        "memory_budget": {
+            "cpu_bytes": r.plan.budget.cpu_bytes,
+            "gpu_bytes": r.plan.budget.gpu_bytes,
+            "shared_memory": r.plan.shared_memory,
+        },
         "render_path": {
             "demosaic": if r.neural.available { "neural" } else { "classical" },
             "neural_available": r.neural.available,
@@ -238,6 +316,23 @@ fn to_json(r: &Report) -> Value {
         "looks_folder": lossy(&r.looks_folder),
         "data_folder": lossy(&r.data_folder),
     })
+}
+
+/// The `GPU policy` row: the setting, where it came from, and what it comes to here.
+fn policy_text(plan: &GpuPlan) -> String {
+    let mut text = plan.choice.to_string();
+    if plan.uses_gpu {
+        text.push_str(&format!(": uses the GPU for {}", plan.stages));
+    } else {
+        text.push_str(": uses the CPU");
+        if let Some(reason) = &plan.reason {
+            text.push_str(&format!(", {reason}"));
+        }
+    }
+    if let Some(warning) = &plan.choice.warning {
+        text.push_str(&format!(". {warning}"));
+    }
+    text
 }
 
 fn short(hash: &str) -> &str {
@@ -291,6 +386,28 @@ fn to_text(r: &Report) -> String {
         }
         Err(reason) => row("GPU", format!("none, CPU fallback ({reason})")),
     }
+    row("GPU policy", policy_text(&r.plan));
+    row(
+        "GPU stages",
+        format!(
+            "{} for Auto; On and Require run {}",
+            GpuPolicy::Auto.stages(),
+            GpuStages::ALL
+        ),
+    );
+    row(
+        "Memory budget",
+        format!(
+            "CPU {:.1} GiB, GPU {:.1} GiB{}",
+            r.plan.budget.cpu_bytes as f64 / f64::from(1u32 << 30),
+            r.plan.budget.gpu_bytes as f64 / f64::from(1u32 << 30),
+            if r.plan.shared_memory {
+                " (the GPU shares the memory of the CPU)"
+            } else {
+                ""
+            }
+        ),
+    );
     row(
         "Render path",
         if r.neural.available {

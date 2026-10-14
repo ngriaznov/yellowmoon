@@ -14,6 +14,12 @@
 //!
 //! Nothing here persists anything but the preferences and the looks (`docs/01` section
 //! Persistence).
+//!
+//! The graphics device is opened in [`gpu`] and nowhere else: [`gpu::open_gpu`] turns a
+//! [`gpu::GpuPolicy`] into a [`gpu::GpuSlot`], and [`Core::attach_gpu`] gives the slot to the
+//! renderer.
+
+pub mod gpu;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -230,6 +236,19 @@ impl Core {
     #[must_use]
     pub fn data_root(&self) -> &Path {
         &self.data_root
+    }
+
+    /// Gives the renderer the device of `slot`, the stages it may run and the memory budgets that
+    /// go with it (the unified-memory rule lowers the CPU budget on a machine whose GPU shares the
+    /// RAM). `ym` opens the device in the background while photos decode and attaches it here
+    /// before it queues the export, so that one export is wholly on the device or wholly on the
+    /// CPU: call it before the first render of the run, not during one. A slot that uses the CPU
+    /// takes any device away (the renderer then uses the CPU for everything).
+    pub fn attach_gpu(&self, slot: &gpu::GpuSlot) {
+        if slot.budget() != self.renderer.options().budget {
+            self.renderer.set_budget(slot.budget());
+        }
+        self.renderer.set_gpu(slot.gpu().cloned(), slot.stages());
     }
 
     /// Registers the application's listener for `looks_changed`.

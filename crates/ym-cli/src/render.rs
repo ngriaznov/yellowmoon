@@ -15,6 +15,10 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::RecvTimeoutError;
 use std::time::{Duration, Instant};
 
+use ym_core::app::gpu::{
+    CpuReason, GPU_ENV, GpuOutcome, GpuPolicy, GpuSlot, GpuStages, PolicyChoice, PolicySource,
+    open_gpu,
+};
 use ym_core::export_queue::{ExportEvent, ExportJob, FileDone, QueueError};
 use ym_core::looks::{LookService, LooksError};
 use ym_core::pipeline::DisplayChoice;
@@ -31,7 +35,7 @@ use crate::develop::{LoadedSettings, Overrides, SettingsFile};
 use crate::exit::{self, Failure};
 use crate::inputs::{self, Expanded, Problem};
 use crate::report::{Object, develop_fields, render_error, render_ok};
-use crate::runtime::{BackgroundProbe, CoreSettings, Runtime, gpu_line, interrupted, probe_gpu};
+use crate::runtime::{BackgroundGpu, CoreSettings, Runtime, gpu_line, interrupted};
 use crate::text::{data_path, line_text, lossy, path_text};
 
 /// The longest file name the progress line shows. With the bar and the counts the line is then
@@ -242,6 +246,52 @@ impl Stdout {
     }
 }
 
+/// What `--require-gpu` (or `YELLOWMOON_GPU=require`) says when no device opens.
+fn no_gpu_message(choice: &PolicyChoice, reason: &str) -> String {
+    let asked = match choice.source {
+        PolicySource::Flag(flag) => format!("{} was given", flag.text()),
+        PolicySource::Environment | PolicySource::Default => {
+            format!("{GPU_ENV}={} is set", choice.policy)
+        }
+    };
+    format!("No usable GPU was found ({reason}). {asked}, so nothing was rendered.")
+}
+
+/// What is said about the graphics device once it is open: the adapter and the stages on a line of
+/// detail, a software adapter that `Auto` left alone, and a warning when none was found.
+fn report_gpu(console: &mut Console, slot: &GpuSlot) {
+    let adapter = slot.adapter().map(gpu_line);
+    match slot.outcome() {
+        GpuOutcome::Using => console.detail(&format!(
+            "GPU: {} (stages: {})",
+            adapter.unwrap_or_default(),
+            slot.stages()
+        )),
+        GpuOutcome::Cpu(CpuReason::SoftwareAdapter) => console.detail(&format!(
+            "GPU: {} is a software adapter, so the CPU is used (YELLOWMOON_GPU=on uses it).",
+            adapter.unwrap_or_default()
+        )),
+        GpuOutcome::Cpu(CpuReason::NoAdapter(reason)) | GpuOutcome::Unavailable(reason) => {
+            console.warn("No usable GPU was found. Rendering on the CPU, which is slower.");
+            console.detail(&format!("GPU: {reason}"));
+        }
+        GpuOutcome::Cpu(CpuReason::Disabled) => {}
+    }
+}
+
+/// Where the images of an export are made, for `device` in the JSON: `gpu` when the device is open
+/// and runs a stage of the export render ([`GpuStages::USED_BY_EXPORTS`], none in this version), else
+/// `cpu`. The export queue's own report will carry the answer per photo once stages move to the
+/// device (a photo that fell back to the CPU reports `cpu`).
+fn export_device(slot: Option<&GpuSlot>) -> &'static str {
+    match slot {
+        Some(slot) if slot.is_using() && slot.stages().intersects(GpuStages::USED_BY_EXPORTS) => {
+            "gpu"
+        }
+        _ => "cpu",
+    }
+}
+
 fn read_settings_text(path: &Path) -> Result<String, Failure> {
     if path.as_os_str() == "-" {
         let mut text = String::new();
@@ -296,20 +346,21 @@ fn run_checked(args: &RenderArgs, console: &mut Console) -> Result<u8, Failure> 
     })?;
     let core = &rt.core;
 
-    // `--require-gpu` is checked first: a machine that can't meet it renders nothing. The export
-    // render runs on the CPU in this version; the probe still tells a machine without a GPU so.
-    if args.require_gpu {
-        match probe_gpu() {
-            Ok(info) => console.detail(&format!("GPU: {}", gpu_line(&info))),
-            Err(reason) => {
-                return Err(Failure::new(
-                    exit::NO_GPU,
-                    format!(
-                        "No usable GPU was found ({reason}). --require-gpu was given, so nothing was rendered."
-                    ),
-                ));
-            }
+    // The graphics policy: `--cpu` or `--require-gpu`, else `YELLOWMOON_GPU`, else Auto, the same
+    // choice the app makes (`ym_core::app::gpu`). A policy that needs a device is checked first: a
+    // machine that can't meet it renders nothing.
+    let choice = GpuPolicy::from_environment(args.policy_flag());
+    if let Some(warning) = &choice.warning {
+        console.warn(warning);
+    }
+    let budget = core.renderer.options().budget;
+    let mut gpu_slot: Option<GpuSlot> = None;
+    if choice.policy.is_strict() {
+        let slot = open_gpu(choice.policy, budget);
+        if let Some(reason) = slot.failure() {
+            return Err(Failure::new(exit::NO_GPU, no_gpu_message(&choice, reason)));
         }
+        gpu_slot = Some(slot);
     }
 
     // Display rendering and look.
@@ -395,9 +446,11 @@ fn run_checked(args: &RenderArgs, console: &mut Console) -> Result<u8, Failure> 
         }
     }
 
-    // Everything that could be a usage mistake has been checked. Look at the GPU while the photos
-    // develop (the answer is wanted before the export starts).
-    let mut gpu_probe = (!args.require_gpu).then(BackgroundProbe::start);
+    // Everything that could be a usage mistake has been checked. Open the GPU while the photos
+    // develop (it is wanted before the export starts), unless the CPU was asked for or a strict
+    // policy opened it already.
+    let mut gpu_open = (gpu_slot.is_none() && choice.policy != GpuPolicy::Off)
+        .then(|| BackgroundGpu::start(choice.policy, budget));
 
     let mut plans: Vec<Plan> = Vec::with_capacity(files.len());
     for file in &files {
@@ -491,16 +544,14 @@ fn run_checked(args: &RenderArgs, console: &mut Console) -> Result<u8, Failure> 
         return Ok(final_code(&counts, false));
     }
 
-    // Report the GPU probe now that the photos are developed.
-    if let Some(result) = gpu_probe.as_mut().and_then(BackgroundProbe::finish) {
-        match result {
-            Ok(info) => console.detail(&format!("GPU: {}", gpu_line(&info))),
-            Err(reason) => {
-                console.warn("No usable GPU was found. Rendering on the CPU, which is slower.");
-                console.detail(&format!("GPU: {reason}"));
-            }
-        }
+    // The device is open by now (or was never wanted). Say what it is, and give it to the core
+    // before the export is queued, so that the whole export is on the device or on the CPU.
+    let gpu_slot = gpu_slot.or_else(|| gpu_open.as_mut().and_then(BackgroundGpu::finish));
+    if let Some(slot) = &gpu_slot {
+        report_gpu(console, slot);
+        core.attach_gpu(slot);
     }
+    let device = export_device(gpu_slot.as_ref());
 
     // Export.
     let remove_location = core.preferences.get().remove_location_from_exports;
@@ -542,6 +593,7 @@ fn run_checked(args: &RenderArgs, console: &mut Console) -> Result<u8, Failure> 
                     &mut plans,
                     &by_photo,
                     args.json,
+                    device,
                     console,
                     &mut stdout,
                     &mut counts,
@@ -692,6 +744,7 @@ fn handle_file(
     plans: &mut [Plan],
     by_photo: &HashMap<PhotoId, usize>,
     json: bool,
+    device: &'static str,
     console: &mut Console,
     stdout: &mut Stdout,
     counts: &mut Counts,
@@ -739,14 +792,16 @@ fn handle_file(
             }
             if json {
                 let status = if report.skipped { "skipped" } else { "ok" };
-                let empty = Object::new();
-                let known = plan.known.as_ref().unwrap_or(&empty);
+                // `device` joins what is known of the photo, so it comes after `settings` and
+                // before `timings_ms`: where the picture was made (`docs/10`).
+                let mut known = plan.known.clone().unwrap_or_default();
+                known.insert("device", device);
                 stdout.line(
                     &render_ok(
                         &lossy(input),
                         &lossy(&report.path),
                         status,
-                        known,
+                        &known,
                         (
                             done.decode_ms,
                             report.timings.render_ms,

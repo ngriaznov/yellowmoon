@@ -6,6 +6,10 @@
 //!
 //! The process runs with an empty `YELLOWMOON_HOME`, so the user's preferences (default look, display rendering,
 //! export defaults) and imported looks cannot change a golden render.
+//!
+//! The golden hashes pin the CPU reference: the process gets `--cpu` and `YELLOWMOON_GPU=off`, so that no graphics
+//! device is opened and a machine with a GPU cannot move a hash (`docs/gpu-plan.md` section 7). GPU renders are
+//! compared with the stored CPU pictures within a tolerance, in a mode of their own.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -229,6 +233,7 @@ impl YmBinary {
             .with_context(|| format!("writing {}", settings_path.display()))?;
         let mut cmd = Command::new(&self.path);
         cmd.arg("render")
+            .arg("--cpu")
             .arg("--json")
             .arg("--quiet")
             .arg("--settings")
@@ -238,6 +243,7 @@ impl YmBinary {
             .arg(out_dir)
             .arg(input)
             .env("YELLOWMOON_HOME", &home)
+            .env("YELLOWMOON_GPU", "off")
             .stdin(Stdio::null());
         if let Some(data) = &self.data {
             cmd.env("YELLOWMOON_DATA", data);
@@ -332,6 +338,42 @@ mod tests {
         if std::env::var_os("GOLDEN_RENDER_TIMEOUT_SECS").is_none() {
             assert_eq!(render_timeout(), RENDER_TIMEOUT);
         }
+    }
+
+    #[test]
+    fn a_golden_render_asks_for_the_cpu_reference() {
+        // The command is built in `render`; the process cannot be run here, so look at it through a
+        // stand-in binary that prints what it was given.
+        let dir = std::env::temp_dir().join(format!("golden-ymrun-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("dir");
+        let script = dir.join("ym");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\nprintf '{\"status\":\"error\",\"error\":{\"message\":\"args: %s gpu: %s\"}}\\n' \"$*\" \"$YELLOWMOON_GPU\"\nexit 1\n",
+        )
+        .expect("script");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        }
+        let ym = YmBinary {
+            path: script,
+            data: None,
+        };
+        let e = ym
+            .render(
+                Path::new("a.ARW"),
+                &serde_json::json!({}),
+                Output::Png16,
+                &dir.join("out"),
+                &dir.join("work"),
+            )
+            .unwrap_err();
+        let text = format!("{e:#}");
+        assert!(text.contains("args: render --cpu --json"), "{text}");
+        assert!(text.contains("gpu: off"), "{text}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

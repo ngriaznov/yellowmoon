@@ -1,7 +1,5 @@
 //! Upload, dispatch and readback helpers shared by the kernels.
 
-use std::sync::mpsc;
-
 use bytemuck::Pod;
 
 use crate::device::{GpuContext, GpuError, StorageMode};
@@ -44,6 +42,7 @@ pub(crate) fn uniform_buffer<T: Pod>(
     let bytes = bytemuck::bytes_of(value);
     let buf = ctx.pool().acquire(label, bytes.len() as u64, UNIFORM)?;
     ctx.queue.write_buffer(&buf, 0, bytes);
+    ctx.counters_shared().count_upload(bytes.len() as u64);
     Ok(buf)
 }
 
@@ -62,6 +61,7 @@ pub(crate) fn storage_buffer(
         padded.resize(len as usize, 0);
         ctx.queue.write_buffer(&buf, 0, &padded);
     }
+    ctx.counters_shared().count_upload(data.len() as u64);
     Ok(buf)
 }
 
@@ -126,41 +126,15 @@ impl Readback {
         }
     }
 
-    /// Waits for the submission, maps the staging buffer and returns a copy of its first `bytes`.
+    /// Waits for the submission (at most the readback timeout), maps the staging buffer and returns
+    /// a copy of its first `bytes`.
     pub(crate) fn finish(self, ctx: &GpuContext) -> Result<Vec<u8>, GpuError> {
-        let slice = self.staging.slice(0..self.bytes);
-        let (tx, rx) = mpsc::channel();
-        slice.map_async(wgpu::MapMode::Read, move |r| {
-            let _ = tx.send(r);
-        });
-        ctx.device
-            .poll(wgpu::PollType::Wait {
-                submission_index: Some(self.submission),
-                timeout: None,
-            })
-            .map_err(|e| GpuError::Readback(e.to_string()))?;
-        // The map callback runs inside `poll`; if the mapping needed a further poll, do it.
-        let mapped = match rx.try_recv() {
-            Ok(r) => r,
-            Err(_) => {
-                ctx.device
-                    .poll(wgpu::PollType::wait_indefinitely())
-                    .map_err(|e| GpuError::Readback(e.to_string()))?;
-                rx.recv()
-                    .map_err(|e| GpuError::Readback(format!("map callback lost: {e}")))?
-            }
-        };
-        mapped.map_err(|e| GpuError::Readback(e.to_string()))?;
-        let data = match slice.get_mapped_range() {
-            Ok(view) => view.to_vec(),
-            Err(e) => {
-                // Never park a mapped buffer in the pool.
-                self.staging.unmap();
-                return Err(GpuError::Readback(e.to_string()));
-            }
-        };
-        self.staging.unmap();
-        Ok(data)
+        let mut parts = crate::stream::map_readbacks(
+            ctx,
+            self.submission,
+            &[(&self.staging, self.bytes)],
+        )?;
+        Ok(parts.pop().unwrap_or_default())
     }
 }
 
@@ -174,7 +148,7 @@ pub(crate) fn submit_with_readback(
 ) -> Result<Readback, GpuError> {
     let staging = ctx.pool().acquire("readback", bytes, STAGING)?;
     encoder.copy_buffer_to_buffer(src, 0, &staging, 0, bytes);
-    let submission = ctx.queue.submit([encoder.finish()]);
+    let submission = ctx.submit([encoder.finish()])?;
     Ok(Readback::new(staging, bytes, submission))
 }
 

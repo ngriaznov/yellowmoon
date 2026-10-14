@@ -367,14 +367,34 @@ impl<C: 'static> Scheduler<C> {
         }
     }
 
-    /// Queues `job`. See the module rules for ordering and cancellation.
+    /// Queues `job` with a fresh [`CancelToken`]. See the module rules for ordering and
+    /// cancellation.
     pub fn submit<R, F>(&self, spec: JobSpec, job: F) -> JobHandle<R>
     where
         R: Send + 'static,
         F: FnOnce(&mut C, &CancelToken) -> R + Send + 'static,
     {
+        self.submit_with_token(spec, CancelToken::new(), job)
+    }
+
+    /// Queues `job` with a token the caller already owns, normally the render's own
+    /// ([`JobSpec`] stays `Copy`, so the token is a separate argument).
+    ///
+    /// Every job of one render, one export or one navigation can share a single token: setting it
+    /// skips every job of the group that has not started (the worker finds the token set and
+    /// resolves the job with [`JobError::Cancelled`] without running it), and a job that is running
+    /// sees the flag through the `&CancelToken` it is given, at its next check. The shared token is
+    /// the one [`JobHandle::token`] returns, so [`JobHandle::cancel`] on one handle of the group
+    /// cancels the whole group, and [`Scheduler::cancel_navigation`] and [`Scheduler::cancel_all`]
+    /// set it for every job they reach (a viewport or tile job of a navigation, any job for
+    /// `cancel_all`). Use a fresh token per independent job ([`Scheduler::submit`]) when that is
+    /// not wanted.
+    pub fn submit_with_token<R, F>(&self, spec: JobSpec, token: CancelToken, job: F) -> JobHandle<R>
+    where
+        R: Send + 'static,
+        F: FnOnce(&mut C, &CancelToken) -> R + Send + 'static,
+    {
         let (tx, rx) = mpsc::sync_channel::<Result<R, JobError>>(1);
-        let token = CancelToken::new();
         let boxed: Job<C> = Box::new(move |dispatch, token| match dispatch {
             Dispatch::Run(ctx) => {
                 let r = catch_unwind(AssertUnwindSafe(|| job(ctx, token)));

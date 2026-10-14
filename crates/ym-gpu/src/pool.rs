@@ -25,14 +25,29 @@
 //! `min(4 GiB, 2 * max_buffer_size)` ([`MemoryBudget::for_limits`]). An allocation that would
 //! exceed the budget first frees the pool's unused buffers, and fails with
 //! [`GpuError::OutOfBudget`] if that is not enough. The tile scheduler sizes its tiles from the
-//! budget ([`crate::tiles::tile_size_for_budget`]) so this does not normally happen.
+//! budget ([`crate::tiles::tile_size_for_budget`]) so this does not normally happen. A real
+//! out-of-memory from the driver while creating a buffer is reported the same way, so the caller's
+//! "trim the pool, retry once, then the CPU" rule covers both.
+//!
+//! On a machine where the GPU shares memory with the CPU (Apple silicon) the budget is carved out of
+//! the RAM the CPU side also uses: [`MemoryBudget::for_unified_memory`] and [`unified_split`].
+//!
+//! # Poison
+//!
+//! [`BufferPool::acquire`] returns recycled buffers uncleared, and wgpu zero-fills a new one, so a
+//! kernel that reads what it never wrote works by luck on a fresh device and breaks later, on
+//! whatever an earlier job left behind. With poison mode ([`crate::device::GpuConfig::poison`]) the
+//! pool fills the whole buffer with [`POISON_WORD`] before handing it out: NaN as one f32 and as two
+//! f16, so a stale float read shows up as NaN, and a stale integer read as a value no sane input
+//! has. The fill is an ordinary queue write, so it is ordered before the caller's own uploads and
+//! commands. Poisoned buffers get `COPY_DST` added to their usage when the caller did not ask for it.
 
 use std::collections::HashMap;
 use std::num::NonZeroU64;
 use std::ops::Deref;
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 
-use crate::device::GpuError;
+use crate::device::{DeviceHealth, FaultState, GpuError};
 
 /// The GPU memory budget.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -46,6 +61,24 @@ impl MemoryBudget {
     pub const DEFAULT_BYTES: u64 = 4 << 30;
     /// The smallest budget ever used (below this the tile pipeline cannot run).
     pub const MIN_BYTES: u64 = 64 << 20;
+    /// Smallest GPU budget on a unified-memory machine.
+    pub const UNIFIED_MIN_BYTES: u64 = 512 << 20;
+    /// Largest GPU budget on a unified-memory machine.
+    pub const UNIFIED_MAX_BYTES: u64 = 4 << 30;
+    /// The GPU gets this fraction of the RAM on a unified-memory machine: `1 / UNIFIED_RAM_DIVISOR`.
+    pub const UNIFIED_RAM_DIVISOR: u64 = 4;
+    /// The CPU and GPU budgets together stay within `UNIFIED_SUM_PERCENT` percent of the RAM.
+    pub const UNIFIED_SUM_PERCENT: u64 = 60;
+
+    /// The GPU budget of a machine whose GPU shares `ram_bytes` of memory with the CPU
+    /// (`DeviceType::IntegratedGpu`, `docs/gpu-plan.md` 4.8): a quarter of the RAM, between 512 MiB
+    /// and 4 GiB. One line to change if the Mac says otherwise (STATUS question 4).
+    pub fn for_unified_memory(ram_bytes: u64) -> Self {
+        Self {
+            bytes: (ram_bytes / Self::UNIFIED_RAM_DIVISOR)
+                .clamp(Self::UNIFIED_MIN_BYTES, Self::UNIFIED_MAX_BYTES),
+        }
+    }
 
     /// The budget for a device with `limits`: `requested` as given (at least [`Self::MIN_BYTES`]),
     /// or by default `min(4 GiB, 2 * max_buffer_size)`.
@@ -59,6 +92,27 @@ impl MemoryBudget {
         }
     }
 }
+
+/// Splits a unified-memory machine's budget: the GPU gets [`MemoryBudget::for_unified_memory`], and the
+/// CPU side, which would have had `cpu_bytes` alone, is lowered by the same amount (saturating, and
+/// never above what keeps the two together within [`MemoryBudget::UNIFIED_SUM_PERCENT`] percent of
+/// `ram_bytes`). Returns `(cpu_bytes, gpu_bytes)`.
+pub fn unified_split(ram_bytes: u64, cpu_bytes: u64) -> (u64, u64) {
+    let gpu = MemoryBudget::for_unified_memory(ram_bytes).bytes;
+    let cap = ram_bytes / 100 * MemoryBudget::UNIFIED_SUM_PERCENT;
+    let cpu = cpu_bytes.saturating_sub(gpu).min(cap.saturating_sub(gpu));
+    (cpu, gpu)
+}
+
+/// The word poison mode fills buffers with: `0x7FC0_7FC0` is a quiet NaN as one f32 and as each of
+/// two f16 halves.
+pub const POISON_WORD: u32 = 0x7FC0_7FC0;
+
+/// Bytes the poison fill writes per queue write.
+const POISON_CHUNK_BYTES: usize = 4 << 20;
+/// A poison fill flushes its queued writes after this many bytes, so the staging memory of a large
+/// fill is released as it goes.
+const POISON_FLUSH_BYTES: u64 = 32 << 20;
 
 /// Usage counters of a [`BufferPool`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -162,7 +216,17 @@ struct PoolShared {
     max_buffer_size: u64,
     max_storage_binding: u64,
     budget: u64,
+    options: PoolOptions,
     state: Mutex<PoolState>,
+}
+
+/// What the device wires into its pool: the health flags to check, the fault hook, and the queue to
+/// poison buffers with (poison mode only).
+#[derive(Default)]
+pub(crate) struct PoolOptions {
+    pub(crate) health: Option<Arc<DeviceHealth>>,
+    pub(crate) fault: Option<Arc<FaultState>>,
+    pub(crate) poison: Option<wgpu::Queue>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -193,18 +257,62 @@ impl BufferPool {
         max_buffer_size: u64,
         max_storage_binding: u64,
     ) -> Self {
+        Self::with_options(
+            device,
+            budget_bytes,
+            max_buffer_size,
+            max_storage_binding,
+            PoolOptions::default(),
+        )
+    }
+
+    /// [`BufferPool::new`] with the device's health flags, fault hook and poison queue.
+    pub(crate) fn with_options(
+        device: wgpu::Device,
+        budget_bytes: u64,
+        max_buffer_size: u64,
+        max_storage_binding: u64,
+        options: PoolOptions,
+    ) -> Self {
         Self {
             shared: Arc::new(PoolShared {
                 device,
                 max_buffer_size,
                 max_storage_binding,
                 budget: budget_bytes,
+                options,
                 state: Mutex::new(PoolState {
                     free: HashMap::new(),
                     ledger: Ledger::new(budget_bytes),
                 }),
             }),
         }
+    }
+
+    /// A pool on `device` that fills every buffer with [`POISON_WORD`] (through `queue`) before
+    /// handing it out, for tests that want poison without a whole [`crate::device::Gpu`].
+    pub fn poisoned(
+        device: wgpu::Device,
+        queue: wgpu::Queue,
+        budget_bytes: u64,
+        max_buffer_size: u64,
+        max_storage_binding: u64,
+    ) -> Self {
+        Self::with_options(
+            device,
+            budget_bytes,
+            max_buffer_size,
+            max_storage_binding,
+            PoolOptions {
+                poison: Some(queue),
+                ..PoolOptions::default()
+            },
+        )
+    }
+
+    /// Whether this pool poisons the buffers it hands out.
+    pub fn is_poisoned(&self) -> bool {
+        self.shared.options.poison.is_some()
     }
 
     /// The budget in bytes.
@@ -242,6 +350,9 @@ impl BufferPool {
         size: u64,
         usage: wgpu::BufferUsages,
     ) -> Result<PooledBuffer, GpuError> {
+        if let Some(health) = &self.shared.options.health {
+            health.check()?;
+        }
         // A request just below the adapter's maximum must not be refused because the size class
         // rounds past it: near the limit the buffer gets no rounding slack.
         let max = self.shared.max_buffer_size & !3;
@@ -262,10 +373,20 @@ impl BufferPool {
                 limit: self.shared.max_storage_binding,
             });
         }
+        // The poison fill is a queue write, which needs `COPY_DST`.
+        let usage = if self.shared.options.poison.is_some() {
+            usage | wgpu::BufferUsages::COPY_DST
+        } else {
+            usage
+        };
         let key = (class, usage.bits());
         let mut st = lock(&self.shared.state);
+        if let Some(fault) = &self.shared.options.fault {
+            fault.on_allocation(class, st.ledger.stats().allocated_bytes, self.shared.budget)?;
+        }
         if let Some(buffer) = st.free.get_mut(&key).and_then(Vec::pop) {
             st.ledger.reused(class);
+            self.poison(&buffer, class);
             return Ok(self.wrap(buffer, size, class, usage));
         }
         if !st.ledger.fits(class) {
@@ -284,14 +405,57 @@ impl BufferPool {
                 });
             }
         }
+        // A driver that is out of memory says so here; report it as the budget it is.
+        let scope = self
+            .shared
+            .device
+            .push_error_scope(wgpu::ErrorFilter::OutOfMemory);
         let buffer = self.shared.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some(label),
             size: class,
             usage,
             mapped_at_creation: false,
         });
+        if pollster::block_on(scope.pop()).is_some() {
+            return Err(GpuError::OutOfBudget {
+                requested: class,
+                allocated: st.ledger.stats().allocated_bytes,
+                budget: self.shared.budget,
+            });
+        }
         st.ledger.created(class);
+        self.poison(&buffer, class);
         Ok(self.wrap(buffer, size, class, usage))
+    }
+
+    /// Fills `buffer` (`bytes` long, a multiple of 4) with [`POISON_WORD`] when poison mode is on.
+    fn poison(&self, buffer: &wgpu::Buffer, bytes: u64) {
+        let Some(queue) = &self.shared.options.poison else {
+            return;
+        };
+        static CHUNK: OnceLock<Vec<u8>> = OnceLock::new();
+        let chunk = CHUNK.get_or_init(|| {
+            POISON_WORD
+                .to_le_bytes()
+                .iter()
+                .copied()
+                .cycle()
+                .take(POISON_CHUNK_BYTES)
+                .collect()
+        });
+        let (mut offset, mut since_flush) = (0u64, 0u64);
+        while offset < bytes {
+            let n = (bytes - offset).min(chunk.len() as u64);
+            queue.write_buffer(buffer, offset, &chunk[..n as usize]);
+            offset += n;
+            since_flush += n;
+            if since_flush >= POISON_FLUSH_BYTES && offset < bytes {
+                // An empty submission flushes the queued writes, so their staging memory is freed
+                // as the fill goes instead of piling up to the size of the buffer.
+                queue.submit([]);
+                since_flush = 0;
+            }
+        }
     }
 
     fn wrap(

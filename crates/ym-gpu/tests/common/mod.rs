@@ -2,6 +2,14 @@
 //! with a clear message when there is no adapter (unless `YM_REQUIRE_GPU=1`, which makes that a
 //! failure: the `gpu-lavapipe` CI job sets it), and a seeded random source.
 //!
+//! **Every test device runs in poison mode** (`GpuConfig::poison`): the pool fills each buffer with
+//! NaN before handing it out, so a kernel that reads what it did not write fails its test instead of
+//! passing by luck on a fresh, zeroed buffer (`docs/gpu-plan.md` X-10). [`start_unpoisoned`] gives a
+//! device without it, for the tests that compare the two.
+//!
+//! Further helpers: [`exact`] (tile = whole frame, bit comparisons) and [`limits`] (the 128 MiB
+//! design binding).
+//!
 //! The skip notice goes straight to the process's stderr, not through `eprintln!`: the test harness
 //! captures `eprintln!` output of passing tests, so a skipped (and therefore vacuously "passing")
 //! GPU test would otherwise say nothing at all in a default `cargo test` run.
@@ -20,8 +28,19 @@ pub struct TestGpu {
 }
 
 fn start(storage: StoragePreference) -> Option<Gpu> {
+    start_with(storage, true)
+}
+
+/// A device in `storage` mode without poison mode, or `None` when there is no adapter. The tests
+/// that need the default device use [`gpu`]; this one is for comparing a run with and without poison.
+pub fn start_unpoisoned(storage: StoragePreference) -> Option<Gpu> {
+    start_with(storage, false)
+}
+
+fn start_with(storage: StoragePreference, poison: bool) -> Option<Gpu> {
     let config = GpuConfig {
         storage,
+        poison,
         ..GpuConfig::default()
     };
     match Gpu::start(config) {
@@ -119,3 +138,5 @@ pub fn f16_round(x: f32) -> f32 {
 }
 
 pub mod chains;
+pub mod exact;
+pub mod limits;

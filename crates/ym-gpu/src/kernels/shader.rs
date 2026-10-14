@@ -81,11 +81,39 @@ pub enum KernelId {
     AdaptiveRatioMatch,
     /// RA-09 adaptive ratio demosaic: the exit without shadow colour matching.
     AdaptiveRatioExit,
+    /// PLACEHOLDER (G-04): the geometry sampler (orientation, straighten, crop, resampling kernels).
+    Sampler,
+    /// PLACEHOLDER (G-04): C13 with dither to RGBA8 or 16-bit bands.
+    Encode,
+    /// PLACEHOLDER (G-07): R1 normalise, R3 vignetting, R4 gains, the quantisation step and the clip mask.
+    Prep,
+    /// PLACEHOLDER (G-07): R5 highlight reconstruction, applying the chroma offsets.
+    Highlights,
+    /// PLACEHOLDER (G-07): R5b lateral chromatic aberration on the mosaic.
+    MosaicCa,
+    /// PLACEHOLDER (G-07): R9 lens resampling.
+    Lens,
+    /// PLACEHOLDER (G-07): the half-resolution noise sigma plane.
+    Sigma,
+    /// PLACEHOLDER (G-07): the k x k mosaic binning of the fit view.
+    Bin,
+    /// PLACEHOLDER (G-07): the fixed-order reduction of the R5 chroma offsets (reduced path).
+    Reduce,
+    /// PLACEHOLDER (G-06): the 5 x 5 opponent bilateral denoise.
+    Bilateral,
+    /// PLACEHOLDER (G-06): the R7 chroma guided filter.
+    Guided,
+    /// PLACEHOLDER (G-06): R7 detail injection.
+    Detail,
+    /// PLACEHOLDER (G-06): R8 Richardson-Lucy deconvolution.
+    RichardsonLucy,
+    /// PLACEHOLDER (G-08): the Lanczos-3 resize of the export tail.
+    Resize,
 }
 
 impl KernelId {
-    /// All kernels.
-    pub const ALL: [KernelId; 33] = [
+    /// All kernels, placeholders included (see [`KernelId::is_placeholder`]).
+    pub const ALL: [KernelId; 47] = [
         KernelId::SpikeNormalize,
         KernelId::SpikeDemosaic,
         KernelId::SpikeMatrix,
@@ -119,6 +147,20 @@ impl KernelId {
         KernelId::AdaptiveRatioLowErr,
         KernelId::AdaptiveRatioMatch,
         KernelId::AdaptiveRatioExit,
+        KernelId::Sampler,
+        KernelId::Encode,
+        KernelId::Prep,
+        KernelId::Highlights,
+        KernelId::MosaicCa,
+        KernelId::Lens,
+        KernelId::Sigma,
+        KernelId::Bin,
+        KernelId::Reduce,
+        KernelId::Bilateral,
+        KernelId::Guided,
+        KernelId::Detail,
+        KernelId::RichardsonLucy,
+        KernelId::Resize,
     ];
 
     /// Stable name (also the pipeline label).
@@ -157,6 +199,71 @@ impl KernelId {
             KernelId::AdaptiveRatioLowErr => "adaptive_ratio_low_err",
             KernelId::AdaptiveRatioMatch => "adaptive_ratio_match",
             KernelId::AdaptiveRatioExit => "adaptive_ratio_exit",
+            KernelId::Sampler => "sampler",
+            KernelId::Encode => "encode",
+            KernelId::Prep => "prep",
+            KernelId::Highlights => "highlights",
+            KernelId::MosaicCa => "mosaic_ca",
+            KernelId::Lens => "lens",
+            KernelId::Sigma => "sigma",
+            KernelId::Bin => "bin",
+            KernelId::Reduce => "reduce",
+            KernelId::Bilateral => "bilateral",
+            KernelId::Guided => "guided",
+            KernelId::Detail => "detail",
+            KernelId::RichardsonLucy => "richardson_lucy",
+            KernelId::Resize => "resize",
+        }
+    }
+
+    /// The task that owns this kernel while it is still a placeholder, `None` for a real kernel.
+    ///
+    /// A placeholder is registered ahead of its implementation so that the id, its warm-up set and
+    /// the offline checks exist: its WGSL is a stub that writes NaN into its first binding and does
+    /// nothing else, [`warm_up`](crate::device::GpuContext::warm_up) skips it, and the tests list
+    /// it. The task that implements the kernel replaces the stub with `include_str!` of its own
+    /// `.wgsl` in [`KernelId::body`] and deletes the id from this match (two small edits, reported).
+    pub const fn placeholder_owner(self) -> Option<&'static str> {
+        match self {
+            KernelId::Sampler | KernelId::Encode => Some("G-04"),
+            KernelId::Bilateral
+            | KernelId::Guided
+            | KernelId::Detail
+            | KernelId::RichardsonLucy => Some("G-06"),
+            KernelId::Prep
+            | KernelId::Highlights
+            | KernelId::MosaicCa
+            | KernelId::Lens
+            | KernelId::Sigma
+            | KernelId::Bin
+            | KernelId::Reduce => Some("G-07"),
+            KernelId::Resize => Some("G-08"),
+            _ => None,
+        }
+    }
+
+    /// Whether this kernel is still a placeholder ([`KernelId::placeholder_owner`]).
+    pub const fn is_placeholder(self) -> bool {
+        self.placeholder_owner().is_some()
+    }
+
+    /// The warm-up set this kernel belongs to: never [`KernelSet::All`].
+    pub const fn set(self) -> KernelSet {
+        match self {
+            KernelId::Color
+            | KernelId::SpikeMatrix
+            | KernelId::OutputSharpenLuma
+            | KernelId::OutputSharpenHighpassRows
+            | KernelId::OutputSharpenHighpassCols
+            | KernelId::OutputSharpenGainTerms
+            | KernelId::OutputSharpenBlur
+            | KernelId::OutputSharpenAccumulate
+            | KernelId::OutputSharpenWindow
+            | KernelId::OutputSharpenTransfer
+            | KernelId::Sampler
+            | KernelId::Encode => KernelSet::View,
+            KernelId::Resize => KernelSet::Tail,
+            _ => KernelSet::Raw,
         }
     }
 
@@ -199,8 +306,78 @@ impl KernelId {
             | KernelId::AdaptiveRatioLowErr
             | KernelId::AdaptiveRatioMatch
             | KernelId::AdaptiveRatioExit => super::adaptive_ratio::body(self),
+            KernelId::Sampler
+            | KernelId::Encode
+            | KernelId::Prep
+            | KernelId::Highlights
+            | KernelId::MosaicCa
+            | KernelId::Lens
+            | KernelId::Sigma
+            | KernelId::Bin
+            | KernelId::Reduce
+            | KernelId::Bilateral
+            | KernelId::Guided
+            | KernelId::Detail
+            | KernelId::RichardsonLucy
+            | KernelId::Resize => placeholder_body(self),
         }
     }
+}
+
+/// Groups of kernels that are compiled together (`GpuContext::warm_up_set`): the app warms the
+/// view kernels first, `ym` the sets an export needs while the photos decode.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum KernelSet {
+    /// What a viewport frame needs: the colour chain, output sharpening, the sampler, C13.
+    View,
+    /// The raw chain: normalise, highlights, demosaic, denoise, detail, sharpen, lens, the fit path.
+    Raw,
+    /// What only the export tail uses: the resize.
+    Tail,
+    /// Every kernel.
+    All,
+}
+
+impl KernelSet {
+    /// Stable lower-case name.
+    pub const fn name(self) -> &'static str {
+        match self {
+            KernelSet::View => "view",
+            KernelSet::Raw => "raw",
+            KernelSet::Tail => "tail",
+            KernelSet::All => "all",
+        }
+    }
+
+    /// Whether `id` is in this set.
+    pub fn contains(self, id: KernelId) -> bool {
+        self == KernelSet::All || id.set() == self
+    }
+
+    /// The kernels of this set, placeholders included, in [`KernelId::ALL`] order.
+    pub fn kernels(self) -> impl Iterator<Item = KernelId> {
+        KernelId::ALL.into_iter().filter(move |&id| self.contains(id))
+    }
+}
+
+/// The WGSL of a placeholder kernel: one storage binding it writes a NaN into, nothing else, so a
+/// stage wired to it by mistake fails every parity test instead of passing by accident. The NaN is
+/// built from a run-time value because WGSL refuses to evaluate one at shader-creation time.
+fn placeholder_body(id: KernelId) -> String {
+    let owner = id.placeholder_owner().unwrap_or("?");
+    format!(
+        "// PLACEHOLDER kernel `{name}`, registered by G-02. {owner} replaces this stub with the real kernel.\n\
+         // It writes a NaN into binding 0 and nothing else.\n\
+         @group(0) @binding(0) var<storage, read_write> placeholder_out: array<f32>;\n\
+         \n\
+         @compute @workgroup_size(16, 16)\n\
+         fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{\n\
+         \tif (gid.x == 0u && gid.y == 0u && arrayLength(&placeholder_out) > 0u) {{\n\
+         \t\tplaceholder_out[0] = bitcast<f32>(0x7fc00000u + gid.x);\n\
+         \t}}\n\
+         }}\n",
+        name = id.name(),
+    )
 }
 
 /// Offsets (in f32 elements) of the sections of the `tables` storage buffer of the colour kernel.

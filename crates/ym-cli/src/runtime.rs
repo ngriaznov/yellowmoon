@@ -1,14 +1,16 @@
 //! What every command that develops photos needs: the core with the CLI's options, the Ctrl-C
-//! flag and the GPU probe.
+//! flag and the graphics device, opened by `ym_core::app::gpu::open_gpu` like the app's.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::time::Duration;
 
+use ym_core::app::gpu::{GpuPolicy, GpuSlot, open_gpu};
 use ym_core::app::{Core, CoreError, CoreOptions};
 use ym_core::export_queue::{ExportEvent, ExportSink};
+use ym_core::scheduler::MemoryBudget;
 use ym_core::session::SessionError;
-use ym_gpu::device::{Gpu, GpuConfig, GpuInfo};
+use ym_gpu::device::GpuInfo;
 
 use crate::exit::{self, Failure};
 
@@ -126,53 +128,42 @@ impl Runtime {
     }
 }
 
-/// Opens the GPU the way the app does and reports what it found.
+/// The graphics device being opened on another thread, so that the answer is ready by the time the
+/// photos are developed, and the kernels compile in the background if an export will use them
+/// (`GpuSlot::warm_up_for_exports`, an `Export`-priority job that gives way to the first render
+/// job and stops when the device shuts down).
 ///
-/// A software adapter (Mesa lavapipe, WARP) counts: the device is usable, and `GpuInfo` says it is
-/// software. The device is closed again when the returned value is dropped.
-///
-/// # Errors
-///
-/// The reason there is no usable GPU, in plain words.
-pub fn probe_gpu() -> Result<GpuInfo, String> {
-    let gpu = Gpu::start(GpuConfig::default()).map_err(|e| e.to_string())?;
-    let info = gpu.info().clone();
-    gpu.shutdown();
-    Ok(info)
-}
-
-/// A GPU probe running on another thread, so the answer is ready by the time the photos are
-/// developed.
-///
-/// Dropping it waits for the probe to finish: leaving the process while a graphics driver is still
+/// Dropping it waits for the open to finish: leaving the process while a graphics driver is still
 /// starting up on another thread can crash the driver's exit handlers, and a run that failed
 /// early would then end with a signal instead of its exit code.
 #[derive(Debug)]
-pub struct BackgroundProbe(Option<std::thread::JoinHandle<Result<GpuInfo, String>>>);
+pub struct BackgroundGpu(Option<std::thread::JoinHandle<GpuSlot>>);
 
-impl BackgroundProbe {
-    /// Starts probing. If the thread cannot be started, nothing is ever said about the GPU.
-    pub fn start() -> Self {
+impl BackgroundGpu {
+    /// Starts opening the device for `policy`. If the thread cannot be started, nothing is ever
+    /// said about the GPU.
+    pub fn start(policy: GpuPolicy, budget: MemoryBudget) -> Self {
         Self(
             std::thread::Builder::new()
-                .name("ym-gpu-probe".to_owned())
-                .spawn(|| {
-                    // A driver that panics is a GPU that cannot be used, not a reason to stop.
-                    std::panic::catch_unwind(probe_gpu).unwrap_or_else(|_| {
-                        Err("the graphics driver stopped unexpectedly".to_owned())
-                    })
+                .name("ym-gpu-open".to_owned())
+                .spawn(move || {
+                    let slot = open_gpu(policy, budget);
+                    // The handle is not kept: the job runs on the device thread, its result is
+                    // only a count, and a failing kernel shows again when its stage runs.
+                    drop(slot.warm_up_for_exports());
+                    slot
                 })
                 .ok(),
         )
     }
 
     /// Waits for the answer. `None` when there is none (the thread could not start or panicked).
-    pub fn finish(&mut self) -> Option<Result<GpuInfo, String>> {
+    pub fn finish(&mut self) -> Option<GpuSlot> {
         self.0.take().and_then(|handle| handle.join().ok())
     }
 }
 
-impl Drop for BackgroundProbe {
+impl Drop for BackgroundGpu {
     fn drop(&mut self) {
         let _ = self.finish();
     }

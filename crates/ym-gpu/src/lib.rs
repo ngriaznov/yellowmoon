@@ -1,5 +1,5 @@
-//! GPU image processing: wgpu device and queue ownership, tiling with halos, buffer pools and
-//! the WGSL compute kernels.
+//! GPU image processing: wgpu device and queue ownership, tiling with halos, buffer pools, device
+//! images and command streams, and the WGSL compute kernels.
 //!
 //! Every kernel has a CPU reference in [`cpu`] and a parity test with a stated maximum absolute
 //! error. Depends on `ym-color` (constants and reference functions used in parity tests) and `ym-noise` (the noise model the raw algorithms take on the 16-bit working scale, `cpu::NoiseDn`).
@@ -10,9 +10,13 @@
 
 #![warn(missing_docs)]
 
+pub mod chain;
 pub mod cpu;
 pub mod device;
+pub mod image;
 pub mod kernels;
 pub mod pool;
 pub mod queue;
+pub mod stream;
+pub mod tail;
 pub mod tiles;

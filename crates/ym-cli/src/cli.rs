@@ -207,8 +207,28 @@ pub struct RenderArgs {
     #[arg(long, help_heading = H_RUN)]
     pub json: bool,
     /// Stop with exit code 4 when there is no usable GPU, instead of using the CPU.
-    #[arg(long, help_heading = H_RUN)]
+    #[arg(long, conflicts_with = "cpu", help_heading = H_RUN)]
     pub require_gpu: bool,
+    /// Render on the CPU only and open no graphics device. The golden images are made this way.
+    /// Beats YELLOWMOON_GPU.
+    #[arg(long, help_heading = H_RUN)]
+    pub cpu: bool,
+}
+
+impl RenderArgs {
+    /// The flag that decides the graphics policy before `YELLOWMOON_GPU` is looked at, if one was
+    /// given (`--cpu` and `--require-gpu` cannot be given together).
+    #[must_use]
+    pub fn policy_flag(&self) -> Option<ym_core::app::gpu::PolicyFlag> {
+        use ym_core::app::gpu::PolicyFlag;
+        if self.cpu {
+            Some(PolicyFlag::Cpu)
+        } else if self.require_gpu {
+            Some(PolicyFlag::RequireGpu)
+        } else {
+            None
+        }
+    }
 }
 
 /// `--format`.
