@@ -504,6 +504,20 @@ impl<'c> TileRun<'c, '_> {
         })
     }
 
+    /// Like [`demosaic_input`](Self::demosaic_input), but hands the mosaic over instead of lending it
+    /// (no copy of a few megabytes per tile): returns the mosaic and the rectangle of the output
+    /// that is wanted from it. The tile then holds an empty mosaic, so the caller must follow with
+    /// [`supply_demosaic`](Self::supply_demosaic); running the demosaic stage here afterwards would
+    /// demosaic nothing. `None` (and nothing taken) when the demosaic is not the next stage.
+    pub fn take_demosaic_input(&mut self) -> Option<(Mosaic, Rect)> {
+        let Some(Stage::Demosaic(_)) = self.stages.get(self.next) else {
+            return None;
+        };
+        let core = self.need[self.next + 1].relative_to(&self.cur);
+        let empty = Mosaic::new(0, 0, self.mosaic.cfa);
+        Some((std::mem::replace(&mut self.mosaic, empty), core))
+    }
+
     /// Runs the next stage and crops the data to what the one after it needs. Does nothing once
     /// every stage has run.
     ///

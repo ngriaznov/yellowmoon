@@ -42,11 +42,27 @@ struct SharpenParams {
     use_ramp: u32,   // method 2: the kernel has not collapsed to one tap
     halo_acc: u32,   // the stage adds to Hacc
     limiter: u32,    // the transfer applies the halo limiter
+    in_stride: u32,  // the source image: samples per row, per plane, and the window's origin in it
+    in_plane: u32,
+    in_x: u32,
+    in_y: u32,
+    out_stride: u32, // the destination: samples per row, per plane, and the pixel of the core's (0, 0)
+    out_plane: u32,
+    out_x: u32,
+    out_y: u32,
+    out_kind: u32,   // transfer: 0 f32 planes, 1 RGBA8 with C13 fused
+    space: u32,      // fused C13: output transfer, 0 sRGB, 1 BT.1886
+    dither: u32,     // fused C13: blue-noise dither of the 8-bit codes
+    has_mask: u32,   // the source has a fourth plane, 1 outside the photo (the letterbox)
+    org_x: u32,      // fused C13: absolute position of the core's (0, 0), for the dither
+    org_y: u32,
+    bg: u32,         // fused C13: the letterbox colour, RGBA8 packed
+    copy_only: u32,  // transfer: ratio 1, no luma, no stages (a setup without a stage)
 };
 
 @group(0) @binding(0) var<uniform> sp: SharpenParams;
 @group(0) @binding(1) var<storage, read> taps: array<f32>;           // every kernel, f32
-@group(0) @binding(2) var<storage, read> img: array<f32>;            // RGB planes of the compute rectangle
+@group(0) @binding(2) var<storage, read> img: array<f32>;            // the source image (RGB planes, optionally a mask plane)
 @group(0) @binding(3) var<storage, read_write> lum: array<f32>;      // L
 @group(0) @binding(4) var<storage, read_write> tmp: array<f32>;      // t, the horizontal part of the high-pass
 @group(0) @binding(5) var<storage, read_write> hp: array<f32>;       // h = G * L - L (d = -h)
@@ -54,7 +70,8 @@ struct SharpenParams {
 @group(0) @binding(7) var<storage, read_write> hacc: array<f32>;     // Hacc, the halo-limited delta
 @group(0) @binding(8) var<storage, read_write> work_a: array<f32>;   // gain terms / envelope maps, blurred
 @group(0) @binding(9) var<storage, read_write> work_b: array<f32>;   // the horizontal half of a blur
-@group(0) @binding(10) var<storage, read_write> out_px: array<f32>;  // sharpened RGB of the core
+@group(0) @binding(10) var<storage, read_write> out_px: array<u32>;  // the core: f32 bits per plane, or RGBA8 words
+@group(0) @binding(11) var<storage, read> dither_tab: array<f32>;    // the 64 x 64 blue-noise thresholds (fused C13)
 
 // Constants of the spec (3.3, 3.5, 3.7).
 const GAIN_EPS: f32 = 1e-10;
@@ -81,18 +98,29 @@ fn mir(i: i32, n: i32) -> i32 {
     return mirror_idx(i, n);
 }
 
+// Sample `c` (0 R, 1 G, 2 B, 3 the outside mask) of pixel (x, y) of the window, from the source image.
+fn src_at(c: u32, x: u32, y: u32) -> f32 {
+    return img[c * sp.in_plane + (sp.in_y + y) * sp.in_stride + sp.in_x + x];
+}
+
 // L = sqrt(((wR R) R + (wG G) G) + (wB B) B), f32, in exactly this order (spec 3.1).
+//
+// The limiter compares luma values for equality and order, so a driver that fuses `(w r) r + a` into
+// one multiply-add (Metal's fast-math default does) would move the last bit of L and flip rank
+// counts. Every product is therefore passed through `abs`: the weights are positive, so a product
+// `(w c) c` is never negative and `abs` changes nothing, but it sits between the multiplication and
+// the addition, where a compiler cannot fuse them.
 fn sharpen_luma(gid: vec3<u32>) {
     if (gid.x >= sp.width || gid.y >= sp.height) {
         return;
     }
     let i = gid.y * sp.width + gid.x;
-    let r = img[i];
-    let g = img[sp.plane + i];
-    let b = img[2u * sp.plane + i];
-    let a0 = (sp.luma_r * r) * r;
-    let a1 = (sp.luma_g * g) * g;
-    let a2 = (sp.luma_b * b) * b;
+    let r = src_at(0u, gid.x, gid.y);
+    let g = src_at(1u, gid.x, gid.y);
+    let b = src_at(2u, gid.x, gid.y);
+    let a0 = abs((sp.luma_r * r) * r);
+    let a1 = abs((sp.luma_g * g) * g);
+    let a2 = abs((sp.luma_b * b) * b);
     lum[i] = sqrt((a0 + a1) + a2);
 }
 
@@ -309,27 +337,61 @@ fn sharpen_window(gid: vec3<u32>) {
 }
 
 // The halo limiter's clamp (spec 3.5, with the four maps blurred in work_a) and the ratio transfer
-// (spec 3.7), over the core of the compute rectangle. Writes the core's RGB planes densely.
+// (spec 3.7), over the core of the compute rectangle. Writes the core as three f32 planes of the
+// destination image (`out_kind` 0) or as RGBA8 words with C13, the dither and the letterbox fused
+// (`out_kind` 1).
+//
+// The ratio is 1 exactly when the pixel has no delta (spec 3.7: `(L + 0) / max(L, floor)` is 1 in
+// IEEE arithmetic). Metal's fast-math default turns `a / b` into `a * (1 / b)`, which gives
+// 0.99999994 for many `a == b`, so a flat field or a collapsed kernel would change by one ulp; the
+// branch makes the identity exact whatever the division does. A NaN delta or luma takes the general
+// road (bit test, because fast-math may assume no NaN and fold a comparison).
 fn sharpen_transfer(gid: vec3<u32>) {
     if (gid.x >= sp.core_w || gid.y >= sp.core_h) {
         return;
     }
-    let i = (sp.core_y + gid.y) * sp.width + sp.core_x + gid.x;
-    let o = gid.y * sp.core_w + gid.x;
-    let l0 = lum[i];
-    var d = dacc[i];
-    if (sp.limiter == 1u) {
-        let up = fmax_(work_a[i] / work_a[sp.plane + i] - l0, 0.0);
-        let lo = fmin_(work_a[2u * sp.plane + i] / work_a[3u * sp.plane + i] - l0, 0.0);
-        d = d + fmax_(lo, fmin_(hacc[i], up));
+    let px = sp.core_x + gid.x;
+    let py = sp.core_y + gid.y;
+    var ratio = 1.0;
+    if (sp.copy_only == 0u) {
+        let i = py * sp.width + px;
+        let l0 = lum[i];
+        var d = dacc[i];
+        if (sp.limiter == 1u) {
+            let up = fmax_(work_a[i] / work_a[sp.plane + i] - l0, 0.0);
+            let lo = fmin_(work_a[2u * sp.plane + i] / work_a[3u * sp.plane + i] - l0, 0.0);
+            d = d + fmax_(lo, fmin_(hacc[i], up));
+        }
+        if (d != 0.0 || is_nan_f(d) || is_nan_f(l0) || l0 < LUMA_FLOOR) {
+            let l = fmax_(l0, LUMA_FLOOR);
+            let lp = l0 + d;
+            ratio = lp / l;
+            // A NaN fails the comparison and gives 0.
+            ratio = select(0.0, fmin_(ratio, RATIO_MAX), ratio >= 0.0);
+        }
     }
-    let l = fmax_(l0, LUMA_FLOOR);
-    let lp = l0 + d;
-    var ratio = lp / l;
-    // A NaN fails the comparison and gives 0.
-    ratio = select(0.0, fmin_(ratio, RATIO_MAX), ratio >= 0.0);
-    let cp = sp.core_w * sp.core_h;
-    out_px[o] = img[i] * ratio;
-    out_px[cp + o] = img[sp.plane + i] * ratio;
-    out_px[2u * cp + o] = img[2u * sp.plane + i] * ratio;
+    let r = src_at(0u, px, py) * ratio;
+    let g = src_at(1u, px, py) * ratio;
+    let b = src_at(2u, px, py) * ratio;
+    let o = (sp.out_y + gid.y) * sp.out_stride + sp.out_x + gid.x;
+    if (sp.out_kind == 0u) {
+        out_px[o] = bitcast<u32>(r);
+        out_px[sp.out_plane + o] = bitcast<u32>(g);
+        out_px[2u * sp.out_plane + o] = bitcast<u32>(b);
+        return;
+    }
+    if (sp.has_mask != 0u && src_at(3u, px, py) != 0.0) {
+        out_px[o] = sp.bg;
+        return;
+    }
+    let e = c13_encode(vec3<f32>(r, g, b), sp.space);
+    var thr = 0.0;
+    if (sp.dither != 0u) {
+        let ax = sp.org_x + gid.x;
+        let ay = sp.org_y + gid.y;
+        thr = dither_tab[(ay % 64u) * 64u + (ax % 64u)];
+    }
+    let dithered = sp.dither != 0u;
+    out_px[o] = c13_code8(e.x, thr, dithered) | (c13_code8(e.y, thr, dithered) << 8u)
+        | (c13_code8(e.z, thr, dithered) << 16u) | 0xff000000u;
 }

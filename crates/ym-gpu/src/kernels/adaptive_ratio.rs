@@ -803,9 +803,10 @@ pub fn encode_demosaic(
 }
 
 /// Runs the kernel on the `core` rectangle of the host mosaic `m` and reads the core back: upload,
-/// [`encode_demosaic`], submit, read. The rectangle around the core supplies the context (real rows
+/// [`encode_demosaic`], submit, read. The host path every wrapper and the device chain use; the
+/// samples were checked by the caller ([`PreparedDemosaic::check_mosaic`]). The rectangle around the core supplies the context (real rows
 /// and columns, or the buffer edge, where it mirrors).
-fn run_rect(
+pub(crate) fn demosaic_core(
     ctx: &GpuContext,
     m: &Mosaic,
     core: Rect,
@@ -856,7 +857,7 @@ pub fn demosaic(
     params: &Params,
 ) -> Result<RgbImage, GpuError> {
     let frame = prepare(m, balance, inputs, params)?;
-    run_rect(ctx, m, Rect::whole(m.width, m.height), &frame)
+    demosaic_core(ctx, m, Rect::whole(m.width, m.height), &frame)
 }
 
 /// Demosaics `m` tile by tile: cores of at most `tile_px` (rounded down to an even number), each
@@ -930,7 +931,7 @@ pub fn demosaic_planned(
         cancel.check()?;
         let sub = m.extract(tile.compute);
         let core = tile.core_in_compute();
-        let img = run_rect(ctx, &sub, core, &frame)?;
+        let img = demosaic_core(ctx, &sub, core, &frame)?;
         out.paste(&img, Rect::whole(core.w, core.h), tile.core.x, tile.core.y);
     }
     Ok(out)
