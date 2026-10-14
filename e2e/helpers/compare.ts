@@ -24,8 +24,20 @@ const DOM_DIR = resolve(OUT, "screenshot-dom");
  * other state gets the default of `playwright.config.ts` (0.35 %). Measured on 2026-10-12.
  */
 const BUDGETS: Readonly<Record<string, number>> = {
-  // The Light tab's histogram and the pixel readout are drawn from the photo; the mockup's are made-up numbers.
-  "photos-light": 0.01,
+  // The Light tab's histogram and the pixel readout are drawn from the photo; the mockup's are made-up numbers. It also has a
+  // second card, White (the white lift's Offset, the owner's decision of 2026-10-14, docs/11), which the mockup does not: High
+  // dynamic range sits one card lower. Measured 2.06 % (Playwright's count) on 2026-10-14.
+  "photos-light": 0.03,
+  // The Automatic card has a fifth row, White (the same decision), so the Look card and everything under it sit one row (44 px)
+  // lower than in the mockup. Measured 3.24 % (Playwright's count) on 2026-10-14.
+  "photos-look": 0.04,
+  // The same extra row shifts the Look card in the states that show it from the top or scroll the panel to the library: the page
+  // is 44 px longer, so the library, its headings and the thumbnails sit lower (and the mock's Look card also carries the Look
+  // lane's "Make default" link and the Fit label differs by a figure). Playwright's counts on 2026-10-14: Before 3.24 %, Teal and
+  // orange picked 7.45 %, search "film" 2.77 %.
+  "photos-before": 0.035,
+  "photos-look-teal": 0.08,
+  "photos-look-search": 0.03,
   // The DNG note carries the sentence about other apps, Adobe's notice and the white-balance caveat (docs/09 §Legal): about five lines more than the mockup.
   "export-dng": 0.02,
   // The Sharpening card has a third row, Output (the owner's decision of 2026-10-13, docs/11): the card is 38 px taller than

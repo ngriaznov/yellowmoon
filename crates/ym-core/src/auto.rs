@@ -30,7 +30,8 @@
 //!    to C6 at EV 0, metered with the centre weight and the highlight guard. Burst sharing
 //!    (step 6) needs the other photos, so the session does it ([`burst_frame`]) and stores the
 //!    shared value in [`ExposureResult::ev`] (`own_ev` keeps the photo's own).
-//! 3b. **The white lift** (`ym_color::exposure::white`, `docs/02` C12 step 1b): the same preview, through
+//!
+//!    3b. **The white lift** (`ym_color::exposure::white`, `docs/02` C12 step 1b): the same preview, through
 //!    the all-Auto chain at the photo's exposure and the default C7, sized for the reference look
 //!    (Signature) by [`estimate_white`]: the amount `A` and the anchor, two scalars per photo
 //!    ([`AutoEstimates::white`]). Estimated at the photo's own exposure; a burst median that replaces

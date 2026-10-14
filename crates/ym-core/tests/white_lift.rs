@@ -193,7 +193,7 @@ fn the_panel_numbers_say_what_the_render_did() {
         white_offset_ev: Some(-0.2),
         ..ym_core::settings::SettingsPatch::default()
     };
-    let rs = d.session.update_settings(d.id, patch).expect("the patch");
+    let rs = d.session.update_settings(d.id, &patch).expect("the patch");
     assert!((rs.settings.white_offset_ev + 0.2).abs() < 1e-12);
     assert!((rs.values.white_ev - (auto - 0.2)).abs() < 1e-12);
 }

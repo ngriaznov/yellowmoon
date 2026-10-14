@@ -21,7 +21,8 @@ expression: shape(&v)
       "amount": "number",
       "radius_px": "number"
     },
-    "tint": "number"
+    "tint": "number",
+    "white_ev": "number"
   },
   "camera": {
     "arw_version": "string",
@@ -124,6 +125,7 @@ expression: shape(&v)
     "white_balance": {
       "kind": "string"
     },
+    "white_offset_ev": "number",
     "white_pick": "null"
   },
   "status": "string",

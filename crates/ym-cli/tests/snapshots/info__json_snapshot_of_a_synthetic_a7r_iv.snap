@@ -21,7 +21,8 @@ expression: v
       "amount": 102.9,
       "radius_px": 0.8
     },
-    "tint": -24.96
+    "tint": -24.96,
+    "white_ev": 0.9149
   },
   "black": [
     512.0,
@@ -190,6 +191,7 @@ expression: v
     "white_balance": {
       "kind": "auto"
     },
+    "white_offset_ev": 0.0,
     "white_pick": null
   },
   "status": "ok",

@@ -515,9 +515,13 @@ pub fn default_decode_threads() -> usize {
 /// like any built-in look. `None` when there is no such file or it cannot be used (the lift is then
 /// sized for the bare ACES 2 picture).
 fn load_reference_look(data_root: &Path) -> Option<Arc<LookTransform>> {
-    let text =
-        std::fs::read_to_string(data_root.join("looks").join("builtin").join("signature.json"))
-            .ok()?;
+    let text = std::fs::read_to_string(
+        data_root
+            .join("looks")
+            .join("builtin")
+            .join("signature.json"),
+    )
+    .ok()?;
     let look = ParametricLook::from_json(&text).ok()?.to_transform().ok()?;
     Some(Arc::new(look))
 }

@@ -285,9 +285,13 @@ fn a_full_render_and_a_100_percent_frame_on_the_device_match_the_cpu() {
     eprintln!(
         "full render, device against CPU: worst {worst:e}, share over 1e-3 {over:e}, mean {mean:e}"
     );
-    // Twice the first measured values (worst 4.8e-4, share over 1e-3 zero, mean 2.6e-8).
+    // Twice the first measured values (worst 4.8e-4, share over 1e-3 zero, mean 2.6e-8), with the worst
+    // allowance raised for the white lift: this scene is high-key (a lift of 1.04 stops), and the lift
+    // multiplies the one tie-flipped demosaic sample of the patchwork (the single worst pixel and its
+    // two neighbours, at a noise texture of 4e-3 between neighbours) by its local gain, 8.4e-4 without
+    // the lift and 1.41e-3 with it. The lift's own parity is gated in `ym-gpu` (`gpu_color_white_lift`).
     assert!(
-        worst < 1e-3 && over <= 1e-5 && mean < 1e-6,
+        worst < 2e-3 && over <= 1e-5 && mean < 1e-6,
         "{worst} {over} {mean}"
     );
 
