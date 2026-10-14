@@ -52,15 +52,15 @@ Everything after decoding moves onto the wgpu device (Metal on the Mac), in the 
 
 | Wave | Lane A | Lane B | State |
 |---|---|---|---|
-| 1 | G-01 device policy, flags, goldens on the CPU | G-02 device foundation | running |
-| 2 | G-03 adaptive ratio on a device chain | G-04 view kernels | — |
+| 1 | G-01 device policy, flags, goldens on the CPU | G-02 device foundation | done, reviewed (2026-10-14): `GpuPolicy` and `YELLOWMOON_GPU`, `ym render --cpu`, one `open_gpu` for app and `ym`, golden runner on `--cpu` (61 identical); `Auto` storage is f32, poison mode, device-loss handling, cancel tokens, `GpuImage`/`GpuRaw`, HLSL and capability checks |
+| 2 | G-03 adaptive ratio on a device chain | G-04 view kernels | running |
 | 3 | G-05 view wiring | G-06 denoise, R7, R8 kernels | — |
 | 4 | G-08 export tail | G-07 raw front, lens, fit view | — |
 | 5 | G-09 CI, GPU golden, determinism, ML seam | G-10 device residency | — |
 
 First Metal CI run (2026-10-14): the Metal adapter opens on macos-14 and macos-15; the app builds and its tests pass on macOS (the native Metal viewport compiled for the first time); the frontend build failed on macOS because `wheel.ts` shadowed `Wheel.tsx` on a case-insensitive file system (fixed, guarded by `src/casing.test.ts`); the adaptive ratio vector test fails on Metal (`edge_knight` 40 tie flips against 10 on lavapipe, worst 6.6e-4) and is handed to G-03.
 
-Metal baseline on the verified commit d629dbe (`docs/gpu-plan.md` section 12; identical on macos-14 and macos-15, adapter "Apple Paravirtual device"): 23 of 27 `ym-gpu` test binaries pass on Metal, including every colour-pass test; 14 tests fail in four binaries — adaptive ratio tie flips (1), diffraction (6, among them the exact luma: 30304 of 60000 values differ), log-guided overflow to inf (1), output sharpening (6, up to 8.8e-4) — consistent with Metal's default fast-math (reassociation, FMA contraction, no-NaN/Inf assumptions). They go to G-03 and G-04 as acceptance items. `ym-core` shows five macOS portability failures unrelated to the GPU (`/private/var` paths from a canonicalized temp dir, a non-UTF-8 directory name APFS refuses, and a thumbnail-look race seen once on macos-15); a separate fix lane is on them.
+Metal baseline on the verified commit d629dbe (`docs/gpu-plan.md` section 12; identical on macos-14 and macos-15, adapter "Apple Paravirtual device"): 23 of 27 `ym-gpu` test binaries pass on Metal, including every colour-pass test; 14 tests fail in four binaries — adaptive ratio tie flips (1), diffraction (6, among them the exact luma: 30304 of 60000 values differ), log-guided overflow to inf (1), output sharpening (6, up to 8.8e-4) — consistent with Metal's default fast-math (reassociation, FMA contraction, no-NaN/Inf assumptions). They go to G-03 and G-04 as acceptance items. `ym-core` showed five macOS portability failures unrelated to the GPU, now fixed: the default export folder keeps the path as given (`ym_export::naming::default_destination`, one rule for the app, `ym` and the preview; a symlink in the path is no longer resolved, so `/var/...` stays `/var/...`), the non-UTF-8 folder test is ignored on macOS with its reason and a cross-platform test replaces it, and the thumbnail-look failure was a test race (deterministic hooks now; 1000 stress runs, no failure).
 
 ## Done
 
