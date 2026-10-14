@@ -1121,7 +1121,17 @@ fn json_says_where_the_pictures_were_made_after_the_settings() {
             assert!(keys.contains(&key), "{key} in {keys:?}");
         }
     }
-    // A failure has no device: nothing was rendered.
+    // A file that was skipped was not rendered: its device is null.
+    let out = sb
+        .ym()
+        .args(["render", "--json", "--quiet", "--skip-existing"])
+        .arg(&arw)
+        .assert()
+        .success();
+    let skipped = json_lines(&out.get_output().stdout).remove(0);
+    assert_eq!(skipped["status"], "skipped");
+    assert_eq!(skipped["device"], Value::Null);
+    // A failure has no device at all: nothing was rendered.
     let out = sb
         .ym()
         .args(["render", "--json", "does-not-exist.ARW"])

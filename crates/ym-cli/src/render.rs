@@ -260,16 +260,12 @@ fn no_gpu_message(choice: &PolicyChoice, reason: &str) -> String {
 /// What is said about the graphics device once it is open: the adapter and the stages on a line of
 /// detail, a software adapter that `Auto` left alone, and a warning when none was found.
 fn report_gpu(console: &mut Console, slot: &GpuSlot) {
-    let adapter = slot.adapter().map(gpu_line);
+    let adapter = slot.adapter().map(gpu_line).unwrap_or_default();
     match slot.outcome() {
-        GpuOutcome::Using => console.detail(&format!(
-            "GPU: {} (stages: {})",
-            adapter.unwrap_or_default(),
-            slot.stages()
-        )),
+        GpuOutcome::Using => console.detail(&format!("GPU: {adapter}; stages: {}", slot.stages())),
         GpuOutcome::Cpu(CpuReason::SoftwareAdapter) => console.detail(&format!(
             "GPU: {} is a software adapter, so the CPU is used (YELLOWMOON_GPU=on uses it).",
-            adapter.unwrap_or_default()
+            slot.adapter().map(|a| a.name.as_str()).unwrap_or_default()
         )),
         GpuOutcome::Cpu(CpuReason::NoAdapter(reason)) | GpuOutcome::Unavailable(reason) => {
             console.warn("No usable GPU was found. Rendering on the CPU, which is slower.");
@@ -793,9 +789,10 @@ fn handle_file(
             if json {
                 let status = if report.skipped { "skipped" } else { "ok" };
                 // `device` joins what is known of the photo, so it comes after `settings` and
-                // before `timings_ms`: where the picture was made (`docs/10`).
+                // before `timings_ms`: where the picture was made (`docs/10`); a file that was
+                // skipped was not rendered, so it has none (`null`).
                 let mut known = plan.known.clone().unwrap_or_default();
-                known.insert("device", device);
+                known.insert("device", (!report.skipped).then_some(device));
                 stdout.line(
                     &render_ok(
                         &lossy(input),

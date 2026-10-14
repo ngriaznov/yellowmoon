@@ -182,7 +182,7 @@ impl GpuImage {
     ///
     /// # Errors
     ///
-    /// The errors of [`read_bytes`](crate::stream::read_bytes).
+    /// The errors of [`read_bytes`].
     pub fn read(&self, ctx: &GpuContext) -> Result<Vec<f32>, GpuError> {
         let bytes = read_bytes(ctx, &self.buf, 0, self.byte_len())?;
         Ok(self.unpack(&bytes))
@@ -308,7 +308,7 @@ impl GpuRaw {
     ///
     /// # Errors
     ///
-    /// The errors of [`read_bytes`](crate::stream::read_bytes).
+    /// The errors of [`read_bytes`].
     pub fn read(&self, ctx: &GpuContext) -> Result<Vec<u16>, GpuError> {
         let n = self.width * self.height;
         let bytes = read_bytes(ctx, &self.words, 0, n as u64 * 2)?;

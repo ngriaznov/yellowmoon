@@ -222,7 +222,7 @@ impl KernelId {
     /// the offline checks exist: its WGSL is a stub that writes NaN into its first binding and does
     /// nothing else, [`warm_up`](crate::device::GpuContext::warm_up) skips it, and the tests list
     /// it. The task that implements the kernel replaces the stub with `include_str!` of its own
-    /// `.wgsl` in [`KernelId::body`] and deletes the id from this match (two small edits, reported).
+    /// `.wgsl` in `KernelId::body` and deletes the id from this match (two small edits, reported).
     pub const fn placeholder_owner(self) -> Option<&'static str> {
         match self {
             KernelId::Sampler | KernelId::Encode => Some("G-04"),
