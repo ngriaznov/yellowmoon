@@ -51,6 +51,7 @@ The project is Apache-2.0. Everything shipped must be compatible with it. Everyt
 5. Shipped weights only from CC0, CC BY, Apache or our own data. A model card per network lists every dataset and licence.
 6. Product name, bundle id, crate names and UI never use "ARRI" or "ALEXA" as names. Factual compatibility lines only. The About window says "Not affiliated with ARRI or Sony. ARRI and ALEXA are trademarks of ARRI AG; Sony is a trademark of Sony Group Corporation."
 7. A binary release carries the licence texts its dependencies require: `THIRD-PARTY.md` and `NOTICE` are in the app bundle (`bundle.resources`), and both CI (`licences`) and `release.yml` generate and check them.
+8. **Numeric facts may come from any source** (Mykyta, 2026-10-14): colour matrices, white-balance coefficients and similar camera constants may be taken as numbers from any source, including projects whose licence we cannot accept. Only the numbers are taken: no code, file, table layout, text or comment from such a project enters the repository, and nothing in the repository or the app refers to such a project as a source. Rule 4 is unchanged: no ARRI LUT data in any form.
 
 ## NOTICE file
 
