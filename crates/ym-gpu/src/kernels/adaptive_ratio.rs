@@ -754,20 +754,6 @@ pub fn encode_demosaic(
         bytemuck::cast_slice(knots),
     )?);
     let base = base_uniform(input, core, frame, &lay, out.stride);
-    {
-        // MODEL-DUMP (temporary)
-        model_log(2, bytemuck::cast_slice(knots));
-        let mut v = Vec::new();
-        for x in [
-            (plane_len * planes as u64) as u32,
-            core.w as u32,
-            core.h as u32,
-            out.stride as u32,
-        ] {
-            v.extend_from_slice(&x.to_le_bytes());
-        }
-        model_log(3, &v);
-    }
 
     let mut run = |id: KernelId, region: [u32; 4], channel: u32| -> Result<(), GpuError> {
         let Some((_, slots)) = pass_of(id) else {
@@ -779,24 +765,6 @@ pub fn encode_demosaic(
         u.region = region;
         u.ctl[1] = channel;
         let ub = passes.uniform("adaptive ratio uniform", &u)?;
-        {
-            // MODEL-DUMP (temporary)
-            let mut v = Vec::new();
-            let name = format!("{id:?}");
-            v.extend_from_slice(&(name.len() as u32).to_le_bytes());
-            v.extend_from_slice(name.as_bytes());
-            let ubytes = bytemuck::bytes_of(&u);
-            v.extend_from_slice(&(ubytes.len() as u32).to_le_bytes());
-            v.extend_from_slice(ubytes);
-            for g in [
-                (region[2] - region[0]).div_ceil(GROUP),
-                (region[3] - region[1]).div_ceil(GROUP),
-                1,
-            ] {
-                v.extend_from_slice(&g.to_le_bytes());
-            }
-            model_log(4, &v);
-        }
         let entries: Vec<(u32, wgpu::BindingResource<'_>)> = slots
             .iter()
             .map(|&slot| {
@@ -846,19 +814,6 @@ pub fn encode_demosaic(
     Ok(out)
 }
 
-/// MODEL-DUMP (temporary): appends a tagged record to the file named by `YM_AR_DISPATCH_LOG`.
-#[doc(hidden)]
-pub fn model_log(tag: u32, bytes: &[u8]) {
-    use std::io::Write as _;
-    if let Some(path) = std::env::var_os("YM_AR_DISPATCH_LOG")
-        && let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path)
-    {
-        let _ = f.write_all(&tag.to_le_bytes());
-        let _ = f.write_all(&(bytes.len() as u32).to_le_bytes());
-        let _ = f.write_all(bytes);
-    }
-}
-
 /// Runs the kernel on the `core` rectangle of the host mosaic `m` and reads the core back: upload,
 /// [`encode_demosaic`], submit, read. The host path every wrapper and the device chain use; the
 /// samples were checked by the caller ([`PreparedDemosaic::check_mosaic`]). The rectangle around the core supplies the context (real rows
@@ -878,28 +833,11 @@ pub(crate) fn demosaic_core(
         &m.data,
         m.place,
     )?;
-    {
-        // MODEL-DUMP (temporary)
-        static CALLS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-        let n = CALLS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        model_log(
-            7,
-            format!("call {n} {}x{} core {}x{}", m.width, m.height, core.w, core.h).as_bytes(),
-        );
-        let mut v = Vec::new();
-        for x in [m.width as u32, m.height as u32, input.stride as u32] {
-            v.extend_from_slice(&x.to_le_bytes());
-        }
-        v.extend_from_slice(bytemuck::cast_slice(&m.data));
-        model_log(1, &v);
-    }
     let mut passes = PassList::new(ctx, "adaptive ratio demosaic");
     let out = encode_demosaic(&mut passes, &input, m.cfa, core, frame)?;
     let read = out.encode_read(&mut passes)?;
     let done = passes.submit()?.finish()?;
     let data = out.take(&done, read)?;
-    model_log(5, bytemuck::cast_slice(&data));
-    model_log(6, bytemuck::cast_slice(&data));
     Ok(RgbImage {
         width: out.width,
         height: out.height,
@@ -1065,10 +1003,17 @@ mod tests {
                 );
                 let name = id.name();
                 families.insert(
-                    ["adaptive_ratio", "output_sharpen", "log_guided", "detail", "guided", "diffraction"]
-                        .into_iter()
-                        .find(|f| name.starts_with(f))
-                        .unwrap_or_else(|| panic!("{name} has a barrier but is in no known family")),
+                    [
+                        "adaptive_ratio",
+                        "output_sharpen",
+                        "log_guided",
+                        "detail",
+                        "guided",
+                        "diffraction",
+                    ]
+                    .into_iter()
+                    .find(|f| name.starts_with(f))
+                    .unwrap_or_else(|| panic!("{name} has a barrier but is in no known family")),
                 );
             }
             assert!(

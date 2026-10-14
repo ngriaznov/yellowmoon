@@ -211,20 +211,6 @@ fn record(
         let mut u = base;
         u.ctl[0] = pass as u32;
         let ub = passes.uniform("log-guided uniform", &u)?;
-        {
-            // MODEL-DUMP (temporary)
-            let mut v = Vec::new();
-            let name = "LogGuided";
-            v.extend_from_slice(&(name.len() as u32).to_le_bytes());
-            v.extend_from_slice(name.as_bytes());
-            let ubytes = bytemuck::bytes_of(&u);
-            v.extend_from_slice(&(ubytes.len() as u32).to_le_bytes());
-            v.extend_from_slice(ubytes);
-            for g in [dispatch.0, dispatch.1, 1] {
-                v.extend_from_slice(&g.to_le_bytes());
-            }
-            model_log(4, &v);
-        }
         passes.dispatch(
             KernelId::LogGuided,
             labels[pass],
@@ -293,19 +279,6 @@ pub fn encode_demosaic(
     Ok(out)
 }
 
-/// MODEL-DUMP (temporary): appends a tagged record to the file named by `YM_LG_DISPATCH_LOG`.
-#[doc(hidden)]
-pub fn model_log(tag: u32, bytes: &[u8]) {
-    use std::io::Write as _;
-    if let Some(path) = std::env::var_os("YM_LG_DISPATCH_LOG")
-        && let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path)
-    {
-        let _ = f.write_all(&tag.to_le_bytes());
-        let _ = f.write_all(&(bytes.len() as u32).to_le_bytes());
-        let _ = f.write_all(bytes);
-    }
-}
-
 /// Runs the kernel on one mosaic rectangle and reads the planes back.
 fn demosaic_rect(
     ctx: &GpuContext,
@@ -318,21 +291,6 @@ fn demosaic_rect(
     let (w, h) = (m.width, m.height);
     let stride = even(w);
     let plane = stride * h;
-    {
-        // MODEL-DUMP (temporary)
-        static CALLS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-        let n = CALLS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        model_log(
-            7,
-            format!("call {n} {}x{} {}", m.width, m.height, ctx.storage_mode().name()).as_bytes(),
-        );
-        let mut v = Vec::new();
-        for x in [m.width as u32, m.height as u32, even(m.width) as u32] {
-            v.extend_from_slice(&x.to_le_bytes());
-        }
-        v.extend_from_slice(bytemuck::cast_slice(&m.data));
-        model_log(1, &v);
-    }
     let mut passes = PassList::new(ctx, "log-guided demosaic");
     let mosaic = passes.keep(upload_mosaic(ctx, m)?);
     let rgb = passes.keep(ctx.pool().acquire(
@@ -360,7 +318,6 @@ fn demosaic_rect(
             dst[y * w..(y + 1) * w].copy_from_slice(&raw[s..s + w]);
         }
     }
-    model_log(5, bytemuck::cast_slice(&out.data));
     Ok(out)
 }
 

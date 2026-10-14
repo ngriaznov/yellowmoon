@@ -76,17 +76,12 @@ fn f32_device() -> Option<&'static TestGpu> {
 }
 
 fn run_gpu(dev: &TestGpu, m: &Mosaic, noise: NoiseDn, detail: i32) -> RgbImage {
-    let m0 = m.clone(); // MODEL-DUMP (temporary)
     let m = m.clone();
-    let out = dev
-        .gpu
+    dev.gpu
         .run(JobSpec::new(Priority::Viewport), move |ctx, _| {
             gpu_lg::demosaic(ctx, &m, noise, detail)
         })
-        .expect("GPU log-guided demosaic");
-    // MODEL-DUMP (temporary)
-    ym_gpu::kernels::log_guided::model_log(6, bytemuck::cast_slice(&cpu(&m0, noise, detail).data));
-    out
+        .expect("GPU log-guided demosaic")
 }
 
 fn run_gpu_tiled(

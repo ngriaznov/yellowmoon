@@ -2058,8 +2058,9 @@ fn wgsl_function(src: &str, name: &str) -> String {
 fn the_shader_square_root_and_division_are_correctly_rounded_on_the_device() {
     // K8: `sharpen_sqrt` and `sharpen_div` compute in integers, so they give the IEEE result whatever
     // the device's `sqrt` and `/` do (Metal's fast-math ones are 1 to 2 ulp off). Run on the device on
-    // 2^21 square roots (every 4th mantissa of two exponents, which is every case of the algorithm's
-    // two branches, and random others) and 2^21 random quotients with normal operands and results,
+    // 2^21 square roots (every 16th mantissa over the whole range of two exponents, one odd and one
+    // even, which are both branches of the algorithm, and random others) and 2^21 random quotients with
+    // normal operands and results,
     // against Rust's `f32::sqrt` and `/`. The C model of the same routines matched IEEE on all 16.8
     // million mantissas of 11 exponents and 259 million quotients.
     let Some(dev) = gpus().first() else { return };
@@ -2091,11 +2092,12 @@ fn the_shader_square_root_and_division_are_correctly_rounded_on_the_device() {
     for i in 0..n {
         let qa = bits(64, 190);
         let qb = bits(64, 190);
-        // The square roots: every 4th mantissa at the exponents 126 and 127 for the first half,
-        // random positive normals for the second; the divisions use the same `a`.
+        // The square roots: every 16th mantissa (the whole range, 2^19 of them) at each of the
+        // exponents 126 and 127 for the first half, random positive normals for the second; the
+        // divisions use the same `a`.
         let sa = if i < n / 2 {
             let e = 126 + (i & 1) as u32;
-            (e << 23) | (((i >> 1) as u32 * 4) & 0x7f_ffff)
+            (e << 23) | (((i >> 1) as u32 * 16) & 0x7f_ffff)
         } else {
             qa & 0x7fff_ffff
         };
@@ -2249,53 +2251,3 @@ fn the_passes_pin_every_rounding_the_limiter_sees() {
         );
     }
 }
-
-// MODEL-DUMP-BEGIN (temporary, reviewer; removed after the run)
-#[test]
-#[ignore = "development aid: YM_OS_DISPATCH_LOG=<file> records the dispatches of the cases of the four Metal failures"]
-fn zz_os_dump() {
-    use ym_gpu::kernels::output_sharpen::model_log;
-    if std::env::var_os("YM_OS_DISPATCH_LOG").is_none() {
-        return;
-    }
-    let Some(dev) = gpus().first() else { return };
-    let save = |name: &str, p: &OutputSharpen, scale: f32, img: &RgbImage| {
-        model_log(7, name.as_bytes());
-        let gpu = gpu_sharpen(dev, p, scale, img);
-        model_log(5, bytemuck::cast_slice(&gpu.data));
-        let cpu = p.apply(img, scale).expect("cpu");
-        model_log(6, bytemuck::cast_slice(&cpu.data));
-    };
-    let frames: Vec<(&str, RgbImage)> = vec![
-        ("busy71", busy(71, 66, 21)),
-        ("busy130", busy(130, 97, 22)),
-        ("photo150", photo_like(150, 113, 23)),
-        ("photo33", photo_like(33, 20, 24)),
-    ];
-    for (name, img) in &frames {
-        for (set, p, scale) in param_sets() {
-            save(&format!("noisy {name} {set}"), &p, scale, img);
-        }
-    }
-    let img = busy(53, 41, 61);
-    for (set, p, scale) in param_sets() {
-        save(&format!("flip orig {set}"), &p, scale, &img);
-        save(&format!("flip flipx {set}"), &p, scale, &flip_x(&img));
-        save(&format!("flip transp {set}"), &p, scale, &transpose(&img));
-    }
-    for (name, v) in vectors() {
-        let (os, scale) = params_of(&v);
-        save(&format!("vec {name}"), &os, scale, &image_of(&v["input"]));
-    }
-    if std::env::var_os("YM_MODEL_DUMP_LARGE").is_some() {
-        let img = photo_like(2048, 1365, 71);
-        save("large screen full", &OutputSharpen::screen(), 1.0, &img);
-        save(
-            "large screen 2048 from 6000",
-            &OutputSharpen::screen(),
-            scale_for_edges(2048, 6000),
-            &img,
-        );
-    }
-}
-// MODEL-DUMP-END

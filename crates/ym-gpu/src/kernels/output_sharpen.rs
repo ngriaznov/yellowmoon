@@ -452,7 +452,6 @@ impl PreparedSharpen {
         if taps.is_empty() {
             taps.push(0.0);
         }
-        model_log(2, bytemuck::cast_slice(&taps)); // MODEL-DUMP (temporary)
         let taps_buf = Arc::new(crate::kernels::util::storage_buffer(
             ctx,
             "sharpen taps",
@@ -750,20 +749,6 @@ impl PreparedSharpen {
             } else {
                 (p.width, p.height)
             };
-            {
-                // MODEL-DUMP (temporary)
-                let mut v = Vec::new();
-                let name = format!("{id:?}");
-                v.extend_from_slice(&(name.len() as u32).to_le_bytes());
-                v.extend_from_slice(name.as_bytes());
-                let ubytes = bytemuck::bytes_of(p);
-                v.extend_from_slice(&(ubytes.len() as u32).to_le_bytes());
-                v.extend_from_slice(ubytes);
-                for g in [gw.div_ceil(GROUP), gh.div_ceil(GROUP), z] {
-                    v.extend_from_slice(&g.to_le_bytes());
-                }
-                model_log(4, &v);
-            }
             passes.dispatch(
                 id,
                 id.name(),
@@ -772,15 +757,6 @@ impl PreparedSharpen {
             )
         };
 
-        {
-            // MODEL-DUMP (temporary): plane samples, working planes, Hacc samples.
-            let mut v = Vec::new();
-            let hacc_n = if limiter || tracing { n } else { 4 };
-            for x in [n as u32, work_planes as u32, hacc_n as u32, u32::from(noop)] {
-                v.extend_from_slice(&x.to_le_bytes());
-            }
-            model_log(3, &v);
-        }
         if !noop {
             // Pooled buffers keep their old contents: the accumulators start from zero.
             passes.encoder().clear_buffer(&dacc, 0, Some(plane_bytes));
@@ -860,19 +836,6 @@ impl PreparedSharpen {
             return Ok(Some((l, d, hh)));
         }
         Ok(None)
-    }
-}
-
-/// MODEL-DUMP (temporary): appends a tagged record to the file named by `YM_OS_DISPATCH_LOG`.
-#[doc(hidden)]
-pub fn model_log(tag: u32, bytes: &[u8]) {
-    use std::io::Write as _;
-    if let Some(path) = std::env::var_os("YM_OS_DISPATCH_LOG")
-        && let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path)
-    {
-        let _ = f.write_all(&tag.to_le_bytes());
-        let _ = f.write_all(&(bytes.len() as u32).to_le_bytes());
-        let _ = f.write_all(bytes);
     }
 }
 
@@ -1093,30 +1056,6 @@ impl PreparedSharpen {
             3,
             Placement::whole(core.w, core.h),
         )?;
-        {
-            // MODEL-DUMP (temporary): the input in the device layout and the destination's.
-            let mut v = Vec::new();
-            for x in [
-                src.width as u32,
-                src.height as u32,
-                src.stride as u32,
-                src.plane_len() as u32,
-                dst.stride as u32,
-                dst.plane_len() as u32,
-            ] {
-                v.extend_from_slice(&x.to_le_bytes());
-            }
-            let n = upload.width * upload.height;
-            let mut planes = vec![0.0f32; 3 * src.plane_len()];
-            for c in 0..3 {
-                for y in 0..upload.height {
-                    let from = &upload.data[c * n + y * upload.width..][..upload.width];
-                    planes[c * src.plane_len() + y * src.stride..][..upload.width].copy_from_slice(from);
-                }
-            }
-            v.extend_from_slice(bytemuck::cast_slice(&planes));
-            model_log(1, &v);
-        }
         let mut passes = PassList::new(ctx, "output sharpening");
         let window = Rect::whole(compute.w, compute.h);
         let ids = self.encode_to(
