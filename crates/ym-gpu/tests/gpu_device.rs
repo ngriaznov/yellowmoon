@@ -952,8 +952,26 @@ fn the_ml_feature_requests_what_cubecl_requests() {
 }
 
 // ---------------------------------------------------------------------------------------------
-// G-02: fault injection (feature `fault-injection`)
+// G-02 review: the existing kernels read nothing they did not write, NaN-proof
 // ---------------------------------------------------------------------------------------------
+
+/// Acceptance (2) of G-02 says the existing kernel tests pass under poison, but several of their
+/// error measures skip a NaN (`fold(0.0, f64::max)`, `ratio > worst`, `f32::max`), so a kernel that
+/// read a poisoned buffer could still pass them. This module is the NaN-proof version: every existing
+/// host wrapper runs on the poisoned test device and on a plain one (fresh buffers are zeros there),
+/// whole frame and tiled (so recycled buffers are exercised), and the two must give the same bits and
+/// no NaN or infinity anywhere. A stale read cannot satisfy that.
+mod existing_kernels {
+    use super::*;
+
+    use common::chains::{self, camera_image};
+    use common::exact::assert_poison_neutral;
+    use ym_color::display::ColorChain;
+    use ym_gpu::cpu::Cfa;
+    use ym_gpu::cpu::chain::RawFrame;
+    use ym_gpu::cpu::demosaic::adaptive_ratio::{Params, ShadowMatch};
+    use ym_gpu::cpu::demosaic::bilinear_stage_marker as _;
+}
 
 #[cfg(feature = "fault-injection")]
 mod faults {
