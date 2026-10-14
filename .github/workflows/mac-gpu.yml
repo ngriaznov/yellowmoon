@@ -58,11 +58,12 @@ jobs:
       - name: Every GPU kernel against its CPU reference on Metal (ym-gpu)
         env:
           YM_REQUIRE_GPU: "1"
-        run: cargo test -p ym-gpu --release -- --test-threads=2 2>&1 | tee ym-gpu-${{ matrix.runner }}.log
+        run: cargo test -p ym-gpu --release --no-fail-fast -- --test-threads=2 2>&1 | tee ym-gpu-${{ matrix.runner }}.log
       - name: The renderer on Metal (ym-core, every test; the GPU ones against the CPU reference)
+        if: ${{ !cancelled() }}
         env:
           YM_REQUIRE_GPU: "1"
-        run: cargo test -p ym-core --release -- --test-threads=2 2>&1 | tee ym-core-${{ matrix.runner }}.log
+        run: cargo test -p ym-core --release --no-fail-fast -- --test-threads=2 2>&1 | tee ym-core-${{ matrix.runner }}.log
       - name: Keep the logs
         if: always()
         uses: actions/upload-artifact@v4
