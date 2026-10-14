@@ -28,6 +28,17 @@ We don't intend to compete with existing raw processors or to replace any of the
 - Exports JPEG, TIFF, PNG, and DNG with your look baked in.
 - A command-line tool, `ym`, with the same results as the app, for scripts and batch jobs.
 
+## Screenshots
+
+![A photo developed automatically, Look tab](docs/images/readme/photo-look.png)
+
+| | |
+|---|---|
+| ![Light tab: exposure, histogram, highlights and shadows](docs/images/readme/photo-light.png) | ![Colour tab: white balance and colour balance](docs/images/readme/photo-colour.png) |
+| ![Detail tab: sharpening and noise reduction](docs/images/readme/photo-detail.png) | ![Export panel](docs/images/readme/photo-export.png) |
+
+Photos: Mykyta Griaznov. The screenshots are of the development build on Linux (`tools/readme`); on a Mac the photo is drawn by a native Metal view.
+
 ## How the colour works
 
 In short: estimate the light, translate what the Sony sensor recorded into what an ALEXA sensor would have recorded under that light, then grade and display it the way a cinema colourist would.

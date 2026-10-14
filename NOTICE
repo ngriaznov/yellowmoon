@@ -147,3 +147,8 @@ UNDISCLOSED.
    Listed, each with its licence text, in THIRD-PARTY.md inside the app. The
    file is generated for every release from Cargo.lock and package-lock.json
    (tools/licences/generate.py: cargo-about and license-checker).
+
+10. README screenshots (docs/images/readme/)
+   The photographs shown in these screenshots are © Mykyta Griaznov, used here
+   with his permission. They are not covered by the Apache License 2.0 and are
+   not part of the application.
