@@ -6,9 +6,9 @@
 //!   `{camera}`. Unknown `{words}` stay as typed, as in the UI preview. The result is made safe for a
 //!   file name: path separators and characters Windows and exFAT reject become `_`, leading dots and
 //!   trailing dots and spaces are dropped, the length is capped.
-//! * **Destination.** `<source folder> export` next to the source folder, or
-//!   `~/Pictures/Yellowmoon export` when that can't be written. An explicitly requested folder is
-//!   never replaced by a fallback.
+//! * **Destination.** `<source folder> export` next to the source folder, named as the person gave
+//!   the path (symbolic links are not resolved), or `~/Pictures/Yellowmoon export` when that can't
+//!   be written. An explicitly requested folder is never replaced by a fallback.
 //! * **If the file exists.** Skip, Replace, or Keep both (" 2", " 3", ...). Keep both and Skip never
 //!   overwrite, even when another process creates the file while we work.
 //! * **Atomic write.** The file is written under a temporary name in the destination folder, flushed
@@ -138,17 +138,31 @@ pub fn file_stem(template: &str, fields: &NameFields) -> String {
 /// `<source folder> export` next to the source folder: for `/Volumes/A1/Lisbon/DSC04204.ARW` that is
 /// `/Volumes/A1/Lisbon export`. `None` when the source has no named parent folder with a parent of
 /// its own (a file at the root of a volume).
+///
+/// The folder keeps the name the person knows it by. A symbolic link in the path is **not**
+/// resolved: on a Mac `/var` is a link to `/private/var`, a photos folder is often a link to
+/// another disk, and the Export panel, the command `ym render` is shown as and the files
+/// themselves must all say `/var/…/Lisbon export` when the photo was opened as `/var/…/Lisbon`
+/// (the session's `default_export_folder` is spelled the same way, `docs/01`). A relative path is
+/// made absolute against the working directory. A folder that has no name as written, because the
+/// path ends in `..` or has no folder part (`DSC04204.ARW` in the working directory), takes the
+/// name of the folder it resolves to. The name is kept byte for byte, also when it is not UTF-8.
 #[must_use]
 pub fn default_destination(source_file: &Path) -> Option<PathBuf> {
     let folder = source_file.parent()?;
     let folder = if folder.as_os_str().is_empty() {
         std::env::current_dir().ok()?
     } else {
-        fs::canonicalize(folder).unwrap_or_else(|_| folder.to_path_buf())
+        std::path::absolute(folder).ok()?
     };
-    let name = folder.file_name()?;
-    let outer = folder.parent()?;
-    Some(outer.join(format!("{} export", name.to_string_lossy())))
+    let folder = if folder.file_name().is_some() {
+        folder
+    } else {
+        fs::canonicalize(&folder).ok()?
+    };
+    let mut name = folder.file_name()?.to_os_string();
+    name.push(" export");
+    Some(folder.parent()?.join(name))
 }
 
 /// `~/Pictures/Yellowmoon export`, the fallback destination.

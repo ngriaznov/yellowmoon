@@ -583,6 +583,7 @@ fn a_device_destroyed_in_the_middle_of_a_job_fails_its_transfers_and_never_hangs
         let g2 = Arc::clone(&g);
         std::thread::spawn(move || {
             let r = g2.run(JobSpec::new(Priority::Export), |ctx, _| {
+                let base = ctx.pool().stats().in_use_bytes;
                 let buf = ctx.pool().acquire("doomed", 4096, storage())?;
                 ctx.device.destroy();
                 // Neither the upload, the readback nor a pass list may panic or wait for ever.
@@ -597,7 +598,10 @@ fn a_device_destroyed_in_the_middle_of_a_job_fails_its_transfers_and_never_hangs
                 )?;
                 let id = passes.read(&buf, 0, 16);
                 let list = passes.submit().and_then(|p| p.finish()).map(|_| ());
-                Ok((up.is_ok(), down, id.is_ok(), list))
+                drop(buf);
+                // Every buffer the failed transfers and the failed list took is back in the pool.
+                let held = ctx.pool().stats().in_use_bytes - base;
+                Ok((up.is_ok(), down, id.is_ok(), list, held))
             });
             let _ = tx.send((r, g2.is_lost()));
         });
@@ -605,7 +609,8 @@ fn a_device_destroyed_in_the_middle_of_a_job_fails_its_transfers_and_never_hangs
             .expect("a destroyed device must fail fast, not hang")
     };
     let (result, lost) = outcome;
-    let (up_ok, down, id_ok, list) = result.expect("the job itself returns");
+    let (up_ok, down, id_ok, list, held) = result.expect("the job itself returns");
+    assert_eq!(held, 0, "the failed transfers leaked pool buffers");
     eprintln!(
         "after destroy: upload ok {up_ok}, readback {down:?}, read request ok {id_ok}, list {list:?}"
     );
@@ -686,7 +691,7 @@ fn a_readback_that_does_not_finish_in_time_taints_the_device() {
                          @compute @workgroup_size(1)\n\
                          fn main() {\n\
                          \tvar x = d[0];\n\
-                         \tfor (var i = 0u; i < 100000000u; i++) { x = x * 1.0000001 + 0.5; }\n\
+                         \tfor (var i = 0u; i < 200000000u; i++) { x = x * 1.0000001 + 0.5; }\n\
                          \td[0] = x;\n}\n"
                             .into(),
                     ),
@@ -1264,14 +1269,14 @@ mod existing_kernels {
     }
 
     #[test]
-    fn the_colour_kernel_reads_nothing_it_did_not_write() {
+    fn the_color_kernel_reads_nothing_it_did_not_write() {
         let img = camera_image(23, 17, 0xBEEF);
         let cases: Vec<(String, ColorChain)> = chains::cases()
             .into_iter()
             .map(|(name, p)| (name, ColorChain::new(&p).expect("chain")))
             .collect();
         assert!(cases.len() > 10);
-        neutral("colour chain", |g| {
+        neutral("color chain", |g| {
             let (img, cases) = (img.clone(), cases.clone());
             g.run(JobSpec::new(Priority::Export), move |ctx, _| {
                 let mut out = Vec::new();

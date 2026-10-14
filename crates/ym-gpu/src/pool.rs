@@ -38,9 +38,12 @@
 //! kernel that reads what it never wrote works by luck on a fresh device and breaks later, on
 //! whatever an earlier job left behind. With poison mode ([`crate::device::GpuConfig::poison`]) the
 //! pool fills the whole buffer with [`POISON_WORD`] before handing it out: NaN as one f32 and as two
-//! f16, so a stale float read shows up as NaN, and a stale integer read as a value no sane input
-//! has. The fill is an ordinary queue write, so it is ordered before the caller's own uploads and
-//! commands. Poisoned buffers get `COPY_DST` added to their usage when the caller did not ask for it.
+//! f16, so a stale float read shows up as NaN. A stale integer read gives `0x7FC07FC0` (32704 per
+//! `u16` half), which is a possible raw value and so no sentinel by itself: it is caught by comparing
+//! the result with a run on a plain device (`tests/common/exact.rs::assert_poison_neutral`), where
+//! the same read gives zero. The fill is an ordinary queue write, so it is ordered before the
+//! caller's own uploads and commands. Poisoned buffers get `COPY_DST` added to their usage when the
+//! caller did not ask for it.
 
 use std::collections::HashMap;
 use std::num::NonZeroU64;
