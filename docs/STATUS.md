@@ -189,7 +189,7 @@ The `synthetic-full` and `synthetic-eval` sets (53 more, the latter with CIE ref
 
 ## Auto exposure and the DNG (your decisions of 2026-10-14)
 
-Research: `research/auto-exposure-2026-10-14.md`. Of A1M01749's −1.16 EV against its camera JPEG, −0.85 EV is where ACES 2 SDR puts mid grey and −0.30 EV is our exposure. Your decisions:
+Research: `research/auto-exposure-2026-10-14.md`. Of A1M01749's −1.16 EV against its camera JPEG, −0.85 EV is where ACES 2 SDR puts mid grey and −0.30 EV is our exposure.
 
 Direction (your words): "This is a photo processing app, not video, we can do brighter than the reference LUT. I care about ARRI colours and, in future, intelligent automatic settings." Decisions, after a few rounds of questions:
 
