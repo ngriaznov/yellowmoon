@@ -613,6 +613,51 @@ fn the_cli_preview_of_a_real_session() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn the_cli_preview_names_the_folders_as_the_session_was_opened_with_them() {
+    // A session opened through a symbolic link (on a Mac, `/var` is a link to `/private/var`):
+    // the command, the panel's default folder and the files all use the name the person gave.
+    let r = rig();
+    let (root, folder) = shoot(2);
+    let links = tempfile::tempdir().expect("links");
+    let via = links.path().join("via");
+    std::os::unix::fs::symlink(root.path(), &via).expect("symlink");
+    let opened = via.join("Shoot");
+    let ids = open_all(&r.core, &opened);
+    assert_eq!(ids.len(), 2);
+    let out = via.join("Shoot export");
+
+    let state = r.core.session.state();
+    assert_eq!(
+        state.default_export_folder.as_deref().map(Path::new),
+        Some(out.as_path())
+    );
+    let all = r.core.cli_preview_detail(&jpeg_job(ApplyScope::All, None));
+    assert_eq!(
+        all.command,
+        format!(
+            "ym render {} \\\n  --look neutral \\\n  --format jpeg \\\n  --quality 92 \\\n  --colour-space srgb \\\n  --out {}",
+            opened.display(),
+            ym_core::cli_preview::shell_quote(&out.to_string_lossy())
+        )
+    );
+
+    // The files go where the command says (the same place on the disk as the real folder).
+    r.core
+        .export_start(&jpeg_job(ApplyScope::All, None))
+        .expect("queued");
+    wait_export(&r);
+    assert_eq!(
+        names_in(&out),
+        vec![
+            "DSC00001_neutral.jpg".to_owned(),
+            "DSC00002_neutral.jpg".to_owned()
+        ]
+    );
+    assert!(folder.parent().expect("root").join("Shoot export").is_dir());
+}
+
 // ---------------------------------------------------------------------------------------------
 // The wire types against src/api/types.ts
 // ---------------------------------------------------------------------------------------------

@@ -926,9 +926,17 @@ fn open_app_gpu(enabled: bool, budget: ym_core::scheduler::MemoryBudget) -> GpuS
     if !enabled {
         return GpuSlot::off(budget);
     }
-    GpuOpener::new(gpu_policy(), budget)
+    let slot = GpuOpener::new(gpu_policy(), budget)
         .with_pipeline_cache_dir(ym_gpu::device::default_pipeline_cache_dir())
-        .open()
+        .open();
+    // `require` is strict, and a window has no exit code to say so with: the application goes on
+    // with the CPU, loudly, rather than quietly looking as if the device were in use.
+    if let Some(reason) = slot.failure() {
+        tracing::warn!(
+            "YELLOWMOON_GPU=require, but no graphics device opened ({reason}); using the CPU"
+        );
+    }
+    slot
 }
 
 #[cfg(test)]

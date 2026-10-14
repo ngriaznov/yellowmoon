@@ -352,9 +352,14 @@ mod extreme_frames {
 mod session_lifecycle {
     use super::*;
     use common::{session_with_events, settle};
-    use std::sync::{Arc, Mutex};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex, mpsc};
+    use std::time::Duration;
     use ym_core::auto::NoiseSource;
-    use ym_core::session::{OpenOptions, PhotoId, SessionError, ThumbnailInput, ThumbnailRenderer};
+    use ym_core::session::{
+        EventSink, OpenOptions, PhotoId, PhotoProgress, PhotoStage, SessionError, SessionEvent,
+        ThumbnailInput, ThumbnailRenderer,
+    };
     use ym_core::settings::SettingsPatch;
     use ym_looks::library::LookId;
 
@@ -561,26 +566,87 @@ mod session_lifecycle {
         }
     }
 
-    #[test]
-    fn a_thumbnail_is_rendered_with_the_look_the_photo_has_by_then() {
+    /// Opens one photo, holds its development job at the first event `at` accepts, applies a look
+    /// to the photo there and lets the job go on. Returns what the thumbnail hook was asked to
+    /// render.
+    ///
+    /// The job's thread is held inside the event sink (a sink may be slow: the app's forwards to
+    /// the webview), after the photo's settings were first read and before the thumbnail stage
+    /// reads them again. The look is therefore applied at a point of the job that is fixed, not at
+    /// a time after `open` that a faster or busier machine would put somewhere else. (The test used
+    /// to sleep 10 ms and assume the decode and the analysis were still running; on a fast Mac in
+    /// a release build they are not, and the thumbnail was already rendered with the old look.)
+    fn thumbnails_after_a_look_applied_at(
+        at: impl Fn(&PhotoProgress) -> bool + Send + Sync + 'static,
+    ) -> Vec<(PhotoId, LookId, f64)> {
         let dir = tempfile::tempdir().unwrap();
         let white = light(PROFILE, 5200.0);
-        Scene::new(3000, 2000, white, Layout::Uniform, 0.3).write(dir.path(), "big.ARW", MODEL);
+        Scene::new(300, 200, white, Layout::Uniform, 0.3).write(dir.path(), "big.ARW", MODEL);
         let recorder = Arc::new(LookRecorder::default());
-        let session =
-            ym_core::session::Session::new(common::base_env().with_thumbnails(recorder.clone()));
+
+        let (reached_tx, reached_rx) = mpsc::channel::<()>();
+        let (go_tx, go_rx) = mpsc::channel::<()>();
+        let (reached_tx, go_rx) = (Mutex::new(reached_tx), Mutex::new(go_rx));
+        let held = AtomicBool::new(false);
+        let sink = EventSink::new(move |event| {
+            if let SessionEvent::PhotoProgress(p) = &event
+                && at(p)
+                && !held.swap(true, Ordering::SeqCst)
+            {
+                reached_tx.lock().unwrap().send(()).unwrap();
+                // Only the test thread's `apply_look` has to happen now; it takes the state lock,
+                // which the job does not hold while it sends an event. The timeout keeps a failing
+                // test from hanging.
+                let _ = go_rx.lock().unwrap().recv_timeout(Duration::from_secs(30));
+            }
+        });
+        let session = ym_core::session::Session::new(
+            common::base_env()
+                .with_events(sink)
+                .with_thumbnails(recorder.clone()),
+        );
         session.open(&[dir.path().to_path_buf()], OpenOptions::default());
-        // The photo is being decoded and analysed (that takes much longer than this pause); the
-        // user applies a look to it.
-        std::thread::sleep(std::time::Duration::from_millis(10));
-        let signature = LookId::builtin("signature");
+        reached_rx
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the photo's job reached the point where the look is applied");
         session
-            .apply_look(ym_core::session::ApplyScope::All, &signature, 80.0)
+            .apply_look(
+                ym_core::session::ApplyScope::All,
+                &LookId::builtin("signature"),
+                80.0,
+            )
             .unwrap();
+        go_tx.send(()).unwrap();
         settle(&session);
-        let seen = recorder.0.lock().unwrap();
+        recorder.0.lock().unwrap().clone()
+    }
+
+    #[test]
+    fn a_thumbnail_is_rendered_with_the_look_the_photo_has_by_then() {
+        // The look is applied once the photo's estimates are in, the moment before its thumbnail
+        // is started.
+        let seen = thumbnails_after_a_look_applied_at(|p| {
+            p.stage == PhotoStage::Estimate && p.done && p.error.is_none()
+        });
         assert_eq!(seen.len(), 1);
-        assert_eq!(seen[0].1, signature, "the thumbnail shows the old look");
+        assert_eq!(
+            seen[0].1,
+            LookId::builtin("signature"),
+            "the thumbnail shows the old look"
+        );
+        assert_eq!(seen[0].2, 80.0);
+    }
+
+    #[test]
+    fn a_look_applied_before_the_photo_is_decoded_is_in_its_thumbnail() {
+        // The job took its copy of the settings when it was started; the look comes after that.
+        let seen = thumbnails_after_a_look_applied_at(|p| p.stage == PhotoStage::Decode && !p.done);
+        assert_eq!(seen.len(), 1);
+        assert_eq!(
+            seen[0].1,
+            LookId::builtin("signature"),
+            "the thumbnail shows the look the photo was opened with"
+        );
         assert_eq!(seen[0].2, 80.0);
     }
 }

@@ -569,10 +569,15 @@ impl GpuSlot<Gpu> {
     /// or the export render uses no stage on it yet ([`GpuStages::USED_BY_EXPORTS`]).
     #[must_use]
     pub fn warm_up_for_exports(&self) -> Option<JobHandle<Result<usize, GpuError>>> {
+        self.warm_up_for(GpuStages::USED_BY_EXPORTS)
+    }
+
+    /// [`GpuSlot::warm_up_for_exports`] for the stages `used` by the work to come: `None` when no
+    /// device is used or none of those stages runs on it, else the warm-up job.
+    #[must_use]
+    pub fn warm_up_for(&self, used: GpuStages) -> Option<JobHandle<Result<usize, GpuError>>> {
         let gpu = self.gpu.as_ref()?;
-        self.stages()
-            .intersects(GpuStages::USED_BY_EXPORTS)
-            .then(|| warm_up(gpu))
+        self.stages().intersects(used).then(|| warm_up(gpu))
     }
 }
 
@@ -712,7 +717,11 @@ impl<P: AdapterProbe> GpuOpener<P> {
         if shared_memory {
             let unified = budget.for_unified_memory(self.ram_bytes);
             if unified.gpu_bytes != budget.gpu_bytes {
+                // Closed *and dropped* before the second is asked for: the device thread is gone
+                // after `close`, but the wgpu device lives as long as the value does, and on an
+                // 8 GB Mac two of them must not exist at once.
                 device.close();
+                drop(device);
                 budget = unified;
                 device = match self.probe.open(self.config(&budget)) {
                     Ok(device) => device,
@@ -800,6 +809,9 @@ mod tests {
     struct FakeDevice {
         info: GpuInfo,
         closed: Arc<AtomicUsize>,
+        /// Devices that exist (opened and not dropped yet): the wgpu device of a real one lives as
+        /// long as the value does, whatever `close` has stopped.
+        alive: Arc<AtomicUsize>,
     }
 
     impl GpuDevice for FakeDevice {
@@ -812,13 +824,24 @@ mod tests {
         }
     }
 
+    impl Drop for FakeDevice {
+        fn drop(&mut self) {
+            self.alive.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+
     /// A probe that records how it was asked. Clones share the records.
     #[derive(Clone)]
     struct FakeProbe {
         adapter: Adapter,
         opened: Arc<AtomicUsize>,
         closed: Arc<AtomicUsize>,
+        /// Devices that exist now, and the most that ever existed at one time.
+        alive: Arc<AtomicUsize>,
+        most_alive: Arc<AtomicUsize>,
         budgets: Arc<Mutex<Vec<Option<u64>>>>,
+        /// The request (counted from 1) that finds no adapter although the others do.
+        fail_request: Option<usize>,
     }
 
     impl FakeProbe {
@@ -827,7 +850,10 @@ mod tests {
                 adapter,
                 opened: Arc::default(),
                 closed: Arc::default(),
+                alive: Arc::default(),
+                most_alive: Arc::default(),
                 budgets: Arc::default(),
+                fail_request: None,
             }
         }
 
@@ -841,10 +867,14 @@ mod tests {
         type Device = FakeDevice;
 
         fn open(&self, config: GpuConfig) -> Result<FakeDevice, GpuError> {
-            self.budgets
-                .lock()
-                .expect("budgets")
-                .push(config.memory_budget_bytes);
+            let request = {
+                let mut budgets = self.budgets.lock().expect("budgets");
+                budgets.push(config.memory_budget_bytes);
+                budgets.len()
+            };
+            if self.fail_request == Some(request) {
+                return Err(GpuError::NoAdapter("the driver went away".to_owned()));
+            }
             let info = match self.adapter {
                 Adapter::Hardware => info("Test discrete GPU", "DiscreteGpu", false),
                 Adapter::Unified => info("Test Apple GPU", "IntegratedGpu", false),
@@ -855,9 +885,12 @@ mod tests {
             };
             // Counted when a device exists; a request that finds none opens nothing.
             self.opened.fetch_add(1, Ordering::SeqCst);
+            let alive = self.alive.fetch_add(1, Ordering::SeqCst) + 1;
+            self.most_alive.fetch_max(alive, Ordering::SeqCst);
             Ok(FakeDevice {
                 info,
                 closed: Arc::clone(&self.closed),
+                alive: Arc::clone(&self.alive),
             })
         }
     }
@@ -1014,6 +1047,46 @@ mod tests {
             assert!(slot.is_using());
             // Exactly one device is left open: the first was closed before the second started.
             assert_eq!(probe.open_devices(), 1, "{ram} GB");
+            // And the first was gone, not only stopped, when the second was asked for: two wgpu
+            // devices at once is what an 8 GB Mac cannot spare.
+            assert_eq!(probe.alive.load(Ordering::SeqCst), 1, "{ram} GB: alive");
+            assert_eq!(
+                probe.most_alive.load(Ordering::SeqCst),
+                1,
+                "{ram} GB: the first device was still alive when the second was opened"
+            );
+        }
+    }
+
+    #[test]
+    fn a_second_open_that_fails_leaves_no_device_and_follows_the_policy() {
+        // 8 GB: the first device is closed for the second, which then finds nothing.
+        for (policy, strict) in [
+            (GpuPolicy::Auto, false),
+            (GpuPolicy::On, false),
+            (GpuPolicy::Require, true),
+        ] {
+            let mut probe = FakeProbe::new(Adapter::Unified);
+            probe.fail_request = Some(2);
+            let slot = GpuOpener::new(policy, MemoryBudget::for_ram(Some(8 * GIB)))
+                .with_ram_bytes(Some(8 * GIB))
+                .with_probe(probe.clone())
+                .open();
+            assert_eq!(probe.budgets.lock().expect("b").len(), 2, "{policy}");
+            assert!(!slot.is_using() && slot.gpu().is_none(), "{policy}");
+            assert_eq!(slot.stages(), GpuStages::NONE, "{policy}");
+            assert_eq!(slot.failure().is_some(), strict, "{policy}");
+            assert!(
+                slot.missing_device_reason()
+                    .is_some_and(|r| r.contains("the driver went away")),
+                "{policy}: {:?}",
+                slot.outcome()
+            );
+            assert_eq!(
+                probe.alive.load(Ordering::SeqCst),
+                0,
+                "{policy}: nothing left open"
+            );
         }
     }
 
@@ -1037,6 +1110,7 @@ mod tests {
                 Ok(FakeDevice {
                     info: info("x", "DiscreteGpu", false),
                     closed: Arc::default(),
+                    alive: Arc::new(AtomicUsize::new(1)),
                 })
             }
         }
@@ -1272,5 +1346,35 @@ mod tests {
         }
         // Today no export stage is on the device, so there is nothing worth warming up for.
         assert!(slot.warm_up_for_exports().is_none());
+    }
+
+    #[test]
+    fn the_warm_up_starts_for_a_stage_the_device_runs_and_for_nothing_else() {
+        // The branch the wiring tasks switch on when they add their stages to
+        // `GpuStages::USED_BY_EXPORTS`: it must start the job (and only then).
+        let slot = open_gpu(GpuPolicy::On, MemoryBudget::default());
+        if !slot.is_using() {
+            assert!(
+                !ym_gpu::device::gpu_required_by_env(),
+                "{:?}",
+                slot.outcome()
+            );
+            return;
+        }
+        assert!(slot.warm_up_for(GpuStages::NONE).is_none(), "nothing used");
+        // Started; it is cancelled at once, because the job itself (every kernel compiled, the
+        // cancel honoured) is the subject of the test above and a full compile costs seconds on a
+        // real GPU.
+        let started = slot.warm_up_for(GpuStages::EXPORT_TAIL).expect("started");
+        started.cancel();
+        match started.wait() {
+            Ok(Ok(n)) => assert!(n <= KernelId::ALL.len()),
+            Ok(Err(GpuError::Cancelled)) | Err(_) => {}
+            Ok(Err(e)) => panic!("warm-up failed: {e}"),
+        }
+        // A slot with no device has nothing to warm up, whatever is used.
+        let off: GpuSlot = GpuSlot::off(MemoryBudget::default());
+        assert!(off.warm_up_for(GpuStages::ALL).is_none());
+        assert!(off.warm_up_for_exports().is_none());
     }
 }

@@ -530,8 +530,9 @@ impl Renderer {
     /// Gives the renderer a GPU (or takes it away with `None`) and the stages it may run. `ym`
     /// opens the device in the background while photos decode and calls this before it queues
     /// the export, so that an export is wholly on the device or wholly on the CPU: it is for the
-    /// start of a run, not for the middle of a render. Renders that are running keep the options
-    /// they started with.
+    /// start of a run, not for the middle of a render: a render that is running reads the options
+    /// again at each stage ([`Renderer::options`] is a snapshot of the moment it is called), so one
+    /// that straddles the call may see the device from the next stage on.
     pub fn set_gpu(&self, gpu: Option<Arc<Gpu>>, stages: GpuStages) {
         self.update_options(|o| {
             o.gpu = gpu;

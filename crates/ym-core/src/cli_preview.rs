@@ -39,6 +39,7 @@ use ym_export::options::DEFAULT_NAME_TEMPLATE;
 use ym_export::{ColorSpace, FormatKind, IfExists, Size, TiffCompression};
 use ym_looks::library::LookId;
 
+use crate::export::default_destination;
 use crate::export_queue::ExportJob;
 use crate::looks::LookService;
 use crate::session::Session;
@@ -305,7 +306,7 @@ pub fn build(
         let first = paths.first()?;
         let same_folder = paths.iter().all(|p| p.parent() == first.parent());
         same_folder.then(|| {
-            naming::default_destination(first)
+            default_destination(first)
                 .or_else(|| {
                     home.map(Path::to_path_buf)
                         .or_else(naming::home_dir)
@@ -499,6 +500,62 @@ mod tests {
             None,
         );
         assert!(png.command.contains("--bits 16") && !png.command.contains("--quality"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symbolic_link_in_the_path_is_shown_as_it_was_given() {
+        // How a Mac reaches its temporary folder: `/var` is a link to `/private/var`, and the
+        // command must say `/var/…`, in the folder and in `--out`, because that is the name the
+        // person knows (and the one `ym render` is given).
+        let real = tempfile::tempdir().expect("real");
+        let links = tempfile::tempdir().expect("links");
+        let via = links.path().join("via");
+        std::os::unix::fs::symlink(real.path(), &via).expect("symlink");
+        let folder = via.join("Lisbon");
+        std::fs::create_dir(&folder).expect("folder");
+        let a = folder.join("DSC00001.ARW");
+        std::fs::write(&a, b"x").expect("file");
+        let s = with_look("neutral", 100.0);
+
+        let preview = build(
+            std::slice::from_ref(&a),
+            &[&s],
+            &job(ExportOptions::default()),
+            None,
+            None,
+        );
+        let folder_text = folder.to_string_lossy();
+        assert_eq!(
+            preview.command,
+            format!(
+                "ym render {folder_text} \\\n  --look neutral \\\n  --format jpeg \\\n  --quality 92 \\\n  --colour-space srgb \\\n  --out {}",
+                shell_quote(&format!("{folder_text} export"))
+            )
+        );
+
+        // A source folder that is itself a link: the export folder is named after the link and
+        // sits next to it, which is where the Export panel says it goes.
+        let target = real.path().join("2024-05-trip");
+        std::fs::create_dir(&target).expect("target");
+        std::fs::write(target.join("DSC00001.ARW"), b"x").expect("file");
+        let link = links.path().join("Shoot");
+        std::os::unix::fs::symlink(&target, &link).expect("symlink");
+        let preview = build(
+            &[link.join("DSC00001.ARW")],
+            &[&s],
+            &job(ExportOptions::default()),
+            None,
+            None,
+        );
+        let out = links.path().join("Shoot export");
+        assert!(
+            preview
+                .command
+                .ends_with(&format!("--out {}", shell_quote(&out.to_string_lossy()))),
+            "{}",
+            preview.command
+        );
     }
 
     #[test]

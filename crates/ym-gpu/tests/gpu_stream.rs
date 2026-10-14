@@ -429,6 +429,57 @@ fn a_new_image_is_poison_until_a_kernel_writes_it_and_goes_back_to_the_pool_when
 }
 
 #[test]
+fn raw_words_survive_the_smallest_and_oddest_readouts() {
+    let Some(dev) = gpu() else { return };
+    dev.gpu
+        .run(job(), |ctx, _| {
+            // 1 x 1 (one word, half of it padding), a single row or column of odd length, 2 x 2, and
+            // an odd x odd readout whose rows share words: each comes back as it went up.
+            for (w, h) in [
+                (1usize, 1usize),
+                (1, 7),
+                (7, 1),
+                (2, 2),
+                (3, 3),
+                (1, 2),
+                (5, 5),
+            ] {
+                let samples: Vec<u16> = (0..w * h).map(|i| 65_535 - (i as u16) * 997).collect();
+                let raw = GpuRaw::upload(ctx, "tiny raw", w, h, Cfa::BGGR, &samples)?;
+                assert_eq!(raw.words.size(), GpuRaw::words_bytes(w * h), "{w}x{h}");
+                assert_eq!(raw.read(ctx)?, samples, "{w}x{h}");
+            }
+            // An empty readout is refused, not uploaded.
+            for (w, h) in [(0usize, 4usize), (4, 0)] {
+                let err = GpuRaw::upload(ctx, "empty", w, h, Cfa::RGGB, &[]).expect_err("empty");
+                assert!(matches!(err, GpuError::InvalidInput(_)), "{err:?}");
+            }
+            Ok(())
+        })
+        .expect("job");
+}
+
+#[test]
+fn an_image_refuses_the_readback_of_another_image() {
+    let Some(dev) = gpu() else { return };
+    dev.gpu
+        .run(job(), |ctx, _| {
+            let place = Placement::whole(1, 1);
+            let small = GpuImage::upload(ctx, "small", 3, 2, 1, &[1.0; 6], place)?;
+            let big = GpuImage::upload(ctx, "big", 40, 30, 3, &vec![2.0; 3 * 40 * 30], place)?;
+            let mut passes = PassList::new(ctx, "mixed up");
+            let small_id = small.encode_read(&mut passes)?;
+            let done = passes.submit()?.finish()?;
+            // The right image decodes; the one with more samples cannot, and says so (no slice panic).
+            assert_eq!(small.take(&done, small_id)?, vec![1.0; 6]);
+            let err = big.take(&done, small_id).expect_err("too short for `big`");
+            assert!(matches!(err, GpuError::InvalidInput(_)), "{err:?}");
+            Ok(())
+        })
+        .expect("job");
+}
+
+#[test]
 fn reading_an_image_through_a_pass_list_equals_the_host_wrapper() {
     let Some(dev) = gpu() else { return };
     dev.gpu
@@ -507,6 +558,20 @@ fn the_tile_helper_passes_a_pointwise_function_and_catches_one_that_depends_on_t
     let msg = msg.downcast_ref::<String>().cloned().unwrap_or_default();
     assert!(
         msg.contains("not bit-identical") && msg.contains("tiles of 32 px"),
+        "{msg}"
+    );
+
+    // A frame of NaN equals itself bit for bit, tiled or not: that is what a kernel reading a
+    // poisoned buffer gives, so the helper must refuse it instead of calling it tile-exact.
+    let caught = std::panic::catch_unwind(|| {
+        assert_tiles_equal_whole("all NaN", 100, 70, 1, &[32], |r: Rect| {
+            vec![f32::NAN; r.w * r.h]
+        });
+    });
+    let msg = caught.expect_err("a frame of NaN is not a result");
+    let msg = msg.downcast_ref::<String>().cloned().unwrap_or_default();
+    assert!(
+        msg.contains("all NaN: whole frame") && msg.contains("nobody wrote"),
         "{msg}"
     );
 }

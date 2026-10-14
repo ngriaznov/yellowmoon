@@ -225,12 +225,32 @@ impl GpuImage {
     ///
     /// # Errors
     ///
-    /// None today; the signature leaves room for the length check to become an error.
+    /// [`GpuError::InvalidInput`] when the readback `id` is shorter than this image, that is when it
+    /// is the readback of another, smaller image.
+    ///
+    /// # Panics
+    ///
+    /// When `id` does not belong to `done` (see [`Completed::read`]).
     pub fn take(&self, done: &Completed, id: ReadId) -> Result<Vec<f32>, GpuError> {
-        Ok(self.unpack(done.read(id)))
+        let bytes = done.read(id);
+        if (bytes.len() as u64) < self.byte_len() {
+            return Err(GpuError::InvalidInput(format!(
+                "a readback of {} bytes is too short for a {} x {} image of {} planes ({} bytes)",
+                bytes.len(),
+                self.width,
+                self.height,
+                self.planes,
+                self.byte_len()
+            )));
+        }
+        Ok(self.unpack(bytes))
     }
 
     /// Decodes the bytes of the image's buffer into dense planar f32 samples, dropping the padding.
+    ///
+    /// # Panics
+    ///
+    /// When `bytes` is shorter than [`GpuImage::byte_len`]; [`GpuImage::take`] checks that first.
     pub fn unpack(&self, bytes: &[u8]) -> Vec<f32> {
         let all: Vec<f32> = bytes
             .chunks_exact(4)

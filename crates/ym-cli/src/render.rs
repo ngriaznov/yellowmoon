@@ -356,7 +356,14 @@ fn run_checked(args: &RenderArgs, console: &mut Console) -> Result<u8, Failure> 
         if let Some(reason) = slot.failure() {
             return Err(Failure::new(exit::NO_GPU, no_gpu_message(&choice, reason)));
         }
+        // As `BackgroundGpu` does for the other policies: the kernels an export will use compile
+        // while the photos develop (nothing yet: `GpuStages::USED_BY_EXPORTS` is empty).
+        drop(slot.warm_up_for_exports());
         gpu_slot = Some(slot);
+    } else if choice.policy == GpuPolicy::Off {
+        // Nothing to open, but the renderer is told so all the same, as the app tells it: the
+        // same policy leaves the same options (no device, no stage) in both front ends.
+        gpu_slot = Some(GpuSlot::off(budget));
     }
 
     // Display rendering and look.

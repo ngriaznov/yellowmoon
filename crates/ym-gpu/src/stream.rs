@@ -165,7 +165,14 @@ fn wait_submission(
             health.mark_tainted(why.clone());
             Err(GpuError::DeviceLost(why))
         }
-        Err(e) => Err(GpuError::Readback(e.to_string())),
+        Err(e) => {
+            // A wait that fails because the device was destroyed or reset a moment ago is a lost
+            // device, not a readback problem: the lost callback is delivered by the next poll, and the
+            // caller's fallback policy (rebuild the device, or go to the CPU) depends on which it is.
+            let _ = device.poll(wgpu::PollType::Poll);
+            health.check()?;
+            Err(GpuError::Readback(e.to_string()))
+        }
     }
 }
 

@@ -93,6 +93,11 @@ pub fn paste(
 /// bit for bit. `render(rect)` returns the planar output (`planes` planes) of exactly `rect`; the
 /// whole frame is `render(Rect::whole(width, height))`. Returns the whole frame so the caller can
 /// compare it with a reference.
+///
+/// The whole frame must be finite. Bit equality alone would pass a frame of NaN against a tiled frame
+/// of NaN, and that is exactly what a kernel that reads a poisoned buffer (`GpuConfig::poison`)
+/// produces in both runs, so a tile test that did not look at the values would pass on the very bug
+/// poison mode exists to find.
 pub fn assert_tiles_equal_whole(
     what: &str,
     width: usize,
@@ -107,6 +112,7 @@ pub fn assert_tiles_equal_whole(
         planes * width * height,
         "{what}: whole frame length"
     );
+    assert_all_finite(&format!("{what}: whole frame"), &whole);
     for &tile_px in tile_sizes {
         let mut tiled = vec![f32::NAN; whole.len()];
         for rect in tile_grid(width, height, tile_px, tile_px, 2) {

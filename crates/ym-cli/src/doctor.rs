@@ -322,7 +322,9 @@ fn to_json(r: &Report) -> Value {
 fn policy_text(plan: &GpuPlan) -> String {
     let mut text = plan.choice.to_string();
     if plan.uses_gpu {
-        text.push_str(&format!(": uses the GPU for {}", plan.stages));
+        // The stages the policy lets the device run; which of them have a GPU version yet is the
+        // GPU wave's business (`GpuStages`), so this says "may", not "does".
+        text.push_str(&format!(": uses the GPU, which may run {}", plan.stages));
     } else {
         text.push_str(": uses the CPU");
         if let Some(reason) = &plan.reason {

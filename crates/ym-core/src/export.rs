@@ -1007,8 +1007,7 @@ fn export_photo_unguarded(
 
     // 2. The file name and the folder; a skipped file costs nothing.
     let fields = name_fields(photo, params.seq);
-    let mut dest =
-        ExportDestination::resolve(options, &fields, Some(&photo.path), ctx.home.as_deref())?;
+    let mut dest = resolve_destination(options, &fields, &photo.path, ctx.home.as_deref())?;
     // A name this job has already written is numbered whatever "If the file exists" says: Replace
     // would overwrite the job's own earlier photo and Skip would take it for a file from before.
     let mut notes: Vec<String> = Vec::new();
@@ -1305,8 +1304,83 @@ pub fn planned_destination(
     options
         .destination
         .clone()
-        .or_else(|| naming::default_destination(photo))
+        .or_else(|| default_destination(photo))
         .or_else(|| ctx.home().map(naming::fallback_destination))
+}
+
+/// `<source folder> export` next to the source folder of `photo`: for
+/// `/Volumes/A1/Lisbon/DSC04204.ARW` that is `/Volumes/A1/Lisbon export`. `None` when the source has
+/// no named parent folder with a parent of its own (a file at the root of a volume).
+///
+/// The folder keeps the name the person knows it by. A symbolic link in the path is **not**
+/// resolved: on a Mac `/var` is a link to `/private/var`, a photos folder is often a link to
+/// another disk, and the Export panel, the command `ym render` is shown as and the files
+/// themselves must all say `/var/…/Lisbon export` when the photo was opened as `/var/…/Lisbon`
+/// (the session's `default_export_folder` is spelled the same way, `docs/01`). A folder that has
+/// no name as written, because the path ends in `..` or has no folder part (`DSC04204.ARW` in the
+/// working directory), takes the name of the folder it resolves to.
+#[must_use]
+pub fn default_destination(photo: &Path) -> Option<PathBuf> {
+    let folder = photo.parent()?;
+    let folder = if folder.as_os_str().is_empty() {
+        std::env::current_dir().ok()?
+    } else {
+        std::path::absolute(folder).ok()?
+    };
+    let folder = if folder.file_name().is_some() {
+        folder
+    } else {
+        std::fs::canonicalize(&folder).ok()?
+    };
+    let mut name = folder.file_name()?.to_os_string();
+    name.push(" export");
+    Some(folder.parent()?.join(name))
+}
+
+/// Chooses and prepares the folder of an export, and names the file in it (`docs/09`): the folder the
+/// options name (created if missing; when it cannot be written the export fails, a folder the
+/// person chose is never replaced by a fallback), else [`default_destination`], and when that
+/// cannot be written `~/Pictures/Yellowmoon export` under `home`.
+fn resolve_destination(
+    options: &ExportOptions,
+    fields: &NameFields,
+    photo: &Path,
+    home: Option<&Path>,
+) -> Result<ExportDestination, ym_export::ExportError> {
+    let dir = match &options.destination {
+        Some(dir) => {
+            naming::ensure_writable_dir(dir)?;
+            dir.clone()
+        }
+        None => default_dir(photo, home)?,
+    };
+    Ok(ExportDestination {
+        dir,
+        file_stem: naming::file_stem(&options.name_template, fields),
+        if_exists: options.if_exists,
+        source_path: Some(photo.to_path_buf()),
+    })
+}
+
+/// The first of [`default_destination`] and the fallback under `home` that can be written.
+fn default_dir(photo: &Path, home: Option<&Path>) -> Result<PathBuf, ym_export::ExportError> {
+    let mut last_error = None;
+    if let Some(candidate) = default_destination(photo) {
+        match naming::ensure_writable_dir(&candidate) {
+            Ok(()) => return Ok(candidate),
+            Err(e) => last_error = Some(e),
+        }
+    }
+    if let Some(home) = home {
+        let fallback = naming::fallback_destination(home);
+        naming::ensure_writable_dir(&fallback)?;
+        return Ok(fallback);
+    }
+    Err(last_error.unwrap_or_else(|| {
+        ym_export::ExportError::invalid(
+            "there is no folder to save to; choose one in the export options",
+        )
+    }))
 }
 
 /// Whether "Keep both" would add a number to this name, and which: the first free of `name.ext`,

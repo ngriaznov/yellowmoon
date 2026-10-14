@@ -284,6 +284,18 @@ fn doctor_with_an_adapter_reports_it_whatever_the_policy_does_with_it() {
         assert_eq!(v["gpu"]["available"], true, "{gpu}");
         assert_eq!(v["gpu"]["name"], on["gpu"]["name"], "{gpu}");
     }
+    // The text row says what the policy lets the device run, not that it runs it all today.
+    let out = sb
+        .ym()
+        .env("YELLOWMOON_GPU", "on")
+        .arg("doctor")
+        .assert()
+        .success();
+    let text = String::from_utf8(out.get_output().stdout.clone()).expect("utf-8");
+    assert!(
+        text.contains("on (YELLOWMOON_GPU): uses the GPU, which may run raw, sampler, colour"),
+        "{text}"
+    );
     // `on` and `require` use any adapter and all the stages; `off` none; `auto` only a hardware
     // adapter and only what is signed off.
     for gpu in ["on", "require"] {

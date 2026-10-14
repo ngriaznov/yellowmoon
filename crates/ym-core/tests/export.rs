@@ -16,7 +16,7 @@ use ym_color::look::{LookInput, LookTransform};
 use ym_color::lut::{Lut, Lut3d};
 use ym_core::export::{
     DNG_BLOCKED_MESSAGE, ExportContext, ExportControl, ExportError, ExportParams, ExportPhoto,
-    ExportReport, export_photo,
+    ExportReport, default_destination, export_photo, planned_destination,
 };
 use ym_core::pipeline::{
     FullRequest, FullTarget, LookProblem, LookProvider, NeutralOnly, Renderer, ResolvedLook,
@@ -1011,6 +1011,157 @@ fn the_default_destination_is_next_to_the_source_folder() {
     // The original is untouched and nothing was made in the home folder.
     assert_eq!(names_in(&folder), vec!["DSC00001.ARW".to_owned()]);
     assert!(names_in(home.path()).is_empty());
+}
+
+/// A folder reached through a symbolic link: how a Mac reaches its temporary folder (`/var` is a
+/// link to `/private/var`) and how a photos disk is often linked into `~/Pictures`. `real` holds
+/// what is on the disk, `links` the link `via` to it.
+#[cfg(unix)]
+fn linked_root() -> (tempfile::TempDir, tempfile::TempDir, PathBuf) {
+    let real = tempfile::tempdir().expect("real");
+    let links = tempfile::tempdir().expect("links");
+    let via = links.path().join("via");
+    std::os::unix::fs::symlink(real.path(), &via).expect("symlink");
+    (real, links, via)
+}
+
+#[cfg(unix)]
+#[test]
+fn the_default_destination_keeps_the_path_the_photo_was_opened_by() {
+    // The person opened `via/Lisbon`; `via` is a link. The folder is called `via/Lisbon export`
+    // everywhere: in the panel (the session's default), in the plan, in the file's path. It is not
+    // `<what via points to>/Lisbon export`, which they would not recognise (on a Mac that is
+    // `/private/var/…` for a folder in `/var/…`).
+    let (real, _links, via) = linked_root();
+    let folder = via.join("Lisbon");
+    std::fs::create_dir(&folder).expect("folder");
+    write_photo(&folder, "DSC00001.ARW", |b| b);
+    let d = open_in_place(&folder);
+    let home = tempfile::tempdir().expect("home");
+    let ctx = export_context(home.path());
+    let photo = photo_of(&d);
+    let options = ExportOptions {
+        destination: None,
+        ..ExportOptions::default()
+    };
+    let expected = via.join("Lisbon export");
+
+    assert_eq!(
+        d.session
+            .state()
+            .default_export_folder
+            .as_deref()
+            .map(Path::new),
+        Some(expected.as_path())
+    );
+    assert_eq!(
+        planned_destination(&ctx, &photo.path, &options),
+        Some(expected.clone())
+    );
+    let report = export_ok(&ctx, &photo, options);
+    assert_eq!(report.path, expected.join("DSC00001_neutral.jpg"));
+    // It is the same place on the disk, behind the link.
+    assert!(
+        real.path()
+            .join("Lisbon export")
+            .join("DSC00001_neutral.jpg")
+            .is_file()
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_source_folder_that_is_a_link_gets_its_export_folder_next_to_the_link() {
+    // `Lisbon` is a link to a folder with another name somewhere else. The export folder is named
+    // after what the person sees and sits next to it, as the panel says, not next to the target.
+    let root = tempfile::tempdir().expect("root");
+    let elsewhere = tempfile::tempdir().expect("elsewhere");
+    let target = elsewhere.path().join("2024-05-trip");
+    std::fs::create_dir(&target).expect("target");
+    write_photo(&target, "DSC00001.ARW", |b| b);
+    let folder = root.path().join("Lisbon");
+    std::os::unix::fs::symlink(&target, &folder).expect("symlink");
+    let d = open_in_place(&folder);
+    let home = tempfile::tempdir().expect("home");
+    let ctx = export_context(home.path());
+    let photo = photo_of(&d);
+    let options = ExportOptions {
+        destination: None,
+        ..ExportOptions::default()
+    };
+    let expected = root.path().join("Lisbon export");
+
+    assert_eq!(
+        d.session
+            .state()
+            .default_export_folder
+            .as_deref()
+            .map(Path::new),
+        Some(expected.as_path())
+    );
+    assert_eq!(
+        planned_destination(&ctx, &photo.path, &options),
+        Some(expected.clone())
+    );
+    let report = export_ok(&ctx, &photo, options);
+    assert_eq!(report.path, expected.join("DSC00001_neutral.jpg"));
+    assert!(!elsewhere.path().join("2024-05-trip export").exists());
+    // The original, behind the link, is untouched.
+    assert_eq!(names_in(&target), vec!["DSC00001.ARW".to_owned()]);
+}
+
+#[test]
+fn the_default_destination_is_named_after_the_folder_the_path_gives() {
+    // Nothing here needs the disk: the path says it.
+    assert_eq!(
+        default_destination(Path::new("/Volumes/A1/Lisbon/DSC04204.ARW")),
+        Some(PathBuf::from("/Volumes/A1/Lisbon export"))
+    );
+    // `.` components are dropped; the name of the folder is not looked up.
+    assert_eq!(
+        default_destination(Path::new("/Volumes/./A1/Lisbon/./DSC04204.ARW")),
+        Some(PathBuf::from("/Volumes/A1/Lisbon export"))
+    );
+    // A file at the root of a volume has no folder to sit next to.
+    assert_eq!(default_destination(Path::new("/DSC04204.ARW")), None);
+    assert_eq!(default_destination(Path::new("")), None);
+}
+
+#[cfg(unix)]
+#[test]
+fn the_default_destination_does_not_mangle_a_folder_name_that_is_not_utf_8() {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+    // Only the path is looked at, so this holds on every unix, whatever its file system allows.
+    let photo = PathBuf::from(OsStr::from_bytes(b"/Volumes/A1/Li\xffsbon/DSC04204.ARW"));
+    let expected = PathBuf::from(OsStr::from_bytes(b"/Volumes/A1/Li\xffsbon export"));
+    assert_eq!(default_destination(&photo), Some(expected));
+}
+
+#[test]
+fn a_folder_without_a_name_in_the_path_takes_the_name_it_resolves_to() {
+    let root = tempfile::tempdir().expect("root");
+    let folder = root.path().join("Lisbon");
+    let inner = folder.join("inner");
+    std::fs::create_dir_all(&inner).expect("folders");
+    // `inner/..` is `Lisbon`; the path does not say so.
+    let by_dots = inner.join("..").join("DSC04204.ARW");
+    let canonical = std::fs::canonicalize(&folder).expect("canonical");
+    assert_eq!(
+        default_destination(&by_dots),
+        Some(canonical.parent().expect("parent").join("Lisbon export"))
+    );
+    // No folder part: the working directory (the tests run in the crate's folder).
+    let cwd = std::env::current_dir().expect("cwd");
+    let name = cwd
+        .file_name()
+        .expect("named")
+        .to_string_lossy()
+        .into_owned();
+    assert_eq!(
+        default_destination(Path::new("DSC04204.ARW")),
+        Some(cwd.parent().expect("parent").join(format!("{name} export")))
+    );
 }
 
 // ---------------------------------------------------------------------------------------------

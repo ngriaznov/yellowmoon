@@ -257,7 +257,16 @@ mod tests {
         assert_eq!(resolve_data_dir(None, None, None), None);
     }
 
+    // This test needs a directory whose name is not UTF-8. Linux file systems keep any bytes in a
+    // name; APFS (macOS) refuses them (EILSEQ, "Illegal byte sequence", already when the directory
+    // is made), so on a Mac such a folder cannot exist and there is nothing to look up. The test is
+    // marked ignored there, with the reason, instead of passing without checking anything; the
+    // test after it covers what can be covered on every platform.
     #[test]
+    #[cfg_attr(
+        target_os = "macos",
+        ignore = "APFS cannot hold a directory whose name is not UTF-8 (EILSEQ), so the case cannot be set up"
+    )]
     fn non_utf8_env_value_is_accepted() {
         let dir = tempfile::tempdir().expect("tempdir");
         let name = OsStr::from_bytes(b"data-\xff");
@@ -266,6 +275,23 @@ mod tests {
 
         let found = resolve_data_dir(Some(data.as_os_str()), None, None);
         assert_eq!(found, Some(data));
+    }
+
+    #[test]
+    fn non_utf8_env_value_that_names_nothing_falls_through() {
+        // No directory with such a name is made, so this runs on every platform (APFS included):
+        // a value that is not UTF-8 is a path like any other, not an error and not a panic, and an
+        // absent folder moves the lookup on to the bundle.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (exe, bundle_data) = make_bundle(dir.path(), "Yellowmoon");
+        let missing = OsStr::from_bytes(b"/no/such/folder/data-\xff");
+
+        let found = resolve_data_dir(Some(missing), Some(&exe), None);
+        assert_eq!(
+            found,
+            Some(bundle_data.canonicalize().expect("canonicalize"))
+        );
+        assert_eq!(resolve_data_dir(Some(missing), None, None), None);
     }
 
     #[test]

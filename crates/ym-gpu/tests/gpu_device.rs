@@ -571,6 +571,58 @@ fn destroying_the_device_flips_is_lost_and_a_later_job_reports_device_lost() {
 }
 
 #[test]
+fn a_device_destroyed_in_the_middle_of_a_job_fails_its_transfers_and_never_hangs() {
+    if gpu().is_none() {
+        return;
+    }
+    let g = Gpu::start(GpuConfig::default()).expect("device");
+    let (tx, rx) = mpsc::channel();
+    // Run on a helper thread with a deadline, so a hang is a failure and not a stuck test run.
+    let outcome = {
+        let g = Arc::new(g);
+        let g2 = Arc::clone(&g);
+        std::thread::spawn(move || {
+            let r = g2.run(JobSpec::new(Priority::Export), |ctx, _| {
+                let buf = ctx.pool().acquire("doomed", 4096, storage())?;
+                ctx.device.destroy();
+                // Neither the upload, the readback nor a pass list may panic or wait for ever.
+                let up = ym_gpu::stream::upload_bytes(ctx, &buf, 0, &[1u8; 64]);
+                let down = read_bytes(ctx, &buf, 0, 64).map(|_| ());
+                let mut passes = PassList::new(ctx, "doomed");
+                passes.dispatch(
+                    KernelId::Sampler,
+                    "doomed",
+                    &[(0, buf.binding())],
+                    (1, 1, 1),
+                )?;
+                let id = passes.read(&buf, 0, 16);
+                let list = passes.submit().and_then(|p| p.finish()).map(|_| ());
+                Ok((up.is_ok(), down, id.is_ok(), list))
+            });
+            let _ = tx.send((r, g2.is_lost()));
+        });
+        rx.recv_timeout(Duration::from_secs(120))
+            .expect("a destroyed device must fail fast, not hang")
+    };
+    let (result, lost) = outcome;
+    let (up_ok, down, id_ok, list) = result.expect("the job itself returns");
+    eprintln!(
+        "after destroy: upload ok {up_ok}, readback {down:?}, read request ok {id_ok}, list {list:?}"
+    );
+    assert!(lost, "the destroyed device reports itself lost");
+    // After destroy() nothing may succeed silently, and the failure is classed as what it is, a lost
+    // device (which tells the caller to rebuild or leave the GPU), not as a readback problem.
+    assert!(
+        matches!(down, Err(GpuError::DeviceLost(_))),
+        "the readback of a destroyed device: {down:?}"
+    );
+    assert!(
+        matches!(list, Err(GpuError::DeviceLost(_))),
+        "the pass list of a destroyed device: {list:?}"
+    );
+}
+
+#[test]
 fn an_error_nobody_captured_taints_the_device_and_a_captured_one_does_not() {
     if gpu().is_none() {
         return;
@@ -967,11 +1019,357 @@ mod existing_kernels {
     use common::chains::{self, camera_image};
     use common::exact::assert_poison_neutral;
     use ym_color::display::ColorChain;
-    use ym_gpu::cpu::Cfa;
     use ym_gpu::cpu::chain::RawFrame;
     use ym_gpu::cpu::demosaic::adaptive_ratio::{Params, ShadowMatch};
-    use ym_gpu::cpu::demosaic::bilinear_stage_marker as _;
+    use ym_gpu::cpu::demosaic::{CaCurves, DemosaicInputs, Method, RadialCurve};
+    use ym_gpu::cpu::normalize::Levels;
+    use ym_gpu::cpu::output_sharpen::OutputSharpen;
+    use ym_gpu::cpu::sharpen::diffraction::{DiffractionParams, DiffractionPlan, SPEC_LUMA};
+    use ym_gpu::cpu::tiling::Stage;
+    use ym_gpu::cpu::{Cfa, Mosaic, NoiseDn, RgbImage, synth};
+    use ym_gpu::kernels::PixelData;
+    use ym_gpu::kernels::adaptive_ratio::{self as gpu_ar, Balance};
+    use ym_gpu::kernels::color::{ColorImage, ColorOutput, PreparedChain, Stop};
+    use ym_gpu::kernels::diffraction::PreparedDiffraction;
+    use ym_gpu::kernels::log_guided as gpu_lg;
+    use ym_gpu::kernels::output_sharpen::PreparedSharpen;
+    use ym_gpu::kernels::raw::{RawParams, run_raw_to_display};
+    use ym_gpu::tiles::TilePlan;
+    use ym_noise::model::NoiseModel;
+
+    /// Runs `run` on the poisoned device and a plain one; same bits, all finite, and not trivially
+    /// empty or zero (a skipped kernel would compare nothing).
+    fn neutral(what: &str, run: impl Fn(&Gpu) -> Vec<f32>) {
+        let Some(out) = assert_poison_neutral(what, run) else {
+            return;
+        };
+        assert!(
+            out.len() > 100 && out.iter().any(|&v| v != 0.0),
+            "{what}: the output is empty or all zero, so nothing was compared"
+        );
+    }
+
+    fn flatten(img: ColorImage) -> Vec<f32> {
+        match img.data {
+            PixelData::F32Planar(v) => v,
+            PixelData::Rgba8(v) => v.into_iter().map(f32::from).collect(),
+            PixelData::U16Planar(v) => v.into_iter().map(f32::from).collect(),
+        }
+    }
+
+    fn model(a: f64, b: f64, sigma_row: f64, q: f64) -> NoiseDn {
+        NoiseDn::from_model(&NoiseModel {
+            a,
+            b,
+            delta: [0.0; 4],
+            sigma_row,
+            q,
+        })
+    }
+
+    /// A seeded unbalanced mosaic of a natural-looking scene with noise, values in -0.05..=peak.
+    fn mosaic(w: usize, h: usize, cfa: Cfa, seed: u64, peak: f32, sigma: f32) -> Mosaic {
+        let mut m = synth::mosaic_from_rgb(&synth::natural(w, h, seed), cfa);
+        for v in &mut m.data {
+            *v *= peak;
+        }
+        synth::add_noise(&mut m.data, sigma, seed ^ 0x5eed);
+        for v in &mut m.data {
+            *v = v.max(-0.05);
+        }
+        m
+    }
+
+    #[derive(Clone)]
+    struct ArCase {
+        m: Mosaic,
+        balance: Balance,
+        noise: NoiseDn,
+        ca: Option<CaCurves>,
+        params: Params,
+    }
+
+    #[test]
+    fn the_adaptive_ratio_kernel_reads_nothing_it_did_not_write() {
+        let low = model(2e-5, 1e-8, 0.0, 1.0 / 65535.0);
+        let high = model(5e-4, 4e-5, 1e-3, 0.0);
+        let curve =
+            |a: f64, b: f64| RadialCurve::from_knots(&[(0.0, a), (200.0, b)]).expect("curve");
+        let ca = CaCurves::new(19.0, 17.0, curve(0.0, 0.6), curve(0.0, -0.5)).expect("curves");
+        let d = Params::default();
+        let cases = vec![
+            ArCase {
+                m: mosaic(45, 37, Cfa::RGGB, 1, 1.3, 0.005),
+                balance: Balance::Unbalanced,
+                noise: low,
+                ca: None,
+                params: d,
+            },
+            // The dark noisy scene shadow matching is for, balanced input.
+            ArCase {
+                m: mosaic(40, 34, Cfa::GBRG, 2, 0.12, 0.012),
+                balance: Balance::Balanced,
+                noise: high,
+                ca: None,
+                params: Params {
+                    shadow_match: ShadowMatch::On,
+                    ..d
+                },
+            },
+            // The lateral CA path.
+            ArCase {
+                m: mosaic(38, 42, Cfa::BGGR, 3, 1.3, 0.005),
+                balance: Balance::Unbalanced,
+                noise: low,
+                ca: Some(ca),
+                params: d,
+            },
+            ArCase {
+                m: mosaic(43, 35, Cfa::GRBG, 4, 0.12, 0.012),
+                balance: Balance::Unbalanced,
+                noise: high,
+                ca: None,
+                params: Params {
+                    shadow_sharpening: false,
+                    ..d
+                },
+            },
+        ];
+        neutral("adaptive ratio", |g| {
+            let cases = cases.clone();
+            g.run(JobSpec::new(Priority::Export), move |ctx, token| {
+                let mut out = Vec::new();
+                for c in &cases {
+                    let inputs = DemosaicInputs {
+                        gains: [1.9, 1.0, 1.4],
+                        noise: c.noise,
+                        ca: c.ca.as_ref(),
+                    };
+                    out.extend(gpu_ar::demosaic(ctx, &c.m, c.balance, &inputs, &c.params)?.data);
+                    // Tiles recycle the buffers of the tile before them.
+                    out.extend(
+                        gpu_ar::demosaic_tiled(
+                            ctx, &c.m, c.balance, &inputs, &c.params, 16, token,
+                        )?
+                        .data,
+                    );
+                }
+                Ok(out)
+            })
+            .expect("adaptive ratio job")
+        });
+    }
+
+    #[test]
+    fn the_log_guided_kernel_reads_nothing_it_did_not_write() {
+        let noise = model(2e-5, 1e-8, 0.0, 1.0 / 65535.0);
+        let cases: Vec<(Mosaic, i32)> = [
+            (Cfa::RGGB, 37, 29, 0),
+            (Cfa::GBRG, 34, 40, 100),
+            (Cfa::BGGR, 31, 33, -50),
+            (Cfa::GRBG, 40, 36, 0),
+        ]
+        .iter()
+        .enumerate()
+        .map(|(i, &(cfa, w, h, detail))| (mosaic(w, h, cfa, 10 + i as u64, 1.3, 0.004), detail))
+        .collect();
+        neutral("log-guided demosaic", |g| {
+            let cases = cases.clone();
+            g.run(JobSpec::new(Priority::Export), move |ctx, token| {
+                let mut out = Vec::new();
+                for (m, detail) in &cases {
+                    out.extend(gpu_lg::demosaic(ctx, m, noise, *detail)?.data);
+                    out.extend(gpu_lg::demosaic_tiled(ctx, m, noise, *detail, 16, token)?.data);
+                }
+                Ok(out)
+            })
+            .expect("log-guided job")
+        });
+    }
+
+    /// A natural scene with the gains applied and a trace of noise, as the sharpening stages see it.
+    fn balanced_scene(w: usize, h: usize, seed: u64, g0: [f32; 3]) -> RgbImage {
+        let mut img = synth::natural(w, h, seed);
+        let n = img.plane_len();
+        for (ch, gain) in g0.iter().enumerate() {
+            for v in &mut img.data[ch * n..(ch + 1) * n] {
+                *v *= 0.75 * gain;
+            }
+        }
+        synth::add_noise(&mut img.data, 0.003, seed ^ 0x6e6f_6973);
+        img
+    }
+
+    #[test]
+    fn the_diffraction_kernel_reads_nothing_it_did_not_write() {
+        let g0 = [2.0f32, 1.0, 1.5];
+        let plan = DiffractionPlan::new(
+            &DiffractionParams::new(3.76, 11.0)
+                .with_scale(1.0)
+                .with_strength(1.0),
+            g0,
+            &model(2.5e-5, 4e-8, 5e-5, 0.0),
+            SPEC_LUMA,
+        )
+        .expect("an active plan");
+        let images = [
+            balanced_scene(61, 47, 21, g0),
+            balanced_scene(40, 55, 22, g0),
+        ];
+        neutral("diffraction", |g| {
+            let (plan, images) = (plan.clone(), images.clone());
+            g.run(JobSpec::new(Priority::Export), move |ctx, token| {
+                let prepared = PreparedDiffraction::new(ctx, &plan)?;
+                let mut out = Vec::new();
+                for img in &images {
+                    out.extend(prepared.run(ctx, img)?.data);
+                    out.extend(prepared.run_tiled(ctx, img, 24, token)?.data);
+                }
+                Ok(out)
+            })
+            .expect("diffraction job")
+        });
+    }
+
+    #[test]
+    fn the_output_sharpening_kernel_reads_nothing_it_did_not_write() {
+        let images = [
+            balanced_scene(70, 60, 31, [1.0; 3]),
+            balanced_scene(53, 41, 32, [1.0; 3]),
+        ];
+        let sets: Vec<(OutputSharpen, f32)> = vec![
+            (OutputSharpen::screen(), 1.0),
+            (OutputSharpen::screen(), 0.6),
+            (OutputSharpen::print(), 1.0),
+        ];
+        neutral("output sharpening", |g| {
+            let (images, sets) = (images.clone(), sets.clone());
+            g.run(JobSpec::new(Priority::Export), move |ctx, token| {
+                let mut out = Vec::new();
+                for (params, scale) in &sets {
+                    let prepared = PreparedSharpen::new(ctx, params, *scale)?;
+                    for img in &images {
+                        out.extend(prepared.run(ctx, img)?.data);
+                        let plan = prepared.tile_plan(img.width, img.height, 32);
+                        prepared.run_tiled(ctx, img, &plan, 2, token, &mut |_, tile| {
+                            out.extend(flatten(tile));
+                            Ok(())
+                        })?;
+                    }
+                }
+                Ok(out)
+            })
+            .expect("output sharpening job")
+        });
+    }
+
+    #[test]
+    fn the_colour_kernel_reads_nothing_it_did_not_write() {
+        let img = camera_image(23, 17, 0xBEEF);
+        let cases: Vec<(String, ColorChain)> = chains::cases()
+            .into_iter()
+            .map(|(name, p)| (name, ColorChain::new(&p).expect("chain")))
+            .collect();
+        assert!(cases.len() > 10);
+        neutral("colour chain", |g| {
+            let (img, cases) = (img.clone(), cases.clone());
+            g.run(JobSpec::new(Priority::Export), move |ctx, _| {
+                let mut out = Vec::new();
+                for (_, chain) in &cases {
+                    let prepared = PreparedChain::new(ctx, chain)?;
+                    for output in [
+                        ColorOutput::Stage(Stop::C6),
+                        ColorOutput::Stage(Stop::C11),
+                        ColorOutput::Stage(Stop::C12),
+                        ColorOutput::Stage(Stop::C13),
+                        ColorOutput::Stage(Stop::Before),
+                        ColorOutput::Rgba8 { dither: true },
+                        ColorOutput::U16 { bits: 10 },
+                    ] {
+                        out.extend(flatten(prepared.render(ctx, &img, (3, 5), output)?));
+                    }
+                }
+                Ok(out)
+            })
+            .expect("colour job")
+        });
+    }
+
+    #[test]
+    fn the_raw_front_end_to_display_pipeline_reads_nothing_it_did_not_write() {
+        use common::Rng;
+        let (w, h) = (120usize, 77usize);
+        let mut rng = Rng(11);
+        let data: Vec<u16> = (0..w * h)
+            .map(|i| {
+                let (x, y) = ((i % w) as f64 / w as f64, (i / w) as f64 / h as f64);
+                let v = 0.4 + 0.3 * (x * 6.0).sin() * (y * 4.0).cos() + 0.03 * (rng.unit() - 0.5);
+                (512.0 + v.clamp(-0.01, 1.3) * 15488.0).max(0.0) as u16
+            })
+            .collect();
+        let params = RawParams {
+            cfa: Cfa::GBRG,
+            levels: Levels {
+                black: [512.0, 514.0, 513.0, 511.0],
+                white: [16000.0, 16010.0, 15990.0, 16005.0],
+            },
+            gains: [1.9, 1.0, 1.5],
+        };
+        let mut cp = ym_color::display::ChainParams::new(chains::fused_matrix(), chains::tone());
+        cp.grade = chains::grade_params();
+        cp.curves = chains::curves();
+        let chain = ColorChain::new(&cp).expect("chain");
+        let stages = [
+            Stage::Normalize,
+            Stage::Gains,
+            Stage::Demosaic(Method::Bilinear),
+        ];
+        let plan = TilePlan::new(w, h, 50, &stages);
+        neutral("raw to display", |g| {
+            let (data, chain, plan) = (data.clone(), chain.clone(), plan.clone());
+            let params = params.clone();
+            g.run(JobSpec::new(Priority::Export), move |ctx, token| {
+                let raw = RawFrame {
+                    width: w,
+                    height: h,
+                    cfa: params.cfa,
+                    data: &data,
+                    qstep: None,
+                };
+                let prepared = PreparedChain::new(ctx, &chain)?;
+                let mut out = vec![f32::NAN; 3 * w * h];
+                run_raw_to_display(
+                    ctx,
+                    &raw,
+                    &params,
+                    &prepared,
+                    &plan,
+                    ColorOutput::Stage(Stop::C13),
+                    2,
+                    token,
+                    &mut |t, img| {
+                        let tile = flatten(img);
+                        let c = t.core;
+                        for ch in 0..3 {
+                            for y in 0..c.h {
+                                let dst = ch * w * h + (c.y + y) * w + c.x;
+                                out[dst..dst + c.w]
+                                    .copy_from_slice(&tile[ch * c.w * c.h + y * c.w..][..c.w]);
+                            }
+                        }
+                        Ok(())
+                    },
+                )?;
+                Ok(out)
+            })
+            .expect("pipeline job")
+        });
+    }
 }
+
+// ---------------------------------------------------------------------------------------------
+// G-02: fault injection (feature `fault-injection`)
+// ---------------------------------------------------------------------------------------------
 
 #[cfg(feature = "fault-injection")]
 mod faults {
