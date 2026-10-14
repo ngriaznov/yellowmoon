@@ -498,16 +498,46 @@ impl RawWork {
     /// Runs the work; a device that is out of memory or refuses a buffer is given one more try after
     /// the pool let go of what it holds unused (`docs/gpu-plan.md` 4.9).
     fn run(&self, ctx: &GpuContext, cancel: &CancelToken) -> Result<RgbImage, GpuError> {
-        match self.run_once(ctx, cancel) {
+        match self.run_once(ctx, cancel, MAX_PHYS_AREA) {
             Err(GpuError::OutOfBudget { .. } | GpuError::BufferTooLarge { .. }) => {
                 ctx.pool().trim();
-                self.run_once(ctx, cancel)
+                self.run_once(ctx, cancel, MAX_PHYS_AREA)
             }
             other => other,
         }
     }
 
-    fn run_once(&self, ctx: &GpuContext, cancel: &CancelToken) -> Result<RgbImage, GpuError> {
+    /// Runs the work with the demosaic core cut at `max_padded_pixels` instead of [`MAX_PHYS_AREA`]
+    /// (tests).
+    ///
+    /// # Errors
+    ///
+    /// As [`DeviceWork::run`].
+    pub fn run_with_limit(
+        &self,
+        ctx: &GpuContext,
+        cancel: &CancelToken,
+        max_padded_pixels: u64,
+    ) -> Result<RgbImage, GpuError> {
+        self.run_once(ctx, cancel, max_padded_pixels)
+    }
+
+    /// The rectangles the demosaic is cut into at `max_padded_pixels` (one for a work that starts
+    /// from demosaiced planes).
+    #[must_use]
+    pub fn demosaic_parts(&self, max_padded_pixels: u64) -> usize {
+        match &self.input {
+            RawInput::Mosaic(d) => split_core_above(d.core, max_padded_pixels).len(),
+            RawInput::Image(_) => 1,
+        }
+    }
+
+    fn run_once(
+        &self,
+        ctx: &GpuContext,
+        cancel: &CancelToken,
+        max_padded_pixels: u64,
+    ) -> Result<RgbImage, GpuError> {
         cancel.check()?;
         ctx.inject_tile_fault()?;
         // Every buffer the list reads or writes stays alive until it has finished: a buffer that went
@@ -517,7 +547,7 @@ impl RawWork {
         let mut passes;
         let mut cur = match &self.input {
             RawInput::Mosaic(d) => {
-                let parts = split_core(d.core);
+                let parts = split_core_above(d.core, max_padded_pixels);
                 if let [only] = parts.as_slice()
                     && *only == d.core
                 {

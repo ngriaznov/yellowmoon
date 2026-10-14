@@ -713,7 +713,9 @@ struct Recording<'a> {
 
 impl DeviceRunner for Recording<'_> {
     fn run_device(&self, work: DeviceWork, cancel: &CancelToken) -> Result<RgbImage, GpuError> {
-        let DeviceWork::Demosaic(w) = work;
+        let DeviceWork::Demosaic(w) = work else {
+            panic!("this runner is only given the demosaic range");
+        };
         let parts = match self.limit {
             Some(l) => split_core_above(w.core(), l).len(),
             None => w.parts().len(),

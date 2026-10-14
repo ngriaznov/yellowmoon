@@ -2,19 +2,68 @@
 //! decision of 2026-10-13): the last stage of every display-referred picture. Moving the Output
 //! slider re-runs only that stage; a view at 100 % shows the picture the export writes; a pan, a
 //! letterbox and the Before view change nothing they should not.
+//!
+//! Every test runs twice: on the CPU (`Renderer::neutral_only`, the reference) and on the device
+//! (`*_on_the_device`: the sampler, the colour chain, output sharpening and C13 on Mesa lavapipe,
+//! G-05; the raw chain stays on the CPU so that the difference is the view stages alone). The two must
+//! meet the same assertions: the same run counts, the same agreement with the export within a code.
 mod common;
+
+use std::io::Write as _;
+use std::sync::Arc;
 
 use common::*;
 use ym_color::display::OutputTarget;
 use ym_color::encode::OutputSpace;
+use ym_core::app::gpu::GpuStages;
 use ym_core::pipeline::{
-    FrameOptions, FullRequest, FullTarget, PhotoSource, RenderedFrame, Renderer, StageRuns,
-    ViewportMode, ViewportRect, ViewportState,
+    FrameOptions, FullRequest, FullTarget, NeutralOnly, PhotoSource, RenderOptions, RenderedFrame,
+    Renderer, StageRuns, ViewportMode, ViewportRect, ViewportState,
 };
 use ym_core::settings::DevelopSettings;
 use ym_gpu::cpu::output_sharpen::{OutputSharpen, scale_for_edges};
 use ym_gpu::cpu::resample::sample_catmull_rom;
+use ym_gpu::device::{Gpu, GpuConfig, gpu_required_by_env};
 use ym_gpu::queue::CancelToken;
+
+/// The device, in poison mode (every pool buffer starts as NaN, so a kernel that reads what it did
+/// not write fails the comparison). Skipped, loudly, when no adapter opens, unless `YM_REQUIRE_GPU=1`
+/// turns that into a failure.
+fn gpu() -> Option<Arc<Gpu>> {
+    match Gpu::start(GpuConfig {
+        poison: true,
+        ..GpuConfig::default()
+    }) {
+        Ok(g) => Some(Arc::new(g)),
+        Err(e) => {
+            assert!(
+                !gpu_required_by_env(),
+                "YM_REQUIRE_GPU is set but no GPU adapter could be opened: {e}"
+            );
+            let _ = writeln!(
+                std::io::stderr(),
+                "\n* GPU TESTS SKIPPED in render_sharpen: {e}\n"
+            );
+            None
+        }
+    }
+}
+
+/// A renderer whose view stages (sampler, colour chain, output sharpening, C13) run on `gpu`.
+fn device(gpu: &Arc<Gpu>) -> Renderer {
+    Renderer::new(
+        Arc::new(NeutralOnly),
+        RenderOptions {
+            gpu: Some(Arc::clone(gpu)),
+            gpu_stages: GpuStages::SAMPLER
+                .union(GpuStages::COLOR)
+                .union(GpuStages::OUTPUT_SHARPEN)
+                .union(GpuStages::ENCODE),
+            ..RenderOptions::default()
+        },
+    )
+    .expect("render thread")
+}
 
 const MODEL: &str = "ILCE-7RM4";
 const PROFILE: &str = "sony-ilce-7rm4";
@@ -89,10 +138,8 @@ fn local_contrast(f: &RenderedFrame) -> f64 {
     sum / n as f64
 }
 
-#[test]
-fn moving_the_slider_re_runs_only_the_stage_and_zero_runs_no_stage() {
+fn moving_the_slider_re_runs_only_the_stage_and_zero_runs_no_stage_with(r: &Renderer) {
     let d = developed(1200, 800);
-    let r = Renderer::neutral_only().expect("render thread");
     let src = d.source();
     assert_eq!(src.settings.output_sharpening, 100.0);
     let state = cell(576.0, 384.0);
@@ -149,9 +196,18 @@ fn moving_the_slider_re_runs_only_the_stage_and_zero_runs_no_stage() {
 }
 
 #[test]
-fn the_amount_changes_the_picture_and_zero_is_the_unsharpened_one() {
+fn moving_the_slider_re_runs_only_the_stage_and_zero_runs_no_stage() {
+    moving_the_slider_re_runs_only_the_stage_and_zero_runs_no_stage_with(&Renderer::neutral_only().expect("render thread"));
+}
+
+#[test]
+fn moving_the_slider_re_runs_only_the_stage_and_zero_runs_no_stage_on_the_device() {
+    let Some(gpu) = gpu() else { return };
+    moving_the_slider_re_runs_only_the_stage_and_zero_runs_no_stage_with(&device(&gpu));
+}
+
+fn the_amount_changes_the_picture_and_zero_is_the_unsharpened_one_with(r: &Renderer) {
     let d = developed(1200, 800);
-    let r = Renderer::neutral_only().expect("render thread");
     let src = d.source();
     let state = cell(576.0, 384.0);
     let off = fresh_frame(&r, &with_amount(&src, 0.0), &state);
@@ -186,9 +242,18 @@ fn the_amount_changes_the_picture_and_zero_is_the_unsharpened_one() {
 }
 
 #[test]
-fn the_before_view_is_not_sharpened() {
+fn the_amount_changes_the_picture_and_zero_is_the_unsharpened_one() {
+    the_amount_changes_the_picture_and_zero_is_the_unsharpened_one_with(&Renderer::neutral_only().expect("render thread"));
+}
+
+#[test]
+fn the_amount_changes_the_picture_and_zero_is_the_unsharpened_one_on_the_device() {
+    let Some(gpu) = gpu() else { return };
+    the_amount_changes_the_picture_and_zero_is_the_unsharpened_one_with(&device(&gpu));
+}
+
+fn the_before_view_is_not_sharpened_with(r: &Renderer) {
     let d = developed(1200, 800);
-    let r = Renderer::neutral_only().expect("render thread");
     let src = d.source();
     let mut state = cell(576.0, 384.0);
     state.before = true;
@@ -199,9 +264,18 @@ fn the_before_view_is_not_sharpened() {
 }
 
 #[test]
-fn a_view_at_100_percent_is_the_sharpened_picture_the_export_writes() {
+fn the_before_view_is_not_sharpened() {
+    the_before_view_is_not_sharpened_with(&Renderer::neutral_only().expect("render thread"));
+}
+
+#[test]
+fn the_before_view_is_not_sharpened_on_the_device() {
+    let Some(gpu) = gpu() else { return };
+    the_before_view_is_not_sharpened_with(&device(&gpu));
+}
+
+fn a_view_at_100_percent_is_the_sharpened_picture_the_export_writes_with(r: &Renderer) {
     let d = developed(800, 600);
-    let r = Renderer::neutral_only().expect("render thread");
     let src = d.source();
     let full = r
         .render_full(
@@ -251,11 +325,20 @@ fn a_view_at_100_percent_is_the_sharpened_picture_the_export_writes() {
 }
 
 #[test]
-fn a_pan_at_100_percent_is_a_window_of_the_whole_picture() {
+fn a_view_at_100_percent_is_the_sharpened_picture_the_export_writes() {
+    a_view_at_100_percent_is_the_sharpened_picture_the_export_writes_with(&Renderer::neutral_only().expect("render thread"));
+}
+
+#[test]
+fn a_view_at_100_percent_is_the_sharpened_picture_the_export_writes_on_the_device() {
+    let Some(gpu) = gpu() else { return };
+    a_view_at_100_percent_is_the_sharpened_picture_the_export_writes_with(&device(&gpu));
+}
+
+fn a_pan_at_100_percent_is_a_window_of_the_whole_picture_with(r: &Renderer) {
     // The view is grown by the stage's receptive field, so what it shows is what the whole
     // picture shows there: no seam where the cell ends in the middle of the photo.
     let d = developed(800, 600);
-    let r = Renderer::neutral_only().expect("render thread");
     let src = d.source();
     let image = (800, 600);
     let whole = frame(&r, &src, &at_100_percent(800.0, 600.0, image));
@@ -284,12 +367,21 @@ fn a_pan_at_100_percent_is_a_window_of_the_whole_picture() {
 }
 
 #[test]
-fn a_letterbox_changes_nothing_inside_the_photo() {
+fn a_pan_at_100_percent_is_a_window_of_the_whole_picture() {
+    a_pan_at_100_percent_is_a_window_of_the_whole_picture_with(&Renderer::neutral_only().expect("render thread"));
+}
+
+#[test]
+fn a_pan_at_100_percent_is_a_window_of_the_whole_picture_on_the_device() {
+    let Some(gpu) = gpu() else { return };
+    a_pan_at_100_percent_is_a_window_of_the_whole_picture_with(&device(&gpu));
+}
+
+fn a_letterbox_changes_nothing_inside_the_photo_with(r: &Renderer) {
     // 800 x 600 in a 1000 x 300 cell at Fit: half size, with 300 px of paper on each side. The
     // stage works on the photo's own pixels and mirrors at its edge, as it does at the edge of an
     // export, so the photo is what the same view without a letterbox shows.
     let d = developed(800, 600);
-    let r = Renderer::neutral_only().expect("render thread");
     let src = d.source();
     let wide = frame(&r, &src, &cell(1000.0, 300.0));
     let exact = frame(&r, &src, &cell(400.0, 300.0));
@@ -321,9 +413,18 @@ fn a_letterbox_changes_nothing_inside_the_photo() {
 }
 
 #[test]
-fn thumbnails_and_look_tiles_are_sharpened_at_their_own_scale() {
+fn a_letterbox_changes_nothing_inside_the_photo() {
+    a_letterbox_changes_nothing_inside_the_photo_with(&Renderer::neutral_only().expect("render thread"));
+}
+
+#[test]
+fn a_letterbox_changes_nothing_inside_the_photo_on_the_device() {
+    let Some(gpu) = gpu() else { return };
+    a_letterbox_changes_nothing_inside_the_photo_with(&device(&gpu));
+}
+
+fn thumbnails_and_look_tiles_are_sharpened_at_their_own_scale_with(r: &Renderer) {
     let d = developed(1200, 800);
-    let r = Renderer::neutral_only().expect("render thread");
     let src = d.source();
     let token = CancelToken::new();
     let on = r.thumbnail_png(&src, &token).expect("thumbnail");
@@ -342,11 +443,20 @@ fn thumbnails_and_look_tiles_are_sharpened_at_their_own_scale() {
 }
 
 #[test]
-fn a_view_magnified_above_100_percent_is_the_sharpened_export_picture_made_bigger() {
+fn thumbnails_and_look_tiles_are_sharpened_at_their_own_scale() {
+    thumbnails_and_look_tiles_are_sharpened_at_their_own_scale_with(&Renderer::neutral_only().expect("render thread"));
+}
+
+#[test]
+fn thumbnails_and_look_tiles_are_sharpened_at_their_own_scale_on_the_device() {
+    let Some(gpu) = gpu() else { return };
+    thumbnails_and_look_tiles_are_sharpened_at_their_own_scale_with(&device(&gpu));
+}
+
+fn a_view_magnified_above_100_percent_is_the_sharpened_export_picture_made_bigger_with(r: &Renderer) {
     // The stage runs on the picture at 100 % (the pixels an export holds, s = 1) and the sharpened
     // picture is magnified: the view at 200 % is the sharpened export, Catmull-Rom filtered.
     let d = developed(800, 600);
-    let r = Renderer::neutral_only().expect("render thread");
     let src = d.source();
     let full = r
         .render_full(
@@ -401,9 +511,18 @@ fn a_view_magnified_above_100_percent_is_the_sharpened_export_picture_made_bigge
 }
 
 #[test]
-fn moving_the_slider_on_a_magnified_view_re_runs_only_the_stage() {
+fn a_view_magnified_above_100_percent_is_the_sharpened_export_picture_made_bigger() {
+    a_view_magnified_above_100_percent_is_the_sharpened_export_picture_made_bigger_with(&Renderer::neutral_only().expect("render thread"));
+}
+
+#[test]
+fn a_view_magnified_above_100_percent_is_the_sharpened_export_picture_made_bigger_on_the_device() {
+    let Some(gpu) = gpu() else { return };
+    a_view_magnified_above_100_percent_is_the_sharpened_export_picture_made_bigger_with(&device(&gpu));
+}
+
+fn moving_the_slider_on_a_magnified_view_re_runs_only_the_stage_with(r: &Renderer) {
     let d = developed(800, 600);
-    let r = Renderer::neutral_only().expect("render thread");
     let src = d.source();
     let mut st = cell(400.0, 300.0);
     st.set_mode(ViewportMode::Percent { value: 300.0 }, (800, 600));
@@ -425,11 +544,20 @@ fn moving_the_slider_on_a_magnified_view_re_runs_only_the_stage() {
 }
 
 #[test]
-fn a_magnified_view_pans_and_letterboxes_like_the_whole_picture() {
+fn moving_the_slider_on_a_magnified_view_re_runs_only_the_stage() {
+    moving_the_slider_on_a_magnified_view_re_runs_only_the_stage_with(&Renderer::neutral_only().expect("render thread"));
+}
+
+#[test]
+fn moving_the_slider_on_a_magnified_view_re_runs_only_the_stage_on_the_device() {
+    let Some(gpu) = gpu() else { return };
+    moving_the_slider_on_a_magnified_view_re_runs_only_the_stage_with(&device(&gpu));
+}
+
+fn a_magnified_view_pans_and_letterboxes_like_the_whole_picture_with(r: &Renderer) {
     // 200 x 150 in an 800 x 300 cell: the photo is shown at 200 % (400 x 300) with 200 px of paper
     // on each side. The photo is what the same view without paper shows, and the paper is paper.
     let d = developed(200, 150);
-    let r = Renderer::neutral_only().expect("render thread");
     let src = d.source();
     let wide = frame(&r, &src, &cell(800.0, 300.0));
     let exact = frame(&r, &src, &cell(400.0, 300.0));
@@ -460,9 +588,18 @@ fn a_magnified_view_pans_and_letterboxes_like_the_whole_picture() {
 }
 
 #[test]
-fn the_tiles_of_a_magnified_sharpened_view_are_prepared_with_it() {
+fn a_magnified_view_pans_and_letterboxes_like_the_whole_picture() {
+    a_magnified_view_pans_and_letterboxes_like_the_whole_picture_with(&Renderer::neutral_only().expect("render thread"));
+}
+
+#[test]
+fn a_magnified_view_pans_and_letterboxes_like_the_whole_picture_on_the_device() {
+    let Some(gpu) = gpu() else { return };
+    a_magnified_view_pans_and_letterboxes_like_the_whole_picture_with(&device(&gpu));
+}
+
+fn the_tiles_of_a_magnified_sharpened_view_are_prepared_with_it_with(r: &Renderer) {
     let d = developed(1200, 800);
-    let r = Renderer::neutral_only().expect("render thread");
     let src = d.source();
     let image = r.final_size(&src, &CancelToken::new()).expect("final size");
     let mut st = cell(576.0, 384.0);
@@ -490,3 +627,14 @@ fn the_tiles_of_a_magnified_sharpened_view_are_prepared_with_it() {
     assert_eq!(sharp.report.runs.tiles, 0);
     assert_eq!(sharp.report.scale, 1);
 }
+#[test]
+fn the_tiles_of_a_magnified_sharpened_view_are_prepared_with_it() {
+    the_tiles_of_a_magnified_sharpened_view_are_prepared_with_it_with(&Renderer::neutral_only().expect("render thread"));
+}
+
+#[test]
+fn the_tiles_of_a_magnified_sharpened_view_are_prepared_with_it_on_the_device() {
+    let Some(gpu) = gpu() else { return };
+    the_tiles_of_a_magnified_sharpened_view_are_prepared_with_it_with(&device(&gpu));
+}
+
