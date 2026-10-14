@@ -4,6 +4,10 @@
 //   camera RGB --M--> C6 linear AWG4 --C7--> --C8--> LogC4 --C9--> --C10 look--> --C11 curves-->
 //   --C12 ACES 2 or ARRI display LUT--> display linear --C13--> code values
 //
+// C12 on the ACES 2 path starts with the white lift (docs/02, step 1b): a scene-linear gain on the tones
+// above +1 stop (`white_lift_gain`, amount and 1 / span in `CU.fl.z` and `CU.fl.w`, 0 for none and for a
+// display LUT), then the placement and ACES 2. The DNG stop (6) carries it too.
+//
 // `mode.x` selects the stop (so each stage can be checked against `ColorChain::trace`), `mode.y` the
 // output format. One thread handles two horizontally adjacent pixels. All maths is f32; image
 // samples are read through the storage accessors (f16 or f32), look cubes and curves are f32

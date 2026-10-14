@@ -184,6 +184,13 @@ export function LookTab({ store, photo, rs, onOpenTab }: LookTabProps) {
             onOpen={() => onOpenTab("light")}
           />
           <AutoRow
+            label="White"
+            value={values.white_ev > 0 ? `${formats.ev(values.white_ev)} EV` : "None"}
+            isAuto={values.white_offset_ev === 0}
+            tabLabel="Light"
+            onOpen={() => onOpenTab("light")}
+          />
+          <AutoRow
             label="White balance"
             value={`${Math.round(values.kelvin)} K · tint ${tintLabel(values.tint)}`}
             isAuto={whiteAuto}

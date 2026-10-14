@@ -171,6 +171,7 @@ pub enum SettingsField {
     /// `white`.
     White,
     /// `white_offset_ev`.
+    #[serde(rename = "white_offset_ev")]
     WhiteOffset,
     /// `black`.
     Black,
@@ -812,13 +813,15 @@ impl DevelopSettings {
     }
 
     /// What "Re-run" on the Automatic card resets: exposure, white balance (the light preset, the
-    /// Kelvin and tint and a picked white) and noise reduction go back to Auto.
+    /// Kelvin and tint and a picked white) and noise reduction go back to Auto, and the white lift's
+    /// offset (the Automatic card's White row) back to 0, the automatic amount.
     pub fn reset_automatic(&mut self) {
         self.exposure = AutoOr::Auto;
         self.light_source = LightSource::Auto;
         self.white_balance = AutoOr::Auto;
         self.white_pick = None;
         self.noise_reduction = AutoOr::Auto;
+        self.white_offset_ev = 0.0;
     }
 
     /// Reads a settings document (the `ym:Settings` JSON, `ym render --settings`, a golden
@@ -1993,9 +1996,7 @@ mod tests {
         assert_eq!(s.white_offset_ev, -0.35);
         assert!(clamped.is_empty());
         // Not a number: refused, like every other field.
-        assert!(
-            DevelopSettings::from_json(r#"{ "white_offset_ev": "a lot" }"#, &neutral).is_err()
-        );
+        assert!(DevelopSettings::from_json(r#"{ "white_offset_ev": "a lot" }"#, &neutral).is_err());
         // The patch sets it, Reset puts it back, and it belongs to the grade group (C12 step 1b).
         let mut s = DevelopSettings::default();
         let report = s

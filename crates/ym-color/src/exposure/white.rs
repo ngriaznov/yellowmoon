@@ -51,7 +51,8 @@
 //!    no look is the identity), because the lift acts on the C11 output and the look already lifts the
 //!    shoulder (`docs/02`, "Re-tune with the Signature look").
 //! 3. `d` is the display luma code (0 to 255, ACES 2 with the placement, sRGB) of the neutral value
-//!    `P` would have, and `high_key = clamp((B - 1) / 1.5, 0, 1)` says how high-key the photo is.
+//!    `P` would have, and `high_key = clamp((B - 1) / 1.5, 0, 1)` says how high-key the photo is (`B`
+//!    before the look: the photo's own highlights, so the look's shoulder is not counted twice).
 //!    The target code is `d + high_key * max(TARGET_CODE - d, 0)`.
 //! 4. `A` is the smallest amount that lifts `P` to the target code (a bisection on the neutral axis),
 //!    held to `0 ..= MAX_AUTO_AMOUNT_EV`. A photo whose highlights are not above +1 stop gets `A = 0`.
@@ -71,11 +72,11 @@
 //! * The reference look is applied to the neutral axis only; the picture's colours do not enter the
 //!   sizing (the lift is meant for white, and neutral is what white is).
 
+use crate::consts::REC709_LUMA_WEIGHTS;
 use crate::consts::Vec3;
 use crate::consts::linalg::Mat3;
 use crate::display::{ChainParams, ColorChain, OutputTarget};
 use crate::exposure::{ExposureError, LUMINANCE_FLOOR, PreviewRgb, TARGET_GREY};
-use crate::consts::REC709_LUMA_WEIGHTS;
 use crate::logc::LogC4;
 use crate::look::LookTransform;
 use crate::tone::ToneParams;
@@ -229,7 +230,8 @@ pub struct WhiteEstimate {
     pub amount_ev: f64,
     /// The anchor in stops over middle grey (after the reference look): where the lift is complete.
     pub anchor_ev: f64,
-    /// How high-key the photo is, 0 to 1 (`clamp((anchor - 1) / 1.5, 0, 1)`).
+    /// How high-key the photo is, 0 to 1: `clamp((B - 1) / 1.5, 0, 1)` with `B` the photo's own anchor in
+    /// stops over middle grey, before the reference look.
     pub high_key: f64,
     /// The photo's 99.5th percentile of luminance in stops over middle grey, after the reference look.
     pub highlight_ev: f64,
@@ -265,7 +267,11 @@ impl WhiteEstimate {
     /// [`MAX_AMOUNT_EV`]. A non-finite offset counts as 0.
     #[must_use]
     pub fn lift(&self, offset_ev: f64) -> WhiteLift {
-        let offset = if offset_ev.is_finite() { offset_ev } else { 0.0 };
+        let offset = if offset_ev.is_finite() {
+            offset_ev
+        } else {
+            0.0
+        };
         let amount = (self.amount_ev + offset).clamp(0.0, MAX_AMOUNT_EV);
         WhiteLift::new(amount, self.anchor_ev).unwrap_or(WhiteLift::NONE)
     }
@@ -287,8 +293,7 @@ impl<'a> Reference<'a> {
         let mut params = ChainParams::new(identity, tone);
         params.output = OutputTarget::Srgb;
         params.dither = false;
-        let display =
-            ColorChain::new(&params).map_err(|e| WhiteError::Reference(e.to_string()))?;
+        let display = ColorChain::new(&params).map_err(|e| WhiteError::Reference(e.to_string()))?;
         // A look that carries its own display rendering has no neutral axis in LogC4: no look.
         let look = look.filter(|l| !l.includes_display_rendering());
         Ok(Self { look, display })
@@ -454,8 +459,11 @@ pub fn estimate_white(
     // 3. Where the percentile is on the display and where it should go.
     let y_p = TARGET_GREY * highlight_ev.exp2();
     let code_before = reference.code(y_p);
-    let high_key = ((anchor_ev - HIGH_KEY_FROM_EV) / (HIGH_KEY_TO_EV - HIGH_KEY_FROM_EV))
-        .clamp(0.0, 1.0);
+    // How high-key the photo is is read from its own anchor, before the look: the look lifts the
+    // shoulder by itself (the Signature look by about half a stop above +1), and counting that in
+    // the ramp as well would make the lift grow twice for the same photo.
+    let high_key =
+        ((anchor_pre - HIGH_KEY_FROM_EV) / (HIGH_KEY_TO_EV - HIGH_KEY_FROM_EV)).clamp(0.0, 1.0);
     let target_code = code_before + high_key * (TARGET_CODE - code_before).max(0.0);
 
     // 4. The smallest amount that gets the percentile there (it is lifted by the ramp's value at its

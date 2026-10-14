@@ -24,11 +24,11 @@ use std::sync::{Arc, Mutex, PoisonError, RwLock};
 use ym_color::chain::FusedChain;
 use ym_color::consts::Vec3;
 use ym_color::curve::{Curve, CurveSet};
-use ym_color::exposure::white::WhiteLift;
 use ym_color::display::{
     ArriDisplayLut, BeforePoint, ChainParams, ColorChain, DisplayLutInput, DisplayLutOutput,
     DisplayTransform, LookSetting, OutputTarget,
 };
+use ym_color::exposure::white::WhiteLift;
 use ym_color::grade::{ColorBalance, GradeParams};
 use ym_color::look::LookTransform;
 use ym_color::tone::ToneParams;

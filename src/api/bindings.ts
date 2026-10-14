@@ -173,6 +173,8 @@ export type ApplyScope =
 export type AutoEstimates = {
 	/**  `EV_auto`. */
 	exposure_ev: number,
+	/**  The automatic white lift in stops (0 when nothing is above +1 stop). */
+	white_ev: number,
 	/**  The Auto Kelvin. */
 	kelvin: number,
 	/**  The Auto tint. */
@@ -356,6 +358,11 @@ export type DevelopSettings = {
 	shadows: number,
 	/**  -100 to 100. */
 	white: number,
+	/**
+	 *  Light › White › Offset: stops added to the automatic white lift, -3 to +3, default 0 (the
+	 *  automatic amount; a plain number, not Auto).
+	 */
+	white_offset_ev: number,
 	/**  -100 to 100. */
 	black: number,
 	/**  Colour › White balance, the light presets. */
@@ -1056,6 +1063,10 @@ export type ResolvedValues = {
 	shadows: number,
 	/**  `white`. */
 	white: number,
+	/**  `white_offset_ev`. */
+	white_offset_ev: number,
+	/**  The white lift in effect in stops: the automatic amount plus the offset, never below 0. */
+	white_ev: number,
 	/**  `black`. */
 	black: number,
 	/**  `light_source`. */
@@ -1151,6 +1162,8 @@ export type SettingsPatch = {
 	shadows?: number | null,
 	/**  New white. */
 	white?: number | null,
+	/**  New white lift offset, in stops. */
+	white_offset_ev?: number | null,
 	/**  New black. */
 	black?: number | null,
 	/**  New light preset. */

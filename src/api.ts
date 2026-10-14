@@ -84,7 +84,7 @@ export interface Api {
   updateSettings(photoId: PhotoId, patch: SettingsPatch): Promise<ResolvedSettings>;
   /** `apply_look`: copy a look and its intensity to this photo, the picked photos, or all. */
   applyLook(scope: ApplyScope, lookId: LookId, intensity: number): Promise<void>;
-  /** `rerun_auto`: recompute the automatic estimates and reset exposure, white balance and noise to Auto. */
+  /** `rerun_auto`: recompute the automatic estimates and reset exposure, white lift, white balance and noise to Auto. */
   rerunAuto(photoId: PhotoId): Promise<ResolvedSettings>;
   /**
    * `histogram`: the RGB histogram of the photo as it is rendered now (Light tab, Curve plot).

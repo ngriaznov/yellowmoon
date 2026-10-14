@@ -58,3 +58,21 @@ describe("design tokens", () => {
     expect(css).not.toMatch(/outline:\s*(none|0)\b/);
   });
 });
+
+describe("copy (docs/11 tab blurbs)", () => {
+  // Since 0.2.0 Auto exposure is the camera's own, so the Light tab no longer says it is set for each photo.
+  const LIGHT = "Exposure starts at your camera's own. Adjust it from there.";
+  const OLD = "Exposure is set for each photo automatically.";
+
+  it("the Light blurb is the same in the component, the mockup and docs/11", () => {
+    expect(read("src/components/tabs.ts")).toContain(`blurb: "${LIGHT}"`);
+    expect(read("design/mockups/photos.html")).toContain(`blurb: '${LIGHT.replace("'", "\\'")}'`);
+    expect(read("docs/11-ui.md")).toContain(`Light "${LIGHT}"`);
+  });
+
+  it("the old Light blurb is gone from the component, the mockup and docs/11", () => {
+    for (const file of ["src/components/tabs.ts", "design/mockups/photos.html", "docs/11-ui.md"]) {
+      expect(read(file), file).not.toContain(OLD);
+    }
+  });
+});

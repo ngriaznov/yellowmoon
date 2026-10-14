@@ -389,11 +389,7 @@ enum Kind {
 impl PreparedDisplay {
     /// Prepares `transform` for `output`. Builds (or fetches) the ACES 2 tables, which takes
     /// 10 to 35 ms the first time per limiting gamut.
-    pub(crate) fn new(
-        transform: &DisplayTransform,
-        output: OutputTarget,
-        lift: WhiteLift,
-    ) -> Self {
+    pub(crate) fn new(transform: &DisplayTransform, output: OutputTarget, lift: WhiteLift) -> Self {
         let kind = match transform {
             DisplayTransform::Aces2 => Kind::Aces2 {
                 transform: Aces2Transform::shared(output.aces2()),

@@ -4,16 +4,17 @@ import type { SettingsPatch } from "../../api/types";
 import { useAppState } from "../../state/context";
 import { shutterLabel } from "../../state/photo";
 import { ContrastSlider } from "./controls";
-import { AUTO, manualOrAuto } from "./shared";
+import { AUTO, WHITE_OFFSET_DEFAULT, WHITE_OFFSET_RANGE_EV, manualOrAuto } from "./shared";
 import type { TabProps } from "./shared";
 
 /** Drawn until the first histogram arrives, so the panel doesn't jump. */
 const EMPTY_HISTOGRAM = { red: [0, 0], green: [0, 0], blue: [0, 0] };
 
 /**
- * Light: Exposure (with the AUTO tag) and High dynamic range (`docs/11-ui.md` §Photos). Exposure
- * is Automatic until the person moves it; Reset and the AUTO button go back to Automatic, not to
- * the number Automatic resolves to.
+ * Light: Exposure (with the AUTO tag), White (the automatic white lift and its offset) and High
+ * dynamic range (`docs/11-ui.md` §Photos). Exposure is Automatic until the person moves it; Reset and
+ * the AUTO button go back to Automatic, not to the number Automatic resolves to. The White card's
+ * Offset is a plain number of stops added to the automatic lift: 0 is Automatic.
  */
 export function LightTab({ store, photo, rs }: TabProps) {
   const { values, estimates, auto } = rs;
@@ -70,6 +71,28 @@ export function LightTab({ store, photo, rs }: TabProps) {
           defaultValue={0}
           format={formats.signed}
           onChange={(v, final) => send({ brightness: v })(final)}
+        />
+      </Card>
+      <Card
+        title="White"
+        tag={
+          <AutoToggle
+            aria-label="Auto white"
+            isAuto={values.white_offset_ev === 0}
+            onAuto={() => void store.update({ white_offset_ev: WHITE_OFFSET_DEFAULT })}
+          />
+        }
+        action={<ResetLink size="card" onClick={() => void store.update({ white_offset_ev: WHITE_OFFSET_DEFAULT })} />}
+      >
+        <Slider
+          label="Offset"
+          value={values.white_offset_ev}
+          min={WHITE_OFFSET_RANGE_EV[0]}
+          max={WHITE_OFFSET_RANGE_EV[1]}
+          step={0.05}
+          defaultValue={WHITE_OFFSET_DEFAULT}
+          format={formats.ev}
+          onChange={(v, final) => send({ white_offset_ev: v })(final)}
         />
       </Card>
       <Card

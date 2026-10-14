@@ -210,6 +210,13 @@ export interface DevelopSettings {
   highlights: number;
   shadows: number;
   white: number;
+  /**
+   * Light › White › Offset: stops added to the automatic white lift (`AutoEstimates.white_ev`), the
+   * per-photo gain on the tones above +1 stop over middle grey (`docs/02` C12 step 1b). −3…+3, step
+   * 0.05, default 0 = the automatic amount; a negative offset of the automatic amount or more gives no
+   * lift. A plain number, not Auto. Only the built-in ACES 2 display rendering has the lift.
+   */
+  white_offset_ev: number;
   black: number;
   /** Colour › White balance, segmented control. */
   light_source: LightSource;
@@ -260,6 +267,8 @@ export type LightClass = "daylight" | "tungsten" | "fluorescent" | "led";
  */
 export interface AutoEstimates {
   exposure_ev: number;
+  /** The automatic white lift in stops, 0 for a photo with nothing above +1 stop to lift (the Automatic card's White row). */
+  white_ev: number;
   kelvin: number;
   tint: number;
   light_class: LightClass;
@@ -279,6 +288,8 @@ export type ResolvedValues = Omit<
   "exposure" | "white_balance" | "sharpen" | "noise_reduction"
 > & {
   exposure_ev: number;
+  /** The white lift in effect in stops: the automatic amount plus `white_offset_ev`, never below 0. */
+  white_ev: number;
   kelvin: number;
   tint: number;
   sharpen: { amount: number; radius_px: number };

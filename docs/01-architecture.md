@@ -138,6 +138,7 @@ Every control in the UI and every CLI flag maps to one field. Defaults reproduce
 | `saturation` | −100…100, subtractive (`docs/02` C9) | 0 | Colour › Colour balance; also on Look › Tone |
 | `sharpen` | `Auto` or `{ amount 0–300, radius_px 0.3–2.5 }` | Auto | Detail › Sharpening (Amount, Radius): capture sharpening, R8 |
 | `output_sharpening` | percent, 0–200, step 5; a plain number (not Auto) | 100 | Detail › Sharpening › Output: sharpening of the picture at the size it is shown and written (`docs/algorithms/04`); 0 is off |
+| `white_offset_ev` | stops, −3…+3, step 0.05; a plain number (not Auto) | 0 | Light › White › Offset: added to the photo's **automatic white lift** (`docs/02` C12 step 1b); 0 is the automatic amount, a negative offset of the amount or more gives no lift. A document without the field reads as 0. Belongs to the Grade group (the lift sits in front of ACES 2); `ResolvedValues` also carries `white_ev`, the lift in effect (`auto.white_ev + offset`, never below 0), and `AutoEstimates.white_ev` the automatic amount |
 | `noise_reduction` | `Auto` or `{ luminance, color, detail }` 0–100 | Auto | Detail › Noise reduction |
 | `curve` | luma + R, G, B: up to 16 control points each in [0,1]² | identity | Curve |
 | `decode` | `{ neural_demosaic, highlight_recovery, lens_corrections, chromatic_aberration }` bools | all true | RAW › Decode |
@@ -146,7 +147,7 @@ Every control in the UI and every CLI flag maps to one field. Defaults reproduce
 | `orientation` | 0, 90, 180, 270 degrees, applied after the camera's EXIF orientation | 0 | Crop › Rotate 90° |
 | `white_pick` | `Option<(x, y)>` sampled point | None | Pick white (header) |
 
-"Auto" values resolve against `AutoEstimates` at render time. The UI shows the resolved value with an AUTO tag; moving a slider turns it to `Manual`. "Reset" restores `Auto`. "Re-run" on the Automatic card recomputes `AutoEstimates` and resets exposure, WB and noise to Auto.
+"Auto" values resolve against `AutoEstimates` at render time. The UI shows the resolved value with an AUTO tag; moving a slider turns it to `Manual`. "Reset" restores `Auto`. "Re-run" on the Automatic card recomputes `AutoEstimates` and resets exposure, the white lift's offset, WB and noise to Auto.
 
 **Applying to several photos.** The Look card's "Apply to" (This photo / Picked / All) copies `look` and `look_intensity` to those photos. Other controls apply to the current photo only (`output_sharpening` included: `SettingsPatch::of_field` can carry any one field, but nothing in the app copies settings between photos). Export can target the current photo, picked photos or all.
 
@@ -167,10 +168,10 @@ Each photo's render is a fixed chain of stages (`docs/02` and `docs/05`). Each s
 | Stage group | Invalidated by |
 |---|---|
 | Decode, black/white, clip mask | never within a session |
-| Noise estimate, illuminant estimate, auto exposure | Re-run |
+| Noise estimate, illuminant estimate, auto exposure, white lift estimate | Re-run |
 | Vignetting, highlights, demosaic+denoise, detail controls, sharpening, lens resample (R3–R9) | `decode.*`, `noise_reduction`, `sharpen` |
 | WB, sensor map, ARRI matrix, AWG4, exposure, roll-off and toe, LogC4 (C1–C8) | `light_source`, `white_balance`, `white_pick`, `exposure`, `rolloff.*` |
-| Primary grade, look, curve, DRT, display encode (C9–C13) | everything else (except `output_sharpening`) |
+| Primary grade, look, curve, white lift and ACES 2 (DRT), display encode (C9–C13) | everything else (except `output_sharpening`); the white lift's amount is the photo's automatic one plus `white_offset_ev` |
 | Geometry (crop, straighten, orientation) | `crop`, `orientation`: applied when sampling for display and export; no pixel stage re-runs |
 | Output sharpening (the last stage: the display-linear picture at the size it is shown or written, then C13) | `output_sharpening`; it also re-runs after every change above, because it sharpens what they made. Moving its slider re-runs only this stage on the display-linear frame already rendered. |
 

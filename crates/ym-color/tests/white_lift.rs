@@ -20,11 +20,11 @@ use ym_color::display::{
     LookSetting, OutputTarget, aces2_input_matrix,
 };
 use ym_color::exposure::PreviewRgb;
+use ym_color::exposure::white::drive_luma;
 use ym_color::exposure::white::{
     KNEE_EV, MAX_AMOUNT_EV, MAX_AUTO_AMOUNT_EV, TARGET_CODE, WhiteEstimate, WhiteLift,
     estimate_white,
 };
-use ym_color::exposure::white::drive_luma;
 use ym_color::look::{LookInput, LookTransform};
 use ym_color::lut::{Lut, Lut3d};
 use ym_color::tone::ToneParams;
@@ -125,7 +125,11 @@ fn below_plus_one_stop_the_gain_is_exactly_one_and_mid_grey_is_untouched() {
         let mut s = -12.0;
         while s <= KNEE_EV {
             let y = stops(s);
-            assert_eq!(l.gain_for_luminance(y), 1.0, "{s} stops, A {amount}, anchor {anchor}");
+            assert_eq!(
+                l.gain_for_luminance(y),
+                1.0,
+                "{s} stops, A {amount}, anchor {anchor}"
+            );
             let px = [y, y * 0.8, y * 1.1];
             // to 1e-9 in scene-linear (it is in fact exact)
             for c in 0..3 {
@@ -200,7 +204,12 @@ fn the_neutral_axis_and_every_ray_are_monotone() {
             s += 0.01;
         }
         // along a ray (the colour kept, the level scaled), every channel rises with the level
-        for base in [[1.0, 0.6, 0.3], [0.2, 1.0, 0.5], [0.3, 0.4, 1.0], [1.0, 1.0, 0.05]] {
+        for base in [
+            [1.0, 0.6, 0.3],
+            [0.2, 1.0, 0.5],
+            [0.3, 0.4, 1.0],
+            [1.0, 1.0, 0.05],
+        ] {
             let mut prev = [0.0; 3];
             let mut s = -8.0;
             while s < 6.0 {
@@ -232,7 +241,10 @@ fn a_channel_alone_never_lowers_its_own_output() {
                 let mut up = px;
                 up[c] += h;
                 let d = (l.apply(up)[c] - l.apply(px)[c]) / h;
-                assert!(d >= -1e-9, "{px:?} channel {c}: slope {d} (A {amount}, anchor {anchor})");
+                assert!(
+                    d >= -1e-9,
+                    "{px:?} channel {c}: slope {d} (A {amount}, anchor {anchor})"
+                );
             }
         }
     }
@@ -289,7 +301,12 @@ fn the_dng_pixels_are_the_scene_values_the_app_feeds_aces_2() {
     // The DNG holds C11 decoded and lifted; Adobe's renderer puts the placement back (BaselineExposure)
     // and runs ACES 2: so the app's display value is ACES 2 of `aces2_input_matrix * dng pixel`.
     let aces = Aces2Transform::new(Aces2Output::Srgb);
-    for l in [WhiteLift::NONE, lift(0.4, 1.8), lift(1.15, 2.78), lift(2.0, 3.6)] {
+    for l in [
+        WhiteLift::NONE,
+        lift(0.4, 1.8),
+        lift(1.15, 2.78),
+        lift(2.0, 3.6),
+    ] {
         let c = chain_with(l);
         for px in pixels(300, 9) {
             let dng = c.apply_dng_pixel(px);
@@ -310,19 +327,24 @@ fn the_dng_pixels_are_the_scene_values_the_app_feeds_aces_2() {
     let hi = stops(3.0);
     assert!(lifted.apply_dng_pixel([hi; 3])[1] > 1.9 * plain.apply_dng_pixel([hi; 3])[1]);
     let lo = stops(0.5);
-    assert_eq!(lifted.apply_dng_pixel([lo; 3]), plain.apply_dng_pixel([lo; 3]));
+    assert_eq!(
+        lifted.apply_dng_pixel([lo; 3]),
+        plain.apply_dng_pixel([lo; 3])
+    );
 }
 
 fn cube(size: usize, f: impl FnMut(Vec3) -> Vec3) -> Arc<Lut> {
-    Arc::new(Lut::from_cube(Lut3d::bake(size, [0.0; 3], [1.0; 3], f).unwrap()))
+    Arc::new(Lut::from_cube(
+        Lut3d::bake(size, [0.0; 3], [1.0; 3], f).unwrap(),
+    ))
 }
 
 #[test]
 fn an_imported_display_lut_and_a_display_look_keep_arris_highlights() {
     let display = |l: WhiteLift| {
         let lut = cube(9, |c| [c[0] * 0.9, c[1] * 0.95, c[2]]);
-        let arri = ArriDisplayLut::new(lut, DisplayLutInput::LogC4, DisplayLutOutput::REC709_G24)
-            .unwrap();
+        let arri =
+            ArriDisplayLut::new(lut, DisplayLutInput::LogC4, DisplayLutOutput::REC709_G24).unwrap();
         let mut p = ChainParams::new(identity_matrix(), tone());
         p.output = OutputTarget::Srgb;
         p.display = DisplayTransform::arri(arri);
@@ -330,7 +352,10 @@ fn an_imported_display_lut_and_a_display_look_keep_arris_highlights() {
         ColorChain::new(&p).unwrap()
     };
     let (a, b) = (display(WhiteLift::NONE), display(lift(1.5, 2.8)));
-    assert!(b.white_lift().is_identity(), "a display LUT ignores the lift");
+    assert!(
+        b.white_lift().is_identity(),
+        "a display LUT ignores the lift"
+    );
     for px in pixels(200, 11) {
         assert_eq!(a.apply_pixel(px), b.apply_pixel(px));
         assert_eq!(a.apply_dng_pixel(px), b.apply_dng_pixel(px));
@@ -338,7 +363,8 @@ fn an_imported_display_lut_and_a_display_look_keep_arris_highlights() {
     // A LogC3-to-Rec.709 look: at 100 % it is theirs (no lift), at 0 % it is our C12 with the lift.
     let baked = |intensity: f64, l: WhiteLift| {
         let lut = cube(17, |c| [c[0].powf(0.9), c[1].powf(0.9), c[2].powf(0.9)]);
-        let look = LookTransform::new(LookInput::LogC3ToRec709, None, Some((*lut).clone())).unwrap();
+        let look =
+            LookTransform::new(LookInput::LogC3ToRec709, None, Some((*lut).clone())).unwrap();
         let mut p = ChainParams::new(identity_matrix(), tone());
         p.output = OutputTarget::Srgb;
         p.look = Some(LookSetting::new(Arc::new(look), intensity));
@@ -350,9 +376,21 @@ fn an_imported_display_lut_and_a_display_look_keep_arris_highlights() {
     let zero_lift = chain_with(lift(1.5, 2.8));
     let own = (baked(0.0, WhiteLift::NONE), baked(0.0, lift(1.5, 2.8)));
     for px in pixels(200, 12) {
-        assert_eq!(full.0.apply_pixel(px), full.1.apply_pixel(px), "theirs at 100 %");
-        assert_eq!(own.0.apply_pixel(px), zero_plain.apply_pixel(px), "ours at 0 %");
-        assert_eq!(own.1.apply_pixel(px), zero_lift.apply_pixel(px), "ours with the lift at 0 %");
+        assert_eq!(
+            full.0.apply_pixel(px),
+            full.1.apply_pixel(px),
+            "theirs at 100 %"
+        );
+        assert_eq!(
+            own.0.apply_pixel(px),
+            zero_plain.apply_pixel(px),
+            "ours at 0 %"
+        );
+        assert_eq!(
+            own.1.apply_pixel(px),
+            zero_lift.apply_pixel(px),
+            "ours with the lift at 0 %"
+        );
     }
 }
 
@@ -399,7 +437,10 @@ fn a_high_key_photo_gets_a_lift_that_reaches_the_target() {
     let (w, h) = (160, 90);
     let rgb = ramp_preview(w, h, -3.0, 3.2, 6);
     let e = estimate(&rgb, w, h, None);
-    assert!(e.amount_ev > 0.2 && e.amount_ev <= MAX_AUTO_AMOUNT_EV, "{e:?}");
+    assert!(
+        e.amount_ev > 0.2 && e.amount_ev <= MAX_AUTO_AMOUNT_EV,
+        "{e:?}"
+    );
     assert!(e.high_key > 0.5, "{e:?}");
     assert!(e.code_after > e.code_before, "{e:?}");
     assert!(e.code_after <= TARGET_CODE + 0.01, "{e:?}");
@@ -409,13 +450,20 @@ fn a_high_key_photo_gets_a_lift_that_reaches_the_target() {
     let l = e.lift(0.0);
     assert_eq!(l.amount_ev(), e.amount_ev);
     // (a chain without the C7 shoulder, which the estimator's neutral axis does not have either)
-    let mut p = ChainParams::new(identity_matrix(), ToneParams::new(0.0, 0.0, 1e12, 0.0).unwrap());
+    let mut p = ChainParams::new(
+        identity_matrix(),
+        ToneParams::new(0.0, 0.0, 1e12, 0.0).unwrap(),
+    );
     p.output = OutputTarget::Srgb;
     p.white_lift = l;
     let chain = ColorChain::new(&p).unwrap();
     let y = GREY * e.highlight_ev.exp2();
     let code = 255.0 * chain.apply_pixel([y, y, y])[1];
-    assert!((code - e.code_after).abs() < 0.05, "{code} vs {}", e.code_after);
+    assert!(
+        (code - e.code_after).abs() < 0.05,
+        "{code} vs {}",
+        e.code_after
+    );
 }
 
 #[test]
@@ -428,7 +476,10 @@ fn a_brighter_photo_never_ends_darker_than_a_dimmer_one() {
     for top in [0.8, 1.2, 1.6, 2.0, 2.4, 2.8, 3.0, 3.6, 4.5] {
         let e = estimate(&ramp_preview(w, h, -3.0, top, 8), w, h, None);
         assert!(e.code_after >= prev - 1e-9, "top {top}: {e:?}");
-        assert!(e.code_after <= TARGET_CODE + 0.01 || e.code_before > TARGET_CODE, "{e:?}");
+        assert!(
+            e.code_after <= TARGET_CODE + 0.01 || e.code_before > TARGET_CODE,
+            "{e:?}"
+        );
         prev = e.code_after;
         lifted += usize::from(e.amount_ev > 0.0);
     }
@@ -442,12 +493,20 @@ fn the_offset_adds_to_the_amount_and_below_zero_gives_no_lift() {
         anchor_ev: 2.5,
         ..WhiteEstimate::none()
     };
-    assert_eq!(e.lift(0.0).amount_ev(), 0.8, "offset 0 is the automatic amount");
+    assert_eq!(
+        e.lift(0.0).amount_ev(),
+        0.8,
+        "offset 0 is the automatic amount"
+    );
     assert!((e.lift(0.5).amount_ev() - 1.3).abs() < 1e-15);
     assert!((e.lift(-0.3).amount_ev() - 0.5).abs() < 1e-15);
     assert!(e.lift(-0.8).is_identity(), "offset of -A gives no lift");
     assert!(e.lift(-2.0).is_identity(), "below -A gives no lift");
-    assert_eq!(e.lift(100.0).amount_ev(), MAX_AMOUNT_EV, "held to the limit");
+    assert_eq!(
+        e.lift(100.0).amount_ev(),
+        MAX_AMOUNT_EV,
+        "held to the limit"
+    );
     assert_eq!(e.lift(f64::NAN).amount_ev(), 0.8, "a bad offset is 0");
     assert_eq!(e.lift(0.5).anchor_ev(), 2.5);
     // a photo with no lift can still be given one
@@ -487,7 +546,13 @@ fn hostile_previews_give_finite_numbers() {
     // empty, one pixel, all black, all NaN, huge values
     let empty = estimate(&[], 0, 0, None);
     assert_eq!(empty.amount_ev, 0.0);
-    for (w, h, v) in [(1, 1, 0.5f32), (7, 5, 0.0), (9, 9, f32::NAN), (8, 8, 1e30), (6, 6, -3.0)] {
+    for (w, h, v) in [
+        (1, 1, 0.5f32),
+        (7, 5, 0.0),
+        (9, 9, f32::NAN),
+        (8, 8, 1e30),
+        (6, 6, -3.0),
+    ] {
         let rgb = vec![v; w * h * 3];
         let e = estimate(&rgb, w, h, None);
         assert!(ok(&e), "{w}x{h} of {v}: {e:?}");
@@ -510,5 +575,32 @@ fn hostile_previews_give_finite_numbers() {
     };
     let mut m = identity_matrix();
     m[1][1] = f64::NAN;
-    assert_eq!(estimate_white(&preview, &m, &tone(), None).unwrap().amount_ev, 0.0);
+    assert_eq!(
+        estimate_white(&preview, &m, &tone(), None)
+            .unwrap()
+            .amount_ev,
+        0.0
+    );
+}
+
+/// The cost of one estimate on the 1/8 preview of a 61 MP frame (1188 x 792), for `docs/02`:
+/// `cargo test -p ym-color --test white_lift --release -- --ignored --nocapture timing`.
+#[test]
+#[ignore = "timing only: run it with --ignored --nocapture"]
+fn timing_of_the_estimate() {
+    let (w, h) = (1188, 792);
+    let rgb = ramp_preview(w, h, -6.0, 3.8, 99);
+    let look = None;
+    let mut times = Vec::new();
+    for _ in 0..5 {
+        let t = std::time::Instant::now();
+        let e = estimate(&rgb, w, h, look);
+        times.push(t.elapsed().as_secs_f64() * 1000.0);
+        assert!(e.amount_ev >= 0.0);
+    }
+    times.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    eprintln!(
+        "white lift estimate of a {w} x {h} preview: median {:.1} ms, best {:.1} ms",
+        times[2], times[0]
+    );
 }

@@ -68,7 +68,11 @@ fn ramp_image(w: usize, h: usize) -> RgbImage {
     for i in 0..w * h {
         let s = -4.0 + 10.0 * i as f64 / (w * h - 1) as f64;
         let y = 0.18 * s.exp2();
-        let cast = if i % 2 == 0 { [1.0, 1.0, 1.0] } else { [1.3, 0.9, 0.6] };
+        let cast = if i % 2 == 0 {
+            [1.0, 1.0, 1.0]
+        } else {
+            [1.3, 0.9, 0.6]
+        };
         for c in cast {
             rgb.push(common::f16_round((y * c) as f32));
         }
@@ -90,7 +94,12 @@ fn the_gain_matches_the_cpu() {
         let mut base = ChainParams::new(identity_matrix(), chains::identity_tone());
         base.output = OutputTarget::Srgb;
         let plain_chain = ColorChain::new(&base).expect("chain");
-        let plain = render(dev, &plain_chain, &img, &[ColorOutput::Stage(Stop::DngLinearAwg4)]);
+        let plain = render(
+            dev,
+            &plain_chain,
+            &img,
+            &[ColorOutput::Stage(Stop::DngLinearAwg4)],
+        );
         let plain = planar(&plain[0]);
         let mut worst = 0.0f64;
         for (amount, anchor) in [(0.4, 1.8), (1.1, 2.8), (2.0, 3.6), (3.0, 1.3), (0.9, 6.0)] {
@@ -98,7 +107,12 @@ fn the_gain_matches_the_cpu() {
             let mut p = base.clone();
             p.white_lift = lift;
             let chain = ColorChain::new(&p).expect("chain");
-            let out = render(dev, &chain, &img, &[ColorOutput::Stage(Stop::DngLinearAwg4)]);
+            let out = render(
+                dev,
+                &chain,
+                &img,
+                &[ColorOutput::Stage(Stop::DngLinearAwg4)],
+            );
             let got = planar(&out[0]);
             for i in 0..n {
                 let lin = [
@@ -148,10 +162,18 @@ fn every_stage_of_a_lifted_chain_matches_the_cpu_trace() {
             // Guard against a vacuous comparison: a good part of the pixels must be in the lift's range.
             let lifted = cams
                 .iter()
-                .filter(|c| chain.white_lift().gain(chain.trace(**c).c11_logc4.to_linear().0) > 1.0 + 1e-9)
+                .filter(|c| {
+                    chain
+                        .white_lift()
+                        .gain(chain.trace(**c).c11_logc4.to_linear().0)
+                        > 1.0 + 1e-9
+                })
                 .count();
             if !chain.white_lift().is_identity() {
-                assert!(lifted * 10 > n, "{name}: only {lifted} of {n} pixels are lifted");
+                assert!(
+                    lifted * 10 > n,
+                    "{name}: only {lifted} of {n} pixels are lifted"
+                );
             }
             let out = render(
                 dev,
@@ -164,7 +186,12 @@ fn every_stage_of_a_lifted_chain_matches_the_cpu_trace() {
                     ColorOutput::Stage(Stop::C13),
                 ],
             );
-            let (c11, dng, c12, c13) = (planar(&out[0]), planar(&out[1]), planar(&out[2]), planar(&out[3]));
+            let (c11, dng, c12, c13) = (
+                planar(&out[0]),
+                planar(&out[1]),
+                planar(&out[2]),
+                planar(&out[3]),
+            );
             for i in 0..n {
                 let t = &traces[i];
                 let want_dng = chain.apply_dng_pixel(cams[i]);
@@ -186,7 +213,12 @@ fn every_stage_of_a_lifted_chain_matches_the_cpu_trace() {
                             want_dng[ch]
                         );
                     }
-                    let top = t.c12_display_linear.iter().copied().fold(0.0f64, f64::max).max(0.02);
+                    let top = t
+                        .c12_display_linear
+                        .iter()
+                        .copied()
+                        .fold(0.0f64, f64::max)
+                        .max(0.02);
                     let e = (f64::from(c12[ch * n + i]) - t.c12_display_linear[ch]).abs();
                     worst[2] = worst[2].max(e / top);
                     assert!(
@@ -273,7 +305,11 @@ fn a_lift_changes_only_what_is_above_one_stop_on_the_device() {
                     );
                 } else if stops > 1.5 {
                     above += 1;
-                    assert!(b[c * n + i] > a[c * n + i], "{:?}: pixel {i} at {stops:.2} stops not lifted", dev.mode);
+                    assert!(
+                        b[c * n + i] > a[c * n + i],
+                        "{:?}: pixel {i} at {stops:.2} stops not lifted",
+                        dev.mode
+                    );
                 }
             }
         }
