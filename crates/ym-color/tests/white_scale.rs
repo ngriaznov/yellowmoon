@@ -291,12 +291,8 @@ fn a_scaled_chain_still_lands_the_scene_white_on_neutral() {
         let balanced = [w_body[0] * g0[0], w_body[1] * g0[1], w_body[2] * g0[2]];
         let out = chain.apply(balanced).0;
         let gain = 0.6f64.exp2();
-        for c in 0..3 {
-            assert!(
-                (out[c] / gain - 1.0).abs() < 1e-12,
-                "{cct} K channel {c}: {}",
-                out[c]
-            );
+        for (c, v) in out.iter().enumerate() {
+            assert!((v / gain - 1.0).abs() < 1e-12, "{cct} K channel {c}: {v}");
         }
         // The metering chain carries the scale too.
         let metering = estimates.metering_chain(p.tables()).unwrap();
