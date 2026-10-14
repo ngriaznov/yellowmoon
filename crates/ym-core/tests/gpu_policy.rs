@@ -311,6 +311,11 @@ fn attaching_the_device_changes_no_byte_of_a_full_render_that_runs_no_raw_stage_
     r.set_gpu(Some(Arc::clone(&gpu)), GpuStages::ALL);
     let on_device = render(&r);
     assert_eq!(on_device.len(), reference.len());
+    // `f32::max` skips a NaN, so a picture of NaN would pass the bound below: say it first.
+    assert!(
+        on_device.iter().all(|&b| f32::from_bits(b).is_finite()),
+        "the render on the device holds a sample that is not finite"
+    );
     let worst = on_device
         .iter()
         .zip(&reference)

@@ -1228,7 +1228,8 @@ impl<'a> Job<'a> {
     ///
     /// # Errors
     ///
-    /// [`RenderError::Gpu`] when the device is lost and the policy is strict.
+    /// [`RenderError::Gpu`] when the device is lost, or an earlier device error ended the route, and
+    /// the policy is strict.
     fn raw_route(&mut self) -> Result<Option<GpuRoute>, RenderError> {
         let Some(gpu) = self.opts.gpu.clone() else {
             return Ok(None);
@@ -1239,6 +1240,14 @@ impl<'a> Job<'a> {
         if self.g.raw_gpu_failed.load(Ordering::SeqCst)
             || self.r.inner.raw_gpu_disabled.load(Ordering::SeqCst)
         {
+            // An earlier device error ended the route. A strict policy (`Require`) must not turn
+            // that into a quiet CPU render of the next photo: it fails that photo too.
+            if self.opts.gpu_strict {
+                return Err(RenderError::Gpu(
+                    "an earlier error of the graphics card ended its use for the raw stages, and the strict setting does not let the CPU take over"
+                        .to_owned(),
+                ));
+            }
             return Ok(None);
         }
         if gpu.is_lost() {
@@ -1282,7 +1291,9 @@ impl<'a> Job<'a> {
     ///
     /// * strict policy (`Require`): the error fails the render ([`RenderError::Gpu`]);
     /// * an export (`restartable`): the render asks to start again on the CPU
-    ///   ([`Job::take_gpu_restart`]), so that one file is wholly device or wholly CPU;
+    ///   ([`Job::take_gpu_restart`]), so that one file is wholly device or wholly CPU. It asks the
+    ///   same when its first tiles ran on the device and the route went away between two tiles
+    ///   (the device was lost, or another request ended the photo's or the process's use of it);
     /// * any other request (a 100 % tile, a viewport region): this tile runs on the CPU, with a note,
     ///   and so does every later request for the photo. The tile cache may then hold tiles of both
     ///   devices, which differ within the tolerances of the kernels (viewing only).
@@ -1296,7 +1307,27 @@ impl<'a> Job<'a> {
     ) -> Result<RgbImage, RenderError> {
         let expected =
             self.opts.gpu.is_some() && self.opts.gpu_stages.contains(GpuStages::RAW_CHAIN);
-        if let Some(route) = self.raw_route()? {
+        let route = self.raw_route()?;
+        if route.is_none()
+            && expected
+            && self.restartable
+            && self
+                .raw_ranges
+                .iter()
+                .any(|r| r.device == ComputeDevice::Gpu)
+        {
+            // The first tiles of this export ran on the device and the route has gone away since:
+            // another request failed on the device (the flags above belong to the photo and to the
+            // process, not to this export), or the device was lost between two tiles. The rest of
+            // the file must not be made on the CPU: start again on the CPU, as for an error of the
+            // device in one of the tiles.
+            let reason = "the graphics card was no longer available while the photo was rendering"
+                .to_owned();
+            self.raw_ranges.clear();
+            self.restart = Some(reason.clone());
+            return Err(RenderError::Gpu(reason));
+        }
+        if let Some(route) = route {
             match full.run_tile_gpu(frame, rect, &route) {
                 Ok(img) => {
                     self.record_range(route.range, ComputeDevice::Gpu);

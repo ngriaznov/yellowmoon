@@ -5,9 +5,10 @@
 //! refinement, the shadow sharpening and the shadow colour matching, and the entry that undoes R4 on
 //! the balanced mosaic the chain hands to R6 ([`Balance::Balanced`]).
 //!
-//! Nothing here is wired into the render path: the raw stages still run the CPU reference, and wiring
-//! this one is a later decision. The entry points upload a mosaic, run the passes and read the planes
-//! back, for the parity tests and for that later decision.
+//! The render runs it through [`crate::chain::GpuChain`] (G-03): [`encode_demosaic`] is the device-in,
+//! device-out entry point (`docs/gpu-plan.md` section 4.3), and the host wrappers ([`demosaic`],
+//! [`demosaic_tiled`], [`demosaic_planned`]) upload a mosaic, run the passes and read the planes back,
+//! for the parity tests and for the chain's hand-off.
 //!
 //! # What runs where
 //!

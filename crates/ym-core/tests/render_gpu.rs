@@ -627,6 +627,119 @@ mod faults {
         }
     }
 
+    /// The ways the device route of a photo can go away between two tiles of an export that has
+    /// already put its first tile on the device.
+    #[derive(Clone, Copy, Debug)]
+    enum RouteLost {
+        /// A viewport tile of the same photo fails on the device, which ends the photo's route.
+        ViewportTileFails,
+        /// The device is lost between two tiles.
+        DeviceLost,
+    }
+
+    #[test]
+    fn an_export_whose_route_goes_away_between_tiles_starts_again_on_the_cpu() {
+        // Never a mix of devices in one file (`docs/gpu-plan.md` 4.9): the route is decided by flags
+        // that other requests can set while an export is under way, so the export itself must notice
+        // that its first tiles ran on the device and the rest cannot, and render the whole photo on
+        // the CPU. The event happens inside the export's own progress callback, that is between two
+        // tiles, so the test is not a race.
+        let src = scene();
+        let cpu = render_full(&on_cpu(), &src).expect("cpu render");
+        for how in [RouteLost::ViewportTileFails, RouteLost::DeviceLost] {
+            let Some(gpu) = gpu() else { return };
+            let dev = on_device(&gpu);
+            let mut st = ViewportState::new(ViewportRect::cell(700.0, 500.0, 1.0));
+            st.set_mode(ViewportMode::Percent { value: 100.0 }, (1300, 900));
+            let first = Arc::new(std::sync::atomic::AtomicBool::new(true));
+            let progress = {
+                let (gpu, dev, src) = (Arc::clone(&gpu), dev.clone(), src.clone());
+                Arc::new(move |_: f32| {
+                    if !first.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                        return;
+                    }
+                    match how {
+                        RouteLost::ViewportTileFails => {
+                            gpu.set_fault(Some(GpuFault::OutOfBudget));
+                            let frame = dev.viewport_frame(
+                                &src,
+                                &st,
+                                &FrameOptions::default(),
+                                &CancelToken::new(),
+                            );
+                            gpu.set_fault(None);
+                            assert!(frame.is_ok(), "the frame falls back to the CPU: {frame:?}");
+                        }
+                        RouteLost::DeviceLost => {
+                            gpu.set_fault(Some(GpuFault::Lost));
+                            let _ = gpu.run(
+                                ym_gpu::queue::JobSpec::new(ym_gpu::queue::Priority::Viewport),
+                                |_, _| Ok(()),
+                            );
+                            assert!(gpu.is_lost(), "the fault lost the device");
+                        }
+                    }
+                })
+            };
+            let handle = dev.spawn_full_reporting(
+                src.clone(),
+                FullRequest {
+                    target: FullTarget::DisplayLinear(OutputTarget::Srgb),
+                },
+                progress,
+            );
+            let img = handle
+                .wait()
+                .expect("the job resolved")
+                .unwrap_or_else(|e| panic!("{how:?}: {e}"));
+            assert!(
+                img.rgb == cpu.rgb,
+                "{how:?}: the CPU render, bit for bit (a mix of the two devices differs in the tiles the device made)"
+            );
+            assert_eq!(
+                device_of(&img.report),
+                vec![("R6".to_owned(), ComputeDevice::Cpu)],
+                "{how:?}"
+            );
+            assert!(
+                img.report.notes.iter().any(|n| n
+                    .starts_with("The graphics card could not render this photo, so the CPU did")),
+                "{how:?}: {:?}",
+                img.report.notes
+            );
+        }
+    }
+
+    #[test]
+    fn a_strict_policy_does_not_fall_back_quietly_once_the_raw_chain_is_off_for_the_process() {
+        // A shader that does not compile fails the photo under `Require` and switches the raw chain off
+        // for the process. The next photo must fail too: rendering it on the CPU without a word would
+        // be the silent fall-back that `Require` exists to forbid.
+        let Some(gpu) = gpu() else { return };
+        let strict = renderer_with(
+            Some(Arc::clone(&gpu)),
+            GpuStages::ALL,
+            true,
+            Method::AdaptiveRatio,
+        );
+        gpu.set_fault(Some(GpuFault::Shader));
+        let first = render_full(&strict, &scene());
+        gpu.set_fault(None);
+        assert!(
+            matches!(first, Err(RenderError::Gpu(_))),
+            "{:?}",
+            first.map(|i| i.report.notes)
+        );
+        let jobs = gpu.counters().submissions;
+        let second = render_full(&strict, &scene());
+        assert!(
+            matches!(second, Err(RenderError::Gpu(_))),
+            "{:?}",
+            second.map(|i| (i.report.ranges, i.report.notes))
+        );
+        assert_eq!(gpu.counters().submissions, jobs, "the device was not asked");
+    }
+
     #[test]
     fn a_cancel_fault_cancels_the_render_and_leaves_nothing_resident() {
         let Some(gpu) = gpu() else { return };
