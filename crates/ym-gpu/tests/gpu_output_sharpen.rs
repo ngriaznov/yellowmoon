@@ -49,10 +49,10 @@
 //!
 //! The CPU accumulates convolutions, window sums and the envelope formula in `f64`; WGSL has no `f64`,
 //! so the GPU accumulates in `f32` with the taps rounded to `f32` (the model of the C++ reference's
-//! `Accumulation::F32`). Division and square root are as accurate as the driver makes them (correctly
-//! rounded on lavapipe). The luma is the one quantity that must be bit-identical, because the limiter
-//! compares it exactly: [`luma_has_the_cpu_bits`] checks that, and fails on a software adapter that
-//! fuses the multiplications and additions of the luma.
+//! `Accumulation::F32`). Square roots and divisions are the shader's own integer routines, correctly
+//! rounded on every device ([`the_shader_square_root_and_division_are_correctly_rounded_on_the_device`]).
+//! The luma is the one quantity that must be bit-identical, because the limiter compares it exactly:
+//! [`luma_has_the_cpu_bits`] checks that on every adapter.
 
 mod common;
 
@@ -83,36 +83,21 @@ const DIAGONAL_P999_BOUND: f64 = 1e-3;
 /// rank counts flip even with noise; measured 4.3e-5 on 26 of 8.4 million samples.
 const LARGE_FRAME_MAX_BOUND: f64 = 2e-4;
 
-// ---- The hardware column (Metal) ------------------------------------------------------------------
+// ---- Metal (hardware adapters) ---------------------------------------------------------------------
 //
-// Metal compiles with fast-math by default and wgpu has no switch for it (docs/gpu-plan.md section 12,
-// docs/algorithms/04 section 10): a division is `a * (1 / b)`, a square root is not correctly rounded,
-// `a * b + c` may be fused, and so the last bit of a sample moves, and a rank count of the halo
-// limiter flips at a tie that f32 rounding leaves between two luma values. None of that exists on a
-// software adapter (lavapipe is correctly rounded and does not fuse), whose bounds above are
-// unchanged. The bounds below apply to hardware adapters only. Each is twice the value measured on
-// the Metal runners at the baseline commit d629dbe (macos-14 and macos-15 agree), before the kernel
-// was made robust (the luma passes through `abs` so that nothing fuses it, a delta of exactly 0 gives
-// a ratio of exactly 1, a collapsed stage is dropped); a run on Metal after the change reports its
-// own numbers in the CI log (`ci_note`) and replaces these when they are better.
-
-/// The vectors on hardware: a sample may differ by this many ulps of its own size on top of the
-/// vector's tolerance (the HDR vector has samples near 128, where one ulp is 1.5e-5, the ratio cap
-/// of 16 times a value of 8: 1.84e-5 measured on Metal).
-const HW_VECTOR_ULPS: f64 = 2.0;
-/// The worst absolute error of the 16 vectors on hardware (measured 1.84e-5).
-const HW_VECTORS_MAX: f64 = 4e-5;
-/// Noisy frame with the limiter on, hardware: 99.9th percentile (measured 5.54e-5), maximum
-/// (measured 8.79e-4) and the share of samples over 1e-5 (measured 0.25 %, 95 of 37830).
-const HW_NOISY_P999: f64 = 1.1e-4;
-const HW_NOISY_MAX: f64 = 1.8e-3;
-const HW_NOISY_OVER_SHARE: f64 = 0.005;
-/// Transposed image with method 2, R 2.5 and the limiter, hardware (measured 8.64e-4).
-const HW_TRANSPOSE_MAX: f64 = 1.8e-3;
-/// The 2048 x 1365 frame with the limiter, hardware: maximum (measured 5.73e-4) and the share of
-/// samples over 1e-5 (measured 1.7e-4, 1450 of 8.4 million; lavapipe 3e-6).
-const HW_LARGE_MAX: f64 = 1.2e-3;
-const HW_LARGE_OVER_SHARE: f64 = 3.5e-4;
+// Metal compiles with fast-math and wgpu has no switch for it. Wave 2 gave hardware adapters looser
+// bounds of their own (twice the Metal baseline at d629dbe); the Metal run of b6f2e4b then failed four
+// of these tests on later cases (vectors 1.36e-5, noisy p99.9 1.5e-4, the flipped image 8.6e-4, the
+// 2048 px export 1.96e-3). None of that was inherent to `f32`: Metal's `sqrt` left a third of the
+// lumas 1 or 2 ulp off, its division is the dividend times an approximate reciprocal, and it fused the
+// blurs' products into multiply-adds. Each moved a value the limiter compares by an ulp, and at a
+// near-tie a rank count flipped. The kernel now pins every such rounding (`opaque`) and computes its
+// square roots and quotients in integer arithmetic, correctly rounded (`output_sharpen.wgsl`), so a
+// hardware adapter computes lavapipe's bits: a C port of the shader compiled with clang `-O2`/`-O3
+// -ffast-math -ffp-contract=fast -mfma`, with a square root and a reciprocal 1 to 2 ulp off, gives the
+// bits of the strict build on every case of these tests (`docs/gpu-plan.md` section 12). So there is
+// no hardware column any more: every adapter meets the bounds above. On hardware the tests still
+// write their numbers to the CI log (`ci_note`).
 
 fn hardware(dev: &TestGpu) -> bool {
     !dev.gpu.info().is_software
@@ -127,22 +112,6 @@ fn ci_note(text: &str) {
     if std::env::var_os("GITHUB_ACTIONS").is_some() {
         let _ = writeln!(err, "::notice title=G-04 output sharpening::{text}");
     }
-}
-
-/// The size of one unit in the last place of `x` (an f32).
-fn ulp(x: f32) -> f64 {
-    let a = x.abs();
-    f64::from(f32::from_bits(a.to_bits() + 1)) - f64::from(a)
-}
-
-/// The largest `|got - want|` once `ulps` units in the last place of each reference sample are
-/// forgiven (never below 0).
-fn error_beyond_ulps(got: &RgbImage, want: &RgbImage, ulps: f64) -> f64 {
-    got.data
-        .iter()
-        .zip(&want.data)
-        .map(|(&g, &w)| ((f64::from(g) - f64::from(w)).abs() - ulps * ulp(w)).max(0.0))
-        .fold(0.0, f64::max)
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -607,20 +576,6 @@ fn vectors_match_the_oracle_and_the_cpu_port() {
                     bit_equal(&out, &cpu),
                     "{name}: must equal the CPU port exactly"
                 );
-            } else if hardware(dev) {
-                // The hardware column: forgive the ulps of each sample's own size.
-                let beyond_oracle = error_beyond_ulps(&out, &expected, HW_VECTOR_ULPS);
-                let beyond_cpu = error_beyond_ulps(&out, &cpu, HW_VECTOR_ULPS);
-                assert!(
-                    beyond_oracle <= tol,
-                    "{name}: error {:e} against the oracle is above the tolerance {tol:e} (+{HW_VECTOR_ULPS} ulp)",
-                    vs_expected.max
-                );
-                assert!(
-                    beyond_cpu <= tol,
-                    "{name}: error {:e} against the CPU port is above {tol:e} (+{HW_VECTOR_ULPS} ulp)",
-                    vs_cpu.max
-                );
             } else {
                 assert!(
                     vs_expected.max <= tol,
@@ -642,18 +597,13 @@ fn vectors_match_the_oracle_and_the_cpu_port() {
         );
         if hardware(dev) {
             ci_note(&format!(
-                "hardware vectors: max |gpu - oracle| {worst_vs_expected:.3e}, max |gpu - cpu port| {worst_vs_cpu:.3e} (baseline on Metal 1.84e-5)"
+                "hardware vectors: max |gpu - oracle| {worst_vs_expected:.3e}, max |gpu - cpu port| {worst_vs_cpu:.3e} (lavapipe 7.15e-7; Metal at b6f2e4b 1.36e-5)"
             ));
-            assert!(
-                worst_vs_expected <= HW_VECTORS_MAX,
-                "the 16 vectors must stay within {HW_VECTORS_MAX:e} on hardware, got {worst_vs_expected:e}"
-            );
-        } else {
-            assert!(
-                worst_vs_expected <= 2e-6,
-                "the 16 vectors must stay within 2e-6 on the GPU, got {worst_vs_expected:e}"
-            );
         }
+        assert!(
+            worst_vs_expected <= 2e-6,
+            "the 16 vectors must stay within 2e-6 on the GPU, got {worst_vs_expected:e}"
+        );
     }
 }
 
@@ -669,8 +619,9 @@ fn luma_of(w: &[f32; 3], r: f32, g: f32, b: f32) -> f32 {
 #[test]
 fn luma_has_the_cpu_bits() {
     // The limiter compares luma values for equality and order, so the GPU's luma must be the CPU's
-    // `f32` luma. On a software adapter (lavapipe) that means every bit; a hardware driver may fuse
-    // multiply-adds or round the square root differently, so there it must stay within 2 ulp.
+    // `f32` luma, every bit, on every adapter: the products and the partial sum are hidden from the
+    // optimiser and the square root is the shader's integer one (Metal's own `sqrt` left 27 to 37 % of
+    // the lumas 1 or 2 ulp off at b6f2e4b).
     let images = [
         random_image(37, 29, -0.05, 3.0, 11),
         random_image(64, 16, 0.0, 1.0, 12),
@@ -712,14 +663,10 @@ fn luma_has_the_cpu_bits() {
                         img.width, img.height
                     ));
                 }
-                if software {
-                    assert_eq!(
-                        differ, 0,
-                        "the luma must have the CPU's bits on a software adapter"
-                    );
-                } else {
-                    assert!(worst_ulps <= 2, "luma off by {worst_ulps} ulp");
-                }
+                assert_eq!(
+                    differ, 0,
+                    "the luma must have the CPU's bits (worst {worst_ulps} ulp)"
+                );
             }
         }
     }
@@ -747,28 +694,15 @@ fn noisy_and_photographic_frames_match_the_cpu_port_within_1e_5() {
             assert!(all_finite(&gpu));
             let e = ErrStats::of_images(&gpu, &cpu);
             eprintln!("{name:<20} {set:<40} {}", e.line());
-            if hardware(dev) {
-                // The hardware column: a few rank counts of the limiter flip (module note above).
-                if e.max > NOISY_BOUND {
-                    ci_note(&format!("hardware {name} / {set}: {}", e.line()));
-                }
-                assert!(
-                    e.max <= HW_NOISY_MAX && e.p999 <= HW_NOISY_P999,
-                    "{name} / {set}: {}",
-                    e.line()
-                );
-                assert!(
-                    e.over as f64 <= HW_NOISY_OVER_SHARE * e.total as f64,
-                    "{name} / {set}: {}",
-                    e.line()
-                );
-            } else {
-                assert!(
-                    e.max <= NOISY_BOUND,
-                    "{name} / {set}: max error {:e} above {NOISY_BOUND:e}",
-                    e.max
-                );
+            if hardware(dev) && e.max > NOISY_BOUND {
+                ci_note(&format!("hardware {name} / {set}: {}", e.line()));
             }
+            assert!(
+                e.max <= NOISY_BOUND,
+                "{name} / {set}: max error {:e} above {NOISY_BOUND:e} ({})",
+                e.max,
+                e.line()
+            );
             worst = worst.max(e.max);
             worst_p999 = worst_p999.max(e.p999);
         }
@@ -776,6 +710,11 @@ fn noisy_and_photographic_frames_match_the_cpu_port_within_1e_5() {
     eprintln!(
         "noisy and photographic frames: worst max error {worst:.3e}, worst p99.9 {worst_p999:.3e}"
     );
+    if hardware(dev) {
+        ci_note(&format!(
+            "hardware noisy and photographic frames: worst max error {worst:.3e}, worst p99.9 {worst_p999:.3e} (lavapipe 1.43e-6)"
+        ));
+    }
 }
 
 #[test]
@@ -1081,17 +1020,14 @@ fn flip_and_transpose_equivariance_within_1e_5() {
             "{set:<40} flip max {:.3e}, transpose max {:.3e}",
             ef.max, et.max
         );
-        assert!(ef.max <= NOISY_BOUND, "{set}: flip {:e}", ef.max);
-        if hardware(dev) {
-            // The hardware column: the transposed image sums in another order, and a rank count of
-            // the limiter may flip (measured 8.64e-4 on Metal at the baseline).
-            if et.max > NOISY_BOUND {
-                ci_note(&format!("hardware transpose, {set}: max {:.3e}", et.max));
-            }
-            assert!(et.max <= HW_TRANSPOSE_MAX, "{set}: transpose {:e}", et.max);
-        } else {
-            assert!(et.max <= NOISY_BOUND, "{set}: transpose {:e}", et.max);
+        if hardware(dev) && ef.max.max(et.max) > NOISY_BOUND {
+            ci_note(&format!(
+                "hardware flip / transpose, {set}: max {:.3e} / {:.3e}",
+                ef.max, et.max
+            ));
         }
+        assert!(ef.max <= NOISY_BOUND, "{set}: flip {:e}", ef.max);
+        assert!(et.max <= NOISY_BOUND, "{set}: transpose {:e}", et.max);
     }
 }
 
@@ -1139,19 +1075,10 @@ fn a_2048_by_1365_frame_through_the_tiling_path() {
             dev.gpu.info().name
         );
         assert!(all_finite(&tiled));
-        if limiter_on && hardware(dev) {
-            // The hardware column: more rank counts flip at f32 ties than on a correctly rounded
-            // adapter (measured 1450 samples over 1e-5 and a maximum of 5.73e-4 on Metal at the
-            // baseline, 26 samples and 4.3e-5 on lavapipe); the bulk still meets 1e-5.
+        if hardware(dev) {
             ci_note(&format!("hardware {name}: {}", e.line()));
-            assert!(e.p999 <= CLEAN_P999_BOUND, "{name}: p99.9 {:e}", e.p999);
-            assert!(e.max <= HW_LARGE_MAX, "{name}: max error {:e}", e.max);
-            assert!(
-                e.over as f64 <= HW_LARGE_OVER_SHARE * e.total as f64,
-                "{name}: {}",
-                e.line()
-            );
-        } else if limiter_on {
+        }
+        if limiter_on {
             assert!(e.p999 <= CLEAN_P999_BOUND, "{name}: p99.9 {:e}", e.p999);
             assert!(
                 e.max <= LARGE_FRAME_MAX_BOUND,
@@ -1980,14 +1907,7 @@ fn collapsed_stages_are_dropped_and_the_rest_runs() {
         bit_equal(&gpu, &alone),
         "the collapsed extra stage changed the result"
     );
-    assert!(
-        ErrStats::of_images(&gpu, &cpu).max
-            <= if hardware(dev) {
-                HW_NOISY_MAX
-            } else {
-                NOISY_BOUND
-            }
-    );
+    assert!(ErrStats::of_images(&gpu, &cpu).max <= NOISY_BOUND);
 }
 
 #[test]
@@ -2105,7 +2025,7 @@ fn the_luma_pass_hides_every_factor_and_partial_sum_from_the_optimiser() {
         "opaque(opaque(sp.luma_g * g) * g)",
         "opaque(opaque(sp.luma_b * b) * b)",
         "opaque(a0 + a1)",
-        "sqrt(s01 + a2)",
+        "sharpen_sqrt(s01 + a2)",
     ] {
         assert!(
             body.contains(needle),
@@ -2120,6 +2040,214 @@ fn the_luma_pass_hides_every_factor_and_partial_sum_from_the_optimiser() {
         src.contains("bitcast<f32>(bitcast<u32>(x) ^ sp.zero)"),
         "opaque is the XOR with the run-time zero"
     );
+}
+
+/// The text of the WGSL function `name` of `output_sharpen.wgsl`, up to its closing brace.
+fn wgsl_function(src: &str, name: &str) -> String {
+    let start = src
+        .find(&format!("fn {name}("))
+        .unwrap_or_else(|| panic!("`fn {name}` in output_sharpen.wgsl"));
+    let end = src[start..]
+        .find("\n}\n")
+        .map(|e| start + e + 3)
+        .expect("its end");
+    src[start..end].to_string()
+}
+
+#[test]
+fn the_shader_square_root_and_division_are_correctly_rounded_on_the_device() {
+    // K8: `sharpen_sqrt` and `sharpen_div` compute in integers, so they give the IEEE result whatever
+    // the device's `sqrt` and `/` do (Metal's fast-math ones are 1 to 2 ulp off). Run on the device on
+    // 2^21 square roots (every 4th mantissa of two exponents, which is every case of the algorithm's
+    // two branches, and random others) and 2^21 random quotients with normal operands and results,
+    // against Rust's `f32::sqrt` and `/`. The C model of the same routines matched IEEE on all 16.8
+    // million mantissas of 11 exponents and 259 million quotients.
+    let Some(dev) = gpus().first() else { return };
+    let src = include_str!("../src/shaders/output_sharpen.wgsl");
+    let shader = format!(
+        "@group(0) @binding(0) var<storage, read> a_in: array<f32>;\n\
+         @group(0) @binding(1) var<storage, read> b_in: array<f32>;\n\
+         @group(0) @binding(2) var<storage, read_write> out_v: array<f32>;\n\
+         {}\n{}\n\
+         @compute @workgroup_size(256)\n\
+         fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{\n\
+             let i = gid.x;\n\
+             if (i >= arrayLength(&a_in)) {{ return; }}\n\
+             out_v[2u * i] = sharpen_sqrt(a_in[i]);\n\
+             out_v[2u * i + 1u] = sharpen_div(a_in[i], b_in[i]);\n\
+         }}\n",
+        wgsl_function(src, "sharpen_sqrt"),
+        wgsl_function(src, "sharpen_div")
+    );
+    let n = 1usize << 21;
+    let mut rng = Rng(0x5157_4454);
+    let mut bits = |lo: u32, hi: u32| -> u32 {
+        let e = lo + (rng.next_u64() % u64::from(hi - lo + 1)) as u32;
+        let sign = (rng.next_u64() & 1) as u32;
+        (sign << 31) | (e << 23) | (rng.next_u64() as u32 & 0x7f_ffff)
+    };
+    let mut a = Vec::with_capacity(n);
+    let mut b = Vec::with_capacity(n);
+    for i in 0..n {
+        let qa = bits(64, 190);
+        let qb = bits(64, 190);
+        // The square roots: every 4th mantissa at the exponents 126 and 127 for the first half,
+        // random positive normals for the second; the divisions use the same `a`.
+        let sa = if i < n / 2 {
+            let e = 126 + (i & 1) as u32;
+            (e << 23) | (((i >> 1) as u32 * 4) & 0x7f_ffff)
+        } else {
+            qa & 0x7fff_ffff
+        };
+        a.push(f32::from_bits(if i % 3 == 0 {
+            sa
+        } else {
+            sa | (qa & 0x8000_0000)
+        }));
+        b.push(f32::from_bits(qb));
+    }
+    let (a2, b2) = (a.clone(), b.clone());
+    let got: Vec<f32> = run_gpu(dev, move |ctx| {
+        use wgpu::util::DeviceExt as _;
+        let module = ctx
+            .device
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("sharpen sqrt and div"),
+                source: wgpu::ShaderSource::Wgsl(shader.into()),
+            });
+        let pipeline = ctx
+            .device
+            .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some("sharpen sqrt and div"),
+                layout: None,
+                module: &module,
+                entry_point: Some("main"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                cache: None,
+            });
+        let input = |label: &str, v: &[f32]| {
+            ctx.device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some(label),
+                    contents: bytemuck::cast_slice(v),
+                    usage: wgpu::BufferUsages::STORAGE,
+                })
+        };
+        let a_buf = input("a", &a2);
+        let b_buf = input("b", &b2);
+        let out = ctx.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("sqrt and div"),
+            size: (a2.len() * 8) as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+        let group = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("sharpen sqrt and div"),
+            layout: &pipeline.get_bind_group_layout(0),
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: a_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: b_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: out.as_entire_binding(),
+                },
+            ],
+        });
+        let mut passes = PassList::new(ctx, "sharpen sqrt and div");
+        {
+            let mut pass = passes
+                .encoder()
+                .begin_compute_pass(&wgpu::ComputePassDescriptor::default());
+            pass.set_pipeline(&pipeline);
+            pass.set_bind_group(0, &group, &[]);
+            pass.dispatch_workgroups((a2.len() / 256) as u32, 1, 1);
+        }
+        let id = passes.read(&out, 0, out.size())?;
+        let mut done = passes.submit()?.finish()?;
+        Ok(bytemuck::pod_collect_to_vec(&done.take(id)))
+    });
+    let (mut sqrt_bad, mut div_bad, mut div_checked) = (0usize, 0usize, 0usize);
+    for i in 0..n {
+        let want_sqrt = a[i].sqrt();
+        if got[2 * i].to_bits() != want_sqrt.to_bits() && !(a[i] < 0.0 && got[2 * i].is_nan()) {
+            sqrt_bad += 1;
+        }
+        let want_div = a[i] / b[i];
+        if want_div.is_normal() {
+            div_checked += 1;
+            if got[2 * i + 1].to_bits() != want_div.to_bits() {
+                div_bad += 1;
+            }
+        }
+    }
+    eprintln!(
+        "{}: {sqrt_bad} of {n} square roots and {div_bad} of {div_checked} quotients differ from IEEE",
+        dev.gpu.info().name
+    );
+    if hardware(dev) {
+        ci_note(&format!(
+            "hardware integer sqrt and division: {sqrt_bad} of {n} square roots and {div_bad} of {div_checked} quotients differ from IEEE"
+        ));
+    }
+    assert!(div_checked > n * 9 / 10, "{div_checked} quotients checked");
+    assert_eq!(
+        sqrt_bad, 0,
+        "the shader's square root must be correctly rounded"
+    );
+    assert_eq!(
+        div_bad, 0,
+        "the shader's division must be correctly rounded"
+    );
+}
+
+#[test]
+fn the_passes_pin_every_rounding_the_limiter_sees() {
+    // K8, the source side of the test above and of `luma_has_the_cpu_bits`: lavapipe neither fuses nor
+    // re-associates, so it cannot show that a barrier went missing. Every square root and division of
+    // the passes is the shader's integer one, and the sums and products named here go through `opaque`
+    // (the clang fast-math model of `docs/gpu-plan.md` section 12 needs each of these groups: without
+    // the blur's, the 2048 px export from 6000 px moves by 1.96e-3, as it did on Metal).
+    let src = include_str!("../src/shaders/output_sharpen.wgsl");
+    let passes_start = src.find("fn sharpen_luma(").expect("the passes");
+    let passes = &src[passes_start..];
+    for needle in [
+        "lum[i] = sharpen_sqrt(s01 + a2);",
+        "acc = opaque(acc + opaque(taps[sp.tap_off + j] * opaque(lum[row + xx] - c)));",
+        "acc = opaque(acc + opaque(taps[sp.tap_off + j] * opaque(opaque(lum[o] - c) + tmp[o])));",
+        "let mag = sharpen_sqrt(opaque(gx * gx) + opaque(gy * gy));",
+        "work_a[sp.plane + i] = opaque(v * v) + GAIN_EPS;",
+        "acc = opaque(acc + opaque(taps[sp.tap_off + j] * work_a[row + u32(mir(x + i32(j) - r, w))]));",
+        "acc = opaque(acc + opaque(taps[sp.tap_off + j] * work_b[o]));",
+        "let wg = opaque(sharpen_div(work_a[i], work_a[sp.plane + i]));",
+        "dacc[i] = dacc[i] + opaque(sp.a_free * s);",
+        "hacc[i] = hacc[i] + opaque(sp.a_halo * s);",
+        "let s = opaque(c + hacc[i]);",
+        "let sl = opaque(l + hacc[o]);",
+        "e_shi = opaque(e_shi + opaque(sl - s));",
+        "let d_hi = opaque(sharpen_div(m_hi, nhi));",
+        "v_hi = opaque(v_hi) + opaque(max_l * t);",
+        "ratio = opaque(sharpen_div(lp, l));",
+    ] {
+        assert!(passes.contains(needle), "the passes lost `{needle}`");
+    }
+    // No division or square root of the device outside the two integer routines' fallbacks.
+    for (line_no, line) in passes.lines().enumerate() {
+        let code = line.split("//").next().unwrap_or("");
+        assert!(
+            !code.contains(" / ") || code.contains("sp.tap_n / 2u"),
+            "line {line_no} of the passes divides with the device's `/`: {line}"
+        );
+        assert!(
+            !code.contains("sqrt(") || code.contains("sharpen_sqrt("),
+            "line {line_no} of the passes uses the device's `sqrt`: {line}"
+        );
+    }
 }
 
 // MODEL-DUMP-BEGIN (temporary, removed before the end of the task)
@@ -2142,7 +2270,13 @@ mod model_dump {
 
     /// The case file: sizes, luma weights, the stages as `PreparedSharpen::new` derives them, the
     /// input, the CPU port's output and the device's output.
-    pub fn case(p: &OutputSharpen, scale: f32, img: &RgbImage, cpu: &RgbImage, gpu: Option<&RgbImage>) -> Vec<u8> {
+    pub fn case(
+        p: &OutputSharpen,
+        scale: f32,
+        img: &RgbImage,
+        cpu: &RgbImage,
+        gpu: Option<&RgbImage>,
+    ) -> Vec<u8> {
         let plan = p.plan(scale).expect("plan");
         let mut v = Vec::new();
         put_u32(&mut v, 0x5348_5250);
@@ -2269,15 +2403,33 @@ fn zz_model_dump() {
     ];
     for (name, img) in &frames {
         for (set, p, scale) in param_sets() {
-            save(&format!("noisy__{name}__{}", slug(set)), &p, scale, img, true);
+            save(
+                &format!("noisy__{name}__{}", slug(set)),
+                &p,
+                scale,
+                img,
+                true,
+            );
         }
     }
     // Failure 3: flip and transpose.
     let img = busy(53, 41, 61);
     for (set, p, scale) in param_sets() {
         save(&format!("flip__orig__{}", slug(set)), &p, scale, &img, true);
-        save(&format!("flip__flipx__{}", slug(set)), &p, scale, &flip_x(&img), true);
-        save(&format!("flip__transp__{}", slug(set)), &p, scale, &transpose(&img), true);
+        save(
+            &format!("flip__flipx__{}", slug(set)),
+            &p,
+            scale,
+            &flip_x(&img),
+            true,
+        );
+        save(
+            &format!("flip__transp__{}", slug(set)),
+            &p,
+            scale,
+            &transpose(&img),
+            true,
+        );
     }
     // Failure 6: the vectors.
     for (name, v) in vectors() {
@@ -2295,7 +2447,13 @@ fn zz_model_dump() {
     // Failure 4: the large frame (only the two limiter cases).
     if std::env::var_os("YM_MODEL_DUMP_LARGE").is_some() {
         let img = photo_like(2048, 1365, 71);
-        save("large__screen_full", &OutputSharpen::screen(), 1.0, &img, true);
+        save(
+            "large__screen_full",
+            &OutputSharpen::screen(),
+            1.0,
+            &img,
+            true,
+        );
         save(
             "large__screen_2048_from_6000",
             &OutputSharpen::screen(),

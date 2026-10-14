@@ -14,8 +14,20 @@
 // (spec 3.2, 3.5), so a flat region gives exact zeros here as on the CPU. Per-pixel formulas keep the
 // operation order of the spec; min and max follow the C++ semantics (`std::min`, `std::max`: the first
 // argument wins when the comparison fails), written with `select` so a driver cannot reorder them.
-// No pass uses a fused multiply-add on purpose; WGSL cannot forbid one, so a driver that contracts
-// `a * b + c` can move the last bit (see the test notes in tests/gpu_output_sharpen.rs).
+// No pass uses a fused multiply-add on purpose.
+//
+// Fast-math (K8). Metal compiles with fast-math and wgpu cannot switch it off: the compiler may fuse
+// `a * b + c` into one multiply-add, re-associate sums and products, and its `sqrt` and `a / b` are
+// not correctly rounded. The limiter compares luma values and S = L + Hacc for order, so the last bit
+// of any of them flips a rank count where two values tie within an ulp, and a flipped count moves a
+// pixel by up to 2e-3 (the Metal runs at b6f2e4b). So every operation whose rounding matters is
+// pinned: each product that meets an addition, each partial sum and each difference passes through
+// `opaque` (one operation per barrier, nothing left to fuse or re-associate), and the square roots and
+// divisions are computed in integer arithmetic, correctly rounded (`sharpen_sqrt`, `sharpen_div`).
+// IEEE arithmetic is unchanged by both (lavapipe gives the same bits as before), and a C port of this
+// file compiled with clang -O2/-O3 -ffast-math -ffp-contract=fast -mfma, with a square root and a
+// reciprocal 1 to 2 ulp off, gives the bits of the strict build on every case of the tests (see
+// docs/gpu-plan.md section 12, "Metal after wave 2").
 
 struct SharpenParams {
     width: u32,      // compute rectangle, pixels
@@ -114,6 +126,106 @@ fn opaque(x: f32) -> f32 {
     return bitcast<f32>(bitcast<u32>(x) ^ sp.zero);
 }
 
+// The correctly rounded square root of `x`, in integer arithmetic only (Metal's fast-math `sqrt` is
+// 1 to 2 ulp off for about a third of the lumas: the hardware notes of `luma_has_the_cpu_bits`).
+// For a positive normal x = m 2^(e - 150), the mantissa is doubled when e is odd so that the exponent
+// is even, and the integer root of N = mp 2^26 (50 or 51 bits, 26 pairs of bits) is taken digit by
+// digit: `root` = floor(sqrt(N)), `rem` = N - root^2 (below 2^28, so u32 holds every step). The top 24
+// bits of `root` are the mantissa; the next bit and whether anything is left decide the rounding to
+// nearest, ties to even. Zero returns itself; subnormals, infinities, NaN and negatives (none of which
+// a luma or a gradient magnitude of finite samples is) take the device's `sqrt`.
+fn sharpen_sqrt(x: f32) -> f32 {
+    let bits = bitcast<u32>(x);
+    if ((bits & 0x7fffffffu) == 0u) {
+        return x;
+    }
+    let e = (bits >> 23u) & 0xffu;
+    if (e == 0u || e == 0xffu || (bits >> 31u) != 0u) {
+        return sqrt(x);
+    }
+    let odd = e & 1u;
+    let mp = ((bits & 0x7fffffu) | 0x800000u) << odd;
+    var rem = 0u;
+    var root = 0u;
+    for (var k = 0u; k < 26u; k = k + 1u) {
+        var two = 0u;
+        if (k < 13u) {
+            two = (mp >> (24u - 2u * k)) & 3u;
+        }
+        rem = (rem << 2u) | two;
+        let trial = (root << 2u) | 1u;
+        if (rem >= trial) {
+            rem = rem - trial;
+            root = (root << 1u) | 1u;
+        } else {
+            root = root << 1u;
+        }
+    }
+    var q = root >> 1u;
+    var round_bit = root & 1u;
+    var sticky = u32(rem != 0u);
+    if (odd == 1u) {
+        q = root >> 2u;
+        round_bit = (root >> 1u) & 1u;
+        sticky = sticky | (root & 1u);
+    }
+    q = q + (round_bit & (sticky | (q & 1u)));
+    // q holds the leading bit, so adding it to the exponent field minus one carries a rounding
+    // overflow into the exponent.
+    return bitcast<f32>(((((e + 127u) >> 1u) - 1u) << 23u) + q);
+}
+
+// The correctly rounded quotient a / b, in integer arithmetic only (Metal's fast-math division is
+// `a * (1 / b)` with an approximate reciprocal). Restoring division of the 24-bit mantissas gives
+// q = floor(ma 2^25 / mb), 25 or 26 bits, and the remainder; rounding to nearest, ties to even, as
+// in `sharpen_sqrt`. A zero dividend gives the signed zero; subnormal, infinite or NaN operands and a
+// quotient outside the normal range take the device's division (none occurs on finite images: every
+// divisor here is a count, a blurred weight of at least 1/25, a gain-map denominator of at least 1e-10
+// or a luma of at least 1e-20).
+fn sharpen_div(a: f32, b: f32) -> f32 {
+    let ab = bitcast<u32>(a);
+    let bb = bitcast<u32>(b);
+    let ea = (ab >> 23u) & 0xffu;
+    let eb = (bb >> 23u) & 0xffu;
+    let sign = (ab ^ bb) & 0x80000000u;
+    if (eb == 0u || eb == 0xffu || ea == 0xffu) {
+        return a / b;
+    }
+    if (ea == 0u) {
+        if ((ab & 0x7fffffffu) == 0u) {
+            return bitcast<f32>(sign);
+        }
+        return a / b;
+    }
+    let ma = (ab & 0x7fffffu) | 0x800000u;
+    let mb = (bb & 0x7fffffu) | 0x800000u;
+    var rem = ma;
+    var q = 0u;
+    for (var k = 0u; k < 26u; k = k + 1u) {
+        q = q << 1u;
+        if (rem >= mb) {
+            rem = rem - mb;
+            q = q | 1u;
+        }
+        rem = rem << 1u;
+    }
+    var ex = i32(ea) - i32(eb) + 126;
+    var m = q >> 1u;
+    var round_bit = q & 1u;
+    var sticky = u32(rem != 0u);
+    if (q >= 0x2000000u) {
+        m = q >> 2u;
+        round_bit = (q >> 1u) & 1u;
+        sticky = sticky | (q & 1u);
+        ex = ex + 1;
+    }
+    if (ex < 1 || ex > 254) {
+        return a / b;
+    }
+    m = m + (round_bit & (sticky | (m & 1u)));
+    return bitcast<f32>(sign | ((u32(ex - 1) << 23u) + m));
+}
+
 // L = sqrt(((wR R) R + (wG G) G) + (wB B) B), f32, in exactly this order (spec 3.1).
 //
 // The limiter compares luma values for equality and order, so a compiler that changes the last bit of
@@ -124,7 +236,10 @@ fn opaque(x: f32) -> f32 {
 // compiler), `abs` left 16 % of 2 million random lumas one ulp off the strict f32 value (19 % without
 // it). So every factor and every partial sum is hidden behind `opaque`: each is an operand of exactly
 // one operation, and there is nothing left to fuse or re-associate (the same model: 0 of 2 million
-// lumas differ, also with `-O3`). The square root is the one operation left to the driver.
+// lumas differ, also with `-O3`). The square root is `sharpen_sqrt`, correctly rounded whatever the
+// driver's `sqrt` does: Metal's left 27 to 37 % of the lumas 1 or 2 ulp off the CPU's (b6f2e4b), and
+// a luma moved by one ulp at a near-tie flips a rank count (in the busy 130 x 97 frame, one ulp at any
+// of five pixels moves the output by 4.7e-4 to 2.1e-3).
 fn sharpen_luma(gid: vec3<u32>) {
     if (gid.x >= sp.width || gid.y >= sp.height) {
         return;
@@ -137,10 +252,11 @@ fn sharpen_luma(gid: vec3<u32>) {
     let a1 = opaque(opaque(sp.luma_g * g) * g);
     let a2 = opaque(opaque(sp.luma_b * b) * b);
     let s01 = opaque(a0 + a1);
-    lum[i] = sqrt(s01 + a2);
+    lum[i] = sharpen_sqrt(s01 + a2);
 }
 
-// t(x, y) = sum_j k_j (L(x + j - r, y) - L(x, y))  (spec 3.2)
+// t(x, y) = sum_j k_j (L(x + j - r, y) - L(x, y))  (spec 3.2). The difference, the product and the
+// running sum each pass through `opaque`: no multiply-add, no re-association of the sum.
 fn sharpen_highpass_rows(gid: vec3<u32>) {
     if (gid.x >= sp.width || gid.y >= sp.height) {
         return;
@@ -153,12 +269,12 @@ fn sharpen_highpass_rows(gid: vec3<u32>) {
     var acc = 0.0;
     for (var j = 0u; j < sp.tap_n; j = j + 1u) {
         let xx = u32(mir(x + i32(j) - r, w));
-        acc = acc + taps[sp.tap_off + j] * (lum[row + xx] - c);
+        acc = opaque(acc + opaque(taps[sp.tap_off + j] * opaque(lum[row + xx] - c)));
     }
     tmp[row + gid.x] = acc;
 }
 
-// h(x, y) = sum_j k_j ((L(x, y + j - r) - L(x, y)) + t(x, y + j - r))  (spec 3.2)
+// h(x, y) = sum_j k_j ((L(x, y + j - r) - L(x, y)) + t(x, y + j - r))  (spec 3.2), pinned as the rows.
 fn sharpen_highpass_cols(gid: vec3<u32>) {
     if (gid.x >= sp.width || gid.y >= sp.height) {
         return;
@@ -171,7 +287,7 @@ fn sharpen_highpass_cols(gid: vec3<u32>) {
     var acc = 0.0;
     for (var j = 0u; j < sp.tap_n; j = j + 1u) {
         let o = u32(mir(y + i32(j) - r, h)) * sp.width + gid.x;
-        acc = acc + taps[sp.tap_off + j] * ((lum[o] - c) + tmp[o]);
+        acc = opaque(acc + opaque(taps[sp.tap_off + j] * opaque(opaque(lum[o] - c) + tmp[o])));
     }
     hp[i] = acc;
 }
@@ -184,7 +300,8 @@ fn blurred_luma(x: u32, y: u32) -> f32 {
 
 // The numerator and denominator planes of the gain maps (spec 3.3), written to work_a planes 0 and 1:
 // method 1: P = |d| max(|d| - T, 0);  method 2: P = d^2 w with w the ramp on the Scharr gradient of B.
-// Both: Q = d^2 + eps.
+// Both: Q = d^2 + eps. The gradient's terms, its squares and the magnitude are pinned (`opaque`,
+// `sharpen_sqrt`), and so is d^2 before it meets the epsilon.
 fn sharpen_gain_terms(gid: vec3<u32>) {
     if (gid.x >= sp.width || gid.y >= sp.height) {
         return;
@@ -204,28 +321,34 @@ fn sharpen_gain_terms(gid: vec3<u32>) {
             let xp = u32(mir(i32(gid.x) + 1, w));
             let ym = u32(mir(i32(gid.y) - 1, h));
             let yp = u32(mir(i32(gid.y) + 1, h));
-            let um = blurred_luma(xm, ym);
-            let u0 = blurred_luma(gid.x, ym);
-            let up = blurred_luma(xp, ym);
-            let cm = blurred_luma(xm, gid.y);
-            let cp = blurred_luma(xp, gid.y);
-            let dm = blurred_luma(xm, yp);
-            let d0 = blurred_luma(gid.x, yp);
-            let dp = blurred_luma(xp, yp);
-            let gx = (cp - cm) * 0.3125 + (((up + dp) - um) - dm) * 0.09375;
-            let gy = (d0 - u0) * 0.3125 + (((dm + dp) - um) - up) * 0.09375;
-            let t = sp.inv * (sqrt(gx * gx + gy * gy) - sp.g0);
+            let um = opaque(blurred_luma(xm, ym));
+            let u0 = opaque(blurred_luma(gid.x, ym));
+            let up = opaque(blurred_luma(xp, ym));
+            let cm = opaque(blurred_luma(xm, gid.y));
+            let cp = opaque(blurred_luma(xp, gid.y));
+            let dm = opaque(blurred_luma(xm, yp));
+            let d0 = opaque(blurred_luma(gid.x, yp));
+            let dp = opaque(blurred_luma(xp, yp));
+            let gx = opaque(opaque((cp - cm) * 0.3125)
+                + opaque(opaque(opaque(opaque(up + dp) - um) - dm) * 0.09375));
+            let gy = opaque(opaque((d0 - u0) * 0.3125)
+                + opaque(opaque(opaque(opaque(dm + dp) - um) - up) * 0.09375));
+            let mag = sharpen_sqrt(opaque(gx * gx) + opaque(gy * gy));
+            let t = sp.inv * opaque(mag - sp.g0);
             wgt = fmin_(fmax_(t, 0.0), 1.0);
         }
-        pv = v * v * wgt;
+        pv = opaque(v * v) * wgt;
     }
     work_a[i] = pv;
-    work_a[sp.plane + i] = v * v + GAIN_EPS;
+    work_a[sp.plane + i] = opaque(v * v) + GAIN_EPS;
 }
 
 // One half of the separable blur of `planes` planes (spec 3.6): rows read work_a and write work_b,
 // columns read work_b and write work_a. Taps left to right from 0, mirrored reads, f32 accumulator.
-// The dispatch has one z layer per plane.
+// The dispatch has one z layer per plane. Products and running sums are pinned: fused into
+// multiply-adds, the gain-map blur moved the gain and so S by an ulp, and at a tie within an ulp a rank
+// count flipped (the 1.96e-3 of the 2048 px export from 6000 px on Metal, reproduced exactly by the
+// clang fast-math model and gone with the barriers).
 fn sharpen_blur(gid: vec3<u32>) {
     if (gid.x >= sp.width || gid.y >= sp.height || gid.z >= sp.planes) {
         return;
@@ -238,7 +361,7 @@ fn sharpen_blur(gid: vec3<u32>) {
         let x = i32(gid.x);
         let row = base + gid.y * sp.width;
         for (var j = 0u; j < sp.tap_n; j = j + 1u) {
-            acc = acc + taps[sp.tap_off + j] * work_a[row + u32(mir(x + i32(j) - r, w))];
+            acc = opaque(acc + opaque(taps[sp.tap_off + j] * work_a[row + u32(mir(x + i32(j) - r, w))]));
         }
         work_b[row + gid.x] = acc;
     } else {
@@ -246,14 +369,15 @@ fn sharpen_blur(gid: vec3<u32>) {
         let y = i32(gid.y);
         for (var j = 0u; j < sp.tap_n; j = j + 1u) {
             let o = base + u32(mir(y + i32(j) - r, h)) * sp.width + gid.x;
-            acc = acc + taps[sp.tap_off + j] * work_b[o];
+            acc = opaque(acc + opaque(taps[sp.tap_off + j] * work_b[o]));
         }
         work_a[base + gid.y * sp.width + gid.x] = acc;
     }
 }
 
 // The stage's delta s and its accumulation (spec 3.3 and 3.4):
-// D += a_free s, Hacc += a_halo s (only when the stage has a limited share).
+// D += a_free s, Hacc += a_halo s (only when the stage has a limited share). The gain is the exact
+// quotient, s is pinned before the products and each product before its sum.
 fn sharpen_accumulate(gid: vec3<u32>) {
     if (gid.x >= sp.width || gid.y >= sp.height) {
         return;
@@ -265,18 +389,21 @@ fn sharpen_accumulate(gid: vec3<u32>) {
         let t = sp.threshold;
         s = v - fmin_(fmax_(v, -t), t);
     } else if (sp.use_gain == 1u) {
-        let wg = work_a[i] / work_a[sp.plane + i];
+        let wg = opaque(sharpen_div(work_a[i], work_a[sp.plane + i]));
         s = v * fmin_(fmax_(wg, 0.0), 1.0);
     }
-    dacc[i] = dacc[i] + sp.a_free * s;
+    s = opaque(s);
+    dacc[i] = dacc[i] + opaque(sp.a_free * s);
     if (sp.halo_acc == 1u) {
-        hacc[i] = hacc[i] + sp.a_halo * s;
+        hacc[i] = hacc[i] + opaque(sp.a_halo * s);
     }
 }
 
 // The four envelope maps of the halo limiter (spec 3.5) on the 5 x 5 window, written to work_a planes
 // 0 to 3 as v_hi, w_hi, v_lo, w_lo. Counts are exact comparisons of f32 values; the sums are f32 sums
-// of differences to the centre, window row by row, left to right.
+// of differences to the centre, window row by row, left to right. S, every difference and every
+// running sum are pinned, the quotients are exact (`sharpen_div`) and each product that meets a sum is
+// pinned, so the counts compare the bits lavapipe compares.
 fn sharpen_window(gid: vec3<u32>) {
     if (gid.x >= sp.width || gid.y >= sp.height) {
         return;
@@ -287,7 +414,7 @@ fn sharpen_window(gid: vec3<u32>) {
     let y = i32(gid.y);
     let i = gid.y * sp.width + gid.x;
     let c = lum[i];
-    let s = c + hacc[i];
+    let s = opaque(c + hacc[i]);
     var n_lo = 0;
     var n_hi = 0;
     var n_slo = 0;
@@ -301,22 +428,22 @@ fn sharpen_window(gid: vec3<u32>) {
         for (var dx = -2; dx <= 2; dx = dx + 1) {
             let o = row + u32(mir(x + dx, w));
             let l = lum[o];
-            let sl = l + hacc[o];
+            let sl = opaque(l + hacc[o]);
             if (l <= c) {
                 n_lo = n_lo + 1;
-                e_lo = e_lo + (l - c);
+                e_lo = opaque(e_lo + opaque(l - c));
             }
             if (l >= c) {
                 n_hi = n_hi + 1;
-                e_hi = e_hi + (l - c);
+                e_hi = opaque(e_hi + opaque(l - c));
             }
             if (sl <= s) {
                 n_slo = n_slo + 1;
-                e_slo = e_slo + (sl - s);
+                e_slo = opaque(e_slo + opaque(sl - s));
             }
             if (sl >= s) {
                 n_shi = n_shi + 1;
-                e_shi = e_shi + (sl - s);
+                e_shi = opaque(e_shi + opaque(sl - s));
             }
         }
     }
@@ -325,25 +452,25 @@ fn sharpen_window(gid: vec3<u32>) {
     let nslo = f32(n_slo);
     let nshi = f32(n_shi);
     // Robust local maximum / minimum of L: c + 2 mean(l - c) over the samples on one side.
-    let m_hi = (2.0 * e_hi) / nhi;
-    let m_lo = (2.0 * e_lo) / nlo;
+    let m_hi = opaque(sharpen_div(2.0 * e_hi, nhi));
+    let m_lo = opaque(sharpen_div(2.0 * e_lo, nlo));
     let max_l = c + m_hi;
     let min_l = c + m_lo;
     var w_hi = fmax_(1.0 - f32(abs(n_hi - n_shi)) * HALO_INV_R, HALO_INV_N);
-    var v_hi = (s + (2.0 * e_shi) / nshi) * w_hi;
+    var v_hi = opaque(s + opaque(sharpen_div(2.0 * e_shi, nshi))) * w_hi;
     var w_lo = fmax_(1.0 - f32(abs(n_lo - n_slo)) * HALO_INV_R, HALO_INV_N);
-    var v_lo = (s + (2.0 * e_slo) / nslo) * w_lo;
-    let d_hi = m_hi / nhi;
-    let d_lo = -m_lo / nlo;
+    var v_lo = opaque(s + opaque(sharpen_div(2.0 * e_slo, nslo))) * w_lo;
+    let d_hi = opaque(sharpen_div(m_hi, nhi));
+    let d_lo = opaque(sharpen_div(-m_lo, nlo));
     // On the flat side of an edge, pull the envelope to the plateau of L.
     if (n_hi > HALO_K_MIN && d_hi < d_lo) {
-        let t = d_lo / (d_hi + d_lo * HALO_INV_N);
-        v_hi = v_hi + max_l * t;
+        let t = opaque(sharpen_div(d_lo, opaque(d_hi + opaque(d_lo * HALO_INV_N))));
+        v_hi = opaque(v_hi) + opaque(max_l * t);
         w_hi = w_hi + t;
     }
     if (n_lo > HALO_K_MIN && d_lo < d_hi) {
-        let t = d_hi / (d_lo + d_hi * HALO_INV_N);
-        v_lo = v_lo + min_l * t;
+        let t = opaque(sharpen_div(d_hi, opaque(d_lo + opaque(d_hi * HALO_INV_N))));
+        v_lo = opaque(v_lo) + opaque(min_l * t);
         w_lo = w_lo + t;
     }
     work_a[i] = v_hi;
@@ -361,7 +488,8 @@ fn sharpen_window(gid: vec3<u32>) {
 // IEEE arithmetic). Metal's fast-math default turns `a / b` into `a * (1 / b)`, which gives
 // 0.99999994 for many `a == b`, so a flat field or a collapsed kernel would change by one ulp; the
 // branch makes the identity exact whatever the division does. A NaN delta or luma takes the general
-// road (bit test, because fast-math may assume no NaN and fold a comparison).
+// road (bit test, because fast-math may assume no NaN and fold a comparison). The envelopes and the
+// ratio are exact quotients (`sharpen_div`), pinned before their sums.
 fn sharpen_transfer(gid: vec3<u32>) {
     if (gid.x >= sp.core_w || gid.y >= sp.core_h) {
         return;
@@ -374,14 +502,14 @@ fn sharpen_transfer(gid: vec3<u32>) {
         let l0 = lum[i];
         var d = dacc[i];
         if (sp.limiter == 1u) {
-            let up = fmax_(work_a[i] / work_a[sp.plane + i] - l0, 0.0);
-            let lo = fmin_(work_a[2u * sp.plane + i] / work_a[3u * sp.plane + i] - l0, 0.0);
-            d = d + fmax_(lo, fmin_(hacc[i], up));
+            let up = fmax_(opaque(sharpen_div(work_a[i], work_a[sp.plane + i])) - l0, 0.0);
+            let lo = fmin_(opaque(sharpen_div(work_a[2u * sp.plane + i], work_a[3u * sp.plane + i])) - l0, 0.0);
+            d = opaque(d + fmax_(lo, fmin_(hacc[i], up)));
         }
         if (d != 0.0 || is_nan_f(d) || is_nan_f(l0) || l0 < LUMA_FLOOR) {
             let l = fmax_(l0, LUMA_FLOOR);
-            let lp = l0 + d;
-            ratio = lp / l;
+            let lp = opaque(l0 + d);
+            ratio = opaque(sharpen_div(lp, l));
             // A NaN fails the comparison and gives 0.
             ratio = select(0.0, fmin_(ratio, RATIO_MAX), ratio >= 0.0);
         }

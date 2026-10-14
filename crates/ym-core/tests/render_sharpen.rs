@@ -143,7 +143,7 @@ fn moving_the_slider_re_runs_only_the_stage_and_zero_runs_no_stage_with(r: &Rend
     let src = d.source();
     assert_eq!(src.settings.output_sharpening, 100.0);
     let state = cell(576.0, 384.0);
-    let runs = |src: &PhotoSource| frame(&r, src, &state).report.runs;
+    let runs = |src: &PhotoSource| frame(r, src, &state).report.runs;
 
     let first = runs(&src);
     assert_eq!(
@@ -212,10 +212,10 @@ fn the_amount_changes_the_picture_and_zero_is_the_unsharpened_one_with(r: &Rende
     let d = developed(1200, 800);
     let src = d.source();
     let state = cell(576.0, 384.0);
-    let off = fresh_frame(&r, &with_amount(&src, 0.0), &state);
-    let half = fresh_frame(&r, &with_amount(&src, 50.0), &state);
-    let full = fresh_frame(&r, &with_amount(&src, 100.0), &state);
-    let double = fresh_frame(&r, &with_amount(&src, 200.0), &state);
+    let off = fresh_frame(r, &with_amount(&src, 0.0), &state);
+    let half = fresh_frame(r, &with_amount(&src, 50.0), &state);
+    let full = fresh_frame(r, &with_amount(&src, 100.0), &state);
+    let double = fresh_frame(r, &with_amount(&src, 200.0), &state);
     // More amount, more local contrast, monotonically.
     let c: Vec<f64> = [&off, &half, &full, &double]
         .iter()
@@ -238,7 +238,7 @@ fn the_amount_changes_the_picture_and_zero_is_the_unsharpened_one_with(r: &Rende
     assert!(worst_difference(&off, &full) >= 1);
     // The same request twice is the same bytes.
     assert!(
-        fresh_frame(&r, &src, &state).rgba == full.rgba,
+        fresh_frame(r, &src, &state).rgba == full.rgba,
         "the same request gave other pixels"
     );
 }
@@ -261,8 +261,8 @@ fn the_before_view_is_not_sharpened_with(r: &Renderer) {
     let src = d.source();
     let mut state = cell(576.0, 384.0);
     state.before = true;
-    let a = frame(&r, &with_amount(&src, 0.0), &state);
-    let b = frame(&r, &with_amount(&src, 200.0), &state);
+    let a = frame(r, &with_amount(&src, 0.0), &state);
+    let b = frame(r, &with_amount(&src, 200.0), &state);
     assert_eq!(a.rgba, b.rgba);
     assert_eq!(a.report.runs.output_passes + b.report.runs.output_passes, 0);
 }
@@ -300,7 +300,7 @@ fn a_view_at_100_percent_is_the_sharpened_picture_the_export_writes_with(r: &Ren
         .apply_interleaved(800, 600, &full.rgb, 1.0)
         .expect("sharpen");
     let st = at_100_percent(800.0, 600.0, (800, 600));
-    let f = frame(&r, &src, &st);
+    let f = frame(r, &src, &st);
     assert_eq!(f.report.scale, 1, "the full-resolution tiles");
     assert_eq!(f.report.runs.output_passes, 1);
     let mut worst = 0.0f64;
@@ -383,11 +383,11 @@ fn a_pan_at_100_percent_is_a_window_of_the_whole_picture_with(r: &Renderer) {
     let d = developed(800, 600);
     let src = d.source();
     let image = (800, 600);
-    let whole = frame(&r, &src, &at_100_percent(800.0, 600.0, image));
+    let whole = frame(r, &src, &at_100_percent(800.0, 600.0, image));
     for centre in [[0.5, 0.5], [0.3, 0.62], [0.8, 0.25], [0.0, 0.0], [1.0, 1.0]] {
         let mut st = at_100_percent(240.0, 180.0, image);
         st.centre = centre;
-        let part = frame(&r, &src, &st);
+        let part = frame(r, &src, &st);
         // The window's origin in the picture (whole pixels at 100 %).
         let (ox, oy) = st.view_to_final(image).apply(0.5, 0.5);
         let (ox, oy) = ((ox - 0.5).round() as usize, (oy - 0.5).round() as usize);
@@ -427,8 +427,8 @@ fn a_letterbox_changes_nothing_inside_the_photo_with(r: &Renderer) {
     // export, so the photo is what the same view without a letterbox shows.
     let d = developed(800, 600);
     let src = d.source();
-    let wide = frame(&r, &src, &cell(1000.0, 300.0));
-    let exact = frame(&r, &src, &cell(400.0, 300.0));
+    let wide = frame(r, &src, &cell(1000.0, 300.0));
+    let exact = frame(r, &src, &cell(400.0, 300.0));
     assert_eq!((wide.width, wide.height), (1000, 300));
     assert_eq!((exact.width, exact.height), (400, 300));
     let background = r.options().background;
@@ -452,7 +452,7 @@ fn a_letterbox_changes_nothing_inside_the_photo_with(r: &Renderer) {
     }
     assert!(worst <= 1, "the photo differs by {worst} codes");
     // And it really is the sharpened picture there.
-    let plain = frame(&r, &with_amount(&src, 0.0), &cell(400.0, 300.0));
+    let plain = frame(r, &with_amount(&src, 0.0), &cell(400.0, 300.0));
     assert!(worst_difference(&plain, &exact) >= 1);
 }
 
@@ -533,7 +533,7 @@ fn a_view_magnified_above_100_percent_is_the_sharpened_export_picture_made_bigge
         let mut st = cell(400.0, 300.0);
         st.set_mode(ViewportMode::Percent { value: zoom }, image);
         st.centre = centre;
-        let f = frame(&r, &src, &st);
+        let f = frame(r, &src, &st);
         assert_eq!(f.report.runs.output_passes, 1, "{zoom} %");
         let to_final = st.view_to_final(image);
         let mut worst = 0.0f64;
@@ -555,7 +555,7 @@ fn a_view_magnified_above_100_percent_is_the_sharpened_export_picture_made_bigge
             "{zoom} %: the view differs from the sharpened export magnified by {worst} codes"
         );
         // And it is not the plain magnified picture.
-        let plain = frame(&r, &with_amount(&src, 0.0), &st);
+        let plain = frame(r, &with_amount(&src, 0.0), &st);
         assert!(worst_difference(&plain, &f) >= 1, "{zoom} %");
     }
 }
@@ -580,13 +580,13 @@ fn moving_the_slider_on_a_magnified_view_re_runs_only_the_stage_with(r: &Rendere
     let src = d.source();
     let mut st = cell(400.0, 300.0);
     st.set_mode(ViewportMode::Percent { value: 300.0 }, (800, 600));
-    let first = frame(&r, &src, &st).report.runs;
+    let first = frame(r, &src, &st).report.runs;
     assert_eq!(
         (first.output_passes, first.color_passes),
         (1, 1),
         "{first:?}"
     );
-    let moved = frame(&r, &with_amount(&src, 50.0), &st).report.runs;
+    let moved = frame(r, &with_amount(&src, 50.0), &st).report.runs;
     assert_eq!(
         moved,
         StageRuns {
@@ -615,8 +615,8 @@ fn a_magnified_view_pans_and_letterboxes_like_the_whole_picture_with(r: &Rendere
     // on each side. The photo is what the same view without paper shows, and the paper is paper.
     let d = developed(200, 150);
     let src = d.source();
-    let wide = frame(&r, &src, &cell(800.0, 300.0));
-    let exact = frame(&r, &src, &cell(400.0, 300.0));
+    let wide = frame(r, &src, &cell(800.0, 300.0));
+    let exact = frame(r, &src, &cell(400.0, 300.0));
     let background = r.options().background;
     for y in 0..300 {
         for x in 0..800 {

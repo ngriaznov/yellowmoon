@@ -477,14 +477,21 @@ mod tests {
         assert_eq!((auto.radius_px(), auto.halo_px()), (3, 24));
         assert_eq!(auto.dispatches(), 18);
         let big = RlPlan::new(&p(300.0, 2.5)).expect("plan");
-        assert_eq!((big.iterations(), big.radius_px(), big.halo_px()), (10, 10, 24));
+        assert_eq!(
+            (big.iterations(), big.radius_px(), big.halo_px()),
+            (10, 10, 24)
+        );
         assert_eq!(big.bank.len(), KERNEL_LEVELS * 21);
         // Every row of the bank is a normalised kernel.
         for row in big.bank.chunks(21) {
             assert!((row.iter().sum::<f32>() - 1.0).abs() < 1e-6);
         }
         // A radius outside the range is clamped like the CPU's.
-        assert_eq!(RlPlan::new(&p(90.0, 100.0)).expect("plan").radius_px(), 8);
-        assert_eq!(RlPlan::new(&p(90.0, f32::NAN)).expect("plan").radius_px(), 3);
+        // 2.5 px: sigma_max 3.125, ceil(9.375) = 10.
+        assert_eq!(RlPlan::new(&p(90.0, 100.0)).expect("plan").radius_px(), 10);
+        assert_eq!(
+            RlPlan::new(&p(90.0, f32::NAN)).expect("plan").radius_px(),
+            3
+        );
     }
 }

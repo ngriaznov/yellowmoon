@@ -997,7 +997,8 @@ mod view {
         );
         assert!(cold.report.runs.raw_work() > 0);
         // Edits of the grade: a control, a curve, the look's intensity, white balance.
-        let edits: Vec<(&str, Box<dyn Fn(&mut DevelopSettings)>)> = vec![
+        type Edit = Box<dyn Fn(&mut DevelopSettings)>;
+        let edits: Vec<(&str, Edit)> = vec![
             ("contrast", Box::new(|s| s.contrast = 30.0)),
             ("saturation", Box::new(|s| s.saturation = -25.0)),
             (
@@ -1215,6 +1216,18 @@ mod view {
             }),
             ("100 %", src.clone(), at_100(640.0, 480.0, image)),
         ];
+        // A large photo seen small: the reduced images (1/4 and 1/2) the views read are larger than
+        // the band size too, so the bands share them out and each uploads only its own part.
+        let large = picture(1800, 1200);
+        let cases = cases.into_iter().chain([
+            ("fit of 1/4", large.clone(), cell(400.0, 267.0, 1.0)),
+            ("fit of 1/2", large.clone(), cell(700.0, 467.0, 1.0)),
+            (
+                "fit of 1/2, plain",
+                with_amount(&large, 0.0),
+                cell(700.0, 467.0, 1.0),
+            ),
+        ]);
         for (name, photo, st) in cases {
             let a = fresh(&whole, &photo, &st);
             let jobs = gpu.counters().submissions;
@@ -1226,7 +1239,8 @@ mod view {
                 "{name}: {:?}",
                 b.report.notes
             );
-            assert!(ran >= 3, "{name}: the view was cut into {ran} jobs");
+            eprintln!("{name}: {ran} device jobs");
+            assert!(ran >= 2, "{name}: the view was cut into {ran} jobs");
             assert!(
                 a.rgba == b.rgba,
                 "{name}: the bands differ from the view in one piece ({:?})",

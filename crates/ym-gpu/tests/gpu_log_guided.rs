@@ -839,3 +839,63 @@ fn out_of_range_guide_detail_is_clamped_like_the_cpu() {
         assert!(d.max_abs <= FRAME_BOUND, "detail {detail}: {}", d.max_abs);
     }
 }
+
+// MODEL-DUMP-BEGIN (temporary, removed before the end of the task)
+#[test]
+#[ignore = "development aid: YM_MODEL_DUMP=<dir> writes the stripes cases for the clang model"]
+fn zz_model_dump() {
+    let Ok(root) = std::env::var("YM_MODEL_DUMP") else {
+        return;
+    };
+    let Some(dev) = f32_device() else { return };
+    let root = Path::new(&root);
+    std::fs::create_dir_all(root).expect("dir");
+    let put_u32 = |v: &mut Vec<u8>, x: u32| v.extend_from_slice(&x.to_le_bytes());
+    let put_f32 = |v: &mut Vec<u8>, x: f32| v.extend_from_slice(&x.to_le_bytes());
+    let mut write = |name: &str, m: &Mosaic, noise: NoiseDn, detail: i32| {
+        let d = log_guided::derive(noise, detail, 0);
+        let got = run_gpu(dev, m, noise, detail);
+        let want = cpu(m, noise, detail);
+        let mut v = Vec::new();
+        put_u32(&mut v, 0x4c47_444d);
+        put_u32(&mut v, m.width as u32);
+        put_u32(&mut v, m.height as u32);
+        for p in 0..4 {
+            put_u32(&mut v, m.cfa.color_at(p & 1, p >> 1).plane() as u32);
+        }
+        put_f32(&mut v, d.p as f32);
+        put_f32(&mut v, 65535.0);
+        for i in 0..3 {
+            put_f32(&mut v, d.kernel[i] as f32 / 1024.0);
+        }
+        for x in &m.data {
+            put_f32(&mut v, *x);
+        }
+        for x in &want.data {
+            put_f32(&mut v, *x);
+        }
+        for x in &got.data {
+            put_f32(&mut v, *x);
+        }
+        std::fs::write(root.join(format!("{name}.bin")), v).expect("write");
+    };
+    let (w, h) = (40usize, 30usize);
+    for scale in [1e3f32, 1e6, 1e10, 1e20, 1e30] {
+        for transpose in [false, true] {
+            let mut m = Mosaic::new(w, h, Cfa::RGGB);
+            for y in 0..h {
+                for x in 0..w {
+                    let stripe = if transpose { y } else { x };
+                    let level = [0.1f32, 3.0, 0.5, 2.0, 0.05][stripe % 5];
+                    m.data[y * w + x] = level * scale * (1.0 + 0.1 * ((x + y) % 2) as f32);
+                }
+            }
+            write(&format!("stripes_{scale:e}_{transpose}"), &m, NoiseDn::ZERO, 0);
+        }
+    }
+    for (i, cfa) in Cfa::ALL.into_iter().enumerate() {
+        let m = hostile(83, 59, cfa, 900 + i as u64);
+        write(&format!("hostile_{}", cfa.name()), &m, NoiseDn::ZERO, 0);
+    }
+}
+// MODEL-DUMP-END

@@ -50,8 +50,8 @@
 //!   2 are computed on the CPU in `f64` (the same code paths as the CPU reference) and passed as taps
 //!   and uniforms.
 //! * **Rank counts.** The limiter's counts depend on exact `f32` values of `L` and `S = L + Hacc`.
-//!   `L` has the CPU's bits when the driver does not contract the luma into fused multiply-adds
-//!   (checked in `tests/gpu_output_sharpen.rs`); `S` differs from the CPU's wherever `f32` and `f64`
+//!   `L` has the CPU's bits on every device (the products are pinned and the square root is the
+//!   shader's own, see below; checked in `tests/gpu_output_sharpen.rs`); `S` differs from the CPU's wherever `f32` and `f64`
 //!   accumulation round the high-pass differently, which flips a count where the content has ties in
 //!   exact arithmetic (noiseless bars, checkerboards, diagonals: spec 5.4). On noisy and
 //!   photographic content no count flips at frame sizes up to 150 x 113 and 2 to 4 of 2.8 million
@@ -68,21 +68,28 @@
 //! * **Identities are exact by construction.** A stage whose kernel has collapsed to one tap has an
 //!   exactly zero delta (every side tap is 0, the centre term is `L - L`), so [`PreparedSharpen::new`]
 //!   drops it; a setup with no stage left copies its input, bit for bit, on every device. The
-//!   transfer takes the ratio `(L + D) / max(L, floor)` as exactly 1 when `D == 0` instead of
-//!   dividing: Metal's `a / b` is `a * (1 / b)`, which is not 1 for many `a == b`.
-//! * **The luma cannot be fused or re-associated.** Fast-math fuses `(w c) c + a` into a multiply-add
-//!   and re-associates the product `(w c) c` into `w (c c)`; both move the last bit of `L`. Passing
-//!   each product through `abs` stops the fusing but not the re-association (the optimised code of
-//!   clang `-O2 -ffast-math`, LLVM like Metal's compiler, left 16 % of 2 million random lumas one ulp
-//!   off the strict value with `abs`, 19 % without it). Every factor and partial sum of the luma
-//!   is therefore XORed with a uniform that is 0 at run time and unknown to the compiler
-//!   (`opaque` in `output_sharpen.wgsl`, the device of the diffraction kernel): the same model gives
-//!   0 of 2 million lumas off. The square root is the one operation left to the driver.
-//! * **What fast-math still changes** is the last bit of a division or square root, and the rounding
-//!   of accumulations it fuses (`fma`). Those move a sample by an ulp of its own size (1.5e-5 at the
-//!   ratio cap on a value of 8: the HDR vector), and flip rank counts at a handful of ties per
-//!   million pixels. Both are inherent to `f32` decisions and have their own columns in the tests
-//!   (`tests/gpu_output_sharpen.rs`, hardware adapters only); no lavapipe bound is loosened.
+//!   transfer takes the ratio `(L + D) / max(L, floor)` as exactly 1 when `D == 0`.
+//! * **Nothing the limiter compares can move by an ulp.** The limiter counts window samples of `L`
+//!   and `S = L + Hacc` by exact comparisons, so one ulp at a near-tie flips a count and moves a pixel
+//!   by up to 2e-3. On Metal at b6f2e4b three things did that: its `sqrt` left 27 to 37 % of the lumas
+//!   1 or 2 ulp off, its division is the dividend times an approximate reciprocal, and it fused the
+//!   blurs' products into multiply-adds. So every product that meets a sum, every partial sum and
+//!   every difference whose rounding matters is XORed with a uniform that is 0 at run time and unknown
+//!   to the compiler (`opaque` in `output_sharpen.wgsl`): one operation per barrier, nothing left to
+//!   fuse or re-associate. Every square root and division is computed in integer arithmetic, correctly
+//!   rounded (`sharpen_sqrt`, `sharpen_div`; the device's own only for zero, subnormal or non-finite
+//!   operands). IEEE arithmetic is unchanged, so lavapipe gives the bits it gave before.
+//! * **Evidence without a Mac.** A C port of the shader, compiled with clang `-O2` and `-O3`
+//!   `-ffast-math -ffp-contract=fast -mfma` (LLVM, like Metal's compiler) and with a square root and a
+//!   reciprocal 1 to 2 ulp off, gives the bits of the strict build on all 67 cases of the four failing
+//!   tests (the 16 vectors, 28 noisy and photographic frames, 21 flip and transpose runs, the two
+//!   2048 x 1365 limiter cases); the same port of the shader before the change reproduces Metal's
+//!   1.959e-3 on the 2048 px export exactly. The tests therefore hold hardware adapters to the
+//!   lavapipe bounds (`tests/gpu_output_sharpen.rs`), and `docs/gpu-plan.md` section 12 has the numbers.
+//!
+//! The cost: the luma and the gradient take a 26-step integer square root, and the window, the
+//! accumulation and the transfer take up to eleven 26-step integer divisions per pixel (on lavapipe
+//! the 2048 x 1365 frame takes about 1.3 times as long).
 
 use std::sync::Arc;
 
@@ -234,8 +241,8 @@ struct ParamsU {
     org_y: u32,
     bg: u32,
     copy_only: u32,
-    /// Always 0: the shader XORs the luma terms with it so that no compiler can re-associate or
-    /// fuse them (`opaque` in `output_sharpen.wgsl`). Nothing sets it.
+    /// Always 0: the shader XORs the terms whose rounding matters with it so that no compiler can
+    /// re-associate or fuse them (`opaque` in `output_sharpen.wgsl`). Nothing sets it.
     zero: u32,
     pad: [u32; 3],
 }

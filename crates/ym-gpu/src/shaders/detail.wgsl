@@ -4,6 +4,11 @@
 // "network output" is the denoised image and `Y_classical` the demosaic before the denoise, so the
 // stage puts back a fraction of what the denoise removed.
 //
+// Fast-math (Metal, K8): every product and partial sum is hidden behind `opaque`, so the stage keeps
+// the CPU's bits under a compiler that contracts and re-associates (a C model of the sequence under
+// clang -O3 -ffast-math -ffp-contract=fast -mfma gives the strict bits; without the barriers 17 % of
+// the samples are an ulp off).
+//
 // Two small passes. `detail_luma` forms Y_classical, the luma plane of the image that goes into the
 // denoise, for the pixels the denoise outputs (the classical image itself is never kept: the stage
 // reads nothing but its luma); `detail_inject` adds the delta. The luma is formed with the CPU's
@@ -16,7 +21,7 @@ struct DtParams {
     dims: vec4<u32>,   // input width, height, row stride, plane length
     core: vec4<u32>,   // core x, y, width, height in the input
     dst: vec4<u32>,    // output row stride, output plane length, luma plane row stride, 0
-    org: vec4<u32>,    // the input's origin in the luma plane (x, y)
+    org: vec4<u32>,    // the input's origin in the luma plane (x, y), 0, zero (always 0: see `opaque`)
     k: vec4<f32>,      // beta
     luma: vec4<f32>,   // luma weights (R, G, B)
 };
@@ -26,9 +31,20 @@ struct DtParams {
 @group(0) @binding(2) var<storage, read_write> yc: array<f32>;
 @group(0) @binding(3) var<storage, read_write> dst: array<f32>;
 
+// Always 0 at run time, which the optimiser cannot know: a value xor-ed with it is hidden from
+// reassociation and from contraction into a fused multiply-add (the technique of `diffraction.wgsl`).
+fn opaque(x: f32) -> f32 {
+    return bitcast<f32>(bitcast<u32>(x) ^ dt.org.w);
+}
+
+// The luma as the CPU forms it: three rounded products added left to right, every intermediate hidden
+// so that Metal's fast-math compiler cannot fuse or reorder them.
 fn luma_at(x: u32, y: u32) -> f32 {
     let i = y * dt.dims.z + x;
-    return dt.luma.x * img[i] + dt.luma.y * img[dt.dims.w + i] + dt.luma.z * img[2u * dt.dims.w + i];
+    let r = opaque(dt.luma.x * img[i]);
+    let g = opaque(dt.luma.y * img[dt.dims.w + i]);
+    let b = opaque(dt.luma.z * img[2u * dt.dims.w + i]);
+    return opaque(opaque(r + g) + b);
 }
 
 // Y_classical of the core pixels of the input, into a plane of the core's size (row stride `dst.z`).
@@ -48,7 +64,7 @@ fn detail_inject(gid: vec3<u32>) {
     let py = dt.core.y + gid.y;
     let i = py * dt.dims.z + px;
     let yn = luma_at(px, py);
-    let d = dt.k.x * (yc[(dt.org.y + py) * dt.dst.z + dt.org.x + px] - yn);
+    let d = opaque(dt.k.x * opaque(yc[(dt.org.y + py) * dt.dst.z + dt.org.x + px] - yn));
     let o = gid.y * dt.dst.x + gid.x;
     dst[o] = img[i] + d;
     dst[dt.dst.y + o] = img[dt.dims.w + i] + d;

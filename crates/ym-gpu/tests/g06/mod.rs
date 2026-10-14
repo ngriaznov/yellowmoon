@@ -29,7 +29,10 @@ pub struct Err {
 impl Err {
     /// How many samples differ by more than `bound` (a NaN on one side counts).
     pub fn over(a: &[f32], b: &[f32], bound: f32) -> usize {
-        a.iter().zip(b).filter(|&(&x, &y)| !(diff(x, y) <= bound)).count()
+        a.iter()
+            .zip(b)
+            .filter(|&(&x, &y)| diff(x, y).is_nan() || diff(x, y) > bound)
+            .count()
     }
 }
 
@@ -56,7 +59,7 @@ pub fn compare(a: &[f32], b: &[f32]) -> Err {
     let mut sum = 0.0f64;
     for (i, (&x, &y)) in a.iter().zip(b).enumerate() {
         let d = diff(x, y);
-        if !(d <= e.max) {
+        if d.is_nan() || d > e.max {
             e.max = d;
             e.at = i;
         }

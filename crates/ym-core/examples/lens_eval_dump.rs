@@ -225,7 +225,7 @@ fn main() {
                 )
                 .expect("lens")
                 .with_crop(crop);
-                full.chain.lens = Some(geo);
+                full.chain_mut().lens = Some(geo);
                 let img = full.run_tile(&frame, whole).expect("chain");
                 write_f32(
                     &out_dir.join(format!("{stem}.{method_name}.{name}.f32")),

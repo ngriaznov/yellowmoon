@@ -36,8 +36,12 @@
 // (Metal, fast-math) would otherwise change exactly the digits this filter is sensitive to.
 //
 // Fast-math (Metal, K8): the exactness above rests on `opaque` hiding every rounded value and every
-// error term of the two-sum and the quotient from the optimiser, as in `diffraction.wgsl`; nothing rests
-// on infinities. The shader assumes round-to-nearest f32 add and multiply.
+// error term of the two-sum and the quotients from the optimiser, as in `diffraction.wgsl`, and on
+// every division being refined from its exact remainder (`run_mean`, `div_cr`), so a divide that is
+// off by a few ulp (Metal's fast-math one may be) still gives the correctly rounded quotient; nothing
+// rests on infinities. The shader assumes round-to-nearest f32 add and multiply. A C model of the
+// passes compiled with clang -O3 -ffast-math -ffp-contract=fast -mfma (and with -mrecip, and with a
+// division made 3 ulp wrong on purpose) gives the strict bits in every sample.
 //
 // Bindings: 0 uniform, 1 the input planes, 2 and 3 two scratch buffers (6 and 4 planes of the input's
 // size, `w * h` per plane, no padding), 4 the sigma plane, 5 the output (the core).
@@ -106,14 +110,37 @@ fn run_add(r: Run, x: f32) -> Run {
     return Run(t.x, r.lo + t.y);
 }
 
-// The correctly rounded f32 of (hi + lo) / count: the quotient of the leading part, its exact
-// remainder (q n is formed exactly by `two_prod`), and the remainder's quotient, added once.
+// The correctly rounded f32 of (hi + lo) / count, also where the exact mean is a tie between two f32
+// values and whatever the accuracy of the driver's division (Metal's fast-math divide is allowed
+// 2.5 ulp): the quotient of the leading part, its exact remainder (q n is formed exactly by
+// `two_prod`), the remainder's own quotient refined once the same way, and one rounding at the end.
+// A C model of this sequence under clang -O3 -ffast-math -ffp-contract=fast, with a division that
+// is off by up to 3 ulp, gives the f64 mean rounded to f32 in 2 million of 2 million windows (without
+// the refinement, 28,916 differ: exact ties broken the wrong way).
 fn run_mean(r: Run, count: u32) -> f32 {
     let n = f32(count);
     let q = opaque(r.hi / n);
     let p = two_prod(q, n);
-    let rem = opaque(opaque(r.hi - p.x) - p.y) + r.lo;
-    return q + rem / n;
+    let rem = opaque(opaque(opaque(r.hi - p.x) - p.y) + r.lo);
+    let c1 = opaque(rem / n);
+    let p2 = two_prod(c1, n);
+    let rem2 = opaque(opaque(rem - p2.x) - p2.y);
+    let c = opaque(c1 + opaque(rem2 / n));
+    return q + c;
+}
+
+// The correctly rounded f32 of x / d whatever the accuracy of the driver's division: the quotient,
+// its exact remainder and the remainder's quotient refined once, as in `run_mean`. The CPU divides
+// in f32 (or rounds an f64 quotient), so this gives its bits where a fast-math divide would be off
+// by an ulp.
+fn div_cr(x: f32, d: f32) -> f32 {
+    let q = opaque(x / d);
+    let p = two_prod(q, d);
+    let rem = opaque(opaque(x - p.x) - p.y);
+    let c1 = opaque(rem / d);
+    let p2 = two_prod(c1, d);
+    let rem2 = opaque(opaque(rem - p2.x) - p2.y);
+    return q + opaque(c1 + opaque(rem2 / d));
 }
 
 // Y = a_R R + a_G G + a_B B as the CPU forms it: three rounded products added left to right. Every
@@ -208,14 +235,14 @@ fn gd_cols(gid: vec3<u32>) {
     }
     let m = column_means(gid.x, gid.y, 6u);
     let s = sgm[(gp.sig.y + gid.y) * gp.dst.z + gp.sig.x + gid.x];
-    let eps = max(s * s * gp.k.x, 1e-10);
+    let eps = max(opaque(s * s) * gp.k.x, 1e-10);
     // The products that are subtracted from a number of their own size are rounded on their own, as
     // the CPU's stored f32 values are.
-    let inv = 1.0 / (max(m[1] - opaque(m[0] * m[0]), 0.0) + eps);
+    let inv = opaque(div_cr(1.0, max(m[1] - opaque(m[0] * m[0]), 0.0) + eps));
     let o = gid.y * w + gid.x;
     // Cr: mean m[2], correlation with Y m[3]; Cb: m[4] and m[5].
-    let a_cr = (m[3] - opaque(m[0] * m[2])) * inv;
-    let a_cb = (m[5] - opaque(m[0] * m[4])) * inv;
+    let a_cr = opaque(opaque(m[3] - opaque(m[0] * m[2])) * inv);
+    let a_cb = opaque(opaque(m[5] - opaque(m[0] * m[4])) * inv);
     s2[o] = a_cr;
     s2[gp.sig.z + o] = m[2] - opaque(a_cr * m[0]);
     s2[2u * gp.sig.z + o] = a_cb;
@@ -257,12 +284,15 @@ fn gd_out(gid: vec3<u32>) {
     let g = img[gp.dims.w + i];
     let b = img[2u * gp.dims.w + i];
     let yl = luma_of(r, g, b);
-    let fcr = m[0] * yl + m[1];
-    let fcb = m[2] * yl + m[3];
+    // The products are rounded on their own as the CPU's are (no fused multiply-add), and the
+    // division by the green weight is correctly rounded (`div_cr`), as the CPU's.
+    let fcr = opaque(opaque(m[0] * yl) + m[1]);
+    let fcb = opaque(opaque(m[2] * yl) + m[3]);
     let red = fcr + yl;
     let blue = fcb + yl;
     let o = gid.y * gp.dst.x + gid.x;
     dst[o] = red;
-    dst[gp.dst.y + o] = (yl - gp.luma.x * red - gp.luma.z * blue) / gp.luma.y;
+    dst[gp.dst.y + o] =
+        div_cr(opaque(opaque(yl - opaque(gp.luma.x * red)) - opaque(gp.luma.z * blue)), gp.luma.y);
     dst[2u * gp.dst.y + o] = blue;
 }

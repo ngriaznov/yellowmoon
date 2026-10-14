@@ -19,7 +19,9 @@ mod common;
 #[path = "g06/mod.rs"]
 mod g06;
 
-use common::exact::{assert_all_finite, assert_bit_equal, assert_poison_neutral, assert_tiles_equal_whole};
+use common::exact::{
+    assert_all_finite, assert_bit_equal, assert_poison_neutral, assert_tiles_equal_whole,
+};
 use common::limits::assert_max_binding_bytes;
 use common::{TestGpu, gpus};
 use g06::{FNV_START, compare, fnv, placed, sigma_plane};
@@ -99,7 +101,7 @@ fn blur(img: &RgbImage, sigma: f32) -> RgbImage {
 
 /// A soft, noisy scene of text and natural texture: what R8 is made for.
 fn soft_scene(w: usize, h: usize, seed: u64, noise: f32) -> RgbImage {
-    let sharp = if seed % 2 == 0 {
+    let sharp = if seed.is_multiple_of(2) {
         synth::fine_text(w, h, 2)
     } else {
         synth::natural(w, h, seed)
@@ -149,12 +151,23 @@ fn cpu_reference(img: &RgbImage, sigma: &SigmaOwned, params: &SharpenParams) -> 
     richardson_lucy_whole(img, params, &NoiseSigma::Plane(&plane), 0)
 }
 
+/// One case: width, height, the frame it is cut from (`x0, y0, frame width, frame height`), the
+/// sigma, the amount and the radius.
+type RlCase = (
+    usize,
+    usize,
+    Option<(usize, usize, usize, usize)>,
+    SigmaOwned,
+    f32,
+    f32,
+);
+
 #[test]
 fn matches_the_cpu_for_every_iteration_count() {
     let Some(dev) = f32_device() else { return };
     let mut worst_by_n = [0.0f32; 11];
     // (width, height, frame, sigma, amount, radius): `frame` places the image in a bigger frame.
-    let mut cases: Vec<(usize, usize, Option<(usize, usize, usize, usize)>, SigmaOwned, f32, f32)> = Vec::new();
+    let mut cases: Vec<RlCase> = Vec::new();
     for n in 1..=10usize {
         let amount = 30.0 * n as f32;
         cases.push((96, 72, None, SigmaOwned::Scalar(0.004), amount, 0.8));
@@ -218,10 +231,17 @@ fn matches_the_cpu_for_every_iteration_count() {
         );
         worst_by_n[n] = worst_by_n[n].max(e.max);
         let limit = bound(dev, if n <= 4 { BOUND_N4 } else { BOUND });
-        assert!(e.max <= limit, "case {i} {w}x{h} n {n}: {:e} > {limit:e}", e.max);
+        assert!(
+            e.max <= limit,
+            "case {i} {w}x{h} n {n}: {:e} > {limit:e}",
+            e.max
+        );
         // It did something: R8 changes the image.
         if w * h > 100 {
-            assert!(compare(&got.data, &img.data).max > 1e-3, "case {i}: nothing sharpened");
+            assert!(
+                compare(&got.data, &img.data).max > 1e-3,
+                "case {i}: nothing sharpened"
+            );
         }
     }
     let line: Vec<String> = (1..=10)
@@ -229,7 +249,11 @@ fn matches_the_cpu_for_every_iteration_count() {
         .collect();
     g06::ci_note(
         "richardson-lucy",
-        &format!("Richardson-Lucy on {}: worst by iterations: {}", dev.gpu.info().name, line.join(", ")),
+        &format!(
+            "Richardson-Lucy on {}: worst by iterations: {}",
+            dev.gpu.info().name,
+            line.join(", ")
+        ),
     );
 }
 
@@ -280,7 +304,10 @@ fn tiles_with_the_plans_halo_equal_the_whole_frame_bit_for_bit() {
     });
     let want = cpu_reference(&img, &SigmaOwned::Plane(plane), &params);
     let e = compare(&whole, &want.data);
-    eprintln!("[G-06] rl 203x157 tiles (n 4): against the CPU max {:.3e}", e.max);
+    eprintln!(
+        "[G-06] rl 203x157 tiles (n 4): against the CPU max {:.3e}",
+        e.max
+    );
     assert!(e.max <= bound(dev, BOUND_N4), "{:e}", e.max);
 }
 
@@ -296,20 +323,29 @@ fn beyond_the_halo_cap_a_tile_differs_from_the_whole_frame_by_a_little() {
         radius_px: 1.5,
     };
     let plan = RlPlan::new(&params).expect("plan");
-    assert_eq!((plan.iterations(), plan.radius_px(), plan.halo_px()), (10, 6, 24));
+    assert_eq!(
+        (plan.iterations(), plan.radius_px(), plan.halo_px()),
+        (10, 6, 24)
+    );
     let img = soft_scene(w, h, 33, 0.004);
     let plane = sigma_plane(w, h, 22);
     let sigma = SigmaOwned::Plane(plane.clone());
     let whole = run_gpu(dev, &img, Rect::whole(w, h), &sigma, params);
     let mut worst = 0.0f32;
-    for core in [Rect::new(50, 40, 60, 50), Rect::new(0, 0, 70, 60), Rect::new(133, 97, 70, 60)] {
+    for core in [
+        Rect::new(50, 40, 60, 50),
+        Rect::new(0, 0, 70, 60),
+        Rect::new(133, 97, 70, 60),
+    ] {
         let (sub, rel, sig) = tile_of(&img, &plane, core, plan.halo_px());
         let tile = run_gpu(dev, &sub, rel, &SigmaOwned::Plane(sig), params);
         let want = whole.extract(core);
         let e = compare(&tile.data, &want.data);
         worst = worst.max(e.max);
     }
-    eprintln!("[G-06] rl beyond the cap (n 10, exact radius 120, halo 24): tile against whole {worst:.3e}");
+    eprintln!(
+        "[G-06] rl beyond the cap (n 10, exact radius 120, halo 24): tile against whole {worst:.3e}"
+    );
     assert!(worst <= BEYOND_CAP_BOUND, "{worst:e}");
     // The CPU's own band decomposition has the same property: report it for comparison.
     let cpu_whole = cpu_reference(&img, &sigma, &params);
@@ -336,7 +372,10 @@ fn the_psf_follows_the_position_in_the_frame() {
     let corner = placed(base, 8658 - 80, 5772 - 60, 8658, 5772);
     let a = run_gpu(dev, &centre, Rect::whole(80, 60), &sigma, params);
     let b = run_gpu(dev, &corner, Rect::whole(80, 60), &sigma, params);
-    assert!(compare(&a.data, &b.data).max > 1e-4, "the PSF did not depend on the position");
+    assert!(
+        compare(&a.data, &b.data).max > 1e-4,
+        "the PSF did not depend on the position"
+    );
     for (img, got) in [(&centre, &a), (&corner, &b)] {
         let want = cpu_reference(img, &sigma, &params);
         assert!(compare(&got.data, &want.data).max <= bound(dev, BOUND_N4));
@@ -358,9 +397,26 @@ fn damping_holds_flat_noise_down_on_the_device_as_on_the_cpu() {
         let m = y.iter().sum::<f32>() / y.len() as f32;
         (y.iter().map(|v| (v - m).powi(2)).sum::<f32>() / y.len() as f32).sqrt()
     };
-    let plain = run_gpu(dev, &img, Rect::whole(64, 64), &SigmaOwned::Scalar(0.0), params);
-    let damped = run_gpu(dev, &img, Rect::whole(64, 64), &SigmaOwned::Scalar(0.01), params);
-    assert!(sd(&damped) < sd(&plain), "{} !< {}", sd(&damped), sd(&plain));
+    let plain = run_gpu(
+        dev,
+        &img,
+        Rect::whole(64, 64),
+        &SigmaOwned::Scalar(0.0),
+        params,
+    );
+    let damped = run_gpu(
+        dev,
+        &img,
+        Rect::whole(64, 64),
+        &SigmaOwned::Scalar(0.01),
+        params,
+    );
+    assert!(
+        sd(&damped) < sd(&plain),
+        "{} !< {}",
+        sd(&damped),
+        sd(&plain)
+    );
     assert!(sd(&damped) < 1.5 * sd(&img));
 }
 
@@ -375,7 +431,13 @@ fn a_poisoned_device_and_a_plain_one_give_the_same_bits() {
     assert_poison_neutral("richardson-lucy", |gpu| {
         let (img, plane) = (img.clone(), plane.clone());
         gpu.run(JobSpec::new(Priority::Viewport), move |ctx, _| {
-            gpu_rl(ctx, &img, Rect::whole(70, 50), &SigmaInput::Plane(&plane), &params)
+            gpu_rl(
+                ctx,
+                &img,
+                Rect::whole(70, 50),
+                &SigmaInput::Plane(&plane),
+                &params,
+            )
         })
         .expect("run")
         .data
@@ -394,7 +456,13 @@ fn thread_count_does_not_change_a_bit() {
                 amount,
                 radius_px: 0.9,
             };
-            let out = run_gpu(dev, &img, Rect::whole(w, hh), &SigmaOwned::Plane(plane), params);
+            let out = run_gpu(
+                dev,
+                &img,
+                Rect::whole(w, hh),
+                &SigmaOwned::Plane(plane),
+                params,
+            );
             h = fnv(h, &out.data);
         }
         h
@@ -404,7 +472,11 @@ fn thread_count_does_not_change_a_bit() {
 #[test]
 fn bindings_fit_the_design_binding_at_the_largest_rectangle() {
     let side = (MAX_PHYS_AREA as f64).sqrt() as usize;
-    assert_max_binding_bytes("richardson-lucy", Rect::new(0, 0, side, side), max_binding_bytes);
+    assert_max_binding_bytes(
+        "richardson-lucy",
+        Rect::new(0, 0, side, side),
+        max_binding_bytes,
+    );
     let _ = richardson_lucy::RlPlan::new;
 }
 
@@ -418,15 +490,25 @@ fn bad_inputs_are_refused_with_the_reason() {
     };
     let run = |core: Rect, sigma: SigmaOwned| {
         let img = img.clone();
-        dev.gpu.run(JobSpec::new(Priority::Viewport), move |ctx, _| {
-            gpu_rl(ctx, &img, core, &sigma.as_input(), &params)
-        })
+        dev.gpu
+            .run(JobSpec::new(Priority::Viewport), move |ctx, _| {
+                gpu_rl(ctx, &img, core, &sigma.as_input(), &params)
+            })
     };
     assert!(run(Rect::whole(30, 30), SigmaOwned::Scalar(0.01)).is_ok());
     for (what, result) in [
-        ("core outside", run(Rect::new(20, 20, 20, 20), SigmaOwned::Scalar(0.01))),
-        ("empty core", run(Rect::new(0, 0, 0, 3), SigmaOwned::Scalar(0.01))),
-        ("short sigma plane", run(Rect::whole(30, 30), SigmaOwned::Plane(vec![0.01; 5]))),
+        (
+            "core outside",
+            run(Rect::new(20, 20, 20, 20), SigmaOwned::Scalar(0.01)),
+        ),
+        (
+            "empty core",
+            run(Rect::new(0, 0, 0, 3), SigmaOwned::Scalar(0.01)),
+        ),
+        (
+            "short sigma plane",
+            run(Rect::whole(30, 30), SigmaOwned::Plane(vec![0.01; 5])),
+        ),
     ] {
         let err = result.expect_err(what);
         assert!(matches!(err, GpuError::InvalidInput(_)), "{what}: {err}");

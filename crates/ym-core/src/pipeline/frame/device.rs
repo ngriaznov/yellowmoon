@@ -109,7 +109,9 @@ pub(super) struct ViewRoute {
     ///
     /// [`RenderOptions::view_band_bytes`]: crate::pipeline::RenderOptions::view_band_bytes
     pub band_bytes: u64,
-    /// The largest storage binding of the device: what the uploaded camera RGB of a view must fit.
+    /// The largest uploaded camera RGB of one device pass: the same constant as the frame's (a
+    /// renderer constant, not the device's limit, so that the cut does not depend on the machine:
+    /// `docs/gpu-plan.md` N-1).
     pub source_bytes: u64,
 }
 
@@ -121,12 +123,7 @@ impl ViewRoute {
             spec: JobSpec::new(priority).owned_by(u64::from(job.src.id.0)),
             token: job.cancel.clone(),
             band_bytes: job.options().view_band_bytes,
-            source_bytes: gpu
-                .gpu
-                .info()
-                .limits
-                .max_storage_buffer_binding_size
-                .min(gpu.gpu.info().limits.max_buffer_size),
+            source_bytes: job.options().view_band_bytes,
             gpu: gpu.gpu,
         }
     }
@@ -241,8 +238,8 @@ pub(super) enum DeviceInput {
 
 impl DeviceInput {
     /// Whether the buffers of a job over this input fit one storage binding: the frame (four
-    /// planes of f32, which the colour pass, the sharpening and C13 read and write) within the
-    /// route's band size, and the uploaded camera RGB within the device's binding limit.
+    /// planes of f32, which the colour pass, the sharpening and C13 read and write) and the uploaded
+    /// camera RGB within the route's band size.
     pub(super) fn fits(&self, route: &ViewRoute) -> bool {
         let even = |n: usize| n.next_multiple_of(2) as u64;
         let frame = |w: usize, h: usize| 16 * even(w) * h as u64 <= route.band_bytes;
@@ -766,7 +763,6 @@ mod tests {
         assert_eq!(&rgb[..6], &[1.0, 5.0, 9.0, 2.0, 6.0, 10.0]);
         assert_eq!(outside, Some(vec![0, 0, 1, 0]));
         // No pixel outside: no mask.
-        let mut planar = planar;
         planar[12..].fill(0.0);
         assert_eq!(sampled_of(2, 2, planar.clone()).outside, None);
         assert_eq!(interleave_display(2, 2, 4, &planar).1, None);

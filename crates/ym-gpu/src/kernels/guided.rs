@@ -177,7 +177,12 @@ pub fn encode_guided(
             sigma.stride as u32,
             r as u32,
         ],
-        sig: [sigma_origin.0 as u32, sigma_origin.1 as u32, plane as u32, 0],
+        sig: [
+            sigma_origin.0 as u32,
+            sigma_origin.1 as u32,
+            plane as u32,
+            0,
+        ],
         k: [k, 0.0, 0.0, 0.0],
         luma: [LUMA[0], LUMA[1], LUMA[2], 0.0],
     };
@@ -190,7 +195,11 @@ pub fn encode_guided(
     passes.dispatch(
         KernelId::Guided,
         "guided rows",
-        &[(0, ub.binding()), (1, input.buf.binding()), (2, s1.binding())],
+        &[
+            (0, ub.binding()),
+            (1, input.buf.binding()),
+            (2, s1.binding()),
+        ],
         whole,
     )?;
     passes.dispatch(
@@ -363,6 +372,31 @@ mod tests {
             assert_eq!(m.offset as usize, offset, "offset of {name}");
         }
         assert_eq!(*span as usize, size_of::<GdU>());
+    }
+
+    #[test]
+    fn the_sums_and_quotients_are_hidden_from_the_optimiser() {
+        // Metal compiles with fast-math: the exact window sums, the refined quotients and the products
+        // that are subtracted from numbers of their own size must stay behind `opaque` (a C model of
+        // this text under clang -ffast-math gives the strict bits; without the barriers 22 % of the
+        // outputs and, at exact ties, 1 in 700 means are an ulp off). Lavapipe does not re-associate,
+        // so only the text can pin it.
+        let src = include_str!("../shaders/guided.wgsl");
+        for needle in [
+            "return bitcast<f32>(bitcast<u32>(x) ^ gp.sig.w);",
+            "let ea = opaque(a - ad);",
+            "let eb = opaque(b - bb);",
+            "let rem2 = opaque(opaque(rem - p2.x) - p2.y);",
+            "let c = opaque(c1 + opaque(rem2 / n));",
+            "let inv = opaque(div_cr(1.0,",
+            "let a_cr = opaque(opaque(m[3] - opaque(m[0] * m[2])) * inv);",
+            "let fcr = opaque(opaque(m[0] * yl) + m[1]);",
+            "opaque(yl * yl)",
+            "div_cr(opaque(opaque(yl - opaque(gp.luma.x * red)) - opaque(gp.luma.z * blue)), gp.luma.y)",
+        ] {
+            assert!(src.contains(needle), "guided.wgsl lost `{needle}`");
+        }
+        assert!(!src.contains("fma("), "no fused multiply-add on purpose");
     }
 
     #[test]

@@ -229,12 +229,17 @@ impl HalfSigma {
         let (width, height) = (frame_w / 2, frame_h / 2);
         let mut rng = synth::Rng::new(seed);
         let data = (0..width * height)
-            .map(|i| level * (0.6 + 0.8 * ((i % width) as f32 / width as f32)) + 0.0005 * rng.next_f32())
+            .map(|i| {
+                level * (0.6 + 0.8 * ((i % width) as f32 / width as f32)) + 0.0005 * rng.next_f32()
+            })
             .collect();
         let gains = vignette.then(|| {
             (0..width * height)
                 .map(|i| {
-                    let (x, y) = ((i % width) as f32 / width as f32 - 0.5, (i / width) as f32 / height as f32 - 0.5);
+                    let (x, y) = (
+                        (i % width) as f32 / width as f32 - 0.5,
+                        (i / width) as f32 / height as f32 - 0.5,
+                    );
                     1.0 + 1.6 * (x * x + y * y)
                 })
                 .collect()
@@ -1316,7 +1321,11 @@ fn r6_to_r8_matches_the_cpu_chain() {
     free.print("R6..R8 chain, tie-free content");
     prone.print("R6..R8 chain, tie-prone content");
     assert_within("R6..R8 chain, tie-free content", &free, RAW_GROUP_TIE_FREE);
-    assert_within("R6..R8 chain, tie-prone content", &prone, RAW_GROUP_TIE_PRONE);
+    assert_within(
+        "R6..R8 chain, tie-prone content",
+        &prone,
+        RAW_GROUP_TIE_PRONE,
+    );
 }
 
 #[test]
@@ -1339,7 +1348,10 @@ fn the_stages_after_the_demosaic_match_the_cpu_stages_on_the_same_planes() {
         raw6.gpu_chain = Arc::clone(&raw6.chain);
         raw6.half = None;
         let (ow, oh) = raw8.output_size();
-        for out in [Rect::whole(ow, oh), Rect::new(ow / 3, oh / 3, 33.min(ow - ow / 3), 21.min(oh - oh / 3))] {
+        for out in [
+            Rect::whole(ow, oh),
+            Rect::new(ow / 3, oh / 3, 33.min(ow - ow / 3), 21.min(oh - oh / 3)),
+        ] {
             let a = raw8.gpu(dev, out);
             let b = raw6.gpu(dev, out);
             let s = compare(&a, &b);
@@ -1354,7 +1366,10 @@ fn the_stages_after_the_demosaic_match_the_cpu_stages_on_the_same_planes() {
             );
         }
     }
-    eprintln!("[G-06] stages after the demosaic, R6..R8 against R6..R6: worst {worst:.3e}, mean of the maxima {:.3e}", sum / n as f64);
+    eprintln!(
+        "[G-06] stages after the demosaic, R6..R8 against R6..R6: worst {worst:.3e}, mean of the maxima {:.3e}",
+        sum / n as f64
+    );
     assert!(worst <= POST_STAGES_LARGEST, "{worst:e}");
 }
 
@@ -1427,7 +1442,10 @@ fn the_three_sigma_sources_give_the_same_pixels() {
 /// Chains that skip stages or keep them as identities: every combination of the switches the settings
 /// have, so that the bookkeeping of the rectangles a skipped stage leaves behind (the next stage's
 /// core is named relative to the image it really gets) is exercised.
-fn option_chains() -> Vec<(&'static str, Box<dyn Fn(&mut Chain)>)> {
+/// A named change to a chain.
+type ChainTweak = (&'static str, Box<dyn Fn(&mut Chain)>);
+
+fn option_chains() -> Vec<ChainTweak> {
     vec![
         ("all on", Box::new(|_| {})),
         ("no denoise", Box::new(|c| c.denoise = None)),
@@ -1438,8 +1456,14 @@ fn option_chains() -> Vec<(&'static str, Box<dyn Fn(&mut Chain)>)> {
                 c.noise_reduction.luminance = 0.0;
             }),
         ),
-        ("no colour filter", Box::new(|c| c.noise_reduction.color = 0.0)),
-        ("no detail re-injection", Box::new(|c| c.noise_reduction.detail = 0.0)),
+        (
+            "no colour filter",
+            Box::new(|c| c.noise_reduction.color = 0.0),
+        ),
+        (
+            "no detail re-injection",
+            Box::new(|c| c.noise_reduction.detail = 0.0),
+        ),
         (
             "no colour filter, no detail",
             Box::new(|c| {
@@ -1534,9 +1558,16 @@ fn every_option_of_the_stages_after_the_demosaic_matches_the_cpu_and_the_tiles()
             let a = setup.gpu(dev, out);
             let b = raw6.gpu(dev, out);
             let s = compare(&a, &b);
-            eprintln!("option '{name}' lens {lens:?}: against R6..R6 {:.3e}", s.max_abs);
+            eprintln!(
+                "option '{name}' lens {lens:?}: against R6..R6 {:.3e}",
+                s.max_abs
+            );
             worst_post = worst_post.max(s.max_abs);
-            assert!(s.max_abs <= POST_STAGES_LARGEST, "'{name}' {lens:?}: {}", s.max_abs);
+            assert!(
+                s.max_abs <= POST_STAGES_LARGEST,
+                "'{name}' {lens:?}: {}",
+                s.max_abs
+            );
             if name.starts_with("ten iterations") {
                 // Beyond the halo cap (exact radius 2 * 10 * 7 = 140 px against 24): a tile differs
                 // from the whole frame, on the CPU's bands as on the device (`docs/05`: about 2e-7 on
@@ -1602,7 +1633,13 @@ fn thread_count_does_not_change_a_bit() {
     g06::assert_thread_count_independent("thread_count_does_not_change_a_bit", || {
         let mut h = g06::FNV_START;
         for (cfa, lens, noise, variant, seed) in [
-            (Cfa::RGGB, Lens::Full, high_noise(), Variant::HalfWithGains, 1801u64),
+            (
+                Cfa::RGGB,
+                Lens::Full,
+                high_noise(),
+                Variant::HalfWithGains,
+                1801u64,
+            ),
             (Cfa::GBRG, Lens::Bare, low_noise(), Variant::Scalar, 1802),
         ] {
             let setup = setup_for(Scene::new(120, 90, cfa, seed), lens, noise, variant);
@@ -1672,7 +1709,10 @@ fn splitting_the_demosaic_core_of_the_raw_group_changes_no_bit() {
             assert_eq!(counts.0, vec![1]);
             assert!(counts.1.iter().all(|&n| n >= 6), "cut into {:?}", counts.1);
             assert_bit_equal(
-                &format!("{} {w}x{h}: cut at 4500 padded pixels against whole", cfa.name()),
+                &format!(
+                    "{} {w}x{h}: cut at 4500 padded pixels against whole",
+                    cfa.name()
+                ),
                 &cut.data,
                 &whole.data,
             );
@@ -1714,7 +1754,10 @@ fn the_raw_group_with_diffraction_deconvolution_matches_the_cpu() {
     gpu_off.sharpen = None;
     off.gpu_chain = Arc::new(gpu_off);
     let c = off.gpu(dev, out);
-    assert!(compare(&a, &c).max_abs > 1e-4, "the diffraction stage did nothing");
+    assert!(
+        compare(&a, &c).max_abs > 1e-4,
+        "the diffraction stage did nothing"
+    );
     // Tiles equal the whole (the plan's halo is exact).
     assert_tiles_equal_whole("diffraction in the raw group", ow, oh, 3, &[64], |rect| {
         setup.gpu(dev, rect).data
@@ -1759,7 +1802,12 @@ fn small_frames_through_the_raw_group_match_the_cpu_stages() {
                 let b = raw6.gpu(dev, Rect::whole(ow, oh));
                 let s = compare(&a, &b);
                 worst = worst.max(s.max_abs);
-                assert!(s.max_abs <= 1e-4, "{} {w}x{h} lens {lens:?}: {}", cfa.name(), s.max_abs);
+                assert!(
+                    s.max_abs <= 1e-4,
+                    "{} {w}x{h} lens {lens:?}: {}",
+                    cfa.name(),
+                    s.max_abs
+                );
             }
         }
     }
@@ -1781,7 +1829,12 @@ fn a_cancelled_raw_group_stops_and_leaves_the_pool_at_its_baseline() {
         .run(JobSpec::new(Priority::Viewport), move |ctx, _| {
             let before = ctx.pool().stats().in_use_bytes;
             let g = s.device_chain()?;
-            let ok = g.run_tile(ctx, &s.scene.raw(), Rect::whole(ow, oh), &CancelToken::new())?;
+            let ok = g.run_tile(
+                ctx,
+                &s.scene.raw(),
+                Rect::whole(ow, oh),
+                &CancelToken::new(),
+            )?;
             drop(ok);
             let after_ok = ctx.pool().stats().in_use_bytes;
             let token = CancelToken::new();
@@ -1809,11 +1862,20 @@ fn a_cancelled_raw_group_stops_and_leaves_the_pool_at_its_baseline() {
                 &token,
             );
             let after_cancel = ctx.pool().stats().in_use_bytes;
-            Ok((before, after_ok, after_cancel, ran, (err.map(|_| ()), again.map(|_| ()))))
+            Ok((
+                before,
+                after_ok,
+                after_cancel,
+                ran,
+                (err.map(|_| ()), again.map(|_| ())),
+            ))
         })
         .expect("job");
     assert_eq!(after_ok, before, "a finished tile releases its buffers");
-    assert_eq!(after_cancel, before, "cancelled tiles release their buffers");
+    assert_eq!(
+        after_cancel, before,
+        "cancelled tiles release their buffers"
+    );
     assert!(matches!(err.0, Err(GpuError::Cancelled)), "{:?}", err.0);
     assert!(matches!(err.1, Err(GpuError::Cancelled)), "{:?}", err.1);
     assert_eq!((ran.dispatches, ran.submissions), (0, 0));

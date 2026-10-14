@@ -1256,6 +1256,25 @@ pub fn reduced_rgb(
 // The full-resolution path
 // ---------------------------------------------------------------------------------------------
 
+/// A half-resolution sigma plane that [`FullChain`] can keep: the renderer's cached
+/// `Arc<SigmaPlane>` is shared (no copy), a plain `&SigmaPlane` (tests, tools) is copied once.
+pub trait SharedSigma {
+    /// The plane as a shared value.
+    fn shared(self) -> Arc<SigmaPlane>;
+}
+
+impl SharedSigma for &Arc<SigmaPlane> {
+    fn shared(self) -> Arc<SigmaPlane> {
+        Arc::clone(self)
+    }
+}
+
+impl SharedSigma for &SigmaPlane {
+    fn shared(self) -> Arc<SigmaPlane> {
+        Arc::new(self.clone())
+    }
+}
+
 /// The classical chain at full resolution, prepared: `cpu::chain::Chain` with the real settings
 /// and the whole-frame reductions (the R5 chroma offsets) done.
 ///
@@ -1269,8 +1288,8 @@ pub fn reduced_rgb(
 pub struct FullChain {
     /// The chain without its full-resolution sigma map (and so with `sigma = 0` for its CPU stages).
     chain: Chain,
-    /// The half-resolution noise sigma the map is made from.
-    sigma: SigmaPlane,
+    /// The half-resolution noise sigma the map is made from: the renderer's cached plane, shared.
+    sigma: Arc<SigmaPlane>,
     /// The vignetting profile, for the gain at the centre of each cell.
     vignette: Option<VignetteProfile>,
     /// Frame size in photosites.
@@ -1299,7 +1318,7 @@ impl FullChain {
         frame: &FrameData,
         plan: &RawPlan,
         params: &RawParams,
-        sigma: &SigmaPlane,
+        sigma: impl SharedSigma,
         cancel: &CancelToken,
     ) -> Result<Self, RenderError> {
         Self::with_method(frame, plan, params, sigma, DEFAULT_METHOD, cancel)
@@ -1319,11 +1338,12 @@ impl FullChain {
         frame: &FrameData,
         plan: &RawPlan,
         params: &RawParams,
-        sigma: &SigmaPlane,
+        sigma: impl SharedSigma,
         method: Method,
         cancel: &CancelToken,
     ) -> Result<Self, RenderError> {
         debug_assert!(!frame.reduced);
+        let sigma = sigma.shared();
         let scale = detail::network_sigma_scale(params.noise_reduction.luminance, params.iso);
         let noise = params.noise_dn();
         if !noise_model_is_usable(&params.noise) {
@@ -1353,7 +1373,7 @@ impl FullChain {
         let (out_w, out_h) = chain.output_size(frame.width, frame.height);
         Ok(Self {
             chain,
-            sigma: sigma.clone(),
+            sigma,
             vignette: plan.vignette.clone(),
             frame_w: plan.width,
             frame_h: plan.height,
@@ -1416,6 +1436,14 @@ impl FullChain {
         &self.chain
     }
 
+    /// The chain, to change a setting of it (evaluation tools: another lens geometry, a stage off).
+    /// The CPU's copy with the sigma map is made again from it on the next CPU run, so a change is
+    /// never hidden behind a copy made before it.
+    pub fn chain_mut(&mut self) -> &mut Chain {
+        self.cpu_chain = OnceLock::new();
+        &mut self.chain
+    }
+
     /// Whether the full-resolution sigma map has been made (it is when a CPU stage ran).
     #[must_use]
     pub fn sigma_map_built(&self) -> bool {
@@ -1466,16 +1494,14 @@ impl FullChain {
         }
     }
 
-    /// Bytes the chain holds: the half-resolution sigma and, once made, the cell gains and the
-    /// full-resolution sigma map.
+    /// Bytes the chain holds of its own: once made, the cell gains and the full-resolution sigma map.
+    /// (The half-resolution plane is the renderer's sigma cache, shared, and counted there.)
     #[must_use]
     pub fn bytes(&self) -> usize {
-        self.sigma.bytes()
-            + self
-                .gains
-                .get()
-                .and_then(Option::as_ref)
-                .map_or(0, |g| g.len() * 4)
+        self.gains
+            .get()
+            .and_then(Option::as_ref)
+            .map_or(0, |g| g.len() * 4)
             + self
                 .cpu_chain
                 .get()
@@ -2690,7 +2716,7 @@ mod tests {
             .expect("full chain");
         // Nothing but the half plane is held, and the chain the device walks has no map.
         assert!(!full.sigma_map_built());
-        assert_eq!(full.bytes(), sigma.bytes());
+        assert_eq!(full.bytes(), 0);
         assert!(full.device_chain().sigma_map.is_none());
         let want = full_sigma_map(&sigma, &plan);
         // The half-resolution view the device takes is the cells and the gains of the plan.
@@ -2698,7 +2724,14 @@ mod tests {
         assert_eq!((half.width, half.height), (sigma.width, sigma.height));
         let gains = gain_plane(&plan, 2, sigma.width, sigma.height).expect("gains");
         assert_eq!(half.gains, Some(gains.as_slice()));
-        for (x, y) in [(0usize, 0usize), (3, 5), (160, 120), (159, 119), (160, 0), (0, 120)] {
+        for (x, y) in [
+            (0usize, 0usize),
+            (3, 5),
+            (160, 120),
+            (159, 119),
+            (160, 0),
+            (0, 120),
+        ] {
             assert_eq!(half.at(x, y).to_bits(), want[y * w as usize + x].to_bits());
         }
         assert!(!full.sigma_map_built(), "the half view makes no map");
@@ -2708,14 +2741,21 @@ mod tests {
         assert!(full.sigma_map_built());
         let map = full.cpu_chain().sigma_map.as_ref().expect("map");
         assert_eq!(map.len(), (w * h) as usize);
-        assert!(map.iter().zip(&want).all(|(a, b)| a.to_bits() == b.to_bits()));
-        assert_eq!(full.bytes(), sigma.bytes() + gains.len() * 4 + map.len() * 4);
+        assert!(
+            map.iter()
+                .zip(&want)
+                .all(|(a, b)| a.to_bits() == b.to_bits())
+        );
+        assert_eq!(full.bytes(), gains.len() * 4 + map.len() * 4);
         let mut eager = full.device_chain().clone();
         eager.sigma_map = Some(want);
         let b = eager
             .run_tile(&frame.as_raw_frame(), &full.prepared, tile)
             .expect("eager tile");
-        assert_eq!(a.data, b.data, "the lazy map gives the eager chain's pixels");
+        assert_eq!(
+            a.data, b.data,
+            "the lazy map gives the eager chain's pixels"
+        );
         // The noise reduction was on: the sigma reached the stages (a chain without a map would
         // have denoised nothing, it has `sigma = 0`).
         let blind = full
@@ -2723,6 +2763,18 @@ mod tests {
             .run_tile(&frame.as_raw_frame(), &full.prepared, tile)
             .expect("blind tile");
         assert!(a.max_abs_diff(&blind) > 1e-5, "the sigma map has an effect");
+        // A change through `chain_mut` drops the CPU's copy, so the next CPU run sees it.
+        let mut full = full;
+        full.chain_mut().noise_reduction.color = 0.0;
+        assert!(!full.sigma_map_built());
+        let c = full
+            .run_tile(&frame, tile)
+            .expect("cpu tile after a change");
+        assert!(full.sigma_map_built());
+        assert!(
+            c.max_abs_diff(&a) > 1e-6,
+            "the change reached the CPU chain"
+        );
     }
 
     /// The device: policy `On` through the application's own opener (a device is created nowhere
@@ -2763,7 +2815,10 @@ mod tests {
             ] {
                 let got = gpu
                     .run(JobSpec::new(ym_gpu::queue::Priority::Export), {
-                        let (data, gains) = (sigma.data.clone(), full.sigma_half().gains.map(<[f32]>::to_vec));
+                        let (data, gains) = (
+                            sigma.data.clone(),
+                            full.sigma_half().gains.map(<[f32]>::to_vec),
+                        );
                         let (cw, ch) = (sigma.width, sigma.height);
                         move |ctx, _| {
                             let half = SigmaHalf {
@@ -2782,10 +2837,14 @@ mod tests {
                     .expect("device expansion");
                 let mut cells = Vec::new();
                 for y in rect.y..rect.y1() {
-                    cells.extend_from_slice(&want[y * w as usize + rect.x..y * w as usize + rect.x1()]);
+                    cells.extend_from_slice(
+                        &want[y * w as usize + rect.x..y * w as usize + rect.x1()],
+                    );
                 }
                 assert!(
-                    got.iter().zip(&cells).all(|(a, b)| a.to_bits() == b.to_bits()),
+                    got.iter()
+                        .zip(&cells)
+                        .all(|(a, b)| a.to_bits() == b.to_bits()),
                     "{w}x{h} {rect:?}: the device's sigma plane is not the CPU map's"
                 );
             }
@@ -2818,8 +2877,16 @@ mod tests {
                     .expect("device tile")
             })
             .collect();
-        assert!(!full.sigma_map_built(), "the raw group of the device needs no sigma map");
-        assert_eq!(full.bytes(), sigma.bytes() + full.cell_gains().map_or(0, |g| g.len() * 4));
+        assert!(
+            !full.sigma_map_built(),
+            "the raw group of the device needs no sigma map"
+        );
+        assert_eq!(full.bytes(), full.cell_gains().map_or(0, |g| g.len() * 4));
+        // The renderer's cached plane is shared, not copied.
+        let shared = Arc::new(sigma.clone());
+        let again = FullChain::new(&frame, &plan, &params, &shared, &CancelToken::new())
+            .expect("full chain");
+        assert!(Arc::ptr_eq(&again.sigma, &shared));
         // R6 alone: the CPU denoise, R7 and R8 read the map, which is made now.
         let hybrid: Vec<RgbImage> = rects
             .iter()
@@ -2844,10 +2911,12 @@ mod tests {
                 sum += f64::from(d);
             }
             let mean = sum / a.data.len() as f64;
-            assert!(mean < 2e-6 && worst < 0.05, "mean {mean:e}, worst {worst:e}");
+            assert!(
+                mean < 2e-6 && worst < 0.05,
+                "mean {mean:e}, worst {worst:e}"
+            );
         }
     }
-
 }
 
 #[cfg(test)]

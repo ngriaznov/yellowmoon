@@ -142,9 +142,9 @@ fn placeholder_kernels_are_marked_in_name_and_text_and_write_nothing_but_a_nan()
         .into_iter()
         .filter(|id| id.is_placeholder())
         .collect();
-    // One per kernel family the plan still has to write (G-06 x4, G-07 x7, G-08 x1; G-04's sampler and
-    // encode kernels are real).
-    assert_eq!(placeholders.len(), 12, "{placeholders:?}");
+    // One per kernel family the plan still has to write (G-07 x7, G-08 x1; G-04's sampler and encode
+    // kernels and G-06's denoise, R7 and Richardson-Lucy kernels are real).
+    assert_eq!(placeholders.len(), 8, "{placeholders:?}");
     for id in &placeholders {
         let owner = id.placeholder_owner().expect("owner");
         let src = shader_source(StorageMode::F32, *id);

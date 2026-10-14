@@ -23,10 +23,14 @@ mod common;
 #[path = "g06/mod.rs"]
 mod g06;
 
-use common::exact::{assert_all_finite, assert_bit_equal, assert_poison_neutral, assert_tiles_equal_whole};
+use common::exact::{
+    assert_all_finite, assert_bit_equal, assert_poison_neutral, assert_tiles_equal_whole,
+};
 use common::limits::assert_max_binding_bytes;
 use common::{TestGpu, gpus};
-use g06::{FNV_START, bright_flat_scene, chroma_noisy_scene, compare, fnv, noisy_scene, sigma_plane};
+use g06::{
+    FNV_START, bright_flat_scene, chroma_noisy_scene, compare, fnv, noisy_scene, sigma_plane,
+};
 use ym_gpu::chain::MAX_PHYS_AREA;
 use ym_gpu::cpu::denoise::{BilateralParams, bilateral_whole};
 use ym_gpu::cpu::detail::{chroma_guided_whole, inject_detail as cpu_inject};
@@ -102,7 +106,13 @@ impl SigmaOwned {
     }
 }
 
-fn run_guided(dev: &TestGpu, img: &RgbImage, core: Rect, sigma: &SigmaOwned, color: f32) -> RgbImage {
+fn run_guided(
+    dev: &TestGpu,
+    img: &RgbImage,
+    core: Rect,
+    sigma: &SigmaOwned,
+    color: f32,
+) -> RgbImage {
     let (img, sigma) = (img.clone(), sigma.clone());
     on_device(dev, move |ctx| {
         gpu_chroma_guided(ctx, &img, core, &sigma.as_input(), color)
@@ -121,16 +131,40 @@ fn guided_matches_the_cpu() {
         (5, 7, 0.03, SigmaOwned::Scalar(0.02), 100.0),
         (9, 17, 0.03, SigmaOwned::Scalar(0.03), 10.0),
         (33, 20, 0.03, SigmaOwned::Scalar(0.03), 25.0),
-        (48, 40, 0.03, SigmaOwned::Plane(sigma_plane(48, 40, 1)), 50.0),
+        (
+            48,
+            40,
+            0.03,
+            SigmaOwned::Plane(sigma_plane(48, 40, 1)),
+            50.0,
+        ),
         (64, 48, 0.01, SigmaOwned::Scalar(0.01), 75.0),
         (64, 48, 0.003, SigmaOwned::Scalar(0.003), 100.0),
-        (80, 60, 0.03, SigmaOwned::Plane(sigma_plane(80, 60, 2)), 100.0),
+        (
+            80,
+            60,
+            0.03,
+            SigmaOwned::Plane(sigma_plane(80, 60, 2)),
+            100.0,
+        ),
         (131, 97, 0.03, SigmaOwned::Scalar(0.03), 50.0),
-        (131, 97, 0.01, SigmaOwned::Plane(sigma_plane(131, 97, 3)), 25.0),
+        (
+            131,
+            97,
+            0.01,
+            SigmaOwned::Plane(sigma_plane(131, 97, 3)),
+            25.0,
+        ),
         (97, 131, 0.03, SigmaOwned::Scalar(0.02), 60.0),
         (11, 131, 0.03, SigmaOwned::Scalar(0.03), 50.0),
         (131, 11, 0.03, SigmaOwned::Scalar(0.03), 100.0),
-        (200, 150, 0.03, SigmaOwned::Plane(sigma_plane(200, 150, 4)), 50.0),
+        (
+            200,
+            150,
+            0.03,
+            SigmaOwned::Plane(sigma_plane(200, 150, 4)),
+            50.0,
+        ),
         (200, 150, 0.03, SigmaOwned::Scalar(0.0), 50.0),
     ];
     for (i, (w, h, noise, sigma, color)) in cases.into_iter().enumerate() {
@@ -181,7 +215,13 @@ fn guided_on_bright_flat_scenes_and_without_regularisation() {
         let img = bright_flat_scene(w, h, 90 + i as u64, level, sigma);
         let plane = vec![sig_in; w * h];
         let want = chroma_guided_whole(&img, &NoiseSigma::Plane(&plane), 0, color);
-        let got = run_guided(dev, &img, Rect::whole(w, h), &SigmaOwned::Scalar(sig_in), color);
+        let got = run_guided(
+            dev,
+            &img,
+            Rect::whole(w, h),
+            &SigmaOwned::Scalar(sig_in),
+            color,
+        );
         let e = compare(&got.data, &want.data);
         eprintln!(
             "[G-06] guided bright flat {i}: level {level} noise {sigma} C {color} sigma {sig_in}: max {:.3e} mean {:.2e}",
@@ -196,7 +236,13 @@ fn guided_leaves_the_luma_alone_and_a_zero_strength_is_a_copy() {
     let Some(dev) = f32_device() else { return };
     let (w, h) = (70usize, 50usize);
     let img = chroma_noisy_scene(w, h, 7, 0.03);
-    let got = run_guided(dev, &img, Rect::whole(w, h), &SigmaOwned::Scalar(0.03), 50.0);
+    let got = run_guided(
+        dev,
+        &img,
+        Rect::whole(w, h),
+        &SigmaOwned::Scalar(0.03),
+        50.0,
+    );
     let (a, b) = (img.luma_plane(), got.luma_plane());
     let e = compare(&b, &a);
     eprintln!("[G-06] guided luma change: max {:.3e}", e.max);
@@ -205,18 +251,22 @@ fn guided_leaves_the_luma_alone_and_a_zero_strength_is_a_copy() {
     let n = img.plane_len();
     let chroma_sd = |im: &RgbImage| {
         let y = im.luma_plane();
-        let mut s = 0.0f64;
-        for i in 0..n {
-            let d = f64::from(im.data[i] - y[i]);
-            s += d * d;
-        }
+        let s: f64 = im.data[..n]
+            .iter()
+            .zip(&y)
+            .map(|(r, y)| f64::from(r - y).powi(2))
+            .sum();
         (s / n as f64).sqrt()
     };
     assert!(chroma_sd(&got) < 0.8 * chroma_sd(&img));
     // Zero strength: the host wrapper returns the core, and the entry point refuses to run.
     let core = Rect::new(3, 4, 40, 30);
     let copy = run_guided(dev, &img, core, &SigmaOwned::Scalar(0.03), 0.0);
-    assert_bit_equal("a zero colour strength", &copy.data, &img.extract(core).data);
+    assert_bit_equal(
+        "a zero colour strength",
+        &copy.data,
+        &img.extract(core).data,
+    );
     let refused = dev.gpu.run(JobSpec::new(Priority::Viewport), {
         let img = img.clone();
         move |ctx, _| {
@@ -226,7 +276,10 @@ fn guided_leaves_the_luma_alone_and_a_zero_strength_is_a_copy() {
             encode_guided(&mut passes, &input, Rect::whole(w, h), &sg, (0, 0), 0.0).map(|_| ())
         }
     });
-    assert!(matches!(refused, Err(GpuError::InvalidInput(_))), "{refused:?}");
+    assert!(
+        matches!(refused, Err(GpuError::InvalidInput(_))),
+        "{refused:?}"
+    );
 }
 
 /// The cut of the whole frame that carries a tile's core and `halo` pixels of context.
@@ -254,7 +307,10 @@ fn guided_tiles_equal_the_whole_frame_bit_for_bit() {
         });
         let want = chroma_guided_whole(&img, &NoiseSigma::Plane(&plane), 0, color);
         let e = compare(&whole, &want.data);
-        eprintln!("[G-06] guided C {color} 203x157 tiles: against the CPU max {:.3e}", e.max);
+        eprintln!(
+            "[G-06] guided C {color} 203x157 tiles: against the CPU max {:.3e}",
+            e.max
+        );
         assert!(e.max <= bound(dev, GUIDED_BOUND), "{:e}", e.max);
     }
 }
@@ -270,7 +326,13 @@ fn a_tile_with_less_context_than_the_receptive_field_differs() {
     let color = 50.0;
     let r = radius_px(color);
     let core = Rect::new(40, 30, 30, 20);
-    let whole = run_guided(dev, &img, Rect::whole(w, h), &SigmaOwned::Plane(plane.clone()), color);
+    let whole = run_guided(
+        dev,
+        &img,
+        Rect::whole(w, h),
+        &SigmaOwned::Plane(plane.clone()),
+        color,
+    );
     let want = whole.extract(core);
     let tile = |halo: usize| {
         let (sub, rel, sig) = tile_of(&img, &plane, core, halo);
@@ -305,13 +367,19 @@ fn detail_injection_matches_the_cpu() {
             move |ctx| gpu_inject(ctx, &net, &classical, Rect::whole(w, h), beta)
         });
         let e = compare(&got.data, &want.data);
-        eprintln!("[G-06] inject case {i} {w}x{h} beta {beta}: max {:.3e}", e.max);
+        eprintln!(
+            "[G-06] inject case {i} {w}x{h} beta {beta}: max {:.3e}",
+            e.max
+        );
         worst = worst.max(e.max);
         assert!(e.max <= bound(dev, INJECT_BOUND), "{:e}", e.max);
     }
     g06::ci_note(
         "detail",
-        &format!("detail injection on {}: worst {worst:.3e}", dev.gpu.info().name),
+        &format!(
+            "detail injection on {}: worst {worst:.3e}",
+            dev.gpu.info().name
+        ),
     );
     // A zero beta is the net image, and the sizes must agree.
     let net = noisy_scene(10, 10, 1, 0.01);
@@ -395,14 +463,7 @@ fn the_denoise_to_detail_sequence_of_a_tile_matches_the_cpu_stage_sequence() {
                 &BilateralParams::default(),
             )?;
             let origin1 = (r1.x - r0.x, r1.y - r0.y);
-            let col = encode_guided(
-                &mut passes,
-                &den,
-                r2.relative_to(&r1),
-                &sg,
-                origin1,
-                color,
-            )?;
+            let col = encode_guided(&mut passes, &den, r2.relative_to(&r1), &sg, origin1, color)?;
             let origin2 = (r2.x - r1.x, r2.y - r1.y);
             let out = encode_inject_detail(
                 &mut passes,
@@ -422,13 +483,19 @@ fn the_denoise_to_detail_sequence_of_a_tile_matches_the_cpu_stage_sequence() {
         }
     });
     let e = compare(&got, &want.data);
-    eprintln!("[G-06] R6 denoise -> R7 sequence on {r2:?}: max {:.3e} mean {:.2e}", e.max, e.mean);
+    eprintln!(
+        "[G-06] R6 denoise -> R7 sequence on {r2:?}: max {:.3e} mean {:.2e}",
+        e.max, e.mean
+    );
     assert!(e.max <= bound(dev, SEQUENCE_BOUND), "{:e}", e.max);
     assert_eq!(submissions, 1);
     assert_eq!(got.len(), 3 * r2.area());
     // The luma is the CPU's too: the stage changed the picture (a pass-through would be far off).
     let untouched = crop(&input, r0, r2);
-    assert!(compare(&untouched.data, &want.data).max > 1e-3, "the stages did nothing");
+    assert!(
+        compare(&untouched.data, &want.data).max > 1e-3,
+        "the stages did nothing"
+    );
 }
 
 #[test]
@@ -438,7 +505,13 @@ fn a_poisoned_device_and_a_plain_one_give_the_same_bits() {
     let ran = assert_poison_neutral("guided", |gpu| {
         let (img, plane) = (img.clone(), plane.clone());
         gpu.run(JobSpec::new(Priority::Viewport), move |ctx, _| {
-            gpu_chroma_guided(ctx, &img, Rect::whole(70, 50), &SigmaInput::Plane(&plane), 80.0)
+            gpu_chroma_guided(
+                ctx,
+                &img,
+                Rect::whole(70, 50),
+                &SigmaInput::Plane(&plane),
+                80.0,
+            )
         })
         .expect("run")
         .data
@@ -464,7 +537,13 @@ fn thread_count_does_not_change_a_bit() {
         for (w, hh, seed, color) in [(97usize, 61usize, 1u64, 50.0f32), (203, 157, 2, 100.0)] {
             let img = chroma_noisy_scene(w, hh, seed, 0.02);
             let plane = sigma_plane(w, hh, seed);
-            let out = run_guided(dev, &img, Rect::whole(w, hh), &SigmaOwned::Plane(plane), color);
+            let out = run_guided(
+                dev,
+                &img,
+                Rect::whole(w, hh),
+                &SigmaOwned::Plane(plane),
+                color,
+            );
             h = fnv(h, &out.data);
         }
         h
@@ -488,22 +567,42 @@ fn bad_inputs_are_refused_with_the_reason() {
     let img = chroma_noisy_scene(30, 30, 1, 0.02);
     let run = |core: Rect, sigma: SigmaOwned, color: f32| {
         let (img, sigma) = (img.clone(), sigma.clone());
-        dev.gpu.run(JobSpec::new(Priority::Viewport), move |ctx, _| {
-            gpu_chroma_guided(ctx, &img, core, &sigma.as_input(), color)
-        })
+        dev.gpu
+            .run(JobSpec::new(Priority::Viewport), move |ctx, _| {
+                gpu_chroma_guided(ctx, &img, core, &sigma.as_input(), color)
+            })
     };
     let whole = Rect::whole(30, 30);
     assert!(run(whole, SigmaOwned::Scalar(0.02), 50.0).is_ok());
     for (what, result) in [
-        ("NaN strength", run(whole, SigmaOwned::Scalar(0.02), f32::NAN)),
-        ("core outside", run(Rect::new(20, 20, 20, 20), SigmaOwned::Scalar(0.02), 50.0)),
-        ("empty core", run(Rect::new(0, 0, 0, 3), SigmaOwned::Scalar(0.02), 50.0)),
-        ("short sigma plane", run(whole, SigmaOwned::Plane(vec![0.01; 5]), 50.0)),
-        ("a radius above the maximum", run(whole, SigmaOwned::Scalar(0.02), 1000.0)),
+        (
+            "NaN strength",
+            run(whole, SigmaOwned::Scalar(0.02), f32::NAN),
+        ),
+        (
+            "core outside",
+            run(Rect::new(20, 20, 20, 20), SigmaOwned::Scalar(0.02), 50.0),
+        ),
+        (
+            "empty core",
+            run(Rect::new(0, 0, 0, 3), SigmaOwned::Scalar(0.02), 50.0),
+        ),
+        (
+            "short sigma plane",
+            run(whole, SigmaOwned::Plane(vec![0.01; 5]), 50.0),
+        ),
+        (
+            "a radius above the maximum",
+            run(whole, SigmaOwned::Scalar(0.02), 1000.0),
+        ),
     ] {
         let err = result.expect_err(what);
         assert!(matches!(err, GpuError::InvalidInput(_)), "{what}: {err}");
     }
-    assert_eq!(radius_px(1000.0), 62, "the radius rule is the CPU's, unclamped");
+    assert_eq!(
+        radius_px(1000.0),
+        62,
+        "the radius rule is the CPU's, unclamped"
+    );
     assert!(radius_px(1000.0) > MAX_RADIUS_PX);
 }

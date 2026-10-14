@@ -408,7 +408,7 @@ pub enum SigmaWork {
 #[derive(Debug)]
 enum RawInput {
     /// The balanced mosaic: the device runs the demosaic first.
-    Mosaic(DemosaicWork),
+    Mosaic(Box<DemosaicWork>),
     /// The demosaiced planes (a mosaic below 2 x 2 photosites was demosaiced on the CPU).
     Image(RgbImage),
 }
@@ -562,8 +562,13 @@ impl RawWork {
                         m.place,
                     )?;
                     passes = PassList::new(ctx, "raw R6 to R8");
-                    let out =
-                        adaptive_ratio::encode_demosaic(&mut passes, &input, m.cfa, d.core, &d.frame)?;
+                    let out = adaptive_ratio::encode_demosaic(
+                        &mut passes,
+                        &input,
+                        m.cfa,
+                        d.core,
+                        &d.frame,
+                    )?;
                     keep.push(input);
                     out
                 } else {
@@ -881,7 +886,7 @@ impl<'a> GpuChain<'a> {
             let (mosaic, core) = run.take_demosaic_input().ok_or_else(|| {
                 GpuError::InvalidInput("the demosaic is not the next stage".into())
             })?;
-            RawInput::Mosaic(DemosaicWork::new(mosaic, core, frame)?)
+            RawInput::Mosaic(Box::new(DemosaicWork::new(mosaic, core, frame)?))
         };
         // The stages after the demosaic, up to R9: each with the rectangle the CPU stepper cuts for
         // it. A stage that does nothing for these controls is left out; the next one then names its

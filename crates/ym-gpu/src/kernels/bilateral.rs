@@ -384,8 +384,7 @@ fn spatial_weights(p: &BilateralParams) -> Vec<f32> {
     for dy in 0..side {
         for dx in 0..side {
             let d2 = ((dx as isize - r as isize).pow(2) + (dy as isize - r as isize).pow(2)) as f32;
-            spatial[dy * side + dx] =
-                (-0.5 * d2 / (p.spatial_sigma_px * p.spatial_sigma_px)).exp();
+            spatial[dy * side + dx] = (-0.5 * d2 / (p.spatial_sigma_px * p.spatial_sigma_px)).exp();
         }
     }
     spatial
@@ -650,7 +649,8 @@ mod tests {
         };
         // 3 x 2 cells cover 6 x 4 photosites; an odd frame's extra column/row reads the last cell.
         assert_eq!(half.at(0, 0), data[0] * gains[0]);
-        assert_eq!(half.at(3, 3), data[5] * gains[5]);
+        assert_eq!(half.at(3, 3), data[4] * gains[4]);
+        assert_eq!(half.at(5, 3), data[5] * gains[5]);
         assert_eq!(half.at(6, 4), data[5] * gains[5], "clamped to the plane");
         let plain = SigmaHalf {
             gains: None,

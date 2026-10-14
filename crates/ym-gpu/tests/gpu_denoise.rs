@@ -21,7 +21,9 @@ mod common;
 #[path = "g06/mod.rs"]
 mod g06;
 
-use common::exact::{assert_all_finite, assert_bit_equal, assert_poison_neutral, assert_tiles_equal_whole};
+use common::exact::{
+    assert_all_finite, assert_bit_equal, assert_poison_neutral, assert_tiles_equal_whole,
+};
 use common::limits::assert_max_binding_bytes;
 use common::{TestGpu, gpus};
 use g06::{FNV_START, compare, fnv, noisy_scene, sigma_plane};
@@ -59,7 +61,9 @@ fn f32_device() -> Option<&'static TestGpu> {
 /// One run on the device thread.
 fn on_device<R: Send + 'static>(
     dev: &TestGpu,
-    job: impl FnOnce(&ym_gpu::device::GpuContext) -> Result<R, ym_gpu::device::GpuError> + Send + 'static,
+    job: impl FnOnce(&ym_gpu::device::GpuContext) -> Result<R, ym_gpu::device::GpuError>
+    + Send
+    + 'static,
 ) -> R {
     dev.gpu
         .run(JobSpec::new(Priority::Viewport), move |ctx, _| job(ctx))
@@ -127,16 +131,58 @@ fn matches_the_cpu() {
             (1, 1, 0.01, SigmaOwned::Scalar(0.01), 1.0, default),
             (2, 2, 0.01, SigmaOwned::Scalar(0.01), 1.0, default),
             (3, 5, 0.02, SigmaOwned::Scalar(0.02), 1.0, default),
-            (7, 9, 0.01, SigmaOwned::Plane(sigma_plane(7, 9, 1)), 1.7, default),
+            (
+                7,
+                9,
+                0.01,
+                SigmaOwned::Plane(sigma_plane(7, 9, 1)),
+                1.7,
+                default,
+            ),
             (33, 17, 0.01, SigmaOwned::Scalar(0.01), 1.7, r(2, 1.5, 0.5)),
-            (64, 48, 0.02, SigmaOwned::Plane(sigma_plane(64, 48, 2)), 1.0, r(1, 0.8, 1.0)),
-            (64, 48, 0.002, SigmaOwned::Scalar(0.002), 1.0, r(3, 2.0, 2.5)),
-            (131, 97, 0.01, SigmaOwned::Plane(sigma_plane(131, 97, 3)), 1.7, default),
+            (
+                64,
+                48,
+                0.02,
+                SigmaOwned::Plane(sigma_plane(64, 48, 2)),
+                1.0,
+                r(1, 0.8, 1.0),
+            ),
+            (
+                64,
+                48,
+                0.002,
+                SigmaOwned::Scalar(0.002),
+                1.0,
+                r(3, 2.0, 2.5),
+            ),
+            (
+                131,
+                97,
+                0.01,
+                SigmaOwned::Plane(sigma_plane(131, 97, 3)),
+                1.7,
+                default,
+            ),
             (131, 97, 0.02, SigmaOwned::Scalar(0.02), 0.6, r(4, 2.5, 1.0)),
-            (97, 131, 0.005, SigmaOwned::Plane(sigma_plane(97, 131, 4)), 2.2, r(2, 1.5, 1.8)),
+            (
+                97,
+                131,
+                0.005,
+                SigmaOwned::Plane(sigma_plane(97, 131, 4)),
+                2.2,
+                r(2, 1.5, 1.8),
+            ),
             (5, 131, 0.01, SigmaOwned::Scalar(0.01), 1.0, default),
             (131, 5, 0.01, SigmaOwned::Scalar(0.01), 1.0, default),
-            (200, 150, 0.01, SigmaOwned::Plane(sigma_plane(200, 150, 5)), 1.0, default),
+            (
+                200,
+                150,
+                0.01,
+                SigmaOwned::Plane(sigma_plane(200, 150, 5)),
+                1.0,
+                default,
+            ),
             (200, 150, 0.03, SigmaOwned::Scalar(0.03), 1.0, default),
         ]
     };
@@ -201,16 +247,19 @@ fn a_zero_sigma_scale_or_strength_returns_the_input_bit_for_bit() {
     );
     let n = w * h;
     let (mut kept, mut changed) = (0, 0);
-    for i in 0..n {
+    for (i, &sigma) in plane.iter().enumerate() {
         let same = (0..3).all(|c| got.data[c * n + i].to_bits() == img.data[c * n + i].to_bits());
-        if plane[i] == 0.0 {
+        if sigma == 0.0 {
             assert!(same, "a pixel with sigma 0 changed at {i}");
             kept += 1;
         } else if !same {
             changed += 1;
         }
     }
-    assert!(kept > 20 && changed > n / 2, "kept {kept}, changed {changed}");
+    assert!(
+        kept > 20 && changed > n / 2,
+        "kept {kept}, changed {changed}"
+    );
 }
 
 /// The cut of the whole frame that carries a tile's core and the 2 px of context the stage needs.
@@ -239,7 +288,10 @@ fn tiles_equal_the_whole_frame_bit_for_bit() {
     // And the whole frame is the CPU's within the bound.
     let want = cpu_reference(&img, &SigmaOwned::Plane(plane), 1.3, &p);
     let e = compare(&whole, &want.data);
-    eprintln!("[G-06] bilateral 203x157 tiles: against the CPU max {:.3e}", e.max);
+    eprintln!(
+        "[G-06] bilateral 203x157 tiles: against the CPU max {:.3e}",
+        e.max
+    );
     assert!(e.max <= bound(dev), "{:e}", e.max);
 }
 
@@ -287,7 +339,9 @@ fn the_sigma_plane_has_the_cpus_bits_for_every_cell() {
     // the cells cover, which reads the last cell.
     let (cw, ch) = (41usize, 29usize);
     let mut rng = ym_gpu::cpu::synth::Rng::new(77);
-    let data: Vec<f32> = (0..cw * ch).map(|_| 0.001 + 0.02 * rng.next_f32()).collect();
+    let data: Vec<f32> = (0..cw * ch)
+        .map(|_| 0.001 + 0.02 * rng.next_f32())
+        .collect();
     let gains: Vec<f32> = (0..cw * ch).map(|_| 1.0 + 3.0 * rng.next_f32()).collect();
     for with_gains in [false, true] {
         let half = SigmaHalf {
@@ -333,7 +387,9 @@ fn the_sigma_plane_has_the_cpus_bits_for_every_cell() {
         }
     }
     // The scalar and the plane sources.
-    let got = on_device(dev, |ctx| expand_sigma(ctx, &SigmaInput::Scalar(0.0123), Rect::new(5, 6, 33, 21)));
+    let got = on_device(dev, |ctx| {
+        expand_sigma(ctx, &SigmaInput::Scalar(0.0123), Rect::new(5, 6, 33, 21))
+    });
     assert!(got.len() == 33 * 21 && got.iter().all(|v| v.to_bits() == 0.0123f32.to_bits()));
     let plane: Vec<f32> = (0..33 * 21).map(|i| i as f32 * 1e-4).collect();
     let got = on_device(dev, {
@@ -351,8 +407,12 @@ fn the_bilateral_stage_and_the_sigma_plane_run_in_one_pass_list_without_a_readba
     let Some(dev) = f32_device() else { return };
     let (w, h) = (90usize, 60usize);
     let img = noisy_scene(w, h, 31, 0.01);
-    let cells: Vec<f32> = (0..(w / 2) * (h / 2)).map(|i| 0.004 + 1e-5 * (i % 97) as f32).collect();
-    let gains: Vec<f32> = (0..(w / 2) * (h / 2)).map(|i| 1.0 + 1e-3 * (i % 13) as f32).collect();
+    let cells: Vec<f32> = (0..(w / 2) * (h / 2))
+        .map(|i| 0.004 + 1e-5 * (i % 97) as f32)
+        .collect();
+    let gains: Vec<f32> = (0..(w / 2) * (h / 2))
+        .map(|i| 1.0 + 1e-3 * (i % 13) as f32)
+        .collect();
     let core = Rect::new(2, 3, 80, 50);
     let (a, subs) = {
         let (img, cells, gains) = (img.clone(), cells.clone(), gains.clone());
@@ -366,7 +426,8 @@ fn the_bilateral_stage_and_the_sigma_plane_run_in_one_pass_list_without_a_readba
             let before = ctx.counters();
             let input = ym_gpu::image::GpuImage::upload_rgb(ctx, "in", &img)?;
             let mut passes = ym_gpu::stream::PassList::new(ctx, "chain");
-            let sg = bilateral::encode_sigma(&mut passes, &SigmaInput::Half(&half), Rect::whole(w, h))?;
+            let sg =
+                bilateral::encode_sigma(&mut passes, &SigmaInput::Half(&half), Rect::whole(w, h))?;
             let out = bilateral::encode_bilateral(
                 &mut passes,
                 &input,
@@ -403,7 +464,10 @@ fn the_bilateral_stage_and_the_sigma_plane_run_in_one_pass_list_without_a_readba
         }
     });
     assert_bit_equal("device chain against the host wrapper", &a, &b.data);
-    assert_eq!(subs, 1, "the sigma plane and the filter share one submission");
+    assert_eq!(
+        subs, 1,
+        "the sigma plane and the filter share one submission"
+    );
 }
 
 #[test]
@@ -456,20 +520,56 @@ fn bad_inputs_are_refused_with_the_reason() {
     for (what, result) in [
         (
             "radius above the maximum",
-            run(whole, SigmaOwned::Scalar(0.01), 1.0, BilateralParams { radius_px: MAX_RADIUS_PX + 1, ..ok }),
+            run(
+                whole,
+                SigmaOwned::Scalar(0.01),
+                1.0,
+                BilateralParams {
+                    radius_px: MAX_RADIUS_PX + 1,
+                    ..ok
+                },
+            ),
         ),
         (
             "spatial sigma zero",
-            run(whole, SigmaOwned::Scalar(0.01), 1.0, BilateralParams { spatial_sigma_px: 0.0, ..ok }),
+            run(
+                whole,
+                SigmaOwned::Scalar(0.01),
+                1.0,
+                BilateralParams {
+                    spatial_sigma_px: 0.0,
+                    ..ok
+                },
+            ),
         ),
         (
             "negative strength",
-            run(whole, SigmaOwned::Scalar(0.01), 1.0, BilateralParams { strength: -1.0, ..ok }),
+            run(
+                whole,
+                SigmaOwned::Scalar(0.01),
+                1.0,
+                BilateralParams {
+                    strength: -1.0,
+                    ..ok
+                },
+            ),
         ),
-        ("NaN scale", run(whole, SigmaOwned::Scalar(0.01), f32::NAN, ok)),
-        ("core outside", run(Rect::new(10, 10, 20, 20), SigmaOwned::Scalar(0.01), 1.0, ok)),
-        ("empty core", run(Rect::new(0, 0, 0, 5), SigmaOwned::Scalar(0.01), 1.0, ok)),
-        ("short sigma plane", run(whole, SigmaOwned::Plane(vec![0.01; 19]), 1.0, ok)),
+        (
+            "NaN scale",
+            run(whole, SigmaOwned::Scalar(0.01), f32::NAN, ok),
+        ),
+        (
+            "core outside",
+            run(Rect::new(10, 10, 20, 20), SigmaOwned::Scalar(0.01), 1.0, ok),
+        ),
+        (
+            "empty core",
+            run(Rect::new(0, 0, 0, 5), SigmaOwned::Scalar(0.01), 1.0, ok),
+        ),
+        (
+            "short sigma plane",
+            run(whole, SigmaOwned::Plane(vec![0.01; 19]), 1.0, ok),
+        ),
     ] {
         let err = result.expect_err(what);
         assert!(

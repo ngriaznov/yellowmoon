@@ -312,6 +312,24 @@ mod tests {
     }
 
     #[test]
+    fn the_luma_and_the_delta_are_hidden_from_the_optimiser() {
+        // Metal's fast-math compiler would contract the luma's products and the delta into fused
+        // multiply-adds (17 % of the samples an ulp off in a C model); the barriers keep the CPU's
+        // bits. Lavapipe cannot show it, so the text pins it.
+        let src = include_str!("../shaders/detail.wgsl");
+        for needle in [
+            "return bitcast<f32>(bitcast<u32>(x) ^ dt.org.w);",
+            "return opaque(opaque(r + g) + b);",
+            "let d = opaque(dt.k.x * opaque(",
+        ] {
+            assert!(src.contains(needle), "detail.wgsl lost `{needle}`");
+        }
+        // The uniform's last word of `org` is the runtime zero the host writes.
+        let host = include_str!("detail.rs");
+        assert!(host.contains("org: [origin.0 as u32, origin.1 as u32, 0, 0],"));
+    }
+
+    #[test]
     fn the_uniform_block_has_the_layout_of_dt_u() {
         let (module, _) = module_of(KernelId::Detail);
         let var = module

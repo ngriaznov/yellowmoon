@@ -241,10 +241,29 @@ impl PreparedView {
 
     /// The part of the group the view reads, and where it starts in the buffer: the rectangle the
     /// pixels sample from (widened by 3 px for the filters, as the 100 % path reads its region), or
-    /// the whole image when that is most of it. Sampling from the window gives the same pixels as
-    /// from the whole image (the filters never reach beyond it, and where the window is cut by the
-    /// image's own edge the clamp is the same).
+    /// the image itself when the view reads all of it (no copy). Sampling from the window gives the
+    /// same pixels as from the whole image (the filters never reach beyond it, and where the window is
+    /// cut by the image's own edge the clamp is the same). The window is what the device job
+    /// uploads, so a view of part of a large group (a band of a cut view, a zoomed fit view) uploads
+    /// only that part.
     fn source_window(&self) -> Option<(Arc<RgbImage>, (usize, usize))> {
+        let ViewSource::Image { image, origin, .. } = &self.source else {
+            return None;
+        };
+        let (want, whole) = self.window_rect()?;
+        if want == whole {
+            return Some((Arc::clone(image), *origin));
+        }
+        Some((
+            Arc::new(image.extract(want.relative_to(&whole))),
+            (want.x, want.y),
+        ))
+    }
+
+    /// The rectangle [`PreparedView::source_window`] cuts, in buffer pixels, and the rectangle of the
+    /// image it is cut from; the two are equal when the view reads the whole image. No pixel is
+    /// copied.
+    fn window_rect(&self) -> Option<(Rect, Rect)> {
         let ViewSource::Image {
             image,
             origin,
@@ -255,16 +274,10 @@ impl PreparedView {
         };
         let whole = Rect::new(origin.0, origin.1, image.width, image.height);
         let Some((x0, y0, x1, y1)) = grid.source_bounds(0, 0, self.width, self.height, 3) else {
-            return Some((Arc::clone(image), *origin));
+            return Some((whole, whole));
         };
         let want = Rect::new(x0, y0, x1 - x0, y1 - y0).intersect(&whole);
-        if want.is_empty() || want.area() * 2 > whole.area() {
-            return Some((Arc::clone(image), *origin));
-        }
-        Some((
-            Arc::new(image.extract(want.relative_to(&whole))),
-            (want.x, want.y),
-        ))
+        Some((if want.is_empty() { whole } else { want }, whole))
     }
 
     /// What a device job starts from for this view, and the bounding box of the pixels inside the
@@ -297,8 +310,8 @@ impl PreparedView {
     /// Bytes of the camera RGB window an upload of this view would need (3 planes of f32), when the
     /// view has pixels to sample.
     fn source_window_bytes(&self) -> Option<u64> {
-        let (image, _) = self.source_window()?;
-        Some(12 * image.width.next_multiple_of(2) as u64 * image.height as u64)
+        let (want, _) = self.window_rect()?;
+        Some(12 * want.w.next_multiple_of(2) as u64 * want.h as u64)
     }
 }
 
@@ -619,9 +632,12 @@ struct Sharpened {
 
 /// Core rows of one strip of the CPU stage (`sharpen_photo`): few enough that a cancel is noticed
 /// within a fraction of a second (the stage costs 220 to 450 ms per megapixel on four shared cores,
-/// `docs/algorithms/04` section 9), many enough that the receptive field read above and below
-/// (17 to 21 rows) stays a small part of the work.
+/// `docs/algorithms/04` section 9; a strip of a retina frame is about 0.75 Mpixel), many enough that
+/// the receptive field read above and below (17 to 21 rows) stays a small part of the work.
 const CPU_SHARPEN_STRIP_ROWS: usize = 256;
+
+/// The cancel check of the CPU stage: the request's own, callable from the threads the strips run on.
+type CancelCheck<'a> = &'a (dyn Fn() -> Result<(), RenderError> + Sync);
 
 /// Runs the stage on the photo's pixels of `display` on the CPU, in strips of rows with the stage's
 /// own receptive field of context above and below (the tiling contract of
@@ -629,8 +645,16 @@ const CPU_SHARPEN_STRIP_ROWS: usize = 256;
 /// `sharpen_output`), calling `check` (the request's cancel check) before every strip, so that a
 /// frame that is no longer wanted stops within one strip instead of after seconds. `None` when no
 /// pixel is inside the photo.
+///
+/// The strips run side by side on the rayon pool (the render thread's, never the device thread's):
+/// one after the other, a strip of a few hundred rows gives the stage's own bands of 128 rows too
+/// little to share among the cores, and the frame took 1.8 times as long as in one piece (measured on
+/// a 1764 x 1189 and a 2948 x 1988 frame at the fit scale, four shared cores); side by side it takes
+/// 1.02 to 1.17 times as long (the receptive field each strip reads again, and the load of the
+/// machine). A cancel stops the strips that have not started; the ones that run finish theirs, one
+/// strip each.
 fn sharpen_photo(
-    check: &dyn Fn() -> Result<(), RenderError>,
+    check: CancelCheck<'_>,
     display: &HostDisplay<'_>,
     sharpening: &ViewSharpening,
 ) -> Result<Option<Sharpened>, RenderError> {
@@ -641,27 +665,35 @@ fn sharpen_photo(
     let (w, h) = (x1 - x0, y1 - y0);
     let row = 3 * w;
     let halo = sharpening.halo;
-    let mut rgb = vec![0.0f32; row * h];
-    let mut strip: Vec<f32> = Vec::new();
-    let mut start = 0;
-    while start < h {
-        check()?;
-        let end = (start + CPU_SHARPEN_STRIP_ROWS).min(h);
-        let (top, bottom) = (start.saturating_sub(halo), (end + halo).min(h));
-        strip.clear();
-        for y in top..bottom {
-            let at = ((y0 + y) * display.width + x0) * 3;
-            strip.extend_from_slice(&display.rgb[at..at + row]);
-        }
-        sharpening
-            .stage
-            .apply_interleaved_in_place(w, bottom - top, &mut strip, sharpening.scale)
-            .map_err(|e| RenderError::Image(format!("This photo can't be rendered: {e}.")))?;
-        rgb[start * row..end * row].copy_from_slice(&strip[(start - top) * row..(end - top) * row]);
-        start = end;
-    }
+    let starts: Vec<usize> = (0..h).step_by(CPU_SHARPEN_STRIP_ROWS).collect();
+    let strips: Vec<Vec<f32>> = starts
+        .par_iter()
+        .map(|&start| -> Result<Vec<f32>, RenderError> {
+            check()?;
+            let end = (start + CPU_SHARPEN_STRIP_ROWS).min(h);
+            let (top, bottom) = (start.saturating_sub(halo), (end + halo).min(h));
+            let mut strip = Vec::with_capacity((bottom - top) * row);
+            for y in top..bottom {
+                let at = ((y0 + y) * display.width + x0) * 3;
+                strip.extend_from_slice(&display.rgb[at..at + row]);
+            }
+            sharpening
+                .stage
+                .apply_interleaved_in_place(w, bottom - top, &mut strip, sharpening.scale)
+                .map_err(|e| RenderError::Image(format!("This photo can't be rendered: {e}.")))?;
+            strip.drain(..(start - top) * row);
+            strip.truncate((end - start) * row);
+            Ok(strip)
+        })
+        .collect::<Result<_, _>>()?;
     check()?;
-    Ok(Some(Sharpened { x0, y0, w, h, rgb }))
+    Ok(Some(Sharpened {
+        x0,
+        y0,
+        w,
+        h,
+        rgb: strips.concat(),
+    }))
 }
 
 /// C13 and the letterbox: encodes a display-linear `w x h` view to RGBA8 (the dither at the pixel's
@@ -723,7 +755,9 @@ fn sharpen_and_encode(
             let at = ((y + halo) * ew + halo) * 3;
             row.copy_from_slice(&display.rgb[at..at + 3 * w]);
         });
-    if let Some(s) = sharpen_photo(&|| job.check(), display, sharpening)? {
+    let cancel = job.cancel;
+    let check = move || cancel.check().map_err(|_| RenderError::Cancelled);
+    if let Some(s) = sharpen_photo(&check, display, sharpening)? {
         // Put the sharpened pixels back where they fall inside the view.
         let (vx0, vx1) = (s.x0.max(halo), (s.x0 + s.w).min(halo + w));
         if vx0 < vx1 {
@@ -774,7 +808,9 @@ fn magnify_and_encode(
     let (w, h) = (spec.out_w, spec.out_h);
     // The sharpened 100 % picture, as three planes (what the filter reads).
     let mut native = display.rgb.to_vec();
-    if let Some(s) = sharpen_photo(&|| job.check(), display, sharpening)? {
+    let cancel = job.cancel;
+    let check = move || cancel.check().map_err(|_| RenderError::Cancelled);
+    if let Some(s) = sharpen_photo(&check, display, sharpening)? {
         for y in 0..s.h {
             let dst = ((s.y0 + y) * nw + s.x0) * 3;
             native[dst..dst + 3 * s.w].copy_from_slice(&s.rgb[y * s.w * 3..(y + 1) * s.w * 3]);
@@ -1204,7 +1240,14 @@ fn render_pass(
         match flow {
             Flow::Done(done) => return Ok(done),
             // A device error ended the pass: the frame again, on the CPU only.
-            Flow::Cpu => route = None,
+            Flow::Cpu if route.is_some() => route = None,
+            // The CPU road never asks for the CPU road (an invariant of the passes); a request that
+            // did would loop, so it is refused instead.
+            Flow::Cpu => {
+                return Err(RenderError::Image(
+                    "This frame can't be rendered: the CPU path gave up.".to_owned(),
+                ));
+            }
         }
     }
 }
@@ -1226,7 +1269,9 @@ fn whole(
 /// The view as one pass, or as one pass per band when the device cannot hold its frame in one
 /// binding ([`band_split`]): a band is a view of its own, the pixels are those of the whole view bit
 /// for bit (every device stage of a view is tile-exact, and the dither counts its texels from the
-/// band's place in the view), and a device error in any band makes the whole frame again on the CPU.
+/// band's place in the view), and a device error in any band, or a band the device could not take
+/// whole (its buffers would not fit, so the CPU made it), makes the whole frame again on the CPU:
+/// never a frame of both.
 fn banded(
     job: &mut Job<'_>,
     spec: &ViewSpec,
@@ -1238,24 +1283,21 @@ fn banded(
         return whole(job, spec, grade, sharpening, Some(route));
     };
     let mut rgba = Vec::with_capacity(4 * spec.out_w * spec.out_h);
-    let (mut scale, mut sharp, mut device) = (1, true, ComputeDevice::Gpu);
+    let (mut scale, mut sharp) = (1, true);
     for band in device::bands_of(spec, rows) {
         job.check()?;
         match whole(job, &band, grade, sharpening, Some(route))? {
-            Flow::Done(done) => {
+            Flow::Done(done) if done.device == ComputeDevice::Gpu => {
                 rgba.extend_from_slice(&done.rgba);
                 scale = done.scale;
                 sharp &= done.sharp;
-                if done.device == ComputeDevice::Cpu {
-                    device = ComputeDevice::Cpu;
-                }
             }
-            Flow::Cpu => return Ok(Flow::Cpu),
+            Flow::Done(_) | Flow::Cpu => return Ok(Flow::Cpu),
         }
     }
     Ok(Flow::Done(Done {
         rgba,
-        device,
+        device: ComputeDevice::Gpu,
         scale,
         sharp,
     }))
@@ -1264,8 +1306,17 @@ fn banded(
 /// How many rows per band a view is cut into, or `None` for one pass: only a view the device makes
 /// whole, from the sampler to the RGBA8 frame, is cut, and only when its frame (four planes of f32
 /// over the view grown by the stage's receptive field) or the camera RGB it reads does not fit one
-/// storage binding ([`device::band_rows`]). A magnified view reads the 100 % picture around it and
-/// is not cut.
+/// storage binding of [`RenderOptions::view_band_bytes`] ([`device::band_rows`]; a constant of the
+/// renderer, so the cut is the same on every machine). A magnified view reads the 100 % picture
+/// around it and is not cut.
+///
+/// The camera RGB a view reads can be larger than its frame (the whole group at 1/2 is 150 MB for a
+/// 50 MP photo; full-resolution tiles under a view between 50 and 100 % hold up to four pixels per
+/// pixel shown): the bands share it out, and the cut is made finer until the window of every band,
+/// grown by the stage's receptive field, fits. The window of full-resolution tiles is found from the
+/// geometry alone, without computing a tile.
+///
+/// [`RenderOptions::view_band_bytes`]: crate::pipeline::RenderOptions::view_band_bytes
 fn band_split(
     job: &mut Job<'_>,
     spec: &ViewSpec,
@@ -1281,24 +1332,58 @@ fn band_split(
         return Ok(None);
     }
     let halo = sharpening.map_or(0, |s| s.halo);
-    // The camera RGB of a reduced image is the biggest buffer of a view (the whole group at 1/2 is
-    // 150 MB for a 50 MP photo): the bands share it out. The tiles of a 100 % view are about the size
-    // of the frame, which the frame's own rule covers.
+    let by_frame = device::band_rows(spec.out_w, spec.out_h, halo, route.band_bytes, 1);
     let plan = job.plan()?;
-    let mut min_bands = 1;
-    if plan.reduced || plan.effective_scale(spec.k) >= 2 {
-        let prepared = prepare_view(job, spec)?;
-        if let Some(bytes) = prepared.source_window_bytes() {
-            min_bands = (bytes as f64 * 1.05 / route.source_bytes as f64).ceil() as usize;
+    let image = job.final_size()?;
+    let geometry = job.geometry().at_full_resolution();
+    // The camera RGB one band reads: the view's own rows, or with output sharpening the band grown
+    // by the stage's receptive field (the frame the band's colour pass makes).
+    let source_fits = |job: &mut Job<'_>, band: &ViewSpec| -> Result<bool, RenderError> {
+        let read = match sharpening
+            .and_then(|sh| sh.frame_geometry(&band.view_to_final, (band.out_w, band.out_h), image))
+        {
+            Some(g) => ViewSpec {
+                out_w: g.width,
+                out_h: g.height,
+                view_to_final: g.view_to_final,
+                ..band.clone()
+            },
+            None => band.clone(),
+        };
+        let bytes = if !plan.reduced && plan.effective_scale(read.k) == 1 {
+            // Full-resolution tiles: the region `prepare_view` would read (a coarse frame reads
+            // less, the 1/2 image, which this bounds too).
+            geometry
+                .grid_from((plan.out_w, plan.out_h), read.view_to_final)
+                .source_bounds(0, 0, read.out_w, read.out_h, 3)
+                .map(|(x0, y0, x1, y1)| {
+                    12 * (x1 - x0).next_multiple_of(2) as u64 * (y1 - y0) as u64
+                })
+        } else {
+            prepare_view(job, &read)?.source_window_bytes()
+        };
+        Ok(bytes.is_none_or(|b| b <= route.source_bytes))
+    };
+    let mut rows = by_frame.unwrap_or(spec.out_h).max(1);
+    loop {
+        let bands = device::bands_of(spec, rows);
+        let mut fits = true;
+        for band in &bands {
+            if !source_fits(job, band)? {
+                fits = false;
+                break;
+            }
         }
+        if fits {
+            return Ok((rows < spec.out_h).then_some(rows));
+        }
+        if rows == 1 {
+            // Not even one row fits: the device cannot take the view, the CPU makes it.
+            return Ok(None);
+        }
+        // One more band each time: the same rows for every machine and the fewest bands that fit.
+        rows = spec.out_h.div_ceil(bands.len() + 1).min(rows - 1);
     }
-    Ok(device::band_rows(
-        spec.out_w,
-        spec.out_h,
-        halo,
-        route.band_bytes,
-        min_bands.max(1),
-    ))
 }
 
 fn display_key(
@@ -2149,6 +2234,7 @@ mod sharpening_tests {
 
     #[test]
     fn the_cpu_stage_looks_at_the_cancel_check_before_every_strip() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
         let (w, h) = (80usize, 700usize);
         let (rgb, _) = picture_with_paper(w, h, 0);
         let host = HostDisplay {
@@ -2158,24 +2244,36 @@ mod sharpening_tests {
             outside: None,
         };
         let sh = sharpening_at(1.0, (6000, 4000));
-        let calls = std::cell::Cell::new(0usize);
+        let strips = 700usize.div_ceil(CPU_SHARPEN_STRIP_ROWS);
+        let calls = AtomicUsize::new(0);
         // Never cancelled: one look per strip (700 rows in strips of 256: three) and one at the end.
         let _ = sharpen_photo(
             &|| {
-                calls.set(calls.get() + 1);
+                calls.fetch_add(1, Ordering::SeqCst);
                 Ok(())
             },
             &host,
             &sh,
         )
         .expect("strips");
-        assert_eq!(calls.get(), 700usize.div_ceil(CPU_SHARPEN_STRIP_ROWS) + 1);
-        // Cancelled at the second look: the stage stops there, no strip after it is cut.
-        calls.set(0);
+        assert_eq!(calls.load(Ordering::SeqCst), strips + 1);
+        // Cancelled before the stage starts: no strip is computed, the stage says so.
+        let computed = AtomicUsize::new(0);
         let result = sharpen_photo(
             &|| {
-                calls.set(calls.get() + 1);
-                if calls.get() == 2 {
+                computed.fetch_add(1, Ordering::SeqCst);
+                Err(RenderError::Cancelled)
+            },
+            &host,
+            &sh,
+        );
+        assert!(matches!(result, Err(RenderError::Cancelled)));
+        assert!(computed.load(Ordering::SeqCst) <= strips);
+        // Cancelled after the first strip has looked: the stage stops with the cancel.
+        calls.store(0, Ordering::SeqCst);
+        let result = sharpen_photo(
+            &|| {
+                if calls.fetch_add(1, Ordering::SeqCst) >= 1 {
                     Err(RenderError::Cancelled)
                 } else {
                     Ok(())
@@ -2185,11 +2283,6 @@ mod sharpening_tests {
             &sh,
         );
         assert!(matches!(result, Err(RenderError::Cancelled)));
-        assert_eq!(
-            calls.get(),
-            2,
-            "nothing is looked at, or computed, after the cancel"
-        );
     }
 
     #[test]
