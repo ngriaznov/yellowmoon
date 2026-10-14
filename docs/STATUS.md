@@ -192,10 +192,10 @@ The `synthetic-full` and `synthetic-eval` sets (53 more, the latter with CIE ref
 Research: `research/auto-exposure-2026-10-14.md`. Of A1M01749's −1.16 EV against its camera JPEG, −0.85 EV is where ACES 2 SDR puts mid grey and −0.30 EV is our exposure. Your decisions:
 
 - **Exposure: on hold.** You first chose to keep all of the camera's exposure decision (a fixed camera gain of +1.11 EV, exposure compensation in full), then held it: Yellowmoon has to be clearly more dynamic than a raw processor plus an ARRI-like LUT, and a research workflow on dynamic stages (how much our per-photo colour already differs from the best static LUT, and which per-photo stages to add) runs first. Auto exposure stays as it is until then.
-- **Display placement +0.57 EV** before ACES 2. ARRI's own renderings (an imported ARRI display LUT, the LogC3-to-Rec.709 looks) keep ARRI's brightness, so such a look's intensity slider also changes brightness by up to 0.57 EV.
-- **The DNG carries everything Yellowmoon does except sharpening.** It opens as bright as the app (the placement goes into `BaselineExposure`); its pixels carry no capture sharpening (R8) and no output sharpening, while the demosaic's built-in shadow step stays. It becomes available, approximately, for LogC3-to-Rec.709 looks. The DNG gate keeps comparing with our (sharpened) JPEG.
+- **Display brightness: on hold.** You first chose +0.57 EV before ACES 2 (ARRI's own renderings keeping ARRI's brightness). Your commercial comparison LUT (Resolve-generated, S-Gamut3.Cine/S-Log3 in, 65³) puts mid grey at 39.5 % video, about where ACES 2 is today (38 %) and where ARRI's Rec.709 rendering is quoted (38 to 40 %); +0.57 would put ours near 46 %. You will choose between +0, +0.35 and +0.57 after side-by-sides of your photos through that LUT and through our chain.
+- **The DNG carries everything Yellowmoon does except sharpening.** It opens as bright as the app; its pixels carry no capture sharpening (R8) and no output sharpening, while the demosaic's built-in shadow step stays. It becomes available, approximately, for LogC3-to-Rec.709 looks. The DNG gate keeps comparing with our (sharpened) JPEG.
 
-State: the placement and the DNG changes are queued; they start when GPU wave 3 ends (they change every golden and `PIPELINE_VERSION` to 0.2.0, which the running lanes check against), before wave 4. The commercial LUT you will supply for the comparison stays local (`testdata/luts/`, git-ignored) and is never committed; its comparison pictures go only to you.
+State: the DNG changes are queued; they start when GPU wave 3 ends, before wave 4. The commercial LUT stays local (`testdata/luts/`, git-ignored) and is never committed; its comparison pictures go only to you.
 
 ## Questions for Mykyta
 
