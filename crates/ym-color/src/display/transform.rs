@@ -7,9 +7,24 @@
 //!
 //! # ACES 2
 //!
-//! LogC4 to linear AWG4 to AP0 (`gamut::matrices().awg4_to_ap0`: AWG4 to XYZ, CAT02 from D65 to the
-//! ACES white, XYZ to AP0), then [`Aces2Transform::transform_ap0_linear`] for the output's limiting
-//! and encoding primaries.
+//! LogC4 to linear AWG4 to AP0 ([`aces2_input_matrix`]: `gamut::matrices().awg4_to_ap0`, that is AWG4
+//! to XYZ, CAT02 from D65 to the ACES white, XYZ to AP0, times the display placement
+//! `2^`[`DISPLAY_PLACEMENT_EV`]), then [`Aces2Transform::transform_ap0_linear`] for the output's
+//! limiting and encoding primaries.
+//!
+//! # Display placement
+//!
+//! ACES 2 SDR is a cinema rendering: it puts scene 0.18 at display-linear 0.100 (sRGB code 89, 38.3 %
+//! video at gamma 2.4), 0.85 EV under where a camera JPEG puts mid grey (0.18, code 118). Yellowmoon
+//! is a photo processor, so the scene-linear AP0 triple is multiplied by `2^`[`DISPLAY_PLACEMENT_EV`]
+//! just before the ACES 2 transform. The factor is folded into the AWG4 to AP0 matrix, so the CPU
+//! reference and the GPU kernel (`ym_gpu`, which writes its `AWG4_TO_AP0` constant from
+//! [`aces2_input_matrix`]) apply exactly the same numbers. It sits after the look and the curve, so a
+//! look still sees mid grey at LogC4 0.2784 (the placement is after C10 and C11), and it applies to
+//! the ACES 2 path only: an imported ARRI display LUT and a LogC3-to-Rec.709 look keep ARRI's own
+//! brightness. With such a look the intensity blend runs between our C12 (placed) and the look's
+//! LUT (not placed), so the intensity slider also changes the brightness by up to
+//! [`DISPLAY_PLACEMENT_EV`] stops.
 //!
 //! # Imported ARRI display LUT
 //!
@@ -309,6 +324,29 @@ impl DisplayTransform {
     }
 }
 
+/// The display placement of the ACES 2 path, in stops: the scene-linear AP0 triple is multiplied by
+/// `2^DISPLAY_PLACEMENT_EV` before the ACES 2 output transform (`docs/02` C12, step 1a).
+///
+/// A constant of the look, not a control and not a measurement: through the Neutral look it puts
+/// scene 0.18 at display-linear Y of `0.18 * 2^0.85` through ACES 2 SDR (see the tests), about where a
+/// Sony camera JPEG puts mid grey (sRGB code near 118). It never applies to an imported ARRI display LUT
+/// or to a LogC3-to-Rec.709 look, and a DNG carries it in `BaselineExposure`
+/// (`ym_export::dng`, `docs/09`).
+pub const DISPLAY_PLACEMENT_EV: f64 = 0.85;
+
+/// The matrix of the ACES 2 path of C12: linear AWG4 to AP0 with the display placement folded in,
+/// `2^DISPLAY_PLACEMENT_EV * gamut::matrices().awg4_to_ap0`.
+///
+/// `gamut::matrices().awg4_to_ap0` itself is unchanged (the gamut conversions, the DNG path and the
+/// ARRI tables use the plain matrix). Every consumer of the ACES 2 path, the CPU chain, the GPU
+/// kernel's constant and the tests that build an AP0 triple by hand, takes this matrix so that they
+/// cannot drift apart.
+#[must_use]
+pub fn aces2_input_matrix() -> Mat3 {
+    let gain = DISPLAY_PLACEMENT_EV.exp2();
+    matrices().awg4_to_ap0.map(|row| row.map(|v| v * gain))
+}
+
 /// Linear RGB from the LUT's primaries to the output colour space's primaries, `None` when equal.
 fn primaries_matrix(from: DisplayLutPrimaries, to: OutputSpace) -> Option<Mat3> {
     let m = matrices();
@@ -353,7 +391,7 @@ impl PreparedDisplay {
         let kind = match transform {
             DisplayTransform::Aces2 => Kind::Aces2 {
                 transform: Aces2Transform::shared(output.aces2()),
-                awg4_to_ap0: matrices().awg4_to_ap0,
+                awg4_to_ap0: aces2_input_matrix(),
             },
             DisplayTransform::ArriDisplayLut(lut) => Kind::Arri {
                 to_output: primaries_matrix(lut.output.primaries, output.space()),

@@ -90,6 +90,7 @@
 mod cam;
 mod compress;
 mod display;
+mod inverse;
 mod matrix;
 mod params;
 mod tables;

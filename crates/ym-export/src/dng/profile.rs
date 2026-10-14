@@ -196,13 +196,22 @@ impl Default for DngProfile {
 /// How `BaselineExposure` is chosen.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum BaselineExposure {
-    /// `log2(x_white) + fit_offset_ev`: undoes the 1/`x_white` scaling of the stored values, plus the
-    /// constant `tools/dngfit` found for the profile (`-4` for the embedded one, 0 for the identity profile).
+    /// `log2(x_white) + fit_offset_ev + placement_ev`: undoes the 1/`x_white` scaling of the stored values, plus the
+    /// constant `tools/dngfit` found for the profile (`-4` for the embedded one, 0 for the identity profile), plus the
+    /// display placement.
+    ///
+    /// The placement is what the app's ACES 2 path adds before the transform (`ym_color::display::DISPLAY_PLACEMENT_EV`,
+    /// `docs/02` C12 step 1a). The embedded profile is fitted to the plain transform; Adobe's renderer scales the
+    /// linear values by `2^BaselineExposure` before the profile, so adding the placement here makes the DNG as bright
+    /// as the app (`2^placement_ev * x` through the plain transform is the placed transform of `x`). It is 0 for a
+    /// writer that is not given the fitted profile.
     ///
     /// `x_white` is floored at [`BaselineExposure::white_floor`], so the value is never negative.
     Auto {
         /// The fitted offset in EV.
         fit_offset_ev: f64,
+        /// The display placement in EV (0 for no placement).
+        placement_ev: f64,
     },
     /// Write this value (EV) as it is.
     Fixed(f64),
@@ -210,7 +219,10 @@ pub enum BaselineExposure {
 
 impl Default for BaselineExposure {
     fn default() -> Self {
-        Self::Auto { fit_offset_ev: 0.0 }
+        Self::Auto {
+            fit_offset_ev: 0.0,
+            placement_ev: 0.0,
+        }
     }
 }
 
@@ -223,10 +235,14 @@ impl BaselineExposure {
     /// With the white level floored at `2^-fit_offset_ev` the exposure is zero for every photo whose 99.99th percentile
     /// is below that (scene 16 for the embedded profile, nearly all of them) and positive for the rest. The cost is shadow
     /// precision: the stored codes are scene value / `x_white` * 65535.
+    ///
+    /// The placement does not move the floor: it only adds to a value that is never negative, and a floor at
+    /// `2^-(fit_offset_ev + placement_ev)` would give 0.85 EV finer shadow codes at the price of the stored headroom
+    /// above scene 8.9 (a user who lowers the exposure in the other editor needs it).
     #[must_use]
     pub fn white_floor(self) -> f32 {
         match self {
-            Self::Auto { fit_offset_ev } => (-fit_offset_ev).exp2().max(1.0) as f32,
+            Self::Auto { fit_offset_ev, .. } => (-fit_offset_ev).exp2().max(1.0) as f32,
             Self::Fixed(_) => 1.0,
         }
     }
@@ -235,7 +251,10 @@ impl BaselineExposure {
     #[must_use]
     pub fn resolve_ev(self, x_white: f32) -> f64 {
         match self {
-            Self::Auto { fit_offset_ev } => f64::from(x_white).log2() + fit_offset_ev,
+            Self::Auto {
+                fit_offset_ev,
+                placement_ev,
+            } => f64::from(x_white).log2() + fit_offset_ev + placement_ev,
             Self::Fixed(ev) => ev,
         }
     }
@@ -372,7 +391,10 @@ mod tests {
 
     #[test]
     fn the_white_floor_cancels_a_negative_offset_and_is_at_least_one() {
-        let auto = |fit_offset_ev| BaselineExposure::Auto { fit_offset_ev };
+        let auto = |fit_offset_ev| BaselineExposure::Auto {
+            fit_offset_ev,
+            placement_ev: 0.0,
+        };
         assert_eq!(BaselineExposure::default().white_floor(), 1.0);
         assert_eq!(auto(-4.0).white_floor(), 16.0);
         assert_eq!(auto(-0.5).white_floor(), 0.5_f64.exp2() as f32);
@@ -386,6 +408,14 @@ mod tests {
         }
         // and above it the exposure is positive
         assert!(auto(-4.0).resolve_ev(32.0) > 0.99);
+        // the placement adds to the exposure and leaves the floor alone
+        let placed = BaselineExposure::Auto {
+            fit_offset_ev: -4.0,
+            placement_ev: 0.85,
+        };
+        assert_eq!(placed.white_floor(), 16.0);
+        assert!((placed.resolve_ev(16.0) - 0.85).abs() < 1e-12);
+        assert!((placed.resolve_ev(32.0) - 1.85).abs() < 1e-12);
     }
 
     #[test]
@@ -394,7 +424,8 @@ mod tests {
         assert!((BaselineExposure::default().resolve_ev(8.0) - 3.0).abs() < 1e-12);
         assert!(
             (BaselineExposure::Auto {
-                fit_offset_ev: -0.25
+                fit_offset_ev: -0.25,
+                placement_ev: 0.0
             }
             .resolve_ev(2.0)
                 - 0.75)

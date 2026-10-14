@@ -200,6 +200,10 @@ Direction (your words): "This is a photo processing app, not video, we can do br
 - **Your photos may stay in the repository** (the `readme-photos` branch with your reference exports; test data, CI and published images allowed; `tools/fetch/owner-photos.sh`).
 - **Next: intelligent automatic settings and ARRI colour against a LUT.** A research workflow measures how much our per-photo colour differs from the best static LUT pipelines and which per-photo stages to build; your commercial LUT (local, `testdata/luts/`, git-ignored, never committed; comparison pictures only to you) is the reference for the colour comparison.
 
+Next, your answers to the research (`research/dynamic-vs-lut-2026-10-14.md`):
+- **Default rendering:** ARRI's default neutral look (ARRI's own Rec.709 display rendering) should be the default, once you have seen it on your photos. Yellowmoon cannot ship ARRI's LUTs, so the app reaches it through the import wizard; a preview on your photos needs ARRI's free display LUTs (download blocked by this environment's network policy for www.arri.com; waiting on you).
+- **Build:** a white correction for bodies without their own sensor data (your A1 reads daylight as about 4430 K on the A7R IV stand-in), and a per-photo lift of the top tones to a real white (mid-tones untouched; shown in the Automatic card with an offset). Not now: the steadier white-balance estimate and series rule, and the high-ISO shadow chroma stage.
+
 State: the three changes above are queued as one step (pipeline version 0.2.0, every golden updated, README screenshots redone). It starts when GPU wave 3 ends, before wave 4.
 
 ## Questions for Mykyta

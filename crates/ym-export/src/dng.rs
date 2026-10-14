@@ -31,8 +31,9 @@
 //! edge of the matching bin of a histogram with 2048 bins per octave (a relative resolution of
 //! 0.05 %), so at least 99.99 % of the pixels are at or below it and the result does not depend on
 //! the thread count. Negative values are clipped to 0 and the clipped fractions are reported in
-//! [`DngReport`]. `BaselineExposure` is `log2(x_white)` plus a fitted offset
-//! ([`BaselineExposure`]), so Adobe's renderer sees the original scene-linear values. A reader that
+//! [`DngReport`]. `BaselineExposure` is `log2(x_white)` plus a fitted offset plus the display placement
+//! ([`BaselineExposure`]), so Adobe's renderer sees the original scene-linear values, brightened by
+//! the placement the app applies before ACES 2 (`docs/02` C12 step 1a). A reader that
 //! ignores `BaselineExposure` and the profile shows the stored image darker by the white level (4 EV for
 //! the usual 16).
 //!
@@ -40,7 +41,8 @@
 //!
 //! [`fitted::FittedProfile::embedded`] is `data/dng/profile.json`, compiled into the binary: the tone curve
 //! and look table fitted to ACES 2 with Adobe's renderer, and the offset `-4`. The app and the CLI both
-//! write it, with `BaselineExposure::Auto { fit_offset_ev }`.
+//! write it, with `BaselineExposure::Auto { fit_offset_ev, placement_ev }` (see
+//! [`fitted::FittedProfile::baseline_exposure`]).
 //!
 //! The 90-degree orientation steps go into the TIFF `Orientation` tag; pixels are not rotated, and
 //! the preview and thumbnail must be in the same (unrotated) orientation as the raw pixels.
@@ -312,7 +314,7 @@ fn check_baseline_exposure(b: BaselineExposure) -> Result<(), ExportError> {
         BaselineExposure::Fixed(v) if !v.is_finite() => {
             Err(ExportError::invalid("the baseline exposure isn't a number"))
         }
-        BaselineExposure::Auto { fit_offset_ev }
+        BaselineExposure::Auto { fit_offset_ev, .. }
             if !fit_offset_ev.is_finite() || !FIT_OFFSET_RANGE_EV.contains(&fit_offset_ev) =>
         {
             Err(ExportError::invalid(format!(
@@ -321,6 +323,9 @@ fn check_baseline_exposure(b: BaselineExposure) -> Result<(), ExportError> {
                 FIT_OFFSET_RANGE_EV.end()
             )))
         }
+        BaselineExposure::Auto { placement_ev, .. } if !placement_ev.is_finite() => Err(
+            ExportError::invalid("the baseline exposure placement isn't a number"),
+        ),
         _ => Ok(()),
     }
 }
@@ -736,6 +741,7 @@ mod tests {
         let (w, h) = (100_u32, 100_u32);
         let fitted = BaselineExposure::Auto {
             fit_offset_ev: -4.0,
+            placement_ev: 0.0,
         };
         // A dim photo: x_white is the floor, 16, and BaselineExposure log2(16) - 4 = 0.
         let dim = raw_image(w, h, |x, _| [x as f32 / 200.0, 0.1, 0.0]);
@@ -759,9 +765,18 @@ mod tests {
         assert!(fitted.resolve_ev(x) > 1.3);
         // An offset the writer cannot use is refused.
         for bad in [f64::NAN, f64::INFINITY, -30.0, 9.0] {
-            let b = BaselineExposure::Auto { fit_offset_ev: bad };
+            let b = BaselineExposure::Auto {
+                fit_offset_ev: bad,
+                placement_ev: 0.0,
+            };
             assert!(white_level(&img, b).is_err(), "{bad}");
         }
+        // A placement that is not a number is refused too.
+        let b = BaselineExposure::Auto {
+            fit_offset_ev: -4.0,
+            placement_ev: f64::NAN,
+        };
+        assert!(white_level(&img, b).is_err());
     }
 
     #[test]

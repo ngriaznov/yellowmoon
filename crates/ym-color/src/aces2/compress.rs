@@ -4,7 +4,9 @@
 //! Chroma compression and gamut compression of the ACES 2 output transform.
 //!
 //! Port of the `chroma_compress_*`, `compress_gamut`, `gamut_compress_fwd` and helper functions
-//! in `Lib.Academy.OutputTransform.ctl`, forward direction only.
+//! in `Lib.Academy.OutputTransform.ctl`. The forward direction is here; the inverse output
+//! transform (`inverse.rs`) reuses the geometry of `compress_gamut_with`, which the reference also
+//! runs in both directions through one `invert` flag.
 
 use super::cam::HUE_LIMIT;
 use super::matrix::V3;
@@ -220,8 +222,22 @@ pub(super) fn compute_focus_j(cusp_j: f64, mid_j: f64, limit_j_max: f64) -> f64 
 }
 
 /// `remap_M` (forward): Reinhard-style compression of M above a threshold below the gamut boundary.
+#[cfg(test)]
 #[inline]
 fn remap_m(m: f64, gamut_boundary_m: f64, reach_boundary_m: f64) -> f64 {
+    remap_m_with(m, gamut_boundary_m, reach_boundary_m, false)
+}
+
+/// `remap_M` in either direction (`invert` runs the Reinhard remap backwards, `reinhard_remap` of the
+/// reference): the compressed M goes back to the M it came from. Above the compressed range of the
+/// curve (`nd >= 1`) the reference returns the reach boundary's M.
+#[inline]
+pub(super) fn remap_m_with(
+    m: f64,
+    gamut_boundary_m: f64,
+    reach_boundary_m: f64,
+    invert: bool,
+) -> f64 {
     let boundary_ratio = gamut_boundary_m / reach_boundary_m;
     let proportion = boundary_ratio.max(COMPRESSION_THRESHOLD);
     let threshold = proportion * gamut_boundary_m;
@@ -238,8 +254,16 @@ fn remap_m(m: f64, gamut_boundary_m: f64, reach_boundary_m: f64) -> f64 {
     let scale = reach_offset / ((reach_offset / gamut_offset) - 1.0);
     let nd = m_offset / scale;
 
-    // Shift result back to absolute (forward Reinhard remap).
-    threshold + scale * nd / (1.0 + nd)
+    // Shift result back to absolute (Reinhard remap, forward or inverse).
+    if invert {
+        if nd >= 1.0 {
+            threshold + scale
+        } else {
+            threshold + scale * -(nd / (nd - 1.0))
+        }
+    } else {
+        threshold + scale * nd / (1.0 + nd)
+    }
 }
 
 /// Hue dependent gamut parameters (`HueDependentGamutParams`).
@@ -350,6 +374,19 @@ impl Aces2Params {
 
     /// `compress_gamut` (forward): moves (J, M) along the compression vector into the gamut.
     fn compress_gamut(&self, jmh: V3, jx: f64, hdp: &HueDependentGamutParams) -> V3 {
+        self.compress_gamut_with(jmh, jx, hdp, false)
+    }
+
+    /// `compress_gamut` in either direction: `invert` moves a compressed (J, M) back along the same
+    /// compression vector to where it came from. `jx` is the J that sets the vector's slope gain
+    /// (the point's own J going forward; the estimate of the source J when inverting).
+    pub(super) fn compress_gamut_with(
+        &self,
+        jmh: V3,
+        jx: f64,
+        hdp: &HueDependentGamutParams,
+        invert: bool,
+    ) -> V3 {
         let (j, m, h) = (jmh[0], jmh[1], jmh[2]);
 
         let slope_gain = get_focus_gain(
@@ -401,7 +438,7 @@ impl Aces2Params {
             self.limit_j_max,
         );
 
-        let remapped_m = remap_m(m, gamut_boundary_m, reach_boundary_m);
+        let remapped_m = remap_m_with(m, gamut_boundary_m, reach_boundary_m, invert);
 
         [j_intersect_source + remapped_m * gamut_slope, remapped_m, h]
     }

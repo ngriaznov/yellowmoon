@@ -8,7 +8,7 @@ use ym_color::consts::Vec3;
 use ym_color::consts::linalg;
 use ym_color::display::{
     ArriDisplayLut, ChainParams, ColorChain, DisplayError, DisplayLutInput, DisplayLutOutput,
-    DisplayLutPrimaries, DisplayLutTransfer, DisplayTransform, OutputTarget,
+    DisplayLutPrimaries, DisplayLutTransfer, DisplayTransform, OutputTarget, aces2_input_matrix,
 };
 use ym_color::encode::OutputSpace;
 use ym_color::gamut::matrices;
@@ -84,7 +84,7 @@ fn aces2_dispatch_is_the_reference_transform_for_every_output() {
         let mut worst = 0.0_f64;
         for px in scene_pixels() {
             let t = chain.trace(px);
-            let ap0 = linalg::mul_vec(&matrices().awg4_to_ap0, px);
+            let ap0 = linalg::mul_vec(&aces2_input_matrix(), px);
             // C12 keeps display-linear in the output's primaries; C13 is the output's transfer.
             let want_linear = reference.transform_ap0_linear(ap0);
             let want_encoded = target.space().encode_clamped(want_linear);

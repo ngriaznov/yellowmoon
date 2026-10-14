@@ -110,6 +110,32 @@ fn constants_are_generated_from_ym_color_not_typed() {
 }
 
 #[test]
+fn the_aces2_input_matrix_constant_is_the_cpu_matrix_with_the_display_placement() {
+    // docs/02 C12 step 1a: the kernel's AWG4 to AP0 constant is the CPU reference's placed matrix
+    // (`2^DISPLAY_PLACEMENT_EV` folded in), written from the one Rust constant, rounded to f32.
+    let src = shader_source(StorageMode::F32, KernelId::Color);
+    let placed = ym_color::display::aces2_input_matrix();
+    let plain = ym_color::gamut::matrices().awg4_to_ap0;
+    let line = |name: &str, row: &[f64; 3]| {
+        format!(
+            "const {name}: vec3<f32> = vec3<f32>({:?}, {:?}, {:?});",
+            row[0] as f32, row[1] as f32, row[2] as f32
+        )
+    };
+    for i in 0..3 {
+        let name = format!("AWG4_TO_AP0_{i}");
+        assert!(
+            src.contains(&line(&name, &placed[i])),
+            "{name} is not the placed matrix"
+        );
+        assert!(
+            !src.contains(&line(&name, &plain[i])),
+            "{name} is the plain gamut matrix: the placement is missing"
+        );
+    }
+}
+
+#[test]
 fn the_adaptive_ratio_passes_share_one_source_and_each_has_one_entry_point() {
     // RA-09: eleven pipelines of `adaptive_ratio.wgsl`, f32 planes in every storage mode, so the text
     // of a pass differs between storage modes only by the generated prelude (and not at all in its

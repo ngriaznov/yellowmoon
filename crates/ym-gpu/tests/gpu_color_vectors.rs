@@ -22,7 +22,7 @@ use std::sync::Arc;
 use ym_color::aces2::Aces2Output;
 use ym_color::consts::linalg::IDENTITY;
 use ym_color::cube::parse_lut;
-use ym_color::display::{ChainParams, ColorChain, LookSetting, OutputTarget};
+use ym_color::display::{ChainParams, ColorChain, DISPLAY_PLACEMENT_EV, LookSetting, OutputTarget};
 use ym_color::gamut::matrices;
 use ym_color::logc::logc4_decode_rgb;
 use ym_color::look::{LookInput, LookTransform};
@@ -100,7 +100,11 @@ fn drt_gate_against_opencolorio_for_all_four_outputs() {
                 .collect();
             // The chain's matrix takes AP0 to AWG4; roll-off off, zero grade, Neutral, curves
             // identity: C8 to C13 only.
-            let mut params = ChainParams::new(matrices().ap0_to_awg4, identity_tone());
+            // The ACES 2 path applies the display placement 2^k before the transform (docs/02 C12
+            // step 1a) and the vectors do not include it: scale the input matrix by 2^-k so it cancels.
+            let unplace = (-DISPLAY_PLACEMENT_EV).exp2();
+            let ap0_to_awg4 = matrices().ap0_to_awg4.map(|row| row.map(|v| v * unplace));
+            let mut params = ChainParams::new(ap0_to_awg4, identity_tone());
             params.output = OutputTarget::from(output);
             // f16 devices hold the image in f16, which rounds the AP0 inputs themselves (a relative
             // 2.4e-4 on saturated, very bright wheel colours is a few 10-bit codes after the gamut

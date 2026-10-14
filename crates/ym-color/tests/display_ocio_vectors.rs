@@ -32,7 +32,7 @@
 //! noise does not.
 
 use ym_color::consts::Vec3;
-use ym_color::display::{ChainParams, ColorChain, OutputTarget};
+use ym_color::display::{ChainParams, ColorChain, DISPLAY_PLACEMENT_EV, OutputTarget};
 use ym_color::logc::logc4_decode_rgb;
 use ym_color::tone::ToneParams;
 
@@ -269,10 +269,14 @@ fn expected(target: OutputTarget) -> &'static [[f64; 3]; 40] {
     }
 }
 
-/// A chain that does nothing before C12: identity matrix, roll-off out of reach, zero grade.
+/// A chain that does nothing before C12: roll-off out of reach, zero grade. The ACES 2 path applies
+/// the display placement `2^DISPLAY_PLACEMENT_EV` before the transform (`docs/02` C12 step 1a) and
+/// OpenColorIO's vectors do not include it, so the fused matrix is `2^-k` times the identity: the
+/// placement then cancels and the chain is compared with the transform itself.
 fn bare(target: OutputTarget) -> ColorChain {
-    let identity = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
-    let mut p = ChainParams::new(identity, ToneParams::new(0.5, 0.0, 1.0e6, 0.0).unwrap());
+    let g = (-DISPLAY_PLACEMENT_EV).exp2();
+    let scale = [[g, 0.0, 0.0], [0.0, g, 0.0], [0.0, 0.0, g]];
+    let mut p = ChainParams::new(scale, ToneParams::new(0.5, 0.0, 1.0e6, 0.0).unwrap());
     p.output = target;
     ColorChain::new(&p).unwrap()
 }

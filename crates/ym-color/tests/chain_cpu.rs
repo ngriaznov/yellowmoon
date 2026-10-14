@@ -20,7 +20,7 @@ use ym_color::curve::{Curve, CurveSet};
 use ym_color::deltae::{d65_white_xyz, delta_e_2000, xyz_to_lab};
 use ym_color::display::{
     BeforePoint, ChainParams, ColorChain, DisplayError, Frame, Layout, LookSetting, OutputTarget,
-    View,
+    View, aces2_input_matrix,
 };
 use ym_color::encode::{self, OutputSpace};
 use ym_color::gamut::{LinearAwg4, matrices};
@@ -177,7 +177,7 @@ fn chain(p: &ChainParams) -> ColorChain {
 /// port's own `transform_ap0` uses the reference's continuous "moncurve" instead, which differs by
 /// up to 9.8e-6, see `c13_srgb_differs_from_the_aces2_references_moncurve_by_under_1e5`).
 fn aces2_of_linear_awg4(linear: Vec3, output: Aces2Output) -> Vec3 {
-    let ap0 = linalg::mul_vec(&matrices().awg4_to_ap0, linear);
+    let ap0 = linalg::mul_vec(&aces2_input_matrix(), linear);
     let display_linear = Aces2Transform::new(output).transform_ap0_linear(ap0);
     OutputTarget::from(output)
         .space()
@@ -203,7 +203,7 @@ fn trace_equals_an_independent_composition_of_the_stage_modules() {
         let c9 = grade.apply(c8, grade_luma(lin));
         let c10 = blend_logc4(c9, look.eval_logc4(c9).unwrap(), 80.0);
         let c11 = baked.apply(c10);
-        let ap0 = linalg::mul_vec(&matrices().awg4_to_ap0, logc4_decode_rgb(c11.0));
+        let ap0 = linalg::mul_vec(&aces2_input_matrix(), logc4_decode_rgb(c11.0));
         let c12 = aces.transform_ap0_linear(ap0);
         let c13 = OutputSpace::DisplayP3.encode_clamped(c12);
         assert_close(t.c6_linear_awg4, c6, 1e-14, "c6");
@@ -1087,7 +1087,7 @@ fn c13_srgb_differs_from_the_aces2_references_moncurve_by_under_1e5() {
         let mut worst = 0.0_f64;
         for stops in -140..=30 {
             let g = 0.18 * (f64::from(stops) / 10.0).exp2();
-            let ap0 = linalg::mul_vec(&matrices().awg4_to_ap0, [g, g * 0.9, g * 0.7]);
+            let ap0 = linalg::mul_vec(&aces2_input_matrix(), [g, g * 0.9, g * 0.7]);
             worst = worst.max(max_diff(
                 c.apply_pixel([g, g * 0.9, g * 0.7]),
                 reference.transform_ap0(ap0),

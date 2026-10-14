@@ -4,6 +4,7 @@
 use std::fmt::Write as _;
 
 use ym_color::consts::{LOGC3_EI800, LOGC4, LOGC4_GRAY, LOGC4_STOP, linalg::Mat3};
+use ym_color::display::aces2_input_matrix;
 use ym_color::gamut::{awg4_luminance_row, matrices};
 use ym_color::grade::{
     BRIGHTNESS_SIGMA, COLOR_BALANCE_STRENGTH, E1, E2, ZONE_CONTROL_SIGMA, ZONE_SIGMA,
@@ -488,7 +489,10 @@ fn constants() -> String {
     );
     s.push_str(&rows("AWG4_TO_AWG3", &m.awg4_to_awg3));
     s.push_str(&rows("AWG3_TO_AWG4", &m.awg3_to_awg4));
-    s.push_str(&rows("AWG4_TO_AP0", &m.awg4_to_ap0));
+    // The ACES 2 path's input matrix: AWG4 to AP0 with the display placement 2^k folded in
+    // (`docs/02` C12 step 1a). The only use of this constant is `display_ours`, so the CPU reference
+    // (`PreparedDisplay`) and the kernel apply the same numbers from one Rust constant.
+    s.push_str(&rows("AWG4_TO_AP0", &aces2_input_matrix()));
     s.push_str(&rows("AP0_TO_AP1", &aces::ap0_to_ap1()));
     s.push_str(&rows("AP1_TO_AP0", &aces::ap1_to_ap0()));
     let _ = writeln!(s, "const T_DITHER: u32 = {}u;", table::DITHER);

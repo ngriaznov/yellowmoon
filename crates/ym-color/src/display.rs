@@ -59,8 +59,8 @@ mod transform;
 pub use chain::{BeforePoint, ChainParams, ColorChain, LookSetting, StageTrace, View};
 pub use frame::{Frame, Layout};
 pub use transform::{
-    ArriDisplayLut, DisplayLutInput, DisplayLutOutput, DisplayLutPrimaries, DisplayLutTransfer,
-    DisplayTransform,
+    ArriDisplayLut, DISPLAY_PLACEMENT_EV, DisplayLutInput, DisplayLutOutput, DisplayLutPrimaries,
+    DisplayLutTransfer, DisplayTransform, aces2_input_matrix,
 };
 
 use crate::aces2::Aces2Output;
