@@ -922,7 +922,10 @@ mod tests {
         // Off does not even look.
         let (slot, probe) = open_with(GpuPolicy::Off, Adapter::Software);
         assert_eq!(summary(&slot, &probe), (false, GpuStages::NONE, 0));
-        assert!(probe.budgets.lock().expect("b").is_empty(), "Off asks for nothing");
+        assert!(
+            probe.budgets.lock().expect("b").is_empty(),
+            "Off asks for nothing"
+        );
     }
 
     #[test]
@@ -954,7 +957,10 @@ mod tests {
         );
         let (slot, probe) = open_with(GpuPolicy::Off, Adapter::None);
         assert_eq!(summary(&slot, &probe), (false, GpuStages::NONE, 0));
-        assert!(probe.budgets.lock().expect("b").is_empty(), "Off asks for nothing");
+        assert!(
+            probe.budgets.lock().expect("b").is_empty(),
+            "Off asks for nothing"
+        );
     }
 
     #[test]

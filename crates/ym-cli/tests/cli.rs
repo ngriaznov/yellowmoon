@@ -5,7 +5,7 @@ mod common;
 
 use assert_cmd::Command;
 use assert_cmd::cargo::cargo_bin_cmd;
-use common::Sandbox;
+use common::{Sandbox, shape};
 use predicates::prelude::*;
 use serde_json::Value;
 
@@ -165,22 +165,6 @@ fn doctor_json_has_the_same_parts() {
     assert_eq!(v["profiles"].as_array().expect("profiles").len(), 11);
     assert_eq!(v["looks"]["built_in"], 1);
     assert_eq!(v["looks"]["imported"], 0);
-}
-
-/// A JSON document reduced to its shape: every leaf is the name of its type, an array is the shape
-/// of its first element (or nothing). What a snapshot of a report that depends on the machine can
-/// pin without pinning the machine.
-fn shape(v: &Value) -> Value {
-    match v {
-        Value::Null => Value::from("null"),
-        Value::Bool(_) => Value::from("bool"),
-        Value::Number(_) => Value::from("number"),
-        Value::String(_) => Value::from("string"),
-        Value::Array(items) => Value::Array(items.first().map(shape).into_iter().collect()),
-        Value::Object(map) => {
-            Value::Object(map.iter().map(|(k, v)| (k.clone(), shape(v))).collect())
-        }
-    }
 }
 
 #[test]

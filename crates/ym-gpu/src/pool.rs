@@ -626,6 +626,60 @@ mod tests {
     }
 
     #[test]
+    fn the_unified_memory_budget_is_a_quarter_of_the_ram_between_half_a_gib_and_four() {
+        const GIB: u64 = 1 << 30;
+        for (ram, want) in [
+            (GIB, 512 << 20),
+            (2 * GIB, 512 << 20),
+            (4 * GIB, GIB),
+            (8 * GIB, 2 * GIB),
+            (16 * GIB, 4 * GIB),
+            (32 * GIB, 4 * GIB),
+            (64 * GIB, 4 * GIB),
+        ] {
+            assert_eq!(
+                MemoryBudget::for_unified_memory(ram).bytes,
+                want,
+                "{} GiB",
+                ram / GIB
+            );
+        }
+    }
+
+    #[test]
+    fn the_unified_split_lowers_the_cpu_side_and_keeps_the_sum_within_sixty_percent_of_the_ram() {
+        const GIB: u64 = 1 << 30;
+        // The CPU budget as `MemoryBudget::detect` has it today: the smaller of 6 GiB and half the RAM.
+        let cpu_default = |ram: u64| (6 * GIB).min(ram / 2);
+        for (ram_gib, cpu_gib, gpu_gib) in [(8u64, 2, 2), (16, 2, 4), (64, 2, 4)] {
+            let ram = ram_gib * GIB;
+            let (cpu, gpu) = unified_split(ram, cpu_default(ram));
+            assert_eq!(
+                (cpu, gpu),
+                (cpu_gib * GIB, gpu_gib * GIB),
+                "{ram_gib} GiB machine"
+            );
+            assert!(
+                cpu + gpu <= ram / 100 * MemoryBudget::UNIFIED_SUM_PERCENT,
+                "{ram_gib} GiB"
+            );
+        }
+        // The bound holds for every size, including machines too small for the minimum GPU budget.
+        for ram_mib in (256u64..=131_072).step_by(256) {
+            let ram = ram_mib << 20;
+            let (cpu, gpu) = unified_split(ram, cpu_default(ram));
+            assert!(
+                cpu + gpu <= ram / 100 * MemoryBudget::UNIFIED_SUM_PERCENT
+                    || gpu == MemoryBudget::UNIFIED_MIN_BYTES,
+                "{ram_mib} MiB: cpu {cpu} + gpu {gpu}"
+            );
+            assert!(cpu <= cpu_default(ram));
+        }
+        // The CPU side never goes negative.
+        assert_eq!(unified_split(8 * GIB, GIB).0, 0);
+    }
+
+    #[test]
     fn the_default_budget_scales_down_to_the_adapter() {
         let big = wgpu::Limits {
             max_buffer_size: 16 << 30,

@@ -38,7 +38,11 @@ pub fn max_abs_diff(a: &[f32], b: &[f32]) -> f32 {
 /// Panics unless `a` and `b` are the same bits, naming the first sample that differs.
 pub fn assert_bit_equal(what: &str, a: &[f32], b: &[f32]) {
     if let Some((i, x, y)) = first_difference(a, b) {
-        let diffs = a.iter().zip(b).filter(|(x, y)| x.to_bits() != y.to_bits()).count();
+        let diffs = a
+            .iter()
+            .zip(b)
+            .filter(|(x, y)| x.to_bits() != y.to_bits())
+            .count();
         panic!(
             "{what}: not bit-identical; first difference at sample {i}: {x:e} ({:#010x}) against {y:e} ({:#010x}); {diffs} of {} samples differ, max |diff| {:e}",
             x.to_bits(),
@@ -62,8 +66,19 @@ pub fn assert_all_finite(what: &str, data: &[f32]) {
 
 /// Pastes `tile` (planar, `planes` planes of `rect.w x rect.h`) into `frame` (planar, `planes`
 /// planes of `width x height`) at `rect`.
-pub fn paste(frame: &mut [f32], width: usize, height: usize, planes: usize, rect: Rect, tile: &[f32]) {
-    assert_eq!(tile.len(), planes * rect.w * rect.h, "tile {rect:?} has the wrong length");
+pub fn paste(
+    frame: &mut [f32],
+    width: usize,
+    height: usize,
+    planes: usize,
+    rect: Rect,
+    tile: &[f32],
+) {
+    assert_eq!(
+        tile.len(),
+        planes * rect.w * rect.h,
+        "tile {rect:?} has the wrong length"
+    );
     for c in 0..planes {
         for y in 0..rect.h {
             let dst = c * width * height + (rect.y + y) * width + rect.x;
@@ -87,14 +102,22 @@ pub fn assert_tiles_equal_whole(
     render: impl Fn(Rect) -> Vec<f32>,
 ) -> Vec<f32> {
     let whole = render(Rect::whole(width, height));
-    assert_eq!(whole.len(), planes * width * height, "{what}: whole frame length");
+    assert_eq!(
+        whole.len(),
+        planes * width * height,
+        "{what}: whole frame length"
+    );
     for &tile_px in tile_sizes {
         let mut tiled = vec![f32::NAN; whole.len()];
         for rect in tile_grid(width, height, tile_px, tile_px, 2) {
             let tile = render(rect);
             paste(&mut tiled, width, height, planes, rect, &tile);
         }
-        assert_bit_equal(&format!("{what}: tiles of {tile_px} px against the whole frame"), &tiled, &whole);
+        assert_bit_equal(
+            &format!("{what}: tiles of {tile_px} px against the whole frame"),
+            &tiled,
+            &whole,
+        );
     }
     whole
 }
@@ -115,7 +138,11 @@ pub fn assert_poison_neutral(what: &str, run: impl Fn(&Gpu) -> Vec<f32>) -> Opti
     let plain = plain_gpu()?;
     let a = run(&poisoned.gpu);
     let b = run(plain);
-    assert_bit_equal(&format!("{what}: poisoned device against plain device"), &a, &b);
+    assert_bit_equal(
+        &format!("{what}: poisoned device against plain device"),
+        &a,
+        &b,
+    );
     assert_all_finite(&format!("{what} (poisoned device)"), &a);
     Some(a)
 }

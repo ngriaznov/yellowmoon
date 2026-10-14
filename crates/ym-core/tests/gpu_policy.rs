@@ -66,6 +66,30 @@ fn sources(root: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
+/// Whether `line` holds `needle` as a call of its own: not as the tail of a longer name
+/// (`BackgroundGpu::start(` is not `Gpu::start(`).
+fn calls(line: &str, needle: &str) -> bool {
+    line.match_indices(needle).any(|(at, _)| {
+        needle.starts_with('.')
+            || !line[..at]
+                .chars()
+                .next_back()
+                .is_some_and(|c| c.is_alphanumeric() || c == '_')
+    })
+}
+
+#[test]
+fn the_scan_tells_a_device_call_from_a_longer_name() {
+    assert!(calls("let g = Gpu::start(config)?;", "Gpu::start("));
+    assert!(calls("ym_gpu::device::Gpu::start(config)", "Gpu::start("));
+    assert!(!calls(
+        "BackgroundGpu::start(policy, budget)",
+        "Gpu::start("
+    ));
+    assert!(!calls("MyGpu::start(x)", "Gpu::start("));
+    assert!(calls("adapter.request_device(&desc)", ".request_device("));
+}
+
 #[test]
 fn no_code_outside_open_gpu_creates_a_device() {
     let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
@@ -115,7 +139,7 @@ fn no_code_outside_open_gpu_creates_a_device() {
                 continue;
             }
             for needle in needles {
-                if line.contains(needle) && !allowed(&name, needle) {
+                if calls(line, needle) && !allowed(&name, needle) {
                     offences.push(format!("{name}:{}: {}", n + 1, code));
                 }
             }

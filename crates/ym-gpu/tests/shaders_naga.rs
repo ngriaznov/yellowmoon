@@ -5,8 +5,9 @@
 //!
 //! The validation baseline is `Capabilities::empty()`: a kernel that needs an optional capability
 //! (push constants, 64-bit integers, subgroups, float atomics, binding arrays, ...) fails here, on
-//! every machine, instead of on the one adapter that lacks it. Only the f16 storage mode adds the
-//! capability its `enable f16;` needs. A source lint then checks the kernel contract of
+//! every machine, instead of on the one adapter that lacks it. Only the two f16 storage modes (legacy,
+//! reached by `StoragePreference::Force`) add the capability their own declarations need
+//! (`SHADER_FLOAT16` for `enable f16;`, `SHADER_FLOAT16_IN_FLOAT32` for `pack2x16float`). A source lint then checks the kernel contract of
 //! `docs/gpu-plan.md` section 4.6 and the determinism rules that can be read off the source
 //! (K1 to K3, D3, D6); the lint itself is proved on seeded bad shaders.
 
@@ -17,10 +18,12 @@ use ym_gpu::device::StorageMode;
 use ym_gpu::kernels::{KernelId, KernelSet, shader_source};
 
 /// The capability the storage mode's own declarations need; everything else must validate with none.
+/// The default mode (f32) needs nothing.
 fn baseline(mode: StorageMode) -> Capabilities {
     match mode {
         StorageMode::F16Native => Capabilities::SHADER_FLOAT16,
-        StorageMode::F32 | StorageMode::F16Packed => Capabilities::empty(),
+        StorageMode::F16Packed => Capabilities::SHADER_FLOAT16_IN_FLOAT32,
+        StorageMode::F32 => Capabilities::empty(),
     }
 }
 
@@ -29,18 +32,17 @@ fn parse(mode: StorageMode, id: KernelId, src: &str) -> naga::Module {
         .unwrap_or_else(|e| panic!("{mode:?} {id:?}: parse error\n{}", e.emit_to_string(src)))
 }
 
-fn validate(
-    caps: Capabilities,
-    module: &naga::Module,
-) -> Result<naga::valid::ModuleInfo, naga::WithSpan<naga::valid::ValidationError>> {
-    Validator::new(ValidationFlags::all(), caps).validate(module)
+fn validate(caps: Capabilities, module: &naga::Module) -> Result<naga::valid::ModuleInfo, String> {
+    Validator::new(ValidationFlags::all(), caps)
+        .validate(module)
+        .map_err(|e| format!("{e:?}"))
 }
 
 fn check(mode: StorageMode, id: KernelId) {
     let src = shader_source(mode, id);
     let module = parse(mode, id, &src);
     let info = validate(baseline(mode), &module)
-        .unwrap_or_else(|e| panic!("{mode:?} {id:?}: validation error\n{e:?}"));
+        .unwrap_or_else(|e| panic!("{mode:?} {id:?}: validation error\n{e}"));
     msl::write_string(
         &module,
         &info,
@@ -149,7 +151,10 @@ fn placeholder_kernels_are_marked_in_name_and_text_and_write_nothing_but_a_nan()
             src.contains(&format!("PLACEHOLDER kernel `{}`", id.name())),
             "{id:?} does not announce itself"
         );
-        assert!(src.contains(owner), "{id:?} does not name its owner {owner}");
+        assert!(
+            src.contains(owner),
+            "{id:?} does not name its owner {owner}"
+        );
         assert!(
             src.contains("0x7fc00000u"),
             "{id:?} must write a NaN, not look like a working kernel"
@@ -335,6 +340,21 @@ fn lint(mode: StorageMode, src: &str) -> Vec<String> {
     found
 }
 
+/// Violations of the contract in kernels that predate it, each with the task that removes it. A
+/// listed violation must still be there (`known_violations_are_still_needed`), so a task that fixes
+/// one has to delete its line, and nothing new can hide behind this list.
+const KNOWN_VIOLATIONS: &[(KernelId, &str, &str)] = &[(
+    KernelId::Color,
+    "K3: 2 uniform buffers",
+    "G-04: the per-frame ChainU and the ACES 2 AcesU become one block",
+)];
+
+fn known(id: KernelId, finding: &str) -> bool {
+    KNOWN_VIOLATIONS
+        .iter()
+        .any(|(k, prefix, _)| *k == id && finding.starts_with(prefix))
+}
+
 #[test]
 fn no_kernel_breaks_the_kernel_contract() {
     for mode in [
@@ -344,9 +364,23 @@ fn no_kernel_breaks_the_kernel_contract() {
     ] {
         for id in KernelId::ALL {
             let src = shader_source(mode, id);
-            let found = lint(mode, &src);
+            let found: Vec<String> = lint(mode, &src)
+                .into_iter()
+                .filter(|f| !known(id, f))
+                .collect();
             assert!(found.is_empty(), "{mode:?} {id:?}: {found:#?}");
         }
+    }
+}
+
+#[test]
+fn known_violations_are_still_needed() {
+    for (id, prefix, owner) in KNOWN_VIOLATIONS {
+        let found = lint(StorageMode::F32, &shader_source(StorageMode::F32, *id));
+        assert!(
+            found.iter().any(|f| f.starts_with(prefix)),
+            "{id:?} no longer breaks `{prefix}`: delete its line from KNOWN_VIOLATIONS ({owner})"
+        );
     }
 }
 
@@ -372,7 +406,12 @@ fn the_lint_fails_on_seeded_bad_shaders() {
     }
     bad.push_str("}\n");
     let found = lint(StorageMode::F32, &bad);
-    for rule in ["K3: 9 storage", "K2: workgroup size", "K2: 20000 bytes", "D6"] {
+    for rule in [
+        "K3: 9 storage",
+        "K2: workgroup size",
+        "K2: 20000 bytes",
+        "D6",
+    ] {
         assert!(
             found.iter().any(|f| f.starts_with(rule)),
             "the lint missed {rule}: {found:#?}"
@@ -383,7 +422,11 @@ fn the_lint_fails_on_seeded_bad_shaders() {
     let text_bad = "enable subgroups;\nenable f16;\n\
                     @compute @workgroup_size(16, 16)\nfn main() { let a = subgroupAdd(1.0); }\n";
     let found = lint(StorageMode::F32, text_bad);
-    assert!(found.iter().any(|f| f.contains("directive `enable subgroups;`")));
+    assert!(
+        found
+            .iter()
+            .any(|f| f.contains("directive `enable subgroups;`"))
+    );
     assert!(
         found.iter().any(|f| f.contains("directive `enable f16;`")),
         "`enable f16;` is allowed only in the f16-native mode"

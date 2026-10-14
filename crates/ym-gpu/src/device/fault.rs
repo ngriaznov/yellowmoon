@@ -203,7 +203,9 @@ mod tests {
         assert_eq!(" lost ".parse::<GpuFault>(), Ok(GpuFault::Lost));
         assert_eq!("cancel@3".parse::<GpuFault>(), Ok(GpuFault::CancelAtJob(3)));
         assert_eq!("tile@12".parse::<GpuFault>(), Ok(GpuFault::FailTile(12)));
-        for bad in ["", "oom@1", "cancel@0", "cancel@x", "tile@", "tile@-1", "boom"] {
+        for bad in [
+            "", "oom@1", "cancel@0", "cancel@x", "tile@", "tile@-1", "boom",
+        ] {
             assert!(bad.parse::<GpuFault>().is_err(), "{bad:?}");
         }
     }

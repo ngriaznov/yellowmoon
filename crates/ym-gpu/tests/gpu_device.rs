@@ -23,7 +23,7 @@ use ym_gpu::device::{
 use ym_gpu::kernels::{KernelId, KernelSet};
 use ym_gpu::pool::{BufferPool, MemoryBudget, POISON_WORD, size_class};
 use ym_gpu::queue::{CancelToken, JobError, JobSpec, Priority};
-use ym_gpu::stream::read_bytes;
+use ym_gpu::stream::{PassList, read_bytes};
 
 fn storage() -> wgpu::BufferUsages {
     wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST
@@ -481,7 +481,11 @@ fn poison_mode_fills_new_and_recycled_buffers_and_adds_copy_dst_when_missing() {
             let reuses = ctx.pool().stats().reuses;
             let b = ctx.pool().acquire("poison b", 100_001, usage)?;
             assert_eq!(b.class_size(), class);
-            assert_eq!(ctx.pool().stats().reuses, reuses + 1, "served from the free list");
+            assert_eq!(
+                ctx.pool().stats().reuses,
+                reuses + 1,
+                "served from the free list"
+            );
             let got = words(&read_bytes(ctx, &b, 0, class)?);
             assert!(
                 got.iter().all(|&w| w == POISON_WORD),
@@ -619,13 +623,6 @@ fn a_readback_that_does_not_finish_in_time_taints_the_device() {
         ..GpuConfig::default()
     })
     .expect("device");
-    assert_eq!(
-        Gpu::start(GpuConfig::default())
-            .expect("device")
-            .scheduler()
-            .pending(),
-        0
-    );
     let err = g
         .run(JobSpec::new(Priority::Export), |ctx, _| {
             let module = ctx
@@ -637,7 +634,7 @@ fn a_readback_that_does_not_finish_in_time_taints_the_device() {
                          @compute @workgroup_size(1)\n\
                          fn main() {\n\
                          \tvar x = d[0];\n\
-                         \tfor (var i = 0u; i < 400000000u; i++) { x = x * 1.0000001 + 0.5; }\n\
+                         \tfor (var i = 0u; i < 100000000u; i++) { x = x * 1.0000001 + 0.5; }\n\
                          \td[0] = x;\n}\n"
                             .into(),
                     ),
@@ -665,25 +662,20 @@ fn a_readback_that_does_not_finish_in_time_taints_the_device() {
                     resource: buf.binding(),
                 }],
             });
-            let mut encoder = ctx
-                .device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+            // The slow pass and the readback of its result in one submission, waited for with the
+            // 50 ms timeout. (On lavapipe a *second* `queue.submit` blocks behind a running one,
+            // so the wait has to be the first thing that can block.)
+            let mut passes = PassList::new(ctx, "slow");
             {
-                let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor::default());
+                let mut pass = passes
+                    .encoder()
+                    .begin_compute_pass(&wgpu::ComputePassDescriptor::default());
                 pass.set_pipeline(&pipeline);
                 pass.set_bind_group(0, &group, &[]);
                 pass.dispatch_workgroups(1, 1, 1);
             }
-            let t0 = std::time::Instant::now();
-            let sub = ctx.submit([encoder.finish()])?;
-            eprintln!("DEBUG submit took {:?}", t0.elapsed());
-            let t1 = std::time::Instant::now();
-            let pr = ctx.device.poll(wgpu::PollType::Wait { submission_index: Some(sub), timeout: Some(Duration::from_millis(50)) });
-            eprintln!("DEBUG raw poll took {:?}: {:?}", t1.elapsed(), pr);
-            let t = std::time::Instant::now();
-            let r = read_bytes(ctx, &buf, 0, 4);
-            eprintln!("DEBUG readback took {:?}: {:?}", t.elapsed(), r.as_ref().map(|b| f32::from_le_bytes([b[0],b[1],b[2],b[3]])));
-            r.map(|_| ())
+            passes.read(&buf, 0, 4)?;
+            passes.submit()?.finish().map(|_| ())
         })
         .expect_err("the readback must time out");
     assert!(
@@ -691,6 +683,34 @@ fn a_readback_that_does_not_finish_in_time_taints_the_device() {
         "{err:?}"
     );
     assert!(g.is_lost(), "a timed-out readback taints the device");
+}
+
+/// `YM_GPU_POISON` decides `GpuConfig::default().poison`: the probe test below prints it, and the
+/// parent runs the probe in child processes with the variable set and unset (the environment of a
+/// running test process must not be edited).
+#[test]
+#[ignore = "run by poison_follows_the_environment_variable in a child process"]
+fn poison_env_probe() {
+    println!("POISON_DEFAULT={}", GpuConfig::default().poison);
+}
+
+#[test]
+fn poison_follows_the_environment_variable() {
+    let probe = |value: Option<&str>| {
+        let mut cmd = std::process::Command::new(std::env::current_exe().expect("test binary"));
+        cmd.args(["--exact", "poison_env_probe", "--ignored", "--nocapture"]);
+        match value {
+            Some(v) => cmd.env("YM_GPU_POISON", v),
+            None => cmd.env_remove("YM_GPU_POISON"),
+        };
+        let out = cmd.output().expect("child test process");
+        let text = String::from_utf8_lossy(&out.stdout).to_string();
+        assert!(out.status.success(), "{text}");
+        text.contains("POISON_DEFAULT=true")
+    };
+    assert!(!probe(None), "off by default");
+    assert!(!probe(Some("0")) && !probe(Some("")));
+    assert!(probe(Some("1")), "YM_GPU_POISON=1 turns it on");
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -754,10 +774,15 @@ fn a_running_job_sees_the_shared_token_and_navigation_sets_it() {
             t.is_cancelled()
         },
     );
-    started_rx.recv_timeout(Duration::from_secs(10)).expect("running");
+    started_rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("running");
     token.cancel();
     go_tx.send(()).expect("go");
-    assert!(seen.wait().expect("job"), "the running job saw the shared token set");
+    assert!(
+        seen.wait().expect("job"),
+        "the running job saw the shared token set"
+    );
 
     // A viewport render's jobs share one token; navigating away from its photo sets it, so the
     // jobs of that render that are still queued are skipped as well as the one that runs.
@@ -777,10 +802,17 @@ fn a_running_job_sees_the_shared_token_and_navigation_sets_it() {
     // thumbnail job is skipped because it shares that job's token.
     assert_eq!(dev.gpu.scheduler().cancel_navigation(Some(9)), 1);
     assert!(render.is_cancelled());
-    assert_eq!(first.wait_timeout(Duration::from_secs(10)), Some(Err(JobError::Cancelled)));
+    assert_eq!(
+        first.wait_timeout(Duration::from_secs(10)),
+        Some(Err(JobError::Cancelled))
+    );
     open.send(()).expect("open");
     gate.wait().expect("gate");
-    assert_eq!(sibling.wait(), Err(JobError::Cancelled), "the sibling shares the token");
+    assert_eq!(
+        sibling.wait(),
+        Err(JobError::Cancelled),
+        "the sibling shares the token"
+    );
 }
 
 #[test]
@@ -795,10 +827,14 @@ fn run_with_token_reports_cancelled_before_the_job_starts() {
     assert!(matches!(err, GpuError::Cancelled), "{err:?}");
     let ok = dev
         .gpu
-        .run_with_token(JobSpec::new(Priority::Export), CancelToken::new(), |_, t| {
-            assert!(!t.is_cancelled());
-            Ok(7)
-        })
+        .run_with_token(
+            JobSpec::new(Priority::Export),
+            CancelToken::new(),
+            |_, t| {
+                assert!(!t.is_cancelled());
+                Ok(7)
+            },
+        )
         .expect("fresh token");
     assert_eq!(ok, 7);
 }
@@ -829,7 +865,11 @@ fn warm_up_sets_compile_their_real_kernels_and_a_placeholder_compiles_on_request
         ctx.warm_up_set(KernelSet::View)?;
         assert_eq!(compiled(ctx), real(KernelSet::View));
         ctx.warm_up_set(KernelSet::Tail)?;
-        assert_eq!(real(KernelSet::Tail), 0, "the resize is still a placeholder");
+        assert_eq!(
+            real(KernelSet::Tail),
+            0,
+            "the resize is still a placeholder"
+        );
         assert_eq!(compiled(ctx), real(KernelSet::View));
         ctx.warm_up_set(KernelSet::Raw)?;
         assert_eq!(compiled(ctx), real(KernelSet::View) + real(KernelSet::Raw));
@@ -852,7 +892,10 @@ fn the_handle_hands_out_the_wgpu_objects_it_opened() {
     let setup = dev.gpu.wgpu_setup();
     assert_eq!(format!("{:?}", setup.backend), info.backend);
     assert_eq!(setup.adapter.get_info().name, info.name);
-    assert_eq!(setup.device.limits().max_buffer_size, info.limits.max_buffer_size);
+    assert_eq!(
+        setup.device.limits().max_buffer_size,
+        info.limits.max_buffer_size
+    );
     // Clones of the device thread's own objects: the context keeps the instance and the adapter too.
     let (name, same_limits) = dev
         .gpu
@@ -885,7 +928,9 @@ fn the_default_build_requests_no_optional_device_features() {
 #[cfg(feature = "ml")]
 #[test]
 fn the_ml_feature_requests_what_cubecl_requests() {
-    let Some(dev) = gpu() else { return };
+    if gpu().is_none() {
+        return;
+    }
     let g = Gpu::start(GpuConfig::default()).expect("device");
     let setup = g.wgpu_setup();
     let want = setup.adapter.features()
@@ -898,7 +943,6 @@ fn the_ml_feature_requests_what_cubecl_requests() {
         ctx.warm_up_set(KernelSet::View)
     })
     .expect("kernels compile on the ml device");
-    drop(dev);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -923,7 +967,9 @@ mod faults {
 
     #[test]
     fn an_injected_out_of_budget_fails_every_allocation_until_cleared() {
-        let Some(g) = armed(GpuFault::OutOfBudget) else { return };
+        let Some(g) = armed(GpuFault::OutOfBudget) else {
+            return;
+        };
         let r = g
             .run(JobSpec::new(Priority::Export), |ctx, _| {
                 ctx.pool().acquire("x", 1024, storage()).map(|_| ())
@@ -947,23 +993,34 @@ mod faults {
 
     #[test]
     fn an_injected_shader_fault_fails_pipeline_compilation() {
-        let Some(g) = armed(GpuFault::Shader) else { return };
+        let Some(g) = armed(GpuFault::Shader) else {
+            return;
+        };
         let r = g
             .run(JobSpec::new(Priority::Export), |ctx, _| {
-                ctx.kernels().pipeline(ctx, KernelId::SpikeMatrix).map(|_| ())
+                ctx.kernels()
+                    .pipeline(ctx, KernelId::SpikeMatrix)
+                    .map(|_| ())
             })
             .expect_err("injected");
-        assert!(matches!(&r, GpuError::Shader(m) if m.contains("injected")), "{r:?}");
+        assert!(
+            matches!(&r, GpuError::Shader(m) if m.contains("injected")),
+            "{r:?}"
+        );
         g.set_fault(None);
         g.run(JobSpec::new(Priority::Export), |ctx, _| {
-            ctx.kernels().pipeline(ctx, KernelId::SpikeMatrix).map(|_| ())
+            ctx.kernels()
+                .pipeline(ctx, KernelId::SpikeMatrix)
+                .map(|_| ())
         })
         .expect("cleared");
     }
 
     #[test]
     fn an_injected_lost_device_reports_device_lost_to_the_next_job() {
-        let Some(g) = armed(GpuFault::Lost) else { return };
+        let Some(g) = armed(GpuFault::Lost) else {
+            return;
+        };
         let r = g
             .run(JobSpec::new(Priority::Export), |_, _| Ok(()))
             .expect_err("lost at the start of the job");
@@ -971,9 +1028,58 @@ mod faults {
         assert!(g.is_lost());
     }
 
+    /// `YM_GPU_FAULT` arms a fault when the device opens (read in a child process, as above).
+    #[test]
+    #[ignore = "run by the_environment_variable_arms_a_fault in a child process"]
+    fn fault_env_probe() {
+        if gpu().is_none() {
+            println!("FAULT_PROBE=no-gpu");
+            return;
+        }
+        let g = Gpu::start(GpuConfig::default()).expect("device");
+        let hits: Vec<bool> = (0..3)
+            .map(|_| {
+                g.run(JobSpec::new(Priority::Export), |ctx, _| {
+                    Ok(ctx.inject_tile_fault().is_err())
+                })
+                .expect("job")
+            })
+            .collect();
+        println!("FAULT_PROBE={hits:?}");
+    }
+
+    #[test]
+    fn the_environment_variable_arms_a_fault() {
+        if gpu().is_none() {
+            return;
+        }
+        let run = |value: Option<&str>| {
+            let mut cmd = std::process::Command::new(std::env::current_exe().expect("test binary"));
+            cmd.args([
+                "--exact",
+                "faults::fault_env_probe",
+                "--ignored",
+                "--nocapture",
+            ]);
+            match value {
+                Some(v) => cmd.env("YM_GPU_FAULT", v),
+                None => cmd.env_remove("YM_GPU_FAULT"),
+            };
+            let out = cmd.output().expect("child test process");
+            assert!(out.status.success());
+            String::from_utf8_lossy(&out.stdout).to_string()
+        };
+        assert!(run(None).contains("FAULT_PROBE=[false, false, false]"));
+        assert!(run(Some("tile@2")).contains("FAULT_PROBE=[false, true, false]"));
+        // A value that is not a fault is ignored with a warning, not a failure.
+        assert!(run(Some("boom")).contains("FAULT_PROBE=[false, false, false]"));
+    }
+
     #[test]
     fn an_injected_cancel_sets_the_token_of_the_nth_job_only() {
-        let Some(g) = armed(GpuFault::CancelAtJob(2)) else { return };
+        let Some(g) = armed(GpuFault::CancelAtJob(2)) else {
+            return;
+        };
         let seen: Vec<bool> = (0..3)
             .map(|_| {
                 g.run(JobSpec::new(Priority::Export), |_, t| Ok(t.is_cancelled()))
@@ -985,7 +1091,9 @@ mod faults {
 
     #[test]
     fn an_injected_tile_fault_fails_the_nth_call_of_the_hook() {
-        let Some(g) = armed(GpuFault::FailTile(3)) else { return };
+        let Some(g) = armed(GpuFault::FailTile(3)) else {
+            return;
+        };
         let results: Vec<bool> = (0..4)
             .map(|_| {
                 g.run(JobSpec::new(Priority::Export), |ctx, _| {

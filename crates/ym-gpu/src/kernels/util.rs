@@ -129,11 +129,8 @@ impl Readback {
     /// Waits for the submission (at most the readback timeout), maps the staging buffer and returns
     /// a copy of its first `bytes`.
     pub(crate) fn finish(self, ctx: &GpuContext) -> Result<Vec<u8>, GpuError> {
-        let mut parts = crate::stream::map_readbacks(
-            ctx,
-            self.submission,
-            &[(&self.staging, self.bytes)],
-        )?;
+        let mut parts =
+            crate::stream::map_readbacks(ctx, self.submission, &[(&self.staging, self.bytes)])?;
         Ok(parts.pop().unwrap_or_default())
     }
 }

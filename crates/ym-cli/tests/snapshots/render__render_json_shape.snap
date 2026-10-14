@@ -1,0 +1,135 @@
+---
+source: crates/ym-cli/tests/render.rs
+expression: shape(&v)
+---
+{
+  "auto": {
+    "exposure_ev": "number",
+    "kelvin": "number",
+    "light_class": "string",
+    "light_confidence": "number",
+    "noise": {
+      "a": "number",
+      "b": "number"
+    },
+    "noise_reduction": {
+      "color": "number",
+      "detail": "number",
+      "luminance": "number"
+    },
+    "sharpen": {
+      "amount": "number",
+      "radius_px": "number"
+    },
+    "tint": "number"
+  },
+  "camera": {
+    "arw_version": "string",
+    "body": "string",
+    "firmware": "string",
+    "make": "string",
+    "match": "string",
+    "model": "string",
+    "model_id": "number",
+    "profile": "string",
+    "profile_name": "string",
+    "profile_version": "string",
+    "reduced": "bool",
+    "stand_in": "bool"
+  },
+  "device": "string",
+  "error": "null",
+  "input": "string",
+  "look": {
+    "id": "string",
+    "intensity": "number"
+  },
+  "notes": [
+    "string"
+  ],
+  "output": "string",
+  "pipeline_version": "string",
+  "settings": {
+    "black": "number",
+    "brightness": "number",
+    "color_balance": {
+      "highlights": [
+        "number"
+      ],
+      "midtones": [
+        "number"
+      ],
+      "shadows": [
+        "number"
+      ]
+    },
+    "contrast": "number",
+    "crop": "null",
+    "curve": {
+      "blue": [
+        [
+          "number"
+        ]
+      ],
+      "green": [
+        [
+          "number"
+        ]
+      ],
+      "luma": [
+        [
+          "number"
+        ]
+      ],
+      "red": [
+        [
+          "number"
+        ]
+      ]
+    },
+    "decode": {
+      "chromatic_aberration": "bool",
+      "highlight_recovery": "bool",
+      "lens_corrections": "bool",
+      "neural_demosaic": "bool"
+    },
+    "exposure": {
+      "ev": "number",
+      "kind": "string"
+    },
+    "highlights": "number",
+    "light_source": "string",
+    "look": "string",
+    "look_intensity": "number",
+    "noise_reduction": {
+      "color": "number",
+      "detail": "number",
+      "kind": "string",
+      "luminance": "number"
+    },
+    "orientation": "number",
+    "output_sharpening": "number",
+    "rolloff": {
+      "highlights": "number",
+      "low_light": "number"
+    },
+    "saturation": "number",
+    "shadows": "number",
+    "sharpen": {
+      "amount": "number",
+      "kind": "string",
+      "radius_px": "number"
+    },
+    "white": "number",
+    "white_balance": {
+      "kind": "string"
+    },
+    "white_pick": "null"
+  },
+  "status": "string",
+  "timings_ms": {
+    "decode": "number",
+    "develop": "number",
+    "encode": "number"
+  }
+}

@@ -145,3 +145,19 @@ pub fn head(path: &Path, n: usize) -> Vec<u8> {
     bytes.truncate(n);
     bytes
 }
+
+/// A JSON document reduced to its shape: every leaf is the name of its type, an array is the shape
+/// of its first element (or nothing). What a snapshot of a report that depends on the machine can
+/// pin without pinning the machine.
+pub fn shape(v: &Value) -> Value {
+    match v {
+        Value::Null => Value::from("null"),
+        Value::Bool(_) => Value::from("bool"),
+        Value::Number(_) => Value::from("number"),
+        Value::String(_) => Value::from("string"),
+        Value::Array(items) => Value::Array(items.first().map(shape).into_iter().collect()),
+        Value::Object(map) => {
+            Value::Object(map.iter().map(|(k, v)| (k.clone(), shape(v))).collect())
+        }
+    }
+}

@@ -335,7 +335,8 @@ pub struct GpuInfo {
     /// it exactly when the machine has unified memory). The memory budget is then carved out of the
     /// RAM the CPU side also uses ([`MemoryBudget::for_unified_memory`]).
     pub unified_memory: bool,
-    /// `TIMESTAMP_QUERY` was requested and is on, so pass lists report GPU times.
+    /// Timestamps were asked for ([`GpuConfig::timestamps`]) and the device has `TIMESTAMP_QUERY`, so
+    /// pass lists report GPU times.
     pub timestamp_query: bool,
     /// Poison mode is on: every buffer is filled with NaN when handed out.
     pub poison: bool,
@@ -710,7 +711,10 @@ impl GpuContext {
             f16_packing,
             pipeline_cache: cache.is_some(),
             unified_memory: adapter_info.device_type == wgpu::DeviceType::IntegratedGpu,
-            timestamp_query: device.features().contains(wgpu::Features::TIMESTAMP_QUERY),
+            // Recorded only when asked for, also on a device that has the feature for another reason
+            // (the `ml` request takes every adapter feature).
+            timestamp_query: config.timestamps
+                && device.features().contains(wgpu::Features::TIMESTAMP_QUERY),
             poison: config.poison,
             storage_mode,
             memory_budget_bytes: budget.bytes,

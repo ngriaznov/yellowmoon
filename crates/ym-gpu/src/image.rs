@@ -91,9 +91,11 @@ impl GpuImage {
                 "{label}: {samples} samples do not fit a 32-bit index"
             )));
         }
-        let buf = ctx
-            .pool()
-            .acquire(label, Self::buffer_bytes(width, height, planes), IMAGE_USAGE)?;
+        let buf = ctx.pool().acquire(
+            label,
+            Self::buffer_bytes(width, height, planes),
+            IMAGE_USAGE,
+        )?;
         Ok(GpuImage {
             buf,
             width,
@@ -151,7 +153,7 @@ impl GpuImage {
             }
             std::borrow::Cow::Owned(padded)
         };
-        upload_bytes(ctx, &img.buf, 0, bytemuck::cast_slice(&*bytes))?;
+        upload_bytes(ctx, &img.buf, 0, bytemuck::cast_slice(&bytes))?;
         Ok(img)
     }
 
@@ -160,7 +162,11 @@ impl GpuImage {
     /// # Errors
     ///
     /// As [`GpuImage::upload`].
-    pub fn upload_rgb(ctx: &GpuContext, label: &str, image: &RgbImage) -> Result<GpuImage, GpuError> {
+    pub fn upload_rgb(
+        ctx: &GpuContext,
+        label: &str,
+        image: &RgbImage,
+    ) -> Result<GpuImage, GpuError> {
         GpuImage::upload(
             ctx,
             label,

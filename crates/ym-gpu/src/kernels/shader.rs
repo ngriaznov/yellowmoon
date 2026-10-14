@@ -356,7 +356,9 @@ impl KernelSet {
 
     /// The kernels of this set, placeholders included, in [`KernelId::ALL`] order.
     pub fn kernels(self) -> impl Iterator<Item = KernelId> {
-        KernelId::ALL.into_iter().filter(move |&id| self.contains(id))
+        KernelId::ALL
+            .into_iter()
+            .filter(move |&id| self.contains(id))
     }
 }
 

@@ -6,7 +6,7 @@ mod common;
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 
-use common::{Sandbox, head, json_lines, lines, names_in, text};
+use common::{Sandbox, head, json_lines, lines, names_in, shape, text};
 use predicates::prelude::*;
 use serde_json::{Value, json};
 
@@ -997,6 +997,22 @@ fn a_setting_that_is_not_a_policy_is_a_warning_and_the_default() {
         .assert()
         .success()
         .stderr(predicate::str::is_empty());
+}
+
+#[test]
+fn the_json_of_a_file_has_this_shape() {
+    // The additive `device` key is in the snapshot, between `settings` and `timings_ms`.
+    let sb = Sandbox::new();
+    let arw = sb.arw("a.ARW");
+    let out = sb
+        .ym()
+        .env_remove("YELLOWMOON_GPU")
+        .args(["render", "--json", "--quiet", "--cpu"])
+        .arg(&arw)
+        .assert()
+        .success();
+    let v = json_lines(&out.get_output().stdout).remove(0);
+    insta::assert_json_snapshot!("render_json_shape", shape(&v));
 }
 
 /// The bytes of the JPEG `ym render` writes for `a.ARW` under the given policy.

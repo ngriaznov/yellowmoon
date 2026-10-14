@@ -899,6 +899,78 @@ mod tests {
     }
 
     #[test]
+    fn jobs_sharing_a_token_are_all_skipped_when_it_is_set_and_others_still_run() {
+        let s = scheduler();
+        let (open, g) = gate(&s);
+        let ran = Arc::new(AtomicUsize::new(0));
+        let shared = CancelToken::new();
+        let mk = |token: CancelToken, p: Priority| {
+            let ran = Arc::clone(&ran);
+            s.submit_with_token(JobSpec::new(p), token, move |_, _| {
+                ran.fetch_add(1, Ordering::SeqCst);
+            })
+        };
+        let a = mk(shared.clone(), Priority::Viewport);
+        let b = mk(shared.clone(), Priority::Export);
+        let other = mk(CancelToken::new(), Priority::Thumbnail);
+        assert!(
+            !a.token().is_cancelled() && !b.token().is_cancelled(),
+            "nothing is cancelled yet"
+        );
+        // The handle's token is the shared one: cancelling through either handle cancels both.
+        b.cancel();
+        assert!(shared.is_cancelled() && a.token().is_cancelled());
+        open.send(()).expect("open");
+        g.wait().expect("gate");
+        assert_eq!(a.wait(), Err(JobError::Cancelled));
+        assert_eq!(b.wait(), Err(JobError::Cancelled));
+        other.wait().expect("the job with its own token ran");
+        assert_eq!(ran.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_running_job_sees_the_shared_token_and_navigation_sets_it_for_the_whole_render() {
+        let s = scheduler();
+        let token = CancelToken::new();
+        let (started_tx, started_rx) = mpsc::channel::<()>();
+        let (go_tx, go_rx) = mpsc::channel::<()>();
+        let seen = s.submit_with_token(
+            JobSpec::new(Priority::Viewport).owned_by(4),
+            token.clone(),
+            move |_, t| {
+                let _ = started_tx.send(());
+                let _ = go_rx.recv();
+                t.is_cancelled()
+            },
+        );
+        started_rx.recv_timeout(WAIT).expect("started");
+        // A queued sibling of the same render, at a priority navigation does not cancel on its own.
+        let sibling = s.submit_with_token(
+            JobSpec::new(Priority::Export).owned_by(4),
+            token.clone(),
+            |log: &mut Vec<&'static str>, _| log.push("sibling"),
+        );
+        assert_eq!(s.cancel_navigation(Some(4)), 1, "the running viewport job");
+        assert!(token.is_cancelled(), "the render's token is set");
+        go_tx.send(()).expect("go");
+        assert_eq!(
+            seen.wait(),
+            Ok(true),
+            "the running job sees the shared token"
+        );
+        assert_eq!(
+            sibling.wait_timeout(WAIT),
+            Some(Err(JobError::Cancelled)),
+            "the queued sibling is skipped because it shares the token"
+        );
+        let log = s
+            .submit(JobSpec::new(Priority::Export), |log, _| log.clone())
+            .wait()
+            .expect("log");
+        assert!(log.is_empty(), "{log:?}");
+    }
+
+    #[test]
     fn cancel_all_clears_the_queue() {
         let s = scheduler();
         let (open, g) = gate(&s);

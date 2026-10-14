@@ -509,7 +509,10 @@ impl<'a> PassList<'a> {
     /// [`GpuError::OutOfBudget`], [`GpuError::BufferTooLarge`] or [`GpuError::DeviceLost`] from the
     /// pool.
     pub fn scratch(&mut self, label: &str, bytes: u64) -> Result<Arc<PooledBuffer>, GpuError> {
-        let buffer = self.ctx.pool().acquire(label, bytes.max(4), STORAGE_SCRATCH)?;
+        let buffer = self
+            .ctx
+            .pool()
+            .acquire(label, bytes.max(4), STORAGE_SCRATCH)?;
         Ok(self.keep(buffer))
     }
 
@@ -519,9 +522,16 @@ impl<'a> PassList<'a> {
     /// # Errors
     ///
     /// As [`PassList::scratch`].
-    pub fn uniform<T: Pod>(&mut self, label: &str, value: &T) -> Result<Arc<PooledBuffer>, GpuError> {
+    pub fn uniform<T: Pod>(
+        &mut self,
+        label: &str,
+        value: &T,
+    ) -> Result<Arc<PooledBuffer>, GpuError> {
         let bytes = bytemuck::bytes_of(value);
-        let buffer = self.ctx.pool().acquire(label, bytes.len() as u64, UNIFORM)?;
+        let buffer = self
+            .ctx
+            .pool()
+            .acquire(label, bytes.len() as u64, UNIFORM)?;
         self.ctx.queue.write_buffer(&buffer, 0, bytes);
         self.ctx.counters_shared().count_upload(bytes.len() as u64);
         Ok(self.keep(buffer))
@@ -643,7 +653,8 @@ impl<'a> PassList<'a> {
             _ => None,
         };
         let dispatches = self.dispatches;
-        ctx.counters_shared().count_dispatches(u64::from(dispatches));
+        ctx.counters_shared()
+            .count_dispatches(u64::from(dispatches));
         let submission = ctx.submit([self.encoder.finish()])?;
         Ok(Pending {
             device: ctx.device.clone(),
@@ -739,11 +750,8 @@ impl Pending {
     /// [`GpuError::DeviceLost`] when the device was lost, was tainted by an error while the work ran,
     /// or the wait timed out; [`GpuError::Readback`] when a mapping failed.
     pub fn finish(self) -> Result<Completed, GpuError> {
-        let mut staging: Vec<(&PooledBuffer, u64)> = self
-            .reads
-            .iter()
-            .map(|r| (&r.staging, r.bytes))
-            .collect();
+        let mut staging: Vec<(&PooledBuffer, u64)> =
+            self.reads.iter().map(|r| (&r.staging, r.bytes)).collect();
         if let Some(t) = &self.timing {
             staging.push((&t.staging, t.bytes));
         }
