@@ -525,7 +525,9 @@ impl SessionEnv {
             illuminants: Arc::new(illuminants),
             events: EventSink::none(),
             thumbnails: None,
-            default_look: LookId::builtin("neutral"),
+            // No look library is attached yet, so the identity look; `Core::open` sets the user's
+            // default look (Signature out of the box) with `with_default_look`.
+            default_look: LookId::neutral(),
             decode_threads: default_decode_threads(),
             forced_profile: None,
         })

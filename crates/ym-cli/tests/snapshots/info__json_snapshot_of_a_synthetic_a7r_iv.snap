@@ -75,7 +75,7 @@ expression: v
     "white": "sr2"
   },
   "look": {
-    "id": "builtin:neutral",
+    "id": "builtin:signature",
     "intensity": 100
   },
   "notes": [],
@@ -165,7 +165,7 @@ expression: v
     },
     "highlights": 0.0,
     "light_source": "auto",
-    "look": "builtin:neutral",
+    "look": "builtin:signature",
     "look_intensity": 100.0,
     "noise_reduction": {
       "color": 50.0,

@@ -15,7 +15,7 @@ fn one_file_goes_to_the_folder_next_to_its_folder_and_its_path_is_on_stdout() {
     let sb = Sandbox::new();
     let arw = sb.arw("DSC00001.ARW");
     let out = sb.ym().arg("render").arg(&arw).assert().success();
-    let expected = sb.default_export().join("DSC00001_neutral.jpg");
+    let expected = sb.default_export().join("DSC00001_signature.jpg");
     assert_eq!(
         lines(&out.get_output().stdout),
         [expected.display().to_string()]
@@ -29,7 +29,7 @@ fn one_file_goes_to_the_folder_next_to_its_folder_and_its_path_is_on_stdout() {
     );
     // The original is untouched and nothing else was written next to it.
     assert_eq!(names_in(&sb.photos()), ["DSC00001.ARW"]);
-    assert_eq!(names_in(&sb.default_export()), ["DSC00001_neutral.jpg"]);
+    assert_eq!(names_in(&sb.default_export()), ["DSC00001_signature.jpg"]);
 }
 
 #[test]
@@ -46,7 +46,7 @@ fn a_folder_is_walked_in_name_order_and_recursion_is_asked_for() {
         .iter()
         .map(|l| l.rsplit('/').next().unwrap_or(l).to_owned())
         .collect();
-    assert_eq!(names, ["A_neutral.jpg", "b_neutral.jpg"]);
+    assert_eq!(names, ["A_signature.jpg", "b_signature.jpg"]);
 
     let sb2 = sb;
     let out = sb2
@@ -127,7 +127,7 @@ fn json_has_one_object_per_file_in_the_documented_shape_and_order() {
     assert_eq!(
         v["output"],
         sb.default_export()
-            .join("DSC00001_neutral.png")
+            .join("DSC00001_signature.png")
             .display()
             .to_string()
     );
@@ -140,7 +140,7 @@ fn json_has_one_object_per_file_in_the_documented_shape_and_order() {
     assert_eq!(v["camera"]["match"], "exact");
     assert_eq!(
         v["look"],
-        json!({ "id": "builtin:neutral", "intensity": 100 })
+        json!({ "id": "builtin:signature", "intensity": 100 })
     );
     for key in [
         "exposure_ev",
@@ -160,7 +160,7 @@ fn json_has_one_object_per_file_in_the_documented_shape_and_order() {
     assert_eq!(v["settings"]["exposure"]["kind"], "manual");
     assert_eq!(v["settings"]["exposure"]["ev"], v["auto"]["exposure_ev"]);
     assert_eq!(v["settings"]["white_balance"]["kind"], "auto");
-    assert_eq!(v["settings"]["look"], "builtin:neutral");
+    assert_eq!(v["settings"]["look"], "builtin:signature");
 }
 
 #[test]
@@ -193,7 +193,7 @@ fn a_failed_file_has_status_error_no_output_and_the_exit_code_is_1() {
         .expect("good");
     assert_eq!(good["status"], "ok");
     assert!(
-        sb.default_export().join("good_neutral.jpg").exists(),
+        sb.default_export().join("good_signature.jpg").exists(),
         "the good file is still exported"
     );
 }
@@ -208,7 +208,7 @@ fn text_mode_reports_a_failed_file_on_stderr_and_still_exports_the_rest() {
         .arg(sb.photos())
         .assert()
         .code(1)
-        .stdout(predicate::str::contains("good_neutral.jpg"))
+        .stdout(predicate::str::contains("good_signature.jpg"))
         .stderr(predicate::str::contains("bad.ARW: This isn't an ARW file."))
         .stderr(predicate::str::contains("1 photo failed."));
 }
@@ -218,10 +218,14 @@ fn every_format_writes_its_own_file() {
     let sb = Sandbox::new();
     let arw = sb.arw("DSC00001.ARW");
     let cases: [(&[&str], &str, &[u8]); 4] = [
-        (&["jpeg"], "DSC00001_neutral.jpg", &[0xFF, 0xD8]),
-        (&["tiff"], "DSC00001_neutral.tif", b"II*\0"),
-        (&["png"], "DSC00001_neutral.png", &[0x89, b'P', b'N', b'G']),
-        (&["dng"], "DSC00001_neutral.dng", b"II*\0"),
+        (&["jpeg"], "DSC00001_signature.jpg", &[0xFF, 0xD8]),
+        (&["tiff"], "DSC00001_signature.tif", b"II*\0"),
+        (
+            &["png"],
+            "DSC00001_signature.png",
+            &[0x89, b'P', b'N', b'G'],
+        ),
+        (&["dng"], "DSC00001_signature.dng", b"II*\0"),
     ];
     for (format, file, magic) in cases {
         let out = sb.root().join(format[0]);
@@ -332,7 +336,7 @@ fn two_photos_that_map_to_one_name_are_both_written_whatever_the_exists_option_s
         assert_eq!(noted, expected, "{flag}");
         assert_eq!(
             names_in(&out),
-            ["DSC00001_neutral 2.jpg", "DSC00001_neutral.jpg"],
+            ["DSC00001_signature 2.jpg", "DSC00001_signature.jpg"],
             "{flag}"
         );
         let said = text(&run.get_output().stderr);
@@ -370,7 +374,7 @@ fn the_long_edge_scales_the_picture() {
         .arg(&arw)
         .assert()
         .success();
-    let bytes = std::fs::read(out.join("big_neutral.png")).expect("png");
+    let bytes = std::fs::read(out.join("big_signature.png")).expect("png");
     // IHDR: width and height are the first two big-endian words after the signature and chunk head.
     let w = u32::from_be_bytes(bytes[16..20].try_into().expect("w"));
     let h = u32::from_be_bytes(bytes[20..24].try_into().expect("h"));
@@ -753,7 +757,7 @@ fn the_output_sharpening_option_is_in_the_settings_the_json_reports() {
     let off = run(&["--output-sharpening", "0"], "off");
     assert_eq!(off["settings"]["output_sharpening"], json!(0.0));
     // The three files have three different pictures.
-    let file = |dir: &str| std::fs::read(sb.root().join(dir).join("a_neutral.png")).expect("png");
+    let file = |dir: &str| std::fs::read(sb.root().join(dir).join("a_signature.png")).expect("png");
     let (a, b, c) = (file("default"), file("set"), file("off"));
     assert!(a != b && a != c && b != c);
 }
@@ -835,7 +839,7 @@ fn a_named_file_that_is_not_an_arw_is_a_failure_next_to_the_photos_that_worked()
         .arg(&notes)
         .assert()
         .code(1)
-        .stdout(predicate::str::contains("a_neutral.jpg"))
+        .stdout(predicate::str::contains("a_signature.jpg"))
         .stderr(predicate::str::contains(
             "notes.txt: This isn't an ARW file.",
         ));
@@ -930,7 +934,7 @@ fn require_gpu_exits_4_only_when_no_device_opens_at_the_start() {
             .arg(&arw)
             .assert()
             .success();
-        assert_eq!(names_in(&sb.default_export()), ["a_neutral.jpg"]);
+        assert_eq!(names_in(&sb.default_export()), ["a_signature.jpg"]);
     }
 }
 
@@ -1031,7 +1035,7 @@ fn export_under(sb: &Sandbox, arw: &std::path::Path, flags: &[&str], gpu: Option
         .arg(arw)
         .assert()
         .success();
-    std::fs::read(sb.default_export().join("a_neutral.jpg")).expect("the export")
+    std::fs::read(sb.default_export().join("a_signature.jpg")).expect("the export")
 }
 
 #[test]
@@ -1171,7 +1175,7 @@ fn quiet_prints_nothing_and_verbose_adds_timings() {
         .assert()
         .success()
         .stderr(predicate::str::is_empty())
-        .stdout(predicate::str::contains("a_neutral.jpg"));
+        .stdout(predicate::str::contains("a_signature.jpg"));
     sb.ym()
         .args(["render", "--verbose", "--overwrite"])
         .arg(&arw)
@@ -1276,7 +1280,7 @@ fn a_photo_whose_settings_are_refused_is_reported_and_not_exported_with_its_defa
         .expect("white");
     assert_eq!(white["status"], "error");
     assert_eq!(white["error"]["kind"], "settings");
-    assert_eq!(names_in(&sb.default_export()), ["good_neutral.jpg"]);
+    assert_eq!(names_in(&sb.default_export()), ["good_signature.jpg"]);
 }
 
 #[test]

@@ -65,26 +65,79 @@ fn changes(f: &Fixture) -> usize {
 }
 
 #[test]
-fn the_built_in_looks_are_listed_and_neutral_is_the_default() {
+fn the_built_in_looks_are_listed_and_signature_is_the_default() {
     let f = fixture();
     let list = f.service.list();
-    let neutral = list
-        .iter()
-        .find(|l| l.id.as_str() == "builtin:neutral")
-        .expect("Neutral");
+    // Neutral first, then Signature; both are built in and usable.
+    let ids: Vec<&str> = list.iter().map(|l| l.id.as_str()).collect();
+    assert_eq!(&ids[..2], ["builtin:neutral", "builtin:signature"]);
+    let neutral = &list[0];
     assert_eq!(neutral.name, "Neutral");
-    assert!(neutral.is_default && !neutral.missing);
+    assert!(!neutral.is_default && !neutral.missing);
     assert_eq!(neutral.input, LookInput::LogC4);
+    let signature = &list[1];
+    assert_eq!(signature.name, "Signature");
+    assert!(signature.is_default && !signature.missing);
+    assert_eq!(signature.input, LookInput::LogC4);
     assert_eq!(list.iter().filter(|l| l.is_default).count(), 1);
     assert!(f.service.display_luts().is_empty());
-    assert_eq!(f.service.effective_default().as_str(), "builtin:neutral");
+    assert_eq!(f.service.effective_default().as_str(), "builtin:signature");
     assert_eq!(f.service.display_choice(), DisplayChoice::Aces2);
+    // Both built-in looks load: Neutral is the identity, Signature moves colour but not mid grey.
+    let provider = f.service.provider();
+    let neutral_look = provider.look(&LookId::neutral()).expect("Neutral loads");
+    assert!(neutral_look.transform.is_identity());
+    let signature_look = provider
+        .look(&LookId::factory_default())
+        .expect("Signature loads");
+    assert!(!signature_look.transform.is_identity());
+    let warm = ym_color::logc::LogC4([0.5, 0.4, 0.3]);
+    assert_ne!(
+        signature_look.transform.eval_logc4(warm).expect("log look"),
+        warm
+    );
     // Nothing was written by looking.
     assert!(
         std::fs::read_dir(f.root.path())
             .expect("dir")
             .next()
             .is_none()
+    );
+}
+
+/// A data folder with no `signature.json` (a broken bundle, a test): the default look is Neutral,
+/// which exists in code, and the list says so.
+#[test]
+fn without_the_signature_file_the_default_is_neutral() {
+    let data = tempfile::tempdir().expect("data");
+    let builtin = data.path().join("looks").join("builtin");
+    std::fs::create_dir_all(&builtin).expect("dir");
+    std::fs::copy(
+        data_root()
+            .join("looks")
+            .join("builtin")
+            .join("neutral.json"),
+        builtin.join("neutral.json"),
+    )
+    .expect("neutral.json");
+    let root = tempfile::tempdir().expect("app root");
+    let service = LookService::open(
+        root.path(),
+        data.path(),
+        Arc::new(PreferencesStore::open(root.path())),
+    )
+    .expect("service");
+    let list = service.list();
+    assert_eq!(
+        list.iter().map(|l| l.id.as_str()).collect::<Vec<_>>(),
+        ["builtin:neutral"]
+    );
+    assert!(list[0].is_default);
+    assert_eq!(service.effective_default().as_str(), "builtin:neutral");
+    // The preference itself still says Signature; the file coming back makes it the default again.
+    assert_eq!(
+        PreferencesStore::open(root.path()).get().default_look,
+        LookId::factory_default()
     );
 }
 
@@ -120,13 +173,10 @@ fn importing_a_cube_adds_a_look_notifies_once_and_is_idempotent() {
     assert!(provider.look(&look.id).is_ok());
     let sha = provider.look_sha256(&look.id).expect("sha");
     assert_eq!(sha.len(), 64);
-    // Built-in Neutral has a hash too: the one of its description file.
-    assert_eq!(
-        provider
-            .look_sha256(&LookId::builtin("neutral"))
-            .map(|s| s.len()),
-        Some(64)
-    );
+    // Built-in Neutral and Signature have a hash too: the one of their description files.
+    for built_in in [LookId::neutral(), LookId::factory_default()] {
+        assert_eq!(provider.look_sha256(&built_in).map(|s| s.len()), Some(64));
+    }
 
     // Again: nothing added, nothing notified.
     let again = import_cube(&f, &cube).expect("import again");
@@ -183,8 +233,8 @@ fn the_default_look_is_a_preference_and_a_missing_one_is_not_used() {
     assert!(
         !list
             .iter()
-            .find(|l| l.id.as_str() == "builtin:neutral")
-            .expect("n")
+            .find(|l| l.id.as_str() == "builtin:signature")
+            .expect("s")
             .is_default
     );
     // Persisted: a new store over the same folder sees it.
@@ -206,13 +256,13 @@ fn the_default_look_is_a_preference_and_a_missing_one_is_not_used() {
         missing.missing,
         "a look without its file stays in the list, disabled"
     );
-    assert_eq!(f.service.effective_default().as_str(), "builtin:neutral");
+    assert_eq!(f.service.effective_default().as_str(), "builtin:signature");
     assert!(
         f.service
             .list()
             .iter()
-            .find(|l| l.id.as_str() == "builtin:neutral")
-            .expect("n")
+            .find(|l| l.id.as_str() == "builtin:signature")
+            .expect("s")
             .is_default
     );
     let err = f.service.set_default(&id).expect_err("refused");
@@ -262,9 +312,9 @@ fn removing_a_look_deletes_its_file_and_resets_what_pointed_at_it() {
             .get()
             .default_look
             .as_str(),
-        "builtin:neutral"
+        "builtin:signature"
     );
-    assert_eq!(f.service.effective_default().as_str(), "builtin:neutral");
+    assert_eq!(f.service.effective_default().as_str(), "builtin:signature");
 
     let err = f
         .service

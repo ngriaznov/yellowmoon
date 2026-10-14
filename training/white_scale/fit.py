@@ -52,6 +52,27 @@ def _round3(s) -> list[float]:
     return [round(float(s[0]), DECIMALS), 1.0, round(float(s[2]), DECIMALS)]
 
 
+OWNER_SHA256 = paths.REPO_ROOT / "tools" / "fetch" / "owner-photos.sha256"
+
+
+def check_owner_files(folder: Path) -> None:
+    """Refuses a file named in ``tools/fetch/owner-photos.sha256`` whose SHA-256 differs: the registry names the
+    owner's photos as the source of the A1's scale, so the files read must be those."""
+    import hashlib
+
+    if not OWNER_SHA256.is_file():
+        return
+    pinned = {}
+    for line in OWNER_SHA256.read_text().splitlines():
+        digest, _, name = line.partition("  ")
+        if name and "/" not in name:
+            pinned[name] = digest
+    for f in sorted(folder.glob("*.ARW")):
+        want = pinned.get(f.name)
+        if want is not None and hashlib.sha256(f.read_bytes()).hexdigest() != want:
+            raise SystemExit(f"{f}: SHA-256 differs from tools/fetch/owner-photos.sha256 (run tools/fetch/owner-photos.sh)")
+
+
 def photo_levels(folder: Path) -> dict[str, dict[str, dict[str, tuple[int, ...]]]]:
     """``{model string: {file name: levels}}`` for the ARW files of a folder."""
     out: dict[str, dict[str, dict[str, tuple[int, ...]]]] = {}
@@ -121,6 +142,7 @@ def _matrix_sentence(fit: ref.Fit, m_fit: ref.Fit) -> str:
 def fit_all(photos: Path) -> dict:
     """The contents of ``white_scale.json``."""
     matrices = ref.load_matrices()
+    check_owner_files(photos)
     levels_by_model = photo_levels(photos)
     bodies: dict[str, dict] = {}
     fitted: dict[int, dict] = {}

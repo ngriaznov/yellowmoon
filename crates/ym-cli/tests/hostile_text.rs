@@ -537,8 +537,8 @@ fn looks_list_names_from_a_hostile_file_name_are_escaped() {
     assert_run_clean("`ym looks list` with a hostile look name", &run);
     let shown = text_of(&run.get_output().stdout);
     assert!(shown.contains("ev\\x1b[2Jil\\u{9b}"), "{shown}");
-    // The escape added no row: the header, the built-in look and the imported one.
-    assert_eq!(lines(&run.get_output().stdout).len(), 3, "{shown}");
+    // The escape added no row: the header, the two built-in looks and the imported one.
+    assert_eq!(lines(&run.get_output().stdout).len(), 4, "{shown}");
 
     let run = sandbox
         .ym()

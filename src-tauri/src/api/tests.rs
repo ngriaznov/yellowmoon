@@ -1105,7 +1105,7 @@ fn importing_a_cube_needs_the_answer_and_announces_the_new_look() {
     assert!(
         listed
             .iter()
-            .any(|l| l.id.0 == "builtin:neutral" && l.is_default)
+            .any(|l| l.id.0 == "builtin:signature" && l.is_default)
     );
 
     // The same file again changes nothing; the folder it came from is remembered.
@@ -1131,8 +1131,8 @@ fn importing_a_cube_needs_the_answer_and_announces_the_new_look() {
     h.api.looks_remove(&result.added[0].id).expect("remove");
     assert_eq!(
         h.api.preferences_get().expect("prefs").default_look.0,
-        "builtin:neutral",
-        "removing the default look puts Neutral back"
+        "builtin:signature",
+        "removing the default look puts Signature back"
     );
 }
 
@@ -1233,7 +1233,7 @@ fn a_downloads_folder_that_cannot_be_read_is_explained() {
 fn preferences_round_trip_and_nothing_else_is_written() {
     let h = Harness::new();
     let prefs = h.api.preferences_get().expect("prefs");
-    assert_eq!(prefs.default_look.0, "builtin:neutral");
+    assert_eq!(prefs.default_look.0, "builtin:signature");
     assert_eq!(prefs.display_rendering, DisplayRendering::Aces2);
     assert!(prefs.check_for_updates_automatically && !prefs.remove_location_from_exports);
     // Reading creates nothing.
@@ -1435,6 +1435,10 @@ fn assert_app_and_command_line_agree(h: &Harness, ym: &Path, files: &[PathBuf]) 
         .arg("--quiet")
         .env("YELLOWMOON_HOME", cli_home.path())
         .env("HOME", cli_home.path())
+        // The app under test opens no device (`open_app_gpu(false, ..)`), so `ym` runs on the CPU
+        // too: on a machine with a GPU, `auto` would put the raw chain on it. App and `ym` on the
+        // same device are compared by `crates/ym-cli/tests/parity_gpu.rs`.
+        .env("YELLOWMOON_GPU", "off")
         .output()
         .expect("run ym");
     assert!(

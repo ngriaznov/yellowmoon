@@ -242,7 +242,7 @@ fn a_default_look_chosen_by_the_cli_reaches_the_app_through_a_reload() {
     app.on_change(move || {
         c.fetch_add(1, Ordering::SeqCst);
     });
-    assert_eq!(app.effective_default().as_str(), "builtin:neutral");
+    assert_eq!(app.effective_default().as_str(), "builtin:signature");
 
     // `ym looks default user:warm` in another process: the preferences file changes.
     let cli = service_in(root.path());

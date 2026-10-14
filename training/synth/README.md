@@ -59,7 +59,7 @@ blends two renders (tungsten left, daylight right, a smoothstep over the middle 
 families and the Ohno (2013) CCT of the SPD for FL11 and the LEDs.
 
 **Bodies** (`spectra.py`): A7R IV (also the A1's stand-in), A7 III, A7S III, A6400, RX100 IV and the A1 with model ID 384 and the
-A7R IV curves. The curves are the published ones **in the raw scale** (green peaks at 1.0, red and blue lower), so the as-shot
+A7R IV curves. The scenes of a stand-in are rendered through the stand-in's curves, so its raw is written as the render divided by the registry's `white_scale` of the body (red and blue) and its as-shot gains are multiplied by it (`docs/03`, White scale of stand-in bodies): the pipeline's own scaling then lands on the render again. The sidecar records `camera_white_scale` and `as_shot.white_scale`; `w_true_camera_rgb` stays on the profile's scale; the recipe hash carries the scale only for a body that has one. The curves are the published ones **in the raw scale** (green peaks at 1.0, red and blue lower), so the as-shot
 white balance of a file is what a real raw file of that light has (R gain about 3, B gain about 1.4 under D65 for the A7R IV).
 
 **Exposure** (`sensor.py`): the camera's meter puts the green response of the 18 % grey at 0.12 of `white - black` (about 3.1 stops

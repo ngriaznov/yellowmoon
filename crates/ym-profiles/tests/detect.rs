@@ -377,3 +377,59 @@ fn the_store_can_be_shared_between_threads() {
         }
     });
 }
+
+#[test]
+fn detection_carries_the_bodys_white_scale() {
+    // docs/03, White scale of stand-in bodies: the scale belongs to the registry body.
+    let s = store();
+    let reg = s.registry();
+    for b in &reg.bodies {
+        let m = s.detect("SONY", &b.model, Some(b.model_id));
+        assert_eq!(m.white_scale, b.white_scale, "{}", b.model);
+        // The same through the Model string.
+        assert_eq!(
+            s.detect("SONY", &b.model, None).white_scale,
+            b.white_scale,
+            "{}",
+            b.model
+        );
+    }
+    // The A1 borrows the A7R IV and needs the scale; the A7R IV itself does not.
+    let a1 = s.detect("SONY", "ILCE-1", Some(384));
+    assert_eq!(a1.profile.as_str(), "sony-ilce-7rm4");
+    assert!(a1.is_stand_in() && a1.white_scale != [1.0; 3]);
+    assert_eq!(a1.white_scale[1], 1.0);
+    assert_eq!(
+        s.detect("SONY", "ILCE-7RM4", Some(375)).white_scale,
+        [1.0; 3]
+    );
+    // A body the registry does not list, a file that is not Sony's, and a body with no data: nothing to correct.
+    assert_eq!(
+        s.detect("SONY", "ILCE-7M6", Some(60000)).white_scale,
+        [1.0; 3]
+    );
+    assert_eq!(
+        s.detect("HASSELBLAD", "Lunar", Some(384)).white_scale,
+        [1.0; 3]
+    );
+    assert_eq!(
+        s.detect("SONY", "ILCE-9M3", Some(392)).white_scale,
+        [1.0; 3]
+    );
+    // Forcing the profile the registry chose keeps it; forcing another one drops it: the scale was fitted to the
+    // curves of the profile the registry gave the body.
+    let same = s
+        .detect_forced("SONY", "ILCE-1", Some(384), "sony-ilce-7rm4")
+        .unwrap();
+    assert_eq!(same, a1);
+    let other = s
+        .detect_forced("SONY", "ILCE-1", Some(384), "sony-ilce-7m3")
+        .unwrap();
+    assert_eq!(other.white_scale, [1.0; 3]);
+    assert!(matches!(other.how, MatchKind::Forced { .. }));
+    // It is part of the match as it is serialised.
+    let json = serde_json::to_value(&a1).unwrap();
+    assert_eq!(json["white_scale"][1], 1.0);
+    let back: CameraMatch = serde_json::from_value(json).unwrap();
+    assert_eq!(back, a1);
+}

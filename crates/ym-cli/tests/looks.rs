@@ -29,7 +29,7 @@ fn write_cube(sb: &Sandbox, name: &str, title: &str, red: f64) -> std::path::Pat
 }
 
 #[test]
-fn list_shows_the_built_in_look_as_the_default() {
+fn list_shows_the_built_in_looks_with_signature_as_the_default() {
     let sb = Sandbox::new();
     let out = sb.ym().args(["looks", "list"]).assert().success();
     let l = lines(&out.get_output().stdout);
@@ -42,19 +42,30 @@ fn list_shows_the_built_in_look_as_the_default() {
             && l[1].contains("Neutral")
             && l[1].contains("built in")
             && l[1].contains("logc4")
-            && l[1].ends_with("default"),
+            && !l[1].ends_with("default"),
         "{l:?}"
     );
-    assert_eq!(l.len(), 2);
+    assert!(
+        l[2].starts_with("builtin:signature")
+            && l[2].contains("Signature")
+            && l[2].contains("built in")
+            && l[2].contains("logc4")
+            && l[2].ends_with("default"),
+        "{l:?}"
+    );
+    assert_eq!(l.len(), 3);
     // Listing creates nothing in the app folder.
     assert!(names_in(&sb.home()).is_empty());
 
     let out = sb.ym().args(["looks", "list", "--json"]).assert().success();
     let v = json_lines(&out.get_output().stdout).remove(0);
     assert_eq!(v["looks"][0]["id"], "builtin:neutral");
-    assert_eq!(v["looks"][0]["is_default"], true);
-    assert_eq!(v["looks"][0]["missing"], false);
-    assert_eq!(v["looks"][0]["group"]["kind"], "built_in");
+    assert_eq!(v["looks"][0]["is_default"], false);
+    assert_eq!(v["looks"][1]["id"], "builtin:signature");
+    assert_eq!(v["looks"][1]["is_default"], true);
+    assert_eq!(v["looks"][1]["name"], "Signature");
+    assert_eq!(v["looks"][1]["missing"], false);
+    assert_eq!(v["looks"][1]["group"]["kind"], "built_in");
     assert_eq!(v["display_luts"], serde_json::json!([]));
 }
 
@@ -106,8 +117,8 @@ fn an_imported_look_is_listed_used_by_name_and_set_as_the_default() {
     let out = sb.ym().args(["looks", "list", "--json"]).assert().success();
     let v = json_lines(&out.get_output().stdout).remove(0);
     let looks = v["looks"].as_array().expect("looks");
-    assert_eq!(looks.len(), 2);
-    let warm = &looks[1];
+    assert_eq!(looks.len(), 3, "Neutral, Signature and the import");
+    let warm = &looks[2];
     let id = warm["id"].as_str().expect("id").to_owned();
     assert!(id.starts_with("user:"), "{id}");
     assert_eq!(
@@ -292,7 +303,15 @@ fn a_name_that_matches_no_look_exits_3_with_the_command_to_list_them() {
         .iter()
         .map(|l| l["id"].as_str().expect("id"))
         .collect();
-    assert_eq!(ids, ["builtin:neutral", "user:film", "user:film-2"]);
+    assert_eq!(
+        ids,
+        [
+            "builtin:neutral",
+            "builtin:signature",
+            "user:film",
+            "user:film-2"
+        ]
+    );
 }
 
 #[test]

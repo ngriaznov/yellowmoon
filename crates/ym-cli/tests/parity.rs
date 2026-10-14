@@ -422,7 +422,7 @@ fn output_sharpening_is_byte_identical_through_the_app_path_and_the_binary() {
         assert_same_files(&from_cli, &again, &format!("jobs 1 and 4, {name}"));
     }
     // And the amount changes the picture: the same photo at 0 and at 35 differ.
-    let at = |name: &str| bytes(&sb.root().join("cli").join(name).join("big_neutral.png"));
+    let at = |name: &str| bytes(&sb.root().join("cli").join(name).join("big_signature.png"));
     assert_ne!(at("35-None"), at("0-None"));
     // A DNG is the same bytes whatever the amount, apart from the settings the XMP records.
     let dng = |amount: &str, dir: &str| {

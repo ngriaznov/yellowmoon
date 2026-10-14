@@ -625,7 +625,11 @@ pub fn as_shot_white(wb_rggb: Option<[f32; 4]>) -> Option<Vec3> {
 #[must_use]
 pub fn as_shot_white_scaled(wb_rggb: Option<[f32; 4]>, white_scale: Vec3) -> Option<Vec3> {
     let gains = shot_gains(wb_rggb)?;
-    wb::scale_white([1.0 / gains[0], 1.0 / gains[1], 1.0 / gains[2]], white_scale).ok()
+    wb::scale_white(
+        [1.0 / gains[0], 1.0 / gains[1], 1.0 / gains[2]],
+        white_scale,
+    )
+    .ok()
 }
 
 /// The as-shot gains `[R, G, B]` (green is the mean of the two greens), `None` when unusable.
@@ -681,7 +685,11 @@ fn estimate_light(
         // The estimator reads the preview on the profile's scale (`docs/03`, White scale of stand-in
         // bodies): red and blue of the body's raw times the white scale. The identity reads the preview as is.
         let scaled_rgb = (white_scale != wb::IDENTITY_WHITE_SCALE).then(|| {
-            let s = [white_scale[0] as f32, white_scale[1] as f32, white_scale[2] as f32];
+            let s = [
+                white_scale[0] as f32,
+                white_scale[1] as f32,
+                white_scale[2] as f32,
+            ];
             preview
                 .rgb
                 .chunks_exact(3)

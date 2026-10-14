@@ -127,7 +127,7 @@ fn doctor_says_what_it_includes_and_lists_the_parts() {
         "Camera profiles",
         "sony-ilce-7rm4 1.0.0",
         "Looks",
-        "1 built in, 0 imported",
+        "2 built in, 0 imported",
         "Preferences",
         "not created yet",
         "Data folder",
@@ -163,7 +163,7 @@ fn doctor_json_has_the_same_parts() {
         assert_eq!(model["sha256"].as_str().expect("hash").len(), 64);
     }
     assert_eq!(v["profiles"].as_array().expect("profiles").len(), 11);
-    assert_eq!(v["looks"]["built_in"], 1);
+    assert_eq!(v["looks"]["built_in"], 2);
     assert_eq!(v["looks"]["imported"], 0);
 }
 

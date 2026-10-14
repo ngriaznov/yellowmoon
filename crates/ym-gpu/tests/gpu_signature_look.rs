@@ -109,9 +109,14 @@ fn signature_through_the_gpu_matches_the_cpu() {
                 if pct > 0.0 {
                     let moved = traces
                         .iter()
-                        .filter(|t| (0..3).any(|c| (t.c10_logc4.0[c] - t.c9_logc4.0[c]).abs() > 1e-3))
+                        .filter(|t| {
+                            (0..3).any(|c| (t.c10_logc4.0[c] - t.c9_logc4.0[c]).abs() > 1e-3)
+                        })
                         .count();
-                    assert!(moved * 2 > n, "{target:?} {pct} %: only {moved} of {n} pixels move");
+                    assert!(
+                        moved * 2 > n,
+                        "{target:?} {pct} %: only {moved} of {n} pixels move"
+                    );
                 }
                 let gpu = render(
                     dev,

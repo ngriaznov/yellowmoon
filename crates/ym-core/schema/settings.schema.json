@@ -7,10 +7,10 @@
   "additionalProperties": false,
   "properties": {
     "look": {
-      "description": "Look id: builtin:<slug>, user:<slug>, arri:<group number>:<slug> or arri-display:<input>:<target>. Default: the user's default look, builtin:signature out of the box.",
+      "description": "Look id: builtin:<slug>, user:<slug>, arri:<group number>:<slug> or arri-display:<input>:<target>. A document without `look` is read as the user's default look (builtin:signature out of the box) by a session and by `ym render`; the blank value, shown as the default here, is builtin:neutral.",
       "type": "string",
       "pattern": "^(?:(?:builtin|user):[^:\\s]+|arri:[0-9]+:[^:\\s]+|arri-display:[^:\\s]+:[^:\\s]+)$",
-      "default": "builtin:signature"
+      "default": "builtin:neutral"
     },
     "look_intensity": { "type": "number", "minimum": 0, "maximum": 100, "default": 100 },
     "exposure": { "$ref": "#/$defs/exposure" },

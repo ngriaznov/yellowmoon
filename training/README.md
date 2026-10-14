@@ -27,6 +27,7 @@ Python 3.12 is what CI uses; 3.13 gives the same numbers. Set `YM_TESTDATA` to m
 | `noise/` | per-body noise priors from public files (M2-01): see `noise/README.md` |
 | `jdd/` | joint demosaic + denoise network: data generator, training, export, model card (M2-04, M2-05): see `jdd/README.md` |
 | `synth/` | the synthetic golden set: spectral scenes, noise, ground truth (stand-in for the CC0 corpus): see `synth/README.md` |
+| `white_scale/` | the white scale of stand-in bodies (`docs/03`): our own reader of the camera's white-balance presets (`sr2.py`), the two references and the fit (`reference.py`, `fit.py`), the table that `build_registry` copies into the registry (`white_scale.json`), the published colour matrices it cross-checks with (`colour_matrices.json`) |
 
 `alexa/ssf_core.py`, `validate_loo.py` and `estimate_alexa.py` are copies of `research/alexa-ssf/scripts/` with only the
 input and output locations changed; `research/` stays as it is.
@@ -41,6 +42,8 @@ input and output locations changed; `research/` stays as it is.
 | `python3 -m training.sensor_map.evaluate` | ported `sony_profiles.py`: reproduces `research/alexa-ssf/out/sony_profiles.csv` | 5 s |
 | `python3 -m training.sensor_map.build_profiles` | writes the 11 `data/cameras/profiles/*/profile.json` (`--check` compares without writing) | 20 s |
 | `python3 -m training.sensor_map.build_registry` / `build_target` | write `data/cameras/registry.json` / `data/alexa/target.json` | 1 s |
+| `python3 -m training.white_scale.fit --write` / `--check` / `--report` | fits the white scale of every stand-in body that has files in `testdata/readme-photos/src` and writes `white_scale.json` (run `build_registry` after) / compares a fresh fit with it / prints both references' residuals for those files and for `--local` | 2 s |
+| `python3 -m unittest training.white_scale.test_white_scale` | the SR2 reader, the fit, and that the registry carries `white_scale.json` | 1 s |
 | `python3 -m training.sensor_map.validate_profiles` | schema + semantic checks of all shipped camera data (needs no fetched sources) | 5 s |
 | `python3 -m training.sensor_map.gate` | sensor-map gate (M1-05) for all 11 profiles | 10 s |
 | `python3 -m training.sensor_map.check_reference` | checks `spectral_reference.json` against the shipped profile (stale content digest of `profile.json` without its provenance block, `runtime_ref` reproduces every field) | 2 s |

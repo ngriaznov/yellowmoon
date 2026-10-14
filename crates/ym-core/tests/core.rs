@@ -367,7 +367,7 @@ fn remove_location_is_taken_from_the_preferences_when_the_job_is_queued() {
         .export_start(&jpeg_job(ApplyScope::All, Some(a.path())))
         .expect("queued");
     wait_export(&r);
-    assert!(has_gps(&a.path().join("DSC00001_neutral.jpg")));
+    assert!(has_gps(&a.path().join("DSC00001_signature.jpg")));
 
     r.core
         .preferences_set(&PreferencesPatch {
@@ -379,7 +379,70 @@ fn remove_location_is_taken_from_the_preferences_when_the_job_is_queued() {
         .export_start(&jpeg_job(ApplyScope::All, Some(b.path())))
         .expect("queued");
     wait_export(&r);
-    assert!(!has_gps(&b.path().join("DSC00001_neutral.jpg")));
+    assert!(!has_gps(&b.path().join("DSC00001_signature.jpg")));
+}
+
+/// The look of a photo nobody has touched is Signature (owner's decision of 2026-10-14); Neutral is
+/// still listed, still the identity, and still one click away.
+#[test]
+fn a_new_session_gets_signature_and_neutral_is_still_the_identity() {
+    let r = rig();
+    let list = r.core.looks_list();
+    assert_eq!(
+        list.iter()
+            .take(2)
+            .map(|l| l.id.as_str())
+            .collect::<Vec<_>>(),
+        ["builtin:neutral", "builtin:signature"]
+    );
+    assert_eq!(
+        list.iter()
+            .filter(|l| l.is_default)
+            .map(|l| l.id.as_str())
+            .collect::<Vec<_>>(),
+        ["builtin:signature"]
+    );
+    assert_eq!(
+        r.core.preferences_get().default_look.as_str(),
+        "builtin:signature"
+    );
+
+    let (_root, folder) = shoot(1);
+    let ids = open_all(&r.core, &folder);
+    let opened = r.core.session.settings(ids[0]).expect("settings").settings;
+    assert_eq!(opened.look.as_str(), "builtin:signature");
+    assert_eq!(opened.look_intensity, 100.0);
+
+    // The export says which look made it, and Signature changes the picture.
+    let (signature_dir, neutral_dir) = (
+        tempfile::tempdir().expect("a"),
+        tempfile::tempdir().expect("b"),
+    );
+    r.core
+        .export_start(&jpeg_job(ApplyScope::All, Some(signature_dir.path())))
+        .expect("queued");
+    wait_export(&r);
+    r.core
+        .apply_look(ApplyScope::All, &LookId::neutral(), 100.0)
+        .expect("apply");
+    r.core
+        .export_start(&jpeg_job(ApplyScope::All, Some(neutral_dir.path())))
+        .expect("queued");
+    wait_export(&r);
+    let signature = std::fs::read(signature_dir.path().join("DSC00001_signature.jpg"))
+        .expect("the Signature export");
+    let neutral =
+        std::fs::read(neutral_dir.path().join("DSC00001_neutral.jpg")).expect("the Neutral export");
+    assert_ne!(signature, neutral, "Signature is not the identity");
+    for (bytes, look) in [
+        (&signature, "builtin:signature"),
+        (&neutral, "builtin:neutral"),
+    ] {
+        assert_eq!(
+            xmp_property(&xmp_of(bytes).expect("xmp"), "ym:Look").as_deref(),
+            Some(look)
+        );
+    }
 }
 
 #[test]
@@ -421,7 +484,7 @@ fn the_display_rendering_preference_chooses_the_transform_and_is_written_to_the_
         .export_start(&jpeg_job(ApplyScope::All, Some(arri.path())))
         .expect("queued");
     wait_export(&r);
-    let name = "DSC00001_neutral.jpg";
+    let name = "DSC00001_signature.jpg";
     let (bytes_aces, bytes_arri) = (
         std::fs::read(aces.path().join(name)).expect("aces"),
         std::fs::read(arri.path().join(name)).expect("arri"),
@@ -567,7 +630,7 @@ fn the_cli_preview_of_a_real_session() {
     assert_eq!(
         all.command,
         format!(
-            "ym render {} \\\n  --look neutral \\\n  --format jpeg \\\n  --quality 92 \\\n  --colour-space srgb \\\n  --out {}",
+            "ym render {} \\\n  --look signature \\\n  --format jpeg \\\n  --quality 92 \\\n  --colour-space srgb \\\n  --out {}",
             folder.display(),
             ym_core::cli_preview::shell_quote(&out.to_string_lossy())
         )
@@ -647,7 +710,7 @@ fn the_cli_preview_names_the_folders_as_the_session_was_opened_with_them() {
     assert_eq!(
         all.command,
         format!(
-            "ym render {} \\\n  --look neutral \\\n  --format jpeg \\\n  --quality 92 \\\n  --colour-space srgb \\\n  --out {}",
+            "ym render {} \\\n  --look signature \\\n  --format jpeg \\\n  --quality 92 \\\n  --colour-space srgb \\\n  --out {}",
             opened.display(),
             ym_core::cli_preview::shell_quote(&out.to_string_lossy())
         )
@@ -661,8 +724,8 @@ fn the_cli_preview_names_the_folders_as_the_session_was_opened_with_them() {
     assert_eq!(
         names_in(&out),
         vec![
-            "DSC00001_neutral.jpg".to_owned(),
-            "DSC00002_neutral.jpg".to_owned()
+            "DSC00001_signature.jpg".to_owned(),
+            "DSC00002_signature.jpg".to_owned()
         ]
     );
     assert!(folder.parent().expect("root").join("Shoot export").is_dir());

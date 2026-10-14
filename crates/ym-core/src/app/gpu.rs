@@ -1373,10 +1373,17 @@ mod tests {
             .expect("the raw chain is on the device");
         started.cancel();
         let _ = started.wait();
-        // `Auto` runs the colour pass only (the signed-off stages), which no export uses: no warm-up.
+        // `Auto` runs the signed-off stages; since 2026-10-14 they include the raw chain, so an
+        // export under `Auto` on a hardware device warms the kernels up too. A stage that `Auto`
+        // does not run (the export tail, until G-08 is signed off) starts nothing.
         let auto = open_gpu(GpuPolicy::Auto, MemoryBudget::default());
         if auto.is_using() {
-            assert!(auto.warm_up_for_exports().is_none());
+            let started = auto
+                .warm_up_for_exports()
+                .expect("the raw chain is signed off");
+            started.cancel();
+            let _ = started.wait();
+            assert!(auto.warm_up_for(GpuStages::EXPORT_TAIL).is_none());
         }
     }
 

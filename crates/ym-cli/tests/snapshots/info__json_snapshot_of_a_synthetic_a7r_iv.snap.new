@@ -1,0 +1,210 @@
+---
+source: crates/ym-cli/tests/info.rs
+assertion_line: 147
+expression: v
+---
+{
+  "auto": {
+    "exposure_ev": 1.11,
+    "kelvin": 3450.0,
+    "light_class": "daylight",
+    "light_confidence": 0.2839,
+    "noise": {
+      "a": 0.00008857,
+      "b": 0.00000007845
+    },
+    "noise_reduction": {
+      "color": 50.0,
+      "detail": 50.0,
+      "luminance": 30.0
+    },
+    "sharpen": {
+      "amount": 102.9,
+      "radius_px": 0.8
+    },
+    "tint": -24.96
+  },
+  "black": [
+    512.0,
+    512.0,
+    512.0,
+    512.0
+  ],
+  "camera": {
+    "arw_version": "ARW 2.2",
+    "body": "Sony A7R IV",
+    "firmware": "ILCE-7RM4 v1.00",
+    "make": "SONY",
+    "match": "exact",
+    "model": "ILCE-7RM4",
+    "model_id": 375,
+    "profile": "sony-ilce-7rm4",
+    "profile_name": "A7R IV",
+    "profile_version": "1.0.0",
+    "reduced": false,
+    "stand_in": false
+  },
+  "dimensions": {
+    "active_area": null,
+    "crop": null,
+    "height": 96,
+    "width": 128
+  },
+  "error": null,
+  "exposure": {
+    "aperture": 4.0,
+    "captured": "2026-10-04T12:03:44.070+02:00",
+    "exposure_comp_ev": -0.7,
+    "focal_length_35mm": 35,
+    "focal_length_mm": 35.0,
+    "iso": 400,
+    "iso_source": "sony_maker_note",
+    "lens_model": "FE 24-70mm F2.8 GM",
+    "orientation": 1,
+    "shutter_s": 0.004
+  },
+  "gps": null,
+  "input": "[path]",
+  "lens_corrections": {
+    "chromatic_aberration": true,
+    "distortion": true,
+    "vignetting": true
+  },
+  "levels_source": {
+    "black": "sr2",
+    "wb": "sr2",
+    "white": "sr2"
+  },
+  "look": {
+    "id": "builtin:signature",
+    "intensity": 100
+  },
+  "notes": [],
+  "pipeline_version": "0.2.0",
+  "preview": "[preview location]",
+  "raw": {
+    "bits_per_sample": 14,
+    "cfa": "RGGB",
+    "compression": 1,
+    "decode": "uncompressed14",
+    "description": "14-bit uncompressed",
+    "reduced": false,
+    "samples_per_pixel": 1,
+    "subsampling": null,
+    "supported": true
+  },
+  "settings": {
+    "black": 0.0,
+    "brightness": 0.0,
+    "color_balance": {
+      "highlights": [
+        0.0,
+        0.0
+      ],
+      "midtones": [
+        0.0,
+        0.0
+      ],
+      "shadows": [
+        0.0,
+        0.0
+      ]
+    },
+    "contrast": 0.0,
+    "crop": null,
+    "curve": {
+      "blue": [
+        [
+          0.0,
+          0.0
+        ],
+        [
+          1.0,
+          1.0
+        ]
+      ],
+      "green": [
+        [
+          0.0,
+          0.0
+        ],
+        [
+          1.0,
+          1.0
+        ]
+      ],
+      "luma": [
+        [
+          0.0,
+          0.0
+        ],
+        [
+          1.0,
+          1.0
+        ]
+      ],
+      "red": [
+        [
+          0.0,
+          0.0
+        ],
+        [
+          1.0,
+          1.0
+        ]
+      ]
+    },
+    "decode": {
+      "chromatic_aberration": true,
+      "highlight_recovery": true,
+      "lens_corrections": true,
+      "neural_demosaic": true
+    },
+    "exposure": {
+      "ev": 1.11,
+      "kind": "manual"
+    },
+    "highlights": 0.0,
+    "light_source": "auto",
+    "look": "builtin:signature",
+    "look_intensity": 100.0,
+    "noise_reduction": {
+      "color": 50.0,
+      "detail": 50.0,
+      "kind": "manual",
+      "luminance": 30.0
+    },
+    "orientation": 0,
+    "output_sharpening": 100.0,
+    "rolloff": {
+      "highlights": 0.5,
+      "low_light": 0.5
+    },
+    "saturation": 0.0,
+    "shadows": 0.0,
+    "sharpen": {
+      "amount": 102.9,
+      "kind": "manual",
+      "radius_px": 0.8
+    },
+    "white": 0.0,
+    "white_balance": {
+      "kind": "auto"
+    },
+    "white_pick": null
+  },
+  "status": "ok",
+  "tone_curve": null,
+  "wb_as_shot": [
+    2043.0,
+    1024.0,
+    1024.0,
+    1755.0
+  ],
+  "white": [
+    16300.0,
+    16300.0,
+    16300.0,
+    16300.0
+  ]
+}

@@ -1377,8 +1377,8 @@ mod view {
 
     #[test]
     fn a_frame_over_one_binding_keeps_the_stages_that_are_on_whichever_they_are() {
-        // The default (`Auto`) runs the colour pass only, the other members of the set are what
-        // `On` adds: whichever members are on, a frame larger than one storage binding is cut and
+        // Any set of view members (`Auto` ran the colour pass alone until 2026-10-14; the others are
+        // what `On` adds): whichever members are on, a frame larger than one storage binding is cut and
         // made by the device, with the pixels of the frame in one piece, and not quietly given to
         // the CPU (which would be a CPU frame, slow and unannounced, for a big display).
         let Some(gpu) = gpu() else { return };
