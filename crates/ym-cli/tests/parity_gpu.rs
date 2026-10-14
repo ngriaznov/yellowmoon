@@ -258,3 +258,41 @@ fn a_dng_is_byte_identical_through_the_app_path_and_the_binary_on_the_device() {
     let from_cli = cli_export(&sb, &[&arw], &["--format", "dng"], &sb.root().join("cli"));
     assert_same_files(&from_app, &from_cli, "dng on the device");
 }
+
+/// The renders of a DNG run with R8 capture sharpening off and the other formats with it on, in one session and on
+/// one device (the device caches what it builds by the chain's parameters, the capture sharpening among them): a TIFF
+/// exported after a DNG is the TIFF exported before it, and a DNG exported after a TIFF is the DNG the binary writes
+/// alone. Nothing of R8 leaks from one into the other (`docs/09`, "What a DNG carries").
+#[test]
+fn a_dng_and_a_tiff_exported_one_after_the_other_on_the_device_do_not_share_r8() {
+    let sb = Sandbox::new();
+    let arw = sb.arw_sized("big.ARW", 1500, 1100, 3);
+    let Some(app) = App::open(&[&arw]) else {
+        return;
+    };
+    let tiff = || ExportOptions {
+        format: FormatKind::Tiff,
+        bit_depth: BitDepth::Sixteen,
+        ..ExportOptions::default()
+    };
+    let dng = || ExportOptions {
+        format: FormatKind::Dng,
+        ..ExportOptions::default()
+    };
+    let tiff_first = app.export(tiff(), &sb.root().join("tiff1"));
+    let dng_after_tiff = app.export(dng(), &sb.root().join("dng1"));
+    let tiff_after_dng = app.export(tiff(), &sb.root().join("tiff2"));
+    let dng_again = app.export(dng(), &sb.root().join("dng2"));
+    assert_same_files(
+        &tiff_first,
+        &tiff_after_dng,
+        "a TIFF before and after a DNG",
+    );
+    assert_same_files(&dng_after_tiff, &dng_again, "a DNG before and after a TIFF");
+    let dng_alone = cli_export(&sb, &[&arw], &["--format", "dng"], &sb.root().join("cli"));
+    assert_same_files(
+        &dng_after_tiff,
+        &dng_alone,
+        "a DNG after a TIFF and a DNG alone",
+    );
+}

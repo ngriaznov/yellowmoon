@@ -14,11 +14,15 @@
 //!   the DNG's `BaselineExposure` (`docs/09`), not in the pixels, so it is divided out here: Adobe's
 //!   renderer multiplies it back in.
 //! * **Display white has no finite scene value.** ACES 2 reaches its peak at 128 times the reference
-//!   white, and the fitted profile's tone curve ends at 16. The result is scaled down (all three
-//!   channels by one factor, so the colour keeps its ratios) until its largest channel, with the
-//!   placement applied, is at most [`DNG_SCENE_LIMIT`]. A display white therefore comes out of Adobe's
-//!   renderer at the display value of scene 16 (code 0.975), and the white level of the DNG stays at
-//!   its floor instead of crushing the shadows.
+//!   white, and the fitted profile's tone curve ends at 16. The display colour is dimmed (all three
+//!   channels by one factor, in linear light, so its hue and saturation stay) until its scene value, with
+//!   the placement applied, has a largest channel of at most [`DNG_SCENE_LIMIT`]. A display white
+//!   therefore comes out of Adobe's renderer at the display value of scene 16 (linear 0.9435, code
+//!   0.975), a slightly tinted near-white keeps its tint and loses a few percent of light, and the
+//!   white level of the DNG stays at its floor instead of crushing the shadows. (Scaling the scene
+//!   value down instead, as this module first did, gave a tinted near-white a strong cast: the forward
+//!   transform compresses chroma by lightness, so the same scene ratios at a lower lightness are far
+//!   more saturated. `(1, 1, 0.95)` came out as `(1, 0.99, 0.63)`.)
 //! * **Out-of-gamut display values clamp** (negative and above-white values, and a display LUT's
 //!   wider primaries after the matrix to Rec.709): the forward transform cannot produce them.
 
@@ -69,20 +73,56 @@ impl DngDisplayInverse {
         }
     }
 
+    /// The scene-linear AWG4 triple, with the placement divided out, that ACES 2 turns into `rec709`
+    /// (display-linear Rec.709, already cleaned to `0..=1`). Not limited.
+    fn unlimited(&self, rec709: Vec3) -> Vec3 {
+        linalg::mul_vec(&self.ap0_to_awg4, self.transform.inverse_ap0_linear(rec709))
+    }
+
     /// The scene-linear AWG4 triple for a display-linear triple (1.0 is the 100 nit white).
+    ///
+    /// A display colour near white has a scene value above the top of the DNG profile
+    /// ([`DNG_SCENE_LIMIT`]). It is made to fit by **dimming the display colour** (all three channels by one
+    /// factor, in linear light) until its scene value fits, and not by scaling the scene value down: the
+    /// forward transform compresses chroma more the lighter the colour, so a scene value brought down to
+    /// the limit with its ratios kept shows at a lower lightness with far less compression and turns a
+    /// slightly tinted highlight, `(1, 1, 0.95)` for example, into a strong cast (ΔE76 20 in the test
+    /// colours), where the dimmed colour keeps its hue and its saturation and loses a few percent of
+    /// light (ΔE76 at most 2.3, the loss of a white).
     pub(super) fn scene_awg4(&self, display: Vec3) -> Vec3 {
         let rec709 = match &self.to_rec709 {
             Some(m) => linalg::mul_vec(m, display),
             None => display,
         };
-        let ap0 = self.transform.inverse_ap0_linear(rec709);
-        let awg4 = linalg::mul_vec(&self.ap0_to_awg4, ap0);
-        let top = awg4[0].max(awg4[1]).max(awg4[2]);
+        // What the inverse does first (`Aces2Transform::inverse_ap0_linear`): not a number is 0, and the
+        // display's range is `0..=1` (the 100 nit peak of SDR).
+        let rec709 = rec709.map(|c| if c.is_nan() { 0.0 } else { c.clamp(0.0, 1.0) });
+        let top = |a: Vec3| a[0].max(a[1]).max(a[2]);
+        let awg4 = self.unlimited(rec709);
+        if top(awg4) <= self.max_channel {
+            return awg4;
+        }
+        // The largest factor in 0.5..=1 whose colour fits (the scene value grows with the factor; 0.5 of
+        // any display colour is far below the limit). `DIM_STEPS` halvings leave 3e-5.
+        let (mut fits, mut over) = (0.5_f64, 1.0_f64);
+        for _ in 0..DIM_STEPS {
+            let mid = 0.5 * (fits + over);
+            if top(self.unlimited(rec709.map(|c| c * mid))) <= self.max_channel {
+                fits = mid;
+            } else {
+                over = mid;
+            }
+        }
+        let awg4 = self.unlimited(rec709.map(|c| c * fits));
+        // The backstop for a colour that does not fit even at half: scale the scene value.
+        let top = top(awg4);
         if top > self.max_channel {
-            let scale = self.max_channel / top;
-            awg4.map(|c| c * scale)
+            awg4.map(|c| c * (self.max_channel / top))
         } else {
             awg4
         }
     }
 }
+
+/// Halvings of the bracket `0.5..=1` of the display dimming factor in [`DngDisplayInverse::scene_awg4`].
+const DIM_STEPS: u32 = 14;

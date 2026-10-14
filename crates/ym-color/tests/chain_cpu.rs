@@ -707,6 +707,101 @@ fn an_imported_display_lut_is_inverted_for_the_dng_too() {
     }
 }
 
+#[test]
+fn near_display_white_a_tinted_colour_keeps_its_tint_in_the_dng() {
+    use ym_color::display::{ArriDisplayLut, DisplayLutInput, DisplayLutOutput, DisplayTransform};
+    // Found in review: a display colour near white has a scene value above the top of the DNG profile.
+    // Scaling that scene value down with its ratios kept turns a slightly tinted highlight into a strong
+    // cast (the forward transform compresses chroma more the lighter the colour): (1, 1, 0.95) came back
+    // as (1, 0.99, 0.63), CIE76 20 away. The display colour is dimmed instead, so its hue and saturation
+    // stay and it loses a few percent of light (what a white loses anyway: linear 0.9435).
+    //
+    // An identity display LUT in LogC4 and Rec.709 gamma 2.4: the display colour of a camera pixel is
+    // its LogC4 code to the power 2.4, so any display colour can be asked for.
+    let display = DisplayTransform::arri(
+        ArriDisplayLut::new(
+            cube_lut(17, |c| c),
+            DisplayLutInput::LogC4,
+            DisplayLutOutput::REC709_G24,
+        )
+        .unwrap(),
+    );
+    let identity = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+    let mut p = ChainParams::new(identity, ToneParams::new(0.5, 0.0, 1.0e6, 0.0).unwrap());
+    p.output = OutputTarget::Srgb;
+    p.display = display;
+    let c = chain(&p);
+    assert!(c.dng_inverts_display());
+    let aces2 = Aces2Transform::shared(Aces2Output::Srgb);
+    let limit = DNG_SCENE_LIMIT / DISPLAY_PLACEMENT_EV.exp2();
+    let lab = |rgb: Vec3| {
+        xyz_to_lab(
+            linalg::mul_vec(&matrices().rec709_to_xyz, rgb),
+            d65_white_xyz(),
+        )
+    };
+    let shown = |display: Vec3| {
+        let px = logc4_decode_rgb(display.map(|v| v.powf(1.0 / 2.4)));
+        let dng = c.apply_dng_pixel(px);
+        assert!(dng.iter().all(|v| v.is_finite()), "{display:?}: {dng:?}");
+        assert!(
+            dng[0].max(dng[1]).max(dng[2]) <= limit * (1.0 + 1e-12),
+            "{display:?}: {dng:?}"
+        );
+        // The chain's own picture is the colour that was asked for.
+        assert_close(
+            c.apply_to_display_linear(px),
+            display,
+            1e-9,
+            "the asked colour",
+        );
+        aces2.transform_ap0_linear(linalg::mul_vec(&aces2_input_matrix(), dng))
+    };
+    // The colours that were wrong: tinted near-whites, warm and cool.
+    for display in [
+        [1.0, 1.0, 0.95],
+        [1.0, 0.97, 0.93],
+        [0.93, 0.97, 1.0],
+        [0.9, 0.95, 1.0],
+        [1.0, 0.95, 0.85],
+    ] {
+        let back = shown(display);
+        let d = delta_e_2000(lab(display), lab(back));
+        assert!(d < 2.5, "{display:?} comes out as {back:?}, CIEDE2000 {d}");
+    }
+    // The top of the display cube: the DNG shows the colour, dimmed by one factor (same ratios), by
+    // 10 % at most, and never a cast.
+    let steps = 11;
+    let (mut n, mut worst_e, mut least_s) = (0, 0.0_f64, 1.0_f64);
+    for i in 0..steps {
+        for j in 0..steps {
+            for k in 0..steps {
+                let display = [i, j, k].map(|x| 0.5 + 0.5 * f64::from(x) / f64::from(steps - 1));
+                if display.iter().copied().fold(0.0, f64::max) < 0.9 {
+                    continue;
+                }
+                let back = shown(display);
+                let s = back.iter().sum::<f64>() / display.iter().sum::<f64>();
+                for ch in 0..3 {
+                    // (A colour on the gamut edge, a channel at 1 and another well below, round-trips to a few
+                    // 1e-4: the inverse clamps what the forward transform cannot reach. The cast it replaces
+                    // was 0.3.)
+                    assert!(
+                        (back[ch] - s * display[ch]).abs() < 1e-3,
+                        "{display:?} comes out as {back:?}: not the same colour dimmed (factor {s})"
+                    );
+                }
+                least_s = least_s.min(s);
+                worst_e = worst_e.max(delta_e_2000(lab(display), lab(back)));
+                n += 1;
+            }
+        }
+    }
+    assert!(n >= 500, "{n} colours");
+    assert!(least_s > 0.9, "dimmed by {least_s}");
+    assert!(worst_e < 2.5, "worst CIEDE2000 {worst_e}");
+}
+
 // ---- the DNG stop point --------------------------------------------------------------------------
 
 #[test]
