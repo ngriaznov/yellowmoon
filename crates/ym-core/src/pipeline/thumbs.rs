@@ -26,7 +26,8 @@ use ym_looks::library::LookId;
 use super::RenderError;
 use super::color::{PhotoSource, with_look};
 use super::frame::{
-    FrameOptions, FullImage, FullRequest, RenderedFrame, ViewSpec, render_view, sample_view,
+    FrameOptions, FullImage, FullRequest, RenderedFrame, ViewSpec, render_view,
+    sample_view_routed,
 };
 use super::geometry::Affine;
 use super::graph::{Job, Renderer};
@@ -117,6 +118,7 @@ impl Renderer {
             cache: false,
             background: self.options().background,
             gpu_priority: Priority::Thumbnail,
+            dither_origin: (0, 0),
         };
         Ok((spec, (tw, th)))
     }
@@ -210,9 +212,12 @@ impl Renderer {
             cache: false,
             background: self.options().background,
             gpu_priority: Priority::Thumbnail,
+            dither_origin: (0, 0),
         };
         let grade = job.grade(OutputTarget::Viewport, false)?;
-        let view = sample_view(&mut job, &spec)?;
+        // The sample comes from the device group when the sampler is there; the counting stays on
+        // the CPU (a few thousand pixels through the f64 trace: `docs/gpu-plan.md` X-14).
+        let view = sample_view_routed(&mut job, &spec)?;
         let img = &view.sampled.img;
         let n = img.width * img.height;
         let outside = view.sampled.outside.as_deref();

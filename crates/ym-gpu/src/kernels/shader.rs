@@ -103,19 +103,35 @@ pub enum KernelId {
     SigmaExpand,
     /// G-06: the 5 x 5 opponent bilateral denoise of R6.
     Bilateral,
-    /// PLACEHOLDER (G-06): the R7 chroma guided filter.
+    /// G-06: the R7 chroma guided filter, pass 1: horizontal window means of the six quantities.
     Guided,
-    /// PLACEHOLDER (G-06): R7 detail injection.
+    /// G-06: the R7 chroma guided filter, pass 2: vertical means and the coefficients a and b.
+    GuidedCols,
+    /// G-06: the R7 chroma guided filter, pass 3: horizontal means of the coefficients.
+    GuidedSmoothRows,
+    /// G-06: the R7 chroma guided filter, pass 4: vertical means and the output.
+    GuidedOutput,
+    /// G-06: R7 detail re-injection, the classical luma plane (the luma of the image before the denoise).
+    DetailLuma,
+    /// G-06: R7 detail re-injection: `Y += beta (Y_classical - Y)`.
     Detail,
-    /// PLACEHOLDER (G-06): R8 Richardson-Lucy deconvolution.
+    /// G-06: R8 Richardson-Lucy, the level of every pixel's PSF and the starting planes.
     RichardsonLucy,
+    /// G-06: R8 Richardson-Lucy, the horizontal half of a blur with the pixel's kernel.
+    RlBlurRows,
+    /// G-06: R8 Richardson-Lucy, the vertical half of the forward blur and the damped ratio.
+    RlBlurColsRatio,
+    /// G-06: R8 Richardson-Lucy, the vertical half of the transposed blur and the update.
+    RlBlurColsUpdate,
+    /// G-06: R8 Richardson-Lucy, the core of the result.
+    RlOutput,
     /// PLACEHOLDER (G-08): the Lanczos-3 resize of the export tail.
     Resize,
 }
 
 impl KernelId {
     /// All kernels, placeholders included (see [`KernelId::is_placeholder`]).
-    pub const ALL: [KernelId; 48] = [
+    pub const ALL: [KernelId; 56] = [
         KernelId::SpikeNormalize,
         KernelId::SpikeDemosaic,
         KernelId::SpikeMatrix,
@@ -161,8 +177,16 @@ impl KernelId {
         KernelId::SigmaExpand,
         KernelId::Bilateral,
         KernelId::Guided,
+        KernelId::GuidedCols,
+        KernelId::GuidedSmoothRows,
+        KernelId::GuidedOutput,
+        KernelId::DetailLuma,
         KernelId::Detail,
         KernelId::RichardsonLucy,
+        KernelId::RlBlurRows,
+        KernelId::RlBlurColsRatio,
+        KernelId::RlBlurColsUpdate,
+        KernelId::RlOutput,
         KernelId::Resize,
     ];
 
@@ -214,8 +238,16 @@ impl KernelId {
             KernelId::SigmaExpand => "sigma_expand",
             KernelId::Bilateral => "bilateral",
             KernelId::Guided => "guided",
+            KernelId::GuidedCols => "guided_cols",
+            KernelId::GuidedSmoothRows => "guided_smooth_rows",
+            KernelId::GuidedOutput => "guided_output",
+            KernelId::DetailLuma => "detail_luma",
             KernelId::Detail => "detail",
             KernelId::RichardsonLucy => "richardson_lucy",
+            KernelId::RlBlurRows => "rl_blur_rows",
+            KernelId::RlBlurColsRatio => "rl_blur_cols_ratio",
+            KernelId::RlBlurColsUpdate => "rl_blur_cols_update",
+            KernelId::RlOutput => "rl_output",
             KernelId::Resize => "resize",
         }
     }
@@ -229,7 +261,6 @@ impl KernelId {
     /// `.wgsl` in `KernelId::body` and deletes the id from this match (two small edits, reported).
     pub const fn placeholder_owner(self) -> Option<&'static str> {
         match self {
-            KernelId::Guided | KernelId::Detail | KernelId::RichardsonLucy => Some("G-06"),
             KernelId::Prep
             | KernelId::Highlights
             | KernelId::MosaicCa
@@ -305,6 +336,16 @@ impl KernelId {
             KernelId::Sampler => super::sampler::body(),
             KernelId::Encode => super::encode::body(),
             KernelId::SigmaExpand | KernelId::Bilateral => super::bilateral::body(self),
+            KernelId::Guided
+            | KernelId::GuidedCols
+            | KernelId::GuidedSmoothRows
+            | KernelId::GuidedOutput => super::guided::body(self),
+            KernelId::DetailLuma | KernelId::Detail => super::detail::body(self),
+            KernelId::RichardsonLucy
+            | KernelId::RlBlurRows
+            | KernelId::RlBlurColsRatio
+            | KernelId::RlBlurColsUpdate
+            | KernelId::RlOutput => super::richardson_lucy::body(self),
             KernelId::Prep
             | KernelId::Highlights
             | KernelId::MosaicCa
@@ -312,9 +353,6 @@ impl KernelId {
             | KernelId::Sigma
             | KernelId::Bin
             | KernelId::Reduce
-            | KernelId::Guided
-            | KernelId::Detail
-            | KernelId::RichardsonLucy
             | KernelId::Resize => placeholder_body(self),
         }
     }

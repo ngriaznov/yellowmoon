@@ -4,12 +4,20 @@
 //! [`GpuChain`] is built from the very `Chain` and `Prepared` the CPU uses, and walks the same
 //! stages with the same rectangles ([`TileRun`](crate::cpu::chain::TileRun)), so the settings, the stage choice and the halos are
 //! single-sourced. A [`StageRange`] says which stages run on the device; every stage outside it runs
-//! on the CPU stepper and the boundary is a host copy. This task (G-03) has one range, R6 (the adaptive
-//! ratio demosaic, [`StageRange::DEMOSAIC`]): the CPU runs R1 to R5b exactly as today and hands the
-//! balanced mosaic over, the device runs the demosaic (including the R4 undo, the CA path and the
-//! shadow colour matching of the kernel), the planes come back as an [`RgbImage`] and the CPU continues
-//! with R6's bilateral denoise, R7, R8 and R9. The later tasks widen the range (G-06 to R8, G-07 to
-//! R1..R9) by adding variants of [`DeviceWork`].
+//! on the CPU stepper and the boundary is a host copy. There are two ranges so far:
+//!
+//! * R6 ([`StageRange::DEMOSAIC`], G-03): the CPU runs R1 to R5b exactly as today and hands the
+//!   balanced mosaic over, the device runs the adaptive ratio demosaic (including the R4 undo, the CA
+//!   path and the shadow colour matching of the kernel), the planes come back as an [`RgbImage`] and
+//!   the CPU continues with R6's bilateral denoise, R7, R8 and R9.
+//! * R6 to R8 ([`StageRange::DEMOSAIC_TO_SHARPEN`], G-06): the same hand-off, and the planes stay on
+//!   the device through the bilateral denoise, the R7 colour guided filter and detail re-injection
+//!   and R8 (Richardson-Lucy, or diffraction deconvolution) as one job with one readback; the CPU
+//!   runs R9 on what comes back. The noise sigma of the stages is expanded on the device from the
+//!   photo's half-resolution plane ([`GpuChain::with_sigma`]), so the 200 MB full-resolution map of the
+//!   CPU chain is never built for this range.
+//!
+//! The later tasks widen the range (G-07 to R1..R9) by adding variants of [`DeviceWork`].
 //!
 //! # Where the work runs
 //!
@@ -32,11 +40,22 @@
 use crate::cpu::chain::{Chain, Prepared, RawFrame};
 use crate::cpu::demosaic::Method;
 use crate::cpu::demosaic::adaptive_ratio::Params;
+use crate::cpu::denoise::BilateralParams;
+use crate::cpu::detail::network_sigma_scale;
+use crate::cpu::sharpen::CaptureSharpen;
+use crate::cpu::sharpen::diffraction::{DiffractionPlan, SPEC_LUMA};
 use crate::cpu::tiling::{Halo, Rect, Stage};
 use crate::cpu::{Mosaic, RgbImage};
 use crate::device::{GpuContext, GpuError};
+use crate::image::GpuImage;
 use crate::kernels::adaptive_ratio::{self, Balance, PreparedDemosaic};
+use crate::kernels::bilateral::{self, SigmaHalf, SigmaInput, SigmaTile};
+use crate::kernels::detail::{encode_classical_luma, encode_inject_detail};
+use crate::kernels::diffraction::{PreparedDiffraction, encode_sharpen};
+use crate::kernels::guided::encode_guided;
+use crate::kernels::richardson_lucy::{RlPlan, encode_richardson_lucy};
 use crate::queue::CancelToken;
+use crate::stream::PassList;
 
 /// The most padded pixels one device rectangle has: 2.5 Mpixel (`docs/gpu-plan.md` section 4.4). The
 /// adaptive ratio scratch is 12 planes of 4 bytes with shadow colour matching, 48 bytes per pixel, so
@@ -138,6 +157,21 @@ impl StageRange {
         last: RawStage::Demosaic,
     };
 
+    /// R6 to R8 (G-06): the adaptive ratio demosaic, the bilateral denoise, R7 and capture sharpening,
+    /// one device job with one readback.
+    pub const DEMOSAIC_TO_SHARPEN: StageRange = StageRange {
+        first: RawStage::Demosaic,
+        last: RawStage::Sharpen,
+    };
+
+    /// Whether the stages of this range read the noise sigma on the device only: the denoise, R7 and
+    /// R8 are all in it (or none of them is needed), so the chain's full-resolution sigma map is not
+    /// read by any CPU stage and need not exist (`GpuChain::with_sigma`).
+    #[must_use]
+    pub fn covers_sigma_stages(&self) -> bool {
+        self.first <= RawStage::Denoise && self.last >= RawStage::Sharpen
+    }
+
     /// Whether `stage` is on the device.
     #[must_use]
     pub fn contains(&self, stage: RawStage) -> bool {
@@ -210,6 +244,9 @@ fn split_into(core: Rect, max_padded_pixels: u64, out: &mut Vec<Rect>) {
 pub enum DeviceWork {
     /// R6: the adaptive ratio demosaic of a host mosaic.
     Demosaic(DemosaicWork),
+    /// R6 to R8: the demosaic and the stages after it, on the device without a readback between
+    /// them.
+    Raw(RawWork),
 }
 
 impl DeviceWork {
@@ -221,9 +258,7 @@ impl DeviceWork {
     /// [`GpuError::Cancelled`], and whatever the kernel reports (device errors, a binding that does
     /// not fit, an injected fault of the `fault-injection` feature).
     pub fn run(self, ctx: &GpuContext, cancel: &CancelToken) -> Result<RgbImage, GpuError> {
-        match self {
-            DeviceWork::Demosaic(w) => w.run(ctx, cancel),
-        }
+        self.run_ref(ctx, cancel)
     }
 
     /// The same as [`run`](Self::run) for work held by reference (tests that run one piece twice).
@@ -234,6 +269,7 @@ impl DeviceWork {
     pub fn run_ref(&self, ctx: &GpuContext, cancel: &CancelToken) -> Result<RgbImage, GpuError> {
         match self {
             DeviceWork::Demosaic(w) => w.run(ctx, cancel),
+            DeviceWork::Raw(w) => w.run(ctx, cancel),
         }
     }
 }
@@ -356,6 +392,292 @@ impl DemosaicWork {
     }
 }
 
+/// Where the noise sigma of a tile comes from (the device makes the plane the stages read from it, see
+/// [`bilateral::encode_sigma`]).
+#[derive(Debug)]
+pub enum SigmaWork {
+    /// One value for the whole tile (the chain's scalar sigma).
+    Scalar(f32),
+    /// The tile's rectangle of a full-resolution map the host has (`width * height` of the rectangle).
+    Plane(Vec<f32>),
+    /// The cells of the half-resolution plane that the rectangle reads, expanded on the device.
+    Cells(SigmaTile),
+}
+
+/// What the stages after the demosaic receive.
+#[derive(Debug)]
+enum RawInput {
+    /// The balanced mosaic: the device runs the demosaic first.
+    Mosaic(DemosaicWork),
+    /// The demosaiced planes (a mosaic below 2 x 2 photosites was demosaiced on the CPU).
+    Image(RgbImage),
+}
+
+/// The capture-sharpening method of a [`PostStep`].
+#[derive(Debug)]
+enum SharpenKind {
+    /// Richardson-Lucy.
+    RichardsonLucy(RlPlan),
+    /// Diffraction deconvolution (an active plan only).
+    Diffraction(DiffractionPlan),
+}
+
+/// One stage after the demosaic, with the rectangle (frame coordinates) it must leave.
+#[derive(Debug)]
+enum PostStep {
+    /// R6 bilateral denoise; with `keep_classical` the luma of its input is kept for R7.
+    Denoise {
+        out: Rect,
+        scale: f32,
+        params: BilateralParams,
+        keep_classical: bool,
+    },
+    /// R7: the colour guided filter (`color > 0`) and the detail re-injection (`beta`, when the
+    /// denoise kept the classical luma).
+    Detail {
+        out: Rect,
+        color: f32,
+        beta: Option<f32>,
+    },
+    /// R8.
+    Sharpen { out: Rect, kind: SharpenKind },
+}
+
+impl PostStep {
+    fn out(&self) -> Rect {
+        match self {
+            PostStep::Denoise { out, .. }
+            | PostStep::Detail { out, .. }
+            | PostStep::Sharpen { out, .. } => *out,
+        }
+    }
+}
+
+/// R6 to R8 of one tile: the balanced mosaic (or the demosaiced planes), the part of it the stages
+/// leave, the frame constants of the demosaic and the stages after it, with the noise sigma they read.
+///
+/// One job: the device demosaics, denoises, filters the colour, re-injects the detail and sharpens
+/// without a readback between the stages, and the planes come back once. Every stage is the CPU
+/// stage's kernel with the CPU's own rectangle for it (`TileRun::need`), so the result is the CPU
+/// chain's within the tolerances of the kernels.
+#[derive(Debug)]
+pub struct RawWork {
+    input: RawInput,
+    /// The frame rectangle of the demosaic's output (the input of the first stage after it).
+    start: Rect,
+    /// The frame rectangle the last stage leaves (the input of R9, or the output of the tile).
+    end: Rect,
+    sigma: SigmaWork,
+    steps: Vec<PostStep>,
+}
+
+impl RawWork {
+    /// The dispatches the work records at most (informational: the demosaic's up to 14, the sigma
+    /// plane, the denoise, the guided filter's 4 and 2 for the injection, Richardson-Lucy's `2 + 4 n`).
+    #[must_use]
+    pub fn max_dispatches(&self) -> usize {
+        let mut n = match &self.input {
+            RawInput::Mosaic(_) => 14,
+            RawInput::Image(_) => 0,
+        } + 1;
+        for step in &self.steps {
+            n += match step {
+                PostStep::Denoise { keep_classical, .. } => 1 + usize::from(*keep_classical),
+                PostStep::Detail { color, beta, .. } => {
+                    4 * usize::from(*color > 0.0) + usize::from(beta.is_some())
+                }
+                PostStep::Sharpen { kind, .. } => match kind {
+                    SharpenKind::RichardsonLucy(p) => p.dispatches(),
+                    SharpenKind::Diffraction(_) => 11,
+                },
+            };
+        }
+        n
+    }
+
+    /// Runs the work; a device that is out of memory or refuses a buffer is given one more try after
+    /// the pool let go of what it holds unused (`docs/gpu-plan.md` 4.9).
+    fn run(&self, ctx: &GpuContext, cancel: &CancelToken) -> Result<RgbImage, GpuError> {
+        match self.run_once(ctx, cancel) {
+            Err(GpuError::OutOfBudget { .. } | GpuError::BufferTooLarge { .. }) => {
+                ctx.pool().trim();
+                self.run_once(ctx, cancel)
+            }
+            other => other,
+        }
+    }
+
+    fn run_once(&self, ctx: &GpuContext, cancel: &CancelToken) -> Result<RgbImage, GpuError> {
+        cancel.check()?;
+        ctx.inject_tile_fault()?;
+        // Every buffer the list reads or writes stays alive until it has finished: a buffer that went
+        // back to the pool could be handed out again by the next `acquire` of the same list, and the
+        // poison fill (a queue write) of that second use runs before the whole submission.
+        let mut keep: Vec<GpuImage> = Vec::new();
+        let mut passes;
+        let mut cur = match &self.input {
+            RawInput::Mosaic(d) => {
+                let parts = split_core(d.core);
+                if let [only] = parts.as_slice()
+                    && *only == d.core
+                {
+                    let m = &d.mosaic;
+                    let input = GpuImage::upload(
+                        ctx,
+                        "adaptive ratio mosaic",
+                        m.width,
+                        m.height,
+                        1,
+                        &m.data,
+                        m.place,
+                    )?;
+                    passes = PassList::new(ctx, "raw R6 to R8");
+                    let out =
+                        adaptive_ratio::encode_demosaic(&mut passes, &input, m.cfa, d.core, &d.frame)?;
+                    keep.push(input);
+                    out
+                } else {
+                    // A core above MAX_PHYS_AREA is cut in rectangles whose planes are put together on
+                    // the host and uploaded once more (a corner tile of a strong lens; the stages that
+                    // follow need the whole core in one image).
+                    let rgb = d.run_split(ctx, cancel, &parts)?;
+                    passes = PassList::new(ctx, "raw R6 to R8");
+                    GpuImage::upload_rgb(ctx, "adaptive ratio rgb", &rgb)?
+                }
+            }
+            RawInput::Image(img) => {
+                passes = PassList::new(ctx, "raw R6 to R8");
+                GpuImage::upload_rgb(ctx, "demosaiced planes", img)?
+            }
+        };
+        let mut cur_rect = self.start;
+        if (cur.width, cur.height) != (cur_rect.w, cur_rect.h) {
+            return Err(GpuError::InvalidInput(format!(
+                "the demosaic left {} x {} pixels, the stages after it expect {:?}",
+                cur.width, cur.height, cur_rect
+            )));
+        }
+        cancel.check()?;
+        let sigma_input = match &self.sigma {
+            SigmaWork::Scalar(v) => SigmaInput::Scalar(*v),
+            SigmaWork::Plane(p) => SigmaInput::Plane(p),
+            SigmaWork::Cells(t) => SigmaInput::Tile(t),
+        };
+        let sigma = bilateral::encode_sigma(&mut passes, &sigma_input, self.start)?;
+        // The luma of the image that went into the denoise, for R7's re-injection, with the frame
+        // rectangle it covers.
+        let mut classical: Option<(GpuImage, Rect)> = None;
+        let origin_of = |inner: Rect, outer: Rect| -> Result<(usize, usize), GpuError> {
+            if outer.contains(&inner) {
+                Ok((inner.x - outer.x, inner.y - outer.y))
+            } else {
+                Err(GpuError::InvalidInput(format!(
+                    "the stage's rectangle {inner:?} is not inside {outer:?}"
+                )))
+            }
+        };
+        for step in &self.steps {
+            let out = step.out();
+            if !cur_rect.contains(&out) {
+                return Err(GpuError::InvalidInput(format!(
+                    "a stage must leave {out:?}, the image it gets covers {cur_rect:?}"
+                )));
+            }
+            // The part of the current image the stage leaves, and where the image sits in the sigma
+            // plane. A stage that is an identity (no iteration, a zero colour strength with nothing to
+            // re-inject) is not recorded at all and leaves the image as it was, larger than `out`: the
+            // next stage names its core relative to the image it really gets.
+            let core = out.relative_to(&cur_rect);
+            let sigma_origin = origin_of(cur_rect, self.start)?;
+            match step {
+                PostStep::Denoise {
+                    scale,
+                    params,
+                    keep_classical,
+                    ..
+                } => {
+                    if *keep_classical {
+                        let luma = encode_classical_luma(&mut passes, &cur, core)?;
+                        classical = Some((luma, out));
+                    }
+                    let next = bilateral::encode_bilateral(
+                        &mut passes,
+                        &cur,
+                        core,
+                        &sigma,
+                        sigma_origin,
+                        *scale,
+                        params,
+                    )?;
+                    keep.push(std::mem::replace(&mut cur, next));
+                    cur_rect = out;
+                }
+                PostStep::Detail { color, beta, .. } => {
+                    if *color > 0.0 {
+                        let next =
+                            encode_guided(&mut passes, &cur, core, &sigma, sigma_origin, *color)?;
+                        keep.push(std::mem::replace(&mut cur, next));
+                        cur_rect = out;
+                    }
+                    if let Some(beta) = beta {
+                        let Some((luma, luma_rect)) = classical.as_ref() else {
+                            return Err(GpuError::InvalidInput(
+                                "the detail re-injection has no classical luma".into(),
+                            ));
+                        };
+                        let inner = out.relative_to(&cur_rect);
+                        let origin = origin_of(cur_rect, *luma_rect)?;
+                        let next =
+                            encode_inject_detail(&mut passes, &cur, inner, luma, origin, *beta)?;
+                        keep.push(std::mem::replace(&mut cur, next));
+                        cur_rect = out;
+                    }
+                }
+                PostStep::Sharpen { kind, .. } => {
+                    let next = match kind {
+                        SharpenKind::RichardsonLucy(plan) => encode_richardson_lucy(
+                            &mut passes,
+                            plan,
+                            &cur,
+                            core,
+                            &sigma,
+                            sigma_origin,
+                        )?,
+                        SharpenKind::Diffraction(plan) => {
+                            let prepared = PreparedDiffraction::new(ctx, plan)?;
+                            encode_sharpen(&mut passes, &prepared, &cur, core)?
+                        }
+                    };
+                    keep.push(std::mem::replace(&mut cur, next));
+                    cur_rect = out;
+                }
+            }
+        }
+        cancel.check()?;
+        let read = cur.encode_read(&mut passes)?;
+        let done = passes.submit()?.finish()?;
+        let data = cur.take(&done, read)?;
+        drop((keep, sigma, classical));
+        let mut rgb = RgbImage {
+            width: cur.width,
+            height: cur.height,
+            place: cur.place,
+            data,
+        };
+        if cur_rect != self.end {
+            // Stages that were identities leave a larger image than the tile needs: cut it.
+            if !cur_rect.contains(&self.end) {
+                return Err(GpuError::InvalidInput(format!(
+                    "the stages left {cur_rect:?}, the tile needs {:?}",
+                    self.end
+                )));
+            }
+            rgb = rgb.extract(self.end.relative_to(&cur_rect));
+        }
+        Ok(rgb)
+    }
+}
+
 /// Where the device work of a tile runs. The context of a device runs it on the calling thread; the
 /// application submits it to the device thread as one job.
 pub trait DeviceRunner {
@@ -379,6 +701,7 @@ pub struct GpuChain<'a> {
     chain: &'a Chain,
     prepared: &'a Prepared,
     range: StageRange,
+    sigma: Option<SigmaHalf<'a>>,
 }
 
 impl<'a> GpuChain<'a> {
@@ -387,17 +710,18 @@ impl<'a> GpuChain<'a> {
     /// # Errors
     ///
     /// [`GpuError::InvalidInput`] for a range the device does not run yet (only
-    /// [`StageRange::DEMOSAIC`] in this version) or a chain whose R6 method is not the adaptive
-    /// ratio demosaic (the other methods run on the CPU only).
+    /// [`StageRange::DEMOSAIC`] and [`StageRange::DEMOSAIC_TO_SHARPEN`] in this version) or a chain
+    /// whose R6 method is not the adaptive ratio demosaic (the other methods run on the CPU only).
     pub fn new(
         chain: &'a Chain,
         prepared: &'a Prepared,
         range: StageRange,
     ) -> Result<GpuChain<'a>, GpuError> {
-        if range != StageRange::DEMOSAIC {
+        if range != StageRange::DEMOSAIC && range != StageRange::DEMOSAIC_TO_SHARPEN {
             return Err(GpuError::InvalidInput(format!(
-                "the device chain runs the range {} only, not {}",
+                "the device chain runs the ranges {} and {}, not {}",
                 StageRange::DEMOSAIC.label(),
+                StageRange::DEMOSAIC_TO_SHARPEN.label(),
                 range.label()
             )));
         }
@@ -411,7 +735,31 @@ impl<'a> GpuChain<'a> {
             chain,
             prepared,
             range,
+            sigma: None,
         })
+    }
+
+    /// Gives the device chain the photo's noise sigma as the half-resolution plane and the cell gains
+    /// (`ym-core`'s `SigmaPlane` and `gain_plane`), instead of the chain's own full-resolution map
+    /// (`Chain::sigma_map`) or scalar. The device expands the cells a tile reads with the rule of the
+    /// CPU's `full_sigma_map`, so the chain's map need not exist when every stage that reads the sigma
+    /// is on the device ([`StageRange::covers_sigma_stages`]); a range that leaves one on the CPU
+    /// needs the map the CPU stepper reads.
+    ///
+    /// # Errors
+    ///
+    /// [`GpuError::InvalidInput`] for a half plane of the wrong length, or a range that leaves a stage
+    /// that reads the sigma on the CPU while the chain has no sigma map to give it.
+    pub fn with_sigma(mut self, sigma: SigmaHalf<'a>) -> Result<GpuChain<'a>, GpuError> {
+        sigma.validate()?;
+        if !self.range.covers_sigma_stages() && self.chain.sigma_map.is_none() {
+            return Err(GpuError::InvalidInput(format!(
+                "the range {} leaves stages that read the noise sigma on the CPU, and the chain has no sigma map",
+                self.range.label()
+            )));
+        }
+        self.sigma = Some(sigma);
+        Ok(self)
     }
 
     /// The stages on the device.
@@ -450,6 +798,9 @@ impl<'a> GpuChain<'a> {
         let degenerate = run
             .demosaic_input()
             .is_some_and(|i| i.mosaic.width < 2 || i.mosaic.height < 2);
+        if self.range == StageRange::DEMOSAIC_TO_SHARPEN {
+            return self.run_raw_group(runner, raw, run, first, degenerate, cancel);
+        }
         if degenerate {
             // A mosaic below 2 x 2 photosites is a bilinear demosaic on the CPU (no kernel): the
             // CPU stage is the same stage, and costs nothing.
@@ -468,5 +819,143 @@ impl<'a> GpuChain<'a> {
         cancel.check()?;
         run.run_to_end()?;
         Ok(run.finish()?)
+    }
+
+    /// The range R6 to R8: the demosaic and the stages after it as one device job, then R9 (the lens
+    /// resample) on the CPU on what comes back.
+    fn run_raw_group<R: DeviceRunner + ?Sized>(
+        &self,
+        runner: &R,
+        raw: &RawFrame<'_>,
+        mut run: crate::cpu::chain::TileRun<'_, '_>,
+        first: usize,
+        degenerate: bool,
+        cancel: &CancelToken,
+    ) -> Result<RgbImage, GpuError> {
+        let chain = self.chain;
+        let stages_len = run.stages().len();
+        let start = run.need(first + 1);
+        let input = if degenerate {
+            // The CPU demosaics a mosaic below 2 x 2 photosites (bilinear); the stages after it still
+            // run on the device.
+            run.step()?;
+            let img = run
+                .image()
+                .ok_or_else(|| GpuError::InvalidInput("the demosaic left no image".into()))?
+                .clone();
+            RawInput::Image(img)
+        } else {
+            let ca = chain.ca_curves();
+            let inputs = chain.demosaic_inputs(ca.as_ref());
+            let frame = PreparedDemosaic::new(Balance::Balanced, &inputs, &Params::default())?;
+            let (mosaic, core) = run.take_demosaic_input().ok_or_else(|| {
+                GpuError::InvalidInput("the demosaic is not the next stage".into())
+            })?;
+            RawInput::Mosaic(DemosaicWork::new(mosaic, core, frame)?)
+        };
+        // The stages after the demosaic, up to R9: each with the rectangle the CPU stepper cuts for
+        // it. A stage that does nothing for these controls is left out; the next one then names its
+        // core relative to the image it really gets (`RawWork::run_once`).
+        let nr = &chain.noise_reduction;
+        let mut steps = Vec::new();
+        let mut classical = false;
+        let mut lens: Option<usize> = None;
+        for i in first + 1..stages_len {
+            let out = run.need(i + 1);
+            match run.stages()[i] {
+                Stage::Denoise { .. } => {
+                    let keep_classical = nr.needs_classical();
+                    classical = keep_classical;
+                    steps.push(PostStep::Denoise {
+                        out,
+                        scale: network_sigma_scale(nr.luminance, chain.iso),
+                        params: chain.denoise.unwrap_or_default(),
+                        keep_classical,
+                    });
+                }
+                Stage::Detail { .. } => {
+                    let beta = classical.then(|| nr.beta());
+                    if nr.color > 0.0 || beta.is_some() {
+                        steps.push(PostStep::Detail {
+                            out,
+                            color: nr.color,
+                            beta,
+                        });
+                    }
+                }
+                Stage::Sharpen(CaptureSharpen::RichardsonLucy(p)) => {
+                    if let Some(plan) = RlPlan::new(&p) {
+                        steps.push(PostStep::Sharpen {
+                            out,
+                            kind: SharpenKind::RichardsonLucy(plan),
+                        });
+                    }
+                }
+                Stage::Sharpen(CaptureSharpen::Diffraction(p)) => {
+                    // The plan comes from the controls, the gains and the noise model, none of which
+                    // depends on the tile; an inactive plan is the identity, as on the CPU.
+                    if let Some(plan) =
+                        DiffractionPlan::new(&p, chain.gains, &chain.noise_dn(), SPEC_LUMA)
+                    {
+                        steps.push(PostStep::Sharpen {
+                            out,
+                            kind: SharpenKind::Diffraction(plan),
+                        });
+                    }
+                }
+                Stage::Lens(_) => {
+                    lens = Some(i);
+                    break;
+                }
+                other => {
+                    return Err(GpuError::InvalidInput(format!(
+                        "the stage {:?} cannot follow the demosaic on the device",
+                        RawStage::of(&other)
+                    )));
+                }
+            }
+        }
+        let end = run.need(lens.unwrap_or(stages_len));
+        let sigma = self.sigma_work(raw, start, chain)?;
+        let work = DeviceWork::Raw(RawWork {
+            input,
+            start,
+            end,
+            sigma,
+            steps,
+        });
+        let rgb = runner.run_device(work, cancel)?;
+        cancel.check()?;
+        match lens {
+            Some(i) => {
+                let Stage::Lens(geo) = run.stages()[i] else {
+                    return Err(GpuError::InvalidInput("the lens stage moved".into()));
+                };
+                Ok(crate::cpu::resample::resample_lens(&rgb, geo, run.out())
+                    .map_err(|e| GpuError::Cpu(e.to_string()))?)
+            }
+            None => Ok(rgb),
+        }
+    }
+
+    /// The noise sigma of the tile's first rectangle `start` (frame coordinates), from the half plane
+    /// given to [`with_sigma`](Self::with_sigma), else the chain's map, else its scalar.
+    fn sigma_work(
+        &self,
+        raw: &RawFrame<'_>,
+        start: Rect,
+        chain: &Chain,
+    ) -> Result<SigmaWork, GpuError> {
+        if let Some(half) = &self.sigma {
+            return Ok(SigmaWork::Cells(SigmaTile::cut(half, start)?));
+        }
+        if let Some(map) = &chain.sigma_map {
+            let mut plane = Vec::with_capacity(start.area());
+            for y in start.y..start.y1() {
+                plane.extend_from_slice(&map[y * raw.width + start.x..y * raw.width + start.x1()]);
+            }
+            return Ok(SigmaWork::Plane(plane));
+        }
+        Ok(SigmaWork::Scalar(chain.sigma))
     }
 }

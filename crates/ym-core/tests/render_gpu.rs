@@ -11,6 +11,12 @@
 //!   bit the CPU render, with the note; a strict policy (`Require`) fails the photo instead; a
 //!   cancelled render and a navigation leave the pool at its baseline.
 //!
+//! * G-05, the view stages: with the members of [`GpuStages`] for the sampler, the colour chain,
+//!   output sharpening and C13, a viewport frame, a thumbnail and a look tile are one device job each
+//!   (sampler, C1 to C12, stage, C13, one readback), a move of the Output slider is one small job on
+//!   the resident display-linear frame, and a view too big for one storage binding is cut into bands
+//!   with the same pixels. See `mod view` below.
+//!
 //! Skipped, loudly, when no adapter opens, unless `YM_REQUIRE_GPU=1` (the `gpu-lavapipe` job) turns
 //! that into a failure.
 mod common;
@@ -137,13 +143,25 @@ fn gpu_and_cpu_frames_agree_within_the_parity_tolerance() {
         assert!(worst <= 2, "{name}: worst difference {worst} codes");
         assert!(mean < 0.25, "{name}: mean difference {mean}");
     }
-    // The Before view runs on the CPU whatever is attached.
+    // The Before view is the colour kernel's RGBA8 stop, on the device since G-05.
     let mut before = st.clone();
     before.before = true;
+    let a = cpu
+        .viewport_frame(&src, &before, &FrameOptions::default(), &cancel)
+        .expect("cpu before");
     let b = on_gpu
         .viewport_frame(&src, &before, &FrameOptions::default(), &cancel)
         .expect("before");
-    assert_eq!(b.report.device, ComputeDevice::Cpu);
+    assert_eq!(a.report.device, ComputeDevice::Cpu);
+    assert_eq!(b.report.device, ComputeDevice::Gpu, "{:?}", b.report.notes);
+    let worst = a
+        .rgba
+        .iter()
+        .zip(&b.rgba)
+        .map(|(x, y)| x.abs_diff(*y))
+        .max()
+        .unwrap_or(0);
+    assert!(worst <= 2, "the Before view differs by {worst} codes");
     // Thumbnails go through the same pass.
     let a = cpu.thumbnail_png(&src, &cancel).expect("thumbnail");
     let b = on_gpu
@@ -571,6 +589,734 @@ fn a_device_error_of_a_strict_render_is_the_export_error_kind_gpu() {
     assert_eq!(ExportError::Render(RenderError::Memory).kind(), "render");
 }
 
+// ---------------------------------------------------------------------------------------------
+// The view stages on the device (G-05)
+// ---------------------------------------------------------------------------------------------
+
+mod view {
+    use super::*;
+    use ym_color::consts::linalg;
+    use ym_color::deltae::{d65_white_xyz, delta_e_2000, percentile, xyz_to_lab};
+    use ym_color::encode::srgb_decode;
+    use ym_core::pipeline::{RenderedFrame, StageRuns};
+    use ym_core::settings::{Crop, CropAspect, NormRect, Orientation};
+
+    /// What a frame, a thumbnail and a look tile run on the device: the sampler, the colour chain,
+    /// output sharpening and C13. The raw chain stays on the CPU, so a comparison with the CPU
+    /// renderer isolates the view stages.
+    pub const VIEW: GpuStages = GpuStages::SAMPLER
+        .union(GpuStages::COLOR)
+        .union(GpuStages::OUTPUT_SHARPEN)
+        .union(GpuStages::ENCODE);
+
+    pub fn picture(w: u32, h: u32) -> PhotoSource {
+        let white = light("sony-ilce-7rm4", 4500.0);
+        let scene = Scene::new(w, h, white, Layout::Patchwork, 0.5).noise(2e-4, 2e-6);
+        Developed::new(&scene, MODEL).source()
+    }
+
+    pub fn device_renderer(gpu: &Arc<Gpu>, stages: GpuStages) -> Renderer {
+        renderer_with(Some(Arc::clone(gpu)), stages, false, Method::AdaptiveRatio)
+    }
+
+    pub fn frame(r: &Renderer, src: &PhotoSource, st: &ViewportState) -> RenderedFrame {
+        r.viewport_frame(src, st, &FrameOptions::default(), &CancelToken::new())
+            .expect("frame")
+    }
+
+    pub fn fresh(r: &Renderer, src: &PhotoSource, st: &ViewportState) -> RenderedFrame {
+        let options = FrameOptions {
+            no_cache: true,
+            ..FrameOptions::default()
+        };
+        r.viewport_frame(src, st, &options, &CancelToken::new())
+            .expect("frame")
+    }
+
+    pub fn cell(w: f64, h: f64, scale: f64) -> ViewportState {
+        ViewportState::new(ViewportRect::cell(w, h, scale))
+    }
+
+    pub fn at_100(w: f64, h: f64, image: (usize, usize)) -> ViewportState {
+        let mut st = cell(w, h, 1.0);
+        st.set_mode(ViewportMode::Percent { value: 100.0 }, image);
+        st
+    }
+
+    fn with_amount(src: &PhotoSource, pct: f64) -> PhotoSource {
+        edit(src, |s| s.output_sharpening = pct)
+    }
+
+    /// The comparison of the golden runner (`tools/golden/src/image.rs`): CIEDE2000 per pixel on a
+    /// 1/4 downsample (a box filter in linear light, the samples read as sRGB), and its median, 99th
+    /// percentile and maximum.
+    pub fn golden(a: &RenderedFrame, b: &RenderedFrame) -> (f64, f64, f64) {
+        assert_eq!((a.width, a.height), (b.width, b.height));
+        let to_xyz = ym_color::gamut::matrices().rec709_to_xyz;
+        let white = d65_white_xyz();
+        let table: Vec<f64> = (0..=255u32)
+            .map(|v| srgb_decode(f64::from(v) / 255.0))
+            .collect();
+        let lab = |f: &RenderedFrame| -> Vec<[f64; 3]> {
+            let (w, h) = (f.width / 4, f.height / 4);
+            let mut out = Vec::with_capacity(w * h);
+            for by in 0..h {
+                for bx in 0..w {
+                    let mut sum = [0.0f64; 3];
+                    for dy in 0..4 {
+                        for dx in 0..4 {
+                            let i = ((by * 4 + dy) * f.width + bx * 4 + dx) * 4;
+                            for (c, s) in sum.iter_mut().enumerate() {
+                                *s += table[usize::from(f.rgba[i + c])];
+                            }
+                        }
+                    }
+                    let linear = sum.map(|v| v / 16.0);
+                    out.push(xyz_to_lab(linalg::mul_vec(&to_xyz, linear), white));
+                }
+            }
+            out
+        };
+        let d: Vec<f64> = lab(a)
+            .iter()
+            .zip(&lab(b))
+            .map(|(x, y)| delta_e_2000(*x, *y))
+            .collect();
+        assert!(!d.is_empty() && d.iter().all(|v| v.is_finite()));
+        (
+            percentile(&d, 50.0).expect("median"),
+            percentile(&d, 99.0).expect("p99"),
+            d.iter().copied().fold(0.0, f64::max),
+        )
+    }
+
+    /// The largest difference in codes, the share of samples more than one code apart, the mean.
+    pub fn codes(a: &RenderedFrame, b: &RenderedFrame) -> (u8, f64, f64) {
+        assert_eq!((a.width, a.height), (b.width, b.height));
+        let (mut worst, mut over, mut sum) = (0u8, 0usize, 0u64);
+        for (x, y) in a.rgba.iter().zip(&b.rgba) {
+            let d = x.abs_diff(*y);
+            worst = worst.max(d);
+            over += usize::from(d > 1);
+            sum += u64::from(d);
+        }
+        let n = a.rgba.len() as f64;
+        (worst, over as f64 / n, sum as f64 / n)
+    }
+
+    /// Whether the frame's notes say nothing about the graphics card (the classical-demosaic note
+    /// is on every frame until a network exists).
+    pub fn no_gpu_note(f: &RenderedFrame) -> bool {
+        !f.report.notes.iter().any(|n| n.contains("graphics card"))
+    }
+
+    /// Bytes in use in the device's pool (what a finished or dropped frame must hand back).
+    pub fn in_use(gpu: &Gpu) -> u64 {
+        super::pool_in_use(gpu)
+    }
+
+    fn crop_and_straighten(s: &mut DevelopSettings) {
+        s.crop = Some(Crop {
+            rect: NormRect {
+                x: 0.05,
+                y: 0.08,
+                width: 0.88,
+                height: 0.84,
+            },
+            angle_deg: 5.0,
+            aspect: CropAspect::Free,
+        });
+    }
+
+    #[test]
+    fn device_frames_equal_the_cpu_frames_within_the_golden_metric() {
+        let Some(gpu) = gpu() else { return };
+        let src = picture(900, 600);
+        let token = CancelToken::new();
+        let (cpu, dev) = (on_cpu(), device_renderer(&gpu, VIEW));
+        let image = cpu.final_size(&src, &token).expect("final size");
+        // Fit, a retina cell (2x device pixels), the 100 % view, a straightened crop with paper in
+        // its corners, a rotated photo, 200 % sharpening, no sharpening, and a magnified view (the
+        // colour pass on the device, the stage and the magnification on the CPU).
+        type Edit = fn(&mut DevelopSettings);
+        let cases: Vec<(&str, ViewportState, Edit)> = vec![
+            ("fit", cell(300.0, 200.0, 1.0), |_| {}),
+            ("retina", cell(300.0, 200.0, 2.0), |_| {}),
+            ("100 %", at_100(700.0, 500.0, image), |_| {}),
+            ("crop and straighten", cell(300.0, 200.0, 1.0), |s| {
+                crop_and_straighten(s);
+            }),
+            ("rotated", cell(300.0, 200.0, 1.0), |s| {
+                s.orientation = Orientation::Deg90;
+            }),
+            ("amount 200", cell(300.0, 200.0, 1.0), |s| {
+                s.output_sharpening = 200.0;
+            }),
+            ("amount 0", cell(300.0, 200.0, 1.0), |s| {
+                s.output_sharpening = 0.0;
+            }),
+            (
+                "magnified",
+                {
+                    let mut st = cell(300.0, 200.0, 1.0);
+                    st.set_mode(ViewportMode::Percent { value: 300.0 }, image);
+                    st
+                },
+                |_| {},
+            ),
+        ];
+        for (name, st, change) in cases {
+            let src = edit(&src, change);
+            let a = frame(&cpu, &src, &st);
+            let b = frame(&dev, &src, &st);
+            assert_eq!(a.report.device, ComputeDevice::Cpu);
+            assert_eq!(b.report.device, ComputeDevice::Gpu, "{name}: {:?}", b.report.notes);
+            assert!(no_gpu_note(&b), "{name}: {:?}", b.report.notes);
+            assert_eq!(b.report.timings.sample_ms, 0.0, "{name}: the CPU sampled");
+            assert_eq!((a.width, a.height), (b.width, b.height), "{name}");
+            let (median, p99, max) = golden(&a, &b);
+            let (worst, over, mean) = codes(&a, &b);
+            eprintln!(
+                "{name}: ΔE00 median {median:.4} p99 {p99:.4} max {max:.4}; worst {worst} codes, over 1 code {over:e}, mean {mean:e}"
+            );
+            // The golden gates of the GPU plan (section 7), which a whole GPU render must meet.
+            assert!(
+                median <= 0.02 && p99 <= 0.05 && max <= 0.5,
+                "{name}: {median} {p99} {max}"
+            );
+            assert!(worst <= 2 && mean < 0.25, "{name}: {worst} codes, mean {mean}");
+            // The view stages alone come in far below them on lavapipe: twice the first measured
+            // values (ΔE00 max 0.082, one code at worst, mean 7.1e-5 codes). A hardware adapter has
+            // its own f32 rounding (fast-math on Metal), so it keeps the gates above and prints its
+            // numbers for the next tightening.
+            if gpu.info().is_software {
+                assert!(
+                    max <= 0.17 && worst <= 2 && over <= 1e-5 && mean < 1.5e-4,
+                    "{name}: max {max}, {worst} codes, over {over}, mean {mean}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_move_of_the_slider_is_one_small_job_with_no_sampler_and_no_colour_pass() {
+        let Some(gpu) = gpu() else { return };
+        let src = picture(900, 600);
+        let r = device_renderer(&gpu, VIEW);
+        let st = cell(576.0, 384.0, 1.0);
+        let (w, h) = (576usize, 384usize);
+        let base = gpu.counters();
+        let before = in_use(&gpu);
+        let first = frame(&r, &src, &st);
+        let cold = gpu.counters().since(base);
+        eprintln!("cold frame: {cold:?}, runs {:?}", first.report.runs);
+        assert_eq!(first.report.device, ComputeDevice::Gpu);
+        assert_eq!(
+            (
+                first.report.runs.color_passes,
+                first.report.runs.output_passes,
+                first.report.runs.display_hits
+            ),
+            (1, 1, 0)
+        );
+        // One device job for the whole frame: one submission, and one readback, of the RGBA8 frame.
+        assert_eq!(cold.submissions, 1, "{cold:?}");
+        assert_eq!((cold.readbacks, cold.readback_bytes), (1, (w * h * 4) as u64));
+        // The display-linear frame (the view and the stage's border, four f32 planes) stays resident
+        // and is on the pool's ledger, and in the cache's byte count.
+        let resident = in_use(&gpu) - before;
+        let display_bytes = 16 * (w as u64 + 34) * (h as u64 + 34);
+        assert!(resident >= display_bytes, "{resident} < {display_bytes}");
+        assert!(r.cached_bytes() as u64 >= display_bytes);
+
+        // The slider moves: the resident frame is sharpened and encoded again. Nothing is sampled
+        // or coloured, nothing but a few uniform blocks is uploaded, and one small job runs.
+        let c1 = gpu.counters();
+        let moved = frame(&r, &with_amount(&src, 60.0), &st);
+        let slide = gpu.counters().since(c1);
+        eprintln!("slider move: {slide:?}, runs {:?}", moved.report.runs);
+        assert_eq!(
+            moved.report.runs,
+            StageRuns {
+                output_passes: 1,
+                display_hits: 1,
+                ..StageRuns::default()
+            }
+        );
+        let t = moved.report.timings;
+        assert_eq!((t.sample_ms, t.pass_ms), (0.0, 0.0));
+        assert!(t.output_ms > 0.0, "the move reports its time: {t:?}");
+        assert_eq!(slide.submissions, 1, "{slide:?}");
+        assert_eq!((slide.readbacks, slide.readback_bytes), (1, (w * h * 4) as u64));
+        assert!(
+            slide.uploaded_bytes < 16 << 10,
+            "a slider move uploaded {} bytes",
+            slide.uploaded_bytes
+        );
+        assert_eq!(moved.report.device, ComputeDevice::Gpu);
+        assert_eq!(in_use(&gpu) - before, resident, "the move made no new resident frame");
+
+        // Back to the first value: the finished frame, no device work at all.
+        let c2 = gpu.counters();
+        let again = frame(&r, &src, &st);
+        assert_eq!(again.report.runs.frame_hits, 1);
+        assert_eq!(gpu.counters().since(c2).submissions, 0);
+        assert_eq!(again.rgba, first.rgba);
+
+        // Zero is no stage: the plain road (the colour pass to C13 in one dispatch), no output pass,
+        // no raw work.
+        let off = frame(&r, &with_amount(&src, 0.0), &st);
+        assert_eq!(
+            (off.report.runs.output_passes, off.report.runs.color_passes),
+            (0, 1)
+        );
+        assert_eq!(off.report.runs.raw_work(), 0);
+
+        // The photo's caches let go of the frame: the pool gets its buffers back.
+        r.forget(src.id);
+        assert!(
+            in_use(&gpu) - before < resident,
+            "the resident frame outlived its photo's caches"
+        );
+    }
+
+    struct CubeLook {
+        transform: Arc<ym_color::look::LookTransform>,
+    }
+
+    impl CubeLook {
+        fn new(points: usize) -> Self {
+            use ym_color::look::{LookInput, LookTransform};
+            use ym_color::lut::{Lut, Lut3d};
+            let cube = Lut3d::bake(points, [0.0; 3], [1.0; 3], |c| {
+                [c[0] * 0.95 + 0.02, c[1], (c[2] * 1.04).min(1.0)]
+            })
+            .expect("cube");
+            let transform =
+                LookTransform::new(LookInput::LogC4, None, Some(Lut::from_cube(cube))).expect("look");
+            Self {
+                transform: Arc::new(transform),
+            }
+        }
+    }
+
+    impl ym_core::pipeline::LookProvider for CubeLook {
+        fn look(
+            &self,
+            id: &ym_looks::library::LookId,
+        ) -> Result<ym_core::pipeline::ResolvedLook, ym_core::pipeline::LookProblem> {
+            match id.as_str() {
+                "builtin:neutral" => NeutralOnly.look(id),
+                "user:cube" => Ok(ym_core::pipeline::ResolvedLook {
+                    transform: Arc::clone(&self.transform),
+                    fingerprint: "cube-v1".to_owned(),
+                }),
+                _ => Err(ym_core::pipeline::LookProblem(
+                    "File missing or changed. Import again.".to_owned(),
+                )),
+            }
+        }
+
+        fn display_transform(
+            &self,
+            id: &ym_looks::library::LookId,
+        ) -> Result<(ym_color::display::DisplayTransform, String), ym_core::pipeline::LookProblem>
+        {
+            NeutralOnly.display_transform(id)
+        }
+    }
+
+    #[test]
+    fn a_colour_only_edit_uploads_no_look_cube_and_runs_no_raw_stage() {
+        let Some(gpu) = gpu() else { return };
+        // A 65-point look cube is 4.4 MB; the camera RGB of this view is 0.7 MB.
+        let cube_bytes = 65u64.pow(3) * 16;
+        let r = Renderer::new(
+            Arc::new(CubeLook::new(65)),
+            RenderOptions {
+                gpu: Some(Arc::clone(&gpu)),
+                gpu_stages: VIEW,
+                ..RenderOptions::default()
+            },
+        )
+        .expect("render thread");
+        let look = ym_looks::library::LookId::parse("user:cube").expect("id");
+        let src = edit(&picture(600, 400), |s| s.look = look.clone());
+        let st = cell(300.0, 200.0, 1.0);
+        let c0 = gpu.counters();
+        let cold = frame(&r, &src, &st);
+        let uploaded_cold = gpu.counters().since(c0).uploaded_bytes;
+        assert_eq!(cold.report.device, ComputeDevice::Gpu, "{:?}", cold.report.notes);
+        assert!(uploaded_cold >= cube_bytes, "the cube went up once: {uploaded_cold}");
+        assert!(cold.report.runs.raw_work() > 0);
+        // Edits of the grade: a control, a curve, the look's intensity, white balance.
+        let edits: Vec<(&str, Box<dyn Fn(&mut DevelopSettings)>)> = vec![
+            ("contrast", Box::new(|s| s.contrast = 30.0)),
+            ("saturation", Box::new(|s| s.saturation = -25.0)),
+            (
+                "curve",
+                Box::new(|s| s.curve.luma = vec![[0.0, 0.0], [0.5, 0.6], [1.0, 1.0]]),
+            ),
+            ("look intensity", Box::new(|s| s.look_intensity = 60.0)),
+        ];
+        for (name, change) in edits {
+            let edited = edit(&src, |s| change(s));
+            let c = gpu.counters();
+            let f = frame(&r, &edited, &st);
+            let up = gpu.counters().since(c);
+            eprintln!("{name}: {up:?}");
+            assert_eq!(f.report.device, ComputeDevice::Gpu, "{name}");
+            // Colour and grade work and no raw stage; the cube stays where it is.
+            assert_eq!(f.report.runs.raw_work(), 0, "{name}: {:?}", f.report.runs);
+            assert_eq!(f.report.timings.raw_ms, 0.0, "{name}");
+            assert!(
+                up.uploaded_bytes < cube_bytes / 2,
+                "{name}: {} bytes uploaded, the cube is {cube_bytes}",
+                up.uploaded_bytes
+            );
+            assert_eq!(up.submissions, 1, "{name}: {up:?}");
+        }
+    }
+
+    #[test]
+    fn a_frame_queued_behind_other_device_work_stops_at_once_when_it_is_cancelled_or_left() {
+        let Some(gpu) = gpu() else { return };
+        let mut src = picture(900, 600);
+        src.id = PhotoId(1);
+        let mut other = picture(640, 480);
+        other.id = PhotoId(2);
+        let r = device_renderer(&gpu, VIEW);
+        r.navigate(src.id);
+        let before = in_use(&gpu);
+        // Hold the device thread with a job of our own; the frame's device job queues behind it.
+        let hold = |gpu: &Arc<Gpu>| {
+            let (gate_tx, gate_rx) = std::sync::mpsc::channel::<()>();
+            let (ready_tx, ready_rx) = std::sync::mpsc::channel::<()>();
+            let job = gpu.submit(
+                ym_gpu::queue::JobSpec::new(ym_gpu::queue::Priority::Viewport),
+                move |_, _| {
+                    ready_tx.send(()).expect("ready");
+                    gate_rx.recv().expect("gate");
+                },
+            );
+            ready_rx
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .expect("the device thread took the gate job");
+            (gate_tx, job)
+        };
+        let wait_queued = |gpu: &Gpu| {
+            let started = std::time::Instant::now();
+            while gpu.scheduler().pending() == 0 {
+                assert!(started.elapsed().as_secs() < 60, "no device job was queued");
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+        };
+        let st = cell(300.0, 200.0, 1.0);
+
+        // 1. The render's own token (a newer request, a closed session): the render resolves with
+        // the gate still closed, and the queued job is skipped when it is popped.
+        let (gate, job) = hold(&gpu);
+        let handle = r.spawn_viewport_frame(src.clone(), st.clone(), FrameOptions::default());
+        wait_queued(&gpu);
+        handle.cancel();
+        let result = handle
+            .wait_timeout(std::time::Duration::from_secs(30))
+            .expect("the render resolved while the device thread was still held");
+        assert!(
+            matches!(result, Err(JobError::Cancelled))
+                || matches!(result, Ok(Err(RenderError::Cancelled))),
+            "{result:?}"
+        );
+        gate.send(()).expect("open the gate");
+        job.wait().expect("gate job");
+
+        // 2. Moving to another photo: the device job of the photo left is dropped from the queue at
+        // once (it holds the photo's camera RGB), not left to be skipped when it is popped.
+        let (gate, job) = hold(&gpu);
+        let handle = r.spawn_viewport_frame(src.clone(), st.clone(), FrameOptions::default());
+        wait_queued(&gpu);
+        r.navigate(other.id);
+        let result = handle
+            .wait_timeout(std::time::Duration::from_secs(30))
+            .expect("the render resolved while the device thread was still held");
+        assert!(
+            matches!(result, Err(JobError::Cancelled))
+                || matches!(result, Ok(Err(RenderError::Cancelled))),
+            "{result:?}"
+        );
+        assert_eq!(gpu.scheduler().pending(), 0, "nothing of the photo is left queued");
+        gate.send(()).expect("open the gate");
+        job.wait().expect("gate job");
+
+        // The device is as it was, and a fresh request works.
+        let f = frame(&r, &other, &st);
+        assert_eq!(f.report.device, ComputeDevice::Gpu);
+        r.forget(other.id);
+        r.forget(src.id);
+        assert!(in_use(&gpu) <= before + (1 << 20), "the ledger returns to its baseline");
+    }
+
+    #[test]
+    fn every_subset_of_the_view_stages_renders_the_picture_of_the_cpu() {
+        let Some(gpu) = gpu() else { return };
+        let src = picture(600, 400);
+        let tilted = edit(&src, crop_and_straighten);
+        let cpu = on_cpu();
+        let st = cell(300.0, 200.0, 1.0);
+        let members = [
+            GpuStages::SAMPLER,
+            GpuStages::COLOR,
+            GpuStages::OUTPUT_SHARPEN,
+            GpuStages::ENCODE,
+        ];
+        for mask in 0u8..16 {
+            let stages = members
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| mask & (1 << i) != 0)
+                .fold(GpuStages::NONE, |acc, (_, m)| acc.union(*m));
+            let (sampler, colour) = (mask & 1 != 0, mask & 2 != 0);
+            for (name, photo) in [
+                ("sharpened", src.clone()),
+                ("tilted", tilted.clone()),
+                ("plain", with_amount(&src, 0.0)),
+            ] {
+                let r = device_renderer(&gpu, stages);
+                let jobs = gpu.counters().submissions;
+                let a = fresh(&cpu, &photo, &st);
+                let b = fresh(&r, &photo, &st);
+                let ran = gpu.counters().submissions - jobs;
+                // The colour pass decides where the frame is said to be made; the sampler alone
+                // still uses the device, and a tail without them does not.
+                let want = if colour {
+                    ComputeDevice::Gpu
+                } else {
+                    ComputeDevice::Cpu
+                };
+                assert_eq!(b.report.device, want, "{name} {stages}: {:?}", b.report.notes);
+                assert_eq!(ran > 0, sampler || colour, "{name} {stages}: {ran} jobs");
+                assert!(no_gpu_note(&b), "{name} {stages}: {:?}", b.report.notes);
+                assert_eq!(
+                    b.report.runs.color_passes,
+                    1,
+                    "{name} {stages}: {:?}",
+                    b.report.runs
+                );
+                assert_eq!(
+                    b.report.runs.output_passes,
+                    a.report.runs.output_passes,
+                    "{name} {stages}"
+                );
+                let (median, p99, max) = golden(&a, &b);
+                let (worst, _, mean) = codes(&a, &b);
+                assert!(
+                    median <= 0.02 && p99 <= 0.05 && max <= 0.5 && worst <= 2 && mean < 0.25,
+                    "{name} {stages}: ΔE00 {median} {p99} {max}, {worst} codes, mean {mean}"
+                );
+                if !sampler && !colour {
+                    assert_eq!(b.rgba, a.rgba, "{name} {stages}: no device, the CPU's bytes");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_view_cut_into_bands_has_the_pixels_of_the_view_in_one_piece() {
+        let Some(gpu) = gpu() else { return };
+        let src = picture(900, 600);
+        let whole = device_renderer(&gpu, VIEW);
+        let banded = Renderer::new(
+            Arc::new(NeutralOnly),
+            RenderOptions {
+                gpu: Some(Arc::clone(&gpu)),
+                gpu_stages: VIEW,
+                // About 110 rows of a 576 px view with the stage's border (16 bytes a pixel).
+                view_band_bytes: 1_400_000,
+                full_tile_px: 512,
+                ..RenderOptions::default()
+            },
+        )
+        .expect("render thread");
+        let image = whole.final_size(&src, &CancelToken::new()).expect("size");
+        let tilted = edit(&src, crop_and_straighten);
+        let cases: Vec<(&str, PhotoSource, ViewportState)> = vec![
+            ("fit", src.clone(), cell(576.0, 384.0, 1.0)),
+            ("odd cell", src.clone(), cell(577.0, 383.0, 1.0)),
+            ("retina", src.clone(), cell(300.0, 200.0, 2.0)),
+            ("tilted crop", tilted.clone(), cell(576.0, 384.0, 1.0)),
+            ("plain", with_amount(&src, 0.0), cell(576.0, 384.0, 1.0)),
+            ("before", src.clone(), {
+                let mut st = cell(576.0, 384.0, 1.0);
+                st.before = true;
+                st
+            }),
+            ("100 %", src.clone(), at_100(640.0, 480.0, image)),
+        ];
+        for (name, photo, st) in cases {
+            let a = fresh(&whole, &photo, &st);
+            let jobs = gpu.counters().submissions;
+            let b = fresh(&banded, &photo, &st);
+            let ran = gpu.counters().submissions - jobs;
+            assert_eq!(b.report.device, ComputeDevice::Gpu, "{name}: {:?}", b.report.notes);
+            assert!(ran >= 3, "{name}: the view was cut into {ran} jobs");
+            assert!(
+                a.rgba == b.rgba,
+                "{name}: the bands differ from the view in one piece ({:?})",
+                codes(&a, &b)
+            );
+        }
+        // The display-linear frames of the bands are cached one by one: a move of the slider runs
+        // the tail of each band and nothing else.
+        let st = cell(576.0, 384.0, 1.0);
+        let first = frame(&banded, &src, &st);
+        let moved = frame(&banded, &with_amount(&src, 40.0), &st);
+        let bands = first.report.runs.output_passes;
+        assert!(bands >= 3, "{bands}");
+        assert_eq!(
+            moved.report.runs,
+            StageRuns {
+                output_passes: bands,
+                display_hits: bands,
+                ..StageRuns::default()
+            }
+        );
+        let want = fresh(&whole, &with_amount(&src, 40.0), &st);
+        assert!(moved.rgba == want.rgba);
+    }
+
+    #[test]
+    fn a_thumbnail_and_a_look_tile_run_at_thumbnail_priority_behind_the_viewport() {
+        let Some(gpu) = gpu() else { return };
+        let src = picture(900, 600);
+        let r = device_renderer(&gpu, VIEW);
+        let st = cell(300.0, 200.0, 1.0);
+        // Warm up everything that is not a device job (the raw group, the plans), so that the two
+        // requests below go straight to the device.
+        let _ = frame(&r, &src, &st);
+        let _ = r.thumbnail_png(&src, &CancelToken::new()).expect("thumbnail");
+        let (gate_tx, gate_rx) = std::sync::mpsc::channel::<()>();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel::<()>();
+        let hold = gpu.submit(
+            ym_gpu::queue::JobSpec::new(ym_gpu::queue::Priority::Viewport),
+            move |_, _| {
+                ready_tx.send(()).expect("ready");
+                gate_rx.recv().expect("gate");
+            },
+        );
+        ready_rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the device thread took the gate job");
+        let order = Arc::new(std::sync::Mutex::new(Vec::<&'static str>::new()));
+        let queued = |n: usize| {
+            let started = std::time::Instant::now();
+            while gpu.scheduler().pending() < n {
+                assert!(started.elapsed().as_secs() < 60, "device jobs not queued");
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+        };
+        // A thumbnail first, then a viewport frame (of a size nothing has cached), then a look tile.
+        let thumb = {
+            let (r, src, order) = (r.clone(), src.clone(), Arc::clone(&order));
+            std::thread::spawn(move || {
+                r.thumbnail_png(&src, &CancelToken::new()).expect("thumbnail");
+                order.lock().expect("order").push("thumbnail");
+            })
+        };
+        queued(1);
+        let viewport = {
+            let (r, src, order) = (r.clone(), src.clone(), Arc::clone(&order));
+            std::thread::spawn(move || {
+                let st = cell(310.0, 207.0, 1.0);
+                frame(&r, &src, &st);
+                order.lock().expect("order").push("viewport");
+            })
+        };
+        queued(2);
+        gate_tx.send(()).expect("open the gate");
+        hold.wait().expect("gate job");
+        thumb.join().expect("thumbnail thread");
+        viewport.join().expect("viewport thread");
+        assert_eq!(
+            *order.lock().expect("order"),
+            ["viewport", "thumbnail"],
+            "the viewport's job ran first although it was queued second"
+        );
+    }
+
+    #[test]
+    fn the_histogram_sample_comes_from_the_device_and_is_counted_on_the_cpu() {
+        let Some(gpu) = gpu() else { return };
+        let src = picture(900, 600);
+        let cpu = on_cpu();
+        let dev = device_renderer(&gpu, VIEW);
+        let token = CancelToken::new();
+        let a = cpu.histogram(&src, &token).expect("cpu histogram");
+        let jobs = gpu.counters().submissions;
+        let b = dev.histogram(&src, &token).expect("device histogram");
+        assert_eq!(
+            gpu.counters().submissions - jobs,
+            1,
+            "the sample was made by one device job"
+        );
+        // The device sampler is the CPU's within 5e-6 of a sample: a count can change only where a
+        // sample sits on a bin edge.
+        let mut worst = 0.0f64;
+        for (x, y) in [(&a.red, &b.red), (&a.green, &b.green), (&a.blue, &b.blue)] {
+            assert_eq!(x.len(), y.len());
+            for (p, q) in x.iter().zip(y) {
+                worst = worst.max((p - q).abs());
+            }
+        }
+        eprintln!("histogram, device against CPU: worst bin difference {worst}");
+        assert!(worst <= 0.02, "{worst}");
+    }
+
+    #[test]
+    fn a_strict_policy_and_the_off_policy_keep_to_their_word() {
+        let Some(gpu) = gpu() else { return };
+        let src = picture(600, 400);
+        let st = cell(300.0, 200.0, 1.0);
+        // Off: a device is attached but no stage is on it: the CPU's bytes, and the device is not asked.
+        let off = device_renderer(&gpu, GpuStages::NONE);
+        let jobs = gpu.counters().submissions;
+        let a = frame(&off, &src, &st);
+        let b = frame(&on_cpu(), &src, &st);
+        assert_eq!(a.rgba, b.rgba);
+        assert_eq!(gpu.counters().submissions, jobs);
+        assert_eq!(a.report.device, ComputeDevice::Cpu);
+        // The thumbnail and the look tile too.
+        let t = off.thumbnail_png(&src, &CancelToken::new()).expect("thumbnail");
+        assert_eq!(
+            t,
+            on_cpu().thumbnail_png(&src, &CancelToken::new()).expect("thumbnail")
+        );
+        assert_eq!(gpu.counters().submissions, jobs);
+    }
+
+    #[test]
+    fn two_renders_and_a_render_after_another_photo_are_byte_identical() {
+        let Some(gpu) = gpu() else { return };
+        let src = picture(900, 600);
+        let other = picture(640, 480);
+        let r = device_renderer(&gpu, VIEW);
+        let st = cell(576.0, 384.0, 1.0);
+        let first = fresh(&r, &src, &st);
+        let second = fresh(&r, &src, &st);
+        assert!(first.rgba == second.rgba, "twice");
+        // Another photo in between (pool history), on a fresh renderer.
+        let _ = fresh(&device_renderer(&gpu, VIEW), &other, &st);
+        let third = fresh(&device_renderer(&gpu, VIEW), &src, &st);
+        assert!(first.rgba == third.rgba, "after another photo");
+        // A thumbnail and a look tile.
+        let token = CancelToken::new();
+        let t1 = r.thumbnail_png(&src, &token).expect("thumbnail");
+        let t2 = device_renderer(&gpu, VIEW)
+            .thumbnail_png(&src, &token)
+            .expect("thumbnail");
+        assert_eq!(t1, t2);
+    }
+}
+
 #[cfg(feature = "fault-injection")]
 mod faults {
     use super::*;
@@ -857,5 +1603,109 @@ mod faults {
             device_of(&f.report),
             vec![("R6".to_owned(), ComputeDevice::Cpu)]
         );
+    }
+
+    mod views {
+        //! A device error in the view stages: the frame, the thumbnail and the histogram are made on
+        //! the CPU, bit for bit what a renderer without a device makes, with the note; a strict
+        //! policy fails the request instead.
+        use super::super::view::{VIEW, cell, device_renderer, fresh, no_gpu_note, picture};
+        use super::*;
+
+        #[test]
+        fn a_device_error_is_answered_by_the_cpu_with_the_note() {
+            let src = picture(600, 400);
+            let st = cell(300.0, 200.0, 1.0);
+            let token = CancelToken::new();
+            let want = fresh(&on_cpu(), &src, &st);
+            let thumb = on_cpu().thumbnail_png(&src, &token).expect("cpu thumbnail");
+            let hist = on_cpu().histogram(&src, &token).expect("cpu histogram");
+            // (name, fault, whether the route is closed for the photo from then on)
+            let faults = [
+                ("out of budget", GpuFault::OutOfBudget, false),
+                ("shader", GpuFault::Shader, true),
+                ("lost device", GpuFault::Lost, true),
+            ];
+            for (name, fault, closed) in faults {
+                let Some(gpu) = gpu() else { return };
+                let r = device_renderer(&gpu, VIEW);
+                let before = pool_in_use(&gpu);
+                gpu.set_fault(Some(fault));
+                let f = fresh(&r, &src, &st);
+                // The thumbnail and the histogram of the same photo meet the same fault.
+                let t = r.thumbnail_png(&src, &token).expect("thumbnail");
+                let h = r.histogram(&src, &token).expect("histogram");
+                gpu.set_fault(None);
+                assert_eq!(f.report.device, ComputeDevice::Cpu, "{name}");
+                assert!(f.rgba == want.rgba, "{name}: the CPU frame, bit for bit");
+                assert_eq!(t, thumb, "{name}: the CPU thumbnail");
+                assert_eq!(h, hist, "{name}: the CPU histogram");
+                assert!(
+                    f.report.notes.iter().any(|n| n.starts_with(
+                        "The graphics card could not render this frame, so the CPU did"
+                    )),
+                    "{name}: {:?}",
+                    f.report.notes
+                );
+                if !matches!(fault, GpuFault::Lost) {
+                    assert_eq!(pool_in_use(&gpu), before, "{name}: the ledger is back");
+                }
+                // The next request: a buffer that did not fit is a property of that request and the
+                // device is asked again; a shader that does not compile or a lost device closes the
+                // route, quietly, for the photo (and, for a shader, the process).
+                let jobs = gpu.counters().submissions;
+                let again = fresh(&r, &src, &st);
+                if closed {
+                    assert_eq!(again.report.device, ComputeDevice::Cpu, "{name}");
+                    assert_eq!(gpu.counters().submissions, jobs, "{name}: not asked again");
+                    assert!(again.rgba == want.rgba, "{name}");
+                } else {
+                    assert_eq!(again.report.device, ComputeDevice::Gpu, "{name}");
+                    assert!(no_gpu_note(&again), "{name}: {:?}", again.report.notes);
+                }
+            }
+        }
+
+        #[test]
+        fn a_strict_policy_fails_the_request_instead_of_falling_back() {
+            let src = picture(600, 400);
+            let st = cell(300.0, 200.0, 1.0);
+            for (name, fault) in [
+                ("out of budget", GpuFault::OutOfBudget),
+                ("shader", GpuFault::Shader),
+                ("lost device", GpuFault::Lost),
+            ] {
+                let Some(gpu) = gpu() else { return };
+                let strict = renderer_with(Some(Arc::clone(&gpu)), VIEW, true, Method::AdaptiveRatio);
+                gpu.set_fault(Some(fault));
+                let frame = strict.viewport_frame(
+                    &src,
+                    &st,
+                    &FrameOptions::default(),
+                    &CancelToken::new(),
+                );
+                let thumb = strict.thumbnail_png(&src, &CancelToken::new());
+                gpu.set_fault(None);
+                assert!(matches!(frame, Err(RenderError::Gpu(_))), "{name}: {frame:?}");
+                assert!(matches!(thumb, Err(RenderError::Gpu(_))), "{name}: {thumb:?}");
+            }
+        }
+
+        #[test]
+        fn a_cancelled_job_leaves_nothing_resident_and_the_next_request_works() {
+            let Some(gpu) = gpu() else { return };
+            let src = picture(600, 400);
+            let st = cell(300.0, 200.0, 1.0);
+            let r = device_renderer(&gpu, VIEW);
+            let before = pool_in_use(&gpu);
+            gpu.set_fault(Some(GpuFault::CancelAtJob(1)));
+            let result = r.viewport_frame(&src, &st, &FrameOptions::default(), &CancelToken::new());
+            gpu.set_fault(None);
+            assert!(matches!(result, Err(RenderError::Cancelled)), "{result:?}");
+            assert_eq!(pool_in_use(&gpu), before);
+            let again = fresh(&r, &src, &st);
+            assert_eq!(again.report.device, ComputeDevice::Gpu);
+            assert!(no_gpu_note(&again), "{:?}", again.report.notes);
+        }
     }
 }

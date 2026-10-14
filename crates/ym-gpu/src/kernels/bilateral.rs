@@ -109,8 +109,73 @@ pub enum SigmaInput<'a> {
     /// One sigma per pixel of the tile, row-major, `width * height` of the tile's rectangle (the
     /// tile of a full-resolution map the host already has).
     Plane(&'a [f32]),
-    /// The half-resolution plane, expanded on the device.
+    /// The half-resolution plane, expanded on the device (the cells the rectangle reads are cut here).
     Half(&'a SigmaHalf<'a>),
+    /// The cells of one rectangle, already cut ([`SigmaTile`]): what a job that moves to the device
+    /// thread carries.
+    Tile(&'a SigmaTile),
+}
+
+/// The cells of the half-resolution sigma plane (and their gains) that one rectangle of the frame
+/// reads, owned: the form of [`SigmaHalf`] that a device job carries across threads. A tile of `n`
+/// pixels holds about `n / 4` cells (twice that with the gains).
+#[derive(Clone, Debug)]
+pub struct SigmaTile {
+    rect: Rect,
+    /// First cell column and row of the cut, its width and height.
+    cells: [u32; 4],
+    /// Last cell column and row of the whole plane.
+    last: [u32; 2],
+    data: Vec<f32>,
+    gains: Option<Vec<f32>>,
+}
+
+impl SigmaTile {
+    /// Cuts the cells that the photosites of `rect` (frame coordinates) read.
+    ///
+    /// # Errors
+    ///
+    /// [`GpuError::InvalidInput`] for an empty rectangle or a half plane of the wrong length.
+    pub fn cut(half: &SigmaHalf<'_>, rect: Rect) -> Result<SigmaTile, GpuError> {
+        half.validate()?;
+        if rect.is_empty() {
+            return Err(GpuError::InvalidInput(
+                "the sigma cells of an empty rectangle".into(),
+            ));
+        }
+        let (last_x, last_y) = (half.width - 1, half.height - 1);
+        let cx0 = (rect.x / 2).min(last_x);
+        let cy0 = (rect.y / 2).min(last_y);
+        let cx1 = ((rect.x1() - 1) / 2).min(last_x);
+        let cy1 = ((rect.y1() - 1) / 2).min(last_y);
+        let (cw, ch) = (cx1 - cx0 + 1, cy1 - cy0 + 1);
+        let cut = |src: &[f32]| -> Vec<f32> {
+            let mut out = Vec::with_capacity(cw * ch);
+            for cy in cy0..=cy1 {
+                out.extend_from_slice(&src[cy * half.width + cx0..cy * half.width + cx1 + 1]);
+            }
+            out
+        };
+        Ok(SigmaTile {
+            rect,
+            cells: [cx0 as u32, cy0 as u32, cw as u32, ch as u32],
+            last: [last_x as u32, last_y as u32],
+            data: cut(half.data),
+            gains: half.gains.map(cut),
+        })
+    }
+
+    /// The rectangle of the frame the cut was made for.
+    #[must_use]
+    pub fn rect(&self) -> Rect {
+        self.rect
+    }
+
+    /// Bytes held.
+    #[must_use]
+    pub fn bytes(&self) -> usize {
+        4 * (self.data.len() + self.gains.as_ref().map_or(0, Vec::len))
+    }
 }
 
 /// The uniform block of `sigma_expand.wgsl`.
@@ -177,26 +242,10 @@ pub fn encode_sigma(
             (vec![0.0f32], vec![0.0f32])
         }
         SigmaInput::Half(half) => {
-            half.validate()?;
-            let (last_x, last_y) = (half.width - 1, half.height - 1);
-            let cx0 = (rect.x / 2).min(last_x);
-            let cy0 = (rect.y / 2).min(last_y);
-            let cx1 = ((rect.x1() - 1) / 2).min(last_x);
-            let cy1 = ((rect.y1() - 1) / 2).min(last_y);
-            let (cw, ch) = (cx1 - cx0 + 1, cy1 - cy0 + 1);
-            let cut = |src: &[f32]| -> Vec<f32> {
-                let mut out = Vec::with_capacity(cw * ch);
-                for cy in cy0..=cy1 {
-                    out.extend_from_slice(&src[cy * half.width + cx0..cy * half.width + cx1 + 1]);
-                }
-                out
-            };
-            u.cells = [cx0 as u32, cy0 as u32, cw as u32, ch as u32];
-            u.limit = [last_x as u32, last_y as u32, u32::from(half.gains.is_some()), 1];
-            let data = cut(half.data);
-            let gains = half.gains.map_or_else(|| vec![1.0f32], cut);
-            (data, gains)
+            let tile = SigmaTile::cut(half, rect)?;
+            return encode_sigma_tile(passes, &tile, rect);
         }
+        SigmaInput::Tile(tile) => return encode_sigma_tile(passes, tile, rect),
     };
     let out = GpuImage::alloc(ctx, "sigma tile", rect.w, rect.h, 1, place)?;
     u.dst = [out.stride as u32, 0, 0, 0];
@@ -209,6 +258,68 @@ pub fn encode_sigma(
         ctx,
         "sigma cell gains",
         bytemuck::cast_slice(&cell_gain),
+    )?);
+    let ub = passes.uniform("sigma uniform", &u)?;
+    passes.dispatch(
+        KernelId::SigmaExpand,
+        "sigma expand",
+        &[
+            (0, ub.binding()),
+            (1, data.binding()),
+            (2, gains.binding()),
+            (3, out.buf.binding()),
+        ],
+        (
+            (rect.w as u32).div_ceil(GROUP),
+            (rect.h as u32).div_ceil(GROUP),
+            1,
+        ),
+    )?;
+    Ok(out)
+}
+
+/// The expansion of a cut ([`SigmaTile`]) into the plane of `rect`.
+fn encode_sigma_tile(
+    passes: &mut PassList<'_>,
+    tile: &SigmaTile,
+    rect: Rect,
+) -> Result<GpuImage, GpuError> {
+    let ctx = passes.context();
+    if tile.rect != rect {
+        return Err(GpuError::InvalidInput(format!(
+            "the sigma cells were cut for {:?}, the plane is for {rect:?}",
+            tile.rect
+        )));
+    }
+    let out = GpuImage::alloc(
+        ctx,
+        "sigma tile",
+        rect.w,
+        rect.h,
+        1,
+        Placement::whole(rect.w, rect.h),
+    )?;
+    let u = SgU {
+        rect: [rect.x as u32, rect.y as u32, rect.w as u32, rect.h as u32],
+        cells: tile.cells,
+        limit: [
+            tile.last[0],
+            tile.last[1],
+            u32::from(tile.gains.is_some()),
+            1,
+        ],
+        dst: [out.stride as u32, 0, 0, 0],
+        scalar: [0.0; 4],
+    };
+    let data = passes.keep(storage_buffer(
+        ctx,
+        "sigma cells",
+        bytemuck::cast_slice(&tile.data),
+    )?);
+    let gains = passes.keep(storage_buffer(
+        ctx,
+        "sigma cell gains",
+        bytemuck::cast_slice(tile.gains.as_deref().unwrap_or(&[1.0])),
     )?);
     let ub = passes.uniform("sigma uniform", &u)?;
     passes.dispatch(

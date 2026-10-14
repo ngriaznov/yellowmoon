@@ -36,6 +36,8 @@
 //! Because geometry is applied *before* the pointwise colour chain, a crop or a rotation never
 //! re-runs a raw or colour group, and the colour chain only touches the pixels that are shown.
 
+mod device;
+
 use std::sync::Arc;
 
 use rayon::prelude::*;
@@ -44,10 +46,12 @@ use ym_color::display::{ColorChain, Frame, Layout, OutputTarget, View};
 use ym_gpu::cpu::output_sharpen::{OutputSharpen, scale_for_edges};
 use ym_gpu::cpu::resample::sample_catmull_rom;
 use ym_gpu::cpu::{Rect, RgbImage};
-use ym_gpu::kernels::PixelData;
-use ym_gpu::kernels::color::{ColorOutput, PreparedChain, Stop};
-use ym_gpu::queue::{CancelToken, JobSpec, Priority};
+use ym_gpu::device::GpuError;
+use ym_gpu::queue::{CancelToken, Priority};
 
+use self::device::{
+    Bounds, DeviceDisplay, DeviceInput, DisplayJob, PlainJob, TailWork, Upload, ViewRoute,
+};
 use super::color::{GradePlan, PhotoSource};
 use super::geometry::{Affine, Grid, oriented_to_sensor, sensor_to_oriented};
 use super::graph::{ComputeDevice, Job, RenderReport, Renderer};
@@ -167,53 +171,17 @@ pub struct FullImage {
 // Sampling
 // ---------------------------------------------------------------------------------------------
 
-/// Camera RGB sampled through a grid, with a mask of the pixels that fell outside the photo.
-pub(crate) struct Sampled {
-    pub img: RgbImage,
-    /// 1 where the pixel is outside the photo; `None` when every pixel is inside.
-    pub outside: Option<Vec<u8>>,
-}
-
-/// The sampling kernel the grid asks for.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Kernel {
-    /// Read the pixel the grid points at.
-    Copy,
-    /// Catmull-Rom bicubic.
-    Bicubic,
-    /// Bilinear averaged over `n x n` sub-samples per output pixel (shrinking).
-    Box(usize),
-}
-
-fn kernel_for(grid: &Grid) -> Kernel {
-    if grid.is_pixel_copy() {
-        return Kernel::Copy;
-    }
-    let (sx, sy) = grid.step_lengths();
-    let ratio = sx.max(sy);
-    if ratio <= 1.25 {
-        Kernel::Bicubic
-    } else {
-        Kernel::Box((ratio - 0.25).ceil().clamp(2.0, 4.0) as usize)
-    }
-}
-
-#[inline]
-fn bilinear(plane: &[f32], w: usize, h: usize, sx: f64, sy: f64) -> f32 {
-    let (ux, uy) = (
-        (sx - 0.5).clamp(0.0, w as f64 - 1.0),
-        (sy - 0.5).clamp(0.0, h as f64 - 1.0),
-    );
-    let (x0, y0) = (ux.floor() as usize, uy.floor() as usize);
-    let (x1, y1) = ((x0 + 1).min(w - 1), (y0 + 1).min(h - 1));
-    let (fx, fy) = ((ux - x0 as f64) as f32, (uy - y0 as f64) as f32);
-    let a = plane[y0 * w + x0] * (1.0 - fx) + plane[y0 * w + x1] * fx;
-    let b = plane[y1 * w + x0] * (1.0 - fx) + plane[y1 * w + x1] * fx;
-    a * (1.0 - fy) + b * fy
-}
+pub(crate) use ym_gpu::cpu::sampler::Sampled;
 
 /// Samples the `w x h` output pixels at offset `off` of `grid` from `src`, an image whose pixel
-/// `(0, 0)` is buffer pixel `origin`.
+/// `(0, 0)` is buffer pixel `origin`: camera RGB through the geometry, with a mask of the pixels
+/// that fell outside the photo.
+///
+/// The arithmetic is `ym-gpu`'s CPU port of the device sampler ([`ym_gpu::cpu::sampler`], the
+/// reference of the kernel and the one implementation since G-05): a [`Grid`] only hands it the
+/// numbers of its position chain ([`Grid::sampler_grid`]). The port is a verbatim move of what this
+/// function was, and `tests::the_sampler_of_ym_gpu_is_the_function_this_was` keeps the old code and
+/// requires the same bits.
 pub(crate) fn sample_to_camera(
     src: &RgbImage,
     origin: (usize, usize),
@@ -222,158 +190,196 @@ pub(crate) fn sample_to_camera(
     w: usize,
     h: usize,
 ) -> Sampled {
-    let kernel = kernel_for(grid);
-    let mut img = RgbImage::new(w, h);
-    let mut outside = vec![0u8; w * h];
-    let n = w * h;
-    let (rp, rest) = img.data.split_at_mut(n);
-    let (gp, bp) = rest.split_at_mut(n);
-    let (sw, sh) = (src.width, src.height);
-    let planes = [src.plane(0), src.plane(1), src.plane(2)];
-    let (ox, oy) = (origin.0 as f64, origin.1 as f64);
-    (
-        rp.par_chunks_mut(w.max(1)),
-        gp.par_chunks_mut(w.max(1)),
-        bp.par_chunks_mut(w.max(1)),
-        outside.par_chunks_mut(w.max(1)),
-    )
-        .into_par_iter()
-        .enumerate()
-        .for_each(|(y, (r, g, b, out))| {
-            let rows = [r, g, b];
-            for x in 0..w {
-                let (gx, gy) = (off.0 + x, off.1 + y);
-                match kernel {
-                    Kernel::Copy | Kernel::Bicubic => {
-                        let Some((sx, sy)) = grid.source(gx, gy) else {
-                            out[x] = 1;
-                            continue;
-                        };
-                        let (px, py) = (sx - ox, sy - oy);
-                        for c in 0..3 {
-                            rows[c][x] = if kernel == Kernel::Copy {
-                                let ix = (px.floor() as isize).clamp(0, sw as isize - 1) as usize;
-                                let iy = (py.floor() as isize).clamp(0, sh as isize - 1) as usize;
-                                planes[c][iy * sw + ix]
-                            } else {
-                                sample_catmull_rom(planes[c], sw, sh, px, py)
-                            };
-                        }
-                    }
-                    Kernel::Box(taps) => {
-                        let mut acc = [0.0f32; 3];
-                        let mut count = 0u32;
-                        for j in 0..taps {
-                            for i in 0..taps {
-                                let (fx, fy) = (
-                                    gx as f64 + (i as f64 + 0.5) / taps as f64,
-                                    gy as f64 + (j as f64 + 0.5) / taps as f64,
-                                );
-                                if let Some((sx, sy)) = grid.source_at(fx, fy) {
-                                    for c in 0..3 {
-                                        acc[c] += bilinear(planes[c], sw, sh, sx - ox, sy - oy);
-                                    }
-                                    count += 1;
-                                }
-                            }
-                        }
-                        if count == 0 {
-                            out[x] = 1;
-                        } else {
-                            for c in 0..3 {
-                                rows[c][x] = acc[c] / count as f32;
-                            }
-                        }
-                    }
-                }
-            }
-        });
-    let any_outside = outside.iter().any(|&v| v != 0);
-    Sampled {
-        img,
-        outside: any_outside.then_some(outside),
+    ym_gpu::cpu::sampler::sample_to_camera(src, origin, &grid.sampler_grid(), off, w, h)
+}
+
+/// Where the pixels of a view come from once the raw group is there.
+enum ViewSource {
+    /// Camera RGB: `image` is a window of the raw group whose pixel (0, 0) is buffer pixel `origin`,
+    /// sampled through `grid`.
+    Image {
+        image: Arc<RgbImage>,
+        origin: (usize, usize),
+        grid: Grid,
+    },
+    /// Nothing of the photo is in view.
+    Empty,
+}
+
+/// A view ready to be sampled: the raw group's pixels and the geometry that maps the view onto them
+/// (steps 1 and 2 of the module documentation). Sampling itself is the next step, on the CPU
+/// ([`PreparedView::sample_host`]) or on the device (`frame::device`).
+pub(crate) struct PreparedView {
+    source: ViewSource,
+    /// The reduction of the raw group the pixels come from.
+    pub scale: usize,
+    /// False when the view was made from a coarser image than its zoom asks for.
+    pub sharp: bool,
+    width: usize,
+    height: usize,
+}
+
+impl PreparedView {
+    /// Samples the view on the CPU ([`sample_to_camera`]); the time goes to `sample_ms`.
+    fn sample_host(&self, job: &mut Job<'_>) -> Arc<Sampled> {
+        let t = std::time::Instant::now();
+        let (w, h) = (self.width, self.height);
+        let sampled = match &self.source {
+            ViewSource::Image {
+                image,
+                origin,
+                grid,
+            } => sample_to_camera(image, *origin, grid, (0, 0), w, h),
+            ViewSource::Empty => Sampled {
+                img: RgbImage::new(w, h),
+                outside: Some(vec![1; w * h]),
+            },
+        };
+        job.timings.sample_ms += t.elapsed().as_secs_f64() * 1000.0;
+        Arc::new(sampled)
+    }
+
+    /// The part of the group the view reads, and where it starts in the buffer: the rectangle the
+    /// pixels sample from (widened by 3 px for the filters, as the 100 % path reads its region), or
+    /// the whole image when that is most of it. Sampling from the window gives the same pixels as
+    /// from the whole image (the filters never reach beyond it, and where the window is cut by the
+    /// image's own edge the clamp is the same).
+    fn source_window(&self) -> Option<(Arc<RgbImage>, (usize, usize))> {
+        let ViewSource::Image {
+            image,
+            origin,
+            grid,
+        } = &self.source
+        else {
+            return None;
+        };
+        let whole = Rect::new(origin.0, origin.1, image.width, image.height);
+        let Some((x0, y0, x1, y1)) = grid.source_bounds(0, 0, self.width, self.height, 3) else {
+            return Some((Arc::clone(image), *origin));
+        };
+        let want = Rect::new(x0, y0, x1 - x0, y1 - y0).intersect(&whole);
+        if want.is_empty() || want.area() * 2 > whole.area() {
+            return Some((Arc::clone(image), *origin));
+        }
+        Some((
+            Arc::new(image.extract(want.relative_to(&whole))),
+            (want.x, want.y),
+        ))
+    }
+
+    /// What a device job starts from for this view, and the bounding box of the pixels inside the
+    /// photo in the sampled picture. With the sampler on the device (`sampler`) the group's window
+    /// is uploaded as camera RGB; otherwise the CPU samples and the sampled pixels are uploaded.
+    fn device_input(&self, job: &mut Job<'_>, sampler: bool) -> (DeviceInput, Option<Bounds>) {
+        let (w, h) = (self.width, self.height);
+        if sampler
+            && let ViewSource::Image { grid, .. } = &self.source
+            && let Some((image, origin)) = self.source_window()
+        {
+            let grid = grid.sampler_grid();
+            let bounds = grid.inside_bounds((0, 0), w, h);
+            return (
+                DeviceInput::Camera {
+                    image,
+                    origin,
+                    grid,
+                    width: w,
+                    height: h,
+                },
+                bounds,
+            );
+        }
+        let sampled = self.sample_host(job);
+        let bounds = inside_bounds(sampled.outside.as_deref(), w, h);
+        (DeviceInput::Sampled(Upload::of(&sampled)), bounds)
+    }
+
+    /// Bytes of the camera RGB window an upload of this view would need (3 planes of f32), when the
+    /// view has pixels to sample.
+    fn source_window_bytes(&self) -> Option<u64> {
+        let (image, _) = self.source_window()?;
+        Some(12 * image.width.next_multiple_of(2) as u64 * image.height as u64)
     }
 }
 
 // ---------------------------------------------------------------------------------------------
-// The colour pass
+// The colour pass on the CPU
 // ---------------------------------------------------------------------------------------------
 
-/// Runs the colour chain over `sampled` and returns RGBA8 with the letterbox painted, and where it
-/// ran. The GPU is used for the final view when there is one; on any GPU error the CPU path runs
-/// instead and the note says why.
-pub(crate) fn color_pass(
+/// Paints the paper over the pixels the mask marks as outside the photo.
+fn paint_letterbox(rgba: &mut [u8], outside: Option<&[u8]>, background: [u8; 3]) {
+    let Some(outside) = outside else { return };
+    rgba.par_chunks_mut(4)
+        .zip(outside.par_iter())
+        .for_each(|(d, &o)| {
+            if o != 0 {
+                d[0] = background[0];
+                d[1] = background[1];
+                d[2] = background[2];
+                d[3] = 255;
+            }
+        });
+}
+
+/// The colour chain C1 to C13 over `sampled` on the CPU reference path: RGBA8 with the letterbox
+/// painted (a frame that is not sharpened: amount 0, or the Before view).
+fn color_pass_cpu(
     job: &mut Job<'_>,
-    sampled: Sampled,
+    sampled: &Sampled,
     grade: &GradePlan,
     before: bool,
     background: [u8; 3],
-    priority: Priority,
-) -> Result<(Vec<u8>, ComputeDevice), RenderError> {
+) -> Result<Vec<u8>, RenderError> {
     job.check()?;
-    let started = std::time::Instant::now();
     let (w, h) = (sampled.img.width, sampled.img.height);
     let n = w * h;
+    let frame =
+        Frame::planar(w, h, &sampled.img.data).map_err(|e| RenderError::Color(e.to_string()))?;
+    let mut rgb = vec![0u8; 3 * n];
+    let view = if before { View::Before } else { View::Final };
+    grade
+        .chain
+        .render_u8(view, &frame, (0, 0), &mut rgb, job.options().threads)
+        .map_err(|e| RenderError::Color(e.to_string()))?;
     let mut rgba = vec![255u8; 4 * n];
-    let mut device = ComputeDevice::Cpu;
-    let mut done = false;
-    if let (Some(gpu), false) = (job.r.options().gpu.clone(), before) {
-        let chain = Arc::clone(&grade.chain);
-        let img = Arc::new(sampled.img.clone());
-        let id = u64::from(job.src.id.0);
-        let result = gpu.run(JobSpec::new(priority).owned_by(id), move |ctx, cancel| {
-            cancel.check()?;
-            let prepared = PreparedChain::new(ctx, &chain)?;
-            prepared.render(ctx, &img, (0, 0), ColorOutput::Rgba8 { dither: true })
+    rgba.par_chunks_mut(4)
+        .zip(rgb.par_chunks(3))
+        .for_each(|(d, s)| {
+            d[0] = s[0];
+            d[1] = s[1];
+            d[2] = s[2];
+            d[3] = 255;
         });
-        match result {
-            Ok(out) => {
-                if let ym_gpu::kernels::PixelData::Rgba8(bytes) = out.data
-                    && bytes.len() == 4 * n
-                {
-                    rgba = bytes;
-                    device = ComputeDevice::Gpu;
-                    done = true;
-                }
-            }
-            Err(e) => job.notes.push(format!(
-                "The graphics card could not render this frame, so the CPU did: {e}."
-            )),
-        }
-    }
-    if !done {
-        let frame = Frame::planar(w, h, &sampled.img.data)
-            .map_err(|e| RenderError::Color(e.to_string()))?;
-        let mut rgb = vec![0u8; 3 * n];
-        let view = if before { View::Before } else { View::Final };
-        grade
-            .chain
-            .render_u8(view, &frame, (0, 0), &mut rgb, job.r.options().threads)
-            .map_err(|e| RenderError::Color(e.to_string()))?;
-        rgba.par_chunks_mut(4)
-            .zip(rgb.par_chunks(3))
-            .for_each(|(d, s)| {
-                d[0] = s[0];
-                d[1] = s[1];
-                d[2] = s[2];
-                d[3] = 255;
-            });
-    }
-    job.runs.color_passes += 1;
-    job.timings.pass_ms += started.elapsed().as_secs_f64() * 1000.0;
+    paint_letterbox(&mut rgba, sampled.outside.as_deref(), background);
+    Ok(rgba)
+}
+
+/// The colour chain C1 to C12 over `sampled` on the CPU reference path: display-linear f32,
+/// interleaved, zero outside the photo, and the mask of the pixels outside.
+fn display_linear_cpu(
+    job: &mut Job<'_>,
+    sampled: &Sampled,
+    grade: &GradePlan,
+) -> Result<(Vec<f32>, Option<Vec<u8>>), RenderError> {
+    job.check()?;
+    let (w, h) = (sampled.img.width, sampled.img.height);
+    let frame =
+        Frame::planar(w, h, &sampled.img.data).map_err(|e| RenderError::Color(e.to_string()))?;
+    let mut rgb = vec![0.0f32; 3 * w * h];
+    grade
+        .chain
+        .render_display_linear_f32(&frame, Layout::Interleaved, &mut rgb, job.options().threads)
+        .map_err(|e| RenderError::Color(e.to_string()))?;
     if let Some(outside) = &sampled.outside {
-        rgba.par_chunks_mut(4)
+        rgb.par_chunks_mut(3)
             .zip(outside.par_iter())
             .for_each(|(d, &o)| {
                 if o != 0 {
-                    d[0] = background[0];
-                    d[1] = background[1];
-                    d[2] = background[2];
-                    d[3] = 255;
+                    d.fill(0.0);
                 }
             });
     }
-    Ok((rgba, device))
+    Ok((rgb, sampled.outside.clone()))
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -495,20 +501,31 @@ struct FrameGeometry {
     origin: Option<(usize, usize)>,
 }
 
-/// A view before output sharpening: display-linear f32 (C1 to C12), interleaved, over the frame the
-/// stage reads ([`ViewSharpening::frame_geometry`]: the view grown by the stage's receptive field,
-/// or the 100 % picture under a magnified view). Cached per photo, so that a change of the amount
-/// sharpens the same pixels again and nothing else runs.
-#[derive(Debug)]
+/// The pixels of a [`DisplayFrame`]: on the host, or resident on the device.
+pub(crate) enum DisplayData {
+    /// Display-linear f32, interleaved, zero outside the photo, and the mask of the pixels outside
+    /// (`None` when every pixel is inside).
+    Host {
+        rgb: Vec<f32>,
+        outside: Option<Vec<u8>>,
+    },
+    /// Four f32 planes on the device (`frame::device`): the tail of the view runs on them where they
+    /// are.
+    Device(Arc<DeviceDisplay>),
+}
+
+/// A view before output sharpening: display-linear f32 (C1 to C12) over the frame the stage reads
+/// ([`ViewSharpening::frame_geometry`]: the view grown by the stage's receptive field, or the
+/// 100 % picture under a magnified view). Cached per photo, so that a change of the amount
+/// sharpens the same pixels again and nothing else runs. On the device the frame stays on the
+/// device ([`DisplayData::Device`]) and a move of the slider runs the tail there.
 pub(crate) struct DisplayFrame {
     /// Width of the frame.
     pub width: usize,
     /// Height of the frame.
     pub height: usize,
-    /// `3 * width * height` samples; pixels outside the photo are zero.
-    pub rgb: Vec<f32>,
-    /// 1 where the pixel is outside the photo; `None` when every pixel is inside.
-    pub outside: Option<Vec<u8>>,
+    /// The pixels.
+    pub data: DisplayData,
     /// The reduction of the raw group the pixels came from.
     pub scale: usize,
     /// False when the view was made from a coarser image than its zoom asks for.
@@ -517,103 +534,49 @@ pub(crate) struct DisplayFrame {
     pub device: ComputeDevice,
 }
 
+/// The host pixels of a [`DisplayFrame`], borrowed.
+struct HostDisplay<'a> {
+    width: usize,
+    height: usize,
+    /// `3 * width * height` samples, interleaved.
+    rgb: &'a [f32],
+    outside: Option<&'a [u8]>,
+}
+
 impl DisplayFrame {
-    /// Bytes the frame holds.
+    /// Bytes the frame holds (on the host, or on the device: either way memory the cache keeps
+    /// alive, and the pool's ledger counts the device's).
     pub(crate) fn bytes(&self) -> usize {
-        self.rgb.len() * 4 + self.outside.as_ref().map_or(0, Vec::len)
-    }
-}
-
-/// What [`display_linear_pass`] made.
-struct DisplayPass {
-    /// Display-linear f32, interleaved, zero outside the photo.
-    rgb: Vec<f32>,
-    /// 1 where the pixel is outside the photo; `None` when every pixel is inside.
-    outside: Option<Vec<u8>>,
-    /// Where the colour chain ran.
-    device: ComputeDevice,
-}
-
-/// Runs the colour chain to C12 over `sampled`: display-linear f32, interleaved, zero outside the
-/// photo. The GPU does it when there is one (on any GPU error the CPU path runs and the report's
-/// notes say why).
-fn display_linear_pass(
-    job: &mut Job<'_>,
-    sampled: Sampled,
-    grade: &GradePlan,
-    priority: Priority,
-) -> Result<DisplayPass, RenderError> {
-    job.check()?;
-    let started = std::time::Instant::now();
-    let (w, h) = (sampled.img.width, sampled.img.height);
-    let n = w * h;
-    let mut rgb: Option<Vec<f32>> = None;
-    let mut device = ComputeDevice::Cpu;
-    if let Some(gpu) = job.r.options().gpu.clone() {
-        let chain = Arc::clone(&grade.chain);
-        let img = Arc::new(sampled.img.clone());
-        let id = u64::from(job.src.id.0);
-        let result = gpu.run(JobSpec::new(priority).owned_by(id), move |ctx, cancel| {
-            cancel.check()?;
-            let prepared = PreparedChain::new(ctx, &chain)?;
-            prepared.render(ctx, &img, (0, 0), ColorOutput::Stage(Stop::C12))
-        });
-        match result {
-            Ok(out) => {
-                if let PixelData::F32Planar(planar) = out.data
-                    && planar.len() == 3 * n
-                {
-                    let mut inter = vec![0.0f32; 3 * n];
-                    let (r, rest) = planar.split_at(n);
-                    let (g, b) = rest.split_at(n);
-                    inter.par_chunks_mut(3).enumerate().for_each(|(i, d)| {
-                        d[0] = r[i];
-                        d[1] = g[i];
-                        d[2] = b[i];
-                    });
-                    rgb = Some(inter);
-                    device = ComputeDevice::Gpu;
-                }
-            }
-            Err(e) => job.notes.push(format!(
-                "The graphics card could not render this frame, so the CPU did: {e}."
-            )),
+        match &self.data {
+            DisplayData::Host { rgb, outside } => rgb.len() * 4 + outside.as_ref().map_or(0, Vec::len),
+            DisplayData::Device(d) => d.bytes(),
         }
     }
-    let mut rgb = match rgb {
-        Some(v) => v,
-        None => {
-            let frame = Frame::planar(w, h, &sampled.img.data)
-                .map_err(|e| RenderError::Color(e.to_string()))?;
-            let mut out = vec![0.0f32; 3 * n];
-            grade
-                .chain
-                .render_display_linear_f32(
-                    &frame,
-                    Layout::Interleaved,
-                    &mut out,
-                    job.r.options().threads,
-                )
-                .map_err(|e| RenderError::Color(e.to_string()))?;
-            out
+
+    /// The frame's host pixels, `None` for a resident one.
+    fn host(&self) -> Option<HostDisplay<'_>> {
+        match &self.data {
+            DisplayData::Host { rgb, outside } => Some(HostDisplay {
+                width: self.width,
+                height: self.height,
+                rgb,
+                outside: outside.as_deref(),
+            }),
+            DisplayData::Device(_) => None,
         }
-    };
-    if let Some(outside) = &sampled.outside {
-        rgb.par_chunks_mut(3)
-            .zip(outside.par_iter())
-            .for_each(|(d, &o)| {
-                if o != 0 {
-                    d.fill(0.0);
-                }
-            });
     }
-    job.runs.color_passes += 1;
-    job.timings.pass_ms += started.elapsed().as_secs_f64() * 1000.0;
-    Ok(DisplayPass {
-        rgb,
-        outside: sampled.outside,
-        device,
-    })
+
+    /// Whether a request that wants its tail `on_device` (on the device `gpu`) can use this frame as
+    /// it is: a resident frame only for the device it lives on and a tail that runs there, a host
+    /// frame only for a tail on the CPU (the other pairs would read the frame back or upload it, and
+    /// a frame made again on the right side costs about the same as the colour pass it replaces).
+    fn usable(&self, gpu: Option<usize>) -> bool {
+        match (&self.data, gpu) {
+            (DisplayData::Device(d), Some(id)) => d.gpu == id,
+            (DisplayData::Host { .. }, None) => true,
+            _ => false,
+        }
+    }
 }
 
 /// The smallest rectangle `(x0, y0, x1, y1)` (exclusive ends) that holds every pixel inside the
@@ -652,27 +615,50 @@ struct Sharpened {
     rgb: Vec<f32>,
 }
 
-/// Runs the stage on the photo's pixels of `display`; `None` when no pixel is inside the photo.
+/// Core rows of one strip of the CPU stage (`sharpen_photo`): few enough that a cancel is noticed
+/// within a fraction of a second (the stage costs 220 to 450 ms per megapixel on four shared cores,
+/// `docs/algorithms/04` section 9), many enough that the receptive field read above and below
+/// (17 to 21 rows) stays a small part of the work.
+const CPU_SHARPEN_STRIP_ROWS: usize = 256;
+
+/// Runs the stage on the photo's pixels of `display` on the CPU, in strips of rows with the stage's
+/// own receptive field of context above and below (the tiling contract of
+/// `docs/algorithms/04` section 5.2: the whole-frame result bit for bit, as in the export's
+/// `sharpen_output`), calling `check` (the request's cancel check) before every strip, so that a
+/// frame that is no longer wanted stops within one strip instead of after seconds. `None` when no
+/// pixel is inside the photo.
 fn sharpen_photo(
-    display: &DisplayFrame,
+    check: &dyn Fn() -> Result<(), RenderError>,
+    display: &HostDisplay<'_>,
     sharpening: &ViewSharpening,
 ) -> Result<Option<Sharpened>, RenderError> {
-    let Some((x0, y0, x1, y1)) =
-        inside_bounds(display.outside.as_deref(), display.width, display.height)
+    let Some((x0, y0, x1, y1)) = inside_bounds(display.outside, display.width, display.height)
     else {
         return Ok(None);
     };
     let (w, h) = (x1 - x0, y1 - y0);
-    let ew = display.width;
-    let mut rgb = vec![0.0f32; 3 * w * h];
-    rgb.par_chunks_mut(3 * w).enumerate().for_each(|(y, row)| {
-        let at = ((y0 + y) * ew + x0) * 3;
-        row.copy_from_slice(&display.rgb[at..at + 3 * w]);
-    });
-    sharpening
-        .stage
-        .apply_interleaved_in_place(w, h, &mut rgb, sharpening.scale)
-        .map_err(|e| RenderError::Image(format!("This photo can't be rendered: {e}.")))?;
+    let row = 3 * w;
+    let halo = sharpening.halo;
+    let mut rgb = vec![0.0f32; row * h];
+    let mut strip: Vec<f32> = Vec::new();
+    let mut start = 0;
+    while start < h {
+        check()?;
+        let end = (start + CPU_SHARPEN_STRIP_ROWS).min(h);
+        let (top, bottom) = (start.saturating_sub(halo), (end + halo).min(h));
+        strip.clear();
+        for y in top..bottom {
+            let at = ((y0 + y) * display.width + x0) * 3;
+            strip.extend_from_slice(&display.rgb[at..at + row]);
+        }
+        sharpening
+            .stage
+            .apply_interleaved_in_place(w, bottom - top, &mut strip, sharpening.scale)
+            .map_err(|e| RenderError::Image(format!("This photo can't be rendered: {e}.")))?;
+        rgb[start * row..end * row].copy_from_slice(&strip[(start - top) * row..(end - top) * row]);
+        start = end;
+    }
+    check()?;
     Ok(Some(Sharpened { x0, y0, w, h, rgb }))
 }
 
@@ -713,7 +699,7 @@ fn encode_view(
 /// painted.
 fn sharpen_and_encode(
     job: &mut Job<'_>,
-    display: &DisplayFrame,
+    display: &HostDisplay<'_>,
     sharpening: &ViewSharpening,
     grade: &GradePlan,
     (w, h): (usize, usize),
@@ -735,7 +721,7 @@ fn sharpen_and_encode(
             let at = ((y + halo) * ew + halo) * 3;
             row.copy_from_slice(&display.rgb[at..at + 3 * w]);
         });
-    if let Some(s) = sharpen_photo(display, sharpening)? {
+    if let Some(s) = sharpen_photo(&|| job.check(), display, sharpening)? {
         // Put the sharpened pixels back where they fall inside the view.
         let (vx0, vx1) = (s.x0.max(halo), (s.x0 + s.w).min(halo + w));
         if vx0 < vx1 {
@@ -753,7 +739,7 @@ fn sharpen_and_encode(
                 });
         }
     }
-    let letterbox = display.outside.as_ref().map(|outside| {
+    let letterbox = display.outside.map(|outside| {
         let mut mask = vec![0u8; w * h];
         mask.par_chunks_mut(w.max(1))
             .enumerate()
@@ -772,7 +758,7 @@ fn sharpen_and_encode(
 /// the final image, or on pixels of it that are outside the straightened photo, are the paper.
 fn magnify_and_encode(
     job: &mut Job<'_>,
-    display: &DisplayFrame,
+    display: &HostDisplay<'_>,
     origin: (usize, usize),
     sharpening: &ViewSharpening,
     grade: &GradePlan,
@@ -785,8 +771,8 @@ fn magnify_and_encode(
     let n = nw * nh;
     let (w, h) = (spec.out_w, spec.out_h);
     // The sharpened 100 % picture, as three planes (what the filter reads).
-    let mut native = display.rgb.clone();
-    if let Some(s) = sharpen_photo(display, sharpening)? {
+    let mut native = display.rgb.to_vec();
+    if let Some(s) = sharpen_photo(&|| job.check(), display, sharpening)? {
         for y in 0..s.h {
             let dst = ((s.y0 + y) * nw + s.x0) * 3;
             native[dst..dst + 3 * s.w].copy_from_slice(&s.rgb[y * s.w * 3..(y + 1) * s.w * 3]);
@@ -810,16 +796,20 @@ fn magnify_and_encode(
     let mut view = vec![0.0f32; 3 * w * h];
     let mut letterbox = vec![0u8; w * h];
     let (ox, oy) = (origin.0 as f64, origin.1 as f64);
+    let token = job.cancel.clone();
     view.par_chunks_mut(3 * w.max(1))
         .zip(letterbox.par_chunks_mut(w.max(1)))
         .enumerate()
         .for_each(|(y, (row, mask))| {
+            if token.is_cancelled() {
+                return;
+            }
             for x in 0..w {
                 let (fx, fy) = spec.view_to_final.apply(x as f64 + 0.5, y as f64 + 0.5);
                 let inside = fx >= 0.0 && fy >= 0.0 && fx < fw as f64 && fy < fh as f64;
                 let (px, py) = (fx - ox, fy - oy);
                 let empty = !inside
-                    || display.outside.as_ref().is_some_and(|o| {
+                    || display.outside.is_some_and(|o| {
                         let (ix, iy) = (
                             (px.max(0.0) as usize).min(nw - 1),
                             (py.max(0.0) as usize).min(nh - 1),
@@ -836,22 +826,250 @@ fn magnify_and_encode(
                 }
             }
         });
+    job.check()?;
     let rgba = encode_view(job, &view, (w, h), Some(&letterbox), grade, spec.background)?;
     job.runs.output_passes += 1;
     job.timings.output_ms += started.elapsed().as_secs_f64() * 1000.0;
     Ok(rgba)
 }
 
+// ---------------------------------------------------------------------------------------------
+// The passes of a view
+// ---------------------------------------------------------------------------------------------
+
+/// A finished frame and where it came from.
+struct Done {
+    rgba: Vec<u8>,
+    /// Where the colour chain ran.
+    device: ComputeDevice,
+    /// The reduction of the raw group.
+    scale: usize,
+    /// False when the frame was made from a coarser image than its zoom asks for.
+    sharp: bool,
+}
+
+/// What a pass of a view came to.
+enum Flow {
+    /// The frame.
+    Done(Done),
+    /// A device error ended the pass (it is noted, and the photo's flags are set,
+    /// `Job::view_gpu_failed`): make the whole frame again on the CPU, never a frame of both.
+    Cpu,
+}
+
+/// Answers the result of a device job: its value; the render's own cancellation; or `None` after a
+/// device error, which the request answers on the CPU (a strict policy fails the request instead).
+fn attempt<T>(job: &mut Job<'_>, result: Result<T, GpuError>) -> Result<Option<T>, RenderError> {
+    match result {
+        Ok(v) => Ok(Some(v)),
+        Err(GpuError::Cancelled) => Err(RenderError::Cancelled),
+        Err(e) => {
+            job.view_gpu_failed(&e)?;
+            Ok(None)
+        }
+    }
+}
+
+fn millis(since: std::time::Instant) -> f64 {
+    since.elapsed().as_secs_f64() * 1000.0
+}
+
+/// The sampled pixels of a view: on the device when the sampler is there (the colour pass is on the
+/// CPU, or the caller wants the pixels, as the histogram does), else on the CPU. A device error falls
+/// back to the CPU sampler for this call, with the usual note.
+fn sample_routed(
+    job: &mut Job<'_>,
+    prepared: &PreparedView,
+    route: Option<&ViewRoute>,
+) -> Result<Arc<Sampled>, RenderError> {
+    if let Some(r) = route.filter(|r| r.stages.sampler)
+        && matches!(prepared.source, ViewSource::Image { .. })
+    {
+        let (input, _) = prepared.device_input(job, true);
+        if input.fits(r) {
+            let t = std::time::Instant::now();
+            if let Some((w, h, planar)) = attempt(job, r.run(input, device::sample_job))? {
+                job.timings.sample_ms += millis(t);
+                return Ok(Arc::new(device::sampled_of(w, h, planar)));
+            }
+        }
+    }
+    Ok(prepared.sample_host(job))
+}
+
+/// A frame that is not sharpened (amount 0, or the Before view): the colour chain to C13 in one
+/// pass, on the device when it is there.
+fn plain_pass(
+    job: &mut Job<'_>,
+    spec: &ViewSpec,
+    grade: &GradePlan,
+    route: Option<&ViewRoute>,
+) -> Result<Flow, RenderError> {
+    job.check()?;
+    let prepared = prepare_view(job, spec)?;
+    job.check()?;
+    let (scale, sharp) = (prepared.scale, prepared.sharp);
+    let started = std::time::Instant::now();
+    if let Some(r) = route.filter(|r| r.stages.color) {
+        let (input, _) = prepared.device_input(job, r.stages.sampler);
+        // A frame that does not fit one binding is made on the CPU, quietly (a view cut into bands
+        // never gets here: `banded`).
+        if input.fits(r) {
+            let data = PlainJob {
+                input,
+                chain: Arc::clone(&grade.chain),
+                before: spec.before,
+                background: spec.background,
+                origin: spec.dither_origin,
+            };
+            let Some(rgba) = attempt(job, r.run(data, device::plain_job))? else {
+                return Ok(Flow::Cpu);
+            };
+            job.runs.color_passes += 1;
+            job.timings.pass_ms += millis(started);
+            return Ok(Flow::Done(Done {
+                rgba,
+                device: ComputeDevice::Gpu,
+                scale,
+                sharp,
+            }));
+        }
+    }
+    let sampled = sample_routed(job, &prepared, route)?;
+    let started = std::time::Instant::now();
+    let rgba = color_pass_cpu(job, &sampled, grade, spec.before, spec.background)?;
+    job.runs.color_passes += 1;
+    job.timings.pass_ms += millis(started);
+    Ok(Flow::Done(Done {
+        rgba,
+        device: ComputeDevice::Cpu,
+        scale,
+        sharp,
+    }))
+}
+
+/// What a display pass made: the display-linear frame (kept, when anything wants it again), the
+/// RGBA8 frame when the tail ran in the same job, and where things ran.
+struct Built {
+    display: Option<DisplayFrame>,
+    rgba: Option<Vec<u8>>,
+    scale: usize,
+    sharp: bool,
+    device: ComputeDevice,
+}
+
+/// The display-linear frame of `read` (the view grown by the stage's receptive field): the sampler
+/// (the CPU's, or the device's) and the colour chain C1 to C12, with the tail of the view in the same
+/// device job when `tail` says the device runs it. `keep` asks for the frame to stay resident.
+/// `None` after a device error (answered on the CPU by the caller).
+fn build_display(
+    job: &mut Job<'_>,
+    route: Option<&ViewRoute>,
+    prepared: &PreparedView,
+    read: &ViewSpec,
+    grade: &GradePlan,
+    tail: Option<&TailWork>,
+    keep: bool,
+) -> Result<Option<Built>, RenderError> {
+    let (scale, sharp) = (prepared.scale, prepared.sharp);
+    let started = std::time::Instant::now();
+    if let Some(r) = route.filter(|r| r.stages.color) {
+        let (input, bounds) = prepared.device_input(job, r.stages.sampler);
+        if input.fits(r) {
+            let data = DisplayJob {
+                input,
+                bounds,
+                chain: Arc::clone(&grade.chain),
+                tail: tail.cloned(),
+                keep: keep && tail.is_some(),
+                gpu: r.gpu_id(),
+            };
+            let Some(out) = attempt(job, r.run(data, device::display_job))? else {
+                return Ok(None);
+            };
+            job.runs.color_passes += 1;
+            if tail.is_some() {
+                job.runs.output_passes += 1;
+            }
+            // One job made the frame, and the tail when it was there: its time is the pass's.
+            job.timings.pass_ms += millis(started);
+            let frame = |data| DisplayFrame {
+                width: read.out_w,
+                height: read.out_h,
+                data,
+                scale,
+                sharp,
+                device: ComputeDevice::Gpu,
+            };
+            let display = if let Some(resident) = out.resident {
+                Some(frame(DisplayData::Device(Arc::new(resident))))
+            } else {
+                out.planar.map(|(planes, planar)| {
+                    let (rgb, outside) =
+                        device::interleave_display(read.out_w, read.out_h, planes, &planar);
+                    frame(DisplayData::Host { rgb, outside })
+                })
+            };
+            return Ok(Some(Built {
+                display,
+                rgba: out.rgba,
+                scale,
+                sharp,
+                device: ComputeDevice::Gpu,
+            }));
+        }
+    }
+    let sampled = sample_routed(job, prepared, route)?;
+    let started = std::time::Instant::now();
+    let (rgb, outside) = display_linear_cpu(job, &sampled, grade)?;
+    job.runs.color_passes += 1;
+    job.timings.pass_ms += millis(started);
+    Ok(Some(Built {
+        display: Some(DisplayFrame {
+            width: read.out_w,
+            height: read.out_h,
+            data: DisplayData::Host { rgb, outside },
+            scale,
+            sharp,
+            device: ComputeDevice::Cpu,
+        }),
+        rgba: None,
+        scale,
+        sharp,
+        device: ComputeDevice::Cpu,
+    }))
+}
+
+/// The tail of a view as the device runs it: the stage's inputs and the encode's.
+fn tail_work(
+    grade: &GradePlan,
+    sharpening: &ViewSharpening,
+    spec: &ViewSpec,
+) -> TailWork {
+    TailWork {
+        sharpen: sharpening.stage.clone(),
+        scale: sharpening.scale,
+        halo: sharpening.halo,
+        view: (spec.out_w, spec.out_h),
+        space: grade.chain.space(),
+        dither: grade.chain.dither(),
+        background: spec.background,
+        origin: spec.dither_origin,
+    }
+}
+
 /// The road of a view with output sharpening (see the module documentation): the display-linear
 /// frame the stage reads (from the display cache when `spec.cache`, else made), then the stage and
-/// C13. Returns the RGBA8 frame, where the colour chain ran, the raw scale and whether the frame is
-/// sharp.
+/// C13. On the device that is one job when the frame is made (sampler, colour pass, stage, C13, one
+/// readback) and one small job when it is cached (stage and C13), so that a move of the Output slider
+/// runs no sampler and no colour pass.
 fn sharpened_pass(
     job: &mut Job<'_>,
     spec: &ViewSpec,
     grade: &GradePlan,
     sharpening: &ViewSharpening,
-) -> Result<(Vec<u8>, ComputeDevice, usize, bool), RenderError> {
+    route: Option<&ViewRoute>,
+) -> Result<Flow, RenderError> {
     let image = job.final_size()?;
     let Some(geometry) =
         sharpening.frame_geometry(&spec.view_to_final, (spec.out_w, spec.out_h), image)
@@ -860,7 +1078,12 @@ fn sharpened_pass(
         let mut rgba = vec![255u8; 4 * spec.out_w * spec.out_h];
         rgba.par_chunks_mut(4)
             .for_each(|d| d[..3].copy_from_slice(&spec.background));
-        return Ok((rgba, ComputeDevice::Cpu, 1, true));
+        return Ok(Flow::Done(Done {
+            rgba,
+            device: ComputeDevice::Cpu,
+            scale: 1,
+            sharp: true,
+        }));
     };
     let read = ViewSpec {
         out_w: geometry.width,
@@ -872,57 +1095,212 @@ fn sharpened_pass(
         .cache
         .then(|| display_key(job, &read, grade, sharpening))
         .transpose()?;
+    // The tail runs on the device when the route has it and the frame is the view grown by the halo
+    // (a magnified view keeps the host road: the stage runs on the 100 % picture and the sharpened
+    // picture is magnified on the CPU).
+    let tail = route
+        .filter(|r| r.stages.tail && geometry.origin.is_none())
+        .map(|_| tail_work(grade, sharpening, spec));
+    let tail_gpu = tail.as_ref().and(route).map(ViewRoute::gpu_id);
     let cached = key
         .as_ref()
         .and_then(|k| job.g.cached_display(k))
-        .filter(|d| {
-            // A frame made from a coarser image than asked for is not served to a request that wants
-            // the tiles (same rule as the finished frames).
-            !(spec.coarse_only && !d.sharp)
-        });
-    let display = match cached {
+        // A frame made from a coarser image than asked for is not served to a request that wants
+        // the tiles (same rule as the finished frames).
+        .filter(|d| !(spec.coarse_only && !d.sharp))
+        .filter(|d| d.usable(tail_gpu));
+    let (scale, sharp, device);
+    let mut rgba: Option<Vec<u8>> = None;
+    let display: Option<Arc<DisplayFrame>>;
+    match cached {
         Some(d) => {
             job.runs.display_hits += 1;
-            d
+            (scale, sharp, device) = (d.scale, d.sharp, d.device);
+            display = Some(d);
         }
         None => {
-            let SampledView {
-                sampled,
-                scale,
-                sharp,
-            } = sample_view(job, &read)?;
-            let DisplayPass {
-                rgb,
-                outside,
-                device,
-            } = display_linear_pass(job, sampled, grade, spec.gpu_priority)?;
-            let d = Arc::new(DisplayFrame {
-                width: read.out_w,
-                height: read.out_h,
-                rgb,
-                outside,
-                scale,
-                sharp,
-                device,
+            let prepared = prepare_view(job, &read)?;
+            let Some(built) = build_display(
+                job,
+                route,
+                &prepared,
+                &read,
+                grade,
+                tail.as_ref(),
+                key.is_some(),
+            )?
+            else {
+                return Ok(Flow::Cpu);
+            };
+            (scale, sharp, device) = (built.scale, built.sharp, built.device);
+            rgba = built.rgba;
+            display = built.display.map(|d| {
+                let d = Arc::new(d);
+                if let Some(k) = key {
+                    job.g.store_display(k, Arc::clone(&d));
+                }
+                d
             });
-            if let Some(k) = key {
-                job.g.store_display(k, Arc::clone(&d));
-            }
-            d
         }
+    }
+    let rgba = match (rgba, display) {
+        (Some(rgba), _) => rgba,
+        // Made without the tail (or served from the cache): the tail now, where the frame is.
+        (None, Some(display)) => match &display.data {
+            DisplayData::Device(d) => {
+                let (Some(r), Some(tail)) = (route, tail) else {
+                    return Ok(Flow::Cpu);
+                };
+                let started = std::time::Instant::now();
+                let Some(rgba) = attempt(job, r.run((Arc::clone(d), tail), device::tail_job))?
+                else {
+                    return Ok(Flow::Cpu);
+                };
+                job.runs.output_passes += 1;
+                job.timings.output_ms += millis(started);
+                rgba
+            }
+            DisplayData::Host { .. } => {
+                let Some(host) = display.host() else {
+                    return Ok(Flow::Cpu);
+                };
+                match geometry.origin {
+                    None => sharpen_and_encode(
+                        job,
+                        &host,
+                        sharpening,
+                        grade,
+                        (spec.out_w, spec.out_h),
+                        spec.background,
+                    )?,
+                    Some(origin) => {
+                        magnify_and_encode(job, &host, origin, sharpening, grade, spec, image)?
+                    }
+                }
+            }
+        },
+        // A pass that made neither a frame nor a display has nothing to finish: the CPU road.
+        (None, None) => return Ok(Flow::Cpu),
     };
-    let rgba = match geometry.origin {
-        None => sharpen_and_encode(
-            job,
-            &display,
-            sharpening,
-            grade,
-            (spec.out_w, spec.out_h),
-            spec.background,
-        )?,
-        Some(origin) => magnify_and_encode(job, &display, origin, sharpening, grade, spec, image)?,
+    Ok(Flow::Done(Done {
+        rgba,
+        device,
+        scale,
+        sharp,
+    }))
+}
+
+/// The view, or the bands it is cut into, made by one pass each.
+fn render_pass(
+    job: &mut Job<'_>,
+    spec: &ViewSpec,
+    grade: &GradePlan,
+    sharpening: Option<&ViewSharpening>,
+    mut route: Option<ViewRoute>,
+) -> Result<Done, RenderError> {
+    loop {
+        let flow = match &route {
+            Some(r) => banded(job, spec, grade, sharpening, r)?,
+            None => whole(job, spec, grade, sharpening, None)?,
+        };
+        match flow {
+            Flow::Done(done) => return Ok(done),
+            // A device error ended the pass: the frame again, on the CPU only.
+            Flow::Cpu => route = None,
+        }
+    }
+}
+
+/// One pass over `spec` as a whole.
+fn whole(
+    job: &mut Job<'_>,
+    spec: &ViewSpec,
+    grade: &GradePlan,
+    sharpening: Option<&ViewSharpening>,
+    route: Option<&ViewRoute>,
+) -> Result<Flow, RenderError> {
+    match sharpening {
+        Some(sh) => sharpened_pass(job, spec, grade, sh, route),
+        None => plain_pass(job, spec, grade, route),
+    }
+}
+
+/// The view as one pass, or as one pass per band when the device cannot hold its frame in one
+/// binding ([`band_split`]): a band is a view of its own, the pixels are those of the whole view bit
+/// for bit (every device stage of a view is tile-exact, and the dither counts its texels from the
+/// band's place in the view), and a device error in any band makes the whole frame again on the CPU.
+fn banded(
+    job: &mut Job<'_>,
+    spec: &ViewSpec,
+    grade: &GradePlan,
+    sharpening: Option<&ViewSharpening>,
+    route: &ViewRoute,
+) -> Result<Flow, RenderError> {
+    let Some(rows) = band_split(job, spec, sharpening, route)? else {
+        return whole(job, spec, grade, sharpening, Some(route));
     };
-    Ok((rgba, display.device, display.scale, display.sharp))
+    let mut rgba = Vec::with_capacity(4 * spec.out_w * spec.out_h);
+    let (mut scale, mut sharp, mut device) = (1, true, ComputeDevice::Gpu);
+    for band in device::bands_of(spec, rows) {
+        job.check()?;
+        match whole(job, &band, grade, sharpening, Some(route))? {
+            Flow::Done(done) => {
+                rgba.extend_from_slice(&done.rgba);
+                scale = done.scale;
+                sharp &= done.sharp;
+                if done.device == ComputeDevice::Cpu {
+                    device = ComputeDevice::Cpu;
+                }
+            }
+            Flow::Cpu => return Ok(Flow::Cpu),
+        }
+    }
+    Ok(Flow::Done(Done {
+        rgba,
+        device,
+        scale,
+        sharp,
+    }))
+}
+
+/// How many rows per band a view is cut into, or `None` for one pass: only a view the device makes
+/// whole, from the sampler to the RGBA8 frame, is cut, and only when its frame (four planes of f32
+/// over the view grown by the stage's receptive field) or the camera RGB it reads does not fit one
+/// storage binding ([`device::band_rows`]). A magnified view reads the 100 % picture around it and
+/// is not cut.
+fn band_split(
+    job: &mut Job<'_>,
+    spec: &ViewSpec,
+    sharpening: Option<&ViewSharpening>,
+    route: &ViewRoute,
+) -> Result<Option<usize>, RenderError> {
+    let stages = route.stages;
+    if !(stages.sampler && stages.color && (sharpening.is_none() || stages.tail)) {
+        return Ok(None);
+    }
+    let step = spec.view_to_final.m[0][0];
+    if sharpening.is_some() && step.is_finite() && step < 1.0 - 1e-9 {
+        return Ok(None);
+    }
+    let halo = sharpening.map_or(0, |s| s.halo);
+    // The camera RGB of a reduced image is the biggest buffer of a view (the whole group at 1/2 is
+    // 150 MB for a 50 MP photo): the bands share it out. The tiles of a 100 % view are about the size
+    // of the frame, which the frame's own rule covers.
+    let plan = job.plan()?;
+    let mut min_bands = 1;
+    if plan.reduced || plan.effective_scale(spec.k) >= 2 {
+        let prepared = prepare_view(job, spec)?;
+        if let Some(bytes) = prepared.source_window_bytes() {
+            min_bands = (bytes as f64 * 1.05 / route.source_bytes as f64).ceil() as usize;
+        }
+    }
+    Ok(device::band_rows(
+        spec.out_w,
+        spec.out_h,
+        halo,
+        route.band_bytes,
+        min_bands.max(1),
+    ))
 }
 
 fn display_key(
@@ -979,22 +1357,30 @@ pub(crate) struct ViewSpec {
     pub coarse_only: bool,
     pub cache: bool,
     pub background: [u8; 3],
-    /// The queue priority of the colour pass when it runs on the GPU: a thumbnail's pass must not
-    /// jump ahead of the viewport's.
+    /// The queue priority of the device jobs of the view: a thumbnail's must not jump ahead of the
+    /// viewport's.
     pub gpu_priority: Priority,
+    /// The place of the view's pixel (0, 0) in the picture the dither texels are counted in: (0, 0)
+    /// for a whole view, `(0, row)` for a band of one ([`device::bands_of`]), so that a band
+    /// dithers as the same rows of the whole view do.
+    pub dither_origin: (usize, usize),
 }
 
 /// The sampled camera RGB of a view and how it was found.
 pub(crate) struct SampledView {
-    pub sampled: Sampled,
+    pub sampled: Arc<Sampled>,
     pub scale: usize,
-    pub sharp: bool,
 }
 
-/// Steps 1 to 3 of the module documentation.
-pub(crate) fn sample_view(job: &mut Job<'_>, spec: &ViewSpec) -> Result<SampledView, RenderError> {
+/// Steps 1 and 2 of the module documentation: the raw group's pixels (the reduced image, or the
+/// full-resolution tiles the view reads) and the geometry that maps the view onto them.
+pub(crate) fn prepare_view(
+    job: &mut Job<'_>,
+    spec: &ViewSpec,
+) -> Result<PreparedView, RenderError> {
     let plan = job.plan()?;
     let geom = job.geometry();
+    let (w, h) = (spec.out_w, spec.out_h);
     // A camera-processed file has no mosaic, so any scale works; the limit that keeps a reduced
     // image at least a few pixels across applies to both.
     let mut k = plan.effective_scale(spec.k);
@@ -1004,32 +1390,33 @@ pub(crate) fn sample_view(job: &mut Job<'_>, spec: &ViewSpec) -> Result<SampledV
         let grid = geom
             .at_full_resolution()
             .grid_from((plan.out_w, plan.out_h), spec.view_to_final);
-        if let Some((x0, y0, x1, y1)) = grid.source_bounds(0, 0, spec.out_w, spec.out_h, 3) {
+        if let Some((x0, y0, x1, y1)) = grid.source_bounds(0, 0, w, h, 3) {
             let rect = Rect::new(x0, y0, x1 - x0, y1 - y0);
             if spec.coarse_only && !job.tiles_ready(rect)? {
                 k = plan.effective_scale(2).max(2);
                 sharp = false;
             } else {
                 let region = job.region(rect, true)?;
-                let t = std::time::Instant::now();
-                let sampled =
-                    sample_to_camera(&region, (x0, y0), &grid, (0, 0), spec.out_w, spec.out_h);
-                job.timings.sample_ms += t.elapsed().as_secs_f64() * 1000.0;
-                return Ok(SampledView {
-                    sampled,
+                return Ok(PreparedView {
+                    source: ViewSource::Image {
+                        image: Arc::new(region),
+                        origin: (x0, y0),
+                        grid,
+                    },
                     scale: 1,
                     sharp,
+                    width: w,
+                    height: h,
                 });
             }
         } else {
             // Nothing of the photo is in view.
-            return Ok(SampledView {
-                sampled: Sampled {
-                    img: RgbImage::new(spec.out_w, spec.out_h),
-                    outside: Some(vec![1; spec.out_w * spec.out_h]),
-                },
+            return Ok(PreparedView {
+                source: ViewSource::Empty,
                 scale: 1,
                 sharp,
+                width: w,
+                height: h,
             });
         }
     }
@@ -1039,13 +1426,44 @@ pub(crate) fn sample_view(job: &mut Job<'_>, spec: &ViewSpec) -> Result<SampledV
         .view_to_final
         .then(&Affine::scale_translate(inv, inv, 0.0, 0.0));
     let grid = geom.grid_from((img.width, img.height), v2f);
-    let t = std::time::Instant::now();
-    let sampled = sample_to_camera(&img, (0, 0), &grid, (0, 0), spec.out_w, spec.out_h);
-    job.timings.sample_ms += t.elapsed().as_secs_f64() * 1000.0;
-    Ok(SampledView {
-        sampled,
+    Ok(PreparedView {
+        source: ViewSource::Image {
+            image: img,
+            origin: (0, 0),
+            grid,
+        },
         scale: k,
         sharp,
+        width: w,
+        height: h,
+    })
+}
+
+/// Steps 1 to 3 of the module documentation on the CPU: prepare the view and sample it.
+pub(crate) fn sample_view(job: &mut Job<'_>, spec: &ViewSpec) -> Result<SampledView, RenderError> {
+    let prepared = prepare_view(job, spec)?;
+    let sampled = prepared.sample_host(job);
+    Ok(SampledView {
+        sampled,
+        scale: prepared.scale,
+    })
+}
+
+/// [`sample_view`] on the device when the sampler is there (the histogram's sample: the pixels come
+/// back to the host, where the counting stays), else on the CPU. A device error samples on the CPU
+/// for this call, with the usual note.
+pub(crate) fn sample_view_routed(
+    job: &mut Job<'_>,
+    spec: &ViewSpec,
+) -> Result<SampledView, RenderError> {
+    let prepared = prepare_view(job, spec)?;
+    let route = job
+        .view_gpu()?
+        .map(|gpu| ViewRoute::new(job, gpu, spec.gpu_priority));
+    let sampled = sample_routed(job, &prepared, route.as_ref())?;
+    Ok(SampledView {
+        sampled,
+        scale: prepared.scale,
     })
 }
 
@@ -1067,27 +1485,17 @@ pub(crate) fn render_view(mut job: Job<'_>, spec: &ViewSpec) -> Result<RenderedF
         frame.report = job.finish(scale, device, spec.target);
         return Ok(frame);
     }
-    let (rgba, device, scale, sharp) = if let Some(sh) = &sharpening {
-        sharpened_pass(&mut job, spec, &grade, sh)?
-    } else {
-        let view = sample_view(&mut job, spec)?;
-        let (rgba, device) = color_pass(
-            &mut job,
-            view.sampled,
-            &grade,
-            spec.before,
-            spec.background,
-            spec.gpu_priority,
-        )?;
-        (rgba, device, view.scale, view.sharp)
-    };
+    let route = job
+        .view_gpu()?
+        .map(|gpu| ViewRoute::new(&job, gpu, spec.gpu_priority));
+    let done = render_pass(&mut job, spec, &grade, sharpening.as_ref(), route)?;
     let graph = Arc::clone(&job.g);
-    let report = job.finish(scale, device, spec.target);
+    let report = job.finish(done.scale, done.device, spec.target);
     let frame = RenderedFrame {
         width: spec.out_w,
         height: spec.out_h,
-        rgba,
-        sharp,
+        rgba: done.rgba,
+        sharp: done.sharp,
         report,
     };
     if let Some(key) = cache_key {
@@ -1182,6 +1590,7 @@ impl Renderer {
             cache: !options.no_cache,
             background: self.options().background,
             gpu_priority: Priority::Viewport,
+            dither_origin: (0, 0),
         };
         let mut frame = render_view(job, &spec)?;
         // The zoom belongs to the request, not to the pixels (a cached frame is served for the
@@ -1279,6 +1688,7 @@ impl Renderer {
             cache: false,
             background: self.options().background,
             gpu_priority: Priority::Viewport,
+            dither_origin: (0, 0),
         };
         let grade = job.grade(OutputTarget::Viewport, false)?;
         let view = sample_view(&mut job, &spec)?;
@@ -1663,6 +2073,117 @@ mod sharpening_tests {
         );
     }
 
+    /// A display-linear picture of `w x h` with edges and texture everywhere, and a border of paper
+    /// (the mask) `border` pixels wide on the left and right and `border` rows on the top and bottom.
+    fn picture_with_paper(w: usize, h: usize, border: usize) -> (Vec<f32>, Vec<u8>) {
+        let mut rgb = vec![0.0f32; 3 * w * h];
+        let mut mask = vec![0u8; w * h];
+        let mut state = 0x2545_f491_4f6c_dd1du64;
+        for y in 0..h {
+            for x in 0..w {
+                let i = y * w + x;
+                if x < border || y < border || x >= w - border || y >= h - border {
+                    mask[i] = 1;
+                    continue;
+                }
+                state = state
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                let noise = ((state >> 40) as f32) / 16_777_216.0;
+                let edge = if (x / 23 + y / 17) % 2 == 0 { 0.8 } else { 0.1 };
+                for c in 0..3 {
+                    rgb[3 * i + c] = edge * (0.6 + 0.2 * c as f32) + 0.05 * noise;
+                }
+            }
+        }
+        (rgb, mask)
+    }
+
+    fn sharpening_at(step: f64, image: (usize, usize)) -> ViewSharpening {
+        ViewSharpening::of_view(100.0, &to_final(step, 0.0, 0.0), image, false)
+            .expect("plan")
+            .expect("a stage")
+    }
+
+    #[test]
+    fn the_cpu_stage_in_strips_is_the_stage_on_the_whole_frame_bit_for_bit() {
+        // Frames shorter than a strip, as tall as one, a little taller, and three strips; two
+        // receptive fields (full size and shrunk); with paper round the photo, so that the box is
+        // not the frame.
+        for (w, h) in [(64usize, 5usize), (90, 255), (90, 256), (90, 300), (130, 700)] {
+            for (step, border) in [(1.0, 0usize), (3.0, 2)] {
+                let (rgb, mask) = picture_with_paper(w, h, border);
+                let outside = (border > 0).then_some(mask.as_slice());
+                let host = HostDisplay {
+                    width: w,
+                    height: h,
+                    rgb: &rgb,
+                    outside,
+                };
+                let sh = sharpening_at(step, (6000, 4000));
+                let strips = sharpen_photo(&|| Ok(()), &host, &sh)
+                    .expect("strips")
+                    .expect("a photo");
+                // The same stage over the box in one call.
+                let (x0, y0, x1, y1) = inside_bounds(outside, w, h).expect("a box");
+                let (bw, bh) = (x1 - x0, y1 - y0);
+                let mut whole = Vec::with_capacity(3 * bw * bh);
+                for y in y0..y1 {
+                    whole.extend_from_slice(&rgb[(y * w + x0) * 3..(y * w + x1) * 3]);
+                }
+                sh.stage
+                    .apply_interleaved_in_place(bw, bh, &mut whole, sh.scale)
+                    .expect("whole");
+                assert_eq!((strips.x0, strips.y0, strips.w, strips.h), (x0, y0, bw, bh));
+                assert!(
+                    strips.rgb == whole,
+                    "{w} x {h} at step {step}: strips differ from the whole frame"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_cpu_stage_looks_at_the_cancel_check_before_every_strip() {
+        let (w, h) = (80usize, 700usize);
+        let (rgb, _) = picture_with_paper(w, h, 0);
+        let host = HostDisplay {
+            width: w,
+            height: h,
+            rgb: &rgb,
+            outside: None,
+        };
+        let sh = sharpening_at(1.0, (6000, 4000));
+        let calls = std::cell::Cell::new(0usize);
+        // Never cancelled: one look per strip (700 rows in strips of 256: three) and one at the end.
+        let _ = sharpen_photo(
+            &|| {
+                calls.set(calls.get() + 1);
+                Ok(())
+            },
+            &host,
+            &sh,
+        )
+        .expect("strips");
+        assert_eq!(calls.get(), 700usize.div_ceil(CPU_SHARPEN_STRIP_ROWS) + 1);
+        // Cancelled at the second look: the stage stops there, no strip after it is cut.
+        calls.set(0);
+        let result = sharpen_photo(
+            &|| {
+                calls.set(calls.get() + 1);
+                if calls.get() == 2 {
+                    Err(RenderError::Cancelled)
+                } else {
+                    Ok(())
+                }
+            },
+            &host,
+            &sh,
+        );
+        assert!(matches!(result, Err(RenderError::Cancelled)));
+        assert_eq!(calls.get(), 2, "nothing is looked at, or computed, after the cancel");
+    }
+
     #[test]
     fn the_bounding_box_of_the_photo_ignores_the_paper() {
         // No mask: the whole frame.
@@ -1688,5 +2209,230 @@ mod sharpening_tests {
         assert_eq!(inside_bounds(Some(&tilted), 4, 4), Some((0, 0, 4, 4)));
         // Nothing of the photo in view.
         assert_eq!(inside_bounds(Some(&[1; 12]), 4, 3), None);
+    }
+}
+
+/// The sampler as it was before G-05 moved it into `ym-gpu` (`ym_gpu::cpu::sampler`), kept verbatim as
+/// the reference of the bit-equality test below.
+#[cfg(test)]
+mod reference_sampler {
+    use rayon::prelude::*;
+    use ym_gpu::cpu::RgbImage;
+    use ym_gpu::cpu::resample::sample_catmull_rom;
+    use ym_gpu::cpu::sampler::Sampled;
+
+    use crate::pipeline::geometry::Grid;
+
+/// The sampling kernel the grid asks for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Kernel {
+    /// Read the pixel the grid points at.
+    Copy,
+    /// Catmull-Rom bicubic.
+    Bicubic,
+    /// Bilinear averaged over `n x n` sub-samples per output pixel (shrinking).
+    Box(usize),
+}
+
+fn kernel_for(grid: &Grid) -> Kernel {
+    if grid.is_pixel_copy() {
+        return Kernel::Copy;
+    }
+    let (sx, sy) = grid.step_lengths();
+    let ratio = sx.max(sy);
+    if ratio <= 1.25 {
+        Kernel::Bicubic
+    } else {
+        Kernel::Box((ratio - 0.25).ceil().clamp(2.0, 4.0) as usize)
+    }
+}
+
+#[inline]
+fn bilinear(plane: &[f32], w: usize, h: usize, sx: f64, sy: f64) -> f32 {
+    let (ux, uy) = (
+        (sx - 0.5).clamp(0.0, w as f64 - 1.0),
+        (sy - 0.5).clamp(0.0, h as f64 - 1.0),
+    );
+    let (x0, y0) = (ux.floor() as usize, uy.floor() as usize);
+    let (x1, y1) = ((x0 + 1).min(w - 1), (y0 + 1).min(h - 1));
+    let (fx, fy) = ((ux - x0 as f64) as f32, (uy - y0 as f64) as f32);
+    let a = plane[y0 * w + x0] * (1.0 - fx) + plane[y0 * w + x1] * fx;
+    let b = plane[y1 * w + x0] * (1.0 - fx) + plane[y1 * w + x1] * fx;
+    a * (1.0 - fy) + b * fy
+}
+
+/// Samples the `w x h` output pixels at offset `off` of `grid` from `src`, an image whose pixel
+/// `(0, 0)` is buffer pixel `origin`.
+pub(super) fn reference_sample_to_camera(
+    src: &RgbImage,
+    origin: (usize, usize),
+    grid: &Grid,
+    off: (usize, usize),
+    w: usize,
+    h: usize,
+) -> Sampled {
+    let kernel = kernel_for(grid);
+    let mut img = RgbImage::new(w, h);
+    let mut outside = vec![0u8; w * h];
+    let n = w * h;
+    let (rp, rest) = img.data.split_at_mut(n);
+    let (gp, bp) = rest.split_at_mut(n);
+    let (sw, sh) = (src.width, src.height);
+    let planes = [src.plane(0), src.plane(1), src.plane(2)];
+    let (ox, oy) = (origin.0 as f64, origin.1 as f64);
+    (
+        rp.par_chunks_mut(w.max(1)),
+        gp.par_chunks_mut(w.max(1)),
+        bp.par_chunks_mut(w.max(1)),
+        outside.par_chunks_mut(w.max(1)),
+    )
+        .into_par_iter()
+        .enumerate()
+        .for_each(|(y, (r, g, b, out))| {
+            let rows = [r, g, b];
+            for x in 0..w {
+                let (gx, gy) = (off.0 + x, off.1 + y);
+                match kernel {
+                    Kernel::Copy | Kernel::Bicubic => {
+                        let Some((sx, sy)) = grid.source(gx, gy) else {
+                            out[x] = 1;
+                            continue;
+                        };
+                        let (px, py) = (sx - ox, sy - oy);
+                        for c in 0..3 {
+                            rows[c][x] = if kernel == Kernel::Copy {
+                                let ix = (px.floor() as isize).clamp(0, sw as isize - 1) as usize;
+                                let iy = (py.floor() as isize).clamp(0, sh as isize - 1) as usize;
+                                planes[c][iy * sw + ix]
+                            } else {
+                                sample_catmull_rom(planes[c], sw, sh, px, py)
+                            };
+                        }
+                    }
+                    Kernel::Box(taps) => {
+                        let mut acc = [0.0f32; 3];
+                        let mut count = 0u32;
+                        for j in 0..taps {
+                            for i in 0..taps {
+                                let (fx, fy) = (
+                                    gx as f64 + (i as f64 + 0.5) / taps as f64,
+                                    gy as f64 + (j as f64 + 0.5) / taps as f64,
+                                );
+                                if let Some((sx, sy)) = grid.source_at(fx, fy) {
+                                    for c in 0..3 {
+                                        acc[c] += bilinear(planes[c], sw, sh, sx - ox, sy - oy);
+                                    }
+                                    count += 1;
+                                }
+                            }
+                        }
+                        if count == 0 {
+                            out[x] = 1;
+                        } else {
+                            for c in 0..3 {
+                                rows[c][x] = acc[c] / count as f32;
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    let any_outside = outside.iter().any(|&v| v != 0);
+    Sampled {
+        img,
+        outside: any_outside.then_some(outside),
+    }
+}
+}
+
+#[cfg(test)]
+mod sampler_tests {
+    use super::reference_sampler::reference_sample_to_camera;
+    use super::*;
+    use crate::pipeline::geometry::Geometry;
+    use crate::settings::{Crop, CropAspect, DevelopSettings, NormRect, Orientation};
+
+    /// A picture with structure at every scale (so that every filter tap matters) and a different
+    /// value in every plane.
+    fn picture(w: usize, h: usize) -> RgbImage {
+        let mut img = RgbImage::new(w, h);
+        let mut state = 0x9e37_79b9_7f4a_7c15u64;
+        for y in 0..h {
+            for x in 0..w {
+                state = state
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                let noise = ((state >> 40) as f32) / 16_777_216.0;
+                let (fx, fy) = (x as f32 / w as f32, y as f32 / h as f32);
+                img.set_pixel(
+                    x,
+                    y,
+                    [
+                        fx * 0.7 + noise * 0.3,
+                        fy * 0.6 + noise * 0.4 + ((x / 7 + y / 5) % 2) as f32 * 0.25,
+                        (fx * fy).sqrt() + noise * 0.2,
+                    ],
+                );
+            }
+        }
+        img
+    }
+
+    #[test]
+    fn the_sampler_of_ym_gpu_is_the_function_this_was() {
+        // Every orientation and quarter turn, three straighten angles (0 is the exact grid: a copy;
+        // the others rotate), and output sizes that shrink (the box), magnify (Catmull-Rom) and
+        // match: both of the grid's kernels and the copy, over windows of the output with an
+        // offset, as the tiles of an export are.
+        let (bw, bh) = (96usize, 64usize);
+        let img = picture(bw, bh);
+        let mut cases = 0;
+        for exif in 1..=8u16 {
+            for turns in 0..4u8 {
+                for angle in [0.0, 4.0, -17.5] {
+                    let settings = DevelopSettings {
+                        orientation: match turns {
+                            0 => Orientation::Deg0,
+                            1 => Orientation::Deg90,
+                            2 => Orientation::Deg180,
+                            _ => Orientation::Deg270,
+                        },
+                        crop: Some(Crop {
+                            rect: NormRect {
+                                x: 0.04,
+                                y: 0.07,
+                                width: 0.9,
+                                height: 0.8,
+                            },
+                            angle_deg: angle,
+                            aspect: CropAspect::Free,
+                        }),
+                        ..DevelopSettings::default()
+                    };
+                    let g = Geometry::new(exif, &settings);
+                    let own = g.at_full_resolution().output_size(bw, bh);
+                    for out in [own, (own.0 / 3 + 1, own.1 / 3 + 1), (own.0 * 2, own.1 * 2)] {
+                        let grid = g.grid((bw, bh), out);
+                        let off = (out.0 / 5, out.1 / 7);
+                        let (w, h) = (out.0 - off.0, out.1 - off.1);
+                        let a = reference_sample_to_camera(&img, (0, 0), &grid, off, w, h);
+                        let b = sample_to_camera(&img, (0, 0), &grid, off, w, h);
+                        assert!(
+                            a.img.data == b.img.data && a.outside == b.outside,
+                            "exif {exif} turns {turns} angle {angle} out {out:?}"
+                        );
+                        cases += 1;
+                    }
+                }
+            }
+        }
+        assert_eq!(cases, 8 * 4 * 3 * 3);
+        // The pixel-exact grid of the 100 % view, sampling a window of the buffer.
+        let g = Geometry::camera_only(1).at_full_resolution();
+        let grid = g.grid((bw, bh), (bw, bh));
+        let window = img.extract(Rect::new(10, 6, 40, 30));
+        let a = reference_sample_to_camera(&window, (10, 6), &grid, (12, 9), 30, 20);
+        let b = sample_to_camera(&window, (10, 6), &grid, (12, 9), 30, 20);
+        assert!(a.img.data == b.img.data && a.outside == b.outside);
     }
 }

@@ -833,8 +833,6 @@ pub(crate) struct ViewGpu {
     pub gpu: Arc<Gpu>,
     /// Which view stages it runs: a non-empty subset of [`VIEW_STAGES`].
     pub stages: GpuStages,
-    /// A device error fails the request (`Require`) instead of falling back to the CPU.
-    pub strict: bool,
 }
 
 /// One request: the renderer, the photo's graph, the settings snapshot and the bookkeeping.
@@ -1374,18 +1372,16 @@ impl<'a> Job<'a> {
             ));
             return Ok(None);
         }
-        Ok(Some(ViewGpu {
-            gpu,
-            stages,
-            strict: self.opts.gpu_strict,
-        }))
+        Ok(Some(ViewGpu { gpu, stages }))
     }
 
     /// A view stage failed on the device with `error`. A shader that does not compile switches the
     /// view stages off for the process. A strict policy fails the request; any other policy notes
     /// why the CPU makes this frame, and ends the route for the photo (view caches may then hold
     /// frames of both devices, which differ within the tolerances of the kernels; viewing only,
-    /// `docs/gpu-plan.md` 4.9).
+    /// `docs/gpu-plan.md` 4.9). A buffer that does not fit (out of budget, too large) is a property
+    /// of the request and not of the photo: the CPU makes this frame, and the next one tries the
+    /// device again.
     ///
     /// # Errors
     ///
@@ -1402,7 +1398,12 @@ impl<'a> Job<'a> {
         if self.opts.gpu_strict {
             return Err(RenderError::Gpu(reason));
         }
-        self.g.view_gpu_failed.store(true, Ordering::SeqCst);
+        if !matches!(
+            error,
+            GpuError::OutOfBudget { .. } | GpuError::BufferTooLarge { .. }
+        ) {
+            self.g.view_gpu_failed.store(true, Ordering::SeqCst);
+        }
         self.note(&format!(
             "The graphics card could not render this frame, so the CPU did: {reason}."
         ));
