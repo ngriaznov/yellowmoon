@@ -16,10 +16,17 @@ use ym_looks::library::LookId;
 /// A smooth tone map from LogC3 code values to Rec.709 gamma 2.4 code values, with a small colour
 /// twist: a stand-in of our own for a look with ARRI's rendering baked in (no ARRI data).
 pub fn logc3_to_rec709_lut() -> Lut {
+    logc3_to_rec709_lut_with(0.55)
+}
+
+/// [`logc3_to_rec709_lut`] with the scene brightened by `gain` before the tone curve. At 0.55 mid grey is at 0.12 in
+/// display light and only the very brightest scene values reach white; at 2.2 the highlights of an ordinary
+/// photograph do, which is where a DNG of such a look is least like its picture.
+pub fn logc3_to_rec709_lut_with(gain: f64) -> Lut {
     // A filmic curve (Narkowicz's fit of a reference tone map), darkened to put mid grey at 0.12 in
     // display light, then gamma 2.4 as a Rec.709 display LUT has it.
     let tone = |x: f64| {
-        let x = (x * 0.55).max(0.0);
+        let x = (x * gain).max(0.0);
         ((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14)).clamp(0.0, 1.0)
     };
     let m = ym_color::gamut::matrices();
@@ -73,6 +80,12 @@ impl LookProvider for Looks {
             "user:rec709" => {
                 LookTransform::new(LookInput::LogC3ToRec709, None, Some(logc3_to_rec709_lut()))
             }
+            // The same look with the highlights reaching display white (`logc3_to_rec709_lut_with`).
+            "user:rec709bright" => LookTransform::new(
+                LookInput::LogC3ToRec709,
+                None,
+                Some(logc3_to_rec709_lut_with(2.2)),
+            ),
             _ => return Err(LookProblem("File missing or changed. Import again.".into())),
         }
         .expect("a look");

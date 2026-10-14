@@ -201,3 +201,115 @@ fn adobes_renderer_shows_a_look_with_its_own_display_rendering_close_to_the_apps
         assert!(jpeg.0 < 1.5, "{name}: median against the JPEG {}", jpeg.0);
     }
 }
+
+/// The highlights of a look that reaches display white (found in review). A display colour near white has a scene value
+/// above the top of the DNG profile, and scaling that scene value down with its ratios kept turned a slightly tinted
+/// highlight into a strong cast in Adobe's render (a pale blue became a saturated one; display (1, 1, 0.95) came back
+/// as (1, 0.99, 0.63) in the app's own arithmetic, CIE76 20). The display colour is dimmed instead, so a highlight keeps
+/// its tint and loses a few percent of light. Measured on the pixels whose picture is at or above sRGB code 0.9 in some
+/// channel (the highlights), Adobe's render of the DNG against the app's unsharpened picture.
+#[test]
+fn adobes_renderer_keeps_the_tint_of_the_highlights_of_a_look_that_reaches_display_white() {
+    let Some(binary) = dng_validate_binary() else {
+        assert!(
+            std::env::var_os("YM_REQUIRE_EXTERNAL_TOOLS").is_none(),
+            "dng_validate is required: run tools/dng/build_dng_validate.sh"
+        );
+        eprintln!("SKIPPED: dng_validate not built and $DNG_VALIDATE not set");
+        return;
+    };
+    let src = tempfile::tempdir().expect("source folder");
+    // A bright patchwork: its coloured patches are tinted near-whites through the bright look.
+    Scene::new(600, 400, light(PROFILE, 5200.0), Layout::Patchwork, 0.9)
+        .noise(2e-4, 2e-6)
+        .write(src.path(), "DSC00001.ARW", MODEL);
+    let session = Session::new(base_env());
+    let opened = session.open(&[src.path().to_path_buf()], OpenOptions::default());
+    assert_eq!(opened.added.len(), 1);
+    settle(&session);
+    let home = tempfile::tempdir().expect("home");
+    let ctx = ExportContext::new(
+        Renderer::new(Arc::new(Looks), RenderOptions::default()).expect("render thread"),
+    )
+    .with_home(Some(home.path().to_path_buf()));
+    let out = tempfile::tempdir().expect("out");
+    let export = |patch: SettingsPatch, format: FormatKind| {
+        session
+            .update_settings(opened.added[0], &patch)
+            .expect("settings");
+        let photo = ExportPhoto::from_session(&session, opened.added[0]).expect("photo");
+        let options = ExportOptions {
+            format,
+            destination: Some(out.path().to_path_buf()),
+            bit_depth: BitDepth::Sixteen,
+            tiff_compression: TiffCompression::None,
+            if_exists: ym_export::IfExists::Replace,
+            name_template: format!("{{name}}-{format:?}"),
+            ..ExportOptions::default()
+        };
+        let report = export_photo(
+            &ctx,
+            &photo,
+            &ExportParams::new(options),
+            &ExportControl::none(),
+        )
+        .expect("export");
+        std::fs::read(report.path).expect("read")
+    };
+    let patch = SettingsPatch {
+        look: Some(LookId::parse("user:rec709bright").expect("look id")),
+        look_intensity: Some(100.0),
+        sharpen: Some(AutoOr::Manual(SharpenManualPatch {
+            amount: Some(0.0),
+            radius_px: Some(1.0),
+        })),
+        output_sharpening: Some(0.0),
+        ..SettingsPatch::default()
+    };
+    let dng = export(patch.clone(), FormatKind::Dng);
+    let tiff = export(patch, FormatKind::Tiff);
+    let tiff_ifd = Tiff::new(&tiff).expect("a TIFF");
+    let (tw, th, t16) = tiff_ifd.uncompressed_u16_rgb(tiff_ifd.ifd0());
+    let picture: Vec<f64> = t16.iter().map(|&v| f64::from(v) / 65535.0).collect();
+    let dng_path = out.path().join("photo.dng");
+    std::fs::write(&dng_path, &dng).expect("write the DNG");
+    let (w, h, adobe) = adobe_render(&binary, &dng_path, out.path());
+    assert_eq!((w, h), (tw, th));
+
+    let all = delta_e(&adobe, &picture);
+    let highlights: Vec<f64> = picture
+        .chunks_exact(3)
+        .zip(&all)
+        .filter(|(p, _)| p.iter().copied().fold(0.0, f64::max) >= 0.9)
+        .map(|(_, &d)| d)
+        .collect();
+    assert!(
+        highlights.len() > w * h / 20,
+        "the scene has highlights: {} of {} pixels",
+        highlights.len(),
+        w * h
+    );
+    let (a, hl) = (summary(&all), summary(&highlights));
+    eprintln!(
+        "bright LogC3 to Rec.709 look: Adobe's render of the DNG against the unsharpened TIFF: all {} pixels median {:.3}, p95 {:.3}, p99 {:.3}, max {:.2}; the {} highlight pixels median {:.3}, p95 {:.3}, p99 {:.3}, max {:.2}",
+        all.len(),
+        a.0,
+        a.1,
+        a.2,
+        a.3,
+        highlights.len(),
+        hl.0,
+        hl.1,
+        hl.2,
+        hl.3
+    );
+    // The loss of a white (display 1.0 comes out at 0.9435) and the profile's own fit: measured p95 0.70, p99 0.76, worst
+    // 1.00. The first version, which scaled the scene value down, measured p95 3.0, p99 3.3 and worst 3.6 on this scene.
+    assert!(hl.0 < 0.5, "highlights: median {}", hl.0);
+    assert!(
+        hl.1 < 1.5 && hl.2 < 1.5,
+        "highlights: p95 {}, p99 {}",
+        hl.1,
+        hl.2
+    );
+}
