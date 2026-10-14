@@ -1,11 +1,14 @@
 //! `golden truth`: the end-to-end colour of the product against the ground truth of the synthetic scenes.
 //!
-//! For every scene the real `ym` binary develops the file with its default settings and writes a DNG. The DNG holds the
-//! picture after the whole colour chain up to the look and curve (C1 to C11, `docs/02`), decoded back to linear
-//! AWG4: the last place before the display transform where the colour can be compared with an ALEXA-referred truth
-//! without going through a tone curve. The sidecar of the scene holds, for every patch, what an ALEXA would have
-//! recorded of the same scene (the ALEXA estimate of `docs/02` C3 to C6, in linear AWG4) and what Sony's own camera RGB
-//! gives through the same ARRI matrix without the sensor map (the baseline).
+//! For every scene the real `ym` binary develops the file with its default settings and writes a DNG. The two defaults
+//! that are not the sensor's colour are switched off, because the truth is the colour of the scene and not a look: the
+//! look is Neutral (the default look is Signature since pipeline 0.3.0) and the white lift is 0 (it is a gain on the
+//! highlights, [`truth_settings`]). The DNG holds the picture after the whole colour chain up to the look and curve
+//! (C1 to C11, `docs/02`), decoded back to linear AWG4: the last place before the display transform where the colour
+//! can be compared with an ALEXA-referred truth without going through a tone curve. The sidecar of the scene holds,
+//! for every patch, what an ALEXA would have recorded of the same scene (the ALEXA estimate of `docs/02` C3 to C6, in
+//! linear AWG4) and what Sony's own camera RGB gives through the same ARRI matrix without the sensor map (the
+//! baseline).
 //!
 //! **Exposure.** The truth is reflectance-referred (the 18 % grey patch is `[0.18, 0.18, 0.18]`); a render has its own
 //! automatic exposure. Both the render and the baseline are therefore scaled by one number, 0.18 divided by the
@@ -202,6 +205,22 @@ pub fn group_stats(
         .collect()
 }
 
+/// The settings a scene is developed with for the truth: the entry's own, with the Neutral look and no white lift
+/// unless the entry sets them. The default look (Signature) and the automatic white lift change the picture on purpose;
+/// the truth measures the colour of the scene, so a number here moves only when the sensor map or the white balance does.
+#[must_use]
+pub fn truth_settings(base: &serde_json::Value) -> serde_json::Value {
+    let mut settings = base.clone();
+    if let Some(map) = settings.as_object_mut() {
+        map.entry("look")
+            .or_insert_with(|| serde_json::Value::from("builtin:neutral"));
+        // -3 is the lowest offset: the automatic amount can never be larger than 2 stops, so the lift is off.
+        map.entry("white_offset_ev")
+            .or_insert_with(|| serde_json::Value::from(-3));
+    }
+    settings
+}
+
 /// Develops the file of `entry` with `ym`, reads the DNG and compares it with the scene's truth.
 ///
 /// # Errors
@@ -222,7 +241,7 @@ pub fn scene_result(ym: &YmBinary, testdata: &Path, entry: &Entry) -> Result<Sce
     let scratch = tempfile::tempdir().context("creating a scratch folder")?;
     let rendered = ym.render(
         &testdata.join(&entry.file),
-        &entry.settings,
+        &truth_settings(&entry.settings),
         Output::Dng,
         &scratch.path().join("out"),
         scratch.path(),
@@ -501,6 +520,24 @@ mod tests {
                 [0.25, 0.2, 0.1],
             ),
         ])
+    }
+
+    #[test]
+    fn the_truth_is_developed_without_the_default_look_and_the_white_lift() {
+        use serde_json::json;
+        // An entry with no settings gets the Neutral look and no lift.
+        let plain = truth_settings(&json!({}));
+        assert_eq!(plain["look"], "builtin:neutral");
+        assert_eq!(plain["white_offset_ev"], -3);
+        // What the entry sets itself stays.
+        let own = truth_settings(
+            &json!({"look": "builtin:signature", "white_offset_ev": 0.5, "exposure": {"ev": 1.0}}),
+        );
+        assert_eq!(own["look"], "builtin:signature");
+        assert_eq!(own["white_offset_ev"], 0.5);
+        assert_eq!(own["exposure"]["ev"], 1.0);
+        // Something that is not an object is passed on as it is (ym refuses it, loudly).
+        assert_eq!(truth_settings(&json!(3)), json!(3));
     }
 
     #[test]

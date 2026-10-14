@@ -85,7 +85,9 @@ cargo run -p golden --release -- truth [--set synthetic] [--filter TEXT] [--patc
 ```
 
 For every scene of the set (one ARW per sidecar: the plain mosaic is preferred over cRAW and Lossless M/S) the real `ym`
-writes a DNG with default settings. The DNG holds the picture after the colour chain up to the look and curve (C1 to C11),
+writes a DNG with default settings, except that the look is Neutral and the white lift is 0 (the default look is Signature and
+the highlights get an automatic lift since pipeline 0.3.0; the truth is the colour of the scene, not a look, and the DNG
+carries both). The DNG holds the picture after the colour chain up to the look and curve (C1 to C11),
 as linear AWG4: the last place before the display transform where Yellowmoon's colour can be compared with the ALEXA
 estimate in the sidecar without going through a tone curve. Per patch, the interior is averaged in linear light, the picture is scaled by 0.18
 over the luminance of its 18 % grey patch (the truth is reflectance-referred; a render has its own automatic exposure:
