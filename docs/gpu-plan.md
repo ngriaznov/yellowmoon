@@ -346,3 +346,39 @@ Lanes: A is the `ym-core` / front-end / CI lane, B is the `ym-gpu` kernel lane. 
 - Delivers: `GpuChain::run_tile_device` and the tile -> sampler -> colour handoff on the device (no host `RgbImage` round trip for views and exports); resident `group(k)` and tile caches in the existing `ByteLru`; `GpuRaw` of the neighbour photos prefetched at Thumbnail priority (at most two uploaded); the 50 MP full-chain memory gate; `UniformArena`, `BindGroupCache` and `ReadbackRing` only if the submission-count and CPU-side overhead measurements on lavapipe show them worth it (record the numbers either way); `KernelSet` warm-up order; at most three submissions per tile (counted in a test).
 - Acceptance: (1) resident output equals the host-round-trip path bit for bit; (2) the 50 MP full-chain peak under 2 GiB by the pool ledger (`--release`, one lane at a time) and the ledger returns to its resident set after an export and after navigation; (3) cancel mid-export leaks nothing; poison clean; (4) submission counts per tile recorded and bounded; (5) existing `render_*` tests unchanged; (6) fmt, clippy, tests.
 - Reviewer focus: ownership and lifetime of resident images across navigation; no change of any byte against the non-resident path; the memory gate is measured on the whole chain, not on one stage.
+
+---
+
+## 12. Metal baseline (GitHub Apple-silicon runners, commit d629dbe, run 38493633451 attempt 2; identical on macos-14 and macos-15)
+
+Adapter: "Apple Paravirtual device" (Metal, IntegratedGpu), Apple M1 (Virtual), 3 cores, 7 GB; shader_f16 true; storage f16-native at that commit (G-02 makes Auto = F32); limits: buffer 3584 MiB, storage binding 2048 MiB, 8 storage buffers, 256 invocations, workgroup storage 16 KiB, texture 8192.
+Logs: the job logs of that run.
+
+### ym-gpu: 14 failing tests in 4 binaries (23 of 27 binaries pass)
+Owner G-03 (adaptive ratio, log-guided, diffraction kernels):
+1. gpu_adaptive_ratio every_vector_matches_the_oracle_on_the_gpu: edge_knight 40 of 1728 over 1e-4 (allowed 20; lavapipe 10), worst 6.595e-4 (allowed 2e-3); ca_weighting 56 of 3072 (lavapipe 58), max 1.078e-3.
+2. gpu_diffraction a_non_finite_sample_stays_local_and_does_not_panic: "1e30 left a non-finite sample" (finite on lavapipe).
+3. gpu_diffraction every_image_vector_matches_on_the_gpu: edge_horizontal_colour 1.502e-5 > asserted 5e-6 (vector tolerance 2e-5).
+4. gpu_diffraction random_frames_match_the_cpu_across_plans_scenes_and_sizes: 3.76 um f/16 Text 4.113e-5 > 2e-5.
+5. gpu_diffraction strengths_scales_noise_levels_gates_and_luma_weights_match_the_cpu: scale 1/4 Natural 8.982e-5 > 2e-5.
+6. gpu_diffraction the_luma_plane_has_the_cpu_bits: Natural 30304 of 60000 luma values differ from the CPU's (exact-luma trick does not survive Metal; lavapipe 0).
+7. gpu_diffraction a_large_frame_through_the_tiling_path_matches_the_cpu: 1.361e-4 (4123 samples >1e-6, 847 >5e-6, 361 >1e-5 of 8.4M).
+8. gpu_log_guided huge_values_in_strongly_directional_frames_stay_finite_and_match: "GPU sample (0, 1) is inf" (scales 1e3..1e10 fine; fails at a larger scale).
+Owner G-04 (output sharpening, colour):
+9. gpu_output_sharpen a_collapsed_kernel_is_a_finite_no_op_for_every_method: HardThreshold / halo 0 changed the image by 1.19e-7 (must be a bit-exact no-op).
+10. gpu_output_sharpen flip_and_transpose_equivariance_within_1e_5: method 2, R 2.5, halo: transpose 8.638e-4 (flip 2.4e-7).
+11. gpu_output_sharpen a_2048_by_1365_frame_through_the_tiling_path: screen full size max 5.730e-4, p99.9 4.8e-7, 1450 of 8.4M over 1e-5.
+12. gpu_output_sharpen noisy_and_photographic_frames_match_the_cpu_port_within_1e_5: busy+noise screen 8.789e-4, p99.9 5.5e-5, 95 of 37830 over 1e-5.
+13. gpu_output_sharpen tiny_and_odd_sizes_follow_the_mirror_semantics: "1x1: a flat image changed".
+14. gpu_output_sharpen vectors_match_the_oracle_and_the_cpu_port: hdr_values_and_negatives 1.836e-5 > 1e-5 (17 of 3072).
+Colour kernels (gpu_color, gpu_color_vectors, gpu_color_monotone), gpu_pipeline, gpu_spike, gpu_device, shaders_naga, all CPU tests: PASS on Metal.
+
+Reading: Metal compiles with fast-math by default (wgpu-hal 30 sets only the language version and preserveInvariance). Fast-math lets the compiler reassociate, contract a*b+c into fma, and assume no NaN/Inf: exact-rounding tricks (Dekker-style exact luma, "collapsed kernel is a no-op" identities, luma bits that the limiter ranks on) and overflow behaviour differ. Kernel owners: make the kernels robust to fast-math (K8): no reliance on exact rounding or on IEEE Inf/NaN propagation; bound values before they can overflow; compute identities exactly by construction (skip the stage when the kernel collapses); where a bit-exact luma is a requirement, decide whether it is (a property the spec needs) or test-only. Investigate whether fast-math can be turned off for a kernel through wgpu on Metal (MSL passthrough with `#pragma METAL fp math_mode(safe)` / `fp contract(off)` on macOS 15+, or any wgpu option) and report; never loosen a lavapipe threshold; Metal gets its own column with evidence.
+
+### ym-core on Metal runners: macOS portability failures (not GPU)
+15. lib cli_preview::tests::the_command_carries_the_options_and_leaves_out_the_defaults (cli_preview.rs:430): --out path '/private/var/folders/...' vs expected '/var/folders/...' (macOS temp dir is a symlink; code canonicalizes).
+16. tests/core.rs the_cli_preview_of_a_real_session (core.rs:557): same /private prefix.
+17. tests/export.rs the_default_destination_is_next_to_the_source_folder (export.rs:1005): same /private prefix.
+18. lib data_dir::tests::non_utf8_env_value_is_accepted (data_dir.rs:265): APFS refuses a non-UTF-8 directory name (EILSEQ, os error 92).
+19. macos-15 only: tests/review.rs session_lifecycle::a_thumbnail_is_rendered_with_the_look_the_photo_has_by_then (review.rs:583): thumbnail shows the old look (neutral vs signature) — a race, passed on macos-14.
+App job (frontend build, sidecar, clippy -p yellowmoon-app on macOS, app tests): PASS.

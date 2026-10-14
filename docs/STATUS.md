@@ -60,6 +60,8 @@ Everything after decoding moves onto the wgpu device (Metal on the Mac), in the 
 
 First Metal CI run (2026-10-14): the Metal adapter opens on macos-14 and macos-15; the app builds and its tests pass on macOS (the native Metal viewport compiled for the first time); the frontend build failed on macOS because `wheel.ts` shadowed `Wheel.tsx` on a case-insensitive file system (fixed, guarded by `src/casing.test.ts`); the adaptive ratio vector test fails on Metal (`edge_knight` 40 tie flips against 10 on lavapipe, worst 6.6e-4) and is handed to G-03.
 
+Metal baseline on the verified commit d629dbe (`docs/gpu-plan.md` section 12; identical on macos-14 and macos-15, adapter "Apple Paravirtual device"): 23 of 27 `ym-gpu` test binaries pass on Metal, including every colour-pass test; 14 tests fail in four binaries — adaptive ratio tie flips (1), diffraction (6, among them the exact luma: 30304 of 60000 values differ), log-guided overflow to inf (1), output sharpening (6, up to 8.8e-4) — consistent with Metal's default fast-math (reassociation, FMA contraction, no-NaN/Inf assumptions). They go to G-03 and G-04 as acceptance items. `ym-core` shows five macOS portability failures unrelated to the GPU (`/private/var` paths from a canonicalized temp dir, a non-UTF-8 directory name APFS refuses, and a thumbnail-look race seen once on macos-15); a separate fix lane is on them.
+
 ## Done
 
 | Task | Commit | Notes |
