@@ -479,8 +479,10 @@ export type ExportEstimate = {
 	seconds: number,
 	/**  Photos with adjustments beyond the look. */
 	adjusted_photos: number,
-	/**  A DNG of the job is close to, not the same as, the picture in the app: a photo uses a look with
-its own display rendering, or ARRI's display rendering is chosen. */
+	/**
+	 *  A DNG of the job is close to, not the same as, the picture in the app: a photo uses a look with
+	 *  its own display rendering, or ARRI's display rendering is chosen.
+	 */
 	dng_approximate: boolean,
 };
 

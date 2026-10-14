@@ -825,7 +825,7 @@ class Preview(unittest.TestCase):
     def test_the_engine_gain_is_calibrated_to_the_camera_gain_of_the_gate(self):
         # Decision 2026-10-14: the synthetic camera's JPEG engine is Sony-like. The estimator of tools/eval/autoexp.py reads
         # this engine at +1.11 EV (the median camera gain, `ym_color::exposure::CAMERA_GAIN_EV`) although its own gain is
-        # +1.0653 EV (a reading bias of +0.045 EV on this tier, measured: docs/02), so the auto-exposure gate passes by
+        # +1.0654 EV (a reading bias of +0.04 EV on this tier, measured: docs/02), so the auto-exposure gate passes by
         # construction.
         self.assertEqual(pv.TARGET_MEASURED_GAIN_EV, 1.11)
         self.assertEqual(pv.PREVIEW_GAIN, 2.133)
@@ -846,7 +846,7 @@ class Preview(unittest.TestCase):
         code = float(pv.tone(np.array([x]))[0])
         lin = code / 12.92 if code <= 0.04045 else ((code + 0.055) / 1.055) ** 2.4
         self.assertAlmostEqual(lin, 0.18, places=9)
-        self.assertAlmostEqual(x, 0.0871, places=4)
+        self.assertAlmostEqual(x, 0.0860, places=4)
 
     def test_rendering_is_white_preserving_and_monotone(self):
         light = sp.single_lights()["D6500"]
@@ -858,7 +858,7 @@ class Preview(unittest.TestCase):
         self.assertTrue((np.diff(img) >= 0).all())
         self.assertEqual(int(img[-1]), 255)
         self.assertEqual(int(img[0]), 0)
-        # the raw level at which the engine shows ISO 12232's 18 % grey (0.0871 of the white level, a gain of +1.0653 EV
+        # the raw level at which the engine shows ISO 12232's 18 % grey (0.0860 of the white level, a gain of +1.0654 EV
         # that the estimator reads as +1.11) is sRGB code 118
         level = 0.18 / 2.0 ** pv.known_gain_ev()
         iso_grey = pv.render(np.full((1, 1, 3), level, dtype=np.float32), np.ones(3), np.eye(3))[0, 0, 0]

@@ -225,14 +225,18 @@ fn old_metric_median_luminance_against_the_embedded_jpegs_of_the_real_files_info
     // INFORMATIONAL: this is NOT the M1-08 gate. It computes the metric the gate used before
     // Mykyta's decision of 2026-10-13 (`docs/16`): the median luminance in linear light of our
     // render at `EV_auto` against the median of the camera's embedded JPEG. That metric mixes in
-    // the display transform (ACES 2 puts scene 0.18 at display 0.10, a camera JPEG near 0.18:
-    // about -0.85 EV by design) and the camera's tone curve, so its errors are not all exposure
-    // errors (nine real files: median -0.28 EV, `docs/02` Evaluation).
+    // the camera's tone curve and the scene's key, so its errors are not all exposure errors
+    // (nine real files under the metered rule and ACES 2 without the placement: median -0.28 EV,
+    // `docs/02` Evaluation; since 2026-10-14 `EV_auto` is the camera's gain, +1.11 EV, and this
+    // test reads 9 of 9 within +-0.5 EV on the nine files of `testdata/real/files`, errors -0.45
+    // (DSLR-A300) to +0.41 (A7 II); `autoexp.py` G1 on the twelve local files of `docs/02` Gate
+    // status: 12 of 12, median -0.02, std 0.27. The display placement does not touch this metric).
     // The gate is G3, `EV_auto` against the camera engine's own gain, measured by
-    // `python3 -I tools/eval/autoexp.py testdata/real/files --label real` (`tools/eval/README.md`,
-    // `docs/02` Auto exposure Evaluation, `docs/13` Gates): 6 of 9 within +-0.5 EV, 9 of 9 within
-    // +-0.75. This test prints the old figures for comparison and asserts nothing about them but
-    // that the report is complete; it never decides the gate.
+    // `python3 -I tools/eval/autoexp.py testdata/real/files testdata/readme-photos/src --label real12 --gate`
+    // (`tools/eval/README.md`, `docs/02` Auto exposure Gate status, `docs/13` Gates): 12 of 12
+    // within +-0.5 EV, in-sample (the constant is those files' median gain). This test prints the
+    // figures for comparison and asserts nothing about them but that the report is complete; it
+    // never decides the gate.
     use ym_color::exposure::{
         GATE_REQUIRED_FRACTION, GATE_TOLERANCE_EV, GateEntry, PreviewRgb, evaluate_gate,
         exposure_error_ev, jpeg_median_luminance, preview_median_luminance,

@@ -631,6 +631,16 @@ fn pixel(img: &ym_core::pipeline::FullImage, x: usize, y: usize) -> [f32; 3] {
     [img.rgb[i], img.rgb[i + 1], img.rgb[i + 2]]
 }
 
+/// R8 capture sharpening off by the setting. A DNG is made without R8 (`docs/09`, "What a DNG carries"), so the
+/// picture of another format that it is compared with has none either: these tests are about where the pixels
+/// are, not how sharp they are.
+fn without_r8(s: &mut DevelopSettings) {
+    s.sharpen = ym_core::settings::AutoOr::Manual(ym_core::settings::SharpenValue {
+        amount: 0.0,
+        radius_px: 1.0,
+    });
+}
+
 fn assert_same_pixel(a: [f32; 3], b: [f32; 3], tol: f32, what: &str) {
     for c in 0..3 {
         assert!((a[c] - b[c]).abs() <= tol, "{what}: {a:?} vs {b:?}");
@@ -660,6 +670,7 @@ fn the_dng_raw_pixels_keep_the_cameras_orientation_and_the_crop_becomes_a_window
     let src = edit(&d.source(), |s| {
         s.orientation = Orientation::Deg90;
         crop(s);
+        without_r8(s);
     });
     let baked = full(&r, &src, FullTarget::DisplayLinear(OutputTarget::Srgb));
     assert_eq!((baked.width, baked.height), (300, 240));
@@ -694,7 +705,10 @@ fn the_dng_raw_pixels_keep_the_cameras_orientation_and_the_crop_becomes_a_window
     );
     // Only the camera's turn (EXIF 6): the net turn is a quarter turn clockwise. Canvas 400 x 600,
     // crop (40, 120, 200, 360); in the buffer (120, 160, 360, 200).
-    let src = edit(&d.source(), crop);
+    let src = edit(&d.source(), |s| {
+        crop(s);
+        without_r8(s);
+    });
     let baked = full(&r, &src, FullTarget::DisplayLinear(OutputTarget::Srgb));
     assert_eq!((baked.width, baked.height), (200, 360));
     let preview = full(&r, &src, FullTarget::DngPreview);
@@ -734,6 +748,7 @@ fn a_dng_with_a_straighten_angle_bakes_the_angle_and_the_crop_but_not_the_turns(
     let d = patchwork_with_exif(2);
     let src = edit(&d.source(), |s| {
         s.orientation = Orientation::Deg180;
+        without_r8(s);
         s.crop = Some(Crop {
             rect: NormRect {
                 x: 0.05,

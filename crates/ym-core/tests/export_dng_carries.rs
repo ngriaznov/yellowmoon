@@ -302,3 +302,17 @@ fn an_imported_display_lut_goes_into_the_dng_through_the_same_inverse() {
     let limit = (DNG_SCENE_LIMIT / DISPLAY_PLACEMENT_EV.exp2()) as f32;
     assert!(raw.rgb.iter().all(|&c| c <= limit * (1.0 + 1e-6)));
 }
+
+#[test]
+fn the_scene_limit_of_the_inverse_is_the_top_of_the_profile_the_dng_embeds() {
+    // `DNG_SCENE_LIMIT` is where the inverse stops the scene values, and where Adobe's renderer ends the profile's
+    // tone curve after `BaselineExposure`: the floor of the white level of the embedded profile.
+    let fitted = ym_export::dng::FittedProfile::embedded();
+    assert_eq!(
+        f64::from(fitted.baseline_exposure().white_floor()),
+        DNG_SCENE_LIMIT
+    );
+    // And with the placement the largest AWG4 channel the inverse gives is `limit / 2^k`, the stored headroom a user
+    // who lowers the exposure in the other editor has above it (`docs/09`).
+    assert!((DNG_SCENE_LIMIT / DISPLAY_PLACEMENT_EV.exp2() - 8.9).abs() < 0.05);
+}
