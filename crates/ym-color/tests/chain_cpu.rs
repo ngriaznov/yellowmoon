@@ -19,8 +19,8 @@ use ym_color::consts::linalg::{self, Mat3};
 use ym_color::curve::{Curve, CurveSet};
 use ym_color::deltae::{d65_white_xyz, delta_e_2000, xyz_to_lab};
 use ym_color::display::{
-    BeforePoint, ChainParams, ColorChain, DisplayError, Frame, Layout, LookSetting, OutputTarget,
-    View, aces2_input_matrix,
+    BeforePoint, ChainParams, ColorChain, DISPLAY_PLACEMENT_EV, DNG_SCENE_LIMIT, DisplayError,
+    Frame, Layout, LookSetting, OutputTarget, View, aces2_input_matrix,
 };
 use ym_color::encode::{self, OutputSpace};
 use ym_color::gamut::{LinearAwg4, matrices};
@@ -598,22 +598,113 @@ fn rec709_baked_look_blends_with_an_arri_display_lut_as_c12_too() {
 }
 
 #[test]
-fn rec709_baked_look_cannot_go_into_a_dng() {
+fn rec709_baked_look_goes_into_a_dng_as_the_scene_values_aces2_turns_into_its_picture() {
+    // Owner's decision of 2026-10-14: a look with its own display rendering is allowed in a DNG,
+    // approximately. The pixels are the scene-linear AWG4 values that ACES 2 (with the display
+    // placement, the transform the DNG's fitted profile emulates) turns into the picture the chain
+    // makes, so Adobe's renderer shows about that picture.
+    let look = rec709_baked_look();
     let mut p = ChainParams::new(fused_matrix(), tone());
-    p.look = Some(LookSetting::new(rec709_baked_look(), 100.0));
+    p.grade = grade_params();
+    p.curves = curves();
+    p.output = OutputTarget::Srgb;
+    p.look = Some(LookSetting::new(Arc::clone(&look), 100.0));
     let c = chain(&p);
-    assert!(!c.dng_available());
-    assert_eq!(
-        c.apply_dng_pixel([0.2, 0.2, 0.2]),
-        Err(DisplayError::DngUnavailable)
-    );
+    assert!(c.dng_inverts_display());
+    let aces2 = Aces2Transform::shared(Aces2Output::Srgb);
+    let mut checked = 0;
+    for px in pixels() {
+        let dng = c.apply_dng_pixel(px);
+        assert!(dng.iter().all(|v| v.is_finite()), "{px:?}: {dng:?}");
+        // The largest channel is held to the top of the profile's range, placement included.
+        let top = dng[0].max(dng[1]).max(dng[2]);
+        assert!(
+            top <= DNG_SCENE_LIMIT / DISPLAY_PLACEMENT_EV.exp2() * (1.0 + 1e-12),
+            "{px:?}: {dng:?}"
+        );
+        // Through our ACES 2 (placement included) the DNG gives the picture of the chain, where
+        // the picture is inside what ACES 2 reaches (display white and the display's gamut edge
+        // are clamped by the inverse).
+        let picture = c.apply_to_display_linear(px);
+        let in_range = picture.iter().all(|&v| (0.0..=0.9).contains(&v));
+        if in_range && top < DNG_SCENE_LIMIT / DISPLAY_PLACEMENT_EV.exp2() * 0.99 {
+            let back = aces2.transform_ap0_linear(linalg::mul_vec(&aces2_input_matrix(), dng));
+            for k in 0..3 {
+                assert!(
+                    (back[k] - picture[k]).abs() <= 1e-6,
+                    "{px:?}: picture {picture:?}, the DNG renders {back:?}"
+                );
+            }
+            checked += 1;
+        }
+    }
+    assert!(checked >= 8, "only {checked} pixels were in range");
+    // The buffer render is the pixel function.
     let data = vec![0.2_f32; 12];
     let src = Frame::interleaved(2, 2, &data).unwrap();
     let mut out = vec![0.0_f32; 12];
-    assert_eq!(
-        c.render_dng_linear_awg4_f32(&src, Layout::Interleaved, &mut out, 1),
-        Err(DisplayError::DngUnavailable)
+    c.render_dng_linear_awg4_f32(&src, Layout::Interleaved, &mut out, 1)
+        .unwrap();
+    let want = c.apply_dng_pixel([f64::from(0.2_f32); 3]);
+    for px in out.chunks_exact(3) {
+        for k in 0..3 {
+            assert_eq!(px[k], want[k] as f32);
+        }
+    }
+}
+
+#[test]
+fn a_baked_look_at_intensity_zero_and_an_aces2_chain_keep_the_plain_dng() {
+    // At 0 % the chain is our C12 exactly, so nothing is inverted: the DNG is the decoded C11 output.
+    let mut p = ChainParams::new(fused_matrix(), tone());
+    p.curves = curves();
+    p.output = OutputTarget::Srgb;
+    let plain = chain(&p);
+    assert!(!plain.dng_inverts_display());
+    p.look = Some(LookSetting::new(rec709_baked_look(), 0.0));
+    let zero = chain(&p);
+    assert!(zero.look_includes_display_rendering() && !zero.dng_inverts_display());
+    for px in pixels() {
+        assert_eq!(zero.apply_dng_pixel(px), plain.apply_dng_pixel(px));
+        let t = plain.trace(px);
+        assert_close(
+            plain.apply_dng_pixel(px),
+            t.c11_logc4.to_linear().0,
+            1e-15,
+            "plain",
+        );
+    }
+}
+
+#[test]
+fn an_imported_display_lut_is_inverted_for_the_dng_too() {
+    use ym_color::display::{ArriDisplayLut, DisplayLutInput, DisplayLutOutput, DisplayTransform};
+    // The DNG's profile renders ACES 2; with a display LUT chosen as C12 the pixels are the scene
+    // values ACES 2 turns into the LUT's picture (the preview of the DNG already shows it).
+    let lut = cube_lut(33, |c| {
+        let t = tweak(c);
+        [t[0].powf(1.05), t[1] * 0.97 + 0.01, t[2].powf(0.95)]
+    });
+    let display = DisplayTransform::arri(
+        ArriDisplayLut::new(lut, DisplayLutInput::LogC4, DisplayLutOutput::REC709_G24).unwrap(),
     );
+    let mut p = ChainParams::new(fused_matrix(), tone());
+    p.output = OutputTarget::Srgb;
+    p.display = display;
+    let c = chain(&p);
+    assert!(c.dng_inverts_display());
+    let aces2 = Aces2Transform::shared(Aces2Output::Srgb);
+    for px in [[0.18, 0.18, 0.18], [0.5, 0.3, 0.2], [0.02, 0.03, 0.08]] {
+        let dng = c.apply_dng_pixel(px);
+        let picture = c.apply_to_display_linear(px);
+        let back = aces2.transform_ap0_linear(linalg::mul_vec(&aces2_input_matrix(), dng));
+        for k in 0..3 {
+            assert!(
+                (back[k] - picture[k]).abs() <= 1e-6,
+                "{px:?}: picture {picture:?}, the DNG renders {back:?}"
+            );
+        }
+    }
 }
 
 // ---- the DNG stop point --------------------------------------------------------------------------
@@ -622,10 +713,10 @@ fn rec709_baked_look_cannot_go_into_a_dng() {
 fn dng_stop_point_applies_grade_look_and_curve_then_decodes_to_linear_awg4() {
     let p = rich_params();
     let c = chain(&p);
-    assert!(c.dng_available());
+    assert!(!c.dng_inverts_display());
     for px in pixels() {
         let t = c.trace(px);
-        let dng = c.apply_dng_pixel(px).unwrap();
+        let dng = c.apply_dng_pixel(px);
         // Decoded C11 output, nothing after it.
         assert_close(dng, t.c11_logc4.to_linear().0, 1e-15, "dng");
         // Re-encoding gives C11 back.
@@ -636,10 +727,7 @@ fn dng_stop_point_applies_grade_look_and_curve_then_decodes_to_linear_awg4() {
     let moved = pixels()
         .into_iter()
         .filter(|px| {
-            let (a, b) = (
-                c.apply_dng_pixel(*px).unwrap(),
-                plain.apply_dng_pixel(*px).unwrap(),
-            );
+            let (a, b) = (c.apply_dng_pixel(*px), plain.apply_dng_pixel(*px));
             max_diff(logc4_encode_rgb(a), logc4_encode_rgb(b)) > 1e-3
         })
         .count();
@@ -655,7 +743,7 @@ fn dng_stop_point_of_a_neutral_chain_is_the_tone_mapped_linear_awg4() {
     let c = chain(&ChainParams::new(fused_matrix(), tone()));
     for px in pixels() {
         let want = tone().apply_rgb(linalg::mul_vec(&fused_matrix(), px));
-        let got = c.apply_dng_pixel(px).unwrap();
+        let got = c.apply_dng_pixel(px);
         for k in 0..3 {
             assert!(
                 (got[k] - want[k]).abs() <= 1e-12 + 1e-11 * want[k].abs(),
@@ -677,7 +765,7 @@ fn dng_buffer_render_matches_the_pixel_function() {
         .unwrap();
     for (i, p) in px.iter().enumerate() {
         let f32_in = p.map(|v| f64::from(v as f32));
-        let want = c.apply_dng_pixel(f32_in).unwrap();
+        let want = c.apply_dng_pixel(f32_in);
         for k in 0..3 {
             assert_eq!(out[3 * i + k], want[k] as f32);
         }

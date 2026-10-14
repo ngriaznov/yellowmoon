@@ -34,6 +34,7 @@
 use std::fmt;
 use std::sync::Arc;
 
+use super::dng_inverse::DngDisplayInverse;
 use super::transform::{DisplayTransform, PreparedDisplay};
 use super::{DisplayError, OutputTarget};
 use crate::consts::Vec3;
@@ -216,6 +217,9 @@ pub struct ColorChain {
     space: OutputSpace,
     dither: bool,
     before: BeforePoint,
+    /// Set when C12 is not our ACES 2, so the DNG holds the scene values ACES 2 turns into this
+    /// chain's picture (see [`ColorChain::dng_inverts_display`]).
+    dng_inverse: Option<DngDisplayInverse>,
 }
 
 impl fmt::Debug for ColorChain {
@@ -266,6 +270,10 @@ impl ColorChain {
                 intensity_pct: s.intensity_pct,
             },
         };
+        // C12 is not our ACES 2 for an imported ARRI display LUT, and for a look that includes its
+        // own display rendering at any intensity above 0 (at 0 the chain is our C12 exactly).
+        let own_rendering = matches!(params.display, DisplayTransform::ArriDisplayLut(_))
+            || matches!(&look, LookStage::Baked { intensity_pct, .. } if intensity_fraction(*intensity_pct) > 0.0);
         Ok(Self {
             params: params.clone(),
             matrix: params.matrix,
@@ -278,6 +286,7 @@ impl ColorChain {
             space: params.output.space(),
             dither: params.dither,
             before: params.before,
+            dng_inverse: own_rendering.then(|| DngDisplayInverse::new(params.output)),
         })
     }
 
@@ -317,10 +326,15 @@ impl ColorChain {
         matches!(self.look, LookStage::Baked { .. })
     }
 
-    /// Whether the DNG stop point is available (it is not with a look that includes display rendering).
+    /// Whether a DNG of this chain holds the picture through the inverse of our display transform
+    /// instead of the C11 output itself: true when C12 is not our ACES 2 (an imported ARRI display LUT,
+    /// or a look that includes its own display rendering at an intensity above 0). The DNG's fitted
+    /// profile renders ACES 2, so the pixels are the scene values that ACES 2 turns into the picture
+    /// this chain makes, and Adobe's renderer shows approximately that picture
+    /// ([`ColorChain::apply_dng_pixel`], `docs/09`).
     #[must_use]
-    pub fn dng_available(&self) -> bool {
-        !self.look_includes_display_rendering()
+    pub fn dng_inverts_display(&self) -> bool {
+        self.dng_inverse.is_some()
     }
 
     // ---- stages --------------------------------------------------------------------------------
@@ -438,14 +452,20 @@ impl ColorChain {
     /// The DNG path (`docs/09`, Pixel pipeline per format): C1 to C11, then LogC4 decoded back to
     /// linear AWG4. Negative values are not clipped here (the writer clips and counts them).
     ///
-    /// # Errors
-    ///
-    /// [`DisplayError::DngUnavailable`] when the look includes its own display rendering.
-    pub fn apply_dng_pixel(&self, camera_rgb: Vec3) -> Result<Vec3, DisplayError> {
-        if !self.dng_available() {
-            return Err(DisplayError::DngUnavailable);
+    /// When C12 is not our ACES 2 ([`ColorChain::dng_inverts_display`]) the result is instead the
+    /// scene-linear AWG4 triple that ACES 2 with the display placement turns into this chain's
+    /// display-linear picture (look, intensity blend and all), limited to the range of the DNG
+    /// profile ([`DNG_SCENE_LIMIT`](super::DNG_SCENE_LIMIT)): with the placement in `BaselineExposure`, Adobe's renderer shows
+    /// approximately that picture. Build the chain for [`OutputTarget::Srgb`], the display the DNG
+    /// profile was fitted to; for another output the display value is first converted to Rec.709
+    /// primaries.
+    #[must_use]
+    pub fn apply_dng_pixel(&self, camera_rgb: Vec3) -> Vec3 {
+        let c11 = self.up_to_c11(camera_rgb).c11;
+        match &self.dng_inverse {
+            None => c11.to_linear().0,
+            Some(inverse) => inverse.scene_awg4(self.c12(c11)),
         }
-        Ok(self.up_to_c11(camera_rgb).c11.to_linear().0)
     }
 
     /// The Before view for one pixel: the LogC4 signal at the chain's [`BeforePoint`], each channel

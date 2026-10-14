@@ -1332,7 +1332,7 @@ fn an_export_runs_in_the_background_and_reports_its_progress() {
     let estimate = h.api.export_estimate(&job).expect("estimate");
     assert!(estimate.bytes.0 > 0.0 && estimate.seconds.0 > 0.0);
     assert_eq!(estimate.adjusted_photos, 0);
-    assert!(!estimate.dng_unavailable);
+    assert!(!estimate.dng_approximate);
     let command = h.api.cli_preview(&job).expect("preview");
     assert!(command.starts_with("ym render "), "{command}");
 

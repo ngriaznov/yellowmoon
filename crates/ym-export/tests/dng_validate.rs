@@ -777,8 +777,9 @@ fn independent_readers_accept_a_dng_with_the_embedded_profile() {
         &[
             "--preview-size",
             "192x128",
+            // `BaselineExposure = log2(x_white) + offset`, with the display placement part of the offset.
             "--baseline-offset-ev",
-            &fitted.fit_offset_ev.to_string(),
+            &(fitted.fit_offset_ev + ym_color::display::DISPLAY_PLACEMENT_EV).to_string(),
             "--white-floor",
             &fitted.baseline_exposure().white_floor().to_string(),
             "--tone-curve",

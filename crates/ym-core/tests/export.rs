@@ -15,8 +15,8 @@ use ym_color::encode::{OutputSpace, encode_quantized};
 use ym_color::look::{LookInput, LookTransform};
 use ym_color::lut::{Lut, Lut3d};
 use ym_core::export::{
-    DNG_BLOCKED_MESSAGE, ExportContext, ExportControl, ExportError, ExportParams, ExportPhoto,
-    ExportReport, default_destination, export_photo, planned_destination,
+    ExportContext, ExportControl, ExportError, ExportParams, ExportPhoto, ExportReport,
+    default_destination, export_photo, planned_destination,
 };
 use ym_core::pipeline::{
     FullRequest, FullTarget, LookProblem, LookProvider, NeutralOnly, Renderer, ResolvedLook,
@@ -1275,7 +1275,9 @@ fn the_look_and_its_hash_are_recorded() {
 }
 
 #[test]
-fn a_dng_is_refused_for_a_look_with_its_own_display_rendering() {
+fn a_dng_is_made_for_a_look_with_its_own_display_rendering() {
+    // Decision of 2026-10-14: the DNG is allowed, approximately (`docs/09`, "What a DNG carries");
+    // `tests/export_dng_display.rs` measures how close it is.
     let src = tempfile::tempdir().expect("dir");
     write_photo(src.path(), "DSC00001.ARW", |b| b);
     let d = open_dir(src);
@@ -1285,11 +1287,13 @@ fn a_dng_is_refused_for_a_look_with_its_own_display_rendering() {
     );
     let ctx = ctx_with_looks(home.path());
     let photo = photo_with_look(&d, "user:rec709");
-    let err = run(&ctx, &photo, options_in(out.path(), FormatKind::Dng)).expect_err("refused");
-    assert!(matches!(err, ExportError::DngUnavailable), "{err}");
-    assert_eq!(err.to_string(), DNG_BLOCKED_MESSAGE);
-    assert!(names_in(out.path()).is_empty(), "nothing was made");
-    // TIFF is fine, as the message says.
+    let dng = run(&ctx, &photo, options_in(out.path(), FormatKind::Dng)).expect("a DNG");
+    assert!(dng.dng.is_some(), "the report says what the DNG scaled to");
+    assert_eq!(
+        names_in(out.path()),
+        vec!["DSC00001_rec709.dng".to_owned()],
+        "the DNG is the one file made"
+    );
     let ok = run(&ctx, &photo, tiff16(out.path()));
     assert!(ok.is_ok(), "{ok:?}");
 }

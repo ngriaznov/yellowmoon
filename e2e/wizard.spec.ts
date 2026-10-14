@@ -195,7 +195,7 @@ test.describe("the generic .cube question", () => {
     const group = page.getByRole("radiogroup", { name: "Input of Warm_Film.cube" });
     await expect(group.getByRole("radio")).toHaveText(["LogC4", "LogC3", "LogC3 · Rec.709"]);
     await group.getByRole("radio", { name: "LogC3 · Rec.709" }).click();
-    await expect(page.getByText("LogC3 in, Rec.709 out. It replaces our display rendering, so it can't go into a DNG.")).toBeVisible();
+    await expect(page.getByText("LogC3 in, Rec.709 out. It replaces our display rendering.")).toBeVisible();
     await next(page).click();
     await expect(page.getByRole("heading", { level: 1, name: "Imported" })).toBeVisible({ timeout: 10_000 });
     const mine = await page.evaluate(async () => (await window.__yellowmoon!.mockApi.looksList()).find((l) => l.id === "user:warm-film"));

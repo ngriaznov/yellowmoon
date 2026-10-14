@@ -116,43 +116,61 @@ fn a_file_with_no_white_balance_gets_daylight_with_no_confidence() {
 }
 
 #[test]
-fn auto_exposure_lands_a_neutral_scene_on_middle_grey() {
-    // A neutral pixel of the scene has the camera RGB 0.9 L w / max(w); the initial gains 1 / w
-    // balance it to 0.9 L / max(w) in all three channels, which the colour chain keeps as
-    // Y = 0.9 L / max(w) (white-preserving map, balanced ARRI matrices). EV_auto = log2(0.18 / Y)
-    // for a flat scene (docs/02 Auto exposure).
+fn auto_exposure_is_the_cameras_gain_whatever_the_scene() {
+    // docs/02 Auto exposure (interim rule, 2026-10-14): EV_auto is the camera's gain, a constant, for a dark, a
+    // middle and a bright scene alike. The centre-weighted mean is still reported: a neutral pixel of the scene
+    // has the camera RGB 0.9 L w / max(w); the initial gains 1 / w balance it to 0.9 L / max(w) in all three
+    // channels, which the colour chain keeps as Y = 0.9 L / max(w) (white-preserving map, balanced ARRI matrices).
     let dir = tempfile::tempdir().unwrap();
     let env = base_env();
     let white = light(PROFILE, 5200.0);
     let peak = white.iter().copied().fold(0.0, f64::max);
-    for level in [0.18, 0.045, 0.72, 0.09, 0.3] {
+    for level in [0.01, 0.18, 0.045, 0.72, 0.09, 0.3, 0.9] {
         let scene = Scene::new(512, 384, white, Layout::Uniform, level).noise(2e-4, 1e-6);
         let raw = decode(&scene.write(dir.path(), "e.ARW", MODEL));
-        let ev = estimates_of(&raw, &env).summary().exposure_ev;
-        let want = (0.18 / (0.9 * level / peak)).log2();
+        let est = estimates_of(&raw, &env);
+        assert_eq!(
+            est.summary().exposure_ev,
+            ym_color::exposure::CAMERA_GAIN_EV,
+            "level {level}"
+        );
+        assert_eq!(est.exposure.own_ev, ym_color::exposure::CAMERA_GAIN_EV);
+        assert_eq!(est.color.ev_auto, ym_color::exposure::CAMERA_GAIN_EV);
+        let y = 0.9 * level / peak;
+        let m = est.exposure.meter.mean_luminance;
         assert!(
-            (ev - want).abs() < 0.08,
-            "level {level}: EV {ev}, want {want}"
+            (m / y - 1.0).abs() < 0.08,
+            "level {level}: metered statistic {m}, want {y}"
         );
     }
 }
 
 #[test]
-fn auto_exposure_follows_the_cameras_exposure_compensation_at_half_weight() {
+fn auto_exposure_leaves_the_cameras_exposure_compensation_in_the_picture_in_full() {
+    // The raw already holds the compensation dialled on the camera, and the exposure is a constant, so no term of
+    // it is metered away: the same scene with any compensation gets the same EV (and so is 2^EC brighter when the
+    // camera exposed it 2^EC brighter).
     let dir = tempfile::tempdir().unwrap();
     let env = base_env();
     let scene = Scene::new(512, 384, light(PROFILE, 5200.0), Layout::Uniform, 0.18);
-    let path = dir.path().join("ec.ARW");
-    scene
-        .builder(MODEL)
-        .exposure_comp(10, 10)
-        .write_to(&path, &scene.mosaic())
-        .unwrap();
-    let ev = estimates_of(&decode(&path), &env).summary().exposure_ev;
-    let white = scene.white;
-    let peak = white.iter().copied().fold(0.0, f64::max);
-    let want = (0.18 / (0.9 * 0.18 / peak)).log2() + 0.5;
-    assert!((ev - want).abs() < 0.08, "EV {ev}, want {want}");
+    for (num, den) in [(10, 10), (-20, 10), (0, 10), (-7, 10), (30, 10)] {
+        let path = dir.path().join("ec.ARW");
+        scene
+            .builder(MODEL)
+            .exposure_comp(num, den)
+            .write_to(&path, &scene.mosaic())
+            .unwrap();
+        let raw = decode(&path);
+        assert!(
+            (raw.meta.exposure_comp_ev.unwrap() - f64::from(num) / f64::from(den)).abs() < 1e-12
+        );
+        let ev = estimates_of(&raw, &env).summary().exposure_ev;
+        assert_eq!(
+            ev,
+            ym_color::exposure::CAMERA_GAIN_EV,
+            "EC {num}/{den}: no compensation term"
+        );
+    }
 }
 
 #[test]
@@ -161,8 +179,10 @@ fn a_ramp_is_metered_in_the_middle_of_its_range() {
     let env = base_env();
     let scene = Scene::new(512, 384, light(PROFILE, 5200.0), Layout::Ramp, 0.5).noise(2e-4, 1e-6);
     let est = estimates_of(&decode(&scene.write(dir.path(), "r.ARW", MODEL)), &env);
-    // The geometric mean of a ramp from 0.05 to 0.5 with a centre weight is between its ends.
-    let m = 0.18 / est.exposure.own_ev.exp2();
+    // The geometric mean of a ramp from 0.05 to 0.5 with a centre weight is between its ends (reported; the
+    // exposure itself is the camera's gain).
+    let m = est.exposure.meter.mean_luminance;
+    assert_eq!(est.exposure.own_ev, ym_color::exposure::CAMERA_GAIN_EV);
     assert!((0.05..=0.5).contains(&m), "metered luminance {m}");
     assert!(est.exposure.meter.metered);
 }
@@ -628,8 +648,12 @@ fn auto_exposure_meters_the_picture_the_render_makes_when_the_file_has_a_vignett
     );
     let raw = decode(&flat_field_through_a_lens(dir.path(), "lens.ARW", true));
     let lens = estimates_of(&raw, &env);
-    let ev_flat = flat.exposure.own_ev;
-    let ev_lens = lens.exposure.own_ev;
+    // The exposure is the camera's gain for both; what the metering of the corrected picture shows is the key
+    // statistic (`log2(0.18 / mean luminance)`, reported) and the highlight guard.
+    let key = |m: &ym_color::exposure::AutoExposure| (0.18 / m.mean_luminance).log2();
+    assert_eq!(flat.exposure.own_ev, lens.exposure.own_ev);
+    let ev_flat = key(&flat.exposure.meter);
+    let ev_lens = key(&lens.exposure.meter);
     assert!(
         (ev_lens - ev_flat).abs() < 0.02,
         "metered {ev_lens:.3} EV, the flat field {ev_flat:.3} EV"
@@ -662,7 +686,7 @@ fn auto_exposure_meters_the_picture_the_render_makes_when_the_file_has_a_vignett
     );
     let matrix = *lens.color.metering_chain(tables).unwrap().matrix();
     let ev_of = |rgb: &[f32]| {
-        auto_exposure(
+        key(&auto_exposure(
             &PreviewRgb {
                 width: w,
                 height: h,
@@ -670,10 +694,8 @@ fn auto_exposure_meters_the_picture_the_render_makes_when_the_file_has_a_vignett
                 clip_mask: Some(&preview.clip),
             },
             &matrix,
-            0.0,
         )
-        .unwrap()
-        .ev_auto
+        .unwrap())
     };
     assert!((ev_of(&metered) - ev_lens).abs() < 1e-9);
     eprintln!(

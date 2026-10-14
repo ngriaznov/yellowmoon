@@ -53,10 +53,12 @@
 //! * **Before view.** See [`BeforePoint`] and [`ColorChain::apply_before_pixel`].
 
 mod chain;
+mod dng_inverse;
 mod frame;
 mod transform;
 
 pub use chain::{BeforePoint, ChainParams, ColorChain, LookSetting, StageTrace, View};
+pub use dng_inverse::DNG_SCENE_LIMIT;
 pub use frame::{Frame, Layout};
 pub use transform::{
     ArriDisplayLut, DISPLAY_PLACEMENT_EV, DisplayLutInput, DisplayLutOutput, DisplayLutPrimaries,
@@ -72,11 +74,6 @@ pub enum DisplayError {
     /// The fused colour matrix has a NaN or infinite entry.
     #[error("the fused colour matrix contains a value that is not a finite number")]
     NonFiniteMatrix,
-    /// The look includes its own display rendering, which a DNG cannot hold (`docs/09`).
-    #[error(
-        "this look includes its own display rendering, so it can't go into a DNG; pick another look or export TIFF"
-    )]
-    DngUnavailable,
     /// The display LUT's target is not one the viewport and export paths can render.
     #[error("display LUT target {target:?} is not supported: {reason}")]
     UnsupportedTarget {

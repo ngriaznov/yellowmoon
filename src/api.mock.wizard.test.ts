@@ -287,20 +287,23 @@ describe("the estimate's extra fields", () => {
     expect((await api.exportEstimate(job("this"))).adjusted_photos).toBe(0);
   });
 
-  it("says DNG is unavailable for a look with its own display rendering, and refuses to start one", async () => {
+  it("says a DNG is approximate for a look with its own display rendering, and still starts one", async () => {
     const importing = api.looksImport(downloads(PACKAGE_ZIPS.look_library_logc3_to_rec709));
     await vi.advanceTimersByTimeAsync(4000);
     await importing;
-    expect((await api.exportEstimate(job("this"))).dng_unavailable).toBe(false);
+    expect((await api.exportEstimate(job("this"))).dng_approximate).toBe(false);
     await api.applyLook("this", "arri:3000:film-warm-rec709", 100);
-    expect((await api.exportEstimate(job("this"))).dng_unavailable).toBe(true);
-    expect((await api.exportEstimate(job("picked"))).dng_unavailable).toBe(true);
+    expect((await api.exportEstimate(job("this"))).dng_approximate).toBe(true);
+    expect((await api.exportEstimate(job("picked"))).dng_approximate).toBe(true);
     await api.setCurrent(1);
-    expect((await api.exportEstimate(job("this"))).dng_unavailable).toBe(false);
+    expect((await api.exportEstimate(job("this"))).dng_approximate).toBe(false);
+    // At an intensity of 0 the picture is our own rendering.
     await api.setCurrent(4);
-    const error = await rejection(api.exportStart(job("this", { format: "dng" })));
-    expect(error).toEqual({ scope: "export", message: "This look includes its own display rendering, so it can't go into a DNG. Pick another look or export TIFF." });
-    expect(await api.exportStart(job("this", { format: "tiff" }))).toBe(1);
+    await api.applyLook("this", "arri:3000:film-warm-rec709", 0);
+    expect((await api.exportEstimate(job("this"))).dng_approximate).toBe(false);
+    await api.applyLook("this", "arri:3000:film-warm-rec709", 100);
+    expect(await api.exportStart(job("this", { format: "dng" }))).toBe(1);
+    expect(await api.exportStart(job("this", { format: "tiff" }))).toBe(2);
   });
 });
 

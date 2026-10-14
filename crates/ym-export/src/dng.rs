@@ -78,6 +78,14 @@ pub const ADOBE_NOTICE: &str = "This product includes DNG technology under licen
 /// undo that through `BaselineExposure` and the profile, other apps show the stored image as it is.
 pub const OTHER_APPS_NOTE: &str = "Apps other than Adobe's show the stored linear image darker until their own exposure handling is applied.";
 
+/// One sentence for the DNG export help text (the CLI's `--format dng` help and the export panel, shown
+/// by the panel when the job has such a look), `docs/09`.
+///
+/// A look that includes its own display rendering (LogC3 to Rec.709), or an imported ARRI display LUT,
+/// has no scene-linear form: the DNG's pixels are the scene values that ACES 2 turns into that picture,
+/// which Adobe's renderer shows approximately (`ym_color::display::ColorChain::apply_dng_pixel`).
+pub const OWN_DISPLAY_NOTE: &str = "With a look that includes its own display rendering, the DNG is close to, not the same as, the picture you see.";
+
 /// `UniqueCameraModel`: keeps Lightroom from substituting Adobe's Sony profiles.
 pub const UNIQUE_CAMERA_MODEL: &str = "Yellowmoon AWG4";
 

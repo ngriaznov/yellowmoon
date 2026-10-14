@@ -500,7 +500,7 @@ fn the_dng_stop_and_the_before_view_match_the_cpu() {
             let bef = planar(&out[1]);
             for i in 0..n {
                 let cam = pixel(&img, i);
-                let want = chain.apply_dng_pixel(cam).expect("dng");
+                let want = chain.apply_dng_pixel(cam);
                 let view = chain.apply_view_pixel(View::Before, cam);
                 for ch in 0..3 {
                     let tol = 2e-4 * want[ch].abs().max(0.01);

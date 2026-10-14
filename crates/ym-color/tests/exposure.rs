@@ -1,5 +1,6 @@
-//! M1-08, auto exposure (`docs/02-colour-pipeline.md`, section "Auto exposure"): the metering steps 1 to 5,
-//! burst consistency (step 6), and the comparison with the camera's embedded JPEG that gates it.
+//! M1-08, auto exposure (`docs/02-colour-pipeline.md`, section "Auto exposure"): the interim rule (the
+//! camera's own exposure, a constant gain, with the highlight guard) steps 1 to 5, burst consistency
+//! (step 6), and the comparison with the camera's embedded JPEG that gates it.
 //!
 //! The gate itself ("within 0.5 EV of the embedded JPEG for at least 80 % of the golden set") needs real
 //! ARW files with their embedded previews, and the environment has none; what is tested here is every
@@ -9,10 +10,11 @@
 
 use ym_color::consts::linalg::{IDENTITY, Mat3};
 use ym_color::exposure::{
-    self, AutoExposure, BURST_WINDOW_S, BurstFrame, CENTRE_SIGMA, ExposureError, ExposureSetting,
-    GATE_REQUIRED_FRACTION, GATE_TOLERANCE_EV, GateEntry, LUMINANCE_FLOOR, PreviewRgb,
-    ShotSettings, TARGET_GREY, auto_exposure, burst_groups, evaluate_gate, exposure_error_ev,
-    jpeg_median_luminance, preview_median_luminance, share_burst_ev, srgb_to_linear,
+    self, AutoExposure, BURST_WINDOW_S, BurstFrame, CAMERA_GAIN_EV, CENTRE_SIGMA, ExposureError,
+    ExposureSetting, GATE_REQUIRED_FRACTION, GATE_TOLERANCE_EV, GateEntry, LUMINANCE_FLOOR,
+    PreviewRgb, ShotSettings, TARGET_GREY, auto_exposure, burst_groups, evaluate_gate,
+    exposure_error_ev, jpeg_median_luminance, preview_median_luminance, share_burst_ev,
+    srgb_to_linear,
 };
 use ym_color::gamut::awg4_luminance;
 
@@ -120,8 +122,8 @@ impl Image {
         }
     }
 
-    fn meter(&self, ec: f64) -> AutoExposure {
-        auto_exposure(&self.preview(), &IDENTITY, ec).unwrap()
+    fn meter(&self) -> AutoExposure {
+        auto_exposure(&self.preview(), &IDENTITY).unwrap()
     }
 }
 
@@ -131,71 +133,132 @@ fn y_of_grey(v: f64) -> f64 {
 }
 
 #[test]
-fn a_flat_image_meters_to_middle_grey() {
-    for v in [0.01, 0.05, 0.18, 0.5, 1.5] {
+fn the_exposure_is_the_cameras_gain_for_scenes_of_any_key() {
+    // Dark, middle, bright, flat and a lens-cap frame: the scene does not move the exposure. None of these
+    // ends above 8 after exposure (1.5 * 2^1.11 = 3.2), so the guard stays out of it.
+    for v in [0.0, 1e-5, 0.01, 0.05, 0.18, 0.5, 1.5] {
         let img = Image::flat(40, 30, v);
-        let r = img.meter(0.0);
-        let y = y_of_grey(f64::from(v as f32));
-        let expect = (0.18 / y).log2().clamp(-3.0, 3.0);
+        let r = img.meter();
+        let y = y_of_grey(f64::from(v as f32)).max(LUMINANCE_FLOOR);
         assert!(r.metered);
+        assert_eq!(r.ev_auto, CAMERA_GAIN_EV, "flat {v}");
+        assert_eq!(r.ev_before_guard, CAMERA_GAIN_EV);
+        assert_eq!(r.guard_reduction_ev, 0.0);
+        assert_eq!(r.unmasked_pixels, 40 * 30);
+        // The key statistic is still reported, and does not move the exposure.
         assert!(
             (r.mean_luminance - y).abs() < 1e-9 * y,
             "{v}: {}",
             r.mean_luminance
         );
-        // None of these ends above 8 after exposure, so the guard stays out of it.
-        assert!(
-            (r.ev_auto - expect).abs() < 1e-9,
-            "{v}: {} vs {expect}",
-            r.ev_auto
-        );
+    }
+    // A gradient, a high-key and a low-key scene, and a spotlight: all the same exposure.
+    let (w, h) = (60, 40);
+    let scenes = [
+        Image::new(w, h, |x, _| 0.02 + 0.6 * x as f64 / w as f64),
+        Image::new(w, h, |x, y| 0.9 + 0.02 * ((x + y) % 5) as f64),
+        Image::new(w, h, |x, y| 0.004 + 0.001 * ((x * 3 + y) % 7) as f64),
+        Image::new(w, h, |x, y| {
+            if (x as f64 - 30.0).abs() < 8.0 && (y as f64 - 20.0).abs() < 6.0 {
+                1.2
+            } else {
+                0.03
+            }
+        }),
+    ];
+    for (i, img) in scenes.iter().enumerate() {
+        let r = img.meter();
+        assert_eq!(r.ev_auto, CAMERA_GAIN_EV, "scene {i}");
         assert_eq!(r.guard_reduction_ev, 0.0);
-        assert_eq!(r.unmasked_pixels, 40 * 30);
+        // What the old metering would have chosen differs scene by scene by many stops; it is not used.
+        let old = (TARGET_GREY / r.mean_luminance).log2();
+        assert!((old - CAMERA_GAIN_EV).abs() > 0.05, "scene {i}: {old}");
     }
-    // Middle grey stays where it is.
-    assert!(Image::flat(16, 16, 0.18).meter(0.0).ev_auto.abs() < 1e-6);
+    // A key spread of more than 6 stops (0.004 to 1.2) gives exactly the same exposure.
+    assert_eq!(scenes[1].meter().ev_auto, scenes[2].meter().ev_auto);
 }
 
 #[test]
-fn the_exposure_compensation_counts_at_half_weight() {
-    let img = Image::flat(20, 20, 0.18);
-    for ec in [-2.0, -0.7, 0.0, 1.0, 2.0] {
-        let r = img.meter(ec);
-        assert!((r.ev_auto - 0.5 * ec).abs() < 1e-6, "{ec}: {}", r.ev_auto);
-    }
-    // A non-finite compensation counts as none.
-    assert!(img.meter(f64::NAN).ev_auto.abs() < 1e-6);
+fn the_camera_gain_is_the_documented_median_of_the_camera_engines() {
+    // docs/02: +1.11 EV, the median of the 12 local files' camera JPEGs (std 0.13, range +0.87 to +1.33); it
+    // is within the clamp, and not the +0.79 of an ideal ISO 12232 camera.
+    assert_eq!(CAMERA_GAIN_EV, 1.11);
+    assert!(CAMERA_GAIN_EV.abs() < exposure::EV_LIMIT);
+    assert!((0.87..=1.33).contains(&CAMERA_GAIN_EV));
 }
 
 #[test]
-fn the_ev_is_clamped_to_plus_and_minus_three() {
-    let dark = Image::flat(20, 20, 1e-5);
-    let r = dark.meter(0.0);
-    assert_eq!(r.ev_auto, 3.0);
-    assert_eq!(r.ev_metered, 3.0);
-    // Black is a floor, not a missing value: the lens-cap frame meters to the limit.
-    assert_eq!(Image::flat(20, 20, 0.0).meter(0.0).ev_auto, 3.0);
-    assert_eq!(Image::flat(20, 20, -0.01).meter(0.0).ev_auto, 3.0);
-    assert_eq!(Image::flat(20, 20, 1e-5).meter(10.0).ev_metered, 3.0);
-    let bright = Image::flat(20, 20, 100.0);
-    let r = bright.meter(0.0);
-    assert_eq!(r.ev_metered, -3.0);
-    assert_eq!(Image::flat(20, 20, 40.0).meter(-10.0).ev_metered, -3.0);
-    // 40 at -3 EV is 5, below 8: the guard leaves it. 100 at -3 EV is 12.5, above 8 everywhere: the
-    // guard lowers it to put 100 at 8, which is less than a stop.
-    assert_eq!(Image::flat(20, 20, 40.0).meter(0.0).ev_auto, -3.0);
-    assert!(r.ev_auto < -3.0 && r.ev_auto >= -4.0, "{}", r.ev_auto);
-    assert!((r.ev_auto - (8.0 / 100.0_f64).log2()).abs() < 1e-5);
-    let very = Image::flat(20, 20, 4000.0).meter(0.0);
-    assert_eq!(very.ev_auto, -4.0);
+fn the_exposure_compensation_reaches_the_picture_in_full() {
+    // The raw of a shot taken with EC stops of compensation holds the scene 2^EC brighter. The exposure is the
+    // same constant for both, so the picture (raw * 2^EV) is exactly 2^EC brighter: the whole compensation,
+    // as in the camera's JPEG, and no part of it metered away. Scenes away from the highlight guard.
+    let mut rng = Rng(0xEC_0001);
+    for case in 0..200 {
+        let (w, h) = (24 + case % 17, 18 + case % 11);
+        let base = 0.004 + 0.05 * rng.next_f64();
+        let tilt = 3.0 * rng.next_f64();
+        let ec = 6.0 * rng.next_f64() - 3.0;
+        let scene = Image::new(w, h, |x, y| {
+            base * (1.0 + tilt * x as f64 / w as f64) * (0.6 + y as f64 / h as f64)
+        });
+        let scale = ec.exp2();
+        let shot = Image {
+            rgb: scene.rgb.iter().map(|v| v * scale as f32).collect(),
+            ..Image::new(w, h, |_, _| 0.0)
+        };
+        let (a, b) = (scene.meter(), shot.meter());
+        // Neither is near the guard (the brightest pixel stays below 8 / 2^1.11 = 3.7).
+        let brightest = shot.rgb.iter().fold(0.0_f32, |m, v| m.max(*v));
+        assert!(f64::from(brightest) < 3.0, "case {case}");
+        assert_eq!(a.ev_auto, CAMERA_GAIN_EV);
+        assert_eq!(a.ev_auto, b.ev_auto, "case {case}, EC {ec}");
+        // The pictures: raw * 2^EV, brighter by exactly 2^EC (f32 scaling of the raw: 1e-6).
+        for (x, y) in scene.rgb.iter().zip(&shot.rgb) {
+            let ours = f64::from(*x) * a.ev_auto.exp2();
+            let theirs = f64::from(*y) * b.ev_auto.exp2();
+            assert!(
+                (theirs / ours / scale - 1.0).abs() < 1e-6,
+                "case {case}, EC {ec}: {theirs} / {ours}"
+            );
+        }
+        // The metering statistic, which does not move the exposure, follows the scene by 2^EC.
+        assert!((b.mean_luminance / a.mean_luminance / scale - 1.0).abs() < 1e-5);
+    }
+}
+
+#[test]
+fn the_ev_limit_stays_and_the_guard_can_only_lower_the_gain() {
+    // The clamp of step 4 is unchanged: the gain is inside it, whatever the preview.
+    assert_eq!(exposure::EV_LIMIT, 3.0);
+    for img in [
+        Image::flat(20, 20, 1e-5),
+        Image::flat(20, 20, 0.0),
+        Image::flat(20, 20, -0.01),
+        Image::flat(20, 20, 100.0),
+    ] {
+        let r = img.meter();
+        assert_eq!(r.ev_before_guard, CAMERA_GAIN_EV);
+        assert!(r.ev_auto <= r.ev_before_guard);
+    }
+    // 100 after the gain is 216, above 8 everywhere: the guard would put 100 at 8 (-3.6 EV), which is more
+    // than a stop, so it takes the whole stop it may.
+    let r = Image::flat(20, 20, 100.0).meter();
+    assert_eq!(r.guard_reduction_ev, 1.0);
+    assert!((r.ev_auto - (CAMERA_GAIN_EV - 1.0)).abs() < 1e-12, "{}", r.ev_auto);
+    let very = Image::flat(20, 20, 4000.0).meter();
+    assert_eq!(very.ev_auto, CAMERA_GAIN_EV - 1.0);
     assert_eq!(very.guard_reduction_ev, 1.0);
+    // The lens-cap frame keeps the gain: no metering pushes it to the +3 limit any more.
+    assert_eq!(Image::flat(37, 29, 0.0).meter().ev_auto, CAMERA_GAIN_EV);
 }
 
-/// An independent, deliberately plain implementation of steps 1 to 4 for the test scenes.
-fn reference_ev(img: &Image, matrix: &Mat3, ec: f64) -> (f64, f64) {
+/// An independent, deliberately plain implementation of steps 1 to 5 for the test scenes: the centre-weighted
+/// geometric mean `m` (reported only), and `EV_auto`, the camera gain lowered by a bisection for the highlight guard.
+fn reference_ev(img: &Image, matrix: &Mat3) -> (f64, f64) {
     let y_row = ym_color::gamut::awg4_luminance_row();
     let (w, h) = (img.width as f64, img.height as f64);
     let mut ys: Vec<(f64, f64)> = Vec::new(); // (Y, weight)
+    let mut raw_ys: Vec<f64> = Vec::new(); // every unmasked pixel, before the floor
     for py in 0..img.height {
         for px in 0..img.width {
             let i = py * img.width + px;
@@ -214,6 +277,7 @@ fn reference_ev(img: &Image, matrix: &Mat3, ec: f64) -> (f64, f64) {
             ];
             let y =
                 (y_row[0] * lin[0] + y_row[1] * lin[1] + y_row[2] * lin[2]).max(LUMINANCE_FLOOR);
+            raw_ys.push(y);
             let dx = px as f64 + 0.5 - w / 2.0;
             let dy = py as f64 + 0.5 - h / 2.0;
             let r = (dx * dx + dy * dy).sqrt() / (0.5 * (w * w + h * h).sqrt());
@@ -236,7 +300,26 @@ fn reference_ev(img: &Image, matrix: &Mat3, ec: f64) -> (f64, f64) {
         }
     }
     let m = (swl / sw).exp();
-    (m, ((0.18 / m).log2() + 0.5 * ec).clamp(-3.0, 3.0))
+    // The guard by bisection: the largest EV in [gain - 1, gain] with at most floor(0.005 n) pixels above 8.
+    let allowed = (0.005 * raw_ys.len() as f64).floor() as usize;
+    let over = |ev: f64| raw_ys.iter().filter(|&&y| y * ev.exp2() > 8.0).count();
+    let ev = if over(CAMERA_GAIN_EV) <= allowed {
+        CAMERA_GAIN_EV
+    } else if over(CAMERA_GAIN_EV - 1.0) > allowed {
+        CAMERA_GAIN_EV - 1.0
+    } else {
+        let (mut ok, mut bad) = (CAMERA_GAIN_EV - 1.0, CAMERA_GAIN_EV);
+        for _ in 0..80 {
+            let mid = 0.5 * (ok + bad);
+            if over(mid) <= allowed {
+                ok = mid;
+            } else {
+                bad = mid;
+            }
+        }
+        ok
+    };
+    (m, ev)
 }
 
 #[test]
@@ -244,7 +327,8 @@ fn metering_agrees_with_a_plain_reimplementation_on_random_scenes() {
     let mut rng = Rng(0xE5_0C_5E);
     // A matrix that is not the identity: a mild colour matrix plus a gain.
     let matrix: Mat3 = [[1.3, -0.2, -0.1], [-0.15, 1.2, -0.05], [0.02, -0.3, 1.28]];
-    for scene in 0..12 {
+    let mut guarded = 0;
+    for scene in 0..24 {
         let (w, h) = (24 + scene * 5, 18 + scene * 3);
         let base = 0.02 + 0.5 * rng.next_f64();
         let tilt = rng.next_f64() * 2.0;
@@ -263,29 +347,40 @@ fn metering_agrees_with_a_plain_reimplementation_on_random_scenes() {
                 img.rgb[3 * i..3 * i + 3].copy_from_slice(&[0.0, 0.0, 0.0]);
             }
         }
+        // Every other scene gets a bright patch that is not clipped, for the guard.
+        if scene % 2 == 1 {
+            for i in 0..w * h / 40 {
+                img.rgb[3 * i..3 * i + 3].copy_from_slice(&[5.0, 4.5, 4.8]);
+            }
+        }
         for y in 0..h / 4 {
             for x in 0..w / 3 {
                 img.mask[y * w + x] = 1;
                 img.rgb[3 * (y * w + x)..3 * (y * w + x) + 3].copy_from_slice(&[50.0, 50.0, 50.0]);
             }
         }
-        let ec = rng.next_f64() * 4.0 - 2.0;
-        let got = auto_exposure(&img.preview(), &matrix, ec).unwrap();
-        let (m, ev) = reference_ev(&img, &matrix, ec);
+        let got = auto_exposure(&img.preview(), &matrix).unwrap();
+        let (m, ev) = reference_ev(&img, &matrix);
         assert!(
             (got.mean_luminance - m).abs() < 1e-9 * m,
             "scene {scene}: {} vs {m}",
             got.mean_luminance
         );
+        // The exposure is the gain, lowered by the guard only.
+        assert_eq!(got.ev_before_guard, CAMERA_GAIN_EV, "scene {scene}");
         assert!(
-            (got.ev_metered - ev).abs() < 1e-9,
+            (got.ev_auto - ev).abs() < 1e-9,
             "scene {scene}: {} vs {ev}",
-            got.ev_metered
+            got.ev_auto
         );
         // The guard can only lower the exposure, by at most a stop.
-        assert!(got.ev_auto <= got.ev_metered && got.ev_auto >= got.ev_metered - 1.0);
-        assert_eq!(got.guard_reduction_ev, got.ev_metered - got.ev_auto);
+        assert!(
+            got.ev_auto <= got.ev_before_guard && got.ev_auto >= got.ev_before_guard - 1.0
+        );
+        assert_eq!(got.guard_reduction_ev, got.ev_before_guard - got.ev_auto);
+        guarded += usize::from(got.guard_reduction_ev > 0.0);
     }
+    assert!(guarded >= 4, "the sweep must exercise the guard: {guarded}");
 }
 
 #[test]
@@ -297,28 +392,39 @@ fn clipped_pixels_do_not_count() {
             img.mask[y * 40 + x] = 1;
         }
     }
-    let r = img.meter(0.0);
-    assert!(r.ev_auto.abs() < 1e-6, "{}", r.ev_auto);
+    let r = img.meter();
+    // The masked half is outside the statistic and outside the guard: the camera gain, untouched.
+    assert_eq!(r.ev_auto, CAMERA_GAIN_EV);
+    assert_eq!(r.guard_reduction_ev, 0.0);
+    let grey = y_of_grey(f64::from(0.18_f32));
+    assert!(
+        (r.mean_luminance - grey).abs() < 1e-9,
+        "{}",
+        r.mean_luminance
+    );
     assert_eq!(r.unmasked_pixels, 400);
-    // Without the mask the same pixels dominate the percentile band.
+    // Without the mask the same pixels are half the picture above 8 after the gain: the guard takes its stop,
+    // and they dominate the reported statistic.
     let without = auto_exposure(
         &PreviewRgb {
             clip_mask: None,
             ..img.preview()
         },
         &IDENTITY,
-        0.0,
     )
     .unwrap();
-    assert!(without.ev_auto < -1.0, "{}", without.ev_auto);
-    // Everything masked: nothing to meter, only the compensation is left.
+    assert_eq!(without.ev_auto, CAMERA_GAIN_EV - 1.0);
+    assert!(without.mean_luminance > 1.0, "{}", without.mean_luminance);
+    // Everything masked: nothing to report, and the exposure is the same camera gain.
     let all = Image {
         mask: vec![1; 40 * 20],
         ..Image::flat(40, 20, 100.0)
     };
-    let r = all.meter(1.0);
+    let r = all.meter();
     assert!(!r.metered);
-    assert_eq!(r.ev_auto, 0.5);
+    assert_eq!(r.ev_auto, CAMERA_GAIN_EV);
+    assert_eq!(r.ev_before_guard, CAMERA_GAIN_EV);
+    assert_eq!(r.guard_reduction_ev, 0.0);
     assert_eq!(r.metered_pixels, 0);
     // An empty preview likewise.
     let empty = auto_exposure(
@@ -329,11 +435,10 @@ fn clipped_pixels_do_not_count() {
             clip_mask: None,
         },
         &IDENTITY,
-        -2.0,
     )
     .unwrap();
     assert!(!empty.metered);
-    assert_eq!(empty.ev_auto, -1.0);
+    assert_eq!(empty.ev_auto, CAMERA_GAIN_EV);
 }
 
 #[test]
@@ -342,9 +447,10 @@ fn pixels_that_are_not_finite_are_skipped() {
     img.rgb[3 * 5] = f32::NAN;
     img.rgb[3 * 17 + 1] = f32::INFINITY;
     img.rgb[3 * 40 + 2] = f32::NEG_INFINITY;
-    let r = img.meter(0.0);
+    let r = img.meter();
     assert_eq!(r.unmasked_pixels, 900 - 3);
-    assert!(r.ev_auto.abs() < 1e-6);
+    assert_eq!(r.ev_auto, CAMERA_GAIN_EV);
+    assert!((r.mean_luminance - y_of_grey(f64::from(0.18_f32))).abs() < 1e-9);
 }
 
 #[test]
@@ -367,7 +473,7 @@ fn flat_frames_of_any_size_keep_every_pixel_in_the_band() {
     ] {
         for v in [0.0, 1e-5, 0.007, 0.07, 0.123_456_79, 0.18, 0.3, 1.0, 7.77] {
             let img = Image::flat(w, h, v);
-            let r = img.meter(0.0);
+            let r = img.meter();
             assert!(r.ev_auto.is_finite(), "{w} x {h} at {v}: {r:?}");
             assert_eq!(
                 r.metered_pixels,
@@ -375,14 +481,30 @@ fn flat_frames_of_any_size_keep_every_pixel_in_the_band() {
                 "{w} x {h} at {v} lost pixels from the band"
             );
             let y = y_of_grey(f64::from(v as f32)).max(LUMINANCE_FLOOR);
-            let expect = (TARGET_GREY / y).log2().clamp(-3.0, 3.0);
-            assert!((r.ev_metered - expect).abs() < 1e-9, "{w} x {h} at {v}");
+            assert!(
+                (r.mean_luminance - y).abs() < 1e-9 * y,
+                "{w} x {h} at {v}: {}",
+                r.mean_luminance
+            );
+            // The camera gain, except that the guard puts a frame brighter than 8 after the gain at 8 (by at
+            // most the stop it may take): 7.77 here.
+            let expect = if y * CAMERA_GAIN_EV.exp2() > 8.0 {
+                (8.0 / y).log2().max(CAMERA_GAIN_EV - 1.0)
+            } else {
+                CAMERA_GAIN_EV
+            };
+            assert_eq!(r.ev_before_guard, CAMERA_GAIN_EV, "{w} x {h} at {v}");
+            assert!(
+                (r.ev_auto - expect).abs() < 1e-12,
+                "{w} x {h} at {v}: {} vs {expect}",
+                r.ev_auto
+            );
             checked += 1;
         }
     }
     assert_eq!(checked, 90);
-    // The lens-cap frame of the documented size meters to the +3 EV limit.
-    assert_eq!(Image::flat(37, 29, 0.0).meter(0.0).ev_auto, 3.0);
+    // The lens-cap frame of the documented size keeps the camera gain.
+    assert_eq!(Image::flat(37, 29, 0.0).meter().ev_auto, CAMERA_GAIN_EV);
 }
 
 #[test]
@@ -398,7 +520,6 @@ fn a_preview_of_two_different_pixels_is_metered_not_nan() {
             clip_mask: None,
         },
         &IDENTITY,
-        0.0,
     )
     .unwrap();
     assert!(r.metered && r.ev_auto.is_finite(), "{r:?}");
@@ -422,7 +543,6 @@ fn a_preview_of_two_different_pixels_is_metered_not_nan() {
                 clip_mask: None,
             },
             &IDENTITY,
-            0.0,
         )
         .unwrap();
         assert!(
@@ -443,7 +563,7 @@ fn a_size_that_overflows_is_an_error_not_a_panic() {
             clip_mask: None,
         };
         assert!(matches!(
-            auto_exposure(&preview, &IDENTITY, 0.0),
+            auto_exposure(&preview, &IDENTITY),
             Err(ExposureError::BufferSize { .. })
         ));
         assert!(preview_median_luminance(&preview, &IDENTITY, 0.0).is_err());
@@ -460,13 +580,13 @@ fn the_first_and_last_percent_are_ignored() {
         i if i >= w * h - 40 => 50.0,
         _ => 0.18,
     });
-    let r = img.meter(0.0);
+    let r = img.meter();
     assert!(
         (r.mean_luminance - 0.18).abs() < 1e-6,
         "{}",
         r.mean_luminance
     );
-    assert!(r.ev_auto.abs() < 1e-6, "{}", r.ev_auto);
+    assert_eq!(r.ev_auto, CAMERA_GAIN_EV);
     assert_eq!(r.guard_reduction_ev, 0.0);
     assert!(r.metered_pixels < w * h, "the outliers were dropped");
     // Two percent each side: the 1st and 99th percentiles fall inside the outlier blocks, nothing is
@@ -476,14 +596,14 @@ fn the_first_and_last_percent_are_ignored() {
         i if i >= w * h - 200 => 50.0,
         _ => 0.18,
     });
-    let r = more.meter(0.0);
+    let r = more.meter();
     assert_eq!(r.metered_pixels, w * h);
     assert!(
         (r.mean_luminance / 0.18 - 1.0).abs() > 1e-3,
         "{}",
         r.mean_luminance
     );
-    let (m, _) = reference_ev(&more, &IDENTITY, 0.0);
+    let (m, _) = reference_ev(&more, &IDENTITY);
     assert!((r.mean_luminance - m).abs() < 1e-9 * m);
 }
 
@@ -495,10 +615,11 @@ fn the_centre_counts_more_than_the_edges() {
     let inside =
         |x: usize, y: usize| (x as f64 - 30.0).abs() < 12.0 && (y as f64 - 20.0).abs() < 8.0;
     let img = Image::new(w, h, |x, y| if inside(x, y) { 0.5 } else { 0.04 });
-    let r = img.meter(0.0);
-    let (m, ev) = reference_ev(&img, &IDENTITY, 0.0);
+    let r = img.meter();
+    let (m, ev) = reference_ev(&img, &IDENTITY);
     assert!((r.mean_luminance - m).abs() < 1e-9 * m);
-    assert!((r.ev_metered - ev).abs() < 1e-9);
+    assert_eq!(r.ev_auto, ev);
+    assert_eq!(r.ev_auto, CAMERA_GAIN_EV);
     let count = (0..w * h).filter(|i| inside(i % w, i / w)).count() as f64;
     let total = (w * h) as f64;
     let flat = ((count * 0.5_f64.ln() + (total - count) * 0.04_f64.ln()) / total).exp();
@@ -523,27 +644,35 @@ fn the_centre_counts_more_than_the_edges() {
             corner.rgb[3 * (y * 41 + x)..3 * (y * 41 + x) + 3].copy_from_slice(&[0.2; 3]);
         }
     }
-    assert!(centre.meter(0.0).mean_luminance > corner.meter(0.0).mean_luminance * 1.01);
+    assert!(centre.meter().mean_luminance > corner.meter().mean_luminance * 1.01);
 }
 
 #[test]
 fn the_matrix_decides_the_luminance() {
     let img = Image::flat(30, 30, 0.09);
-    // A gain of 2 in the chain doubles Y and lowers the EV by one stop.
+    // A gain of 2 in the chain doubles Y: the reported statistic follows, the exposure does not move.
     let double: Mat3 = [[2.0, 0.0, 0.0], [0.0, 2.0, 0.0], [0.0, 0.0, 2.0]];
-    let a = auto_exposure(&img.preview(), &IDENTITY, 0.0).unwrap();
-    let b = auto_exposure(&img.preview(), &double, 0.0).unwrap();
-    assert!((a.ev_auto - b.ev_auto - 1.0).abs() < 1e-6);
+    let a = auto_exposure(&img.preview(), &IDENTITY).unwrap();
+    let b = auto_exposure(&img.preview(), &double).unwrap();
+    assert!((b.mean_luminance / a.mean_luminance - 2.0).abs() < 1e-12);
+    assert_eq!(a.ev_auto, CAMERA_GAIN_EV);
+    assert_eq!(b.ev_auto, CAMERA_GAIN_EV);
     // Only the AWG4 Y row counts: a matrix that moves light between channels without changing Y of a
-    // grey leaves the EV alone.
+    // grey leaves the statistic alone.
     let swap: Mat3 = [[0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0]];
-    let c = auto_exposure(&img.preview(), &swap, 0.0).unwrap();
-    assert!((a.ev_auto - c.ev_auto).abs() < 1e-6);
+    let c = auto_exposure(&img.preview(), &swap).unwrap();
+    assert!((a.mean_luminance - c.mean_luminance).abs() < 1e-12);
+    // The matrix does decide the highlight guard: the same picture through a bright matrix (Y = 8 / 2^1.11
+    // and a bit over, on more than 0.5 % of the pixels) is lowered, through the plain one it is not.
+    let bright = Image::flat(30, 30, 2.0);
+    assert_eq!(bright.meter().guard_reduction_ev, 0.0);
+    let r = auto_exposure(&bright.preview(), &double).unwrap();
+    assert!(r.guard_reduction_ev > 0.0, "{r:?}");
 }
 
 #[test]
 fn the_highlight_guard_follows_the_half_percent_rule() {
-    // 10 000 pixels, a fraction of them at Y = 12 (not clipped), the rest middle grey.
+    // 10 000 pixels, a fraction of them at Y = 6 (not clipped, 13 after the gain), the rest middle grey.
     let (w, h) = (100, 100);
     let with_bright = |count: usize, level: f64| {
         Image::new(
@@ -553,41 +682,41 @@ fn the_highlight_guard_follows_the_half_percent_rule() {
         )
     };
     // 0.5 % (50 pixels) is allowed: no change.
-    let r = with_bright(50, 12.0).meter(0.0);
+    let r = with_bright(50, 6.0).meter();
     assert_eq!(r.guard_reduction_ev, 0.0, "{r:?}");
+    assert_eq!(r.ev_auto, CAMERA_GAIN_EV);
     // 51 pixels is more than 0.5 %: lowered until at most 50 are above 8, i.e. the 51st brightest
-    // pixel (12) must land at 8: -log2(12/8) = -0.585 stops.
-    let r = with_bright(51, 12.0).meter(0.0);
+    // pixel (6) must land at 8: log2(8/6) = +0.415, which is 0.695 stops down from the gain.
+    let r = with_bright(51, 6.0).meter();
     assert!(
-        (r.ev_auto - (8.0_f64 / 12.0).log2()).abs() < 1e-5,
+        (r.ev_auto - (8.0_f64 / 6.0).log2()).abs() < 1e-5,
         "{}",
         r.ev_auto
     );
-    // Very bright highlights: at most one stop.
-    let r = with_bright(300, 100.0).meter(0.0);
-    assert!((r.guard_reduction_ev - 1.0).abs() < 1e-9, "{r:?}");
-    assert!((r.ev_auto - (r.ev_metered - 1.0)).abs() < 1e-9);
-    // The guard counts after the exposure: a dark exposure leaves the same highlights below 8.
-    let dark = Image::new(w, h, |x, y| if y * w + x < 300 { 6.0 } else { 0.18 });
-    assert_eq!(dark.meter(0.0).guard_reduction_ev, 0.0);
-    // With +2 EC the metered exposure is a stop up and 6 would end at 10.8: the guard puts 6 at 8.
-    let raised = dark.meter(2.0);
-    assert!(raised.ev_metered > 0.8, "{}", raised.ev_metered);
+    assert!((r.guard_reduction_ev - (CAMERA_GAIN_EV - (8.0_f64 / 6.0).log2())).abs() < 1e-5);
+    // A highlight that the gain brings to 8 or below does not count: 3.6 * 2^1.11 = 7.8.
+    let r = with_bright(300, 3.6).meter();
+    assert_eq!(r.guard_reduction_ev, 0.0, "{r:?}");
+    // ... and one that only just exceeds it costs only the excess: 3.8 * 2^1.11 = 8.2.
+    let r = with_bright(300, 3.8).meter();
     assert!(
-        (raised.ev_auto - (8.0_f64 / 6.0).log2()).abs() < 1e-5,
-        "{}",
-        raised.ev_auto
+        (r.ev_auto - (8.0_f64 / 3.8).log2()).abs() < 1e-5 && r.guard_reduction_ev < 0.05,
+        "{r:?}"
     );
+    // Very bright highlights: at most one stop.
+    let r = with_bright(300, 100.0).meter();
+    assert!((r.guard_reduction_ev - 1.0).abs() < 1e-9, "{r:?}");
+    assert!((r.ev_auto - (r.ev_before_guard - 1.0)).abs() < 1e-9);
     // Masked (clipped) pixels are not counted: 300 blown-out pixels in the mask cause no guard.
     let mut masked = with_bright(300, 100.0);
     for i in 0..300 {
         masked.mask[i] = 1;
     }
-    assert_eq!(masked.meter(0.0).guard_reduction_ev, 0.0);
+    assert_eq!(masked.meter().guard_reduction_ev, 0.0);
     // The guard never raises the exposure.
-    let r = Image::flat(20, 20, 0.001).meter(0.0);
+    let r = Image::flat(20, 20, 0.001).meter();
     assert_eq!(r.guard_reduction_ev, 0.0);
-    assert_eq!(r.ev_auto, r.ev_metered);
+    assert_eq!(r.ev_auto, r.ev_before_guard);
 }
 
 #[test]
@@ -601,7 +730,6 @@ fn the_buffers_are_checked() {
             clip_mask: None,
         },
         &IDENTITY,
-        0.0,
     )
     .unwrap_err();
     assert_eq!(
@@ -624,7 +752,6 @@ fn the_buffers_are_checked() {
             clip_mask: Some(&mask),
         },
         &IDENTITY,
-        0.0,
     )
     .unwrap_err();
     assert!(matches!(
@@ -731,6 +858,35 @@ fn a_burst_shares_the_median_ev() {
     // One frame is its own group.
     assert_eq!(share_burst_ev(&frames[..1], &ev[..1]), vec![0.5]);
     assert!(share_burst_ev(&[], &[]).is_empty());
+}
+
+#[test]
+fn a_burst_keeps_the_constant_gain_and_a_guarded_frame_takes_the_median() {
+    // Five frames of one burst whose key differs by many stops (the subject moves, the light changes): every
+    // frame has the same exposure and the shared one is that constant, as before the median and after it.
+    let s = shot(1.0 / 500.0, 100.0);
+    let frames: Vec<BurstFrame> = (0..5)
+        .map(|i| frame("A1", Some(100.0 + 0.1 * f64::from(i)), s))
+        .collect();
+    let keys = [0.004, 0.03, 0.18, 0.9, 1.4];
+    let own: Vec<f64> = keys
+        .iter()
+        .map(|&v| Image::flat(40, 30, v).meter().ev_auto)
+        .collect();
+    assert_eq!(own, vec![CAMERA_GAIN_EV; 5]);
+    assert_eq!(share_burst_ev(&frames, &own), vec![CAMERA_GAIN_EV; 5]);
+    // One frame with a sky that clips (its guard acted) is the odd one out: the group median is still the
+    // constant, so that frame takes the camera gain too (the spec orders the sharing after the guard).
+    let mut own = own;
+    let guarded = Image::new(100, 100, |x, y| if y * 100 + x < 300 { 6.0 } else { 0.18 }).meter();
+    assert!(guarded.ev_auto < CAMERA_GAIN_EV);
+    own[2] = guarded.ev_auto;
+    assert_eq!(share_burst_ev(&frames, &own), vec![CAMERA_GAIN_EV; 5]);
+    // Two guarded frames out of five still leave the median at the constant; three move it.
+    own[3] = guarded.ev_auto;
+    assert_eq!(share_burst_ev(&frames, &own), vec![CAMERA_GAIN_EV; 5]);
+    own[4] = guarded.ev_auto;
+    assert_eq!(share_burst_ev(&frames, &own), vec![guarded.ev_auto; 5]);
 }
 
 #[test]
@@ -1057,7 +1213,7 @@ fn the_whole_gate_pipeline_on_synthetic_scenes_with_planted_camera_offsets() {
             base * spread.powf(x as f64 / w as f64)
                 * (0.6 + 0.8 * ((x * 7 + y * 13) % 11) as f64 / 11.0)
         });
-        let r = img.meter(0.0);
+        let r = img.meter();
         let ours = preview_median_luminance(&img.preview(), &IDENTITY, r.ev_auto)
             .unwrap()
             .unwrap();
@@ -1117,7 +1273,7 @@ fn the_whole_gate_pipeline_on_synthetic_scenes_with_planted_camera_offsets() {
 fn the_constants_are_the_ones_of_the_spec() {
     assert_eq!(TARGET_GREY, 0.18);
     assert_eq!(CENTRE_SIGMA, 0.35);
-    assert_eq!(exposure::EC_WEIGHT, 0.5);
+    assert_eq!(CAMERA_GAIN_EV, 1.11);
     assert_eq!(exposure::EV_LIMIT, 3.0);
     assert_eq!(exposure::PERCENTILE_LOW, 0.01);
     assert_eq!(exposure::PERCENTILE_HIGH, 0.99);
@@ -1138,7 +1294,7 @@ fn a_full_size_eighth_resolution_preview_meters_in_well_under_a_second() {
         0.02 + 0.3 * ((x * 31 + y * 17) % 97) as f64 / 97.0
     });
     let start = std::time::Instant::now();
-    let r = auto_exposure(&img.preview(), &IDENTITY, 0.0).unwrap();
+    let r = auto_exposure(&img.preview(), &IDENTITY).unwrap();
     let elapsed = start.elapsed();
     eprintln!("auto exposure on {w} x {h}: {elapsed:?}");
     assert!(r.metered && r.unmasked_pixels == w * h);

@@ -8,8 +8,12 @@ import type { AppStore } from "../../state/store";
 /** The Adobe notice that goes with DNG (`docs/09` §Legal: "in the About window and the DNG export help text"). */
 export const ADOBE_NOTICE = "This product includes DNG technology under license by Adobe.";
 
-/** Said under Format when a look has its own display rendering (`docs/09` §Pixel pipeline per format). */
-export const DNG_BLOCKED = "This look includes its own display rendering, so it can't go into a DNG. Pick another look or export TIFF.";
+/**
+ * Said under the DNG note when a look in the job has its own display rendering (`docs/09` §What a DNG carries): a
+ * DNG still works, and is close to the picture here rather than the same. It is `ym_export::dng::OWN_DISPLAY_NOTE`,
+ * which `ym render --help` also says; a test in `src-tauri/src/bindings.rs` fails if this copy drifts.
+ */
+export const OWN_DISPLAY_NOTE = "With a look that includes its own display rendering, the DNG is close to, not the same as, the picture you see.";
 
 const DNG_NOTE =
   "Linear DNG with your look baked in. Opens in Lightroom close to this render, with room to adjust exposure, highlights and white balance.";
@@ -88,7 +92,7 @@ export function ExportOptionsForm({ store, options, mode, model, scope, estimate
   const set = (patch: Partial<ExportOptions>, final = true): void => store.setExportOptions(patch, final);
   const fullEdge = model.fullEdge;
   const range = longEdgeRange(panel ? (fullEdge ?? 0) : DEFAULTS_MAX_EDGE);
-  const dngBlocked = panel && estimate?.dng_unavailable === true;
+  const dngApproximate = panel && estimate?.dng_approximate === true;
   const bits = (value: string): BitDepth => (value === "8" ? 8 : 16);
 
   const chooseFolder = async (): Promise<void> => {
@@ -138,7 +142,7 @@ export function ExportOptionsForm({ store, options, mode, model, scope, estimate
             { value: "jpeg", label: "JPEG" },
             { value: "tiff", label: "TIFF" },
             { value: "png", label: "PNG" },
-            { value: "dng", label: "DNG", disabled: dngBlocked, ariaLabel: dngBlocked ? "DNG, not available for this look" : undefined },
+            { value: "dng", label: "DNG" },
           ]}
         />
         {options.format === "jpeg" ? (
@@ -197,21 +201,14 @@ export function ExportOptionsForm({ store, options, mode, model, scope, estimate
           </Field>
         ) : null}
         {options.format === "dng" ? (
-          dngBlocked ? (
-            <p className="ym-row-note" role="alert">
-              {DNG_BLOCKED}
+          <>
+            <p className="ym-row-note">{DNG_NOTE}</p>
+            <p className="ym-row-note">{OTHER_APPS_NOTE}</p>
+            {dngApproximate ? <p className="ym-row-note">{OWN_DISPLAY_NOTE}</p> : null}
+            <p className="ym-row-note ym-export__legal">
+              {DNG_LATER_EDITS} {ADOBE_NOTICE}
             </p>
-          ) : (
-            <>
-              <p className="ym-row-note">{DNG_NOTE}</p>
-              <p className="ym-row-note">{OTHER_APPS_NOTE}</p>
-              <p className="ym-row-note ym-export__legal">
-                {DNG_LATER_EDITS} {ADOBE_NOTICE}
-              </p>
-            </>
-          )
-        ) : dngBlocked ? (
-          <p className="ym-row-note">{DNG_BLOCKED}</p>
+          </>
         ) : null}
       </Card>
 

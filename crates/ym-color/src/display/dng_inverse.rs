@@ -10,7 +10,7 @@
 //!
 //! * **The inverse of what the fitted profile emulates.** ACES 2 SDR with Rec.709 limiting
 //!   primaries and the display placement (`2^`[`DISPLAY_PLACEMENT_EV`] in front of the transform,
-//!   [`aces2_input_matrix`]), inverted by `Aces2Transform::inverse_ap0_linear`. The placement is in
+//!   [`aces2_input_matrix`](super::aces2_input_matrix)), inverted by `Aces2Transform::inverse_ap0_linear`. The placement is in
 //!   the DNG's `BaselineExposure` (`docs/09`), not in the pixels, so it is divided out here: Adobe's
 //!   renderer multiplies it back in.
 //! * **Display white has no finite scene value.** ACES 2 reaches its peak at 128 times the reference
@@ -24,7 +24,6 @@
 
 use super::DISPLAY_PLACEMENT_EV;
 use super::OutputTarget;
-use super::transform::aces2_input_matrix;
 use crate::aces2::{Aces2Output, Aces2Transform};
 use crate::consts::Vec3;
 use crate::consts::linalg::{self, Mat3};
@@ -40,7 +39,7 @@ pub const DNG_SCENE_LIMIT: f64 = 16.0;
 #[derive(Debug, Clone, Copy)]
 pub(super) struct DngDisplayInverse {
     transform: &'static Aces2Transform,
-    /// The inverse of `2^DISPLAY_PLACEMENT_EV * awg4_to_ap0` ([`aces2_input_matrix`]): AP0 to AWG4
+    /// The inverse of `2^DISPLAY_PLACEMENT_EV * awg4_to_ap0` ([`aces2_input_matrix`](super::aces2_input_matrix)): AP0 to AWG4
     /// with the placement divided out.
     ap0_to_awg4: Mat3,
     /// Largest AWG4 channel the result may have: [`DNG_SCENE_LIMIT`] over `2^DISPLAY_PLACEMENT_EV`.
@@ -53,6 +52,7 @@ impl DngDisplayInverse {
     /// The inverse for a chain that renders `output`.
     pub(super) fn new(output: OutputTarget) -> Self {
         let m = matrices();
+        let gain = DISPLAY_PLACEMENT_EV.exp2();
         let to_rec709 = match output {
             OutputTarget::Srgb => None,
             OutputTarget::Viewport | OutputTarget::DisplayP3 => {
@@ -62,9 +62,9 @@ impl DngDisplayInverse {
         };
         Self {
             transform: Aces2Transform::shared(Aces2Output::Srgb),
-            // `aces2_input_matrix` is `2^k` times an invertible gamut matrix: always invertible.
-            ap0_to_awg4: linalg::inv(&aces2_input_matrix()).unwrap_or(m.ap0_to_awg4),
-            max_channel: DNG_SCENE_LIMIT / DISPLAY_PLACEMENT_EV.exp2(),
+            // The inverse of `aces2_input_matrix()` (`2^k` times AWG4 to AP0) is AP0 to AWG4 over `2^k`.
+            ap0_to_awg4: m.ap0_to_awg4.map(|row| row.map(|v| v / gain)),
+            max_channel: DNG_SCENE_LIMIT / gain,
             to_rec709,
         }
     }

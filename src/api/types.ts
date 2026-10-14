@@ -595,10 +595,11 @@ export interface ExportEstimate {
    */
   adjusted_photos: number;
   /**
-   * A photo in the job uses a look with its own display rendering (LogC3 to Rec.709), which cannot go into
-   * a DNG: DNG is disabled (addition, `docs/09` §Pixel pipeline per format).
+   * A DNG of this job is close to, not the same as, the picture in the app: a photo in the job uses a look
+   * with its own display rendering (LogC3 to Rec.709) at an intensity above 0, or ARRI's display rendering is
+   * chosen. The panel then adds one sentence to the DNG note (addition, `docs/09` §What a DNG carries).
    */
-  dng_unavailable: boolean;
+  dng_approximate: boolean;
 }
 
 /** `export_progress` event payload. */

@@ -291,7 +291,7 @@ describe("step 3 · Recognise", () => {
     expect(next()).toHaveAttribute("aria-disabled", "true");
     expect(screen.getByText("Say what the other LUTs expect as input.")).toBeInTheDocument();
     await h!.user.click(within(group).getByRole("radio", { name: "LogC3 · Rec.709" }));
-    expect(within(row).getByText("LogC3 in, Rec.709 out. It replaces our display rendering, so it can't go into a DNG.")).toBeInTheDocument();
+    expect(within(row).getByText("LogC3 in, Rec.709 out. It replaces our display rendering.")).toBeInTheDocument();
     expect(within(row).getByText("Ready")).toBeInTheDocument();
     expect(next()).not.toHaveAttribute("aria-disabled");
   });

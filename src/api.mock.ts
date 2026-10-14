@@ -780,7 +780,6 @@ function packageDisplayLuts(id: PackageId): DisplayLut[] {
 /** "Warm_Film.cube" gives "Warm Film". */
 const cubeName = (fileName: string): string => fileName.replace(/\.(cube|zip)$/i, "").replace(/[_-]+/g, " ").trim();
 
-const DNG_BLOCKED_MESSAGE = "This look includes its own display rendering, so it can't go into a DNG. Pick another look or export TIFF.";
 const MISSING_SOURCE = "That file is not there any more. Download it again, or choose it again.";
 
 /** The last part of a path. */
@@ -1303,9 +1302,10 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     return { files, skips, errors };
   }
 
-  /** The photos of a job that use a look with its own display rendering, which can't go into a DNG. */
-  function dngUnavailable(job: ExportJob): boolean {
-    return targets(job.scope).some((rec) => findLook(rec.settings.look)?.input === "logc3_to_rec709");
+  /** A DNG of the job is close to, not the same as, the picture: a photo has a look with its own display rendering (at an intensity above 0), or ARRI's display rendering is chosen. */
+  function dngApproximate(job: ExportJob): boolean {
+    if (preferences.display_rendering.kind === "arri_display") return true;
+    return targets(job.scope).some((rec) => rec.settings.look_intensity > 0 && findLook(rec.settings.look)?.input === "logc3_to_rec709");
   }
 
   /** Photos of a job with adjustments beyond their look: what a command line can't carry. */
@@ -1769,12 +1769,11 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
           bytes: Math.round(megabytesPerPhoto(job.options) * count * 1_000_000),
           seconds: Math.round(count * ((EXPORT_TICK_MS / EXPORT_STEP) / 1000) * 10) / 10,
           adjusted_photos: adjustedPhotos(job),
-          dng_unavailable: dngUnavailable(job),
+          dng_approximate: dngApproximate(job),
         };
       }),
     exportStart: (job) =>
       run("exportStart", () => {
-        if (job.options.format === "dng" && dngUnavailable(job)) fail("export", DNG_BLOCKED_MESSAGE);
         const planned = exportFiles(job);
         if (planned.files.length === 0) {
           fail("export", "No photos are picked. Pick some photos, or choose All, then export again.");

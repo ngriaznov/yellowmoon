@@ -13,7 +13,7 @@
 //!
 //! 1. **Checks** that the look (and the imported display LUT, if one is chosen) can be loaded: an
 //!    export never quietly falls back to Neutral the way the viewport does, because the file's XMP
-//!    says which look made it. A DNG is refused for a look with its own display rendering.
+//!    says which look made it.
 //! 2. **Names** the file from the template and resolves the destination folder (`docs/09` Options).
 //!    With "If the file exists: Skip" and a file in the way nothing is rendered at all.
 //! 3. **Renders** at full resolution, tile by tile, on the render scheduler's export worker, which
@@ -26,10 +26,14 @@
 //!      preset at the scale of the written long edge over the rendered one; 0 is no stage and the
 //!      bytes of an export without it) and does C13 (the transfer function and, for 8 bit, the
 //!      dither).
-//!    * DNG (never sharpened): C1 to C11 decoded to linear AWG4 in the sensor's orientation
-//!      ([`FullTarget::DngLinearAwg4`]) and the sRGB preview of what the user sees
+//!    * DNG (**no sharpening of any kind**: both renders run with R8 capture sharpening off, and
+//!      output sharpening is never applied): C1 to C11 decoded to linear AWG4 in the sensor's
+//!      orientation ([`FullTarget::DngLinearAwg4`]) and the sRGB preview of what the user sees
 //!      ([`FullTarget::DngPreview`]). The `Orientation` tag carries the camera's and the user's
-//!      turns, the default crop tags the user's crop, so other editors can undo both.
+//!      turns, the default crop tags the user's crop, so other editors can undo both. With a look
+//!      that carries its own display rendering (LogC3 to Rec.709), or an imported display LUT, the
+//!      pixels are the scene values ACES 2 turns into that picture, so the DNG is close to, not the
+//!      same as, the picture of the app (`docs/09`, "What a DNG carries").
 //! 4. **Writes** through `ym_export::write_export`: a temporary file in the destination folder, then
 //!    a rename; a cancel or an error deletes the temporary file.
 //!
@@ -95,9 +99,6 @@ pub use ym_export::naming::default_destination;
 /// template gives (see [`WrittenFiles`]).
 pub const SAME_NAME_IN_JOB_NOTE: &str = "Another photo of this export has the same file name, so this one was saved with a number instead of replacing it.";
 
-/// The message of a DNG export with a look that has its own display rendering (`docs/09`).
-pub const DNG_BLOCKED_MESSAGE: &str = "This look includes its own display rendering, so it can't go into a DNG. Pick another look or export TIFF.";
-
 /// Why a photo could not be exported. The text is plain words with a next step.
 #[derive(Debug, thiserror::Error)]
 pub enum ExportError {
@@ -107,9 +108,6 @@ pub enum ExportError {
     /// The look or the display LUT cannot be used ("File missing or changed. Import again.").
     #[error("{0}")]
     Look(String),
-    /// A DNG was asked for with a look that has its own display rendering.
-    #[error("{DNG_BLOCKED_MESSAGE}")]
-    DngUnavailable,
     /// The photo could not be rendered.
     #[error(transparent)]
     Render(RenderError),
@@ -163,7 +161,6 @@ impl ExportError {
         match self {
             Self::Cancelled => "cancelled",
             Self::Look(_) => "look",
-            Self::DngUnavailable => "unsupported",
             Self::Render(RenderError::Gpu(_)) => "gpu",
             Self::Render(_) => "render",
             Self::Write(_) => "write",
@@ -902,7 +899,7 @@ fn render(
 /// [`ExportError::Look`] for a look or display LUT that cannot be loaded, or that was replaced,
 /// removed or switched while the photo was rendering ([`CHANGED_DURING_EXPORT_MESSAGE`]; nothing is
 /// written under a look the pixels were not made with),
-/// [`ExportError::DngUnavailable`], [`ExportError::Render`] (memory, an unusable photo, a panic
+/// [`ExportError::Render`] (memory, an unusable photo, a panic
 /// below this function, which is caught and logged),
 /// [`ExportError::Write`] (the folder, the disk, the original in the way), and
 /// [`ExportError::Cancelled`] after `control.cancel` fired, with the partial file removed. A photo
@@ -950,12 +947,9 @@ struct RenderInputs {
     display_lut: Option<String>,
 }
 
-/// The look and display rendering as they are now, and whether the look has its own display
-/// rendering. An error when either cannot be loaded: an export never falls back.
-fn render_inputs(
-    ctx: &ExportContext,
-    photo: &ExportPhoto,
-) -> Result<(RenderInputs, bool), ExportError> {
+/// The look and display rendering as they are now. An error when either cannot be loaded: an
+/// export never falls back.
+fn render_inputs(ctx: &ExportContext, photo: &ExportPhoto) -> Result<RenderInputs, ExportError> {
     let looks = ctx.renderer.looks();
     let look = looks
         .look(photo.look())
@@ -970,15 +964,11 @@ fn render_inputs(
         ),
         DisplayChoice::Aces2 => None,
     };
-    let own_rendering = look.transform.includes_display_rendering();
-    Ok((
-        RenderInputs {
-            look: look.fingerprint,
-            display,
-            display_lut,
-        },
-        own_rendering,
-    ))
+    Ok(RenderInputs {
+        look: look.fingerprint,
+        display,
+        display_lut,
+    })
 }
 
 fn export_photo_unguarded(
@@ -996,16 +986,13 @@ fn export_photo_unguarded(
 
     // 1. The look and the display rendering must be usable: an export does not fall back.
     let looks = ctx.renderer.looks();
-    let (inputs, own_display_rendering) = render_inputs(ctx, photo)?;
+    let inputs = render_inputs(ctx, photo)?;
     let display = inputs.display.clone();
     let is_dng = options.format == FormatKind::Dng;
-    if is_dng && own_display_rendering {
-        return Err(ExportError::DngUnavailable);
-    }
     let look_sha256 = looks.look_sha256(photo.look());
     // Checked again once the pixels are rendered (which takes seconds to minutes).
     let still_the_same = || -> Result<(), ExportError> {
-        if render_inputs(ctx, photo)?.0 == inputs {
+        if render_inputs(ctx, photo)? == inputs {
             Ok(())
         } else {
             Err(ExportError::Look(CHANGED_DURING_EXPORT_MESSAGE.to_owned()))

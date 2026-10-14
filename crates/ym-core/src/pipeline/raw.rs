@@ -394,6 +394,20 @@ impl RawParams {
         (self.sharpen.iterations() > 0).then_some(CaptureSharpen::RichardsonLucy(self.sharpen))
     }
 
+    /// The same parameters with R8 capture sharpening off: neither Richardson-Lucy nor diffraction
+    /// deconvolution runs. A render-time switch of the internal chain parameters (no setting, no UI):
+    /// the renders of a DNG use it, because a DNG carries no sharpening (`docs/09`, "What a DNG
+    /// carries"). Everything else stays as it was, in particular the adaptive ratio demosaic's own
+    /// shadow step (`shadow_sharpening`), which is part of the demosaic and not of R8. The key changes
+    /// ([`RawParams::key`] reads the amount and the diffraction controls), so a render with R8 off
+    /// never reads a cached tile or chain made with R8 on.
+    #[must_use]
+    pub fn without_capture_sharpening(mut self) -> Self {
+        self.sharpen.amount = 0.0;
+        self.diffraction = None;
+        self
+    }
+
     /// The numbers of the noise model that the sigma map reads.
     fn noise_key_parts(&self) -> [f64; 8] {
         let n = &self.noise;

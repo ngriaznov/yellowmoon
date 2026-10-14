@@ -36,8 +36,8 @@ describe("formatDuration", () => {
   });
 
   it("joins with the size for a tooltip", () => {
-    expect(estimateTitle({ bytes: 75_000_000, seconds: 3.8, adjusted_photos: 0, dng_unavailable: false })).toBe("≈ 75 MB, about 4 s");
-    expect(estimateTitle({ bytes: 75_000_000, seconds: 0, adjusted_photos: 0, dng_unavailable: false })).toBe("≈ 75 MB");
+    expect(estimateTitle({ bytes: 75_000_000, seconds: 3.8, adjusted_photos: 0, dng_approximate: false })).toBe("≈ 75 MB, about 4 s");
+    expect(estimateTitle({ bytes: 75_000_000, seconds: 0, adjusted_photos: 0, dng_approximate: false })).toBe("≈ 75 MB");
   });
 });
 

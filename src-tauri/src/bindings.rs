@@ -233,8 +233,8 @@ mod tests {
             ("OTHER_APPS_NOTE", ym_export::dng::OTHER_APPS_NOTE),
             // Adobe's licence notice.
             ("ADOBE_NOTICE", ym_export::dng::ADOBE_NOTICE),
-            // Why a DNG is refused for a look with its own display rendering.
-            ("DNG_BLOCKED", ym_core::export::DNG_BLOCKED_MESSAGE),
+            // What a DNG is, with a look that has its own display rendering (shown when the job has one).
+            ("OWN_DISPLAY_NOTE", ym_export::dng::OWN_DISPLAY_NOTE),
         ];
         for (name, text) in constants {
             let declaration = Regex::new(&format!(

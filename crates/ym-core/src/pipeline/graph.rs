@@ -867,6 +867,9 @@ pub(crate) struct Job<'a> {
     restart: Option<String>,
     /// Where the raw stages ran, per range, for the tiles of this request.
     raw_ranges: Vec<RangeDevice>,
+    /// Whether R8 capture sharpening runs for this request. Off for the renders of a DNG, which
+    /// carries no sharpening ([`Job::without_capture_sharpening`]).
+    capture_sharpening: bool,
 }
 
 impl<'a> Job<'a> {
@@ -908,7 +911,19 @@ impl<'a> Job<'a> {
             restartable: true,
             restart: None,
             raw_ranges: Vec::new(),
+            capture_sharpening: true,
         }
+    }
+
+    /// The raw group of this request runs without R8 capture sharpening (neither Richardson-Lucy nor
+    /// diffraction deconvolution), on the CPU and on the device alike (both read the chain that is
+    /// made from [`Job::params`]). The renders of a DNG use it: `docs/09`, "What a DNG carries".
+    /// The demosaic's own shadow step stays on. Call before the first use of [`Job::params`].
+    #[must_use]
+    pub fn without_capture_sharpening(mut self) -> Self {
+        self.capture_sharpening = false;
+        self.params = None;
+        self
     }
 
     /// The device jobs of this request run at `priority` (the request's own: `TileNeural` for the
@@ -1044,6 +1059,11 @@ impl<'a> Job<'a> {
             iso,
             noise: usable_noise_model(&e.noise.model),
             diffraction: self.diffraction_params(),
+        };
+        let p = if self.capture_sharpening {
+            p
+        } else {
+            p.without_capture_sharpening()
         };
         self.params = Some(p);
         Ok(p)

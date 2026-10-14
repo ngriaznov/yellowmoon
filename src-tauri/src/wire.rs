@@ -1393,8 +1393,9 @@ pub struct ExportEstimate {
     pub seconds: Num,
     /// Photos with adjustments beyond the look.
     pub adjusted_photos: u32,
-    /// A photo uses a look with its own display rendering, which cannot go into a DNG.
-    pub dng_unavailable: bool,
+    /// A DNG of the job is close to, not the same as, the picture in the app: a photo uses a look with
+    /// its own display rendering, or ARRI's display rendering is chosen.
+    pub dng_approximate: bool,
 }
 
 // ---------------------------------------------------------------------------------------------

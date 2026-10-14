@@ -4,20 +4,29 @@
 //! Everything here is a pure function over plain buffers and small metadata structs: no decoder, no
 //! GPU, no file access.
 //!
-//! The algorithm, with the numbers of the spec (constants below):
+//! # The rule (interim, decision of 2026-10-14)
+//!
+//! Until the intelligent automatic settings of a later milestone replace it, **auto exposure is the
+//! camera's own exposure**: no metering of our own moves it. Step by step ([`auto_exposure`] is given
+//! the fused matrix of [`crate::chain`]):
 //!
 //! 1. Run C1 to C6 at EV 0 on the 1/8-resolution preview and take the linear luminance `Y` with the
-//!    AWG4 `Y` row ([`auto_exposure`] is given the fused matrix of [`crate::chain`]).
+//!    AWG4 `Y` row.
 //! 2. Ignore pixels in the clip mask, and pixels whose `Y` is below the 1st or above the 99th
 //!    percentile of the unmasked pixels.
 //! 3. `m = exp(sum w ln Y / sum w)` with the centre weight `w = exp(-r^2 / (2 * 0.35^2))`, `r` the
-//!    distance from the centre over the half diagonal.
-//! 4. `EV_auto = log2(0.18 / m) + 0.5 * EC`, clamped to -3..=+3 (`EC` is the camera's exposure
-//!    compensation).
+//!    distance from the centre over the half diagonal. This statistic is only reported
+//!    ([`AutoExposure::mean_luminance`]); it does not move the exposure.
+//! 4. `EV_auto = clamp(CAMERA_GAIN_EV, -3, +3)`: the median gain of the cameras' own JPEG engines (raw
+//!    level to JPEG mid grey, +1.11 EV over 12 photos from 9 Sony bodies). There is **no
+//!    exposure-compensation term**: the raw data already carries the photographer's compensation (the
+//!    camera exposed that much more or less), so with a constant gain it reaches the picture in full,
+//!    as it does in the camera's JPEG.
 //! 5. Highlight guard: if more than 0.5 % of the unmasked pixels would exceed linear 8.0 after the
-//!    exposure, lower `EV_auto` until they do not, by at most 1 EV.
+//!    exposure, lower `EV_auto` until they do not, by at most 1 EV. It can only lower the exposure.
 //! 6. Frames of the same camera within 2 s of each other and with identical exposure settings share the
-//!    median `EV_auto` ([`share_burst_ev`]).
+//!    median `EV_auto` ([`share_burst_ev`]); with a constant gain that is the constant unless the guard
+//!    acted on some frame.
 //!
 //! # Decisions where the spec is silent
 //!
@@ -26,16 +35,17 @@
 //!   do not move the percentiles. When no pixel lies in the band (two distinct values and nothing
 //!   else) every unmasked pixel is metered.
 //! * *Luminance floor.* `Y` is raised to [`LUMINANCE_FLOOR`] (1e-4, ten and a half stops below
-//!   middle grey) before the logarithm, so black or negative pixels (noise after black subtraction) are
-//!   very dark pixels rather than missing ones, and a lens-cap frame meters to the +3 EV limit.
+//!   middle grey) before the logarithm of the reported statistic, so black or negative pixels (noise
+//!   after black subtraction) are very dark pixels rather than missing ones.
 //! * *Which pixels count.* A pixel with a non-finite channel counts as masked. The highlight guard and
 //!   its 0.5 % are over every unmasked pixel (not only those kept by the percentiles, which would remove
 //!   the highlights the guard is looking for), and compare `Y` after exposure with 8.0.
 //! * *The guard* is solved in closed form: the largest EV at which at most `floor(0.005 n)` pixels have
 //!   `Y * 2^EV > 8`, from the `(floor(0.005 n) + 1)`-th brightest luminance; the result is
-//!   `max(that, EV_metered - 1)` when it is below `EV_metered`.
-//! * *No usable pixel* (everything masked, or an empty preview): nothing can be metered, so
-//!   `EV_auto = clamp(0.5 * EC)` and [`AutoExposure::metered`] is false.
+//!   `max(that, EV_before_guard - 1)` when it is below `EV_before_guard`.
+//! * *No usable pixel* (everything masked, or an empty preview): nothing can be reported, and the
+//!   exposure is the same camera gain, `EV_auto = clamp(CAMERA_GAIN_EV)`; [`AutoExposure::metered`] is
+//!   false.
 //! * *Bursts.* A frame joins a group when the previous frame of the same camera and identical exposure
 //!   settings is at most 2 s earlier (consecutive gaps, so a 10 fps burst of any length is one group).
 //!   The median of an even group is the mean of the two middle values. Frames without a capture time
@@ -54,12 +64,22 @@ use serde::{Deserialize, Serialize};
 use crate::consts::linalg::{Mat3, Vec3};
 use crate::gamut::awg4_luminance_row;
 
-/// Scene-linear middle grey: the target of the metered luminance.
+/// The camera's gain in stops: the exposure `EV_auto` of every photo until the intelligent automatic settings
+/// of a later milestone replace the rule (`docs/02`, Auto exposure).
+///
+/// It is the median gain of the cameras' own JPEG engines, `log2(0.18 / x)` for the raw level `x` that the
+/// embedded JPEG renders as middle grey in linear light, over the 12 local evaluation photos from 9 Sony bodies
+/// (std 0.13 EV, range +0.87 to +1.33; `tools/eval/autoexp.py`, `research/auto-exposure-2026-10-14.md`). An ideal
+/// ISO 12232 camera would put grey at +0.79; Sony places it higher.
+///
+/// The scene does not move it and neither does the camera's exposure compensation: the raw data already holds
+/// that compensation, so it reaches the picture in full.
+pub const CAMERA_GAIN_EV: f64 = 1.11;
+/// Scene-linear middle grey: the reference of the reported key statistic ([`AutoExposure::mean_luminance`]) and
+/// of the camera gain ([`CAMERA_GAIN_EV`] is measured against it).
 pub const TARGET_GREY: f64 = 0.18;
 /// Standard deviation of the centre weight, in units of the half diagonal.
 pub const CENTRE_SIGMA: f64 = 0.35;
-/// Weight of the camera's exposure compensation in `EV_auto`.
-pub const EC_WEIGHT: f64 = 0.5;
 /// `EV_auto` is clamped to plus or minus this many stops before the highlight guard.
 pub const EV_LIMIT: f64 = 3.0;
 /// Pixels below this quantile of the unmasked luminances are ignored.
@@ -236,22 +256,23 @@ impl PreviewRgb<'_> {
     }
 }
 
-/// The result of metering one photo.
+/// The result of [`auto_exposure`] for one photo.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AutoExposure {
     /// `EV_auto` in stops after the highlight guard (before burst sharing).
     pub ev_auto: f64,
-    /// `EV_auto` of step 4, before the highlight guard.
-    pub ev_metered: f64,
+    /// `EV_auto` of step 4, before the highlight guard: [`CAMERA_GAIN_EV`] (clamped to the limit).
+    pub ev_before_guard: f64,
     /// How far the highlight guard lowered the exposure, 0 to 1 stop.
     pub guard_reduction_ev: f64,
-    /// The centre-weighted geometric mean luminance `m` at EV 0 (0 when nothing could be metered).
+    /// The centre-weighted geometric mean luminance `m` at EV 0 (0 when nothing could be metered). A
+    /// diagnostic: it does not move `ev_auto`.
     pub mean_luminance: f64,
     /// Pixels that were not masked and finite.
     pub unmasked_pixels: usize,
     /// Pixels inside the percentile band that entered the mean.
     pub metered_pixels: usize,
-    /// False when there was no usable pixel and the value is only the compensation term.
+    /// False when there was no usable pixel (so `mean_luminance` is 0 and the highlight guard did not run).
     pub metered: bool,
 }
 
@@ -276,10 +297,12 @@ fn quantile(sorted: &[f64], q: f64) -> f64 {
     v.clamp(a, b)
 }
 
-/// Meters a preview: steps 1 to 5 of the spec.
+/// The automatic exposure of a preview: steps 1 to 5 of the spec. `EV_auto` is [`CAMERA_GAIN_EV`], lowered by the
+/// highlight guard when the picture would clip; the centre-weighted geometric mean is reported and moves nothing.
 ///
 /// `matrix_ev0` is the fused C1 to C6 matrix at EV 0 (`FusedChain::matrix` of a chain built with
-/// `exposure_ev = 0`); `exposure_compensation_ev` is the camera's EXIF compensation (0 when unknown).
+/// `exposure_ev = 0`). The camera's exposure compensation is not an input: the raw already holds it and it
+/// reaches the picture in full.
 ///
 /// # Errors
 ///
@@ -287,15 +310,10 @@ fn quantile(sorted: &[f64], q: f64) -> f64 {
 pub fn auto_exposure(
     preview: &PreviewRgb<'_>,
     matrix_ev0: &Mat3,
-    exposure_compensation_ev: f64,
 ) -> Result<AutoExposure, ExposureError> {
     preview.validate()?;
-    let ec = if exposure_compensation_ev.is_finite() {
-        exposure_compensation_ev
-    } else {
-        0.0
-    };
-    let compensation_ev = EC_WEIGHT * ec;
+    // Step 4: the camera's gain, whatever the scene.
+    let ev_before_guard = CAMERA_GAIN_EV.clamp(-EV_LIMIT, EV_LIMIT);
     let luminances = preview.luminances(matrix_ev0);
     let mut sorted: Vec<f64> = luminances
         .iter()
@@ -304,10 +322,9 @@ pub fn auto_exposure(
         .collect();
     let n = sorted.len();
     if n == 0 {
-        let ev = compensation_ev.clamp(-EV_LIMIT, EV_LIMIT);
         return Ok(AutoExposure {
-            ev_auto: ev,
-            ev_metered: ev,
+            ev_auto: ev_before_guard,
+            ev_before_guard,
             guard_reduction_ev: 0.0,
             mean_luminance: 0.0,
             unmasked_pixels: 0,
@@ -321,7 +338,7 @@ pub fn auto_exposure(
         quantile(&sorted, PERCENTILE_HIGH),
     );
 
-    // Step 3: centre-weighted geometric mean over the band.
+    // Step 3: centre-weighted geometric mean over the band (reported, not used for the exposure).
     let (w, h) = (preview.width as f64, preview.height as f64);
     let half_diagonal_sq = 0.25 * (w * w + h * h);
     let weighted_log_sum = |banded: bool| {
@@ -354,23 +371,19 @@ pub fn auto_exposure(
     }
     let mean_luminance = (sum_wl / sum_w).exp();
 
-    // Step 4.
-    let ev_metered =
-        ((TARGET_GREY / mean_luminance).log2() + compensation_ev).clamp(-EV_LIMIT, EV_LIMIT);
-
     // Step 5: the largest EV with at most floor(0.005 n) pixels above the guard level.
     let allowed = (GUARD_FRACTION * n as f64).floor() as usize;
     let threshold_y = sorted[n - 1 - allowed.min(n - 1)];
     let ev_guard = (GUARD_LEVEL / threshold_y).log2();
-    let ev_auto = if ev_metered > ev_guard {
-        ev_guard.max(ev_metered - GUARD_MAX_REDUCTION_EV)
+    let ev_auto = if ev_before_guard > ev_guard {
+        ev_guard.max(ev_before_guard - GUARD_MAX_REDUCTION_EV)
     } else {
-        ev_metered
+        ev_before_guard
     };
     Ok(AutoExposure {
         ev_auto,
-        ev_metered,
-        guard_reduction_ev: ev_metered - ev_auto,
+        ev_before_guard,
+        guard_reduction_ev: ev_before_guard - ev_auto,
         mean_luminance,
         unmasked_pixels: n,
         metered_pixels,

@@ -649,7 +649,7 @@ fn the_estimate_counts_bytes_seconds_and_what_a_command_cannot_carry() {
     let jpeg = job(ApplyScope::All, out.path());
     let est = queue.estimate(&f.session, &jpeg);
     assert_eq!(est.adjusted_photos, 0);
-    assert!(!est.dng_unavailable);
+    assert!(!est.dng_approximate);
     assert!(est.bytes > 3 * 4096 && est.seconds > 0.0, "{est:?}");
 
     // A bigger file for a higher quality, a smaller one for a smaller size.

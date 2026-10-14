@@ -1014,14 +1014,15 @@ pub fn noise_prior(priors: &PriorStore, meta: &RawMetadata) -> NoisePrior {
 // Exposure
 // ---------------------------------------------------------------------------------------------
 
-/// The automatic exposure of a photo.
+/// The automatic exposure of a photo: the camera's own exposure (`ym_color::exposure::CAMERA_GAIN_EV`, `docs/02`
+/// Auto exposure), lowered by the highlight guard when the picture would clip, and shared across a burst.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ExposureResult {
     /// `EV_auto` in effect: the burst median once the session has shared it, else `own_ev`.
     pub ev: f64,
     /// `EV_auto` of this photo alone, after the highlight guard.
     pub own_ev: f64,
-    /// The metering details (`ev_metered`, the guard's reduction, the pixel counts).
+    /// The details (`ev_before_guard`, the guard's reduction, the reported key statistic and pixel counts).
     pub meter: AutoExposure,
 }
 
@@ -1191,7 +1192,6 @@ impl AutoEstimates {
                 clip_mask: Some(&preview.clip),
             },
             metering.matrix(),
-            meta.exposure_comp_ev.unwrap_or(0.0),
         )?;
         color.ev_auto = meter.ev_auto;
         let noise = estimate_noise(raw, inputs.priors)?;

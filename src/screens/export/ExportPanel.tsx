@@ -5,7 +5,7 @@ import { exportModel } from "../../export/model";
 import { queueItems, runBlurb, runNote, runTitle, summarise } from "../../export/run";
 import { useAppState } from "../../state/context";
 import type { AppStore } from "../../state/store";
-import { DNG_BLOCKED, ExportOptionsForm } from "./ExportOptionsForm";
+import { ExportOptionsForm } from "./ExportOptionsForm";
 import { useExportPreview } from "./useExportPreview";
 
 export interface ExportPanelProps {
@@ -34,7 +34,6 @@ export function ExportPanel({ store }: ExportPanelProps) {
   const preview = useExportPreview(store, job, key, run === null && model.count > 0);
   const { estimate } = preview;
 
-  const dngBlocked = options.format === "dng" && estimate?.dng_unavailable === true;
   const blocker =
     model.count === 0
       ? scope === "picked"
@@ -42,9 +41,7 @@ export function ExportPanel({ store }: ExportPanelProps) {
         : "There is nothing to export."
       : model.problem
         ? model.problem
-        : dngBlocked
-          ? DNG_BLOCKED
-          : null;
+        : null;
 
   const start = async (): Promise<void> => {
     if (run !== null || blocker !== null) return;

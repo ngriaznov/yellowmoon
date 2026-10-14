@@ -112,7 +112,7 @@ test.describe("each format", () => {
     await expect(page.getByRole("region", { name: "Same thing from the command line" })).not.toContainText("--colour-space");
   });
 
-  test("DNG is disabled for a look with its own display rendering", async ({ page }) => {
+  test("DNG stays available for a look with its own display rendering and says it is close to the picture", async ({ page }) => {
     await exportPanel(page);
     // Import the LogC3 to Rec.709 package through the app's own mock, and pick one of its looks.
     await page.evaluate(async () => {
@@ -122,9 +122,9 @@ test.describe("each format", () => {
     });
     // The panel asks again when the photos or options change.
     await page.getByRole("radiogroup", { name: "Photos" }).getByRole("radio", { name: "This photo" }).click();
-    const dng = page.getByRole("radio", { name: "DNG, not available for this look" });
-    await expect(dng).toHaveAttribute("aria-disabled", "true");
-    await expect(page.getByText("This look includes its own display rendering, so it can't go into a DNG. Pick another look or export TIFF.")).toBeVisible();
+    await format(page, "DNG");
+    await expect(page.getByRole("radio", { name: "DNG" })).not.toHaveAttribute("aria-disabled", "true");
+    await expect(page.getByText("With a look that includes its own display rendering, the DNG is close to, not the same as, the picture you see.")).toBeVisible();
   });
 
   test("Long edge: the slider runs from 1000 to 8640 px in 20 px steps", async ({ page }) => {

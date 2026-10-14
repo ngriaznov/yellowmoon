@@ -482,7 +482,7 @@ fn the_display_rendering_preference_chooses_the_transform_and_is_written_to_the_
 // ---------------------------------------------------------------------------------------------
 
 #[test]
-fn a_look_with_its_own_display_rendering_blocks_dng_and_nothing_else() {
+fn a_look_with_its_own_display_rendering_makes_a_dng_approximate_and_blocks_nothing() {
     let r = rig();
     let src = tempfile::tempdir().expect("src");
     let imported = r
@@ -506,13 +506,13 @@ fn a_look_with_its_own_display_rendering_blocks_dng_and_nothing_else() {
             ..ExportOptions::default()
         },
     };
-    assert!(!r.core.export_estimate(&dng).dng_unavailable);
+    assert!(!r.core.export_estimate(&dng).dng_approximate);
     r.core.session.set_current(ids[1]).expect("current");
     r.core
         .apply_look(ApplyScope::This, &baked, 100.0)
         .expect("apply");
     assert!(
-        r.core.export_estimate(&dng).dng_unavailable,
+        r.core.export_estimate(&dng).dng_approximate,
         "one photo has the look"
     );
     // Not for the photo that doesn't have it.
@@ -521,19 +521,31 @@ fn a_look_with_its_own_display_rendering_blocks_dng_and_nothing_else() {
         ..dng.clone()
     };
     r.core.session.set_picked(ids[0], true).expect("pick");
-    assert!(!r.core.export_estimate(&first_only).dng_unavailable);
+    assert!(!r.core.export_estimate(&first_only).dng_approximate);
+    // Not at an intensity of 0, where the picture is our own rendering.
+    r.core
+        .apply_look(ApplyScope::This, &baked, 0.0)
+        .expect("apply");
+    assert!(!r.core.export_estimate(&dng).dng_approximate);
+    r.core
+        .apply_look(ApplyScope::This, &baked, 100.0)
+        .expect("apply");
 
-    let err = r.core.export_start(&dng).expect_err("refused");
-    assert_eq!(err.scope(), "export");
-    assert!(matches!(
-        err,
-        ym_core::app::CoreError::Export(QueueError::DngUnavailable)
-    ));
-    assert_eq!(
-        err.to_string(),
-        "This look includes its own display rendering, so it can't go into a DNG. Pick another look or export TIFF."
-    );
-    // A JPEG of both photos is fine: the baked look carries its own rendering.
+    // The DNG is queued and made, as the other formats are.
+    let dng_out = tempfile::tempdir().expect("out");
+    let dng_job = ExportJob {
+        scope: ApplyScope::All,
+        options: ExportOptions {
+            format: FormatKind::Dng,
+            destination: Some(dng_out.path().to_path_buf()),
+            ..ExportOptions::default()
+        },
+    };
+    let id = r.core.export_start(&dng_job).expect("queued");
+    wait_export(&r);
+    let s = r.core.export_summary(id).expect("summary");
+    assert_eq!((s.saved, s.failed), (2, 0), "{:?}", s.errors);
+    // A JPEG of both photos: the baked look carries its own rendering.
     let out = tempfile::tempdir().expect("out");
     let id = r
         .core
@@ -728,7 +740,7 @@ fn the_export_preferences_and_looks_types_have_the_fields_of_the_typescript_inte
             bytes: 1,
             seconds: 1.0,
             adjusted_photos: 0,
-            dng_unavailable: false,
+            dng_approximate: false,
         })
         .expect("json"),
     );

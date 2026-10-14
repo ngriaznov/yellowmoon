@@ -499,7 +499,7 @@ export function formatSize(bytes: number | null): string {
 export const INPUT_CHOICES: ReadonlyArray<{ value: LookInput; label: string; detail: string }> = [
   { value: "logc4", label: "LogC4", detail: "LogC4 with ARRI Wide Gamut 4. Used like the Look Library for LogC4." },
   { value: "logc3_ei800", label: "LogC3", detail: "LogC3 (EI 800) with ARRI Wide Gamut 3." },
-  { value: "logc3_to_rec709", label: "LogC3 · Rec.709", detail: "LogC3 in, Rec.709 out. It replaces our display rendering, so it can't go into a DNG." },
+  { value: "logc3_to_rec709", label: "LogC3 · Rec.709", detail: "LogC3 in, Rec.709 out. It replaces our display rendering." },
 ];
 
 /**

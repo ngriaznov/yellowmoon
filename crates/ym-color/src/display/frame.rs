@@ -340,11 +340,12 @@ impl ColorChain {
         })
     }
 
-    /// Renders the DNG stop point: C1 to C11, decoded back to linear AWG4 (f32, unclipped).
+    /// Renders the DNG's pixels ([`ColorChain::apply_dng_pixel`]): C1 to C11 decoded back to linear
+    /// AWG4 (f32, unclipped), or, when C12 is not our ACES 2 ([`ColorChain::dng_inverts_display`]),
+    /// the scene values that ACES 2 turns into the chain's picture.
     ///
     /// # Errors
     ///
-    /// [`DisplayError::DngUnavailable`] with a look that includes display rendering;
     /// [`DisplayError::BadBuffer`] when `out` has the wrong length.
     pub fn render_dng_linear_awg4_f32(
         &self,
@@ -353,11 +354,8 @@ impl ColorChain {
         out: &mut [f32],
         threads: usize,
     ) -> Result<(), DisplayError> {
-        if !self.dng_available() {
-            return Err(DisplayError::DngUnavailable);
-        }
         map_pixels(src, out, out_layout, threads, |rgb, _, _| {
-            to_f32(self.apply_logc4_pixel(rgb).to_linear().0)
+            to_f32(self.apply_dng_pixel(rgb))
         })
     }
 

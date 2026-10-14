@@ -574,9 +574,7 @@ fn run_checked(args: &RenderArgs, console: &mut Console) -> Result<u8, Failure> 
     let started = Instant::now();
     if let Err(error) = core.exports.start(&core.session, &job, remove_location) {
         return Err(match error {
-            QueueError::DngUnavailable | QueueError::Options(_) => {
-                Failure::usage(error.to_string())
-            }
+            QueueError::Options(_) => Failure::usage(error.to_string()),
             other => Failure::failed(other.to_string()),
         });
     }

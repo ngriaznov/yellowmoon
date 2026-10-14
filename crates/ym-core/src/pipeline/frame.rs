@@ -129,13 +129,25 @@ pub enum FullTarget {
     /// orientation (after the lens stage's auto crop), neither turned nor, without a straighten
     /// angle, cropped: the user's crop is then [`FullImage::window`] for the writer to put in the
     /// default crop tags. With a straighten angle the angle and the crop are baked in (a DNG has no
-    /// rotated crop), still unturned, and `window` is `None`. Not available with a look that
-    /// includes its own display rendering.
+    /// rotated crop), still unturned, and `window` is `None`. Made without R8 capture sharpening (a
+    /// DNG carries none). With a look that includes its own display rendering, or an imported display
+    /// LUT, the pixels are instead the scene values that ACES 2 turns into that picture
+    /// ([`ym_color::display::ColorChain::apply_dng_pixel`]).
     DngLinearAwg4,
     /// The DNG's preview: the exact render in sRGB (display-linear, Rec.709 primaries) in the
     /// buffer's orientation, cropped and straightened as the user sees it, so it has the size of
-    /// [`FullImage::window`] when the raw pixels carry one.
+    /// [`FullImage::window`] when the raw pixels carry one. Made without R8 capture sharpening, like
+    /// the raw pixels, and never with output sharpening.
     DngPreview,
+}
+
+impl FullTarget {
+    /// Whether this is one of the two images of a DNG, which carries no sharpening: the renders
+    /// of both run with R8 capture sharpening off (`docs/09`, "What a DNG carries").
+    #[must_use]
+    pub fn is_dng(self) -> bool {
+        matches!(self, Self::DngLinearAwg4 | Self::DngPreview)
+    }
 }
 
 /// A request for [`Renderer::render_full`].
@@ -2121,6 +2133,10 @@ impl Renderer {
         };
         gate()?;
         let mut job = Job::for_export(self, src, cancel);
+        if request.target.is_dng() {
+            // A DNG carries no sharpening (docs/09): its pixels and its preview are made without R8.
+            job = job.without_capture_sharpening();
+        }
         let plan = job.plan()?;
         // Which geometry the target asks for (see [`FullTarget`]).
         let baked = job.geometry().at_full_resolution();
@@ -2163,18 +2179,14 @@ impl Renderer {
             .ledger()
             .try_reserve(output + working + frame_extra + sigma_map)
             .map_err(|_| RenderError::Memory)?;
+        // The DNG's pixels and preview are made for sRGB, the display its fitted profile emulates: a
+        // chain whose display rendering is not ours (a look with its own, an imported display LUT)
+        // inverts it from sRGB for the pixels.
         let target_out = match request.target {
             FullTarget::DisplayLinear(t) => t,
-            FullTarget::DngLinearAwg4 => OutputTarget::DisplayP3,
-            FullTarget::DngPreview => OutputTarget::Srgb,
+            FullTarget::DngLinearAwg4 | FullTarget::DngPreview => OutputTarget::Srgb,
         };
         let grade = job.grade(target_out, false)?;
-        if matches!(request.target, FullTarget::DngLinearAwg4) && !grade.chain.dng_available() {
-            return Err(RenderError::Color(
-                "This look includes its own display rendering, so it can't go into a DNG; pick another look or export TIFF."
-                    .to_owned(),
-            ));
-        }
         let grid = geom.grid((plan.out_w, plan.out_h), (fw, fh));
         let mut rgb = vec![0.0f32; fw * fh * 3];
         let threads = job.options().threads;

@@ -291,29 +291,26 @@ describe("DNG and a look with its own display rendering", () => {
     return screen.findByRole("complementary", { name: "Export" });
   }
 
-  it("disables DNG and says why", async () => {
+  const OWN_DISPLAY = "With a look that includes its own display rendering, the DNG is close to, not the same as, the picture you see.";
+
+  it("keeps DNG available and says that the DNG is close to the picture, not the same", async () => {
     await withRec709Look();
-    const dng = await waitFor(() => {
-      const el = radio("Format", "DNG, not available for this look");
-      expect(el).toHaveAttribute("aria-disabled", "true");
-      return el;
-    });
-    await h!.user.click(dng);
-    expect(checked("Format")).toBe("JPEG");
-    expect(screen.getByText("This look includes its own display rendering, so it can't go into a DNG. Pick another look or export TIFF.")).toBeInTheDocument();
+    await h!.user.click(radio("Format", "DNG"));
+    expect(checked("Format")).toBe("DNG");
+    expect(await screen.findByText(OWN_DISPLAY)).toBeInTheDocument();
+    expect(screen.getByText("Linear DNG with your look baked in.", { exact: false })).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).toBeNull();
+    await waitFor(() => expect(exportButton()).not.toHaveAttribute("aria-disabled", "true"));
   });
 
-  it("holds the export back when DNG is already chosen", async () => {
+  it("says nothing about it for a look of ours, and nothing outside the DNG note", async () => {
     await setup(MOCKUP);
     await h!.store.setExportOptions({ format: "dng" });
-    await act(async () => {
-      await h!.api.looksImport(`~/Downloads/${PACKAGE_ZIPS.look_library_logc3_to_rec709}`);
-    });
-    await h!.store.refreshLooks();
-    await h!.store.chooseLook("arri:3000:film-warm-rec709");
     await h!.user.keyboard("{Meta>}e{/Meta}");
-    expect(await screen.findByRole("alert")).toHaveTextContent("so it can't go into a DNG");
-    await waitFor(() => expect(exportButton()).toHaveAttribute("aria-disabled", "true"));
+    await screen.findByRole("complementary", { name: "Export" });
+    expect(screen.queryByText(OWN_DISPLAY)).toBeNull();
+    await h!.store.setExportOptions({ format: "jpeg" });
+    expect(screen.queryByText(OWN_DISPLAY)).toBeNull();
   });
 });
 

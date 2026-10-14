@@ -750,8 +750,7 @@ impl AppApi {
     /// # Errors
     ///
     /// [`AppError`] with a plain sentence: no photos in the scope, photos of the scope that have
-    /// no estimates yet ("Some photos are still being developed…"), a DNG of a look with its own
-    /// display rendering, a display LUT that is gone.
+    /// no estimates yet ("Some photos are still being developed…"), a display LUT that is gone.
     pub fn export_start(&self, job: &ExportJob) -> Result<ExportJobId, AppError> {
         let job: CoreExportJob = convert(job)?;
         // Held while the job is queued: a restart that has begun (and found no export) is not

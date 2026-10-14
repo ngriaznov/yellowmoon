@@ -70,13 +70,13 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use ym_export::{ExportOptions, FormatKind};
+use ym_export::ExportOptions;
 use ym_gpu::queue::CancelToken;
 use ym_raw::decode::RawImage;
 
 use crate::export::{
-    DNG_BLOCKED_MESSAGE, ExportContext, ExportControl, ExportError, ExportParams, ExportReport,
-    PhotoSnapshot, WrittenFiles, estimate, export_photo, planned_destination, predicted_name_in,
+    ExportContext, ExportControl, ExportError, ExportParams, ExportReport, PhotoSnapshot,
+    WrittenFiles, estimate, export_photo, planned_destination, predicted_name_in,
 };
 use crate::session::{ApplyScope, PhotoId, PhotoStatus, Session, SessionError};
 use crate::settings::DevelopSettings;
@@ -106,8 +106,11 @@ pub struct ExportEstimate {
     /// Photos in the job with adjustments beyond the look, which the command line preview cannot
     /// carry.
     pub adjusted_photos: usize,
-    /// A photo in the job uses a look with its own display rendering, which cannot go into a DNG.
-    pub dng_unavailable: bool,
+    /// A DNG of this job is close to, not the same as, the picture in the app: a photo in the job uses a
+    /// look with its own display rendering (LogC3 to Rec.709) at an intensity above 0, or ARRI's display
+    /// rendering is chosen in Preferences. A DNG then holds the scene values that ACES 2 turns into that
+    /// picture (`docs/09`, "What a DNG carries"), which Adobe's renderer shows approximately.
+    pub dng_approximate: bool,
 }
 
 /// The `export_progress` event (`ExportProgress` in `src/api/types.ts`; see the module
@@ -222,9 +225,6 @@ pub enum QueueError {
     /// The scope holds no photo.
     #[error("{0}")]
     NoPhotos(&'static str),
-    /// A DNG was asked for with a look that has its own display rendering.
-    #[error("{DNG_BLOCKED_MESSAGE}")]
-    DngUnavailable,
     /// The options cannot be used.
     #[error("{0}")]
     Options(String),
@@ -457,10 +457,14 @@ impl ExportQueue {
                 command_intensity,
                 command_output_sharpening,
             ),
-            dng_unavailable: views.iter().any(|v| {
-                looks
-                    .look(&v.settings.look)
-                    .is_ok_and(|l| l.transform.includes_display_rendering())
+            dng_approximate: matches!(
+                self.ctx.renderer().display(),
+                crate::pipeline::DisplayChoice::ArriLut(_)
+            ) || views.iter().any(|v| {
+                v.settings.look_intensity > 0.0
+                    && looks
+                        .look(&v.settings.look)
+                        .is_ok_and(|l| l.transform.includes_display_rendering())
             }),
         }
     }
@@ -480,8 +484,7 @@ impl ExportQueue {
     ///
     /// # Errors
     ///
-    /// [`QueueError::NoPhotos`] for an empty scope, [`QueueError::DngUnavailable`] for a DNG of a
-    /// look with its own display rendering, [`QueueError::Options`] for options the writers refuse,
+    /// [`QueueError::NoPhotos`] for an empty scope, [`QueueError::Options`] for options the writers refuse,
     /// [`QueueError::Developing`] when photos of the scope have no estimates yet and
     /// [`QueueError::Photo`] for a photo that cannot be exported (nothing is queued).
     pub fn start(
@@ -533,16 +536,6 @@ impl ExportQueue {
         }
         if developing > 0 {
             return Err(QueueError::Developing(developing));
-        }
-        if job.options.format == FormatKind::Dng {
-            let looks = self.ctx.renderer().looks();
-            if items.iter().any(|i| {
-                looks
-                    .look(&i.snapshot.view.settings.look)
-                    .is_ok_and(|l| l.transform.includes_display_rendering())
-            }) {
-                return Err(QueueError::DngUnavailable);
-            }
         }
         let mut st = lock(&self.shared.state);
         if st.shutdown {
