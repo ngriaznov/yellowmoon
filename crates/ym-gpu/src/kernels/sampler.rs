@@ -25,7 +25,7 @@
 //!
 //! # Entry points
 //!
-//! [`encode_sample`] records the pass into a [`PassList`](crate::stream::PassList) and returns the
+//! [`encode_sample`] records the pass into a [`PassList`] and returns the
 //! four-plane image; [`sample`] is the thin host wrapper (upload, pass, readback) that tests and the
 //! first wiring call.
 

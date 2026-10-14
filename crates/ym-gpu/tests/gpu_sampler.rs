@@ -572,3 +572,21 @@ fn tiny_sources_and_tiny_outputs_match_the_cpu_port() {
         "the matrix must cover all three kernels"
     );
 }
+
+#[test]
+fn the_sampler_returns_every_buffer_to_the_pool_even_when_it_refuses() {
+    let Some(dev) = gpus().first() else { return };
+    let img = scene(37, 23, 8);
+    let (grid, _, _) = general_grid(37, 23, 1, 0, 8.0, 1.9, (1.0, 2.0));
+    let (before, after) = run(dev, move |ctx| {
+        let before = ctx.pool().stats().in_use_bytes;
+        for (w, h) in [(30usize, 20usize), (1, 1), (0, 5), (5, 0), (17, 9)] {
+            let _ = sample(ctx, &img, (0, 0), &grid, (0, 0), w, h);
+        }
+        Ok((before, ctx.pool().stats().in_use_bytes))
+    });
+    assert_eq!(
+        before, after,
+        "buffers are still in use after the sampler ran"
+    );
+}

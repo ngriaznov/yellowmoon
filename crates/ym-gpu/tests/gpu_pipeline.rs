@@ -1012,9 +1012,10 @@ fn windows_of_any_width_and_position_encode_the_codes_of_the_whole_picture() {
 #[test]
 fn a_band_refuses_a_stride_its_rows_do_not_fit() {
     // Seven pixels of RGB8 take two groups of three words, 6; with a stride of 5 a thread of the pass
-    // would write into the next row, where another thread writes too. The strided entry point must
-    // refuse that, and an `dst_x` the interleaved layouts have no use for, and accept a stride that
-    // fits (wider is fine).
+    // would write into the next row, where another thread writes too. The strided entry point is public
+    // and must do all the checking itself: it refuses that stride, a `dst_x` the interleaved layouts
+    // have no use for, a window outside the source or empty, and bits outside 1 to 16, and accepts a
+    // stride that fits (wider is fine).
     let img = linear_image(7, 4, 0x57D);
     let results = on_gpu(move |ctx| {
         let src = GpuImage::upload_rgb(ctx, "strided source", &img)?;
@@ -1033,31 +1034,37 @@ fn a_band_refuses_a_stride_its_rows_do_not_fit() {
         let rgb16 = Encoding::Rgb16 { bits: 16 };
         let rgba = Encoding::Rgba8 { background: [0; 3] };
         let mut passes = PassList::new(ctx, "strided");
-        let mut go = |enc, stride: usize, dst_x: usize| {
-            encode::encode_c13_strided(&mut passes, &src, whole, enc, c, &dst, stride, dst_x, 0)
+        let mut go = |enc, win: Rect, stride: usize, dst_x: usize| {
+            encode::encode_c13_strided(&mut passes, &src, win, enc, c, &dst, stride, dst_x, 0)
                 .is_ok()
         };
         Ok([
             // refused: 5 words hold neither 6 (RGB8) nor 12 (RGB16) nor 3 + 7 (RGBA8 at x = 3)
-            go(rgb8, 5, 0),
-            go(rgb16, 11, 0),
-            go(rgba, 9, 3),
+            go(rgb8, whole, 5, 0),
+            go(rgb16, whole, 11, 0),
+            go(rgba, whole, 9, 3),
             // refused: the interleaved layouts start at the left edge of their rows
-            go(rgb8, 6, 1),
-            go(rgb16, 12, 2),
+            go(rgb8, whole, 6, 1),
+            go(rgb16, whole, 12, 2),
+            // refused: a window outside the source, an empty one, bits outside 1 to 16
+            go(rgb8, Rect::new(4, 0, 7, 4), 6, 0),
+            go(rgb8, Rect::new(0, 0, 0, 4), 6, 0),
+            go(Encoding::Rgb16 { bits: 0 }, whole, 12, 0),
+            go(Encoding::Rgb16 { bits: 17 }, whole, 12, 0),
             // accepted: exactly fitting and wider
-            go(rgb8, 6, 0),
-            go(rgb16, 12, 0),
-            go(rgba, 10, 3),
-            go(rgb8, 40, 0),
-            go(rgba, 40, 0),
+            go(rgb8, whole, 6, 0),
+            go(rgb16, whole, 12, 0),
+            go(rgba, whole, 10, 3),
+            go(rgb8, whole, 40, 0),
+            go(rgba, whole, 40, 0),
         ])
     })
     .expect("device");
     assert_eq!(
         results,
         [
-            false, false, false, false, false, true, true, true, true, true
+            false, false, false, false, false, false, false, false, false, true, true, true, true,
+            true
         ]
     );
 }

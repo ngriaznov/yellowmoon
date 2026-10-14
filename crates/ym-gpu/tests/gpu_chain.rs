@@ -335,6 +335,16 @@ const STRONG_LENS: Limits = Limits {
     largest: 5.3e-3,
 };
 
+/// The 1024 x 1024 corner tile of a 50 MP frame (8658 x 5772) behind a strong barrel lens, demosaic
+/// and lens only, tie-prone content, against the CPU chain (`#[ignore]`d, run under `--release`).
+/// First measured: 29 of 3 145 728 over 1e-4 (9.2e-6), 45 over 2e-5 (1.4e-5), largest 8.0e-3; the
+/// limits are twice that. (It is not [`STRONG_LENS`]: that one is calibrated on a 1500 x 1400 tile.)
+const FIFTY_MP_CORNER: Limits = Limits {
+    over: 1.9e-5,
+    fine: 2.9e-5,
+    largest: 1.6e-2,
+};
+
 /// One hand-off case (a whole frame of a few thousand samples): a plumbing bug (a wrong core, a
 /// wrong placement, the unbalanced mosaic) moves nearly every sample, a tie flip a few percent at
 /// most (measured: 3.7 % in the worst tie-prone case).
@@ -869,10 +879,41 @@ fn a_50_mp_frame_corner_tile_is_split_within_the_design_binding() {
     let setup = Setup::new(scene, chain);
     let (ow, oh) = setup.output_size();
     let out = Rect::new(ow - 1024, oh - 1024, 1024, 1024);
+    // The demosaic core of this tile is above the limit, is cut, and every part fits the binding.
+    let mut run = setup
+        .chain
+        .begin_tile(&setup.scene.raw(), &setup.prepared, out)
+        .expect("tile");
+    let first = run
+        .stages()
+        .iter()
+        .position(|st| RawStage::of(st) == RawStage::Demosaic)
+        .expect("demosaic");
+    run.run_until(first).expect("stages before R6");
+    let core = run.demosaic_input().expect("input").core;
+    let parts = split_core(core);
+    let binding = parts
+        .iter()
+        .map(|&r| adaptive_ratio::max_binding_bytes(r))
+        .max()
+        .unwrap_or(0);
+    eprintln!(
+        "50 MP corner tile {out:?}: demosaic core {}x{} = {} padded pixels (limit {MAX_PHYS_AREA}), \
+         cut into {} rectangles, largest binding {:.1} MiB",
+        core.w,
+        core.h,
+        adaptive_ratio::padded_pixels(core),
+        parts.len(),
+        binding as f64 / f64::from(1u32 << 20)
+    );
+    assert!(adaptive_ratio::padded_pixels(core) > MAX_PHYS_AREA);
+    assert!(parts.len() > 1);
+    common::limits::assert_fits_design_binding("the largest part", binding);
+    drop(run);
     let gpu = setup.gpu(dev, out);
     let s = compare(&gpu, &setup.cpu(out));
     s.print("50 MP corner tile against the CPU");
-    assert_within("50 MP corner tile against the CPU", &s, STRONG_LENS);
+    assert_within("50 MP corner tile against the CPU", &s, FIFTY_MP_CORNER);
 }
 
 #[test]

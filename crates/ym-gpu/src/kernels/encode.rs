@@ -16,7 +16,7 @@
 //! same ones into its last pass; `tests/gpu_pipeline.rs` pins all three together.
 //!
 //! The entry point is [`encode_c13`], which records one pass into a
-//! [`PassList`](crate::stream::PassList); [`encode_host`] is the thin host wrapper the tests use.
+//! [`PassList`]; [`encode_host`] is the thin host wrapper the tests use.
 
 use bytemuck::{Pod, Zeroable};
 use ym_color::encode::OutputSpace;
@@ -165,44 +165,12 @@ pub fn encode_c13(
     dst_x: usize,
     dst_row: usize,
 ) -> Result<(), GpuError> {
-    if !matches!(src.planes, 3 | 4) {
-        return Err(GpuError::InvalidInput(format!(
-            "C13 reads a three- or four-plane image, not {} planes",
-            src.planes
-        )));
-    }
-    if window.is_empty() || window.x1() > src.width || window.y1() > src.height {
-        return Err(GpuError::InvalidInput(format!(
-            "the window {window:?} is empty or outside the {} x {} source",
-            src.width, src.height
-        )));
-    }
-    if let Encoding::Rgb16 { bits } = encoding
-        && !(1..=16).contains(&bits)
-    {
-        return Err(GpuError::InvalidInput(format!(
-            "a 16-bit band needs 1 to 16 bits, got {bits}"
-        )));
-    }
-    if dst_x != 0 && !matches!(encoding, Encoding::Rgba8 { .. }) {
-        return Err(GpuError::InvalidInput(
-            "an interleaved band starts at the left edge of its rows".into(),
-        ));
-    }
     let stride_words = if matches!(encoding, Encoding::Rgba8 { .. }) {
         // An RGBA8 destination is as wide as its pixels reach.
         dst_x + window.w
     } else {
         row_words(encoding, window.w)
     };
-    let need = ((dst_row + window.h) * stride_words * 4) as u64;
-    if dst.size() < need {
-        return Err(GpuError::InvalidInput(format!(
-            "a {} byte band does not hold {} rows of {stride_words} words",
-            dst.size(),
-            dst_row + window.h
-        )));
-    }
     encode_c13_strided(
         passes,
         src,
@@ -237,6 +205,25 @@ pub fn encode_c13_strided(
     dst_row: usize,
 ) -> Result<(), GpuError> {
     let ctx = passes.context();
+    if !matches!(src.planes, 3 | 4) {
+        return Err(GpuError::InvalidInput(format!(
+            "C13 reads a three- or four-plane image, not {} planes",
+            src.planes
+        )));
+    }
+    if window.is_empty() || window.x1() > src.width || window.y1() > src.height {
+        return Err(GpuError::InvalidInput(format!(
+            "the window {window:?} is empty or outside the {} x {} source",
+            src.width, src.height
+        )));
+    }
+    if let Encoding::Rgb16 { bits } = encoding
+        && !(1..=16).contains(&bits)
+    {
+        return Err(GpuError::InvalidInput(format!(
+            "a 16-bit band needs 1 to 16 bits, got {bits}"
+        )));
+    }
     let interleaved = !matches!(encoding, Encoding::Rgba8 { .. });
     if dst_x != 0 && interleaved {
         return Err(GpuError::InvalidInput(

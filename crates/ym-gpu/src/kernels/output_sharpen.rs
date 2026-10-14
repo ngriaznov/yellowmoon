@@ -7,7 +7,7 @@
 //!
 //! * **Device in, device out** ([`encode`](PreparedSharpen::encode),
 //!   [`encode_rgba8`](PreparedSharpen::encode_rgba8)): record the passes into a
-//!   [`PassList`](crate::stream::PassList). The input is a [`GpuImage`] (three planes, optionally a
+//!   [`PassList`]. The input is a [`GpuImage`] (three planes, optionally a
 //!   fourth one that marks the letterbox) and a `window` of it, the rectangle the stage reads: the
 //!   photo's bounding box, where the stage mirrors at its edge, exactly as the CPU does. The `core`
 //!   inside the window is what is written, either as three f32 planes of a destination image or, fused

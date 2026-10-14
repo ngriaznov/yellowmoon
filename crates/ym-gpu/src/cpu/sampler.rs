@@ -267,17 +267,18 @@ impl SamplerGrid {
     pub fn inside_rows(&self, off: (usize, usize), w: usize, h: usize, n: usize) -> Vec<[i32; 2]> {
         let n = n.max(1);
         let mut out = vec![[1, 0]; h * n * n];
-        out.par_chunks_mut(n * n)
-            .enumerate()
-            .for_each(|(y, cells)| {
-                for j in 0..n {
-                    let oy = (off.1 + y) as f64 + (j as f64 + 0.5) / n as f64;
-                    for i in 0..n {
-                        let fx = (i as f64 + 0.5) / n as f64;
-                        cells[j * n + i] = self.row_interval(off.0, w, oy, fx);
-                    }
+        // Serial on purpose: a row is a handful of divisions (microseconds for a whole tile), and the
+        // device thread that calls this must not wait for the rayon pool, whose workers may be
+        // waiting for the device.
+        for (y, cells) in out.chunks_mut(n * n).enumerate() {
+            for j in 0..n {
+                let oy = (off.1 + y) as f64 + (j as f64 + 0.5) / n as f64;
+                for i in 0..n {
+                    let fx = (i as f64 + 0.5) / n as f64;
+                    cells[j * n + i] = self.row_interval(off.0, w, oy, fx);
                 }
-            });
+            }
+        }
         out
     }
 
