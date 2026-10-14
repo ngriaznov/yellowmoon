@@ -158,8 +158,23 @@ class Ym:
         self.display = display
         self.commands: list[str] = []
         self.env = dict(os.environ, YELLOWMOON_HOME=str(home))
+        self._stamp = self._file_stamp()
+
+    def _file_stamp(self) -> tuple[int, int, int] | None:
+        """Identity of the binary on disk (inode, size, modification time), `None` when it cannot be read."""
+        try:
+            st = self.binary.stat()
+        except OSError:
+            return None
+        return (st.st_ino, st.st_size, st.st_mtime_ns)
 
     def run(self, args: list[str], timeout_s: float = 1800, record: bool = True) -> subprocess.CompletedProcess[str]:
+        # `ym info` and the renders of one photo must come from one binary: `target/debug/ym` is rewritten by every
+        # `cargo build`, and a study takes minutes. A rebuild in between once gave a render whose automatic exposure
+        # (+0.7229 EV) was not the one `ym info` had reported (+0.6784 EV) for the same file, which `check_render_exposure`
+        # caught. A binary that changed is now named as the cause.
+        if self._file_stamp() != self._stamp:
+            raise StudyError(f"{self.binary} was rebuilt or replaced while the study was running; run the study again (or point --ym at a copy)")
         cmd = [str(self.binary), *args]
         if record:
             self.commands.append(" ".join(cmd))

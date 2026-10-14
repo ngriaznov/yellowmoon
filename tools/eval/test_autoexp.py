@@ -146,6 +146,24 @@ class Runner(unittest.TestCase):
             self.assertEqual(len(ym.commands), 1)
             self.assertTrue(ym.commands[0].endswith("info x.ARW"))
 
+    def test_a_binary_that_is_rebuilt_during_the_run_is_refused(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            binary = root / "ym"
+            binary.write_text("#!/bin/sh\necho first\n")
+            binary.chmod(binary.stat().st_mode | stat.S_IXUSR)
+            ym = autoexp.Ym(binary, root / "home", "aces2")
+            self.assertEqual(ym.run(["info", "x.ARW"]).stdout.strip(), "first")
+            # What `cargo build` does: write a new file and move it over the old one.
+            new = root / "ym.new"
+            new.write_text("#!/bin/sh\necho second, with another size\n")
+            new.chmod(new.stat().st_mode | stat.S_IXUSR)
+            os.replace(new, binary)
+            with self.assertRaises(autoexp.StudyError) as caught:
+                ym.run(["render", "x.ARW"])
+            self.assertIn("rebuilt or replaced", str(caught.exception))
+            self.assertEqual(len(ym.commands), 1)  # the refused command was not run or recorded
+
 
 class Cache(unittest.TestCase):
     """`analyse(..., reuse=True)` without a `ym`: it can only use a cache that fits the file, the schema and the display."""
