@@ -54,7 +54,7 @@ They mirror the app's controls. Anything not given uses the automatic value or t
 | `--jobs <n>` | parallel decodes | the GPU keeps one queue |
 | `--json` | | one JSON object per file on stdout |
 | `--cpu` | | render on the CPU only and open no graphics device. The golden images are made this way (`tools/golden` passes it). Beats `YELLOWMOON_GPU`; with `--require-gpu` it is a usage error (exit 2) |
-| `--require-gpu` | | exit 4 if no usable GPU opens at the start, instead of falling back to the CPU; with it, a GPU error on a photo fails that photo (kind `gpu`) instead of re-rendering it on the CPU. Same as `YELLOWMOON_GPU=require` |
+| `--require-gpu` | | exit 4 if no usable GPU opens at the start, instead of falling back to the CPU; with it, a GPU error on a photo fails that photo (kind `gpu`) instead of re-rendering it on the CPU (from G-03 of `docs/gpu-plan.md` on; until then no export stage runs on the GPU). Same as `YELLOWMOON_GPU=require` |
 | `--quiet`, `--verbose` | | logs go to stderr |
 
 ## JSON output (`--json`)

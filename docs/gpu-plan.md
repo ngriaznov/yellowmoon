@@ -102,7 +102,7 @@ Estimates for the device (raw chain 1 to 2 s, colour and sharpening 0.4 to 0.7 s
 - Nothing about the device goes into a file or its XMP; `PIPELINE_VERSION` does not change; `ym render --json` gets additive `device` and `notes`.
 
 ### 4.2 Precision
-f32 for every image plane that crosses a kernel boundary, in every storage mode (X-3). `StoragePreference::Auto` resolves to `F32`; `Force(F16Native | F16Packed)` and `YM_GPU_STORAGE` stay for the legacy kernels and their tests. Raw words are `u16` pairs, look cubes and tables are f32 (already). `docs/01` "Storage format f16" is rewritten (STATUS question 2, option 1, pending Mykyta).
+f32 for every image plane that crosses a kernel boundary, in every storage mode (X-3). `StoragePreference::Auto` resolves to `F32`; `Force(F16Native | F16Packed)` stays for the legacy kernels and their tests. Raw words are `u16` pairs, look cubes and tables are f32 (already). `docs/01` "Storage format f16" is rewritten (STATUS question 2, option 1, pending Mykyta).
 
 ### 4.3 Types and the entry-point shape (in `ym-gpu`; it does not depend on `ym-core`)
 ```text

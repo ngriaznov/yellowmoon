@@ -63,6 +63,11 @@ jobs:
         env:
           YM_REQUIRE_GPU: "1"
         run: cargo test -p ym-gpu --release --no-fail-fast -- --test-threads=2 2>&1 | tee ym-gpu-${{ matrix.runner }}.log
+      - name: Device faults and the ML device recipe on Metal (ym-gpu, features fault-injection and ml)
+        if: ${{ !cancelled() }}
+        env:
+          YM_REQUIRE_GPU: "1"
+        run: cargo test -p ym-gpu --release --features fault-injection,ml --lib --test gpu_device 2>&1 | tee ym-gpu-features-${{ matrix.runner }}.log
       - name: The renderer on Metal (ym-core, every test; the GPU ones against the CPU reference)
         if: ${{ !cancelled() }}
         env:
@@ -78,6 +83,7 @@ jobs:
             doctor-${{ matrix.runner }}.json
             ym-gpu-${{ matrix.runner }}.log
             ym-core-${{ matrix.runner }}.log
+            ym-gpu-features-${{ matrix.runner }}.log
           if-no-files-found: warn
 
   app:

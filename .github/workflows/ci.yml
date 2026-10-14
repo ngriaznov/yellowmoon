@@ -157,6 +157,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Kernel parity, queue, pool, tiles
         run: cargo test -p ym-gpu --release
+      - name: Device faults and the ML device recipe (features fault-injection and ml)
+        run: cargo test -p ym-gpu --release --features fault-injection,ml --lib --test gpu_device
       - name: 50 MP spike and the GPU memory gate (peak under 1.5 GiB)
         run: cargo test -p ym-gpu --release --test gpu_spike -- --ignored --nocapture gpu_spike_50mp
       # The renderer's GPU colour pass against its CPU reference (ym-core). The test's header says this job runs it, but only

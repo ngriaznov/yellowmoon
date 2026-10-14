@@ -32,7 +32,7 @@ cargo run -p golden --release -- update --note "why the pictures changed"
 `--testdata DIR` (else `$YM_TESTDATA`, else `testdata/`), `--refs DIR`, `--expected FILE`, `--jobs N`, `--report FILE`
 (everything as JSON), `--quiet`.
 
-**What a render is.** One `ym render --json --quiet --settings <the entry's settings> --format png --bits 16 --colour-space srgb`
+**What a render is.** One `ym render --cpu --json --quiet --settings <the entry's settings> --format png --bits 16 --colour-space srgb` (with `YELLOWMOON_GPU=off`: golden hashes pin the CPU reference, `docs/gpu-plan.md` section 7)
 process per file, in an empty `YELLOWMOON_HOME` (so the user's default look, display rendering and imported looks cannot
 change it). One process per file because a photo's automatic exposure and pooled noise model depend on the other photos
 of the same run (`docs/01`, Session): the same file rendered in other company would give other pixels. A render that takes
