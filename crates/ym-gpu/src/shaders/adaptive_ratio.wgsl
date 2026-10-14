@@ -32,10 +32,11 @@
 // 45 degree edge, a symmetric neighbourhood) is then decided by which rounding each side got; every
 // later value is computed from values a decision chose. So every product that meets a sum, every
 // partial sum and every difference passes through `ar_op` (one operation per barrier: nothing to
-// fuse or re-associate), and every division and the one square root are computed in integer
-// arithmetic, correctly rounded (`ar_div`, `ar_sqrt`). IEEE arithmetic is unchanged by all of that;
-// it also stops the re-association of constants that lavapipe's compiler (NIR) did in a few chains
-// (a few samples moved by 1 to 3 ulp). A model of Apple's compiler (naga's MSL of these passes
+// fuse or re-associate), and every quotient and the one square root are made correctly rounded with
+// integer arithmetic (`ar_div`, `ar_sqrt`). IEEE arithmetic is unchanged by all of that. Lavapipe
+// did not follow the written order everywhere before (a few samples 1 to 3 ulp from the strict
+// evaluation in 10 of 258 cases, probably NIR re-associating chains with constants); with the barriers
+// it gives the strict bits. A model of Apple's compiler (naga's MSL of these passes
 // compiled with clang -O2 -ffast-math -ffp-contract=fast -mfma -mrecip=all) gives the bits of the
 // strict compile on every case it was run on (docs/gpu-plan.md section 12).
 //
@@ -200,6 +201,8 @@ fn ar_sqrt(x: f32) -> f32 {
         sticky = sticky | (root & 1u);
     }
     q = q + (round_bit & (sticky | (q & 1u)));
+    // q holds the leading bit, so adding it to the exponent field minus one carries a rounding
+    // overflow into the exponent.
     return bitcast<f32>(((((e + 127u) >> 1u) - 1u) << 23u) + q);
 }
 

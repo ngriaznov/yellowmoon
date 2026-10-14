@@ -1264,7 +1264,7 @@ mod view {
     }
 
     /// A renderer with `stages` on the device whose device passes hold at most `bytes` per binding.
-    fn small_binding(gpu: &Arc<Gpu>, stages: GpuStages, bytes: u64) -> Renderer {
+    pub fn small_binding(gpu: &Arc<Gpu>, stages: GpuStages, bytes: u64) -> Renderer {
         Renderer::new(
             Arc::new(NeutralOnly),
             RenderOptions {
@@ -1332,20 +1332,24 @@ mod view {
                 ("tilted crop", tilted.clone()),
                 ("plain", with_amount(&src, 0.0)),
             ] {
-                let st = cell(576.0, 384.0, 1.0);
-                let a = fresh(&whole, &photo, &st);
-                let jobs = gpu.counters().submissions;
-                let b = fresh(&cut, &photo, &st);
-                let ran = gpu.counters().submissions - jobs;
-                let what = format!("{name} {stages}");
-                assert_eq!(
-                    b.report.device,
-                    ComputeDevice::Gpu,
-                    "{what}: {:?}",
-                    b.report.notes
-                );
-                assert!(ran >= 2, "{what}: {ran} device jobs");
-                assert!(b.rgba == a.rgba, "{what}: {:?}", codes(&a, &b));
+                // The second cell is tall: the photo has paper above and below it, and some bands
+                // of the cut are nothing but paper.
+                for (w, h) in [(576.0, 384.0), (300.0, 520.0)] {
+                    let st = cell(w, h, 1.0);
+                    let a = fresh(&whole, &photo, &st);
+                    let jobs = gpu.counters().submissions;
+                    let b = fresh(&cut, &photo, &st);
+                    let ran = gpu.counters().submissions - jobs;
+                    let what = format!("{name} {w}x{h} {stages}");
+                    assert_eq!(
+                        b.report.device,
+                        ComputeDevice::Gpu,
+                        "{what}: {:?}",
+                        b.report.notes
+                    );
+                    assert!(ran >= 2, "{what}: {ran} device jobs");
+                    assert!(b.rgba == a.rgba, "{what}: {:?}", codes(&a, &b));
+                }
             }
         }
     }
@@ -2023,6 +2027,64 @@ mod faults {
                     matches!(thumb, Err(RenderError::Gpu(_))),
                     "{name}: {thumb:?}"
                 );
+            }
+        }
+
+        #[test]
+        fn a_device_error_in_a_cut_view_is_answered_by_the_whole_frame_on_the_cpu() {
+            // The view is cut into bands; the device refuses (the first band's buffers): no band of
+            // the device is mixed into the frame, the frame is the CPU's bit for bit, with the note,
+            // and a strict policy fails the request.
+            use super::super::view::small_binding;
+            let src = picture(600, 400);
+            let st = cell(300.0, 200.0, 1.0);
+            let want = fresh(&on_cpu(), &src, &st);
+            for (name, fault) in [
+                ("out of budget", GpuFault::OutOfBudget),
+                ("lost device", GpuFault::Lost),
+            ] {
+                let Some(gpu) = gpu() else { return };
+                let cut = small_binding(&gpu, VIEW, 400_000);
+                let strict = Renderer::new(
+                    Arc::new(NeutralOnly),
+                    RenderOptions {
+                        gpu: Some(Arc::clone(&gpu)),
+                        gpu_stages: VIEW,
+                        gpu_strict: true,
+                        view_band_bytes: 400_000,
+                        ..RenderOptions::default()
+                    },
+                )
+                .expect("render thread");
+                let before = pool_in_use(&gpu);
+                gpu.set_fault(Some(fault));
+                let f = fresh(&cut, &src, &st);
+                let refused = strict.viewport_frame(
+                    &src,
+                    &st,
+                    &FrameOptions {
+                        no_cache: true,
+                        ..FrameOptions::default()
+                    },
+                    &CancelToken::new(),
+                );
+                gpu.set_fault(None);
+                assert_eq!(f.report.device, ComputeDevice::Cpu, "{name}");
+                assert!(f.rgba == want.rgba, "{name}: the CPU frame, bit for bit");
+                assert!(
+                    f.report.notes.iter().any(|n| n.starts_with(
+                        "The graphics card could not render this frame, so the CPU did"
+                    )),
+                    "{name}: {:?}",
+                    f.report.notes
+                );
+                assert!(
+                    matches!(refused, Err(RenderError::Gpu(_))),
+                    "{name}: {refused:?}"
+                );
+                if !matches!(fault, GpuFault::Lost) {
+                    assert_eq!(pool_in_use(&gpu), before, "{name}: the ledger is back");
+                }
             }
         }
 

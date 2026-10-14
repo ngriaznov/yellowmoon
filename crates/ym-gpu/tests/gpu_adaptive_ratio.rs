@@ -9,7 +9,7 @@
 //! | Case | Asserted bound | Measured |
 //! |---|---|---|
 //! | the 16 stable vectors against the oracle's `expected` | the vectors' own tolerance, 1e-5 | 1.4e-6 (`highlights_and_negatives`, values to 3), 3e-7 on the others |
-//! | the 2 tie-sensitive vectors (`edge_knight`, `ca_weighting`) | [`TIE_VECTORS`]: at most 20 / 100 samples over, 2e-3 (Metal: [`TIE_VECTORS_METAL`], 80 / 100) | 10 / 58 samples over, 4.2e-4 / 6.1e-4 (the CPU port moves 8 / 26 samples by up to 6.6e-4 / 1.1e-3 under 1 ulp of input noise); Metal 40 / 56, 6.6e-4 / 1.08e-3 |
+//! | the 2 tie-sensitive vectors (`edge_knight`, `ca_weighting`) | [`TIE_VECTORS`]: at most 20 / 100 samples over, 2e-3, on every adapter | 10 / 58 samples over, 4.2e-4 / 6.1e-4 (the CPU port moves 8 / 26 samples by up to 6.6e-4 / 1.1e-3 under 1 ulp of input noise); Metal at b6f2e4b, before the fast-math barriers: 40 / 56, 6.6e-4 / 1.08e-3 |
 //! | random frames: 4 phases x 3 noise models x 5 parameter sets x 4 sizes (240 runs, 894 240 samples) | [`FRAME_FRACTION`] over, [`FRAME_FINE_FRACTION`] fine, [`FRAME_BOUND`] | 0 over, 0 fine, worst 7.4e-6 |
 //! | the same on the balanced entry (R6's), and against the unbalanced entry | as above | 0 over, worst 1.7e-6 (CPU), 1.4e-6 (unbalanced GPU) |
 //! | CA path: random curves, off-centre optical centres, placements anywhere in a 6000 x 4000 frame (32 runs) | as above | 0 over, 0 fine, worst 2.4e-6 |
@@ -70,28 +70,15 @@ const VECTOR_TOLERANCE: f64 = 1e-5;
 /// The two vectors that sit on exact ties (`edge_knight`: a 2:1 edge; `ca_weighting`: a 45 degree
 /// edge with a position-dependent CA weight): the most samples over 1e-4 and the largest difference
 /// allowed. Measured: 10 and 58 samples, 4.2e-4 and 6.1e-4.
+///
+/// The same limits hold on Metal. At b6f2e4b the Apple runners counted 40 `edge_knight` samples over
+/// 1e-4 (worst 6.6e-4) and the test had a Metal column of 80; the cause was fast-math (fused
+/// multiply-adds, re-associated sums, approximate division) moving the near-ties, not anything
+/// inherent to `f32`. The kernel now pins those roundings (`kernels::adaptive_ratio`, "Fast-math"),
+/// and naga's MSL of it compiled with clang `-ffast-math -mfma -mrecip=all` gives lavapipe's bits on
+/// these vectors (10 and 58 samples), so there is no Metal column any more.
 const TIE_VECTORS: [(&str, usize, f64); 2] =
     [("edge_knight", 20, 2e-3), ("ca_weighting", 100, 2e-3)];
-/// The same two vectors on Metal, which has its own column (`docs/gpu-plan.md` section 12, the run on
-/// the Apple-silicon runners): Metal compiles with fast-math, which re-associates and contracts the
-/// sums the decisions compare, so a tie in exact arithmetic is decided by different rounding noise
-/// than on lavapipe's separately rounded operations (and than on the CPU's `f64`). Measured there:
-/// `edge_knight` 40 samples over 1e-4 (lavapipe 10), worst 6.6e-4; `ca_weighting` 56 (lavapipe 58),
-/// worst 1.08e-3. `edge_knight` is the vector that failed there (40 against a limit of 20): its Metal
-/// limit is twice the first measurement. `ca_weighting` passed within the lavapipe limit (56 against
-/// 100), so a column that was looser than lavapipe's would have no evidence behind it: it keeps 100.
-/// The lavapipe limits above are untouched and the worst-difference limit is the same for both.
-const TIE_VECTORS_METAL: [(&str, usize, f64); 2] =
-    [("edge_knight", 80, 2e-3), ("ca_weighting", 100, 2e-3)];
-
-/// The tie-vector limits for `dev`: Metal has its own column, every other backend the lavapipe one.
-fn tie_vectors(dev: &TestGpu) -> &'static [(&'static str, usize, f64); 2] {
-    if dev.gpu.info().backend == "Metal" {
-        &TIE_VECTORS_METAL
-    } else {
-        &TIE_VECTORS
-    }
-}
 /// Random frames: the fraction of samples that may differ from the CPU by more than 1e-4 (measured:
 /// 0 of 894 240 on the sweep, 0 of 178 224 with CA).
 const FRAME_FRACTION: f64 = 1e-4;
@@ -516,7 +503,7 @@ fn every_vector_matches_the_oracle_on_the_gpu() {
             v.tolerance,
             to_cpu.max_abs,
         );
-        if let Some(&(_, max_over, max_abs)) = tie_vectors(dev).iter().find(|t| t.0 == v.name) {
+        if let Some(&(_, max_over, max_abs)) = TIE_VECTORS.iter().find(|t| t.0 == v.name) {
             // Exact ties in exact arithmetic: the GPU takes the other of two equal estimates at some
             // pixels along the edge. Bounded, and of the size of the CPU's own response to 1 ulp
             // (`cpu_is_as_sensitive_as_the_gpu_is_different`).
@@ -1676,101 +1663,3 @@ fn cpu_is_as_sensitive_as_the_gpu_is_different() {
         );
     }
 }
-
-// MODEL-DUMP-BEGIN (temporary, removed before the end of the task)
-#[test]
-#[ignore = "development aid: YM_MODEL_DUMP=<dir> writes the MSL of every kernel for the clang model"]
-fn zz_msl_dump() {
-    let Ok(root) = std::env::var("YM_MODEL_DUMP") else {
-        return;
-    };
-    let root = std::path::Path::new(&root);
-    std::fs::create_dir_all(root).expect("dir");
-    for id in ym_gpu::kernels::KernelId::ALL {
-        let src = ym_gpu::kernels::shader_source(ym_gpu::device::StorageMode::F32, id);
-        let module = naga::front::wgsl::parse_str(&src).expect("parse");
-        let info = naga::valid::Validator::new(
-            naga::valid::ValidationFlags::all(),
-            naga::valid::Capabilities::all(),
-        )
-        .validate(&module)
-        .expect("valid");
-        let mut resources = naga::back::msl::BindingMap::default();
-        for (_, var) in module.global_variables.iter() {
-            if let Some(rb) = var.binding {
-                let mutable = matches!(var.space, naga::AddressSpace::Storage { access } if access.contains(naga::StorageAccess::STORE));
-                resources.insert(
-                    rb,
-                    naga::back::msl::BindTarget {
-                        buffer: Some(rb.binding as u8),
-                        texture: None,
-                        sampler: None,
-                        external_texture: None,
-                        mutable,
-                    },
-                );
-            }
-        }
-        let mut map = naga::back::msl::EntryPointResourceMap::default();
-        map.insert(
-            "main".to_string(),
-            naga::back::msl::EntryPointResources {
-                resources,
-                immediates_buffer: None,
-                sizes_buffer: Some(30),
-            },
-        );
-        let options = naga::back::msl::Options {
-            lang_version: (2, 4),
-            fake_missing_bindings: false,
-            per_entry_point_map: map,
-            ..naga::back::msl::Options::default()
-        };
-        let (msl, _) = naga::back::msl::write_string(
-            &module,
-            &info,
-            &options,
-            &naga::back::msl::PipelineOptions::default(),
-        )
-        .expect("msl");
-        std::fs::write(root.join(format!("{id:?}.metal")), msl).expect("write");
-    }
-}
-#[test]
-#[ignore = "development aid: YM_AR_DISPATCH_LOG=<file> records the dispatches of the vectors and frames"]
-fn zz_ar_dump() {
-    use ym_gpu::kernels::adaptive_ratio::model_log;
-    if std::env::var_os("YM_AR_DISPATCH_LOG").is_none() {
-        return;
-    }
-    let Some(dev) = f32_device() else { return };
-    let save = |name: &str, c: &Case| {
-        model_log(7, name.as_bytes());
-        let got = c.gpu(dev);
-        model_log(5, bytemuck::cast_slice(&got.data));
-        model_log(6, bytemuck::cast_slice(&c.cpu().data));
-    };
-    for v in load_vectors() {
-        save(&format!("vec {}", v.name), &v.case);
-    }
-    if std::env::var_os("YM_AR_DUMP_FRAMES").is_some() {
-        let mut seed = 100;
-        for cfa in Cfa::ALL {
-            for (w, h) in [(67usize, 41usize), (40, 40), (31, 18), (9, 7)] {
-                for (n, noise) in [
-                    ("zero", NoiseDn::ZERO),
-                    ("low", low_noise()),
-                    ("high", high_noise()),
-                ] {
-                    for (k, params) in param_sets().into_iter().enumerate() {
-                        seed += 1;
-                        let mut c = Case::new(scene_for(noise, w, h, cfa, seed), noise);
-                        c.params = params;
-                        save(&format!("frame {} {w}x{h} {n} {k}", cfa.name()), &c);
-                    }
-                }
-            }
-        }
-    }
-}
-// MODEL-DUMP-END

@@ -72,10 +72,24 @@
 //!   frame position (an exact integer difference plus a half-integer for the usual centre, so only the
 //!   square root and the curve interpolation round), looks the two curves up in the `f32` knots and
 //!   subtracts. The CPU does the same in `f64`; the difference is a few `1e-7` px.
-//! * **Division.** `1 / w` and the final divisions are `f32` divisions, correctly rounded on lavapipe;
-//!   a GPU that approximates them (up to 2.5 ulp is allowed by WGSL) moves the result by that much.
-//! * **No fused multiply-add** is requested; WGSL cannot forbid one, so a driver that contracts
-//!   `a * b + c` can move the last bit.
+//! * **Fast-math (Metal, K8).** Metal compiles with fast-math: it fuses `a * b + c`, re-associates
+//!   sums and products, and divides and takes square roots to a few ulp (WGSL allows 2.5 ulp for a
+//!   division). Every one of those moved a near-tie of the decisions above, and every later value is
+//!   computed from what a decision chose: at b6f2e4b the Apple runners counted 40 samples of the
+//!   `edge_knight` vector over 1e-4 (lavapipe 10) and the device chain's strong-lens corner 921 (lavapipe
+//!   293), up to 2.07e-2. So every product that meets a sum, every partial sum and every difference
+//!   passes through a barrier (`ar_op`, an OR with the always-zero third word of `cst2`, which the
+//!   compiler cannot know; an OR because an XOR applied twice cancels), and every quotient and the
+//!   CA square root are made correctly rounded with integer arithmetic (`ar_div`: the device's estimate
+//!   corrected with the exact integer remainder; `ar_sqrt`: a digit-by-digit integer root). IEEE
+//!   arithmetic is unchanged. Evidence without a Mac: naga's MSL of the eleven passes, compiled with
+//!   clang `-O2` and `-O3 -ffast-math -ffp-contract=fast -mfma -mrecip=all`, gives lavapipe's bits on
+//!   all 18 vectors, 240 random frames and the three demosaic calls of the strong-lens corner test
+//!   (24.6 million samples); the MSL of the kernel before the change reproduces Metal's worst
+//!   `edge_knight` and `ca_weighting` differences (6.595e-4, 1.078e-3) to the digit, and with the
+//!   barriers but the device's division the strong-lens counts come back (3606 samples off by more
+//!   than 1e-4). The cost: about 60 exact divisions per pixel (about 25 integer operations each); the
+//!   scalar CPU model of the passes runs 3.9 times as long as before. Mac timing is an M0-H4 item.
 //!
 //! # Inputs the kernel accepts
 //!
@@ -740,20 +754,6 @@ pub fn encode_demosaic(
         bytemuck::cast_slice(knots),
     )?);
     let base = base_uniform(input, core, frame, &lay, out.stride);
-    {
-        // MODEL-DUMP (temporary)
-        model_log(2, bytemuck::cast_slice(knots));
-        let mut v = Vec::new();
-        for x in [
-            (plane_len * planes as u64) as u32,
-            core.w as u32,
-            core.h as u32,
-            out.stride as u32,
-        ] {
-            v.extend_from_slice(&x.to_le_bytes());
-        }
-        model_log(3, &v);
-    }
 
     let mut run = |id: KernelId, region: [u32; 4], channel: u32| -> Result<(), GpuError> {
         let Some((_, slots)) = pass_of(id) else {
@@ -765,24 +765,6 @@ pub fn encode_demosaic(
         u.region = region;
         u.ctl[1] = channel;
         let ub = passes.uniform("adaptive ratio uniform", &u)?;
-        {
-            // MODEL-DUMP (temporary)
-            let mut v = Vec::new();
-            let name = format!("{id:?}");
-            v.extend_from_slice(&(name.len() as u32).to_le_bytes());
-            v.extend_from_slice(name.as_bytes());
-            let ubytes = bytemuck::bytes_of(&u);
-            v.extend_from_slice(&(ubytes.len() as u32).to_le_bytes());
-            v.extend_from_slice(ubytes);
-            for g in [
-                (region[2] - region[0]).div_ceil(GROUP),
-                (region[3] - region[1]).div_ceil(GROUP),
-                1,
-            ] {
-                v.extend_from_slice(&g.to_le_bytes());
-            }
-            model_log(4, &v);
-        }
         let entries: Vec<(u32, wgpu::BindingResource<'_>)> = slots
             .iter()
             .map(|&slot| {
@@ -832,19 +814,6 @@ pub fn encode_demosaic(
     Ok(out)
 }
 
-/// MODEL-DUMP (temporary): appends a tagged record to the file named by `YM_AR_DISPATCH_LOG`.
-#[doc(hidden)]
-pub fn model_log(tag: u32, bytes: &[u8]) {
-    use std::io::Write as _;
-    if let Some(path) = std::env::var_os("YM_AR_DISPATCH_LOG")
-        && let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path)
-    {
-        let _ = f.write_all(&tag.to_le_bytes());
-        let _ = f.write_all(&(bytes.len() as u32).to_le_bytes());
-        let _ = f.write_all(bytes);
-    }
-}
-
 /// Runs the kernel on the `core` rectangle of the host mosaic `m` and reads the core back: upload,
 /// [`encode_demosaic`], submit, read. The host path every wrapper and the device chain use; the
 /// samples were checked by the caller ([`PreparedDemosaic::check_mosaic`]). The rectangle around the core supplies the context (real rows
@@ -864,15 +833,6 @@ pub(crate) fn demosaic_core(
         &m.data,
         m.place,
     )?;
-    {
-        // MODEL-DUMP (temporary)
-        let mut v = Vec::new();
-        for x in [m.width as u32, m.height as u32, input.stride as u32] {
-            v.extend_from_slice(&x.to_le_bytes());
-        }
-        v.extend_from_slice(bytemuck::cast_slice(&m.data));
-        model_log(1, &v);
-    }
     let mut passes = PassList::new(ctx, "adaptive ratio demosaic");
     let out = encode_demosaic(&mut passes, &input, m.cfa, core, frame)?;
     let read = out.encode_read(&mut passes)?;
@@ -1007,6 +967,62 @@ mod tests {
     use super::*;
     use crate::device::StorageMode;
     use crate::kernels::shader_source;
+
+    /// The text of the WGSL function `name` in `src`, up to its closing brace.
+    fn wgsl_function<'a>(src: &'a str, name: &str) -> &'a str {
+        let start = src
+            .find(&format!("fn {name}("))
+            .unwrap_or_else(|| panic!("fn {name}"));
+        let end = src[start..]
+            .find("\n}\n")
+            .map(|e| start + e + 3)
+            .expect("end");
+        &src[start..end]
+    }
+
+    /// K8 (module notes, "Fast-math"): lavapipe neither fuses nor re-associates, so only the text can
+    /// show that a barrier or an exact routine went missing. The barrier is an OR (an XOR applied
+    /// twice cancels), no pass divides or takes a square root with the device's operations except
+    /// inside the two routines' fallbacks (and the exact `/ 16.0`), and the routines are the output
+    /// sharpening kernel's, which `tests/gpu_output_sharpen.rs` runs against IEEE on the device.
+    #[test]
+    fn the_shader_pins_every_rounding_and_divides_exactly() {
+        let src = include_str!("../shaders/adaptive_ratio.wgsl");
+        assert!(src.contains("return bitcast<f32>(bitcast<u32>(x) | bitcast<u32>(u.cst2.z));"));
+        let sharpen = include_str!("../shaders/output_sharpen.wgsl");
+        assert_eq!(
+            wgsl_function(src, "ar_div").replacen("fn ar_div(", "", 1),
+            wgsl_function(sharpen, "sharpen_div").replacen("fn sharpen_div(", "", 1),
+            "ar_div is the output sharpening kernel's sharpen_div"
+        );
+        assert_eq!(
+            wgsl_function(src, "ar_sqrt").replacen("fn ar_sqrt(", "", 1),
+            wgsl_function(sharpen, "sharpen_sqrt").replacen("fn sharpen_sqrt(", "", 1),
+            "ar_sqrt is the output sharpening kernel's sharpen_sqrt"
+        );
+        let passes = &src[src.find("fn ar_prepare(").expect("the passes")..];
+        for (n, line) in passes.lines().enumerate() {
+            let code = line.split("//").next().unwrap_or("");
+            assert!(
+                !code.contains(" / ") || code.contains("/ 2u") || code.contains("acc / 16.0"),
+                "line {n} of the passes divides with the device's `/`: {line}"
+            );
+            assert!(
+                !code.contains("sqrt(") || code.contains("ar_sqrt("),
+                "line {n} of the passes uses the device's `sqrt`: {line}"
+            );
+        }
+        for needle in [
+            "let w_u = ar_op(ar_op(ar_op(ar_op(ar_op(ar_op(rho * abs(",
+            "return ar_op(ar_op(c + k) * ar_div(num, den)) - k;",
+            "let s2 = ar_op(ar_op(ar_op(ar_op(abs(s - e) + abs(n - w))",
+            "gsum = ar_op(gsum + ar_op(wj * gn[j]));",
+            "let wt = ar_div(b2, ar_op(a2 + b2));",
+            "outp[o] = ar_div(v.x, u.gains.w);",
+        ] {
+            assert!(src.contains(needle), "the shader lost `{needle}`");
+        }
+    }
 
     /// Every adaptive ratio pass, as registered in [`KernelId`].
     fn passes() -> Vec<KernelId> {
