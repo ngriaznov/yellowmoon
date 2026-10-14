@@ -8,9 +8,10 @@
 name: Mac GPU (Metal)
 
 on:
+  # Every push except checkpoints (the jobs skip those): a path filter missed the commit that closes a wave, whose code
+  # had already gone in with earlier checkpoint commits.
   push:
     branches: [main, "claude/**"]
-    paths: ["crates/**", "src-tauri/**", "src/**", "tools/golden/**", "data/**", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "package.json", "package-lock.json", ".github/workflows/mac-gpu.yml"]
   pull_request:
     paths: ["crates/**", "src-tauri/**", "src/**", "tools/golden/**", "data/**", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "package.json", "package-lock.json", ".github/workflows/mac-gpu.yml"]
   workflow_dispatch:
