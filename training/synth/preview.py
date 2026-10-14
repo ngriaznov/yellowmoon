@@ -7,15 +7,19 @@ It exists so that the auto-exposure comparison machinery (preview extraction, me
 2. the as-shot white balance (the file's SR2 gains, i.e. the true gains perturbed like an automatic white balance),
    clipped at the balanced white, so a clipped highlight goes white;
 3. a colour matrix fitted on the 190 training reflectances under the true light, camera to linear sRGB (D65);
-4. a fixed gain of 2.2 (``PREVIEW_GAIN``), a soft shoulder above 0.8 that maps 2.2 to 1.0, the sRGB transfer curve and a
-   mild S-curve (``v - 0.12 sin(2 pi v) / (2 pi)``).
+4. a fixed gain of 2.133 (``PREVIEW_GAIN``), a soft shoulder above 0.8 that maps the gain to 1.0, the sRGB transfer curve
+   and a mild S-curve (``v - 0.12 sin(2 pi v) / (2 pi)``).
 
-The gain is what makes the camera engine Sony-like: the raw level at which this rendering shows middle grey (0.18 in
-linear light) is 0.0834 of the balanced white, i.e. the engine's gain is ``log2(0.18 / 0.0834) = +1.1100 EV``, the median
-gain of the cameras' own JPEG engines on the 12 local files (``ym_color::exposure::CAMERA_GAIN_EV``, ``docs/02`` Auto
-exposure, decision of 2026-10-14). So the auto-exposure gate (G3, ``tools/eval/autoexp.py --gate``) passes on this tier by
-construction: ``EV_auto`` is that same constant. The gain was calibrated, not guessed: ``known_gain_ev(gain)`` solves
-the tone function for the raw level that reads 0.18, and 2.2 gives 1.11004 EV (the earlier 1.5 gave +0.5575 EV).
+The gain is what makes the camera engine Sony-like. ``tools/eval/autoexp.py`` reads a camera's gain (the raw level at
+which the JPEG shows middle grey, 0.18 in linear light) by quantile matching against our own scene picture, and reads
+this engine **+0.045 EV above its own gain** (std 0.03 over the 37 scenes; the cause is not isolated, the C7 low-light
+toe of our picture and the noise at the lower level are the suspects). It reads real cameras with the same method, so the
+gain was calibrated on the measured value, not on the analytic one: ``known_gain_ev(2.133)`` is +1.0653 EV, and the
+estimator reads the tier's median at +1.11 EV, the median gain of the cameras' own JPEG engines on the 12 local files
+(``ym_color::exposure::CAMERA_GAIN_EV``, ``docs/02`` Auto exposure, decision of 2026-10-14). ``EV_auto`` is that same
+constant, so the auto-exposure gate (G3, ``tools/eval/autoexp.py --gate``) passes on this tier by construction. The earlier
+gain of 1.5 was +0.5575 EV (and was read at +0.55). ``known_gain_ev(gain)`` solves the tone function for the raw level that
+reads 0.18.
 
 The JPEG is baseline, 4:2:0, quality 90, starts ``FF D8 FF DB`` like Sony previews (without JFIF) and carries a
 ``COM`` segment that says it is synthetic.
@@ -30,10 +34,13 @@ import numpy as np
 from training.alexa import ssf_core as s
 
 JPEG_QUALITY = 90
-#: The fixed gain of the synthetic camera engine (linear sRGB, balanced white = 1). `known_gain_ev(2.2)` is +1.1100 EV.
-PREVIEW_GAIN = 2.2
-#: The engine's gain in stops that `PREVIEW_GAIN` is calibrated to: `ym_color::exposure::CAMERA_GAIN_EV`.
-TARGET_GAIN_EV = 1.11
+#: The fixed gain of the synthetic camera engine (linear sRGB, balanced white = 1). `known_gain_ev(2.133)` is +1.0653 EV, which
+#: `tools/eval/autoexp.py` reads at +1.11 EV (its +0.045 EV reading bias on this tier, see the module docstring).
+PREVIEW_GAIN = 2.133
+#: What the estimator of `tools/eval/autoexp.py` must read as the median gain of the tier: `ym_color::exposure::CAMERA_GAIN_EV`.
+TARGET_MEASURED_GAIN_EV = 1.11
+#: The engine's own gain in stops, `known_gain_ev(PREVIEW_GAIN)` rounded to 4 decimals (`autoexp.SYNTH_GAIN_EV`).
+KNOWN_GAIN_EV = 1.0653
 COMMENT = b"Yellowmoon synthetic test file: this preview is a made-up sRGB rendering, not a camera rendering."
 
 
@@ -72,7 +79,7 @@ def known_gain_ev(gain: float | None = None) -> float:
     `tone` shows 0.18 in linear light (ISO 12232's grey, the anchor `tools/eval/autoexp.py` reads the camera gain at).
 
     Exact for a grey pixel (the matrix rows sum to 1, so `lin` is the raw level); the 8-bit quantisation is ignored (it is
-    1 code at most). `known_gain_ev(1.5)` is 0.5575, `known_gain_ev(2.2)` is 1.1100.
+    1 code at most). `known_gain_ev(1.5)` is 0.5575, `known_gain_ev(2.133)` is 1.0653.
     """
     from scipy.optimize import brentq
 

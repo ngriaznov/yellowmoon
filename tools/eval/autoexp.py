@@ -79,10 +79,11 @@ DNG_BLOCK = 8  # the 1/8 preview's binning
 #: Version of the reduction a cache file holds (bump it when `reduce_photo` stores something else): an older cache
 #: is not reused, so `--reuse` cannot mix numbers from two versions of the arithmetic.
 CACHE_SCHEMA = 3
-# The raw level at which the synthetic JPEG (training/synth/preview.py `tone`: gain 2.2, soft shoulder, sRGB, mild S-curve)
-# reads 0.18 in linear light, as a gain: 1.1100 EV (the nominal gain log2(2.2) is 1.138; the S-curve darkens grey). The gain
-# was solved so that this equals `ym_color::exposure::CAMERA_GAIN_EV`, the camera gain `EV_auto` is (docs/02, 2026-10-14).
-SYNTH_GAIN_EV = 1.1100
+# The raw level at which the synthetic JPEG (training/synth/preview.py `tone`: gain 2.133, soft shoulder, sRGB, mild S-curve)
+# reads 0.18 in linear light, as a gain: 1.0653 EV (the nominal gain log2(2.133) is 1.093; the S-curve darkens grey). The gain was
+# calibrated so that this estimator reads the tier's median at `ym_color::exposure::CAMERA_GAIN_EV` (+1.11 EV, the camera gain
+# `EV_auto` is, docs/02, 2026-10-14): it reads this engine +0.045 EV above its own gain (std 0.03).
+SYNTH_GAIN_EV = 1.0653
 #: `ym_color::display::DISPLAY_PLACEMENT_EV`, read from the source so that the two cannot drift apart: the ACES 2 path brightens
 #: the scene by this many stops before the transform and the DNG's `BaselineExposure` carries it.
 PLACEMENT_SOURCE = REPO / "crates" / "ym-color" / "src" / "display" / "transform.rs"
