@@ -21,6 +21,8 @@
 //! The dihedral part is exact: with no straighten angle and an output grid that lines up with the
 //! buffer, [`Grid::source`] returns pixel centres and sampling copies pixels.
 
+use ym_gpu::cpu::sampler::SamplerGrid;
+
 use crate::auto::display_to_sensor;
 use crate::settings::{Crop, DevelopSettings, NormRect, Orientation};
 
@@ -434,6 +436,21 @@ impl Grid {
             snap(s[0].clamp(0.0, 1.0) * self.buffer.0),
             snap(s[1].clamp(0.0, 1.0) * self.buffer.1),
         ))
+    }
+
+    /// The same grid as plain data for the sampler of `ym-gpu` ([`SamplerGrid`], the CPU reference of
+    /// the device kernel and, since G-05, the implementation `sample_to_camera` calls): every number
+    /// the position chain reads, nothing else, so the two cannot disagree about where a pixel samples.
+    #[must_use]
+    pub fn sampler_grid(&self) -> SamplerGrid {
+        SamplerGrid::new(
+            self.to_canvas.m,
+            self.canvas,
+            self.buffer,
+            self.geometry.exif_orientation,
+            self.geometry.quarter_turns,
+            self.geometry.is_unrotated(),
+        )
     }
 
     /// The smallest rectangle of the buffer (integer pixels, `x0 <= x < x1`) that holds every
@@ -872,6 +889,58 @@ mod tests {
             x + w <= 40 && y + h <= 60,
             "inside the turned canvas (40 x 60): {x} {y} {w} {h}"
         );
+    }
+
+    /// The sampler of `ym-gpu` reads the grid as plain data ([`Grid::sampler_grid`]): the position
+    /// chain, the inside test and the kernel choice are the grid's own, for every orientation, turn
+    /// and straighten angle.
+    #[test]
+    fn the_sampler_grid_is_this_grid_as_plain_data() {
+        let (w, h) = (64usize, 48usize);
+        for exif in 1..=8u16 {
+            for turns in 0..4u8 {
+                for angle in [0.0, 3.5, -12.0] {
+                    let settings = DevelopSettings {
+                        orientation: match turns {
+                            0 => Orientation::Deg0,
+                            1 => Orientation::Deg90,
+                            2 => Orientation::Deg180,
+                            _ => Orientation::Deg270,
+                        },
+                        crop: Some(Crop {
+                            rect: NormRect {
+                                x: 0.05,
+                                y: 0.1,
+                                width: 0.8,
+                                height: 0.7,
+                            },
+                            angle_deg: angle,
+                            aspect: crate::settings::CropAspect::Free,
+                        }),
+                        ..DevelopSettings::default()
+                    };
+                    let g = Geometry::new(exif, &settings);
+                    for out in [(40usize, 30usize), (90, 70), (23, 17)] {
+                        let grid = g.grid((w, h), out);
+                        let sg = grid.sampler_grid();
+                        assert_eq!(sg.is_pixel_copy(), grid.is_pixel_copy());
+                        assert_eq!(sg.step_lengths(), grid.step_lengths());
+                        for (x, y) in [(0, 0), (out.0 - 1, 3), (7, out.1 - 1), (out.0 / 2, out.1 / 2)] {
+                            assert_eq!(
+                                sg.source(x, y),
+                                grid.source(x, y),
+                                "exif {exif} turns {turns} angle {angle} out {out:?} pixel ({x}, {y})"
+                            );
+                        }
+                        assert_eq!(
+                            sg.source_at(1.25, 2.75),
+                            grid.source_at(1.25, 2.75),
+                            "exif {exif} turns {turns} angle {angle}"
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]

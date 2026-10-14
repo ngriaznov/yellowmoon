@@ -185,6 +185,16 @@ The `synthetic-full` and `synthetic-eval` sets (53 more, the latter with CIE ref
 | M0-H4 (added) | On a Mac: "Move to Trash" for a downloaded look zip goes through Finder (the `trash` crate's default), which may ask for Automation permission the first time (`src-tauri/Info.plist` now carries the usage string). Check that the prompt appears once and the move works. | M3 |
 | M4-H2…M4-H5 | Developer ID signing and notarisation decision; trademark clearance (EUIPO, INPI, WIPO, UK IPO); freedom-to-operate check on US 11948279 and on the patent leads in `research/raw-algorithms-prior-art.md` §2.2 (Kodak, Epson, Sony, Apple, IBM families; diffraction restoration filters); announcement. Not started. | M4 |
 
+## Auto exposure and the DNG (your decisions of 2026-10-14)
+
+Research: `research/auto-exposure-2026-10-14.md`. Of A1M01749's −1.16 EV against its camera JPEG, −0.85 EV is where ACES 2 SDR puts mid grey and −0.30 EV is our exposure. Your decisions:
+
+- **Keep the camera's exposure decision.** The auto exposure keeps half of the camera's own placement instead of metering every scene to one grey: `EV = A + w·(L − A) + (w − 0.5)·EC`, `A = +1.11 EV` (the cameras' median gain), `w = 0.5`. On the 12 local files G3 goes from 8 to 12 of 12 within ±0.5 EV (in-sample).
+- **Display placement +0.57 EV** before ACES 2 (ACES 2 path only; ARRI display LUTs keep ARRI's own placement). The brighter of the two variants: A1M01749's display median goes from code 94 to about 123 (camera JPEG 138).
+- **The DNG carries everything Yellowmoon does except sharpening.** It opens as bright as the app (the placement goes into `BaselineExposure`), and its pixels carry no capture sharpening (R8) and no output sharpening, so the receiving editor's own sharpening applies.
+
+State: queued. It starts when GPU wave 3 ends (it changes every golden and `PIPELINE_VERSION` to 0.2.0, which the running lanes check against), before wave 4.
+
 ## Questions for Mykyta
 
 1. **Sensor-map gate with estimated lights (docs/02, M1-06).** As worded it can't pass: any white-balance error dominates (1° ≈ 1.2–1.9 ΔE00, while the gate needs the white right to about 0.3°). Proposal in docs/02: gate the estimator by angular error only, and state the estimated-light check as the map-only increase (≤ +0.2 median, ≤ +0.7 p95 — measured +0.15 / +0.69, so these thresholds are post-hoc). Accept, or another wording?

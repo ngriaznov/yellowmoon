@@ -63,6 +63,10 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
+/// The default of [`RenderOptions::view_band_bytes`]: 128 MiB, the storage binding the GPU plan
+/// designs every device pass for (`docs/gpu-plan.md` N-1, K4).
+pub const VIEW_BAND_BYTES: u64 = 128 << 20;
+
 /// What a [`Renderer`] needs to know about the machine and the preferences.
 #[derive(Clone)]
 pub struct RenderOptions {
@@ -91,6 +95,14 @@ pub struct RenderOptions {
     /// Whether a device error is a failure of the photo (`GpuPolicy::Require`, `--require-gpu`)
     /// instead of a fall-back to the CPU. Off by default.
     pub gpu_strict: bool,
+    /// The largest storage binding, in bytes, that one device pass of a view may need: a four-plane
+    /// f32 frame takes `16 * width * rows` of it. A view whose frame needs more (the Metal limit is
+    /// 2 GiB, lavapipe's 128 MiB, and the plan designs for the lower, `docs/gpu-plan.md` N-1) is cut
+    /// into horizontal bands that are rendered one after the other and put together, which gives
+    /// the same pixels bit for bit (every device stage of a view is tile-exact). A constant of the
+    /// renderer and not the device's limit, so that the cut does not depend on the machine.
+    /// [`VIEW_BAND_BYTES`] by default.
+    pub view_band_bytes: u64,
     /// The colour of the letterbox around the photo (the paper colour).
     pub background: [u8; 3],
     /// Longest edge of a thumbnail in pixels (`docs/01`: 240).
@@ -155,6 +167,7 @@ impl std::fmt::Debug for RenderOptions {
             .field("gpu", &self.gpu.as_ref().map(|g| g.info().name.clone()))
             .field("gpu_stages", &self.gpu_stages)
             .field("gpu_strict", &self.gpu_strict)
+            .field("view_band_bytes", &self.view_band_bytes)
             .finish_non_exhaustive()
     }
 }
@@ -170,6 +183,7 @@ impl Default for RenderOptions {
             gpu: None,
             gpu_stages: GpuStages::ALL,
             gpu_strict: false,
+            view_band_bytes: VIEW_BAND_BYTES,
             background: [255, 255, 255],
             thumbnail_px: 240,
             demosaic: forced_demosaic().unwrap_or(DEFAULT_METHOD),
@@ -354,6 +368,10 @@ pub struct PhotoGraph {
     /// CPU (`docs/gpu-plan.md` 4.9). The caches may hold tiles of both devices, which differ within
     /// the tolerances of the kernels; an export restarts the photo wholly on the CPU.
     raw_gpu_failed: AtomicBool,
+    /// A device error ended the GPU route of this photo's view stages (the sampler, the colour pass,
+    /// output sharpening and C13 of frames, thumbnails and look tiles): from then on the CPU makes
+    /// its frames, quietly (`docs/gpu-plan.md` 4.9).
+    view_gpu_failed: AtomicBool,
 }
 
 impl std::fmt::Debug for PhotoGraph {
@@ -373,6 +391,7 @@ impl PhotoGraph {
             counters: StageCounters::default(),
             budget,
             raw_gpu_failed: AtomicBool::new(false),
+            view_gpu_failed: AtomicBool::new(false),
         }
     }
 
@@ -481,6 +500,9 @@ struct Inner {
     /// chain for the rest of the process (`docs/gpu-plan.md` 4.9, "shader: disable that kernel
     /// family for the process").
     raw_gpu_disabled: AtomicBool,
+    /// A shader of the view stages failed to compile on this machine: the device does not run them
+    /// for the rest of the process.
+    view_gpu_disabled: AtomicBool,
 }
 
 /// The render engine (see the module documentation of [`crate::pipeline`]). Cheap to clone.
@@ -521,6 +543,7 @@ impl Renderer {
                 scheduler,
                 ledger,
                 raw_gpu_disabled: AtomicBool::new(false),
+                view_gpu_disabled: AtomicBool::new(false),
             }),
         })
     }
@@ -791,6 +814,27 @@ impl Renderer {
         let g = self.graph(id);
         lock(&g.state).stats = Some(stats);
     }
+}
+
+/// The stages of a viewport frame, a thumbnail or a look tile that can run on the device: the
+/// geometry sampler, the colour chain, output sharpening and C13.
+pub(crate) const VIEW_STAGES: [GpuStages; 4] = [
+    GpuStages::SAMPLER,
+    GpuStages::COLOR,
+    GpuStages::OUTPUT_SHARPEN,
+    GpuStages::ENCODE,
+];
+
+/// The device a request runs its view stages on and the stages it may run there
+/// ([`Job::view_gpu`]).
+#[derive(Clone)]
+pub(crate) struct ViewGpu {
+    /// The device.
+    pub gpu: Arc<Gpu>,
+    /// Which view stages it runs: a non-empty subset of [`VIEW_STAGES`].
+    pub stages: GpuStages,
+    /// A device error fails the request (`Require`) instead of falling back to the CPU.
+    pub strict: bool,
 }
 
 /// One request: the renderer, the photo's graph, the settings snapshot and the bookkeeping.
@@ -1283,6 +1327,86 @@ impl<'a> Job<'a> {
             Some(_) => {}
             None => self.raw_ranges.push(RangeDevice { range, device }),
         }
+    }
+
+    /// The device for the view stages of this request, or `None` when the CPU makes the frame:
+    /// there is no device, none of the view stages is on ([`VIEW_STAGES`]), a device error ended the
+    /// route for this photo or for the process, or the device is lost. Reads the options of the
+    /// request's snapshot.
+    ///
+    /// # Errors
+    ///
+    /// [`RenderError::Gpu`] when the device is lost, or an earlier device error ended the route, and
+    /// the policy is strict.
+    pub(crate) fn view_gpu(&mut self) -> Result<Option<ViewGpu>, RenderError> {
+        let Some(gpu) = self.opts.gpu.clone() else {
+            return Ok(None);
+        };
+        let stages = VIEW_STAGES
+            .into_iter()
+            .filter(|s| self.opts.gpu_stages.contains(*s))
+            .fold(GpuStages::NONE, GpuStages::union);
+        if stages.is_empty() {
+            return Ok(None);
+        }
+        if self.g.view_gpu_failed.load(Ordering::SeqCst)
+            || self.r.inner.view_gpu_disabled.load(Ordering::SeqCst)
+        {
+            // As for the raw chain: a strict policy must not turn an earlier error into a quiet CPU
+            // frame of the next request.
+            if self.opts.gpu_strict {
+                return Err(RenderError::Gpu(
+                    "an earlier error ended the use of the graphics card, and the strict setting does not let the CPU take over"
+                        .to_owned(),
+                ));
+            }
+            return Ok(None);
+        }
+        if gpu.is_lost() {
+            let why = gpu
+                .lost_reason()
+                .unwrap_or_else(|| "the device was lost".to_owned());
+            if self.opts.gpu_strict {
+                return Err(RenderError::Gpu(why));
+            }
+            self.note(&format!(
+                "The graphics card stopped working, so the CPU did: {why}."
+            ));
+            return Ok(None);
+        }
+        Ok(Some(ViewGpu {
+            gpu,
+            stages,
+            strict: self.opts.gpu_strict,
+        }))
+    }
+
+    /// A view stage failed on the device with `error`. A shader that does not compile switches the
+    /// view stages off for the process. A strict policy fails the request; any other policy notes
+    /// why the CPU makes this frame, and ends the route for the photo (view caches may then hold
+    /// frames of both devices, which differ within the tolerances of the kernels; viewing only,
+    /// `docs/gpu-plan.md` 4.9).
+    ///
+    /// # Errors
+    ///
+    /// [`RenderError::Gpu`] under a strict policy.
+    pub(crate) fn view_gpu_failed(&mut self, error: &GpuError) -> Result<(), RenderError> {
+        let reason = error.to_string();
+        tracing::warn!(error = %reason, "the device failed on a view; the CPU takes over");
+        if matches!(error, GpuError::Shader(_)) {
+            self.r
+                .inner
+                .view_gpu_disabled
+                .store(true, Ordering::SeqCst);
+        }
+        if self.opts.gpu_strict {
+            return Err(RenderError::Gpu(reason));
+        }
+        self.g.view_gpu_failed.store(true, Ordering::SeqCst);
+        self.note(&format!(
+            "The graphics card could not render this frame, so the CPU did: {reason}."
+        ));
+        Ok(())
     }
 
     /// Runs one tile of the full-resolution chain: the stages the renderer runs on the device go

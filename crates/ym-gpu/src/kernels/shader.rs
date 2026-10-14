@@ -99,7 +99,9 @@ pub enum KernelId {
     Bin,
     /// PLACEHOLDER (G-07): the fixed-order reduction of the R5 chroma offsets (reduced path).
     Reduce,
-    /// PLACEHOLDER (G-06): the 5 x 5 opponent bilateral denoise.
+    /// G-06: the noise sigma of a tile, expanded from the half-resolution plane (or filled).
+    SigmaExpand,
+    /// G-06: the 5 x 5 opponent bilateral denoise of R6.
     Bilateral,
     /// PLACEHOLDER (G-06): the R7 chroma guided filter.
     Guided,
@@ -113,7 +115,7 @@ pub enum KernelId {
 
 impl KernelId {
     /// All kernels, placeholders included (see [`KernelId::is_placeholder`]).
-    pub const ALL: [KernelId; 47] = [
+    pub const ALL: [KernelId; 48] = [
         KernelId::SpikeNormalize,
         KernelId::SpikeDemosaic,
         KernelId::SpikeMatrix,
@@ -156,6 +158,7 @@ impl KernelId {
         KernelId::Sigma,
         KernelId::Bin,
         KernelId::Reduce,
+        KernelId::SigmaExpand,
         KernelId::Bilateral,
         KernelId::Guided,
         KernelId::Detail,
@@ -208,6 +211,7 @@ impl KernelId {
             KernelId::Sigma => "sigma",
             KernelId::Bin => "bin",
             KernelId::Reduce => "reduce",
+            KernelId::SigmaExpand => "sigma_expand",
             KernelId::Bilateral => "bilateral",
             KernelId::Guided => "guided",
             KernelId::Detail => "detail",
@@ -225,10 +229,7 @@ impl KernelId {
     /// `.wgsl` in `KernelId::body` and deletes the id from this match (two small edits, reported).
     pub const fn placeholder_owner(self) -> Option<&'static str> {
         match self {
-            KernelId::Bilateral
-            | KernelId::Guided
-            | KernelId::Detail
-            | KernelId::RichardsonLucy => Some("G-06"),
+            KernelId::Guided | KernelId::Detail | KernelId::RichardsonLucy => Some("G-06"),
             KernelId::Prep
             | KernelId::Highlights
             | KernelId::MosaicCa
@@ -303,6 +304,7 @@ impl KernelId {
             | KernelId::AdaptiveRatioExit => super::adaptive_ratio::body(self),
             KernelId::Sampler => super::sampler::body(),
             KernelId::Encode => super::encode::body(),
+            KernelId::SigmaExpand | KernelId::Bilateral => super::bilateral::body(self),
             KernelId::Prep
             | KernelId::Highlights
             | KernelId::MosaicCa
@@ -310,7 +312,6 @@ impl KernelId {
             | KernelId::Sigma
             | KernelId::Bin
             | KernelId::Reduce
-            | KernelId::Bilateral
             | KernelId::Guided
             | KernelId::Detail
             | KernelId::RichardsonLucy
