@@ -18,9 +18,11 @@ on:
 permissions:
   contents: read
 
+# One group per commit: a later push never cancels a run that is under way (a run takes about 25 minutes and the
+# branch is pushed more often than that), so every pushed commit gets its Metal result.
 concurrency:
-  group: mac-gpu-${{ github.ref }}
-  cancel-in-progress: true
+  group: mac-gpu-${{ github.sha }}
+  cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
