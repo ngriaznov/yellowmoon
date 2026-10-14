@@ -239,10 +239,15 @@ struct ErrStats {
 impl ErrStats {
     fn between(a: &[f32], b: &[f32]) -> ErrStats {
         assert_eq!(a.len(), b.len());
+        // A sample that is NaN on either side counts as an infinite error: `f64::max` and the
+        // comparisons below would otherwise skip it, and a stale (poisoned) read would pass.
         let mut d: Vec<f64> = a
             .iter()
             .zip(b)
-            .map(|(&x, &y)| (f64::from(x) - f64::from(y)).abs())
+            .map(|(&x, &y)| {
+                let e = (f64::from(x) - f64::from(y)).abs();
+                if e.is_nan() { f64::INFINITY } else { e }
+            })
             .collect();
         let over = d.iter().filter(|&&v| v > NOISY_BOUND).count();
         let max = d.iter().copied().fold(0.0, f64::max);

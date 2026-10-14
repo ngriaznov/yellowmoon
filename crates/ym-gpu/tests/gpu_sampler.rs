@@ -136,10 +136,15 @@ fn general_grid(
 
 fn max_diff(a: &RgbImage, b: &RgbImage) -> f64 {
     assert_eq!((a.width, a.height), (b.width, b.height));
+    // A NaN on either side is an infinite error (`f64::max` would skip it, and a stale read of a
+    // poisoned buffer would pass).
     a.data
         .iter()
         .zip(&b.data)
-        .map(|(&x, &y)| (f64::from(x) - f64::from(y)).abs())
+        .map(|(&x, &y)| {
+            let e = (f64::from(x) - f64::from(y)).abs();
+            if e.is_nan() { f64::INFINITY } else { e }
+        })
         .fold(0.0, f64::max)
 }
 
