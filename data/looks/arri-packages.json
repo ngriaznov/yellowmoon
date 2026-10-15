@@ -1,7 +1,7 @@
 {
   "version": 1,
   "note": "Recognition rules and fingerprints for ARRI's free look packages. Names, sizes, LUT sizes and SHA-256 only; never LUT data. Filled by tools/looks/fingerprint.py in M3-09 (HUMAN M3-H2). See docs/08-looks.md.",
-  "patterns_note": "The name patterns and markers below are written from ARRI's public package descriptions (counts, LUT sizes, encodings) and were not checked against the real downloads. Where a pattern misses, the wizard asks the generic input question instead of guessing. Once tools/looks/fingerprint.py has filled 'fingerprints' (HUMAN M3-H2), files are identified by hash and these patterns only cover files that are not in a fingerprint list.",
+  "patterns_note": "The name patterns and markers below were written from ARRI's public package descriptions and naming guideline (counts, LUT sizes, encodings, names like ARRI_LogC4-to-Gamma24_Rec709-D65_v1_65.cube) and were not checked against the real downloads. The zip_name patterns, the encoding and the LUT sizes identify a package as a whole (at least half of expected.cube_files files); the group_folders and display_rendering markers are only read for files whose zip name says nothing, and then between packages that both fit. Counts are expected values, not gates: more files than expected are imported with a note, fewer are reported as an incomplete download. Download sizes are not used to recognise anything. Once tools/looks/fingerprint.py has filled 'fingerprints' (HUMAN M3-H2), files are identified by hash and these patterns only cover files that are not in a fingerprint list.",
   "page_url": "https://www.arri.com/en/learn/camera-systems/image-science/look-files",
   "display_names": ["gamma24", "rec709", "bt709", "p3", "dcip3", "rec2020", "bt2020", "hlg", "pq", "srgb"],
   "packages": [
@@ -12,7 +12,7 @@
       "input": "logc4",
       "download_mb": 181,
       "zip_name": [
-        { "all_of": ["look", "logc4"], "none_of": ["logc3", "rec709"] }
+        { "all_of": ["look", "logc4"], "none_of": ["logc3", "rec709", "wvo"] }
       ],
       "expected": { "cube_files": 87, "groups": 9, "lut_sizes": [65] },
       "markers": {
@@ -29,8 +29,8 @@
       "input": "logc4",
       "download_mb": 32,
       "zip_name": [
-        { "all_of": ["display", "logc4"], "none_of": ["logc3"] },
-        { "all_of": ["lut", "logc4"], "none_of": ["look", "logc3"] }
+        { "all_of": ["display", "logc4"], "none_of": ["logc3", "wvo"] },
+        { "all_of": ["lut", "logc4"], "none_of": ["look", "logc3", "wvo"] }
       ],
       "expected": { "cube_files": 22, "lut_sizes": [] },
       "markers": {

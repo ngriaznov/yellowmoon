@@ -90,10 +90,16 @@ enum EntryKind {
     Other,
 }
 
+/// A path component that only macOS puts there: `__MACOSX`, or a name starting `._`.
+fn is_mac_metadata_name(component: &str) -> bool {
+    component.eq_ignore_ascii_case("__MACOSX") || component.starts_with("._")
+}
+
 fn classify(rel_path: &str) -> EntryKind {
     let name = file_name(rel_path);
-    if rel_path.split('/').any(|c| c == "__MACOSX") || name.starts_with("._") || name == ".DS_Store"
-    {
+    // macOS adds a `__MACOSX` tree (any case) of `._` AppleDouble files next to the real ones when
+    // it zips a folder, and `.DS_Store` files; none of it is a LUT, even when it is called `.cube`.
+    if rel_path.split('/').any(is_mac_metadata_name) || name == ".DS_Store" {
         return EntryKind::MacMetadata;
     }
     match name
@@ -373,7 +379,7 @@ fn walk(
         if kind.is_symlink() {
             ignored.unsafe_entries += 1;
         } else if kind.is_dir() {
-            if name == "__MACOSX" {
+            if is_mac_metadata_name(&name) {
                 ignored.macos_metadata += 1;
             } else if depth < MAX_DEPTH {
                 walk(
@@ -485,6 +491,9 @@ mod tests {
         assert_eq!(classify("__MACOSX/a/b.cube"), EntryKind::MacMetadata);
         assert_eq!(classify("a/._b.cube"), EntryKind::MacMetadata);
         assert_eq!(classify("a/.DS_Store"), EntryKind::MacMetadata);
+        assert_eq!(classify("__macosx/a/b.cube"), EntryKind::MacMetadata);
+        assert_eq!(classify("Looks/__MACOSX/3000 Film/._x.cube"), EntryKind::MacMetadata);
+        assert_eq!(classify("a/._dir/b.cube"), EntryKind::MacMetadata);
         assert_eq!(classify("a/notes.txt"), EntryKind::Other);
         assert_eq!(classify("a/noextension"), EntryKind::Other);
     }

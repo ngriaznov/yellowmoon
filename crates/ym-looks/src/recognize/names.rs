@@ -99,14 +99,46 @@ fn words(text: &str) -> Vec<&str> {
 }
 
 /// Whether the words after a "to" start a display name, for example `Gamma24 Rec709`, `P3 D65`,
-/// `HLG`, `PQ`. The words are joined and compared with the folded names, so `Rec 709` and
-/// `Rec.709` both count.
+/// `HLG`, `PQ`. Whole words only, so `Pqrs`, `P3ach` and `Hlgx` are not display names:
+///
+/// * one to three words are joined and compared with the folded names, so `Rec 709`, `Rec.709`
+///   and `DCI P3` count;
+/// * a single word may also be a display name followed by digits only (`PQ1000`).
+///
+/// This is the target side of ARRI's naming (`LogC4-to-Gamma24_Rec709-D65_v1_65`): what follows
+/// `to`. A log-to-log name (`LogC4-to-LogC4`) names no display.
 fn starts_display(after_to: &[&str], display_names: &[String]) -> bool {
-    let joined = fold_alnum(&after_to.join(""));
-    !joined.is_empty()
-        && display_names
-            .iter()
-            .any(|d| !d.is_empty() && joined.starts_with(&fold_alnum(d)))
+    let names: Vec<String> = display_names
+        .iter()
+        .map(|d| fold_alnum(d))
+        .filter(|d| !d.is_empty())
+        .collect();
+    let mut joined = String::new();
+    let mut seen = 0_usize;
+    for word in after_to {
+        let folded = fold_alnum(word);
+        if folded.is_empty() {
+            continue;
+        }
+        joined.push_str(&folded);
+        if names.contains(&joined) {
+            return true;
+        }
+        if seen == 0
+            && names.iter().any(|n| {
+                folded
+                    .strip_prefix(n.as_str())
+                    .is_some_and(|rest| !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit()))
+            })
+        {
+            return true;
+        }
+        seen += 1;
+        if seen == 3 {
+            break;
+        }
+    }
+    false
 }
 
 /// Where a display rendering is named in a file stem: the index of the "to" word in `words(stem)`
@@ -163,19 +195,36 @@ pub fn display_target(stem: &str, display_names: &[String]) -> Option<String> {
 /// it is from, not what the look is.
 const LEADING_NOISE: [&str; 6] = ["arri", "logc4", "logc3", "awg4", "awg3", "ei800"];
 
+/// `v1`, `V12`: the version word ARRI puts near the end of its LUT names.
+fn is_version_word(word: &str) -> bool {
+    word.len() >= 2
+        && word.starts_with(['v', 'V'])
+        && word[1..].bytes().all(|b| b.is_ascii_digit())
+}
+
+/// The mesh size ARRI puts at the very end of its LUT names (`..._v1_65.cube`).
+fn is_mesh_word(word: &str) -> bool {
+    matches!(word, "17" | "33" | "65" | "129")
+}
+
 /// The display name of an ARRI look from its file stem: underscores and dashes become spaces; a
-/// leading group number, a leading `ARRI`/`LogC4`/`LogC3`/`AWG4`/`AWG3`/`EI800` and a trailing
-/// `to <display>` are dropped. Falls back to the plain stem when nothing would be left.
+/// leading group number, a leading `ARRI`/`LogC4`/`LogC3`/`AWG4`/`AWG3`/`EI800` (with the `to` and
+/// the encoding after it, as in `ARRI_LogC4-to-LogC4_Neutral`), a trailing version and mesh size
+/// (`v1_65`) and a trailing `to <display>` are dropped. Falls back to the plain stem when nothing
+/// would be left.
 #[must_use]
 pub fn look_name(stem: &str, display_names: &[String]) -> String {
     let plain = words(stem).join(" ");
     let all = words(stem);
+    let is_noise = |w: &str| LEADING_NOISE.contains(&w.to_lowercase().as_str());
     let mut start = 0;
     while let Some(word) = all.get(start) {
-        let lower = word.to_lowercase();
         let is_group_number = word.len() == 4 && word.bytes().all(|b| b.is_ascii_digit());
-        if is_group_number || LEADING_NOISE.contains(&lower.as_str()) {
+        if is_group_number || is_noise(word) {
             start += 1;
+        } else if word.eq_ignore_ascii_case("to") && all.get(start + 1).is_some_and(|n| is_noise(n))
+        {
+            start += 2;
         } else {
             break;
         }
@@ -189,12 +238,15 @@ pub fn look_name(stem: &str, display_names: &[String]) -> String {
         end = at;
     }
     let mut kept: Vec<&str> = all[start..end.max(start)].to_vec();
-    while kept.len() > 1
-        && kept
-            .last()
-            .is_some_and(|w| LEADING_NOISE.contains(&w.to_lowercase().as_str()))
-    {
-        kept.pop();
+    while kept.len() > 1 {
+        let last = kept[kept.len() - 1];
+        if is_noise(last) || is_version_word(last) {
+            kept.pop();
+        } else if is_mesh_word(last) && kept.len() > 2 && is_version_word(kept[kept.len() - 2]) {
+            kept.truncate(kept.len() - 2);
+        } else {
+            break;
+        }
     }
     let kept = kept.join(" ");
     if !kept.is_empty() {
@@ -308,6 +360,56 @@ mod tests {
     }
 
     #[test]
+    fn display_renderings_follow_arris_naming() {
+        // `<Creator>_<LogC>-to-<Target>_<ColourSpace>-<White>_..._v<N>_<mesh>.cube`
+        let d = display();
+        for name in [
+            "ARRI_LogC4-to-Gamma24_Rec709-D65_v1_33",
+            "ARRI_LogC4-to-Gamma24_Rec709-D65_v1_65",
+            "ARRI_LogC4-to-HLG_1K_Rec2020-D65_DW203_v1_65",
+            "ARRI_LogC3-to-Rec.709_v1_33",
+            "ARRI_LogC4-to-Rec 2020_PQ_v1_65",
+            "ARRI_LogC4-to-PQ1000_v1_65",
+            "ARRI_LogC4-to-DCI P3_v1_65",
+        ] {
+            let mut names = d.clone();
+            names.push("dcip3".to_string());
+            assert!(has_display_rendering(name, &names), "{name}");
+        }
+        // Log to log names no display, whatever else the name holds.
+        for name in [
+            "ARRI_LogC4-to-LogC4_Neutral_v1_65",
+            "ARRI_LogC4-to-LogC4_Kodak_2383_v1_65",
+            "ARRI Look Library LogC4 (log-to-log) 3D-LUTs_data",
+            "ARRI_LogC4-to-LogC4_WVO_v1_33",
+        ] {
+            assert!(!has_display_rendering(name, &d), "{name}");
+        }
+    }
+
+    #[test]
+    fn display_names_are_whole_words_not_prefixes() {
+        let d = display();
+        // The short names (p3, pq, hlg) as part of other words, before or after a "to".
+        for name in [
+            "Pale to Pqrs",
+            "Film to P3ach",
+            "Ember to Hlgx",
+            "Warm P3 Glow",
+            "PQ Noir",
+            "Spq to Soft",
+            "Soft to Pastel",
+            "Day to Rec7090x",
+            "Toned P3",
+            "Sepia to Hlg2x",
+        ] {
+            assert!(!has_display_rendering(name, &d), "{name}");
+        }
+        assert!(has_display_rendering("Sepia to PQ", &d));
+        assert!(has_display_rendering("Sepia_to_Rec_709", &d));
+    }
+
+    #[test]
     fn display_targets_are_canonical() {
         let d = display();
         assert_eq!(
@@ -345,6 +447,21 @@ mod tests {
         assert_eq!(look_name("Warm_LogC3_to_Rec709", &d), "Warm");
         assert_eq!(look_name("Soft to Warm", &d), "Soft to Warm");
         assert_eq!(look_name("LogC4", &d), "LogC4", "never empty");
+    }
+
+    #[test]
+    fn look_names_lose_arris_naming_noise() {
+        let d = display();
+        assert_eq!(look_name("ARRI_LogC4-to-LogC4_Neutral_v1_65", &d), "Neutral");
+        assert_eq!(
+            look_name("ARRI_LogC4-to-LogC4_Kodak 2383_v2_33", &d),
+            "Kodak 2383"
+        );
+        assert_eq!(look_name("Warm_Glow_v3", &d), "Warm Glow");
+        // A number that is part of the name stays; so does a mesh size with no version before it.
+        assert_eq!(look_name("Kodak_2383", &d), "Kodak 2383");
+        assert_eq!(look_name("Film_65", &d), "Film 65");
+        assert_eq!(look_name("Film_v1_65_v2", &d), "Film");
     }
 
     #[test]

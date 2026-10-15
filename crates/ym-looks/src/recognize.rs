@@ -14,7 +14,14 @@
 //!    it a display LUT (no group folder) or a Rec.709-baked look (group folder); a four-digit
 //!    group number in a folder name makes it a look; `LUT_3D_SIZE` 65 or 33 must agree with the
 //!    package. Exactly one package must fit.
-//! 3. **Nothing fits.** The file gets the generic question (what does it expect as input?), with a
+//! 3. **The package as a whole.** A file that fits no package by its own names may still belong to
+//!    one by the evidence of the whole source: a zip or folder whose own name is the package's
+//!    (`ARRI Look Library LogC4 (log-to-log) 3D-LUTs_data.zip`), holding at least half the files the
+//!    package should have, all at its LUT size. That is strong enough that the layout (group
+//!    folders, one folder per look, a single top-level folder, a flat list) and look names that
+//!    happen to hold words like `P3` or `PQ` are only a tie-breaker, never a requirement
+//!    ([`match_by_package`]).
+//! 4. **Nothing fits.** The file gets the generic question (what does it expect as input?), with a
 //!    suggestion when the names hint at one.
 //!
 //! A source with no `.cube` files, or only unusable ones, or ARRI files from a package Yellowmoon
@@ -39,7 +46,7 @@ pub use packages::{
 
 use names::{
     display_target, file_name, file_stem, fold_alnum, folder_components, group_of,
-    has_display_rendering, look_name,
+    has_display_rendering, look_name, parse_group_folder,
 };
 
 /// What kind of thing the user chose to import.
@@ -477,6 +484,17 @@ fn match_pattern<'a>(
 }
 
 fn outcome_for(db: &PackageDb, package: &Package, path: &str, evidence: Evidence) -> Outcome {
+    outcome_in_group(db, package, path, evidence, group_of(path))
+}
+
+/// [`outcome_for`] with the group decided by the caller (`None`: ungrouped).
+fn outcome_in_group(
+    db: &PackageDb,
+    package: &Package,
+    path: &str,
+    evidence: Evidence,
+    group: Option<(u32, String)>,
+) -> Outcome {
     let stem = file_stem(path);
     if let Some(input) = package.display_input() {
         // The display is named after the part of the file name that follows `-to-`; when the file
@@ -494,7 +512,7 @@ fn outcome_for(db: &PackageDb, package: &Package, path: &str, evidence: Evidence
             evidence,
         }
     } else {
-        let (group_no, group_name) = group_of(path).unwrap_or_else(|| (0, "Ungrouped".to_string()));
+        let (group_no, group_name) = group.unwrap_or_else(|| (0, "Ungrouped".to_string()));
         Outcome::ArriLook {
             package: package.id.clone(),
             group_no,
@@ -504,6 +522,175 @@ fn outcome_for(db: &PackageDb, package: &Package, path: &str, evidence: Evidence
             file_name: file_name(path).to_string(),
             evidence,
         }
+    }
+}
+
+/// Fewest files a source may hold, as a share of what its package should have, and still be read
+/// as that package when its name and LUT size say so: half, rounded up. Fewer files than the
+/// package should have are then reported as an incomplete download (with the numbers); a handful
+/// of files, such as ARRI's small WVO package, are not taken for a big package.
+fn minimum_files(expected: usize) -> usize {
+    expected.div_ceil(2).max(1)
+}
+
+/// The group a file gets when its folders are not ARRI's four-digit ones: its innermost folder
+/// that holds at least two of the files (so one folder per look is no group), not counting the
+/// folders every file shares (a single top-level folder is the download's wrapper, not a group).
+/// `None` for a flat list.
+fn lenient_groups(paths: &[&str]) -> Vec<Option<(u32, String)>> {
+    let folders: Vec<Vec<&str>> = paths.iter().map(|p| folder_components(p)).collect();
+    let Some(first) = folders.first() else {
+        return Vec::new();
+    };
+    let shared = folders.iter().fold(first.len(), |shared, f| {
+        shared.min(f.iter().zip(first).take_while(|(a, b)| a == b).count())
+    });
+    // How many files sit at or below each folder.
+    let mut below: HashMap<String, usize> = HashMap::new();
+    for f in &folders {
+        for depth in shared + 1..=f.len() {
+            *below.entry(f[..depth].join("/")).or_default() += 1;
+        }
+    }
+    folders
+        .iter()
+        .map(|f| {
+            (shared + 1..=f.len()).rev().find_map(|depth| {
+                if below.get(&f[..depth].join("/")).copied().unwrap_or(0) < 2 {
+                    return None;
+                }
+                let name = f[depth - 1];
+                Some(parse_group_folder(name).unwrap_or_else(|| {
+                    let tidy = name.replace('_', " ");
+                    let tidy = tidy.split_whitespace().collect::<Vec<_>>().join(" ");
+                    (0, if tidy.is_empty() { "Group".to_string() } else { tidy })
+                }))
+            })
+        })
+        .collect()
+}
+
+/// Whether a file was identified by its hash (which nothing overrides).
+fn identified_by_hash(file: &RecognizedFile) -> bool {
+    matches!(
+        file.outcome,
+        Outcome::ArriLook {
+            evidence: Evidence::Fingerprint,
+            ..
+        } | Outcome::ArriDisplay {
+            evidence: Evidence::Fingerprint,
+            ..
+        }
+    )
+}
+
+/// Rule 3: reads a whole zip or folder as one package. The name of the source must be the
+/// package's (`zip_name` patterns, which include the encoding words and rule out the other
+/// encodings and packages), and at least [`minimum_files`] valid `.cube` files must have a LUT
+/// size the package allows. Layout is not asked for: group folders, a display name in a look's
+/// name and the like decide only between two packages that both qualify.
+///
+/// When the name fits one package only, the name wins over what the files' own names suggested
+/// (a flat `LogC3_to_Rec709` list inside "Look Library LogC3 to Rec709" is that look library, not
+/// a set of display LUTs). Files identified by hash keep what the hash says. When the name fits
+/// several packages, only files that fit nothing yet are assigned, to the package that stands out
+/// (the file count closest to what it should have, then the layout that fits its markers best).
+fn match_by_package(
+    db: &PackageDb,
+    source: &SourceInfo,
+    files: &[FileFacts],
+    recognized: &mut [RecognizedFile],
+    package_of: &mut [Option<usize>],
+) {
+    if source.kind == SourceKind::File {
+        return;
+    }
+    let source_text = fold_alnum(source.name.strip_suffix(".zip").unwrap_or(&source.name));
+    let named: Vec<usize> = db
+        .packages
+        .iter()
+        .enumerate()
+        .filter(|(_, package)| {
+            package.expected.cube_files.is_some()
+                && !package.markers.encoding.is_empty()
+                && package.matches_zip_name(&source.name)
+                && package.markers.encoding.matches_folded(&source_text)
+        })
+        .map(|(i, _)| i)
+        .collect();
+    let decisive = named.len() == 1;
+    // (package index, files that fit it)
+    let mut qualified: Vec<(usize, Vec<usize>)> = Vec::new();
+    for &i in &named {
+        let package = &db.packages[i];
+        let Some(expected) = package.expected.cube_files else {
+            continue;
+        };
+        let members: Vec<usize> = (0..files.len())
+            .filter(|&j| match &files[j].check {
+                Ok(summary) => {
+                    lut_size_fits(package, summary.lut_size)
+                        && (package_of[j] == Some(i)
+                            || recognized[j].needs_answer()
+                            || (decisive && !identified_by_hash(&recognized[j])))
+                }
+                Err(_) => false,
+            })
+            .collect();
+        if members.len() >= minimum_files(expected) {
+            qualified.push((i, members));
+        }
+    }
+    let chosen = match qualified.as_slice() {
+        [] => return,
+        [one] => one,
+        several => {
+            let layout = |(i, members): &(usize, Vec<usize>)| {
+                let markers = &db.packages[*i].markers;
+                members
+                    .iter()
+                    .filter(|&&j| {
+                        let Ok(summary) = &files[j].check else {
+                            return false;
+                        };
+                        markers
+                            .group_folders
+                            .allows(group_of(&files[j].rel_path).is_some())
+                            && markers.display_rendering.allows(names_display_rendering(
+                                db,
+                                source,
+                                &files[j],
+                                summary,
+                            ))
+                    })
+                    .count()
+            };
+            let rank = |q: &(usize, Vec<usize>)| {
+                let expected = db.packages[q.0].expected.cube_files.unwrap_or(0);
+                (
+                    expected.abs_diff(q.1.len()),
+                    std::cmp::Reverse(layout(q)),
+                )
+            };
+            let best = several.iter().map(rank).min();
+            let mut top = several.iter().filter(|q| Some(rank(q)) == best);
+            match (top.next(), top.next()) {
+                (Some(one), None) => one,
+                _ => return,
+            }
+        }
+    };
+    let (index, members) = chosen;
+    let package = &db.packages[*index];
+    let paths: Vec<&str> = members.iter().map(|&j| files[j].rel_path.as_str()).collect();
+    let groups = lenient_groups(&paths);
+    for (&j, lenient) in members.iter().zip(groups) {
+        if package_of[j] != Some(*index) {
+            let path = &files[j].rel_path;
+            let group = group_of(path).or(lenient);
+            recognized[j].outcome = outcome_in_group(db, package, path, Evidence::Pattern, group);
+        }
+        package_of[j] = Some(*index);
     }
 }
 
@@ -609,6 +796,8 @@ pub fn recognize(
         recognized.push(out);
         package_of.push(package_index);
     }
+
+    match_by_package(db, source, files, &mut recognized, &mut package_of);
 
     let packages = findings(db, source, &recognized, &package_of, &claimed);
     let issues = issues_for(db, source, ignored, &recognized, &packages);
@@ -1137,6 +1326,206 @@ mod tests {
         assert_eq!(r.packages[0].missing, vec!["3000 Film/Look_2.cube"]);
         let message = &r.problems().next().unwrap().message;
         assert!(message.contains("Look_2.cube"), "{message}");
+    }
+
+    /// The real download's name (ARRI's own text, with a `_data` suffix).
+    const REAL_NAME: &str = "ARRI Look Library LogC4 (log-to-log) 3D-LUTs_data.zip";
+
+    fn names_of(paths: &[&str]) -> Vec<FileFacts> {
+        paths
+            .iter()
+            .enumerate()
+            .map(|(i, p)| facts(p, 5, None, i as u8 + 1))
+            .collect()
+    }
+
+    fn look(r: &Recognition, i: usize) -> (&str, u32, String, String) {
+        match &r.files[i].outcome {
+            Outcome::ArriLook {
+                package,
+                group_no,
+                group_name,
+                name,
+                input,
+                ..
+            } => {
+                assert_eq!(*input, LookInput::LogC4);
+                (package, *group_no, group_name.clone(), name.clone())
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_zip_named_for_the_package_is_recognized_whatever_its_layout() {
+        // None of these has a four-digit group folder, which the per-file rules ask for.
+        let layouts: [(&str, &[&str]); 4] = [
+            (
+                "flat",
+                &[
+                    "ARRI_LogC4-to-LogC4_Neutral_v1_65.cube",
+                    "ARRI_LogC4-to-LogC4_Warm_v1_65.cube",
+                    "ARRI_LogC4-to-LogC4_Cool_v1_65.cube",
+                ],
+            ),
+            (
+                "one top-level folder",
+                &[
+                    "ARRI Look Library LogC4/Neutral.cube",
+                    "ARRI Look Library LogC4/Warm.cube",
+                    "ARRI Look Library LogC4/Cool.cube",
+                ],
+            ),
+            (
+                "one folder per look",
+                &["Neutral/Neutral.cube", "Warm/Warm.cube", "Cool/Cool.cube"],
+            ),
+            (
+                "named groups",
+                &["Film/Neutral.cube", "Film/Warm.cube", "Mono/Cool.cube"],
+            ),
+        ];
+        for (layout, paths) in layouts {
+            let files = names_of(paths);
+            let r = recognize(&db(), &zip(REAL_NAME), &files, &Ignored::default());
+            assert_eq!(r.verdict(), Verdict::Ready, "{layout}: {:?}", r.issues);
+            assert_eq!(r.packages.len(), 1, "{layout}");
+            assert_eq!(r.packages[0].id, "ll4", "{layout}");
+            assert_eq!(r.packages[0].status, PackageStatus::Complete, "{layout}");
+            assert!(r.files.iter().all(RecognizedFile::is_recognized), "{layout}");
+        }
+        // The names come from the files, not from the log-to-log prefix or the version and mesh.
+        let flat = names_of(&[
+            "ARRI_LogC4-to-LogC4_Neutral_v1_65.cube",
+            "ARRI_LogC4-to-LogC4_Warm_v1_65.cube",
+            "ARRI_LogC4-to-LogC4_Cool_v1_65.cube",
+        ]);
+        let r = recognize(&db(), &zip(REAL_NAME), &flat, &Ignored::default());
+        assert_eq!(look(&r, 0), ("ll4", 0, "Ungrouped".into(), "Neutral".into()));
+    }
+
+    #[test]
+    fn folders_that_hold_several_looks_become_groups_only_when_they_are_groups() {
+        let files = names_of(&[
+            "Pack/Film/A.cube",
+            "Pack/Film/B.cube",
+            "Pack/Mono/C.cube",
+            "Pack/Mono/D.cube",
+        ]);
+        let r = recognize(&db(), &zip(REAL_NAME), &files, &Ignored::default());
+        assert_eq!(look(&r, 0).2, "Film");
+        assert_eq!(look(&r, 3).2, "Mono");
+        assert_eq!(r.packages[0].groups, 1, "unnumbered groups share number 0");
+        // Four-digit folders keep their numbers, and win over the other rule.
+        let files = names_of(&["3000 Film/A.cube", "3000 Film/B.cube", "4000 Mono/C.cube"]);
+        let r = recognize(&db(), &zip(REAL_NAME), &files, &Ignored::default());
+        assert_eq!(look(&r, 2).1, 4000);
+        assert_eq!(r.packages[0].groups, 2);
+    }
+
+    #[test]
+    fn look_names_with_p3_pq_hlg_in_them_are_not_display_renderings() {
+        // Per-file rules: a group folder and these names, and the log-to-log zip name: a look.
+        let files = names_of(&[
+            "3000 Film/ARRI_LogC4-to-LogC4_Pale to Pqrs_v1_65.cube",
+            "3000 Film/ARRI_LogC4-to-LogC4_Warm P3 Glow_v1_65.cube",
+            "3000 Film/ARRI_LogC4-to-LogC4_PQ Noir_v1_65.cube",
+        ]);
+        let r = recognize(&db(), &zip("misc.zip"), &files, &Ignored::default());
+        assert_eq!(r.packages.len(), 1, "{:?}", r.issues);
+        assert_eq!(r.packages[0].id, "ll4");
+        assert_eq!(look(&r, 0).3, "Pale to Pqrs");
+        assert_eq!(look(&r, 1).3, "Warm P3 Glow");
+        // Package rule: the same names with no group folders at all.
+        let files = names_of(&[
+            "Pale to Pqrs/ARRI_LogC4-to-LogC4_Pale to Pqrs_v1_65.cube",
+            "Warm P3 Glow/ARRI_LogC4-to-LogC4_Warm P3 Glow_v1_65.cube",
+            "HLG Haze/ARRI_LogC4-to-LogC4_HLG Haze_v1_65.cube",
+        ]);
+        let r = recognize(&db(), &zip(REAL_NAME), &files, &Ignored::default());
+        assert_eq!(r.verdict(), Verdict::Ready, "{:?}", r.issues);
+        assert_eq!(r.packages[0].id, "ll4");
+    }
+
+    #[test]
+    fn the_package_rule_needs_the_name_the_lut_size_and_enough_files() {
+        let flat = ["A.cube", "B.cube", "C.cube"];
+        let sized = |size: usize| -> Vec<FileFacts> {
+            flat.iter()
+                .enumerate()
+                .map(|(i, p)| facts(p, size, None, i as u8 + 1))
+                .collect()
+        };
+        // Another name: the question, not a guess.
+        let r = recognize(&db(), &zip("my looks.zip"), &sized(5), &Ignored::default());
+        assert_eq!(r.verdict(), Verdict::NeedsAnswer);
+        assert!(r.packages.is_empty());
+        // The LogC3 name does not make it the LogC4 package.
+        let r = recognize(
+            &db(),
+            &zip("ARRI Look Library LogC3 (log-to-log).zip"),
+            &sized(5),
+            &Ignored::default(),
+        );
+        assert_eq!(r.verdict(), Verdict::NeedsAnswer);
+        // The right name, the wrong LUT size.
+        let r = recognize(&db(), &zip(REAL_NAME), &sized(9), &Ignored::default());
+        assert_eq!(r.verdict(), Verdict::NeedsAnswer);
+        assert!(r.packages.is_empty());
+        // Too few files for a package that should have 3: one file is no package.
+        let one = sized(5)[..1].to_vec();
+        let r = recognize(&db(), &zip(REAL_NAME), &one, &Ignored::default());
+        assert_eq!(r.verdict(), Verdict::NeedsAnswer);
+        // Two of three is read as the package, short: the download may be incomplete.
+        let two = sized(5)[..2].to_vec();
+        let r = recognize(&db(), &zip(REAL_NAME), &two, &Ignored::default());
+        assert_eq!(r.verdict(), Verdict::Incomplete);
+        assert!(r.problems().next().unwrap().message.contains("should have 3 files"));
+        // More than expected is taken with a note.
+        let many: Vec<FileFacts> = (0..5)
+            .map(|i| facts(&format!("L{i}.cube"), 5, None, i + 1))
+            .collect();
+        let r = recognize(&db(), &zip(REAL_NAME), &many, &Ignored::default());
+        assert_eq!(r.verdict(), Verdict::Ready);
+        assert_eq!(r.packages[0].status, PackageStatus::MoreThanExpected);
+        // A single .cube file is never a package, whatever it is called.
+        let single = SourceInfo {
+            kind: SourceKind::File,
+            name: "ARRI Look Library LogC4.cube".to_string(),
+        };
+        let r = recognize(&db(), &single, &sized(5)[..3], &Ignored::default());
+        assert!(r.packages.is_empty());
+    }
+
+    #[test]
+    fn the_layout_only_breaks_a_tie_between_two_packages_that_both_fit() {
+        // Two packages with one name pattern. Every file's TITLE names LogC3 as well as the zip's
+        // LogC4, so the per-file rules (which read the titles) fit neither; the package rule reads
+        // the name of the zip and fits both. The files have no group folders: the package that
+        // does not ask for them is the better fit.
+        let mut both = db();
+        both.packages[1].zip_name = both.packages[0].zip_name.clone();
+        both.packages[1].markers.encoding = both.packages[0].markers.encoding.clone();
+        both.packages[1].expected = both.packages[0].expected.clone();
+        both.packages[1].markers.group_folders = packages::Presence::Absent;
+        let mixed: Vec<FileFacts> = ["A.cube", "B.cube", "C.cube"]
+            .iter()
+            .enumerate()
+            .map(|(i, p)| facts(p, 5, Some("LogC3 and LogC4"), i as u8 + 1))
+            .collect();
+        let r = recognize(&both, &zip(REAL_NAME), &mixed, &Ignored::default());
+        assert_eq!(r.packages.len(), 1, "{:?}", r.issues);
+        assert_eq!(r.packages[0].id, "ll3");
+        // Nothing separates them: no guess, the question.
+        both.packages[1].markers.group_folders = both.packages[0].markers.group_folders;
+        let r = recognize(&both, &zip(REAL_NAME), &mixed, &Ignored::default());
+        assert!(r.packages.is_empty());
+        assert_eq!(r.verdict(), Verdict::NeedsAnswer);
+        // A count that is closer to what a package should have decides before the layout does.
+        both.packages[1].expected.cube_files = Some(5);
+        both.packages[1].markers.group_folders = packages::Presence::Absent;
+        let r = recognize(&both, &zip(REAL_NAME), &mixed, &Ignored::default());
+        assert_eq!(r.packages[0].id, "ll4", "3 files: 0 away from 3, 2 away from 5");
     }
 
     #[test]
