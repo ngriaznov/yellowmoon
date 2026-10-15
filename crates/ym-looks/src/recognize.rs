@@ -1501,6 +1501,63 @@ mod tests {
     }
 
     #[test]
+    fn a_flat_list_with_look_codes_is_a_look_package_by_the_folder_name_alone() {
+        // ARRI's real layout: one folder named for the package, flat files `<code> <title>.cube`,
+        // no encoding word in them. These two packages have no zip_name patterns here, so only the
+        // per-file rules can recognise them: the encoding comes from the folder, the group from the
+        // first digit of the look code, and "to Rec709" in the folder says display-referred.
+        let log = vec![
+            facts("ARRI Look Library LogC3 (log-to-log)/1110 Gray Test.cube", 3, None, 1),
+            facts("ARRI Look Library LogC3 (log-to-log)/3250 Cross.cube", 3, None, 2),
+            facts("ARRI Look Library LogC3 (log-to-log)/8120 20s.cube", 3, None, 3),
+        ];
+        let r = recognize(&db(), &zip("download.zip"), &log, &Ignored::default());
+        assert_eq!(r.verdict(), Verdict::Ready, "{:?}", r.issues);
+        assert_eq!(r.packages[0].id, "ll3");
+        assert_eq!(r.packages[0].groups, 3);
+        match &r.files[2].outcome {
+            Outcome::ArriLook { group_no, name, evidence, .. } => {
+                assert_eq!((*group_no, name.as_str()), (8000, "20s"));
+                assert_eq!(*evidence, Evidence::Pattern);
+            }
+            other => panic!("{other:?}"),
+        }
+        let baked = vec![
+            facts("ARRI Look Library LogC3 to Rec709 3D-LUTs/1110-Gray-Test.cube", 3, None, 1),
+            facts("ARRI Look Library LogC3 to Rec709 3D-LUTs/8120-20s.cube", 3, None, 2),
+        ];
+        let r = recognize(&db(), &zip("download.zip"), &baked, &Ignored::default());
+        assert_eq!(r.verdict(), Verdict::Ready, "{:?}", r.issues);
+        assert_eq!(r.packages[0].id, "ll3r");
+        match &r.files[1].outcome {
+            Outcome::ArriLook { group_no, input, .. } => {
+                assert_eq!(*group_no, 8000);
+                assert_eq!(*input, LookInput::LogC3ToRec709);
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn looks_that_share_a_title_keep_their_code() {
+        let files = vec![
+            facts("ARRI Look Library LogC3 (log-to-log)/1110 Gray Test.cube", 3, None, 1),
+            facts("ARRI Look Library LogC3 (log-to-log)/1111 Gray Test.cube", 3, None, 2),
+            facts("ARRI Look Library LogC3 (log-to-log)/2110 Other.cube", 3, None, 3),
+        ];
+        let r = recognize(&db(), &zip("download.zip"), &files, &Ignored::default());
+        let names: Vec<&str> = r
+            .files
+            .iter()
+            .map(|f| match &f.outcome {
+                Outcome::ArriLook { name, .. } => name.as_str(),
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(names, ["Gray Test 1110", "Gray Test 1111", "Other"]);
+    }
+
+    #[test]
     fn look_names_with_p3_pq_hlg_in_them_are_not_display_renderings() {
         // Per-file rules: a group folder and these names, and the log-to-log zip name: a look.
         let files = names_of(&[

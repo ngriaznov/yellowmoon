@@ -779,3 +779,222 @@ fn the_real_count_of_87_looks_in_nine_groups_is_recognized_in_any_layout() {
         }
     }
 }
+
+// ---------------------------------------------------------------------------------------------
+// ARRI's real layouts, rebuilt from made-up looks (names and a few bytes only; see the header).
+// ---------------------------------------------------------------------------------------------
+
+/// Look codes and titles in the shape of ARRI's Look Library (a four-digit code, the first digit
+/// the group, then a title), with titles of our own. Two looks share a title, as ARRI's do.
+const CODED: [(u32, &str); 9] = [
+    (1110, "Gray Test"),
+    (1111, "Gray Test"),
+    (1120, "Gray Test - Night"),
+    (2110, "Studio Sample"),
+    (3110, "Sample A"),
+    (3111, "Sample B"),
+    (4130, "Tinted - Sample"),
+    (8120, "20s"),
+    (9211, "Dusk Sample"),
+];
+
+/// A real download: the zip's name, the one folder inside it, the input its looks have, the LUT
+/// size `small_db` allows, and whether file names use hyphens (the LogC3 to Rec709 package does).
+struct RealShape {
+    zip: &'static str,
+    folder: &'static str,
+    input: LookInput,
+    size: usize,
+    hyphens: bool,
+    package: &'static str,
+}
+
+const SHAPES: [RealShape; 3] = [
+    RealShape {
+        zip: "ARRI Look Library LogC4 (log-to-log) 3D-LUTs_data.zip",
+        folder: "ARRI Look Library for LogC4 (3D-LUTs)",
+        input: LookInput::LogC4,
+        size: 5,
+        hyphens: false,
+        package: "look-library-logc4",
+    },
+    RealShape {
+        zip: "ARRI Look Library LogC3 (log-to-log) 3D LUTs_data.zip",
+        folder: "ARRI Look Library LogC3 (log-to-log)",
+        input: LookInput::LogC3Ei800,
+        size: 3,
+        hyphens: false,
+        package: "look-library-logc3",
+    },
+    RealShape {
+        zip: "ARRI Look Library LogC3 (to Rec709) 3D-LUTs_data.zip",
+        folder: "ARRI Look Library LogC3 to Rec709 3D-LUTs",
+        input: LookInput::LogC3ToRec709,
+        size: 3,
+        hyphens: true,
+        package: "look-library-logc3-rec709",
+    },
+];
+
+/// The entries of a real-shaped zip: one top folder with flat `.cube` files, no group folders and
+/// no encoding word in the file names, plus a `__MACOSX` tree of `._` files called `.cube`.
+fn real_entries(shape: &RealShape) -> Vec<(String, Vec<u8>)> {
+    let mut entries = vec![(format!("{}/", shape.folder), Vec::new())];
+    for (i, (code, title)) in CODED.iter().enumerate() {
+        let file = if shape.hyphens {
+            format!("{code}-{}.cube", title.replace(" - ", " ").replace(' ', "-"))
+        } else {
+            format!("{code} {title}.cube")
+        };
+        entries.push((
+            format!("{}/{file}", shape.folder),
+            cube_text(shape.size, i as u32 + 1, "made up").into_bytes(),
+        ));
+        entries.push((
+            format!("__MACOSX/{}/._{file}", shape.folder),
+            b"\x00\x05\x16\x07 apple double".to_vec(),
+        ));
+    }
+    entries.push((format!("__MACOSX/._{}", shape.folder), b"apple double".to_vec()));
+    entries
+}
+
+/// Writes the entries as a folder tree (what Finder makes from the zip).
+fn write_tree(root: &Path, entries: &[(String, Vec<u8>)]) {
+    for (path, bytes) in entries {
+        let target = root.join(path.trim_end_matches('/'));
+        if path.ends_with('/') {
+            std::fs::create_dir_all(&target).unwrap();
+        } else {
+            std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+            std::fs::write(&target, bytes).unwrap();
+        }
+    }
+}
+
+#[test]
+fn the_real_layouts_are_recognized_as_zips_and_as_unzipped_folders() {
+    for shape in &SHAPES {
+        let entries = real_entries(shape);
+        let work = tempfile::tempdir().unwrap();
+        let real_zip = work.path().join(shape.zip);
+        write_zip(&real_zip, &entries);
+        let renamed = work.path().join("download.zip");
+        write_zip(&renamed, &entries);
+        // Finder unzips into a folder named like the zip; the person may drop that or the one inside.
+        let outer = work.path().join(shape.zip.trim_end_matches(".zip"));
+        write_tree(&outer, &entries);
+        let inner = outer.join(shape.folder);
+        let db = small_db(CODED.len());
+
+        for (form, source) in [
+            ("zip", &real_zip),
+            ("renamed zip", &renamed),
+            ("unzipped folder", &outer),
+            ("folder inside it", &inner),
+        ] {
+            let label = format!("{} / {form}", shape.zip);
+            let r = inspect(source, &db, None, &mut no_progress()).unwrap();
+            assert_eq!(r.verdict(), Verdict::Ready, "{label}: {:?}", r.issues);
+            assert_eq!(r.packages.len(), 1, "{label}");
+            assert_eq!(r.packages[0].id, shape.package, "{label}");
+            assert_eq!(r.packages[0].found, CODED.len(), "{label}");
+            assert_eq!(r.files.len(), CODED.len(), "junk is never a look: {label}");
+            assert_eq!(r.needs_answer_count(), 0, "{label}");
+            // A zip counts each of the Mac's files, a folder walk skips the `__MACOSX` folder whole.
+            // The folder inside has no `__MACOSX` next to it.
+            assert!(form == "folder inside it" || r.ignored.macos_metadata >= 1, "{label}: {:?}", r.ignored);
+
+            // Groups from the first digit of the look code; names without the code; the two
+            // looks that share a title keep their code.
+            let found: Vec<(u32, &str, &str)> = r
+                .files
+                .iter()
+                .map(|f| match &f.outcome {
+                    Outcome::ArriLook {
+                        group_no,
+                        group_name,
+                        name,
+                        input,
+                        ..
+                    } => {
+                        assert_eq!(*input, shape.input, "{label}");
+                        (*group_no, group_name.as_str(), name.as_str())
+                    }
+                    other => panic!("{label}: {other:?}"),
+                })
+                .collect();
+            let mut groups: Vec<(u32, &str)> = found.iter().map(|f| (f.0, f.1)).collect();
+            groups.dedup();
+            assert_eq!(
+                groups,
+                [
+                    (1000, "Black and White"),
+                    (2000, "Application"),
+                    (3000, "Film"),
+                    (4000, "Tinted"),
+                    (8000, "Period"),
+                    (9000, "Special")
+                ],
+                "{label}"
+            );
+            assert_eq!(r.packages[0].groups, 6, "{label}");
+            let mut names: Vec<&str> = found.iter().map(|f| f.2).collect();
+            names.sort_unstable();
+            assert_eq!(
+                names,
+                [
+                    "20s",
+                    "Dusk Sample",
+                    "Gray Test 1110",
+                    "Gray Test 1111",
+                    "Gray Test Night",
+                    "Sample A",
+                    "Sample B",
+                    "Studio Sample",
+                    "Tinted Sample"
+                ],
+                "{label}"
+            );
+        }
+
+        // And the zip imports: every look, grouped, with this package's encoding.
+        let mut library = open_library(&work.path().join("app"));
+        let r = inspect(&real_zip, &db, None, &mut no_progress()).unwrap();
+        let report = import(&mut library, &db, &real_zip, &r, &ImportOptions::default(), &mut no_progress()).unwrap();
+        assert_eq!(report.added.len(), CODED.len(), "{}", shape.zip);
+        let imported: Vec<_> = library.looks().iter().filter(|l| l.id.prefix() == "arri").collect();
+        assert_eq!(imported.len(), CODED.len());
+        assert!(imported.iter().all(|l| l.input == shape.input));
+        assert!(imported.iter().any(|l| matches!(&l.group, LookGroup::Arri { group_no: 3000, group_name, .. } if group_name == "Film")));
+        assert!(library.verify(&mut no_progress()).unwrap().is_clean());
+    }
+}
+
+#[test]
+fn the_real_layouts_are_told_apart_by_their_names_and_sizes() {
+    // The LogC4 zip's looks at the LogC3 size, or the LogC3 zips' at the LogC4 size, are not that package.
+    let work = tempfile::tempdir().unwrap();
+    let db = small_db(CODED.len());
+    let shape = &SHAPES[0];
+    let entries: Vec<(String, Vec<u8>)> = real_entries(shape)
+        .into_iter()
+        .map(|(path, bytes)| {
+            if path.ends_with(".cube") && !path.starts_with("__MACOSX") {
+                (path, cube_text(3, 1, "made up").into_bytes())
+            } else {
+                (path, bytes)
+            }
+        })
+        .collect();
+    let zip = work.path().join(shape.zip);
+    write_zip(&zip, &entries);
+    let r = inspect(&zip, &db, None, &mut no_progress()).unwrap();
+    assert!(r.packages.is_empty(), "{:?}", r.packages);
+    assert_eq!(r.verdict(), Verdict::NeedsAnswer);
+    // What the wizard preselects for it: LogC4, from the zip and folder names.
+    assert!(r.files.iter().all(|f| matches!(
+        f.outcome,
+        Outcome::NeedsAnswer { suggested_input: Some(LookInput::LogC4), .. }
+    )));
+}
