@@ -411,8 +411,6 @@ fn a_raw_front_that_is_off_keeps_the_group_on_the_cpu() {
     assert_eq!(f.report.runs.raw_uploads, 0);
     assert_eq!(f.report.runs.sigma_planes, 1, "the host's sigma plane");
     assert!(!mentions_the_card(&f), "{:?}", f.report.notes);
-    // The gate the Auto policy uses: the front is not signed off yet, so Auto does not run it.
-    assert!(!GpuStages::SIGNED_OFF.contains(GpuStages::RAW_FRONT));
 }
 
 #[cfg(feature = "fault-injection")]

@@ -216,7 +216,15 @@ fn doctor_says_what_the_graphics_policy_comes_to() {
     assert_eq!(v["gpu_policy"]["stages"], serde_json::json!([]));
     assert_eq!(
         v["gpu_policy"]["auto_stages"],
-        serde_json::json!(["raw", "sampler", "colour", "sharpening", "encode"])
+        serde_json::json!([
+            "raw",
+            "sampler",
+            "colour",
+            "sharpening",
+            "encode",
+            "export",
+            "raw front"
+        ])
     );
     assert_eq!(
         v["gpu_policy"]["all_stages"],
@@ -238,7 +246,7 @@ fn doctor_says_what_the_graphics_policy_comes_to() {
     assert!(text.contains("GPU stages"), "{text}");
     assert!(
         text.contains(
-            "raw, sampler, colour, sharpening, encode for Auto; On and Require run raw, sampler, colour"
+            "raw, sampler, colour, sharpening, encode, export, raw front for Auto; On and Require run raw, sampler, colour"
         ),
         "{text}"
     );

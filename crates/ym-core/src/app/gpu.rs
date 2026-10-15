@@ -66,8 +66,7 @@ impl GpuStages {
     /// R1 to R9 runs on the device from the photo's resident raw words, uploaded once), R9 lens
     /// resample, and the reduced fit-view group (the noise sigma plane, the R5 chroma offsets, the
     /// `k x k` binning, the denoise and R9 at 1/k) that never builds a full-resolution frame on the
-    /// host (G-07). **Not signed off**: `Auto` leaves it to the CPU until the Metal CI runners have
-    /// passed its suites ([`GpuStages::SIGNED_OFF`]); `On` and `Require` run it.
+    /// host (G-07). Signed off on 2026-10-15 ([`GpuStages::SIGNED_OFF`]).
     pub const RAW_FRONT: Self = Self(1 << 6);
     /// Every stage.
     pub const ALL: Self = Self(0b111_1111);
@@ -77,14 +76,18 @@ impl GpuStages {
     /// rule of STATUS question 14. **The one constant to widen** when a stage joins.
     /// Signed off on 2026-10-14 (Mykyta), after every suite passed on macOS 14 and 15 (Metal CI run
     /// 38557455494, commit 6d277b8): the raw chain (R6 to R8), the sampler, the colour chain,
-    /// output sharpening and C13. The export tail joins when G-08 has passed there too. Before
-    /// that date only the colour pass was signed off (since M0-07).
+    /// output sharpening and C13. On 2026-10-15, by the same rule, after Metal CI run 38694506557
+    /// (commit 4c5939f): the export tail (G-08) and the raw front (G-07), so `Auto` on a hardware
+    /// adapter now runs every stage. Before 2026-10-14 only the colour pass was signed off (since
+    /// M0-07).
     pub const SIGNED_OFF: Self = Self(
         Self::RAW_CHAIN.0
             | Self::SAMPLER.0
             | Self::COLOR.0
             | Self::OUTPUT_SHARPEN.0
-            | Self::ENCODE.0,
+            | Self::ENCODE.0
+            | Self::EXPORT_TAIL.0
+            | Self::RAW_FRONT.0,
     );
 
     /// The stages of an export that run on the device in this version: the raw chain (R6 to R8 of
@@ -1255,16 +1258,21 @@ mod tests {
         assert_eq!(GpuPolicy::On.stages(), GpuStages::ALL);
         assert_eq!(GpuPolicy::Require.stages(), GpuStages::ALL);
         assert_eq!(GpuPolicy::Off.stages(), GpuStages::NONE);
-        // Signed off on 2026-10-14: everything but the export tail (G-08) and the raw front (G-07).
+        // Signed off on 2026-10-14 (the raw chain and the view stages) and on 2026-10-15 (the
+        // export tail, G-08, and the raw front, G-07): every stage.
         assert_eq!(
             GpuStages::SIGNED_OFF.names(),
-            ["raw", "sampler", "colour", "sharpening", "encode"]
+            [
+                "raw",
+                "sampler",
+                "colour",
+                "sharpening",
+                "encode",
+                "export",
+                "raw front"
+            ]
         );
-        assert!(!GpuStages::SIGNED_OFF.contains(GpuStages::EXPORT_TAIL));
-        assert!(!GpuStages::SIGNED_OFF.contains(GpuStages::RAW_FRONT));
-        assert!(!GpuStages::SIGNED_OFF.intersects(GpuStages::RAW_FRONT));
-        assert!(GpuStages::ALL.contains(GpuStages::SIGNED_OFF));
-        assert!(!GpuStages::SIGNED_OFF.contains(GpuStages::ALL));
+        assert_eq!(GpuStages::SIGNED_OFF, GpuStages::ALL);
     }
 
     #[test]
@@ -1393,17 +1401,16 @@ mod tests {
             .expect("the raw chain is on the device");
         started.cancel();
         let _ = started.wait();
-        // `Auto` runs the signed-off stages; since 2026-10-14 they include the raw chain, so an
-        // export under `Auto` on a hardware device warms the kernels up too. A stage that `Auto`
-        // does not run (the export tail, until G-08 is signed off) starts nothing.
+        // `Auto` runs the signed-off stages; since 2026-10-15 they are every stage, so an export
+        // under `Auto` on a hardware device warms the kernels of the raw chain, the raw front and
+        // the export tail up too.
         let auto = open_gpu(GpuPolicy::Auto, MemoryBudget::default());
         if auto.is_using() {
             let started = auto
                 .warm_up_for_exports()
-                .expect("the raw chain is signed off");
+                .expect("the export stages are signed off");
             started.cancel();
             let _ = started.wait();
-            assert!(auto.warm_up_for(GpuStages::EXPORT_TAIL).is_none());
         }
     }
 

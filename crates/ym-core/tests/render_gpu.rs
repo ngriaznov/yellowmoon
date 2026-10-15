@@ -372,7 +372,12 @@ fn the_renders_of_a_dng_have_no_capture_sharpening_on_the_device_and_match_the_c
     // two renders runs on the device too (G-08, `tests/gpu_export.rs` compares it with the CPU's),
     // while the display render of a host frame colours on the CPU, so the two would differ by the
     // colour stage's f32 rounding and not be equal bit for bit. This test is about R8.
-    let no_tail = GpuStages::SIGNED_OFF.union(GpuStages::RAW_FRONT);
+    let no_tail = GpuStages::RAW_CHAIN
+        .union(GpuStages::RAW_FRONT)
+        .union(GpuStages::SAMPLER)
+        .union(GpuStages::COLOR)
+        .union(GpuStages::OUTPUT_SHARPEN)
+        .union(GpuStages::ENCODE);
     let (cpu, dev) = (
         on_cpu(),
         renderer_with(
