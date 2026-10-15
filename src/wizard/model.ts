@@ -27,6 +27,10 @@ export interface PackageDef {
   megabytes: number;
   /** Files the package holds. */
   fileCount: number;
+  /** What the LUTs of a looks package expect as input; null for display LUTs, which no answer can stand in for. */
+  input: LookInput | null;
+  /** The title of the download on ARRI's page, for the words that say what to download (`data/looks/arri-packages.json`, `arri_title`). */
+  arriTitle: string;
 }
 
 /** ARRI's five free packages, in the order of the Choose step (`docs/08` §What users can import). */
@@ -35,12 +39,14 @@ export const PACKAGES: readonly PackageDef[] = [
     id: "look_library_logc4",
     name: "Look Library · LogC4",
     description: "87 creative looks, log to log. They run before the display transform, so the automatic development still applies.",
-    meta: "87 looks · 65-point · 181 MB",
+    meta: "87 looks · 65-point · 190 MB",
     recommended: true,
     older: false,
     role: "looks",
-    megabytes: 181,
+    megabytes: 190,
     fileCount: 87,
+    input: "logc4",
+    arriTitle: "Look Library for LogC4 (3D-LUTs)",
   },
   {
     id: "display_luts_logc4",
@@ -52,6 +58,8 @@ export const PACKAGES: readonly PackageDef[] = [
     role: "display",
     megabytes: 32,
     fileCount: 22,
+    input: null,
+    arriTitle: "LogC4 LUT Package",
   },
   {
     id: "look_library_logc3",
@@ -63,6 +71,8 @@ export const PACKAGES: readonly PackageDef[] = [
     role: "looks",
     megabytes: 30,
     fileCount: 87,
+    input: "logc3_ei800",
+    arriTitle: "ARRI Look Library LogC3 (3D-LUTs)",
   },
   {
     id: "look_library_logc3_to_rec709",
@@ -74,6 +84,8 @@ export const PACKAGES: readonly PackageDef[] = [
     role: "looks",
     megabytes: 32,
     fileCount: 87,
+    input: "logc3_to_rec709",
+    arriTitle: "ARRI Look Library LogC3 (to Rec709) 3D-LUTs",
   },
   {
     id: "display_luts_logc3",
@@ -85,6 +97,8 @@ export const PACKAGES: readonly PackageDef[] = [
     role: "display",
     megabytes: 46,
     fileCount: 48,
+    input: null,
+    arriTitle: "LogC3 LUT Package",
   },
 ];
 
@@ -297,9 +311,23 @@ export type Verdict =
   /** A package that is not among the chosen ones. */
   | { kind: "other-package"; packageId: PackageId; title: string; what: string; contents: string; explanation: string }
   /** `.cube` files that need the generic question; `input` is the answer so far. */
-  | { kind: "question"; fileCount: number; lutSize: number | null; note: string; input: LookInput | null }
+  | { kind: "question"; fileCount: number; lutSize: number | null; note: string; input: LookInput | null; standsFor: string | null }
   | { kind: "unusable"; explanation: string }
   | { kind: "missing"; explanation: string };
+
+/** The chosen packages as ARRI's page names them: "Look Library for LogC4 (3D-LUTs)". For the words that say what to download. */
+export const downloadList = (packages: readonly PackageDef[]): string => joinList(packages.map((p) => `'${p.arriTitle}'`));
+
+/**
+ * The chosen package an answered set of unknown `.cube` files stands in for: a zip or folder (not one loose file) whose input
+ * has been answered, and a chosen looks package with the same input. The person said what the set is, so the package counts as
+ * present; the files are imported as their own LUTs with that input (`docs/08` §Any other .cube). Null when there is none.
+ */
+export function standsInFor(state: WizardState, source: Received): PackageDef | null {
+  const found = source.found;
+  if (!found || found.recognition.kind !== "needs_answer" || found.source === "file" || !source.answer) return null;
+  return chosenPackages(state).find((p) => p.role === "looks" && p.input === source.answer) ?? null;
+}
 
 /** What the recogniser found, set against what was chosen. */
 export function verdictFor(state: WizardState, source: Received): Verdict {
@@ -311,14 +339,15 @@ export function verdictFor(state: WizardState, source: Received): Verdict {
       if (state.chosen.includes(r.package_id)) {
         return { kind: "match", packageId: r.package_id, title: r.title, what: r.what, contents: r.contents, note: r.note };
       }
-      const chosen = joinList(chosenPackages(state).map((p) => p.name));
+      const chosenList = chosenPackages(state);
+      const chosen = joinList(chosenList.map((p) => p.name));
       const explanation = chosen
-        ? `This is ${r.title}, not ${chosen}, which you chose. Download ${chosen} from ARRI's page, or go back and choose this one.`
+        ? `This is ${r.title}, not ${chosen}, which you chose. Download ${downloadList(chosenList)} from ARRI's page, or go back and choose this one.`
         : `This is ${r.title}. Go back and choose it to import it.`;
       return { kind: "other-package", packageId: r.package_id, title: r.title, what: r.what, contents: r.contents, explanation };
     }
     case "needs_answer":
-      return { kind: "question", fileCount: r.file_count, lutSize: r.lut_size, note: r.note, input: source.answer };
+      return { kind: "question", fileCount: r.file_count, lutSize: r.lut_size, note: r.note, input: source.answer, standsFor: standsInFor(state, source)?.name ?? null };
     case "unusable":
       return { kind: "unusable", explanation: r.reason };
     case "missing":
@@ -329,17 +358,18 @@ export function verdictFor(state: WizardState, source: Received): Verdict {
 /** A step of the rail is locked while it is ahead of the current one. */
 export const stepLocked = (state: WizardState, step: number): boolean => step > state.step;
 
-/** The package ids that have a source recognised as them. */
+/** The package ids that have a source recognised as them, or an answered set of unknown files standing in for them. */
 export function matchedPackages(state: WizardState): PackageId[] {
   const ids: PackageId[] = [];
   for (const source of state.sources) {
     const v = verdictFor(state, source);
-    if (v.kind === "match" && !ids.includes(v.packageId)) ids.push(v.packageId);
+    const id = v.kind === "match" ? v.packageId : v.kind === "question" ? (standsInFor(state, source)?.id ?? null) : null;
+    if (id && !ids.includes(id)) ids.push(id);
   }
   return ids;
 }
 
-/** Chosen packages that no source matches yet. */
+/** Chosen packages that no source matches yet, and no answered set stands in for. */
 export const unmatchedPackages = (state: WizardState): PackageDef[] => {
   const matched = matchedPackages(state);
   return chosenPackages(state).filter((p) => !matched.includes(p.id));
@@ -376,27 +406,41 @@ export function importPlan(state: WizardState): PlanItem[] {
   return plan;
 }
 
-/** Why Import is not available yet on the Recognise step, in plain words; null when it is. */
+/**
+ * Why Import is not available yet on the Recognise step, in plain words; null when it is. Import waits for the files to be
+ * looked at, for every set of unknown `.cube` files to be answered, and for something to import. A chosen package that nothing
+ * matches does not hold it back while there is something to import: [`recogniseNote`] says so instead.
+ */
 export function recogniseBlocker(state: WizardState): string | null {
   if (anyChecking(state)) return "Checking the files…";
-  const missing = unmatchedPackages(state);
-  if (missing.length > 0) {
-    return missing.length === 1
-      ? `${missing[0]!.name} is missing. Go back and add it.`
-      : "Some packages are missing. Go back and add them.";
-  }
   const unanswered = state.sources.filter((s) => {
     const v = verdictFor(state, s);
     return v.kind === "question" && v.input === null;
   });
   if (unanswered.length > 0) return "Say what the other LUTs expect as input.";
+  if (importPlan(state).length === 0) {
+    const missing = unmatchedPackages(state);
+    if (missing.length === 1) return `${missing[0]!.name} is missing. Go back and add it.`;
+    if (missing.length > 1) return "Some packages are missing. Go back and add them.";
+    return "There is nothing to import yet. Go back and add a package.";
+  }
   return null;
+}
+
+/** A chosen package that nothing matches, when there is something else to import: said in the footer, never a lock. Null otherwise. */
+export function recogniseNote(state: WizardState): string | null {
+  if (recogniseBlocker(state) !== null) return null;
+  const missing = unmatchedPackages(state);
+  if (missing.length === 0) return null;
+  return missing.length === 1
+    ? `${missing[0]!.name} isn't here. You can import the rest now and add it later.`
+    : "Some of the packages you chose aren't here. You can import the rest now and add them later.";
 }
 
 /**
  * Whether the Next button of a step is available. Choose needs a package; Get the files needs a file for each chosen
- * package (the Recognise step judges what they are); Recognise needs every chosen package matched; Import waits
- * for the copy to finish.
+ * package (the Recognise step judges what they are); Recognise needs something to import, with every question answered
+ * (a chosen package that is missing only gets a note); Import waits for the copy to finish.
  */
 export function canAdvance(state: WizardState): boolean {
   switch (state.step) {
@@ -429,6 +473,8 @@ export function footNote(state: WizardState): string {
     case STEP_RECOGNISE: {
       const blocker = recogniseBlocker(state);
       if (blocker) return blocker;
+      const note = recogniseNote(state);
+      if (note) return note;
       const n = matchedPackages(state).length;
       return `${n} ${n === 1 ? "package matches" : "packages match"} what you chose`;
     }
@@ -448,7 +494,7 @@ export function heading(state: WizardState): string {
     case STEP_GET:
       return "Download from ARRI";
     case STEP_RECOGNISE:
-      return state.sources.some((s) => verdictFor(state, s).kind === "match") && recogniseBlocker(state) === null ? "Found it" : "Check what arrived";
+      return importPlan(state).length > 0 && recogniseBlocker(state) === null && unmatchedPackages(state).length === 0 ? "Found it" : "Check what arrived";
     case STEP_IMPORT:
       return state.import.status === "done" ? "Imported" : state.import.status === "failed" ? "Not imported" : "Importing";
     default: {
