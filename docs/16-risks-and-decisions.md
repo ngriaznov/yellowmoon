@@ -46,7 +46,7 @@ The biggest risk is the ALEXA target itself. Most open decisions are settled by 
 | Lateral CA correction stage | R5b on the mosaic (built), or R9 after the demosaic, or off by default | Mykyta (STATUS question 11) | provisional: R5b on the mosaic, on by default |
 | CIE-derived tables | ship fitted coefficients with attribution, or restrict to formula SPDs + own measurements | M1-H4 | open |
 | Signature look | its character and name | Mykyta in M3 | open |
-| Code signing for 1.0 | unsigned like plugout, or Developer ID + notarisation | Mykyta before 1.0 | open |
+| Code signing for 1.0 | unsigned like plugout, or Developer ID + notarisation | Mykyta before 1.0 | **decided 2026-10-15: unsigned** (ad-hoc signature only); the README says how to allow the app to open (`docs/12` Signing) |
 | Trademark clearance | own search in EUIPO/INPI/WIPO/UK IPO, or a trademark attorney | Mykyta before announcing | open |
 | Repository and domain | `github.com/ngriaznov/yellowmoon` (personal account, like plugout); domain given in the handover message | Mykyta | decided |
 

@@ -262,7 +262,7 @@ Playwright flows and screenshot comparisons for every mocked state.
 **M4-05 · Fuzzing campaign** 8 hours per target. *Done when:* no open findings.
 **M4-06 · Release 1.0.0** *Done when:* gate passes and the release pipeline publishes it.
 
-**[HUMAN] M4-H1** Blind A/B of 50 A1 photos vs Capture One, Lightroom and DxO. **M4-H2** Decide on Apple Developer ID signing and notarisation; provide certificates if yes. **M4-H3** Trademark clearance (EUIPO, INPI, WIPO, UK IPO). **M4-H4** Freedom-to-operate check on US 11948279. **M4-H5** Announce.
+**[HUMAN] M4-H1** Blind A/B of 50 A1 photos vs Capture One, Lightroom and DxO. **M4-H2** Decide on Apple Developer ID signing and notarisation; provide certificates if yes. *(Answered 2026-10-15: no; the app ships unsigned.)* **M4-H3** Trademark clearance (EUIPO, INPI, WIPO, UK IPO). **M4-H4** Freedom-to-operate check on US 11948279. **M4-H5** Announce.
 
 **Gate M4 (1.0):** whole-app blind A/B ≥ 50% preferred or tied; all earlier gates still pass; legal items closed or explicitly accepted by Mykyta.
 

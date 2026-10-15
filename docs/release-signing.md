@@ -95,5 +95,5 @@ These are the M0-03 acceptance checks that no Linux container can run:
 
 - **Lost the key or the password:** installed copies can no longer verify new updates. Generate a new pair (steps 1 to 4, with `-f` to overwrite) and publish a release that people install by hand. Say so in the release notes.
 - **Key leaked:** same as above, and delete the old secrets first (`gh secret delete TAURI_SIGNING_PRIVATE_KEY --repo ngriaznov/yellowmoon`).
-- **Apple code signing and notarisation** are a separate decision for 1.0 (`docs/12`, `docs/16`, [HUMAN M4-H2]). The `APPLE_*` variables in `release.yml` stay commented until then.
+- **Apple code signing and notarisation** are not used: Yellowmoon ships without a Developer ID (Mykyta, 2026-10-15; `docs/12`, `docs/16`). The `APPLE_*` variables in `release.yml` stay commented; the README tells people how to allow the app to open.
 - **Newer Tauri CLIs** can bind a signature to the app version (`tauri signer sign --app-version`, set automatically by `tauri build`). Whether to turn on the updater's matching check is a later hardening decision; nothing here depends on it.

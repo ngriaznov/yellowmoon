@@ -26,10 +26,11 @@ cask "yellowmoon" do
     "~/Library/WebKit/app.yellowmoon",
   ]
 
-  # Remove this caveat if Apple Developer ID signing and notarisation are adopted (docs/16).
+  # Yellowmoon ships without an Apple Developer ID (Mykyta, 2026-10-15; docs/16, README "Allow Yellowmoon to open").
   caveats <<~EOS
-    Yellowmoon is not code-signed yet. If macOS refuses to open it, either install
-    with --no-quarantine or run:
-      xattr -cr /Applications/Yellowmoon.app
+    Yellowmoon is not signed with an Apple Developer ID. If macOS refuses to open it,
+    run once:
+      xattr -dr com.apple.quarantine /Applications/Yellowmoon.app
+    or allow it in System Settings > Privacy & Security > Open Anyway.
   EOS
 end

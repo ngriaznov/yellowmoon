@@ -1,7 +1,7 @@
 # Build: a test build of the macOS app to download and open on your own Mac. Not a release: no version tag,
-# no updater artefacts (the updater signing key is M0-03, docs/release-signing.md) and no Developer ID (docs/16,
-# "Code signing for 1.0"). The bundle is signed ad hoc, so macOS asks once before it opens it: Control-click the
-# app > Open, or System Settings > Privacy & Security > Open Anyway (docs/12, "Test builds").
+# no updater artefacts (the updater signing key is M0-03, docs/release-signing.md). Yellowmoon ships without an
+# Apple Developer ID (docs/16): the bundle is signed ad hoc, so macOS asks once before it opens it (README, "Allow
+# Yellowmoon to open").
 #
 # Runs on every push to main and by hand: Actions > Build > Run workflow (choose universal or Apple silicon only).
 # The disk image is the run's artefact "Yellowmoon-<commit>-<architecture>", kept for 14 days.
@@ -100,7 +100,7 @@ jobs:
             echo "### Yellowmoon test build"
             echo
             echo "Commit \`$SHORT_SHA\`, $TARGET. Download the artefact below, unzip it and open the disk image."
-            echo "The app is signed ad hoc: the first time, Control-click Yellowmoon.app > Open."
+            echo "The app has no Apple Developer ID: allow it once as the README says (\"Allow Yellowmoon to open\")."
           } >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-artifact@v4

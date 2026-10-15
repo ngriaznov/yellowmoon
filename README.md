@@ -61,7 +61,23 @@ brew tap ngriaznov/yellowmoon https://github.com/ngriaznov/yellowmoon
 brew install --cask yellowmoon
 ```
 
-The app updates itself.
+Open the `.dmg` and drag Yellowmoon to Applications. The app updates itself.
+
+Until then, test builds of the current code are on the [Build workflow](https://github.com/ngriaznov/yellowmoon/actions/workflows/build.yml): open the latest green run, download the artefact `Yellowmoon-<commit>-universal` at the bottom (you need to be signed in to GitHub), unzip it and open the `.dmg` inside.
+
+### Allow Yellowmoon to open
+
+Yellowmoon is free and is not signed with an Apple Developer ID, so the first time you open it macOS stops it with "Apple could not verify Yellowmoon is free of malware" (or "Yellowmoon is damaged and can't be opened"). The app is fine; macOS only knows that it was downloaded and not notarised by Apple. Allow it once, in one of these ways:
+
+- **macOS 15 Sequoia and later.** Open Yellowmoon and choose **Done** in the warning. Open **System Settings › Privacy & Security**, scroll down to **Security**, click **Open Anyway** next to "Yellowmoon was blocked to protect your Mac", and confirm with your password or Touch ID. Open Yellowmoon again and choose **Open Anyway**.
+- **macOS 12 to 14.** In Applications, Control-click (or right-click) Yellowmoon, choose **Open**, then **Open** again in the warning.
+- **Terminal, any version** (also when macOS says the app is damaged). Remove the download mark, then open the app as usual:
+
+  ```
+  xattr -dr com.apple.quarantine /Applications/Yellowmoon.app
+  ```
+
+You only do this once. After that Yellowmoon opens like any other app, and the updates it installs itself don't ask again. A new `.dmg` downloaded by hand needs the same step.
 
 ## Command line
 
