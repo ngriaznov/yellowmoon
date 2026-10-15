@@ -8,7 +8,7 @@
 //! AppKit's origin is at the bottom left, which this module converts).
 //!
 //! The page lets the view show through: the cell is transparent (`data-native`), and while the
-//! Photos screen shows, so are the page's root, its body and the screen (`data-viewport="native"`
+//! Photos screen shows, so are the page's root, its body and the screen (`data-native-viewport`
 //! on the root element, `src/styles/screens.css`). Behind the page the window is paper
 //! ([`PAPER_SRGB`]), so the page looks the same wherever it draws nothing.
 //!

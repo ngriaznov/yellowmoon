@@ -10,17 +10,17 @@ const read = (path: string): string => readFileSync(resolve(import.meta.dirname,
 describe("the page over the native viewport", () => {
   it("is transparent from the root down to the photo cell", () => {
     const css = read("screens.css");
-    const rule = /([^{}]*:root\[data-viewport="native"\][^{}]*)\{\s*background:\s*transparent( !important)?;\s*\}/.exec(css);
+    const rule = /([^{}]*:root\[data-native-viewport\][^{}]*)\{\s*background:\s*transparent( !important)?;\s*\}/.exec(css);
     expect(rule, "a transparent rule for :root[data-viewport=native]").not.toBeNull();
     const selectors = (rule?.[1] ?? "")
       .replace(/\/\*[\s\S]*?\*\//g, "")
       .split(",")
       .map((s) => s.trim());
     expect(selectors).toEqual([
-      ':root[data-viewport="native"]',
-      ':root[data-viewport="native"] body',
-      ':root[data-viewport="native"] #root',
-      ':root[data-viewport="native"] .ym-screen[data-screen="photos"]',
+      ':root[data-native-viewport]',
+      ':root[data-native-viewport] body',
+      ':root[data-native-viewport] #root',
+      ':root[data-native-viewport] .ym-screen[data-screen="photos"]',
     ]);
   });
 
@@ -28,7 +28,7 @@ describe("the page over the native viewport", () => {
     // The first app on a Mac (0.1.0) showed no photo: index.html paints <html> paper inline, which a plain rule cannot override.
     const html = readFileSync(resolve(import.meta.dirname, "../../index.html"), "utf8");
     const inline = /<html[^>]*style="[^"]*background/.test(html);
-    const important = /:root\[data-viewport="native"\][^{}]*\{\s*background:\s*transparent !important;/.test(read("screens.css"));
+    const important = /:root\[data-native-viewport\][^{}]*\{\s*background:\s*transparent !important;/.test(read("screens.css"));
     expect(!inline || important, "index.html paints the root inline, so the transparent rule needs !important").toBe(true);
   });
 

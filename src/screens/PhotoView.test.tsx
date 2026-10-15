@@ -47,13 +47,13 @@ describe("the native viewport", () => {
 
   it("lets the layer behind the page show through: the root says so while the photo shows, and nothing between the cell and it paints", async () => {
     const cell = await setup({ viewport: "native" });
-    await waitFor(() => expect(document.documentElement).toHaveAttribute("data-viewport", "native"));
+    await waitFor(() => expect(document.documentElement).toHaveAttribute("data-native-viewport"));
     // screens.css makes the root, the body, #root and the Photos screen transparent; a new box between the cell and the screen would
     // paint paper over the photo.
     expect(cell.parentElement).toHaveAttribute("data-screen", "photos");
     h!.unmount();
     h = undefined;
-    expect(document.documentElement).not.toHaveAttribute("data-viewport");
+    expect(document.documentElement).not.toHaveAttribute("data-native-viewport");
   });
 
   it("still carries the look chip and the camera line over the transparent cell", async () => {
@@ -69,7 +69,7 @@ describe("the fallback viewport", () => {
     await waitFor(() => expect(cell).toHaveAttribute("data-viewport-backend", "fallback"));
     expect(cell).not.toHaveAttribute("data-native");
     // The page stays opaque: the pictures are in it.
-    expect(document.documentElement).not.toHaveAttribute("data-viewport");
+    expect(document.documentElement).not.toHaveAttribute("data-native-viewport");
     // The mock sends the photo's frame too; use the shell's own address from here on.
     act(() => h!.api.emitEvent("viewport_frame", frameEvent(100)));
     const img = (): HTMLImageElement | null => cell.querySelector("img.ym-photo-cell__frame");

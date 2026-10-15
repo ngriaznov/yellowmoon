@@ -310,7 +310,7 @@ const SMOKE_DESCRIBE_PAGE: &str = r##"(() => {
   const name = (e) => e.tagName.toLowerCase() + (e.id ? "#" + e.id : "") + (e.classList.length ? "." + [...e.classList].join(".") : "");
   const stack = r ? document.elementsFromPoint(r.left + r.width / 2, r.top + r.height / 2).map((e) => name(e) + " " + bg(e)) : [];
   return JSON.stringify({
-    viewport: document.documentElement.dataset.viewport ?? null,
+    viewport: document.documentElement.hasAttribute("data-native-viewport") ? "native" : null,
     native: cell ? cell.dataset.native ?? null : null,
     cell: r ? [r.left, r.top, r.width, r.height] : null,
     html: bg(document.documentElement),

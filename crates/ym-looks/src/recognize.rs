@@ -20,7 +20,7 @@
 //!    package should have, all at its LUT size. That is strong enough that the layout (group
 //!    folders, one folder per look, a single top-level folder, a flat list) and look names that
 //!    happen to hold words like `P3` or `PQ` are only a tie-breaker, never a requirement
-//!    ([`match_by_package`]).
+//!    (`match_by_package`).
 //! 4. **Nothing fits.** The file gets the generic question (what does it expect as input?), with a
 //!    suggestion when the names hint at one.
 //!

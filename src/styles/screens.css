@@ -104,10 +104,10 @@
 /* The native viewport draws the photo behind the webview (docs/01 §Native viewport): while the Photos screen shows it, nothing under the
    transparent cell may paint, from the root down. The window behind the page is paper (src-tauri/src/native.rs). index.html paints the
    root paper in an inline style, so that no page shows through before this sheet loads; only !important beats it. */
-:root[data-viewport="native"],
-:root[data-viewport="native"] body,
-:root[data-viewport="native"] #root,
-:root[data-viewport="native"] .ym-screen[data-screen="photos"] { background: transparent !important; }
+:root[data-native-viewport],
+:root[data-native-viewport] body,
+:root[data-native-viewport] #root,
+:root[data-native-viewport] .ym-screen[data-screen="photos"] { background: transparent !important; }
 .ym-screen[data-screen="photos"] .ym-filmstrip { grid-column: 1; grid-row: 3; }
 .ym-tools {
   display: flex;

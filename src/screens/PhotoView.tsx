@@ -70,9 +70,9 @@ export function PhotoView({ store, photo, rs, lookName, before, picking, onPicke
   useEffect(() => {
     if (!native) return;
     const root = document.documentElement;
-    root.dataset.viewport = "native";
+    root.dataset.nativeViewport = "";
     return () => {
-      delete root.dataset.viewport;
+      delete root.dataset.nativeViewport;
     };
   }, [native]);
   const picture = useMemo(() => (photo && drawsFixture ? previewUrl(photo, rs, before) : undefined), [photo, rs, before, drawsFixture]);
