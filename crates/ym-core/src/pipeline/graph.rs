@@ -1612,6 +1612,20 @@ impl<'a> Job<'a> {
                     if self.opts.gpu_strict {
                         return Err(RenderError::Gpu(reason));
                     }
+                    if self.restartable
+                        && self
+                            .raw_ranges
+                            .iter()
+                            .any(|r| r.range == FRONT_RANGE && r.device == ComputeDevice::Gpu)
+                    {
+                        // Earlier tiles of this export ran the front on the device: the rest must
+                        // not run behind the CPU's front (one file, one device). Start again on
+                        // the CPU, as for a device error in a tile.
+                        self.raw_ranges.clear();
+                        self.front_failed = true;
+                        self.restart = Some(reason.clone());
+                        return Err(RenderError::Gpu(reason));
+                    }
                     self.front_failed = true;
                 }
             }

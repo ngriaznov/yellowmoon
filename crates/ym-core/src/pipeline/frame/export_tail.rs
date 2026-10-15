@@ -551,9 +551,7 @@ impl Renderer {
                 }
                 ox += tw;
             }
-            let bands = tail
-                .advance(oy + th)
-                .map_err(|e| device_error(&e))?;
+            let bands = tail.advance(oy + th).map_err(|e| device_error(&e))?;
             for band in bands {
                 send(tx, Msg::Band(band), cancel)?;
             }
