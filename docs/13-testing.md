@@ -93,7 +93,7 @@ A parity bound has two columns, software (lavapipe, the CPU-like rounding) and h
 
 ### Times and the cache
 
-Recorded on the 4-core development machine with Mesa lavapipe, debug build: `gpu_determinism` 130 s with two test threads (189 s with one), `gpu_faults` 63 s, `golden check --device gpu --subset tools/golden/gpu-subset.txt --jobs 2` 53 s, `ym doctor --bench` on a 1 MP file about 43 s. The hosted-runner times are not measured yet (the jobs have not run on GitHub since they were added); the first runs go into `docs/STATUS.md`. `mac-gpu.yml` keeps one Rust cache for both arm64 runners (`shared-key: metal-arm64`), saved also when a test fails (`cache-on-failure`) and only from `main`, `claude/**` and manual runs, so that a pull request cannot push the macOS caches out of the repository's 10 GB; the owner photos have a cache of their own.
+Recorded on the 4-core development machine with Mesa lavapipe, debug build: `gpu_determinism` 130 s with two test threads (189 s with one), `gpu_faults` 63 s, `golden check --device gpu --subset tools/golden/gpu-subset.txt --jobs 2` 42 s (53 s on a busier machine), `ym doctor --bench` on a 1 MP file about 43 s. The hosted-runner times are not measured yet (the jobs have not run on GitHub since they were added); the first runs go into `docs/STATUS.md`. `mac-gpu.yml` keeps one Rust cache for both arm64 runners (`shared-key: metal-arm64`), saved also when a test fails (`cache-on-failure`) and only from `main`, `claude/**` and manual runs, so that a pull request cannot push the macOS caches out of the repository's 10 GB; the owner photos have a cache of their own.
 
 ## Test data
 

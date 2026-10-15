@@ -258,11 +258,7 @@ fn open_core(arw: &Path, method: Method) -> (Core, tempfile::TempDir) {
 }
 
 /// [`open_core`] with the device of `slot` attached, the way the application attaches it.
-fn open_core_on(
-    arw: &Path,
-    method: Method,
-    slot: Option<&GpuSlot>,
-) -> (Core, tempfile::TempDir) {
+fn open_core_on(arw: &Path, method: Method, slot: Option<&GpuSlot>) -> (Core, tempfile::TempDir) {
     let app_home = tempfile::tempdir().expect("app home");
     let mut options = CoreOptions::new(data_dir(), app_home.path().to_path_buf());
     options.thumbnails = false;
