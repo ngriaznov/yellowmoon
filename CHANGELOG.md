@@ -11,6 +11,8 @@ moves the entries below from Unreleased into a dated section for that version.
 
 ### Fixed
 
+- The photo shows in the main view on a Mac. In 0.1.0 the picture was drawn on the graphics card behind the page, but the page's own white background covered it, so the photo cell stayed blank while the thumbnails and looks showed. The Photos screen now lets the picture through, and the window behind the page is paper white, so nothing else changes. A check on a Mac in CI opens photos and fails if the page covers the picture again.
+- No more "method `backend` is never used" warning when building the app for release.
 - The ARRI import wizard recognises ARRI's real 3D-LUT downloads. "ARRI Look Library LogC4 (log-to-log) 3D-LUTs" (87 looks, one folder, files called `1110 Black and White.cube`) was shown as "Not from a package we know" and locked Import: the rules asked for group folders the real zip does not have. Now the zip or folder name, the LUT size and the look codes (the first digit is the group) identify it, in any layout, and the three 3D-LUT packages are known by their file checksums. ARRI's camera look-file zips (`.alf4`, `.aml`) are told apart and the wizard says which 3D-LUT download to take.
 - Import is no longer locked when a chosen package is missing but something else can be imported; an unknown set whose input was answered counts for the chosen package with the same input.
 
