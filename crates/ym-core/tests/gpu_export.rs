@@ -24,13 +24,12 @@ mod common;
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use common::*;
 use ym_color::consts::linalg;
 use ym_color::deltae::{d65_white_xyz, delta_e_2000, percentile, xyz_to_lab};
-use ym_color::display::OutputTarget;
 use ym_color::encode::srgb_decode;
 use ym_core::app::gpu::GpuStages;
 use ym_core::export::{
@@ -43,7 +42,7 @@ use ym_core::pipeline::{
 };
 use ym_core::session::{OpenOptions, PhotoId, Session};
 use ym_core::settings::{Crop, CropAspect, NormRect, SettingsPatch};
-use ym_export::{BitDepth, ColorSpace, ExportOptions, FormatKind, IfExists, Size, TiffCompression};
+use ym_export::{BitDepth, ExportOptions, FormatKind, IfExists, Size, TiffCompression};
 use ym_gpu::device::{Gpu, GpuConfig, gpu_required_by_env};
 use ym_gpu::queue::{CancelToken, JobSpec, Priority};
 use ym_looks::library::LookId;
@@ -809,6 +808,222 @@ fn a_look_that_changes_while_the_picture_renders_is_not_written() {
     assert!(names_in(out.path()).is_empty(), "no file");
 }
 
+/// A look of our own that is shaped like the built-in Signature: a luma curve baked into a 33^3 cube
+/// in LogC4, then a CDL saturation of 1.2. Every id resolves to it.
+struct CubeLook;
+
+impl LookProvider for CubeLook {
+    fn look(&self, id: &LookId) -> Result<ResolvedLook, LookProblem> {
+        let lut = ym_color::lut::Lut3d::bake(33, [0.0; 3], [1.0; 3], |code| {
+            let y = 0.2126 * code[0] + 0.7152 * code[1] + 0.0722 * code[2];
+            // An S curve about the middle of the code range, steeper than the identity.
+            let curved = y + 0.35 * (y - 0.5) * (1.0 - (2.0 * (y - 0.5)).abs());
+            let k = if y > 1e-6 { curved.max(0.0) / y } else { 1.0 };
+            code.map(|c| (c * k).clamp(0.0, 1.0))
+        })
+        .expect("a cube");
+        let transform = ym_color::look::LookTransform::new(
+            ym_color::look::LookInput::LogC4,
+            Some(ym_color::cdl::Cdl::new([1.0; 3], [0.0; 3], [1.0; 3], 1.2).expect("cdl")),
+            Some(ym_color::lut::Lut::from_cube(lut)),
+        )
+        .expect("a look");
+        Ok(ResolvedLook {
+            transform: Arc::new(transform),
+            fingerprint: format!("{id}"),
+        })
+    }
+
+    fn display_transform(
+        &self,
+        id: &LookId,
+    ) -> Result<(ym_color::display::DisplayTransform, String), LookProblem> {
+        NeutralOnly.display_transform(id)
+    }
+}
+
+/// The picture the user sees is the export's picture: with a look that is a cube and a CDL (the
+/// shape of the default look), a look intensity below 100, a white offset (the white lift's manual
+/// part), contrast, saturation and a curve edit, the tail's export is the CPU export. These are
+/// stages of the colour chain, which the tail runs from the very chain object the CPU path uses; the
+/// test is the end-to-end proof, with the persistent tables of the device (the look's cube is
+/// uploaded once for the twelve tiles of the picture, not per tile).
+#[test]
+fn a_look_a_white_offset_and_a_curve_come_out_of_the_tail_as_they_do_of_the_cpu() {
+    let Some(gpu) = gpu() else { return };
+    let shot = Shot::new();
+    let home = tempfile::tempdir().expect("home");
+    // The photo with its default look (Neutral here), as a reference for "the look does something".
+    let neutral_dir = tempfile::tempdir().expect("dir");
+    let neutral = {
+        let ctx = context(home.path(), renderer(None, GpuStages::NONE, false));
+        let r = export(
+            &ctx,
+            &shot.photo(),
+            png(neutral_dir.path(), BitDepth::Sixteen),
+        );
+        decode_png(&read(&r.path)).3
+    };
+    shot.edit(SettingsPatch {
+        look: Some(LookId::parse("user:cube").expect("look id")),
+        look_intensity: Some(70.0),
+        white_offset_ev: Some(0.4),
+        contrast: Some(15.0),
+        saturation: Some(10.0),
+        output_sharpening: Some(0.0),
+        ..SettingsPatch::default()
+    });
+    let photo = shot.photo();
+    let make = |gpu: Option<Arc<Gpu>>, stages: GpuStages| {
+        context(
+            home.path(),
+            Renderer::new(
+                Arc::new(CubeLook),
+                RenderOptions {
+                    gpu,
+                    gpu_stages: stages,
+                    full_tile_px: 256,
+                    ..RenderOptions::default()
+                },
+            )
+            .expect("render thread"),
+        )
+    };
+    let cpu = make(None, GpuStages::NONE);
+    let raw_only = make(Some(Arc::clone(&gpu)), RAW);
+    let tail = make(Some(Arc::clone(&gpu)), RAW_AND_TAIL);
+    for (label, opts) in [
+        (
+            "PNG 8",
+            (|o: &Path| png(o, BitDepth::Eight)) as fn(&Path) -> ExportOptions,
+        ),
+        ("PNG 16", |o: &Path| png(o, BitDepth::Sixteen)),
+    ] {
+        let (a, b, c) = (
+            tempfile::tempdir().expect("a"),
+            tempfile::tempdir().expect("b"),
+            tempfile::tempdir().expect("c"),
+        );
+        let (ra, rb, rc) = (
+            export(&cpu, &photo, opts(a.path())),
+            export(&raw_only, &photo, opts(b.path())),
+            export(&tail, &photo, opts(c.path())),
+        );
+        assert_eq!(rc.device, ComputeDevice::Gpu, "{label}: {:?}", rc.notes);
+        let (_, _, sixteen, want_cpu) = decode_png(&read(&ra.path));
+        let (_, _, _, want_raw) = decode_png(&read(&rb.path));
+        let (w, h, _, got) = decode_png(&read(&rc.path));
+        let s_tail = stats(&want_raw, &got);
+        let s_cpu = stats(&want_cpu, &got);
+        ci_note(&format!(
+            "{label}, look + white offset + curve: tail against the CPU colour pass {} over 1, max {}; against the CPU export {} over 1, max {}",
+            s_tail.over_one, s_tail.max, s_cpu.over_one, s_cpu.max
+        ));
+        if sixteen {
+            // The plan's C13 bound for 16 bit is 8 codes; first measured on lavapipe is below it.
+            assert!(s_tail.max <= 8, "{label}: max {}", s_tail.max);
+            // The look is in the picture: Neutral is far from it.
+            assert!(
+                stats(&neutral, &want_cpu).max > 1000,
+                "the look moved the CPU picture by only {} codes",
+                stats(&neutral, &want_cpu).max
+            );
+        } else {
+            assert!(s_tail.max <= 1, "{label}: max {}", s_tail.max);
+            assert!(
+                s_tail.exact as f64 >= 0.99 * s_tail.n as f64,
+                "{label}: only {} of {} exact",
+                s_tail.exact,
+                s_tail.n
+            );
+        }
+        let top = if sixteen { 65535 } else { 255 };
+        let (median, p99, max) = golden(&want_cpu, &got, w, h, top);
+        assert!(
+            median <= 0.02 && p99 <= 0.05 && max <= 0.5,
+            "{label}: {median} {p99} {max}"
+        );
+    }
+}
+
+/// A look provider that, the first time the export worker asks it for a look, writes `target`: the
+/// file of somebody else that appears after the export decided there was none and before it has
+/// pulled a row.
+struct FileAppears {
+    test_thread: std::thread::ThreadId,
+    target: PathBuf,
+    created: AtomicUsize,
+}
+
+impl LookProvider for FileAppears {
+    fn look(&self, id: &LookId) -> Result<ResolvedLook, LookProblem> {
+        if std::thread::current().id() != self.test_thread
+            && self.created.fetch_add(1, Ordering::SeqCst) == 0
+        {
+            std::fs::write(&self.target, b"somebody else's file").expect("the other file");
+        }
+        NeutralOnly.look(&LookId::builtin("neutral")).map(|mut l| {
+            l.fingerprint = format!("{id}");
+            l
+        })
+    }
+
+    fn display_transform(
+        &self,
+        id: &LookId,
+    ) -> Result<(ym_color::display::DisplayTransform, String), LookProblem> {
+        NeutralOnly.display_transform(id)
+    }
+}
+
+/// "If the file exists: skip", and the file appears while the device starts the render: the photo is
+/// skipped (nothing is written, the other file is left alone), not reported as cancelled.
+#[test]
+fn a_file_that_appears_before_the_first_row_is_skipped_not_cancelled() {
+    let Some(gpu) = gpu() else { return };
+    let shot = Shot::new();
+    let photo = shot.photo();
+    let home = tempfile::tempdir().expect("home");
+    let out = tempfile::tempdir().expect("out");
+    // The name the export would use.
+    let ctx = context(
+        home.path(),
+        renderer(Some(Arc::clone(&gpu)), GpuStages::ALL, false),
+    );
+    let first = export(&ctx, &photo, png(out.path(), BitDepth::Eight));
+    let target = first.path.clone();
+    std::fs::remove_file(&target).expect("remove");
+    let provider = Arc::new(FileAppears {
+        test_thread: std::thread::current().id(),
+        target: target.clone(),
+        created: AtomicUsize::new(0),
+    });
+    let ctx = context(
+        home.path(),
+        Renderer::new(
+            provider.clone(),
+            RenderOptions {
+                gpu: Some(Arc::clone(&gpu)),
+                gpu_stages: GpuStages::ALL,
+                full_tile_px: 256,
+                ..RenderOptions::default()
+            },
+        )
+        .expect("render thread"),
+    );
+    let mut o = png(out.path(), BitDepth::Eight);
+    o.if_exists = IfExists::Skip;
+    let r = run(&ctx, &photo, o).expect("a skipped photo is not an error");
+    assert!(
+        provider.created.load(Ordering::SeqCst) > 0,
+        "the file appeared"
+    );
+    assert!(r.skipped, "{r:?}");
+    assert_eq!(r.bytes, 0);
+    assert_eq!(read(&target), b"somebody else's file", "left alone");
+    assert_eq!(names_in(out.path()).len(), 1, "no temporary file");
+}
+
 fn dng_image(r: &Renderer, src: &PhotoSource, target: FullTarget) -> FullImage {
     r.render_full(src, &FullRequest { target }, &CancelToken::new())
         .expect("render")
@@ -842,6 +1057,167 @@ fn the_colour_stage_of_a_dng_runs_on_the_device_and_agrees_with_the_cpu() {
         ));
         // First measured: 2.3e-6 (linear AWG4) and 3.5e-6 (preview); the bound is twice the larger.
         assert!(worst <= 7e-6, "{target:?}: {worst:e}");
+    }
+}
+
+/// A picture of 8-bit codes as a `BandSource`: what a JPEG writer would be handed after C13.
+struct Codes8 {
+    width: u32,
+    height: u32,
+    rgb: Vec<u8>,
+}
+
+impl ym_export::pixels::BandSource for Codes8 {
+    fn width(&self) -> u32 {
+        self.width
+    }
+
+    fn height(&self) -> u32 {
+        self.height
+    }
+
+    fn rows_u8(
+        &mut self,
+        y0: usize,
+        rows: usize,
+        out: &mut Vec<u8>,
+    ) -> Result<(), ym_export::ExportError> {
+        let n = self.width as usize * 3;
+        out.clear();
+        out.extend_from_slice(&self.rgb[y0 * n..(y0 + rows) * n]);
+        Ok(())
+    }
+
+    fn rows_u16(
+        &mut self,
+        _: usize,
+        _: usize,
+        _: &mut Vec<u16>,
+    ) -> Result<(), ym_export::ExportError> {
+        Err(ym_export::ExportError::Unsupported("8-bit codes".into()))
+    }
+}
+
+/// The decoded pixels of the JPEG that the writer makes of `codes` (8-bit RGB, rows of `width`).
+fn jpeg_of_codes(codes: &[u32], width: usize, height: usize) -> Vec<u32> {
+    use ym_export::jpeg::{JpegMetadata, write_jpeg_bands};
+    let mut bands = Codes8 {
+        width: width as u32,
+        height: height as u32,
+        rgb: codes.iter().map(|&c| c as u8).collect(),
+    };
+    let quality = match ExportOptions::default().format_spec() {
+        ym_export::ExportFormat::Jpeg { quality } => quality,
+        other => panic!("the default format is not a JPEG: {other:?}"),
+    };
+    let mut file = Vec::new();
+    write_jpeg_bands(
+        &mut file,
+        &mut bands,
+        quality,
+        &JpegMetadata {
+            exif_app1: None,
+            xmp: None,
+            icc: None,
+        },
+        &ym_export::ExportHooks::none(),
+    )
+    .expect("a JPEG of the codes");
+    decode_jpeg(&file).2
+}
+
+/// The JPEG gap to the CPU export (maximum ΔE 1.5 against the plan's 0.5, `docs/09`) is the quantiser
+/// and nothing else: the JPEG of the device export is, pixel for pixel, the JPEG of the 8-bit codes
+/// of the device's PNG, and the CPU's the JPEG of the CPU's codes. So the picture the device makes
+/// differs from the CPU's by the one-code differences of the PNG 8 (maximum ΔE 0.06), and the DCT
+/// and the quantiser turn those into the gap.
+#[test]
+fn the_jpeg_of_an_export_is_the_jpeg_of_its_8_bit_codes() {
+    let Some(gpu) = gpu() else { return };
+    let shot = Shot::new();
+    let home = tempfile::tempdir().expect("home");
+    let cpu = context(home.path(), renderer(None, GpuStages::NONE, false));
+    let dev = context(home.path(), renderer(Some(gpu), GpuStages::ALL, false));
+    for (i, (name, pct, size, straighten)) in variants().into_iter().enumerate() {
+        if ![0, 2, 4].contains(&i) {
+            continue;
+        }
+        apply_variant(&shot, pct, straighten);
+        let photo = shot.photo();
+        let mut gaps = Vec::new();
+        for (who, ctx) in [("CPU", &cpu), ("device", &dev)] {
+            let dir = tempfile::tempdir().expect("dir");
+            let mut o = png(dir.path(), BitDepth::Eight);
+            o.size = size;
+            let r = export(ctx, &photo, o);
+            let (w, h, _, codes) = decode_png(&read(&r.path));
+            let mut o = options(dir.path(), FormatKind::Jpeg);
+            o.size = size;
+            let j = export(ctx, &photo, o);
+            let (jw, jh, from_file) = decode_jpeg(&read(&j.path));
+            assert_eq!((jw, jh), (w, h), "{name} {who}");
+            let from_codes = jpeg_of_codes(&codes, w, h);
+            assert!(
+                from_file == from_codes,
+                "{name} {who}: the JPEG is not the JPEG of the PNG 8's codes ({} samples differ)",
+                from_file
+                    .iter()
+                    .zip(&from_codes)
+                    .filter(|(a, b)| a != b)
+                    .count()
+            );
+            gaps.push((codes, from_file, w, h));
+        }
+        let (cpu_codes, cpu_jpeg, w, h) = &gaps[0];
+        let (dev_codes, dev_jpeg, _, _) = &gaps[1];
+        let (png_median, png_p99, png_max) = golden(cpu_codes, dev_codes, *w, *h, 255);
+        let (jpeg_median, jpeg_p99, jpeg_max) = golden(cpu_jpeg, dev_jpeg, *w, *h, 255);
+        ci_note(&format!(
+            "{name}: the PNG 8 differs by median {png_median:.4} p99 {png_p99:.4} max {png_max:.4}; the JPEG of the same codes by median {jpeg_median:.4} p99 {jpeg_p99:.4} max {jpeg_max:.4}"
+        ));
+        assert!(png_max <= 0.5 && jpeg_median <= 0.02 && jpeg_p99 <= 0.05);
+    }
+}
+
+/// The estimate reads the numbers of the path the renderer takes (the tail on the device, or the CPU
+/// reference with the raw chain wherever it runs), so an export must teach the set of that path:
+/// an export whose raw chain ran on the device and whose colour pass and writer ran on the CPU (what
+/// `Auto` does on a Mac) is the CPU reference's, and the estimate that reads it must learn from it.
+#[test]
+fn an_export_teaches_the_numbers_of_the_path_the_estimate_reads() {
+    let Some(gpu) = gpu() else { return };
+    let shot = Shot::new();
+    let photo = shot.photo();
+    let home = tempfile::tempdir().expect("home");
+    let prior = ym_core::export::RENDER_S_PER_MP_PRIOR;
+    for (name, stages, tail) in [
+        ("the raw chain alone on the device", RAW, false),
+        ("the export tail", RAW_AND_TAIL, true),
+    ] {
+        let ctx = context(home.path(), renderer(Some(Arc::clone(&gpu)), stages, false));
+        let out = tempfile::tempdir().expect("out");
+        let r = export(&ctx, &photo, png(out.path(), BitDepth::Eight));
+        assert_eq!(r.device, ComputeDevice::Gpu, "{name}: {:?}", r.notes);
+        let speed = ctx.speed();
+        assert!(speed.is_measured(), "{name}");
+        // The numbers of the path that made the file moved, the other path's did not.
+        let (taken, other) = if tail {
+            (ComputeDevice::Gpu, ComputeDevice::Cpu)
+        } else {
+            (ComputeDevice::Cpu, ComputeDevice::Gpu)
+        };
+        speed.use_device(other);
+        assert!(
+            (speed.render_s_per_mp() - prior).abs() < 1e-12,
+            "{name}: the other path's numbers moved to {}",
+            speed.render_s_per_mp()
+        );
+        speed.use_device(taken);
+        assert!(
+            (speed.render_s_per_mp() - prior).abs() > 1e-9,
+            "{name}: the path that made the file learned nothing ({})",
+            speed.render_s_per_mp()
+        );
     }
 }
 
@@ -1049,6 +1425,126 @@ mod faults {
         }
     }
 
+    /// How a device fails once the writer has taken rows.
+    #[derive(Clone, Copy, Debug)]
+    enum Part {
+        /// The `n`th tile of the raw chain fails.
+        Tile(u64),
+        /// The device is lost at the first job after the writer has taken this share of the rows.
+        LostAfter(f32),
+    }
+
+    #[test]
+    fn a_device_that_fails_part_way_is_made_again_on_the_cpu_bit_for_bit() {
+        let Some(gpu) = gpu() else { return };
+        // 96 x 8192 in 256 px tiles is thirty-two tile rows; sharpened, the picture comes out in
+        // eight bands of 1024 rows, and the band channel and the writer's own buffer hold five of
+        // them at the most. A writer that stalls in its progress callback (below) therefore has the
+        // render stopped on a full channel with work left, whatever the speed of the device, when it
+        // takes the first third of the rows: the fault always finds a job to fail, after the
+        // writer has taken rows and compressed them.
+        let shot = Shot::sized(96, 8192);
+        apply_variant(&shot, 100.0, false);
+        let home = tempfile::tempdir().expect("home");
+        drop(gpu);
+        let sixteen = |out: &Path, format: FormatKind| {
+            let mut o = options(out, format);
+            o.bit_depth = BitDepth::Sixteen;
+            o
+        };
+        for format in [FormatKind::Png, FormatKind::Tiff, FormatKind::Jpeg] {
+            let cpu_bytes = {
+                let ctx = context(home.path(), renderer(None, GpuStages::NONE, false));
+                let out = tempfile::tempdir().expect("out");
+                read(&export(&ctx, &shot.photo(), sixteen(out.path(), format)).path)
+            };
+            // The JPEG writer reports half of its progress while it collects the rows.
+            let rows_to_progress = if format == FormatKind::Jpeg { 0.5 } else { 1.0 };
+            for (stages_name, stages, part) in [
+                ("every stage", GpuStages::ALL, Part::Tile(20)),
+                ("every stage", GpuStages::ALL, Part::LostAfter(0.2)),
+                (
+                    "the tail alone",
+                    GpuStages::EXPORT_TAIL,
+                    Part::LostAfter(0.2),
+                ),
+            ] {
+                // The TIFF writer takes a picture this narrow in one batch (16 strips of 910 rows)
+                // and reports its progress when all of it is written: no progress to fail after.
+                if format == FormatKind::Tiff && matches!(part, Part::LostAfter(_)) {
+                    continue;
+                }
+                let own = Arc::new(
+                    Gpu::start(GpuConfig {
+                        poison: true,
+                        ..GpuConfig::default()
+                    })
+                    .expect("device"),
+                );
+                let ctx = context(home.path(), renderer(Some(Arc::clone(&own)), stages, false));
+                let baseline = pool_in_use(&own);
+                if let Part::Tile(n) = part {
+                    own.set_fault(Some(GpuFault::FailTile(n)));
+                }
+                let out = tempfile::tempdir().expect("out");
+                let seen = Mutex::new(Vec::new());
+                let note = |f: f32| {
+                    seen.lock().expect("lock").push(f);
+                    if let Part::LostAfter(share) = part {
+                        // A slow writer: the render runs ahead until the channel is full.
+                        std::thread::sleep(std::time::Duration::from_millis(15));
+                        if f >= share * rows_to_progress {
+                            own.set_fault(Some(GpuFault::Lost));
+                        }
+                    }
+                };
+                let r = export_photo(
+                    &ctx,
+                    &shot.photo(),
+                    &ExportParams::new(sixteen(out.path(), format)),
+                    &ExportControl {
+                        cancel: CancelToken::new(),
+                        progress: Some(&note),
+                    },
+                );
+                own.set_fault(None);
+                let what = format!("{format:?}, {stages_name}, {part:?}");
+                let r = r.unwrap_or_else(|e| panic!("{what}: {e}"));
+                assert_eq!(r.device, ComputeDevice::Cpu, "{what}: {:?}", r.notes);
+                assert!(
+                    r.notes.iter().any(|n| n
+                        .contains("The graphics card could not render this photo, so the CPU did")),
+                    "{what}: {:?}",
+                    r.notes
+                );
+                assert!(
+                    read(&r.path) == cpu_bytes,
+                    "{what}: the fallback is not the CPU export"
+                );
+                assert_eq!(
+                    names_in(out.path()).len(),
+                    1,
+                    "{what}: one file, no temporary"
+                );
+                let seen = seen.into_inner().expect("lock");
+                assert!(
+                    seen.windows(2).all(|w| w[0] <= w[1]),
+                    "{what}: monotone {seen:?}"
+                );
+                if let Part::LostAfter(share) = part {
+                    assert!(
+                        seen.iter().any(|&f| f >= share * rows_to_progress),
+                        "{what}: the writer never got as far as the fault: {seen:?}"
+                    );
+                } else {
+                    // The device is usable again and everything was handed back.
+                    assert_eq!(pool_in_use(&own), baseline, "{what}");
+                }
+                assert_eq!(ctx.renderer().ledger().used(), 0, "{what}");
+            }
+        }
+    }
+
     #[test]
     fn a_strict_policy_fails_the_photo_and_leaves_no_file() {
         let Some(gpu) = gpu() else { return };
@@ -1115,10 +1611,4 @@ fn nothing_but_the_picture_is_written() {
     let r = export(&ctx, &shot.photo(), png(out.path(), BitDepth::Eight));
     assert_eq!(names_in(out.path()).len(), 1);
     assert_eq!(r.path.parent(), Some(out.path()));
-    let _ = (
-        PathBuf::new(),
-        ColorSpace::Srgb,
-        OutputTarget::Srgb,
-        AtomicU32::new(0),
-    );
 }

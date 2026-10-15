@@ -14,7 +14,7 @@ use ym_color::encode::OutputSpace;
 
 use crate::error::ExportError;
 use crate::options::{BitDepth, ColorSpace};
-use crate::pixels::{BandSource, ExportHooks, ImageBands, ImageRef, band_rows};
+use crate::pixels::{BandSource, ExportHooks, ImageBands, ImageRef, band_rows, check_band_len};
 
 /// The iTXt keyword Adobe's XMP specification reserves for an embedded packet.
 pub const XMP_ITXT_KEYWORD: &str = "XML:com.adobe.xmp";
@@ -109,10 +109,12 @@ pub fn write_png_bands<W: Write>(
         match bits {
             BitDepth::Eight => {
                 bands.rows_u8(y, n, &mut band8)?;
+                check_band_len(band8.len(), width, n)?;
                 stream.write_all(&band8).map_err(png_io)?;
             }
             BitDepth::Sixteen => {
                 bands.rows_u16(y, n, &mut band16)?;
+                check_band_len(band16.len(), width, n)?;
                 bytes16.clear();
                 bytes16.reserve(n * w * 6);
                 for s in &band16 {

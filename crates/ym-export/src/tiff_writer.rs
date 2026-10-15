@@ -19,7 +19,7 @@ use tiff::encoder::{Rational, TiffEncoder};
 use crate::error::ExportError;
 use crate::exif::{self, EXIF_IFD_POINTER, ExifTables, GPS_IFD_POINTER, Undefined, put};
 use crate::options::{BitDepth, ColorSpace, TiffCompression};
-use crate::pixels::{BandSource, ExportHooks, ImageBands, ImageRef};
+use crate::pixels::{BandSource, ExportHooks, ImageBands, ImageRef, check_band_len};
 
 /// What a TIFF carries besides pixels.
 #[derive(Debug, Clone, Copy)]
@@ -171,6 +171,7 @@ pub fn write_tiff_bands<W: Write + Seek>(
         let strips: Vec<Vec<u8>> = match bits {
             BitDepth::Eight => {
                 bands.rows_u8(y, rows, &mut band8)?;
+                check_band_len(band8.len(), width, rows)?;
                 band8
                     .chunks(rows_per_strip * row_bytes)
                     .map(<[u8]>::to_vec)
@@ -186,6 +187,7 @@ pub fn write_tiff_bands<W: Write + Seek>(
             }
             BitDepth::Sixteen => {
                 bands.rows_u16(y, rows, &mut band16)?;
+                check_band_len(band16.len(), width, rows)?;
                 band16
                     .chunks(rows_per_strip * w * 3)
                     .map(<[u16]>::to_vec)

@@ -1209,13 +1209,16 @@ fn export_photo_unguarded(
         } else {
             ComputeDevice::Cpu
         };
+        // The numbers of the path the estimate reads: the colour stage on the device (the export
+        // tail's) or the CPU reference, whatever ran the raw chain (`RenderReport::device`, not
+        // `device_of`, which also counts the raw ranges).
         ctx.speed.record_render_on(
-            device_of(&raw.report),
+            raw.report.device,
             megapixels(raw.width, raw.height),
             raw.report.ms / 1000.0,
         );
         ctx.speed.record_render_on(
-            device_of(&preview.report),
+            preview.report.device,
             megapixels(preview.width, preview.height),
             preview.report.ms / 1000.0,
         );
@@ -1310,14 +1313,22 @@ fn export_photo_unguarded(
             }
         }
         if let Some((done, began)) = on_device {
-            render_ms = done.report.ms;
-            rendered = done.rendered;
-            device = ComputeDevice::Gpu;
-            overlapped = true;
-            for n in &done.report.notes {
-                if !notes.contains(n) {
-                    notes.push(n.clone());
+            if let Some(render_report) = &done.report {
+                render_ms = render_report.ms;
+                rendered = done.rendered;
+                device = ComputeDevice::Gpu;
+                overlapped = true;
+                for n in &render_report.notes {
+                    if !notes.contains(n) {
+                        notes.push(n.clone());
+                    }
                 }
+            } else {
+                // Skipped after the render had started (see `export_on_device`): nothing was
+                // rendered to the end, as for a photo that is skipped before it starts.
+                render_ms = 0.0;
+                rendered = (0, 0);
+                device = ComputeDevice::Cpu;
             }
             outcome = done.outcome;
             encode_started = began;
@@ -1332,8 +1343,10 @@ fn export_photo_unguarded(
             )?;
             render_ms = image.report.ms;
             device = device_of(&image.report);
+            // The CPU reference's numbers, also when its raw chain ran on the device: the estimate
+            // reads this set unless the export tail is on (`ExportSpeed::use_device`).
             ctx.speed.record_render_on(
-                device,
+                image.report.device,
                 megapixels(image.width, image.height),
                 image.report.ms / 1000.0,
             );
@@ -1417,7 +1430,8 @@ fn export_photo_unguarded(
 /// What a raster export that the device made gives back.
 struct DeviceExport {
     outcome: ym_export::ExportOutcome,
-    report: RenderReport,
+    /// The render's report; `None` for a photo that was skipped after the render had started.
+    report: Option<RenderReport>,
     rendered: (u32, u32),
 }
 
@@ -1480,7 +1494,18 @@ fn export_on_device(
     let finished = bands.finish();
     match written {
         Ok(outcome) => {
-            let report = finished?;
+            let report = match finished {
+                Ok(report) => Some(report),
+                // A file appeared under the name between the check at the start and the writer's
+                // own: with "Skip" the writer pulled no row and left the file alone, and it is
+                // `bands` that stopped the render. The photo is skipped like any other, not cancelled.
+                Err(RenderError::Cancelled)
+                    if matches!(outcome.placement, Placement::Skipped(_)) =>
+                {
+                    None
+                }
+                Err(e) => return Err(e.into()),
+            };
             Ok(DeviceExport {
                 outcome,
                 report,

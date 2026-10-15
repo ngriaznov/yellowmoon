@@ -168,15 +168,11 @@ fn placeholder_kernels_are_marked_in_name_and_text_and_write_nothing_but_a_nan()
         .into_iter()
         .filter(|id| id.is_placeholder())
         .collect();
-    // What is still a placeholder belongs to G-07's raw front, and the list shrinks as its kernels
-    // land (G-04's sampler and encode, G-06's denoise, R7 and Richardson-Lucy, G-07's prep and G-08's
-    // resize are real); the count is not pinned here so that two lanes can land kernels in one wave.
-    assert!(
-        placeholders
-            .iter()
-            .all(|id| id.placeholder_owner() == Some("G-07")),
-        "{placeholders:?}"
-    );
+    // Every kernel the plan registered ahead of its implementation is real now (G-04's sampler and
+    // encode, G-06's denoise, R7 and Richardson-Lucy, G-07's raw front, G-08's resize): the one
+    // placeholder left is the permanent probe. A kernel that goes back to a stub, or a stage wired to
+    // the probe, shows up here.
+    assert_eq!(placeholders, [KernelId::Probe], "{placeholders:?}");
     for id in &placeholders {
         let owner = id.placeholder_owner().expect("owner");
         let src = shader_source(StorageMode::F32, *id);

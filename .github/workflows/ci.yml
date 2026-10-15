@@ -165,7 +165,7 @@ jobs:
       # `-p ym-gpu` was run here; the one other place was the macOS `rust` job, where the test skips itself and passes when
       # the runner opens no Metal adapter. YM_REQUIRE_GPU (above) makes a missing adapter a failure.
       - name: Renderer on the GPU against the CPU reference, with device faults injected
-        run: cargo test -p ym-core --release --features fault-injection --test render_gpu --test render_sharpen --test render_graph --test gpu_reduced
+        run: cargo test -p ym-core --release --features fault-injection --test render_gpu --test render_sharpen --test render_graph --test gpu_reduced --test gpu_export
       - name: The app and ym give the same exports on the GPU
         env:
           YELLOWMOON_GPU: "on"

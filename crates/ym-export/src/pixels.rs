@@ -215,6 +215,19 @@ pub trait BandSource {
     fn rows_u16(&mut self, y0: usize, rows: usize, out: &mut Vec<u16>) -> Result<(), ExportError>;
 }
 
+/// Checks that a [`BandSource`] gave exactly the `rows` rows of `width` pixels that were asked for
+/// (`len` samples of three channels): a short or long band would make a corrupt file, or panic in an
+/// encoder, so a source that got it wrong ends the export with an error instead.
+pub(crate) fn check_band_len(len: usize, width: u32, rows: usize) -> Result<(), ExportError> {
+    if len == width as usize * rows * 3 {
+        Ok(())
+    } else {
+        Err(ExportError::invalid(format!(
+            "the picture's source gave {len} samples for {rows} rows of {width} pixels"
+        )))
+    }
+}
+
 /// An [`ImageRef`] seen as a [`BandSource`]: each call runs [`encode_rows_u8`] or [`encode_rows_u16`]
 /// on the CPU. Any order of calls gives the same bytes (the dither uses absolute coordinates).
 #[derive(Debug, Clone, Copy)]

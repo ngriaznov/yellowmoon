@@ -774,6 +774,220 @@ fn one_tile_read_back_is_the_cpu_colour_pass() {
     }
 }
 
+/// The codes the tail makes of `sc` against the CPU export's, with the bounds of
+/// [`the_tail_matches_the_cpu_export_in_every_configuration`]: 8 bit within one code with 99 % exact
+/// (a picture of a few pixels: every code but one), 16 bit within [`MAX_CODE_DIFF_16`] unless
+/// sharpened (then the limiter's rank flips, at most [`MAX_FLIP_SHARE_16`] of the codes).
+fn assert_tail_matches_cpu(
+    dev: &TestGpu,
+    name: &str,
+    sc: &Scene,
+    out: (usize, usize),
+    pct: f64,
+    bits16: bool,
+    tile: usize,
+) {
+    let ch = chain(OutputTarget::Srgb);
+    let bands = run_tail(
+        dev,
+        sc,
+        &ch,
+        out,
+        pct,
+        format_of(bits16),
+        OutputSpace::Srgb,
+        tile,
+    );
+    let (got, sixteen) = codes(&bands, out);
+    assert_eq!(sixteen, bits16, "{name}");
+    let want = cpu_codes(sc, &ch, out, pct, OutputSpace::Srgb, bits16);
+    let want: Vec<u32> = if bits16 {
+        want.sixteen
+            .expect("16 bit")
+            .iter()
+            .map(|&v| u32::from(v))
+            .collect()
+    } else {
+        want.eight
+            .expect("8 bit")
+            .iter()
+            .map(|&v| u32::from(v))
+            .collect()
+    };
+    assert_eq!(got.len(), want.len(), "{name}");
+    let d = diff_codes(&got, &want);
+    let label = format!(
+        "{name}: {}x{} -> {}x{}, {pct} %, {} bit, tile {tile}: max {}, {:.4} exact",
+        sc.w,
+        sc.h,
+        out.0,
+        out.1,
+        if bits16 { 16 } else { 8 },
+        d.max,
+        d.exact_share()
+    );
+    if bits16 {
+        let over = (0..got.len())
+            .filter(|&i| got[i].abs_diff(want[i]) > MAX_CODE_DIFF_16)
+            .count();
+        if pct > 0.0 {
+            // A handful of codes may flip on a rank; none of a small picture needs to.
+            assert!(
+                over as f64 <= (MAX_FLIP_SHARE_16 * got.len() as f64).max(2.0)
+                    && d.max <= MAX_FLIP_DIFF_16,
+                "{label}: {over} over {MAX_CODE_DIFF_16}"
+            );
+        } else {
+            assert!(d.max <= MAX_CODE_DIFF_16, "{label}");
+        }
+    } else {
+        let over = (0..got.len())
+            .filter(|&i| got[i].abs_diff(want[i]) > MAX_CODE_DIFF_8)
+            .count();
+        if pct > 0.0 {
+            // A picture this narrow is nothing but borders for the sharpening, and its limiter's
+            // rank flips (see MAX_FLIP_SHARE_16) can move a dithered code by more than one. First
+            // measured, 301 x 1301 to 7 x 1301: 3 of 27,321 codes over 1 (1.1e-4), at most 2 off.
+            // The evidence that it is the stage's sensitivity and not the tail: the same input
+            // through the sharpening kernel and the CPU stage differs by 5e-7, the tail is the
+            // whole-frame device chain bit for bit (`extreme_resizes_match_the_cpu_export`), and a
+            // random relative perturbation of 1e-6 of the CPU's own samples (a quarter of the f32
+            // against f64 colour difference) makes 6 codes of the CPU's own export differ by more
+            // than 1, up to 3. The bounds are twice the first measured share and the perturbed max.
+            assert!(
+                d.max <= 3 && over as f64 <= (2.2e-4 * got.len() as f64).max(2.0),
+                "{label}: {over} codes over {MAX_CODE_DIFF_8}"
+            );
+        } else {
+            assert!(d.max <= MAX_CODE_DIFF_8, "{label}");
+        }
+        // On a picture of a handful of pixels one dithered code is more than 1 %.
+        let allowed = ((1.0 - MIN_EXACT_8) * got.len() as f64).ceil().max(2.0) as usize;
+        assert!(
+            d.n - d.exact <= allowed,
+            "{label}: {} codes differ",
+            d.n - d.exact
+        );
+    }
+}
+
+/// Pictures of a few pixels, one pixel wide or high, odd: the slabs, the chunks, the bands and the
+/// sharpening window all degenerate to one piece, and nothing may panic or read what was not written
+/// (every test device runs under poison).
+#[test]
+fn tiny_and_one_pixel_wide_pictures_match_the_cpu_export() {
+    let Some(dev) = common::gpu() else { return };
+    let sizes = [
+        (1, 1),
+        (1, 2),
+        (2, 1),
+        (2, 2),
+        (3, 5),
+        (1, 37),
+        (37, 1),
+        (17, 3),
+        (64, 1),
+        (1, 600),
+        (5, 1030),
+    ];
+    for (i, &(w, h)) in sizes.iter().enumerate() {
+        let sc = exact_scene(w, h, 1, 0, 300 + i as u64);
+        for pct in [0.0, 100.0] {
+            for bits16 in [false, true] {
+                assert_tail_matches_cpu(dev, "tiny", &sc, (w, h), pct, bits16, 16);
+            }
+        }
+    }
+}
+
+/// The picture shrunk to a single pixel, to a single row or column, and by a large factor in one
+/// direction: the taps of the first and last output, a mid image of one column, a vertical chunk
+/// that reads the whole picture.
+#[test]
+fn extreme_resizes_match_the_cpu_export() {
+    let Some(dev) = common::gpu() else { return };
+    let sc = exact_scene(301, 1301, 1, 0, 400);
+    for out in [
+        (1, 1),
+        (2, 2),
+        (1, 650),
+        (150, 1),
+        (301, 1),
+        (1, 1301),
+        (7, 1301),
+        (300, 1300),
+        (301, 1300),
+        (302, 1301),
+        (400, 5),
+    ] {
+        // The tail is the whole-frame device chain bit for bit (the cut shows nowhere) ...
+        for pct in [0.0, 100.0] {
+            let c = Config {
+                name: "extreme resize",
+                scene: exact_scene(301, 1301, 1, 0, 400),
+                out,
+                sharpen_pct: pct,
+                bits16: false,
+                target: OutputTarget::Srgb,
+                tile: 300,
+            };
+            let bands = run_tail(
+                dev,
+                &c.scene,
+                &chain(c.target),
+                out,
+                pct,
+                format_of(false),
+                OutputSpace::Srgb,
+                c.tile,
+            );
+            let (got, _) = codes(&bands, out);
+            assert!(
+                got == device_whole(dev, &c),
+                "301x1301 -> {}x{}, {pct} %: the tail differs from the whole-frame chain",
+                out.0,
+                out.1
+            );
+        }
+        // ... and the CPU export's codes within the bounds of the plan.
+        for pct in [0.0, 100.0] {
+            assert_tail_matches_cpu(dev, "extreme resize", &sc, out, pct, false, 300);
+        }
+        assert_tail_matches_cpu(dev, "extreme resize", &sc, out, 0.0, true, 513);
+    }
+}
+
+/// A straightened picture that is not sharpened and not resized keeps the letterbox plane of the
+/// slab in the window C13 reads (the sharpened and the resized pictures read three planes): the
+/// corners must come out black, in 8 and 16 bit, and the rest as the CPU's.
+#[test]
+fn a_straightened_picture_without_sharpening_or_resize_matches_the_cpu_export() {
+    let Some(dev) = common::gpu() else { return };
+    let sc = rotated_scene(400, 1100, (360, 1000), 6.0, 1.0, 5);
+    for bits16 in [false, true] {
+        assert_tail_matches_cpu(dev, "letterbox", &sc, (360, 1000), 0.0, bits16, 300);
+        assert_tail_matches_cpu(dev, "letterbox", &sc, (360, 1000), 0.0, bits16, 97);
+        assert_tail_matches_cpu(dev, "letterbox", &sc, (240, 667), 0.0, bits16, 300);
+    }
+    // The corner is black.
+    let ch = chain(OutputTarget::Srgb);
+    let bands = run_tail(
+        dev,
+        &sc,
+        &ch,
+        (360, 1000),
+        0.0,
+        format_of(false),
+        OutputSpace::Srgb,
+        300,
+    );
+    let (got, _) = codes(&bands, (360, 1000));
+    assert!(
+        got[..3].iter().all(|&c| c == 0),
+        "the top-left corner is outside the photo"
+    );
+}
+
 /// The rectangle of `camera` a tile of an identity-geometry picture reads (the tile and a margin of
 /// four pixels, which the sampler's bilinear taps stay inside), as the render hands it to the tail.
 fn crop_of(

@@ -459,7 +459,6 @@ impl Renderer {
         gate()?;
         let mut job = Job::for_export(self, src, cancel);
         let opts = job.options();
-        let strict = opts.gpu_strict;
         let (Some(gpu), true) = (
             opts.gpu.clone(),
             opts.gpu_stages.contains(GpuStages::EXPORT_TAIL),
@@ -518,7 +517,7 @@ impl Renderer {
                 format: request.format(),
             },
         )
-        .map_err(|e| device_error(&e, strict))?;
+        .map_err(|e| device_error(&e))?;
         send(
             tx,
             Msg::Start(Start {
@@ -548,19 +547,19 @@ impl Renderer {
                         Err(e) => return Err(e),
                     };
                     tail.add_tile(Arc::new(region), (x0, y0), (ox, oy), tw, th)
-                        .map_err(|e| device_error(&e, strict))?;
+                        .map_err(|e| device_error(&e))?;
                 }
                 ox += tw;
             }
             let bands = tail
                 .advance(oy + th)
-                .map_err(|e| device_error(&e, strict))?;
+                .map_err(|e| device_error(&e))?;
             for band in bands {
                 send(tx, Msg::Band(band), cancel)?;
             }
             oy += th;
         }
-        for band in tail.finish().map_err(|e| device_error(&e, strict))? {
+        for band in tail.finish().map_err(|e| device_error(&e))? {
             send(tx, Msg::Band(band), cancel)?;
         }
         Ok(job.finish(1, ComputeDevice::Gpu, request.target))
@@ -570,8 +569,7 @@ impl Renderer {
 /// A device error of the tail as the render's: a cancel stays a cancel; anything else is
 /// [`RenderError::Gpu`], which the export answers with the CPU (or, for a strict policy, with the
 /// failure of the photo).
-fn device_error(e: &GpuError, strict: bool) -> RenderError {
-    let _ = strict;
+fn device_error(e: &GpuError) -> RenderError {
     match e {
         GpuError::Cancelled => RenderError::Cancelled,
         other => {

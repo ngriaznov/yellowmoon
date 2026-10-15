@@ -16,7 +16,7 @@ use ym_color::encode::OutputSpace;
 
 use crate::error::ExportError;
 use crate::options::JpegQuality;
-use crate::pixels::{BandSource, ExportHooks, ImageBands, ImageRef, band_rows};
+use crate::pixels::{BandSource, ExportHooks, ImageBands, ImageRef, band_rows, check_band_len};
 use crate::xmp::XMP_APP1_HEADER;
 
 /// The largest width or height a JPEG can have.
@@ -81,6 +81,7 @@ pub fn write_jpeg_bands<W: Write>(
         hooks.check()?;
         let n = rows.min(h - y);
         bands.rows_u8(y, n, &mut band)?;
+        check_band_len(band.len(), width, n)?;
         pixels.extend_from_slice(&band);
         y += n;
         hooks.report(0.5 * y as f32 / h as f32);

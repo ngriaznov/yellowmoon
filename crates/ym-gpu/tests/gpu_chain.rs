@@ -2659,3 +2659,104 @@ fn a_50_mp_frame_corner_tile_runs_the_whole_front_chain_and_is_split() {
         front_limits(dev, FIFTY_MP_CORNER_FRONT),
     );
 }
+
+/// Review of G-07: a front with neither R5 nor R5b (highlight recovery off, a lens without a CA
+/// table) cut into parts. The parts of a cut core start at any photosite, so a part's mosaic can start
+/// at an odd one; with no stage to align it the front must still leave exactly the rectangle the
+/// demosaic reads. Every part, and the whole, must give the same bits.
+#[test]
+fn splitting_the_front_chain_without_highlights_and_mosaic_ca_changes_no_bit() {
+    let Some(dev) = f32_device_or_skip() else {
+        return;
+    };
+    let mut seed = 2900;
+    for cfa in [Cfa::RGGB, Cfa::GRBG] {
+        for lens in [Lens::Bare, Lens::Vignette] {
+            for (w, h) in [(173usize, 131usize), (96, 77)] {
+                seed += 1;
+                let scene = Scene::new(w, h, cfa, seed);
+                let mut chain = chain_of(&scene, lens, high_noise());
+                chain.highlight_recovery = false;
+                let setup = Setup::new(scene, chain).front();
+                let (ow, oh) = setup.output_size();
+                // Odd and even tile origins both, so that some part starts at an odd photosite.
+                for out in [
+                    Rect::new(3, 2, ow - 5, oh - 4),
+                    Rect::new(2, 3, ow - 6, oh - 5),
+                ] {
+                    let s = setup.clone();
+                    let (whole, cut, counts) = dev
+                        .gpu
+                        .run(JobSpec::new(Priority::Viewport), move |ctx, cancel| {
+                            let g = s.device_chain()?;
+                            let raw = s.scene.upload(ctx)?;
+                            let plain = RawRecording {
+                                ctx,
+                                parts: Default::default(),
+                                limit: MAX_PHYS_AREA,
+                            };
+                            let whole = g.run_tile_front(&plain, &raw, out, cancel)?;
+                            let cutter = RawRecording {
+                                ctx,
+                                parts: Default::default(),
+                                limit: 4_500,
+                            };
+                            let cut = g.run_tile_front(&cutter, &raw, out, cancel)?;
+                            Ok((whole, cut, (plain.parts.take(), cutter.parts.take())))
+                        })
+                        .unwrap_or_else(|e| {
+                            panic!(
+                                "{} {w}x{h} lens {lens:?} out {out:?}: no R5, no R5b, cut at 4500: {e:?}",
+                                cfa.name()
+                            )
+                        });
+                    assert_eq!(counts.0, vec![1]);
+                    assert!(counts.1.iter().all(|&n| n >= 4), "cut into {:?}", counts.1);
+                    assert_bit_equal(
+                        &format!(
+                            "{} {w}x{h} lens {lens:?} out {out:?}: no R5/R5b, cut against whole",
+                            cfa.name()
+                        ),
+                        &cut.data,
+                        &whole.data,
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// Review of G-07: `LP_NUM_THREADS=1` against the default thread count of the software adapter,
+/// bit-identical, for the whole chain from the resident words (R1, R3, R4, R5 with the CPU's offsets,
+/// R5b, the demosaic, R6 to R8 and R9) — the thread-count check of `thread_count_does_not_change_a_bit`
+/// covers R6..R8 only.
+#[test]
+fn the_front_chain_is_thread_count_independent() {
+    let Some(dev) = f32_device_or_skip() else {
+        return;
+    };
+    g06::assert_thread_count_independent("the_front_chain_is_thread_count_independent", || {
+        let mut h = g06::FNV_START;
+        for (cfa, lens, noise, variant, seed) in [
+            (
+                Cfa::RGGB,
+                Lens::Full,
+                high_noise(),
+                Variant::HalfWithGains,
+                2901u64,
+            ),
+            (
+                Cfa::GBRG,
+                Lens::Vignette,
+                low_noise(),
+                Variant::Scalar,
+                2902,
+            ),
+        ] {
+            let setup = setup_for(Scene::new(120, 90, cfa, seed), lens, noise, variant).front();
+            let (ow, oh) = setup.output_size();
+            h = g06::fnv(h, &setup.gpu(dev, Rect::new(3, 2, ow - 6, oh - 5)).data);
+        }
+        h
+    });
+}

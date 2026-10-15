@@ -750,3 +750,93 @@ fn a_50_mp_frame_matches_the_cpu_in_default_slabs() {
         "{worst:e}"
     );
 }
+
+/// Review of G-07: the fit view of a 50 MP photo on a retina display is the group at `k = 2`, whose
+/// binned image is three planes of 4329 x 2886 `f32` (150 MB), more than the 128 MiB design binding.
+/// The group must not be given to a device it cannot fit (or must run within the binding): `Ok` with
+/// the CPU's size, or the refusal `InvalidInput`/`BufferTooLarge` that sends the group to the CPU
+/// without tainting the device; a validation error that leaves the device unusable is the defect.
+#[test]
+#[ignore = "50 MP: 100 MB of words; run with --ignored"]
+fn a_50_mp_frame_at_k_2_fits_the_design_binding_or_is_refused_cleanly() {
+    let Some(dev) = f32_device() else { return };
+    let (w, h) = (8658usize, 5772usize);
+    let levels = uneven_levels();
+    let mut rng = synth::Rng::new(51);
+    let data: Vec<u16> = (0..w * h)
+        .map(|i| (400.0 + 9000.0 * ((i % w) as f32 / w as f32) + 120.0 * rng.next_f32()) as u16)
+        .collect();
+    let scene = RawScene {
+        width: w,
+        height: h,
+        cfa: Cfa::RGGB,
+        data,
+        qstep: None,
+    };
+    let profile = vignette_profile();
+    let c = Case {
+        k: 2,
+        recovery: false,
+        vignette: false,
+        denoise: false,
+        lens: false,
+    };
+    let p = reduced_params(&scene, levels, c, &profile);
+    let s = scene.clone();
+    let r = on_device_result(dev, move |ctx| {
+        let raw = DeviceRaw::upload(ctx, "r", s.width, s.height, s.cfa, &s.data, None)?;
+        ym_gpu::chain::GpuReduced::run(ctx, &raw, &p, &ym_gpu::queue::CancelToken::new())
+            .map(|img| (img.width, img.height))
+    });
+    eprintln!("[review] 50 MP k = 2: {r:?}");
+    match r {
+        Ok(size) => assert_eq!(size, (w / 2, h / 2)),
+        Err(e) => assert!(
+            matches!(
+                e,
+                ym_gpu::device::GpuError::InvalidInput(_)
+                    | ym_gpu::device::GpuError::BufferTooLarge { .. }
+            ),
+            "{e:?}"
+        ),
+    }
+    // The device must still work afterwards.
+    let again = on_device_result(dev, move |ctx| Ok(ctx.check_alive().is_ok()));
+    assert_eq!(
+        again.ok(),
+        Some(true),
+        "the device is unusable after the group"
+    );
+}
+
+/// Review of G-07: `LP_NUM_THREADS=1` against the default thread count of the software adapter,
+/// bit-identical, for the reduced group: the offsets reduction (a tree per workgroup and a fold, D2),
+/// the sigma plane, the binning, the binned sigma, the denoise and R9, in slabs of several heights.
+#[test]
+fn the_reduced_group_is_thread_count_independent() {
+    let Some(dev) = f32_device() else { return };
+    g06::assert_thread_count_independent("the_reduced_group_is_thread_count_independent", || {
+        let profile = vignette_profile();
+        let levels = uneven_levels();
+        let mut h = g06::FNV_START;
+        for (n, (cfa, w, ht, k, slab)) in [
+            (Cfa::RGGB, 150usize, 118usize, 2usize, 24usize),
+            (Cfa::GBRG, 131, 77, 4, 16),
+            (Cfa::BGGR, 160, 96, 8, 1024),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let scene = RawScene::new(w, ht, cfa, 31 + n as u64, &levels);
+            let c = Case {
+                k,
+                recovery: true,
+                vignette: true,
+                denoise: true,
+                lens: true,
+            };
+            h = g06::fnv(h, &run_group(dev, &scene, levels, c, &profile, slab).data);
+        }
+        h
+    });
+}

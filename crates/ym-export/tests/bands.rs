@@ -312,3 +312,79 @@ fn write_export_bands_places_the_file_like_write_export() {
     assert!(p.last().is_some_and(|&l| l >= 0.999), "{p:?}");
     assert!(p.windows(2).all(|w| w[0] <= w[1]), "monotone: {p:?}");
 }
+
+/// A source that hands out a band one sample short (or too long): a bug of the source, which must end
+/// the export with an error and no file, not a corrupt file or a panic in an encoder.
+struct WrongLength<'a> {
+    inner: ImageBands<'a>,
+    /// Samples added to (positive) or taken off (negative) every band.
+    delta: isize,
+}
+
+impl BandSource for WrongLength<'_> {
+    fn width(&self) -> u32 {
+        self.inner.width()
+    }
+
+    fn height(&self) -> u32 {
+        self.inner.height()
+    }
+
+    fn rows_u8(&mut self, y0: usize, rows: usize, out: &mut Vec<u8>) -> Result<(), ExportError> {
+        self.inner.rows_u8(y0, rows, out)?;
+        let len = out.len().saturating_add_signed(self.delta);
+        out.resize(len, 0);
+        Ok(())
+    }
+
+    fn rows_u16(&mut self, y0: usize, rows: usize, out: &mut Vec<u16>) -> Result<(), ExportError> {
+        self.inner.rows_u16(y0, rows, out)?;
+        let len = out.len().saturating_add_signed(self.delta);
+        out.resize(len, 0);
+        Ok(())
+    }
+}
+
+#[test]
+fn a_source_that_hands_out_the_wrong_number_of_samples_is_refused() {
+    let (w, h) = (61_u32, 47_u32);
+    let data = common::display_scene(w, h);
+    let meta = common::metadata();
+    let pixels = ImageRef::new(w, h, &data, PixelEncoding::DisplayLinear).unwrap();
+    for delta in [-1_isize, 1, -3 * 61] {
+        for format in formats() {
+            let dir = tempfile::tempdir().unwrap();
+            let dest = ExportDestination {
+                dir: dir.path().to_path_buf(),
+                file_stem: "out".into(),
+                if_exists: IfExists::Replace,
+                source_path: None,
+            };
+            let mut src = WrongLength {
+                inner: ImageBands::new(pixels, OutputSpace::Srgb),
+                delta,
+            };
+            let err = write_export_bands(
+                &BandRequest {
+                    format,
+                    color_space: ColorSpace::Srgb,
+                    metadata: &meta,
+                    remove_location: false,
+                },
+                &mut src,
+                &dest,
+                &ExportHooks::none(),
+            )
+            .expect_err("a band of the wrong size");
+            assert!(
+                matches!(err, ExportError::InvalidInput(_)),
+                "{format:?} {delta}: {err}"
+            );
+            assert_eq!(
+                std::fs::read_dir(dir.path()).unwrap().count(),
+                0,
+                "{format:?} {delta}: a file was left"
+            );
+        }
+    }
+}

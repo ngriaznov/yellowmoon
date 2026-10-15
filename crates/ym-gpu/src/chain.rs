@@ -487,8 +487,14 @@ impl FrontShape {
             highlights = Some(r.relative_to(&input));
             r = input;
         }
+        // R1, R3 and R4 are pointwise and read the frame's parity from absolute coordinates, so they
+        // run on exactly the rectangle the next stage reads. That rectangle is already aligned to the
+        // superpixel grid when R5 or R5b follows; when neither does, `r` is the demosaic's own
+        // rectangle, which the CPU stepper aligns (`Stage::input_rect`) but which a part of a cut
+        // demosaic core need not be (it starts at any photosite): aligning it here would leave the
+        // front a photosite wider than the demosaic reads.
         FrontPlan {
-            prep: r.grow_aligned(Halo::NONE, self.frame, 2),
+            prep: r,
             highlights,
             mosaic_ca,
             target,
