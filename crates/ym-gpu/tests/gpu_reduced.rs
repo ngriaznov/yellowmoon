@@ -42,26 +42,12 @@ use ym_gpu::stream::PassList;
 /// CPU's bits) and of the binned sigma (measured 2.3e-7, the root and the division of the device).
 /// The plan's number is 1e-5; the bound is twice the larger measured value.
 const SIGMA_BOUND: f32 = 5e-7;
-/// The same on a hardware adapter: the plan's number for the sigma plane (Metal's square root and
-/// division are not correctly rounded), to be lowered from the Metal numbers.
-const SIGMA_HW_BOUND: f32 = 1e-5;
 /// Largest `|gpu - cpu|` of the binning (white 1.0; measured 0: the CPU's bits). The plan's number is
 /// 1e-6, kept: it is the margin for a platform whose division and fused multiply-add differ.
 const BIN_BOUND: f32 = 1e-6;
 /// The same with the vignetting gain (values up to 4 after the gains; measured 0: the gain is formed
 /// in double-floats, `front_vig.wgsl`). One ulp is allowed.
 const BIN_VIG_BOUND: f32 = 1.2e-7;
-/// The same on a hardware adapter: the plan's number for `bin`.
-const BIN_VIG_HW_BOUND: f32 = 1e-6;
-
-fn hw(dev: &TestGpu, software: f32, hardware: f32) -> f32 {
-    if dev.gpu.info().is_software {
-        software
-    } else {
-        hardware
-    }
-}
-
 fn f32_device() -> Option<&'static TestGpu> {
     gpus().iter().find(|d| d.mode == StorageMode::F32)
 }
@@ -112,10 +98,7 @@ fn the_sigma_plane_matches_the_cpu() {
         }
     }
     eprintln!("[G-07] sigma plane: worst relative difference {worst:e} ({worst_at})");
-    assert!(
-        worst <= hw(dev, SIGMA_BOUND, SIGMA_HW_BOUND),
-        "{worst:e} {worst_at}"
-    );
+    assert!(worst <= SIGMA_BOUND, "{worst:e} {worst_at}");
 }
 
 fn natural_scene_mosaic(w: usize, h: usize, cfa: Cfa, seed: u64) -> ym_gpu::cpu::Mosaic {
@@ -167,10 +150,7 @@ fn the_binning_matches_the_cpu_for_every_phase_and_slab_height() {
     }
     eprintln!("[G-07] bin: worst {worst:e}; with the vignetting gain (scaled) {worst_vig:e}");
     assert!(worst <= BIN_BOUND, "{worst:e}");
-    assert!(
-        worst_vig <= hw(dev, BIN_VIG_BOUND, BIN_VIG_HW_BOUND),
-        "{worst_vig:e}"
-    );
+    assert!(worst_vig <= BIN_VIG_BOUND, "{worst_vig:e}");
 }
 
 #[test]
@@ -235,7 +215,7 @@ fn the_binned_sigma_matches_the_cpu() {
         }
     }
     eprintln!("[G-07] binned sigma: worst relative difference {worst:e}");
-    assert!(worst <= hw(dev, SIGMA_BOUND, SIGMA_HW_BOUND), "{worst:e}");
+    assert!(worst <= SIGMA_BOUND, "{worst:e}");
 }
 
 #[test]
@@ -290,9 +270,6 @@ fn the_bindings_fit_the_design_binding() {
 /// kernels' (about 1e-5 with the denoise); the bound is twice the first measured value (9.8e-7, R5,
 /// the vignetting gain, the denoise and R9 together).
 const GROUP_BOUND: f32 = 2e-6;
-/// The same on a hardware adapter: the plan's sum for the group (about 1e-5).
-const GROUP_HW_BOUND: f32 = 1e-5;
-
 /// The pieces a case of the group switches on.
 #[derive(Clone, Copy, Debug)]
 struct Case {
@@ -308,8 +285,6 @@ struct Case {
 /// it. Measured per case: 7.0e-7 without R9, 5.7e-6 for R9 alone at k = 8, 9.5e-6 for the whole group
 /// at k = 8 and 2.0e-5 at k = 4; the bound is twice the largest.
 const GROUP_BOUND_50MP: f32 = 4e-5;
-/// The same on a hardware adapter (see `gpu_lens.rs`, `HW_CORNER_BOUND`).
-const GROUP_HW_BOUND_50MP: f32 = 8e-5;
 
 const DENOISE_SCALE: f32 = 0.8;
 
@@ -544,12 +519,7 @@ fn the_reduced_group_matches_the_cpu() {
         "[G-07] reduced group: worst scaled difference {:e} ({})",
         worst.0, worst.1
     );
-    assert!(
-        worst.0 <= hw(dev, GROUP_BOUND, GROUP_HW_BOUND),
-        "{:e} {}",
-        worst.0,
-        worst.1
-    );
+    assert!(worst.0 <= GROUP_BOUND, "{:e} {}", worst.0, worst.1);
 }
 
 #[test]
@@ -745,10 +715,7 @@ fn a_50_mp_frame_matches_the_cpu_in_default_slabs() {
         );
         worst = worst.max(e);
     }
-    assert!(
-        worst <= hw(dev, GROUP_BOUND_50MP, GROUP_HW_BOUND_50MP),
-        "{worst:e}"
-    );
+    assert!(worst <= GROUP_BOUND_50MP, "{worst:e}");
 }
 
 /// Review of G-07: the fit view of a 50 MP photo on a retina display is the group at `k = 2`, whose
@@ -839,4 +806,60 @@ fn the_reduced_group_is_thread_count_independent() {
         }
         h
     });
+}
+
+/// Review of G-07: a differential fuzz of the reduced group against the CPU composition: random
+/// frame sizes (odd and even), phases, factors, switches, levels and slab heights. The tile
+/// independence of the slabs is the second oracle (a slab of any height gives the bits of one).
+#[test]
+fn a_fuzz_of_the_reduced_group_matches_the_cpu_and_every_slab_height() {
+    let Some(dev) = f32_device() else { return };
+    let profile = vignette_profile();
+    let mut rng = synth::Rng::new(0xF1_07);
+    let mut pick = |n: u64| (rng.next_u64() % n) as usize;
+    let total: u64 = std::env::var("YM_FUZZ_CASES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(40);
+    let mut worst = (0.0f32, String::new());
+    let mut cases = 0usize;
+    for case in 0..total {
+        let k = [2usize, 4, 8][pick(3)];
+        let (w, h) = (k * 8 + pick(150), k * 8 + pick(110));
+        let cfa = Cfa::ALL[pick(4)];
+        let levels = if pick(2) == 0 {
+            uneven_levels()
+        } else {
+            g07::full_levels()
+        };
+        let scene = RawScene::new(w, h, cfa, 900 + case, &levels);
+        let c = Case {
+            k,
+            recovery: pick(3) != 0,
+            vignette: pick(2) == 0,
+            denoise: pick(2) == 0,
+            lens: pick(2) == 0,
+        };
+        let label = format!("case {case}: {} {w}x{h} {c:?}", cfa.name());
+        let want = cpu_reduced(&scene, &levels, c, &profile);
+        let slab = [8usize, 16, 40, 1024][pick(4)];
+        let got = run_group(dev, &scene, levels, c, &profile, slab);
+        assert_eq!(
+            (got.width, got.height),
+            (want.width, want.height),
+            "{label}"
+        );
+        let (e, at) = compare_scaled(&got.data, &want.data);
+        if e > worst.0 {
+            worst = (e, format!("{label} slab {slab} sample {at}"));
+        }
+        assert!(e <= GROUP_BOUND, "{label} slab {slab}: {e:e} at {at}");
+        let one = run_group(dev, &scene, levels, c, &profile, 1 << 20);
+        common::exact::assert_bit_equal(&format!("{label} slab {slab}"), &got.data, &one.data);
+        cases += 1;
+    }
+    eprintln!(
+        "[review] reduced group fuzz: {cases} cases, worst scaled difference {:e} ({})",
+        worst.0, worst.1
+    );
 }

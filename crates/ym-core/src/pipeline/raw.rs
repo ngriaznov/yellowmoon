@@ -3224,8 +3224,9 @@ mod tests {
             );
             worst = worst.max(d);
         }
-        // R5, the gain, the denoise and R9 together: the plan's 1e-5 for the group.
-        assert!(worst <= 1e-5, "{worst:e}");
+        // R5, the gain, the denoise and R9 together. First measured 9.5e-7 (k = 2; 8.3e-7 at k = 4,
+        // 6.0e-7 at k = 8); twice that, the same on every adapter (the plan's number is 1e-5).
+        assert!(worst <= 1.9e-6, "{worst:e}");
         // The parameters the device refuses give no group: an odd factor, one beyond the kernels'.
         assert!(
             reduced_params(&frame, &plan, &params, 3)

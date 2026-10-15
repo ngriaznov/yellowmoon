@@ -46,19 +46,6 @@ use ym_gpu::kernels::prep::{
 /// near-tie decisions). The bound allows one ulp, for a pixel whose f64 gain lies within 1e-13 of a
 /// rounding boundary.
 const VIGNETTE_BOUND: f32 = 1.2e-7;
-/// The same on a hardware adapter: the plan's number for `prep`. Metal's fast square root and division
-/// move the gain by a few ulp, which the software bound does not allow for; to be lowered from the
-/// Metal numbers (`docs/gpu-plan.md` K8).
-const VIGNETTE_HW_BOUND: f32 = 1e-6;
-
-fn vignette_bound(dev: &TestGpu) -> f32 {
-    if dev.gpu.info().is_software {
-        VIGNETTE_BOUND
-    } else {
-        VIGNETTE_HW_BOUND
-    }
-}
-
 fn f32_device() -> Option<&'static TestGpu> {
     gpus().iter().find(|d| d.mode == StorageMode::F32)
 }
@@ -168,7 +155,7 @@ fn prep_with_the_profile_matches_the_cpu() {
         }
     }
     eprintln!("[G-07] prep with the profile: worst {worst:e} ({worst_at})");
-    assert!(worst <= vignette_bound(dev), "{worst:e} at {worst_at}");
+    assert!(worst <= VIGNETTE_BOUND, "{worst:e} at {worst_at}");
 }
 
 #[test]
@@ -238,7 +225,9 @@ fn tiles_of_the_prep_pass_equal_the_whole_frame() {
     });
     // And the whole frame is the CPU's within the bound.
     let (cpu, _) = cpu_front(&scene, &levels, GAINS, Some(&profile));
-    assert!(compare_scaled(&whole, &cpu.data).0 <= vignette_bound(dev));
+    let worst = compare_scaled(&whole, &cpu.data).0;
+    eprintln!("[G-07] prep tiles of a 203 x 157 frame against the CPU: worst {worst:e}");
+    assert!(worst <= VIGNETTE_BOUND, "{worst:e}");
 }
 
 #[test]
@@ -379,7 +368,7 @@ fn a_70_mp_frame_runs_through_two_slabs() {
         ym_gpu::cpu::gains::apply_gains(&mut m, GAINS);
         let e = compare_scaled(g, &m.data).0;
         eprintln!("[G-07] 70 MP tile {r:?}: worst {e:e}");
-        assert!(e <= vignette_bound(dev), "{r:?}: {e:e}");
+        assert!(e <= VIGNETTE_BOUND, "{r:?}: {e:e}");
     }
 }
 
@@ -428,7 +417,7 @@ fn the_far_corner_of_a_50_mp_frame_has_the_cpus_gain() {
         worst = worst.max(compare_scaled(g, &m.data).0);
     }
     eprintln!("[G-07] far corner of 8658 x 5772: worst {worst:e}");
-    assert!(worst <= vignette_bound(dev), "{worst:e}");
+    assert!(worst <= VIGNETTE_BOUND, "{worst:e}");
 }
 
 #[test]
@@ -694,18 +683,6 @@ use ym_gpu::kernels::mosaic_ca;
 /// Largest `|gpu - cpu|` of R5b on natural content (white 1.0): the plan's number is 1e-5, the bound is
 /// twice the first measured value (3.0e-7, about one ulp of the values), see the test.
 const MOSAIC_CA_BOUND: f32 = 6e-7;
-/// The same on a hardware adapter: the plan's number for R5b (the darktable-oracle numbers of
-/// `cpu_lens.rs`), to be lowered from the Metal numbers.
-const MOSAIC_CA_HW_BOUND: f32 = 1e-5;
-
-fn mosaic_ca_bound(dev: &TestGpu) -> f32 {
-    if dev.gpu.info().is_software {
-        MOSAIC_CA_BOUND
-    } else {
-        MOSAIC_CA_HW_BOUND
-    }
-}
-
 /// Lens tags with a lateral CA of up to a few pixels at the corner of a 200-pixel frame.
 fn ca_tags() -> LensTags {
     LensTags {
@@ -756,7 +733,7 @@ fn r5b_matches_the_cpu_for_every_phase_and_odd_sizes() {
         }
     }
     eprintln!("[G-07] R5b: worst {worst:e} ({worst_at})");
-    assert!(worst <= mosaic_ca_bound(dev), "{worst:e} {worst_at}");
+    assert!(worst <= MOSAIC_CA_BOUND, "{worst:e} {worst_at}");
 }
 
 #[test]
@@ -776,7 +753,9 @@ fn r5b_tiles_with_the_stage_halo_equal_the_whole_frame() {
     });
     let mut cpu = m.clone();
     lens::correct_mosaic_ca(&mut cpu, &curves).expect("cpu");
-    assert!(compare_scaled(&whole, &cpu.data).0 <= mosaic_ca_bound(dev));
+    let worst = compare_scaled(&whole, &cpu.data).0;
+    eprintln!("[G-07] R5b tiles of a 203 x 157 frame against the CPU: worst {worst:e}");
+    assert!(worst <= MOSAIC_CA_BOUND, "{worst:e}");
 }
 
 #[test]
@@ -807,7 +786,7 @@ fn r5b_at_the_far_corner_of_a_50_mp_frame() {
         "[G-07] R5b at the far corner of 8658 x 5772: worst {:e}",
         e.0
     );
-    assert!(e.0 <= mosaic_ca_bound(dev), "{:e}", e.0);
+    assert!(e.0 <= MOSAIC_CA_BOUND, "{:e}", e.0);
     assert!(
         compare_scaled(&want, &crop(&m.data, rect.w, rel)).0 > 1e-4,
         "the correction must move values there"

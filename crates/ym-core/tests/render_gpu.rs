@@ -596,6 +596,16 @@ fn cancelling_an_export_stops_within_a_tile_and_hands_the_buffers_back() {
         "{tiles_done} tiles reported after the cancel at {done_at_cancel}"
     );
     assert!(tiles_done < 6, "the export stopped before the last tile");
+    // The tile job that was in flight when the export was cancelled is abandoned, not waited for
+    // (`GpuRoute::run_job`): it holds the tile's buffers, and with the raw front the photo's resident
+    // words, until the device thread pops it (a queued job whose token is set is skipped and dropped)
+    // or finishes it. The ledger probe runs at Viewport priority, ahead of an Export job that has not
+    // been popped yet, so under load it can see those buffers once. A leak never goes away: wait for
+    // the baseline for up to ten seconds, then require it.
+    let settle = std::time::Instant::now();
+    while pool_in_use(&gpu) != before && settle.elapsed().as_secs() < 10 {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
     assert_eq!(
         pool_in_use(&gpu),
         before,

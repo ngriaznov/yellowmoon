@@ -2076,24 +2076,6 @@ const FIFTY_MP_CORNER_FRONT: Limits = Limits {
     largest: 8.7e-3,
 };
 
-/// What a hardware adapter may show of the front's tie flips: four times the software limits. The
-/// front's mosaic is the CPU's to the bit where the maths is exact (R1, R3 and R4 in double-floats, R5
-/// with the CPU's offsets); where it is not (R5b, whose positions are formed in f32) a hardware
-/// adapter's square root and division may move a value by a few ulp more than lavapipe's, and flip
-/// more of the demosaic's near-tie decisions. To be lowered from the Metal numbers
-/// (`docs/gpu-plan.md` K8).
-fn front_limits(dev: &TestGpu, l: Limits) -> Limits {
-    if dev.gpu.info().is_software {
-        l
-    } else {
-        Limits {
-            over: l.over * 4.0,
-            fine: l.fine * 4.0,
-            largest: l.largest * 2.0,
-        }
-    }
-}
-
 /// R1..R9 against R6..R8 behind the CPU's front, largest difference over the tie-free cases. First
 /// measured 1.43e-6 (R5b and R9 formed in f32 against the CPU's f64 positions; no sample flips a
 /// decision: the first version, with the vignetting gain in f32, had 2.7e-4 at one sample); twice that.
@@ -2150,19 +2132,10 @@ fn r1_to_r9_matches_the_cpu_chain() {
     eprintln!(
         "[G-07] R1..R9 against R6..R8 behind the CPU's front (tie-free): largest {against_handoff:e}"
     );
-    assert_within(
-        "R1..R9 chain, tie-free content",
-        &free,
-        front_limits(dev, FRONT_TIE_FREE),
-    );
-    assert_within(
-        "R1..R9 chain, tie-prone content",
-        &prone,
-        front_limits(dev, FRONT_TIE_PRONE),
-    );
+    assert_within("R1..R9 chain, tie-free content", &free, FRONT_TIE_FREE);
+    assert_within("R1..R9 chain, tie-prone content", &prone, FRONT_TIE_PRONE);
     assert!(
-        against_handoff
-            <= FRONT_AGAINST_HANDOFF * if dev.gpu.info().is_software { 1.0 } else { 4.0 },
+        against_handoff <= FRONT_AGAINST_HANDOFF,
         "{against_handoff:e}"
     );
 }
@@ -2235,16 +2208,8 @@ fn the_front_chain_of_a_lossy_file_matches_the_cpu_and_the_tiles() {
     }
     free.print("R1..R9 lossy, tie-free content");
     prone.print("R1..R9 lossy, tie-prone content");
-    assert_within(
-        "R1..R9 lossy, tie-free",
-        &free,
-        front_limits(dev, FRONT_TIE_FREE),
-    );
-    assert_within(
-        "R1..R9 lossy, tie-prone",
-        &prone,
-        front_limits(dev, FRONT_TIE_PRONE),
-    );
+    assert_within("R1..R9 lossy, tie-free", &free, FRONT_TIE_FREE);
+    assert_within("R1..R9 lossy, tie-prone", &prone, FRONT_TIE_PRONE);
 }
 
 #[test]
@@ -2653,11 +2618,7 @@ fn a_50_mp_frame_corner_tile_runs_the_whole_front_chain_and_is_split() {
     assert!(parts[0] > 1, "the corner tile of a strong lens is cut");
     let s = compare(&gpu, &setup.cpu(out));
     s.print("50 MP corner tile, R1..R9, against the CPU");
-    assert_within(
-        "50 MP corner tile, R1..R9",
-        &s,
-        front_limits(dev, FIFTY_MP_CORNER_FRONT),
-    );
+    assert_within("50 MP corner tile, R1..R9", &s, FIFTY_MP_CORNER_FRONT);
 }
 
 /// Review of G-07: a front with neither R5 nor R5b (highlight recovery off, a lens without a CA
@@ -2759,4 +2720,94 @@ fn the_front_chain_is_thread_count_independent() {
         }
         h
     });
+}
+
+/// Review of G-07: a differential fuzz of the whole front. Random frames (odd and even, tiny to a
+/// hundred photosites), phases, lens kinds (none, vignetting, vignetting + distortion + CA on the
+/// mosaic), highlight recovery on and off, lossy and lossless words, and random tiles of the output.
+/// Two oracles per case: the tile equals the same rectangle of the whole front bit for bit (D5), and
+/// the front equals the device chain behind the CPU's own front (R6..R8) up to the front's rounding,
+/// which isolates R1 to R5b and R9 from the demosaic's decisions.
+#[test]
+fn a_fuzz_of_the_front_chain_keeps_tiles_exact_and_the_front_on_the_cpus_values() {
+    let Some(dev) = f32_device_or_skip() else {
+        return;
+    };
+    let mut rng = synth::Rng::new(0xF0_07);
+    let mut pick = |n: u64| (rng.next_u64() % n) as usize;
+    let mut worst_hand = 0.0f64;
+    let mut worst_case = String::new();
+    let mut cases = 0usize;
+    // `YM_FUZZ_CASES=600` runs a longer sweep by hand.
+    let total: u64 = std::env::var("YM_FUZZ_CASES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(96);
+    for case in 0..total {
+        let cfa = Cfa::ALL[pick(4)];
+        let (w, h) = (6 + pick(90), 6 + pick(90));
+        let lens = [Lens::Bare, Lens::Vignette, Lens::Full][pick(3)];
+        let recovery = pick(3) != 0;
+        let lossy = pick(3) == 0;
+        let noise = if pick(2) == 0 {
+            low_noise()
+        } else {
+            high_noise()
+        };
+        let mut scene = Scene::new(w, h, cfa, 7000 + case);
+        if lossy {
+            scene = scene.with_steps(8000 + case);
+        }
+        let mut chain = chain_of(&scene, lens, noise);
+        chain.highlight_recovery = recovery;
+        let setup = Setup::new(scene, chain).front();
+        let (ow, oh) = setup.output_size();
+        if ow < 2 || oh < 2 {
+            continue;
+        }
+        let x = pick(ow as u64 - 1);
+        let y = pick(oh as u64 - 1);
+        let out = Rect::new(x, y, 1 + pick((ow - x) as u64), 1 + pick((oh - y) as u64));
+        let label = format!(
+            "case {case}: {} {w}x{h} {lens:?} recovery {recovery} lossy {lossy} tile {out:?}",
+            cfa.name()
+        );
+        let s = setup.clone();
+        let (tile, whole, hand) = dev
+            .gpu
+            .run(JobSpec::new(Priority::Viewport), move |ctx, cancel| {
+                let g = s.device_chain()?;
+                let raw = s.scene.upload(ctx)?;
+                let tile = g.run_tile_front(ctx, &raw, out, cancel)?;
+                let whole = g.run_tile_front(ctx, &raw, Rect::whole(ow, oh), cancel)?;
+                let hand_chain =
+                    GpuChain::new(&s.gpu_chain, &s.prepared, StageRange::DEMOSAIC_TO_SHARPEN)?;
+                let hand = hand_chain.run_tile(ctx, &s.scene.raw(), out, cancel)?;
+                Ok((tile, whole, hand))
+            })
+            .unwrap_or_else(|e| panic!("{label}: {e:?}"));
+        assert_bit_equal(
+            &format!("{label}: tile against the whole front"),
+            &tile.data,
+            &whole.extract(out).data,
+        );
+        let d = compare(&tile, &hand).max_abs;
+        assert!(d.is_finite(), "{label}");
+        if d > worst_hand {
+            worst_hand = d;
+            worst_case = label.clone();
+        }
+        assert!(
+            d <= 5e-3,
+            "{label}: the front differs from the CPU front by {d:e}"
+        );
+        cases += 1;
+    }
+    eprintln!(
+        "[review] front fuzz: {cases} cases, worst front against the CPU front {worst_hand:e} ({worst_case})"
+    );
+    assert!(
+        cases as u64 * 6 >= total * 5,
+        "only {cases} of {total} cases ran"
+    );
 }

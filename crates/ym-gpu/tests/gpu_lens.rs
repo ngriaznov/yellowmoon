@@ -36,34 +36,12 @@ use ym_gpu::kernels::lens as klens;
 /// Largest `|gpu - cpu|` of the resample (white 1.0) on frames of a few hundred pixels. The plan's
 /// number is 1e-5; the bound is twice the first measured value (2.9e-6).
 const BOUND: f32 = 6e-6;
-/// The same on a hardware adapter: the plan's number for R9, to be lowered from the Metal numbers.
-const HW_BOUND: f32 = 1e-5;
 /// The same at the far corner of a 50 MP frame on synthetic content with hard edges (gradients of
 /// about one per pixel), where the displacement is about 160 pixels and an `f32` position holds it to
 /// 1e-5 to 3e-5 pixel (the table value, the radius and the product each round at about 1e-5 pixel).
 /// Twice the first measured value (3.0e-5). On a photograph (gradients of 0.05) this is a value error
 /// of 2e-6.
 const CORNER_BOUND: f32 = 6e-5;
-/// The same on a hardware adapter: twice the software bound, because Metal's fast square root of the
-/// doubled radius (a number of up to 25 000) moves the position by a few 1e-4 pixel.
-const HW_CORNER_BOUND: f32 = 1.2e-4;
-
-fn bound(dev: &TestGpu) -> f32 {
-    if dev.gpu.info().is_software {
-        BOUND
-    } else {
-        HW_BOUND
-    }
-}
-
-fn corner_bound(dev: &TestGpu) -> f32 {
-    if dev.gpu.info().is_software {
-        CORNER_BOUND
-    } else {
-        HW_CORNER_BOUND
-    }
-}
-
 fn f32_device() -> Option<&'static TestGpu> {
     gpus().iter().find(|d| d.mode == StorageMode::F32)
 }
@@ -141,7 +119,7 @@ fn r9_matches_the_cpu() {
         }
     }
     eprintln!("[G-07] R9: worst {worst:e} ({worst_case})");
-    assert!(worst <= bound(dev), "{worst:e} {worst_case}");
+    assert!(worst <= BOUND, "{worst:e} {worst_case}");
 }
 
 #[test]
@@ -171,7 +149,9 @@ fn r9_tiles_equal_the_whole_output() {
             })
         });
         let want = resample_lens(&img, &geo, Rect::whole(cw, ch)).expect("cpu");
-        assert!(compare(&whole, &want.data).max <= bound(dev), "{kind:?}");
+        let worst = compare(&whole, &want.data).max;
+        eprintln!("[G-07] R9 tiles of a 230 x 170 frame, {kind:?}: worst {worst:e}");
+        assert!(worst <= BOUND, "{kind:?}: {worst:e}");
     }
 }
 
@@ -223,8 +203,8 @@ fn r9_at_the_far_corner_and_the_centre_of_a_50_mp_frame() {
     eprintln!(
         "[G-07] R9 at 8658 x 5772: natural worst {worst:e}, hostile noise patch {worst_stress:e}"
     );
-    assert!(worst <= corner_bound(dev), "{worst:e}");
-    assert!(worst_stress <= corner_bound(dev), "{worst_stress:e}");
+    assert!(worst <= CORNER_BOUND, "{worst:e}");
+    assert!(worst_stress <= CORNER_BOUND, "{worst_stress:e}");
 }
 
 #[test]
