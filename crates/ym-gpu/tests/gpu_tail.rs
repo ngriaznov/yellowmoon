@@ -831,9 +831,14 @@ fn assert_tail_matches_cpu(
             .filter(|&i| got[i].abs_diff(want[i]) > MAX_CODE_DIFF_16)
             .count();
         if pct > 0.0 {
-            // A handful of codes may flip on a rank; none of a small picture needs to.
+            // A handful of codes may flip on a rank. The stage scales R, G and B of a pixel by one
+            // ratio, so one flipped pixel moves up to three codes. Software (lavapipe): no small
+            // picture flips, floor 2. Hardware (Metal at 6d4d2f4, macos-14 and macos-15 alike):
+            // 5 x 1030, 16 bit, 3 of 15,450 codes over 8 (one pixel), at most 32 off, while the
+            // sharpening kernel alone matches lavapipe's bits there; floor 6, two pixels.
+            let floor = if dev.gpu.info().is_software { 2.0 } else { 6.0 };
             assert!(
-                over as f64 <= (MAX_FLIP_SHARE_16 * got.len() as f64).max(2.0)
+                over as f64 <= (MAX_FLIP_SHARE_16 * got.len() as f64).max(floor)
                     && d.max <= MAX_FLIP_DIFF_16,
                 "{label}: {over} over {MAX_CODE_DIFF_16}"
             );

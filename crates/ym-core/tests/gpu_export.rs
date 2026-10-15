@@ -338,6 +338,22 @@ fn the_tail_writes_the_cpu_pixels_in_every_format() {
         home.path(),
         renderer(Some(Arc::clone(&gpu)), RAW_AND_TAIL, false),
     );
+    // Software (lavapipe) holds the bounds first measured there. A hardware adapter has its own
+    // column for the sharpened outputs only: the raw-chain-only export runs the colour chain on the
+    // CPU in f64, the tail on the device in f32, and the output-sharpening limiter decides on a rank
+    // of luma values, so last-bit differences flip a few pixels (`docs/algorithms/04` section 10).
+    // Metal at 6d4d2f4 (macos-14 and macos-15 alike): full size, PNG 8, 6 of 1.62 M codes over 1,
+    // at most 2, while the sharpening kernel alone matches lavapipe's bits; the same pair of chains
+    // in `device_and_cpu_exports_agree_within_the_golden_metric` measured at most 3 (8 bit) and 660
+    // (16 bit) codes. Hardware bounds are twice those, until this test's own Metal numbers (every
+    // case prints, and every failure is collected so one run reports all of them) replace them.
+    let hardware = !gpu.info().is_software;
+    let mut failures: Vec<String> = Vec::new();
+    let mut check = |ok: bool, what: String| {
+        if !ok {
+            failures.push(what);
+        }
+    };
     let (mut worst8, mut min_exact8) = (0u32, 1.0f64);
     for (name, pct, size, straighten) in variants() {
         apply_variant(&shot, pct, straighten);
@@ -400,35 +416,48 @@ fn the_tail_writes_the_cpu_pixels_in_every_format() {
             let exact = s.exact as f64 / n;
             if sixteen && pct == 0.0 {
                 // The plan's bound for the 16-bit C13: within 8 codes. First measured: 1 code.
-                assert!(s.max <= 2, "{name} {label}: max {}", s.max);
+                check(s.max <= 2, format!("{name} {label}: max {}", s.max));
             } else if sixteen {
                 // Sharpening amplifies the f32 against f64 colour difference at the few pixels
                 // where its halo limiter decides on a rank of luma values (`gpu_tail.rs`). First
                 // measured: 354 samples over 1 code (2.2e-4), 81 over 8 (5.0e-5), at most 89 codes
-                // off, in 1.62 M samples; the bounds are twice that.
-                assert!(
+                // off, in 1.62 M samples; the bounds are twice that (hardware: see above).
+                let max16 = if hardware { 1320 } else { 180 };
+                check(
                     s.over_one as f64 <= 4.4e-4 * n
                         && s.over_eight as f64 <= 1.0e-4 * n
-                        && s.max <= 180,
-                    "{name} {label}: {} over 1, {} over 8, max {}",
-                    s.over_one,
-                    s.over_eight,
-                    s.max
+                        && s.max <= max16,
+                    format!(
+                        "{name} {label}: {} over 1, {} over 8, max {}",
+                        s.over_one, s.over_eight, s.max
+                    ),
                 );
             } else if label == "JPEG" {
                 // The DCT and the quantiser turn a one-code input difference into a step of the
                 // quantiser in one coefficient: a few codes over the block. First measured: 280
                 // samples over 1 code (1.7e-4) and 5 codes at most; the bounds are twice that.
-                assert!(
+                check(
                     s.max <= 10 && s.over_one as f64 <= 3.5e-4 * n && exact >= 0.99,
-                    "{name} {label}: {} over 1, max {}, {exact} exact",
-                    s.over_one,
-                    s.max
+                    format!(
+                        "{name} {label}: {} over 1, max {}, {exact} exact",
+                        s.over_one, s.max
+                    ),
                 );
+            } else if hardware && pct > 0.0 {
+                // A rank flip moves a dithered 8-bit code by more than one (see above).
+                check(
+                    s.max <= 6 && s.over_one as f64 <= 3e-5 * n && exact >= 0.99,
+                    format!(
+                        "{name} {label}: {} over 1, max {}, {exact} exact",
+                        s.over_one, s.max
+                    ),
+                );
+                worst8 = worst8.max(s.max);
+                min_exact8 = min_exact8.min(exact);
             } else {
                 // The C13 bound of the plan: within one code, 99 % of the codes exact.
-                assert!(s.max <= 1, "{name} {label}: max {}", s.max);
-                assert!(exact >= 0.99, "{name} {label}: {exact} exact");
+                check(s.max <= 1, format!("{name} {label}: max {}", s.max));
+                check(exact >= 0.99, format!("{name} {label}: {exact} exact"));
                 worst8 = worst8.max(s.max);
                 min_exact8 = min_exact8.min(exact);
             }
@@ -437,6 +466,7 @@ fn the_tail_writes_the_cpu_pixels_in_every_format() {
     ci_note(&format!(
         "tail against the raw-chain-only export: worst 8-bit difference {worst8}, smallest exact share {min_exact8:.5}"
     ));
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
 #[test]
