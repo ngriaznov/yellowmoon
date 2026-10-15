@@ -19,7 +19,7 @@ use tiff::encoder::{Rational, TiffEncoder};
 use crate::error::ExportError;
 use crate::exif::{self, EXIF_IFD_POINTER, ExifTables, GPS_IFD_POINTER, Undefined, put};
 use crate::options::{BitDepth, ColorSpace, TiffCompression};
-use crate::pixels::{ExportHooks, ImageRef, encode_rows_u8, encode_rows_u16};
+use crate::pixels::{BandSource, ExportHooks, ImageBands, ImageRef};
 
 /// What a TIFF carries besides pixels.
 #[derive(Debug, Clone, Copy)]
@@ -98,7 +98,31 @@ pub fn write_tiff<W: Write + Seek>(
 ) -> Result<(), ExportError> {
     image.validate()?;
     let space = color_space.output_space();
-    let (w, h) = (image.width as usize, image.height as usize);
+    write_tiff_bands(
+        out,
+        &mut ImageBands::new(*image, space),
+        bits,
+        compression,
+        metadata,
+        hooks,
+    )
+}
+
+/// Encodes the rows of `bands` (already through C13, 8 or 16 bit as `bits` says) as a TIFF. The
+/// bands are pulled in order, a batch of strips at a time, and compressed in parallel.
+pub fn write_tiff_bands<W: Write + Seek>(
+    out: W,
+    bands: &mut dyn BandSource,
+    bits: BitDepth,
+    compression: TiffCompression,
+    metadata: &TiffMetadata<'_>,
+    hooks: &ExportHooks<'_>,
+) -> Result<(), ExportError> {
+    let (width, height) = (bands.width(), bands.height());
+    if width == 0 || height == 0 {
+        return Err(ExportError::invalid("the image has no pixels"));
+    }
+    let (w, h) = (width as usize, height as usize);
     let bytes_per_sample = match bits {
         BitDepth::Eight => 1_usize,
         BitDepth::Sixteen => 2,
@@ -146,7 +170,7 @@ pub fn write_tiff<W: Write + Seek>(
         // Raw bytes of each strip of this batch, predictor applied.
         let strips: Vec<Vec<u8>> = match bits {
             BitDepth::Eight => {
-                encode_rows_u8(image, space, y, rows, &mut band8);
+                bands.rows_u8(y, rows, &mut band8)?;
                 band8
                     .chunks(rows_per_strip * row_bytes)
                     .map(<[u8]>::to_vec)
@@ -161,7 +185,7 @@ pub fn write_tiff<W: Write + Seek>(
                     .collect()
             }
             BitDepth::Sixteen => {
-                encode_rows_u16(image, space, y, rows, &mut band16);
+                bands.rows_u16(y, rows, &mut band16)?;
                 band16
                     .chunks(rows_per_strip * w * 3)
                     .map(<[u16]>::to_vec)
@@ -193,8 +217,8 @@ pub fn write_tiff<W: Write + Seek>(
     hooks.check()?;
 
     let sample_bits = u16::from(bits.bits());
-    put(&mut dir, 256, image.width)?;
-    put(&mut dir, 257, image.height)?;
+    put(&mut dir, 256, width)?;
+    put(&mut dir, 257, height)?;
     put(&mut dir, 258, &[sample_bits; 3][..])?;
     put(&mut dir, 259, compression_code(compression))?;
     put(&mut dir, 262, 2_u16)?; // RGB
@@ -232,7 +256,7 @@ pub fn write_tiff<W: Write + Seek>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pixels::PixelEncoding;
+    use crate::pixels::{PixelEncoding, encode_rows_u8, encode_rows_u16};
     use std::io::Cursor;
     use tiff::decoder::{Decoder, DecodingResult};
     use tiff::tags::Tag;

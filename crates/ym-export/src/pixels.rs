@@ -176,6 +176,94 @@ pub fn encode_rows_u16(
     });
 }
 
+/// The finished picture, handed to a writer as encoded rows (stage C13: the transfer function, the
+/// dither for 8 bit and the quantiser), in order from the top.
+///
+/// A writer asks for rows band by band and never twice: `y0` of each call is the row after the last
+/// one it received (a source may refuse anything else), and a call for rows past [`height`] is an
+/// error. The JPEG writer pulls 8-bit rows, the TIFF and PNG writers 8 or 16 bit depending on the
+/// requested depth; a source made for one depth refuses the other.
+///
+/// [`ImageBands`] encodes an [`ImageRef`] on the CPU (the reference: the bytes of every export before
+/// the export tail moved to the device). `ym-core`'s `GpuBands` pulls rows that the device made, so a
+/// writer can overlap its own work (compression, disk) with the render of the rows that follow.
+///
+/// [`height`]: BandSource::height
+pub trait BandSource {
+    /// Width of the picture in pixels.
+    fn width(&self) -> u32;
+
+    /// Height of the picture in pixels.
+    fn height(&self) -> u32;
+
+    /// Rows `y0..y0 + rows` as 8-bit interleaved RGB, `rows * width * 3` bytes in `out` (which is
+    /// cleared first). The dither, when there is one, uses absolute pixel coordinates.
+    ///
+    /// # Errors
+    ///
+    /// [`ExportError::InvalidInput`] for rows outside the picture, a call out of order or a source
+    /// that holds 16-bit rows; [`ExportError::Cancelled`] when the export was cancelled while the
+    /// rows were being made; any other error of the source (a render that failed).
+    fn rows_u8(&mut self, y0: usize, rows: usize, out: &mut Vec<u8>) -> Result<(), ExportError>;
+
+    /// Rows `y0..y0 + rows` as 16-bit interleaved RGB, `rows * width * 3` samples in `out` (which is
+    /// cleared first). No dither.
+    ///
+    /// # Errors
+    ///
+    /// As [`BandSource::rows_u8`].
+    fn rows_u16(&mut self, y0: usize, rows: usize, out: &mut Vec<u16>) -> Result<(), ExportError>;
+}
+
+/// An [`ImageRef`] seen as a [`BandSource`]: each call runs [`encode_rows_u8`] or [`encode_rows_u16`]
+/// on the CPU. Any order of calls gives the same bytes (the dither uses absolute coordinates).
+#[derive(Debug, Clone, Copy)]
+pub struct ImageBands<'a> {
+    image: ImageRef<'a>,
+    space: OutputSpace,
+}
+
+impl<'a> ImageBands<'a> {
+    /// The rows of `image` encoded for `space`.
+    #[must_use]
+    pub fn new(image: ImageRef<'a>, space: OutputSpace) -> Self {
+        Self { image, space }
+    }
+
+    fn check(&self, y0: usize, rows: usize) -> Result<(), ExportError> {
+        if y0.checked_add(rows).is_none_or(|end| end > self.image.height as usize) {
+            return Err(ExportError::invalid(format!(
+                "rows {y0} to {} are outside the {} rows of the picture",
+                y0.saturating_add(rows),
+                self.image.height
+            )));
+        }
+        Ok(())
+    }
+}
+
+impl BandSource for ImageBands<'_> {
+    fn width(&self) -> u32 {
+        self.image.width
+    }
+
+    fn height(&self) -> u32 {
+        self.image.height
+    }
+
+    fn rows_u8(&mut self, y0: usize, rows: usize, out: &mut Vec<u8>) -> Result<(), ExportError> {
+        self.check(y0, rows)?;
+        encode_rows_u8(&self.image, self.space, y0, rows, out);
+        Ok(())
+    }
+
+    fn rows_u16(&mut self, y0: usize, rows: usize, out: &mut Vec<u16>) -> Result<(), ExportError> {
+        self.check(y0, rows)?;
+        encode_rows_u16(&self.image, self.space, y0, rows, out);
+        Ok(())
+    }
+}
+
 /// Cancel and progress callbacks for one export.
 ///
 /// `cancel` is polled between bands and strips (about every million pixels); returning `true`

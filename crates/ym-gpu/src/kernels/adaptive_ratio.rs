@@ -1010,6 +1010,11 @@ mod tests {
                         "detail",
                         "guided",
                         "diffraction",
+                        "prep",
+                        "highlights",
+                        "reduce",
+                        "mosaic_ca",
+                        "lens",
                     ]
                     .into_iter()
                     .find(|f| name.starts_with(f))
@@ -1028,8 +1033,13 @@ mod tests {
                 "detail",
                 "diffraction",
                 "guided",
+                "highlights",
+                "lens",
                 "log_guided",
-                "output_sharpen"
+                "mosaic_ca",
+                "output_sharpen",
+                "prep",
+                "reduce"
             ],
             "the kernels with a fast-math barrier"
         );

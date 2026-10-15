@@ -255,6 +255,28 @@ impl LensGeometry {
         }
     }
 
+    /// The distortion factors `F_i` at the knots (knot `i` of `n` at the normalised radius
+    /// `(i + 0.5) / (n - 1)`), or `None` without a distortion table. What a device copy of the
+    /// geometry uploads (`ym_gpu::kernels::lens`).
+    pub fn distortion_knots(&self) -> Option<&[f64]> {
+        self.distortion.as_ref().map(LinearKnots::ys)
+    }
+
+    /// The CA factors `K_i` of the red and the blue plane at the knots, or `None` without a CA
+    /// table (a geometry from [`LensGeometry::new`] holds either both or neither).
+    pub fn ca_knots(&self) -> Option<(&[f64], &[f64])> {
+        match (&self.ca_red, &self.ca_blue) {
+            (Some(r), Some(b)) => Some((r.ys(), b.ys())),
+            _ => None,
+        }
+    }
+
+    /// Whether the R9 resample applies the lateral CA (`true`, the default) or the chain has taken
+    /// it out of R9 ([`with_ca_on_mosaic`](Self::with_ca_on_mosaic)).
+    pub fn ca_in_r9(&self) -> bool {
+        self.ca_in_r9
+    }
+
     /// Source frame width in pixels.
     pub fn frame_width(&self) -> usize {
         self.frame_w

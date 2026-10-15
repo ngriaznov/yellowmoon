@@ -24,7 +24,7 @@ use crate::icc;
 use crate::jpeg::{self, JpegMetadata};
 use crate::naming::{self, NameFields, Placement};
 use crate::options::{ColorSpace, ExportFormat, ExportOptions, IfExists, Size};
-use crate::pixels::{ExportHooks, ImageRef, PixelEncoding};
+use crate::pixels::{BandSource, ExportHooks, ImageBands, ImageRef, PixelEncoding};
 use crate::png_writer::{self, PngMetadata};
 use crate::resize::{resize_lanczos3, sharpen_output};
 use crate::tiff_writer::{self, TiffMetadata};
@@ -284,6 +284,33 @@ pub fn encode_to_writer<W: Write + Seek>(
     encode_to_writer_with(req, out, hooks, &PictureStages::default())
 }
 
+/// The metadata every format writes, worked out once: the XMP content with its defaults, the creator
+/// string and the XMP packet.
+struct Prepared {
+    xmp_info: XmpInfo,
+    software: String,
+    xmp_packet: Vec<u8>,
+}
+
+impl Prepared {
+    fn new(metadata: &Metadata, format: ExportFormat) -> Result<Self, ExportError> {
+        let mut xmp_info: XmpInfo = metadata.xmp.clone();
+        if xmp_info.app_version.is_empty() {
+            xmp_info.app_version = env!("CARGO_PKG_VERSION").to_owned();
+        }
+        if xmp_info.capture_time.is_none() {
+            xmp_info.capture_time = metadata.exif.capture_time;
+        }
+        let software = software_string(&xmp_info.app_version);
+        let xmp_packet = xmp::build_xmp(&xmp_info, mime(format))?;
+        Ok(Self {
+            xmp_info,
+            software,
+            xmp_packet,
+        })
+    }
+}
+
 /// [`encode_to_writer`] with the photo's [`PictureStages`] (output sharpening after the resize).
 pub fn encode_to_writer_with<W: Write + Seek>(
     req: &ExportRequest<'_>,
@@ -295,15 +322,7 @@ pub fn encode_to_writer_with<W: Write + Seek>(
     stages.validate()?;
     hooks.check()?;
 
-    let mut xmp_info: XmpInfo = req.metadata.xmp.clone();
-    if xmp_info.app_version.is_empty() {
-        xmp_info.app_version = env!("CARGO_PKG_VERSION").to_owned();
-    }
-    if xmp_info.capture_time.is_none() {
-        xmp_info.capture_time = req.metadata.exif.capture_time;
-    }
-    let software = software_string(&xmp_info.app_version);
-    let xmp_packet = xmp::build_xmp(&xmp_info, mime(req.format))?;
+    let prepared = Prepared::new(req.metadata, req.format)?;
 
     if req.format == ExportFormat::Dng {
         let Some(inputs) = req.dng else {
@@ -326,7 +345,7 @@ pub fn encode_to_writer_with<W: Write + Seek>(
         let tables = req
             .metadata
             .exif
-            .tables(&facts, &software, req.remove_location);
+            .tables(&facts, &prepared.software, req.remove_location);
         let report = dng::write_dng(
             out,
             &DngParams {
@@ -337,8 +356,8 @@ pub fn encode_to_writer_with<W: Write + Seek>(
                 baseline_exposure: inputs.baseline_exposure,
                 profile: inputs.profile,
                 exif: &tables,
-                xmp: Some(&xmp_packet),
-                app_version: &xmp_info.app_version,
+                xmp: Some(&prepared.xmp_packet),
+                app_version: &prepared.xmp_info.app_version,
             },
             hooks,
         )?;
@@ -383,7 +402,66 @@ pub fn encode_to_writer_with<W: Write + Seek>(
         }
     }
     let encode_hooks = hooks.stage(done, 1.0);
+    encode_prepared(
+        &BandRequest {
+            format: req.format,
+            color_space: req.color_space,
+            metadata: req.metadata,
+            remove_location: req.remove_location,
+        },
+        &prepared,
+        &mut ImageBands::new(image, space),
+        out,
+        &encode_hooks,
+    )
+}
 
+/// Everything of a JPEG, TIFF or PNG export that is not the pixels, for the writers that take them
+/// as [`BandSource`] rows (`ym-core`'s export tail on the device). The size, the resize and the
+/// output sharpening have been applied by whoever made the rows.
+#[derive(Debug, Clone, Copy)]
+pub struct BandRequest<'a> {
+    /// The format and its options (not [`ExportFormat::Dng`]).
+    pub format: ExportFormat,
+    /// The colour space the rows are encoded in.
+    pub color_space: ColorSpace,
+    /// EXIF and XMP content.
+    pub metadata: &'a Metadata,
+    /// The "Remove location from exports" preference.
+    pub remove_location: bool,
+}
+
+/// Encodes the rows of `bands` into `out`: [`encode_to_writer`] for pixels that are already encoded
+/// rows. The bytes are those [`encode_to_writer`] writes for the same rows.
+///
+/// # Errors
+///
+/// [`ExportError::InvalidInput`] for a DNG or a picture with no pixels, a JPEG that is too large,
+/// whatever the writers and the source raise.
+pub fn encode_bands_to_writer<W: Write + Seek>(
+    req: &BandRequest<'_>,
+    bands: &mut dyn BandSource,
+    out: &mut W,
+    hooks: &ExportHooks<'_>,
+) -> Result<EncodeSummary, ExportError> {
+    if req.format == ExportFormat::Dng {
+        return Err(ExportError::invalid(
+            "a DNG is written from its own pixels, not from encoded bands",
+        ));
+    }
+    hooks.check()?;
+    let prepared = Prepared::new(req.metadata, req.format)?;
+    encode_prepared(req, &prepared, bands, out, hooks)
+}
+
+fn encode_prepared<W: Write + Seek>(
+    req: &BandRequest<'_>,
+    prepared: &Prepared,
+    bands: &mut dyn BandSource,
+    out: &mut W,
+    hooks: &ExportHooks<'_>,
+) -> Result<EncodeSummary, ExportError> {
+    let (out_w, out_h) = (bands.width(), bands.height());
     let facts = OutputFacts {
         width: out_w,
         height: out_h,
@@ -393,55 +471,58 @@ pub fn encode_to_writer_with<W: Write + Seek>(
     let tables = req
         .metadata
         .exif
-        .tables(&facts, &software, req.remove_location);
+        .tables(&facts, &prepared.software, req.remove_location);
     let icc_profile = icc::profile(req.color_space);
+    let xmp_packet = &prepared.xmp_packet;
     match req.format {
         ExportFormat::Jpeg { quality } => {
             let app1 = exif::build_exif_app1_payload(&tables);
-            jpeg::write_jpeg(
+            jpeg::write_jpeg_bands(
                 out,
-                &image,
-                space,
+                bands,
                 quality,
                 &JpegMetadata {
                     exif_app1: Some(&app1),
-                    xmp: Some(&xmp_packet),
+                    xmp: Some(xmp_packet),
                     icc: Some(icc_profile),
                 },
-                &encode_hooks,
+                hooks,
             )?;
         }
         ExportFormat::Tiff { bits, compression } => {
-            tiff_writer::write_tiff(
+            tiff_writer::write_tiff_bands(
                 out,
-                &image,
-                req.color_space,
+                bands,
                 bits,
                 compression,
                 &TiffMetadata {
                     exif: &tables,
-                    xmp: Some(&xmp_packet),
+                    xmp: Some(xmp_packet),
                     icc: Some(icc_profile),
                 },
-                &encode_hooks,
+                hooks,
             )?;
         }
         ExportFormat::Png { bits } => {
             let blob = exif::build_exif_blob(&tables);
-            png_writer::write_png(
+            png_writer::write_png_bands(
                 out,
-                &image,
+                bands,
                 req.color_space,
                 bits,
                 &PngMetadata {
                     exif: Some(&blob),
-                    xmp: Some(&xmp_packet),
+                    xmp: Some(xmp_packet),
                     icc: Some(icc_profile),
                 },
-                &encode_hooks,
+                hooks,
             )?;
         }
-        ExportFormat::Dng => unreachable!("handled above"),
+        ExportFormat::Dng => {
+            return Err(ExportError::invalid(
+                "a DNG is written from its own pixels, not from encoded bands",
+            ));
+        }
     }
     Ok(EncodeSummary {
         width: out_w,
@@ -524,5 +605,60 @@ pub fn write_export_with(
         width: summary.map_or(0, |s| s.width),
         height: summary.map_or(0, |s| s.height),
         dng: summary.and_then(|s| s.dng),
+    })
+}
+
+/// [`write_export`] for the encoded rows of a [`BandSource`]: the file is encoded under a temporary
+/// name in the destination folder and renamed according to `dest.if_exists`; with "Skip" and an
+/// existing file nothing is pulled from `bands`; a cancel or an error (the source's included) deletes
+/// the partial file. The bytes are those [`write_export`] writes for the same rows.
+///
+/// # Errors
+///
+/// As [`encode_bands_to_writer`], and the file and folder errors of [`write_export`].
+pub fn write_export_bands(
+    req: &BandRequest<'_>,
+    bands: &mut dyn BandSource,
+    dest: &ExportDestination,
+    hooks: &ExportHooks<'_>,
+) -> Result<ExportOutcome, ExportError> {
+    if req.format == ExportFormat::Dng {
+        return Err(ExportError::invalid(
+            "a DNG is written from its own pixels, not from encoded bands",
+        ));
+    }
+    let ext = req.format.extension();
+    let source = dest.source_path.as_deref();
+    if let Some(skipped) =
+        naming::plan_output(&dest.dir, &dest.file_stem, ext, dest.if_exists, source)?
+    {
+        return Ok(ExportOutcome {
+            placement: skipped,
+            bytes: 0,
+            width: 0,
+            height: 0,
+            dng: None,
+        });
+    }
+    let mut summary = None;
+    let (placement, bytes) = naming::write_atomically(
+        &dest.dir,
+        &dest.file_stem,
+        ext,
+        dest.if_exists,
+        source,
+        |writer| {
+            summary = Some(encode_bands_to_writer(req, bands, writer, hooks)?);
+            Ok(())
+        },
+    )?;
+    let skipped = matches!(placement, Placement::Skipped(_));
+    let summary = summary.filter(|_| !skipped);
+    Ok(ExportOutcome {
+        placement,
+        bytes,
+        width: summary.map_or(0, |s| s.width),
+        height: summary.map_or(0, |s| s.height),
+        dng: None,
     })
 }

@@ -47,7 +47,9 @@ pub struct GpuStages(u8);
 impl GpuStages {
     /// No stage.
     pub const NONE: Self = Self(0);
-    /// The raw chain, R1 to R9.
+    /// The raw chain: the adaptive ratio demosaic, the bilateral denoise, R7 and capture sharpening
+    /// of every full-resolution tile (R6 to R8). The stages in front of it and after it are
+    /// [`GpuStages::RAW_FRONT`].
     pub const RAW_CHAIN: Self = Self(1 << 0);
     /// The geometry sampler (orientation, straighten, crop, resize to the view).
     pub const SAMPLER: Self = Self(1 << 1);
@@ -59,8 +61,16 @@ impl GpuStages {
     pub const ENCODE: Self = Self(1 << 4);
     /// The export tail: resize and bands for the writers.
     pub const EXPORT_TAIL: Self = Self(1 << 5);
+    /// The raw front and the lens: R1 normalise, R3 vignetting, R4 gains, R5 highlights and R5b
+    /// lateral CA of every full-resolution tile (with [`GpuStages::RAW_CHAIN`] the whole of
+    /// R1 to R9 runs on the device from the photo's resident raw words, uploaded once), R9 lens
+    /// resample, and the reduced fit-view group (the noise sigma plane, the R5 chroma offsets, the
+    /// `k x k` binning, the denoise and R9 at 1/k) that never builds a full-resolution frame on the
+    /// host (G-07). **Not signed off**: `Auto` leaves it to the CPU until the Metal CI runners have
+    /// passed its suites ([`GpuStages::SIGNED_OFF`]); `On` and `Require` run it.
+    pub const RAW_FRONT: Self = Self(1 << 6);
     /// Every stage.
-    pub const ALL: Self = Self(0b11_1111);
+    pub const ALL: Self = Self(0b111_1111);
 
     /// What `Auto` runs on the device: the stages signed off, that is, the ones whose parity, tile
     /// and determinism suites pass on the Metal CI runners (`.github/workflows/mac-gpu.yml`), the
@@ -78,10 +88,13 @@ impl GpuStages {
     );
 
     /// The stages of an export that run on the device in this version: the raw chain (R6 to R8 of
-    /// every full-resolution tile: demosaic, denoise, R7 and capture sharpening; G-03, G-06).
-    /// Decides whether `ym` warms the kernels up
-    /// while photos decode; **the wiring tasks add their stages here**.
-    pub const USED_BY_EXPORTS: Self = Self::RAW_CHAIN;
+    /// every full-resolution tile: demosaic, denoise, R7 and capture sharpening; G-03, G-06) and the
+    /// raw front (R1 to R5b and R9 of every tile, G-07), and the export tail: the sampler, the colour
+    /// chain, the Lanczos-3 resize, output sharpening and C13 of the written picture, which the CPU
+    /// writers pull as encoded bands (G-08). Decides whether `ym` warms the kernels up while photos
+    /// decode; **the wiring tasks add their stages here**.
+    pub const USED_BY_EXPORTS: Self =
+        Self(Self::RAW_CHAIN.0 | Self::RAW_FRONT.0 | Self::EXPORT_TAIL.0);
 
     /// Whether every stage of `other` is in this set.
     #[must_use]
@@ -107,8 +120,8 @@ impl GpuStages {
         self.0 == 0
     }
 
-    /// The names of the stages in the set, in pipeline order (`raw`, `sampler`, `colour`,
-    /// `sharpening`, `encode`, `export`): what `ym doctor` prints.
+    /// The names of the stages in the set, in the order of the members (`raw`, `sampler`,
+    /// `colour`, `sharpening`, `encode`, `export`, `raw front`): what `ym doctor` prints.
     #[must_use]
     pub fn names(self) -> Vec<&'static str> {
         [
@@ -118,6 +131,7 @@ impl GpuStages {
             (Self::OUTPUT_SHARPEN, "sharpening"),
             (Self::ENCODE, "encode"),
             (Self::EXPORT_TAIL, "export"),
+            (Self::RAW_FRONT, "raw front"),
         ]
         .into_iter()
         .filter(|(stage, _)| self.contains(*stage))
@@ -1241,12 +1255,14 @@ mod tests {
         assert_eq!(GpuPolicy::On.stages(), GpuStages::ALL);
         assert_eq!(GpuPolicy::Require.stages(), GpuStages::ALL);
         assert_eq!(GpuPolicy::Off.stages(), GpuStages::NONE);
-        // Signed off on 2026-10-14: everything but the export tail (G-08).
+        // Signed off on 2026-10-14: everything but the export tail (G-08) and the raw front (G-07).
         assert_eq!(
             GpuStages::SIGNED_OFF.names(),
             ["raw", "sampler", "colour", "sharpening", "encode"]
         );
         assert!(!GpuStages::SIGNED_OFF.contains(GpuStages::EXPORT_TAIL));
+        assert!(!GpuStages::SIGNED_OFF.contains(GpuStages::RAW_FRONT));
+        assert!(!GpuStages::SIGNED_OFF.intersects(GpuStages::RAW_FRONT));
         assert!(GpuStages::ALL.contains(GpuStages::SIGNED_OFF));
         assert!(!GpuStages::SIGNED_OFF.contains(GpuStages::ALL));
     }
@@ -1260,6 +1276,7 @@ mod tests {
             GpuStages::OUTPUT_SHARPEN,
             GpuStages::ENCODE,
             GpuStages::EXPORT_TAIL,
+            GpuStages::RAW_FRONT,
         ];
         let mut union = GpuStages::NONE;
         for (i, a) in all.iter().enumerate() {
@@ -1274,16 +1291,19 @@ mod tests {
         assert_eq!(GpuStages::NONE.to_string(), "none");
         assert_eq!(
             GpuStages::ALL.to_string(),
-            "raw, sampler, colour, sharpening, encode, export"
+            "raw, sampler, colour, sharpening, encode, export, raw front"
         );
         assert!(GpuStages::ALL.contains(GpuStages::NONE));
     }
 
     #[test]
     fn the_raw_chain_is_the_stage_of_an_export_on_the_device() {
-        // G-03: the R6 demosaic of every export tile. The wiring tasks that follow add theirs.
+        // G-03: the R6 demosaic of every export tile; G-07: R1 to R5b and R9 of every tile. The
+        // wiring tasks that follow add theirs.
         assert!(GpuStages::USED_BY_EXPORTS.contains(GpuStages::RAW_CHAIN));
-        assert!(!GpuStages::USED_BY_EXPORTS.contains(GpuStages::EXPORT_TAIL));
+        assert!(GpuStages::USED_BY_EXPORTS.contains(GpuStages::RAW_FRONT));
+        // G-08: the sampler, colour chain, resize, sharpening and C13 of the written picture.
+        assert!(GpuStages::USED_BY_EXPORTS.contains(GpuStages::EXPORT_TAIL));
     }
 
     // --- the real stack -----------------------------------------------------------------------

@@ -12,86 +12,16 @@
 //! Lanczos overshoots at hard edges (about 7 % at a step); nothing is clamped here, the display
 //! encode clamps to [0, 1].
 
-use std::f64::consts::PI;
-
 use rayon::prelude::*;
 use ym_color::encode::OutputSpace;
 use ym_gpu::cpu::output_sharpen::OutputSharpen;
+// The kernel and the taps are planned once, in `ym-gpu`, and used by this CPU resize and by the
+// kernel of the export tail on the device (`docs/gpu-plan.md` G-08), so that the two cannot disagree
+// on a weight.
+pub use ym_gpu::kernels::resize::{LANCZOS_A, Taps, lanczos3};
 
 use crate::error::ExportError;
 use crate::pixels::{ExportHooks, ImageRef, LinearImage, PixelEncoding};
-
-/// The Lanczos window half-width `a`.
-pub const LANCZOS_A: f64 = 3.0;
-
-fn sinc(x: f64) -> f64 {
-    if x == 0.0 {
-        1.0
-    } else {
-        let px = x * PI;
-        px.sin() / px
-    }
-}
-
-/// The Lanczos-3 kernel.
-#[must_use]
-pub fn lanczos3(x: f64) -> f64 {
-    if (-LANCZOS_A..LANCZOS_A).contains(&x) {
-        sinc(x) * sinc(x / LANCZOS_A)
-    } else {
-        0.0
-    }
-}
-
-/// Per output index: the first input index and its normalised taps.
-struct Taps {
-    start: Vec<usize>,
-    offsets: Vec<usize>,
-    weights: Vec<f64>,
-}
-
-impl Taps {
-    fn new(in_len: usize, out_len: usize) -> Self {
-        let scale = in_len as f64 / out_len as f64;
-        let filter_scale = scale.max(1.0);
-        let support = LANCZOS_A * filter_scale;
-        let mut start = Vec::with_capacity(out_len);
-        let mut offsets = Vec::with_capacity(out_len + 1);
-        let mut weights = Vec::new();
-        offsets.push(0);
-        for i in 0..out_len {
-            let center = (i as f64 + 0.5) * scale;
-            let lo = ((center - support + 0.5).floor().max(0.0)) as usize;
-            let hi = (((center + support + 0.5).floor()) as usize).min(in_len);
-            let first = weights.len();
-            let mut sum = 0.0;
-            for x in lo..hi {
-                let w = lanczos3((x as f64 - center + 0.5) / filter_scale);
-                weights.push(w);
-                sum += w;
-            }
-            if sum != 0.0 {
-                for w in &mut weights[first..] {
-                    *w /= sum;
-                }
-            }
-            start.push(lo);
-            offsets.push(weights.len());
-        }
-        Self {
-            start,
-            offsets,
-            weights,
-        }
-    }
-
-    fn row(&self, i: usize) -> (usize, &[f64]) {
-        (
-            self.start[i],
-            &self.weights[self.offsets[i]..self.offsets[i + 1]],
-        )
-    }
-}
 
 /// Resizes `src` to `out_width` x `out_height` with Lanczos-3 in linear light.
 ///
@@ -267,6 +197,8 @@ pub fn sharpen_output(
 
 #[cfg(test)]
 mod tests {
+    use std::f64::consts::PI;
+
     use super::*;
 
     fn linear<'a>(w: u32, h: u32, data: &'a [f32]) -> ImageRef<'a> {

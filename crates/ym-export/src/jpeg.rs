@@ -16,7 +16,7 @@ use ym_color::encode::OutputSpace;
 
 use crate::error::ExportError;
 use crate::options::JpegQuality;
-use crate::pixels::{ExportHooks, ImageRef, band_rows, encode_rows_u8};
+use crate::pixels::{BandSource, ExportHooks, ImageBands, ImageRef, band_rows};
 use crate::xmp::XMP_APP1_HEADER;
 
 /// The largest width or height a JPEG can have.
@@ -35,7 +35,7 @@ pub struct JpegMetadata<'a> {
 
 /// Encodes `image` (display-linear or display-encoded) as a baseline JPEG.
 pub fn write_jpeg<W: Write>(
-    mut out: W,
+    out: W,
     image: &ImageRef<'_>,
     space: OutputSpace,
     quality: JpegQuality,
@@ -43,22 +43,44 @@ pub fn write_jpeg<W: Write>(
     hooks: &ExportHooks<'_>,
 ) -> Result<(), ExportError> {
     image.validate()?;
-    if image.width > MAX_JPEG_SIDE || image.height > MAX_JPEG_SIDE {
+    write_jpeg_bands(
+        out,
+        &mut ImageBands::new(*image, space),
+        quality,
+        metadata,
+        hooks,
+    )
+}
+
+/// Encodes the rows of `bands` (8-bit, already through C13) as a baseline JPEG. The bands are pulled
+/// in order, about a million pixels at a time, into one 8-bit buffer; the encoder then runs over it.
+pub fn write_jpeg_bands<W: Write>(
+    mut out: W,
+    bands: &mut dyn BandSource,
+    quality: JpegQuality,
+    metadata: &JpegMetadata<'_>,
+    hooks: &ExportHooks<'_>,
+) -> Result<(), ExportError> {
+    let (width, height) = (bands.width(), bands.height());
+    if width == 0 || height == 0 {
+        return Err(ExportError::invalid("the image has no pixels"));
+    }
+    if width > MAX_JPEG_SIDE || height > MAX_JPEG_SIDE {
         return Err(ExportError::Unsupported(format!(
             "JPEG can't be wider or taller than {MAX_JPEG_SIDE} pixels. Pick a smaller long edge, or export TIFF or PNG."
         )));
     }
-    let (w, h) = (image.width as usize, image.height as usize);
+    let (w, h) = (width as usize, height as usize);
 
     // Display encode (C13) band by band into one 8-bit buffer (a third of the f32 input).
     let mut pixels = Vec::with_capacity(w * h * 3);
     let mut band = Vec::new();
-    let rows = band_rows(image.width);
+    let rows = band_rows(width);
     let mut y = 0;
     while y < h {
         hooks.check()?;
         let n = rows.min(h - y);
-        encode_rows_u8(image, space, y, n, &mut band);
+        bands.rows_u8(y, n, &mut band)?;
         pixels.extend_from_slice(&band);
         y += n;
         hooks.report(0.5 * y as f32 / h as f32);
@@ -117,7 +139,7 @@ pub fn write_jpeg<W: Write>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pixels::PixelEncoding;
+    use crate::pixels::{PixelEncoding, encode_rows_u8};
 
     /// The marker segments of a JPEG up to the start of scan: `(marker, payload)`.
     pub(crate) fn segments(jpeg: &[u8]) -> Vec<(u8, &[u8])> {

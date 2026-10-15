@@ -14,7 +14,7 @@ use ym_color::encode::OutputSpace;
 
 use crate::error::ExportError;
 use crate::options::{BitDepth, ColorSpace};
-use crate::pixels::{ExportHooks, ImageRef, band_rows, encode_rows_u8, encode_rows_u16};
+use crate::pixels::{BandSource, ExportHooks, ImageBands, ImageRef, band_rows};
 
 /// The iTXt keyword Adobe's XMP specification reserves for an embedded packet.
 pub const XMP_ITXT_KEYWORD: &str = "XML:com.adobe.xmp";
@@ -41,7 +41,31 @@ pub fn write_png<W: Write>(
 ) -> Result<(), ExportError> {
     image.validate()?;
     let space: OutputSpace = color_space.output_space();
-    let mut info = Info::with_size(image.width, image.height);
+    write_png_bands(
+        out,
+        &mut ImageBands::new(*image, space),
+        color_space,
+        bits,
+        metadata,
+        hooks,
+    )
+}
+
+/// Encodes the rows of `bands` (already through C13, 8 or 16 bit as `bits` says) as a PNG in
+/// `color_space`. The bands are pulled in order while the encoder compresses the rows before them.
+pub fn write_png_bands<W: Write>(
+    out: W,
+    bands: &mut dyn BandSource,
+    color_space: ColorSpace,
+    bits: BitDepth,
+    metadata: &PngMetadata<'_>,
+    hooks: &ExportHooks<'_>,
+) -> Result<(), ExportError> {
+    let (width, height) = (bands.width(), bands.height());
+    if width == 0 || height == 0 {
+        return Err(ExportError::invalid("the image has no pixels"));
+    }
+    let mut info = Info::with_size(width, height);
     info.color_type = ColorType::Rgb;
     info.bit_depth = match bits {
         BitDepth::Eight => PngDepth::Eight,
@@ -73,8 +97,8 @@ pub fn write_png<W: Write>(
     writer.write_chunk(png::chunk::cICP, &color_space.cicp())?;
     let mut stream = writer.stream_writer()?;
 
-    let (w, h) = (image.width as usize, image.height as usize);
-    let rows = band_rows(image.width);
+    let (w, h) = (width as usize, height as usize);
+    let rows = band_rows(width);
     let mut y = 0;
     let mut band8 = Vec::new();
     let mut band16 = Vec::new();
@@ -84,11 +108,11 @@ pub fn write_png<W: Write>(
         let n = rows.min(h - y);
         match bits {
             BitDepth::Eight => {
-                encode_rows_u8(image, space, y, n, &mut band8);
+                bands.rows_u8(y, n, &mut band8)?;
                 stream.write_all(&band8).map_err(png_io)?;
             }
             BitDepth::Sixteen => {
-                encode_rows_u16(image, space, y, n, &mut band16);
+                bands.rows_u16(y, n, &mut band16)?;
                 bytes16.clear();
                 bytes16.reserve(n * w * 6);
                 for s in &band16 {

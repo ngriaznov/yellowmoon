@@ -90,9 +90,13 @@ pub enum KernelId {
     Sampler,
     /// G-04: C13 with dither and the letterbox to RGBA8 or 8 / 16-bit interleaved bands.
     Encode,
-    /// PLACEHOLDER (G-07): R1 normalise, R3 vignetting, R4 gains, the quantisation step and the clip mask.
+    /// G-07: R1 normalise, R3 vignetting and R4 gains of a rectangle, from the resident raw words.
     Prep,
-    /// PLACEHOLDER (G-07): R5 highlight reconstruction, applying the chroma offsets.
+    /// G-07: the R1 clip bits of a rectangle (one bit per photosite) from the words and the steps.
+    PrepMask,
+    /// G-07: R5 highlight reconstruction, the superpixel planes of a rectangle.
+    HighlightsSuper,
+    /// G-07: R5 highlight reconstruction, applying the chroma offsets.
     Highlights,
     /// PLACEHOLDER (G-07): R5b lateral chromatic aberration on the mosaic.
     MosaicCa,
@@ -102,8 +106,10 @@ pub enum KernelId {
     Sigma,
     /// PLACEHOLDER (G-07): the k x k mosaic binning of the fit view.
     Bin,
-    /// PLACEHOLDER (G-07): the fixed-order reduction of the R5 chroma offsets (reduced path).
+    /// G-07: the fixed-order reduction of the R5 chroma offsets (reduced path): one partial per workgroup.
     Reduce,
+    /// G-07: the fold of the partials of the R5 chroma-offset reduction, in index order.
+    ReduceFold,
     /// G-06: the noise sigma of a tile, expanded from the half-resolution plane (or filled).
     SigmaExpand,
     /// G-06: the 5 x 5 opponent bilateral denoise of R6.
@@ -130,13 +136,13 @@ pub enum KernelId {
     RlBlurColsUpdate,
     /// G-06: R8 Richardson-Lucy, the core of the result.
     RlOutput,
-    /// PLACEHOLDER (G-08): the Lanczos-3 resize of the export tail.
+    /// G-08: the Lanczos-3 resize of the export tail (one separable pass per dispatch).
     Resize,
 }
 
 impl KernelId {
     /// All kernels, placeholders included (see [`KernelId::is_placeholder`]).
-    pub const ALL: [KernelId; 56] = [
+    pub const ALL: [KernelId; 59] = [
         KernelId::SpikeNormalize,
         KernelId::SpikeDemosaic,
         KernelId::SpikeMatrix,
@@ -173,12 +179,15 @@ impl KernelId {
         KernelId::Sampler,
         KernelId::Encode,
         KernelId::Prep,
+        KernelId::PrepMask,
+        KernelId::HighlightsSuper,
         KernelId::Highlights,
         KernelId::MosaicCa,
         KernelId::Lens,
         KernelId::Sigma,
         KernelId::Bin,
         KernelId::Reduce,
+        KernelId::ReduceFold,
         KernelId::SigmaExpand,
         KernelId::Bilateral,
         KernelId::Guided,
@@ -234,12 +243,15 @@ impl KernelId {
             KernelId::Sampler => "sampler",
             KernelId::Encode => "encode",
             KernelId::Prep => "prep",
+            KernelId::PrepMask => "prep_mask",
+            KernelId::HighlightsSuper => "highlights_super",
             KernelId::Highlights => "highlights",
             KernelId::MosaicCa => "mosaic_ca",
             KernelId::Lens => "lens",
             KernelId::Sigma => "sigma",
             KernelId::Bin => "bin",
             KernelId::Reduce => "reduce",
+            KernelId::ReduceFold => "reduce_fold",
             KernelId::SigmaExpand => "sigma_expand",
             KernelId::Bilateral => "bilateral",
             KernelId::Guided => "guided",
@@ -266,14 +278,7 @@ impl KernelId {
     /// `.wgsl` in `KernelId::body` and deletes the id from this match (two small edits, reported).
     pub const fn placeholder_owner(self) -> Option<&'static str> {
         match self {
-            KernelId::Prep
-            | KernelId::Highlights
-            | KernelId::MosaicCa
-            | KernelId::Lens
-            | KernelId::Sigma
-            | KernelId::Bin
-            | KernelId::Reduce => Some("G-07"),
-            KernelId::Resize => Some("G-08"),
+            KernelId::Sigma | KernelId::Bin => Some("G-07"),
             _ => None,
         }
     }
@@ -351,14 +356,15 @@ impl KernelId {
             | KernelId::RlBlurColsRatio
             | KernelId::RlBlurColsUpdate
             | KernelId::RlOutput => super::richardson_lucy::body(self),
-            KernelId::Prep
+            KernelId::Prep | KernelId::PrepMask => super::prep::body(self),
+            KernelId::HighlightsSuper
             | KernelId::Highlights
-            | KernelId::MosaicCa
-            | KernelId::Lens
-            | KernelId::Sigma
-            | KernelId::Bin
             | KernelId::Reduce
-            | KernelId::Resize => placeholder_body(self),
+            | KernelId::ReduceFold => super::highlights::body(self),
+            KernelId::MosaicCa => super::mosaic_ca::body(),
+            KernelId::Lens => super::lens::body(),
+            KernelId::Sigma | KernelId::Bin => placeholder_body(self),
+            KernelId::Resize => super::resize::body(),
         }
     }
 }

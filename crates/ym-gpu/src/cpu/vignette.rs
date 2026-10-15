@@ -73,6 +73,13 @@ impl VignetteProfile {
         VignetteProfile::from_tag(&tags.vignetting).map(Some)
     }
 
+    /// The attenuations `G_i` at the knots (`knot_attenuation` of the raw values), knot `i` of `n`
+    /// at the normalised radius `(i + 0.5) / (n - 1)`: what a device copy of the profile uploads
+    /// (`ym_gpu::kernels::prep`).
+    pub fn knot_attenuations(&self) -> &[f64] {
+        self.attenuation.ys()
+    }
+
     /// The relative illumination `G(r)` the lens leaves at normalised radius `r`.
     #[inline]
     pub fn attenuation_at(&self, r: f64) -> f64 {

@@ -168,9 +168,15 @@ fn placeholder_kernels_are_marked_in_name_and_text_and_write_nothing_but_a_nan()
         .into_iter()
         .filter(|id| id.is_placeholder())
         .collect();
-    // One per kernel family the plan still has to write (G-07 x7, G-08 x1; G-04's sampler and encode
-    // kernels and G-06's denoise, R7 and Richardson-Lucy kernels are real).
-    assert_eq!(placeholders.len(), 8, "{placeholders:?}");
+    // What is still a placeholder belongs to G-07's raw front, and the list shrinks as its kernels
+    // land (G-04's sampler and encode, G-06's denoise, R7 and Richardson-Lucy, G-07's prep and G-08's
+    // resize are real); the count is not pinned here so that two lanes can land kernels in one wave.
+    assert!(
+        placeholders
+            .iter()
+            .all(|id| id.placeholder_owner() == Some("G-07")),
+        "{placeholders:?}"
+    );
     for id in &placeholders {
         let owner = id.placeholder_owner().expect("owner");
         let src = shader_source(StorageMode::F32, *id);

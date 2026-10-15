@@ -922,14 +922,16 @@ fn warm_up_sets_compile_their_real_kernels_and_a_placeholder_compiles_on_request
         ctx.warm_up_set(KernelSet::View)?;
         assert_eq!(compiled(ctx), real(KernelSet::View));
         ctx.warm_up_set(KernelSet::Tail)?;
+        assert_eq!(real(KernelSet::Tail), 1, "the tail set is the resize");
         assert_eq!(
-            real(KernelSet::Tail),
-            0,
-            "the resize is still a placeholder"
+            compiled(ctx),
+            real(KernelSet::View) + real(KernelSet::Tail)
         );
-        assert_eq!(compiled(ctx), real(KernelSet::View));
         ctx.warm_up_set(KernelSet::Raw)?;
-        assert_eq!(compiled(ctx), real(KernelSet::View) + real(KernelSet::Raw));
+        assert_eq!(
+            compiled(ctx),
+            real(KernelSet::View) + real(KernelSet::Tail) + real(KernelSet::Raw)
+        );
         ctx.warm_up()?;
         assert_eq!(compiled(ctx), real(KernelSet::All));
         // The placeholders are valid pipelines: the plan's later tasks drop into ids that compile.

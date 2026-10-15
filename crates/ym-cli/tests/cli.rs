@@ -220,7 +220,15 @@ fn doctor_says_what_the_graphics_policy_comes_to() {
     );
     assert_eq!(
         v["gpu_policy"]["all_stages"],
-        serde_json::json!(["raw", "sampler", "colour", "sharpening", "encode", "export"])
+        serde_json::json!([
+            "raw",
+            "sampler",
+            "colour",
+            "sharpening",
+            "encode",
+            "export",
+            "raw front"
+        ])
     );
     assert!(text.contains("GPU policy"), "{text}");
     assert!(
