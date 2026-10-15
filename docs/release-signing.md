@@ -1,6 +1,6 @@
 # Release signing: one-time setup [HUMAN]
 
-Status: **waiting on Mykyta.** The release pipeline (`.github/workflows/release.yml`) and the updater (`src-tauri/tauri.conf.json`) are ready, but nobody has created the updater signing key yet. Until you do, a push to `main` that carries a new version stops early in the "Require the updater signing setup" step with an error that points here. Nothing is half-released.
+Status: **waiting on Mykyta.** The release pipeline (`.github/workflows/release.yml`) and the updater (`src-tauri/tauri.conf.json`) are ready, but nobody has created the updater signing key yet. Until you do, the release job of a push to `main` is skipped, with a warning that points here. Nothing is half-released. To try the app before that, download a test build from the **Build** workflow (`.github/workflows/build.yml`: ad-hoc signed, no updater).
 
 ## Why the agent did not do this
 

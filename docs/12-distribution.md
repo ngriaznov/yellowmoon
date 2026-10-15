@@ -20,6 +20,10 @@ We copy github.com/ngriaznov/plugout's setup: every version bump on main becomes
 
 **Bundle naming detail:** the app's main binary is `Yellowmoon` and macOS file systems are usually case-insensitive, so a sidecar called `yellowmoon` would collide with it inside `Contents/MacOS`. The command is `ym` (decision 2026-10-12), so the sidecar is `Contents/MacOS/ym` and there is nothing to rename: the cask's `binary` stanza and the "Install Command-Line Tool…" menu link it as `ym`.
 
+## Test builds (`build.yml`)
+
+Every push to `main`, and a manual run (Actions > Build > Run workflow, universal or Apple silicon only), builds the app on a macOS runner and keeps the disk image as the run's artefact `Yellowmoon-<commit>-<architecture>` for 14 days. It is not a release: no tag, no updater artefacts (they need the signing key, `docs/release-signing.md`), no Developer ID. The bundle is signed ad hoc, so macOS asks before it first opens it: Control-click Yellowmoon.app > Open (or System Settings > Privacy & Security > Open Anyway). Until the updater key exists, the release job of `release.yml` is skipped with a warning instead of failing.
+
 ## In the app
 
 - `tauri-plugin-updater` with the minisign public key embedded and one endpoint: `https://github.com/ngriaznov/yellowmoon/releases/latest/download/latest.json`. The restart into the installed update is the app's own `restart_app` command (`docs/01` IPC), not `tauri-plugin-process`: Tauri's restart cannot be vetoed by the exit handler, so an export in progress could not stop it, while `restart_app` refuses with "An export is still running. Restart after it finishes." The process plugin is not a dependency (neither the crate nor `@tauri-apps/plugin-process`) and its `restart` permission is not granted.

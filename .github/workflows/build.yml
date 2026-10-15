@@ -1,0 +1,111 @@
+# Build: a test build of the macOS app to download and open on your own Mac. Not a release: no version tag,
+# no updater artefacts (the updater signing key is M0-03, docs/release-signing.md) and no Developer ID (docs/16,
+# "Code signing for 1.0"). The bundle is signed ad hoc, so macOS asks once before it opens it: Control-click the
+# app > Open, or System Settings > Privacy & Security > Open Anyway (docs/12, "Test builds").
+#
+# Runs on every push to main and by hand: Actions > Build > Run workflow (choose universal or Apple silicon only).
+# The disk image is the run's artefact "Yellowmoon-<commit>-<architecture>", kept for 14 days.
+name: Build
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Architecture: universal (Apple silicon and Intel) or aarch64 (Apple silicon only, about half the build time)"
+        type: choice
+        options: [universal, aarch64]
+        default: universal
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  app:
+    runs-on: macos-15
+    timeout-minutes: 120
+    env:
+      TARGET: ${{ inputs.target || 'universal' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Add both macOS targets to the pinned toolchain
+        # rust-toolchain.toml pins the version, which overrides the toolchain installed above.
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: build-macos-${{ env.TARGET }}
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      # The bundle carries the licence texts of every dependency next to NOTICE (as release.yml does).
+      - name: cargo-about
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-about@0.9.2
+
+      - name: Licence texts of the dependencies (THIRD-PARTY.md, bundled next to NOTICE)
+        run: |
+          python3 tools/licences/generate.py
+          python3 tools/licences/check_bundle.py
+
+      - name: Build the command-line tool (the app's sidecar `ym`)
+        run: |
+          mkdir -p src-tauri/binaries
+          cargo build -p ym-cli --release --target aarch64-apple-darwin
+          cp target/aarch64-apple-darwin/release/ym src-tauri/binaries/ym-aarch64-apple-darwin
+          if [ "$TARGET" = universal ]; then
+            cargo build -p ym-cli --release --target x86_64-apple-darwin
+            cp target/x86_64-apple-darwin/release/ym src-tauri/binaries/ym-x86_64-apple-darwin
+            lipo -create \
+              target/aarch64-apple-darwin/release/ym \
+              target/x86_64-apple-darwin/release/ym \
+              -output src-tauri/binaries/ym-universal-apple-darwin
+            lipo -info src-tauri/binaries/ym-universal-apple-darwin
+          fi
+
+      - name: Build the app (ad-hoc signed, no updater artefacts)
+        run: |
+          if [ "$TARGET" = universal ]; then TRIPLE=universal-apple-darwin; else TRIPLE=aarch64-apple-darwin; fi
+          echo "TRIPLE=$TRIPLE" >> "$GITHUB_ENV"
+          echo "SHORT_SHA=${GITHUB_SHA::7}" >> "$GITHUB_ENV"
+          npm run tauri build -- --target "$TRIPLE" \
+            --config '{"bundle":{"createUpdaterArtifacts":false,"macOS":{"signingIdentity":"-"}}}'
+
+      - name: Check the bundle
+        run: |
+          APP="target/$TRIPLE/release/bundle/macos/Yellowmoon.app"
+          ls -la "target/$TRIPLE/release/bundle/dmg/"
+          codesign --verify --deep --strict --verbose=2 "$APP"
+          lipo -info "$APP/Contents/MacOS/Yellowmoon"
+          "$APP/Contents/MacOS/ym" --version
+          "$APP/Contents/MacOS/ym" doctor || echo "::warning title=ym doctor::exited with $? (informational)"
+          {
+            echo "### Yellowmoon test build"
+            echo
+            echo "Commit \`$SHORT_SHA\`, $TARGET. Download the artefact below, unzip it and open the disk image."
+            echo "The app is signed ad hoc: the first time, Control-click Yellowmoon.app > Open."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Yellowmoon-${{ env.SHORT_SHA }}-${{ env.TARGET }}
+          path: target/${{ env.TRIPLE }}/release/bundle/dmg/*.dmg
+          if-no-files-found: error
+          retention-days: 14

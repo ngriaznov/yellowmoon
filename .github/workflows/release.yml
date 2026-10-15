@@ -3,8 +3,9 @@
 #
 # Needs two repository secrets before the first release: TAURI_SIGNING_PRIVATE_KEY and
 # TAURI_SIGNING_PRIVATE_KEY_PASSWORD, and the matching public key in src-tauri/tauri.conf.json
-# (plugins.updater.pubkey). Setup steps: docs/release-signing.md. Until then this workflow stops early
-# with an explicit error instead of burning macOS minutes on a build that cannot be signed.
+# (plugins.updater.pubkey). Setup steps: docs/release-signing.md. Until then the release job is skipped,
+# with a warning that points there, instead of burning macOS minutes on a build that cannot be signed
+# (a test build of the app without the updater is build.yml).
 name: Release
 
 on:
@@ -19,7 +20,29 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Whether the updater signing setup exists: without it the release job is skipped (grey), not failed (red).
+  preflight:
+    runs-on: ubuntu-latest
+    outputs:
+      ready: ${{ steps.check.outputs.ready }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: check
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ] || [ -z "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD" ] \
+             || grep -q 'REPLACE_WITH_MINISIGN_PUBLIC_KEY' src-tauri/tauri.conf.json; then
+            echo "::warning title=Release skipped::The updater signing setup is missing (docs/release-signing.md). Test builds: the Build workflow."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+
   release:
+    needs: preflight
+    if: needs.preflight.outputs.ready == 'true'
     runs-on: macos-latest
     timeout-minutes: 90
     steps:
