@@ -82,6 +82,29 @@ pub fn parse_group_folder(component: &str) -> Option<(u32, String)> {
     Some((number, name))
 }
 
+/// The look code ARRI starts the file names of its Look Library with: four digits, the first of
+/// them the group (`1110 Black and White`, `3250-Cross`, `8120-20s`), then a space, dash,
+/// underscore or dot. What follows must not be only digits and separators, which is a date or a
+/// version (`2024-05-12`, `2024_05`), not a title.
+#[must_use]
+pub fn look_code(stem: &str) -> Option<u32> {
+    let bytes = stem.as_bytes();
+    if bytes.len() < 5 || !bytes[..4].iter().all(u8::is_ascii_digit) || bytes[0] == b'0' {
+        return None;
+    }
+    if !matches!(bytes[4], b' ' | b'-' | b'_' | b'.') {
+        return None;
+    }
+    let rest = &stem[5..];
+    if rest
+        .chars()
+        .all(|c| c.is_ascii_digit() || c.is_whitespace() || matches!(c, '-' | '_' | '.'))
+    {
+        return None;
+    }
+    stem[..4].parse().ok()
+}
+
 /// The innermost group folder in a relative path (`ARRI Looks/3000 Film/x.cube` gives 3000).
 #[must_use]
 pub fn group_of(rel_path: &str) -> Option<(u32, String)> {
@@ -288,6 +311,25 @@ mod tests {
         assert_eq!(file_stem("noext"), "noext");
         assert_eq!(folder_components("a/b/c.cube"), vec!["a", "b"]);
         assert!(folder_components("c.cube").is_empty());
+    }
+
+    #[test]
+    fn look_codes() {
+        assert_eq!(look_code("1110 Black and White"), Some(1110));
+        assert_eq!(look_code("3250-Cross"), Some(3250));
+        assert_eq!(look_code("8120-20s"), Some(8120), "a decade after the code is a title");
+        assert_eq!(look_code("9211_Day_for_Night"), Some(9211));
+        assert_eq!(look_code("1120 Black and White - Night sky"), Some(1120));
+        // Dates, versions, short or long numbers and names that merely hold digits are not codes.
+        assert_eq!(look_code("2024-05-12"), None);
+        assert_eq!(look_code("2024_05"), None);
+        assert_eq!(look_code("2024.1"), None);
+        assert_eq!(look_code("2024 "), None);
+        assert_eq!(look_code("2024"), None);
+        assert_eq!(look_code("20245 Film"), None);
+        assert_eq!(look_code("300 Film"), None);
+        assert_eq!(look_code("0110 Film"), None);
+        assert_eq!(look_code("Film 3000"), None);
     }
 
     #[test]

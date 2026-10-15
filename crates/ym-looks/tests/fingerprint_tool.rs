@@ -31,7 +31,13 @@ fn the_script_output_identifies_a_renamed_package_by_hash() {
     let shipped = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data/looks/arri-packages.json");
     let work = tempfile::tempdir().unwrap();
     let list = work.path().join("arri-packages.json");
-    fs::copy(&shipped, &list).unwrap();
+    // The shipped list carries the real fingerprints; start from one without them.
+    let mut shipped_db = PackageDb::load(&shipped).unwrap();
+    for package in &mut shipped_db.packages {
+        package.fingerprints.clear();
+        package.observed = None;
+    }
+    fs::write(&list, serde_json::to_string_pretty(&shipped_db).unwrap()).unwrap();
 
     // 1. Fingerprint a synthetic LogC4 package (4 small cubes) with the real script.
     let zip = write_package_zip(work.path(), Kind::LookLogC4, 4);

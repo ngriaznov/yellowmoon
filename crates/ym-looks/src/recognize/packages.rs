@@ -8,6 +8,7 @@
 //!   "note": "...",
 //!   "page_url": "https://www.arri.com/en/learn/camera-systems/image-science/look-files",
 //!   "display_names": ["gamma24", "rec709", "p3", "rec2020", "hlg", "pq"],
+//!   "group_names": { "1000": "Black and White", "3000": "Film" },
 //!   "packages": [
 //!     {
 //!       "id": "look-library-logc4",
@@ -32,6 +33,7 @@
 //! All name patterns are compared in folded form (lower case, letters and digits only), so
 //! `"LogC4"`, `"logc-4"` and `"LOGC_4"` are the same.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -304,6 +306,11 @@ pub struct PackageDb {
     /// Display-rendering words that follow `-to-` in file names (folded when compared).
     #[serde(default = "default_display_names")]
     pub display_names: Vec<String>,
+    /// The names of ARRI's look groups by number (`"3000": "Film"`). The Look Library is a flat list
+    /// of files called `3110 Film A.cube`: the first digit of the look code is the group, and this
+    /// says what the group is called. Names only.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub group_names: BTreeMap<u32, String>,
     /// The packages.
     #[serde(default)]
     pub packages: Vec<Package>,
@@ -324,6 +331,7 @@ impl PackageDb {
             note: None,
             page_url: None,
             display_names: default_display_names(),
+            group_names: BTreeMap::new(),
             packages: Vec::new(),
         }
     }

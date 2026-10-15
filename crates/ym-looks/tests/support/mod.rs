@@ -157,10 +157,14 @@ pub fn write_package_zip(dir: &Path, kind: Kind, n: usize) -> PathBuf {
 }
 
 /// The real `data/looks/arri-packages.json` with the numbers shrunk so synthetic packages stay small:
-/// `n` files per package and the test LUT sizes. Patterns, markers and names are the real ones.
+/// `n` files per package and the test LUT sizes. Patterns, markers and names are the real ones; the
+/// fingerprints (hashes of ARRI's real files) are left out, since synthetic files cannot match them.
 pub fn small_db(n: usize) -> PackageDb {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data/looks/arri-packages.json");
     let mut db = PackageDb::load(&path).expect("arri-packages.json");
+    for package in &mut db.packages {
+        package.fingerprints.clear();
+    }
     for kind in Kind::ALL {
         let package = db
             .packages

@@ -242,7 +242,7 @@ describe("step 3 · Recognise", () => {
     await toRecognise(FAILURE_ZIPS.alf4Only);
     const row = screen.getAllByRole("row")[1] as HTMLElement;
     expect(within(row).getByText("Can't use")).toBeInTheDocument();
-    expect(row).toHaveTextContent("This zip has ARRI Look Files (.alf4) but no .cube files. Download the 'LUT (.cube)' version from ARRI's page.");
+    expect(row).toHaveTextContent("These are ARRI look files for the camera (.alf4). Yellowmoon needs the 3D-LUT version: download 'Look Library for LogC4 (3D-LUTs)' from ARRI's look page.");
     expect(next()).toHaveAttribute("aria-disabled", "true");
   });
 

@@ -67,9 +67,13 @@ class FingerprintTests(unittest.TestCase):
         self.dir = Path(self._tmp.name)
         self.db = self.dir / "arri-packages.json"
         shutil.copy(PACKAGES, self.db)
-        # Shrink the expectations so the synthetic packages are small.
+        # The shipped list carries the real fingerprints (names, sizes and hashes of ARRI's public
+        # packages): start from a list without them, and shrink the expectations so the synthetic
+        # packages are small.
         data = json.loads(self.db.read_text())
         for package in data["packages"]:
+            package["fingerprints"] = []
+            package.pop("observed", None)
             package["expected"]["cube_files"] = 4
             if package["expected"]["lut_sizes"]:
                 package["expected"]["lut_sizes"] = [5]
@@ -221,6 +225,15 @@ class FingerprintTests(unittest.TestCase):
         self.assertEqual(run("--reformat", "--packages", copy).returncode, 0)
         self.assertEqual(copy.read_bytes(), shipped, "run `fingerprint.py --reformat` to restore the layout")
         self.assertLess(len(shipped), 200_000)
+        # Fingerprints are names, sizes and hashes: no other key, no LUT rows anywhere.
+        data = json.loads(shipped)
+        for package in data["packages"]:
+            for fp in package["fingerprints"]:
+                self.assertEqual(set(fp), {"path", "size", "lut_size", "sha256"}, package["id"])
+                self.assertRegex(fp["sha256"], r"^[0-9a-f]{64}$")
+                self.assertTrue(fp["path"].endswith(".cube"), fp["path"])
+                self.assertLess(len(fp["path"]), 200)
+        self.assertNotRegex(shipped.decode(), r"-?\d+\.\d+\s+-?\d+\.\d+\s+-?\d+\.\d+")
 
     def test_usage_errors_exit_2(self) -> None:
         self.assertEqual(run().returncode, 2)

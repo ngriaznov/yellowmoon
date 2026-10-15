@@ -46,7 +46,7 @@ pub use packages::{
 
 use names::{
     display_target, file_name, file_stem, fold_alnum, folder_components, group_of,
-    has_display_rendering, look_name, parse_group_folder,
+    has_display_rendering, look_code, look_name, parse_group_folder,
 };
 
 /// What kind of thing the user chose to import.
@@ -388,6 +388,26 @@ enum Pattern<'a> {
     },
 }
 
+/// The look group of a file: the four-digit group folder it sits in (`3000 Film/x.cube`), else the
+/// first digit of the look code its name starts with. ARRI's Look Library is a flat list of files
+/// called `3110 Film A.cube` or `3250-Cross.cube` (code 3110 is in group 3000, "Film", by
+/// [`PackageDb::group_names`]), so the folders say nothing and the file names do.
+fn group_for(db: &PackageDb, path: &str) -> Option<(u32, String)> {
+    group_of(path).or_else(|| {
+        let code = look_code(file_stem(path))?;
+        let number = code / 1000 * 1000;
+        if number == 0 {
+            return None;
+        }
+        let name = db
+            .group_names
+            .get(&number)
+            .cloned()
+            .unwrap_or_else(|| format!("Group {number}"));
+        Some((number, name))
+    })
+}
+
 /// Evidence text for a file: the source's name, its path and its `TITLE`, folded.
 fn evidence_text(source: &SourceInfo, file: &FileFacts, summary: &CubeSummary) -> String {
     let title = summary.title.as_deref().unwrap_or("");
@@ -451,7 +471,7 @@ fn match_pattern<'a>(
     summary: &CubeSummary,
 ) -> Pattern<'a> {
     let evidence = evidence_text(source, file, summary);
-    let has_group = group_of(&file.rel_path).is_some();
+    let has_group = group_for(db, &file.rel_path).is_some();
     let has_display = names_display_rendering(db, source, file, summary);
     let fits: Vec<&Package> = db
         .packages
@@ -486,7 +506,7 @@ fn match_pattern<'a>(
 }
 
 fn outcome_for(db: &PackageDb, package: &Package, path: &str, evidence: Evidence) -> Outcome {
-    outcome_in_group(db, package, path, evidence, group_of(path))
+    outcome_in_group(db, package, path, evidence, group_for(db, path))
 }
 
 /// [`outcome_for`] with the group decided by the caller (`None`: ungrouped).
@@ -572,6 +592,52 @@ fn lenient_groups(paths: &[&str]) -> Vec<Option<(u32, String)>> {
         .collect()
 }
 
+/// The folders every file sits in, outermost first (`ARRI Look Library for LogC4 (3D-LUTs)`).
+fn shared_folders(files: &[FileFacts]) -> Vec<&str> {
+    let mut folders = files.iter().map(|f| folder_components(&f.rel_path));
+    let Some(mut shared) = folders.next() else {
+        return Vec::new();
+    };
+    for other in folders {
+        let same = shared.iter().zip(&other).take_while(|(a, b)| a == b).count();
+        shared.truncate(same);
+    }
+    shared
+}
+
+/// Looks of one package and group that share a name (ARRI's `1110 Black and White` and
+/// `1111 Black and White` are two looks) get their look code added to the name, so the list of
+/// looks does not show the same name twice.
+fn tell_same_names_apart(files: &mut [RecognizedFile]) {
+    let key = |package: &str, group_no: u32, name: &str| (package.to_string(), group_no, name.to_lowercase());
+    let mut count: HashMap<(String, u32, String), usize> = HashMap::new();
+    for f in files.iter() {
+        if let Outcome::ArriLook {
+            package,
+            group_no,
+            name,
+            ..
+        } = &f.outcome
+        {
+            *count.entry(key(package, *group_no, name)).or_default() += 1;
+        }
+    }
+    for f in files.iter_mut() {
+        if let Outcome::ArriLook {
+            package,
+            group_no,
+            name,
+            file_name: library_name,
+            ..
+        } = &mut f.outcome
+            && count.get(&key(package, *group_no, name)).is_some_and(|n| *n > 1)
+            && let Some(code) = look_code(file_stem(library_name))
+        {
+            *name = format!("{name} {code}");
+        }
+    }
+}
+
 /// Whether a file was identified by its hash (which nothing overrides).
 fn identified_by_hash(file: &RecognizedFile) -> bool {
     matches!(
@@ -607,7 +673,12 @@ fn match_by_package(
     if source.kind == SourceKind::File {
         return;
     }
-    let source_text = fold_alnum(source.name.strip_suffix(".zip").unwrap_or(&source.name));
+    // The names that can say what the package is: the zip or folder, and the folders every file
+    // sits in (ARRI's zips hold one folder named for the package, which survives a renamed zip).
+    let wrapper = shared_folders(files);
+    let names: Vec<&str> = std::iter::once(source.name.as_str())
+        .chain(wrapper.iter().copied())
+        .collect();
     let named: Vec<usize> = db
         .packages
         .iter()
@@ -615,8 +686,10 @@ fn match_by_package(
         .filter(|(_, package)| {
             package.expected.cube_files.is_some()
                 && !package.markers.encoding.is_empty()
-                && package.matches_zip_name(&source.name)
-                && package.markers.encoding.matches_folded(&source_text)
+                && names.iter().any(|name| {
+                    let folded = fold_alnum(name.strip_suffix(".zip").unwrap_or(name));
+                    package.matches_zip_name(name) && package.markers.encoding.matches_folded(&folded)
+                })
         })
         .map(|(i, _)| i)
         .collect();
@@ -657,7 +730,7 @@ fn match_by_package(
                         };
                         markers
                             .group_folders
-                            .allows(group_of(&files[j].rel_path).is_some())
+                            .allows(group_for(db, &files[j].rel_path).is_some())
                             && markers.display_rendering.allows(names_display_rendering(
                                 db,
                                 source,
@@ -689,7 +762,7 @@ fn match_by_package(
     for (&j, lenient) in members.iter().zip(groups) {
         if package_of[j] != Some(*index) {
             let path = &files[j].rel_path;
-            let group = group_of(path).or(lenient);
+            let group = group_for(db, path).or(lenient);
             recognized[j].outcome = outcome_in_group(db, package, path, Evidence::Pattern, group);
         }
         package_of[j] = Some(*index);
@@ -800,6 +873,7 @@ pub fn recognize(
     }
 
     match_by_package(db, source, files, &mut recognized, &mut package_of);
+    tell_same_names_apart(&mut recognized);
 
     let packages = findings(db, source, &recognized, &package_of, &claimed);
     let issues = issues_for(db, source, ignored, &recognized, &packages);

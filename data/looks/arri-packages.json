@@ -1,9 +1,20 @@
 {
   "version": 1,
   "note": "Recognition rules and fingerprints for ARRI's free look packages. Names, sizes, LUT sizes and SHA-256 only; never LUT data. Filled by tools/looks/fingerprint.py in M3-09 (HUMAN M3-H2). See docs/08-looks.md.",
-  "patterns_note": "Checked on 2026-10-15 against the text of ARRI's Look Files page (https://www.arri.com/en/learn/camera-systems/image-science/look-files, pasted by Mykyta) and one real download: 'ARRI Look Library LogC4 (log-to-log) 3D-LUTs_data.zip' (190 MB, 87 cubes of 65 points). The page lists 'Look Library for LogC4 (3D-LUTs)' (log-to-log, 2025-07-30), 'ARRI Look Library LogC3 (3D-LUTs)' (log-to-log, 2024-11-28), 'ARRI Look Library LogC3 (to Rec709) 3D-LUTs' (33 mesh points, 2024-03-12) and two camera look-file packages that Yellowmoon cannot import: 'Look Library for LogC4 (ALF4 Look Files)' (.alf4, 2023-02-10) and 'ARRI Look Library LogC3 (Look Files)' (.aml, 2023-02-10). It states no download sizes and no LUT size for the LogC3 log-to-log library, so neither is a rule (download_mb is a hint; that library's lut_sizes is empty). The two display LUT packages are on ARRI's Technical Downloads page, not on that page; their names ('LogC4 LUT Package'), counts and file naming (ARRI_LogC4-to-Gamma24_Rec709-D65_v1_65.cube) come from ARRI's LUT naming guideline and were not checked against a download. How the patterns are used: the zip_name patterns, the encoding and the LUT sizes identify a package as a whole (at least half of expected.cube_files files); group_folders and display_rendering are only read for files whose zip name says nothing, and then between packages that both fit. Counts are expected values, not gates: more files than expected are imported with a note, fewer are reported as an incomplete download. Download sizes are not used to recognise anything. Once tools/looks/fingerprint.py has filled 'fingerprints' (HUMAN M3-H2), files are identified by hash and these patterns only cover files that are not in a fingerprint list.",
+  "patterns_note": "Checked on 2026-10-15 against the text of ARRI's Look Files page (https://www.arri.com/en/learn/camera-systems/image-science/look-files, pasted by Mykyta) and ARRI's five public downloads from it (unzipped and listed, names only): the three 3D-LUT packages below and the two camera look-file packages. The 3D-LUT zips each hold ONE top folder named for the package and 87 flat .cube files named '<look code> <title>.cube' ('1110 Black and White.cube'; '3250-Cross.cube' with hyphens in the LogC3 to Rec709 one): no group folders, no encoding word in the file names (the zip and folder names carry it: 'LogC4', 'LogC3', 'to Rec709'), the group is the first digit of the look code, the LUT size is 65 (LogC4) or 33 (LogC3). The LogC3 to Rec709 zip also holds a __MACOSX tree of ._ files named .cube that are not LUTs. The camera look-file zips hold .alf4 (LogC4) or .aml (LogC3, three strengths per look) files in group folders; Yellowmoon cannot read them and says which 3D-LUT download to take. The page names the downloads 'Look Library for LogC4 (3D-LUTs)' (log-to-log, 2025-07-30), 'ARRI Look Library LogC3 (3D-LUTs)' (log-to-log, 2024-11-28), 'ARRI Look Library LogC3 (to Rec709) 3D-LUTs' (33 mesh points, 2024-03-12), 'Look Library for LogC4 (ALF4 Look Files)' and 'ARRI Look Library LogC3 (Look Files)' (2023-02-10); it states no download sizes and no LUT size for the LogC3 log-to-log library, so neither is a rule (download_mb is a hint; that library's lut_sizes is empty although its files have 33 points). The two display LUT packages are on ARRI's Technical Downloads page, not on that page; their names ('LogC4 LUT Package'), counts and file naming (ARRI_LogC4-to-Gamma24_Rec709-D65_v1_65.cube) come from ARRI's LUT naming guideline and were not checked against a download. The fingerprints of the three 3D-LUT packages were taken by the agent with tools/looks/fingerprint.py on 2026-10-15 from those downloads, with Mykyta's go-ahead (M3-H2): names, sizes, LUT sizes and SHA-256, no LUT data. How the patterns are used when a file is not in a fingerprint list: the zip_name patterns (on the zip's name or on the folder every file sits in), the encoding and the LUT sizes identify a package as a whole (at least half of expected.cube_files files); group_folders (a four-digit group folder or a look code at the start of the file name) and display_rendering are only read for files whose names say nothing about the package, and then between packages that both fit. Counts are expected values, not gates: more files than expected are imported with a note, fewer are reported as an incomplete download. Download sizes are not used to recognise anything.",
   "page_url": "https://www.arri.com/en/learn/camera-systems/image-science/look-files",
   "display_names": ["gamma24", "rec709", "bt709", "p3", "dcip3", "rec2020", "bt2020", "hlg", "pq", "srgb"],
+  "group_names": {
+    "1000": "Black and White",
+    "2000": "Application",
+    "3000": "Film",
+    "4000": "Tinted",
+    "5000": "Environment",
+    "6000": "Season",
+    "7000": "Contrast",
+    "8000": "Period",
+    "9000": "Special"
+  },
   "packages": [
     {
       "id": "look-library-logc4",
@@ -21,7 +32,538 @@
         "display_rendering": "absent",
         "group_folders": "required"
       },
-      "fingerprints": []
+      "fingerprints": [
+        {
+          "path": "ARRI Look Library for LogC4 (3D-LUTs)/1110 Black and White.cube",
+          "size": 7414985,
+          "lut_size": 65,
+          "sha256": "dc500fd0cc1c759c45ab1d63c9340b9b0a210f74a6168ae2e5cfc97221efa603"
+        },
+        {
+          "path": "ARRI Look Library for LogC4 (3D-LUTs)/1111 Black and White.cube",
+          "size": 7414985,
+          "lut_size": 65,
+          "sha256": "a71deb02cbd19399a8e57daf649a9747d32abd434c570c51d56ba51270e99109"
+        },
+        {
+          "path": "ARRI Look Library for LogC4 (3D-LUTs)/1120 Black and White - Night sky.cube",
+          "size": 7414985,
+          "lut_size": 65,
+          "sha256": "dc3a7dcadfd1fa3d191fd079846e6ad3c14bff51ebea849d45397957fb6b5e4d"
+        },
+        {
+          "path": "ARRI Look Library for LogC4 (3D-LUTs)/2110 Commercial.cube",
+          "size": 7414985,
+          "lut_size": 65,
+          "sha256": "90667a65f94e17247cd632f5fb624626aa96b50bd79e78c1580b86a3f0c6c676"
+        },
+        {
+          "path": "ARRI Look Library for LogC4 (3D-LUTs)/2111 Commercial.cube",
+          "size": 7414985,
+          "lut_size": 65,
+          "sha256": "d8b6f1409978d47e1d4eeaad2036dc4367bd68f465c514bd2e5c1adf5d3345be"
+        },
+        {
+          "path": "ARRI Look Library for LogC4 (3D-LUTs)/2120 Fashion.cube",
+          "size": 7414985,
+          "lut_size": 65,
+          "sha256": "7f5f530f890e9e2382a83999eeac8e8e5d2f9d4e6f1cdae4e271cb5122b5632e"
+        },
+        {
+          "path": "ARRI Look Library for LogC4 (3D-LUTs)/2121 Fashion.cube",
+          "size": 7414985,
+          "lut_size": 65,
+          "sha256": "b0152ac67c9a45d7e24cc233a3efe00ff51ec507ff6b731b9c4960c843e91118"
+        },
+        {
+          "path": "ARRI Look Library for LogC4 (3D-LUTs)/2130 Beauty.cube",
+          "size": 7414985,
+          "lut_size": 65,
+          "sha256": "8bd9f0996d0cb62683f0a0c7aa4012a2a9992f7fbace0a02a1e199abeb2a330d"
+        },
+        {
+          "path": "ARRI Look Library for LogC4 (3D-LUTs)/2131 Beauty.cube",
+          "size": 7414985,
+          "lut_size": 65,
+          "sha256": "e73ffadbd664d04a776b9dd6b05647049807cad9fc18323e30652e243b5f0f43"
+        },
+        {
+          "path": "ARRI Look Library for LogC4 (3D-LUTs)/3110 Film A.cube",
+          "size": 7414985,
+          "lut_size": 65,
+          "sha256": "9c79b79db50ca6aa712155e573825aa2fb209d4763d9a1e12cf6c09c57e8bfd8"
+        },
+        {
+          "path": "ARRI Look Library for LogC4 (3D-LUTs)/3111 Film B.cube",
+          "size": 7414985,
+          "lut_size": 65,
+          "sha256": "740644c5aa1ddd6b9fa65f9755bf2160d49cff5728031de897c93eedb9009f5e"
+        },
+        {
+          "path": "ARRI Look Library for LogC4 (3D-LUTs)/3112 Film C.cube",
+          "size": 7414985,
+          "lut_size": 65,
+          "sha256": "5986e172219dc488ed8503a33be8a1f2a8017af499d540bf6ca982a2ef6aea6c"
+        },
+        {
+          "path": "ARRI Look Library for LogC4 (3D-LUTs)/3113 Film D.cube",
+          "size": 7414985,
+          "lut_size": 65,
+          "sha256": "93f465a6cc4442bf8cfafb251414dce4adbe6142a0c524245fef7b9fb7c1a0b0"
+        },
+        {
+          "path": "ARRI Look Library for LogC4 (3D-LUTs)/3114 Film E.cube",
+          "size": 7414985,
+          "lut_size": 65,
+          "sha256": "cbee0192639762feebd6473e1de11aaaefd002f16ca4c69dbda3026e940cc091"
+        },
+        {
+          "path": "ARRI Look Library for LogC4 (3D-LUTs)/3150 Film Process - Bleach bypass.cube",
+          "size": 7414985,
+          "lut_size": 65,
+          "sha256": "3d745aee0f5677f873a4ea164b14cdbc50274fdc84ab407fe1f502b86b9954bb"
+        },
+        {
+          "path": "ARRI Look Library for LogC4 (3D-LUTs)/3151 Film Process - Bleach bypass.cube",
+          "size": 7414985,
+          "lut_size": 65,
+          "sha256": "86b65f00819500936f45b34386528e6a53b0dbeb1985e32b405996651e622551"
+        },
+        {
+          "path": "ARRI Look Library for LogC4 (3D-LUTs)/3210 Vintage.cube",
+          "size": 7414985,
+          "lut_size": 65,
+          "sha256": "73642f0483a17bc09cc4156526c9cc6efc4a475de9e50bf97aba6798d1cb35fe"
+        },
+        {
+          "path": "ARRI Look Library for LogC4 (3D-LUTs)/3211 Vintage.cube",
+          "size": 7414985,
+          "lut_size": 65,
+          "sha256": "8f9f206d61ce2cade0f506128037cc313fd33dd8391f478123d4636afae72676"
+        },
+        {
+          "path": "ARRI Look Library for LogC4 (3D-LUTs)/3220 Analog.cube",
+          "size": 7414985,
+          "lut_size": 65,
+          "sha256": "8b3727824c64e37641d8b32e404ab265ddaca94854d519571c77b9bf6ee851c6"
+        },
+        {
+          "path": "ARRI Look Library for LogC4 (3D-LUTs)/3221 Analog.cube",
+          "size": 7414985,
+          "lut_size": 65,
+          "sha256": "2ac4a52a7c1ac1d6b3388ec00bf7342f5e73852bc45ffea6c7af171e9e79b9f0"
+        },
+        {
+          "path": "ARRI Look Library for LogC4 (3D-LUTs)/3230 Retro.cube",
+          "size": 7414985,
+          "lut_size": 65,
+          "sha256": "701bcd010c95556701e4368e484131961f37c04504f6430a44c32d6ac9a06cce"
+        },
+        {
+          "path": "ARRI Look Library for LogC4 (3D-LUTs)/3231 Retro.cube",
+          "size": 7414985,
+          "lut_size": 65,
+          "sha256": "7a0236bea59c02cc7ab3aab8d8253b353e69c02d20d586e609642b95caf7bc7a"
+        },
+        {
+          "path": "ARRI Look Library for LogC4 (3D-LUTs)/3240 Faded.cube",
+          "size": 7414985,
+          "lut_size": 65,
+          "sha256": "2a563538437908c6c51f07b04a3f15860a50034b73ea786e5aeb09d95b003ef4"
+        },
+        {
+          "path": "ARRI Look Library for LogC4 (3D-LUTs)/3241 Faded.cube",
+          "size": 7414985,
+          "lut_size": 65,
+          "sha256": "4784edf52b5b6360d020244a2c46aebf3e7cd230c0dd4ce20495a63858629433"
+        },
+        {
+          "path": "ARRI Look Library for LogC4 (3D-LUTs)/3250 Cross.cube",
+          "size": 7414985,
+          "lut_size": 65,
+          "sha256": "dabf9f0ea87cefda337aa6c2f3d6f34058dd5f9c889cf79219c7ffd12960c73d"
+        },
+        {
+          "path": "ARRI Look Library for LogC4 (3D-LUTs)/3410 Film - Teal and orange.cube",
+          "size": 7414985,
+          "lut_size": 65,
+          "sha256": "b656c46c5d759954eec6cba74cabe89437140a6a98984f98b7ffa4a8337af911"
+        },
+        {
+          "path": "ARRI Look Library for LogC4 (3D-LUTs)/3411 Film - Teal and orange.cube",
+          "size": 7414985,
+          "lut_size": 65,
+          "sha256": "b58bc0a2c764ca9204fbcc63d9797e785c46199cfa7cc6780c236569f1920db0"
+        },
+        {
+          "path": "ARRI Look Library for LogC4 (3D-LUTs)/3420 Video - Teal and orange.cube",
+          "size": 7414985,
+          "lut_size": 65,
+          "sha256": "521601148d398178ab73c9f0318ba6aa703910099b8db0e1180cbee12317ab42"
+        },
+        {
+          "path": "ARRI Look Library for LogC4 (3D-LUTs)/4110 Tinted - Desert.cube",
+          "size": 7414985,
+          "lut_size": 65,
+          "sha256": "025a4c5ef213abedfc891819d6bd2f99be0b35823f0fb75280ef674dabfc95de"
+        },
+        {
+          "path": "ARRI Look Library for LogC4 (3D-LUTs)/4120 Tinted - Sepia.cube",
+          "size": 7414985,
+          "lut_size": 65,
+          "sha256": "85434624d6c4e7ae95fc604474b827ebf2efd6a13d5a031f4acd62a0fef683a1"
+        },
+        {
+          "path": "ARRI Look Library for LogC4 (3D-LUTs)/4130 Tinted - Orange.cube",
+          "size": 7414985,
+          "lut_size": 65,
+          "sha256": "965ef22ef77affd39e7e71d172dfc481478ccafb55ffb5abb222168c0b409729"
+        },
+        {
+          "path": "ARRI Look Library for LogC4 (3D-LUTs)/4131 Tinted - Orange.cube",
+          "size": 7414985,
+          "lut_size": 65,
+          "sha256": "de87ab97bc03cb895b072929e00721bbaf2faead4de7f615da6156b80b0de1fa"
+        },
+        {
+          "path": "ARRI Look Library for LogC4 (3D-LUTs)/4140 Tinted - Earth.cube",
+          "size": 7414985,
+          "lut_size": 65,
+          "sha256": "2e32fb0a90e0bde1262d58b827a28250b9a3dbcc8a85ddeea05b57ff3cccf0a2"
+        },
+        {
+          "path": "ARRI Look Library for LogC4 (3D-LUTs)/4150 Tinted - White.cube",
+          "size": 7414985,
+          "lut_size": 65,
+          "sha256": "b5f895074a8dc79cdb4cbcd67ae97870a71c1fc514f1fb97a77dbe39bb683600"
+        },
+        {
+          "path": "ARRI Look Library for LogC4 (3D-LUTs)/4160 Tinted - Teal.cube",
+          "size": 7414985,
+          "lut_size": 65,
+          "sha256": "d7c62952c09468b88e55d15db064554a9b8630d01890764c25c6017a66199214"
+        },
+        {
+          "path": "ARRI Look Library for LogC4 (3D-LUTs)/4170 Tinted - Blue sky.cube",
+          "size": 7414985,
+          "lut_size": 65,
+          "sha256": "4d72c9452bfa111a6de7445d9d01f58033eea1d62769d9cd5bdb51d7dc30a8f0"
+        },
+        {
+          "path": "ARRI Look Library for LogC4 (3D-LUTs)/4180 Tinted - Ocean.cube",
+          "size": 7414985,
+          "lut_size": 65,
+          "sha256": "38b8927820ae7f6a6ef4b5019ac204c3ff1b34e2eb9dd5e1638da0a8fe028083"
+        },
+        {
+          "path": "ARRI Look Library for LogC4 (3D-LUTs)/4190 Tinted - Aqua.cube",
+          "size": 7414985,
+          "lut_size": 65,
+          "sha256": "a46cc0edbc4c758e14f921ceb86a2e4344fd83e7590b57a95207f965e55af332"
+        },
+        {
+          "path": "ARRI Look Library for LogC4 (3D-LUTs)/4210 Tinted - Green.cube",
+          "size": 7414985,
+          "lut_size": 65,
+          "sha256": "72e9bd70a55c09c6b0422534d33539c3fea038289b1a3cdffb3d27e2b55476e1"
+        },
+        {
+          "path": "ARRI Look Library for LogC4 (3D-LUTs)/4220 Tinted - Magenta.cube",
+          "size": 7414985,
+          "lut_size": 65,
+          "sha256": "f2af32de9eed88ad6aff4b7a5df1ede99d74e3a4bd86c5ecff980a8d5b767fde"
+        },
+        {
+          "path": "ARRI Look Library for LogC4 (3D-LUTs)/4230 Tinted - Yellow.cube",
+          "size": 7414985,
+          "lut_size": 65,
+          "sha256": "8285a7aa13dee24a58ecb1ac28250c1d7c4a693e377444b8de1b7da4f7898945"
+        },
+        {
+          "path": "ARRI Look Library for LogC4 (3D-LUTs)/4240 Tinted - Fire.cube",
+          "size": 7414985,
+          "lut_size": 65,
+          "sha256": "b1acb92fd3dccfa74fb2daaf1c0a6bca9d33157faa35b21d9dcf2cd5c3bad56b"
+        },
+        {
+          "path": "ARRI Look Library for LogC4 (3D-LUTs)/5110 Nature.cube",
+          "size": 7414985,
+          "lut_size": 65,
+          "sha256": "c5a39e59ff064f7dc099ba2c11b2313df87af1823aca9cc2df7f2dbced94af31"
+        },
+        {
+          "path": "ARRI Look Library for LogC4 (3D-LUTs)/5111 Nature.cube",
+          "size": 7414985,
+          "lut_size": 65,
+          "sha256": "9633780c9f3621c01eef029143162f8122228f9effe09db5600c1288173a3a27"
+        },
+        {
+          "path": "ARRI Look Library for LogC4 (3D-LUTs)/5120 City.cube",
+          "size": 7414985,
+          "lut_size": 65,
+          "sha256": "7e7ae29785b6fae220f5da9fc248fafe990379d517d2615d1bc8a28fe83e4bfd"
+        },
+        {
+          "path": "ARRI Look Library for LogC4 (3D-LUTs)/5121 City.cube",
+          "size": 7414985,
+          "lut_size": 65,
+          "sha256": "62f9d31f1c33484db101345b18efe1d0fbe01d55ee8c37cce4f2bbf3dbaf308f"
+        },
+        {
+          "path": "ARRI Look Library for LogC4 (3D-LUTs)/5122 City.cube",
+          "size": 7414985,
+          "lut_size": 65,
+          "sha256": "8f7065d9c546f46a36989621d03587cf7ff7cd42d8d5b49e8f23f4575d8ab3ff"
+        },
+        {
+          "path": "ARRI Look Library for LogC4 (3D-LUTs)/5130 Suburban.cube",
+          "size": 7414985,
+          "lut_size": 65,
+          "sha256": "a3818c6ca634ca3ae1aee79ae3b094a35ac4e5c7850acc7b1fd94bccdfe2cce4"
+        },
+        {
+          "path": "ARRI Look Library for LogC4 (3D-LUTs)/5131 Suburban.cube",
+          "size": 7414985,
+          "lut_size": 65,
+          "sha256": "a2e4b855e9ad9ad9d8d69afafc9760d0a1529551f4f946aa45e07fba513eec91"
+        },
+        {
+          "path": "ARRI Look Library for LogC4 (3D-LUTs)/5210 Vibrant.cube",
+          "size": 7414985,
+          "lut_size": 65,
+          "sha256": "7643e1c899ca237a9f8949220cac4f53e9ae3e980c4b9568fd2845138bdb1b32"
+        },
+        {
+          "path": "ARRI Look Library for LogC4 (3D-LUTs)/5220 Desaturated.cube",
+          "size": 7414985,
+          "lut_size": 65,
+          "sha256": "cb5e3187f95e8ab41a144972728499cee92e5517d7fab13aa16ea8ca9bb51b53"
+        },
+        {
+          "path": "ARRI Look Library for LogC4 (3D-LUTs)/5230 Saturated.cube",
+          "size": 7414985,
+          "lut_size": 65,
+          "sha256": "6457eb8798a41611e8055a01d7ccc2a77387658f9fbc837779c7b1be66a04c75"
+        },
+        {
+          "path": "ARRI Look Library for LogC4 (3D-LUTs)/6110 Warm.cube",
+          "size": 7414985,
+          "lut_size": 65,
+          "sha256": "91d34346a8c8b0135a260ba0ac8ad6ca90fa95251bc53f331bcec590866ce05b"
+        },
+        {
+          "path": "ARRI Look Library for LogC4 (3D-LUTs)/6111 Warm.cube",
+          "size": 7414985,
+          "lut_size": 65,
+          "sha256": "72fcc20079a2553205bf0e29b77b95d1dea898c4d51f2fb75eb1a8ba549e446e"
+        },
+        {
+          "path": "ARRI Look Library for LogC4 (3D-LUTs)/6112 Warm.cube",
+          "size": 7414985,
+          "lut_size": 65,
+          "sha256": "5a96e753b182b6c639fe3155d2d391d1d5ba132de550356d516095194bc78272"
+        },
+        {
+          "path": "ARRI Look Library for LogC4 (3D-LUTs)/6120 Cold.cube",
+          "size": 7414985,
+          "lut_size": 65,
+          "sha256": "bf208420938f88218bc8042ea2c5185c1e212814567060373e669058e236dd8c"
+        },
+        {
+          "path": "ARRI Look Library for LogC4 (3D-LUTs)/6121 Cold.cube",
+          "size": 7414985,
+          "lut_size": 65,
+          "sha256": "80e1e3afce68c46bd6f34cb303f7a8225b501fa692bea1497890b9e18ccffa64"
+        },
+        {
+          "path": "ARRI Look Library for LogC4 (3D-LUTs)/6210 Spring.cube",
+          "size": 7414985,
+          "lut_size": 65,
+          "sha256": "4d5c2af2486cac82db5837d00de9d5b3bf644e82efac43051adadfeaefadfa0b"
+        },
+        {
+          "path": "ARRI Look Library for LogC4 (3D-LUTs)/6220 Summer.cube",
+          "size": 7414985,
+          "lut_size": 65,
+          "sha256": "cf12a0fc7424f9dd5d1aba9f213a2d0c65f81a6d06f969ee204aa63831587206"
+        },
+        {
+          "path": "ARRI Look Library for LogC4 (3D-LUTs)/6230 Autumn.cube",
+          "size": 7414985,
+          "lut_size": 65,
+          "sha256": "ac09cd849a63a35669bf945ee59384ee3d63bbd07731402b2598d0314b1cce3c"
+        },
+        {
+          "path": "ARRI Look Library for LogC4 (3D-LUTs)/6240 Winter.cube",
+          "size": 7414985,
+          "lut_size": 65,
+          "sha256": "da0c786c8df1520fc37c932bb56c14a0d7cf998968ecac0656ab71974cf5591a"
+        },
+        {
+          "path": "ARRI Look Library for LogC4 (3D-LUTs)/6310 Pastel.cube",
+          "size": 7414985,
+          "lut_size": 65,
+          "sha256": "93d4dd513d7e3d46ab3e8c8fc092b0ad2eda10757d23ea87c9bf263265f73530"
+        },
+        {
+          "path": "ARRI Look Library for LogC4 (3D-LUTs)/6311 Pastel.cube",
+          "size": 7414985,
+          "lut_size": 65,
+          "sha256": "ca9bb51f76edd6042d92a59ed4bce16936849e6e1014a90c8731dfa58d8b6a3a"
+        },
+        {
+          "path": "ARRI Look Library for LogC4 (3D-LUTs)/6410 Sunset.cube",
+          "size": 7414985,
+          "lut_size": 65,
+          "sha256": "1bfd5b51fa3c1805998a642cb60ec4958b063dded95b90b8979e0feb74d5ad55"
+        },
+        {
+          "path": "ARRI Look Library for LogC4 (3D-LUTs)/6420 Early Morning.cube",
+          "size": 7414985,
+          "lut_size": 65,
+          "sha256": "1a39b85728436288f69072ccf9a88d3aedd0fb301a699e965825872135055a8d"
+        },
+        {
+          "path": "ARRI Look Library for LogC4 (3D-LUTs)/6610 Desert.cube",
+          "size": 7414985,
+          "lut_size": 65,
+          "sha256": "88d8b75af69e7d79ac808be58142af5a0c57df00eb2d88e6c92f8c621639c44c"
+        },
+        {
+          "path": "ARRI Look Library for LogC4 (3D-LUTs)/6620 Snow.cube",
+          "size": 7414985,
+          "lut_size": 65,
+          "sha256": "83c0b40bf653e3543e734eaad0999835363e58c7dc08b5919d9537d282c47346"
+        },
+        {
+          "path": "ARRI Look Library for LogC4 (3D-LUTs)/7110 Low Contrast.cube",
+          "size": 7414985,
+          "lut_size": 65,
+          "sha256": "d7aa4da8ccd29f5be0d636de8e706e586f17b1f8cc149f10ceb47422e4a46b77"
+        },
+        {
+          "path": "ARRI Look Library for LogC4 (3D-LUTs)/7111 Low Contrast.cube",
+          "size": 7414985,
+          "lut_size": 65,
+          "sha256": "0fb6b45abdbb5b119c7f8a8a944c04a2047d06db1ea0404ca6ba9b0e221cbb38"
+        },
+        {
+          "path": "ARRI Look Library for LogC4 (3D-LUTs)/7120 High Contrast.cube",
+          "size": 7414985,
+          "lut_size": 65,
+          "sha256": "872fa4d55dbcfca13ae41ba02b955ea5c1a26ee2881b5463dad32bb9da3f989c"
+        },
+        {
+          "path": "ARRI Look Library for LogC4 (3D-LUTs)/7121 High Contrast.cube",
+          "size": 7414985,
+          "lut_size": 65,
+          "sha256": "5051c4da4849b6a48f01a616e15af9957a42a35f6760fbad81b8b4cb776311ce"
+        },
+        {
+          "path": "ARRI Look Library for LogC4 (3D-LUTs)/7130 High Key.cube",
+          "size": 7414985,
+          "lut_size": 65,
+          "sha256": "008a9b3598237d057eafbc7f5944ccc39da3d7126c42c993423c6d3616c09c2a"
+        },
+        {
+          "path": "ARRI Look Library for LogC4 (3D-LUTs)/7131 High Key.cube",
+          "size": 7414985,
+          "lut_size": 65,
+          "sha256": "ea1bed73dad76f62c15782e7f99e8537856432d331907c40654d683ea23db414"
+        },
+        {
+          "path": "ARRI Look Library for LogC4 (3D-LUTs)/7140 Low Key.cube",
+          "size": 7414985,
+          "lut_size": 65,
+          "sha256": "e2ec636c3863b09eb99c987144272b9b328b89d23bfee5cee804596100752366"
+        },
+        {
+          "path": "ARRI Look Library for LogC4 (3D-LUTs)/8120 20s.cube",
+          "size": 7414985,
+          "lut_size": 65,
+          "sha256": "da95d33cb44c2b054f74d83349a9e6beeacac257965c113a82b95a55ce8c355e"
+        },
+        {
+          "path": "ARRI Look Library for LogC4 (3D-LUTs)/8130 30s.cube",
+          "size": 7414985,
+          "lut_size": 65,
+          "sha256": "d83c67e5e4fbcbd8e1657d04193c6366d1d783ad321da632192a86451f3fc80b"
+        },
+        {
+          "path": "ARRI Look Library for LogC4 (3D-LUTs)/8140 40s.cube",
+          "size": 7414985,
+          "lut_size": 65,
+          "sha256": "e41785f7e910482f9827d683131055459ab5a6540e61dcd58a3a29bb716ef103"
+        },
+        {
+          "path": "ARRI Look Library for LogC4 (3D-LUTs)/8150 50s.cube",
+          "size": 7414985,
+          "lut_size": 65,
+          "sha256": "93a6419a56610fe76973cc7e44307f1f048ce824b008132f360f435cff19ca80"
+        },
+        {
+          "path": "ARRI Look Library for LogC4 (3D-LUTs)/8160 60s.cube",
+          "size": 7414985,
+          "lut_size": 65,
+          "sha256": "084481bb4fe04a74accee038692258dec7b417137c8a204c741584b95588a7c5"
+        },
+        {
+          "path": "ARRI Look Library for LogC4 (3D-LUTs)/8170 70s.cube",
+          "size": 7414985,
+          "lut_size": 65,
+          "sha256": "e87a4e2de5fb311a7196eaa2d607b03d00b3d909f21efc324bafae0399faf8b8"
+        },
+        {
+          "path": "ARRI Look Library for LogC4 (3D-LUTs)/8180 80s.cube",
+          "size": 7414985,
+          "lut_size": 65,
+          "sha256": "1a9a63841dfcd6736f65eb7200ec30cb3375e8383ac6f894ca13f4f36148d639"
+        },
+        {
+          "path": "ARRI Look Library for LogC4 (3D-LUTs)/8190 90s.cube",
+          "size": 7414985,
+          "lut_size": 65,
+          "sha256": "2c5eacba3ebe1deaaf448dec3455285dda5e0316fa69a8bcd369d3db629f5edd"
+        },
+        {
+          "path": "ARRI Look Library for LogC4 (3D-LUTs)/9110 Dream.cube",
+          "size": 7414985,
+          "lut_size": 65,
+          "sha256": "d1e0487461ae843b6a9a1b6c4b9484fa21628e93d86ea876708264ffa8c2be2a"
+        },
+        {
+          "path": "ARRI Look Library for LogC4 (3D-LUTs)/9111 Dream.cube",
+          "size": 7414985,
+          "lut_size": 65,
+          "sha256": "1f30b43bd08df77c323f3b0fc6a851fde1e1c1fbf62da44207ed69180c2e0180"
+        },
+        {
+          "path": "ARRI Look Library for LogC4 (3D-LUTs)/9120 Flash Back.cube",
+          "size": 7414985,
+          "lut_size": 65,
+          "sha256": "3e7be443cf89f470263f9c3ce323bb4907c55ae4d7683cb4201fc9f46fc6e86e"
+        },
+        {
+          "path": "ARRI Look Library for LogC4 (3D-LUTs)/9210 Day for Night.cube",
+          "size": 7414985,
+          "lut_size": 65,
+          "sha256": "576e566d386a8eb2aff2f2abc813af443f0a1bf975370ed4981efecb54cdec19"
+        },
+        {
+          "path": "ARRI Look Library for LogC4 (3D-LUTs)/9211 Day for Night.cube",
+          "size": 7414985,
+          "lut_size": 65,
+          "sha256": "a1d1bb8388b0bdb9e18576eb3cd06f8c151507089ffcd370e6f6a4816218234c"
+        }
+      ],
+      "observed": {
+        "zip_name": "ARRI Look Library LogC4 (log-to-log) 3D-LUTs_data.zip",
+        "zip_bytes": 189793124,
+        "cube_files": 87,
+        "lut_sizes": [65],
+        "top_level_folders": ["ARRI Look Library for LogC4 (3D-LUTs)"],
+        "ignored": {}
+      }
     },
     {
       "id": "display-luts-logc4",
@@ -58,7 +600,538 @@
         "display_rendering": "absent",
         "group_folders": "required"
       },
-      "fingerprints": []
+      "fingerprints": [
+        {
+          "path": "ARRI Look Library LogC3 (log-to-log)/1110 Black and White.cube",
+          "size": 970403,
+          "lut_size": 33,
+          "sha256": "16e5ec12566ce585411e309598b56acd8a14f69727e9316d12b0556af91a8bc4"
+        },
+        {
+          "path": "ARRI Look Library LogC3 (log-to-log)/1111 Black and White.cube",
+          "size": 970403,
+          "lut_size": 33,
+          "sha256": "1d7b86c17a724a843125ea69b753e0ee58e7666d642ca4a3e8891e42125535d5"
+        },
+        {
+          "path": "ARRI Look Library LogC3 (log-to-log)/1120 Black and White - Night sky.cube",
+          "size": 970403,
+          "lut_size": 33,
+          "sha256": "c7edaca9f371eb0f884289d3b4f706ca6e613a4995ac257ba71d3b31efd0306d"
+        },
+        {
+          "path": "ARRI Look Library LogC3 (log-to-log)/2110 Commercial.cube",
+          "size": 970403,
+          "lut_size": 33,
+          "sha256": "8218a2391ac2cf9cdf1bf4e110abed58c4d1e4c67975580c99ace0b517d15818"
+        },
+        {
+          "path": "ARRI Look Library LogC3 (log-to-log)/2111 Commercial.cube",
+          "size": 970403,
+          "lut_size": 33,
+          "sha256": "7a54a9819bcd693878fb8fd2e862b8b7f35f8fa46fbcc9dbe871b21131c3ba94"
+        },
+        {
+          "path": "ARRI Look Library LogC3 (log-to-log)/2120 Fashion.cube",
+          "size": 970403,
+          "lut_size": 33,
+          "sha256": "db599158bc0752b8ecf3a92d961a4f11e281756e224a21e06883d2c302b56c07"
+        },
+        {
+          "path": "ARRI Look Library LogC3 (log-to-log)/2121 Fashion.cube",
+          "size": 970403,
+          "lut_size": 33,
+          "sha256": "8f219764339ebe01da282053198e0e071d66c17ee942ee1cae91644414fd59c8"
+        },
+        {
+          "path": "ARRI Look Library LogC3 (log-to-log)/2130 Beauty.cube",
+          "size": 970403,
+          "lut_size": 33,
+          "sha256": "37bece99b86c7452dc75857fb3d4a9b985c599d327e26781ae0a6c09e2afd9ea"
+        },
+        {
+          "path": "ARRI Look Library LogC3 (log-to-log)/2131 Beauty.cube",
+          "size": 970403,
+          "lut_size": 33,
+          "sha256": "3b96119d7e3fba138c6873318be7339d5c743e5075aee14b4de3c2c69cce3886"
+        },
+        {
+          "path": "ARRI Look Library LogC3 (log-to-log)/3110 Film A.cube",
+          "size": 970403,
+          "lut_size": 33,
+          "sha256": "cee155989194d1a63eb07454d894a400c9716248aa14b99e902cae8b66e33fa5"
+        },
+        {
+          "path": "ARRI Look Library LogC3 (log-to-log)/3111 Film B.cube",
+          "size": 970403,
+          "lut_size": 33,
+          "sha256": "ef7a8ed92baf4109236131bbb51b3a55a9bbeaff980577f2df845d418096a30a"
+        },
+        {
+          "path": "ARRI Look Library LogC3 (log-to-log)/3112 Film C.cube",
+          "size": 970403,
+          "lut_size": 33,
+          "sha256": "a217df0aa2316654c30bbe7ca72f825739f08c8d8644daa4eb20ecbbe1fc96ec"
+        },
+        {
+          "path": "ARRI Look Library LogC3 (log-to-log)/3113 Film D.cube",
+          "size": 970403,
+          "lut_size": 33,
+          "sha256": "ac806c19bfa0d395446eb9715f963aa64f5045768df7c5d04e570ed12bc6ac33"
+        },
+        {
+          "path": "ARRI Look Library LogC3 (log-to-log)/3114 Film E.cube",
+          "size": 970403,
+          "lut_size": 33,
+          "sha256": "23f2daf0c494a39d26bd9092df6bc9c6ef01422378c91438419105703b7731c3"
+        },
+        {
+          "path": "ARRI Look Library LogC3 (log-to-log)/3150 Film process - Bleach bypass.cube",
+          "size": 970403,
+          "lut_size": 33,
+          "sha256": "caf0092beb84a9bc4f133d84c3372b3d5e791a0cc1a6f286e489606856eae37b"
+        },
+        {
+          "path": "ARRI Look Library LogC3 (log-to-log)/3151 Film Process - Bleach bypass.cube",
+          "size": 970403,
+          "lut_size": 33,
+          "sha256": "8cb65a1b31b201fc4bfbe021e797e9ebbd101deed0c4a9f32ebe015e9c287fb1"
+        },
+        {
+          "path": "ARRI Look Library LogC3 (log-to-log)/3210 Vintage.cube",
+          "size": 970403,
+          "lut_size": 33,
+          "sha256": "7933de3373537e4ede888023ff3538e99c6db1ed596cc2a40a9e18c1c1c5bf06"
+        },
+        {
+          "path": "ARRI Look Library LogC3 (log-to-log)/3211 Vintage.cube",
+          "size": 970403,
+          "lut_size": 33,
+          "sha256": "368062e91b8278d3fbb688c84d7323dc7431bb600653a2c0022eaebc55cd3689"
+        },
+        {
+          "path": "ARRI Look Library LogC3 (log-to-log)/3220 Analog.cube",
+          "size": 970403,
+          "lut_size": 33,
+          "sha256": "bfa0225eb420a7c5028fb433533763ea8471221218d8524347ccf6f1bd25ef37"
+        },
+        {
+          "path": "ARRI Look Library LogC3 (log-to-log)/3221 Analog.cube",
+          "size": 970403,
+          "lut_size": 33,
+          "sha256": "99af571f030cc509ad26a3b2aacd213ef1facf092d787229b1cc19ca458adb13"
+        },
+        {
+          "path": "ARRI Look Library LogC3 (log-to-log)/3230 Retro.cube",
+          "size": 970403,
+          "lut_size": 33,
+          "sha256": "be81d70379795730f606dfee72444335a3c5918d0f63a713554b318f3a1bce43"
+        },
+        {
+          "path": "ARRI Look Library LogC3 (log-to-log)/3231 Retro.cube",
+          "size": 970403,
+          "lut_size": 33,
+          "sha256": "8b8b013ba9c3d017481fb244bbbcfab52b09ce830724fe01b9695c3f288cbded"
+        },
+        {
+          "path": "ARRI Look Library LogC3 (log-to-log)/3240 Faded.cube",
+          "size": 970403,
+          "lut_size": 33,
+          "sha256": "ab58dd1293f8f023581b1a2c6a834058352fb7c2f262fd27f06c1b36cbe4b256"
+        },
+        {
+          "path": "ARRI Look Library LogC3 (log-to-log)/3241 Faded.cube",
+          "size": 970403,
+          "lut_size": 33,
+          "sha256": "c7e4a13484b08b0efaa1855320e26f6902fc388e4bab316b8deedfb99a4121f0"
+        },
+        {
+          "path": "ARRI Look Library LogC3 (log-to-log)/3250 Cross.cube",
+          "size": 970403,
+          "lut_size": 33,
+          "sha256": "7920b1c3a4c9f77bf39069d110279d5462235e15094144fe3138a17dddb25f7c"
+        },
+        {
+          "path": "ARRI Look Library LogC3 (log-to-log)/3410 Film - Teal and orange.cube",
+          "size": 970403,
+          "lut_size": 33,
+          "sha256": "e7ed78393eeac1b5aee4c0cdb61d992d3d2728cffb2f8fa0f186f87c6abad546"
+        },
+        {
+          "path": "ARRI Look Library LogC3 (log-to-log)/3411 Film - Teal and orange.cube",
+          "size": 970403,
+          "lut_size": 33,
+          "sha256": "4ebfdb4ce375dcb3589c1b0230664b2f3be2c144e3f18ae203f58421e866e4e8"
+        },
+        {
+          "path": "ARRI Look Library LogC3 (log-to-log)/3420 Video - Teal and orange.cube",
+          "size": 970403,
+          "lut_size": 33,
+          "sha256": "2b4d1617f4384cea9a8d504c9f9a8337cf732431d5710c89aa7cd2728a32832f"
+        },
+        {
+          "path": "ARRI Look Library LogC3 (log-to-log)/4110 Tinted - Desert.cube",
+          "size": 970403,
+          "lut_size": 33,
+          "sha256": "dccca631a92eb567e3ae7cfc9b56ae5403c8b95897ba686121e51626e1e0aa91"
+        },
+        {
+          "path": "ARRI Look Library LogC3 (log-to-log)/4120 Tinted - Sepia.cube",
+          "size": 970403,
+          "lut_size": 33,
+          "sha256": "60c48e3fff950b78f2948bcf78e430c76e5d6bc6a93cc93c0886ee5e332783e1"
+        },
+        {
+          "path": "ARRI Look Library LogC3 (log-to-log)/4130 Tinted - Orange.cube",
+          "size": 970403,
+          "lut_size": 33,
+          "sha256": "0bdeab22832043df30ff1926ca1723506209c1a90bdce7a8de25fa4039d223e2"
+        },
+        {
+          "path": "ARRI Look Library LogC3 (log-to-log)/4131 Tinted - Orange.cube",
+          "size": 970403,
+          "lut_size": 33,
+          "sha256": "f999a74ca222b7f39a93ad1557b223175eb72efc0bd0c605df37e57b532db601"
+        },
+        {
+          "path": "ARRI Look Library LogC3 (log-to-log)/4140 Tinted - Earth.cube",
+          "size": 970403,
+          "lut_size": 33,
+          "sha256": "5dcc555ac3bc363f7b23ae4b26327ccf069b0d4bd1eacb79bfa6311956e1c122"
+        },
+        {
+          "path": "ARRI Look Library LogC3 (log-to-log)/4150 Tinted - White.cube",
+          "size": 970403,
+          "lut_size": 33,
+          "sha256": "99cd84d1c8613df1a2c13198c8cad8ce2556ac84150da9005b16a01ed5d4d5b0"
+        },
+        {
+          "path": "ARRI Look Library LogC3 (log-to-log)/4160 Tinted - Teal.cube",
+          "size": 970403,
+          "lut_size": 33,
+          "sha256": "0006db284f1c72008ab3c9d1ea85eb49b77e06cdc1892447bfc7410d5e7ed323"
+        },
+        {
+          "path": "ARRI Look Library LogC3 (log-to-log)/4170 Tinted - Blue sky.cube",
+          "size": 970403,
+          "lut_size": 33,
+          "sha256": "0d67619899d4a042ed6a4a8cb1fbc371fb34438e23c5a7156eb9b6d6c69a7242"
+        },
+        {
+          "path": "ARRI Look Library LogC3 (log-to-log)/4180 Tinted - Ocean.cube",
+          "size": 970403,
+          "lut_size": 33,
+          "sha256": "1b98abaddc3b85f0aeaa6ba8a7b82f2dbc27a36c38a7c139b729a96839c4bdec"
+        },
+        {
+          "path": "ARRI Look Library LogC3 (log-to-log)/4190 Tinted - Aqua.cube",
+          "size": 970403,
+          "lut_size": 33,
+          "sha256": "9e0fe585af86c498c155ff821ac117d5ebdf64ab0df1d4c4d8fdc624ca374b95"
+        },
+        {
+          "path": "ARRI Look Library LogC3 (log-to-log)/4210 Tinted - Green.cube",
+          "size": 970403,
+          "lut_size": 33,
+          "sha256": "e5986c861dd6886e990196bfaca57161204a0e06b7e6f72da384e1e0eb4ac488"
+        },
+        {
+          "path": "ARRI Look Library LogC3 (log-to-log)/4220 Tinted - Magenta.cube",
+          "size": 970403,
+          "lut_size": 33,
+          "sha256": "a2bc329357fb32802786cfc6aea9e063bddf270e1c028f538616fc2567e5cccf"
+        },
+        {
+          "path": "ARRI Look Library LogC3 (log-to-log)/4230 Tinted - Yellow.cube",
+          "size": 970403,
+          "lut_size": 33,
+          "sha256": "35e8748c9c51e703475a43fac76d50acf3f1c7dd409511329e8ab104488dc1df"
+        },
+        {
+          "path": "ARRI Look Library LogC3 (log-to-log)/4240 Tinted - Fire.cube",
+          "size": 970403,
+          "lut_size": 33,
+          "sha256": "e3bf6b26c91defd20f43a5dbef8db8a9f63e3d3b1bfd1c0dac7266ec9d019703"
+        },
+        {
+          "path": "ARRI Look Library LogC3 (log-to-log)/5110 Nature.cube",
+          "size": 970403,
+          "lut_size": 33,
+          "sha256": "53014dcf5f2867d291aba31cb0f35ee2f2875cfa98a5503fb4b1753526a87803"
+        },
+        {
+          "path": "ARRI Look Library LogC3 (log-to-log)/5111 Nature.cube",
+          "size": 970403,
+          "lut_size": 33,
+          "sha256": "f989ea9d2dc9df4dd5c9e1d6b8a094004475d2ec038344cc7729dcd7b94c36dc"
+        },
+        {
+          "path": "ARRI Look Library LogC3 (log-to-log)/5120 City.cube",
+          "size": 970403,
+          "lut_size": 33,
+          "sha256": "9ff383209efcbffc397a2cb97e698e2f677914b0d86f90619cfeeac60dfdad76"
+        },
+        {
+          "path": "ARRI Look Library LogC3 (log-to-log)/5121 City.cube",
+          "size": 970403,
+          "lut_size": 33,
+          "sha256": "6732f5531d14749cedcadc6f6ed3662413747be545fe755e855572ab4f00dd23"
+        },
+        {
+          "path": "ARRI Look Library LogC3 (log-to-log)/5122 City.cube",
+          "size": 970403,
+          "lut_size": 33,
+          "sha256": "288c5b6cb38341ba57082d5fa80e51a7eb03c81d5e7fcf182ef2934c99907987"
+        },
+        {
+          "path": "ARRI Look Library LogC3 (log-to-log)/5130 Suburban.cube",
+          "size": 970403,
+          "lut_size": 33,
+          "sha256": "78626b3a1eea0ad7ea3338da08bd527b47b306aee59e1732e964b4b5d5dcb5e3"
+        },
+        {
+          "path": "ARRI Look Library LogC3 (log-to-log)/5131 Suburban.cube",
+          "size": 970403,
+          "lut_size": 33,
+          "sha256": "fa2320f25b1095221e0bee331cb50a5e80afd1d541d61d58b8c33813ee7c7c25"
+        },
+        {
+          "path": "ARRI Look Library LogC3 (log-to-log)/5210 Vibrant.cube",
+          "size": 970403,
+          "lut_size": 33,
+          "sha256": "8b68d8ead0d2c1b76fb6b7d5d2f58780d1a75a44a7d55a1cce0736c2aff4b5d0"
+        },
+        {
+          "path": "ARRI Look Library LogC3 (log-to-log)/5220 Desaturated.cube",
+          "size": 970403,
+          "lut_size": 33,
+          "sha256": "f8a1ad459c6b0f4114c023b6a70999eaf3b05da15646050359be649ca6194b0f"
+        },
+        {
+          "path": "ARRI Look Library LogC3 (log-to-log)/5230 Saturated.cube",
+          "size": 970403,
+          "lut_size": 33,
+          "sha256": "d362101466ef34a2d8e2a3e5d7bcb737b307a9341d790f8c22a7e789f21f673c"
+        },
+        {
+          "path": "ARRI Look Library LogC3 (log-to-log)/6110 Warm.cube",
+          "size": 970403,
+          "lut_size": 33,
+          "sha256": "a8587aaeedd3b9436a5ffa681df90b65126564a5fe348e38000658bd0e86549a"
+        },
+        {
+          "path": "ARRI Look Library LogC3 (log-to-log)/6111 Warm.cube",
+          "size": 970403,
+          "lut_size": 33,
+          "sha256": "3a196785f67802965f1fe2624cfa3e54ee68b34df63b6fe28b8009a3d0c41979"
+        },
+        {
+          "path": "ARRI Look Library LogC3 (log-to-log)/6112 Warm.cube",
+          "size": 970403,
+          "lut_size": 33,
+          "sha256": "63dab8b3bbb90f87c1962ea1ce5501d2ae32d936e2fa2b1dc0c087597e744630"
+        },
+        {
+          "path": "ARRI Look Library LogC3 (log-to-log)/6120 Cold.cube",
+          "size": 970403,
+          "lut_size": 33,
+          "sha256": "fd4847ed2e1bd38bc4d01619b29a4c9c7016aa914e6f6090fd1752ed97d3f389"
+        },
+        {
+          "path": "ARRI Look Library LogC3 (log-to-log)/6121 Cold.cube",
+          "size": 970403,
+          "lut_size": 33,
+          "sha256": "681f7e6a06bf813398699f4f2010e8e79dd972a6400b282fae2dc4fbf7784ae6"
+        },
+        {
+          "path": "ARRI Look Library LogC3 (log-to-log)/6210 Spring.cube",
+          "size": 970403,
+          "lut_size": 33,
+          "sha256": "1fb18c557dd22a9ec1e06713127253d404357cc98f8723631817a8770c8b17a9"
+        },
+        {
+          "path": "ARRI Look Library LogC3 (log-to-log)/6220 Sommer.cube",
+          "size": 970403,
+          "lut_size": 33,
+          "sha256": "004384ab6af6cdfe7c9d3c9fc9631fd012865f0afafa2d9d5d5180479d52b6c7"
+        },
+        {
+          "path": "ARRI Look Library LogC3 (log-to-log)/6230 Autumn.cube",
+          "size": 970403,
+          "lut_size": 33,
+          "sha256": "f22b568c4039f5b2002377f617b3fb0dab41d564a803bc47278cc34bcc46b333"
+        },
+        {
+          "path": "ARRI Look Library LogC3 (log-to-log)/6240 Winter.cube",
+          "size": 970403,
+          "lut_size": 33,
+          "sha256": "2f05df2b7f8c9806bff35e3564382db4c9fb51ac1df7da86e297784be3de5897"
+        },
+        {
+          "path": "ARRI Look Library LogC3 (log-to-log)/6310 Pastel.cube",
+          "size": 970403,
+          "lut_size": 33,
+          "sha256": "59dd27d832b26734d8aaf36f2b8d19b2348fe4e68e5baf556c3b4c78c47429d5"
+        },
+        {
+          "path": "ARRI Look Library LogC3 (log-to-log)/6311 Pastel.cube",
+          "size": 970403,
+          "lut_size": 33,
+          "sha256": "92b32598c83397939b092ef2f67ae628e920e7ef7fa5afbc4a6dbb7ff23af5ef"
+        },
+        {
+          "path": "ARRI Look Library LogC3 (log-to-log)/6410 Sunset.cube",
+          "size": 970403,
+          "lut_size": 33,
+          "sha256": "50201cd9c0f87425a1e250677aeb482084dab5d5066251143ef554f9caa73d4c"
+        },
+        {
+          "path": "ARRI Look Library LogC3 (log-to-log)/6420 Early Morning.cube",
+          "size": 970403,
+          "lut_size": 33,
+          "sha256": "eda49f92c6c730d4c5e2320cf17e678b5b26a89b0d2644e3564ff4c9b14460c8"
+        },
+        {
+          "path": "ARRI Look Library LogC3 (log-to-log)/6610 Desert.cube",
+          "size": 970403,
+          "lut_size": 33,
+          "sha256": "85a4a052bbfa271d86511f7fe727eba503b34e16da538b8e3fcb4b0bddd8e9ac"
+        },
+        {
+          "path": "ARRI Look Library LogC3 (log-to-log)/6620 Snow.cube",
+          "size": 970403,
+          "lut_size": 33,
+          "sha256": "5a5416285af5a7656f6fa2c0b8dacc36e9231de6722f6b0045a3582a0c6a7bfb"
+        },
+        {
+          "path": "ARRI Look Library LogC3 (log-to-log)/7110 Low Contrast.cube",
+          "size": 970403,
+          "lut_size": 33,
+          "sha256": "342afa2ba3cc0039268ed839a89d928f4444eb652dea60c2109470c5bb155f5c"
+        },
+        {
+          "path": "ARRI Look Library LogC3 (log-to-log)/7111 Low Contrast.cube",
+          "size": 970403,
+          "lut_size": 33,
+          "sha256": "75ae7add24fe73e8bc0c9134ae5505eef8b44e5ba8a581c3be1a6e93e178da51"
+        },
+        {
+          "path": "ARRI Look Library LogC3 (log-to-log)/7120 High Contrast.cube",
+          "size": 970403,
+          "lut_size": 33,
+          "sha256": "048feab4359654b2809cc3a432e4fd24bf36ab65af26de9ce6bbde86f8e6c3f8"
+        },
+        {
+          "path": "ARRI Look Library LogC3 (log-to-log)/7121 High Contrast.cube",
+          "size": 970403,
+          "lut_size": 33,
+          "sha256": "3c8761ee6df115cee3dbb1a0b1d25725d03405230cfb2dc7408c0121b58858b6"
+        },
+        {
+          "path": "ARRI Look Library LogC3 (log-to-log)/7130 High Key.cube",
+          "size": 970403,
+          "lut_size": 33,
+          "sha256": "f4d0351c16da70917967ecdf91ea84284304a0340c609549ebb4607cee45544c"
+        },
+        {
+          "path": "ARRI Look Library LogC3 (log-to-log)/7131 High Key.cube",
+          "size": 970403,
+          "lut_size": 33,
+          "sha256": "ed93d7a6198870cee5d54f1df109cb23810269a811392f6cc09149b0422a165b"
+        },
+        {
+          "path": "ARRI Look Library LogC3 (log-to-log)/7140 Low Key.cube",
+          "size": 970403,
+          "lut_size": 33,
+          "sha256": "59e11870b308d1f14482d64c02aa7bc951a296a7639426ddf3961f2b9b3e361d"
+        },
+        {
+          "path": "ARRI Look Library LogC3 (log-to-log)/8120 20s.cube",
+          "size": 970403,
+          "lut_size": 33,
+          "sha256": "0b50bbb1898d8f2f8155b05984c7fa9db185781c4fe97fb4bd0f21001d26ddc7"
+        },
+        {
+          "path": "ARRI Look Library LogC3 (log-to-log)/8130 30s.cube",
+          "size": 970403,
+          "lut_size": 33,
+          "sha256": "fecb186d6f3ad7ccb0ef84412bc6783d19099827af5609cb99f1d0c631abcd4a"
+        },
+        {
+          "path": "ARRI Look Library LogC3 (log-to-log)/8140 40s.cube",
+          "size": 970403,
+          "lut_size": 33,
+          "sha256": "4ef42b6f2cc468d214e9349dbcb8563b6dae3f476ad786f63b78465804e843b3"
+        },
+        {
+          "path": "ARRI Look Library LogC3 (log-to-log)/8150 50s.cube",
+          "size": 970403,
+          "lut_size": 33,
+          "sha256": "69134d1b4e3c8306cea990c0db2f85c69e83ae5b21dd23c6f31cbb66a7b40e30"
+        },
+        {
+          "path": "ARRI Look Library LogC3 (log-to-log)/8160 60s.cube",
+          "size": 970403,
+          "lut_size": 33,
+          "sha256": "d32275485b9c9f8bbc48af5f4107e7ba97dca9a13281d9311f92a28c8b132e77"
+        },
+        {
+          "path": "ARRI Look Library LogC3 (log-to-log)/8170 70s.cube",
+          "size": 970403,
+          "lut_size": 33,
+          "sha256": "3c35c1a035cbcb3d484264890e70e49c482816ba74b05ce3bc2a0be82db023a6"
+        },
+        {
+          "path": "ARRI Look Library LogC3 (log-to-log)/8180 80s.cube",
+          "size": 970403,
+          "lut_size": 33,
+          "sha256": "bb0b335484e6387261371ad3a4dd647cf8d3e70c82e8cb1235319256091bb17d"
+        },
+        {
+          "path": "ARRI Look Library LogC3 (log-to-log)/8190 90s.cube",
+          "size": 970403,
+          "lut_size": 33,
+          "sha256": "8167643bae15150ddd1915aafb280e9b07cc778d3e4a9443cc344a86591898bf"
+        },
+        {
+          "path": "ARRI Look Library LogC3 (log-to-log)/9110 Dream.cube",
+          "size": 970403,
+          "lut_size": 33,
+          "sha256": "fd6b5c194d9e12c2595367e6e15ae9080f388589175921b7e25970484bb774e7"
+        },
+        {
+          "path": "ARRI Look Library LogC3 (log-to-log)/9111 Dream.cube",
+          "size": 970403,
+          "lut_size": 33,
+          "sha256": "041c752e541107c73e5a92133074b9d162d0cdea97d3c003d7f91f5ed5316bd0"
+        },
+        {
+          "path": "ARRI Look Library LogC3 (log-to-log)/9120 Flash Back.cube",
+          "size": 970403,
+          "lut_size": 33,
+          "sha256": "1423c56cbe473883e86154df69ed153a9211b0128a5d192116dbde2b5af2bdac"
+        },
+        {
+          "path": "ARRI Look Library LogC3 (log-to-log)/9210 Day for Night.cube",
+          "size": 970403,
+          "lut_size": 33,
+          "sha256": "b5244af6f214031e83f6866ec1f70f626dbf3709d254cad6c73f8df8a3098835"
+        },
+        {
+          "path": "ARRI Look Library LogC3 (log-to-log)/9211 Day for Night.cube",
+          "size": 970403,
+          "lut_size": 33,
+          "sha256": "abbdefb9540dae60b29fb0cbf63938abf5b57f60c79ca5cb4320763dd12420e9"
+        }
+      ],
+      "observed": {
+        "zip_name": "ARRI Look Library LogC3 (log-to-log) 3D LUTs_data.zip",
+        "zip_bytes": 31286603,
+        "cube_files": 87,
+        "lut_sizes": [33],
+        "top_level_folders": ["ARRI Look Library LogC3 (log-to-log)"],
+        "ignored": {}
+      }
     },
     {
       "id": "look-library-logc3-rec709",
@@ -76,7 +1149,538 @@
         "display_rendering": "required",
         "group_folders": "required"
       },
-      "fingerprints": []
+      "fingerprints": [
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 3D-LUTs/1110-Black-and-White.cube",
+          "size": 1401558,
+          "lut_size": 33,
+          "sha256": "1b717d0c252261438337b9a9a6e43f4568b8f253c7caa08355d4ae1cdfa1f1cd"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 3D-LUTs/1111-Black-and-White.cube",
+          "size": 1401558,
+          "lut_size": 33,
+          "sha256": "dc65dda2b47729c02ac6ae1266a062b65245e032510a1b02bbda90b2297fb05d"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 3D-LUTs/1120-Black-and-White-Night-sky.cube",
+          "size": 1401558,
+          "lut_size": 33,
+          "sha256": "6a343ce929d8e98881656dd2fd1b98dc5e4927a6287485682b96cfd9a33b4074"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 3D-LUTs/2110-Commercial.cube",
+          "size": 1401558,
+          "lut_size": 33,
+          "sha256": "fc6b5e2158a0f3cb42f47931ceaecea96bfd59bffd8bdae952fda13a77b93eed"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 3D-LUTs/2111-Commercial.cube",
+          "size": 1401558,
+          "lut_size": 33,
+          "sha256": "d98d4a552516c8b7c435b95d2b2a0ec0a4ae237b1b72ebe5a837f7dbfdee1d6b"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 3D-LUTs/2120-Fashion.cube",
+          "size": 1401558,
+          "lut_size": 33,
+          "sha256": "2983be3c2ce0393785d602e875e0e5414006f808291328ec0e9bff17a33e9adf"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 3D-LUTs/2121-Fashion.cube",
+          "size": 1401558,
+          "lut_size": 33,
+          "sha256": "76c59ea2895397a596b75f90f68bbdfa280a6bd773c329734d731cb08fab579d"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 3D-LUTs/2130-Beauty.cube",
+          "size": 1401558,
+          "lut_size": 33,
+          "sha256": "62e010ac5e6776979775bad80dfbb60e254c1df0d93095d232bc26aa7a3a6314"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 3D-LUTs/2131-Beauty.cube",
+          "size": 1401558,
+          "lut_size": 33,
+          "sha256": "f564f153fde20f0ac8bbc513b58caecfaa919ab30c64e06576fcf6b003c3dbb9"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 3D-LUTs/3110-Film-A.cube",
+          "size": 1401558,
+          "lut_size": 33,
+          "sha256": "d34da52b88ca3ff7d5de6de00eb9ff182716043c55b5cd260a5c6e5816ef98cc"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 3D-LUTs/3111-Film-B.cube",
+          "size": 1401558,
+          "lut_size": 33,
+          "sha256": "ded0751c59566770afa77103634ba767be489b3fa399e8a6c3ee9ea6c6c23fdf"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 3D-LUTs/3112-Film-C.cube",
+          "size": 1401558,
+          "lut_size": 33,
+          "sha256": "c90e3ea957b0f4e3d39b4b660bae3d8c54d83562950da074d7cab887d7fba1cf"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 3D-LUTs/3113-Film-D.cube",
+          "size": 1401558,
+          "lut_size": 33,
+          "sha256": "df173a7f1d2008a5f872970c38f4c213b6ab517110d5b15d579c5a8ed0c2e41a"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 3D-LUTs/3114-Film-E.cube",
+          "size": 1401558,
+          "lut_size": 33,
+          "sha256": "91db32813cc79940afaf11dab99ef0392c973990e0ef2977979984e26148ba68"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 3D-LUTs/3150-Film-process-Bleach-bypass.cube",
+          "size": 1401558,
+          "lut_size": 33,
+          "sha256": "bb87284611eee8f34556d770888dbaef20dd89d124010b47a3b5702b7e53fde2"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 3D-LUTs/3151-Film-Process-Bleach-bypass.cube",
+          "size": 1401558,
+          "lut_size": 33,
+          "sha256": "b6cc2457067eae93c316c2c8510fb398dbc36ed29bea888776116978de00d09a"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 3D-LUTs/3210-Vintage.cube",
+          "size": 1401558,
+          "lut_size": 33,
+          "sha256": "db26566f68767e32d814fb292893c1be13929f3ddaea2df1ef3d0a5f3a0551ad"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 3D-LUTs/3211-Vintage.cube",
+          "size": 1401558,
+          "lut_size": 33,
+          "sha256": "23965c5c62986e473824e22604183ceaaebaf8f06b0cb0856e47f9e81c3e45ec"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 3D-LUTs/3220-Analog.cube",
+          "size": 1401558,
+          "lut_size": 33,
+          "sha256": "4f7b7faaf254155467fd4432ba59f0951a1aa51f42275371db252e9618d59344"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 3D-LUTs/3221-Analog.cube",
+          "size": 1401558,
+          "lut_size": 33,
+          "sha256": "1575db5067f8ca3a58287479ef80cf1fb844e1594e65735b4d173e166389d241"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 3D-LUTs/3230-Retro.cube",
+          "size": 1401558,
+          "lut_size": 33,
+          "sha256": "27f23a1eb20618f4a55290e086bc80781eedfe42085f6ad297822e166b5e24c0"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 3D-LUTs/3231-Retro.cube",
+          "size": 1401558,
+          "lut_size": 33,
+          "sha256": "099a7e268712af5c3d66622088cf4628cf563543422bc5c289935cf4371d354d"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 3D-LUTs/3240-Faded.cube",
+          "size": 1401558,
+          "lut_size": 33,
+          "sha256": "6a06137161ce02819873d0e96f3933625e38b086c50c2bfbccc79ece33cf1c51"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 3D-LUTs/3241-Faded.cube",
+          "size": 1401558,
+          "lut_size": 33,
+          "sha256": "d40154b804884ce17a140b55d09d8209e40e9d585f37a8ce10a6e35923438843"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 3D-LUTs/3250-Cross.cube",
+          "size": 1401558,
+          "lut_size": 33,
+          "sha256": "a9c0aae7fdbdd265abb90950bca9efd11adc79dcf543184dcb8e82c9839d7ec0"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 3D-LUTs/3410-Film-Teal-and-orange.cube",
+          "size": 1401558,
+          "lut_size": 33,
+          "sha256": "019dff72fe256815a30682ace2bdf696bb3d2eaff3507d7b4a33c7e661170b5a"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 3D-LUTs/3411-Film-Teal-and-orange.cube",
+          "size": 1401558,
+          "lut_size": 33,
+          "sha256": "74ea8bbb2719c6004eebccb283c05ed6209eec39c358f01e6c0b24e4a192fe87"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 3D-LUTs/3420-Video-Teal-and-orange.cube",
+          "size": 1401558,
+          "lut_size": 33,
+          "sha256": "73bfca46002e6d6cc4cebd87b307e57ab996aed00aacc0abce23310e59848634"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 3D-LUTs/4110-Tinted-Desert.cube",
+          "size": 1401558,
+          "lut_size": 33,
+          "sha256": "53eaaf9ecf9986ba9adcc7ce2f0fdf2d2b7d4c459360edc492fd0920632a81dd"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 3D-LUTs/4120-Tinted-Sepia.cube",
+          "size": 1401558,
+          "lut_size": 33,
+          "sha256": "0ae87529c817a0dc22c71a9556fb117e286b96b09420ff90db9419a5068dead3"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 3D-LUTs/4130-Tinted-Orange.cube",
+          "size": 1401558,
+          "lut_size": 33,
+          "sha256": "c03972abfaf5dcde21dc79702f2e1742a056ca45daaf33a96b9053091b257f3e"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 3D-LUTs/4131-Tinted-Orange.cube",
+          "size": 1401558,
+          "lut_size": 33,
+          "sha256": "4b3421af80ae47a1b5568509cfb61efb0eeda58b7fa69825536fc5190b8a54e9"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 3D-LUTs/4140-Tinted-Earth.cube",
+          "size": 1401558,
+          "lut_size": 33,
+          "sha256": "be5b2b6b76621dd7f34c0a10912b331e71cf5c48e436d9a6b0d16e79889046d8"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 3D-LUTs/4150-Tinted-White.cube",
+          "size": 1401558,
+          "lut_size": 33,
+          "sha256": "1b63237d6aacfa3dff3b60ffa8e22e14f11cf23cb511556b9554c69bdb335c8a"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 3D-LUTs/4160-Tinted-Teal.cube",
+          "size": 1401558,
+          "lut_size": 33,
+          "sha256": "53e0069831e2536d3e7143b726dda8d4255f3bf107d408b4f2c5e7ad6430c8e4"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 3D-LUTs/4170-Tinted-Blue-sky.cube",
+          "size": 1401558,
+          "lut_size": 33,
+          "sha256": "1e8b2a0012f56632087a62389b90954d1945484d58c4a7f6b64c87543b4f3c68"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 3D-LUTs/4180-Tinted-Ocean.cube",
+          "size": 1401558,
+          "lut_size": 33,
+          "sha256": "ef7c24c3163de420090abbb15eea866fa03684fdd434f515f3570c26631fc743"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 3D-LUTs/4190-Tinted-Aqua.cube",
+          "size": 1401558,
+          "lut_size": 33,
+          "sha256": "08d57b5f89f03563cdeef580f0bdecf9d6d078d85633e5cfec7127cef66778e2"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 3D-LUTs/4210-Tinted-Green.cube",
+          "size": 1401558,
+          "lut_size": 33,
+          "sha256": "e3380ccf509b2631cb2b9ec62ca1c8c83f181750c3b8a5c5c9dc8db8cd4560d4"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 3D-LUTs/4220-Tinted-Magenta.cube",
+          "size": 1401558,
+          "lut_size": 33,
+          "sha256": "84442ea3898565b945a4b10b7a179a490aa1b6259d696070af3b1e27e34cc7f1"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 3D-LUTs/4230-Tinted-Yellow.cube",
+          "size": 1401558,
+          "lut_size": 33,
+          "sha256": "2602cbfc3b3299ab665bd5762629f83b8a66e566d88cea834e5e11bb404351e6"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 3D-LUTs/4240-Tinted-Fire.cube",
+          "size": 1401558,
+          "lut_size": 33,
+          "sha256": "7b3205c764e8b8b18f2d4cc43648f8162931b82aed1a0b1e0e59a4e8fa35f761"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 3D-LUTs/5110-Nature.cube",
+          "size": 1401558,
+          "lut_size": 33,
+          "sha256": "b11e3aead99552fd8df02dbc8a418d53b141afcb79610b8a221be512decdeb80"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 3D-LUTs/5111-Nature.cube",
+          "size": 1401558,
+          "lut_size": 33,
+          "sha256": "64f25b9459570232731e39a302c4f3f25384a6f5dd2281ee4b65b877da0e0be9"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 3D-LUTs/5120-City.cube",
+          "size": 1401558,
+          "lut_size": 33,
+          "sha256": "a9b3273497a40fb1194468719002151b3030cdbc91df4a41fc0c2214be1c365b"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 3D-LUTs/5121-City.cube",
+          "size": 1401558,
+          "lut_size": 33,
+          "sha256": "06e4470ef651ffa7970a679004218f594e571dbde7428b1489274679ad493670"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 3D-LUTs/5122-City.cube",
+          "size": 1401558,
+          "lut_size": 33,
+          "sha256": "e890754e53ec047e43f269f4ddf2eb5585c6b932dc5f101f3de5539a57160c3b"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 3D-LUTs/5130-Suburban.cube",
+          "size": 1401558,
+          "lut_size": 33,
+          "sha256": "01240107dddd35b68243ee925b514e4842cb33378bc9bf928ad29ee0e11981d2"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 3D-LUTs/5131-Suburban.cube",
+          "size": 1401558,
+          "lut_size": 33,
+          "sha256": "869212fc5bf9de4e6d95329689b7b3c55b647a70f924d1323db9933021fcf374"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 3D-LUTs/5210-Vibrant.cube",
+          "size": 1401558,
+          "lut_size": 33,
+          "sha256": "8548e45f6e7543a4d88fbce19269d456b07576fbd1fcb7554626e0ef32bd3ad7"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 3D-LUTs/5220-Desaturated.cube",
+          "size": 1401558,
+          "lut_size": 33,
+          "sha256": "fc85a30e94a104b844f2abb3c4793f220b4bf3b3747e2d808ffd7e668f9fbf76"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 3D-LUTs/5230-Saturated.cube",
+          "size": 1401558,
+          "lut_size": 33,
+          "sha256": "676af02a683af34d1c7cc378a9b6d2840b6344777d16d0cef0b3e97d1f10eaf5"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 3D-LUTs/6110-Warm.cube",
+          "size": 1401558,
+          "lut_size": 33,
+          "sha256": "0b3aecd542a29107d6390e303ac930e40aa402875befe2d216c553c8a0c2a33e"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 3D-LUTs/6111-Warm.cube",
+          "size": 1401558,
+          "lut_size": 33,
+          "sha256": "92e5ba0e9d0d063394acb1268e4f7c1ff531488bd253c149f1a3996d8ec71520"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 3D-LUTs/6112-Warm.cube",
+          "size": 1401558,
+          "lut_size": 33,
+          "sha256": "e254324a0b48165fe3c1dbb8d715dea2a7bad0f27681319b008ed17cccac4775"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 3D-LUTs/6120-Cold.cube",
+          "size": 1401558,
+          "lut_size": 33,
+          "sha256": "9e0ac8e7bbbd91ea8c2bd06692d9fbb41b4c1fe10a3f657ae1acafdcb47f2302"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 3D-LUTs/6121-Cold.cube",
+          "size": 1401558,
+          "lut_size": 33,
+          "sha256": "a4ccf8daba30b59d69f79f272c50dd10f633eee39cae8725ccf2058c2c165ef8"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 3D-LUTs/6210-Spring.cube",
+          "size": 1401558,
+          "lut_size": 33,
+          "sha256": "633edabeedf4f536fec92646284f746abd20d5c5e8fa61aafc43a33fff89e76c"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 3D-LUTs/6220-Sommer.cube",
+          "size": 1401558,
+          "lut_size": 33,
+          "sha256": "72c3878a0bbca09cdcb93a7ee91675e1ae9ac150520815774025247ca2982127"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 3D-LUTs/6230-Autumn.cube",
+          "size": 1401558,
+          "lut_size": 33,
+          "sha256": "f3d4a8c9503b15952f1f4c17b9695602843cca0acb9c12abf03a26b737a0655b"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 3D-LUTs/6240-Winter.cube",
+          "size": 1401558,
+          "lut_size": 33,
+          "sha256": "21815b474e2cf9dc73b63e9f8d33233422988f8bf9c080bef439d5f55fad1b88"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 3D-LUTs/6310-Pastel.cube",
+          "size": 1401558,
+          "lut_size": 33,
+          "sha256": "04de01303f87c4ff881c17c8471105f53f876f1fc767fc59d51b6245d885cb3b"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 3D-LUTs/6311-Pastel.cube",
+          "size": 1401558,
+          "lut_size": 33,
+          "sha256": "abdebaa0ea3aa61711ac564a5c8a7c0f1d7e9ae7206856049faedfce1a44eea9"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 3D-LUTs/6410-Sunset.cube",
+          "size": 1401558,
+          "lut_size": 33,
+          "sha256": "b96818ac3b9f52b03add939a62a479ec678d4bcffe30393607e5f5c9d0374d98"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 3D-LUTs/6420-Early-Morning.cube",
+          "size": 1401558,
+          "lut_size": 33,
+          "sha256": "05b0995ae861d560999c4f1a8f0192873334b9c8dbd502b69f838d022b6eeed1"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 3D-LUTs/6610-Desert.cube",
+          "size": 1401558,
+          "lut_size": 33,
+          "sha256": "1020ee53af67f7ff369ea646f403157915a1bee7985a815305c10648212e4050"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 3D-LUTs/6620-Snow.cube",
+          "size": 1401558,
+          "lut_size": 33,
+          "sha256": "fbe170fe6f54a3832b153940ceed260d066824c2c08e706f4282fe192eed4e17"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 3D-LUTs/7110-Low-Contrast.cube",
+          "size": 1401558,
+          "lut_size": 33,
+          "sha256": "9a10c19e97c54b9eb0e6ee230b8825874ca3f1c15339debf41d59f72da411310"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 3D-LUTs/7111-Low-Contrast.cube",
+          "size": 1401558,
+          "lut_size": 33,
+          "sha256": "2b913cd115475dbe8346f311482a0cfbd7654676fc136705c12f6ff62b3498f8"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 3D-LUTs/7120-High-Contrast.cube",
+          "size": 1401558,
+          "lut_size": 33,
+          "sha256": "efa2e840be0b4a2ba353e8940b6f81306ec7900705659c0da7f8d129d27ba0ba"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 3D-LUTs/7121-High-Contrast.cube",
+          "size": 1401558,
+          "lut_size": 33,
+          "sha256": "d2135a06830972b53aeba69b67285ccaebcfb4288e390f1c9f7464f723172150"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 3D-LUTs/7130-High-Key.cube",
+          "size": 1401558,
+          "lut_size": 33,
+          "sha256": "4158da98bf878ea5e7f5b17cc285dc748830fe75960733dca3661979091ebdc2"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 3D-LUTs/7131-High-Key.cube",
+          "size": 1401558,
+          "lut_size": 33,
+          "sha256": "df422b8f047f1a9b36a2f8369dcf9a7f36aea957d0851a955c35193a051d9a4f"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 3D-LUTs/7140-Low-Key.cube",
+          "size": 1401558,
+          "lut_size": 33,
+          "sha256": "708f9e2dfc451cc196def9edf7cc24e5dda75569909a40b36e29a12f6a548a76"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 3D-LUTs/8120-20s.cube",
+          "size": 1401558,
+          "lut_size": 33,
+          "sha256": "877eb9b2df32a7ef13514fff6c47ce3cb73007c86e5803f3f318534da738a366"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 3D-LUTs/8130-30s.cube",
+          "size": 1401558,
+          "lut_size": 33,
+          "sha256": "732dc0306cb9fc5432d24d90398b2ace7e598a33c1878b0272b265a648492a5d"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 3D-LUTs/8140-40s.cube",
+          "size": 1401558,
+          "lut_size": 33,
+          "sha256": "59040757a9a3b6b5d3d4772fc244ea744558eb7e368a8a6aa9fdd2abeb481f63"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 3D-LUTs/8150-50s.cube",
+          "size": 1401558,
+          "lut_size": 33,
+          "sha256": "7abc4f2e6c3548b43ff571ab35b7e132f86dd0f11a8f0e012869fcfeabe18d39"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 3D-LUTs/8160-60s.cube",
+          "size": 1401558,
+          "lut_size": 33,
+          "sha256": "9c866a11a3a166043a4736e480def25571a961344b6f84d165ad0cf5e442c148"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 3D-LUTs/8170-70s.cube",
+          "size": 1401558,
+          "lut_size": 33,
+          "sha256": "d525982ff355e826f0f0bc86a65dc60b92c0b885780698e7cd889f3ecb619ff4"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 3D-LUTs/8180-80s.cube",
+          "size": 1401558,
+          "lut_size": 33,
+          "sha256": "5c458d5602ca27bd3de85b1817623848f92f8af5493c80662dde5db051d00eae"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 3D-LUTs/8190-90s.cube",
+          "size": 1401558,
+          "lut_size": 33,
+          "sha256": "c829a0cb2ef5abb82f6eefc346fa58b42a04103ba6ee652f9721fb8d72781b0f"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 3D-LUTs/9110-Dream.cube",
+          "size": 1401558,
+          "lut_size": 33,
+          "sha256": "f3d7950b85840f8ad621b735896a4f907daa4c0c311f2bcc2e891e388a2dc12f"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 3D-LUTs/9111-Dream.cube",
+          "size": 1401558,
+          "lut_size": 33,
+          "sha256": "06e4470ef651ffa7970a679004218f594e571dbde7428b1489274679ad493670"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 3D-LUTs/9120-Flash-Back.cube",
+          "size": 1401558,
+          "lut_size": 33,
+          "sha256": "a95aecdd040fe4de7fa9887637cc314fa60479febc000fa672fd0dd613c1333b"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 3D-LUTs/9210-Day-for-Night.cube",
+          "size": 1401558,
+          "lut_size": 33,
+          "sha256": "2a163e37275588f86134417bf573fd12afc8b1962c46d2b34c4466aab1e56ea8"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 3D-LUTs/9211-Day-for-Night.cube",
+          "size": 1401558,
+          "lut_size": 33,
+          "sha256": "988427ccd1fb72784fd9af05a21673a82730c61d7aef11b781c26b0e4ba7008f"
+        }
+      ],
+      "observed": {
+        "zip_name": "ARRI Look Library LogC3 (to Rec709) 3D-LUTs_data.zip",
+        "zip_bytes": 34011439,
+        "cube_files": 87,
+        "lut_sizes": [33],
+        "top_level_folders": ["ARRI Look Library LogC3 to Rec709 3D-LUTs"],
+        "ignored": { "macos": 88 }
+      }
     },
     {
       "id": "display-luts-logc3",

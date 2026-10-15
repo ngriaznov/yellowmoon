@@ -101,7 +101,7 @@ Rules, in order:
 2. Match file hashes against `arri-packages.json`: an exact package match identifies everything.
 3. Otherwise use names and headers: `LogC4` vs `LogC3` in names or `TITLE`; `-to-` plus a display name (`Gamma24_Rec709`, `P3`, `Rec2020`, `HLG`, `PQ`) means a display LUT or a Rec.709-baked look; `LUT_3D_SIZE` 65 vs 33; look group numbers (four digits) in folder names.
 4. A file that matches nothing gets the generic question (below).
-5. A wrong package (for example ARRI camera LUTs for another sensor, or a zip of ALF4 files only) gets a plain explanation: "This zip has ARRI Look Files (.alf4) but no .cube files. Download the 'LUT (.cube)' version from ARRI's page."
+5. A wrong package (for example ARRI camera LUTs for another sensor, or a zip of ALF4 files only) gets a plain explanation: "These are ARRI look files for the camera (.alf4). Yellowmoon needs the 3D-LUT version: download 'Look Library for LogC4 (3D-LUTs)' from ARRI's look page."
 
 ## Wizard (five steps, `design/mockups/import-looks.html`)
 

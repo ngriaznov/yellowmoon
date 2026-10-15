@@ -643,7 +643,7 @@ export const PACKAGE_ZIPS = Object.fromEntries(Object.entries(PACKAGE_FACTS).map
 
 /** Zips the mock knows that are not one of the five packages: the failure cases of the wizard. */
 export const FAILURE_ZIPS = {
-  /** Only `.alf4` files: the "LUT (.cube)" version is the one to download. */
+  /** Only `.alf4` files (ARRI's look files for the camera): the 3D-LUT version is the one to download. */
   alf4Only: "ARRI_LookFiles_ALF4.zip",
   /** ARRI `.cube` files from a package Yellowmoon doesn't know (another camera). */
   otherCamera: "ARRI_ALEXA35_CameraLUTs.zip",
@@ -685,7 +685,7 @@ function defaultSources(): Map<string, SourceFixture> {
     recognition: {
       kind: "unusable",
       package_id: null,
-      reason: "This zip has ARRI Look Files (.alf4) but no .cube files. Download the 'LUT (.cube)' version from ARRI's page.",
+      reason: "These are ARRI look files for the camera (.alf4). Yellowmoon needs the 3D-LUT version: download 'Look Library for LogC4 (3D-LUTs)' from ARRI's look page.",
     },
   });
   map.set(FAILURE_ZIPS.otherCamera.toLowerCase(), {

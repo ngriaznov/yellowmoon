@@ -1299,7 +1299,12 @@ fn full_size_logc3_package_with_the_real_patterns() {
     let real = {
         let path =
             Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data/looks/arri-packages.json");
-        ym_looks::recognize::PackageDb::load(&path).unwrap()
+        // Without the fingerprints of ARRI's real files: these are synthetic ones.
+        let mut db = ym_looks::recognize::PackageDb::load(&path).unwrap();
+        for package in &mut db.packages {
+            package.fingerprints.clear();
+        }
+        db
     };
     let entries: Vec<(String, Vec<u8>)> = (0..87)
         .map(|i| {

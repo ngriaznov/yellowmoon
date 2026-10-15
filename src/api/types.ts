@@ -371,8 +371,9 @@ export type SourceKind = "zip" | "folder" | "file";
  *    expected).
  *  - `needs_answer`: `.cube` files that match no package. The person says what they expect as input
  *    (`looks_import` takes it as `input`); `note` says why, and `suggestion` is what the names suggest.
- *  - `unusable`: nothing can be imported. `reason` is the plain explanation, for example "This zip has ARRI
- *    Look Files (.alf4) but no .cube files. Download the 'LUT (.cube)' version from ARRI's page." When the
+ *  - `unusable`: nothing can be imported. `reason` is the plain explanation, for example "These are ARRI look
+ *    files for the camera (.alf4). Yellowmoon needs the 3D-LUT version: download 'Look Library for LogC4
+ *    (3D-LUTs)' from ARRI's look page." When the
  *    package is known but damaged (`package_id` set), the reason says what to download again.
  *  - `missing`: the file is not there (moved or deleted since it arrived).
  */

@@ -150,7 +150,7 @@ test.describe("failure paths", () => {
   test("an ALF4-only zip: the explanation of docs/08", async ({ page }) => {
     await wizard(page);
     await toRecognise(page, ALF4);
-    await expect(page.getByText("This zip has ARRI Look Files (.alf4) but no .cube files. Download the 'LUT (.cube)' version from ARRI's page.")).toBeVisible();
+    await expect(page.getByText("These are ARRI look files for the camera (.alf4). Yellowmoon needs the 3D-LUT version: download 'Look Library for LogC4 (3D-LUTs)' from ARRI's look page.")).toBeVisible();
     await expect(page.getByText("Can't use", { exact: true })).toBeVisible();
     await expect(next(page)).toHaveAttribute("aria-disabled", "true");
   });

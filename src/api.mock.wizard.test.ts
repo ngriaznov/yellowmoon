@@ -73,7 +73,7 @@ describe("recognising synthetic packages", () => {
     expect(found.recognition).toEqual({
       kind: "unusable",
       package_id: null,
-      reason: "This zip has ARRI Look Files (.alf4) but no .cube files. Download the 'LUT (.cube)' version from ARRI's page.",
+      reason: "These are ARRI look files for the camera (.alf4). Yellowmoon needs the 3D-LUT version: download 'Look Library for LogC4 (3D-LUTs)' from ARRI's look page.",
     });
   });
 
@@ -169,7 +169,7 @@ describe("importing", () => {
 
   it("refuses what cannot be imported, with the explanation", async () => {
     const alf = await rejection(api.looksImport(downloads(FAILURE_ZIPS.alf4Only)));
-    expect(alf).toEqual({ scope: "looks", message: "This zip has ARRI Look Files (.alf4) but no .cube files. Download the 'LUT (.cube)' version from ARRI's page." });
+    expect(alf).toEqual({ scope: "looks", message: "These are ARRI look files for the camera (.alf4). Yellowmoon needs the 3D-LUT version: download 'Look Library for LogC4 (3D-LUTs)' from ARRI's look page." });
     const gone = await rejection(api.looksImport(downloads("gone.zip")));
     expect(gone.message).toBe("That file is not there any more. Download it again, or choose it again.");
     const unanswered = await rejection(api.looksImport(downloads(FAILURE_ZIPS.ownCube)));

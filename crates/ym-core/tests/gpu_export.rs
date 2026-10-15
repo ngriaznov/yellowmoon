@@ -1919,13 +1919,21 @@ mod faults {
 
     /// The same guard through an export of the tail: the writer takes a share of the rows, the
     /// words go, the upload fails; the whole file is the CPU export, byte for byte, with the note.
+    ///
+    /// The words are taken from the writer's thread (its progress report) while the render goes on
+    /// on its own, and how far the render has got when the report comes is no matter of the speed of
+    /// the device: the channel of bands holds it back. The picture is thirty-two tile rows and eight
+    /// bands of 1024 rows. The first report at or above 0.2 is the one after row 2048: the writer
+    /// has taken bands 0 and 1 and is inside the callback, so it takes no more until the callback
+    /// returns. The channel holds three bands (2 to 4) and the render blocks sending the fifth (band
+    /// 5 needs the rows up to 6144 and the sharpening's halo: twenty-five tile rows at the most), so
+    /// at least seven tile rows are left, on a device as quick as Metal and on a slow one alike.
+    /// Each of them starts by asking for the photo's words, and the first upload after they went
+    /// fails (the fault is armed before they go, see `take_the_raw_words_away`).
     #[test]
     fn a_tail_export_whose_raw_words_cannot_be_uploaded_again_is_the_cpu_export() {
         let Some(gpu) = gpu() else { return };
         drop(gpu);
-        // The shape of the part-way test above: thirty-two tile rows, eight bands of 1024 rows, so a
-        // writer that stalls in its progress callback has the render stopped on a full channel with
-        // tiles left.
         let shot = Shot::sized(96, 8192);
         apply_variant(&shot, 100.0, false);
         let src = shot.d.source();
@@ -1951,15 +1959,8 @@ mod faults {
         let taken = AtomicUsize::new(0);
         let note = |f: f32| {
             seen.lock().expect("lock").push(f);
-            // A slow writer: the render runs ahead until the channel is full.
-            std::thread::sleep(std::time::Duration::from_millis(15));
-            eprintln!("DBG {:?} progress {f}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() % 100000);
             if f >= 0.2 && taken.fetch_add(1, Ordering::SeqCst) == 0 {
-                eprintln!("DBG {:?} take start", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() % 100000);
-                take_the_raw_words_away(ctx.renderer(), &src);
-                eprintln!("DBG {:?} take end", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() % 100000);
-                own.set_fault(Some(GpuFault::FailUpload(1)));
-                eprintln!("DBG {:?} armed", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() % 100000);
+                take_the_raw_words_away(ctx.renderer(), &src, Some(&own));
             }
         };
         let r = export_photo(

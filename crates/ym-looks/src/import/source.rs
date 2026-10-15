@@ -244,6 +244,23 @@ impl Source {
                 budget: MAX_TOTAL_BYTES,
             });
         }
+        // A look file for the camera chosen by itself: nothing to read, but the recognition says
+        // which 3D-LUT download to take instead (like a zip of them).
+        let kind = classify(&name);
+        if matches!(kind, EntryKind::Alf4 | EntryKind::Alf2 | EntryKind::Aml) {
+            let mut ignored = Ignored::default();
+            tally(&mut ignored, kind);
+            return Ok(Self {
+                info: SourceInfo {
+                    kind: SourceKind::File,
+                    name,
+                },
+                candidates: Vec::new(),
+                ignored,
+                opened: Opened::File,
+                budget: MAX_TOTAL_BYTES,
+            });
+        }
         Err(ImportError::UnsupportedSource(name))
     }
 

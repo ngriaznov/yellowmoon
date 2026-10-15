@@ -207,7 +207,7 @@ describe("Recognise", () => {
   });
 
   it("explains an ALF4-only zip in the words of docs/08", () => {
-    const reason = "This zip has ARRI Look Files (.alf4) but no .cube files. Download the 'LUT (.cube)' version from ARRI's page.";
+    const reason = "These are ARRI look files for the camera (.alf4). Yellowmoon needs the 3D-LUT version: download 'Look Library for LogC4 (3D-LUTs)' from ARRI's look page.";
     const state = at(2, [unusable("~/Downloads/ARRI_LookFiles_ALF4.zip", reason)]);
     expect(verdictFor(state, state.sources[0]!)).toEqual({ kind: "unusable", explanation: reason });
     expect(canAdvance(state)).toBe(false);

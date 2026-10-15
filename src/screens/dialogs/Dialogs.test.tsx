@@ -390,7 +390,7 @@ describe("Import .cube…", () => {
   it("imports an ARRI package without asking, and lists a file that can't be used with the reason", async () => {
     const dialog = await chooseCube(PACKAGE_ZIPS.display_luts_logc4, FAILURE_ZIPS.alf4Only);
     expect(within(dialog).getByText(/Display LUTs · LogC4 · 22 \.cube\. It is imported as it comes\./)).toBeInTheDocument();
-    expect(within(dialog).getByText("This zip has ARRI Look Files (.alf4) but no .cube files. Download the 'LUT (.cube)' version from ARRI's page.")).toBeInTheDocument();
+    expect(within(dialog).getByText("These are ARRI look files for the camera (.alf4). Yellowmoon needs the 3D-LUT version: download 'Look Library for LogC4 (3D-LUTs)' from ARRI's look page.")).toBeInTheDocument();
     expect(within(dialog).queryByRole("radiogroup")).toBeNull();
     await h!.user.click(within(dialog).getByRole("button", { name: "Import" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull(), { timeout: 8000 });
