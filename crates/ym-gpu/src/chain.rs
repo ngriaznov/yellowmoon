@@ -1503,7 +1503,6 @@ impl GpuReduced {
         slab_rows: usize,
     ) -> Result<GpuImage, GpuError> {
         cancel.check()?;
-        ctx.inject_tile_fault()?;
         let (w, h) = (raw.width(), raw.height());
         let slab_rows = (slab_rows.max(8)) & !1;
         let bp = BinParams {

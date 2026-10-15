@@ -35,7 +35,9 @@ use std::sync::{Arc, OnceLock};
 
 use half::f16;
 use rayon::prelude::*;
-use ym_gpu::chain::{DeviceRunner, DeviceWork, GpuChain, StageRange};
+use ym_gpu::chain::{
+    DeviceRunner, DeviceWork, GpuChain, GpuReduced, ReducedDenoise, ReducedParams, StageRange,
+};
 use ym_gpu::cpu::chain::{Chain, Prepared, RawFrame};
 use ym_gpu::cpu::demosaic::{DEFAULT_METHOD, Method};
 use ym_gpu::cpu::denoise::{self, BilateralParams};
@@ -51,8 +53,10 @@ use ym_gpu::cpu::vignette::VignetteProfile;
 use ym_gpu::cpu::{
     Cfa, CfaColor as GpuColor, LUMA, Mosaic, NoiseDn, NoiseSigma, Placement, Rect, RgbImage,
 };
-use ym_gpu::device::{Gpu, GpuError};
+use ym_gpu::device::{Gpu, GpuContext, GpuError};
 use ym_gpu::kernels::bilateral::SigmaHalf;
+use ym_gpu::kernels::lens::LensTable;
+use ym_gpu::kernels::prep::{DeviceRaw, VignetteTable};
 use ym_gpu::queue::{CancelToken, JobSpec};
 use ym_noise::model::NoiseModel;
 use ym_noise::sigma_map::{HalfPlanes, QstepMap, SigmaParams, sigma_quad};
@@ -1178,6 +1182,60 @@ fn finish_lens(img: RgbImage, plan: &RawPlan, k: usize) -> Result<RgbImage, Rend
     }
 }
 
+/// What the device's fit-view path ([`GpuReduced`]) needs for the photo at `1/k`: the numbers
+/// [`reduced_bayer`] reads, as plain data (the R1 levels, the R4 gains, whether R5 runs, the
+/// vignetting profile, the noise model and the gains per CFA position for the sigma plane, the noise
+/// the binning leaves, the light denoise and the lens at `1/k`).
+///
+/// Returns `None` when the device cannot take them (a vignetting profile or a lens table with more
+/// knots than the kernels hold, a binning factor they refuse): the CPU makes the group then.
+///
+/// # Errors
+///
+/// [`RenderError::Image`] when the lens tables cannot make a map for the smaller frame (the CPU
+/// path's error too).
+pub fn reduced_params(
+    frame: &FrameData,
+    plan: &RawPlan,
+    params: &RawParams,
+    k: usize,
+) -> Result<Option<ReducedParams>, RenderError> {
+    if k < 2 || k % 2 != 0 || k > 16 {
+        return Ok(None);
+    }
+    let mut g0_pos = [0.0f32; 4];
+    for (p, g) in g0_pos.iter_mut().enumerate() {
+        *g = params.g0[frame.cfa.color_at(p & 1, p >> 1).plane()];
+    }
+    let vignette = match plan.vignette.as_ref().map(VignetteTable::from_profile) {
+        Some(Ok(t)) => Some(t),
+        Some(Err(_)) => return Ok(None),
+        None => None,
+    };
+    let lens = match plan.lens_at(k)? {
+        Some(geo) => match LensTable::from_geometry(&geo) {
+            Ok(t) => Some(t),
+            Err(_) => return Ok(None),
+        },
+        None => None,
+    };
+    let scale = detail::network_sigma_scale(params.noise_reduction.luminance, params.iso);
+    Ok(Some(ReducedParams {
+        k,
+        levels: plan.levels,
+        g0: params.g0,
+        highlight_recovery: params.highlight_recovery && plan.has_clipped,
+        vignette,
+        noise: SigmaParams::new(&params.noise, g0_pos),
+        noise_factor: binning_noise_factor(k) as f32,
+        denoise: (scale > 0.0).then(|| ReducedDenoise {
+            scale,
+            params: BilateralParams::default(),
+        }),
+        lens,
+    }))
+}
+
 /// R1 to R8 for a camera-processed file at `1/k` (`k = 1` is full resolution): one range for the
 /// three channels, the gains, the light denoise and, at full resolution, R7 and R8.
 ///
@@ -1481,7 +1539,9 @@ impl FullChain {
     /// CPU runs the rest. The same contract as [`run_tile`](Self::run_tile), within the tolerances of
     /// the kernels (`docs/05`). A range that holds every stage that reads the noise sigma
     /// ([`StageRange::covers_sigma_stages`]) gets it from the half-resolution plane and the full map
-    /// is not made; a shorter range leaves such a stage to the CPU, which reads the map.
+    /// is not made; a shorter range leaves such a stage to the CPU, which reads the map. The range
+    /// [`FRONT_RANGE`] (R1 to R9) runs every stage on the device from [`GpuRoute::resident`], the raw
+    /// words uploaded once per photo.
     ///
     /// # Errors
     ///
@@ -1493,6 +1553,18 @@ impl FullChain {
         out: Rect,
         route: &GpuRoute,
     ) -> Result<RgbImage, GpuError> {
+        if route.range == StageRange::RAW_TO_LENS {
+            // R1 to R9 from the photo's resident raw words: nothing of the frame is read on the host
+            // (the CPU's chroma offsets of `prepared` go to the device as numbers).
+            let resident = route.resident.as_ref().ok_or_else(|| {
+                GpuError::InvalidInput(
+                    "the range R1..R9 needs the photo's raw words on the device".into(),
+                )
+            })?;
+            return GpuChain::new(&self.chain, &self.prepared, route.range)?
+                .with_sigma(self.sigma_half())?
+                .run_tile_front(route, resident, out, &route.token);
+        }
         let raw = frame.as_raw_frame();
         if route.range.covers_sigma_stages() {
             GpuChain::new(&self.chain, &self.prepared, route.range)?
@@ -1529,6 +1601,14 @@ impl FullChain {
 /// G-06). A route of this range never makes the full-resolution sigma map ([`FullChain::sigma_map_built`]).
 pub const DEVICE_RANGE: StageRange = StageRange::DEMOSAIC_TO_SHARPEN;
 
+/// The stages the renderer runs on the device when both [`GpuStages::RAW_CHAIN`] and
+/// [`GpuStages::RAW_FRONT`] are on: the whole classical chain R1 to R9 from the raw words that sit on
+/// the device (`StageRange::RAW_TO_LENS`, G-07). With the front off the range is [`DEVICE_RANGE`].
+///
+/// [`GpuStages::RAW_CHAIN`]: crate::app::gpu::GpuStages::RAW_CHAIN
+/// [`GpuStages::RAW_FRONT`]: crate::app::gpu::GpuStages::RAW_FRONT
+pub const FRONT_RANGE: StageRange = StageRange::RAW_TO_LENS;
+
 /// How often a render waiting for its device job looks at its cancel token.
 const DEVICE_POLL: std::time::Duration = std::time::Duration::from_millis(5);
 
@@ -1546,6 +1626,9 @@ pub struct GpuRoute {
     pub spec: JobSpec,
     /// The render's cancel token, shared by its jobs.
     pub token: CancelToken,
+    /// The photo's raw words on the device, for the range [`FRONT_RANGE`]; `None` for the ranges that
+    /// read the host's mosaic.
+    pub resident: Option<Arc<DeviceRaw>>,
 }
 
 impl std::fmt::Debug for GpuRoute {
@@ -1553,7 +1636,81 @@ impl std::fmt::Debug for GpuRoute {
         f.debug_struct("GpuRoute")
             .field("range", &self.range)
             .field("spec", &self.spec)
+            .field("resident", &self.resident.is_some())
             .finish_non_exhaustive()
+    }
+}
+
+impl GpuRoute {
+    /// Runs `job` on the device as one job of the route (its priority, the render's token) and waits
+    /// for it. A render that is cancelled while its job is still queued behind others stops waiting at
+    /// once: the job is abandoned, skipped when it is popped (its token is set) and its buffers go
+    /// back to the pool when it is dropped. A job that is already running finishes on its own the same
+    /// way; the render does not wait for it.
+    ///
+    /// # Errors
+    ///
+    /// [`GpuError::Cancelled`] when the token was set; the job's own errors; the scheduler's.
+    pub fn run_job<R: Send + 'static>(
+        &self,
+        job: impl FnOnce(&GpuContext, &CancelToken) -> Result<R, GpuError> + Send + 'static,
+    ) -> Result<R, GpuError> {
+        let handle = self
+            .gpu
+            .submit_with_token(self.spec, self.token.clone(), move |ctx, token| {
+                ctx.check_alive()?;
+                job(ctx, token)
+            });
+        loop {
+            if let Some(done) = handle.wait_timeout(DEVICE_POLL) {
+                return done;
+            }
+            if self.token.is_cancelled() {
+                return Err(GpuError::Cancelled);
+            }
+        }
+    }
+
+    /// Uploads the photo's raw words to the device (a job of the route). The caller keeps the result
+    /// for the life of the photo ([`Job::resident`](super::graph) holds it once per photo).
+    ///
+    /// # Errors
+    ///
+    /// As [`run_job`](Self::run_job), and [`GpuError::InvalidInput`] for a frame the upload refuses
+    /// (a camera-processed file, a readout above two slabs), the pool's errors.
+    pub fn upload(&self, frame: &Arc<FrameData>) -> Result<Arc<DeviceRaw>, GpuError> {
+        if frame.reduced {
+            return Err(GpuError::InvalidInput(
+                "a camera-processed file has no mosaic to put on the device".into(),
+            ));
+        }
+        let frame = Arc::clone(frame);
+        self.run_job(move |ctx, _| {
+            DeviceRaw::upload(
+                ctx,
+                "photo raw words",
+                frame.width,
+                frame.height,
+                frame.cfa,
+                frame.data(),
+                frame.qstep.as_deref(),
+            )
+            .map(Arc::new)
+        })
+    }
+
+    /// The fit-view group of the resident photo at `1/k`, read back as a host image.
+    ///
+    /// # Errors
+    ///
+    /// As [`run_job`](Self::run_job), and the group's own errors ([`GpuReduced::run_rgb`]).
+    pub fn reduced(
+        &self,
+        resident: &Arc<DeviceRaw>,
+        params: ReducedParams,
+    ) -> Result<RgbImage, GpuError> {
+        let resident = Arc::clone(resident);
+        self.run_job(move |ctx, token| GpuReduced::run_rgb(ctx, &resident, &params, token))
     }
 }
 
@@ -1565,20 +1722,7 @@ impl DeviceRunner for GpuRoute {
     /// set) and its buffers go back to the pool when it is dropped. A job that is already running
     /// finishes on its own the same way; the render does not wait for it.
     fn run_device(&self, work: DeviceWork, _cancel: &CancelToken) -> Result<RgbImage, GpuError> {
-        let handle =
-            self.gpu
-                .submit_with_token(self.spec, self.token.clone(), move |ctx, token| {
-                    ctx.check_alive()?;
-                    work.run(ctx, token)
-                });
-        loop {
-            if let Some(done) = handle.wait_timeout(DEVICE_POLL) {
-                return done?;
-            }
-            if self.token.is_cancelled() {
-                return Err(GpuError::Cancelled);
-            }
-        }
+        self.run_job(move |ctx, token| work.run(ctx, token))
     }
 }
 
@@ -2875,6 +3019,7 @@ mod tests {
             range,
             spec: JobSpec::new(ym_gpu::queue::Priority::Export),
             token: CancelToken::new(),
+            resident: None,
         };
         let full = FullChain::new(&frame, &plan, &params, &sigma, &CancelToken::new())
             .expect("full chain");
@@ -2931,6 +3076,59 @@ mod tests {
             );
         }
     }
+    #[test]
+    fn the_front_range_runs_every_stage_from_the_resident_words_and_needs_no_sigma_map() {
+        let Some(gpu) = device() else { return };
+        let (w, h) = (200u32, 150u32);
+        let (frame, plan, sigma, params) = full_chain_with_every_stage(w, h);
+        let frame = Arc::new(frame);
+        let mut route = GpuRoute {
+            gpu: Arc::clone(&gpu),
+            range: FRONT_RANGE,
+            spec: JobSpec::new(ym_gpu::queue::Priority::Export),
+            token: CancelToken::new(),
+            resident: None,
+        };
+        let full = FullChain::new(&frame, &plan, &params, &sigma, &CancelToken::new())
+            .expect("full chain");
+        let rects = [
+            Rect::new(0, 0, 64, 64),
+            Rect::new(60, 40, 70, 60),
+            Rect::new(full.out_w - 64, full.out_h - 50, 64, 50),
+        ];
+        // The range reads the photo's words on the device: without them it is refused.
+        let refused = full.run_tile_gpu(&frame, rects[0], &route);
+        assert!(matches!(refused, Err(GpuError::InvalidInput(_))), "{refused:?}");
+        route.resident = Some(route.upload(&frame).expect("upload"));
+        let front: Vec<RgbImage> = rects
+            .iter()
+            .map(|&r| full.run_tile_gpu(&frame, r, &route).expect("device tile"))
+            .collect();
+        assert!(
+            !full.sigma_map_built(),
+            "R1 to R9 on the device needs no sigma map"
+        );
+        // The CPU chain's picture, up to the demosaic's decisions on exact ties.
+        for (a, &r) in front.iter().zip(&rects) {
+            let cpu = full.run_tile(&frame, r).expect("cpu tile");
+            let (mut worst, mut sum) = (0.0f32, 0.0f64);
+            for (x, y) in a.data.iter().zip(&cpu.data) {
+                let d = (x - y).abs();
+                worst = worst.max(d);
+                sum += f64::from(d);
+            }
+            let mean = sum / a.data.len() as f64;
+            assert!(
+                mean < 2e-6 && worst < 0.05,
+                "mean {mean:e}, worst {worst:e}"
+            );
+        }
+        // A camera-processed file puts nothing on the device.
+        let (_, mut reduced) = edge_frame(40, 30);
+        reduced.reduced = true;
+        assert!(route.upload(&Arc::new(reduced)).is_err());
+    }
+
 }
 
 #[cfg(test)]

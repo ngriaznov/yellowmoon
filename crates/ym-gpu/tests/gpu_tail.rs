@@ -687,3 +687,92 @@ fn one_tile_read_back_is_the_cpu_colour_pass() {
         }
     }
 }
+
+/// FNV-1a over the codes of the bands, in order.
+fn fingerprint(bands: &[Band]) -> u64 {
+    let mut h = 0xcbf2_9ce4_8422_2325_u64;
+    let mut mix = |b: u8| {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x0100_0000_01b3);
+    };
+    for b in bands {
+        match &b.data {
+            BandData::Eight(v) => v.iter().for_each(|&c| mix(c)),
+            BandData::Sixteen(v) => v.iter().for_each(|&c| c.to_le_bytes().into_iter().for_each(&mut mix)),
+        }
+    }
+    h
+}
+
+/// 50 MP (8688 x 5792) through the tail in 1024 px tiles: what the device holds between two tile rows and at its peak,
+/// against the 800 MB the four planes of the rendered picture would be, and the same codes twice.
+/// Ignored: it makes a 600 MB camera image and runs the colour chain over 50 million pixels (about
+/// a minute on lavapipe in a test build); wave 5 runs it on Metal.
+#[test]
+#[ignore = "50 MP: run with --ignored (wave 5 runs it on Metal)"]
+fn fifty_megapixels_leave_a_few_slabs_on_the_device_and_the_same_bytes_twice() {
+    let Some(gpu) = common::start_unpoisoned(StoragePreference::Auto) else {
+        return;
+    };
+    let dev = TestGpu {
+        mode: gpu.info().storage_mode,
+        gpu,
+    };
+    let (bw, bh) = (8688, 5792);
+    let sc = exact_scene(bw, bh, 1, 0, 50);
+    let ch = chain(OutputTarget::Srgb);
+    let picture = (bw * bh * 16) as u64;
+    for (name, out, pct, bits16) in [
+        ("full size, sharpened, 16 bit", (bw, bh), 100.0, true),
+        ("long edge 4000, sharpened, 8 bit", (4000, 2667), 100.0, false),
+    ] {
+        let mut prints = Vec::new();
+        for pass in 0..2 {
+            dev.gpu
+                .run(JobSpec::new(Priority::Export), |ctx, _| {
+                    ctx.pool().reset_peaks();
+                    Ok(())
+                })
+                .expect("reset");
+            let started = std::time::Instant::now();
+            let route = TailRoute::new(&dev.gpu, JobSpec::new(Priority::Export), CancelToken::new());
+            let spec = spec_of(&sc, &ch, out, pct, OutputSpace::Srgb, format_of(bits16));
+            let mut tail = ExportTail::new(route, spec).expect("tail");
+            let mut between_rows = 0u64;
+            let bands = feed(&mut tail, &sc, 1024, |_, _| {
+                let in_use = dev
+                    .gpu
+                    .run(JobSpec::new(Priority::Export), |ctx, _| {
+                        Ok(ctx.pool().stats().in_use_bytes)
+                    })
+                    .expect("pool");
+                between_rows = between_rows.max(in_use);
+            })
+            .expect("tail run");
+            let seconds = started.elapsed().as_secs_f64();
+            let peak = dev
+                .gpu
+                .run(JobSpec::new(Priority::Export), |ctx, _| {
+                    Ok(ctx.pool().stats().peak_in_use_bytes)
+                })
+                .expect("pool");
+            let rows: usize = bands.iter().map(|b| b.rows).sum();
+            assert_eq!(rows, out.1, "{name}: the bands cover the picture");
+            ci_note(
+                "50 MP tail",
+                &format!(
+                    "{name}, pass {pass}: {:.1} s; resident between tile rows at most {} MiB, peak {} MiB ({}% of the {} MiB four-plane picture)",
+                    seconds,
+                    between_rows >> 20,
+                    peak >> 20,
+                    peak * 100 / picture,
+                    picture >> 20
+                ),
+            );
+            // The design: a few slabs of 128 MiB at most and a chunk of scratch, never the picture.
+            assert!(peak < picture / 2, "{name}: peak {peak} of a {picture} B picture");
+            prints.push(fingerprint(&bands));
+        }
+        assert_eq!(prints[0], prints[1], "{name}: the same codes twice");
+    }
+}

@@ -46,6 +46,7 @@ use ym_gpu::cpu::{Cfa, Mosaic, NoiseDn, RgbImage};
 use ym_gpu::device::{GpuContext, GpuError, StorageMode};
 use ym_gpu::kernels::adaptive_ratio::{self, Balance, PreparedDemosaic};
 use ym_gpu::kernels::bilateral::SigmaHalf;
+use ym_gpu::kernels::prep::DeviceRaw;
 use ym_gpu::queue::{CancelToken, JobSpec, Priority};
 
 /// The device with `f32` storage (the automatic one, since the device foundation).
@@ -66,6 +67,8 @@ struct Scene {
     height: usize,
     cfa: Cfa,
     data: Vec<u16>,
+    /// The quantisation steps of a lossy file (one per photosite), or none.
+    qstep: Option<Vec<f32>>,
 }
 
 impl Scene {
@@ -86,7 +89,20 @@ impl Scene {
             height,
             cfa,
             data,
+            qstep: None,
         }
+    }
+
+    /// The same scene as a lossy file: a step per photosite (f16 values, as the decoder keeps them).
+    fn with_steps(mut self, seed: u64) -> Scene {
+        let mut rng = synth::Rng::new(seed);
+        let table = [0.0f32, 0.25, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0];
+        self.qstep = Some(
+            (0..self.data.len())
+                .map(|_| table[(rng.next_u64() % table.len() as u64) as usize])
+                .collect(),
+        );
+        self
     }
 
     fn raw(&self) -> RawFrame<'_> {
@@ -95,8 +111,21 @@ impl Scene {
             height: self.height,
             cfa: self.cfa,
             data: &self.data,
-            qstep: None,
+            qstep: self.qstep.as_deref(),
         }
+    }
+
+    /// The photo's raw words resident on the device (what `ym-core` uploads once per photo).
+    fn upload(&self, ctx: &GpuContext) -> Result<Arc<DeviceRaw>, GpuError> {
+        Ok(Arc::new(DeviceRaw::upload(
+            ctx,
+            "chain test photo",
+            self.width,
+            self.height,
+            self.cfa,
+            &self.data,
+            self.qstep.as_deref(),
+        )?))
     }
 }
 
@@ -308,6 +337,12 @@ impl Setup {
         self
     }
 
+    /// The same, run on the range R1 to R9 from the resident raw words.
+    fn front(mut self) -> Setup {
+        self.range = StageRange::RAW_TO_LENS;
+        self
+    }
+
     /// The chain gets its noise sigma from `half`: the CPU chain through the expanded map, the device
     /// chain through the half-resolution plane (and has no map at all).
     fn with_half(scene: Scene, mut chain: Chain, half: HalfSigma) -> Setup {
@@ -340,7 +375,13 @@ impl Setup {
         let s = self.clone();
         dev.gpu
             .run(JobSpec::new(Priority::Viewport), move |ctx, cancel| {
-                s.device_chain()?.run_tile(ctx, &s.scene.raw(), out, cancel)
+                let g = s.device_chain()?;
+                if s.range == StageRange::RAW_TO_LENS {
+                    let raw = s.scene.upload(ctx)?;
+                    g.run_tile_front(ctx, &raw, out, cancel)
+                } else {
+                    g.run_tile(ctx, &s.scene.raw(), out, cancel)
+                }
             })
     }
 
@@ -1119,6 +1160,7 @@ fn a_mosaic_below_two_by_two_is_the_cpu_stage_and_the_smallest_the_device_takes_
             height: h,
             cfa: Cfa::RGGB,
             data,
+            qstep: None,
         };
         let mut chain = chain_of(&tiny, Lens::Bare, low_noise());
         chain.denoise = None;
@@ -1966,4 +2008,576 @@ fn a_cut_demosaic_core_is_still_one_tile_for_the_tile_fault() {
         "tile 2 carries the fault: {second:?}"
     );
     assert!(third.is_ok(), "the fault fires once: {third:?}");
+}
+
+// ---------------------------------------------------------------------------------------------
+// G-07: the whole chain R1..R9 from the resident raw words
+// ---------------------------------------------------------------------------------------------
+//
+// `GpuChain::run_tile_front`: R1, R3, R4 in one pass, R5 with the CPU's chroma offsets, R5b, the
+// demosaic, the stages after it and the lens resample are one device job. The CPU chain is the
+// reference; a flip of a demosaic decision on a tie is the dominant difference (as in R6..R8), so the
+// limits are fractions of samples.
+//
+// | Case | Asserted | Measured |
+// |---|---|---|
+// | R1..R9 against the CPU chain, 4 phases x 2 odd sizes x 3 lens kinds x 2 noise models x 4 rectangles | per case [`ONE_CHAIN_CASE`], all cases together [`FRONT_TIE_FREE`] / [`FRONT_TIE_PRONE`] | see the printout |
+// | R1..R9 against R6..R8 behind the CPU's front (the same demosaic code, the front differs by its rounding) | largest [`FRONT_AGAINST_HANDOFF`] on tie-free content | see the printout |
+// | tiles of two sizes | bit-identical to the whole | 0 differing |
+// | a poisoned device and a plain one | bit-identical, finite | 0 differing |
+// | a demosaic core cut at a few thousand padded pixels | bit-identical to the unsplit run | 0 differing |
+// | `FrontShape::plan` | the CPU's `required_raw_rect` | equal |
+// | a lossy file (steps) | within the same limits | see the printout |
+
+/// All tie-free cases together (vignetted content, so off the raw grid). First measured on lavapipe
+/// (Mesa 25.2, LLVM 20.1): 219 of 1 228 536 samples over 1e-4 (1.78e-4), 1467 over 2e-5 (1.19e-3),
+/// largest 2.9e-3, the R6..R8 numbers within noise (the lens resample on the device and the CPU's
+/// front change little). The limits are twice that.
+const FRONT_TIE_FREE: Limits = Limits {
+    over: 3.6e-4,
+    fine: 2.4e-3,
+    largest: 5.8e-3,
+};
+
+/// All tie-prone cases together (the bare grid). First measured: 9204 of 638 232 over 1e-4 (1.44e-2),
+/// 21 839 over 2e-5 (3.42e-2), largest 0.11: the R6..R8 numbers, the front being bit-identical to the
+/// CPU's on content without a vignetting gain.
+const FRONT_TIE_PRONE: Limits = Limits {
+    over: 2.9e-2,
+    fine: 6.9e-2,
+    largest: 0.23,
+};
+
+/// The 1024 x 1024 corner tile of a 50 MP frame (8658 x 5772) behind a strong barrel lens with CA on
+/// the mosaic, a vignetting profile and R5, the whole chain R1..R9 on the device against the CPU chain
+/// (`#[ignore]`d). First measured: 503 of 3 145 728 over 1e-4 (1.60e-4), 8030 over 2e-5 (2.55e-3),
+/// largest 6.3e-3; the limits are twice that.
+const FIFTY_MP_CORNER_FRONT: Limits = Limits {
+    over: 3.2e-4,
+    fine: 5.1e-3,
+    largest: 1.3e-2,
+};
+
+/// R1..R9 against R6..R8 behind the CPU's front, largest difference over the tie-free cases. First
+/// measured 2.7e-4 (one sample: the vignetting gain differs by 2.7e-7, a demosaic decision on a
+/// near tie flips); twice that.
+const FRONT_AGAINST_HANDOFF: f64 = 5.4e-4;
+
+/// The R6..R8 setup of a case and the R1..R9 setup of the same case.
+fn front_pair(scene: Scene, lens: Lens, noise: NoiseDn, variant: Variant) -> (Setup, Setup) {
+    let handoff = setup_for(scene, lens, noise, variant);
+    let front = handoff.clone().front();
+    (handoff, front)
+}
+
+#[test]
+fn r1_to_r9_matches_the_cpu_chain() {
+    let Some(dev) = f32_device_or_skip() else {
+        return;
+    };
+    let (mut free, mut prone) = (Stats::default(), Stats::default());
+    let mut against_handoff = 0.0f64;
+    for (n, (cfa, w, h, lens, nname, noise, seed)) in sweep().into_iter().enumerate() {
+        let variant = [Variant::Scalar, Variant::Half, Variant::HalfWithGains][n % 3];
+        let (handoff, front) = front_pair(Scene::new(w, h, cfa, seed), lens, noise, variant);
+        let (ow, oh) = front.output_size();
+        for out in [
+            Rect::whole(ow, oh),
+            Rect::new(0, 0, 40.min(ow), 31.min(oh)),
+            Rect::new(
+                ow.saturating_sub(37),
+                oh.saturating_sub(29),
+                37.min(ow),
+                29.min(oh),
+            ),
+            Rect::new(ow / 3, oh / 3, 33.min(ow - ow / 3), 21.min(oh - oh / 3)),
+        ] {
+            let got = front.gpu(dev, out);
+            let s = compare(&got, &front.cpu(out));
+            let label = format!(
+                "{} {w}x{h} lens {lens:?} noise {nname} {variant:?} {out:?}",
+                cfa.name()
+            );
+            assert_within(&label, &s, ONE_CHAIN_CASE);
+            if lens.tie_prone() {
+                prone.add(&s);
+            } else {
+                free.add(&s);
+                // The same demosaic code on the CPU's front: only the front's rounding and R9's differ.
+                let h = compare(&got, &handoff.gpu(dev, out));
+                against_handoff = against_handoff.max(h.max_abs);
+            }
+        }
+    }
+    free.print("R1..R9 chain, tie-free content");
+    prone.print("R1..R9 chain, tie-prone content");
+    eprintln!("[G-07] R1..R9 against R6..R8 behind the CPU's front (tie-free): largest {against_handoff:e}");
+    assert_within("R1..R9 chain, tie-free content", &free, FRONT_TIE_FREE);
+    assert_within("R1..R9 chain, tie-prone content", &prone, FRONT_TIE_PRONE);
+    assert!(against_handoff <= FRONT_AGAINST_HANDOFF, "{against_handoff:e}");
+}
+
+#[test]
+fn tiles_of_the_front_chain_equal_the_whole_chain_bit_for_bit() {
+    let Some(dev) = f32_device_or_skip() else {
+        return;
+    };
+    let mut seed = 2500;
+    for (cfa, lens, noise, variant) in [
+        (Cfa::RGGB, Lens::Full, high_noise(), Variant::HalfWithGains),
+        (Cfa::GRBG, Lens::Bare, low_noise(), Variant::Scalar),
+        (Cfa::BGGR, Lens::Full, low_noise(), Variant::Half),
+        (Cfa::GBRG, Lens::Vignette, high_noise(), Variant::Scalar),
+    ] {
+        seed += 1;
+        let (w, h) = (171usize, 133usize);
+        let (_, setup) = front_pair(Scene::new(w, h, cfa, seed), lens, noise, variant);
+        let (ow, oh) = setup.output_size();
+        assert_tiles_equal_whole(
+            &format!("R1..R9 {} lens {:?} {variant:?}", cfa.name(), lens),
+            ow,
+            oh,
+            3,
+            &[64, 100],
+            |rect| setup.gpu(dev, rect).data,
+        );
+    }
+}
+
+#[test]
+fn the_front_chain_of_a_lossy_file_matches_the_cpu_and_the_tiles() {
+    let Some(dev) = f32_device_or_skip() else {
+        return;
+    };
+    let (mut free, mut prone) = (Stats::default(), Stats::default());
+    for (n, (cfa, lens)) in [
+        (Cfa::RGGB, Lens::Full),
+        (Cfa::GBRG, Lens::Vignette),
+        (Cfa::BGGR, Lens::Bare),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let (w, h) = (133usize, 97usize);
+        let scene = Scene::new(w, h, cfa, 2600 + n as u64).with_steps(9 + n as u64);
+        let (_, setup) = front_pair(scene, lens, high_noise(), Variant::HalfWithGains);
+        let (ow, oh) = setup.output_size();
+        let out = Rect::new(3, 2, ow - 7, oh - 5);
+        let s = compare(&setup.gpu(dev, out), &setup.cpu(out));
+        assert_within(&format!("{} lossy {lens:?}", cfa.name()), &s, ONE_CHAIN_CASE);
+        if lens.tie_prone() {
+            prone.add(&s);
+        } else {
+            free.add(&s);
+        }
+        assert_tiles_equal_whole(
+            &format!("lossy {} {lens:?}", cfa.name()),
+            ow,
+            oh,
+            3,
+            &[48],
+            |rect| setup.gpu(dev, rect).data,
+        );
+    }
+    free.print("R1..R9 lossy, tie-free content");
+    prone.print("R1..R9 lossy, tie-prone content");
+    assert_within("R1..R9 lossy, tie-free", &free, FRONT_TIE_FREE);
+    assert_within("R1..R9 lossy, tie-prone", &prone, FRONT_TIE_PRONE);
+}
+
+#[test]
+fn the_front_chain_is_poison_neutral() {
+    let Some(_dev) = f32_device_or_skip() else {
+        return;
+    };
+    let scene = Scene::new(150, 110, Cfa::RGGB, 78);
+    let chain = chain_of(&scene, Lens::Full, high_noise());
+    let setup = Setup::with_half(scene, chain, HalfSigma::new(150, 110, 0.01, true, 3)).front();
+    let (ow, oh) = setup.output_size();
+    let out = Rect::new(7, 5, ow - 9, oh - 8);
+    let got = assert_poison_neutral("the device chain, R1..R9", |gpu| {
+        let s = setup.clone();
+        gpu.run(JobSpec::new(Priority::Viewport), move |ctx, cancel| {
+            let raw = s.scene.upload(ctx)?;
+            s.device_chain()?.run_tile_front(ctx, &raw, out, cancel)
+        })
+        .expect("chain")
+        .data
+    });
+    assert!(got.is_some(), "a plain device is available");
+}
+
+#[test]
+fn the_fronts_rectangles_are_the_cpu_steppers() {
+    // `FrontShape::plan` walks the stages backwards with the halos of `Stage::input_rect`, as the CPU
+    // stepper does: its first rectangle is the raw rectangle `required_raw_rect` names.
+    use ym_gpu::chain::FrontShape;
+    for lens in [Lens::Bare, Lens::Vignette, Lens::Full] {
+        for highlight_recovery in [false, true] {
+            for (w, h) in [(171usize, 133usize), (40, 30), (9, 7)] {
+                let scene = Scene::new(w, h, Cfa::RGGB, 5);
+                let mut chain = chain_of(&scene, lens, high_noise());
+                chain.highlight_recovery = highlight_recovery;
+                let frame = Rect::whole(w, h);
+                let (ow, oh) = chain.output_size(w, h);
+                let stages = chain.stages();
+                let d = stages
+                    .iter()
+                    .position(|s| matches!(s, ym_gpu::cpu::tiling::Stage::Demosaic(_)))
+                    .expect("demosaic");
+                let shape = FrontShape {
+                    highlights: highlight_recovery,
+                    ca_halo_px: stages[..d].iter().find_map(|s| match s {
+                        ym_gpu::cpu::tiling::Stage::MosaicCa { halo_px } => Some(*halo_px),
+                        _ => None,
+                    }),
+                    frame,
+                };
+                for out in [
+                    Rect::whole(ow, oh),
+                    Rect::new(0, 0, 5.min(ow), 3.min(oh)),
+                    Rect::new(ow - 4.min(ow), oh - 3.min(oh), 4.min(ow), 3.min(oh)),
+                    Rect::new(ow / 2, oh / 2, 1, 1),
+                ] {
+                    let mut needs = vec![out; stages.len() + 1];
+                    for i in (0..stages.len()).rev() {
+                        needs[i] = stages[i].input_rect(needs[i + 1], frame);
+                    }
+                    let plan = shape.plan(needs[d]);
+                    assert_eq!(plan.target, needs[d]);
+                    assert_eq!(
+                        plan.prep,
+                        chain.required_raw_rect(w, h, out),
+                        "{lens:?} recovery {highlight_recovery} {w}x{h} {out:?}"
+                    );
+                    // The rectangles nest: what R5b reads is what R5 writes, which R5 reads in `prep`.
+                    if let Some((input, core)) = plan.mosaic_ca {
+                        assert_eq!(
+                            Rect::new(input.x + core.x, input.y + core.y, core.w, core.h),
+                            needs[d]
+                        );
+                    }
+                    if let Some(core) = plan.highlights {
+                        let inner = plan.mosaic_ca.map_or(needs[d], |(input, _)| input);
+                        assert_eq!(
+                            Rect::new(plan.prep.x + core.x, plan.prep.y + core.y, core.w, core.h),
+                            inner
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// A runner that cuts the demosaic core of `RawWork` at a chosen limit (the front re-runs its
+/// front for each part) and counts the rectangles.
+#[test]
+fn splitting_the_demosaic_core_of_the_front_chain_changes_no_bit() {
+    let Some(dev) = f32_device_or_skip() else {
+        return;
+    };
+    let mut seed = 2700;
+    for cfa in [Cfa::RGGB, Cfa::BGGR] {
+        for (w, h, noise, lens) in [
+            (173usize, 131usize, high_noise(), Lens::Full),
+            (96, 77, low_noise(), Lens::Vignette),
+        ] {
+            seed += 1;
+            let setup = setup_for(
+                Scene::new(w, h, cfa, seed),
+                lens,
+                noise,
+                Variant::HalfWithGains,
+            )
+            .front();
+            let (ow, oh) = setup.output_size();
+            let out = Rect::new(3, 2, ow - 5, oh - 4);
+            let s = setup.clone();
+            let (whole, cut, counts) = dev
+                .gpu
+                .run(JobSpec::new(Priority::Viewport), move |ctx, cancel| {
+                    let g = s.device_chain()?;
+                    let raw = s.scene.upload(ctx)?;
+                    let plain = RawRecording {
+                        ctx,
+                        parts: Default::default(),
+                        limit: MAX_PHYS_AREA,
+                    };
+                    let whole = g.run_tile_front(&plain, &raw, out, cancel)?;
+                    let cutter = RawRecording {
+                        ctx,
+                        parts: Default::default(),
+                        limit: 4_500,
+                    };
+                    let cut = g.run_tile_front(&cutter, &raw, out, cancel)?;
+                    Ok((whole, cut, (plain.parts.take(), cutter.parts.take())))
+                })
+                .expect("chains");
+            assert_eq!(counts.0, vec![1]);
+            assert!(counts.1.iter().all(|&n| n >= 6), "cut into {:?}", counts.1);
+            assert_bit_equal(
+                &format!(
+                    "{} {w}x{h} lens {lens:?}: R1..R9 cut at 4500 padded pixels against whole",
+                    cfa.name()
+                ),
+                &cut.data,
+                &whole.data,
+            );
+        }
+    }
+}
+
+#[test]
+fn the_front_chain_refuses_what_the_device_does_not_run() {
+    let Some(dev) = f32_device_or_skip() else {
+        return;
+    };
+    let (w, h) = (64usize, 48usize);
+    let scene = Scene::new(w, h, Cfa::RGGB, 8);
+    let chain = chain_of(&scene, Lens::Full, low_noise());
+    let setup = Setup::new(scene, chain).front();
+    let (ow, oh) = setup.output_size();
+    let s = setup.clone();
+    let errors = dev
+        .gpu
+        .run(JobSpec::new(Priority::Viewport), move |ctx, cancel| {
+            let raw = s.scene.upload(ctx)?;
+            let g = s.device_chain()?;
+            let mut errors = Vec::new();
+            // A tile outside the output, and an empty one.
+            errors.push(g.run_tile_front(ctx, &raw, Rect::new(0, 0, ow + 1, oh), cancel));
+            errors.push(g.run_tile_front(ctx, &raw, Rect::new(0, 0, 0, 3), cancel));
+            // Another range, and `run_tile` on this range.
+            let other = GpuChain::new(&s.chain, &s.prepared, StageRange::DEMOSAIC)?;
+            errors.push(other.run_tile_front(ctx, &raw, Rect::whole(ow, oh), cancel));
+            errors.push(g.run_tile(ctx, &s.scene.raw(), Rect::whole(ow, oh), cancel));
+            // A resident frame of another size than the lens geometry's.
+            let small = Scene::new(w - 2, h - 2, Cfa::RGGB, 8);
+            let raw_small = small.upload(ctx)?;
+            errors.push(g.run_tile_front(ctx, &raw_small, Rect::whole(ow, oh), cancel));
+            Ok(errors)
+        })
+        .expect("job");
+    assert_eq!(errors.len(), 5);
+    for (i, e) in errors.iter().enumerate() {
+        assert!(
+            matches!(e, Err(GpuError::InvalidInput(_))),
+            "case {i}: {:?}",
+            e.as_ref().map(|_| ())
+        );
+    }
+}
+
+#[test]
+fn small_frames_through_the_front_chain_match_the_cpu_chain() {
+    let Some(dev) = f32_device_or_skip() else {
+        return;
+    };
+    let mut seed = 2800;
+    let mut worst = 0.0f64;
+    for cfa in [Cfa::RGGB, Cfa::GBRG] {
+        for (w, h) in [
+            (2usize, 2usize),
+            (2, 3),
+            (3, 3),
+            (4, 4),
+            (5, 7),
+            (9, 6),
+            (2, 40),
+            (40, 2),
+            (17, 17),
+            (23, 11),
+        ] {
+            for lens in [Lens::Bare, Lens::Vignette] {
+                seed += 1;
+                let scene = Scene::new(w, h, cfa, seed);
+                let chain = chain_of(&scene, lens, high_noise());
+                let setup = Setup::new(scene, chain).front();
+                let (ow, oh) = setup.output_size();
+                let got = setup.gpu(dev, Rect::whole(ow, oh));
+                let want = setup.cpu(Rect::whole(ow, oh));
+                // Frames of a few photosites are all halo: every stage sees the edge rules. Equal to
+                // the CPU stages' to the demosaic's own flips on these tiny, tie-rich frames.
+                let s = compare(&got, &want);
+                worst = worst.max(s.max_abs);
+                assert!(s.max_abs.is_finite(), "{} {w}x{h} {lens:?}", cfa.name());
+                // The device chain from the CPU's front (R6..R8) on the same frame: equal to it up
+                // to the front's rounding.
+                let hand = {
+                    let mut hs = setup.clone();
+                    hs.range = StageRange::DEMOSAIC_TO_SHARPEN;
+                    hs.gpu(dev, Rect::whole(ow, oh))
+                };
+                let d = compare(&got, &hand).max_abs;
+                assert!(d <= 1e-3, "{} {w}x{h} {lens:?}: front against hand-off {d:e}", cfa.name());
+            }
+        }
+    }
+    eprintln!("[G-07] small frames, R1..R9 against the CPU chain: worst {worst:.3e}");
+}
+
+#[test]
+fn a_cancelled_front_chain_stops_and_leaves_the_pool_at_its_baseline() {
+    let Some(dev) = f32_device_or_skip() else {
+        return;
+    };
+    let scene = Scene::new(150, 110, Cfa::RGGB, 3);
+    let chain = chain_of(&scene, Lens::Full, high_noise());
+    let setup = Setup::with_half(scene, chain, HalfSigma::new(150, 110, 0.01, true, 4)).front();
+    let (ow, oh) = setup.output_size();
+    let s = setup.clone();
+    let (before, after_ok, after_cancel, ran, err) = dev
+        .gpu
+        .run(JobSpec::new(Priority::Viewport), move |ctx, _| {
+            let raw = s.scene.upload(ctx)?;
+            let before = ctx.pool().stats().in_use_bytes;
+            let g = s.device_chain()?;
+            let ok = g.run_tile_front(ctx, &raw, Rect::whole(ow, oh), &CancelToken::new())?;
+            drop(ok);
+            let after_ok = ctx.pool().stats().in_use_bytes;
+            let token = CancelToken::new();
+            token.cancel();
+            let counters = ctx.counters();
+            let err = g.run_tile_front(ctx, &raw, Rect::whole(ow, oh), &token);
+            let ran = ctx.counters().since(counters);
+            struct CancelsFirst<'a>(&'a GpuContext, CancelToken);
+            impl DeviceRunner for CancelsFirst<'_> {
+                fn run_device(
+                    &self,
+                    work: DeviceWork,
+                    cancel: &CancelToken,
+                ) -> Result<RgbImage, GpuError> {
+                    self.1.cancel();
+                    work.run(self.0, cancel)
+                }
+            }
+            let token = CancelToken::new();
+            let again = g.run_tile_front(&CancelsFirst(ctx, token.clone()), &raw, Rect::whole(ow, oh), &token);
+            let after_cancel = ctx.pool().stats().in_use_bytes;
+            Ok((
+                before,
+                after_ok,
+                after_cancel,
+                ran,
+                (err.map(|_| ()), again.map(|_| ())),
+            ))
+        })
+        .expect("job");
+    assert_eq!(after_ok, before, "a finished tile releases its buffers");
+    assert_eq!(after_cancel, before, "cancelled tiles release their buffers");
+    assert!(matches!(err.0, Err(GpuError::Cancelled)), "{:?}", err.0);
+    assert!(matches!(err.1, Err(GpuError::Cancelled)), "{:?}", err.1);
+    assert_eq!((ran.dispatches, ran.submissions), (0, 0));
+}
+
+#[test]
+fn the_front_chain_records_one_submission_and_one_readback_per_tile() {
+    let Some(dev) = f32_device_or_skip() else {
+        return;
+    };
+    let scene = Scene::new(150, 110, Cfa::RGGB, 5);
+    let chain = chain_of(&scene, Lens::Full, high_noise());
+    let setup = Setup::with_half(scene, chain, HalfSigma::new(150, 110, 0.01, true, 4)).front();
+    let (ow, oh) = setup.output_size();
+    let s = setup.clone();
+    let front = dev
+        .gpu
+        .run(JobSpec::new(Priority::Viewport), move |ctx, cancel| {
+            let raw = s.scene.upload(ctx)?;
+            let g = s.device_chain()?;
+            let before = ctx.counters();
+            g.run_tile_front(ctx, &raw, Rect::whole(ow, oh), cancel)?;
+            Ok(ctx.counters().since(before))
+        })
+        .expect("job");
+    eprintln!("[G-07] one tile, R1..R9: {front:?}");
+    assert_eq!((front.submissions, front.readbacks), (1, 1));
+}
+
+/// A tile of the front chain is one tile for the `tile@N` fault of the fault-injection feature.
+#[cfg(feature = "fault-injection")]
+#[test]
+fn a_front_tile_is_one_tile_for_the_tile_fault() {
+    use ym_gpu::device::{Gpu, GpuConfig, GpuFault};
+
+    let Some(_dev) = f32_device_or_skip() else {
+        return;
+    };
+    let gpu = Gpu::start(GpuConfig {
+        fault: Some(GpuFault::FailTile(2)),
+        ..GpuConfig::default()
+    })
+    .expect("a device with the tile fault armed");
+    let scene = Scene::new(150, 110, Cfa::RGGB, 12);
+    let chain = chain_of(&scene, Lens::Full, high_noise());
+    let setup = Setup::with_half(scene, chain, HalfSigma::new(150, 110, 0.01, true, 4)).front();
+    let (ow, oh) = setup.output_size();
+    let out = Rect::new(7, 5, ow - 9, oh - 8);
+    let s = setup.clone();
+    let (first, second, third) = gpu
+        .run(JobSpec::new(Priority::Viewport), move |ctx, cancel| {
+            let raw = s.scene.upload(ctx)?;
+            let g = s.device_chain()?;
+            let run = || g.run_tile_front(ctx, &raw, out, cancel);
+            Ok((run(), run(), run()))
+        })
+        .expect("the job itself runs");
+    assert!(first.is_ok(), "tile 1 is not the faulty one: {first:?}");
+    assert!(
+        matches!(second, Err(GpuError::Readback(_))),
+        "tile 2 carries the fault: {second:?}"
+    );
+    assert!(third.is_ok(), "the fault fires once: {third:?}");
+}
+
+/// The corner tile of a 50 MP frame (8658 x 5772) behind a strong barrel lens, from the resident raw
+/// words: R1, R3, R4, R5 with the CPU's chroma offsets, R5b, the demosaic (its core cut into parts
+/// above the limit, each part re-running the front) and R9 on the device, against the CPU chain.
+/// Slow on lavapipe; `cargo test -p ym-gpu --release --test gpu_chain -- --ignored`.
+#[test]
+#[ignore = "50 MP frame: run with --release -- --ignored"]
+fn a_50_mp_frame_corner_tile_runs_the_whole_front_chain_and_is_split() {
+    let Some(dev) = f32_device_or_skip() else {
+        return;
+    };
+    let (w, h) = (8658usize, 5772usize);
+    let tags = LensTags {
+        vignetting: vec![0, -400, -1500, -3500, -6000],
+        distortion: vec![0, 600, 1800, 3600, 6000, 9000, 12_500, 16_000],
+        ca: vec![0, 100, 400, 900, 0, -100, -400, -900],
+    };
+    let scene = Scene::new(w, h, Cfa::RGGB, 57);
+    let mut chain = light_chain_of(&scene, &tags, low_noise());
+    chain.vignette = Some(VignetteProfile::from_tag(&tags.vignetting).expect("vignette"));
+    chain.highlight_recovery = true;
+    chain.lens = Some(
+        LensGeometry::new(w, h, &tags, LensSwitches::default())
+            .expect("lens")
+            .with_ca_on_mosaic()
+            .with_auto_crop(),
+    );
+    let setup = Setup::new(scene, chain).front();
+    let (ow, oh) = setup.output_size();
+    let out = Rect::new(ow - 1024, oh - 1024, 1024, 1024);
+    let s = setup.clone();
+    let (gpu, parts) = dev
+        .gpu
+        .run(JobSpec::new(Priority::Viewport), move |ctx, cancel| {
+            let g = s.device_chain()?;
+            let raw = s.scene.upload(ctx)?;
+            let rec = RawRecording {
+                ctx,
+                parts: Default::default(),
+                limit: MAX_PHYS_AREA,
+            };
+            let img = g.run_tile_front(&rec, &raw, out, cancel)?;
+            Ok((img, rec.parts.take()))
+        })
+        .expect("the tile");
+    eprintln!("50 MP corner tile {out:?}: the demosaic core is cut into {parts:?} rectangles");
+    assert!(parts[0] > 1, "the corner tile of a strong lens is cut");
+    let s = compare(&gpu, &setup.cpu(out));
+    s.print("50 MP corner tile, R1..R9, against the CPU");
+    assert_within("50 MP corner tile, R1..R9", &s, FIFTY_MP_CORNER_FRONT);
 }

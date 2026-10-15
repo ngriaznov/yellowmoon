@@ -1612,3 +1612,88 @@ fn samples_for_external_tools() {
         eprintln!("{}", report.path.display());
     }
 }
+
+// ---------------------------------------------------------------------------------------------
+// The estimate's speeds, one set per path (CPU reference and export tail on the device)
+// ---------------------------------------------------------------------------------------------
+
+mod speed {
+    use ym_core::export::{
+        ENCODE_S_PER_MP_PRIOR, ExportSpeed, RENDER_S_PER_MP_PRIOR,
+    };
+    use ym_core::pipeline::ComputeDevice;
+    use ym_export::FormatKind;
+
+    fn close(a: f64, b: f64) -> bool {
+        (a - b).abs() <= 1e-12 * a.abs().max(b.abs()).max(1.0)
+    }
+
+    #[test]
+    fn both_paths_start_at_the_measured_numbers_of_the_cpu() {
+        let s = ExportSpeed::new();
+        assert!(!s.is_measured());
+        for device in [ComputeDevice::Cpu, ComputeDevice::Gpu] {
+            s.use_device(device);
+            assert!(close(s.render_s_per_mp(), RENDER_S_PER_MP_PRIOR), "{device:?}");
+            assert!(close(s.encode_s_per_mp(FormatKind::Jpeg), ENCODE_S_PER_MP_PRIOR[0]));
+            // 24 MP rendered and written at full size.
+            let expect = 24.0 * RENDER_S_PER_MP_PRIOR + 24.0 * ENCODE_S_PER_MP_PRIOR[0];
+            assert!(close(s.seconds_for(24.0, 24.0, FormatKind::Jpeg), expect), "{device:?}");
+        }
+    }
+
+    #[test]
+    fn a_path_learns_only_from_the_photos_it_made() {
+        let s = ExportSpeed::new();
+        // A photo made on the card: 10 MP in 5 s.
+        s.record_render_on(ComputeDevice::Gpu, 10.0, 5.0);
+        assert!(s.is_measured());
+        s.use_device(ComputeDevice::Cpu);
+        assert!(
+            close(s.render_s_per_mp(), RENDER_S_PER_MP_PRIOR),
+            "the CPU's numbers are untouched by the card's photo"
+        );
+        s.use_device(ComputeDevice::Gpu);
+        assert!(close(s.render_s_per_mp(), 0.5), "the first sample replaces the prior");
+        // The next photo fell back to the CPU: 10 MP in 20 s teaches the CPU path only.
+        s.record_render_on(ComputeDevice::Cpu, 10.0, 20.0);
+        assert!(close(s.render_s_per_mp(), 0.5), "the card keeps its own numbers");
+        s.use_device(ComputeDevice::Cpu);
+        assert!(close(s.render_s_per_mp(), 2.0));
+        // Later samples are a running mean that weighs the newest half.
+        s.record_render_on(ComputeDevice::Cpu, 10.0, 10.0);
+        assert!(close(s.render_s_per_mp(), 1.5));
+        // Too small a sample says nothing.
+        s.record_render_on(ComputeDevice::Cpu, 0.01, 100.0);
+        assert!(close(s.render_s_per_mp(), 1.5));
+    }
+
+    #[test]
+    fn a_photo_the_writer_pulled_while_the_card_made_it_costs_no_encode_on_top() {
+        let s = ExportSpeed::new();
+        s.use_device(ComputeDevice::Gpu);
+        // 24 MP written as a JPEG in 6 s in all, render and writing together.
+        s.record_overlapped(FormatKind::Jpeg, 24.0, 6.0);
+        assert!(close(s.seconds_for(24.0, 24.0, FormatKind::Jpeg), 6.0));
+        // The same photo at half the size out: the time is the render's, the writing is inside it.
+        assert!(close(s.seconds_for(24.0, 6.0, FormatKind::Jpeg), 6.0));
+        // The CPU path still adds its encode.
+        s.use_device(ComputeDevice::Cpu);
+        let cpu = 24.0 * RENDER_S_PER_MP_PRIOR + 24.0 * ENCODE_S_PER_MP_PRIOR[0];
+        assert!(close(s.seconds_for(24.0, 24.0, FormatKind::Jpeg), cpu));
+        // A second overlapped photo is averaged with the first.
+        s.use_device(ComputeDevice::Gpu);
+        s.record_overlapped(FormatKind::Jpeg, 24.0, 10.0);
+        assert!(close(s.seconds_for(24.0, 24.0, FormatKind::Jpeg), 8.0));
+    }
+
+    #[test]
+    fn a_dng_counts_two_renders_on_either_path() {
+        let s = ExportSpeed::new();
+        s.record_render_on(ComputeDevice::Gpu, 10.0, 5.0);
+        s.use_device(ComputeDevice::Gpu);
+        let dng = s.seconds_for(10.0, 10.0, FormatKind::Dng);
+        let encode = 10.0 * s.encode_s_per_mp(FormatKind::Dng);
+        assert!(close(dng, 2.0 * 10.0 * 0.5 + encode), "{dng}");
+    }
+}

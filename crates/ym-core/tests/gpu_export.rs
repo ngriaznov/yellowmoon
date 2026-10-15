@@ -112,8 +112,12 @@ struct Shot {
 
 impl Shot {
     fn new() -> Self {
+        Self::sized(900, 600)
+    }
+
+    fn sized(w: u32, h: u32) -> Self {
         let white = light("sony-ilce-7rm4", 4500.0);
-        let scene = Scene::new(900, 600, white, Layout::Patchwork, 0.5).noise(2e-4, 2e-6);
+        let scene = Scene::new(w, h, white, Layout::Patchwork, 0.5).noise(2e-4, 2e-6);
         let dir = tempfile::tempdir().expect("dir");
         scene.write(dir.path(), "DSC00001.ARW", MODEL);
         let shared = Arc::new(Session::new(base_env()));
@@ -214,6 +218,7 @@ struct CodeStats {
     exact: usize,
     max: u32,
     over_one: usize,
+    over_eight: usize,
 }
 
 fn stats(a: &[u32], b: &[u32]) -> CodeStats {
@@ -223,11 +228,13 @@ fn stats(a: &[u32], b: &[u32]) -> CodeStats {
         exact: 0,
         max: 0,
         over_one: 0,
+        over_eight: 0,
     };
     for (&x, &y) in a.iter().zip(b) {
         let d = x.abs_diff(y);
         s.exact += usize::from(d == 0);
         s.over_one += usize::from(d > 1);
+        s.over_eight += usize::from(d > 8);
         s.max = s.max.max(d);
     }
     s
@@ -382,26 +389,46 @@ fn the_tail_writes_the_cpu_pixels_in_every_format() {
             assert_eq!((w as u32, h as u32), (rb.width, rb.height));
             let s = stats(&ca, &cb);
             ci_note(&format!(
-                "{name}, {label}: {} codes, {:.5} exact, max {}",
+                "{name}, {label}: {} codes, {:.5} exact, {} over 1, {} over 8, max {}",
                 s.n,
                 s.exact as f64 / s.n as f64,
+                s.over_one,
+                s.over_eight,
                 s.max
             ));
-            if sixteen {
+            let n = s.n as f64;
+            let exact = s.exact as f64 / n;
+            if sixteen && pct == 0.0 {
+                // The plan's bound for the 16-bit C13: within 8 codes. First measured: 1 code.
+                assert!(s.max <= 2, "{name} {label}: max {}", s.max);
+            } else if sixteen {
                 // Sharpening amplifies the f32 against f64 colour difference at the few pixels
-                // where its halo limiter decides on a rank of luma values (`gpu_tail.rs`).
+                // where its halo limiter decides on a rank of luma values (`gpu_tail.rs`). First
+                // measured: 354 samples over 1 code (2.2e-4), 81 over 8 (5.0e-5), at most 89 codes
+                // off, in 1.62 M samples; the bounds are twice that.
                 assert!(
-                    s.over_one as f64 <= 1e-4 * s.n as f64 && s.max <= 400,
-                    "{name} {label}: {} codes over 1, max {}",
+                    s.over_one as f64 <= 4.4e-4 * n
+                        && s.over_eight as f64 <= 1.0e-4 * n
+                        && s.max <= 180,
+                    "{name} {label}: {} over 1, {} over 8, max {}",
+                    s.over_one,
+                    s.over_eight,
+                    s.max
+                );
+            } else if label == "JPEG" {
+                // The DCT and the quantiser turn a one-code input difference into a step of the
+                // quantiser in one coefficient: a few codes over the block. First measured: 280
+                // samples over 1 code (1.7e-4) and 5 codes at most; the bounds are twice that.
+                assert!(
+                    s.max <= 10 && s.over_one as f64 <= 3.5e-4 * n && exact >= 0.99,
+                    "{name} {label}: {} over 1, max {}, {exact} exact",
                     s.over_one,
                     s.max
                 );
             } else {
-                // The JPEG decoder rounds again (colour conversion), one code more.
-                let limit = if label == "JPEG" { 2 } else { 1 };
-                assert!(s.max <= limit, "{name} {label}: max {}", s.max);
-                let exact = s.exact as f64 / s.n as f64;
-                assert!(exact >= 0.98, "{name} {label}: {exact} exact");
+                // The C13 bound of the plan: within one code, 99 % of the codes exact.
+                assert!(s.max <= 1, "{name} {label}: max {}", s.max);
+                assert!(exact >= 0.99, "{name} {label}: {exact} exact");
                 worst8 = worst8.max(s.max);
                 min_exact8 = min_exact8.min(exact);
             }
@@ -600,7 +627,9 @@ fn the_same_bytes_every_time_and_through_the_queue() {
 #[test]
 fn progress_never_goes_back_and_a_cancel_between_bands_leaves_nothing() {
     let Some(gpu) = gpu() else { return };
-    let shot = Shot::new();
+    // 320 x 3072: three bands of 1024 rows (the tail's band is about a megapixel), six chunks of
+    // the writers, in twenty-four tiles.
+    let shot = Shot::sized(320, 3072);
     apply_variant(&shot, 100.0, false);
     let photo = shot.photo();
     let home = tempfile::tempdir().expect("home");
@@ -734,9 +763,109 @@ fn the_colour_stage_of_a_dng_runs_on_the_device_and_agrees_with_the_cpu() {
         ci_note(&format!(
             "DNG colour stage ({target:?}) on the device against the CPU: worst relative difference {worst:e}"
         ));
-        // First measured: see the note; the bound is twice that.
-        assert!(worst <= 2e-5, "{target:?}: {worst:e}");
+        // First measured: 2.3e-6 (linear AWG4) and 3.5e-6 (preview); the bound is twice the larger.
+        assert!(worst <= 7e-6, "{target:?}: {worst:e}");
     }
+}
+
+/// Resets the kernel's peak resident-set mark of this process (Linux), so that a later read shows
+/// the peak of the work in between.
+fn reset_peak_rss() {
+    let _ = std::fs::write("/proc/self/clear_refs", "5");
+}
+
+/// (resident set now, peak resident set since the last reset) in MiB, on Linux.
+fn rss_mib() -> Option<(u64, u64)> {
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    let kib = |key: &str| -> Option<u64> {
+        status
+            .lines()
+            .find(|l| l.starts_with(key))?
+            .split_whitespace()
+            .nth(1)?
+            .parse()
+            .ok()
+    };
+    Some((kib("VmRSS:")? >> 10, kib("VmHWM:")? >> 10))
+}
+
+/// 50 MP (8688 x 5792) through the export queue's code path: the tail never holds the picture on the
+/// host, a DNG still does. Records the ledger's peak (the reservation the export makes) and the
+/// process's resident set (what the operating system saw) for each. Ignored: it writes a 100 MB raw
+/// file, and renders 50 MP three times (minutes on lavapipe); wave 5 runs it on Metal.
+#[test]
+#[ignore = "50 MP: run with --release -- --ignored (wave 5 runs it on Metal)"]
+fn fifty_megapixels_leave_no_host_frame_and_a_dng_keeps_its_own() {
+    let Some(gpu) = gpu() else { return };
+    let white = light("sony-ilce-7rm4", 4500.0);
+    let scene = Scene::new(8688, 5792, white, Layout::Patchwork, 0.5).noise(2e-4, 2e-6);
+    let dir = tempfile::tempdir().expect("dir");
+    scene.write(dir.path(), "DSC00001.ARW", MODEL);
+    drop(scene);
+    let session = Session::new(base_env());
+    let opened = session.open(&[dir.path().to_path_buf()], OpenOptions::default());
+    assert_eq!(opened.added.len(), 1);
+    settle(&session);
+    let photo = ExportPhoto::from_session(&session, opened.added[0]).expect("export photo");
+    let home = tempfile::tempdir().expect("home");
+    let frame = 8688u64 * 5792 * 12;
+    let mut results = Vec::new();
+    for (label, stages, options) in [
+        (
+            "PNG 16, tail",
+            GpuStages::ALL,
+            png(Path::new("."), BitDepth::Sixteen),
+        ),
+        (
+            "PNG 16, host frame",
+            RAW,
+            png(Path::new("."), BitDepth::Sixteen),
+        ),
+        (
+            "JPEG, long edge 4000, tail",
+            GpuStages::ALL,
+            ExportOptions {
+                size: Size::LongEdge { px: 4000 },
+                ..options(Path::new("."), FormatKind::Jpeg)
+            },
+        ),
+        ("DNG", GpuStages::ALL, options(Path::new("."), FormatKind::Dng)),
+    ] {
+        let ctx = context(home.path(), renderer(Some(Arc::clone(&gpu)), stages, false));
+        let out = tempfile::tempdir().expect("out");
+        let mut o = options;
+        o.destination = Some(out.path().to_path_buf());
+        reset_peak_rss();
+        let before = rss_mib();
+        let started = std::time::Instant::now();
+        let r = export(&ctx, &photo, o);
+        let seconds = started.elapsed().as_secs_f64();
+        let after = rss_mib();
+        let peak = ctx.renderer().ledger().peak();
+        ci_note(&format!(
+            "50 MP {label}: {seconds:.0} s, {:?} ({:?}); ledger peak {} MiB (the display-linear frame is {} MiB); resident set {:?} MiB before, peak {:?} MiB",
+            r.device,
+            r.notes,
+            peak >> 20,
+            frame >> 20,
+            before.map(|b| b.0),
+            after.map(|a| a.1),
+        ));
+        assert_eq!(ctx.renderer().ledger().used(), 0);
+        results.push((label, r.device, peak));
+    }
+    // The tail's reservation is the host path's less the frame.
+    assert_eq!(results[0].1, ComputeDevice::Gpu);
+    assert_eq!(
+        results[1].2 - results[0].2,
+        frame,
+        "{} against {}",
+        results[1].2,
+        results[0].2
+    );
+    // The tail holds well under one frame; the DNG's host frames are still there.
+    assert!(results[0].2 < frame, "tail peak {} of a {frame} B frame", results[0].2);
+    assert!(results[3].2 >= frame, "the DNG keeps its host frame");
 }
 
 #[cfg(feature = "fault-injection")]
@@ -778,14 +907,14 @@ mod faults {
             ("every stage", GpuStages::ALL),
         ] {
             for fault in [GpuFault::Shader, GpuFault::OutOfBudget, GpuFault::Lost] {
-                // A device that is lost stays lost: each case gets a device of its own.
-                let own = if matches!(fault, GpuFault::Lost) {
-                    Arc::new(Gpu::start(GpuConfig::default()).expect("device"))
-                } else {
-                    Arc::clone(&gpu)
-                };
-                let ctx = context(home.path(), renderer(Some(Arc::clone(&own)), stages, false));
                 for (format, pair) in &pairs {
+                    // A device that is lost stays lost: each case gets a device of its own.
+                    let own = if matches!(fault, GpuFault::Lost) {
+                        Arc::new(Gpu::start(GpuConfig::default()).expect("device"))
+                    } else {
+                        Arc::clone(&gpu)
+                    };
+                    let ctx = context(home.path(), renderer(Some(Arc::clone(&own)), stages, false));
                     let baseline = pool_in_use(&own);
                     own.set_fault(Some(fault));
                     let out = tempfile::tempdir().expect("out");

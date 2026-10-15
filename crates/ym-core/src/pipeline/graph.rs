@@ -24,7 +24,7 @@
 //! the colour group and leaves the raw group alone.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 use std::time::Instant;
 
@@ -37,6 +37,7 @@ use ym_gpu::cpu::sharpen::SharpenParams;
 use ym_gpu::cpu::sharpen::diffraction::DiffractionParams;
 use ym_gpu::cpu::{Rect, RgbImage};
 use ym_gpu::device::{Gpu, GpuError, GpuInfo};
+use ym_gpu::kernels::prep::DeviceRaw;
 use ym_gpu::queue::{CancelToken, JobSpec, Priority};
 
 use super::color::{
@@ -45,9 +46,9 @@ use super::color::{
 };
 use super::geometry::Geometry;
 use super::raw::{
-    CaptureMethod, DEVICE_RANGE, FrameData, FullChain, GpuRoute, RawParams, RawParamsKey, RawPlan,
-    SigmaPlane, diffraction_params, noise_model_is_usable, reduced_bayer, reduced_rgb, sigma_plane,
-    usable_noise_model,
+    CaptureMethod, DEVICE_RANGE, FRONT_RANGE, FrameData, FullChain, GpuRoute, RawParams,
+    RawParamsKey, RawPlan, SigmaPlane, diffraction_params, noise_model_is_usable, reduced_bayer,
+    reduced_params, reduced_rgb, sigma_plane, usable_noise_model,
 };
 use super::{FrameZoom, NeuralStatus, RenderError, RenderPath, RenderStats};
 use crate::app::gpu::GpuStages;
@@ -62,6 +63,11 @@ const METHOD_NOT_ON_DEVICE_NOTE: &str = "The graphics card runs the adaptive rat
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
 }
+
+/// How many photos keep their raw words on the device at a time: the one being looked at and the one
+/// before it (`docs/gpu-plan.md` G-07). The words of a 50 MP photo are 100 MB; a photo that is not
+/// among the two is uploaded again when it is next rendered.
+pub const RESIDENT_PHOTOS: usize = 2;
 
 /// The default of [`RenderOptions::view_band_bytes`]: 128 MiB, the storage binding the GPU plan
 /// designs every device pass for (`docs/gpu-plan.md` N-1, K4).
@@ -205,7 +211,8 @@ pub enum ComputeDevice {
 /// has one value per range, next to the single `device` of the colour pass).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RangeDevice {
-    /// The stages (`R6..R8` for the raw group of the device: [`DEVICE_RANGE`]; `R6` is the demosaic
+    /// The stages (`R1..R9` for the whole chain of the device: [`FRONT_RANGE`], with the raw front
+    /// on; `R6..R8` for the raw group behind a CPU front: [`DEVICE_RANGE`]; `R6` is the demosaic
     /// alone).
     pub range: StageRange,
     /// Where they ran for the tiles of this request.
@@ -219,6 +226,11 @@ pub struct StageRuns {
     pub frame_data: u64,
     /// Raw-group images at a reduced scale (R1, R3 to R9 at 1/k).
     pub raw_groups: u64,
+    /// Of those, the ones the device made from the photo's resident raw words (`GpuReduced`).
+    pub device_groups: u64,
+    /// Times the photo's raw words were put on the device (once per photo while it stays among the
+    /// [`RESIDENT_PHOTOS`] most recent ones).
+    pub raw_uploads: u64,
     /// Noise sigma planes.
     pub sigma_planes: u64,
     /// Prepared full-resolution chains.
@@ -251,6 +263,8 @@ impl StageRuns {
     fn add(&mut self, other: &StageRuns) {
         self.frame_data += other.frame_data;
         self.raw_groups += other.raw_groups;
+        self.device_groups += other.device_groups;
+        self.raw_uploads += other.raw_uploads;
         self.sigma_planes += other.sigma_planes;
         self.full_chains += other.full_chains;
         self.tiles += other.tiles;
@@ -350,6 +364,9 @@ struct GraphState {
     sigma: Option<(Vec<u64>, Arc<SigmaPlane>)>,
     groups: Option<ByteLru<(RawParamsKey, usize), Arc<RgbImage>>>,
     full: Option<(RawParamsKey, Arc<FullChain>)>,
+    /// The photo's raw words on the device (`GpuReduced` and the range R1..R9 read them), uploaded
+    /// once per photo; released with the photo's place among the [`RESIDENT_PHOTOS`].
+    resident: Option<Arc<DeviceRaw>>,
     tiles: Option<ByteLru<(RawParamsKey, usize, usize), Arc<RgbImage>>>,
     color: Option<Arc<ColorPlan>>,
     grade: Option<ByteLru<GradeKey, Arc<GradePlan>>>,
@@ -373,6 +390,11 @@ pub struct PhotoGraph {
     /// output sharpening and C13 of frames, thumbnails and look tiles): from then on the CPU makes
     /// its frames, quietly (`docs/gpu-plan.md` 4.9).
     view_gpu_failed: AtomicBool,
+    /// When the photo's raw words were last used on the device, in ticks of the renderer's clock
+    /// (the order of the two-photo LRU).
+    resident_tick: AtomicU64,
+    /// Held while the raw words are uploaded, so that two requests for one photo upload once.
+    upload_gate: Mutex<()>,
 }
 
 impl std::fmt::Debug for PhotoGraph {
@@ -393,7 +415,20 @@ impl PhotoGraph {
             budget,
             raw_gpu_failed: AtomicBool::new(false),
             view_gpu_failed: AtomicBool::new(false),
+            resident_tick: AtomicU64::new(0),
+            upload_gate: Mutex::new(()),
         }
+    }
+
+    /// The photo's raw words on the device, when they are there.
+    fn resident(&self) -> Option<Arc<DeviceRaw>> {
+        lock(&self.state).resident.clone()
+    }
+
+    /// Lets go of the photo's raw words (a request that is using them keeps its own reference until
+    /// it is done).
+    fn drop_resident(&self) {
+        lock(&self.state).resident = None;
     }
 
     /// The photo.
@@ -501,6 +536,8 @@ struct Inner {
     /// chain for the rest of the process (`docs/gpu-plan.md` 4.9, "shader: disable that kernel
     /// family for the process").
     raw_gpu_disabled: AtomicBool,
+    /// The clock of the two-photo LRU of resident raw words ([`PhotoGraph::resident_tick`]).
+    resident_clock: AtomicU64,
     /// A shader of the view stages failed to compile on this machine: the device does not run them
     /// for the rest of the process.
     view_gpu_disabled: AtomicBool,
@@ -544,6 +581,7 @@ impl Renderer {
                 scheduler,
                 ledger,
                 raw_gpu_disabled: AtomicBool::new(false),
+                resident_clock: AtomicU64::new(0),
                 view_gpu_disabled: AtomicBool::new(false),
             }),
         })
@@ -702,9 +740,59 @@ impl Renderer {
 
     /// Records the photo being looked at and returns the one it replaced, when that was another.
     pub(crate) fn note_current(&self, photo: PhotoId) -> Option<PhotoId> {
-        let mut cur = lock(&self.inner.current);
-        let old = cur.replace(photo);
+        let old = lock(&self.inner.current).replace(photo);
+        // The photo left and the photo arrived are the two the device keeps raw words for; any other
+        // photo's words (a thumbnail's) are let go now.
+        for id in old.into_iter().chain([photo]) {
+            if let Some(g) = self.existing_graph(id) {
+                self.touch_resident(&g);
+            }
+        }
+        self.trim_resident(RESIDENT_PHOTOS);
         old.filter(|o| *o != photo)
+    }
+
+    /// Marks the photo's raw words as the most recently used.
+    fn touch_resident(&self, g: &PhotoGraph) {
+        let tick = self.inner.resident_clock.fetch_add(1, Ordering::SeqCst) + 1;
+        g.resident_tick.store(tick, Ordering::SeqCst);
+    }
+
+    /// Lets go of the raw words of every photo but the `keep` most recently used ones. The photo being
+    /// looked at ([`Renderer::navigate`]) counts as the most recent. The device frees nothing at once
+    /// (the buffers go back to its pool, which gives them to the next allocation or trims them under
+    /// pressure).
+    pub(crate) fn trim_resident(&self, keep: usize) {
+        let graphs: Vec<Arc<PhotoGraph>> = lock(&self.inner.graphs)
+            .iter()
+            .map(|(_, g)| Arc::clone(g))
+            .collect();
+        let current = *lock(&self.inner.current);
+        let mut held: Vec<(u64, Arc<PhotoGraph>)> = graphs
+            .into_iter()
+            .filter(|g| g.resident().is_some())
+            .map(|g| {
+                let tick = if Some(g.id) == current {
+                    u64::MAX
+                } else {
+                    g.resident_tick.load(Ordering::SeqCst)
+                };
+                (tick, g)
+            })
+            .collect();
+        held.sort_by(|a, b| b.0.cmp(&a.0));
+        for (_, g) in held.into_iter().skip(keep) {
+            g.drop_resident();
+        }
+    }
+
+    /// How many photos have their raw words on the device.
+    #[must_use]
+    pub fn resident_photos(&self) -> usize {
+        lock(&self.inner.graphs)
+            .iter()
+            .filter(|(_, g)| g.resident().is_some())
+            .count()
     }
 
     /// The graph of a photo if it has one (without making one).
@@ -870,6 +958,9 @@ pub(crate) struct Job<'a> {
     /// Whether R8 capture sharpening runs for this request. Off for the renders of a DNG, which
     /// carries no sharpening ([`Job::without_capture_sharpening`]).
     capture_sharpening: bool,
+    /// The photo's raw words could not be put on the device for this request: its tiles run R6..R8
+    /// behind the CPU's front ([`DEVICE_RANGE`]) from the first one to the last, never a mix.
+    front_failed: bool,
 }
 
 impl<'a> Job<'a> {
@@ -912,6 +1003,7 @@ impl<'a> Job<'a> {
             restart: None,
             raw_ranges: Vec::new(),
             capture_sharpening: true,
+            front_failed: false,
         }
     }
 
@@ -1161,11 +1253,19 @@ impl<'a> Job<'a> {
             img
         } else {
             debug_assert!(k >= 2, "full resolution of a mosaic goes through tiles");
-            let sigma = self.sigma()?;
-            let t = Instant::now();
-            let img = reduced_bayer(&frame, &plan, &params, &sigma, k, self.cancel)?;
-            self.timings.raw_ms += t.elapsed().as_secs_f64() * 1000.0;
-            img
+            match self.group_on_device(&frame, &plan, &params, k)? {
+                Some(img) => {
+                    self.runs.device_groups += 1;
+                    img
+                }
+                None => {
+                    let sigma = self.sigma()?;
+                    let t = Instant::now();
+                    let img = reduced_bayer(&frame, &plan, &params, &sigma, k, self.cancel)?;
+                    self.timings.raw_ms += t.elapsed().as_secs_f64() * 1000.0;
+                    img
+                }
+            }
         };
         self.runs.raw_groups += 1;
         let img = Arc::new(img);
@@ -1175,6 +1275,86 @@ impl<'a> Job<'a> {
             .get_or_insert_with(|| ByteLru::new(self.g.group_budget()))
             .insert(key, Arc::clone(&img), bytes);
         Ok(img)
+    }
+
+    /// The raw group at 1/`k` made on the device from the photo's resident raw words (`GpuReduced`:
+    /// R1, R4, R5, the binning, the vignetting gain, the sigma, the light denoise and R9 at 1/k), or
+    /// `None` when the CPU makes it: there is no device, the raw front is off
+    /// ([`GpuStages::RAW_FRONT`]), a device error ended the route, or the device cannot take the
+    /// photo's parameters. The sigma plane is made on the device too, so the host's plane
+    /// ([`Job::sigma`]) is not built for this group.
+    ///
+    /// A device error falls back to the CPU for this group with a note; one that is not about this
+    /// request's size also ends the route for the photo (as for a tile). A strict policy fails the
+    /// request.
+    fn group_on_device(
+        &mut self,
+        frame: &Arc<FrameData>,
+        plan: &RawPlan,
+        params: &RawParams,
+        k: usize,
+    ) -> Result<Option<RgbImage>, RenderError> {
+        // An export makes full-resolution tiles and never a reduced group.
+        if self.restartable {
+            return Ok(None);
+        }
+        let Some(gpu) = self.raw_device(GpuStages::RAW_FRONT)? else {
+            return Ok(None);
+        };
+        let Some(device_params) = reduced_params(frame, plan, params, k)? else {
+            return Ok(None);
+        };
+        let route = GpuRoute {
+            gpu,
+            range: FRONT_RANGE,
+            spec: JobSpec::new(self.gpu_priority).owned_by(u64::from(self.src.id.0)),
+            token: self.cancel.clone(),
+            resident: None,
+        };
+        let t = Instant::now();
+        let result = self
+            .resident(&route, frame)
+            .and_then(|raw| route.reduced(&raw, device_params));
+        match result {
+            Ok(img) => {
+                self.timings.raw_ms += t.elapsed().as_secs_f64() * 1000.0;
+                Ok(Some(img))
+            }
+            Err(GpuError::Cancelled) => Err(RenderError::Cancelled),
+            Err(e) => {
+                self.group_gpu_failed(&e)?;
+                Ok(None)
+            }
+        }
+    }
+
+    /// A reduced group failed on the device with `error`: the policy of [`Job::run_full_tile`] for a
+    /// request that can fall back on its own. A shader that does not compile switches the raw chain
+    /// off for the process; a strict policy fails the request; any other policy notes why the CPU
+    /// makes this group. An error about the request's size (a buffer that does not fit, a frame the
+    /// device refuses) is a property of the request and not of the photo, and the next one tries the
+    /// device again.
+    fn group_gpu_failed(&mut self, error: &GpuError) -> Result<(), RenderError> {
+        let reason = error.to_string();
+        tracing::warn!(error = %reason, "the device failed on a reduced group; the CPU takes over");
+        if matches!(error, GpuError::Shader(_)) {
+            self.r.inner.raw_gpu_disabled.store(true, Ordering::SeqCst);
+        }
+        if self.opts.gpu_strict {
+            return Err(RenderError::Gpu(reason));
+        }
+        if !matches!(
+            error,
+            GpuError::OutOfBudget { .. }
+                | GpuError::BufferTooLarge { .. }
+                | GpuError::InvalidInput(_)
+        ) {
+            self.g.raw_gpu_failed.store(true, Ordering::SeqCst);
+        }
+        self.note(&format!(
+            "The graphics card could not render this frame, so the CPU did: {reason}."
+        ));
+        Ok(())
     }
 
     /// The prepared full-resolution chain (mosaic photos).
@@ -1294,20 +1474,20 @@ impl<'a> Job<'a> {
         Ok(out)
     }
 
-    /// The route to the device for the raw chain of this request, or `None` when the CPU runs it:
-    /// there is no device, the stage is not on ([`GpuStages::RAW_CHAIN`]), a device error ended the
-    /// route for this photo or for the process, the device is lost, or the demosaic method is not the
-    /// one the device runs (a test switch). Reads the options of the request's snapshot.
+    /// The device for the raw stages of a request and the stage that lets it run them, or `None` when
+    /// the CPU runs them: there is no device, `stage` is not on, a device error ended the route for
+    /// this photo or for the process, or the device is lost. Reads the options of the request's
+    /// snapshot.
     ///
     /// # Errors
     ///
     /// [`RenderError::Gpu`] when the device is lost, or an earlier device error ended the route, and
     /// the policy is strict.
-    fn raw_route(&mut self) -> Result<Option<GpuRoute>, RenderError> {
+    fn raw_device(&mut self, stage: GpuStages) -> Result<Option<Arc<Gpu>>, RenderError> {
         let Some(gpu) = self.opts.gpu.clone() else {
             return Ok(None);
         };
-        if !self.opts.gpu_stages.contains(GpuStages::RAW_CHAIN) {
+        if !self.opts.gpu_stages.contains(stage) {
             return Ok(None);
         }
         if self.g.raw_gpu_failed.load(Ordering::SeqCst)
@@ -1335,16 +1515,105 @@ impl<'a> Job<'a> {
             ));
             return Ok(None);
         }
+        Ok(Some(gpu))
+    }
+
+    /// The route to the device for the raw chain of this request, or `None` when the CPU runs it:
+    /// there is no device, the stage is not on ([`GpuStages::RAW_CHAIN`]), a device error ended the
+    /// route for this photo or for the process, the device is lost, or the demosaic method is not the
+    /// one the device runs (a test switch). Reads the options of the request's snapshot.
+    ///
+    /// The route runs R1 to R9 ([`FRONT_RANGE`]) when the raw front is on too
+    /// ([`GpuStages::RAW_FRONT`]) and the photo's raw words are on the device ([`Job::resident`]
+    /// uploads them on first use); when they cannot be put there the route runs R6 to R8
+    /// ([`DEVICE_RANGE`]) behind the CPU's front, for the rest of the request.
+    ///
+    /// # Errors
+    ///
+    /// [`RenderError::Gpu`] when the device is lost, or an earlier device error ended the route, and
+    /// the policy is strict; also when the upload fails under a strict policy.
+    fn raw_route(&mut self) -> Result<Option<GpuRoute>, RenderError> {
+        let Some(gpu) = self.raw_device(GpuStages::RAW_CHAIN)? else {
+            return Ok(None);
+        };
         if self.opts.demosaic != Method::AdaptiveRatio {
             self.note(METHOD_NOT_ON_DEVICE_NOTE);
             return Ok(None);
         }
-        Ok(Some(GpuRoute {
+        let mut route = GpuRoute {
             gpu,
             range: DEVICE_RANGE,
             spec: JobSpec::new(self.gpu_priority).owned_by(u64::from(self.src.id.0)),
             token: self.cancel.clone(),
-        }))
+            resident: None,
+        };
+        if self.opts.gpu_stages.contains(GpuStages::RAW_FRONT) && !self.front_failed {
+            let frame = self.frame()?;
+            match self.resident(&route, &frame) {
+                Ok(raw) => {
+                    route.range = FRONT_RANGE;
+                    route.resident = Some(raw);
+                }
+                Err(GpuError::Cancelled) => return Err(RenderError::Cancelled),
+                Err(e) => {
+                    let reason = e.to_string();
+                    tracing::warn!(error = %reason, "the photo's raw words could not be put on the device; the CPU runs the raw front");
+                    if self.opts.gpu_strict {
+                        return Err(RenderError::Gpu(reason));
+                    }
+                    self.front_failed = true;
+                }
+            }
+        }
+        Ok(Some(route))
+    }
+
+    /// The range this request expects its tiles to run on the device (what a CPU fall-back is
+    /// recorded against).
+    fn expected_range(&self) -> StageRange {
+        if self.opts.gpu_stages.contains(GpuStages::RAW_FRONT) && !self.front_failed {
+            FRONT_RANGE
+        } else {
+            DEVICE_RANGE
+        }
+    }
+
+    /// The photo's raw words on the device: uploaded on first use as a job of `route`, kept in the
+    /// photo's graph, and let go of with the photo's place among the [`RESIDENT_PHOTOS`] most recent
+    /// ones (navigation, closing). Two requests for one photo upload once.
+    ///
+    /// # Errors
+    ///
+    /// [`GpuError::Cancelled`] when the request's token was set; the upload's errors (a frame that
+    /// does not fit the device, the pool's budget).
+    fn resident(
+        &mut self,
+        route: &GpuRoute,
+        frame: &Arc<FrameData>,
+    ) -> Result<Arc<DeviceRaw>, GpuError> {
+        if let Some(raw) = self.g.resident() {
+            self.r.touch_resident(&self.g);
+            return Ok(raw);
+        }
+        let g = Arc::clone(&self.g);
+        let _gate = lock(&g.upload_gate);
+        if let Some(raw) = g.resident() {
+            // Another request uploaded while this one waited at the gate.
+            self.r.touch_resident(&g);
+            return Ok(raw);
+        }
+        // Room for one more: of the photos that already have theirs on the device, the newest stays.
+        self.r.trim_resident(RESIDENT_PHOTOS - 1);
+        let raw = route.upload(frame)?;
+        {
+            let mut st = lock(&g.state);
+            if st.fingerprint == Some(self.src.fingerprint) {
+                st.resident = Some(Arc::clone(&raw));
+            }
+        }
+        self.r.touch_resident(&g);
+        self.runs.raw_uploads += 1;
+        Ok(raw)
     }
 
     /// Notes where the raw range ran, once per device (the report lists each range once).
@@ -1509,7 +1778,7 @@ impl<'a> Job<'a> {
             }
         }
         if expected {
-            self.record_range(DEVICE_RANGE, ComputeDevice::Cpu);
+            self.record_range(self.expected_range(), ComputeDevice::Cpu);
         }
         full.run_tile(frame, rect)
     }

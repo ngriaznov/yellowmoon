@@ -243,3 +243,331 @@ fn the_bindings_fit_the_design_binding() {
         bin::max_binding_bytes(r.w, r.h / 8)
     });
 }
+
+// ---------------------------------------------------------------------------------------------
+// The whole group
+// ---------------------------------------------------------------------------------------------
+
+/// Largest `|gpu - cpu| / max(1, |cpu|)` of the whole reduced group against the CPU composition of
+/// the stages (R1, R4, R5, the binning, the vignetting gain, the sigma, the bilateral denoise and R9
+/// at `1/k`), on frames of a few hundred photosites. The plan's number for the group is the sum of the
+/// kernels' (about 1e-5 with the denoise); the bound is twice the first measured value (9.8e-7, R5,
+/// the vignetting gain, the denoise and R9 together).
+const GROUP_BOUND: f32 = 2e-6;
+
+/// The pieces a case of the group switches on.
+#[derive(Clone, Copy, Debug)]
+struct Case {
+    k: usize,
+    recovery: bool,
+    vignette: bool,
+    denoise: bool,
+    lens: bool,
+}
+
+/// The same at 50 MP on a synthetic frame with a hard-edged clipped blob in the far corner: R9's
+/// position (an `f32` displacement of tens of binned pixels, see `gpu_lens.rs` `CORNER_BOUND`) limits
+/// it. Measured per case: 7.0e-7 without R9, 5.7e-6 for R9 alone at k = 8, 9.5e-6 for the whole group
+/// at k = 8 and 2.0e-5 at k = 4; the bound is twice the largest.
+const GROUP_BOUND_50MP: f32 = 4e-5;
+
+const DENOISE_SCALE: f32 = 0.8;
+
+fn lens_tags() -> ym_gpu::cpu::lens::LensTags {
+    ym_gpu::cpu::lens::LensTags {
+        vignetting: vec![],
+        distortion: vec![0, 120, 400, 900, 1600, 2500],
+        ca: vec![0, 5000, 12000, 20000, 0, -5000, -12000, -20000],
+    }
+}
+
+fn lens_geometry(ow: usize, oh: usize) -> ym_gpu::cpu::lens::LensGeometry {
+    ym_gpu::cpu::lens::LensGeometry::new(ow, oh, &lens_tags(), ym_gpu::cpu::lens::LensSwitches::default())
+        .expect("lens")
+        .with_auto_crop()
+}
+
+/// The CPU composition of the reduced path (`reduced_bayer` without the file plumbing).
+fn cpu_reduced(
+    scene: &RawScene,
+    levels: &Levels,
+    c: Case,
+    profile: &ym_gpu::cpu::vignette::VignetteProfile,
+) -> ym_gpu::cpu::RgbImage {
+    let (mut m, mask) = g07::cpu_front(scene, levels, G0, None);
+    if c.recovery {
+        g07::cpu_highlights(&mut m, &mask);
+    }
+    let mut img = ref_bin_mosaic(&m, c.k);
+    let (ow, oh) = (img.width, img.height);
+    let gains = c
+        .vignette
+        .then(|| ref_gain_plane(profile, scene.width, scene.height, c.k, ow, oh));
+    if let Some(g) = &gains {
+        for plane in img.data.chunks_mut(ow * oh) {
+            for (v, g) in plane.iter_mut().zip(g) {
+                *v *= *g;
+            }
+        }
+    }
+    if c.denoise {
+        let sp = ref_sigma_plane(scene, levels, G0, &noise_model());
+        let mut s = ref_binned_sigma(&sp, scene.width / 2, scene.height / 2, gains.as_deref(), c.k, ow, oh);
+        s.iter_mut().for_each(|v| *v *= DENOISE_SCALE);
+        img = ym_gpu::cpu::denoise::bilateral_opponent(
+            &img,
+            &ym_gpu::cpu::NoiseSigma::Plane(&s),
+            &ym_gpu::cpu::denoise::BilateralParams::default(),
+        );
+    }
+    if c.lens {
+        let geo = lens_geometry(ow, oh);
+        let (cw, ch) = geo.output_size();
+        img = ym_gpu::cpu::resample::resample_lens(&img, &geo, Rect::whole(cw, ch)).expect("resample");
+    }
+    img
+}
+
+fn reduced_params(
+    scene: &RawScene,
+    levels: Levels,
+    c: Case,
+    profile: &ym_gpu::cpu::vignette::VignetteProfile,
+) -> ym_gpu::chain::ReducedParams {
+    let (ow, oh) = (scene.width / c.k, scene.height / c.k);
+    ym_gpu::chain::ReducedParams {
+        k: c.k,
+        levels,
+        g0: G0,
+        highlight_recovery: c.recovery,
+        vignette: c
+            .vignette
+            .then(|| VignetteTable::from_profile(profile).expect("table")),
+        noise: ref_sigma_params(scene, G0, &noise_model()),
+        noise_factor: ref_noise_factor(c.k),
+        denoise: c.denoise.then(|| ym_gpu::chain::ReducedDenoise {
+            scale: DENOISE_SCALE,
+            params: ym_gpu::cpu::denoise::BilateralParams::default(),
+        }),
+        lens: c.lens.then(|| {
+            ym_gpu::kernels::lens::LensTable::from_geometry(&lens_geometry(ow, oh)).expect("table")
+        }),
+    }
+}
+
+fn run_group(
+    dev: &'static TestGpu,
+    scene: &RawScene,
+    levels: Levels,
+    c: Case,
+    profile: &ym_gpu::cpu::vignette::VignetteProfile,
+    slab_rows: usize,
+) -> ym_gpu::cpu::RgbImage {
+    let p = reduced_params(scene, levels, c, profile);
+    let s = scene.clone();
+    on_device(dev, move |ctx| {
+        let raw = DeviceRaw::upload(ctx, "r", s.width, s.height, s.cfa, &s.data, s.qstep.as_deref())?;
+        ym_gpu::chain::GpuReduced::run_with_slabs(
+            ctx,
+            &raw,
+            &p,
+            &ym_gpu::queue::CancelToken::new(),
+            slab_rows,
+        )?
+        .read_rgb(ctx)
+    })
+}
+
+#[test]
+fn the_reduced_group_matches_the_cpu() {
+    let Some(dev) = f32_device() else { return };
+    let profile = vignette_profile();
+    let mut worst = (0.0f32, String::new());
+    let mut cases = Vec::new();
+    for k in [2usize, 4, 8] {
+        cases.push(Case { k, recovery: false, vignette: false, denoise: false, lens: false });
+        cases.push(Case { k, recovery: true, vignette: false, denoise: false, lens: false });
+        cases.push(Case { k, recovery: true, vignette: true, denoise: true, lens: true });
+    }
+    cases.push(Case { k: 4, recovery: false, vignette: true, denoise: true, lens: false });
+    cases.push(Case { k: 2, recovery: false, vignette: false, denoise: false, lens: true });
+    for (n, cfa) in Cfa::ALL.into_iter().enumerate() {
+        for (w, h) in [(160usize, 96usize), (131, 77)] {
+            let levels = if (n + w) % 2 == 0 { uneven_levels() } else { g07::full_levels() };
+            let scene = RawScene::new(w, h, cfa, 11 + n as u64, &levels);
+            for c in &cases {
+                if w / c.k < 8 || h / c.k < 8 {
+                    continue;
+                }
+                let want = cpu_reduced(&scene, &levels, *c, &profile);
+                let got = run_group(dev, &scene, levels, *c, &profile, 1024);
+                assert_eq!((got.width, got.height), (want.width, want.height), "{c:?}");
+                assert_eq!(got.place, want.place, "{c:?}");
+                let (e, at) = compare_scaled(&got.data, &want.data);
+                if e > worst.0 {
+                    worst = (e, format!("{} {w}x{h} {c:?} sample {at}", cfa.name()));
+                }
+            }
+        }
+    }
+    // The cases are not vacuous: R5, the denoise and R9 each change the image by far more than the bound.
+    let base = Case { k: 2, recovery: false, vignette: false, denoise: false, lens: false };
+    let levels = uneven_levels();
+    let scene = RawScene::new(160, 96, Cfa::RGGB, 11, &levels);
+    let plain = cpu_reduced(&scene, &levels, base, &profile);
+    for c in [
+        Case { recovery: true, ..base },
+        Case { vignette: true, ..base },
+        Case { denoise: true, ..base },
+    ] {
+        let other = cpu_reduced(&scene, &levels, c, &profile);
+        let (d, _) = compare_scaled(&other.data, &plain.data);
+        assert!(d > 100.0 * GROUP_BOUND, "{c:?} changes the image by only {d:e}");
+    }
+    let lensed = cpu_reduced(&scene, &levels, Case { lens: true, ..base }, &profile);
+    assert!(lensed.width < plain.width || lensed.data != plain.data);
+    eprintln!("[G-07] reduced group: worst scaled difference {:e} ({})", worst.0, worst.1);
+    assert!(worst.0 <= GROUP_BOUND, "{:e} {}", worst.0, worst.1);
+}
+
+#[test]
+fn the_reduced_group_gives_the_same_bits_for_every_slab_height() {
+    let Some(dev) = f32_device() else { return };
+    let profile = vignette_profile();
+    let levels = uneven_levels();
+    let scene = RawScene::new(150, 118, Cfa::GBRG, 21, &levels);
+    for c in [
+        Case { k: 2, recovery: true, vignette: true, denoise: true, lens: true },
+        Case { k: 4, recovery: true, vignette: false, denoise: false, lens: false },
+        Case { k: 8, recovery: false, vignette: true, denoise: true, lens: false },
+    ] {
+        let one = run_group(dev, &scene, levels, c, &profile, 1 << 20);
+        common::exact::assert_all_finite("reduced", &one.data);
+        for slab in [8usize, 16, 24, 40] {
+            let many = run_group(dev, &scene, levels, c, &profile, slab);
+            common::exact::assert_bit_equal(&format!("{c:?} slab {slab}"), &many.data, &one.data);
+        }
+    }
+}
+
+#[test]
+fn the_reduced_group_is_poison_clean_and_cancels() {
+    let Some(dev) = f32_device() else { return };
+    let profile = vignette_profile();
+    let levels = uneven_levels();
+    let scene = RawScene::new(128, 96, Cfa::RGGB, 5, &levels);
+    let c = Case { k: 2, recovery: true, vignette: true, denoise: true, lens: true };
+    let p = reduced_params(&scene, levels, c, &profile);
+    let out = assert_poison_neutral("reduced group", |gpu| {
+        let (s, p) = (scene.clone(), p.clone());
+        gpu.run(
+            ym_gpu::queue::JobSpec::new(ym_gpu::queue::Priority::Viewport),
+            move |ctx, _| {
+                let raw = DeviceRaw::upload(ctx, "r", s.width, s.height, s.cfa, &s.data, None)?;
+                let img = ym_gpu::chain::GpuReduced::run_with_slabs(
+                    ctx,
+                    &raw,
+                    &p,
+                    &ym_gpu::queue::CancelToken::new(),
+                    16,
+                )?;
+                Ok(img.read_rgb(ctx)?.data)
+            },
+        )
+        .expect("job")
+    });
+    assert!(out.is_some());
+
+    // A token that is already cancelled: nothing runs.
+    let token = ym_gpu::queue::CancelToken::new();
+    token.cancel();
+    let s = scene.clone();
+    let r = on_device_result(dev, move |ctx| {
+        let raw = DeviceRaw::upload(ctx, "r", s.width, s.height, s.cfa, &s.data, None)?;
+        ym_gpu::chain::GpuReduced::run(ctx, &raw, &p, &token).map(|_| ())
+    });
+    assert!(matches!(r, Err(ym_gpu::device::GpuError::Cancelled)), "{r:?}");
+}
+
+/// Runs a job on the device and returns its result as it is, errors included.
+fn on_device_result<R: Send + 'static>(
+    dev: &'static TestGpu,
+    f: impl FnOnce(&ym_gpu::device::GpuContext) -> Result<R, ym_gpu::device::GpuError> + Send + 'static,
+) -> Result<R, ym_gpu::device::GpuError> {
+    dev.gpu.run(
+        ym_gpu::queue::JobSpec::new(ym_gpu::queue::Priority::Viewport),
+        move |ctx, _| f(ctx),
+    )
+}
+
+#[test]
+fn the_reduced_group_refuses_what_the_kernels_refuse() {
+    let Some(dev) = f32_device() else { return };
+    let profile = vignette_profile();
+    let levels = uneven_levels();
+    let scene = RawScene::new(64, 48, Cfa::RGGB, 5, &levels);
+    // An odd factor, and a frame smaller than one block.
+    for (k, w, h) in [(3usize, 64usize, 48usize), (8, 6, 48)] {
+        let mut s = scene.clone();
+        s.width = w;
+        s.height = h;
+        s.data.truncate(w * h);
+        let c = Case { k: k.max(2), recovery: false, vignette: false, denoise: false, lens: false };
+        let mut p = reduced_params(&s, levels, c, &profile);
+        p.k = k;
+        let r = on_device_result(dev, move |ctx| {
+            let raw = DeviceRaw::upload(ctx, "r", s.width, s.height, s.cfa, &s.data, None)?;
+            ym_gpu::chain::GpuReduced::run(ctx, &raw, &p, &ym_gpu::queue::CancelToken::new()).map(|_| ())
+        });
+        assert!(
+            matches!(r, Err(ym_gpu::device::GpuError::InvalidInput(_))),
+            "k {k} {w}x{h}: {r:?}"
+        );
+    }
+}
+
+/// A 50 MP frame (8658 x 5772) through the default slabs of 1024 rows: R5 (a clipped blob in the
+/// far corner), the vignetting gain, the denoise and R9, against the CPU composition. The frame is a
+/// smooth gradient with hashed noise (the natural-scene generator would need 600 MB for its image).
+#[test]
+#[ignore = "50 MP: 100 MB of words and the CPU composition; run with --ignored (wave 5 runs it on Metal)"]
+fn a_50_mp_frame_matches_the_cpu_in_default_slabs() {
+    let Some(dev) = f32_device() else { return };
+    let (w, h) = (8658usize, 5772usize);
+    let levels = uneven_levels();
+    let mut rng = synth::Rng::new(50);
+    let data: Vec<u16> = (0..w * h)
+        .map(|i| {
+            let (x, y) = (i % w, i / w);
+            let base = 400.0 + 9000.0 * (x as f32 / w as f32) * (0.4 + 0.6 * (y as f32 / h as f32));
+            let blob = x > w - 900 && y > h - 700;
+            let v = if blob { 20000.0 } else { base + 120.0 * rng.next_f32() };
+            v.min(65535.0) as u16
+        })
+        .collect();
+    let scene = RawScene {
+        width: w,
+        height: h,
+        cfa: Cfa::RGGB,
+        data,
+        qstep: None,
+    };
+    let profile = vignette_profile();
+    let mut worst = 0.0f32;
+    for (k, recovery, vignette, denoise, lens) in [
+        (8usize, true, true, true, false),
+        (8, true, false, false, false),
+        (8, false, false, false, true),
+        (8, true, true, true, true),
+        (4, true, true, true, true),
+    ] {
+        let c = Case { k, recovery, vignette, denoise, lens };
+        let want = cpu_reduced(&scene, &levels, c, &profile);
+        let got = run_group(dev, &scene, levels, c, &profile, ym_gpu::chain::REDUCED_SLAB_ROWS);
+        assert_eq!((got.width, got.height), (want.width, want.height));
+        let (e, at) = compare_scaled(&got.data, &want.data);
+        eprintln!("[G-07] 50 MP reduced group {c:?}: worst scaled difference {e:e} (sample {at} of {})", got.data.len());
+        worst = worst.max(e);
+    }
+    assert!(worst <= GROUP_BOUND_50MP, "{worst:e}");
+}
