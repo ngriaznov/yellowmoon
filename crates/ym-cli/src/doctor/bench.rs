@@ -517,8 +517,10 @@ pub fn to_text(v: &Value) -> String {
         f("/decode_ms")
     );
     if let Some(c) = v["compile_ms"].as_object() {
-        let list: Vec<String> = c
+        // In the order the sets are warmed (the JSON object itself is sorted by name).
+        let list: Vec<String> = ["view", "raw", "tail"]
             .iter()
+            .filter_map(|k| c.get(*k).map(|t| (k, t)))
             .map(|(k, t)| format!("{k} {:.0} ms", t.as_f64().unwrap_or(f64::NAN)))
             .collect();
         if !list.is_empty() {

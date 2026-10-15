@@ -140,6 +140,9 @@ pub enum KernelId {
     RlOutput,
     /// G-08: the Lanczos-3 resize of the export tail (one separable pass per dispatch).
     Resize,
+    /// G-10: copies a rectangle of a planar image into another (the crop of a tile, the parts of a
+    /// cut demosaic core, the pieces of a window).
+    Copy,
     /// A permanent stub (G-07): the one placeholder that stays. It writes a NaN into its single
     /// storage binding and nothing else, so the tests of the pass list, the pool and a lost device,
     /// which need *a* dispatch with one binding, have one now that every kernel of the plan is real.
@@ -149,7 +152,7 @@ pub enum KernelId {
 
 impl KernelId {
     /// All kernels, placeholders included (see [`KernelId::is_placeholder`]).
-    pub const ALL: [KernelId; 61] = [
+    pub const ALL: [KernelId; 62] = [
         KernelId::SpikeNormalize,
         KernelId::SpikeDemosaic,
         KernelId::SpikeMatrix,
@@ -210,6 +213,7 @@ impl KernelId {
         KernelId::RlBlurColsUpdate,
         KernelId::RlOutput,
         KernelId::Resize,
+        KernelId::Copy,
         KernelId::Probe,
     ];
 
@@ -276,6 +280,7 @@ impl KernelId {
             KernelId::RlBlurColsUpdate => "rl_blur_cols_update",
             KernelId::RlOutput => "rl_output",
             KernelId::Resize => "resize",
+            KernelId::Copy => "copy",
             KernelId::Probe => "probe",
         }
     }
@@ -379,6 +384,7 @@ impl KernelId {
             KernelId::Sigma => super::sigma::body(),
             KernelId::Bin | KernelId::BinSigma => super::bin::body(self),
             KernelId::Resize => super::resize::body(),
+            KernelId::Copy => super::copy::body(),
             KernelId::Probe => placeholder_body(self),
         }
     }

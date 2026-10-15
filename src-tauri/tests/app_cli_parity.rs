@@ -23,18 +23,27 @@
 //! the binary for this test must be built `cargo build -p ym-cli --features force-demosaic` (a plain build ignores the
 //! variable: the test notices that, says so and passes, unless `YM_REQUIRE_FORCE_DEMOSAIC` is set, which the CI job sets once
 //! it builds the binary that way).
+//!
+//! Two legs for the graphics policy (`docs/gpu-plan.md` section 7, G-09). The CPU leg starts `ym` with `YELLOWMOON_GPU=off`
+//! (the app's core here has no device): without it `ym` would run `auto`, which on a Mac with Metal puts every stage on the
+//! device, and the comparison would be the device against the CPU. The GPU leg opens the device the way the application
+//! does (`open_gpu(On)`, attached to the core) and starts `ym` with `YELLOWMOON_GPU=on`: the same eleven cases, byte for
+//! byte, with the two sides built apart. Without an adapter it skips with a notice, unless `YM_REQUIRE_GPU=1`.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
+use ym_core::app::gpu::{GpuPolicy, GpuSlot, open_gpu};
 use ym_core::app::{Core, CoreOptions};
 use ym_core::export_queue::ExportJob;
+use ym_core::scheduler::MemoryBudget;
 use ym_core::session::{ApplyScope, OpenOptions};
 use ym_export::{
     BitDepth, ColorSpace, ExportOptions, FormatKind, JpegQuality, Size, TiffCompression,
 };
 use ym_gpu::cpu::demosaic::{DEFAULT_METHOD, Method};
+use ym_gpu::device::gpu_required_by_env;
 use ym_raw::testgen::{ArwBuilder, gradient_mosaic};
 
 /// The `ym` binary under test, or `None` (with a message) when `YM_BIN` is not set.
@@ -203,6 +212,8 @@ fn export_both(
         .arg("render")
         .arg(arw)
         .args(case.flags)
+        // The CPU reference unless the leg says otherwise (`env` comes after and wins).
+        .env("YELLOWMOON_GPU", "off")
         .envs(env.iter().copied())
         .arg("--out")
         .arg(&cli_dir)
@@ -243,11 +254,23 @@ fn sandbox() -> (tempfile::TempDir, PathBuf) {
 /// The app's side: a core over its own app folder, with one photo open and developed, whose
 /// full-resolution renders use the R6 demosaic `method`. No thumbnails, as in the CLI.
 fn open_core(arw: &Path, method: Method) -> (Core, tempfile::TempDir) {
+    open_core_on(arw, method, None)
+}
+
+/// [`open_core`] with the device of `slot` attached, the way the application attaches it.
+fn open_core_on(
+    arw: &Path,
+    method: Method,
+    slot: Option<&GpuSlot>,
+) -> (Core, tempfile::TempDir) {
     let app_home = tempfile::tempdir().expect("app home");
     let mut options = CoreOptions::new(data_dir(), app_home.path().to_path_buf());
     options.thumbnails = false;
     options.render.demosaic = method;
     let core = Core::open(options).expect("core");
+    if let Some(slot) = slot {
+        core.attach_gpu(slot);
+    }
     let outcome = core.session.open(
         std::slice::from_ref(&arw.to_path_buf()),
         OpenOptions::default(),
@@ -322,6 +345,27 @@ fn every_format_is_byte_identical_between_the_app_graph_and_a_separately_built_y
     assert_every_format_is_identical(&core, &ym, &arw, dir.path(), &[]);
 }
 
+/// The GPU leg: the device attached to the app's core and `YELLOWMOON_GPU=on` for the separately built `ym`.
+#[test]
+fn every_format_is_byte_identical_between_the_app_graph_and_a_separately_built_ym_on_the_device() {
+    let Some(ym) = command_line_tool() else {
+        return;
+    };
+    let slot = open_gpu(GpuPolicy::On, MemoryBudget::detect());
+    if slot.gpu().is_none() {
+        assert!(
+            !gpu_required_by_env(),
+            "YM_REQUIRE_GPU is set but no device opened: {:?}",
+            slot.missing_device_reason()
+        );
+        eprintln!("skipped: no graphics adapter for the GPU leg");
+        return;
+    }
+    let (dir, arw) = sandbox();
+    let (core, _app_home) = open_core_on(&arw, DEFAULT_METHOD, Some(&slot));
+    assert_every_format_is_identical(&core, &ym, &arw, dir.path(), &[("YELLOWMOON_GPU", "on")]);
+}
+
 /// The same with Menon, the previous default, forced on both sides; and the switch itself: forcing the
 /// adaptive ratio demosaic by name is the default, forcing Menon is another picture.
 #[test]
@@ -344,6 +388,7 @@ fn every_format_is_byte_identical_with_menon_forced_and_the_default_is_the_adapt
             .arg(&arw)
             .args(["--format", "png", "--bits", "16", "--out"])
             .arg(&out)
+            .env("YELLOWMOON_GPU", "off")
             .envs(env.iter().copied())
             .env("YELLOWMOON_HOME", dir.path().join("cli-home"))
             .env("YELLOWMOON_DATA", data_dir())

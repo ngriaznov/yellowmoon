@@ -54,6 +54,7 @@ use ym_gpu::cpu::{
     Cfa, CfaColor as GpuColor, LUMA, Mosaic, NoiseDn, NoiseSigma, Placement, Rect, RgbImage,
 };
 use ym_gpu::device::{Gpu, GpuContext, GpuError};
+use ym_gpu::image::GpuImage;
 use ym_gpu::kernels::bilateral::SigmaHalf;
 use ym_gpu::kernels::lens::LensTable;
 use ym_gpu::kernels::prep::{DeviceRaw, VignetteTable};
@@ -1580,6 +1581,30 @@ impl FullChain {
         }
     }
 
+    /// [`run_tile_gpu`](Self::run_tile_gpu) for the range [`FRONT_RANGE`] with the tile left on the
+    /// device (`GpuChain::run_tile_device`, `docs/gpu-plan.md` G-10): the same job and the same bits,
+    /// no readback, so that the sampler and the colour chain of an export read the tile where it is.
+    ///
+    /// # Errors
+    ///
+    /// As [`run_tile_gpu`](Self::run_tile_gpu); [`GpuError::InvalidInput`] when the route does not
+    /// run [`FRONT_RANGE`] from the photo's resident words (only that range ends on the device).
+    pub fn run_tile_gpu_device(&self, out: Rect, route: &GpuRoute) -> Result<GpuImage, GpuError> {
+        let resident = route
+            .resident
+            .as_ref()
+            .filter(|_| route.range == StageRange::RAW_TO_LENS)
+            .ok_or_else(|| {
+                GpuError::InvalidInput(
+                    "a tile left on the device needs the range R1..R9 and the photo's raw words"
+                        .into(),
+                )
+            })?;
+        GpuChain::new(&self.chain, &self.prepared, route.range)?
+            .with_sigma(self.sigma_half())?
+            .run_tile_device(route, resident, out, &route.token)
+    }
+
     /// Bytes the chain holds of its own: once made, the cell gains and the full-resolution sigma map.
     /// (The half-resolution plane is the renderer's sigma cache, shared, and counted there.)
     #[must_use]
@@ -1716,6 +1741,16 @@ impl GpuRoute {
 }
 
 impl DeviceRunner for GpuRoute {
+    /// Submits the work as one job of the route and leaves the tile it makes on the device
+    /// ([`DeviceWork::run_resident`]); the image goes back to the pool when its last owner lets go.
+    fn run_device_resident(
+        &self,
+        work: DeviceWork,
+        _cancel: &CancelToken,
+    ) -> Result<GpuImage, GpuError> {
+        self.run_job(move |ctx, token| work.run_resident(ctx, token))
+    }
+
     /// Submits the work as one job of the route (its priority, the render's token) and waits.
     ///
     /// A render that is cancelled while its job is still queued behind others (navigation, a closed

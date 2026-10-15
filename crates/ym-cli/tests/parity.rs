@@ -5,6 +5,15 @@
 //! The app side runs in this process; the CLI side is a separate process. Each side has its own
 //! app folder, its own renderer and its own thread layout, so the test also stands for "different
 //! machines of the same build".
+//!
+//! Two legs (`docs/gpu-plan.md` section 7, G-09). The CPU leg gives the binary `--cpu` and the app no
+//! device: both are the CPU reference whatever graphics card the machine has (without the flag `ym`
+//! would run `auto`, which on a Mac puts every stage on the device while this process's core has none,
+//! and the comparison would be CPU against GPU). The GPU leg opens the device the way the app does
+//! (`open_gpu(On)`, attached to the core) and starts the binary with `YELLOWMOON_GPU=on`: the same
+//! eleven cases, byte for byte. `parity_gpu.rs` goes further on the device (tiles, thread layouts, a
+//! DNG after a TIFF); the GPU leg here is the whole matrix of formats. Without an adapter the GPU leg
+//! skips with a notice, unless `YM_REQUIRE_GPU=1` makes that a failure.
 
 mod common;
 
@@ -12,17 +21,22 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use common::{Sandbox, data_dir, names_in};
+use ym_core::app::gpu::{GpuPolicy, GpuSlot, open_gpu};
 use ym_core::app::{Core, CoreOptions};
 use ym_core::export_queue::ExportJob;
+use ym_core::scheduler::MemoryBudget;
 use ym_core::session::{ApplyScope, OpenOptions, PhotoId};
 use ym_core::settings::{AutoOr, DevelopSettings, SettingsPatch};
 use ym_export::{BitDepth, ColorSpace, ExportOptions, FormatKind, Size, TiffCompression};
 use ym_gpu::cpu::demosaic::{DEFAULT_METHOD, Method};
+use ym_gpu::device::gpu_required_by_env;
 
 /// The app's side: a core over its own app folder with one photo open.
 struct App {
     core: Core,
     photo: PhotoId,
+    /// The device of the GPU leg, kept open as long as the core.
+    _slot: Option<GpuSlot>,
     _home: tempfile::TempDir,
 }
 
@@ -34,12 +48,35 @@ impl App {
     /// Like [`App::open`] with the R6 demosaic method of the full-resolution renders set the way
     /// the app's code would (`RenderOptions::demosaic`, an internal switch with no UI).
     fn open_with(files: &[&Path], method: Method) -> Self {
+        Self::open_on(files, method, None)
+    }
+
+    /// The GPU leg's app: the device of the `On` policy attached to the core the way the application
+    /// attaches it. `None` (with a notice) when no adapter opens; a failure when `YM_REQUIRE_GPU` is set.
+    fn open_on_device(files: &[&Path]) -> Option<Self> {
+        let slot = open_gpu(GpuPolicy::On, MemoryBudget::detect());
+        if slot.gpu().is_none() {
+            assert!(
+                !gpu_required_by_env(),
+                "YM_REQUIRE_GPU is set but no device opened: {:?}",
+                slot.missing_device_reason()
+            );
+            eprintln!("\n* GPU LEG SKIPPED in parity: no adapter\n");
+            return None;
+        }
+        Some(Self::open_on(files, DEFAULT_METHOD, Some(slot)))
+    }
+
+    fn open_on(files: &[&Path], method: Method, slot: Option<GpuSlot>) -> Self {
         let home = tempfile::tempdir().expect("tempdir");
         let mut options = CoreOptions::new(data_dir(), home.path().to_path_buf());
         // What the CLI does: no thumbnail renders competing with the export.
         options.thumbnails = false;
         options.render.demosaic = method;
         let core = Core::open(options).expect("core");
+        if let Some(slot) = &slot {
+            core.attach_gpu(slot);
+        }
         let paths: Vec<PathBuf> = files.iter().map(|p| p.to_path_buf()).collect();
         let outcome = core.session.open(&paths, OpenOptions::default());
         assert_eq!(outcome.added.len(), files.len(), "{outcome:?}");
@@ -51,6 +88,7 @@ impl App {
         Self {
             core,
             photo,
+            _slot: slot,
             _home: home,
         }
     }
@@ -92,10 +130,18 @@ fn cli_export_env(
     dir: &Path,
     env: &[(&str, &str)],
 ) -> Vec<PathBuf> {
+    // The CPU leg asks for the CPU reference by name; a test that names the policy itself
+    // (`YELLOWMOON_GPU=on`) is the GPU leg and is not given `--cpu`, which would beat it.
+    let device: &[&str] = if env.iter().any(|(k, _)| *k == "YELLOWMOON_GPU") {
+        &[]
+    } else {
+        &["--cpu"]
+    };
     let out = sb
         .ym()
         .envs(env.iter().copied())
         .arg("render")
+        .args(device)
         .args(inputs)
         .args(flags)
         .arg("--out")
@@ -246,6 +292,56 @@ fn every_format_is_byte_identical_through_the_app_path_and_the_binary() {
         assert_eq!(names_in(&app_dir).len(), 1, "{}", case.name);
         assert_eq!(names_in(&cli_dir).len(), 1, "{}", case.name);
     }
+}
+
+/// The GPU leg: the same eleven cases with the device attached to the app's core and `YELLOWMOON_GPU=on` for the binary.
+#[test]
+fn every_format_is_byte_identical_through_the_app_path_and_the_binary_on_the_device() {
+    let sb = Sandbox::new();
+    let arw = sb.arw("DSC00001.ARW");
+    let Some(app) = App::open_on_device(&[&arw]) else {
+        return;
+    };
+    for case in cases() {
+        let app_dir = sb.root().join("app").join(case.name);
+        let cli_dir = sb.root().join("cli").join(case.name);
+        let from_app = app.export(case.options.clone(), &app_dir);
+        let from_cli = cli_export_env(
+            &sb,
+            &[&arw],
+            case.flags,
+            &cli_dir,
+            &[("YELLOWMOON_GPU", "on")],
+        );
+        assert_same_files(&from_app, &from_cli, case.name);
+        assert_eq!(names_in(&app_dir).len(), 1, "{}", case.name);
+        assert_eq!(names_in(&cli_dir).len(), 1, "{}", case.name);
+    }
+}
+
+/// Both sides see the same policy result: with `--cpu` neither side touches a device, so the CPU leg is the CPU
+/// reference even where `auto` would pick a graphics card.
+#[test]
+fn the_cpu_leg_asks_for_no_device_on_either_side() {
+    let sb = Sandbox::new();
+    let arw = sb.arw("DSC00001.ARW");
+    let out = sb
+        .ym()
+        .env("YELLOWMOON_GPU", "on")
+        .args(["render", "--cpu", "--json", "--quiet"])
+        .arg(&arw)
+        .arg("--out")
+        .arg(sb.root().join("json"))
+        .assert()
+        .success();
+    let text = String::from_utf8(out.get_output().stdout.clone()).expect("utf-8");
+    let v: serde_json::Value = serde_json::from_str(text.trim()).expect("one JSON object");
+    assert_eq!(v["device"], "cpu", "--cpu beats YELLOWMOON_GPU=on: {text}");
+    let app = App::open(&[&arw]);
+    assert!(
+        app.core.renderer.options().gpu.is_none(),
+        "the app side of the CPU leg has no device"
+    );
 }
 
 #[test]

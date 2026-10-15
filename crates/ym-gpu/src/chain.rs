@@ -65,6 +65,7 @@ use crate::image::{GpuImage, RowBands};
 use crate::kernels::adaptive_ratio::{self, Balance, PreparedDemosaic};
 use crate::kernels::bilateral::{self, SigmaHalf, SigmaInput, SigmaTile};
 use crate::kernels::bin::{self, BinParams};
+use crate::kernels::copy::{encode_copy_rect, encode_crop};
 use crate::kernels::detail::{encode_classical_luma, encode_inject_detail};
 use crate::kernels::diffraction::{PreparedDiffraction, encode_sharpen};
 use crate::kernels::guided::encode_guided;
@@ -285,6 +286,27 @@ impl DeviceWork {
     /// not fit, an injected fault of the `fault-injection` feature).
     pub fn run(self, ctx: &GpuContext, cancel: &CancelToken) -> Result<RgbImage, GpuError> {
         self.run_ref(ctx, cancel)
+    }
+
+    /// Runs the work and leaves the tile on the device (`docs/gpu-plan.md` G-10): the same stages and
+    /// the same bits as [`run`](Self::run), without the readback. Only the work that ends the
+    /// chain on the device ([`GpuChain::run_tile_device`]) can: the range R6 hands a mosaic back to
+    /// the CPU by design.
+    ///
+    /// # Errors
+    ///
+    /// [`GpuError::InvalidInput`] for the work of the range R6; as [`run`](Self::run) otherwise.
+    pub fn run_resident(
+        self,
+        ctx: &GpuContext,
+        cancel: &CancelToken,
+    ) -> Result<GpuImage, GpuError> {
+        match self {
+            DeviceWork::Raw(w) => w.run_resident(ctx, cancel),
+            DeviceWork::Demosaic(_) => Err(GpuError::InvalidInput(
+                "the range R6 hands the planes back to the CPU: it has no resident result".into(),
+            )),
+        }
     }
 
     /// The same as [`run`](Self::run) for work held by reference (tests that run one piece twice).
@@ -616,6 +638,61 @@ impl FrontWork {
     }
 }
 
+impl FrontWork {
+    /// [`run_parts`](Self::run_parts) with the planes put together on the device: each part is made
+    /// from the front of its own rectangle and copied into the core's image, which stays on the
+    /// device (the parts are the same pixels the host assembly pastes).
+    fn run_parts_resident(
+        &self,
+        ctx: &GpuContext,
+        cancel: &CancelToken,
+        parts: &[Rect],
+    ) -> Result<GpuImage, GpuError> {
+        let whole = Rect::whole(self.target.w, self.target.h);
+        let halo = Halo::uniform(self.frame.halo_px());
+        let out = GpuImage::alloc(
+            ctx,
+            "adaptive ratio rgb",
+            self.core.w,
+            self.core.h,
+            3,
+            crate::cpu::Placement::whole(self.raw.width(), self.raw.height())
+                .offset(self.target.x + self.core.x, self.target.y + self.core.y),
+        )?;
+        for part in parts {
+            cancel.check()?;
+            let sub_rect = part.grow(halo, whole);
+            let target = Rect::new(
+                self.target.x + sub_rect.x,
+                self.target.y + sub_rect.y,
+                sub_rect.w,
+                sub_rect.h,
+            );
+            let mut keep = Vec::new();
+            let mut passes = PassList::new(ctx, "raw front part");
+            let mosaic = self.encode_front(&mut passes, target, &mut keep)?;
+            let cfa = self.cfa_at(target.x, target.y);
+            let img = adaptive_ratio::encode_demosaic(
+                &mut passes,
+                &mosaic,
+                cfa,
+                part.relative_to(&sub_rect),
+                &self.frame,
+            )?;
+            encode_copy_rect(
+                &mut passes,
+                &img,
+                Rect::whole(img.width, img.height),
+                &out,
+                (part.x - self.core.x, part.y - self.core.y),
+            )?;
+            passes.submit()?.finish()?;
+            drop((keep, mosaic, img));
+        }
+        Ok(out)
+    }
+}
+
 /// R9 on the device after the stages: the geometry and the output rectangle (G-07).
 #[derive(Debug)]
 struct LensWork {
@@ -723,10 +800,24 @@ impl RawWork {
     /// Runs the work; a device that is out of memory or refuses a buffer is given one more try after
     /// the pool let go of what it holds unused (`docs/gpu-plan.md` 4.9).
     fn run(&self, ctx: &GpuContext, cancel: &CancelToken) -> Result<RgbImage, GpuError> {
-        match self.run_once(ctx, cancel, MAX_PHYS_AREA) {
+        self.run_retrying(ctx, cancel, false)?.into_host()
+    }
+
+    /// [`run`](Self::run) without the readback: the tile stays on the device.
+    fn run_resident(&self, ctx: &GpuContext, cancel: &CancelToken) -> Result<GpuImage, GpuError> {
+        self.run_retrying(ctx, cancel, true)?.into_device()
+    }
+
+    fn run_retrying(
+        &self,
+        ctx: &GpuContext,
+        cancel: &CancelToken,
+        resident: bool,
+    ) -> Result<TileOut, GpuError> {
+        match self.run_once(ctx, cancel, MAX_PHYS_AREA, resident) {
             Err(GpuError::OutOfBudget { .. } | GpuError::BufferTooLarge { .. }) => {
                 ctx.pool().trim();
-                self.run_once(ctx, cancel, MAX_PHYS_AREA)
+                self.run_once(ctx, cancel, MAX_PHYS_AREA, resident)
             }
             other => other,
         }
@@ -744,7 +835,24 @@ impl RawWork {
         cancel: &CancelToken,
         max_padded_pixels: u64,
     ) -> Result<RgbImage, GpuError> {
-        self.run_once(ctx, cancel, max_padded_pixels)
+        self.run_once(ctx, cancel, max_padded_pixels, false)?
+            .into_host()
+    }
+
+    /// [`run_resident`](Self::run_resident) with the demosaic core cut at `max_padded_pixels`
+    /// instead of [`MAX_PHYS_AREA`] (tests).
+    ///
+    /// # Errors
+    ///
+    /// As [`DeviceWork::run_resident`].
+    pub fn run_resident_with_limit(
+        &self,
+        ctx: &GpuContext,
+        cancel: &CancelToken,
+        max_padded_pixels: u64,
+    ) -> Result<GpuImage, GpuError> {
+        self.run_once(ctx, cancel, max_padded_pixels, true)?
+            .into_device()
     }
 
     /// The rectangles the demosaic is cut into at `max_padded_pixels` (one for a work that starts
@@ -763,7 +871,8 @@ impl RawWork {
         ctx: &GpuContext,
         cancel: &CancelToken,
         max_padded_pixels: u64,
-    ) -> Result<RgbImage, GpuError> {
+        resident: bool,
+    ) -> Result<TileOut, GpuError> {
         cancel.check()?;
         ctx.inject_tile_fault()?;
         // Every buffer the list reads or writes stays alive until it has finished: a buffer that went
@@ -832,10 +941,17 @@ impl RawWork {
                     out
                 } else {
                     // A core above MAX_PHYS_AREA: each rectangle from the front of its own
-                    // rectangle, the planes put together on the host (`FrontWork::run_parts`).
-                    let rgb = f.run_parts(ctx, cancel, &parts)?;
-                    passes = PassList::new(ctx, "raw R1 to R9");
-                    GpuImage::upload_rgb(ctx, "adaptive ratio rgb", &rgb)?
+                    // rectangle, the planes put together on the host (`FrontWork::run_parts`), or
+                    // on the device for a tile that stays there.
+                    if resident {
+                        let rgb = f.run_parts_resident(ctx, cancel, &parts)?;
+                        passes = PassList::new(ctx, "raw R1 to R9");
+                        rgb
+                    } else {
+                        let rgb = f.run_parts(ctx, cancel, &parts)?;
+                        passes = PassList::new(ctx, "raw R1 to R9");
+                        GpuImage::upload_rgb(ctx, "adaptive ratio rgb", &rgb)?
+                    }
                 }
             }
         };
@@ -959,6 +1075,24 @@ impl RawWork {
             keep.push(std::mem::replace(&mut cur, next));
             cur_rect = self.end;
         }
+        if resident {
+            // The tile stays where it is made; stages that were identities leave a larger image
+            // than the tile needs, which is cut on the device.
+            if self.lens.is_none() && cur_rect != self.end {
+                if !cur_rect.contains(&self.end) {
+                    return Err(GpuError::InvalidInput(format!(
+                        "the stages left {cur_rect:?}, the tile needs {:?}",
+                        self.end
+                    )));
+                }
+                let cropped = encode_crop(&mut passes, &cur, self.end.relative_to(&cur_rect))?;
+                keep.push(std::mem::replace(&mut cur, cropped));
+            }
+            // Everything the list reads lives until it has finished; the image it made is the result.
+            passes.submit()?.finish()?;
+            drop((keep, plans, sigma, classical));
+            return Ok(TileOut::Device(cur));
+        }
         let read = cur.encode_read(&mut passes)?;
         let done = passes.submit()?.finish()?;
         let data = cur.take(&done, read)?;
@@ -979,7 +1113,34 @@ impl RawWork {
             }
             rgb = rgb.extract(self.end.relative_to(&cur_rect));
         }
-        Ok(rgb)
+        Ok(TileOut::Host(rgb))
+    }
+}
+
+/// What a tile of the device chain is once it is made: read back as a host image, or left on the
+/// device.
+enum TileOut {
+    Host(RgbImage),
+    Device(GpuImage),
+}
+
+impl TileOut {
+    fn into_host(self) -> Result<RgbImage, GpuError> {
+        match self {
+            TileOut::Host(i) => Ok(i),
+            TileOut::Device(_) => Err(GpuError::InvalidInput(
+                "a resident tile where a host image was asked for".into(),
+            )),
+        }
+    }
+
+    fn into_device(self) -> Result<GpuImage, GpuError> {
+        match self {
+            TileOut::Device(i) => Ok(i),
+            TileOut::Host(_) => Err(GpuError::InvalidInput(
+                "a host image where a resident tile was asked for".into(),
+            )),
+        }
     }
 }
 
@@ -992,11 +1153,36 @@ pub trait DeviceRunner {
     ///
     /// As [`DeviceWork::run`], plus the scheduler's errors for a runner that submits a job.
     fn run_device(&self, work: DeviceWork, cancel: &CancelToken) -> Result<RgbImage, GpuError>;
+
+    /// Runs `work` and leaves the tile it makes on the device ([`DeviceWork::run_resident`]). A
+    /// runner that can only read back says so.
+    ///
+    /// # Errors
+    ///
+    /// As [`DeviceWork::run_resident`]; [`GpuError::InvalidInput`] from a runner without device
+    /// results.
+    fn run_device_resident(
+        &self,
+        _work: DeviceWork,
+        _cancel: &CancelToken,
+    ) -> Result<GpuImage, GpuError> {
+        Err(GpuError::InvalidInput(
+            "this runner reads every tile back to the host".into(),
+        ))
+    }
 }
 
 impl DeviceRunner for GpuContext {
     fn run_device(&self, work: DeviceWork, cancel: &CancelToken) -> Result<RgbImage, GpuError> {
         work.run(self, cancel)
+    }
+
+    fn run_device_resident(
+        &self,
+        work: DeviceWork,
+        cancel: &CancelToken,
+    ) -> Result<GpuImage, GpuError> {
+        work.run_resident(self, cancel)
     }
 }
 
@@ -1291,9 +1477,43 @@ impl<'a> GpuChain<'a> {
         cancel: &CancelToken,
     ) -> Result<RgbImage, GpuError> {
         cancel.check()?;
+        let work = self.front_work(raw, out)?;
+        let rgb = runner.run_device(work, cancel)?;
+        cancel.check()?;
+        Ok(rgb)
+    }
+
+    /// [`run_tile_front`](Self::run_tile_front) with the tile left on the device
+    /// (`docs/gpu-plan.md` G-10, `run_tile_device`): the same job, the same bits, no readback, so the
+    /// sampler and the colour chain that follow in a view or an export read it where it is
+    /// (`ExportTail::add_tile_device`, the resident group and tile caches of `ym-core`). The image
+    /// is the tile's rectangle of the output, `out.w x out.h`, three planes, placed at `out` in the
+    /// output frame.
+    ///
+    /// # Errors
+    ///
+    /// As [`run_tile_front`](Self::run_tile_front); [`GpuError::InvalidInput`] from a runner that
+    /// reads every tile back.
+    pub fn run_tile_device<R: DeviceRunner + ?Sized>(
+        &self,
+        runner: &R,
+        raw: &Arc<DeviceRaw>,
+        out: Rect,
+        cancel: &CancelToken,
+    ) -> Result<GpuImage, GpuError> {
+        cancel.check()?;
+        let work = self.front_work(raw, out)?;
+        let tile = runner.run_device_resident(work, cancel)?;
+        cancel.check()?;
+        Ok(tile)
+    }
+
+    /// The device work of one tile of the range R1 to R9 ([`run_tile_front`](Self::run_tile_front)
+    /// and [`run_tile_device`](Self::run_tile_device) run it).
+    fn front_work(&self, raw: &Arc<DeviceRaw>, out: Rect) -> Result<DeviceWork, GpuError> {
         if self.range != StageRange::RAW_TO_LENS {
             return Err(GpuError::InvalidInput(format!(
-                "run_tile_front runs the range {}, not {}",
+                "the front runs the range {}, not {}",
                 StageRange::RAW_TO_LENS.label(),
                 self.range.label()
             )));
@@ -1392,17 +1612,14 @@ impl<'a> GpuChain<'a> {
         };
         let end = needs[lens_at.unwrap_or(stages.len())];
         let sigma = self.sigma_work(frame.w, start, chain)?;
-        let work = DeviceWork::Raw(RawWork {
+        Ok(DeviceWork::Raw(RawWork {
             input,
             start,
             end,
             sigma,
             steps,
             lens,
-        });
-        let rgb = runner.run_device(work, cancel)?;
-        cancel.check()?;
-        Ok(rgb)
+        }))
     }
 
     /// The noise sigma of the tile's first rectangle `start` (frame coordinates), from the half plane
@@ -1830,7 +2047,14 @@ impl<R: std::borrow::Borrow<DeviceRaw>> ReducedRun<R> {
                 frame_height: oh,
             },
         )?;
-        bin::encode_bin(&mut passes, &slab, &self.bp, rows.clone(), &band, rows.start)?;
+        bin::encode_bin(
+            &mut passes,
+            &slab,
+            &self.bp,
+            rows.clone(),
+            &band,
+            rows.start,
+        )?;
         passes.submit()?.finish()?;
         drop((keep, slab));
         self.making.push(band);
@@ -1845,7 +2069,12 @@ impl<R: std::borrow::Borrow<DeviceRaw>> ReducedRun<R> {
 
     fn sigma_planes(&mut self, ctx: &GpuContext) -> Result<(), GpuError> {
         let mut passes = PassList::new(ctx, "reduced sigma");
-        let sigma = encode_sigma_plane(&mut passes, self.raw.borrow(), &self.p.levels, &self.p.noise)?;
+        let sigma = encode_sigma_plane(
+            &mut passes,
+            self.raw.borrow(),
+            &self.p.levels,
+            &self.p.noise,
+        )?;
         let bsigma = bin::encode_bin_sigma(&mut passes, &sigma, &self.bp, self.p.noise_factor)?;
         passes.submit()?.finish()?;
         drop(sigma);

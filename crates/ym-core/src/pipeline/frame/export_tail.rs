@@ -48,7 +48,7 @@ use ym_gpu::tail::{Band, BandData, BandFormat, ExportTail, TailRoute, TailSharpe
 use super::{FullImage, FullRequest, FullTarget};
 use crate::app::gpu::GpuStages;
 use crate::pipeline::color::PhotoSource;
-use crate::pipeline::graph::{ComputeDevice, Job, RenderReport, Renderer};
+use crate::pipeline::graph::{ComputeDevice, Job, RenderReport, Renderer, TileImage};
 use crate::pipeline::{RenderError, graph::RenderOptions};
 
 /// Bands the render may have made ahead of the writer: the depth of the channel between them. Each
@@ -546,7 +546,7 @@ impl Renderer {
                 let tw = tile.min(fw - ox);
                 if let Some((x0, y0, x1, y1)) = grid.source_bounds(ox, oy, tw, th, 3) {
                     let rect = Rect::new(x0, y0, x1 - x0, y1 - y0);
-                    let region = match job.region(rect, false) {
+                    let region = match job.region_resident(rect) {
                         Ok(region) => region,
                         Err(RenderError::Gpu(reason)) => {
                             // The raw chain failed on the device; the photo goes to the CPU, all of
@@ -556,8 +556,17 @@ impl Renderer {
                         }
                         Err(e) => return Err(e),
                     };
-                    tail.add_tile(Arc::new(region), (x0, y0), (ox, oy), tw, th)
-                        .map_err(|e| self.tail_error(&e))?;
+                    // A tile the raw chain made on the device goes to the sampler where it is; one
+                    // the CPU made (or the device made behind the CPU's front) is uploaded.
+                    match region {
+                        TileImage::Device(image) => {
+                            tail.add_tile_device(image, (x0, y0), (ox, oy), tw, th)
+                        }
+                        TileImage::Host(image) => {
+                            tail.add_tile(Arc::new(image), (x0, y0), (ox, oy), tw, th)
+                        }
+                    }
+                    .map_err(|e| self.tail_error(&e))?;
                 }
                 ox += tw;
             }

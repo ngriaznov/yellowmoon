@@ -368,8 +368,15 @@ struct SlabTarget {
     dst_y: usize,
 }
 
+/// The camera RGB a tile samples from: a host image the job uploads, or an image the raw chain left on
+/// the device (`GpuChain::run_tile_device`), which is bound as it is.
+enum TileSource {
+    Host(Arc<RgbImage>),
+    Device(Arc<GpuImage>),
+}
+
 struct TileData {
-    region: Arc<RgbImage>,
+    region: TileSource,
     origin: (usize, usize),
     grid: SamplerGrid,
     off: (usize, usize),
@@ -383,8 +390,15 @@ struct TileData {
 fn tile_job(ctx: &GpuContext, token: &CancelToken, d: &TileData) -> Result<(), GpuError> {
     token.check()?;
     let mut passes = PassList::new(ctx, "tail tile");
-    let src = GpuImage::upload_rgb(ctx, "tail source", &d.region)?;
-    let sampled = encode_sample(&mut passes, &src, d.origin, &d.grid, d.off, d.w, d.h)?;
+    let uploaded;
+    let src: &GpuImage = match &d.region {
+        TileSource::Host(region) => {
+            uploaded = GpuImage::upload_rgb(ctx, "tail source", region)?;
+            &uploaded
+        }
+        TileSource::Device(image) => image,
+    };
+    let sampled = encode_sample(&mut passes, src, d.origin, &d.grid, d.off, d.w, d.h)?;
     let prepared = PreparedChain::new(ctx, &d.chain)?;
     for t in &d.targets {
         prepared.encode_stage(
@@ -720,6 +734,43 @@ impl<'a> ExportTail<'a> {
         w: usize,
         h: usize,
     ) -> Result<(), GpuError> {
+        self.add_tile_from(TileSource::Host(region), origin, off, w, h)
+    }
+
+    /// [`add_tile`](Self::add_tile) for a tile the raw chain left on the device
+    /// (`GpuChain::run_tile_device`, `docs/gpu-plan.md` G-10): the camera RGB is bound as it is, so
+    /// the tile makes no trip through the host (a readback and an upload of 12 MB for a 1024 px tile).
+    /// The bits are the host path's: a readback and an upload of `f32` change none.
+    ///
+    /// # Errors
+    ///
+    /// As [`add_tile`](Self::add_tile); [`GpuError::InvalidInput`] for an image that is not three
+    /// planes.
+    pub fn add_tile_device(
+        &mut self,
+        region: Arc<GpuImage>,
+        origin: (usize, usize),
+        off: (usize, usize),
+        w: usize,
+        h: usize,
+    ) -> Result<(), GpuError> {
+        if region.planes != 3 {
+            return Err(GpuError::InvalidInput(format!(
+                "a camera RGB tile has three planes, not {}",
+                region.planes
+            )));
+        }
+        self.add_tile_from(TileSource::Device(region), origin, off, w, h)
+    }
+
+    fn add_tile_from(
+        &mut self,
+        region: TileSource,
+        origin: (usize, usize),
+        off: (usize, usize),
+        w: usize,
+        h: usize,
+    ) -> Result<(), GpuError> {
         let (fw, fh) = self.spec.rendered;
         if w == 0 || h == 0 || off.0 + w > fw || off.1 + h > fh {
             return Err(GpuError::InvalidInput(format!(
@@ -912,7 +963,7 @@ impl<'a> ExportTail<'a> {
 // ---------------------------------------------------------------------------------------------
 
 struct HostTileData {
-    region: Arc<RgbImage>,
+    region: TileSource,
     origin: (usize, usize),
     grid: SamplerGrid,
     off: (usize, usize),
@@ -929,8 +980,15 @@ fn host_tile_job(
 ) -> Result<Vec<f32>, GpuError> {
     token.check()?;
     let mut passes = PassList::new(ctx, "tail host tile");
-    let src = GpuImage::upload_rgb(ctx, "tail source", &d.region)?;
-    let sampled = encode_sample(&mut passes, &src, d.origin, &d.grid, d.off, d.w, d.h)?;
+    let uploaded;
+    let src: &GpuImage = match &d.region {
+        TileSource::Host(region) => {
+            uploaded = GpuImage::upload_rgb(ctx, "tail source", region)?;
+            &uploaded
+        }
+        TileSource::Device(image) => image,
+    };
+    let sampled = encode_sample(&mut passes, src, d.origin, &d.grid, d.off, d.w, d.h)?;
     let prepared = PreparedChain::new(ctx, &d.chain)?;
     let out = GpuImage::alloc(
         ctx,
@@ -988,7 +1046,47 @@ pub fn colour_tile_to_host(
 ) -> Result<Vec<f32>, GpuError> {
     route.run(
         HostTileData {
-            region,
+            region: TileSource::Host(region),
+            origin,
+            grid,
+            off,
+            w,
+            h,
+            chain,
+            stop,
+        },
+        host_tile_job,
+    )
+}
+
+/// [`colour_tile_to_host`] for a tile the raw chain left on the device
+/// (`GpuChain::run_tile_device`): the camera RGB is sampled where it is, and only the coloured tile
+/// comes back (the DNG's frame stays on the host, its raw tiles need not).
+///
+/// # Errors
+///
+/// As [`colour_tile_to_host`]; [`GpuError::InvalidInput`] for an image that is not three planes.
+#[allow(clippy::too_many_arguments)] // the natural argument list; a struct would only move them
+pub fn colour_device_tile_to_host(
+    route: &TailRoute<'_>,
+    region: Arc<GpuImage>,
+    origin: (usize, usize),
+    grid: SamplerGrid,
+    off: (usize, usize),
+    w: usize,
+    h: usize,
+    chain: Arc<ColorChain>,
+    stop: Stop,
+) -> Result<Vec<f32>, GpuError> {
+    if region.planes != 3 {
+        return Err(GpuError::InvalidInput(format!(
+            "a camera RGB tile has three planes, not {}",
+            region.planes
+        )));
+    }
+    route.run(
+        HostTileData {
+            region: TileSource::Device(region),
             origin,
             grid,
             off,

@@ -376,7 +376,10 @@ impl RowBands {
             place,
         )?;
         for b in &self.bands {
-            let (top, bottom) = (b.place.y0.max(rows.start), (b.place.y0 + b.height).min(rows.end));
+            let (top, bottom) = (
+                b.place.y0.max(rows.start),
+                (b.place.y0 + b.height).min(rows.end),
+            );
             if top >= bottom {
                 continue;
             }

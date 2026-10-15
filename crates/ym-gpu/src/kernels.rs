@@ -38,6 +38,7 @@ pub mod adaptive_ratio;
 pub mod bilateral;
 pub mod bin;
 pub mod color;
+pub mod copy;
 pub mod detail;
 pub mod diffraction;
 pub mod encode;

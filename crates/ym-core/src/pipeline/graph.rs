@@ -37,6 +37,7 @@ use ym_gpu::cpu::sharpen::SharpenParams;
 use ym_gpu::cpu::sharpen::diffraction::DiffractionParams;
 use ym_gpu::cpu::{Rect, RgbImage};
 use ym_gpu::device::{Gpu, GpuError, GpuInfo};
+use ym_gpu::image::GpuImage;
 use ym_gpu::kernels::prep::DeviceRaw;
 use ym_gpu::queue::{CancelToken, JobSpec, Priority};
 
@@ -970,6 +971,16 @@ pub(crate) struct ViewGpu {
     pub stages: GpuStages,
 }
 
+/// A tile of the full-resolution raw group: the host's image, or one the device made and left where it
+/// is (`docs/gpu-plan.md` G-10), for the stages that follow on the device to read.
+pub enum TileImage {
+    /// Camera RGB on the host.
+    Host(RgbImage),
+    /// Camera RGB on the device, three planes. The buffers go back to the device's pool when the
+    /// last owner lets go.
+    Device(Arc<GpuImage>),
+}
+
 /// One request: the renderer, the photo's graph, the settings snapshot and the bookkeeping.
 pub(crate) struct Job<'a> {
     pub r: &'a Renderer,
@@ -1550,6 +1561,31 @@ impl<'a> Job<'a> {
         Ok(out)
     }
 
+    /// The full-resolution raw group over `rect` for an export's colour stage, left on the device when
+    /// the raw chain made it there ([`TileImage`]): one call over the whole rectangle (the stage halos
+    /// are paid once), nothing cached, no readback and no upload between the raw chain and the sampler
+    /// that follows. A tile the CPU made, or the device made behind the CPU's front, comes back as a
+    /// host image, as [`Job::region`] gives it.
+    pub fn region_resident(&mut self, rect: Rect) -> Result<TileImage, RenderError> {
+        let plan = self.plan()?;
+        if rect.is_empty() || rect.x1() > plan.out_w || rect.y1() > plan.out_h {
+            return Err(RenderError::Image(
+                "The region is outside the photo.".to_owned(),
+            ));
+        }
+        if plan.reduced {
+            return self.region(rect, false).map(TileImage::Host);
+        }
+        self.check()?;
+        let frame = self.frame()?;
+        let full = self.full(false)?;
+        let t = Instant::now();
+        let img = self.run_full_tile_any(&full, &frame, rect, true)?;
+        self.runs.tiles += 1;
+        self.timings.raw_ms += t.elapsed().as_secs_f64() * 1000.0;
+        Ok(img)
+    }
+
     /// The device for the raw stages of a request and the stage that lets it run them, or `None` when
     /// the CPU runs them: there is no device, `stage` is not on, a device error ended the route for
     /// this photo or for the process, or the device is lost. Reads the options of the request's
@@ -1830,6 +1866,26 @@ impl<'a> Job<'a> {
         frame: &FrameData,
         rect: Rect,
     ) -> Result<RgbImage, RenderError> {
+        match self.run_full_tile_any(full, frame, rect, false)? {
+            TileImage::Host(image) => Ok(image),
+            TileImage::Device(_) => Err(RenderError::Image(
+                "A tile was left on the graphics card where the host's was asked for.".to_owned(),
+            )),
+        }
+    }
+
+    /// [`run_full_tile`](Self::run_full_tile) that may leave the tile on the device (`device`): the
+    /// range R1..R9 from the photo's resident words ends there ([`FullChain::run_tile_gpu_device`]);
+    /// every other way a tile is made (the CPU, the range R6..R8 behind the CPU's front) gives a host
+    /// image. The policy is the same: a device error ends the route for the photo, an export asks to
+    /// start again on the CPU, a cancelled render stays cancelled.
+    fn run_full_tile_any(
+        &mut self,
+        full: &FullChain,
+        frame: &FrameData,
+        rect: Rect,
+        device: bool,
+    ) -> Result<TileImage, RenderError> {
         let expected =
             self.opts.gpu.is_some() && self.opts.gpu_stages.contains(GpuStages::RAW_CHAIN);
         let route = self.raw_route()?;
@@ -1853,7 +1909,13 @@ impl<'a> Job<'a> {
             return Err(RenderError::Gpu(reason));
         }
         if let Some(route) = route {
-            match full.run_tile_gpu(frame, rect, &route) {
+            let made = if device && route.range == FRONT_RANGE {
+                full.run_tile_gpu_device(rect, &route)
+                    .map(|image| TileImage::Device(Arc::new(image)))
+            } else {
+                full.run_tile_gpu(frame, rect, &route).map(TileImage::Host)
+            };
+            match made {
                 Ok(img) => {
                     self.record_range(route.range, ComputeDevice::Gpu);
                     return Ok(img);
@@ -1883,7 +1945,7 @@ impl<'a> Job<'a> {
         if expected {
             self.record_range(self.expected_range(), ComputeDevice::Cpu);
         }
-        full.run_tile(frame, rect)
+        full.run_tile(frame, rect).map(TileImage::Host)
     }
 
     /// Whether the last error was a device error that asks the export to start again on the CPU

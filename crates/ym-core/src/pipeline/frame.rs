@@ -61,7 +61,7 @@ use ym_gpu::cpu::resample::sample_catmull_rom;
 use ym_gpu::cpu::{Rect, RgbImage};
 use ym_gpu::device::{Gpu, GpuError};
 use ym_gpu::queue::{CancelToken, JobSpec, Priority};
-use ym_gpu::tail::{TailRoute, colour_tile_to_host};
+use ym_gpu::tail::{TailRoute, colour_device_tile_to_host, colour_tile_to_host};
 
 use self::device::{
     Bounds, DeviceDisplay, DeviceInput, DisplayJob, PlainJob, TailWork, Upload, ViewRoute,
@@ -69,7 +69,7 @@ use self::device::{
 pub use self::export_tail::{BAND_DEPTH, GpuBands, TailRequest};
 use super::color::{GradePlan, PhotoSource};
 use super::geometry::{Affine, Grid, oriented_to_sensor, sensor_to_oriented};
-use super::graph::{ComputeDevice, Job, RenderReport, Renderer};
+use super::graph::{ComputeDevice, Job, RenderReport, Renderer, TileImage};
 use super::viewport::ViewportState;
 use super::{FrameZoom, RenderError};
 
@@ -2280,7 +2280,14 @@ impl Renderer {
                     let tw = tile.min(fw - ox);
                     if let Some((x0, y0, x1, y1)) = grid.source_bounds(ox, oy, tw, th, 3) {
                         let rect = Rect::new(x0, y0, x1 - x0, y1 - y0);
-                        let region = match job.region(rect, false) {
+                        // With the colour stage on the device the raw chain's tile may stay there
+                        // (`Job::region_resident`); with the CPU colouring it the host's is wanted.
+                        let region = if device_colour.is_some() {
+                            job.region_resident(rect)
+                        } else {
+                            job.region(rect, false).map(TileImage::Host)
+                        };
+                        let region = match region {
                             Ok(region) => region,
                             Err(RenderError::Gpu(_)) if job.take_gpu_restart() => {
                                 rgb.fill(0.0);
@@ -2293,17 +2300,32 @@ impl Renderer {
                         };
                         let out = if let Some(gpu) = &device_colour {
                             let route = TailRoute::new(gpu, spec, cancel.clone());
-                            let colour = colour_tile_to_host(
-                                &route,
-                                export_tail::shared(region),
-                                (x0, y0),
-                                grid.sampler_grid(),
-                                (ox, oy),
-                                tw,
-                                th,
-                                Arc::clone(&grade.chain),
-                                export_tail::host_stop(request.target),
-                            );
+                            let (grid_s, stop) =
+                                (grid.sampler_grid(), export_tail::host_stop(request.target));
+                            let colour = match region {
+                                TileImage::Device(image) => colour_device_tile_to_host(
+                                    &route,
+                                    image,
+                                    (x0, y0),
+                                    grid_s,
+                                    (ox, oy),
+                                    tw,
+                                    th,
+                                    Arc::clone(&grade.chain),
+                                    stop,
+                                ),
+                                TileImage::Host(image) => colour_tile_to_host(
+                                    &route,
+                                    export_tail::shared(image),
+                                    (x0, y0),
+                                    grid_s,
+                                    (ox, oy),
+                                    tw,
+                                    th,
+                                    Arc::clone(&grade.chain),
+                                    stop,
+                                ),
+                            };
                             match colour {
                                 Ok(out) => out,
                                 Err(GpuError::Cancelled) => return Err(RenderError::Cancelled),
@@ -2318,6 +2340,13 @@ impl Renderer {
                                 }
                             }
                         } else {
+                            // Only the colour stage on the device asks for a tile that stays there.
+                            let TileImage::Host(region) = region else {
+                                return Err(RenderError::Image(
+                                    "A tile was left on the graphics card for the CPU's colour stage."
+                                        .to_owned(),
+                                ));
+                            };
                             let sampled =
                                 sample_to_camera(&region, (x0, y0), &grid, (ox, oy), tw, th);
                             let frame = Frame::planar(tw, th, &sampled.img.data)
