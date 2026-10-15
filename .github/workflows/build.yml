@@ -183,6 +183,12 @@ jobs:
             echo "::error title=Native viewport::the app never showed a picture in the native viewport (viewport/app.log)"
             exit 1
           fi
+          # Drawn is not seen: every box of the page under the middle of the photo cell must be transparent (0.1.0 drew the
+          # photo behind an opaque <html>).
+          if ! grep -q "the page lets the viewport through: yes" viewport/app.log; then
+            echo "::error title=Native viewport::the page paints over the photo cell (see 'smoke: page' in viewport/app.log)"
+            exit 1
+          fi
           exit "$status"
 
       - uses: actions/upload-artifact@v4

@@ -350,6 +350,23 @@ fn smoke_test<R: Runtime>(app: AppHandle<R>, api: Arc<AppApi>) {
                 described = true;
                 let _ = window.eval_with_callback(SMOKE_DESCRIBE_PAGE, |json| {
                     eprintln!("smoke: page {json}");
+                    // The script returns a string of JSON, which the callback gets as JSON again.
+                    let page = serde_json::from_str::<String>(&json)
+                        .ok()
+                        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
+                    let clear = page
+                        .as_ref()
+                        .and_then(|p| p["stack"].as_array())
+                        .is_some_and(|stack| {
+                            !stack.is_empty()
+                                && stack.iter().all(|e| {
+                                    e.as_str().is_some_and(|e| e.ends_with("rgba(0, 0, 0, 0)"))
+                                })
+                        });
+                    eprintln!(
+                        "smoke: the page lets the viewport through: {}",
+                        if clear { "yes" } else { "no" }
+                    );
                 });
             }
             // The Start screen lists the photos; its "Open photos" button is enabled once one is
