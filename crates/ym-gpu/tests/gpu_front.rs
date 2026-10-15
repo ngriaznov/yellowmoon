@@ -40,8 +40,12 @@ use ym_gpu::kernels::prep::{
 
 /// Largest `|gpu - cpu| / max(1, |cpu|)` of R1 + R3 + R4 with the vignetting profile: an absolute
 /// error up to white, a relative one above it (the scenes hold words beyond the white level, which
-/// reach values of 14 after the gains, where one ulp is 1e-6). Twice the first measured value (2.65e-7, about 4 ulp: the profile and its reciprocal rounded in f32 against the CPU's f64 gain rounded once).
-const VIGNETTE_BOUND: f32 = 5.3e-7;
+/// reach values of 14 after the gains, where one ulp is 1e-6). Measured 0: the gain is formed in
+/// double-floats (`front_vig.wgsl`), so the device multiplies by the f32 the CPU makes from its f64 gain
+/// (the first version formed it in f32 and was 2.65e-7 away, about 4 ulp, which flipped the demosaic's
+/// near-tie decisions). The bound allows one ulp, for a pixel whose f64 gain lies within 1e-13 of a
+/// rounding boundary.
+const VIGNETTE_BOUND: f32 = 1.2e-7;
 /// The same on a hardware adapter: the plan's number for `prep`. Metal's fast square root and division
 /// move the gain by a few ulp, which the software bound does not allow for; to be lowered from the
 /// Metal numbers (`docs/gpu-plan.md` K8).

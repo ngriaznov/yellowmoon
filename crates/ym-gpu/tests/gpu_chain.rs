@@ -2047,12 +2047,13 @@ fn a_cut_demosaic_core_is_still_one_tile_for_the_tile_fault() {
 // | a lossy file (steps) | within the same limits | see the printout |
 
 /// All tie-free cases together (vignetted content, so off the raw grid). First measured on lavapipe
-/// (Mesa 25.2, LLVM 20.1): 219 of 1 228 536 samples over 1e-4 (1.78e-4), 1467 over 2e-5 (1.19e-3),
-/// largest 2.9e-3, the R6..R8 numbers within noise (the lens resample on the device and the CPU's
-/// front change little). The limits are twice that.
+/// (Mesa 25.2, LLVM 20.1): 214 of 1 228 536 samples over 1e-4 (1.74e-4), 1113 over 2e-5 (9.1e-4),
+/// largest 2.9e-3: the R6..R8 numbers to the sample (the front's mosaic is the CPU's to the bit, so the
+/// demosaic takes the same decisions; with the vignetting gain formed in f32 the first version had 219,
+/// 1467 and 2.9e-3). The limits are twice that.
 const FRONT_TIE_FREE: Limits = Limits {
-    over: 3.6e-4,
-    fine: 2.4e-3,
+    over: 3.5e-4,
+    fine: 1.8e-3,
     largest: 5.8e-3,
 };
 
@@ -2067,18 +2068,20 @@ const FRONT_TIE_PRONE: Limits = Limits {
 
 /// The 1024 x 1024 corner tile of a 50 MP frame (8658 x 5772) behind a strong barrel lens with CA on
 /// the mosaic, a vignetting profile and R5, the whole chain R1..R9 on the device against the CPU chain
-/// (`#[ignore]`d). First measured: 503 of 3 145 728 over 1e-4 (1.60e-4), 8030 over 2e-5 (2.55e-3),
-/// largest 6.3e-3; the limits are twice that.
+/// (`#[ignore]`d). First measured: 467 of 3 145 728 over 1e-4 (1.48e-4), 7955 over 2e-5 (2.53e-3),
+/// largest 4.3e-3; the limits are twice that.
 const FIFTY_MP_CORNER_FRONT: Limits = Limits {
-    over: 3.2e-4,
+    over: 3.0e-4,
     fine: 5.1e-3,
-    largest: 1.3e-2,
+    largest: 8.7e-3,
 };
 
 /// What a hardware adapter may show of the front's tie flips: four times the software limits. The
-/// front's vignetting gain differs from the CPU's by a few ulp on Metal (its square root and division
-/// are not correctly rounded), which flips more of the demosaic's near-tie decisions than lavapipe's
-/// 2.65e-7; to be lowered from the Metal numbers (`docs/gpu-plan.md` K8).
+/// front's mosaic is the CPU's to the bit where the maths is exact (R1, R3 and R4 in double-floats, R5
+/// with the CPU's offsets); where it is not (R5b, whose positions are formed in f32) a hardware
+/// adapter's square root and division may move a value by a few ulp more than lavapipe's, and flip
+/// more of the demosaic's near-tie decisions. To be lowered from the Metal numbers
+/// (`docs/gpu-plan.md` K8).
 fn front_limits(dev: &TestGpu, l: Limits) -> Limits {
     if dev.gpu.info().is_software {
         l
@@ -2092,9 +2095,9 @@ fn front_limits(dev: &TestGpu, l: Limits) -> Limits {
 }
 
 /// R1..R9 against R6..R8 behind the CPU's front, largest difference over the tie-free cases. First
-/// measured 2.7e-4 (one sample: the vignetting gain differs by 2.7e-7, a demosaic decision on a
-/// near tie flips); twice that.
-const FRONT_AGAINST_HANDOFF: f64 = 5.4e-4;
+/// measured 1.43e-6 (R5b and R9 formed in f32 against the CPU's f64 positions; no sample flips a
+/// decision: the first version, with the vignetting gain in f32, had 2.7e-4 at one sample); twice that.
+const FRONT_AGAINST_HANDOFF: f64 = 2.9e-6;
 
 /// The R6..R8 setup of a case and the R1..R9 setup of the same case.
 fn front_pair(scene: Scene, lens: Lens, noise: NoiseDn, variant: Variant) -> (Setup, Setup) {

@@ -245,14 +245,13 @@ fn the_tiles_run_r1_to_r9_with_the_front_and_r6_to_r8_without_it() {
     eprintln!("full render, R6..R8 against CPU: worst {w1:e}, over 1e-3 {o1:e}, mean {m1:e}");
     eprintln!("full render, R1..R9 against CPU: worst {w2:e}, over 1e-3 {o2:e}, mean {m2:e}");
     eprintln!("full render, R1..R9 against R6..R8: worst {w3:e}, over 1e-3 {o3:e}, mean {m3:e}");
-    // Twice the first measured values (worst 2.4e-3, share over 1e-3 2.0e-6, mean 1.2e-7 for both: a
-    // handful of samples of the patchwork's noise where the front's one-ulp difference to the CPU's
-    // (the cube roots of R5 are correctly rounded on the device) settles a tie of the demosaic the
-    // other way, and the white lift multiplies it; R6..R8 alone has none), the share at the bound of
-    // `render_gpu.rs` for the same scene.
-    assert!(w2 < 4.8e-3 && o2 <= 1e-5 && m2 < 2.5e-7, "{w2} {o2} {m2}");
-    assert!(w3 < 4.8e-3 && o3 <= 1e-5 && m3 < 2.5e-7, "{w3} {o3} {m3}");
-    assert!(w1 < 2e-3 && o1 <= 1e-5 && m1 < 1e-6, "{w1} {o1} {m1}");
+    // Twice the first measured values (R6..R8 behind the CPU's front: worst 1.5e-6, mean 3.4e-8;
+    // R1..R9: worst 1.7e-6, mean 3.8e-8; R1..R9 against R6..R8: worst 8.3e-7, mean 2.1e-8; none over
+    // 1e-3). With the vignetting gain formed in f32 the front differed from the CPU's by 4 ulp
+    // everywhere and a few samples of the noise flipped a tie of the demosaic (worst 2.4e-3).
+    assert!(w2 < 3.4e-6 && o2 <= 1e-5 && m2 < 7.7e-8, "{w2} {o2} {m2}");
+    assert!(w3 < 1.7e-6 && o3 <= 1e-5 && m3 < 4.3e-8, "{w3} {o3} {m3}");
+    assert!(w1 < 3e-6 && o1 <= 1e-5 && m1 < 6.8e-8, "{w1} {o1} {m1}");
 }
 
 /// The lens switches of the RAW tab cut the front down to what the device makes bit for bit.
@@ -294,6 +293,12 @@ fn the_front_is_the_cpus_to_the_bit_where_it_has_no_lens_to_correct() {
             // takes the CPU's decisions and the picture is the R6..R8 route's.
             assert_eq!(r1.rgb, r6.rgb, "lens off: the front changes nothing");
         }
+        // With one it adds no flip of the demosaic to the CPU front's own (the vignetting gain is
+        // the CPU's f32 to the bit, R5b and R9 move values by 1e-6 and no decision).
+        assert!(
+            o1 <= o6 + 2,
+            "lens {lens} CA {ca}: {o1} samples over 1e-3 against {o6}"
+        );
     }
     for line in &table {
         eprintln!("{line}");

@@ -48,9 +48,9 @@ const SIGMA_HW_BOUND: f32 = 1e-5;
 /// Largest `|gpu - cpu|` of the binning (white 1.0; measured 0: the CPU's bits). The plan's number is
 /// 1e-6, kept: it is the margin for a platform whose division and fused multiply-add differ.
 const BIN_BOUND: f32 = 1e-6;
-/// The same with the vignetting gain (values up to 4 after the gains; measured 2.4e-7 of the value,
-/// the f32 profile against the CPU's f64 gain).
-const BIN_VIG_BOUND: f32 = 5e-7;
+/// The same with the vignetting gain (values up to 4 after the gains; measured 0: the gain is formed
+/// in double-floats, `front_vig.wgsl`). One ulp is allowed.
+const BIN_VIG_BOUND: f32 = 1.2e-7;
 /// The same on a hardware adapter: the plan's number for `bin`.
 const BIN_VIG_HW_BOUND: f32 = 1e-6;
 
