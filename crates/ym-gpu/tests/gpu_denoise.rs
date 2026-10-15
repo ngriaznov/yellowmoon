@@ -40,17 +40,29 @@ use ym_gpu::queue::{JobSpec, Priority};
 /// Largest `|gpu - cpu|` of a frame (white 1.0) on a software adapter: twice the first measured value
 /// (4.17e-7 on lavapipe).
 const BOUND: f32 = 8.4e-7;
-/// The same on a hardware adapter (Metal: fast-math contracts and re-associates the sums, `exp` and the
-/// divisions are the driver's). The plan's starting value for neighbourhood stages
-/// (`docs/gpu-plan.md` section 7); the first Apple run prints the measured numbers (`ci_note`) and this
-/// is lowered to twice the worst of them.
-const HW_BOUND: f32 = 1e-5;
+/// The same on a hardware adapter for the 14 frames of `matches_the_cpu_on_every_frame...`, which print their worst
+/// value (`ci_note`). Metal (macos-14 and macos-15, run 38694506557, `[G-06] bilateral on Apple Paravirtual device`):
+/// 6.557e-7, so twice that (G-09; fast-math contracts and re-associates the sums, `exp` and the divisions are the
+/// driver's).
+const HW_BOUND: f32 = 1.32e-6;
+/// The same for the tests whose Metal value was not printed yet (the tile test now prints it): the plan's starting
+/// value for neighbourhood stages (`docs/gpu-plan.md` section 7), to be lowered to twice what the next Metal run prints.
+const HW_BOUND_UNMEASURED: f32 = 1e-5;
 
 fn bound(dev: &TestGpu) -> f32 {
     if dev.gpu.info().is_software {
         BOUND
     } else {
         HW_BOUND
+    }
+}
+
+/// The bound of a test that has not printed a Metal value yet.
+fn bound_unmeasured(dev: &TestGpu) -> f32 {
+    if dev.gpu.info().is_software {
+        BOUND
+    } else {
+        HW_BOUND_UNMEASURED
     }
 }
 
@@ -288,11 +300,15 @@ fn tiles_equal_the_whole_frame_bit_for_bit() {
     // And the whole frame is the CPU's within the bound.
     let want = cpu_reference(&img, &SigmaOwned::Plane(plane), 1.3, &p);
     let e = compare(&whole, &want.data);
-    eprintln!(
-        "[G-06] bilateral 203x157 tiles: against the CPU max {:.3e}",
-        e.max
+    g06::ci_note(
+        "bilateral tiles",
+        &format!(
+            "bilateral 203x157 tiles on {}: against the CPU max {:.3e}",
+            dev.gpu.info().name,
+            e.max
+        ),
     );
-    assert!(e.max <= bound(dev), "{:e}", e.max);
+    assert!(e.max <= bound_unmeasured(dev), "{:e}", e.max);
 }
 
 #[test]

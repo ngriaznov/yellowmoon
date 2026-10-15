@@ -328,6 +328,60 @@ fn apply_variant(shot: &Shot, pct: f64, straighten: bool) {
     });
 }
 
+/// What [`the_tail_writes_the_cpu_pixels_in_every_format`] allows of the sharpened and the JPEG
+/// exports, for one kind of adapter. Each value is twice the first measured one (nothing is loosened
+/// without Mykyta): software on Mesa lavapipe, hardware on the Apple runners (G-09, from the fifteen
+/// cases that run 38694506557 printed on macos-14 and macos-15, identical to the digit).
+struct TailBounds {
+    /// Sharpened 16 bit: the share of samples more than 1 code off, more than 8 codes off, and the
+    /// largest difference in codes.
+    over_one_16: f64,
+    over_eight_16: f64,
+    max_16: u32,
+    /// The decoded JPEG: the largest difference, the share more than 1 code off, the exact share.
+    jpeg_max: u32,
+    jpeg_over_one: f64,
+    jpeg_exact: f64,
+    /// Sharpened 8 bit: the largest difference, the share more than 1 code off (with a floor of
+    /// codes, for a picture too small for a share), the exact share.
+    sharp8_max: u32,
+    sharp8_over_one: f64,
+    sharp8_floor: f64,
+    sharp8_exact: f64,
+}
+
+/// First measured on lavapipe: 354 of 1.62 M 16-bit samples over 1 code and 81 over 8 (at most 89
+/// off), the JPEGs 280 over 1 (1.7e-4) at most 5 off, and no sharpened 8-bit sample more than one off.
+const SOFTWARE: TailBounds = TailBounds {
+    over_one_16: 4.4e-4,
+    over_eight_16: 1.0e-4,
+    max_16: 180,
+    jpeg_max: 10,
+    jpeg_over_one: 3.5e-4,
+    jpeg_exact: 0.99,
+    sharp8_max: 1,
+    sharp8_over_one: 0.0,
+    sharp8_floor: 0.0,
+    sharp8_exact: 0.99,
+};
+
+/// First measured on Metal: sharpened 8 bit 6 of 1.62 M codes over 1, at most 2, 0.99988 exact;
+/// sharpened 16 bit 2.55e-4 over 1, 9.7e-5 over 8, at most 551; JPEG at most 5 codes, 2.12e-4 over 1
+/// (long edge 500), 0.99829 exact (straightened crop). The limiter's rank flips are the cause, not the
+/// sharpening kernel, which gives lavapipe's bits on Metal (`docs/algorithms/04` section 10).
+const HARDWARE: TailBounds = TailBounds {
+    over_one_16: 5.1e-4,
+    over_eight_16: 1.94e-4,
+    max_16: 1102,
+    jpeg_max: 10,
+    jpeg_over_one: 4.25e-4,
+    jpeg_exact: 0.9965,
+    sharp8_max: 4,
+    sharp8_over_one: 7.4e-6,
+    sharp8_floor: 2.0,
+    sharp8_exact: 0.9997,
+};
+
 #[test]
 fn the_tail_writes_the_cpu_pixels_in_every_format() {
     let Some(gpu) = gpu() else { return };
@@ -342,12 +396,16 @@ fn the_tail_writes_the_cpu_pixels_in_every_format() {
     // column for the sharpened outputs only: the raw-chain-only export runs the colour chain on the
     // CPU in f64, the tail on the device in f32, and the output-sharpening limiter decides on a rank
     // of luma values, so last-bit differences flip a few pixels (`docs/algorithms/04` section 10).
-    // Metal at 6d4d2f4 (macos-14 and macos-15 alike): full size, PNG 8, 6 of 1.62 M codes over 1,
-    // at most 2, while the sharpening kernel alone matches lavapipe's bits; the same pair of chains
-    // in `device_and_cpu_exports_agree_within_the_golden_metric` measured at most 3 (8 bit) and 660
-    // (16 bit) codes. Hardware bounds are twice those, until this test's own Metal numbers (every
-    // case prints, and every failure is collected so one run reports all of them) replace them.
-    let hardware = !gpu.info().is_software;
+    // Metal (4c5939f, run 38694506557, macos-14 and macos-15 alike) printed all fifteen cases; the
+    // hardware column is twice the worst of them (G-09), see [`HARDWARE`]: the sharpened 8-bit
+    // exports 6 of 1.62 M codes over 1, at most 2, 0.99988 exact; the sharpened 16-bit exports
+    // 413 / 157 over 1 / over 8 of 1.62 M (2.55e-4 / 9.7e-5), at most 551; the JPEGs at most 5 codes
+    // and 2.1e-4 over 1, 0.99829 exact. The sharpening kernel alone matches lavapipe's bits there.
+    let bounds = if gpu.info().is_software {
+        &SOFTWARE
+    } else {
+        &HARDWARE
+    };
     let mut failures: Vec<String> = Vec::new();
     let mut check = |ok: bool, what: String| {
         if !ok {
@@ -422,11 +480,10 @@ fn the_tail_writes_the_cpu_pixels_in_every_format() {
                 // where its halo limiter decides on a rank of luma values (`gpu_tail.rs`). First
                 // measured: 354 samples over 1 code (2.2e-4), 81 over 8 (5.0e-5), at most 89 codes
                 // off, in 1.62 M samples; the bounds are twice that (hardware: see above).
-                let max16 = if hardware { 1320 } else { 180 };
                 check(
-                    s.over_one as f64 <= 4.4e-4 * n
-                        && s.over_eight as f64 <= 1.0e-4 * n
-                        && s.max <= max16,
+                    s.over_one as f64 <= bounds.over_one_16 * n
+                        && s.over_eight as f64 <= bounds.over_eight_16 * n
+                        && s.max <= bounds.max_16,
                     format!(
                         "{name} {label}: {} over 1, {} over 8, max {}",
                         s.over_one, s.over_eight, s.max
@@ -437,16 +494,21 @@ fn the_tail_writes_the_cpu_pixels_in_every_format() {
                 // quantiser in one coefficient: a few codes over the block. First measured: 280
                 // samples over 1 code (1.7e-4) and 5 codes at most; the bounds are twice that.
                 check(
-                    s.max <= 10 && s.over_one as f64 <= 3.5e-4 * n && exact >= 0.99,
+                    s.max <= bounds.jpeg_max
+                        && s.over_one as f64 <= bounds.jpeg_over_one * n
+                        && exact >= bounds.jpeg_exact,
                     format!(
                         "{name} {label}: {} over 1, max {}, {exact} exact",
                         s.over_one, s.max
                     ),
                 );
-            } else if hardware && pct > 0.0 {
-                // A rank flip moves a dithered 8-bit code by more than one (see above).
+            } else if pct > 0.0 {
+                // A rank flip moves a dithered 8-bit code by more than one (see above); on a software
+                // adapter none did (the C13 bound of the plan: within one code, 99 % exact).
                 check(
-                    s.max <= 6 && s.over_one as f64 <= 3e-5 * n && exact >= 0.99,
+                    s.max <= bounds.sharp8_max
+                        && s.over_one as f64 <= (bounds.sharp8_over_one * n).max(bounds.sharp8_floor)
+                        && exact >= bounds.sharp8_exact,
                     format!(
                         "{name} {label}: {} over 1, max {}, {exact} exact",
                         s.over_one, s.max
@@ -1236,17 +1298,25 @@ fn an_export_teaches_the_numbers_of_the_path_the_estimate_reads() {
         } else {
             (ComputeDevice::Cpu, ComputeDevice::Gpu)
         };
-        speed.use_device(other);
         assert!(
-            (speed.render_s_per_mp() - prior).abs() < 1e-12,
+            (speed.render_s_per_mp(other) - prior).abs() < 1e-12
+                && speed.combined_s_per_mp(other, FormatKind::Png).is_none(),
             "{name}: the other path's numbers moved to {}",
-            speed.render_s_per_mp()
+            speed.render_s_per_mp(other)
         );
-        speed.use_device(taken);
+        // The CPU reference learns its render speed; the tail learns the time of the whole export of
+        // that format (the writer pulls while the device renders), and only of that format.
+        let learned = if tail {
+            speed.combined_s_per_mp(taken, FormatKind::Png).is_some()
+                && speed.combined_s_per_mp(taken, FormatKind::Jpeg).is_none()
+                && speed.combined_s_per_mp(taken, FormatKind::Tiff).is_none()
+        } else {
+            (speed.render_s_per_mp(taken) - prior).abs() > 1e-9
+        };
         assert!(
-            (speed.render_s_per_mp() - prior).abs() > 1e-9,
+            learned,
             "{name}: the path that made the file learned nothing ({})",
-            speed.render_s_per_mp()
+            speed.render_s_per_mp(taken)
         );
     }
 }
@@ -1363,6 +1433,7 @@ fn fifty_megapixels_leave_no_host_frame_and_a_dng_keeps_its_own() {
 #[cfg(feature = "fault-injection")]
 mod faults {
     use super::*;
+    use ym_color::display::OutputTarget;
     use ym_gpu::device::GpuFault;
 
     /// The CPU export and the files of a device export that failed over to the CPU.
@@ -1628,6 +1699,301 @@ mod faults {
             matches!(err, Err(ym_core::pipeline::RenderError::Gpu(_))),
             "{err:?}"
         );
+    }
+
+    /// A device of its own, with nothing compiled yet: a pipeline that an earlier test compiled
+    /// would not meet the injected shader fault.
+    fn fresh_device() -> Arc<Gpu> {
+        Arc::new(
+            Gpu::start(GpuConfig {
+                poison: true,
+                ..GpuConfig::default()
+            })
+            .expect("device"),
+        )
+    }
+
+    /// Plan section 4.9: a shader of the tail that does not compile is a property of the machine,
+    /// not of the photo, so the tail is off for the rest of the process. The photo that met it was
+    /// made again on the CPU (the fault test above); the next one must not try the shader again.
+    #[test]
+    fn a_shader_that_fails_in_the_tail_switches_the_tail_off_for_the_process() {
+        let Some(_) = gpu() else { return };
+        let shot = Shot::new();
+        apply_variant(&shot, 100.0, false);
+        let home = tempfile::tempdir().expect("home");
+        let own = fresh_device();
+        let sixteen = |out: &Path| {
+            let mut o = options(out, FormatKind::Png);
+            o.bit_depth = BitDepth::Sixteen;
+            o.size = Size::LongEdge { px: 600 };
+            o
+        };
+        let cpu_bytes = {
+            let out = tempfile::tempdir().expect("out");
+            let ctx = context(home.path(), renderer(None, GpuStages::NONE, false));
+            read(&export(&ctx, &shot.photo(), sixteen(out.path())).path)
+        };
+        // The raw chain is on the CPU, so the only shader that can fail is the tail's.
+        let ctx = context(
+            home.path(),
+            renderer(Some(Arc::clone(&own)), GpuStages::EXPORT_TAIL, false),
+        );
+        assert!(ctx.renderer().export_tail_enabled());
+        assert!(!ctx.renderer().export_tail_disabled());
+        own.set_fault(Some(GpuFault::Shader));
+        let out = tempfile::tempdir().expect("out");
+        let first = export(&ctx, &shot.photo(), sixteen(out.path()));
+        own.set_fault(None);
+        assert_eq!(first.device, ComputeDevice::Cpu);
+        assert!(
+            first.notes.iter().any(|n| n
+                .contains("The graphics card could not render this photo, so the CPU did")),
+            "{:?}",
+            first.notes
+        );
+        assert!(read(&first.path) == cpu_bytes, "the fallback is the CPU export");
+        assert!(ctx.renderer().export_tail_disabled(), "the tail is off now");
+        assert!(!ctx.renderer().export_tail_enabled());
+        // The fault is gone and the shader would compile, but the tail stays off: the second photo
+        // is a plain CPU export, the device is not asked, and no note says the card failed again.
+        let asked = own.counters().submissions;
+        let out2 = tempfile::tempdir().expect("out");
+        let second = export(&ctx, &shot.photo(), sixteen(out2.path()));
+        assert_eq!(second.device, ComputeDevice::Cpu);
+        assert!(
+            !second.notes.iter().any(|n| n.contains("graphics card")),
+            "{:?}",
+            second.notes
+        );
+        assert!(read(&second.path) == cpu_bytes);
+        assert_eq!(own.counters().submissions, asked, "the device was not asked");
+        // The flag is the renderer's: another renderer on the same (healthy) device runs the tail.
+        let again = context(
+            home.path(),
+            renderer(Some(Arc::clone(&own)), GpuStages::EXPORT_TAIL, false),
+        );
+        let out3 = tempfile::tempdir().expect("out");
+        let third = export(&again, &shot.photo(), sixteen(out3.path()));
+        assert_eq!(third.device, ComputeDevice::Gpu, "{:?}", third.notes);
+
+        // A strict policy never turns the switched-off tail into a quiet CPU export.
+        let own = fresh_device();
+        let strict = context(
+            home.path(),
+            renderer(Some(Arc::clone(&own)), GpuStages::EXPORT_TAIL, true),
+        );
+        own.set_fault(Some(GpuFault::Shader));
+        let out4 = tempfile::tempdir().expect("out");
+        let err = run(&strict, &shot.photo(), sixteen(out4.path())).expect_err("strict");
+        own.set_fault(None);
+        assert_eq!(err.kind(), "gpu", "{err}");
+        assert!(strict.renderer().export_tail_disabled());
+        let out5 = tempfile::tempdir().expect("out");
+        let err = run(&strict, &shot.photo(), sixteen(out5.path())).expect_err("refused");
+        assert_eq!(err.kind(), "gpu", "{err}");
+        assert!(err.to_string().contains("earlier error"), "{err}");
+        assert!(names_in(out4.path()).is_empty() && names_in(out5.path()).is_empty());
+    }
+
+    /// The photo's graph forgets everything cached for a photo whose fingerprint changed (a second
+    /// session, a file replaced), the raw words on the device included. The same pixels under another
+    /// fingerprint are how a test takes the words away from an export between two of its tiles
+    /// without touching the export itself (`Renderer::final_size` makes a request that adopts it and
+    /// uploads nothing).
+    fn take_the_raw_words_away(renderer: &Renderer, src: &PhotoSource) {
+        let mut other = src.clone();
+        other.fingerprint ^= 1;
+        let cancel = CancelToken::new();
+        renderer
+            .final_size(&other, &cancel)
+            .expect("a request for the same photo under another fingerprint");
+        // And back under its own: the graph now holds nothing, and is for this photo again, so the
+        // export's next tile uploads the words once and keeps them.
+        renderer.final_size(src, &cancel).expect("the photo again");
+    }
+
+    /// The guard of `Job::raw_route`: tiles of an export have run the raw front on the device, and
+    /// then the photo's words are gone and cannot be put back (`upload@1`: no room). The rest of the
+    /// file must not be made behind the CPU's front, nor on a device that has just failed to hold the
+    /// photo: the export starts again, wholly on the CPU, and says why. Without the guard the tiles
+    /// that follow run R6..R8 on the device and the file is neither the device's nor the CPU's.
+    #[test]
+    fn an_export_whose_raw_words_cannot_be_uploaded_again_is_made_again_on_the_cpu() {
+        let Some(gpu) = gpu() else { return };
+        drop(gpu);
+        let shot = Shot::new();
+        let src = shot.d.source();
+        let cpu = renderer(None, GpuStages::NONE, false);
+        let want = dng_image(&cpu, &src, FullTarget::DisplayLinear(OutputTarget::Srgb));
+        let stages = GpuStages::RAW_CHAIN.union(GpuStages::RAW_FRONT);
+        for (name, fail) in [("the upload fails", true), ("the upload works", false)] {
+            let own = fresh_device();
+            let dev = renderer(Some(Arc::clone(&own)), stages, false);
+            let baseline = pool_in_use(&own);
+            let tiles = Arc::new(AtomicUsize::new(0));
+            let progress: Arc<dyn Fn(f32) + Send + Sync> = {
+                let (tiles, own, dev, src) = (
+                    Arc::clone(&tiles),
+                    Arc::clone(&own),
+                    dev.clone(),
+                    src.clone(),
+                );
+                Arc::new(move |_| {
+                    // After the third of the twelve tiles (they run in raster order), on the render's
+                    // own thread: nothing can be between this report and the next tile.
+                    if tiles.fetch_add(1, Ordering::SeqCst) + 1 == 3 {
+                        take_the_raw_words_away(&dev, &src);
+                        if fail {
+                            own.set_fault(Some(GpuFault::FailUpload(1)));
+                        }
+                    }
+                })
+            };
+            let got = dev
+                .spawn_full_reporting(
+                    src.clone(),
+                    FullRequest {
+                        target: FullTarget::DisplayLinear(OutputTarget::Srgb),
+                    },
+                    progress,
+                )
+                .wait()
+                .expect("the job resolved")
+                .expect("the render");
+            own.set_fault(None);
+            let notes = &got.report.notes;
+            let note = "The graphics card could not render this photo, so the CPU did";
+            if fail {
+                assert!(
+                    got.rgb == want.rgb,
+                    "{name}: the picture is not the CPU reference"
+                );
+                assert!(notes.iter().any(|n| n.contains(note)), "{name}: {notes:?}");
+                assert!(
+                    got.report.ranges.iter().all(|r| r.device == ComputeDevice::Cpu),
+                    "{name}: {:?}",
+                    got.report.ranges
+                );
+            } else {
+                // The control: the words are uploaded again and the export finishes on the device.
+                assert!(!notes.iter().any(|n| n.contains(note)), "{name}: {notes:?}");
+                assert!(
+                    !got.report.ranges.is_empty()
+                        && got
+                            .report
+                            .ranges
+                            .iter()
+                            .all(|r| r.device == ComputeDevice::Gpu),
+                    "{name}: {:?}",
+                    got.report.ranges
+                );
+                assert_eq!(got.report.runs.raw_uploads, 2, "the words went up twice");
+            }
+            assert!(tiles.load(Ordering::SeqCst) >= 12, "{name}");
+            assert_eq!(pool_in_use(&own), baseline, "{name}: the buffers are back");
+            assert_eq!(dev.ledger().used(), 0, "{name}");
+        }
+    }
+
+    /// The same guard through an export of the tail: the writer takes a share of the rows, the
+    /// words go, the upload fails; the whole file is the CPU export, byte for byte, with the note.
+    #[test]
+    fn a_tail_export_whose_raw_words_cannot_be_uploaded_again_is_the_cpu_export() {
+        let Some(gpu) = gpu() else { return };
+        drop(gpu);
+        // The shape of the part-way test above: thirty-two tile rows, eight bands of 1024 rows, so a
+        // writer that stalls in its progress callback has the render stopped on a full channel with
+        // tiles left.
+        let shot = Shot::sized(96, 8192);
+        apply_variant(&shot, 100.0, false);
+        let src = shot.d.source();
+        let home = tempfile::tempdir().expect("home");
+        let sixteen = |out: &Path| {
+            let mut o = options(out, FormatKind::Png);
+            o.bit_depth = BitDepth::Sixteen;
+            o
+        };
+        let cpu_bytes = {
+            let ctx = context(home.path(), renderer(None, GpuStages::NONE, false));
+            let out = tempfile::tempdir().expect("out");
+            read(&export(&ctx, &shot.photo(), sixteen(out.path())).path)
+        };
+        let own = fresh_device();
+        let ctx = context(
+            home.path(),
+            renderer(Some(Arc::clone(&own)), GpuStages::ALL, false),
+        );
+        let baseline = pool_in_use(&own);
+        let out = tempfile::tempdir().expect("out");
+        let seen = Mutex::new(Vec::new());
+        let taken = AtomicUsize::new(0);
+        let note = |f: f32| {
+            seen.lock().expect("lock").push(f);
+            // A slow writer: the render runs ahead until the channel is full.
+            std::thread::sleep(std::time::Duration::from_millis(15));
+            if f >= 0.2 && taken.fetch_add(1, Ordering::SeqCst) == 0 {
+                take_the_raw_words_away(ctx.renderer(), &src);
+                own.set_fault(Some(GpuFault::FailUpload(1)));
+            }
+        };
+        let r = export_photo(
+            &ctx,
+            &shot.photo(),
+            &ExportParams::new(sixteen(out.path())),
+            &ExportControl {
+                cancel: CancelToken::new(),
+                progress: Some(&note),
+            },
+        );
+        own.set_fault(None);
+        let r = r.expect("the export");
+        assert_eq!(r.device, ComputeDevice::Cpu, "{:?}", r.notes);
+        assert!(
+            r.notes.iter().any(|n| n
+                .contains("The graphics card could not render this photo, so the CPU did")),
+            "{:?}",
+            r.notes
+        );
+        assert!(
+            read(&r.path) == cpu_bytes,
+            "the fallback is not the CPU export"
+        );
+        assert_eq!(names_in(out.path()).len(), 1, "one file, no temporary");
+        let seen = seen.into_inner().expect("lock");
+        assert!(seen.windows(2).all(|w| w[0] <= w[1]), "monotone: {seen:?}");
+        assert!(taken.load(Ordering::SeqCst) > 0, "the words were taken away");
+        assert_eq!(pool_in_use(&own), baseline);
+        assert_eq!(ctx.renderer().ledger().used(), 0);
+    }
+
+    /// The DNG's colour stage runs on the tail's kernels: a shader that fails there switches the
+    /// tail off as well, and the next DNG render makes its colour stage on the CPU without trying.
+    #[test]
+    fn a_shader_that_fails_in_a_dngs_colour_stage_switches_the_tail_off_too() {
+        let Some(_) = gpu() else { return };
+        let shot = Shot::new();
+        let src = shot.d.source();
+        let cpu = renderer(None, GpuStages::NONE, false);
+        let want = dng_image(&cpu, &src, FullTarget::DngLinearAwg4);
+        let own = fresh_device();
+        let dev = renderer(Some(Arc::clone(&own)), GpuStages::EXPORT_TAIL, false);
+        own.set_fault(Some(GpuFault::Shader));
+        let first = dng_image(&dev, &src, FullTarget::DngLinearAwg4);
+        own.set_fault(None);
+        assert_eq!(first.report.device, ComputeDevice::Cpu);
+        assert!(first.rgb == want.rgb, "the fallback is the CPU render");
+        assert!(dev.export_tail_disabled());
+        let asked = own.counters().submissions;
+        let second = dng_image(&dev, &src, FullTarget::DngLinearAwg4);
+        assert_eq!(second.report.device, ComputeDevice::Cpu);
+        assert!(
+            !second.report.notes.iter().any(|n| n.contains("graphics card")),
+            "{:?}",
+            second.report.notes
+        );
+        assert!(second.rgb == want.rgb);
+        assert_eq!(own.counters().submissions, asked, "the device was not asked");
     }
 }
 

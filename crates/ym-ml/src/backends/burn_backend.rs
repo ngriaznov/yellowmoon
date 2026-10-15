@@ -13,6 +13,13 @@
 //! weights live on that one device for the lifetime of the model, so [`TileModel::run`] always runs there
 //! and ignores the [`ExecContext`]: a different device in the context would put the input on a device the
 //! weights are not on.
+//!
+//! The application's device is imported with [`import_device`]: `ym-gpu` opens the one wgpu device of the
+//! process (`ym_core::app::gpu::open_gpu`, feature `ml` of `ym-gpu` so that the device is requested the way
+//! cubecl requests one), and burn registers that device and its queue instead of acquiring another
+//! (`docs/gpu-plan.md` section 8). Register it **once** and clone the returned [`Device`]: burn does not
+//! detect a second registration of the same handles. Burn's work and `ym-gpu`'s work then share one queue
+//! and one memory budget; flush burn's work (reading a tensor does) before a `ym-gpu` job reads what burn wrote.
 
 use burn::tensor::activation::silu;
 use burn::tensor::module::conv2d;
@@ -24,6 +31,30 @@ use crate::model::{
     ExecContext, IN_CHANNELS, JddConfig, MlError, ModelId, OUT_CHANNELS, OUT_SCALE, Result,
     TileInputs, TileModel, TileOutput, TileShape,
 };
+
+/// Registers the device of the image pipeline with burn's wgpu backend and returns burn's handle to it.
+///
+/// Call it once per [`ym_gpu::device::Gpu`] and clone the result; give the clone to [`BurnJdd::with_device`].
+/// The device must come from a build of `ym-gpu` with its `ml` feature (this crate's `burn` feature turns it
+/// on), which requests the features burn's runtime needs.
+///
+/// # Errors
+///
+/// [`MlError::Backend`] when burn refuses the handles (a device that lacks something its runtime requires).
+pub fn import_device(gpu: &ym_gpu::device::Gpu) -> Result<Device> {
+    let shared = gpu.wgpu_setup();
+    let setup = burn::tensor::wgpu::WgpuSetup {
+        instance: shared.instance,
+        adapter: shared.adapter,
+        device: shared.device,
+        queue: shared.queue,
+        backend: shared.backend,
+    };
+    Device::wgpu_options()
+        .setup(setup)
+        .init()
+        .map_err(backend_err)
+}
 
 fn backend_err(e: impl std::fmt::Display) -> MlError {
     MlError::Backend {

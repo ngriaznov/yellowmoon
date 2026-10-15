@@ -180,6 +180,53 @@ pub fn delta_e_stats(a: &Rgb16, b: &Rgb16) -> Result<DeltaStats> {
     Ok(stats_of(&diffs))
 }
 
+/// How far apart two pictures are at full resolution, in codes of 16 bits (the GPU mode of `golden check` holds the
+/// share of samples above a threshold against a gate, `docs/gpu-plan.md` section 7).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+pub struct CodeStats {
+    /// Samples compared (`3 * width * height`).
+    pub samples: usize,
+    /// The threshold in codes: a sample counts when it differs by more than this.
+    pub threshold: u32,
+    /// Samples that differ by more than `threshold` codes.
+    pub over: usize,
+    /// `over / samples`.
+    pub share_over: f64,
+    /// The largest difference of any sample, in codes.
+    pub max: u32,
+}
+
+/// The difference of two pictures of the same size in codes of 16 bits.
+///
+/// # Errors
+///
+/// When the pictures have different sizes.
+pub fn code_stats(a: &Rgb16, b: &Rgb16, threshold: u32) -> Result<CodeStats> {
+    ensure!(
+        (a.width, a.height) == (b.width, b.height),
+        "the pictures differ in size: {} x {} against {} x {}",
+        a.width,
+        a.height,
+        b.width,
+        b.height
+    );
+    let mut over = 0_usize;
+    let mut max = 0_u32;
+    for (&x, &y) in a.data.iter().zip(&b.data) {
+        let d = u32::from(x.abs_diff(y));
+        over += usize::from(d > threshold);
+        max = max.max(d);
+    }
+    let samples = a.data.len();
+    Ok(CodeStats {
+        samples,
+        threshold,
+        over,
+        share_over: over as f64 / samples.max(1) as f64,
+        max,
+    })
+}
+
 /// Median, 99th percentile, mean and maximum of a non-empty list (a NaN counts as infinitely different).
 #[must_use]
 pub fn stats_of(values: &[f64]) -> DeltaStats {

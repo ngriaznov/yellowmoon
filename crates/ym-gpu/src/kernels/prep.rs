@@ -151,6 +151,8 @@ impl DeviceRaw {
                 data.len()
             )));
         }
+        // The hook of the `upload@N` fault: a photo's words that find no room on the device.
+        ctx.inject_upload_fault(2 * data.len() as u64)?;
         if let Some(q) = qstep
             && q.len() != data.len()
         {

@@ -66,7 +66,7 @@ use ym_gpu::tail::{TailRoute, colour_tile_to_host};
 use self::device::{
     Bounds, DeviceDisplay, DeviceInput, DisplayJob, PlainJob, TailWork, Upload, ViewRoute,
 };
-pub use self::export_tail::{BAND_DEPTH, FullSource, GpuBands, TailRequest};
+pub use self::export_tail::{BAND_DEPTH, GpuBands, TailRequest};
 use super::color::{GradePlan, PhotoSource};
 use super::geometry::{Affine, Grid, oriented_to_sensor, sensor_to_oriented};
 use super::graph::{ComputeDevice, Job, RenderReport, Renderer};
@@ -2310,6 +2310,7 @@ impl Renderer {
                                 Err(e) => {
                                     let reason = e.to_string();
                                     tracing::warn!(error = %reason, "the device failed on a tile; the CPU takes over");
+                                    self.note_export_tail_error(&e);
                                     if strict {
                                         return Err(RenderError::Gpu(reason));
                                     }

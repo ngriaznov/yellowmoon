@@ -1530,4 +1530,38 @@ mod faults {
             .collect();
         assert_eq!(results, [false, false, true, false]);
     }
+
+    #[test]
+    fn an_injected_upload_fault_fails_the_nth_upload_of_a_photos_raw_words_only() {
+        use ym_gpu::cpu::Cfa;
+        use ym_gpu::kernels::prep::DeviceRaw;
+        let Some(g) = armed(GpuFault::FailUpload(2)) else {
+            return;
+        };
+        let words = vec![1234u16; 16 * 12];
+        let results: Vec<Result<(), String>> = (0..4)
+            .map(|_| {
+                let words = words.clone();
+                g.run(JobSpec::new(Priority::Export), move |ctx, _| {
+                    Ok(
+                        DeviceRaw::upload(ctx, "raw", 16, 12, Cfa::RGGB, &words, None)
+                            .map(|_| ())
+                            .map_err(|e| format!("{e:?}")),
+                    )
+                })
+                .expect("job")
+            })
+            .collect();
+        assert!(results[0].is_ok() && results[2].is_ok() && results[3].is_ok());
+        let err = results[1].as_ref().expect_err("the second upload");
+        assert!(err.starts_with("OutOfBudget"), "{err}");
+        assert!(!g.is_lost(), "an upload that finds no room is not a lost device");
+        // Allocations and tiles are not uploads: they do not count.
+        g.set_fault(Some(GpuFault::FailUpload(1)));
+        g.run(JobSpec::new(Priority::Export), |ctx, _| {
+            ctx.pool().acquire("x", 1024, storage())?;
+            ctx.inject_tile_fault()
+        })
+        .expect("neither an allocation nor a tile is an upload");
+    }
 }

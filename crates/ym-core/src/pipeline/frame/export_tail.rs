@@ -83,14 +83,6 @@ impl TailRequest {
     }
 }
 
-/// The picture of a raster export, from the CPU or from the device.
-pub enum FullSource<'a> {
-    /// A host frame of display-linear f32: the writer resizes, sharpens and encodes it.
-    Cpu(FullImage),
-    /// Encoded bands made on the device: the writer encodes them.
-    Gpu(GpuBands<'a>),
-}
-
 /// What the render tells the writer before the first band.
 struct Start {
     rendered: (usize, usize),
@@ -340,12 +332,30 @@ impl Drop for GpuBands<'_> {
 
 impl Renderer {
     /// Whether an export would run its tail on the device now: a device is attached, it is not
-    /// lost, and [`GpuStages::EXPORT_TAIL`] is on.
+    /// lost, [`GpuStages::EXPORT_TAIL`] is on, and no shader of the tail has failed on this machine
+    /// ([`Renderer::export_tail_disabled`]: the tail is then off for the rest of the process).
     #[must_use]
     pub fn export_tail_enabled(&self) -> bool {
         let o = self.options();
         o.gpu_stages.contains(GpuStages::EXPORT_TAIL)
             && o.gpu.as_ref().is_some_and(|g| !g.is_lost())
+            && !self.export_tail_disabled()
+    }
+
+    /// The reason an export may not go on without the tail, when the policy is strict and an earlier
+    /// shader failure switched the tail off: a strict policy never turns that into a quiet CPU
+    /// export of the next photo (as for the raw chain, `Job::raw_device`). `None` otherwise.
+    #[must_use]
+    pub fn export_tail_refused(&self) -> Option<String> {
+        let o = self.options();
+        (o.gpu_strict
+            && o.gpu.is_some()
+            && o.gpu_stages.contains(GpuStages::EXPORT_TAIL)
+            && self.export_tail_disabled())
+        .then(|| {
+            "an earlier error ended the use of the graphics card for exports, and the strict setting does not let the CPU take over"
+                .to_owned()
+        })
     }
 
     /// Queues the render of the written picture of a raster export on the export worker and waits
@@ -517,7 +527,7 @@ impl Renderer {
                 format: request.format(),
             },
         )
-        .map_err(|e| device_error(&e))?;
+        .map_err(|e| self.tail_error(&e))?;
         send(
             tx,
             Msg::Start(Start {
@@ -547,32 +557,36 @@ impl Renderer {
                         Err(e) => return Err(e),
                     };
                     tail.add_tile(Arc::new(region), (x0, y0), (ox, oy), tw, th)
-                        .map_err(|e| device_error(&e))?;
+                        .map_err(|e| self.tail_error(&e))?;
                 }
                 ox += tw;
             }
-            let bands = tail.advance(oy + th).map_err(|e| device_error(&e))?;
+            let bands = tail.advance(oy + th).map_err(|e| self.tail_error(&e))?;
             for band in bands {
                 send(tx, Msg::Band(band), cancel)?;
             }
             oy += th;
         }
-        for band in tail.finish().map_err(|e| device_error(&e))? {
+        for band in tail.finish().map_err(|e| self.tail_error(&e))? {
             send(tx, Msg::Band(band), cancel)?;
         }
         Ok(job.finish(1, ComputeDevice::Gpu, request.target))
     }
 }
 
-/// A device error of the tail as the render's: a cancel stays a cancel; anything else is
-/// [`RenderError::Gpu`], which the export answers with the CPU (or, for a strict policy, with the
-/// failure of the photo).
-fn device_error(e: &GpuError) -> RenderError {
-    match e {
-        GpuError::Cancelled => RenderError::Cancelled,
-        other => {
-            tracing::warn!(error = %other, "the device failed in the export tail");
-            RenderError::Gpu(other.to_string())
+impl Renderer {
+    /// A device error of the tail as the render's: a cancel stays a cancel; anything else is
+    /// [`RenderError::Gpu`], which the export answers with the CPU (or, for a strict policy, with the
+    /// failure of the photo). A shader that does not compile also switches the tail off for the
+    /// process ([`Renderer::note_export_tail_error`]).
+    pub(super) fn tail_error(&self, e: &GpuError) -> RenderError {
+        match e {
+            GpuError::Cancelled => RenderError::Cancelled,
+            other => {
+                tracing::warn!(error = %other, "the device failed in the export tail");
+                self.note_export_tail_error(other);
+                RenderError::Gpu(other.to_string())
+            }
         }
     }
 }
@@ -609,6 +623,17 @@ pub(super) fn dng_colour_gpu(job: &mut Job<'_>) -> Result<Option<Arc<Gpu>>, Rend
     let Some(gpu) = opts.gpu.clone() else {
         return Ok(None);
     };
+    if job.r.export_tail_disabled() {
+        // A shader of the tail failed on this machine earlier: the CPU makes the colour stage, and
+        // a strict policy fails the render instead of doing it quietly.
+        if opts.gpu_strict {
+            return Err(RenderError::Gpu(
+                "an earlier error ended the use of the graphics card for exports, and the strict setting does not let the CPU take over"
+                    .to_owned(),
+            ));
+        }
+        return Ok(None);
+    }
     if gpu.is_lost() {
         let why = gpu
             .lost_reason()

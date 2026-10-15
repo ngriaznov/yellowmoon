@@ -4,7 +4,15 @@
 # log2/exp2/pow accuracy), parity of every kernel with its CPU reference, tile = whole frame, run-to-run determinism,
 # and that the app (with the native Metal viewport in src-tauri/src/native.rs) builds and its tests pass on macOS.
 # They do not measure speed (shared VM, paravirtual GPU) or how the viewport looks on screen: those stay M0-H4 on a
-# physical Mac. Runs on pushes that touch Rust code, on pull requests, and by hand.
+# physical Mac (tools/dev/mac-gpu-check.sh). Runs on every push except checkpoints, on pull requests, and by hand.
+#
+# G-09 added to the job below: the large tests that are #[ignore]d by default (a 50 MP and a 70 MP frame through the raw front,
+# the reduced path, the chain's corner tiles, the export tail and the spike), the encode-split bench (print only), the GPU
+# golden subset (`golden check --device gpu`, the device against the CPU of the same machine), one of the owner's photos
+# through the same comparison, and the determinism and fault suites (tests/gpu_determinism.rs and tests/gpu_faults.rs run
+# with every other ym-core test). The Rust cache: one key for both runners (both are arm64), saved also when a test fails,
+# and only from the branches that are worth a cache (a pull request must not push the macOS caches out of the repository's
+# 10 GB; a failing run used to save nothing, so the next run found no cache either).
 name: Mac GPU (Metal)
 
 on:
@@ -54,7 +62,11 @@ jobs:
         run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
         with:
-          key: metal-${{ matrix.runner }}
+          # One cache for both runners: macos-14 and macos-15 are both arm64 and the same rustc, and two copies of a
+          # 3 GB release tree cost the repository's cache budget twice.
+          shared-key: metal-arm64
+          cache-on-failure: true
+          save-if: ${{ github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/claude/') }}
       - name: The machine's GPU as macOS reports it
         run: system_profiler SPDisplaysDataType SPHardwareDataType | tee system-${{ matrix.runner }}.txt
       - name: The adapter as ym sees it (ym doctor)
@@ -69,7 +81,7 @@ jobs:
         env:
           YM_REQUIRE_GPU: "1"
         run: cargo test -p ym-gpu --release --features fault-injection,ml --lib --test gpu_device --test gpu_chain 2>&1 | tee ym-gpu-features-${{ matrix.runner }}.log
-      - name: The renderer on Metal (ym-core, every test; the GPU ones against the CPU reference)
+      - name: The renderer on Metal (ym-core, every test, determinism and faults included; the GPU ones against the CPU reference)
         if: ${{ !cancelled() }}
         env:
           YM_REQUIRE_GPU: "1"
@@ -80,6 +92,78 @@ jobs:
           YM_REQUIRE_GPU: "1"
           YELLOWMOON_GPU: "on"
         run: cargo test -p ym-cli --release --test parity_gpu 2>&1 | tee ym-cli-parity-gpu-${{ matrix.runner }}.log
+      # The tests that are #[ignore]d for their size: a 70 MP raw frame through two slabs, 50 MP frames through the reduced path
+      # (default slabs, and k = 2 at the design binding), the chain's two 50 MP corner tiles, the export tail's 50 MP picture
+      # (two runs, the same bytes), the 50 MP export through the app's path (no host frame, DNG apart) and the spike's 50 MP
+      # frame. They are named by what they test, so the other ignored tests (development aids, child-process probes) stay out.
+      # One thread: each holds a few hundred MB of device memory and the runner has 7 GB.
+      - name: The 50 MP and 70 MP tests (ignored by default) on Metal
+        if: ${{ !cancelled() }}
+        env:
+          YM_REQUIRE_GPU: "1"
+        run: |
+          cargo test -p ym-gpu --release --test gpu_front --test gpu_reduced --test gpu_chain --test gpu_tail --test gpu_spike -- \
+            --ignored --test-threads=1 --nocapture 70_mp 50_mp fifty_megapixels gpu_spike_50mp 2>&1 | tee ym-gpu-large-${{ matrix.runner }}.log
+          cargo test -p ym-core --release --features fault-injection --test gpu_export -- \
+            --ignored --test-threads=1 --nocapture fifty_megapixels 2>&1 | tee ym-core-large-${{ matrix.runner }}.log
+      # The encode split of docs/09 on this machine's CPU encoders (C13, resize, sharpening, DCT and Huffman, LZW, Deflate): print only.
+      - name: Encode split (print only)
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        run: cargo test -p ym-export --release --test encode_split -- --ignored --nocapture 2>&1 | tee encode-split-${{ matrix.runner }}.log
+      # The GPU golden subset (docs/13 "GPU golden"): the synthetic files, each rendered by `ym render --require-gpu` and held
+      # against a CPU render of the same run on the same machine (a Mac's CPU path is not the Linux one expected.json describes,
+      # so the stored pictures do not apply here: `--reference render`). A render that fell back to the CPU fails.
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - name: Synthetic ARW set (the generator and its requirements)
+        if: ${{ !cancelled() }}
+        run: |
+          pip install -r training/requirements.txt -r training/synth/requirements.txt
+          tools/fetch/spectral.sh
+          tools/fetch/synthetic.sh --release
+      - name: Golden check on Metal (the GPU subset against the CPU of this machine)
+        if: ${{ !cancelled() }}
+        run: |
+          cargo build --release -p ym-cli
+          cargo build --release -p golden
+          target/release/golden check --device gpu --reference render --subset tools/golden/gpu-subset.txt \
+            --ym target/release/ym --require-all --report golden-gpu-${{ matrix.runner }}.json 2>&1 | tee golden-gpu-${{ matrix.runner }}.txt
+      # One of the owner's photos (Mykyta allows them in CI, NOTICE item 10): the readme-photos branch, raw files in Git LFS,
+      # cached by the checksums of tools/fetch/owner-photos.sha256. The cache holds the files and not the clone's .git
+      # (persist-credentials is off, so no token can end up in a cache).
+      - name: Owner photos (readme-photos branch, Git LFS)
+        if: ${{ !cancelled() }}
+        id: owner
+        uses: actions/cache@v4
+        with:
+          path: |
+            testdata/readme-photos/src
+            !testdata/readme-photos/src/.git
+          key: owner-photos-${{ hashFiles('tools/fetch/owner-photos.sha256') }}
+      - name: Fetch the owner photos (cache miss)
+        if: ${{ !cancelled() && steps.owner.outputs.cache-hit != 'true' }}
+        uses: actions/checkout@v4
+        with:
+          ref: readme-photos
+          lfs: true
+          path: testdata/readme-photos/src
+          persist-credentials: false
+      - name: Verify the owner photos
+        if: ${{ !cancelled() }}
+        run: tools/fetch/owner-photos.sh --verify
+      - name: One real photo, the device against the CPU (golden metric)
+        if: ${{ !cancelled() }}
+        run: |
+          target/release/golden device-check --ym target/release/ym --long-edge 1500 \
+            --report device-check-${{ matrix.runner }}.json testdata/readme-photos/src/A1M01749.ARW 2>&1 | tee device-check-${{ matrix.runner }}.txt
+      # The report of docs/10 `ym doctor --bench` on the same photo, for the record (a shared VM: the numbers are not a speed).
+      - name: ym doctor --bench on the device (print only)
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        env:
+          YELLOWMOON_GPU: require
+        run: target/release/ym doctor --bench testdata/readme-photos/src/A1M01749.ARW --repeat 3 2>&1 | tee bench-${{ matrix.runner }}.txt
       - name: Keep the logs
         if: always()
         uses: actions/upload-artifact@v4
@@ -92,6 +176,14 @@ jobs:
             ym-core-${{ matrix.runner }}.log
             ym-gpu-features-${{ matrix.runner }}.log
             ym-cli-parity-gpu-${{ matrix.runner }}.log
+            ym-gpu-large-${{ matrix.runner }}.log
+            ym-core-large-${{ matrix.runner }}.log
+            encode-split-${{ matrix.runner }}.log
+            golden-gpu-${{ matrix.runner }}.json
+            golden-gpu-${{ matrix.runner }}.txt
+            device-check-${{ matrix.runner }}.json
+            device-check-${{ matrix.runner }}.txt
+            bench-${{ matrix.runner }}.txt
           if-no-files-found: warn
 
   app:
@@ -112,7 +204,9 @@ jobs:
         run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
         with:
-          key: app-macos
+          shared-key: app-macos
+          cache-on-failure: true
+          save-if: ${{ github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/claude/') }}
       - run: tools/dev/prepare-sidecar.sh   # tauri-build needs the sidecar to exist (docs/01)
       - name: Clippy for the macOS-only code (native Metal viewport)
         run: cargo clippy -p yellowmoon-app --all-targets -- -D warnings

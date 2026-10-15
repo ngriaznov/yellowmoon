@@ -58,16 +58,28 @@ const INJECT_BOUND: f32 = 1.2e-7;
 /// The denoise to injection sequence of a tile, software adapter: twice the first measured value
 /// (6.6e-7, the `exp` of the bilateral filter).
 const SEQUENCE_BOUND: f32 = 1.4e-6;
-/// Hardware adapters (Metal: contracted and re-associated sums, the driver's division): the plan's
-/// starting value for neighbourhood stages (`docs/gpu-plan.md` section 7); the first Apple run prints
-/// the measured numbers (`ci_note`) and this is lowered to twice the worst of them.
+/// Hardware adapters, for the tests that print what they measured on Metal (macos-14 and macos-15, run 38694506557,
+/// G-09): the guided filter and the detail injection gave the CPU's bits there (worst 0), so the hardware bound is the
+/// software one, two ulp and one ulp at white. Metal contracts and re-associates sums and has its own division, which
+/// the kernels hide behind exact sums.
+///
+/// For the tests whose Metal value was not printed yet (the bright flat scenes, the tiles and the denoise-to-injection
+/// sequence now print it): the plan's starting value for neighbourhood stages (`docs/gpu-plan.md` section 7), to be
+/// lowered to twice what the next Metal run prints.
 const HW_BOUND: f32 = 1e-5;
 
 fn f32_device() -> Option<&'static TestGpu> {
     gpus().iter().find(|d| d.mode == StorageMode::F32)
 }
 
+/// The bound of a test whose Metal value was printed: the software bound on both kinds of adapter.
 fn bound(dev: &TestGpu, software: f32) -> f32 {
+    let _ = dev;
+    software
+}
+
+/// The bound of a test that has not printed a Metal value yet.
+fn bound_unmeasured(dev: &TestGpu, software: f32) -> f32 {
     if dev.gpu.info().is_software {
         software
     } else {
@@ -201,6 +213,7 @@ fn guided_on_bright_flat_scenes_and_without_regularisation() {
     // it, where f32 sums and f64 sums rounded per plane part ways most (plain f32 sums gave 6.3e-6 and,
     // with sigma 0, 2.3e-5); the exact window sums of the kernel give the CPU's bits.
     let Some(dev) = f32_device() else { return };
+    let mut worst = 0.0f32;
     for (i, (level, sigma, color, sig_in)) in [
         (0.9f32, 0.003f32, 50.0f32, 0.003f32),
         (0.9, 0.003, 100.0, 0.003),
@@ -227,8 +240,16 @@ fn guided_on_bright_flat_scenes_and_without_regularisation() {
             "[G-06] guided bright flat {i}: level {level} noise {sigma} C {color} sigma {sig_in}: max {:.3e} mean {:.2e}",
             e.max, e.mean
         );
-        assert!(e.max <= bound(dev, GUIDED_BOUND), "{:e}", e.max);
+        worst = worst.max(e.max);
+        assert!(e.max <= bound_unmeasured(dev, GUIDED_BOUND), "{:e}", e.max);
     }
+    g06::ci_note(
+        "guided bright flat",
+        &format!(
+            "guided filter, bright flat scenes on {}: worst {worst:.3e}",
+            dev.gpu.info().name
+        ),
+    );
 }
 
 #[test]
@@ -299,6 +320,7 @@ fn guided_tiles_equal_the_whole_frame_bit_for_bit() {
     let (w, h) = (203usize, 157usize);
     let img = chroma_noisy_scene(w, h, 61, 0.03);
     let plane = sigma_plane(w, h, 11);
+    let mut worst = 0.0f32;
     for color in [25.0f32, 100.0] {
         let halo = 2 * radius_px(color);
         let whole = assert_tiles_equal_whole("guided", w, h, 3, &[48, 100], |core| {
@@ -311,8 +333,16 @@ fn guided_tiles_equal_the_whole_frame_bit_for_bit() {
             "[G-06] guided C {color} 203x157 tiles: against the CPU max {:.3e}",
             e.max
         );
-        assert!(e.max <= bound(dev, GUIDED_BOUND), "{:e}", e.max);
+        worst = worst.max(e.max);
+        assert!(e.max <= bound_unmeasured(dev, GUIDED_BOUND), "{:e}", e.max);
     }
+    g06::ci_note(
+        "guided tiles",
+        &format!(
+            "guided filter, 203x157 tiles on {}: against the CPU worst {worst:.3e}",
+            dev.gpu.info().name
+        ),
+    );
 }
 
 #[test]
@@ -487,7 +517,15 @@ fn the_denoise_to_detail_sequence_of_a_tile_matches_the_cpu_stage_sequence() {
         "[G-06] R6 denoise -> R7 sequence on {r2:?}: max {:.3e} mean {:.2e}",
         e.max, e.mean
     );
-    assert!(e.max <= bound(dev, SEQUENCE_BOUND), "{:e}", e.max);
+    g06::ci_note(
+        "denoise to injection",
+        &format!(
+            "R6 denoise to R7 sequence on {}: max {:.3e}",
+            dev.gpu.info().name,
+            e.max
+        ),
+    );
+    assert!(e.max <= bound_unmeasured(dev, SEQUENCE_BOUND), "{:e}", e.max);
     assert_eq!(submissions, 1);
     assert_eq!(got.len(), 3 * r2.area());
     // The luma is the CPU's too: the stage changed the picture (a pass-through would be far off).

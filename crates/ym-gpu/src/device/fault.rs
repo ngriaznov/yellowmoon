@@ -3,7 +3,8 @@
 //!
 //! Everything that can fail is a *hook* in the code that runs in a normal build too: an allocation
 //! ([`FaultState::on_allocation`]), a pipeline compile ([`FaultState::on_pipeline`]), the start of a
-//! job ([`FaultState::on_job`]) and a tile of a chain ([`FaultState::on_tile`]). In a normal build
+//! job ([`FaultState::on_job`]), a tile of a chain ([`FaultState::on_tile`]) and the upload of a
+//! photo's raw words ([`FaultState::on_upload`]). In a normal build
 //! the hooks are empty functions the optimiser removes. With the cargo feature `fault-injection` a
 //! test arms one fault ([`GpuFault`], [`crate::device::Gpu::set_fault`], or the environment
 //! variable `YM_GPU_FAULT` read when the device opens) and the hooks start failing as described on
@@ -17,7 +18,7 @@ use std::sync::Mutex;
 
 /// A fault a test can arm (feature `fault-injection`). `OutOfBudget`, `Shader` and `Lost` stay
 /// armed until [`crate::device::Gpu::set_fault`] clears them, so a "retry once, then the CPU" rule
-/// sees the failure twice; `CancelAtJob` and `FailTile` fire once, on the hit they name.
+/// sees the failure twice; `CancelAtJob`, `FailTile` and `FailUpload` fire once, on the hit they name.
 #[cfg(feature = "fault-injection")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GpuFault {
@@ -34,13 +35,19 @@ pub enum GpuFault {
     /// [`crate::device::GpuContext::inject_tile_fault`]) fails with [`GpuError::Readback`]
     /// (`tile@n`).
     FailTile(u64),
+    /// The `n`th upload of a photo's raw words after arming (counting from 1, as counted by
+    /// [`crate::device::GpuContext::inject_upload_fault`]) finds no room and fails with
+    /// [`GpuError::OutOfBudget`] (`upload@n`). The words are uploaded once per photo, so this is
+    /// how a test makes a *re*-upload fail (the photo's words were let go in the middle of an
+    /// export, a device that has filled up with other photos' since).
+    FailUpload(u64),
 }
 
 #[cfg(feature = "fault-injection")]
 impl std::str::FromStr for GpuFault {
     type Err = String;
 
-    /// Parses `oom`, `shader`, `lost`, `cancel@N` or `tile@N` (N from 1).
+    /// Parses `oom`, `shader`, `lost`, `cancel@N`, `tile@N` or `upload@N` (N from 1).
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let s = s.trim();
         let at = |rest: &str| {
@@ -58,9 +65,11 @@ impl std::str::FromStr for GpuFault {
                     Ok(GpuFault::CancelAtJob(at(n)?))
                 } else if let Some(n) = s.strip_prefix("tile@") {
                     Ok(GpuFault::FailTile(at(n)?))
+                } else if let Some(n) = s.strip_prefix("upload@") {
+                    Ok(GpuFault::FailUpload(at(n)?))
                 } else {
                     Err(format!(
-                        "`{s}` is not a fault: use oom, shader, lost, cancel@N or tile@N"
+                        "`{s}` is not a fault: use oom, shader, lost, cancel@N, tile@N or upload@N"
                     ))
                 }
             }
@@ -175,6 +184,33 @@ impl FaultState {
         }
     }
 
+    /// Called once per upload of a photo's raw words; `FailUpload(n)` fails the `n`th with an
+    /// [`GpuError::OutOfBudget`] for the `requested` bytes.
+    #[inline]
+    #[allow(unused_variables)]
+    pub(crate) fn on_upload(
+        &self,
+        requested: u64,
+        allocated: u64,
+        budget: u64,
+    ) -> Result<(), GpuError> {
+        #[cfg(feature = "fault-injection")]
+        if let Some(Some(_)) = self.hit(
+            |f| matches!(f, GpuFault::FailUpload(_)),
+            |f, n| match f {
+                GpuFault::FailUpload(at) if at == n => Some(n),
+                _ => None,
+            },
+        ) {
+            return Err(GpuError::OutOfBudget {
+                requested,
+                allocated,
+                budget,
+            });
+        }
+        Ok(())
+    }
+
     /// Called once per tile by the chains; `FailTile(n)` fails the `n`th.
     #[inline]
     pub(crate) fn on_tile(&self) -> Result<(), GpuError> {
@@ -203,8 +239,9 @@ mod tests {
         assert_eq!(" lost ".parse::<GpuFault>(), Ok(GpuFault::Lost));
         assert_eq!("cancel@3".parse::<GpuFault>(), Ok(GpuFault::CancelAtJob(3)));
         assert_eq!("tile@12".parse::<GpuFault>(), Ok(GpuFault::FailTile(12)));
+        assert_eq!("upload@2".parse::<GpuFault>(), Ok(GpuFault::FailUpload(2)));
         for bad in [
-            "", "oom@1", "cancel@0", "cancel@x", "tile@", "tile@-1", "boom",
+            "", "oom@1", "cancel@0", "cancel@x", "tile@", "tile@-1", "upload@0", "upload", "boom",
         ] {
             assert!(bad.parse::<GpuFault>().is_err(), "{bad:?}");
         }
@@ -222,6 +259,17 @@ mod tests {
         assert!(f.on_tile().is_ok());
         assert!(f.on_tile().is_err(), "the second tile");
         assert!(f.on_tile().is_ok(), "once");
+        f.arm(Some(GpuFault::FailUpload(2)));
+        assert!(f.on_upload(8, 0, 16).is_ok(), "the first upload");
+        assert!(
+            matches!(
+                f.on_upload(8, 0, 16),
+                Err(GpuError::OutOfBudget { requested: 8, .. })
+            ),
+            "the second upload"
+        );
+        assert!(f.on_upload(8, 0, 16).is_ok(), "once");
+        assert!(f.on_tile().is_ok() && f.on_allocation(1, 0, 10).is_ok());
         f.arm(None);
         assert!(f.on_allocation(1, 0, 10).is_ok());
     }

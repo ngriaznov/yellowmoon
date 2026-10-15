@@ -49,6 +49,8 @@ struct BinU {
     flags: [u32; 4],
     /// The green count and the noise factor of the binning.
     f: [f32; 4],
+    /// The destination image's first output row (a band of the output, or 0 for the whole output).
+    band: [u32; 4],
     /// The four weight arrays, three vec4s each.
     wts: [[f32; 4]; 12],
     vig: VigU,
@@ -183,6 +185,7 @@ fn base_uniform(p: &BinParams, noise_factor: f32) -> Result<BinU, GpuError> {
             (p.k / 2).max(1) as u32,
         ],
         f: [(p.k * p.k / 2) as f32, noise_factor, 0.0, 0.0],
+        band: [0; 4],
         wts,
         vig: VigU::new(p.vignette.as_ref(), p.frame_w, p.frame_h),
     })
@@ -197,20 +200,23 @@ pub fn max_binding_bytes(frame_w: usize, rows: usize) -> u64 {
 
 /// Records the binning of the output rows `rows` (`0..out_h`) from `slab`, a one-plane image of the
 /// full frame width that starts at frame row `slab.place.y0` and holds the rows [`slab_rows`] gives,
-/// into the three-plane `out` (`out_w x out_h`). Red and blue are multiplied by the vignetting gain
-/// at the binned pixel when the parameters have a profile; so is green.
+/// into the three-plane `out`, which holds the output rows from `out_row0` on (`out_row0 = 0` and
+/// `out.height == out_h` for the whole output; a band of it otherwise, so that no binding has to hold
+/// a picture of 12 Mpixel). Red and blue are multiplied by the vignetting gain at the binned pixel
+/// when the parameters have a profile; so is green.
 ///
 /// # Errors
 ///
 /// [`GpuError::InvalidInput`] for a slab that is not one plane of the frame's width, does not hold the
-/// rows the output rows need, an output of the wrong size, or parameters the kernel refuses; shader
-/// errors.
+/// rows the output rows need, an output of the wrong width or one that does not hold `rows`, or
+/// parameters the kernel refuses; shader errors.
 pub fn encode_bin(
     passes: &mut PassList<'_>,
     slab: &GpuImage,
     params: &BinParams,
     rows: Range<usize>,
     out: &GpuImage,
+    out_row0: usize,
 ) -> Result<(), GpuError> {
     let mut u = base_uniform(params, 0.0)?;
     if slab.planes != 1 || slab.width != params.frame_w {
@@ -230,9 +236,12 @@ pub fn encode_bin(
             "bin: the slab holds frame rows {have:?}, the output rows {rows:?} need {need:?}"
         )));
     }
-    if (out.width, out.height, out.planes) != (params.out_w(), params.out_h(), 3) {
+    if (out.width, out.planes) != (params.out_w(), 3)
+        || out_row0 > rows.start
+        || rows.end > out_row0 + out.height
+    {
         return Err(GpuError::InvalidInput(format!(
-            "bin: the output is {} x {} x {}, expected {} x {} x 3",
+            "bin: the output of {} x {} x {} planes from row {out_row0} does not hold rows {rows:?} of {} x {} x 3",
             out.width,
             out.height,
             out.planes,
@@ -253,7 +262,9 @@ pub fn encode_bin(
         out.stride as u32,
         out.plane_len() as u32,
     ];
-    // The output rows are written at their own row index: the dispatch starts at `rows.start`.
+    u.band[0] = out_row0 as u32;
+    // The output rows are written at their own row index less the destination's first row: the
+    // dispatch starts at `rows.start`.
     let ub = passes.uniform("bin uniform", &u)?;
     passes.dispatch(
         KernelId::Bin,
@@ -363,7 +374,7 @@ pub fn bin_mosaic(
             Placement::whole(m.width, m.height).offset(0, need.start),
         )?;
         let mut passes = PassList::new(ctx, "bin");
-        encode_bin(&mut passes, &slab, &params, rows.clone(), &out)?;
+        encode_bin(&mut passes, &slab, &params, rows.clone(), &out, 0)?;
         passes.submit()?.finish()?;
         r = rows.end;
     }
@@ -418,6 +429,7 @@ mod tests {
                 ("nw", offset_of!(BinU, nw)),
                 ("flags", offset_of!(BinU, flags)),
                 ("f", offset_of!(BinU, f)),
+                ("band", offset_of!(BinU, band)),
                 ("wts", offset_of!(BinU, wts)),
                 ("vig", offset_of!(BinU, vig)),
             ];

@@ -40,6 +40,20 @@
 
 mod common;
 
+/// Prints like `println!` and writes the same line to the process's own stderr as well (the harness captures `println!` and
+/// `eprintln!`, not this), so that the numbers of a passing test reach the CI log of the Apple runners, from which a
+/// hardware column is made (G-09). No annotation: the budget of those is spent by the older notes.
+macro_rules! note {
+    ($($arg:tt)*) => {{
+        let line = format!($($arg)*);
+        println!("{line}");
+        let _ = std::io::Write::write_fmt(
+            &mut std::io::stderr(),
+            format_args!("[G-09 {}] {line}\n", file!().rsplit('/').next().unwrap_or("")),
+        );
+    }};
+}
+
 use std::path::Path;
 
 use common::{Rng, TestGpu, gpus};
@@ -282,7 +296,7 @@ fn every_vector_matches_expected_float_on_the_gpu() {
         );
         worst = worst.max(d);
     }
-    println!("vectors, worst |gpu - expected_float|: {worst:.3e}");
+    note!("vectors, worst |gpu - expected_float|: {worst:.3e}");
 }
 
 #[test]
@@ -370,7 +384,7 @@ fn random_frames_match_in_all_four_phases_and_guide_details() {
             }
         }
     }
-    println!("random frames, worst |gpu - cpu|: {worst:.3e} (bound {FRAME_BOUND:.0e})");
+    note!("random frames, worst |gpu - cpu|: {worst:.3e} (bound {FRAME_BOUND:.0e})");
 }
 
 #[test]
@@ -412,7 +426,7 @@ fn hostile_frames_with_negatives_nan_infinity_and_large_values_match() {
             worst = worst.max(rel);
         }
     }
-    println!("hostile frames, worst relative error: {worst:.3e} (bound {WIDE_BOUND:.0e})");
+    note!("hostile frames, worst relative error: {worst:.3e} (bound {WIDE_BOUND:.0e})");
 }
 
 #[test]
@@ -451,7 +465,7 @@ fn huge_values_in_strongly_directional_frames_stay_finite_and_match() {
             worst = worst.max(rel);
         }
     }
-    println!("huge values, worst relative error: {worst:.3e} (bound {WIDE_BOUND:.0e})");
+    note!("huge values, worst relative error: {worst:.3e} (bound {WIDE_BOUND:.0e})");
 }
 
 #[test]
@@ -472,7 +486,7 @@ fn tiny_buffers_wrap_the_mirror_like_the_cpu() {
             }
         }
     }
-    println!("sizes 1x1 to 7x7, worst |gpu - cpu|: {worst:.3e}");
+    note!("sizes 1x1 to 7x7, worst |gpu - cpu|: {worst:.3e}");
 }
 
 #[test]
@@ -500,7 +514,7 @@ fn cropping_by_one_row_or_column_changes_the_phase_and_keeps_the_interior() {
             }
         }
     }
-    println!("crops by (1,0), (0,1), (1,1): interior differs by {worst:.3e}");
+    note!("crops by (1,0), (0,1), (1,1): interior differs by {worst:.3e}");
     assert!(worst <= FRAME_BOUND, "{worst}");
 }
 
@@ -684,7 +698,7 @@ fn f16_storage_frames_stay_within_half_an_f16_ulp_of_the_f32_bound() {
             let want = cpu(&m, noise, 0);
             worst = worst.max(bounded_error(&got, &want, dev.mode, FRAME_BOUND));
         }
-        println!("storage {}: worst |gpu - cpu| {worst:.3e}", dev.mode.name());
+        note!("storage {}: worst |gpu - cpu| {worst:.3e}", dev.mode.name());
     }
 }
 
@@ -786,7 +800,7 @@ fn flipping_the_mosaic_flips_the_output() {
             }
         }
     }
-    println!("flips: worst |flipped run - flipped output| {worst:.3e}");
+    note!("flips: worst |flipped run - flipped output| {worst:.3e}");
     assert!(worst <= FRAME_BOUND, "{worst}");
 }
 

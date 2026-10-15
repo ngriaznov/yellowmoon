@@ -31,8 +31,9 @@
 //! Nothing here depends on timing or on what ran before, apart from the pool's recycling (which the
 //! poison mode of `crate::pool` makes visible).
 
-use std::sync::Arc;
+use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -69,9 +70,51 @@ pub struct Counters {
     readback_bytes: AtomicU64,
     submissions: AtomicU64,
     dispatches: AtomicU64,
+    /// GPU time per pass label, from the timestamp queries of the lists that were timed (empty unless the
+    /// device was opened with [`GpuConfig::timestamps`](crate::device::GpuConfig::timestamps)).
+    passes: Mutex<BTreeMap<String, PassTotal>>,
+}
+
+/// The GPU time one pass label has taken in total since the device opened (or since the log was last taken).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PassTotal {
+    /// How many times a pass of this label ran.
+    pub count: u64,
+    /// The sum of their GPU times in milliseconds (timestamp queries; on a shared-memory GPU the clock of the
+    /// device, not of the host).
+    pub total_ms: f64,
+    /// The longest single pass in milliseconds.
+    pub max_ms: f64,
 }
 
 impl Counters {
+    /// Adds the timed passes of one finished list to the per-label totals.
+    pub(crate) fn record_passes(&self, timings: &PassTimings) {
+        if timings.passes.is_empty() {
+            return;
+        }
+        let mut log = self
+            .passes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for p in &timings.passes {
+            let t = log.entry(p.label.clone()).or_default();
+            t.count += 1;
+            t.total_ms += p.ms;
+            t.max_ms = t.max_ms.max(p.ms);
+        }
+    }
+
+    /// Takes the per-label totals and starts them again from zero.
+    pub fn take_passes(&self) -> BTreeMap<String, PassTotal> {
+        std::mem::take(
+            &mut *self
+                .passes
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
+    }
+
     /// One host-to-device upload of `bytes` bytes.
     pub(crate) fn count_upload(&self, bytes: u64) {
         self.uploads.fetch_add(1, Ordering::Relaxed);
@@ -801,6 +844,9 @@ impl Pending {
                     .collect(),
             }
         });
+        if let Some(t) = &timings {
+            self.counters.record_passes(t);
+        }
         let reads = parts
             .into_iter()
             .zip(&self.reads)

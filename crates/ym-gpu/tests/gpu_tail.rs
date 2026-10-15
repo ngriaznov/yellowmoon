@@ -313,21 +313,28 @@ fn the_tail_matches_the_cpu_export_in_every_configuration() {
                     .collect()
             };
             let d = diff_codes(&got, &want);
+            let over = (0..got.len())
+                .filter(|&i| got[i].abs_diff(want[i]) > MAX_CODE_DIFF_16)
+                .count();
+            // The share over 8 codes is printed for the 16-bit exports too (G-09): `MAX_FLIP_SHARE_16`
+            // is held by this number, and Metal's value is what a hardware column is made of.
             ci_note(
                 "tail parity",
                 &format!(
-                    "{}: {} codes, {:.4} exact, max {} ({})",
+                    "{}: {} codes, {:.4} exact, max {}{} ({})",
                     c.name,
                     d.n,
                     d.exact_share(),
                     d.max,
+                    if c.bits16 {
+                        format!(", {over} over {MAX_CODE_DIFF_16} ({:.2e})", over as f64 / d.n as f64)
+                    } else {
+                        String::new()
+                    },
                     dev.gpu.info().name
                 ),
             );
             if c.bits16 {
-                let over = (0..got.len())
-                    .filter(|&i| got[i].abs_diff(want[i]) > MAX_CODE_DIFF_16)
-                    .count();
                 if c.sharpen_pct > 0.0 {
                     assert!(
                         over as f64 <= MAX_FLIP_SHARE_16 * got.len() as f64
@@ -837,6 +844,10 @@ fn assert_tail_matches_cpu(
             // 5 x 1030, 16 bit, 3 of 15,450 codes over 8 (one pixel), at most 32 off, while the
             // sharpening kernel alone matches lavapipe's bits there; floor 6, two pixels.
             let floor = if dev.gpu.info().is_software { 2.0 } else { 6.0 };
+            if over > 0 {
+                // Printed where a flip happened (G-09), so that the next Metal run measures the floor.
+                ci_note("tiny pictures", &format!("{label}: {over} over {MAX_CODE_DIFF_16}, max {}", d.max));
+            }
             assert!(
                 over as f64 <= (MAX_FLIP_SHARE_16 * got.len() as f64).max(floor)
                     && d.max <= MAX_FLIP_DIFF_16,

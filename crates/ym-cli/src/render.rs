@@ -16,12 +16,12 @@ use std::sync::mpsc::RecvTimeoutError;
 use std::time::{Duration, Instant};
 
 use ym_core::app::gpu::{
-    CpuReason, GPU_ENV, GpuOutcome, GpuPolicy, GpuSlot, GpuStages, PolicyChoice, PolicySource,
+    CpuReason, GPU_ENV, GpuOutcome, GpuPolicy, GpuSlot, PolicyChoice, PolicySource,
     open_gpu,
 };
 use ym_core::export_queue::{ExportEvent, ExportJob, FileDone, QueueError};
 use ym_core::looks::{LookService, LooksError};
-use ym_core::pipeline::DisplayChoice;
+use ym_core::pipeline::{ComputeDevice, DisplayChoice};
 use ym_core::preferences::DisplayRendering;
 use ym_core::session::{ApplyScope, OpenOptions, PhotoId, PhotoStatus};
 use ym_export::{ExportOptions, FormatKind, IfExists, JpegQuality, Size};
@@ -279,17 +279,15 @@ fn report_gpu(console: &mut Console, slot: &GpuSlot) {
     }
 }
 
-/// Where the images of an export are made, for `device` in the JSON: `gpu` when the device is open
-/// and runs a stage of the export render ([`GpuStages::USED_BY_EXPORTS`]: the raw chain), else `cpu`.
-/// A photo that a device error sent back to the CPU still says `gpu` here and carries the note
-/// ("The graphics card could not render this photo, so the CPU did: …"); the export queue's own
-/// report will carry the answer per photo when the export tail moves to the device.
-fn export_device(slot: Option<&GpuSlot>) -> &'static str {
-    match slot {
-        Some(slot) if slot.is_using() && slot.stages().intersects(GpuStages::USED_BY_EXPORTS) => {
-            "gpu"
-        }
-        _ => "cpu",
+/// Where the pictures of one photo were made, for `device` in the JSON: what the export reported
+/// ([`ym_core::export::ExportReport::device`], the path the photo actually took), not what the policy allowed. A
+/// photo that the device failed on and the CPU made again says `cpu` and carries the note ("The
+/// graphics card could not render this photo, so the CPU did: …"), so a strict job that reads both
+/// cannot be fooled by a silent fallback.
+const fn device_name(device: ComputeDevice) -> &'static str {
+    match device {
+        ComputeDevice::Gpu => "gpu",
+        ComputeDevice::Cpu => "cpu",
     }
 }
 
@@ -559,8 +557,6 @@ fn run_checked(args: &RenderArgs, console: &mut Console) -> Result<u8, Failure> 
         report_gpu(console, slot);
         core.attach_gpu(slot);
     }
-    let device = export_device(gpu_slot.as_ref());
-
     // Export.
     let remove_location = core.preferences.get().remove_location_from_exports;
     // The photos that are going to be exported are the picked ones: a photo whose settings were
@@ -599,7 +595,6 @@ fn run_checked(args: &RenderArgs, console: &mut Console) -> Result<u8, Failure> 
                     &mut plans,
                     &by_photo,
                     args.json,
-                    device,
                     console,
                     &mut stdout,
                     &mut counts,
@@ -750,7 +745,6 @@ fn handle_file(
     plans: &mut [Plan],
     by_photo: &HashMap<PhotoId, usize>,
     json: bool,
-    device: &'static str,
     console: &mut Console,
     stdout: &mut Stdout,
     counts: &mut Counts,
@@ -802,7 +796,10 @@ fn handle_file(
                 // before `timings_ms`: where the picture was made (`docs/10`); a file that was
                 // skipped was not rendered, so it has none (`null`).
                 let mut known = plan.known.clone().unwrap_or_default();
-                known.insert("device", (!report.skipped).then_some(device));
+                known.insert(
+                    "device",
+                    (!report.skipped).then_some(device_name(report.device)),
+                );
                 stdout.line(
                     &render_ok(
                         &lossy(input),

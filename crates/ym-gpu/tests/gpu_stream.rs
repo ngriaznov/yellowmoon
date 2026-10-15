@@ -1,6 +1,7 @@
 //! Device images, command streams and chunked transfers (G-02, `docs/gpu-plan.md` 4.3): `GpuImage`,
-//! `GpuRaw`, `PassList`, `Pending`, the counters, the chunked upload and readback, and the test
-//! helpers of `common` (tile = whole, poison-neutral, the 128 MiB design binding).
+//! `PassList`, `Pending`, the counters, the chunked upload and readback (of the raw words too: the
+//! photo's own resident words are `DeviceRaw`, tested in `gpu_front`), and the test helpers of
+//! `common` (tile = whole, poison-neutral, the 128 MiB design binding).
 //!
 //! Every device here runs in poison mode (see `common`).
 
@@ -12,9 +13,11 @@ use common::exact::{assert_bit_equal, assert_poison_neutral, assert_tiles_equal_
 use common::limits::{DESIGN_BINDING_BYTES, assert_fits_design_binding, assert_max_binding_bytes};
 use common::{Rng, gpu, start_unpoisoned};
 use ym_gpu::cpu::tiling::Rect;
-use ym_gpu::cpu::{Cfa, Placement, RgbImage};
+use ym_gpu::cpu::{Placement, RgbImage};
 use ym_gpu::device::{Gpu, GpuConfig, GpuError, StoragePreference};
-use ym_gpu::image::{GpuImage, GpuRaw, IMAGE_USAGE};
+use ym_gpu::device::GpuContext;
+use ym_gpu::image::{GpuImage, IMAGE_USAGE};
+use ym_gpu::pool::PooledBuffer;
 use ym_gpu::kernels::KernelId;
 use ym_gpu::queue::{JobSpec, Priority};
 use ym_gpu::stream::{
@@ -34,6 +37,57 @@ fn placeholder() -> KernelId {
         .into_iter()
         .find(|k| k.is_placeholder())
         .expect("a kernel that is still a placeholder")
+}
+
+/// Raw sensor words as the decoder produced them, two `u16` per `u32` (little-endian, the first
+/// sample in the low half), row after row with no padding: sample `i = y * width + x` is half
+/// `i & 1` of word `i >> 1`. This is the layout `DeviceRaw` keeps; the helper exercises the chunked
+/// transfers on it without the photo's own parameters.
+#[derive(Debug)]
+struct Words {
+    words: PooledBuffer,
+    width: usize,
+    height: usize,
+}
+
+impl Words {
+    /// Bytes of the word buffer for `samples` samples.
+    fn bytes(samples: usize) -> u64 {
+        (samples as u64).div_ceil(2) * 4
+    }
+
+    fn upload(
+        ctx: &GpuContext,
+        label: &str,
+        width: usize,
+        height: usize,
+        samples: &[u16],
+    ) -> Result<Words, GpuError> {
+        if width == 0 || height == 0 || samples.len() != width * height {
+            return Err(GpuError::InvalidInput(format!(
+                "{label}: {} samples for a {width} x {height} readout",
+                samples.len()
+            )));
+        }
+        let words = ctx
+            .pool()
+            .acquire(label, Self::bytes(samples.len()), IMAGE_USAGE)?;
+        upload_bytes(ctx, &words, 0, bytemuck::cast_slice(samples))?;
+        Ok(Words {
+            words,
+            width,
+            height,
+        })
+    }
+
+    fn read(&self, ctx: &GpuContext) -> Result<Vec<u16>, GpuError> {
+        let n = self.width * self.height;
+        let bytes = read_bytes(ctx, &self.words, 0, n as u64 * 2)?;
+        Ok(bytes
+            .chunks_exact(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .collect())
+    }
 }
 
 fn f32s(bytes: &[u8]) -> Vec<f32> {
@@ -233,7 +287,7 @@ fn a_61_megapixel_raw_plane_goes_up_and_comes_back_bit_exact_in_chunks() {
     dev.gpu
         .run(job(), move |ctx, _| {
             let before = ctx.counters();
-            let raw = GpuRaw::upload(ctx, "raw 61 MP", w, h, Cfa::RGGB, &samples)?;
+            let raw = Words::upload(ctx, "raw 61 MP", w, h, &samples)?;
             assert_fits_design_binding("61 MP raw words", raw.words.size());
             let up = ctx.counters().since(before);
             assert_eq!(up.uploads, 1, "one logical upload");
@@ -245,7 +299,7 @@ fn a_61_megapixel_raw_plane_goes_up_and_comes_back_bit_exact_in_chunks() {
             assert_eq!(down.readback_bytes, 120_434_688);
             assert_eq!(back.len(), samples.len());
             assert!(back == samples, "the plane is not bit exact");
-            assert_eq!((raw.width, raw.height, raw.cfa), (w, h, Cfa::RGGB));
+            assert_eq!((raw.width, raw.height), (w, h));
             Ok(())
         })
         .expect("61 MP job");
@@ -455,13 +509,13 @@ fn raw_words_survive_the_smallest_and_oddest_readouts() {
                 (5, 5),
             ] {
                 let samples: Vec<u16> = (0..w * h).map(|i| 65_535 - (i as u16) * 997).collect();
-                let raw = GpuRaw::upload(ctx, "tiny raw", w, h, Cfa::BGGR, &samples)?;
-                assert_eq!(raw.words.size(), GpuRaw::words_bytes(w * h), "{w}x{h}");
+                let raw = Words::upload(ctx, "tiny raw", w, h, &samples)?;
+                assert_eq!(raw.words.size(), Words::bytes(w * h), "{w}x{h}");
                 assert_eq!(raw.read(ctx)?, samples, "{w}x{h}");
             }
             // An empty readout is refused, not uploaded.
             for (w, h) in [(0usize, 4usize), (4, 0)] {
-                let err = GpuRaw::upload(ctx, "empty", w, h, Cfa::RGGB, &[]).expect_err("empty");
+                let err = Words::upload(ctx, "empty", w, h, &[]).expect_err("empty");
                 assert!(matches!(err, GpuError::InvalidInput(_)), "{err:?}");
             }
             Ok(())
@@ -520,9 +574,9 @@ fn raw_words_are_two_samples_per_word_low_half_first_with_no_row_padding() {
         .run(job(), |ctx, _| {
             // 5 x 3 = 15 samples: an odd width, and an odd count (the last word's high half is zero).
             let samples: Vec<u16> = (1..=15u16).map(|i| i * 1000).collect();
-            let raw = GpuRaw::upload(ctx, "raw", 5, 3, Cfa::GRBG, &samples)?;
-            assert_eq!(raw.words.size(), GpuRaw::words_bytes(15));
-            assert_eq!(GpuRaw::words_bytes(15), 32);
+            let raw = Words::upload(ctx, "raw", 5, 3, &samples)?;
+            assert_eq!(raw.words.size(), Words::bytes(15));
+            assert_eq!(Words::bytes(15), 32);
             let words = read_bytes(ctx, &raw.words, 0, 32)?;
             let word =
                 |i: usize| u32::from_le_bytes(words[4 * i..4 * i + 4].try_into().expect("4"));
@@ -530,9 +584,7 @@ fn raw_words_are_two_samples_per_word_low_half_first_with_no_row_padding() {
             assert_eq!(word(2), 5000 | (6000 << 16), "row 1 starts mid-word");
             assert_eq!(word(7), 15_000, "the unused high half is zero");
             assert_eq!(raw.read(ctx)?, samples);
-            assert!(raw.qstep.is_none());
-            let err =
-                GpuRaw::upload(ctx, "raw", 5, 3, Cfa::RGGB, &samples[..14]).expect_err("length");
+            let err = Words::upload(ctx, "raw", 5, 3, &samples[..14]).expect_err("length");
             assert!(matches!(err, GpuError::InvalidInput(_)));
             Ok(())
         })

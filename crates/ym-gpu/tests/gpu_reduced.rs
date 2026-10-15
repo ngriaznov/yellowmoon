@@ -285,6 +285,10 @@ struct Case {
 /// it. Measured per case: 7.0e-7 without R9, 5.7e-6 for R9 alone at k = 8, 9.5e-6 for the whole group
 /// at k = 8 and 2.0e-5 at k = 4; the bound is twice the largest.
 const GROUP_BOUND_50MP: f32 = 4e-5;
+/// The same at `k = 2` (G-10): R9's `f32` displacement is in binned pixels, so it doubles each time
+/// `k` halves (9.5e-6 at k = 8, 2.0e-5 at k = 4); first measured 4.47e-5 for the whole group; the
+/// bound is twice that.
+const GROUP_BOUND_50MP_K2: f32 = 9e-5;
 
 const DENOISE_SCALE: f32 = 0.8;
 
@@ -718,20 +722,32 @@ fn a_50_mp_frame_matches_the_cpu_in_default_slabs() {
     assert!(worst <= GROUP_BOUND_50MP, "{worst:e}");
 }
 
-/// Review of G-07: the fit view of a 50 MP photo on a retina display is the group at `k = 2`, whose
-/// binned image is three planes of 4329 x 2886 `f32` (150 MB), more than the 128 MiB design binding.
-/// The group must not be given to a device it cannot fit (or must run within the binding): `Ok` with
-/// the CPU's size, or the refusal `InvalidInput`/`BufferTooLarge` that sends the group to the CPU
-/// without tainting the device; a validation error that leaves the device unusable is the defect.
+/// The fit view of a 50 MP photo on a retina display is the group at `k = 2`, whose picture is three
+/// planes of 4329 x 2886 `f32` (150 MB), more than the 128 MiB design binding. G-07 refused it
+/// cleanly (the CPU made the group, and the result depended on the device's binding limit); G-10 makes
+/// the group in bands of full-width rows (`RowBands`), so no buffer of the run, the binning, the
+/// denoise and R9 included, is above the binding: every stage of the group on, against the CPU
+/// composition, with the largest buffer of the result checked against the constant (the device here
+/// has the 128 MiB of lavapipe, so a binding that is too large would fail the run itself).
 #[test]
-#[ignore = "50 MP: 100 MB of words; run with --ignored"]
+#[ignore = "50 MP: 100 MB of words and the CPU composition; run with --ignored (wave 5 runs it on Metal)"]
 fn a_50_mp_frame_at_k_2_fits_the_design_binding_or_is_refused_cleanly() {
     let Some(dev) = f32_device() else { return };
     let (w, h) = (8658usize, 5772usize);
     let levels = uneven_levels();
     let mut rng = synth::Rng::new(51);
     let data: Vec<u16> = (0..w * h)
-        .map(|i| (400.0 + 9000.0 * ((i % w) as f32 / w as f32) + 120.0 * rng.next_f32()) as u16)
+        .map(|i| {
+            let (x, y) = (i % w, i / w);
+            let base = 400.0 + 9000.0 * ((x as f32) / w as f32) * (0.4 + 0.6 * (y as f32 / h as f32));
+            let blob = x > w - 900 && y > h - 700;
+            let v = if blob {
+                20000.0
+            } else {
+                base + 120.0 * rng.next_f32()
+            };
+            v.min(65535.0) as u16
+        })
         .collect();
     let scene = RawScene {
         width: w,
@@ -743,31 +759,66 @@ fn a_50_mp_frame_at_k_2_fits_the_design_binding_or_is_refused_cleanly() {
     let profile = vignette_profile();
     let c = Case {
         k: 2,
-        recovery: false,
-        vignette: false,
-        denoise: false,
-        lens: false,
+        recovery: true,
+        vignette: true,
+        denoise: true,
+        lens: true,
     };
     let p = reduced_params(&scene, levels, c, &profile);
     let s = scene.clone();
-    let r = on_device_result(dev, move |ctx| {
+    let started = std::time::Instant::now();
+    let made = on_device_result(dev, move |ctx| {
         let raw = DeviceRaw::upload(ctx, "r", s.width, s.height, s.cfa, &s.data, None)?;
-        ym_gpu::chain::GpuReduced::run(ctx, &raw, &p, &ym_gpu::queue::CancelToken::new())
-            .map(|img| (img.width, img.height))
+        let mut run = ym_gpu::chain::GpuReduced::start(&raw, p)?;
+        let mut steps = 0usize;
+        // The longest step of each stage, the job length the scheduler sees (K5).
+        let mut longest: Vec<(&'static str, f64, f64, usize)> = Vec::new();
+        loop {
+            let stage = run.next_stage();
+            let t = std::time::Instant::now();
+            let more = run.step(ctx, &ym_gpu::queue::CancelToken::new())?;
+            let ms = t.elapsed().as_secs_f64() * 1000.0;
+            steps += 1;
+            match longest.iter_mut().find(|l| l.0 == stage) {
+                Some(l) => {
+                    l.1 = l.1.max(ms);
+                    l.2 += ms;
+                    l.3 += 1;
+                }
+                None => longest.push((stage, ms, ms, 1)),
+            }
+            if !more {
+                break;
+            }
+        }
+        for (stage, max, total, n) in &longest {
+            eprintln!(
+                "[G-10] reduced step `{stage}`: {n} step(s), longest {max:.1} ms, together {total:.1} ms"
+            );
+        }
+        let picture = run.finish()?;
+        let largest = picture.max_band_bytes();
+        let bands = picture.bands().len();
+        Ok((picture.read_rgb(ctx)?, largest, bands, steps))
     });
-    eprintln!("[review] 50 MP k = 2: {r:?}");
-    match r {
-        Ok(size) => assert_eq!(size, (w / 2, h / 2)),
-        Err(e) => assert!(
-            matches!(
-                e,
-                ym_gpu::device::GpuError::InvalidInput(_)
-                    | ym_gpu::device::GpuError::BufferTooLarge { .. }
-            ),
-            "{e:?}"
-        ),
-    }
-    // The device must still work afterwards.
+    let (got, largest, bands, steps) = made.expect("the group at k = 2 of a 50 MP frame");
+    let want = cpu_reduced(&scene, &levels, c, &profile);
+    assert_eq!((got.width, got.height), (want.width, want.height));
+    let (e, at) = compare_scaled(&got.data, &want.data);
+    eprintln!(
+        "[G-10] 50 MP k = 2, every stage: {} x {} in {bands} bands (largest buffer {} MiB), {steps} steps, worst scaled difference {e:e} (sample {at}), {:.1} s",
+        got.width,
+        got.height,
+        largest >> 20,
+        started.elapsed().as_secs_f64()
+    );
+    assert!(
+        largest <= ym_gpu::tiles::DESIGN_BINDING_BYTES,
+        "a band of {largest} bytes is over the design binding"
+    );
+    assert!(bands > 1, "the picture is more than one buffer");
+    assert!(e <= GROUP_BOUND_50MP_K2, "{e:e}");
+    // The device is usable afterwards.
     let again = on_device_result(dev, move |ctx| Ok(ctx.check_alive().is_ok()));
     assert_eq!(
         again.ok(),

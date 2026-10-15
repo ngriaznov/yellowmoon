@@ -843,6 +843,18 @@ impl GpuContext {
         self.fault.on_tile()
     }
 
+    /// The hook the upload of a photo's raw words calls once: with the `fault-injection` feature
+    /// and an `upload@N` fault armed, the `N`th call fails; otherwise it does nothing.
+    ///
+    /// # Errors
+    ///
+    /// [`GpuError::OutOfBudget`] for the injected fault.
+    pub fn inject_upload_fault(&self, requested_bytes: u64) -> Result<(), GpuError> {
+        let stats = self.pool.stats();
+        self.fault
+            .on_upload(requested_bytes, stats.allocated_bytes, self.pool.budget())
+    }
+
     /// The fault state, for the kernels' pipeline hook.
     pub(crate) fn fault(&self) -> &FaultState {
         &self.fault
@@ -1112,6 +1124,13 @@ impl Gpu {
     /// ([`GpuContext::counters`]).
     pub fn counters(&self) -> CounterSnapshot {
         self.shared.counters.snapshot()
+    }
+
+    /// Takes the GPU time per pass label that the timestamp queries measured since the last call, and
+    /// starts the totals again from zero. Empty unless the device was opened with
+    /// [`GpuConfig::timestamps`] on an adapter that has `TIMESTAMP_QUERY` (`ym doctor --bench`).
+    pub fn take_pass_times(&self) -> std::collections::BTreeMap<String, crate::stream::PassTotal> {
+        self.shared.counters.take_passes()
     }
 
     /// Clones of the instance, adapter, device and queue, in the shape burn's wgpu backend imports

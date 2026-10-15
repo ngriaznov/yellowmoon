@@ -19,6 +19,20 @@
 
 mod common;
 
+/// Prints like `println!` and writes the same line to the process's own stderr as well (the harness captures `println!` and
+/// `eprintln!`, not this), so that the numbers of a passing test reach the CI log of the Apple runners, from which a
+/// hardware column is made (G-09). No annotation: the budget of those is spent by the older notes.
+macro_rules! note {
+    ($($arg:tt)*) => {{
+        let line = format!($($arg)*);
+        println!("{line}");
+        let _ = std::io::Write::write_fmt(
+            &mut std::io::stderr(),
+            format_args!("[G-09 {}] {line}\n", file!().rsplit('/').next().unwrap_or("")),
+        );
+    }};
+}
+
 use common::{Rng, TestGpu, gpus};
 use ym_gpu::cpu::RgbImage;
 use ym_gpu::cpu::sampler::{Kernel, Sampled, SamplerGrid, sample_to_camera};
@@ -268,7 +282,7 @@ fn rotated_scaled_and_magnified_grids_match_the_cpu_port() {
             }
         }
     }
-    eprintln!(
+    note!(
         "sampler vs CPU port: {cases} cases ({bicubics} Catmull-Rom, {boxes} box, {with_mask} with a letterbox), worst error {worst:.3e}"
     );
     assert!(
@@ -434,7 +448,7 @@ fn the_far_corner_of_a_50_mp_frame_is_as_exact_as_the_near_one() {
         let gpu = gpu_sample(dev, &img, origin, grid, off, w, h);
         assert_masks_equal("far corner", &gpu, &cpu);
         let d = max_diff(&gpu.img, &cpu.img);
-        eprintln!("corner {corner:?}: window at {off:?}, max error {d:.3e}");
+        note!("corner {corner:?}: window at {off:?}, max error {d:.3e}");
         errors.push(d);
     }
     let bound = if dev.gpu.info().is_software {

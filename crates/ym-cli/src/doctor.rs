@@ -22,6 +22,8 @@ use ym_core::version::{PIPELINE_VERSION, app_version};
 use ym_gpu::device::GpuInfo;
 use ym_profiles::registry::ProfileStore;
 
+pub mod bench;
+
 use crate::cli::{DoctorArgs, version_text};
 use crate::console::Console;
 use crate::exit::{self, Failure};
@@ -74,6 +76,9 @@ struct Report {
 
 /// Runs `ym doctor` and returns the exit code.
 pub fn run(args: &DoctorArgs, console: &mut Console) -> u8 {
+    if let Some(path) = &args.bench {
+        return run_bench(path, args, console);
+    }
     match build() {
         Ok(report) => {
             let mut out = io::stdout().lock();
@@ -81,6 +86,33 @@ pub fn run(args: &DoctorArgs, console: &mut Console) -> u8 {
                 writeln!(out, "{}", json_line(&to_json(&report)))
             } else {
                 write!(out, "{}", to_text(&report))
+            }
+            .and_then(|()| out.flush());
+            match written {
+                Ok(()) => exit::OK,
+                Err(e) if e.kind() == io::ErrorKind::BrokenPipe => exit::OK,
+                Err(e) => {
+                    console.error(&format!("Couldn't write the report ({e})."));
+                    exit::SOME_FAILED
+                }
+            }
+        }
+        Err(failure) => {
+            console.failure(&failure);
+            failure.code
+        }
+    }
+}
+
+/// `ym doctor --bench <file>`: times the render path on one photo (see [`bench`]).
+fn run_bench(path: &Path, args: &DoctorArgs, console: &mut Console) -> u8 {
+    match bench::run(path, args.repeat) {
+        Ok(report) => {
+            let mut out = io::stdout().lock();
+            let written = if args.json {
+                writeln!(out, "{}", json_line(&report))
+            } else {
+                write!(out, "{}", bench::to_text(&report))
             }
             .and_then(|()| out.flush());
             match written {

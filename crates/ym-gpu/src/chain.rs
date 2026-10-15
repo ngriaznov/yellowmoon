@@ -61,7 +61,7 @@ use crate::cpu::sharpen::diffraction::{DiffractionPlan, SPEC_LUMA};
 use crate::cpu::tiling::{Halo, Rect, Stage};
 use crate::cpu::{Mosaic, RgbImage};
 use crate::device::{GpuContext, GpuError};
-use crate::image::GpuImage;
+use crate::image::{GpuImage, RowBands};
 use crate::kernels::adaptive_ratio::{self, Balance, PreparedDemosaic};
 use crate::kernels::bilateral::{self, SigmaHalf, SigmaInput, SigmaTile};
 use crate::kernels::bin::{self, BinParams};
@@ -1470,23 +1470,84 @@ pub struct ReducedParams {
     pub lens: Option<LensTable>,
 }
 
+/// What the next [`ReducedRun::step`] does (one job's work each).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Phase {
+    /// The offsets sweep: the slab with this index.
+    Offsets(usize),
+    /// The fold of the offsets' partials.
+    Fold,
+    /// The binning: the band whose first row (of the binned picture) is this.
+    Bin(usize),
+    /// The sigma plane and the sigma of the binned picture (the light denoise only).
+    Sigma,
+    /// The bilateral denoise of the band whose first row is this.
+    Denoise(usize),
+    /// R9 for the band of the cropped output whose first row is this.
+    Lens(usize),
+    /// Everything is made.
+    Done,
+}
+
 /// The reduced fit-view path on the device: R1 to R9 at `1/k` of the resolution, from the resident raw
 /// words, never building a full-resolution frame on the host (`docs/gpu-plan.md` N-8). The CPU
 /// reference is `ym-core`'s `reduced_bayer`.
 ///
-/// The frame goes through in slabs of [`REDUCED_SLAB_ROWS`] rows. With R5 on, a first sweep reduces
-/// the global chroma offsets (a fixed-order reduction, [`OffsetReducer`]); a second sweep makes each
-/// slab's normalised mosaic, applies R5 and bins it into the output; then the sigma plane (from the
-/// raw words), the binned sigma, the light bilateral denoise and R9 at `1/k` run on the small image.
+/// # Bands and steps
+///
+/// The picture is made, and handed on from stage to stage, as **bands of full-width rows**
+/// ([`RowBands`], `REDUCED_SLAB_ROWS / k` rows of the result each): every band is a buffer of its own,
+/// so no binding is larger than a band whatever the photo, where one buffer for the picture was 150 MB
+/// at `k = 2` of a 50 MP photo and 180 MB at 61 MP, over the 128 MiB design binding (`docs/gpu-plan.md`
+/// K4). The bands are also the unit of **work**: one call of [`ReducedRun::step`] does one slab of
+/// the offsets sweep, one band of the binning, the sigma planes, one band of the denoise or one band
+/// of R9 (a few megapixels at the most), so that the caller can submit every step as a job of its own
+/// and a viewport frame can run between two of them (K5, `docs/gpu-plan.md` G-10). [`GpuReduced::run`]
+/// does them one after the other.
+///
+/// A band is computed from the rows it needs (`RowBands::window`): the bilateral reads two rows of
+/// context, R9 the rows of its source rectangle (`LensTable::source_rect`), and both are tile-exact,
+/// so the bands equal the picture made in one piece bit for bit.
+///
+/// With R5 on, a first sweep reduces the global chroma offsets (a fixed-order reduction,
+/// [`OffsetReducer`]); the second sweep makes each slab's normalised mosaic, applies R5 and bins it.
 #[derive(Debug)]
 pub struct GpuReduced;
 
+/// The stepwise run of [`GpuReduced`]: owns what lives between two steps (the reducer, the bands made
+/// so far, the sigma of the binned picture). `R` is how the run holds the photo's raw words: a plain
+/// reference for [`GpuReduced::run`], an `Arc` for a run that is moved from one job to the next.
+#[derive(Debug)]
+pub struct ReducedRun<R> {
+    raw: R,
+    p: ReducedParams,
+    bp: BinParams,
+    prep: PrepParams,
+    /// Rows of a band of the binned picture (and of the cropped output).
+    band_rows: usize,
+    /// The slabs of the offsets sweep, as photosite rows.
+    slabs: Vec<(usize, usize)>,
+    reducer: Option<OffsetReducer>,
+    offsets: Option<Offsets>,
+    phase: Phase,
+    /// The size of the binned picture (R9 may crop it to a smaller one).
+    binned: (usize, usize),
+    /// The bands of the picture the current stage is making.
+    making: Vec<GpuImage>,
+    /// The picture the next stage reads, and finally the result.
+    current: Option<RowBands>,
+    /// The sigma of the binned picture.
+    sigma: Option<GpuImage>,
+    steps: usize,
+}
+
 impl GpuReduced {
-    /// Runs the path and returns the image (`out_w x out_h` after R9, three planes) on the device.
+    /// Runs the path and returns the picture (`out_w x out_h` after R9, three planes) on the device,
+    /// as bands of rows.
     ///
     /// # Errors
     ///
-    /// [`GpuError::Cancelled`] between slabs; [`GpuError::InvalidInput`] for parameters the kernels
+    /// [`GpuError::Cancelled`] between steps; [`GpuError::InvalidInput`] for parameters the kernels
     /// refuse (an odd `k`, a frame smaller than one block, a vignetting profile with too many knots);
     /// the pool's errors; shader errors.
     pub fn run(
@@ -1494,7 +1555,7 @@ impl GpuReduced {
         raw: &DeviceRaw,
         p: &ReducedParams,
         cancel: &CancelToken,
-    ) -> Result<GpuImage, GpuError> {
+    ) -> Result<RowBands, GpuError> {
         Self::run_with_slabs(ctx, raw, p, cancel, REDUCED_SLAB_ROWS)
     }
 
@@ -1509,19 +1570,48 @@ impl GpuReduced {
         p: &ReducedParams,
         cancel: &CancelToken,
         slab_rows: usize,
-    ) -> Result<GpuImage, GpuError> {
-        cancel.check()?;
-        let (w, h) = (raw.width(), raw.height());
+    ) -> Result<RowBands, GpuError> {
+        let mut run = Self::start_with_slabs(raw, p.clone(), slab_rows)?;
+        while run.step(ctx, cancel)? {}
+        run.finish()
+    }
+
+    /// Prepares the stepwise run over `raw` with the default slabs ([`REDUCED_SLAB_ROWS`]).
+    ///
+    /// # Errors
+    ///
+    /// [`GpuError::InvalidInput`] for parameters the kernels refuse.
+    pub fn start<R: std::borrow::Borrow<DeviceRaw>>(
+        raw: R,
+        p: ReducedParams,
+    ) -> Result<ReducedRun<R>, GpuError> {
+        Self::start_with_slabs(raw, p, REDUCED_SLAB_ROWS)
+    }
+
+    /// [`start`](Self::start) with slabs of `slab_rows` photosite rows.
+    ///
+    /// # Errors
+    ///
+    /// As [`start`](Self::start).
+    pub fn start_with_slabs<R: std::borrow::Borrow<DeviceRaw>>(
+        raw: R,
+        p: ReducedParams,
+        slab_rows: usize,
+    ) -> Result<ReducedRun<R>, GpuError> {
+        let (w, h, cfa) = {
+            let r = raw.borrow();
+            (r.width(), r.height(), r.cfa())
+        };
         let slab_rows = (slab_rows.max(8)) & !1;
         let bp = BinParams {
             k: p.k,
-            cfa: raw.cfa(),
+            cfa,
             frame_w: w,
             frame_h: h,
             vignette: p.vignette.clone(),
         };
         bp.check()?;
-        let (ow, oh) = (bp.out_w(), bp.out_h());
+        let binned = (bp.out_w(), bp.out_h());
         // R1 and R4, no vignetting: the vignetting gain is applied at the binned pixels.
         let prep = PrepParams {
             levels: p.levels,
@@ -1529,131 +1619,311 @@ impl GpuReduced {
             apply_gains: true,
             vignette: None,
         };
-        let cfa_of = |r: Rect| raw.cfa().shifted(r.x, r.y);
-
-        // 1. The global chroma offsets, over the whole frame in slabs.
-        let offsets = if p.highlight_recovery && w >= 2 && h >= 2 {
-            let sw = w / 2;
+        let mut slabs = Vec::new();
+        let phase = if p.highlight_recovery && w >= 2 && h >= 2 {
             let rows = h / 2 * 2;
-            let mut slabs = Vec::new();
             let mut r0 = 0;
             while r0 < rows {
                 slabs.push((r0, (r0 + slab_rows).min(rows)));
                 r0 += slab_rows;
             }
-            let capacity: usize = slabs
+            Phase::Offsets(0)
+        } else {
+            Phase::Bin(0)
+        };
+        let band_rows = (slab_rows / p.k).max(1);
+        Ok(ReducedRun {
+            raw,
+            p,
+            bp,
+            prep,
+            band_rows,
+            slabs,
+            reducer: None,
+            offsets: None,
+            phase,
+            binned,
+            making: Vec::new(),
+            current: None,
+            sigma: None,
+            steps: 0,
+        })
+    }
+}
+
+impl<R: std::borrow::Borrow<DeviceRaw>> ReducedRun<R> {
+    /// Whether every step has been taken ([`finish`](Self::finish) then gives the picture).
+    #[must_use]
+    pub fn is_done(&self) -> bool {
+        self.phase == Phase::Done
+    }
+
+    /// Steps taken so far.
+    #[must_use]
+    pub fn steps(&self) -> usize {
+        self.steps
+    }
+
+    /// What the next step does, in a word (`offsets`, `fold`, `bin`, `sigma`, `denoise`, `lens`;
+    /// `done` when none is left): for logs and for the tests that time the steps.
+    #[must_use]
+    pub fn next_stage(&self) -> &'static str {
+        match self.phase {
+            Phase::Offsets(_) => "offsets",
+            Phase::Fold => "fold",
+            Phase::Bin(_) => "bin",
+            Phase::Sigma => "sigma",
+            Phase::Denoise(_) => "denoise",
+            Phase::Lens(_) => "lens",
+            Phase::Done => "done",
+        }
+    }
+
+    /// Takes the next step: one slab of the offsets sweep, the fold, one band of the binning, the
+    /// sigma planes, one band of the denoise or one band of R9, recorded into one submission and
+    /// waited for. Returns whether more steps are left. The token is checked before the step.
+    ///
+    /// # Errors
+    ///
+    /// [`GpuError::Cancelled`]; the pool's errors; shader errors. After an error the run is of no
+    /// further use (drop it: its buffers go back to the pool).
+    pub fn step(&mut self, ctx: &GpuContext, cancel: &CancelToken) -> Result<bool, GpuError> {
+        cancel.check()?;
+        match self.phase {
+            Phase::Offsets(i) => self.offsets_slab(ctx, i)?,
+            Phase::Fold => self.fold(ctx)?,
+            Phase::Bin(r) => self.bin_band(ctx, r)?,
+            Phase::Sigma => self.sigma_planes(ctx)?,
+            Phase::Denoise(r) => self.denoise_band(ctx, r)?,
+            Phase::Lens(r) => self.lens_band(ctx, r)?,
+            Phase::Done => return Ok(false),
+        }
+        self.steps += 1;
+        Ok(self.phase != Phase::Done)
+    }
+
+    /// The picture, once every step has been taken.
+    ///
+    /// # Errors
+    ///
+    /// [`GpuError::InvalidInput`] when steps are left.
+    pub fn finish(mut self) -> Result<RowBands, GpuError> {
+        match (self.phase, self.current.take()) {
+            (Phase::Done, Some(picture)) => Ok(picture),
+            _ => Err(GpuError::InvalidInput(
+                "the reduced path has steps left".into(),
+            )),
+        }
+    }
+
+    fn raw(&self) -> &DeviceRaw {
+        self.raw.borrow()
+    }
+
+    /// The next phase after the binning.
+    fn after_bin(&self) -> Phase {
+        if self.p.denoise.is_some() {
+            Phase::Sigma
+        } else {
+            self.before_lens()
+        }
+    }
+
+    fn before_lens(&self) -> Phase {
+        if self.p.lens.is_some() {
+            Phase::Lens(0)
+        } else {
+            Phase::Done
+        }
+    }
+
+    /// The bands made by the stage that has just ended become the picture the next one reads.
+    fn end_stage(&mut self) -> Result<(), GpuError> {
+        self.current = Some(RowBands::new(std::mem::take(&mut self.making))?);
+        Ok(())
+    }
+
+    fn offsets_slab(&mut self, ctx: &GpuContext, i: usize) -> Result<(), GpuError> {
+        let (w, h) = (self.raw().width(), self.raw().height());
+        if self.reducer.is_none() {
+            let sw = w / 2;
+            let capacity: usize = self
+                .slabs
                 .iter()
                 .map(|&(a, b)| OffsetReducer::partials_for(sw, b - a))
                 .sum();
-            let mut reducer = OffsetReducer::new(ctx, capacity)?;
-            for (r0, r1) in slabs {
-                cancel.check()?;
-                let top = r0.saturating_sub(4) & !1;
-                let bottom = (r1 + 4).min(h);
+            self.reducer = Some(OffsetReducer::new(ctx, capacity)?);
+        }
+        let (r0, r1) = self.slabs[i];
+        let top = r0.saturating_sub(4) & !1;
+        let bottom = (r1 + 4).min(h);
+        let rect = Rect::new(0, top, w, bottom - top);
+        let cfa = self.raw().cfa().shifted(rect.x, rect.y);
+        let mut passes = PassList::new(ctx, "reduced offsets slab");
+        let out = encode_prep(&mut passes, self.raw.borrow(), rect, &self.prep, true)?;
+        let Some(mask) = out.mask.as_ref() else {
+            return Err(GpuError::InvalidInput("prep made no clip bits".into()));
+        };
+        let Some(reducer) = self.reducer.as_mut() else {
+            return Err(GpuError::InvalidInput("the offsets reducer is gone".into()));
+        };
+        reducer.encode_slab(&mut passes, &out.mosaic, mask, cfa, (r0 - top, r1 - top))?;
+        passes.submit()?.finish()?;
+        self.phase = if i + 1 < self.slabs.len() {
+            Phase::Offsets(i + 1)
+        } else {
+            Phase::Fold
+        };
+        Ok(())
+    }
+
+    fn fold(&mut self, ctx: &GpuContext) -> Result<(), GpuError> {
+        let Some(reducer) = self.reducer.take() else {
+            return Err(GpuError::InvalidInput("the offsets reducer is gone".into()));
+        };
+        let mut passes = PassList::new(ctx, "reduced offsets fold");
+        let off = reducer.encode_fold(&mut passes)?;
+        passes.submit()?.finish()?;
+        self.offsets = Some(off);
+        self.phase = Phase::Bin(0);
+        Ok(())
+    }
+
+    fn bin_band(&mut self, ctx: &GpuContext, r: usize) -> Result<(), GpuError> {
+        let (w, h) = (self.raw().width(), self.raw().height());
+        let (ow, oh) = self.binned;
+        let rows = r..(r + self.band_rows).min(oh);
+        let need = bin::slab_rows(self.p.k, &rows, h);
+        let cfa_of = |rect: Rect| self.raw().cfa().shifted(rect.x, rect.y);
+        let mut passes = PassList::new(ctx, "reduced bin band");
+        let mut keep: Vec<GpuImage> = Vec::new();
+        let slab = match &self.offsets {
+            Some(off) => {
+                let top = need.start.saturating_sub(4) & !1;
+                let bottom = (need.end + 4).min(h);
                 let rect = Rect::new(0, top, w, bottom - top);
-                let mut passes = PassList::new(ctx, "reduced offsets slab");
-                let out = encode_prep(&mut passes, raw, rect, &prep, true)?;
+                let out = encode_prep(&mut passes, self.raw.borrow(), rect, &self.prep, true)?;
                 let Some(mask) = out.mask.as_ref() else {
                     return Err(GpuError::InvalidInput("prep made no clip bits".into()));
                 };
-                reducer.encode_slab(
-                    &mut passes,
-                    &out.mosaic,
-                    mask,
-                    cfa_of(rect),
-                    (r0 - top, r1 - top),
-                )?;
-                passes.submit()?.finish()?;
+                let core = Rect::new(0, need.start - top, w, need.end - need.start);
+                let slab =
+                    encode_highlights(&mut passes, &out.mosaic, mask, cfa_of(rect), core, off)?;
+                keep.push(out.mosaic);
+                slab
             }
-            let mut passes = PassList::new(ctx, "reduced offsets fold");
-            let off = reducer.encode_fold(&mut passes)?;
-            passes.submit()?.finish()?;
-            Some(off)
-        } else {
-            None
+            None => {
+                let rect = Rect::new(0, need.start, w, need.end - need.start);
+                encode_prep(&mut passes, self.raw.borrow(), rect, &self.prep, false)?.mosaic
+            }
         };
-
-        // 2. The binned image, a slab of output rows at a time.
-        let binned = GpuImage::alloc(
+        let band = GpuImage::alloc(
             ctx,
-            "binned rgb",
+            "binned band",
             ow,
-            oh,
+            rows.len(),
             3,
-            crate::cpu::Placement::whole(ow, oh),
+            crate::cpu::Placement {
+                x0: 0,
+                y0: rows.start,
+                frame_width: ow,
+                frame_height: oh,
+            },
         )?;
-        let step = (slab_rows / p.k).max(1);
-        let mut r = 0;
-        while r < oh {
-            cancel.check()?;
-            let rows = r..(r + step).min(oh);
-            let need = bin::slab_rows(p.k, &rows, h);
-            let mut passes = PassList::new(ctx, "reduced bin slab");
-            let mut keep: Vec<GpuImage> = Vec::new();
-            let slab = match &offsets {
-                Some(off) => {
-                    let top = need.start.saturating_sub(4) & !1;
-                    let bottom = (need.end + 4).min(h);
-                    let rect = Rect::new(0, top, w, bottom - top);
-                    let out = encode_prep(&mut passes, raw, rect, &prep, true)?;
-                    let Some(mask) = out.mask.as_ref() else {
-                        return Err(GpuError::InvalidInput("prep made no clip bits".into()));
-                    };
-                    let core = Rect::new(0, need.start - top, w, need.end - need.start);
-                    let slab =
-                        encode_highlights(&mut passes, &out.mosaic, mask, cfa_of(rect), core, off)?;
-                    keep.push(out.mosaic);
-                    slab
-                }
-                None => {
-                    let rect = Rect::new(0, need.start, w, need.end - need.start);
-                    encode_prep(&mut passes, raw, rect, &prep, false)?.mosaic
-                }
-            };
-            bin::encode_bin(&mut passes, &slab, &bp, rows.clone(), &binned)?;
-            passes.submit()?.finish()?;
-            drop((keep, slab));
-            r = rows.end;
-        }
-
-        // 3. The sigma, the light denoise and R9 on the small image.
-        cancel.check()?;
-        let mut passes = PassList::new(ctx, "reduced finish");
-        let mut keep: Vec<GpuImage> = Vec::new();
-        let mut cur = binned;
-        if let Some(dn) = &p.denoise {
-            let sigma = encode_sigma_plane(&mut passes, raw, &p.levels, &p.noise)?;
-            let bsigma = bin::encode_bin_sigma(&mut passes, &sigma, &bp, p.noise_factor)?;
-            let next = bilateral::encode_bilateral(
-                &mut passes,
-                &cur,
-                Rect::whole(ow, oh),
-                &bsigma,
-                (0, 0),
-                dn.scale,
-                &dn.params,
-            )?;
-            keep.push(sigma);
-            keep.push(bsigma);
-            keep.push(std::mem::replace(&mut cur, next));
-        }
-        if let Some(lens) = &p.lens {
-            let (cw, ch) = lens.output_size();
-            let next = encode_lens(
-                &mut passes,
-                &cur,
-                Rect::whole(ow, oh),
-                lens,
-                Rect::whole(cw, ch),
-            )?;
-            keep.push(std::mem::replace(&mut cur, next));
-        }
+        bin::encode_bin(&mut passes, &slab, &self.bp, rows.clone(), &band, rows.start)?;
         passes.submit()?.finish()?;
-        drop(keep);
-        Ok(cur)
+        drop((keep, slab));
+        self.making.push(band);
+        if rows.end < oh {
+            self.phase = Phase::Bin(rows.end);
+        } else {
+            self.end_stage()?;
+            self.phase = self.after_bin();
+        }
+        Ok(())
     }
 
-    /// [`run`](Self::run) and the image read back as a host image (the group the renderer caches).
+    fn sigma_planes(&mut self, ctx: &GpuContext) -> Result<(), GpuError> {
+        let mut passes = PassList::new(ctx, "reduced sigma");
+        let sigma = encode_sigma_plane(&mut passes, self.raw.borrow(), &self.p.levels, &self.p.noise)?;
+        let bsigma = bin::encode_bin_sigma(&mut passes, &sigma, &self.bp, self.p.noise_factor)?;
+        passes.submit()?.finish()?;
+        drop(sigma);
+        self.sigma = Some(bsigma);
+        self.phase = Phase::Denoise(0);
+        Ok(())
+    }
+
+    fn denoise_band(&mut self, ctx: &GpuContext, r: usize) -> Result<(), GpuError> {
+        let (ow, oh) = self.binned;
+        let (Some(dn), Some(cur), Some(sigma)) = (
+            self.p.denoise.as_ref(),
+            self.current.as_ref(),
+            self.sigma.as_ref(),
+        ) else {
+            return Err(GpuError::InvalidInput(
+                "the denoise has no picture or no sigma to read".into(),
+            ));
+        };
+        let rows = r..(r + self.band_rows).min(oh);
+        let halo = dn.params.radius_px;
+        let wanted = rows.start.saturating_sub(halo)..(rows.end + halo).min(oh);
+        let mut passes = PassList::new(ctx, "reduced denoise band");
+        let (win, _) = cur.window(&mut passes, wanted)?;
+        // The window is a band itself or a copy of rows; either way it says where it sits.
+        let first = win.place.y0;
+        let core = Rect::new(0, rows.start - first, ow, rows.len());
+        let band = bilateral::encode_bilateral(
+            &mut passes,
+            &win,
+            core,
+            sigma,
+            (0, first),
+            dn.scale,
+            &dn.params,
+        )?;
+        passes.submit()?.finish()?;
+        drop(win);
+        self.making.push(band);
+        if rows.end < oh {
+            self.phase = Phase::Denoise(rows.end);
+        } else {
+            self.end_stage()?;
+            self.sigma = None;
+            self.phase = self.before_lens();
+        }
+        Ok(())
+    }
+
+    fn lens_band(&mut self, ctx: &GpuContext, r: usize) -> Result<(), GpuError> {
+        let (Some(table), Some(cur)) = (self.p.lens.as_ref(), self.current.as_ref()) else {
+            return Err(GpuError::InvalidInput(
+                "the lens stage has no picture or no table".into(),
+            ));
+        };
+        let (cw, ch) = table.output_size();
+        let rows = r..(r + self.band_rows).min(ch);
+        let out = Rect::new(0, rows.start, cw, rows.len());
+        let source = table.source_rect(out);
+        let mut passes = PassList::new(ctx, "reduced lens band");
+        let (win, off) = cur.window(&mut passes, source.y..source.y1())?;
+        let window = Rect::new(source.x, off, source.w, source.h);
+        let band = encode_lens(&mut passes, &win, window, table, out)?;
+        passes.submit()?.finish()?;
+        drop(win);
+        self.making.push(band);
+        if rows.end < ch {
+            self.phase = Phase::Lens(rows.end);
+        } else {
+            self.end_stage()?;
+            self.phase = Phase::Done;
+        }
+        Ok(())
+    }
+}
+
+impl GpuReduced {
+    /// [`run`](Self::run) and the picture read back as a host image (the group the renderer caches).
     ///
     /// # Errors
     ///

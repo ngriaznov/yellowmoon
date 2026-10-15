@@ -281,7 +281,11 @@ fn the_before_view_is_not_sharpened_on_the_device() {
 /// `slack` is what the renderer's own arithmetic may add to the one code the dither moves a value by:
 /// 0 for the CPU, which is the reference (first measured 0.9984), and for the device the f32
 /// accumulation of the stage on a hard edge.
-fn a_view_at_100_percent_is_the_sharpened_picture_the_export_writes_with(r: &Renderer, slack: f64) {
+fn a_view_at_100_percent_is_the_sharpened_picture_the_export_writes_with(
+    r: &Renderer,
+    slack: f64,
+    max_over_one: usize,
+) {
     let d = developed(800, 600);
     let src = d.source();
     let full = r
@@ -336,10 +340,12 @@ fn a_view_at_100_percent_is_the_sharpened_picture_the_export_writes_with(r: &Ren
         "the view and the export differ by {worst} codes (the dither moves a value by less than one)"
     );
     // A shift of the whole picture could hide under the slack; rank-count flips touch a handful
-    // of samples (measured: 0 on the CPU, 2 on lavapipe, 5 on Metal).
+    // of samples (measured: 0 on the CPU, 2 on lavapipe, 5 on Metal). The caps are twice the
+    // measured counts (G-09): 4 on a software adapter, 10 on hardware, and 2 on the CPU, where a
+    // count of zero cannot be asked of another libm.
     assert!(
-        over_one <= 50,
-        "{over_one} samples differ from the export by more than one code"
+        over_one <= max_over_one,
+        "{over_one} samples differ from the export by more than one code (at most {max_over_one})"
     );
     assert!(
         moved > 100,
@@ -352,6 +358,7 @@ fn a_view_at_100_percent_is_the_sharpened_picture_the_export_writes() {
     a_view_at_100_percent_is_the_sharpened_picture_the_export_writes_with(
         &Renderer::neutral_only().expect("render thread"),
         0.0,
+        2,
     );
 }
 
@@ -362,13 +369,17 @@ fn a_view_at_100_percent_is_the_sharpened_picture_the_export_writes_on_the_devic
     // The bound is twice the excess over the CPU's one code, per adapter kind. Software (lavapipe):
     // first measured 1.1011 codes at one sample of 1.44 million (0.3.0: 1.0967, two samples), so
     // 0.2. Hardware (Metal, 498a078, macos-14 and macos-15 alike): 1.2039 codes at five samples, so
-    // 0.41. The excess is not the stage (device against CPU on the same input: 3e-7 linear) but its
+    // 0.41 (twice the excess of 0.2039, G-09: run 38694506557 printed the same on both runners). The excess is not the stage (device against CPU on the same input: 3e-7 linear) but its
     // halo limiter's rank counts, which flip on last-bit differences between the device's f32
     // colour chain and the CPU's f64 one: one ulp of input noise in half the samples moves the CPU
     // stage against itself by 0.197 codes. It lands over one code only where the dither is near
     // its extreme.
-    let slack = if gpu.info().is_software { 0.2 } else { 0.41 };
-    a_view_at_100_percent_is_the_sharpened_picture_the_export_writes_with(&dev, slack);
+    let (slack, max_over_one) = if gpu.info().is_software {
+        (0.2, 4)
+    } else {
+        (0.41, 10)
+    };
+    a_view_at_100_percent_is_the_sharpened_picture_the_export_writes_with(&dev, slack, max_over_one);
     // And the device's frame is the CPU's frame within the codes of the colour pass's parity test
     // (two; measured: one).
     let d = developed(800, 600);

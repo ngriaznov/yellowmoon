@@ -642,6 +642,7 @@ pub struct GpuOpener<P: AdapterProbe = SystemProbe> {
     budget: MemoryBudget,
     pipeline_cache_dir: Option<PathBuf>,
     ram_bytes: Option<u64>,
+    timestamps: bool,
     probe: P,
 }
 
@@ -656,6 +657,7 @@ impl GpuOpener<SystemProbe> {
             budget,
             pipeline_cache_dir: None,
             ram_bytes: total_ram_bytes(),
+            timestamps: false,
             probe: SystemProbe,
         }
     }
@@ -670,6 +672,7 @@ impl<P: AdapterProbe> GpuOpener<P> {
             budget: self.budget,
             pipeline_cache_dir: self.pipeline_cache_dir,
             ram_bytes: self.ram_bytes,
+            timestamps: self.timestamps,
             probe,
         }
     }
@@ -689,10 +692,19 @@ impl<P: AdapterProbe> GpuOpener<P> {
         self
     }
 
+    /// Asks for GPU pass timings from timestamp queries (`Gpu::take_pass_times`), where the adapter has
+    /// them. Off by default: nothing is timed in a normal run. `ym doctor --bench` turns it on.
+    #[must_use]
+    pub fn with_timestamps(mut self, on: bool) -> Self {
+        self.timestamps = on;
+        self
+    }
+
     fn config(&self, budget: &MemoryBudget) -> GpuConfig {
         GpuConfig {
             memory_budget_bytes: Some(budget.gpu_bytes),
             pipeline_cache_dir: self.pipeline_cache_dir.clone(),
+            timestamps: self.timestamps,
             ..GpuConfig::default()
         }
     }

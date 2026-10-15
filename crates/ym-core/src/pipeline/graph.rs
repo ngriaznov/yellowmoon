@@ -547,6 +547,13 @@ struct Inner {
     /// A shader of the view stages failed to compile on this machine: the device does not run them
     /// for the rest of the process.
     view_gpu_disabled: AtomicBool,
+    /// A shader of the export tail (the sampler, colour, resize, sharpening and C13 kernels as the
+    /// tail runs them, and the DNG's device colour stage) failed to compile on this machine: the
+    /// device does not run the tail for the rest of the process (`docs/gpu-plan.md` 4.9, "shader:
+    /// disable that kernel family for the process"). The photo that met the error was already made
+    /// again on the CPU; without the flag every later export would try the same shader and fail the
+    /// same way before it fell back.
+    tail_gpu_disabled: AtomicBool,
 }
 
 /// The render engine (see the module documentation of [`crate::pipeline`]). Cheap to clone.
@@ -590,6 +597,7 @@ impl Renderer {
                 resident_clock: AtomicU64::new(0),
                 previous: Mutex::new(None),
                 view_gpu_disabled: AtomicBool::new(false),
+                tail_gpu_disabled: AtomicBool::new(false),
             }),
         })
     }
@@ -804,6 +812,23 @@ impl Renderer {
         held.sort_by_key(|(tick, _)| std::cmp::Reverse(*tick));
         for (_, g) in held.into_iter().skip(keep) {
             g.drop_resident();
+        }
+    }
+
+    /// Whether a shader of the export tail failed to compile on this machine, and the device does
+    /// not run the tail for the rest of the process (see [`Renderer::export_tail_enabled`]).
+    #[must_use]
+    pub fn export_tail_disabled(&self) -> bool {
+        self.inner.tail_gpu_disabled.load(Ordering::SeqCst)
+    }
+
+    /// Switches the export tail off for the process: `error` is a shader failure of one of its
+    /// kernels. Any other error is a property of the export (a buffer that does not fit, a device
+    /// that was lost), not of the machine, and leaves the tail on.
+    pub(crate) fn note_export_tail_error(&self, error: &GpuError) {
+        if matches!(error, GpuError::Shader(_)) {
+            tracing::warn!(error = %error, "a shader of the export tail failed; the device does not run it again in this process");
+            self.inner.tail_gpu_disabled.store(true, Ordering::SeqCst);
         }
     }
 
@@ -1620,9 +1645,13 @@ impl<'a> Job<'a> {
                     {
                         // Earlier tiles of this export ran the front on the device: the rest must
                         // not run behind the CPU's front (one file, one device). Start again on
-                        // the CPU, as for a device error in a tile.
+                        // the CPU, as for a device error in a tile: the photo's raw route is off, so
+                        // that a render which goes on in this very request (a DNG, an export without
+                        // the tail) makes every tile again on the CPU and not on R6..R8 behind the
+                        // CPU's front, which is not the CPU reference.
                         self.raw_ranges.clear();
                         self.front_failed = true;
+                        self.g.raw_gpu_failed.store(true, Ordering::SeqCst);
                         self.restart = Some(reason.clone());
                         return Err(RenderError::Gpu(reason));
                     }

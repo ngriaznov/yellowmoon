@@ -13,7 +13,10 @@ publish = false
 default = []
 # Optional GPU/ONNX backends behind `TileModel` (docs/07 section Runtime). Both are OFF by default and are
 # not compiled (nor downloaded) unless asked for: `cargo build -p ym-ml --features burn,ort`.
-burn = ["dep:burn"]
+# `burn` also brings `ym-gpu` (feature `ml`: its device is requested the way burn's wgpu backend requests one) so that the
+# application's own device can be imported (`burn_backend::import_device`, `tests/burn_shared_device.rs`); a build without
+# `burn` compiles neither.
+burn = ["dep:burn", "dep:ym-gpu"]
 ort = ["dep:ort"]
 # CoreML execution provider for ONNX Runtime on macOS (cannot be built or tested on Linux).
 coreml = ["ort", "ort/coreml"]
@@ -28,6 +31,8 @@ sha2.workspace = true
 hex.workspace = true
 safetensors = "0.8"
 burn = { version = "0.22", default-features = false, features = ["std", "wgpu"], optional = true }
+# The device the image pipeline owns (`docs/gpu-plan.md` section 8); `ml` makes it importable into burn. Only with `burn`.
+ym-gpu = { workspace = true, optional = true, features = ["ml"] }
 # `load-dynamic`: ONNX Runtime is loaded at run time from ORT_DYLIB_PATH (nothing is downloaded at build time).
 ort = { version = "=2.0.0-rc.13", default-features = false, features = ["std", "load-dynamic"], optional = true }
 

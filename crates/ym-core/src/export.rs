@@ -214,9 +214,13 @@ struct DeviceSpeed {
     render_samples: u32,
     encode_s_per_mp: [f64; 4],
     encode_samples: [u32; 4],
-    /// The measured time of this format already includes the encode, because the writer pulls the
-    /// picture while the device renders it: the two overlap, and the encode is not added again.
-    overlapped: [bool; 4],
+    /// The time of a whole raster export of each format per megapixel of the rendered picture, the
+    /// writing inside it: on the device the writer pulls the picture while the tail renders it, so
+    /// the two overlap and the encode must not be added again. Only a format that has been
+    /// measured this way is estimated from it; the others keep `render + encode`. Always empty for
+    /// the CPU path (it renders the whole frame first and encodes it after).
+    combined_s_per_mp: [f64; 4],
+    combined_samples: [u32; 4],
 }
 
 impl DeviceSpeed {
@@ -225,7 +229,8 @@ impl DeviceSpeed {
         render_samples: 0,
         encode_s_per_mp: ENCODE_S_PER_MP_PRIOR,
         encode_samples: [0; 4],
-        overlapped: [false; 4],
+        combined_s_per_mp: [0.0; 4],
+        combined_samples: [0; 4],
     };
 }
 
@@ -233,8 +238,6 @@ impl DeviceSpeed {
 struct SpeedState {
     /// The CPU reference path, and the device path.
     sets: [DeviceSpeed; 2],
-    /// Which set the estimates read: the device path when the renderer runs the export tail.
-    active: usize,
 }
 
 fn device_index(device: ComputeDevice) -> usize {
@@ -253,6 +256,11 @@ fn device_index(device: ComputeDevice) -> usize {
 /// CPU's. Every exported photo then replaces the numbers of the path it took: the first sample
 /// outright, later ones as a running mean that weighs the newest half. A photo that fell back to
 /// the CPU teaches the CPU numbers and leaves the device's alone.
+///
+/// Every reader names the path it reads ([`ComputeDevice`]); nothing holds a "current path" (the
+/// estimate used to select it as a side effect, which a second reader could not see). The caller
+/// that estimates picks the path the renderer would take
+/// ([`Renderer::export_tail_enabled`](crate::pipeline::Renderer::export_tail_enabled)).
 #[derive(Debug)]
 pub struct ExportSpeed {
     state: Mutex<SpeedState>,
@@ -274,7 +282,6 @@ impl ExportSpeed {
         Self {
             state: Mutex::new(SpeedState {
                 sets: [DeviceSpeed::PRIOR; 2],
-                active: 0,
             }),
         }
     }
@@ -289,12 +296,6 @@ impl ExportSpeed {
         } else {
             0.5 * old + 0.5 * new
         }
-    }
-
-    /// The estimates read the numbers of `device` from now on (the renderer runs the export tail
-    /// on the graphics card: [`ComputeDevice::Gpu`]).
-    pub fn use_device(&self, device: ComputeDevice) {
-        self.st().active = device_index(device);
     }
 
     /// Records that rendering `megapixels` took `seconds` on the CPU path.
@@ -331,61 +332,75 @@ impl ExportSpeed {
         }
     }
 
-    /// Records that a photo of `megapixels` took `seconds` in all on the device path, rendering and
-    /// writing together (the writer pulls the picture while the device makes it, so the two cannot
-    /// be told apart): the numbers of `format` on the device are the render speed alone from now on.
+    /// Records that a photo of `megapixels` (the rendered picture) took `seconds` in all on the
+    /// device path as a file of `format`, rendering and writing together (the writer pulls the
+    /// picture while the device makes it, so the two cannot be told apart). Only `format` is
+    /// estimated from it from now on: the other formats keep their own numbers, since the time of
+    /// a slow encoder (PNG) says nothing about a fast one (JPEG).
     pub fn record_overlapped(&self, format: FormatKind, megapixels: f64, seconds: f64) {
         if megapixels >= MIN_SAMPLE_MP && seconds.is_finite() && seconds > 0.0 {
+            let i = format_index(format);
             let mut st = self.st();
             let set = &mut st.sets[1];
-            if !set.overlapped[format_index(format)] {
-                // The first sample of the format replaces what was known.
-                set.render_samples = 0;
-            }
-            set.overlapped = [true; 4];
-            set.render_s_per_mp = Self::blend(
-                set.render_s_per_mp,
-                set.render_samples,
+            set.combined_s_per_mp[i] = Self::blend(
+                set.combined_s_per_mp[i],
+                set.combined_samples[i],
                 seconds / megapixels,
             );
-            set.render_samples += 1;
+            set.combined_samples[i] += 1;
         }
     }
 
-    /// The render speed now, in seconds per megapixel.
+    /// The render speed of `device` now, in seconds per megapixel.
     #[must_use]
-    pub fn render_s_per_mp(&self) -> f64 {
-        let st = self.st();
-        st.sets[st.active].render_s_per_mp
+    pub fn render_s_per_mp(&self, device: ComputeDevice) -> f64 {
+        self.st().sets[device_index(device)].render_s_per_mp
     }
 
-    /// The encode speed of a format now, in seconds per megapixel.
+    /// The encode speed of a format on `device` now, in seconds per megapixel.
     #[must_use]
-    pub fn encode_s_per_mp(&self, format: FormatKind) -> f64 {
-        let st = self.st();
-        st.sets[st.active].encode_s_per_mp[format_index(format)]
+    pub fn encode_s_per_mp(&self, device: ComputeDevice, format: FormatKind) -> f64 {
+        self.st().sets[device_index(device)].encode_s_per_mp[format_index(format)]
+    }
+
+    /// Seconds per megapixel of the rendered picture of a whole export of `format` on `device`, the
+    /// writing inside it, when that has been measured ([`record_overlapped`](Self::record_overlapped));
+    /// `None` otherwise (the CPU path never has one).
+    #[must_use]
+    pub fn combined_s_per_mp(&self, device: ComputeDevice, format: FormatKind) -> Option<f64> {
+        let set = &self.st().sets[device_index(device)];
+        let i = format_index(format);
+        (set.combined_samples[i] > 0).then_some(set.combined_s_per_mp[i])
     }
 
     /// Whether any photo has been measured yet (otherwise the numbers are the starting ones).
     #[must_use]
     pub fn is_measured(&self) -> bool {
-        self.st().sets.iter().any(|s| s.render_samples > 0)
+        self.st()
+            .sets
+            .iter()
+            .any(|s| s.render_samples > 0 || s.combined_samples.iter().any(|&n| n > 0))
     }
 
-    /// Seconds to export one photo: `render_mp` megapixels to render (twice for a DNG, which
-    /// renders the raw pixels and the preview) and `out_mp` to encode.
+    /// Seconds to export one photo on `device`: `render_mp` megapixels to render (twice for a DNG,
+    /// which renders the raw pixels and the preview) and `out_mp` to encode. A format that has been
+    /// measured whole on the device (render and writing overlapped) is `render_mp` at that speed.
     #[must_use]
-    pub fn seconds_for(&self, render_mp: f64, out_mp: f64, format: FormatKind) -> f64 {
+    pub fn seconds_for(
+        &self,
+        device: ComputeDevice,
+        render_mp: f64,
+        out_mp: f64,
+        format: FormatKind,
+    ) -> f64 {
         let st = self.st();
-        let set = &st.sets[st.active];
-        let renders = if format == FormatKind::Dng { 2.0 } else { 1.0 };
+        let set = &st.sets[device_index(device)];
         let i = format_index(format);
-        let encode = if set.overlapped[i] {
-            0.0
-        } else {
-            out_mp * set.encode_s_per_mp[i]
-        };
-        renders * render_mp * set.render_s_per_mp + encode
+        if set.combined_samples[i] > 0 {
+            return render_mp * set.combined_s_per_mp[i];
+        }
+        let renders = if format == FormatKind::Dng { 2.0 } else { 1.0 };
+        renders * render_mp * set.render_s_per_mp + out_mp * set.encode_s_per_mp[i]
     }
 }
 
@@ -1279,6 +1294,9 @@ fn export_photo_unguarded(
         // error ends that attempt, and the whole photo is made again on the CPU reference path.
         let mut cpu_reference = false;
         let mut on_device = None;
+        if let Some(why) = ctx.renderer.export_tail_refused() {
+            return Err(ExportError::Render(RenderError::Gpu(why)));
+        }
         if ctx.renderer.export_tail_enabled() {
             let began = Instant::now();
             let request = TailRequest {
@@ -1344,7 +1362,7 @@ fn export_photo_unguarded(
             render_ms = image.report.ms;
             device = device_of(&image.report);
             // The CPU reference's numbers, also when its raw chain ran on the device: the estimate
-            // reads this set unless the export tail is on (`ExportSpeed::use_device`).
+            // reads this set unless the export tail is on (`estimate`).
             ctx.speed.record_render_on(
                 image.report.device,
                 megapixels(image.width, image.height),
@@ -1377,8 +1395,15 @@ fn export_photo_unguarded(
     let encode_ms = encode_started.elapsed().as_secs_f64() * 1000.0;
     let out_mp = megapixels(outcome.width as usize, outcome.height as usize);
     if overlapped {
-        ctx.speed
-            .record_overlapped(options.format, out_mp, encode_ms / 1000.0);
+        // The whole export (render and writing overlap) per megapixel of the rendered picture,
+        // for this format only. The render time of such an export is not recorded as the device's
+        // render speed: the render waits for a writer that is slower (PNG), so it would hold the
+        // writer's time.
+        ctx.speed.record_overlapped(
+            options.format,
+            megapixels(rendered.0 as usize, rendered.1 as usize),
+            encode_ms / 1000.0,
+        );
     } else {
         ctx.speed
             .record_encode(options.format, out_mp, encode_ms / 1000.0);
@@ -1568,11 +1593,11 @@ pub fn estimate<'a>(
 ) -> Estimate {
     let format = options.format_spec();
     // The numbers of the path the export would take: the device's when the renderer runs the tail.
-    ctx.speed.use_device(if ctx.renderer.export_tail_enabled() {
+    let device = if ctx.renderer.export_tail_enabled() {
         ComputeDevice::Gpu
     } else {
         ComputeDevice::Cpu
-    });
+    };
     let mut bytes = 0u64;
     let mut seconds = 0.0;
     for (meta, settings, detail) in photos {
@@ -1584,6 +1609,7 @@ pub fn estimate<'a>(
             options.size.output_dimensions(w, h)
         };
         seconds += ctx.speed.seconds_for(
+            device,
             megapixels(w as usize, h as usize),
             megapixels(ow as usize, oh as usize),
             options.format,

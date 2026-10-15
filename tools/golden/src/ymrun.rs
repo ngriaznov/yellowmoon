@@ -9,7 +9,9 @@
 //!
 //! The golden hashes pin the CPU reference: the process gets `--cpu` and `YELLOWMOON_GPU=off`, so that no graphics
 //! device is opened and a machine with a GPU cannot move a hash (`docs/gpu-plan.md` section 7). GPU renders are
-//! compared with the stored CPU pictures within a tolerance, in a mode of their own.
+//! compared with the stored CPU pictures within a tolerance, in a mode of their own (`golden check --device gpu`):
+//! the process then gets `--require-gpu` and `YELLOWMOON_GPU=require`, so that a fallback to the CPU is an error and
+//! not a pass, and the JSON it prints (`device`, `notes`) is read back so that the report can say what ran where.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -106,11 +108,43 @@ fn run_with_timeout(
     }
 }
 
+/// Which path a render asks for.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Device {
+    /// The CPU reference: `--cpu`, `YELLOWMOON_GPU=off`. The golden hashes are made this way.
+    #[default]
+    Cpu,
+    /// The graphics device, strictly: `--require-gpu`, `YELLOWMOON_GPU=require` (no adapter is exit 4, a device
+    /// error fails the photo instead of re-rendering it on the CPU, so a fallback cannot pass for a GPU render).
+    Gpu,
+}
+
+impl Device {
+    /// The flag of `ym render`.
+    fn flag(self) -> &'static str {
+        match self {
+            Self::Cpu => "--cpu",
+            Self::Gpu => "--require-gpu",
+        }
+    }
+
+    /// The value of `YELLOWMOON_GPU` (set whatever the user's environment says).
+    fn env(self) -> &'static str {
+        match self {
+            Self::Cpu => "off",
+            Self::Gpu => "require",
+        }
+    }
+}
+
 /// What to ask `ym render` to write.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Output {
     /// A 16-bit sRGB PNG: the golden pictures (no dither, no lossy coding).
     Png16,
+    /// The same, with the long edge scaled to this many pixels (`--long-edge`): the device check of a real photo,
+    /// whose raw chain is the full resolution's but whose picture is small enough to compare quickly.
+    Png16LongEdge(u32),
     /// A DNG with the look baked in (the end-to-end colour check reads its linear AWG4 pixels).
     Dng,
     /// An 8-bit sRGB JPEG at quality 92 (the DNG gate compares with it).
@@ -118,9 +152,11 @@ pub enum Output {
 }
 
 impl Output {
-    fn args(self) -> &'static [&'static str] {
-        match self {
-            Self::Png16 => &["--format", "png", "--bits", "16", "--colour-space", "srgb"],
+    fn args(self) -> Vec<String> {
+        let words: &[&str] = match self {
+            Self::Png16 | Self::Png16LongEdge(_) => {
+                &["--format", "png", "--bits", "16", "--colour-space", "srgb"]
+            }
             Self::Dng => &["--format", "dng"],
             Self::Jpeg => &[
                 "--format",
@@ -130,7 +166,12 @@ impl Output {
                 "--colour-space",
                 "srgb",
             ],
+        };
+        let mut args: Vec<String> = words.iter().map(|w| (*w).to_owned()).collect();
+        if let Self::Png16LongEdge(px) = self {
+            args.extend(["--long-edge".to_owned(), px.to_string()]);
         }
+        args
     }
 }
 
@@ -153,6 +194,25 @@ pub struct Rendered {
 }
 
 impl Rendered {
+    /// Where the pictures were made, as `ym` reported it (`cpu` or `gpu`; `None` when the JSON has none).
+    #[must_use]
+    pub fn reported_device(&self) -> Option<String> {
+        self.json
+            .get("device")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+    }
+
+    /// The plain-words notes of the render (`notes` of the JSON).
+    #[must_use]
+    pub fn notes(&self) -> Vec<String> {
+        self.json
+            .get("notes")
+            .and_then(Value::as_array)
+            .map(|a| a.iter().filter_map(Value::as_str).map(str::to_owned).collect())
+            .unwrap_or_default()
+    }
+
     /// The pipeline version the binary reported.
     #[must_use]
     pub fn pipeline_version(&self) -> String {
@@ -223,6 +283,24 @@ impl YmBinary {
         out_dir: &Path,
         work: &Path,
     ) -> Result<Rendered> {
+        self.render_on(Device::Cpu, input, settings, output, out_dir, work)
+    }
+
+    /// [`render`](Self::render) on the CPU reference or, strictly, on the graphics device.
+    ///
+    /// # Errors
+    ///
+    /// As [`render`](Self::render); on [`Device::Gpu`] also when no device opens (exit 4) or the device fails on
+    /// the photo (`error.kind` `gpu`).
+    pub fn render_on(
+        &self,
+        device: Device,
+        input: &Path,
+        settings: &Value,
+        output: Output,
+        out_dir: &Path,
+        work: &Path,
+    ) -> Result<Rendered> {
         std::fs::create_dir_all(work).with_context(|| format!("creating {}", work.display()))?;
         std::fs::create_dir_all(out_dir)
             .with_context(|| format!("creating {}", out_dir.display()))?;
@@ -233,7 +311,7 @@ impl YmBinary {
             .with_context(|| format!("writing {}", settings_path.display()))?;
         let mut cmd = Command::new(&self.path);
         cmd.arg("render")
-            .arg("--cpu")
+            .arg(device.flag())
             .arg("--json")
             .arg("--quiet")
             .arg("--settings")
@@ -243,7 +321,7 @@ impl YmBinary {
             .arg(out_dir)
             .arg(input)
             .env("YELLOWMOON_HOME", &home)
-            .env("YELLOWMOON_GPU", "off")
+            .env("YELLOWMOON_GPU", device.env())
             .stdin(Stdio::null());
         if let Some(data) = &self.data {
             cmd.env("YELLOWMOON_DATA", data);
@@ -283,6 +361,74 @@ impl YmBinary {
             json,
         })
     }
+}
+
+/// The graphics adapter `ym` finds, from `ym doctor --json` (`gpu`), for the report of a GPU run.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct Adapter {
+    /// The adapter's name (`Apple Paravirtual device`, `llvmpipe (LLVM 17.0.6, 256 bits)`).
+    pub name: String,
+    /// `Metal`, `Vulkan`, ...
+    pub backend: String,
+    /// A software adapter (Mesa lavapipe, WARP).
+    pub software: bool,
+}
+
+impl YmBinary {
+    /// Asks `ym doctor --json` which adapter a GPU run would use. `Ok(None)` when none opens (the reason is in the
+    /// error of a strict render); an error when `ym doctor` cannot be run or printed nothing usable.
+    ///
+    /// # Errors
+    ///
+    /// When the process cannot start or its JSON cannot be read.
+    pub fn adapter(&self, work: &Path) -> Result<Option<Adapter>> {
+        std::fs::create_dir_all(work).with_context(|| format!("creating {}", work.display()))?;
+        let home = work.join("home");
+        std::fs::create_dir_all(&home).with_context(|| format!("creating {}", home.display()))?;
+        let mut cmd = Command::new(&self.path);
+        cmd.args(["doctor", "--json"])
+            .env("YELLOWMOON_HOME", &home)
+            .env("YELLOWMOON_GPU", "require")
+            .stdin(Stdio::null());
+        if let Some(data) = &self.data {
+            cmd.env("YELLOWMOON_DATA", data);
+        }
+        let (_, stdout, stderr) = run_with_timeout(&mut cmd, Duration::from_secs(120))
+            .with_context(|| format!("running {} doctor", self.path.display()))?;
+        let text = String::from_utf8_lossy(&stdout);
+        let json: Value = text
+            .lines()
+            .rev()
+            .find(|l| !l.trim().is_empty())
+            .and_then(|l| serde_json::from_str(l).ok())
+            .with_context(|| {
+                format!(
+                    "ym doctor printed no JSON: {}",
+                    first_lines(&String::from_utf8_lossy(&stderr), 4)
+                )
+            })?;
+        Ok(adapter_of(&json))
+    }
+}
+
+/// The adapter of a `ym doctor --json` document (`None` when `gpu.available` is false).
+#[must_use]
+pub fn adapter_of(doctor: &Value) -> Option<Adapter> {
+    let gpu = doctor.get("gpu")?;
+    if gpu.get("available").and_then(Value::as_bool) != Some(true) {
+        return None;
+    }
+    let text = |key: &str| {
+        gpu.get(key)
+            .and_then(Value::as_str)
+            .unwrap_or("unknown")
+            .to_owned()
+    };
+    Some(Adapter {
+        name: text("name"),
+        backend: text("backend"),
+        software: gpu.get("software").and_then(Value::as_bool).unwrap_or(false),
+    })
 }
 
 fn first_lines(text: &str, n: usize) -> String {
@@ -379,9 +525,13 @@ mod tests {
 
     #[test]
     fn output_kinds_ask_for_their_format() {
-        assert!(Output::Png16.args().contains(&"png"));
-        assert!(Output::Png16.args().contains(&"16"));
-        assert!(Output::Dng.args().contains(&"dng"));
-        assert!(Output::Jpeg.args().contains(&"jpeg"));
+        let has = |o: Output, w: &str| o.args().iter().any(|a| a == w);
+        assert!(has(Output::Png16, "png"));
+        assert!(has(Output::Png16, "16"));
+        assert!(!has(Output::Png16, "--long-edge"));
+        assert!(has(Output::Dng, "dng"));
+        assert!(has(Output::Jpeg, "jpeg"));
+        let edge = Output::Png16LongEdge(1500).args();
+        assert_eq!(&edge[edge.len() - 2..], ["--long-edge", "1500"]);
     }
 }

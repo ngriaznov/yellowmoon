@@ -29,6 +29,7 @@ struct BinU {
     nw: vec4<u32>,     // weights: red x, red y, blue x, blue y
     flags: vec4<u32>,  // vignetting on, sigma plane width, sigma plane height, step = max(k / 2, 1)
     f: vec4<f32>,      // green count k^2 / 2, the noise factor of the binning, 0, 0
+    band: vec4<u32>,   // the destination image's first output row (0 when it holds the whole output), 0, 0, 0
     wts: array<vec4<f32>, 12>,   // red x, red y, blue x, blue y: up to 12 weights each, 3 vec4s apiece
     vig: VigU,
 };
@@ -81,7 +82,7 @@ fn bin_main(gid: vec3<u32>) {
     if (pu.flags.x != 0u) {
         g = vig_gain((2 * ox + 1) * k - w, (2 * oy + 1) * k - h);
     }
-    let o = u32(oy) * pu.out.z + gid.x;
+    let o = (u32(oy) - pu.band.x) * pu.out.z + gid.x;
     var gv = div_exact(gsum, pu.f.x);
     if (pu.flags.x != 0u) {
         gv = opaque(gv * g);
@@ -134,5 +135,5 @@ fn bin_sigma_main(gid: vec3<u32>) {
         g = vig_gain((2 * ox + 1) * i32(pu.dims.w) - i32(pu.frame.x), (2 * oy + 1) * i32(pu.dims.w) - i32(pu.frame.y));
     }
     let root = sqrt(div_exact(s2, n));
-    dst[u32(oy) * pu.out.z + gid.x] = opaque(opaque(root * pu.f.y) * g);
+    dst[(u32(oy) - pu.band.x) * pu.out.z + gid.x] = opaque(opaque(root * pu.f.y) * g);
 }

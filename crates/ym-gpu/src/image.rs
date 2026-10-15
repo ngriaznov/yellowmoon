@@ -1,6 +1,6 @@
-//! Images that live on the device: [`GpuImage`] (planar f32) and [`GpuRaw`] (the raw words of one
-//! photo), with the host-to-device and device-to-host helpers the tests and the first wiring use
-//! (`docs/gpu-plan.md` section 4.3).
+//! Images that live on the device: [`GpuImage`] (planar f32), with the host-to-device and
+//! device-to-host helpers the tests and the wiring use (`docs/gpu-plan.md` section 4.3). The raw
+//! words of a photo are not an image: they live in [`crate::kernels::prep::DeviceRaw`].
 //!
 //! # Layout
 //!
@@ -11,16 +11,12 @@
 //! (`docs/gpu-plan.md` X-3): the storage modes of [`crate::device::StorageMode`] belong to the legacy
 //! kernels and their tests.
 //!
-//! A [`GpuRaw`] is the sensor words of the photo as the decoder produced them, two `u16` per `u32`
-//! (little-endian, the first sample in the low half), row after row with no padding: sample
-//! `i = y * width + x` is half `i & 1` of word `i >> 1`. An odd `width` therefore shares a word
-//! across a row boundary; kernels index by `i`, not by rows of words. One plane of a 61 MP body is
-//! 115 MiB, under the 128 MiB binding the plan designs for.
-//!
 //! Buffers come from the pool ([`crate::pool`]) and go back to it when the image is dropped, so a
 //! resident image is an ordinary value that caches can hold behind an `Arc`.
 
-use crate::cpu::{Cfa, Placement, RgbImage};
+use std::sync::Arc;
+
+use crate::cpu::{Placement, RgbImage};
 use crate::device::{GpuContext, GpuError};
 use crate::kernels::util::even;
 use crate::pool::PooledBuffer;
@@ -267,74 +263,172 @@ impl GpuImage {
     }
 }
 
-/// The raw sensor words of one photo, on the device (see the module notes for the layout).
+/// A tall picture held as bands of full-width rows, each band in a buffer of its own, so that no
+/// storage binding has to hold the whole picture (`docs/gpu-plan.md` K4: at most 128 MiB). The fit
+/// view of a 50 MP photo at `k = 2` is 4344 x 2896 pixels, 150 MB in three planes; as bands of a few
+/// hundred rows it is a dozen buffers of 5 to 30 MB.
+///
+/// The bands run from the top without a gap; all have the picture's width, stride and number of
+/// planes. The placement of a band is `(0, first row)` in a frame of the picture's size, so kernels
+/// that read absolute coordinates (the lens stage) see the picture and not the band.
 #[derive(Debug)]
-pub struct GpuRaw {
-    /// Two `u16` per `u32`, `width * height` samples row after row.
-    pub words: PooledBuffer,
-    /// The quantisation step of a lossy-compressed (cRAW) photo per sample, when it has one. The
-    /// representation (a `u8` table index or f16 pairs) is the raw front's to choose.
-    pub qstep: Option<PooledBuffer>,
-    /// Width in photosites.
+pub struct RowBands {
+    /// Width of the picture in pixels.
     pub width: usize,
-    /// Height in photosites.
+    /// Height of the picture in rows.
     pub height: usize,
-    /// The 2x2 pattern at photosite (0, 0).
-    pub cfa: Cfa,
+    /// Number of planes (1, 3 or 4).
+    pub planes: usize,
+    bands: Vec<Arc<GpuImage>>,
 }
 
-impl GpuRaw {
-    /// Bytes of the word buffer for `samples` samples.
-    pub fn words_bytes(samples: usize) -> u64 {
-        (samples as u64).div_ceil(2) * 4
-    }
-
-    /// Uploads the samples of a `width x height` readout once, in chunks of at most
-    /// [`CHUNK_BYTES`](crate::stream::CHUNK_BYTES).
+impl RowBands {
+    /// A picture made of `bands`, top to bottom.
     ///
     /// # Errors
     ///
-    /// [`GpuError::InvalidInput`] when `samples` is not `width * height` long or the readout is
-    /// empty; [`GpuError::BufferTooLarge`] when it does not fit one storage binding;
-    /// [`GpuError::OutOfBudget`] and [`GpuError::DeviceLost`] from the pool and the queue.
-    pub fn upload(
-        ctx: &GpuContext,
-        label: &str,
-        width: usize,
-        height: usize,
-        cfa: Cfa,
-        samples: &[u16],
-    ) -> Result<GpuRaw, GpuError> {
-        if width == 0 || height == 0 || samples.len() != width * height {
-            return Err(GpuError::InvalidInput(format!(
-                "{label}: {} samples for a {width} x {height} readout",
-                samples.len()
-            )));
+    /// [`GpuError::InvalidInput`] for no band, bands of different widths or plane counts, or bands
+    /// that do not follow each other (a band whose placement is not at the row where the one above it
+    /// ends).
+    pub fn new(bands: Vec<GpuImage>) -> Result<RowBands, GpuError> {
+        let Some(first) = bands.first() else {
+            return Err(GpuError::InvalidInput(
+                "a picture of bands needs at least one band".into(),
+            ));
+        };
+        let (width, planes) = (first.width, first.planes);
+        let mut row = 0;
+        for b in &bands {
+            if (b.width, b.planes) != (width, planes) || b.place.y0 != row || b.place.x0 != 0 {
+                return Err(GpuError::InvalidInput(format!(
+                    "the bands do not make one picture: a {} x {} x {} band at ({}, {}) follows row {row} of a {width} wide, {planes} plane picture",
+                    b.width, b.height, b.planes, b.place.x0, b.place.y0
+                )));
+            }
+            row += b.height;
         }
-        let words = ctx
-            .pool()
-            .acquire(label, Self::words_bytes(samples.len()), IMAGE_USAGE)?;
-        upload_bytes(ctx, &words, 0, bytemuck::cast_slice(samples))?;
-        Ok(GpuRaw {
-            words,
-            qstep: None,
+        Ok(RowBands {
             width,
-            height,
-            cfa,
+            height: row,
+            planes,
+            bands: bands.into_iter().map(Arc::new).collect(),
         })
     }
 
-    /// Reads the samples back (for tests and for the host fallback).
+    /// The bands, top to bottom.
+    #[must_use]
+    pub fn bands(&self) -> &[Arc<GpuImage>] {
+        &self.bands
+    }
+
+    /// Bytes of all the bands' buffers.
+    #[must_use]
+    pub fn byte_len(&self) -> u64 {
+        self.bands.iter().map(|b| b.byte_len()).sum()
+    }
+
+    /// The largest buffer of any band, the figure that must stay under the binding limit.
+    #[must_use]
+    pub fn max_band_bytes(&self) -> u64 {
+        self.bands.iter().map(|b| b.byte_len()).max().unwrap_or(0)
+    }
+
+    /// The rows `rows` as one image: a band itself when they lie in one (the window starts at row
+    /// `rows.start - band.place.y0` of it, which is the second value), else a copy made into an image
+    /// of its own, recorded into `passes` (one copy per plane and band, whole rows). The image keeps
+    /// the placement of the rows in the picture, so a kernel that reads absolute coordinates sees
+    /// them where they are.
     ///
     /// # Errors
     ///
-    /// The errors of [`read_bytes`].
-    pub fn read(&self, ctx: &GpuContext) -> Result<Vec<u16>, GpuError> {
+    /// [`GpuError::InvalidInput`] for rows that are empty or beyond the picture; the pool's errors.
+    pub fn window(
+        &self,
+        passes: &mut PassList<'_>,
+        rows: std::ops::Range<usize>,
+    ) -> Result<(Arc<GpuImage>, usize), GpuError> {
+        if rows.is_empty() || rows.end > self.height {
+            return Err(GpuError::InvalidInput(format!(
+                "the rows {rows:?} are empty or outside the {} rows of the picture",
+                self.height
+            )));
+        }
+        if let Some(b) = self
+            .bands
+            .iter()
+            .find(|b| b.place.y0 <= rows.start && b.place.y0 + b.height >= rows.end)
+        {
+            return Ok((Arc::clone(b), rows.start - b.place.y0));
+        }
+        let ctx = passes.context();
+        let place = Placement {
+            x0: 0,
+            y0: rows.start,
+            frame_width: self.width,
+            frame_height: self.height,
+        };
+        let dst = GpuImage::alloc(
+            ctx,
+            "bands window",
+            self.width,
+            rows.len(),
+            self.planes,
+            place,
+        )?;
+        for b in &self.bands {
+            let (top, bottom) = (b.place.y0.max(rows.start), (b.place.y0 + b.height).min(rows.end));
+            if top >= bottom {
+                continue;
+            }
+            let len = ((bottom - top) * b.stride * 4) as u64;
+            for c in 0..self.planes {
+                let from = ((c * b.plane_len() + (top - b.place.y0) * b.stride) * 4) as u64;
+                let to = ((c * dst.plane_len() + (top - rows.start) * dst.stride) * 4) as u64;
+                passes
+                    .encoder()
+                    .copy_buffer_to_buffer(&b.buf, from, &dst.buf, to, len);
+            }
+        }
+        Ok((Arc::new(dst), 0))
+    }
+
+    /// Reads the picture back as dense planar samples (`planes * width * height`).
+    ///
+    /// # Errors
+    ///
+    /// The errors of [`GpuImage::read`].
+    pub fn read(&self, ctx: &GpuContext) -> Result<Vec<f32>, GpuError> {
         let n = self.width * self.height;
-        let bytes = read_bytes(ctx, &self.words, 0, n as u64 * 2)?;
-        Ok(bytes
-            .chunks_exact(2)
-            .map(|c| u16::from_le_bytes([c[0], c[1]]))
-            .collect())
+        let mut out = vec![0.0f32; self.planes * n];
+        for b in &self.bands {
+            let part = b.read(ctx)?;
+            let len = b.width * b.height;
+            for c in 0..self.planes {
+                let dst = c * n + b.place.y0 * self.width;
+                out[dst..dst + len].copy_from_slice(&part[c * len..(c + 1) * len]);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Reads a three-plane picture back as a host image of the whole picture.
+    ///
+    /// # Errors
+    ///
+    /// [`GpuError::InvalidInput`] when the picture does not have three planes, plus the errors of
+    /// [`RowBands::read`].
+    pub fn read_rgb(&self, ctx: &GpuContext) -> Result<RgbImage, GpuError> {
+        if self.planes != 3 {
+            return Err(GpuError::InvalidInput(format!(
+                "a picture with {} planes is not an RGB image",
+                self.planes
+            )));
+        }
+        Ok(RgbImage {
+            width: self.width,
+            height: self.height,
+            place: Placement::whole(self.width, self.height),
+            data: self.read(ctx)?,
+        })
     }
 }

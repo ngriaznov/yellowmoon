@@ -136,6 +136,7 @@ jobs:
           python3 -I -m unittest discover -s tools/oracle -p 'test_*.py' -v
           python3 -I -m unittest discover -s tools/looks -p 'test_*.py' -v
           python3 -I -m unittest discover -s tools/golden -p 'test_*.py' -v
+          python3 -I -m unittest discover -s tools/dev -p 'test_*.py' -v
 
   # M0-07: WGSL kernels against their CPU references on Mesa lavapipe (software Vulkan): correctness
   # only, speed means nothing here. Metal behaviour and timings are checked on a Mac (HUMAN M0-H4).
@@ -165,7 +166,7 @@ jobs:
       # `-p ym-gpu` was run here; the one other place was the macOS `rust` job, where the test skips itself and passes when
       # the runner opens no Metal adapter. YM_REQUIRE_GPU (above) makes a missing adapter a failure.
       - name: Renderer on the GPU against the CPU reference, with device faults injected
-        run: cargo test -p ym-core --release --features fault-injection --test render_gpu --test render_sharpen --test render_graph --test gpu_reduced --test gpu_export
+        run: cargo test -p ym-core --release --features fault-injection --test render_gpu --test render_sharpen --test render_graph --test gpu_reduced --test gpu_export --test gpu_determinism --test gpu_faults
       - name: The app and ym give the same exports on the GPU
         env:
           YELLOWMOON_GPU: "on"
@@ -346,6 +347,93 @@ jobs:
             autoexp-gate.txt
             autoexp-out/report.md
             autoexp-out/results.json
+          if-no-files-found: ignore
+
+  # G-09: the golden pictures on the graphics device (docs/gpu-plan.md section 7, docs/13 "GPU golden"). `golden check --device gpu`
+  # renders every selected file with `ym render --require-gpu` on Mesa lavapipe, so a render that fell back to the CPU is a
+  # failure (the JSON must say `device: gpu` and carry no fallback note), and holds each picture against the stored CPU one
+  # (the cache the `golden` job above filled; this job needs it) by the CIEDE2000 statistics of the 1/4 downsample and the share
+  # of samples more than 8 codes of 16 bits off. The gates are the lavapipe calibration of tools/golden (GpuGate::CALIBRATED).
+  # A push checks the ten files of tools/golden/gpu-subset.txt (the four CFA phases, cRAW, lossless L, 12 and 14 bit,
+  # camera-processed, the highest ISO); the nightly run takes all 61. One of the owner's photos (the readme-photos branch,
+  # Git LFS, cached by the checksums of tools/fetch/owner-photos.sha256) goes through the same comparison at a long edge of 1500 px.
+  golden-gpu:
+    needs: golden
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      YELLOWMOON_DATA: ${{ github.workspace }}/data
+      YM_REQUIRE_GPU: "1"
+      WGPU_BACKEND: vulkan
+    steps:
+      - uses: actions/checkout@v4
+      - name: Mesa lavapipe (software Vulkan)
+        run: sudo apt-get update && sudo apt-get install -y mesa-vulkan-drivers libvulkan1 vulkan-tools
+      - name: Rust toolchain from rust-toolchain.toml
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: golden-gpu
+          cache-on-failure: true
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install -r training/requirements.txt -r training/synth/requirements.txt tifffile
+      - run: tools/fetch/spectral.sh
+      - name: Synthetic ARW set (61 files, a few minutes)
+        run: tools/fetch/synthetic.sh --release
+      - name: Build ym and golden (two invocations, see the golden job)
+        run: |
+          cargo build --release -p ym-cli
+          cargo build --release -p golden
+      - name: Reference pictures (the cache of the golden job)
+        uses: actions/cache@v4
+        with:
+          path: testdata/golden/refs
+          key: golden-refs-${{ hashFiles('tools/golden/expected.json') }}
+      - name: Golden check on the device, the subset on a push and all 61 files nightly
+        shell: bash
+        run: |
+          subset=(--subset tools/golden/gpu-subset.txt)
+          if [ "${{ github.event_name }}" = schedule ]; then subset=(); fi
+          target/release/golden check --device gpu "${subset[@]}" --ym target/release/ym --require-all \
+            --report golden-gpu-report.json | tee golden-gpu.txt
+          { echo '### golden check --device gpu (lavapipe)'; echo '```text'; tail -n 4 golden-gpu.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - name: Owner photos (readme-photos branch, Git LFS)
+        if: ${{ !cancelled() }}
+        id: owner
+        uses: actions/cache@v4
+        with:
+          path: |
+            testdata/readme-photos/src
+            !testdata/readme-photos/src/.git
+          key: owner-photos-${{ hashFiles('tools/fetch/owner-photos.sha256') }}
+      - name: Fetch the owner photos (cache miss)
+        if: ${{ !cancelled() && steps.owner.outputs.cache-hit != 'true' }}
+        uses: actions/checkout@v4
+        with:
+          ref: readme-photos
+          lfs: true
+          path: testdata/readme-photos/src
+          persist-credentials: false
+      - name: Verify the owner photos
+        if: ${{ !cancelled() }}
+        run: tools/fetch/owner-photos.sh --verify
+      - name: One real photo, the device against the CPU (golden metric)
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          target/release/golden device-check --ym target/release/ym --long-edge 1500 --report device-check-report.json \
+            testdata/readme-photos/src/A1M01749.ARW | tee device-check.txt
+          { echo '### golden device-check, A1M01749 (lavapipe)'; echo '```text'; tail -n 4 device-check.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: golden-gpu-reports
+          path: |
+            golden-gpu-report.json
+            golden-gpu.txt
+            device-check-report.json
+            device-check.txt
           if-no-files-found: ignore
 
   # M3-12: every exported DNG passes Adobe's dng_validate, and its render is within a median ΔE00 of 1.5 of our JPEG (docs/09

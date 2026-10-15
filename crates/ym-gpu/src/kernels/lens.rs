@@ -49,11 +49,14 @@ struct LensU {
 }
 
 /// A lens geometry as the shader reads it.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct LensTable {
     frame_w: usize,
     frame_h: usize,
     crop: Rect,
+    /// The geometry the tables came from, for the source rectangle of a part of the output
+    /// ([`LensTable::source_rect`]).
+    geometry: LensGeometry,
     /// `F_i - 1`.
     dist: Vec<f32>,
     /// `K_red,i - 1` and `K_blue,i - 1` when the geometry has a CA table.
@@ -81,6 +84,7 @@ impl LensTable {
             frame_w: geo.frame_width(),
             frame_h: geo.frame_height(),
             crop: geo.crop(),
+            geometry: geo.clone(),
             dist: geo
                 .distortion_knots()
                 .map(minus_one)
@@ -98,6 +102,14 @@ impl LensTable {
     #[must_use]
     pub fn output_size(&self) -> (usize, usize) {
         (self.crop.w, self.crop.h)
+    }
+
+    /// The rectangle of the source frame (clamped to it) that holds every source position of the part
+    /// `out` of the cropped output, with the Catmull-Rom support and a pixel of safety
+    /// (`LensGeometry::source_rect`): the window a band of the output is resampled from.
+    #[must_use]
+    pub fn source_rect(&self, out: Rect) -> Rect {
+        self.geometry.source_rect(out)
     }
 }
 

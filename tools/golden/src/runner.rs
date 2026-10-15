@@ -13,6 +13,11 @@
 //! A change that is meant goes in with `golden update --note "why"`: it replaces the pictures and the hashes and keeps
 //! the note in `expected.json`, so the next check is identical again. That is how "no unexplained ΔE00 > 0.5 change"
 //! (`docs/13`) is enforced: an unexplained change leaves the old hash in git and fails the check.
+//!
+//! `golden check --device gpu` ([`check_gpu`]) renders on the graphics device, strictly (`ym render --require-gpu`), and
+//! holds the picture against the CPU reference by the same ΔE00 statistic and a count of the samples that moved by more
+//! than 8 codes of 16 bits ([`GpuGate`]); the JSON `ym` prints must say `device: gpu` and carry no fallback note, so a
+//! render that quietly fell back to the CPU cannot pass.
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -24,9 +29,11 @@ use clap::ValueEnum;
 use serde::Serialize;
 
 use crate::expected::{Expected, ExpectedEntry, LogEntry};
-use crate::image::{DOWNSAMPLE, DeltaStats, Rgb16, delta_e_stats, read_png16, write_png16};
+use crate::image::{
+    CodeStats, DOWNSAMPLE, DeltaStats, Rgb16, code_stats, delta_e_stats, read_png16, write_png16,
+};
 use crate::manifest::{Entry, Manifest};
-use crate::ymrun::{Output, YmBinary};
+use crate::ymrun::{Adapter, Device, Output, YmBinary};
 
 /// A run that did what it was asked but must not go on: a render that failed or a change that has no note. The binary
 /// exits with 1 for it (a setup problem, such as a missing `ym`, exits with 2).
@@ -119,6 +126,8 @@ pub enum Status {
     RenderFailed,
     /// The input file is not on disk.
     Missing,
+    /// A GPU render that `ym` reports as made on the CPU, or that carries the note of a fallback (GPU mode only).
+    FellBack,
 }
 
 impl Status {
@@ -141,6 +150,7 @@ impl Status {
             Self::NotExpected => "NOT EXPECTED",
             Self::RenderFailed => "RENDER FAILED",
             Self::Missing => "missing",
+            Self::FellBack => "FELL BACK",
         }
     }
 }
@@ -162,6 +172,15 @@ pub struct Outcome {
     pub message: String,
     /// Wall time of the render.
     pub seconds: f64,
+    /// Where `ym` says the picture was made (`cpu` or `gpu`; GPU mode only).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub device: Option<String>,
+    /// The notes `ym` printed for the render (GPU mode only).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
+    /// The full-resolution difference in codes of 16 bits (GPU mode only; absent for an identical picture).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub codes: Option<CodeStats>,
 }
 
 /// The result of `golden check`.
@@ -173,6 +192,9 @@ pub struct CheckReport {
     pub metric: &'static str,
     /// One outcome per selected entry, in manifest order.
     pub outcomes: Vec<Outcome>,
+    /// What the GPU mode compared with (absent for the CPU check).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gpu: Option<GpuReport>,
 }
 
 impl CheckReport {
@@ -238,16 +260,30 @@ struct Rendered {
     picture: Rgb16,
     pipeline_version: String,
     seconds: f64,
+    /// `device` of the JSON `ym` printed.
+    device: Option<String>,
+    /// `notes` of the JSON.
+    notes: Vec<String>,
 }
 
 fn render_picture(ctx: &Config, entry: &Entry) -> Result<Rendered> {
+    render_picture_on(ctx, Device::Cpu, Output::Png16, entry)
+}
+
+fn render_picture_on(
+    ctx: &Config,
+    device: Device,
+    output: Output,
+    entry: &Entry,
+) -> Result<Rendered> {
     let input = ctx.testdata.join(&entry.file);
     let scratch = tempfile::tempdir().context("creating a scratch folder")?;
     let started = Instant::now();
-    let rendered = ctx.ym.render(
+    let rendered = ctx.ym.render_on(
+        device,
         &input,
         &entry.settings,
-        Output::Png16,
+        output,
         &scratch.path().join("out"),
         scratch.path(),
     )?;
@@ -257,6 +293,8 @@ fn render_picture(ctx: &Config, entry: &Entry) -> Result<Rendered> {
         picture,
         pipeline_version: rendered.pipeline_version(),
         seconds,
+        device: rendered.reported_device(),
+        notes: rendered.notes(),
     })
 }
 
@@ -337,6 +375,9 @@ fn check_one(
         pipeline_version: None,
         message: String::new(),
         seconds: 0.0,
+        device: None,
+        notes: Vec::new(),
+        codes: None,
     };
     let input = ctx.testdata.join(&entry.file);
     if !input.is_file() {
@@ -423,6 +464,333 @@ pub fn check(ctx: &Config, entries: &[&Entry], write_missing_refs: bool) -> Resu
             Metric::P99 => "p99",
         },
         outcomes,
+        gpu: None,
+    })
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// GPU mode
+// ---------------------------------------------------------------------------------------------------------------
+
+/// What a GPU render is held against.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Reference {
+    /// The stored pictures (`testdata/golden/refs`, the CI cache): the CPU reference of the machine that wrote
+    /// `expected.json`. A picture whose hash is `expected.json`'s own is identical without reading a reference.
+    Stored,
+    /// A CPU render (`ym render --cpu`) made in the same run on the same machine: for a machine whose CPU path is not
+    /// the one `expected.json` was written on (a Mac: another libm), where the question is how far the device is from
+    /// the CPU of the same machine.
+    Render,
+}
+
+/// What a picture made on the device may differ from the CPU's by (`docs/gpu-plan.md` section 7): the ΔE00 statistics
+/// of the 1/4 downsample, and the share of the samples of the full-resolution picture that differ by more than
+/// [`codes_threshold`](Self::codes_threshold) codes of 16 bits.
+///
+/// Two sets exist. [`PLAN`](Self::PLAN) is what the plan proposed before any GPU picture had been measured.
+/// [`CALIBRATED`](Self::CALIBRATED) is the default: the plan says the gates are "calibrated on the first lavapipe run",
+/// and the project's rule for such a number is twice the first measured value (`tools/golden/README.md`, "GPU mode",
+/// has the measurements and what they mean). It is tighter than the plan for the median and the 99th percentile and
+/// looser for the maximum and the count, which a handful of limiter flips on the charts' hard edges decide.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+pub struct GpuGate {
+    /// The median ΔE00 may not exceed this.
+    pub median: f64,
+    /// The 99th percentile may not exceed this.
+    pub p99: f64,
+    /// The maximum may not exceed this.
+    pub max: f64,
+    /// A sample counts as moved when it differs by more than this many codes of 16 bits.
+    pub codes_threshold: u32,
+    /// The share of moved samples may not exceed this.
+    pub codes_share: f64,
+}
+
+impl GpuGate {
+    /// The gates the plan proposed (median 0.02, p99 0.05, max 0.5; fewer than 1e-3 of the samples more than 8 codes
+    /// off). On Mesa lavapipe the default synthetic set gives a maximum of 1.86 (one file) and a count of 3.7e-3, so
+    /// this set fails 50 of 61 files; it stays for the day Mykyta wants to hold the line there.
+    pub const PLAN: Self = Self {
+        median: 0.02,
+        p99: 0.05,
+        max: 0.5,
+        codes_threshold: 8,
+        codes_share: 1e-3,
+    };
+
+    /// Twice the worst of the first run on Mesa lavapipe over the 61 files of the default synthetic set (2026-10-15,
+    /// commit 4c5939f plus G-09): median 1.003e-4, p99 1.066e-2, maximum 1.855, share 3.66e-3.
+    pub const CALIBRATED: Self = Self {
+        median: 2.1e-4,
+        p99: 2.2e-2,
+        max: 3.8,
+        codes_threshold: 8,
+        codes_share: 7.4e-3,
+    };
+
+    fn validate(&self) -> Result<()> {
+        for (name, v) in [
+            ("median", self.median),
+            ("p99", self.p99),
+            ("max", self.max),
+            ("codes share", self.codes_share),
+        ] {
+            anyhow::ensure!(
+                v.is_finite() && v >= 0.0,
+                "the {name} gate must be a number of at least 0, not {v}"
+            );
+        }
+        Ok(())
+    }
+}
+
+/// What a GPU run recorded besides the outcomes.
+#[derive(Clone, Debug, Serialize)]
+pub struct GpuReport {
+    /// The gates in force.
+    pub gate: GpuGate,
+    /// What the pictures were compared with.
+    pub reference: Reference,
+    /// The adapter `ym doctor` found (filled in by the caller).
+    pub adapter: Option<Adapter>,
+}
+
+/// The mark of every note that a fallback or a refused device leaves in `notes` ("The graphics card could not render
+/// this photo, so the CPU did: ..."); a GPU render that carries one is not a GPU render.
+pub const FALLBACK_NOTE_MARK: &str = "graphics card";
+
+fn check_one_gpu(
+    ctx: &Config,
+    gate: &GpuGate,
+    reference: Reference,
+    output: Output,
+    entry: &Entry,
+    expected: &Expected,
+) -> Outcome {
+    let mut outcome = Outcome {
+        id: entry.id.clone(),
+        status: Status::Missing,
+        pixels_sha256: None,
+        delta_e_2000: None,
+        pipeline_version: None,
+        message: String::new(),
+        seconds: 0.0,
+        device: None,
+        notes: Vec::new(),
+        codes: None,
+    };
+    let input = ctx.testdata.join(&entry.file);
+    if !input.is_file() {
+        outcome.message = format!(
+            "{} is not on disk (fetch or generate it first)",
+            input.display()
+        );
+        return outcome;
+    }
+    let rendered = match render_picture_on(ctx, Device::Gpu, output, entry) {
+        Ok(r) => r,
+        Err(e) => {
+            outcome.status = Status::RenderFailed;
+            outcome.message = format!("{e:#}");
+            return outcome;
+        }
+    };
+    let hash = rendered.picture.pixel_sha256();
+    outcome.pixels_sha256 = Some(hash.clone());
+    outcome.pipeline_version = Some(rendered.pipeline_version.clone());
+    outcome.seconds = rendered.seconds;
+    outcome.device.clone_from(&rendered.device);
+    outcome.notes.clone_from(&rendered.notes);
+    // No silent fallback can pass: the file must say it was made on the device, and say nothing about the card.
+    if rendered.device.as_deref() != Some("gpu") {
+        outcome.status = Status::FellBack;
+        outcome.message = format!(
+            "ym reports device {:?}, not \"gpu\": the graphics device did not make this picture",
+            rendered.device.as_deref().unwrap_or("none")
+        );
+        return outcome;
+    }
+    if let Some(note) = rendered.notes.iter().find(|n| n.contains(FALLBACK_NOTE_MARK)) {
+        outcome.status = Status::FellBack;
+        outcome.message = format!("ym reports device gpu but says: {note}");
+        return outcome;
+    }
+    // The CPU picture to hold it against.
+    let cpu: Rgb16 = match reference {
+        Reference::Stored => {
+            let Some(want) = expected.entries.get(&entry.id) else {
+                outcome.status = Status::NotExpected;
+                outcome.message =
+                    "expected.json has no entry for this file; run `golden update`".to_owned();
+                return outcome;
+            };
+            let want_hash = want.pixels_sha256.clone();
+            if want_hash == hash {
+                return identical(outcome, &rendered.picture);
+            }
+            let path = reference_path(&ctx.refs, &entry.id);
+            let picture = match read_png16(&path) {
+                Ok(p) => p,
+                Err(_) if !path.is_file() => {
+                    outcome.status = Status::NoReference;
+                    outcome.message = format!(
+                        "the pixels differ from expected.json and {} does not exist, so the difference cannot be \
+                         measured; restore the reference pictures (CI cache) or use --reference render",
+                        path.display()
+                    );
+                    return outcome;
+                }
+                Err(e) => {
+                    outcome.status = Status::NoReference;
+                    outcome.message = format!("{e:#}");
+                    return outcome;
+                }
+            };
+            if picture.pixel_sha256() != want_hash {
+                outcome.status = Status::StaleReference;
+                outcome.message = format!(
+                    "{} is not the picture expected.json describes (another version's reference?); \
+                     delete testdata/golden/refs or run `golden update`",
+                    path.display()
+                );
+                return outcome;
+            }
+            picture
+        }
+        Reference::Render => {
+            let cpu = match render_picture_on(ctx, Device::Cpu, output, entry) {
+                Ok(r) => r,
+                Err(e) => {
+                    outcome.status = Status::RenderFailed;
+                    outcome.message = format!("the CPU render for comparison: {e:#}");
+                    return outcome;
+                }
+            };
+            if cpu.picture.pixel_sha256() == hash {
+                return identical(outcome, &rendered.picture);
+            }
+            cpu.picture
+        }
+    };
+    let (stats, codes) = match delta_e_stats(&cpu, &rendered.picture)
+        .and_then(|s| code_stats(&cpu, &rendered.picture, gate.codes_threshold).map(|c| (s, c)))
+    {
+        Ok(both) => both,
+        Err(e) => {
+            outcome.status = Status::SizeChanged;
+            outcome.message = format!("{e:#}");
+            return outcome;
+        }
+    };
+    let mut broken: Vec<String> = Vec::new();
+    for (name, value, limit) in [
+        ("median", stats.median, gate.median),
+        ("p99", stats.p99, gate.p99),
+        ("max", stats.max, gate.max),
+        ("share over codes", codes.share_over, gate.codes_share),
+    ] {
+        if value.is_nan() || value > limit {
+            broken.push(format!("{name} {value:.4e} > {limit:.4e}"));
+        }
+    }
+    outcome.delta_e_2000 = Some(stats);
+    outcome.codes = Some(codes);
+    if broken.is_empty() {
+        outcome.status = Status::Within;
+        outcome.message = format!(
+            "the device picture moved by ΔE00 median {:.4}, p99 {:.4}, max {:.4}; {} of {} samples ({:.2e}) more than {} codes, at most {}",
+            stats.median,
+            stats.p99,
+            stats.max,
+            codes.over,
+            codes.samples,
+            codes.share_over,
+            codes.threshold,
+            codes.max
+        );
+    } else {
+        outcome.status = Status::Exceeded;
+        outcome.message = format!(
+            "the device picture is too far from the CPU's: {} (ΔE00 median {:.4}, p99 {:.4}, max {:.4}; {} samples more than {} codes, at most {})",
+            broken.join(", "),
+            stats.median,
+            stats.p99,
+            stats.max,
+            codes.over,
+            codes.threshold,
+            codes.max
+        );
+    }
+    outcome
+}
+
+fn identical(mut outcome: Outcome, picture: &Rgb16) -> Outcome {
+    outcome.status = Status::Identical;
+    outcome.delta_e_2000 = Some(DeltaStats {
+        pixels: (picture.width / DOWNSAMPLE) * (picture.height / DOWNSAMPLE),
+        median: 0.0,
+        p99: 0.0,
+        mean: 0.0,
+        max: 0.0,
+    });
+    outcome
+}
+
+/// `golden check --device gpu`: renders every entry on the graphics device (strictly: `ym render --require-gpu`),
+/// requires the JSON to say `device: gpu` with no fallback note, and holds the picture against the CPU reference
+/// (`reference`) by `gate`. The CPU hashes of `expected.json` are not asked to match: a picture that equals them is
+/// reported identical, any other must be within the gate.
+///
+/// # Errors
+///
+/// When `expected.json` cannot be read or a gate is not a number; a failing file is an [`Outcome`], not an error.
+pub fn check_gpu(
+    ctx: &Config,
+    gate: &GpuGate,
+    reference: Reference,
+    entries: &[&Entry],
+) -> Result<CheckReport> {
+    check_gpu_as(ctx, gate, reference, Output::Png16, entries)
+}
+
+/// [`check_gpu`] with another kind of output (`golden device-check` asks for a smaller picture of a real photo).
+/// Only [`Reference::Render`] makes sense with an output other than [`Output::Png16`]: the stored pictures are the
+/// full-size ones.
+///
+/// # Errors
+///
+/// As [`check_gpu`].
+pub fn check_gpu_as(
+    ctx: &Config,
+    gate: &GpuGate,
+    reference: Reference,
+    output: Output,
+    entries: &[&Entry],
+) -> Result<CheckReport> {
+    gate.validate()?;
+    // Only the stored reference reads expected.json; a missing file is an empty set.
+    let expected = if reference == Reference::Stored {
+        Expected::load(&ctx.expected)?
+    } else {
+        Expected::default()
+    };
+    let done = AtomicUsize::new(0);
+    let outcomes = run_parallel(entries, ctx.jobs, |_, entry| {
+        let o = check_one_gpu(ctx, gate, reference, output, entry, &expected);
+        progress(ctx, &done, entries.len(), &o.id, o.status.label());
+        o
+    });
+    Ok(CheckReport {
+        tolerance: gate.max,
+        metric: "gpu",
+        outcomes,
+        gpu: Some(GpuReport {
+            gate: *gate,
+            reference,
+            adapter: None,
+        }),
     })
 }
 

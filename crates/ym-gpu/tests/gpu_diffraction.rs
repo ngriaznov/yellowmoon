@@ -60,6 +60,20 @@
 
 mod common;
 
+/// Prints like `println!` and writes the same line to the process's own stderr as well (the harness captures `println!` and
+/// `eprintln!`, not this), so that the numbers of a passing test reach the CI log of the Apple runners, from which a
+/// hardware column is made (G-09). No annotation: the budget of those is spent by the older notes.
+macro_rules! note {
+    ($($arg:tt)*) => {{
+        let line = format!($($arg)*);
+        println!("{line}");
+        let _ = std::io::Write::write_fmt(
+            &mut std::io::stderr(),
+            format_args!("[G-09 {}] {line}\n", file!().rsplit('/').next().unwrap_or("")),
+        );
+    }};
+}
+
 use std::path::{Path, PathBuf};
 
 use common::{TestGpu, gpus};
@@ -503,7 +517,7 @@ fn every_image_vector_matches_on_the_gpu() {
             worst = worst.max(d);
         }
     }
-    println!("vectors, worst |gpu - expected|: {worst:.3e}");
+    note!("vectors, worst |gpu - expected|: {worst:.3e}");
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -682,7 +696,7 @@ fn strengths_scales_noise_levels_gates_and_luma_weights_match_the_cpu() {
             worst = worst.max(d.max_abs);
         }
     }
-    println!("variants, worst |gpu - cpu|: {worst:.3e} (bound {FRAME_BOUND:.0e})");
+    note!("variants, worst |gpu - cpu|: {worst:.3e} (bound {FRAME_BOUND:.0e})");
 }
 
 #[test]
@@ -717,7 +731,7 @@ fn tiny_buffers_wrap_the_mirror_like_the_cpu() {
         assert!(d.max_abs <= FRAME_BOUND, "{w}x{h}: {}", d.max_abs);
         worst = worst.max(d.max_abs);
     }
-    println!("sizes 1x1 to 7x7 and thin strips, worst |gpu - cpu|: {worst:.3e}");
+    note!("sizes 1x1 to 7x7 and thin strips, worst |gpu - cpu|: {worst:.3e}");
 }
 
 #[test]
@@ -765,7 +779,7 @@ fn hostile_values_do_not_produce_nan_or_inf_and_match_the_cpu() {
             worst = worst.max(d.max_abs);
         }
     }
-    println!("values -0.05..4, strength 3, worst |gpu - cpu|: {worst:.3e}");
+    note!("values -0.05..4, strength 3, worst |gpu - cpu|: {worst:.3e}");
 }
 
 #[test]
@@ -838,7 +852,7 @@ fn hostile_values_that_the_stage_acts_on_match_the_cpu() {
             }
         }
     }
-    println!("hostile frames the stage acts on, worst |gpu - cpu|: {worst:.3e}");
+    note!("hostile frames the stage acts on, worst |gpu - cpu|: {worst:.3e}");
 }
 
 #[test]
@@ -1000,7 +1014,7 @@ fn flipping_and_transposing_the_frame_flips_the_output() {
             }
         }
     }
-    println!("transpose, flip x, flip y: worst |moved run - moved output| {worst:.3e}");
+    note!("transpose, flip x, flip y: worst |moved run - moved output| {worst:.3e}");
     assert!(worst <= FRAME_BOUND, "{worst}");
 }
 

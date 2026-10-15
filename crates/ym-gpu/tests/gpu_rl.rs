@@ -43,8 +43,14 @@ const BOUND_N4: f32 = 1.5e-6;
 /// n up to 10, software adapter: twice the worst first measured value (7.15e-7, at n = 4 and 5; the
 /// others are at most 5.4e-7).
 const BOUND: f32 = 1.5e-6;
-/// Hardware adapters: the plan's starting value for Richardson-Lucy (`docs/gpu-plan.md` section 7);
-/// the first Apple run prints the measured numbers (`ci_note`) and this is lowered to twice them.
+/// Hardware adapters, `matches_the_cpu_for_every_iteration_count`, which prints its worst value by iteration count: Metal
+/// (macos-14 and macos-15, run 38694506557) gave 2.38e-7 (n = 1) rising to 1.19e-6 (n = 4) and 2.26e-6 (n = 10), so the
+/// bounds are twice the worst of n up to 4 and of n up to 10 (G-09).
+const HW_BOUND_N4: f32 = 2.38e-6;
+/// See [`HW_BOUND_N4`]: n from 5 to 10.
+const HW_BOUND_N10: f32 = 4.52e-6;
+/// Hardware adapters, the tests whose Metal value was not printed yet (the tile and PSF tests now print it): the plan's
+/// starting value for Richardson-Lucy (`docs/gpu-plan.md` section 7), to be lowered to twice what the next Metal run prints.
 const HW_BOUND: f32 = 5e-5;
 /// The distance of a tile beyond the halo cap from the whole frame: twice the first measured value
 /// (2.1e-7; the CPU's own bands differ from its whole-frame run by 9.5e-7 there).
@@ -54,11 +60,22 @@ fn f32_device() -> Option<&'static TestGpu> {
     gpus().iter().find(|d| d.mode == StorageMode::F32)
 }
 
+/// The bound of a test that has not printed a Metal value yet.
 fn bound(dev: &TestGpu, software: f32) -> f32 {
     if dev.gpu.info().is_software {
         software
     } else {
         HW_BOUND.max(software)
+    }
+}
+
+/// The bound of the iteration-count test, whose Metal values were printed.
+fn bound_by_iterations(dev: &TestGpu, n: usize) -> f32 {
+    match (dev.gpu.info().is_software, n <= 4) {
+        (true, true) => BOUND_N4,
+        (true, false) => BOUND,
+        (false, true) => HW_BOUND_N4,
+        (false, false) => HW_BOUND_N10,
     }
 }
 
@@ -230,7 +247,7 @@ fn matches_the_cpu_for_every_iteration_count() {
             e.max, e.at, e.mean
         );
         worst_by_n[n] = worst_by_n[n].max(e.max);
-        let limit = bound(dev, if n <= 4 { BOUND_N4 } else { BOUND });
+        let limit = bound_by_iterations(dev, n);
         assert!(
             e.max <= limit,
             "case {i} {w}x{h} n {n}: {:e} > {limit:e}",
@@ -304,9 +321,13 @@ fn tiles_with_the_plans_halo_equal_the_whole_frame_bit_for_bit() {
     });
     let want = cpu_reference(&img, &SigmaOwned::Plane(plane), &params);
     let e = compare(&whole, &want.data);
-    eprintln!(
-        "[G-06] rl 203x157 tiles (n 4): against the CPU max {:.3e}",
-        e.max
+    g06::ci_note(
+        "rl tiles",
+        &format!(
+            "Richardson-Lucy 203x157 tiles (n 4) on {}: against the CPU max {:.3e}",
+            dev.gpu.info().name,
+            e.max
+        ),
     );
     assert!(e.max <= bound(dev, BOUND_N4), "{:e}", e.max);
 }
@@ -343,8 +364,12 @@ fn beyond_the_halo_cap_a_tile_differs_from_the_whole_frame_by_a_little() {
         let e = compare(&tile.data, &want.data);
         worst = worst.max(e.max);
     }
-    eprintln!(
-        "[G-06] rl beyond the cap (n 10, exact radius 120, halo 24): tile against whole {worst:.3e}"
+    g06::ci_note(
+        "rl beyond the cap",
+        &format!(
+            "Richardson-Lucy beyond the cap (n 10, exact radius 120, halo 24) on {}: tile against whole {worst:.3e}",
+            dev.gpu.info().name
+        ),
     );
     assert!(worst <= BEYOND_CAP_BOUND, "{worst:e}");
     // The CPU's own band decomposition has the same property: report it for comparison.
@@ -376,10 +401,20 @@ fn the_psf_follows_the_position_in_the_frame() {
         compare(&a.data, &b.data).max > 1e-4,
         "the PSF did not depend on the position"
     );
+    let mut worst = 0.0f32;
     for (img, got) in [(&centre, &a), (&corner, &b)] {
         let want = cpu_reference(img, &sigma, &params);
-        assert!(compare(&got.data, &want.data).max <= bound(dev, BOUND_N4));
+        let e = compare(&got.data, &want.data).max;
+        worst = worst.max(e);
+        assert!(e <= bound(dev, BOUND_N4), "{e:e}");
     }
+    g06::ci_note(
+        "rl psf",
+        &format!(
+            "Richardson-Lucy, PSF at the centre and the far corner on {}: against the CPU worst {worst:.3e}",
+            dev.gpu.info().name
+        ),
+    );
 }
 
 #[test]

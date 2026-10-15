@@ -48,6 +48,20 @@
 
 mod common;
 
+/// Prints like `println!` and writes the same line to the process's own stderr as well (the harness captures `println!` and
+/// `eprintln!`, not this), so that the numbers of a passing test reach the CI log of the Apple runners, from which a
+/// hardware column is made (G-09). No annotation: the budget of those is spent by the older notes.
+macro_rules! note {
+    ($($arg:tt)*) => {{
+        let line = format!($($arg)*);
+        println!("{line}");
+        let _ = std::io::Write::write_fmt(
+            &mut std::io::stderr(),
+            format_args!("[G-09 {}] {line}\n", file!().rsplit('/').next().unwrap_or("")),
+        );
+    }};
+}
+
 use std::path::{Path, PathBuf};
 
 use common::{Rng, TestGpu, gpus};
@@ -522,7 +536,7 @@ fn every_vector_matches_the_oracle_on_the_gpu() {
             worst_stable = worst_stable.max(to_oracle);
         }
     }
-    println!("the 16 stable vectors: worst |gpu - oracle| {worst_stable:.3e}");
+    note!("the 16 stable vectors: worst |gpu - oracle| {worst_stable:.3e}");
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -561,7 +575,7 @@ impl Totals {
     }
 
     fn report(&self, what: &str) {
-        println!(
+        note!(
             "{what}: {} runs, {} of {} samples over 1e-4 ({:.2e}), {} over 2e-5, worst |gpu - cpu| {:.3e} ({})",
             self.runs,
             self.over,

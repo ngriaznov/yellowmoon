@@ -19,6 +19,20 @@
 //! `YM_REQUIRE_GPU=1`); the Metal runners run the same file (`mac-gpu.yml`).
 
 mod common;
+
+/// Prints like `eprintln!` and writes the same line to the process's own stderr as well (the harness captures `eprintln!`,
+/// not this), so that the numbers of a passing test reach the CI log of the Apple runners, from which a hardware column
+/// is made (G-09). No annotation: the budget of those is spent by the older notes.
+macro_rules! note {
+    ($($arg:tt)*) => {{
+        let line = format!($($arg)*);
+        eprintln!("{line}");
+        let _ = std::io::Write::write_fmt(
+            &mut std::io::stderr(),
+            format_args!("[G-09 {}] {line}\n", file!().rsplit('/').next().unwrap_or("")),
+        );
+    }};
+}
 #[path = "g06/mod.rs"]
 mod g06;
 
@@ -531,7 +545,7 @@ impl Stats {
     }
 
     fn print(&self, what: &str) {
-        eprintln!(
+        note!(
             "{what}: {} samples, {} over 1e-4 ({:.2e}), {} over 2e-5, largest {:e}",
             self.n,
             self.over,
@@ -1425,7 +1439,7 @@ fn the_stages_after_the_demosaic_match_the_cpu_stages_on_the_same_planes() {
             );
         }
     }
-    eprintln!(
+    note!(
         "[G-06] stages after the demosaic, R6..R8 against R6..R6: worst {worst:.3e}, mean of the maxima {:.3e}",
         sum / n as f64
     );
@@ -1642,7 +1656,7 @@ fn every_option_of_the_stages_after_the_demosaic_matches_the_cpu_and_the_tiles()
                 };
                 let on_device = tiles_of(&|r| setup.gpu(dev, r));
                 let on_cpu = tiles_of(&|r| setup.cpu(r));
-                eprintln!(
+                note!(
                     "[G-06] beyond the halo cap ({lens:?}): tiles against whole, device {on_device:.3e}, CPU {on_cpu:.3e}"
                 );
                 assert!(on_device <= BEYOND_CAP_CHAIN, "{on_device:e}");
@@ -1659,7 +1673,7 @@ fn every_option_of_the_stages_after_the_demosaic_matches_the_cpu_and_the_tiles()
             }
         }
     }
-    eprintln!("[G-06] stage options against R6..R6: worst {worst_post:.3e}");
+    note!("[G-06] stage options against R6..R6: worst {worst_post:.3e}");
 }
 
 #[test]
@@ -1873,7 +1887,7 @@ fn small_frames_through_the_raw_group_match_the_cpu_stages() {
             }
         }
     }
-    eprintln!("[G-06] small frames, R6..R8 against R6..R6: worst {worst:.3e}");
+    note!("[G-06] small frames, R6..R8 against R6..R6: worst {worst:.3e}");
 }
 
 #[test]
@@ -2129,7 +2143,7 @@ fn r1_to_r9_matches_the_cpu_chain() {
     }
     free.print("R1..R9 chain, tie-free content");
     prone.print("R1..R9 chain, tie-prone content");
-    eprintln!(
+    note!(
         "[G-07] R1..R9 against R6..R8 behind the CPU's front (tie-free): largest {against_handoff:e}"
     );
     assert_within("R1..R9 chain, tie-free content", &free, FRONT_TIE_FREE);
@@ -2445,7 +2459,7 @@ fn small_frames_through_the_front_chain_match_the_cpu_chain() {
             }
         }
     }
-    eprintln!("[G-07] small frames, R1..R9 against the CPU chain: worst {worst:.3e}");
+    note!("[G-07] small frames, R1..R9 against the CPU chain: worst {worst:.3e}");
 }
 
 #[test]
@@ -2803,7 +2817,7 @@ fn a_fuzz_of_the_front_chain_keeps_tiles_exact_and_the_front_on_the_cpus_values(
         );
         cases += 1;
     }
-    eprintln!(
+    note!(
         "[review] front fuzz: {cases} cases, worst front against the CPU front {worst_hand:e} ({worst_case})"
     );
     assert!(
