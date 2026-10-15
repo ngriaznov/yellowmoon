@@ -934,6 +934,16 @@ impl<'a> Job<'a> {
         self
     }
 
+    /// This request runs with `opts` instead of the renderer's options of the moment it began. The
+    /// export that falls back to the CPU after a device error uses it with no device, so that the
+    /// whole photo is made on the CPU reference path and nothing is left sticky on the photo
+    /// (G-08). Call before anything reads [`Job::options`].
+    #[must_use]
+    pub fn with_options(mut self, opts: Arc<RenderOptions>) -> Self {
+        self.opts = opts;
+        self
+    }
+
     /// The options this request runs with: a snapshot taken when it began.
     pub fn options(&self) -> &RenderOptions {
         &self.opts

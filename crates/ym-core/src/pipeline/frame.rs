@@ -48,7 +48,9 @@
 //! (`sharpen_photo`).
 
 mod device;
+mod export_tail;
 
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Weak};
 
 use rayon::prelude::*;
@@ -58,11 +60,13 @@ use ym_gpu::cpu::output_sharpen::{OutputSharpen, scale_for_edges};
 use ym_gpu::cpu::resample::sample_catmull_rom;
 use ym_gpu::cpu::{Rect, RgbImage};
 use ym_gpu::device::{Gpu, GpuError};
-use ym_gpu::queue::{CancelToken, Priority};
+use ym_gpu::queue::{CancelToken, JobSpec, Priority};
+use ym_gpu::tail::{TailRoute, colour_tile_to_host};
 
 use self::device::{
     Bounds, DeviceDisplay, DeviceInput, DisplayJob, PlainJob, TailWork, Upload, ViewRoute,
 };
+pub use self::export_tail::{BAND_DEPTH, FullSource, GpuBands, TailRequest};
 use super::color::{GradePlan, PhotoSource};
 use super::geometry::{Affine, Grid, oriented_to_sensor, sensor_to_oriented};
 use super::graph::{ComputeDevice, Job, RenderReport, Renderer};
@@ -2115,6 +2119,11 @@ impl Renderer {
     /// [`Renderer::render_full`], optionally waiting for the foreground (viewport frames, tile
     /// passes, thumbnails) to be idle before it starts and before every tile, and reporting the
     /// fraction of tiles done (0 to 1) after each one.
+    ///
+    /// The colour stage of a DNG's renders runs on the device when [`GpuStages::EXPORT_TAIL`] is on
+    /// (the frame itself stays on the host: the DNG's white point is found in it). A device error
+    /// there makes the whole render again with no device at all, with a note, as for every export;
+    /// a strict policy fails the render instead.
     pub(crate) fn render_full_with(
         &self,
         src: &PhotoSource,
@@ -2123,6 +2132,50 @@ impl Renderer {
         yield_to_foreground: bool,
         progress: Option<&(dyn Fn(f32) + Sync)>,
     ) -> Result<FullImage, RenderError> {
+        // Monotone across the two attempts.
+        let best = AtomicU32::new(0);
+        let mono = |f: f32| {
+            if f > f32::from_bits(best.load(Ordering::Relaxed)) {
+                best.store(f.to_bits(), Ordering::Relaxed);
+                if let Some(p) = progress {
+                    p(f);
+                }
+            }
+        };
+        match self.render_full_on(src, request, cancel, yield_to_foreground, Some(&mono), false)? {
+            Attempt::Done(image) => Ok(image),
+            Attempt::DeviceFailed(reason) => {
+                let attempt = self.render_full_on(
+                    src,
+                    request,
+                    cancel,
+                    yield_to_foreground,
+                    Some(&mono),
+                    true,
+                )?;
+                let Attempt::Done(mut image) = attempt else {
+                    return Err(RenderError::Gpu(reason));
+                };
+                image.report.notes.insert(
+                    0,
+                    format!("The graphics card could not render this photo, so the CPU did: {reason}."),
+                );
+                Ok(image)
+            }
+        }
+    }
+
+    /// One attempt of [`Renderer::render_full_with`]. With `cpu_reference` the attempt runs with no
+    /// device at all (the options of the renderer without its device and stages).
+    fn render_full_on(
+        &self,
+        src: &PhotoSource,
+        request: &FullRequest,
+        cancel: &CancelToken,
+        yield_to_foreground: bool,
+        progress: Option<&(dyn Fn(f32) + Sync)>,
+        cpu_reference: bool,
+    ) -> Result<Attempt, RenderError> {
         let gate = || -> Result<(), RenderError> {
             if yield_to_foreground {
                 self.scheduler()
@@ -2133,6 +2186,9 @@ impl Renderer {
         };
         gate()?;
         let mut job = Job::for_export(self, src, cancel);
+        if cpu_reference {
+            job = job.with_options(self.cpu_reference_options());
+        }
         if request.target.is_dng() {
             // A DNG carries no sharpening (docs/09): its pixels and its preview are made without R8.
             job = job.without_capture_sharpening();
@@ -2190,9 +2246,18 @@ impl Renderer {
         let grid = geom.grid((plan.out_w, plan.out_h), (fw, fh));
         let mut rgb = vec![0.0f32; fw * fh * 3];
         let threads = job.options().threads;
+        let strict = job.options().gpu_strict;
         let tiles_total = (fw.div_ceil(tile) * fh.div_ceil(tile)).max(1);
-        // A device error in the raw chain restarts the whole photo on the CPU (`Job::run_full_tile`):
-        // one file is wholly device or wholly CPU, never a mix of tiles.
+        // The colour stage of a DNG's renders runs on the device when the export tail is on; the
+        // frame stays on the host. A device error there, or in the raw chain, makes the whole render
+        // again on the CPU: one file is wholly device or wholly CPU, never a mix of tiles.
+        let mut device_colour = if request.target.is_dng() {
+            export_tail::dng_colour_gpu(&mut job)?
+        } else {
+            None
+        };
+        let colour_on_device = device_colour.is_some();
+        let spec = JobSpec::new(Priority::Export).owned_by(u64::from(src.id.0));
         let mut best_fraction = 0.0f32;
         'render: loop {
             let mut tiles_done = 0usize;
@@ -2210,41 +2275,73 @@ impl Renderer {
                             Ok(region) => region,
                             Err(RenderError::Gpu(_)) if job.take_gpu_restart() => {
                                 rgb.fill(0.0);
+                                // The raw chain's route is gone for this photo; its colour stage
+                                // follows it to the CPU.
+                                device_colour = None;
                                 continue 'render;
                             }
                             Err(e) => return Err(e),
                         };
-                        let sampled = sample_to_camera(&region, (x0, y0), &grid, (ox, oy), tw, th);
-                        let frame = Frame::planar(tw, th, &sampled.img.data)
-                            .map_err(|e| RenderError::Color(e.to_string()))?;
-                        let mut out = vec![0.0f32; 3 * tw * th];
-                        match request.target {
-                            FullTarget::DisplayLinear(_) | FullTarget::DngPreview => grade
-                                .chain
-                                .render_display_linear_f32(
-                                    &frame,
-                                    Layout::Interleaved,
-                                    &mut out,
-                                    threads,
-                                )
-                                .map_err(|e| RenderError::Color(e.to_string()))?,
-                            FullTarget::DngLinearAwg4 => grade
-                                .chain
-                                .render_dng_linear_awg4_f32(
-                                    &frame,
-                                    Layout::Interleaved,
-                                    &mut out,
-                                    threads,
-                                )
-                                .map_err(|e| RenderError::Color(e.to_string()))?,
-                        }
-                        if let Some(outside) = &sampled.outside {
-                            for (i, &o) in outside.iter().enumerate() {
-                                if o != 0 {
-                                    out[3 * i..3 * i + 3].fill(0.0);
+                        let out = if let Some(gpu) = &device_colour {
+                            let route = TailRoute::new(gpu, spec, cancel.clone());
+                            let colour = colour_tile_to_host(
+                                &route,
+                                export_tail::shared(region),
+                                (x0, y0),
+                                grid.sampler_grid(),
+                                (ox, oy),
+                                tw,
+                                th,
+                                Arc::clone(&grade.chain),
+                                export_tail::host_stop(request.target),
+                            );
+                            match colour {
+                                Ok(out) => out,
+                                Err(GpuError::Cancelled) => return Err(RenderError::Cancelled),
+                                Err(e) => {
+                                    let reason = e.to_string();
+                                    tracing::warn!(error = %reason, "the device failed on a tile; the CPU takes over");
+                                    if strict {
+                                        return Err(RenderError::Gpu(reason));
+                                    }
+                                    return Ok(Attempt::DeviceFailed(reason));
                                 }
                             }
-                        }
+                        } else {
+                            let sampled =
+                                sample_to_camera(&region, (x0, y0), &grid, (ox, oy), tw, th);
+                            let frame = Frame::planar(tw, th, &sampled.img.data)
+                                .map_err(|e| RenderError::Color(e.to_string()))?;
+                            let mut out = vec![0.0f32; 3 * tw * th];
+                            match request.target {
+                                FullTarget::DisplayLinear(_) | FullTarget::DngPreview => grade
+                                    .chain
+                                    .render_display_linear_f32(
+                                        &frame,
+                                        Layout::Interleaved,
+                                        &mut out,
+                                        threads,
+                                    )
+                                    .map_err(|e| RenderError::Color(e.to_string()))?,
+                                FullTarget::DngLinearAwg4 => grade
+                                    .chain
+                                    .render_dng_linear_awg4_f32(
+                                        &frame,
+                                        Layout::Interleaved,
+                                        &mut out,
+                                        threads,
+                                    )
+                                    .map_err(|e| RenderError::Color(e.to_string()))?,
+                            }
+                            if let Some(outside) = &sampled.outside {
+                                for (i, &o) in outside.iter().enumerate() {
+                                    if o != 0 {
+                                        out[3 * i..3 * i + 3].fill(0.0);
+                                    }
+                                }
+                            }
+                            out
+                        };
                         for y in 0..th {
                             let d = ((oy + y) * fw + ox) * 3;
                             rgb[d..d + 3 * tw].copy_from_slice(&out[y * tw * 3..(y + 1) * tw * 3]);
@@ -2265,16 +2362,30 @@ impl Renderer {
             }
             break;
         }
-        let report = job.finish(1, ComputeDevice::Cpu, target_out);
-        Ok(FullImage {
+        let device = if colour_on_device && device_colour.is_some() {
+            ComputeDevice::Gpu
+        } else {
+            ComputeDevice::Cpu
+        };
+        let report = job.finish(1, device, target_out);
+        Ok(Attempt::Done(FullImage {
             width: fw,
             height: fh,
             rgb,
             target: request.target,
             window,
             report,
-        })
+        }))
     }
+}
+
+/// How one attempt of a full-resolution render ended.
+enum Attempt {
+    /// The picture.
+    Done(FullImage),
+    /// The device failed in a stage the attempt had put on it (and the policy is not strict): the
+    /// render is made again with no device, and says why.
+    DeviceFailed(String),
 }
 
 /// The only pixel of a 1 x 1 image as camera RGB.

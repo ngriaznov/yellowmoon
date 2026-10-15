@@ -102,10 +102,12 @@ pub enum KernelId {
     MosaicCa,
     /// PLACEHOLDER (G-07): R9 lens resampling.
     Lens,
-    /// PLACEHOLDER (G-07): the half-resolution noise sigma plane.
+    /// G-07: the half-resolution noise sigma plane, from the resident raw words.
     Sigma,
-    /// PLACEHOLDER (G-07): the k x k mosaic binning of the fit view.
+    /// G-07: the k x k mosaic binning of the fit view, with the vignetting gain at the binned pixels.
     Bin,
+    /// G-07: the sigma of the binned image, from the half-resolution sigma plane.
+    BinSigma,
     /// G-07: the fixed-order reduction of the R5 chroma offsets (reduced path): one partial per workgroup.
     Reduce,
     /// G-07: the fold of the partials of the R5 chroma-offset reduction, in index order.
@@ -142,7 +144,7 @@ pub enum KernelId {
 
 impl KernelId {
     /// All kernels, placeholders included (see [`KernelId::is_placeholder`]).
-    pub const ALL: [KernelId; 59] = [
+    pub const ALL: [KernelId; 60] = [
         KernelId::SpikeNormalize,
         KernelId::SpikeDemosaic,
         KernelId::SpikeMatrix,
@@ -186,6 +188,7 @@ impl KernelId {
         KernelId::Lens,
         KernelId::Sigma,
         KernelId::Bin,
+        KernelId::BinSigma,
         KernelId::Reduce,
         KernelId::ReduceFold,
         KernelId::SigmaExpand,
@@ -250,6 +253,7 @@ impl KernelId {
             KernelId::Lens => "lens",
             KernelId::Sigma => "sigma",
             KernelId::Bin => "bin",
+            KernelId::BinSigma => "bin_sigma",
             KernelId::Reduce => "reduce",
             KernelId::ReduceFold => "reduce_fold",
             KernelId::SigmaExpand => "sigma_expand",
@@ -277,10 +281,10 @@ impl KernelId {
     /// it. The task that implements the kernel replaces the stub with `include_str!` of its own
     /// `.wgsl` in `KernelId::body` and deletes the id from this match (two small edits, reported).
     pub const fn placeholder_owner(self) -> Option<&'static str> {
-        match self {
-            KernelId::Sigma | KernelId::Bin => Some("G-07"),
-            _ => None,
-        }
+        // Every family the plan registered ahead of its implementation has one now (G-07 wrote the
+        // last of them); a later task that registers another adds an arm here.
+        let _ = self;
+        None
     }
 
     /// Whether this kernel is still a placeholder ([`KernelId::placeholder_owner`]).
@@ -363,7 +367,8 @@ impl KernelId {
             | KernelId::ReduceFold => super::highlights::body(self),
             KernelId::MosaicCa => super::mosaic_ca::body(),
             KernelId::Lens => super::lens::body(),
-            KernelId::Sigma | KernelId::Bin => placeholder_body(self),
+            KernelId::Sigma => super::sigma::body(),
+            KernelId::Bin | KernelId::BinSigma => super::bin::body(self),
             KernelId::Resize => super::resize::body(),
         }
     }
@@ -410,6 +415,7 @@ impl KernelSet {
 /// The WGSL of a placeholder kernel: one storage binding it writes a NaN into, nothing else, so a
 /// stage wired to it by mistake fails every parity test instead of passing by accident. The NaN is
 /// built from a run-time value because WGSL refuses to evaluate one at shader-creation time.
+#[allow(dead_code)]
 fn placeholder_body(id: KernelId) -> String {
     let owner = id.placeholder_owner().unwrap_or("?");
     format!(

@@ -323,7 +323,7 @@ impl DeviceRaw {
     }
 
     /// The four bindings of the words and steps (`front_raw.wgsl` bindings 1 to 4).
-    fn bindings(&self) -> [wgpu::BindingResource<'_>; 4] {
+    pub(crate) fn bindings(&self) -> [wgpu::BindingResource<'_>; 4] {
         let first = &self.slabs[0];
         let second = self.slabs.get(1).unwrap_or(first);
         [

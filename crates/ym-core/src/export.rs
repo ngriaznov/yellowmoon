@@ -68,7 +68,7 @@ use ym_color::display::OutputTarget;
 use ym_export::dng::{CropRect, DngReport, FittedProfile, compose_orientation};
 use ym_export::exif::{CaptureTime, ExifInfo, Gps};
 use ym_export::naming::{self, NameFields, Placement};
-use ym_export::request::{PictureStages, write_export_with};
+use ym_export::request::{BandRequest, PictureStages, write_export_bands, write_export_with};
 use ym_export::xmp::{XmpInfo, YmInfo};
 use ym_export::{
     ColorSpace, DetailStat, DngInputs, ExportDestination, ExportFormat, ExportHooks, ExportOptions,
@@ -83,8 +83,10 @@ use ym_raw::metadata::RawMetadata;
 
 use crate::auto::meta_image_size;
 use crate::camera::PhotoCamera;
+use crate::pipeline::frame::TailRequest;
 use crate::pipeline::{
-    DisplayChoice, FullImage, FullRequest, FullTarget, PhotoSource, RenderError, Renderer,
+    ComputeDevice, DisplayChoice, FullImage, FullRequest, FullTarget, PhotoSource, RenderError,
+    RenderReport, Renderer,
 };
 use crate::session::{PhotoId, PhotoView, Session, SessionError};
 use crate::settings::{DevelopSettings, ResolvedSettings, SettingsError};
@@ -205,19 +207,52 @@ fn format_index(kind: FormatKind) -> usize {
     }
 }
 
+/// What one device (the CPU path or the export tail on the graphics card) is measured at.
 #[derive(Debug, Clone, Copy)]
-struct SpeedState {
+struct DeviceSpeed {
     render_s_per_mp: f64,
     render_samples: u32,
     encode_s_per_mp: [f64; 4],
     encode_samples: [u32; 4],
+    /// The measured time of this format already includes the encode, because the writer pulls the
+    /// picture while the device renders it: the two overlap, and the encode is not added again.
+    overlapped: [bool; 4],
 }
 
-/// How fast this machine renders and encodes, in seconds per megapixel.
+impl DeviceSpeed {
+    const PRIOR: Self = Self {
+        render_s_per_mp: RENDER_S_PER_MP_PRIOR,
+        render_samples: 0,
+        encode_s_per_mp: ENCODE_S_PER_MP_PRIOR,
+        encode_samples: [0; 4],
+        overlapped: [false; 4],
+    };
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SpeedState {
+    /// The CPU reference path, and the device path.
+    sets: [DeviceSpeed; 2],
+    /// Which set the estimates read: the device path when the renderer runs the export tail.
+    active: usize,
+}
+
+fn device_index(device: ComputeDevice) -> usize {
+    match device {
+        ComputeDevice::Cpu => 0,
+        ComputeDevice::Gpu => 1,
+    }
+}
+
+/// How fast this machine renders and encodes, in seconds per megapixel, for the CPU path and for
+/// the export tail on the graphics card, each measured on its own.
 ///
 /// Starts from the numbers measured on the development machine ([`RENDER_S_PER_MP_PRIOR`],
-/// [`ENCODE_S_PER_MP_PRIOR`]); every exported photo then replaces them: the first sample outright,
-/// later ones as a running mean that weighs the newest half.
+/// [`ENCODE_S_PER_MP_PRIOR`]) for both: no speed of the graphics card has been measured yet (the
+/// Mac session of the GPU plan, M0-H4, does), so the estimate for the device path starts as the
+/// CPU's. Every exported photo then replaces the numbers of the path it took: the first sample
+/// outright, later ones as a running mean that weighs the newest half. A photo that fell back to
+/// the CPU teaches the CPU numbers and leaves the device's alone.
 #[derive(Debug)]
 pub struct ExportSpeed {
     state: Mutex<SpeedState>,
@@ -238,10 +273,8 @@ impl ExportSpeed {
     pub fn new() -> Self {
         Self {
             state: Mutex::new(SpeedState {
-                render_s_per_mp: RENDER_S_PER_MP_PRIOR,
-                render_samples: 0,
-                encode_s_per_mp: ENCODE_S_PER_MP_PRIOR,
-                encode_samples: [0; 4],
+                sets: [DeviceSpeed::PRIOR; 2],
+                active: 0,
             }),
         }
     }
@@ -258,46 +291,74 @@ impl ExportSpeed {
         }
     }
 
-    /// Records that rendering `megapixels` took `seconds`.
+    /// The estimates read the numbers of `device` from now on (the renderer runs the export tail
+    /// on the graphics card: [`ComputeDevice::Gpu`]).
+    pub fn use_device(&self, device: ComputeDevice) {
+        self.st().active = device_index(device);
+    }
+
+    /// Records that rendering `megapixels` took `seconds` on the CPU path.
     pub fn record_render(&self, megapixels: f64, seconds: f64) {
+        self.record_render_on(ComputeDevice::Cpu, megapixels, seconds);
+    }
+
+    /// Records that rendering `megapixels` took `seconds` on `device`.
+    pub fn record_render_on(&self, device: ComputeDevice, megapixels: f64, seconds: f64) {
         if megapixels >= MIN_SAMPLE_MP && seconds.is_finite() && seconds > 0.0 {
             let mut st = self.st();
-            st.render_s_per_mp =
-                Self::blend(st.render_s_per_mp, st.render_samples, seconds / megapixels);
-            st.render_samples += 1;
+            let set = &mut st.sets[device_index(device)];
+            set.render_s_per_mp = Self::blend(set.render_s_per_mp, set.render_samples, seconds / megapixels);
+            set.render_samples += 1;
         }
     }
 
-    /// Records that encoding `megapixels` of `format` took `seconds`.
+    /// Records that encoding `megapixels` of `format` took `seconds` on the CPU path.
     pub fn record_encode(&self, format: FormatKind, megapixels: f64, seconds: f64) {
         if megapixels >= MIN_SAMPLE_MP && seconds.is_finite() && seconds > 0.0 {
             let i = format_index(format);
             let mut st = self.st();
-            st.encode_s_per_mp[i] = Self::blend(
-                st.encode_s_per_mp[i],
-                st.encode_samples[i],
-                seconds / megapixels,
-            );
-            st.encode_samples[i] += 1;
+            let set = &mut st.sets[0];
+            set.encode_s_per_mp[i] =
+                Self::blend(set.encode_s_per_mp[i], set.encode_samples[i], seconds / megapixels);
+            set.encode_samples[i] += 1;
+        }
+    }
+
+    /// Records that a photo of `megapixels` took `seconds` in all on the device path, rendering and
+    /// writing together (the writer pulls the picture while the device makes it, so the two cannot
+    /// be told apart): the numbers of `format` on the device are the render speed alone from now on.
+    pub fn record_overlapped(&self, format: FormatKind, megapixels: f64, seconds: f64) {
+        if megapixels >= MIN_SAMPLE_MP && seconds.is_finite() && seconds > 0.0 {
+            let mut st = self.st();
+            let set = &mut st.sets[1];
+            if !set.overlapped[format_index(format)] {
+                // The first sample of the format replaces what was known.
+                set.render_samples = 0;
+            }
+            set.overlapped = [true; 4];
+            set.render_s_per_mp = Self::blend(set.render_s_per_mp, set.render_samples, seconds / megapixels);
+            set.render_samples += 1;
         }
     }
 
     /// The render speed now, in seconds per megapixel.
     #[must_use]
     pub fn render_s_per_mp(&self) -> f64 {
-        self.st().render_s_per_mp
+        let st = self.st();
+        st.sets[st.active].render_s_per_mp
     }
 
     /// The encode speed of a format now, in seconds per megapixel.
     #[must_use]
     pub fn encode_s_per_mp(&self, format: FormatKind) -> f64 {
-        self.st().encode_s_per_mp[format_index(format)]
+        let st = self.st();
+        st.sets[st.active].encode_s_per_mp[format_index(format)]
     }
 
     /// Whether any photo has been measured yet (otherwise the numbers are the starting ones).
     #[must_use]
     pub fn is_measured(&self) -> bool {
-        self.st().render_samples > 0
+        self.st().sets.iter().any(|s| s.render_samples > 0)
     }
 
     /// Seconds to export one photo: `render_mp` megapixels to render (twice for a DNG, which
@@ -305,8 +366,15 @@ impl ExportSpeed {
     #[must_use]
     pub fn seconds_for(&self, render_mp: f64, out_mp: f64, format: FormatKind) -> f64 {
         let st = self.st();
+        let set = &st.sets[st.active];
         let renders = if format == FormatKind::Dng { 2.0 } else { 1.0 };
-        renders * render_mp * st.render_s_per_mp + out_mp * st.encode_s_per_mp[format_index(format)]
+        let i = format_index(format);
+        let encode = if set.overlapped[i] {
+            0.0
+        } else {
+            out_mp * set.encode_s_per_mp[i]
+        };
+        renders * render_mp * set.render_s_per_mp + encode
     }
 }
 
@@ -654,7 +722,9 @@ impl ExportControl<'_> {
 pub struct ExportTimings {
     /// Rendering the pixels (for a DNG, both renders), in milliseconds.
     pub render_ms: f64,
-    /// Resizing, encoding and writing, in milliseconds.
+    /// Resizing, encoding and writing, in milliseconds. With the export tail on the device the
+    /// writer pulls the picture while it is rendered, so this includes the time spent waiting for
+    /// the render, and the two overlap.
     pub encode_ms: f64,
 }
 
@@ -679,6 +749,11 @@ pub struct ExportReport {
     pub dng: Option<DngReport>,
     /// Where the time went.
     pub timings: ExportTimings,
+    /// [`ComputeDevice::Gpu`] when any stage of this photo's export ran on the graphics card (the
+    /// raw chain of a tile, the export tail), [`ComputeDevice::Cpu`] when none did: also for a photo
+    /// that started on the device and was made again on the CPU after an error, whose `notes` say
+    /// why. A photo that was skipped (nothing was rendered) says `Cpu`.
+    pub device: ComputeDevice,
     /// Plain-words notes from the render (a classical demosaic, lens tables that were ignored).
     pub notes: Vec<String>,
 }
@@ -846,13 +921,15 @@ fn report(control: &ExportControl<'_>, fraction: f32) {
 }
 
 /// Renders one target on the export worker and waits for it, passing the render's tile progress
-/// on (scaled into `lo..hi` of the photo's progress) and its own cancellation to the job.
+/// on (scaled into `lo..hi` of the photo's progress) and its own cancellation to the job. With
+/// `cpu_reference` the render uses no device at all (what an export falls back to).
 fn render(
     ctx: &ExportContext,
     photo: &ExportPhoto,
     target: FullTarget,
     control: &ExportControl<'_>,
     (lo, hi): (f32, f32),
+    cpu_reference: bool,
 ) -> Result<FullImage, ExportError> {
     control.cancel.check().map_err(|_| ExportError::Cancelled)?;
     let tiles = Arc::new(AtomicU32::new(0));
@@ -860,9 +937,13 @@ fn render(
         let tiles = Arc::clone(&tiles);
         Arc::new(move |f: f32| tiles.store(f.to_bits(), Ordering::Relaxed))
     };
-    let handle =
+    let handle = if cpu_reference {
         ctx.renderer
-            .spawn_full_reporting(photo.source.clone(), FullRequest { target }, sink);
+            .spawn_full_cpu(photo.source.clone(), FullRequest { target }, sink)
+    } else {
+        ctx.renderer
+            .spawn_full_reporting(photo.source.clone(), FullRequest { target }, sink)
+    };
     let mut last = f32::NAN;
     loop {
         if control.cancel.is_cancelled() {
@@ -984,6 +1065,22 @@ fn export_photo_unguarded(
         .map_err(|e| ExportError::Options(e.to_string()))?;
     control.cancel.check().map_err(|_| ExportError::Cancelled)?;
 
+    // Progress never goes back, also when a photo is made again on the CPU after the device failed.
+    let best = AtomicU32::new(0);
+    let monotone = |f: f32| {
+        let f = f.clamp(0.0, 1.0);
+        if f > f32::from_bits(best.load(Ordering::Relaxed)) {
+            best.store(f.to_bits(), Ordering::Relaxed);
+            if let Some(p) = control.progress {
+                p(f);
+            }
+        }
+    };
+    let control = &ExportControl {
+        cancel: control.cancel.clone(),
+        progress: Some(&monotone),
+    };
+
     // 1. The look and the display rendering must be usable: an export does not fall back.
     let looks = ctx.renderer.looks();
     let inputs = render_inputs(ctx, photo)?;
@@ -1032,6 +1129,7 @@ fn export_photo_unguarded(
             rendered: (0, 0),
             dng: None,
             timings: ExportTimings::default(),
+            device: ComputeDevice::Cpu,
             notes,
         });
     }
@@ -1072,6 +1170,9 @@ fn export_photo_unguarded(
     let outcome;
     let rendered;
     let encode_started;
+    let device;
+    // The time of a photo made on the device covers the render and the writing together.
+    let mut overlapped = false;
     if is_dng {
         let raw = render(
             ctx,
@@ -1079,6 +1180,7 @@ fn export_photo_unguarded(
             FullTarget::DngLinearAwg4,
             control,
             (0.0, DNG_RAW_SHARE),
+            false,
         )?;
         let preview = render(
             ctx,
@@ -1086,11 +1188,23 @@ fn export_photo_unguarded(
             FullTarget::DngPreview,
             control,
             (DNG_RAW_SHARE, DNG_PREVIEW_SHARE),
+            false,
         )?;
         render_ms = raw.report.ms + preview.report.ms;
-        ctx.speed
-            .record_render(megapixels(raw.width, raw.height), raw.report.ms / 1000.0);
-        ctx.speed.record_render(
+        device = if device_of(&raw.report) == ComputeDevice::Gpu
+            || device_of(&preview.report) == ComputeDevice::Gpu
+        {
+            ComputeDevice::Gpu
+        } else {
+            ComputeDevice::Cpu
+        };
+        ctx.speed.record_render_on(
+            device_of(&raw.report),
+            megapixels(raw.width, raw.height),
+            raw.report.ms / 1000.0,
+        );
+        ctx.speed.record_render_on(
+            device_of(&preview.report),
             megapixels(preview.width, preview.height),
             preview.report.ms / 1000.0,
         );
@@ -1142,47 +1256,109 @@ fn export_photo_unguarded(
         encode_started = Instant::now();
         outcome = write_export(&request, &dest, &hooks.stage(DNG_PREVIEW_SHARE, 1.0))?;
     } else {
-        let image = render(
-            ctx,
-            photo,
-            FullTarget::DisplayLinear(output_target(options.color_space)),
-            control,
-            (0.0, RASTER_RENDER_SHARE),
-        )?;
-        render_ms = image.report.ms;
-        ctx.speed.record_render(
-            megapixels(image.width, image.height),
-            image.report.ms / 1000.0,
-        );
-        notes.extend(image.report.notes.iter().cloned());
-        still_the_same()?;
-        rendered = (image.width as u32, image.height as u32);
-        let pixels = ImageRef::new(
-            image.width as u32,
-            image.height as u32,
-            &image.rgb,
-            PixelEncoding::DisplayLinear,
-        )?;
-        let request =
-            ExportRequest::new(pixels, options, &metadata).remove_location(params.remove_location);
-        encode_started = Instant::now();
-        // Output sharpening (Detail › Sharpening › Output) runs in the writer, right after the
-        // Lanczos-3 resize, on the picture at the size it is written. Never for a DNG.
+        // Output sharpening (Detail › Sharpening › Output) runs right after the Lanczos-3 resize, on
+        // the picture at the size it is written. Never for a DNG.
         let stages =
             PictureStages::output_sharpening(photo.source.settings.output_sharpening as f32);
-        outcome = write_export_with(
-            &request,
-            &dest,
-            &hooks.stage(RASTER_RENDER_SHARE, 1.0),
-            &stages,
-        )?;
+        // With the export tail on the device the picture is never a host frame: the device makes
+        // the encoded rows and the writer pulls them (`pipeline::frame::export_tail`). A device
+        // error ends that attempt, and the whole photo is made again on the CPU reference path.
+        let mut cpu_reference = false;
+        let mut on_device = None;
+        if ctx.renderer.export_tail_enabled() {
+            let began = Instant::now();
+            let request = TailRequest {
+                target: output_target(options.color_space),
+                space: options.color_space,
+                size: options.size,
+                output_sharpening_pct: stages.output_sharpening_pct,
+                bits: bit_depth_of(options.format_spec()),
+            };
+            match export_on_device(
+                ctx,
+                photo,
+                request,
+                &metadata,
+                params,
+                &dest,
+                &hooks,
+                control,
+                &still_the_same,
+            ) {
+                Ok(done) => on_device = Some((done, began)),
+                Err(ExportError::Render(RenderError::Gpu(reason)))
+                    if !ctx.renderer.options().gpu_strict =>
+                {
+                    tracing::warn!(photo = %photo.id, error = %reason, "the export tail failed on the device; the CPU takes over");
+                    notes.push(format!(
+                        "The graphics card could not render this photo, so the CPU did: {reason}."
+                    ));
+                    cpu_reference = true;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        if let Some((done, began)) = on_device {
+            render_ms = done.report.ms;
+            rendered = done.rendered;
+            device = ComputeDevice::Gpu;
+            overlapped = true;
+            for n in &done.report.notes {
+                if !notes.contains(n) {
+                    notes.push(n.clone());
+                }
+            }
+            outcome = done.outcome;
+            encode_started = began;
+        } else {
+            let image = render(
+                ctx,
+                photo,
+                FullTarget::DisplayLinear(output_target(options.color_space)),
+                control,
+                (0.0, RASTER_RENDER_SHARE),
+                cpu_reference,
+            )?;
+            render_ms = image.report.ms;
+            device = device_of(&image.report);
+            ctx.speed.record_render_on(
+                device,
+                megapixels(image.width, image.height),
+                image.report.ms / 1000.0,
+            );
+            for n in &image.report.notes {
+                if !notes.contains(n) {
+                    notes.push(n.clone());
+                }
+            }
+            still_the_same()?;
+            rendered = (image.width as u32, image.height as u32);
+            let pixels = ImageRef::new(
+                image.width as u32,
+                image.height as u32,
+                &image.rgb,
+                PixelEncoding::DisplayLinear,
+            )?;
+            let request = ExportRequest::new(pixels, options, &metadata)
+                .remove_location(params.remove_location);
+            encode_started = Instant::now();
+            outcome = write_export_with(
+                &request,
+                &dest,
+                &hooks.stage(RASTER_RENDER_SHARE, 1.0),
+                &stages,
+            )?;
+        }
     }
     let encode_ms = encode_started.elapsed().as_secs_f64() * 1000.0;
-    ctx.speed.record_encode(
-        options.format,
-        megapixels(outcome.width as usize, outcome.height as usize),
-        encode_ms / 1000.0,
-    );
+    let out_mp = megapixels(outcome.width as usize, outcome.height as usize);
+    if overlapped {
+        ctx.speed
+            .record_overlapped(options.format, out_mp, encode_ms / 1000.0);
+    } else {
+        ctx.speed
+            .record_encode(options.format, out_mp, encode_ms / 1000.0);
+    }
     report(control, 1.0);
     if let Some(dng) = &outcome.dng {
         // `docs/09`: the clipped fractions go in the export log.
@@ -1201,6 +1377,7 @@ fn export_photo_unguarded(
         bytes = outcome.bytes,
         render_ms,
         encode_ms,
+        device = ?device,
         total_ms = started.elapsed().as_secs_f64() * 1000.0,
         "exported"
     );
@@ -1221,8 +1398,93 @@ fn export_photo_unguarded(
             render_ms,
             encode_ms,
         },
+        device,
         notes,
     })
+}
+
+/// What a raster export that the device made gives back.
+struct DeviceExport {
+    outcome: ym_export::ExportOutcome,
+    report: RenderReport,
+    rendered: (u32, u32),
+}
+
+/// The depth of a raster export's samples.
+fn bit_depth_of(format: ExportFormat) -> ym_export::BitDepth {
+    match format {
+        ExportFormat::Tiff { bits, .. } | ExportFormat::Png { bits } => bits,
+        ExportFormat::Jpeg { .. } | ExportFormat::Dng => ym_export::BitDepth::Eight,
+    }
+}
+
+/// Where the stages of a render ran: the device when its colour pass or any raw range did.
+fn device_of(report: &RenderReport) -> ComputeDevice {
+    if report.device == ComputeDevice::Gpu
+        || report.ranges.iter().any(|r| r.device == ComputeDevice::Gpu)
+    {
+        ComputeDevice::Gpu
+    } else {
+        ComputeDevice::Cpu
+    }
+}
+
+/// Makes a raster export with the export tail on the device: the render sends encoded rows, the
+/// writer pulls them into the file. Returns [`RenderError::Gpu`] (inside [`ExportError::Render`])
+/// for a device error, with the temporary file already removed, so that the caller can make the
+/// photo again on the CPU.
+#[allow(clippy::too_many_arguments)] // the export's state, passed once
+fn export_on_device(
+    ctx: &ExportContext,
+    photo: &ExportPhoto,
+    request: TailRequest,
+    metadata: &Metadata,
+    params: &ExportParams,
+    dest: &ExportDestination,
+    hooks: &ExportHooks<'_>,
+    control: &ExportControl<'_>,
+    still_the_same: &dyn Fn() -> Result<(), ExportError>,
+) -> Result<DeviceExport, ExportError> {
+    let options = &params.options;
+    let mut bands = ctx
+        .renderer
+        .start_export_tail(photo.source.clone(), request, &control.cancel)?;
+    let rendered = bands.rendered();
+    // Nothing is written under a look that changed while the picture rendered: checked when the last
+    // rows are asked for, before the writer can finish the file.
+    bands.check_before_last_rows(|| {
+        still_the_same().map_err(|e| match e {
+            ExportError::Look(message) => RenderError::Look(message),
+            other => RenderError::Image(other.to_string()),
+        })
+    });
+    let band_request = BandRequest {
+        format: options.format_spec(),
+        color_space: options.color_space,
+        metadata,
+        remove_location: params.remove_location,
+    };
+    let written = write_export_bands(&band_request, &mut bands, dest, hooks);
+    let failure = bands.take_failure();
+    let finished = bands.finish();
+    match written {
+        Ok(outcome) => {
+            let report = finished?;
+            Ok(DeviceExport {
+                outcome,
+                report,
+                rendered,
+            })
+        }
+        Err(e) => {
+            // The render's own error, or the look that changed, is the reason when there is one: the
+            // writer only saw that its rows stopped coming.
+            if let Some(f) = failure {
+                return Err(f.into());
+            }
+            Err(e.into())
+        }
+    }
 }
 
 fn megapixels(w: usize, h: usize) -> f64 {
@@ -1269,6 +1531,12 @@ pub fn estimate<'a>(
     options: &ExportOptions,
 ) -> Estimate {
     let format = options.format_spec();
+    // The numbers of the path the export would take: the device's when the renderer runs the tail.
+    ctx.speed.use_device(if ctx.renderer.export_tail_enabled() {
+        ComputeDevice::Gpu
+    } else {
+        ComputeDevice::Cpu
+    });
     let mut bytes = 0u64;
     let mut seconds = 0.0;
     for (meta, settings, detail) in photos {

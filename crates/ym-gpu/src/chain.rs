@@ -17,7 +17,16 @@
 //!   photo's half-resolution plane ([`GpuChain::with_sigma`]), so the 200 MB full-resolution map of the
 //!   CPU chain is never built for this range.
 //!
-//! The later tasks widen the range (G-07 to R1..R9) by adding variants of [`DeviceWork`].
+//! * R1 to R9 ([`StageRange::RAW_TO_LENS`], G-07): the whole classical chain from the photo's raw
+//!   words, resident on the device ([`DeviceRaw`], uploaded once per photo): R1 normalise, R3
+//!   vignetting and R4 gains in one pass, R5 highlights with the CPU's chroma offsets, R5b lateral CA
+//!   on the mosaic, the demosaic and the stages after it as above, and R9 on the device too, one job
+//!   per tile with one readback ([`GpuChain::run_tile_front`]). A demosaic core above
+//!   [`MAX_PHYS_AREA`] is cut, and the front of each part is made from its own rectangle (the front is
+//!   tile-exact).
+//!
+//! The reduced fit-view path has its own runner, [`GpuReduced`], which never builds a
+//! full-resolution frame on the host.
 //!
 //! # Where the work runs
 //!
@@ -37,6 +46,10 @@
 //! ([`split_core`]). The rule reads the rectangle only, never the device, so the application and `ym`
 //! cut alike. The kernel is tile-exact, so a split changes no bit.
 
+use std::sync::Arc;
+
+use ym_noise::sigma_map::SigmaParams;
+
 use crate::cpu::chain::{Chain, Prepared, RawFrame};
 use crate::cpu::demosaic::Method;
 use crate::cpu::demosaic::adaptive_ratio::Params;
@@ -44,12 +57,19 @@ use crate::cpu::denoise::BilateralParams;
 use crate::cpu::detail::network_sigma_scale;
 use crate::cpu::sharpen::CaptureSharpen;
 use crate::cpu::sharpen::diffraction::{DiffractionPlan, SPEC_LUMA};
+use crate::cpu::normalize::Levels;
 use crate::cpu::tiling::{Halo, Rect, Stage};
 use crate::cpu::{Mosaic, RgbImage};
 use crate::device::{GpuContext, GpuError};
 use crate::image::GpuImage;
 use crate::kernels::adaptive_ratio::{self, Balance, PreparedDemosaic};
 use crate::kernels::bilateral::{self, SigmaHalf, SigmaInput, SigmaTile};
+use crate::kernels::bin::{self, BinParams};
+use crate::kernels::highlights::{OffsetReducer, Offsets, encode_highlights};
+use crate::kernels::lens::{LensTable, encode_lens};
+use crate::kernels::mosaic_ca::{CaTable, encode_mosaic_ca};
+use crate::kernels::prep::{DeviceRaw, PrepParams, VignetteTable, encode_prep};
+use crate::kernels::sigma::encode_sigma_plane;
 use crate::kernels::detail::{encode_classical_luma, encode_inject_detail};
 use crate::kernels::diffraction::{PreparedDiffraction, encode_sharpen};
 use crate::kernels::guided::encode_guided;
@@ -162,6 +182,12 @@ impl StageRange {
     pub const DEMOSAIC_TO_SHARPEN: StageRange = StageRange {
         first: RawStage::Demosaic,
         last: RawStage::Sharpen,
+    };
+
+    /// R1 to R9 (G-07): the whole chain from the resident raw words, R9 included.
+    pub const RAW_TO_LENS: StageRange = StageRange {
+        first: RawStage::Normalize,
+        last: RawStage::Lens,
     };
 
     /// Whether the stages of this range read the noise sigma on the device only: the denoise, R7 and
@@ -416,6 +442,181 @@ pub enum SigmaWork {
     Cells(SigmaTile),
 }
 
+/// The stages in front of the demosaic that look at neighbours, as the device chain needs to know
+/// them to cut a rectangle (`Chain::stages`): R5 (halo 4 px) and R5b (its own halo), both on the
+/// mosaic. R1, R3 and R4 are pointwise.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FrontShape {
+    /// R5 runs.
+    pub highlights: bool,
+    /// R5b runs, with this halo (`lens::mosaic_ca_halo_px`).
+    pub ca_halo_px: Option<usize>,
+    /// The frame.
+    pub frame: Rect,
+}
+
+/// The rectangles of the raw front for one target: the mosaic that R6 reads (frame coordinates).
+/// Walks the stages backwards with the halos of `Stage::input_rect`, so it gives the CPU stepper's
+/// rectangles (`TileRun::need`) for the target it is given.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FrontPlan {
+    /// The rectangle R1, R3 and R4 make, and R5 reads.
+    pub prep: Rect,
+    /// R5: the core it writes, relative to `prep`.
+    pub highlights: Option<Rect>,
+    /// R5b: the rectangle it reads (frame coordinates) and the core it writes, relative to it.
+    pub mosaic_ca: Option<(Rect, Rect)>,
+    /// The rectangle the front leaves.
+    pub target: Rect,
+}
+
+impl FrontShape {
+    /// The rectangles for `target`.
+    #[must_use]
+    pub fn plan(&self, target: Rect) -> FrontPlan {
+        let mut r = target;
+        let mut mosaic_ca = None;
+        let mut highlights = None;
+        if let Some(h) = self.ca_halo_px {
+            let input = r.grow_aligned(Halo::uniform(h), self.frame, 2);
+            mosaic_ca = Some((input, r.relative_to(&input)));
+            r = input;
+        }
+        if self.highlights {
+            let input = r.grow_aligned(Halo::uniform(4), self.frame, 2);
+            highlights = Some(r.relative_to(&input));
+            r = input;
+        }
+        FrontPlan {
+            prep: r.grow_aligned(Halo::NONE, self.frame, 2),
+            highlights,
+            mosaic_ca,
+            target,
+        }
+    }
+}
+
+/// The raw front of one tile on the device: the resident photo, what R1 to R5b need, and the
+/// demosaic after it (G-07).
+#[derive(Debug)]
+pub struct FrontWork {
+    raw: Arc<DeviceRaw>,
+    prep: PrepParams,
+    /// The CPU's R5 chroma offsets (`Prepared::offsets`), rounded to `f32` where they are added.
+    offsets: [f32; 3],
+    ca: Option<CaTable>,
+    shape: FrontShape,
+    /// The mosaic R6 reads, in frame coordinates (the CPU stepper's `need[demosaic]`).
+    target: Rect,
+    /// The part of it R6 demosaics, relative to `target`.
+    core: Rect,
+    frame: PreparedDemosaic,
+}
+
+impl FrontWork {
+    /// The pattern at the first photosite of a rectangle of the frame.
+    fn cfa_at(&self, x: usize, y: usize) -> crate::cpu::Cfa {
+        self.raw.cfa().shifted(x, y)
+    }
+
+    /// Records the front for `target` (frame coordinates) and returns the mosaic. Buffers the
+    /// recorded passes read stay in `keep` until the list has finished.
+    fn encode_front(
+        &self,
+        passes: &mut PassList<'_>,
+        target: Rect,
+        keep: &mut Vec<GpuImage>,
+    ) -> Result<GpuImage, GpuError> {
+        let plan = self.shape.plan(target);
+        let out = encode_prep(
+            passes,
+            &self.raw,
+            plan.prep,
+            &self.prep,
+            plan.highlights.is_some(),
+        )?;
+        let mut cur = out.mosaic;
+        if let (Some(core), Some(mask)) = (plan.highlights, out.mask.as_ref()) {
+            let offsets = Offsets::from_host(passes, self.offsets)?;
+            let cfa = self.cfa_at(cur.place.x0, cur.place.y0);
+            let next = encode_highlights(passes, &cur, mask, cfa, core, &offsets)?;
+            keep.push(std::mem::replace(&mut cur, next));
+        }
+        if let (Some((_, core)), Some(table)) = (plan.mosaic_ca, self.ca.as_ref()) {
+            let cfa = self.cfa_at(cur.place.x0, cur.place.y0);
+            let next = encode_mosaic_ca(passes, &cur, cfa, core, table)?;
+            keep.push(std::mem::replace(&mut cur, next));
+        }
+        if (cur.width, cur.height) != (target.w, target.h) {
+            return Err(GpuError::InvalidInput(format!(
+                "the raw front left {} x {} photosites, the demosaic reads {:?}",
+                cur.width, cur.height, target
+            )));
+        }
+        Ok(cur)
+    }
+
+    /// The demosaic core cut into `parts` (rectangles relative to `target`), each from the front of
+    /// its own rectangle, the planes put together on the host.
+    fn run_parts(
+        &self,
+        ctx: &GpuContext,
+        cancel: &CancelToken,
+        parts: &[Rect],
+    ) -> Result<RgbImage, GpuError> {
+        let whole = Rect::whole(self.target.w, self.target.h);
+        let halo = Halo::uniform(self.frame.halo_px());
+        let mut out = RgbImage::new(self.core.w, self.core.h);
+        out.place = crate::cpu::Placement::whole(self.raw.width(), self.raw.height())
+            .offset(self.target.x + self.core.x, self.target.y + self.core.y);
+        for part in parts {
+            cancel.check()?;
+            let sub_rect = part.grow(halo, whole);
+            let target = Rect::new(
+                self.target.x + sub_rect.x,
+                self.target.y + sub_rect.y,
+                sub_rect.w,
+                sub_rect.h,
+            );
+            let mut keep = Vec::new();
+            let mut passes = PassList::new(ctx, "raw front part");
+            let mosaic = self.encode_front(&mut passes, target, &mut keep)?;
+            let cfa = self.cfa_at(target.x, target.y);
+            let img = adaptive_ratio::encode_demosaic(
+                &mut passes,
+                &mosaic,
+                cfa,
+                part.relative_to(&sub_rect),
+                &self.frame,
+            )?;
+            let read = img.encode_read(&mut passes)?;
+            let done = passes.submit()?.finish()?;
+            let data = img.take(&done, read)?;
+            drop((keep, mosaic));
+            let host = RgbImage {
+                width: img.width,
+                height: img.height,
+                place: img.place,
+                data,
+            };
+            out.paste(
+                &host,
+                Rect::whole(host.width, host.height),
+                part.x - self.core.x,
+                part.y - self.core.y,
+            );
+        }
+        Ok(out)
+    }
+}
+
+/// R9 on the device after the stages: the geometry and the output rectangle (G-07).
+#[derive(Debug)]
+struct LensWork {
+    table: LensTable,
+    out: Rect,
+}
+
 /// What the stages after the demosaic receive.
 #[derive(Debug)]
 enum RawInput {
@@ -423,6 +624,8 @@ enum RawInput {
     Mosaic(Box<DemosaicWork>),
     /// The demosaiced planes (a mosaic below 2 x 2 photosites was demosaiced on the CPU).
     Image(RgbImage),
+    /// The photo's raw words on the device: R1 to R5b run first, then the demosaic (G-07).
+    Front(Box<FrontWork>),
 }
 
 /// The capture-sharpening method of a [`PostStep`].
@@ -481,6 +684,8 @@ pub struct RawWork {
     end: Rect,
     sigma: SigmaWork,
     steps: Vec<PostStep>,
+    /// R9 on the device after the steps, when the range holds it.
+    lens: Option<LensWork>,
 }
 
 impl RawWork {
@@ -491,6 +696,8 @@ impl RawWork {
         let mut n = match &self.input {
             RawInput::Mosaic(_) => 14,
             RawInput::Image(_) => 0,
+            // The prep and its bits, the superpixels and the apply pass, the CA pass, the demosaic.
+            RawInput::Front(_) => 5 + 14,
         } + 1;
         for step in &self.steps {
             n += match step {
@@ -540,6 +747,7 @@ impl RawWork {
     pub fn demosaic_parts(&self, max_padded_pixels: u64) -> usize {
         match &self.input {
             RawInput::Mosaic(d) => split_core_above(d.core, max_padded_pixels).len(),
+            RawInput::Front(f) => split_core_above(f.core, max_padded_pixels).len(),
             RawInput::Image(_) => 1,
         }
     }
@@ -598,6 +806,31 @@ impl RawWork {
             RawInput::Image(img) => {
                 passes = PassList::new(ctx, "raw R6 to R8");
                 GpuImage::upload_rgb(ctx, "demosaiced planes", img)?
+            }
+            RawInput::Front(f) => {
+                let parts = split_core_above(f.core, max_padded_pixels);
+                if let [only] = parts.as_slice()
+                    && *only == f.core
+                {
+                    passes = PassList::new(ctx, "raw R1 to R9");
+                    let mosaic = f.encode_front(&mut passes, f.target, &mut keep)?;
+                    let cfa = f.cfa_at(f.target.x, f.target.y);
+                    let out = adaptive_ratio::encode_demosaic(
+                        &mut passes,
+                        &mosaic,
+                        cfa,
+                        f.core,
+                        &f.frame,
+                    )?;
+                    keep.push(mosaic);
+                    out
+                } else {
+                    // A core above MAX_PHYS_AREA: each rectangle from the front of its own
+                    // rectangle, the planes put together on the host (`FrontWork::run_parts`).
+                    let rgb = f.run_parts(ctx, cancel, &parts)?;
+                    passes = PassList::new(ctx, "raw R1 to R9");
+                    GpuImage::upload_rgb(ctx, "adaptive ratio rgb", &rgb)?
+                }
             }
         };
         let mut cur_rect = self.start;
@@ -706,6 +939,20 @@ impl RawWork {
             }
         }
         cancel.check()?;
+        if let Some(lens) = &self.lens {
+            // R9 on the device: the window of the current image that holds the stage's input
+            // rectangle (`end`), resampled to the tile.
+            if !cur_rect.contains(&self.end) {
+                return Err(GpuError::InvalidInput(format!(
+                    "the stages left {cur_rect:?}, the lens stage needs {:?}",
+                    self.end
+                )));
+            }
+            let window = self.end.relative_to(&cur_rect);
+            let next = encode_lens(&mut passes, &cur, window, &lens.table, lens.out)?;
+            keep.push(std::mem::replace(&mut cur, next));
+            cur_rect = self.end;
+        }
         let read = cur.encode_read(&mut passes)?;
         let done = passes.submit()?.finish()?;
         let data = cur.take(&done, read)?;
@@ -716,7 +963,7 @@ impl RawWork {
             place: cur.place,
             data,
         };
-        if cur_rect != self.end {
+        if self.lens.is_none() && cur_rect != self.end {
             // Stages that were identities leave a larger image than the tile needs: cut it.
             if !cur_rect.contains(&self.end) {
                 return Err(GpuError::InvalidInput(format!(
@@ -761,19 +1008,23 @@ impl<'a> GpuChain<'a> {
     ///
     /// # Errors
     ///
-    /// [`GpuError::InvalidInput`] for a range the device does not run yet (only
-    /// [`StageRange::DEMOSAIC`] and [`StageRange::DEMOSAIC_TO_SHARPEN`] in this version) or a chain
+    /// [`GpuError::InvalidInput`] for a range the device does not run (only [`StageRange::DEMOSAIC`],
+    /// [`StageRange::DEMOSAIC_TO_SHARPEN`] and [`StageRange::RAW_TO_LENS`]) or a chain
     /// whose R6 method is not the adaptive ratio demosaic (the other methods run on the CPU only).
     pub fn new(
         chain: &'a Chain,
         prepared: &'a Prepared,
         range: StageRange,
     ) -> Result<GpuChain<'a>, GpuError> {
-        if range != StageRange::DEMOSAIC && range != StageRange::DEMOSAIC_TO_SHARPEN {
+        if range != StageRange::DEMOSAIC
+            && range != StageRange::DEMOSAIC_TO_SHARPEN
+            && range != StageRange::RAW_TO_LENS
+        {
             return Err(GpuError::InvalidInput(format!(
-                "the device chain runs the ranges {} and {}, not {}",
+                "the device chain runs the ranges {}, {} and {}, not {}",
                 StageRange::DEMOSAIC.label(),
                 StageRange::DEMOSAIC_TO_SHARPEN.label(),
+                StageRange::RAW_TO_LENS.label(),
                 range.label()
             )));
         }
@@ -839,6 +1090,11 @@ impl<'a> GpuChain<'a> {
         cancel: &CancelToken,
     ) -> Result<RgbImage, GpuError> {
         cancel.check()?;
+        if self.range == StageRange::RAW_TO_LENS {
+            return Err(GpuError::InvalidInput(
+                "the range R1..R9 reads the resident raw words: use run_tile_front".into(),
+            ));
+        }
         let mut run = self.chain.begin_tile(raw, self.prepared, out)?;
         let first = run
             .stages()
@@ -906,15 +1162,51 @@ impl<'a> GpuChain<'a> {
             RawInput::Mosaic(Box::new(DemosaicWork::new(mosaic, core, frame)?))
         };
         // The stages after the demosaic, up to R9: each with the rectangle the CPU stepper cuts for
-        // it. A stage that does nothing for these controls is left out; the next one then names its
-        // core relative to the image it really gets (`RawWork::run_once`).
+        // it (`post_steps`).
+        let needs: Vec<Rect> = (0..=stages_len).map(|i| run.need(i)).collect();
+        let (steps, lens) = self.post_steps(run.stages(), &needs, first)?;
+        let end = run.need(lens.unwrap_or(stages_len));
+        let sigma = self.sigma_work(raw.width, start, chain)?;
+        let work = DeviceWork::Raw(RawWork {
+            input,
+            start,
+            end,
+            sigma,
+            steps,
+            lens: None,
+        });
+        let rgb = runner.run_device(work, cancel)?;
+        cancel.check()?;
+        match lens {
+            Some(i) => {
+                let Stage::Lens(geo) = run.stages()[i] else {
+                    return Err(GpuError::InvalidInput("the lens stage moved".into()));
+                };
+                Ok(crate::cpu::resample::resample_lens(&rgb, geo, run.out())
+                    .map_err(|e| GpuError::Cpu(e.to_string()))?)
+            }
+            None => Ok(rgb),
+        }
+    }
+
+    /// The stages after the demosaic (index `first`), up to R9: each with the rectangle the CPU
+    /// stepper cuts for it (`needs[i + 1]` is the rectangle stage `i` leaves). A stage that does
+    /// nothing for these controls is left out; the next one then names its core relative to the image
+    /// it really gets (`RawWork::run_once`). Returns the steps and the index of the lens stage.
+    fn post_steps(
+        &self,
+        stages: &[Stage<'_>],
+        needs: &[Rect],
+        first: usize,
+    ) -> Result<(Vec<PostStep>, Option<usize>), GpuError> {
+        let chain = self.chain;
         let nr = &chain.noise_reduction;
         let mut steps = Vec::new();
         let mut classical = false;
         let mut lens: Option<usize> = None;
-        for i in first + 1..stages_len {
-            let out = run.need(i + 1);
-            match run.stages()[i] {
+        for i in first + 1..stages.len() {
+            let out = needs[i + 1];
+            match stages[i] {
                 Stage::Denoise { .. } => {
                     let keep_classical = nr.needs_classical();
                     classical = keep_classical;
@@ -967,34 +1259,151 @@ impl<'a> GpuChain<'a> {
                 }
             }
         }
-        let end = run.need(lens.unwrap_or(stages_len));
-        let sigma = self.sigma_work(raw, start, chain)?;
+        Ok((steps, lens))
+    }
+
+    /// Runs the part of the output covered by `out` (output coordinates, as [`Chain::run_tile`]) of
+    /// the whole chain R1 to R9 from the photo's resident raw words, and returns exactly that
+    /// rectangle (the range must be [`StageRange::RAW_TO_LENS`]).
+    ///
+    /// Nothing runs on the CPU: the front (R1, R3, R4 in one pass, R5 with the CPU's chroma offsets of
+    /// [`Prepared`], R5b), the demosaic, the denoise, R7, R8 and the lens resample are one device job
+    /// with one readback. The rectangles are the CPU stepper's: `needs[i]` is walked backwards from
+    /// `out` with `Stage::input_rect` as `Chain::begin_tile` does.
+    ///
+    /// # Errors
+    ///
+    /// [`GpuError::InvalidInput`] for another range, a raw frame whose size is not the chain's lens
+    /// geometry's, an `out` outside the output, a mosaic below 2 x 2 photosites, or a vignetting
+    /// profile the kernel cannot take; [`GpuError::Cancelled`]; the runner's errors, which the
+    /// integrator answers with the CPU chain.
+    pub fn run_tile_front<R: DeviceRunner + ?Sized>(
+        &self,
+        runner: &R,
+        raw: &Arc<DeviceRaw>,
+        out: Rect,
+        cancel: &CancelToken,
+    ) -> Result<RgbImage, GpuError> {
+        cancel.check()?;
+        if self.range != StageRange::RAW_TO_LENS {
+            return Err(GpuError::InvalidInput(format!(
+                "run_tile_front runs the range {}, not {}",
+                StageRange::RAW_TO_LENS.label(),
+                self.range.label()
+            )));
+        }
+        let chain = self.chain;
+        let frame = Rect::whole(raw.width(), raw.height());
+        if let Some(l) = &chain.lens
+            && (l.frame_width(), l.frame_height()) != (frame.w, frame.h)
+        {
+            return Err(GpuError::InvalidInput(format!(
+                "the lens geometry is for a {} x {} frame, the resident raw frame is {} x {}",
+                l.frame_width(),
+                l.frame_height(),
+                frame.w,
+                frame.h
+            )));
+        }
+        let (ow, oh) = chain.output_size(frame.w, frame.h);
+        if out.is_empty() || out.x1() > ow || out.y1() > oh {
+            return Err(GpuError::InvalidInput(format!(
+                "the tile {out:?} is empty or outside the {ow} x {oh} output"
+            )));
+        }
+        let stages = chain.stages();
+        let mut needs = vec![out; stages.len() + 1];
+        for i in (0..stages.len()).rev() {
+            needs[i] = stages[i].input_rect(needs[i + 1], frame);
+        }
+        let d = stages
+            .iter()
+            .position(|s| RawStage::of(s) == RawStage::Demosaic)
+            .ok_or_else(|| GpuError::InvalidInput("the chain has no demosaic stage".into()))?;
+        let target = needs[d];
+        if target.w < 2 || target.h < 2 {
+            return Err(GpuError::InvalidInput(
+                "a mosaic below 2 x 2 photosites is a CPU stage".into(),
+            ));
+        }
+        let shape = FrontShape {
+            highlights: stages[..d]
+                .iter()
+                .any(|s| RawStage::of(s) == RawStage::Highlights),
+            ca_halo_px: stages[..d].iter().find_map(|s| match s {
+                Stage::MosaicCa { halo_px } => Some(*halo_px),
+                _ => None,
+            }),
+            frame,
+        };
+        let ca = match (shape.ca_halo_px, chain.mosaic_ca_curves()) {
+            (Some(_), Some(curves)) => Some(CaTable::from_curves(&curves)?),
+            (Some(_), None) => {
+                return Err(GpuError::InvalidInput(
+                    "the chain has a mosaic CA stage and no curves for it".into(),
+                ));
+            }
+            _ => None,
+        };
+        let vignette = chain
+            .vignette
+            .as_ref()
+            .map(VignetteTable::from_profile)
+            .transpose()?;
+        let off = &self.prepared.offsets.offset;
+        let ca_curves = chain.ca_curves();
+        let inputs = chain.demosaic_inputs(ca_curves.as_ref());
+        let frame_demosaic = PreparedDemosaic::new(Balance::Balanced, &inputs, &Params::default())?;
+        let core = needs[d + 1].relative_to(&target);
+        let input = RawInput::Front(Box::new(FrontWork {
+            raw: Arc::clone(raw),
+            prep: PrepParams {
+                levels: chain.levels,
+                gains: chain.gains,
+                apply_gains: true,
+                vignette,
+            },
+            offsets: [off[0] as f32, off[1] as f32, off[2] as f32],
+            ca,
+            shape,
+            target,
+            core,
+            frame: frame_demosaic,
+        }));
+        let start = needs[d + 1];
+        let (steps, lens_at) = self.post_steps(&stages, &needs, d)?;
+        let lens = match lens_at {
+            Some(i) => {
+                let Stage::Lens(geo) = stages[i] else {
+                    return Err(GpuError::InvalidInput("the lens stage moved".into()));
+                };
+                Some(LensWork {
+                    table: LensTable::from_geometry(geo)?,
+                    out,
+                })
+            }
+            None => None,
+        };
+        let end = needs[lens_at.unwrap_or(stages.len())];
+        let sigma = self.sigma_work(frame.w, start, chain)?;
         let work = DeviceWork::Raw(RawWork {
             input,
             start,
             end,
             sigma,
             steps,
+            lens,
         });
         let rgb = runner.run_device(work, cancel)?;
         cancel.check()?;
-        match lens {
-            Some(i) => {
-                let Stage::Lens(geo) = run.stages()[i] else {
-                    return Err(GpuError::InvalidInput("the lens stage moved".into()));
-                };
-                Ok(crate::cpu::resample::resample_lens(&rgb, geo, run.out())
-                    .map_err(|e| GpuError::Cpu(e.to_string()))?)
-            }
-            None => Ok(rgb),
-        }
+        Ok(rgb)
     }
 
     /// The noise sigma of the tile's first rectangle `start` (frame coordinates), from the half plane
     /// given to [`with_sigma`](Self::with_sigma), else the chain's map, else its scalar.
     fn sigma_work(
         &self,
-        raw: &RawFrame<'_>,
+        frame_width: usize,
         start: Rect,
         chain: &Chain,
     ) -> Result<SigmaWork, GpuError> {
@@ -1004,10 +1413,230 @@ impl<'a> GpuChain<'a> {
         if let Some(map) = &chain.sigma_map {
             let mut plane = Vec::with_capacity(start.area());
             for y in start.y..start.y1() {
-                plane.extend_from_slice(&map[y * raw.width + start.x..y * raw.width + start.x1()]);
+                plane.extend_from_slice(&map[y * frame_width + start.x..y * frame_width + start.x1()]);
             }
             return Ok(SigmaWork::Plane(plane));
         }
         Ok(SigmaWork::Scalar(chain.sigma))
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// The reduced fit-view path
+// ---------------------------------------------------------------------------------------------
+
+/// Photosite rows of one slab of the reduced path (a multiple of 2): the rows of the normalised
+/// mosaic that exist at one time, 38 MB at 9500 photosites a row.
+pub const REDUCED_SLAB_ROWS: usize = 1024;
+
+/// The denoise of the reduced path: the sigma scale and the filter.
+#[derive(Clone, Copy, Debug)]
+pub struct ReducedDenoise {
+    /// `network_sigma_scale(L, ISO)`; the denoise runs only for a scale above zero.
+    pub scale: f32,
+    /// The filter's parameters.
+    pub params: BilateralParams,
+}
+
+/// What the reduced fit-view path needs besides the photo's raw words, as plain data (`ym-core` builds
+/// it from the `RawPlan` and the `RawParams`, `docs/gpu-plan.md` section 4.3).
+#[derive(Clone, Debug)]
+pub struct ReducedParams {
+    /// The binning factor: even, 2 to 16 (`RawPlan::effective_scale`).
+    pub k: usize,
+    /// The R1 levels at the frame's parity.
+    pub levels: Levels,
+    /// The R4 gains `g0`.
+    pub g0: [f32; 3],
+    /// Whether R5 runs (`decode.highlight_recovery` and the frame has a clipped photosite).
+    pub highlight_recovery: bool,
+    /// The vignetting profile, applied at the binned pixels, or `None`.
+    pub vignette: Option<VignetteTable>,
+    /// The noise model and the gains per CFA position, for the sigma plane.
+    pub noise: SigmaParams,
+    /// The noise left in the luminance of a bin (`binning_noise_factor(k)`).
+    pub noise_factor: f32,
+    /// The light denoise, or `None` below a scale of zero.
+    pub denoise: Option<ReducedDenoise>,
+    /// R9 at `1/k` (`RawPlan::lens_at`), or `None`.
+    pub lens: Option<LensTable>,
+}
+
+/// The reduced fit-view path on the device: R1 to R9 at `1/k` of the resolution, from the resident raw
+/// words, never building a full-resolution frame on the host (`docs/gpu-plan.md` N-8). The CPU
+/// reference is `ym-core`'s `reduced_bayer`.
+///
+/// The frame goes through in slabs of [`REDUCED_SLAB_ROWS`] rows. With R5 on, a first sweep reduces
+/// the global chroma offsets (a fixed-order reduction, [`OffsetReducer`]); a second sweep makes each
+/// slab's normalised mosaic, applies R5 and bins it into the output; then the sigma plane (from the
+/// raw words), the binned sigma, the light bilateral denoise and R9 at `1/k` run on the small image.
+#[derive(Debug)]
+pub struct GpuReduced;
+
+impl GpuReduced {
+    /// Runs the path and returns the image (`out_w x out_h` after R9, three planes) on the device.
+    ///
+    /// # Errors
+    ///
+    /// [`GpuError::Cancelled`] between slabs; [`GpuError::InvalidInput`] for parameters the kernels
+    /// refuse (an odd `k`, a frame smaller than one block, a vignetting profile with too many knots);
+    /// the pool's errors; shader errors.
+    pub fn run(
+        ctx: &GpuContext,
+        raw: &DeviceRaw,
+        p: &ReducedParams,
+        cancel: &CancelToken,
+    ) -> Result<GpuImage, GpuError> {
+        Self::run_with_slabs(ctx, raw, p, cancel, REDUCED_SLAB_ROWS)
+    }
+
+    /// [`run`](Self::run) with slabs of `slab_rows` photosite rows (tests make them small).
+    ///
+    /// # Errors
+    ///
+    /// As [`run`](Self::run).
+    pub fn run_with_slabs(
+        ctx: &GpuContext,
+        raw: &DeviceRaw,
+        p: &ReducedParams,
+        cancel: &CancelToken,
+        slab_rows: usize,
+    ) -> Result<GpuImage, GpuError> {
+        cancel.check()?;
+        ctx.inject_tile_fault()?;
+        let (w, h) = (raw.width(), raw.height());
+        let slab_rows = (slab_rows.max(8)) & !1;
+        let bp = BinParams {
+            k: p.k,
+            cfa: raw.cfa(),
+            frame_w: w,
+            frame_h: h,
+            vignette: p.vignette.clone(),
+        };
+        bp.check()?;
+        let (ow, oh) = (bp.out_w(), bp.out_h());
+        // R1 and R4, no vignetting: the vignetting gain is applied at the binned pixels.
+        let prep = PrepParams {
+            levels: p.levels,
+            gains: p.g0,
+            apply_gains: true,
+            vignette: None,
+        };
+        let cfa_of = |r: Rect| raw.cfa().shifted(r.x, r.y);
+
+        // 1. The global chroma offsets, over the whole frame in slabs.
+        let offsets = if p.highlight_recovery && w >= 2 && h >= 2 {
+            let sw = w / 2;
+            let rows = h / 2 * 2;
+            let mut slabs = Vec::new();
+            let mut r0 = 0;
+            while r0 < rows {
+                slabs.push((r0, (r0 + slab_rows).min(rows)));
+                r0 += slab_rows;
+            }
+            let capacity: usize = slabs
+                .iter()
+                .map(|&(a, b)| OffsetReducer::partials_for(sw, b - a))
+                .sum();
+            let mut reducer = OffsetReducer::new(ctx, capacity)?;
+            for (r0, r1) in slabs {
+                cancel.check()?;
+                let top = r0.saturating_sub(4) & !1;
+                let bottom = (r1 + 4).min(h);
+                let rect = Rect::new(0, top, w, bottom - top);
+                let mut passes = PassList::new(ctx, "reduced offsets slab");
+                let out = encode_prep(&mut passes, raw, rect, &prep, true)?;
+                let Some(mask) = out.mask.as_ref() else {
+                    return Err(GpuError::InvalidInput("prep made no clip bits".into()));
+                };
+                reducer.encode_slab(&mut passes, &out.mosaic, mask, cfa_of(rect), (r0 - top, r1 - top))?;
+                passes.submit()?.finish()?;
+            }
+            let mut passes = PassList::new(ctx, "reduced offsets fold");
+            let off = reducer.encode_fold(&mut passes)?;
+            passes.submit()?.finish()?;
+            Some(off)
+        } else {
+            None
+        };
+
+        // 2. The binned image, a slab of output rows at a time.
+        let binned = GpuImage::alloc(ctx, "binned rgb", ow, oh, 3, crate::cpu::Placement::whole(ow, oh))?;
+        let step = (slab_rows / p.k).max(1);
+        let mut r = 0;
+        while r < oh {
+            cancel.check()?;
+            let rows = r..(r + step).min(oh);
+            let need = bin::slab_rows(p.k, &rows, h);
+            let mut passes = PassList::new(ctx, "reduced bin slab");
+            let mut keep: Vec<GpuImage> = Vec::new();
+            let slab = match &offsets {
+                Some(off) => {
+                    let top = need.start.saturating_sub(4) & !1;
+                    let bottom = (need.end + 4).min(h);
+                    let rect = Rect::new(0, top, w, bottom - top);
+                    let out = encode_prep(&mut passes, raw, rect, &prep, true)?;
+                    let Some(mask) = out.mask.as_ref() else {
+                        return Err(GpuError::InvalidInput("prep made no clip bits".into()));
+                    };
+                    let core = Rect::new(0, need.start - top, w, need.end - need.start);
+                    let slab = encode_highlights(&mut passes, &out.mosaic, mask, cfa_of(rect), core, off)?;
+                    keep.push(out.mosaic);
+                    slab
+                }
+                None => {
+                    let rect = Rect::new(0, need.start, w, need.end - need.start);
+                    encode_prep(&mut passes, raw, rect, &prep, false)?.mosaic
+                }
+            };
+            bin::encode_bin(&mut passes, &slab, &bp, rows.clone(), &binned)?;
+            passes.submit()?.finish()?;
+            drop((keep, slab));
+            r = rows.end;
+        }
+
+        // 3. The sigma, the light denoise and R9 on the small image.
+        cancel.check()?;
+        let mut passes = PassList::new(ctx, "reduced finish");
+        let mut keep: Vec<GpuImage> = Vec::new();
+        let mut cur = binned;
+        if let Some(dn) = &p.denoise {
+            let sigma = encode_sigma_plane(&mut passes, raw, &p.levels, &p.noise)?;
+            let bsigma = bin::encode_bin_sigma(&mut passes, &sigma, &bp, p.noise_factor)?;
+            let next = bilateral::encode_bilateral(
+                &mut passes,
+                &cur,
+                Rect::whole(ow, oh),
+                &bsigma,
+                (0, 0),
+                dn.scale,
+                &dn.params,
+            )?;
+            keep.push(sigma);
+            keep.push(bsigma);
+            keep.push(std::mem::replace(&mut cur, next));
+        }
+        if let Some(lens) = &p.lens {
+            let (cw, ch) = lens.output_size();
+            let next = encode_lens(&mut passes, &cur, Rect::whole(ow, oh), lens, Rect::whole(cw, ch))?;
+            keep.push(std::mem::replace(&mut cur, next));
+        }
+        passes.submit()?.finish()?;
+        drop(keep);
+        Ok(cur)
+    }
+
+    /// [`run`](Self::run) and the image read back as a host image (the group the renderer caches).
+    ///
+    /// # Errors
+    ///
+    /// As [`run`](Self::run), plus the readback's.
+    pub fn run_rgb(
+        ctx: &GpuContext,
+        raw: &DeviceRaw,
+        p: &ReducedParams,
+        cancel: &CancelToken,
+    ) -> Result<RgbImage, GpuError> {
+        Self::run(ctx, raw, p, cancel)?.read_rgb(ctx)
     }
 }

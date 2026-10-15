@@ -417,9 +417,12 @@ use ym_gpu::cpu::tiling::Halo;
 use ym_gpu::kernels::highlights as hl;
 
 /// Largest `|gpu - cpu|` of the apply pass (values up to about 3 after the gains) with the CPU's
-/// offsets, on the ten scenes. Twice the first measured value.
-const HIGHLIGHT_BOUND: f32 = 2.4e-6;
-/// Largest relative difference of the device offsets from the CPU's. The plan's number is 1e-6.
+/// offsets, on the ten scenes. Measured 0 (the cube root is correctly rounded and the CPU's is the
+/// glibc one, which agrees on these values): the plan's number is kept as the margin for a libm whose
+/// `cbrtf` is one ulp off in one case of ten.
+const HIGHLIGHT_BOUND: f32 = 1e-6;
+/// Largest relative difference of the device offsets from the CPU's. Measured 7.0e-8; the plan's
+/// number is 1e-6, kept for the same reason.
 const OFFSET_BOUND: f32 = 1e-6;
 
 /// prep (no vignette) then the apply pass for the `core` of the `rect` of the frame, on the device,

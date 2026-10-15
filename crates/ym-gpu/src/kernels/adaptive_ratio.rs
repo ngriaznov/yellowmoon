@@ -1015,6 +1015,8 @@ mod tests {
                         "reduce",
                         "mosaic_ca",
                         "lens",
+                        "sigma",
+                        "bin",
                     ]
                     .into_iter()
                     .find(|f| name.starts_with(f))
@@ -1030,6 +1032,7 @@ mod tests {
             families.into_iter().collect::<Vec<_>>(),
             [
                 "adaptive_ratio",
+                "bin",
                 "detail",
                 "diffraction",
                 "guided",
@@ -1039,7 +1042,8 @@ mod tests {
                 "mosaic_ca",
                 "output_sharpen",
                 "prep",
-                "reduce"
+                "reduce",
+                "sigma"
             ],
             "the kernels with a fast-math barrier"
         );
