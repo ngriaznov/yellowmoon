@@ -1200,7 +1200,12 @@ fn export_photo_unguarded(
     // The time of a photo made on the device covers the render and the writing together.
     let mut overlapped = false;
     if is_dng {
-        let raw = render(
+        // A DNG is two renders, the raw pixels and the preview, and one file is wholly device or
+        // wholly CPU (`docs/gpu-plan.md` 4.9). A device error that fires once is spent by the render
+        // it hits, so the other render would go on running on the device: when the raw render fell
+        // back to the CPU the preview is made on the CPU reference path, and when only the preview
+        // fell back the raw pixels are made again on it (`FullImage::fell_back_to_cpu`).
+        let mut raw = render(
             ctx,
             photo,
             FullTarget::DngLinearAwg4,
@@ -1214,9 +1219,23 @@ fn export_photo_unguarded(
             FullTarget::DngPreview,
             control,
             (DNG_RAW_SHARE, DNG_PREVIEW_SHARE),
-            false,
+            raw.fell_back_to_cpu,
         )?;
-        render_ms = raw.report.ms + preview.report.ms;
+        // What the discarded device render took of the time.
+        let mut discarded_ms = 0.0;
+        if preview.fell_back_to_cpu && !raw.fell_back_to_cpu {
+            discarded_ms = raw.report.ms;
+            raw = render(
+                ctx,
+                photo,
+                FullTarget::DngLinearAwg4,
+                control,
+                // No progress to report: the share of the raw pixels is long reported.
+                (DNG_PREVIEW_SHARE, DNG_PREVIEW_SHARE),
+                true,
+            )?;
+        }
+        render_ms = discarded_ms + raw.report.ms + preview.report.ms;
         device = if device_of(&raw.report) == ComputeDevice::Gpu
             || device_of(&preview.report) == ComputeDevice::Gpu
         {

@@ -197,6 +197,13 @@ pub struct FullImage {
     pub window: Option<PixelWindow>,
     /// What the render did.
     pub report: RenderReport,
+    /// The device failed during this render and the CPU made the picture again (the note in
+    /// [`RenderReport::notes`] says why): the picture is the CPU reference's. The typed signal for an
+    /// export that is more than one render (a DNG is its raw pixels and its preview), so that the
+    /// file is wholly device or wholly CPU (`docs/gpu-plan.md` section 4.9): the render that follows
+    /// a fallen-back one runs on the CPU too, and one that fell back after the first went on the
+    /// device is made again on the CPU.
+    pub fell_back_to_cpu: bool,
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -2262,6 +2269,7 @@ impl Renderer {
                         "The graphics card could not render this photo, so the CPU did: {reason}."
                     ),
                 );
+                image.fell_back_to_cpu = true;
                 Ok(*image)
             }
         }
@@ -2499,6 +2507,7 @@ impl Renderer {
         } else {
             ComputeDevice::Cpu
         };
+        let fell_back_to_cpu = job.gpu_restarted();
         let report = job.finish(1, device, target_out);
         Ok(Attempt::Done(Box::new(FullImage {
             width: fw,
@@ -2507,6 +2516,7 @@ impl Renderer {
             target: request.target,
             window,
             report,
+            fell_back_to_cpu,
         })))
     }
 }

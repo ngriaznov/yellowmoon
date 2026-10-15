@@ -1253,6 +1253,9 @@ pub(crate) struct Job<'a> {
     restartable: bool,
     /// The device error that asked for such a restart ([`Job::take_gpu_restart`]).
     restart: Option<String>,
+    /// A restart on the CPU was taken ([`Job::take_gpu_restart`]): this request's picture is the
+    /// CPU's, made again after a device error ([`Job::gpu_restarted`]).
+    gpu_restarted: bool,
     /// Where the raw stages ran, per range, for the tiles of this request.
     raw_ranges: Vec<RangeDevice>,
     /// Whether R8 capture sharpening runs for this request. Off for the renders of a DNG, which
@@ -1322,6 +1325,7 @@ impl<'a> Job<'a> {
             gpu_priority: Priority::Export,
             restartable: true,
             restart: None,
+            gpu_restarted: false,
             raw_ranges: Vec::new(),
             capture_sharpening: true,
             front_failed: false,
@@ -2466,10 +2470,18 @@ impl<'a> Job<'a> {
             return false;
         };
         self.raw_ranges.clear();
+        self.gpu_restarted = true;
         self.note(&format!(
             "The graphics card could not render this photo, so the CPU did: {reason}."
         ));
         true
+    }
+
+    /// Whether this request was made again on the CPU after a device error
+    /// ([`Job::take_gpu_restart`] took a restart): the typed form of the note that says so, for an
+    /// export that is more than one render ([`FullImage::fell_back_to_cpu`](super::frame::FullImage::fell_back_to_cpu)).
+    pub(crate) fn gpu_restarted(&self) -> bool {
+        self.gpu_restarted
     }
 
     /// Whether every tile (or the whole image, for camera-processed photos) that `rect` needs is

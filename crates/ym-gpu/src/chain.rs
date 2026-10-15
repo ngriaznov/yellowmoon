@@ -269,11 +269,14 @@ fn split_into(core: Rect, max_padded_pixels: u64, out: &mut Vec<Rect>) {
 /// thread and run it there. Built on the render thread by [`GpuChain::run_tile`].
 #[derive(Debug)]
 pub enum DeviceWork {
-    /// R6: the adaptive ratio demosaic of a host mosaic.
-    Demosaic(DemosaicWork),
+    /// R6: the adaptive ratio demosaic of a host mosaic. Boxed with the other variant: both are
+    /// hundreds of bytes (a balanced mosaic's description, or the stage steps and the lens stage),
+    /// and an unboxed one would make every value of the enum as large as the largest
+    /// (`clippy::large_enum_variant`, whichever of the two is the larger on a given toolchain).
+    Demosaic(Box<DemosaicWork>),
     /// R6 to R8: the demosaic and the stages after it, on the device without a readback between
     /// them.
-    Raw(RawWork),
+    Raw(Box<RawWork>),
 }
 
 impl DeviceWork {
@@ -1312,7 +1315,7 @@ impl<'a> GpuChain<'a> {
             let (mosaic, core) = run.take_demosaic_input().ok_or_else(|| {
                 GpuError::InvalidInput("the demosaic is not the next stage".into())
             })?;
-            let work = DeviceWork::Demosaic(DemosaicWork::new(mosaic, core, frame)?);
+            let work = DeviceWork::Demosaic(Box::new(DemosaicWork::new(mosaic, core, frame)?));
             let rgb = runner.run_device(work, cancel)?;
             run.supply_demosaic(rgb)?;
         }
@@ -1359,14 +1362,14 @@ impl<'a> GpuChain<'a> {
         let (steps, lens) = self.post_steps(run.stages(), &needs, first)?;
         let end = run.need(lens.unwrap_or(stages_len));
         let sigma = self.sigma_work(raw.width, start, chain)?;
-        let work = DeviceWork::Raw(RawWork {
+        let work = DeviceWork::Raw(Box::new(RawWork {
             input,
             start,
             end,
             sigma,
             steps,
             lens: None,
-        });
+        }));
         let rgb = runner.run_device(work, cancel)?;
         cancel.check()?;
         match lens {
@@ -1612,14 +1615,14 @@ impl<'a> GpuChain<'a> {
         };
         let end = needs[lens_at.unwrap_or(stages.len())];
         let sigma = self.sigma_work(frame.w, start, chain)?;
-        Ok(DeviceWork::Raw(RawWork {
+        Ok(DeviceWork::Raw(Box::new(RawWork {
             input,
             start,
             end,
             sigma,
             steps,
             lens,
-        }))
+        })))
     }
 
     /// The noise sigma of the tile's first rectangle `start` (frame coordinates), from the half plane

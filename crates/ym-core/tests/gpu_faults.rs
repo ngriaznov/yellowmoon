@@ -9,8 +9,9 @@
 //!   report says `device = cpu` and carries the note ("The graphics card could not render this photo, so the CPU
 //!   did: ..."), one file and no temporary is left, progress never goes back, and the device's pool ledger is back at
 //!   its baseline (a lost device has no pool to look at).
-//!   One cell is a known gap, not a pass: a DNG whose fault fires once (`tile@N`) keeps its preview on the device
-//!   (see `a_dng_after_a_one_shot_device_error_is_the_cpu_export_whole`, ignored).
+//!   A DNG is two renders (the raw pixels and the preview): a fault that fires once is spent by one of them, and the
+//!   other is made on the CPU as well, so that the file is wholly the CPU's
+//!   (`a_dng_after_a_one_shot_device_error_is_the_cpu_export_whole`).
 //! * **The strict policy** (`Require`, `--require-gpu`): the photo fails with the kind `gpu`, nothing is written,
 //!   the ledger is back at its baseline. A fault never turns into a quiet CPU render under `Require`.
 //! * **A cancel** (`cancel@N`) ends the export as cancelled, leaves no file and nothing resident, and the next
@@ -225,22 +226,11 @@ fn every_fault_makes_the_whole_photo_again_on_the_cpu_in_every_format() {
                 "{cell}: {:?}",
                 r.notes
             );
-            if label == "DNG" && matches!(fault, GpuFault::FailTile(_)) {
-                // Known gap, see `a_dng_after_a_one_shot_device_error_is_the_cpu_export_whole`: a DNG is two
-                // renders, and a fault that fires once is spent by the first, so the second one stays on the
-                // device and the file is a mix. Everything else of the contract holds and is checked below.
-                let _ = writeln!(
-                    std::io::stderr(),
-                    "[G-09 gpu_faults] {cell}: device {:?}, not the CPU export (known gap)",
-                    r.device
-                );
-            } else {
-                assert_eq!(r.device, ComputeDevice::Cpu, "{cell}: {:?}", r.notes);
-                assert!(
-                    std::fs::read(&r.path).expect("read") == *want,
-                    "{cell}: the fallback is not the CPU export"
-                );
-            }
+            assert_eq!(r.device, ComputeDevice::Cpu, "{cell}: {:?}", r.notes);
+            assert!(
+                std::fs::read(&r.path).expect("read") == *want,
+                "{cell}: the fallback is not the CPU export"
+            );
             assert_eq!(
                 names_in(out.path()).len(),
                 1,
@@ -256,13 +246,13 @@ fn every_fault_makes_the_whole_photo_again_on_the_cpu_in_every_format() {
     }
 }
 
-/// The contract of `docs/gpu-plan.md` 4.9 for a DNG whose device error fires once (`tile@N`): the whole photo again
-/// on the CPU, `device = cpu`, the CPU's bytes. It does not hold today: `export_photo` renders a DNG as two renders
-/// (the raw one and the preview), each with its own fallback, so the raw render falls back and the preview, run
-/// after the fault is spent, stays on the device. Left ignored until `export.rs` redoes the preview on the CPU
-/// after a fallback of the raw render (follow-up in the G-09 report); `cargo test -- --ignored` shows it.
+/// The contract of `docs/gpu-plan.md` 4.9 for a DNG whose device error fires once (`tile@N`): the whole photo
+/// again on the CPU, `device = cpu`, the CPU's bytes. A DNG is two renders (the raw pixels, then the preview), and
+/// an error that fires once is spent by the render it hits. `tile@1` and `tile@4` hit the raw render (six tiles:
+/// the preview must then be made on the CPU too), `tile@7` and `tile@10` the preview (the raw pixels, made on the
+/// device by then, must be made again on the CPU). Without the rule the file is a mix and the report says
+/// `device = gpu` next to the note.
 #[test]
-#[ignore = "known gap: a DNG whose raw render fell back keeps its preview on the device"]
 fn a_dng_after_a_one_shot_device_error_is_the_cpu_export_whole() {
     let Some(shared) = start_device() else { return };
     let d = Developed::new(&scene(3, 0.5), MODEL);
@@ -274,7 +264,7 @@ fn a_dng_after_a_one_shot_device_error_is_the_cpu_export_whole() {
         .into_iter()
         .find(|(l, _)| *l == "DNG")
         .expect("dng");
-    for at in [1_u64, 4] {
+    for at in [1_u64, 4, 7, 10] {
         let ctx = context(home.path(), Some(&shared), false);
         let out = tempfile::tempdir().expect("out");
         let mut o = opts.clone();

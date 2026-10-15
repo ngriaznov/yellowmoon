@@ -607,7 +607,9 @@ fn the_handoff_matches_the_cpu_demosaic_before_the_later_stages() {
             .extract(core);
         let frame =
             PreparedDemosaic::new(Balance::Balanced, &inputs, &Params::default()).expect("frame");
-        let work = DeviceWork::Demosaic(DemosaicWork::new(mosaic, core, frame).expect("work"));
+        let work = DeviceWork::Demosaic(Box::new(
+            DemosaicWork::new(mosaic, core, frame).expect("work"),
+        ));
         let gpu = dev
             .gpu
             .run(JobSpec::new(Priority::Viewport), move |ctx, cancel| {
