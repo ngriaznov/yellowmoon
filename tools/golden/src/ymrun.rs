@@ -209,7 +209,12 @@ impl Rendered {
         self.json
             .get("notes")
             .and_then(Value::as_array)
-            .map(|a| a.iter().filter_map(Value::as_str).map(str::to_owned).collect())
+            .map(|a| {
+                a.iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_owned)
+                    .collect()
+            })
             .unwrap_or_default()
     }
 
@@ -427,7 +432,10 @@ pub fn adapter_of(doctor: &Value) -> Option<Adapter> {
     Some(Adapter {
         name: text("name"),
         backend: text("backend"),
-        software: gpu.get("software").and_then(Value::as_bool).unwrap_or(false),
+        software: gpu
+            .get("software")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
     })
 }
 

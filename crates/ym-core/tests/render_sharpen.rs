@@ -379,7 +379,11 @@ fn a_view_at_100_percent_is_the_sharpened_picture_the_export_writes_on_the_devic
     } else {
         (0.41, 10)
     };
-    a_view_at_100_percent_is_the_sharpened_picture_the_export_writes_with(&dev, slack, max_over_one);
+    a_view_at_100_percent_is_the_sharpened_picture_the_export_writes_with(
+        &dev,
+        slack,
+        max_over_one,
+    );
     // And the device's frame is the CPU's frame within the codes of the colour pass's parity test
     // (two; measured: one).
     let d = developed(800, 600);

@@ -18,6 +18,7 @@ use std::sync::Arc;
 
 use crate::cpu::{Placement, RgbImage};
 use crate::device::{GpuContext, GpuError};
+use crate::kernels::copy::Piece;
 use crate::kernels::util::even;
 use crate::pool::PooledBuffer;
 use crate::stream::{Completed, PassList, ReadId, read_bytes, upload_bytes};
@@ -319,6 +320,18 @@ impl RowBands {
     #[must_use]
     pub fn bands(&self) -> &[Arc<GpuImage>] {
         &self.bands
+    }
+
+    /// The bands as pieces of the picture, for [`encode_gather`](crate::kernels::copy::encode_gather).
+    #[must_use]
+    pub fn pieces(&self) -> Vec<Piece> {
+        self.bands
+            .iter()
+            .map(|b| Piece {
+                at: (0, b.place.y0),
+                image: Arc::clone(b),
+            })
+            .collect()
     }
 
     /// Bytes of all the bands' buffers.

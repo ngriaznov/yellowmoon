@@ -27,8 +27,8 @@ use serde_json::{Value, json};
 use ym_core::app::gpu::{GpuOpener, GpuPolicy, GpuSlot};
 use ym_core::export_queue::{ExportEvent, ExportJob};
 use ym_core::pipeline::{
-    FrameOptions, PhotoSource, RenderReport, RenderedFrame, StageTimings, ViewportMode, ViewportRect,
-    ViewportState,
+    FrameOptions, PhotoSource, RenderReport, RenderedFrame, StageTimings, ViewportMode,
+    ViewportRect, ViewportState,
 };
 use ym_core::scheduler::MemoryBudget;
 use ym_core::session::{ApplyScope, OpenOptions, PhotoStatus};
@@ -56,8 +56,11 @@ struct Scratch(PathBuf);
 impl Scratch {
     fn new() -> Result<Self, Failure> {
         let dir = std::env::temp_dir().join(format!("ym-bench-{}", std::process::id()));
-        std::fs::create_dir_all(&dir)
-            .map_err(|e| Failure::failed(format!("Couldn't make a folder for the bench exports: {e}.")))?;
+        std::fs::create_dir_all(&dir).map_err(|e| {
+            Failure::failed(format!(
+                "Couldn't make a folder for the bench exports: {e}."
+            ))
+        })?;
         Ok(Self(dir))
     }
 
@@ -134,7 +137,12 @@ struct Phase<'a> {
 }
 
 impl Phase<'_> {
-    fn frame(&self, name: &str, cold: (f64, &RenderedFrame), warm: Option<(f64, &RenderedFrame)>) -> Value {
+    fn frame(
+        &self,
+        name: &str,
+        cold: (f64, &RenderedFrame),
+        warm: Option<(f64, &RenderedFrame)>,
+    ) -> Value {
         let mut v = json!({
             "name": name,
             "cold_ms": r1(cold.0),
@@ -166,7 +174,10 @@ pub fn run(path: &Path, repeat: u32) -> Result<Value, Failure> {
     if let Some(reason) = slot.failure() {
         return Err(Failure::new(
             exit::NO_GPU,
-            format!("No usable GPU was found ({reason}). The setting is {}, so nothing was timed.", choice.policy),
+            format!(
+                "No usable GPU was found ({reason}). The setting is {}, so nothing was timed.",
+                choice.policy
+            ),
         ));
     }
     let rt = Runtime::open(&CoreSettings {
@@ -185,7 +196,9 @@ pub fn run(path: &Path, repeat: u32) -> Result<Value, Failure> {
             g.run(JobSpec::new(Priority::Export), move |ctx, _| {
                 ctx.warm_up_set(set)
             })
-            .map_err(|e| Failure::failed(format!("The {} kernels do not compile: {e}.", set.name())))?;
+            .map_err(|e| {
+                Failure::failed(format!("The {} kernels do not compile: {e}.", set.name()))
+            })?;
             compile.insert(set.name().to_owned(), json!(r1(ms(t.elapsed()))));
         }
     }
@@ -209,7 +222,9 @@ pub fn run(path: &Path, repeat: u32) -> Result<Value, Failure> {
     if let Some(summary) = state.photos.iter().find(|p| p.id == id)
         && let PhotoStatus::Skipped { reason } = &summary.status
     {
-        return Err(Failure::failed(format!("That photo can't be developed: {reason}")));
+        return Err(Failure::failed(format!(
+            "That photo can't be developed: {reason}"
+        )));
     }
     let view = rt
         .core
@@ -265,16 +280,28 @@ pub fn run(path: &Path, repeat: u32) -> Result<Value, Failure> {
         r.forget(src.id);
         let cold = frame(&src, &st)?;
         let warm = frame(&src, &st)?;
-        views.push(phase.frame("100 %, 1440 x 960 cell", (cold.0, &cold.1), Some((warm.0, &warm.1))));
+        views.push(phase.frame(
+            "100 %, 1440 x 960 cell",
+            (cold.0, &cold.1),
+            Some((warm.0, &warm.1)),
+        ));
     }
     // A colour-only edit: the raw group is cached, only the colour and grade stages run.
     {
         let st = ViewportState::new(ViewportRect::cell(1440.0, 960.0, 1.0));
         let base = frame(&src, &st)?;
         let mut s = src.settings.clone();
-        s.contrast = if s.contrast > 50.0 { 5.0 } else { s.contrast + 20.0 };
+        s.contrast = if s.contrast > 50.0 {
+            5.0
+        } else {
+            s.contrast + 20.0
+        };
         let edited = frame(&src.with_settings(s), &st)?;
-        let mut v = phase.frame("colour-only edit, 1440 x 960 cell", (edited.0, &edited.1), Some((base.0, &base.1)));
+        let mut v = phase.frame(
+            "colour-only edit, 1440 x 960 cell",
+            (edited.0, &edited.1),
+            Some((base.0, &base.1)),
+        );
         v["raw_work"] = json!(edited.1.report.runs.raw_work());
         views.push(v);
     }
@@ -352,7 +379,9 @@ pub fn run(path: &Path, repeat: u32) -> Result<Value, Failure> {
     // Peaks.
     let pool = match gpu_ref {
         Some(g) => g
-            .run(JobSpec::new(Priority::Viewport), |ctx, _| Ok(ctx.pool().stats()))
+            .run(JobSpec::new(Priority::Viewport), |ctx, _| {
+                Ok(ctx.pool().stats())
+            })
             .ok(),
         None => None,
     };
@@ -579,10 +608,13 @@ pub fn to_text(v: &Value) -> String {
             .map_or_else(|| "-".to_owned(), |b| (b >> 20).to_string())
     );
     // The heaviest GPU passes over the whole run, when the adapter timed them.
-    let mut totals: std::collections::BTreeMap<String, (u64, f64)> = std::collections::BTreeMap::new();
+    let mut totals: std::collections::BTreeMap<String, (u64, f64)> =
+        std::collections::BTreeMap::new();
     let mut collect = |rows: &Value| {
         for p in rows.as_array().into_iter().flatten() {
-            let t = totals.entry(p["label"].as_str().unwrap_or("?").to_owned()).or_default();
+            let t = totals
+                .entry(p["label"].as_str().unwrap_or("?").to_owned())
+                .or_default();
             t.0 += p["count"].as_u64().unwrap_or(0);
             t.1 += p["total_ms"].as_f64().unwrap_or(0.0);
         }

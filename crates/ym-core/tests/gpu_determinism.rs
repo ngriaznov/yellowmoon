@@ -133,20 +133,13 @@ fn formats(out: &Path) -> Vec<(&'static str, ExportOptions)> {
 }
 
 fn export(ctx: &ExportContext, photo: &ExportPhoto, opts: ExportOptions) -> ExportReport {
-    export_photo(
-        ctx,
-        photo,
-        &ExportParams::new(opts),
-        &ExportControl::none(),
-    )
-    .expect("export")
+    export_photo(ctx, photo, &ExportParams::new(opts), &ExportControl::none()).expect("export")
 }
 
 fn bytes_of(ctx: &ExportContext, photo: &ExportPhoto, opts: ExportOptions) -> Vec<u8> {
     let r = export(ctx, photo, opts);
     assert!(
-        r.device == ComputeDevice::Gpu
-            && !r.notes.iter().any(|n| n.contains("graphics card")),
+        r.device == ComputeDevice::Gpu && !r.notes.iter().any(|n| n.contains("graphics card")),
         "the export did not run on the device: {:?} {:?}",
         r.device,
         r.notes
@@ -213,7 +206,10 @@ fn the_same_export_is_the_same_bytes_every_time_and_on_a_device_of_its_own() {
         let first = bytes_of(&ctx, &p, opts.clone());
         for time in 2..=4 {
             let again = bytes_of(&ctx, &p, opts.clone());
-            assert!(first == again, "{label}: export {time} differs from the first");
+            assert!(
+                first == again,
+                "{label}: export {time} differs from the first"
+            );
         }
         let elsewhere = bytes_of(&own, &p, opts);
         assert!(

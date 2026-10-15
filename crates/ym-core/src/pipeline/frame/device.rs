@@ -53,6 +53,7 @@ use ym_gpu::cpu::{Placement, RgbImage};
 use ym_gpu::device::{Gpu, GpuContext, GpuError};
 use ym_gpu::image::{GpuImage, IMAGE_USAGE};
 use ym_gpu::kernels::color::{PreparedChain, Stop, release_tables};
+use ym_gpu::kernels::copy::{Piece, encode_gather};
 use ym_gpu::kernels::encode::{C13, Encoding, encode_c13};
 use ym_gpu::kernels::output_sharpen::{FusedC13, PreparedSharpen};
 use ym_gpu::kernels::sampler::encode_sample;
@@ -220,13 +221,39 @@ impl Upload {
     }
 }
 
+/// The camera RGB a device job samples from.
+pub(super) enum CameraSource {
+    /// A host image (a window of the raw group), uploaded for the job.
+    Host(Arc<RgbImage>),
+    /// Images that are on the device already (the raw group the caches kept there,
+    /// [`crate::pipeline::RenderOptions::resident_caches`]): the job gathers `window` out of them
+    /// with the copy kernel, which moves the samples and changes none, so the sampler reads the bits
+    /// the uploaded window would have.
+    Resident {
+        /// The pieces of the picture, in buffer pixels.
+        pieces: Vec<Piece>,
+        /// The part of the picture to sample from, in buffer pixels.
+        window: Rect,
+    },
+}
+
+impl CameraSource {
+    /// Width and height of the window in pixels.
+    fn size(&self) -> (usize, usize) {
+        match self {
+            Self::Host(image) => (image.width, image.height),
+            Self::Resident { window, .. } => (window.w, window.h),
+        }
+    }
+}
+
 /// What a device job starts from.
 pub(super) enum DeviceInput {
     /// Camera RGB (a window of the raw group) that the device samples through `grid` into
     /// `width x height` pixels.
     Camera {
         /// The window of the group; its pixel (0, 0) is buffer pixel `origin`.
-        image: Arc<RgbImage>,
+        source: CameraSource,
         /// Where the window starts in the buffer the grid maps into.
         origin: (usize, usize),
         /// The geometry.
@@ -249,13 +276,13 @@ impl DeviceInput {
         let frame = |w: usize, h: usize| 16 * even(w) * h as u64 <= route.band_bytes;
         match self {
             Self::Camera {
-                image,
+                source,
                 width,
                 height,
                 ..
             } => {
-                12 * even(image.width) * image.height as u64 <= route.source_bytes
-                    && frame(*width, *height)
+                let (sw, sh) = source.size();
+                12 * even(sw) * sh as u64 <= route.source_bytes && frame(*width, *height)
             }
             Self::Sampled(Upload::Rgb(s)) => frame(s.img.width, s.img.height),
             Self::Sampled(Upload::Masked { width, height, .. }) => frame(*width, *height),
@@ -316,16 +343,24 @@ fn input_image(
 ) -> Result<GpuImage, GpuError> {
     match input {
         DeviceInput::Camera {
-            image,
+            source,
             origin,
             grid,
             width,
             height,
         } => {
-            let src = GpuImage::upload_rgb(ctx, "view source", image)?;
+            let src = match source {
+                CameraSource::Host(image) => {
+                    Arc::new(GpuImage::upload_rgb(ctx, "view source", image)?)
+                }
+                CameraSource::Resident { pieces, window } => encode_gather(passes, pieces, *window)?,
+            };
             let sampled = encode_sample(passes, &src, *origin, grid, (0, 0), *width, *height)?;
-            // The source must outlive the submission.
-            let _ = passes.keep(src.buf);
+            // The source must outlive the submission: a buffer made here (the upload, a gathered
+            // copy) is kept by the pass list; a cached one is held by the input.
+            if let Ok(owned) = Arc::try_unwrap(src) {
+                let _ = passes.keep(owned.buf);
+            }
             Ok(sampled)
         }
         DeviceInput::Sampled(Upload::Rgb(s)) => GpuImage::upload(

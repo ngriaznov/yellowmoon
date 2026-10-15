@@ -54,7 +54,7 @@ use ym_gpu::cpu::{
     Cfa, CfaColor as GpuColor, LUMA, Mosaic, NoiseDn, NoiseSigma, Placement, Rect, RgbImage,
 };
 use ym_gpu::device::{Gpu, GpuContext, GpuError};
-use ym_gpu::image::GpuImage;
+use ym_gpu::image::{GpuImage, RowBands};
 use ym_gpu::kernels::bilateral::SigmaHalf;
 use ym_gpu::kernels::lens::LensTable;
 use ym_gpu::kernels::prep::{DeviceRaw, VignetteTable};
@@ -1725,18 +1725,49 @@ impl GpuRoute {
         })
     }
 
-    /// The fit-view group of the resident photo at `1/k`, read back as a host image.
+    /// The fit-view group of the resident photo at `1/k`, left on the device as bands of rows
+    /// ([`GpuReduced`]), made as a series of jobs of the route: one per slab of the offsets sweep, per
+    /// band of the binning, of the denoise and of R9, and one for the sigma planes. Each is a few
+    /// megapixels of work at the most, so that a viewport frame queued behind them waits for one of
+    /// them and not for the whole group (`docs/gpu-plan.md` K5; at `k = 2` of a 50 MP photo the whole
+    /// group was 26 steps and 12 seconds on lavapipe, the longest step 3.6 s). The run's state (the
+    /// bands so far, the reducer) travels from one job to the next; a cancelled render drops it, and
+    /// the buffers go back to the pool.
     ///
     /// # Errors
     ///
-    /// As [`run_job`](Self::run_job), and the group's own errors ([`GpuReduced::run_rgb`]).
+    /// As [`run_job`](Self::run_job), and the group's own errors.
+    pub fn reduced_resident(
+        &self,
+        resident: &Arc<DeviceRaw>,
+        params: ReducedParams,
+    ) -> Result<RowBands, GpuError> {
+        let mut run = GpuReduced::start(Arc::clone(resident), params)?;
+        loop {
+            let (next, more) = self.run_job(move |ctx, token| {
+                let more = run.step(ctx, token)?;
+                Ok((run, more))
+            })?;
+            if !more {
+                return next.finish();
+            }
+            run = next;
+        }
+    }
+
+    /// The fit-view group of the resident photo at `1/k`, read back as a host image: the series of
+    /// jobs of [`reduced_resident`](Self::reduced_resident), then one job that reads the bands.
+    ///
+    /// # Errors
+    ///
+    /// As [`reduced_resident`](Self::reduced_resident), and the readback's.
     pub fn reduced(
         &self,
         resident: &Arc<DeviceRaw>,
         params: ReducedParams,
     ) -> Result<RgbImage, GpuError> {
-        let resident = Arc::clone(resident);
-        self.run_job(move |ctx, token| GpuReduced::run_rgb(ctx, &resident, &params, token))
+        let bands = self.reduced_resident(resident, params)?;
+        self.run_job(move |ctx, _| bands.read_rgb(ctx))
     }
 }
 

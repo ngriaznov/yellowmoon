@@ -132,7 +132,7 @@ lossless L, 12 and 14 bit, camera-processed (Lossless M), the highest ISO, a tun
 
 **Real photos.** `golden device-check FILE...` needs no manifest: it renders each file twice (`--cpu`, then strictly on the device), at a long edge of `--long-edge` pixels (default 1500; 0 compares the
 full-size pictures; the raw chain still runs at full resolution on both paths, so the work compared is the same), and applies the gates with `--reference render`. CI feeds it one of the owner's photos
-(`testdata/readme-photos/src/A1M01749.ARW`, the `readme-photos` branch in Git LFS, cached by `tools/fetch/owner-photos.sha256`; `tools/fetch/owner-photos.sh --verify` checks the files).
+(`testdata/readme-photos/src/A1M01749.ARW`, the `readme-photos` branch in Git LFS, cached by `tools/fetch/owner-photos.sha256`; `tools/fetch/owner-photos.sh --verify` checks the files). First measurement on lavapipe, long edge 1500: ΔE00 median 0 (mean 6.5e-5), p99 3.8e-4, max 0.0283, 94 of 4 500 000 samples (2.09e-5) more than 8 codes off (largest 102), 82 s for both renders on four shared cores; well inside the gates, so CI passes no overrides.
 
 ## `golden truth`
 

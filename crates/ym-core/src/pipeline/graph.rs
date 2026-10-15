@@ -25,7 +25,7 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, PoisonError, RwLock};
+use std::sync::{Arc, Mutex, PoisonError, RwLock, Weak};
 use std::time::Instant;
 
 use serde::Serialize;
@@ -36,8 +36,9 @@ use ym_gpu::cpu::detail::NoiseReduction;
 use ym_gpu::cpu::sharpen::SharpenParams;
 use ym_gpu::cpu::sharpen::diffraction::DiffractionParams;
 use ym_gpu::cpu::{Rect, RgbImage};
-use ym_gpu::device::{Gpu, GpuError, GpuInfo};
-use ym_gpu::image::GpuImage;
+use ym_gpu::device::{Gpu, GpuContext, GpuError, GpuInfo};
+use ym_gpu::image::{GpuImage, RowBands};
+use ym_gpu::kernels::copy::Piece;
 use ym_gpu::kernels::prep::DeviceRaw;
 use ym_gpu::queue::{CancelToken, JobSpec, Priority};
 
@@ -110,6 +111,13 @@ pub struct RenderOptions {
     /// renderer and not the device's limit, so that the cut does not depend on the machine.
     /// [`VIEW_BAND_BYTES`] by default.
     pub view_band_bytes: u64,
+    /// Whether the caches of the raw group (the reduced groups and the tiles of the 100 % view) keep
+    /// what the device made where it is, on the device, for the sampler to read (`docs/gpu-plan.md`
+    /// G-10, [`Backing`]): no readback after the raw chain and no upload before the sampler. Has an
+    /// effect only with a device that runs the sampler ([`GpuStages::SAMPLER`]). Off keeps host
+    /// images, as before G-10; the frames are the same either way, bit for bit (the sampler reads the
+    /// same samples), and the tests compare the two. On by default.
+    pub resident_caches: bool,
     /// The colour of the letterbox around the photo (the paper colour).
     pub background: [u8; 3],
     /// Longest edge of a thumbnail in pixels (`docs/01`: 240).
@@ -175,6 +183,7 @@ impl std::fmt::Debug for RenderOptions {
             .field("gpu_stages", &self.gpu_stages)
             .field("gpu_strict", &self.gpu_strict)
             .field("view_band_bytes", &self.view_band_bytes)
+            .field("resident_caches", &self.resident_caches)
             .finish_non_exhaustive()
     }
 }
@@ -191,6 +200,7 @@ impl Default for RenderOptions {
             gpu_stages: GpuStages::ALL,
             gpu_strict: false,
             view_band_bytes: VIEW_BAND_BYTES,
+            resident_caches: true,
             background: [255, 255, 255],
             thumbnail_px: 240,
             demosaic: forced_demosaic().unwrap_or(DEFAULT_METHOD),
@@ -363,12 +373,12 @@ struct GraphState {
     fingerprint: Option<u64>,
     plan: Option<((bool, bool), Arc<RawPlan>)>,
     sigma: Option<(Vec<u64>, Arc<SigmaPlane>)>,
-    groups: Option<ByteLru<(RawParamsKey, usize), Arc<RgbImage>>>,
+    groups: Option<ByteLru<(RawParamsKey, usize), Backing>>,
     full: Option<(RawParamsKey, Arc<FullChain>)>,
     /// The photo's raw words on the device (`GpuReduced` and the range R1..R9 read them), uploaded
     /// once per photo; released with the photo's place among the [`RESIDENT_PHOTOS`].
     resident: Option<Arc<DeviceRaw>>,
-    tiles: Option<ByteLru<(RawParamsKey, usize, usize), Arc<RgbImage>>>,
+    tiles: Option<ByteLru<(RawParamsKey, usize, usize), Backing>>,
     color: Option<Arc<ColorPlan>>,
     grade: Option<ByteLru<GradeKey, Arc<GradePlan>>>,
     frames: Option<ByteLru<String, Arc<super::frame::RenderedFrame>>>,
@@ -512,12 +522,25 @@ impl PhotoGraph {
             .insert(key, frame, bytes);
     }
 
-    fn group_budget(&self) -> usize {
-        (self.budget.cpu_bytes / 6) as usize
+    /// The bytes the reduced groups may take. A cache that keeps its images on the device counts
+    /// device bytes, and takes at most an eighth of the device's budget as well (the rest is for the
+    /// raw words, the working buffers of a render and the other cache).
+    fn group_budget(&self, on_device: bool) -> usize {
+        self.cache_budget(on_device)
     }
 
-    fn tile_budget(&self) -> usize {
-        (self.budget.cpu_bytes / 6) as usize
+    /// The bytes the tiles of the 100 % view may take (as [`PhotoGraph::group_budget`]).
+    fn tile_budget(&self, on_device: bool) -> usize {
+        self.cache_budget(on_device)
+    }
+
+    fn cache_budget(&self, on_device: bool) -> usize {
+        let host = self.budget.cpu_bytes / 6;
+        if on_device {
+            host.min(self.budget.gpu_bytes / 8) as usize
+        } else {
+            host as usize
+        }
     }
 }
 
@@ -971,6 +994,145 @@ pub(crate) struct ViewGpu {
     pub stages: GpuStages,
 }
 
+/// What a cache of the raw group holds for one key (`docs/gpu-plan.md` G-10): a host image, or the
+/// buffers the device made it in, which stay on the device for the sampler to read.
+///
+/// An entry is one or the other and never both: a consumer that needs host pixels (the CPU colour
+/// pass, a fall-back after a device error) reads the device's back and the entry becomes a host one
+/// ([`Job::group`]), so the cache's byte count is the memory the entry takes where it is.
+#[derive(Clone)]
+pub(crate) enum Backing {
+    /// A host image.
+    Cpu(Arc<RgbImage>),
+    /// Device buffers, in pieces.
+    Gpu(Arc<ResidentImage>),
+}
+
+impl Backing {
+    /// Bytes the entry takes, where it is.
+    fn bytes(&self) -> usize {
+        match self {
+            Self::Cpu(image) => image.data.len() * 4,
+            Self::Gpu(resident) => resident.device_bytes(),
+        }
+    }
+
+    /// Width and height of the image in pixels.
+    pub(crate) fn size(&self) -> (usize, usize) {
+        match self {
+            Self::Cpu(image) => (image.width, image.height),
+            Self::Gpu(resident) => (resident.width, resident.height),
+        }
+    }
+}
+
+/// An image of the raw group (three planes of camera RGB) on the device: the bands of a reduced group,
+/// or a tile of the full-resolution group.
+pub(crate) struct ResidentImage {
+    pieces: Vec<Piece>,
+    width: usize,
+    height: usize,
+    /// The device the buffers belong to. A reader on another device (the renderer was given a new one)
+    /// reads the host copy instead.
+    gpu: Weak<Gpu>,
+}
+
+impl ResidentImage {
+    /// The bands of a group made on `gpu`.
+    fn of_bands(bands: &RowBands, gpu: &Arc<Gpu>) -> Self {
+        Self {
+            pieces: bands.pieces(),
+            width: bands.width,
+            height: bands.height,
+            gpu: Arc::downgrade(gpu),
+        }
+    }
+
+    /// A tile made on `gpu`.
+    fn of_tile(image: Arc<GpuImage>, gpu: &Arc<Gpu>) -> Self {
+        Self {
+            width: image.width,
+            height: image.height,
+            pieces: vec![Piece { at: (0, 0), image }],
+            gpu: Arc::downgrade(gpu),
+        }
+    }
+
+    /// The buffers, with the place of each in the image.
+    pub(crate) fn pieces(&self) -> &[Piece] {
+        &self.pieces
+    }
+
+    /// Whether the buffers are on this device.
+    pub(crate) fn is_on(&self, gpu: &Weak<Gpu>) -> bool {
+        Weak::ptr_eq(&self.gpu, gpu)
+    }
+
+    fn device_bytes(&self) -> usize {
+        self.pieces.iter().map(|p| p.image.byte_len() as usize).sum()
+    }
+
+    /// Reads the image back (a job on the device thread).
+    fn read(&self, ctx: &GpuContext) -> Result<RgbImage, GpuError> {
+        let (w, h) = (self.width, self.height);
+        let mut out = RgbImage::new(w, h);
+        for p in &self.pieces {
+            let (pw, ph) = (p.image.width, p.image.height);
+            let part = p.image.read(ctx)?;
+            for c in 0..3 {
+                for y in 0..ph {
+                    let dst = c * w * h + (p.at.1 + y) * w + p.at.0;
+                    let src = c * pw * ph + y * pw;
+                    out.data[dst..dst + pw].copy_from_slice(&part[src..src + pw]);
+                }
+            }
+        }
+        Ok(out)
+    }
+}
+
+/// Where a cached image came from: the key to find it again by, and the way to make it on the host
+/// when the device cannot hand it over.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PartSource {
+    /// The raw group at 1/k.
+    Group(usize),
+    /// The tile `(tx, ty)` of the full-resolution group.
+    Tile(usize, usize),
+}
+
+/// A cached image on the device and its place in the buffer a view samples from.
+#[derive(Clone)]
+pub(crate) struct ResidentPart {
+    pub image: Arc<ResidentImage>,
+    /// Column and row of the image's first pixel in the buffer.
+    pub at: (usize, usize),
+    pub source: PartSource,
+}
+
+/// The pixels a view samples from.
+#[derive(Clone)]
+pub(crate) enum Pixels {
+    /// A host image; its pixel (0, 0) is the view's `origin`.
+    Host(Arc<RgbImage>),
+    /// Images on the device that together cover `rect` (buffer pixels) and may reach beyond it.
+    Resident {
+        parts: Vec<ResidentPart>,
+        rect: Rect,
+    },
+}
+
+impl Pixels {
+    /// The rectangle of the buffer the pixels cover, `origin` being where a host image's first pixel
+    /// is (the device's pieces know their own place).
+    pub(crate) fn rect(&self, origin: (usize, usize)) -> Rect {
+        match self {
+            Self::Host(image) => Rect::new(origin.0, origin.1, image.width, image.height),
+            Self::Resident { rect, .. } => *rect,
+        }
+    }
+}
+
 /// A tile of the full-resolution raw group: the host's image, or one the device made and left where it
 /// is (`docs/gpu-plan.md` G-10), for the stages that follow on the device to read.
 pub enum TileImage {
@@ -1317,59 +1479,87 @@ impl<'a> Job<'a> {
         Ok(sigma)
     }
 
-    /// The raw group at 1/`k` as an image. Mosaic photos need `k >= 2` (full resolution goes
-    /// through [`Job::region`]); camera-processed photos accept any `k`.
+    /// Whether the caches of the raw group keep their images on the device: there is a device that
+    /// runs the sampler, and [`RenderOptions::resident_caches`] is on.
+    fn keeps_on_device(&self) -> bool {
+        self.opts.resident_caches
+            && self.opts.gpu.is_some()
+            && self.opts.gpu_stages.contains(GpuStages::SAMPLER)
+    }
+
+    /// The raw group at 1/`k` as a host image. Mosaic photos need `k >= 2` (full resolution goes
+    /// through [`Job::region`]); camera-processed photos accept any `k`. A group that is on the device
+    /// is read back, and the cache keeps the host image from then on.
     pub fn group(&mut self, k: usize) -> Result<Arc<RgbImage>, RenderError> {
+        match self.group_backing(k)? {
+            Backing::Cpu(image) => Ok(image),
+            Backing::Gpu(resident) => self.demote(PartSource::Group(k), &resident),
+        }
+    }
+
+    /// The raw group at 1/`k` as the cache holds it: on the device when the raw chain made it there
+    /// and the caches keep their images there ([`Job::keeps_on_device`]), else a host image.
+    pub(crate) fn group_backing(&mut self, k: usize) -> Result<Backing, RenderError> {
         let params = self.params()?;
         let key = (params.key(), k);
         {
+            let budget = self.g.group_budget(self.keeps_on_device());
             let mut st = lock(&self.g.state);
-            let groups = st
-                .groups
-                .get_or_insert_with(|| ByteLru::new(self.g.group_budget()));
-            if let Some(img) = groups.get(&key) {
-                return Ok(Arc::clone(img));
+            let groups = st.groups.get_or_insert_with(|| ByteLru::new(budget));
+            if let Some(entry) = groups.get(&key) {
+                return Ok(entry.clone());
             }
         }
         let frame = self.frame()?;
         let plan = self.plan()?;
-        let img = if frame.reduced {
+        let made = if frame.reduced {
             let t = Instant::now();
             let img = reduced_rgb(&frame, &plan, &params, k, self.cancel)?;
             self.timings.raw_ms += t.elapsed().as_secs_f64() * 1000.0;
-            img
+            Backing::Cpu(Arc::new(img))
         } else {
             debug_assert!(k >= 2, "full resolution of a mosaic goes through tiles");
             match self.group_on_device(&frame, &plan, &params, k)? {
-                Some(img) => {
+                Some(made) => {
                     self.runs.device_groups += 1;
-                    img
+                    made
                 }
-                None => {
-                    let sigma = self.sigma()?;
-                    let t = Instant::now();
-                    let img = reduced_bayer(&frame, &plan, &params, &sigma, k, self.cancel)?;
-                    self.timings.raw_ms += t.elapsed().as_secs_f64() * 1000.0;
-                    img
-                }
+                None => Backing::Cpu(Arc::new(self.group_on_host(&frame, &plan, &params, k)?)),
             }
         };
         self.runs.raw_groups += 1;
-        let img = Arc::new(img);
-        let bytes = img.data.len() * 4;
+        let (bytes, budget) = (made.bytes(), self.g.group_budget(self.keeps_on_device()));
         lock(&self.g.state)
             .groups
-            .get_or_insert_with(|| ByteLru::new(self.g.group_budget()))
-            .insert(key, Arc::clone(&img), bytes);
+            .get_or_insert_with(|| ByteLru::new(budget))
+            .insert(key, made.clone(), bytes);
+        Ok(made)
+    }
+
+    /// The raw group of a mosaic photo at 1/`k` on the CPU reference path.
+    fn group_on_host(
+        &mut self,
+        frame: &Arc<FrameData>,
+        plan: &RawPlan,
+        params: &RawParams,
+        k: usize,
+    ) -> Result<RgbImage, RenderError> {
+        let sigma = self.sigma()?;
+        let t = Instant::now();
+        let img = reduced_bayer(frame, plan, params, &sigma, k, self.cancel)?;
+        self.timings.raw_ms += t.elapsed().as_secs_f64() * 1000.0;
         Ok(img)
     }
 
     /// The raw group at 1/`k` made on the device from the photo's resident raw words (`GpuReduced`:
-    /// R1, R4, R5, the binning, the vignetting gain, the sigma, the light denoise and R9 at 1/k), or
-    /// `None` when the CPU makes it: there is no device, the raw front is off
-    /// ([`GpuStages::RAW_FRONT`]), a device error ended the route, or the device cannot take the
-    /// photo's parameters. The sigma plane is made on the device too, so the host's plane
-    /// ([`Job::sigma`]) is not built for this group.
+    /// R1, R4, R5, the binning, the vignetting gain, the sigma, the light denoise and R9 at 1/k) as a
+    /// series of jobs ([`GpuRoute::reduced_resident`]), or `None` when the CPU makes it: there is no
+    /// device, the raw front is off ([`GpuStages::RAW_FRONT`]), a device error ended the route, or the
+    /// device cannot take the photo's parameters. The sigma plane is made on the device too, so the
+    /// host's plane ([`Job::sigma`]) is not built for this group.
+    ///
+    /// The group is left on the device when the caches keep their images there
+    /// ([`Job::keeps_on_device`]), else it is read back.
     ///
     /// A device error falls back to the CPU for this group with a note; one that is not about this
     /// request's size also ends the route for the photo (as for a tile). A strict policy fails the
@@ -1380,7 +1570,7 @@ impl<'a> Job<'a> {
         plan: &RawPlan,
         params: &RawParams,
         k: usize,
-    ) -> Result<Option<RgbImage>, RenderError> {
+    ) -> Result<Option<Backing>, RenderError> {
         // An export makes full-resolution tiles and never a reduced group.
         if self.restartable {
             return Ok(None);
@@ -1392,25 +1582,163 @@ impl<'a> Job<'a> {
             return Ok(None);
         };
         let route = GpuRoute {
-            gpu,
+            gpu: Arc::clone(&gpu),
             range: FRONT_RANGE,
             spec: JobSpec::new(self.gpu_priority).owned_by(u64::from(self.src.id.0)),
             token: self.cancel.clone(),
             resident: None,
         };
+        let keep = self.keeps_on_device();
         let t = Instant::now();
         let result = self
             .resident(&route, frame)
-            .and_then(|raw| route.reduced(&raw, device_params));
+            .and_then(|raw| -> Result<Backing, GpuError> {
+                if keep {
+                    let bands = route.reduced_resident(&raw, device_params)?;
+                    Ok(Backing::Gpu(Arc::new(ResidentImage::of_bands(&bands, &gpu))))
+                } else {
+                    route.reduced(&raw, device_params).map(|i| Backing::Cpu(Arc::new(i)))
+                }
+            });
         match result {
-            Ok(img) => {
+            Ok(made) => {
                 self.timings.raw_ms += t.elapsed().as_secs_f64() * 1000.0;
-                Ok(Some(img))
+                Ok(Some(made))
             }
             Err(GpuError::Cancelled) => Err(RenderError::Cancelled),
             Err(e) => {
                 self.group_gpu_failed(&e)?;
                 Ok(None)
+            }
+        }
+    }
+
+    /// The host image of a cached image that is on the device: read back, and the cache entry made a
+    /// host one (an entry is on one side only, [`Backing`]). When the device cannot hand it over (it
+    /// is gone, it failed, it is not the one the image is on), the CPU makes the image again, with a
+    /// note, and the cache keeps that.
+    ///
+    /// # Errors
+    ///
+    /// [`RenderError::Cancelled`]; a strict policy's [`RenderError::Gpu`]; the CPU path's errors.
+    fn demote(
+        &mut self,
+        source: PartSource,
+        resident: &Arc<ResidentImage>,
+    ) -> Result<Arc<RgbImage>, RenderError> {
+        let read = match resident.gpu.upgrade() {
+            Some(gpu) if !gpu.is_lost() => {
+                let route = self.device_route(gpu);
+                let image = Arc::clone(resident);
+                match route.run_job(move |ctx, _| image.read(ctx)) {
+                    Ok(img) => Some(img),
+                    Err(GpuError::Cancelled) => return Err(RenderError::Cancelled),
+                    Err(e) => {
+                        self.group_gpu_failed(&e)?;
+                        None
+                    }
+                }
+            }
+            _ => {
+                if self.opts.gpu_strict {
+                    return Err(RenderError::Gpu(
+                        "the graphics card that holds the image is no longer there".to_owned(),
+                    ));
+                }
+                None
+            }
+        };
+        let image = match read {
+            Some(img) => Arc::new(img),
+            None => Arc::new(self.make_on_host(source)?),
+        };
+        self.keep_host(source, &image);
+        Ok(image)
+    }
+
+    /// The pixels as one host image whose pixel (0, 0) is the first of [`Pixels::rect`]: the host
+    /// image itself, or the device's images read back ([`Job::demote`]: each cache entry becomes a
+    /// host one) and put together.
+    ///
+    /// # Errors
+    ///
+    /// As [`Job::demote`].
+    pub(crate) fn host_pixels(&mut self, pixels: &Pixels) -> Result<Arc<RgbImage>, RenderError> {
+        let (parts, rect) = match pixels {
+            Pixels::Host(image) => return Ok(Arc::clone(image)),
+            Pixels::Resident { parts, rect } => (parts, *rect),
+        };
+        let mut hosts = Vec::with_capacity(parts.len());
+        for part in parts {
+            hosts.push(self.demote(part.source, &part.image)?);
+        }
+        if let ([part], [host]) = (parts.as_slice(), hosts.as_slice())
+            && part.at == (rect.x, rect.y)
+            && (host.width, host.height) == (rect.w, rect.h)
+        {
+            return Ok(Arc::clone(host));
+        }
+        let mut out = RgbImage::new(rect.w, rect.h);
+        for (part, host) in parts.iter().zip(&hosts) {
+            let at = Rect::new(part.at.0, part.at.1, host.width, host.height);
+            let ov = at.intersect(&rect);
+            if ov.is_empty() {
+                continue;
+            }
+            out.paste(
+                host,
+                Rect::new(ov.x - at.x, ov.y - at.y, ov.w, ov.h),
+                ov.x - rect.x,
+                ov.y - rect.y,
+            );
+        }
+        Ok(Arc::new(out))
+    }
+
+    /// The route for the readback of an image: the request's priority and token.
+    fn device_route(&self, gpu: Arc<Gpu>) -> GpuRoute {
+        GpuRoute {
+            gpu,
+            range: FRONT_RANGE,
+            spec: JobSpec::new(self.gpu_priority).owned_by(u64::from(self.src.id.0)),
+            token: self.cancel.clone(),
+            resident: None,
+        }
+    }
+
+    /// Makes an image of the raw group again on the host (a group on the CPU path, a tile as
+    /// [`Job::run_full_tile`] makes it).
+    fn make_on_host(&mut self, source: PartSource) -> Result<RgbImage, RenderError> {
+        match source {
+            PartSource::Group(k) => {
+                let params = self.params()?;
+                let frame = self.frame()?;
+                let plan = self.plan()?;
+                self.group_on_host(&frame, &plan, &params, k)
+            }
+            PartSource::Tile(tx, ty) => {
+                let (full, frame, rect) = self.tile_inputs(tx, ty, true)?;
+                self.run_full_tile(&full, &frame, rect)
+            }
+        }
+    }
+
+    /// Puts a host image in the place of the cache entry of `source`.
+    fn keep_host(&mut self, source: PartSource, image: &Arc<RgbImage>) {
+        let Ok(params) = self.params() else { return };
+        let key = params.key();
+        let bytes = image.data.len() * 4;
+        let mut st = lock(&self.g.state);
+        match source {
+            PartSource::Group(k) => {
+                if let Some(groups) = st.groups.as_mut() {
+                    groups.insert((key, k), Backing::Cpu(Arc::clone(image)), bytes);
+                }
+            }
+            PartSource::Tile(tx, ty) => {
+                if let Some(tiles) = st.tiles.as_mut() {
+                    tiles.insert((key, tx, ty), Backing::Cpu(Arc::clone(image)), bytes);
+                }
             }
         }
     }
@@ -1480,20 +1808,14 @@ impl<'a> Job<'a> {
         Ok(full)
     }
 
-    /// One 512 px tile of the full-resolution raw group.
-    fn tile(&mut self, tx: usize, ty: usize, keep: bool) -> Result<Arc<RgbImage>, RenderError> {
-        let params = self.params()?;
-        let key = (params.key(), tx, ty);
-        if keep {
-            let mut st = lock(&self.g.state);
-            let tiles = st
-                .tiles
-                .get_or_insert_with(|| ByteLru::new(self.g.tile_budget()));
-            if let Some(t) = tiles.get(&key) {
-                return Ok(Arc::clone(t));
-            }
-        }
-        self.check()?;
+    /// The chain, the decoded area and the rectangle of the tile `(tx, ty)` of the full-resolution
+    /// raw group.
+    fn tile_inputs(
+        &mut self,
+        tx: usize,
+        ty: usize,
+        keep: bool,
+    ) -> Result<(Arc<FullChain>, Arc<FrameData>, Rect), RenderError> {
         let plan = self.plan()?;
         let frame = self.frame()?;
         let full = self.full(keep)?;
@@ -1504,18 +1826,98 @@ impl<'a> Job<'a> {
             t.min(plan.out_w - tx * t),
             t.min(plan.out_h - ty * t),
         );
+        Ok((full, frame, rect))
+    }
+
+    /// One 512 px tile of the full-resolution raw group as a host image (a tile on the device is read
+    /// back, and the cache keeps the host image from then on).
+    fn tile(&mut self, tx: usize, ty: usize, keep: bool) -> Result<Arc<RgbImage>, RenderError> {
+        match self.tile_backing(tx, ty, keep)? {
+            Backing::Cpu(image) => Ok(image),
+            Backing::Gpu(resident) => self.demote(PartSource::Tile(tx, ty), &resident),
+        }
+    }
+
+    /// One 512 px tile of the full-resolution raw group as the cache holds it: left on the device
+    /// when the raw chain made it there and the caches keep their images there
+    /// ([`Job::keeps_on_device`]), else a host image. A tile that is not kept (`keep` false) is
+    /// always a host image.
+    fn tile_backing(&mut self, tx: usize, ty: usize, keep: bool) -> Result<Backing, RenderError> {
+        let params = self.params()?;
+        let key = (params.key(), tx, ty);
+        let on_device = self.keeps_on_device();
+        if keep {
+            let budget = self.g.tile_budget(on_device);
+            let mut st = lock(&self.g.state);
+            let tiles = st.tiles.get_or_insert_with(|| ByteLru::new(budget));
+            if let Some(entry) = tiles.get(&key) {
+                return Ok(entry.clone());
+            }
+        }
+        self.check()?;
+        let (full, frame, rect) = self.tile_inputs(tx, ty, keep)?;
         let t = Instant::now();
-        let img = Arc::new(self.run_full_tile(&full, &frame, rect)?);
+        let made = if keep && on_device {
+            match self.run_full_tile_any(&full, &frame, rect, true)? {
+                TileImage::Device(image) => {
+                    let gpu = self.opts.gpu.clone().ok_or_else(|| {
+                        RenderError::Image(
+                            "A tile was left on a graphics card that is not attached.".to_owned(),
+                        )
+                    })?;
+                    Backing::Gpu(Arc::new(ResidentImage::of_tile(image, &gpu)))
+                }
+                TileImage::Host(image) => Backing::Cpu(Arc::new(image)),
+            }
+        } else {
+            Backing::Cpu(Arc::new(self.run_full_tile(&full, &frame, rect)?))
+        };
         self.runs.tiles += 1;
         self.timings.raw_ms += t.elapsed().as_secs_f64() * 1000.0;
         if keep {
-            let bytes = img.data.len() * 4;
+            let (bytes, budget) = (made.bytes(), self.g.tile_budget(on_device));
             lock(&self.g.state)
                 .tiles
-                .get_or_insert_with(|| ByteLru::new(self.g.tile_budget()))
-                .insert(key, Arc::clone(&img), bytes);
+                .get_or_insert_with(|| ByteLru::new(budget))
+                .insert(key, made.clone(), bytes);
         }
-        Ok(img)
+        Ok(made)
+    }
+
+    /// The pixels a view of the 100 % path samples from: the full-resolution raw group over `rect`,
+    /// out of the cached tiles. When every tile is on the device they stay there, and the sampler
+    /// reads them in place ([`Pixels::Resident`]); else the host assembles the region
+    /// ([`Job::region`]).
+    pub(crate) fn region_pixels(&mut self, rect: Rect) -> Result<Pixels, RenderError> {
+        let plan = self.plan()?;
+        if !self.keeps_on_device()
+            || plan.reduced
+            || rect.is_empty()
+            || rect.x1() > plan.out_w
+            || rect.y1() > plan.out_h
+        {
+            return self.region(rect, true).map(|r| Pixels::Host(Arc::new(r)));
+        }
+        let t = self.opts.tile_px.max(64);
+        let mut parts = Vec::new();
+        for ty in rect.y / t..=(rect.y1() - 1) / t {
+            for tx in rect.x / t..=(rect.x1() - 1) / t {
+                self.check()?;
+                match self.tile_backing(tx, ty, true)? {
+                    Backing::Gpu(image) => parts.push(ResidentPart {
+                        image,
+                        at: (tx * t, ty * t),
+                        source: PartSource::Tile(tx, ty),
+                    }),
+                    // A tile the CPU made: the host assembles the region (the tiles cached on the
+                    // device are read back as they are pasted).
+                    Backing::Cpu(_) => {
+                        return self.region(rect, true).map(|r| Pixels::Host(Arc::new(r)));
+                    }
+                }
+            }
+        }
+        Ok(Pixels::Resident { parts, rect })
     }
 
     /// The full-resolution raw group over `rect` (coordinates of the lens-cropped image), made of

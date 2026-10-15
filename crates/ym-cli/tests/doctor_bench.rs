@@ -42,10 +42,17 @@ fn the_report_of_the_cpu_path_has_every_part_and_names_no_file() {
     let (v, _) = bench(&sb, &arw, "off", &["--json", "--repeat", "2"]);
     assert_eq!(v["bench"], 1);
     assert_eq!(v["photo"]["camera"], "ILCE-7RM4");
-    assert_eq!((v["photo"]["width"].as_u64(), v["photo"]["height"].as_u64()), (Some(400), Some(300)));
+    assert_eq!(
+        (v["photo"]["width"].as_u64(), v["photo"]["height"].as_u64()),
+        (Some(400), Some(300))
+    );
     assert_eq!(v["gpu"]["policy"], "off");
     assert_eq!(v["gpu"]["uses_gpu"], false);
-    assert_eq!(v["compile_ms"], serde_json::json!({}), "no device, no kernels to compile");
+    assert_eq!(
+        v["compile_ms"],
+        serde_json::json!({}),
+        "no device, no kernels to compile"
+    );
     let views = v["views"].as_array().expect("views");
     let names: Vec<&str> = views.iter().filter_map(|x| x["name"].as_str()).collect();
     assert_eq!(
@@ -59,7 +66,10 @@ fn the_report_of_the_cpu_path_has_every_part_and_names_no_file() {
         ]
     );
     for view in views {
-        assert!(view["cold_ms"].as_f64().is_some_and(|ms| ms > 0.0), "{view}");
+        assert!(
+            view["cold_ms"].as_f64().is_some_and(|ms| ms > 0.0),
+            "{view}"
+        );
     }
     // A colour-only edit does no raw work (the raw group is cached).
     assert_eq!(views[3]["raw_work"], 0);
@@ -68,18 +78,31 @@ fn the_report_of_the_cpu_path_has_every_part_and_names_no_file() {
     assert_eq!(formats, ["jpeg", "tiff 16", "png 16"]);
     for e in exports {
         assert_eq!(e["device"], "cpu", "{e}");
-        assert_eq!((e["width"].as_u64(), e["height"].as_u64()), (Some(400), Some(300)));
+        assert_eq!(
+            (e["width"].as_u64(), e["height"].as_u64()),
+            (Some(400), Some(300))
+        );
         assert!(e["bytes"].as_u64().is_some_and(|b| b > 0));
     }
     assert_eq!(v["repeat"]["runs"], 2);
     assert_eq!(v["repeat"]["identical"], true, "{}", v["repeat"]);
-    assert!(v["memory"]["host_ledger_peak_bytes"].as_u64().is_some_and(|b| b > 0));
+    assert!(
+        v["memory"]["host_ledger_peak_bytes"]
+            .as_u64()
+            .is_some_and(|b| b > 0)
+    );
     assert_eq!(v["memory"]["device_pool_peak_in_use_bytes"], Value::Null);
     // The privacy promise of doctor: no file name, no folder.
     let text = v.to_string();
     assert!(!text.contains("a-name-nobody"), "{text}");
-    assert!(!text.contains(&sb.root().to_string_lossy().into_owned()), "{text}");
-    assert!(!text.contains(&arw.to_string_lossy().into_owned()), "{text}");
+    assert!(
+        !text.contains(&sb.root().to_string_lossy().into_owned()),
+        "{text}"
+    );
+    assert!(
+        !text.contains(&arw.to_string_lossy().into_owned()),
+        "{text}"
+    );
 }
 
 #[test]
@@ -107,7 +130,10 @@ fn on_the_device_the_exports_say_gpu_the_kernels_are_timed_and_the_bytes_repeat(
     let sb = Sandbox::new();
     if !adapter_opens(&sb) {
         eprintln!("skipped: no graphics adapter");
-        assert!(std::env::var_os("YM_REQUIRE_GPU").is_none(), "YM_REQUIRE_GPU is set but no adapter opens");
+        assert!(
+            std::env::var_os("YM_REQUIRE_GPU").is_none(),
+            "YM_REQUIRE_GPU is set but no adapter opens"
+        );
         return;
     }
     let arw = sb.arw_sized("a.ARW", 400, 300, 3);
@@ -128,13 +154,28 @@ fn on_the_device_the_exports_say_gpu_the_kernels_are_timed_and_the_bytes_repeat(
         );
     }
     assert_eq!(v["repeat"]["identical"], true, "{}", v["repeat"]);
-    assert!(v["memory"]["device_pool_peak_in_use_bytes"].as_u64().is_some_and(|b| b > 0));
-    assert!(v["device_counters"]["dispatches"].as_u64().is_some_and(|n| n > 0));
+    assert!(
+        v["memory"]["device_pool_peak_in_use_bytes"]
+            .as_u64()
+            .is_some_and(|b| b > 0)
+    );
+    assert!(
+        v["device_counters"]["dispatches"]
+            .as_u64()
+            .is_some_and(|n| n > 0)
+    );
     // Where the adapter has timestamp queries the GPU time of the passes is reported (lavapipe and Metal have them).
     if v["gpu"]["adapter"]["timestamp_query"] == true {
         let passes = v["exports"][0]["gpu_passes"].as_array().expect("passes");
-        assert!(!passes.is_empty(), "timestamps are on but no pass was timed");
-        assert!(passes.iter().all(|p| p["total_ms"].as_f64().is_some_and(|t| t >= 0.0)));
+        assert!(
+            !passes.is_empty(),
+            "timestamps are on but no pass was timed"
+        );
+        assert!(
+            passes
+                .iter()
+                .all(|p| p["total_ms"].as_f64().is_some_and(|t| t >= 0.0))
+        );
     }
 }
 
@@ -155,7 +196,10 @@ fn bad_input_is_named_and_a_strict_policy_without_a_device_is_exit_4() {
         .assert()
         .failure();
     let err = String::from_utf8_lossy(&out.get_output().stderr).into_owned();
-    assert!(err.contains("can't open") || err.contains("not a photo") || err.contains("Try an ARW"), "{err}");
+    assert!(
+        err.contains("can't open") || err.contains("not a photo") || err.contains("Try an ARW"),
+        "{err}"
+    );
     // A device that cannot open when the setting needs one.
     sb.ym()
         .env("WGPU_BACKEND", "dx12")

@@ -93,9 +93,15 @@ fn context(home: &Path, gpu: Option<&Arc<Gpu>>, strict: bool) -> ExportContext {
 }
 
 fn scene(seed: u64, level: f64) -> Scene {
-    Scene::new(600, 400, light("sony-ilce-7rm4", 4500.0), Layout::Patchwork, level)
-        .noise(2e-4, 2e-6)
-        .seed(seed)
+    Scene::new(
+        600,
+        400,
+        light("sony-ilce-7rm4", 4500.0),
+        Layout::Patchwork,
+        level,
+    )
+    .noise(2e-4, 2e-6)
+    .seed(seed)
 }
 
 /// (name, options) of the formats checked; `out` is the destination folder.
@@ -109,15 +115,21 @@ fn formats(out: &Path) -> Vec<(&'static str, ExportOptions)> {
     };
     vec![
         ("JPEG", base(FormatKind::Jpeg)),
-        ("PNG 16", ExportOptions {
-            bit_depth: BitDepth::Sixteen,
-            ..base(FormatKind::Png)
-        }),
-        ("TIFF 16", ExportOptions {
-            bit_depth: BitDepth::Sixteen,
-            tiff_compression: TiffCompression::Lzw,
-            ..base(FormatKind::Tiff)
-        }),
+        (
+            "PNG 16",
+            ExportOptions {
+                bit_depth: BitDepth::Sixteen,
+                ..base(FormatKind::Png)
+            },
+        ),
+        (
+            "TIFF 16",
+            ExportOptions {
+                bit_depth: BitDepth::Sixteen,
+                tiff_compression: TiffCompression::Lzw,
+                ..base(FormatKind::Tiff)
+            },
+        ),
         ("DNG", base(FormatKind::Dng)),
     ]
 }
@@ -229,7 +241,11 @@ fn every_fault_makes_the_whole_photo_again_on_the_cpu_in_every_format() {
                     "{cell}: the fallback is not the CPU export"
                 );
             }
-            assert_eq!(names_in(out.path()).len(), 1, "{cell}: one file, no temporary");
+            assert_eq!(
+                names_in(out.path()).len(),
+                1,
+                "{cell}: one file, no temporary"
+            );
             let seen = seen.into_inner().expect("lock");
             assert!(seen.windows(2).all(|w| w[0] <= w[1]), "{cell}: {seen:?}");
             assert_eq!(ctx.renderer().ledger().used(), 0, "{cell}: host ledger");
@@ -254,7 +270,10 @@ fn a_dng_after_a_one_shot_device_error_is_the_cpu_export_whole() {
     let home = tempfile::tempdir().expect("home");
     let cpu = cpu_exports(home.path(), &photo);
     let want = &cpu.iter().find(|(l, _)| *l == "DNG").expect("dng").1;
-    let (_, opts) = formats(home.path()).into_iter().find(|(l, _)| *l == "DNG").expect("dng");
+    let (_, opts) = formats(home.path())
+        .into_iter()
+        .find(|(l, _)| *l == "DNG")
+        .expect("dng");
     for at in [1_u64, 4] {
         let ctx = context(home.path(), Some(&shared), false);
         let out = tempfile::tempdir().expect("out");
@@ -415,10 +434,8 @@ fn a_fault_in_the_first_photo_of_a_queue_reaches_the_second_only_as_far_as_the_r
     let pair = Pair::new();
     let photos = pair.photos();
     let home = tempfile::tempdir().expect("home");
-    let cpu: Vec<Vec<(&str, Vec<u8>)>> = photos
-        .iter()
-        .map(|p| cpu_exports(home.path(), p))
-        .collect();
+    let cpu: Vec<Vec<(&str, Vec<u8>)>> =
+        photos.iter().map(|p| cpu_exports(home.path(), p)).collect();
     // PNG 16 stands for the formats here; the matrix above has the others.
     let png = |out: &Path| formats(out).remove(1).1;
     // (fault, whether the route is closed for the rest of the run, so that the second photo is the CPU's)
@@ -449,7 +466,11 @@ fn a_fault_in_the_first_photo_of_a_queue_reaches_the_second_only_as_far_as_the_r
                 // `Require`: the first photo fails with the kind `gpu` and nothing is written for it. The second
                 // photo is exported on the device after a tile that failed once, and fails too when the route is
                 // closed.
-                assert_eq!(results[0].as_ref().err().map(String::as_str), Some("gpu"), "{cell}");
+                assert_eq!(
+                    results[0].as_ref().err().map(String::as_str),
+                    Some("gpu"),
+                    "{cell}"
+                );
                 if closed {
                     assert_eq!(
                         results[1].as_ref().err().map(String::as_str),
@@ -457,7 +478,9 @@ fn a_fault_in_the_first_photo_of_a_queue_reaches_the_second_only_as_far_as_the_r
                         "{cell}: a strict run does not fall back quietly"
                     );
                 } else {
-                    let second = results[1].as_ref().unwrap_or_else(|e| panic!("{cell}: {e}"));
+                    let second = results[1]
+                        .as_ref()
+                        .unwrap_or_else(|e| panic!("{cell}: {e}"));
                     assert_eq!(second.device, ComputeDevice::Gpu, "{cell}");
                 }
                 assert!(
@@ -466,14 +489,26 @@ fn a_fault_in_the_first_photo_of_a_queue_reaches_the_second_only_as_far_as_the_r
                     names_in(out.path())
                 );
             } else {
-                let first = results[0].as_ref().unwrap_or_else(|e| panic!("{cell}: {e}"));
-                assert_eq!(first.device, ComputeDevice::Cpu, "{cell}: {:?}", first.notes);
-                assert!(first.notes.iter().any(|n| n.starts_with(FALLBACK_NOTE)), "{cell}");
+                let first = results[0]
+                    .as_ref()
+                    .unwrap_or_else(|e| panic!("{cell}: {e}"));
+                assert_eq!(
+                    first.device,
+                    ComputeDevice::Cpu,
+                    "{cell}: {:?}",
+                    first.notes
+                );
+                assert!(
+                    first.notes.iter().any(|n| n.starts_with(FALLBACK_NOTE)),
+                    "{cell}"
+                );
                 assert!(
                     std::fs::read(&first.path).expect("read") == cpu[0][1].1,
                     "{cell}: photo 1 is not the CPU export"
                 );
-                let second = results[1].as_ref().unwrap_or_else(|e| panic!("{cell}: {e}"));
+                let second = results[1]
+                    .as_ref()
+                    .unwrap_or_else(|e| panic!("{cell}: {e}"));
                 if closed {
                     assert_eq!(second.device, ComputeDevice::Cpu, "{cell}");
                     assert!(
@@ -481,7 +516,12 @@ fn a_fault_in_the_first_photo_of_a_queue_reaches_the_second_only_as_far_as_the_r
                         "{cell}: photo 2 is not the CPU export"
                     );
                 } else {
-                    assert_eq!(second.device, ComputeDevice::Gpu, "{cell}: {:?}", second.notes);
+                    assert_eq!(
+                        second.device,
+                        ComputeDevice::Gpu,
+                        "{cell}: {:?}",
+                        second.notes
+                    );
                     assert!(
                         !second.notes.iter().any(|n| n.starts_with(FALLBACK_NOTE)),
                         "{cell}: {:?}",

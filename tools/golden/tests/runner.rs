@@ -13,8 +13,8 @@ use golden::expected::Expected;
 use golden::image::{Rgb16, write_png16};
 use golden::manifest::{Manifest, SetChoice, select};
 use golden::runner::{
-    Config, GpuGate, Metric, Reference, Refused, Status, UpdateKind, check, check_gpu, reference_path,
-    update,
+    Config, GpuGate, Metric, Reference, Refused, Status, UpdateKind, check, check_gpu,
+    reference_path, update,
 };
 use golden::ymrun::YmBinary;
 use predicates::prelude::*;
@@ -487,10 +487,20 @@ fn a_device_picture_equal_to_the_cpu_one_is_identical_and_says_where_it_was_made
     let grey = b.picture("grey", [30000; 3]);
     let red = b.picture("red", [40000, 10000, 10000]);
     let (manifest, ctx) = stored(&b, [&grey, &red]);
-    let report = check_gpu(&ctx, &GpuGate::PLAN, Reference::Stored, &selected(&manifest)).unwrap();
+    let report = check_gpu(
+        &ctx,
+        &GpuGate::PLAN,
+        Reference::Stored,
+        &selected(&manifest),
+    )
+    .unwrap();
     assert_eq!(report.count(Status::Identical), 2, "{:?}", report.outcomes);
     assert!(!report.failed());
-    for o in report.outcomes.iter().filter(|o| o.status != Status::Missing) {
+    for o in report
+        .outcomes
+        .iter()
+        .filter(|o| o.status != Status::Missing)
+    {
         assert_eq!(o.device.as_deref(), Some("gpu"), "{}", o.id);
         assert!(o.notes.is_empty());
     }
@@ -537,10 +547,20 @@ fn a_device_picture_within_the_gates_passes_and_each_gate_can_fail_it() {
     // A different colour fails the colour gates, and a gate of 0 fails even the two codes.
     let green = b.picture("green", [10000, 40000, 10000]);
     manifest.entries[1].settings = json!({ "picture": red, "picture_gpu": green });
-    let report = check_gpu(&ctx, &GpuGate::PLAN, Reference::Stored, &selected(&manifest)).unwrap();
+    let report = check_gpu(
+        &ctx,
+        &GpuGate::PLAN,
+        Reference::Stored,
+        &selected(&manifest),
+    )
+    .unwrap();
     let c = by_id(&report, "synthetic/b");
     assert_eq!(c.status, Status::Exceeded);
-    assert!(c.message.contains("median") && c.message.contains("max"), "{}", c.message);
+    assert!(
+        c.message.contains("median") && c.message.contains("max"),
+        "{}",
+        c.message
+    );
     let zero = GpuGate {
         median: 0.0,
         p99: 0.0,
@@ -566,7 +586,13 @@ fn a_render_that_ran_on_the_cpu_or_says_it_fell_back_cannot_pass() {
     // Both pictures are the stored ones, so only the report of where they were made can fail them.
     manifest.entries[0].settings = json!({ "picture": grey, "fallback": "device" });
     manifest.entries[1].settings = json!({ "picture": grey, "fallback": "note" });
-    let report = check_gpu(&ctx, &GpuGate::PLAN, Reference::Stored, &selected(&manifest)).unwrap();
+    let report = check_gpu(
+        &ctx,
+        &GpuGate::PLAN,
+        Reference::Stored,
+        &selected(&manifest),
+    )
+    .unwrap();
     let a = by_id(&report, "synthetic/a");
     assert_eq!(a.status, Status::FellBack, "{}", a.message);
     assert_eq!(a.device.as_deref(), Some("cpu"));
@@ -625,7 +651,9 @@ fn the_binary_runs_the_gpu_mode_on_a_subset_and_refuses_what_cannot_be_trusted()
         .assert()
         .success()
         .stdout(predicate::str::contains("GPU run on Stub GPU (Stub)"))
-        .stdout(predicate::str::contains("2 of 2 rendered files say device gpu"));
+        .stdout(predicate::str::contains(
+            "2 of 2 rendered files say device gpu",
+        ));
     let report: Value = serde_json::from_str(&fs::read_to_string(&report_path).unwrap()).unwrap();
     assert_eq!(report["metric"], "gpu");
     assert_eq!(report["gpu"]["adapter"]["name"], "Stub GPU");
@@ -640,7 +668,9 @@ fn the_binary_runs_the_gpu_mode_on_a_subset_and_refuses_what_cannot_be_trusted()
         .arg(&subset)
         .assert()
         .success()
-        .stdout(predicate::str::contains("1 of 1 rendered files say device gpu"));
+        .stdout(predicate::str::contains(
+            "1 of 1 rendered files say device gpu",
+        ));
     // An id the manifest does not have is a setup error, not a smaller subset.
     fs::write(&subset, "synthetic/typo\n").unwrap();
     b.cmd("check")

@@ -507,7 +507,8 @@ fn the_tail_writes_the_cpu_pixels_in_every_format() {
                 // adapter none did (the C13 bound of the plan: within one code, 99 % exact).
                 check(
                     s.max <= bounds.sharp8_max
-                        && s.over_one as f64 <= (bounds.sharp8_over_one * n).max(bounds.sharp8_floor)
+                        && s.over_one as f64
+                            <= (bounds.sharp8_over_one * n).max(bounds.sharp8_floor)
                         && exact >= bounds.sharp8_exact,
                     format!(
                         "{name} {label}: {} over 1, max {}, {exact} exact",

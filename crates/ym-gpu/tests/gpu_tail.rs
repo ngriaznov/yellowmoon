@@ -327,7 +327,10 @@ fn the_tail_matches_the_cpu_export_in_every_configuration() {
                     d.exact_share(),
                     d.max,
                     if c.bits16 {
-                        format!(", {over} over {MAX_CODE_DIFF_16} ({:.2e})", over as f64 / d.n as f64)
+                        format!(
+                            ", {over} over {MAX_CODE_DIFF_16} ({:.2e})",
+                            over as f64 / d.n as f64
+                        )
                     } else {
                         String::new()
                     },
@@ -846,7 +849,10 @@ fn assert_tail_matches_cpu(
             let floor = if dev.gpu.info().is_software { 2.0 } else { 6.0 };
             if over > 0 {
                 // Printed where a flip happened (G-09), so that the next Metal run measures the floor.
-                ci_note("tiny pictures", &format!("{label}: {over} over {MAX_CODE_DIFF_16}, max {}", d.max));
+                ci_note(
+                    "tiny pictures",
+                    &format!("{label}: {over} over {MAX_CODE_DIFF_16}, max {}", d.max),
+                );
             }
             assert!(
                 over as f64 <= (MAX_FLIP_SHARE_16 * got.len() as f64).max(floor)

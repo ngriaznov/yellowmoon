@@ -513,7 +513,13 @@ fn run_check(a: CheckArgs) -> Result<ExitCode> {
             );
             return Ok(ExitCode::from(2));
         }
-        let gate = gate_of(a.gpu_gates, a.gpu_median, a.gpu_p99, a.gpu_max, a.gpu_codes_share);
+        let gate = gate_of(
+            a.gpu_gates,
+            a.gpu_median,
+            a.gpu_p99,
+            a.gpu_max,
+            a.gpu_codes_share,
+        );
         // The adapter first: a machine without one would otherwise fail every file with the same message.
         let adapter = match adapter_or_exit(&s.ym, s.quiet) {
             Ok(adapter) => adapter,
@@ -788,7 +794,13 @@ fn run_device_check(a: DeviceCheckArgs) -> Result<ExitCode> {
         }
     }
     let refs: Vec<&Entry> = entries.iter().collect();
-    let gate = gate_of(a.gpu_gates, a.gpu_median, a.gpu_p99, a.gpu_max, a.gpu_codes_share);
+    let gate = gate_of(
+        a.gpu_gates,
+        a.gpu_median,
+        a.gpu_p99,
+        a.gpu_max,
+        a.gpu_codes_share,
+    );
     let ctx = Config {
         ym,
         // Every entry's file is an absolute or working-directory path; `join` keeps an absolute one as it is.

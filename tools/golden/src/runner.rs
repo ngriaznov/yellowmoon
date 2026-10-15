@@ -612,7 +612,11 @@ fn check_one_gpu(
         );
         return outcome;
     }
-    if let Some(note) = rendered.notes.iter().find(|n| n.contains(FALLBACK_NOTE_MARK)) {
+    if let Some(note) = rendered
+        .notes
+        .iter()
+        .find(|n| n.contains(FALLBACK_NOTE_MARK))
+    {
         outcome.status = Status::FellBack;
         outcome.message = format!("ym reports device gpu but says: {note}");
         return outcome;

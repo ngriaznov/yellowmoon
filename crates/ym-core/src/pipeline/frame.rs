@@ -60,16 +60,21 @@ use ym_gpu::cpu::output_sharpen::{OutputSharpen, scale_for_edges};
 use ym_gpu::cpu::resample::sample_catmull_rom;
 use ym_gpu::cpu::{Rect, RgbImage};
 use ym_gpu::device::{Gpu, GpuError};
+use ym_gpu::kernels::copy::Piece;
 use ym_gpu::queue::{CancelToken, JobSpec, Priority};
 use ym_gpu::tail::{TailRoute, colour_device_tile_to_host, colour_tile_to_host};
 
 use self::device::{
-    Bounds, DeviceDisplay, DeviceInput, DisplayJob, PlainJob, TailWork, Upload, ViewRoute,
+    Bounds, CameraSource, DeviceDisplay, DeviceInput, DisplayJob, PlainJob, TailWork, Upload,
+    ViewRoute,
 };
 pub use self::export_tail::{BAND_DEPTH, GpuBands, TailRequest};
 use super::color::{GradePlan, PhotoSource};
 use super::geometry::{Affine, Grid, oriented_to_sensor, sensor_to_oriented};
-use super::graph::{ComputeDevice, Job, RenderReport, Renderer, TileImage};
+use super::graph::{
+    Backing, ComputeDevice, Job, PartSource, Pixels, RenderReport, Renderer, ResidentPart,
+    TileImage,
+};
 use super::viewport::ViewportState;
 use super::{FrameZoom, RenderError};
 
@@ -222,10 +227,10 @@ pub(crate) fn sample_to_camera(
 
 /// Where the pixels of a view come from once the raw group is there.
 enum ViewSource {
-    /// Camera RGB: `image` is a window of the raw group whose pixel (0, 0) is buffer pixel `origin`,
-    /// sampled through `grid`.
+    /// Camera RGB: `pixels` is a window of the raw group whose pixel (0, 0) is buffer pixel `origin`
+    /// (on the device, the images that cover the rectangle that starts there), sampled through `grid`.
     Image {
-        image: Arc<RgbImage>,
+        pixels: Pixels,
         origin: (usize, usize),
         grid: Grid,
     },
@@ -247,90 +252,141 @@ pub(crate) struct PreparedView {
 }
 
 impl PreparedView {
-    /// Samples the view on the CPU ([`sample_to_camera`]); the time goes to `sample_ms`.
-    fn sample_host(&self, job: &mut Job<'_>) -> Arc<Sampled> {
-        let t = std::time::Instant::now();
+    /// Samples the view on the CPU ([`sample_to_camera`]); the time goes to `sample_ms`. Pixels that
+    /// are on the device are read back first ([`Job::host_pixels`]; the read is not sampling time).
+    ///
+    /// # Errors
+    ///
+    /// [`RenderError::Cancelled`], and what reading the pixels back or making them on the CPU says.
+    fn sample_host(&self, job: &mut Job<'_>) -> Result<Arc<Sampled>, RenderError> {
         let (w, h) = (self.width, self.height);
         let sampled = match &self.source {
+            // A view that reads nothing of the photo is all paper whatever is in the buffer: no need
+            // to bring a picture back from the device for that.
             ViewSource::Image {
-                image,
+                pixels: Pixels::Resident { .. },
+                ..
+            } if self.window_rect().is_none() => Sampled {
+                img: RgbImage::new(w, h),
+                outside: Some(vec![1; w * h]),
+            },
+            ViewSource::Image {
+                pixels,
                 origin,
                 grid,
-            } => sample_to_camera(image, *origin, grid, (0, 0), w, h),
+            } => {
+                let image = job.host_pixels(pixels)?;
+                let t = std::time::Instant::now();
+                let sampled = sample_to_camera(&image, *origin, grid, (0, 0), w, h);
+                job.timings.sample_ms += t.elapsed().as_secs_f64() * 1000.0;
+                sampled
+            }
             ViewSource::Empty => Sampled {
                 img: RgbImage::new(w, h),
                 outside: Some(vec![1; w * h]),
             },
         };
-        job.timings.sample_ms += t.elapsed().as_secs_f64() * 1000.0;
-        Arc::new(sampled)
+        Ok(Arc::new(sampled))
     }
 
-    /// The part of the group the view reads, and where it starts in the buffer: the rectangle the
-    /// pixels sample from (widened by 3 px for the filters, as the 100 % path reads its region), or
-    /// the image itself when the view reads all of it (no copy). Sampling from the window gives the
-    /// same pixels as from the whole image (the filters never reach beyond it, and where the window is
-    /// cut by the image's own edge the clamp is the same). The window is what the device job
-    /// uploads, so a view of part of a large group (a band of a cut view, a zoomed fit view) uploads
-    /// only that part.
-    fn source_window(&self) -> Option<(Arc<RgbImage>, (usize, usize))> {
-        let ViewSource::Image { image, origin, .. } = &self.source else {
-            return None;
-        };
-        let (want, whole) = self.window_rect()?;
-        if want == whole {
-            return Some((Arc::clone(image), *origin));
-        }
-        Some((
-            Arc::new(image.extract(want.relative_to(&whole))),
-            (want.x, want.y),
-        ))
-    }
-
-    /// The rectangle [`PreparedView::source_window`] cuts, in buffer pixels, and the rectangle of the
-    /// image it is cut from; the two are equal when the view reads the whole image. No pixel is
+    /// The rectangle the view reads from the buffer, and the rectangle of the pixels it reads it
+    /// from; the two are equal when the view reads all of it (no copy then). The read rectangle is
+    /// where the pixels sample from, widened by 3 px for the filters (as the 100 % path reads its
+    /// region) and cut by the image: sampling from the window gives the same pixels as from the
+    /// whole image (the filters never reach beyond it, and where the window is cut by the image's
+    /// own edge the clamp is the same). The window is what the device job takes, so a view of part
+    /// of a large group (a band of a cut view, a zoomed fit view) takes only that part. No pixel is
     /// copied. `None` when the view reads nothing of the photo (a band of a letterbox that is all
     /// paper): there is nothing to upload, and a window of the whole image would count against the
     /// binding (and go up to the device) for a frame the sampler leaves empty.
     fn window_rect(&self) -> Option<(Rect, Rect)> {
         let ViewSource::Image {
-            image,
+            pixels,
             origin,
             grid,
         } = &self.source
         else {
             return None;
         };
-        let whole = Rect::new(origin.0, origin.1, image.width, image.height);
+        let whole = pixels.rect(*origin);
         let (x0, y0, x1, y1) = grid.source_bounds(0, 0, self.width, self.height, 3)?;
         let want = Rect::new(x0, y0, x1 - x0, y1 - y0).intersect(&whole);
         Some((if want.is_empty() { whole } else { want }, whole))
     }
 
     /// What a device job starts from for this view, and the bounding box of the pixels inside the
-    /// photo in the sampled picture. With the sampler on the device (`sampler`) the group's window
-    /// is uploaded as camera RGB; otherwise the CPU samples and the sampled pixels are uploaded.
-    fn device_input(&self, job: &mut Job<'_>, sampler: bool) -> (DeviceInput, Option<Bounds>) {
+    /// photo in the sampled picture. With the sampler on the device the window of the pixels is the
+    /// job's input: uploaded as camera RGB when it is on the host, gathered in place when it is on
+    /// the device `route` runs on; otherwise (no sampler on the device, or the pixels are on another
+    /// device) the CPU samples and the sampled pixels are uploaded.
+    ///
+    /// # Errors
+    ///
+    /// As [`PreparedView::sample_host`].
+    fn device_input(
+        &self,
+        job: &mut Job<'_>,
+        route: &ViewRoute,
+    ) -> Result<(DeviceInput, Option<Bounds>), RenderError> {
         let (w, h) = (self.width, self.height);
-        if sampler
-            && let ViewSource::Image { grid, .. } = &self.source
-            && let Some((image, origin)) = self.source_window()
+        if route.stages.sampler
+            && let ViewSource::Image {
+                pixels,
+                origin,
+                grid,
+            } = &self.source
+            && let Some((want, whole)) = self.window_rect()
         {
-            let bounds = self.inside_bounds();
-            return (
-                DeviceInput::Camera {
-                    image,
-                    origin,
-                    grid: grid.sampler_grid(),
-                    width: w,
-                    height: h,
-                },
-                bounds,
-            );
+            let camera = match pixels {
+                Pixels::Host(image) => {
+                    let (image, origin) = if want == whole {
+                        (Arc::clone(image), *origin)
+                    } else {
+                        (
+                            Arc::new(image.extract(want.relative_to(&whole))),
+                            (want.x, want.y),
+                        )
+                    };
+                    Some((CameraSource::Host(image), origin))
+                }
+                Pixels::Resident { parts, .. }
+                    if parts.iter().all(|p| p.image.is_on(&route.gpu_ref())) =>
+                {
+                    let pieces = parts
+                        .iter()
+                        .flat_map(|p| {
+                            p.image.pieces().iter().map(|q| Piece {
+                                at: (p.at.0 + q.at.0, p.at.1 + q.at.1),
+                                image: Arc::clone(&q.image),
+                            })
+                        })
+                        .collect();
+                    Some((
+                        CameraSource::Resident {
+                            pieces,
+                            window: want,
+                        },
+                        (want.x, want.y),
+                    ))
+                }
+                Pixels::Resident { .. } => None,
+            };
+            if let Some((source, origin)) = camera {
+                return Ok((
+                    DeviceInput::Camera {
+                        source,
+                        origin,
+                        grid: grid.sampler_grid(),
+                        width: w,
+                        height: h,
+                    },
+                    self.inside_bounds(),
+                ));
+            }
         }
-        let sampled = self.sample_host(job);
+        let sampled = self.sample_host(job)?;
         let bounds = inside_bounds(sampled.outside.as_deref(), w, h);
-        (DeviceInput::Sampled(Upload::of(&sampled)), bounds)
+        Ok((DeviceInput::Sampled(Upload::of(&sampled)), bounds))
     }
 
     /// The bounding box `(x0, y0, x1, y1)` (exclusive ends) of the pixels of the view that are inside
@@ -966,7 +1022,7 @@ fn sample_routed(
     if let Some(r) = route.filter(|r| r.stages.sampler)
         && matches!(prepared.source, ViewSource::Image { .. })
     {
-        let (input, _) = prepared.device_input(job, true);
+        let (input, _) = prepared.device_input(job, r)?;
         if input.fits(r) {
             let t = std::time::Instant::now();
             if let Some((w, h, planar)) = attempt(job, r.run(input, device::sample_job))? {
@@ -975,7 +1031,7 @@ fn sample_routed(
             }
         }
     }
-    Ok(prepared.sample_host(job))
+    prepared.sample_host(job)
 }
 
 /// A frame that is not sharpened (amount 0, or the Before view): the colour chain to C13 in one
@@ -992,7 +1048,7 @@ fn plain_pass(
     let (scale, sharp) = (prepared.scale, prepared.sharp);
     let started = std::time::Instant::now();
     if let Some(r) = route.filter(|r| r.stages.color) {
-        let (input, _) = prepared.device_input(job, r.stages.sampler);
+        let (input, _) = prepared.device_input(job, r)?;
         // A frame that does not fit one binding is made on the CPU, quietly (a view cut into bands
         // never gets here: `banded`).
         if input.fits(r) {
@@ -1092,7 +1148,7 @@ fn build_display(
     let (scale, sharp) = (prepared.scale, prepared.sharp);
     let started = std::time::Instant::now();
     if let Some(r) = route.filter(|r| r.stages.color) {
-        let (input, own) = prepared.device_input(job, r.stages.sampler);
+        let (input, own) = prepared.device_input(job, r)?;
         let bounds = plan.window.or(own);
         if input.fits(r) {
             let data = DisplayJob {
@@ -1180,7 +1236,7 @@ fn build_display_in_bands(
     for band in device::bands_of(read, rows) {
         job.check()?;
         let prepared = prepare_view(job, &band)?;
-        let (input, _) = prepared.device_input(job, route.stages.sampler);
+        let (input, _) = prepared.device_input(job, route)?;
         if !input.fits(route) {
             // The cut is made so that every band fits (`band_split`): a band that does not is the
             // frame's buffers not fitting, answered as such.
@@ -1734,13 +1790,13 @@ fn prepare_view_with(
                 sharp = false;
             } else {
                 let region = if pixels {
-                    job.region(rect, true)?
+                    job.region_pixels(rect)?
                 } else {
-                    RgbImage::new(0, 0)
+                    Pixels::Host(Arc::new(RgbImage::new(0, 0)))
                 };
                 return Ok(PreparedView {
                     source: ViewSource::Image {
-                        image: Arc::new(region),
+                        pixels: region,
                         origin: (x0, y0),
                         grid,
                     },
@@ -1761,15 +1817,27 @@ fn prepare_view_with(
             });
         }
     }
-    let img = job.group(k)?;
+    let backing = job.group_backing(k)?;
+    let (group_w, group_h) = backing.size();
+    let pixels = match backing {
+        Backing::Cpu(image) => Pixels::Host(image),
+        Backing::Gpu(image) => Pixels::Resident {
+            parts: vec![ResidentPart {
+                image,
+                at: (0, 0),
+                source: PartSource::Group(k),
+            }],
+            rect: Rect::new(0, 0, group_w, group_h),
+        },
+    };
     let inv = 1.0 / k as f64;
     let v2f = spec
         .view_to_final
         .then(&Affine::scale_translate(inv, inv, 0.0, 0.0));
-    let grid = geom.grid_from((img.width, img.height), v2f);
+    let grid = geom.grid_from((group_w, group_h), v2f);
     Ok(PreparedView {
         source: ViewSource::Image {
-            image: img,
+            pixels,
             origin: (0, 0),
             grid,
         },
@@ -1783,7 +1851,7 @@ fn prepare_view_with(
 /// Steps 1 to 3 of the module documentation on the CPU: prepare the view and sample it.
 pub(crate) fn sample_view(job: &mut Job<'_>, spec: &ViewSpec) -> Result<SampledView, RenderError> {
     let prepared = prepare_view(job, spec)?;
-    let sampled = prepared.sample_host(job);
+    let sampled = prepared.sample_host(job)?;
     Ok(SampledView {
         sampled,
         scale: prepared.scale,

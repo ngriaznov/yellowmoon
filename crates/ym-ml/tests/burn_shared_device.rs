@@ -71,7 +71,9 @@ fn burn_runs_on_the_device_of_the_image_pipeline_and_they_share_one_queue() {
     // 2. A golden tile of the network, on the same device.
     let tiles = load_tensors(&read("golden_tiles.safetensors"));
     let weights = read("golden_small.safetensors");
-    let (shape, input) = tiles.get("small.in.0").expect("the first small golden tile");
+    let (shape, input) = tiles
+        .get("small.in.0")
+        .expect("the first small golden tile");
     let ts = TileShape {
         height: shape[1],
         width: shape[2],

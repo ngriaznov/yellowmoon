@@ -5,10 +5,13 @@
 //! does to arithmetic (fast-math included); the CPU reference is a copy of the rows
 //! ([`crate::cpu::RgbImage::extract`] and `paste`).
 
+use std::sync::Arc;
+
 use bytemuck::{Pod, Zeroable};
 
 use super::shader::KernelId;
 use super::util::GROUP;
+use crate::cpu::Placement;
 use crate::cpu::tiling::Rect;
 use crate::device::GpuError;
 use crate::image::GpuImage;
@@ -119,6 +122,91 @@ pub fn encode_crop(
     )?;
     encode_copy_rect(passes, src, rect, &dst, (0, 0))?;
     Ok(dst)
+}
+
+/// A device image that lies at `at` (column, row) of a larger picture: a band of a reduced group, a
+/// tile of the full-resolution group.
+#[derive(Debug, Clone)]
+pub struct Piece {
+    /// Column and row of the image's first pixel in the picture.
+    pub at: (usize, usize),
+    /// The pixels.
+    pub image: Arc<GpuImage>,
+}
+
+impl Piece {
+    /// The rectangle the piece covers in the picture.
+    #[must_use]
+    pub fn rect(&self) -> Rect {
+        Rect::new(self.at.0, self.at.1, self.image.width, self.image.height)
+    }
+}
+
+/// Records the window `window` of the picture that `pieces` make (they do not overlap) as one image of
+/// its own, the pixel (0, 0) of which is the window's first. A window that is exactly one piece is
+/// that piece, with no copy. This is what the sampler reads when the raw group stays on the device:
+/// the same samples as a host image cut to the window and uploaded, since the kernel only moves them.
+///
+/// # Errors
+///
+/// [`GpuError::InvalidInput`] for an empty window, pieces with different plane counts, or pieces that
+/// leave part of the window uncovered; the pool's errors.
+pub fn encode_gather(
+    passes: &mut PassList<'_>,
+    pieces: &[Piece],
+    window: Rect,
+) -> Result<Arc<GpuImage>, GpuError> {
+    let Some(first) = pieces.first() else {
+        return Err(GpuError::InvalidInput(
+            "a window needs at least one piece".into(),
+        ));
+    };
+    let planes = first.image.planes;
+    if window.is_empty() || pieces.iter().any(|p| p.image.planes != planes) {
+        return Err(GpuError::InvalidInput(format!(
+            "the window {window:?} is empty or the pieces differ in planes"
+        )));
+    }
+    let covered: usize = pieces
+        .iter()
+        .map(|p| p.rect().intersect(&window))
+        .map(|r| r.w * r.h)
+        .sum();
+    if covered != window.w * window.h {
+        return Err(GpuError::InvalidInput(format!(
+            "the pieces cover {covered} of the {} pixels of the window {window:?}",
+            window.w * window.h
+        )));
+    }
+    if let [only] = pieces
+        && only.rect() == window
+    {
+        return Ok(Arc::clone(&only.image));
+    }
+    let ctx = passes.context();
+    let dst = GpuImage::alloc(
+        ctx,
+        "gathered window",
+        window.w,
+        window.h,
+        planes,
+        Placement::whole(window.w, window.h),
+    )?;
+    for p in pieces {
+        let part = p.rect().intersect(&window);
+        if part.is_empty() {
+            continue;
+        }
+        let from = Rect::new(part.x - p.at.0, part.y - p.at.1, part.w, part.h);
+        encode_copy_rect(
+            passes,
+            &p.image,
+            from,
+            &dst,
+            (part.x - window.x, part.y - window.y),
+        )?;
+    }
+    Ok(Arc::new(dst))
 }
 
 /// The WGSL of the copy kernel.

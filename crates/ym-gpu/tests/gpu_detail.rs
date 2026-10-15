@@ -525,7 +525,11 @@ fn the_denoise_to_detail_sequence_of_a_tile_matches_the_cpu_stage_sequence() {
             e.max
         ),
     );
-    assert!(e.max <= bound_unmeasured(dev, SEQUENCE_BOUND), "{:e}", e.max);
+    assert!(
+        e.max <= bound_unmeasured(dev, SEQUENCE_BOUND),
+        "{:e}",
+        e.max
+    );
     assert_eq!(submissions, 1);
     assert_eq!(got.len(), 3 * r2.area());
     // The luma is the CPU's too: the stage changed the picture (a pass-through would be far off).

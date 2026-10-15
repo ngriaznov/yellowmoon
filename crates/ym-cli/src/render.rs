@@ -16,8 +16,7 @@ use std::sync::mpsc::RecvTimeoutError;
 use std::time::{Duration, Instant};
 
 use ym_core::app::gpu::{
-    CpuReason, GPU_ENV, GpuOutcome, GpuPolicy, GpuSlot, PolicyChoice, PolicySource,
-    open_gpu,
+    CpuReason, GPU_ENV, GpuOutcome, GpuPolicy, GpuSlot, PolicyChoice, PolicySource, open_gpu,
 };
 use ym_core::export_queue::{ExportEvent, ExportJob, FileDone, QueueError};
 use ym_core::looks::{LookService, LooksError};
