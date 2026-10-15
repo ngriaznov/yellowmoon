@@ -1,6 +1,6 @@
 # Release signing: one-time setup [HUMAN]
 
-Status: **waiting on Mykyta.** The release pipeline (`.github/workflows/release.yml`) and the updater (`src-tauri/tauri.conf.json`) are ready, but nobody has created the updater signing key yet. Until you do, a version bump on `main` still publishes a release with the disk image, but without the updater artefacts (a warning in the run points here), so installed copies do not update themselves: a newer version is downloaded by hand from Releases.
+Status: **waiting on Mykyta.** The release pipeline (`.github/workflows/release.yml`) and the updater (`src-tauri/tauri.conf.json`) are ready, but nobody has created the updater signing key yet. Until you do, a version bump on `main` stops in the "Require the updater signing setup" step with an error that points here, and nothing is released: a version built without the public key could never update itself afterwards.
 
 ## Why the agent did not do this
 
@@ -74,13 +74,13 @@ The CLI asks for the password if it is not in the environment. Do not put the pa
 
 ### 6. First release
 
-1. Open a pull request titled "Release 0.0.1": the version in the root `Cargo.toml` (`[workspace.package] version`) and `package.json` are already `0.0.1`; move the `CHANGELOG.md` Unreleased entries under `## [0.0.1] - <date>`.
+1. The first release is 0.1.0: the version and the `## [0.1.0]` section of `CHANGELOG.md` are already in place (later ones: `tools/release/bump-version.sh patch` and a new section, `docs/12`).
 2. Merge it into `main`. The Release workflow runs on macOS and:
    - builds the two command-line binaries and merges them with `lipo`,
    - builds the universal bundle and signs the updater tarball,
-   - publishes the GitHub release `v0.0.1` with `Yellowmoon_0.0.1_universal.dmg`, `Yellowmoon.app.tar.gz` and `latest.json`,
+   - publishes the GitHub release `v0.1.0` with `Yellowmoon_0.1.0_universal.dmg`, `Yellowmoon.app.tar.gz`, its `.sig` and `latest.json`,
    - updates `Casks/yellowmoon.rb` (version and the dmg's SHA-256) and pushes it to `main`.
-3. Check the release page for the three files, and open `latest.json`: both `darwin-aarch64` and `darwin-x86_64` need a non-empty `signature`.
+3. Check the release page for the four files, and open `latest.json`: both `darwin-aarch64` and `darwin-x86_64` need a non-empty `signature`.
 
 If `main` is protected, the last step (the cask commit) needs the `github-actions[bot]` to be allowed to push to it, or the step fails after the release was already published. Allow it in the branch protection rule, or tell the agent so it can switch the cask update to a pull request.
 
@@ -88,7 +88,7 @@ If `main` is protected, the last step (the cask commit) needs the `github-action
 
 These are the M0-03 acceptance checks that no Linux container can run:
 
-1. Install 0.0.1 from the dmg, publish 0.0.2 the same way as step 6, and confirm that the installed app finds the update, downloads it and restarts into 0.0.2. A "signature verification failed" message means the public key in the installed app does not match the secret key used in CI: redo steps 3 and 4 with one key pair.
+1. Install 0.1.0 from the dmg, publish 0.1.1 the same way (`tools/release/bump-version.sh patch`), and confirm that the installed app finds the update, downloads it and restarts into 0.1.1. A "signature verification failed" message means the public key in the installed app does not match the secret key used in CI: redo steps 3 and 4 with one key pair.
 2. `brew tap ngriaznov/yellowmoon https://github.com/ngriaznov/yellowmoon && brew install --cask yellowmoon`, then `ym --version`. (Recent Homebrew may ask for `brew trust ngriaznov/yellowmoon` once.)
 
 ## If something goes wrong later

@@ -13,7 +13,7 @@ Nothing yet.
 
 ## [0.1.0] - 2026-10-15
 
-The first test release, a universal disk image for Apple silicon and Intel Macs on GitHub Releases. It is not signed with an Apple Developer ID: the README says how to allow it to open the first time. It does not update itself yet (the updater's signing key is still to be made, `docs/release-signing.md`), so a newer 0.1.x is downloaded by hand from Releases. These entries cover everything so far: the M0 skeleton, the `ym` command-line tool, the raw-algorithms wave (`docs/algorithms/`) and the GPU waves, with the owner's decisions (`docs/16`).
+The first test release, a universal disk image for Apple silicon and Intel Macs on GitHub Releases. It is not signed with an Apple Developer ID: the README says how to allow it to open the first time. It updates itself: each later 0.1.x is published with the signed update files, and the app offers it. These entries cover everything so far: the M0 skeleton, the `ym` command-line tool, the raw-algorithms wave (`docs/algorithms/`) and the GPU waves, with the owner's decisions (`docs/16`).
 
 ### Changed
 

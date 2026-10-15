@@ -6,11 +6,12 @@
 # version's section of CHANGELOG.md. The app has no Apple Developer ID (docs/16): the bundle is signed ad hoc and
 # the README says how to allow it to open.
 #
-# Updater artefacts (the .app.tar.gz, its minisign signature and latest.json) are added once the updater signing
-# setup exists: two repository secrets, TAURI_SIGNING_PRIVATE_KEY and TAURI_SIGNING_PRIVATE_KEY_PASSWORD, and the
-# public key in src-tauri/tauri.conf.json (plugins.updater.pubkey); steps in docs/release-signing.md. Until then a
-# release carries the disk image only, the app's quiet update check finds nothing (and says nothing), and a newer
-# version is downloaded by hand.
+# Every release carries everything the in-app updater needs: the disk image for people, and for the updater the
+# Yellowmoon.app.tar.gz, its minisign signature (inside latest.json) and latest.json for darwin-aarch64 and
+# darwin-x86_64. That needs the updater signing setup: two repository secrets, TAURI_SIGNING_PRIVATE_KEY and
+# TAURI_SIGNING_PRIVATE_KEY_PASSWORD, and the public key in src-tauri/tauri.conf.json (plugins.updater.pubkey);
+# steps in docs/release-signing.md. Without it the job stops before building, because a version built without the
+# public key could never update itself afterwards.
 name: Release
 
 on:
@@ -53,19 +54,19 @@ jobs:
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Updater signing setup (optional)
-        id: updater
+      - name: Require the updater signing setup
         if: steps.check_tag.outputs.exists == 'false'
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
-          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ] || [ -z "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD" ] \
-             || grep -q 'REPLACE_WITH_MINISIGN_PUBLIC_KEY' src-tauri/tauri.conf.json; then
-            echo "::warning title=No updater artefacts::The updater signing setup is missing (docs/release-signing.md): this release carries the disk image only and installed copies do not update themselves."
-            echo "enabled=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ] || [ -z "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD" ]; then
+            echo "::error title=Signing secrets missing::Set TAURI_SIGNING_PRIVATE_KEY and TAURI_SIGNING_PRIVATE_KEY_PASSWORD as repository secrets (docs/release-signing.md). A release without them could not update itself."
+            exit 1
+          fi
+          if grep -q 'REPLACE_WITH_MINISIGN_PUBLIC_KEY' src-tauri/tauri.conf.json; then
+            echo "::error title=Updater public key missing::Put the minisign public key into src-tauri/tauri.conf.json plugins.updater.pubkey (docs/release-signing.md)."
+            exit 1
           fi
 
       - uses: dtolnay/rust-toolchain@stable
@@ -152,19 +153,14 @@ jobs:
             -output src-tauri/binaries/ym-universal-apple-darwin
           lipo -info src-tauri/binaries/ym-universal-apple-darwin
 
-      - name: Build universal macOS bundle (ad-hoc signed)
+      - name: Build universal macOS bundle (ad-hoc signed, updater tarball signed with the minisign key)
         if: steps.check_tag.outputs.exists == 'false'
         env:
-          UPDATER: ${{ steps.updater.outputs.enabled }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ steps.updater.outputs.enabled == 'true' && secrets.TAURI_SIGNING_PRIVATE_KEY || '' }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ steps.updater.outputs.enabled == 'true' && secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || '' }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
-          if [ "$UPDATER" = true ]; then
-            CONFIG='{"bundle":{"createUpdaterArtifacts":true,"macOS":{"signingIdentity":"-"}}}'
-          else
-            CONFIG='{"bundle":{"createUpdaterArtifacts":false,"macOS":{"signingIdentity":"-"}}}'
-          fi
-          npm run tauri build -- --target universal-apple-darwin --config "$CONFIG"
+          npm run tauri build -- --target universal-apple-darwin \
+            --config '{"bundle":{"createUpdaterArtifacts":true,"macOS":{"signingIdentity":"-"}}}'
 
       - name: Check the bundle
         if: steps.check_tag.outputs.exists == 'false'
@@ -177,9 +173,12 @@ jobs:
           "$APP/Contents/MacOS/ym" --version | tee "$RUNNER_TEMP/ym-version.txt"
           grep -q "^ym ${VERSION} " "$RUNNER_TEMP/ym-version.txt"
           ls target/universal-apple-darwin/release/bundle/dmg/"Yellowmoon_${VERSION}_universal.dmg"
+          # The updater's files: the tarball and its signature, both non-empty.
+          test -s target/universal-apple-darwin/release/bundle/macos/Yellowmoon.app.tar.gz
+          test -s target/universal-apple-darwin/release/bundle/macos/Yellowmoon.app.tar.gz.sig
 
       - name: Write updater manifest
-        if: steps.check_tag.outputs.exists == 'false' && steps.updater.outputs.enabled == 'true'
+        if: steps.check_tag.outputs.exists == 'false'
         run: |
           BUNDLE_DIR="target/universal-apple-darwin/release/bundle/macos"
           TARBALL=$(ls "$BUNDLE_DIR"/*.app.tar.gz)
@@ -200,6 +199,8 @@ jobs:
               }
             }' > latest.json
           cat latest.json
+          # Both platforms must carry the signature and the tarball's URL.
+          jq -e '[.platforms[] | (.signature | length > 0) and (.url | endswith(".app.tar.gz"))] | all' latest.json
 
       - name: Publish release
         if: steps.check_tag.outputs.exists == 'false'
@@ -209,10 +210,13 @@ jobs:
           target_commitish: ${{ github.sha }}
           name: "Yellowmoon ${{ steps.version.outputs.version }}"
           body_path: ${{ runner.temp }}/notes.md
-          # The updater artefacts exist only with the signing setup; a pattern that matches nothing is skipped.
+          # The disk image for people; the tarball and latest.json for the in-app updater (its signature is in latest.json,
+          # and the .sig is published too). All four must be there.
+          fail_on_unmatched_files: true
           files: |
             target/universal-apple-darwin/release/bundle/dmg/*.dmg
             target/universal-apple-darwin/release/bundle/macos/*.app.tar.gz
+            target/universal-apple-darwin/release/bundle/macos/*.app.tar.gz.sig
             latest.json
 
       - name: Update Homebrew cask

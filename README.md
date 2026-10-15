@@ -61,7 +61,7 @@ brew tap ngriaznov/yellowmoon https://github.com/ngriaznov/yellowmoon
 brew install --cask yellowmoon
 ```
 
-Open the `.dmg` and drag Yellowmoon to Applications. Versions 0.1.x are test releases: they do not update themselves yet, so download a newer one from Releases when it appears.
+Open the `.dmg` and drag Yellowmoon to Applications. The app updates itself (Yellowmoon › Check for Updates, and quietly in the background). Versions 0.1.x are test releases.
 
 ### Allow Yellowmoon to open
 
