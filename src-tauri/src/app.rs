@@ -287,9 +287,19 @@ fn ask_to_quit<R: Runtime>(app: &AppHandle<R>) {
 /// result and exits: `xvfb-run -a target/debug/yellowmoon-app` is the headless smoke run.
 ///
 /// `YM_SMOKE_OPEN=<path>` opens that folder or file before the page loads (the page then finds the
-/// session as after a reload) and the check also wants photos in the session; `YM_SMOKE_HOLD=<s>`
-/// waits that many seconds instead of 4. The viewport job of `.github/workflows/build.yml` uses
-/// both to capture the screen of a Mac while it shows a photo.
+/// session as after a reload), presses "Open photos" on the Start screen once a photo is ready, as a
+/// person would, and the check also wants photos in the session; `YM_SMOKE_HOLD=<s>` waits that
+/// many seconds instead of 4. The viewport job of `.github/workflows/build.yml` uses both to capture
+/// the screen of a Mac while it shows a photo.
+/// Presses the Start screen's "Open photos" button when it is there and enabled.
+#[cfg(debug_assertions)]
+const SMOKE_OPEN_PHOTOS: &str = r#"(() => {
+  const b = [...document.querySelectorAll("button")].find(
+    (b) => b.textContent.trim().startsWith("Open photos") && !b.disabled && b.getAttribute("aria-disabled") !== "true",
+  );
+  if (b) b.click();
+})()"#;
+
 #[cfg(debug_assertions)]
 fn smoke_test<R: Runtime>(app: AppHandle<R>, api: Arc<AppApi>) {
     if std::env::var_os("YM_SMOKE").is_none() {
@@ -307,7 +317,18 @@ fn smoke_test<R: Runtime>(app: AppHandle<R>, api: Arc<AppApi>) {
         .and_then(|s| s.parse::<u64>().ok())
         .unwrap_or(4);
     std::thread::spawn(move || {
-        std::thread::sleep(std::time::Duration::from_secs(hold));
+        let start = std::time::Instant::now();
+        let until = std::time::Duration::from_secs(hold);
+        while start.elapsed() < until {
+            std::thread::sleep(std::time::Duration::from_secs(2));
+            // The Start screen lists the photos; its "Open photos" button is enabled once one is
+            // ready. On the Photos screen there is no such button and this does nothing.
+            if open.is_some()
+                && let Some(window) = app.get_webview_window("main")
+            {
+                let _ = window.eval(SMOKE_OPEN_PHOTOS);
+            }
+        }
         let info = api.app_info();
         let prefs = api.preferences_get();
         let backend = api.backend();
