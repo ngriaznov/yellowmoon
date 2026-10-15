@@ -167,16 +167,26 @@ pub fn encode_gather(
             "the window {window:?} is empty or the pieces differ in planes"
         )));
     }
-    let covered: usize = pieces
+    let parts: Vec<Rect> = pieces
         .iter()
         .map(|p| p.rect().intersect(&window))
-        .map(|r| r.w * r.h)
-        .sum();
+        .filter(|r| !r.is_empty())
+        .collect();
+    let covered: usize = parts.iter().map(|r| r.w * r.h).sum();
     if covered != window.w * window.h {
         return Err(GpuError::InvalidInput(format!(
             "the pieces cover {covered} of the {} pixels of the window {window:?}",
             window.w * window.h
         )));
+    }
+    // Pieces that overlap could add up to the window's size and still leave part of it uncovered
+    // (an image made by the pool is not cleared): the sum above is a proof only for pieces that do not.
+    for (i, a) in parts.iter().enumerate() {
+        if parts[i + 1..].iter().any(|b| !a.intersect(b).is_empty()) {
+            return Err(GpuError::InvalidInput(format!(
+                "the pieces overlap inside the window {window:?}"
+            )));
+        }
     }
     if let [only] = pieces
         && only.rect() == window

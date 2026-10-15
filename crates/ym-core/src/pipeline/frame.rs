@@ -1848,19 +1848,9 @@ fn prepare_view_with(
     })
 }
 
-/// Steps 1 to 3 of the module documentation on the CPU: prepare the view and sample it.
-pub(crate) fn sample_view(job: &mut Job<'_>, spec: &ViewSpec) -> Result<SampledView, RenderError> {
-    let prepared = prepare_view(job, spec)?;
-    let sampled = prepared.sample_host(job)?;
-    Ok(SampledView {
-        sampled,
-        scale: prepared.scale,
-    })
-}
-
-/// [`sample_view`] on the device when the sampler is there (the histogram's sample: the pixels come
-/// back to the host, where the counting stays), else on the CPU. A device error samples on the CPU
-/// for this call, with the usual note.
+/// Steps 1 to 3 of the module documentation, on the device when the sampler is there (the
+/// histogram's sample: the pixels come back to the host, where the counting stays), else on the CPU.
+/// A device error samples on the CPU for this call, with the usual note.
 pub(crate) fn sample_view_routed(
     job: &mut Job<'_>,
     spec: &ViewSpec,
@@ -1870,6 +1860,41 @@ pub(crate) fn sample_view_routed(
         .view_gpu()?
         .map(|gpu| ViewRoute::new(job, gpu, spec.gpu_priority));
     let sampled = sample_routed(job, &prepared, route.as_ref())?;
+    Ok(SampledView {
+        sampled,
+        scale: prepared.scale,
+    })
+}
+
+/// Steps 1 to 3 of the module documentation for a view of one pixel, the readout under the pointer,
+/// which is asked for on every move of the mouse over the photo. Pixels that are on the device (the
+/// caches keep the group and the tiles there,
+/// [`RenderOptions::resident_caches`](super::graph::RenderOptions::resident_caches)) are sampled
+/// there and one pixel comes back: a host read of them would bring the whole group or the tiles back
+/// and replace the cache entries with host images ([`Job::host_pixels`]), and the next frame would
+/// upload its window again, so the residency would be gone as soon as the pointer moved. Pixels that
+/// are on the host are sampled on the host (no device job for a pixel). A device error samples on the
+/// CPU for this call, with the usual note.
+pub(crate) fn sample_view_in_place(
+    job: &mut Job<'_>,
+    spec: &ViewSpec,
+) -> Result<SampledView, RenderError> {
+    let prepared = prepare_view(job, spec)?;
+    let on_device = matches!(
+        prepared.source,
+        ViewSource::Image {
+            pixels: Pixels::Resident { .. },
+            ..
+        }
+    );
+    let sampled = if on_device {
+        let route = job
+            .view_gpu()?
+            .map(|gpu| ViewRoute::new(job, gpu, spec.gpu_priority));
+        sample_routed(job, &prepared, route.as_ref())?
+    } else {
+        prepared.sample_host(job)?
+    };
     Ok(SampledView {
         sampled,
         scale: prepared.scale,
@@ -2100,7 +2125,7 @@ impl Renderer {
             dither_origin: (0, 0),
         };
         let grade = job.grade(OutputTarget::Viewport, false)?;
-        let view = sample_view(&mut job, &spec)?;
+        let view = sample_view_in_place(&mut job, &spec)?;
         if view.sampled.outside.is_some() {
             return Ok(None);
         }

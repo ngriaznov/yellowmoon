@@ -297,6 +297,72 @@ fn a_tile_left_on_the_device_is_the_tile_read_back_bit_for_bit_and_costs_one_sub
     }
 }
 
+/// Review of G-10: the smallest tiles. A tile of one pixel, a row, a column or a 2 x 2 square, at
+/// the corners and at odd origins, crops a much larger image of the stages on the device (the stages
+/// that were identities leave the margins they were asked for): the readback must still be the host
+/// tile's bits and the job one submission.
+#[test]
+fn the_smallest_tiles_are_the_host_tile_bit_for_bit() {
+    let Some(dev) = f32_device() else { return };
+    let mut seed = 4700;
+    let mut tiles = 0usize;
+    for (cfa, lens) in [
+        (Cfa::RGGB, Lens::Full),
+        (Cfa::GBRG, Lens::Bare),
+        (Cfa::BGGR, Lens::Bare),
+    ] {
+        seed += 1;
+        let photo = Arc::new(Photo::new(83, 61, cfa, seed, lens, false));
+        let (ow, oh) = photo.output_size();
+        let mut rects = Vec::new();
+        for (w, h) in [
+            (1usize, 1usize),
+            (1, 9),
+            (9, 1),
+            (2, 2),
+            (3, 5),
+            (1, oh),
+            (ow, 1),
+        ] {
+            let (w, h) = (w.min(ow), h.min(oh));
+            for (x, y) in [
+                (0, 0),
+                (ow - w, oh - h),
+                (ow - w, 0),
+                (0, oh - h),
+                (((ow - w) / 2) | 1, ((oh - h) / 2) | 1),
+            ] {
+                rects.push(Rect::new(x.min(ow - w), y.min(oh - h), w, h));
+            }
+        }
+        let p = Arc::clone(&photo);
+        let results = dev
+            .gpu
+            .run(job(), move |ctx, cancel| {
+                let raw = p.upload(ctx)?;
+                let g = p.device_chain()?;
+                let mut out = Vec::new();
+                for &r in &rects {
+                    let host = g.run_tile_front(ctx, &raw, r, cancel)?;
+                    let before = ctx.counters();
+                    let image = g.run_tile_device(ctx, &raw, r, cancel)?;
+                    let ran = ctx.counters().since(before);
+                    out.push((r, host, image.read_rgb(ctx)?, ran));
+                }
+                Ok(out)
+            })
+            .expect("tiles");
+        for (r, host, resident, ran) in results {
+            let label = format!("{} lens {lens:?} {r:?}", cfa.name());
+            same_bits(&label, &host, &resident);
+            assert_eq!(ran.readbacks, 0, "{label}");
+            assert_eq!(ran.submissions, 1, "{label}");
+            tiles += 1;
+        }
+    }
+    assert!(tiles >= 90, "{tiles} tiles were compared");
+}
+
 #[test]
 fn a_cut_demosaic_core_is_assembled_on_the_device_with_the_host_assemblys_bits() {
     let Some(dev) = f32_device() else { return };
@@ -839,6 +905,23 @@ fn a_window_gathered_from_pieces_is_the_host_crop_bit_for_bit() {
                 Arc::ptr_eq(&got, &one.image),
                 "no copy for a window that is a piece"
             );
+            // Pieces that overlap and leave a hole can add up to the window's size: the window of
+            // four tiles with one tile missing and another one given twice. Refused, since the part
+            // of the gathered image that no piece writes would be whatever the pool handed out.
+            let at = |x: usize, y: usize| {
+                tiles
+                    .iter()
+                    .find(|p| p.at == (x, y))
+                    .expect("a tile of the grid")
+                    .clone()
+            };
+            let twice = vec![at(0, 0), at(16, 0), at(0, 11), at(0, 0)];
+            let r = encode_gather(
+                &mut PassList::new(ctx, "overlap"),
+                &twice,
+                Rect::new(0, 0, 32, 22),
+            );
+            assert!(matches!(r, Err(GpuError::InvalidInput(_))), "{r:?}");
             // What it refuses: no piece, an empty window, a window the pieces do not cover.
             let mut passes = PassList::new(ctx, "refusals");
             let hole: Vec<Piece> = tiles.iter().filter(|p| p.at != (16, 11)).cloned().collect();

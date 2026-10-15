@@ -374,6 +374,75 @@ fn the_ledger_holds_the_caches_and_gives_them_back_with_the_tiles_and_the_photo(
     assert_eq!(end, baseline, "the ledger is back at its baseline");
 }
 
+/// Review of G-10: the readout of the pixel under the pointer is asked for on every move of the mouse
+/// over the photo. It reads one pixel; it must not bring the group (or the tiles) back to the host
+/// and replace the cache entries with host images, which is what a host read of a resident cache does
+/// (`Job::demote`): the next frame would upload the window again, and the residency would be gone
+/// as soon as the pointer moved.
+#[test]
+fn a_pixel_readout_leaves_the_resident_caches_on_the_device() {
+    let Some(gpu) = private_device() else { return };
+    let (_d, src) = photo(12);
+    let (host, resident) = (renderer(Some(&gpu), false), renderer(Some(&gpu), true));
+    let image = resident
+        .final_size(&src, &CancelToken::new())
+        .expect("final size");
+    for (name, st) in [
+        ("fit", cell(300.0, 200.0)),
+        ("100 %", at_100(300.0, 200.0, image)),
+    ] {
+        // A first frame leaves the group (the tiles of the window) on the device.
+        let _ = fresh(&resident, &src, &st);
+        let held = pool_in_use(&gpu);
+        let before = gpu.counters();
+        let pixel = resident
+            .sample_pixel(&src, &st, (150.0, 100.0), &CancelToken::new())
+            .expect("readout")
+            .expect("a point inside the photo");
+        let ran = gpu.counters().since(before);
+        assert!(
+            ran.readback_bytes < 4096,
+            "{name}: the readout read {} bytes back (a pixel, not the group)",
+            ran.readback_bytes
+        );
+        assert_eq!(
+            pool_in_use(&gpu),
+            held,
+            "{name}: the caches are on the device still"
+        );
+        // The next frame, another grade over the same group, reads back its frame and nothing else
+        // and uploads no window.
+        let graded = edit(&src, |s| s.brightness = 9.0);
+        let before = gpu.counters();
+        let again = fresh(&resident, &graded, &st);
+        let ran = gpu.counters().since(before);
+        assert_eq!(again.report.device, ComputeDevice::Gpu, "{name}");
+        assert_eq!(ran.readbacks, 1, "{name}: the frame only");
+        assert!(
+            ran.uploaded_bytes < 64 << 10,
+            "{name}: {} bytes went up for the frame",
+            ran.uploaded_bytes
+        );
+        // The same pixel, read from caches on the host: the device's sampler and the CPU's agree to
+        // a code (the colour pass of a readout is the CPU's in both).
+        let _ = fresh(&host, &src, &st);
+        let reference = host
+            .sample_pixel(&src, &st, (150.0, 100.0), &CancelToken::new())
+            .expect("readout")
+            .expect("a point inside the photo");
+        for (a, b) in [
+            (pixel.r, reference.r),
+            (pixel.g, reference.g),
+            (pixel.b, reference.b),
+        ] {
+            assert!(
+                a.abs_diff(b) <= 1,
+                "{name}: {pixel:?} against {reference:?}"
+            );
+        }
+    }
+}
+
 #[test]
 fn a_neighbour_is_prefetched_while_fewer_than_two_photos_are_resident_and_then_costs_no_upload() {
     let Some(gpu) = private_device() else { return };
@@ -595,6 +664,43 @@ mod faults {
             let again = fresh(&r, &graded, &st);
             same_frame(&resident_frame, &again, "the recovered device");
         }
+    }
+
+    /// Review of G-10: a 100 % view whose tiles are made by the device until one of them fails and
+    /// by the CPU after that. The cache then holds device tiles and a host tile side by side; the
+    /// frame is made of them as the host caches (the same two tiles read back, the same CPU tile)
+    /// make it, bit for bit, and the tiles the device made stay what they were.
+    #[test]
+    fn device_tiles_beside_a_cpu_tile_give_the_frame_the_host_caches_give() {
+        let Some(gpu) = private_device() else { return };
+        let (_d, src) = photo(30);
+        let frame_with = |resident: bool| {
+            let r = renderer(Some(&gpu), resident);
+            let image = r.final_size(&src, &CancelToken::new()).expect("final size");
+            let st = at_100(300.0, 200.0, image);
+            // The window crosses four tiles: the third one fails on the device.
+            gpu.set_fault(Some(GpuFault::FailTile(3)));
+            let frame = fresh(&r, &src, &st);
+            gpu.set_fault(None);
+            // The frame again, from the cache the first one left (no fault now).
+            let again = fresh(&r, &src, &st);
+            (frame, again)
+        };
+        let (host, host_again) = frame_with(false);
+        let (resident, resident_again) = frame_with(true);
+        for (name, f) in [("host", &host), ("resident", &resident)] {
+            assert!(
+                f.report.notes.iter().any(|n| n.contains("graphics card")),
+                "{name}: {:?}",
+                f.report.notes
+            );
+        }
+        same_frame(&host, &resident, "the frame the fault interrupted");
+        same_frame(
+            &host_again,
+            &resident_again,
+            "the frame from the mixed cache",
+        );
     }
 
     #[test]

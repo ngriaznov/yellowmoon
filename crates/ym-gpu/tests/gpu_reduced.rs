@@ -564,6 +564,229 @@ fn the_reduced_group_gives_the_same_bits_for_every_slab_height() {
     }
 }
 
+/// Review of G-10: the smallest frames the reduced path accepts (one block and a few more, odd sizes,
+/// every CFA phase), made in bands of one row (`k = 8`, slabs of 8 rows) and in one piece: the same
+/// bits, finite, and never a panic; a frame that holds no block is refused with an error.
+#[test]
+fn the_smallest_frames_give_the_same_bits_in_bands_of_one_row_and_in_one_piece() {
+    let Some(dev) = f32_device() else { return };
+    let profile = vignette_profile();
+    let levels = uneven_levels();
+    let mut compared = 0usize;
+    for k in [2usize, 4, 8] {
+        for (i, (w, h)) in [
+            (k, k),
+            (k + 1, k),
+            (k, 2 * k + 1),
+            (2 * k + 3, k + 2),
+            (3 * k, 2 * k),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let cfa = Cfa::ALL[i % 4];
+            let scene = RawScene::new(w, h, cfa, 700 + (k * 10 + i) as u64, &levels);
+            let c = Case {
+                k,
+                recovery: i % 2 == 0,
+                vignette: i % 3 != 0,
+                denoise: true,
+                lens: w / k >= 4 && h / k >= 4,
+            };
+            let run = |slab: usize| {
+                let p = reduced_params(&scene, levels, c, &profile);
+                let s = scene.clone();
+                on_device_result(dev, move |ctx| {
+                    let raw = DeviceRaw::upload(
+                        ctx,
+                        "r",
+                        s.width,
+                        s.height,
+                        s.cfa,
+                        &s.data,
+                        s.qstep.as_deref(),
+                    )?;
+                    ym_gpu::chain::GpuReduced::run_with_slabs(
+                        ctx,
+                        &raw,
+                        &p,
+                        &ym_gpu::queue::CancelToken::new(),
+                        slab,
+                    )?
+                    .read_rgb(ctx)
+                })
+            };
+            let (one, many) = (run(1 << 20).expect("one piece"), run(8).expect("bands"));
+            common::exact::assert_all_finite("tiny frame", &one.data);
+            common::exact::assert_bit_equal(
+                &format!("{} {w}x{h} {c:?}", cfa.name()),
+                &many.data,
+                &one.data,
+            );
+            assert_eq!((one.width, one.height), (many.width, many.height));
+            compared += 1;
+        }
+    }
+    assert_eq!(compared, 15);
+    // A frame that holds no block is refused, not a panic.
+    let scene = RawScene::new(5, 9, Cfa::RGGB, 1, &levels);
+    let c = Case {
+        k: 8,
+        recovery: false,
+        vignette: false,
+        denoise: false,
+        lens: false,
+    };
+    let p = reduced_params(&scene, levels, c, &profile);
+    let refused = on_device_result(dev, move |ctx| {
+        let raw = DeviceRaw::upload(ctx, "r", 5, 9, Cfa::RGGB, &scene.data, None)?;
+        ym_gpu::chain::GpuReduced::run(ctx, &raw, &p, &ym_gpu::queue::CancelToken::new())
+            .map(|_| ())
+    });
+    assert!(
+        matches!(refused, Err(ym_gpu::device::GpuError::InvalidInput(_))),
+        "{refused:?}"
+    );
+}
+
+/// Review of G-10 (D7 for the stepwise run). The steps of two groups, each taken as a job of its own
+/// the way `GpuRoute::reduced_resident` takes them (the run's state travels from job to job), with
+/// another group made whole between every two steps on the same poisoned device, give each group the
+/// bits of a run that nothing interrupted: nothing a step leaves on the device (the reducer's
+/// partials, the bands so far, the sigma) is read or recycled by anything else.
+#[test]
+fn steps_interleaved_with_other_jobs_give_the_bits_of_an_uninterrupted_run() {
+    use std::sync::Arc;
+    use ym_gpu::queue::{JobSpec, Priority};
+    let Some(dev) = f32_device() else { return };
+    let profile = vignette_profile();
+    let levels = uneven_levels();
+    let all = |k| Case {
+        k,
+        recovery: true,
+        vignette: true,
+        denoise: true,
+        lens: true,
+    };
+    let cases = [
+        (RawScene::new(150, 118, Cfa::GBRG, 31, &levels), all(2)),
+        (RawScene::new(131, 97, Cfa::RGGB, 32, &levels), all(4)),
+        (
+            RawScene::new(120, 90, Cfa::BGGR, 33, &levels),
+            Case {
+                k: 2,
+                recovery: false,
+                vignette: false,
+                denoise: true,
+                lens: false,
+            },
+        ),
+    ];
+    let alone: Vec<_> = cases
+        .iter()
+        .map(|(s, c)| run_group(dev, s, levels, *c, &profile, 1 << 20))
+        .collect();
+    let spec = JobSpec::new(Priority::Viewport);
+    let mut runs: Vec<Option<ym_gpu::chain::ReducedRun<Arc<DeviceRaw>>>> = Vec::new();
+    for (s, c) in &cases {
+        let p = reduced_params(s, levels, *c, &profile);
+        let s = s.clone();
+        let raw = dev
+            .gpu
+            .run(spec, move |ctx, _| {
+                DeviceRaw::upload(
+                    ctx,
+                    "r",
+                    s.width,
+                    s.height,
+                    s.cfa,
+                    &s.data,
+                    s.qstep.as_deref(),
+                )
+                .map(Arc::new)
+            })
+            .expect("upload");
+        runs.push(Some(
+            ym_gpu::chain::GpuReduced::start_with_slabs(raw, p, 16).expect("start"),
+        ));
+    }
+    let mut finished: Vec<Option<ym_gpu::image::RowBands>> =
+        (0..runs.len()).map(|_| None).collect();
+    let mut steps = 0usize;
+    while runs.iter().any(Option::is_some) {
+        for i in 0..runs.len() {
+            let Some(run) = runs[i].take() else { continue };
+            let (run, more) = dev
+                .gpu
+                .run(spec, move |ctx, token| {
+                    let mut run = run;
+                    let more = run.step(ctx, token)?;
+                    Ok((run, more))
+                })
+                .expect("a step");
+            steps += 1;
+            if more {
+                runs[i] = Some(run);
+            } else {
+                finished[i] = Some(run.finish().expect("finish"));
+            }
+            // Something else runs between the steps: a whole group of the next case, so that the
+            // pool recycles and poisons buffers around the steps' live ones.
+            let (s, c) = &cases[(i + 1) % cases.len()];
+            let other = run_group(dev, s, levels, *c, &profile, 40);
+            common::exact::assert_bit_equal(
+                "the group made between the steps",
+                &other.data,
+                &alone[(i + 1) % cases.len()].data,
+            );
+        }
+    }
+    assert!(
+        steps > 20,
+        "{steps} steps: the groups are made in many jobs"
+    );
+    for (i, bands) in finished.into_iter().enumerate() {
+        let bands = bands.expect("finished");
+        let got = dev
+            .gpu
+            .run(spec, move |ctx, _| bands.read_rgb(ctx))
+            .expect("read");
+        common::exact::assert_bit_equal(
+            &format!("case {i} with other jobs between its steps"),
+            &got.data,
+            &alone[i].data,
+        );
+    }
+    // A run dropped between two steps (a cancelled render) hands every buffer back.
+    let s = cases[0].0.clone();
+    let p = reduced_params(&s, levels, cases[0].1, &profile);
+    let before = on_device_result(dev, |ctx| Ok(ctx.pool().stats().in_use_bytes)).expect("pool");
+    let (raw, run) = dev
+        .gpu
+        .run(spec, move |ctx, token| {
+            let raw = Arc::new(DeviceRaw::upload(
+                ctx,
+                "r",
+                s.width,
+                s.height,
+                s.cfa,
+                &s.data,
+                s.qstep.as_deref(),
+            )?);
+            let mut run = ym_gpu::chain::GpuReduced::start_with_slabs(Arc::clone(&raw), p, 16)?;
+            for _ in 0..9 {
+                run.step(ctx, token)?;
+            }
+            Ok((raw, run))
+        })
+        .expect("nine steps");
+    assert!(!run.is_done());
+    drop(run);
+    drop(raw);
+    let after = on_device_result(dev, |ctx| Ok(ctx.pool().stats().in_use_bytes)).expect("pool");
+    assert_eq!(after, before, "a dropped run holds nothing");
+}
+
 #[test]
 fn the_reduced_group_is_poison_clean_and_cancels() {
     let Some(dev) = f32_device() else { return };
