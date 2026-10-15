@@ -592,7 +592,7 @@ export const PACKAGE_FACTS: Readonly<Record<PackageId, PackageFact>> = {
     what: "Look Library · LogC4 · log to log",
     contents: "87 .cube · 65-point",
     fileCount: 87,
-    megabytes: 190,
+    megabytes: 181,
     input: "logc4",
     role: "looks",
   },

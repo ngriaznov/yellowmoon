@@ -53,7 +53,7 @@ describe("recognising synthetic packages", () => {
     expect(ll4).toMatchObject({
       name: "ARRI_LookLibrary_LogC4.zip",
       source: "zip",
-      size_bytes: 190_000_000,
+      size_bytes: 181_000_000,
       recognition: { package_id: "look_library_logc4", title: "Look Library · LogC4", what: "Look Library · LogC4 · log to log", contents: "87 .cube · 65-point", file_count: 87 },
     });
     expect(found.map((f) => (f.recognition.kind === "package" ? f.recognition.file_count : 0))).toEqual([87, 22, 87, 87, 48]);
@@ -208,7 +208,7 @@ describe("watching Downloads", () => {
     expect(api.simulateDownload(PACKAGE_ZIPS.look_library_logc4)).toBe(false);
     expect(await api.looksWatchDownloads(true)).toEqual({ watching: true, problem: null });
     expect(api.simulateDownload(PACKAGE_ZIPS.look_library_logc4)).toBe(true);
-    expect(found).toEqual([{ path: downloads("ARRI_LookLibrary_LogC4.zip"), file_name: "ARRI_LookLibrary_LogC4.zip", size_bytes: 190_000_000, package_hint: "look_library_logc4" }]);
+    expect(found).toEqual([{ path: downloads("ARRI_LookLibrary_LogC4.zip"), file_name: "ARRI_LookLibrary_LogC4.zip", size_bytes: 181_000_000, package_hint: "look_library_logc4" }]);
     expect(await api.looksWatchDownloads(false)).toEqual({ watching: false, problem: null });
     expect(api.simulateDownload(PACKAGE_ZIPS.look_library_logc4)).toBe(false);
   });
@@ -401,7 +401,7 @@ describe("preferences", () => {
 
 describe("package facts", () => {
   it("match the mockup's choose step", () => {
-    expect(PACKAGE_FACTS.look_library_logc4).toMatchObject({ fileCount: 87, megabytes: 190, contents: "87 .cube · 65-point" });
+    expect(PACKAGE_FACTS.look_library_logc4).toMatchObject({ fileCount: 87, megabytes: 181, contents: "87 .cube · 65-point" });
     expect(PACKAGE_FACTS.display_luts_logc4).toMatchObject({ fileCount: 22, megabytes: 32 });
     expect(PACKAGE_FACTS.display_luts_logc3).toMatchObject({ fileCount: 48, megabytes: 46 });
   });
