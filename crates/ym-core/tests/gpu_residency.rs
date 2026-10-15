@@ -16,7 +16,9 @@
 //!   two photos are resident, and the frame of that photo then uploads nothing.
 //! * **Fall back** (`--features fault-injection`): a device that fails under a frame whose group is
 //!   resident gives the CPU's frame bit for bit with the note, the group read back or made again on
-//!   the CPU, and the next frame, on the recovered device, equals the resident one.
+//!   the CPU, and the next frame, on the recovered device, is the frame a device gives for the CPU's
+//!   group bit for bit, and the resident one (bit for bit on a software adapter; a hardware adapter
+//!   has a bound of its own, as the CPU's group is not the device's in the last bits).
 //!
 //! Skipped, loudly, when no adapter opens, unless `YM_REQUIRE_GPU=1` turns that into a failure.
 mod common;
@@ -70,10 +72,16 @@ fn pool_in_use(gpu: &Gpu) -> u64 {
 }
 
 fn renderer(gpu: Option<&Arc<Gpu>>, resident_caches: bool) -> Renderer {
+    renderer_with(gpu, resident_caches, GpuStages::ALL)
+}
+
+/// As [`renderer`], with the stages `stages` on the device.
+fn renderer_with(gpu: Option<&Arc<Gpu>>, resident_caches: bool, stages: GpuStages) -> Renderer {
     Renderer::new(
         Arc::new(NeutralOnly),
         RenderOptions {
             gpu: gpu.cloned(),
+            gpu_stages: stages,
             resident_caches,
             // 256 px tiles: a 900 x 600 photo is twelve tiles, so a 100 % view gathers its window out
             // of several images.
@@ -138,9 +146,20 @@ fn edit(src: &PhotoSource, f: impl FnOnce(&mut ym_core::settings::DevelopSetting
     src.with_settings(s)
 }
 
-fn same_frame(a: &RenderedFrame, b: &RenderedFrame, what: &str) {
+/// How many bytes of the two frames differ, and the largest difference in codes.
+fn differences(a: &RenderedFrame, b: &RenderedFrame, what: &str) -> (usize, u8) {
     assert_eq!((a.width, a.height), (b.width, b.height), "{what}: size");
-    let differing = a.rgba.iter().zip(&b.rgba).filter(|(x, y)| x != y).count();
+    a.rgba
+        .iter()
+        .zip(&b.rgba)
+        .filter(|(x, y)| x != y)
+        .fold((0, 0), |(n, most), (x, y)| {
+            (n + 1, most.max(x.abs_diff(*y)))
+        })
+}
+
+fn same_frame(a: &RenderedFrame, b: &RenderedFrame, what: &str) {
+    let (differing, _) = differences(a, b, what);
     assert_eq!(differing, 0, "{what}: {differing} bytes differ");
 }
 
@@ -659,12 +678,57 @@ mod faults {
         same_frame(&fresh(&cpu, &other, &st), &failed, "the CPU's frame");
         if recovers {
             gpu.set_fault(None);
-            // The demoted group is a host image now; the device uploads it for the sampler and the
-            // frame is what the resident group gave.
+            // The demoted group is a host image now, made again by the CPU (the readback of the
+            // resident group needs a staging buffer and the fault fails every new allocation); the
+            // device uploads it for the sampler.
             let again = fresh(&r, &graded, &st);
-            same_frame(&resident_frame, &again, "the recovered device");
+            // What the recovered device does with the CPU's group is what any device does with it:
+            // the frame of a device whose raw front is off (the CPU makes the group, the device the
+            // rest) bit for bit, on every adapter. This is the claim of the test.
+            let behind_cpu = renderer_with(Some(&gpu), true, stages_without(GpuStages::RAW_FRONT));
+            same_frame(
+                &fresh(&behind_cpu, &graded, &st),
+                &again,
+                "the recovered device, against a device that is given the CPU's group",
+            );
+            // And the frame the resident group gave, that the device made its own group for. Bit for
+            // bit where the device's arithmetic is the CPU's (lavapipe); on a hardware adapter the
+            // two groups differ in last bits and a few bytes follow ([`HARDWARE_BYTES`]).
+            let (differing, most) = differences(&resident_frame, &again, "the recovered device");
+            let info = gpu.info();
+            let _ = writeln!(
+                std::io::stderr(),
+                "[G-10] {}: the recovered device's frame (the CPU's group) against the resident one (the device's group): {differing} of {} bytes differ, at most {most} codes",
+                info.name,
+                again.rgba.len()
+            );
+            let (bytes, codes) = if info.is_software {
+                (0, 0)
+            } else {
+                (HARDWARE_BYTES, HARDWARE_CODES)
+            };
+            assert!(
+                differing <= bytes && most <= codes,
+                "the recovered device: {differing} bytes differ by at most {most} codes (allowed: {bytes} bytes, {codes} codes)"
+            );
         }
     }
+
+    /// What a hardware adapter may differ in, between the frame of the device's own group and the
+    /// frame of the CPU's group after a device fault (software adapters: nothing). The CPU reduces
+    /// the group in its reference arithmetic and the device in f32 with the platform's math, so the
+    /// two groups differ in last bits (on Metal, 50 MP reduced groups against the CPU: 6.4e-7 to
+    /// 3.9e-5 of white, `gpu_reduced`), and
+    /// the halo limiter of output sharpening decides on a rank of luma values, so a few bytes of
+    /// the frame flip (the cause of every sharpened-output hardware column, `docs/algorithms/04`
+    /// section 10). Metal (5184824, run 38746750138, macos-14 and macos-15 alike) printed 5 of
+    /// 240 000 bytes; the bound is twice that.
+    const HARDWARE_BYTES: usize = 10;
+
+    /// The largest difference in codes in those bytes. The failed run printed the count only; this
+    /// is the sharpened 8-bit column's bound of `gpu_export` (twice the 2 codes measured on Metal),
+    /// and the next Metal run prints the measured value.
+    const HARDWARE_CODES: u8 = 4;
 
     /// Review of G-10: a 100 % view whose tiles are made by the device until one of them fails and
     /// by the CPU after that. The cache then holds device tiles and a host tile side by side; the

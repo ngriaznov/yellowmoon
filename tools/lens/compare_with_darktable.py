@@ -26,7 +26,8 @@ image, it zooms it up so that no black corner is left, by the factor `lens_model
 `selftest` checks this script itself on synthetic data (a matching "darktable" must pass, one that
 differs must fail) and needs neither darktable nor files.
 
-Dependencies: numpy, scipy (pip3 install numpy scipy).
+Dependencies: numpy, scipy. The scripts run as `python3 -I`, which does not see pip's per-user site: install them as root
+(pip3 install numpy scipy), from apt (python3-numpy python3-scipy) or in a venv that comes first on PATH.
 """
 import argparse
 import json

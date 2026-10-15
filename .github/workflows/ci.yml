@@ -212,7 +212,17 @@ jobs:
       - name: Rust toolchain from rust-toolchain.toml
         run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
-      - run: sudo apt-get update && sudo apt-get install -y darktable && pip3 install numpy scipy
+      - name: darktable (the oracle, always a separate process)
+        run: sudo apt-get update && sudo apt-get install -y darktable
+      # numpy and scipy go into a venv, not into pip's per-user site: the oracle scripts run as `python3 -I`, which ignores the
+      # user site, and a runner is not root, so a plain `pip3 install` landed where the scripts could not see it
+      # ("ModuleNotFoundError: No module named 'numpy'", run 38754174424). The venv's bin comes first on PATH for the next step.
+      - name: numpy and scipy in a venv
+        run: |
+          python3 -m venv "$RUNNER_TEMP/lens-venv"
+          "$RUNNER_TEMP/lens-venv/bin/pip" install numpy scipy
+          echo "$RUNNER_TEMP/lens-venv/bin" >> "$GITHUB_PATH"
+      # The script prints the darktable, numpy and scipy versions it runs with at the top of its log.
       - run: tools/lens/run_oracle_suite.sh build/lens-oracle
 
   # Data, fits and test vectors stay reproducible: camera profiles and registry (M1-04), the spectral

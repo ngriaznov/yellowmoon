@@ -20,6 +20,19 @@ ROOT="$(cd "$HERE/../.." && pwd)"
 LENSGEN=(cargo run --release --quiet --manifest-path "$ROOT/tools/lens/lensgen/Cargo.toml" --)
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$ROOT/target/lensgen}"
 
+# Everything below runs `python3 -I`, which ignores PYTHONPATH and the per-user site (where `pip3 install --user`, and plain
+# `pip3 install` as a non-root user, put packages). Say so now rather than after the renders.
+python3 -I -c 'import numpy, scipy' 2>/dev/null || {
+  echo "python3 -I cannot import numpy and scipy. Install them where -I sees them: apt-get install python3-numpy python3-scipy," >&2
+  echo "or a venv put first on PATH (python3 -m venv V && V/bin/pip install numpy scipy && PATH=V/bin:\$PATH $0 ...)." >&2
+  exit 2
+}
+command -v darktable-cli >/dev/null || { echo "darktable-cli not found; on Ubuntu: sudo apt-get install -y darktable" >&2; exit 2; }
+# Record what the numbers below were produced with: the gates were calibrated on darktable 4.6.1, and a CI runner or a Mac
+# may have another build.
+echo "darktable-cli: $(darktable-cli --version 2>&1 | head -n 1)"
+python3 -I -c 'import sys, numpy, scipy; print("python3 %s, numpy %s, scipy %s" % (sys.version.split()[0], numpy.__version__, scipy.__version__))'
+
 mkdir -p "$SUITE"
 # CA x1 for the vignetting / distortion / combined renders, CA x8 for the CA-only measurement (a CA
 # that is large against the sub-pixel noise of the line tracker).

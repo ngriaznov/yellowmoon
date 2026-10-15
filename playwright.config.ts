@@ -25,10 +25,11 @@ export default defineConfig({
     viewport: { width: 1440, height: 900 },
     deviceScaleFactor: 2,
     // Draw text the way the baselines were drawn: no hinting and grey anti-aliasing. Chromium's headless shell hints fully by
-    // default, which moves the text by a fraction of a pixel everywhere and costs 0.3 to 1.5 % of the pixels on every screen
-    // with text (what the GitHub runner showed on 2026-10-15). A machine can wrap the browser to set these two flags itself;
-    // naming them here makes the run the same everywhere.
-    launchOptions: { executablePath: process.env.YM_EXE || undefined, args: ["--font-render-hinting=none", "--disable-lcd-text"] },
+    // default, which moves the glyphs by a fraction of a pixel everywhere: on the GitHub runner (2026-10-15) 1 to 2.5 % more of
+    // the pixels differed on every screen with text, and 12 of the 24 screenshot states went over their budget. The browser
+    // in the agent sandbox is wrapped to set these two flags itself, which is why the baselines matched there to the pixel.
+    // Naming them here makes the run the same everywhere. (macOS and headed runs ignore them.)
+    launchOptions: { args: ["--font-render-hinting=none", "--disable-lcd-text"] },
   },
   webServer: {
     command: "npm run dev",

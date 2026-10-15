@@ -52,13 +52,19 @@ python3 -I tools/lens/ca_xcorr.py mosaic testdata/real/files/ILCE-5000.ARW
 
 ```
 sudo apt-get install -y darktable          # 4.6.1 on Ubuntu 24.04; needs >= 4.4 (embedded Sony metadata, --dump-pipe)
-pip3 install numpy scipy
+pip3 install numpy scipy                   # as root; as a normal user use a venv or apt, see below
 python3 -I tools/lens/compare_with_darktable.py selftest          # works without darktable or files
 tools/lens/run_oracle_suite.sh build/lens-oracle                  # a few minutes; add --record to refresh the snapshot
 ```
 
 The suite needs about 60 MB in its directory and about 220 MB of temporary files per render while it
-runs. Exit status 0 means all gates pass.
+runs. Exit status 0 means all gates pass. It prints the darktable, numpy and scipy versions first.
+
+The scripts run as `python3 -I`, which ignores the per-user site-packages. A plain `pip3 install` as a normal
+user (a CI runner) installs there and the scripts then stop with `No module named 'numpy'`. Install the two
+packages where `-I` sees them: as root, from apt (`python3-numpy python3-scipy`), or in a venv that comes first
+on `PATH` (`python3 -m venv V && V/bin/pip install numpy scipy && PATH=$PWD/V/bin:$PATH tools/lens/run_oracle_suite.sh ...`).
+The suite checks this before it renders anything.
 
 ## What was measured (darktable-cli 4.6.1, Ubuntu 24.04, headless, as root, no GPU)
 
@@ -109,7 +115,11 @@ lens-oracle:
   runs-on: ubuntu-24.04
   steps:
     - uses: actions/checkout@v4
-    - run: sudo apt-get install -y darktable && pip3 install numpy scipy
+    - run: sudo apt-get update && sudo apt-get install -y darktable
+    - run: |   # a venv: `python3 -I` does not see the user site that pip3 falls back to on a runner
+        python3 -m venv "$RUNNER_TEMP/lens-venv"
+        "$RUNNER_TEMP/lens-venv/bin/pip" install numpy scipy
+        echo "$RUNNER_TEMP/lens-venv/bin" >> "$GITHUB_PATH"
     - run: tools/lens/run_oracle_suite.sh build/lens-oracle
 ```
 

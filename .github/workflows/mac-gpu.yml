@@ -114,22 +114,37 @@ jobs:
         if: ${{ !cancelled() }}
         continue-on-error: true
         run: cargo test -p ym-export --release --test encode_split -- --ignored --nocapture 2>&1 | tee encode-split-${{ matrix.runner }}.log
+      # ym and golden, in two invocations as in the golden-gpu job of ci.yml: `golden` switches on ym-raw's test-only `testgen`
+      # feature, which one `cargo build -p ym-cli -p golden` would give the ym under test as well. Built in a step of their own
+      # and before the generator, so that a generator that fails cannot take the binaries of the golden check and of the owner
+      # photo steps with it (they used to be built inside the golden step, after the generator).
+      - name: Build ym and golden (two invocations)
+        if: ${{ !cancelled() }}
+        run: |
+          cargo build --release -p ym-cli
+          cargo build --release -p golden
       # The GPU golden subset (docs/13 "GPU golden"): the synthetic files, each rendered by `ym render --require-gpu` and held
       # against a CPU render of the same run on the same machine (a Mac's CPU path is not the Linux one expected.json describes,
       # so the stored pictures do not apply here: `--reference render`). A render that fell back to the CPU fails.
+      # Every step from here on carries `if: ${{ !cancelled() }}`, setup-python too: a step without an `if:` runs only while all
+      # the steps before it succeeded, so the failed ym-core step of run 38746750138 skipped setup-python, `pip` then installed
+      # the packages for the runner's own Python 3.14 and the import check of synthetic.sh failed. `python3 -m pip` puts the
+      # packages where `python3` (setup-python's 3.12, as in the Linux jobs) looks for them.
       - uses: actions/setup-python@v5
+        if: ${{ !cancelled() }}
         with: { python-version: "3.12" }
       - name: Synthetic ARW set (the generator and its requirements)
         if: ${{ !cancelled() }}
         run: |
-          pip install -r training/requirements.txt -r training/synth/requirements.txt
+          which python3
+          python3 --version
+          python3 -m pip install -r training/requirements.txt -r training/synth/requirements.txt
+          python3 -c "import colour, numpy, scipy, PIL; print('python packages ok: colour', colour.__version__, 'numpy', numpy.__version__)"
           tools/fetch/spectral.sh
           tools/fetch/synthetic.sh --release
       - name: Golden check on Metal (the GPU subset against the CPU of this machine)
         if: ${{ !cancelled() }}
         run: |
-          cargo build --release -p ym-cli
-          cargo build --release -p golden
           target/release/golden check --device gpu --reference render --subset tools/golden/gpu-subset.txt \
             --ym target/release/ym --require-all --report golden-gpu-${{ matrix.runner }}.json 2>&1 | tee golden-gpu-${{ matrix.runner }}.txt
       # One of the owner's photos (Mykyta allows them in CI, NOTICE item 10): the readme-photos branch, raw files in Git LFS,
