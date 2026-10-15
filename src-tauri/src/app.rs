@@ -285,20 +285,37 @@ fn ask_to_quit<R: Runtime>(app: &AppHandle<R>) {
 
 /// With `YM_SMOKE=1` a development build checks itself a few seconds after it starts, logs the
 /// result and exits: `xvfb-run -a target/debug/yellowmoon-app` is the headless smoke run.
+///
+/// `YM_SMOKE_OPEN=<path>` opens that folder or file before the page loads (the page then finds the
+/// session as after a reload) and the check also wants photos in the session; `YM_SMOKE_HOLD=<s>`
+/// waits that many seconds instead of 4. The viewport job of `.github/workflows/build.yml` uses
+/// both to capture the screen of a Mac while it shows a photo.
 #[cfg(debug_assertions)]
 fn smoke_test<R: Runtime>(app: AppHandle<R>, api: Arc<AppApi>) {
     if std::env::var_os("YM_SMOKE").is_none() {
         return;
     }
+    let open = std::env::var("YM_SMOKE_OPEN").ok();
+    if let Some(path) = &open {
+        match api.open_paths(std::slice::from_ref(path)) {
+            Ok(state) => eprintln!("smoke: opened {} photos from {path}", state.photos.len()),
+            Err(e) => eprintln!("smoke: could not open {path}: {}", e.message),
+        }
+    }
+    let hold = std::env::var("YM_SMOKE_HOLD")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(4);
     std::thread::spawn(move || {
-        std::thread::sleep(std::time::Duration::from_secs(4));
+        std::thread::sleep(std::time::Duration::from_secs(hold));
         let info = api.app_info();
         let prefs = api.preferences_get();
         let backend = api.backend();
         let windows = app.webview_windows().len();
-        let ok = prefs.is_ok() && windows > 0;
+        let photos = api.session_state().map_or(0, |s| s.photos.len());
+        let ok = prefs.is_ok() && windows > 0 && (open.is_none() || photos > 0);
         eprintln!(
-            "smoke: version {} backend {backend:?} windows {windows} preferences {} -> {}",
+            "smoke: version {} backend {backend:?} windows {windows} photos {photos} preferences {} -> {}",
             info.version,
             if prefs.is_ok() { "ok" } else { "failed" },
             if ok { "ok" } else { "FAILED" }

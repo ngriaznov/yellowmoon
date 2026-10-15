@@ -7,6 +7,11 @@
 //! the webview reports with `viewport_set_rect` (CSS pixels of the window, origin at the top left;
 //! AppKit's origin is at the bottom left, which this module converts).
 //!
+//! The page lets the view show through: the cell is transparent (`data-native`), and while the
+//! Photos screen shows, so are the page's root, its body and the screen (`data-viewport="native"`
+//! on the root element, `src/styles/screens.css`). Behind the page the window is paper
+//! ([`PAPER_SRGB`]), so the page looks the same wherever it draws nothing.
+//!
 //! The core renders each frame (`ym-core`, RGBA8 in Display P3, the size of the cell in device
 //! pixels). This module only puts it on screen: the frame is uploaded to a texture and drawn with a
 //! full-screen triangle into the surface, so the pixels go from the core's memory to the layer and
@@ -36,7 +41,7 @@ use std::time::Duration;
 
 use objc2::MainThreadMarker;
 use objc2::rc::Retained;
-use objc2_app_kit::{NSView, NSWindowOrderingMode};
+use objc2_app_kit::{NSColor, NSView, NSWindowOrderingMode};
 use objc2_foundation::{NSPoint, NSRect, NSSize};
 use raw_window_handle::{
     AppKitDisplayHandle, AppKitWindowHandle, RawDisplayHandle, RawWindowHandle,
@@ -46,6 +51,13 @@ use ym_core::pipeline::RenderedFrame;
 
 use crate::viewport::FrameSink;
 use crate::wire::{ViewportBackendKind, ViewportRect};
+
+/// The window's background behind the webview, in sRGB: `--paper` of `src/styles/tokens.css`
+/// (#ffffff). The page is transparent over the photo cell while the Photos screen shows, so this is
+/// what the cell shows before the first frame and after [`FrameSink::clear`], and what the page
+/// shows wherever it draws nothing. Tauri's transparent window starts with a clear background,
+/// which would show the desktop there instead.
+const PAPER_SRGB: [f64; 3] = [1.0, 1.0, 1.0];
 
 /// How long creating the view on the main thread may take before we give up and use the fallback.
 const MAIN_THREAD_TIMEOUT: Duration = Duration::from_secs(5);
@@ -160,6 +172,13 @@ impl<R: Runtime> NativeSink<R> {
             // SAFETY: `content` is the window's content `NSView` (`WebviewWindow::ns_view`), valid
             // while the window is, and this runs on the main thread.
             let content: &NSView = unsafe { &*(content as *const NSView) };
+            if let Some(window) = content.window() {
+                let [r, g, b] = PAPER_SRGB;
+                window.setBackgroundColor(Some(&NSColor::colorWithSRGBRed_green_blue_alpha(
+                    r, g, b, 1.0,
+                )));
+                window.setOpaque(true);
+            }
             let frame = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(1.0, 1.0));
             let view = NSView::initWithFrame(mtm.alloc::<NSView>(), frame);
             view.setWantsLayer(true);
@@ -464,6 +483,11 @@ impl<R: Runtime> FrameSink for NativeSink<R> {
             .draw(frame)?;
         // Drawn first, shown second: the view never appears with whatever it held before.
         if self.hidden.swap(false, Ordering::SeqCst) {
+            tracing::info!(
+                width = frame.width,
+                height = frame.height,
+                "the native viewport shows a picture"
+            );
             self.with_views(|_content, view| view.setHidden(false));
         }
         Ok(())

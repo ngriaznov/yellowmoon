@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { MouseEvent as ReactMouseEvent, WheelEvent as ReactWheelEvent } from "react";
 import type { PhotoSummary, ResolvedSettings, ViewportRect } from "../api/types";
 import { PhotoCell, usePointerDrag } from "../components";
@@ -62,6 +62,19 @@ export function PhotoView({ store, photo, rs, lookName, before, picking, onPicke
   // With a backend the picture is the backend's; the mock's fixture is for a build that has none (never inside the app: a real
   // photo called DSC04204 is not the mock's DSC04204, and the answer of `viewport_info` may not have arrived yet).
   const drawsFixture = backend === null && !isTauri();
+
+  // The native layer draws the photo behind the webview: the cell alone being transparent is not enough, every box under it (the
+  // screen, the body, the root) must let it through too. The root says so while this view is on screen (`src/styles/screens.css`); the
+  // window behind the page is paper, so the page looks the same wherever it draws nothing.
+  const native = backend === "native";
+  useEffect(() => {
+    if (!native) return;
+    const root = document.documentElement;
+    root.dataset.viewport = "native";
+    return () => {
+      delete root.dataset.viewport;
+    };
+  }, [native]);
   const picture = useMemo(() => (photo && drawsFixture ? previewUrl(photo, rs, before) : undefined), [photo, rs, before, drawsFixture]);
 
   const handleRect = useCallback(
@@ -137,7 +150,7 @@ export function PhotoView({ store, photo, rs, lookName, before, picking, onPicke
 
   return (
     <PhotoCell
-      native={backend === "native"}
+      native={native}
       data-viewport-backend={backend ?? undefined}
       imageSrc={note ? undefined : picture}
       frame={frame}

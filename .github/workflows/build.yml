@@ -105,3 +105,83 @@ jobs:
           path: target/${{ env.TRIPLE }}/release/bundle/dmg/*.dmg
           if-no-files-found: error
           retention-days: 14
+
+  # The native viewport on a real Mac (docs/01 §Native viewport), which no other job can see: a development build of the app opens
+  # the owner's photos at start (YM_SMOKE_OPEN, debug builds only) and the screen is captured once the photo is drawn. The screenshot
+  # and the app's log are the artefact "viewport-<commit>". The job fails when the log does not say that the native viewport showed a
+  # picture; whether the picture is visible on the screen (and not covered by the page) is what the screenshot is for.
+  viewport:
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: viewport-macos
+
+      - name: Build the frontend
+        run: npm ci && npm run build
+
+      # The owner's photos (Mykyta allows them in CI, NOTICE item 10), as in mac-gpu.yml.
+      - name: Owner photos (readme-photos branch, Git LFS)
+        id: owner
+        uses: actions/cache@v4
+        with:
+          path: |
+            testdata/readme-photos/src
+            !testdata/readme-photos/src/.git
+          key: owner-photos-${{ hashFiles('tools/fetch/owner-photos.sha256') }}
+      - name: Fetch the owner photos (cache miss)
+        if: ${{ steps.owner.outputs.cache-hit != 'true' }}
+        uses: actions/checkout@v4
+        with:
+          ref: readme-photos
+          lfs: true
+          path: testdata/readme-photos/src
+          persist-credentials: false
+      - name: Verify the owner photos
+        run: cd testdata/readme-photos/src && shasum -a 256 -c "$GITHUB_WORKSPACE/tools/fetch/owner-photos.sha256"
+
+      - name: Build the app (development profile, the frontend embedded)
+        run: |
+          # tauri-build wants the sidecar to exist; this check never runs it.
+          mkdir -p src-tauri/binaries
+          : > src-tauri/binaries/ym-aarch64-apple-darwin
+          cargo build -p yellowmoon-app --features custom-protocol
+
+      - name: Open the photos and capture the screen
+        run: |
+          mkdir -p viewport
+          YM_SMOKE=1 YM_SMOKE_HOLD=45 YM_SMOKE_OPEN="$GITHUB_WORKSPACE/testdata/readme-photos/src" \
+            target/debug/yellowmoon-app > viewport/app.log 2>&1 &
+          pid=$!
+          for _ in $(seq 1 40); do
+            grep -q "the native viewport shows a picture" viewport/app.log && break
+            sleep 1
+          done
+          # The window settles (thumbnails, the sharp pass) before the capture.
+          sleep 5
+          screencapture -x viewport/screen.png || echo "::warning title=screencapture::the screen could not be captured"
+          status=0
+          wait "$pid" || status=$?
+          cat viewport/app.log
+          if ! grep -q "the native viewport shows a picture" viewport/app.log; then
+            echo "::error title=Native viewport::the app never showed a picture in the native viewport (viewport/app.log)"
+            exit 1
+          fi
+          exit "$status"
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() }}
+        with:
+          name: viewport-${{ github.sha }}
+          path: viewport/
+          retention-days: 14

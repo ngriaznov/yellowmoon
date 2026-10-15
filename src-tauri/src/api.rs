@@ -33,8 +33,7 @@ use crate::wire::{
     ExportEstimate, ExportJob, ExportJobId, HistogramData, Look, LookId, LookInput,
     LooksImportProgress, LooksImportResult, PhotoId, PhotoProgress, PixelSample, Preferences,
     PreferencesPatch, ResolvedSettings, SessionState, SettingsPatch, SourceRecognition,
-    ThumbnailReady, ViewportBackendKind, ViewportInfo, ViewportInput, ViewportMode, ViewportRect,
-    WatchStatus, convert,
+    ThumbnailReady, ViewportInfo, ViewportInput, ViewportMode, ViewportRect, WatchStatus, convert,
 };
 use crate::wizard::{Downloads, recognise};
 
@@ -901,9 +900,12 @@ impl AppApi {
         }
     }
 
-    /// The backend the viewport draws with.
+    /// The backend the viewport draws with. Only the development smoke test (`YM_SMOKE`, compiled
+    /// out of release builds) asks for it, so it is compiled out there too; the bridge's
+    /// [`AppApi::viewport_info`] is the same answer for the page.
+    #[cfg(debug_assertions)]
     #[must_use]
-    pub fn backend(&self) -> ViewportBackendKind {
+    pub fn backend(&self) -> crate::wire::ViewportBackendKind {
         self.viewport.kind()
     }
 }
