@@ -124,7 +124,7 @@ and looser for the maximum and the count**: with the plan's gates 50 of the 61 f
 limiter, which decides on a rank of luma values: the device's f32 colour chain and the CPU's f64 one differ in the last bits, and a pixel at a hard edge of the chart (the charts' patch
 borders) takes the other side of a rank (`docs/algorithms/04` section 10; the sharpening kernel alone matches the CPU to 3e-7). A median of 1e-4 and a 99th percentile of 1e-2 say that
 the rest of the picture is the CPU's to the last code or two. Metal will have its own numbers (its f32 chain differs in other last bits); the Metal CI job prints them, and the gates are
-raised there only with Mykyta's agreement, as for every gate (`AGENTS.md`). `PLAN` stays in the code so that the question is one flag away.
+raised there only with Mykyta's agreement, as for every gate (`AGENTS.md`). `PLAN` stays in the code so that the question is one flag away. Mykyta agreed to the calibrated defaults on 2026-10-15 (`docs/STATUS.md`, question 26).
 
 **Files.** `tools/golden/gpu-subset.txt` lists the ten files of a push (one id per line, `#` comments; an id that is not in the manifest, or that `--set` leaves out, is an error: a subset never shrinks without a word): the four CFA phases, cRAW,
 lossless L, 12 and 14 bit, camera-processed (Lossless M), the highest ISO, a tungsten light and a second body. Every chart scene carries blown highlights, so each file covers clipped highlights.
