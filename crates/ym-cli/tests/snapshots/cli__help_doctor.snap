@@ -7,7 +7,9 @@ Print the diagnostics that go into a bug report
 Usage: ym doctor [OPTIONS]
 
 Options:
-      --json     Print the report as JSON
-  -q, --quiet    Print only errors on stderr
-  -v, --verbose  Print what is happening on stderr: stages, timings and notes
-  -h, --help     Print help
+      --json             Print the report as JSON
+  -q, --quiet            Print only errors on stderr
+      --bench <FILE>     Time the render path on this photo and print that report instead of the diagnostics. Follows YELLOWMOON_GPU (off for the CPU). The report names no file
+  -v, --verbose          Print what is happening on stderr: stages, timings and notes
+      --repeat <REPEAT>  With --bench: how many times the same JPEG is exported to check that the bytes are equal [default: 10]
+  -h, --help             Print help

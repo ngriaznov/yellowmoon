@@ -1147,7 +1147,10 @@ impl ResidentImage {
     }
 
     fn device_bytes(&self) -> usize {
-        self.pieces.iter().map(|p| p.image.byte_len() as usize).sum()
+        self.pieces
+            .iter()
+            .map(|p| p.image.byte_len() as usize)
+            .sum()
     }
 
     /// Reads the image back (a job on the device thread).
@@ -1673,9 +1676,13 @@ impl<'a> Job<'a> {
             .and_then(|raw| -> Result<Backing, GpuError> {
                 if keep {
                     let bands = route.reduced_resident(&raw, device_params)?;
-                    Ok(Backing::Gpu(Arc::new(ResidentImage::of_bands(&bands, &gpu))))
+                    Ok(Backing::Gpu(Arc::new(ResidentImage::of_bands(
+                        &bands, &gpu,
+                    ))))
                 } else {
-                    route.reduced(&raw, device_params).map(|i| Backing::Cpu(Arc::new(i)))
+                    route
+                        .reduced(&raw, device_params)
+                        .map(|i| Backing::Cpu(Arc::new(i)))
                 }
             });
         match result {

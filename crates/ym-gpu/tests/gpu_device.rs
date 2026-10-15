@@ -1555,7 +1555,10 @@ mod faults {
         assert!(results[0].is_ok() && results[2].is_ok() && results[3].is_ok());
         let err = results[1].as_ref().expect_err("the second upload");
         assert!(err.starts_with("OutOfBudget"), "{err}");
-        assert!(!g.is_lost(), "an upload that finds no room is not a lost device");
+        assert!(
+            !g.is_lost(),
+            "an upload that finds no room is not a lost device"
+        );
         // Allocations and tiles are not uploads: they do not count.
         g.set_fault(Some(GpuFault::FailUpload(1)));
         g.run(JobSpec::new(Priority::Export), |ctx, _| {

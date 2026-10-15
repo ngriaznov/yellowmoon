@@ -1748,12 +1748,16 @@ mod faults {
         own.set_fault(None);
         assert_eq!(first.device, ComputeDevice::Cpu);
         assert!(
-            first.notes.iter().any(|n| n
-                .contains("The graphics card could not render this photo, so the CPU did")),
+            first.notes.iter().any(
+                |n| n.contains("The graphics card could not render this photo, so the CPU did")
+            ),
             "{:?}",
             first.notes
         );
-        assert!(read(&first.path) == cpu_bytes, "the fallback is the CPU export");
+        assert!(
+            read(&first.path) == cpu_bytes,
+            "the fallback is the CPU export"
+        );
         assert!(ctx.renderer().export_tail_disabled(), "the tail is off now");
         assert!(!ctx.renderer().export_tail_enabled());
         // The fault is gone and the shader would compile, but the tail stays off: the second photo
@@ -1768,7 +1772,11 @@ mod faults {
             second.notes
         );
         assert!(read(&second.path) == cpu_bytes);
-        assert_eq!(own.counters().submissions, asked, "the device was not asked");
+        assert_eq!(
+            own.counters().submissions,
+            asked,
+            "the device was not asked"
+        );
         // The flag is the renderer's: another renderer on the same (healthy) device runs the tail.
         let again = context(
             home.path(),
@@ -1872,7 +1880,10 @@ mod faults {
                 );
                 assert!(notes.iter().any(|n| n.contains(note)), "{name}: {notes:?}");
                 assert!(
-                    got.report.ranges.iter().all(|r| r.device == ComputeDevice::Cpu),
+                    got.report
+                        .ranges
+                        .iter()
+                        .all(|r| r.device == ComputeDevice::Cpu),
                     "{name}: {:?}",
                     got.report.ranges
                 );
@@ -1951,8 +1962,9 @@ mod faults {
         let r = r.expect("the export");
         assert_eq!(r.device, ComputeDevice::Cpu, "{:?}", r.notes);
         assert!(
-            r.notes.iter().any(|n| n
-                .contains("The graphics card could not render this photo, so the CPU did")),
+            r.notes.iter().any(
+                |n| n.contains("The graphics card could not render this photo, so the CPU did")
+            ),
             "{:?}",
             r.notes
         );
@@ -1963,7 +1975,10 @@ mod faults {
         assert_eq!(names_in(out.path()).len(), 1, "one file, no temporary");
         let seen = seen.into_inner().expect("lock");
         assert!(seen.windows(2).all(|w| w[0] <= w[1]), "monotone: {seen:?}");
-        assert!(taken.load(Ordering::SeqCst) > 0, "the words were taken away");
+        assert!(
+            taken.load(Ordering::SeqCst) > 0,
+            "the words were taken away"
+        );
         assert_eq!(pool_in_use(&own), baseline);
         assert_eq!(ctx.renderer().ledger().used(), 0);
     }
@@ -1989,12 +2004,20 @@ mod faults {
         let second = dng_image(&dev, &src, FullTarget::DngLinearAwg4);
         assert_eq!(second.report.device, ComputeDevice::Cpu);
         assert!(
-            !second.report.notes.iter().any(|n| n.contains("graphics card")),
+            !second
+                .report
+                .notes
+                .iter()
+                .any(|n| n.contains("graphics card")),
             "{:?}",
             second.report.notes
         );
         assert!(second.rgb == want.rgb);
-        assert_eq!(own.counters().submissions, asked, "the device was not asked");
+        assert_eq!(
+            own.counters().submissions,
+            asked,
+            "the device was not asked"
+        );
     }
 }
 

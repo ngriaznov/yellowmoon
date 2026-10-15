@@ -353,7 +353,9 @@ fn input_image(
                 CameraSource::Host(image) => {
                     Arc::new(GpuImage::upload_rgb(ctx, "view source", image)?)
                 }
-                CameraSource::Resident { pieces, window } => encode_gather(passes, pieces, *window)?,
+                CameraSource::Resident { pieces, window } => {
+                    encode_gather(passes, pieces, *window)?
+                }
             };
             let sampled = encode_sample(passes, &src, *origin, grid, (0, 0), *width, *height)?;
             // The source must outlive the submission: a buffer made here (the upload, a gathered

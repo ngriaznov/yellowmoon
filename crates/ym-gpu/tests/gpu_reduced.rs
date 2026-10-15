@@ -739,7 +739,8 @@ fn a_50_mp_frame_at_k_2_fits_the_design_binding_or_is_refused_cleanly() {
     let data: Vec<u16> = (0..w * h)
         .map(|i| {
             let (x, y) = (i % w, i / w);
-            let base = 400.0 + 9000.0 * ((x as f32) / w as f32) * (0.4 + 0.6 * (y as f32 / h as f32));
+            let base =
+                400.0 + 9000.0 * ((x as f32) / w as f32) * (0.4 + 0.6 * (y as f32 / h as f32));
             let blob = x > w - 900 && y > h - 700;
             let v = if blob {
                 20000.0

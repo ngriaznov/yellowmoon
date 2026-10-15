@@ -1707,12 +1707,16 @@ mod speed {
         let s = ExportSpeed::new();
         let gpu = ComputeDevice::Gpu;
         s.record_overlapped(FormatKind::Jpeg, 24.0, 6.0);
-        let before = |f: FormatKind| 24.0 * RENDER_S_PER_MP_PRIOR + 24.0 * ENCODE_S_PER_MP_PRIOR[match f {
-            FormatKind::Jpeg => 0,
-            FormatKind::Tiff => 1,
-            FormatKind::Png => 2,
-            FormatKind::Dng => 3,
-        }];
+        let before = |f: FormatKind| {
+            24.0 * RENDER_S_PER_MP_PRIOR
+                + 24.0
+                    * ENCODE_S_PER_MP_PRIOR[match f {
+                        FormatKind::Jpeg => 0,
+                        FormatKind::Tiff => 1,
+                        FormatKind::Png => 2,
+                        FormatKind::Dng => 3,
+                    }]
+        };
         for f in [FormatKind::Tiff, FormatKind::Png] {
             assert_eq!(s.combined_s_per_mp(gpu, f), None, "{f:?}");
             assert!(

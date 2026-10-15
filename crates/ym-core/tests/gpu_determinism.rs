@@ -64,12 +64,13 @@ fn gpu() -> Option<Arc<Gpu>> {
     }
 }
 
-fn renderer(gpu: &Arc<Gpu>) -> Renderer {
+fn renderer(gpu: &Arc<Gpu>, resident_caches: bool) -> Renderer {
     Renderer::new(
         Arc::new(NeutralOnly),
         RenderOptions {
             gpu: Some(Arc::clone(gpu)),
             gpu_stages: GpuStages::ALL,
+            resident_caches,
             // 256 px tiles: a 600 x 400 photo is six tiles in two rows, so an export has several jobs to cancel
             // between and to interleave with.
             full_tile_px: 256,
@@ -80,7 +81,12 @@ fn renderer(gpu: &Arc<Gpu>) -> Renderer {
 }
 
 fn context(home: &Path, gpu: &Arc<Gpu>) -> ExportContext {
-    ExportContext::new(renderer(gpu)).with_home(Some(home.to_path_buf()))
+    context_with(home, gpu, true)
+}
+
+/// A context whose renderer keeps its view caches on the device (`resident_caches`, the default) or on the host.
+fn context_with(home: &Path, gpu: &Arc<Gpu>, resident_caches: bool) -> ExportContext {
+    ExportContext::new(renderer(gpu, resident_caches)).with_home(Some(home.to_path_buf()))
 }
 
 /// A synthetic photo of `w` x `h` developed in a session of its own.
@@ -227,6 +233,14 @@ fn the_same_export_is_the_same_bytes_every_time_and_on_a_device_of_its_own() {
 #[test]
 fn photo_a_after_photo_b_is_photo_a_before_it() {
     let Some(gpu) = gpu() else { return };
+    // The views of a photo keep their caches on the device (`resident_caches`) or read them back: the pool's
+    // history differs, the bytes must not.
+    for resident in [true, false] {
+        a_then_b_then_a(&gpu, resident);
+    }
+}
+
+fn a_then_b_then_a(gpu: &Arc<Gpu>, resident: bool) {
     // B differs in size, content, brightness, orientation of the work (a straightened crop, no sharpening) and
     // therefore in every buffer size the pool hands out; A is rendered, B is rendered, A is rendered again.
     let a = photo(600, 400, 0.5, 11);
@@ -252,8 +266,8 @@ fn photo_a_after_photo_b_is_photo_a_before_it() {
         .expect("settings of B");
     let (pa, pb) = (export_photo_of(&a), export_photo_of(&b));
     let home = tempfile::tempdir().expect("home");
-    let ctx = context(home.path(), &gpu);
-    let baseline = pool_in_use(&gpu);
+    let ctx = context_with(home.path(), gpu, resident);
+    let baseline = pool_in_use(gpu);
     let (src_a, src_b) = (a.source(), b.source());
     let r = ctx.renderer();
     let frames_a1 = frames(r, &src_a);
@@ -269,7 +283,7 @@ fn photo_a_after_photo_b_is_photo_a_before_it() {
     let frames_a2 = frames(r, &src_a);
     assert!(
         frames_a1 == frames_a2,
-        "a frame of A after B differs from the frame before"
+        "a frame of A after B differs from the frame before (resident caches {resident})"
     );
     assert!(
         frames_a1 != frames_b,
@@ -277,9 +291,20 @@ fn photo_a_after_photo_b_is_photo_a_before_it() {
     );
     for ((label, opts), before) in formats(home.path()).into_iter().zip(&exports_a1) {
         let after = bytes_of(&ctx, &pa, opts);
-        assert!(*before == after, "{label}: A after B differs from A before");
+        assert!(
+            *before == after,
+            "{label}: A after B differs from A before (resident caches {resident})"
+        );
     }
-    assert_eq!(pool_in_use(&gpu), baseline);
+    // A viewed photo keeps its group and tiles on the device until the renderer forgets it; forgetting hands
+    // everything back, an export never kept anything.
+    r.forget(a.id);
+    r.forget(b.id);
+    assert_eq!(
+        pool_in_use(gpu),
+        baseline,
+        "resident caches {resident}: forgetting both photos hands everything back"
+    );
 }
 
 #[test]

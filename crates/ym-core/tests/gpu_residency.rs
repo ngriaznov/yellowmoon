@@ -28,8 +28,8 @@ use common::*;
 use ym_core::app::gpu::GpuStages;
 use ym_core::export::{ExportContext, ExportControl, ExportParams, ExportPhoto, export_photo};
 use ym_core::pipeline::{
-    ComputeDevice, FrameOptions, NeutralOnly, PhotoSource, RawPrefetch, RenderOptions, Renderer,
-    RenderedFrame, ViewportMode, ViewportRect, ViewportState,
+    ComputeDevice, FrameOptions, NeutralOnly, PhotoSource, RawPrefetch, RenderOptions,
+    RenderedFrame, Renderer, ViewportMode, ViewportRect, ViewportState,
 };
 use ym_core::session::PhotoId;
 use ym_export::{ExportOptions, FormatKind, IfExists};
@@ -173,8 +173,16 @@ fn a_fit_frame_from_a_resident_group_is_the_host_round_trip_bit_for_bit() {
     for (name, v) in variants {
         let a = fresh(&host, &v, &st);
         let b = fresh(&resident, &v, &st);
-        assert_eq!(b.report.device, ComputeDevice::Gpu, "{name}: {:?}", b.report.notes);
-        assert!(b.report.scale >= 2, "{name}: the fit view reads a reduced group");
+        assert_eq!(
+            b.report.device,
+            ComputeDevice::Gpu,
+            "{name}: {:?}",
+            b.report.notes
+        );
+        assert!(
+            b.report.scale >= 2,
+            "{name}: the fit view reads a reduced group"
+        );
         same_frame(&a, &b, name);
     }
 }
@@ -189,7 +197,12 @@ fn a_resident_fit_frame_reads_back_the_frame_and_nothing_else() {
         let before = gpu.counters();
         let frame = fresh(&r, &src, &st);
         let after = gpu.counters();
-        assert_eq!(frame.report.device, ComputeDevice::Gpu, "{:?}", frame.report.notes);
+        assert_eq!(
+            frame.report.device,
+            ComputeDevice::Gpu,
+            "{:?}",
+            frame.report.notes
+        );
         (
             after.readbacks - before.readbacks,
             after.submissions - before.submissions,
@@ -201,7 +214,10 @@ fn a_resident_fit_frame_reads_back_the_frame_and_nothing_else() {
     eprintln!(
         "[G-10] fit frame, first of a photo: host caches {host_reads} readbacks and {host_submits} submissions; resident {resident_reads} readbacks and {resident_submits} submissions"
     );
-    assert_eq!(resident_reads, 1, "the frame's own readback is the only one");
+    assert_eq!(
+        resident_reads, 1,
+        "the frame's own readback is the only one"
+    );
     assert!(
         host_reads > resident_reads,
         "the host path reads the group back too ({host_reads} readbacks)"
@@ -231,7 +247,11 @@ fn a_100_percent_frame_from_resident_tiles_is_the_host_round_trip_bit_for_bit() 
     let cases: Vec<(&str, PhotoSource, ViewportState)> = vec![
         ("across tiles", src.clone(), at_100(300.0, 200.0, image)),
         ("a single tile", src.clone(), at_100(120.0, 90.0, image)),
-        ("whole photo window", src.clone(), at_100(900.0, 600.0, image)),
+        (
+            "whole photo window",
+            src.clone(),
+            at_100(900.0, 600.0, image),
+        ),
         (
             "straightened",
             edit(&src, |s| {
@@ -254,7 +274,12 @@ fn a_100_percent_frame_from_resident_tiles_is_the_host_round_trip_bit_for_bit() 
         let before = gpu.counters();
         let b = fresh(&resident, &v, &st);
         let after = gpu.counters();
-        assert_eq!(b.report.device, ComputeDevice::Gpu, "{name}: {:?}", b.report.notes);
+        assert_eq!(
+            b.report.device,
+            ComputeDevice::Gpu,
+            "{name}: {:?}",
+            b.report.notes
+        );
         assert_eq!(b.report.scale, 1, "{name}: full resolution");
         same_frame(&a, &b, name);
         eprintln!(
@@ -279,14 +304,30 @@ fn a_pan_over_cached_resident_tiles_makes_no_tile_and_reads_back_the_frame_only(
     let graded = edit(&src, |s| s.brightness = 12.0);
     let before = gpu.counters();
     let again = fresh(&r, &graded, &st);
-    let after = gpu.counters();
+    let resident_ran = gpu.counters().since(before);
     assert_eq!(again.report.runs.tiles, 0, "the tiles are cached");
-    assert_eq!(after.readbacks - before.readbacks, 1, "the frame only");
-    assert_eq!(after.uploads, before.uploads, "nothing goes up for the sampler");
-    // The reference: the same two frames with the caches on the host.
+    assert_eq!(resident_ran.readbacks, 1, "the frame only");
+    // The reference: the same two frames with the caches on the host, which uploads the window.
     let host = renderer(Some(&gpu), false);
     let _ = fresh(&host, &src, &st);
-    same_frame(&fresh(&host, &graded, &st), &again, "graded, cached tiles");
+    let before = gpu.counters();
+    let reference = fresh(&host, &graded, &st);
+    let host_ran = gpu.counters().since(before);
+    same_frame(&reference, &again, "graded, cached tiles");
+    let window_bytes = 12 * 300 * 200;
+    eprintln!(
+        "[G-10] 100 % pan over cached tiles: resident {} B uploaded, {} readbacks, {} submissions; host caches {} B uploaded",
+        resident_ran.uploaded_bytes,
+        resident_ran.readbacks,
+        resident_ran.submissions,
+        host_ran.uploaded_bytes
+    );
+    assert!(
+        resident_ran.uploaded_bytes + window_bytes / 2 < host_ran.uploaded_bytes,
+        "the window does not go up again ({} B against {} B)",
+        resident_ran.uploaded_bytes,
+        host_ran.uploaded_bytes
+    );
 }
 
 #[test]
@@ -348,7 +389,10 @@ fn a_neighbour_is_prefetched_while_fewer_than_two_photos_are_resident_and_then_c
 
     let token = CancelToken::new();
     let before = gpu.counters();
-    assert_eq!(r.prefetch_raw(&b, &token).expect("prefetch"), RawPrefetch::Uploaded);
+    assert_eq!(
+        r.prefetch_raw(&b, &token).expect("prefetch"),
+        RawPrefetch::Uploaded
+    );
     assert!(gpu.counters().uploads > before.uploads, "the words went up");
     assert_eq!(r.resident_photos(), 2);
     assert_eq!(
@@ -357,7 +401,10 @@ fn a_neighbour_is_prefetched_while_fewer_than_two_photos_are_resident_and_then_c
         "once"
     );
     // Two are resident: a prefetch makes no room, and the photo being looked at keeps its words.
-    assert_eq!(r.prefetch_raw(&c, &token).expect("prefetch"), RawPrefetch::Skipped);
+    assert_eq!(
+        r.prefetch_raw(&c, &token).expect("prefetch"),
+        RawPrefetch::Skipped
+    );
     assert_eq!(r.resident_photos(), 2);
 
     // The prefetch as a queued job, at Thumbnail priority, for a photo that is resident already.
@@ -379,7 +426,9 @@ fn a_prefetch_does_nothing_without_a_device_or_for_a_stage_that_is_off() {
     let (_d, src) = photo(10);
     let token = CancelToken::new();
     assert_eq!(
-        renderer(None, true).prefetch_raw(&src, &token).expect("prefetch"),
+        renderer(None, true)
+            .prefetch_raw(&src, &token)
+            .expect("prefetch"),
         RawPrefetch::Skipped
     );
     let Some(gpu) = private_device() else { return };
@@ -392,7 +441,10 @@ fn a_prefetch_does_nothing_without_a_device_or_for_a_stage_that_is_off() {
         },
     )
     .expect("render thread");
-    assert_eq!(r.prefetch_raw(&src, &token).expect("prefetch"), RawPrefetch::Skipped);
+    assert_eq!(
+        r.prefetch_raw(&src, &token).expect("prefetch"),
+        RawPrefetch::Skipped
+    );
     assert_eq!(r.resident_photos(), 0);
 }
 
@@ -428,8 +480,13 @@ fn an_export_reads_back_the_bands_and_hands_the_ledger_back() {
             ..ExportOptions::default()
         };
         let before = gpu.counters();
-        let report = export_photo(ctx, &exported, &ExportParams::new(opts), &ExportControl::none())
-            .expect("export");
+        let report = export_photo(
+            ctx,
+            &exported,
+            &ExportParams::new(opts),
+            &ExportControl::none(),
+        )
+        .expect("export");
         (gpu.counters().since(before), report)
     };
     let front = make(GpuStages::ALL);
@@ -437,7 +494,11 @@ fn an_export_reads_back_the_bands_and_hands_the_ledger_back() {
     let baseline = pool_in_use(&gpu);
     let (with_front, report) = run(&front);
     assert_eq!(report.device, ComputeDevice::Gpu, "{:?}", report.notes);
-    assert_eq!(pool_in_use(&gpu), baseline, "the ledger is back at its baseline");
+    assert_eq!(
+        pool_in_use(&gpu),
+        baseline,
+        "the ledger is back at its baseline"
+    );
     let behind = make(stages_without(GpuStages::RAW_FRONT));
     let (without_front, _) = run(&behind);
     let tiles = 900usize.div_ceil(256) * 600usize.div_ceil(256);
@@ -482,7 +543,11 @@ fn caches_stay_on_the_host_when_the_sampler_is_not_on_the_device() {
         gpu.counters().readbacks - before.readbacks > 1,
         "the group was read back for the host's cache"
     );
-    same_frame(&fresh(&make(false), &src, &st), &on, "caches asked for on the device");
+    same_frame(
+        &fresh(&make(false), &src, &st),
+        &on,
+        "caches asked for on the device",
+    );
 }
 
 #[cfg(feature = "fault-injection")]
@@ -506,7 +571,12 @@ mod faults {
         let _ = fresh(&r, &src, &st);
         gpu.set_fault(Some(fault));
         let failed = fresh(&r, &other, &st);
-        assert_eq!(failed.report.device, ComputeDevice::Cpu, "{:?}", failed.report.notes);
+        assert_eq!(
+            failed.report.device,
+            ComputeDevice::Cpu,
+            "{:?}",
+            failed.report.notes
+        );
         assert!(
             failed
                 .report

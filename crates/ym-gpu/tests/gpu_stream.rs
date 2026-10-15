@@ -14,11 +14,11 @@ use common::limits::{DESIGN_BINDING_BYTES, assert_fits_design_binding, assert_ma
 use common::{Rng, gpu, start_unpoisoned};
 use ym_gpu::cpu::tiling::Rect;
 use ym_gpu::cpu::{Placement, RgbImage};
-use ym_gpu::device::{Gpu, GpuConfig, GpuError, StoragePreference};
 use ym_gpu::device::GpuContext;
+use ym_gpu::device::{Gpu, GpuConfig, GpuError, StoragePreference};
 use ym_gpu::image::{GpuImage, IMAGE_USAGE};
-use ym_gpu::pool::PooledBuffer;
 use ym_gpu::kernels::KernelId;
+use ym_gpu::pool::PooledBuffer;
 use ym_gpu::queue::{JobSpec, Priority};
 use ym_gpu::stream::{
     CHUNK_BYTES, MAX_GROUPS_PER_DIMENSION, PassList, read_bytes, read_bytes_in_chunks,

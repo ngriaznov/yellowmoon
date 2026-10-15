@@ -527,12 +527,11 @@ pub struct DoctorArgs {
     /// Print the report as JSON.
     #[arg(long)]
     pub json: bool,
-    /// Time the render path on this photo instead of printing the diagnostics: the kernel compile, the fit and 100 %
-    /// views, a colour-only edit, the exports, the memory peaks, and the GPU time per pass where the graphics card can
-    /// tell it. Follows YELLOWMOON_GPU (set it to off for the CPU). The report names no file.
+    /// Time the render path on this photo and print that report instead of the diagnostics. Follows YELLOWMOON_GPU
+    /// (off for the CPU). The report names no file.
     #[arg(long, value_name = "FILE")]
     pub bench: Option<std::path::PathBuf>,
-    /// With --bench: how many times the same JPEG is exported to check that the bytes never move.
+    /// With --bench: how many times the same JPEG is exported to check that the bytes are equal.
     #[arg(long, default_value_t = crate::doctor::bench::DEFAULT_REPEAT, value_parser = clap::value_parser!(u32).range(1..=1000), requires = "bench")]
     pub repeat: u32,
 }

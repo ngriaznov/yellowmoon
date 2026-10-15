@@ -44,8 +44,8 @@ use ym_gpu::cpu::{Cfa, NoiseDn, Placement, RgbImage};
 use ym_gpu::device::{Gpu, GpuContext, GpuError, StorageMode};
 use ym_gpu::image::{GpuImage, RowBands};
 use ym_gpu::kernels::copy::{Piece, encode_copy_rect, encode_crop, encode_gather};
-use ym_gpu::kernels::{KernelId, KernelSet};
 use ym_gpu::kernels::prep::DeviceRaw;
+use ym_gpu::kernels::{KernelId, KernelSet};
 use ym_gpu::queue::{CancelToken, JobSpec, Priority};
 use ym_gpu::stream::{CounterSnapshot, PassList};
 use ym_gpu::tail::{Band, BandFormat, ExportTail, TailRoute, TailSharpen, TailSpec};
@@ -320,12 +320,18 @@ fn a_cut_demosaic_core_is_assembled_on_the_device_with_the_host_assemblys_bits()
                     let cutter = Cutting { ctx, limit: 4_500 };
                     let whole = g.run_tile_front(&plain, &raw, out, cancel)?;
                     let host_cut = g.run_tile_front(&cutter, &raw, out, cancel)?;
-                    let device_cut = g.run_tile_device(&cutter, &raw, out, cancel)?.read_rgb(ctx)?;
+                    let device_cut = g
+                        .run_tile_device(&cutter, &raw, out, cancel)?
+                        .read_rgb(ctx)?;
                     Ok((whole, host_cut, device_cut))
                 })
                 .expect("tiles");
             let label = format!("{} lens {lens:?}", cfa.name());
-            same_bits(&format!("{label}: host cut against whole"), &host_cut, &whole);
+            same_bits(
+                &format!("{label}: host cut against whole"),
+                &host_cut,
+                &whole,
+            );
             same_bits(
                 &format!("{label}: device cut against host cut"),
                 &device_cut,
@@ -367,7 +373,10 @@ fn a_resident_tile_is_poison_clean_and_a_cancelled_one_hands_everything_back() {
             let token = CancelToken::new();
             token.cancel();
             let cancelled = g.run_tile_device(ctx, &raw, out, &token);
-            assert!(matches!(cancelled, Err(GpuError::Cancelled)), "{cancelled:?}");
+            assert!(
+                matches!(cancelled, Err(GpuError::Cancelled)),
+                "{cancelled:?}"
+            );
             let after_cancel = ctx.pool().stats().in_use_bytes;
             let tile = g.run_tile_device(ctx, &raw, out, cancel)?;
             let after_tile = ctx.pool().stats().in_use_bytes;
@@ -385,7 +394,10 @@ fn a_resident_tile_is_poison_clean_and_a_cancelled_one_hands_everything_back() {
         out.w,
         out.h
     );
-    assert_eq!(after_drop, baseline, "dropping the tile hands everything back");
+    assert_eq!(
+        after_drop, baseline,
+        "dropping the tile hands everything back"
+    );
 }
 
 #[cfg(feature = "fault-injection")]
@@ -424,14 +436,19 @@ fn a_failed_resident_tile_hands_everything_back_and_leaves_a_usable_device() {
         let p = Arc::clone(&photo);
         let r = Arc::clone(&raw);
         let failed = gpu.run(job(), move |ctx, cancel| {
-            p.device_chain()?.run_tile_device(ctx, &r, out, cancel).map(|_| ())
+            p.device_chain()?
+                .run_tile_device(ctx, &r, out, cancel)
+                .map(|_| ())
         });
         gpu.set_fault(None);
         assert!(failed.is_err(), "{fault:?}: the tile fails");
         let after = gpu
             .run(job(), |ctx, _| Ok(ctx.pool().stats().in_use_bytes))
             .expect("pool");
-        assert_eq!(after, in_use, "{fault:?}: the failed tile left nothing behind");
+        assert_eq!(
+            after, in_use,
+            "{fault:?}: the failed tile left nothing behind"
+        );
         drop(raw);
         // And the device works: the same tile runs.
         let p = Arc::clone(&photo);
@@ -490,7 +507,14 @@ fn the_copy_kernel_moves_rectangles_exactly_for_every_plane_count() {
         .run(job(), |ctx, _| {
             for planes in [1usize, 3, 4] {
                 for (sw, sh, rect, at, dw, dh) in [
-                    (37usize, 29usize, Rect::new(0, 0, 37, 29), (0usize, 0usize), 37usize, 29usize),
+                    (
+                        37usize,
+                        29usize,
+                        Rect::new(0, 0, 37, 29),
+                        (0usize, 0usize),
+                        37usize,
+                        29usize,
+                    ),
                     (37, 29, Rect::new(5, 3, 20, 17), (7, 9), 41, 33),
                     (37, 29, Rect::new(36, 28, 1, 1), (40, 32), 41, 33),
                     (16, 16, Rect::new(1, 1, 14, 14), (0, 0), 14, 14),
@@ -554,8 +578,24 @@ fn the_copy_kernel_moves_rectangles_exactly_for_every_plane_count() {
                 }
             }
             // What the kernel refuses.
-            let a = GpuImage::upload(ctx, "a", 8, 8, 3, &pattern(8, 8, 3, 1), Placement::whole(8, 8))?;
-            let b = GpuImage::upload(ctx, "b", 8, 8, 1, &pattern(8, 8, 1, 2), Placement::whole(8, 8))?;
+            let a = GpuImage::upload(
+                ctx,
+                "a",
+                8,
+                8,
+                3,
+                &pattern(8, 8, 3, 1),
+                Placement::whole(8, 8),
+            )?;
+            let b = GpuImage::upload(
+                ctx,
+                "b",
+                8,
+                8,
+                1,
+                &pattern(8, 8, 1, 2),
+                Placement::whole(8, 8),
+            )?;
             let mut passes = PassList::new(ctx, "refusals");
             for r in [
                 encode_copy_rect(&mut passes, &a, Rect::whole(8, 8), &b, (0, 0)),
@@ -624,7 +664,10 @@ fn a_picture_in_bands_reads_back_whole_and_gives_windows_equal_to_its_rows() {
                 let total: usize = heights.iter().sum();
                 let host = pattern(w, total, planes, 3);
                 let bands = bands_of(ctx, &host, w, &heights, planes)?;
-                assert_eq!((bands.width, bands.height, bands.planes), (w, total, planes));
+                assert_eq!(
+                    (bands.width, bands.height, bands.planes),
+                    (w, total, planes)
+                );
                 assert_eq!(bands.bands().len(), heights.len());
                 assert_bit_equal("the whole picture", &bands.read(ctx)?, &host);
                 assert_eq!(
@@ -635,7 +678,13 @@ fn a_picture_in_bands_reads_back_whole_and_gives_windows_equal_to_its_rows() {
                         .max()
                         .unwrap_or(0)
                 );
-                for rows in [0..total, 0..1, total - 1..total, 3..total.min(15), 2..total.min(3)] {
+                for rows in [
+                    0..total,
+                    0..1,
+                    total - 1..total,
+                    3..total.min(15),
+                    2..total.min(3),
+                ] {
                     if rows.is_empty() {
                         continue;
                     }
@@ -665,16 +714,49 @@ fn a_picture_in_bands_reads_back_whole_and_gives_windows_equal_to_its_rows() {
                 for rows in [0..0, 0..total + 1, total..total] {
                     let mut passes = PassList::new(ctx, "refusals");
                     assert!(
-                        matches!(bands.window(&mut passes, rows.clone()), Err(GpuError::InvalidInput(_))),
+                        matches!(
+                            bands.window(&mut passes, rows.clone()),
+                            Err(GpuError::InvalidInput(_))
+                        ),
                         "{rows:?}"
                     );
                 }
             }
             // Bands that do not make a picture are refused.
-            let a = GpuImage::alloc(ctx, "a", 8, 4, 3, Placement { x0: 0, y0: 0, frame_width: 8, frame_height: 9 })?;
-            let gap = GpuImage::alloc(ctx, "gap", 8, 4, 3, Placement { x0: 0, y0: 5, frame_width: 8, frame_height: 9 })?;
-            assert!(matches!(RowBands::new(vec![a, gap]), Err(GpuError::InvalidInput(_))));
-            assert!(matches!(RowBands::new(vec![]), Err(GpuError::InvalidInput(_))));
+            let a = GpuImage::alloc(
+                ctx,
+                "a",
+                8,
+                4,
+                3,
+                Placement {
+                    x0: 0,
+                    y0: 0,
+                    frame_width: 8,
+                    frame_height: 9,
+                },
+            )?;
+            let gap = GpuImage::alloc(
+                ctx,
+                "gap",
+                8,
+                4,
+                3,
+                Placement {
+                    x0: 0,
+                    y0: 5,
+                    frame_width: 8,
+                    frame_height: 9,
+                },
+            )?;
+            assert!(matches!(
+                RowBands::new(vec![a, gap]),
+                Err(GpuError::InvalidInput(_))
+            ));
+            assert!(matches!(
+                RowBands::new(vec![]),
+                Err(GpuError::InvalidInput(_))
+            ));
             Ok(())
         })
         .expect("job");
@@ -753,7 +835,10 @@ fn a_window_gathered_from_pieces_is_the_host_crop_bit_for_bit() {
             let one = tiles.iter().find(|p| p.rect() == exact).expect("a tile");
             let mut passes = PassList::new(ctx, "exact");
             let got = encode_gather(&mut passes, &[one.clone()], exact)?;
-            assert!(Arc::ptr_eq(&got, &one.image), "no copy for a window that is a piece");
+            assert!(
+                Arc::ptr_eq(&got, &one.image),
+                "no copy for a window that is a piece"
+            );
             // What it refuses: no piece, an empty window, a window the pieces do not cover.
             let mut passes = PassList::new(ctx, "refusals");
             let hole: Vec<Piece> = tiles.iter().filter(|p| p.at != (16, 11)).cloned().collect();
@@ -777,8 +862,20 @@ fn a_cold_start_compiles_the_fit_view_then_the_view_stages_then_the_full_resolut
     use KernelId::*;
     let at = |id: KernelId| KernelId::ALL.iter().position(|k| *k == id).expect("listed");
     let fit = [
-        Prep, PrepMask, HighlightsSuper, Highlights, MosaicCa, Sigma, Bin, BinSigma, Reduce,
-        ReduceFold, SigmaExpand, Bilateral, Lens, Copy,
+        Prep,
+        PrepMask,
+        HighlightsSuper,
+        Highlights,
+        MosaicCa,
+        Sigma,
+        Bin,
+        BinSigma,
+        Reduce,
+        ReduceFold,
+        SigmaExpand,
+        Bilateral,
+        Lens,
+        Copy,
     ];
     let view = [
         Sampler,
@@ -797,20 +894,27 @@ fn a_cold_start_compiles_the_fit_view_then_the_view_stages_then_the_full_resolut
     let last_of = |ids: &[KernelId]| ids.iter().map(|&k| at(k)).max().expect("some");
     let first_of = |ids: &[KernelId]| ids.iter().map(|&k| at(k)).min().expect("some");
     assert_eq!(first_of(&fit), 0);
-    assert!(last_of(&fit) < first_of(&view), "the fit view before the view stages");
+    assert!(
+        last_of(&fit) < first_of(&view),
+        "the fit view before the view stages"
+    );
     let chain: Vec<KernelId> = KernelId::ALL
         .into_iter()
-        .filter(|k| {
-            !fit.contains(k) && !view.contains(k) && !unused.contains(k) && *k != Resize
-        })
+        .filter(|k| !fit.contains(k) && !view.contains(k) && !unused.contains(k) && *k != Resize)
         .collect();
     assert!(!chain.is_empty());
     assert!(
         last_of(&view) < first_of(&chain),
         "the view stages before the full-resolution chain"
     );
-    assert!(last_of(&chain) < at(Resize), "the export tail after the chain");
-    assert!(at(Resize) < first_of(&unused), "what no render uses is last");
+    assert!(
+        last_of(&chain) < at(Resize),
+        "the export tail after the chain"
+    );
+    assert!(
+        at(Resize) < first_of(&unused),
+        "what no render uses is last"
+    );
     // Every kernel is listed once, and the sets are views of the one order.
     let mut seen = KernelId::ALL.to_vec();
     seen.sort_by_key(|k| *k as usize);
@@ -844,7 +948,15 @@ fn what_recording_costs_per_dispatch_and_per_tile_is_measured_for_the_arena_deci
     let (per_dispatch, per_run) = dev
         .gpu
         .run(job(), |ctx, _| {
-            let a = GpuImage::upload(ctx, "a", 64, 64, 3, &pattern(64, 64, 3, 5), Placement::whole(64, 64))?;
+            let a = GpuImage::upload(
+                ctx,
+                "a",
+                64,
+                64,
+                3,
+                &pattern(64, 64, 3, 5),
+                Placement::whole(64, 64),
+            )?;
             let b = GpuImage::alloc(ctx, "b", 64, 64, 3, Placement::whole(64, 64))?;
             let record = |passes: &mut PassList<'_>| -> Result<(), GpuError> {
                 for _ in 0..250 {
@@ -911,8 +1023,15 @@ fn what_recording_costs_per_dispatch_and_per_tile_is_measured_for_the_arena_deci
             eprintln!("::notice title=G-10 recording cost::{line}");
         }
     }
-    assert!(per_dispatch < 5e-3, "recording a dispatch took {per_dispatch} s");
-    assert!(ran.submissions <= 3, "{} submissions for one tile", ran.submissions);
+    assert!(
+        per_dispatch < 5e-3,
+        "recording a dispatch took {per_dispatch} s"
+    );
+    assert!(
+        ran.submissions <= 3,
+        "{} submissions for one tile",
+        ran.submissions
+    );
     assert!(ran.dispatches > 0 && ran.readbacks == 0);
 }
 
@@ -927,9 +1046,8 @@ fn tail_spec(
     sharpen_pct: f64,
     format: BandFormat,
 ) -> TailSpec {
-    let chain = Arc::new(
-        ColorChain::new(&common::chains::full(OutputTarget::Srgb)).expect("colour chain"),
-    );
+    let chain =
+        Arc::new(ColorChain::new(&common::chains::full(OutputTarget::Srgb)).expect("colour chain"));
     TailSpec {
         rendered: (ow, oh),
         out,
@@ -979,9 +1097,7 @@ fn through_the_tail(
 ) -> Run {
     let (ow, oh) = photo.output_size();
     let p = Arc::clone(photo);
-    let raw = gpu
-        .run(job(), move |ctx, _| p.upload(ctx))
-        .expect("upload");
+    let raw = gpu.run(job(), move |ctx, _| p.upload(ctx)).expect("upload");
     let runner = Submitting {
         gpu,
         spec: job(),
@@ -989,7 +1105,8 @@ fn through_the_tail(
     };
     let chain = photo.device_chain().expect("chain");
     let route = TailRoute::new(gpu, job(), CancelToken::new());
-    let mut tail = ExportTail::new(route, tail_spec(ow, oh, out, sharpen_pct, format)).expect("tail");
+    let mut tail =
+        ExportTail::new(route, tail_spec(ow, oh, out, sharpen_pct, format)).expect("tail");
     let mut bands = Vec::new();
     let mut worst = 0u64;
     let mut tile_readbacks = 0u64;
@@ -1043,6 +1160,58 @@ fn through_the_tail(
         tiles,
         chain_seconds,
     }
+}
+
+/// The plan's bound of three submissions per tile (the chain's job, the tail's tile job, the slabs the
+/// tile opens) holds when a tile is taller than a slab: a tile of 1024 rows over slabs of 512 opens two
+/// of them, and they are made by one job (the 50 MP run of `fifty_megapixels_...` found four
+/// submissions when each slab was a job of its own). The camera RGB here is a pattern, the chain is
+/// not involved: the tail's share is one job for the slabs a tile opens and one for the tile.
+#[test]
+fn a_tile_taller_than_a_slab_opens_its_slabs_in_one_job() {
+    let Some(gpu) = private_device() else { return };
+    let (ow, oh, tile) = (300usize, 2300usize, 1024usize);
+    let route = TailRoute::new(&gpu, job(), CancelToken::new());
+    let mut tail = ExportTail::new(route, tail_spec(ow, oh, (ow, oh), 0.0, BandFormat::Sixteen))
+        .expect("tail");
+    let mut per_tile = Vec::new();
+    let mut oy = 0;
+    while oy < oh {
+        let th = tile.min(oh - oy);
+        let mut ox = 0;
+        while ox < ow {
+            let tw = tile.min(ow - ox);
+            let (x0, y0) = (ox.saturating_sub(4), oy.saturating_sub(4));
+            let (x1, y1) = ((ox + tw + 4).min(ow), (oy + th + 4).min(oh));
+            let (rw, rh) = (x1 - x0, y1 - y0);
+            let region = gpu
+                .run(job(), move |ctx, _| {
+                    GpuImage::upload(
+                        ctx,
+                        "camera",
+                        rw,
+                        rh,
+                        3,
+                        &pattern(rw, rh, 3, (oy + ox) as u32),
+                        Placement::whole(rw, rh),
+                    )
+                })
+                .expect("camera rgb");
+            let before = gpu.counters();
+            tail.add_tile_device(Arc::new(region), (x0, y0), (ox, oy), tw, th)
+                .expect("a device tile");
+            per_tile.push(gpu.counters().since(before).submissions);
+            ox += tw;
+        }
+        tail.advance(oy + th).expect("advance");
+        oy += th;
+    }
+    tail.finish().expect("finish");
+    eprintln!("[G-10] tail submissions of tiles of 1024 rows over slabs of 512: {per_tile:?}");
+    // The first tile of a row opens two slabs and is the tile's own job: two submissions. (A tile row
+    // of 2300 rows: 1024, 1024 and 252; the last tile row opens one slab at most.)
+    assert_eq!(per_tile[0], 2, "two slabs in one job, and the tile");
+    assert!(per_tile.iter().all(|&n| n <= 2), "{per_tile:?}");
 }
 
 /// A device of this test's own, in poison mode: the tests of a binary run in parallel on the shared

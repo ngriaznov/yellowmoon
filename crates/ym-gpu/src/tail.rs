@@ -336,26 +336,33 @@ fn window(
 // The jobs (run on the device thread)
 // ---------------------------------------------------------------------------------------------
 
-/// A slab of the rendered picture: four planes (red, green, blue and the letterbox mask), zeroed,
-/// so that a tile that never arrives (outside the photo) is black.
-fn slab_job(
+/// The slabs of the rendered picture that a tile needs and the picture does not have yet, one
+/// `(width, rows)` each: four planes (red, green, blue and the letterbox mask), zeroed, so that a tile
+/// that never arrives (outside the photo) is black. All of them are made in **one job and one
+/// submission**: a tile of 1024 rows over slabs of 512 opens two at once, and the plan's bound of three
+/// submissions per tile (the chain's job, this one, the tile's own) holds at any size.
+fn slabs_job(
     ctx: &GpuContext,
     token: &CancelToken,
-    &(width, rows): &(usize, usize),
-) -> Result<GpuImage, GpuError> {
+    specs: &Vec<(usize, usize)>,
+) -> Result<Vec<GpuImage>, GpuError> {
     token.check()?;
-    let image = GpuImage::alloc(
-        ctx,
-        "tail slab",
-        width,
-        rows,
-        4,
-        Placement::whole(width, rows),
-    )?;
     let mut passes = PassList::new(ctx, "tail slab clear");
-    passes.encoder().clear_buffer(&image.buf, 0, None);
+    let mut images = Vec::with_capacity(specs.len());
+    for &(width, rows) in specs {
+        let image = GpuImage::alloc(
+            ctx,
+            "tail slab",
+            width,
+            rows,
+            4,
+            Placement::whole(width, rows),
+        )?;
+        passes.encoder().clear_buffer(&image.buf, 0, None);
+        images.push(image);
+    }
     passes.submit()?.finish()?;
-    Ok(image)
+    Ok(images)
 }
 
 /// Where a tile's rows go: rows `tile_row0..tile_row0 + rows` of the coloured tile land in `image`
@@ -700,19 +707,29 @@ impl<'a> ExportTail<'a> {
         self.route.run(data, work)
     }
 
-    /// Slabs for the rows up to `upto` exist (allocated and zeroed).
+    /// Slabs for the rows up to `upto` exist (allocated and zeroed), the missing ones made by one
+    /// job.
     fn ensure_slabs(&mut self, upto: usize) -> Result<(), GpuError> {
         let (fw, fh) = self.spec.rendered;
-        while self.allocated < upto.min(fh) {
-            let y0 = self.allocated;
-            let rows = self.slab_rows.min(fh - y0);
-            let image = self.run((fw, rows), slab_job)?;
+        let mut missing = Vec::new();
+        let mut at = self.allocated;
+        while at < upto.min(fh) {
+            let rows = self.slab_rows.min(fh - at);
+            missing.push((fw, rows));
+            at += rows;
+        }
+        if missing.is_empty() {
+            return Ok(());
+        }
+        let images = self.run(missing, slabs_job)?;
+        for image in images {
+            let rows = image.height;
             self.rendered.pieces.push_back(Piece {
-                y0,
+                y0: self.allocated,
                 rows,
                 image: Arc::new(image),
             });
-            self.allocated = y0 + rows;
+            self.allocated += rows;
         }
         Ok(())
     }
