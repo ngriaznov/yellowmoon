@@ -9,6 +9,12 @@ moves the entries below from Unreleased into a dated section for that version.
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.1.1] - 2026-10-15
+
+Fixes for what the first test release showed on a Mac.
+
 ### Fixed
 
 - The photo shows in the main view on a Mac. In 0.1.0 the picture was drawn on the graphics card behind the page, but the page's own white background covered it, so the photo cell stayed blank while the thumbnails and looks showed. The Photos screen now lets the picture through, and the window behind the page is paper white, so nothing else changes. A check on a Mac in CI opens photos and fails if the page covers the picture again.
