@@ -33,6 +33,6 @@ mod tests {
     #[test]
     fn app_version_is_the_workspace_version() {
         assert!(is_plain_semver(app_version()), "{}", app_version());
-        assert_eq!(app_version(), "0.0.1");
+        assert_eq!(app_version(), env!("CARGO_PKG_VERSION"));
     }
 }

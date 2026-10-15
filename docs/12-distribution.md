@@ -5,24 +5,24 @@ We copy github.com/ngriaznov/plugout's setup: every version bump on main becomes
 ## Versioning
 
 - One version for the app, the CLI and the workspace: `[workspace.package] version` in the root `Cargo.toml`; `package.json` mirrors it (a test checks they match).
-- Semver. 0.x during M0–M3 betas; 1.0.0 at the end of M4.
-- Bump the version in a PR titled "Release x.y.z" with a CHANGELOG entry. Merging it releases.
+- Semver. 0.x during M0–M3 betas; 1.0.0 at the end of M4. **While the app is tested, every build that goes to Mykyta is the next 0.1.x** (Mykyta, 2026-10-15; 0.1.0 was the first): `tools/release/bump-version.sh patch` sets the version everywhere it lives (root `Cargo.toml` with the workspace's own crates, `package.json`, `package-lock.json`, every `Cargo.lock`), then a `## [0.1.x] - date` section in `CHANGELOG.md` moves the Unreleased entries. Pushing the bump to `main` releases it.
 - `pipeline_version` (`docs/01`) is separate and changes only when output pixels change.
 
 ## Release pipeline (`release.yml`, GitHub Actions on macOS, on push to main)
 
-1. Read the version with `cargo metadata` (package `yellowmoon-app`). If tag `v<version>` exists, stop: the push was not a release. Otherwise, before any build, stop with an explicit error if either signing secret is empty or `tauri.conf.json` still holds the `REPLACE_WITH_MINISIGN_PUBLIC_KEY` placeholder (setup: `docs/release-signing.md`). A release that cannot be signed fails in seconds, not after the full macOS build. `rust-toolchain.toml` pins the toolchain, so the job runs `rustup target add` for both Apple targets on the pinned one.
-2. Build `ym-cli` for aarch64 and x86_64 and place three sidecars: `ym-aarch64-apple-darwin`, `ym-x86_64-apple-darwin` (each per-arch cargo build of `src-tauri` checks for its own) and the `lipo`-merged `ym-universal-apple-darwin` (bundled).
-3. `npm run tauri build -- --target universal-apple-darwin` with `TAURI_SIGNING_PRIVATE_KEY` (and its password) from repository secrets; `createUpdaterArtifacts` produces `.app.tar.gz` and `.sig`.
-4. Write `latest.json` with `jq`: version, publication date, URL and signature for `darwin-aarch64` and `darwin-x86_64` (the same universal tarball).
-5. Publish release `v<version>` with the `.dmg`, the `.app.tar.gz` and `latest.json`, with generated release notes (`softprops/action-gh-release@v2`).
-6. Update `Casks/yellowmoon.rb` (version, SHA-256 of the dmg) and push to main.
+1. Read the version from the root `Cargo.toml` (`[workspace.package] version`). If tag `v<version>` exists, stop: the push was not a release (`workflow_dispatch` retries a release whose run failed).
+2. Updater artefacts only with the signing setup (both secrets set and the public key in `tauri.conf.json`); without it the release carries the disk image only, with a warning in the run, and installed copies do not update themselves (their quiet check finds no `latest.json` and stays silent).
+3. Build `ym-cli` for aarch64 and x86_64 and place three sidecars: `ym-aarch64-apple-darwin`, `ym-x86_64-apple-darwin` (each per-arch cargo build of `src-tauri` checks for its own) and the `lipo`-merged `ym-universal-apple-darwin`.
+4. `npm run tauri build -- --target universal-apple-darwin`, signed ad hoc (`signingIdentity "-"`: no Developer ID, `docs/16`), with `createUpdaterArtifacts` and the signing key from the secrets when step 2 found them. Check the bundle: `codesign --verify`, both architectures, `ym --version` says the version, the disk image is `Yellowmoon_<version>_universal.dmg`.
+5. With the updater: write `latest.json` with `jq` (version, publication date, URL and signature for `darwin-aarch64` and `darwin-x86_64`, the same universal tarball).
+6. Publish release `v<version>` ("Yellowmoon <version>") with the `.dmg` (and the `.app.tar.gz` and `latest.json` with the updater); the notes are the version's section of `CHANGELOG.md` plus how to install and allow the app to open (`softprops/action-gh-release@v2`).
+7. Update `Casks/yellowmoon.rb` (version, SHA-256 of the dmg) and push to main. That commit is on `main` only: a branch that goes on must merge `main` before its next fast-forward.
 
 **Bundle naming detail:** the app's main binary is `Yellowmoon` and macOS file systems are usually case-insensitive, so a sidecar called `yellowmoon` would collide with it inside `Contents/MacOS`. The command is `ym` (decision 2026-10-12), so the sidecar is `Contents/MacOS/ym` and there is nothing to rename: the cask's `binary` stanza and the "Install Command-Line Tool…" menu link it as `ym`.
 
 ## Test builds (`build.yml`)
 
-Every push to `main`, and a manual run (Actions > Build > Run workflow, universal or Apple silicon only), builds the app on a macOS runner and keeps the disk image as the run's artefact `Yellowmoon-<commit>-<architecture>` for 14 days. It is not a release: no tag, no updater artefacts (they need the signing key, `docs/release-signing.md`), no Developer ID. The bundle is signed ad hoc, so macOS asks before it first opens it (README, "Allow Yellowmoon to open"). Until the updater key exists, the release job of `release.yml` is skipped with a warning instead of failing.
+By hand only (Actions > Build > Run workflow, universal or Apple silicon only): builds the app from any branch or commit on a macOS runner and keeps the disk image as the run's artefact `Yellowmoon-<commit>-<architecture>` for 14 days, to try something before it is released. Downloads for people are GitHub Releases. Signed ad hoc and without updater artefacts, like a release before the updater key exists.
 
 ## In the app
 

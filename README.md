@@ -54,16 +54,14 @@ The details, with every constant and gate, are in `docs/02-colour-pipeline.md`.
 
 ## Install
 
-Coming with the first release: a `.dmg` from GitHub Releases, or Homebrew:
+Download the latest `.dmg` from [GitHub Releases](https://github.com/ngriaznov/yellowmoon/releases/latest), or use Homebrew:
 
 ```
 brew tap ngriaznov/yellowmoon https://github.com/ngriaznov/yellowmoon
 brew install --cask yellowmoon
 ```
 
-Open the `.dmg` and drag Yellowmoon to Applications. The app updates itself.
-
-Until then, test builds of the current code are on the [Build workflow](https://github.com/ngriaznov/yellowmoon/actions/workflows/build.yml): open the latest green run, download the artefact `Yellowmoon-<commit>-universal` at the bottom (you need to be signed in to GitHub), unzip it and open the `.dmg` inside.
+Open the `.dmg` and drag Yellowmoon to Applications. Versions 0.1.x are test releases: they do not update themselves yet, so download a newer one from Releases when it appears.
 
 ### Allow Yellowmoon to open
 

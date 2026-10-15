@@ -1,16 +1,23 @@
-# Release: every version bump on main becomes a GitHub release with updater artefacts (docs/12).
+# Release: every version bump on main becomes a GitHub release with the universal disk image (docs/12).
 # Adapted from github.com/ngriaznov/plugout. Installed in M0-03.
 #
-# Needs two repository secrets before the first release: TAURI_SIGNING_PRIVATE_KEY and
-# TAURI_SIGNING_PRIVATE_KEY_PASSWORD, and the matching public key in src-tauri/tauri.conf.json
-# (plugins.updater.pubkey). Setup steps: docs/release-signing.md. Until then the release job is skipped,
-# with a warning that points there, instead of burning macOS minutes on a build that cannot be signed
-# (a test build of the app without the updater is build.yml).
+# The version is the root Cargo.toml [workspace.package] version (set with tools/release/bump-version.sh; 0.1.x
+# while the app is tested); a push whose version already has a tag releases nothing. The release notes are that
+# version's section of CHANGELOG.md. The app has no Apple Developer ID (docs/16): the bundle is signed ad hoc and
+# the README says how to allow it to open.
+#
+# Updater artefacts (the .app.tar.gz, its minisign signature and latest.json) are added once the updater signing
+# setup exists: two repository secrets, TAURI_SIGNING_PRIVATE_KEY and TAURI_SIGNING_PRIVATE_KEY_PASSWORD, and the
+# public key in src-tauri/tauri.conf.json (plugins.updater.pubkey); steps in docs/release-signing.md. Until then a
+# release carries the disk image only, the app's quiet update check finds nothing (and says nothing), and a newer
+# version is downloaded by hand.
 name: Release
 
 on:
   push:
     branches: [main]
+  # Retry a release whose run failed (the tag is made only by a successful publish).
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -20,49 +27,18 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # Whether the updater signing setup exists: without it the release job is skipped (grey), not failed (red).
-  preflight:
-    runs-on: ubuntu-latest
-    outputs:
-      ready: ${{ steps.check.outputs.ready }}
-    steps:
-      - uses: actions/checkout@v4
-      - id: check
-        env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: |
-          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ] || [ -z "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD" ] \
-             || grep -q 'REPLACE_WITH_MINISIGN_PUBLIC_KEY' src-tauri/tauri.conf.json; then
-            echo "::warning title=Release skipped::The updater signing setup is missing (docs/release-signing.md). Test builds: the Build workflow."
-            echo "ready=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "ready=true" >> "$GITHUB_OUTPUT"
-          fi
-
   release:
-    needs: preflight
-    if: needs.preflight.outputs.ready == 'true'
-    runs-on: macos-latest
-    timeout-minutes: 90
+    runs-on: macos-15
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
-
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-apple-darwin,x86_64-apple-darwin
-
-      - name: Add both macOS targets to the pinned toolchain
-        # rust-toolchain.toml (if it pins a version) overrides the toolchain installed above.
-        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
 
       - name: Read version
         id: version
         run: |
-          VERSION=$(cargo metadata --no-deps --format-version 1 \
-            | jq -r '.packages[] | select(.name == "yellowmoon-app") | .version')
-          if [ -z "$VERSION" ] || [ "$VERSION" = "null" ]; then
-            echo "::error title=No version::cargo metadata has no package named yellowmoon-app"
+          VERSION=$(sed -n '/^\[workspace.package\]/,/^\[/{s/^version = "\(.*\)"/\1/p;}' Cargo.toml | head -n 1)
+          if [ -z "$VERSION" ]; then
+            echo "::error title=No version::Cargo.toml has no [workspace.package] version"
             exit 1
           fi
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
@@ -72,24 +48,35 @@ jobs:
         run: |
           if git ls-remote --exit-code --tags origin "refs/tags/v${{ steps.version.outputs.version }}"; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "v${{ steps.version.outputs.version }} is already released; bump the version to release (tools/release/bump-version.sh)." >> "$GITHUB_STEP_SUMMARY"
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Require the updater signing setup
+      - name: Updater signing setup (optional)
+        id: updater
         if: steps.check_tag.outputs.exists == 'false'
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
-          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ] || [ -z "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD" ]; then
-            echo "::error title=Signing secrets missing::Set TAURI_SIGNING_PRIVATE_KEY and TAURI_SIGNING_PRIVATE_KEY_PASSWORD as repository secrets (docs/release-signing.md)."
-            exit 1
+          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ] || [ -z "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD" ] \
+             || grep -q 'REPLACE_WITH_MINISIGN_PUBLIC_KEY' src-tauri/tauri.conf.json; then
+            echo "::warning title=No updater artefacts::The updater signing setup is missing (docs/release-signing.md): this release carries the disk image only and installed copies do not update themselves."
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
           fi
-          if grep -q 'REPLACE_WITH_MINISIGN_PUBLIC_KEY' src-tauri/tauri.conf.json; then
-            echo "::error title=Updater public key missing::Put the minisign public key into src-tauri/tauri.conf.json plugins.updater.pubkey (docs/release-signing.md)."
-            exit 1
-          fi
+
+      - uses: dtolnay/rust-toolchain@stable
+        if: steps.check_tag.outputs.exists == 'false'
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Add both macOS targets to the pinned toolchain
+        if: steps.check_tag.outputs.exists == 'false'
+        # rust-toolchain.toml pins the version, which overrides the toolchain installed above.
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
 
       - uses: actions/setup-node@v4
         if: steps.check_tag.outputs.exists == 'false'
@@ -99,6 +86,9 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         if: steps.check_tag.outputs.exists == 'false'
+        with:
+          # The same cache as the universal test build (build.yml).
+          shared-key: build-macos-universal
 
       - name: Install frontend dependencies
         if: steps.check_tag.outputs.exists == 'false'
@@ -120,6 +110,29 @@ jobs:
           python3 tools/licences/generate.py
           python3 tools/licences/check_bundle.py
 
+      - name: Release notes (the version's section of CHANGELOG.md)
+        if: steps.check_tag.outputs.exists == 'false'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          awk -v v="$VERSION" '
+            index($0, "## [" v "]") == 1 { on = 1; next }
+            on && /^## \[/ { exit }
+            on { print }
+          ' CHANGELOG.md > "$RUNNER_TEMP/notes.md"
+          if ! grep -q '[^[:space:]]' "$RUNNER_TEMP/notes.md"; then
+            echo "::warning title=No CHANGELOG section::CHANGELOG.md has no \"## [$VERSION]\" section."
+            echo "Yellowmoon $VERSION." > "$RUNNER_TEMP/notes.md"
+          fi
+          {
+            echo
+            echo "### Install"
+            echo
+            echo "Download \`Yellowmoon_${VERSION}_universal.dmg\` below, open it and drag Yellowmoon to Applications."
+            echo "Yellowmoon is not signed with an Apple Developer ID, so macOS asks once before it opens it:"
+            echo "see [Allow Yellowmoon to open](https://github.com/${GITHUB_REPOSITORY}#allow-yellowmoon-to-open)."
+          } >> "$RUNNER_TEMP/notes.md"
+
       - name: Build the command-line tool (universal)
         if: steps.check_tag.outputs.exists == 'false'
         run: |
@@ -139,22 +152,34 @@ jobs:
             -output src-tauri/binaries/ym-universal-apple-darwin
           lipo -info src-tauri/binaries/ym-universal-apple-darwin
 
-      - name: Build universal macOS bundle
+      - name: Build universal macOS bundle (ad-hoc signed)
         if: steps.check_tag.outputs.exists == 'false'
         env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          # Uncomment once Apple Developer ID signing is decided (docs/16, open decision "Code signing for 1.0"):
-          # APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          # APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          # APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          # APPLE_ID: ${{ secrets.APPLE_ID }}
-          # APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          # APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        run: npm run tauri build -- --target universal-apple-darwin
+          UPDATER: ${{ steps.updater.outputs.enabled }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ steps.updater.outputs.enabled == 'true' && secrets.TAURI_SIGNING_PRIVATE_KEY || '' }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ steps.updater.outputs.enabled == 'true' && secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || '' }}
+        run: |
+          if [ "$UPDATER" = true ]; then
+            CONFIG='{"bundle":{"createUpdaterArtifacts":true,"macOS":{"signingIdentity":"-"}}}'
+          else
+            CONFIG='{"bundle":{"createUpdaterArtifacts":false,"macOS":{"signingIdentity":"-"}}}'
+          fi
+          npm run tauri build -- --target universal-apple-darwin --config "$CONFIG"
+
+      - name: Check the bundle
+        if: steps.check_tag.outputs.exists == 'false'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          APP="target/universal-apple-darwin/release/bundle/macos/Yellowmoon.app"
+          codesign --verify --deep --strict --verbose=2 "$APP"
+          lipo -info "$APP/Contents/MacOS/Yellowmoon"
+          "$APP/Contents/MacOS/ym" --version | tee "$RUNNER_TEMP/ym-version.txt"
+          grep -q "^ym ${VERSION} " "$RUNNER_TEMP/ym-version.txt"
+          ls target/universal-apple-darwin/release/bundle/dmg/"Yellowmoon_${VERSION}_universal.dmg"
 
       - name: Write updater manifest
-        if: steps.check_tag.outputs.exists == 'false'
+        if: steps.check_tag.outputs.exists == 'false' && steps.updater.outputs.enabled == 'true'
         run: |
           BUNDLE_DIR="target/universal-apple-darwin/release/bundle/macos"
           TARBALL=$(ls "$BUNDLE_DIR"/*.app.tar.gz)
@@ -181,12 +206,14 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: "v${{ steps.version.outputs.version }}"
-          name: "Yellowmoon v${{ steps.version.outputs.version }}"
+          target_commitish: ${{ github.sha }}
+          name: "Yellowmoon ${{ steps.version.outputs.version }}"
+          body_path: ${{ runner.temp }}/notes.md
+          # The updater artefacts exist only with the signing setup; a pattern that matches nothing is skipped.
           files: |
             target/universal-apple-darwin/release/bundle/dmg/*.dmg
             target/universal-apple-darwin/release/bundle/macos/*.app.tar.gz
             latest.json
-          generate_release_notes: true
 
       - name: Update Homebrew cask
         if: steps.check_tag.outputs.exists == 'false'

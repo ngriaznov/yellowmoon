@@ -1,15 +1,11 @@
-# Build: a test build of the macOS app to download and open on your own Mac. Not a release: no version tag,
-# no updater artefacts (the updater signing key is M0-03, docs/release-signing.md). Yellowmoon ships without an
-# Apple Developer ID (docs/16): the bundle is signed ad hoc, so macOS asks once before it opens it (README, "Allow
-# Yellowmoon to open").
-#
-# Runs on every push to main and by hand: Actions > Build > Run workflow (choose universal or Apple silicon only).
-# The disk image is the run's artefact "Yellowmoon-<commit>-<architecture>", kept for 14 days.
+# Build: a test build of the macOS app, by hand only (Actions > Build > Run workflow; universal or Apple silicon
+# only). Downloads for people are GitHub Releases (release.yml, every version bump on main); this is for trying a
+# branch or a commit before a release. The disk image is the run's artefact "Yellowmoon-<commit>-<architecture>",
+# kept for 14 days. No updater artefacts; signed ad hoc like a release (no Apple Developer ID, docs/16), so macOS
+# asks once before it opens it (README, "Allow Yellowmoon to open").
 name: Build
 
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
     inputs:
       target:

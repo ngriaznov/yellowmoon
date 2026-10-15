@@ -9,7 +9,11 @@ moves the entries below from Unreleased into a dated section for that version.
 
 ## [Unreleased]
 
-Nothing has been released yet. These entries cover what is in the repository so far: the M0 skeleton, the `ym` command-line tool and the raw-algorithms wave (`docs/algorithms/`) with its owner decisions (`docs/16`).
+Nothing yet.
+
+## [0.1.0] - 2026-10-15
+
+The first test release, a universal disk image for Apple silicon and Intel Macs on GitHub Releases. It is not signed with an Apple Developer ID: the README says how to allow it to open the first time. It does not update itself yet (the updater's signing key is still to be made, `docs/release-signing.md`), so a newer 0.1.x is downloaded by hand from Releases. These entries cover everything so far: the M0 skeleton, the `ym` command-line tool, the raw-algorithms wave (`docs/algorithms/`) and the GPU waves, with the owner's decisions (`docs/16`).
 
 ### Changed
 
@@ -28,6 +32,7 @@ Nothing has been released yet. These entries cover what is in the repository so 
 
 ### Added
 
+- On a Mac, everything after decoding runs on the graphics card (Metal through wgpu), in the app and in `ym`, exports included: the raw chain, the lens corrections, the fit view, the colour chain, output sharpening, the resize and the export encoding (`docs/gpu-plan.md`). The CPU stays the reference and the fallback: a graphics-card error makes the whole photo again on the CPU, with a note, and `ym render --cpu` asks for the CPU. Exports from the app and from `ym` are byte-identical on the same machine. A 50 MP export holds no full picture in memory any more (215 MiB of host memory at its peak, was 791 MiB).
 - Output sharpening: the develop setting `output_sharpening` (0 to 200 %, default 100), the Output slider in Detail › Sharpening and `ym render --output-sharpening`. A linear-light luma unsharp mask with halo control, applied to every picture at the size it is shown or written, in JPEG, TIFF and PNG exports after the resize, never in a DNG; 0 switches it off. It makes a quality 92 JPEG 0.4 to 4.3 % larger (three real files, full size and 2048 px; RA-08).
 - The Tone card on the Look tab: Temperature, Contrast and Saturation, the same settings as on the Colour and Light tabs.
 - Diffraction deconvolution for capture sharpening (R8), an Airy-pattern PSF from the f-number and the pixel pitch, with sensor widths in the camera registry for 27 of 28 bodies. It is not the default and has no setting; Richardson–Lucy stays until the owner decides (RA-07).

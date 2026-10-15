@@ -32,7 +32,10 @@ fn version_reports_the_workspace_and_pipeline_versions() {
     ym().arg("--version")
         .assert()
         .success()
-        .stdout(predicate::str::starts_with("ym 0.0.1 (pipeline 0.3.0, "));
+        .stdout(predicate::str::starts_with(format!(
+            "ym {} (pipeline 0.3.0, ",
+            env!("CARGO_PKG_VERSION")
+        )));
 }
 
 #[test]
@@ -117,10 +120,11 @@ fn doctor_says_what_it_includes_and_lists_the_parts() {
     let sb = Sandbox::new();
     let out = sb.ym().arg("doctor").assert().success();
     let text = String::from_utf8_lossy(&out.get_output().stdout).into_owned();
+    let version_line = format!("ym {} (pipeline 0.3.0, ", env!("CARGO_PKG_VERSION"));
     for needle in [
         "does not include photos, file names, locations",
         "Version",
-        "ym 0.0.1 (pipeline 0.3.0, ",
+        version_line.as_str(),
         "GPU",
         "Render path",
         "Model weights",
