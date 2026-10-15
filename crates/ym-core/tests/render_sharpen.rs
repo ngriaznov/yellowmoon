@@ -335,6 +335,12 @@ fn a_view_at_100_percent_is_the_sharpened_picture_the_export_writes_with(r: &Ren
         worst <= 1.0 + slack,
         "the view and the export differ by {worst} codes (the dither moves a value by less than one)"
     );
+    // A shift of the whole picture could hide under the slack; rank-count flips touch a handful
+    // of samples (measured: 0 on the CPU, 2 on lavapipe, 5 on Metal).
+    assert!(
+        over_one <= 50,
+        "{over_one} samples differ from the export by more than one code"
+    );
     assert!(
         moved > 100,
         "the stage did change the picture ({moved} samples)"
@@ -353,11 +359,16 @@ fn a_view_at_100_percent_is_the_sharpened_picture_the_export_writes() {
 fn a_view_at_100_percent_is_the_sharpened_picture_the_export_writes_on_the_device() {
     let Some(gpu) = gpu() else { return };
     let dev = device(&gpu);
-    // First measured on lavapipe: 1.1011 codes from the exact value at one sample of 1.44 million
-    // (the stage's f32 accumulation at a hard edge of the patchwork, `docs/05`); the bound is twice
-    // the excess over the CPU's one code. The same bound on every adapter; the Apple runners print
-    // their numbers (`[G-05]`), and a Metal column comes only with them.
-    a_view_at_100_percent_is_the_sharpened_picture_the_export_writes_with(&dev, 0.2);
+    // The bound is twice the excess over the CPU's one code, per adapter kind. Software (lavapipe):
+    // first measured 1.1011 codes at one sample of 1.44 million (0.3.0: 1.0967, two samples), so
+    // 0.2. Hardware (Metal, 498a078, macos-14 and macos-15 alike): 1.2039 codes at five samples, so
+    // 0.41. The excess is not the stage (device against CPU on the same input: 3e-7 linear) but its
+    // halo limiter's rank counts, which flip on last-bit differences between the device's f32
+    // colour chain and the CPU's f64 one: one ulp of input noise in half the samples moves the CPU
+    // stage against itself by 0.197 codes. It lands over one code only where the dither is near
+    // its extreme.
+    let slack = if gpu.info().is_software { 0.2 } else { 0.41 };
+    a_view_at_100_percent_is_the_sharpened_picture_the_export_writes_with(&dev, slack);
     // And the device's frame is the CPU's frame within the codes of the colour pass's parity test
     // (two; measured: one).
     let d = developed(800, 600);
