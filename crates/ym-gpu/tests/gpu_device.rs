@@ -923,10 +923,7 @@ fn warm_up_sets_compile_their_real_kernels_and_a_placeholder_compiles_on_request
         assert_eq!(compiled(ctx), real(KernelSet::View));
         ctx.warm_up_set(KernelSet::Tail)?;
         assert_eq!(real(KernelSet::Tail), 1, "the tail set is the resize");
-        assert_eq!(
-            compiled(ctx),
-            real(KernelSet::View) + real(KernelSet::Tail)
-        );
+        assert_eq!(compiled(ctx), real(KernelSet::View) + real(KernelSet::Tail));
         ctx.warm_up_set(KernelSet::Raw)?;
         assert_eq!(
             compiled(ctx),

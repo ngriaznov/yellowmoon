@@ -1618,9 +1618,7 @@ fn samples_for_external_tools() {
 // ---------------------------------------------------------------------------------------------
 
 mod speed {
-    use ym_core::export::{
-        ENCODE_S_PER_MP_PRIOR, ExportSpeed, RENDER_S_PER_MP_PRIOR,
-    };
+    use ym_core::export::{ENCODE_S_PER_MP_PRIOR, ExportSpeed, RENDER_S_PER_MP_PRIOR};
     use ym_core::pipeline::ComputeDevice;
     use ym_export::FormatKind;
 
@@ -1634,11 +1632,20 @@ mod speed {
         assert!(!s.is_measured());
         for device in [ComputeDevice::Cpu, ComputeDevice::Gpu] {
             s.use_device(device);
-            assert!(close(s.render_s_per_mp(), RENDER_S_PER_MP_PRIOR), "{device:?}");
-            assert!(close(s.encode_s_per_mp(FormatKind::Jpeg), ENCODE_S_PER_MP_PRIOR[0]));
+            assert!(
+                close(s.render_s_per_mp(), RENDER_S_PER_MP_PRIOR),
+                "{device:?}"
+            );
+            assert!(close(
+                s.encode_s_per_mp(FormatKind::Jpeg),
+                ENCODE_S_PER_MP_PRIOR[0]
+            ));
             // 24 MP rendered and written at full size.
             let expect = 24.0 * RENDER_S_PER_MP_PRIOR + 24.0 * ENCODE_S_PER_MP_PRIOR[0];
-            assert!(close(s.seconds_for(24.0, 24.0, FormatKind::Jpeg), expect), "{device:?}");
+            assert!(
+                close(s.seconds_for(24.0, 24.0, FormatKind::Jpeg), expect),
+                "{device:?}"
+            );
         }
     }
 
@@ -1654,10 +1661,16 @@ mod speed {
             "the CPU's numbers are untouched by the card's photo"
         );
         s.use_device(ComputeDevice::Gpu);
-        assert!(close(s.render_s_per_mp(), 0.5), "the first sample replaces the prior");
+        assert!(
+            close(s.render_s_per_mp(), 0.5),
+            "the first sample replaces the prior"
+        );
         // The next photo fell back to the CPU: 10 MP in 20 s teaches the CPU path only.
         s.record_render_on(ComputeDevice::Cpu, 10.0, 20.0);
-        assert!(close(s.render_s_per_mp(), 0.5), "the card keeps its own numbers");
+        assert!(
+            close(s.render_s_per_mp(), 0.5),
+            "the card keeps its own numbers"
+        );
         s.use_device(ComputeDevice::Cpu);
         assert!(close(s.render_s_per_mp(), 2.0));
         // Later samples are a running mean that weighs the newest half.

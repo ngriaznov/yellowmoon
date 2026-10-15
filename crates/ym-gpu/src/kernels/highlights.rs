@@ -80,9 +80,9 @@ impl Offsets {
             0,
             0,
         ];
-        let buf = ctx
-            .pool()
-            .acquire("highlight offsets", (OFFSET_WORDS * 4) as u64, IMAGE_USAGE)?;
+        let buf =
+            ctx.pool()
+                .acquire("highlight offsets", (OFFSET_WORDS * 4) as u64, IMAGE_USAGE)?;
         upload_bytes(ctx, &buf, 0, bytemuck::cast_slice(&words))?;
         Ok(Offsets {
             buf: passes.keep(buf),
@@ -167,12 +167,7 @@ pub fn max_binding_bytes(rect: Rect) -> u64 {
     6 * (rect.w / 2) as u64 * (rect.h / 2) as u64 * 4
 }
 
-fn check_inputs(
-    mosaic: &GpuImage,
-    mask: &ClipBits,
-    cfa: Cfa,
-    what: &str,
-) -> Result<HlU, GpuError> {
+fn check_inputs(mosaic: &GpuImage, mask: &ClipBits, cfa: Cfa, what: &str) -> Result<HlU, GpuError> {
     if mosaic.planes != 1 {
         return Err(GpuError::InvalidInput(format!(
             "{what}: the input has {} planes, not one",
@@ -246,11 +241,7 @@ pub fn encode_superpixels(
             (3, planes.binding()),
             (4, flags.binding()),
         ],
-        (
-            (sw as u32).div_ceil(GROUP),
-            (sh as u32).div_ceil(GROUP),
-            1,
-        ),
+        ((sw as u32).div_ceil(GROUP), (sh as u32).div_ceil(GROUP), 1),
     )?;
     Ok(Superpixels {
         planes,
@@ -530,6 +521,7 @@ pub fn reduce_offsets(
 pub(super) fn body(id: KernelId) -> String {
     let mut s = String::new();
     s.push_str(include_str!("../shaders/front_opaque.wgsl"));
+    s.push_str(include_str!("../shaders/front_exact.wgsl"));
     s.push_str(include_str!("../shaders/highlights.wgsl"));
     let main = match id {
         KernelId::HighlightsSuper => format!(

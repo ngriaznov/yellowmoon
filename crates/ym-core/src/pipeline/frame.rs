@@ -2142,7 +2142,14 @@ impl Renderer {
                 }
             }
         };
-        match self.render_full_on(src, request, cancel, yield_to_foreground, Some(&mono), false)? {
+        match self.render_full_on(
+            src,
+            request,
+            cancel,
+            yield_to_foreground,
+            Some(&mono),
+            false,
+        )? {
             Attempt::Done(image) => Ok(image),
             Attempt::DeviceFailed(reason) => {
                 let attempt = self.render_full_on(
@@ -2158,7 +2165,9 @@ impl Renderer {
                 };
                 image.report.notes.insert(
                     0,
-                    format!("The graphics card could not render this photo, so the CPU did: {reason}."),
+                    format!(
+                        "The graphics card could not render this photo, so the CPU did: {reason}."
+                    ),
                 );
                 Ok(image)
             }

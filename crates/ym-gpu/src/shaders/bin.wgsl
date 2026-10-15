@@ -82,7 +82,7 @@ fn bin_main(gid: vec3<u32>) {
         g = vig_gain((2 * ox + 1) * k - w, (2 * oy + 1) * k - h);
     }
     let o = u32(oy) * pu.out.z + gid.x;
-    var gv = gsum / pu.f.x;
+    var gv = div_exact(gsum, pu.f.x);
     if (pu.flags.x != 0u) {
         gv = opaque(gv * g);
     }
@@ -133,6 +133,6 @@ fn bin_sigma_main(gid: vec3<u32>) {
     if (pu.flags.x != 0u) {
         g = vig_gain((2 * ox + 1) * i32(pu.dims.w) - i32(pu.frame.x), (2 * oy + 1) * i32(pu.dims.w) - i32(pu.frame.y));
     }
-    let root = sqrt(s2 / n);
+    let root = sqrt(div_exact(s2, n));
     dst[u32(oy) * pu.out.z + gid.x] = opaque(opaque(root * pu.f.y) * g);
 }

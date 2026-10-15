@@ -16,10 +16,12 @@
 //   hl_fold           one workgroup: the partials folded in index order with compensated summation,
 //                     the offsets (and the counts) written.
 //
-// The CPU's `Superpixels::build` keeps the cube root with `f32::cbrt`; the device forms it with a
-// Newton step on `exp2(log2 / 3)` (`cbrt_f`), one to two ulp from the CPU's libm. The 3 x 3 sums run in
-// the CPU's order (rows, columns, channels). The estimate's products pass through `opaque` so that a
-// fast-math compiler cannot fuse the cube with the offset.
+// The CPU's `Superpixels::build` keeps the cube root with `f32::cbrt`; the device forms it correctly
+// rounded (`cbrt_f`: a start from `exp2(log2 / 3)` and one Newton correction with the residual formed
+// exactly), one ulp from the CPU's libm where that is not correctly rounded. The 3 x 3 sums run in the
+// CPU's order (rows, columns, channels), each add and product behind `opaque`, and the mean is a
+// correctly rounded quotient (`div_exact`), so a fast-math compiler can neither fuse the cube with the
+// offset nor re-associate the sums nor approximate the division.
 //
 // Bindings: 0 uniform, 1 the mosaic of the input rectangle, 2 the clip bits (`prep.wgsl`), 3 the
 // superpixel planes (6 planes of sw * sh: cube roots, then values), 4 the superpixel flags, 5 the
@@ -49,24 +51,6 @@ fn clipped_bit(x: u32, y: u32) -> u32 {
 
 fn plane_of(x: u32, y: u32) -> u32 {
     return pu.cfa[(y & 1u) * 2u + (x & 1u)];
-}
-
-// Dekker's split of an f32 into two halves of 12 bits (exact; every operation hidden from fast-math).
-fn dekker_split(a: f32) -> vec2<f32> {
-    let c = opaque(4097.0 * a);
-    let hi = opaque(c - opaque(c - a));
-    return vec2<f32>(hi, opaque(a - hi));
-}
-
-// a * b as a rounded product and its exact error (Dekker, no fused multiply-add).
-fn two_prod(a: f32, b: f32) -> vec2<f32> {
-    let p = opaque(a * b);
-    let sa = dekker_split(a);
-    let sb = dekker_split(b);
-    let t1 = opaque(opaque(sa.x * sb.x) - p);
-    let t2 = opaque(t1 + opaque(sa.x * sb.y));
-    let t3 = opaque(t2 + opaque(sa.y * sb.x));
-    return vec2<f32>(p, opaque(t3 + opaque(sa.y * sb.y)));
 }
 
 // The cube root of x, real for negative x, correctly rounded but for a tie within 1e-14: an
@@ -110,7 +94,8 @@ fn hl_super(gid: vec3<u32>) {
     }
     let idx = gid.y * pu.dst.y + gid.x;
     for (var c = 0u; c < 3u; c = c + 1u) {
-        let v = sum[c] / cnt[c];
+        // A channel has one or two photosites in a quad: the reciprocal is exact.
+        let v = opaque(sum[c] * select(1.0, 0.5, cnt[c] > 1.5));
         spc[c * n + idx] = cbrt_f(v);
         spc[(3u + c) * n + idx] = v;
     }
@@ -135,7 +120,7 @@ fn opposed(i: u32, j: u32, c: u32) -> vec2<f32> {
             let fl = spf[idx];
             for (var k = 0u; k < 3u; k = k + 1u) {
                 if (k != c && ((fl >> k) & 1u) == 0u) {
-                    sum = sum + spc[k * n + idx];
+                    sum = opaque(sum + spc[k * n + idx]);
                     cnt = cnt + 1u;
                 }
             }
@@ -144,7 +129,7 @@ fn opposed(i: u32, j: u32, c: u32) -> vec2<f32> {
     if (cnt == 0u) {
         return vec2<f32>(0.0, 0.0);
     }
-    let mean = sum / f32(cnt);
+    let mean = div_exact(sum, f32(cnt));
     return vec2<f32>(opaque(opaque(mean * mean) * mean), 1.0);
 }
 
@@ -333,7 +318,7 @@ fn hl_fold(t: u32) {
         for (var ch = 0u; ch < 3u; ch = ch + 1u) {
             var mean = 0.0;
             if (w_n[0][ch] > 0u) {
-                mean = opaque(w_s[0][ch] + w_c[0][ch]) / f32(w_n[0][ch]);
+                mean = div_exact(opaque(w_s[0][ch] + w_c[0][ch]), f32(w_n[0][ch]));
             }
             offs[ch] = bitcast<u32>(mean);
             offs[4u + ch] = w_n[0][ch];

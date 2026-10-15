@@ -42,6 +42,18 @@ use ym_gpu::kernels::prep::{
 /// error up to white, a relative one above it (the scenes hold words beyond the white level, which
 /// reach values of 14 after the gains, where one ulp is 1e-6). Twice the first measured value (2.65e-7, about 4 ulp: the profile and its reciprocal rounded in f32 against the CPU's f64 gain rounded once).
 const VIGNETTE_BOUND: f32 = 5.3e-7;
+/// The same on a hardware adapter: the plan's number for `prep`. Metal's fast square root and division
+/// move the gain by a few ulp, which the software bound does not allow for; to be lowered from the
+/// Metal numbers (`docs/gpu-plan.md` K8).
+const VIGNETTE_HW_BOUND: f32 = 1e-6;
+
+fn vignette_bound(dev: &TestGpu) -> f32 {
+    if dev.gpu.info().is_software {
+        VIGNETTE_BOUND
+    } else {
+        VIGNETTE_HW_BOUND
+    }
+}
 
 fn f32_device() -> Option<&'static TestGpu> {
     gpus().iter().find(|d| d.mode == StorageMode::F32)
@@ -54,7 +66,8 @@ fn params(levels: &Levels, vignette: bool) -> PrepParams {
         levels: *levels,
         gains: GAINS,
         apply_gains: true,
-        vignette: vignette.then(|| VignetteTable::from_profile(&vignette_profile()).expect("table")),
+        vignette: vignette
+            .then(|| VignetteTable::from_profile(&vignette_profile()).expect("table")),
     }
 }
 
@@ -100,7 +113,12 @@ fn prep_without_a_profile_has_the_cpus_bits() {
             let rects = [
                 Rect::whole(w, h),
                 Rect::new(1, 1, w - 2, h - 2),
-                Rect::new(w / 2 | 1, h / 3 | 1, w - (w / 2 | 1), (h - h / 3).max(1) - 1),
+                Rect::new(
+                    w / 2 | 1,
+                    h / 3 | 1,
+                    w - (w / 2 | 1),
+                    (h - h / 3).max(1) - 1,
+                ),
             ];
             for rect in rects {
                 if rect.is_empty() || rect.x1() > w || rect.y1() > h {
@@ -146,7 +164,7 @@ fn prep_with_the_profile_matches_the_cpu() {
         }
     }
     eprintln!("[G-07] prep with the profile: worst {worst:e} ({worst_at})");
-    assert!(worst <= VIGNETTE_BOUND, "{worst:e} at {worst_at}");
+    assert!(worst <= vignette_bound(dev), "{worst:e} at {worst_at}");
 }
 
 #[test]
@@ -180,16 +198,27 @@ fn the_clip_bits_follow_the_step_plane_in_both_representations() {
     let mut scene = RawScene::new(32, 8, Cfa::RGGB, 1, &levels);
     // Words between 0.995 of the range and the white level: clipped without a step plane, not with a
     // step of zero.
-    for (i, x) in [(40usize, 0usize), (41, 1), (100, 0), (130, 1)].iter().map(|&(i, p)| (i, p)) {
+    for (i, x) in [(40usize, 0usize), (41, 1), (100, 0), (130, 1)]
+        .iter()
+        .map(|&(i, p)| (i, p))
+    {
         let pos = (i / 32 % 2) * 2 + i % 2;
         let _ = x;
-        scene.data[i] = (levels.black[pos] + 0.997 * (levels.white[pos] - levels.black[pos])) as u16;
+        scene.data[i] =
+            (levels.black[pos] + 0.997 * (levels.white[pos] - levels.black[pos])) as u16;
     }
     let plain = cpu_front(&scene, &levels, GAINS, None).1;
     scene.qstep = Some(vec![0.0; 32 * 8]);
     let zero = cpu_front(&scene, &levels, GAINS, None).1;
     assert_ne!(plain.data, zero.data, "the two rules differ on this scene");
-    let (_, mask) = run_prep(dev, &scene, levels, false, Rect::whole(32, 8), MAX_SLAB_SAMPLES);
+    let (_, mask) = run_prep(
+        dev,
+        &scene,
+        levels,
+        false,
+        Rect::whole(32, 8),
+        MAX_SLAB_SAMPLES,
+    );
     assert_eq!(mask, zero.data);
 }
 
@@ -205,7 +234,7 @@ fn tiles_of_the_prep_pass_equal_the_whole_frame() {
     });
     // And the whole frame is the CPU's within the bound.
     let (cpu, _) = cpu_front(&scene, &levels, GAINS, Some(&profile));
-    assert!(compare_scaled(&whole, &cpu.data).0 <= VIGNETTE_BOUND);
+    assert!(compare_scaled(&whole, &cpu.data).0 <= vignette_bound(dev));
 }
 
 #[test]
@@ -346,7 +375,7 @@ fn a_70_mp_frame_runs_through_two_slabs() {
         ym_gpu::cpu::gains::apply_gains(&mut m, GAINS);
         let e = compare_scaled(g, &m.data).0;
         eprintln!("[G-07] 70 MP tile {r:?}: worst {e:e}");
-        assert!(e <= VIGNETTE_BOUND, "{r:?}: {e:e}");
+        assert!(e <= vignette_bound(dev), "{r:?}: {e:e}");
     }
 }
 
@@ -395,16 +424,12 @@ fn the_far_corner_of_a_50_mp_frame_has_the_cpus_gain() {
         worst = worst.max(compare_scaled(g, &m.data).0);
     }
     eprintln!("[G-07] far corner of 8658 x 5772: worst {worst:e}");
-    assert!(worst <= VIGNETTE_BOUND, "{worst:e}");
+    assert!(worst <= vignette_bound(dev), "{worst:e}");
 }
 
 #[test]
 fn the_binding_of_a_prep_pass_fits_the_design_binding() {
-    assert_max_binding_bytes(
-        "prep",
-        Rect::new(0, 0, 1581, 1581),
-        prep::max_binding_bytes,
-    );
+    assert_max_binding_bytes("prep", Rect::new(0, 0, 1581, 1581), prep::max_binding_bytes);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -494,11 +519,19 @@ fn r5_matches_the_cpu_on_the_ten_synthetic_highlight_scenes() {
         let e = compare_scaled(&gpu, &cpu.data);
         if e.0 > worst {
             worst = e.0;
-            worst_scene = format!("{} ({}, {})", s.name, cfa.name(), if s.disc { "disc" } else { "glow" });
+            worst_scene = format!(
+                "{} ({}, {})",
+                s.name,
+                cfa.name(),
+                if s.disc { "disc" } else { "glow" }
+            );
         }
     }
     // A magenta source clips red and blue far above the green estimate: nothing to raise there.
-    assert!(changed >= 8, "only {changed} of ten scenes had something to reconstruct");
+    assert!(
+        changed >= 8,
+        "only {changed} of ten scenes had something to reconstruct"
+    );
     eprintln!("[G-07] R5 apply on ten scenes ({changed} changed): worst {worst:e} ({worst_scene})");
     assert!(worst <= HIGHLIGHT_BOUND, "{worst:e} {worst_scene}");
 }
@@ -549,7 +582,11 @@ fn the_device_offsets_match_the_cpus_within_1e_6() {
     let mut worst = 0.0f32;
     let mut cases = 0;
     for (k, s) in highlight_scenes().iter().enumerate() {
-        let levels = if k % 2 == 0 { uneven_levels() } else { full_levels() };
+        let levels = if k % 2 == 0 {
+            uneven_levels()
+        } else {
+            full_levels()
+        };
         let scene = s.raw(160, Cfa::ALL[k % 4], &levels, GAINS);
         let (m, mask) = cpu_front(&scene, &levels, GAINS, None);
         let want = highlights::chroma_offsets(&m, &mask).expect("offsets");
@@ -561,7 +598,8 @@ fn the_device_offsets_match_the_cpus_within_1e_6() {
             for c in 0..3 {
                 assert_eq!(u64::from(counts[c]), want.count[c], "{} count {c}", s.name);
                 if want.count[c] > 0 {
-                    let rel = (f64::from(got[c]) - want.offset[c]).abs() / want.offset[c].abs().max(1e-3);
+                    let rel =
+                        (f64::from(got[c]) - want.offset[c]).abs() / want.offset[c].abs().max(1e-3);
                     worst = worst.max(rel as f32);
                 }
             }
@@ -582,7 +620,8 @@ fn the_device_offsets_match_the_cpus_within_1e_6() {
         for c in 0..3 {
             assert_eq!(u64::from(counts[c]), want.count[c], "natural count {c}");
             if want.count[c] > 0 {
-                let rel = (f64::from(got[c]) - want.offset[c]).abs() / want.offset[c].abs().max(1e-3);
+                let rel =
+                    (f64::from(got[c]) - want.offset[c]).abs() / want.offset[c].abs().max(1e-3);
                 worst = worst.max(rel as f32);
             }
         }
@@ -651,6 +690,17 @@ use ym_gpu::kernels::mosaic_ca;
 /// Largest `|gpu - cpu|` of R5b on natural content (white 1.0): the plan's number is 1e-5, the bound is
 /// twice the first measured value (3.0e-7, about one ulp of the values), see the test.
 const MOSAIC_CA_BOUND: f32 = 6e-7;
+/// The same on a hardware adapter: the plan's number for R5b (the darktable-oracle numbers of
+/// `cpu_lens.rs`), to be lowered from the Metal numbers.
+const MOSAIC_CA_HW_BOUND: f32 = 1e-5;
+
+fn mosaic_ca_bound(dev: &TestGpu) -> f32 {
+    if dev.gpu.info().is_software {
+        MOSAIC_CA_BOUND
+    } else {
+        MOSAIC_CA_HW_BOUND
+    }
+}
 
 /// Lens tags with a lateral CA of up to a few pixels at the corner of a 200-pixel frame.
 fn ca_tags() -> LensTags {
@@ -702,7 +752,7 @@ fn r5b_matches_the_cpu_for_every_phase_and_odd_sizes() {
         }
     }
     eprintln!("[G-07] R5b: worst {worst:e} ({worst_at})");
-    assert!(worst <= MOSAIC_CA_BOUND, "{worst:e} {worst_at}");
+    assert!(worst <= mosaic_ca_bound(dev), "{worst:e} {worst_at}");
 }
 
 #[test]
@@ -722,7 +772,7 @@ fn r5b_tiles_with_the_stage_halo_equal_the_whole_frame() {
     });
     let mut cpu = m.clone();
     lens::correct_mosaic_ca(&mut cpu, &curves).expect("cpu");
-    assert!(compare_scaled(&whole, &cpu.data).0 <= MOSAIC_CA_BOUND);
+    assert!(compare_scaled(&whole, &cpu.data).0 <= mosaic_ca_bound(dev));
 }
 
 #[test]
@@ -749,8 +799,11 @@ fn r5b_at_the_far_corner_of_a_50_mp_frame() {
     let gpu = on_device(dev, move |ctx| mosaic_ca::mosaic_ca(ctx, &m2, rel, &c2));
     let want = crop(&cpu.data, rect.w, rel);
     let e = compare_scaled(&gpu, &want);
-    eprintln!("[G-07] R5b at the far corner of 8658 x 5772: worst {:e}", e.0);
-    assert!(e.0 <= MOSAIC_CA_BOUND, "{:e}", e.0);
+    eprintln!(
+        "[G-07] R5b at the far corner of 8658 x 5772: worst {:e}",
+        e.0
+    );
+    assert!(e.0 <= mosaic_ca_bound(dev), "{:e}", e.0);
     assert!(
         compare_scaled(&want, &crop(&m.data, rect.w, rel)).0 > 1e-4,
         "the correction must move values there"

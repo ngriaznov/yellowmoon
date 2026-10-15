@@ -231,7 +231,10 @@ impl<'a> ImageBands<'a> {
     }
 
     fn check(&self, y0: usize, rows: usize) -> Result<(), ExportError> {
-        if y0.checked_add(rows).is_none_or(|end| end > self.image.height as usize) {
+        if y0
+            .checked_add(rows)
+            .is_none_or(|end| end > self.image.height as usize)
+        {
             return Err(ExportError::invalid(format!(
                 "rows {y0} to {} are outside the {} rows of the picture",
                 y0.saturating_add(rows),

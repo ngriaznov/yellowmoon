@@ -237,7 +237,11 @@ pub fn cpu_codes(
         }
         eight = Some(v);
     }
-    CpuCodes { eight, sixteen, out }
+    CpuCodes {
+        eight,
+        sixteen,
+        out,
+    }
 }
 
 /// How two code arrays differ.

@@ -11,6 +11,12 @@
 //!   bit the CPU render, with the note; a strict policy (`Require`) fails the photo instead; a
 //!   cancelled render and a navigation leave the pool at its baseline.
 //!
+//! * G-07, the raw front: `GpuStages::ALL` includes [`GpuStages::RAW_FRONT`], so the same tiles run
+//!   R1 to R9 (`R1..R9`) from the photo's raw words, uploaded once per photo; `gpu_reduced.rs` has the
+//!   tests of the front itself and of the fit-view group. The tests below that name a range say
+//!   `R1..R9` for that reason; the R6 to R8 route behind the CPU's front is what `RAW_CHAIN` alone
+//!   runs.
+//!
 //! * G-05, the view stages: with the members of [`GpuStages`] for the sampler, the colour chain,
 //!   output sharpening and C13, a viewport frame, a thumbnail and a look tile are one device job each
 //!   (sampler, C1 to C12, stage, C13, one readback), a move of the Output slider is one small job on
@@ -275,7 +281,7 @@ fn a_full_render_and_a_100_percent_frame_on_the_device_match_the_cpu() {
     assert!(a.report.ranges.is_empty(), "no device, no range");
     assert_eq!(
         device_of(&b.report),
-        vec![("R6..R8".to_owned(), ComputeDevice::Gpu)],
+        vec![("R1..R9".to_owned(), ComputeDevice::Gpu)],
         "{:?}",
         b.report.notes
     );
@@ -318,7 +324,7 @@ fn a_full_render_and_a_100_percent_frame_on_the_device_match_the_cpu() {
     assert_eq!(fa.report.scale, 1, "full-resolution tiles");
     assert_eq!(
         device_of(&fb.report),
-        vec![("R6..R8".to_owned(), ComputeDevice::Gpu)]
+        vec![("R1..R9".to_owned(), ComputeDevice::Gpu)]
     );
     assert!(fc.report.ranges.is_empty());
     assert_eq!(fb.report.runs.tiles, fa.report.runs.tiles);
@@ -362,7 +368,20 @@ fn the_renders_of_a_dng_have_no_capture_sharpening_on_the_device_and_match_the_c
             radius_px: 1.0,
         });
     });
-    let (cpu, dev) = (on_cpu(), on_device(&gpu));
+    // Every stage but the export tail: with `GpuStages::EXPORT_TAIL` the colour stage of the DNG's
+    // two renders runs on the device too (G-08, `tests/gpu_export.rs` compares it with the CPU's),
+    // while the display render of a host frame colours on the CPU, so the two would differ by the
+    // colour stage's f32 rounding and not be equal bit for bit. This test is about R8.
+    let no_tail = GpuStages::SIGNED_OFF.union(GpuStages::RAW_FRONT);
+    let (cpu, dev) = (
+        on_cpu(),
+        renderer_with(
+            Some(Arc::clone(&gpu)),
+            no_tail,
+            false,
+            Method::AdaptiveRatio,
+        ),
+    );
     let full = |r: &Renderer, s: &PhotoSource, target: FullTarget| {
         r.render_full(s, &FullRequest { target }, &CancelToken::new())
             .expect("a render")
@@ -374,7 +393,7 @@ fn the_renders_of_a_dng_have_no_capture_sharpening_on_the_device_and_match_the_c
     let dev_display_off = full(&dev, &off, display);
     assert_eq!(
         device_of(&dev_display_on.report),
-        vec![("R6..R8".to_owned(), ComputeDevice::Gpu)]
+        vec![("R1..R9".to_owned(), ComputeDevice::Gpu)]
     );
     let (effect, _, _) = difference(&dev_display_on.rgb, &dev_display_off.rgb);
     assert!(effect > 1e-3, "R8 moves the picture by {effect}");
@@ -383,7 +402,7 @@ fn the_renders_of_a_dng_have_no_capture_sharpening_on_the_device_and_match_the_c
     let dev_preview = full(&dev, &src, FullTarget::DngPreview);
     assert_eq!(
         device_of(&dev_preview.report),
-        vec![("R6..R8".to_owned(), ComputeDevice::Gpu)],
+        vec![("R1..R9".to_owned(), ComputeDevice::Gpu)],
         "{:?}",
         dev_preview.report.notes
     );
@@ -444,7 +463,7 @@ fn the_device_runs_the_raw_chain_only_when_the_stage_and_the_method_allow_it() {
     assert_eq!(a.rgb, b.rgb);
     assert_eq!(
         device_of(&a.report),
-        vec![("R6..R8".to_owned(), ComputeDevice::Cpu)]
+        vec![("R1..R9".to_owned(), ComputeDevice::Cpu)]
     );
     assert!(
         a.report
@@ -462,7 +481,7 @@ fn the_device_runs_the_raw_chain_only_when_the_stage_and_the_method_allow_it() {
     let a = render_full(&late, &src).expect("render");
     assert_eq!(
         device_of(&a.report),
-        vec![("R6..R8".to_owned(), ComputeDevice::Gpu)]
+        vec![("R1..R9".to_owned(), ComputeDevice::Gpu)]
     );
     late.set_gpu(None, GpuStages::NONE);
     let b = render_full(&late, &src).expect("render");
@@ -495,7 +514,7 @@ fn small_and_odd_photos_render_on_the_device_like_on_the_cpu() {
         assert_eq!((a.width, a.height), (b.width, b.height), "{w}x{h}");
         assert_eq!(
             device_of(&b.report),
-            vec![("R6..R8".to_owned(), ComputeDevice::Gpu)],
+            vec![("R1..R9".to_owned(), ComputeDevice::Gpu)],
             "{w}x{h}: {:?}",
             b.report.notes
         );
@@ -1746,7 +1765,7 @@ mod faults {
             assert_eq!(img.rgb, cpu.rgb, "{name}: the CPU render, bit for bit");
             assert_eq!(
                 device_of(&img.report),
-                vec![("R6..R8".to_owned(), ComputeDevice::Cpu)],
+                vec![("R1..R9".to_owned(), ComputeDevice::Cpu)],
                 "{name}"
             );
             assert!(
@@ -1804,7 +1823,7 @@ mod faults {
         assert_eq!(gpu.counters().submissions, jobs);
         assert_eq!(
             device_of(&second.report),
-            vec![("R6..R8".to_owned(), ComputeDevice::Cpu)]
+            vec![("R1..R9".to_owned(), ComputeDevice::Cpu)]
         );
     }
 
@@ -1901,7 +1920,7 @@ mod faults {
             );
             assert_eq!(
                 device_of(&img.report),
-                vec![("R6..R8".to_owned(), ComputeDevice::Cpu)],
+                vec![("R1..R9".to_owned(), ComputeDevice::Cpu)],
                 "{how:?}"
             );
             assert!(
@@ -1962,7 +1981,7 @@ mod faults {
         let again = render_full(&dev, &src).expect("render");
         assert_eq!(
             device_of(&again.report),
-            vec![("R6..R8".to_owned(), ComputeDevice::Gpu)]
+            vec![("R1..R9".to_owned(), ComputeDevice::Gpu)]
         );
     }
 
@@ -2003,7 +2022,7 @@ mod faults {
         assert_eq!(f.rgba, baseline.rgba);
         assert_eq!(
             device_of(&f.report),
-            vec![("R6..R8".to_owned(), ComputeDevice::Cpu)]
+            vec![("R1..R9".to_owned(), ComputeDevice::Cpu)]
         );
     }
 

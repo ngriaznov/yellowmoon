@@ -217,9 +217,9 @@ impl DeviceRaw {
                         .iter()
                         .map(|v| half::f16::from_f32(*v).to_bits())
                         .collect();
-                    let buf = ctx
-                        .pool()
-                        .acquire("raw steps", bytes.div_ceil(4) * 4, IMAGE_USAGE)?;
+                    let buf =
+                        ctx.pool()
+                            .acquire("raw steps", bytes.div_ceil(4) * 4, IMAGE_USAGE)?;
                     upload_bytes(ctx, &buf, 0, bytemuck::cast_slice(&bits))?;
                     Some(buf)
                 }
@@ -798,7 +798,7 @@ pub(crate) mod tests {
     #[test]
     fn the_mask_unpacks_by_row_and_bit() {
         // 33 columns: two words a row, the second word holds one bit.
-        let mut words = vec![0u32; 2 * 2];
+        let mut words = [0u32; 2 * 2];
         words[0] = 0b101;
         words[1] = 1;
         words[2] = 1 << 31;

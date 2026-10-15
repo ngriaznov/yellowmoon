@@ -178,19 +178,19 @@ impl<'a> TailRoute<'a> {
         D: Send + 'static,
         R: Send + 'static,
     {
-        let handle = self
-            .gpu
-            .submit_with_token(self.spec, self.token.clone(), move |ctx, token| {
-                ctx.check_alive()?;
-                match work(ctx, token, &data) {
-                    Err(GpuError::OutOfBudget { .. } | GpuError::BufferTooLarge { .. }) => {
-                        ctx.pool().trim();
-                        release_tables(ctx);
-                        work(ctx, token, &data)
+        let handle =
+            self.gpu
+                .submit_with_token(self.spec, self.token.clone(), move |ctx, token| {
+                    ctx.check_alive()?;
+                    match work(ctx, token, &data) {
+                        Err(GpuError::OutOfBudget { .. } | GpuError::BufferTooLarge { .. }) => {
+                            ctx.pool().trim();
+                            release_tables(ctx);
+                            work(ctx, token, &data)
+                        }
+                        other => other,
                     }
-                    other => other,
-                }
-            });
+                });
         loop {
             if let Some(done) = handle.wait_timeout(POLL) {
                 return done?;
@@ -300,14 +300,20 @@ fn window(
     }
     let width = pieces[0].image.width;
     let n = rows.len();
-    if let Some(p) = pieces.iter().find(|p| p.y0 <= rows.start && p.end() >= rows.end) {
+    if let Some(p) = pieces
+        .iter()
+        .find(|p| p.y0 <= rows.start && p.end() >= rows.end)
+    {
         return Ok((
             Window::Piece(Arc::clone(&p.image)),
             Rect::new(0, rows.start - p.y0, width, n),
         ));
     }
     let dst = GpuImage::alloc(ctx, "tail window", width, n, 3, Placement::whole(width, n))?;
-    for p in pieces.iter().filter(|p| p.y0 < rows.end && p.end() > rows.start) {
+    for p in pieces
+        .iter()
+        .filter(|p| p.y0 < rows.end && p.end() > rows.start)
+    {
         let (a, b) = (rows.start.max(p.y0), rows.end.min(p.end()));
         if p.image.stride != dst.stride {
             return Err(GpuError::InvalidInput(
@@ -1011,10 +1017,7 @@ mod tests {
             BandFormat::Eight { dither: true }.encoding(),
             Encoding::Rgb8 { background: [0; 3] }
         );
-        assert_eq!(
-            BandFormat::Sixteen.encoding(),
-            Encoding::Rgb16 { bits: 16 }
-        );
+        assert_eq!(BandFormat::Sixteen.encoding(), Encoding::Rgb16 { bits: 16 });
         assert!(BandFormat::Eight { dither: true }.dither());
         assert!(!BandFormat::Eight { dither: false }.dither());
         assert!(!BandFormat::Sixteen.dither());

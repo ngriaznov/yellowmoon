@@ -157,7 +157,12 @@ pub fn encode_mosaic_ca(
     let plane = |dx: usize, dy: usize| cfa.color_at(dx, dy).plane() as u32;
     let u = CaU {
         zero: [0; 4],
-        dims: [input.width as u32, input.height as u32, input.stride as u32, 0],
+        dims: [
+            input.width as u32,
+            input.height as u32,
+            input.stride as u32,
+            0,
+        ],
         core: [core.x as u32, core.y as u32, core.w as u32, core.h as u32],
         dst: [out.stride as u32, table.n_red, table.n_blue, 0],
         cfa: [plane(0, 0), plane(1, 0), plane(0, 1), plane(1, 1)],

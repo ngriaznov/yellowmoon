@@ -31,8 +31,8 @@
 //! stage ([`Renderer::render_full_with`]).
 
 use std::collections::VecDeque;
-use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use std::sync::Arc;
+use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use std::time::Duration;
 
 use ym_color::display::OutputTarget;
@@ -344,7 +344,8 @@ impl Renderer {
     #[must_use]
     pub fn export_tail_enabled(&self) -> bool {
         let o = self.options();
-        o.gpu_stages.contains(GpuStages::EXPORT_TAIL) && o.gpu.as_ref().is_some_and(|g| !g.is_lost())
+        o.gpu_stages.contains(GpuStages::EXPORT_TAIL)
+            && o.gpu.as_ref().is_some_and(|g| !g.is_lost())
     }
 
     /// Queues the render of the written picture of a raster export on the export worker and waits

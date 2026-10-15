@@ -395,6 +395,9 @@ pub struct PhotoGraph {
     resident_tick: AtomicU64,
     /// Held while the raw words are uploaded, so that two requests for one photo upload once.
     upload_gate: Mutex<()>,
+    /// Exports that are rendering the photo: while there is one, the raw words stay on the device
+    /// whatever else the renderer uploads (an export asks for them at every tile).
+    pins: AtomicU32,
 }
 
 impl std::fmt::Debug for PhotoGraph {
@@ -417,6 +420,7 @@ impl PhotoGraph {
             view_gpu_failed: AtomicBool::new(false),
             resident_tick: AtomicU64::new(0),
             upload_gate: Mutex::new(()),
+            pins: AtomicU32::new(0),
         }
     }
 
@@ -538,6 +542,8 @@ struct Inner {
     raw_gpu_disabled: AtomicBool,
     /// The clock of the two-photo LRU of resident raw words ([`PhotoGraph::resident_tick`]).
     resident_clock: AtomicU64,
+    /// The photo the person looked at before the current one: its raw words are the second to go.
+    previous: Mutex<Option<PhotoId>>,
     /// A shader of the view stages failed to compile on this machine: the device does not run them
     /// for the rest of the process.
     view_gpu_disabled: AtomicBool,
@@ -582,6 +588,7 @@ impl Renderer {
                 ledger,
                 raw_gpu_disabled: AtomicBool::new(false),
                 resident_clock: AtomicU64::new(0),
+                previous: Mutex::new(None),
                 view_gpu_disabled: AtomicBool::new(false),
             }),
         })
@@ -741,6 +748,9 @@ impl Renderer {
     /// Records the photo being looked at and returns the one it replaced, when that was another.
     pub(crate) fn note_current(&self, photo: PhotoId) -> Option<PhotoId> {
         let old = lock(&self.inner.current).replace(photo);
+        if let Some(left) = old.filter(|o| *o != photo) {
+            *lock(&self.inner.previous) = Some(left);
+        }
         // The photo left and the photo arrived are the two the device keeps raw words for; any other
         // photo's words (a thumbnail's) are let go now.
         for id in old.into_iter().chain([photo]) {
@@ -752,6 +762,12 @@ impl Renderer {
         old.filter(|o| *o != photo)
     }
 
+    /// Whether `id` is the photo being looked at or the one looked at before it: the two whose raw
+    /// words the device keeps whatever else is uploaded.
+    fn is_protected(&self, id: PhotoId) -> bool {
+        Some(id) == *lock(&self.inner.current) || Some(id) == *lock(&self.inner.previous)
+    }
+
     /// Marks the photo's raw words as the most recently used.
     fn touch_resident(&self, g: &PhotoGraph) {
         let tick = self.inner.resident_clock.fetch_add(1, Ordering::SeqCst) + 1;
@@ -759,7 +775,7 @@ impl Renderer {
     }
 
     /// Lets go of the raw words of every photo but the `keep` most recently used ones. The photo being
-    /// looked at ([`Renderer::navigate`]) counts as the most recent. The device frees nothing at once
+    /// looked at ([`Renderer::navigate`]) counts as the most recent, the one before it as the next. The device frees nothing at once
     /// (the buffers go back to its pool, which gives them to the next allocation or trims them under
     /// pressure).
     pub(crate) fn trim_resident(&self, keep: usize) {
@@ -768,12 +784,17 @@ impl Renderer {
             .map(|(_, g)| Arc::clone(g))
             .collect();
         let current = *lock(&self.inner.current);
+        let previous = *lock(&self.inner.previous);
         let mut held: Vec<(u64, Arc<PhotoGraph>)> = graphs
             .into_iter()
-            .filter(|g| g.resident().is_some())
+            .filter(|g| g.pins.load(Ordering::SeqCst) == 0 && g.resident().is_some())
             .map(|g| {
+                // The photo looked at and the one looked at before it come first, whatever the
+                // thumbnails of a folder have touched since.
                 let tick = if Some(g.id) == current {
                     u64::MAX
+                } else if Some(g.id) == previous {
+                    u64::MAX - 1
                 } else {
                     g.resident_tick.load(Ordering::SeqCst)
                 };
@@ -961,6 +982,25 @@ pub(crate) struct Job<'a> {
     /// The photo's raw words could not be put on the device for this request: its tiles run R6..R8
     /// behind the CPU's front ([`DEVICE_RANGE`]) from the first one to the last, never a mix.
     front_failed: bool,
+    /// This request pins the photo's raw words on the device while it lives ([`Job::for_export`]).
+    pinned: bool,
+}
+
+impl Drop for Job<'_> {
+    /// An export lets go of the photo's raw words when it is done (a batch of exports would
+    /// otherwise leave the words of two photos on the device behind it), unless another export is
+    /// still rendering the photo or the photo is the one being looked at: the person goes on
+    /// editing it.
+    fn drop(&mut self) {
+        let was_export = self.pinned;
+        self.unpin();
+        if was_export
+            && self.g.pins.load(Ordering::SeqCst) == 0
+            && *lock(&self.r.inner.current) != Some(self.src.id)
+        {
+            self.g.drop_resident();
+        }
+    }
 }
 
 impl<'a> Job<'a> {
@@ -977,6 +1017,7 @@ impl<'a> Job<'a> {
         let mut job = Self::for_export(r, src, cancel);
         job.gpu_priority = Priority::Viewport;
         job.restartable = false;
+        job.unpin();
         Ok(job)
     }
 
@@ -985,6 +1026,7 @@ impl<'a> Job<'a> {
     pub fn for_export(r: &'a Renderer, src: &'a PhotoSource, cancel: &'a CancelToken) -> Self {
         let g = r.graph(src.id);
         g.adopt(src.fingerprint);
+        g.pins.fetch_add(1, Ordering::SeqCst);
         Self {
             r,
             g,
@@ -1004,6 +1046,7 @@ impl<'a> Job<'a> {
             raw_ranges: Vec::new(),
             capture_sharpening: true,
             front_failed: false,
+            pinned: true,
         }
     }
 
@@ -1041,6 +1084,14 @@ impl<'a> Job<'a> {
         &self.opts
     }
 
+    /// Lets go of the pin of [`Job::for_export`] (a request for a view does not pin the photo).
+    fn unpin(&mut self) {
+        if self.pinned {
+            self.g.pins.fetch_sub(1, Ordering::SeqCst);
+            self.pinned = false;
+        }
+    }
+
     pub fn check(&self) -> Result<(), RenderError> {
         self.cancel.check().map_err(|_| RenderError::Cancelled)
     }
@@ -1073,11 +1124,11 @@ impl<'a> Job<'a> {
             path: RenderPath::Classical,
             space: color_space_of(target),
             device,
-            ranges: self.raw_ranges,
+            ranges: std::mem::take(&mut self.raw_ranges),
             scale,
             runs: self.runs,
             timings: self.timings,
-            notes: self.notes,
+            notes: std::mem::take(&mut self.notes),
             zoom: None,
         };
         tracing::debug!(
@@ -1602,8 +1653,12 @@ impl<'a> Job<'a> {
             self.r.touch_resident(&g);
             return Ok(raw);
         }
-        // Room for one more: of the photos that already have theirs on the device, the newest stays.
-        self.r.trim_resident(RESIDENT_PHOTOS - 1);
+        // Room for one more, when this is a photo the person is on: of the photos that already have
+        // theirs on the device, the newest stays. (Any other photo is let go of after its upload if the
+        // two the person is on are there; nothing is made room for.)
+        if self.r.is_protected(self.src.id) {
+            self.r.trim_resident(RESIDENT_PHOTOS - 1);
+        }
         let raw = route.upload(frame)?;
         {
             let mut st = lock(&g.state);
@@ -1612,6 +1667,9 @@ impl<'a> Job<'a> {
             }
         }
         self.r.touch_resident(&g);
+        // A photo that is neither the one looked at nor the one before it, uploaded while those two
+        // are there (a thumbnail of the folder), serves this request and is let go of at once.
+        self.r.trim_resident(RESIDENT_PHOTOS);
         self.runs.raw_uploads += 1;
         Ok(raw)
     }

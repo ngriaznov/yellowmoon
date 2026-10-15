@@ -55,9 +55,9 @@ use crate::cpu::demosaic::Method;
 use crate::cpu::demosaic::adaptive_ratio::Params;
 use crate::cpu::denoise::BilateralParams;
 use crate::cpu::detail::network_sigma_scale;
+use crate::cpu::normalize::Levels;
 use crate::cpu::sharpen::CaptureSharpen;
 use crate::cpu::sharpen::diffraction::{DiffractionPlan, SPEC_LUMA};
-use crate::cpu::normalize::Levels;
 use crate::cpu::tiling::{Halo, Rect, Stage};
 use crate::cpu::{Mosaic, RgbImage};
 use crate::device::{GpuContext, GpuError};
@@ -65,15 +65,15 @@ use crate::image::GpuImage;
 use crate::kernels::adaptive_ratio::{self, Balance, PreparedDemosaic};
 use crate::kernels::bilateral::{self, SigmaHalf, SigmaInput, SigmaTile};
 use crate::kernels::bin::{self, BinParams};
+use crate::kernels::detail::{encode_classical_luma, encode_inject_detail};
+use crate::kernels::diffraction::{PreparedDiffraction, encode_sharpen};
+use crate::kernels::guided::encode_guided;
 use crate::kernels::highlights::{OffsetReducer, Offsets, encode_highlights};
 use crate::kernels::lens::{LensTable, encode_lens};
 use crate::kernels::mosaic_ca::{CaTable, encode_mosaic_ca};
 use crate::kernels::prep::{DeviceRaw, PrepParams, VignetteTable, encode_prep};
-use crate::kernels::sigma::encode_sigma_plane;
-use crate::kernels::detail::{encode_classical_luma, encode_inject_detail};
-use crate::kernels::diffraction::{PreparedDiffraction, encode_sharpen};
-use crate::kernels::guided::encode_guided;
 use crate::kernels::richardson_lucy::{RlPlan, encode_richardson_lucy};
+use crate::kernels::sigma::encode_sigma_plane;
 use crate::queue::CancelToken;
 use crate::stream::PassList;
 
@@ -1413,7 +1413,9 @@ impl<'a> GpuChain<'a> {
         if let Some(map) = &chain.sigma_map {
             let mut plane = Vec::with_capacity(start.area());
             for y in start.y..start.y1() {
-                plane.extend_from_slice(&map[y * frame_width + start.x..y * frame_width + start.x1()]);
+                plane.extend_from_slice(
+                    &map[y * frame_width + start.x..y * frame_width + start.x1()],
+                );
             }
             return Ok(SigmaWork::Plane(plane));
         }
@@ -1548,7 +1550,13 @@ impl GpuReduced {
                 let Some(mask) = out.mask.as_ref() else {
                     return Err(GpuError::InvalidInput("prep made no clip bits".into()));
                 };
-                reducer.encode_slab(&mut passes, &out.mosaic, mask, cfa_of(rect), (r0 - top, r1 - top))?;
+                reducer.encode_slab(
+                    &mut passes,
+                    &out.mosaic,
+                    mask,
+                    cfa_of(rect),
+                    (r0 - top, r1 - top),
+                )?;
                 passes.submit()?.finish()?;
             }
             let mut passes = PassList::new(ctx, "reduced offsets fold");
@@ -1560,7 +1568,14 @@ impl GpuReduced {
         };
 
         // 2. The binned image, a slab of output rows at a time.
-        let binned = GpuImage::alloc(ctx, "binned rgb", ow, oh, 3, crate::cpu::Placement::whole(ow, oh))?;
+        let binned = GpuImage::alloc(
+            ctx,
+            "binned rgb",
+            ow,
+            oh,
+            3,
+            crate::cpu::Placement::whole(ow, oh),
+        )?;
         let step = (slab_rows / p.k).max(1);
         let mut r = 0;
         while r < oh {
@@ -1579,7 +1594,8 @@ impl GpuReduced {
                         return Err(GpuError::InvalidInput("prep made no clip bits".into()));
                     };
                     let core = Rect::new(0, need.start - top, w, need.end - need.start);
-                    let slab = encode_highlights(&mut passes, &out.mosaic, mask, cfa_of(rect), core, off)?;
+                    let slab =
+                        encode_highlights(&mut passes, &out.mosaic, mask, cfa_of(rect), core, off)?;
                     keep.push(out.mosaic);
                     slab
                 }
@@ -1617,7 +1633,13 @@ impl GpuReduced {
         }
         if let Some(lens) = &p.lens {
             let (cw, ch) = lens.output_size();
-            let next = encode_lens(&mut passes, &cur, Rect::whole(ow, oh), lens, Rect::whole(cw, ch))?;
+            let next = encode_lens(
+                &mut passes,
+                &cur,
+                Rect::whole(ow, oh),
+                lens,
+                Rect::whole(cw, ch),
+            )?;
             keep.push(std::mem::replace(&mut cur, next));
         }
         passes.submit()?.finish()?;

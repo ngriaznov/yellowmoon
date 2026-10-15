@@ -261,7 +261,12 @@ pub fn noise_model() -> NoiseModel {
 
 /// `ym-core`'s `sigma_plane` over the whole frame in one band: R1 and R4 (no vignetting), the four
 /// positions of each cell, `sigma_quad` without a step plane.
-pub fn ref_sigma_plane(s: &RawScene, levels: &Levels, g0: [f32; 3], model: &NoiseModel) -> Vec<f32> {
+pub fn ref_sigma_plane(
+    s: &RawScene,
+    levels: &Levels,
+    g0: [f32; 3],
+    model: &NoiseModel,
+) -> Vec<f32> {
     let (hw, hh) = (s.width / 2, s.height / 2);
     let (mut m, _mask) =
         normalize::normalize(&s.data, s.width, s.height, s.cfa, levels, None).expect("normalize");
@@ -344,7 +349,12 @@ pub fn ref_bin_mosaic(m: &Mosaic, k: usize) -> RgbImage {
     };
     let lattices = [CfaColor::Red, CfaColor::Blue].map(|c| {
         let (qx, qy) = parity(c);
-        (qx, qy, ref_lattice_weights(k, qx), ref_lattice_weights(k, qy))
+        (
+            qx,
+            qy,
+            ref_lattice_weights(k, qx),
+            ref_lattice_weights(k, qy),
+        )
     });
     let green_count = (k * k / 2) as f32;
     for oy in 0..oh {
@@ -382,7 +392,14 @@ pub fn ref_bin_mosaic(m: &Mosaic, k: usize) -> RgbImage {
 }
 
 /// `ym-core`'s `gain_plane` at the pixels of a frame binned by `k`.
-pub fn ref_gain_plane(v: &VignetteProfile, w: usize, h: usize, k: usize, ow: usize, oh: usize) -> Vec<f32> {
+pub fn ref_gain_plane(
+    v: &VignetteProfile,
+    w: usize,
+    h: usize,
+    k: usize,
+    ow: usize,
+    oh: usize,
+) -> Vec<f32> {
     let (wf, hf) = (w as f64, h as f64);
     let (cx, cy) = (wf * 0.5, hf * 0.5);
     let inv_hd = 1.0 / (0.5 * wf.hypot(hf));

@@ -156,7 +156,10 @@ fn base_uniform(p: &BinParams, noise_factor: f32) -> Result<BinU, GpuError> {
     let (bx, by) = lattice_parity(p.cfa, CfaColor::Blue)?;
     let mut wts = [[0.0f32; 4]; 12];
     let mut nw = [0u32; 4];
-    for (which, (q, slot)) in [(rx, 0usize), (ry, 1), (bx, 2), (by, 3)].into_iter().enumerate() {
+    for (which, (q, slot)) in [(rx, 0usize), (ry, 1), (bx, 2), (by, 3)]
+        .into_iter()
+        .enumerate()
+    {
         let _ = slot;
         let w = lattice_weights(p.k, q);
         nw[which] = w.len() as u32;
@@ -173,7 +176,12 @@ fn base_uniform(p: &BinParams, noise_factor: f32) -> Result<BinU, GpuError> {
         cfa: [plane(0, 0), plane(1, 0), plane(0, 1), plane(1, 1)],
         lat: [rx as u32, ry as u32, bx as u32, by as u32],
         nw,
-        flags: [u32::from(p.vignette.is_some()), 0, 0, (p.k / 2).max(1) as u32],
+        flags: [
+            u32::from(p.vignette.is_some()),
+            0,
+            0,
+            (p.k / 2).max(1) as u32,
+        ],
         f: [(p.k * p.k / 2) as f32, noise_factor, 0.0, 0.0],
         wts,
         vig: VigU::new(p.vignette.as_ref(), p.frame_w, p.frame_h),
@@ -232,7 +240,12 @@ pub fn encode_bin(
             params.out_h()
         )));
     }
-    u.dims = [slab.width as u32, slab.height as u32, slab.stride as u32, params.k as u32];
+    u.dims = [
+        slab.width as u32,
+        slab.height as u32,
+        slab.stride as u32,
+        params.k as u32,
+    ];
     u.frame[2] = slab.place.y0 as u32;
     u.out = [
         rows.start as u32,
@@ -245,7 +258,11 @@ pub fn encode_bin(
     passes.dispatch(
         KernelId::Bin,
         "bin",
-        &[(0, ub.binding()), (1, slab.buf.binding()), (2, out.buf.binding())],
+        &[
+            (0, ub.binding()),
+            (1, slab.buf.binding()),
+            (2, out.buf.binding()),
+        ],
         (
             (params.out_w() as u32).div_ceil(GROUP),
             ((rows.end - rows.start) as u32).div_ceil(GROUP),
@@ -280,7 +297,12 @@ pub fn encode_bin_sigma(
     }
     let (ow, oh) = (params.out_w(), params.out_h());
     let out = GpuImage::alloc(ctx, "binned sigma", ow, oh, 1, Placement::whole(ow, oh))?;
-    u.dims = [sigma.width as u32, sigma.height as u32, sigma.stride as u32, params.k as u32];
+    u.dims = [
+        sigma.width as u32,
+        sigma.height as u32,
+        sigma.stride as u32,
+        params.k as u32,
+    ];
     u.flags[1] = sigma.width as u32;
     u.flags[2] = sigma.height as u32;
     u.out = [0, oh as u32, out.stride as u32, out.plane_len() as u32];
@@ -288,7 +310,11 @@ pub fn encode_bin_sigma(
     passes.dispatch(
         KernelId::BinSigma,
         "bin sigma",
-        &[(0, ub.binding()), (1, sigma.buf.binding()), (2, out.buf.binding())],
+        &[
+            (0, ub.binding()),
+            (1, sigma.buf.binding()),
+            (2, out.buf.binding()),
+        ],
         ((ow as u32).div_ceil(GROUP), (oh as u32).div_ceil(GROUP), 1),
     )?;
     Ok(out)
@@ -317,7 +343,11 @@ pub fn bin_mosaic(
     params.check()?;
     let (ow, oh) = (params.out_w(), params.out_h());
     let out = GpuImage::alloc(ctx, "bin out", ow, oh, 3, Placement::whole(ow, oh))?;
-    let step = if slab_out_rows == 0 { oh } else { slab_out_rows };
+    let step = if slab_out_rows == 0 {
+        oh
+    } else {
+        slab_out_rows
+    };
     let mut r = 0;
     while r < oh {
         let rows = r..(r + step).min(oh);
@@ -353,6 +383,7 @@ pub fn bin_mosaic(
 pub(super) fn body(id: KernelId) -> String {
     let mut s = String::new();
     s.push_str(include_str!("../shaders/front_opaque.wgsl"));
+    s.push_str(include_str!("../shaders/front_exact.wgsl"));
     s.push_str(include_str!("../shaders/front_vig.wgsl"));
     s.push_str(include_str!("../shaders/bin.wgsl"));
     let entry = match id {

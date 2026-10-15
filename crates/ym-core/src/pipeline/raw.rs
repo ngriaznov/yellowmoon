@@ -1200,7 +1200,7 @@ pub fn reduced_params(
     params: &RawParams,
     k: usize,
 ) -> Result<Option<ReducedParams>, RenderError> {
-    if k < 2 || k % 2 != 0 || k > 16 {
+    if k < 2 || !k.is_multiple_of(2) || k > 16 {
         return Ok(None);
     }
     let mut g0_pos = [0.0f32; 4];
@@ -1655,15 +1655,15 @@ impl GpuRoute {
         &self,
         job: impl FnOnce(&GpuContext, &CancelToken) -> Result<R, GpuError> + Send + 'static,
     ) -> Result<R, GpuError> {
-        let handle = self
-            .gpu
-            .submit_with_token(self.spec, self.token.clone(), move |ctx, token| {
-                ctx.check_alive()?;
-                job(ctx, token)
-            });
+        let handle =
+            self.gpu
+                .submit_with_token(self.spec, self.token.clone(), move |ctx, token| {
+                    ctx.check_alive()?;
+                    job(ctx, token)
+                });
         loop {
             if let Some(done) = handle.wait_timeout(DEVICE_POLL) {
-                return done;
+                return done?;
             }
             if self.token.is_cancelled() {
                 return Err(GpuError::Cancelled);
@@ -1672,7 +1672,8 @@ impl GpuRoute {
     }
 
     /// Uploads the photo's raw words to the device (a job of the route). The caller keeps the result
-    /// for the life of the photo ([`Job::resident`](super::graph) holds it once per photo).
+    /// for the life of the photo: the photo's graph holds it, once per photo, within the renderer's
+    /// two-photo LRU.
     ///
     /// # Errors
     ///
@@ -3098,7 +3099,10 @@ mod tests {
         ];
         // The range reads the photo's words on the device: without them it is refused.
         let refused = full.run_tile_gpu(&frame, rects[0], &route);
-        assert!(matches!(refused, Err(GpuError::InvalidInput(_))), "{refused:?}");
+        assert!(
+            matches!(refused, Err(GpuError::InvalidInput(_))),
+            "{refused:?}"
+        );
         route.resident = Some(route.upload(&frame).expect("upload"));
         let front: Vec<RgbImage> = rects
             .iter()
@@ -3129,6 +3133,111 @@ mod tests {
         assert!(route.upload(&Arc::new(reduced)).is_err());
     }
 
+    /// A soft ramp with an overexposed block (the words past the white level, so R1 flags them and R5
+    /// has work), noise on top.
+    fn clipped_frame(w: u32, h: u32) -> (Arc<RawImage>, FrameData) {
+        let mut data = vec![0u16; (w * h) as usize];
+        let mut rng = synth::Rng::new(11);
+        for y in 0..h {
+            for x in 0..w {
+                let (t, u) = (f64::from(x) / f64::from(w), f64::from(y) / f64::from(h));
+                let mut v = 0.08 + 0.5 * t + 0.35 * u * u + 0.004 * f64::from(rng.gaussian());
+                if x > 2 * w / 3 && y > h / 3 {
+                    v += 0.9;
+                }
+                data[(y * w + x) as usize] =
+                    (512.0 + v.clamp(0.0, 1.5) * 15788.0).min(16383.0) as u16;
+            }
+        }
+        let bytes = ym_raw::testgen::ArwBuilder::new("ILCE-7RM4", w, h)
+            .black([512; 4])
+            .white([16300; 3])
+            .build(&data);
+        let raw = Arc::new(
+            ym_raw::decode::decode_bytes(&bytes, &ym_raw::decode::DecodeOptions::default())
+                .expect("decode"),
+        );
+        let frame = FrameData::new(&raw).expect("frame");
+        (raw, frame)
+    }
+
+    #[test]
+    fn the_device_group_matches_reduced_bayer() {
+        let Some(gpu) = device() else { return };
+        let (w, h) = (240u32, 180u32);
+        let (raw, frame) = clipped_frame(w, h);
+        let mut params = params_for_tests();
+        params.noise_reduction = NoiseReduction {
+            luminance: 40.0,
+            color: 60.0,
+            detail: 70.0,
+        };
+        let mut plan = RawPlan::new(&raw, &frame, &params).expect("plan");
+        plan.vignette = Some(
+            VignetteProfile::from_tag(&[0, -400, -1500, -3500, -6000]).expect("vignetting profile"),
+        );
+        let tags = LensTags {
+            vignetting: vec![],
+            distortion: vec![0, 120, 400, 900, 1600, 2500],
+            ca: vec![0, 5000, 12000, 20000, 0, -5000, -12000, -20000],
+        };
+        plan.switches = LensSwitches::default();
+        plan.lens = Some(
+            LensGeometry::new(w as usize, h as usize, &tags, plan.switches)
+                .expect("lens")
+                .with_auto_crop(),
+        );
+        plan.tags = tags;
+        assert!(plan.has_clipped, "the frame has words past white");
+        let cancel = CancelToken::new();
+        let sigma = sigma_plane(&frame, &plan, &params, &cancel).expect("sigma");
+        let frame = Arc::new(frame);
+        let route = GpuRoute {
+            gpu: Arc::clone(&gpu),
+            range: FRONT_RANGE,
+            spec: JobSpec::new(ym_gpu::queue::Priority::Viewport),
+            token: CancelToken::new(),
+            resident: None,
+        };
+        let resident = route.upload(&frame).expect("upload");
+        let mut worst = 0.0f32;
+        for k in [2usize, 4, 8] {
+            let want =
+                reduced_bayer(&frame, &plan, &params, &sigma, k, &cancel).expect("cpu group");
+            let device_params = reduced_params(&frame, &plan, &params, k)
+                .expect("params")
+                .expect("the device takes them");
+            assert!(device_params.highlight_recovery && device_params.vignette.is_some());
+            assert!(device_params.denoise.is_some() && device_params.lens.is_some());
+            let got = route
+                .reduced(&resident, device_params)
+                .expect("device group");
+            assert_eq!(
+                (got.width, got.height),
+                (want.width, want.height),
+                "k = {k}"
+            );
+            let d = got.max_abs_diff(&want);
+            eprintln!(
+                "[G-07] reduced group k = {k}: {} x {}, device against reduced_bayer {d:e}",
+                got.width, got.height
+            );
+            worst = worst.max(d);
+        }
+        // R5, the gain, the denoise and R9 together: the plan's 1e-5 for the group.
+        assert!(worst <= 1e-5, "{worst:e}");
+        // The parameters the device refuses give no group: an odd factor, one beyond the kernels'.
+        assert!(
+            reduced_params(&frame, &plan, &params, 3)
+                .expect("params")
+                .is_none()
+        );
+        assert!(
+            reduced_params(&frame, &plan, &params, 18)
+                .expect("params")
+                .is_none()
+        );
+    }
 }
 
 #[cfg(test)]

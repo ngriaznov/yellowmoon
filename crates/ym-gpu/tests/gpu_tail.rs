@@ -19,17 +19,19 @@ mod g08;
 
 use std::sync::Arc;
 
-use common::chains;
 use common::TestGpu;
+use common::chains;
 use g08::{Scene, ci_note, cpu_codes, diff_codes, exact_scene, rotated_scene};
 use ym_color::display::{ColorChain, Frame, Layout, OutputTarget};
 use ym_color::encode::OutputSpace;
+use ym_gpu::cpu::RgbImage;
 use ym_gpu::cpu::output_sharpen::{OutputSharpen, scale_for_edges};
 use ym_gpu::device::{GpuError, StoragePreference};
 use ym_gpu::kernels::color::{Stop, release_tables};
 use ym_gpu::queue::{CancelToken, JobSpec, Priority};
 use ym_gpu::tail::{
-    Band, BandData, BandFormat, ExportTail, TailRoute, TailSharpen, TailSpec, colour_tile_to_host,
+    Band, BandData, BandFormat, ExportTail, SHARPEN_WINDOW_PIXELS, SLAB_BYTES, TailRoute,
+    TailSharpen, TailSpec, colour_tile_to_host,
 };
 
 /// The largest difference between a device code and the CPU's, 8 bit. The first measured maximum
@@ -192,6 +194,24 @@ fn feed(
     tail: &mut ExportTail<'_>,
     sc: &Scene,
     tile: usize,
+    after_row: impl FnMut(&mut ExportTail<'_>, &[Band]),
+) -> Result<Vec<Band>, GpuError> {
+    feed_regions(
+        tail,
+        sc,
+        tile,
+        |_, _, _, _| (Arc::clone(&sc.camera), (0, 0)),
+        after_row,
+    )
+}
+
+/// [`feed`] with the region of the camera image a tile is given chosen by `region(ox, oy, w, h)`
+/// (the render hands the tail the rectangle the tile reads, not the photo).
+fn feed_regions(
+    tail: &mut ExportTail<'_>,
+    sc: &Scene,
+    tile: usize,
+    region: impl Fn(usize, usize, usize, usize) -> (Arc<RgbImage>, (usize, usize)),
     mut after_row: impl FnMut(&mut ExportTail<'_>, &[Band]),
 ) -> Result<Vec<Band>, GpuError> {
     let mut bands = Vec::new();
@@ -202,7 +222,8 @@ fn feed(
         while ox < sc.w {
             let tw = tile.min(sc.w - ox);
             if !g08::tile_is_outside(sc, (ox, oy), tw, th) {
-                tail.add_tile(Arc::clone(&sc.camera), (0, 0), (ox, oy), tw, th)?;
+                let (image, origin) = region(ox, oy, tw, th);
+                tail.add_tile(image, origin, (ox, oy), tw, th)?;
             }
             ox += tw;
         }
@@ -264,7 +285,16 @@ fn the_tail_matches_the_cpu_export_in_every_configuration() {
             let ch = chain(c.target);
             let space = space_of(c.target);
             let format = format_of(c.bits16);
-            let bands = run_tail(dev, &c.scene, &ch, c.out, c.sharpen_pct, format, space, c.tile);
+            let bands = run_tail(
+                dev,
+                &c.scene,
+                &ch,
+                c.out,
+                c.sharpen_pct,
+                format,
+                space,
+                c.tile,
+            );
             let (got, sixteen) = codes(&bands, c.out);
             assert_eq!(sixteen, c.bits16);
             let want = cpu_codes(&c.scene, &ch, c.out, c.sharpen_pct, space, c.bits16);
@@ -335,12 +365,12 @@ fn the_tail_matches_the_cpu_export_in_every_configuration() {
 fn device_whole(dev: &TestGpu, c: &Config) -> Vec<u32> {
     use ym_gpu::cpu::RgbImage;
     use ym_gpu::cpu::tiling::Rect;
+    use ym_gpu::kernels::PixelData;
     use ym_gpu::kernels::color::{ColorOutput, PreparedChain};
     use ym_gpu::kernels::encode::{C13, Encoding, encode_host};
     use ym_gpu::kernels::output_sharpen::PreparedSharpen;
     use ym_gpu::kernels::resize::resize;
     use ym_gpu::kernels::sampler::sample;
-    use ym_gpu::kernels::PixelData;
 
     let camera = Arc::clone(&c.scene.camera);
     let grid = c.scene.grid;
@@ -355,7 +385,8 @@ fn device_whole(dev: &TestGpu, c: &Config) -> Vec<u32> {
         .run(JobSpec::new(Priority::Export), move |ctx, _| {
             let sampled = sample(ctx, &camera, (0, 0), &grid, (0, 0), w, h)?;
             let prepared = PreparedChain::new(ctx, &ch)?;
-            let colour = prepared.render(ctx, &sampled.img, (0, 0), ColorOutput::Stage(Stop::C12))?;
+            let colour =
+                prepared.render(ctx, &sampled.img, (0, 0), ColorOutput::Stage(Stop::C12))?;
             let PixelData::F32Planar(mut planar) = colour.data else {
                 return Err(GpuError::InvalidInput("planar f32 expected".into()));
             };
@@ -458,10 +489,28 @@ fn the_bytes_do_not_depend_on_the_size_of_the_tiles() {
             let ch = chain(c.target);
             let space = space_of(c.target);
             let format = format_of(c.bits16);
-            let reference = run_tail(dev, &c.scene, &ch, c.out, c.sharpen_pct, format, space, c.tile);
+            let reference = run_tail(
+                dev,
+                &c.scene,
+                &ch,
+                c.out,
+                c.sharpen_pct,
+                format,
+                space,
+                c.tile,
+            );
             let (want, _) = codes(&reference, c.out);
             for tile in [97, 200, 513, 4000] {
-                let bands = run_tail(dev, &c.scene, &ch, c.out, c.sharpen_pct, format, space, tile);
+                let bands = run_tail(
+                    dev,
+                    &c.scene,
+                    &ch,
+                    c.out,
+                    c.sharpen_pct,
+                    format,
+                    space,
+                    tile,
+                );
                 let (got, _) = codes(&bands, c.out);
                 assert!(
                     got == want,
@@ -482,7 +531,14 @@ fn bands_come_out_as_soon_as_their_rows_and_halo_are_complete() {
     let sc = exact_scene(4000, 1200, 1, 0, 13);
     let ch = chain(OutputTarget::Srgb);
     let route = TailRoute::new(&dev.gpu, JobSpec::new(Priority::Export), CancelToken::new());
-    let spec = spec_of(&sc, &ch, (4000, 1200), 100.0, OutputSpace::Srgb, format_of(false));
+    let spec = spec_of(
+        &sc,
+        &ch,
+        (4000, 1200),
+        100.0,
+        OutputSpace::Srgb,
+        format_of(false),
+    );
     let mut tail = ExportTail::new(route, spec).expect("tail");
     let mut per_row = Vec::new();
     let mut declared = 0;
@@ -503,7 +559,11 @@ fn bands_come_out_as_soon_as_their_rows_and_halo_are_complete() {
     // The first chunk is 591 core rows (a 2.5 Mpx window is 625 rows at this width, less the stage's
     // halo of 17 rows on each side); it needs 608 rows to be complete, which the second tile row
     // brings (660). The second chunk waits for the end.
-    assert_eq!(per_row, [0, 591, 0, 609], "rows returned after each tile row");
+    assert_eq!(
+        per_row,
+        [0, 591, 0, 609],
+        "rows returned after each tile row"
+    );
     assert_eq!(tail.rows_encoded(), 1200);
 }
 
@@ -537,7 +597,14 @@ fn a_finished_tail_holds_nothing_and_a_cancelled_one_gives_everything_back() {
         {
             let route =
                 TailRoute::new(&dev.gpu, JobSpec::new(Priority::Export), CancelToken::new());
-            let spec = spec_of(&c.scene, &ch, c.out, c.sharpen_pct, space_of(c.target), format_of(false));
+            let spec = spec_of(
+                &c.scene,
+                &ch,
+                c.out,
+                c.sharpen_pct,
+                space_of(c.target),
+                format_of(false),
+            );
             let mut tail = ExportTail::new(route, spec).expect("tail");
             let mut peak = 0u64;
             feed(&mut tail, &c.scene, c.tile, |_, _| {
@@ -569,7 +636,14 @@ fn a_finished_tail_holds_nothing_and_a_cancelled_one_gives_everything_back() {
         {
             let token = CancelToken::new();
             let route = TailRoute::new(&dev.gpu, JobSpec::new(Priority::Export), token.clone());
-            let spec = spec_of(&c.scene, &ch, c.out, c.sharpen_pct, space_of(c.target), format_of(false));
+            let spec = spec_of(
+                &c.scene,
+                &ch,
+                c.out,
+                c.sharpen_pct,
+                space_of(c.target),
+                format_of(false),
+            );
             let mut tail = ExportTail::new(route, spec).expect("tail");
             let mut rows = 0;
             let result = feed(&mut tail, &c.scene, c.tile, |_, _| {
@@ -598,10 +672,17 @@ fn tiles_must_lie_in_the_picture_and_not_behind_the_rows_declared_complete() {
         assert!(matches!(r, Err(GpuError::InvalidInput(_))), "{what}: {r:?}");
     };
     let cam = || Arc::clone(&sc.camera);
-    refused(tail.add_tile(cam(), (0, 0), (60, 0), 8, 8), "past the right edge");
-    refused(tail.add_tile(cam(), (0, 0), (0, 76), 8, 8), "past the bottom");
+    refused(
+        tail.add_tile(cam(), (0, 0), (60, 0), 8, 8),
+        "past the right edge",
+    );
+    refused(
+        tail.add_tile(cam(), (0, 0), (0, 76), 8, 8),
+        "past the bottom",
+    );
     refused(tail.add_tile(cam(), (0, 0), (0, 0), 0, 8), "no width");
-    tail.add_tile(cam(), (0, 0), (0, 0), 64, 40).expect("a tile");
+    tail.add_tile(cam(), (0, 0), (0, 0), 64, 40)
+        .expect("a tile");
     tail.advance(40).expect("advance");
     refused(
         tail.add_tile(cam(), (0, 0), (0, 10), 64, 8),
@@ -634,8 +715,12 @@ fn one_tile_read_back_is_the_cpu_colour_pass() {
         let ch = chain(OutputTarget::Srgb);
         let route = TailRoute::new(&dev.gpu, JobSpec::new(Priority::Export), CancelToken::new());
         let (off, w, h) = ((0usize, 0usize), 150usize, 130usize);
-        let sampled = ym_gpu::cpu::sampler::sample_to_camera(&sc.camera, (0, 0), &sc.grid, off, w, h);
-        assert!(sampled.outside.is_some(), "the test tile has letterbox in it");
+        let sampled =
+            ym_gpu::cpu::sampler::sample_to_camera(&sc.camera, (0, 0), &sc.grid, off, w, h);
+        assert!(
+            sampled.outside.is_some(),
+            "the test tile has letterbox in it"
+        );
         for (stop, name) in [(Stop::C12, "C12"), (Stop::DngLinearAwg4, "DNG")] {
             let got = colour_tile_to_host(
                 &route,
@@ -688,6 +773,33 @@ fn one_tile_read_back_is_the_cpu_colour_pass() {
     }
 }
 
+/// The rectangle of `camera` a tile of an identity-geometry picture reads (the tile and a margin of
+/// four pixels, which the sampler's bilinear taps stay inside), as the render hands it to the tail.
+fn crop_of(
+    camera: &Arc<RgbImage>,
+) -> impl Fn(usize, usize, usize, usize) -> (Arc<RgbImage>, (usize, usize)) + '_ {
+    move |ox, oy, w, h| {
+        let (x0, y0) = (ox.saturating_sub(4), oy.saturating_sub(4));
+        let (x1, y1) = (
+            (ox + w + 4).min(camera.width),
+            (oy + h + 4).min(camera.height),
+        );
+        let (rw, rh) = (x1 - x0, y1 - y0);
+        let plane = camera.width * camera.height;
+        let mut data = Vec::with_capacity(3 * rw * rh);
+        for c in 0..3 {
+            for y in y0..y1 {
+                let from = c * plane + y * camera.width + x0;
+                data.extend_from_slice(&camera.data[from..from + rw]);
+            }
+        }
+        (
+            Arc::new(RgbImage::from_planar(rw, rh, data).expect("a region")),
+            (x0, y0),
+        )
+    }
+}
+
 /// FNV-1a over the codes of the bands, in order.
 fn fingerprint(bands: &[Band]) -> u64 {
     let mut h = 0xcbf2_9ce4_8422_2325_u64;
@@ -698,7 +810,9 @@ fn fingerprint(bands: &[Band]) -> u64 {
     for b in bands {
         match &b.data {
             BandData::Eight(v) => v.iter().for_each(|&c| mix(c)),
-            BandData::Sixteen(v) => v.iter().for_each(|&c| c.to_le_bytes().into_iter().for_each(&mut mix)),
+            BandData::Sixteen(v) => v
+                .iter()
+                .for_each(|&c| c.to_le_bytes().into_iter().for_each(&mut mix)),
         }
     }
     h
@@ -724,7 +838,12 @@ fn fifty_megapixels_leave_a_few_slabs_on_the_device_and_the_same_bytes_twice() {
     let picture = (bw * bh * 16) as u64;
     for (name, out, pct, bits16) in [
         ("full size, sharpened, 16 bit", (bw, bh), 100.0, true),
-        ("long edge 4000, sharpened, 8 bit", (4000, 2667), 100.0, false),
+        (
+            "long edge 4000, sharpened, 8 bit",
+            (4000, 2667),
+            100.0,
+            false,
+        ),
     ] {
         let mut prints = Vec::new();
         for pass in 0..2 {
@@ -735,11 +854,12 @@ fn fifty_megapixels_leave_a_few_slabs_on_the_device_and_the_same_bytes_twice() {
                 })
                 .expect("reset");
             let started = std::time::Instant::now();
-            let route = TailRoute::new(&dev.gpu, JobSpec::new(Priority::Export), CancelToken::new());
+            let route =
+                TailRoute::new(&dev.gpu, JobSpec::new(Priority::Export), CancelToken::new());
             let spec = spec_of(&sc, &ch, out, pct, OutputSpace::Srgb, format_of(bits16));
             let mut tail = ExportTail::new(route, spec).expect("tail");
             let mut between_rows = 0u64;
-            let bands = feed(&mut tail, &sc, 1024, |_, _| {
+            let bands = feed_regions(&mut tail, &sc, 1024, crop_of(&sc.camera), |_, _| {
                 let in_use = dev
                     .gpu
                     .run(JobSpec::new(Priority::Export), |ctx, _| {
@@ -769,8 +889,17 @@ fn fifty_megapixels_leave_a_few_slabs_on_the_device_and_the_same_bytes_twice() {
                     picture >> 20
                 ),
             );
-            // The design: a few slabs of 128 MiB at most and a chunk of scratch, never the picture.
-            assert!(peak < picture / 2, "{name}: peak {peak} of a {picture} B picture");
+            // The design: a few slabs of 128 MiB at most, one window of the sharpening's scratch (76
+            // bytes a pixel) and the tiles and bands in flight, never the picture.
+            let design = 3 * SLAB_BYTES + SHARPEN_WINDOW_PIXELS as u64 * 76 + (64 << 20);
+            assert!(
+                peak <= design,
+                "{name}: peak {peak} against the design's {design}"
+            );
+            assert!(
+                peak < picture,
+                "{name}: peak {peak} of a {picture} B picture"
+            );
             prints.push(fingerprint(&bands));
         }
         assert_eq!(prints[0], prints[1], "{name}: the same codes twice");

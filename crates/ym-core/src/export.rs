@@ -307,7 +307,11 @@ impl ExportSpeed {
         if megapixels >= MIN_SAMPLE_MP && seconds.is_finite() && seconds > 0.0 {
             let mut st = self.st();
             let set = &mut st.sets[device_index(device)];
-            set.render_s_per_mp = Self::blend(set.render_s_per_mp, set.render_samples, seconds / megapixels);
+            set.render_s_per_mp = Self::blend(
+                set.render_s_per_mp,
+                set.render_samples,
+                seconds / megapixels,
+            );
             set.render_samples += 1;
         }
     }
@@ -318,8 +322,11 @@ impl ExportSpeed {
             let i = format_index(format);
             let mut st = self.st();
             let set = &mut st.sets[0];
-            set.encode_s_per_mp[i] =
-                Self::blend(set.encode_s_per_mp[i], set.encode_samples[i], seconds / megapixels);
+            set.encode_s_per_mp[i] = Self::blend(
+                set.encode_s_per_mp[i],
+                set.encode_samples[i],
+                seconds / megapixels,
+            );
             set.encode_samples[i] += 1;
         }
     }
@@ -336,7 +343,11 @@ impl ExportSpeed {
                 set.render_samples = 0;
             }
             set.overlapped = [true; 4];
-            set.render_s_per_mp = Self::blend(set.render_s_per_mp, set.render_samples, seconds / megapixels);
+            set.render_s_per_mp = Self::blend(
+                set.render_s_per_mp,
+                set.render_samples,
+                seconds / megapixels,
+            );
             set.render_samples += 1;
         }
     }
@@ -1446,9 +1457,9 @@ fn export_on_device(
     still_the_same: &dyn Fn() -> Result<(), ExportError>,
 ) -> Result<DeviceExport, ExportError> {
     let options = &params.options;
-    let mut bands = ctx
-        .renderer
-        .start_export_tail(photo.source.clone(), request, &control.cancel)?;
+    let mut bands =
+        ctx.renderer
+            .start_export_tail(photo.source.clone(), request, &control.cancel)?;
     let rendered = bands.rendered();
     // Nothing is written under a look that changed while the picture rendered: checked when the last
     // rows are asked for, before the writer can finish the file.

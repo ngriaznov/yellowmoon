@@ -168,12 +168,7 @@ fn run(
     photo: &ExportPhoto,
     opts: ExportOptions,
 ) -> Result<ExportReport, ExportError> {
-    export_photo(
-        ctx,
-        photo,
-        &ExportParams::new(opts),
-        &ExportControl::none(),
-    )
+    export_photo(ctx, photo, &ExportParams::new(opts), &ExportControl::none())
 }
 
 fn export(ctx: &ExportContext, photo: &ExportPhoto, opts: ExportOptions) -> ExportReport {
@@ -362,19 +357,31 @@ fn the_tail_writes_the_cpu_pixels_in_every_format() {
             ("PNG 16", |out: &Path| png(out, BitDepth::Sixteen)),
             ("JPEG", |out: &Path| options(out, FormatKind::Jpeg)),
         ] {
-            let (a, b) = (tempfile::tempdir().expect("a"), tempfile::tempdir().expect("b"));
+            let (a, b) = (
+                tempfile::tempdir().expect("a"),
+                tempfile::tempdir().expect("b"),
+            );
             let (mut oa, mut ob) = (mk(a.path()), mk(b.path()));
             oa.size = size;
             ob.size = size;
             let ra = export(&raw_only, &photo, oa);
             let rb = export(&with_tail, &photo, ob);
-            assert_eq!(rb.device, ComputeDevice::Gpu, "{name} {label}: {:?}", rb.notes);
+            assert_eq!(
+                rb.device,
+                ComputeDevice::Gpu,
+                "{name} {label}: {:?}",
+                rb.notes
+            );
             assert!(
                 !rb.notes.iter().any(|n| n.contains("graphics card")),
                 "{name} {label}: {:?}",
                 rb.notes
             );
-            assert_eq!((ra.width, ra.height), (rb.width, rb.height), "{name} {label}");
+            assert_eq!(
+                (ra.width, ra.height),
+                (rb.width, rb.height),
+                "{name} {label}"
+            );
             assert_eq!(ra.rendered, rb.rendered, "{name} {label}");
             let (ba, bb) = (read(&ra.path), read(&rb.path));
             let (ca, cb, w, h, sixteen) = if label == "JPEG" {
@@ -499,7 +506,10 @@ fn device_and_cpu_exports_agree_within_the_golden_metric() {
     for (name, pct, size, straighten) in variants() {
         apply_variant(&shot, pct, straighten);
         let photo = shot.photo();
-        let (a, b) = (tempfile::tempdir().expect("a"), tempfile::tempdir().expect("b"));
+        let (a, b) = (
+            tempfile::tempdir().expect("a"),
+            tempfile::tempdir().expect("b"),
+        );
         let mut oa = png(a.path(), BitDepth::Eight);
         let mut ob = png(b.path(), BitDepth::Eight);
         oa.size = size;
@@ -539,10 +549,7 @@ fn the_picture_is_never_a_host_frame() {
     let report_a = export(&ca, &photo, png(out.path(), BitDepth::Sixteen));
     let report_b = export(&cb, &photo, png(out.path(), BitDepth::Sixteen));
     let frame = (report_a.rendered.0 as u64) * u64::from(report_a.rendered.1) * 12;
-    let (peak_a, peak_b) = (
-        ca.renderer().ledger().peak(),
-        cb.renderer().ledger().peak(),
-    );
+    let (peak_a, peak_b) = (ca.renderer().ledger().peak(), cb.renderer().ledger().peak());
     ci_note(&format!(
         "host ledger peak: {peak_a} bytes with the CPU frame, {peak_b} with the tail ({frame} bytes of display-linear frame)"
     ));
@@ -657,7 +664,11 @@ fn progress_never_goes_back_and_a_cancel_between_bands_leaves_nothing() {
     assert!(seen.len() >= 3, "{seen:?}");
     assert!(seen.windows(2).all(|w| w[0] <= w[1]), "monotone: {seen:?}");
     assert!((seen.last().copied().unwrap_or(0.0) - 1.0).abs() < 1e-6);
-    assert_eq!(pool_in_use(&gpu), baseline, "a finished export hands everything back");
+    assert_eq!(
+        pool_in_use(&gpu),
+        baseline,
+        "a finished export hands everything back"
+    );
     // A cancel in the middle of the writing.
     for format in [FormatKind::Png, FormatKind::Tiff, FormatKind::Jpeg] {
         let out = tempfile::tempdir().expect("out");
@@ -680,7 +691,10 @@ fn progress_never_goes_back_and_a_cancel_between_bands_leaves_nothing() {
         )
         .expect_err("cancelled");
         assert!(err.is_cancelled(), "{format:?}: {err}");
-        assert!(names_in(out.path()).is_empty(), "{format:?}: a file was left");
+        assert!(
+            names_in(out.path()).is_empty(),
+            "{format:?}: a file was left"
+        );
         assert_eq!(
             pool_in_use(&gpu),
             baseline,
@@ -752,7 +766,12 @@ fn the_colour_stage_of_a_dng_runs_on_the_device_and_agrees_with_the_cpu() {
     for target in [FullTarget::DngLinearAwg4, FullTarget::DngPreview] {
         let a = dng_image(&raw_only, &src, target);
         let b = dng_image(&with_tail, &src, target);
-        assert_eq!(b.report.device, ComputeDevice::Gpu, "{target:?}: {:?}", b.report.notes);
+        assert_eq!(
+            b.report.device,
+            ComputeDevice::Gpu,
+            "{target:?}: {:?}",
+            b.report.notes
+        );
         assert_ne!(a.report.device, ComputeDevice::Gpu, "{target:?}");
         assert_eq!((a.width, a.height), (b.width, b.height));
         let mut worst = 0.0f64;
@@ -829,7 +848,11 @@ fn fifty_megapixels_leave_no_host_frame_and_a_dng_keeps_its_own() {
                 ..options(Path::new("."), FormatKind::Jpeg)
             },
         ),
-        ("DNG", GpuStages::ALL, options(Path::new("."), FormatKind::Dng)),
+        (
+            "DNG",
+            GpuStages::ALL,
+            options(Path::new("."), FormatKind::Dng),
+        ),
     ] {
         let ctx = context(home.path(), renderer(Some(Arc::clone(&gpu)), stages, false));
         let out = tempfile::tempdir().expect("out");
@@ -864,7 +887,11 @@ fn fifty_megapixels_leave_no_host_frame_and_a_dng_keeps_its_own() {
         results[0].2
     );
     // The tail holds well under one frame; the DNG's host frames are still there.
-    assert!(results[0].2 < frame, "tail peak {} of a {frame} B frame", results[0].2);
+    assert!(
+        results[0].2 < frame,
+        "tail peak {} of a {frame} B frame",
+        results[0].2
+    );
     assert!(results[3].2 >= frame, "the DNG keeps its host frame");
 }
 
@@ -897,8 +924,14 @@ mod faults {
         apply_variant(&shot, 100.0, false);
         let home = tempfile::tempdir().expect("home");
         let pairs = [
-            (FormatKind::Png, cpu_export(&shot, home.path(), FormatKind::Png)),
-            (FormatKind::Tiff, cpu_export(&shot, home.path(), FormatKind::Tiff)),
+            (
+                FormatKind::Png,
+                cpu_export(&shot, home.path(), FormatKind::Png),
+            ),
+            (
+                FormatKind::Tiff,
+                cpu_export(&shot, home.path(), FormatKind::Tiff),
+            ),
         ];
         // `stages`: the tail alone (the raw chain is on the CPU, the tail fails at its first job)
         // and everything (the raw chain fails first).
@@ -936,7 +969,9 @@ mod faults {
                     let r = r.unwrap_or_else(|e| panic!("{stages_name} {fault:?} {format:?}: {e}"));
                     assert_eq!(r.device, ComputeDevice::Cpu, "{stages_name} {fault:?}");
                     assert!(
-                        r.notes.iter().any(|n| n.contains("The graphics card could not render this photo, so the CPU did")),
+                        r.notes.iter().any(|n| n.contains(
+                            "The graphics card could not render this photo, so the CPU did"
+                        )),
                         "{stages_name} {fault:?}: {:?}",
                         r.notes
                     );
@@ -986,7 +1021,9 @@ mod faults {
         gpu.set_fault(None);
         assert_eq!(got.report.device, ComputeDevice::Cpu);
         assert!(
-            got.report.notes.iter().any(|n| n.contains("The graphics card could not render this photo, so the CPU did")),
+            got.report.notes.iter().any(
+                |n| n.contains("The graphics card could not render this photo, so the CPU did")
+            ),
             "{:?}",
             got.report.notes
         );
@@ -1002,7 +1039,10 @@ mod faults {
             &CancelToken::new(),
         );
         gpu.set_fault(None);
-        assert!(matches!(err, Err(ym_core::pipeline::RenderError::Gpu(_))), "{err:?}");
+        assert!(
+            matches!(err, Err(ym_core::pipeline::RenderError::Gpu(_))),
+            "{err:?}"
+        );
     }
 }
 
@@ -1011,13 +1051,15 @@ fn nothing_but_the_picture_is_written() {
     let Some(gpu) = gpu() else { return };
     let shot = Shot::new();
     let home = tempfile::tempdir().expect("home");
-    let ctx = context(
-        home.path(),
-        renderer(Some(gpu), GpuStages::ALL, false),
-    );
+    let ctx = context(home.path(), renderer(Some(gpu), GpuStages::ALL, false));
     let out = tempfile::tempdir().expect("out");
     let r = export(&ctx, &shot.photo(), png(out.path(), BitDepth::Eight));
     assert_eq!(names_in(out.path()).len(), 1);
     assert_eq!(r.path.parent(), Some(out.path()));
-    let _ = (PathBuf::new(), ColorSpace::Srgb, OutputTarget::Srgb, AtomicU32::new(0));
+    let _ = (
+        PathBuf::new(),
+        ColorSpace::Srgb,
+        OutputTarget::Srgb,
+        AtomicU32::new(0),
+    );
 }

@@ -44,11 +44,7 @@ fn bands_through_every_writer_are_the_bytes_of_the_image_path() {
     let (w, h) = (61_u32, 47_u32);
     let data = common::display_scene(w, h);
     let meta = common::metadata();
-    for space in [
-        ColorSpace::Srgb,
-        ColorSpace::DisplayP3,
-        ColorSpace::Rec2020,
-    ] {
+    for space in [ColorSpace::Srgb, ColorSpace::DisplayP3, ColorSpace::Rec2020] {
         for format in formats() {
             let pixels = ImageRef::new(w, h, &data, PixelEncoding::DisplayLinear).unwrap();
             let request = ExportRequest {

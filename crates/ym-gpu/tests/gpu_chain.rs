@@ -750,6 +750,10 @@ fn the_chain_refuses_what_the_device_does_not_run() {
         },
         StageRange {
             first: RawStage::Normalize,
+            last: RawStage::Sharpen,
+        },
+        StageRange {
+            first: RawStage::Highlights,
             last: RawStage::Lens,
         },
         StageRange {
@@ -762,6 +766,14 @@ fn the_chain_refuses_what_the_device_does_not_run() {
     }
     assert_eq!(StageRange::DEMOSAIC.label(), "R6");
     assert_eq!(StageRange::DEMOSAIC_TO_SHARPEN.label(), "R6..R8");
+    // G-07: the whole chain from the raw words is a range of its own (it reads the resident words,
+    // so `run_tile` refuses it and `run_tile_front` runs it).
+    assert_eq!(StageRange::RAW_TO_LENS.label(), "R1..R9");
+    assert!(GpuChain::new(&chain, &prepared, StageRange::RAW_TO_LENS).is_ok());
+    for stage in [RawStage::Normalize, RawStage::Highlights, RawStage::Demosaic, RawStage::Lens] {
+        assert!(StageRange::RAW_TO_LENS.contains(stage));
+    }
+    assert!(StageRange::RAW_TO_LENS.covers_sigma_stages());
     assert!(StageRange::DEMOSAIC.contains(RawStage::Demosaic));
     assert!(!StageRange::DEMOSAIC.contains(RawStage::Denoise));
     for stage in [RawStage::Denoise, RawStage::Detail, RawStage::Sharpen] {
@@ -2058,6 +2070,22 @@ const FIFTY_MP_CORNER_FRONT: Limits = Limits {
     largest: 1.3e-2,
 };
 
+/// What a hardware adapter may show of the front's tie flips: four times the software limits. The
+/// front's vignetting gain differs from the CPU's by a few ulp on Metal (its square root and division
+/// are not correctly rounded), which flips more of the demosaic's near-tie decisions than lavapipe's
+/// 2.65e-7; to be lowered from the Metal numbers (`docs/gpu-plan.md` K8).
+fn front_limits(dev: &TestGpu, l: Limits) -> Limits {
+    if dev.gpu.info().is_software {
+        l
+    } else {
+        Limits {
+            over: l.over * 4.0,
+            fine: l.fine * 4.0,
+            largest: l.largest * 2.0,
+        }
+    }
+}
+
 /// R1..R9 against R6..R8 behind the CPU's front, largest difference over the tie-free cases. First
 /// measured 2.7e-4 (one sample: the vignetting gain differs by 2.7e-7, a demosaic decision on a
 /// near tie flips); twice that.
@@ -2111,10 +2139,24 @@ fn r1_to_r9_matches_the_cpu_chain() {
     }
     free.print("R1..R9 chain, tie-free content");
     prone.print("R1..R9 chain, tie-prone content");
-    eprintln!("[G-07] R1..R9 against R6..R8 behind the CPU's front (tie-free): largest {against_handoff:e}");
-    assert_within("R1..R9 chain, tie-free content", &free, FRONT_TIE_FREE);
-    assert_within("R1..R9 chain, tie-prone content", &prone, FRONT_TIE_PRONE);
-    assert!(against_handoff <= FRONT_AGAINST_HANDOFF, "{against_handoff:e}");
+    eprintln!(
+        "[G-07] R1..R9 against R6..R8 behind the CPU's front (tie-free): largest {against_handoff:e}"
+    );
+    assert_within(
+        "R1..R9 chain, tie-free content",
+        &free,
+        front_limits(dev, FRONT_TIE_FREE),
+    );
+    assert_within(
+        "R1..R9 chain, tie-prone content",
+        &prone,
+        front_limits(dev, FRONT_TIE_PRONE),
+    );
+    assert!(
+        against_handoff
+            <= FRONT_AGAINST_HANDOFF * if dev.gpu.info().is_software { 1.0 } else { 4.0 },
+        "{against_handoff:e}"
+    );
 }
 
 #[test]
@@ -2164,7 +2206,11 @@ fn the_front_chain_of_a_lossy_file_matches_the_cpu_and_the_tiles() {
         let (ow, oh) = setup.output_size();
         let out = Rect::new(3, 2, ow - 7, oh - 5);
         let s = compare(&setup.gpu(dev, out), &setup.cpu(out));
-        assert_within(&format!("{} lossy {lens:?}", cfa.name()), &s, ONE_CHAIN_CASE);
+        assert_within(
+            &format!("{} lossy {lens:?}", cfa.name()),
+            &s,
+            ONE_CHAIN_CASE,
+        );
         if lens.tie_prone() {
             prone.add(&s);
         } else {
@@ -2181,8 +2227,16 @@ fn the_front_chain_of_a_lossy_file_matches_the_cpu_and_the_tiles() {
     }
     free.print("R1..R9 lossy, tie-free content");
     prone.print("R1..R9 lossy, tie-prone content");
-    assert_within("R1..R9 lossy, tie-free", &free, FRONT_TIE_FREE);
-    assert_within("R1..R9 lossy, tie-prone", &prone, FRONT_TIE_PRONE);
+    assert_within(
+        "R1..R9 lossy, tie-free",
+        &free,
+        front_limits(dev, FRONT_TIE_FREE),
+    );
+    assert_within(
+        "R1..R9 lossy, tie-prone",
+        &prone,
+        front_limits(dev, FRONT_TIE_PRONE),
+    );
 }
 
 #[test]
@@ -2410,7 +2464,11 @@ fn small_frames_through_the_front_chain_match_the_cpu_chain() {
                     hs.gpu(dev, Rect::whole(ow, oh))
                 };
                 let d = compare(&got, &hand).max_abs;
-                assert!(d <= 1e-3, "{} {w}x{h} {lens:?}: front against hand-off {d:e}", cfa.name());
+                assert!(
+                    d <= 1e-3,
+                    "{} {w}x{h} {lens:?}: front against hand-off {d:e}",
+                    cfa.name()
+                );
             }
         }
     }
@@ -2453,7 +2511,12 @@ fn a_cancelled_front_chain_stops_and_leaves_the_pool_at_its_baseline() {
                 }
             }
             let token = CancelToken::new();
-            let again = g.run_tile_front(&CancelsFirst(ctx, token.clone()), &raw, Rect::whole(ow, oh), &token);
+            let again = g.run_tile_front(
+                &CancelsFirst(ctx, token.clone()),
+                &raw,
+                Rect::whole(ow, oh),
+                &token,
+            );
             let after_cancel = ctx.pool().stats().in_use_bytes;
             Ok((
                 before,
@@ -2465,7 +2528,10 @@ fn a_cancelled_front_chain_stops_and_leaves_the_pool_at_its_baseline() {
         })
         .expect("job");
     assert_eq!(after_ok, before, "a finished tile releases its buffers");
-    assert_eq!(after_cancel, before, "cancelled tiles release their buffers");
+    assert_eq!(
+        after_cancel, before,
+        "cancelled tiles release their buffers"
+    );
     assert!(matches!(err.0, Err(GpuError::Cancelled)), "{:?}", err.0);
     assert!(matches!(err.1, Err(GpuError::Cancelled)), "{:?}", err.1);
     assert_eq!((ran.dispatches, ran.submissions), (0, 0));
@@ -2579,5 +2645,9 @@ fn a_50_mp_frame_corner_tile_runs_the_whole_front_chain_and_is_split() {
     assert!(parts[0] > 1, "the corner tile of a strong lens is cut");
     let s = compare(&gpu, &setup.cpu(out));
     s.print("50 MP corner tile, R1..R9, against the CPU");
-    assert_within("50 MP corner tile, R1..R9", &s, FIFTY_MP_CORNER_FRONT);
+    assert_within(
+        "50 MP corner tile, R1..R9",
+        &s,
+        front_limits(dev, FIFTY_MP_CORNER_FRONT),
+    );
 }

@@ -109,9 +109,8 @@ fn where_the_time_of_an_export_goes() {
     );
 
     // The stages the device takes over.
-    let (t, resized) = best_of(|| {
-        resize_lanczos3(&image, W / 2, H / 2, space, &hooks).expect("resize")
-    });
+    let (t, resized) =
+        best_of(|| resize_lanczos3(&image, W / 2, H / 2, space, &hooks).expect("resize"));
     line(
         "resize Lanczos-3 to half the long edge",
         t,

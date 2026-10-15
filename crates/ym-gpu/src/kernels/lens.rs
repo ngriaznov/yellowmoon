@@ -209,8 +209,16 @@ pub fn encode_lens(
         ],
         flags: [u32::from(nc > 0), 0, 0, 0],
         k: [
-            if nd > 1 { (nd - 1) as f32 / diag as f32 } else { 0.0 },
-            if nc > 1 { (nc - 1) as f32 / diag as f32 } else { 0.0 },
+            if nd > 1 {
+                (nd - 1) as f32 / diag as f32
+            } else {
+                0.0
+            },
+            if nc > 1 {
+                (nc - 1) as f32 / diag as f32
+            } else {
+                0.0
+            },
             0.0,
             0.0,
         ],
@@ -222,7 +230,11 @@ pub fn encode_lens(
     passes.dispatch(
         KernelId::Lens,
         "lens r9",
-        &[(0, ub.binding()), (1, src.buf.binding()), (2, dst.buf.binding())],
+        &[
+            (0, ub.binding()),
+            (1, src.buf.binding()),
+            (2, dst.buf.binding()),
+        ],
         (
             (out.w as u32).div_ceil(GROUP),
             (out.h as u32).div_ceil(GROUP),

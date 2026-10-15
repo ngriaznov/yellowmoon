@@ -467,7 +467,10 @@ mod tests {
                 let sum: f64 = w.iter().sum();
                 assert!((sum - 1.0).abs() < 1e-14, "{i}->{o} at {x}: {sum}");
                 assert!(!w.is_empty() && first + w.len() <= i);
-                assert!(first >= prev.0 && first + w.len() >= prev.1, "{i}->{o} at {x}");
+                assert!(
+                    first >= prev.0 && first + w.len() >= prev.1,
+                    "{i}->{o} at {x}"
+                );
                 prev = (first, first + w.len());
                 assert_eq!(t.input_span(x..x + 1), first..first + w.len());
             }
