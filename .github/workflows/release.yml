@@ -8,8 +8,9 @@
 #
 # Every release carries everything the in-app updater needs: the disk image for people, and for the updater the
 # Yellowmoon.app.tar.gz, its minisign signature (inside latest.json) and latest.json for darwin-aarch64 and
-# darwin-x86_64. That needs the updater signing setup: two repository secrets, TAURI_SIGNING_PRIVATE_KEY and
-# TAURI_SIGNING_PRIVATE_KEY_PASSWORD, and the public key in src-tauri/tauri.conf.json (plugins.updater.pubkey);
+# darwin-x86_64. That needs the updater signing setup: the repository secret TAURI_SIGNING_PRIVATE_KEY (and
+# TAURI_SIGNING_PRIVATE_KEY_PASSWORD when the key has a password; plugout's key has none, and GitHub cannot store an
+# empty secret), and the public key in src-tauri/tauri.conf.json (plugins.updater.pubkey);
 # steps in docs/release-signing.md. Without it the job stops before building, because a version built without the
 # public key could never update itself afterwards.
 name: Release
@@ -60,9 +61,12 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
-          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ] || [ -z "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD" ]; then
-            echo "::error title=Signing secrets missing::Set TAURI_SIGNING_PRIVATE_KEY and TAURI_SIGNING_PRIVATE_KEY_PASSWORD as repository secrets (docs/release-signing.md). A release without them could not update itself."
+          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            echo "::error title=Signing key missing::Set TAURI_SIGNING_PRIVATE_KEY as a repository secret, and TAURI_SIGNING_PRIVATE_KEY_PASSWORD if the key has a password (docs/release-signing.md). A release without it could not update itself."
             exit 1
+          fi
+          if [ -z "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD" ]; then
+            echo "No TAURI_SIGNING_PRIVATE_KEY_PASSWORD secret: the key is used without a password."
           fi
           if grep -q 'REPLACE_WITH_MINISIGN_PUBLIC_KEY' src-tauri/tauri.conf.json; then
             echo "::error title=Updater public key missing::Put the minisign public key into src-tauri/tauri.conf.json plugins.updater.pubkey (docs/release-signing.md)."

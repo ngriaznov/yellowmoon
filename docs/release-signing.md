@@ -47,7 +47,7 @@ gh secret set TAURI_SIGNING_PRIVATE_KEY_PASSWORD --repo ngriaznov/yellowmoon
 gh secret list --repo ngriaznov/yellowmoon
 ```
 
-The second command prompts for the value (the input is hidden); paste the password. The last command should list both names. If the password is wrong the release fails at the signing step with an error about decoding the secret key.
+The second command prompts for the value (the input is hidden); paste the password. The last command should list both names. A key without a password (plugout's has none) needs only the first secret: skip the second, since GitHub cannot store an empty one, and the release workflow then uses the key without a password. If the password is wrong the release fails at the signing step with an error about decoding the secret key.
 
 ### 4. Put the public key into the Tauri config
 
