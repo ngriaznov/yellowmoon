@@ -151,13 +151,34 @@ pub enum KernelId {
 }
 
 impl KernelId {
-    /// All kernels, placeholders included (see [`KernelId::is_placeholder`]).
+    /// All kernels, placeholders included (see [`KernelId::is_placeholder`]), in the order a cold
+    /// start needs them (`docs/gpu-plan.md` G-10, the warm-up order): the kernels of the fit view of
+    /// a mosaic photo (the reduced group: R1 to R5, the binning, the sigma, the light denoise, R9),
+    /// the copy that puts the pieces of an image together, the view stages (the sampler, the colour
+    /// chain, output sharpening, C13), the full-resolution raw chain (the demosaic, the denoise, R7,
+    /// capture sharpening, diffraction), the export tail's resize, and last the spikes and the probe,
+    /// which no render uses. [`KernelSet::kernels`] and `warm_up` compile in this order, so that what
+    /// the first frame of the first photo waits for is compiled before what only a zoomed view or an
+    /// export needs.
     pub const ALL: [KernelId; 62] = [
-        KernelId::SpikeNormalize,
-        KernelId::SpikeDemosaic,
-        KernelId::SpikeMatrix,
+        // The fit view of a mosaic photo.
+        KernelId::Prep,
+        KernelId::PrepMask,
+        KernelId::HighlightsSuper,
+        KernelId::Highlights,
+        KernelId::MosaicCa,
+        KernelId::Sigma,
+        KernelId::Bin,
+        KernelId::BinSigma,
+        KernelId::Reduce,
+        KernelId::ReduceFold,
+        KernelId::SigmaExpand,
+        KernelId::Bilateral,
+        KernelId::Lens,
+        KernelId::Copy,
+        // The view stages.
+        KernelId::Sampler,
         KernelId::Color,
-        KernelId::LogGuided,
         KernelId::OutputSharpenLuma,
         KernelId::OutputSharpenHighpassRows,
         KernelId::OutputSharpenHighpassCols,
@@ -166,15 +187,8 @@ impl KernelId {
         KernelId::OutputSharpenAccumulate,
         KernelId::OutputSharpenWindow,
         KernelId::OutputSharpenTransfer,
-        KernelId::DiffractionLuma,
-        KernelId::DiffractionEnvelope,
-        KernelId::DiffractionLayers,
-        KernelId::DiffractionGaussRows,
-        KernelId::DiffractionGaussCols,
-        KernelId::DiffractionPsf,
-        KernelId::DiffractionMomentRows,
-        KernelId::DiffractionSolve,
-        KernelId::DiffractionOutput,
+        KernelId::Encode,
+        // The full-resolution raw chain (the 100 % view and the exports).
         KernelId::AdaptiveRatioPrepare,
         KernelId::AdaptiveRatioGreen,
         KernelId::AdaptiveRatioRefine,
@@ -186,21 +200,7 @@ impl KernelId {
         KernelId::AdaptiveRatioLowErr,
         KernelId::AdaptiveRatioMatch,
         KernelId::AdaptiveRatioExit,
-        KernelId::Sampler,
-        KernelId::Encode,
-        KernelId::Prep,
-        KernelId::PrepMask,
-        KernelId::HighlightsSuper,
-        KernelId::Highlights,
-        KernelId::MosaicCa,
-        KernelId::Lens,
-        KernelId::Sigma,
-        KernelId::Bin,
-        KernelId::BinSigma,
-        KernelId::Reduce,
-        KernelId::ReduceFold,
-        KernelId::SigmaExpand,
-        KernelId::Bilateral,
+        KernelId::LogGuided,
         KernelId::Guided,
         KernelId::GuidedCols,
         KernelId::GuidedSmoothRows,
@@ -212,8 +212,21 @@ impl KernelId {
         KernelId::RlBlurColsRatio,
         KernelId::RlBlurColsUpdate,
         KernelId::RlOutput,
+        KernelId::DiffractionLuma,
+        KernelId::DiffractionEnvelope,
+        KernelId::DiffractionLayers,
+        KernelId::DiffractionGaussRows,
+        KernelId::DiffractionGaussCols,
+        KernelId::DiffractionPsf,
+        KernelId::DiffractionMomentRows,
+        KernelId::DiffractionSolve,
+        KernelId::DiffractionOutput,
+        // The export tail.
         KernelId::Resize,
-        KernelId::Copy,
+        // No render uses these.
+        KernelId::SpikeNormalize,
+        KernelId::SpikeDemosaic,
+        KernelId::SpikeMatrix,
         KernelId::Probe,
     ];
 
@@ -420,7 +433,8 @@ impl KernelSet {
         self == KernelSet::All || id.set() == self
     }
 
-    /// The kernels of this set, placeholders included, in [`KernelId::ALL`] order.
+    /// The kernels of this set, placeholders included, in [`KernelId::ALL`] order (the order a cold
+    /// start needs them).
     pub fn kernels(self) -> impl Iterator<Item = KernelId> {
         KernelId::ALL
             .into_iter()

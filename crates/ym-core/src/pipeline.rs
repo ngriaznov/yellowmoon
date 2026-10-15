@@ -59,8 +59,8 @@ pub use frame::{
     RenderedFrame, ViewportFrame,
 };
 pub use graph::{
-    ComputeDevice, PhotoGraph, RenderOptions, RenderReport, Renderer, StageCounters, StageRuns,
-    StageTimings,
+    ComputeDevice, PhotoGraph, RawPrefetch, RenderOptions, RenderReport, Renderer, StageCounters,
+    StageRuns, StageTimings,
 };
 pub use thumbs::{HistogramData, PhotoThumbnails};
 pub use viewport::{ViewportInput, ViewportMode, ViewportRect, ViewportState};

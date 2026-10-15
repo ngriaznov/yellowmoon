@@ -107,15 +107,15 @@ f32 for every image plane that crosses a kernel boundary, in every storage mode 
 ### 4.3 Types and the entry-point shape (in `ym-gpu`; it does not depend on `ym-core`)
 ```text
 GpuImage  { buf: PooledBuffer, width, height, stride /* even */, planes /* 1, 3, 4 */, place: Placement }   // planar f32
-GpuRaw    { words: PooledBuffer /* 2 x u16 per u32 */, qstep: Option<PooledBuffer>, width, height, cfa }
+DeviceRaw { words: PooledBuffer /* 2 x u16 per u32 */, qstep: Option<PooledBuffer>, width, height, cfa }   // named GpuRaw in this plan until G-07; the unused GpuRaw wrapper was removed in G-10
 PassList  { encoder, kept-alive buffers, uniform slots, dispatch count }  -> submit() -> Pending
 // each kernel module:
 pub fn encode_<stage>(ctx, passes: &mut PassList, inputs: &GpuImage.., params) -> Result<GpuImage, GpuError>   // device in, device out
 pub fn <stage>(ctx, host inputs..) -> Result<RgbImage, GpuError>      // thin host wrapper: upload, encode_, submit, read; what tests and phase-A wiring call
 GpuChain<'a>  { chain: &'a Chain, prepared: &'a Prepared, sigma: SigmaHalf<'a>, range: StageRange }
   run_tile(ctx, &RawFrame, out: Rect, cancel) -> Result<RgbImage, GpuError>      // same contract as Chain::run_tile
-  run_tile_device(ctx, &GpuRaw, out: Rect, cancel) -> Result<GpuImage, GpuError> // G-10
-GpuReduced::run(ctx, &GpuRaw, &ReducedParams, k) -> Result<GpuImage, GpuError>   // G-07
+  run_tile_device(runner, &Arc<DeviceRaw>, out: Rect, cancel) -> Result<GpuImage, GpuError> // G-10
+GpuReduced::run(ctx, &DeviceRaw, &ReducedParams, cancel) -> Result<RowBands, GpuError>   // G-07; in bands of rows and a series of jobs since G-10
 ```
 `SigmaHalf { width, height, data, gains }` and `ReducedParams` are plain data built by `ym-core` from `SigmaPlane`, `gain_plane` and the raw plan. `GpuChain` is built from the same `Chain` and `Prepared` the CPU uses, and walks `Chain::stages()` with `TilePlan` / `required_input_rect`, so settings, stage choice and halos are single-sourced; the noise model goes through `Chain::noise_dn()`. `StageRange { first, last }` is the test and gating lever: stages outside it run on the CPU stepper (V-4), the boundary is a host copy. Resident images are plain `Arc` values: `PooledBuffer` returns to the pool on drop, so `PhotoGraph`'s existing `ByteLru` caches can hold `Arc<GpuImage>` like they hold `Arc<RgbImage>`.
 
@@ -152,7 +152,7 @@ Per photo, never per tile, and never a mix of GPU and CPU tiles in one export. `
 ### 4.10 Export tail (G-08)
 ```text
 for each tile row (1024 rows, one Export-priority job per tile x stage group):
-    GpuChain tile -> camera RGB (host RgbImage in this wave; device-resident after G-10) -> sampler -> C1..C12 f32 -> written at the tile's x offset into the slab of the row
+    GpuChain tile -> camera RGB (device-resident since G-10: `run_tile_device`, `ExportTail::add_tile_device`) -> sampler -> C1..C12 f32 -> written at the tile's x offset into the slab of the row
 slabs: at most 128 MiB each (1024 rows x 8658 px x 3 f32 = 106 MB)
 no resize:  sharpen rows of slab r-1 (needs 17 to 21 rows from slab r) -> C13 -> u8/u16 bands
 resize:     horizontal Lanczos-3 pass as a slab completes -> mid slab; after the last row a vertical pass -> the small final image -> sharpen strips -> C13 -> bands
@@ -169,7 +169,7 @@ Resize taps come from the CPU in f64 (difference form so a flat field is exact);
 |---|---|---|---|---|
 | Decode, metadata | `ym-raw` | n/a | 0.33 s (Lossless L, 4 cores) | stays CPU |
 | Estimates on the 1/8 preview (noise model fit, illuminant, exposure) | `ym-noise`, `ym-color::illum`, `ym-core/src/auto.rs` | none | 171 ms per 24 MP photo | stays CPU (feeds settings and XMP) |
-| Raw upload | `FrameData::new` (copies the area when not the whole readout) | none | memcpy | G-07 (`GpuRaw`, upload once per photo) |
+| Raw upload | `FrameData::new` (copies the area when not the whole readout) | none | memcpy | G-07 (`DeviceRaw`, upload once per photo) |
 | R1 normalise + mask + qstep, R3 vignetting, R4 gains | `cpu/{normalize,vignette,gains}.rs` | `spike_normalize.wgsl` (R1 + R4 only: no qstep, mask or vignette) | 0.35 + 1.3 + 0.05 | G-07 (`prep`) |
 | R5 highlights | `cpu/highlights.rs` | none | 2.2 | offsets: CPU (full chain), GPU reduction (reduced path); apply: G-07 |
 | R5b lateral CA on the mosaic | `cpu/lens.rs::correct_mosaic_ca` | none | not itemised | G-07 |
@@ -199,12 +199,12 @@ Resize taps come from the CPU in f64 (difference form so a flat field is exact);
 
 | Surface | Today | After |
 |---|---|---|
-| 100 % tiles, export front | `FullChain::run_tile` -> `Chain::run_tile` on the CPU | `FullChain` holds an optional GPU runner and tries `GpuChain::run_tile` with the photo's `StageRange`; the host `tiles` cache is unchanged (G-03, grown by G-06 and G-07); `Backing { Cpu, Gpu }` in G-10 |
-| Fit view, thumbnails (`Job::group(k)`) | CPU raw group | `GpuReduced` from the resident `GpuRaw` (G-07), host copy only where a caller needs one |
+| 100 % tiles, export front | `FullChain::run_tile` -> `Chain::run_tile` on the CPU | `FullChain` holds an optional GPU runner and tries `GpuChain::run_tile` with the photo's `StageRange`; the host `tiles` cache is unchanged (G-03, grown by G-06 and G-07); since G-10 the cache holds `Backing { Cpu, Gpu }`: a tile the device made stays on it for the sampler |
+| Fit view, thumbnails (`Job::group(k)`) | CPU raw group | `GpuReduced` from the resident `DeviceRaw` (G-07); since G-10 the group stays on the device as bands of rows (`Backing::Gpu`), and a host copy is made only where a caller needs one (`Job::group`) |
 | Viewport frame | CPU sample, GPU or CPU colour, CPU sharpen, CPU C13 | one device job: sampler, C1 to C12, sharpen, C13, RGBA8, one readback (G-05) |
 | Output slider | CPU stage + C13 on the cached display-linear frame (0.5 to 2.6 s) | `DisplayFrame` holds an `Arc<GpuImage>`; a move re-runs sharpen + C13 only (G-05) |
 | Look tiles, Before, histogram sample | per-tile CPU or GPU colour | same job at Thumbnail priority; Before as an RGBA8 stop (G-05) |
-| Export | CPU render into one `Vec<f32>`, writer resizes, sharpens, encodes | `FullSource { Cpu(FullImage), Gpu(GpuBands) }`; bands through `BandSource` (G-08); `ExportSpeed` priors per device |
+| Export | CPU render into one `Vec<f32>`, writer resizes, sharpens, encodes | `GpuBands` through `BandSource` (G-08; the `FullSource` enum of that task was removed in G-10, the export renders either the host picture or the bands); `ExportSpeed` priors per device |
 | `ym` | probes the GPU, renders on the CPU | `open_gpu`, background open, warm-up, `--cpu`, `--require-gpu`, `device` in `--json` (G-01) |
 | Native viewport (Mac) | own device, uploads the core's RGBA8 | unchanged (one 5.5 to 22 MB copy per frame); a shared surface is a Mac tuning item |
 | Pipeline compile | all 33 kernels via `warm_up` | `KernelSet { View, Raw, Tail, All }`; the app warms View first; `ym` warms the sets it needs while photos decode; compile time on Metal (no wgpu pipeline cache there) is an M0-H4 number |

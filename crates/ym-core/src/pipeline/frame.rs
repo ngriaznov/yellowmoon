@@ -2058,7 +2058,7 @@ impl Renderer {
         let Some((x0, y0, x1, y1)) = grid.source_bounds(0, 0, dw, dh, 3) else {
             return Ok(0);
         };
-        let _ = job.region(Rect::new(x0, y0, x1 - x0, y1 - y0), true)?;
+        job.warm_tiles(Rect::new(x0, y0, x1 - x0, y1 - y0))?;
         let made = job.runs.tiles;
         job.finish(1, ComputeDevice::Cpu, OutputTarget::Viewport);
         Ok(made as usize)

@@ -17,10 +17,11 @@ fn bench(sb: &Sandbox, arw: &std::path::Path, policy: &str, extra: &[&str]) -> (
         .assert()
         .success();
     let text = String::from_utf8(out.get_output().stdout.clone()).expect("utf-8");
-    let json = extra
-        .contains(&"--json")
-        .then(|| serde_json::from_str(text.trim()).expect("one JSON object"))
-        .unwrap_or(Value::Null);
+    let json = if extra.contains(&"--json") {
+        serde_json::from_str(text.trim()).expect("one JSON object")
+    } else {
+        Value::Null
+    };
     (json, text)
 }
 

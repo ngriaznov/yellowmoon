@@ -43,7 +43,8 @@ use ym_gpu::cpu::vignette::VignetteProfile;
 use ym_gpu::cpu::{Cfa, NoiseDn, Placement, RgbImage};
 use ym_gpu::device::{Gpu, GpuContext, GpuError, StorageMode};
 use ym_gpu::image::{GpuImage, RowBands};
-use ym_gpu::kernels::copy::{encode_copy_rect, encode_crop};
+use ym_gpu::kernels::copy::{Piece, encode_copy_rect, encode_crop, encode_gather};
+use ym_gpu::kernels::{KernelId, KernelSet};
 use ym_gpu::kernels::prep::DeviceRaw;
 use ym_gpu::queue::{CancelToken, JobSpec, Priority};
 use ym_gpu::stream::{CounterSnapshot, PassList};
@@ -679,6 +680,242 @@ fn a_picture_in_bands_reads_back_whole_and_gives_windows_equal_to_its_rows() {
         .expect("job");
 }
 
+/// A planar picture of `planes` planes cut into a grid of tiles of `tw x th` (the last ones smaller),
+/// as the pieces the cache of the 100 % view holds.
+fn tiles_of(
+    ctx: &GpuContext,
+    host: &[f32],
+    (w, h): (usize, usize),
+    (tw, th): (usize, usize),
+    planes: usize,
+) -> Result<Vec<Piece>, GpuError> {
+    let mut pieces = Vec::new();
+    for y0 in (0..h).step_by(th) {
+        for x0 in (0..w).step_by(tw) {
+            let (pw, ph) = (tw.min(w - x0), th.min(h - y0));
+            let mut part = Vec::with_capacity(planes * pw * ph);
+            for c in 0..planes {
+                for y in 0..ph {
+                    let from = (c * h + y0 + y) * w + x0;
+                    part.extend_from_slice(&host[from..from + pw]);
+                }
+            }
+            let image =
+                GpuImage::upload(ctx, "tile", pw, ph, planes, &part, Placement::whole(pw, ph))?;
+            pieces.push(Piece {
+                at: (x0, y0),
+                image: Arc::new(image),
+            });
+        }
+    }
+    Ok(pieces)
+}
+
+#[test]
+fn a_window_gathered_from_pieces_is_the_host_crop_bit_for_bit() {
+    let Some(dev) = f32_device() else { return };
+    dev.gpu
+        .run(job(), |ctx, _| {
+            let (w, h, planes) = (50usize, 30usize, 3usize);
+            let host = pattern(w, h, planes, 11);
+            let crop = |r: Rect| -> Vec<f32> {
+                let mut want = Vec::new();
+                for c in 0..planes {
+                    for y in 0..r.h {
+                        let from = (c * h + r.y + y) * w + r.x;
+                        want.extend_from_slice(&host[from..from + r.w]);
+                    }
+                }
+                want
+            };
+            let tiles = tiles_of(ctx, &host, (w, h), (16, 11), planes)?;
+            let bands = bands_of(ctx, &host, w, &[10, 7, 12, 1], planes)?;
+            let windows = [
+                Rect::new(0, 0, w, h),
+                Rect::new(3, 2, 9, 7),
+                Rect::new(10, 5, 30, 20),
+                Rect::new(15, 10, 2, 2),
+                Rect::new(49, 29, 1, 1),
+                Rect::new(32, 22, 18, 8),
+                Rect::new(0, 11, 16, 11),
+            ];
+            for (what, pieces) in [("tiles", tiles.clone()), ("bands", bands.pieces())] {
+                for win in windows {
+                    let mut passes = PassList::new(ctx, "gather");
+                    let got = encode_gather(&mut passes, &pieces, win)?;
+                    passes.submit()?.finish()?;
+                    assert_eq!((got.width, got.height, got.planes), (win.w, win.h, planes));
+                    assert_bit_equal(&format!("{what} {win:?}"), &got.read(ctx)?, &crop(win));
+                }
+            }
+            // A window that is one piece is that piece, with no copy.
+            let exact = Rect::new(16, 11, 16, 11);
+            let one = tiles.iter().find(|p| p.rect() == exact).expect("a tile");
+            let mut passes = PassList::new(ctx, "exact");
+            let got = encode_gather(&mut passes, &[one.clone()], exact)?;
+            assert!(Arc::ptr_eq(&got, &one.image), "no copy for a window that is a piece");
+            // What it refuses: no piece, an empty window, a window the pieces do not cover.
+            let mut passes = PassList::new(ctx, "refusals");
+            let hole: Vec<Piece> = tiles.iter().filter(|p| p.at != (16, 11)).cloned().collect();
+            for r in [
+                encode_gather(&mut passes, &[], exact),
+                encode_gather(&mut passes, &tiles, Rect::new(4, 4, 0, 3)),
+                encode_gather(&mut passes, &hole, Rect::new(10, 5, 30, 20)),
+                encode_gather(&mut passes, &tiles, Rect::new(40, 20, 20, 20)),
+            ] {
+                assert!(matches!(r, Err(GpuError::InvalidInput(_))), "{r:?}");
+            }
+            Ok(())
+        })
+        .expect("job");
+}
+
+/// A cold start compiles what the first frame of the first photo waits for before what only a zoomed
+/// view or an export needs (`KernelId::ALL` is the warm-up order).
+#[test]
+fn a_cold_start_compiles_the_fit_view_then_the_view_stages_then_the_full_resolution_chain() {
+    use KernelId::*;
+    let at = |id: KernelId| KernelId::ALL.iter().position(|k| *k == id).expect("listed");
+    let fit = [
+        Prep, PrepMask, HighlightsSuper, Highlights, MosaicCa, Sigma, Bin, BinSigma, Reduce,
+        ReduceFold, SigmaExpand, Bilateral, Lens, Copy,
+    ];
+    let view = [
+        Sampler,
+        Color,
+        OutputSharpenLuma,
+        OutputSharpenHighpassRows,
+        OutputSharpenHighpassCols,
+        OutputSharpenGainTerms,
+        OutputSharpenBlur,
+        OutputSharpenAccumulate,
+        OutputSharpenWindow,
+        OutputSharpenTransfer,
+        Encode,
+    ];
+    let unused = [SpikeNormalize, SpikeDemosaic, SpikeMatrix, Probe];
+    let last_of = |ids: &[KernelId]| ids.iter().map(|&k| at(k)).max().expect("some");
+    let first_of = |ids: &[KernelId]| ids.iter().map(|&k| at(k)).min().expect("some");
+    assert_eq!(first_of(&fit), 0);
+    assert!(last_of(&fit) < first_of(&view), "the fit view before the view stages");
+    let chain: Vec<KernelId> = KernelId::ALL
+        .into_iter()
+        .filter(|k| {
+            !fit.contains(k) && !view.contains(k) && !unused.contains(k) && *k != Resize
+        })
+        .collect();
+    assert!(!chain.is_empty());
+    assert!(
+        last_of(&view) < first_of(&chain),
+        "the view stages before the full-resolution chain"
+    );
+    assert!(last_of(&chain) < at(Resize), "the export tail after the chain");
+    assert!(at(Resize) < first_of(&unused), "what no render uses is last");
+    // Every kernel is listed once, and the sets are views of the one order.
+    let mut seen = KernelId::ALL.to_vec();
+    seen.sort_by_key(|k| *k as usize);
+    seen.dedup();
+    assert_eq!(seen.len(), KernelId::ALL.len());
+    assert_eq!(
+        KernelSet::All.kernels().collect::<Vec<_>>(),
+        KernelId::ALL.to_vec()
+    );
+    let view_set: Vec<KernelId> = KernelSet::View.kernels().collect();
+    assert!(view_set.windows(2).all(|p| at(p[0]) < at(p[1])));
+}
+
+// ---------------------------------------------------------------------------------------------
+// What recording costs (the UniformArena / BindGroupCache / ReadbackRing decision, X-17)
+// ---------------------------------------------------------------------------------------------
+
+/// The measurement the plan asks for before an arena of uniforms, a cache of bind groups or a ring of
+/// readback buffers is built (`docs/gpu-plan.md` V-2, X-17): the CPU time of recording one dispatch
+/// (a uniform buffer from the pool, a queue write, a bind group, a compute pass), the number of
+/// dispatches, uploads and submissions a tile costs, and the share of the tile's wall time that
+/// recording is. The numbers go to the log (`[G-10] ...`, and a GitHub annotation); the bounds are
+/// sanity bounds. The Mac session (M0-H4) reads the same lines on Metal, where a tile takes
+/// milliseconds and the share may be larger than on lavapipe.
+#[test]
+fn what_recording_costs_per_dispatch_and_per_tile_is_measured_for_the_arena_decision() {
+    use std::time::{Duration, Instant};
+    let Some(dev) = f32_device() else { return };
+    // The cost of one recorded dispatch: copies of 16 x 16 pixels, so that the device's own time is
+    // the least it can be, in lists of 250.
+    let (per_dispatch, per_run) = dev
+        .gpu
+        .run(job(), |ctx, _| {
+            let a = GpuImage::upload(ctx, "a", 64, 64, 3, &pattern(64, 64, 3, 5), Placement::whole(64, 64))?;
+            let b = GpuImage::alloc(ctx, "b", 64, 64, 3, Placement::whole(64, 64))?;
+            let record = |passes: &mut PassList<'_>| -> Result<(), GpuError> {
+                for _ in 0..250 {
+                    encode_copy_rect(passes, &a, Rect::new(0, 0, 16, 16), &b, (0, 0))?;
+                }
+                Ok(())
+            };
+            // One list first, so that the pipeline is compiled and the pool is warm.
+            let mut passes = PassList::new(ctx, "warm");
+            record(&mut passes)?;
+            passes.submit()?.finish()?;
+            let (mut rec, mut run) = (Duration::ZERO, Duration::ZERO);
+            for _ in 0..8 {
+                let t = Instant::now();
+                let mut passes = PassList::new(ctx, "micro");
+                record(&mut passes)?;
+                rec += t.elapsed();
+                let t = Instant::now();
+                passes.submit()?.finish()?;
+                run += t.elapsed();
+            }
+            Ok((rec.as_secs_f64() / 2000.0, run.as_secs_f64() / 2000.0))
+        })
+        .expect("micro");
+    let mut lines = vec![format!(
+        "recording one dispatch (uniform from the pool, queue write, bind group, pass): {:.1} us; submit and finish: {:.1} us per dispatch for trivial passes",
+        per_dispatch * 1e6,
+        per_run * 1e6
+    )];
+    // A tile of the raw chain, from the resident words, as the view and the export make them.
+    let photo = Arc::new(Photo::new(512, 384, Cfa::RGGB, 91, Lens::Full, false));
+    let (ow, oh) = photo.output_size();
+    let out = Rect::new(ow / 4, oh / 4, 256.min(ow / 2), 192.min(oh / 2));
+    let p = Arc::clone(&photo);
+    let (wall, ran) = dev
+        .gpu
+        .run(job(), move |ctx, cancel| {
+            let raw = p.upload(ctx)?;
+            let g = p.device_chain()?;
+            // A first tile compiles the pipelines of the chain.
+            drop(g.run_tile_device(ctx, &raw, out, cancel)?);
+            let before = ctx.counters();
+            let t = Instant::now();
+            drop(g.run_tile_device(ctx, &raw, out, cancel)?);
+            Ok((t.elapsed().as_secs_f64(), ctx.counters().since(before)))
+        })
+        .expect("tile");
+    let share = ran.dispatches as f64 * per_dispatch / wall;
+    lines.push(format!(
+        "a {}x{} tile of R1..R9 from the resident words: {} submissions, {} dispatches, {} uploads ({} B), {} readbacks, {:.0} ms; recording is about {:.2} % of it",
+        out.w,
+        out.h,
+        ran.submissions,
+        ran.dispatches,
+        ran.uploads,
+        ran.uploaded_bytes,
+        ran.readbacks,
+        wall * 1e3,
+        share * 1e2
+    ));
+    for line in &lines {
+        eprintln!("[G-10] {line}");
+        if std::env::var_os("GITHUB_ACTIONS").is_some() {
+            eprintln!("::notice title=G-10 recording cost::{line}");
+        }
+    }
+    assert!(per_dispatch < 5e-3, "recording a dispatch took {per_dispatch} s");
+    assert!(ran.submissions <= 3, "{} submissions for one tile", ran.submissions);
+    assert!(ran.dispatches > 0 && ran.readbacks == 0);
+}
+
 // ---------------------------------------------------------------------------------------------
 // The handoff to the export tail
 // ---------------------------------------------------------------------------------------------
@@ -724,6 +961,9 @@ struct Run {
     tile_readbacks: u64,
     total_readbacks: u64,
     tiles: usize,
+    /// Seconds the chain's job took for each tile (the call of `run_tile_device` or
+    /// `run_tile_front`, the device's work plus the host stages around it).
+    chain_seconds: Vec<f64>,
 }
 
 /// The raw chain's tiles of `photo` through the tail, in tile rows, with the tiles handed over as host
@@ -754,6 +994,7 @@ fn through_the_tail(
     let mut worst = 0u64;
     let mut tile_readbacks = 0u64;
     let mut tiles = 0usize;
+    let mut chain_seconds = Vec::new();
     let start: CounterSnapshot = gpu.counters();
     let mut oy = 0;
     while oy < oh {
@@ -767,15 +1008,19 @@ fn through_the_tail(
             let rect = Rect::new(x0, y0, x1 - x0, y1 - y0);
             let before = gpu.counters();
             if resident {
+                let started = std::time::Instant::now();
                 let image = chain
                     .run_tile_device(&runner, &raw, rect, &CancelToken::new())
                     .expect("a resident tile");
+                chain_seconds.push(started.elapsed().as_secs_f64());
                 tail.add_tile_device(Arc::new(image), (x0, y0), (ox, oy), tw, th)
                     .expect("a device tile");
             } else {
+                let started = std::time::Instant::now();
                 let image = chain
                     .run_tile_front(&runner, &raw, rect, &CancelToken::new())
                     .expect("a host tile");
+                chain_seconds.push(started.elapsed().as_secs_f64());
                 tail.add_tile(Arc::new(image), (x0, y0), (ox, oy), tw, th)
                     .expect("a host tile");
             }
@@ -796,6 +1041,7 @@ fn through_the_tail(
         tile_readbacks,
         total_readbacks: total.readbacks,
         tiles,
+        chain_seconds,
     }
 }
 
@@ -944,6 +1190,12 @@ fn fifty_megapixels_through_the_chain_and_the_tail_stay_under_two_gib() {
         peak >> 20,
         in_use >> 20,
         baseline >> 20
+    );
+    let mean = run.chain_seconds.iter().sum::<f64>() / run.chain_seconds.len().max(1) as f64;
+    let longest = run.chain_seconds.iter().copied().fold(0.0, f64::max);
+    eprintln!(
+        "[G-10] 50 MP chain job per 1024 px tile (about 1.1 MP of mosaic each): mean {mean:.2} s, longest {longest:.2} s over {} tiles",
+        run.chain_seconds.len()
     );
     assert!(peak < 2 << 30, "peak {peak} bytes");
     assert!(run.worst_tile_submissions <= 3);

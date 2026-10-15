@@ -40,7 +40,7 @@ use ym_gpu::device::{Gpu, GpuContext, GpuError, GpuInfo};
 use ym_gpu::image::{GpuImage, RowBands};
 use ym_gpu::kernels::copy::Piece;
 use ym_gpu::kernels::prep::DeviceRaw;
-use ym_gpu::queue::{CancelToken, JobSpec, Priority};
+use ym_gpu::queue::{CancelToken, JobHandle, JobSpec, Priority};
 
 use super::color::{
     ColorKey, ColorPlan, DisplayChoice, GradeKey, GradePlan, GradeRequest, LookProvider,
@@ -74,6 +74,18 @@ pub const RESIDENT_PHOTOS: usize = 2;
 /// The default of [`RenderOptions::view_band_bytes`]: 128 MiB, the storage binding the GPU plan
 /// designs every device pass for (`docs/gpu-plan.md` N-1, K4).
 pub const VIEW_BAND_BYTES: u64 = 128 << 20;
+
+/// What [`Renderer::prefetch_raw`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RawPrefetch {
+    /// The photo's raw words were uploaded.
+    Uploaded,
+    /// They were on the device already.
+    Resident,
+    /// Nothing was done: there is no device for the raw front, the file has no mosaic, two photos are
+    /// resident already, or the upload failed.
+    Skipped,
+}
 
 /// What a [`Renderer`] needs to know about the machine and the preferences.
 #[derive(Clone)]
@@ -571,6 +583,9 @@ struct Inner {
     /// A shader of the view stages failed to compile on this machine: the device does not run them
     /// for the rest of the process.
     view_gpu_disabled: AtomicBool,
+    /// Held while a prefetch of raw words counts the photos that are resident and uploads, so that
+    /// two prefetches do not both find room for the last place ([`Renderer::prefetch_raw`]).
+    prefetch_gate: Mutex<()>,
     /// A shader of the export tail (the sampler, colour, resize, sharpening and C13 kernels as the
     /// tail runs them, and the DNG's device colour stage) failed to compile on this machine: the
     /// device does not run the tail for the rest of the process (`docs/gpu-plan.md` 4.9, "shader:
@@ -621,6 +636,7 @@ impl Renderer {
                 resident_clock: AtomicU64::new(0),
                 previous: Mutex::new(None),
                 view_gpu_disabled: AtomicBool::new(false),
+                prefetch_gate: Mutex::new(()),
                 tail_gpu_disabled: AtomicBool::new(false),
             }),
         })
@@ -854,6 +870,68 @@ impl Renderer {
             tracing::warn!(error = %error, "a shader of the export tail failed; the device does not run it again in this process");
             self.inner.tail_gpu_disabled.store(true, Ordering::SeqCst);
         }
+    }
+
+    /// Puts the raw words of `src` on the device ahead of the person getting there (the neighbours of
+    /// the photo being looked at), as a job of [`Priority::Thumbnail`], so that the first frame of the
+    /// photo does not wait for the upload. A prefetch never makes room: it uploads only while fewer
+    /// than [`RESIDENT_PHOTOS`] photos have their words on the device, so that the photo being
+    /// looked at and the one before it keep theirs and at most two are ever uploaded.
+    ///
+    /// Best effort: no device, the raw front off, a camera-processed file, a failed upload and a
+    /// strict policy's refusal are all [`RawPrefetch::Skipped`] (the frame that needs the words
+    /// uploads them itself, and reports any error).
+    ///
+    /// # Errors
+    ///
+    /// [`RenderError::Cancelled`] when `cancel` was set or the photo belongs to a closed session;
+    /// [`RenderError::Image`] for a mosaic that cannot be cut.
+    pub fn prefetch_raw(
+        &self,
+        src: &PhotoSource,
+        cancel: &CancelToken,
+    ) -> Result<RawPrefetch, RenderError> {
+        let mut job = Job::new(self, src, cancel)?;
+        job.gpu_priority = Priority::Thumbnail;
+        let Ok(Some(gpu)) = job.raw_device(GpuStages::RAW_FRONT) else {
+            return Ok(RawPrefetch::Skipped);
+        };
+        if job.g.resident().is_some() {
+            self.touch_resident(&job.g);
+            return Ok(RawPrefetch::Resident);
+        }
+        let _gate = lock(&self.inner.prefetch_gate);
+        if self.resident_photos() >= RESIDENT_PHOTOS {
+            return Ok(RawPrefetch::Skipped);
+        }
+        let frame = job.frame()?;
+        if frame.reduced {
+            return Ok(RawPrefetch::Skipped);
+        }
+        let route = job.device_route(gpu);
+        match job.resident(&route, &frame) {
+            Ok(_) => Ok(RawPrefetch::Uploaded),
+            Err(GpuError::Cancelled) => Err(RenderError::Cancelled),
+            Err(e) => {
+                tracing::debug!(error = %e, "the raw words of a neighbour could not be prefetched");
+                Ok(RawPrefetch::Skipped)
+            }
+        }
+    }
+
+    /// Queues [`Renderer::prefetch_raw`] at [`Priority::Thumbnail`]. Moving on to another photo does
+    /// not cancel it (the photo it loads is likely the next one).
+    #[must_use]
+    pub fn spawn_raw_prefetch(
+        &self,
+        src: PhotoSource,
+    ) -> JobHandle<Result<RawPrefetch, RenderError>> {
+        let r = self.clone();
+        let id = src.id;
+        self.scheduler()
+            .submit(Priority::Thumbnail, Some(id), move |token| {
+                r.prefetch_raw(&src, token)
+            })
     }
 
     /// How many photos have their raw words on the device.
@@ -1882,6 +1960,29 @@ impl<'a> Job<'a> {
                 .insert(key, made.clone(), bytes);
         }
         Ok(made)
+    }
+
+    /// Makes the tiles of the 100 % view that cover `rect` and leaves them in the cache where they
+    /// are made (on the device when the caches keep their images there), bringing no pixel to the
+    /// host: the work ahead of a view ([`Renderer::prepare_tiles`]).
+    pub fn warm_tiles(&mut self, rect: Rect) -> Result<(), RenderError> {
+        let plan = self.plan()?;
+        if rect.is_empty() || rect.x1() > plan.out_w || rect.y1() > plan.out_h {
+            return Err(RenderError::Image(
+                "The region is outside the photo.".to_owned(),
+            ));
+        }
+        if plan.reduced {
+            return self.group_backing(1).map(|_| ());
+        }
+        let t = self.opts.tile_px.max(64);
+        for ty in rect.y / t..=(rect.y1() - 1) / t {
+            for tx in rect.x / t..=(rect.x1() - 1) / t {
+                self.check()?;
+                self.tile_backing(tx, ty, true)?;
+            }
+        }
+        Ok(())
     }
 
     /// The pixels a view of the 100 % path samples from: the full-resolution raw group over `rect`,
