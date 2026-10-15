@@ -1944,9 +1944,13 @@ mod faults {
             seen.lock().expect("lock").push(f);
             // A slow writer: the render runs ahead until the channel is full.
             std::thread::sleep(std::time::Duration::from_millis(15));
+            eprintln!("DBG {:?} progress {f}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() % 100000);
             if f >= 0.2 && taken.fetch_add(1, Ordering::SeqCst) == 0 {
+                eprintln!("DBG {:?} take start", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() % 100000);
                 take_the_raw_words_away(ctx.renderer(), &src);
+                eprintln!("DBG {:?} take end", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() % 100000);
                 own.set_fault(Some(GpuFault::FailUpload(1)));
+                eprintln!("DBG {:?} armed", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() % 100000);
             }
         };
         let r = export_photo(

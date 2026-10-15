@@ -44,7 +44,7 @@ test.describe("the happy path", () => {
     const problems = watchErrors(page);
     await wizard(page);
     await expect(step(page)).toHaveText("Import · step 1 of 5");
-    await expect(page.getByText("Download total: 181 MB")).toBeVisible();
+    await expect(page.getByText("Download total: 190 MB")).toBeVisible();
     await next(page).click();
     await expect(step(page)).toHaveText("Import · step 2 of 5");
     await expect(page.getByText("Waiting for Look Library · LogC4…")).toBeVisible();

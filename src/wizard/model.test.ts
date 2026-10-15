@@ -34,7 +34,7 @@ function pkg(path: string, id: PackageId, title = "Look Library · LogC4", files
     path,
     name: path.split("/").pop() ?? path,
     source: "zip",
-    size_bytes: 181_000_000,
+    size_bytes: 190_000_000,
     recognition: { kind: "package", package_id: id, title, what: `${title} · log to log`, contents: `${files} .cube · 65-point`, file_count: files, note: null },
   };
 }
@@ -77,11 +77,11 @@ describe("Choose", () => {
 
   it("sums the download and says so in the footer", () => {
     let state = initialWizard();
-    expect(downloadTotalMb(state)).toBe(181);
-    expect(footNote(state)).toBe("Download total: 181 MB");
+    expect(downloadTotalMb(state)).toBe(190);
+    expect(footNote(state)).toBe("Download total: 190 MB");
     state = run([{ type: "toggle-package", id: "display_luts_logc4" }], state);
-    expect(downloadTotalMb(state)).toBe(213);
-    expect(footNote(state)).toBe("Download total: 213 MB");
+    expect(downloadTotalMb(state)).toBe(222);
+    expect(footNote(state)).toBe("Download total: 222 MB");
   });
 
   it("locks Next until a package is chosen", () => {

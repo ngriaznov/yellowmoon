@@ -176,7 +176,8 @@ export function rowView(v: Verdict): RowView {
         tag: v.input ? "match" : "active",
         tagLabel: v.input ? "Ready" : "Question",
         explanation: v.note,
-        note: null,
+        // An answered set stands in for the chosen package that has the same input, so that package is not missing.
+        note: v.standsFor ? `Counts as ${v.standsFor}. Imported as your own LUTs, with the input you picked.` : null,
       };
     case "unusable":
       return { what: "Can't be imported", contents: "", tag: "failed", tagLabel: "Can't use", explanation: v.explanation, note: null };
@@ -321,7 +322,9 @@ export function FinishStep({ wizard }: { wizard: Wizard }) {
   const outcome = state.outcome;
 
   const ordered = looksInDisplayOrder(looks ?? []);
-  const arri = ordered.filter((l) => l.group.kind === "arri");
+  // Looks the packages gave; when there are none, the person's own LUTs (a set of unknown files that was answered is imported as those).
+  const arriOnly = ordered.filter((l) => l.group.kind === "arri");
+  const arri = arriOnly.length > 0 ? arriOnly : ordered.filter((l) => l.group.kind === "user");
   const builtIn = ordered.filter((l) => l.group.kind === "built_in");
   const current = session && session.current_index !== null ? session.photos[session.current_index] : undefined;
   const photoId = current && isReady(current) ? current.id : null;

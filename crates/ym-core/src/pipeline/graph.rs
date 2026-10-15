@@ -2254,7 +2254,10 @@ impl<'a> Job<'a> {
         if self.r.is_protected(self.src.id) {
             self.r.trim_resident(RESIDENT_PHOTOS - 1);
         }
-        let raw = route.upload(frame)?;
+        eprintln!("DBG {:?} upload start", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() % 100000);
+        let raw = route.upload(frame);
+        eprintln!("DBG {:?} upload result ok={}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() % 100000, raw.is_ok());
+        let raw = raw?;
         {
             let mut st = lock(&g.state);
             if st.fingerprint == Some(self.src.fingerprint) {
