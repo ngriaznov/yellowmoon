@@ -801,7 +801,7 @@ impl Renderer {
                 (tick, g)
             })
             .collect();
-        held.sort_by(|a, b| b.0.cmp(&a.0));
+        held.sort_by_key(|(tick, _)| std::cmp::Reverse(*tick));
         for (_, g) in held.into_iter().skip(keep) {
             g.drop_resident();
         }
@@ -1620,9 +1620,11 @@ impl<'a> Job<'a> {
     }
 
     /// The range this request expects its tiles to run on the device (what a CPU fall-back is
-    /// recorded against).
+    /// recorded against): the whole chain when the raw front is on, whether or not the photo's words
+    /// could be put on the device for this request (the tiles that did run behind the CPU's front say
+    /// [`DEVICE_RANGE`] themselves).
     fn expected_range(&self) -> StageRange {
-        if self.opts.gpu_stages.contains(GpuStages::RAW_FRONT) && !self.front_failed {
+        if self.opts.gpu_stages.contains(GpuStages::RAW_FRONT) {
             FRONT_RANGE
         } else {
             DEVICE_RANGE

@@ -428,7 +428,7 @@ impl Renderer {
         self.scheduler()
             .submit(Priority::Export, Some(id), move |token| {
                 match r.render_full_on(&src, &request, token, true, Some(&*progress), true)? {
-                    super::Attempt::Done(image) => Ok(image),
+                    super::Attempt::Done(image) => Ok(*image),
                     super::Attempt::DeviceFailed(reason) => Err(RenderError::Gpu(reason)),
                 }
             })

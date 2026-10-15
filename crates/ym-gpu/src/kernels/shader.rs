@@ -98,9 +98,9 @@ pub enum KernelId {
     HighlightsSuper,
     /// G-07: R5 highlight reconstruction, applying the chroma offsets.
     Highlights,
-    /// PLACEHOLDER (G-07): R5b lateral chromatic aberration on the mosaic.
+    /// G-07: R5b lateral chromatic aberration on the mosaic.
     MosaicCa,
-    /// PLACEHOLDER (G-07): R9 lens resampling.
+    /// G-07: R9 lens resampling.
     Lens,
     /// G-07: the half-resolution noise sigma plane, from the resident raw words.
     Sigma,
@@ -140,11 +140,16 @@ pub enum KernelId {
     RlOutput,
     /// G-08: the Lanczos-3 resize of the export tail (one separable pass per dispatch).
     Resize,
+    /// A permanent stub (G-07): the one placeholder that stays. It writes a NaN into its single
+    /// storage binding and nothing else, so the tests of the pass list, the pool and a lost device,
+    /// which need *a* dispatch with one binding, have one now that every kernel of the plan is real.
+    /// No stage is ever wired to it.
+    Probe,
 }
 
 impl KernelId {
     /// All kernels, placeholders included (see [`KernelId::is_placeholder`]).
-    pub const ALL: [KernelId; 60] = [
+    pub const ALL: [KernelId; 61] = [
         KernelId::SpikeNormalize,
         KernelId::SpikeDemosaic,
         KernelId::SpikeMatrix,
@@ -205,6 +210,7 @@ impl KernelId {
         KernelId::RlBlurColsUpdate,
         KernelId::RlOutput,
         KernelId::Resize,
+        KernelId::Probe,
     ];
 
     /// Stable name (also the pipeline label).
@@ -270,6 +276,7 @@ impl KernelId {
             KernelId::RlBlurColsUpdate => "rl_blur_cols_update",
             KernelId::RlOutput => "rl_output",
             KernelId::Resize => "resize",
+            KernelId::Probe => "probe",
         }
     }
 
@@ -281,10 +288,12 @@ impl KernelId {
     /// it. The task that implements the kernel replaces the stub with `include_str!` of its own
     /// `.wgsl` in `KernelId::body` and deletes the id from this match (two small edits, reported).
     pub const fn placeholder_owner(self) -> Option<&'static str> {
-        // Every family the plan registered ahead of its implementation has one now (G-07 wrote the
-        // last of them); a later task that registers another adds an arm here.
-        let _ = self;
-        None
+        // Every family the plan registered ahead of its implementation is real now (G-07 wrote the
+        // last of them); a later task that registers another adds an arm here. The probe stays.
+        match self {
+            KernelId::Probe => Some("G-07"),
+            _ => None,
+        }
     }
 
     /// Whether this kernel is still a placeholder ([`KernelId::placeholder_owner`]).
@@ -370,6 +379,7 @@ impl KernelId {
             KernelId::Sigma => super::sigma::body(),
             KernelId::Bin | KernelId::BinSigma => super::bin::body(self),
             KernelId::Resize => super::resize::body(),
+            KernelId::Probe => placeholder_body(self),
         }
     }
 }
@@ -415,7 +425,6 @@ impl KernelSet {
 /// The WGSL of a placeholder kernel: one storage binding it writes a NaN into, nothing else, so a
 /// stage wired to it by mistake fails every parity test instead of passing by accident. The NaN is
 /// built from a run-time value because WGSL refuses to evaluate one at shader-creation time.
-#[allow(dead_code)]
 fn placeholder_body(id: KernelId) -> String {
     let owner = id.placeholder_owner().unwrap_or("?");
     format!(

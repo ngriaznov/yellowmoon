@@ -114,9 +114,9 @@ fn prep_without_a_profile_has_the_cpus_bits() {
                 Rect::whole(w, h),
                 Rect::new(1, 1, w - 2, h - 2),
                 Rect::new(
-                    w / 2 | 1,
-                    h / 3 | 1,
-                    w - (w / 2 | 1),
+                    (w / 2) | 1,
+                    (h / 3) | 1,
+                    w - ((w / 2) | 1),
                     (h - h / 3).max(1) - 1,
                 ),
             ];
@@ -340,7 +340,7 @@ fn a_70_mp_frame_runs_through_two_slabs() {
     };
     let profile = vignette_profile();
     // The corner tile in the second slab, and one that straddles the slab boundary.
-    let split = (MAX_SLAB_SAMPLES / w) as usize;
+    let split = MAX_SLAB_SAMPLES / w;
     let tiles = [
         Rect::new(w - 512, h - 512, 512, 512),
         Rect::new(4000, split - 100, 600, 200),

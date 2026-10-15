@@ -342,10 +342,12 @@ impl DeviceRaw {
     }
 }
 
-/// The vignetting profile as the shader reads it: the attenuation `G_i` at each knot, rounded to `f32`.
+/// The vignetting profile as the shader reads it: the attenuation `G_i` at each knot, in `f64` (the
+/// shader takes each as a pair of `f32`, so that it forms the gain in double-floats as the CPU forms it
+/// in `f64`).
 #[derive(Clone, Debug, PartialEq)]
 pub struct VignetteTable {
-    att: Vec<f32>,
+    att: Vec<f64>,
 }
 
 impl VignetteTable {
@@ -362,9 +364,7 @@ impl VignetteTable {
                 ys.len()
             )));
         }
-        Ok(VignetteTable {
-            att: ys.iter().map(|&v| v as f32).collect(),
-        })
+        Ok(VignetteTable { att: ys.to_vec() })
     }
 
     /// The number of knots.
@@ -413,7 +413,13 @@ pub(crate) struct FrameU {
 pub(crate) struct VigU {
     info: [u32; 4],
     k: [f32; 4],
-    att: [[f32; 4]; 8],
+    att: [[f32; 4]; 16],
+}
+
+/// `v` as a pair of `f32` whose sum is `v` to 48 bits.
+fn split_f64(v: f64) -> (f32, f32) {
+    let hi = v as f32;
+    (hi, (v - f64::from(hi)) as f32)
 }
 
 impl FrameU {
@@ -442,7 +448,7 @@ impl FrameU {
 impl VigU {
     /// The block for a frame of `width x height` photosites; with no table the profile is off.
     pub(crate) fn new(table: Option<&VignetteTable>, width: usize, height: usize) -> VigU {
-        let mut att = [[0.0f32; 4]; 8];
+        let mut att = [[0.0f32; 4]; 16];
         let Some(t) = table else {
             return VigU {
                 info: [0; 4],
@@ -451,18 +457,16 @@ impl VigU {
             };
         };
         for (i, v) in t.att.iter().enumerate() {
-            att[i / 4][i % 4] = *v;
+            let (hi, lo) = split_f64(*v);
+            att[i / 2][2 * (i % 2)] = hi;
+            att[i / 2][2 * (i % 2) + 1] = lo;
         }
         // r = sqrt(X^2 + Y^2) / sqrt(w^2 + h^2) for the doubled offsets X, Y; u = r (n - 1) - 0.5.
         let diag = ((width as f64).powi(2) + (height as f64).powi(2)).sqrt();
+        let (scale_hi, scale_lo) = split_f64((t.att.len() - 1) as f64 / diag);
         VigU {
             info: [t.att.len() as u32, 0, 0, 0],
-            k: [
-                ((t.att.len() - 1) as f64 / diag) as f32,
-                MIN_ATTENUATION as f32,
-                0.0,
-                0.0,
-            ],
+            k: [scale_hi, scale_lo, MIN_ATTENUATION as f32, 0.0],
             att,
         }
     }
@@ -682,6 +686,7 @@ fn unpack_mask(bytes: &[u8], width: usize, height: usize) -> Vec<u8> {
 pub(super) fn body(id: KernelId) -> String {
     let mut s = String::new();
     s.push_str(include_str!("../shaders/front_opaque.wgsl"));
+    s.push_str(include_str!("../shaders/front_exact.wgsl"));
     s.push_str(include_str!("../shaders/front_raw.wgsl"));
     s.push_str(include_str!("../shaders/front_vig.wgsl"));
     s.push_str(include_str!("../shaders/prep.wgsl"));

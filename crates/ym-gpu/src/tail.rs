@@ -407,12 +407,15 @@ struct PrepareData {
     v: Option<Taps>,
 }
 
+/// The horizontal and the vertical taps on the device (each only when the export resizes).
+type TapPair = (Option<Arc<PreparedTaps>>, Option<Arc<PreparedTaps>>);
+
 /// The device copies of the resize taps.
 fn prepare_job(
     ctx: &GpuContext,
     token: &CancelToken,
     d: &PrepareData,
-) -> Result<(Option<Arc<PreparedTaps>>, Option<Arc<PreparedTaps>>), GpuError> {
+) -> Result<TapPair, GpuError> {
     token.check()?;
     let make = |t: &Option<Taps>| -> Result<Option<Arc<PreparedTaps>>, GpuError> {
         t.as_ref()

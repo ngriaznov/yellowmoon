@@ -367,22 +367,25 @@ pub fn ref_bin_mosaic(m: &Mosaic, k: usize) -> RgbImage {
                 *s += block[first..].iter().step_by(2).sum::<f32>();
             }
         }
-        for ox in 0..ow {
-            img.data[n + oy * ow + ox] = sums[ox] / green_count;
+        for (d, s) in img.data[n + oy * ow..n + (oy + 1) * ow]
+            .iter_mut()
+            .zip(&sums)
+        {
+            *d = s / green_count;
         }
         for (plane, (qx, qy, wx, wy)) in [0usize, 2].into_iter().zip(&lattices) {
             let mut acc = vec![0.0f32; ow];
             for (ii, wyi) in wy.iter().enumerate() {
                 let y = (oy * k) as isize + 2 * (ii as isize - 1) + *qy as isize;
                 let row = &m.data[same_parity(y, h) * w..(same_parity(y, h) + 1) * w];
-                for ox in 0..ow {
+                for (ox, a) in acc.iter_mut().enumerate() {
                     let x0 = (ox * k) as isize + *qx as isize;
                     let line: f32 = wx
                         .iter()
                         .enumerate()
                         .map(|(jj, wxj)| wxj * row[same_parity(x0 + 2 * (jj as isize - 1), w)])
                         .sum();
-                    acc[ox] += wyi * line;
+                    *a += wyi * line;
                 }
             }
             img.data[plane * n + oy * ow..plane * n + (oy + 1) * ow].copy_from_slice(&acc);

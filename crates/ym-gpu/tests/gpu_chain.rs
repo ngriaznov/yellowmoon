@@ -770,7 +770,12 @@ fn the_chain_refuses_what_the_device_does_not_run() {
     // so `run_tile` refuses it and `run_tile_front` runs it).
     assert_eq!(StageRange::RAW_TO_LENS.label(), "R1..R9");
     assert!(GpuChain::new(&chain, &prepared, StageRange::RAW_TO_LENS).is_ok());
-    for stage in [RawStage::Normalize, RawStage::Highlights, RawStage::Demosaic, RawStage::Lens] {
+    for stage in [
+        RawStage::Normalize,
+        RawStage::Highlights,
+        RawStage::Demosaic,
+        RawStage::Lens,
+    ] {
         assert!(StageRange::RAW_TO_LENS.contains(stage));
     }
     assert!(StageRange::RAW_TO_LENS.covers_sigma_stages());

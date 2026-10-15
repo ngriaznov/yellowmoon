@@ -236,6 +236,7 @@ fn feed_regions(
     Ok(bands)
 }
 
+#[allow(clippy::too_many_arguments)] // one configuration of a run, passed once
 fn run_tail(
     dev: &TestGpu,
     sc: &Scene,

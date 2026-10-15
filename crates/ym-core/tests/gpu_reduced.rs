@@ -177,13 +177,19 @@ fn the_fit_view_group_runs_on_the_device_from_words_uploaded_once() {
     assert_eq!(after.raw_uploads, before.raw_uploads, "no second upload");
     assert_eq!(after.raw_uploads, 1, "one upload for the whole photo");
     assert!(full.report.runs.tiles >= 6);
-    assert_eq!(full.report.runs.raw_uploads, 0, "the export used the resident words");
+    assert_eq!(
+        full.report.runs.raw_uploads, 0,
+        "the export used the resident words"
+    );
     // An export lets go of the photo's words when it is done ...
     assert_eq!(all.resident_photos(), 0);
     // ... unless the photo is the one being looked at.
     all.navigate(src.id);
     let again = render_full(&all, &src);
-    assert_eq!(again.report.runs.raw_uploads, 1, "uploaded again for this export");
+    assert_eq!(
+        again.report.runs.raw_uploads, 1,
+        "uploaded again for this export"
+    );
     assert_eq!(all.resident_photos(), 1);
 }
 
@@ -249,6 +255,51 @@ fn the_tiles_run_r1_to_r9_with_the_front_and_r6_to_r8_without_it() {
     assert!(w1 < 2e-3 && o1 <= 1e-5 && m1 < 1e-6, "{w1} {o1} {m1}");
 }
 
+/// The lens switches of the RAW tab cut the front down to what the device makes bit for bit.
+#[test]
+fn the_front_is_the_cpus_to_the_bit_where_it_has_no_lens_to_correct() {
+    let Some(gpu) = gpu() else { return };
+    let base = source(&clipped_scene(1300, 900, 5));
+    let edit = |lens: bool, ca: bool| {
+        let mut st = base.settings.clone();
+        st.decode.lens_corrections = lens;
+        st.decode.chromatic_aberration = ca;
+        base.with_settings(st)
+    };
+    let cpu = renderer(None, GpuStages::NONE);
+    let front = renderer(Some(&gpu), GpuStages::RAW_CHAIN.union(GpuStages::RAW_FRONT));
+    let behind = renderer(Some(&gpu), GpuStages::RAW_CHAIN);
+    let stat = |a: &[f32], b: &[f32]| {
+        let (mut worst, mut over) = (0.0f64, 0usize);
+        for (&x, &y) in a.iter().zip(b) {
+            let d = f64::from((x - y).abs());
+            worst = worst.max(d);
+            over += usize::from(d > 1e-3);
+        }
+        (worst, over)
+    };
+    let mut table = Vec::new();
+    for (lens, ca) in [(false, false), (true, false), (true, true)] {
+        let src = edit(lens, ca);
+        let c = render_full(&cpu, &src);
+        let r6 = render_full(&behind, &src);
+        let r1 = render_full(&front, &src);
+        let (w6, o6) = stat(&c.rgb, &r6.rgb);
+        let (w1, o1) = stat(&c.rgb, &r1.rgb);
+        table.push(format!(
+            "lens {lens} CA {ca}: R6..R8 against CPU worst {w6:e} ({o6} over 1e-3), R1..R9 worst {w1:e} ({o1} over 1e-3)"
+        ));
+        if !lens {
+            // Without a lens table the front is R1, R4 and R5 only: the CPU's bits, so the demosaic
+            // takes the CPU's decisions and the picture is the R6..R8 route's.
+            assert_eq!(r1.rgb, r6.rgb, "lens off: the front changes nothing");
+        }
+    }
+    for line in &table {
+        eprintln!("{line}");
+    }
+}
+
 #[test]
 fn two_photos_stay_on_the_device_and_the_third_pushes_the_oldest_out() {
     let Some(gpu) = gpu() else { return };
@@ -277,7 +328,6 @@ fn two_photos_stay_on_the_device_and_the_third_pushes_the_oldest_out() {
         .collect();
     let ids: Vec<PhotoId> = sources.iter().map(|s| s.id).collect();
     let r = renderer(Some(&gpu), GpuStages::ALL);
-    let token = CancelToken::new();
     // Each use is a group that is not cached yet (another noise reduction is another key), so each
     // one needs the photo's words on the device.
     let count = [

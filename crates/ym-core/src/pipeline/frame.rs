@@ -2150,7 +2150,7 @@ impl Renderer {
             Some(&mono),
             false,
         )? {
-            Attempt::Done(image) => Ok(image),
+            Attempt::Done(image) => Ok(*image),
             Attempt::DeviceFailed(reason) => {
                 let attempt = self.render_full_on(
                     src,
@@ -2169,7 +2169,7 @@ impl Renderer {
                         "The graphics card could not render this photo, so the CPU did: {reason}."
                     ),
                 );
-                Ok(image)
+                Ok(*image)
             }
         }
     }
@@ -2377,21 +2377,21 @@ impl Renderer {
             ComputeDevice::Cpu
         };
         let report = job.finish(1, device, target_out);
-        Ok(Attempt::Done(FullImage {
+        Ok(Attempt::Done(Box::new(FullImage {
             width: fw,
             height: fh,
             rgb,
             target: request.target,
             window,
             report,
-        }))
+        })))
     }
 }
 
 /// How one attempt of a full-resolution render ended.
 enum Attempt {
     /// The picture.
-    Done(FullImage),
+    Done(Box<FullImage>),
     /// The device failed in a stage the attempt had put on it (and the policy is not strict): the
     /// render is made again with no device, and says why.
     DeviceFailed(String),
