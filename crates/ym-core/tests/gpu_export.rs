@@ -1810,7 +1810,19 @@ mod faults {
     /// fingerprint are how a test takes the words away from an export between two of its tiles
     /// without touching the export itself (`Renderer::final_size` makes a request that adopts it and
     /// uploads nothing).
-    fn take_the_raw_words_away(renderer: &Renderer, src: &PhotoSource) {
+    ///
+    /// The words go, and the next upload of them (the export's next tile, which finds none) is the
+    /// one that fails when `fail_upload` is set. The fault is armed **before** the words are taken,
+    /// never after: when the progress report comes from a thread other than the render's (the
+    /// writer's, in an export of the tail), the render keeps tiling while this runs, and the two
+    /// requests below take tens of milliseconds, longer than a tile on a quick device. A tile that
+    /// found the words gone in that gap would upload them again with nothing armed, and the fault
+    /// armed afterwards would never meet an upload (the export would finish on the device). Armed
+    /// first, the first upload that follows the loss fails, whichever tile makes it.
+    fn take_the_raw_words_away(renderer: &Renderer, src: &PhotoSource, fail_upload: Option<&Gpu>) {
+        if let Some(gpu) = fail_upload {
+            gpu.set_fault(Some(GpuFault::FailUpload(1)));
+        }
         let mut other = src.clone();
         other.fingerprint ^= 1;
         let cancel = CancelToken::new();
@@ -1852,10 +1864,7 @@ mod faults {
                     // After the third of the twelve tiles (they run in raster order), on the render's
                     // own thread: nothing can be between this report and the next tile.
                     if tiles.fetch_add(1, Ordering::SeqCst) + 1 == 3 {
-                        take_the_raw_words_away(&dev, &src);
-                        if fail {
-                            own.set_fault(Some(GpuFault::FailUpload(1)));
-                        }
+                        take_the_raw_words_away(&dev, &src, fail.then_some(&*own));
                     }
                 })
             };
@@ -1910,13 +1919,21 @@ mod faults {
 
     /// The same guard through an export of the tail: the writer takes a share of the rows, the
     /// words go, the upload fails; the whole file is the CPU export, byte for byte, with the note.
+    ///
+    /// The words are taken from the writer's thread (its progress report) while the render goes on
+    /// on its own, and how far the render has got when the report comes is no matter of the speed of
+    /// the device: the channel of bands holds it back. The picture is thirty-two tile rows and eight
+    /// bands of 1024 rows. The first report at or above 0.2 is the one after row 2048: the writer
+    /// has taken bands 0 and 1 and is inside the callback, so it takes no more until the callback
+    /// returns. The channel holds three bands (2 to 4) and the render blocks sending the fifth (band
+    /// 5 needs the rows up to 6144 and the sharpening's halo: twenty-five tile rows at the most), so
+    /// at least seven tile rows are left, on a device as quick as Metal and on a slow one alike.
+    /// Each of them starts by asking for the photo's words, and the first upload after they went
+    /// fails (the fault is armed before they go, see `take_the_raw_words_away`).
     #[test]
     fn a_tail_export_whose_raw_words_cannot_be_uploaded_again_is_the_cpu_export() {
         let Some(gpu) = gpu() else { return };
         drop(gpu);
-        // The shape of the part-way test above: thirty-two tile rows, eight bands of 1024 rows, so a
-        // writer that stalls in its progress callback has the render stopped on a full channel with
-        // tiles left.
         let shot = Shot::sized(96, 8192);
         apply_variant(&shot, 100.0, false);
         let src = shot.d.source();
@@ -1942,11 +1959,8 @@ mod faults {
         let taken = AtomicUsize::new(0);
         let note = |f: f32| {
             seen.lock().expect("lock").push(f);
-            // A slow writer: the render runs ahead until the channel is full.
-            std::thread::sleep(std::time::Duration::from_millis(15));
             if f >= 0.2 && taken.fetch_add(1, Ordering::SeqCst) == 0 {
-                take_the_raw_words_away(ctx.renderer(), &src);
-                own.set_fault(Some(GpuFault::FailUpload(1)));
+                take_the_raw_words_away(ctx.renderer(), &src, Some(&own));
             }
         };
         let r = export_photo(

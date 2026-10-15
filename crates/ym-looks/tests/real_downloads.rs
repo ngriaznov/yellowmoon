@@ -66,8 +66,10 @@ fn downloads() -> Option<PathBuf> {
 }
 
 fn shipped_db() -> PackageDb {
-    PackageDb::load(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data/looks/arri-packages.json"))
-        .expect("arri-packages.json")
+    PackageDb::load(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data/looks/arri-packages.json"),
+    )
+    .expect("arri-packages.json")
 }
 
 /// The shipped list without its fingerprints: names and headers only, as before M3-H2.
@@ -129,18 +131,27 @@ fn check_look_package(label: &str, r: &Recognition, package: &str, by_hash: bool
     assert_eq!(finding.id, package, "{label}");
     assert_eq!((finding.found, finding.expected), (87, Some(87)), "{label}");
     assert_eq!(finding.status, PackageStatus::Complete, "{label}");
-    assert_eq!(finding.groups, 9, "{label}: nine groups from the first digit of the look code");
+    assert_eq!(
+        finding.groups, 9,
+        "{label}: nine groups from the first digit of the look code"
+    );
     assert_eq!(r.files.len(), 87, "{label}");
     assert_eq!(r.needs_answer_count(), 0, "{label}");
     assert_eq!(r.rejected_count(), 0, "{label}");
     assert!(
-        r.files.iter().all(|f| matches!(&f.outcome, Outcome::ArriLook { package: p, evidence, .. }
-            if p == package && (*evidence == Evidence::Fingerprint) == by_hash)),
+        r.files.iter().all(
+            |f| matches!(&f.outcome, Outcome::ArriLook { package: p, evidence, .. }
+            if p == package && (*evidence == Evidence::Fingerprint) == by_hash)
+        ),
         "{label}"
     );
     assert_eq!(
         finding.evidence,
-        if by_hash { Evidence::Fingerprint } else { Evidence::Pattern },
+        if by_hash {
+            Evidence::Fingerprint
+        } else {
+            Evidence::Pattern
+        },
         "{label}"
     );
     // Groups and names come out as ARRI's.
@@ -186,7 +197,10 @@ fn the_three_3d_lut_packages_are_recognized_as_downloaded_and_unzipped() {
         let by_hash = mode == "by hash";
         if by_hash {
             assert!(
-                db.packages.iter().filter(|p| p.role == ym_looks::recognize::PackageRole::Looks).all(|p| p.is_fingerprinted()),
+                db.packages
+                    .iter()
+                    .filter(|p| p.role == ym_looks::recognize::PackageRole::Looks)
+                    .all(|p| p.is_fingerprinted()),
                 "the shipped list has no fingerprints for a looks package"
             );
         }
@@ -196,24 +210,43 @@ fn the_three_3d_lut_packages_are_recognized_as_downloaded_and_unzipped() {
             let start = std::time::Instant::now();
 
             // 1. The zip as downloaded.
-            let r = inspect(&linked(work.path(), &zip, name), &db, None, &mut no_progress()).unwrap();
+            let r = inspect(
+                &linked(work.path(), &zip, name),
+                &db,
+                None,
+                &mut no_progress(),
+            )
+            .unwrap();
             check_look_package(&format!("{mode}: {name}"), &r, package, by_hash);
             eprintln!("{mode}: {name}: {package}, 87 files, {:?}", start.elapsed());
             // The junk of a Mac zip is set aside, never read as a LUT.
-            assert!(r.ignored.macos_metadata == 0 || r.ignored.macos_metadata >= 87, "{:?}", r.ignored);
+            assert!(
+                r.ignored.macos_metadata == 0 || r.ignored.macos_metadata >= 87,
+                "{:?}",
+                r.ignored
+            );
 
             // 2. The folder Finder makes, and the folder inside it.
             let outer = unzip_like_finder(&zip, work.path(), name);
             let inner = inner_folder(&outer);
             for folder in [&outer, &inner] {
-                let label = format!("{mode}: folder {}", folder.file_name().unwrap().to_string_lossy());
+                let label = format!(
+                    "{mode}: folder {}",
+                    folder.file_name().unwrap().to_string_lossy()
+                );
                 let r = inspect(folder, &db, None, &mut no_progress()).unwrap();
                 check_look_package(&label, &r, package, by_hash);
             }
 
             // 3. The zip under a name that says nothing: the folder inside it still does (names)
             // and the hashes always do.
-            let r = inspect(&linked(work.path(), &zip, "download.zip"), &db, None, &mut no_progress()).unwrap();
+            let r = inspect(
+                &linked(work.path(), &zip, "download.zip"),
+                &db,
+                None,
+                &mut no_progress(),
+            )
+            .unwrap();
             check_look_package(&format!("{mode}: download.zip"), &r, package, by_hash);
         }
     }
@@ -233,25 +266,50 @@ fn the_camera_look_file_packages_say_which_download_to_take() {
             assert_eq!(r.verdict(), Verdict::Blocked, "{label}");
             assert!(r.files.is_empty() && r.packages.is_empty(), "{label}");
             let message = &r.issues[0].message;
-            assert!(message.starts_with("These are ARRI look files for the camera "), "{label}: {message}");
+            assert!(
+                message.starts_with("These are ARRI look files for the camera "),
+                "{label}: {message}"
+            );
             assert!(message.contains(extension), "{label}: {message}");
             assert!(message.contains("3D-LUTs"), "{label}: {message}");
             eprintln!("{label}: {message}");
         };
-        let r = inspect(&linked(work.path(), &zip, name), &db, None, &mut no_progress()).unwrap();
+        let r = inspect(
+            &linked(work.path(), &zip, name),
+            &db,
+            None,
+            &mut no_progress(),
+        )
+        .unwrap();
         check(name, &r);
-        assert_eq!(r.ignored.alf4 + r.ignored.aml, if file == "alf4.zip" { 87 } else { 261 });
+        assert_eq!(
+            r.ignored.alf4 + r.ignored.aml,
+            if file == "alf4.zip" { 87 } else { 261 }
+        );
         let outer = unzip_like_finder(&zip, work.path(), name);
-        check("folder", &inspect(&outer, &db, None, &mut no_progress()).unwrap());
-        check("inner folder", &inspect(&inner_folder(&outer), &db, None, &mut no_progress()).unwrap());
+        check(
+            "folder",
+            &inspect(&outer, &db, None, &mut no_progress()).unwrap(),
+        );
+        check(
+            "inner folder",
+            &inspect(&inner_folder(&outer), &db, None, &mut no_progress()).unwrap(),
+        );
         // One look file chosen by itself.
         let loose = walk_first(&outer, &["alf4", "alf4c", "aml"]).expect("a look file");
-        check("loose file", &inspect(&loose, &db, None, &mut no_progress()).unwrap());
+        check(
+            "loose file",
+            &inspect(&loose, &db, None, &mut no_progress()).unwrap(),
+        );
     }
 }
 
 fn walk_first(dir: &Path, extensions: &[&str]) -> Option<PathBuf> {
-    let mut entries: Vec<PathBuf> = fs::read_dir(dir).ok()?.flatten().map(|e| e.path()).collect();
+    let mut entries: Vec<PathBuf> = fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .map(|e| e.path())
+        .collect();
     entries.sort();
     for path in entries {
         if path.is_dir() {
@@ -264,7 +322,9 @@ fn walk_first(dir: &Path, extensions: &[&str]) -> Option<PathBuf> {
         } else if path
             .extension()
             .is_some_and(|e| extensions.iter().any(|x| e.eq_ignore_ascii_case(x)))
-            && !path.file_name().is_some_and(|n| n.to_string_lossy().starts_with("._"))
+            && !path
+                .file_name()
+                .is_some_and(|n| n.to_string_lossy().starts_with("._"))
         {
             return Some(path);
         }
@@ -277,7 +337,15 @@ fn walk_first(dir: &Path, extensions: &[&str]) -> Option<PathBuf> {
 fn import_and_render(db: &PackageDb, zip: &Path, package: &str, library: &mut Library) -> usize {
     let r = inspect(zip, db, None, &mut no_progress()).unwrap();
     let start = std::time::Instant::now();
-    let report = import(library, db, zip, &r, &ImportOptions::default(), &mut no_progress()).unwrap();
+    let report = import(
+        library,
+        db,
+        zip,
+        &r,
+        &ImportOptions::default(),
+        &mut no_progress(),
+    )
+    .unwrap();
     eprintln!(
         "{package}: imported {} looks in {:?} ({} rejected)",
         report.added.len(),
@@ -290,8 +358,13 @@ fn import_and_render(db: &PackageDb, zip: &Path, package: &str, library: &mut Li
     let mut changed = 0;
     for item in added.iter().step_by(10) {
         let look = library.get(&item.id).expect("look").clone();
-        assert_eq!(look.source.as_ref().and_then(|s| s.package.as_deref()), Some(package));
-        let transform = library.transform(&item.id).unwrap_or_else(|e| panic!("{}: {e}", item.id));
+        assert_eq!(
+            look.source.as_ref().and_then(|s| s.package.as_deref()),
+            Some(package)
+        );
+        let transform = library
+            .transform(&item.id)
+            .unwrap_or_else(|e| panic!("{}: {e}", item.id));
         for grey in [0.1, 0.2784, 0.5, 0.8] {
             let input = LogC4([grey; 3]);
             let out = if transform.includes_display_rendering() {
@@ -320,13 +393,20 @@ fn the_real_packages_import_into_a_library_and_render() {
     for db in [shipped_db(), patterns_only()] {
         for (file, name, package) in LUT_ZIPS {
             // Each pass starts from an empty library; the second pass proves names alone import too.
-            let root = work.path().join(format!("app-{package}-{}", db.packages[0].fingerprints.len()));
+            let root = work.path().join(format!(
+                "app-{package}-{}",
+                db.packages[0].fingerprints.len()
+            ));
             let mut lib = open_library(&root);
             let links = tempfile::tempdir().unwrap();
             let zip = linked(links.path(), &source.join(file), name);
             let n = import_and_render(&db, &zip, package, &mut lib);
             assert_eq!(n, 87);
-            let arri = lib.looks().iter().filter(|l| l.id.prefix() == "arri").count();
+            let arri = lib
+                .looks()
+                .iter()
+                .filter(|l| l.id.prefix() == "arri")
+                .count();
             assert_eq!(arri, 87, "{package}");
             assert!(lib.verify(&mut no_progress()).unwrap().is_clean());
             // Same ids and names for 'by hash' and 'by names': nothing depends on the fingerprints.
@@ -339,7 +419,15 @@ fn the_real_packages_import_into_a_library_and_render() {
             }
         }
     }
-    let arri = library.looks().iter().filter(|l| l.id.prefix() == "arri").count();
-    assert_eq!(arri, 87 * 3, "the three libraries share names but never collide");
+    let arri = library
+        .looks()
+        .iter()
+        .filter(|l| l.id.prefix() == "arri")
+        .count();
+    assert_eq!(
+        arri,
+        87 * 3,
+        "the three libraries share names but never collide"
+    );
     assert!(library.verify(&mut no_progress()).unwrap().is_clean());
 }

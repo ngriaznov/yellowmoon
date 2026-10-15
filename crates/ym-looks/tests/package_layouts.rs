@@ -56,7 +56,10 @@ fn layout(kind: &str, looks: &[String]) -> Vec<String> {
                     format!("3D-LUTs/{}/{file}", ["Colour", "Film", "Mono"][i % 3])
                 }
                 "numbered groups" => {
-                    format!("{}/{file}", ["1000 Colour", "3000 Film", "4000 Mono"][i % 3])
+                    format!(
+                        "{}/{file}",
+                        ["1000 Colour", "3000 Film", "4000 Mono"][i % 3]
+                    )
                 }
                 "wrapper and numbered groups" => format!(
                     "ARRI Look Library/{}/{file}",
@@ -115,7 +118,10 @@ fn write_sized_looks_zip(dir: &Path, zip_name: &str, paths: &[String], size: usi
         entries.push((beside, b"\x00\x05\x16\x07 apple double".to_vec()));
     }
     entries.push((".DS_Store".to_string(), b"junk".to_vec()));
-    entries.push(("ARRI Look Library notes.pdf".to_string(), b"%PDF-1.4".to_vec()));
+    entries.push((
+        "ARRI Look Library notes.pdf".to_string(),
+        b"%PDF-1.4".to_vec(),
+    ));
     let path = dir.join(zip_name);
     write_zip(&path, &entries);
     path
@@ -136,7 +142,12 @@ fn looks_of(r: &Recognition) -> Vec<(&str, u32, &str, &str)> {
             } => {
                 assert_eq!(*input, LookInput::LogC4);
                 assert_eq!(*evidence, Evidence::Pattern);
-                (package.as_str(), *group_no, group_name.as_str(), name.as_str())
+                (
+                    package.as_str(),
+                    *group_no,
+                    group_name.as_str(),
+                    name.as_str(),
+                )
             }
             other => panic!("{}: {other:?}", f.rel_path),
         })
@@ -261,7 +272,9 @@ fn spellings_of_the_zip_name_all_count() {
     // The same folder unpacked: the folder's name is the evidence.
     let work = tempfile::tempdir().unwrap();
     let zip = write_looks_zip(work.path(), REAL_ZIP, &paths);
-    let unpacked = work.path().join("ARRI Look Library LogC4 (log-to-log) 3D-LUTs_data");
+    let unpacked = work
+        .path()
+        .join("ARRI Look Library LogC4 (log-to-log) 3D-LUTs_data");
     std::fs::create_dir_all(&unpacked).unwrap();
     for (i, path) in paths.iter().enumerate() {
         std::fs::write(unpacked.join(path), cube_text(5, i as u32 + 1, "x")).unwrap();
@@ -290,8 +303,7 @@ fn macos_junk_is_never_counted_as_a_cube_or_a_group() {
         r.files.iter().map(|f| &f.rel_path).collect::<Vec<_>>()
     );
     // The groups are the real ones: neither `__MACOSX` nor the `3D-LUTs` wrapper is a group.
-    let groups: std::collections::BTreeSet<&str> =
-        looks_of(&r).iter().map(|f| f.2).collect();
+    let groups: std::collections::BTreeSet<&str> = looks_of(&r).iter().map(|f| f.2).collect();
     assert_eq!(
         groups.into_iter().collect::<Vec<_>>(),
         ["Colour", "Film", "Mono"]
@@ -332,7 +344,14 @@ fn look_names_with_p3_pq_hlg_srgb_and_709_in_them_are_looks_not_display_renderin
         assert_eq!(r.packages.len(), 1, "{kind}");
         assert_eq!(r.packages[0].id, "look-library-logc4", "{kind}");
         let names: Vec<&str> = looks_of(&r).iter().map(|f| f.3).collect();
-        for want in ["Pale to Pqrs", "Warm P3 Glow", "PQ Noir", "HLG Haze", "sRGB Soft", "Rec709 Neutral"] {
+        for want in [
+            "Pale to Pqrs",
+            "Warm P3 Glow",
+            "PQ Noir",
+            "HLG Haze",
+            "sRGB Soft",
+            "Rec709 Neutral",
+        ] {
             assert!(names.contains(&want), "{kind}: {want} in {names:?}");
         }
         assert!(
@@ -361,18 +380,24 @@ fn the_other_packages_and_the_wvo_package_are_told_apart_by_name() {
         let path = path.replace("LogC4", "LogC3");
         entries.push((path, cube_text(3, i as u32 + 1, "x").into_bytes()));
     }
-    let zip = work.path().join("ARRI Look Library LogC3 (log-to-log) 3D-LUTs.zip");
+    let zip = work
+        .path()
+        .join("ARRI Look Library LogC3 (log-to-log) 3D-LUTs.zip");
     write_zip(&zip, &entries);
     let r = inspect(&zip, &small_db(4), None, &mut no_progress()).unwrap();
     assert_eq!(r.verdict(), Verdict::Ready, "{:?}", r.issues);
     assert_eq!(r.packages[0].id, "look-library-logc3");
-    let zip = work.path().join("ARRI Look Library LogC3 to Rec709 3D-LUTs.zip");
+    let zip = work
+        .path()
+        .join("ARRI Look Library LogC3 to Rec709 3D-LUTs.zip");
     write_zip(&zip, &entries);
     let r = inspect(&zip, &small_db(4), None, &mut no_progress()).unwrap();
     assert_eq!(r.packages[0].id, "look-library-logc3-rec709");
 
     // A LogC4 name over LogC3-sized cubes (3 points) is not the LogC4 package.
-    let zip = work.path().join("ARRI Look Library LogC4 (log-to-log) 3D-LUTs.zip");
+    let zip = work
+        .path()
+        .join("ARRI Look Library LogC4 (log-to-log) 3D-LUTs.zip");
     write_zip(&zip, &entries);
     let r = inspect(&zip, &small_db(4), None, &mut no_progress()).unwrap();
     assert!(r.packages.is_empty(), "{:?}", r.packages);
@@ -425,10 +450,11 @@ fn display_luts_named_the_way_arri_names_them() {
         let r = inspect(&zip, &db, None, &mut no_progress()).unwrap();
         assert_eq!(r.verdict(), Verdict::Ready, "{zip_name}: {:?}", r.issues);
         assert_eq!(r.packages[0].id, "display-luts-logc4", "{zip_name}");
-        assert!(r
-            .files
-            .iter()
-            .all(|f| matches!(f.outcome, Outcome::ArriDisplay { .. })));
+        assert!(
+            r.files
+                .iter()
+                .all(|f| matches!(f.outcome, Outcome::ArriDisplay { .. }))
+        );
         let mut library = open_library(&work.path().join(format!("app-{zip_name}")));
         let report = import(
             &mut library,
@@ -439,7 +465,11 @@ fn display_luts_named_the_way_arri_names_them() {
             &mut no_progress(),
         )
         .unwrap();
-        assert_eq!(report.added.len(), 4, "{zip_name}: both meshes of a target are kept");
+        assert_eq!(
+            report.added.len(),
+            4,
+            "{zip_name}: both meshes of a target are kept"
+        );
         assert_eq!(library.display_luts().len(), 4);
     }
 }
@@ -455,7 +485,10 @@ fn fewer_files_than_expected_is_an_incomplete_download_and_more_is_a_note() {
     assert_eq!(r.verdict(), Verdict::Incomplete, "{:?}", r.issues);
     assert_eq!(r.packages[0].status, PackageStatus::Incomplete);
     let message = &r.problems().next().unwrap().message;
-    assert!(message.contains("should have 8 files, but this zip has 6"), "{message}");
+    assert!(
+        message.contains("should have 8 files, but this zip has 6"),
+        "{message}"
+    );
     // ...3 of 8 is not read as the package at all...
     let zip = write_looks_zip(work.path(), "ARRI Look Library LogC4 small.zip", &flat[..3]);
     let r = inspect(&zip, &small_db(8), None, &mut no_progress()).unwrap();
@@ -498,7 +531,10 @@ fn an_unknown_set_with_an_answer_imports_as_the_users_own_luts_with_that_input()
         )
         .unwrap_err();
         assert!(matches!(err, ImportError::NeedsInput { .. }), "{err}");
-        assert!(tree(&library.looks_dir()).is_empty(), "nothing written without an answer");
+        assert!(
+            tree(&library.looks_dir()).is_empty(),
+            "nothing written without an answer"
+        );
 
         let report = import(
             &mut library,
@@ -538,9 +574,18 @@ fn the_three_3d_lut_downloads_are_known_by_the_names_on_arris_page() {
             .map(|p| p.id.clone())
             .collect()
     };
-    assert_eq!(ids("ARRI Look Library LogC4 (log-to-log) 3D-LUTs_data.zip"), ["look-library-logc4"]);
-    assert_eq!(ids("Look Library for LogC4 (3D-LUTs).zip"), ["look-library-logc4"]);
-    assert_eq!(ids("ARRI Look Library LogC3 (3D-LUTs).zip"), ["look-library-logc3"]);
+    assert_eq!(
+        ids("ARRI Look Library LogC4 (log-to-log) 3D-LUTs_data.zip"),
+        ["look-library-logc4"]
+    );
+    assert_eq!(
+        ids("Look Library for LogC4 (3D-LUTs).zip"),
+        ["look-library-logc4"]
+    );
+    assert_eq!(
+        ids("ARRI Look Library LogC3 (3D-LUTs).zip"),
+        ["look-library-logc3"]
+    );
     assert_eq!(
         ids("ARRI Look Library LogC3 (to Rec709) 3D-LUTs.zip"),
         ["look-library-logc3-rec709"]
@@ -560,12 +605,27 @@ fn the_three_3d_lut_downloads_are_known_by_the_names_on_arris_page() {
         &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data/looks/arri-packages.json"),
     )
     .unwrap();
-    assert!(real.package("look-library-logc3").unwrap().expected.lut_sizes.is_empty());
+    assert!(
+        real.package("look-library-logc3")
+            .unwrap()
+            .expected
+            .lut_sizes
+            .is_empty()
+    );
     assert_eq!(
-        real.package("look-library-logc3-rec709").unwrap().expected.lut_sizes,
+        real.package("look-library-logc3-rec709")
+            .unwrap()
+            .expected
+            .lut_sizes,
         [33]
     );
-    assert_eq!(real.package("look-library-logc4").unwrap().expected.lut_sizes, [65]);
+    assert_eq!(
+        real.package("look-library-logc4")
+            .unwrap()
+            .expected
+            .lut_sizes,
+        [65]
+    );
     assert_eq!(
         real.package("look-library-logc4").unwrap().download_title(),
         "Look Library for LogC4 (3D-LUTs)"
@@ -626,7 +686,10 @@ fn camera_look_file_zips_say_which_3d_lut_download_to_take() {
             &mut no_progress(),
         )
         .unwrap_err();
-        assert!(matches!(&err, ImportError::NothingToImport(m) if m == message), "{err}");
+        assert!(
+            matches!(&err, ImportError::NothingToImport(m) if m == message),
+            "{err}"
+        );
         assert!(tree(&library.looks_dir()).is_empty(), "{name}");
     }
 }
@@ -663,7 +726,12 @@ fn pressing_import_works_for_each_real_zip_shape_even_when_nothing_is_recognized
     // answer must import every look, whatever the layout and whichever of the three it is.
     let looks = look_names(6);
     for (zip_name, answer, _, name_of) in real_shapes() {
-        for kind in ["flat", "one top-level folder", "one folder per look", "named groups"] {
+        for kind in [
+            "flat",
+            "one top-level folder",
+            "one folder per look",
+            "named groups",
+        ] {
             let paths: Vec<String> = looks
                 .iter()
                 .enumerate()
@@ -689,7 +757,9 @@ fn pressing_import_works_for_each_real_zip_shape_even_when_nothing_is_recognized
                 .files
                 .iter()
                 .map(|f| match &f.outcome {
-                    Outcome::NeedsAnswer { suggested_input, .. } => format!("{suggested_input:?}"),
+                    Outcome::NeedsAnswer {
+                        suggested_input, ..
+                    } => format!("{suggested_input:?}"),
                     other => panic!("{label}: {other:?}"),
                 })
                 .collect();
@@ -748,7 +818,12 @@ fn each_real_zip_shape_is_recognized_when_it_is_what_its_name_says() {
 fn the_real_count_of_87_looks_in_nine_groups_is_recognized_in_any_layout() {
     // 87 looks like the real package, at 5 points so the test stays small.
     let looks: Vec<String> = (1..=87).map(|i| format!("Look {i:02}")).collect();
-    for kind in ["flat", "one top-level folder", "one folder per look", "nine named groups"] {
+    for kind in [
+        "flat",
+        "one top-level folder",
+        "one folder per look",
+        "nine named groups",
+    ] {
         let paths: Vec<String> = looks
             .iter()
             .enumerate()
@@ -767,7 +842,10 @@ fn the_real_count_of_87_looks_in_nine_groups_is_recognized_in_any_layout() {
         let r = inspect(&zip, &small_db(87), None, &mut no_progress()).unwrap();
         assert_eq!(r.verdict(), Verdict::Ready, "{kind}: {:?}", r.issues);
         assert_eq!(r.packages[0].id, "look-library-logc4", "{kind}");
-        assert_eq!((r.packages[0].found, r.packages[0].expected), (87, Some(87)));
+        assert_eq!(
+            (r.packages[0].found, r.packages[0].expected),
+            (87, Some(87))
+        );
         assert_eq!(r.packages[0].status, PackageStatus::Complete);
         assert_eq!(r.needs_answer_count(), 0);
         let mut groups: Vec<&str> = looks_of(&r).iter().map(|f| f.2).collect();
@@ -842,7 +920,10 @@ fn real_entries(shape: &RealShape) -> Vec<(String, Vec<u8>)> {
     let mut entries = vec![(format!("{}/", shape.folder), Vec::new())];
     for (i, (code, title)) in CODED.iter().enumerate() {
         let file = if shape.hyphens {
-            format!("{code}-{}.cube", title.replace(" - ", " ").replace(' ', "-"))
+            format!(
+                "{code}-{}.cube",
+                title.replace(" - ", " ").replace(' ', "-")
+            )
         } else {
             format!("{code} {title}.cube")
         };
@@ -855,7 +936,10 @@ fn real_entries(shape: &RealShape) -> Vec<(String, Vec<u8>)> {
             b"\x00\x05\x16\x07 apple double".to_vec(),
         ));
     }
-    entries.push((format!("__MACOSX/._{}", shape.folder), b"apple double".to_vec()));
+    entries.push((
+        format!("__MACOSX/._{}", shape.folder),
+        b"apple double".to_vec(),
+    ));
     entries
 }
 
@@ -903,7 +987,11 @@ fn the_real_layouts_are_recognized_as_zips_and_as_unzipped_folders() {
             assert_eq!(r.needs_answer_count(), 0, "{label}");
             // A zip counts each of the Mac's files, a folder walk skips the `__MACOSX` folder whole.
             // The folder inside has no `__MACOSX` next to it.
-            assert!(form == "folder inside it" || r.ignored.macos_metadata >= 1, "{label}: {:?}", r.ignored);
+            assert!(
+                form == "folder inside it" || r.ignored.macos_metadata >= 1,
+                "{label}: {:?}",
+                r.ignored
+            );
 
             // Groups from the first digit of the look code; names without the code; the two
             // looks that share a title keep their code.
@@ -961,9 +1049,21 @@ fn the_real_layouts_are_recognized_as_zips_and_as_unzipped_folders() {
         // And the zip imports: every look, grouped, with this package's encoding.
         let mut library = open_library(&work.path().join("app"));
         let r = inspect(&real_zip, &db, None, &mut no_progress()).unwrap();
-        let report = import(&mut library, &db, &real_zip, &r, &ImportOptions::default(), &mut no_progress()).unwrap();
+        let report = import(
+            &mut library,
+            &db,
+            &real_zip,
+            &r,
+            &ImportOptions::default(),
+            &mut no_progress(),
+        )
+        .unwrap();
         assert_eq!(report.added.len(), CODED.len(), "{}", shape.zip);
-        let imported: Vec<_> = library.looks().iter().filter(|l| l.id.prefix() == "arri").collect();
+        let imported: Vec<_> = library
+            .looks()
+            .iter()
+            .filter(|l| l.id.prefix() == "arri")
+            .collect();
         assert_eq!(imported.len(), CODED.len());
         assert!(imported.iter().all(|l| l.input == shape.input));
         assert!(imported.iter().any(|l| matches!(&l.group, LookGroup::Arri { group_no: 3000, group_name, .. } if group_name == "Film")));
@@ -995,6 +1095,9 @@ fn the_real_layouts_are_told_apart_by_their_names_and_sizes() {
     // What the wizard preselects for it: LogC4, from the zip and folder names.
     assert!(r.files.iter().all(|f| matches!(
         f.outcome,
-        Outcome::NeedsAnswer { suggested_input: Some(LookInput::LogC4), .. }
+        Outcome::NeedsAnswer {
+            suggested_input: Some(LookInput::LogC4),
+            ..
+        }
     )));
 }

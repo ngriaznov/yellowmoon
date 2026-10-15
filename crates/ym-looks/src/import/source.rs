@@ -514,7 +514,10 @@ mod tests {
         assert_eq!(classify("a/._b.cube"), EntryKind::MacMetadata);
         assert_eq!(classify("a/.DS_Store"), EntryKind::MacMetadata);
         assert_eq!(classify("__macosx/a/b.cube"), EntryKind::MacMetadata);
-        assert_eq!(classify("Looks/__MACOSX/3000 Film/._x.cube"), EntryKind::MacMetadata);
+        assert_eq!(
+            classify("Looks/__MACOSX/3000 Film/._x.cube"),
+            EntryKind::MacMetadata
+        );
         assert_eq!(classify("a/._dir/b.cube"), EntryKind::MacMetadata);
         assert_eq!(classify("a/notes.txt"), EntryKind::Other);
         assert_eq!(classify("a/noextension"), EntryKind::Other);

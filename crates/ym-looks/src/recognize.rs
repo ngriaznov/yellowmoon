@@ -585,7 +585,14 @@ fn lenient_groups(paths: &[&str]) -> Vec<Option<(u32, String)>> {
                 Some(parse_group_folder(name).unwrap_or_else(|| {
                     let tidy = name.replace('_', " ");
                     let tidy = tidy.split_whitespace().collect::<Vec<_>>().join(" ");
-                    (0, if tidy.is_empty() { "Group".to_string() } else { tidy })
+                    (
+                        0,
+                        if tidy.is_empty() {
+                            "Group".to_string()
+                        } else {
+                            tidy
+                        },
+                    )
                 }))
             })
         })
@@ -599,7 +606,11 @@ fn shared_folders(files: &[FileFacts]) -> Vec<&str> {
         return Vec::new();
     };
     for other in folders {
-        let same = shared.iter().zip(&other).take_while(|(a, b)| a == b).count();
+        let same = shared
+            .iter()
+            .zip(&other)
+            .take_while(|(a, b)| a == b)
+            .count();
         shared.truncate(same);
     }
     shared
@@ -609,7 +620,9 @@ fn shared_folders(files: &[FileFacts]) -> Vec<&str> {
 /// `1111 Black and White` are two looks) get their look code added to the name, so the list of
 /// looks does not show the same name twice.
 fn tell_same_names_apart(files: &mut [RecognizedFile]) {
-    let key = |package: &str, group_no: u32, name: &str| (package.to_string(), group_no, name.to_lowercase());
+    let key = |package: &str, group_no: u32, name: &str| {
+        (package.to_string(), group_no, name.to_lowercase())
+    };
     let mut count: HashMap<(String, u32, String), usize> = HashMap::new();
     for f in files.iter() {
         if let Outcome::ArriLook {
@@ -630,7 +643,9 @@ fn tell_same_names_apart(files: &mut [RecognizedFile]) {
             file_name: library_name,
             ..
         } = &mut f.outcome
-            && count.get(&key(package, *group_no, name)).is_some_and(|n| *n > 1)
+            && count
+                .get(&key(package, *group_no, name))
+                .is_some_and(|n| *n > 1)
             && let Some(code) = look_code(file_stem(library_name))
         {
             *name = format!("{name} {code}");
@@ -688,7 +703,8 @@ fn match_by_package(
                 && !package.markers.encoding.is_empty()
                 && names.iter().any(|name| {
                     let folded = fold_alnum(name.strip_suffix(".zip").unwrap_or(name));
-                    package.matches_zip_name(name) && package.markers.encoding.matches_folded(&folded)
+                    package.matches_zip_name(name)
+                        && package.markers.encoding.matches_folded(&folded)
                 })
         })
         .map(|(i, _)| i)
@@ -731,21 +747,15 @@ fn match_by_package(
                         markers
                             .group_folders
                             .allows(group_for(db, &files[j].rel_path).is_some())
-                            && markers.display_rendering.allows(names_display_rendering(
-                                db,
-                                source,
-                                &files[j],
-                                summary,
-                            ))
+                            && markers
+                                .display_rendering
+                                .allows(names_display_rendering(db, source, &files[j], summary))
                     })
                     .count()
             };
             let rank = |q: &(usize, Vec<usize>)| {
                 let expected = db.packages[q.0].expected.cube_files.unwrap_or(0);
-                (
-                    expected.abs_diff(q.1.len()),
-                    std::cmp::Reverse(layout(q)),
-                )
+                (expected.abs_diff(q.1.len()), std::cmp::Reverse(layout(q)))
             };
             let best = several.iter().map(rank).min();
             let mut top = several.iter().filter(|q| Some(rank(q)) == best);
@@ -757,7 +767,10 @@ fn match_by_package(
     };
     let (index, members) = chosen;
     let package = &db.packages[*index];
-    let paths: Vec<&str> = members.iter().map(|&j| files[j].rel_path.as_str()).collect();
+    let paths: Vec<&str> = members
+        .iter()
+        .map(|&j| files[j].rel_path.as_str())
+        .collect();
     let groups = lenient_groups(&paths);
     for (&j, lenient) in members.iter().zip(groups) {
         if package_of[j] != Some(*index) {
@@ -1469,7 +1482,10 @@ mod tests {
             assert_eq!(r.packages.len(), 1, "{layout}");
             assert_eq!(r.packages[0].id, "ll4", "{layout}");
             assert_eq!(r.packages[0].status, PackageStatus::Complete, "{layout}");
-            assert!(r.files.iter().all(RecognizedFile::is_recognized), "{layout}");
+            assert!(
+                r.files.iter().all(RecognizedFile::is_recognized),
+                "{layout}"
+            );
         }
         // The names come from the files, not from the log-to-log prefix or the version and mesh.
         let flat = names_of(&[
@@ -1478,7 +1494,10 @@ mod tests {
             "ARRI_LogC4-to-LogC4_Cool_v1_65.cube",
         ]);
         let r = recognize(&db(), &zip(REAL_NAME), &flat, &Ignored::default());
-        assert_eq!(look(&r, 0), ("ll4", 0, "Ungrouped".into(), "Neutral".into()));
+        assert_eq!(
+            look(&r, 0),
+            ("ll4", 0, "Ungrouped".into(), "Neutral".into())
+        );
     }
 
     #[test]
@@ -1507,30 +1526,62 @@ mod tests {
         // per-file rules can recognise them: the encoding comes from the folder, the group from the
         // first digit of the look code, and "to Rec709" in the folder says display-referred.
         let log = vec![
-            facts("ARRI Look Library LogC3 (log-to-log)/1110 Gray Test.cube", 3, None, 1),
-            facts("ARRI Look Library LogC3 (log-to-log)/3250 Cross.cube", 3, None, 2),
-            facts("ARRI Look Library LogC3 (log-to-log)/8120 20s.cube", 3, None, 3),
+            facts(
+                "ARRI Look Library LogC3 (log-to-log)/1110 Gray Test.cube",
+                3,
+                None,
+                1,
+            ),
+            facts(
+                "ARRI Look Library LogC3 (log-to-log)/3250 Cross.cube",
+                3,
+                None,
+                2,
+            ),
+            facts(
+                "ARRI Look Library LogC3 (log-to-log)/8120 20s.cube",
+                3,
+                None,
+                3,
+            ),
         ];
         let r = recognize(&db(), &zip("download.zip"), &log, &Ignored::default());
         assert_eq!(r.verdict(), Verdict::Ready, "{:?}", r.issues);
         assert_eq!(r.packages[0].id, "ll3");
         assert_eq!(r.packages[0].groups, 3);
         match &r.files[2].outcome {
-            Outcome::ArriLook { group_no, name, evidence, .. } => {
+            Outcome::ArriLook {
+                group_no,
+                name,
+                evidence,
+                ..
+            } => {
                 assert_eq!((*group_no, name.as_str()), (8000, "20s"));
                 assert_eq!(*evidence, Evidence::Pattern);
             }
             other => panic!("{other:?}"),
         }
         let baked = vec![
-            facts("ARRI Look Library LogC3 to Rec709 3D-LUTs/1110-Gray-Test.cube", 3, None, 1),
-            facts("ARRI Look Library LogC3 to Rec709 3D-LUTs/8120-20s.cube", 3, None, 2),
+            facts(
+                "ARRI Look Library LogC3 to Rec709 3D-LUTs/1110-Gray-Test.cube",
+                3,
+                None,
+                1,
+            ),
+            facts(
+                "ARRI Look Library LogC3 to Rec709 3D-LUTs/8120-20s.cube",
+                3,
+                None,
+                2,
+            ),
         ];
         let r = recognize(&db(), &zip("download.zip"), &baked, &Ignored::default());
         assert_eq!(r.verdict(), Verdict::Ready, "{:?}", r.issues);
         assert_eq!(r.packages[0].id, "ll3r");
         match &r.files[1].outcome {
-            Outcome::ArriLook { group_no, input, .. } => {
+            Outcome::ArriLook {
+                group_no, input, ..
+            } => {
                 assert_eq!(*group_no, 8000);
                 assert_eq!(*input, LookInput::LogC3ToRec709);
             }
@@ -1541,9 +1592,24 @@ mod tests {
     #[test]
     fn looks_that_share_a_title_keep_their_code() {
         let files = vec![
-            facts("ARRI Look Library LogC3 (log-to-log)/1110 Gray Test.cube", 3, None, 1),
-            facts("ARRI Look Library LogC3 (log-to-log)/1111 Gray Test.cube", 3, None, 2),
-            facts("ARRI Look Library LogC3 (log-to-log)/2110 Other.cube", 3, None, 3),
+            facts(
+                "ARRI Look Library LogC3 (log-to-log)/1110 Gray Test.cube",
+                3,
+                None,
+                1,
+            ),
+            facts(
+                "ARRI Look Library LogC3 (log-to-log)/1111 Gray Test.cube",
+                3,
+                None,
+                2,
+            ),
+            facts(
+                "ARRI Look Library LogC3 (log-to-log)/2110 Other.cube",
+                3,
+                None,
+                3,
+            ),
         ];
         let r = recognize(&db(), &zip("download.zip"), &files, &Ignored::default());
         let names: Vec<&str> = r
@@ -1614,7 +1680,13 @@ mod tests {
         let two = sized(5)[..2].to_vec();
         let r = recognize(&db(), &zip(REAL_NAME), &two, &Ignored::default());
         assert_eq!(r.verdict(), Verdict::Incomplete);
-        assert!(r.problems().next().unwrap().message.contains("should have 3 files"));
+        assert!(
+            r.problems()
+                .next()
+                .unwrap()
+                .message
+                .contains("should have 3 files")
+        );
         // More than expected is taken with a note.
         let many: Vec<FileFacts> = (0..5)
             .map(|i| facts(&format!("L{i}.cube"), 5, None, i + 1))
@@ -1659,7 +1731,10 @@ mod tests {
         both.packages[1].expected.cube_files = Some(5);
         both.packages[1].markers.group_folders = packages::Presence::Absent;
         let r = recognize(&both, &zip(REAL_NAME), &mixed, &Ignored::default());
-        assert_eq!(r.packages[0].id, "ll4", "3 files: 0 away from 3, 2 away from 5");
+        assert_eq!(
+            r.packages[0].id, "ll4",
+            "3 files: 0 away from 3, 2 away from 5"
+        );
     }
 
     #[test]

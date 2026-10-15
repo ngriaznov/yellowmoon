@@ -149,9 +149,9 @@ fn starts_display(after_to: &[&str], display_names: &[String]) -> bool {
         }
         if seen == 0
             && names.iter().any(|n| {
-                folded
-                    .strip_prefix(n.as_str())
-                    .is_some_and(|rest| !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit()))
+                folded.strip_prefix(n.as_str()).is_some_and(|rest| {
+                    !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit())
+                })
             })
         {
             return true;
@@ -220,9 +220,7 @@ const LEADING_NOISE: [&str; 6] = ["arri", "logc4", "logc3", "awg4", "awg3", "ei8
 
 /// `v1`, `V12`: the version word ARRI puts near the end of its LUT names.
 fn is_version_word(word: &str) -> bool {
-    word.len() >= 2
-        && word.starts_with(['v', 'V'])
-        && word[1..].bytes().all(|b| b.is_ascii_digit())
+    word.len() >= 2 && word.starts_with(['v', 'V']) && word[1..].bytes().all(|b| b.is_ascii_digit())
 }
 
 /// The mesh size ARRI puts at the very end of its LUT names (`..._v1_65.cube`).
@@ -317,7 +315,11 @@ mod tests {
     fn look_codes() {
         assert_eq!(look_code("1110 Black and White"), Some(1110));
         assert_eq!(look_code("3250-Cross"), Some(3250));
-        assert_eq!(look_code("8120-20s"), Some(8120), "a decade after the code is a title");
+        assert_eq!(
+            look_code("8120-20s"),
+            Some(8120),
+            "a decade after the code is a title"
+        );
         assert_eq!(look_code("9211_Day_for_Night"), Some(9211));
         assert_eq!(look_code("1120 Black and White - Night sky"), Some(1120));
         // Dates, versions, short or long numbers and names that merely hold digits are not codes.
@@ -494,7 +496,10 @@ mod tests {
     #[test]
     fn look_names_lose_arris_naming_noise() {
         let d = display();
-        assert_eq!(look_name("ARRI_LogC4-to-LogC4_Neutral_v1_65", &d), "Neutral");
+        assert_eq!(
+            look_name("ARRI_LogC4-to-LogC4_Neutral_v1_65", &d),
+            "Neutral"
+        );
         assert_eq!(
             look_name("ARRI_LogC4-to-LogC4_Kodak 2383_v2_33", &d),
             "Kodak 2383"

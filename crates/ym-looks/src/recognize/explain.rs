@@ -241,10 +241,15 @@ mod tests {
         };
         let text = no_cube_files(&zip(), &both, &db());
         assert!(text.contains("(.alf4, .alf2 and .aml)"), "{text}");
-        assert!(text.contains("'Look Library for LogC4 (3D-LUTs)', 'ARRI Look Library LogC3 (3D-LUTs)' or"));
+        assert!(text.contains(
+            "'Look Library for LogC4 (3D-LUTs)', 'ARRI Look Library LogC3 (3D-LUTs)' or"
+        ));
         // Without a package list the sentence still says what to do.
         let text = no_cube_files(&zip(), &alf4, &PackageDb::empty());
-        assert!(text.ends_with("download the 3D-LUT (.cube) version from ARRI's look page."), "{text}");
+        assert!(
+            text.ends_with("download the 3D-LUT (.cube) version from ARRI's look page."),
+            "{text}"
+        );
     }
 
     #[test]

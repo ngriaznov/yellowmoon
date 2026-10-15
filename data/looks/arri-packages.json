@@ -590,7 +590,7 @@
       "arri_title": "ARRI Look Library LogC3 (3D-LUTs)",
       "role": "looks",
       "input": "logc3",
-      "download_mb": 30,
+      "download_mb": 31,
       "zip_name": [
         { "all_of": ["look", "logc3"], "none_of": ["logc4", "rec709", "alf2", "lookfiles"] }
       ],
@@ -1139,7 +1139,7 @@
       "arri_title": "ARRI Look Library LogC3 (to Rec709) 3D-LUTs",
       "role": "looks",
       "input": "logc3_to_rec709",
-      "download_mb": 32,
+      "download_mb": 34,
       "zip_name": [
         { "all_of": ["look", "logc3", "rec709"], "none_of": ["logc4", "alf2", "lookfiles"] }
       ],

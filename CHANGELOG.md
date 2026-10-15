@@ -9,7 +9,10 @@ moves the entries below from Unreleased into a dated section for that version.
 
 ## [Unreleased]
 
-Nothing yet.
+### Fixed
+
+- The ARRI import wizard recognises ARRI's real 3D-LUT downloads. "ARRI Look Library LogC4 (log-to-log) 3D-LUTs" (87 looks, one folder, files called `1110 Black and White.cube`) was shown as "Not from a package we know" and locked Import: the rules asked for group folders the real zip does not have. Now the zip or folder name, the LUT size and the look codes (the first digit is the group) identify it, in any layout, and the three 3D-LUT packages are known by their file checksums. ARRI's camera look-file zips (`.alf4`, `.aml`) are told apart and the wizard says which 3D-LUT download to take.
+- Import is no longer locked when a chosen package is missing but something else can be imported; an unknown set whose input was answered counts for the chosen package with the same input.
 
 ## [0.1.0] - 2026-10-15
 
