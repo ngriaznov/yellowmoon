@@ -300,6 +300,25 @@ const SMOKE_OPEN_PHOTOS: &str = r#"(() => {
   if (b) b.click();
 })()"#;
 
+/// The page at the middle of the photo cell: the root's `data-viewport`, the backgrounds, and every
+/// element under that point with its background.
+#[cfg(debug_assertions)]
+const SMOKE_DESCRIBE_PAGE: &str = r##"(() => {
+  const bg = (e) => (e ? getComputedStyle(e).backgroundColor : null);
+  const cell = document.querySelector(".ym-photo-cell");
+  const r = cell ? cell.getBoundingClientRect() : null;
+  const name = (e) => e.tagName.toLowerCase() + (e.id ? "#" + e.id : "") + (e.classList.length ? "." + [...e.classList].join(".") : "");
+  const stack = r ? document.elementsFromPoint(r.left + r.width / 2, r.top + r.height / 2).map((e) => name(e) + " " + bg(e)) : [];
+  return JSON.stringify({
+    viewport: document.documentElement.dataset.viewport ?? null,
+    native: cell ? cell.dataset.native ?? null : null,
+    cell: r ? [r.left, r.top, r.width, r.height] : null,
+    html: bg(document.documentElement),
+    body: bg(document.body),
+    stack,
+  });
+})()"##;
+
 #[cfg(debug_assertions)]
 fn smoke_test<R: Runtime>(app: AppHandle<R>, api: Arc<AppApi>) {
     if std::env::var_os("YM_SMOKE").is_none() {
@@ -319,8 +338,20 @@ fn smoke_test<R: Runtime>(app: AppHandle<R>, api: Arc<AppApi>) {
     std::thread::spawn(move || {
         let start = std::time::Instant::now();
         let until = std::time::Duration::from_secs(hold);
+        let mut described = false;
         while start.elapsed() < until {
             std::thread::sleep(std::time::Duration::from_secs(2));
+            // Once, after the photo had time to show: what the page has at the photo cell.
+            if open.is_some()
+                && !described
+                && start.elapsed() > std::time::Duration::from_secs(14)
+                && let Some(window) = app.get_webview_window("main")
+            {
+                described = true;
+                let _ = window.eval_with_callback(SMOKE_DESCRIBE_PAGE, |json| {
+                    eprintln!("smoke: page {json}");
+                });
+            }
             // The Start screen lists the photos; its "Open photos" button is enabled once one is
             // ready. On the Photos screen there is no such button and this does nothing.
             if open.is_some()

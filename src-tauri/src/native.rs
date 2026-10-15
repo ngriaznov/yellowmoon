@@ -174,6 +174,14 @@ impl<R: Runtime> NativeSink<R> {
             let content: &NSView = unsafe { &*(content as *const NSView) };
             if let Some(window) = content.window() {
                 let [r, g, b] = PAPER_SRGB;
+                // The smoke run's colour test (`YM_SMOKE_WINDOW=red`): a red photo cell means the page
+                // lets the window through but the view is not there.
+                #[cfg(debug_assertions)]
+                let [r, g, b] = if std::env::var("YM_SMOKE_WINDOW").is_ok_and(|v| v == "red") {
+                    [1.0, 0.0, 0.0]
+                } else {
+                    [r, g, b]
+                };
                 window.setBackgroundColor(Some(&NSColor::colorWithSRGBRed_green_blue_alpha(
                     r, g, b, 1.0,
                 )));
@@ -488,7 +496,13 @@ impl<R: Runtime> FrameSink for NativeSink<R> {
                 height = frame.height,
                 "the native viewport shows a picture"
             );
-            self.with_views(|_content, view| view.setHidden(false));
+            self.with_views(|content, view| {
+                view.setHidden(false);
+                #[cfg(debug_assertions)]
+                smoke::describe(content, view);
+                #[cfg(not(debug_assertions))]
+                let _ = content;
+            });
         }
         Ok(())
     }
@@ -496,6 +510,108 @@ impl<R: Runtime> FrameSink for NativeSink<R> {
     fn clear(&self, _seq: u32) {
         if !self.hidden.swap(true, Ordering::SeqCst) {
             self.with_views(|_content, view| view.setHidden(true));
+        }
+    }
+}
+
+/// What the smoke run (`YM_SMOKE`, development builds) logs about the view once it shows a picture:
+/// where it is, whether it is in the window's content view, its layers, and every sibling view.
+#[cfg(debug_assertions)]
+mod smoke {
+    use objc2::msg_send;
+    use objc2::rc::Retained;
+    use objc2::runtime::AnyObject;
+    use objc2_app_kit::NSView;
+    use objc2_foundation::NSRect;
+
+    fn class_of(o: &AnyObject) -> String {
+        o.class().name().to_string_lossy().into_owned()
+    }
+
+    fn rect(r: NSRect) -> String {
+        format!(
+            "({:.0},{:.0} {:.0}x{:.0})",
+            r.origin.x, r.origin.y, r.size.width, r.size.height
+        )
+    }
+
+    /// Runs on the main thread.
+    pub(super) fn describe(content: &NSView, view: &NSView) {
+        if std::env::var_os("YM_SMOKE").is_none() {
+            return;
+        }
+        let window = view.window();
+        let content_of_window = window.as_ref().and_then(|w| w.contentView());
+        // SAFETY: `superview` only reads the view's parent; this runs on the main thread.
+        let in_content = unsafe { view.superview() }.is_some_and(|s| std::ptr::eq(&*s, content));
+        let content_is_windows = content_of_window
+            .as_ref()
+            .is_some_and(|c| std::ptr::eq(&**c, content));
+        eprintln!(
+            "smoke: view frame {} hidden {} in window {} superview is content {} content is the window's {} content {} {}",
+            rect(view.frame()),
+            view.isHidden(),
+            window.is_some(),
+            in_content,
+            content_is_windows,
+            class_of(content),
+            rect(content.frame()),
+        );
+        if let Some(w) = &window {
+            eprintln!(
+                "smoke: window opaque {} frame {}",
+                w.isOpaque(),
+                rect(w.frame())
+            );
+        }
+        // SAFETY: plain property reads of AppKit and Core Animation objects on the main thread;
+        // every message below exists on the receiver's class (`NSView`, `NSArray`, `CALayer`).
+        unsafe {
+            let layer: Option<Retained<AnyObject>> = msg_send![view, layer];
+            match layer {
+                Some(layer) => {
+                    let subs: Option<Retained<AnyObject>> = msg_send![&*layer, sublayers];
+                    let n: usize = subs.as_ref().map_or(0, |s| msg_send![&**s, count]);
+                    let frame: NSRect = msg_send![&*layer, frame];
+                    eprintln!(
+                        "smoke: view layer {} frame {} sublayers {n}",
+                        class_of(&layer),
+                        rect(frame)
+                    );
+                    if let Some(subs) = subs {
+                        for i in 0..n {
+                            let o: Retained<AnyObject> = msg_send![&*subs, objectAtIndex: i];
+                            let f: NSRect = msg_send![&*o, frame];
+                            let hidden: bool = msg_send![&*o, isHidden];
+                            let opacity: f32 = msg_send![&*o, opacity];
+                            eprintln!(
+                                "smoke:   sublayer {i} {} frame {} hidden {hidden} opacity {opacity}",
+                                class_of(&o),
+                                rect(f)
+                            );
+                        }
+                    }
+                }
+                None => eprintln!("smoke: view has no layer"),
+            }
+            let subviews: Retained<AnyObject> = msg_send![content, subviews];
+            let n: usize = msg_send![&*subviews, count];
+            for i in 0..n {
+                let o: Retained<AnyObject> = msg_send![&*subviews, objectAtIndex: i];
+                let f: NSRect = msg_send![&*o, frame];
+                let hidden: bool = msg_send![&*o, isHidden];
+                let opaque: bool = msg_send![&*o, isOpaque];
+                let ours = std::ptr::eq(
+                    std::ptr::from_ref::<AnyObject>(&o).cast::<u8>(),
+                    std::ptr::from_ref::<NSView>(view).cast::<u8>(),
+                );
+                eprintln!(
+                    "smoke:   subview {i} {} frame {} hidden {hidden} opaque {opaque}{}",
+                    class_of(&o),
+                    rect(f),
+                    if ours { " (the viewport)" } else { "" }
+                );
+            }
         }
     }
 }

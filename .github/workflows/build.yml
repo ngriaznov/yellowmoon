@@ -161,7 +161,9 @@ jobs:
       - name: Open the photos and capture the screen
         run: |
           mkdir -p viewport
-          YM_SMOKE=1 YM_SMOKE_HOLD=90 YM_SMOKE_OPEN="$GITHUB_WORKSPACE/testdata/readme-photos/src" \
+          # The window behind the page is red instead of paper for this run (YM_SMOKE_WINDOW): a red photo cell would
+          # mean the page lets the window through but the viewport's view is not where the cell is.
+          YM_SMOKE=1 YM_SMOKE_WINDOW=red YM_SMOKE_HOLD=90 YM_SMOKE_OPEN="$GITHUB_WORKSPACE/testdata/readme-photos/src" \
             target/debug/yellowmoon-app > viewport/app.log 2>&1 &
           pid=$!
           # One capture early, while the app surely runs, and one once the picture is there (or after 60 s).
