@@ -51,7 +51,10 @@ jobs:
       matrix:
         runner: [macos-15, macos-14]   # both Apple silicon (arm64)
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 90
+    # The run of 4c5939f took 50 minutes with a warm dependency cache (ym-gpu 16, ym-core 28); the steps G-09 added (the 50 and
+    # 70 MP tests, the encode split, the synthetic set and the golden subset, one 50 MP photo twice, the bench) are another
+    # 30 to 45 by estimate, and the first run of a new cache key is cold. The numbers of the first runs go to docs/13.
+    timeout-minutes: 150
     env:
       WGPU_BACKEND: metal
       # A release build finds data/ only inside an app bundle (docs/01, "Finding data/"); point it at the repository's.
@@ -149,9 +152,12 @@ jobs:
           lfs: true
           path: testdata/readme-photos/src
           persist-credentials: false
+      # Not tools/fetch/owner-photos.sh --verify: on a Mac that script falls back to `shasum --quiet`, an option the Digest::SHA that
+      # ships with macOS's Perl 5.34 (6.02) probably lacks (newer versions have it), and the runners have no unprefixed sha256sum.
+      # Plain `shasum -a 256 -c` works with every version; it lists each file as OK.
       - name: Verify the owner photos
         if: ${{ !cancelled() }}
-        run: tools/fetch/owner-photos.sh --verify
+        run: cd testdata/readme-photos/src && shasum -a 256 -c "$GITHUB_WORKSPACE/tools/fetch/owner-photos.sha256"
       - name: One real photo, the device against the CPU (golden metric)
         if: ${{ !cancelled() }}
         run: |

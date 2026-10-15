@@ -834,7 +834,7 @@ fn a_window_gathered_from_pieces_is_the_host_crop_bit_for_bit() {
             let exact = Rect::new(16, 11, 16, 11);
             let one = tiles.iter().find(|p| p.rect() == exact).expect("a tile");
             let mut passes = PassList::new(ctx, "exact");
-            let got = encode_gather(&mut passes, &[one.clone()], exact)?;
+            let got = encode_gather(&mut passes, std::slice::from_ref(one), exact)?;
             assert!(
                 Arc::ptr_eq(&got, &one.image),
                 "no copy for a window that is a piece"

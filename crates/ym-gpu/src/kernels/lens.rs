@@ -10,6 +10,8 @@
 //! whole frame bit for bit. This also serves the binned fit view, which resamples the image at 1/k
 //! with the geometry of the smaller frame (`RawPlan::lens_at`).
 
+use std::sync::Arc;
+
 use bytemuck::{Pod, Zeroable};
 
 use super::shader::KernelId;
@@ -56,7 +58,7 @@ pub struct LensTable {
     crop: Rect,
     /// The geometry the tables came from, for the source rectangle of a part of the output
     /// ([`LensTable::source_rect`]).
-    geometry: LensGeometry,
+    geometry: Arc<LensGeometry>,
     /// `F_i - 1`.
     dist: Vec<f32>,
     /// `K_red,i - 1` and `K_blue,i - 1` when the geometry has a CA table.
@@ -84,7 +86,7 @@ impl LensTable {
             frame_w: geo.frame_width(),
             frame_h: geo.frame_height(),
             crop: geo.crop(),
-            geometry: geo.clone(),
+            geometry: Arc::new(geo.clone()),
             dist: geo
                 .distortion_knots()
                 .map(minus_one)

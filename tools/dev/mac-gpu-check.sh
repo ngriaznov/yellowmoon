@@ -66,6 +66,16 @@ case "$out" in
   *.json) ;;
   *) echo "--out must name a .json file" >&2; exit 2 ;;
 esac
+# The script works from the repository root (cargo, the git check below), so a relative --out or --photo is made absolute
+# here, against the folder the command was typed in: the report lands where the user said, not in the repository root.
+absolute() {
+  case "$1" in
+    /*) printf '%s' "$1" ;;
+    *) printf '%s/%s' "$PWD" "$1" ;;
+  esac
+}
+out="$(absolute "$out")"
+if [ -n "$photo" ]; then photo="$(absolute "$photo")"; fi
 if [ -d "$out" ]; then
   echo "--out is a folder" >&2
   exit 2
@@ -91,10 +101,11 @@ trap 'rm -rf "$scratch"' EXIT
 
 # --- helpers ---------------------------------------------------------------------------------------------------
 
-# A JSON string from the text on stdin: backslash, quote and control characters escaped.
+# A JSON string from the text on stdin: backslash and quote escaped. Newline, tab and carriage return become spaces and the
+# other control characters are dropped (tr only: BSD sed on a Mac does not read \001 in a pattern like GNU sed does, and nothing
+# this script writes through here, a name, a command line, a test name, has more than one line).
 json_string() {
-  # tr turns the newlines into a placeholder first, so that sed sees one line.
-  printf '"%s"' "$(tr '\n\t\r' '\001\002\003' | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/\001/\\n/g' -e 's/\002/\\t/g' -e 's/\003/\\r/g')"
+  printf '"%s"' "$(tr '\n\t\r' '   ' | tr -d '\000-\037' | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')"
 }
 
 # The text of a file as a JSON value: itself when it parses as one JSON line, else null.

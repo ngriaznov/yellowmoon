@@ -153,16 +153,49 @@ class MacGpuCheck(unittest.TestCase):
         self.assertFalse(self.out.exists())
 
     def test_a_file_that_git_tracks_is_never_replaced(self) -> None:
-        # The script's own folder is the repository: README.md is tracked there.
-        tracked = SCRIPT.parent.parent.parent / "LICENSE"
-        if not tracked.exists():
-            self.skipTest("no tracked file to point at")
+        # The script's own folder is the repository: package.json is a tracked .json file there. Named by its
+        # absolute path and, from the repository root, by its relative one, the script must refuse both (exit 2)
+        # and leave the file as it is.
+        root = SCRIPT.parent.parent.parent
+        tracked = root / "package.json"
+        tracking = subprocess.run(
+            ["git", "ls-files", "--error-unmatch", "--", "package.json"], cwd=root, capture_output=True, text=True
+        )
+        if tracking.returncode != 0:
+            self.skipTest("package.json is not tracked here (a source archive, not a clone)")
         before = tracked.read_bytes()
-        r = self.run_script("--out", str(tracked.with_suffix(".json")))
-        # LICENSE.json is not tracked: this only proves the check does not trip on an untracked name.
-        self.assertNotEqual(r.returncode, 2, r.stderr)
-        tracked.with_suffix(".json").unlink(missing_ok=True)
-        self.assertEqual(tracked.read_bytes(), before)
+        for args, cwd in ((["--out", str(tracked), "--skip-tests"], None), (["--out", "package.json", "--skip-tests"], str(root))):
+            e = dict(os.environ)
+            e["PATH"] = f"{self.shim}:{e['PATH']}"
+            e["CARGO_TARGET_DIR"] = str(self.target)
+            r = subprocess.run(
+                [str(SCRIPT), *args], capture_output=True, text=True, env=e, cwd=cwd or self.dir.name, timeout=120
+            )
+            self.assertEqual(r.returncode, 2, (args, r.stderr))
+            self.assertIn("git tracks", r.stderr)
+            self.assertEqual(tracked.read_bytes(), before)
+
+    def test_a_relative_out_and_photo_are_read_from_the_folder_the_command_was_typed_in(self) -> None:
+        # The script works from the repository root; the report and the photo must still be found where the user
+        # said, not in the repository (`--out report.json` used to be written to the repository root).
+        root = SCRIPT.parent.parent.parent
+        stray = root / "rel-report.json"
+        self.assertFalse(stray.exists(), "a file of an earlier run is in the way")
+        try:
+            r = self.run_script("--out", "rel-report.json", "--photo", "photo.ARW", "--skip-tests")
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertFalse(stray.exists(), "the report was written into the repository root")
+            report = json.loads((Path(self.dir.name) / "rel-report.json").read_text())
+            self.assertIsNotNone(report["bench"])
+            # A relative folder that exists only here.
+            r = self.run_script("--out", "out/nested.json", "--skip-tests")
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertTrue((self.out.parent / "nested.json").is_file())
+            # A relative photo that does not exist here is refused, whatever the repository root holds.
+            r = self.run_script("--out", "rel-report.json", "--photo", "README.md")
+            self.assertEqual(r.returncode, 2, r.stderr)
+        finally:
+            stray.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":
