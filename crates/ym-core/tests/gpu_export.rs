@@ -1810,7 +1810,19 @@ mod faults {
     /// fingerprint are how a test takes the words away from an export between two of its tiles
     /// without touching the export itself (`Renderer::final_size` makes a request that adopts it and
     /// uploads nothing).
-    fn take_the_raw_words_away(renderer: &Renderer, src: &PhotoSource) {
+    ///
+    /// The words go, and the next upload of them (the export's next tile, which finds none) is the
+    /// one that fails when `fail_upload` is set. The fault is armed **before** the words are taken,
+    /// never after: when the progress report comes from a thread other than the render's (the
+    /// writer's, in an export of the tail), the render keeps tiling while this runs, and the two
+    /// requests below take tens of milliseconds, longer than a tile on a quick device. A tile that
+    /// found the words gone in that gap would upload them again with nothing armed, and the fault
+    /// armed afterwards would never meet an upload (the export would finish on the device). Armed
+    /// first, the first upload that follows the loss fails, whichever tile makes it.
+    fn take_the_raw_words_away(renderer: &Renderer, src: &PhotoSource, fail_upload: Option<&Gpu>) {
+        if let Some(gpu) = fail_upload {
+            gpu.set_fault(Some(GpuFault::FailUpload(1)));
+        }
         let mut other = src.clone();
         other.fingerprint ^= 1;
         let cancel = CancelToken::new();
@@ -1852,10 +1864,7 @@ mod faults {
                     // After the third of the twelve tiles (they run in raster order), on the render's
                     // own thread: nothing can be between this report and the next tile.
                     if tiles.fetch_add(1, Ordering::SeqCst) + 1 == 3 {
-                        take_the_raw_words_away(&dev, &src);
-                        if fail {
-                            own.set_fault(Some(GpuFault::FailUpload(1)));
-                        }
+                        take_the_raw_words_away(&dev, &src, fail.then_some(&*own));
                     }
                 })
             };

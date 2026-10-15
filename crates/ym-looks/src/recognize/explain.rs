@@ -2,7 +2,7 @@
 //!
 //! Short sentences that say what is wrong and what to do next, British spelling, no jargon.
 
-use super::{Ignored, SourceInfo, SourceKind};
+use super::{Ignored, PackageDb, PackageInput, PackageRole, SourceInfo, SourceKind};
 
 /// "zip", "folder" or "file".
 fn noun(source: &SourceInfo) -> &'static str {
@@ -23,19 +23,66 @@ pub fn count(n: usize, one: &str, many: &str) -> String {
     }
 }
 
+/// The titles of the 3D-LUT downloads that replace camera look files, quoted as ARRI's page has
+/// them: `.alf4` files belong to the LogC4 look library, `.alf2` and `.aml` to the LogC3 ones.
+fn lut_titles(db: &PackageDb, logc4: bool, logc3: bool) -> Vec<String> {
+    db.packages
+        .iter()
+        .filter(|p| p.role == PackageRole::Looks)
+        .filter(|p| match p.input {
+            PackageInput::LogC4 => logc4,
+            PackageInput::LogC3 | PackageInput::LogC3ToRec709 => logc3,
+        })
+        .map(|p| format!("'{}'", p.download_title()))
+        .collect()
+}
+
+/// "A", "A or B", "A, B or C".
+fn or_list(items: &[String]) -> String {
+    match items {
+        [] => String::new(),
+        [one] => one.clone(),
+        [init @ .., last] => format!("{} or {last}", init.join(", ")),
+    }
+}
+
+/// "A", "A and B", "A, B and C".
+fn and_list(items: &[&str]) -> String {
+    match items {
+        [] => String::new(),
+        [one] => (*one).to_string(),
+        [init @ .., last] => format!("{} and {last}", init.join(", ")),
+    }
+}
+
 /// Why a source with no `.cube` files cannot be imported, and where to get the right one.
-pub(super) fn no_cube_files(source: &SourceInfo, ignored: &Ignored) -> String {
+///
+/// A zip of ARRI's look files for the camera (`.alf4`, `.alf2`, `.aml`) is one of the packages on
+/// ARRI's page that the app cannot use: the message says so and names the 3D-LUT download to take
+/// instead, as ARRI's page titles it.
+pub(super) fn no_cube_files(source: &SourceInfo, ignored: &Ignored, db: &PackageDb) -> String {
     let noun = noun(source);
-    let alf = match (ignored.alf4 > 0, ignored.alf2 > 0) {
-        (true, true) => Some(".alf4 and .alf2"),
-        (true, false) => Some(".alf4"),
-        (false, true) => Some(".alf2"),
-        (false, false) => None,
-    };
-    if let Some(alf) = alf {
+    let mut extensions: Vec<&str> = Vec::new();
+    if ignored.alf4 > 0 {
+        extensions.push(".alf4");
+    }
+    if ignored.alf2 > 0 {
+        extensions.push(".alf2");
+    }
+    if ignored.aml > 0 {
+        extensions.push(".aml");
+    }
+    if !extensions.is_empty() {
+        let titles = lut_titles(db, ignored.alf4 > 0, ignored.alf2 > 0 || ignored.aml > 0);
+        let what = if titles.is_empty() {
+            "the 3D-LUT (.cube) version".to_string()
+        } else {
+            or_list(&titles)
+        };
         return format!(
-            "This {noun} has ARRI Look Files ({alf}) but no .cube files. \
-             Download the 'LUT (.cube)' version from ARRI's page."
+            "These are ARRI look files for the camera ({}). Yellowmoon needs the 3D-LUT version: \
+             download {what} from ARRI's look page.",
+            and_list(&extensions)
         );
     }
     if ignored.pdf > 0 {
@@ -149,17 +196,55 @@ mod tests {
         }
     }
 
+    fn db() -> PackageDb {
+        PackageDb::from_json(
+            r#"{ "version": 1, "packages": [
+              { "id": "a", "title": "Look Library · LogC4", "arri_title": "Look Library for LogC4 (3D-LUTs)",
+                "role": "looks", "input": "logc4" },
+              { "id": "b", "title": "Look Library · LogC3", "arri_title": "ARRI Look Library LogC3 (3D-LUTs)",
+                "role": "looks", "input": "logc3" },
+              { "id": "c", "title": "Look Library · LogC3 to Rec.709",
+                "arri_title": "ARRI Look Library LogC3 (to Rec709) 3D-LUTs",
+                "role": "looks", "input": "logc3_to_rec709" },
+              { "id": "d", "title": "Display LUTs · LogC4", "role": "display_luts", "input": "logc4" }
+            ] }"#,
+        )
+        .unwrap()
+    }
+
     #[test]
-    fn alf4_only_message_matches_the_spec_wording() {
-        let ignored = Ignored {
+    fn camera_look_files_say_which_3d_lut_download_to_take() {
+        let alf4 = Ignored {
             alf4: 87,
             ..Ignored::default()
         };
         assert_eq!(
-            no_cube_files(&zip(), &ignored),
-            "This zip has ARRI Look Files (.alf4) but no .cube files. \
-             Download the 'LUT (.cube)' version from ARRI's page."
+            no_cube_files(&zip(), &alf4, &db()),
+            "These are ARRI look files for the camera (.alf4). Yellowmoon needs the 3D-LUT version: \
+             download 'Look Library for LogC4 (3D-LUTs)' from ARRI's look page."
         );
+        let aml = Ignored {
+            aml: 87,
+            ..Ignored::default()
+        };
+        assert_eq!(
+            no_cube_files(&zip(), &aml, &db()),
+            "These are ARRI look files for the camera (.aml). Yellowmoon needs the 3D-LUT version: \
+             download 'ARRI Look Library LogC3 (3D-LUTs)' or \
+             'ARRI Look Library LogC3 (to Rec709) 3D-LUTs' from ARRI's look page."
+        );
+        let both = Ignored {
+            alf4: 1,
+            alf2: 1,
+            aml: 1,
+            ..Ignored::default()
+        };
+        let text = no_cube_files(&zip(), &both, &db());
+        assert!(text.contains("(.alf4, .alf2 and .aml)"), "{text}");
+        assert!(text.contains("'Look Library for LogC4 (3D-LUTs)', 'ARRI Look Library LogC3 (3D-LUTs)' or"));
+        // Without a package list the sentence still says what to do.
+        let text = no_cube_files(&zip(), &alf4, &PackageDb::empty());
+        assert!(text.ends_with("download the 3D-LUT (.cube) version from ARRI's look page."), "{text}");
     }
 
     #[test]
@@ -168,14 +253,14 @@ mod tests {
             pdf: 2,
             ..Ignored::default()
         };
-        assert!(no_cube_files(&zip(), &pdf).contains("PDF"));
-        let none = no_cube_files(&zip(), &Ignored::default());
+        assert!(no_cube_files(&zip(), &pdf, &db()).contains("PDF"));
+        let none = no_cube_files(&zip(), &Ignored::default(), &db());
         assert!(none.contains("no .cube files"));
         let folder = SourceInfo {
             kind: SourceKind::Folder,
             name: "f".into(),
         };
-        assert!(no_cube_files(&folder, &Ignored::default()).starts_with("This folder"));
+        assert!(no_cube_files(&folder, &Ignored::default(), &db()).starts_with("This folder"));
     }
 
     #[test]

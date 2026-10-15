@@ -2,7 +2,7 @@
 //!
 //! Listing never reads LUT data. A zip is opened through its central directory and entries are
 //! inflated one at a time, so a 180 MB look package never sits in memory whole. Only `.cube` files
-//! are candidates; `__MACOSX` folders, `._` files, `.DS_Store`, `.alf4`, `.alf2`, PDFs and
+//! are candidates; `__MACOSX` folders, `._` files, `.DS_Store`, `.alf4`, `.alf4c`, `.alf2`, `.aml`, PDFs and
 //! everything else are counted in [`Ignored`] and left alone. Nothing here writes.
 
 use std::fs::{self, File};
@@ -85,6 +85,7 @@ enum EntryKind {
     Cube,
     Alf4,
     Alf2,
+    Aml,
     Pdf,
     MacMetadata,
     Other,
@@ -107,8 +108,9 @@ fn classify(rel_path: &str) -> EntryKind {
         .map(|(_, ext)| ext.to_ascii_lowercase())
     {
         Some(ext) if ext == "cube" => EntryKind::Cube,
-        Some(ext) if ext == "alf4" => EntryKind::Alf4,
+        Some(ext) if ext == "alf4" || ext == "alf4c" => EntryKind::Alf4,
         Some(ext) if ext == "alf2" => EntryKind::Alf2,
+        Some(ext) if ext == "aml" => EntryKind::Aml,
         Some(ext) if ext == "pdf" => EntryKind::Pdf,
         _ => EntryKind::Other,
     }
@@ -118,6 +120,7 @@ fn tally(ignored: &mut Ignored, kind: EntryKind) {
     match kind {
         EntryKind::Alf4 => ignored.alf4 += 1,
         EntryKind::Alf2 => ignored.alf2 += 1,
+        EntryKind::Aml => ignored.aml += 1,
         EntryKind::Pdf => ignored.pdf += 1,
         EntryKind::MacMetadata => ignored.macos_metadata += 1,
         EntryKind::Other => ignored.other += 1,
@@ -487,6 +490,8 @@ mod tests {
         assert_eq!(classify("a/B.CUBE"), EntryKind::Cube);
         assert_eq!(classify("x.alf4"), EntryKind::Alf4);
         assert_eq!(classify("x.ALF2"), EntryKind::Alf2);
+        assert_eq!(classify("x.alf4c"), EntryKind::Alf4);
+        assert_eq!(classify("x.AML"), EntryKind::Aml);
         assert_eq!(classify("doc/readme.pdf"), EntryKind::Pdf);
         assert_eq!(classify("__MACOSX/a/b.cube"), EntryKind::MacMetadata);
         assert_eq!(classify("a/._b.cube"), EntryKind::MacMetadata);

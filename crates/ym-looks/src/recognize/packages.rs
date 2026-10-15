@@ -12,6 +12,7 @@
 //!     {
 //!       "id": "look-library-logc4",
 //!       "title": "Look Library · LogC4",
+//!       "arri_title": "Look Library for LogC4 (3D-LUTs)",  // as on ARRI's page; optional
 //!       "role": "looks",                      // "looks" or "display_luts"
 //!       "input": "logc4",                     // "logc4", "logc3" or "logc3_to_rec709"
 //!       "download_mb": 181,
@@ -195,6 +196,10 @@ pub struct Package {
     pub id: String,
     /// Name shown in the wizard (`Look Library · LogC4`).
     pub title: String,
+    /// The title of the download on ARRI's page (`Look Library for LogC4 (3D-LUTs)`), for the words
+    /// that tell the person what to download. [`Package::download_title`] falls back to `title`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arri_title: Option<String>,
     /// Looks or display LUTs.
     pub role: PackageRole,
     /// The encoding the LUTs expect.
@@ -244,6 +249,12 @@ impl Package {
             PackageInput::LogC3 => Some(DisplayInput::LogC3),
             PackageInput::LogC3ToRec709 => None,
         }
+    }
+
+    /// The name ARRI gives the download, so the person can find it on ARRI's page.
+    #[must_use]
+    pub fn download_title(&self) -> &str {
+        self.arri_title.as_deref().unwrap_or(&self.title)
     }
 
     /// Whether the package has been fingerprinted.
@@ -489,10 +500,10 @@ mod tests {
             .join("../../data/looks/arri-packages.json");
         let db = PackageDb::load(&path).unwrap();
         let ids = |list: &[&str]| list.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
-        assert_eq!(db.download_total_mb(&ids(&["look-library-logc4"])), 181);
+        assert_eq!(db.download_total_mb(&ids(&["look-library-logc4"])), 190);
         assert_eq!(
             db.download_total_mb(&ids(&["look-library-logc4", "display-luts-logc4"])),
-            181 + 32
+            190 + 32
         );
         assert_eq!(db.download_total_mb(&ids(&["nope"])), 0);
     }

@@ -73,10 +73,12 @@ pub struct SourceInfo {
 /// What was set aside without being read as a LUT.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
 pub struct Ignored {
-    /// ARRI Look Files (`.alf4`), a binary container the app cannot use.
+    /// ARRI Look Files for LogC4 cameras (`.alf4`, `.alf4c`), a binary container the app cannot use.
     pub alf4: usize,
     /// ARRI Look Files (`.alf2`).
     pub alf2: usize,
+    /// ARRI Look Files for LogC3 cameras (`.aml`).
+    pub aml: usize,
     /// PDF documents.
     pub pdf: usize,
     /// macOS metadata: `__MACOSX` folders, `._` files, `.DS_Store`.
@@ -914,7 +916,7 @@ fn issues_for(
         push(
             Severity::Problem,
             IssueKind::NoCubeFiles,
-            explain::no_cube_files(source, ignored),
+            explain::no_cube_files(source, ignored, db),
         );
         return issues;
     }
@@ -1037,6 +1039,7 @@ mod tests {
             "version": 1,
             "packages": [
               { "id": "ll4", "title": "Look Library · LogC4", "role": "looks", "input": "logc4",
+                "arri_title": "Look Library for LogC4 (3D-LUTs)",
                 "zip_name": [ { "all_of": ["look", "logc4"], "none_of": ["logc3"] } ],
                 "expected": { "cube_files": 3, "lut_sizes": [5] },
                 "markers": { "encoding": { "any_of": ["logc4"], "none_of": ["logc3"] },
@@ -1539,8 +1542,8 @@ mod tests {
         assert_eq!(r.issues[0].kind, IssueKind::NoCubeFiles);
         assert_eq!(
             r.issues[0].message,
-            "This zip has ARRI Look Files (.alf4) but no .cube files. \
-             Download the 'LUT (.cube)' version from ARRI's page."
+            "These are ARRI look files for the camera (.alf4). Yellowmoon needs the 3D-LUT version: \
+             download 'Look Library for LogC4 (3D-LUTs)' from ARRI's look page."
         );
 
         let bad = FileFacts {

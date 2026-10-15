@@ -295,8 +295,8 @@ fn alf4_only_zip_is_explained_and_nothing_is_written() {
     assert_eq!(issue.kind, IssueKind::NoCubeFiles);
     assert_eq!(
         issue.message,
-        "This zip has ARRI Look Files (.alf4) but no .cube files. \
-         Download the 'LUT (.cube)' version from ARRI's page."
+        "These are ARRI look files for the camera (.alf4). Yellowmoon needs the 3D-LUT version: \
+         download 'Look Library for LogC4 (3D-LUTs)' from ARRI's look page."
     );
     let err = import(
         &mut library,
