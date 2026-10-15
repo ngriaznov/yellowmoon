@@ -85,6 +85,8 @@ Metal after GPU wave 5 (5184824, run 38746750138; macos-14 and macos-15 agree on
 | Encode split, 24 MP, 3 threads | resize 182 / 78 ms, output sharpening 1688 / 1465, C13 8 bit 442 / 384, JPEG q92 444 / 406, PNG 8 3227 / 2568, PNG 16 3635 / 3696, TIFF 16 uncompressed 108 / 93, LZW 1424 / 1414, Zip 1407 / 1274 ms |
 | Job time, about 64 / 62 minutes in all (timeout 150) | `ym` build and doctor 126 / 137 s; `ym-gpu` 1035 / 1016 s; fault and ML 116 / 134 s; `ym-core` 1792 / 1750 s; parity 201 / 167 s; 50 and 70 MP 324 / 278 s; encode split 103 / 90 s; owner photo 27 / 22 s; bench 30 / 24 s; the generator stopped after 21 / 19 s and the golden check found no files |
 
+First full CI run on GitHub (`main` at 9b0307e, 2026-10-15; until then `ci.yml` ran only for pull requests and `main`): the test build of the app (`build.yml`) passed and is downloadable; seven jobs failed and are fixed: rustdoc links to private items (`parity`), an import used only on Linux (`rust` on macOS; the whole workspace is now also clippy-clean when checked for aarch64-apple-darwin), two `ym render` tests that assumed `Auto` means the CPU (true no longer on a Mac, where `Auto` runs every stage on the device), rustls 0.23.45 advisories (`deny`, now 0.23.46), the deny self-test's grep under coloured output, the e2e screenshots' text rendering on the runner (the browser now launches with `--font-render-hinting=none --disable-lcd-text`, the settings the baselines were made with; no budget loosened), the lens oracle's numpy under `python3 -I` (a venv; the script now records the darktable and library versions), and `gpu-lavapipe` release tests that could not find `data/` (`YELLOWMOON_DATA`). The next run on `main` confirms them.
+
 ## Done
 
 | Task | Commit | Notes |
