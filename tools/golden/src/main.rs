@@ -345,6 +345,18 @@ fn setup(common: &Common, files: Option<&RunnerFiles>) -> Result<Setup> {
         .collect();
     if let Some(path) = &common.subset {
         let wanted = read_subset(path, &manifest)?;
+        // An id that `--set` leaves out would be dropped without a word, and a push would check fewer files than the
+        // subset file lists; `--filter` narrows on purpose and is not held to this.
+        let in_set: Vec<&str> = select(&manifest, common.set, &[])
+            .iter()
+            .map(|e| e.id.as_str())
+            .collect();
+        if let Some(id) = wanted.iter().find(|id| !in_set.contains(&id.as_str())) {
+            anyhow::bail!(
+                "{}: {id:?} is in the manifest but not in the selected set (--set), so it would be left out of the subset",
+                path.display()
+            );
+        }
         selected_ids.retain(|id| wanted.contains(id));
     }
     let testdata = common

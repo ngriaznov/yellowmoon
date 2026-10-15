@@ -36,6 +36,8 @@ exit 0
 """
 
 YM = r"""#!/bin/sh
+# YM_HOME_LOG: where to note which app folder each call was given.
+if [ -n "$YM_HOME_LOG" ]; then echo "$1 $2 ${YELLOWMOON_HOME:-unset}" >> "$YM_HOME_LOG"; fi
 if [ "$1" = doctor ] && [ "$2" = --json ]; then
   echo '{"version":"0.0.1","gpu":{"available":true,"name":"Stub \"GPU\""}}'
   exit 0
@@ -121,6 +123,19 @@ class MacGpuCheck(unittest.TestCase):
         # The only new file is the report (the scratch folder is gone, no temporary is left beside it).
         after = {p for p in Path(self.dir.name).rglob("*")}
         self.assertEqual(after - before, {self.out})
+
+    def test_ym_runs_with_an_app_folder_in_the_scratch_folder_that_is_gone_afterwards(self) -> None:
+        # The report must not depend on the user's preferences or leave anything in the user's own app folder.
+        log = Path(self.dir.name) / "homes.txt"
+        r = self.run_script(
+            "--out", str(self.out), "--photo", str(self.photo), "--with-cpu", "--skip-tests", YM_HOME_LOG=str(log), YELLOWMOON_HOME="/nonexistent/users/own"
+        )
+        self.assertEqual(r.returncode, 0, r.stderr)
+        calls = [line.split(" ", 2) for line in log.read_text().splitlines()]
+        self.assertGreaterEqual(len(calls), 3, calls)  # doctor --json, the bench, the CPU bench
+        for first, second, home in calls:
+            self.assertIn("ym-mac-gpu-check.", home, (first, second, home))
+            self.assertFalse(Path(home).exists(), "the scratch folder is removed at the end")
 
     def test_a_failing_suite_and_differing_exports_fail_the_run_and_are_named(self) -> None:
         r = self.run_script("--out", str(self.out), "--photo", str(self.photo), FAIL_ONE="1", BENCH_DIFFERS="1")

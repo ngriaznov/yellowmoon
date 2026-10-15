@@ -21,6 +21,7 @@
 //! The report names no file and no folder: the photo is identified by its camera model and size only.
 
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::RecvTimeoutError;
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
@@ -39,7 +40,7 @@ use ym_gpu::kernels::KernelSet;
 use ym_gpu::queue::{CancelToken, JobSpec, Priority};
 
 use crate::exit::{self, Failure};
-use crate::runtime::{CoreSettings, Runtime};
+use crate::runtime::{CoreSettings, Runtime, interrupted};
 
 /// The version of the shape of the report, for `tools/dev/mac-gpu-check.sh`.
 pub const SCHEMA: u32 = 1;
@@ -108,6 +109,17 @@ fn fnv(bytes: &[u8]) -> u64 {
     bytes.iter().fold(0xcbf2_9ce4_8422_2325_u64, |h, &b| {
         (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01B3)
     })
+}
+
+/// Fails with the exit code of Ctrl-C when it was pressed. Once the photo is developed
+/// ([`Runtime::wait_developed`] says the command looks at the flag) the first Ctrl-C only sets it, so every phase of the
+/// bench looks at it; the scratch folder and the device go with the return.
+fn check_interrupted() -> Result<(), Failure> {
+    if interrupted() {
+        Err(Failure::new(exit::INTERRUPTED, "Interrupted.".to_owned()))
+    } else {
+        Ok(())
+    }
 }
 
 /// The GPU time per pass label since the last call, as a list sorted by total time, longest first.
@@ -246,6 +258,7 @@ pub fn run(path: &Path, repeat: u32) -> Result<Value, Failure> {
 
     let render_error = |e: ym_core::pipeline::RenderError| Failure::failed(e.to_string());
     let frame = |s: &PhotoSource, st: &ViewportState| -> Result<(f64, RenderedFrame), Failure> {
+        check_interrupted()?;
         let t = Instant::now();
         let f = r
             .viewport_frame(
@@ -307,6 +320,7 @@ pub fn run(path: &Path, repeat: u32) -> Result<Value, Failure> {
     }
     // The thumbnail.
     {
+        check_interrupted()?;
         r.forget(src.id);
         let t = Instant::now();
         let png = r.thumbnail_png(&src, &cancel).map_err(render_error)?;
@@ -352,6 +366,7 @@ pub fn run(path: &Path, repeat: u32) -> Result<Value, Failure> {
     let mut identical = true;
     let mut repeat_ms: Vec<f64> = Vec::new();
     for i in 0..repeat {
+        check_interrupted()?;
         let dir = scratch.sub(&format!("repeat-{i}"));
         let opts = ExportOptions {
             size: Size::LongEdge { px: REPEAT_EDGE_PX },
@@ -452,14 +467,30 @@ fn export_once(
         .start(&rt.core.session, &job, false)
         .map_err(|e| Failure::failed(e.to_string()))?;
     let mut report = None;
+    let mut cancelled = false;
+    let mut last_event = Instant::now();
     loop {
-        match rt.events.recv_timeout(Duration::from_secs(900)) {
+        // Ctrl-C ends the queue's job at the next tile; the loop then waits for the queue to say it is idle.
+        if interrupted() && !cancelled {
+            cancelled = true;
+            rt.core.exports.cancel_all();
+        }
+        match rt.events.recv_timeout(Duration::from_millis(100)) {
             Ok(ExportEvent::File(done)) => {
+                last_event = Instant::now();
                 report = Some(done.outcome.map_err(|f| Failure::failed(f.message)));
             }
-            Ok(ExportEvent::Busy(false)) | Err(_) => break,
-            Ok(_) => {}
+            Ok(ExportEvent::Busy(false)) | Err(RecvTimeoutError::Disconnected) => break,
+            Ok(_) => last_event = Instant::now(),
+            Err(RecvTimeoutError::Timeout) => {
+                if last_event.elapsed() > Duration::from_secs(900) {
+                    break;
+                }
+            }
         }
+    }
+    if cancelled {
+        return Err(Failure::new(exit::INTERRUPTED, "Interrupted.".to_owned()));
     }
     let wall = ms(started.elapsed());
     match report {

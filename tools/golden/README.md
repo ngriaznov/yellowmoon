@@ -126,7 +126,7 @@ borders) takes the other side of a rank (`docs/algorithms/04` section 10; the sh
 the rest of the picture is the CPU's to the last code or two. Metal will have its own numbers (its f32 chain differs in other last bits); the Metal CI job prints them, and the gates are
 raised there only with Mykyta's agreement, as for every gate (`AGENTS.md`). `PLAN` stays in the code so that the question is one flag away.
 
-**Files.** `tools/golden/gpu-subset.txt` lists the ten files of a push (one id per line, `#` comments; an id that is not in the manifest is an error): the four CFA phases, cRAW,
+**Files.** `tools/golden/gpu-subset.txt` lists the ten files of a push (one id per line, `#` comments; an id that is not in the manifest, or that `--set` leaves out, is an error: a subset never shrinks without a word): the four CFA phases, cRAW,
 lossless L, 12 and 14 bit, camera-processed (Lossless M), the highest ISO, a tungsten light and a second body. Every chart scene carries blown highlights, so each file covers clipped highlights.
 `--subset FILE` applies to every runner command, after `--set` and `--filter`.
 

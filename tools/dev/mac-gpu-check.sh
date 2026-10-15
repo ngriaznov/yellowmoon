@@ -6,8 +6,9 @@
 #   tools/dev/mac-gpu-check.sh [--out FILE.json] [--photo FILE.ARW] [--repeat N] [--with-cpu] [--skip-tests]
 #
 #   --out FILE.json  where the report goes (default: mac-gpu-check.json in the current folder). The only file this
-#                    script writes besides the build output of cargo and a scratch folder it removes again. It refuses
-#                    a name that does not end in .json, a folder, and a file that git tracks.
+#                    script writes besides the build output of cargo and a scratch folder it removes again (`ym` gets its
+#                    app folder there too, so nothing lands in the user's real one). It refuses a name that does not end
+#                    in .json, a folder, and a file that git tracks.
 #   --photo FILE.ARW the photo for the timings and for the CPU against device comparison (a 50 MP Sony file makes the
 #                    numbers of the plan's targets). Without it only the suites run.
 #   --repeat N       exports of the same JPEG that must come out byte for byte equal (default 10).
@@ -98,6 +99,10 @@ fi
 
 scratch="$(mktemp -d "${TMPDIR:-/tmp}/ym-mac-gpu-check.XXXXXX")"
 trap 'rm -rf "$scratch"' EXIT
+# `ym` runs with an app folder of its own in the scratch folder: the report must not depend on this user's preferences, default
+# look or imported looks (numbers from two Macs have to be comparable), and the run leaves nothing in the real one.
+ym_home="$scratch/ym-home"
+mkdir -p "$ym_home"
 
 # --- helpers ---------------------------------------------------------------------------------------------------
 
@@ -161,7 +166,7 @@ export YELLOWMOON_DATA="$root/data"
 
 ok=0
 doctor="$scratch/doctor.json"
-"$ym" doctor --json >"$doctor" 2>"$scratch/doctor.err" || true
+YELLOWMOON_HOME="$ym_home" "$ym" doctor --json >"$doctor" 2>"$scratch/doctor.err" || true
 
 # --- the suites ------------------------------------------------------------------------------------------------
 
@@ -216,10 +221,10 @@ compare_file="$scratch/compare.json"
 : >"$bench_file"; : >"$bench_cpu_file"; : >"$compare_file"
 if [ -n "$photo" ]; then
   echo "mac-gpu-check: timing the render path on the device ..." >&2
-  YELLOWMOON_GPU=require "$ym" doctor --bench "$photo" --json --repeat "$repeat" >"$bench_file" 2>"$scratch/bench.err" || ok=1
+  YELLOWMOON_HOME="$ym_home" YELLOWMOON_GPU=require "$ym" doctor --bench "$photo" --json --repeat "$repeat" >"$bench_file" 2>"$scratch/bench.err" || ok=1
   if [ "$with_cpu" = 1 ]; then
     echo "mac-gpu-check: timing the CPU path ..." >&2
-    YELLOWMOON_GPU=off "$ym" doctor --bench "$photo" --json --repeat 2 >"$bench_cpu_file" 2>"$scratch/bench-cpu.err" || ok=1
+    YELLOWMOON_HOME="$ym_home" YELLOWMOON_GPU=off "$ym" doctor --bench "$photo" --json --repeat 2 >"$bench_cpu_file" 2>"$scratch/bench-cpu.err" || ok=1
   fi
   echo "mac-gpu-check: the device against the CPU on this photo ..." >&2
   "$golden" device-check --ym "$ym" --data "$root/data" --report "$compare_file" "$photo" >&2 || ok=1

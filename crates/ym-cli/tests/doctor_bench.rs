@@ -4,6 +4,9 @@
 
 mod common;
 
+use std::process::Stdio;
+use std::time::{Duration, Instant};
+
 use common::Sandbox;
 use serde_json::Value;
 
@@ -209,4 +212,57 @@ fn bad_input_is_named_and_a_strict_policy_without_a_device_is_exit_4() {
         .arg(&arw)
         .assert()
         .code(4);
+}
+
+/// Once the photo is developed the first Ctrl-C only sets a flag (`runtime::handle_interrupts`), so every phase of the bench
+/// has to look at it: the run ends with 130 at the next phase or tile, and the folder its exports were written to
+/// (`$TMPDIR/ym-bench-<pid>`) is gone. A bench that ignored the flag would go on through the whole repeat check.
+#[cfg(unix)]
+#[test]
+fn ctrl_c_during_the_bench_ends_it_with_130_and_removes_its_scratch_folder() {
+    let sb = Sandbox::new();
+    let arw = sb.arw_sized("big.ARW", 3000, 2000, 5);
+    let tmp = sb.root().join("tmp");
+    std::fs::create_dir_all(&tmp).expect("tmp");
+    let mut child = std::process::Command::new(assert_cmd::cargo::cargo_bin!("ym"))
+        .args(["doctor", "--bench"])
+        .arg(&arw)
+        // A thousand exports: the run is still going whenever the signal arrives.
+        .args(["--repeat", "1000"])
+        .env("YELLOWMOON_HOME", sb.home())
+        .env("YELLOWMOON_DATA", common::data_dir())
+        .env("YELLOWMOON_GPU", "off")
+        .env("TMPDIR", &tmp)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn ym");
+    // Past the development of the photo (the flag is looked at from there on) and into the views or the exports.
+    std::thread::sleep(Duration::from_secs(8));
+    let kill = std::process::Command::new("kill")
+        .args(["-INT", &child.id().to_string()])
+        .status()
+        .expect("kill");
+    assert!(kill.success());
+    let signalled = Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait().expect("try_wait") {
+            break Some(status);
+        }
+        if signalled.elapsed() > Duration::from_secs(90) {
+            let _ = child.kill();
+            let _ = child.wait();
+            break None;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    let status =
+        status.expect("the bench stops within 90 s of Ctrl-C (it went on, and was killed)");
+    assert_eq!(status.code(), Some(130), "{status:?}");
+    let left: Vec<_> = std::fs::read_dir(&tmp)
+        .expect("tmp")
+        .filter_map(Result::ok)
+        .map(|e| e.file_name())
+        .collect();
+    assert!(left.is_empty(), "the scratch folder is left: {left:?}");
 }

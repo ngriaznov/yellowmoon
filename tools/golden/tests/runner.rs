@@ -695,4 +695,28 @@ fn the_binary_runs_the_gpu_mode_on_a_subset_and_refuses_what_cannot_be_trusted()
         .stderr(predicate::str::contains("no graphics adapter"));
     // The CPU mode does not need one.
     b.cmd("check").assert().success();
+
+    // An id that the selected set leaves out is a setup error as well: the subset would shrink without a word.
+    let manifest_path = b.root().join("manifest.json");
+    let mut doc: Value =
+        serde_json::from_str(&fs::read_to_string(&manifest_path).unwrap()).unwrap();
+    doc["entries"][1]["set"] = json!("full");
+    fs::write(&manifest_path, doc.to_string()).unwrap();
+    fs::write(&subset, "synthetic/a\nsynthetic/b\n").unwrap();
+    fs::remove_file(b.root().join("no-adapter")).unwrap();
+    b.cmd("check")
+        .args(["--device", "gpu", "--subset"])
+        .arg(&subset)
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("not in the selected set"));
+    // With the set that holds both, the same subset runs both files.
+    b.cmd("check")
+        .args(["--device", "gpu", "--set", "synthetic-full", "--subset"])
+        .arg(&subset)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "2 of 2 rendered files say device gpu",
+        ));
 }
