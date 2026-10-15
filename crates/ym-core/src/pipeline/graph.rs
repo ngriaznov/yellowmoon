@@ -125,7 +125,7 @@ pub struct RenderOptions {
     pub view_band_bytes: u64,
     /// Whether the caches of the raw group (the reduced groups and the tiles of the 100 % view) keep
     /// what the device made where it is, on the device, for the sampler to read (`docs/gpu-plan.md`
-    /// G-10, [`Backing`]): no readback after the raw chain and no upload before the sampler. Has an
+    /// G-10, `Backing`): no readback after the raw chain and no upload before the sampler. Has an
     /// effect only with a device that runs the sampler ([`GpuStages::SAMPLER`]). Off keeps host
     /// images, as before G-10; the frames are the same either way, bit for bit (the sampler reads the
     /// same samples), and the tests compare the two. On by default.

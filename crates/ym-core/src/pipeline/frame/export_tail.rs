@@ -424,7 +424,7 @@ impl Renderer {
         }
     }
 
-    /// Queues the CPU reference render of an export: [`Renderer::render_full_with`] with no device
+    /// Queues the CPU reference render of an export: `Renderer::render_full_with` with no device
     /// at all, on the export worker. What an export falls back to after a device error.
     #[must_use]
     pub fn spawn_full_cpu(

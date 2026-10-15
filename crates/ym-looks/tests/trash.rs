@@ -4,7 +4,8 @@
 //! Trash cannot be redirected there.
 
 use std::env;
-use std::fs;
+#[cfg(target_os = "linux")]
+use std::fs; // only the Linux-only test below touches files; unused (and a clippy error) elsewhere
 use std::path::Path;
 
 use ym_looks::import::trash::{TrashError, move_to_trash};

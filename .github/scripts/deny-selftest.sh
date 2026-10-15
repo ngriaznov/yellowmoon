@@ -63,12 +63,14 @@ run_case() {
   local dir="$work/$name"
   workspace "$dir" "$shipped_dep" "$oracle_dep"
   local out status=0
-  out="$(cd "$dir" && cargo deny --config "$config" --manifest-path "$dir/Cargo.toml" check licenses bans 2>&1)" || status=$?
+  # --color never: CI sets CARGO_TERM_COLOR=always, and escape codes in front of "error" would hide it from the greps below.
+  out="$(cd "$dir" && cargo deny --color never --config "$config" --manifest-path "$dir/Cargo.toml" check licenses bans 2>&1)" || status=$?
   if [ "$expect" = pass ] && [ "$status" -eq 0 ]; then
     echo "ok   $name: passed as expected"
   elif [ "$expect" = fail ] && [ "$status" -ne 0 ] && { [ "$needle" = - ] || grep -q "$needle" <<<"$out"; }; then
     echo "ok   $name: failed as expected (exit $status)"
-    grep -E "^error" -A3 <<<"$out" | head -8 | sed 's/^/       /'
+    # Display only: a missing match must not end the script (set -e with pipefail), the case already passed.
+    { grep -E "^error" -A3 <<<"$out" || true; } | head -8 | sed 's/^/       /'
   else
     echo "FAIL $name: expected $expect, got exit $status" >&2
     printf '%s\n' "$out" | sed 's/^/       /' >&2

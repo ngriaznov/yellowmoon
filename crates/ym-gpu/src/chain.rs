@@ -842,7 +842,7 @@ impl RawWork {
             .into_host()
     }
 
-    /// [`run_resident`](Self::run_resident) with the demosaic core cut at `max_padded_pixels`
+    /// The run that keeps the tile on the device, with the demosaic core cut at `max_padded_pixels`
     /// instead of [`MAX_PHYS_AREA`] (tests).
     ///
     /// # Errors

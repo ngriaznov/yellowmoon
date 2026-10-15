@@ -24,6 +24,11 @@ export default defineConfig({
     baseURL: "http://localhost:1420",
     viewport: { width: 1440, height: 900 },
     deviceScaleFactor: 2,
+    // Draw text the way the baselines were drawn: no hinting and grey anti-aliasing. Chromium's headless shell hints fully by
+    // default, which moves the text by a fraction of a pixel everywhere and costs 0.3 to 1.5 % of the pixels on every screen
+    // with text (what the GitHub runner showed on 2026-10-15). A machine can wrap the browser to set these two flags itself;
+    // naming them here makes the run the same everywhere.
+    launchOptions: { executablePath: process.env.YM_EXE || undefined, args: ["--font-render-hinting=none", "--disable-lcd-text"] },
   },
   webServer: {
     command: "npm run dev",

@@ -104,7 +104,7 @@ pub fn run(args: &DoctorArgs, console: &mut Console) -> u8 {
     }
 }
 
-/// `ym doctor --bench <file>`: times the render path on one photo (see [`bench`]).
+/// `ym doctor --bench <file>`: times the render path on one photo (see [`bench`](mod@bench)).
 fn run_bench(path: &Path, args: &DoctorArgs, console: &mut Console) -> u8 {
     match bench::run(path, args.repeat) {
         Ok(report) => {
