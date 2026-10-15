@@ -147,6 +147,8 @@ jobs:
     env:
       YM_REQUIRE_GPU: "1"
       WGPU_BACKEND: vulkan
+      # Release test builds have no debug fallback to the workspace data/ folder (ym-core data_dir.rs).
+      YELLOWMOON_DATA: ${{ github.workspace }}/data
     steps:
       - uses: actions/checkout@v4
       - name: Mesa lavapipe (software Vulkan)

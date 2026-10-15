@@ -329,7 +329,7 @@ impl GpuPolicy {
     /// path is the reference, and faster than a software device's first pass.
     #[must_use]
     pub const fn accepts_software(self) -> bool {
-        matches!(self, Self::Auto | Self::On | Self::Require) /* TEMPORARY EMULATION, RESTORE */
+        matches!(self, Self::On | Self::Require)
     }
 
     /// Whether a missing device is a failure rather than a fallback.

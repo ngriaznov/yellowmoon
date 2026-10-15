@@ -897,6 +897,21 @@ fn adapter_opens(sb: &Sandbox) -> bool {
     v["gpu"]["available"] == true
 }
 
+/// Whether the default policy, `auto`, puts the device to work on this machine, asked of `ym doctor`: a hardware
+/// adapter opens (a software one, Mesa lavapipe on a Linux runner, is left alone under `auto`). Since the stage
+/// sign-off of 2026-10-15 `auto` runs every stage, so where this is true an export is made on the device and is
+/// not the CPU reference to the byte (a Mac); where it is false the default is the CPU reference (Linux).
+fn auto_uses_the_device(sb: &Sandbox) -> bool {
+    let out = sb
+        .ym()
+        .env_remove("YELLOWMOON_GPU")
+        .args(["doctor", "--json"])
+        .assert()
+        .success();
+    let v: Value = serde_json::from_slice(&out.get_output().stdout).expect("JSON");
+    v["gpu_policy"]["uses_gpu"] == true
+}
+
 #[test]
 fn cpu_and_require_gpu_together_are_a_usage_error() {
     let sb = Sandbox::new();
@@ -1040,36 +1055,41 @@ fn export_under(sb: &Sandbox, arw: &std::path::Path, flags: &[&str], gpu: Option
 
 #[test]
 fn every_policy_that_keeps_the_cpu_writes_the_bytes_of_the_cpu_reference() {
-    // The default, `--cpu`, `YELLOWMOON_GPU=off` and `auto` run the export on the CPU reference
-    // (`auto` runs only the signed-off stages, the colour pass, which an export does not use): the
-    // same bytes. A policy that puts the raw chain on the device (`on`, `--require-gpu`) writes a
-    // picture that agrees with it within the kernels' tolerances (`docs/05`), not necessarily to
-    // the byte: it is checked to be the same kind of file of about the same size, and
-    // `tests/parity_gpu.rs` pins that the app and `ym` agree with each other on the device.
+    // `--cpu` and `YELLOWMOON_GPU=off` open no device: the CPU reference, the same bytes. So does `auto`
+    // (the default) where it finds no hardware adapter, as on a Linux runner that has only a software one.
+    // Where it does (a Mac), `auto` runs every stage, which since 2026-10-15 are all signed off, and writes
+    // what a policy that puts the raw chain on the device (`on`, `--require-gpu`) writes: a picture that
+    // agrees with the reference within the kernels' tolerances (`docs/05`), not necessarily to the byte. That
+    // one is checked to be the same kind of file of about the same size, and `tests/parity_gpu.rs` pins that
+    // the app and `ym` agree with each other on the device.
     let sb = Sandbox::new();
     let arw = sb.arw("a.ARW");
     let reference = export_under(&sb, &arw, &["--cpu"], None);
     assert_eq!(&reference[..2], [0xFF, 0xD8]);
-    assert_eq!(
-        export_under(&sb, &arw, &[], None),
-        reference,
-        "default (auto)"
-    );
-    assert_eq!(
-        export_under(&sb, &arw, &[], Some("off")),
-        reference,
-        "YELLOWMOON_GPU=off"
-    );
-    assert_eq!(
-        export_under(&sb, &arw, &[], Some("auto")),
-        reference,
-        "YELLOWMOON_GPU=auto"
-    );
     let near = |bytes: Vec<u8>, what: &str| {
         assert_eq!(&bytes[..2], [0xFF, 0xD8], "{what}");
         let (a, b) = (bytes.len() as f64, reference.len() as f64);
         assert!((a - b).abs() / b < 0.05, "{what}: {a} bytes against {b}");
     };
+    assert_eq!(
+        export_under(&sb, &arw, &[], Some("off")),
+        reference,
+        "YELLOWMOON_GPU=off"
+    );
+    let auto_on_the_device = auto_uses_the_device(&sb);
+    for (bytes, what) in [
+        (export_under(&sb, &arw, &[], None), "default (auto)"),
+        (
+            export_under(&sb, &arw, &[], Some("auto")),
+            "YELLOWMOON_GPU=auto",
+        ),
+    ] {
+        if auto_on_the_device {
+            near(bytes, what);
+        } else {
+            assert_eq!(bytes, reference, "{what}");
+        }
+    }
     near(
         export_under(&sb, &arw, &[], Some("on")),
         "YELLOWMOON_GPU=on",
@@ -1100,13 +1120,15 @@ fn json_says_where_the_pictures_were_made_after_the_settings() {
             .success();
         let line = String::from_utf8(out.get_output().stdout.clone()).expect("utf-8");
         let v: Value = serde_json::from_str(line.trim()).expect("one JSON object");
-        // The raw chain of an export runs on the device when the policy lets it (`on`, `require`) and
-        // an adapter opens; every other policy, and a machine without one, is the CPU.
-        let expected = if gpu == Some("on") && adapter_opens(&sb) {
-            "gpu"
-        } else {
-            "cpu"
+        // The raw chain of an export runs on the device when the policy lets it and an adapter opens:
+        // `on` with any adapter, `auto` (no flag, no variable) with a hardware one (every stage is signed
+        // off since 2026-10-15); `--cpu`, and a machine without that adapter, is the CPU.
+        let on_the_device = match (flags.is_empty(), gpu) {
+            (true, Some("on")) => adapter_opens(&sb),
+            (true, None) => auto_uses_the_device(&sb),
+            _ => false,
         };
+        let expected = if on_the_device { "gpu" } else { "cpu" };
         assert_eq!(v["device"], expected, "{flags:?} {gpu:?}");
         // Additive: `device` sits between `settings` and `timings_ms`, the rest keep their order.
         let keys: Vec<&str> = v
