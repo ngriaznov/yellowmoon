@@ -152,9 +152,10 @@ jobs:
 
       - name: Build the app (development profile, the frontend embedded)
         run: |
-          # tauri-build wants the sidecar to exist; this check never runs it.
+          # tauri-build wants the sidecar and the bundled licence texts to exist; this check never runs or bundles them.
           mkdir -p src-tauri/binaries
           : > src-tauri/binaries/ym-aarch64-apple-darwin
+          [ -e THIRD-PARTY.md ] || : > THIRD-PARTY.md
           cargo build -p yellowmoon-app --features custom-protocol
 
       - name: Open the photos and capture the screen
