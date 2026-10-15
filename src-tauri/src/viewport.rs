@@ -575,6 +575,7 @@ impl Shared {
             }
             st.last_error = Some((photo, message.clone()));
         }
+        tracing::warn!(?scope, photo = ?photo, %message, "the viewport reports a problem");
         self.emitter
             .emit(AppEvent::Error(AppError::new(scope, message)));
     }
@@ -974,6 +975,14 @@ impl Viewport {
         // A cell with no area (a hidden screen, a layout that has not run) is not the rectangle
         // the first frame waits for.
         if rect.width.0 >= MIN_CELL_PX && rect.height.0 >= MIN_CELL_PX {
+            if !st.has_rect {
+                tracing::info!(
+                    width = rect.width.0,
+                    height = rect.height.0,
+                    scale = rect.scale.0,
+                    "the webview placed the photo cell"
+                );
+            }
             st.has_rect = true;
         }
         st.ops.push(Op::Rect(core_rect));

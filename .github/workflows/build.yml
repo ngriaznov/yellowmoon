@@ -161,10 +161,13 @@ jobs:
       - name: Open the photos and capture the screen
         run: |
           mkdir -p viewport
-          YM_SMOKE=1 YM_SMOKE_HOLD=45 YM_SMOKE_OPEN="$GITHUB_WORKSPACE/testdata/readme-photos/src" \
+          YM_SMOKE=1 YM_SMOKE_HOLD=90 YM_SMOKE_OPEN="$GITHUB_WORKSPACE/testdata/readme-photos/src" \
             target/debug/yellowmoon-app > viewport/app.log 2>&1 &
           pid=$!
-          for _ in $(seq 1 40); do
+          # One capture early, while the app surely runs, and one once the picture is there (or after 60 s).
+          sleep 15
+          screencapture -x viewport/screen-15s.png || echo "::warning title=screencapture::the screen could not be captured"
+          for _ in $(seq 1 45); do
             grep -q "the native viewport shows a picture" viewport/app.log && break
             sleep 1
           done
