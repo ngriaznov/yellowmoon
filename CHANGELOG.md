@@ -9,6 +9,12 @@ moves the entries below from Unreleased into a dated section for that version.
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.1.3] - 2026-10-16
+
+ARRI Look Files, a section per look library, and no duplicate looks.
+
 ### Added
 
 - ARRI Look Files. Yellowmoon now imports `.alf4` (ALEXA 35 looks), `.alf4c` (the creative look of a custom colour management; its own display transforms are not used, Yellowmoon's display rendering is) and `.aml` (looks for LogC3 cameras, made for Rec.709) next to `.cube` files, from the same places: Looks › Import, a folder, a zip or a single file, and `ym looks import`. A look file says what it expects as input, so it asks no question: a LogC4 look gets its colour correction and LUT, a Rec.709 look takes the place of the display rendering. The two Look Files downloads on ARRI's page (87 LogC4 looks, 261 LogC3 looks in three strengths) are recognised as packages, and ARRI's LogC4 library, which comes both as 3D LUTs and as `.alf4` files, stays one entry per look (the 3D LUT, which has more points, is kept). The LogC3 look files are listed as their own looks, one per strength. The file is kept byte for byte and checked on every load. Files for another colour space, ARRI's older `.xml` look files (ALF-1), damaged files and files with nothing to import are refused with a plain sentence, and the rest of a folder or zip still imports: the files that were left out are named on the Recognise step, and `ym looks import` prints them and exits 1. The look's Intensity setting inside a file is not read (a look opens at 100 %). `docs/08-looks.md` has the formats and what is still open.

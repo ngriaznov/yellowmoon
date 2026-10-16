@@ -1109,3 +1109,142 @@ fn the_owners_sequence_of_imports_on_the_real_downloads_never_duplicates_a_look(
         );
     }
 }
+
+/// One file of a zip, written to `dir` under the name it has in the zip (loose, as a person drags
+/// one file into the wizard).
+fn extract_one(zip: &Path, tail: &str, dir: &Path) -> PathBuf {
+    let mut archive = zip::ZipArchive::new(File::open(zip).expect("open")).expect("zip");
+    for i in 0..archive.len() {
+        let mut entry = archive.by_index(i).expect("entry");
+        let name = entry
+            .enclosed_name()
+            .map(|p| p.to_string_lossy().replace('\\', "/"))
+            .unwrap_or_default();
+        if name.starts_with("__MACOSX") || !name.ends_with(tail) {
+            continue;
+        }
+        fs::create_dir_all(dir).expect("mkdir");
+        let target = dir.join(tail);
+        io::copy(&mut entry, &mut File::create(&target).expect("create")).expect("copy");
+        return target;
+    }
+    panic!("{tail} is not in {}", zip.display());
+}
+
+/// A file that comes alone is the look its name says, with the id it has in the whole download: the
+/// same look in its other form or in the whole package is found and never listed twice. Two files
+/// of the LogC3 to Rec.709 package share their bytes (`5121-City` and `9111-Dream`): each is its
+/// own look, whichever comes first.
+#[test]
+#[ignore = "needs ARRI's real downloads: set YM_ARRI_DOWNLOADS (see the file header)"]
+fn single_files_of_the_real_downloads_are_the_looks_their_names_say() {
+    let Some(source) = downloads() else {
+        return;
+    };
+    let work = tempfile::tempdir().expect("work");
+    let loose = work.path().join("loose");
+    let calls = std::cell::Cell::new(0_u32);
+    let zip_named = |file: &str| {
+        let name = LUT_ZIPS
+            .iter()
+            .map(|z| (z.0, z.1))
+            .chain(LOOK_FILE_ZIPS.iter().map(|z| (z.0, z.1)))
+            .find(|z| z.0 == file)
+            .expect("known download")
+            .1;
+        // A folder of its own each time: the link is made again for every import of the zip.
+        let links = work.path().join(format!("links-{}", calls.get()));
+        calls.set(calls.get() + 1);
+        fs::create_dir_all(&links).expect("mkdir");
+        linked(&links, &source.join(file), name)
+    };
+    let db = shipped_db();
+    let take = |library: &mut Library, path: &Path| {
+        import_path(
+            library,
+            &db,
+            path,
+            &ImportOptions::default(),
+            &mut no_progress(),
+        )
+        .unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+        .1
+    };
+    let arri_ids = |library: &Library| -> Vec<String> {
+        let mut v: Vec<String> = library
+            .looks()
+            .iter()
+            .filter(|l| l.id.prefix() == "arri")
+            .map(|l| l.id.to_string())
+            .collect();
+        v.sort();
+        v
+    };
+    let no_collision_numbers = |ids: &[String]| {
+        for id in ids {
+            let last = id.rsplit('-').next().unwrap_or("");
+            assert!(
+                !last.parse::<u32>().is_ok_and(|n| n < 100),
+                "{id} carries a collision number"
+            );
+        }
+    };
+
+    // 1111 Black and White shares its title with 1110: alone it is already "... 1111".
+    let cube = extract_one(
+        &source.join("logc4.zip"),
+        "1111 Black and White.cube",
+        &loose,
+    );
+    let mut library = open_library(&work.path().join("app-cube-first"));
+    let r = take(&mut library, &cube);
+    assert_eq!(r.added.len(), 1, "{r:?}");
+    assert_eq!(r.added[0].id.to_string(), "arri:1000:black-and-white-1111");
+    assert_eq!(r.added[0].name, "Black and White 1111");
+    // The whole download after it: 86 more looks, that one unchanged, no `-2`.
+    let r = take(&mut library, &zip_named("logc4.zip"));
+    assert_eq!((r.added.len(), r.unchanged.len()), (86, 1), "{r:?}");
+    let ids = arri_ids(&library);
+    assert_eq!(ids.len(), 87);
+    no_collision_numbers(&ids);
+
+    // The look file of the same look, alone, then the cubes: one entry, the cube wins.
+    let look_file = extract_one(
+        &source.join("alf4.zip"),
+        "LL-1111-Black-and-White.alf4",
+        &loose,
+    );
+    let mut library = open_library(&work.path().join("app-look-file-first"));
+    let r = take(&mut library, &look_file);
+    assert_eq!(r.added[0].id.to_string(), "arri:1000:black-and-white-1111");
+    let r = take(&mut library, &zip_named("logc4.zip"));
+    assert_eq!((r.added.len(), r.updated.len()), (86, 1), "{r:?}");
+    assert_eq!(arri_ids(&library).len(), 87);
+    // And the reverse: the cube first, then the look file alone changes nothing.
+    let manifest = fs::read(library.paths().manifest_path()).unwrap();
+    let r = take(&mut library, &look_file);
+    assert!(r.added.is_empty() && r.updated.is_empty(), "{r:?}");
+    assert_eq!(fs::read(library.paths().manifest_path()).unwrap(), manifest);
+
+    // City and Dream hold the same LUT. Dream alone first, then the whole package: City is a look.
+    let dream = extract_one(&source.join("logc3-rec709.zip"), "9111-Dream.cube", &loose);
+    let mut library = open_library(&work.path().join("app-dream-first"));
+    let r = take(&mut library, &dream);
+    assert_eq!(r.added.len(), 1, "{r:?}");
+    // Alone, it has the id it has in the whole package (its title is shared with 9110).
+    assert_eq!(
+        r.added[0].id.to_string(),
+        "arri:9000:dream-9111-logc3-rec709"
+    );
+    let r = take(&mut library, &zip_named("logc3-rec709.zip"));
+    assert_eq!(r.added.len(), 86, "{r:?}");
+    let ids = arri_ids(&library);
+    assert_eq!(ids.len(), 87, "{ids:?}");
+    assert!(
+        ids.contains(&"arri:5000:city-5121-logc3-rec709".to_string()),
+        "{ids:?}"
+    );
+    no_collision_numbers(&ids);
+    let mut again = open_library(library.root());
+    assert!(again.verify(&mut no_progress()).unwrap().is_clean());
+}
