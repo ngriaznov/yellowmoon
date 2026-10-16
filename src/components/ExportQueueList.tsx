@@ -1,3 +1,4 @@
+import { Item } from "@/components/glass/item";
 import { cx } from "./cx";
 import { Tag } from "./Tag";
 import type { TagVariant } from "./Tag";
@@ -41,7 +42,7 @@ export interface ExportQueueListProps {
 }
 
 /**
- * The per-file list of the Export panel while it runs: a 52 px row per file with its name, a
+ * The per-file list of the Export panel while it runs: a glasscn `Item` row per file with its name, a
  * note and a tag (WAITING, 45% in yellow, DONE in ink, SKIPPED in orange for a file that already
  * existed, or FAILED with the reason as the note).
  */
@@ -49,15 +50,17 @@ export function ExportQueueList({ items, label = "Export queue", className }: Ex
   return (
     <ul aria-label={label} className={cx("ym-queue", className)}>
       {items.map((item) => (
-        <li key={item.id} className="ym-queue__row">
-          <span className="ym-queue__text">
-            <span className="ym-queue__file" title={item.file}>
-              {item.file}
+        <Item key={item.id} asChild size="sm">
+          <li className="ym-queue__row">
+            <span className="ym-queue__text">
+              <span className="ym-queue__file" title={item.file}>
+                {item.file}
+              </span>
+              <span className="ym-queue__note">{item.note ?? DEFAULT_NOTES[item.state]}</span>
             </span>
-            <span className="ym-queue__note">{item.note ?? DEFAULT_NOTES[item.state]}</span>
-          </span>
-          <Tag variant={TAGS[item.state]}>{item.state === "running" ? `${Math.round(item.percent ?? 0)}%` : undefined}</Tag>
-        </li>
+            <Tag variant={TAGS[item.state]}>{item.state === "running" ? `${Math.round(item.percent ?? 0)}%` : undefined}</Tag>
+          </li>
+        </Item>
       ))}
     </ul>
   );
@@ -90,7 +93,7 @@ export interface DevelopListProps {
 }
 
 /**
- * The Start screen's list of photos being developed: a 36 px row per file with its name, what
+ * The Start screen's list of photos being developed: a glasscn `Item` row per file with its name, what
  * is happening and a tag (WAITING, DEVELOPING in yellow, READY in ink, SKIPPED in orange with
  * the reason). It scrolls when it is taller than its box.
  */
@@ -99,13 +102,15 @@ export function DevelopList({ items, label = "Photos being developed", className
     <div className={cx("ym-develop-list", className)}>
       <ul aria-label={label} className="ym-queue">
         {items.map((item) => (
-          <li key={item.id} className="ym-queue__row">
-            <span className="ym-queue__file" title={item.name}>
-              {item.name}
-            </span>
-            <span className="ym-queue__note">{item.note ?? DEVELOP_NOTES[item.state]}</span>
-            <Tag variant={item.state} />
-          </li>
+          <Item key={item.id} asChild size="sm">
+            <li className="ym-queue__row">
+              <span className="ym-queue__file" title={item.name}>
+                {item.name}
+              </span>
+              <span className="ym-queue__note">{item.note ?? DEVELOP_NOTES[item.state]}</span>
+              <Tag variant={item.state} />
+            </li>
+          </Item>
         ))}
       </ul>
     </div>

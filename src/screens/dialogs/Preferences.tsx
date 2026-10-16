@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import type { ReactNode } from "react";
+import { Item, ItemActions, ItemContent, ItemDescription, ItemTitle } from "@/components/glass/item";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/glass/select";
 import { Button, LinkButton, Segmented, Switch } from "../../components";
 import { exportModel } from "../../export/model";
@@ -18,15 +19,15 @@ interface RowProps {
 /** One row of Preferences: a title and a line of help at the left, the control at the right. */
 function Row({ title, hint, children }: RowProps) {
   return (
-    <div className="ym-pref" role="group" aria-label={title}>
-      <span className="ym-pref__text">
-        <span className="ym-pref__title" aria-hidden="true">
+    <Item size="sm" role="group" aria-label={title} className="ym-pref">
+      <ItemContent className="ym-pref__text">
+        <ItemTitle className="ym-pref__title" aria-hidden="true">
           {title}
-        </span>
-        {hint ? <span className="ym-pref__hint">{hint}</span> : null}
-      </span>
-      <span className="ym-pref__control">{children}</span>
-    </div>
+        </ItemTitle>
+        {hint ? <ItemDescription className="ym-pref__hint">{hint}</ItemDescription> : null}
+      </ItemContent>
+      <ItemActions className="ym-pref__control">{children}</ItemActions>
+    </Item>
   );
 }
 

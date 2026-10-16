@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import type { AppInfo } from "../../api/types";
+import { Item, ItemContent } from "@/components/glass/item";
 import { Button, LinkButton, MoonMark } from "../../components";
 import { useStore } from "../../state/context";
 import { ADOBE_NOTICE } from "../export/ExportOptionsForm";
@@ -86,7 +87,9 @@ export function About() {
         </ul>
         <p style={{ marginTop: 8 }}>The full licence texts are in the NOTICE and THIRD-PARTY.md files inside the app.</p>
       </section>
-      <p className="ym-about-dialog__adobe">{ADOBE_NOTICE}</p>
+      <Item variant="muted" size="sm" className="ym-about-dialog__adobe">
+        <ItemContent>{ADOBE_NOTICE}</ItemContent>
+      </Item>
       <p className="ym-about-dialog__legal">{IJG_NOTICE}</p>
       <p className="ym-about-dialog__legal">{TRADEMARK_NOTICE}</p>
     </Dialog>

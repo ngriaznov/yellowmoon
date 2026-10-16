@@ -141,6 +141,8 @@ export interface LinkButtonProps extends Omit<ButtonHTMLAttributes<HTMLButtonEle
   /** `heavy` (default) or `bold` ("Start over"). */
   weight?: "heavy" | "bold";
   disabled?: boolean;
+  /** The `<button>` element, for a menu that returns focus to it. */
+  ref?: Ref<HTMLButtonElement>;
   children?: ReactNode;
 }
 

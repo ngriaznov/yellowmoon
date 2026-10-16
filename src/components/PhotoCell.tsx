@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef } from "react";
 import type { HTMLAttributes, PointerEvent as ReactPointerEvent, ReactNode } from "react";
 import type { ViewportRect } from "../api/types";
+import { Badge } from "@/components/glass/badge";
 import { isTauri } from "../env";
 import { cx } from "./cx";
 import { useLatest } from "./hooks";
@@ -227,10 +228,22 @@ export function PhotoCell({
         ) : !native && imageSrc ? (
           <img className="ym-photo-cell__image" src={imageSrc} alt="" draggable={false} />
         ) : null}
-        {before ? <span className="ym-photo-cell__before">{beforeLabel}</span> : null}
-        {!before && lookChip ? <span className="ym-photo-cell__chip">{lookChip}</span> : null}
+        {before ? (
+          <Badge variant="default" className="ym-photo-cell__before">
+            {beforeLabel}
+          </Badge>
+        ) : null}
+        {!before && lookChip ? (
+          <Badge variant="outline" className="ym-photo-cell__chip">
+            {lookChip}
+          </Badge>
+        ) : null}
         {cameraLine ? <span className="ym-photo-cell__camera">{cameraLine}</span> : null}
-        {pixelReadout ? <span className="ym-photo-cell__readout">{pixelReadout}</span> : null}
+        {pixelReadout ? (
+          <Badge variant="outline" className="ym-photo-cell__readout">
+            {pixelReadout}
+          </Badge>
+        ) : null}
       </div>
       {children ? <div className="ym-photo-cell__overlay">{children}</div> : null}
     </main>

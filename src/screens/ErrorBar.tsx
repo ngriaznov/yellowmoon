@@ -1,10 +1,12 @@
+import { AlertCircleIcon, InfoIcon } from "lucide-react";
+import { Item, ItemActions, ItemContent, ItemMedia } from "@/components/glass/item";
 import { LinkButton } from "../components";
 import { useAppState, useStore } from "../state/context";
 
 /**
- * Shows the last error from the core in a black bar at the bottom of the window until it is
- * dismissed. Errors already say what went wrong and what to do (`docs/01` §Errors and logging);
- * this only shows them. A message that is not an error ("Yellowmoon is up to date.") uses the same bar as a status.
+ * Shows the last error from the core in a bar at the bottom of the window until it is dismissed: a glasscn `Item` on glass, with
+ * Dismiss as a button. Errors already say what went wrong and what to do (`docs/01` §Errors and logging); this only shows them.
+ * A message that is not an error ("Yellowmoon is up to date.") uses the same bar as a status.
  */
 export function ErrorBar() {
   const store = useStore();
@@ -12,18 +14,32 @@ export function ErrorBar() {
   const notice = useAppState((s) => s.notice);
   if (error) {
     return (
-      <div role="alert" className="ym-error-bar">
-        <span>{error.message}</span>
-        <LinkButton onClick={() => store.dismissError()}>Dismiss</LinkButton>
-      </div>
+      <Item role="alert" size="sm" className="ym-error-bar">
+        <ItemMedia variant="icon" aria-hidden="true">
+          <AlertCircleIcon />
+        </ItemMedia>
+        <ItemContent>
+          <span>{error.message}</span>
+        </ItemContent>
+        <ItemActions>
+          <LinkButton onClick={() => store.dismissError()}>Dismiss</LinkButton>
+        </ItemActions>
+      </Item>
     );
   }
   if (notice) {
     return (
-      <div role="status" className="ym-error-bar" data-kind="notice">
-        <span>{notice}</span>
-        <LinkButton onClick={() => store.dismissNotice()}>Dismiss</LinkButton>
-      </div>
+      <Item role="status" size="sm" className="ym-error-bar" data-kind="notice">
+        <ItemMedia variant="icon" aria-hidden="true">
+          <InfoIcon />
+        </ItemMedia>
+        <ItemContent>
+          <span>{notice}</span>
+        </ItemContent>
+        <ItemActions>
+          <LinkButton onClick={() => store.dismissNotice()}>Dismiss</LinkButton>
+        </ItemActions>
+      </Item>
     );
   }
   return null;

@@ -78,4 +78,11 @@ describe("DevelopList", () => {
     render(<DevelopList items={items} label="Photos being developed" />);
     expect(screen.getByRole("list", { name: "Photos being developed" })).toBeInTheDocument();
   });
+
+  it("draws each photo as a glasscn Item", () => {
+    const { container } = render(<DevelopList items={items} />);
+    const rows = container.querySelectorAll("li.ym-queue__row");
+    expect(rows.length).toBeGreaterThan(0);
+    for (const row of rows) expect(row).toHaveAttribute("data-slot", "item");
+  });
 });

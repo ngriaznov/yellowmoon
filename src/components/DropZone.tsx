@@ -1,5 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
+import { DownloadIcon } from "lucide-react";
+import { Card } from "@/components/glass/card";
+import { Item, ItemMedia } from "@/components/glass/item";
 import { cx } from "./cx";
 import { useLatest } from "./hooks";
 import { domDropSource } from "./useWindowDrop";
@@ -12,7 +15,7 @@ export interface DropZoneProps {
   /** A problem with the last drop, in a peach box: "No ARW files in what you dropped." */
   notice?: string;
   /**
-   * `large` is the Start screen's dashed box with the black download icon. `compact` is the
+   * `large` is the Start screen's dashed box with the download icon. `compact` is the
    * wizard's "Or drop the zip here" strip: title and hint at the left, actions at the right.
    */
   variant?: "large" | "compact";
@@ -29,7 +32,7 @@ export interface DropZoneProps {
 }
 
 /**
- * A dashed 3 px drop target (`docs/11-ui.md` §Start). It highlights while a drag is over the
+ * A dashed drop target on a glasscn `Card` (`docs/11-ui.md` §Start). It highlights while a drag is over the
  * window (`active`) or over itself, and reports DOM drops through `onDropPaths`. The whole
  * window accepts drops through `useWindowDrop`; this component is where they are shown.
  */
@@ -59,7 +62,7 @@ export function DropZone({
   }, [hasHandler, latest]);
 
   return (
-    <div
+    <Card
       ref={el}
       role="group"
       aria-label={title}
@@ -68,24 +71,20 @@ export function DropZone({
       data-active={active || over || undefined}
     >
       {variant === "large" ? (
-        <span className="ym-drop-zone__icon" aria-hidden="true">
-          <svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="square">
-            <path d="M12 3v13" />
-            <path d="M6 10.5L12 16.5l6-6" />
-            <path d="M4 21h16" />
-          </svg>
-        </span>
+        <ItemMedia variant="icon" className="ym-drop-zone__icon" aria-hidden="true">
+          <DownloadIcon />
+        </ItemMedia>
       ) : null}
       <span className="ym-drop-zone__text">
         <span className="ym-drop-zone__title">{title}</span>
         {hint ? <span className="ym-drop-zone__hint">{hint}</span> : null}
       </span>
       {notice ? (
-        <span role="alert" className="ym-drop-zone__notice">
+        <Item variant="muted" size="sm" role="alert" className="ym-drop-zone__notice">
           {notice}
-        </span>
+        </Item>
       ) : null}
       {children ? <div className="ym-drop-zone__actions">{children}</div> : null}
-    </div>
+    </Card>
   );
 }

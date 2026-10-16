@@ -1,4 +1,8 @@
 import { useId } from "react";
+import { CheckIcon, CircleAlertIcon } from "lucide-react";
+import { Card, CardImage } from "@/components/glass/card";
+import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemMedia, ItemTitle } from "@/components/glass/item";
+import { Spinner } from "@/components/glass/spinner";
 import type { Look } from "../../api/types";
 import { Button, DropZone, LinkButton, ProgressBar, Segmented, Switch, Tag } from "../../components";
 import type { TagVariant } from "../../components";
@@ -35,37 +39,34 @@ export function ChooseStep({ wizard }: { wizard: Wizard }) {
       {visiblePackages(state).map((p) => {
         const on = state.chosen.includes(p.id);
         return (
-          <button
-            key={p.id}
-            type="button"
-            role="checkbox"
-            aria-checked={on}
-            aria-labelledby={`${uid}-${p.id}-name`}
-            aria-describedby={`${uid}-${p.id}-desc ${uid}-${p.id}-meta`}
-            className="ym-wizard__package"
-            data-on={on || undefined}
-            onClick={() => dispatch({ type: "toggle-package", id: p.id })}
-          >
-            <span className="ym-wizard__box" aria-hidden="true">
-              {on ? (
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#FFF" strokeWidth="4" strokeLinecap="square">
-                  <path d="M4 12.5l5 5L20 6.5" />
-                </svg>
-              ) : null}
-            </span>
-            <span className="ym-wizard__package-text">
-              <span id={`${uid}-${p.id}-name`} className="ym-wizard__package-name">
-                {p.name}
-              </span>
-              <span id={`${uid}-${p.id}-desc`} className="ym-wizard__package-desc">
-                {p.description}
-              </span>
-              <span id={`${uid}-${p.id}-meta`} className="ym-wizard__package-meta">
-                {p.meta}
-              </span>
-            </span>
-            {p.recommended ? <Tag variant="recommended" size="lg" /> : null}
-          </button>
+          <Item key={p.id} asChild variant="outline">
+            <button
+              type="button"
+              role="checkbox"
+              aria-checked={on}
+              aria-labelledby={`${uid}-${p.id}-name`}
+              aria-describedby={`${uid}-${p.id}-desc ${uid}-${p.id}-meta`}
+              className="ym-wizard__package"
+              data-on={on || undefined}
+              onClick={() => dispatch({ type: "toggle-package", id: p.id })}
+            >
+              <ItemMedia variant="icon" className="ym-wizard__box" aria-hidden="true">
+                {on ? <CheckIcon /> : null}
+              </ItemMedia>
+              <ItemContent className="ym-wizard__package-text">
+                <ItemTitle id={`${uid}-${p.id}-name`} className="ym-wizard__package-name">
+                  {p.name}
+                </ItemTitle>
+                <ItemDescription id={`${uid}-${p.id}-desc`} className="ym-wizard__package-desc">
+                  {p.description}
+                </ItemDescription>
+                <span id={`${uid}-${p.id}-meta`} className="ym-wizard__package-meta">
+                  {p.meta}
+                </span>
+              </ItemContent>
+              {p.recommended ? <Tag variant="recommended" size="lg" /> : null}
+            </button>
+          </Item>
         );
       })}
       <LinkButton className="ym-wizard__older" onClick={() => dispatch({ type: "toggle-older" })}>
@@ -103,43 +104,50 @@ export function GetStep({ wizard }: { wizard: Wizard }) {
         </Button>
         <span>Opens in your browser. Download {wantList(state)} there.</span>
       </div>
-      <div className="ym-wizard__watch">
-        <span className="ym-wizard__watch-text">
-          <span className="ym-wizard__watch-title">Watch my Downloads folder</span>
-          <span>Picks up the zip as soon as it lands. Only while this window is open.</span>
-        </span>
-        <Switch label="Watch my Downloads folder" checked={watchOn} onChange={wizard.setWatch} />
-      </div>
+      <Item variant="outline" className="ym-wizard__watch">
+        <ItemContent className="ym-wizard__watch-text">
+          <ItemTitle className="ym-wizard__watch-title">Watch my Downloads folder</ItemTitle>
+          <ItemDescription>Picks up the zip as soon as it lands. Only while this window is open.</ItemDescription>
+        </ItemContent>
+        <ItemActions>
+          <Switch label="Watch my Downloads folder" checked={watchOn} onChange={wizard.setWatch} />
+        </ItemActions>
+      </Item>
       {watchProblem ? (
-        <p role="alert" className="ym-wizard__problem">
-          {watchProblem}
-        </p>
+        <Item variant="muted" size="sm" role="alert" className="ym-wizard__problem">
+          <ItemMedia variant="icon" aria-hidden="true">
+            <CircleAlertIcon />
+          </ItemMedia>
+          <ItemContent>{watchProblem}</ItemContent>
+        </Item>
       ) : null}
       <DropZone variant="compact" title="Or drop the zip here" hint="A zip or an unpacked folder both work." active={dragging}>
         <LinkButton onClick={() => void wizard.chooseFiles()}>Choose file…</LinkButton>
       </DropZone>
-      <div className="ym-wizard__waiting" role="status" data-arrived={arrived || undefined}>
-        <span aria-hidden="true" />
-        <span>
+      <Item variant="muted" size="sm" className="ym-wizard__waiting" role="status" data-arrived={arrived || undefined}>
+        <ItemMedia aria-hidden="true">{arrived ? <CheckIcon /> : <Spinner />}</ItemMedia>
+        <ItemContent>
           {arrived
             ? "Everything has arrived. Press Next to check what each file is."
             : watching
               ? `Watching Downloads for ${waitingFor}…`
               : `Waiting for ${waitingFor}…`}
-        </span>
-      </div>
+        </ItemContent>
+      </Item>
       {state.sources.length > 0 ? (
         <ul className="ym-wizard__received" aria-label="Files that arrived">
           {state.sources.map((source) => (
-            <li key={source.path}>
-              <span className="ym-wizard__received-name">{source.found?.name ?? source.path}</span>
-              <span className="ym-wizard__received-meta">
-                {source.found && source.found.recognition.kind === "package" ? `${source.found.recognition.title} · ${formatSize(source.found.size_bytes)}` : receivedLabel(source)}
-              </span>
-              <LinkButton size="sm" aria-label={`Remove ${source.found?.name ?? source.path}`} onClick={() => wizard.remove(source.path)}>
-                Remove
-              </LinkButton>
-            </li>
+            <Item key={source.path} asChild size="sm">
+              <li>
+                <span className="ym-wizard__received-name">{source.found?.name ?? source.path}</span>
+                <span className="ym-wizard__received-meta">
+                  {source.found && source.found.recognition.kind === "package" ? `${source.found.recognition.title} · ${formatSize(source.found.size_bytes)}` : receivedLabel(source)}
+                </span>
+                <LinkButton size="sm" aria-label={`Remove ${source.found?.name ?? source.path}`} onClick={() => wizard.remove(source.path)}>
+                  Remove
+                </LinkButton>
+              </li>
+            </Item>
           ))}
         </ul>
       ) : null}
@@ -232,9 +240,9 @@ export function RecogniseStep({ wizard }: { wizard: Wizard }) {
               {view.explanation || view.note || v.kind === "question" ? (
                 <span role="cell" className="ym-wizard__why">
                   {view.explanation ? (
-                    <span className="ym-wizard__explain" data-tone={v.kind === "question" ? "plain" : "error"}>
-                      {view.explanation}
-                    </span>
+                    <Item variant="muted" size="sm" className="ym-wizard__explain" data-tone={v.kind === "question" ? "plain" : "error"}>
+                      <ItemContent>{view.explanation}</ItemContent>
+                    </Item>
                   ) : null}
                   {view.note ? <span className="ym-wizard__explain">{view.note}</span> : null}
                   {v.kind === "question" ? (
@@ -256,10 +264,12 @@ export function RecogniseStep({ wizard }: { wizard: Wizard }) {
           );
         })}
       </div>
-      <div className="ym-wizard__callout">
-        If a package isn&apos;t the one you chose, for example LogC3 instead of LogC4, the wizard says what it is and what to download instead.
-        Nothing is copied until you continue.
-      </div>
+      <Item variant="muted" size="sm" className="ym-wizard__callout">
+        <ItemContent>
+          If a package isn&apos;t the one you chose, for example LogC3 instead of LogC4, the wizard says what it is and what to download instead.
+          Nothing is copied until you continue.
+        </ItemContent>
+      </Item>
     </div>
   );
 }
@@ -281,27 +291,29 @@ export function ImportStep({ wizard }: { wizard: Wizard }) {
       </div>
       <ProgressBar className="ym-wizard__progress" size="lg" value={pct} label="Importing looks" />
       {status === "failed" ? (
-        <div role="alert" className="ym-wizard__callout ym-wizard__callout--error">
-          <span>{error}</span>
-          <Button variant="secondary" onClick={wizard.retryImport}>
-            Try again
-          </Button>
-        </div>
+        <Item variant="muted" size="sm" role="alert" className="ym-wizard__callout ym-wizard__callout--error">
+          <ItemContent>{error}</ItemContent>
+          <ItemActions>
+            <Button variant="secondary" onClick={wizard.retryImport}>
+              Try again
+            </Button>
+          </ItemActions>
+        </Item>
       ) : null}
-      <div className="ym-wizard__facts">
-        <div>
-          <b>Copied</b>
-          <span>{copiedLabel(state)}, into the app&apos;s looks folder</span>
-        </div>
-        <div>
-          <b>Grouped</b>
-          <span>The way ARRI groups them</span>
-        </div>
-        <div>
-          <b>Recorded per file</b>
-          <span>Source address, date and SHA-256 checksum</span>
-        </div>
-      </div>
+      <ItemGroup className="ym-wizard__facts">
+        <Item size="sm" role="listitem">
+          <ItemTitle>Copied</ItemTitle>
+          <ItemContent>{copiedLabel(state)}, into the app&apos;s looks folder</ItemContent>
+        </Item>
+        <Item size="sm" role="listitem">
+          <ItemTitle>Grouped</ItemTitle>
+          <ItemContent>The way ARRI groups them</ItemContent>
+        </Item>
+        <Item size="sm" role="listitem">
+          <ItemTitle>Recorded per file</ItemTitle>
+          <ItemContent>Source address, date and SHA-256 checksum</ItemContent>
+        </Item>
+      </ItemGroup>
     </div>
   );
 }
@@ -315,10 +327,10 @@ function WizardTile({ look, photoId }: { look: Look; photoId: number | null }) {
   const store = useStore();
   const { src, onImageError } = useLookThumbnail(store, photoId, look.id, "wizard");
   return (
-    <div className="ym-wizard__tile">
-      <span className="ym-wizard__tile-picture">{src ? <img src={src} alt="" onError={onImageError} /> : null}</span>
+    <Card size="sm" className="ym-wizard__tile">
+      <CardImage className="ym-wizard__tile-picture">{src ? <img src={src} alt="" onError={onImageError} /> : null}</CardImage>
       <span className="ym-wizard__tile-name">{look.name}</span>
-    </div>
+    </Card>
   );
 }
 
@@ -357,20 +369,20 @@ export function FinishStep({ wizard }: { wizard: Wizard }) {
             <WizardTile key={look.id} look={look} photoId={photoId} />
           ))}
           {more > 0 ? (
-            <div className="ym-wizard__tile">
-              <span className="ym-wizard__tile-picture ym-wizard__tile-more">+{more}</span>
+            <Card size="sm" className="ym-wizard__tile">
+              <CardImage className="ym-wizard__tile-picture ym-wizard__tile-more">+{more}</CardImage>
               <span className="ym-wizard__tile-name">And {more} more</span>
-            </div>
+            </Card>
           ) : null}
         </div>
       ) : null}
-      <div className="ym-wizard__options">
+      <ItemGroup className="ym-wizard__options">
         {outcome && outcome.looks > 0 ? (
-          <div className="ym-wizard__option">
-            <span className="ym-wizard__option-text">
-              <span className="ym-wizard__option-title">Default look</span>
-              <span>For every photo you open</span>
-            </span>
+          <Item size="sm" role="listitem" className="ym-wizard__option">
+            <ItemContent className="ym-wizard__option-text">
+              <ItemTitle className="ym-wizard__option-title">Default look</ItemTitle>
+              <ItemDescription>For every photo you open</ItemDescription>
+            </ItemContent>
             <Segmented
               label="Default look"
               size="lg"
@@ -378,14 +390,14 @@ export function FinishStep({ wizard }: { wizard: Wizard }) {
               onChange={(id) => dispatch({ type: "finish", patch: { defaultLook: id } })}
               options={defaultOptions.map((l) => ({ value: l.id, label: label(l) }))}
             />
-          </div>
+          </Item>
         ) : null}
         {offersDisplayChoice(state) ? (
-          <div className="ym-wizard__option">
-            <span className="ym-wizard__option-text">
-              <span className="ym-wizard__option-title">Display rendering</span>
-              <span>How log becomes a picture</span>
-            </span>
+          <Item size="sm" role="listitem" className="ym-wizard__option">
+            <ItemContent className="ym-wizard__option-text">
+              <ItemTitle className="ym-wizard__option-title">Display rendering</ItemTitle>
+              <ItemDescription>How log becomes a picture</ItemDescription>
+            </ItemContent>
             <Segmented
               label="Display rendering"
               size="lg"
@@ -396,14 +408,14 @@ export function FinishStep({ wizard }: { wizard: Wizard }) {
                 { value: "arri", label: "ARRI's" },
               ]}
             />
-          </div>
+          </Item>
         ) : null}
         {zips.length > 0 ? (
-          <div className="ym-wizard__option">
-            <span className="ym-wizard__option-text">
-              <span className="ym-wizard__option-title">Downloaded zip</span>
-              <span>No longer needed</span>
-            </span>
+          <Item size="sm" role="listitem" className="ym-wizard__option">
+            <ItemContent className="ym-wizard__option-text">
+              <ItemTitle className="ym-wizard__option-title">Downloaded zip</ItemTitle>
+              <ItemDescription>No longer needed</ItemDescription>
+            </ItemContent>
             <Segmented
               label="Downloaded zip"
               size="lg"
@@ -414,9 +426,9 @@ export function FinishStep({ wizard }: { wizard: Wizard }) {
                 { value: "trash", label: "Move to Trash" },
               ]}
             />
-          </div>
+          </Item>
         ) : null}
-      </div>
+      </ItemGroup>
     </div>
   );
 }
