@@ -18,9 +18,9 @@ use crate::system;
 use crate::wire::{
     self, AppError, AppInfo, ApplyScope, CliLinkResult, CliLinkStatus, DisplayLut, ErrorScope,
     ExportEstimate, ExportJob, ExportJobId, HistogramData, Look, LookId, LookInput,
-    LooksImportResult, Num, OpenKind, PhotoId, PixelSample, Preferences, PreferencesPatch,
-    ResolvedSettings, SessionState, SettingsPatch, SourceRecognition, ThumbnailReady, ViewportInfo,
-    ViewportInput, ViewportMode, ViewportRect, WatchStatus,
+    LooksImportResult, MenuState, Num, OpenKind, PasteReport, PhotoId, PixelSample, Preferences,
+    PreferencesPatch, ResolvedSettings, SessionState, SettingsPatch, SourceRecognition,
+    ThumbnailReady, ViewportInfo, ViewportInput, ViewportMode, ViewportRect, WatchStatus,
 };
 
 /// The managed state: the command handlers, or why the application could not start.
@@ -202,6 +202,36 @@ pub async fn rerun_auto(
     photo_id: PhotoId,
 ) -> Result<ResolvedSettings, AppError> {
     run(&state, move |api| api.rerun_auto(photo_id)).await
+}
+
+/// `copy_settings(photo_id)`: the photo's settings as a patch to paste onto other photos (not the
+/// crop, the orientation or the Pick white point).
+#[tauri::command]
+#[specta::specta]
+pub async fn copy_settings(
+    state: State<'_, AppState>,
+    photo_id: PhotoId,
+) -> Result<SettingsPatch, AppError> {
+    run(&state, move |api| api.copy_settings(photo_id)).await
+}
+
+/// `paste_settings(photo_ids, patch)`: applies a copied patch to those photos in one call; the
+/// answer says which took it (with each one's change as an undo step) and which were skipped.
+#[tauri::command]
+#[specta::specta]
+pub async fn paste_settings(
+    state: State<'_, AppState>,
+    photo_ids: Vec<PhotoId>,
+    patch: SettingsPatch,
+) -> Result<PasteReport, AppError> {
+    run(&state, move |api| api.paste_settings(&photo_ids, &patch)).await
+}
+
+/// `set_menu_state(state)`: switches the Edit menu's settings items on or off.
+#[tauri::command]
+#[specta::specta]
+pub async fn set_menu_state(app: AppHandle, state: MenuState) -> Result<(), AppError> {
+    crate::menu::apply_state(&app, &state).map_err(AppError::internal)
 }
 
 /// `histogram(photo_id)`: the RGB histogram of the photo as it is rendered now.
@@ -574,6 +604,9 @@ pub fn builder() -> Builder<tauri::Wry> {
             update_settings,
             apply_look,
             rerun_auto,
+            copy_settings,
+            paste_settings,
+            set_menu_state,
             histogram,
             viewport_info,
             viewport_set_rect,
@@ -651,6 +684,8 @@ mod tests {
                 set_current,
                 get_settings,
                 update_settings,
+                copy_settings,
+                paste_settings,
                 viewport_info,
                 viewport_set_rect,
                 export_busy,
@@ -690,7 +725,7 @@ mod tests {
         let empty = call(&window, "session_state", json!({})).expect("session_state");
         assert_eq!(
             empty,
-            json!({ "folder_name": null, "photos": [], "current_index": null, "picked": [], "default_export_folder": null })
+            json!({ "folder_name": null, "photos": [], "current_index": null, "picked": [], "default_export_folder": null, "opened": null })
         );
         assert_eq!(
             call(&window, "viewport_info", json!({})),
@@ -750,6 +785,41 @@ mod tests {
         );
         assert_eq!(updated["values"]["exposure_ev"], json!(0.25));
         assert_eq!(updated["settings"]["orientation"], json!(0));
+
+        // Copy and paste: the patch leaves out the crop, the orientation and the white pick, and a
+        // paste answers with one undo step per photo and the photos it left out.
+        let copied =
+            call(&window, "copy_settings", json!({ "photoId": id })).expect("copy_settings");
+        assert_eq!(
+            copied["exposure"],
+            json!({ "kind": "manual", "ev": 0.25 }),
+            "a manual exposure is copied as it is"
+        );
+        for left_out in ["crop", "orientation", "white_pick"] {
+            assert!(copied.get(left_out).is_none(), "{left_out} is not copied");
+        }
+        assert_eq!(copied["white_balance"], json!({ "kind": "auto" }));
+        let pasted = call(
+            &window,
+            "paste_settings",
+            json!({ "photoIds": [id, 9999], "patch": { "contrast": 33 } }),
+        )
+        .expect("paste_settings");
+        assert_eq!(pasted["skipped"], json!([9999]));
+        assert_eq!(pasted["pasted"][0]["id"], json!(id));
+        assert_eq!(pasted["pasted"][0]["before"], json!({ "contrast": 0.0 }));
+        assert_eq!(pasted["pasted"][0]["after"], json!({ "contrast": 33.0 }));
+        let err = call(&window, "copy_settings", json!({ "photoId": 9999 })).expect_err("unknown");
+        assert_eq!(err["scope"], json!("open"));
+        assert!(
+            call(
+                &window,
+                "paste_settings",
+                json!({ "photo_ids": [id], "patch": {} })
+            )
+            .is_err(),
+            "the wire name is camelCase"
+        );
 
         // An error is `{ scope, message }`.
         let err =

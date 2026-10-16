@@ -51,8 +51,10 @@ import type {
   LookInput,
   LookLibrary,
   LooksImportResult,
+  MenuState,
   OpenKind,
   PackageId,
+  PasteReport,
   PhotoId,
   PhotoStage,
   PhotoStatus,
@@ -84,6 +86,7 @@ import { sceneHistogram } from "./fixtures/histogram";
 import { scenePng, hexToRgb } from "./fixtures/png";
 import { layerAt, SCENES, type Scene } from "./fixtures/scenes";
 import { fitInCell, imageAspectOf } from "./screens/crop/cropMath";
+import { diffSettings } from "./state/history";
 import { bytesToUrl } from "./state/photo";
 
 // ---------------------------------------------------------------------------
@@ -287,6 +290,8 @@ export interface MockApi extends Api {
   fixtureUrl(photoId: PhotoId): string | undefined;
   /** What `viewport_*` and `set_before` have been called with. */
   readonly viewport: Readonly<MockViewportState>;
+  /** The last state `set_menu_state` was given (which of the Edit menu's settings items are available); null before the first. */
+  readonly menuState: Readonly<MenuState> | null;
   /** What the system commands were asked to do, in order: pages opened, folders shown in Finder, files moved to the Trash. */
   readonly system: Readonly<MockSystemLog>;
   /**
@@ -296,6 +301,11 @@ export interface MockApi extends Api {
    */
   queueChoice(kind: "folder", answer: string | null): void;
   queueChoice(kind: "files", answer: string[] | null): void;
+  /**
+   * The paths the next `openDialog` opens (instead of the twelve fixture files or the fixture folder), whichever kind it asks for.
+   * A name the session does not have is a new photo; one it has is "already open". Answers queue up.
+   */
+  queueChoice(kind: "open", answer: string[]): void;
   /** Add (or replace) a synthetic file the recogniser can find, by file name. */
   addSource(fileName: string, fixture: SourceFixture): void;
   /** Take a synthetic file away, as if it had been deleted or moved: it is `missing` from now on. */
@@ -456,6 +466,20 @@ export function resolveSettings(photoId: PhotoId, settings: DevelopSettings, est
     },
     estimates,
   };
+}
+
+/**
+ * What Copy settings takes from a photo (the core's `SettingsPatch::copied_from`): every setting but the crop, the orientation and the
+ * Pick white point; Auto stays Auto and manual values stay as they are; a white balance that came from a picked white (a white picked,
+ * the light preset and the white balance both Auto) is the manual Kelvin and tint it resolved to.
+ */
+export function copiedPatch(rs: ResolvedSettings): SettingsPatch {
+  const { crop: _crop, orientation: _orientation, white_pick: pick, ...rest } = rs.settings;
+  const patch = JSON.parse(JSON.stringify(rest)) as SettingsPatch;
+  if (pick !== null && rs.settings.light_source === "auto" && rs.settings.white_balance.kind === "auto") {
+    patch.white_balance = { kind: "manual", kelvin: rs.values.kelvin, tint: rs.values.tint };
+  }
+  return patch;
 }
 
 /** Slug of a look id: "arri:3000:film-warm" gives "film-warm". */
@@ -1014,7 +1038,8 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
   let watching = false;
   let downloadTimers: Array<ReturnType<typeof setTimeout>> = [];
   const importRuns = new Set<ImportRun>();
-  const choices: { folder: Array<string | null>; files: Array<string[] | null> } = { folder: [], files: [] };
+  const choices: { folder: Array<string | null>; files: Array<string[] | null>; open: string[][] } = { folder: [], files: [], open: [] };
+  let menuState: MenuState | null = null;
   const system: MockSystemLog = { opened: [], revealed: [], trashed: [], restarts: 0 };
   let cliLink: string | null = null;
   const viewport: MockViewportState = { rect: null, mode: { kind: "fit" }, before: false, inputs: [] };
@@ -1187,48 +1212,93 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     return skipped[`${scene.name}.ARW`] ?? skipped[scene.name] ?? null;
   }
 
+  /**
+   * A photo of the fixture folder: the scene for its place in the folder, under `name` when the file has one of its own. Past the
+   * twelve fixtures the scenes repeat under new names, so every file name is its own.
+   */
+  function makePhoto(index: number, id: PhotoId, name?: string, picked = false): PhotoRecord {
+    const fixture = SCENES[index % SCENES.length] as Scene;
+    const scene: Scene =
+      name !== undefined ? { ...fixture, name } : index < SCENES.length ? fixture : { ...fixture, name: `DSC${String(4201 + index).padStart(5, "0")}` };
+    const summary: PhotoSummary = {
+      id,
+      file_name: `${scene.name}.ARW`,
+      camera: {
+        body: "Sony A1",
+        model: "ILCE-1",
+        model_id: 384,
+        profile: "A7R IV",
+        profile_id: "sony-ilce-7rm4",
+        profile_version: "1.0.0",
+        match_kind: { kind: "default" },
+      },
+      iso: 400,
+      shutter_s: 1 / 125,
+      aperture_f: 2.8,
+      captured_at: new Date(FIRST_CAPTURE + index * CAPTURE_STEP_MS).toISOString().slice(0, 19),
+      width_px: 8640,
+      height_px: 5760,
+      status: { kind: "waiting" },
+      picked,
+      reduced: false,
+    };
+    const initial = options.initialSettings[`${scene.name}.ARW`] ?? options.initialSettings[scene.name] ?? {};
+    const override = options.photoOverrides[`${scene.name}.ARW`] ?? options.photoOverrides[scene.name];
+    if (override) Object.assign(summary, { ...override, camera: { ...summary.camera, ...override.camera } });
+    return {
+      scene,
+      summary,
+      settings: clampSettings({ ...defaultSettings(preferences.default_look), ...initial }),
+      phase: 0,
+      skipReason: skipReasonFor(scene),
+    };
+  }
+
   function openFixtureSession(): void {
     const pickedSet = new Set(options.picked);
-    photos = Array.from({ length: Math.max(1, Math.floor(options.photoCount)) }, (_, index): PhotoRecord => {
-      const fixture = SCENES[index % SCENES.length] as Scene;
-      // Past the twelve fixtures the scenes repeat under new names, so every file name is its own.
-      const scene: Scene = index < SCENES.length ? fixture : { ...fixture, name: `DSC${String(4201 + index).padStart(5, "0")}` };
-      const summary: PhotoSummary = {
-        id: index + 1,
-        file_name: `${scene.name}.ARW`,
-        camera: {
-          body: "Sony A1",
-          model: "ILCE-1",
-          model_id: 384,
-          profile: "A7R IV",
-          profile_id: "sony-ilce-7rm4",
-          profile_version: "1.0.0",
-          match_kind: { kind: "default" },
-        },
-        iso: 400,
-        shutter_s: 1 / 125,
-        aperture_f: 2.8,
-        captured_at: new Date(FIRST_CAPTURE + index * CAPTURE_STEP_MS).toISOString().slice(0, 19),
-        width_px: 8640,
-        height_px: 5760,
-        status: { kind: "waiting" },
-        picked: pickedSet.has(index),
-        reduced: false,
-      };
-      const initial = options.initialSettings[`${scene.name}.ARW`] ?? options.initialSettings[scene.name] ?? {};
-      const override = options.photoOverrides[`${scene.name}.ARW`] ?? options.photoOverrides[scene.name];
-      if (override) Object.assign(summary, { ...override, camera: { ...summary.camera, ...override.camera } });
-      return {
-        scene,
-        summary,
-        settings: clampSettings({ ...defaultSettings(preferences.default_look), ...initial }),
-        phase: 0,
-        skipReason: skipReasonFor(scene),
-      };
-    });
+    photos = Array.from({ length: Math.max(1, Math.floor(options.photoCount)) }, (_, index) => makePhoto(index, index + 1, undefined, pickedSet.has(index)));
     current = clamp(options.current, 0, photos.length - 1);
     developProgress = 0;
     startDevelopment();
+  }
+
+  /** The file names of the folder the session came from, as the folder itself would list them. */
+  function folderFileNames(): string[] {
+    return Array.from({ length: Math.max(1, Math.floor(options.photoCount)) }, (_, index) =>
+      index < SCENES.length ? (SCENES[index] as Scene).name : `DSC${String(4201 + index).padStart(5, "0")}`,
+    );
+  }
+
+  /**
+   * Adds to a session that is open (the core's `Session::open`): a file the session has is counted as already open, a new one becomes
+   * a photo after the others, new files in name order, and only those develop. The current photo and the photos before stay as they are.
+   * A folder is the fixture folder.
+   */
+  function addPhotos(paths: string[]): { added: number; already_open: number } {
+    const known = new Set(photos.map((p) => p.scene.name.toLowerCase()));
+    const fresh: string[] = [];
+    let alreadyOpen = 0;
+    const want = (name: string): void => {
+      if (known.has(name.toLowerCase())) alreadyOpen += 1;
+      else {
+        known.add(name.toLowerCase());
+        fresh.push(name);
+      }
+    };
+    for (const path of paths) {
+      if (isArwPath(path)) want(fileNameOf(path).replace(/\.arw$/i, ""));
+      else if (isFolderPath(path)) folderFileNames().forEach(want);
+    }
+    fresh.sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
+    const before = photos.length;
+    let nextId = photos.reduce((most, p) => Math.max(most, p.summary.id), 0) + 1;
+    for (const name of fresh) photos.push(makePhoto(photos.length, nextId++, name));
+    if (fresh.length > 0) {
+      // Only the new photos are left to develop; the others keep what they have.
+      developProgress = Math.min(developProgress, before);
+      startDevelopment();
+    }
+    return { added: fresh.length, already_open: alreadyOpen };
   }
 
   function setStatus(rec: PhotoRecord, status: PhotoStatus): void {
@@ -1336,9 +1406,16 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
 
   function openPathsNow(paths: string[]): SessionState {
     const hasPhotos = paths.some((p) => isArwPath(p) || isFolderPath(p));
-    // Non-ARW files are ignored; a session that is already open already has these photos.
-    if (hasPhotos && photos.length === 0) openFixtureSession();
-    return snapshot();
+    // Non-ARW files are ignored. Any ARW file or folder opens the whole fixture folder when nothing is open; in an open session
+    // the files are added (or already there).
+    let opened = { added: 0, already_open: 0 };
+    if (hasPhotos && photos.length === 0) {
+      openFixtureSession();
+      opened = { added: photos.length, already_open: 0 };
+    } else if (hasPhotos) {
+      opened = addPhotos(paths);
+    }
+    return { ...snapshot(), opened };
   }
 
   // --- Command plumbing -----------------------------------------------------------
@@ -1588,6 +1665,8 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     sources = defaultSources();
     choices.folder = [];
     choices.files = [];
+    choices.open = [];
+    menuState = null;
     system.opened = [];
     system.revealed = [];
     system.trashed = [];
@@ -1615,6 +1694,9 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     },
     get viewport() {
       return viewport;
+    },
+    get menuState() {
+      return menuState;
     },
 
     configure(patch) {
@@ -1657,6 +1739,8 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
           cancelDialog = false;
           return null;
         }
+        const queued = choices.open.shift();
+        if (queued) return openPathsNow(queued);
         return openPathsNow(kind === "folder" ? [folderPath()] : SCENES.map((s) => `${folderPath()}/${s.name}.ARW`));
       }),
     sessionState: () => run("sessionState", snapshot),
@@ -1734,6 +1818,47 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
         scheduleThumbnail(rec);
         if (rec === photos[current]) sendFrame();
         return resolveSettings(photoId, rec.settings, MOCK_ESTIMATES);
+      }),
+    copySettings: (photoId) =>
+      run("copySettings", () => {
+        const rec = photo(photoId);
+        if (rec.skipReason) fail("open", "This file can't be opened, so there are no settings to copy.");
+        if (rec.phase < 3) fail("open", "That photo is still developing. Try again in a moment.");
+        return copiedPatch(resolveSettings(photoId, rec.settings, MOCK_ESTIMATES));
+      }),
+    pasteSettings: (photoIds, patch: SettingsPatch) =>
+      run("pasteSettings", (): PasteReport => {
+        // The crop, the turn and the white pick are never pasted, whatever the patch says.
+        const { crop: _crop, orientation: _orientation, white_pick: _pick, ...pasteable } = patch;
+        if (pasteable.look !== undefined) {
+          const look = findLook(pasteable.look);
+          if (!look || look.missing) fail("looks", "That look isn't in the library any more. Import it again.");
+        }
+        const report: PasteReport = { pasted: [], skipped: [] };
+        for (const id of new Set(photoIds)) {
+          const rec = photos.find((p) => p.summary.id === id);
+          if (!rec || rec.skipReason || rec.phase < 3) {
+            report.skipped.push(id);
+            continue;
+          }
+          const merged = { ...rec.settings } as Record<string, unknown>;
+          for (const [key, value] of Object.entries(pasteable)) if (value !== undefined) merged[key] = value;
+          const next = clampSettings(merged as unknown as DevelopSettings);
+          const step = diffSettings(rec.settings, next);
+          report.pasted.push({ id, before: step?.before ?? {}, after: step?.after ?? {} });
+          if (step) {
+            rec.settings = next;
+            scheduleThumbnail(rec);
+            emitSoon("settings_changed", { photo_id: id });
+            if (rec === photos[current]) sendFrame();
+          }
+        }
+        if (report.pasted.length > 0) emitSoon("render_stats", RENDER_STATS);
+        return report;
+      }),
+    setMenuState: (state) =>
+      run("setMenuState", () => {
+        menuState = { ...state };
       }),
     histogram: (photoId) =>
       run("histogram", (): HistogramData => {
@@ -2007,8 +2132,9 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     get system() {
       return system;
     },
-    queueChoice(kind: "folder" | "files", answer: string | string[] | null) {
+    queueChoice(kind: "folder" | "files" | "open", answer: string | string[] | null) {
       if (kind === "folder") choices.folder.push(answer as string | null);
+      else if (kind === "open") choices.open.push(answer as string[]);
       else choices.files.push(answer as string[] | null);
     },
     emitEvent(event, payload) {

@@ -1,6 +1,6 @@
 import { memo, useCallback, useMemo, useState } from "react";
 import type { ColorSpace, PhotoSummary, RenderStats, ResolvedSettings, ViewportMode } from "../api/types";
-import { Button, Filmstrip, TabBar, tabPanelProps, TitleBlock, useLatest, useTabShortcuts } from "../components";
+import { Button, Filmstrip, TabBar, tabPanelProps, TitleBlock, useLatest, useTabShortcuts, useWindowDrop } from "../components";
 import { exportModel } from "../export/model";
 import { cellLabel, summarise } from "../export/run";
 import type { FilmstripPhoto, TabId } from "../components";
@@ -91,6 +91,43 @@ const ZoomMenu = memo(function ZoomMenu({ store, photo, rs, cell }: ZoomMenuProp
 });
 
 /**
+ * The header's "Add photos" button: the system's file dialog for ARW files, and what is chosen goes into the session after the
+ * photos that are open (⌘O does the same; ⇧⌘O or a drop adds a folder). It is off while a dialog or an open is under way, so a second
+ * click cannot ask twice.
+ */
+const AddPhotosButton = memo(function AddPhotosButton({ store }: { store: AppStore }) {
+  const opening = useAppState((s) => s.opening);
+  return (
+    <Button variant="header" disabled={opening} onClick={() => void store.openDialog("files")} title="Add photos (⌘O)">
+      Add photos
+    </Button>
+  );
+});
+
+/**
+ * The header's "Copy settings" and "Paste" (⇧⌘C, ⇧⌘V; the Edit menu has them and "Paste Settings to Picked" too). Copy needs a photo
+ * that is developed; Paste needs something copied as well, and its title names the photo the settings came from.
+ */
+const CopyPasteButtons = memo(function CopyPasteButtons({ store, canCopy }: { store: AppStore; canCopy: boolean }) {
+  const source = useAppState((s) => s.copied?.source ?? null);
+  return (
+    <>
+      <Button variant="header" disabled={!canCopy} onClick={() => void store.copySettings()} title="Copy the settings of this photo (⇧⌘C)">
+        Copy settings
+      </Button>
+      <Button
+        variant="header"
+        disabled={!canCopy || source === null}
+        onClick={() => void store.pasteSettings("this")}
+        title={source === null ? "Copy the settings of a photo first (⇧⌘C)" : `Paste the settings of ${source} (⇧⌘V)`}
+      >
+        Paste
+      </Button>
+    </>
+  );
+});
+
+/**
  * The Export cell of the header. It reads the run and the picks itself, so a tile finishing in an export redraws this button, not the
  * screen.
  */
@@ -109,7 +146,7 @@ function ExportCellContainer({ store }: { store: AppStore }) {
 
 /**
  * The Photos screen (`design/mockups/photos.html`, `docs/11-ui.md` §Photos): the header with
- * Before, Crop, Pick white and the zoom menu, the photo, the filmstrip and the tool panel with its
+ * Before, Crop, Pick white, Add photos, Copy settings, Paste and the zoom menu, the photo, the filmstrip and the tool panel with its
  * six tabs. The Crop panel and the Export panel replace the tool panel.
  */
 export function Photos() {
@@ -133,6 +170,8 @@ export function Photos() {
   const overlay = useAppState((s) => s.overlay);
   const [tab, setTab] = useState<TabId>("look");
   const [picking, setPicking] = useState(false);
+  // Files dropped anywhere on the window are added to the session, as on Start (`docs/11` §Photos); a dialog takes the drop away.
+  const { dragging } = useWindowDrop({ onDrop: (paths) => void store.openPaths(paths), enabled: overlay === null });
   const [cell, setCell] = useState<{ width: number; height: number; scale: number } | null>(null);
   const crop = useCropSession(store, photo, rs);
 
@@ -279,6 +318,15 @@ export function Photos() {
         case "pick-white":
           togglePicking();
           return true;
+        case "copy-settings":
+          void store.copySettings();
+          return true;
+        case "paste-settings":
+          void store.pasteSettings("this");
+          return true;
+        case "paste-settings-picked":
+          void store.pasteSettings("picked");
+          return true;
         case "escape":
           if (picking) setPicking(false);
           else if (crop.session) crop.session.cancel();
@@ -334,7 +382,7 @@ export function Photos() {
   const exporting = panel === "export";
 
   return (
-    <div className="ym-screen" data-screen="photos" data-panel={panel}>
+    <div className="ym-screen" data-screen="photos" data-panel={panel} data-dragging={dragging || undefined}>
       <Header titleAs="h1" title={session?.folder_name ?? "Yellowmoon"} subline={session ? folderSubline(session) : ""} export={<ExportCellContainer store={store} />}>
         {exporting ? (
           <>
@@ -354,6 +402,8 @@ export function Photos() {
             <Button variant="header" pressed={picking} disabled={!rs || cropping} onClick={togglePicking} title="Pick white (W)">
               Pick white
             </Button>
+            <AddPhotosButton store={store} />
+            <CopyPasteButtons store={store} canCopy={rs !== null && photo !== null && isReady(photo)} />
             <ZoomMenu store={store} photo={photo} rs={rs} cell={cell} />
             {picking ? (
               <span className="ym-status" data-hint="true" role="status">

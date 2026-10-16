@@ -33,6 +33,9 @@ import type {
   LookInput,
   LookLibrary,
   MenuAction,
+  MenuState,
+  OpenSummary,
+  PasteReport,
   PhotoId,
   PhotoProgress,
   PhotoStatus,
@@ -61,7 +64,7 @@ import type { ExportRun } from "../export/run";
 import { diffSettings, PhotoHistory } from "./history";
 import type { HistoryEntry } from "./history";
 import { perfCount } from "../perf";
-import { isReady, releaseUrl } from "./photo";
+import { isReady, photoName, releaseUrl } from "./photo";
 import { RequestLimiter } from "./requestLimiter";
 import { ViewportInputQueue } from "./viewportInputQueue";
 import type { StreamInput } from "./viewportInputQueue";
@@ -92,6 +95,43 @@ export interface CubeImport {
 
 /** Said when a drop holds nothing the app can open. */
 export const NO_ARW_NOTICE = "No ARW files in what you dropped.";
+
+/** Said when files are added to a session and every one of them is open already. */
+export const ALREADY_OPEN_NOTICE = "These photos are already open.";
+
+/** What Photos says after files were added to the session: "Added 3 photos. 2 were already open." */
+export function openedNotice(opened: OpenSummary): string {
+  if (opened.added === 0 && opened.already_open === 0) return NO_ARW_NOTICE;
+  if (opened.added === 0) return ALREADY_OPEN_NOTICE;
+  const added = `Added ${opened.added} ${opened.added === 1 ? "photo" : "photos"}.`;
+  if (opened.already_open === 0) return added;
+  return `${added} ${opened.already_open} ${opened.already_open === 1 ? "was" : "were"} already open.`;
+}
+
+/**
+ * What Photos says after Paste settings: "Pasted the settings of DSC04213." for one photo, "Pasted the settings of DSC04213 to 5
+ * photos." for more, and how many were left out when a photo was still developing or could not be opened. `pasted` counts the photos
+ * that now have the settings, whether or not anything changed in them.
+ */
+export function pastedNotice(source: string, pasted: number, skipped: number): string {
+  const left = (n: number): string => `${n} ${n === 1 ? "photo" : "photos"}`;
+  if (pasted === 0) return `Nothing was pasted: ${left(skipped)} ${skipped === 1 ? "isn't" : "aren't"} developed.`;
+  const done = pasted === 1 ? `Pasted the settings of ${source}.` : `Pasted the settings of ${source} to ${pasted} photos.`;
+  if (skipped === 0) return done;
+  return `${done} ${left(skipped)} ${skipped === 1 ? "was" : "were"} skipped because ${skipped === 1 ? "it isn't" : "they aren't"} developed.`;
+}
+
+/**
+ * The settings Copy settings took from a photo, kept for pasting onto others. It lives in the store, for the running app only: never
+ * written to disk (`docs/01` §Persistence, AGENTS rule 4) and never put on the system clipboard. A session closing does not clear it,
+ * so settings can go from one folder to another.
+ */
+export interface CopiedSettings {
+  /** The photo they came from, as the notices name it: "DSC04213". */
+  source: string;
+  /** What `copy_settings` answered: everything but the crop, the orientation and the Pick white point. */
+  patch: SettingsPatch;
+}
 
 /** Everything the screens draw. Replaced, never changed in place. */
 export interface AppState {
@@ -162,6 +202,8 @@ export interface AppState {
   viewportFrame: ViewportFrame | null;
   /** An export is queued or running in the core (`export_busy`), also one this window did not start. */
   exportBusy: boolean;
+  /** The settings Copy settings took, or null before the first copy; it outlives a session and is never saved. */
+  copied: CopiedSettings | null;
 }
 
 /** The state of an app with nothing open. */
@@ -199,6 +241,7 @@ export function initialState(): AppState {
     viewportBackend: null,
     viewportFrame: null,
     exportBusy: false,
+    copied: null,
   };
 }
 
@@ -294,6 +337,10 @@ export class AppStore {
   private newestFrame: number | null = null;
   /** Photos with a Pick white click on its way to the core: their settings are read when the click is answered. */
   private readonly picks = new Set<PhotoId>();
+  /** Photos a paste is changing: the core's `settings_changed` for them is the paste's own news, which the store handles itself. */
+  private readonly pasting = new Set<PhotoId>();
+  /** The state the native menu was last told, which is the one it starts with: the settings items off. */
+  private menuState: MenuState = { copy_settings: false, paste_settings: false, paste_settings_to_picked: false };
   private readonly lookThumbs = new Map<PhotoId, { key: string; urls: Map<LookId, LookThumb> }>();
   /** Holds the look tiles' requests to {@link LOOK_THUMBNAIL_CONCURRENCY} at a time; what waits is dropped when its photo or settings change. */
   private readonly thumbLimiter = new RequestLimiter<{ photoId: PhotoId; key: string }>(LOOK_THUMBNAIL_CONCURRENCY);
@@ -357,6 +404,28 @@ export class AppStore {
   private notify(): void {
     perfCount("store.notify");
     for (const listener of [...this.listeners]) listener();
+    this.syncMenu();
+  }
+
+  /**
+   * Tells the native menu which of the Edit menu's settings items are available: Copy Settings needs a developed current photo, Paste
+   * Settings something copied as well, Paste Settings to Picked something copied and a picked photo. Sent when it changes only.
+   */
+  private syncMenu(): void {
+    const { session, copied } = this.state;
+    const current = session && session.current_index !== null ? session.photos[session.current_index] : undefined;
+    const ready = current !== undefined && isReady(current);
+    const next: MenuState = {
+      copy_settings: ready,
+      paste_settings: ready && copied !== null,
+      paste_settings_to_picked: copied !== null && (session?.picked.length ?? 0) > 0,
+    };
+    const was = this.menuState;
+    if (next.copy_settings === was.copy_settings && next.paste_settings === was.paste_settings && next.paste_settings_to_picked === was.paste_settings_to_picked) return;
+    this.menuState = next;
+    void this.api.setMenuState(next).catch(() => {
+      // The menu keeps its items as they were; the keys and the buttons work without it.
+    });
   }
 
   /**
@@ -559,7 +628,7 @@ export class AppStore {
 
   /** The core changed a photo's settings by itself (a Pick white click): ask for them again. */
   private async onSettingsChanged(id: PhotoId): Promise<void> {
-    if (this.picks.has(id) || !this.state.settings[id]) return;
+    if (this.picks.has(id) || this.pasting.has(id) || !this.state.settings[id]) return;
     await this.resyncSettings(id);
   }
 
@@ -584,20 +653,26 @@ export class AppStore {
    * In the app the paths are real and the core sorts them out (it opens a folder and keeps the ARW files in it, whatever the folder is
    * called) and answers "No ARW files in what you dropped." itself, which shows in the drop zone. In a browser the names stand in for
    * paths, so a name that looks like a file of another kind is left out here.
+   *
+   * With a session open this adds to it: the new photos go after the others, the current photo stays and the others are not touched.
+   * On Photos the answer is said in a notice ("Added 3 photos. 2 were already open.", `openedNotice`), and the "No ARW files" sentence
+   * goes there too, since only Start has a drop zone to show it in.
    */
   async openPaths(paths: string[]): Promise<void> {
+    const addingToPhotos = this.addingToPhotos();
     const toOpen = isTauri() ? paths : filterArwPaths(paths).accepted;
     if (toOpen.length === 0) {
-      this.set({ dropNotice: NO_ARW_NOTICE });
+      this.sayNoArw(addingToPhotos);
       return;
     }
     this.set({ dropNotice: null, opening: true });
     try {
       const session = await this.api.openPaths(toOpen);
       this.adoptSession(session);
+      if (addingToPhotos && session.opened) this.showNotice(openedNotice(session.opened));
     } catch (error) {
       const failure = toAppError(error);
-      if (failure.scope === "open" && failure.message === NO_ARW_NOTICE) this.set({ dropNotice: NO_ARW_NOTICE });
+      if (failure.scope === "open" && failure.message === NO_ARW_NOTICE) this.sayNoArw(addingToPhotos);
       else this.fail(failure);
     } finally {
       this.set({ opening: false });
@@ -606,15 +681,30 @@ export class AppStore {
 
   /** Asks for files or a folder with the system dialog. A cancelled dialog changes nothing. */
   async openDialog(kind: "files" | "folder"): Promise<void> {
+    const addingToPhotos = this.addingToPhotos();
     this.set({ dropNotice: null, opening: true });
     try {
       const session = await this.api.openDialog(kind);
-      if (session) this.adoptSession(session);
+      if (session) {
+        this.adoptSession(session);
+        if (addingToPhotos && session.opened) this.showNotice(openedNotice(session.opened));
+      }
     } catch (error) {
       this.fail(error);
     } finally {
       this.set({ opening: false });
     }
+  }
+
+  /** True while Photos is on screen: files opened now are added to the session, and Photos says what was added. */
+  private addingToPhotos(): boolean {
+    return this.state.screen === "photos" && this.state.session !== null;
+  }
+
+  /** "No ARW files in what you dropped.": in the drop zone on Start, in the notice bar where there is no drop zone. */
+  private sayNoArw(onPhotos: boolean): void {
+    if (onPhotos) this.set({ dropNotice: null, notice: NO_ARW_NOTICE });
+    else this.set({ dropNotice: NO_ARW_NOTICE });
   }
 
   /** Goes to the Photos screen, on the first photo that is ready when the current one isn't. */
@@ -664,6 +754,8 @@ export class AppStore {
       notice: this.state.notice,
       viewportBackend: this.state.viewportBackend,
       exportBusy: this.state.exportBusy,
+      // What was copied is for pasting in another folder too.
+      copied: this.state.copied,
     };
     this.notify();
     // A fresh session starts at Fit with the camera view off.
@@ -1344,6 +1436,81 @@ export class AppStore {
     } catch (error) {
       this.fail(error);
     }
+  }
+
+  // --- Copy and paste settings --------------------------------------------------------------
+
+  /**
+   * Copy settings (⇧⌘C): keeps the current photo's settings for pasting: everything but the crop, the orientation and the Pick white
+   * point, Auto kept as Auto, a white balance that came from a picked white as the manual Kelvin and tint it resolved to. The core
+   * makes the patch (`copy_settings`), after the patches still on their way to it have landed. Nothing is saved or put on the system
+   * clipboard. Does nothing for a photo that is not developed.
+   */
+  async copySettings(): Promise<void> {
+    const photo = this.currentPhoto();
+    if (!photo || !isReady(photo)) return;
+    await this.whenIdle(photo.id);
+    try {
+      const patch = await this.api.copySettings(photo.id);
+      const source = photoName(photo.file_name);
+      this.set({ copied: { source, patch } });
+      this.showNotice(`Copied the settings of ${source}.`);
+    } catch (error) {
+      this.fail(error);
+    }
+  }
+
+  /**
+   * Paste settings (⇧⌘V) onto the current photo, or Paste settings to Picked (⌥⇧⌘V) onto every picked photo, the current one too when
+   * it is picked. One `paste_settings` for all of them, so five hundred photos are one command. Each photo's change is one undo step
+   * in that photo's own history. A photo that is still developing or could not be opened is skipped, and the notice says how many.
+   * The current photo is read again, the settings of the others are dropped and asked for when they are shown, and the filmstrip
+   * thumbnails follow from the core.
+   */
+  async pasteSettings(scope: "this" | "picked"): Promise<void> {
+    const { session, copied } = this.state;
+    if (!session) return;
+    if (!copied) {
+      this.showNotice("Copy the settings of a photo first.");
+      return;
+    }
+    const current = this.currentPhoto();
+    const wanted = scope === "this" ? (current ? [current] : []) : session.photos.filter((p) => p.picked);
+    if (wanted.length === 0) {
+      this.showNotice(scope === "this" ? "There is no photo to paste onto." : "No photos are picked.");
+      return;
+    }
+    const ids = wanted.filter(isReady).map((p) => p.id);
+    // Patches still on their way to a photo land first, so its undo step starts from the settings the core has.
+    await Promise.all(ids.map((id) => this.whenIdle(id)));
+    let report: PasteReport = { pasted: [], skipped: [] };
+    if (ids.length > 0) {
+      for (const id of ids) this.pasting.add(id);
+      try {
+        report = await this.api.pasteSettings(ids, copied.patch);
+      } catch (error) {
+        this.fail(error);
+        return;
+      } finally {
+        // The core's `settings_changed` for these photos arrives about now; let it pass before the guard is lifted.
+        setTimeout(() => {
+          for (const id of ids) this.pasting.delete(id);
+        }, 0);
+      }
+    }
+    const changed = report.pasted.filter((p) => Object.keys(p.before).length > 0 || Object.keys(p.after).length > 0);
+    for (const step of changed) this.historyOf(step.id).push({ before: step.before, after: step.after });
+    // What the mirror knew about the other photos is out of date; the current photo's is read again at once.
+    const stale = new Set(changed.map((p) => p.id));
+    if (stale.size > 0) {
+      const kept: Record<PhotoId, ResolvedSettings> = {};
+      for (const [key, value] of Object.entries(this.state.settings)) if (!stale.has(Number(key)) || Number(key) === current?.id) kept[Number(key)] = value;
+      this.set({ settings: kept });
+    }
+    if (current && stale.has(current.id)) await this.resyncSettings(current.id);
+    this.syncHistoryFlags();
+    const skipped = wanted.length - ids.length + report.skipped.length;
+    this.showNotice(pastedNotice(copied.source, report.pasted.length, skipped));
   }
 
   // --- Looks --------------------------------------------------------------------------------

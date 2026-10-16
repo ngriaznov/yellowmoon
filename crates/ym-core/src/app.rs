@@ -44,8 +44,10 @@ use crate::preferences::{
     PreferencesStore,
 };
 use crate::session::{
-    ApplyScope, EventSink, PhotoId, Session, SessionEnv, SessionError, default_decode_threads,
+    ApplyScope, EventSink, PasteReport, PhotoId, Session, SessionEnv, SessionError,
+    default_decode_threads,
 };
+use crate::settings::SettingsPatch;
 
 /// How long [`Core::shutdown`] waits for a cancelled export to delete its partial file. A cancel is
 /// noticed between render tiles and writer bands (a few tenths of a second at 24 MP); this is the
@@ -393,6 +395,34 @@ impl Core {
         intensity: f64,
     ) -> Result<Vec<PhotoId>, CoreError> {
         Ok(self.looks.apply_look(&self.session, scope, id, intensity)?)
+    }
+
+    /// `copy_settings`: a photo's settings as a patch to paste onto other photos
+    /// ([`SettingsPatch::copied_from`]).
+    ///
+    /// # Errors
+    ///
+    /// [`CoreError::Session`] for a photo that is unknown, failed or not developed yet.
+    pub fn copy_settings(&self, id: PhotoId) -> Result<SettingsPatch, CoreError> {
+        Ok(self.session.copy_settings(id)?)
+    }
+
+    /// `paste_settings`: applies a copied patch to the photos in `ids` ([`Session::paste_settings`]).
+    /// A look in the patch whose file is gone, or that is not in the library any more, is refused,
+    /// as `apply_look` refuses it: the photos would not draw.
+    ///
+    /// # Errors
+    ///
+    /// [`CoreError::Looks`] for such a look, [`CoreError::Session`] for a patch that cannot be applied.
+    pub fn paste_settings(
+        &self,
+        ids: &[PhotoId],
+        patch: &SettingsPatch,
+    ) -> Result<PasteReport, CoreError> {
+        if let Some(look) = &patch.look {
+            self.looks.check_usable(look)?;
+        }
+        Ok(self.session.paste_settings(ids, patch)?)
     }
 
     // --- Export -----------------------------------------------------------------------------

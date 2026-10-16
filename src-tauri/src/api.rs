@@ -31,9 +31,10 @@ use crate::viewport::{FrameSink, FrameStore, Viewport, core_id};
 use crate::wire::{
     AppError, AppInfo, ApplyScope, CliLinkResult, CliLinkStatus, DisplayLut, ErrorScope,
     ExportEstimate, ExportJob, ExportJobId, HistogramData, Look, LookId, LookInput,
-    LooksImportProgress, LooksImportResult, PhotoId, PhotoProgress, PixelSample, Preferences,
-    PreferencesPatch, ResolvedSettings, SessionState, SettingsPatch, SourceRecognition,
-    ThumbnailReady, ViewportInfo, ViewportInput, ViewportMode, ViewportRect, WatchStatus, convert,
+    LooksImportProgress, LooksImportResult, OpenSummary, PasteReport, PhotoId, PhotoProgress,
+    PixelSample, Preferences, PreferencesPatch, ResolvedSettings, SessionState, SettingsPatch,
+    SourceRecognition, ThumbnailReady, ViewportInfo, ViewportInput, ViewportMode, ViewportRect,
+    WatchStatus, convert,
 };
 use crate::wizard::{Downloads, recognise};
 
@@ -295,7 +296,12 @@ impl AppApi {
         }
         self.remember_open_folder(&paths);
         self.sync_current();
-        self.session_state()
+        let mut state = self.session_state()?;
+        state.opened = Some(OpenSummary {
+            added: u32::try_from(outcome.added.len()).unwrap_or(u32::MAX),
+            already_open: u32::try_from(outcome.already_open).unwrap_or(u32::MAX),
+        });
+        Ok(state)
     }
 
     /// Remembers the folder the first path came from (`last_used_folders.open`). A failure to save
@@ -473,6 +479,63 @@ impl AppApi {
             .map_err(session_error)?;
         self.settings_changed(core_id(id), false);
         convert(&resolved)
+    }
+
+    /// `copy_settings`: the settings of a photo as a patch to paste onto other photos: everything
+    /// but the crop, the orientation and the Pick white point, Auto kept as Auto, a white balance
+    /// that came from a picked white as the manual Kelvin and tint it resolved to
+    /// (`ym_core::settings::SettingsPatch::copied_from`). Nothing is stored here: the webview keeps
+    /// the patch for as long as the app runs.
+    ///
+    /// # Errors
+    ///
+    /// [`AppError`] for a photo that is unknown, failed or not developed yet.
+    pub fn copy_settings(&self, id: PhotoId) -> Result<SettingsPatch, AppError> {
+        let patch = self
+            .core
+            .copy_settings(core_id(id))
+            .map_err(AppError::from)?;
+        convert(&patch)
+    }
+
+    /// `paste_settings`: applies a copied patch to every photo in `ids` in one call under one lock
+    /// (`ym_core::session::Session::paste_settings`), so a paste onto five hundred photos is one
+    /// command and not a thousand. A photo that is still developing or failed is skipped. The
+    /// viewport draws again if the current photo changed, every photo that changed gets a new
+    /// thumbnail (queued at thumbnail priority, behind what the viewport needs) and a
+    /// `settings_changed` event, and the answer carries each photo's change as an undo step.
+    ///
+    /// # Errors
+    ///
+    /// [`AppError`] for a look that is gone from the library (as `apply_look` refuses it) and for a
+    /// patch that cannot be applied; nothing changes then.
+    pub fn paste_settings(
+        &self,
+        ids: &[PhotoId],
+        patch: &SettingsPatch,
+    ) -> Result<PasteReport, AppError> {
+        let core_patch: ym_core::settings::SettingsPatch = convert(patch)?;
+        let core_ids: Vec<CorePhotoId> = ids.iter().map(|id| core_id(*id)).collect();
+        let report = self
+            .core
+            .paste_settings(&core_ids, &core_patch)
+            .map_err(AppError::from)?;
+        let changed: Vec<CorePhotoId> = report
+            .pasted
+            .iter()
+            .filter(|p| !(p.before.is_empty() && p.after.is_empty()))
+            .map(|p| p.id)
+            .collect();
+        if let Some(current) = self.core.session.current()
+            && changed.contains(&current)
+        {
+            self.viewport.invalidate();
+        }
+        self.thumbs.refresh(changed.iter().copied());
+        for id in &changed {
+            self.emitter.emit(AppEvent::SettingsChanged(PhotoId(id.0)));
+        }
+        convert(&report)
     }
 
     /// `histogram`: the photo as it is rendered now. It is asked for after every frame, so it runs

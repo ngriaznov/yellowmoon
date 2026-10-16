@@ -1483,7 +1483,93 @@ impl SettingsPatch {
     pub fn reset(field: SettingsField, default_look: &LookId) -> Self {
         Self::of_field(&DevelopSettings::with_look(default_look.clone()), field)
     }
+
+    /// The patch that takes every field of `from` that is in `fields` (every part of each).
+    #[must_use]
+    pub fn of_fields(from: &DevelopSettings, fields: &[SettingsField]) -> Self {
+        let mut patch = Self::default();
+        for field in fields {
+            patch.absorb(Self::of_field(from, *field));
+        }
+        patch
+    }
+
+    /// Takes over the fields `other` sets. Each field of a patch built by [`SettingsPatch::of_field`]
+    /// belongs to one field only, so nothing is overwritten.
+    fn absorb(&mut self, other: Self) {
+        macro_rules! take {
+            ($($field:ident),* $(,)?) => {
+                $(if other.$field.is_some() { self.$field = other.$field; })*
+            };
+        }
+        take!(
+            look,
+            look_intensity,
+            exposure,
+            contrast,
+            brightness,
+            highlights,
+            shadows,
+            white,
+            white_offset_ev,
+            black,
+            light_source,
+            white_balance,
+            color_balance,
+            saturation,
+            sharpen,
+            output_sharpening,
+            noise_reduction,
+            curve,
+            decode,
+            rolloff,
+            crop,
+            orientation,
+            white_pick,
+        );
+    }
+
+    /// What Copy settings takes from a photo, to paste onto others (`docs/11` §Copy and paste
+    /// settings): every field of the photo's settings but [`COPY_LEAVES_OUT`], which belong to
+    /// the photo's own geometry and pixels (the crop and the turn, and the point of Pick white).
+    ///
+    /// * Auto stays Auto (exposure, light preset, white balance, sharpening, noise reduction): each
+    ///   photo gets its own automatic values. Manual values are taken as they are, and so is the
+    ///   white lift's offset (a number of stops added to each photo's own automatic amount).
+    /// * A white balance that came from a picked white (a white picked, the light preset and the
+    ///   white balance both Auto) becomes a manual white balance at the Kelvin and tint the pick
+    ///   resolved to: the point is not meaningful on another photo, the light it found is.
+    ///
+    /// Every part of every manual value is in the patch, so it applies to a photo that has no
+    /// automatic estimates yet.
+    #[must_use]
+    pub fn copied_from(source: &ResolvedSettings) -> Self {
+        let settings = &source.settings;
+        let fields: Vec<SettingsField> = SettingsField::ALL
+            .into_iter()
+            .filter(|f| !COPY_LEAVES_OUT.contains(f))
+            .collect();
+        let mut patch = Self::of_fields(settings, &fields);
+        let white_came_from_pick = settings.white_pick.is_some()
+            && settings.light_source == LightSource::Auto
+            && settings.white_balance.is_auto();
+        if white_came_from_pick {
+            patch.white_balance = Some(AutoOr::Manual(WhiteBalanceManualPatch {
+                kelvin: Some(source.values.kelvin),
+                tint: Some(source.values.tint),
+            }));
+        }
+        patch
+    }
 }
+
+/// The fields Copy settings leaves out: the crop and the orientation (the photo's own geometry)
+/// and the Pick white point (a spot of that photo's pixels). See [`SettingsPatch::copied_from`].
+pub const COPY_LEAVES_OUT: [SettingsField; 3] = [
+    SettingsField::Crop,
+    SettingsField::Orientation,
+    SettingsField::WhitePick,
+];
 
 impl DevelopSettings {
     /// Applies a patch with the rules of the module documentation.

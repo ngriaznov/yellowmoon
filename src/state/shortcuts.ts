@@ -2,8 +2,9 @@
  * The keyboard shortcuts of `docs/11-ui.md` §Keyboard shortcuts, as one pure function from a
  * key event to an action name, so the table is tested without a screen. ⌘ is the Meta key; the
  * app is macOS only. Keys that type (P, Z, C, W, 1–9, the arrows) are ignored while a text box
- * has focus, and the arrows are left to the control that has focus when it uses them (a slider, the
- * filmstrip, the tabs).
+ * has focus, and so are ⇧⌘C, ⇧⌘V and ⌥⇧⌘V (copy and paste settings; plain ⌘C and ⌘V never reach this
+ * table: they stay the system's Copy and Paste). The arrows are left to the control that has focus when
+ * it uses them (a slider, the filmstrip, the tabs).
  */
 import type { TabId } from "../components/tabs";
 
@@ -26,6 +27,9 @@ export type ShortcutAction =
   | "zoom-out"
   | "crop"
   | "pick-white"
+  | "copy-settings"
+  | "paste-settings"
+  | "paste-settings-picked"
   | "preferences"
   | "escape"
   | "confirm";
@@ -98,6 +102,12 @@ export function shortcutFor(event: KeyLike, context: ShortcutContext = {}): Shor
   if (event.defaultPrevented) return null;
   const key = event.key.length === 1 ? event.key.toLowerCase() : event.key;
 
+  // ⌥⇧⌘V pastes the copied settings onto the picked photos. With ⌥ held the key often reports the character ⌥ makes (√, ◊), so the
+  // key's place on the keyboard names it.
+  if (event.metaKey && event.altKey && event.shiftKey && !event.ctrlKey && (event.code === "KeyV" || key === "v")) {
+    return isTextTarget(event.target) ? null : { action: "paste-settings-picked" };
+  }
+
   if (event.metaKey && !event.ctrlKey && !event.altKey) {
     switch (key) {
       case "o":
@@ -111,6 +121,11 @@ export function shortcutFor(event: KeyLike, context: ShortcutContext = {}): Shor
         return isTextTarget(event.target) ? null : { action: event.shiftKey ? "redo" : "undo" };
       case "a":
         return event.shiftKey || isTextTarget(event.target) ? null : { action: "pick-all" };
+      // Plain ⌘C and ⌘V are the system's Copy and Paste; the shifted keys copy and paste a photo's settings. A text box keeps them.
+      case "c":
+        return event.shiftKey && !isTextTarget(event.target) ? { action: "copy-settings" } : null;
+      case "v":
+        return event.shiftKey && !isTextTarget(event.target) ? { action: "paste-settings" } : null;
       case ",":
         return { action: "preferences" };
       case "+":

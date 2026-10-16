@@ -12,7 +12,9 @@
  *
  * Deliberate differences, each stated where it is excluded: `SettingsPatch` (the core accepts more than `Partial<DevelopSettings>`, so
  * the narrower one is what the screens send), `UpdateState` (the shell never sends it; the updater runs in the webview), the unit
- * commands (`null` on the wire, `void` in `Api`), `looksImport` (an optional `input`) and `viewportInfo` (the mock has no viewport).
+ * commands (`null` on the wire, `void` in `Api`), `looksImport` (an optional `input`), `viewportInfo` (the mock has no viewport) and
+ * `copySettings` and `pasteSettings` (they answer patches, which the generated type allows `null` in every field of; `tauriApi` narrows
+ * them, see `narrowed` in `api.ts`).
  */
 import type { Api } from "../api";
 import type { commands, events } from "./bindings";
@@ -53,6 +55,7 @@ export type FromCore = AllTrue<{
   viewportInfo: Assignable<B.ViewportInfo, T.ViewportInfo>;
   appError: Assignable<B.AppError, T.AppError>;
   menuAction: Assignable<B.MenuAction, T.MenuAction>;
+  openSummary: Assignable<B.OpenSummary, T.OpenSummary>;
 }>;
 
 /** Arguments: what the screens send has to fit the type the core takes. */
@@ -63,6 +66,7 @@ export type ToCore = AllTrue<{
   lookInput: Assignable<T.LookInput, NonNullable<Parameters<typeof commands.looksImport>[1]>>;
   openKind: Assignable<T.OpenKind, B.OpenKind>;
   applyScope: Assignable<T.ApplyScope, B.ApplyScope>;
+  menuState: Assignable<T.MenuState, B.MenuState>;
 }>;
 
 /** Types that go both ways, or that both sides build: they have to be the same type. */
@@ -96,6 +100,7 @@ export type Both = AllTrue<{
   matchKind: Same<T.MatchKind, B.MatchKind>;
   recognition: Same<T.Recognition, B.Recognition>;
   menuAction: Same<T.MenuAction, B.MenuAction>;
+  menuState: Same<T.MenuState, B.MenuState>;
 }>;
 
 // ---------------------------------------------------------------------------
@@ -134,7 +139,7 @@ type Answer<Fn> = Fn extends (...args: never[]) => Promise<infer Result> ? Resul
 type Args<Fn> = Fn extends (...args: infer Parameters) => unknown ? Parameters : never;
 
 /** Commands whose `Api` method differs from the generated one on purpose. */
-type Adapted = "looksImport" | "viewportInfo";
+type Adapted = "looksImport" | "viewportInfo" | "copySettings" | "pasteSettings";
 
 /**
  * Every generated command has an `Api` method of the same name that passes its arguments on (the method's arguments fit the

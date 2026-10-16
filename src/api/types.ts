@@ -118,6 +118,19 @@ export interface SessionState {
   picked: PhotoId[];
   /** Where Export saves by default: "<source folder> export" (addition, `docs/09` Save to). */
   default_export_folder: string | null;
+  /**
+   * What the `open_paths` or `open_dialog` call that answered with this state did; null (or absent) in every other answer. It lets
+   * Photos say "Added 3 photos. 2 were already open." when files are added to a session (addition, 2026-10-16).
+   */
+  opened?: OpenSummary | null;
+}
+
+/** What one `open_paths` or `open_dialog` call did to the session. */
+export interface OpenSummary {
+  /** ARW files added to the filmstrip. */
+  added: number;
+  /** ARW files that were already in the session and were not added again. */
+  already_open: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -248,6 +261,24 @@ export interface DevelopSettings {
 
 /** A partial update: only the fields present change. `update_settings(photo_id, patch)`. */
 export type SettingsPatch = Partial<DevelopSettings>;
+
+/**
+ * What `paste_settings` did to one photo: the fields it changed, as two patches that make one undo step. `before` is what Undo
+ * sends and `after` what Redo sends; both are empty when the photo already had the pasted settings (addition, 2026-10-16).
+ */
+export interface PastedPhoto {
+  id: PhotoId;
+  before: SettingsPatch;
+  after: SettingsPatch;
+}
+
+/** The answer of `paste_settings` (addition, 2026-10-16). */
+export interface PasteReport {
+  /** The photos that took the settings, in the order they were asked for. */
+  pasted: PastedPhoto[];
+  /** The photos left out: still developing, failed or not in the session. */
+  skipped: PhotoId[];
+}
 
 /** Which `Auto` fields are still automatic; the UI shows the AUTO tag for these. */
 export interface AutoFlags {
@@ -812,7 +843,23 @@ export type MenuAction =
   | "previous_photo"
   | "import_arri_looks"
   | "import_cube"
-  | "make_default_look";
+  | "make_default_look"
+  | "copy_settings"
+  | "paste_settings"
+  | "paste_settings_to_picked";
+
+/**
+ * `set_menu_state(state)` (addition, 2026-10-16): which of the Edit menu's settings items are available. The webview knows (a developed
+ * current photo, something copied, photos picked) and the native menu does not.
+ */
+export interface MenuState {
+  /** Copy Settings: the current photo is developed. */
+  copy_settings: boolean;
+  /** Paste Settings: something is copied and the current photo is developed. */
+  paste_settings: boolean;
+  /** Paste Settings to Picked: something is copied and a photo is picked. */
+  paste_settings_to_picked: boolean;
+}
 
 /** `menu_action` event payload. */
 export interface MenuActionEvent {

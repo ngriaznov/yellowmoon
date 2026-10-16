@@ -474,6 +474,127 @@ fn apply_look_reaches_this_picked_and_all_photos() {
 }
 
 #[test]
+fn opening_more_files_adds_to_the_session_and_says_what_was_new() {
+    let h = Harness::new();
+    let first = h.open(2);
+    assert_eq!(
+        first.opened,
+        Some(OpenSummary {
+            added: 2,
+            already_open: 0
+        })
+    );
+    let ids: Vec<_> = first.photos.iter().map(|p| p.id).collect();
+    h.develop();
+    // The same folder again: every file is open already, nothing is added, nothing is an error.
+    let folder = h.photos.path().to_string_lossy().into_owned();
+    let again = h.api.open_paths(&[folder.clone()]).expect("open again");
+    assert_eq!(
+        again.opened,
+        Some(OpenSummary {
+            added: 0,
+            already_open: 2
+        })
+    );
+    assert_eq!(again.photos.len(), 2);
+    // One new file and the two known ones: the new photo goes after the others, and the current
+    // photo and the photos before it stay as they were.
+    h.api.set_current(ids[1]).expect("current");
+    crate::testing::write_arw(h.photos.path(), "DSC00003.ARW", 3);
+    let more = h.api.open_paths(&[folder]).expect("open more");
+    assert_eq!(
+        more.opened,
+        Some(OpenSummary {
+            added: 1,
+            already_open: 2
+        })
+    );
+    assert_eq!(
+        more.photos.iter().map(|p| p.id).take(2).collect::<Vec<_>>(),
+        ids
+    );
+    assert_eq!(more.photos.len(), 3);
+    assert_eq!(more.current_index, Some(1), "the current photo stays");
+    // Only an open says what it did.
+    assert_eq!(h.api.session_state().expect("state").opened, None);
+}
+
+#[test]
+fn copy_and_paste_settings_move_a_photos_settings_onto_others() {
+    let h = Harness::new();
+    h.open(3);
+    let state = h.develop();
+    let ids: Vec<_> = state.photos.iter().map(|p| p.id).collect();
+    let edit: SettingsPatch = serde_json::from_value(json!({
+        "exposure": { "kind": "manual", "ev": 0.6 },
+        "contrast": 25,
+        "look": "builtin:neutral",
+        "look_intensity": 45,
+        "crop": { "rect": { "x": 0.1, "y": 0.1, "width": 0.5, "height": 0.5 }, "angle_deg": 2, "aspect": "free" },
+        "orientation": 90
+    }))
+    .expect("patch");
+    h.api.update_settings(ids[0], &edit).expect("edit");
+
+    let copied = h.api.copy_settings(ids[0]).expect("copy");
+    assert!(copied.crop.is_none() && copied.orientation.is_none() && copied.white_pick.is_none());
+    assert_eq!(copied.contrast, Some(Num(25.0)));
+    let before_events = h.events.events().len();
+
+    let report = h
+        .api
+        .paste_settings(&[ids[1], ids[2], PhotoId(9999)], &copied)
+        .expect("paste");
+    assert_eq!(report.skipped, [PhotoId(9999)]);
+    assert_eq!(
+        report.pasted.iter().map(|p| p.id).collect::<Vec<_>>(),
+        [ids[1], ids[2]]
+    );
+    for id in [ids[1], ids[2]] {
+        let r = h.api.get_settings(id).expect("settings");
+        assert_eq!(r.values.contrast.0, 25.0);
+        assert_eq!(r.values.exposure_ev.0, 0.6);
+        assert_eq!(r.values.look_intensity.0, 45.0);
+        assert!(r.settings.crop.is_none(), "the crop is not pasted");
+    }
+    // Every photo that changed is announced, once.
+    let events = h.events.events();
+    for id in [ids[1], ids[2]] {
+        let n = events[before_events..]
+            .iter()
+            .filter(|e| **e == AppEvent::SettingsChanged(id))
+            .count();
+        assert_eq!(n, 1, "settings_changed for {id:?}");
+    }
+    // The same paste again changes nothing, so announces nothing and is an empty step.
+    let after = events.len();
+    let again = h.api.paste_settings(&[ids[1]], &copied).expect("again");
+    assert_eq!(again.pasted.len(), 1);
+    assert!(again.pasted[0].before == SettingsPatch::default());
+    assert_eq!(h.events.events().len(), after);
+
+    // A look that is not in the library is refused as `apply_look` refuses it, and nothing changes.
+    let gone: SettingsPatch =
+        serde_json::from_value(json!({ "look": "arri:3000:nothing", "contrast": -5 }))
+            .expect("patch");
+    let err = h
+        .api
+        .paste_settings(&[ids[1]], &gone)
+        .expect_err("no such look");
+    assert_eq!(err.scope, ErrorScope::Looks);
+    assert_eq!(
+        h.api
+            .get_settings(ids[1])
+            .expect("settings")
+            .values
+            .contrast
+            .0,
+        25.0
+    );
+    assert!(h.api.copy_settings(PhotoId(9999)).is_err());
+}
+
+#[test]
 fn rerun_histogram_and_look_thumbnails() {
     let h = Harness::new();
     h.open(1);
@@ -2334,9 +2455,12 @@ fn core_types_convert_without_loss() {
     h.api.update_settings(id, &patch).expect("update");
 
     let core = h.api.core();
+    // The wire state also says what the last open did (`opened`); a plain `session_state` says nothing.
+    let mut core_state = serde_json::to_value(core.session.state()).expect("core json");
+    core_state["opened"] = serde_json::Value::Null;
     assert_same(
         "session_state",
-        &core.session.state(),
+        &core_state,
         &h.api.session_state().expect("state"),
     );
     assert_same(

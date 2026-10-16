@@ -275,3 +275,13 @@
 
 /* The Export screen's photo chip is drawn without tabular numbers (the Photos screen's has them), as in the mockups. */
 .ym-screen[data-panel="export"] .ym-photo-cell__chip { font-variant-numeric: normal; }
+
+/* Files are being dragged over the Photos screen: a yellow frame around the window says that a drop adds them. */
+.ym-screen[data-screen="photos"][data-dragging="true"]::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  border: 6px solid var(--brand);
+  pointer-events: none;
+}

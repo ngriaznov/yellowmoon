@@ -22,6 +22,12 @@ export const commands = {
 	picked: PhotoId[],
 	/**  Where Export saves by default: "<source folder> export". */
 	default_export_folder: string | null,
+	/**
+	 *  What the `open_paths` or `open_dialog` call that answered with this state did; null in every
+	 *  other answer (`session_state`). It is what lets Photos say "Added 3 photos. 2 were already
+	 *  open." when files are added to a session.
+	 */
+	opened?: OpenSummary | null,
 } | null>("open_dialog", { kind }),
 	/**  `session_state()`. */
 	sessionState: () => __TAURI_INVOKE<SessionState>("session_state"),
@@ -39,6 +45,18 @@ export const commands = {
 	applyLook: (scope: ApplyScope, lookId: LookId, intensity: number) => __TAURI_INVOKE<null>("apply_look", { scope, lookId, intensity }),
 	/**  `rerun_auto(photo_id)`: recomputes the automatic estimates. */
 	rerunAuto: (photoId: PhotoId) => __TAURI_INVOKE<ResolvedSettings>("rerun_auto", { photoId }),
+	/**
+	 *  `copy_settings(photo_id)`: the photo's settings as a patch to paste onto other photos (not the
+	 *  crop, the orientation or the Pick white point).
+	 */
+	copySettings: (photoId: PhotoId) => __TAURI_INVOKE<SettingsPatch>("copy_settings", { photoId }),
+	/**
+	 *  `paste_settings(photo_ids, patch)`: applies a copied patch to those photos in one call; the
+	 *  answer says which took it (with each one's change as an undo step) and which were skipped.
+	 */
+	pasteSettings: (photoIds: PhotoId[], patch: SettingsPatch) => __TAURI_INVOKE<PasteReport>("paste_settings", { photoIds, patch }),
+	/**  `set_menu_state(state)`: switches the Edit menu's settings items on or off. */
+	setMenuState: (state: MenuState) => __TAURI_INVOKE<null>("set_menu_state", { state }),
 	/**  `histogram(photo_id)`: the RGB histogram of the photo as it is rendered now. */
 	histogram: (photoId: PhotoId) => __TAURI_INVOKE<HistogramData>("histogram", { photoId }),
 	/**  `viewport_info()` (addition): which backend draws the photo, `native` or `fallback`. */
@@ -805,12 +823,31 @@ export type MenuAction =
 /**  Import a .cube file. */
 "import_cube" | 
 /**  Make the current look the default. */
-"make_default_look";
+"make_default_look" | 
+/**  Copy the settings of the current photo. */
+"copy_settings" | 
+/**  Paste the copied settings onto the current photo. */
+"paste_settings" | 
+/**  Paste the copied settings onto the picked photos. */
+"paste_settings_to_picked";
 
 /**  `menu_action { action }`: a menu item that needs the webview was chosen. */
 export type MenuActionEvent = {
 	/**  Which item. */
 	action: MenuAction,
+};
+
+/**
+ *  `set_menu_state(state)`: which of the Edit menu's settings items are available. The webview
+ *  knows (a developed current photo, something copied, photos picked) and the native menu does not.
+ */
+export type MenuState = {
+	/**  Copy Settings: the current photo is developed. */
+	copy_settings: boolean,
+	/**  Paste Settings: something is copied and the current photo is developed. */
+	paste_settings: boolean,
+	/**  Paste Settings to Picked: something is copied and a photo is picked. */
+	paste_settings_to_picked: boolean,
 };
 
 /**  Poisson–Gaussian noise model, `variance = a · signal + b`. */
@@ -876,6 +913,14 @@ export type OpenKind =
 /**  A folder. */
 "folder";
 
+/**  What one `open_paths` or `open_dialog` call did to the session. */
+export type OpenSummary = {
+	/**  ARW files added to the filmstrip. */
+	added: number,
+	/**  ARW files that were already in the session and were not added again. */
+	already_open: number,
+};
+
 /**
  *  The five free packages ARRI publishes (the ids of `data/looks/arri-packages.json`, with
  *  underscores). The two look libraries that also come as ARRI Look Files (the LogC4 one as
@@ -893,6 +938,28 @@ export type PackageId =
 "look_library_logc3_to_rec709" | 
 /**  Display LUTs, LogC3. */
 "display_luts_logc3";
+
+/**  The answer of `paste_settings`. */
+export type PasteReport = {
+	/**  The photos that took the settings, in the order they were asked for. */
+	pasted: PastedPhoto[],
+	/**  The photos left out: still developing, failed or not in the session. */
+	skipped: PhotoId[],
+};
+
+/**
+ *  What `paste_settings` did to one photo: the fields it changed, as two patches that make one
+ *  undo step (`before` is what Undo sends, `after` what Redo sends). Both are empty when the photo
+ *  already had the pasted settings.
+ */
+export type PastedPhoto = {
+	/**  The photo. */
+	id: PhotoId,
+	/**  The changed fields as they were. */
+	before: SettingsPatch,
+	/**  The same fields as they are now. */
+	after: SettingsPatch,
+};
 
 /**  Identifies a photo for the lifetime of the session only. */
 export type PhotoId = number;
@@ -1194,6 +1261,12 @@ export type SessionState = {
 	picked: PhotoId[],
 	/**  Where Export saves by default: "<source folder> export". */
 	default_export_folder: string | null,
+	/**
+	 *  What the `open_paths` or `open_dialog` call that answered with this state did; null in every
+	 *  other answer (`session_state`). It is what lets Photos say "Added 3 photos. 2 were already
+	 *  open." when files are added to a session.
+	 */
+	opened?: OpenSummary | null,
 };
 
 /**

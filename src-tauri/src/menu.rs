@@ -6,19 +6,23 @@
 //! shell's own business: Show Looks Folder, the Help links, Report a Problem, About, Quit and the
 //! standard window items.
 //!
-//! Shortcuts are given to the items whose keys do not also type: ⌘, ⌘O ⇧⌘O ⌘E ⌘W ⌘= ⌘- ⌘Q. ⌘Z, ⇧⌘Z
-//! and ⌘A stay with the webview, which sends them to a text box when one has focus and to the
-//! photos otherwise; a menu item bound to them would take the keys away from the text boxes. The
-//! menu shows those items without a key. The single-key shortcuts (P, Z, C, W, \ and the arrows) are
-//! not menu shortcuts for the same reason.
+//! Shortcuts are given to the items whose keys do not also type: ⌘, ⌘O ⇧⌘O ⌘E ⌘W ⌘= ⌘- ⌘Q and the
+//! three settings items ⇧⌘C ⇧⌘V ⌥⇧⌘V (no text box uses them: the system's Copy and Paste are plain
+//! ⌘C and ⌘V). ⌘Z, ⇧⌘Z and ⌘A stay with the webview, which sends them to a text box when one has
+//! focus and to the photos otherwise; a menu item bound to them would take the keys away from the
+//! text boxes. The menu shows those items without a key. The single-key shortcuts (P, Z, C, W, \ and
+//! the arrows) are not menu shortcuts for the same reason.
+//!
+//! Three items change with what is open: Copy Settings needs a developed current photo, Paste
+//! Settings something copied as well, and Paste Settings to Picked something copied and a picked
+//! photo. The webview says which are available (`set_menu_state`, [`apply_state`]); the menu starts
+//! with all three off, as Start has nothing to copy.
 
-#[cfg(test)]
-use tauri::menu::MenuItemKind;
-use tauri::menu::{AboutMetadata, Menu, MenuItem, PredefinedMenuItem, Submenu};
+use tauri::menu::{AboutMetadata, Menu, MenuItem, MenuItemKind, PredefinedMenuItem, Submenu};
 use tauri::{AppHandle, Runtime};
 
 use crate::about;
-use crate::wire::MenuAction;
+use crate::wire::{MenuAction, MenuState};
 
 /// What an item of the menu does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -182,6 +186,25 @@ pub fn spec() -> Vec<Menus> {
                 web("undo", "Undo", None, MenuAction::Undo),
                 web("redo", "Redo", None, MenuAction::Redo),
                 Separator,
+                web(
+                    "copy_settings",
+                    "Copy Settings",
+                    Some("CmdOrCtrl+Shift+C"),
+                    MenuAction::CopySettings,
+                ),
+                web(
+                    "paste_settings",
+                    "Paste Settings",
+                    Some("CmdOrCtrl+Shift+V"),
+                    MenuAction::PasteSettings,
+                ),
+                web(
+                    "paste_settings_to_picked",
+                    "Paste Settings to Picked",
+                    Some("CmdOrCtrl+Alt+Shift+V"),
+                    MenuAction::PasteSettingsToPicked,
+                ),
+                Separator,
                 web("pick", "Pick", None, MenuAction::Pick),
                 web("pick_all", "Pick All", None, MenuAction::PickAll),
                 web("clear_picks", "Clear Picks", None, MenuAction::ClearPicks),
@@ -270,6 +293,47 @@ pub fn spec() -> Vec<Menus> {
     ]
 }
 
+/// The ids of the items that change with what is open, in the order of [`MenuState`]'s fields.
+pub const STATE_ITEMS: [&str; 3] = [
+    "copy_settings",
+    "paste_settings",
+    "paste_settings_to_picked",
+];
+
+/// `(id, available)` for each of [`STATE_ITEMS`] under `state`.
+#[must_use]
+pub fn availability(state: &MenuState) -> [(&'static str, bool); 3] {
+    [
+        (STATE_ITEMS[0], state.copy_settings),
+        (STATE_ITEMS[1], state.paste_settings),
+        (STATE_ITEMS[2], state.paste_settings_to_picked),
+    ]
+}
+
+/// Switches the items of [`STATE_ITEMS`] on or off to match `state`. Does nothing when the app has
+/// no menu (a test, a platform without one). On macOS the menu is changed on the main thread, which
+/// Tauri arranges.
+///
+/// # Errors
+///
+/// The error of changing an item.
+pub fn apply_state<R: Runtime>(app: &AppHandle<R>, state: &MenuState) -> tauri::Result<()> {
+    let Some(menu) = app.menu() else {
+        return Ok(());
+    };
+    for kind in menu.items()? {
+        let MenuItemKind::Submenu(sub) = kind else {
+            continue;
+        };
+        for (id, on) in availability(state) {
+            if let Some(MenuItemKind::MenuItem(item)) = sub.get(id) {
+                item.set_enabled(on)?;
+            }
+        }
+    }
+    Ok(())
+}
+
 /// What the item with this id does, if it is one of ours.
 #[must_use]
 pub fn action_for(id: &str) -> Option<Do> {
@@ -352,7 +416,9 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
                     shortcut,
                     ..
                 } => {
-                    let item = MenuItem::with_id(app, id, label, true, shortcut)?;
+                    // The items that follow what is open start off: Start has nothing to copy.
+                    let on = !STATE_ITEMS.contains(&id);
+                    let item = MenuItem::with_id(app, id, label, on, shortcut)?;
                     sub.append(&item)?;
                     last_was_separator = false;
                 }
@@ -442,6 +508,9 @@ mod tests {
             // Edit
             "Undo",
             "Redo",
+            "Copy Settings",
+            "Paste Settings",
+            "Paste Settings to Picked",
             "Pick",
             "Pick All",
             "Clear Picks",
@@ -530,6 +599,9 @@ mod tests {
             MenuAction::ImportArriLooks,
             MenuAction::ImportCube,
             MenuAction::MakeDefaultLook,
+            MenuAction::CopySettings,
+            MenuAction::PasteSettings,
+            MenuAction::PasteSettingsToPicked,
         ];
         let ours: HashSet<String> = all
             .iter()
@@ -566,8 +638,68 @@ mod tests {
                 "{s} belongs to the text boxes"
             );
         }
-        // ⌘, ⌘O ⇧⌘O ⌘E ⌘W ⌘= ⌘-
-        assert_eq!(seen.len(), 7);
+        // ⌘, ⌘O ⇧⌘O ⌘E ⌘W ⌘= ⌘- and the settings items ⇧⌘C ⇧⌘V ⌥⇧⌘V
+        assert_eq!(seen.len(), 10);
+    }
+
+    #[test]
+    fn the_settings_items_have_their_keys_and_follow_the_state() {
+        let by_id: std::collections::HashMap<_, _> = items()
+            .into_iter()
+            .map(|(id, label, shortcut, action)| (id, (label, shortcut, action)))
+            .collect();
+        for (id, label, shortcut, action) in [
+            (
+                "copy_settings",
+                "Copy Settings",
+                "CmdOrCtrl+Shift+C",
+                MenuAction::CopySettings,
+            ),
+            (
+                "paste_settings",
+                "Paste Settings",
+                "CmdOrCtrl+Shift+V",
+                MenuAction::PasteSettings,
+            ),
+            (
+                "paste_settings_to_picked",
+                "Paste Settings to Picked",
+                "CmdOrCtrl+Alt+Shift+V",
+                MenuAction::PasteSettingsToPicked,
+            ),
+        ] {
+            assert_eq!(
+                by_id[id],
+                (label, Some(shortcut), Do::Webview(action)),
+                "{id}"
+            );
+            assert_eq!(action_for(id), Some(Do::Webview(action)));
+            assert!(STATE_ITEMS.contains(&id));
+        }
+        // Plain ⌘C and ⌘V stay the system's Copy and Paste for the text boxes.
+        let entries: Vec<_> = spec().into_iter().flat_map(|m| m.entries).collect();
+        assert!(entries.contains(&Entry::Standard(Standard::Copy)));
+        assert!(entries.contains(&Entry::Standard(Standard::Paste)));
+
+        let none = MenuState {
+            copy_settings: false,
+            paste_settings: false,
+            paste_settings_to_picked: false,
+        };
+        assert!(availability(&none).iter().all(|(_, on)| !on));
+        let state = MenuState {
+            copy_settings: true,
+            paste_settings: false,
+            paste_settings_to_picked: true,
+        };
+        assert_eq!(
+            availability(&state),
+            [
+                ("copy_settings", true),
+                ("paste_settings", false),
+                ("paste_settings_to_picked", true)
+            ]
+        );
     }
 
     #[test]
@@ -624,5 +756,39 @@ mod tests {
         let labels: Vec<String> = file.iter().map(label_of).collect();
         assert!(labels.contains(&"Open Files…".to_owned()), "{labels:?}");
         assert!(labels.contains(&"Close Session".to_owned()), "{labels:?}");
+
+        // The three settings items start off and follow `apply_state`.
+        let enabled = |menu: &Menu<tauri::test::MockRuntime>, id: &str| -> bool {
+            for kind in menu.items().expect("items") {
+                if let MenuItemKind::Submenu(sub) = kind
+                    && let Some(MenuItemKind::MenuItem(item)) = sub.get(id)
+                {
+                    return item.is_enabled().expect("enabled");
+                }
+            }
+            panic!("no item {id}");
+        };
+        assert!(
+            STATE_ITEMS.iter().all(|id| !enabled(&menu, id)),
+            "they start off"
+        );
+        assert!(enabled(&menu, "export"), "the others start on");
+        app.set_menu(menu.clone()).expect("set the menu");
+        apply_state(
+            app.handle(),
+            &MenuState {
+                copy_settings: true,
+                paste_settings: false,
+                paste_settings_to_picked: true,
+            },
+        )
+        .expect("apply the state");
+        assert!(enabled(&menu, "copy_settings"));
+        assert!(!enabled(&menu, "paste_settings"));
+        assert!(enabled(&menu, "paste_settings_to_picked"));
+        assert!(
+            enabled(&menu, "export"),
+            "the state leaves other items alone"
+        );
     }
 }

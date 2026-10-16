@@ -15,6 +15,7 @@
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { mockApi } from "./api.mock";
 import { commands } from "./api/bindings";
+import type * as B from "./api/bindings";
 import { isTauri } from "./env";
 import { perf } from "./perf";
 import type {
@@ -34,7 +35,9 @@ import type {
   Look,
   LookInput,
   LooksImportResult,
+  MenuState,
   OpenKind,
+  PasteReport,
   PhotoId,
   PixelSample,
   Preferences,
@@ -87,6 +90,21 @@ export interface Api {
   applyLook(scope: ApplyScope, lookId: LookId, intensity: number): Promise<void>;
   /** `rerun_auto`: recompute the automatic estimates and reset exposure, white lift, white balance and noise to Auto. */
   rerunAuto(photoId: PhotoId): Promise<ResolvedSettings>;
+  /**
+   * `copy_settings` (addition, 2026-10-16): the settings of a photo as a patch to paste onto other photos: everything but the crop,
+   * the orientation and the Pick white point; Auto stays Auto; a white balance that came from a picked white is the manual Kelvin
+   * and tint it resolved to. The core stores nothing: the caller keeps the patch (`docs/11` §Copy and paste settings). Rejects for a
+   * photo that is unknown, failed or not developed yet.
+   */
+  copySettings(photoId: PhotoId): Promise<SettingsPatch>;
+  /**
+   * `paste_settings` (addition, 2026-10-16): apply a copied patch to every photo in `photoIds` in one call. A photo that is still
+   * developing, failed or unknown is skipped. The answer holds each changed photo's before and after patches (one undo step). A
+   * look that is no longer in the library is refused, and nothing changes.
+   */
+  pasteSettings(photoIds: PhotoId[], patch: SettingsPatch): Promise<PasteReport>;
+  /** `set_menu_state` (addition, 2026-10-16): which of the Edit menu's settings items are available. */
+  setMenuState(state: MenuState): Promise<void>;
   /**
    * `histogram`: the RGB histogram of the photo as it is rendered now (Light tab, Curve plot).
    * Addition to `docs/01`; ask again after every `render_stats` event.
@@ -226,6 +244,13 @@ export function toAppError(value: unknown): AppError {
   return { scope: "app", message };
 }
 
+/**
+ * A patch the core sends (`copy_settings`, the steps of `paste_settings`). The generated `SettingsPatch` allows `null` in every field,
+ * because the bridge reads an optional Rust field as `T | null`; the core leaves a field out and writes a `null` only for `crop` and
+ * `white_pick`, which `Partial<DevelopSettings>` allows too. The screens read it as the narrower type.
+ */
+const narrowed = (patch: B.SettingsPatch): SettingsPatch => patch as unknown as SettingsPatch;
+
 /** The unit commands answer `null` on the wire; the interface says `void`. */
 const unit = (call: Promise<null>): Promise<void> => call.then(() => undefined);
 
@@ -245,6 +270,12 @@ export const tauriApi: Api = {
   updateSettings: (photoId, patch) => commands.updateSettings(photoId, patch),
   applyLook: (scope, lookId, intensity) => unit(commands.applyLook(scope, lookId, intensity)),
   rerunAuto: (photoId) => commands.rerunAuto(photoId),
+  copySettings: async (photoId) => narrowed(await commands.copySettings(photoId)),
+  pasteSettings: async (photoIds, patch) => {
+    const report = await commands.pasteSettings(photoIds, patch);
+    return { ...report, pasted: report.pasted.map((p) => ({ id: p.id, before: narrowed(p.before), after: narrowed(p.after) })) };
+  },
+  setMenuState: (state) => unit(commands.setMenuState(state)),
   histogram: (photoId) => commands.histogram(photoId),
 
   viewportInfo: () => commands.viewportInfo(),

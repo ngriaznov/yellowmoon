@@ -13,12 +13,17 @@ use std::time::{Duration, Instant};
 
 use common::{Layout, Scene, base_env, light, session_with_events, settle};
 use ym_color::exposure::CAMERA_GAIN_EV;
+use ym_color::wb::LightSource;
 use ym_core::auto::NoiseSource;
 use ym_core::session::{
     ApplyScope, EventSink, OpenOptions, PhotoId, PhotoProgress, PhotoStage, PhotoStatus, Session,
     SessionError, SessionEvent, ThumbnailInput, ThumbnailRenderer, default_decode_threads,
 };
-use ym_core::settings::{AutoOr, SettingsPatch};
+use ym_core::settings::{
+    AutoOr, ColorBalancePatch, Crop, CropAspect, CurvesPatch, DecodePatch, ExposureSetting,
+    NoiseReductionManualPatch, NormRect, Orientation, RolloffPatch, SettingsPatch,
+    SharpenManualPatch, WhiteBalanceManualPatch, WhiteBalanceValue,
+};
 use ym_looks::library::LookId;
 use ym_raw::layout::ChromaSubsampling;
 use ym_raw::testgen::{ArwBuilder, ContainerOnly, CrawEncoder, LosslessL, LosslessMs};
@@ -1195,6 +1200,387 @@ fn a_white_pick_samples_the_photo_and_a_blown_out_spot_is_refused() {
     session.update_settings(id, &patch).unwrap();
     session.rerun_auto(id).unwrap();
     assert!(session.settings(id).unwrap().settings.white_pick.is_none());
+}
+
+/// Three developed photos of one scene at three brightnesses.
+fn three_photos() -> (tempfile::TempDir, Session, Vec<PhotoId>) {
+    let dir = tempfile::tempdir().unwrap();
+    for (name, level) in [("a.ARW", 0.3), ("b.ARW", 0.2), ("c.ARW", 0.4)] {
+        write_plain(dir.path(), name, level);
+    }
+    let (session, _rx) = session_with_events();
+    session.open(&[dir.path().to_path_buf()], OpenOptions::default());
+    settle(&session);
+    let ids = session.photo_ids();
+    assert_eq!(ids.len(), 3);
+    (dir, session, ids)
+}
+
+/// A patch that sets every kind of setting, the crop, the turn and the white pick included.
+fn edit_everything() -> SettingsPatch {
+    SettingsPatch {
+        look: Some(LookId::builtin("signature")),
+        look_intensity: Some(60.0),
+        exposure: Some(ExposureSetting::manual_ev(0.7)),
+        contrast: Some(12.0),
+        brightness: Some(-8.0),
+        highlights: Some(-30.0),
+        shadows: Some(25.0),
+        white: Some(5.0),
+        white_offset_ev: Some(0.5),
+        black: Some(-4.0),
+        light_source: Some(LightSource::Day),
+        white_balance: Some(AutoOr::Manual(WhiteBalanceManualPatch {
+            kelvin: Some(4300.0),
+            tint: Some(7.0),
+        })),
+        color_balance: Some(ColorBalancePatch {
+            shadows: Some([0.2, -0.1]),
+            midtones: None,
+            highlights: Some([-0.1, 0.1]),
+        }),
+        saturation: Some(15.0),
+        sharpen: Some(AutoOr::Manual(SharpenManualPatch {
+            amount: Some(80.0),
+            radius_px: Some(1.2),
+        })),
+        output_sharpening: Some(60.0),
+        noise_reduction: Some(AutoOr::Manual(NoiseReductionManualPatch {
+            luminance: Some(30.0),
+            color: Some(40.0),
+            detail: Some(50.0),
+        })),
+        curve: Some(CurvesPatch {
+            luma: Some(vec![[0.0, 0.0], [0.5, 0.6], [1.0, 1.0]]),
+            ..Default::default()
+        }),
+        decode: Some(DecodePatch {
+            neural_demosaic: Some(false),
+            lens_corrections: Some(false),
+            ..Default::default()
+        }),
+        rolloff: Some(RolloffPatch {
+            highlights: Some(0.7),
+            low_light: Some(0.3),
+        }),
+        crop: Some(Some(Crop {
+            rect: NormRect {
+                x: 0.1,
+                y: 0.1,
+                width: 0.5,
+                height: 0.5,
+            },
+            angle_deg: 3.0,
+            aspect: CropAspect::Free,
+        })),
+        orientation: Some(Orientation::Deg90),
+        white_pick: Some(Some([0.4167, 0.125])),
+    }
+}
+
+#[test]
+fn pasting_takes_every_setting_but_the_crop_the_turn_and_the_white_pick() {
+    let (_dir, session, ids) = three_photos();
+    let (a, b, c) = (ids[0], ids[1], ids[2]);
+    // `white_pick` last in the patch: a pick clears the light preset and the white balance unless
+    // the same patch sets them, and this one does.
+    session.update_settings(a, &edit_everything()).unwrap();
+    // The targets have a crop and a turn of their own; c has only a turn.
+    let own_crop = SettingsPatch {
+        crop: Some(Some(Crop {
+            rect: NormRect {
+                x: 0.0,
+                y: 0.2,
+                width: 0.9,
+                height: 0.6,
+            },
+            angle_deg: -2.0,
+            aspect: CropAspect::Original,
+        })),
+        orientation: Some(Orientation::Deg180),
+        ..Default::default()
+    };
+    session.update_settings(b, &own_crop).unwrap();
+    session
+        .update_settings(
+            c,
+            &SettingsPatch {
+                orientation: Some(Orientation::Deg270),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+    let source = session.settings(a).unwrap().settings;
+    assert!(source.crop.is_some() && source.white_pick.is_some());
+    assert_eq!(source.orientation, Orientation::Deg90);
+
+    let patch = session.copy_settings(a).unwrap();
+    assert!(
+        patch.crop.is_none() && patch.orientation.is_none() && patch.white_pick.is_none(),
+        "the copy leaves out the crop, the turn and the white pick"
+    );
+    let own: Vec<_> = [b, c]
+        .iter()
+        .map(|id| session.settings(*id).unwrap().settings)
+        .collect();
+    assert_ne!(own[0], source);
+    let report = session.paste_settings(&[b, c], &patch).unwrap();
+    assert_eq!(
+        report.pasted.iter().map(|p| p.id).collect::<Vec<_>>(),
+        [b, c]
+    );
+    assert!(report.skipped.is_empty());
+    for (id, before) in [b, c].into_iter().zip(own) {
+        let mut expected = source.clone();
+        expected.crop = before.crop;
+        expected.orientation = before.orientation;
+        expected.white_pick = before.white_pick;
+        assert_eq!(session.settings(id).unwrap().settings, expected);
+    }
+    // The source itself was not touched.
+    assert_eq!(session.settings(a).unwrap().settings, source);
+}
+
+#[test]
+fn auto_stays_auto_and_each_photo_keeps_its_own_estimates() {
+    let (_dir, session, ids) = three_photos();
+    let (a, b) = (ids[0], ids[1]);
+    session
+        .update_settings(
+            a,
+            &SettingsPatch {
+                contrast: Some(20.0),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    // b is manual wherever a is automatic.
+    session
+        .update_settings(
+            b,
+            &SettingsPatch {
+                exposure: Some(ExposureSetting::manual_ev(-1.5)),
+                light_source: Some(LightSource::Tungsten),
+                white_balance: Some(AutoOr::Manual(WhiteBalanceManualPatch {
+                    kelvin: Some(3300.0),
+                    tint: Some(-4.0),
+                })),
+                sharpen: Some(AutoOr::Manual(SharpenManualPatch {
+                    amount: Some(120.0),
+                    radius_px: Some(1.5),
+                })),
+                noise_reduction: Some(AutoOr::Manual(NoiseReductionManualPatch {
+                    luminance: Some(70.0),
+                    color: Some(70.0),
+                    detail: Some(70.0),
+                })),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let estimates_before = session.settings(b).unwrap().estimates;
+    assert!(!session.settings(b).unwrap().auto.exposure);
+
+    let patch = session.copy_settings(a).unwrap();
+    assert_eq!(patch.exposure, Some(AutoOr::Auto));
+    assert_eq!(patch.white_balance, Some(AutoOr::Auto));
+    assert_eq!(patch.light_source, Some(LightSource::Auto));
+    assert_eq!(patch.sharpen, Some(AutoOr::Auto));
+    assert_eq!(patch.noise_reduction, Some(AutoOr::Auto));
+    session.paste_settings(&[b], &patch).unwrap();
+
+    let r = session.settings(b).unwrap();
+    assert!(r.auto.exposure && r.auto.light_source && r.auto.white_balance);
+    assert!(r.auto.sharpen && r.auto.noise_reduction);
+    assert_eq!(r.settings.contrast, 20.0);
+    // The automatic values are b's own, from b's pixels, and nothing changed them.
+    assert_eq!(r.estimates, estimates_before);
+    assert_eq!(r.values.exposure_ev, r.estimates.exposure_ev);
+    assert_eq!(r.values.sharpen, r.estimates.sharpen);
+    assert_eq!(r.values.noise_reduction, r.estimates.noise_reduction);
+
+    // Manual values are pasted as they are, onto a photo that is automatic.
+    session.update_settings(a, &edit_everything()).unwrap();
+    let patch = session.copy_settings(a).unwrap();
+    session.paste_settings(&[b], &patch).unwrap();
+    let r = session.settings(b).unwrap();
+    assert!(
+        !r.auto.exposure && !r.auto.white_balance && !r.auto.sharpen && !r.auto.noise_reduction
+    );
+    assert_eq!(r.values.exposure_ev, 0.7);
+    assert_eq!((r.values.kelvin, r.values.tint), (4300.0, 7.0));
+    assert_eq!(r.settings.white_offset_ev, 0.5);
+}
+
+#[test]
+fn a_white_balance_from_a_picked_white_is_pasted_as_manual_kelvin_and_tint() {
+    let dir = tempfile::tempdir().unwrap();
+    // Lit at 3000 K, but the camera's white balance says daylight, as in the Pick white test.
+    let s = Scene::new(512, 384, light(PROFILE, 3000.0), Layout::Patchwork, 0.5).noise(1e-4, 1e-6);
+    s.builder(MODEL)
+        .wb(Some(common::wb_levels(light(PROFILE, 6500.0))))
+        .write_to(&dir.path().join("a.ARW"), &s.mosaic())
+        .unwrap();
+    write_plain(dir.path(), "b.ARW", 0.3);
+    let (session, _rx) = session_with_events();
+    session.open(&[dir.path().to_path_buf()], OpenOptions::default());
+    settle(&session);
+    let (a, b) = (session.photo_ids()[0], session.photo_ids()[1]);
+
+    let pick = SettingsPatch {
+        white_pick: Some(Some([0.4167, 0.125])),
+        ..Default::default()
+    };
+    let picked = session.update_settings(a, &pick).unwrap();
+    assert!((picked.values.kelvin - 3000.0).abs() <= 100.0);
+    assert!(picked.auto.white_balance && picked.auto.light_source);
+
+    let patch = session.copy_settings(a).unwrap();
+    assert!(patch.white_pick.is_none(), "the point stays with its photo");
+    assert_eq!(patch.light_source, Some(LightSource::Auto));
+    assert_eq!(
+        patch.white_balance,
+        Some(AutoOr::Manual(WhiteBalanceManualPatch {
+            kelvin: Some(picked.values.kelvin),
+            tint: Some(picked.values.tint),
+        }))
+    );
+    session.paste_settings(&[b], &patch).unwrap();
+    let r = session.settings(b).unwrap();
+    assert_eq!(
+        r.settings.white_balance,
+        AutoOr::Manual(WhiteBalanceValue {
+            kelvin: picked.values.kelvin,
+            tint: picked.values.tint
+        })
+    );
+    assert!(r.settings.white_pick.is_none() && !r.auto.white_balance);
+
+    // A light preset chosen after the pick wins over it: the preset is copied, the white balance
+    // stays Auto.
+    session
+        .update_settings(
+            a,
+            &SettingsPatch {
+                light_source: Some(LightSource::Day),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let patch = session.copy_settings(a).unwrap();
+    assert_eq!(patch.light_source, Some(LightSource::Day));
+    assert_eq!(patch.white_balance, Some(AutoOr::Auto));
+
+    // A manual white balance next to a pick is copied as it is.
+    session
+        .update_settings(
+            a,
+            &SettingsPatch {
+                light_source: Some(LightSource::Auto),
+                white_balance: Some(AutoOr::Manual(WhiteBalanceManualPatch {
+                    kelvin: Some(4000.0),
+                    tint: Some(3.0),
+                })),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert!(session.settings(a).unwrap().settings.white_pick.is_some());
+    let patch = session.copy_settings(a).unwrap();
+    assert_eq!(
+        patch.white_balance,
+        Some(AutoOr::Manual(WhiteBalanceManualPatch {
+            kelvin: Some(4000.0),
+            tint: Some(3.0)
+        }))
+    );
+}
+
+#[test]
+fn a_photo_that_cannot_be_adjusted_is_skipped_and_a_bad_patch_changes_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    write_plain(dir.path(), "a.ARW", 0.3);
+    std::fs::write(dir.path().join("b.ARW"), b"this is not a raw file at all").unwrap();
+    write_plain(dir.path(), "c.ARW", 0.4);
+    let (session, _rx) = session_with_events();
+    session.open(&[dir.path().to_path_buf()], OpenOptions::default());
+    settle(&session);
+    let ids = session.photo_ids();
+    let (a, failed, c) = (ids[0], ids[1], ids[2]);
+    assert!(matches!(
+        session.status(failed),
+        Some(PhotoStatus::Skipped { .. })
+    ));
+    assert!(session.copy_settings(failed).is_err());
+    assert!(session.copy_settings(PhotoId(99)).is_err());
+
+    session.update_settings(a, &edit_everything()).unwrap();
+    let patch = session.copy_settings(a).unwrap();
+    // A photo that failed or is not there is skipped; the others are still done, each once.
+    let report = session
+        .paste_settings(&[failed, PhotoId(99), c, c], &patch)
+        .unwrap();
+    assert_eq!(report.skipped, [failed, PhotoId(99)]);
+    assert_eq!(report.pasted.len(), 1);
+    assert_eq!(report.pasted[0].id, c);
+    assert_eq!(session.settings(c).unwrap().values.exposure_ev, 0.7);
+
+    // A patch that names the crop, the turn or the white pick does not touch them.
+    let (_dir2, session2, ids2) = three_photos();
+    session2
+        .paste_settings(&[ids2[1]], &edit_everything())
+        .unwrap();
+    let r = session2.settings(ids2[1]).unwrap().settings;
+    assert!(r.crop.is_none() && r.white_pick.is_none());
+    assert_eq!(r.orientation, Orientation::Deg0);
+    assert_eq!(r.contrast, 12.0);
+
+    // A patch that cannot be applied changes no photo, not even the ones before the bad value.
+    let before = session.settings(a).unwrap().settings;
+    let bad = SettingsPatch {
+        contrast: Some(f64::NAN),
+        ..Default::default()
+    };
+    assert!(matches!(
+        session.paste_settings(&[a, c], &bad),
+        Err(SessionError::Settings(_))
+    ));
+    assert_eq!(session.settings(a).unwrap().settings, before);
+    assert_eq!(session.settings(c).unwrap().settings.contrast, 12.0);
+}
+
+#[test]
+fn the_patches_of_a_paste_undo_and_redo_it_and_a_second_paste_changes_nothing() {
+    let (_dir, session, ids) = three_photos();
+    let (a, b) = (ids[0], ids[1]);
+    session.update_settings(a, &edit_everything()).unwrap();
+    session
+        .update_settings(
+            b,
+            &SettingsPatch {
+                contrast: Some(-10.0),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let patch = session.copy_settings(a).unwrap();
+    let was = session.settings(b).unwrap().settings;
+    let report = session.paste_settings(&[b], &patch).unwrap();
+    let now = session.settings(b).unwrap().settings;
+    assert_ne!(was, now);
+    let step = &report.pasted[0];
+    assert!(!step.before.is_empty() && !step.after.is_empty());
+    // Only what changed is in the step: the crop and the turn never are.
+    assert!(step.before.crop.is_none() && step.after.orientation.is_none());
+    session.update_settings(b, &step.before).unwrap();
+    assert_eq!(session.settings(b).unwrap().settings, was);
+    session.update_settings(b, &step.after).unwrap();
+    assert_eq!(session.settings(b).unwrap().settings, now);
+    // The same paste again: the photo already has these settings.
+    let again = session.paste_settings(&[b], &patch).unwrap();
+    assert_eq!(again.pasted.len(), 1);
+    assert!(again.pasted[0].before.is_empty() && again.pasted[0].after.is_empty());
 }
 
 #[test]

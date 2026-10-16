@@ -407,6 +407,28 @@ pub enum ApplyScope {
     All,
 }
 
+/// What [`Session::paste_settings`] did to one photo: the fields it changed, as a pair of patches
+/// the caller can keep as one undo step.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PastedPhoto {
+    /// The photo.
+    pub id: PhotoId,
+    /// The changed fields as they were (what Undo sends). Empty when the photo already had the
+    /// pasted settings.
+    pub before: SettingsPatch,
+    /// The same fields as they are now (what Redo sends).
+    pub after: SettingsPatch,
+}
+
+/// What [`Session::paste_settings`] did.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct PasteReport {
+    /// The photos that took the settings, in the order they were asked for.
+    pub pasted: Vec<PastedPhoto>,
+    /// The photos left out: still developing, failed or not in the session.
+    pub skipped: Vec<PhotoId>,
+}
+
 // ---------------------------------------------------------------------------------------------
 // Errors
 // ---------------------------------------------------------------------------------------------
@@ -1766,6 +1788,80 @@ impl Session {
             }
         }
         Ok(changed)
+    }
+
+    /// `copy_settings`: the settings of a photo as a patch to paste onto other photos
+    /// ([`SettingsPatch::copied_from`]): everything but the crop, the orientation and the Pick
+    /// white point, Auto kept as Auto, a white balance that came from a picked white as the
+    /// manual Kelvin and tint it resolved to. Nothing is stored: the caller keeps the patch.
+    ///
+    /// # Errors
+    ///
+    /// As [`Session::settings`].
+    pub fn copy_settings(&self, id: PhotoId) -> Result<SettingsPatch, SessionError> {
+        Ok(SettingsPatch::copied_from(&self.settings(id)?))
+    }
+
+    /// `paste_settings`: applies `patch` (what [`Session::copy_settings`] made) to every photo in
+    /// `ids`, in one call under one lock, so a hundred photos are one change and not a hundred
+    /// commands. The crop, the orientation and the Pick white point are never touched, whatever
+    /// the patch says. A photo that has no estimates yet (still developing), failed, or is not in
+    /// the session is skipped. A photo's own automatic values stay its own: only the settings
+    /// change, nothing is rendered here (the caller draws the current photo and the thumbnails
+    /// again). Each id counts once, in the order given.
+    ///
+    /// The patch is checked against every photo before any is changed, so a patch that cannot be
+    /// applied changes nothing.
+    ///
+    /// # Errors
+    ///
+    /// [`SessionError::Settings`] for a patch that cannot be applied (a value that is not a
+    /// number, a partial manual value for a photo whose field is Auto: `copy_settings` makes
+    /// whole ones).
+    pub fn paste_settings(
+        &self,
+        ids: &[PhotoId],
+        patch: &SettingsPatch,
+    ) -> Result<PasteReport, SessionError> {
+        let mut patch = patch.clone();
+        patch.crop = None;
+        patch.orientation = None;
+        patch.white_pick = None;
+        let mut st = lock(&self.inner.state);
+        let mut report = PasteReport::default();
+        let mut seen = HashSet::new();
+        let mut apply: Vec<(usize, DevelopSettings, Vec<crate::settings::SettingsField>)> =
+            Vec::new();
+        for &id in ids {
+            if !seen.insert(id) {
+                continue;
+            }
+            let ready = st.index.get(&id).copied().filter(|&i| {
+                let p = &st.photos[i];
+                !matches!(p.summary.status, PhotoStatus::Skipped { .. })
+                    && p.meta.is_some()
+                    && p.camera.is_some()
+                    && p.profile.is_some()
+                    && p.effective.is_some()
+            });
+            let Some(i) = ready else {
+                report.skipped.push(id);
+                continue;
+            };
+            let mut next = st.photos[i].settings.clone();
+            let done = next.apply_patch(&patch, None)?;
+            apply.push((i, next, done.changed));
+        }
+        for (i, next, changed) in apply {
+            let p = &mut st.photos[i];
+            report.pasted.push(PastedPhoto {
+                id: p.id,
+                before: SettingsPatch::of_fields(&p.settings, &changed),
+                after: SettingsPatch::of_fields(&next, &changed),
+            });
+            p.settings = next;
+        }
+        Ok(report)
     }
 
     /// Sets the default look: the look of photos opened from now on (a preference).

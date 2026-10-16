@@ -295,6 +295,20 @@ pub struct SessionState {
     pub picked: Vec<PhotoId>,
     /// Where Export saves by default: "<source folder> export".
     pub default_export_folder: Option<String>,
+    /// What the `open_paths` or `open_dialog` call that answered with this state did; null in every
+    /// other answer (`session_state`). It is what lets Photos say "Added 3 photos. 2 were already
+    /// open." when files are added to a session.
+    #[serde(default)]
+    pub opened: Option<OpenSummary>,
+}
+
+/// What one `open_paths` or `open_dialog` call did to the session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct OpenSummary {
+    /// ARW files added to the filmstrip.
+    pub added: u32,
+    /// ARW files that were already in the session and were not added again.
+    pub already_open: u32,
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -947,6 +961,28 @@ pub enum ApplyScope {
     Picked,
     /// Every photo.
     All,
+}
+
+/// What `paste_settings` did to one photo: the fields it changed, as two patches that make one
+/// undo step (`before` is what Undo sends, `after` what Redo sends). Both are empty when the photo
+/// already had the pasted settings.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
+pub struct PastedPhoto {
+    /// The photo.
+    pub id: PhotoId,
+    /// The changed fields as they were.
+    pub before: SettingsPatch,
+    /// The same fields as they are now.
+    pub after: SettingsPatch,
+}
+
+/// The answer of `paste_settings`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
+pub struct PasteReport {
+    /// The photos that took the settings, in the order they were asked for.
+    pub pasted: Vec<PastedPhoto>,
+    /// The photos left out: still developing, failed or not in the session.
+    pub skipped: Vec<PhotoId>,
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1654,6 +1690,24 @@ pub enum MenuAction {
     ImportCube,
     /// Make the current look the default.
     MakeDefaultLook,
+    /// Copy the settings of the current photo.
+    CopySettings,
+    /// Paste the copied settings onto the current photo.
+    PasteSettings,
+    /// Paste the copied settings onto the picked photos.
+    PasteSettingsToPicked,
+}
+
+/// `set_menu_state(state)`: which of the Edit menu's settings items are available. The webview
+/// knows (a developed current photo, something copied, photos picked) and the native menu does not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct MenuState {
+    /// Copy Settings: the current photo is developed.
+    pub copy_settings: bool,
+    /// Paste Settings: something is copied and the current photo is developed.
+    pub paste_settings: bool,
+    /// Paste Settings to Picked: something is copied and a photo is picked.
+    pub paste_settings_to_picked: bool,
 }
 
 // ---------------------------------------------------------------------------------------------

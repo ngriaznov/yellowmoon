@@ -95,6 +95,15 @@ export async function runMenuAction(store: AppStore, action: MenuAction): Promis
     case "import_cube":
       await store.startCubeImport();
       return;
+    case "copy_settings":
+      await store.copySettings();
+      return;
+    case "paste_settings":
+      await store.pasteSettings("this");
+      return;
+    case "paste_settings_to_picked":
+      await store.pasteSettings("picked");
+      return;
     case "make_default_look": {
       const rs = store.currentSettings();
       if (rs) await store.makeDefault(rs.values.look);
