@@ -2,8 +2,12 @@
  * Auto-update, per `docs/12-distribution.md` §In the app. Phases: idle, available,
  * downloading, ready, error (the `UpdateState` of `api/types.ts`).
  *
- *  - A quiet check 10 s after launch and then every 6 hours while "Check for updates
- *    automatically" is on. Failures stay silent: an unreachable endpoint never bothers the user.
+ *  - A quiet check 10 s after launch and then every hour while "Check for updates automatically"
+ *    is on. An update it finds downloads and installs at once, in the background, and the header
+ *    says "Update ready": a click restarts into it now, and the next launch runs it anyway (0.1.0
+ *    only offered the update, and the owner expected it to install itself). Failures stay silent:
+ *    an unreachable endpoint or a download that fails never bothers the user (the update is then
+ *    offered as "Update available", whose click tries again).
  *  - "Check for Updates…" checks now and reports the result.
  *  - Updates come from `@tauri-apps/plugin-updater` (`check`, `downloadAndInstall`) and the app
  *    restarts through the `restart_app` command (`Api.restartApp`), not the process plugin's `relaunch`: a restart
@@ -26,7 +30,7 @@ import { isTauri } from "./env";
 /** First quiet check after launch. */
 export const FIRST_CHECK_DELAY_MS = 10_000;
 /** Interval between quiet checks while the app runs. */
-export const CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
+export const CHECK_INTERVAL_MS = 60 * 60 * 1000;
 
 /** The part of the plugin's `Update` that the state machine uses. */
 export type UpdateHandle = Pick<Update, "version" | "downloadAndInstall">;
@@ -56,11 +60,14 @@ export interface Updater {
   quietCheck(): Promise<void>;
   /** "Check for Updates…": always asks, and reports what happened. */
   checkNow(): Promise<CheckResult>;
-  /** Downloads and installs the pending update (idle → downloading → ready, or error). */
-  download(): Promise<void>;
+  /**
+   * Downloads and installs the pending update (available → downloading → ready). A failure is the error phase, or with
+   * `quiet` (the scheduled download) the update is offered again as available, without a word.
+   */
+  download(quiet?: boolean): Promise<void>;
   /** Restarts into the update. Does nothing and resolves false unless `restartAvailability` allows it. */
   restart(exportRunning: boolean): Promise<boolean>;
-  /** Starts the schedule (10 s, then every 6 h) and returns a function that stops it. */
+  /** Starts the schedule (10 s, then every hour; an update found is installed) and returns a function that stops it. */
   start(): () => void;
   /** Takes over a state sent by the core (the `update_state` event, for example from the app menu). */
   applyExternal(state: UpdateState): void;
@@ -182,7 +189,7 @@ export function createUpdater(deps: UpdaterDeps): Updater {
     }
   }
 
-  async function download(): Promise<void> {
+  async function download(quiet = false): Promise<void> {
     if (state.phase !== "available" || !pending) return;
     const { version } = state;
     const update = pending;
@@ -204,7 +211,8 @@ export function createUpdater(deps: UpdaterDeps): Updater {
       await update.downloadAndInstall(onEvent);
       setState({ phase: "ready", version });
     } catch (error) {
-      setState({ phase: "error", message: messageOf(error) });
+      if (quiet) setState({ phase: "available", version });
+      else setState({ phase: "error", message: messageOf(error) });
     }
   }
 
@@ -224,7 +232,10 @@ export function createUpdater(deps: UpdaterDeps): Updater {
 
   async function scheduledCheck(): Promise<void> {
     const enabled = deps.autoCheck ? await deps.autoCheck() : true;
-    if (enabled) await quietCheck();
+    if (!enabled) return;
+    await quietCheck();
+    // Found: install it now, in the background.
+    if (state.phase === "available") await download(true);
   }
 
   function start(): () => void {

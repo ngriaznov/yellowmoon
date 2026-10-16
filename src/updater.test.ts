@@ -99,13 +99,13 @@ describe("quiet check", () => {
   });
 });
 
-describe("schedule (docs/12: 10 s after launch, then every 6 hours)", () => {
+describe("schedule (docs/12: 10 s after launch, then every hour)", () => {
   it("constants match the spec", () => {
     expect(FIRST_CHECK_DELAY_MS).toBe(10_000);
-    expect(CHECK_INTERVAL_MS).toBe(6 * 60 * 60 * 1000);
+    expect(CHECK_INTERVAL_MS).toBe(60 * 60 * 1000);
   });
 
-  it("checks at 10 s, then every 6 h, until stopped", async () => {
+  it("checks at 10 s, then every hour, until stopped", async () => {
     const check = vi.fn().mockResolvedValue(null);
     const u = createUpdater({ check, relaunch: vi.fn() });
     const stop = u.start();
@@ -162,11 +162,34 @@ describe("schedule (docs/12: 10 s after launch, then every 6 hours)", () => {
     expect(check).toHaveBeenCalledTimes(1);
   });
 
-  it("a scheduled check that finds an update shows it", async () => {
-    const u = createUpdater({ check: vi.fn().mockResolvedValue(fakeUpdate("0.0.5")), relaunch: vi.fn() });
+  it("a scheduled check that finds an update installs it in the background, and the header says it is ready", async () => {
+    const update = fakeUpdate("0.0.5");
+    const u = createUpdater({ check: vi.fn().mockResolvedValue(update), relaunch: vi.fn() });
+    u.start();
+    await vi.advanceTimersByTimeAsync(FIRST_CHECK_DELAY_MS);
+    expect(update.downloadAndInstall).toHaveBeenCalledTimes(1);
+    expect(u.getState()).toEqual({ phase: "ready", version: "0.0.5" });
+  });
+
+  it("a background download that fails says nothing and offers the update again", async () => {
+    const update = fakeUpdate("0.0.5");
+    vi.mocked(update.downloadAndInstall).mockRejectedValueOnce(new Error("connection reset"));
+    const u = createUpdater({ check: vi.fn().mockResolvedValue(update), relaunch: vi.fn() });
     u.start();
     await vi.advanceTimersByTimeAsync(FIRST_CHECK_DELAY_MS);
     expect(u.getState()).toEqual({ phase: "available", version: "0.0.5" });
+    // The next scheduled round does not ask again while the update is offered; a click on "Update available" retries.
+    await u.download();
+    expect(u.getState()).toEqual({ phase: "ready", version: "0.0.5" });
+  });
+
+  it("does not install anything while automatic checking is off", async () => {
+    const update = fakeUpdate("0.0.5");
+    const u = createUpdater({ check: vi.fn().mockResolvedValue(update), relaunch: vi.fn(), autoCheck: async () => false });
+    u.start();
+    await vi.advanceTimersByTimeAsync(FIRST_CHECK_DELAY_MS + CHECK_INTERVAL_MS);
+    expect(update.downloadAndInstall).not.toHaveBeenCalled();
+    expect(u.getState()).toEqual(IDLE);
   });
 });
 
