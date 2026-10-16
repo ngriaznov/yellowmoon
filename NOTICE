@@ -149,7 +149,8 @@ UNDISCLOSED.
    (tools/licences/generate.py: cargo-about and license-checker).
 
 10. Mykyta Griaznov's photographs (README screenshots in docs/images/readme/,
-   the readme-photos branch, test and evaluation images made from them)
+   the social card docs/images/social-card.png, the readme-photos branch, test
+   and evaluation images made from them)
    The photographs, his raw files on the readme-photos branch and every image
    made from them are © Mykyta Griaznov, used with his permission as README
    screenshots, test and evaluation data (including CI) and published

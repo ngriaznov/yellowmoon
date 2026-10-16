@@ -1,0 +1,261 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<title>Yellowmoon social card</title>
+<meta name="viewport" content="width=1280">
+<!--
+  Yellowmoon social preview card, 1280 x 640 (GitHub's size).
+
+  Parameters (query string, or one JSON value: ?cfg={"variant":"A","shot":"file:///..."}):
+    variant   A, B or C                      (default A)
+    shot      URL of the app screenshot      (A and B; C when `photo` is not given)
+    photo     URL of a developed photo       (C)
+    crop      "x,y,w,h" as fractions of the screenshot, the photo cell to crop for C when no `photo` is given
+              (default 0,0.083,0.722,0.77: the photo cell of the 1440 x 900 layout)
+    photoPos  CSS object-position of the photo in C (default "50% 38%")
+
+  The font (Figtree, OFL, design/fonts/OFL.txt) is put in by render.mjs: it puts the font file in as a data URI
+  where the @font-face rule names the placeholder, because a page opened from a file may not load a font from another file. Everything else is inline.
+  The page sets window.__cardReady = true once the font and the images are loaded.
+-->
+<style id="font">@font-face{font-family:"Figtree";font-style:normal;font-weight:300 900;font-display:block;src:url(__FIGTREE_WOFF2__) format("woff2")}</style>
+<style>
+:root {
+  /* The C2 dark-glass tokens (src/styles/glass.css .dark, glass-c2.css html.dark on origin/claude/glasscn-ui). */
+  --aurora-base: oklch(0.125 0.014 262);
+  --aurora-1: oklch(0.36 0.1 262);   /* deep blue */
+  --aurora-2: oklch(0.4 0.08 212);   /* teal */
+  --aurora-3: oklch(0.34 0.09 298);  /* violet */
+  --paper: #0f0f10;
+  --brand: #ffc20e;                  /* the moon, and one small detail. Never a large area. */
+  --ink: oklch(0.985 0 0);
+  --ink-2: rgb(255 255 255 / 0.62);  /* tagline */
+  --ink-3: rgb(255 255 255 / 0.5);   /* small line */
+  --rim: rgb(255 255 255 / 0.16);
+  --glass-tint: oklch(0.24 0.012 285);
+  --font: "Figtree", sans-serif;
+  --margin: 64px;                    /* nothing but pictures closer than this to an edge */
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { width: 1280px; height: 640px; overflow: hidden; background: var(--paper); }
+body {
+  font-family: var(--font);
+  color: var(--ink);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: geometricPrecision;
+  font-synthesis: none;
+}
+.card { position: relative; width: 1280px; height: 640px; overflow: hidden; background: var(--aurora-base); isolation: isolate; }
+
+/* ---- the ground: three still palette blobs over the base, as the app's Aurora component draws them -------------------------------- */
+.aurora { position: absolute; inset: 0; overflow: hidden; z-index: 0; }
+.aurora i {
+  position: absolute; display: block; aspect-ratio: 1; border-radius: 50%;
+  width: var(--s); left: calc(var(--x) - var(--s) / 2); top: calc(var(--y) - var(--s) / 2);
+  background: radial-gradient(closest-side, var(--c), color-mix(in oklch, var(--c) 55%, transparent) 45%, transparent);
+  opacity: var(--o, 1);
+}
+.aurora .b1 { --c: var(--aurora-1); }
+.aurora .b2 { --c: var(--aurora-2); }
+.aurora .b3 { --c: var(--aurora-3); }
+body[data-variant="A"] .aurora .b1 { --x: 330px;  --y: 40px;   --s: 1050px; }
+body[data-variant="A"] .aurora .b2 { --x: 1130px; --y: 70px;   --s: 960px; }
+body[data-variant="A"] .aurora .b3 { --x: 110px;  --y: 720px;  --s: 900px; }
+body[data-variant="B"] .aurora .b1 { --x: 280px;  --y: 60px;   --s: 1000px; }
+body[data-variant="B"] .aurora .b2 { --x: 1040px; --y: 120px;  --s: 940px; }
+body[data-variant="B"] .aurora .b3 { --x: 640px;  --y: 660px;  --s: 1050px; }
+/* Fine grain over the ground: it breaks up the 8-bit steps of a dark gradient, so a palette PNG or a JPEG keeps it smooth. */
+.grain { position: absolute; inset: 0; z-index: 1; pointer-events: none; opacity: 0.5; mix-blend-mode: soft-light; }
+.grain svg { width: 100%; height: 100%; display: block; }
+
+/* ---- shared type ------------------------------------------------------------------------------------------------------------------- */
+.wordmark { font-weight: 800; letter-spacing: -0.045em; line-height: 0.92; color: var(--ink); white-space: nowrap; }
+.tagline { font-weight: 500; letter-spacing: -0.012em; color: var(--ink-2); text-wrap: balance; }
+.small { font-weight: 500; letter-spacing: 0.005em; color: var(--ink-3); white-space: nowrap; }
+.small .dot { display: inline-block; width: 6px; height: 6px; margin: 0 11px 3px; border-radius: 50%; background: var(--brand); vertical-align: middle; }
+
+/* The mark, dark-glass style: the app icon's geometry (tile 412, ring r 135, disc r 101 on a 512 grid) with the white tile turned to glass. */
+.mark { display: block; flex: none; }
+.mark--tile { filter: drop-shadow(0 6px 16px rgb(0 0 0 / 0.45)); }
+
+/* ---- the variants --------------------------------------------------------------------------------------------------------------- */
+.v { position: absolute; inset: 0; z-index: 2; display: none; }
+body[data-variant="A"] .v-a, body[data-variant="B"] .v-b, body[data-variant="C"] .v-c { display: block; }
+
+/* the glass frame around the screenshot */
+.frame {
+  position: absolute; padding: 10px; border-radius: 28px; border: 1px solid var(--rim);
+  background: linear-gradient(180deg, rgb(255 255 255 / 0.13), rgb(255 255 255 / 0.05));
+  -webkit-backdrop-filter: blur(28px) saturate(180%); backdrop-filter: blur(28px) saturate(180%);
+  box-shadow: 0 50px 90px -18px rgb(0 0 0 / 0.65), 0 18px 36px -12px rgb(0 0 0 / 0.5), inset 0 1px 0 rgb(255 255 255 / 0.24);
+}
+.frame img { display: block; width: 100%; height: auto; border-radius: 18px; box-shadow: 0 0 0 1px rgb(0 0 0 / 0.5); }
+
+/* A: text left, screenshot right, bleeding off the right and bottom edges */
+.v-a .copy { position: absolute; left: var(--margin); top: 146px; }
+.v-a .mark { width: 64px; height: 64px; margin-bottom: 40px; }
+.v-a .wordmark { font-size: 82px; }
+.v-a .tagline { margin-top: 24px; font-size: 33px; line-height: 1.24; width: 430px; }
+.v-a .small { margin-top: 38px; font-size: 20px; }
+.v-a .frame { left: 592px; top: 146px; width: 840px; }
+
+/* B: a centred hero, the screenshot cropped by the bottom edge */
+.v-b .copy { position: absolute; left: 0; right: 0; top: var(--margin); text-align: center; display: flex; flex-direction: column; align-items: center; }
+.v-b .mark { width: 52px; height: 52px; margin-bottom: 22px; }
+.v-b .wordmark { font-size: 78px; }
+.v-b .tagline { margin-top: 14px; font-size: 29px; line-height: 1.2; }
+.v-b .frame { left: 50%; top: 318px; width: 944px; margin-left: -472px; }
+
+/* C: a developed photo, full bleed, with a dark gradient for the words */
+.v-c { background: #0f0f10; }
+.v-c .photo { position: absolute; inset: 0; overflow: hidden; }
+.v-c .photo img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; object-position: var(--photo-pos, 50% 38%); }
+.v-c .photo .cellcrop { position: absolute; inset: 0; background-repeat: no-repeat; }
+.v-c .shade {
+  position: absolute; inset: 0;
+  background:
+    linear-gradient(0deg, rgb(11 13 20 / 0.9) 0%, rgb(11 13 20 / 0.72) 18%, rgb(11 13 20 / 0.4) 36%, rgb(11 13 20 / 0.12) 54%, rgb(11 13 20 / 0) 70%);
+}
+.v-c .copy { position: absolute; left: var(--margin); bottom: var(--margin); }
+.v-c .row { display: flex; align-items: center; gap: 20px; }
+.v-c .mark { width: 46px; height: 46px; margin-top: 5px; }
+.v-c .wordmark { font-size: 86px; }
+.v-c .tagline { margin-top: 20px; font-size: 32px; line-height: 1.2; color: rgb(255 255 255 / 0.74); }
+.v-c .small { position: absolute; right: var(--margin); bottom: var(--margin); font-size: 19px; color: rgb(255 255 255 / 0.62);
+  padding: 9px 18px 10px; border-radius: 999px; border: 1px solid var(--rim); background: rgb(20 22 30 / 0.5);
+  -webkit-backdrop-filter: blur(20px) saturate(160%); backdrop-filter: blur(20px) saturate(160%); }
+</style>
+</head>
+<body data-variant="A">
+
+<!-- The mark. A tile is the app icon in dark glass; a bare mark is the ring and the disc. -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <linearGradient id="tile-fill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#fff" stop-opacity="0.2"/>
+      <stop offset="1" stop-color="#fff" stop-opacity="0.07"/>
+    </linearGradient>
+    <linearGradient id="tile-rim" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#fff" stop-opacity="0.5"/>
+      <stop offset="1" stop-color="#fff" stop-opacity="0.12"/>
+    </linearGradient>
+    <radialGradient id="disc" cx="50%" cy="38%" r="70%">
+      <stop offset="0" stop-color="#ffcd33"/>
+      <stop offset="1" stop-color="#ffc20e"/>
+    </radialGradient>
+    <symbol id="mark-tile" viewBox="50 50 412 412">
+      <rect x="51" y="51" width="410" height="410" rx="79" fill="url(#tile-fill)"/>
+      <rect x="52.5" y="52.5" width="407" height="407" rx="77.5" fill="none" stroke="url(#tile-rim)" stroke-width="3"/>
+      <circle cx="256" cy="256" r="135" fill="#08090c" fill-opacity="0.9"/>
+      <circle cx="256" cy="256" r="135" fill="none" stroke="#fff" stroke-opacity="0.1" stroke-width="2"/>
+      <circle cx="256" cy="256" r="101" fill="url(#disc)"/>
+    </symbol>
+    <symbol id="mark-bare" viewBox="119 119 274 274">
+      <circle cx="256" cy="256" r="135" fill="#08090c" fill-opacity="0.62"/>
+      <circle cx="256" cy="256" r="135" fill="none" stroke="#fff" stroke-opacity="0.22" stroke-width="3"/>
+      <circle cx="256" cy="256" r="101" fill="url(#disc)"/>
+    </symbol>
+  </defs>
+</svg>
+
+<div class="card">
+  <div class="aurora" aria-hidden="true"><i class="b1"></i><i class="b2"></i><i class="b3"></i></div>
+  <div class="grain" aria-hidden="true">
+    <svg xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="none">
+      <filter id="n" x="0" y="0" width="100%" height="100%" color-interpolation-filters="sRGB">
+        <feTurbulence type="fractalNoise" baseFrequency="0.9" numOctaves="2" seed="7" stitchTiles="stitch"/>
+        <feColorMatrix type="saturate" values="0"/>
+      </filter>
+      <rect width="100%" height="100%" filter="url(#n)"/>
+    </svg>
+  </div>
+
+  <!-- A -->
+  <section class="v v-a">
+    <div class="copy">
+      <svg class="mark mark--tile" data-text><use href="#mark-tile"/></svg>
+      <h1 class="wordmark" data-text>Yellowmoon</h1>
+      <p class="tagline" data-text>Cinema colour for Sony raw files.</p>
+      <p class="small" data-text>Free and open source<span class="dot"></span>macOS</p>
+    </div>
+    <div class="frame" data-shot><img class="js-shot" alt=""></div>
+  </section>
+
+  <!-- B -->
+  <section class="v v-b">
+    <div class="copy">
+      <svg class="mark mark--tile" data-text><use href="#mark-tile"/></svg>
+      <h1 class="wordmark" data-text>Yellowmoon</h1>
+      <p class="tagline" data-text>Cinema colour for Sony raw files.</p>
+    </div>
+    <div class="frame" data-shot><img class="js-shot" alt=""></div>
+  </section>
+
+  <!-- C -->
+  <section class="v v-c">
+    <div class="photo"><img class="js-photo" alt=""><div class="cellcrop js-cellcrop"></div></div>
+    <div class="shade"></div>
+    <div class="copy">
+      <div class="row">
+        <svg class="mark" data-text><use href="#mark-bare"/></svg>
+        <h1 class="wordmark" data-text>Yellowmoon</h1>
+      </div>
+      <p class="tagline" data-text>Cinema colour for Sony raw files.</p>
+    </div>
+    <p class="small" data-text>Free and open source<span class="dot"></span>macOS</p>
+  </section>
+</div>
+
+<script>
+(function () {
+  var q = new URLSearchParams(location.search);
+  var cfg = {};
+  try { if (q.get("cfg")) cfg = JSON.parse(q.get("cfg")); } catch (e) { cfg = {}; }
+  function get(k, d) { return cfg[k] != null ? String(cfg[k]) : (q.get(k) != null ? q.get(k) : d); }
+  var variant = get("variant", "A").toUpperCase();
+  if (["A", "B", "C"].indexOf(variant) < 0) variant = "A";
+  document.body.dataset.variant = variant;
+
+  var shot = get("shot", ""), photo = get("photo", "");
+  document.querySelectorAll(".js-shot").forEach(function (img) { if (shot) img.src = shot; else img.remove(); });
+  var photoImg = document.querySelector(".js-photo"), cell = document.querySelector(".js-cellcrop");
+  document.querySelector(".v-c").style.setProperty("--photo-pos", get("photoPos", "50% 38%"));
+  if (photo) {
+    photoImg.src = photo; cell.remove();
+  } else {
+    photoImg.remove();
+    // No photo: crop the photo cell out of the screenshot. crop = x,y,w,h as fractions of the screenshot.
+    var c = get("crop", "0,0.083,0.722,0.77").split(",").map(Number);
+    var probe = new Image();
+    window.__cropReady = new Promise(function (res) { probe.onload = function () { build(); res(); }; probe.onerror = function () { res(); }; });
+    var build = function () {
+      var iw = probe.naturalWidth, ih = probe.naturalHeight;
+      var cw = c[2] * iw, ch = c[3] * ih;
+      var k = Math.max(1280 / cw, 640 / ch);               // cover
+      cell.style.backgroundImage = "url(" + JSON.stringify(shot) + ")";
+      cell.style.backgroundSize = (iw * k) + "px " + (ih * k) + "px";
+      cell.style.backgroundPosition = (-(c[0] * iw * k) - (cw * k - 1280) / 2) + "px " + (-(c[1] * ih * k) - (ch * k - 640) / 2) + "px";
+      cell.dataset.ready = "1";
+    };
+    if (shot) probe.src = shot; else window.__cropReady = Promise.resolve();
+  }
+
+  // Ready: the font is loaded (a FontFace in the set, status "loaded"; document.fonts.check alone says true for an unknown family)
+  // and every image in the shown variant has decoded.
+  var imgs = Array.prototype.slice.call(document.querySelectorAll(".v-" + variant.toLowerCase() + " img"));
+  window.__cardReady = false;
+  window.__cardError = null;
+  Promise.all([
+    window.__cropReady || Promise.resolve(),
+    document.fonts.load('800 80px "Figtree"'), document.fonts.load('500 30px "Figtree"'), document.fonts.load('400 20px "Figtree"')
+  ]).then(function () {
+    return Promise.all(imgs.map(function (img) {
+      if (!img.getAttribute("src")) return Promise.reject(new Error("image missing: set ?shot= or ?photo="));
+      return img.decode().catch(function () { throw new Error("image failed to load: " + img.getAttribute("src")); });
+    }));
+  }).then(function () { window.__cardReady = true; }).catch(function (e) { window.__cardError = String(e && e.message || e); });
+})();
+</script>
+</body>
+</html>
