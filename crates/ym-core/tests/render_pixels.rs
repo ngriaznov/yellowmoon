@@ -1,10 +1,12 @@
-//! What the pixels of a render must be: neutral stays neutral, one stop is one stop of LogC4,
+//! What the pixels of a render must be: neutral stays neutral, one stop is one stop of exposure,
 //! orientation and straightening move the right pixels, the reduced path agrees with the full one,
 //! and every raw layout renders (cRAW, Lossless M/S, odd crop origins, lens tags).
 mod common;
 
 use common::*;
-use ym_color::logc::logc4_encode;
+use ym_color::camera_default::CameraTone;
+use ym_color::encode::srgb_encode;
+use ym_color::exposure::CAMERA_GAIN_EV;
 use ym_core::pipeline::{
     FrameOptions, FullRequest, FullTarget, PhotoSource, RenderedFrame, Renderer, ViewportMode,
     ViewportRect, ViewportState,
@@ -61,11 +63,28 @@ fn balanced(level: f64, white: [f64; 3]) -> f64 {
     0.9 * level / white.iter().copied().fold(0.0, f64::max)
 }
 
+/// The mean of the central quarter of a full image, per channel.
+fn centre_of(img: &ym_core::pipeline::FullImage) -> [f64; 3] {
+    let (w, h) = (img.width, img.height);
+    let (x0, y0, cw, ch) = (w * 3 / 8, h * 3 / 8, w / 4, h / 4);
+    let mut sum = [0.0f64; 3];
+    for y in y0..y0 + ch {
+        for x in x0..x0 + cw {
+            for (c, s) in sum.iter_mut().enumerate() {
+                *s += f64::from(img.rgb[(y * w + x) * 3 + c]);
+            }
+        }
+    }
+    let n = (cw * ch) as f64;
+    sum.map(|v| v / n)
+}
+
 #[test]
-fn the_before_view_of_a_neutral_field_is_the_logc4_of_the_exposed_signal() {
-    // This checks R1 (black and white), R4 (the gains), the fused matrix (white preserving, one
-    // stop per EV), the roll-off (identity far below the knee) and C8, end to end, against the
-    // LogC4 formula: one stop of exposure moves a neutral by exactly the LogC4 of twice the value.
+fn the_exposed_signal_of_a_neutral_field_is_two_to_the_ev_times_the_balanced_value() {
+    // This checks R1 (black and white), R4 (the gains), the fused matrix (white preserving, one stop per
+    // EV), the roll-off (identity far below the knee) and C8 to C11 and back, end to end: the DNG's
+    // pixels (scene-linear AWG4 after the whole LogC4 chain) of a neutral field move by exactly a stop
+    // for an EV. The Before view cannot show this any more: it ignores the exposure.
     let white = light(PROFILE, 5500.0);
     for level in [0.05, 0.12] {
         let scene = Scene::new(600, 400, white, Layout::Uniform, level);
@@ -73,20 +92,60 @@ fn the_before_view_of_a_neutral_field_is_the_logc4_of_the_exposed_signal() {
         let src = d.source();
         let r = Renderer::neutral_only().expect("render thread");
         let v = balanced(level, white);
+        let dng = |src: &PhotoSource| {
+            r.render_full(
+                src,
+                &FullRequest {
+                    target: FullTarget::DngLinearAwg4,
+                },
+                &CancelToken::new(),
+            )
+            .expect("render")
+        };
         for ev in [-1.0, 0.0, 1.0, 1.5] {
-            let f = render(&r, &manual_ev(&src, ev), &before(300.0, 200.0));
-            let expect = 255.0 * logc4_encode(2f64.powf(ev) * v).clamp(0.0, 1.0);
-            let got = centre(&f);
+            let got = centre_of(&dng(&manual_ev(&src, ev)));
+            let expect = 2f64.powf(ev) * v;
             for (c, g) in got.iter().enumerate() {
                 assert!(
-                    (g - expect).abs() < 0.8,
-                    "level {level} ev {ev} channel {c}: got {g:.2}, LogC4 says {expect:.2}"
+                    (g / expect - 1.0).abs() < 0.03,
+                    "level {level} ev {ev} channel {c}: got {g:.5}, 2^ev x v says {expect:.5}"
                 );
             }
         }
         // Auto exposure is the same chain with the metered EV.
+        let got = centre_of(&dng(&src))[1];
+        let expect = 2f64.powf(src.estimates.exposure.ev) * v;
+        assert!((got / expect - 1.0).abs() < 0.03, "auto: {got} vs {expect}");
+    }
+}
+
+/// The code value the Before view shows for a neutral that is `v` after the as-shot white balance: the
+/// camera gain, the camera tone curve and the sRGB transfer (a neutral is the same in Display P3).
+fn camera_default_code(v: f64) -> f64 {
+    255.0 * srgb_encode(CameraTone::FITTED.apply(CAMERA_GAIN_EV.exp2() * v))
+}
+
+#[test]
+fn the_before_view_of_a_neutral_field_is_the_camera_default_of_the_as_shot_signal() {
+    // R1, R4 and the as-shot balance, end to end, against the camera default's own formula; and the
+    // exposure setting does not move it.
+    let white = light(PROFILE, 5500.0);
+    for level in [0.05, 0.12, 0.3] {
+        let scene = Scene::new(600, 400, white, Layout::Uniform, level);
+        let d = Developed::new(&scene, MODEL);
+        let src = d.source();
+        let r = Renderer::neutral_only().expect("render thread");
+        let expect = camera_default_code(balanced(level, white));
+        for ev in [-1.0, 0.0, 1.5] {
+            let f = render(&r, &manual_ev(&src, ev), &before(300.0, 200.0));
+            for (c, g) in centre(&f).iter().enumerate() {
+                assert!(
+                    (g - expect).abs() < 0.8,
+                    "level {level} ev {ev} channel {c}: got {g:.2}, the camera default says {expect:.2}"
+                );
+            }
+        }
         let f = render(&r, &src, &before(300.0, 200.0));
-        let expect = 255.0 * logc4_encode(2f64.powf(src.estimates.exposure.ev) * v).clamp(0.0, 1.0);
         assert!((centre(&f)[1] - expect).abs() < 0.8);
     }
 }
@@ -573,10 +632,11 @@ fn a_lossless_ms_file_renders_through_the_reduced_path_with_the_right_scale() {
     assert!(src.raw.is_reduced());
     let r = Renderer::neutral_only().expect("render thread");
     // R1 scales the three channels by one range (green's): a neutral field of 0.4 * 14000 DN above
-    // the pedestal over a 16512 DN range is 0.339 after the gains, whatever the colour.
+    // the pedestal over a 16512 DN range is 0.339 after the gains, whatever the colour; the Before view
+    // shows that through the camera default.
     let v = 0.4 * 14000.0 / 16512.0;
     let f = render(&r, &manual_ev(&src, 0.0), &before(128.0, 96.0));
-    let expect = 255.0 * logc4_encode(v).clamp(0.0, 1.0);
+    let expect = camera_default_code(v);
     for (c, g) in centre(&f).iter().enumerate() {
         assert!(
             (g - expect).abs() < 1.5,

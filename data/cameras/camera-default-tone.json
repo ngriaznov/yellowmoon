@@ -140,6 +140,7 @@
  "fit": {
   "photos": 12,
   "bodies": 10,
+  "fitted_on": "the nine Standard-style photos of nine bodies (the median across them); the three photos of the A1 are in Neutral style with contrast and saturation High, were left out of the fit and agree with it after about -0.14 EV",
   "method": "per-photo quantile matching of scene luminance (as-shot white balance, the body's D65 colour matrix, +1.11 EV) against the luminance of the camera's embedded JPEG, pooled-channel curves, median across the nine Standard-style photos, Naka-Rushton least squares in sRGB code space with the white pinned at 2.5",
   "summary": "Mean over the 12 photos of the pixel metrics: median error 4.3 codes, 95th percentile 12.0, DeltaE76 2.9. Middle grey 0.18 lands on code 119.7; the median of the 12 JPEGs at that level is 119.8. Leave-one-photo-out: n 1.636 to 1.662, sigma 0.451 to 0.463.",
   "per_body": {

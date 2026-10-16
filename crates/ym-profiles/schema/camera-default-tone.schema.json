@@ -60,10 +60,11 @@
       "description": "Aggregate numbers and body names only: no file names and no pixels of the photos the curve was fitted on.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["photos", "bodies", "method", "summary", "per_body"],
+      "required": ["photos", "bodies", "fitted_on", "method", "summary", "per_body"],
       "properties": {
         "photos": { "type": "integer", "minimum": 1 },
         "bodies": { "type": "integer", "minimum": 1 },
+        "fitted_on": { "type": "string", "minLength": 1 },
         "method": { "type": "string", "minLength": 1 },
         "summary": { "type": "string", "minLength": 1 },
         "per_body": {

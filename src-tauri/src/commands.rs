@@ -227,10 +227,14 @@ pub async fn paste_settings(
     run(&state, move |api| api.paste_settings(&photo_ids, &patch)).await
 }
 
+// Not `async` on purpose, for the reason given at `viewport_set_rect` below: the webview sends this
+// on every flip of the three flags, and two calls on worker threads of their own could overtake
+// each other, or swap items one by one on the main thread, and leave the menu in a mixed state. A
+// command that is not `async` runs on the main thread in the order the webview sent them.
 /// `set_menu_state(state)`: switches the Edit menu's settings items on or off.
 #[tauri::command]
 #[specta::specta]
-pub async fn set_menu_state(app: AppHandle, state: MenuState) -> Result<(), AppError> {
+pub fn set_menu_state(app: AppHandle, state: MenuState) -> Result<(), AppError> {
     crate::menu::apply_state(&app, &state).map_err(AppError::internal)
 }
 
@@ -700,6 +704,16 @@ mod tests {
             .build()
             .expect("a mock window");
         (app, window)
+    }
+
+    /// `set_menu_state` must not be `async`: an `async` command runs on a
+    /// worker thread of its own, so two quick calls could overtake each other and leave the Edit
+    /// menu half switched. An `async fn` returns a future, so this does not compile if the command
+    /// becomes one.
+    #[test]
+    fn the_menu_state_command_runs_on_the_main_thread_in_order() {
+        fn assert_sync<F: Fn(AppHandle, MenuState) -> Result<(), AppError>>(_: F) {}
+        assert_sync(set_menu_state);
     }
 
     fn call(window: &WebviewWindow<MockRuntime>, cmd: &str, args: Value) -> Result<Value, Value> {

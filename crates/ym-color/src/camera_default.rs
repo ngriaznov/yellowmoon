@@ -23,9 +23,10 @@
 //! final picture. There is no sensor map, look, grade, curve, display transform, white lift or output
 //! sharpening, and no user setting reaches this path.
 //!
-//! The curve is a normalised Naka-Rushton hyperbola, fitted to the embedded JPEGs of 12 photos from 10
-//! Sony bodies in Standard style (`data/cameras/camera-default-tone.json` holds the constants, the
-//! golden table and the fit summary; a test pins the file to the constants here). The body matrices are
+//! The curve is a normalised Naka-Rushton hyperbola, fitted to the embedded JPEGs of nine Standard-style
+//! photos from nine Sony bodies and checked on 12 photos from 10 bodies
+//! (`data/cameras/camera-default-tone.json` holds the constants, the golden table and the fit summary; a
+//! test pins the file to the constants here). The body matrices are
 //! numbers from the bodies' published D65 colour matrices (`data/cameras/color-matrices.json`,
 //! `docs/14-licensing.md` rule 8).
 
