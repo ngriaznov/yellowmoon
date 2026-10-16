@@ -245,11 +245,13 @@ export function toAppError(value: unknown): AppError {
 }
 
 /**
- * A patch the core sends (`copy_settings`, the steps of `paste_settings`). The generated `SettingsPatch` allows `null` in every field,
- * because the bridge reads an optional Rust field as `T | null`; the core leaves a field out and writes a `null` only for `crop` and
- * `white_pick`, which `Partial<DevelopSettings>` allows too. The screens read it as the narrower type.
+ * An answer that carries patches (`copy_settings`, the steps of `paste_settings`). The generated `SettingsPatch` allows `null` in
+ * every field, because the bridge reads an optional Rust field as `T | null`; the core leaves a field out and writes a `null` only
+ * for `crop` and `white_pick`, which `Partial<DevelopSettings>` allows too. The screens read the narrower type: this changes the
+ * type and nothing at run time.
  */
-const narrowed = (patch: B.SettingsPatch): SettingsPatch => patch as unknown as SettingsPatch;
+const narrowed = <T extends B.SettingsPatch | B.PasteReport>(answer: Promise<T>): Promise<T extends B.PasteReport ? PasteReport : SettingsPatch> =>
+  answer as unknown as Promise<T extends B.PasteReport ? PasteReport : SettingsPatch>;
 
 /** The unit commands answer `null` on the wire; the interface says `void`. */
 const unit = (call: Promise<null>): Promise<void> => call.then(() => undefined);
@@ -270,11 +272,8 @@ export const tauriApi: Api = {
   updateSettings: (photoId, patch) => commands.updateSettings(photoId, patch),
   applyLook: (scope, lookId, intensity) => unit(commands.applyLook(scope, lookId, intensity)),
   rerunAuto: (photoId) => commands.rerunAuto(photoId),
-  copySettings: async (photoId) => narrowed(await commands.copySettings(photoId)),
-  pasteSettings: async (photoIds, patch) => {
-    const report = await commands.pasteSettings(photoIds, patch);
-    return { ...report, pasted: report.pasted.map((p) => ({ id: p.id, before: narrowed(p.before), after: narrowed(p.after) })) };
-  },
+  copySettings: (photoId) => narrowed(commands.copySettings(photoId)),
+  pasteSettings: (photoIds, patch) => narrowed(commands.pasteSettings(photoIds, patch)),
   setMenuState: (state) => unit(commands.setMenuState(state)),
   histogram: (photoId) => commands.histogram(photoId),
 
