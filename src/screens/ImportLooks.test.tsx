@@ -1,7 +1,7 @@
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { MockOptions } from "../api.mock";
-import { FAILURE_ZIPS, PACKAGE_ZIPS } from "../api.mock";
+import { FAILURE_ZIPS, LOOK_FILE_ZIPS, PACKAGE_ZIPS } from "../api.mock";
 import { openPhotos, renderApp } from "../test/harness";
 import type { Harness } from "../test/harness";
 
@@ -237,13 +237,63 @@ describe("step 3 · Recognise", () => {
     expect(screen.getByText("Look Library · LogC4 is missing. Go back and add it.")).toBeInTheDocument();
   });
 
-  it("explains an ALF4-only zip in the words of docs/08", async () => {
+  it("explains a damaged look file in plain words", async () => {
     await wizard();
-    await toRecognise(FAILURE_ZIPS.alf4Only);
+    await toRecognise(FAILURE_ZIPS.damagedLookFile);
     const row = screen.getAllByRole("row")[1] as HTMLElement;
     expect(within(row).getByText("Can't use")).toBeInTheDocument();
-    expect(row).toHaveTextContent("These are ARRI look files for the camera (.alf4). Yellowmoon needs the 3D-LUT version: download 'Look Library for LogC4 (3D-LUTs)' from ARRI's look page.");
+    expect(row).toHaveTextContent("Damaged_Look.alf4 cannot be used. Its checksum does not match, so the file is damaged. Download it again.");
     expect(next()).toHaveAttribute("aria-disabled", "true");
+  });
+
+  it("takes ARRI's Look Files version of the chosen library as the library: Match, with the look files counted", async () => {
+    await wizard();
+    await toRecognise(LOOK_FILE_ZIPS.alf4Library);
+    const row = screen.getAllByRole("row")[1] as HTMLElement;
+    expect(within(row).getByText("Match")).toBeInTheDocument();
+    expect(row).toHaveTextContent("Look Library · LogC4 · log to log");
+    expect(row).toHaveTextContent("87 .alf4 · 33-point");
+    expect(screen.getByRole("heading", { level: 1, name: "Found it" })).toBeInTheDocument();
+    expect(next()).not.toHaveAttribute("aria-disabled");
+    // Imported as the library: 87 looks, the ids of the 3D-LUT version.
+    await h!.user.click(next());
+    await screen.findByRole("heading", { level: 1, name: "Imported" }, { timeout: 10_000 });
+    expect(screen.getByText("of 87 files")).toBeInTheDocument();
+    // The copy says what is copied: look files, not .cube files.
+    expect(screen.getByText("Only the look files, into the app's looks folder")).toBeInTheDocument();
+    expect(screen.queryByText(/Only the \.cube files/)).toBeNull();
+    expect((await h!.api.looksList()).filter((l) => l.group.kind === "arri")).toHaveLength(87);
+  });
+
+  it("reads a person's own look files without a question: Ready, with the input they say", async () => {
+    await wizard();
+    await toRecognise(FAILURE_ZIPS.ownLookFolder);
+    const row = screen.getAllByRole("row")[1] as HTMLElement;
+    expect(within(row).getByText("Ready")).toBeInTheDocument();
+    expect(row).toHaveTextContent("ARRI Look Files · LogC4");
+    expect(row).toHaveTextContent("3 .alf4 · 33-point");
+    expect(within(row).queryByRole("radiogroup")).toBeNull();
+    expect(row).toHaveTextContent("Counts as Look Library · LogC4. Imported as your own looks, with the input read from each file.");
+    expect(screen.getByText("1 package matches what you chose")).toBeInTheDocument();
+    expect(screen.queryByText("Say what the other LUTs expect as input.")).toBeNull();
+    expect(next()).not.toHaveAttribute("aria-disabled");
+    await h!.user.click(next());
+    await screen.findByRole("heading", { level: 1, name: "Imported" }, { timeout: 10_000 });
+    expect(screen.getByText("Only the look files, into the app's looks folder")).toBeInTheDocument();
+    const mine = (await h!.api.looksList()).filter((l) => l.group.kind === "user");
+    expect(mine).toHaveLength(3);
+    expect(mine.every((l) => l.input === "logc4")).toBe(true);
+  });
+
+  it("says an .alf4c's display transforms are not used, and one look file chosen by itself does not stand in for a package", async () => {
+    await wizard();
+    await toRecognise(FAILURE_ZIPS.ownAlf4c);
+    const row = screen.getAllByRole("row")[1] as HTMLElement;
+    expect(row).toHaveTextContent("Custom_Look.alf4c: its own display transforms are not used; Yellowmoon's display rendering is.");
+    expect(row).not.toHaveTextContent("Counts as");
+    // It can be imported, and the chosen package is said not to be here.
+    expect(screen.getByText("Look Library · LogC4 isn't here. You can import the rest now and add it later.")).toBeInTheDocument();
+    expect(next()).not.toHaveAttribute("aria-disabled");
   });
 
   it("explains a package with files missing", async () => {

@@ -839,3 +839,86 @@ fn the_real_packages_import_into_a_library_and_render() {
     );
     assert!(library.verify(&mut no_progress()).unwrap().is_clean());
 }
+
+/// The nine files that ARRI's look-builder wrote from our own synthetic cubes (`YM_ALF_SAMPLES`,
+/// see `crates/ym-color/tests/alf_samples.rs`) through the importer: seven are looks, two are
+/// refused in plain words (an `.alf4c` with no creative look, an `.aml` made for Rec.2020 PQ).
+#[test]
+#[ignore = "needs look files written by ART CMD: set YM_ALF_SAMPLES (see crates/ym-color/tests/alf_samples.rs)"]
+fn the_look_builder_files_import_as_looks_or_are_refused_in_plain_words() {
+    let Some(dir) = std::env::var_os("YM_ALF_SAMPLES").map(PathBuf::from) else {
+        eprintln!("YM_ALF_SAMPLES is not set: nothing to check");
+        return;
+    };
+    let folder = dir.join("out");
+    let db = shipped_db();
+    let work = tempfile::tempdir().unwrap();
+    let mut library = open_library(&work.path().join("app"));
+    let (r, report) = import_path(
+        &mut library,
+        &db,
+        &folder,
+        &ImportOptions::default(),
+        &mut no_progress(),
+    )
+    .unwrap();
+    assert_eq!(r.verdict(), Verdict::Ready, "{:?}", r.issues);
+    assert_eq!(report.added.len(), 7, "{report:?}");
+    assert_eq!(report.rejected.len(), 2, "{:?}", report.rejected);
+    for rejected in &report.rejected {
+        eprintln!("refused: {}: {}", rejected.name, rejected.reason);
+    }
+    let reason_of = |name: &str| {
+        report
+            .rejected
+            .iter()
+            .find(|f| f.name == name)
+            .map(|f| f.reason.clone())
+            .unwrap_or_else(|| panic!("{name} was not refused"))
+    };
+    assert!(reason_of("alf4c_nocmt.alf4c").contains("no creative look (CMT)"));
+    assert_eq!(
+        reason_of("aml_2020pq_17.aml"),
+        "It is made for a Rec.2020 PQ display. Yellowmoon can use ARRI Look Files made for Rec.709."
+    );
+    // Each look renders, with the input its file says.
+    for item in &report.added {
+        let look = library.get(&item.id).unwrap();
+        let transform = library.transform(&item.id).unwrap();
+        let expected = if item.file.ends_with(".aml") {
+            LookInput::LogC3ToRec709
+        } else {
+            LookInput::LogC4
+        };
+        assert_eq!(look.input, expected, "{}", item.file);
+        assert_eq!(transform.input(), expected);
+        eprintln!(
+            "imported {} as {} ({}-point)",
+            item.file,
+            item.id,
+            look.lut.as_ref().unwrap().lut_size
+        );
+    }
+    // The .alf4c's creative look is its 17-point CMT, not a display transform.
+    let alf4c = report
+        .added
+        .iter()
+        .find(|i| i.file.ends_with("alf4c_cmt17_sdr33_hdr65.alf4c"))
+        .unwrap();
+    assert_eq!(
+        library
+            .get(&alf4c.id)
+            .unwrap()
+            .lut
+            .as_ref()
+            .unwrap()
+            .lut_size,
+        17
+    );
+    assert!(
+        r.issues
+            .iter()
+            .any(|i| { i.kind == ym_looks::recognize::IssueKind::DisplayTransformsIgnored })
+    );
+    assert!(library.verify(&mut no_progress()).unwrap().is_clean());
+}

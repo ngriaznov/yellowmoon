@@ -4,8 +4,9 @@ import { dropFiles, openApp, openPhotos, recordCalls, showUpdateReady, watchErro
 import { compareScreen, isCopyOfDesign } from "./helpers/compare";
 
 // The ARRI import wizard (M3-09) in a real browser against the mocked API: the happy path through the five steps, the failure
-// paths with synthetic packages (a wrong package, an ALF4-only zip, a missing file), the Downloads watcher, the generic .cube
-// question, and screenshot comparisons against design/screenshots/import-*.png.
+// paths with synthetic packages (a wrong package, a damaged look file, a missing file), ARRI Look Files (a library as look
+// files, a person's own), the Downloads watcher, the generic .cube question, and screenshot comparisons against
+// design/screenshots/import-*.png.
 
 const STATES = ["import-1-choose", "import-2-get-files", "import-3-recognise", "import-4-importing", "import-4-imported", "import-5-finish"];
 
@@ -16,7 +17,9 @@ test("the baselines are byte-for-byte copies of design/screenshots", () => {
 const LL4 = "ARRI_LookLibrary_LogC4.zip";
 const DL4 = "ARRI_DisplayLUTs_LogC4.zip";
 const LL3 = "ARRI_LookLibrary_LogC3.zip";
-const ALF4 = "ARRI_LookFiles_ALF4.zip";
+const ALF4_LIBRARY = "arri-look-library-logc4-log-to-log-alf4-data.zip";
+const DAMAGED = "Damaged_Look.alf4";
+const OWN_LOOKS = "My_Looks";
 
 /** From Start, with no ARRI looks imported, into the wizard. */
 async function wizard(page: Page, options: Record<string, string | number> = {}): Promise<void> {
@@ -147,10 +150,10 @@ test.describe("failure paths", () => {
     await expect(page.getByText("Match", { exact: true })).toBeVisible();
   });
 
-  test("an ALF4-only zip: the explanation of docs/08", async ({ page }) => {
+  test("a damaged look file: it says what is wrong and what to do", async ({ page }) => {
     await wizard(page);
-    await toRecognise(page, ALF4);
-    await expect(page.getByText("These are ARRI look files for the camera (.alf4). Yellowmoon needs the 3D-LUT version: download 'Look Library for LogC4 (3D-LUTs)' from ARRI's look page.")).toBeVisible();
+    await toRecognise(page, DAMAGED);
+    await expect(page.getByText("Damaged_Look.alf4 cannot be used. Its checksum does not match, so the file is damaged. Download it again.")).toBeVisible();
     await expect(page.getByText("Can't use", { exact: true })).toBeVisible();
     await expect(next(page)).toHaveAttribute("aria-disabled", "true");
   });
@@ -182,6 +185,46 @@ test.describe("failure paths", () => {
     await expect(page.getByRole("alert").filter({ hasText: "The looks folder can't be written to." })).toBeVisible();
     await page.getByRole("button", { name: "Try again" }).click();
     await expect(page.getByRole("heading", { level: 1, name: "Imported" })).toBeVisible({ timeout: 10_000 });
+  });
+});
+
+test.describe("ARRI Look Files", () => {
+  test("the look-file version of the chosen library is the library", async ({ page }) => {
+    await wizard(page);
+    await toRecognise(page, ALF4_LIBRARY);
+    await expect(page.getByRole("heading", { level: 1, name: "Found it" })).toBeVisible();
+    await expect(page.getByText("Match", { exact: true })).toBeVisible();
+    await expect(page.getByText("87 .alf4 · 33-point")).toBeVisible();
+    await next(page).click();
+    await expect(page.getByRole("heading", { level: 1, name: "Imported" })).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByText("Only the look files, into the app's looks folder")).toBeVisible();
+  });
+
+  test("a person's own look files need no question, and are imported with the input the files say", async ({ page }) => {
+    await wizard(page);
+    await toRecognise(page, OWN_LOOKS);
+    await expect(page.getByText("Ready", { exact: true })).toBeVisible();
+    await expect(page.getByText("3 .alf4 · 33-point")).toBeVisible();
+    await expect(page.getByText("What does this LUT expect as input?")).toHaveCount(0);
+    await expect(next(page)).not.toHaveAttribute("aria-disabled", "true");
+    await next(page).click();
+    await expect(page.getByRole("heading", { level: 1, name: "Imported" })).toBeVisible({ timeout: 10_000 });
+    const mine = await page.evaluate(async () => (await window.__yellowmoon!.mockApi.looksList()).filter((l) => l.group.kind === "user"));
+    expect(mine).toHaveLength(3);
+    expect(mine.every((l) => l.input === "logc4")).toBe(true);
+  });
+
+  test("Looks › Import .cube… takes a look file without a question", async ({ page }) => {
+    await openApp(page, { mockCurrent: 3 });
+    await openPhotos(page);
+    await page.evaluate(() => window.__yellowmoon!.mockApi.queueChoice("files", ["~/Looks/Warm_Pull.alf4"]));
+    await page.getByRole("button", { name: "Import .cube…" }).click();
+    const dialog = page.getByRole("dialog", { name: "Import LUTs" });
+    await expect(dialog).toBeVisible();
+    await expect(dialog.getByRole("radiogroup")).toHaveCount(0);
+    await expect(dialog.getByText("Imported as your own looks, with the input read from each file.", { exact: false })).toBeVisible();
+    await dialog.getByRole("button", { name: "Import" }).click();
+    await expect(page.getByText("1 LUT added to Your LUTs.")).toBeVisible();
   });
 });
 

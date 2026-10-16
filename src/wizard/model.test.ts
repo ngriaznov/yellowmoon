@@ -3,6 +3,8 @@ import type { LookInput, PackageId, SourceRecognition } from "../api/types";
 import {
   anyChecking,
   canAdvance,
+  copiesLookFiles,
+  downloadList,
   downloadTotalMb,
   footNote,
   heading,
@@ -59,6 +61,22 @@ const unknownSet = (path: string, suggestion: LookInput | null = "logc4", source
   recognition: { kind: "needs_answer", file_count: 87, lut_size: 65, suggestion, note: "87 files are not from an ARRI package we know. Say what they expect as input: LogC4, LogC3, or LogC3 with Rec.709 baked in." },
 });
 
+/** ARRI Look Files of the person's own: `input` is what they all expect (null when they differ). */
+const lookFiles = (path: string, source: "zip" | "folder" | "file" = "folder", input: LookInput | null = "logc4", files = 3): SourceRecognition => ({
+  path,
+  name: path.split("/").pop() ?? path,
+  source,
+  size_bytes: null,
+  recognition: {
+    kind: "look_files",
+    what: input === "logc4" ? "ARRI Look Files · LogC4" : input === "logc3_to_rec709" ? "ARRI Look Files · LogC3 to Rec.709" : "ARRI Look Files",
+    contents: `${files} .alf4 · 33-point`,
+    file_count: files,
+    input,
+    note: "Imported as your own looks, with the input read from each file.",
+  },
+});
+
 /** A wizard that has got to `step` with the sources recognised as given. */
 function at(step: number, found: SourceRecognition[], chosen?: PackageId[]): WizardState {
   let state = initialWizard();
@@ -68,6 +86,61 @@ function at(step: number, found: SourceRecognition[], chosen?: PackageId[]): Wiz
 }
 
 const LL4 = "~/Downloads/ARRI_LookLibrary_LogC4.zip";
+
+describe("ARRI Look Files", () => {
+  it("are the person's own looks: no question, they go in the plan with what they say", () => {
+    const state = at(2, [lookFiles("~/Looks/Mine", "folder", "logc4", 3)], ["look_library_logc4"]);
+    const v = verdictFor(state, state.sources[0]!);
+    expect(v).toMatchObject({ kind: "look-files", what: "ARRI Look Files · LogC4", contents: "3 .alf4 · 33-point", fileCount: 3, input: "logc4" });
+    expect(recogniseBlocker(state)).toBeNull();
+    expect(canAdvance(state)).toBe(true);
+    expect(importPlan(state)).toEqual([{ path: "~/Looks/Mine", files: 3, kind: "look-files" }]);
+    expect(copiesLookFiles(state)).toBe(true);
+  });
+
+  it("from a zip or folder stand in for the chosen looks package with the same input, so it is not missing", () => {
+    const state = at(2, [lookFiles("~/Looks/Mine", "folder", "logc4")], ["look_library_logc4"]);
+    expect(standsInFor(state, state.sources[0]!)?.id).toBe("look_library_logc4");
+    expect(verdictFor(state, state.sources[0]!)).toMatchObject({ standsFor: "Look Library · LogC4" });
+    expect(matchedPackages(state)).toEqual(["look_library_logc4"]);
+    expect(unmatchedPackages(state)).toEqual([]);
+    expect(recogniseNote(state)).toBeNull();
+    // Another input is another package: the chosen one is still missing, and the files are imported all the same.
+    const other = at(2, [lookFiles("~/Looks/Night", "folder", "logc3_to_rec709")], ["look_library_logc4"]);
+    expect(standsInFor(other, other.sources[0]!)).toBeNull();
+    expect(recogniseBlocker(other)).toBeNull();
+    expect(recogniseNote(other)).toBe("Look Library · LogC4 isn't here. You can import the rest now and add it later.");
+    // Files that expect different things claim nothing; one file chosen by itself never stands in for a package.
+    const mixed = at(2, [lookFiles("~/Looks/Mix", "folder", null)], ["look_library_logc4"]);
+    expect(standsInFor(mixed, mixed.sources[0]!)).toBeNull();
+    const single = at(2, [lookFiles("~/Looks/Mine.alf4", "file", "logc4", 1)], ["look_library_logc4"]);
+    expect(standsInFor(single, single.sources[0]!)).toBeNull();
+    expect(importPlan(single)).toHaveLength(1);
+  });
+
+  it("and the look-file version of a library: the copy says look files, the plan is the package", () => {
+    const alf4 = pkg("~/Downloads/arri-look-library-logc4-log-to-log-alf4-data.zip", "look_library_logc4");
+    if (alf4.recognition.kind === "package") alf4.recognition.contents = "87 .alf4 · 33-point";
+    const state = at(2, [alf4]);
+    expect(verdictFor(state, state.sources[0]!)).toMatchObject({ kind: "match", packageId: "look_library_logc4", contents: "87 .alf4 · 33-point" });
+    expect(importPlan(state)).toEqual([{ path: alf4.path, files: 87, kind: "package", packageId: "look_library_logc4" }]);
+    expect(copiesLookFiles(state)).toBe(true);
+    // The 3D-LUT version copies .cube files, as the mockup says.
+    expect(copiesLookFiles(at(2, [pkg(LL4, "look_library_logc4")]))).toBe(false);
+    // Nothing planned, nothing copied.
+    expect(copiesLookFiles(at(2, [unusable("~/Downloads/x.alf4", "x")]))).toBe(false);
+  });
+
+  it("are named with ARRI's two titles when a library is the wrong package", () => {
+    const [ll4] = PACKAGES.filter((p) => p.id === "look_library_logc4");
+    const [dl4] = PACKAGES.filter((p) => p.id === "display_luts_logc4");
+    expect(downloadList([ll4!])).toBe("'Look Library for LogC4 (3D-LUTs)' (or 'Look Library for LogC4 (ALF4 Look Files)')");
+    expect(downloadList([dl4!])).toBe("'LogC4 LUT Package'");
+    expect(downloadList([ll4!, dl4!])).toBe("'Look Library for LogC4 (3D-LUTs)' (or 'Look Library for LogC4 (ALF4 Look Files)') and 'LogC4 LUT Package'");
+    // Only the two look libraries that ARRI also publishes as look files name both.
+    expect(PACKAGES.filter((p) => p.lookFilesTitle).map((p) => p.id)).toEqual(["look_library_logc4", "look_library_logc3_to_rec709"]);
+  });
+});
 
 describe("Choose", () => {
   it("starts with the recommended package ticked and the older ones hidden", () => {
@@ -199,16 +272,16 @@ describe("Recognise", () => {
     const v = verdictFor(state, state.sources[0]!);
     expect(v).toMatchObject({ kind: "other-package", packageId: "look_library_logc3" });
     expect(v.kind === "other-package" && v.explanation).toBe(
-      "This is Look Library · LogC3, not Look Library · LogC4, which you chose. Download 'Look Library for LogC4 (3D-LUTs)' from ARRI's page, or go back and choose this one.",
+      "This is Look Library · LogC3, not Look Library · LogC4, which you chose. Download 'Look Library for LogC4 (3D-LUTs)' (or 'Look Library for LogC4 (ALF4 Look Files)') from ARRI's page, or go back and choose this one.",
     );
     expect(canAdvance(state)).toBe(false);
     expect(recogniseBlocker(state)).toBe("Look Library · LogC4 is missing. Go back and add it.");
     expect(heading(state)).toBe("Check what arrived");
   });
 
-  it("explains an ALF4-only zip in the words of docs/08", () => {
-    const reason = "These are ARRI look files for the camera (.alf4). Yellowmoon needs the 3D-LUT version: download 'Look Library for LogC4 (3D-LUTs)' from ARRI's look page.";
-    const state = at(2, [unusable("~/Downloads/ARRI_LookFiles_ALF4.zip", reason)]);
+  it("explains a damaged look file in plain words", () => {
+    const reason = "Damaged_Look.alf4 cannot be used. Its checksum does not match, so the file is damaged. Download it again.";
+    const state = at(2, [unusable("~/Downloads/Damaged_Look.alf4", reason)]);
     expect(verdictFor(state, state.sources[0]!)).toEqual({ kind: "unusable", explanation: reason });
     expect(canAdvance(state)).toBe(false);
   });

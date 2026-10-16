@@ -1,7 +1,7 @@
 // The mock's side of the ARRI wizard, the export extras and Preferences: synthetic packages, recognition, the simulated
 // import, the Downloads watcher, the system commands, display LUTs, the estimate's extra fields and the preferences store.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createMockApi, FAILURE_ZIPS, PACKAGE_FACTS, PACKAGE_ZIPS } from "./api.mock";
+import { createMockApi, FAILURE_ZIPS, LOOK_FILE_ZIPS, PACKAGE_FACTS, PACKAGE_ZIPS } from "./api.mock";
 import type { MockApi } from "./api.mock";
 import type { AppError, DownloadFound, ExportJob, ExportOptions, ExportProgress, LooksImportProgress } from "./api/types";
 
@@ -68,13 +68,41 @@ describe("recognising synthetic packages", () => {
     expect(await api.looksRecognise("~/Downloads/ARRI_LookLibrary_LogC4")).toMatchObject({ source: "folder", recognition: { kind: "package", package_id: "look_library_logc4" } });
   });
 
-  it("explains an ALF4-only zip in the words of docs/08", async () => {
-    const found = await api.looksRecognise(downloads(FAILURE_ZIPS.alf4Only));
+  it("explains a damaged look file in plain words", async () => {
+    const found = await api.looksRecognise(downloads(FAILURE_ZIPS.damagedLookFile));
+    expect(found).toMatchObject({ source: "file" });
     expect(found.recognition).toEqual({
       kind: "unusable",
       package_id: null,
-      reason: "These are ARRI look files for the camera (.alf4). Yellowmoon needs the 3D-LUT version: download 'Look Library for LogC4 (3D-LUTs)' from ARRI's look page.",
+      reason: "Damaged_Look.alf4 cannot be used. Its checksum does not match, so the file is damaged. Download it again.",
     });
+  });
+
+  it("knows ARRI's look-file downloads as the looks of their package", async () => {
+    const alf4 = await api.looksRecognise(downloads(LOOK_FILE_ZIPS.alf4Library));
+    expect(alf4).toMatchObject({
+      source: "zip",
+      recognition: { kind: "package", package_id: "look_library_logc4", title: "Look Library · LogC4", contents: "87 .alf4 · 33-point", file_count: 87 },
+    });
+    const aml = await api.looksRecognise(downloads(LOOK_FILE_ZIPS.amlLibrary));
+    expect(aml).toMatchObject({
+      recognition: { kind: "package", package_id: "look_library_logc3_to_rec709", title: "Look Library · LogC3 to Rec.709", contents: "261 .aml · 33-point", file_count: 261 },
+    });
+  });
+
+  it("reads a person's own look files without a question: each says what it expects", async () => {
+    expect(await api.looksRecognise(downloads(FAILURE_ZIPS.ownAlf4))).toMatchObject({
+      source: "file",
+      recognition: { kind: "look_files", what: "ARRI Look Files · LogC4", contents: "1 .alf4 · 33-point", file_count: 1, input: "logc4" },
+    });
+    expect(await api.looksRecognise(downloads(FAILURE_ZIPS.ownLookFolder))).toMatchObject({
+      source: "folder",
+      recognition: { kind: "look_files", file_count: 3, input: "logc4" },
+    });
+    const alf4c = (await api.looksRecognise(downloads(FAILURE_ZIPS.ownAlf4c))).recognition;
+    expect(alf4c.kind === "look_files" && alf4c.note).toContain("its own display transforms are not used");
+    // A name the mock does not know, with a look file's extension, is a missing file, not a question.
+    expect((await api.looksRecognise(downloads("Gone.aml"))).recognition.kind).toBe("missing");
   });
 
   it("explains an incomplete package and a zip with no LUTs", async () => {
@@ -82,7 +110,7 @@ describe("recognising synthetic packages", () => {
     expect(incomplete).toMatchObject({ kind: "unusable", package_id: "look_library_logc4" });
     expect(incomplete.kind === "unusable" && incomplete.reason).toContain("should have 87 files, but this zip has 79");
     const none = (await api.looksRecognise(downloads(FAILURE_ZIPS.noLuts))).recognition;
-    expect(none.kind === "unusable" && none.reason).toContain("no .cube files");
+    expect(none.kind === "unusable" && none.reason).toContain("no .cube, .alf4, .alf4c or .aml files");
   });
 
   it("asks the generic question for ARRI cubes of another camera and for a loose .cube", async () => {
@@ -168,12 +196,26 @@ describe("importing", () => {
   });
 
   it("refuses what cannot be imported, with the explanation", async () => {
-    const alf = await rejection(api.looksImport(downloads(FAILURE_ZIPS.alf4Only)));
-    expect(alf).toEqual({ scope: "looks", message: "These are ARRI look files for the camera (.alf4). Yellowmoon needs the 3D-LUT version: download 'Look Library for LogC4 (3D-LUTs)' from ARRI's look page." });
+    const alf = await rejection(api.looksImport(downloads(FAILURE_ZIPS.damagedLookFile)));
+    expect(alf).toEqual({ scope: "looks", message: "Damaged_Look.alf4 cannot be used. Its checksum does not match, so the file is damaged. Download it again." });
     const gone = await rejection(api.looksImport(downloads("gone.zip")));
     expect(gone.message).toBe("That file is not there any more. Download it again, or choose it again.");
     const unanswered = await rejection(api.looksImport(downloads(FAILURE_ZIPS.ownCube)));
     expect(unanswered.message).toContain("Say what the LUT expects as input");
+  });
+
+  it("adds a person's own look file to Your LUTs with the input the file says, without being asked", async () => {
+    api.reset({ looksImported: false });
+    const importing = api.looksImport(downloads(FAILURE_ZIPS.ownAlf4));
+    await vi.advanceTimersByTimeAsync(4000);
+    const result = await importing;
+    expect(result.added).toHaveLength(1);
+    expect(result.added[0]).toMatchObject({ id: "user:warm-pull", name: "Warm Pull", group: { kind: "user" }, input: "logc4" });
+    // The answer to the generic question does not change what a look file says.
+    const again = api.looksImport(downloads(FAILURE_ZIPS.ownAlf4), "logc3_ei800");
+    await vi.advanceTimersByTimeAsync(4000);
+    expect((await again).added).toEqual([]);
+    expect((await api.looksList()).find((l) => l.id === "user:warm-pull")?.input).toBe("logc4");
   });
 
   it("adds a loose .cube to Your LUTs under the name of the file", async () => {

@@ -388,14 +388,28 @@ describe("Import .cube…", () => {
   });
 
   it("imports an ARRI package without asking, and lists a file that can't be used with the reason", async () => {
-    const dialog = await chooseCube(PACKAGE_ZIPS.display_luts_logc4, FAILURE_ZIPS.alf4Only);
+    const dialog = await chooseCube(PACKAGE_ZIPS.display_luts_logc4, FAILURE_ZIPS.damagedLookFile);
     expect(within(dialog).getByText(/Display LUTs · LogC4 · 22 \.cube\. It is imported as it comes\./)).toBeInTheDocument();
-    expect(within(dialog).getByText("These are ARRI look files for the camera (.alf4). Yellowmoon needs the 3D-LUT version: download 'Look Library for LogC4 (3D-LUTs)' from ARRI's look page.")).toBeInTheDocument();
+    expect(within(dialog).getByText("Damaged_Look.alf4 cannot be used. Its checksum does not match, so the file is damaged. Download it again.")).toBeInTheDocument();
     expect(within(dialog).queryByRole("radiogroup")).toBeNull();
     await h!.user.click(within(dialog).getByRole("button", { name: "Import" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull(), { timeout: 8000 });
     expect(await h!.api.looksDisplayLuts()).toHaveLength(22);
   }, 20_000);
+
+  it("takes an ARRI Look File without a question: it says what it expects", async () => {
+    const dialog = await chooseCube(FAILURE_ZIPS.ownAlf4c);
+    expect(within(dialog).getByText("Ready")).toBeInTheDocument();
+    expect(within(dialog).getByText(/ARRI Look Files · LogC4 · 1 \.alf4c · 33-point\. Imported as your own looks, with the input read from each file\./)).toBeInTheDocument();
+    expect(within(dialog).getByText(/its own display transforms are not used/)).toBeInTheDocument();
+    expect(within(dialog).queryByRole("radiogroup")).toBeNull();
+    const importButton = within(dialog).getByRole("button", { name: "Import" });
+    expect(importButton).toHaveFocus();
+    await h!.user.click(importButton);
+    expect(await screen.findByText("1 LUT added to Your LUTs.")).toBeInTheDocument();
+    const mine = (await h!.api.looksList()).find((l) => l.id === "user:custom-look");
+    expect(mine).toMatchObject({ name: "Custom Look", input: "logc4", group: { kind: "user" } });
+  });
 
   it("changes nothing when the chooser is cancelled, or the dialog is", async () => {
     await start({ looksImported: false });
