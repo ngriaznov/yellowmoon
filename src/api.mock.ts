@@ -1864,8 +1864,9 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
       run("histogram", (): HistogramData => {
         const rec = photo(photoId);
         const { values } = resolveSettings(photoId, rec.settings, MOCK_ESTIMATES);
-        // Exposure moves the plot along the tonal scale; the camera-log view is flatter and lower.
-        const shift = (values.exposure_ev - MOCK_ESTIMATES.exposure_ev) * 0.06 + (viewport.before ? -0.05 : 0);
+        // Exposure moves the plot along the tonal scale. Before does not: the core's histogram is always that of the
+        // finished picture (docs/02).
+        const shift = (values.exposure_ev - MOCK_ESTIMATES.exposure_ev) * 0.06;
         return sceneHistogram(developed(rec), shift);
       }),
 

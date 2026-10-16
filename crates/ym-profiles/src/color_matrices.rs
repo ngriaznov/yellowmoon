@@ -244,8 +244,39 @@ mod tests {
     }
 
     #[test]
+    fn a_file_finds_its_own_body_by_the_id_the_camera_writes() {
+        // The A7, A7R and A6000 have neighbouring IDs (306, 311, 312) that the first draft mixed up, and
+        // the model string must not matter once the file has an ID.
+        let t = ColorMatrices::shipped();
+        for (id, model) in [(306, "ILCE-7"), (311, "ILCE-7R"), (312, "ILCE-6000")] {
+            let l = t.lookup("SONY", model, Some(id));
+            assert_eq!(
+                (l.body.model.as_str(), l.how),
+                (model, MatrixMatch::ModelId),
+                "ID {id}"
+            );
+            // Another body's string behind the same ID changes nothing.
+            assert_eq!(t.lookup("SONY", "ILCE-7M3", Some(id)).body.model, model);
+        }
+        // The NEX-6 (295), NEX-5T (307), A7S (318) and A6500 (360) are listed, not the fallback.
+        for (id, model) in [
+            (295, "NEX-6"),
+            (307, "NEX-5T"),
+            (318, "ILCE-7S"),
+            (360, "ILCE-6500"),
+        ] {
+            let l = t.lookup("SONY", "", Some(id));
+            assert_eq!(
+                (l.body.model.as_str(), l.how),
+                (model, MatrixMatch::ModelId)
+            );
+        }
+    }
+
+    #[test]
     fn bodies_without_a_real_entry_use_the_fallback() {
-        // These four have no matrix of their own (data/cameras/color-matrices.json, `excluded`).
+        // These four are left out of the table (data/cameras/color-matrices.json, `excluded`): none
+        // published, or the numbers of another body.
         let t = ColorMatrices::shipped();
         for (model, id) in [
             ("ILCE-7M5", Some(407)),

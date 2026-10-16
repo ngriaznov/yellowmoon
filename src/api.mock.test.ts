@@ -1102,6 +1102,17 @@ describe("what the screens need beyond docs/01", () => {
     expect(await api.histogram(4)).toEqual(bright);
   });
 
+  it("keeps the histogram of the finished picture while Before is on", async () => {
+    // The core builds the histogram from the graded picture and never reads the Before state (docs/02).
+    const api = createMockApi({ speed: Number.POSITIVE_INFINITY });
+    await open(api);
+    const after = await api.histogram(4);
+    await api.setBefore(true);
+    expect(await api.histogram(4)).toEqual(after);
+    await api.setBefore(false);
+    expect(await api.histogram(4)).toEqual(after);
+  });
+
   it("resolves a light preset to a kelvin while white balance is Auto, and a manual kelvin wins", async () => {
     const api = createMockApi({ speed: Number.POSITIVE_INFINITY });
     await open(api);

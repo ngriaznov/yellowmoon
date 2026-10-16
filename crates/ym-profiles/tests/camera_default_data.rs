@@ -88,8 +88,10 @@ fn the_matrix_table_agrees_with_the_registry_and_the_exclusions() {
     assert_eq!(
         excluded,
         ["ILCE-7M5", "ILCE-7RM6", "ILCE-1M2", "ILCE-3000"],
-        "the four draft entries that are prefix matches or have no real entry"
+        "the four bodies left out: none published, or the numbers of another body"
     );
+    // ILCE-3000 is the one of the four that the profile registry does not list.
+    assert!(!registry.bodies.iter().any(|b| b.model == "ILCE-3000"));
     for body in &registry.bodies {
         let hit = table.lookup("SONY", &body.model, Some(body.model_id));
         if excluded.contains(&body.model.as_str()) {
@@ -111,6 +113,151 @@ fn the_matrix_table_agrees_with_the_registry_and_the_exclusions() {
     let unknown = table.lookup("SONY", "ILCE-9999", Some(65000));
     assert_eq!(unknown.how, MatrixMatch::Fallback);
     assert_eq!(unknown.body, table.fallback());
+}
+
+/// Every entry of the matrix table as Sony publishes it: (model ID, Model string), in file order, which is
+/// the order of the IDs. The IDs are facts about the cameras (maker-note tag 0xB001), pinned here from an
+/// independent public list (exiftool's SonyModelID table) so that a guessed ID cannot slip in:
+/// `the_matrix_table_agrees_with_the_registry_and_the_exclusions` walks only the 28 registry bodies.
+/// Sony lists no 402 and 403 in that table's older versions; the profile registry (`docs/03`) has them.
+const PUBLISHED_IDS: [(u16, &str); 42] = [
+    (261, "DSLR-A300"),
+    (274, "DSLR-A500"),
+    (288, "NEX-5N"),
+    (289, "NEX-7"),
+    (295, "NEX-6"),
+    (296, "NEX-5R"),
+    (305, "NEX-3N"),
+    (306, "ILCE-7"),
+    (307, "NEX-5T"),
+    (311, "ILCE-7R"),
+    (312, "ILCE-6000"),
+    (313, "ILCE-5000"),
+    (318, "ILCE-7S"),
+    (339, "ILCE-5100"),
+    (340, "ILCE-7M2"),
+    (341, "DSC-RX100M4"),
+    (347, "ILCE-7RM2"),
+    (350, "ILCE-7SM2"),
+    (357, "ILCE-6300"),
+    (358, "ILCE-9"),
+    (360, "ILCE-6500"),
+    (362, "ILCE-7RM3"),
+    (363, "ILCE-7M3"),
+    (371, "ILCE-6400"),
+    (375, "ILCE-7RM4"),
+    (376, "ILCE-9M2"),
+    (378, "ILCE-6600"),
+    (379, "ILCE-6100"),
+    (381, "ILCE-7C"),
+    (383, "ILCE-7SM3"),
+    (384, "ILCE-1"),
+    (385, "ILME-FX3"),
+    (386, "ILCE-7RM3A"),
+    (387, "ILCE-7RM4A"),
+    (388, "ILCE-7M4"),
+    (390, "ILCE-7RM5"),
+    (392, "ILCE-9M3"),
+    (393, "ZV-E1"),
+    (396, "ILCE-7CR"),
+    (397, "ILCE-7CM2"),
+    (402, "ILCE-6400A"),
+    (403, "ILCE-6100A"),
+];
+
+#[test]
+fn every_entry_has_the_model_id_sony_publishes_for_its_body() {
+    let table = ColorMatrices::shipped();
+    let have: Vec<(u16, &str)> = table
+        .bodies()
+        .iter()
+        .map(|b| (b.model_id, b.model.as_str()))
+        .collect();
+    assert_eq!(
+        have,
+        PUBLISHED_IDS.to_vec(),
+        "an entry has an ID that belongs to another body"
+    );
+    for (id, model) in PUBLISHED_IDS {
+        // The file's own ID finds the body, and so does its Model string when the file has no ID.
+        let by_id = table.lookup("SONY", model, Some(id));
+        assert_eq!(by_id.how, MatrixMatch::ModelId, "{model} ({id})");
+        assert_eq!(by_id.body.model, model, "ID {id}");
+        let by_model = table.lookup("SONY", model, None);
+        assert_eq!(by_model.how, MatrixMatch::ModelString, "{model}");
+        assert_eq!(by_model.body.model_id, id, "{model}");
+    }
+    // The first draft guessed these IDs. 291 is the SLT-A37 and 300 the NEX-VG30E; 315 and 368 are
+    // nobody's. A real file with one of them must not find an entry.
+    for id in [291, 300, 315, 368] {
+        let l = table.lookup("SONY", "ILCE-7", Some(id));
+        assert_eq!(l.how, MatrixMatch::Fallback, "ID {id}");
+        assert_eq!(l.body.model, "ILCE-7RM4", "ID {id}");
+    }
+    // The IDs those guesses were meant for find their own bodies, not the A7R IV's.
+    for (id, model) in [
+        (295, "NEX-6"),
+        (307, "NEX-5T"),
+        (318, "ILCE-7S"),
+        (360, "ILCE-6500"),
+    ] {
+        let l = table.lookup("SONY", model, Some(id));
+        assert_eq!(
+            (l.how, l.body.model.as_str()),
+            (MatrixMatch::ModelId, model)
+        );
+    }
+}
+
+#[test]
+fn the_matrices_of_the_bodies_once_keyed_by_a_neighbouring_id_are_their_own() {
+    // The numbers belong to the ID the camera writes, so when the draft's IDs were wrong the numbers
+    // sat under the wrong names: the ILCE-7's under ILCE-6000, the ILCE-7R's under ILCE-7, the
+    // ILCE-6000's under ILCE-7R and the SLT-A37's under NEX-6. Pinned here, rounded as published.
+    let table = ColorMatrices::shipped();
+    let pinned: [(u16, [[f64; 3]; 3]); 4] = [
+        (
+            295, // NEX-6
+            [
+                [0.6129, -0.1545, -0.0418],
+                [-0.493, 1.249, 0.2743],
+                [-0.0977, 0.1693, 0.6615],
+            ],
+        ),
+        (
+            306, // ILCE-7
+            [
+                [0.5271, -0.0712, -0.0347],
+                [-0.6153, 1.3653, 0.2763],
+                [-0.1601, 0.2366, 0.7242],
+            ],
+        ),
+        (
+            311, // ILCE-7R
+            [
+                [0.4913, -0.0541, -0.0202],
+                [-0.613, 1.3513, 0.2906],
+                [-0.1564, 0.2151, 0.7183],
+            ],
+        ),
+        (
+            312, // ILCE-6000
+            [
+                [0.5991, -0.1456, -0.0455],
+                [-0.4764, 1.2135, 0.298],
+                [-0.0707, 0.1425, 0.6701],
+            ],
+        ),
+    ];
+    for (id, want) in pinned {
+        let body = table.lookup("SONY", "", Some(id));
+        assert_eq!(body.how, MatrixMatch::ModelId, "ID {id}");
+        assert_eq!(
+            body.body.xyz_d65_to_camera, want,
+            "{} ({id})",
+            body.body.model
+        );
+    }
 }
 
 #[test]

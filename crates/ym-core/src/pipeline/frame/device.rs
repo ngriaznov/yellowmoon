@@ -462,7 +462,7 @@ pub(super) struct PlainJob {
     pub input: DeviceInput,
     /// The colour chain.
     pub chain: Arc<ColorChain>,
-    /// The Before view (the LogC4 signal at the chain's reading point) instead of the picture.
+    /// The Before view (the camera default rendering) instead of the picture.
     pub before: bool,
     /// The paper colour.
     pub background: [u8; 3],

@@ -76,7 +76,7 @@ export function flatScene(scene: Scene): Scene {
 
 /**
  * The Before picture of the design mockups: the scene flattened towards grey like a camera-log signal, which is what Before
- * showed until 0.1.4 (`docs/11`). Only the replica of the mockup draws it, so that it keeps matching `design/mockups`, which
+ * showed up to 0.1.3 (`docs/11`). Only the replica of the mockup draws it, so that it keeps matching `design/mockups`, which
  * were not changed when Before became the camera default.
  */
 export function logScene(scene: Scene): Scene {

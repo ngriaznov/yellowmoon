@@ -5,6 +5,7 @@ import { mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync, writeFileSync, r
 import { get } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { listen, serveFrontend } from "../../e2e/real/host.mjs";
 import { ALL_STATES, UsageError, chooseStates, cssColours, findPhotos, findTools, formatSize, halve, licenceProblem, parseArgs, parsePick, planDrop, pngSize, realPlace, scaleRects, shrinkPng, shrinkShot, spread, topColours } from "./lib.mjs";
@@ -354,4 +355,20 @@ it("links a photo the way the runner does", () => {
   mkdirSync(folder, { recursive: true });
   symlinkSync(target, join(folder, "real.ARW"));
   expect(findPhotos([folder]).map((f) => f.split("/").pop())).toEqual(["real.ARW"]);
+});
+
+describe("the driver's Before label", () => {
+  // The driver tells Before mode from the words the photo cell draws. When the label changes (0.1.4: "camera log" became "camera default")
+  // and the driver does not, its two checks go quiet: a run that ends with Before on is photographed without a word.
+  const here = (path) => fileURLToPath(new URL(path, import.meta.url));
+
+  it("looks for the label the photo cell draws", () => {
+    const label = /beforeLabel = "([^"]+)"/.exec(readFileSync(here("../../src/components/PhotoCell.tsx"), "utf8"))?.[1];
+    expect(label).toMatch(/^Before · /);
+    const driver = readFileSync(here("./driver.js"), "utf8");
+    const patterns = [...driver.matchAll(/\/(Before[^/\n]*)\//g)].map((m) => new RegExp(m[1]));
+    // One check says the photo is in Before mode, the other waits for it to be off again.
+    expect(patterns).toHaveLength(2);
+    for (const pattern of patterns) expect(pattern.test(label)).toBe(true);
+  });
 });

@@ -411,7 +411,8 @@ pub struct ColorPlan {
 }
 
 /// The Before view's camera default of a photo (`docs/02`, The Before view): the body's D65 colour matrix
-/// (looked up by the file's Sony model ID, then its Model string, falling back to the A7R IV entry), the
+/// (looked up by the file's Sony model ID, or by its Model string when the file has no ID; an ID that is not
+/// listed gives the A7R IV entry, as in the profile registry), the
 /// camera's as-shot white balance read from the file (our initial gains `g0` when the file has none),
 /// and `g0`, which the raw stages have already applied to the camera RGB the chain receives.
 ///

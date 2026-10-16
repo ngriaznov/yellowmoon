@@ -76,7 +76,7 @@
         if (Math.abs(f.naturalWidth - Math.round(box.width * dpr)) > 1 || Math.abs(f.naturalHeight - Math.round(box.height * dpr)) > 1) why.push(`the frame is ${f.naturalWidth}x${f.naturalHeight}, not the cell's size`);
       }
       if (q(".ym-photo-note")) why.push("a note covers the photo: " + textOf(".ym-photo-note"));
-      if (/Before · camera log/.test(textOf("[data-viewport]"))) why.push("the photo is shown in Before mode");
+      if (/Before · camera default/.test(textOf("[data-viewport]"))) why.push("the photo is shown in Before mode");
       // (The Export panel's header says "Classical · Display P3": the render time is the photo view's.)
       if (!q("aside[aria-label=Export]") && !/· \d+ ms ·/.test(textOf(".ym-status"))) why.push("no render time in the header yet");
       const open = currentId();
@@ -242,7 +242,7 @@
       key("\\");
       await waitFor("a new frame", () => frame() && loaded(frame()) && frame().src !== before, config.frameTimeoutMs);
     }
-    await waitFor("Before is off again", () => !/Before · camera log/.test(textOf("[data-viewport]")), 10000);
+    await waitFor("Before is off again", () => !/Before · camera default/.test(textOf("[data-viewport]")), 10000);
   }
 
   async function openTab(name) {
