@@ -56,6 +56,12 @@ yanked = "deny"
 ignore = [
   { id = "RUSTSEC-2024-0436", reason = "paste is unmaintained; compile-time proc macro only, pulled in by specta/tauri-specta, which we do not control. No safe upgrade exists." },
   { id = "RUSTSEC-2024-0370", reason = "proc-macro-error is unmaintained; compile-time proc macro only, pulled in by the gtk-rs 0.18 crates that Tauri uses on Linux (not part of the macOS app). No safe upgrade exists." },
+  # A yanked crate, not an advisory: every zip 4.x release was yanked (zip 4.6.1 on 2026-10-16 at the latest), and
+  # tauri-plugin-updater (2.13.3 and the newest, 2.14.0) still requires zip ^4. The updater's `zip` feature also
+  # brings the tar and flate2 code that unpacks Yellowmoon.app.tar.gz, so it cannot be switched off; zip itself is
+  # used only for Windows updates (the .msi/.exe in a zip), which this macOS app never takes. Our own zip is 9.x.
+  # Delete the entry when the updater moves to a zip that is not yanked (cargo update -p tauri-plugin-updater).
+  { crate = "zip@4.6.1", reason = "yanked; required by tauri-plugin-updater ^2 (no release with a newer zip); its zip code runs only for Windows updates, never on macOS." },
 ]
 
 [sources]
