@@ -1,5 +1,7 @@
 # Yellowmoon UI mockups
 
+**These are the pre-glass design ("bold grid, white"), kept for history.** Since the owner's decision of 2026-10-16 the interface is the dark glass one (C2); its references are the 24 pictures in `screenshots-c2/` (the same states as `screenshots/`, same names, same size), which the end-to-end suite compares the app with (`docs/11`). The layout, the sizes and the copy below still hold; the colours, the material and the look of the controls do not.
+
 Interactive mockups of the Yellowmoon V1 screens, designed at 1440 × 900 (desktop app window).
 
 ## Pages
@@ -28,7 +30,7 @@ These are static mockups with fake data: 12 photos from "Lisbon" drawn as flat s
 
 ## Screenshots
 
-`screenshots/`, 1440 × 900 at 2× (2880 × 1800 PNG), taken from the pages above. `overview.png` is a 1440 × 900 contact sheet of all of them.
+`screenshots/`, 1440 × 900 at 2× (2880 × 1800 PNG), taken from the pages above. `screenshots-c2/` has the same 24 states of the dark glass interface, taken from the app on its mock API (`npx playwright test e2e/screenshots.spec.ts e2e/export.spec.ts e2e/wizard.spec.ts --update-snapshots`; look at them before committing). `screenshots/overview.png` is a 1440 × 900 contact sheet of the pre-glass ones.
 
 | File | State |
 |---|---|

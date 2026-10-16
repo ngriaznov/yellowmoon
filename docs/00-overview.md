@@ -82,7 +82,7 @@ Don't reopen these without new evidence. The reasoning is in `research/`.
 | Export | JPEG, TIFF, PNG; DNG as LinearRaw AWG4 with the look baked into pixels and a profile fitted to ACES 2. |
 | CLI | `ym` binary in the same workspace, shipped inside the app bundle, bit-identical to app exports. |
 | Persistence | Nothing per photo. Only imported looks and preferences (default look, display rendering choice, export defaults, watch-Downloads permission). |
-| UI | "Bold grid, white": Figtree, 3 px black rules, flat colour block per tab, square boxed controls, photo edge to edge. Yellow is the brand colour. A dark variant exists in research but is not V1. |
+| UI | Dark glass (owner's decision, 2026-10-16): glasscn components on Tailwind 4 and Radix, Figtree, yellow `#FFC20E` only as a button accent, a still cool aurora, dark only, photo edge to edge. The visual reference is `design/screenshots-c2/`; see `docs/11` and `docs/16`. The earlier "Bold grid, white" design (`design/mockups/`, `design/screenshots/`) is kept for history. |
 | Distribution | plugout's release pipeline: version bump on main → signed updater artefacts → GitHub release → cask update. |
 
 ## Glossary

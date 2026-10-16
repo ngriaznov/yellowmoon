@@ -40,7 +40,7 @@ describe("Start, nothing open", () => {
     h = renderApp();
     const exportCell = screen.getByRole("button", { name: /Export/ });
     expect(exportCell).toHaveAttribute("aria-disabled", "true");
-    expect(exportCell).toHaveAttribute("title", "Open photos to export");
+    expect(exportCell).toHaveAccessibleDescription("Open photos to export");
   });
 
   it("marks the first step as the current one", () => {

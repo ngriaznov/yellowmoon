@@ -3,9 +3,10 @@
  * driven the way a person would (keys, typed values, clicks), the patch that reaches the mock is
  * checked, and so is what the screen shows once the core's resolved settings come back.
  */
-import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { act, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SettingsPatch } from "../api/types";
+import { capturingPointer } from "../test/pointer";
 import { installManualRaf, mockRect } from "../test/raf";
 import { openPhotos, openTab, renderApp, sliderOf, tools, valueOf } from "../test/harness";
 import type { Harness, UpdateSpy } from "../test/harness";
@@ -400,26 +401,27 @@ describe("every control round-trips through update_settings", () => {
     await openTab(h, "Light");
     const raf = installManualRaf();
     try {
-      const control = sliderOf("Highlights").closest(".ym-slider__control") as HTMLElement;
-      mockRect(control, { left: 100, top: 0, width: 200, height: 38 });
+      const root = sliderOf("Highlights").closest('[data-slot="slider"]') as HTMLElement;
+      mockRect(root, { left: 100, top: 0, width: 200, height: 38 });
+      const pointer = capturingPointer(root);
       spy.mockClear();
-      fireEvent.pointerDown(control, { button: 0, clientX: 200 }); // the middle: 0
-      fireEvent.pointerMove(window, { clientX: 190 });
-      fireEvent.pointerMove(window, { clientX: 180 });
-      fireEvent.pointerMove(window, { clientX: 170 });
+      pointer.down(200); // the middle: 0
+      pointer.move(190);
+      pointer.move(180);
+      pointer.move(170);
       // Three moves before the frame: one patch, with the newest value.
       await act(async () => {
         raf.flush();
       });
       await waitFor(() => expect(spy).toHaveBeenCalledTimes(1));
       expect(spy.mock.calls[0]?.[1]).toEqual({ highlights: -30 });
-      fireEvent.pointerMove(window, { clientX: 150 });
+      pointer.move(150);
       await act(async () => {
         raf.flush();
       });
       await waitFor(() => expect(spy).toHaveBeenCalledTimes(2));
       expect(spy.mock.calls[1]?.[1]).toEqual({ highlights: -50 });
-      fireEvent.pointerUp(window, { clientX: 150 });
+      pointer.up(150);
       await waitFor(() => expect(spy).toHaveBeenCalledTimes(3));
       expect(spy.mock.calls[2]?.[1]).toEqual({ highlights: -50 });
       await waitFor(() => expect(valueOf("Highlights")).toBe("\u221250"));

@@ -19,7 +19,7 @@
   border-right: 5px solid transparent;
   border-left: 5px solid transparent;
 }
-.ym-btn[aria-disabled="true"] .ym-caret { border-top-color: var(--muted); }
+
 .ym-status {
   margin-left: auto;
   font-size: var(--fs-small);
@@ -28,72 +28,9 @@
   white-space: nowrap;
 }
 .ym-status[data-hint="true"] { font-weight: var(--fw-heavy); }
-.ym-export {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-left: auto;
-  padding: 0 22px;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-  color: var(--ink);
-  font: inherit;
-  font-size: 15px;
-  font-weight: var(--fw-heavy);
-  letter-spacing: 0.02em;
-  text-decoration: none;
-  text-transform: uppercase;
-  white-space: nowrap;
-  cursor: default;
-}
-.ym-export[aria-disabled="true"] { color: var(--muted); cursor: default; }
-.ym-export[aria-current="true"] { background: var(--ink); color: var(--paper); }
-.ym-export:focus-visible { position: relative; z-index: 1; }
 
 /* ---- Menu (the zoom menu, the default look picker) ------------------------------------------- */
 .ym-menu { position: relative; display: inline-flex; }
-.ym-menu__list {
-  position: absolute;
-  top: 100%;
-  left: 0;
-  z-index: 20;
-  min-width: 160px;
-  margin: 4px 0 0;
-  padding: 0;
-  list-style: none;
-  max-height: min(60vh, 420px);
-  overflow-y: auto;
-  border: var(--rule) solid var(--ink);
-  background: var(--paper);
-  color: var(--ink);
-}
-.ym-menu__list[data-align="end"] { right: 0; left: auto; }
-.ym-menu__item {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  width: 100%;
-  height: 36px;
-  padding: 0 12px;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-  color: inherit;
-  font: inherit;
-  font-size: var(--fs-label);
-  font-weight: var(--fw-heavy);
-  letter-spacing: var(--ls-caps);
-  text-align: left;
-  text-transform: uppercase;
-  white-space: nowrap;
-  cursor: default;
-}
-.ym-menu__item:hover,
-.ym-menu__item:focus-visible { background: var(--ink); color: var(--paper); }
-.ym-menu__item:focus-visible { outline-offset: -3px; }
-.ym-menu__item[aria-checked="true"]::after { content: ""; width: 8px; height: 8px; background: currentColor; }
 
 /* ---- Photos -------------------------------------------------------------------------------- */
 .ym-screen[data-screen="photos"] {
@@ -108,7 +45,7 @@
 :root[data-native-viewport] body,
 :root[data-native-viewport] #root,
 :root[data-native-viewport] .ym-screen[data-screen="photos"] { background: transparent !important; transition: none !important; }
-.ym-screen[data-screen="photos"] .ym-filmstrip { grid-column: 1; grid-row: 3; }
+
 .ym-tools {
   display: flex;
   flex-direction: column;
@@ -127,7 +64,7 @@
   padding: 16px var(--pad-panel);
   border-top: var(--rule) solid var(--ink);
 }
-.ym-tools__footer .ym-btn { min-width: 0; padding: 0; }
+
 /* The row of "Copy settings" and "Paste" under the tabs' cards: the header buttons' type, in a 3 px ruled strip. */
 .ym-tools__foot {
   display: flex;
@@ -230,7 +167,7 @@
 }
 .ym-about-row[data-action="true"] { grid-template-columns: 140px minmax(0, 1fr) auto; }
 .ym-about-row__label { font-size: var(--fs-small); font-weight: var(--fw-heavy); letter-spacing: var(--ls-tag); text-transform: uppercase; }
-.ym-about-row .ym-link { color: #000; font-size: inherit; }
+
 .ym-drop {
   grid-column: 2;
   grid-row: 2;
@@ -280,7 +217,7 @@
   font-size: var(--fs-body);
   font-weight: var(--fw-bold);
 }
-.ym-error-bar .ym-link { color: var(--paper); }
+
 /* On Photos the bar stops at the tool panel. A notice ("Copied the settings of DSC04204.") shows until it is dismissed, and what sits at
    the foot of the panel (Copy settings and Paste, the Export panel's buttons) has to stay in reach meanwhile. */
 .ym-screen[data-screen="photos"] ~ .ym-error-bar { right: var(--panel-w); }
@@ -304,9 +241,10 @@
   .ym-screen[data-screen="photos"][data-panel="tools"] .ym-status:not([data-hint="true"]) { display: none; }
 }
 
-/* The Pick white hint is a whole sentence on one line (219 px) and does not fit beside the buttons below about 1347 px: at 1180 px it
-   ran 150 px into the Export cell. There it floats over the top right of the photo area instead, just under the header, on paper. */
-@media (max-width: 1346px) {
+/* The Pick white hint is a whole sentence on one line (219 px) and does not fit beside the buttons below about 1357 px (1347 px before the
+   glass buttons): at 1180 px it ran 150 px into the Export cell. There it floats over the top right of the photo area instead, just under
+   the header (the same breakpoint as in glass-c2.css). */
+@media (max-width: 1359px) {
   .ym-status[data-hint="true"] {
     position: fixed;
     top: calc(var(--header-h) + 8px);

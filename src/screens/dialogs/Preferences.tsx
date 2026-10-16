@@ -1,5 +1,7 @@
 import { useMemo, useState } from "react";
 import type { ReactNode } from "react";
+import { Item, ItemActions, ItemContent, ItemDescription, ItemTitle } from "@/components/glass/item";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/glass/select";
 import { Button, LinkButton, Segmented, Switch } from "../../components";
 import { exportModel } from "../../export/model";
 import { useAppState, useStore } from "../../state/context";
@@ -17,15 +19,15 @@ interface RowProps {
 /** One row of Preferences: a title and a line of help at the left, the control at the right. */
 function Row({ title, hint, children }: RowProps) {
   return (
-    <div className="ym-pref" role="group" aria-label={title}>
-      <span className="ym-pref__text">
-        <span className="ym-pref__title" aria-hidden="true">
+    <Item size="sm" role="group" aria-label={title} className="ym-pref">
+      <ItemContent className="ym-pref__text">
+        <ItemTitle className="ym-pref__title" aria-hidden="true">
           {title}
-        </span>
-        {hint ? <span className="ym-pref__hint">{hint}</span> : null}
-      </span>
-      <span className="ym-pref__control">{children}</span>
-    </div>
+        </ItemTitle>
+        {hint ? <ItemDescription className="ym-pref__hint">{hint}</ItemDescription> : null}
+      </ItemContent>
+      <ItemActions className="ym-pref__control">{children}</ItemActions>
+    </Item>
   );
 }
 
@@ -77,24 +79,25 @@ export function Preferences() {
       ) : (
         <>
           <Row title="Default look" hint="The look every new photo opens with.">
-            <select
-              className="ym-pref__select"
-              aria-label="Default look"
-              value={defaultLook?.id ?? ""}
-              onChange={(event) => void store.makeDefault(event.target.value)}
-            >
-              {lookOptions.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
+            <Select value={defaultLook?.id ?? ""} onValueChange={(next) => void store.makeDefault(next)}>
+              <SelectTrigger aria-label="Default look" className="w-[220px]">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {lookOptions.map((option) => (
+                  <SelectItem key={option.value} value={option.value}>
+                    {option.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </Row>
           <Row
             title="Display rendering"
             hint={arriLut ? "How log becomes a picture." : "Import ARRI's display LUTs to use them here."}
           >
             <Segmented
+              fit
               label="Display rendering"
               size="md"
               value={usingArri ? "arri" : "ours"}

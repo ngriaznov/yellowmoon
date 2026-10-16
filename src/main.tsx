@@ -8,14 +8,10 @@ import { isTauri } from "./env";
 import { installPerf } from "./perf";
 import { installTestHooks } from "./testHooks";
 import { updater } from "./updater";
-import "./styles/tokens.css";
-import "./styles/global.css";
-import "./styles/components.css";
-import "./styles/app.css";
-import "./styles/screens.css";
-import "./styles/export.css";
-import "./styles/wizard.css";
-import "./styles/dialogs.css";
+import "./styles/glass.css";
+import "./styles/legacy.css";
+import "./styles/glass-c2.css";
+import "./styles/glass-c2-pages.css";
 
 // An app, not a page: no pinch zoom, no page menu (docs/11 §Desktop feel). Measuring is off unless the page was opened with ?perf.
 installDesktopFeel();

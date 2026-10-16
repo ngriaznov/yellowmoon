@@ -40,12 +40,13 @@ test.describe("idle", () => {
     await expect(page.getByRole("button", { name: /Export/ })).toHaveAttribute("aria-disabled", "true");
   });
 
-  test("draws the drop zone as a 3 px dashed box, and the header cells with 3 px rules", async ({ page }) => {
+  test("draws the drop zone as a glasscn Card with a 2 px dashed rim, the header with a 1 px rim, and keeps room for the traffic lights", async ({ page }) => {
     await openApp(page);
     const zone = page.getByRole("group", { name: "Drop files or a folder" });
+    await expect(zone).toHaveAttribute("data-slot", "card");
     await expect(zone).toHaveCSS("border-top-style", "dashed");
-    await expect(zone).toHaveCSS("border-top-width", "3px");
-    await expect(page.locator(".ym-header")).toHaveCSS("border-bottom-width", "3px");
+    await expect(zone).toHaveCSS("border-top-width", "2px");
+    await expect(page.locator(".ym-header")).toHaveCSS("border-bottom-width", "1px");
     await expect(page.locator(".ym-brand")).toHaveCSS("padding-left", "84px");
   });
 
@@ -53,7 +54,7 @@ test.describe("idle", () => {
     await openApp(page);
     await expect(page.getByText("Update ready")).toHaveCount(0);
     await showUpdateReady(page);
-    await expect(page.locator(".ym-update-pill")).toHaveCSS("text-transform", "uppercase");
+    await expect(page.locator(".ym-update-pill")).toBeVisible();
   });
 
   test("the default look can be changed from the Start screen", async ({ page }) => {
@@ -126,7 +127,7 @@ test.describe("opening photos", () => {
     await expect(list.getByText("Skipped", { exact: true })).toHaveCount(1);
     await expect(list.getByText("This file is from a camera mode we can't read yet.")).toBeVisible();
     await expect(page.getByText("1 file skipped. Everything else is developed and ready to export.")).toBeVisible();
-    await expect(list.getByText("Skipped", { exact: true })).toHaveCSS("background-color", "rgb(255, 90, 31)");
+    await expect(list.getByText("Skipped", { exact: true })).toHaveAttribute("data-variant", "skipped");
   });
 
   test("Start over returns to the drop zone", async ({ page }) => {
@@ -156,7 +157,9 @@ test.describe("dropping files on the window", () => {
       window.dispatchEvent(new DragEvent("dragenter", { dataTransfer: data, bubbles: true, cancelable: true }));
     });
     await expect(page.getByRole("group", { name: "Drop files or a folder" })).toHaveAttribute("data-active", "true");
-    await expect(page.getByRole("group", { name: "Drop files or a folder" })).toHaveCSS("background-color", "rgb(255, 194, 14)");
+    // The zone lights up: a solid ring in the accent in place of the dashed rim.
+    await expect(page.getByRole("group", { name: "Drop files or a folder" })).toHaveCSS("border-top-style", "solid");
+    await expect(page.getByRole("group", { name: "Drop files or a folder" })).toHaveCSS("border-top-color", "rgb(255, 194, 14)");
     await dropFiles(page, ["DSC04201.ARW", "DSC04202.ARW"]);
     await expect(page.getByRole("heading", { level: 2, name: "12 photos ready" })).toBeVisible();
   });

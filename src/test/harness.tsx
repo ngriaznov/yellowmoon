@@ -54,7 +54,11 @@ export async function openTab(h: Harness, name: string): Promise<void> {
 /** The text of a slider's value box. */
 export const valueOf = (label: string): string => (screen.getByRole("textbox", { name: `${label} value` }) as HTMLInputElement).value;
 
-/** The slider (range input) of a labelled row. */
-export const sliderOf = (label: string): HTMLInputElement => screen.getByRole("slider", { name: label }) as HTMLInputElement;
+/** The slider (glasscn's Radix knob, `role="slider"`) of a labelled row. */
+export const sliderOf = (label: string): HTMLElement => screen.getByRole("slider", { name: label });
+
+/** The name a slider has from its row's label (`aria-labelledby`), as a person reads it. */
+export const sliderName = (slider: HTMLElement): string | undefined =>
+  slider.getAttribute("aria-labelledby")?.split(/\s+/).map((id) => document.getElementById(id)?.textContent ?? "").join(" ");
 
 export { screen, waitFor, within };

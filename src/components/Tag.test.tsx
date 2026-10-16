@@ -13,7 +13,7 @@ describe("Tag", () => {
   it("shows its own label and carries the variant", () => {
     render(<Tag variant="stand-in" />);
     const tag = screen.getByText("Stand-in");
-    expect(tag).toHaveClass("ym-tag");
+    expect(tag).toHaveAttribute("data-slot", "badge");
     expect(tag).toHaveAttribute("data-variant", "stand-in");
   });
 

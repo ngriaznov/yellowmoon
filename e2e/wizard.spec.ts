@@ -1,18 +1,12 @@
 import { expect, test } from "@playwright/test";
 import type { Page } from "@playwright/test";
 import { dropFiles, openApp, openPhotos, recordCalls, showUpdateReady, watchErrors } from "./helpers/app";
-import { compareScreen, isCopyOfDesign } from "./helpers/compare";
+import { compareScreen } from "./helpers/compare";
 
 // The ARRI import wizard (M3-09) in a real browser against the mocked API: the happy path through the five steps, the failure
 // paths with synthetic packages (a wrong package, a damaged look file, a missing file), ARRI Look Files (a library as look
 // files, a person's own), the Downloads watcher, the generic .cube question, and screenshot comparisons against
-// design/screenshots/import-*.png.
-
-const STATES = ["import-1-choose", "import-2-get-files", "import-3-recognise", "import-4-importing", "import-4-imported", "import-5-finish"];
-
-test("the baselines are byte-for-byte copies of design/screenshots", () => {
-  for (const name of STATES) expect(isCopyOfDesign(name), `${name}.png is a copy`).toBe(true);
-});
+// design/screenshots-c2/import-*.png.
 
 const LL4 = "ARRI_LookLibrary_LogC4.zip";
 const DL4 = "ARRI_DisplayLUTs_LogC4.zip";
@@ -30,6 +24,8 @@ async function wizard(page: Page, options: Record<string, string | number> = {})
 
 const next = (page: Page) => page.locator(".ym-wizard__footer").getByRole("button", { name: /^(Next|Import|Done)/ });
 const step = (page: Page) => page.getByText(/^Import · step \d of 5$/);
+/** The footer's note about why Next is locked. */
+const foot = (page: Page) => page.locator(".ym-wizard__foot-note");
 
 /** Choose, drop the zips, Recognise. */
 async function toRecognise(page: Page, ...names: string[]): Promise<void> {
@@ -110,7 +106,8 @@ test.describe("steps are locked until their turn", () => {
     const rail = page.getByRole("navigation", { name: "Steps" });
     await expect(rail.getByRole("button", { name: /^Get the files/ })).toHaveAttribute("aria-disabled", "true");
     await page.getByRole("checkbox", { name: "Look Library · LogC4" }).click();
-    await expect(page.getByText("Choose at least one package")).toBeVisible();
+    // The footer's note (the same sentence is also the locked Next's tooltip and description).
+    await expect(foot(page)).toHaveText("Choose at least one package");
     await expect(next(page)).toHaveAttribute("aria-disabled", "true");
     await next(page).click({ force: true });
     await expect(step(page)).toHaveText("Import · step 1 of 5");
@@ -142,7 +139,7 @@ test.describe("failure paths", () => {
     await expect(page.getByText("Not chosen", { exact: true })).toBeVisible();
     await expect(page.getByText("This is Look Library · LogC3, not Look Library · LogC4, which you chose.", { exact: false })).toBeVisible();
     await expect(next(page)).toHaveAttribute("aria-disabled", "true");
-    await expect(page.getByText("Look Library · LogC4 is missing. Go back and add it.")).toBeVisible();
+    await expect(foot(page)).toHaveText("Look Library · LogC4 is missing. Go back and add it.");
     // Back, drop the right one, and carry on.
     await page.getByRole("button", { name: "← Back" }).click();
     await dropFiles(page, [LL4]);
@@ -234,7 +231,7 @@ test.describe("the generic .cube question", () => {
     await toRecognise(page, LL4, "Warm_Film.cube");
     await expect(page.getByText("What does this LUT expect as input?")).toBeVisible();
     await expect(next(page)).toHaveAttribute("aria-disabled", "true");
-    await expect(page.getByText("Say what the other LUTs expect as input.")).toBeVisible();
+    await expect(foot(page)).toHaveText("Say what the other LUTs expect as input.");
     const group = page.getByRole("radiogroup", { name: "Input of Warm_Film.cube" });
     await expect(group.getByRole("radio")).toHaveText(["LogC4", "LogC3", "LogC3 · Rec.709"]);
     await group.getByRole("radio", { name: "LogC3 · Rec.709" }).click();
@@ -309,7 +306,7 @@ test.describe("Get the files", () => {
 });
 
 test.describe("layout", () => {
-  test("is the mockup's grid: a 360 px rail, a 75 px header, a 96 px footer", async ({ page }) => {
+  test("is the layout's grid: a 360 px rail, a 75 px header, a 96 px footer", async ({ page }) => {
     await wizard(page);
     const geometry = await page.evaluate(() => {
       const box = (selector: string) => {
@@ -322,11 +319,14 @@ test.describe("layout", () => {
     expect(geometry.rail).toMatchObject({ x: 0, y: 75, w: 360 });
     expect(geometry.footer).toMatchObject({ x: 360, y: 804, h: 96 });
     expect(geometry.brand.w).toBe(360);
-    await expect(page.locator(".ym-wizard__rail button[aria-current='step']")).toHaveCSS("background-color", "rgb(255, 194, 14)");
+    // The current step is a glasscn Item with a light fill, not a yellow block (yellow is for buttons).
+    const current = page.locator(".ym-wizard__rail button[aria-current='step']");
+    await expect(current).toHaveAttribute("data-slot", "item");
+    await expect(current).not.toHaveCSS("background-color", "rgb(255, 194, 14)");
   });
 });
 
-test.describe("screenshots against design/screenshots", () => {
+test.describe("screenshots against design/screenshots-c2", () => {
   /** The mockup's states: Photos with the fourth photo current (the tiles of the last step are that photo), then the wizard. */
   async function mockupWizard(page: Page, options: Record<string, string | number> = {}): Promise<void> {
     await openApp(page, { mockLooks: 0, mockCurrent: 3, mockPicked: "2,3,4", ...options });

@@ -1,20 +1,14 @@
 import { expect, test } from "@playwright/test";
 import type { Page } from "@playwright/test";
 import { openApp, openPhotos, recordCalls, settle, showUpdateReady, watchErrors } from "./helpers/app";
-import { compareScreen, isCopyOfDesign } from "./helpers/compare";
+import { compareScreen } from "./helpers/compare";
 
 // The Export panel (M3-11) in a real browser against the mocked API: every format, the options, the queue, the finished
-// state, exports that keep running while the person browses, and screenshot comparisons against design/screenshots/export-*.png.
+// state, exports that keep running while the person browses, and screenshot comparisons against design/screenshots-c2/export-*.png.
 
 const MOCKUP: Record<string, string | number> = { mockCurrent: 3, mockPicked: "2,3,4" };
 
-const STATES = ["export-jpeg", "export-tiff", "export-png", "export-dng", "export-running", "export-finished"];
-
-test("the baselines are byte-for-byte copies of design/screenshots", () => {
-  for (const name of STATES) expect(isCopyOfDesign(name), `${name}.png is a copy`).toBe(true);
-});
-
-/** Photos, the update cell as in the mockups, then ⌘E; waits for the estimate. */
+/** Photos, the update cell as in the screenshots, then ⌘E; waits for the estimate. */
 async function exportPanel(page: Page, options: Record<string, string | number> = MOCKUP): Promise<void> {
   await openApp(page, options);
   // Wait for all twelve so the mockup's current photo (the fourth) is the one on screen.
@@ -29,7 +23,7 @@ async function exportPanel(page: Page, options: Record<string, string | number> 
 const format = (page: Page, name: string) => page.getByRole("radiogroup", { name: "Format" }).getByRole("radio", { name }).click();
 
 test.describe("layout", () => {
-  test("is the mockup's grid at 1440 × 900: the panel is 400 px wide, the title block black, the footer 56 px", async ({ page }) => {
+  test("is the layout's grid at 1440 × 900: the panel is 400 px wide, the footer 81 px with a 48 px button, the title block neutral glass", async ({ page }) => {
     const problems = watchErrors(page);
     await exportPanel(page);
     const geometry = await page.evaluate(() => {
@@ -37,44 +31,45 @@ test.describe("layout", () => {
         const r = (document.querySelector(selector) as HTMLElement).getBoundingClientRect();
         return { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) };
       };
-      return { panel: box(".ym-tools"), title: box(".ym-title-block"), footer: box(".ym-tools__footer"), button: box(".ym-tools__footer .ym-btn"), cell: box(".ym-photo-cell") };
+      return { panel: box(".ym-tools"), title: box(".ym-title-block"), footer: box(".ym-tools__footer"), button: box(".ym-tools__footer button"), cell: box(".ym-photo-cell") };
     });
     expect(geometry.panel).toMatchObject({ x: 1040, y: 75, w: 400, h: 825 });
-    // The panel has a 3 px rule on its left edge; the title block fills the rest.
-    expect(geometry.title).toMatchObject({ x: 1043, w: 397 });
-    expect(geometry.button.h).toBe(56);
+    // The panel has a 1 px rim on its left edge; the title block fills the rest.
+    expect(geometry.title).toMatchObject({ x: 1041, w: 399 });
+    expect(geometry.button.h).toBe(48);
     expect(geometry.footer.y + geometry.footer.h).toBe(900);
     expect(geometry.cell).toMatchObject({ y: 75 });
-    await expect(page.locator(".ym-title-block")).toHaveCSS("background-color", "rgb(0, 0, 0)");
+    // Yellow is for buttons: the title block is neutral glass in every tab, not a flat colour.
+    await expect(page.locator(".ym-title-block")).not.toHaveCSS("background-color", "rgb(255, 194, 14)");
     expect(problems).toEqual([]);
   });
 
-  test("keeps the header's Export cell black while the panel is open, and says Back to photos", async ({ page }) => {
+  test("marks the header's Export button as the current one while the panel is open, and says Back to photos", async ({ page }) => {
     await exportPanel(page);
-    await expect(page.locator(".ym-export")).toHaveCSS("background-color", "rgb(0, 0, 0)");
-    await expect(page.locator(".ym-export")).toHaveAttribute("aria-current", "true");
+    await expect(page.locator(".ym-export-cell button")).toHaveAttribute("aria-current", "true");
     await expect(page.getByRole("button", { name: "← Back to photos" })).toBeVisible();
     await expect(page.getByText("Neural · Display P3")).toBeVisible();
     await page.getByRole("button", { name: "← Back to photos" }).click();
     await expect(page.getByRole("complementary", { name: "Tools" })).toBeVisible();
   });
 
-  test("dims the photos that won't be exported (opacity 0.3) and thickens the ones that will", async ({ page }) => {
+  test("dims the photos that won't be exported (opacity 0.35), rings the current one, and the caption counts what is exported", async ({ page }) => {
     await exportPanel(page);
     const thumbs = page.locator(".ym-filmstrip__thumb");
     await expect(thumbs.nth(2)).toHaveCSS("opacity", "1");
-    await expect(thumbs.nth(2)).toHaveCSS("border-top-width", "3px");
-    await expect(thumbs.nth(3)).toHaveCSS("border-top-width", "4px"); // the current photo
-    await expect(thumbs.nth(0)).toHaveCSS("opacity", "0.3");
-    await expect(page.locator(".ym-filmstrip__count")).toHaveText("3");
-    await expect(page.locator(".ym-filmstrip__count-label")).toHaveText("to export");
+    await expect(thumbs.nth(2)).toHaveAttribute("data-in-export", "true");
+    await expect(thumbs.nth(3)).toHaveCSS("border-top-width", "3px"); // the current photo: a 3 px accent ring
+    await expect(thumbs.nth(3)).toHaveCSS("border-top-color", "rgb(255, 194, 14)");
+    await expect(thumbs.nth(0)).toHaveCSS("opacity", "0.35");
+    await expect(thumbs.nth(0)).toHaveAttribute("data-in-export", "false");
+    await expect(page.locator(".ym-filmstrip__caption")).toHaveText("3 to export");
   });
 });
 
 test.describe("each format", () => {
   test("JPEG: Quality slider, 92, and the estimate", async ({ page }) => {
     await exportPanel(page);
-    await expect(page.getByRole("slider", { name: "Quality" })).toHaveValue("92");
+    await expect(page.getByRole("slider", { name: "Quality" })).toHaveAttribute("aria-valuenow", "92");
     await expect(page.getByRole("button", { name: /^Export 3 photos/ })).toContainText("≈ 75 MB · ⌘↩");
     await expect(page.getByText("DSC04203_neutral.jpg")).toBeVisible();
   });
@@ -131,14 +126,14 @@ test.describe("each format", () => {
     await exportPanel(page);
     await page.getByRole("radiogroup", { name: "Size" }).getByRole("radio", { name: "Long edge" }).click();
     const slider = page.getByRole("slider", { name: "Long edge" });
-    await expect(slider).toHaveAttribute("min", "1000");
-    await expect(slider).toHaveAttribute("max", "8640");
-    await expect(slider).toHaveAttribute("step", "20");
+    await expect(slider).toHaveAttribute("aria-valuemin", "1000");
+    await expect(slider).toHaveAttribute("aria-valuemax", "8640");
+    // One arrow key is one step of 20 px (Radix's slider has no step attribute to read), Shift ten of them.
     await slider.focus();
     await page.keyboard.press("ArrowRight");
-    await expect(slider).toHaveValue("3020");
+    await expect(slider).toHaveAttribute("aria-valuenow", "3020");
     await page.keyboard.press("Shift+ArrowRight");
-    await expect(slider).toHaveValue("3220");
+    await expect(slider).toHaveAttribute("aria-valuenow", "3220");
     await expect(page.getByRole("region", { name: "Same thing from the command line" })).toContainText("--long-edge 3220");
   });
 });
@@ -253,11 +248,11 @@ test.describe("running", () => {
     await page.keyboard.press("ArrowRight");
     await page.getByRole("tab", { name: "Colour" }).click();
     await expect(page.getByRole("button", { name: "Exporting 1 of 3 ⌘E" })).toBeVisible();
-    await expect(page.locator(".ym-export__strip > span")).toHaveCSS("width", /^(?!0px)/);
+    await expect(page.locator("[data-export-strip] > span")).toHaveCSS("width", /^(?!0px)/);
     // The ready update can't restart yet.
     const pill = page.getByRole("button", { name: /Update ready/ });
     await expect(pill).toHaveAttribute("aria-disabled", "true");
-    await expect(pill).toHaveAttribute("title", "Restarts after the export finishes");
+    await expect(pill).toHaveAccessibleDescription("Restarts after the export finishes");
     // The queue is one click away; the rest of the run finishes.
     await page.getByRole("button", { name: /^Exporting/ }).click();
     await expect(page.getByRole("heading", { level: 2, name: "Exporting" })).toBeVisible();
@@ -289,7 +284,8 @@ test.describe("keyboard", () => {
     await page.keyboard.press("Shift+Tab");
     await page.keyboard.press("Tab");
     await expect(page.getByRole("radio", { name: "Picked · 3" })).toHaveCSS("outline-width", "3px");
-    await expect(page.getByRole("radio", { name: "Picked · 3" })).toHaveCSS("outline-offset", "2px");
+    // A segment draws its ring inside the control.
+    await expect(page.getByRole("radio", { name: "Picked · 3" })).toHaveCSS("outline-offset", "-3px");
     // Photos (1 stop), Format (1), Quality slider, the value box, Colour space, Size, Choose…, the template, If it exists, Copy, Export.
     const seen: string[] = [];
     for (let i = 0; i < 14; i++) {
@@ -308,7 +304,7 @@ test.describe("keyboard", () => {
   });
 });
 
-test.describe("screenshots against design/screenshots", () => {
+test.describe("screenshots against design/screenshots-c2", () => {
   test("JPEG (export-jpeg.png)", async ({ page }) => {
     await exportPanel(page);
     await compareScreen(page, "export-jpeg");

@@ -265,7 +265,7 @@ test.describe("text is not selectable, except where people copy it", () => {
     await page.evaluate(() => window.__yellowmoon!.mockApi.failNext("looksImport", { scope: "looks", message: "The looks folder can't be written to. Check its permissions." }));
     await footer.getByRole("button", { name: /^Import/ }).click();
     await expect(page.getByRole("heading", { level: 1, name: "Not imported" })).toBeVisible();
-    await expectCopyable(page, ".ym-wizard__callout--error > span", "The looks folder can't be written to.");
+    await expectCopyable(page, '.ym-wizard__callout--error [data-slot="item-content"]', "The looks folder can't be written to.");
     // The button next to it is still a button: nothing to select in it.
     expect(await page.getByRole("button", { name: "Try again" }).evaluate((el) => getComputedStyle(el).userSelect)).toBe("none");
   });
@@ -274,6 +274,16 @@ test.describe("text is not selectable, except where people copy it", () => {
     await openApp(page);
     await dropFiles(page, ["notes.txt"]);
     await expectCopyable(page, ".ym-drop-zone__notice", "No ARW files in what you dropped.");
+  });
+
+  test("the same notice while photos are developing can be selected and copied too", async ({ page }) => {
+    // The Start screen turns into the list of photos being developed, and a later drop with no ARW files still says so.
+    await openApp(page, { mockHold: 5.4, mockLooks: 0 });
+    await page.getByRole("button", { name: "Open files…" }).click();
+    await expect(page.getByRole("heading", { level: 2, name: /^Developing 12 photos/ })).toBeVisible();
+    await dropFiles(page, ["notes.txt"]);
+    await expectCopyable(page, ".ym-develop__notice", "No ARW files in what you dropped.");
+    expect(await page.locator(".ym-develop__notice").evaluate((el) => getComputedStyle(el).cursor)).toBe("text");
   });
 
   test("a note that is only information is not selectable: the class of the Start notice is not enough", async ({ page }) => {

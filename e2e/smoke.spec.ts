@@ -34,10 +34,22 @@ test("shows the Start screen", async ({ page }) => {
   expect(problems).toEqual([]);
 });
 
-test("uses the bundled Figtree font on a white page", async ({ page }) => {
+test("uses the bundled Figtree font on a dark page", async ({ page }) => {
   await page.goto("/");
-  await expect(page.locator("body")).toHaveCSS("background-color", "rgb(255, 255, 255)");
-  await expect(page.locator("body")).toHaveCSS("color", "rgb(0, 0, 0)");
+  await expect(page.locator("[data-screen]")).toBeVisible();
+  // The page is dark (`index.html`): the colour scheme says so, the ground is the aurora's near-black, and the text is near-white.
+  await expect(page.locator("html")).toHaveCSS("color-scheme", "dark");
+  const channels = (css: string) =>
+    page.evaluate((color) => {
+      const ctx = document.createElement("canvas").getContext("2d", { willReadFrequently: true })!;
+      ctx.fillStyle = color;
+      ctx.fillRect(0, 0, 1, 1);
+      return [...ctx.getImageData(0, 0, 1, 1).data].slice(0, 3);
+    }, css);
+  const ground = await channels(await page.locator('[data-slot="aurora"]').evaluate((el) => getComputedStyle(el).backgroundColor));
+  const text = await channels(await page.locator("body").evaluate((el) => getComputedStyle(el).color));
+  expect(Math.max(...ground), "the ground's brightest channel").toBeLessThan(40);
+  expect(Math.min(...text), "the text's dimmest channel").toBeGreaterThan(235);
 
   const loaded = await page.evaluate(async () => {
     const faces = await document.fonts.load('800 24px "Figtree"');
@@ -60,5 +72,6 @@ test("keyboard focus shows the 3 px focus ring", async ({ page }) => {
   await expect(probe).toBeFocused();
   await expect(probe).toHaveCSS("outline-width", "3px");
   await expect(probe).toHaveCSS("outline-offset", "2px");
-  await expect(probe).toHaveCSS("outline-color", "rgb(11, 92, 194)");
+  // The focus blue of the dark theme (`--focus` in tokens.css).
+  await expect(probe).toHaveCSS("outline-color", "rgb(13, 183, 232)");
 });

@@ -62,7 +62,7 @@
     const why = [];
     const screen = (q("[data-screen]") || { getAttribute: () => "" }).getAttribute("data-screen");
     if (screen === "start") {
-      const tags = qa("[data-screen=start] .ym-tag").map((t) => t.textContent.trim());
+      const tags = qa("[data-screen=start] [data-slot=badge]").map((t) => t.textContent.trim());
       if (!/^\d+ photos? ready$/.test(textOf("[data-screen=start] h2"))) why.push("the Start screen is still developing: " + textOf("[data-screen=start] h2"));
       if (tags.some((t) => !/^(ready|skipped)$/i.test(t))) why.push("a file is not Ready yet");
     } else if (screen === "photos") {

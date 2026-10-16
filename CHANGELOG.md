@@ -9,7 +9,10 @@ moves the entries below from Unreleased into a dated section for that version.
 
 ## [Unreleased]
 
-Nothing yet.
+### Changed
+
+- A new dark glass interface: the same layout with new controls throughout, yellow kept for buttons, the photo count in the filmstrip's caption ("4 of 12 · 3 picked"), and larger thumbnails.
+- The new interface needs a recent web engine from macOS (Safari 16.4 or later). On macOS 12 and 13, install the latest system and Safari updates before you update Yellowmoon, or the controls may not draw correctly.
 
 ## [0.1.5] - 2026-10-16
 

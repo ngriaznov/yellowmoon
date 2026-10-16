@@ -7,6 +7,7 @@
   (tools/licences/generate.py; the file is written by ``release.yml`` and by the CI job ``licences``).
 * ``NOTICE`` reproduces the BSD 3-Clause conditions of the ported Menon demosaic (crates/ym-gpu/src/cpu/demosaic.rs), which a
   binary distribution must carry (clause 2), and not only the copyright line.
+* ``NOTICE`` carries the MIT notice of glasscn (src/components/glass/), whose source is part of the interface.
 
 Prints one line per problem and exits 1 when there is one. The bundle's other resources (data/...) are checked by tauri-build.
 """
@@ -26,12 +27,14 @@ REQUIRED_RESOURCES = {
     "THIRD-PARTY.md": "the licence texts of the Rust crates, JavaScript packages and fonts (NOTICE item 9, About)",
 }
 
-#: Phrases a complete BSD 3-Clause text has, and what NOTICE must carry for colour-demosaicing (item 8).
+#: Phrases a complete BSD 3-Clause text has, and what NOTICE must carry for colour-demosaicing (item 8) and for glasscn (item 11).
 NOTICE_PHRASES = (
     ("Colour Developers", "the copyright holder of the ported Menon demosaic"),
     ("Redistributions in binary form must reproduce", "the BSD 3-Clause conditions (clause 2) for the Menon demosaic"),
     ("Neither the name of", "the BSD 3-Clause non-endorsement clause"),
     ("THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS", "the BSD 3-Clause disclaimer"),
+    ("Tim Mikeladze", "the copyright holder of the glasscn components (MIT), whose notice the licence requires in every copy"),
+    ("The above copyright notice and this permission notice shall be included in all", "the MIT conditions of the glasscn components"),
 )
 
 

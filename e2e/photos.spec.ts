@@ -18,7 +18,7 @@ const valueBox = (page: Page, label: string) => page.getByRole("textbox", { name
 
 /** Drags a slider's thumb to a share of its track with the real mouse. */
 async function dragSlider(page: Page, label: string, to: number, steps = 6): Promise<void> {
-  const control = page.getByRole("slider", { name: label }).locator("xpath=ancestor::*[contains(@class,'ym-slider__control')][1]");
+  const control = page.getByRole("slider", { name: label }).locator("xpath=ancestor::*[@data-slot='slider'][1]");
   const box = (await control.boundingBox())!;
   const y = box.y + box.height / 2;
   const fromX = box.x + box.width * 0.5;
@@ -94,20 +94,23 @@ test.describe("the flow", () => {
     expect(problems).toEqual([]);
   });
 
-  test("every tab has the colour of its title block", async ({ page }) => {
+  test("every tab has its own accent, which its sliders, switches and changed values take, and the title block stays neutral glass", async ({ page }) => {
     await photos(page);
-    const colors: Array<[string, string]> = [
-      ["Look", "rgb(255, 194, 14)"],
-      ["Light", "rgb(13, 183, 232)"],
-      ["Colour", "rgb(119, 224, 90)"],
-      ["Detail", "rgb(242, 184, 170)"],
-      ["Curve", "rgb(255, 90, 31)"],
-      ["RAW", "rgb(11, 92, 194)"],
+    // `--primary` is what glasscn paints a slider's range, a switch, the selected tab's underline and the focus ring from.
+    const accents: Array<[string, string]> = [
+      ["Look", "#ffc20e"],
+      ["Light", "#2ec4f4"],
+      ["Colour", "#7be35f"],
+      ["Detail", "#f4b9ac"],
+      ["Curve", "#ff7340"],
+      ["RAW", "#5b9bff"],
     ];
-    for (const [name, color] of colors) {
+    for (const [name, accent] of accents) {
       await tabs(page).getByRole("tab", { name }).click();
-      await expect(page.locator(".ym-title-block")).toHaveCSS("background-color", color);
-      await expect(tabs(page).getByRole("tab", { name })).toHaveCSS("background-color", color);
+      await expect(tabs(page).getByRole("tab", { name })).toHaveAttribute("aria-selected", "true");
+      await expect.poll(() => page.getByRole("tabpanel").evaluate((el) => getComputedStyle(el).getPropertyValue("--primary").trim())).toBe(accent);
+      // Yellow is for buttons: no tab paints its title block in its colour.
+      expect(await page.locator(".ym-title-block").evaluate((el) => getComputedStyle(el).backgroundColor)).not.toMatch(/^rgb\(/);
     }
   });
 
@@ -206,7 +209,8 @@ test.describe("controls with the real mouse", () => {
     await setValue(page, "Exposure", "1.5");
     await expect(valueBox(page, "Exposure")).toHaveValue("+1.50");
     await expect(valueBox(page, "Exposure")).toHaveAttribute("data-changed", "true");
-    await expect(valueBox(page, "Exposure")).toHaveCSS("background-color", "rgb(13, 183, 232)");
+    // A changed value is drawn in its tab's colour (Light's #2ec4f4): the text and a ring.
+    await expect(valueBox(page, "Exposure")).toHaveCSS("color", "rgb(46, 196, 244)");
     await expect(page.getByRole("region", { name: "Exposure" }).getByRole("button", { name: "Auto" })).toHaveAttribute("aria-pressed", "false");
     await page.getByRole("button", { name: "Reset Exposure" }).click();
     await expect(valueBox(page, "Exposure")).toHaveValue("+0.30");
@@ -300,16 +304,23 @@ test.describe("controls with the real mouse", () => {
     await expect(sw).toHaveAttribute("aria-checked", "true");
     await sw.click();
     await expect(sw).toHaveAttribute("aria-checked", "false");
-    await expect(sw).toHaveCSS("background-color", "rgb(255, 255, 255)");
+    // Off, the switch is neutral; on, it is the tab's colour (RAW's #5b9bff).
+    await expect(sw).not.toHaveCSS("background-color", "rgb(91, 155, 255)");
+    await sw.click();
+    await expect(sw).toHaveCSS("background-color", "rgb(91, 155, 255)");
+    await sw.click();
     await setValue(page, "Highlights", "0.8");
     await expect(valueBox(page, "Highlights")).toHaveValue("0.80");
   });
 
   test("Crop, Pick white and Before sit in the header with the shortcuts in their tooltips", async ({ page }) => {
     await photos(page);
-    await expect(page.getByRole("button", { name: "Before" })).toHaveAttribute("title", /\\/);
-    await expect(page.getByRole("button", { name: "Crop" })).toHaveAttribute("title", "Crop (C)");
-    await expect(page.getByRole("button", { name: "Pick white" })).toHaveAttribute("title", "Pick white (W)");
+    // A title is a glass tooltip and the button's description.
+    await expect(page.getByRole("button", { name: "Before" })).toHaveAccessibleDescription(/\\/);
+    await expect(page.getByRole("button", { name: "Crop" })).toHaveAccessibleDescription("Crop (C)");
+    await expect(page.getByRole("button", { name: "Pick white" })).toHaveAccessibleDescription("Pick white (W)");
+    await page.getByRole("button", { name: "Crop" }).hover();
+    await expect(page.getByRole("tooltip").first()).toHaveText("Crop (C)");
   });
 });
 
@@ -326,10 +337,10 @@ test.describe("keyboard shortcuts", () => {
     await expect(page.locator(".ym-photo-cell__chip")).toHaveText("Teal and orange · 100%");
     // ← →
     await page.keyboard.press("ArrowRight");
-    await expect(page.getByText("5 / 12")).toBeVisible();
+    await expect(page.getByText(/^5 of 12 · /)).toBeVisible();
     await page.keyboard.press("ArrowLeft");
     await page.keyboard.press("ArrowLeft");
-    await expect(page.getByText("3 / 12")).toBeVisible();
+    await expect(page.getByText(/^3 of 12 · /)).toBeVisible();
     // P picks, ⌘A picks all
     await page.keyboard.press("p");
     await expect(page.getByText("2 picked")).toBeVisible();
@@ -388,7 +399,9 @@ test.describe("keyboard shortcuts", () => {
     const menu = page.getByRole("menu", { name: "Zoom" });
     await expect(menu).toBeVisible();
     await expect(menu.getByRole("menuitemradio", { name: "Fit" })).toBeFocused();
+    // Radix moves the focus a tick after the key, so each step is waited for.
     await page.keyboard.press("ArrowDown");
+    await expect(menu.getByRole("menuitemradio", { name: "50%" })).toBeFocused();
     await page.keyboard.press("ArrowDown");
     await expect(menu.getByRole("menuitemradio", { name: "100%" })).toBeFocused();
     await page.keyboard.press("Enter");
@@ -487,7 +500,7 @@ test.describe("error states", () => {
     await openPhotos(page);
     const thumb = page.getByRole("button", { name: "Show DSC04202, can't open" });
     await expect(thumb).toContainText("Can't open");
-    await expect(thumb.locator(".ym-tag")).toHaveCSS("background-color", "rgb(0, 0, 0)");
+    await expect(thumb.locator('[data-slot="badge"]')).toHaveAttribute("data-variant", "cant-open");
     await thumb.click();
     await expect(page.getByText("This file can't be opened.", { exact: true })).toBeVisible();
     await expect(page.locator(".ym-photo-note").getByText("This file is from a camera mode we can't read yet.")).toBeVisible();
@@ -562,13 +575,13 @@ test("a folder of 500 photos: the first one opens while the rest develop, and th
   await page.getByRole("button", { name: /Open photos/ }).click();
   await expect(page.getByRole("region", { name: "Automatic" })).toBeVisible();
   await expect(page.getByText("2026-10-04 · 500 photos")).toBeVisible();
-  await expect(page.locator(".ym-filmstrip__count")).toHaveText("1 / 500");
+  await expect(page.locator(".ym-filmstrip__caption")).toHaveText("1 of 500 · 0 picked");
   await page.keyboard.press("ArrowRight");
-  await expect(page.locator(".ym-filmstrip__count")).toHaveText("2 / 500");
+  await expect(page.locator(".ym-filmstrip__caption")).toHaveText("2 of 500 · 0 picked");
   await page.keyboard.press("End");
   // A photo that is still developing says so and has nothing to adjust.
   await page.getByRole("button", { name: "Show DSC04700, developing" }).click();
-  await expect(page.locator(".ym-filmstrip__count")).toHaveText("500 / 500");
+  await expect(page.locator(".ym-filmstrip__caption")).toHaveText("500 of 500 · 0 picked");
   await expect(page.getByText("Still developing.")).toBeVisible();
   await expect(page.getByRole("region", { name: "Automatic" })).toHaveCount(0);
   // The window still takes keys: ⌘A picks the photos that are ready, not the ones still developing.

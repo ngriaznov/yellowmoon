@@ -38,6 +38,13 @@ use crate::wire::{
 };
 use crate::wizard::{Downloads, recognise};
 
+/// The paper of the interface as 8-bit sRGB codes: `--paper` of the dark theme in `src/styles/tokens.css` (#0f0f10). It is the
+/// letterbox the core paints around a fitted or cropped photo in viewport frames, thumbnails and look tiles, so that a photo that does
+/// not fill its cell sits on the colour of the page and of the window behind it (`native.rs`, `PAPER_SRGB`). Only views have a
+/// letterbox; an export has none, so no exported file depends on it. The command line keeps the core's default (white), the page its
+/// contact sheets are laid on. `src/styles/native-viewport.node.test.ts` and a test of this module hold the colour to `--paper`.
+pub(crate) const PAPER_RGB8: [u8; 3] = [0x0f, 0x0f, 0x10];
+
 /// How the application is started: where its data and its files are.
 #[derive(Debug, Clone)]
 pub struct AppConfig {
@@ -215,6 +222,9 @@ impl AppApi {
         // same policy, the same adapter, the same budgets.
         let slot = open_app_gpu(config.gpu, options.render.budget);
         slot.apply_to(&mut options.render);
+        // The ground of the interface is dark: the letterbox of a viewport frame, a thumbnail and a look tile is that colour, as the
+        // window behind the webview is (`native.rs`). Exports have no letterbox, so no file changes.
+        options.render.background = PAPER_RGB8;
         let core = Arc::new(Core::open(options).map_err(AppError::from)?);
         {
             let emitter = Arc::clone(&emitter);

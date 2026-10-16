@@ -127,11 +127,11 @@ describe("the text of the app is not selectable, except where people copy it", (
     ".ym-about-dialog__section",
     ".ym-about-dialog__adobe",
     ".ym-about-dialog__legal",
-    ".ym-error-bar > span",
+    '.ym-error-bar [data-slot="item-content"]',
     ".ym-wizard__problem",
-    ".ym-wizard__callout--error > span",
+    '.ym-wizard__callout--error [data-slot="item-content"]',
     ".ym-drop-zone__notice",
-    'p.ym-row-note[role="alert"]',
+    ".ym-develop__notice",
     ".ym-wizard__received-name",
     ".ym-queue__file",
     ".ym-queue__note",
@@ -157,7 +157,9 @@ describe("the text of the app is not selectable, except where people copy it", (
 
   it("keeps a field a field: the I-beam over text fields and over the read-only text people copy, not over sliders", () => {
     const beam = ALL.filter((r) => r.decls.get("cursor") === "text").flatMap((r) => r.selectors);
-    expect(beam).toEqual(expect.arrayContaining(["textarea", ".ym-export__code", ".ym-pref__hint", ".ym-error-bar > span"]));
+    expect(beam).toEqual(
+      expect.arrayContaining(["textarea", ".ym-export__code", ".ym-pref__hint", '.ym-error-bar [data-slot="item-content"]', ".ym-develop__notice"]),
+    );
     expect(beam).not.toContain("input");
   });
 
@@ -174,6 +176,13 @@ describe("a button is an arrow, a link is a hand", () => {
 
   it("leaves the pointing hand to link-styled buttons (LinkButton, ResetLink) and nothing else", () => {
     const hands = ALL.filter((r) => r.decls.get("cursor") === "pointer").flatMap((r) => r.selectors);
-    expect(hands.sort()).toEqual([".ym-link", ".ym-reset-link"]);
+    // glasscn's `link` variant carries data-variant="link"; a link that cannot be used (aria-disabled) is an arrow again.
+    expect(hands.sort()).toEqual(['button[data-slot="button"][data-variant="link"]:not([aria-disabled="true"])']);
+  });
+
+  it("draws LinkButton and ResetLink as glasscn's link variant, the one that gets the hand", () => {
+    const text = (file: string): string => sources().find((s) => s.file.endsWith(file))?.text ?? "";
+    expect(text("components/Button.tsx")).toMatch(/<GlassButton[^>]*variant="link"/);
+    expect(text("components/ResetLink.tsx")).toMatch(/<GlassButton[^>]*variant="link"/);
   });
 });

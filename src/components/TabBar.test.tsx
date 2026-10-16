@@ -47,10 +47,15 @@ describe("TabBar", () => {
     expect(screen.getByRole("tab", { name: "Detail" })).toHaveAttribute("aria-selected", "true");
   });
 
-  it("has one tab in the tab order", () => {
+  it("has one tab in the tab order", async () => {
+    const user = userEvent.setup();
     render(<Harness initial="color" />);
-    expect(screen.getByRole("tab", { name: "Colour" })).toHaveAttribute("tabindex", "0");
+    // Radix's roving focus: the list takes the Tab and hands the focus to the selected tab; the other five are out of the order.
+    await user.tab();
+    expect(screen.getByRole("tab", { name: "Colour" })).toHaveFocus();
     expect(screen.getByRole("tab", { name: "Look" })).toHaveAttribute("tabindex", "-1");
+    await user.tab();
+    expect(screen.getAllByRole("tab")).not.toContain(document.activeElement);
   });
 
   it("moves with ← and → inside the bar, and wraps", async () => {

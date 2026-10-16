@@ -39,6 +39,11 @@ async function wizard(options: MockOptions = { looksImported: false }): Promise<
 
 /** The Next button of the footer (its name changes with the step: Next, Import, Done). */
 const next = (): HTMLElement => within(document.querySelector(".ym-wizard__footer") as HTMLElement).getByRole("button", { name: /^(Next|Import|Done)/ });
+/**
+ * The footer's note about why Next is locked. The same sentence is also the locked Next's description (a tooltip, and a hidden copy of
+ * it for assistive technology), so it is read from the note itself.
+ */
+const foot = (): HTMLElement => document.querySelector(".ym-wizard__foot-note") as HTMLElement;
 const rail = (title: string) => screen.getByRole("button", { name: new RegExp(`^${title}[,.]`) });
 const step = async (): Promise<string> => (await screen.findByText(/^Import · step \d of 5$/)).textContent ?? "";
 
@@ -85,7 +90,8 @@ describe("step 1 · Choose", () => {
   it("locks Next until a package is chosen, and says so", async () => {
     await wizard();
     await h!.user.click(screen.getByRole("checkbox", { name: "Look Library · LogC4" }));
-    expect(screen.getByText("Choose at least one package")).toBeInTheDocument();
+    expect(foot()).toHaveTextContent("Choose at least one package");
+    expect(next()).toHaveAccessibleDescription("Choose at least one package");
     expect(next()).toHaveAttribute("aria-disabled", "true");
     await h!.user.click(next());
     expect(await step()).toBe("Import · step 1 of 5");
@@ -124,7 +130,8 @@ describe("step 2 · Get the files", () => {
   it("waits for the zip, and says what for", async () => {
     await toGet();
     expect(screen.getByText("Waiting for Look Library · LogC4…")).toBeInTheDocument();
-    expect(screen.getByText("Next unlocks when the zip arrives.")).toBeInTheDocument();
+    expect(foot()).toHaveTextContent("Next unlocks when the zip arrives.");
+    expect(next()).toHaveAccessibleDescription("Next unlocks when the zip arrives.");
     expect(next()).toHaveAttribute("aria-disabled", "true");
     expect(screen.getByRole("group", { name: "Or drop the zip here" })).toHaveTextContent("A zip or an unpacked folder both work.");
     expect(rail("Choose")).not.toHaveAttribute("aria-disabled");
@@ -197,7 +204,8 @@ describe("step 2 · Get the files", () => {
     await h!.user.click(screen.getByRole("checkbox", { name: "Display LUTs · LogC4" }));
     await h!.user.click(next());
     expect(screen.getByText("Opens in your browser. Download Look Library · LogC4 and Display LUTs · LogC4 there.")).toBeInTheDocument();
-    expect(screen.getByText("Next unlocks when all 2 files have arrived.")).toBeInTheDocument();
+    expect(foot()).toHaveTextContent("Next unlocks when all 2 files have arrived.");
+    expect(next()).toHaveAccessibleDescription("Next unlocks when all 2 files have arrived.");
     drop(LL4);
     await screen.findByRole("list", { name: "Files that arrived" });
     expect(next()).toHaveAttribute("aria-disabled", "true");
@@ -234,7 +242,8 @@ describe("step 3 · Recognise", () => {
     expect(within(row).getByText("Not chosen")).toBeInTheDocument();
     expect(row).toHaveTextContent("This is Look Library · LogC3, not Look Library · LogC4, which you chose. Download 'Look Library for LogC4 (3D-LUTs)' (or 'Look Library for LogC4 (ALF4 Look Files)') from ARRI's page, or go back and choose this one.");
     expect(next()).toHaveAttribute("aria-disabled", "true");
-    expect(screen.getByText("Look Library · LogC4 is missing. Go back and add it.")).toBeInTheDocument();
+    expect(foot()).toHaveTextContent("Look Library · LogC4 is missing. Go back and add it.");
+    expect(next()).toHaveAccessibleDescription("Look Library · LogC4 is missing. Go back and add it.");
   });
 
   it("explains a damaged look file in plain words", async () => {
@@ -363,7 +372,8 @@ describe("step 3 · Recognise", () => {
     const group = within(row).getByRole("radiogroup", { name: `Input of ${FAILURE_ZIPS.ownCube}` });
     expect(within(group).getAllByRole("radio").map((r) => r.textContent)).toEqual(["LogC4", "LogC3", "LogC3 · Rec.709"]);
     expect(next()).toHaveAttribute("aria-disabled", "true");
-    expect(screen.getByText("Say what the other LUTs expect as input.")).toBeInTheDocument();
+    expect(foot()).toHaveTextContent("Say what the other LUTs expect as input.");
+    expect(next()).toHaveAccessibleDescription("Say what the other LUTs expect as input.");
     await h!.user.click(within(group).getByRole("radio", { name: "LogC3 · Rec.709" }));
     expect(within(row).getByText("LogC3 in, Rec.709 out. It replaces our display rendering.")).toBeInTheDocument();
     expect(within(row).getByText("Ready")).toBeInTheDocument();
@@ -390,7 +400,8 @@ describe("step 3 · Recognise", () => {
     expect(within(row).getByText("Question")).toBeInTheDocument();
     // Not answered yet: the question locks Import, and it comes first.
     expect(next()).toHaveAttribute("aria-disabled", "true");
-    expect(screen.getByText("Say what the other LUTs expect as input.")).toBeInTheDocument();
+    expect(foot()).toHaveTextContent("Say what the other LUTs expect as input.");
+    expect(next()).toHaveAccessibleDescription("Say what the other LUTs expect as input.");
     const group = within(row).getByRole("radiogroup", { name: `Input of ${FAILURE_ZIPS.otherCamera}` });
     await h!.user.click(within(group).getByRole("radio", { name: "LogC4" }));
     expect(within(row).getByText("Ready")).toBeInTheDocument();
@@ -433,7 +444,8 @@ describe("steps 4 and 5 · Import and Finish", () => {
     await waitFor(() => expect(screen.getByText("of 87 files")).toBeInTheDocument());
     await waitFor(() => expect(screen.getByRole("progressbar", { name: "Importing looks" })).toHaveAttribute("aria-valuenow", "46"));
     expect(screen.getByText("40")).toBeInTheDocument();
-    expect(screen.getByText("This takes a few seconds")).toBeInTheDocument();
+    expect(foot()).toHaveTextContent("This takes a few seconds");
+    expect(next()).toHaveAccessibleDescription("This takes a few seconds");
     expect(next()).toHaveAttribute("aria-disabled", "true");
     // Nothing can be left or stepped back from while files are copied.
     expect(screen.getByRole("button", { name: "Cancel" })).toHaveAttribute("aria-disabled", "true");

@@ -21,7 +21,7 @@ const whiteBalanceAuto = (page: Page) => page.getByRole("region", { name: "White
 
 /** Drags a slider's thumb to a share of its track with the real mouse. */
 async function dragSlider(page: Page, label: string, to: number, steps = 6): Promise<void> {
-  const control = page.getByRole("slider", { name: label }).locator("xpath=ancestor::*[contains(@class,'ym-slider__control')][1]");
+  const control = page.getByRole("slider", { name: label }).locator("xpath=ancestor::*[@data-slot='slider'][1]");
   const box = (await control.boundingBox())!;
   const y = box.y + box.height / 2;
   await page.mouse.move(box.x + box.width * 0.5, y);

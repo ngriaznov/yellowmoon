@@ -5,9 +5,10 @@ them (BSD, MIT, ISC, Apache-2.0 and the OFL all make that a condition). This fol
 
 | File | What it is |
 |---|---|
-| `generate.py` | Writes `THIRD-PARTY.md` at the repository root and verifies it. Rust: `cargo about generate --format json` for the two programs that ship (`src-tauri` and `crates/ym-cli`), macOS targets, normal dependencies only. npm: `license-checker --production`. Fonts: the Figtree OFL text. Our own crates are not listed (`LICENSE` covers them). |
+| `generate.py` | Writes `THIRD-PARTY.md` at the repository root and verifies it. Rust: `cargo about generate --format json` for the two programs that ship (`src-tauri` and `crates/ym-cli`), macOS targets, normal dependencies only. npm: `license-checker --production`, plus Tailwind CSS (a build tool whose output is in the app's stylesheet: `BUILD_TOOL_OUTPUT`). Fonts: the Figtree OFL text. Our own crates are not listed (`LICENSE` covers them). |
 | `about.toml` | The cargo-about configuration: the accepted licences (the allow list of `deny.toml`; a unit test keeps the two equal), the two macOS targets, no build or dev dependencies. |
-| `check_bundle.py` | Fails when `src-tauri/tauri.conf.json` does not put `NOTICE`, `LICENSE` and `THIRD-PARTY.md` into `bundle.resources`, or when `NOTICE` lacks the BSD 3-Clause conditions of the ported Menon demosaic. |
+| `check_bundle.py` | Fails when `src-tauri/tauri.conf.json` does not put `NOTICE`, `LICENSE` and `THIRD-PARTY.md` into `bundle.resources`, or when `NOTICE` lacks the BSD 3-Clause conditions of the ported Menon demosaic or the MIT notice of glasscn. |
+| `texts/` | Licence texts of npm packages that ship no LICENSE file (`HAND_ADDED_TEXTS` in `generate.py`): today `react-remove-scroll-bar`, a dependency of Radix. Each is the LICENSE file of the package's repository. |
 | `THIRD-PARTY.stub.md` | What a development build gets in place of the real file, so that tauri-build finds the resource. `generate.py --verify` never accepts it. |
 | `test_licences.py` | Unit tests (stdlib only): `python3 -I -m unittest discover -s tools/licences`. |
 
@@ -32,7 +33,7 @@ writes the stub when `tauri.conf.json` lists the file and no real one exists.
 
 **A package without a licence file.** The generator stops. The Tauri plugins' npm packages ship only an SPDX tag (`LICENSE.spdx`);
 for them (and only for `@tauri-apps/plugin-*`) the texts of the Rust crate of the same repository are used, and the file says so
-(`rust_counterpart` in `generate.py`). Another package needs the same kind of explicit rule, or its text added by hand.
+(`rust_counterpart` in `generate.py`). Another package needs the same kind of explicit rule, or its text added by hand: save the repository's LICENSE in `texts/<package>.LICENSE` and name the package in `HAND_ADDED_TEXTS`.
 
 **What is not covered here.** Data and ported code are attributed in `NOTICE` (AMPAS terms, rawtoaces-data, the ACES 2 port,
 the Menon demosaic). Fonts other than Figtree, if one is ever added, need a line in `collect_fonts`.

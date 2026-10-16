@@ -11,6 +11,55 @@ use super::*;
 use crate::testing::{Harness, WAIT, jpeg_job, png_size, wait_until};
 use crate::wire::*;
 
+// --- The paper --------------------------------------------------------------------------------
+
+/// The paper of the dark theme in `src/styles/tokens.css` (`--paper`), as 8-bit codes.
+fn dark_paper_of_tokens() -> [u8; 3] {
+    let tokens = include_str!("../../../src/styles/tokens.css");
+    let dark = tokens
+        .split(r#":root[data-theme="dark"]"#)
+        .nth(1)
+        .expect("tokens.css has a dark theme block");
+    let hex = dark
+        .split("--paper:")
+        .nth(1)
+        .expect("the dark theme sets --paper")
+        .trim_start();
+    let hex = hex.strip_prefix('#').expect("--paper is a hex colour");
+    let code = |i: usize| u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).expect("two hex digits");
+    [code(0), code(1), code(2)]
+}
+
+#[test]
+fn the_letterbox_the_app_paints_is_the_paper_of_the_interface() {
+    assert_eq!(
+        PAPER_RGB8,
+        dark_paper_of_tokens(),
+        "PAPER_RGB8 is --paper of the dark theme"
+    );
+    let h = Harness::new();
+    assert_eq!(
+        h.api.core.renderer.options().background,
+        PAPER_RGB8,
+        "the core's frames, thumbnails and look tiles are letterboxed with the paper"
+    );
+}
+
+#[test]
+fn the_window_is_the_paper_from_its_first_moment() {
+    // `backgroundColor` of the window in tauri.conf.json is what macOS shows before `native.rs` sets the window's own colour (a
+    // transparent window is clear until then, and the desktop would show through).
+    let conf: serde_json::Value =
+        serde_json::from_str(include_str!("../../tauri.conf.json")).expect("tauri.conf.json");
+    let window = &conf["app"]["windows"][0];
+    let [r, g, b] = PAPER_RGB8;
+    assert_eq!(
+        window["backgroundColor"].as_str(),
+        Some(format!("#{r:02x}{g:02x}{b:02x}").as_str()),
+        "the main window's backgroundColor is the paper"
+    );
+}
+
 // --- Session ----------------------------------------------------------------------------------
 
 #[test]

@@ -11,6 +11,12 @@ const files = (...names: string[]) => ({
 });
 
 describe("DropZone", () => {
+  it("is a glasscn Card, with an Item for its notice", () => {
+    render(<DropZone title="Drop files or a folder" notice="No ARW files in what you dropped." />);
+    expect(screen.getByRole("group", { name: "Drop files or a folder" })).toHaveAttribute("data-slot", "card");
+    expect(screen.getByRole("alert")).toHaveAttribute("data-slot", "item");
+  });
+
   it("is a named group with a title, a hint and actions", () => {
     render(
       <DropZone title="Drop files or a folder" hint="ARW only, as many as you like">

@@ -1,0 +1,23 @@
+/* The base colour tokens `shadcn init` writes and glasscn's components assume (its registry ships only its own tokens). This
+   experiment skipped `init`, so utilities such as `text-muted-foreground`, `text-foreground` and `bg-destructive/14` were not generated
+   and every muted label, inactive tab and red badge drew in the plain text colour. Only the ones the components use are defined;
+   shadcn's `--muted` is left out because tokens.css already has a `--muted` (a text colour) that the app uses. */
+@theme inline {
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-destructive: var(--destructive);
+}
+:root {
+  --foreground: var(--glass-label);
+  --card: var(--glass-tint);
+  --card-foreground: var(--glass-label);
+  --popover-foreground: var(--glass-label);
+  --muted-foreground: var(--glass-label-secondary);
+  --destructive: oklch(0.577 0.245 27.325);
+}
+.dark {
+  --destructive: oklch(0.704 0.191 22.216);
+}

@@ -10,7 +10,7 @@
 //! The page lets the view show through: the cell is transparent (`data-native`), and while the
 //! Photos screen shows, so are the page's root, its body and the screen (`data-native-viewport`
 //! on the root element, `src/styles/screens.css`). Behind the page the window is paper
-//! ([`PAPER_SRGB`]), so the page looks the same wherever it draws nothing.
+//! ([`PAPER_SRGB`], dark since the interface is), so the page looks the same wherever it draws nothing.
 //!
 //! The core renders each frame (`ym-core`, RGBA8 in Display P3, the size of the cell in device
 //! pixels). This module only puts it on screen: the frame is uploaded to a texture and drawn with a
@@ -58,12 +58,20 @@ use crate::perf;
 use crate::viewport::FrameSink;
 use crate::wire::{ViewportBackendKind, ViewportRect};
 
-/// The window's background behind the webview, in sRGB: `--paper` of `src/styles/tokens.css`
-/// (#ffffff). The page is transparent over the photo cell while the Photos screen shows, so this is
-/// what the cell shows before the first frame and after [`FrameSink::clear`], and what the page
+/// The window's background behind the webview, in sRGB: `--paper` of the dark theme in
+/// `src/styles/tokens.css` (#0f0f10, the interface's ground since the dark glass interface of
+/// 2026-10-16). The page is transparent over the photo cell while the Photos screen shows, so this
+/// is what the cell shows before the first frame and after [`FrameSink::clear`], and what the page
 /// shows wherever it draws nothing. Tauri's transparent window starts with a clear background,
-/// which would show the desktop there instead.
-const PAPER_SRGB: [f64; 3] = [1.0, 1.0, 1.0];
+/// which would show the desktop there instead; `backgroundColor` of the window in
+/// `tauri.conf.json` is the same colour, so that the window is not clear before this runs either.
+/// The same colour as 8-bit codes, [`crate::api::PAPER_RGB8`], is the letterbox of the core's
+/// frames; `src/styles/native-viewport.node.test.ts` holds all of them to `--paper`.
+const PAPER_SRGB: [f64; 3] = [
+    0.058823529411764705,
+    0.058823529411764705,
+    0.06274509803921569,
+];
 
 /// How long creating the view on the main thread may take before we give up and use the fallback.
 const MAIN_THREAD_TIMEOUT: Duration = Duration::from_secs(5);

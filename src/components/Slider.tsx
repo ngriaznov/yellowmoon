@@ -1,12 +1,15 @@
-import { useId, useRef, useState } from "react";
-import type { ChangeEvent, KeyboardEvent, PointerEvent as ReactPointerEvent } from "react";
+import { useEffect, useId, useRef } from "react";
+import { Slider as GlassSlider } from "@/components/glass/slider";
 import { cx } from "./cx";
-import { clamp, clampSnap, roundToStep, sameValue } from "./format";
-import { useDraft, useFrameEmitter, useLatest, usePointerDrag } from "./hooks";
+import { clampSnap, roundToStep, sameValue } from "./format";
+import { useDraft, useFrameEmitter, useLatest } from "./hooks";
 import { ResetLink } from "./ResetLink";
 import type { TabId } from "./tabs";
 import { ValueBox } from "./ValueBox";
 import type { ValueBoxProps } from "./ValueBox";
+
+/** The keys Radix's slider acts on. */
+const STEP_KEYS: ReadonlySet<string> = new Set(["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End", "PageUp", "PageDown"]);
 
 export interface SliderProps {
   /** Row label, 13 px 800 ("Exposure"). Also the slider's accessible name. */
@@ -17,9 +20,8 @@ export interface SliderProps {
   /** Default 1. Typed values, keys and drags all land on this grid. */
   step?: number;
   /**
-   * The default value, which for an automatic setting is the resolved auto value. A 2 × 16
-   * detent tick marks it, the fill bar runs from it to the thumb, and Reset and a double
-   * click go back to it. Omit it for a slider with no default (Export's Quality): the fill
+   * The default value, which for an automatic setting is the resolved auto value. The accent
+   * range runs from it to the knob, and Reset and a double click go back to it. Omit it for a slider with no default (Export's Quality): the fill
    * then runs from the left end and there is no reset.
    */
   defaultValue?: number;
@@ -51,14 +53,11 @@ export interface SliderProps {
 }
 
 /**
- * Slider row (`docs/11-ui.md` §Components): grid `92px 1fr 72px 40px`, 38 px high. A 2 px
- * track, a 10 px fill bar in the tab colour with a 2 px ink border between the detent and the
- * value, a 2 × 16 detent tick at the default, an 8 × 22 ink thumb. A native
- * `<input type="range">` sits on top at opacity 0 for assistive technology and the keyboard.
+ * Slider row: a 92 px label, glasscn's slider (a soft track, an accent range that grows from the default, a capsule knob that turns into
+ * a lens while dragged), a 72 px value box and a 40 px Reset column, 38 px high. The knob is Radix's `role="slider"`, named by the label.
  *
- * Keys: arrows step, Shift ×10, PageUp/PageDown ×10, Home/End to the limits. Double-click the
- * track to reset. The component is controlled; while a drag or a patch is in flight it shows
- * its own value so the thumb never lags behind the pointer.
+ * Keys (Radix): arrows step, Shift+arrow or PageUp/PageDown ×10, Home/End to the limits; the same keys with ⌘, ⌃ or ⌥ are left alone. Double-click the track to reset. The component is
+ * controlled; while a drag or a patch is in flight it shows its own value so the knob never lags behind the pointer.
  */
 export function Slider({
   label,
@@ -80,9 +79,8 @@ export function Slider({
 }: SliderProps) {
   const autoId = useId();
   const id = idProp ?? `ym-slider-${autoId}`;
+  const labelId = `${id}-label`;
   const control = useRef<HTMLDivElement>(null);
-  const input = useRef<HTMLInputElement>(null);
-  const [focusVisible, setFocusVisible] = useState(false);
   const draft = useDraft<number>(value, (a, b) => sameValue(a, b, step));
   const shown = draft.shown;
   const hasDefault = defaultValue !== undefined;
@@ -90,6 +88,8 @@ export function Slider({
 
   const onChangeRef = useLatest(onChange);
   const last = useRef(value);
+  const pointerDown = useRef(false);
+  const moved = useRef(false);
   const frames = useFrameEmitter<number>((v) => onChangeRef.current(v, false));
 
   /** A finished change: keys, typing, Reset, release. */
@@ -98,36 +98,6 @@ export function Slider({
     draft.settle(next);
     onChangeRef.current(next, true);
   };
-
-  const valueAt = (clientX: number): number => {
-    const rect = control.current?.getBoundingClientRect();
-    if (!rect || rect.width <= 0) return last.current;
-    const t = clamp((clientX - rect.left) / rect.width, 0, 1);
-    return clampSnap(min + t * (max - min), min, max, step);
-  };
-
-  const onPointerDown = usePointerDrag({
-    start: (event: ReactPointerEvent<Element>) => {
-      if (disabled) return false;
-      input.current?.focus({ preventScroll: true });
-      const next = valueAt(event.clientX);
-      last.current = next;
-      draft.drag(next);
-      frames.push(next);
-      return true;
-    },
-    move: (event: PointerEvent) => {
-      const next = valueAt(event.clientX);
-      if (next === last.current) return;
-      last.current = next;
-      draft.drag(next);
-      frames.push(next);
-    },
-    end: () => {
-      frames.cancel();
-      commit(last.current);
-    },
-  });
 
   const reset = (): void => {
     if (disabled || !hasDefault) return;
@@ -139,83 +109,84 @@ export function Slider({
     }
   };
 
-  const onKeyDown = (event: KeyboardEvent<HTMLInputElement>): void => {
-    if (disabled || event.metaKey || event.ctrlKey || event.altKey) return;
-    const unit = step * (event.shiftKey ? 10 : 1);
-    let next: number;
-    switch (event.key) {
-      case "ArrowRight":
-      case "ArrowUp":
-        next = shown + unit;
-        break;
-      case "ArrowLeft":
-      case "ArrowDown":
-        next = shown - unit;
-        break;
-      case "PageUp":
-        next = shown + step * 10;
-        break;
-      case "PageDown":
-        next = shown - step * 10;
-        break;
-      case "Home":
-        next = min;
-        break;
-      case "End":
-        next = max;
-        break;
-      default:
-        return;
+  // Radix's knob has no `aria-valuetext` prop here, so the readable value ("+0.30 EV") is put on it.
+  useEffect(() => {
+    if (!format) return;
+    control.current?.querySelector('[role="slider"]')?.setAttribute("aria-valuetext", format(shown));
+  }, [format, shown]);
+
+  const onValueChange = ([raw]: number[]): void => {
+    if (disabled || raw === undefined) return;
+    const next = clampSnap(raw, min, max, step);
+    if (pointerDown.current) {
+      // A drag: at most one call per frame, and a final one on release.
+      if (next === last.current) return;
+      moved.current = true;
+      last.current = next;
+      draft.drag(next);
+      frames.push(next);
+    } else if (!sameValue(next, shown, step)) {
+      // A key: one finished change.
+      commit(next);
     }
-    event.preventDefault();
-    const snapped = clampSnap(next, min, max, step);
-    if (!sameValue(snapped, shown, step)) commit(snapped);
   };
 
-  // The thumb and fill positions, in percent of the control.
-  const span = max - min || 1;
-  const pos = clamp(((shown - min) / span) * 100, 0, 100);
-  const detent = hasDefault ? clamp(((defaultValue - min) / span) * 100, 0, 100) : null;
-  const fill =
-    detent === null
-      ? { left: 0, width: pos }
-      : { left: Math.min(pos, detent), width: Math.abs(pos - detent) };
-  const showFill = detent === null || changed;
+  const release = (): void => {
+    if (!pointerDown.current) return;
+    pointerDown.current = false;
+    frames.cancel();
+    if (moved.current) commit(last.current);
+    moved.current = false;
+  };
 
   return (
     <div
-      className={cx("ym-slider", className)}
+      className={cx(
+        "grid min-h-[38px] items-center gap-x-3",
+        resetColumn ? "grid-cols-[92px_minmax(0,1fr)_72px_40px]" : "grid-cols-[92px_minmax(0,1fr)_72px]",
+        className,
+      )}
+      data-slider=""
       data-tab={tab}
       data-changed={changed || undefined}
       data-disabled={disabled || undefined}
       data-reset-column={resetColumn ? undefined : "false"}
     >
-      <label className="ym-slider__label" htmlFor={id}>
+      <span id={labelId} className="text-[0.8125rem] font-semibold leading-tight">
         {label}
-      </label>
-      <div ref={control} className="ym-slider__control" onPointerDown={onPointerDown} onDoubleClick={reset} data-focus-visible={focusVisible || undefined}>
-        <div className="ym-slider__track" />
-        {showFill ? <div className="ym-slider__fill" style={{ left: `${fill.left}%`, width: `${fill.width}%` }} /> : null}
-        {detent !== null ? <div className="ym-slider__detent" style={{ left: `${detent}%` }} /> : null}
-        <div className="ym-slider__thumb" style={{ left: `${pos}%` }} />
-        <input
-          ref={input}
-          id={id}
-          className="ym-slider__input"
-          type="range"
+      </span>
+      <div
+        ref={control}
+        className="px-1"
+        onDoubleClick={reset}
+        // Radix steps the value on ⌘, ⌃ and ⌥ with the arrows, Home, End and Page keys as well; those combinations belong to the app and the system.
+        onKeyDownCapture={(event) => {
+          if ((event.metaKey || event.ctrlKey || event.altKey) && STEP_KEYS.has(event.key)) event.stopPropagation();
+        }}
+        onPointerDownCapture={(event) => {
+          // Only the primary button drags. Radix's slider takes any button, so a right click (or a two-finger click) on the track would
+          // move the knob and end as a finished change; stopping the event here keeps Radix's own handler from seeing it.
+          if (event.button !== 0) {
+            event.stopPropagation();
+            return;
+          }
+          if (disabled) return;
+          pointerDown.current = true;
+          moved.current = false;
+          last.current = shown;
+        }}
+        onPointerUp={release}
+        onPointerCancel={release}
+      >
+        <GlassSlider
+          aria-labelledby={labelId}
           min={min}
           max={max}
           step={step}
-          value={roundToStep(shown, step)}
+          value={[roundToStep(shown, step)]}
+          neutralValue={hasDefault ? defaultValue : undefined}
           disabled={disabled}
-          aria-valuetext={format ? format(shown) : undefined}
-          onChange={(event: ChangeEvent<HTMLInputElement>) => {
-            const next = clampSnap(Number(event.target.value), min, max, step);
-            if (!sameValue(next, shown, step)) commit(next);
-          }}
-          onKeyDown={onKeyDown}
-          onFocus={(event) => setFocusVisible(event.target.matches(":focus-visible"))}
-          onBlur={() => setFocusVisible(false)}
+          onValueChange={onValueChange}
         />
       </div>
       <ValueBox
@@ -231,9 +202,7 @@ export function Slider({
         disabled={disabled}
       />
       {resetColumn ? (
-        <div className="ym-slider__reset">
-          {changed && !disabled ? <ResetLink aria-label={`Reset ${label}`} onClick={reset} /> : null}
-        </div>
+        <div className="flex justify-end">{changed && !disabled ? <ResetLink aria-label={`Reset ${label}`} onClick={reset} /> : null}</div>
       ) : null}
     </div>
   );

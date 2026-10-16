@@ -1,0 +1,840 @@
+/* Variant C2, round 6: the pages that still wore the old look, brought to the same dark glass (experiment, branch claude/glasscn-ui).
+   Start, the Import ARRI looks wizard, the modes on the photo (Before, the pixel readout, Crop, Pick white), the error bar, and the
+   rest of the dialogs and tabs. The layout of every page is the one it has today (the same cells, edge to edge, in the same places);
+   what changed is what they are made of: glass surfaces with a thin light rim for each rule, glasscn's own components for every control
+   and every row, the yellow accent and the tab colours. The wheels, the curve plot, the histogram, the look tiles, the filmstrip
+   thumbnails and the crop frame stay ours (glasscn has no counterpart), drawn to sit on glass. */
+@reference "./glass.css";
+
+/* ---- The ground ------------------------------------------------------------------------------------------------------------------- */
+html:has(.ym-screen[data-screen="start"]),
+html:has(.ym-screen[data-screen="start"]) body,
+html:has(.ym-screen[data-screen="start"]) #root,
+html:has(.ym-screen[data-screen="import-looks"]),
+html:has(.ym-screen[data-screen="import-looks"]) body,
+html:has(.ym-screen[data-screen="import-looks"]) #root {
+  background: transparent !important;
+}
+.ym-screen[data-screen="start"],
+.ym-screen[data-screen="import-looks"] {
+  background: transparent;
+  color: var(--glass-label);
+}
+
+/* The header: the folder cell, the actions, the update cell and the Export cell as one glass surface, a rim under it and between cells. */
+.ym-screen[data-screen="start"] .ym-header,
+.ym-screen[data-screen="import-looks"] .ym-header {
+  @apply glass rounded-none;
+  border-width: 0 0 1px 0;
+}
+.ym-screen[data-screen="start"] .ym-brand,
+.ym-screen[data-screen="import-looks"] .ym-brand {
+  border-right: 1px solid var(--rim);
+}
+.ym-screen[data-screen="start"] .ym-header__right {
+  border-left: 1px solid var(--rim);
+}
+
+/* ---- Start ------------------------------------------------------------------------------------------------------------------------ */
+/* The block that says what the app does: neutral glass. Round 7: yellow is a button accent, never a large tinted area (translucent
+   yellow over dark glass reads olive), so the only yellow on this page is the moon, the primary buttons and the progress fill. */
+.ym-about {
+  @apply glass rounded-none;
+  border-width: 0 1px 0 0;
+  color: var(--glass-label);
+}
+.ym-about h1 {
+  color: var(--glass-label);
+}
+.ym-about p {
+  color: color-mix(in oklch, var(--glass-label) 88%, transparent);
+}
+.ym-about-table {
+  border-top: 1px solid var(--rim);
+}
+.ym-about-row {
+  display: grid;
+  grid-template-columns: 140px minmax(0, 1fr);
+  align-items: center;
+  gap: 0;
+  min-height: 48px;
+  padding: 0;
+  border-bottom: 1px solid var(--rim);
+  border-radius: 0;
+  font-size: 15px;
+}
+.ym-about-row[data-action="true"] {
+  grid-template-columns: 140px minmax(0, 1fr) auto;
+}
+.ym-about-row__label {
+  font-size: var(--fs-small);
+  font-weight: var(--fw-heavy);
+  letter-spacing: var(--ls-tag);
+  text-transform: uppercase;
+}
+
+/* The drop cell and its zone: a glass card with a dashed accent edge. */
+.ym-drop {
+  padding: 32px;
+}
+.ym-drop-zone {
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  padding: 32px;
+  border: 2px dashed color-mix(in oklch, var(--ink) 30%, transparent);
+  text-align: center;
+}
+.ym-drop-zone[data-active="true"] {
+  border-style: solid;
+  border-color: var(--brand);
+  background-image: linear-gradient(color-mix(in oklch, var(--ink) 8%, transparent), color-mix(in oklch, var(--ink) 8%, transparent));
+}
+.ym-drop-zone__icon {
+  width: 88px;
+  height: 88px;
+  border-radius: calc(var(--glass-radius-surface) * 0.75);
+  background: color-mix(in oklch, var(--ink) 10%, transparent);
+  color: var(--glass-label);
+}
+.ym-drop-zone__icon svg {
+  width: 40px;
+  height: 40px;
+}
+.ym-drop-zone__title {
+  font-size: var(--fs-h1);
+  font-weight: var(--fw-heavy);
+  letter-spacing: -0.02em;
+  line-height: 1.1;
+}
+.ym-drop-zone__hint {
+  color: var(--glass-label-secondary);
+  font-size: 15px;
+}
+.ym-drop-zone__notice {
+  width: auto;
+  border: 0;
+  border-radius: calc(var(--glass-radius-surface) * 0.5);
+  background: color-mix(in oklch, var(--destructive) 20%, transparent);
+  color: var(--glass-label);
+  font-weight: var(--fw-semibold);
+}
+.ym-drop-zone[data-variant="compact"] {
+  flex-direction: row;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 24px 28px;
+  border-radius: var(--glass-radius-surface);
+  text-align: left;
+}
+.ym-drop-zone[data-variant="compact"] .ym-drop-zone__title {
+  font-size: 20px;
+  letter-spacing: 0;
+}
+.ym-drop-zone[data-variant="compact"] .ym-drop-zone__hint {
+  font-size: var(--fs-label);
+}
+
+/* Developing: the list of photos, a glasscn Item for each. */
+.ym-develop {
+  padding: 0;
+}
+.ym-develop__head h2 {
+  font-size: var(--fs-h1);
+}
+.ym-develop__progress {
+  margin-top: 16px;
+}
+.ym-develop__list {
+  margin-top: 20px;
+}
+.ym-develop-list .ym-queue {
+  border-top: 1px solid var(--rim);
+}
+.ym-queue__row {
+  padding-block: 8px;
+  border-radius: 0;
+}
+.ym-develop-list .ym-queue__row {
+  grid-template-columns: 112px minmax(0, 1fr) auto;
+  column-gap: 16px;
+  min-height: 40px;
+  padding-block: 4px;
+}
+.ym-develop-list .ym-queue__file {
+  font-variant-numeric: tabular-nums;
+}
+.ym-develop-list .ym-queue__note {
+  overflow: hidden;
+  font-size: var(--fs-label);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ym-develop__foot > span {
+  color: var(--glass-label-secondary);
+}
+.ym-row-note {
+  color: var(--glass-label-secondary);
+}
+.ym-develop__notice {
+  margin-top: 12px;
+  background: color-mix(in oklch, var(--destructive) 20%, transparent);
+  color: var(--glass-label);
+  font-weight: var(--fw-semibold);
+}
+
+/* The three steps: three glass cells under the page, the current one tinted with the accent. */
+.ym-steps {
+  @apply glass rounded-none;
+  display: block;
+  border-width: 1px 0 0 0;
+}
+.ym-steps__list {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  height: 100%;
+}
+.ym-step {
+  flex-wrap: nowrap;
+  gap: 20px;
+  padding: 0 32px;
+  color: var(--glass-label);
+  border-right: 1px solid var(--rim);
+  border-radius: 0;
+  background: transparent;
+}
+.ym-step:last-child {
+  border-right: 0;
+}
+.ym-step[data-on="true"] {
+  background: color-mix(in oklch, var(--ink) 9%, transparent);
+  box-shadow: inset 0 2px 0 color-mix(in oklch, var(--ink) 55%, transparent);
+}
+.ym-step__n {
+  align-self: center;
+  translate: none;
+  color: var(--glass-label-tertiary);
+  font-size: 48px;
+  font-weight: var(--fw-heavy);
+  letter-spacing: -0.03em;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+.ym-step[data-on="true"] .ym-step__n {
+  color: var(--glass-label);
+}
+.ym-step__text {
+  gap: 4px;
+  font-size: var(--fs-body);
+}
+.ym-step__title {
+  font-size: var(--fs-h3);
+  font-weight: var(--fw-heavy);
+}
+
+/* ---- The wizard ------------------------------------------------------------------------------------------------------------------- */
+.ym-wizard__header-text {
+  color: var(--glass-label-secondary);
+}
+.ym-wizard__cancel {
+  display: flex;
+  align-items: center;
+  padding: 0 24px;
+  border-left: 1px solid var(--rim);
+}
+.ym-wizard__rail {
+  @apply glass rounded-none;
+  border-width: 0 1px 0 0;
+}
+.ym-step-rail__list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+/* A step is a glasscn Item that is a button: its number (or tick) in a tile, a title and a line. */
+.ym-step-rail__step {
+  display: grid;
+  grid-template-columns: 52px minmax(0, 1fr);
+  align-items: start;
+  column-gap: 12px;
+  width: 100%;
+  padding: 18px var(--pad-panel);
+  border-bottom: 1px solid var(--rim);
+  border-radius: 0;
+  background: transparent;
+  color: var(--glass-label);
+  cursor: default;
+}
+.ym-step-rail__step[aria-current="step"] {
+  background: color-mix(in oklch, var(--ink) 9%, transparent);
+}
+.ym-step-rail__step[aria-disabled="true"]:hover,
+.ym-step-rail__step[aria-current="step"]:hover {
+  background: inherit;
+}
+.ym-step-rail__step[aria-current="step"]:hover {
+  background: color-mix(in oklch, var(--ink) 9%, transparent);
+}
+.ym-step-rail__mark {
+  width: 44px;
+  height: 44px;
+  border-radius: calc(var(--glass-radius-control) * 0.9);
+  background: color-mix(in oklch, var(--ink) 10%, transparent);
+  color: var(--glass-label);
+  font-size: 22px;
+  font-weight: var(--fw-heavy);
+  letter-spacing: -0.02em;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+.ym-step-rail__mark svg {
+  width: 24px;
+  height: 24px;
+}
+.ym-step-rail__step[aria-current="step"] .ym-step-rail__mark {
+  background: var(--glass-label);
+  color: oklch(0.2 0.01 262);
+}
+.ym-step-rail__step[data-state="done"] .ym-step-rail__mark {
+  background: color-mix(in oklch, var(--ink) 12%, transparent);
+  color: var(--glass-label);
+}
+.ym-step-rail__body {
+  gap: 4px;
+  padding-top: 2px;
+}
+.ym-step-rail__title {
+  font-size: 17px;
+  font-weight: var(--fw-heavy);
+}
+.ym-step-rail__text {
+  color: var(--glass-label-secondary);
+  font-size: var(--fs-label);
+  line-height: 1.45;
+}
+.ym-step-rail__step[data-state="locked"] {
+  opacity: 0.86;
+}
+
+.ym-wizard__main {
+  @apply glass rounded-none;
+  border-width: 0;
+}
+.ym-wizard__lead {
+  color: var(--glass-label-secondary);
+}
+.ym-wizard__footer {
+  @apply glass rounded-none;
+  border-width: 1px 0 0 0;
+}
+.ym-wizard__foot-note {
+  color: var(--glass-label-secondary);
+}
+
+/* 1 · Choose: each package is an Item that is a checkbox. */
+.ym-wizard__package {
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr) auto;
+  column-gap: 16px;
+  align-items: start;
+  width: 100%;
+  padding: 18px 20px;
+  border: 0;
+  border-radius: calc(var(--glass-radius-surface) * 0.6);
+  background: color-mix(in oklch, var(--ink) 5%, transparent);
+  box-shadow: inset 0 0 0 1px var(--rim);
+  color: var(--glass-label);
+  cursor: default;
+}
+.ym-wizard__package[data-on="true"] {
+  background: color-mix(in oklch, var(--ink) 9%, transparent);
+  box-shadow: inset 0 0 0 2px var(--brand);
+}
+.ym-wizard__package:hover {
+  background: color-mix(in oklch, var(--ink) 8%, transparent);
+}
+.ym-wizard__package[data-on="true"]:hover {
+  background: color-mix(in oklch, var(--ink) 11%, transparent);
+}
+.ym-wizard__box {
+  width: 32px;
+  height: 32px;
+  border: 0;
+  border-radius: calc(var(--glass-radius-control) * 0.6);
+  background: transparent;
+  box-shadow: inset 0 0 0 2px color-mix(in oklch, var(--ink) 38%, transparent);
+}
+.ym-wizard__package[data-on="true"] .ym-wizard__box {
+  background: var(--brand);
+  box-shadow: none;
+  color: var(--brand-ink);
+}
+.ym-wizard__box svg {
+  width: 20px;
+  height: 20px;
+  stroke-width: 3;
+}
+.ym-wizard__package-text {
+  gap: 6px;
+}
+.ym-wizard__package-name {
+  font-size: 19px;
+  font-weight: var(--fw-heavy);
+}
+.ym-wizard__package-desc {
+  max-width: 520px;
+  font-size: var(--fs-body);
+  line-clamp: unset;
+  -webkit-line-clamp: unset;
+  display: block;
+}
+.ym-wizard__package-meta {
+  color: var(--glass-label-secondary);
+}
+
+/* 2 · Get the files */
+.ym-wizard__watch {
+  padding: 14px 18px;
+  border-radius: calc(var(--glass-radius-surface) * 0.6);
+}
+.ym-wizard__watch-text {
+  gap: 3px;
+}
+.ym-wizard__watch-title {
+  font-size: 15px;
+  font-weight: var(--fw-heavy);
+}
+.ym-wizard__problem,
+.ym-wizard__waiting,
+.ym-wizard__callout {
+  border: 0;
+  border-radius: calc(var(--glass-radius-surface) * 0.6);
+  font-size: var(--fs-body);
+  line-height: 1.5;
+}
+.ym-wizard__problem {
+  background: color-mix(in oklch, var(--destructive) 20%, transparent);
+  color: var(--glass-label);
+  font-weight: var(--fw-semibold);
+}
+.ym-wizard__problem svg {
+  color: var(--destructive);
+}
+.ym-wizard__waiting {
+  flex-wrap: nowrap;
+  gap: 12px;
+  padding: 12px 16px;
+  background: color-mix(in oklch, var(--ink) 7%, transparent);
+  color: var(--glass-label);
+  font-weight: var(--fw-semibold);
+}
+.ym-wizard__waiting[data-arrived="true"] [data-slot="item-media"] {
+  color: var(--status-ok);
+}
+.ym-wizard__waiting [data-slot="item-media"] {
+  color: var(--glass-label);
+}
+.ym-wizard__received {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border-top: 1px solid var(--rim);
+}
+.ym-wizard__received > li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  column-gap: 16px;
+  min-height: 48px;
+  padding-block: 4px;
+  border-bottom: 1px solid var(--rim);
+  border-radius: 0;
+  font-size: var(--fs-body);
+}
+.ym-wizard__received-meta {
+  color: var(--glass-label-secondary);
+}
+
+/* 3 · Recognise: a table has no counterpart in glasscn; its rows are ruled in the glass rim, and what a row says is an Item. */
+.ym-wizard__head {
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--rim);
+  color: var(--glass-label-secondary);
+}
+.ym-wizard__row {
+  border-bottom: 1px solid var(--rim);
+}
+.ym-wizard__size {
+  color: var(--glass-label-secondary);
+}
+.ym-wizard__row > .ym-wizard__why {
+  gap: 10px;
+}
+.ym-wizard__explain {
+  border: 0;
+  max-width: 640px;
+  padding: 0;
+  background: transparent;
+  color: var(--glass-label-secondary);
+  font-size: var(--fs-body);
+  line-height: 1.5;
+}
+.ym-wizard__explain[data-tone="error"] {
+  border: 0;
+  padding: 10px 14px;
+  border-radius: calc(var(--glass-radius-surface) * 0.5);
+  background: color-mix(in oklch, var(--destructive) 20%, transparent);
+  color: var(--glass-label);
+}
+.ym-wizard__question-detail {
+  color: var(--glass-label-secondary);
+}
+.ym-wizard__callout {
+  margin-top: 24px;
+  padding: 16px 20px;
+  background: color-mix(in oklch, var(--ink) 7%, transparent);
+  color: var(--glass-label-secondary);
+}
+.ym-wizard__older,
+.ym-wizard__remove {
+  margin-left: -10px;
+}
+.ym-wizard__callout--error {
+  flex-wrap: nowrap;
+  background: color-mix(in oklch, var(--destructive) 20%, transparent);
+  color: var(--glass-label);
+}
+
+/* 4 · Import */
+.ym-wizard__count-of {
+  color: var(--glass-label-secondary);
+}
+.ym-wizard__facts {
+  margin-top: 28px;
+  border-top: 1px solid var(--rim);
+}
+.ym-wizard__facts > [data-slot="item"] {
+  display: grid;
+  grid-template-columns: 180px minmax(0, 1fr);
+  align-items: center;
+  min-height: 48px;
+  padding-block: 4px;
+  border-bottom: 1px solid var(--rim);
+  border-radius: 0;
+  font-size: var(--fs-body);
+}
+.ym-wizard__facts [data-slot="item-title"] {
+  font-weight: var(--fw-heavy);
+}
+.ym-wizard__facts [data-slot="item-content"] {
+  color: var(--glass-label-secondary);
+}
+
+/* 5 · Finish: the looks as small glass cards, then the options as Items. */
+.ym-wizard__tile {
+  gap: 8px;
+  padding: 8px 8px 10px;
+  border-radius: calc(var(--glass-radius-surface) * 0.6);
+}
+.ym-wizard__tile-picture {
+  border: 0;
+  aspect-ratio: 3 / 2;
+  border-radius: calc(var(--glass-radius-control) * 0.5);
+  box-shadow: inset 0 0 0 1px var(--rim);
+  background: var(--code-bg);
+}
+.ym-wizard__tile-picture img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.ym-wizard__tile-more {
+  background: color-mix(in oklch, var(--ink) 8%, transparent);
+  color: var(--glass-label);
+  font-size: 22px;
+  font-weight: var(--fw-heavy);
+}
+.ym-wizard__tile-name {
+  padding-inline: 2px;
+  font-size: var(--fs-label);
+  font-weight: var(--fw-semibold);
+}
+.ym-wizard__options {
+  margin-top: 28px;
+  border-top: 1px solid var(--rim);
+}
+.ym-wizard__option {
+  display: grid;
+  grid-template-columns: 200px minmax(0, 1fr);
+  align-items: center;
+  column-gap: 16px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--rim);
+  border-radius: 0;
+}
+.ym-wizard__option-text {
+  gap: 3px;
+}
+.ym-wizard__option-title {
+  font-size: 15px;
+  font-weight: var(--fw-heavy);
+}
+
+/* ---- On the photo: Before, the look, the pixel readout ---------------------------------------------------------------------------- */
+/* Chips are glasscn's Badge. The photo is a native layer under the page (nothing here can frost it), so they are a dark tint with a rim
+   that reads on any picture, and they sit a little in from the corner. */
+.ym-photo-cell__before,
+.ym-photo-cell__chip,
+.ym-photo-cell__readout {
+  position: absolute;
+  height: 26px;
+  padding: 0 12px;
+  font-size: var(--fs-small);
+  font-weight: var(--fw-heavy);
+  letter-spacing: var(--ls-caps);
+  font-variant-numeric: tabular-nums;
+}
+.ym-photo-cell__before {
+  top: 12px;
+  left: 12px;
+  text-transform: uppercase;
+}
+.ym-photo-cell__before,
+.ym-photo-cell__chip,
+.ym-photo-cell__readout {
+  border: 1px solid rgb(255 255 255 / 0.2);
+  background: rgb(14 14 18 / 0.74);
+  color: #fff;
+}
+.ym-photo-cell__chip {
+  bottom: 12px;
+  left: 12px;
+  text-transform: uppercase;
+}
+.ym-photo-cell__readout {
+  top: 12px;
+  right: 12px;
+}
+.ym-photo-cell__camera {
+  right: 16px;
+  bottom: 14px;
+}
+
+/* ---- Crop and Pick white --------------------------------------------------------------------------------------------------------- */
+.ym-crop__frame {
+  border: 2px solid var(--brand);
+  outline: 0;
+  box-shadow: 0 0 0 4000px rgb(8 8 12 / 0.55);
+}
+.ym-crop__frame:focus-visible {
+  outline: var(--glass-ring-width) solid var(--ring);
+  outline-offset: 2px;
+}
+.ym-crop__handle {
+  width: 14px;
+  height: 14px;
+  margin: -7px 0 0 -7px;
+  border: 2px solid var(--brand);
+  border-radius: 50%;
+  background: oklch(0.2 0.01 285);
+  box-shadow: 0 1px 4px rgb(0 0 0 / 0.5);
+}
+.ym-crop__thirds i {
+  background: rgb(255 255 255 / 0.7);
+}
+.ym-pick-white {
+  outline-offset: -3px;
+}
+
+/* ---- The wheels, the curve plot, the histogram ------------------------------------------------------------------------------------- */
+.ym-wheel__disc {
+  border: 1px solid var(--rim);
+  box-shadow: 0 2px 10px rgb(0 0 0 / 0.35), inset 0 0 0 1px rgb(255 255 255 / 0.06);
+}
+.ym-wheel__axis-v,
+.ym-wheel__axis-h {
+  background: rgb(255 255 255 / 0.26);
+}
+.ym-wheel__puck {
+  width: 16px;
+  height: 16px;
+  border: 2px solid #fff;
+  border-radius: 50%;
+  box-shadow: 0 1px 5px rgb(0 0 0 / 0.6);
+}
+.ym-wheel__label {
+  color: var(--glass-label-secondary);
+}
+
+.ym-curve__plot {
+  border: 1px solid var(--rim);
+  border-radius: calc(var(--glass-radius-control) * 0.8);
+  background: color-mix(in oklch, var(--ink) 5%, transparent);
+}
+.ym-curve__grid {
+  stroke: color-mix(in oklch, var(--ink) 13%, transparent);
+  stroke-width: 1;
+}
+.ym-curve__identity {
+  stroke: color-mix(in oklch, var(--ink) 30%, transparent);
+  stroke-width: 1.5;
+}
+.ym-curve__histogram {
+  fill: color-mix(in oklch, var(--ink) 10%, transparent);
+}
+.ym-curve__line {
+  stroke-width: 3;
+  stroke-linecap: round;
+}
+.ym-curve__line[style*="--ink"] {
+  stroke: var(--primary) !important;
+}
+.ym-curve__point {
+  rx: 50%;
+  fill: oklch(0.2 0.01 285);
+  stroke: var(--primary);
+  stroke-width: 2.5;
+}
+.ym-curve__point[data-selected="true"] {
+  fill: var(--primary);
+}
+.ym-curve__readout {
+  color: var(--glass-label-secondary);
+}
+.ym-curve__readout b {
+  color: var(--glass-label);
+}
+
+/* ---- The error bar ----------------------------------------------------------------------------------------------------------------- */
+/* A glasscn Item on glass, floating above the foot of the window with Dismiss at its right. */
+.ym-error-bar {
+  @apply glass-liquid;
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  left: 24px;
+  z-index: 50;
+  flex-wrap: nowrap;
+  gap: 12px;
+  padding: 12px 14px 12px 12px;
+  border-radius: var(--glass-radius-surface);
+  /* Near-opaque, so whatever is under the bar does not read through it. */
+  background-color: oklch(0.19 0.012 285 / 0.95);
+  background-image: linear-gradient(color-mix(in oklch, var(--destructive) 26%, transparent), color-mix(in oklch, var(--destructive) 26%, transparent));
+  color: var(--glass-label);
+  font-size: var(--fs-body);
+  font-weight: var(--fw-semibold);
+}
+.ym-error-bar[data-kind="notice"] {
+  background-image: none;
+}
+.ym-error-bar [data-slot="item-media"] {
+  background: color-mix(in oklch, var(--destructive) 30%, transparent);
+  color: var(--glass-label);
+}
+.ym-error-bar[data-kind="notice"] [data-slot="item-media"] {
+  background: color-mix(in oklch, var(--ink) 12%, transparent);
+}
+/* On Photos the bar stops at the tool panel, so that Paste and the Export panel's buttons stay in reach, and sits over the foot of the
+   photo, above the filmstrip: the thumbnails are as tall as their row, and a notice ("Copied the settings of DSC04204.") that covered
+   them would be in the way of the next click. The photo cell's rectangle (--cell-y and --cell-h, set by the screen) says where its
+   foot is; without it (the screen has not measured yet) the bar is 24 px from the window's foot. */
+.ym-screen[data-screen="photos"] ~ .ym-error-bar {
+  right: calc(var(--panel-w) + 24px);
+  bottom: max(24px, calc(100vh - var(--cell-y, 100vh) - var(--cell-h, 0px) + 12px));
+}
+
+/* ---- Dialogs ----------------------------------------------------------------------------------------------------------------------- */
+.ym-about-dialog__adobe {
+  padding: 12px 14px;
+  border-radius: calc(var(--glass-radius-surface) * 0.5);
+  background: color-mix(in oklch, var(--ink) 8%, transparent);
+  font-weight: var(--fw-semibold);
+  line-height: 1.5;
+}
+.ym-about-dialog__section ul {
+  list-style: disc;
+  margin: 0;
+  padding-left: 18px;
+}
+.ym-about-dialog__section h3,
+.ym-about-dialog__version {
+  color: var(--glass-label-secondary);
+}
+.ym-about-dialog__legal {
+  color: var(--glass-label-secondary);
+}
+.ym-cube-list > li {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+  padding-block: 14px;
+  border-radius: 0;
+  line-height: 1.5;
+}
+.ym-cube-list > li:last-child {
+  border-bottom: 0;
+}
+.ym-cube-list__name {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-weight: var(--fw-heavy);
+}
+
+/* The crop panel's foot: Done and Cancel share the row (glasscn's button does not shrink by itself). A button sits in the span of its
+   tooltip, which is what the row sees. */
+.ym-tools__footer > [data-slot="button"],
+.ym-tools__footer > [data-slot="tooltip-trigger"] {
+  flex: 1 1 0;
+  width: auto;
+  min-width: 0;
+}
+
+/* The tool panel's plain rows are glasscn Items too: no side padding (the card's own inset is the row's) and no rounding. */
+.ym-info-row,
+.ym-switch-row {
+  flex-wrap: nowrap;
+  padding-inline: 0;
+  border-radius: 0;
+}
+
+/* ---- Round 7: yellow is a button accent ------------------------------------------------------------------------------------------- */
+/* A pressed toggle is the solid accent with dark text (Before, Crop, Pick white; an Auto toggle in its tab's colour), not a translucent
+   tint. */
+[data-slot="toggle"][data-state="on"] {
+  background: var(--primary);
+  color: var(--primary-foreground);
+}
+[data-slot="toggle"][data-state="on"]:hover {
+  background: var(--primary);
+  filter: brightness(1.07);
+}
+/* The Default tag on a look tile sits on a picture: a dark chip, as the number is. */
+.ym-look-tile__default {
+  background: rgb(0 0 0 / 0.58);
+  color: #fff;
+}
+
+/* A disabled primary button is not a faded yellow (45 % yellow over dark glass is olive): it is a neutral glass button with muted text. */
+[data-slot="button"][data-variant="primary"][aria-disabled="true"] {
+  background: color-mix(in oklch, var(--ink) 9%, transparent);
+  background-image: none;
+  color: var(--glass-label-tertiary);
+  box-shadow: inset 0 0 0 1px var(--rim);
+  filter: none;
+  opacity: 1;
+}
+[data-slot="button"][data-variant="primary"][aria-disabled="true"] [data-slot="kbd"] {
+  opacity: 0.6;
+}
+
+/* A value changed by hand: a solid ring and text in the tab's colour on a neutral box, not a translucent tint of it. */
+[data-slot="input"][data-changed] {
+  background: transparent;
+  color: var(--primary);
+  box-shadow: inset 0 0 0 1.5px var(--primary);
+}

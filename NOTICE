@@ -155,3 +155,36 @@ UNDISCLOSED.
    screenshots, test and evaluation data (including CI) and published
    comparison images. They are not covered by the Apache License 2.0 and are
    not part of the application.
+
+11. glasscn (src/components/glass/)
+    The interface's controls are glasscn components, installed from the
+    glasscn shadcn registry (https://glasscn.app/r/, source
+    https://github.com/TimMikeladze/glasscn) and changed for Yellowmoon:
+    src/components/glass/, src/hooks/use-glass-pointer.ts,
+    src/hooks/use-sliding-indicator.ts and src/lib/glass-variants.ts. They run
+    on Tailwind CSS, Radix UI, class-variance-authority, lucide-react and
+    tw-animate-css, whose licence texts are in THIRD-PARTY.md. glasscn is
+    distributed under the following licence (the same text is in
+    src/components/glass/LICENSE):
+
+    MIT License
+
+    Copyright (c) 2026 Tim Mikeladze
+
+    Permission is hereby granted, free of charge, to any person obtaining a copy
+    of this software and associated documentation files (the "Software"), to deal
+    in the Software without restriction, including without limitation the rights
+    to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+    copies of the Software, and to permit persons to whom the Software is
+    furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice shall be included in all
+    copies or substantial portions of the Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+    AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+    OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+    SOFTWARE.

@@ -59,6 +59,8 @@ brew tap ngriaznov/yellowmoon https://github.com/ngriaznov/yellowmoon
 brew install --cask yellowmoon
 ```
 
+Yellowmoon needs macOS 12 or later. It draws its windows with the web engine that comes with macOS, and the interface needs a recent one (Safari 16.4 or later): on macOS 12 and 13, install the latest system and Safari updates first, or the controls may not draw correctly.
+
 Open the `.dmg` and drag Yellowmoon to Applications. The app updates itself: it checks for a new version every hour and installs it in the background; click **Update ready** at the top right to restart into it now, or it runs the next time you open Yellowmoon (Yellowmoon › Check for Updates… checks at once). Versions 0.1.x are test releases.
 
 ### Allow Yellowmoon to open

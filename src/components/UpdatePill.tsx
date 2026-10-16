@@ -1,5 +1,7 @@
 import type { UpdateState } from "../api/types";
 import { updateCell } from "../updater";
+import { Badge } from "@/components/glass/badge";
+import { Button } from "./Button";
 import { cx } from "./cx";
 
 export interface UpdatePillProps {
@@ -28,28 +30,26 @@ export function UpdatePill({ state, exportRunning = false, onActivate, className
       {cell.label}
     </>
   );
-  const common = {
-    className: cx("ym-update-pill", className),
-    "data-phase": cell.phase,
-    title: cell.title ?? undefined,
-  };
-  if (cell.action === null) {
-    return (
-      <div {...common} role="status">
-        {content}
-      </div>
-    );
-  }
   return (
-    <button
-      {...common}
-      type="button"
-      aria-disabled={cell.disabled || undefined}
-      onClick={() => {
-        if (!cell.disabled) onActivate?.();
-      }}
-    >
-      {content}
-    </button>
+    <div className={cx("ym-update-pill", className)} data-phase={cell.phase}>
+      {cell.action === null ? (
+        // A status has no pointer-events rule, so the browser's own title works on it.
+        <Badge variant="secondary" role="status" data-phase={cell.phase} title={cell.title ?? undefined} className="h-control-xs px-pad-sm">
+          {content}
+        </Badge>
+      ) : (
+        // The app's Button, not glasscn's: a locked glass button takes no pointer events, so a native `title` on it would never show.
+        // The Button puts its tooltip on the span around it, which still takes the hover ("Restarts after the export finishes").
+        <Button
+          variant="header"
+          data-phase={cell.phase}
+          disabled={cell.disabled}
+          title={cell.title ?? undefined}
+          onClick={() => onActivate?.()}
+        >
+          {content}
+        </Button>
+      )}
+    </div>
   );
 }

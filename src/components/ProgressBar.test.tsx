@@ -13,7 +13,7 @@ describe("ProgressBar", () => {
 
   it("fills in percent", () => {
     const { container } = render(<ProgressBar value={42.4} label="x" />);
-    expect((container.querySelector(".ym-progress__fill") as HTMLElement).style.width).toBe("42%");
+    expect((container.querySelector('[data-slot="progress-indicator"]') as HTMLElement).style.width).toBe("42%");
   });
 
   it("keeps the value inside 0–100", () => {
@@ -23,13 +23,14 @@ describe("ProgressBar", () => {
     expect(screen.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "100");
   });
 
-  it("has the ink edge on the fill only between 0 and 100 per cent", () => {
+  it("draws no fill at 0, part of the bar between and all of it at 100 per cent", () => {
+    const width = (): string => (document.querySelector('[data-slot="progress-indicator"]') as HTMLElement).style.width;
     const { rerender } = render(<ProgressBar value={0} label="x" />);
-    expect(screen.getByRole("progressbar")).not.toHaveAttribute("data-partial");
+    expect(width()).toBe("0%");
     rerender(<ProgressBar value={50} label="x" />);
-    expect(screen.getByRole("progressbar")).toHaveAttribute("data-partial", "true");
+    expect(width()).toBe("50%");
     rerender(<ProgressBar value={100} label="x" />);
-    expect(screen.getByRole("progressbar")).not.toHaveAttribute("data-partial");
+    expect(width()).toBe("100%");
   });
 
   it("has a large size for the wizard", () => {

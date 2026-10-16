@@ -43,7 +43,7 @@ describe("Update ready while the core exports", () => {
     expect(pill).not.toHaveAttribute("aria-disabled");
     act(() => h!.api.emitEvent("export_busy", { busy: true }));
     await waitFor(() => expect(screen.getByRole("button", { name: /Update ready/ })).toHaveAttribute("aria-disabled", "true"));
-    expect(screen.getByRole("button", { name: /Update ready/ })).toHaveAttribute("title", "Restarts after the export finishes");
+    expect(screen.getByRole("button", { name: /Update ready/ })).toHaveAccessibleDescription("Restarts after the export finishes");
     act(() => h!.api.emitEvent("export_busy", { busy: false }));
     await waitFor(() => expect(screen.getByRole("button", { name: /Update ready/ })).not.toHaveAttribute("aria-disabled"));
   });

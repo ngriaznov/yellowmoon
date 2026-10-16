@@ -84,12 +84,12 @@ textarea,
 .ym-about-dialog__section,
 .ym-about-dialog__adobe,
 .ym-about-dialog__legal,
-.ym-error-bar > span,
+.ym-error-bar [data-slot="item-content"],
 .ym-wizard__problem,
-.ym-wizard__callout--error > span,
+.ym-wizard__callout--error [data-slot="item-content"],
 .ym-drop-zone__notice,
-/* Only the Start screen's error (role="alert"): the same class also styles static notes (colour, DNG, legal) that stay unselectable. */
-p.ym-row-note[role="alert"],
+/* The same sentence while photos are developing (the Start screen's list view). */
+.ym-develop__notice,
 .ym-photo-note__text,
 .ym-wizard__received-name,
 .ym-wizard__file,
@@ -115,8 +115,9 @@ textarea,
 [contenteditable]:not([contenteditable="false"]),
 .ym-export__code,
 .ym-pref__hint,
-.ym-error-bar > span,
-.ym-wizard__callout--error > span {
+.ym-error-bar [data-slot="item-content"],
+.ym-wizard__callout--error [data-slot="item-content"],
+.ym-develop__notice {
   cursor: text;
 }
 

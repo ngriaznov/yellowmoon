@@ -2,18 +2,17 @@ import { expect, test } from "@playwright/test";
 import type { Page } from "@playwright/test";
 import type { MockOptions } from "../src/api.mock";
 import { configureMock, lookTilesLoaded, openApp, openPhotos, showUpdateReady } from "./helpers/app";
-import { compareScreen, isCopyOfDesign } from "./helpers/compare";
+import { compareScreen } from "./helpers/compare";
 
-// Screenshot comparisons of the screens against the mockups (docs/11 §Tests): the app at 1440 × 900 at 2×
-// compared with `design/screenshots/*.png`, whose copies sit in `e2e/__screenshots__/`. `toHaveScreenshot` is the
-// assertion (default threshold 0.2, at most 2 % of the pixels allowed to differ, see playwright.config.ts). The
-// share of pixels that differ by more than 24 on a channel, the measure of the M3-01 report, is printed and
-// kept in `node_modules/.cache/yellowmoon-e2e/screenshot-diffs/<state>.json` for each state.
+// Screenshot comparisons of the screens (docs/11 §Tests): the app at 1440 × 900 at 2× compared with `design/screenshots-c2/*.png`,
+// the references of the dark glass interface (C2). They are the app's own pictures on the mock API, taken with the browser flags of
+// `playwright.config.ts` (`npx playwright test --update-snapshots` retakes them; a person looks at them before they are committed).
+// `toHaveScreenshot` is the assertion (threshold 0.2, a share of pixels allowed to differ, see playwright.config.ts and the budgets in
+// `helpers/compare.ts`). The share of pixels that differ by more than 24 on a channel is printed and kept in
+// `node_modules/.cache/yellowmoon-e2e/screenshot-diffs/<state>.json` for each state.
 //
-// The mock photos are the mockups' flat-shape photos, graded with the mockup's own grading function, so the
-// comparison is meaningful. What stays different: the photo drawn as SVG (anti-aliasing), the thumbnails as PNGs,
-// "Fit 24%" (the mockup says 34%), the histogram and the pixel readout (made-up numbers in the mockup), and,
-// on the Curve tab, the histogram behind the plot.
+// The mock photos are flat-shape photos graded with the mock's own grading function, so the picture is the same on every run.
+// Nothing moves while the picture is taken: animations are off and the aurora is still.
 
 const MOCKUP: Record<string, string | number> = { mockCurrent: 3, mockPicked: "2,3,4" };
 
@@ -35,12 +34,6 @@ const MOCKUP_SETTINGS: MockOptions["initialSettings"] = {
     curve: { luma: CURVE_DEMO_POINTS.luma, red: CURVE_DEMO_POINTS.red, green: CURVE_DEMO_POINTS.green, blue: CURVE_DEMO_POINTS.blue },
   },
 };
-
-test("the baselines are byte-for-byte copies of design/screenshots", () => {
-  for (const name of ["start-idle", "start-busy", "start-done", "photos-look", "photos-light", "photos-color", "photos-detail", "photos-curve", "photos-raw", "photos-before", "photos-look-teal", "photos-look-search"]) {
-    expect(isCopyOfDesign(name), `${name}.png is a copy`).toBe(true);
-  }
-});
 
 test.describe("Start", () => {
   test("idle (start-idle.png)", async ({ page }) => {
@@ -130,7 +123,7 @@ test.describe("Photos", () => {
     const before = await thumbs();
     await page.getByRole("button", { name: "Teal and orange look, key 6" }).click();
     await expect(page.locator(".ym-photo-cell__chip")).toHaveText("Teal and orange · 100%");
-    // The mockup was captured scrolled by 357 px, 3 px short of the very bottom of its panel (360 px of travel).
+    // Scrolled to 357 px, 3 px short of the very bottom of the panel's travel (the state the pre-glass screenshot was taken in).
     await page.locator(".ym-tools__scroll").evaluate((el) => {
       el.scrollTop = 357;
     });

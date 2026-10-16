@@ -351,14 +351,27 @@ const SMOKE_OPEN_PHOTOS: &str = r#"(() => {
 })()"#;
 
 /// The page at the middle of the photo cell: the root's `data-viewport`, the backgrounds, and every
-/// element under that point with its background.
+/// element under that point with its background. `elementsFromPoint` skips what takes no pointer
+/// events and ignores masks, so the aurora (a fixed, opaque, `pointer-events: none` layer that a CSS
+/// mask cuts the cell out of, `.ym-aurora` in `src/styles/glass-c2.css`) is read directly: its mask
+/// and the rectangle the Photos screen reports in `--cell-x/y/w/h`. [`page_paints_over_cell`] reads
+/// the result.
 #[cfg(debug_assertions)]
 const SMOKE_DESCRIBE_PAGE: &str = r##"(() => {
   const bg = (e) => (e ? getComputedStyle(e).backgroundColor : null);
   const cell = document.querySelector(".ym-photo-cell");
   const r = cell ? cell.getBoundingClientRect() : null;
   const name = (e) => e.tagName.toLowerCase() + (e.id ? "#" + e.id : "") + (e.classList.length ? "." + [...e.classList].join(".") : "");
-  const stack = r ? document.elementsFromPoint(r.left + r.width / 2, r.top + r.height / 2).map((e) => name(e) + " " + bg(e)) : [];
+  const under = r ? document.elementsFromPoint(r.left + r.width / 2, r.top + r.height / 2) : [];
+  const stack = under.map((e) => name(e) + " " + bg(e));
+  // What else a box can paint besides a colour: an image (a gradient) and a blur of what is behind it.
+  const paints = under.map((e) => {
+    const cs = getComputedStyle(e);
+    return { element: name(e), image: cs.backgroundImage, backdrop: cs.backdropFilter || cs.webkitBackdropFilter || "none" };
+  });
+  const au = document.querySelector(".ym-aurora");
+  const acs = au ? getComputedStyle(au) : null;
+  const root = getComputedStyle(document.documentElement);
   return JSON.stringify({
     viewport: document.documentElement.hasAttribute("data-native-viewport") ? "native" : null,
     native: cell ? cell.dataset.native ?? null : null,
@@ -366,6 +379,16 @@ const SMOKE_DESCRIBE_PAGE: &str = r##"(() => {
     html: bg(document.documentElement),
     body: bg(document.body),
     stack,
+    paints,
+    // The aurora's cut-out, either spelling of each property (older WebKit has the prefixed ones only).
+    aurora: acs
+      ? {
+          composite: acs.maskComposite || acs.webkitMaskComposite || "",
+          size: acs.maskSize || acs.webkitMaskSize || "",
+          position: acs.maskPosition || acs.webkitMaskPosition || "",
+        }
+      : null,
+    cell_vars: ["--cell-x", "--cell-y", "--cell-w", "--cell-h"].map((v) => root.getPropertyValue(v).trim()),
     // Why a box paints (0.1.4's viewport job: the root's attribute set and the rule loaded, the root still paper): the root's inline
     // style, whether the rule's selector matches, and whether a loaded sheet carries the rule.
     root_style: document.documentElement.getAttribute("style"),
@@ -379,6 +402,118 @@ const SMOKE_DESCRIBE_PAGE: &str = r##"(() => {
     }),
   });
 })()"##;
+
+/// What stands between the photo and the person in a page described by [`SMOKE_DESCRIBE_PAGE`]; an empty
+/// list when nothing does (the native viewport is a layer behind the webview, so anything the page paints over the cell hides the photo,
+/// the 0.1.0 failure). Four things are held to it:
+///
+/// 1. every box under the middle of the cell has no background colour;
+/// 2. none has a background image or blurs what is behind it;
+/// 3. the aurora (opaque, but it takes no pointer events, so the boxes above never list it) is masked with the two-layer exclusion
+///    whose second layer is the cell's rectangle;
+/// 4. the page has told the aurora where the cell is (`--cell-x/y/w/h`, the rectangle the mask is sized from).
+///
+/// The cell's rectangle is compared to the mask with a pixel and a half of room: the page writes the shell's rounded rectangle.
+#[cfg(debug_assertions)]
+fn page_paints_over_cell(page: &serde_json::Value) -> Vec<String> {
+    const CLEAR: &str = "rgba(0, 0, 0, 0)";
+    const ROOM_PX: f64 = 1.5;
+    let mut problems = Vec::new();
+
+    match page["stack"].as_array() {
+        Some(stack) if !stack.is_empty() => {
+            for entry in stack {
+                match entry.as_str() {
+                    Some(e) if e.ends_with(CLEAR) => {}
+                    Some(e) => problems.push(format!("{e} paints a background colour")),
+                    None => problems.push("an entry of the stack is not text".to_owned()),
+                }
+            }
+        }
+        _ => problems.push("no element under the middle of the photo cell".to_owned()),
+    }
+
+    match page["paints"].as_array() {
+        Some(paints) if !paints.is_empty() => {
+            for paint in paints {
+                let element = paint["element"].as_str().unwrap_or("an element");
+                if paint["image"].as_str() != Some("none") {
+                    problems.push(format!("{element} paints a background image"));
+                }
+                if !matches!(paint["backdrop"].as_str(), Some("none" | "")) {
+                    problems.push(format!("{element} blurs what is behind it"));
+                }
+            }
+        }
+        _ => problems.push("the page did not say what its boxes paint".to_owned()),
+    }
+
+    // The cell's rectangle as the page measured it: [left, top, width, height].
+    let cell: Option<Vec<f64>> = page["cell"]
+        .as_array()
+        .map(|v| v.iter().filter_map(serde_json::Value::as_f64).collect())
+        .filter(|v: &Vec<f64>| v.len() == 4);
+    let vars_set = page["cell_vars"].as_array().is_some_and(|vars| {
+        vars.len() == 4
+            && vars
+                .iter()
+                .all(|v| v.as_str().is_some_and(|v| !v.is_empty()))
+    });
+    if !vars_set {
+        problems.push(
+            "--cell-x/y/w/h are not set: the Photos screen has not told the aurora where the cell is"
+                .to_owned(),
+        );
+    }
+
+    let aurora = &page["aurora"];
+    if aurora.is_null() {
+        problems.push("the Photos screen has no .ym-aurora".to_owned());
+    } else {
+        // The computed value is a list with one entry for each layer ("exclude, exclude"); the first layer is the one that is
+        // composited with the layer below it, which is what cuts the cell out.
+        let composite = aurora["composite"].as_str().unwrap_or("");
+        if !matches!(
+            composite.split(',').next().map(str::trim),
+            Some("exclude" | "xor")
+        ) {
+            problems.push(format!(
+                "the aurora's mask does not exclude its second layer (mask-composite is {composite:?})"
+            ));
+        }
+        let second_layer = |property: &str| -> Option<Vec<f64>> {
+            let layer = aurora[property].as_str()?.split(',').nth(1)?;
+            layer
+                .split_whitespace()
+                .map(|n| n.strip_suffix("px")?.parse::<f64>().ok())
+                .collect()
+        };
+        match (second_layer("size"), second_layer("position"), &cell) {
+            (Some(size), Some(position), Some(cell)) if size.len() == 2 && position.len() == 2 => {
+                let wanted = [
+                    ("left", position[0], cell[0]),
+                    ("top", position[1], cell[1]),
+                    ("width", size[0], cell[2]),
+                    ("height", size[1], cell[3]),
+                ];
+                for (what, got, want) in wanted {
+                    if (got - want).abs() > ROOM_PX {
+                        problems.push(format!(
+                            "the aurora's cut-out has {what} {got} px where the cell has {want} px"
+                        ));
+                    }
+                }
+                if size[0] <= 0.0 || size[1] <= 0.0 {
+                    problems.push("the aurora's cut-out is empty".to_owned());
+                }
+            }
+            _ => problems.push(
+                "the aurora's mask has no second layer sized and placed in pixels".to_owned(),
+            ),
+        }
+    }
+    problems
+}
 
 /// Drives the photo cell and a slider like a hand does (`YM_PERF_SCRIPT`): 240 ctrl+wheel events (zoom
 /// in about the middle of the cell, a little out at the end), 240 pan events and 60 key presses on the
@@ -408,8 +543,9 @@ const SMOKE_PERF_SCRIPT: &str = r##"(() => {
   (async () => {
     await phase("ctrl_wheel", 240, (i) => wheel({ ctrlKey: true, deltaY: i < 200 ? -2 : 2 }));
     await phase("pan", 240, (i) => wheel({ deltaX: i % 2 ? 6 : -6, deltaY: i % 2 ? 4 : -4 }));
-    const label = [...document.querySelectorAll("label")].find((l) => l.textContent.trim() === "Temperature");
-    const slider = (label && label.htmlFor && document.getElementById(label.htmlFor)) || document.querySelector("input[type=range]:not(:disabled)");
+    // glasscn's slider is Radix's: the knob has role="slider" and is named by its row's label through aria-labelledby.
+    const nameOf = (s) => (s.getAttribute("aria-labelledby") || "").split(" ").map((id) => (document.getElementById(id) || {}).textContent || "").join(" ").trim();
+    const slider = [...document.querySelectorAll('[role="slider"]')].find((s) => nameOf(s) === "Temperature") || document.querySelector('[role="slider"]:not([data-disabled])');
     if (!slider) {
       out.missing.push("Temperature slider");
     } else {
@@ -492,15 +628,14 @@ fn smoke_test<R: Runtime>(app: AppHandle<R>, api: Arc<AppApi>) {
                     let page = serde_json::from_str::<String>(&json)
                         .ok()
                         .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
-                    let clear = page
-                        .as_ref()
-                        .and_then(|p| p["stack"].as_array())
-                        .is_some_and(|stack| {
-                            !stack.is_empty()
-                                && stack.iter().all(|e| {
-                                    e.as_str().is_some_and(|e| e.ends_with("rgba(0, 0, 0, 0)"))
-                                })
-                        });
+                    let problems = page.as_ref().map_or_else(
+                        || vec!["the page did not answer".to_owned()],
+                        page_paints_over_cell,
+                    );
+                    for problem in &problems {
+                        eprintln!("smoke: the page paints over the cell: {problem}");
+                    }
+                    let clear = problems.is_empty();
                     eprintln!(
                         "smoke: the page lets the viewport through: {}",
                         if clear { "yes" } else { "no" }
@@ -624,6 +759,177 @@ mod tests {
             frame_response(&store, "/thumb-4-1.png").status() == 404,
             "no launch id"
         );
+    }
+
+    /// A page as [`SMOKE_DESCRIBE_PAGE`] describes the Photos screen over the native viewport when all is well: the cell at
+    /// (200, 60), 1000 by 600 px, every box under its middle clear, the aurora masked with the cell cut out.
+    #[cfg(debug_assertions)]
+    fn clear_page() -> serde_json::Value {
+        serde_json::json!({
+            "cell": [200.0, 60.0, 1000.0, 600.0],
+            "stack": [
+                "div.ym-photo-cell__overlay rgba(0, 0, 0, 0)",
+                "div.ym-photo-cell rgba(0, 0, 0, 0)",
+                "html rgba(0, 0, 0, 0)",
+            ],
+            "paints": [
+                { "element": "div.ym-photo-cell__overlay", "image": "none", "backdrop": "none" },
+                { "element": "div.ym-photo-cell", "image": "none", "backdrop": "none" },
+                { "element": "html", "image": "none", "backdrop": "none" },
+            ],
+            "aurora": {
+                "composite": "exclude, exclude",
+                "size": "100% 100%, 1000px 600px",
+                "position": "0% 0%, 200px 60px",
+            },
+            "cell_vars": ["200px", "60px", "1000px", "600px"],
+        })
+    }
+
+    /// The script's own answer in Chromium (the `viewport` e2e of the frontend runs it there), cut down to what the check reads: the
+    /// numbers come as the browser writes them, one entry for each layer of the mask, three decimals.
+    #[cfg(debug_assertions)]
+    #[test]
+    fn the_description_a_browser_gives_is_read_as_it_is_written() {
+        let page = serde_json::json!({
+            "cell": [0, 75, 1040, 693.328125],
+            "stack": [
+                "div.ym-photo-cell__view rgba(0, 0, 0, 0)",
+                "main.ym-photo-cell rgba(0, 0, 0, 0)",
+                "div.ym-screen rgba(0, 0, 0, 0)",
+                "div#root rgba(0, 0, 0, 0)",
+                "body rgba(0, 0, 0, 0)",
+                "html.dark rgba(0, 0, 0, 0)",
+            ],
+            "paints": [
+                { "element": "div.ym-photo-cell__view", "image": "none", "backdrop": "none" },
+                { "element": "main.ym-photo-cell", "image": "none", "backdrop": "none" },
+                { "element": "div.ym-screen", "image": "none", "backdrop": "none" },
+                { "element": "div#root", "image": "none", "backdrop": "none" },
+                { "element": "body", "image": "none", "backdrop": "none" },
+                { "element": "html.dark", "image": "none", "backdrop": "none" },
+            ],
+            "aurora": {
+                "composite": "exclude, exclude",
+                "size": "100% 100%, 1040px 693.328px",
+                "position": "0px 0px, 0px 75px",
+            },
+            "cell_vars": ["0px", "75px", "1040px", "693.328125px"],
+        });
+        assert_eq!(page_paints_over_cell(&page), Vec::<String>::new());
+    }
+
+    /// What the check was before the aurora: the boxes under the cell's middle, by colour alone.
+    #[cfg(debug_assertions)]
+    fn the_stack_alone_says_clear(page: &serde_json::Value) -> bool {
+        page["stack"].as_array().is_some_and(|stack| {
+            !stack.is_empty()
+                && stack
+                    .iter()
+                    .all(|e| e.as_str().is_some_and(|e| e.ends_with("rgba(0, 0, 0, 0)")))
+        })
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn a_page_that_cuts_the_cell_out_of_the_aurora_and_paints_nothing_over_it_lets_the_viewport_through()
+     {
+        assert_eq!(page_paints_over_cell(&clear_page()), Vec::<String>::new());
+        // A fraction of a pixel is the page rounding what the shell measured.
+        let mut page = clear_page();
+        page["aurora"]["size"] = "100% 100%, 1000.4px 599.6px".into();
+        page["aurora"]["position"] = "0px 0px, 199.5px 60.5px".into();
+        assert_eq!(page_paints_over_cell(&page), Vec::<String>::new());
+        // The prefixed spelling of an older WebKit.
+        let mut page = clear_page();
+        page["aurora"]["composite"] = "xor, xor".into();
+        assert_eq!(page_paints_over_cell(&page), Vec::<String>::new());
+        page["aurora"]["composite"] = "exclude".into();
+        assert_eq!(page_paints_over_cell(&page), Vec::<String>::new());
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn an_opaque_aurora_that_the_mask_does_not_cut_is_found_though_every_box_above_it_is_clear() {
+        // 0.1.0's symptom with the dark glass: the aurora takes no pointer events, so `elementsFromPoint` never lists it, and the
+        // boxes it does list are clear whether or not the mask works.
+        type Spoil = fn(&mut serde_json::Value);
+        let broken: [(&str, Spoil); 8] = [
+            ("a mask that adds its layers", |p| {
+                p["aurora"]["composite"] = "add, add".into();
+            }),
+            ("a mask that keeps the first layer as it is", |p| {
+                p["aurora"]["composite"] = "add, exclude".into();
+            }),
+            ("a mask no property of which the browser kept", |p| {
+                p["aurora"]["composite"] = "".into();
+            }),
+            ("a cut-out of no size (the variables were never set)", |p| {
+                p["aurora"]["size"] = "100% 100%, 0px 0px".into();
+                p["cell_vars"] = serde_json::json!(["", "", "", ""]);
+            }),
+            ("a cut-out that is not where the cell is", |p| {
+                p["aurora"]["position"] = "0% 0%, 0px 0px".into();
+            }),
+            ("a cut-out smaller than the cell", |p| {
+                p["aurora"]["size"] = "100% 100%, 640px 600px".into();
+            }),
+            ("a mask of one layer", |p| {
+                p["aurora"]["size"] = "100% 100%".into();
+            }),
+            ("no aurora where the check expects one", |p| {
+                p["aurora"] = serde_json::Value::Null;
+            }),
+        ];
+        for (what, spoil) in broken {
+            let mut page = clear_page();
+            spoil(&mut page);
+            assert!(
+                the_stack_alone_says_clear(&page),
+                "{what}: the old check would have passed"
+            );
+            assert!(
+                !page_paints_over_cell(&page).is_empty(),
+                "{what}: the page was let through"
+            );
+        }
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn a_box_over_the_cell_that_paints_a_colour_an_image_or_a_blur_is_found() {
+        let mut page = clear_page();
+        page["stack"][1] = "div.ym-photo-cell rgb(15, 15, 16)".into();
+        let problems = page_paints_over_cell(&page);
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(problems[0].contains("div.ym-photo-cell"), "{problems:?}");
+
+        let mut page = clear_page();
+        page["paints"][0]["image"] = "linear-gradient(rgb(0, 0, 0), rgb(9, 9, 9))".into();
+        assert!(
+            the_stack_alone_says_clear(&page),
+            "a gradient has no background colour"
+        );
+        let problems = page_paints_over_cell(&page);
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(problems[0].contains("background image"), "{problems:?}");
+
+        let mut page = clear_page();
+        page["paints"][2]["backdrop"] = "blur(24px) saturate(1.4)".into();
+        let problems = page_paints_over_cell(&page);
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(problems[0].contains("blurs"), "{problems:?}");
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn a_page_that_says_nothing_about_the_cell_is_not_let_through() {
+        for page in [
+            serde_json::json!({}),
+            serde_json::json!({ "stack": [], "paints": [], "aurora": null, "cell": null }),
+        ] {
+            assert!(!page_paints_over_cell(&page).is_empty(), "{page}");
+        }
     }
 
     #[cfg(debug_assertions)]

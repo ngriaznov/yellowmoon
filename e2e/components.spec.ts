@@ -1,13 +1,10 @@
-import { pathToFileURL } from "node:url";
-import { resolve } from "node:path";
 import { expect, test } from "@playwright/test";
 import type { Page } from "@playwright/test";
-import { pixelDiff } from "./helpers/pixelDiff";
 
-// The component dev page (`components.html`, task M3-01) in a real browser: layout, pointer drags, focus
-// rings and the replicas of the mockups that prove the components reproduce them.
-
-const MOCKUPS = resolve(import.meta.dirname, "../design/mockups");
+// The component dev page (`components.html`, task M3-01) in a real browser: layout, pointer drags and focus rings of the components,
+// on the same dark glass sheets as the app. The replicas of the screens (`?replica=`) open without errors; they are no longer compared
+// pixel by pixel with `design/mockups` (the pre-glass design). The screens themselves are compared with `design/screenshots-c2/`
+// (`screenshots.spec.ts`, `export.spec.ts`, `wizard.spec.ts`).
 
 /** Collects console errors and page errors so a test can assert there were none. */
 function watchErrors(page: Page): string[] {
@@ -47,19 +44,20 @@ test.describe("the dev page", () => {
   test("draws the slider's parts at the sizes of docs/11", async ({ page }) => {
     await page.goto("/components.html");
     await ready(page);
-    const slider = page.locator("#slider .ym-slider").first();
+    const slider = page.locator("#slider [data-slider]").first();
     await expect(slider).toHaveCSS("height", "38px");
     const geometry = await slider.evaluate((el) => {
       const box = (selector: string) => {
         const r = (el.querySelector(selector) as HTMLElement).getBoundingClientRect();
         return { w: Math.round(r.width * 100) / 100, h: Math.round(r.height * 100) / 100 };
       };
-      return { track: box(".ym-slider__track"), detent: box(".ym-slider__detent"), thumb: box(".ym-slider__thumb"), value: box(".ym-value-box") };
+      return { track: box('[data-slot="slider-track"]'), knob: box('[data-slot="slider-thumb"]'), value: box('[data-slot="input"]') };
     });
-    expect(geometry.track.h).toBe(2);
-    expect(geometry.detent).toEqual({ w: 2, h: 16 });
-    expect(geometry.thumb).toEqual({ w: 8, h: 22 });
-    expect(geometry.value).toEqual({ w: 72, h: 30 });
+    // glasscn's slider: a 6 px soft track and a 36 × 24 capsule knob; the box is its small input.
+    expect(geometry.track.h).toBe(6);
+    expect(geometry.knob).toEqual({ w: 36, h: 24 });
+    expect(geometry.value.w).toBe(72);
+    expect(geometry.value.h).toBeLessThanOrEqual(38);
     const columns = await slider.evaluate((el) => getComputedStyle(el).gridTemplateColumns.split(" ").map((c) => Math.round(parseFloat(c))));
     expect(columns[0]).toBe(92);
     expect(columns[2]).toBe(72);
@@ -72,7 +70,7 @@ test.describe("slider in a real browser", () => {
     await page.goto("/components.html");
     await ready(page);
     const demo = page.locator("figure.dev-demo", { hasText: "Live · exposure with Auto" });
-    const control = demo.locator(".ym-slider__control");
+    const control = demo.locator('[data-slot="slider"]');
     await control.scrollIntoViewIfNeeded();
     const box = (await control.boundingBox())!;
     const y = box.y + box.height / 2;
@@ -97,16 +95,18 @@ test.describe("slider in a real browser", () => {
     await page.goto("/components.html");
     await ready(page);
     const demo = page.locator("figure.dev-demo", { hasText: "Intensity · default at the right end" });
-    const control = demo.locator(".ym-slider__control");
+    const control = demo.locator('[data-slot="slider"]');
     await control.scrollIntoViewIfNeeded();
     const box = (await control.boundingBox())!;
     await page.mouse.click(box.x + box.width * 0.25, box.y + box.height / 2);
     await expect(demo.getByRole("textbox", { name: "Intensity value" })).toHaveValue("25%");
-    const thumb = (await demo.locator(".ym-slider__thumb").boundingBox())!;
-    expect(Math.abs(thumb.x + thumb.width / 2 - (box.x + box.width * 0.25))).toBeLessThan(1);
+    await expect(demo.getByRole("slider", { name: "Intensity" })).toHaveAttribute("aria-valuenow", "25");
+    // Radix keeps the knob inside the track, so it sits a few pixels off the pointer at the quarter point (half its width less a quarter of it).
+    const knob = (await demo.locator('[data-slot="slider-thumb"]').boundingBox())!;
+    expect(Math.abs(knob.x + knob.width / 2 - (box.x + box.width * 0.25))).toBeLessThan(knob.width / 2);
   });
 
-  test("shows a 3 px focus ring on the slider when reached with the keyboard, and steps with the arrows", async ({ page }) => {
+  test("shows a 3 px focus ring on the slider's knob when reached with the keyboard, and steps with the arrows", async ({ page }) => {
     await page.goto("/components.html");
     await ready(page);
     const demo = page.locator("figure.dev-demo", { hasText: "Intensity · default at the right end" });
@@ -121,10 +121,10 @@ test.describe("slider in a real browser", () => {
     await demo.getByRole("textbox", { name: "Intensity value" }).focus();
     await page.keyboard.press("Shift+Tab");
     await expect(input).toBeFocused();
-    const control = demo.locator(".ym-slider__control");
-    await expect(control).toHaveCSS("outline-width", "3px");
-    await expect(control).toHaveCSS("outline-offset", "2px");
-    await expect(control).toHaveCSS("outline-color", "rgb(11, 92, 194)");
+    // The knob is the focus stop and draws the ring itself.
+    await expect(input).toHaveCSS("outline-style", "solid");
+    await expect(input).toHaveCSS("outline-width", "3px");
+    await expect(input).toHaveCSS("outline-offset", "2px");
   });
 
   test("the value box takes a typed value, clamps and commits on Return", async ({ page }) => {
@@ -260,6 +260,8 @@ test.describe("shortcuts and drops in a real browser", () => {
     await expect(page.getByRole("tab", { name: "Light" })).toBeFocused();
     await expect(page.getByRole("tab", { name: "Light" })).toHaveAttribute("aria-selected", "true");
     await page.keyboard.press("ArrowLeft");
+    await expect(page.getByRole("tab", { name: "Look" })).toBeFocused();
+    // From the first tab the arrow wraps to the last.
     await page.keyboard.press("ArrowLeft");
     await expect(page.getByRole("tab", { name: "RAW" })).toBeFocused();
   });
@@ -288,20 +290,22 @@ test.describe("shortcuts and drops in a real browser", () => {
     await expect(demo.locator(".dev-output")).toContainText("No ARW files in what you dropped.");
   });
 
-  test("focus rings are 3 px with a 2 px offset on buttons, switches and tabs", async ({ page }) => {
+  test("focus rings are 3 px: outside a switch (2 px offset), inside a tab and a segment (inset)", async ({ page }) => {
     await page.goto("/components.html?replica=photos&tab=raw");
     await ready(page);
     await page.keyboard.press("Tab");
-    for (const locator of [page.getByRole("switch", { name: "Neural demosaic" }), page.getByRole("tab", { name: "RAW" })]) {
+    const ring = async (locator: ReturnType<Page["getByRole"]>, offset: string): Promise<void> => {
       await locator.focus();
       await page.keyboard.press("Shift+Tab");
       await page.keyboard.press("Tab");
       await expect(locator).toBeFocused();
       await expect(locator).toHaveCSS("outline-width", "3px");
       await expect(locator).toHaveCSS("outline-style", "solid");
-      await expect(locator).toHaveCSS("outline-offset", "2px");
-      await expect(locator).toHaveCSS("outline-color", "rgb(11, 92, 194)");
-    }
+      await expect(locator).toHaveCSS("outline-offset", offset);
+    };
+    await ring(page.getByRole("switch", { name: "Neural demosaic" }), "2px");
+    // The tab row and a segmented control are panes of their own: their ring is drawn inside the item.
+    await ring(page.getByRole("tab", { name: "RAW" }), "-3px");
     await page.goto("/components.html?replica=photos&tab=color");
     await ready(page);
     await page.getByRole("radio", { name: "Auto" }).focus();
@@ -309,48 +313,45 @@ test.describe("shortcuts and drops in a real browser", () => {
     const radio = page.getByRole("radio", { name: "Day" });
     await expect(radio).toBeFocused();
     await expect(radio).toHaveCSS("outline-width", "3px");
-    await expect(radio).toHaveCSS("outline-offset", "2px");
+    await expect(radio).toHaveCSS("outline-offset", "-3px");
   });
 });
 
-test.describe("replicas of the mockups", () => {
-  // The screens of design/mockups rebuilt from the components, compared pixel by pixel with the mockups
-  // rendered by the same Chromium. What may differ: fake data (histogram, curve), photo shapes drawn by SVG
-  // against CSS, and a few anti-aliased edges.
-  const cases: Array<{ name: string; mockup: string; state: Record<string, unknown>; query: string; limit: number }> = [
-    { name: "photos look", mockup: "photos.html", state: { tab: "look" }, query: "replica=photos&tab=look", limit: 0.005 },
-    { name: "photos light", mockup: "photos.html", state: { tab: "light" }, query: "replica=photos&tab=light", limit: 0.015 },
-    { name: "photos colour", mockup: "photos.html", state: { tab: "color" }, query: "replica=photos&tab=color", limit: 0.005 },
-    { name: "photos detail", mockup: "photos.html", state: { tab: "detail" }, query: "replica=photos&tab=detail", limit: 0.005 },
-    { name: "photos curve", mockup: "photos.html", state: { tab: "curve" }, query: "replica=photos&tab=curve", limit: 0.008 },
-    { name: "photos raw", mockup: "photos.html", state: { tab: "raw" }, query: "replica=photos&tab=raw", limit: 0.005 },
-    { name: "photos before", mockup: "photos.html", state: { tab: "look", before: true }, query: "replica=photos&tab=look&before=1", limit: 0.005 },
-    { name: "photos look search", mockup: "photos.html", state: { tab: "look", q: "film" }, query: "replica=photos&tab=look&q=film", limit: 0.006 },
-    { name: "start idle", mockup: "start.html", state: { busy: false, prog: 0 }, query: "replica=start", limit: 0.003 },
-    { name: "start developing", mockup: "start.html", state: { busy: true, prog: 5.4 }, query: "replica=start&prog=5.4", limit: 0.003 },
-    { name: "start done", mockup: "start.html", state: { busy: true, prog: 12 }, query: "replica=start&prog=12", limit: 0.003 },
-    { name: "export jpeg", mockup: "export.html", state: { fmt: "jpeg" }, query: "replica=export&fmt=jpeg", limit: 0.004 },
-    { name: "export tiff", mockup: "export.html", state: { fmt: "tiff" }, query: "replica=export&fmt=tiff", limit: 0.004 },
-    { name: "export png", mockup: "export.html", state: { fmt: "png" }, query: "replica=export&fmt=png", limit: 0.004 },
-    { name: "export dng", mockup: "export.html", state: { fmt: "dng" }, query: "replica=export&fmt=dng", limit: 0.004 },
-    { name: "export running", mockup: "export.html", state: { running: true, prog: 1.45 }, query: "replica=export&running=1.45", limit: 0.004 },
-    { name: "export finished", mockup: "export.html", state: { running: true, prog: 3 }, query: "replica=export&running=3", limit: 0.004 },
-    { name: "wizard get the files", mockup: "import-looks.html", state: { step: 1 }, query: "replica=wizard&step=1", limit: 0.002 },
-    { name: "wizard import", mockup: "import-looks.html", state: { step: 3, imp: 40 }, query: "replica=wizard&step=3&imp=40", limit: 0.002 },
+test.describe("the replicas of the screens", () => {
+  // The screens of design/mockups rebuilt from the components (`?replica=`). They are the dev page's own scaffolding: each opens and
+  // draws without a script error. They were compared pixel by pixel with the mockups until the dark glass interface (2026-10-16); the
+  // mockups are the pre-glass design now, and the real screens are compared with `design/screenshots-c2/` instead.
+  const queries = [
+    "replica=photos&tab=look",
+    "replica=photos&tab=light",
+    "replica=photos&tab=color",
+    "replica=photos&tab=detail",
+    "replica=photos&tab=curve",
+    "replica=photos&tab=raw",
+    "replica=photos&tab=look&before=1",
+    "replica=photos&tab=look&q=film",
+    "replica=start",
+    "replica=start&prog=5.4",
+    "replica=start&prog=12",
+    "replica=export&fmt=jpeg",
+    "replica=export&fmt=tiff",
+    "replica=export&fmt=png",
+    "replica=export&fmt=dng",
+    "replica=export&running=1.45",
+    "replica=export&running=3",
+    "replica=wizard&step=1",
+    "replica=wizard&step=3&imp=40",
   ];
-
-  for (const c of cases) {
-    test(`${c.name} matches the mockup`, async ({ page, browser }) => {
+  for (const query of queries) {
+    test(`${query} opens without errors and fills the window`, async ({ page }) => {
       const problems = watchErrors(page);
-      await page.goto(pathToFileURL(resolve(MOCKUPS, c.mockup)).href);
-      await page.evaluate((state) => (window as unknown as { __inst: { setState(s: unknown): void } }).__inst.setState(state), c.state);
+      await page.goto(`/components.html?${query}`);
       await ready(page);
-      const mock = await page.screenshot();
-      await page.goto(`/components.html?${c.query}`);
-      await ready(page);
-      const mine = await page.screenshot();
-      const diff = await pixelDiff(browser, mock, mine);
-      expect(diff.mismatch, `${(diff.mismatch * 100).toFixed(3)} % of ${diff.width} × ${diff.height} pixels differ`).toBeLessThan(c.limit);
+      const screen = page.locator(".rp-screen").first();
+      await expect(screen).toBeVisible();
+      const box = (await screen.boundingBox())!;
+      expect(box.width).toBeGreaterThan(1000);
+      expect(box.height).toBeGreaterThan(600);
       expect(problems).toEqual([]);
     });
   }

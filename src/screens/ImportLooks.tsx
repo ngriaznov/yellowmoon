@@ -1,3 +1,4 @@
+import { Aurora } from "@/components/glass/aurora";
 import { Button, LinkButton, MoonMark, StepRail } from "../components";
 import {
   canAdvance,
@@ -31,6 +32,7 @@ export function ImportLooks() {
 
   return (
     <div className="ym-screen ym-wizard" data-screen="import-looks" data-step={state.step}>
+      <Aurora className="ym-aurora" animate={false} />
       <header className="ym-header ym-wizard__header" data-tauri-drag-region="">
         <div className="ym-brand" data-tauri-drag-region="deep">
           <span className="ym-brand-title">
@@ -40,15 +42,11 @@ export function ImportLooks() {
           <span className="ym-brand-sub">Import · step {state.step + 1} of 5</span>
         </div>
         <div className="ym-wizard__header-text">Free from ARRI. Imported to this Mac only, never shared or uploaded.</div>
-        <button
-          type="button"
-          className="ym-wizard__cancel"
-          aria-disabled={importing || undefined}
-          title={importing ? "Importing. This takes a few seconds." : undefined}
-          onClick={wizard.cancel}
-        >
-          Cancel
-        </button>
+        <div className="ym-wizard__cancel">
+          <Button variant="header" disabled={importing} title={importing ? "Importing. This takes a few seconds." : undefined} onClick={wizard.cancel}>
+            Cancel
+          </Button>
+        </div>
       </header>
 
       <StepRail className="ym-wizard__rail" steps={STEPS} current={state.step} onSelect={wizard.select} />

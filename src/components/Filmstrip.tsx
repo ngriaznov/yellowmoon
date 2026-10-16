@@ -1,7 +1,8 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useId, useRef } from "react";
 import type { KeyboardEvent, MouseEvent, ReactNode } from "react";
 import { cx } from "./cx";
 import { Tag } from "./Tag";
+import type { TabId } from "./tabs";
 
 /** What a thumbnail shows: a picture, a placeholder while developing, or a "can't open" tag. */
 export type FilmstripStatus = "ready" | "developing" | "failed";
@@ -24,22 +25,22 @@ export interface FilmstripPhoto {
 
 export interface FilmstripProps {
   photos: readonly FilmstripPhoto[];
-  /** The photo on screen: drawn 90 × 60 with a 4 px border. Null when none. */
+  /** The photo on screen: the same size as the others, told apart by a 3 px accent ring. Null when none. */
   currentId: number | string | null;
   /** A thumbnail was clicked, or ←/→ moved the selection. */
   onSelect?: (id: number | string) => void;
   /** ⌘-click or P on a thumbnail. */
   onTogglePick?: (id: number | string) => void;
   /**
-   * `browse` (default) is the Photos screen: clickable thumbnails, a "4 / 12" counter and
-   * "3 picked". `export` is the Export panel: not clickable, included photos have a 3 px border
-   * and the rest are dimmed, and the counter reads "3 to export".
+   * `browse` (default) is the Photos screen: clickable thumbnails and a caption, "4 of 12 · 3 picked".
+   * `export` is the Export panel: not clickable, included photos have a 3 px border and the rest are
+   * dimmed, and the caption reads "3 to export".
    */
   mode?: "browse" | "export";
-  /** Replaces the counter's big text. */
-  counter?: ReactNode;
-  /** Replaces the counter's caption. */
-  counterLabel?: ReactNode;
+  /** Replaces the caption line ("4 of 12 · 3 picked"). */
+  caption?: ReactNode;
+  /** Tab whose colour tints the strip, for a surface that follows the tab. Omit it for the brand colour. */
+  tab?: TabId;
   /** Accessible name of the strip. Defaults to "Photos" (browse) or "Photos to export". */
   label?: string;
   className?: string;
@@ -63,10 +64,21 @@ export function scrollOffsetToReveal(
 }
 
 /**
- * The filmstrip under the photo: thumbnails 60 × 40 with 2 px borders, the current one 90 × 60
- * with a 4 px border, a yellow corner square on picked photos and a black CAN'T OPEN tag on
- * files that failed, then a counter cell. Click selects, ⌘-click or P toggles the pick, ←/→
- * move the selection (focus follows), the strip scrolls sideways.
+ * The one line that says where you are in the folder: "4 of 12 · 3 picked", or "3 to export" in the Export panel. The strip
+ * shows it as its caption; a header that wants to show the same line asks here, so the two never differ.
+ */
+export function filmstripCaption(photos: readonly FilmstripPhoto[], currentId: number | string | null, mode: "browse" | "export" = "browse"): string {
+  if (mode === "export") return `${photos.filter((p) => p.included).length} to export`;
+  const index = photos.findIndex((p) => p.id === currentId);
+  return `${index >= 0 ? index + 1 : 0} of ${photos.length} · ${photos.filter((p) => p.picked).length} picked`;
+}
+
+/**
+ * The filmstrip under the photo: 3:2 thumbnails as tall as the row less the panel inset above and
+ * below (24 px, the tool panel's own inset), the current one told apart by a 3 px accent ring, a
+ * yellow corner dot on picked photos and a black CAN'T OPEN tag on files that failed, and a one-line
+ * caption ("4 of 12 · 3 picked") in the strip's top inset. Click selects, ⌘-click or P toggles the
+ * pick, ←/→ move the selection (focus follows), the strip scrolls sideways.
  */
 export function Filmstrip({
   photos,
@@ -74,11 +86,12 @@ export function Filmstrip({
   onSelect,
   onTogglePick,
   mode = "browse",
-  counter,
-  counterLabel,
+  caption,
+  tab,
   label,
   className,
 }: FilmstripProps) {
+  const captionId = useId();
   const refs = useRef(new Map<number | string, HTMLElement>());
   const scroller = useRef<HTMLDivElement>(null);
   const focusAfter = useRef<number | string | null>(null);
@@ -117,10 +130,7 @@ export function Filmstrip({
     }
   };
 
-  const pickedCount = photos.filter((p) => p.picked).length;
-  const includedCount = photos.filter((p) => p.included).length;
-  const bigText = counter ?? (mode === "export" ? String(includedCount) : `${currentIndex >= 0 ? currentIndex + 1 : 0} / ${photos.length}`);
-  const smallText = counterLabel ?? (mode === "export" ? "to export" : `${pickedCount} picked`);
+  const captionText = caption ?? filmstripCaption(photos, currentId, mode);
 
   const thumbContent = (photo: FilmstripPhoto): ReactNode => (
     <>
@@ -145,7 +155,13 @@ export function Filmstrip({
       .join(", ");
 
   return (
-    <nav aria-label={label ?? (mode === "export" ? "Photos to export" : "Photos")} className={cx("ym-filmstrip", className)} onKeyDown={onKeyDown}>
+    <nav
+      aria-label={label ?? (mode === "export" ? "Photos to export" : "Photos")}
+      aria-describedby={captionId}
+      className={cx("ym-filmstrip", className)}
+      data-tab={tab}
+      onKeyDown={onKeyDown}
+    >
       <div ref={scroller} className="ym-filmstrip__scroll">
         {photos.map((photo, index) => {
           const isCurrent = photo.id === currentId;
@@ -191,10 +207,9 @@ export function Filmstrip({
           );
         })}
       </div>
-      <div className="ym-filmstrip__counter">
-        <span className="ym-filmstrip__count">{bigText}</span>
-        <span className="ym-filmstrip__count-label">{smallText}</span>
-      </div>
+      <span id={captionId} className="ym-filmstrip__caption">
+        {captionText}
+      </span>
     </nav>
   );
 }

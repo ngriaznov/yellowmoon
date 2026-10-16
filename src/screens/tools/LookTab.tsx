@@ -1,6 +1,8 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ChevronDownIcon } from "lucide-react";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/glass/collapsible";
 import type { ReactNode } from "react";
-import { AutoRow, AutoToggle, Card, Field, formats, LinkButton, LookTile, ResetLink, Rows, SearchField, Segmented, Slider, Tag } from "../../components";
+import { AutoRow, AutoToggle, Button, Card, Field, formats, LinkButton, LookTile, ResetLink, Rows, SearchField, Segmented, Slider, Tag } from "../../components";
 import type { TabId } from "../../components";
 import type { ApplyScope, Look, LookId, LookLibrary, ResolvedSettings } from "../../api/types";
 import { perfCount } from "../../perf";
@@ -160,31 +162,38 @@ function LookSection({ library, total, shown, searching, collapsed, holdsCurrent
   const amount = searching ? `${shown} of ${total} ${noun}` : `${total} ${noun}`;
   const name = [library.label, amount, ...(marker ? ["holds the current look"] : []), ...(searching ? [] : [open ? "collapse" : "expand"])].join(", ");
   return (
-    <div className="ym-look-group" data-library={library.id}>
-      <button
-        type="button"
-        className="ym-look-group__header ym-look-group__toggle"
-        aria-expanded={open}
-        aria-controls={bodyId}
-        aria-label={name}
-        aria-disabled={searching || undefined}
-        tabIndex={searching ? -1 : undefined}
-        title={searching ? "Clear the search to fold this section." : undefined}
-        onClick={() => {
-          if (!searching) onToggle();
-        }}
-      >
-        <span className="ym-look-group__title">
-          <span className="ym-look-group__chevron" data-open={open} aria-hidden="true" />
-          <span>{library.label}</span>
-          {marker ? <span className="ym-look-group__marker" aria-hidden="true" /> : null}
-        </span>
-        <span className="ym-look-group__count">{searching ? `${shown} of ${total}` : total}</span>
-      </button>
-      <div id={bodyId} hidden={!open}>
-        {open ? <div className="ym-look-grid">{children}</div> : null}
-      </div>
-    </div>
+    <Collapsible
+      open={open}
+      disabled={searching}
+      onOpenChange={() => {
+        if (!searching) onToggle();
+      }}
+      className="ym-look-group"
+      data-library={library.id}
+    >
+      <CollapsibleTrigger asChild>
+        <Button
+          variant="quiet"
+          size="sm"
+          className="ym-look-group__header ym-look-group__toggle"
+          aria-label={name}
+          aria-controls={bodyId}
+          // It does nothing while a search holds the sections open, so Tab skips it (it stays readable to a screen reader).
+          tabIndex={searching ? -1 : undefined}
+          title={searching ? "Clear the search to fold this section." : undefined}
+        >
+          <span className="ym-look-group__title">
+            <ChevronDownIcon className="ym-look-group__chevron" data-open={open} aria-hidden="true" />
+            <span>{library.label}</span>
+            {marker ? <span className="ym-look-group__marker" aria-hidden="true" /> : null}
+          </span>
+          <span className="ym-look-group__count">{searching ? `${shown} of ${total}` : total}</span>
+        </Button>
+      </CollapsibleTrigger>
+      <CollapsibleContent id={bodyId}>
+        <div className="ym-look-grid">{children}</div>
+      </CollapsibleContent>
+    </Collapsible>
   );
 }
 

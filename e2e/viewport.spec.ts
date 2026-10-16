@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { expect, test } from "@playwright/test";
 import type { Page } from "@playwright/test";
 import { openApp, openPhotos, settle, showUpdateReady, watchErrors } from "./helpers/app";
@@ -39,6 +41,88 @@ test.describe("the native viewport", () => {
     expect(rect.width).toBeCloseTo(box.width, 1);
     expect(rect.height).toBeCloseTo(box.height, 1);
     expect(problems).toEqual([]);
+  });
+
+  test("the page paints nothing over the cell: every box under it is clear, and the aurora is cut out of it", async ({ page }) => {
+    // The photo is a layer behind the webview (docs/01 §Native viewport), so anything the page paints where the cell is would cover
+    // it. Since the dark glass interface the page has more that paints (an aurora under the panes, glass surfaces, a blurred backdrop);
+    // none of it may reach the cell. Checked two ways: the boxes at five points of the cell, and the pixels of a capture taken
+    // without the page's own background.
+    await photos(page, { mockViewport: "native" });
+    await expect(page.locator("html")).toHaveAttribute("data-native-viewport", "");
+    const box = (await cell(page).boundingBox())!;
+    const points = [
+      [0.5, 0.5],
+      [0.25, 0.5],
+      [0.75, 0.5],
+      [0.5, 0.3],
+      [0.5, 0.7],
+    ].map(([fx, fy]) => ({ x: Math.round(box.x + box.width * fx!), y: Math.round(box.y + box.height * fy!) }));
+    const boxes = await page.evaluate((at) => {
+      const name = (e: Element) => e.tagName.toLowerCase() + (e.id ? `#${e.id}` : "") + [...e.classList].map((c) => `.${c}`).join("");
+      return at.flatMap(({ x, y }) =>
+        document.elementsFromPoint(x, y).map((e) => {
+          const css = getComputedStyle(e);
+          return { at: `${x},${y}`, element: name(e), color: css.backgroundColor, image: css.backgroundImage, backdrop: css.backdropFilter || css.getPropertyValue("-webkit-backdrop-filter") || "none" };
+        }),
+      );
+    }, points);
+    expect(boxes.length).toBeGreaterThan(points.length * 3);
+    for (const b of boxes) {
+      expect(b, `${b.element} at ${b.at} paints a background`).toMatchObject({ color: "rgba(0, 0, 0, 0)", image: "none" });
+      expect(b.backdrop, `${b.element} at ${b.at} blurs what is behind it`).toBe("none");
+    }
+    // In pixels: transparent inside the cell (nothing painted), opaque in the header above it (the glass paints there).
+    const png = await page.screenshot({ omitBackground: true, animations: "disabled" });
+    const alpha = await page.evaluate(
+      async ({ data, at, scale }) => {
+        const bitmap = await createImageBitmap(await (await fetch(`data:image/png;base64,${data}`)).blob());
+        const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
+        const ctx = canvas.getContext("2d")!;
+        ctx.drawImage(bitmap, 0, 0);
+        return at.map(({ x, y }) => ctx.getImageData(Math.round(x * scale), Math.round(y * scale), 1, 1).data[3]!);
+      },
+      { data: png.toString("base64"), at: [...points, { x: 720, y: 24 }], scale: 2 },
+    );
+    expect(alpha.slice(0, points.length), "alpha inside the cell").toEqual(points.map(() => 0));
+    expect(alpha[points.length], "alpha in the header").toBeGreaterThan(0);
+  });
+
+  test("the Mac job's description of the page sees the aurora cut out at the cell (SMOKE_DESCRIBE_PAGE, run here as it runs there)", async ({ page }) => {
+    // The `viewport` job of build.yml is the only guard on a Mac. It runs this script in the app's own web view and reads the result in
+    // src-tauri/src/app.rs (`page_paints_over_cell`). The aurora takes no pointer events, so the boxes under the cell never include it:
+    // the script reads its mask and the cell's variables itself. Run here, the script must see what the pixel check above sees.
+    await photos(page, { mockViewport: "native" });
+    const source = readFileSync(resolve(import.meta.dirname, "../src-tauri/src/app.rs"), "utf8");
+    const script = /const SMOKE_DESCRIBE_PAGE: &str = r##"([\s\S]*?)"##;/.exec(source)?.[1];
+    expect(script, "SMOKE_DESCRIBE_PAGE in src-tauri/src/app.rs").toBeDefined();
+    const described = JSON.parse((await page.evaluate(script as string)) as string) as {
+      cell: [number, number, number, number];
+      stack: string[];
+      paints: Array<{ element: string; image: string; backdrop: string }>;
+      aurora: { composite: string; size: string; position: string } | null;
+      cell_vars: string[];
+    };
+    expect(described.stack.length).toBeGreaterThan(2);
+    for (const entry of described.stack) expect(entry, "a box over the cell").toMatch(/rgba\(0, 0, 0, 0\)$/);
+    expect(described.paints.length).toBe(described.stack.length);
+    for (const paint of described.paints) {
+      expect(paint, `${paint.element} paints an image`).toMatchObject({ image: "none", backdrop: "none" });
+    }
+    expect(described.cell_vars, "--cell-x/y/w/h").toHaveLength(4);
+    for (const value of described.cell_vars) expect(value).toMatch(/^[\d.]+px$/);
+    expect(described.aurora, "the aurora").not.toBeNull();
+    // One entry for each of the two layers ("exclude, exclude"); the first is composited with the layer below it.
+    expect(["exclude", "xor"]).toContain(described.aurora!.composite.split(",")[0]!.trim());
+    // The second layer of the mask is the cell, in pixels.
+    const px = (layer: string | undefined): number[] => (layer ?? "").trim().split(/\s+/).map((n) => parseFloat(n));
+    const [, size] = described.aurora!.size.split(",");
+    const [, position] = described.aurora!.position.split(",");
+    const [left, top, width, height] = described.cell;
+    px(size).forEach((n, i) => expect(n).toBeCloseTo([width, height][i]!, 0));
+    px(position).forEach((n, i) => expect(n).toBeCloseTo([left, top][i]!, 0));
+    expect(px(size)).toHaveLength(2);
+    expect(px(position)).toHaveLength(2);
   });
 
   test("follows the cell when the window is resized", async ({ page }) => {
@@ -180,7 +264,10 @@ test.describe("Update ready while the core exports", () => {
     await expect(pill).not.toHaveAttribute("aria-disabled", "true");
     await page.evaluate(() => (window as unknown as { __yellowmoon: { mockApi: { emitEvent: (e: string, p: unknown) => void } } }).__yellowmoon.mockApi.emitEvent("export_busy", { busy: true }));
     await expect(pill).toHaveAttribute("aria-disabled", "true");
-    await expect(pill).toHaveAttribute("title", "Restarts after the export finishes");
+    await expect(pill).toHaveAccessibleDescription("Restarts after the export finishes");
+    // A locked button takes no pointer events itself, so the tooltip is on the span around it: hovering the dead cell explains it.
+    await page.locator('[data-slot="tooltip-trigger"]', { has: pill }).hover();
+    await expect(page.getByRole("tooltip").first()).toHaveText("Restarts after the export finishes");
     await page.evaluate(() => (window as unknown as { __yellowmoon: { mockApi: { emitEvent: (e: string, p: unknown) => void } } }).__yellowmoon.mockApi.emitEvent("export_busy", { busy: false }));
     await expect(pill).not.toHaveAttribute("aria-disabled", "true");
   });

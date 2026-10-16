@@ -180,16 +180,17 @@ test.describe("keyboard only", () => {
     await expect(page.getByRole("complementary", { name: "Tools" }).getByRole("heading", { level: 2, name: "Light" })).toBeVisible();
 
     // A slider takes the arrows; Shift takes ten steps; Home goes to the end of the range.
-    await tabTo(page, (el) => el instanceof HTMLInputElement && el.type === "range" && el.labels?.[0]?.textContent === "Exposure");
+    await tabTo(page, (el) => el.getAttribute("role") === "slider" && document.getElementById(el.getAttribute("aria-labelledby") ?? "")?.textContent === "Exposure");
     const exposure = page.getByRole("slider", { name: "Exposure" });
     await expect(exposure).toBeFocused();
-    const before = Number(await exposure.inputValue());
+    const value = async (): Promise<number> => Number(await exposure.getAttribute("aria-valuenow"));
+    const before = await value();
     await page.keyboard.press("ArrowRight");
-    expect(Number(await exposure.inputValue())).toBeGreaterThan(before);
+    expect(await value()).toBeGreaterThan(before);
     await page.keyboard.press("Shift+ArrowRight");
-    expect(Number(await exposure.inputValue())).toBeGreaterThan(before + 0.05);
+    expect(await value()).toBeGreaterThan(before + 0.05);
     await page.keyboard.press("Home");
-    expect(Number(await exposure.inputValue())).toBe(-4);
+    expect(await value()).toBe(-4);
     await expect(page.getByRole("textbox", { name: "Exposure value" })).toHaveValue("−4.00");
     // ⌘Z takes the keys back.
     await page.keyboard.press("Meta+z");
@@ -212,6 +213,7 @@ test.describe("keyboard only", () => {
     await tabTo(page, (el) => el.getAttribute("aria-label") === "Search looks");
     await page.keyboard.type("film");
     await expect(page.getByText("2 of 7")).toBeVisible();
+    // The field's Clear button (there while the field holds text) is not a Tab stop: the first tile is the next one.
     await page.keyboard.press("Tab");
     await expect(page.getByRole("button", { name: "Film warm look, key 3" })).toBeFocused();
     await page.keyboard.press("Enter");
@@ -237,7 +239,7 @@ test.describe("keyboard only", () => {
     await openPhotos(page);
     await page.keyboard.press("Meta+2");
     await setValue(page, "Contrast", "25");
-    await expect(page.getByRole("slider", { name: "Contrast" })).toHaveValue("25");
+    await expect(page.getByRole("slider", { name: "Contrast" })).toHaveAttribute("aria-valuenow", "25");
     const box = page.getByRole("textbox", { name: "Contrast value" });
     await box.click();
     await box.fill("80");
@@ -285,10 +287,14 @@ test.describe("focus ring", () => {
           await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
           const el = document.activeElement as HTMLElement | null;
           if (!el || el === document.body) return { label: "BODY", ring: true };
-          // A range input is transparent; its slider draws the ring on the control around it.
-          const target = el instanceof HTMLInputElement && el.type === "range" ? (el.closest(".ym-slider__control") as HTMLElement | null) ?? el : el;
-          const style = getComputedStyle(target);
-          const own = style.outlineStyle !== "none" && parseFloat(style.outlineWidth) >= 3;
+          // A text input inside a capsule (the search field) draws its ring on the capsule around it (focus-within); every other stop
+          // draws its own.
+          const rings = (node: Element | null): boolean => {
+            if (!node) return false;
+            const style = getComputedStyle(node);
+            return style.outlineStyle !== "none" && parseFloat(style.outlineWidth) >= 3;
+          };
+          const own = rings(el) || (el instanceof HTMLInputElement && el.type !== "checkbox" && rings(el.parentElement));
           const label = (el.getAttribute("aria-label") ?? el.textContent ?? el.tagName).trim().slice(0, 40);
           return { label, ring: own };
         }),
@@ -312,7 +318,7 @@ test.describe("focus ring", () => {
     expect(seen.length).toBe(30);
   });
 
-  test("a focused tab shows the ring outside its cell, over the title block", async ({ page }) => {
+  test("a focused tab shows the 3 px ring, drawn inside its cell", async ({ page }) => {
     await openApp(page, MOCKUP);
     await openPhotos(page);
     await page.keyboard.press("Meta+6");
@@ -320,6 +326,7 @@ test.describe("focus ring", () => {
     const raw = page.getByRole("tab", { name: "RAW" });
     await expect(raw).toBeFocused();
     await expect(raw).toHaveCSS("outline-width", "3px");
-    await expect(raw).toHaveCSS("outline-offset", "2px");
+    // glasscn's tabs draw the ring inset (the tab row is a pane of its own, there is no room outside it).
+    await expect(raw).toHaveCSS("outline-offset", "-3px");
   });
 });

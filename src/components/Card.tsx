@@ -1,6 +1,8 @@
 import { useId } from "react";
 import type { ButtonHTMLAttributes, ReactNode } from "react";
 import { cx } from "./cx";
+import { ChevronRightIcon } from "lucide-react";
+import { Item } from "@/components/glass/item";
 import { Tag } from "./Tag";
 import type { TagVariant } from "./Tag";
 import { Switch } from "./Switch";
@@ -83,14 +85,14 @@ export interface InfoRowProps {
   tagLabel?: string;
 }
 
-/** A label, a value and an optional tag: the Camera card's "Detected" and "Profile" rows. */
+/** A label, a value and an optional tag: the Camera card's "Detected" and "Profile" rows, glasscn's `Item`. */
 export function InfoRow({ label, value, tag, tagLabel }: InfoRowProps) {
   return (
-    <div className="ym-info-row">
+    <Item size="sm" className="ym-info-row">
       <span className="ym-info-row__label">{label}</span>
       <span className="ym-info-row__value">{value}</span>
       {tag ? <Tag variant={tag}>{tagLabel}</Tag> : null}
-    </div>
+    </Item>
   );
 }
 
@@ -108,25 +110,19 @@ export interface AutoRowProps extends Omit<ButtonHTMLAttributes<HTMLButtonElemen
 
 /**
  * A row of the Automatic card: label, value, AUTO or EDITED tag and an arrow. The whole row is
- * a button that opens the tab that owns the value.
+ * glasscn's pressable `Item` (a button) that opens the tab that owns the value.
  */
 export function AutoRow({ label, value, isAuto, tabLabel, onOpen, className, ...rest }: AutoRowProps) {
   const tagText = isAuto ? "Auto" : "Edited";
   return (
-    <button
-      {...rest}
-      type="button"
-      className={cx("ym-auto-row", className)}
-      aria-label={`${label} ${value}, ${tagText}. Open ${tabLabel}`}
-      onClick={onOpen}
-    >
-      <span className="ym-auto-row__label">{label}</span>
-      <span className="ym-auto-row__value">{value}</span>
-      <Tag variant={isAuto ? "auto" : "edited"} />
-      <span className="ym-auto-row__arrow" aria-hidden="true">
-        →
-      </span>
-    </button>
+    <Item asChild size="sm" className={cx("ym-auto-row", className)}>
+      <button {...rest} type="button" aria-label={`${label} ${value}, ${tagText}. Open ${tabLabel}`} onClick={onOpen}>
+        <span className="ym-auto-row__label">{label}</span>
+        <span className="ym-auto-row__value">{value}</span>
+        <Tag variant={isAuto ? "auto" : "edited"} />
+        <ChevronRightIcon className="ym-auto-row__arrow" aria-hidden="true" />
+      </button>
+    </Item>
   );
 }
 
@@ -137,15 +133,15 @@ export interface SwitchRowProps {
   disabled?: boolean;
 }
 
-/** A 44 px row with a label and a `Switch` (RAW › Decode). */
+/** A 44 px `Item` with a label and a `Switch` (RAW › Decode). */
 export function SwitchRow({ label, checked, onChange, disabled }: SwitchRowProps) {
   return (
-    <div className="ym-switch-row">
+    <Item size="sm" className="ym-switch-row">
       <span className="ym-switch-row__label" aria-hidden="true">
         {label}
       </span>
       <Switch label={label} checked={checked} onChange={onChange} disabled={disabled} />
-    </div>
+    </Item>
   );
 }
 

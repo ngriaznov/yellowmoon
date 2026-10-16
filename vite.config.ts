@@ -1,4 +1,5 @@
 import { resolve } from "node:path";
+import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import { configDefaults, defineConfig } from "vitest/config";
 
@@ -6,7 +7,10 @@ const host = process.env.TAURI_DEV_HOST;
 
 // https://vite.dev/config/ and https://v2.tauri.app/start/frontend/vite/
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), tailwindcss()],
+
+  // glasscn's components import each other and the helpers through the shadcn alias.
+  resolve: { alias: { "@": resolve(import.meta.dirname, "src") } },
 
   // Tauri options, applied in `tauri dev` and `tauri build`.
   // 1. Keep Rust compiler errors visible in the terminal.
@@ -43,7 +47,10 @@ export default defineConfig({
         components: resolve(import.meta.dirname, "components.html"),
       },
     },
-    // macOS 12 ships Safari 15, the oldest WebKit the app supports.
+    // The script and style syntax is lowered to Safari 15, which macOS 12 ships. That is the syntax only: the dark glass interface's
+    // CSS (Tailwind 4: @layer, :has(), @property, color-mix()) needs WebKit 16.4 or later, which macOS 12 and 13 have only after
+    // their latest system and Safari updates (macOS 13.3 and later ship it). The minimum is the owner's open question 30 in
+    // docs/STATUS.md; until he answers, the README and the changelog tell people on 12 and 13 to update.
     target: "safari15",
     minify: process.env.TAURI_ENV_DEBUG ? false : "esbuild",
     sourcemap: !!process.env.TAURI_ENV_DEBUG,

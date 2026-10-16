@@ -88,18 +88,27 @@ describe("Menu", () => {
     expect(screen.queryByRole("menu")).toBeNull();
   });
 
-  it("closes on Esc, returning focus, and on a click or Tab outside", async () => {
+  it("closes on Esc, returning focus, and on a click outside; Tab stays in the list", async () => {
     const { user, trigger } = setup();
     await user.click(trigger);
     await user.keyboard("{Escape}");
     expect(screen.queryByRole("menu")).toBeNull();
     expect(trigger).toHaveFocus();
-    await user.click(trigger);
-    await user.click(screen.getByRole("button", { name: "Elsewhere" }));
+    // While the list is open Radix hides the rest of the page from assistive technology and stops its pointer events, so the click
+    // outside goes to the page itself, with the pointer-events check off.
+    const outside = userEvent.setup({ pointerEventsCheck: 0 });
+    await outside.click(trigger);
+    expect(screen.queryByRole("button", { name: "Elsewhere" })).toBeNull();
+    await outside.click(screen.getByText("Elsewhere"));
     expect(screen.queryByRole("menu")).toBeNull();
+    // Tab does not leave the list (Radix traps the focus while it is open): it stays on an item until Esc closes the list.
     await user.click(trigger);
     await user.keyboard("{Tab}");
+    expect(screen.getByRole("menu", { name: "Zoom" })).toBeInTheDocument();
+    expect(screen.getAllByRole("menuitemradio")).toContain(document.activeElement);
+    await user.keyboard("{Escape}");
     expect(screen.queryByRole("menu")).toBeNull();
+    expect(trigger).toHaveFocus();
   });
 
   it("keeps focus on the item the arrows chose when the screen draws again", async () => {

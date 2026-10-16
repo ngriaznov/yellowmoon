@@ -7,7 +7,7 @@
 import { screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SettingsPatch } from "../api/types";
-import { openPhotos, openTab, renderApp, sliderOf, valueOf } from "../test/harness";
+import { openPhotos, openTab, renderApp, sliderName, sliderOf, valueOf } from "../test/harness";
 import type { Harness, UpdateSpy } from "../test/harness";
 
 let h: Harness;
@@ -43,7 +43,7 @@ describe("the Tone card on the Look tab", () => {
     expect(regions.map((r) => within(r).getAllByRole("heading", { level: 3 })[0]?.textContent)).toEqual(["Automatic", "Look", "Tone"]);
     const labels = tone()
       .getAllByRole("slider")
-      .map((s: HTMLElement) => (s as HTMLInputElement).labels?.[0]?.textContent);
+      .map((s: HTMLElement) => sliderName(s));
     expect(labels).toEqual(["Temperature", "Contrast", "Saturation"]);
     expect(tone().queryByRole("slider", { name: "Tint" })).toBeNull();
     // The Auto Kelvin with the AUTO tag; Contrast and Saturation start at 0.

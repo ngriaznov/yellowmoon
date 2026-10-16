@@ -40,6 +40,8 @@ BSD_NOTICE = (
     "Copyright 2015 Colour Developers\nRedistributions in binary form must reproduce the above copyright notice\n"
     "Neither the name of the copyright holder nor the names of its contributors\n"
     "THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS \"AS IS\"\n"
+    "Copyright (c) 2026 Tim Mikeladze\n"
+    "The above copyright notice and this permission notice shall be included in all\n"
 )
 OFL = "Copyright 2022 The Figtree Project Authors\n\nSIL OPEN FONT LICENSE Version 1.1 - 26 February 2007\n"
 
@@ -128,11 +130,49 @@ class Npm(unittest.TestCase):
         self.assertIsNone(generate.rust_counterpart("react"))
         self.assertIsNone(generate.rust_counterpart("@tauri-apps/api"))
 
+    def test_a_package_that_ships_no_licence_file_gets_its_saved_text_and_a_note_that_says_so(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            checker = {"react-remove-scroll-bar@2.3.8": {"licenses": "MIT", "path": tmp}}
+            packages = generate.collect_npm(checker)
+        self.assertEqual(len(packages[0].texts), 1)
+        self.assertIn("Permission is hereby granted", packages[0].texts[0])
+        self.assertIn("Anton Korzunov", packages[0].texts[0])
+        self.assertIn("carries no LICENSE file", packages[0].note)
+
+    def test_the_saved_texts_are_the_only_ones_and_each_names_a_file_that_exists(self):
+        for name in generate.HAND_ADDED_TEXTS:
+            self.assertTrue((generate.TEXTS_DIR / f"{name}.LICENSE").is_file(), name)
+        self.assertEqual(sorted(p.name for p in generate.TEXTS_DIR.iterdir()), sorted(f"{n}.LICENSE" for n in generate.HAND_ADDED_TEXTS))
+        self.assertIsNone(generate.hand_added_text("react"))
+
     def test_a_package_without_a_licence_file_is_an_error_not_a_silent_gap(self):
         with tempfile.TemporaryDirectory() as tmp:
             checker = {"bare@1.0.0": {"licenses": "MIT", "path": tmp}}
             with self.assertRaisesRegex(generate.GenerateError, "bare@1.0.0"):
                 generate.collect_npm(checker)
+
+
+class BuildToolOutput(unittest.TestCase):
+    def test_tailwind_is_listed_with_its_licence_and_a_note_about_why(self):
+        packages = generate.collect_build_tool_output()
+        self.assertEqual([p.name for p in packages], ["tailwindcss"])
+        self.assertIn("Tailwind Labs", packages[0].texts[0])
+        self.assertIn("Permission is hereby granted", packages[0].texts[0])
+        self.assertIn("stylesheet", packages[0].note)
+        self.assertEqual(packages[0].licenses, "MIT")
+
+    def test_a_missing_package_is_an_error_not_a_silent_gap(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaisesRegex(generate.GenerateError, "tailwindcss is not installed"):
+                generate.collect_build_tool_output(Path(tmp))
+
+    def test_a_package_without_a_licence_file_is_an_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp) / "tailwindcss"
+            folder.mkdir()
+            (folder / "package.json").write_text(json.dumps({"version": "4.0.0", "license": "MIT"}))
+            with self.assertRaisesRegex(generate.GenerateError, "no LICENSE file"):
+                generate.collect_build_tool_output(Path(tmp))
 
 
 class Rendering(unittest.TestCase):
@@ -228,6 +268,12 @@ class Bundle(unittest.TestCase):
             self.tree(Path(tmp), notice="BSD 3-Clause, Copyright 2015 Colour Developers.\n")
             problems = check_bundle.problems(Path(tmp))
         self.assertTrue(any("Redistributions in binary form" in p for p in problems), problems)
+
+    def test_the_glasscn_notice_must_be_in_the_notice(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.tree(Path(tmp), notice=BSD_NOTICE.replace("Tim Mikeladze", "Someone"))
+            problems = check_bundle.problems(Path(tmp))
+        self.assertTrue(any("Tim Mikeladze" in p for p in problems), problems)
 
 
 if __name__ == "__main__":

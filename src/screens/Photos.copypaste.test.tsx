@@ -39,7 +39,7 @@ describe("Add photos", () => {
     await setup();
     const labels = within(header()).getAllByRole("button").map((b) => b.textContent);
     expect(labels.slice(0, 5)).toEqual(["Before", "Crop", "Pick white", "Add photos", expect.stringMatching(/^Fit/)]);
-    expect(within(header()).getByRole("button", { name: "Add photos" })).toHaveAttribute("title", "Add photos (⌘O)");
+    expect(within(header()).getByRole("button", { name: "Add photos" })).toHaveAccessibleDescription("Add photos (⌘O)");
   });
 
   it("opens the system's dialog for files and adds what is chosen, keeping the current photo", async () => {
@@ -54,7 +54,7 @@ describe("Add photos", () => {
     expect(within(strip).getAllByRole("button")).toHaveLength(13);
     expect(within(strip).getByRole("button", { name: /^Show DSC09001/ })).toBeInTheDocument();
     expect(within(strip).getByRole("button", { name: "Show DSC04204, picked" })).toHaveAttribute("aria-current", "true");
-    expect(screen.getByText("4 / 13")).toBeInTheDocument();
+    expect(screen.getByText("4 of 13 · 3 picked")).toBeInTheDocument();
     expect(screen.getByRole("status")).toHaveTextContent("Added 1 photo. 1 was already open.");
     // The Export panel counts the new photo.
     await h!.user.click(screen.getByRole("button", { name: /Export/ }));
@@ -140,10 +140,10 @@ describe("Add photos", () => {
 describe("Copy settings and Paste", () => {
   it("are a row at the foot of the tool panel, with their keys in the tooltips", async () => {
     await setup();
-    expect(copyButton()).toHaveAttribute("title", "Copy the settings of this photo (⇧⌘C)");
+    expect(copyButton()).toHaveAccessibleDescription("Copy the settings of this photo (⇧⌘C)");
     // Nothing is copied yet: Paste says what to do first.
     expect(pasteButton()).toHaveAttribute("aria-disabled", "true");
-    expect(pasteButton()).toHaveAttribute("title", "Copy the settings of a photo first (⇧⌘C)");
+    expect(pasteButton()).toHaveAccessibleDescription("Copy the settings of a photo first (⇧⌘C)");
     // The header has neither.
     expect(within(header()).queryByRole("button", { name: "Copy settings" })).toBeNull();
     expect(within(header()).queryByRole("button", { name: "Paste" })).toBeNull();
@@ -155,7 +155,7 @@ describe("Copy settings and Paste", () => {
     await h!.user.click(copyButton());
     expect(await screen.findByRole("status")).toHaveTextContent("Copied the settings of DSC04204.");
     expect(pasteButton()).not.toHaveAttribute("aria-disabled");
-    expect(pasteButton()).toHaveAttribute("title", "Paste the settings of DSC04204 (⇧⌘V)");
+    expect(pasteButton()).toHaveAccessibleDescription("Paste the settings of DSC04204 (⇧⌘V)");
 
     await h!.user.click(screen.getByRole("button", { name: "Show DSC04206" }));
     await waitFor(() => expect(h!.store.currentSettings()?.photo_id).toBe(6));

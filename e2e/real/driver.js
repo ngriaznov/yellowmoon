@@ -56,9 +56,9 @@
     const t0 = Date.now();
     await dropFolder(config.dir);
     await waitFor("the Start screen develops the photos", () => /^Developing \d+ photos?$/.test(textOf("[data-screen=start] h2")) || /photos? ready$/.test(textOf("[data-screen=start] h2")), 30000);
-    record("a drop of the folder opens the session and the Start screen shows the progress of photo_progress", true, `${textOf("[data-screen=start] h2")} after ${Date.now() - t0} ms; tags ${[...new Set(qa("[data-screen=start] .ym-tag").map((t) => t.textContent.trim()))].join(", ")}`);
+    record("a drop of the folder opens the session and the Start screen shows the progress of photo_progress", true, `${textOf("[data-screen=start] h2")} after ${Date.now() - t0} ms; tags ${[...new Set(qa("[data-screen=start] [data-slot=badge]").map((t) => t.textContent.trim()))].join(", ")}`);
     await waitFor("every photo developed", () => /^\d+ photos? ready$/.test(textOf("[data-screen=start] h2")), config.developTimeoutMs);
-    const tags = qa("[data-screen=start] .ym-tag").map((t) => t.textContent.trim());
+    const tags = qa("[data-screen=start] [data-slot=badge]").map((t) => t.textContent.trim());
     record("the Start screen ends with every photo Ready or Skipped", tags.length > 0 && tags.every((t) => /^(ready|skipped)$/i.test(t)), tags.join(", ") + "; " + textOf("[data-screen=start] h2"));
     const open = qa("button", q("[data-screen=start]")).find((b) => /Open photos/.test(b.textContent));
     record("Open photos is there", !!open, "");
@@ -164,7 +164,7 @@
     const lb = layer.getBoundingClientRect();
     layer.dispatchEvent(new MouseEvent("click", { clientX: lb.left + lb.width * config.pickAt[0], clientY: lb.top + lb.height * config.pickAt[1], bubbles: true }));
     const outcome = await waitFor("a pick or an error", () => {
-      const edited = qa(".ym-tag", region("White balance")).some((t) => /edited/i.test(t.textContent));
+      const edited = qa("[data-slot=badge]", region("White balance")).some((t) => /edited/i.test(t.textContent));
       const bar = q(".ym-error-bar");
       return edited ? { picked: true } : bar ? { picked: false, error: bar.textContent } : null;
     }, 60000);
@@ -172,7 +172,7 @@
     if (outcome.picked) {
       const reset = qa("button", region("White balance")).find((b) => /^reset$/i.test(b.textContent.trim()));
       if (reset) reset.click();
-      await waitFor("the pick is cleared", () => !qa(".ym-tag", region("White balance")).some((t) => /edited/i.test(t.textContent)), 30000);
+      await waitFor("the pick is cleared", () => !qa("[data-slot=badge]", region("White balance")).some((t) => /edited/i.test(t.textContent)), 30000);
       record("Reset clears the pick", true, "");
     } else {
       const dismiss = qa(".ym-error-bar button").find((b) => /dismiss/i.test(b.textContent));
@@ -229,7 +229,7 @@
   async function brokenFile(backend) {
     await dropFolder(config.brokenDir);
     await waitFor("the Start screen settles", () => /photos? ready$/.test(textOf("[data-screen=start] h2")), config.developTimeoutMs);
-    const tags = qa("[data-screen=start] .ym-tag").map((t) => t.textContent.trim().toLowerCase());
+    const tags = qa("[data-screen=start] [data-slot=badge]").map((t) => t.textContent.trim().toLowerCase());
     record("a file that can't be read is Skipped on the Start screen, the rest Ready", tags.includes("skipped") && tags.includes("ready"), `${tags.join(", ")}; ${textOf("[data-screen=start] main").replace(/\s+/g, " ").slice(0, 300)}`);
     const reasons = qa("[data-screen=start] li").map((li) => li.textContent.replace(/\s+/g, " ")).filter((t) => /skipped/i.test(t));
     record("the Skipped file says why, in words", reasons.length > 0 && /\.\s*$|[a-z]/.test(reasons[0]), reasons[0] || "no row");
@@ -290,7 +290,7 @@
         const lb = layer.getBoundingClientRect();
         layer.dispatchEvent(new MouseEvent("click", { clientX: lb.left + picture.x + picture.w * u, clientY: lb.top + picture.y + picture.h * v, bubbles: true }));
         const outcome = await waitFor("a pick or an error", () => {
-          const edited = qa(".ym-tag", region("White balance")).some((t) => /edited/i.test(t.textContent));
+          const edited = qa("[data-slot=badge]", region("White balance")).some((t) => /edited/i.test(t.textContent));
           const bar = q(".ym-error-bar");
           return edited ? { picked: true } : bar ? { picked: false } : null;
         }, 60000);
@@ -298,7 +298,7 @@
           const got = (await invoke("get_settings", { photoId: photo.id })).settings.white_pick;
           const reset = qa("button", region("White balance")).find((b) => /^reset$/i.test(b.textContent.trim()));
           if (reset) reset.click();
-          await waitFor("the pick is cleared", () => !qa(".ym-tag", region("White balance")).some((t) => /edited/i.test(t.textContent)), 30000);
+          await waitFor("the pick is cleared", () => !qa("[data-slot=badge]", region("White balance")).some((t) => /edited/i.test(t.textContent)), 30000);
           return { u, v, got };
         }
         const dismiss = qa(".ym-error-bar button").find((b) => /dismiss/i.test(b.textContent));

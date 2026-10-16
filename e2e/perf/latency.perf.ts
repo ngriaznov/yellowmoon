@@ -7,7 +7,7 @@ import { openApp } from "../helpers/app";
 // with a folder of 500 photos, built for production, while the mock develops the photos in the background (about 2,500 progress
 // events and 500 thumbnails), keys pressed meanwhile. The latency of a key is the time from the moment the browser made the key
 // event (`KeyboardEvent.timeStamp`, so the wait behind whatever the page was busy with counts) to two frames after the filmstrip's
-// counter shows the next photo (the first frame carries the change, the second callback runs when that frame is out).
+// caption ("4 of 12 · 3 picked") shows the next photo (the first frame carries the change, the second callback runs when that frame is out).
 //
 // The numbers are a report (test-results/perf/latency.json and latency.md, also attached to the test); the only assertions are that
 // the measurement measured what it says (every key got an answer; photos were still developing at the last key) and a generous
@@ -45,12 +45,12 @@ test("500 photos developing: a key is on screen two frames later, p95 well insid
   await expect(page.getByRole("heading", { level: 2, name: "Developing 500 photos" })).toBeVisible();
   await page.getByRole("button", { name: /Open photos/ }).click();
   await expect(page.getByRole("region", { name: "Automatic" })).toBeVisible();
-  await expect(page.locator(".ym-filmstrip__count")).toHaveText("1 / 500");
+  await expect(page.locator(".ym-filmstrip__caption")).toHaveText("1 of 500 · 0 picked");
 
   const developing = (): Promise<number> =>
     page.locator(".ym-filmstrip button").evaluateAll((buttons) => buttons.filter((b) => /, developing$/.test(b.getAttribute("aria-label") ?? "")).length);
 
-  // The instruments: the time of every keydown, the long tasks, and one sample per change of the counter.
+  // The instruments: the time of every keydown, the long tasks, and one sample per change of the caption.
   await page.evaluate(() => {
     const perf: InPage = { samples: [], longTasks: [] };
     window.__perf = perf;
@@ -62,18 +62,18 @@ test("500 photos developing: a key is on screen two frames later, p95 well insid
       },
       true,
     );
-    const counter = document.querySelector(".ym-filmstrip__count");
-    if (!counter) throw new Error("no filmstrip counter");
-    let shown = counter.textContent;
+    const caption = document.querySelector(".ym-filmstrip__caption");
+    if (!caption) throw new Error("no filmstrip caption");
+    let shown = caption.textContent;
     new MutationObserver(() => {
-      const now = counter.textContent;
+      const now = caption.textContent;
       if (now === shown) return;
       shown = now;
       const since = pressedAt;
       pressedAt = null;
       if (since === null) return;
       requestAnimationFrame(() => requestAnimationFrame(() => perf.samples.push(performance.now() - since)));
-    }).observe(counter, { childList: true, characterData: true, subtree: true });
+    }).observe(caption, { childList: true, characterData: true, subtree: true });
     new PerformanceObserver((list) => {
       for (const entry of list.getEntries()) perf.longTasks.push(entry.duration);
     }).observe({ type: "longtask", buffered: true });

@@ -7,10 +7,11 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import type { CurveChannel, TabId } from "../components";
 import { TAB_IDS } from "../components";
-import "../styles/tokens.css";
-import "../styles/global.css";
-import "../styles/components.css";
-import "../styles/app.css";
+// The same sheets as the app (`src/main.tsx`), so that the components look here as they do in it.
+import "../styles/glass.css";
+import "../styles/legacy.css";
+import "../styles/glass-c2.css";
+import "../styles/glass-c2-pages.css";
 import "./dev.css";
 import { ComponentsPage } from "./ComponentsPage";
 import { ExportReplica } from "./ExportReplica";

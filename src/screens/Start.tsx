@@ -1,4 +1,6 @@
 import { useMemo } from "react";
+import { Aurora } from "@/components/glass/aurora";
+import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemMedia, ItemTitle } from "@/components/glass/item";
 import { Button, DevelopList, DropZone, LinkButton, ProgressBar, useWindowDrop } from "../components";
 import type { DevelopItem } from "../components";
 import { useAppState, useStore } from "../state/context";
@@ -72,6 +74,7 @@ export function Start() {
 
   return (
     <div className="ym-screen" data-screen="start">
+      <Aurora className="ym-aurora" animate={false} />
       <Header
         title={busy ? (session?.folder_name ?? "Yellowmoon") : "Yellowmoon"}
         subline={busy && session ? folderSubline(session) : "Drop ARW files to start"}
@@ -91,33 +94,35 @@ export function Start() {
           Every photo is developed automatically: exposure, white balance, noise and cinema colour. Adjust if you want, then export. Your
           original files are never changed.
         </p>
-        <div className="ym-about-table">
-          <div className="ym-about-row">
-            <span className="ym-about-row__label">Camera</span>
-            <span>Any Sony camera · every kind of ARW</span>
-          </div>
-          <div className="ym-about-row" data-action="true">
-            <span className="ym-about-row__label">Default look</span>
-            <span>{defaultLook ? label(defaultLook) : "Neutral"}</span>
-            <Menu
-              label="Default look"
-              options={lookOptions}
-              value={defaultLook?.id ?? null}
-              onSelect={(id) => void store.makeDefault(id)}
-              trigger={({ ref, ...props }) => (
-                <button ref={ref} type="button" className="ym-link" {...props}>
-                  Change
-                </button>
-              )}
-              align="end"
-            />
-          </div>
-          <div className="ym-about-row" data-action={looks !== null && imported === 0 ? "true" : undefined}>
-            <span className="ym-about-row__label">ARRI looks</span>
-            <span>{looks === null ? "" : imported === 0 ? "Not imported yet" : `${imported} ${plural(imported, "look", "looks")} imported`}</span>
-            {looks !== null && imported === 0 ? <LinkButton onClick={() => store.go("import-looks")}>Import →</LinkButton> : null}
-          </div>
-        </div>
+        <ItemGroup className="ym-about-table">
+          <Item size="sm" role="listitem" className="ym-about-row">
+            <ItemTitle className="ym-about-row__label">Camera</ItemTitle>
+            <ItemContent>Any Sony camera · every kind of ARW</ItemContent>
+          </Item>
+          <Item size="sm" role="listitem" className="ym-about-row" data-action="true">
+            <ItemTitle className="ym-about-row__label">Default look</ItemTitle>
+            <ItemContent>{defaultLook ? label(defaultLook) : "Neutral"}</ItemContent>
+            <ItemActions>
+              <Menu
+                label="Default look"
+                options={lookOptions}
+                value={defaultLook?.id ?? null}
+                onSelect={(id) => void store.makeDefault(id)}
+                trigger={({ ref }) => <LinkButton ref={ref}>Change</LinkButton>}
+                align="end"
+              />
+            </ItemActions>
+          </Item>
+          <Item size="sm" role="listitem" className="ym-about-row" data-action={looks !== null && imported === 0 ? "true" : undefined}>
+            <ItemTitle className="ym-about-row__label">ARRI looks</ItemTitle>
+            <ItemContent>{looks === null ? "" : imported === 0 ? "Not imported yet" : `${imported} ${plural(imported, "look", "looks")} imported`}</ItemContent>
+            {looks !== null && imported === 0 ? (
+              <ItemActions>
+                <LinkButton onClick={() => store.go("import-looks")}>Import →</LinkButton>
+              </ItemActions>
+            ) : null}
+          </Item>
+        </ItemGroup>
       </section>
 
       <main aria-label="Drop files" className="ym-drop">
@@ -141,9 +146,9 @@ export function Start() {
             <ProgressBar className="ym-develop__progress" value={progress} label="Developing photos" />
             <DevelopList items={items} className="ym-develop__list" />
             {notice ? (
-              <p role="alert" className="ym-row-note">
+              <Item variant="muted" size="sm" role="alert" className="ym-develop__notice">
                 {notice}
-              </p>
+              </Item>
             ) : null}
             <div className="ym-develop__foot">
               <span role="status">{hint}</span>
@@ -160,15 +165,17 @@ export function Start() {
       </main>
 
       <section aria-label="How it works" className="ym-steps">
-        {STEPS.map((step, i) => (
-          <div key={step.n} className="ym-step" data-on={i === stepOn || undefined}>
-            <span className="ym-step__n">{step.n}</span>
-            <span className="ym-step__text">
-              <span className="ym-step__title">{step.title}</span>
-              <span>{step.text}</span>
-            </span>
-          </div>
-        ))}
+        <ItemGroup className="ym-steps__list">
+          {STEPS.map((step, i) => (
+            <Item key={step.n} role="listitem" variant={i === stepOn ? "muted" : "default"} className="ym-step" data-on={i === stepOn || undefined}>
+              <ItemMedia className="ym-step__n">{step.n}</ItemMedia>
+              <ItemContent className="ym-step__text">
+                <ItemTitle className="ym-step__title">{step.title}</ItemTitle>
+                <ItemDescription>{step.text}</ItemDescription>
+              </ItemContent>
+            </Item>
+          ))}
+        </ItemGroup>
       </section>
     </div>
   );

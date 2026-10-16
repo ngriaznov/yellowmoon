@@ -47,6 +47,32 @@ test.describe("the sections of the Look tab", () => {
     expect(ys).toEqual([...ys].sort((a, b) => a - b));
   });
 
+  test("draw each header across the whole row with its count at the right end, with or without a search", async ({ page }) => {
+    // A button whose title comes and goes sits in the span of its tooltip; the span has to be as wide as the row, or the header
+    // shrinks to its text and the count moves next to the label.
+    await photos(page);
+    const rows = async (): Promise<Array<{ header: number; group: number; gap: number }>> =>
+      card(page)
+        .locator("button[aria-expanded]")
+        .evaluateAll((els) =>
+          els.map((el) => {
+            const group = (el.closest("[data-library]") as HTMLElement).getBoundingClientRect();
+            const count = (el.querySelector(".ym-look-group__count") as HTMLElement).getBoundingClientRect();
+            const box = el.getBoundingClientRect();
+            return { header: Math.round(box.width), group: Math.round(group.width), gap: Math.round(box.right - count.right) };
+          }),
+        );
+    for (const stage of ["no search", "a search"]) {
+      if (stage === "a search") await page.getByRole("searchbox", { name: "Search looks" }).fill("film");
+      const found = await rows();
+      expect(found.length, stage).toBeGreaterThan(0);
+      for (const row of found) {
+        expect(row.header, `${stage}: header width`).toBe(row.group);
+        expect(row.gap, `${stage}: space right of the count`).toBeLessThan(12);
+      }
+    }
+  });
+
   test("keep the old call to action while no ARRI looks are imported", async ({ page }) => {
     await openApp(page, { mockCurrent: 3, mockLooks: 0 });
     await openPhotos(page);
@@ -165,8 +191,8 @@ test.describe("a name that two libraries share", () => {
   test("says which library in the default look choices", async ({ page }) => {
     await photos(page);
     await page.keyboard.press("Meta+,");
-    const select = page.getByRole("dialog", { name: "Preferences" }).getByRole("combobox", { name: "Default look" });
-    const labels = await select.locator("option").allTextContents();
+    await page.getByRole("dialog", { name: "Preferences" }).getByRole("combobox", { name: "Default look" }).click();
+    const labels = await page.getByRole("option").allTextContents();
     expect(labels).toContain("Neutral");
     expect(labels).toContain("Film warm · LogC4");
     expect(labels).toContain("Film warm · LogC3 to Rec.709");

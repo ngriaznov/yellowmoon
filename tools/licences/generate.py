@@ -13,8 +13,9 @@ promise cannot rot. Sources, all read from the files cargo and npm already have:
   that ship, the app (``src-tauri``) and the ``ym`` command (``crates/ym-cli``), for the macOS targets, normal
   dependencies only. The texts are the LICENSE files in the crates' own sources, so the copyright lines are right.
   Our own crates (no registry source) are not listed: LICENSE covers them.
-* JavaScript packages: ``license-checker --production`` (the tool and the allow list of the CI check ``frontend``); the
-  LICENSE files in each package folder (run ``npm ci`` first).
+* JavaScript packages: ``license-checker --production`` (the tool and the allow list of the CI check ``frontend`` ), the
+  LICENSE files in each package folder (run ``npm ci`` first), and the build tools whose output is in the app
+  (``BUILD_TOOL_OUTPUT``: Tailwind CSS).
 * Fonts: the OFL text of Figtree (``src/styles/fonts/OFL.txt``), whose woff2 files Vite copies into the app.
 
 Everything is sorted and carries no date, so the output depends only on Cargo.lock, package-lock.json and the tool
@@ -85,7 +86,7 @@ class NpmPackage:
     licenses: str
     repository: str | None
     texts: list[str]
-    #: Set when the package folder has no LICENSE file and the texts come from somewhere else (see ``rust_counterpart``).
+    #: Set when the package folder has no LICENSE file and the texts come from somewhere else (see ``rust_counterpart``, ``HAND_ADDED_TEXTS``).
     note: str = ""
 
 
@@ -150,6 +151,28 @@ def rust_counterpart(npm_name: str) -> str | None:
     return None
 
 
+#: npm packages whose tarball carries no LICENSE file although package.json declares the licence. The text is the LICENSE file
+#: of the package's own repository, saved in ``tools/licences/texts/`` (the file name is the package name plus ``.LICENSE``).
+#: Each entry is explicit on purpose: a new package without a licence file stays an error until somebody reads its licence.
+HAND_ADDED_TEXTS = {
+    "react-remove-scroll-bar": "https://github.com/theKashey/react-remove-scroll-bar",
+}
+TEXTS_DIR = HERE / "texts"
+
+
+def hand_added_text(npm_name: str) -> tuple[str, str] | None:
+    """The saved licence text of an npm package that ships none, and the note that says where it comes from."""
+    repository = HAND_ADDED_TEXTS.get(npm_name)
+    if repository is None:
+        return None
+    text = normalize((TEXTS_DIR / f"{npm_name}.LICENSE").read_text(encoding="utf-8"))
+    note = (
+        "The npm package carries no LICENSE file. This is the LICENSE file of its repository "
+        f"({repository}), which publishes the package under the same licence."
+    )
+    return text, note
+
+
 def collect_npm(checker: dict, rust: list[Group] | None = None) -> list[NpmPackage]:
     """Reads the output of ``license-checker --json``: every LICENSE file in each package folder.
 
@@ -169,6 +192,9 @@ def collect_npm(checker: dict, rust: list[Group] | None = None) -> list[NpmPacka
             if text and text not in texts:
                 texts.append(text)
         note = ""
+        saved = hand_added_text(name) if not texts else None
+        if saved:
+            texts, note = [saved[0]], saved[1]
         if not texts:
             crate = rust_counterpart(name)
             borrowed = [g.text for g in rust or [] if any(p.name == crate for p in g.packages)] if crate else []
@@ -182,6 +208,38 @@ def collect_npm(checker: dict, rust: list[Group] | None = None) -> list[NpmPacka
         repository = info.get("repository")
         packages.append(NpmPackage(name, version, str(info.get("licenses", "")), repository, texts, note))
     return packages
+
+
+#: Build tools whose output is part of the app although the tool is not: ``license-checker --production`` leaves them out, and their
+#: licence asks for its notice in copies and substantial portions. Tailwind CSS compiles into the app's stylesheet (its preflight and
+#: the utility classes we use), and the minified stylesheet carries no banner, so the notice travels here. Each entry is explicit.
+BUILD_TOOL_OUTPUT = {
+    "tailwindcss": "A build tool. Its preflight stylesheet and the utility classes it generates are part of the app's CSS.",
+}
+
+
+def collect_build_tool_output(modules: Path | None = None) -> list[NpmPackage]:
+    """The ``BUILD_TOOL_OUTPUT`` packages, read from ``node_modules`` like the others (run ``npm ci`` first)."""
+    modules = modules or REPO / "node_modules"
+    found = []
+    for name, note in sorted(BUILD_TOOL_OUTPUT.items()):
+        folder = modules / name
+        try:
+            manifest = json.loads((folder / "package.json").read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            raise GenerateError(f"{name} is not installed in {modules}: run `npm ci` first ({error})") from error
+        texts = []
+        for path in sorted(folder.iterdir()):
+            if path.is_file() and _LICENCE_FILE.match(path.name) and path.suffix.lower() != ".spdx":
+                text = normalize(path.read_text(encoding="utf-8", errors="replace"))
+                if text and text not in texts:
+                    texts.append(text)
+        if not texts:
+            raise GenerateError(f"{name} has no LICENSE file in {folder}")
+        repository = manifest.get("repository")
+        url = repository.get("url") if isinstance(repository, dict) else repository
+        found.append(NpmPackage(name, str(manifest.get("version", "")), str(manifest.get("license", "")), url, texts, note))
+    return found
 
 
 def collect_fonts() -> list[Font]:
@@ -346,7 +404,8 @@ def main(argv: list[str]) -> int:
             run_to_file(["npx", "--yes", LICENSE_CHECKER, "--production", "--excludePrivatePackages", "--json"])
         )
         rust = collect_rust(reports)
-        document = render(rust, collect_npm(checker, rust), collect_fonts(), collect_notices(reports), tool)
+        npm = sorted(collect_npm(checker, rust) + collect_build_tool_output(), key=lambda p: (p.name, p.version))
+        document = render(rust, npm, collect_fonts(), collect_notices(reports), tool)
     except GenerateError as error:
         print(f"error: {error}", file=sys.stderr)
         return 1

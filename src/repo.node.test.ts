@@ -76,3 +76,48 @@ describe("copy (docs/11 tab blurbs)", () => {
     }
   });
 });
+
+describe("the web engine the interface needs (docs/STATUS.md question 30)", () => {
+  /** macOS 13.3 is the first release to ship Safari 16.4 (`@property`, with `color-mix()`, `:has()` and `@layer`: what Tailwind 4 needs). */
+  const FIRST_WITH_16_4 = [13, 3];
+
+  const minimum = (): number[] => {
+    const conf = JSON.parse(read("src-tauri/tauri.conf.json")) as { bundle: { macOS: { minimumSystemVersion: string } } };
+    return conf.bundle.macOS.minimumSystemVersion.split(".").map(Number);
+  };
+  const older = (a: number[], b: number[]): boolean => (a[0] ?? 0) < (b[0] ?? 0) || ((a[0] ?? 0) === (b[0] ?? 0) && (a[1] ?? 0) < (b[1] ?? 0));
+
+  it("does not call Safari 15 the oldest WebKit the app supports: only its syntax is lowered to that", () => {
+    const vite = read("vite.config.ts");
+    expect(vite).not.toMatch(/oldest WebKit the app supports/);
+    expect(vite).toMatch(/16\.4/);
+  });
+
+  it("tells people on a macOS that ships an older engine to update, while the minimum allows one", () => {
+    if (!older(minimum(), FIRST_WITH_16_4)) return; // the owner raised the minimum: nothing left to say
+    expect(read("README.md")).toMatch(/macOS 12 and 13, install the latest system and Safari updates/);
+    const unreleased = /## \[Unreleased\]([\s\S]*?)\n## \[/.exec(read("CHANGELOG.md"))?.[1] ?? "";
+    expect(unreleased).toMatch(/macOS 12 and 13, install the latest system and Safari updates/);
+  });
+});
+
+describe("the docs agree on the dark glass decision (owner, 2026-10-16)", () => {
+  it("docs/00 settled decisions call the interface dark glass, not the white grid, and point at the C2 references", () => {
+    const row = /^\| UI \|.*$/m.exec(read("docs/00-overview.md"))?.[0] ?? "";
+    expect(row).toMatch(/Dark glass/);
+    expect(row).toMatch(/design\/screenshots-c2\//);
+    expect(row).not.toMatch(/not V1/);
+  });
+
+  it("AGENTS.md sends a UI task to the C2 screenshots for the look, and keeps the mockups for layout and copy", () => {
+    const agents = read("AGENTS.md");
+    expect(agents).not.toMatch(/mockups\/` are the visual and copy reference/);
+    expect(agents).toMatch(/mockups\/` are the layout, size and copy reference/);
+    expect(agents).toMatch(/docs\/11-ui\.md` wins/);
+  });
+
+  it("STATUS does not call PAPER_SRGB a clear colour: the native pass clears to black and the colour is the window's", () => {
+    expect(read("docs/STATUS.md")).not.toMatch(/native layer's clear colour/);
+    expect(read("src-tauri/src/native.rs")).toMatch(/wgpu::Color::BLACK/);
+  });
+});

@@ -59,7 +59,7 @@
 .ym-wizard__get { display: flex; flex-direction: column; gap: 20px; }
 .ym-wizard__open { display: flex; flex-wrap: wrap; align-items: center; gap: 16px; }
 .ym-wizard__open > span { max-width: 340px; font-size: var(--fs-body); line-height: 1.5; }
-.ym-wizard__open .ym-btn { padding: 0 24px; }
+
 .ym-wizard__watch { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px 0; border-top: var(--rule-control) solid var(--ink); border-bottom: var(--rule-control) solid var(--ink); }
 .ym-wizard__watch-text { display: flex; flex-direction: column; gap: 3px; font-size: var(--fs-label); }
 .ym-wizard__watch-title { font-size: 15px; font-weight: var(--fw-heavy); }
@@ -146,8 +146,7 @@
 .ym-wizard__options { margin-top: 28px; border-top: var(--rule) solid var(--ink); }
 .ym-wizard__tiles + .ym-wizard__options { margin-top: 28px; }
 .ym-wizard__option { display: grid; grid-template-columns: 200px minmax(0, 1fr); align-items: center; column-gap: 16px; padding: 10px 0; border-bottom: var(--rule-control) solid var(--ink); }
-/* 480 px of buttons inside the 2 px border, as in the mockup (it sizes the group content-box). */
-.ym-wizard__option > .ym-segmented { max-width: 484px; }
+
 .ym-wizard__option-text { display: flex; flex-direction: column; gap: 3px; font-size: 12.5px; }
 .ym-wizard__option-title { font-size: 15px; font-weight: var(--fw-heavy); }
 

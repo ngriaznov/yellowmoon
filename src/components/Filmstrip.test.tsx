@@ -2,7 +2,7 @@ import { fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
-import { Filmstrip, scrollOffsetToReveal } from "./Filmstrip";
+import { Filmstrip, filmstripCaption, scrollOffsetToReveal } from "./Filmstrip";
 import type { FilmstripPhoto } from "./Filmstrip";
 
 const PHOTOS: FilmstripPhoto[] = [
@@ -50,10 +50,15 @@ describe("Filmstrip", () => {
     expect(container.querySelectorAll(".ym-filmstrip__picked")).toHaveLength(1);
   });
 
-  it("shows the counter: position and number picked", () => {
+  it("shows one caption line: position, and number picked", () => {
     render(<Harness />);
-    expect(screen.getByText("2 / 5")).toBeInTheDocument();
-    expect(screen.getByText("1 picked")).toBeInTheDocument();
+    expect(screen.getByText("2 of 5 · 1 picked")).toBeInTheDocument();
+  });
+
+  it("has no counter cell, and describes the strip by its caption", () => {
+    const { container } = render(<Harness />);
+    expect(container.querySelector(".ym-filmstrip__counter")).toBeNull();
+    expect(screen.getByRole("navigation", { name: "Photos" })).toHaveAccessibleDescription("2 of 5 · 1 picked");
   });
 
   it("selects on click", async () => {
@@ -61,7 +66,7 @@ describe("Filmstrip", () => {
     render(<Harness onSelect={onSelect} />);
     await userEvent.click(screen.getByRole("button", { name: "Show DSC04203" }));
     expect(onSelect).toHaveBeenCalledWith(3);
-    expect(screen.getByText("3 / 5")).toBeInTheDocument();
+    expect(screen.getByText("3 of 5 · 1 picked")).toBeInTheDocument();
   });
 
   it("toggles the pick on ⌘-click without selecting", () => {
@@ -161,8 +166,7 @@ describe("Filmstrip in export mode", () => {
     render(<Filmstrip mode="export" photos={exportPhotos} currentId={2} />);
     expect(screen.getByRole("navigation", { name: "Photos to export" })).toBeInTheDocument();
     expect(screen.queryAllByRole("button")).toHaveLength(0);
-    expect(screen.getByText("2")).toBeInTheDocument();
-    expect(screen.getByText("to export")).toBeInTheDocument();
+    expect(screen.getByText("2 to export")).toBeInTheDocument();
   });
 
   it("dims what will not be exported and names what will", () => {
@@ -171,9 +175,24 @@ describe("Filmstrip in export mode", () => {
     expect(screen.getByRole("img", { name: "DSC04201" })).toHaveAttribute("data-in-export", "false");
   });
 
-  it("takes custom counter text", () => {
-    render(<Filmstrip mode="export" photos={exportPhotos} currentId={2} counter="12" counterLabel="photos" />);
-    expect(screen.getByText("12")).toBeInTheDocument();
-    expect(screen.getByText("photos")).toBeInTheDocument();
+  it("takes a custom caption", () => {
+    render(<Filmstrip mode="export" photos={exportPhotos} currentId={2} caption="12 photos" />);
+    expect(screen.getByText("12 photos")).toBeInTheDocument();
+  });
+
+  it("tints by tab through data-tab", () => {
+    render(<Filmstrip photos={PHOTOS} currentId={2} tab="light" />);
+    expect(screen.getByRole("navigation", { name: "Photos" })).toHaveAttribute("data-tab", "light");
+  });
+});
+
+describe("filmstripCaption", () => {
+  it("says where you are and how many are picked", () => {
+    expect(filmstripCaption(PHOTOS, 2)).toBe("2 of 5 · 1 picked");
+    expect(filmstripCaption(PHOTOS, null)).toBe("0 of 5 · 1 picked");
+  });
+
+  it("counts what will be exported in the Export panel", () => {
+    expect(filmstripCaption([{ id: 1, name: "a", included: true }, { id: 2, name: "b" }], 1, "export")).toBe("1 to export");
   });
 });

@@ -45,10 +45,16 @@ describe("Segmented", () => {
     expect(onChange).toHaveBeenCalledTimes(1);
   });
 
-  it("puts only the active option in the tab order", () => {
+  it("puts only the active option in the tab order", async () => {
+    const user = userEvent.setup();
     render(<Harness initial="picked" />);
-    expect(screen.getByRole("radio", { name: "Picked · 3" })).toHaveAttribute("tabindex", "0");
+    // Radix's roving focus: the group takes the Tab and hands the focus to the active option; the others are left out (tabindex -1).
+    await user.tab();
+    expect(screen.getByRole("radio", { name: "Picked · 3" })).toHaveFocus();
     expect(screen.getByRole("radio", { name: "This photo" })).toHaveAttribute("tabindex", "-1");
+    expect(screen.getByRole("radio", { name: "All · 12" })).toHaveAttribute("tabindex", "-1");
+    await user.tab();
+    expect(screen.getAllByRole("radio")).not.toContain(document.activeElement);
   });
 
   it("moves the selection and focus with the arrow keys, and wraps", async () => {
@@ -94,14 +100,16 @@ describe("Segmented", () => {
     expect(screen.getByRole("radio", { name: "Other" })).toBeChecked();
     await user.click(screen.getByRole("radio", { name: "ARRI's" }));
     expect(onChange).toHaveBeenCalledTimes(1);
-    expect(screen.getByRole("radio", { name: "ARRI's" })).toHaveAttribute("aria-disabled", "true");
+    expect(screen.getByRole("radio", { name: "ARRI's" })).toBeDisabled();
   });
 
   it("sets one column per option, or as many as asked", () => {
     const { rerender } = render(<Harness />);
-    expect(screen.getByRole("radiogroup").style.getPropertyValue("--ym-cols")).toBe("3");
+    // The segments share the row evenly (each one is `flex: 1`); `columns` is only recorded, for a caller that wants a grid.
+    expect(screen.getByRole("radiogroup")).not.toHaveAttribute("data-columns");
+    expect(screen.getAllByRole("radio")).toHaveLength(3);
     rerender(<Segmented label="x" options={OPTIONS} value="this" onChange={() => undefined} columns={6} size="lg" />);
-    expect(screen.getByRole("radiogroup").style.getPropertyValue("--ym-cols")).toBe("6");
+    expect(screen.getByRole("radiogroup")).toHaveAttribute("data-columns", "6");
     expect(screen.getByRole("radiogroup")).toHaveAttribute("data-size", "lg");
   });
 

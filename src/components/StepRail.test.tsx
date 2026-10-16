@@ -56,4 +56,9 @@ describe("StepRail", () => {
     await userEvent.click(screen.getByRole("button", { name: /^Finish/ }));
     expect(onSelect).toHaveBeenCalledTimes(1);
   });
+
+  it("draws each step as a glasscn Item", () => {
+    render(<StepRail steps={STEPS} current={1} />);
+    for (const button of screen.getAllByRole("button")) expect(button).toHaveAttribute("data-slot", "item");
+  });
 });

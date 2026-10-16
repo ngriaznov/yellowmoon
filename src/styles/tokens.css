@@ -115,7 +115,9 @@
   --t-med: 160ms;
 }
 
-/* Dark variant: explored in research, not part of V1. Kept so the tokens stay complete. */
+/* Dark theme: the theme of the interface since the dark glass interface of 2026-10-16 (docs/11, docs/16); index.html sets data-theme="dark".
+   --paper is the ground the native viewport and the window agree on (src-tauri/src/native.rs, api.rs, tauri.conf.json). The light values
+   above are the pre-glass design of design/mockups, kept for history. */
 :root[data-theme="dark"] {
   color-scheme: dark;
   --ink: #f2f2f2;

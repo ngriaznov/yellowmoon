@@ -230,7 +230,7 @@ describe("the search", () => {
     await h!.user.type(search(), "film warm");
     const logc4 = header("ARRI looks · LogC4, ");
     expect(logc4).toHaveAttribute("aria-disabled", "true");
-    // It does nothing, so Tab skips it: from the search box the next stop is the first tile.
+    // It does nothing, so Tab skips it: from the search box the next stop is the first tile (the field's Clear button is not a Tab stop).
     expect(logc4).toHaveAttribute("tabindex", "-1");
     await h!.user.click(search());
     await h!.user.tab();

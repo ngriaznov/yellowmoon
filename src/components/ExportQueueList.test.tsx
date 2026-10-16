@@ -39,8 +39,9 @@ describe("ExportQueueList", () => {
     render(<ExportQueueList items={[{ id: 1, file: "a.jpg", state: "skipped" }]} />);
     const row = screen.getByText("a.jpg").closest("li") as HTMLElement;
     expect(row).toHaveTextContent("Skipped, the file already exists");
-    expect(row.querySelector(".ym-tag")).toHaveAttribute("data-variant", "skipped");
-    expect(row.querySelector(".ym-tag")).toHaveTextContent("Skipped");
+    const tag = row.querySelector('[data-slot="badge"]');
+    expect(tag).toHaveAttribute("data-variant", "skipped");
+    expect(tag).toHaveTextContent("Skipped");
   });
 
   it("shows 0% for a running file with no percentage yet", () => {
@@ -77,5 +78,12 @@ describe("DevelopList", () => {
   it("is a named list", () => {
     render(<DevelopList items={items} label="Photos being developed" />);
     expect(screen.getByRole("list", { name: "Photos being developed" })).toBeInTheDocument();
+  });
+
+  it("draws each photo as a glasscn Item", () => {
+    const { container } = render(<DevelopList items={items} />);
+    const rows = container.querySelectorAll("li.ym-queue__row");
+    expect(rows.length).toBeGreaterThan(0);
+    for (const row of rows) expect(row).toHaveAttribute("data-slot", "item");
   });
 });

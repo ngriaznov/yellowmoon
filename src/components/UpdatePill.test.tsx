@@ -41,10 +41,22 @@ describe("UpdatePill", () => {
     render(<UpdatePill state={{ phase: "ready", version: "0.2.0" }} exportRunning onActivate={onActivate} />);
     const pill = screen.getByRole("button", { name: "Update ready" });
     expect(pill).toHaveAttribute("aria-disabled", "true");
-    expect(pill).toHaveAttribute("title", RESTART_AFTER_EXPORT);
+    expect(pill).toHaveAccessibleDescription(RESTART_AFTER_EXPORT);
     expect(RESTART_AFTER_EXPORT).toBe("Restarts after the export finishes");
     await userEvent.click(pill);
     expect(onActivate).not.toHaveBeenCalled();
+  });
+
+  it("shows why it is locked as a tooltip on hover (a locked glass button takes no pointer events, so a native title would never show)", async () => {
+    render(<UpdatePill state={{ phase: "ready", version: "0.2.0" }} exportRunning />);
+    const pill = screen.getByRole("button", { name: "Update ready" });
+    // The reason is not a native title on the dead button; it is on the tooltip of the span around it, which does take the hover.
+    expect(pill).not.toHaveAttribute("title");
+    const trigger = pill.closest('[data-slot="tooltip-trigger"]') as HTMLElement;
+    expect(trigger).not.toBeNull();
+    expect(screen.queryByRole("tooltip")).toBeNull();
+    await userEvent.hover(trigger);
+    expect(await screen.findByRole("tooltip")).toHaveTextContent(RESTART_AFTER_EXPORT);
   });
 
   it("shows a failure with the reason on hover", () => {

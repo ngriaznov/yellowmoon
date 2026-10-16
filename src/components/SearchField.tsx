@@ -1,41 +1,26 @@
-import type { ChangeEvent } from "react";
+import { SearchField as GlassSearchField } from "@/components/glass/search-field";
 import { cx } from "./cx";
 
 export interface SearchFieldProps {
   value: string;
   onChange: (value: string) => void;
-  /** Accessible name; also the default placeholder without the ellipsis. */
+  /** Accessible name ("Search looks"). */
   label: string;
+  /** Default: the label with an ellipsis ("Search looks…"). */
   placeholder?: string;
   className?: string;
 }
 
-/** The 44 px search box of the Look tab: a 3 px border and a magnifier at the right. */
+/** A search field: glasscn's capsule with a magnifier and a Clear button while there is text. A `type="search"` input named by `label`. */
 export function SearchField({ value, onChange, label, placeholder, className }: SearchFieldProps) {
   return (
-    <div className={cx("ym-search", className)}>
-      <input
-        type="search"
-        className="ym-search__input"
-        value={value}
-        placeholder={placeholder ?? `${label}…`}
-        aria-label={label}
-        onChange={(event: ChangeEvent<HTMLInputElement>) => onChange(event.target.value)}
-      />
-      <svg
-        className="ym-search__icon"
-        width="20"
-        height="20"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="2.6"
-        strokeLinecap="round"
-        aria-hidden="true"
-      >
-        <circle cx="10.5" cy="10.5" r="6.5" />
-        <path d="M15.5 15.5L21 21" />
-      </svg>
-    </div>
+    <GlassSearchField
+      className={cx("ym-search", className)}
+      value={value}
+      onValueChange={onChange}
+      aria-label={label}
+      placeholder={placeholder ?? `${label}…`}
+      showCancel="never"
+    />
   );
 }

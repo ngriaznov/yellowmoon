@@ -19,10 +19,12 @@ test.describe("Preferences", () => {
     for (const row of ["Default look", "Display rendering", "Export defaults", "Remove location from exports", "Watch Downloads during import", "Check for updates automatically", "Command-line tool"]) {
       await expect(dialog.getByRole("group", { name: row })).toBeVisible();
     }
-    // Square, boxed, 3 px rules, black title block.
-    await expect(dialog).toHaveCSS("border-top-width", "3px");
-    await expect(dialog).toHaveCSS("border-top-left-radius", "0px");
-    await expect(dialog.locator(".ym-dialog__head")).toHaveCSS("background-color", "rgb(0, 0, 0)");
+    // A glasscn dialog: a glass pane with a 1 px rim and rounded corners, titled by an h2, over a dimmed window.
+    await expect(dialog).toHaveAttribute("data-slot", "dialog-content");
+    await expect(dialog).toHaveCSS("border-top-width", "1px");
+    expect(await dialog.evaluate((el) => parseFloat(getComputedStyle(el).borderTopLeftRadius))).toBeGreaterThan(8);
+    await expect(dialog.getByRole("heading", { level: 2, name: "Preferences" })).toBeVisible();
+    await expect(page.locator('[data-slot="dialog-overlay"]')).toBeVisible();
     await expect(dialog.getByRole("switch", { name: "Check for updates automatically" })).toHaveAttribute("aria-checked", "true");
     expect(problems).toEqual([]);
   });
@@ -70,8 +72,11 @@ test.describe("Preferences", () => {
       await page.keyboard.press("Shift+Tab");
       expect(await inside()).toBe(true);
     }
-    // The first Tab used to leave the dialog, and Esc did nothing from there.
-    await page.keyboard.press("Tab");
+    // The first Tab used to leave the dialog, and Esc did nothing from there. Focus on the locked Import opens no tooltip (a title is
+    // shown on hover only: an open tooltip is the topmost layer and would take the first Esc), so one Esc closes the dialog.
+    await dialog.getByRole("button", { name: "Import" }).focus();
+    await expect(dialog.getByRole("button", { name: "Import" })).toBeFocused();
+    await expect(page.getByRole("tooltip")).toHaveCount(0);
     await page.keyboard.press("Escape");
     await expect(page.getByRole("dialog")).toHaveCount(0);
   });
@@ -95,10 +100,11 @@ test.describe("Preferences", () => {
     let dialog = page.getByRole("dialog", { name: "Preferences" });
     await dialog.getByRole("switch", { name: "Remove location from exports" }).click();
     await dialog.getByRole("switch", { name: "Watch Downloads during import" }).click();
-    await dialog.getByRole("combobox", { name: "Default look" }).selectOption({ label: "Signature" });
+    await dialog.getByRole("combobox", { name: "Default look" }).click();
+    await page.getByRole("option", { name: "Signature" }).click();
     await dialog.getByRole("button", { name: "Edit…" }).click();
     await dialog.getByRole("radiogroup", { name: "Format" }).getByRole("radio", { name: "TIFF" }).click();
-    await expect(dialog.getByRole("combobox", { name: "Default look" })).toHaveValue("builtin:signature");
+    await expect(dialog.getByRole("combobox", { name: "Default look" })).toHaveText("Signature");
     await page.waitForFunction(async () => (await window.__yellowmoon!.mockApi.preferencesGet()).export_defaults.format === "tiff");
 
     await page.reload();
@@ -107,7 +113,7 @@ test.describe("Preferences", () => {
     dialog = page.getByRole("dialog", { name: "Preferences" });
     await expect(dialog.getByRole("switch", { name: "Remove location from exports" })).toHaveAttribute("aria-checked", "true");
     await expect(dialog.getByRole("switch", { name: "Watch Downloads during import" })).toHaveAttribute("aria-checked", "true");
-    await expect(dialog.getByRole("combobox", { name: "Default look" })).toHaveValue("builtin:signature");
+    await expect(dialog.getByRole("combobox", { name: "Default look" })).toHaveText("Signature");
     await dialog.getByRole("button", { name: "Edit…" }).click();
     await expect(dialog.getByRole("radiogroup", { name: "Format" }).getByRole("radio", { name: "TIFF" })).toHaveAttribute("aria-checked", "true");
     // The Start screen shows the default look too, and the Export panel starts from the remembered format.
@@ -147,7 +153,7 @@ test.describe("Preferences", () => {
     await expect(dialog.getByRole("region", { name: "Photos" })).toHaveCount(0);
     await expect(dialog.getByRole("region", { name: "Same thing from the command line" })).toHaveCount(0);
     await expect(dialog.getByRole("region", { name: "Format" })).toBeVisible();
-    await expect(dialog.getByRole("slider", { name: "Quality" })).toHaveValue("92");
+    await expect(dialog.getByRole("slider", { name: "Quality" })).toHaveAttribute("aria-valuenow", "92");
   });
 });
 
@@ -202,9 +208,9 @@ test.describe("the menu bar", () => {
     await menu(page, "before_after");
     await expect(page.getByText("Before · camera default")).toBeVisible();
     await menu(page, "pick");
-    await expect(page.locator(".ym-filmstrip__count-label")).toHaveText("1 picked");
+    await expect(page.locator(".ym-filmstrip__caption")).toHaveText("4 of 12 · 1 picked");
     await menu(page, "next_photo");
-    await expect(page.locator(".ym-filmstrip__count")).toHaveText("5 / 12");
+    await expect(page.locator(".ym-filmstrip__caption")).toHaveText("5 of 12 · 1 picked");
     await menu(page, "export");
     await expect(page.getByRole("complementary", { name: "Export" })).toBeVisible();
     await menu(page, "close_session");

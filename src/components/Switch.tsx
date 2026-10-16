@@ -1,4 +1,4 @@
-import { cx } from "./cx";
+import { Switch as GlassSwitch } from "@/components/glass/switch";
 import type { TabId } from "./tabs";
 
 export interface SwitchProps {
@@ -14,25 +14,19 @@ export interface SwitchProps {
 }
 
 /**
- * The 44 × 24 square switch: on is the tab colour with a white 16 px knob on the right, off is
- * paper with an ink knob on the left. `role="switch"`; Space and Return toggle it.
+ * glasscn's switch: a capsule that fills with the accent, a knob that springs across and stretches while held. `role="switch"`;
+ * Space toggles it.
  */
 export function Switch({ checked, onChange, label, disabled = false, tab, id, className }: SwitchProps) {
   return (
-    <button
+    <GlassSwitch
       id={id}
-      type="button"
-      role="switch"
-      aria-checked={checked}
       aria-label={label}
-      aria-disabled={disabled || undefined}
-      className={cx("ym-switch", className)}
+      checked={checked}
+      disabled={disabled}
       data-tab={tab}
-      onClick={() => {
-        if (!disabled) onChange(!checked);
-      }}
-    >
-      <span className="ym-switch__knob" aria-hidden="true" />
-    </button>
+      className={className}
+      onCheckedChange={(next) => onChange(next)}
+    />
   );
 }

@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { KeyHint, MoonMark, UpdatePill } from "../components";
+import { Button, MoonMark, UpdatePill } from "../components";
 import { useAppState, useStore } from "../state/context";
 import { useUpdater } from "../updater";
 
@@ -76,31 +76,33 @@ export interface ExportCellProps {
   onClick?: () => void;
 }
 
-/** The "Export ⌘E" cell at the right end of the header. */
+/** The Export cell at the right end of the header: glasscn's prominent button ("Export ⌘E") in its cell. */
 export function ExportCell({ label, disabled = false, title, current = false, progress, onClick }: ExportCellProps) {
   return (
-    <button
-      type="button"
-      className="ym-export"
-      aria-disabled={disabled || undefined}
-      aria-current={current || undefined}
-      title={title}
-      onClick={() => {
-        if (!disabled) onClick?.();
-      }}
-    >
-      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="square" aria-hidden="true">
-        <path d="M12 3v12" />
-        <path d="M6.5 9.5L12 15l5.5-5.5" />
-        <path d="M4 20h16" />
-      </svg>
-      {label}
-      <KeyHint>⌘E</KeyHint>
-      {progress !== undefined ? (
-        <span className="ym-export__strip" aria-hidden="true">
-          <span style={{ width: `${progress}%` }} />
-        </span>
-      ) : null}
-    </button>
+    <div className="ym-export-cell">
+      <Button
+        variant="primary"
+        className="relative overflow-hidden"
+        disabled={disabled}
+        aria-current={current || undefined}
+        title={title}
+        icon={
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M12 3v12" />
+            <path d="M6.5 9.5L12 15l5.5-5.5" />
+            <path d="M4 20h16" />
+          </svg>
+        }
+        shortcut="⌘E"
+        onClick={() => onClick?.()}
+      >
+        {label}
+        {progress !== undefined ? (
+          <span className="absolute inset-x-0 bottom-0 h-1 bg-black/20" aria-hidden="true" data-export-strip="">
+            <span className="block h-full bg-black/65" style={{ width: `${progress}%` }} />
+          </span>
+        ) : null}
+      </Button>
+    </div>
   );
 }

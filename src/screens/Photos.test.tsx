@@ -62,11 +62,11 @@ describe("the photo and the filmstrip", () => {
     expect(within(photo).getByText("Sony A1 · DSC04204 · ISO 400 · 1/125 · f/2.8")).toBeInTheDocument();
   });
 
-  it("shows the counter and the picked count", async () => {
+  it("shows the position and the picked count as one line", async () => {
     await setup();
     const strip = screen.getByRole("navigation", { name: "Photos" });
-    expect(within(strip).getByText("4 / 12")).toBeInTheDocument();
-    expect(within(strip).getByText("3 picked")).toBeInTheDocument();
+    expect(within(strip).getByText("4 of 12 · 3 picked")).toBeInTheDocument();
+    expect(strip).toHaveAccessibleDescription("4 of 12 · 3 picked");
     expect(within(strip).getAllByRole("button")).toHaveLength(12);
     expect(within(strip).getByRole("button", { name: "Show DSC04204, picked" })).toHaveAttribute("aria-current", "true");
   });
@@ -75,7 +75,7 @@ describe("the photo and the filmstrip", () => {
     await setup();
     await h!.user.click(screen.getByRole("button", { name: "Show DSC04206" }));
     await waitFor(() => expect(h!.store.currentPhoto()?.file_name).toBe("DSC04206.ARW"));
-    expect(screen.getByText("6 / 12")).toBeInTheDocument();
+    expect(screen.getByText("6 of 12 · 3 picked")).toBeInTheDocument();
     await waitFor(() => expect(h!.store.currentSettings()?.photo_id).toBe(6));
   });
 
@@ -83,9 +83,9 @@ describe("the photo and the filmstrip", () => {
     await setup();
     const thumb = screen.getByRole("button", { name: "Show DSC04206" });
     fireEvent.click(thumb, { metaKey: true });
-    await waitFor(() => expect(screen.getByText("4 picked")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("4 of 12 · 4 picked")).toBeInTheDocument());
     await h!.user.keyboard("p");
-    await waitFor(() => expect(screen.getByText("3 picked")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("4 of 12 · 3 picked")).toBeInTheDocument());
     // P toggles the photo on screen (4, which was picked), ⌘-click toggled 6.
     expect(h!.store.getState().session?.picked).toEqual([3, 5, 6]);
   });
@@ -93,15 +93,15 @@ describe("the photo and the filmstrip", () => {
   it("← and → move between photos", async () => {
     await setup();
     await h!.user.keyboard("{ArrowRight}");
-    await waitFor(() => expect(screen.getByText("5 / 12")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("5 of 12 · 3 picked")).toBeInTheDocument());
     await h!.user.keyboard("{ArrowLeft}{ArrowLeft}");
-    await waitFor(() => expect(screen.getByText("3 / 12")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("3 of 12 · 3 picked")).toBeInTheDocument());
   });
 
   it("⌘A picks every photo", async () => {
     await setup();
     await h!.user.keyboard("{Meta>}a{/Meta}");
-    await waitFor(() => expect(screen.getByText("12 picked")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("4 of 12 · 12 picked")).toBeInTheDocument());
     expect(screen.getByRole("button", { name: /Export 12/ })).toBeInTheDocument();
   });
 
@@ -111,7 +111,8 @@ describe("the photo and the filmstrip", () => {
     h = renderApp({ current: 1, picked: [], skipped: { DSC04202: "This file is from a camera mode we can't read yet." } });
     await h.user.click(await screen.findByRole("button", { name: "Open files…" }));
     h.api.flush();
-    await h.user.click(await screen.findByRole("button", { name: /Open photos/ }));
+    await waitFor(() => expect(screen.getByRole("button", { name: /Open photos/ })).not.toHaveAttribute("aria-disabled"));
+    await h.user.click(screen.getByRole("button", { name: /Open photos/ }));
     // The current photo is the first one that is ready, so go to the broken one by hand.
     await h.user.click(await screen.findByRole("button", { name: "Show DSC04202, can't open" }));
     expect(await screen.findByText("This file can't be opened.")).toBeInTheDocument();

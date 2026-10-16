@@ -1,3 +1,4 @@
+import { Item } from "@/components/glass/item";
 import { Button, Tag } from "../../components";
 import { useAppState, useStore } from "../../state/context";
 import { formatSize } from "../../wizard/model";
@@ -47,7 +48,8 @@ export function CubeImport() {
           const r = item.found.recognition;
           const size = formatSize(item.found.size_bytes);
           return (
-            <li key={item.found.path}>
+            <Item key={item.found.path} asChild size="sm">
+            <li>
               <span className="ym-cube-list__name">
                 <span>
                   {item.found.name}
@@ -77,6 +79,7 @@ export function CubeImport() {
               ) : null}
               {r.kind === "unusable" || r.kind === "missing" ? <span>{r.reason}</span> : null}
             </li>
+            </Item>
           );
         })}
       </ul>

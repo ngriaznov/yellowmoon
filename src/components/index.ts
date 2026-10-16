@@ -38,7 +38,7 @@ export { CURVE_CHANNEL_LABELS, CURVE_COLORS, CurvePlot, PLOT_HEIGHT, PLOT_WIDTH 
 export type { CurveChannel, CurvePlotProps } from "./CurvePlot";
 export { Histogram, histogramMax, histogramPath } from "./Histogram";
 export type { HistogramData, HistogramProps } from "./Histogram";
-export { Filmstrip } from "./Filmstrip";
+export { Filmstrip, filmstripCaption } from "./Filmstrip";
 export type { FilmstripPhoto, FilmstripProps, FilmstripStatus } from "./Filmstrip";
 export { PhotoCell } from "./PhotoCell";
 export type { PhotoCellFrame, PhotoCellProps, PhotoProbe } from "./PhotoCell";

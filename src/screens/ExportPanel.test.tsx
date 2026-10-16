@@ -1,8 +1,10 @@
-import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { act, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { MockOptions } from "../api.mock";
 import { PACKAGE_ZIPS } from "../api.mock";
 import { openPhotos, renderApp } from "../test/harness";
+import { capturingPointer } from "../test/pointer";
+import { mockRect } from "../test/raf";
 import type { Harness } from "../test/harness";
 
 let h: Harness | undefined;
@@ -79,7 +81,7 @@ describe("the options (design/mockups/export.html)", () => {
     const flags = within(strip).getAllByRole("img").map((el) => el.getAttribute("data-in-export"));
     expect(flags.filter((f) => f === "true")).toHaveLength(3);
     expect(flags.filter((f) => f === "false")).toHaveLength(9);
-    expect(within(strip).getByText("to export")).toBeInTheDocument();
+    expect(within(strip).getByText("3 to export")).toBeInTheDocument();
     await h!.user.click(radio("Photos", "All · 12"));
     await waitFor(() => expect(within(strip).getAllByRole("img").filter((el) => el.getAttribute("data-in-export") === "true")).toHaveLength(12));
   });
@@ -87,9 +89,9 @@ describe("the options (design/mockups/export.html)", () => {
   it("shows Quality for JPEG, Bit depth and Compression for TIFF, Bit depth for PNG", async () => {
     await openExport();
     const slider = screen.getByRole("slider", { name: "Quality" });
-    expect(slider).toHaveAttribute("min", "50");
-    expect(slider).toHaveAttribute("max", "100");
-    expect(slider).toHaveValue("92");
+    expect(slider).toHaveAttribute("aria-valuemin", "50");
+    expect(slider).toHaveAttribute("aria-valuemax", "100");
+    expect(slider).toHaveAttribute("aria-valuenow", "92");
     await h!.user.click(radio("Format", "TIFF"));
     expect(screen.queryByRole("slider", { name: "Quality" })).toBeNull();
     expect(checked("Bit depth")).toBe("16-bit");
@@ -109,7 +111,7 @@ describe("the options (design/mockups/export.html)", () => {
     await h!.user.click(box);
     await h!.user.clear(box);
     await h!.user.type(box, "60{Enter}");
-    await waitFor(() => expect(screen.getByRole("slider", { name: "Quality" })).toHaveValue("60"));
+    await waitFor(() => expect(screen.getByRole("slider", { name: "Quality" })).toHaveAttribute("aria-valuenow", "60"));
     await waitFor(() => expect(exportButton()).toHaveTextContent("≈ 32 MB")); // (6 + 10 × 0.45) × 3 = 31.5
   });
 
@@ -141,18 +143,29 @@ describe("the options (design/mockups/export.html)", () => {
     expect(screen.queryByRole("slider", { name: "Long edge" })).toBeNull();
     await h!.user.click(radio("Size", "Long edge"));
     const slider = screen.getByRole("slider", { name: "Long edge" });
-    expect(slider).toHaveAttribute("min", "1000");
-    expect(slider).toHaveAttribute("max", "8640");
-    expect(slider).toHaveAttribute("step", "20");
-    expect(slider).toHaveValue("3000");
+    expect(slider).toHaveAttribute("aria-valuemin", "1000");
+    expect(slider).toHaveAttribute("aria-valuemax", "8640");
+    expect(slider).toHaveAttribute("aria-valuenow", "3000");
     expect(screen.getByRole("textbox", { name: "Long edge value" })).toHaveValue("3000 px");
     await waitFor(() => expect(exportButton()).toHaveTextContent("≈ 9 MB")); // 24.9 × (3000/8640)² × 3
-    fireEvent.change(slider, { target: { value: "4320" } });
+    // One arrow key is one step of 20 px (Radix's slider has no step attribute to read).
+    slider.focus();
+    await h!.user.keyboard("{ArrowRight}");
+    await waitFor(() => expect(screen.getByRole("textbox", { name: "Long edge value" })).toHaveValue("3020 px"));
+    await h!.user.keyboard("{ArrowLeft}");
+    await waitFor(() => expect(screen.getByRole("textbox", { name: "Long edge value" })).toHaveValue("3000 px"));
+    // A press on the track at 87 of its 200 px lands on 4320 px (1000 + 87/200 × 7640 = 4323, rounded to the 20 px grid).
+    const root = slider.closest('[data-slot="slider"]') as HTMLElement;
+    mockRect(root, { left: 0, width: 200, height: 38 });
+    const pointer = capturingPointer(root);
+    pointer.down(86.9);
+    pointer.up();
     await waitFor(() => expect(exportButton()).toHaveTextContent("≈ 19 MB"));
+    expect(screen.getByRole("slider", { name: "Long edge" })).toHaveAttribute("aria-valuenow", "4320");
     // Back to Full and again: the last long edge comes back.
     await h!.user.click(radio("Size", "Full · 8640 px"));
     await h!.user.click(radio("Size", "Long edge"));
-    expect(screen.getByRole("slider", { name: "Long edge" })).toHaveValue("4320");
+    expect(screen.getByRole("slider", { name: "Long edge" })).toHaveAttribute("aria-valuenow", "4320");
   });
 
   it("keeps Long edge snapped to the grid when the value is typed", async () => {
@@ -162,11 +175,11 @@ describe("the options (design/mockups/export.html)", () => {
     await h!.user.click(box);
     await h!.user.clear(box);
     await h!.user.type(box, "2500{Enter}");
-    expect(screen.getByRole("slider", { name: "Long edge" })).toHaveValue("2500");
+    expect(screen.getByRole("slider", { name: "Long edge" })).toHaveAttribute("aria-valuenow", "2500");
     await h!.user.click(box);
     await h!.user.clear(box);
     await h!.user.type(box, "99999{Enter}");
-    expect(screen.getByRole("slider", { name: "Long edge" })).toHaveValue("8640");
+    expect(screen.getByRole("slider", { name: "Long edge" })).toHaveAttribute("aria-valuenow", "8640");
   });
 });
 
@@ -217,7 +230,7 @@ describe("Save to, the file name and what to do when it exists", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("{colour} is not a token. Use {name}, {look}, {date}, {seq} or {camera}.");
     expect(box).toHaveAttribute("aria-invalid", "true");
     expect(exportButton()).toHaveAttribute("aria-disabled", "true");
-    expect(exportButton()).toHaveAttribute("title", "{colour} is not a token. Use {name}, {look}, {date}, {seq} or {camera}.");
+    expect(exportButton()).toHaveAccessibleDescription("{colour} is not a token. Use {name}, {look}, {date}, {seq} or {camera}.");
     // A template that can't be used is never remembered.
     await h!.user.tab();
     expect((await h!.api.preferencesGet()).export_defaults.name_template).toBe("{name}_{look}");
@@ -453,7 +466,7 @@ describe("running", () => {
     await waitFor(() => expect(within(screen.getByRole("complementary", { name: "Export" })).getByRole("button", { name: /^Export/ })).toHaveTextContent("≈"));
     await h.user.click(exportButton());
     await h.user.click(await screen.findByRole("button", { name: "← Back to photos" }));
-    await waitFor(() => expect(document.querySelector(".ym-export__strip > span")).not.toBeNull());
+    await waitFor(() => expect(document.querySelector("[data-export-strip] > span")).not.toBeNull());
     await h.store.cancelExport();
   }, 20_000);
 
@@ -463,7 +476,7 @@ describe("running", () => {
     act(() => updater.applyExternal({ phase: "ready", version: "0.1.1" }));
     const pill = await screen.findByRole("button", { name: /Update ready/ });
     expect(pill).toHaveAttribute("aria-disabled", "true");
-    expect(pill).toHaveAttribute("title", "Restarts after the export finishes");
+    expect(pill).toHaveAccessibleDescription("Restarts after the export finishes");
     act(() => h!.api.flush());
     await within(panel).findByRole("heading", { level: 2, name: "Exported" });
     await waitFor(() => expect(screen.getByRole("button", { name: /Update ready/ })).not.toHaveAttribute("aria-disabled"));

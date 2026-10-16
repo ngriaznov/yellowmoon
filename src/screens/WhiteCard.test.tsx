@@ -7,7 +7,7 @@
 import { screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SettingsPatch } from "../api/types";
-import { openPhotos, openTab, renderApp, sliderOf, valueOf } from "../test/harness";
+import { openPhotos, openTab, renderApp, sliderName, sliderOf, valueOf } from "../test/harness";
 import type { Harness, UpdateSpy } from "../test/harness";
 
 let h: Harness;
@@ -43,14 +43,19 @@ describe("the White card on the Light tab", () => {
     expect(regions.map((r) => within(r).getAllByRole("heading", { level: 3 })[0]?.textContent)).toEqual(["Exposure", "White", "High dynamic range"]);
     const labels = card()
       .getAllByRole("slider")
-      .map((s: HTMLElement) => (s as HTMLInputElement).labels?.[0]?.textContent);
+      .map((s: HTMLElement) => sliderName(s));
     expect(labels).toEqual(["Offset"]);
     expect(valueOf("Offset")).toBe("0.00");
     expect(autoButton()).toHaveAttribute("aria-pressed", "true");
     // It is a stop offset from −3 to +3 in steps of 0.05; the C9 White slider next door is unchanged.
     const slider = sliderOf("Offset");
-    expect([slider.min, slider.max, slider.step]).toEqual(["-3", "3", "0.05"]);
+    expect([slider.getAttribute("aria-valuemin"), slider.getAttribute("aria-valuemax")]).toEqual(["-3", "3"]);
     expect(valueOf("White")).toBe("0");
+    // One arrow key is one step of 0.05 (Radix's slider has no step attribute to read).
+    const spy = vi.spyOn(h.api, "updateSettings");
+    slider.focus();
+    await h.user.keyboard("{ArrowRight}");
+    expect(await lastPatch(spy)).toEqual({ white_offset_ev: 0.05 });
   });
 
   it("an offset is a plain patch of white_offset_ev, shown as signed stops, and the AUTO button follows it", async () => {

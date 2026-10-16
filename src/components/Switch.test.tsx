@@ -43,7 +43,9 @@ describe("Switch", () => {
     render(<Switch label="x" checked={false} onChange={onChange} disabled />);
     await userEvent.click(screen.getByRole("switch"));
     expect(onChange).not.toHaveBeenCalled();
-    expect(screen.getByRole("switch")).toHaveAttribute("aria-disabled", "true");
+    // Radix's switch is a disabled button: it is announced as unavailable and has left the tab order.
+    expect(screen.getByRole("switch")).toBeDisabled();
+    expect(screen.getByRole("switch")).toHaveAttribute("data-disabled");
   });
 
   it("can name its tab for the colour", () => {

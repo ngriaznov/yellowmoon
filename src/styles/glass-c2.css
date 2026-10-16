@@ -1,0 +1,726 @@
+/* Variant C2: the current layout, dark glass, glasscn's own controls (experiment, branch claude/glasscn-ui).
+   Two halves, and no rule here restyles a glasscn control:
+   1. Tokens. The dark palette (glasscn's own `.dark` material is used as it is), the yellow accent, a colour per tab, Figtree.
+   2. Layout. The cells of the screen sit where they sit today, edge to edge, with the sizes and spacing of the mockups; their surfaces
+      are glasscn's glass and the rules between them are thin light rims. The parts that are not controls (the title block, the cards'
+      sections, the histogram, look tiles, the filmstrip and its caption) keep their geometry from `design/mockups/photos.html`.
+   Every control inside (buttons, toggles, tabs, segmented, sliders and their boxes, switches, selects, inputs, search, menus, badges,
+   the dialog, tooltips) is a component in src/components/glass/ in its own default shape. */
+@reference "./glass.css";
+
+/* ---- 1. Tokens -------------------------------------------------------------------------------------------------------------------- */
+html.dark {
+  /* Figtree under glasscn's type scale (it is a plain humanist sans, and fits it). */
+  --glass-font-sans: var(--font);
+  --glass-font-heading: var(--font);
+  --glass-font-display: var(--font);
+  --glass-font-mono: var(--font-mono);
+
+  /* The accent: the brand yellow, black on it. Tabs re-theme their own subtree below. */
+  --primary: var(--brand);
+  --primary-foreground: var(--brand-ink);
+  --ring: var(--brand);
+  --chart-1: var(--brand);
+  --chart-2: oklch(0.91 0.12 92);
+
+  /* The ground: a dark aurora in cool hues only (deep blue, teal, violet at low brightness). Nothing warm sits behind a glass pane, so no
+     pane turns olive or brown (round 7). */
+  --aurora-base: oklch(0.125 0.014 262);
+  --aurora-1: oklch(0.36 0.1 262);
+  --aurora-2: oklch(0.4 0.08 212);
+  --aurora-3: oklch(0.34 0.09 298);
+
+  /* The rules between the cells: a thin light rim. */
+  --rim: color-mix(in oklch, var(--ink) 16%, transparent);
+
+  /* Tab colours: each keeps its hue, lightened where it was dark; black text on all six. */
+  --tab-look: #ffc20e;   --tab-look-ink: #000000;
+  --tab-light: #2ec4f4;  --tab-light-ink: #000000;
+  --tab-colour: #7be35f; --tab-colour-ink: #000000;
+  --tab-detail: #f4b9ac; --tab-detail-ink: #000000;
+  --tab-curve: #ff7340;  --tab-curve-ink: #000000;
+  --tab-raw: #5b9bff;    --tab-raw-ink: #000000;
+}
+/* A tab's accent is the accent of its controls: glasscn paints sliders, switches, toggles, the tab underline and the focus ring from
+   --primary, so setting it on the tab's subtree is all it takes. */
+[data-tab="look"] { --primary: var(--tab-look); --primary-foreground: var(--tab-look-ink); --ring: var(--tab-look); }
+[data-tab="light"] { --primary: var(--tab-light); --primary-foreground: var(--tab-light-ink); --ring: var(--tab-light); }
+[data-tab="color"] { --primary: var(--tab-colour); --primary-foreground: var(--tab-colour-ink); --ring: var(--tab-colour); }
+[data-tab="detail"] { --primary: var(--tab-detail); --primary-foreground: var(--tab-detail-ink); --ring: var(--tab-detail); }
+[data-tab="curve"] { --primary: var(--tab-curve); --primary-foreground: var(--tab-curve-ink); --ring: var(--tab-curve); }
+[data-tab="raw"] { --primary: var(--tab-raw); --primary-foreground: var(--tab-raw-ink); --ring: var(--tab-raw); }
+
+body {
+  font-family: var(--font);
+  color: var(--glass-label);
+}
+
+/* ---- 2. Layout --------------------------------------------------------------------------------------------------------------------- */
+/* Glass needs something to frost: the aurora is behind the page, so the page paints nothing on the Photos screen. The aurora is page
+   content, and with the native viewport the photo is a layer BEHIND the page: it is masked out of the photo cell's rectangle
+   (Photos sets --cell-x/y/w/h from the cell). */
+html:has(.ym-screen[data-screen="photos"]),
+html:has(.ym-screen[data-screen="photos"]) body,
+html:has(.ym-screen[data-screen="photos"]) #root {
+  background: transparent !important;
+}
+.ym-screen[data-screen="photos"] {
+  background: transparent;
+  color: var(--glass-label);
+}
+.ym-aurora {
+  -webkit-mask-image: linear-gradient(#000 0 0), linear-gradient(#000 0 0);
+  mask-image: linear-gradient(#000 0 0), linear-gradient(#000 0 0);
+  -webkit-mask-size: 100% 100%, var(--cell-w, 0px) var(--cell-h, 0px);
+  mask-size: 100% 100%, var(--cell-w, 0px) var(--cell-h, 0px);
+  -webkit-mask-position: 0 0, var(--cell-x, 0px) var(--cell-y, 0px);
+  mask-position: 0 0, var(--cell-x, 0px) var(--cell-y, 0px);
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+}
+
+/* The header: the same row of cells (folder, actions, update, Export), one glass surface, a rim under it and between the cells. */
+.ym-screen[data-screen="photos"] .ym-header {
+  @apply glass rounded-none;
+  border-width: 0 0 1px 0;
+}
+.ym-screen[data-screen="photos"] .ym-brand {
+  border-right: 1px solid var(--rim);
+}
+.ym-screen[data-screen="photos"] .ym-header__right {
+  border-left: 1px solid var(--rim);
+}
+.ym-update-pill {
+  align-items: center;
+  border: 0;
+  border-right: 1px solid var(--rim);
+  background: transparent;
+  text-transform: none;
+}
+.ym-update-pill__square {
+  box-sizing: content-box;
+  flex-shrink: 0;
+  width: 8px;
+  height: 8px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--status-ok);
+}
+.ym-export-cell {
+  display: flex;
+  align-items: center;
+  margin-left: auto;
+  padding: 0 22px;
+}
+.ym-status {
+  margin-left: auto;
+  color: var(--glass-label-secondary);
+  font-size: var(--fs-small);
+  font-weight: var(--fw-semibold);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.ym-status[data-hint="true"] {
+  color: var(--glass-label);
+  font-weight: var(--fw-heavy);
+}
+@media (max-width: 1273px) {
+  .ym-screen[data-screen="photos"][data-panel="tools"] .ym-status:not([data-hint="true"]) {
+    display: none;
+  }
+}
+/* The Pick white hint is a whole sentence on one line (219 px). Beside the glass buttons it does not fit below about 1357 px: at 1347 it ran
+   9 px into the Export cell. There it floats over the top right of the photo area instead, just under the header. */
+@media (max-width: 1359px) {
+  .ym-status[data-hint="true"] {
+    @apply glass-liquid;
+    position: fixed;
+    top: calc(var(--header-h) + 8px);
+    right: calc(var(--panel-w) + 16px);
+    z-index: 30;
+    margin-left: 0;
+    padding: 6px 12px;
+  }
+}
+
+/* Round 5, variant (a): the count beside the render status, same type ("Neural · 42 ms · Display P3 · 4 of 12 · 3 picked"). It needs
+   about 270 px, so it is there from 1440 px and the strip's caption takes over below that (see `COUNT_IN_HEADER` in Photos.tsx). */
+.ym-status-group {
+  display: flex;
+  align-items: baseline;
+  margin-left: auto;
+  white-space: nowrap;
+}
+.ym-status-group .ym-status {
+  margin-left: 0;
+}
+.ym-status--count::before {
+  content: "·";
+  margin: 0 0.5em;
+}
+@media (min-width: 1440px) {
+  .ym-screen[data-count="header"] .ym-filmstrip__caption {
+    display: none;
+  }
+}
+@media (max-width: 1439px) {
+  .ym-status--count {
+    display: none;
+  }
+}
+
+/* The tool panel: one glass surface with a rim on its left; the tab row, the title block, the cards stacked as they are, the foot. */
+.ym-tools {
+  @apply glass rounded-none;
+  border-width: 0 0 0 1px;
+}
+.ym-screen[data-screen="photos"] .ym-filmstrip {
+  grid-column: 1;
+  grid-row: 3;
+}
+.ym-tools > [data-slot="tabs"] {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  height: var(--tab-h);
+  padding: 0 12px;
+  border-bottom: 1px solid var(--rim);
+}
+.ym-tools__foot {
+  gap: 8px;
+  padding: 8px 14px;
+  border-top: 1px solid var(--rim);
+}
+.ym-tools__footer {
+  gap: 12px;
+  padding: 16px var(--pad-panel);
+  border-top: 1px solid var(--rim);
+}
+.ym-tools__notice {
+  color: var(--glass-label-secondary);
+}
+
+/* The title block: a flat block of the tab colour today; here neutral glass (round 7). A tab's colour is a small accent, never a large
+   tint: it shows on the tab's underline and on its controls. */
+.ym-title-block {
+  padding: 22px var(--pad-panel);
+  background: color-mix(in oklch, var(--ink) 7%, transparent);
+  color: var(--glass-label);
+  border-bottom: 1px solid var(--rim);
+}
+.ym-title-block__title {
+  margin: 0;
+  font-size: var(--fs-display);
+  font-weight: var(--fw-heavy);
+  letter-spacing: var(--ls-display);
+  line-height: 1;
+}
+.ym-title-block__blurb {
+  max-width: 330px;
+  margin: 12px 0 0;
+  font-size: 15px;
+  line-height: 1.5;
+}
+
+/* The cards: sections stacked edge to edge, ruled, as they are today. */
+.ym-card {
+  padding: 16px var(--pad-panel) 20px;
+  border-bottom: 1px solid var(--rim);
+}
+.ym-card__header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  height: 28px;
+  margin-bottom: 10px;
+}
+.ym-card__title {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--fs-label);
+  font-weight: var(--fw-heavy);
+  letter-spacing: var(--ls-tag);
+  text-transform: uppercase;
+}
+.ym-card[data-density="option"] {
+  padding-bottom: 18px;
+}
+.ym-card[data-density="option"] .ym-card__header {
+  height: auto;
+  margin-bottom: 10px;
+}
+.ym-card[data-last="true"] {
+  border-bottom: 0;
+}
+.ym-rows {
+  border-top: 1px solid var(--rim);
+}
+.ym-rows[data-spaced="true"] {
+  margin-bottom: 8px;
+}
+.ym-rows > * {
+  position: relative;
+}
+.ym-rows > *::after {
+  content: "";
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: 1px;
+  background: var(--rim);
+  pointer-events: none;
+}
+.ym-row-note {
+  margin: 10px 0 0;
+  color: var(--glass-label-secondary);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.ym-info-row {
+  display: grid;
+  grid-template-columns: 104px minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: var(--gap-row);
+  min-height: 44px;
+}
+.ym-info-row__label {
+  font-size: var(--fs-label);
+  font-weight: var(--fw-heavy);
+}
+.ym-info-row__value {
+  font-size: var(--fs-body);
+}
+/* The Automatic card's rows are glasscn's Item: its hover fill reaches past the text a little, as in a settings list. */
+.ym-auto-row {
+  display: grid;
+  grid-template-columns: 104px minmax(0, 1fr) auto 16px;
+  align-items: center;
+  column-gap: var(--gap-row);
+  width: calc(100% + 28px);
+  height: 44px;
+  margin-inline: -14px;
+  padding-block: 0;
+  text-align: left;
+}
+.ym-auto-row::after {
+  right: 14px;
+  left: 14px;
+}
+.ym-auto-row__label {
+  font-size: var(--fs-label);
+  font-weight: var(--fw-heavy);
+}
+.ym-auto-row__value {
+  overflow: hidden;
+  color: var(--glass-label-secondary);
+  font-size: var(--fs-body);
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ym-auto-row__arrow {
+  width: 16px;
+  height: 16px;
+  color: var(--glass-label-secondary);
+}
+.ym-switch-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  height: 44px;
+}
+.ym-switch-row__label {
+  font-size: var(--fs-body);
+  font-weight: var(--fw-bold);
+}
+.ym-field {
+  display: grid;
+  grid-template-columns: var(--label-col) minmax(0, 1fr);
+  align-items: center;
+  column-gap: var(--gap-row);
+  margin-top: 8px;
+}
+.ym-field__label {
+  font-size: var(--fs-label);
+  font-weight: var(--fw-heavy);
+}
+
+/* The histogram (an SVG: glasscn has none). */
+.ym-histogram {
+  padding: 18px var(--pad-panel) 16px;
+  border-bottom: 1px solid var(--rim);
+}
+.ym-histogram__box {
+  position: relative;
+  box-sizing: border-box;
+  height: 88px;
+  overflow: hidden;
+  border: 1px solid var(--rim);
+  border-radius: calc(var(--glass-radius-control) * 0.5);
+  background: color-mix(in oklch, var(--ink) 5%, transparent);
+}
+.ym-histogram__box svg {
+  width: 100%;
+  height: 84px;
+}
+.ym-histogram__caption {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 8px;
+  color: var(--glass-label-secondary);
+  font-size: var(--fs-small);
+  font-weight: var(--fw-bold);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Look tiles (a picture button: glasscn has none), their groups and their grid. */
+.ym-look-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px 12px;
+}
+.ym-look-group {
+  margin-bottom: 18px;
+}
+/* Every Button sits in the span of its tooltip (`data-slot="tooltip-trigger"`, inline-flex). The section header fills the row, so the span
+   that holds it does too, or the header shrinks to its text and the count moves next to the label. */
+.ym-look-group > [data-slot="tooltip-trigger"] {
+  display: flex;
+}
+.ym-look-group__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  margin-bottom: 8px;
+  padding-inline: 6px;
+  font-size: var(--fs-small);
+  font-weight: var(--fw-heavy);
+  letter-spacing: var(--ls-tag);
+  text-transform: uppercase;
+}
+.ym-look-group__count {
+  font-weight: var(--fw-bold);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0;
+  text-transform: none;
+}
+.ym-look-group__title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.ym-look-group__chevron {
+  width: 14px;
+  height: 14px;
+  transition: rotate var(--glass-duration) var(--glass-ease);
+}
+.ym-look-group__chevron[data-open="false"] {
+  rotate: -90deg;
+}
+.ym-look-group__marker {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--glass-label-tertiary);
+}
+.ym-look-tile {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--glass-label);
+  font: inherit;
+  text-align: left;
+  cursor: default;
+}
+.ym-look-tile__picture {
+  position: relative;
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  aspect-ratio: 3 / 2;
+  overflow: hidden;
+  border: 1px solid var(--rim);
+  border-radius: calc(var(--glass-radius-control) * 0.5);
+  background: var(--code-bg);
+}
+.ym-look-tile[aria-pressed="true"] .ym-look-tile__picture {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+.ym-look-tile:focus-visible .ym-look-tile__picture {
+  outline: var(--glass-ring-width) solid var(--ring);
+  outline-offset: 2px;
+}
+.ym-look-tile__picture img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+/* The badges are glasscn's Badge, a plain tinted fill, placed on the picture. */
+.ym-look-tile__badge {
+  position: absolute;
+  top: 5px;
+  left: 5px;
+  height: 18px;
+  min-width: 18px;
+  padding: 0 5px;
+  background: rgb(0 0 0 / 0.58);
+  color: #fff;
+  font-size: 0.625rem;
+  font-variant-numeric: tabular-nums;
+}
+.ym-look-tile__default {
+  position: absolute;
+  right: 5px;
+  bottom: 5px;
+  height: 16px;
+  padding: 0 6px;
+  font-size: 0.5625rem;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+.ym-look-tile__name {
+  max-width: 100%;
+  padding: 1px 4px;
+  margin-left: -4px;
+  overflow: hidden;
+  border-radius: calc(var(--glass-radius-control) * 0.5);
+  font-size: var(--fs-label);
+  font-weight: var(--fw-semibold);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ym-look-tile[aria-pressed="true"] .ym-look-tile__name {
+  font-weight: var(--fw-heavy);
+}
+.ym-look-tile[aria-disabled="true"] {
+  color: var(--glass-label-tertiary);
+}
+.ym-look-tile[aria-disabled="true"] .ym-look-tile__picture {
+  opacity: 0.45;
+}
+.ym-look-tile__note {
+  color: var(--glass-label-secondary);
+  font-size: 11px;
+  line-height: 1.3;
+}
+
+/* The filmstrip row: the strip of thumbnails and, in its own cell, the counter. One glass surface, a rim above it and between them.
+   Round 4: the thumbnails fill the row. The row keeps the height the layout gives it (what is left under the photo, never less than
+   --filmstrip-min-h); each thumbnail is as tall as that row less the tool panel's inset (--pad-panel, 24 px) above and below, so the space
+   from a thumbnail to the edge of its cell is the space from a control to the edge of the tool panel. The row is a size container so
+   the thumbnails can read its height; the scroller keeps the same inset on its left and right. */
+.ym-filmstrip {
+  @apply glass rounded-none;
+  --strip-inset: var(--pad-panel);
+  --strip-gap: 8px;
+  /* Round 5: the strip has a surface of its own, so the warm part of the aurora no longer sits under warm thumbnails. Three tried, one
+     chosen: change --strip-surface to --strip-graphite, --strip-blue or --strip-tab and nothing else. --strip-alpha is how much of the
+     colour covers the glass (100% is an opaque surface; less lets the aurora and the blur through). */
+  --strip-alpha: 96%;
+  --strip-graphite: linear-gradient(to bottom, color-mix(in oklch, oklch(0.3 0.008 255) var(--strip-alpha), transparent), color-mix(in oklch, oklch(0.2 0.008 255) var(--strip-alpha), transparent));
+  --strip-blue: linear-gradient(to bottom, color-mix(in oklch, oklch(0.27 0.045 232) var(--strip-alpha), transparent), color-mix(in oklch, oklch(0.165 0.035 240) var(--strip-alpha), transparent));
+  --strip-tab: linear-gradient(to bottom, color-mix(in oklab, color-mix(in oklab, var(--primary) 9%, oklch(0.23 0.004 255)) var(--strip-alpha), transparent), color-mix(in oklab, color-mix(in oklab, var(--primary) 3%, oklch(0.16 0.004 255)) var(--strip-alpha), transparent));
+  --strip-surface: var(--strip-blue);
+  container-type: size;
+  position: relative;
+  display: flex;
+  align-items: stretch;
+  box-sizing: border-box;
+  min-width: 0;
+  background: var(--strip-surface);
+  /* Near-opaque, so there is nothing for a blur to frost: one backdrop filter less on the screen. (Lower --strip-alpha a lot and put the
+     blur back by deleting these two lines.) */
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  border-width: 1px 0 0 0;
+}
+.ym-filmstrip__scroll {
+  display: flex;
+  flex: 1;
+  align-items: flex-start;
+  gap: var(--strip-gap);
+  min-width: 0;
+  padding: var(--strip-inset);
+  overflow-x: auto;
+}
+/* Every thumbnail is the same 3:2 box, so a photo keeps its shape inside it (the picture is never stretched). The selected one is told
+   apart by its ring, not by its size: a larger one could not keep the inset above and below it. */
+.ym-filmstrip__thumb {
+  position: relative;
+  flex-shrink: 0;
+  box-sizing: border-box;
+  height: calc(var(--filmstrip-min-h) - 1px - 2 * var(--strip-inset));
+  aspect-ratio: 3 / 2;
+  padding: 0;
+  border: 1px solid var(--rim);
+  border-radius: calc(var(--glass-radius-control) * 0.5);
+  overflow: hidden;
+  background: var(--code-bg);
+  cursor: default;
+}
+@supports (height: 1cqh) {
+  .ym-filmstrip__thumb {
+    height: calc(100cqh - 2 * var(--strip-inset));
+  }
+}
+.ym-filmstrip__thumb[aria-current="true"] {
+  border: 3px solid var(--tab-look);
+}
+.ym-filmstrip__thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  pointer-events: none;
+}
+.ym-filmstrip__thumb:focus-visible {
+  outline: var(--glass-ring-width) solid var(--ring);
+  outline-offset: 3px;
+}
+.ym-filmstrip__thumb[data-status="developing"],
+.ym-filmstrip__thumb[data-status="failed"] {
+  background: repeating-linear-gradient(135deg, var(--code-bg) 0 6px, transparent 6px 12px);
+}
+.ym-filmstrip__failed {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  display: flex;
+  justify-content: center;
+  padding-bottom: 2px;
+}
+.ym-filmstrip__picked {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--tab-look);
+  box-shadow: 0 0 0 2px #000;
+}
+.ym-filmstrip__thumb[data-in-export="true"][aria-current="true"] {
+  border-width: 3px;
+}
+.ym-filmstrip__thumb[data-in-export="false"] {
+  opacity: 0.35;
+}
+span.ym-filmstrip__thumb {
+  cursor: default;
+}
+/* The caption: where you are in the folder, one line of muted text in the strip's top inset, above the first thumbnail. It never touches a
+   thumbnail (the inset is 24 px and the line 14 px; it sits a pixel high so that a focused thumbnail's 3 px ring, 3 px off, clears the
+   letters) and lets a wheel or a drag pass through to the strip. */
+.ym-filmstrip__caption {
+  position: absolute;
+  top: 5px;
+  left: var(--strip-inset);
+  z-index: 1;
+  color: var(--glass-label-secondary);
+  font-size: var(--fs-small);
+  font-weight: var(--fw-semibold);
+  font-variant-numeric: tabular-nums;
+  line-height: 14px;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+/* ---- Export panel ---------------------------------------------------------------------------------------------------------------- */
+.ym-queue {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border-top: 1px solid var(--rim);
+}
+.ym-queue__row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: 12px;
+  min-height: 52px;
+  border-bottom: 1px solid var(--rim);
+}
+.ym-queue__file {
+  font-weight: var(--fw-heavy);
+}
+.ym-queue__note {
+  color: var(--glass-label-secondary);
+}
+.ym-export__folder,
+.ym-export__code {
+  border: 1px solid var(--rim);
+}
+.ym-export__footer-pair [data-slot="button"] {
+  width: 100%;
+}
+
+/* ---- Dialogs: Preferences rows, About -------------------------------------------------------------------------------------------- */
+.ym-pref {
+  padding: 12px 0;
+  border-bottom: 1px solid var(--rim);
+}
+.ym-pref:last-child {
+  border-bottom: 0;
+}
+.ym-pref__title {
+  font-size: 0.9375rem;
+  font-weight: 600;
+}
+.ym-pref__hint {
+  color: var(--glass-label-secondary);
+  font-size: 0.8125rem;
+}
+.ym-pref__defaults {
+  padding: 4px 0 0;
+  border-bottom: 1px solid var(--rim);
+}
+.ym-pref__defaults .ym-card {
+  padding-inline: 0;
+}
+.ym-dialog__footer-start {
+  margin-right: auto;
+}
+.ym-dialog__text {
+  margin: 0;
+  padding: 8px 0;
+  font-size: 0.9375rem;
+  line-height: 1.5;
+}
+.ym-about-dialog__section,
+.ym-about-dialog__adobe,
+.ym-about-dialog__legal {
+  padding-inline: 0;
+  border-bottom: 1px solid var(--rim);
+}
+.ym-about-dialog__brand,
+.ym-about-dialog__version {
+  padding-inline: 0;
+}
+.ym-about-dialog__adobe {
+  background: color-mix(in oklch, var(--ink) 8%, transparent);
+  color: var(--glass-label);
+  padding-inline: 12px;
+}
+.ym-cube-list > li {
+  padding-inline: 0;
+  border-bottom: 1px solid var(--rim);
+}
+
+/* A Mac button keeps the arrow; a link-styled one (LinkButton, ResetLink, a section's text action) is a pointing hand once it can be used
+   (docs/11 §Desktop feel). glasscn's own buttons set no cursor, and the base rule `button { cursor: default }` is the arrow. */
+button[data-slot="button"][data-variant="link"]:not([aria-disabled="true"]) {
+  cursor: pointer;
+}

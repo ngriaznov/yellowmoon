@@ -35,7 +35,7 @@ describe("Preferences (⌘,)", () => {
       expect(within(dialog).getByRole("group", { name: row })).toBeInTheDocument();
     }
     expect(within(dialog).getByRole("heading", { level: 2, name: "Preferences" })).toBeInTheDocument();
-    expect(within(dialog).getByRole("combobox", { name: "Default look" })).toHaveValue("builtin:neutral");
+    expect(within(dialog).getByRole("combobox", { name: "Default look" })).toHaveTextContent("Neutral");
     expect(sw(dialog, "Remove location from exports")).toHaveAttribute("aria-checked", "false");
     expect(sw(dialog, "Watch Downloads during import")).toHaveAttribute("aria-checked", "false");
     expect(sw(dialog, "Check for updates automatically")).toHaveAttribute("aria-checked", "true");
@@ -80,7 +80,8 @@ describe("Preferences (⌘,)", () => {
     await h!.user.keyboard("{Meta>},{/Meta}");
     const dialog = await screen.findByRole("dialog", { name: "Preferences" });
     await waitFor(() => expect(within(dialog).queryByText("Loading your preferences…")).toBeNull());
-    expect(dialog).toHaveAttribute("aria-modal", "true");
+    // Radix hides everything behind a modal dialog from assistive technology (it has no aria-modal), so the page's buttons are gone to it.
+    expect(screen.queryByRole("button", { name: "Open files ⌘O" })).toBeNull();
     expect(dialog.contains(document.activeElement)).toBe(true);
     for (let i = 0; i < 25; i++) {
       await h!.user.tab();
@@ -97,7 +98,7 @@ describe("Preferences (⌘,)", () => {
 
   it("closes on a click outside it", async () => {
     await openPreferences();
-    await h!.user.click(document.querySelector(".ym-dialog-backdrop") as HTMLElement);
+    await h!.user.click(document.querySelector('[data-slot="dialog-overlay"]') as HTMLElement);
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
@@ -120,23 +121,24 @@ describe("Preferences (⌘,)", () => {
     const dialog = await openPreferences();
     h!.api.failNext("preferencesSet", { scope: "preferences", message: "The preferences file can't be written. Check its permissions." });
     await h!.user.click(sw(dialog, "Remove location from exports"));
-    expect(await screen.findByRole("alert")).toHaveTextContent("The preferences file can't be written. Check its permissions.");
+    // The error bar sits behind the dialog, which Radix hides from assistive technology while it is open, hence `hidden`.
+    expect(await screen.findByRole("alert", { hidden: true })).toHaveTextContent("The preferences file can't be written. Check its permissions.");
     expect(sw(dialog, "Remove location from exports")).toHaveAttribute("aria-checked", "false");
   });
 
   it("changes the default look", async () => {
     const dialog = await openPreferences();
-    const select = within(dialog).getByRole("combobox", { name: "Default look" });
-    expect(within(select).getAllByRole("option").map((o) => o.textContent)).toContain("Film warm");
-    await h!.user.selectOptions(select, "Signature");
+    await h!.user.click(within(dialog).getByRole("combobox", { name: "Default look" }));
+    expect((await screen.findAllByRole("option")).map((o) => o.textContent)).toContain("Film warm");
+    await h!.user.click(screen.getByRole("option", { name: "Signature" }));
     await waitFor(async () => expect((await h!.api.preferencesGet()).default_look).toBe("builtin:signature"));
-    await waitFor(() => expect(within(dialog).getByRole("combobox", { name: "Default look" })).toHaveValue("builtin:signature"));
+    await waitFor(() => expect(within(dialog).getByRole("combobox", { name: "Default look" })).toHaveTextContent("Signature"));
   });
 
   it("names a look by its library in the default look list when two libraries have a look of that name", async () => {
     const dialog = await openPreferences({ allLibraries: true });
-    const select = within(dialog).getByRole("combobox", { name: "Default look" });
-    const options = within(select).getAllByRole("option");
+    await h!.user.click(within(dialog).getByRole("combobox", { name: "Default look" }));
+    const options = await screen.findAllByRole("option");
     const labels = options.map((o) => o.textContent);
     expect(labels).toContain("Neutral");
     expect(labels).toContain("Monochrome");
@@ -144,21 +146,21 @@ describe("Preferences (⌘,)", () => {
     expect(labels).toContain("Film warm · LogC3");
     expect(labels).toContain("Film cool · Your LUTs");
     expect(labels).not.toContain("Film warm");
-    await h!.user.selectOptions(select, "Film warm · LogC3");
+    await h!.user.click(screen.getByRole("option", { name: "Film warm · LogC3" }));
     await waitFor(async () => expect((await h!.api.preferencesGet()).default_look).toBe("arri:3000:film-warm-logc3"));
   });
 
   it("offers ARRI's display rendering only once display LUTs are imported", async () => {
     const dialog = await openPreferences({ looksImported: false });
     const group = within(dialog).getByRole("radiogroup", { name: "Display rendering" });
-    expect(within(group).getByRole("radio", { name: "ARRI's display rendering, not imported" })).toHaveAttribute("aria-disabled", "true");
+    expect(within(group).getByRole("radio", { name: "ARRI's display rendering, not imported" })).toBeDisabled();
     expect(within(dialog).getByText("Import ARRI's display LUTs to use them here.")).toBeInTheDocument();
     await act(async () => {
       await h!.api.looksImport(`~/Downloads/${PACKAGE_ZIPS.display_luts_logc4}`);
     });
     await h!.store.refreshDisplayLuts();
     const arri = await within(dialog).findByRole("radio", { name: "ARRI's display rendering" });
-    expect(arri).not.toHaveAttribute("aria-disabled");
+    expect(arri).toBeEnabled();
     await h!.user.click(arri);
     await waitFor(async () => expect((await h!.api.preferencesGet()).display_rendering).toEqual({ kind: "arri_display", id: "arri-display:logc4:rec709-g24" }));
     await h!.user.click(within(dialog).getByRole("radio", { name: "Ours · ACES 2" }));
@@ -349,9 +351,14 @@ describe("Import .cube…", () => {
     expect(within(group).getAllByRole("radio").map((r) => r.textContent)).toEqual(["LogC4", "LogC3", "LogC3 · Rec.709"]);
     const importButton = within(dialog).getByRole("button", { name: "Import" });
     expect(importButton).toHaveAttribute("aria-disabled", "true");
-    expect(importButton).toHaveAttribute("title", "Say what each LUT expects as input.");
+    expect(importButton).toHaveAccessibleDescription("Say what each LUT expects as input.");
     await h!.user.click(within(group).getByRole("radio", { name: "LogC4" }));
-    await h!.user.click(importButton);
+    // Answering the question takes the explanation off the button. It stays the same element, so the focus is not lost with it.
+    const answered = within(dialog).getByRole("button", { name: "Import" });
+    expect(answered).toBe(importButton);
+    expect(answered).not.toHaveAttribute("aria-disabled");
+    expect(answered).not.toHaveAccessibleDescription();
+    await h!.user.click(answered);
     expect(await screen.findByText("1 LUT added to Your LUTs.")).toBeInTheDocument();
     expect(screen.queryByRole("dialog")).toBeNull();
     expect((await h!.api.looksList()).find((l) => l.id === "user:warm-film")).toMatchObject({ name: "Warm Film", input: "logc4", group: { kind: "user" } });
