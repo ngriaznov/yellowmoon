@@ -108,6 +108,36 @@ fn a_cube_file_needs_the_input_question_answered() {
         ));
 }
 
+#[test]
+fn a_renamed_copy_of_an_imported_lut_is_not_imported_again() {
+    let sb = Sandbox::new();
+    let warm = write_cube(&sb, "warm.cube", "Warm", 0.9);
+    sb.ym()
+        .args(["looks", "import", "--input", "logc4"])
+        .arg(&warm)
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("Imported 1 look."));
+    // The same bytes under another name: the same LUT, said in plain words, nothing listed twice.
+    let copy = sb.root().join("cubes").join("cool.cube");
+    std::fs::copy(&warm, &copy).expect("copy");
+    sb.ym()
+        .args(["looks", "import", "--input", "logc4"])
+        .arg(&copy)
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains(
+            "1 file is the same as a LUT that is already imported under another name, so it was not added again.",
+        ))
+        .stderr(predicate::str::contains(
+            "Imported 0 looks, 1 already imported.",
+        ));
+    let out = sb.ym().args(["looks", "list", "--json"]).assert().success();
+    let v = json_lines(&out.get_output().stdout).remove(0);
+    assert_eq!(v["looks"].as_array().expect("looks").len(), 3, "{v}");
+}
+
 /// A look file written by our own writer from a synthetic LUT (no ARRI file is involved).
 fn write_look_file(sb: &Sandbox, name: &str, kind: &str, cdl: Option<&Cdl>) -> std::path::PathBuf {
     let dir = sb.root().join("looks");

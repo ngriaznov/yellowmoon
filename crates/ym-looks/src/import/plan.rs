@@ -953,4 +953,264 @@ mod tests {
             "2026-01-01T00:00:00Z"
         );
     }
+
+    fn display_spec(input: DisplayInput, target: &str) -> Spec {
+        Spec::from_outcome(
+            &Outcome::ArriDisplay {
+                package: "d".into(),
+                input,
+                target: target.into(),
+                file_name: format!("LogC4_to_{target}.cube"),
+                evidence: crate::recognize::Evidence::Pattern,
+            },
+            &format!("LogC4_to_{target}.cube"),
+            None,
+            LookFormat::Cube,
+        )
+        .unwrap()
+    }
+
+    fn with_input(spec: &Spec, input: LookInput) -> Spec {
+        let mut spec = spec.clone();
+        if let SpecKind::Look { group, .. } = &spec.kind {
+            spec.kind = SpecKind::Look {
+                group: group.clone(),
+                input,
+            };
+        }
+        spec
+    }
+
+    #[test]
+    fn a_renamed_copy_of_an_own_lut_is_the_same_entry() {
+        let mut m = Manifest::default();
+        put(&mut m, &user_spec("mine"), &sha(1));
+        let slot = assign(&m, &user_spec("renamed"), &sha(1), &HashSet::new());
+        assert!(
+            matches!(&slot, Slot::Same { id, file, name, display_lut: false }
+                if id.as_str() == "user:mine" && file == "user/mine.cube" && name == "mine"),
+            "{slot:?}"
+        );
+        // Other content under the new name is another LUT, and so is the same content for
+        // another input.
+        assert!(
+            matches!(assign(&m, &user_spec("renamed"), &sha(2), &HashSet::new()), Slot::Add { id, .. } if id.as_str() == "user:renamed")
+        );
+        let other_input = with_input(&user_spec("renamed"), LookInput::LogC3Ei800);
+        assert!(
+            matches!(assign(&m, &other_input, &sha(1), &HashSet::new()), Slot::Add { id, .. } if id.as_str() == "user:renamed")
+        );
+        // The same name and the same bytes is still the entry, with the new answer.
+        assert!(matches!(
+            assign(
+                &m,
+                &with_input(&user_spec("mine"), LookInput::LogC3Ei800),
+                &sha(1),
+                &HashSet::new()
+            ),
+            Slot::Existing { .. }
+        ));
+        // Two copies in one import: the first is added, the second is the first.
+        let mut touched = HashSet::new();
+        touched.insert(LookId::user("mine"));
+        let slot = assign(&m, &user_spec("copy"), &sha(1), &touched);
+        assert!(matches!(slot, Slot::Same { .. }), "{slot:?}");
+    }
+
+    #[test]
+    fn a_loose_file_that_is_one_of_arris_looks_is_that_look() {
+        let mut m = Manifest::default();
+        put(&mut m, &arri_spec(LookInput::LogC4, "Film"), &sha(1));
+        let slot = assign(&m, &user_spec("my film"), &sha(1), &HashSet::new());
+        assert!(
+            matches!(&slot, Slot::Same { id, name, .. } if id.as_str() == "arri:3000:film" && name == "Film"),
+            "{slot:?}"
+        );
+    }
+
+    #[test]
+    fn an_arri_package_claims_an_own_lut_and_there_is_one_entry() {
+        let mut m = Manifest::default();
+        put(&mut m, &user_spec("mine"), &sha(1));
+        put(&mut m, &user_spec("other"), &sha(2));
+        let film = arri_spec(LookInput::LogC4, "Film");
+        let slot = assign(&m, &film, &sha(1), &HashSet::new());
+        let Slot::Claim { id, file, old } = &slot else {
+            panic!("{slot:?}")
+        };
+        assert_eq!(id.as_str(), "arri:3000:film");
+        assert_eq!(file, "arri/3000-film/Film.cube");
+        assert_eq!(
+            (old.id.as_str(), old.file.as_str()),
+            ("user:mine", "user/mine.cube")
+        );
+        apply(
+            &mut m,
+            &EntryData {
+                spec: &film,
+                id: id.clone(),
+                file: file.clone(),
+                sha256: sha(1),
+                lut_size: 65,
+                imported: "later",
+                url: Some("https://example.invalid/"),
+                replaces: Some(&old.id),
+            },
+        );
+        assert_eq!(m.looks.len(), 2);
+        let moved = m.look(&LookId::arri(3000, "film")).unwrap();
+        assert!(matches!(&moved.group, ManifestGroup::Arri { no: 3000, .. }));
+        assert_eq!(moved.name, "Film");
+        assert_eq!(moved.file, "arri/3000-film/Film.cube");
+        assert_eq!(moved.source.as_ref().unwrap().package.as_deref(), Some("p"));
+        assert!(m.look(&LookId::user("mine")).is_none());
+        assert!(m.look(&LookId::user("other")).is_some());
+
+        // Only for the same input: the same bytes read as another encoding are not that look.
+        let mut m = Manifest::default();
+        put(
+            &mut m,
+            &with_input(&user_spec("mine"), LookInput::LogC3Ei800),
+            &sha(1),
+        );
+        assert!(matches!(
+            assign(&m, &film, &sha(1), &HashSet::new()),
+            Slot::Add { .. }
+        ));
+    }
+
+    #[test]
+    fn arri_files_are_not_merged_by_their_bytes_within_an_import() {
+        // Two looks of one package that hold the same LUT are two looks: ARRI's names say so.
+        let mut m = Manifest::default();
+        let alpha = arri_spec(LookInput::LogC4, "Alpha");
+        let beta = arri_spec(LookInput::LogC4, "Beta");
+        put(&mut m, &alpha, &sha(1));
+        let mut touched = HashSet::new();
+        touched.insert(alpha.id.clone());
+        let slot = assign(&m, &beta, &sha(1), &touched);
+        assert!(
+            matches!(&slot, Slot::Add { id, .. } if id.as_str() == "arri:3000:beta"),
+            "{slot:?}"
+        );
+        // A later import of a file under another ARRI name with the same bytes is that look.
+        let slot = assign(&m, &beta, &sha(1), &HashSet::new());
+        assert!(
+            matches!(&slot, Slot::Same { id, .. } if id.as_str() == "arri:3000:alpha"),
+            "{slot:?}"
+        );
+    }
+
+    #[test]
+    fn display_luts_follow_the_same_rules() {
+        let rec709 = display_spec(DisplayInput::LogC4, "rec709");
+        // The package claims the person's copy (the same input), and not another input's.
+        let mut m = Manifest::default();
+        put(&mut m, &user_spec("my display"), &sha(1));
+        put(
+            &mut m,
+            &with_input(&user_spec("my c3"), LookInput::LogC3Ei800),
+            &sha(2),
+        );
+        let slot = assign(&m, &rec709, &sha(1), &HashSet::new());
+        let Slot::Claim { id, file, old } = &slot else {
+            panic!("{slot:?}")
+        };
+        assert_eq!(id.as_str(), "arri-display:logc4:rec709");
+        assert_eq!(old.id.as_str(), "user:my-display");
+        apply(
+            &mut m,
+            &EntryData {
+                spec: &rec709,
+                id: id.clone(),
+                file: file.clone(),
+                sha256: sha(1),
+                lut_size: 0,
+                imported: "later",
+                url: None,
+                replaces: Some(&old.id),
+            },
+        );
+        assert_eq!((m.looks.len(), m.display_luts.len()), (1, 1));
+        assert_eq!(m.display_luts[0].file, "arri-display/LogC4_to_rec709.cube");
+        // Each input finds its own: LogC3 claims the LogC3 copy, and the LogC4 bytes are not
+        // taken for a LogC3 display LUT.
+        let c3 = display_spec(DisplayInput::LogC3, "rec709");
+        assert!(matches!(
+            assign(&m, &c3, &sha(2), &HashSet::new()),
+            Slot::Claim { .. }
+        ));
+        assert!(matches!(
+            assign(&m, &c3, &sha(1), &HashSet::new()),
+            Slot::Add { .. }
+        ));
+
+        // The package's file again, and the same bytes under another name or from the person.
+        let slot = assign(&m, &rec709, &sha(1), &HashSet::new());
+        assert!(matches!(slot, Slot::Existing { .. }), "{slot:?}");
+        let renamed = display_spec(DisplayInput::LogC4, "mine");
+        let slot = assign(&m, &renamed, &sha(1), &HashSet::new());
+        assert!(
+            matches!(&slot, Slot::Same { id, name, display_lut: true, .. } if id.as_str() == "arri-display:logc4:rec709" && name == "rec709"),
+            "{slot:?}"
+        );
+        let slot = assign(&m, &user_spec("copy"), &sha(1), &HashSet::new());
+        assert!(
+            matches!(
+                &slot,
+                Slot::Same {
+                    display_lut: true,
+                    ..
+                }
+            ),
+            "{slot:?}"
+        );
+        // A look that already has Rec.709 baked in is not a display LUT's copy.
+        let baked = with_input(&user_spec("copy"), LookInput::LogC3ToRec709);
+        assert!(matches!(
+            assign(&m, &baked, &sha(1), &HashSet::new()),
+            Slot::Add { .. }
+        ));
+    }
+
+    #[test]
+    fn a_look_file_meets_the_cube_of_its_own_import_first() {
+        let cube = arri_spec(LookInput::LogC4, "Film");
+        let alf = look_file_spec(LookFormat::Alf4, "Film");
+        let mut m = Manifest::default();
+        put(&mut m, &cube, &sha(1));
+        // The `.cube` was settled by this import: the look file is left out, and says so.
+        let mut touched = HashSet::new();
+        touched.insert(cube.id.clone());
+        let slot = assign(&m, &alf, &sha(2), &touched);
+        assert!(
+            matches!(
+                &slot,
+                Slot::Superseded {
+                    same_import: true,
+                    ..
+                }
+            ),
+            "{slot:?}"
+        );
+        // The same look file after an earlier import's `.cube` is the other kind of note.
+        let slot = assign(&m, &alf, &sha(2), &HashSet::new());
+        assert!(
+            matches!(
+                &slot,
+                Slot::Superseded {
+                    same_import: false,
+                    ..
+                }
+            ),
+            "{slot:?}"
+        );
+        // A `.cube` still never replaces an entry that this import settled.
+        let mut m = Manifest::default();
+        put(&mut m, &alf, &sha(2));
+        let mut touched = HashSet::new();
+        touched.insert(alf.id.clone());
+        let slot = assign(&m, &cube, &sha(1), &touched);
+        assert!(matches!(slot, Slot::Add { .. }), "{slot:?}");
+    }
 }

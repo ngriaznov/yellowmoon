@@ -922,3 +922,190 @@ fn the_look_builder_files_import_as_looks_or_are_refused_in_plain_words() {
     );
     assert!(library.verify(&mut no_progress()).unwrap().is_clean());
 }
+
+/// The owner's realistic sequence of imports, on ARRI's real downloads, counting the library after
+/// each step: nothing is ever listed twice, no look gets a collision number, and a step that adds
+/// nothing leaves the list of looks byte for byte as it was (`tests/reimport.rs` has the same
+/// sequence on made-up looks).
+#[test]
+#[ignore = "needs ARRI's real downloads: set YM_ARRI_DOWNLOADS (see the file header)"]
+fn the_owners_sequence_of_imports_on_the_real_downloads_never_duplicates_a_look() {
+    let Some(source) = downloads() else {
+        return;
+    };
+    let zip_of = |links: &Path, file: &str| {
+        let name = LUT_ZIPS
+            .iter()
+            .map(|z| (z.0, z.1))
+            .chain(LOOK_FILE_ZIPS.iter().map(|z| (z.0, z.1)))
+            .find(|z| z.0 == file)
+            .expect("known download")
+            .1;
+        linked(links, &source.join(file), name)
+    };
+    let take = |library: &mut Library, db: &PackageDb, path: &Path, input| {
+        let options = ImportOptions {
+            input,
+            ..ImportOptions::default()
+        };
+        import_path(library, db, path, &options, &mut no_progress())
+            .unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+            .1
+    };
+    let manifest = |library: &Library| fs::read(library.paths().manifest_path()).unwrap();
+    let ids = |library: &Library| {
+        let mut v: Vec<String> = library
+            .looks()
+            .iter()
+            .filter(|l| l.id.prefix() != "builtin")
+            .map(|l| l.id.to_string())
+            .collect();
+        v.sort();
+        v
+    };
+    // After a step: this many looks (87 by ARRI and `user` by the person), every id once, a file
+    // for each, a clean list.
+    let check = |library: &Library, arri: usize, user: usize, label: &str| {
+        let all = ids(library);
+        let mut unique = all.clone();
+        unique.dedup();
+        assert_eq!(all, unique, "{label}: an id twice");
+        let found_arri = all.iter().filter(|i| i.starts_with("arri:")).count();
+        let found_user = all.iter().filter(|i| i.starts_with("user:")).count();
+        assert_eq!((found_arri, found_user), (arri, user), "{label}");
+        let files = fs::read_dir(library.looks_dir().join("arri"))
+            .map(|d| {
+                d.flatten()
+                    .map(|g| fs::read_dir(g.path()).map_or(0, |f| f.flatten().count()))
+                    .sum::<usize>()
+            })
+            .unwrap_or(0);
+        assert_eq!(files, arri, "{label}: a file for each look");
+        assert!(library.problems().is_empty(), "{label}");
+        let mut copy = open_library(library.root());
+        assert!(
+            copy.verify(&mut no_progress()).unwrap().is_clean(),
+            "{label}"
+        );
+        eprintln!("{label}: {arri} ARRI looks, {user} of your own");
+    };
+
+    for (pass, db) in [("by hash", shipped_db()), ("by names", patterns_only())] {
+        eprintln!("--- {pass}");
+        let work = tempfile::tempdir().unwrap();
+        let links = tempfile::tempdir().unwrap();
+        let logc4 = zip_of(links.path(), "logc4.zip");
+        let logc3 = zip_of(links.path(), "logc3.zip");
+        let rec709 = zip_of(links.path(), "logc3-rec709.zip");
+        let alf4 = zip_of(links.path(), "alf4.zip");
+        let alf2 = zip_of(links.path(), "alf2.zip");
+        let mut library = open_library(&work.path().join("app"));
+
+        // 1 and 2: the LogC4 3D LUTs, twice.
+        let r = take(&mut library, &db, &logc4, None);
+        assert_eq!(r.added.len(), 87);
+        check(&library, 87, 0, "1 LogC4 3D LUTs");
+        let logc4_ids = ids(&library);
+        let list = manifest(&library);
+        let r = take(&mut library, &db, &logc4, None);
+        assert!(r.added.is_empty() && r.updated.is_empty(), "{r:?}");
+        check(&library, 87, 0, "2 again");
+        assert_eq!(manifest(&library), list, "2: the list is unchanged");
+
+        // 3: the ALF4 zip.
+        let r = take(&mut library, &db, &alf4, None);
+        assert!(r.added.is_empty() && r.updated.is_empty(), "{r:?}");
+        assert_eq!(r.unchanged.len(), 87);
+        check(&library, 87, 0, "3 ALF4 zip");
+        assert_eq!(ids(&library), logc4_ids);
+        assert_eq!(manifest(&library), list, "3: the list is unchanged");
+
+        // 4: both unzipped folders in one folder, one import. Names alone cannot tell the two
+        // libraries apart inside one folder (no folder holds all the files); the hashes can, and
+        // they are what the app ships.
+        let both = work.path().join("both");
+        let a = unzip_like_finder(
+            &alf4,
+            &both,
+            "arri-look-library-logc4-log-to-log-alf4-data.zip",
+        );
+        let c = unzip_like_finder(
+            &logc4,
+            &both,
+            "ARRI Look Library LogC4 (log-to-log) 3D-LUTs_data.zip",
+        );
+        assert!(a.is_dir() && c.is_dir());
+        if pass == "by hash" {
+            let r = take(&mut library, &db, &both, None);
+            assert!(r.added.is_empty() && r.updated.is_empty(), "{r:?}");
+            assert!(
+                r.notes
+                    .iter()
+                    .any(|n| n.contains("came both as 3D LUTs and as look files")),
+                "{:?}",
+                r.notes
+            );
+            check(&library, 87, 0, "4 both in one import");
+            assert_eq!(manifest(&library), list, "4: the list is unchanged");
+        }
+
+        // 5: the unzipped LogC4 folder.
+        let r = take(&mut library, &db, &c, None);
+        assert!(r.added.is_empty() && r.updated.is_empty(), "{r:?}");
+        check(&library, 87, 0, "5 unzipped folder");
+        assert_eq!(manifest(&library), list, "5: the list is unchanged");
+
+        // 6 and 7: the two LogC3 libraries.
+        let r = take(&mut library, &db, &logc3, None);
+        assert_eq!(r.added.len(), 87, "{r:?}");
+        check(&library, 174, 0, "6 LogC3");
+        let r = take(&mut library, &db, &rec709, None);
+        assert_eq!(r.added.len(), 87, "{r:?}");
+        check(&library, 261, 0, "7 LogC3 to Rec709");
+
+        // 8 and 9: the ALF2 zip (261 looks: three strengths of each), twice.
+        let r = take(&mut library, &db, &alf2, None);
+        assert_eq!(r.added.len(), 261, "{r:?}");
+        check(&library, 522, 0, "8 ALF2");
+        let list = manifest(&library);
+        let r = take(&mut library, &db, &alf2, None);
+        assert!(r.added.is_empty() && r.updated.is_empty(), "{r:?}");
+        check(&library, 522, 0, "9 ALF2 again");
+        assert_eq!(manifest(&library), list, "9: the list is unchanged");
+
+        // 10 and 11: one cube of the person's own, and the same one renamed.
+        let mine = work.path().join("mine");
+        fs::create_dir_all(&mine).unwrap();
+        let own = mine.join("Mine.cube");
+        fs::write(&own, support::cube_text(17, 4242, "mine")).unwrap();
+        let r = take(&mut library, &db, &own, Some(LookInput::LogC4));
+        assert_eq!(r.added.len(), 1, "{r:?}");
+        check(&library, 522, 1, "10 one cube of your own");
+        let list = manifest(&library);
+        let copy = mine.join("Renamed.cube");
+        fs::copy(&own, &copy).unwrap();
+        let r = take(&mut library, &db, &copy, Some(LookInput::LogC4));
+        assert!(r.added.is_empty() && r.updated.is_empty(), "{r:?}");
+        check(&library, 522, 1, "11 the same cube renamed");
+        assert_eq!(manifest(&library), list, "11: the list is unchanged");
+
+        // 12: the ALF4 zip into an empty library, then the 3D LUTs: they take the entries over.
+        let mut fresh = open_library(&work.path().join("app-fresh"));
+        let r = take(&mut fresh, &db, &alf4, None);
+        assert_eq!(r.added.len(), 87, "{r:?}");
+        check(&fresh, 87, 0, "12 ALF4 zip, empty library");
+        let r = take(&mut fresh, &db, &logc4, None);
+        assert!(r.added.is_empty(), "{r:?}");
+        assert_eq!(r.updated.len(), 87, "{r:?}");
+        check(&fresh, 87, 0, "12 then the 3D LUTs");
+        assert_eq!(ids(&fresh), logc4_ids);
+        assert!(
+            fresh
+                .looks()
+                .iter()
+                .filter(|l| l.id.prefix() == "arri")
+                .all(|l| l.lut.as_ref().is_some_and(|u| u.format.is_cube())),
+            "every look is the 3D LUT"
+        );
+    }
+}
