@@ -56,6 +56,24 @@ describe("the native viewport", () => {
     expect(document.documentElement).not.toHaveAttribute("data-native-viewport");
   });
 
+  it("also makes the root, the body and the Photos screen transparent inline, and puts the root's own paper back when it goes", async () => {
+    // index.html paints the root paper inline; a WebKit build kept it (and the screen) paper although the stylesheet's rule was loaded.
+    document.documentElement.setAttribute("style", "background: #ffffff; color-scheme: light");
+    const cell = await setup({ viewport: "native" });
+    await waitFor(() => expect(document.documentElement).toHaveAttribute("data-native-viewport"));
+    const screen = cell.parentElement as HTMLElement;
+    for (const el of [document.documentElement, document.body, screen]) {
+      expect(el.style.getPropertyValue("background-color")).toBe("transparent");
+      expect(el.style.getPropertyPriority("background-color")).toBe("important");
+    }
+    h!.unmount();
+    h = undefined;
+    expect(document.documentElement.style.getPropertyValue("background-color")).toBe("rgb(255, 255, 255)");
+    expect(document.documentElement.style.getPropertyPriority("background-color")).toBe("");
+    expect(document.body.style.getPropertyValue("background-color")).toBe("");
+    document.documentElement.removeAttribute("style");
+  });
+
   it("still carries the look chip and the camera line over the transparent cell", async () => {
     const cell = await setup({ viewport: "native" });
     expect(cell.querySelector(".ym-photo-cell__chip")).toHaveTextContent("Neutral · 100%");

@@ -75,8 +75,20 @@ export const PhotoView = memo(function PhotoView({ store, photo, rs, lookName, b
     if (!native) return;
     const root = document.documentElement;
     root.dataset.nativeViewport = "";
+    // The stylesheet's rule is not enough on its own: a WebKit build on the Mac CI runner (2026-10-16, the 0.1.4 viewport job) kept
+    // the root and the screen paper with the attribute set and the rule loaded, so the photo was hidden again. The same boxes are also
+    // made transparent inline, which no rule can override, and put back as they were when the view goes.
+    const screen = document.querySelector<HTMLElement>('.ym-screen[data-screen="photos"]');
+    const boxes = [root, document.body, document.getElementById("root"), screen].filter((el): el is HTMLElement => el !== null);
+    const before = boxes.map((el) => [el.style.getPropertyValue("background-color"), el.style.getPropertyPriority("background-color")] as const);
+    for (const el of boxes) el.style.setProperty("background-color", "transparent", "important");
     return () => {
       delete root.dataset.nativeViewport;
+      boxes.forEach((el, i) => {
+        const [value, priority] = before[i] ?? ["", ""];
+        if (value) el.style.setProperty("background-color", value, priority);
+        else el.style.removeProperty("background-color");
+      });
     };
   }, [native]);
   const picture = useMemo(() => (photo && drawsFixture ? previewUrl(photo, rs, before) : undefined), [photo, rs, before, drawsFixture]);

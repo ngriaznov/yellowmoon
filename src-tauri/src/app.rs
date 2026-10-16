@@ -366,6 +366,15 @@ const SMOKE_DESCRIBE_PAGE: &str = r##"(() => {
     html: bg(document.documentElement),
     body: bg(document.body),
     stack,
+    // Why a box paints (0.1.4's viewport job: the root's attribute set and the rule loaded, the root still paper): the root's inline
+    // style, whether the rule's selector matches, and whether a loaded sheet carries the rule.
+    root_style: document.documentElement.getAttribute("style"),
+    rule_matches: document.documentElement.matches(":root[data-native-viewport]"),
+    sheets: [...document.styleSheets].map((s) => {
+      let rule = false;
+      try { rule = [...s.cssRules].some((r) => r.cssText.includes("data-native-viewport")); } catch (e) { rule = "unreadable"; }
+      return (s.href || "inline").split("/").pop() + (rule === true ? " (has the rule)" : rule === "unreadable" ? " (unreadable)" : "");
+    }),
   });
 })()"##;
 
