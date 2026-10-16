@@ -9,6 +9,12 @@ moves the entries below from Unreleased into a dated section for that version.
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.1.4] - 2026-10-16
+
+The app feels like a Mac app: a pan moves only the photo, pinch zooms, text stays put, and it keeps up while you work.
+
 ### Fixed
 
 - A two-finger pan over the photo moves only the photo. The whole window no longer moves with it, and nothing else on the screen bounces or scrolls under your fingers: the header, the filmstrip, the dialogs and the ends of the tool panel stay where they are.
