@@ -41,8 +41,8 @@ use crate::library::{
     DisplayInput, LookFormat, LookId, sanitize_file_stem, slugify, truncate_to_bytes,
 };
 use crate::manifest::{Manifest, ManifestDisplayLut, ManifestGroup, ManifestLook, Source};
-use crate::recognize::{Evidence, Outcome};
 use crate::recognize::names::{file_name, file_stem};
+use crate::recognize::{Evidence, Outcome};
 
 /// What kind of entry an incoming file becomes.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -406,9 +406,7 @@ fn same_bytes(
         SpecKind::Display { input, .. } => manifest
             .display_luts
             .iter()
-            .find(|d| {
-                d.sha256 == sha256 && d.input == *input && usable(&d.id) && !spec.by_hash
-            })
+            .find(|d| d.sha256 == sha256 && d.input == *input && usable(&d.id) && !spec.by_hash)
             .map(same_display)
             .or_else(|| {
                 looks()

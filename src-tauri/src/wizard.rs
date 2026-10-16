@@ -475,8 +475,7 @@ mod tests {
         std::fs::write(dir.join(name), bytes).expect("look file");
     }
 
-    const TORN: &str =
-        "Torn.alf4 cannot be used. Its checksum does not match, so the file is damaged. Download it again.";
+    const TORN: &str = "Torn.alf4 cannot be used. Its checksum does not match, so the file is damaged. Download it again.";
 
     #[test]
     fn a_folder_of_look_files_names_the_one_that_cannot_be_used() {

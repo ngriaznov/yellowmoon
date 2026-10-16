@@ -1686,6 +1686,10 @@ fn assert_app_and_command_line_agree(h: &Harness, ym: &Path, files: &[PathBuf]) 
         "the same file names"
     );
     for (name, bytes) in &app {
+        if bytes != &cli[name] {
+            let _ = std::fs::write("/tmp/claude-0/-home-user-yellowmoon/21063226-7ac2-5ae0-bec4-1d31a6166c2b/scratchpad/app_{}".replace("{}", name), bytes);
+            let _ = std::fs::write("/tmp/claude-0/-home-user-yellowmoon/21063226-7ac2-5ae0-bec4-1d31a6166c2b/scratchpad/cli_{}".replace("{}", name), &cli[name]);
+        }
         assert!(bytes == &cli[name], "{name} differs between the app and ym");
     }
 }

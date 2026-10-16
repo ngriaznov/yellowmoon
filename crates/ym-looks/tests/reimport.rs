@@ -651,10 +651,7 @@ fn a_package_claims_an_own_lut_that_is_its_file_and_keeps_one_entry() {
     // The old id is reported with the new one, so what still names it can follow, and said.
     assert_eq!(
         r.renamed,
-        vec![(
-            LookId::user("warm"),
-            LookId::arri(1000, "gray-test-night")
-        )]
+        vec![(LookId::user("warm"), LookId::arri(1000, "gray-test-night"))]
     );
     assert!(
         note_with(&r, "user:warm is now arri:1000:gray-test-night."),
@@ -900,7 +897,12 @@ fn a_look_file_replaced_by_its_cube_and_an_own_lut_claimed_in_one_import_are_cou
         .cloned()
         .collect();
     assert_eq!(without.len(), N - 1);
-    let r = import_source(&mut library, &db, &zip_of(work.path(), &(ALF4_ZIP, without)), None);
+    let r = import_source(
+        &mut library,
+        &db,
+        &zip_of(work.path(), &(ALF4_ZIP, without)),
+        None,
+    );
     assert_eq!(r.added.len(), N - 1, "{r:?}");
     let mine = work.path().join("mine");
     fs::create_dir_all(&mine).unwrap();
@@ -909,7 +911,12 @@ fn a_look_file_replaced_by_its_cube_and_an_own_lut_claimed_in_one_import_are_cou
     import_source(&mut library, &db, &warm, Some(LookInput::LogC4));
 
     // The cubes: N - 1 look files become cubes, and Warm is the last look.
-    let r = import_source(&mut library, &db, &zip_of(work.path(), &logc4_cubes()), None);
+    let r = import_source(
+        &mut library,
+        &db,
+        &zip_of(work.path(), &logc4_cubes()),
+        None,
+    );
     assert_eq!(r.updated.len(), N, "{r:?}");
     assert!(r.added.is_empty(), "{r:?}");
     assert!(
@@ -944,7 +951,12 @@ fn look_files_do_not_keep_a_cube_that_is_gone_or_altered_and_the_cubes_bring_it_
         user: 0,
         display: 0,
     };
-    import_source(&mut library, &db, &zip_of(work.path(), &logc4_cubes()), None);
+    import_source(
+        &mut library,
+        &db,
+        &zip_of(work.path(), &logc4_cubes()),
+        None,
+    );
 
     // Two of the library's cubes are lost: one deleted, one altered.
     let cubes: Vec<String> = tree(&library.looks_dir())
@@ -953,7 +965,11 @@ fn look_files_do_not_keep_a_cube_that_is_gone_or_altered_and_the_cubes_bring_it_
         .collect();
     assert_eq!(cubes.len(), N);
     fs::remove_file(library.looks_dir().join(&cubes[0])).unwrap();
-    fs::write(library.looks_dir().join(&cubes[1]), b"not the file any more").unwrap();
+    fs::write(
+        library.looks_dir().join(&cubes[1]),
+        b"not the file any more",
+    )
+    .unwrap();
     let mut copy = open_library(library.root());
     assert!(!copy.verify(&mut no_progress()).unwrap().is_clean());
 
@@ -996,7 +1012,12 @@ fn look_files_do_not_keep_a_cube_that_is_gone_or_altered_and_the_cubes_bring_it_
     let r = import_source(&mut library, &db, &zip_of(work.path(), &alf4_files()), None);
     assert!(r.added.is_empty() && r.updated.is_empty(), "{r:?}");
     assert_eq!(manifest_bytes(&library), manifest);
-    let r = import_source(&mut library, &db, &zip_of(work.path(), &logc4_cubes()), None);
+    let r = import_source(
+        &mut library,
+        &db,
+        &zip_of(work.path(), &logc4_cubes()),
+        None,
+    );
     assert_eq!(r.updated.len(), 2, "{r:?}");
     assert!(
         note_with(&r, "2 looks were replaced by the 3D-LUT version"),
@@ -1043,7 +1064,12 @@ fn a_loose_file_is_named_and_given_an_id_as_it_is_in_the_whole_package() {
     // 1111 Gray Test shares its title with 1110: in the package, and so on its own, it is
     // "Gray Test 1111", never plain "Gray Test".
     let mut library = open_library(&work.path().join("app"));
-    let one = loose(work.path(), &cubes, "1111 Gray Test.cube", "Whatever I called it.cube");
+    let one = loose(
+        work.path(),
+        &cubes,
+        "1111 Gray Test.cube",
+        "Whatever I called it.cube",
+    );
     let r = import_source(&mut library, &db, &one, None);
     assert_eq!(r.added.len(), 1, "{r:?}");
     assert_eq!(r.added[0].id.to_string(), "arri:1000:gray-test-1111");
@@ -1059,7 +1085,12 @@ fn a_loose_file_is_named_and_given_an_id_as_it_is_in_the_whole_package() {
         vec!["arri:1000:gray-test-1110", "arri:1000:gray-test-1111"]
     );
     // A title that is alone in its package stays as it is.
-    let alone = loose(work.path(), &cubes, "2110 Studio Sample.cube", "Studio.cube");
+    let alone = loose(
+        work.path(),
+        &cubes,
+        "2110 Studio Sample.cube",
+        "Studio.cube",
+    );
     let r = import_source(&mut library, &db, &alone, None);
     assert_eq!(r.added[0].id.to_string(), "arri:2000:studio-sample");
 
@@ -1072,7 +1103,8 @@ fn a_loose_file_is_named_and_given_an_id_as_it_is_in_the_whole_package() {
 }
 
 #[test]
-fn a_loose_cube_after_the_look_files_takes_the_look_over_and_a_loose_look_file_after_the_cubes_does_not() {
+fn a_loose_cube_after_the_look_files_takes_the_look_over_and_a_loose_look_file_after_the_cubes_does_not()
+ {
     let work = tempfile::tempdir().unwrap();
     let (db, cubes, alf4) = known_logc4();
     let c = |arri| Counts {
@@ -1090,12 +1122,21 @@ fn a_loose_cube_after_the_look_files_takes_the_look_over_and_a_loose_look_file_a
     assert!(r.added.is_empty(), "no second look 1111: {r:?}");
     assert_eq!(r.updated.len(), 1, "{r:?}");
     assert_eq!(r.updated[0].id.to_string(), "arri:1000:gray-test-1111");
-    assert!(note_with(&r, "1 look was replaced by the 3D-LUT version"), "{:?}", r.notes);
+    assert!(
+        note_with(&r, "1 look was replaced by the 3D-LUT version"),
+        "{:?}",
+        r.notes
+    );
     check_library(&library, &c(N), "the cube took one look over");
 
     // The cubes, then one loose look file of such a look.
     let mut library = open_library(&work.path().join("app2"));
-    import_source(&mut library, &db, &zip_of(work.path(), &logc4_cubes()), None);
+    import_source(
+        &mut library,
+        &db,
+        &zip_of(work.path(), &logc4_cubes()),
+        None,
+    );
     let look_file = loose(work.path(), &alf4, "LL-1111-Gray-Test.alf4", "Single.alf4");
     let manifest = manifest_bytes(&library);
     let r = import_source(&mut library, &db, &look_file, None);
@@ -1124,7 +1165,12 @@ fn a_file_with_the_bytes_of_an_earlier_arri_look_is_still_the_look_its_own_name_
     let mut library = open_library(&work.path().join("app"));
 
     // The later one of the pair (in the zip's order), alone, first.
-    let dream = loose(work.path(), &entries, "3110-Sample-A.cube", "3110-Sample-A.cube");
+    let dream = loose(
+        work.path(),
+        &entries,
+        "3110-Sample-A.cube",
+        "3110-Sample-A.cube",
+    );
     let r = import_source(&mut library, &db, &dream, None);
     assert_eq!(r.added.len(), 1, "{r:?}");
     assert_eq!(r.added[0].id.to_string(), "arri:3000:sample-a-logc3-rec709");

@@ -255,7 +255,10 @@ mod tests {
             "{text}"
         );
         assert!(!text.contains("has .xml files"), "{text}");
-        assert!(text.contains("It reads .cube, .alf4, .alf4c and .aml files."), "{text}");
+        assert!(
+            text.contains("It reads .cube, .alf4, .alf4c and .aml files."),
+            "{text}"
+        );
     }
 
     #[test]

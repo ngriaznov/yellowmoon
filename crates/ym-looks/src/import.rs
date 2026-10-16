@@ -600,7 +600,10 @@ pub fn import(
     let mut source = Source::open(path)?;
     let mut candidates_named: HashMap<&str, Vec<usize>> = HashMap::new();
     for (i, c) in source.candidates.iter().enumerate() {
-        candidates_named.entry(c.rel_path.as_str()).or_default().push(i);
+        candidates_named
+            .entry(c.rel_path.as_str())
+            .or_default()
+            .push(i);
     }
     let mut seen_named: HashMap<&str, usize> = HashMap::new();
     let mut occurrence: Vec<usize> = Vec::with_capacity(recognition.files.len());
