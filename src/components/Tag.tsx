@@ -114,7 +114,7 @@ export interface AutoToggleProps extends Omit<ButtonHTMLAttributes<HTMLButtonEle
 }
 
 /**
- * The AUTO button in a card header (Exposure, White balance, Noise reduction): glasscn's `Toggle`. On (the accent's tint) while the card
+ * The AUTO button in a card header (Exposure, White balance, Noise reduction): glasscn's `Toggle` as it comes (its own pressed style). On while the card
  * is automatic; once something was changed it is off, and pressing it restores Auto. Pressing it while automatic does nothing.
  */
 export function AutoToggle({ isAuto, onAuto, className, ...rest }: AutoToggleProps) {
@@ -124,7 +124,7 @@ export function AutoToggle({ isAuto, onAuto, className, ...rest }: AutoTogglePro
       size="sm"
       variant="outline"
       pressed={isAuto}
-      className={cx("h-control-xs min-w-0 rounded-button px-2.5 text-xs font-semibold data-[state=on]:bg-primary/16 data-[state=on]:text-primary-ink", className)}
+      className={cx("h-control-xs min-w-0 px-2.5 text-xs font-semibold", className)}
       onPressedChange={() => {
         if (!isAuto) onAuto();
       }}
