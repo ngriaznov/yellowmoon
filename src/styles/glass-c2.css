@@ -488,9 +488,16 @@ html:has(.ym-screen[data-screen="photos"]) #root {
   line-height: 1.3;
 }
 
-/* The filmstrip row: the strip of thumbnails and, in its own cell, the counter. One glass surface, a rim above it and between them. */
+/* The filmstrip row: the strip of thumbnails and, in its own cell, the counter. One glass surface, a rim above it and between them.
+   Round 4: the thumbnails fill the row. The row keeps the height the layout gives it (what is left under the photo, never less than
+   --filmstrip-min-h); each thumbnail is as tall as that row less the tool panel's inset (--pad-panel, 24 px) above and below, so the space
+   from a thumbnail to the edge of its cell is the space from a control to the edge of the tool panel. The row is a size container so
+   the thumbnails can read its height; the scroller keeps the same inset on its left and right. */
 .ym-filmstrip {
   @apply glass rounded-none;
+  --strip-inset: var(--pad-panel);
+  --strip-gap: 8px;
+  container-type: size;
   display: flex;
   align-items: stretch;
   box-sizing: border-box;
@@ -500,28 +507,33 @@ html:has(.ym-screen[data-screen="photos"]) #root {
 .ym-filmstrip__scroll {
   display: flex;
   flex: 1;
-  align-items: center;
-  gap: 8px;
+  align-items: flex-start;
+  gap: var(--strip-gap);
   min-width: 0;
-  padding: 0 24px;
+  padding: var(--strip-inset);
   overflow-x: auto;
 }
+/* Every thumbnail is the same 3:2 box, so a photo keeps its shape inside it (the picture is never stretched). The selected one is told
+   apart by its ring, not by its size: a larger one could not keep the inset above and below it. */
 .ym-filmstrip__thumb {
   position: relative;
   flex-shrink: 0;
   box-sizing: border-box;
-  width: var(--thumb-strip-w);
-  height: var(--thumb-strip-h);
+  height: calc(var(--filmstrip-min-h) - 1px - 2 * var(--strip-inset));
+  aspect-ratio: 3 / 2;
   padding: 0;
   border: 1px solid var(--rim);
-  border-radius: calc(var(--glass-radius-control) * 0.4);
+  border-radius: calc(var(--glass-radius-control) * 0.5);
   overflow: hidden;
   background: var(--code-bg);
   cursor: default;
 }
+@supports (height: 1cqh) {
+  .ym-filmstrip__thumb {
+    height: calc(100cqh - 2 * var(--strip-inset));
+  }
+}
 .ym-filmstrip__thumb[aria-current="true"] {
-  width: var(--thumb-strip-current-w);
-  height: var(--thumb-strip-current-h);
   border: 3px solid var(--tab-look);
 }
 .ym-filmstrip__thumb img {
@@ -549,10 +561,10 @@ html:has(.ym-screen[data-screen="photos"]) #root {
 }
 .ym-filmstrip__picked {
   position: absolute;
-  top: 3px;
-  right: 3px;
-  width: 9px;
-  height: 9px;
+  top: 6px;
+  right: 6px;
+  width: 12px;
+  height: 12px;
   border-radius: 50%;
   background: var(--tab-look);
   box-shadow: 0 0 0 2px #000;
@@ -573,8 +585,9 @@ span.ym-filmstrip__thumb {
   justify-content: center;
   gap: 6px;
   box-sizing: border-box;
-  width: 132px;
-  padding: 0 20px;
+  /* The inset on both sides of the widest everyday count ("99 / 99" is 86 px of text): the cell stays one width from photo 1 to 99. */
+  min-width: 136px;
+  padding: 0 var(--strip-inset);
   border-left: 1px solid var(--rim);
 }
 .ym-filmstrip__count {

@@ -24,7 +24,7 @@ export interface FilmstripPhoto {
 
 export interface FilmstripProps {
   photos: readonly FilmstripPhoto[];
-  /** The photo on screen: drawn 90 × 60 with a 4 px border. Null when none. */
+  /** The photo on screen: the same size as the others, told apart by a 3 px accent ring. Null when none. */
   currentId: number | string | null;
   /** A thumbnail was clicked, or ←/→ moved the selection. */
   onSelect?: (id: number | string) => void;
@@ -63,10 +63,11 @@ export function scrollOffsetToReveal(
 }
 
 /**
- * The filmstrip under the photo: thumbnails 60 × 40 with 2 px borders, the current one 90 × 60
- * with a 4 px border, a yellow corner square on picked photos and a black CAN'T OPEN tag on
- * files that failed, then a counter cell. Click selects, ⌘-click or P toggles the pick, ←/→
- * move the selection (focus follows), the strip scrolls sideways.
+ * The filmstrip under the photo: 3:2 thumbnails as tall as the row less the panel inset above and
+ * below (24 px, the tool panel's own inset), the current one told apart by a 3 px accent ring, a
+ * yellow corner dot on picked photos and a black CAN'T OPEN tag on files that failed, then a
+ * counter cell. Click selects, ⌘-click or P toggles the pick, ←/→ move the selection (focus
+ * follows), the strip scrolls sideways.
  */
 export function Filmstrip({
   photos,
