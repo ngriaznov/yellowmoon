@@ -641,10 +641,27 @@ export const PACKAGE_FACTS: Readonly<Record<PackageId, PackageFact>> = {
 /** The zip file name of each package, for tests and the Playwright flows. */
 export const PACKAGE_ZIPS = Object.fromEntries(Object.entries(PACKAGE_FACTS).map(([id, f]) => [id, f.zip])) as Record<PackageId, string>;
 
+/**
+ * ARRI's two look-file downloads as the mock "downloads" them: the same looks as a 3D-LUT package, as camera look files. They
+ * are recognised as that package (`docs/08` §ARRI Look Files).
+ */
+export const LOOK_FILE_ZIPS = {
+  /** Look Library for LogC4 (ALF4 Look Files): the looks of `look_library_logc4`, 87 `.alf4` files. */
+  alf4Library: "arri-look-library-logc4-log-to-log-alf4-data.zip",
+  /** ARRI Look Library LogC3 (Look Files): the looks of `look_library_logc3_to_rec709`, 261 `.aml` files (three strengths each). */
+  amlLibrary: "ARRI Look Library LogC3 (log-to-Rec709) ALF2_data.zip",
+} as const;
+
 /** Zips the mock knows that are not one of the five packages: the failure cases of the wizard. */
 export const FAILURE_ZIPS = {
-  /** Only `.alf4` files (ARRI's look files for the camera): the 3D-LUT version is the one to download. */
-  alf4Only: "ARRI_LookFiles_ALF4.zip",
+  /** One ARRI Look File that is damaged (its checksum does not match). */
+  damagedLookFile: "Damaged_Look.alf4",
+  /** One loose `.alf4` of the person's own: it says what it expects, so nothing is asked. */
+  ownAlf4: "Warm_Pull.alf4",
+  /** One loose `.alf4c`: its CMT is the look, its display transforms are not used. */
+  ownAlf4c: "Custom_Look.alf4c",
+  /** A folder of three of the person's own `.alf4` files. */
+  ownLookFolder: "My_Looks",
   /** ARRI `.cube` files from a package Yellowmoon doesn't know (another camera). */
   otherCamera: "ARRI_ALEXA35_CameraLUTs.zip",
   /** A zip with no LUTs at all. */
@@ -679,13 +696,63 @@ function defaultSources(): Map<string, SourceFixture> {
       note: null,
     },
   });
-  map.set(FAILURE_ZIPS.alf4Only.toLowerCase(), {
+  // ARRI's look-file downloads are the looks of their 3D-LUT package.
+  map.set(LOOK_FILE_ZIPS.alf4Library.toLowerCase(), {
     source: "zip",
-    size_bytes: 120_000_000,
+    size_bytes: 16_800_000,
+    recognition: {
+      kind: "package",
+      package_id: "look_library_logc4",
+      title: PACKAGE_FACTS.look_library_logc4.title,
+      what: PACKAGE_FACTS.look_library_logc4.what,
+      contents: "87 .alf4 · 33-point",
+      file_count: 87,
+      note: null,
+    },
+  });
+  map.set(LOOK_FILE_ZIPS.amlLibrary.toLowerCase(), {
+    source: "zip",
+    size_bytes: 38_700_000,
+    recognition: {
+      kind: "package",
+      package_id: "look_library_logc3_to_rec709",
+      title: PACKAGE_FACTS.look_library_logc3_to_rec709.title,
+      what: PACKAGE_FACTS.look_library_logc3_to_rec709.what,
+      contents: "261 .aml · 33-point",
+      file_count: 261,
+      note: null,
+    },
+  });
+  const ownNote = "Imported as your own looks, with the input read from each file.";
+  map.set(FAILURE_ZIPS.ownAlf4.toLowerCase(), {
+    source: "file",
+    size_bytes: 217_246,
+    recognition: { kind: "look_files", what: "ARRI Look Files · LogC4", contents: "1 .alf4 · 33-point", file_count: 1, input: "logc4", note: ownNote },
+  });
+  map.set(FAILURE_ZIPS.ownAlf4c.toLowerCase(), {
+    source: "file",
+    size_bytes: 432_100,
+    recognition: {
+      kind: "look_files",
+      what: "ARRI Look Files · LogC4",
+      contents: "1 .alf4c · 33-point",
+      file_count: 1,
+      input: "logc4",
+      note: `${ownNote} Custom_Look.alf4c: its own display transforms are not used; Yellowmoon's display rendering is.`,
+    },
+  });
+  map.set(FAILURE_ZIPS.ownLookFolder.toLowerCase(), {
+    source: "folder",
+    size_bytes: null,
+    recognition: { kind: "look_files", what: "ARRI Look Files · LogC4", contents: "3 .alf4 · 33-point", file_count: 3, input: "logc4", note: ownNote },
+  });
+  map.set(FAILURE_ZIPS.damagedLookFile.toLowerCase(), {
+    source: "file",
+    size_bytes: 217_246,
     recognition: {
       kind: "unusable",
       package_id: null,
-      reason: "These are ARRI look files for the camera (.alf4). Yellowmoon needs the 3D-LUT version: download 'Look Library for LogC4 (3D-LUTs)' from ARRI's look page.",
+      reason: "Damaged_Look.alf4 cannot be used. Its checksum does not match, so the file is damaged. Download it again.",
     },
   });
   map.set(FAILURE_ZIPS.otherCamera.toLowerCase(), {
@@ -705,7 +772,7 @@ function defaultSources(): Map<string, SourceFixture> {
     recognition: {
       kind: "unusable",
       package_id: null,
-      reason: "This zip has no .cube files, so there is nothing to import. Choose a .cube file, or a folder or zip that holds .cube files.",
+      reason: "This zip has no .cube, .alf4, .alf4c or .aml files, so there is nothing to import. Choose a look file or a LUT, or a folder or zip that holds them.",
     },
   });
   map.set(FAILURE_ZIPS.incomplete.toLowerCase(), {
@@ -782,7 +849,7 @@ function packageDisplayLuts(id: PackageId): DisplayLut[] {
 }
 
 /** "Warm_Film.cube" gives "Warm Film". */
-const cubeName = (fileName: string): string => fileName.replace(/\.(cube|zip)$/i, "").replace(/[_-]+/g, " ").trim();
+const cubeName = (fileName: string): string => fileName.replace(/\.(cube|zip|alf4c?|aml)$/i, "").replace(/[_-]+/g, " ").trim();
 
 const MISSING_SOURCE = "That file is not there any more. Download it again, or choose it again.";
 
@@ -1392,7 +1459,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
       return {
         path,
         name,
-        source: /\.zip$/i.test(name) ? "zip" : /\.cube$/i.test(name) ? "file" : "folder",
+        source: /\.zip$/i.test(name) ? "zip" : /\.(cube|alf4c?|aml)$/i.test(name) ? "file" : "folder",
         size_bytes: null,
         recognition: { kind: "missing", reason: MISSING_SOURCE },
       };
@@ -1710,7 +1777,8 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
             id: `user:${slug}${r.file_count > 1 ? `-${i + 1}` : ""}`,
             name: r.file_count > 1 ? `${base} ${i + 1}` : base,
             group: { kind: "user" },
-            input: input ?? "logc4",
+            // A look file says what it expects; a `.cube` is what the person answered.
+            input: (r.kind === "look_files" ? r.input : null) ?? input ?? "logc4",
             is_default: false,
             missing: false,
           }));

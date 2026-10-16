@@ -103,7 +103,10 @@ export const commands = {
 	thumbnails: () => __TAURI_INVOKE<ThumbnailReady[]>("thumbnails"),
 	/**  `choose_folder(start)`: the system's folder chooser. `null` when cancelled. */
 	chooseFolder: (start: string | null) => __TAURI_INVOKE<string | null>("choose_folder", { start }),
-	/**  `choose_look_files()`: the system's file chooser for zips and `.cube` files. `null` when cancelled. */
+	/**
+	 *  `choose_look_files()`: the system's file chooser for zips, `.cube` files and ARRI Look Files
+	 *  (`.alf4`, `.alf4c`, `.aml`). `null` when cancelled.
+	 */
 	chooseLookFiles: () => __TAURI_INVOKE<string[] | null>("choose_look_files"),
 	/**  `open_url(url)`: opens a page of arri.com or github.com in the system browser. */
 	openUrl: (url: string) => __TAURI_INVOKE<null>("open_url", { url }),
@@ -838,7 +841,9 @@ export type OpenKind =
 
 /**
  *  The five free packages ARRI publishes (the ids of `data/looks/arri-packages.json`, with
- *  underscores).
+ *  underscores). The two look libraries that also come as ARRI Look Files (the LogC4 one as
+ *  `.alf4`, the LogC3 to Rec.709 one as `.aml`) are the same package here: a person who downloads
+ *  the look files has what they chose.
  */
 export type PackageId = 
 /**  Look Library, LogC4 log-to-log. */
@@ -981,6 +986,21 @@ what: string;
 contents: string; 
 /**  Files that will be copied. */
 file_count: number; 
+/**  A remark that does not stop the import. */
+note: string | null } | 
+/**
+ *  ARRI Look Files (`.alf4`, `.alf4c`, `.aml`) that are not part of a package: the person's own
+ *  looks. Each file says what it expects, so nothing is asked.
+ */
+{ kind: "look_files"; 
+/**  "ARRI Look Files · LogC4". */
+what: string; 
+/**  "3 .alf4 · 33-point". */
+contents: string; 
+/**  Files that will be copied. */
+file_count: number; 
+/**  What every file expects as input; `None` when they differ. */
+input: LookInput | null; 
 /**  A remark that does not stop the import. */
 note: string | null } | 
 /**  `.cube` files that match no package: the person says what they expect as input. */
@@ -1227,13 +1247,13 @@ export type SharpenValue = {
 	radius_px: number,
 };
 
-/**  What a chosen source is: a zip, an unpacked folder, or a single `.cube` file. */
+/**  What a chosen source is: a zip, an unpacked folder, or a single `.cube` or look file. */
 export type SourceKind = 
 /**  A zip archive. */
 "zip" | 
 /**  A folder. */
 "folder" | 
-/**  One `.cube` file. */
+/**  One `.cube` or look file. */
 "file";
 
 /**  `looks_recognise(path)`: one source and what it is. Nothing is copied. */

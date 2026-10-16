@@ -505,6 +505,40 @@ mod tests {
     }
 
     #[test]
+    fn the_format_of_a_look_file_is_recorded_and_a_cube_has_none() {
+        let mut m = sample();
+        // A list of cubes is what 0.1.1 wrote: no `format` key at all.
+        assert!(!m.to_json().contains("format"));
+        m.looks[0].format = LookFormat::Alf4;
+        m.looks[0].file = "arri/3000-film/Film.alf4".into();
+        m.looks[0].lut_size = 33;
+        let json = m.to_json();
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(value["looks"][0]["format"], "alf4");
+        let back = Manifest::parse(&json, Path::new("m.json")).unwrap();
+        assert_eq!(back, m);
+        for (format, word) in [
+            (LookFormat::Alf4c, "alf4c"),
+            (LookFormat::Aml, "aml"),
+            (LookFormat::Cube, "cube"),
+        ] {
+            let text = serde_json::to_string(&format).unwrap();
+            assert_eq!(text, format!("\"{word}\""));
+        }
+        // A list written before look files were read has no format: every entry is a cube.
+        let old = json.replace("\"format\": \"alf4\",", "");
+        assert!(!old.contains("format"));
+        let back = Manifest::parse(&old, Path::new("m.json")).unwrap();
+        assert_eq!(back.looks[0].format, LookFormat::Cube);
+        // A format this build does not know is a damaged list, not a silent cube.
+        let odd = json.replace("\"alf4\"", "\"alf9\"");
+        assert!(matches!(
+            Manifest::parse(&odd, Path::new("m.json")),
+            Err(ManifestError::Damaged { .. })
+        ));
+    }
+
+    #[test]
     fn round_trips_through_a_folder() {
         let dir = tempfile::tempdir().unwrap();
         assert_eq!(Manifest::load(dir.path()).unwrap(), Manifest::default());

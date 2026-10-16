@@ -62,8 +62,11 @@ fn files_word(files: &[RecognizedFile]) -> String {
     }
 }
 
-/// Every file was rejected.
+/// Every file was rejected. A single file that was chosen by itself gets just its own reason.
 pub(super) fn all_rejected(source: &SourceInfo, files: &[RecognizedFile], example: &str) -> String {
+    if source.kind == SourceKind::File {
+        return example.to_string();
+    }
     let noun = noun(source);
     let what = files_word(files);
     if files.len() == 1 {
@@ -235,6 +238,15 @@ mod tests {
         assert_eq!(
             all_rejected(&zip(), &alf, "a.alf4 cannot be used. Bad."),
             "The one .alf4 file in this zip cannot be used. a.alf4 cannot be used. Bad."
+        );
+        // One file chosen by itself is not "in this file": it just says why it cannot be used.
+        let file = SourceInfo {
+            kind: SourceKind::File,
+            name: "a.alf4".into(),
+        };
+        assert_eq!(
+            all_rejected(&file, &alf, "a.alf4 cannot be used. Bad."),
+            "a.alf4 cannot be used. Bad."
         );
         let cubes = [
             recognized("a.cube", LookFormat::Cube),

@@ -1149,7 +1149,7 @@ fn recognition_never_fails_and_explains_what_is_wrong() {
     assert_eq!(missing.source, SourceKind::Zip);
     assert!(missing.size_bytes.is_none());
 
-    // A zip that only holds ARRI Look Files.
+    // A zip of `.alf4` files that are not look files at all.
     let zip_path = h.photos.path().join("ARRI_LookFiles_ALF4.zip");
     {
         let file = std::fs::File::create(&zip_path).expect("zip");
@@ -1163,7 +1163,8 @@ fn recognition_never_fails_and_explains_what_is_wrong() {
     assert_eq!(seen.source, SourceKind::Zip);
     match seen.recognition {
         Recognition::Unusable { reason, .. } => {
-            assert!(reason.to_lowercase().contains("alf4"), "{reason}");
+            assert!(reason.contains(".alf4"), "{reason}");
+            assert!(reason.contains("It is not an ARRI Look File"), "{reason}");
         }
         other => panic!("expected unusable, got {other:?}"),
     }
@@ -1175,6 +1176,216 @@ fn recognition_never_fails_and_explains_what_is_wrong() {
         h.api.looks_recognise(&junk.to_string_lossy()).recognition,
         Recognition::Unusable { .. }
     ));
+}
+
+/// A look file written by our own writer from an identity LUT (and a CDL when asked).
+fn write_look_file(dir: &Path, name: &str, kind: &str, cdl: bool) -> PathBuf {
+    use ym_color::alf::AlfFile;
+    let lut = ym_color::lut::Lut3d::identity(5).expect("identity cube");
+    let cdl = cdl
+        .then(|| ym_color::cdl::Cdl::new([1.2, 1.0, 0.9], [0.0; 3], [1.0; 3], 1.1).expect("cdl"));
+    let file = match kind {
+        "alf4" => AlfFile::alf4(&lut, cdl.as_ref(), "", "x.cube"),
+        "aml" => AlfFile::aml(&lut, cdl.as_ref(), "x.cube"),
+        "alf4c" => AlfFile::alf4c(Some(&lut), cdl.as_ref(), Some(&lut), Some(&lut), ""),
+        other => panic!("{other}"),
+    };
+    let path = dir.join(name);
+    std::fs::write(&path, file.to_bytes().expect("write")).expect("write the look file");
+    path
+}
+
+#[test]
+fn look_files_are_recognised_and_imported_without_a_question() {
+    let h = Harness::new();
+    let dir = h.photos.path();
+
+    // An .alf4 with a CDL: the person's own look, with the input read from the file.
+    let alf4 = write_look_file(dir, "Warm Pull.alf4", "alf4", true);
+    let path = alf4.to_string_lossy().into_owned();
+    let seen = h.api.looks_recognise(&path);
+    assert_eq!(seen.source, SourceKind::File);
+    match &seen.recognition {
+        Recognition::LookFiles {
+            what,
+            contents,
+            file_count,
+            input,
+            note,
+        } => {
+            assert_eq!(what, "ARRI Look Files · LogC4");
+            assert_eq!(contents, "1 .alf4 · 5-point");
+            assert_eq!((*file_count, *input), (1, Some(LookInput::Logc4)));
+            assert!(
+                note.as_deref()
+                    .is_some_and(|n| n.contains("your own looks"))
+            );
+        }
+        other => panic!("expected look files, got {other:?}"),
+    }
+    let result = h
+        .api
+        .looks_import(&path, None)
+        .expect("import without an answer");
+    assert_eq!(result.added.len(), 1);
+    assert_eq!(result.added[0].group, LookGroup::User);
+    assert_eq!(result.added[0].input, LookInput::Logc4);
+    assert_eq!(result.added[0].name, "Warm Pull");
+    // The same file again changes nothing.
+    let again = h.api.looks_import(&path, None).expect("again");
+    assert!(again.added.is_empty() && again.unchanged == 1);
+
+    // An .aml is a LogC3-to-Rec.709 look.
+    let aml = write_look_file(dir, "Night.aml", "aml", false);
+    let seen = h.api.looks_recognise(&aml.to_string_lossy());
+    assert!(matches!(
+        &seen.recognition,
+        Recognition::LookFiles { what, input: Some(LookInput::Logc3ToRec709), .. }
+            if what == "ARRI Look Files · LogC3 to Rec.709"
+    ));
+    let result = h
+        .api
+        .looks_import(&aml.to_string_lossy(), None)
+        .expect("aml");
+    assert_eq!(result.added[0].input, LookInput::Logc3ToRec709);
+
+    // An .alf4c says its display transforms are not used.
+    let alf4c = write_look_file(dir, "Custom.alf4c", "alf4c", false);
+    let seen = h.api.looks_recognise(&alf4c.to_string_lossy());
+    match &seen.recognition {
+        Recognition::LookFiles { note, contents, .. } => {
+            let note = note.as_deref().expect("a note");
+            assert!(note.contains("display transforms are not used"), "{note}");
+            assert_eq!(contents, "1 .alf4c · 5-point");
+        }
+        other => panic!("expected look files, got {other:?}"),
+    }
+
+    // A folder of both kinds: one row, the input differs, so none is claimed for the row.
+    let folder = dir.join("Mine");
+    std::fs::create_dir_all(&folder).expect("mkdir");
+    write_look_file(&folder, "A.alf4", "alf4", false);
+    write_look_file(&folder, "B.aml", "aml", false);
+    let seen = h.api.looks_recognise(&folder.to_string_lossy());
+    assert_eq!(seen.source, SourceKind::Folder);
+    assert!(matches!(
+        &seen.recognition,
+        Recognition::LookFiles { what, contents, file_count: 2, input: None, .. }
+            if what == "ARRI Look Files" && contents == "1 .alf4 · 1 .aml · 5-point"
+    ));
+
+    // A damaged file is explained, not imported.
+    let mut bytes = std::fs::read(&alf4).expect("read");
+    let at = bytes.len() - 3;
+    bytes[at] ^= 0x20;
+    let damaged = dir.join("Damaged.alf4");
+    std::fs::write(&damaged, bytes).expect("write");
+    match h
+        .api
+        .looks_recognise(&damaged.to_string_lossy())
+        .recognition
+    {
+        Recognition::Unusable { reason, .. } => {
+            assert!(reason.contains("damaged"), "{reason}");
+        }
+        other => panic!("expected unusable, got {other:?}"),
+    }
+}
+
+#[test]
+fn the_look_file_libraries_are_the_packages_they_are_the_looks_of() {
+    assert_eq!(
+        PackageId::from_data_id("look-library-logc4-alf4"),
+        Some(PackageId::LookLibraryLogc4)
+    );
+    assert_eq!(
+        PackageId::from_data_id("look-library-logc3-rec709-alf2"),
+        Some(PackageId::LookLibraryLogc3ToRec709)
+    );
+    // The ids of the 3D-LUT packages are as before, and an unknown id is none.
+    assert_eq!(
+        PackageId::from_data_id("look-library-logc4"),
+        Some(PackageId::LookLibraryLogc4)
+    );
+    assert_eq!(PackageId::from_data_id("look-library-logc5"), None);
+    for id in [
+        PackageId::LookLibraryLogc4,
+        PackageId::DisplayLutsLogc4,
+        PackageId::LookLibraryLogc3,
+        PackageId::LookLibraryLogc3ToRec709,
+        PackageId::DisplayLutsLogc3,
+    ] {
+        assert_eq!(PackageId::from_data_id(id.data_id()), Some(id));
+    }
+}
+
+#[test]
+fn the_alf4_library_reads_as_the_logc4_look_library_with_its_own_numbers() {
+    use std::io::Write as _;
+    // The shipped package list, shrunk to a library of three looks of 5 points (as the tests of
+    // `ym-looks` do), and a zip laid out and named as ARRI's ALF4 download is.
+    let mut db = ym_looks::recognize::PackageDb::load(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("../data/looks/arri-packages.json"),
+    )
+    .expect("arri-packages.json");
+    for package in &mut db.packages {
+        package.fingerprints.clear();
+    }
+    let package = db
+        .packages
+        .iter_mut()
+        .find(|p| p.id == "look-library-logc4-alf4")
+        .expect("the ALF4 package");
+    package.expected.cube_files = Some(3);
+    package.expected.lut_sizes = vec![5];
+    let work = tempfile::tempdir().expect("tempdir");
+    let zip_path = work
+        .path()
+        .join("arri-look-library-logc4-log-to-log-alf4-data.zip");
+    {
+        let lut = ym_color::lut::Lut3d::identity(5).expect("identity cube");
+        let file = std::fs::File::create(&zip_path).expect("zip");
+        let mut zip = zip::ZipWriter::new(file);
+        for (i, (group, code)) in [
+            ("1000 Black-and-White", 1010),
+            ("3000 Film", 3010),
+            ("4000 Tinted", 4010),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            zip.start_file(
+                format!(
+                    "ARRI Look Library LogC4 (log-to-log) ALF4/{group}/LL-{code}-Look-{i}.alf4"
+                ),
+                zip::write::SimpleFileOptions::default(),
+            )
+            .expect("entry");
+            let bytes = ym_color::alf::AlfFile::alf4(&lut, None, "", "x.cube")
+                .to_bytes()
+                .expect("write");
+            zip.write_all(&bytes).expect("bytes");
+        }
+        zip.finish().expect("finish");
+    }
+    let seen = crate::wizard::recognise(&db, &zip_path);
+    match seen.recognition {
+        Recognition::Package {
+            package_id,
+            title,
+            what,
+            contents,
+            file_count,
+            ..
+        } => {
+            assert_eq!(package_id, PackageId::LookLibraryLogc4);
+            assert_eq!(title, "Look Library · LogC4");
+            assert_eq!(what, "Look Library · LogC4 · log to log");
+            assert_eq!(contents, "3 .alf4 · 5-point");
+            assert_eq!(file_count, 3);
+        }
+        other => panic!("expected the package, got {other:?}"),
+    }
 }
 
 #[test]

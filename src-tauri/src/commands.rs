@@ -443,7 +443,8 @@ pub async fn choose_folder(
     .await
 }
 
-/// `choose_look_files()`: the system's file chooser for zips and `.cube` files. `null` when cancelled.
+/// `choose_look_files()`: the system's file chooser for zips, `.cube` files and ARRI Look Files
+/// (`.alf4`, `.alf4c`, `.aml`). `null` when cancelled.
 #[tauri::command]
 #[specta::specta]
 pub async fn choose_look_files(
@@ -461,7 +462,10 @@ pub async fn choose_look_files(
             .dialog()
             .file()
             .set_title("Choose look files")
-            .add_filter("ARRI packages and LUTs", &["zip", "cube"]);
+            .add_filter(
+                "ARRI packages, look files and LUTs",
+                &["zip", "cube", "alf4", "alf4c", "aml"],
+            );
         if let Some(dir) = start {
             dialog = dialog.set_directory(dir);
         }

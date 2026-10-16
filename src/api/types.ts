@@ -352,7 +352,8 @@ export interface LooksImportResult {
 
 /**
  * The five free packages ARRI publishes (`docs/08` §What users can import). The ids are the ones
- * of `data/looks/arri-packages.json`.
+ * of `data/looks/arri-packages.json`, except that the two look libraries that also come as ARRI Look Files
+ * (the LogC4 one as `.alf4`, the LogC3 to Rec.709 one as `.aml`) are the same package here.
  */
 export type PackageId =
   | "look_library_logc4"
@@ -361,19 +362,23 @@ export type PackageId =
   | "look_library_logc3_to_rec709"
   | "display_luts_logc3";
 
-/** What a chosen source is: a zip, an unpacked folder, or a single `.cube` file. */
+/** What a chosen source is: a zip, an unpacked folder, or a single `.cube` or look file. */
 export type SourceKind = "zip" | "folder" | "file";
 
 /**
  * What the recogniser made of one source (`looks_recognise`):
  *  - `package`: one of the five packages (an exact hash match, or by names and headers). `contents`
- *    reads "87 .cube · 65-point"; `note` carries a remark that does not stop the import (more files than
- *    expected).
+ *    reads "87 .cube · 65-point", or "87 .alf4 · 33-point" for the same looks as ARRI Look Files (the
+ *    LogC4 library as `.alf4`, the LogC3 to Rec.709 one as `.aml`); `note` carries a remark that does not
+ *    stop the import (more files than expected).
+ *  - `look_files`: ARRI Look Files (`.alf4`, `.alf4c`, `.aml`) that are not part of a package: the person's
+ *    own looks. Each file says what it expects, so nothing is asked. `input` is what they all expect, or
+ *    null when they differ; `note` says how they are imported (and that an `.alf4c`'s display transforms are
+ *    not used).
  *  - `needs_answer`: `.cube` files that match no package. The person says what they expect as input
  *    (`looks_import` takes it as `input`); `note` says why, and `suggestion` is what the names suggest.
- *  - `unusable`: nothing can be imported. `reason` is the plain explanation, for example "These are ARRI look
- *    files for the camera (.alf4). Yellowmoon needs the 3D-LUT version: download 'Look Library for LogC4
- *    (3D-LUTs)' from ARRI's look page." When the
+ *  - `unusable`: nothing can be imported. `reason` is the plain explanation, for example "Its checksum does
+ *    not match, so the file is damaged. Download it again." When the
  *    package is known but damaged (`package_id` set), the reason says what to download again.
  *  - `missing`: the file is not there (moved or deleted since it arrived).
  */
@@ -389,6 +394,18 @@ export type Recognition =
       contents: string;
       /** Files that will be copied. */
       file_count: number;
+      note: string | null;
+    }
+  | {
+      kind: "look_files";
+      /** "ARRI Look Files · LogC4". */
+      what: string;
+      /** "3 .alf4 · 33-point". */
+      contents: string;
+      /** Files that will be copied. */
+      file_count: number;
+      /** What every file expects as input; null when they differ. */
+      input: LookInput | null;
       note: string | null;
     }
   | {

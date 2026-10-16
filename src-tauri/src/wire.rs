@@ -1011,7 +1011,9 @@ pub struct LooksImportResult {
 }
 
 /// The five free packages ARRI publishes (the ids of `data/looks/arri-packages.json`, with
-/// underscores).
+/// underscores). The two look libraries that also come as ARRI Look Files (the LogC4 one as
+/// `.alf4`, the LogC3 to Rec.709 one as `.aml`) are the same package here: a person who downloads
+/// the look files has what they chose.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "snake_case")]
 pub enum PackageId {
@@ -1040,9 +1042,16 @@ impl PackageId {
         }
     }
 
-    /// The package for an id of `arri-packages.json`.
+    /// The package for an id of `arri-packages.json`. The ids of the look-file libraries
+    /// (`look-library-logc4-alf4`, `look-library-logc3-rec709-alf2`) give the package whose looks
+    /// they are.
     #[must_use]
     pub fn from_data_id(id: &str) -> Option<Self> {
+        let id = match id {
+            "look-library-logc4-alf4" => "look-library-logc4",
+            "look-library-logc3-rec709-alf2" => "look-library-logc3-rec709",
+            other => other,
+        };
         [
             Self::LookLibraryLogc4,
             Self::DisplayLutsLogc4,
@@ -1055,7 +1064,7 @@ impl PackageId {
     }
 }
 
-/// What a chosen source is: a zip, an unpacked folder, or a single `.cube` file.
+/// What a chosen source is: a zip, an unpacked folder, or a single `.cube` or look file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "snake_case")]
 pub enum SourceKind {
@@ -1063,7 +1072,7 @@ pub enum SourceKind {
     Zip,
     /// A folder.
     Folder,
-    /// One `.cube` file.
+    /// One `.cube` or look file.
     File,
 }
 
@@ -1083,6 +1092,20 @@ pub enum Recognition {
         contents: String,
         /// Files that will be copied.
         file_count: u32,
+        /// A remark that does not stop the import.
+        note: Option<String>,
+    },
+    /// ARRI Look Files (`.alf4`, `.alf4c`, `.aml`) that are not part of a package: the person's own
+    /// looks. Each file says what it expects, so nothing is asked.
+    LookFiles {
+        /// "ARRI Look Files · LogC4".
+        what: String,
+        /// "3 .alf4 · 33-point".
+        contents: String,
+        /// Files that will be copied.
+        file_count: u32,
+        /// What every file expects as input; `None` when they differ.
+        input: Option<LookInput>,
         /// A remark that does not stop the import.
         note: Option<String>,
     },

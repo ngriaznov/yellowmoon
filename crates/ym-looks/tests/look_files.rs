@@ -782,7 +782,9 @@ fn look_files_that_cannot_be_used_are_refused_in_plain_words() {
         let issue = &r.issues[0];
         assert_eq!(issue.kind, IssueKind::AllRejected, "{name}");
         assert!(
-            issue.message.starts_with("The one"),
+            issue
+                .message
+                .starts_with(&format!("{name} cannot be used. ")),
             "{name}: {}",
             issue.message
         );

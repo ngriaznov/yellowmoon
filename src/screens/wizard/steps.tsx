@@ -8,6 +8,7 @@ import { useLookThumbnail } from "../../state/useLookThumbnail";
 import { looksInDisplayOrder } from "../tools/LookTab";
 import {
   anyChecking,
+  copiesLookFiles,
   formatSize,
   joinList,
   offersDisplayChoice,
@@ -179,6 +180,16 @@ export function rowView(v: Verdict): RowView {
         // An answered set stands in for the chosen package that has the same input, so that package is not missing.
         note: v.standsFor ? `Counts as ${v.standsFor}. Imported as your own LUTs, with the input you picked.` : null,
       };
+    case "look-files":
+      return {
+        what: v.what,
+        contents: v.contents,
+        tag: "match",
+        tagLabel: "Ready",
+        explanation: null,
+        // A folder or zip of the person's own look files stands in for the chosen package that has the same input.
+        note: [v.standsFor ? `Counts as ${v.standsFor}.` : null, v.note].filter(Boolean).join(" ") || null,
+      };
     case "unusable":
       return { what: "Can't be imported", contents: "", tag: "failed", tagLabel: "Can't use", explanation: v.explanation, note: null };
     case "missing":
@@ -280,7 +291,7 @@ export function ImportStep({ wizard }: { wizard: Wizard }) {
       <div className="ym-wizard__facts">
         <div>
           <b>Copied</b>
-          <span>Only the .cube files, into the app&apos;s looks folder</span>
+          <span>{copiesLookFiles(state) ? "Only the look files" : "Only the .cube files"}, into the app&apos;s looks folder</span>
         </div>
         <div>
           <b>Grouped</b>

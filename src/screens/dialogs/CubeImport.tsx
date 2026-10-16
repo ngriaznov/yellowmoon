@@ -5,14 +5,17 @@ import { InputQuestion } from "../wizard/InputQuestion";
 import { Dialog } from "./Dialog";
 
 /**
- * Looks › Import .cube… (`docs/08-looks.md` §Any other .cube): the files that were chosen, what each is, and for LUTs that
- * match no ARRI package the one question: what does it expect as input? A recognised ARRI package is imported without asking.
+ * Looks › Import .cube… (`docs/08-looks.md` §Any other .cube, §ARRI Look Files): the files that were chosen, what each is, and for
+ * LUTs that match no ARRI package the one question: what does it expect as input? A recognised ARRI package, and ARRI Look Files
+ * (`.alf4`, `.alf4c`, `.aml`, which say what they expect), are imported without asking.
  */
 export function CubeImport() {
   const store = useStore();
   const dialog = useAppState((s) => s.cubeImport);
   if (!dialog) return null;
-  const importable = dialog.items.filter((i) => i.found.recognition.kind === "package" || (i.found.recognition.kind === "needs_answer" && i.answer));
+  const importable = dialog.items.filter(
+    (i) => i.found.recognition.kind === "package" || i.found.recognition.kind === "look_files" || (i.found.recognition.kind === "needs_answer" && i.answer),
+  );
   const unanswered = dialog.items.some((i) => i.found.recognition.kind === "needs_answer" && !i.answer);
   const locked = importable.length === 0 || unanswered;
   return (
@@ -50,9 +53,22 @@ export function CubeImport() {
                   {item.found.name}
                   {size ? ` · ${size}` : ""}
                 </span>
-                {r.kind === "package" ? <Tag variant="match">Match</Tag> : r.kind === "needs_answer" ? <Tag variant={item.answer ? "match" : "active"}>{item.answer ? "Ready" : "Question"}</Tag> : <Tag variant="failed">Can&apos;t use</Tag>}
+                {r.kind === "package" ? (
+                  <Tag variant="match">Match</Tag>
+                ) : r.kind === "look_files" ? (
+                  <Tag variant="match">Ready</Tag>
+                ) : r.kind === "needs_answer" ? (
+                  <Tag variant={item.answer ? "match" : "active"}>{item.answer ? "Ready" : "Question"}</Tag>
+                ) : (
+                  <Tag variant="failed">Can&apos;t use</Tag>
+                )}
               </span>
               {r.kind === "package" ? <span>{r.what} · {r.contents}. It is imported as it comes.</span> : null}
+              {r.kind === "look_files" ? (
+                <span>
+                  {r.what} · {r.contents}. {r.note}
+                </span>
+              ) : null}
               {r.kind === "needs_answer" ? (
                 <>
                   <span>{r.note}</span>

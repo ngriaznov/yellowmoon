@@ -9,8 +9,10 @@ use std::io;
 use std::path::Path;
 
 use ym_looks::import::inspect;
+use ym_looks::library::LookFormat;
 use ym_looks::recognize::{
-    Outcome, PackageDb, PackageFinding, PackageStatus, Recognition as Found, Severity, Verdict,
+    IssueKind, Outcome, PackageDb, PackageFinding, PackageStatus, Recognition as Found, Severity,
+    Verdict,
 };
 
 use crate::events::{AppEvent, Emitter};
@@ -110,12 +112,77 @@ fn what_of(db: &PackageDb, finding: &PackageFinding) -> String {
     }
 }
 
-/// "87 .cube · 65-point".
-fn contents_of(finding: &PackageFinding) -> String {
+/// "87 .cube · 65-point", or "87 .alf4 · 33-point" for the look-file version of a library.
+fn contents_of(db: &PackageDb, finding: &PackageFinding) -> String {
+    let noun = db
+        .package(&finding.id)
+        .map_or(LookFormat::Cube, |p| p.format)
+        .noun();
     match finding.lut_sizes.as_slice() {
-        [size] => format!("{} .cube · {size}-point", finding.found),
-        _ => format!("{} .cube", finding.found),
+        [size] => format!("{} {noun} · {size}-point", finding.found),
+        _ => format!("{} {noun}", finding.found),
     }
+}
+
+/// The row for look files of the person's own: "ARRI Look Files · LogC4", "3 .alf4 · 33-point".
+/// `None` when the source holds no such file.
+fn look_files_of(found: &Found) -> Option<Recognition> {
+    let own: Vec<_> = found
+        .files
+        .iter()
+        .filter(|f| matches!(f.outcome, Outcome::OwnLookFile { .. }))
+        .collect();
+    if own.is_empty() {
+        return None;
+    }
+    let mut inputs: Vec<ym_color::look::LookInput> = Vec::new();
+    for f in &own {
+        if let Outcome::OwnLookFile { input, .. } = &f.outcome
+            && !inputs.contains(input)
+        {
+            inputs.push(*input);
+        }
+    }
+    let input = match inputs.as_slice() {
+        [one] => Some(*one),
+        _ => None,
+    };
+    let what = match input {
+        Some(ym_color::look::LookInput::LogC4) => "ARRI Look Files · LogC4",
+        Some(ym_color::look::LookInput::LogC3ToRec709) => "ARRI Look Files · LogC3 to Rec.709",
+        _ => "ARRI Look Files",
+    }
+    .to_owned();
+    let counts: Vec<String> = [LookFormat::Alf4, LookFormat::Alf4c, LookFormat::Aml]
+        .into_iter()
+        .filter_map(|format| {
+            let n = own.iter().filter(|f| f.format == format).count();
+            (n > 0).then(|| format!("{n} {}", format.noun()))
+        })
+        .collect();
+    let mut contents = counts.join(" · ");
+    let mut sizes: Vec<usize> = own.iter().filter_map(|f| f.lut_size).collect();
+    sizes.sort_unstable();
+    sizes.dedup();
+    if let [size] = sizes.as_slice() {
+        contents.push_str(&format!(" · {size}-point"));
+    }
+    let mut notes =
+        vec!["Imported as your own looks, with the input read from each file.".to_owned()];
+    notes.extend(
+        found
+            .issues
+            .iter()
+            .filter(|i| i.kind == IssueKind::DisplayTransformsIgnored)
+            .map(|i| i.message.clone()),
+    );
+    Some(Recognition::LookFiles {
+        what,
+        contents,
+        file_count: u32::try_from(own.len()).unwrap_or(u32::MAX),
+        input: input.map(look_input),
+        note: Some(notes.join(" ")),
+    })
 }
 
 fn map(db: &PackageDb, found: &Found) -> Recognition {
@@ -191,6 +258,10 @@ fn map(db: &PackageDb, found: &Found) -> Recognition {
         }
         Verdict::Ready => {
             let Some(finding) = found.packages.first() else {
+                // No package: the person's own look files, if that is what the source holds.
+                if let Some(files) = look_files_of(found) {
+                    return files;
+                }
                 return Recognition::Unusable {
                     reason: first_problem().unwrap_or_else(|| {
                         "There is nothing in this that Yellowmoon can import.".to_owned()
@@ -222,11 +293,22 @@ fn map(db: &PackageDb, found: &Found) -> Recognition {
                     if found.packages.len() == 2 { "" } else { "s" }
                 ));
             }
+            let own = found.files.iter().filter(|f| f.is_own_look_file()).count();
+            if own > 0 {
+                notes.push(format!(
+                    "It also holds {} of your own, imported as your own looks.",
+                    if own == 1 {
+                        "1 look file".to_owned()
+                    } else {
+                        format!("{own} look files")
+                    }
+                ));
+            }
             Recognition::Package {
                 package_id,
                 title: finding.title.clone(),
                 what: what_of(db, finding),
-                contents: contents_of(finding),
+                contents: contents_of(db, finding),
                 file_count: u32::try_from(finding.found).unwrap_or(u32::MAX),
                 note: (!notes.is_empty()).then(|| notes.join(" ")),
             }

@@ -557,6 +557,160 @@ mod tests {
         assert_eq!(m.looks.len(), 3);
     }
 
+    fn look_file_spec(format: LookFormat, name: &str) -> Spec {
+        let mut spec = arri_spec(LookInput::LogC4, name);
+        spec.format = format;
+        spec.stem = format!("LL-3010-{name}");
+        spec
+    }
+
+    #[test]
+    fn own_look_files_are_users_looks_with_the_input_of_the_file() {
+        for (format, input) in [
+            (LookFormat::Alf4, LookInput::LogC4),
+            (LookFormat::Alf4c, LookInput::LogC4),
+            (LookFormat::Aml, LookInput::LogC3ToRec709),
+        ] {
+            let spec = Spec::from_outcome(
+                &Outcome::OwnLookFile {
+                    input,
+                    display_transforms_ignored: false,
+                },
+                &format!("Mine/Warm Pull.{}", format.extension()),
+                None,
+                format,
+            )
+            .unwrap();
+            assert_eq!(spec.id.as_str(), "user:warm-pull");
+            assert_eq!(spec.name, "Warm Pull");
+            assert_eq!(spec.folder, "user");
+            assert_eq!(spec.format, format);
+            assert!(!spec.arri);
+            assert!(
+                matches!(&spec.kind, SpecKind::Look { group: ManifestGroup::User, input: i } if *i == input)
+            );
+            // The file keeps its kind's extension and is never overwritten by another.
+            let mut m = Manifest::default();
+            let first = put(&mut m, &spec, &sha(1));
+            assert!(
+                matches!(&first, Slot::Add { file, .. } if *file == format!("user/Warm Pull.{}", format.extension()))
+            );
+            let second = put(&mut m, &spec, &sha(2));
+            assert!(matches!(&second, Slot::Add { id, .. } if id.as_str() == "user:warm-pull-2"));
+        }
+    }
+
+    #[test]
+    fn a_cube_beats_the_look_file_of_the_same_look_whichever_came_first() {
+        let cube = arri_spec(LookInput::LogC4, "Film");
+        let alf = look_file_spec(LookFormat::Alf4, "Film");
+
+        // The `.cube` is there: the look file is left out.
+        let mut m = Manifest::default();
+        put(&mut m, &cube, &sha(1));
+        let slot = assign(&m, &alf, &sha(2), &HashSet::new());
+        assert!(
+            matches!(&slot, Slot::Superseded { id, file } if id.as_str() == "arri:3000:film" && file == "arri/3000-film/Film.cube"),
+            "{slot:?}"
+        );
+
+        // The look file is there: the `.cube` takes its place and names the file that goes.
+        let mut m = Manifest::default();
+        put(&mut m, &alf, &sha(2));
+        assert_eq!(m.looks[0].file, "arri/3000-film/LL-3010-Film.alf4");
+        let slot = assign(&m, &cube, &sha(1), &HashSet::new());
+        assert!(
+            matches!(&slot, Slot::Upgrade { id, file, old_file }
+                if id.as_str() == "arri:3000:film"
+                    && file == "arri/3000-film/Film.cube"
+                    && old_file == "arri/3000-film/LL-3010-Film.alf4"),
+            "{slot:?}"
+        );
+        // Applying it moves the entry: one look, now a cube.
+        let Slot::Upgrade { id, file, .. } = slot else {
+            unreachable!()
+        };
+        apply(
+            &mut m,
+            &EntryData {
+                spec: &cube,
+                id,
+                file,
+                sha256: sha(1),
+                lut_size: 65,
+                imported: "later",
+                url: None,
+            },
+        );
+        assert_eq!(m.looks.len(), 1);
+        assert_eq!(m.looks[0].format, LookFormat::Cube);
+        assert_eq!(m.looks[0].file, "arri/3000-film/Film.cube");
+        assert_eq!(m.looks[0].lut_size, 65);
+
+        // The same look file again is the same entry; a look file never replaces a look file of
+        // another kind (a `.cube` is the only one that outranks).
+        let mut m = Manifest::default();
+        put(&mut m, &alf, &sha(2));
+        assert!(matches!(put(&mut m, &alf, &sha(2)), Slot::Existing { .. }));
+        let aml = look_file_spec(LookFormat::Aml, "Film");
+        let slot = assign(&m, &aml, &sha(3), &HashSet::new());
+        assert!(
+            matches!(&slot, Slot::Add { id, .. } if id.as_str() == "arri:3000:film-2"),
+            "{slot:?}"
+        );
+
+        // Within one import the first of two files with the same id keeps it.
+        let mut m = Manifest::default();
+        put(&mut m, &alf, &sha(2));
+        let mut touched = HashSet::new();
+        touched.insert(alf.id.clone());
+        let slot = assign(&m, &cube, &sha(1), &touched);
+        assert!(
+            matches!(&slot, Slot::Add { id, .. } if id.as_str() == "arri:3000:film-2"),
+            "{slot:?}"
+        );
+
+        // A user's look of the same name is nobody's "same look": it gets a number.
+        let mut m = Manifest::default();
+        put(&mut m, &cube, &sha(1));
+        let own = Spec::from_outcome(
+            &Outcome::OwnLookFile {
+                input: LookInput::LogC4,
+                display_transforms_ignored: false,
+            },
+            "Film.alf4",
+            None,
+            LookFormat::Alf4,
+        )
+        .unwrap();
+        assert!(
+            matches!(assign(&m, &own, &sha(9), &HashSet::new()), Slot::Add { id, .. } if id.as_str() == "user:film")
+        );
+    }
+
+    #[test]
+    fn a_taken_path_stops_a_cube_taking_the_place_of_a_look_file() {
+        // Another entry already sits where the `.cube` would go: the look file stays, the `.cube`
+        // gets a number rather than overwriting that file.
+        let cube = arri_spec(LookInput::LogC4, "Film");
+        let alf = look_file_spec(LookFormat::Alf4, "Film");
+        let mut m = Manifest::default();
+        put(&mut m, &alf, &sha(2));
+        let blocker = Spec {
+            id: LookId::user("film"),
+            stem: "Film".to_string(),
+            folder: "arri/3000-film".to_string(),
+            ..user_spec("film")
+        };
+        put(&mut m, &blocker, &sha(7));
+        assert_eq!(m.looks.len(), 2);
+        let slot = assign(&m, &cube, &sha(1), &HashSet::new());
+        assert!(
+            matches!(slot, Slot::Add { ref id, .. } if id.as_str() == "arri:3000:film-2"),
+            "{slot:?}"
+        );
+    }
+
     #[test]
     fn the_three_look_library_packages_do_not_collide() {
         let mut m = Manifest::default();

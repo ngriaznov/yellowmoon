@@ -31,6 +31,8 @@ export interface PackageDef {
   input: LookInput | null;
   /** The title of the download on ARRI's page, for the words that say what to download (`data/looks/arri-packages.json`, `arri_title`). */
   arriTitle: string;
+  /** The title of the same looks as ARRI Look Files, when ARRI has them that way (the two look libraries that run in LogC4 and LogC3 to Rec.709). */
+  lookFilesTitle?: string;
 }
 
 /** ARRI's five free packages, in the order of the Choose step (`docs/08` §What users can import). */
@@ -47,6 +49,7 @@ export const PACKAGES: readonly PackageDef[] = [
     fileCount: 87,
     input: "logc4",
     arriTitle: "Look Library for LogC4 (3D-LUTs)",
+    lookFilesTitle: "Look Library for LogC4 (ALF4 Look Files)",
   },
   {
     id: "display_luts_logc4",
@@ -86,6 +89,7 @@ export const PACKAGES: readonly PackageDef[] = [
     fileCount: 87,
     input: "logc3_to_rec709",
     arriTitle: "ARRI Look Library LogC3 (to Rec709) 3D-LUTs",
+    lookFilesTitle: "ARRI Look Library LogC3 (Look Files)",
   },
   {
     id: "display_luts_logc3",
@@ -312,21 +316,32 @@ export type Verdict =
   | { kind: "other-package"; packageId: PackageId; title: string; what: string; contents: string; explanation: string }
   /** `.cube` files that need the generic question; `input` is the answer so far. */
   | { kind: "question"; fileCount: number; lutSize: number | null; note: string; input: LookInput | null; standsFor: string | null }
+  /** ARRI Look Files of the person's own: each says what it expects, so nothing is asked. */
+  | { kind: "look-files"; what: string; contents: string; fileCount: number; input: LookInput | null; note: string | null; standsFor: string | null }
   | { kind: "unusable"; explanation: string }
   | { kind: "missing"; explanation: string };
 
-/** The chosen packages as ARRI's page names them: "Look Library for LogC4 (3D-LUTs)". For the words that say what to download. */
-export const downloadList = (packages: readonly PackageDef[]): string => joinList(packages.map((p) => `'${p.arriTitle}'`));
+/**
+ * The chosen packages as ARRI's page names them: "Look Library for LogC4 (3D-LUTs)". For the words that say what to download. A
+ * look library that ARRI also publishes as look files names both: "'Look Library for LogC4 (3D-LUTs)' (or 'Look Library for LogC4
+ * (ALF4 Look Files)')".
+ */
+export const downloadList = (packages: readonly PackageDef[]): string =>
+  joinList(packages.map((p) => (p.lookFilesTitle ? `'${p.arriTitle}' (or '${p.lookFilesTitle}')` : `'${p.arriTitle}'`)));
 
 /**
- * The chosen package an answered set of unknown `.cube` files stands in for: a zip or folder (not one loose file) whose input
- * has been answered, and a chosen looks package with the same input. The person said what the set is, so the package counts as
- * present; the files are imported as their own LUTs with that input (`docs/08` §Any other .cube). Null when there is none.
+ * The chosen package a set of the person's own files stands in for: a zip or folder (not one loose file) of unknown `.cube` files
+ * whose input has been answered, or of ARRI Look Files that all expect the same input, and a chosen looks package with that input.
+ * The person said what the set is, or the files did, so the package counts as present; the files are imported as their own looks
+ * with that input (`docs/08` §Any other .cube, §ARRI Look Files). Null when there is none.
  */
 export function standsInFor(state: WizardState, source: Received): PackageDef | null {
   const found = source.found;
-  if (!found || found.recognition.kind !== "needs_answer" || found.source === "file" || !source.answer) return null;
-  return chosenPackages(state).find((p) => p.role === "looks" && p.input === source.answer) ?? null;
+  if (!found || found.source === "file") return null;
+  const r = found.recognition;
+  const input = r.kind === "needs_answer" ? source.answer : r.kind === "look_files" ? r.input : null;
+  if (!input) return null;
+  return chosenPackages(state).find((p) => p.role === "looks" && p.input === input) ?? null;
 }
 
 /** What the recogniser found, set against what was chosen. */
@@ -348,6 +363,8 @@ export function verdictFor(state: WizardState, source: Received): Verdict {
     }
     case "needs_answer":
       return { kind: "question", fileCount: r.file_count, lutSize: r.lut_size, note: r.note, input: source.answer, standsFor: standsInFor(state, source)?.name ?? null };
+    case "look_files":
+      return { kind: "look-files", what: r.what, contents: r.contents, fileCount: r.file_count, input: r.input, note: r.note, standsFor: standsInFor(state, source)?.name ?? null };
     case "unusable":
       return { kind: "unusable", explanation: r.reason };
     case "missing":
@@ -363,7 +380,7 @@ export function matchedPackages(state: WizardState): PackageId[] {
   const ids: PackageId[] = [];
   for (const source of state.sources) {
     const v = verdictFor(state, source);
-    const id = v.kind === "match" ? v.packageId : v.kind === "question" ? (standsInFor(state, source)?.id ?? null) : null;
+    const id = v.kind === "match" ? v.packageId : v.kind === "question" || v.kind === "look-files" ? (standsInFor(state, source)?.id ?? null) : null;
     if (id && !ids.includes(id)) ids.push(id);
   }
   return ids;
@@ -379,8 +396,8 @@ export const unmatchedPackages = (state: WizardState): PackageDef[] => {
 export const anyChecking = (state: WizardState): boolean => state.checking || state.sources.some((s) => s.found === null);
 
 /**
- * The sources that will be imported, in order: packages that were chosen, and `.cube` files whose input has been
- * answered. Everything else is left out and the Recognise step says why.
+ * The sources that will be imported, in order: packages that were chosen, `.cube` files whose input has been
+ * answered, and the person's own look files. Everything else is left out and the Recognise step says why.
  */
 export interface PlanItem {
   path: string;
@@ -388,7 +405,7 @@ export interface PlanItem {
   input?: LookInput;
   /** Files that will be copied. */
   files: number;
-  kind: "package" | "cube";
+  kind: "package" | "cube" | "look-files";
   packageId?: PackageId;
 }
 
@@ -401,9 +418,22 @@ export function importPlan(state: WizardState): PlanItem[] {
       plan.push({ path: source.path, files: r?.kind === "package" ? r.file_count : packageDef(v.packageId).fileCount, kind: "package", packageId: v.packageId });
     } else if (v.kind === "question" && v.input) {
       plan.push({ path: source.path, input: v.input, files: v.fileCount, kind: "cube" });
+    } else if (v.kind === "look-files") {
+      // The files say what they are for: nothing to answer.
+      plan.push({ path: source.path, files: v.fileCount, kind: "look-files" });
     }
   }
   return plan;
+}
+
+/** Whether the import copies ARRI Look Files (`.alf4`, `.alf4c`, `.aml`) as well as, or instead of, `.cube` files. */
+export function copiesLookFiles(state: WizardState): boolean {
+  const planned = new Set(importPlan(state).map((p) => p.path));
+  return state.sources.some((s) => {
+    const r = s.found?.recognition;
+    if (!planned.has(s.path) || !r) return false;
+    return r.kind === "look_files" || (r.kind === "package" && !r.contents.includes(".cube"));
+  });
 }
 
 /**

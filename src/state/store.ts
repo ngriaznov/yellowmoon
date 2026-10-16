@@ -804,7 +804,8 @@ export class AppStore {
 
   /**
    * Looks › Import .cube…: asks for files, finds out what each is, and opens the dialog that asks what a LUT expects as
-   * input (`docs/08` §Any other .cube). A cancelled chooser changes nothing.
+   * input (`docs/08` §Any other .cube); ARRI Look Files (`.alf4`, `.alf4c`, `.aml`) say what they expect and are not asked.
+   * A cancelled chooser changes nothing.
    */
   async startCubeImport(): Promise<void> {
     let paths: string[] | null;
@@ -837,7 +838,9 @@ export class AppStore {
   async confirmCubeImport(): Promise<void> {
     const dialog = this.state.cubeImport;
     if (!dialog || dialog.busy) return;
-    const todo = dialog.items.filter((i) => i.found.recognition.kind === "package" || (i.found.recognition.kind === "needs_answer" && i.answer));
+    const todo = dialog.items.filter(
+      (i) => i.found.recognition.kind === "package" || i.found.recognition.kind === "look_files" || (i.found.recognition.kind === "needs_answer" && i.answer),
+    );
     if (todo.length === 0) return;
     this.set({ cubeImport: { ...dialog, busy: true } });
     let added = 0;
