@@ -35,6 +35,8 @@ Knots `v_i`, i = 0…n−1 (n = 16 on current bodies). Knot `i` sits at the norm
 
 *Real files (RA-03c):* the reading holds on real raw data. The even part of the horizontal brightness profile of a sky band follows `G(r)` of the table on ILCE-7M4, ILCE-1 (three frames) and A6300 (section R9, "Real files", point 3), so the raw is not vignetting-corrected by the camera (`0x7031` = 257 or 272, `Auto`) and R3 does not correct twice. The `n`-knot grids of 11 (APS-C, or the crop mode of a full-frame body) and 16 (full frame) are one physical grid and need no special case.
 
+*The Before view leaves R3 out (2026-10-16, `docs/02` *The Before view*):* a render for the Before view runs the raw stages without this one (`RawParams::vignetting` off; the plan has no profile; the device's prep kernel gets no vignetting table), because the camera's own picture is not brightened at the corners by it. Nothing else of the chain changes for that view, and the final picture, the thumbnails and the exports always have R3.
+
 ## R4 · Initial gains
 
 `g0 = 1 / w_scene_initial` (green = 1), from the illuminant estimate at open. If the estimate fails, use the as-shot gains from SR2 0x7313. Gains are applied to the mosaic before R5 and R6 because both work better on balanced data. Later white-balance changes do not re-run R5–R9 (`docs/02` C1 applies a residual). The clip mask is not changed by the gains; a clipped photosite then sits at `g0_c` (times the vignetting gain), and R5 finds it through the mask, not by a threshold. SR2 0x7313 levels are multipliers (green about 1024), so `g0 = [R/G, 1, B/G]` with `G` the mean of the two green levels (`gains::g0_from_wb_levels`); from a scene white `w`, `g0 = [w_G/w_R, 1, w_G/w_B]` (`gains::g0_from_scene_white`).
