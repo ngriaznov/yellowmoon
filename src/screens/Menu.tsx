@@ -34,7 +34,7 @@ export function Menu<T extends string | number>({ label, options, value, onSelec
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>{trigger({ ref: () => undefined })}</DropdownMenuTrigger>
-      <DropdownMenuContent aria-label={label} align={align === "end" ? "end" : "start"} className="ym-menu__list min-w-44">
+      <DropdownMenuContent aria-label={label} align={align === "end" ? "end" : "start"} className="min-w-44">
         <DropdownMenuRadioGroup
           value={value === null ? "" : String(value)}
           onValueChange={(next) => {

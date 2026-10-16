@@ -1,4 +1,3 @@
-import { CheckIcon } from "lucide-react";
 import type { ReactNode, Ref } from "react";
 import { Badge } from "@/components/glass/badge";
 import { cx } from "./cx";
@@ -73,17 +72,12 @@ export function LookTile({
       <span className="ym-look-tile__picture">
         {thumbnail ?? (src ? <img src={src} alt="" draggable={false} onError={onImageError} /> : null)}
         {badge ? (
-          <Badge variant="glass" className="ym-look-tile__badge" aria-hidden="true">
+          <Badge variant="secondary" className="ym-look-tile__badge" aria-hidden="true">
             {badge}
           </Badge>
         ) : null}
-        {selected ? (
-          <span className="ym-look-tile__check" aria-hidden="true">
-            <CheckIcon strokeWidth={3} />
-          </span>
-        ) : null}
         {isDefault ? (
-          <Badge variant="glass" className="ym-look-tile__default">
+          <Badge variant="default" className="ym-look-tile__default">
             Default
           </Badge>
         ) : null}

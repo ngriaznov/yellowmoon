@@ -1,0 +1,674 @@
+/* Variant C2: the current layout, dark glass, glasscn's own controls (experiment, branch claude/glasscn-ui).
+   Two halves, and no rule here restyles a glasscn control:
+   1. Tokens. The dark palette (glasscn's own `.dark` material is used as it is), the yellow accent, a colour per tab, Figtree.
+   2. Layout. The cells of the screen sit where they sit today, edge to edge, with the sizes and spacing of the mockups; their surfaces
+      are glasscn's glass and the rules between them are thin light rims. The parts that are not controls (the title block, the cards'
+      sections, the histogram, look tiles, the filmstrip and its counter) keep their geometry from `design/mockups/photos.html`.
+   Every control inside (buttons, toggles, tabs, segmented, sliders and their boxes, switches, selects, inputs, search, menus, badges,
+   the dialog, tooltips) is a component in src/components/glass/ in its own default shape. */
+@reference "./glass.css";
+
+/* ---- 1. Tokens -------------------------------------------------------------------------------------------------------------------- */
+html.dark {
+  /* Figtree under glasscn's type scale (it is a plain humanist sans, and fits it). */
+  --glass-font-sans: var(--font);
+  --glass-font-heading: var(--font);
+  --glass-font-display: var(--font);
+  --glass-font-mono: var(--font-mono);
+
+  /* The accent: the brand yellow, black on it. Tabs re-theme their own subtree below. */
+  --primary: var(--brand);
+  --primary-foreground: var(--brand-ink);
+  --ring: var(--brand);
+  --chart-1: var(--brand);
+  --chart-2: oklch(0.91 0.12 92);
+
+  /* The ground: a dark aurora warmed by the brand and two tab colours. */
+  --aurora-base: oklch(0.135 0.006 285);
+  --aurora-1: oklch(0.44 0.095 85);
+  --aurora-2: oklch(0.4 0.085 225);
+  --aurora-3: oklch(0.4 0.085 35);
+
+  /* The rules between the cells: a thin light rim. */
+  --rim: color-mix(in oklch, var(--ink) 16%, transparent);
+
+  /* Tab colours: each keeps its hue, lightened where it was dark; black text on all six. */
+  --tab-look: #ffc20e;   --tab-look-ink: #000000;
+  --tab-light: #2ec4f4;  --tab-light-ink: #000000;
+  --tab-colour: #7be35f; --tab-colour-ink: #000000;
+  --tab-detail: #f4b9ac; --tab-detail-ink: #000000;
+  --tab-curve: #ff7340;  --tab-curve-ink: #000000;
+  --tab-raw: #5b9bff;    --tab-raw-ink: #000000;
+}
+/* A tab's accent is the accent of its controls: glasscn paints sliders, switches, toggles, the tab underline and the focus ring from
+   --primary, so setting it on the tab's subtree is all it takes. */
+[data-tab="look"] { --primary: var(--tab-look); --primary-foreground: var(--tab-look-ink); --ring: var(--tab-look); }
+[data-tab="light"] { --primary: var(--tab-light); --primary-foreground: var(--tab-light-ink); --ring: var(--tab-light); }
+[data-tab="color"] { --primary: var(--tab-colour); --primary-foreground: var(--tab-colour-ink); --ring: var(--tab-colour); }
+[data-tab="detail"] { --primary: var(--tab-detail); --primary-foreground: var(--tab-detail-ink); --ring: var(--tab-detail); }
+[data-tab="curve"] { --primary: var(--tab-curve); --primary-foreground: var(--tab-curve-ink); --ring: var(--tab-curve); }
+[data-tab="raw"] { --primary: var(--tab-raw); --primary-foreground: var(--tab-raw-ink); --ring: var(--tab-raw); }
+
+body {
+  font-family: var(--font);
+  color: var(--glass-label);
+}
+
+/* ---- 2. Layout --------------------------------------------------------------------------------------------------------------------- */
+/* Glass needs something to frost: the aurora is behind the page, so the page paints nothing on the Photos screen. The aurora is page
+   content, and with the native viewport the photo is a layer BEHIND the page: it is masked out of the photo cell's rectangle
+   (Photos sets --cell-x/y/w/h from the cell). */
+html:has(.ym-screen[data-screen="photos"]),
+html:has(.ym-screen[data-screen="photos"]) body,
+html:has(.ym-screen[data-screen="photos"]) #root {
+  background: transparent !important;
+}
+.ym-screen[data-screen="photos"] {
+  background: transparent;
+  color: var(--glass-label);
+}
+.ym-aurora {
+  -webkit-mask-image: linear-gradient(#000 0 0), linear-gradient(#000 0 0);
+  mask-image: linear-gradient(#000 0 0), linear-gradient(#000 0 0);
+  -webkit-mask-size: 100% 100%, var(--cell-w, 0px) var(--cell-h, 0px);
+  mask-size: 100% 100%, var(--cell-w, 0px) var(--cell-h, 0px);
+  -webkit-mask-position: 0 0, var(--cell-x, 0px) var(--cell-y, 0px);
+  mask-position: 0 0, var(--cell-x, 0px) var(--cell-y, 0px);
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+}
+
+/* The header: the same row of cells (folder, actions, update, Export), one glass surface, a rim under it and between the cells. */
+.ym-screen[data-screen="photos"] .ym-header {
+  @apply glass rounded-none;
+  border-width: 0 0 1px 0;
+}
+.ym-screen[data-screen="photos"] .ym-brand {
+  border-right: 1px solid var(--rim);
+}
+.ym-screen[data-screen="photos"] .ym-header__right {
+  border-left: 1px solid var(--rim);
+}
+.ym-update-pill {
+  align-items: center;
+  border: 0;
+  border-right: 1px solid var(--rim);
+  background: transparent;
+  text-transform: none;
+}
+.ym-update-pill__square {
+  box-sizing: content-box;
+  flex-shrink: 0;
+  width: 8px;
+  height: 8px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--status-ok);
+}
+.ym-export-cell {
+  display: flex;
+  align-items: center;
+  margin-left: auto;
+  padding: 0 22px;
+}
+.ym-status {
+  margin-left: auto;
+  color: var(--glass-label-secondary);
+  font-size: var(--fs-small);
+  font-weight: var(--fw-semibold);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.ym-status[data-hint="true"] {
+  color: var(--glass-label);
+  font-weight: var(--fw-heavy);
+}
+@media (max-width: 1273px) {
+  .ym-screen[data-screen="photos"][data-panel="tools"] .ym-status:not([data-hint="true"]) {
+    display: none;
+  }
+}
+@media (max-width: 1346px) {
+  .ym-status[data-hint="true"] {
+    @apply glass-liquid;
+    position: fixed;
+    top: calc(var(--header-h) + 8px);
+    right: calc(var(--panel-w) + 16px);
+    z-index: 30;
+    margin-left: 0;
+    padding: 6px 12px;
+  }
+}
+
+/* The tool panel: one glass surface with a rim on its left; the tab row, the title block, the cards stacked as they are, the foot. */
+.ym-tools {
+  @apply glass rounded-none;
+  border-width: 0 0 0 1px;
+}
+.ym-screen[data-screen="photos"] .ym-filmstrip {
+  grid-column: 1;
+  grid-row: 3;
+}
+.ym-tools > [data-slot="tabs"] {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  height: var(--tab-h);
+  padding: 0 12px;
+  border-bottom: 1px solid var(--rim);
+}
+.ym-tools__foot {
+  gap: 8px;
+  padding: 8px 14px;
+  border-top: 1px solid var(--rim);
+}
+.ym-tools__footer {
+  gap: 12px;
+  padding: 16px var(--pad-panel);
+  border-top: 1px solid var(--rim);
+}
+.ym-tools__notice {
+  color: var(--glass-label-secondary);
+}
+
+/* The title block: a flat block of the tab colour today; here the same block as tinted glass. */
+.ym-title-block {
+  padding: 22px var(--pad-panel);
+  background: color-mix(in oklch, var(--tab, var(--primary)) 30%, transparent);
+  color: var(--glass-label);
+  border-bottom: 1px solid var(--rim);
+}
+.ym-title-block[data-tone="ink"] {
+  background: color-mix(in oklch, var(--ink) 9%, transparent);
+  color: var(--glass-label);
+}
+.ym-title-block__title {
+  margin: 0;
+  font-size: var(--fs-display);
+  font-weight: var(--fw-heavy);
+  letter-spacing: var(--ls-display);
+  line-height: 1;
+}
+.ym-title-block__blurb {
+  max-width: 330px;
+  margin: 12px 0 0;
+  font-size: 15px;
+  line-height: 1.5;
+}
+
+/* The cards: sections stacked edge to edge, ruled, as they are today. */
+.ym-card {
+  padding: 16px var(--pad-panel) 20px;
+  border-bottom: 1px solid var(--rim);
+}
+.ym-card__header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  height: 28px;
+  margin-bottom: 10px;
+}
+.ym-card__title {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--fs-label);
+  font-weight: var(--fw-heavy);
+  letter-spacing: var(--ls-tag);
+  text-transform: uppercase;
+}
+.ym-card[data-density="option"] {
+  padding-bottom: 18px;
+}
+.ym-card[data-density="option"] .ym-card__header {
+  height: auto;
+  margin-bottom: 10px;
+}
+.ym-card[data-last="true"] {
+  border-bottom: 0;
+}
+.ym-rows {
+  border-top: 1px solid var(--rim);
+}
+.ym-rows[data-spaced="true"] {
+  margin-bottom: 8px;
+}
+.ym-rows > * {
+  position: relative;
+}
+.ym-rows > *::after {
+  content: "";
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: 1px;
+  background: var(--rim);
+  pointer-events: none;
+}
+.ym-row-note {
+  margin: 10px 0 0;
+  color: var(--glass-label-secondary);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.ym-info-row {
+  display: grid;
+  grid-template-columns: 104px minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: var(--gap-row);
+  min-height: 44px;
+}
+.ym-info-row__label {
+  font-size: var(--fs-label);
+  font-weight: var(--fw-heavy);
+}
+.ym-info-row__value {
+  font-size: var(--fs-body);
+}
+/* The Automatic card's rows are glasscn's Item: its hover fill reaches past the text a little, as in a settings list. */
+.ym-auto-row {
+  display: grid;
+  grid-template-columns: 104px minmax(0, 1fr) auto 16px;
+  align-items: center;
+  column-gap: var(--gap-row);
+  width: calc(100% + 28px);
+  height: 44px;
+  margin-inline: -14px;
+  padding-block: 0;
+  text-align: left;
+}
+.ym-auto-row::after {
+  right: 14px;
+  left: 14px;
+}
+.ym-auto-row__label {
+  font-size: var(--fs-label);
+  font-weight: var(--fw-heavy);
+}
+.ym-auto-row__value {
+  overflow: hidden;
+  color: var(--glass-label-secondary);
+  font-size: var(--fs-body);
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ym-auto-row__arrow {
+  width: 16px;
+  height: 16px;
+  color: var(--glass-label-secondary);
+}
+.ym-switch-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  height: 44px;
+}
+.ym-switch-row__label {
+  font-size: var(--fs-body);
+  font-weight: var(--fw-bold);
+}
+.ym-field {
+  display: grid;
+  grid-template-columns: var(--label-col) minmax(0, 1fr);
+  align-items: center;
+  column-gap: var(--gap-row);
+  margin-top: 8px;
+}
+.ym-field__label {
+  font-size: var(--fs-label);
+  font-weight: var(--fw-heavy);
+}
+
+/* The histogram (an SVG: glasscn has none). */
+.ym-histogram {
+  padding: 18px var(--pad-panel) 16px;
+  border-bottom: 1px solid var(--rim);
+}
+.ym-histogram__box {
+  position: relative;
+  box-sizing: border-box;
+  height: 88px;
+  overflow: hidden;
+  border: 1px solid var(--rim);
+  border-radius: calc(var(--glass-radius-control) * 0.5);
+  background: color-mix(in oklch, var(--ink) 5%, transparent);
+}
+.ym-histogram__box svg {
+  width: 100%;
+  height: 84px;
+}
+.ym-histogram__caption {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 8px;
+  color: var(--glass-label-secondary);
+  font-size: var(--fs-small);
+  font-weight: var(--fw-bold);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Look tiles (a picture button: glasscn has none), their groups and their grid. */
+.ym-look-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px 12px;
+}
+.ym-look-group {
+  margin-bottom: 18px;
+}
+.ym-look-group__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  margin-bottom: 8px;
+  padding-inline: 6px;
+  font-size: var(--fs-small);
+  font-weight: var(--fw-heavy);
+  letter-spacing: var(--ls-tag);
+  text-transform: uppercase;
+}
+.ym-look-group__count {
+  font-weight: var(--fw-bold);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0;
+  text-transform: none;
+}
+.ym-look-group__title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.ym-look-group__chevron {
+  width: 14px;
+  height: 14px;
+  transition: rotate var(--glass-duration) var(--glass-ease);
+}
+.ym-look-group__chevron[data-open="false"] {
+  rotate: -90deg;
+}
+.ym-look-group__marker {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--primary);
+}
+.ym-look-tile {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--glass-label);
+  font: inherit;
+  text-align: left;
+  cursor: default;
+}
+.ym-look-tile__picture {
+  position: relative;
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  aspect-ratio: 3 / 2;
+  overflow: hidden;
+  border: 1px solid var(--rim);
+  border-radius: calc(var(--glass-radius-control) * 0.5);
+  background: var(--code-bg);
+}
+.ym-look-tile[aria-pressed="true"] .ym-look-tile__picture {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+.ym-look-tile:focus-visible .ym-look-tile__picture {
+  outline: var(--glass-ring-width) solid var(--ring);
+  outline-offset: 2px;
+}
+.ym-look-tile__picture img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+/* The badges are glasscn's Badge, a plain tinted fill, placed on the picture. */
+.ym-look-tile__badge {
+  position: absolute;
+  top: 5px;
+  left: 5px;
+  height: 18px;
+  min-width: 18px;
+  padding: 0 5px;
+  background: rgb(0 0 0 / 0.58);
+  color: #fff;
+  font-size: 0.625rem;
+  font-variant-numeric: tabular-nums;
+}
+.ym-look-tile__default {
+  position: absolute;
+  right: 5px;
+  bottom: 5px;
+  height: 16px;
+  padding: 0 6px;
+  font-size: 0.5625rem;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+.ym-look-tile__name {
+  max-width: 100%;
+  padding: 1px 4px;
+  margin-left: -4px;
+  overflow: hidden;
+  border-radius: calc(var(--glass-radius-control) * 0.5);
+  font-size: var(--fs-label);
+  font-weight: var(--fw-semibold);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ym-look-tile[aria-pressed="true"] .ym-look-tile__name {
+  background: var(--primary);
+  color: var(--primary-foreground);
+  font-weight: var(--fw-heavy);
+}
+.ym-look-tile[aria-disabled="true"] {
+  color: var(--glass-label-tertiary);
+}
+.ym-look-tile[aria-disabled="true"] .ym-look-tile__picture {
+  opacity: 0.45;
+}
+.ym-look-tile__note {
+  color: var(--glass-label-secondary);
+  font-size: 11px;
+  line-height: 1.3;
+}
+
+/* The filmstrip row: the strip of thumbnails and, in its own cell, the counter. One glass surface, a rim above it and between them. */
+.ym-filmstrip {
+  @apply glass rounded-none;
+  display: flex;
+  align-items: stretch;
+  box-sizing: border-box;
+  min-width: 0;
+  border-width: 1px 0 0 0;
+}
+.ym-filmstrip__scroll {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 0 24px;
+  overflow-x: auto;
+}
+.ym-filmstrip__thumb {
+  position: relative;
+  flex-shrink: 0;
+  box-sizing: border-box;
+  width: var(--thumb-strip-w);
+  height: var(--thumb-strip-h);
+  padding: 0;
+  border: 1px solid var(--rim);
+  border-radius: calc(var(--glass-radius-control) * 0.4);
+  overflow: hidden;
+  background: var(--code-bg);
+  cursor: default;
+}
+.ym-filmstrip__thumb[aria-current="true"] {
+  width: var(--thumb-strip-current-w);
+  height: var(--thumb-strip-current-h);
+  border: 3px solid var(--tab-look);
+}
+.ym-filmstrip__thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  pointer-events: none;
+}
+.ym-filmstrip__thumb:focus-visible {
+  outline: var(--glass-ring-width) solid var(--ring);
+  outline-offset: 3px;
+}
+.ym-filmstrip__thumb[data-status="developing"],
+.ym-filmstrip__thumb[data-status="failed"] {
+  background: repeating-linear-gradient(135deg, var(--code-bg) 0 6px, transparent 6px 12px);
+}
+.ym-filmstrip__failed {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  display: flex;
+  justify-content: center;
+  padding-bottom: 2px;
+}
+.ym-filmstrip__picked {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--tab-look);
+  box-shadow: 0 0 0 2px #000;
+}
+.ym-filmstrip__thumb[data-in-export="true"][aria-current="true"] {
+  border-width: 3px;
+}
+.ym-filmstrip__thumb[data-in-export="false"] {
+  opacity: 0.35;
+}
+span.ym-filmstrip__thumb {
+  cursor: default;
+}
+.ym-filmstrip__counter {
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  justify-content: center;
+  gap: 6px;
+  box-sizing: border-box;
+  width: 132px;
+  padding: 0 20px;
+  border-left: 1px solid var(--rim);
+}
+.ym-filmstrip__count {
+  font-size: 26px;
+  font-weight: var(--fw-heavy);
+  letter-spacing: -0.02em;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+.ym-filmstrip__count-label {
+  color: var(--glass-label-secondary);
+  font-size: var(--fs-small);
+  font-weight: var(--fw-heavy);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+/* ---- Export panel ---------------------------------------------------------------------------------------------------------------- */
+.ym-queue {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border-top: 1px solid var(--rim);
+}
+.ym-queue__row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: 12px;
+  min-height: 52px;
+  border-bottom: 1px solid var(--rim);
+}
+.ym-queue__file {
+  font-weight: var(--fw-heavy);
+}
+.ym-queue__note {
+  color: var(--glass-label-secondary);
+}
+.ym-export__folder,
+.ym-export__code {
+  border: 1px solid var(--rim);
+}
+.ym-export__footer-pair [data-slot="button"] {
+  width: 100%;
+}
+
+/* ---- Dialogs: Preferences rows, About -------------------------------------------------------------------------------------------- */
+.ym-pref {
+  padding: 12px 0;
+  border-bottom: 1px solid var(--rim);
+}
+.ym-pref:last-child {
+  border-bottom: 0;
+}
+.ym-pref__title {
+  font-size: 0.9375rem;
+  font-weight: 600;
+}
+.ym-pref__hint {
+  color: var(--glass-label-secondary);
+  font-size: 0.8125rem;
+}
+.ym-pref__defaults {
+  padding: 4px 0 0;
+  border-bottom: 1px solid var(--rim);
+}
+.ym-pref__defaults .ym-card {
+  padding-inline: 0;
+}
+.ym-dialog__footer-start {
+  margin-right: auto;
+}
+.ym-dialog__text {
+  margin: 0;
+  padding: 8px 0;
+  font-size: 0.9375rem;
+  line-height: 1.5;
+}
+.ym-about-dialog__section,
+.ym-about-dialog__adobe,
+.ym-about-dialog__legal {
+  padding-inline: 0;
+  border-bottom: 1px solid var(--rim);
+}
+.ym-about-dialog__brand,
+.ym-about-dialog__version {
+  padding-inline: 0;
+}
+.ym-about-dialog__adobe {
+  background: color-mix(in oklch, var(--ink) 8%, transparent);
+  color: var(--glass-label);
+  padding-inline: 12px;
+}
+.ym-cube-list > li {
+  padding-inline: 0;
+  border-bottom: 1px solid var(--rim);
+}

@@ -1085,3 +1085,9 @@
     initial-value: 1;
 
 }
+  @property --glass-materialize {
+    syntax: "<number>";
+    inherits: false;
+    initial-value: 1;
+
+}

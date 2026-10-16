@@ -76,31 +76,33 @@ export interface ExportCellProps {
   onClick?: () => void;
 }
 
-/** The "Export ⌘E" button at the right end of the header: glasscn's prominent (accent-tinted glass) button. */
+/** The Export cell at the right end of the header: glasscn's prominent button ("Export ⌘E") in its cell. */
 export function ExportCell({ label, disabled = false, title, current = false, progress, onClick }: ExportCellProps) {
   return (
-    <Button
-      variant="primary"
-      className="ym-export-cell relative overflow-hidden"
-      disabled={disabled}
-      aria-current={current || undefined}
-      title={title}
-      icon={
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-          <path d="M12 3v12" />
-          <path d="M6.5 9.5L12 15l5.5-5.5" />
-          <path d="M4 20h16" />
-        </svg>
-      }
-      shortcut="⌘E"
-      onClick={() => onClick?.()}
-    >
-      {label}
-      {progress !== undefined ? (
-        <span className="absolute inset-x-0 bottom-0 h-[3px] bg-white/30" aria-hidden="true">
-          <span className="block h-full bg-white/90" style={{ width: `${progress}%` }} />
-        </span>
-      ) : null}
-    </Button>
+    <div className="ym-export-cell">
+      <Button
+        variant="primary"
+        className="relative overflow-hidden"
+        disabled={disabled}
+        aria-current={current || undefined}
+        title={title}
+        icon={
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M12 3v12" />
+            <path d="M6.5 9.5L12 15l5.5-5.5" />
+            <path d="M4 20h16" />
+          </svg>
+        }
+        shortcut="⌘E"
+        onClick={() => onClick?.()}
+      >
+        {label}
+        {progress !== undefined ? (
+          <span className="absolute inset-x-0 bottom-0 h-[3px] bg-white/30" aria-hidden="true">
+            <span className="block h-full bg-white/90" style={{ width: `${progress}%` }} />
+          </span>
+        ) : null}
+      </Button>
+    </div>
   );
 }

@@ -72,8 +72,8 @@ export interface TagProps {
 }
 
 /** Which glasscn badge each tag variant uses: soft fills for state, the solid accent for what was changed, red for what failed. */
-const BADGE: Readonly<Record<TagVariant, "default" | "tinted" | "secondary" | "outline" | "destructive" | "glass">> = {
-  auto: "glass",
+const BADGE: Readonly<Record<TagVariant, "default" | "tinted" | "secondary" | "outline" | "destructive">> = {
+  auto: "secondary",
   edited: "default",
   on: "tinted",
   "stand-in": "outline",

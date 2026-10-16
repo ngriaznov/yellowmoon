@@ -1,5 +1,7 @@
 import type { UpdateState } from "../api/types";
 import { updateCell } from "../updater";
+import { Badge } from "@/components/glass/badge";
+import { Button as GlassButton } from "@/components/glass/button";
 import { cx } from "./cx";
 
 export interface UpdatePillProps {
@@ -29,27 +31,29 @@ export function UpdatePill({ state, exportRunning = false, onActivate, className
     </>
   );
   const common = {
-    className: cx("ym-update-pill", className),
     "data-phase": cell.phase,
     title: cell.title ?? undefined,
   };
-  if (cell.action === null) {
-    return (
-      <div {...common} role="status">
-        {content}
-      </div>
-    );
-  }
   return (
-    <button
-      {...common}
-      type="button"
-      aria-disabled={cell.disabled || undefined}
-      onClick={() => {
-        if (!cell.disabled) onActivate?.();
-      }}
-    >
-      {content}
-    </button>
+    <div className={cx("ym-update-pill", className)} data-phase={cell.phase}>
+      {cell.action === null ? (
+        <Badge variant="secondary" role="status" {...common} className="h-control-xs px-pad-sm">
+          {content}
+        </Badge>
+      ) : (
+        <GlassButton
+          {...common}
+          type="button"
+          variant="glass"
+          size="sm"
+          aria-disabled={cell.disabled || undefined}
+          onClick={() => {
+            if (!cell.disabled) onActivate?.();
+          }}
+        >
+          {content}
+        </GlassButton>
+      )}
+    </div>
   );
 }

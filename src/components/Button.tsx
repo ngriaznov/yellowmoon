@@ -2,16 +2,17 @@ import { useId } from "react";
 import type { ButtonHTMLAttributes, MouseEvent, ReactNode, Ref } from "react";
 import { Button as GlassButton } from "@/components/glass/button";
 import { Kbd } from "@/components/glass/kbd";
+import { Toggle } from "@/components/glass/toggle";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/glass/tooltip";
 import { cx } from "./cx";
 
 /** Visual kind of a `Button`. */
-export type ButtonVariant = "primary" | "secondary" | "header";
+export type ButtonVariant = "primary" | "secondary" | "header" | "quiet";
 
 export interface ButtonProps extends Omit<ButtonHTMLAttributes<HTMLButtonElement>, "type" | "disabled"> {
   /**
-   * `primary`: the accent (Open photos, Next, Export N photos). `secondary`: a soft fill (Open folder, Cancel, Show in Finder).
-   * `header`: a quiet button in a bar (Before, Crop, Pick white). Default `primary`.
+   * `primary`: the accent (Open photos, Next, Export N photos), glasscn's prominent glass button. `secondary` and `header`: glasscn's glass
+   * button (Open folder, Cancel, Add photos). `quiet`: its clear ghost button. A button that has `pressed` is glasscn's `Toggle`. Default `primary`.
    */
   variant?: ButtonVariant;
   /** `sm` is the compact control, `md` the control height, `lg` the large one (Next, Export, Cancel). */
@@ -36,7 +37,7 @@ export interface ButtonProps extends Omit<ButtonHTMLAttributes<HTMLButtonElement
   children?: ReactNode;
 }
 
-const KIND = { primary: "prominent", secondary: "secondary" } as const;
+const KIND = { primary: "prominent", secondary: "glass", header: "glass", quiet: "ghost" } as const;
 
 /**
  * The app's button, drawn by glasscn's `Button` (`src/components/glass/button.tsx`). A plain `<button type="button">`; `disabled`
@@ -70,23 +71,20 @@ export function Button({
   // span keeps that.
   const descriptionId = useId();
   const describedBy = [rest["aria-describedby"], title ? descriptionId : undefined].filter(Boolean).join(" ") || undefined;
-  const glassVariant = variant === "header" ? (pressed ? "default" : "ghost") : KIND[variant];
-  const button = (
-    <GlassButton
-      {...rest}
-      type="button"
-      variant={glassVariant}
-      size={variant === "header" || size === "sm" ? "sm" : size === "lg" ? "lg" : "default"}
-      className={cx(block && "w-full", split && "justify-between", variant === "header" && "px-2.5", className)}
-      data-variant={variant}
-      data-size={size}
-      data-block={block || undefined}
-      data-split={split || undefined}
-      aria-disabled={disabled || undefined}
-      aria-pressed={pressed}
-      aria-describedby={describedBy}
-      onClick={handleClick}
-    >
+  const toggle = pressed !== undefined;
+  const shared = {
+    ...rest,
+    type: "button" as const,
+    "data-variant": variant,
+    "data-size": size,
+    "data-block": block || undefined,
+    "data-split": split || undefined,
+    "aria-disabled": disabled || undefined,
+    "aria-describedby": describedBy,
+    onClick: handleClick,
+  };
+  const content = (
+    <>
       {icon}
       {split ? (
         <>
@@ -97,6 +95,23 @@ export function Button({
         children
       )}
       {shortcut ? <KeyHint>{shortcut}</KeyHint> : null}
+    </>
+  );
+  const sizeName = size === "sm" ? "sm" : size === "lg" ? "lg" : "default";
+  const button = toggle ? (
+    // A button with a pressed state is glasscn's Toggle: it draws the pressed style and reports aria-pressed. The state is the app's, so
+    // Radix's own toggling is a no-op.
+    <Toggle {...shared} variant="outline" size={size === "lg" ? "lg" : "sm"} pressed={pressed} onPressedChange={() => undefined} className={cx(block && "w-full", className)}>
+      {content}
+    </Toggle>
+  ) : (
+    <GlassButton
+      {...shared}
+      variant={KIND[variant]}
+      size={variant === "header" && size === "md" ? "sm" : sizeName}
+      className={cx(block && "w-full", split && "justify-between", className)}
+    >
+      {content}
     </GlassButton>
   );
   if (!title) return button;
@@ -117,7 +132,7 @@ export function Button({
 
 /** A keycap such as "⌘E", on glass. */
 export function KeyHint({ children, className }: { children: ReactNode; className?: string }) {
-  return <Kbd className={cx("bg-transparent text-current opacity-80", className)}>{children}</Kbd>;
+  return <Kbd className={className}>{children}</Kbd>;
 }
 
 export interface LinkButtonProps extends Omit<ButtonHTMLAttributes<HTMLButtonElement>, "type" | "disabled"> {
@@ -130,22 +145,14 @@ export interface LinkButtonProps extends Omit<ButtonHTMLAttributes<HTMLButtonEle
 }
 
 /** A text action in the accent: "Change", "Import →", "Choose…", "Start over", "← Back". glasscn's `link` button. */
-export function LinkButton({
-  size = "md",
-  weight = "heavy",
-  disabled = false,
-  className,
-  onClick,
-  children,
-  ...rest
-}: LinkButtonProps) {
+export function LinkButton({ size = "md", weight = "heavy", disabled = false, className, onClick, children, ...rest }: LinkButtonProps) {
   return (
     <GlassButton
       {...rest}
       type="button"
       variant="link"
-      size="xs"
-      className={cx("h-auto! px-0! underline", size === "sm" ? "text-[0.8125rem]!" : "text-sm!", weight === "heavy" ? "font-semibold" : "font-medium", className)}
+      size={size === "sm" ? "xs" : "sm"}
+      className={className}
       data-size={size}
       data-weight={weight}
       aria-disabled={disabled || undefined}

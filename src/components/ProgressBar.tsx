@@ -1,3 +1,4 @@
+import { Progress } from "@/components/glass/progress";
 import { cx } from "./cx";
 import { clamp } from "./format";
 
@@ -17,18 +18,5 @@ export interface ProgressBarProps {
  */
 export function ProgressBar({ value, label, size = "md", className }: ProgressBarProps) {
   const pct = clamp(Math.round(value), 0, 100);
-  return (
-    <div
-      role="progressbar"
-      aria-label={label}
-      aria-valuemin={0}
-      aria-valuemax={100}
-      aria-valuenow={pct}
-      className={cx("ym-progress", className)}
-      data-size={size === "lg" ? "lg" : undefined}
-      data-partial={pct > 0 && pct < 100 ? "true" : undefined}
-    >
-      <div className="ym-progress__fill" style={{ width: `${pct}%` }} />
-    </div>
-  );
+  return <Progress aria-label={label} value={pct} data-size={size === "lg" ? "lg" : undefined} className={cx(size === "lg" && "h-3.5", className)} />;
 }

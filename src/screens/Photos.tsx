@@ -1,7 +1,6 @@
 import { memo, useCallback, useEffect, useMemo, useState } from "react";
 import { Aurora } from "@/components/glass/aurora";
-import { ButtonGroup } from "@/components/glass/button-group";
-import { ToolbarGroup } from "@/components/glass/toolbar";
+import { ChevronDownIcon } from "lucide-react";
 import type { ColorSpace, PhotoSummary, RenderStats, ResolvedSettings, ViewportMode } from "../api/types";
 import { Button, Filmstrip, TabBar, tabPanelProps, TitleBlock, useLatest, useTabShortcuts, useWindowDrop } from "../components";
 import { exportModel } from "../export/model";
@@ -86,7 +85,7 @@ const ZoomMenu = memo(function ZoomMenu({ store, photo, rs, cell }: ZoomMenuProp
       trigger={({ ref, ...props }) => (
         <Button variant="header" className="ym-fit" ref={ref} title="Zoom (Z toggles Fit and 100%)" {...props}>
           {label}
-          <span className="ym-caret" aria-hidden="true" />
+          <ChevronDownIcon data-icon="inline-end" aria-hidden="true" />
         </Button>
       )}
     />
@@ -115,7 +114,7 @@ const AddPhotosButton = memo(function AddPhotosButton({ store }: { store: AppSto
 const CopyPasteButtons = memo(function CopyPasteButtons({ store, canCopy }: { store: AppStore; canCopy: boolean }) {
   const source = useAppState((s) => s.copied?.source ?? null);
   return (
-    <ButtonGroup variant="glass">
+    <>
       <Button variant="header" disabled={!canCopy} onClick={() => void store.copySettings()} title="Copy the settings of this photo (⇧⌘C)">
         Copy settings
       </Button>
@@ -127,7 +126,7 @@ const CopyPasteButtons = memo(function CopyPasteButtons({ store, canCopy }: { st
       >
         Paste
       </Button>
-    </ButtonGroup>
+    </>
   );
 });
 
@@ -407,30 +406,24 @@ export function Photos() {
       <Header titleAs="h1" title={session?.folder_name ?? "Yellowmoon"} subline={session ? folderSubline(session) : ""} export={<ExportCellContainer store={store} />}>
         {exporting ? (
           <>
-            <ToolbarGroup aria-label="Export">
-              <Button variant="header" onClick={() => store.closeExport()}>
-                ← Back to photos
-              </Button>
-            </ToolbarGroup>
+            <Button variant="header" onClick={() => store.closeExport()}>
+              ← Back to photos
+            </Button>
             <StatusText forExport />
           </>
         ) : (
           <>
-            <ToolbarGroup aria-label="View and edit">
-              <Button variant="header" pressed={before} onClick={() => void store.toggleBefore()} title="Before and after (\)">
-                Before
-              </Button>
-              <Button variant="header" pressed={cropping} disabled={!rs} onClick={() => (cropping ? crop.session?.cancel() : startCrop())} title="Crop (C)">
-                Crop
-              </Button>
-              <Button variant="header" pressed={picking} disabled={!rs || cropping} onClick={togglePicking} title="Pick white (W)">
-                Pick white
-              </Button>
-            </ToolbarGroup>
-            <ToolbarGroup aria-label="Photos and zoom">
-              <AddPhotosButton store={store} />
-              <ZoomMenu store={store} photo={photo} rs={rs} cell={cell} />
-            </ToolbarGroup>
+            <Button variant="header" pressed={before} onClick={() => void store.toggleBefore()} title="Before and after (\)">
+              Before
+            </Button>
+            <Button variant="header" pressed={cropping} disabled={!rs} onClick={() => (cropping ? crop.session?.cancel() : startCrop())} title="Crop (C)">
+              Crop
+            </Button>
+            <Button variant="header" pressed={picking} disabled={!rs || cropping} onClick={togglePicking} title="Pick white (W)">
+              Pick white
+            </Button>
+            <AddPhotosButton store={store} />
+            <ZoomMenu store={store} photo={photo} rs={rs} cell={cell} />
             {picking ? (
               <span className="ym-status" data-hint="true" role="status">
                 Click something neutral: grey or white.

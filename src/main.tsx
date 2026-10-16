@@ -10,9 +10,7 @@ import { installTestHooks } from "./testHooks";
 import { updater } from "./updater";
 import "./styles/glass.css";
 import "./styles/legacy.css";
-import "./styles/glass-app.css";
-import "./styles/glass-brand.css";
-import "./styles/glass-dark.css";
+import "./styles/glass-c2.css";
 
 // An app, not a page: no pinch zoom, no page menu (docs/11 §Desktop feel). Measuring is off unless the page was opened with ?perf.
 installDesktopFeel();

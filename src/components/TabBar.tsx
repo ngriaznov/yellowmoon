@@ -19,7 +19,7 @@ export interface TabBarProps {
 export function TabBar({ value, onChange, label = "Tool tabs", className }: TabBarProps) {
   return (
     <Tabs value={value} onValueChange={(next) => onChange(next as TabId)} className="block">
-      <TabsList aria-label={label} data-tab={value} className={cx("flex w-full", className)}>
+      <TabsList variant="line" aria-label={label} data-tab={value} className={cx("flex w-full", className)}>
         {TABS.map((tab) => (
           <TabsTrigger
             key={tab.id}
@@ -27,7 +27,7 @@ export function TabBar({ value, onChange, label = "Tool tabs", className }: TabB
             id={tabDomId(tab.id)}
             aria-controls={tabPanelDomId(tab.id)}
             data-tab={tab.id}
-            className="px-1.5 text-[0.8125rem]"
+            className="px-1 text-[0.8125rem]"
           >
             {tab.label}
           </TabsTrigger>
