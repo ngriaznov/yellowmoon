@@ -162,9 +162,24 @@ jobs:
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        # Tauri's bundle_dmg.sh (hdiutil) fails now and then on the hosted runners (0.1.2's first run, 0.1.3's
+        # first run: "error running bundle_dmg.sh", the compile itself fine). Up to three tries; between them
+        # anything the script left mounted is detached and the half-made image removed. The compile is not
+        # repeated (cargo's output is reused), only the bundling. --verbose shows the script's own error.
         run: |
-          npm run tauri build -- --target universal-apple-darwin \
-            --config '{"bundle":{"createUpdaterArtifacts":true,"macOS":{"signingIdentity":"-"}}}'
+          for attempt in 1 2 3; do
+            if npm run tauri build -- --verbose --target universal-apple-darwin \
+              --config '{"bundle":{"createUpdaterArtifacts":true,"macOS":{"signingIdentity":"-"}}}'; then
+              exit 0
+            fi
+            echo "::warning title=Bundling failed::try ${attempt} of 3 failed; detaching leftover images and trying again"
+            for vol in /Volumes/Yellowmoon* /Volumes/dmg.*; do
+              [ -d "$vol" ] && hdiutil detach "$vol" -force || true
+            done
+            rm -rf target/universal-apple-darwin/release/bundle/dmg
+            sleep 20
+          done
+          exit 1
 
       - name: Check the bundle
         if: steps.check_tag.outputs.exists == 'false'
