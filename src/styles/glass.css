@@ -31,7 +31,7 @@
     --color-info: var(--info);
     --color-info-foreground: var(--info-foreground);
     --color-info-ink: color-mix(in oklch, var(--info) 68%, var(--glass-label));
-    --color-primary-ink: color-mix(in oklch, var(--primary) 30%, var(--glass-label));
+    --color-primary-ink: color-mix(in oklab, var(--primary) 30%, var(--glass-label)); /* oklab: in oklch the neutral label's hue (0) pulls a yellow accent to pink and a cyan one to lilac */
     --color-destructive-foreground: var(--destructive-foreground, oklch(0.985 0 0));
     --color-destructive-ink: color-mix(in oklch, var(--destructive) 30%, var(--glass-label));
     --color-glass-dim: color-mix(in oklch, oklch(0 0 0) var(--glass-dim), transparent);
