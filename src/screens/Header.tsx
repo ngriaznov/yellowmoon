@@ -98,8 +98,8 @@ export function ExportCell({ label, disabled = false, title, current = false, pr
       >
         {label}
         {progress !== undefined ? (
-          <span className="absolute inset-x-0 bottom-0 h-[3px] bg-white/30" aria-hidden="true">
-            <span className="block h-full bg-white/90" style={{ width: `${progress}%` }} />
+          <span className="absolute inset-x-0 bottom-0 h-1 bg-black/20" aria-hidden="true">
+            <span className="block h-full bg-black/65" style={{ width: `${progress}%` }} />
           </span>
         ) : null}
       </Button>
