@@ -54,7 +54,7 @@ describe("Add photos", () => {
     expect(within(strip).getAllByRole("button")).toHaveLength(13);
     expect(within(strip).getByRole("button", { name: /^Show DSC09001/ })).toBeInTheDocument();
     expect(within(strip).getByRole("button", { name: "Show DSC04204, picked" })).toHaveAttribute("aria-current", "true");
-    expect(screen.getByText("4 / 13")).toBeInTheDocument();
+    expect(screen.getByText("4 of 13 · 3 picked")).toBeInTheDocument();
     expect(screen.getByRole("status")).toHaveTextContent("Added 1 photo. 1 was already open.");
     // The Export panel counts the new photo.
     await h!.user.click(screen.getByRole("button", { name: /Export/ }));

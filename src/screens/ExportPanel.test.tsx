@@ -79,7 +79,7 @@ describe("the options (design/mockups/export.html)", () => {
     const flags = within(strip).getAllByRole("img").map((el) => el.getAttribute("data-in-export"));
     expect(flags.filter((f) => f === "true")).toHaveLength(3);
     expect(flags.filter((f) => f === "false")).toHaveLength(9);
-    expect(within(strip).getByText("to export")).toBeInTheDocument();
+    expect(within(strip).getByText("3 to export")).toBeInTheDocument();
     await h!.user.click(radio("Photos", "All · 12"));
     await waitFor(() => expect(within(strip).getAllByRole("img").filter((el) => el.getAttribute("data-in-export") === "true")).toHaveLength(12));
   });

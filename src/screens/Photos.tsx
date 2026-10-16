@@ -2,7 +2,7 @@ import { memo, useCallback, useEffect, useMemo, useState } from "react";
 import { Aurora } from "@/components/glass/aurora";
 import { ChevronDownIcon } from "lucide-react";
 import type { ColorSpace, PhotoSummary, RenderStats, ResolvedSettings, ViewportMode } from "../api/types";
-import { Button, Filmstrip, TabBar, tabPanelProps, TitleBlock, useLatest, useTabShortcuts, useWindowDrop } from "../components";
+import { Button, Filmstrip, filmstripCaption, TabBar, tabPanelProps, TitleBlock, useLatest, useTabShortcuts, useWindowDrop } from "../components";
 import { exportModel } from "../export/model";
 import { cellLabel, summarise } from "../export/run";
 import type { FilmstripPhoto, TabId } from "../components";
@@ -41,6 +41,18 @@ export function exportStatusText(stats: RenderStats): string {
 
 /** The filmstrip only draws again when its photos or the selection change, not on every slider frame. */
 const PhotoStrip = memo(Filmstrip);
+
+/**
+ * Where "4 of 12 · 3 picked" is shown. The shipped answer is the filmstrip's own caption. Variant (a) of round 5 puts it in the header
+ * beside the status text instead (windows 1440 px and wider; narrower ones keep the caption, there is no room); `?count=header` turns
+ * it on in the dev page so that both can be looked at.
+ */
+const COUNT_IN_HEADER = import.meta.env.DEV && typeof window !== "undefined" && new URLSearchParams(window.location.search).get("count") === "header";
+
+/** Variant (a): the count as a second piece of the header's status text, in the same type. */
+function HeaderCount({ photos, currentId, mode }: { photos: readonly FilmstripPhoto[]; currentId: number | string | null; mode: "browse" | "export" }) {
+  return <span className="ym-status ym-status--count">{filmstripCaption(photos, currentId, mode)}</span>;
+}
 
 /** The header's status text. It reads `render_stats` itself, so a frame drawn by the viewport redraws this span and not the screen. */
 function StatusText({ forExport = false }: { forExport?: boolean }) {
@@ -401,7 +413,7 @@ export function Photos() {
   const exporting = panel === "export";
 
   return (
-    <div className="ym-screen" data-screen="photos" data-panel={panel} data-dragging={dragging || undefined}>
+    <div className="ym-screen" data-screen="photos" data-panel={panel} data-count={COUNT_IN_HEADER ? "header" : undefined} data-dragging={dragging || undefined}>
       <Aurora className="ym-aurora" />
       <Header titleAs="h1" title={session?.folder_name ?? "Yellowmoon"} subline={session ? folderSubline(session) : ""} export={<ExportCellContainer store={store} />}>
         {exporting ? (
@@ -409,7 +421,14 @@ export function Photos() {
             <Button variant="header" onClick={() => store.closeExport()}>
               ← Back to photos
             </Button>
-            <StatusText forExport />
+            {COUNT_IN_HEADER ? (
+              <span className="ym-status-group">
+                <StatusText forExport />
+                <HeaderCount photos={strip} currentId={photo?.id ?? null} mode="export" />
+              </span>
+            ) : (
+              <StatusText forExport />
+            )}
           </>
         ) : (
           <>
@@ -427,6 +446,11 @@ export function Photos() {
             {picking ? (
               <span className="ym-status" data-hint="true" role="status">
                 Click something neutral: grey or white.
+              </span>
+            ) : COUNT_IN_HEADER ? (
+              <span className="ym-status-group">
+                <StatusText />
+                <HeaderCount photos={strip} currentId={photo?.id ?? null} mode="browse" />
               </span>
             ) : (
               <StatusText />
@@ -448,7 +472,14 @@ export function Photos() {
         onRect={onRect}
       />
 
-      <PhotoStrip mode={exporting ? "export" : "browse"} photos={strip} currentId={photo?.id ?? null} onSelect={select} onTogglePick={togglePickOf} />
+      <PhotoStrip
+        mode={exporting ? "export" : "browse"}
+        photos={strip}
+        currentId={photo?.id ?? null}
+        tab={exporting ? undefined : tab}
+        onSelect={select}
+        onTogglePick={togglePickOf}
+      />
 
       {panelNode}
     </div>

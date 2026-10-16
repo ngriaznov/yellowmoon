@@ -3,7 +3,7 @@
    1. Tokens. The dark palette (glasscn's own `.dark` material is used as it is), the yellow accent, a colour per tab, Figtree.
    2. Layout. The cells of the screen sit where they sit today, edge to edge, with the sizes and spacing of the mockups; their surfaces
       are glasscn's glass and the rules between them are thin light rims. The parts that are not controls (the title block, the cards'
-      sections, the histogram, look tiles, the filmstrip and its counter) keep their geometry from `design/mockups/photos.html`.
+      sections, the histogram, look tiles, the filmstrip and its caption) keep their geometry from `design/mockups/photos.html`.
    Every control inside (buttons, toggles, tabs, segmented, sliders and their boxes, switches, selects, inputs, search, menus, badges,
    the dialog, tooltips) is a component in src/components/glass/ in its own default shape. */
 @reference "./glass.css";
@@ -139,6 +139,32 @@ html:has(.ym-screen[data-screen="photos"]) #root {
     z-index: 30;
     margin-left: 0;
     padding: 6px 12px;
+  }
+}
+
+/* Round 5, variant (a): the count beside the render status, same type ("Neural · 42 ms · Display P3 · 4 of 12 · 3 picked"). It needs
+   about 270 px, so it is there from 1440 px and the strip's caption takes over below that (see `COUNT_IN_HEADER` in Photos.tsx). */
+.ym-status-group {
+  display: flex;
+  align-items: baseline;
+  margin-left: auto;
+  white-space: nowrap;
+}
+.ym-status-group .ym-status {
+  margin-left: 0;
+}
+.ym-status--count::before {
+  content: "·";
+  margin: 0 0.5em;
+}
+@media (min-width: 1440px) {
+  .ym-screen[data-count="header"] .ym-filmstrip__caption {
+    display: none;
+  }
+}
+@media (max-width: 1439px) {
+  .ym-status--count {
+    display: none;
   }
 }
 
@@ -497,11 +523,25 @@ html:has(.ym-screen[data-screen="photos"]) #root {
   @apply glass rounded-none;
   --strip-inset: var(--pad-panel);
   --strip-gap: 8px;
+  /* Round 5: the strip has a surface of its own, so the warm part of the aurora no longer sits under warm thumbnails. Three tried, one
+     chosen: change --strip-surface to --strip-graphite, --strip-blue or --strip-tab and nothing else. --strip-alpha is how much of the
+     colour covers the glass (100% is an opaque surface; less lets the aurora and the blur through). */
+  --strip-alpha: 96%;
+  --strip-graphite: linear-gradient(to bottom, color-mix(in oklch, oklch(0.3 0.008 255) var(--strip-alpha), transparent), color-mix(in oklch, oklch(0.2 0.008 255) var(--strip-alpha), transparent));
+  --strip-blue: linear-gradient(to bottom, color-mix(in oklch, oklch(0.27 0.045 232) var(--strip-alpha), transparent), color-mix(in oklch, oklch(0.165 0.035 240) var(--strip-alpha), transparent));
+  --strip-tab: linear-gradient(to bottom, color-mix(in oklab, color-mix(in oklab, var(--primary) 9%, oklch(0.23 0.004 255)) var(--strip-alpha), transparent), color-mix(in oklab, color-mix(in oklab, var(--primary) 3%, oklch(0.16 0.004 255)) var(--strip-alpha), transparent));
+  --strip-surface: var(--strip-blue);
   container-type: size;
+  position: relative;
   display: flex;
   align-items: stretch;
   box-sizing: border-box;
   min-width: 0;
+  background: var(--strip-surface);
+  /* Near-opaque, so there is nothing for a blur to frost: one backdrop filter less on the screen. (Lower --strip-alpha a lot and put the
+     blur back by deleting these two lines.) */
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
   border-width: 1px 0 0 0;
 }
 .ym-filmstrip__scroll {
@@ -578,31 +618,21 @@ html:has(.ym-screen[data-screen="photos"]) #root {
 span.ym-filmstrip__thumb {
   cursor: default;
 }
-.ym-filmstrip__counter {
-  display: flex;
-  flex-direction: column;
-  flex-shrink: 0;
-  justify-content: center;
-  gap: 6px;
-  box-sizing: border-box;
-  /* The inset on both sides of the widest everyday count ("99 / 99" is 86 px of text): the cell stays one width from photo 1 to 99. */
-  min-width: 136px;
-  padding: 0 var(--strip-inset);
-  border-left: 1px solid var(--rim);
-}
-.ym-filmstrip__count {
-  font-size: 26px;
-  font-weight: var(--fw-heavy);
-  letter-spacing: -0.02em;
-  line-height: 1;
-  font-variant-numeric: tabular-nums;
-}
-.ym-filmstrip__count-label {
+/* The caption: where you are in the folder, one line of muted text in the strip's top inset, above the first thumbnail. It never touches a
+   thumbnail (the inset is 24 px and the line 14 px; it sits a pixel high so that a focused thumbnail's 3 px ring, 3 px off, clears the
+   letters) and lets a wheel or a drag pass through to the strip. */
+.ym-filmstrip__caption {
+  position: absolute;
+  top: 5px;
+  left: var(--strip-inset);
+  z-index: 1;
   color: var(--glass-label-secondary);
   font-size: var(--fs-small);
-  font-weight: var(--fw-heavy);
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
+  font-weight: var(--fw-semibold);
+  font-variant-numeric: tabular-nums;
+  line-height: 14px;
+  white-space: nowrap;
+  pointer-events: none;
 }
 
 /* ---- Export panel ---------------------------------------------------------------------------------------------------------------- */
