@@ -147,7 +147,24 @@
     --color-ring: var(--ring);
     --color-primary-foreground: var(--primary-foreground);
     --color-primary: var(--primary);
-  @keyframes glass-aurora-1 {
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+}
+
+/* glasscn installs these inside @theme, where Tailwind 4 only keeps a keyframes that an `animate-*` utility uses. The aurora and the
+   dialogs apply them from inline styles and utilities of their own, so they would be dropped (no drift, no materialise). Top level, they stay. */
+@keyframes glass-aurora-1 {
   0%, 100% {
     transform: translate3d(0, 0, 0) scale(1);
         }
@@ -155,7 +172,7 @@
     transform: translate3d(6%, 4%, 0) scale(1.08);
         }
     }
-  @keyframes glass-aurora-2 {
+@keyframes glass-aurora-2 {
   0%, 100% {
     transform: translate3d(0, 0, 0) scale(1);
         }
@@ -163,7 +180,7 @@
     transform: translate3d(-5%, 6%, 0) scale(1.06);
         }
     }
-  @keyframes glass-aurora-3 {
+@keyframes glass-aurora-3 {
   0%, 100% {
     transform: translate3d(0, 0, 0) scale(1.04);
         }
@@ -171,12 +188,12 @@
     transform: translate3d(4%, -6%, 0) scale(1);
         }
     }
-  @keyframes glass-draw {
+@keyframes glass-draw {
   from {
     stroke-dashoffset: var(--glass-draw-from, 1);
         }
     }
-  @keyframes glass-materialize {
+@keyframes glass-materialize {
   from {
     --glass-materialize: 0;
     opacity: 0;
@@ -186,17 +203,17 @@
     background-color: transparent;
         }
     }
-  @keyframes glass-fade {
+@keyframes glass-fade {
   from {
     opacity: 0;
         }
     }
-  @keyframes glass-grow {
+@keyframes glass-grow {
   from {
     transform: scaleX(0);
         }
     }
-  @keyframes glass-pulse {
+@keyframes glass-pulse {
   0% {
     transform: scale(1);
     opacity: 0.7;
@@ -206,7 +223,7 @@
     opacity: 0;
         }
     }
-  @keyframes glass-typing {
+@keyframes glass-typing {
   0%, 60%, 100% {
     transform: translateY(0);
     opacity: 0.45;
@@ -216,7 +233,7 @@
     opacity: 1;
         }
     }
-  @keyframes glass-shimmer {
+@keyframes glass-shimmer {
   from {
     transform: translateX(-100%);
         }
@@ -224,7 +241,7 @@
     transform: translateX(100%);
         }
     }
-  @keyframes glass-shimmer-rtl {
+@keyframes glass-shimmer-rtl {
   from {
     transform: translateX(100%);
         }
@@ -232,7 +249,7 @@
     transform: translateX(-100%);
         }
     }
-  @keyframes glass-collapsible-down {
+@keyframes glass-collapsible-down {
   from {
     height: 0;
     opacity: 0;
@@ -241,7 +258,7 @@
     height: var(--radix-collapsible-content-height);
         }
     }
-  @keyframes glass-collapsible-up {
+@keyframes glass-collapsible-up {
   from {
     height: var(--radix-collapsible-content-height);
         }
@@ -250,7 +267,6 @@
     opacity: 0;
         }
     }
-}
 
 :root {
     --primary: oklch(0.557 0.19 34.8);
