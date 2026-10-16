@@ -1,3 +1,4 @@
+import { memo } from "react";
 import { AutoToggle, Card, formats, ResetLink, Slider } from "../../components";
 import { AUTO, manualOrAuto, OUTPUT_SHARPENING_DEFAULT } from "./shared";
 import type { TabProps } from "./shared";
@@ -8,7 +9,7 @@ import type { TabProps } from "./shared";
  * sharpening of the picture at the size it is shown and written (the owner's decision of 2026-10-13,
  * `docs/11-ui.md`): a plain percentage, 100 by default, so Reset goes back to 100 and not to Auto.
  */
-export function DetailTab({ store, rs }: TabProps) {
+export const DetailTab = memo(function DetailTab({ store, rs }: TabProps) {
   const { values, estimates, auto } = rs;
   const sharp = values.sharpen;
   const nr = values.noise_reduction;
@@ -98,4 +99,4 @@ export function DetailTab({ store, rs }: TabProps) {
       </Card>
     </>
   );
-}
+});

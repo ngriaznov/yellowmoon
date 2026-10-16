@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { memo, useEffect, useMemo, useState } from "react";
 import { Card, centralInnerPoint, CurvePlot, CURVE_CHANNEL_LABELS, ResetLink, Segmented } from "../../components";
 import type { CurveChannel } from "../../components";
 import type { Curves } from "../../api/types";
@@ -22,13 +22,11 @@ function plotHistogram(channel: CurveChannel, data: { red: number[]; green: numb
 }
 
 /** Curve: Luma, Red, Green and Blue curves on a 320 × 220 plot with the photo's histogram behind it. */
-export function CurveTab({ store, photo, rs }: TabProps) {
+export const CurveTab = memo(function CurveTab({ store, photo, rs }: TabProps) {
   const [channel, setChannel] = useState<CurveChannel>("luma");
   const histogram = useAppState((s) => s.histogram);
-  const stats = useAppState((s) => s.stats);
-  useEffect(() => {
-    void store.requestHistogram();
-  }, [store, stats, photo.id]);
+  // The histogram behind the plot follows the frames the viewport draws, at most five times a second (`store.watchHistogram`).
+  useEffect(() => store.watchHistogram(), [store, photo.id]);
   const background = useMemo(() => plotHistogram(channel, histogram), [channel, histogram]);
   const curve = rs.settings.curve;
 
@@ -52,4 +50,4 @@ export function CurveTab({ store, photo, rs }: TabProps) {
       </div>
     </Card>
   );
-}
+});

@@ -4,7 +4,7 @@ use std::borrow::Cow;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use tauri::http::{Request, Response};
+use tauri::http::Response;
 use tauri::menu::MenuEvent;
 use tauri::{App, AppHandle, Manager, RunEvent, Runtime, WindowEvent};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
@@ -15,6 +15,7 @@ use crate::cli_link::{CliLink, Elevate};
 use crate::commands::{self, AppState};
 use crate::events::{Emitter, TauriEmitter};
 use crate::menu::{self, Do};
+use crate::perf;
 use crate::system;
 use crate::viewport::{FRAME_SCHEME, FallbackSink, FrameSink, FrameStore};
 use crate::wire::{AppError, ErrorScope, MenuActionEvent};
@@ -41,8 +42,17 @@ pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
-        .register_uri_scheme_protocol(FRAME_SCHEME, move |_ctx, request| {
-            frame_response(&protocol_frames, &request)
+        // Asynchronous: the handler of a synchronous scheme runs on the main thread (wry calls it from
+        // `webView:startURLSchemeTask:`), and a request copies a PNG under a mutex. The filmstrip
+        // asks for hundreds of pictures at once when a folder opens, and the Look tab for as many
+        // whenever it is shown, so the copies are made on a blocking thread and only the answer
+        // goes back to the main thread.
+        .register_asynchronous_uri_scheme_protocol(FRAME_SCHEME, move |_ctx, request, responder| {
+            serve_frame(
+                Arc::clone(&protocol_frames),
+                request.uri().path().to_owned(),
+                move |response| responder.respond(response),
+            );
         })
         .invoke_handler(builder.invoke_handler())
         .menu(menu::build)
@@ -77,6 +87,9 @@ fn start(app: &mut App, frames: &Arc<FrameStore>) -> AppState {
         version = ym_core::version::app_version(),
         "starting Yellowmoon"
     );
+    if perf::enabled() {
+        perf::watch_main_thread(app.handle().clone());
+    }
     let emitter: Arc<dyn Emitter> = Arc::new(TauriEmitter::new(app.handle().clone()));
     let sink = make_sink(app, frames, &emitter);
     let cli = CliLink::locate()
@@ -135,16 +148,40 @@ fn elevator() -> Box<dyn Elevate + Send + Sync> {
     }
 }
 
-/// `ym-frame://localhost/frame-<n>.png` (a frame of the fallback viewport) or
-/// `ym-frame://localhost/thumb-<photo>-<version>.png` (a thumbnail of the filmstrip).
-fn frame_response(store: &FrameStore, request: &Request<Vec<u8>>) -> Response<Cow<'static, [u8]>> {
-    let (status, mime, body) = store.respond(request.uri().path());
+/// Answers a request of the `ym-frame` scheme without making the thread that got it (the main
+/// thread) wait: the response is made on a blocking thread, which may have to wait for the store's
+/// locks, and `respond` is called from there.
+fn serve_frame(
+    store: Arc<FrameStore>,
+    path: String,
+    respond: impl FnOnce(Response<Cow<'static, [u8]>>) + Send + 'static,
+) {
+    // Started here, on the thread that was called: the time to get a blocking thread counts.
+    let timer = perf::timer(perf::Timed::FrameHandler);
+    // The handle is dropped: the task runs to its end and answers by itself.
+    drop(tauri::async_runtime::spawn_blocking(move || {
+        let response = frame_response(&store, &path);
+        drop(timer);
+        respond(response);
+    }));
+}
+
+/// The answer for `path`, `/<launch>/frame-<n>.png` (a frame of the fallback viewport),
+/// `/<launch>/thumb-<photo>-<version>.png` (a thumbnail of the filmstrip) or
+/// `/<launch>/look-<photo>-<version>.png` (a tile of the Look tab).
+///
+/// Thumbnails and tiles that exist are cached for good: their address holds the launch id and a
+/// version that is never used twice, so what an address names never changes, and the webview need
+/// not ask again when the Look tab or the filmstrip is shown again. Frames and every 404 are not
+/// cached (see [`crate::viewport::Cache`]).
+fn frame_response(store: &FrameStore, path: &str) -> Response<Cow<'static, [u8]>> {
+    let served = store.serve(path);
     Response::builder()
-        .status(status)
-        .header("Content-Type", mime)
-        .header("Cache-Control", "no-store")
+        .status(served.status)
+        .header("Content-Type", served.mime)
+        .header("Cache-Control", served.cache.header())
         .header("Access-Control-Allow-Origin", "*")
-        .body(body)
+        .body(served.body)
         .unwrap_or_else(|_| Response::new(Cow::Borrowed(&[][..])))
 }
 
@@ -408,22 +445,81 @@ mod tests {
         assert!(!quit_needs_question(false, true));
     }
 
+    /// `/<launch>/<file>` of an address the store made.
+    fn path_of(url: &str) -> String {
+        let (_, path) = url.split_once("localhost/").expect("a localhost address");
+        format!("/{path}")
+    }
+
     #[test]
-    fn the_frame_protocol_answers_with_the_png_and_never_caches_it() {
+    fn the_frame_protocol_never_caches_frames_and_misses_but_caches_thumbnails_and_tiles_for_good() {
         let store = FrameStore::new();
         store.put(7, vec![1, 2, 3]);
-        let request = |path: &str| {
-            Request::builder()
-                .uri(format!("{FRAME_SCHEME}://localhost{path}"))
-                .body(Vec::new())
-                .expect("request")
-        };
-        let ok = frame_response(&store, &request("/frame-7.png"));
+        let frame_path = path_of(&store.frame_url(7));
+        let ok = frame_response(&store, &frame_path);
         assert_eq!(ok.status(), 200);
         assert_eq!(ok.headers()["Content-Type"], "image/png");
         assert_eq!(ok.headers()["Cache-Control"], "no-store");
         assert_eq!(ok.body().as_ref(), &[1, 2, 3]);
-        let gone = frame_response(&store, &request("/frame-8.png"));
+        let gone = frame_response(&store, &path_of(&store.frame_url(8)));
         assert_eq!(gone.status(), 404);
+        assert_eq!(gone.headers()["Cache-Control"], "no-store");
+
+        let thumb = store.put_thumbnail(4, vec![4, 4]);
+        let tile = store.put_look_tile(4, "builtin:neutral", vec![5]);
+        for (url, body) in [(&thumb, vec![4u8, 4]), (&tile, vec![5u8])] {
+            let response = frame_response(&store, &path_of(url));
+            assert_eq!(response.status(), 200, "{url}");
+            assert_eq!(response.headers()["Content-Type"], "image/png");
+            assert_eq!(
+                response.headers()["Cache-Control"],
+                "private, max-age=31536000, immutable",
+                "{url}"
+            );
+            assert_eq!(response.body().as_ref(), body.as_slice());
+        }
+        // The same address in an earlier launch is a miss, and a miss is never kept.
+        let other = FrameStore::with_launch_id("an-earlier-launch".to_owned());
+        let stale = frame_response(&other, &path_of(&thumb));
+        assert_eq!(stale.status(), 404);
+        assert_eq!(stale.headers()["Cache-Control"], "no-store");
+        assert!(frame_response(&store, "/thumb-4-1.png").status() == 404, "no launch id");
+    }
+
+    #[test]
+    fn a_request_is_answered_from_another_thread_even_when_the_store_is_busy() {
+        use std::sync::mpsc;
+        use std::time::{Duration, Instant};
+        let store = Arc::new(FrameStore::new());
+        let tile = store.put_look_tile(1, "builtin:neutral", vec![9, 9]);
+        let path = path_of(&tile);
+
+        // Another thread holds the tiles (a burst of `put_look_tile`, a 256 MB budget being
+        // enforced). The thread the handler is called on, which is the main thread, must not wait.
+        let held = store.hold_look_tiles();
+        let (tx, rx) = mpsc::channel();
+        let called = Instant::now();
+        serve_frame(Arc::clone(&store), path, move |response| {
+            let _ = tx.send(response);
+        });
+        assert!(
+            called.elapsed() < Duration::from_millis(250),
+            "the handler waited for the store: {:?}",
+            called.elapsed()
+        );
+        assert!(
+            rx.recv_timeout(Duration::from_millis(300)).is_err(),
+            "the answer came while the store was held"
+        );
+        drop(held);
+        let response = rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the answer arrives once the store is free");
+        assert_eq!(response.status(), 200);
+        assert_eq!(response.body().as_ref(), &[9, 9]);
+        assert_eq!(
+            response.headers()["Cache-Control"],
+            "private, max-age=31536000, immutable"
+        );
     }
 }

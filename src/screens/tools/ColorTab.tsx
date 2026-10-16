@@ -1,3 +1,4 @@
+import { memo } from "react";
 import { AutoToggle, Card, formats, ResetLink, Segmented, Slider, Tag, Wheel, WheelGroup } from "../../components";
 import type { ColorBalance, ColorBalancePoint, LightSource } from "../../api/types";
 import { KelvinSlider, SaturationSlider, setWhiteBalance, whiteBalanceState, whiteBalanceToAuto } from "./controls";
@@ -25,7 +26,7 @@ const ZERO_BALANCE: ColorBalance = { shadows: [0, 0], midtones: [0, 0], highligh
  * Colour: White balance (light presets, Kelvin, Tint) and Colour balance (three wheels and
  * Saturation). A picked white shows here with the EDITED tag.
  */
-export function ColorTab({ store, rs }: TabProps) {
+export const ColorTab = memo(function ColorTab({ store, rs }: TabProps) {
   const { settings, values, estimates } = rs;
   const { picked, isAuto: whiteIsAuto } = whiteBalanceState(rs);
   const toAuto = (): void => whiteBalanceToAuto(store);
@@ -82,4 +83,4 @@ export function ColorTab({ store, rs }: TabProps) {
       </Card>
     </>
   );
-}
+});

@@ -232,6 +232,8 @@ pub async fn viewport_info(state: State<'_, AppState>) -> Result<ViewportInfo, A
 #[tauri::command]
 #[specta::specta]
 pub fn viewport_set_rect(state: State<'_, AppState>, rect: ViewportRect) -> Result<(), AppError> {
+    // Timed (with `YM_PERF`, and in development builds): this runs on the main thread.
+    let _timer = crate::perf::timer(crate::perf::Timed::SetRect);
     state.api()?.viewport_set_rect(&rect)
 }
 

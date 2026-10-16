@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { memo, useEffect } from "react";
 import { AutoToggle, Card, formats, Histogram, ResetLink, Slider } from "../../components";
 import type { SettingsPatch } from "../../api/types";
 import { useAppState } from "../../state/context";
@@ -16,23 +16,15 @@ const EMPTY_HISTOGRAM = { red: [0, 0], green: [0, 0], blue: [0, 0] };
  * the AUTO button go back to Automatic, not to the number Automatic resolves to. The White card's
  * Offset is a plain number of stops added to the automatic lift: 0 is Automatic.
  */
-export function LightTab({ store, photo, rs }: TabProps) {
+export const LightTab = memo(function LightTab({ store, photo, rs }: TabProps) {
   const { values, estimates, auto } = rs;
   const histogram = useAppState((s) => s.histogram);
-  const stats = useAppState((s) => s.stats);
-  const [readout, setReadout] = useState<string | null>(null);
+  const middle = useAppState((s) => s.middleReadout);
+  const readout = middle ? `R ${middle.r}  G ${middle.g}  B ${middle.b}` : null;
 
-  // The plot follows every render. The left caption reads the middle of the frame.
-  useEffect(() => {
-    void store.requestHistogram();
-    let live = true;
-    void store.samplePixelAt(0.5, 0.5).then((pixel) => {
-      if (live && pixel) setReadout(`R ${pixel.r}  G ${pixel.g}  B ${pixel.b}`);
-    });
-    return () => {
-      live = false;
-    };
-  }, [store, stats, photo.id]);
+  // The plot follows the frames the viewport draws, at most five times a second; the left caption reads the middle of the frame
+  // (`store.watchHistogram`). Nothing is asked for per frame: every request is a job in the queue that also draws the viewport.
+  useEffect(() => store.watchHistogram({ readout: true }), [store, photo.id]);
 
   const send = (patch: SettingsPatch) => (final: boolean) => void store.update(patch, final);
   const exposure = (ev: number, final: boolean): void => void store.update({ exposure: manualOrAuto({ ev }, { ev: estimates.exposure_ev }) }, final);
@@ -106,4 +98,4 @@ export function LightTab({ store, photo, rs }: TabProps) {
       </Card>
     </>
   );
-}
+});

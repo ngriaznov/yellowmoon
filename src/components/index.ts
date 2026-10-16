@@ -42,6 +42,8 @@ export { Filmstrip } from "./Filmstrip";
 export type { FilmstripPhoto, FilmstripProps, FilmstripStatus } from "./Filmstrip";
 export { PhotoCell } from "./PhotoCell";
 export type { PhotoCellFrame, PhotoCellProps, PhotoProbe } from "./PhotoCell";
+export { usePhotoGestures, WHEEL_ZOOM_RATE } from "./usePhotoGestures";
+export type { PhotoGestureHandlers } from "./usePhotoGestures";
 export { UpdatePill } from "./UpdatePill";
 export type { UpdatePillProps } from "./UpdatePill";
 export { DevelopList, ExportQueueList } from "./ExportQueueList";

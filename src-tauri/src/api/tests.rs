@@ -82,9 +82,11 @@ fn served(h: &Harness, url: &str) -> Vec<u8> {
     body.into_owned()
 }
 
+/// `/<launch>/<file>`: what follows the host of an address of the scheme.
 fn path_of_url(url: &str) -> &str {
     assert!(url.contains("ym-frame"), "{url}");
-    &url[url.rfind('/').expect("a path")..]
+    let host = url.find("localhost/").expect("a localhost address");
+    &url[host + "localhost".len()..]
 }
 
 #[test]

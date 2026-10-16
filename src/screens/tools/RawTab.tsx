@@ -1,3 +1,4 @@
+import { memo } from "react";
 import { Card, formats, InfoRow, ResetLink, RowNote, Rows, Slider, SwitchRow } from "../../components";
 import type { CameraInfo, DecodeOptions } from "../../api/types";
 import type { TabProps } from "./shared";
@@ -35,7 +36,7 @@ const SWITCHES: ReadonlyArray<[keyof DecodeOptions, string]> = [
 ];
 
 /** RAW: the camera and its profile, the decode switches and the roll-off sliders. */
-export function RawTab({ store, photo, rs }: TabProps) {
+export const RawTab = memo(function RawTab({ store, photo, rs }: TabProps) {
   const { camera } = photo;
   const { decode, rolloff } = rs.settings;
   return (
@@ -85,4 +86,4 @@ export function RawTab({ store, photo, rs }: TabProps) {
       </Card>
     </>
   );
-}
+});

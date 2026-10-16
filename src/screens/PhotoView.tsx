@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { MouseEvent as ReactMouseEvent, WheelEvent as ReactWheelEvent } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { MouseEvent as ReactMouseEvent } from "react";
 import type { PhotoSummary, ResolvedSettings, ViewportRect } from "../api/types";
 import { PhotoCell, usePointerDrag } from "../components";
-import type { PhotoProbe } from "../components";
+import type { PhotoGestureHandlers, PhotoProbe } from "../components";
 import { isTauri } from "../env";
 import { useAppState } from "../state/context";
 import { cameraLine, photoName } from "../state/photo";
@@ -50,12 +50,16 @@ function notReadyNote(photo: PhotoSummary): { title: string; text: string } | nu
  * crop frame. Who draws the photo depends on the viewport backend (`viewport_info`): the native
  * layer behind a transparent cell (`native`), the shell's pictures of the cell shown as images
  * (`fallback`, from `viewport_frame`), or, with no backend (a browser build on the mock), the
- * mock's own picture. Double click toggles Fit and 100 %, the wheel zooms and pans, and a drag pans.
+ * mock's own picture. Double click toggles Fit and 100 %, the wheel pans and (with ⌘) zooms, a pinch zooms, and a drag pans: the
+ * wheel, the pinch and the drag go through `store.queueViewportInput`, which sends one command per frame (`docs/11` §Photos input).
+ *
+ * The screen draws it again only when what it shows changes (`memo`): a `render_stats` tick or a zoom step elsewhere does not.
  */
-export function PhotoView({ store, photo, rs, lookName, before, picking, onPicked, crop, onRect, compactCaption = false }: PhotoViewProps) {
+export const PhotoView = memo(function PhotoView({ store, photo, rs, lookName, before, picking, onPicked, crop, onRect, compactCaption = false }: PhotoViewProps) {
   const backend = useAppState((s) => s.viewportBackend);
   const sentFrame = useAppState((s) => s.viewportFrame);
-  const zoom = useAppState((s) => s.zoom);
+  // Only Pick white needs to know whether the picture is letterboxed; the zoom changes on every wheel step and is not read otherwise.
+  const letterboxed = useAppState((s) => picking && showsWhole(s.zoom, store.fitPercentExact()));
   const [readout, setReadout] = useState<string | null>(null);
   const probing = useRef(false);
 
@@ -130,12 +134,23 @@ export function PhotoView({ store, photo, rs, lookName, before, picking, onPicke
       const last = panning.current;
       if (!last) return;
       panning.current = { x: event.clientX, y: event.clientY };
-      void store.viewportInput({ kind: "pan", dx: event.clientX - last.x, dy: event.clientY - last.y });
+      store.queueViewportInput({ kind: "pan", dx: event.clientX - last.x, dy: event.clientY - last.y });
     },
     end: () => {
       panning.current = null;
+      // The last moves go out now, not with the next frame: the drag is over.
+      void store.flushViewportInput();
     },
   });
+
+  // The wheel and the pinch (native listeners, `usePhotoGestures`): claimed over the whole cell, acted on only when nothing else has
+  // the cell (Crop and Pick white do).
+  const gestures: PhotoGestureHandlers = {
+    enabled: () => !(crop || picking),
+    canPan: () => !store.showsWholePhoto(),
+    pan: (dx, dy) => store.queueViewportInput({ kind: "pan", dx, dy }),
+    zoom: (factor, x, y) => store.queueViewportInput({ kind: "zoom", factor, x, y }),
+  };
 
   const note = photo ? notReadyNote(photo) : null;
   const frame = backend === "fallback" && sentFrame && !note ? { src: sentFrame.url, widthPx: sentFrame.width, heightPx: sentFrame.height } : undefined;
@@ -166,15 +181,7 @@ export function PhotoView({ store, photo, rs, lookName, before, picking, onPicke
         const at = cellPoint(event);
         void store.viewportInput({ kind: "toggle_zoom", ...at });
       }}
-      onWheel={(event: ReactWheelEvent<HTMLElement>) => {
-        if (crop || picking) return;
-        if (event.ctrlKey || event.metaKey) {
-          const at = cellPoint(event);
-          void store.viewportInput({ kind: "zoom", factor: Math.exp(-event.deltaY * 0.01), ...at });
-        } else if (!store.showsWholePhoto()) {
-          void store.viewportInput({ kind: "pan", dx: -event.deltaX, dy: -event.deltaY });
-        }
-      }}
+      gestures={gestures}
       onPointerDown={onPointerDown}
     >
       {note ? (
@@ -185,9 +192,9 @@ export function PhotoView({ store, photo, rs, lookName, before, picking, onPicke
       ) : crop ? (
         <CropOverlay session={crop} />
       ) : picking ? (
-        <PickWhiteLayer displayAspect={displayAspect} letterboxed={showsWhole(zoom, store.fitPercentExact())} onPick={onPicked} />
+        <PickWhiteLayer displayAspect={displayAspect} letterboxed={letterboxed} onPick={onPicked} />
       ) : null}
     </PhotoCell>
   );
-}
+});
 

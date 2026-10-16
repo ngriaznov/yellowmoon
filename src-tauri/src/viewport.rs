@@ -124,15 +124,16 @@ impl Default for FrameStore {
     }
 }
 
-/// An id for this launch of the app: the time, in milliseconds since 1970, in hexadecimal, and
-/// how many stores this process made before (two stores of one process, as in the tests, never
-/// share one). It is not a secret; it only has to differ from the ids of earlier launches.
+/// An id for this launch of the app: the time, in milliseconds since 1970, in hexadecimal, a
+/// hyphen and how many stores this process made before (two stores of one process, as in the
+/// tests, never share one). It is not a secret; it only has to differ from the ids of earlier
+/// launches.
 fn new_launch_id() -> String {
     static MADE: AtomicU32 = AtomicU32::new(0);
     let millis = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_millis());
-    format!("{millis:x}{:x}", MADE.fetch_add(1, Ordering::Relaxed))
+    format!("{millis:x}-{:x}", MADE.fetch_add(1, Ordering::Relaxed))
 }
 
 /// How long the webview may keep an answer of the `ym-frame` scheme.
@@ -308,6 +309,7 @@ impl FrameStore {
     }
 
     /// The id of this launch, the first segment of every address.
+    #[cfg(test)]
     #[must_use]
     pub fn launch_id(&self) -> &str {
         &self.launch
@@ -578,7 +580,7 @@ impl FrameSink for FallbackSink {
             width: u32::try_from(frame.width).unwrap_or(u32::MAX),
             height: u32::try_from(frame.height).unwrap_or(u32::MAX),
             sharp: frame.sharp,
-            url: frame_url(seq),
+            url: self.store.frame_url(seq),
         }));
         Ok(())
     }
@@ -1670,11 +1672,330 @@ mod tests {
     }
 
     #[test]
-    fn frame_addresses_use_the_scheme() {
-        let url = frame_url(12);
+    fn frame_addresses_use_the_scheme_and_the_launch_id() {
+        let store = FrameStore::with_launch_id("18f3a".to_owned());
+        let url = store.frame_url(12);
         assert!(
-            url.contains("ym-frame") && url.ends_with("/frame-12.png"),
+            url.contains("ym-frame") && url.ends_with("/18f3a/frame-12.png"),
             "{url}"
         );
+        assert!(store.thumbnail_url(3, 4).ends_with("/18f3a/thumb-3-4.png"));
+        assert!(store.look_tile_url(3, 4).ends_with("/18f3a/look-3-4.png"));
+        assert_eq!(path_of_url(&url), "/18f3a/frame-12.png");
+    }
+
+    #[test]
+    fn every_store_has_a_launch_id_of_its_own() {
+        let ids: Vec<String> = (0..50)
+            .map(|_| FrameStore::new().launch_id().to_owned())
+            .collect();
+        for id in &ids {
+            assert!(!id.is_empty() && !id.contains('/'), "{id:?}");
+        }
+        let mut unique = ids.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(unique.len(), ids.len(), "{ids:?}");
+        // The start time comes first: hexadecimal milliseconds since 1970 (after November 2023).
+        let (time, _) = ids[0].split_once('-').expect("a time and a count");
+        let millis = u128::from_str_radix(time, 16).expect("hex time");
+        assert!(millis > 1_700_000_000_000, "{}", ids[0]);
+    }
+
+    #[test]
+    fn an_address_of_an_earlier_launch_is_not_served_and_the_same_picture_is_not_the_same_address() {
+        // Version counters start at 1 in every launch: photo 3's first thumbnail is
+        // `thumb-3-1.png` in both. The launch id keeps a webview that cached the first from being
+        // handed it for the second.
+        let before = FrameStore::with_launch_id("aaa".to_owned());
+        let after = FrameStore::with_launch_id("bbb".to_owned());
+        let old = before.put_thumbnail(3, vec![1]);
+        let new = after.put_thumbnail(3, vec![2]);
+        let old_look = before.put_look_tile(3, "builtin:neutral", vec![1]);
+        assert!(old.ends_with("thumb-3-1.png") && new.ends_with("thumb-3-1.png"));
+        assert_ne!(old, new);
+        assert_ne!(path_of_url(&old), path_of_url(&new));
+
+        assert_eq!(after.respond(path_of_url(&new)).0, 200);
+        for (name, url) in [("thumbnail", &old), ("look tile", &old_look)] {
+            let served = after.serve(path_of_url(url));
+            assert_eq!(served.status, 404, "{name}: an address of the launch before");
+            assert_eq!(served.cache, Cache::Never, "{name}");
+        }
+        // A path with no launch id, or with the id in the wrong place, is not an address either.
+        for bad in ["/thumb-3-1.png", "thumb-3-1.png", "/bbb", "/bbb/", "//thumb-3-1.png", "/bbb/x/thumb-3-1.png"] {
+            assert_eq!(after.serve(bad).status, 404, "{bad}");
+        }
+    }
+
+    #[test]
+    fn only_thumbnails_and_tiles_that_exist_are_cached_for_good() {
+        let store = FrameStore::new();
+        store.put(7, vec![7]);
+        let thumb = store.put_thumbnail(1, vec![1]);
+        let tile = store.put_look_tile(1, "builtin:neutral", vec![2]);
+        let at = |file: &str| format!("/{}/{file}", store.launch_id());
+
+        for url in [&thumb, &tile] {
+            let served = store.serve(path_of_url(url));
+            assert_eq!((served.status, served.cache), (200, Cache::Forever), "{url}");
+            assert_eq!(
+                served.cache.header(),
+                "private, max-age=31536000, immutable"
+            );
+        }
+        // A frame is replaced by the next one; a 404 may become a 200 (a tile not made yet).
+        let frame = store.serve(&at("frame-7.png"));
+        assert_eq!((frame.status, frame.cache), (200, Cache::Never));
+        assert_eq!(frame.cache.header(), "no-store");
+        for gone in ["frame-8.png", "thumb-1-9.png", "thumb-2-1.png", "look-1-9.png", "look-x.png"] {
+            let served = store.serve(&at(gone));
+            assert_eq!((served.status, served.cache), (404, Cache::Never), "{gone}");
+        }
+        // The session closed: the addresses answer 404 now, and not for good.
+        store.clear_thumbnails();
+        let served = store.serve(path_of_url(&thumb));
+        assert_eq!((served.status, served.cache), (404, Cache::Never));
+    }
+
+    // ----- Which render a request stops (`Flight`) -------------------------------------------
+
+    /// Puts a render of this kind in flight, as the worker does, and returns its token.
+    fn fly(shared: &Shared, flight: Flight) -> CancelToken {
+        let token = CancelToken::new();
+        lock(&shared.state).in_flight = Some((token.clone(), flight));
+        token
+    }
+
+    #[test]
+    fn a_request_lets_the_frame_being_drawn_finish_and_stops_the_pass_that_makes_sharp_tiles() {
+        let (vp, _events) = controller();
+        let shared = vp.shared();
+        vp.set_photo(Some(CorePhotoId(1)));
+        vp.set_rect(&cell(100.0, 80.0)).expect("rect");
+        let pan = || {
+            vp.input(&ViewportInput::Pan {
+                dx: crate::wire::Num(3.0),
+                dy: crate::wire::Num(0.0),
+            })
+            .expect("input");
+        };
+        let requests: Vec<(&str, Box<dyn Fn()>)> = vec![
+            ("an input", Box::new(pan)),
+            ("a settings patch", Box::new(|| vp.invalidate())),
+            ("a mode", Box::new(|| vp.set_mode(&ViewportMode::Fit).expect("mode"))),
+            ("Before", Box::new(|| vp.set_before(true))),
+            // The cell moved and kept its size.
+            ("a cell that only moved", Box::new(|| {
+                let mut moved = cell(100.0, 80.0);
+                moved.x = crate::wire::Num(40.0);
+                vp.set_rect(&moved).expect("rect");
+            })),
+            ("estimates", Box::new(|| shared.estimates_changed(CorePhotoId(1)))),
+        ];
+        for (what, request) in &requests {
+            let frame = fly(&shared, Flight::Frame);
+            request();
+            assert!(!frame.is_cancelled(), "{what} stopped the frame being drawn");
+            assert!(lock(&shared.state).dirty, "{what} did not ask for a new frame");
+
+            let tiles = fly(&shared, Flight::Tiles);
+            request();
+            assert!(tiles.is_cancelled(), "{what} left the sharp-tile pass running");
+        }
+        // The pass that was asked for is not asked for again until the new round has run.
+        assert!(!lock(&shared.state).want_sharp);
+    }
+
+    #[test]
+    fn a_request_that_makes_the_frame_wrong_stops_it() {
+        let (vp, _events) = controller();
+        let shared = vp.shared();
+        vp.set_photo(Some(CorePhotoId(1)));
+        vp.set_rect(&cell(100.0, 80.0)).expect("rect");
+
+        // Another photo.
+        for flight in [Flight::Frame, Flight::Tiles] {
+            let token = fly(&shared, flight);
+            vp.set_photo(Some(CorePhotoId(2)));
+            assert!(token.is_cancelled(), "{flight:?} of the photo before");
+            vp.set_photo(Some(CorePhotoId(1)));
+        }
+        // No photo (the session closed).
+        let token = fly(&shared, Flight::Frame);
+        vp.set_photo(None);
+        assert!(token.is_cancelled(), "the session closed");
+        vp.set_photo(Some(CorePhotoId(1)));
+
+        // A cell of another size, in either side or the scale; the same size again does not.
+        for resized in [cell(120.0, 80.0), cell(120.0, 90.0)] {
+            let token = fly(&shared, Flight::Frame);
+            vp.set_rect(&resized).expect("rect");
+            assert!(token.is_cancelled(), "a frame of the old size is no use");
+        }
+        let token = fly(&shared, Flight::Frame);
+        vp.set_rect(&cell(120.0, 90.0)).expect("rect");
+        assert!(!token.is_cancelled(), "the same size again");
+        let mut sharper = cell(120.0, 90.0);
+        sharper.scale = crate::wire::Num(2.0);
+        vp.set_rect(&sharper).expect("rect");
+        assert!(token.is_cancelled(), "the same size at another scale");
+    }
+
+    #[test]
+    fn a_round_taken_before_a_request_that_makes_its_frame_wrong_gives_up_and_a_later_one_does_not() {
+        let (vp, _events) = controller();
+        let shared = vp.shared();
+        vp.set_photo(Some(CorePhotoId(1)));
+        vp.set_rect(&cell(100.0, 80.0)).expect("rect");
+        assert!(lock(&shared.state).urgent);
+        // The worker takes the work (a round for photo 1), and then the photo changes before the
+        // round has registered what it draws: it must not draw photo 1.
+        let first = shared.next_work().expect("round");
+        assert_eq!(first.photo, Some(CorePhotoId(1)));
+        assert!(!lock(&shared.state).urgent, "taking work answers what was asked");
+        vp.set_photo(Some(CorePhotoId(2)));
+        assert!(lock(&shared.state).urgent, "the round for photo 1 is told to give up");
+        // The next round is for photo 2 and starts with the flag down.
+        let second = shared.next_work().expect("round");
+        assert_eq!(second.photo, Some(CorePhotoId(2)));
+        assert!(!lock(&shared.state).urgent);
+        // An ordinary request does not raise it.
+        vp.invalidate();
+        assert!(!lock(&shared.state).urgent);
+    }
+
+    #[test]
+    fn the_time_from_a_request_to_the_frame_is_kept_for_the_round_that_answers_it() {
+        let (vp, _events) = controller();
+        let shared = vp.shared();
+        vp.set_photo(Some(CorePhotoId(1)));
+        vp.set_rect(&cell(100.0, 80.0)).expect("rect");
+        std::thread::sleep(Duration::from_millis(5));
+        let first = shared.next_work().expect("round");
+        let waited = first.requested_at.expect("a request is behind the round").elapsed();
+        assert!(waited >= Duration::from_millis(5), "{waited:?}");
+        // Requests made while that round runs belong to the next one, and the oldest counts.
+        vp.invalidate();
+        std::thread::sleep(Duration::from_millis(2));
+        vp.invalidate();
+        let second = shared.next_work().expect("round");
+        let at = second.requested_at.expect("requests are behind the round");
+        assert!(at > first.requested_at.expect("first") && at.elapsed() >= Duration::from_millis(2));
+        // A round that nobody asked for (the sharp follow-up) has no time to report.
+        {
+            let mut st = lock(&shared.state);
+            st.dirty = true;
+            st.want_sharp = true;
+        }
+        assert!(shared.next_work().expect("round").requested_at.is_none());
+    }
+
+    #[test]
+    fn a_reader_waits_for_what_is_pending_no_longer_than_its_cap() {
+        // No worker: the rectangle is recorded and never applied, as when a round never ends.
+        let (vp, _events) = controller();
+        vp.set_photo(Some(CorePhotoId(1)));
+        vp.set_rect(&cell(100.0, 80.0)).expect("rect");
+        let started = Instant::now();
+        let (photo, _) = vp.snapshot_synced();
+        let waited = started.elapsed();
+        assert_eq!(photo, Some(CorePhotoId(1)));
+        assert!(waited >= SYNC_TIMEOUT - Duration::from_millis(50), "{waited:?}");
+        assert!(waited < SYNC_TIMEOUT + Duration::from_secs(1), "{waited:?}");
+    }
+
+    #[test]
+    fn frames_reach_the_screen_while_the_settings_change_faster_than_a_frame_takes() {
+        use crate::testing::{Harness, WAIT};
+        let h = Harness::new();
+        h.open(1);
+        h.develop();
+        let vp = h.api.viewport();
+        h.rect(200.0, 150.0);
+        h.frame_of_size(200, 150);
+        assert!(vp.wait_idle(WAIT));
+        let before = vp.frames_presented();
+
+        // A slider patch arrives every 2 ms, which is faster than a frame of the CPU renderer.
+        // Every request used to stop the frame being drawn, so none was finished until the patches
+        // stopped. It goes on past 200 until a second frame is out, so that a slow machine that
+        // needs more than 400 ms for a frame is not mistaken for starvation.
+        let deadline = Instant::now() + Duration::from_secs(60);
+        let mut calls = 0;
+        while (calls < 200 || vp.frames_presented() < before + 2) && Instant::now() < deadline {
+            vp.invalidate();
+            calls += 1;
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let shown = vp.frames_presented() - before;
+        assert!(
+            shown > 1,
+            "{shown} frames presented while {calls} requests arrived 2 ms apart"
+        );
+
+        // And the picture of the last request is the one that stays.
+        assert!(vp.wait_idle(WAIT));
+        let settled = vp.frames_presented();
+        vp.invalidate();
+        assert!(vp.wait_idle(WAIT));
+        assert!(vp.frames_presented() > settled);
+    }
+
+    #[test]
+    fn a_reader_asking_during_a_stream_of_input_is_answered_within_its_cap() {
+        use crate::testing::{Harness, WAIT};
+        let h = Harness::new();
+        h.open(1);
+        h.develop();
+        let vp = h.api.viewport();
+        h.rect(200.0, 150.0);
+        h.frame_of_size(200, 150);
+        assert!(vp.wait_idle(WAIT));
+        h.api
+            .viewport_input(&ViewportInput::ToggleZoom {
+                x: crate::wire::Num(100.0),
+                y: crate::wire::Num(75.0),
+            })
+            .expect("zoom in");
+        assert!(vp.wait_idle(WAIT));
+
+        // Pans arrive as fast as a hand makes them while a readout (a click for Pick white, the
+        // Option key's pixel) asks where the view is. It gets the state after the next round
+        // applied what was pending, which is at most one frame away, and never waits past its cap.
+        let api = Arc::clone(&h.api);
+        let stop = Arc::new(AtomicBool::new(false));
+        let feeder = {
+            let stop = Arc::clone(&stop);
+            std::thread::spawn(move || {
+                let mut i = 0_u32;
+                while !stop.load(Ordering::SeqCst) {
+                    let dx = if i % 2 == 0 { 2.0 } else { -2.0 };
+                    api.viewport_input(&ViewportInput::Pan {
+                        dx: crate::wire::Num(dx),
+                        dy: crate::wire::Num(0.0),
+                    })
+                    .expect("pan");
+                    i += 1;
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+            })
+        };
+        let mut slowest = Duration::ZERO;
+        for _ in 0..10 {
+            let asked = Instant::now();
+            let (photo, state) = vp.snapshot_synced();
+            slowest = slowest.max(asked.elapsed());
+            assert!(photo.is_some());
+            assert!(matches!(state.mode, CoreMode::Percent { .. }));
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        stop.store(true, Ordering::SeqCst);
+        feeder.join().expect("the feeder");
+        assert!(
+            slowest < SYNC_TIMEOUT + Duration::from_secs(1),
+            "a reader waited {slowest:?} (the cap is {SYNC_TIMEOUT:?})"
+        );
+        assert!(vp.wait_idle(WAIT));
     }
 }

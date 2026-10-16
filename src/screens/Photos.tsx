@@ -1,12 +1,14 @@
 import { memo, useCallback, useMemo, useState } from "react";
-import type { ColorSpace, RenderStats } from "../api/types";
+import type { ColorSpace, PhotoSummary, RenderStats, ResolvedSettings, ViewportMode } from "../api/types";
 import { Button, Filmstrip, TabBar, tabPanelProps, TitleBlock, useLatest, useTabShortcuts } from "../components";
 import { exportModel } from "../export/model";
 import { cellLabel, summarise } from "../export/run";
 import type { FilmstripPhoto, TabId } from "../components";
+import { perfCount } from "../perf";
 import { useAppState, useCurrentPhoto, useCurrentSettings, useStore } from "../state/context";
 import { lookLabeller, looksInDisplayOrder } from "../state/looks";
 import { folderSubline, isReady, photoName } from "../state/photo";
+import type { AppStore } from "../state/store";
 import { useShortcuts } from "../state/useShortcuts";
 import { fitZoomExact, fitZoomOf, showsWhole, ZOOMS, zoomKey, zoomStep } from "../state/zoom";
 import { CropPanel } from "./crop/CropPanel";
@@ -38,28 +40,96 @@ export function exportStatusText(stats: RenderStats): string {
 /** The filmstrip only draws again when its photos or the selection change, not on every slider frame. */
 const PhotoStrip = memo(Filmstrip);
 
+/** The header's status text. It reads `render_stats` itself, so a frame drawn by the viewport redraws this span and not the screen. */
+function StatusText({ forExport = false }: { forExport?: boolean }) {
+  const text = useAppState((s) => (s.stats ? (forExport ? exportStatusText(s.stats) : statusText(s.stats)) : null));
+  return text === null ? null : <span className="ym-status">{text}</span>;
+}
+
+/** What the zoom button says and which entry of its menu is the current one, from the zoom, the core's Fit figure and an estimate of it. */
+function zoomView(zoom: ViewportMode, stats: RenderStats | null, estimate: number | null): { label: string; key: string } {
+  // The Fit zoom, not rounded: a fixed zoom no larger than it is Fit to the core (50 % where Fit is 62 %). The core's own figure
+  // (`render_stats.fit_percent`, which counts the lens crop, the straighten angle and the crop) once it has drawn a frame, else the
+  // estimate from the photo and the cell, which is all the mock has.
+  const fit = fitZoomOf(stats, estimate);
+  const whole = showsWhole(zoom, fit);
+  const fitPercent = fit === null ? null : Math.round(fit);
+  const label = whole || zoom.kind === "fit" ? (fitPercent === null ? "Fit" : `Fit ${fitPercent}%`) : `${Math.round(zoom.value)}%`;
+  return { label, key: zoomKey(whole ? { kind: "fit" } : zoom) };
+}
+
+interface ZoomMenuProps {
+  store: AppStore;
+  photo: PhotoSummary | null;
+  rs: ResolvedSettings | null;
+  /** The photo cell's size, for the estimate of the Fit zoom. */
+  cell: { width: number; height: number; scale: number } | null;
+}
+
+/** The header's zoom button and menu. It reads the zoom and `render_stats` itself: a wheel zoom or a frame redraws this button only. */
+const ZoomMenu = memo(function ZoomMenu({ store, photo, rs, cell }: ZoomMenuProps) {
+  const estimate = cell && photo ? fitZoomExact(cell, photo, rs?.values ?? null) : null;
+  const label = useAppState((s) => zoomView(s.zoom, s.stats, estimate).label);
+  const key = useAppState((s) => zoomView(s.zoom, s.stats, estimate).key);
+  return (
+    <Menu
+      label="Zoom"
+      options={ZOOMS.map((z) => ({ value: z.key, label: z.label }))}
+      value={key}
+      onSelect={(next) => {
+        const z = ZOOMS.find((item) => item.key === next);
+        if (z) void store.setZoom(z.mode);
+      }}
+      trigger={({ ref, ...props }) => (
+        <Button variant="header" className="ym-fit" ref={ref} title="Zoom (Z toggles Fit and 100%)" {...props}>
+          {label}
+          <span className="ym-caret" aria-hidden="true" />
+        </Button>
+      )}
+    />
+  );
+});
+
+/**
+ * The Export cell of the header. It reads the run and the picks itself, so a tile finishing in an export redraws this button, not the
+ * screen.
+ */
+function ExportCellContainer({ store }: { store: AppStore }) {
+  const exporting = useAppState((s) => s.panel === "export");
+  // While the panel is open it says where the export is; the cell keeps its name, as in the mockup.
+  const label = useAppState((s) => {
+    if (s.panel === "export") return "Export";
+    if (s.exportRun) return cellLabel(s.exportRun);
+    const nPicked = s.session?.picked.length ?? 0;
+    return nPicked > 1 ? `Export ${nPicked}` : "Export";
+  });
+  const progress = useAppState((s) => (s.panel !== "export" && s.exportRun?.phase === "running" ? summarise(s.exportRun).percent : undefined));
+  return <ExportCell label={label} current={exporting} progress={progress} onClick={() => (store.getState().panel === "export" ? store.closeExport() : store.openExport())} />;
+}
+
 /**
  * The Photos screen (`design/mockups/photos.html`, `docs/11-ui.md` §Photos): the header with
  * Before, Crop, Pick white and the zoom menu, the photo, the filmstrip and the tool panel with its
  * six tabs. The Crop panel and the Export panel replace the tool panel.
  */
 export function Photos() {
+  perfCount("Photos");
   const store = useStore();
   const session = useAppState((s) => s.session);
   const looks = useAppState((s) => s.looks);
-  const stats = useAppState((s) => s.stats);
   const before = useAppState((s) => s.before);
-  const zoom = useAppState((s) => s.zoom);
   const thumbnails = useAppState((s) => s.thumbnails);
   const photo = useCurrentPhoto();
   const rs = useCurrentSettings();
 
+  // What changes often is read where it is shown, not here: the zoom and `render_stats` by the zoom button and the status text, the
+  // export run by the Export cell. A frame drawn by the viewport or a tile finished by an export does not redraw this screen.
   const panel = useAppState((s) => s.panel);
-  const exportRun = useAppState((s) => s.exportRun);
-  const exportScope = useAppState((s) => s.exportScope);
-  const exportOptions = useAppState((s) => s.exportOptions);
-  const settings = useAppState((s) => s.settings);
-  const preferences = useAppState((s) => s.preferences);
+  // What only the Export panel needs is not subscribed to while it is closed: the settings of every photo change with each slider move.
+  const exportScope = useAppState((s) => (s.panel === "export" ? s.exportScope : null));
+  const exportOptions = useAppState((s) => (s.panel === "export" ? s.exportOptions : null));
+  const settings = useAppState((s) => (s.panel === "export" ? s.settings : null));
+  const preferences = useAppState((s) => (s.panel === "export" ? s.preferences : null));
   const overlay = useAppState((s) => s.overlay);
   const [tab, setTab] = useState<TabId>("look");
   const [picking, setPicking] = useState(false);
@@ -78,12 +148,14 @@ export function Photos() {
   }, [looks]);
 
   const photos = session?.photos ?? [];
-  const nPicked = session?.picked.length ?? 0;
   const cropping = crop.active;
 
   // In the Export panel the filmstrip dims the photos that won't be exported.
   const included = useMemo(
-    () => (panel === "export" ? exportModel({ session, settings, looks, preferences }, exportScope, exportOptions).included : null),
+    () =>
+      panel === "export" && settings && exportScope && exportOptions
+        ? exportModel({ session, settings, looks, preferences }, exportScope, exportOptions).included
+        : null,
     [panel, session, settings, looks, preferences, exportScope, exportOptions],
   );
 
@@ -125,11 +197,8 @@ export function Photos() {
   };
   useTabShortcuts(showTab, !cropping && overlay === null);
 
-  // The Fit zoom, not rounded: a fixed zoom no larger than it is Fit to the core (50 % where Fit is 62 %). The core's own figure
-  // (`render_stats.fit_percent`, which counts the lens crop, the straighten angle and the crop) once it has drawn a frame, else the
-  // estimate from the photo and the cell, which is all the mock has.
-  const fitExact = fitZoomOf(stats, cell && photo ? fitZoomExact(cell, photo, rs?.values ?? null) : null);
-  const zoomBy = (delta: number): void => void store.setZoom(zoomStep(zoom, delta, fitExact));
+  // The zoom and the Fit zoom are read when the key is pressed, not at each render: this screen does not follow them.
+  const zoomBy = (delta: number): void => void store.setZoom(zoomStep(store.getState().zoom, delta, store.fitPercentExact()));
   const toggleZoom = (): void => void store.toggleZoom();
 
   const startCrop = (): void => {
@@ -142,11 +211,17 @@ export function Photos() {
     if (!rs || !photo || !isReady(photo) || cropping) return;
     setPicking((on) => !on);
   };
-  const onPicked = (point: { x: number; y: number }): void => {
-    setPicking(false);
-    setTab("color");
-    void store.pickWhite(point.x, point.y);
-  };
+  const onPicked = useCallback(
+    (point: { x: number; y: number }): void => {
+      setPicking(false);
+      setTab("color");
+      void store.pickWhite(point.x, point.y);
+    },
+    [store],
+  );
+  const onRect = useCallback((rect: { width: number; height: number; scale: number }): void => {
+    setCell((was) => (was && was.width === rect.width && was.height === rect.height && was.scale === rect.scale ? was : { width: rect.width, height: rect.height, scale: rect.scale }));
+  }, []);
 
   useShortcuts(
     (shortcut) => {
@@ -221,10 +296,6 @@ export function Photos() {
     overlay === null,
   );
 
-  const whole = showsWhole(zoom, fitExact);
-  const fitPercent = fitExact === null ? null : Math.round(fitExact);
-  const zoomLabel = whole || zoom.kind === "fit" ? (fitPercent === null ? "Fit" : `Fit ${fitPercent}%`) : `${Math.round(zoom.value)}%`;
-
   let panelNode;
   if (crop.session) {
     panelNode = <CropPanel session={crop.session} />;
@@ -261,25 +332,16 @@ export function Photos() {
   }
 
   const exporting = panel === "export";
-  const exportCell = (
-    <ExportCell
-      // While the panel is open it says where the export is; the cell keeps its name, as in the mockup.
-      label={exporting ? "Export" : exportRun ? cellLabel(exportRun) : nPicked > 1 ? `Export ${nPicked}` : "Export"}
-      current={exporting}
-      progress={!exporting && exportRun?.phase === "running" ? summarise(exportRun).percent : undefined}
-      onClick={() => (exporting ? store.closeExport() : store.openExport())}
-    />
-  );
 
   return (
     <div className="ym-screen" data-screen="photos" data-panel={panel}>
-      <Header titleAs="h1" title={session?.folder_name ?? "Yellowmoon"} subline={session ? folderSubline(session) : ""} export={exportCell}>
+      <Header titleAs="h1" title={session?.folder_name ?? "Yellowmoon"} subline={session ? folderSubline(session) : ""} export={<ExportCellContainer store={store} />}>
         {exporting ? (
           <>
             <Button variant="header" onClick={() => store.closeExport()}>
               ← Back to photos
             </Button>
-            {stats ? <span className="ym-status">{exportStatusText(stats)}</span> : null}
+            <StatusText forExport />
           </>
         ) : (
           <>
@@ -292,28 +354,14 @@ export function Photos() {
             <Button variant="header" pressed={picking} disabled={!rs || cropping} onClick={togglePicking} title="Pick white (W)">
               Pick white
             </Button>
-            <Menu
-              label="Zoom"
-              options={ZOOMS.map((z) => ({ value: z.key, label: z.label }))}
-              value={zoomKey(whole ? { kind: "fit" } : zoom)}
-              onSelect={(key) => {
-                const z = ZOOMS.find((item) => item.key === key);
-                if (z) void store.setZoom(z.mode);
-              }}
-              trigger={({ ref, ...props }) => (
-                <Button variant="header" className="ym-fit" ref={ref} title="Zoom (Z toggles Fit and 100%)" {...props}>
-                  {zoomLabel}
-                  <span className="ym-caret" aria-hidden="true" />
-                </Button>
-              )}
-            />
+            <ZoomMenu store={store} photo={photo} rs={rs} cell={cell} />
             {picking ? (
               <span className="ym-status" data-hint="true" role="status">
                 Click something neutral: grey or white.
               </span>
-            ) : stats ? (
-              <span className="ym-status">{statusText(stats)}</span>
-            ) : null}
+            ) : (
+              <StatusText />
+            )}
           </>
         )}
       </Header>
@@ -328,7 +376,7 @@ export function Photos() {
         picking={picking}
         onPicked={onPicked}
         crop={crop.session}
-        onRect={(rect) => setCell({ width: rect.width, height: rect.height, scale: rect.scale })}
+        onRect={onRect}
       />
 
       <PhotoStrip mode={exporting ? "export" : "browse"} photos={strip} currentId={photo?.id ?? null} onSelect={select} onTogglePick={togglePickOf} />

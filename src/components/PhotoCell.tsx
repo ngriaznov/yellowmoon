@@ -4,6 +4,8 @@ import type { ViewportRect } from "../api/types";
 import { isTauri } from "../env";
 import { cx } from "./cx";
 import { useLatest } from "./hooks";
+import { usePhotoGestures } from "./usePhotoGestures";
+import type { PhotoGestureHandlers } from "./usePhotoGestures";
 
 export interface PhotoProbe {
   /** Position in the cell, 0–1 across and down. */
@@ -54,6 +56,11 @@ export interface PhotoCellProps extends Omit<HTMLAttributes<HTMLElement>, "child
    * released or the pointer leaves. The screen answers with `sample_pixel` and `pixelReadout`.
    */
   onPixelProbe?: (probe: PhotoProbe | null) => void;
+  /**
+   * What the wheel and a trackpad pinch do over the cell. With it the cell claims every wheel and gesture event over it (nothing
+   * scrolls or bounces under the photo); without it the cell leaves them to the page (`usePhotoGestures`).
+   */
+  gestures?: PhotoGestureHandlers;
   /** Extra layers over the photo (the crop rectangle). They fill the cell. */
   children?: ReactNode;
   className?: string;
@@ -86,11 +93,15 @@ export function PhotoCell({
   native = isTauri(),
   onRect,
   onPixelProbe,
+  gestures,
   children,
   className,
   ...rest
 }: PhotoCellProps) {
   const cell = useRef<HTMLElement>(null);
+  // Where the cell is, as `report` last measured it: a pointer move or a wheel event over the cell reads this instead of asking the
+  // browser (a forced layout whenever anything on the page is dirty). It is as fresh as what the native layer follows.
+  const placed = useRef<{ left: number; top: number; width: number; height: number } | null>(null);
   const onRectRef = useLatest(onRect);
   const probeRef = useLatest(onPixelProbe);
   const pointer = useRef<PhotoProbe | null>(null);
@@ -102,6 +113,7 @@ export function PhotoCell({
     let previous: ViewportRect | null = null;
     const report = (): void => {
       const box = el.getBoundingClientRect();
+      placed.current = { left: box.left, top: box.top, width: box.width, height: box.height };
       const next: ViewportRect = {
         x: box.left,
         y: box.top,
@@ -159,9 +171,18 @@ export function PhotoCell({
     };
   }, [onPixelProbe, probeRef]);
 
+  /** The cell's place: the last measured one, or a fresh measurement before the first (and for a cell that has no size yet). */
+  const place = (): { left: number; top: number; width: number; height: number } => {
+    const known = placed.current;
+    if (known && known.width > 0 && known.height > 0) return known;
+    const box = cell.current?.getBoundingClientRect();
+    return box ? { left: box.left, top: box.top, width: box.width, height: box.height } : { left: 0, top: 0, width: 0, height: 0 };
+  };
+  usePhotoGestures(cell, gestures, place);
+
   const onPointerMove = (event: ReactPointerEvent<HTMLElement>): void => {
     rest.onPointerMove?.(event);
-    const box = event.currentTarget.getBoundingClientRect();
+    const box = place();
     if (box.width <= 0 || box.height <= 0) return;
     pointer.current = { x: (event.clientX - box.left) / box.width, y: (event.clientY - box.top) / box.height };
     if (event.altKey) {

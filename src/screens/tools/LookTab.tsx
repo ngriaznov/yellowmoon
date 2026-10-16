@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { AutoRow, AutoToggle, Card, Field, formats, LinkButton, LookTile, ResetLink, Rows, SearchField, Segmented, Slider, Tag } from "../../components";
 import type { TabId } from "../../components";
-import type { ApplyScope, Look, LookLibrary, ResolvedSettings } from "../../api/types";
+import type { ApplyScope, Look, LookId, LookLibrary, ResolvedSettings } from "../../api/types";
+import { perfCount } from "../../perf";
 import { useAppState, useStore } from "../../state/context";
 import { isArriLook, LOOK_LIBRARIES, looksInDisplayOrder, lookTooltip } from "../../state/looks";
 import type { LookLibraryInfo } from "../../state/looks";
@@ -15,6 +16,12 @@ import type { TabProps } from "./shared";
 
 /** Said on a tile whose look file is gone or changed (`docs/08-looks.md` §Missing looks). */
 export const MISSING_LOOK_NOTE = "File missing or changed. Import again.";
+
+/**
+ * How long the photo's settings must rest before the tiles are made again: a person moving a slider on this tab (the Tone card is
+ * here) is not asking to see every look through each step, and each remake is a job for the core's one foreground worker.
+ */
+export const THUMBNAIL_SETTLE_MS = 400;
 
 /** Waits `ms` after a value stops changing before passing it on; the first value passes at once. */
 function useSettled<T>(value: T, ms: number): T {
@@ -31,6 +38,46 @@ function useSettled<T>(value: T, ms: number): T {
   return settled;
 }
 
+/**
+ * Tells the tiles of the tab when they are in view, with one `IntersectionObserver` for all of them (a tab can hold hundreds of
+ * tiles; one observer each was a few hundred objects the page had to keep). Without `IntersectionObserver` (a test) every tile is
+ * always in view.
+ */
+export interface TileWatch {
+  /** Calls `callback(true)` while `el` is in view and `callback(false)` while it is not, both ways. Returns the function that stops. */
+  observe: (el: Element, callback: (inView: boolean) => void) => () => void;
+  /** Stops watching everything; `observe` starts again if asked. */
+  disconnect: () => void;
+}
+
+/** Makes a {@link TileWatch}. */
+export function createTileWatch(): TileWatch {
+  const callbacks = new Map<Element, (inView: boolean) => void>();
+  let observer: IntersectionObserver | null = null;
+  return {
+    observe(el, callback) {
+      if (typeof IntersectionObserver === "undefined") {
+        callback(true);
+        return () => undefined;
+      }
+      observer ??= new IntersectionObserver((entries) => {
+        for (const entry of entries) callbacks.get(entry.target)?.(entry.isIntersecting);
+      });
+      callbacks.set(el, callback);
+      observer.observe(el);
+      return () => {
+        callbacks.delete(el);
+        observer?.unobserve(el);
+      };
+    },
+    disconnect() {
+      observer?.disconnect();
+      observer = null;
+      callbacks.clear();
+    },
+  };
+}
+
 interface LazyTileProps {
   look: Look;
   index: number;
@@ -38,32 +85,32 @@ interface LazyTileProps {
   photoId: number;
   /** Everything about the photo except its look; when it changes the thumbnails are made again. */
   thumbKey: string;
-  onSelect: () => void;
+  /** One function for every tile of the grid (a tile of its own would be a new prop for each, and every tile would draw again). */
+  onSelect: (id: LookId) => void;
+  /** The tab's shared observer. */
+  watch: TileWatch;
 }
 
 /**
- * A look tile that asks for its thumbnail when it scrolls into view, and again when the photo's other settings change, when the
- * request it was handed failed, and when the picture it was given does not load (`useLookThumbnail`).
+ * A look tile that asks for its thumbnail while it is in view (the tab's shared `TileWatch`), and again when the photo's other settings
+ * change, when the request it was handed failed, and when the picture it was given does not load (`useLookThumbnail`). A tile out of
+ * view asks for nothing and keeps the picture it has; it asks for a new one when it comes back with other settings.
+ *
+ * It draws again only when one of its own props changes (`memo`): a tick of the status line, a slider moving or another tile
+ * becoming the selected one leaves the others alone.
  */
-function LazyLookTile({ look, index, selected, photoId, thumbKey, onSelect }: LazyTileProps) {
+const LazyLookTile = memo(function LazyLookTile({ look, index, selected, photoId, thumbKey, onSelect, watch }: LazyTileProps) {
+  perfCount("LazyLookTile");
   const store = useStore();
   const button = useRef<HTMLButtonElement>(null);
-  const [visible, setVisible] = useState(typeof IntersectionObserver === "undefined");
+  const [inView, setInView] = useState(typeof IntersectionObserver === "undefined");
 
   useEffect(() => {
     const el = button.current;
-    if (!el || typeof IntersectionObserver === "undefined") return;
-    const observer = new IntersectionObserver((entries) => {
-      if (entries.some((e) => e.isIntersecting)) {
-        setVisible(true);
-        observer.disconnect();
-      }
-    });
-    observer.observe(el);
-    return () => observer.disconnect();
-  }, []);
+    return el ? watch.observe(el, setInView) : undefined;
+  }, [watch]);
 
-  const { src, onImageError } = useLookThumbnail(store, photoId, look.id, thumbKey, visible && !look.missing);
+  const { src, onImageError } = useLookThumbnail(store, photoId, look.id, thumbKey, inView && !look.missing);
 
   return (
     <LookTile
@@ -76,11 +123,11 @@ function LazyLookTile({ look, index, selected, photoId, thumbKey, onSelect }: La
       disabled={look.missing}
       note={look.missing ? MISSING_LOOK_NOTE : undefined}
       title={lookTooltip(look)}
-      onSelect={onSelect}
+      onSelect={() => onSelect(look.id)}
       onImageError={onImageError}
     />
   );
-}
+});
 
 interface LookSectionProps {
   library: LookLibraryInfo;
@@ -182,9 +229,11 @@ export interface LookTabProps extends TabProps {
  * Look card (strength, "Apply to", search and the grid of looks with lazy thumbnails) and the Tone
  * card (Temperature, Contrast, Saturation).
  */
-export function LookTab({ store, photo, rs, onOpenTab }: LookTabProps) {
+export const LookTab = memo(function LookTab({ store, photo, rs, onOpenTab }: LookTabProps) {
+  perfCount("LookTab");
   const looks = useAppState((s) => s.looks);
-  const session = useAppState((s) => s.session);
+  const nPicked = useAppState((s) => s.session?.picked.length ?? 0);
+  const nAll = useAppState((s) => s.session?.photos.length ?? 0);
   const scope = useAppState((s) => s.applyScope);
   const [query, setQuery] = useState("");
   const { settings, values, auto } = rs;
@@ -201,7 +250,12 @@ export function LookTab({ store, photo, rs, onOpenTab }: LookTabProps) {
     const { look: _look, look_intensity: _intensity, ...rest } = settings;
     return JSON.stringify(rest);
   }, [settings]);
-  const thumbKey = useSettled(rawKey, 250);
+  const thumbKey = useSettled(rawKey, THUMBNAIL_SETTLE_MS);
+
+  // One observer and one select function for every tile, so a tile's props change only when the tile does.
+  const [watch] = useState(createTileWatch);
+  useEffect(() => () => watch.disconnect(), [watch]);
+  const selectLook = useCallback((id: LookId) => void store.chooseLook(id), [store]);
 
   // One section per library that has looks, in display order; the search narrows what each shows.
   const sections = useMemo(() => {
@@ -219,8 +273,6 @@ export function LookTab({ store, photo, rs, onOpenTab }: LookTabProps) {
   const anyShown = sections.some((s) => s.shown.length > 0);
   const arriCount = ordered.filter(isArriLook).length;
 
-  const nPicked = session?.picked.length ?? 0;
-  const nAll = session?.photos.length ?? 0;
   const scopeOptions: Array<{ value: ApplyScope; label: string }> = [
     { value: "this", label: "This photo" },
     { value: "picked", label: `Picked · ${nPicked}` },
@@ -327,7 +379,8 @@ export function LookTab({ store, photo, rs, onOpenTab }: LookTabProps) {
                     selected={look.id === settings.look}
                     photoId={photo.id}
                     thumbKey={thumbKey}
-                    onSelect={() => void store.chooseLook(look.id)}
+                    onSelect={selectLook}
+                    watch={watch}
                   />
                 ))}
               </LookSection>
@@ -349,5 +402,5 @@ export function LookTab({ store, photo, rs, onOpenTab }: LookTabProps) {
       <ToneCard store={store} rs={rs} />
     </>
   );
-}
+});
 

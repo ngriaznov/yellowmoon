@@ -444,6 +444,7 @@ impl LagHistogram {
     }
 
     /// How many waits there were.
+    #[cfg(test)]
     #[must_use]
     pub fn total(&self) -> u32 {
         self.counts.iter().sum()
@@ -455,7 +456,8 @@ impl LagHistogram {
         self.worst
     }
 
-    /// The count of waits slower than the top edge, and the ones between the edges before it.
+    /// The waits in each bucket: below each edge of [`EDGES_MS`], then the slower ones.
+    #[cfg(test)]
     #[must_use]
     pub fn counts(&self) -> [u32; 6] {
         self.counts
