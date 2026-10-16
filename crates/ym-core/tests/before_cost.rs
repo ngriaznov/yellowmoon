@@ -91,9 +91,8 @@ fn flipping_to_before_costs() {
         st.set_mode(ViewportMode::Percent { value: 100.0 }, (w, h));
     }
     let baseline = rss_mib().0;
-    let mut line = format!(
-        "{stem} {w}x{h} {backend} {zoom}: rss before any render {baseline:.0} MiB;"
-    );
+    let mut line =
+        format!("{stem} {w}x{h} {backend} {zoom}: rss before any render {baseline:.0} MiB;");
     let steps = [
         ("final", false),
         ("final again", false),

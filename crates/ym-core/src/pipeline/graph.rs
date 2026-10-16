@@ -482,7 +482,11 @@ impl PhotoGraph {
         let st = lock(&self.state);
         st.sigma.as_ref().map_or(0, |(_, s)| s.bytes())
             + st.groups.as_ref().map_or(0, ByteLru::used)
-            + st.full.iter().flatten().map(|(_, f)| f.bytes()).sum::<usize>()
+            + st.full
+                .iter()
+                .flatten()
+                .map(|(_, f)| f.bytes())
+                .sum::<usize>()
             + st.tiles.as_ref().map_or(0, ByteLru::used)
             + st.frames.as_ref().map_or(0, ByteLru::used)
             + st.display.as_ref().map_or(0, ByteLru::used)

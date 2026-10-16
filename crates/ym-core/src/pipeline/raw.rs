@@ -3389,7 +3389,10 @@ mod tests {
         let params = params_for_tests();
         let with_r3 = RawPlan::new(&raw, &frame, &params).expect("plan");
         let without = RawPlan::new(&raw, &frame, &params.without_vignetting()).expect("plan");
-        assert!(with_r3.vignette.is_some(), "the file has a vignetting table");
+        assert!(
+            with_r3.vignette.is_some(),
+            "the file has a vignetting table"
+        );
         assert!(without.vignette.is_none(), "the Before view has no R3");
         // Distortion and its crop stay: the Before view's geometry is the final picture's.
         assert!(with_r3.lens.is_some() && without.lens.is_some());
@@ -3406,7 +3409,10 @@ mod tests {
         );
         // The two never share a cache entry.
         assert_ne!(params.key(), params.without_vignetting().key());
-        assert_eq!(params.without_vignetting().without_vignetting(), params.without_vignetting());
+        assert_eq!(
+            params.without_vignetting().without_vignetting(),
+            params.without_vignetting()
+        );
         // With the lens corrections off there is no profile either way.
         let mut off = params;
         off.lens_corrections = false;
@@ -3421,7 +3427,12 @@ mod tests {
         assert!(!has_vignetting_profile(&raw, false));
         // The answer is the plan's: a profile exactly when the function says so.
         let params = params_for_tests();
-        assert!(RawPlan::new(&raw, &frame, &params).unwrap().vignette.is_some());
+        assert!(
+            RawPlan::new(&raw, &frame, &params)
+                .unwrap()
+                .vignette
+                .is_some()
+        );
         let mut off = params;
         off.lens_corrections = false;
         assert!(RawPlan::new(&raw, &frame, &off).unwrap().vignette.is_none());
@@ -3491,7 +3502,11 @@ mod tests {
             let got = route
                 .reduced(&resident, device_params)
                 .expect("device group");
-            assert_eq!((got.width, got.height), (want.width, want.height), "k = {k}");
+            assert_eq!(
+                (got.width, got.height),
+                (want.width, want.height),
+                "k = {k}"
+            );
             let d = got.max_abs_diff(&want);
             eprintln!(
                 "[Before] reduced group without R3, k = {k}: {} x {}, device against reduced_bayer {d:e}",

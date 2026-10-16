@@ -553,7 +553,10 @@ fn the_device_and_the_cpu_agree_on_the_before_view_without_the_vignetting_correc
     let (w, h) = on_cpu
         .final_size(&src.for_before_view(), &CancelToken::new())
         .expect("size");
-    for (zoom, name) in [(None, "fit (the reduced group)"), (Some(100.0), "100 % (tiles)")] {
+    for (zoom, name) in [
+        (None, "fit (the reduced group)"),
+        (Some(100.0), "100 % (tiles)"),
+    ] {
         let mut st = fit_state(true);
         if let Some(value) = zoom {
             st.set_mode(ViewportMode::Percent { value }, (w, h));
@@ -586,9 +589,7 @@ fn the_device_and_the_cpu_agree_on_the_before_view_without_the_vignetting_correc
 #[test]
 fn flipping_to_before_never_mixes_the_raw_fronts() {
     let src = vignetted(true);
-    let (w, h) = cpu()
-        .final_size(&src, &CancelToken::new())
-        .expect("size");
+    let (w, h) = cpu().final_size(&src, &CancelToken::new()).expect("size");
     for zoom in [None, Some(100.0)] {
         for (name, r) in both_renderers() {
             let mut fin = fit_state(false);
@@ -604,20 +605,34 @@ fn flipping_to_before_never_mixes_the_raw_fronts() {
             let b1 = frame_in(&r, &src, &bef);
             let runs = b1.report.runs;
             if zoom.is_none() {
-                assert_eq!(runs.raw_groups, 1, "{label}: Before makes its own raw group");
+                assert_eq!(
+                    runs.raw_groups, 1,
+                    "{label}: Before makes its own raw group"
+                );
             } else {
-                assert_eq!(runs.full_chains, 1, "{label}: Before prepares its own chain");
+                assert_eq!(
+                    runs.full_chains, 1,
+                    "{label}: Before prepares its own chain"
+                );
                 assert!(runs.tiles > 0, "{label}: and its own tiles");
             }
             assert_eq!(runs.sigma_planes, 0, "{label}: the sigma plane is shared");
-            assert!(f1.rgba != b1.rgba, "{label}: Before is not the final picture");
+            assert!(
+                f1.rgba != b1.rgba,
+                "{label}: Before is not the final picture"
+            );
             // Flipping back and forth does no raw work, and each picture is what it was.
             let f2 = frame_in(&r, &src, &fin);
             let b2 = frame_in(&r, &src, &bef);
             for (again, first, what) in [(&f2, &f1, "final"), (&b2, &b1, "Before")] {
                 let runs = again.report.runs;
                 assert_eq!(
-                    (runs.raw_groups, runs.full_chains, runs.tiles, runs.sigma_planes),
+                    (
+                        runs.raw_groups,
+                        runs.full_chains,
+                        runs.tiles,
+                        runs.sigma_planes
+                    ),
                     (0, 0, 0, 0),
                     "{label}: {what} again made raw work"
                 );
@@ -635,11 +650,25 @@ fn flipping_to_before_never_mixes_the_raw_fronts() {
                 });
             });
             let b3 = frame_in(&r, &edited, &bef);
-            assert!(b3.rgba == b1.rgba, "{label}: Detail reached the Before view");
-            assert_eq!(b3.report.runs.raw_groups + b3.report.runs.tiles, 0, "{label}");
-            let fresh = if name == "cpu" { cpu() } else { device().expect("device") };
+            assert!(
+                b3.rgba == b1.rgba,
+                "{label}: Detail reached the Before view"
+            );
+            assert_eq!(
+                b3.report.runs.raw_groups + b3.report.runs.tiles,
+                0,
+                "{label}"
+            );
+            let fresh = if name == "cpu" {
+                cpu()
+            } else {
+                device().expect("device")
+            };
             let b4 = frame_in(&fresh, &src, &bef);
-            assert!(b4.rgba == b1.rgba, "{label}: a fresh renderer makes another Before view");
+            assert!(
+                b4.rgba == b1.rgba,
+                "{label}: a fresh renderer makes another Before view"
+            );
             assert!(frame_in(&fresh, &src, &fin).rgba == f1.rgba, "{label}");
         }
     }
@@ -677,7 +706,12 @@ fn a_photo_with_no_vignetting_to_apply_shares_its_raw_front_with_the_before_view
                 let b = frame_in(&r, src, &bef);
                 let runs = b.report.runs;
                 assert_eq!(
-                    (runs.raw_groups, runs.full_chains, runs.tiles, runs.sigma_planes),
+                    (
+                        runs.raw_groups,
+                        runs.full_chains,
+                        runs.tiles,
+                        runs.sigma_planes
+                    ),
                     (0, 0, 0, 0),
                     "{label}: the Before view made raw work of its own"
                 );

@@ -301,17 +301,27 @@ mod tests {
         let a1 = by_id(384);
         assert_eq!(a1.body.model, "ILCE-1");
         let a1_ii = by_id(400);
-        assert_eq!((a1_ii.body.model.as_str(), a1_ii.how), ("ILCE-1M2", MatrixMatch::ModelId));
+        assert_eq!(
+            (a1_ii.body.model.as_str(), a1_ii.how),
+            ("ILCE-1M2", MatrixMatch::ModelId)
+        );
         assert_eq!(a1_ii.body.xyz_d65_to_camera, a1.body.xyz_d65_to_camera);
         let nex_5n = by_id(288);
         assert_eq!(nex_5n.body.model, "NEX-5N");
         let a3000 = by_id(302);
-        assert_eq!((a3000.body.model.as_str(), a3000.how), ("ILCE-3000", MatrixMatch::ModelId));
+        assert_eq!(
+            (a3000.body.model.as_str(), a3000.how),
+            ("ILCE-3000", MatrixMatch::ModelId)
+        );
         assert_eq!(a3000.body.xyz_d65_to_camera, nex_5n.body.xyz_d65_to_camera);
         // Without an ID the Model string finds them too, and neither is the fallback any more.
         for (model, want) in [("ILCE-1M2", 400), ("ILCE-3000", 302)] {
             let l = t.lookup("SONY", model, None);
-            assert_eq!((l.how, l.body.model_id), (MatrixMatch::ModelString, want), "{model}");
+            assert_eq!(
+                (l.how, l.body.model_id),
+                (MatrixMatch::ModelString, want),
+                "{model}"
+            );
         }
         // Each says where its numbers come from.
         for body in [a1_ii.body, a3000.body] {
