@@ -9,6 +9,12 @@ moves the entries below from Unreleased into a dated section for that version.
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.1.6] - 2026-10-16
+
+A new dark interface of glass panes over a still, cool glow, so the photo is the brightest thing on screen.
+
 ### Changed
 
 - A new dark glass interface: the same layout with new controls throughout, yellow kept for buttons, the photo count in the filmstrip's caption ("4 of 12 · 3 picked"), and larger thumbnails.

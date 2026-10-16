@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // README screenshots of the REAL app showing real photos: the debug Tauri shell under Xvfb at a device scale of 2 (like a Retina display),
 // driven the way a person uses it (drop the photos, open them, change tab, open Export), one PNG per state, the webview only (no window
-// frame), shrunk with pngquant. See tools/readme/README.md.
+// frame), shrunk to 8-bit PNGs with pngquant (one palette over the picture, or one per region: --palette). See tools/readme/README.md.
 //
 //   npm run build && cargo build -p yellowmoon-app        (or pass --build)
 //   npm run readme:screenshots -- --photos ~/Pictures/Lisbon --out /tmp/readme-shots
@@ -231,27 +231,29 @@ if (added.length) failures.push(`the app wrote next to the photos: ${added.join(
 
 // --- Shrink the pictures and write them ------------------------------------------------------------------------------------------
 
-// The flat colours of the interface (the design tokens): kept exact when a picture is cut down to 256 colours, however small the part of
-// the picture that is drawn in them (the moon mark at half size).
+// `--palette regions` only: the flat colours of the interface (the design tokens) are kept exact when a picture is cut down to 256 colours,
+// however small the part of the picture that is drawn in them (the moon mark at half size). `--palette whole` needs no such list.
 const tokensFile = join(ROOT, "design/tokens.css");
-const keepColours = existsSync(tokensFile) ? cssColours(readFileSync(tokensFile, "utf8")) : [];
-if (keepColours.length === 0) say("design/tokens.css is missing: small flat colours (the moon mark at half size) may be lost when the pictures are shrunk");
+const keepColours = options.palette === "regions" && existsSync(tokensFile) ? cssColours(readFileSync(tokensFile, "utf8")) : [];
+if (options.palette === "regions" && keepColours.length === 0) say("design/tokens.css is missing: small flat colours (the moon mark at half size) may be lost when the pictures are shrunk");
+if (options.optimise) say(`palette ${options.palette}: dither ${options.dither}, at least ${options.minColours} colours, under ${options.maxKb} KB where that allows`);
 
 const written = [];
 for (const shot of shots) {
   const base = shot.name;
   const target = join(out, `${base}.png`);
   const result = options.optimise
-    ? shrinkShot(shot.file, target, { maxBytes: options.maxKb * 1000, minColours: options.minColours, dither: options.dither, tools, keepColours, photoRects: shot.photoRects ?? [], gradientRects: shot.gradientRects ?? [], uiRects: shot.uiRects ?? [] })
+    ? shrinkShot(shot.file, target, { palette: options.palette, maxBytes: options.maxKb * 1000, minColours: options.minColours, dither: options.dither, tools, keepColours, photoRects: shot.photoRects ?? [], gradientRects: shot.gradientRects ?? [], uiRects: shot.uiRects ?? [] })
     : (copyFileSync(shot.file, target), { bytes: statSync(target).size, colours: 0, underTarget: statSync(target).size <= options.maxKb * 1000, lossless: true });
   const entry = { file: target, state: shot.name, what: shot.what, bytes: result.bytes, colours: result.colours, lossless: result.lossless, underTarget: result.underTarget, width: shot.view.width, height: shot.view.height, photoSpread: shot.photoSpread };
   written.push(entry);
   if (options.oneX !== "never" && tools.magick && scale === 2) {
     const small = join(out, `${base}-1x.png`);
     const tmp = join(raw, `${base}-1x.raw.png`);
+    // Always from the lossless capture (Lanczos), then quantised once: never a downscale of the 2x PNG, which is already quantised.
     halve(shot.file, tmp, tools);
     const half = { photoRects: scaleRects(shot.photoRects ?? [], 0.5), gradientRects: scaleRects(shot.gradientRects ?? [], 0.5), uiRects: scaleRects(shot.uiRects ?? [], 0.5) };
-    const r1 = options.optimise ? shrinkShot(tmp, small, { maxBytes: options.maxKb * 1000, minColours: options.minColours, dither: options.dither, tools, keepColours, ...half }) : (copyFileSync(tmp, small), { bytes: statSync(small).size, colours: 0, lossless: true, underTarget: true });
+    const r1 = options.optimise ? shrinkShot(tmp, small, { palette: options.palette, maxBytes: options.maxKb * 1000, minColours: options.minColours, dither: options.dither, tools, keepColours, ...half }) : (copyFileSync(tmp, small), { bytes: statSync(small).size, colours: 0, lossless: true, underTarget: true });
     if (options.oneX === "always" || r1.bytes < result.bytes * 0.6) written.push({ file: small, state: shot.name, what: `${shot.what} (1x)`, bytes: r1.bytes, colours: r1.colours, lossless: r1.lossless, underTarget: r1.bytes <= options.maxKb * 1000, width: shot.view.width / 2, height: shot.view.height / 2 });
     else rmSync(small, { force: true });
   }
@@ -270,6 +272,7 @@ writeFileSync(
       photos: files.map((f) => f.split("/").pop()),
       folder_shown: drop.folder,
       scale,
+      palette: options.optimise ? options.palette : "lossless",
       window_css_px: [cssWidth, cssHeight],
       warnings: [...new Set(shots.flatMap((s) => s.warnings))],
       images: written.map((w) => ({ file: w.file.split("/").pop(), shows: w.what, bytes: w.bytes, width_px: w.width, height_px: w.height, colours: w.colours || null })),

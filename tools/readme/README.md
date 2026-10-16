@@ -19,7 +19,7 @@ It reuses the machinery of `npm run e2e:shell` (`e2e/real/host.mjs`: the server 
 | `photo-colour.png` | Colour tab (white balance card, colour balance wheels) | the most colourful |
 | `photo-detail.png` | Detail tab (sharpening, noise reduction) | the first |
 | `photo-export.png` | Export panel over a photo | the first |
-| `*-1x.png` | the same at half size, written when it is less than 60 % of the 2x file | |
+| `*-1x.png` | the same at half size, written when it is less than 60 % of the 2x file (always, with `--one-x always`) | |
 | `manifest.json` | what each file shows, its size, which photos were used | |
 
 The pictures are of the webview only (no window frame, no menu bar), 2880 × 1800 px: a 1440 × 900 CSS pixel window at a device scale of 2, the size of `design/screenshots/`. The page is made 1440 × 900 with `xdotool`, because the window the app opens has a 25 px menu bar inside its 900 px on Linux.
@@ -47,19 +47,27 @@ A pick is `first`, `second`, `last`, `colourful`, a number (1 is the first in th
 
 `--export-to "~/Pictures/Lisbon export"` is the folder the Export panel says it saves to. The default is that sentence with the folder's name, as in the mockup; the real default is next to the photos and would put your own paths on the picture. Nothing is exported either way.
 
-Other options (`npm run readme:screenshots -- --help`): `--states`, `--scale 1`, `--max-kb`, `--min-colours`, `--dither`, `--one-x`, `--no-optimise`, `--keep-raw`, `--dist`, `--binary`, `--data`, `--stable-ms`, `--timeout-min`.
+Other options (`npm run readme:screenshots -- --help`): `--states`, `--scale 1`, `--palette`, `--max-kb`, `--min-colours`, `--dither`, `--one-x`, `--no-optimise`, `--keep-raw`, `--dist`, `--binary`, `--data`, `--stable-ms`, `--timeout-min`.
 
 The debug app reads the repository's `data/` folder at run time. When the app was built before a change to `data/` (the app then refuses every photo with an "unknown field" error), or `data/` is being edited, give `--data` a copy: `git archive HEAD data | tar -x -C /tmp/snapshot` and `--data /tmp/snapshot/data`.
 
 ## Size
 
-The target is 600 KB for each PNG. The interface is flat colour and compresses to almost nothing; the photo does not: a 2880 × 1800 capture is 1.7 to 3.4 MB, and as a 256-colour PNG still 0.7 to 0.9 MB. The picture is shrunk to an 8-bit PNG with three palettes, because one palette over everything loses what is small (the yellow moon beside a cyan title block came out as mud, the colour wheels as grey discs):
+A capture is 2880 × 1800 px and 4.5 to 4.8 MB as a PNG. Each one is cut down to an 8-bit PNG (at most 256 colours) with `pngquant`, then `optipng` or `oxipng` repacks it without changing a pixel. `--palette` chooses how the colours are shared out.
 
-- the interface keeps its 48 most frequent exact colours, mapped without dithering (the page tells the tool where the photos are, so thumbnails and the photo cell are not part of it), plus every colour of `design/tokens.css` that is on the picture at all: a small flat colour is not among the most frequent once the capture is halved for the 1x file (the moon mark is 20 pixels there, behind a thousand shades of grey from the text and the resize), and without this it came out grey or as the colour of the title block beside it;
-- the colour wheels, the histogram and the curve plot get 40 colours of their own;
-- the photographs (the photo cell, the filmstrip, the look tiles) get what is left, up to 168 colours, searched with `pngquant` for the largest palette that is under the target, not below `--min-colours` (dithering at 0.5, so a sky stays smooth). `optipng` or `oxipng` then repacks the file.
+**`--palette whole` (the default).** One palette over the entire picture, dithered. `--dither` is 1 (pngquant's own default). The palette starts at 256 colours and is searched down, by bisection, until the file is under `--max-kb` (default 600), but never below `--min-colours` (192 in this mode). The dark glass interface is blurred translucent panes over a gradient, not flat colour: the right-hand panel alone has thousands of shades, and they only look smooth with a fine palette and dithering. The small accent colours (the cyan Auto pill, the yellow Export button and moon mark, the green and coral pills on the other tabs) stay as they are on the screen.
 
-On the test photos the 2x files ended with 96 to 168 photo colours at 580 to 600 KB, except a detailed photo (a brick tower in front of trees), which is 900 KB at the floor of 96. A photo bands visibly below about 96 colours (the default floor): when a picture is still over the target there, the log says so; raise `--max-kb`, use the 1x file (about 320 KB at 256 colours), or lower `--min-colours` and look at the result. A JPEG at quality 92 is about 500 KB for the same capture, if the README ever prefers that to a palette PNG.
+**`--palette regions`.** Three palettes, one for each kind of thing on the picture (the page tells the tool where the photos and plots are). It was the only mode before the glass interface, and it suits an interface of flat colours. `--dither` is 0.5 and `--min-colours` 96 in this mode.
+
+- The interface keeps its 48 most frequent exact colours, mapped without dithering (thumbnails and the photo cell are not part of it), plus every colour of `design/tokens.css` that is on the picture at all. A small flat colour is not among the most frequent once the capture is halved for the 1x file (the moon mark is 20 pixels there, behind a thousand shades of grey from the text and the resize), and without this it came out grey or as the colour of the title block beside it.
+- The colour wheels, the histogram and the curve plot get 40 colours of their own.
+- The photographs (the photo cell, the filmstrip, the look tiles) get what is left, up to 168 colours, searched with `pngquant` for the largest palette that is under the target, not below `--min-colours`.
+
+On the glass interface this mode comes out wrong, which is why `whole` is the default. The panel's gradient is mapped to its 48 most frequent colours without dithering, so it is blotchy, with dark teal patches. And the accent colours of the tabs are in `src/styles/glass-c2.css`, not in `design/tokens.css`, so nothing keeps them: the Light tab's cyan Auto pill came out white. On a flat interface it is the other way round: one palette over the whole picture loses what is small (the yellow moon beside a cyan title block came out as mud, the colour wheels as grey discs), because the photo's pixels outnumber them a thousand to one.
+
+**The 1x files.** A `-1x.png` is made from the lossless capture, never from the 2x PNG: the capture is scaled to half with ImageMagick's Lanczos filter, then cut down once. It is the file the README uses, so it is the one to look at. It is written when it is under 60 % of the 2x file, or always with `--one-x always`.
+
+**What to expect.** The 1x files come out at 256 colours and 450 to 470 KB, under the target, so the search stops at once. The 2x files cannot get under 600 KB with a dithered palette over the whole picture: they end at the floor of 192 colours at about 1.6 MB, and the log says so ("over 600 KB"). Use the 1x file, or raise `--max-kb`. `--min-colours 256` keeps the best palette when the target cannot be met anyway, and `--dither 0.5` makes a 2x file about 5 % smaller. A JPEG at quality 92 (4:4:4) is about 380 KB for a 1x capture, if the README ever prefers that to a palette PNG.
 
 ## What counts as "final"
 

@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { listen, serveFrontend } from "../../e2e/real/host.mjs";
-import { ALL_STATES, UsageError, chooseStates, cssColours, findPhotos, findTools, formatSize, halve, licenceProblem, parseArgs, parsePick, planDrop, pngSize, realPlace, scaleRects, shrinkPng, shrinkShot, spread, topColours } from "./lib.mjs";
+import { ALL_STATES, PALETTES, UsageError, chooseStates, cssColours, findPhotos, findTools, formatSize, halve, licenceProblem, paletteDefaults, parseArgs, parsePick, planDrop, pngSize, realPlace, scaleRects, shrinkPng, shrinkShot, spread, topColours, USAGE } from "./lib.mjs";
 
 let work;
 beforeAll(() => {
@@ -20,7 +20,22 @@ describe("parseArgs", () => {
   it("reads photos up to the next flag, and the defaults", () => {
     const o = parseArgs(["--photos", "a.ARW", "b.ARW", "--out", "shots"]);
     expect(o.photos).toEqual(["a.ARW", "b.ARW"]);
-    expect(o).toMatchObject({ out: "shots", scale: 2, maxKb: 600, minColours: 96, dither: 0.5, oneX: "auto", optimise: true, build: false });
+    // The default palette is one over the whole picture, with the dithering and the floor of colours that keep a gradient smooth.
+    expect(o).toMatchObject({ out: "shots", scale: 2, palette: "whole", maxKb: 600, minColours: 192, dither: 1, oneX: "auto", optimise: true, build: false });
+    expect(PALETTES).toEqual(["whole", "regions"]);
+  });
+
+  it("takes --palette, and lets it decide the dithering and the floor of colours that were not given", () => {
+    const base = ["--photos", "a", "--out", "x"];
+    expect(parseArgs([...base, "--palette", "regions"])).toMatchObject({ palette: "regions", minColours: 96, dither: 0.5 });
+    expect(parseArgs([...base, "--palette=whole"])).toMatchObject({ palette: "whole", minColours: 192, dither: 1 });
+    expect(parseArgs([...base, "--palette", "regions"])).toMatchObject(paletteDefaults("regions"));
+    // What was given wins, in either order, and a dithering of 0 is a value, not "not given".
+    expect(parseArgs([...base, "--dither", "0.25", "--min-colours", "128", "--palette", "regions"])).toMatchObject({ palette: "regions", dither: 0.25, minColours: 128 });
+    expect(parseArgs([...base, "--palette", "whole", "--dither", "0", "--min-colours", "64"])).toMatchObject({ palette: "whole", dither: 0, minColours: 64 });
+    // The help text says what the defaults are.
+    expect(parseArgs(["--help", "--palette", "regions"])).toMatchObject({ help: true, palette: "regions", dither: 0.5 });
+    expect(USAGE).toMatch(/--palette <mode>[^]*whole[^]*regions/);
   });
 
   it("takes --photos more than once, with = and bare words", () => {
@@ -41,6 +56,8 @@ describe("parseArgs", () => {
     expect(() => parseArgs(["--photos", "a", "--out", "x", "--scale", "3"])).toThrow(/1 or 2/);
     expect(() => parseArgs(["--photos", "a", "--out", "x", "--one-x", "maybe"])).toThrow(/auto, always or never/);
     expect(() => parseArgs(["--photos", "a", "--out", "x", "--max-kb", "lots"])).toThrow(/needs a number/);
+    expect(() => parseArgs(["--photos", "a", "--out", "x", "--palette", "three"])).toThrow(/whole or regions/);
+    expect(() => parseArgs(["--photos", "a", "--out", "x", "--palette"])).toThrow(/needs a value/);
   });
 
   it("takes the options that change the output", () => {
@@ -199,7 +216,7 @@ describe("shrinking a PNG", () => {
   });
 });
 
-describe("shrinking a screenshot: photographs and interface apart", () => {
+describe("shrinking a screenshot with a palette per region (--palette regions)", () => {
   const tools = findTools();
   const can = !!tools.magick && !!tools.pngquant;
   let shot;
@@ -225,7 +242,7 @@ describe("shrinking a screenshot: photographs and interface apart", () => {
 
   it.skipIf(!can)("keeps the interface's exact colours, however small the patch, and writes an 8-bit PNG of at most 256 colours", () => {
     const out = join(work, "shot-small.png");
-    const r = shrinkShot(shot, out, { maxBytes: 20000, minColours: 16, tools, photoRects: [photo] });
+    const r = shrinkShot(shot, out, { palette: "regions", maxBytes: 20000, minColours: 16, tools, photoRects: [photo] });
     const bytes = readFileSync(out);
     expect(pngSize(bytes)).toEqual({ width: 400, height: 300 });
     // The PNG header's colour type: 3 is a palette.
@@ -256,8 +273,8 @@ describe("shrinking a screenshot: photographs and interface apart", () => {
     if (r.status !== 0) throw new Error("ImageMagick could not make a test screenshot: " + r.stderr);
     const without = join(work, "tiny-moon-without.png");
     const withKeep = join(work, "tiny-moon-kept.png");
-    shrinkShot(small, without, { maxBytes: 1000000, minColours: 16, tools, photoRects: [photo], uiColours: 2 });
-    const kept = shrinkShot(small, withKeep, { maxBytes: 1000000, minColours: 16, tools, photoRects: [photo], uiColours: 2, keepColours: [yellow, [1, 2, 3]] });
+    shrinkShot(small, without, { palette: "regions", maxBytes: 1000000, minColours: 16, tools, photoRects: [photo], uiColours: 2 });
+    const kept = shrinkShot(small, withKeep, { palette: "regions", maxBytes: 1000000, minColours: 16, tools, photoRects: [photo], uiColours: 2, keepColours: [yellow, [1, 2, 3]] });
     expect(at(without, 22, 22)).not.toBe("FFC20E");
     expect(at(withKeep, 22, 22)).toBe("FFC20E");
     // A colour to keep that is not on the picture costs no palette place.
@@ -269,8 +286,8 @@ describe("shrinking a screenshot: photographs and interface apart", () => {
     const without = join(work, "shot-no-gradient.png");
     const withGradient = join(work, "shot-gradient.png");
     // A tiny interface palette, as the real one is for a gradient with more colours than it has room for.
-    shrinkShot(shot, without, { maxBytes: 1000000, tools, photoRects: [photo], uiColours: 4 });
-    const r = shrinkShot(shot, withGradient, { maxBytes: 1000000, tools, photoRects: [photo], gradientRects: [gradient], gradientColours: 24, uiColours: 4 });
+    shrinkShot(shot, without, { palette: "regions", maxBytes: 1000000, tools, photoRects: [photo], uiColours: 4 });
+    const r = shrinkShot(shot, withGradient, { palette: "regions", maxBytes: 1000000, tools, photoRects: [photo], gradientRects: [gradient], gradientColours: 24, uiColours: 4 });
     expect(r.gradientColours).toBe(24);
     expect(colours(without, gradient)).toBeLessThanOrEqual(4);
     expect(colours(withGradient, gradient)).toBeGreaterThan(colours(without, gradient));
@@ -279,9 +296,94 @@ describe("shrinking a screenshot: photographs and interface apart", () => {
 
   it.skipIf(!can)("falls back to one palette when it is not told where the photographs are", () => {
     const out = join(work, "shot-plain.png");
-    const r = shrinkShot(shot, out, { maxBytes: 1000000, tools, photoRects: [] });
+    const r = shrinkShot(shot, out, { palette: "regions", maxBytes: 1000000, tools, photoRects: [] });
     expect(r.lossless).toBe(false);
     expect(pngSize(readFileSync(out))).toEqual({ width: 400, height: 300 });
+  });
+});
+
+describe("shrinking a screenshot with one palette (--palette whole, the default)", () => {
+  const tools = findTools();
+  const can = !!tools.magick && !!tools.pngquant;
+  const photo = { x: 20, y: 150, width: 180, height: 120 };
+  let glass;
+  const at = (file, x, y) => spawnSync(tools.magick, [file, "-crop", `1x1+${x}+${y}`, "+repage", "-depth", "8", "-format", "%[hex:p{0,0}]", "info:"], { encoding: "utf8" }).stdout.trim().toUpperCase();
+  // How far a piece of a picture is from the same piece of another: ImageMagick's RMSE, 0 (the same) to 1.
+  const distance = (a, b, r) => Number(spawnSync(tools.magick, [a, b, "-crop", `${r.width}x${r.height}+${r.x}+${r.y}`, "+repage", "-metric", "RMSE", "-compare", "-format", "%[distortion]", "info:"], { encoding: "utf8" }).stdout);
+  // A cut-down of the dark glass interface: a smooth, blurred dark teal aurora (thousands of shades), a small cyan pill and a yellow moon
+  // (accent colours that are in no design token), and a noisy "photograph" in a rectangle.
+  beforeAll(() => {
+    if (!can) return;
+    glass = join(work, "glass.png");
+    const r = spawnSync(tools.magick, ["-size", "400x300", "-seed", "5", "plasma:#0a1620-#2a6a7a", "-blur", "0x25", "-fill", "#2EC4F5", "-draw", "roundrectangle 300,40 339,55 8,8", "-fill", "#FFC20E", "-draw", "circle 30,30 30,12", "(", "-size", "180x120", "-seed", "3", "plasma:fractal", ")", "-geometry", "+20+150", "-composite", glass]);
+    if (r.status !== 0) throw new Error("ImageMagick could not make a test screenshot: " + r.stderr);
+  });
+
+  it("has a floor of colours and a dithering of its own, which --palette regions does not share", () => {
+    expect(paletteDefaults("whole")).toEqual({ minColours: 192, dither: 1 });
+    expect(paletteDefaults("regions")).toEqual({ minColours: 96, dither: 0.5 });
+    expect(() => shrinkShot("in.png", "out.png", { palette: "three", maxBytes: 1, tools: {} })).toThrow(/whole or regions/);
+  });
+
+  it.skipIf(!can)("writes one 8-bit palette over the whole picture, without telling regions apart", () => {
+    const out = join(work, "glass-whole.png");
+    // Given rectangles and no palette: whole is the default, and the rectangles are not needed.
+    const r = shrinkShot(glass, out, { maxBytes: 1000000, tools, photoRects: [photo] });
+    const bytes = readFileSync(out);
+    expect(pngSize(bytes)).toEqual({ width: 400, height: 300 });
+    expect(bytes[25]).toBe(3);
+    expect(r).toMatchObject({ lossless: false, underTarget: true, colours: 256 });
+    expect(r.interfaceColours).toBeUndefined();
+    expect(r.photoColours).toBeUndefined();
+    expect(shrinkShot(glass, join(work, "glass-no-rects.png"), { maxBytes: 1000000, tools }).colours).toBe(256);
+  });
+
+  it.skipIf(!can)("keeps a gradient smooth and a small accent colour, where the palettes per region blotch the one and lose the other", () => {
+    const whole = join(work, "glass-w.png");
+    const regions = join(work, "glass-r.png");
+    shrinkShot(glass, whole, { palette: "whole", maxBytes: 1000000, tools, photoRects: [photo] });
+    shrinkShot(glass, regions, { palette: "regions", maxBytes: 1000000, tools, photoRects: [photo] });
+    const aurora = { x: 0, y: 70, width: 400, height: 70 };
+    expect(distance(glass, whole, aurora)).toBeLessThan(0.03);
+    expect(distance(glass, whole, aurora)).toBeLessThan(distance(glass, regions, aurora) / 3);
+    // The pill is cyan, not grey or white (a channel is within 16 of #2EC4F5), and so is the moon.
+    const [r, g, b] = [0, 2, 4].map((i) => parseInt(at(whole, 320, 47).slice(i, i + 2), 16));
+    expect(Math.abs(r - 0x2e)).toBeLessThanOrEqual(16);
+    expect(Math.abs(g - 0xc4)).toBeLessThanOrEqual(16);
+    expect(Math.abs(b - 0xf5)).toBeLessThanOrEqual(16);
+    expect(at(whole, 30, 30)).toBe("FFC20E");
+  });
+
+  it.skipIf(!can)("searches the colours down to fit the size, but never below its floor", () => {
+    const loose = join(work, "glass-loose.png");
+    const tight = join(work, "glass-tight.png");
+    const floored = join(work, "glass-floor.png");
+    const a = shrinkShot(glass, loose, { maxBytes: statSync(glass).size, tools });
+    // A target no palette can reach stops at the floor and says so; the floor is the one given.
+    const b = shrinkShot(glass, tight, { maxBytes: 1000, tools });
+    const c = shrinkShot(glass, floored, { maxBytes: 1000, minColours: 64, tools });
+    expect(a).toMatchObject({ colours: 256, underTarget: true });
+    expect(b).toMatchObject({ colours: 192, underTarget: false });
+    expect(c).toMatchObject({ colours: 64, underTarget: false });
+    expect(statSync(floored).size).toBeLessThan(statSync(tight).size);
+    // A target just under the file at 256 colours (the recompressed file is never bigger than the one the search measured): the search
+    // goes down, and stops at a palette between the floor and 256.
+    const target = Math.round(a.bytes * 0.99);
+    const mid = shrinkShot(glass, join(work, "glass-mid.png"), { maxBytes: target, tools });
+    expect(mid.colours).toBeGreaterThanOrEqual(192);
+    expect(mid.colours).toBeLessThan(256);
+    expect(mid.underTarget).toBe(mid.bytes <= target);
+  });
+
+  it.skipIf(!can)("makes the 1x file from the lossless capture, not from a quantised one", () => {
+    // The 1x file is made by `halve` from the lossless capture the runner keeps in its temporary folder (Lanczos), then quantised once.
+    // Halving reads the picture it is given and gives exactly ImageMagick's Lanczos half.
+    const half = join(work, "glass-half.png");
+    halve(glass, half, tools);
+    expect(pngSize(readFileSync(half))).toEqual({ width: 200, height: 150 });
+    const lanczos = join(work, "glass-lanczos.png");
+    spawnSync(tools.magick, [glass, "-filter", "Lanczos", "-resize", "50%", "-strip", lanczos]);
+    expect(distance(half, lanczos, { x: 0, y: 0, width: 200, height: 150 })).toBe(0);
   });
 });
 

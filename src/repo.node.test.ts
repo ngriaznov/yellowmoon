@@ -96,8 +96,8 @@ describe("the web engine the interface needs (docs/STATUS.md question 30)", () =
   it("tells people on a macOS that ships an older engine to update, while the minimum allows one", () => {
     if (!older(minimum(), FIRST_WITH_16_4)) return; // the owner raised the minimum: nothing left to say
     expect(read("README.md")).toMatch(/macOS 12 and 13, install the latest system and Safari updates/);
-    const unreleased = /## \[Unreleased\]([\s\S]*?)\n## \[/.exec(read("CHANGELOG.md"))?.[1] ?? "";
-    expect(unreleased).toMatch(/macOS 12 and 13, install the latest system and Safari updates/);
+    // The note goes out with the first release of the glass interface (0.1.6); a later release moves Unreleased on.
+    expect(read("CHANGELOG.md")).toMatch(/macOS 12 and 13, install the latest system and Safari updates/);
   });
 });
 

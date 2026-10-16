@@ -10,6 +10,18 @@ export const ALL_STATES = ["start", "look", "light", "colour", "detail", "export
 export const FILE_OF_STATE = { start: "start-ready", look: "photo-look", light: "photo-light", colour: "photo-colour", detail: "photo-detail", export: "photo-export" };
 const PICK_KEYS = ["look", "light", "colour", "detail", "export"];
 
+/** The ways a capture can be reduced to an 8-bit PNG (`--palette`): one palette over the whole picture, or one per kind of region. */
+export const PALETTES = ["whole", "regions"];
+
+/**
+ * What `--min-colours` and `--dither` are when they are not given, for each palette mode. `whole` has to keep the interface's gradients
+ * smooth, which a floor of 96 colours (a photograph's) does not, and dithers fully (pngquant's own default); `regions` keeps the
+ * interface flat and exact, so it dithers less and may cut the photographs further.
+ */
+export function paletteDefaults(palette) {
+  return palette === "regions" ? { minColours: 96, dither: 0.5 } : { minColours: 192, dither: 1 };
+}
+
 export const USAGE = `Usage: npm run readme:screenshots -- --photos <folder-or-files...> --out <folder> [options]
 
 Runs the real app (the debug Tauri shell, under Xvfb) on your photos and writes one PNG per state of the interface:
@@ -34,10 +46,16 @@ Options
                        photo for light; the most colourful for colour.
   --states <list>      comma-separated, from: ${ALL_STATES.join(", ")} (default: all; light is left out for one photo)
   --scale <1|2>        device scale of the screen (default 2, like a Retina display; the window is 1440 x 900 CSS pixels)
+  --palette <mode>     how a capture is cut down to an 8-bit PNG (default whole):
+                         whole    one palette over the whole picture, dithered. Right for the glass interface (gradients, blur)
+                         regions  one palette each for the interface (exact colours, no dithering), the colour wheels and
+                                  histogram, and the photographs. Right for a flat-colour interface
   --max-kb <n>         size each PNG should stay under (default 600); the palette is cut until it does, down to --min-colours
-  --min-colours <n>    the fewest colours the photographs may be cut to (default 96; a photo bands visibly below about 96)
-  --dither <0..1>      pngquant's dithering strength (default 0.5: less is smaller and bands a little more)
-  --one-x <mode>       also write a half-size NAME-1x.png: auto (when it is less than 60 % of the 2x file), always, never (default auto)
+  --min-colours <n>    the fewest colours the picture may be cut to (default 192 for whole, 96 for regions: a photo bands
+                       visibly below about 96, and a gradient below about 192)
+  --dither <0..1>      pngquant's dithering strength (default 1 for whole, 0.5 for regions: less is smaller and bands more)
+  --one-x <mode>       also write a half-size NAME-1x.png, made from the lossless capture (Lanczos), not from the 2x PNG: auto (when it
+                       is less than 60 % of the 2x file), always, never (default auto)
   --no-optimise        keep the captures as they are (lossless, large)
   --build              run \`npm run build\` and \`cargo build -p yellowmoon-app\` first
   --dist <folder>      the built frontend (default dist/)
@@ -54,11 +72,12 @@ Options
 export class UsageError extends Error {}
 
 /**
- * Reads the command line (without `node` and the script). Returns the options with their defaults. Throws `UsageError`.
+ * Reads the command line (without `node` and the script). Returns the options with their defaults (`minColours` and `dither` default to
+ * what `paletteDefaults` says for `palette`). Throws `UsageError`.
  * `--photos` takes every following word up to the next flag, so `--photos a.ARW b.ARW --out x` works as well as `--photos a --photos b`.
  */
 export function parseArgs(argv) {
-  const o = { photos: [], out: null, name: null, exportTo: null, pick: "", states: null, scale: 2, maxKb: 600, minColours: 96, dither: 0.5, oneX: "auto", optimise: true, build: false, dist: null, binary: null, data: null, stableMs: 1500, timeoutMin: 20, keepRaw: false, help: false };
+  const o = { photos: [], out: null, name: null, exportTo: null, pick: "", states: null, scale: 2, palette: "whole", maxKb: 600, minColours: null, dither: null, oneX: "auto", optimise: true, build: false, dist: null, binary: null, data: null, stableMs: 1500, timeoutMin: 20, keepRaw: false, help: false };
   const value = (flag, i) => {
     const v = argv[i + 1];
     if (v === undefined || (v.startsWith("--") && v.length > 2)) throw new UsageError(`${flag} needs a value`);
@@ -116,6 +135,10 @@ export function parseArgs(argv) {
         o.scale = number(flag, next(), 1);
         if (![1, 2].includes(o.scale)) throw new UsageError("--scale is 1 or 2");
         break;
+      case "--palette":
+        o.palette = next();
+        if (!PALETTES.includes(o.palette)) throw new UsageError("--palette is whole or regions");
+        break;
       case "--max-kb":
         o.maxKb = number(flag, next(), 1);
         break;
@@ -162,6 +185,10 @@ export function parseArgs(argv) {
         else throw new UsageError(`unknown option ${a}; see --help`);
     }
   }
+  // What the palette mode decides when the person did not (whichever order the flags came in).
+  const byPalette = paletteDefaults(o.palette);
+  o.minColours ??= byPalette.minColours;
+  o.dither ??= byPalette.dither;
   if (o.help) return o;
   if (o.photos.length === 0) throw new UsageError("--photos is required");
   if (!o.out) throw new UsageError("--out is required");
@@ -302,14 +329,15 @@ export function recompress(file, tools, level = 5) {
 }
 
 /**
- * Writes a smaller PNG of `input` to `output`, the lossy way a screenshot allows: the interface is flat colour, the photo is the only part
- * that loses anything. With pngquant the palette is cut from 256 colours down, by bisection, to the largest palette whose file is under
- * `maxBytes`, but never below `minColours`; without pngquant ImageMagick's quantiser does the same. Returns
- * `{ bytes, colours, underTarget, lossless }` (`underTarget` is false when even `minColours` is over `maxBytes`: the file is then the one
- * with `minColours`). With `lossless` (or no tool at all) only the compression is improved. `dither` is pngquant's Floyd-Steinberg strength
- * (0 to 1): less of it is smaller and bands a little more; 0.5 keeps a sky smooth at 128 colours.
+ * Writes a smaller PNG of `input` to `output`, the lossy way a screenshot allows: one palette over the whole picture, dithered. With
+ * pngquant the palette is cut from 256 colours down, by bisection, to the largest palette whose file is under `maxBytes`, but never below
+ * `minColours`; without pngquant ImageMagick's quantiser does the same. Returns `{ bytes, colours, underTarget, lossless }`
+ * (`underTarget` is false when even `minColours` is over `maxBytes`: the file is then the one with `minColours`). With `lossless` (or no
+ * tool at all) only the compression is improved. `dither` is pngquant's Floyd-Steinberg strength (0 to 1): less of it is smaller and bands
+ * a little more; 0.5 keeps a sky smooth at 128 colours, and 1 (pngquant's own default) keeps a gradient smooth. `speed` is pngquant's
+ * (1 is the slowest and best: on a 2880 x 1800 capture it took the same 2.5 s as 3 and came out 1 dB closer to the original).
  */
-export function shrinkPng(input, output, { maxBytes, minColours = 96, tools, lossless = false, dither = 0.5 }) {
+export function shrinkPng(input, output, { maxBytes, minColours = 96, tools, lossless = false, dither = 0.5, speed = 3 }) {
   if (lossless || (!tools.pngquant && !tools.magick)) {
     copyFileSync(input, output);
     recompress(output, tools);
@@ -320,7 +348,7 @@ export function shrinkPng(input, output, { maxBytes, minColours = 96, tools, los
   const file = (colours) => `${output}.try${colours}.png`;
   const attempt = (colours) => {
     if (!tries.has(colours)) {
-      if (tools.pngquant) run("pngquant", ["--force", "--speed", "3", "--strip", `--floyd=${dither}`, "--quality", "0-100", "--output", file(colours), String(colours), input]);
+      if (tools.pngquant) run("pngquant", ["--force", "--speed", String(speed), "--strip", `--floyd=${dither}`, "--quality", "0-100", "--output", file(colours), String(colours), input]);
       else run(tools.magick, [input, "-colors", String(colours), "-dither", "FloydSteinberg", "-strip", "-define", "png:compression-level=9", file(colours)]);
       tries.set(colours, statSync(file(colours)).size);
     }
@@ -399,9 +427,17 @@ export const scaleRects = (rects, factor) =>
   });
 
 /**
- * Like `shrinkPng`, for a screenshot: the three kinds of thing on it get a palette each. One palette over the whole picture loses what is
- * small (the yellow moon beside a cyan title block came out as mud, the colour wheels as grey discs), because a photo's pixels outnumber
- * them a thousand to one.
+ * Like `shrinkPng`, for a screenshot, with two ways to make the 8-bit PNG (`palette`).
+ *
+ * `"whole"` (the default) is `shrinkPng` with the settings that suit the dark glass interface: one palette over the whole picture, dithered
+ * (`paletteDefaults("whole")`: `dither` 1, `minColours` 192) and made at pngquant's slowest, best speed. The interface is blurred translucent
+ * panes over a gradient, not flat colour, so it has thousands of shades. With the three palettes of `"regions"` the right-hand panel's
+ * gradient was mapped to the 48 most frequent exact colours without dithering (blotchy, with dark teal patches) and the Light tab's cyan
+ * Auto pill came out white, because the accent colours are not in the design tokens. One palette over everything, with dithering, kept both.
+ *
+ * `"regions"` is for a flat-colour interface, where one palette over everything loses what is small (the yellow moon beside a cyan title
+ * block came out as mud, the colour wheels as grey discs), because a photo's pixels outnumber them a thousand to one. The three kinds of
+ * thing on the picture get a palette each:
  *
  * - The interface (everything not listed below) keeps its `uiColours` most frequent exact colours, mapped without dithering, and every
  *   one of `keepColours` (the design tokens: `[[r, g, b], ...]`) that is on the picture at all. A small flat colour is not among the
@@ -412,9 +448,16 @@ export const scaleRects = (rects, factor) =>
  *   for the largest that fits `maxBytes` (not below `minColours`).
  *
  * `uiRects` are overlays inside the photo rectangles that are interface after all (the DEFAULT tag, the look chip). The three are joined
- * (at most 256 colours) and written as an 8-bit PNG. Needs ImageMagick and pngquant, else `shrinkPng` is used.
+ * (at most 256 colours) and written as an 8-bit PNG. Needs ImageMagick, pngquant and the rectangles, else `shrinkPng` (one palette)
+ * is used.
+ *
+ * `minColours` and `dither` default to `paletteDefaults(palette)`.
  */
-export function shrinkShot(input, output, { maxBytes, minColours = 96, dither = 0.5, tools, photoRects, gradientRects = [], uiRects = [], uiColours = 48, gradientColours = 40, keepColours = [] }) {
+export function shrinkShot(input, output, { palette = "whole", maxBytes, minColours, dither, tools, photoRects = [], gradientRects = [], uiRects = [], uiColours = 48, gradientColours = 40, keepColours = [] }) {
+  if (!PALETTES.includes(palette)) throw new Error(`palette is whole or regions, not "${palette}"`);
+  minColours ??= paletteDefaults(palette).minColours;
+  dither ??= paletteDefaults(palette).dither;
+  if (palette === "whole") return shrinkPng(input, output, { maxBytes, minColours, dither, tools, speed: 1 });
   if (!tools.magick || !tools.pngquant || photoRects.length === 0) return shrinkPng(input, output, { maxBytes, minColours, dither, tools });
   const size = pngSize(readFileSync(input));
   if (!size) throw new Error(`${input} is not a PNG`);
