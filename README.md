@@ -16,7 +16,7 @@ It's free, and it's simple: open your files, export, and never look back. Nothin
 
 ## What it's for
 
-We don't intend to compete with existing raw processors or to replace any of them. Yellowmoon is simply a quick way to get ARRI-like results from Sony cameras, open source and free.
+I don't intend to compete with existing raw processors or to replace any of them. Yellowmoon is simply a quick way to get ARRI-like results from Sony cameras, open source and free.
 
 ## What it does
 
