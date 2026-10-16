@@ -457,6 +457,26 @@ describe("steps 4 and 5 · Import and Finish", () => {
     expect(h.api.system.trashed).toEqual([LL4]);
   }, 30_000);
 
+  it("names the looks of the default choice by their library when another library has the same title", async () => {
+    // LogC3 and Rec.709 looks with the titles of the LogC4 library are already there, as in ARRI's own libraries.
+    h = renderApp({ looksImported: false, allLibraries: true, current: 3 });
+    await openPhotos(h);
+    await h.user.click(screen.getByRole("button", { name: "Import ARRI looks →" }));
+    await screen.findByRole("heading", { level: 1, name: "Choose what to import" });
+    await toRecognise(LL4);
+    await h.user.click(next());
+    await screen.findByRole("heading", { level: 1, name: "Imported" }, { timeout: 5000 });
+    await h.user.click(next());
+    await screen.findByRole("heading", { level: 1, name: "87 looks ready" });
+    const defaultGroup = screen.getByRole("radiogroup", { name: "Default look" });
+    // Neutral and Signature are only here; the first imported look is "Film warm" in LogC4, and also in the others.
+    expect(within(defaultGroup).getAllByRole("radio").map((r) => r.textContent)).toEqual(["Neutral", "Signature", "Film warm · LogC4"]);
+    await h.user.click(within(defaultGroup).getByRole("radio", { name: "Film warm · LogC4" }));
+    await h.user.click(next());
+    expect(await screen.findByRole("tab", { name: "Look" })).toBeInTheDocument();
+    expect((await h.api.preferencesGet()).default_look).toBe("arri:3000:film-warm");
+  }, 30_000);
+
   it("asks for another picture when one of the Finish tiles does not load (the shell dropped it)", async () => {
     h = renderApp({ looksImported: false, current: 3 });
     await openPhotos(h);

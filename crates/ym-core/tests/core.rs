@@ -831,6 +831,9 @@ fn the_export_preferences_and_looks_types_have_the_fields_of_the_typescript_inte
             name: "Neutral".into(),
             group: ym_core::looks::LookGroupInfo::BuiltIn,
             input: LookInput::LogC4,
+            library: ym_looks::library::LookLibrary::BuiltIn,
+            format: None,
+            lut_size: None,
             is_default: true,
             missing: false,
         })

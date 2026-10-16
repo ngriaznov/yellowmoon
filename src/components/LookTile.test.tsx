@@ -19,6 +19,15 @@ describe("LookTile", () => {
     expect(onSelect).toHaveBeenCalledTimes(1);
   });
 
+  it("has a tooltip when it is given one, and the note is the tooltip of a disabled tile", () => {
+    const { rerender } = render(<LookTile name="Film" title="ARRI looks · LogC4 · 3D LUT, 65 points" onSelect={() => undefined} />);
+    expect(screen.getByRole("button", { name: "Film look" })).toHaveAttribute("title", "ARRI looks · LogC4 · 3D LUT, 65 points");
+    rerender(<LookTile name="Film" onSelect={() => undefined} />);
+    expect(screen.getByRole("button", { name: "Film look" })).not.toHaveAttribute("title");
+    rerender(<LookTile name="Film" title="ARRI looks · LogC4 · 3D LUT, 65 points" disabled note="File missing or changed. Import again." onSelect={() => undefined} />);
+    expect(screen.getByRole("button", { name: /^Film look/ })).toHaveAttribute("title", "File missing or changed. Import again.");
+  });
+
   it("shows the selected state", () => {
     render(<LookTile name="Neutral" selected onSelect={() => undefined} />);
     expect(screen.getByRole("button", { name: "Neutral look" })).toHaveAttribute("aria-pressed", "true");

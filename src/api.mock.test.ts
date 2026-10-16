@@ -4,6 +4,7 @@ import {
   createMockApi,
   defaultSettings,
   expandNameTemplate,
+  libraryOf,
   lookSlug,
   MOCK_ESTIMATES,
   resolveSettings,
@@ -385,6 +386,83 @@ describe("looks", () => {
     expect(looks.filter((l) => l.group.kind === "built_in")).toHaveLength(2);
     expect(looks.every((l) => !l.missing)).toBe(true);
     expect(looks[2]).toMatchObject({ id: "arri:3000:film-warm", group: { kind: "arri", no: 3000 }, input: "logc4" });
+  });
+
+  it("says which library, kind of file and table size each look has", async () => {
+    const looks = await api.looksList();
+    expect(looks.slice(0, 2).map((l) => [l.library, l.format, l.lut_size])).toEqual([
+      ["built_in", null, null],
+      ["built_in", null, null],
+    ]);
+    // ARRI's LogC4 library, as 65-point 3D LUTs.
+    expect(looks.slice(2).every((l) => l.library === "arri_logc4" && l.format === "cube" && l.lut_size === 65)).toBe(true);
+  });
+
+  it("has looks in every section with mockLibraries=all, with ARRI's titles repeating from one library to the next", async () => {
+    api.reset({ allLibraries: true });
+    const looks = await api.looksList();
+    const count = (library: string): number => looks.filter((l) => l.library === library).length;
+    expect(["built_in", "arri_logc4", "arri_logc3", "arri_logc3_to_rec709", "arri_alf2", "user"].map(count)).toEqual([2, 7, 5, 4, 6, 5]);
+    expect(new Set(looks.map((l) => l.id)).size).toBe(looks.length);
+    // Every look is where the core's rule puts it.
+    for (const look of looks) expect(libraryOf(look.group, look.input, look.format)).toBe(look.library);
+    // The same title in LogC4, LogC3 and LogC3 to Rec.709, and in the person's own LUTs.
+    const titled = (name: string): string[] => looks.filter((l) => l.name === name).map((l) => l.library);
+    expect(titled("Film warm")).toEqual(["arri_logc4", "arri_logc3", "arri_logc3_to_rec709"]);
+    expect(titled("Film cool")).toEqual(["arri_logc4", "arri_logc3", "arri_logc3_to_rec709", "user"]);
+    // The ALF2 library has three strengths of a look, as 33-point look files.
+    expect(looks.filter((l) => l.library === "arri_alf2").map((l) => [l.name, l.format, l.lut_size])).toEqual(
+      ["Film warm", "Soft print"].flatMap((t) => ["Low", "Medium", "High"].map((s) => [`${t} · ${s}`, "aml", 33])),
+    );
+    // The person's own LUTs hold one of each kind of file.
+    expect(looks.filter((l) => l.library === "user").map((l) => l.format)).toEqual(["cube", "cube", "alf4", "alf4c", "aml"]);
+    expect(looks.filter((l) => l.library === "user").every((l) => l.group.kind === "user")).toBe(true);
+  });
+
+  it("puts the looks of a LogC3 package in their own library, under the same titles", async () => {
+    api.reset({ looksImported: false });
+    for (const zip of ["ARRI_LookLibrary_LogC3.zip", "ARRI_LookLibrary_LogC3_to_Rec709.zip"]) {
+      const importing = api.looksImport(`~/Downloads/${zip}`);
+      await vi.advanceTimersByTimeAsync(4000);
+      await importing;
+    }
+    const looks = await api.looksList();
+    const only = (library: string) => looks.filter((l) => l.library === library);
+    expect(only("arri_logc3")).toHaveLength(87);
+    expect(only("arri_logc3_to_rec709")).toHaveLength(87);
+    expect(only("arri_logc3")[0]).toMatchObject({ id: "arri:3000:film-warm-logc3", name: "Film warm", input: "logc3_ei800", format: "cube", lut_size: 33 });
+    expect(only("arri_logc3_to_rec709")[0]).toMatchObject({ id: "arri:3000:film-warm-logc3-rec709", name: "Film warm", input: "logc3_to_rec709" });
+  });
+
+  it("files the person's own LUTs and look files under Your LUTs, with their kind of file", async () => {
+    api.reset({ looksImported: false });
+    const own = async (name: string, input?: "logc4"): Promise<void> => {
+      const importing = api.looksImport(`~/Downloads/${name}`, input);
+      await vi.advanceTimersByTimeAsync(500);
+      await importing;
+    };
+    await own("Warm_Film.cube", "logc4");
+    await own("Warm_Pull.alf4");
+    await own("Custom_Look.alf4c");
+    const mine = (await api.looksList()).filter((l) => l.library === "user");
+    expect(mine.map((l) => [l.name, l.format, l.lut_size])).toEqual([
+      ["Warm Film", "cube", 33],
+      ["Warm Pull", "alf4", 33],
+      ["Custom Look", "alf4c", 33],
+    ]);
+  });
+
+  it("classifies a look the way the core does", () => {
+    const arri = { kind: "arri", no: 3000, name: "Film" } as const;
+    expect(libraryOf({ kind: "built_in" }, "logc3_to_rec709", "aml")).toBe("built_in");
+    expect(libraryOf({ kind: "user" }, "logc3_to_rec709", "aml")).toBe("user");
+    expect(libraryOf(arri, "logc4", "cube")).toBe("arri_logc4");
+    expect(libraryOf(arri, "logc4", "alf4")).toBe("arri_logc4");
+    expect(libraryOf(arri, "logc4", "alf4c")).toBe("arri_logc4");
+    expect(libraryOf(arri, "logc3_ei800", "cube")).toBe("arri_logc3");
+    expect(libraryOf(arri, "logc3_to_rec709", "cube")).toBe("arri_logc3_to_rec709");
+    expect(libraryOf(arri, "logc3_to_rec709", "aml")).toBe("arri_alf2");
+    expect(libraryOf(arri, "logc3_to_rec709", null)).toBe("arri_logc3_to_rec709");
   });
 
   it("imports the looks when they aren't there yet, and only once", async () => {
@@ -1098,6 +1176,8 @@ describe("optionsFromLocation", () => {
       holdAt: 5.4,
     });
     expect(optionsFromLocation("?mockPhotos=500")).toEqual({ photoCount: 500 });
+    expect(optionsFromLocation("?mockLibraries=all")).toEqual({ allLibraries: true });
+    expect(optionsFromLocation("?mockLibraries=none")).toEqual({});
     expect(optionsFromLocation("?mockViewport=fallback")).toEqual({ viewport: "fallback" });
     expect(optionsFromLocation("?mockViewport=native")).toEqual({ viewport: "native" });
     expect(optionsFromLocation("?mockViewport=metal")).toEqual({});

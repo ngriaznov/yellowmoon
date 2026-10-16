@@ -118,7 +118,7 @@ test.describe("each format", () => {
     await page.evaluate(async () => {
       const { mockApi } = window.__yellowmoon!;
       await mockApi.looksImport("~/Downloads/ARRI_LookLibrary_LogC3_to_Rec709.zip");
-      await mockApi.applyLook("this", "arri:3000:film-warm-rec709", 100);
+      await mockApi.applyLook("this", "arri:3000:film-warm-logc3-rec709", 100);
     });
     // The panel asks again when the photos or options change.
     await page.getByRole("radiogroup", { name: "Photos" }).getByRole("radio", { name: "This photo" }).click();

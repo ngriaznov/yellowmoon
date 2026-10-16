@@ -84,6 +84,8 @@ export type Both = AllTrue<{
   lightSource: Same<T.LightSource, B.LightSource>;
   lookInput: Same<T.LookInput, B.LookInput>;
   lookGroup: Same<T.LookGroup, B.LookGroup>;
+  lookLibrary: Same<T.LookLibrary, B.LookLibrary>;
+  lookFormat: Same<T.LookFormat, B.LookFormat>;
   packageId: Same<T.PackageId, B.PackageId>;
   colorSpace: Same<T.ColorSpace, B.ColorSpace>;
   exportFormat: Same<T.ExportFormat, B.ExportFormat>;

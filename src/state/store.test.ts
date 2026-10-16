@@ -547,6 +547,38 @@ describe("Re-run", () => {
   });
 });
 
+describe("the folded sections of the Look tab", () => {
+  it("start empty, fold and open one section at a time, and keep the order they were folded in", async () => {
+    const { store } = await connected();
+    expect(store.getState().collapsedLookLibraries).toEqual([]);
+    store.toggleLookLibrary("arri_logc3");
+    store.toggleLookLibrary("user");
+    expect(store.getState().collapsedLookLibraries).toEqual(["arri_logc3", "user"]);
+    store.toggleLookLibrary("arri_logc3");
+    expect(store.getState().collapsedLookLibraries).toEqual(["user"]);
+    store.toggleLookLibrary("user");
+    expect(store.getState().collapsedLookLibraries).toEqual([]);
+  });
+
+  it("tell the subscribers, and stay when a session is closed (they belong to the app, not the photos)", async () => {
+    const { store } = await opened();
+    const seen = vi.fn();
+    const stop = store.subscribe(seen);
+    store.toggleLookLibrary("arri_alf2");
+    expect(seen).toHaveBeenCalledTimes(1);
+    stop();
+    await store.closeSession();
+    expect(store.getState().session).toBeNull();
+    expect(store.getState().collapsedLookLibraries).toEqual(["arri_alf2"]);
+  });
+
+  it("are not in the preferences, which are the only thing the core keeps", async () => {
+    const { api, store } = await connected();
+    store.toggleLookLibrary("arri_logc4");
+    expect(JSON.stringify(await api.preferencesGet())).not.toMatch(/collapsed|arri_logc4/);
+  });
+});
+
 describe("looks", () => {
   it("picks a look for this photo only", async () => {
     const { api, store } = await opened();

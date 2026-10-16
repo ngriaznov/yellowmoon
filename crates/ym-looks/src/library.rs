@@ -46,7 +46,7 @@ pub use ids::{
 };
 pub use model::{
     DISABLED_MESSAGE, DisplayInput, DisplayLut, LoadedLook, Look, LookFormat, LookGroup,
-    LookStatus, LutLoadError, LutRef, cube_error_text,
+    LookLibrary, LookStatus, LutLoadError, LutRef, cube_error_text,
 };
 pub use resolve::{Candidate, EXIT_LOOK_MISSING, EXIT_USAGE, ResolveError, resolve};
 pub use verify::{VerifyEntry, VerifyOutcome, VerifyReport};

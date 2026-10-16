@@ -37,13 +37,23 @@ fn list_shows_the_built_in_looks_with_signature_as_the_default() {
     let out = sb.ym().args(["looks", "list"]).assert().success();
     let l = lines(&out.get_output().stdout);
     assert!(
-        l[0].starts_with("ID") && l[0].contains("NAME") && l[0].contains("INPUT"),
+        l[0].starts_with("ID")
+            && l[0].contains("NAME")
+            && l[0].contains("LIBRARY")
+            && l[0].contains("INPUT"),
+        "{l:?}"
+    );
+    // GROUP, then LIBRARY, then INPUT.
+    let col = |header: &str| l[0].find(header).expect(header);
+    assert!(
+        col("GROUP") < col("LIBRARY") && col("LIBRARY") < col("INPUT"),
         "{l:?}"
     );
     assert!(
         l[1].starts_with("builtin:neutral")
             && l[1].contains("Neutral")
             && l[1].contains("built in")
+            && l[1].contains("Built in")
             && l[1].contains("logc4")
             && !l[1].ends_with("default"),
         "{l:?}"
@@ -52,6 +62,7 @@ fn list_shows_the_built_in_looks_with_signature_as_the_default() {
         l[2].starts_with("builtin:signature")
             && l[2].contains("Signature")
             && l[2].contains("built in")
+            && l[2].contains("Built in")
             && l[2].contains("logc4")
             && l[2].ends_with("default"),
         "{l:?}"
@@ -69,6 +80,18 @@ fn list_shows_the_built_in_looks_with_signature_as_the_default() {
     assert_eq!(v["looks"][1]["name"], "Signature");
     assert_eq!(v["looks"][1]["missing"], false);
     assert_eq!(v["looks"][1]["group"]["kind"], "built_in");
+    // A built-in look is in the built-in library and has no file: no format, no size.
+    for look in v["looks"].as_array().expect("looks") {
+        assert_eq!(look["library"], "built_in", "{look}");
+        assert!(
+            look["format"].is_null() && look["lut_size"].is_null(),
+            "{look}"
+        );
+        assert!(
+            look.get("format").is_some() && look.get("lut_size").is_some(),
+            "{look}"
+        );
+    }
     assert_eq!(v["display_luts"], serde_json::json!([]));
 }
 
@@ -180,6 +203,12 @@ fn arri_look_files_import_without_the_input_question_and_keep_what_they_say() {
     assert_eq!(find("user:warm-pull")["name"], "Warm Pull");
     assert_eq!(find("user:warm-pull")["group"]["kind"], "user");
     assert_eq!(find("user:night")["input"], "logc3_to_rec709");
+    // The person's own look files are in Your LUTs, with the kind of file and the size of their table.
+    for (id, format) in [("user:warm-pull", "alf4"), ("user:night", "aml")] {
+        assert_eq!(find(id)["library"], "user", "{id}");
+        assert_eq!(find(id)["format"], format, "{id}");
+        assert_eq!(find(id)["lut_size"], 5, "{id}");
+    }
     // The table says the same, with the words of the CLI.
     let out = sb.ym().args(["looks", "list"]).assert().success();
     let shown = text(&out.get_output().stdout);
@@ -308,6 +337,18 @@ fn an_imported_look_is_listed_used_by_name_and_set_as_the_default() {
     );
     assert_eq!(warm["group"]["kind"], "user");
     assert_eq!(warm["input"], "logc4");
+    assert_eq!(warm["library"], "user");
+    assert_eq!(warm["format"], "cube");
+    assert!(warm["lut_size"].as_u64().is_some_and(|n| n >= 2), "{warm}");
+    // The table has the LIBRARY column: Your LUTs.
+    let out = sb.ym().args(["looks", "list"]).assert().success();
+    assert!(
+        lines(&out.get_output().stdout)
+            .iter()
+            .any(|l| l.starts_with(&id) && l.contains("Your LUTs") && l.contains("imported")),
+        "{}",
+        text(&out.get_output().stdout)
+    );
 
     // --look takes the id, the slug and the name in any case.
     let arw = sb.arw("a.ARW");

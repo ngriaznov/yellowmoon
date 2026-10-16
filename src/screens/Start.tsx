@@ -2,6 +2,7 @@ import { useMemo } from "react";
 import { Button, DevelopList, DropZone, LinkButton, ProgressBar, useWindowDrop } from "../components";
 import type { DevelopItem } from "../components";
 import { useAppState, useStore } from "../state/context";
+import { lookLabeller } from "../state/looks";
 import { developFraction, folderSubline, isReady, photoName } from "../state/photo";
 import { ExportCell, Header } from "./Header";
 import { Menu } from "./Menu";
@@ -64,7 +65,9 @@ export function Start() {
 
   const defaultLook = looks?.find((l) => l.is_default);
   const imported = looks?.filter((l) => l.group.kind === "arri").length ?? 0;
-  const lookOptions = (looks ?? []).filter((l) => !l.missing).map((l) => ({ value: l.id, label: l.name }));
+  // A title that two libraries share says which one it is ("Film · LogC3"), since the list stands without its sections.
+  const label = lookLabeller(looks ?? []);
+  const lookOptions = (looks ?? []).filter((l) => !l.missing).map((l) => ({ value: l.id, label: label(l) }));
   const stepOn = busy ? 1 : 0;
 
   return (
@@ -95,7 +98,7 @@ export function Start() {
           </div>
           <div className="ym-about-row" data-action="true">
             <span className="ym-about-row__label">Default look</span>
-            <span>{defaultLook?.name ?? "Neutral"}</span>
+            <span>{defaultLook ? label(defaultLook) : "Neutral"}</span>
             <Menu
               label="Default look"
               options={lookOptions}

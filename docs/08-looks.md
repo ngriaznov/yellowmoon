@@ -14,7 +14,26 @@ pub struct Look {
     pub lut: Option<LutRef>,      // path + SHA-256 + format (cube, alf4, alf4c, aml); loaded lazily, cached in memory
     pub source: Option<Source>,   // URL, import date, original file name
 }
+
+impl Look {
+    pub fn library(&self) -> LookLibrary; // the section it is listed under; worked out, never stored
+    pub fn format(&self) -> Option<LookFormat>; // Cube | Alf4 | Alf4c | Aml; None for a built-in look
+    pub fn lut_size(&self) -> Option<usize>;    // points per axis (65, 33, ...); None for a built-in look
+}
 ```
+
+**Library.** `LookLibrary` (`crates/ym-looks/src/library/model.rs`) says which of six lists a look belongs to: the Look tab shows one section per library, in this order, and `ym looks list` has a LIBRARY column. It is worked out from the group, the input and the file format by `LookLibrary::classify`, so the app and the CLI cannot disagree (the app gets it as `library` next to `format` and `lut_size`, the CLI in `--json` as well):
+
+| `LookLibrary` | JSON | Section heading (`label()`) | Short word (`qualifier()`) | Which looks |
+|---|---|---|---|---|
+| `BuiltIn` | `built_in` | Built in | none | Neutral, Signature (group built in) |
+| `ArriLogC4` | `arri_logc4` | ARRI looks · LogC4 | LogC4 | ARRI group, input LogC4: the 65-point `.cube` library, or its `.alf4` look files (also an `.alf4c`) |
+| `ArriLogC3` | `arri_logc3` | ARRI looks · LogC3 | LogC3 | ARRI group, input LogC3 EI 800: the log-to-log `.cube` library (ids end `-logc3`) |
+| `ArriLogC3ToRec709` | `arri_logc3_to_rec709` | ARRI looks · LogC3 to Rec.709 | LogC3 to Rec.709 | ARRI group, input LogC3 to Rec.709, not an `.aml`: the `.cube` library (ids end `-logc3-rec709`) |
+| `ArriAlf2` | `arri_alf2` | ARRI looks · LogC3 to Rec.709 · ALF2 | ALF2 | ARRI group, input LogC3 to Rec.709, format `aml`: the 261 look files, three strengths of each look |
+| `User` | `user` | Your LUTs | Your LUTs | user group, any input, any format (`.cube`, `.alf4`, `.alf4c`, `.aml`) |
+
+The short word is what tells two looks of one title apart where the section is not visible (the look chip, the default look choices: `docs/11-ui.md` §Look tab sections). `format` and `lut_size` come with the look too (the tooltip of a tile says "3D LUT, 65 points" or "ALF4 look file, 33 points"). The person's own `.aml` is in Your LUTs, not in ARRI's ALF2 section: that one is for ARRI's own library, recognised by the package. Tests: `crates/ym-looks/tests/libraries.rs` (the five downloads and the person's own files, imported), the unit tests of every group, input and format combination in `model.rs`.
 
 Application maths is in `docs/02-colour-pipeline.md` (C10). Intensity 0–100% per photo, default 100.
 
@@ -199,11 +218,11 @@ The colour space of an `.alf4` or `.alf4c` look must be `com.arri.colorspace.awg
 
 ## Look tab behaviour
 
-- Groups: "Built in" (Neutral, Signature) and "ARRI looks · imported" (then "Your LUTs" if any). Counts on the right. Search filters by name across groups ("2 of 7").
+- Sections, one per library (owner's decision of 2026-10-16, `docs/11-ui.md` §Look tab sections): "Built in" (Neutral, Signature), "ARRI looks · LogC4", "ARRI looks · LogC3", "ARRI looks · LogC3 to Rec.709", "ARRI looks · LogC3 to Rec.709 · ALF2" and "Your LUTs", in that order, each shown only when it has looks (see *Library* above for which look is in which). Counts on the right. Each header folds its section away (remembered while the app runs, never saved); search filters by name across sections, opens every section with matches and counts them ("2 of 7"). A tile's tooltip names its section and the kind of file. Where a look's name stands alone, a name that another library has too gets that library's short word ("Film · LogC3").
 - Tiles render the current photo through each look at thumbnail size; render lazily as tiles scroll into view; cache in memory for the session.
 - Keys 1–9 pick the first nine tiles in display order.
 - The default look carries a DEFAULT tag; "Make default" on the selected tile.
-- If no ARRI looks are imported, the group shows a call to action: "Import ARRI looks →" opening the wizard.
+- If no ARRI looks are imported (in none of the four libraries), a call to action shows in their place: "The free ARRI Look Library is not imported yet." and "Import ARRI looks →" opening the wizard.
 
 ## Missing looks
 

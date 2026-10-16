@@ -222,7 +222,19 @@ describe("importing", () => {
     const importing = api.looksImport(downloads(FAILURE_ZIPS.ownCube), "logc3_ei800");
     await vi.advanceTimersByTimeAsync(500);
     const result = await importing;
-    expect(result.added).toEqual([{ id: "user:warm-film", name: "Warm Film", group: { kind: "user" }, input: "logc3_ei800", is_default: false, missing: false }]);
+    expect(result.added).toEqual([
+      {
+        id: "user:warm-film",
+        name: "Warm Film",
+        group: { kind: "user" },
+        input: "logc3_ei800",
+        library: "user",
+        format: "cube",
+        lut_size: 33,
+        is_default: false,
+        missing: false,
+      },
+    ]);
   });
 
   it("imports the same package twice without duplicating anything", async () => {
@@ -334,16 +346,16 @@ describe("the estimate's extra fields", () => {
     await vi.advanceTimersByTimeAsync(4000);
     await importing;
     expect((await api.exportEstimate(job("this"))).dng_approximate).toBe(false);
-    await api.applyLook("this", "arri:3000:film-warm-rec709", 100);
+    await api.applyLook("this", "arri:3000:film-warm-logc3-rec709", 100);
     expect((await api.exportEstimate(job("this"))).dng_approximate).toBe(true);
     expect((await api.exportEstimate(job("picked"))).dng_approximate).toBe(true);
     await api.setCurrent(1);
     expect((await api.exportEstimate(job("this"))).dng_approximate).toBe(false);
     // At an intensity of 0 the picture is our own rendering.
     await api.setCurrent(4);
-    await api.applyLook("this", "arri:3000:film-warm-rec709", 0);
+    await api.applyLook("this", "arri:3000:film-warm-logc3-rec709", 0);
     expect((await api.exportEstimate(job("this"))).dng_approximate).toBe(false);
-    await api.applyLook("this", "arri:3000:film-warm-rec709", 100);
+    await api.applyLook("this", "arri:3000:film-warm-logc3-rec709", 100);
     expect(await api.exportStart(job("this", { format: "dng" }))).toBe(1);
     expect(await api.exportStart(job("this", { format: "tiff" }))).toBe(2);
   });

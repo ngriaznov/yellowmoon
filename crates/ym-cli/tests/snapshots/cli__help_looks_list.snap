@@ -2,7 +2,7 @@
 source: crates/ym-cli/tests/cli.rs
 expression: "help(&[\"looks\", \"list\"])"
 ---
-List the built-in and imported looks, with ids, names, groups and inputs; the default look is marked
+List the built-in and imported looks, with ids, names, groups, libraries and inputs; the default look is marked
 
 Usage: ym looks list [OPTIONS]
 

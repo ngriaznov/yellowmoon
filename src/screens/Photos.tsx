@@ -5,6 +5,7 @@ import { exportModel } from "../export/model";
 import { cellLabel, summarise } from "../export/run";
 import type { FilmstripPhoto, TabId } from "../components";
 import { useAppState, useCurrentPhoto, useCurrentSettings, useStore } from "../state/context";
+import { lookLabeller, looksInDisplayOrder } from "../state/looks";
 import { folderSubline, isReady, photoName } from "../state/photo";
 import { useShortcuts } from "../state/useShortcuts";
 import { fitZoomExact, fitZoomOf, showsWhole, ZOOMS, zoomKey, zoomStep } from "../state/zoom";
@@ -19,7 +20,7 @@ import { ColorTab } from "./tools/ColorTab";
 import { CurveTab } from "./tools/CurveTab";
 import { DetailTab } from "./tools/DetailTab";
 import { LightTab } from "./tools/LightTab";
-import { LookTab, looksInDisplayOrder } from "./tools/LookTab";
+import { LookTab } from "./tools/LookTab";
 import { RawTab } from "./tools/RawTab";
 
 const SPACE_LABELS: Record<ColorSpace, string> = { srgb: "sRGB", display_p3: "Display P3", rec2020: "Rec.2020" };
@@ -66,7 +67,15 @@ export function Photos() {
   const crop = useCropSession(store, photo, rs);
 
   const ordered = useMemo(() => looksInDisplayOrder(looks ?? []), [looks]);
-  const lookName = useCallback((id: string) => looks?.find((l) => l.id === id)?.name ?? lookSlugOf(id), [looks]);
+  // The look chip names the look alone, so a title that two libraries share says which one it is ("Film · LogC3").
+  const lookName = useMemo(() => {
+    const label = lookLabeller(looks ?? []);
+    const byId = new Map((looks ?? []).map((l) => [l.id, l]));
+    return (id: string): string => {
+      const look = byId.get(id);
+      return look ? label(look) : lookSlugOf(id);
+    };
+  }, [looks]);
 
   const photos = session?.photos ?? [];
   const nPicked = session?.picked.length ?? 0;

@@ -31,6 +31,7 @@ import type {
   Look,
   LookId,
   LookInput,
+  LookLibrary,
   MenuAction,
   PhotoId,
   PhotoProgress,
@@ -108,6 +109,11 @@ export interface AppState {
   zoom: ViewportMode;
   /** "Apply to" on the Look card. */
   applyScope: ApplyScope;
+  /**
+   * The Look tab's sections the person folded away. Kept for the running app only (`docs/01` §Persistence: nothing about the look
+   * list goes to disk); it outlives a session and starts empty (every section open) the next time the app starts.
+   */
+  collapsedLookLibraries: readonly LookLibrary[];
   /** A problem with the last drop, in words ("No ARW files in what you dropped."). */
   dropNotice: string | null;
   /** The last error from the core, until dismissed. */
@@ -165,6 +171,7 @@ export function initialState(): AppState {
     before: false,
     zoom: { kind: "fit" },
     applyScope: "all",
+    collapsedLookLibraries: [],
     dropNotice: null,
     error: null,
     opening: false,
@@ -592,6 +599,7 @@ export class AppStore {
       ...initialState(),
       looks: this.state.looks,
       applyScope: this.state.applyScope,
+      collapsedLookLibraries: this.state.collapsedLookLibraries,
       stats: null,
       // What belongs to the app rather than the session stays: the preferences, the export in flight, the dialogs.
       preferences: this.state.preferences,
@@ -703,6 +711,12 @@ export class AppStore {
 
   setApplyScope(scope: ApplyScope): void {
     this.set({ applyScope: scope });
+  }
+
+  /** Folds a section of the Look tab away, or opens it again. Remembered until the app quits, never saved. */
+  toggleLookLibrary(library: LookLibrary): void {
+    const collapsed = this.state.collapsedLookLibraries;
+    this.set({ collapsedLookLibraries: collapsed.includes(library) ? collapsed.filter((l) => l !== library) : [...collapsed, library] });
   }
 
   // --- Preferences and dialogs ----------------------------------------------------------------

@@ -1,8 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import { AutoRow, AutoToggle, Card, Field, formats, LinkButton, LookTile, ResetLink, Rows, SearchField, Segmented, Slider, Tag } from "../../components";
 import type { TabId } from "../../components";
-import type { ApplyScope, Look, ResolvedSettings } from "../../api/types";
+import type { ApplyScope, Look, LookLibrary, ResolvedSettings } from "../../api/types";
 import { useAppState, useStore } from "../../state/context";
+import { isArriLook, LOOK_LIBRARIES, looksInDisplayOrder, lookTooltip } from "../../state/looks";
+import type { LookLibraryInfo } from "../../state/looks";
 import type { AppStore } from "../../state/store";
 import { useLookThumbnail } from "../../state/useLookThumbnail";
 import { shortBody } from "./RawTab";
@@ -12,18 +15,6 @@ import type { TabProps } from "./shared";
 
 /** Said on a tile whose look file is gone or changed (`docs/08-looks.md` §Missing looks). */
 export const MISSING_LOOK_NOTE = "File missing or changed. Import again.";
-
-/** Groups of the look grid, in order. */
-const GROUPS = [
-  { kind: "built_in", label: "Built in" },
-  { kind: "arri", label: "ARRI looks · imported" },
-  { kind: "user", label: "Your LUTs" },
-] as const;
-
-/** The looks in the order the tiles are drawn: built in, then ARRI, then the person's own. This is also the order of the keys 1–9. */
-export function looksInDisplayOrder(looks: readonly Look[]): Look[] {
-  return GROUPS.flatMap((g) => looks.filter((l) => l.group.kind === g.kind));
-}
 
 /** Waits `ms` after a value stops changing before passing it on; the first value passes at once. */
 function useSettled<T>(value: T, ms: number): T {
@@ -84,9 +75,67 @@ function LazyLookTile({ look, index, selected, photoId, thumbKey, onSelect }: La
       selected={selected}
       disabled={look.missing}
       note={look.missing ? MISSING_LOOK_NOTE : undefined}
+      title={lookTooltip(look)}
       onSelect={onSelect}
       onImageError={onImageError}
     />
+  );
+}
+
+interface LookSectionProps {
+  library: LookLibraryInfo;
+  /** Every look of the library. */
+  total: number;
+  /** How many of them match the search. */
+  shown: number;
+  /** The search box has text: the section is open whatever the person folded, and its header does not fold. */
+  searching: boolean;
+  /** The person folded the section. */
+  collapsed: boolean;
+  /** The current photo's look is in this library. */
+  holdsCurrent: boolean;
+  onToggle: () => void;
+  children: ReactNode;
+}
+
+/**
+ * One library of the Look tab: a header that is a disclosure button (label, count, a chevron) over the grid of its tiles. Folded, the
+ * tiles are not drawn at all (so their thumbnails are not asked for); a small filled square in the header says the current look is
+ * inside. While the search box has text the section is open and the header only reads "2 of 87" (`aria-disabled`), so a search always
+ * finds a look in a section that was folded.
+ */
+function LookSection({ library, total, shown, searching, collapsed, holdsCurrent, onToggle, children }: LookSectionProps) {
+  const open = searching || !collapsed;
+  const marker = !open && holdsCurrent;
+  const bodyId = `look-section-${library.id}`;
+  const noun = total === 1 ? "look" : "looks";
+  const amount = searching ? `${shown} of ${total} ${noun}` : `${total} ${noun}`;
+  const name = [library.label, amount, ...(marker ? ["holds the current look"] : []), ...(searching ? [] : [open ? "collapse" : "expand"])].join(", ");
+  return (
+    <div className="ym-look-group" data-library={library.id}>
+      <button
+        type="button"
+        className="ym-look-group__header ym-look-group__toggle"
+        aria-expanded={open}
+        aria-controls={bodyId}
+        aria-label={name}
+        aria-disabled={searching || undefined}
+        title={searching ? "Clear the search to fold this section." : undefined}
+        onClick={() => {
+          if (!searching) onToggle();
+        }}
+      >
+        <span className="ym-look-group__title">
+          <span className="ym-look-group__chevron" data-open={open} aria-hidden="true" />
+          <span>{library.label}</span>
+          {marker ? <span className="ym-look-group__marker" aria-hidden="true" /> : null}
+        </span>
+        <span className="ym-look-group__count">{searching ? `${shown} of ${total}` : total}</span>
+      </button>
+      <div id={bodyId} hidden={!open}>
+        {open ? <div className="ym-look-grid">{children}</div> : null}
+      </div>
+    </div>
   );
 }
 
@@ -138,6 +187,7 @@ export function LookTab({ store, photo, rs, onOpenTab }: LookTabProps) {
   const [query, setQuery] = useState("");
   const { settings, values, auto } = rs;
 
+  const collapsed = useAppState((s) => s.collapsedLookLibraries);
   const ordered = useMemo(() => looksInDisplayOrder(looks ?? []), [looks]);
   const keyOf = useMemo(() => new Map(ordered.map((l, i) => [l.id, i + 1])), [ordered]);
   const current = ordered.find((l) => l.id === settings.look);
@@ -151,13 +201,21 @@ export function LookTab({ store, photo, rs, onOpenTab }: LookTabProps) {
   }, [settings]);
   const thumbKey = useSettled(rawKey, 250);
 
-  const groups = GROUPS.map((g) => {
-    const all = ordered.filter((l) => l.group.kind === g.kind);
-    const shown = all.filter((l) => !q || l.name.toLowerCase().includes(q));
-    return { ...g, all, shown };
-  }).filter((g) => g.kind !== "user" || g.all.length > 0);
-  const anyShown = groups.some((g) => g.shown.length > 0);
-  const arriCount = ordered.filter((l) => l.group.kind === "arri").length;
+  // One section per library that has looks, in display order; the search narrows what each shows.
+  const sections = useMemo(() => {
+    const byLibrary = new Map<LookLibrary, Look[]>();
+    for (const look of ordered) {
+      const list = byLibrary.get(look.library);
+      if (list) list.push(look);
+      else byLibrary.set(look.library, [look]);
+    }
+    return LOOK_LIBRARIES.map((library) => {
+      const all = byLibrary.get(library.id) ?? [];
+      return { library, all, shown: all.filter((l) => !q || l.name.toLowerCase().includes(q)) };
+    });
+  }, [ordered, q]);
+  const anyShown = sections.some((s) => s.shown.length > 0);
+  const arriCount = ordered.filter(isArriLook).length;
 
   const nPicked = session?.picked.length ?? 0;
   const nAll = session?.photos.length ?? 0;
@@ -231,11 +289,11 @@ export function LookTab({ store, photo, rs, onOpenTab }: LookTabProps) {
         </Field>
         <div className="ym-look-block">
           <SearchField className="ym-look-search" value={query} onChange={setQuery} label="Search looks" />
-          {groups.map((g) => {
-            if (g.kind === "arri" && arriCount === 0) {
-              // Nothing imported: say so, and offer the wizard.
+          {sections.map(({ library, all, shown }) => {
+            if (library.id === "arri_logc4" && arriCount === 0) {
+              // Nothing of ARRI's is imported: say so, and offer the wizard.
               return q ? null : (
-                <div className="ym-look-group" key={g.kind}>
+                <div className="ym-look-group" key="arri-none">
                   <div className="ym-look-group__header">
                     <span>ARRI looks</span>
                     <span className="ym-look-group__count">0</span>
@@ -247,27 +305,30 @@ export function LookTab({ store, photo, rs, onOpenTab }: LookTabProps) {
                 </div>
               );
             }
-            if (g.shown.length === 0) return null;
+            if (shown.length === 0) return null;
             return (
-              <div className="ym-look-group" key={g.kind}>
-                <div className="ym-look-group__header">
-                  <span>{g.label}</span>
-                  <span className="ym-look-group__count">{q ? `${g.shown.length} of ${g.all.length}` : g.all.length}</span>
-                </div>
-                <div className="ym-look-grid">
-                  {g.shown.map((look) => (
-                    <LazyLookTile
-                      key={look.id}
-                      look={look}
-                      index={keyOf.get(look.id) ?? 0}
-                      selected={look.id === settings.look}
-                      photoId={photo.id}
-                      thumbKey={thumbKey}
-                      onSelect={() => void store.chooseLook(look.id)}
-                    />
-                  ))}
-                </div>
-              </div>
+              <LookSection
+                key={library.id}
+                library={library}
+                total={all.length}
+                shown={shown.length}
+                searching={q !== ""}
+                collapsed={collapsed.includes(library.id)}
+                holdsCurrent={all.some((l) => l.id === settings.look)}
+                onToggle={() => store.toggleLookLibrary(library.id)}
+              >
+                {shown.map((look) => (
+                  <LazyLookTile
+                    key={look.id}
+                    look={look}
+                    index={keyOf.get(look.id) ?? 0}
+                    selected={look.id === settings.look}
+                    photoId={photo.id}
+                    thumbKey={thumbKey}
+                    onSelect={() => void store.chooseLook(look.id)}
+                  />
+                ))}
+              </LookSection>
             );
           })}
           {!anyShown && q ? <p className="ym-look-empty">No looks match “{query.trim()}”.</p> : null}

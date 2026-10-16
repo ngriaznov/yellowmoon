@@ -323,12 +323,27 @@ export type LookGroup =
 /** What a look's LUT expects as input (`docs/08`). */
 export type LookInput = "logc4" | "logc3_ei800" | "logc3_to_rec709";
 
+/**
+ * The library a look belongs to: the Look tab shows one section per library, in this order (`docs/08` §Look model). The core works it
+ * out from the group, the input and the file format, so the app and `ym looks list` agree.
+ */
+export type LookLibrary = "built_in" | "arri_logc4" | "arri_logc3" | "arri_logc3_to_rec709" | "arri_alf2" | "user";
+
+/** The kind of file an imported look is kept as (`aml` is ARRI's ALF2). */
+export type LookFormat = "cube" | "alf4" | "alf4c" | "aml";
+
 /** One entry of the look library. */
 export interface Look {
   id: LookId;
   name: string;
   group: LookGroup;
   input: LookInput;
+  /** The section the look is listed in. */
+  library: LookLibrary;
+  /** The kind of file it is kept as; null for a built-in look. */
+  format: LookFormat | null;
+  /** Points per axis of its 3D table (65, 33, …); null for a built-in look. */
+  lut_size: number | null;
   /** The user's default look (a preference, shown with the DEFAULT tag). */
   is_default: boolean;
   /** The look's file is gone or its hash changed: shown disabled, "File missing or changed". */

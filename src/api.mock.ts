@@ -45,8 +45,11 @@ import type {
   HistogramData,
   LightSource,
   Look,
+  LookFormat,
+  LookGroup,
   LookId,
   LookInput,
+  LookLibrary,
   LooksImportResult,
   OpenKind,
   PackageId,
@@ -148,6 +151,55 @@ const IMPORTED_LOOKS: ReadonlyArray<Pick<Look, "id" | "name">> = [
   ["monochrome", "Monochrome"],
 ].map(([slug, name]) => ({ id: `arri:3000:${slug}`, name: name as string }));
 
+/**
+ * The library a look is listed under, by the core's rule (`LookLibrary::classify` in `crates/ym-looks/src/library/model.rs`): the
+ * mock plays the core, so it has to say the same. Built-in group: built in; user group: Your LUTs; ARRI group: by input, with
+ * an `.aml` of LogC3 to Rec.709 being the ALF2 library.
+ */
+export function libraryOf(group: LookGroup, input: LookInput, format: LookFormat | null): LookLibrary {
+  if (group.kind === "built_in") return "built_in";
+  if (group.kind === "user") return "user";
+  if (input === "logc4") return "arri_logc4";
+  if (input === "logc3_ei800") return "arri_logc3";
+  return format === "aml" ? "arri_alf2" : "arri_logc3_to_rec709";
+}
+
+const ARRI_FILM: LookGroup = { kind: "arri", no: 3000, name: "Film" };
+
+/** An imported look as the core lists it: group, input, kind of file and table size, with the library worked out from them. */
+function importedLook(id: LookId, name: string, group: LookGroup, input: LookInput, format: LookFormat, lutSize: number): Look {
+  return { id, name, group, input, library: libraryOf(group, input, format), format, lut_size: lutSize, is_default: false, missing: false };
+}
+
+/** A built-in look: no file, so no kind of file and no table size. */
+function builtInLook(id: LookId, name: string): Look {
+  return { id, name, group: { kind: "built_in" }, input: "logc4", library: "built_in", format: null, lut_size: null, is_default: false, missing: false };
+}
+
+/**
+ * The looks `mockLibraries=all` adds so every section of the Look tab has some: ARRI's titles repeat from library to library (as they do
+ * in the real ones), the ALF2 library has its three strengths, and the person's own LUTs hold one of each kind of file, one of them with
+ * a title ARRI uses too.
+ */
+function sectionLooks(): Look[] {
+  const titles = ["Film warm", "Film cool", "Bleach bypass", "Teal and orange", "Soft print"];
+  const logc3 = titles.map((t) => importedLook(`arri:3000:${slugify(t)}-logc3`, t, ARRI_FILM, "logc3_ei800", "cube", 33));
+  const rec709 = titles.slice(0, 4).map((t) => importedLook(`arri:3000:${slugify(t)}-logc3-rec709`, t, ARRI_FILM, "logc3_to_rec709", "cube", 33));
+  const alf2 = ["Film warm", "Soft print"].flatMap((t) =>
+    ["Low", "Medium", "High"].map((strength) =>
+      importedLook(`arri:3000:${slugify(t)}-${strength.toLowerCase()}`, `${t} · ${strength}`, ARRI_FILM, "logc3_to_rec709", "aml", 33),
+    ),
+  );
+  const own: Look[] = [
+    importedLook("user:warm-film", "Warm Film", { kind: "user" }, "logc4", "cube", 33),
+    importedLook("user:film-cool", "Film cool", { kind: "user" }, "logc4", "cube", 65),
+    importedLook("user:warm-pull", "Warm Pull", { kind: "user" }, "logc4", "alf4", 33),
+    importedLook("user:custom-look", "Custom Look", { kind: "user" }, "logc4", "alf4c", 33),
+    importedLook("user:night", "Night", { kind: "user" }, "logc3_to_rec709", "aml", 33),
+  ];
+  return [...logc3, ...rec709, ...alf2, ...own];
+}
+
 // ---------------------------------------------------------------------------
 // Options and the mock-only surface
 // ---------------------------------------------------------------------------
@@ -171,6 +223,11 @@ export interface MockOptions {
   photoCount?: number;
   /** Whether the imported looks of the mockups are in the library. Default true. */
   looksImported?: boolean;
+  /**
+   * Looks in every section of the Look tab as well: ARRI's LogC3, LogC3 to Rec.709 and ALF2 libraries (the same titles as the LogC4
+   * one, as in the real libraries) and the person's own LUTs of every kind of file (`?mockLibraries=all`). Default false.
+   */
+  allLibraries?: boolean;
   /** Slugs of imported looks whose file is "missing or changed" ("film-warm"): listed with `missing: true`. */
   missingLooks?: string[];
   /** Development stops at this many photos (fractions allowed: 5.4 is five done, the sixth under way). Default: all. */
@@ -469,6 +526,7 @@ const DEFAULT_OPTIONS: Required<MockOptions> = {
   photoCount: SCENES.length,
   folderName: DEFAULT_FOLDER_NAME,
   looksImported: true,
+  allLibraries: false,
   missingLooks: [],
   holdAt: Number.POSITIVE_INFINITY,
   initialSettings: {},
@@ -499,7 +557,7 @@ function withDefaults(...layers: MockOptions[]): Required<MockOptions> {
  * Reads the mock's options from the page URL so Playwright (and a person with a browser) can
  * set the scene without code: `?mockSpeed=20` (or `Infinity`), `mockSkipped=DSC04207,DSC04209`
  * (a reason after a colon), `mockPicked=2,3,4`, `mockCurrent=3`, `mockPhotos=500` (a folder of 500 photos, the twelve repeating), `mockFolder=Name` (the folder's name), `mockLooks=0` (no imported
- * looks), `mockMissing=film-warm,film-cool`, `mockHold=5.4`, `mockDownloads=ARRI_LookLibrary_LogC4.zip` (zips that
+ * looks), `mockLibraries=all` (looks in every section of the Look tab), `mockMissing=film-warm,film-cool`, `mockHold=5.4`, `mockDownloads=ARRI_LookLibrary_LogC4.zip` (zips that
  * land in Downloads while the wizard watches), `mockDownloadsDenied=1`, `mockExisting=DSC04204_neutral.jpg`,
  * `mockExportFails=DSC04204:reason`, `mockExportHold=1.45` (an export waits there until `flush()`), `mockImportHold=40` (a look import waits at 40 files until `flush()`) and `mockPersist=1`
  * (preferences survive a reload) and `mockViewport=native` or `fallback` (the mock behaves like that viewport backend of the app).
@@ -533,6 +591,7 @@ export function optionsFromLocation(search: string | undefined = typeof location
   const count = params.get("mockPhotos");
   if (count !== null && Number.isInteger(Number(count)) && Number(count) >= 1) out.photoCount = Number(count);
   if (params.get("mockLooks") === "0") out.looksImported = false;
+  if (params.get("mockLibraries") === "all") out.allLibraries = true;
   const missing = list("mockMissing");
   if (missing) out.missingLooks = missing;
   const hold = params.get("mockHold");
@@ -804,21 +863,18 @@ const NAMED_LOOKS = ["Film warm", "Film cool", "Bleach bypass", "Teal and orange
 /** Names for the rest of a package's 87 looks. */
 const LOOK_FAMILIES = ["Print", "Fade", "Noir", "Dusk", "Dawn", "Bloom", "Haze", "Ember", "Frost"];
 
-/** The looks a package adds: the mockup's seven, then generated ones up to the package's count. LogC3 packages get their own ids. */
+/**
+ * The looks a package adds: the mockup's seven, then generated ones up to the package's count. A LogC3 package has its own ids and
+ * its own library; the titles are the same as the LogC4 package's, as they are in ARRI's libraries.
+ */
 function packageLooks(id: PackageId): Look[] {
   const fact = PACKAGE_FACTS[id];
   if (fact.role !== "looks") return [];
-  const suffix = id === "look_library_logc4" ? "" : id === "look_library_logc3" ? "-logc3" : "-rec709";
+  const suffix = id === "look_library_logc4" ? "" : id === "look_library_logc3" ? "-logc3" : "-logc3-rec709";
+  const lutSize = id === "look_library_logc4" ? 65 : 33;
   const names = [...NAMED_LOOKS];
   for (let i = 0; names.length < fact.fileCount; i++) names.push(`${LOOK_FAMILIES[i % LOOK_FAMILIES.length]} ${Math.floor(i / LOOK_FAMILIES.length) + 1}`);
-  return names.map((name) => ({
-    id: `arri:3000:${slugify(name)}${suffix}`,
-    name: suffix ? `${name} · ${suffix === "-logc3" ? "LogC3" : "Rec.709"}` : name,
-    group: { kind: "arri", no: 3000, name: "Film" },
-    input: fact.input,
-    is_default: false,
-    missing: false,
-  }));
+  return names.map((name) => importedLook(`arri:3000:${slugify(name)}${suffix}`, name, ARRI_FILM, fact.input, "cube", lutSize));
 }
 
 /** The display LUTs a package adds. The first is ARRI's Rec.709 rendering, `arri-display:logc4:rec709-g24`. */
@@ -901,6 +957,13 @@ interface StoredState {
   importedPackages: PackageId[];
   userLooks: Look[];
   cliLink: string | null;
+}
+
+/** A look kept by an earlier version of the mock has no library, kind of file or size: it was one of the person's own `.cube` files. */
+function withLibraryFields(look: Look): Look {
+  const stored = look as Partial<Look> & Pick<Look, "group" | "input">;
+  const format = stored.format ?? "cube";
+  return { ...look, library: stored.library ?? libraryOf(look.group, look.input, format), format, lut_size: stored.lut_size ?? 33 };
 }
 
 function readStored(): StoredState | null {
@@ -1056,13 +1119,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
   // --- Looks and preferences ---------------------------------------------------
 
   function buildLooks(): Look[] {
-    const list: Look[] = BUILT_IN_LOOKS.map((l) => ({
-      ...l,
-      group: { kind: "built_in" },
-      input: "logc4",
-      is_default: false,
-      missing: false,
-    }));
+    const list: Look[] = BUILT_IN_LOOKS.map((l) => builtInLook(l.id, l.name));
     const seen = new Set(list.map((l) => l.id));
     const add = (more: Look[]): void => {
       for (const look of more) {
@@ -1072,6 +1129,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
       }
     };
     if (options.looksImported) add(importedLooks());
+    if (options.allLibraries) add(sectionLooks().map((l) => ({ ...l, missing: options.missingLooks.includes(lookSlug(l.id)) })));
     for (const id of importedPackages) add(packageLooks(id).map((l) => ({ ...l, missing: options.missingLooks.includes(lookSlug(l.id)) })));
     add(userLooks);
     return list.map((l) => ({ ...l, is_default: l.id === preferences.default_look }));
@@ -1087,13 +1145,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
   }
 
   function importedLooks(): Look[] {
-    return IMPORTED_LOOKS.map((l) => ({
-      ...l,
-      group: { kind: "arri", no: 3000, name: "Film" },
-      input: "logc4",
-      is_default: false,
-      missing: options.missingLooks.includes(lookSlug(l.id)),
-    }));
+    return IMPORTED_LOOKS.map((l) => ({ ...importedLook(l.id, l.name, ARRI_FILM, "logc4", "cube", 65), missing: options.missingLooks.includes(lookSlug(l.id)) }));
   }
 
   /** Writes what a real install would keep: the preferences and the imported looks. */
@@ -1530,7 +1582,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     const stored = options.persistPreferences ? readStored() : null;
     preferences = stored ? { ...defaultPreferences(), ...stored.preferences } : defaultPreferences();
     importedPackages = stored?.importedPackages ?? [];
-    userLooks = stored?.userLooks ?? [];
+    userLooks = (stored?.userLooks ?? []).map(withLibraryFields);
     cliLink = stored?.cliLink ?? null;
     displayLuts = importedPackages.flatMap(packageDisplayLuts);
     sources = defaultSources();
@@ -1773,15 +1825,21 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
         } else {
           const base = cubeName(found.name);
           const slug = slugify(base);
-          const made: Look[] = Array.from({ length: r.file_count }, (_, i) => ({
-            id: `user:${slug}${r.file_count > 1 ? `-${i + 1}` : ""}`,
-            name: r.file_count > 1 ? `${base} ${i + 1}` : base,
-            group: { kind: "user" },
-            // A look file says what it expects; a `.cube` is what the person answered.
-            input: (r.kind === "look_files" ? r.input : null) ?? input ?? "logc4",
-            is_default: false,
-            missing: false,
-          }));
+          // The kind of file is the extension (a folder of look files is taken for `.alf4` files); a `.cube` has the size the question was asked with.
+          const extension = /\.(cube|alf4c?|aml)$/i.exec(found.name)?.[1]?.toLowerCase();
+          const format: LookFormat = extension === "alf4" || extension === "alf4c" || extension === "aml" ? extension : r.kind === "look_files" ? "alf4" : "cube";
+          const lutSize = r.kind === "needs_answer" ? (r.lut_size ?? 33) : 33;
+          const made: Look[] = Array.from({ length: r.file_count }, (_, i) =>
+            importedLook(
+              `user:${slug}${r.file_count > 1 ? `-${i + 1}` : ""}`,
+              r.file_count > 1 ? `${base} ${i + 1}` : base,
+              { kind: "user" },
+              // A look file says what it expects; a `.cube` is what the person answered.
+              (r.kind === "look_files" ? r.input : null) ?? input ?? "logc4",
+              format,
+              lutSize,
+            ),
+          );
           userLooks = [...userLooks.filter((l) => !made.some((m) => m.id === l.id)), ...made];
         }
         rebuildLooks();

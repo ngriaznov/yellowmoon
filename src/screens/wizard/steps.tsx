@@ -3,9 +3,9 @@ import type { Look } from "../../api/types";
 import { Button, DropZone, LinkButton, ProgressBar, Segmented, Switch, Tag } from "../../components";
 import type { TagVariant } from "../../components";
 import { useAppState, useStore } from "../../state/context";
+import { lookLabeller, looksInDisplayOrder } from "../../state/looks";
 import { isReady } from "../../state/photo";
 import { useLookThumbnail } from "../../state/useLookThumbnail";
-import { looksInDisplayOrder } from "../tools/LookTab";
 import {
   anyChecking,
   copiesLookFiles,
@@ -345,6 +345,8 @@ export function FinishStep({ wizard }: { wizard: Wizard }) {
   const currentDefault = ordered.find((l) => l.is_default)?.id ?? builtIn[0]?.id ?? "";
   const defaultOptions = [...builtIn.slice(0, 2), ...(arri[0] ? [arri[0]] : [])];
   const defaultValue = state.finish.defaultLook ?? currentDefault;
+  // A name two libraries share says which one it is (the options stand without their section).
+  const label = lookLabeller(looks ?? []);
   const zips = trashCandidates(state);
 
   return (
@@ -374,7 +376,7 @@ export function FinishStep({ wizard }: { wizard: Wizard }) {
               size="lg"
               value={defaultValue}
               onChange={(id) => dispatch({ type: "finish", patch: { defaultLook: id } })}
-              options={defaultOptions.map((l) => ({ value: l.id, label: l.name }))}
+              options={defaultOptions.map((l) => ({ value: l.id, label: label(l) }))}
             />
           </div>
         ) : null}

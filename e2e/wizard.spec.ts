@@ -85,7 +85,7 @@ test.describe("the happy path", () => {
     await expect(page.locator(".ym-wizard__tile-picture img")).toHaveCount(7);
     await next(page).click();
     await expect(page.getByRole("tab", { name: "Look" })).toBeVisible();
-    await expect(page.getByText("ARRI looks · imported")).toBeVisible();
+    await expect(page.getByText("ARRI looks · LogC4", { exact: true })).toBeVisible();
     await expect(page.locator(".ym-look-group__count").nth(1)).toHaveText("87");
   });
 

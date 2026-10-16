@@ -19,6 +19,8 @@ export interface LookTileProps {
   disabled?: boolean;
   /** Why it is disabled; part of the accessible name. */
   note?: string;
+  /** A tooltip for what the look is ("ARRI looks · LogC4 · 3D LUT, 65 points"). A disabled tile's tooltip is its note. */
+  title?: string;
   onSelect: () => void;
   /** The `src` picture did not load; the screen may ask for another and pass its address. */
   onImageError?: () => void;
@@ -32,7 +34,7 @@ export interface LookTileProps {
 /**
  * A look in the Look tab's grid: a 3:2 thumbnail with a 2 px border, a 1–9 key badge top-left,
  * a DEFAULT tag bottom-right and the name below. Selected is a 3 px ink ring and the name on a
- * tab-colour label. A toggle button (`aria-pressed`) named "<name> look, key <n>".
+ * tab-colour label. A toggle button (`aria-pressed`) named "<name> look, key <n>", with an optional `title` tooltip.
  */
 export function LookTile({
   name,
@@ -43,6 +45,7 @@ export function LookTile({
   selected = false,
   disabled = false,
   note,
+  title,
   onSelect,
   onImageError,
   ref,
@@ -60,7 +63,7 @@ export function LookTile({
       aria-disabled={disabled || undefined}
       aria-label={label}
       data-tab={tab}
-      title={disabled ? note : undefined}
+      title={disabled ? note : title}
       onClick={() => {
         if (!disabled) onSelect();
       }}

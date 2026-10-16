@@ -539,8 +539,8 @@ pub struct DoctorArgs {
 /// Subcommands of `ym looks`.
 #[derive(Debug, Subcommand)]
 pub enum LooksCommand {
-    /// List the built-in and imported looks, with ids, names, groups and inputs; the default look
-    /// is marked.
+    /// List the built-in and imported looks, with ids, names, groups, libraries and inputs; the
+    /// default look is marked.
     List(LooksListArgs),
     /// Import ARRI look packages, folders of looks, `.cube` files or ARRI Look Files (`.alf4`,
     /// `.alf4c`, `.aml`) into the look library.

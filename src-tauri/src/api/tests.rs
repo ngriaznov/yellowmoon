@@ -1097,11 +1097,22 @@ fn importing_a_cube_needs_the_answer_and_announces_the_new_look() {
     assert_eq!(result.added.len(), 1);
     assert_eq!(result.added[0].group, LookGroup::User);
     assert_eq!(result.added[0].input, LookInput::Logc4);
+    // The library, the kind of file and the table size cross the bridge with the look.
+    assert_eq!(result.added[0].library, LookLibrary::User);
+    assert_eq!(result.added[0].format, Some(LookFormat::Cube));
+    assert_eq!(result.added[0].lut_size, Some(5));
     wait_until("looks_changed", || {
         h.events.events().contains(&AppEvent::LooksChanged)
     });
     let listed = h.api.looks_list().expect("list");
     assert!(listed.iter().any(|l| l.id == result.added[0].id));
+    // A built-in look has no file: no format and no size.
+    let neutral = listed
+        .iter()
+        .find(|l| l.id.0 == "builtin:neutral")
+        .expect("Neutral is listed");
+    assert_eq!(neutral.library, LookLibrary::BuiltIn);
+    assert_eq!((neutral.format, neutral.lut_size), (None, None));
     assert!(
         listed
             .iter()
@@ -1231,6 +1242,10 @@ fn look_files_are_recognised_and_imported_without_a_question() {
     assert_eq!(result.added[0].group, LookGroup::User);
     assert_eq!(result.added[0].input, LookInput::Logc4);
     assert_eq!(result.added[0].name, "Warm Pull");
+    // The person's own look file is in Your LUTs, and says what it is.
+    assert_eq!(result.added[0].library, LookLibrary::User);
+    assert_eq!(result.added[0].format, Some(LookFormat::Alf4));
+    assert_eq!(result.added[0].lut_size, Some(5));
     // The same file again changes nothing.
     let again = h.api.looks_import(&path, None).expect("again");
     assert!(again.added.is_empty() && again.unchanged == 1);
@@ -1248,6 +1263,9 @@ fn look_files_are_recognised_and_imported_without_a_question() {
         .looks_import(&aml.to_string_lossy(), None)
         .expect("aml");
     assert_eq!(result.added[0].input, LookInput::Logc3ToRec709);
+    // An .aml of the person's own stays in Your LUTs (ARRI's ALF2 section is for ARRI's library).
+    assert_eq!(result.added[0].library, LookLibrary::User);
+    assert_eq!(result.added[0].format, Some(LookFormat::Aml));
 
     // An .alf4c says its display transforms are not used.
     let alf4c = write_look_file(dir, "Custom.alf4c", "alf4c", false);
@@ -2239,6 +2257,44 @@ fn assert_same<C: serde::Serialize, W: serde::Serialize>(what: &str, core: &C, w
         same_json(&c, &w),
         "{what} lost something on the bridge:\ncore {c}\nwire {w}"
     );
+}
+
+#[test]
+fn every_look_library_and_format_of_the_core_crosses_the_bridge_by_the_same_word() {
+    use ym_looks::library::{LookFormat as CoreFormat, LookLibrary as CoreLibrary};
+    let wire = [
+        LookLibrary::BuiltIn,
+        LookLibrary::ArriLogC4,
+        LookLibrary::ArriLogC3,
+        LookLibrary::ArriLogC3ToRec709,
+        LookLibrary::ArriAlf2,
+        LookLibrary::User,
+    ];
+    assert_eq!(wire.len(), CoreLibrary::ALL.len());
+    for (core, wire) in CoreLibrary::ALL.into_iter().zip(wire) {
+        let converted: LookLibrary = convert(&core).expect("library");
+        assert_eq!(converted, wire, "{core:?}");
+        assert_eq!(
+            serde_json::to_value(wire).expect("json"),
+            json!(core.slug()),
+            "{core:?}"
+        );
+    }
+    let formats = [
+        (CoreFormat::Cube, LookFormat::Cube),
+        (CoreFormat::Alf4, LookFormat::Alf4),
+        (CoreFormat::Alf4c, LookFormat::Alf4c),
+        (CoreFormat::Aml, LookFormat::Aml),
+    ];
+    for (core, wire) in formats {
+        let converted: LookFormat = convert(&core).expect("format");
+        assert_eq!(converted, wire, "{core:?}");
+        assert_eq!(
+            serde_json::to_value(wire).expect("json"),
+            json!(core.extension()),
+            "{core:?}"
+        );
+    }
 }
 
 #[test]

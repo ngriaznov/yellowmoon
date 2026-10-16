@@ -133,6 +133,21 @@ describe("Preferences (⌘,)", () => {
     await waitFor(() => expect(within(dialog).getByRole("combobox", { name: "Default look" })).toHaveValue("builtin:signature"));
   });
 
+  it("names a look by its library in the default look list when two libraries have a look of that name", async () => {
+    const dialog = await openPreferences({ allLibraries: true });
+    const select = within(dialog).getByRole("combobox", { name: "Default look" });
+    const options = within(select).getAllByRole("option");
+    const labels = options.map((o) => o.textContent);
+    expect(labels).toContain("Neutral");
+    expect(labels).toContain("Monochrome");
+    expect(labels).toContain("Film warm · LogC4");
+    expect(labels).toContain("Film warm · LogC3");
+    expect(labels).toContain("Film cool · Your LUTs");
+    expect(labels).not.toContain("Film warm");
+    await h!.user.selectOptions(select, "Film warm · LogC3");
+    await waitFor(async () => expect((await h!.api.preferencesGet()).default_look).toBe("arri:3000:film-warm-logc3"));
+  });
+
   it("offers ARRI's display rendering only once display LUTs are imported", async () => {
     const dialog = await openPreferences({ looksImported: false });
     const group = within(dialog).getByRole("radiogroup", { name: "Display rendering" });

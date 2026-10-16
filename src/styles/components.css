@@ -630,6 +630,36 @@
   text-transform: uppercase;
 }
 .ym-look-group__count { font-weight: var(--fw-bold); font-variant-numeric: tabular-nums; letter-spacing: 0; text-transform: none; }
+/* A library's header is a disclosure button: the same row as the call to action's header, with a chevron before the label. */
+.ym-look-group__toggle {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--ink);
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.ym-look-group__toggle[aria-disabled="true"] { cursor: default; }
+.ym-look-group__title { display: flex; align-items: center; gap: 8px; min-width: 0; }
+/* The chevron is two 2 px strokes with square ends: a box turned 45 degrees, open (pointing down) or folded (pointing right). */
+.ym-look-group__chevron {
+  box-sizing: border-box;
+  flex: none;
+  width: 8px;
+  height: 8px;
+  margin: -3px 2px 0 2px;
+  border-right: var(--rule-control) solid var(--ink);
+  border-bottom: var(--rule-control) solid var(--ink);
+  transform: rotate(45deg);
+}
+.ym-look-group__chevron[data-open="false"] { margin: 0 2px; transform: rotate(-45deg); }
+.ym-look-group__toggle[aria-disabled="true"] .ym-look-group__chevron { border-color: var(--muted); }
+/* A folded section that holds the current look: a small filled square, like the tile's selected ring in miniature. */
+.ym-look-group__marker { flex: none; width: 8px; height: 8px; background: var(--ink); }
 
 /* The wheel, the curve grid and the histogram use rgba() where the mockup uses color-mix(in srgb, ink 22%, transparent): the same colours, and
    Safari before 16.2 (macOS 12 can still be on 15) drops a declaration with color-mix in it. */

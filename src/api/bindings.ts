@@ -647,11 +647,28 @@ export type Look = {
 	group: LookGroup,
 	/**  What its LUT expects as input. */
 	input: LookInput,
+	/**  The library it belongs to: the Look tab shows one section per library. */
+	library: LookLibrary,
+	/**  The kind of file it is kept as; null for a built-in look. */
+	format: LookFormat | null,
+	/**  Points per axis of its 3D table; null for a built-in look. */
+	lut_size: number | null,
 	/**  The user's default look. */
 	is_default: boolean,
 	/**  The look's file is gone or its hash changed. */
 	missing: boolean,
 };
+
+/**  The kind of file an imported look is kept as. */
+export type LookFormat = 
+/**  A `.cube` 3D LUT. */
+"cube" | 
+/**  An ARRI Look File for ALEXA 35 (`.alf4`). */
+"alf4" | 
+/**  An ARRI custom colour management file (`.alf4c`). */
+"alf4c" | 
+/**  An ARRI Look File for LogC3 cameras (`.aml`, "ALF2"). */
+"aml";
 
 /**  Where a look comes from. ARRI looks keep their numbered group ("3000 Film"). */
 export type LookGroup = 
@@ -677,6 +694,25 @@ export type LookInput =
 "logc3_ei800" | 
 /**  LogC3 with Rec.709 output baked in. */
 "logc3_to_rec709";
+
+/**
+ *  The library a look is listed under: its section of the Look tab (`docs/08-looks.md`). In display
+ *  order; the core works it out (`ym_looks::library::Look::library`) so the app and `ym looks
+ *  list` agree.
+ */
+export type LookLibrary = 
+/**  Shipped with the app. */
+"built_in" | 
+/**  ARRI's LogC4 looks (the 3D-LUT library, or its `.alf4` version). */
+"arri_logc4" | 
+/**  ARRI's LogC3 log-to-log 3D-LUT library. */
+"arri_logc3" | 
+/**  ARRI's LogC3 to Rec.709 3D-LUT library. */
+"arri_logc3_to_rec709" | 
+/**  ARRI's ALF2 look files (`.aml`). */
+"arri_alf2" | 
+/**  The person's own LUTs and look files. */
+"user";
 
 /**  `looks_changed`: the look list, the default look or a look's file changed. No data. */
 export type LooksChanged = null;

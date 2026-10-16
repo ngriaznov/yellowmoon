@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 import { Button, LinkButton, Segmented, Switch } from "../../components";
 import { exportModel } from "../../export/model";
 import { useAppState, useStore } from "../../state/context";
+import { lookLabeller } from "../../state/looks";
 import { preferredDisplayLut } from "../../wizard/model";
 import { ExportOptionsForm } from "../export/ExportOptionsForm";
 import { Dialog } from "./Dialog";
@@ -49,7 +50,9 @@ export function Preferences() {
   );
 
   const defaultLook = looks?.find((l) => l.is_default);
-  const lookOptions = (looks ?? []).filter((l) => !l.missing).map((l) => ({ value: l.id, label: l.name }));
+  // A title that two libraries share says which one it is ("Film · LogC3"), since the list stands without its sections.
+  const label = lookLabeller(looks ?? []);
+  const lookOptions = (looks ?? []).filter((l) => !l.missing).map((l) => ({ value: l.id, label: label(l) }));
   const arriLut = preferredDisplayLut(luts);
   const usingArri = prefs?.display_rendering.kind === "arri_display";
 

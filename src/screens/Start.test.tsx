@@ -78,6 +78,27 @@ describe("Start, nothing open", () => {
     expect((await h.api.preferencesGet()).default_look).toBe("builtin:signature");
   });
 
+  it("names a default look by its library when two libraries have a look of that name", async () => {
+    h = renderApp({ allLibraries: true });
+    const row = (await screen.findByText("Default look")).closest(".ym-about-row") as HTMLElement;
+    await h.user.click(within(row).getByRole("button", { name: "Change" }));
+    const menu = screen.getByRole("menu", { name: "Default look" });
+    const names = within(menu).getAllByRole("menuitemradio").map((item) => item.textContent);
+    expect(names).toHaveLength(29);
+    expect(names).toContain("Neutral");
+    expect(names).toContain("Monochrome");
+    expect(names).toContain("Film warm · LogC4");
+    expect(names).toContain("Film warm · LogC3");
+    expect(names).toContain("Film warm · LogC3 to Rec.709");
+    expect(names).toContain("Film cool · Your LUTs");
+    // An ALF2 title already says its strength, and the same title is in the LogC3 to Rec.709 library too.
+    expect(names).toContain("Film warm · Low");
+    // Picking one shows the same words in the row.
+    await h.user.click(within(menu).getByRole("menuitemradio", { name: "Film warm · LogC3" }));
+    await waitFor(() => expect(within(row).getByText("Film warm · LogC3")).toBeInTheDocument());
+    expect((await h.api.preferencesGet()).default_look).toBe("arri:3000:film-warm-logc3");
+  });
+
   it("Open files and Open folder use the system dialog", async () => {
     h = renderApp();
     const spy = vi.spyOn(h.api, "openDialog");

@@ -42,7 +42,7 @@ use ym_color::look::LookInput;
 use ym_looks::import::{CancelToken, ImportError, ImportOptions, ImportReport, Progress};
 use ym_looks::library::{
     DISABLED_MESSAGE, DisplayInput, DisplayLut, Library, LibraryError, LibraryProblem, LoadError,
-    Look, LookGroup, LookId, ResolveError, VerifyReport,
+    Look, LookFormat, LookGroup, LookId, LookLibrary, ResolveError, VerifyReport,
 };
 use ym_looks::manifest::hash_file;
 use ym_looks::recognize::PackageDb;
@@ -144,6 +144,13 @@ pub struct LookEntry {
     pub group: LookGroupInfo,
     /// What its LUT expects as input.
     pub input: LookInput,
+    /// The library it is listed under: its section of the Look tab and the LIBRARY column of
+    /// `ym looks list` (`Look::library`, `docs/08-looks.md`).
+    pub library: LookLibrary,
+    /// The kind of file the look is kept as; `None` for a built-in look, which has no file.
+    pub format: Option<LookFormat>,
+    /// Points per axis of the look's 3D table (65, 33, …); `None` for a built-in look.
+    pub lut_size: Option<usize>,
     /// The user's default look (the DEFAULT tag).
     pub is_default: bool,
     /// The look's file is gone or its hash changed: shown disabled.
@@ -767,6 +774,9 @@ fn entry_of(look: &Look, default: &LookId) -> LookEntry {
         name: look.name.clone(),
         group: LookGroupInfo::from(&look.group),
         input: look.input,
+        library: look.library(),
+        format: look.format(),
+        lut_size: look.lut_size(),
         is_default: &look.id == default,
         missing: !look.is_enabled(),
     }
@@ -832,6 +842,9 @@ mod tests {
             name: "Neutral".into(),
             group: LookGroupInfo::BuiltIn,
             input: LookInput::LogC3ToRec709,
+            library: LookLibrary::BuiltIn,
+            format: None,
+            lut_size: None,
             is_default: true,
             missing: false,
         };
@@ -839,7 +852,31 @@ mod tests {
             serde_json::to_value(&entry).expect("json"),
             serde_json::json!({
                 "id": "builtin:neutral", "name": "Neutral", "group": { "kind": "built_in" },
-                "input": "logc3_to_rec709", "is_default": true, "missing": false
+                "input": "logc3_to_rec709", "library": "built_in", "format": null,
+                "lut_size": null, "is_default": true, "missing": false
+            })
+        );
+        let imported = LookEntry {
+            id: LookId::arri(3000, "film"),
+            name: "Film".into(),
+            group: LookGroupInfo::Arri {
+                no: 3000,
+                name: "Film".into(),
+            },
+            input: LookInput::LogC3ToRec709,
+            library: LookLibrary::ArriAlf2,
+            format: Some(LookFormat::Aml),
+            lut_size: Some(33),
+            is_default: false,
+            missing: false,
+        };
+        assert_eq!(
+            serde_json::to_value(&imported).expect("json"),
+            serde_json::json!({
+                "id": "arri:3000:film", "name": "Film",
+                "group": { "kind": "arri", "no": 3000, "name": "Film" },
+                "input": "logc3_to_rec709", "library": "arri_alf2", "format": "aml",
+                "lut_size": 33, "is_default": false, "missing": false
             })
         );
     }

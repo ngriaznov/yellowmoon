@@ -7,7 +7,7 @@ Manage the look library
 Usage: ym looks [OPTIONS] <COMMAND>
 
 Commands:
-  list     List the built-in and imported looks, with ids, names, groups and inputs; the default look is marked
+  list     List the built-in and imported looks, with ids, names, groups, libraries and inputs; the default look is marked
   import   Import ARRI look packages, folders of looks, `.cube` files or ARRI Look Files (`.alf4`, `.alf4c`, `.aml`) into the look library
   verify   Re-hash every imported look and report missing or changed files
   default  Set the look new photos get

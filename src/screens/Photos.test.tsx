@@ -245,7 +245,7 @@ describe("the Look tab", () => {
     expect(within(apply).getAllByRole("radio").map((r) => r.textContent)).toEqual(["This photo", "Picked · 3", "All · 12"]);
     expect(within(apply).getByRole("radio", { name: "All · 12" })).toHaveAttribute("aria-checked", "true");
     expect(card.getByText("Built in")).toBeInTheDocument();
-    expect(card.getByText("ARRI looks · imported")).toBeInTheDocument();
+    expect(card.getByText("ARRI looks · LogC4")).toBeInTheDocument();
     expect(card.getAllByRole("button", { name: / look, key \d/ })).toHaveLength(9);
     expect(card.getByRole("button", { name: "Neutral look, key 1" })).toHaveAttribute("aria-pressed", "true");
     expect(card.getByRole("button", { name: "Film warm look, key 3" })).toBeInTheDocument();
@@ -389,7 +389,7 @@ describe("the Look tab", () => {
 
   it("offers the wizard in place of the ARRI looks when none are imported", async () => {
     await setup({ ...MOCKUP, looksImported: false });
-    expect(screen.queryByText("ARRI looks · imported")).toBeNull();
+    expect(screen.queryByText(/^ARRI looks · /)).toBeNull();
     expect(screen.getByText("The free ARRI Look Library is not imported yet.")).toBeInTheDocument();
     expect(screen.getAllByRole("button", { name: /look, key/ })).toHaveLength(2);
     await h!.user.click(screen.getByRole("button", { name: "Import ARRI looks →" }));

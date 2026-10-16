@@ -15,6 +15,7 @@ moves the entries below from Unreleased into a dated section for that version.
 
 ### Changed
 
+- The Look tab lists each library in its own section, which folds away, and a name that appears in two libraries says which one ("Film · LogC3"). ARRI's LogC4, LogC3, LogC3 to Rec.709 and ALF2 looks and your own LUTs each have a heading with a count, a search opens the sections that match, and a look's tooltip says what it is ("3D LUT, 65 points"). `ym looks list` has a LIBRARY column, and its JSON gains `library`, `format` and `lut_size`.
 - Importing again never duplicates a look. The same file under another name is not added a second time (a renamed copy of your own LUT stays one entry, and a file you imported on its own that is one of ARRI's looks becomes that ARRI look when you import ARRI's download), a folder that holds both ARRI libraries (3D LUTs and look files) gives one entry per look, and an import that adds nothing leaves the list of looks untouched.
 
 ## [0.1.2] - 2026-10-16

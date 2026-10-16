@@ -982,6 +982,45 @@ pub enum LookInput {
     Logc3ToRec709,
 }
 
+/// The library a look is listed under: its section of the Look tab (`docs/08-looks.md`). In display
+/// order; the core works it out (`ym_looks::library::Look::library`) so the app and `ym looks
+/// list` agree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub enum LookLibrary {
+    /// Shipped with the app.
+    #[serde(rename = "built_in")]
+    BuiltIn,
+    /// ARRI's LogC4 looks (the 3D-LUT library, or its `.alf4` version).
+    #[serde(rename = "arri_logc4")]
+    ArriLogC4,
+    /// ARRI's LogC3 log-to-log 3D-LUT library.
+    #[serde(rename = "arri_logc3")]
+    ArriLogC3,
+    /// ARRI's LogC3 to Rec.709 3D-LUT library.
+    #[serde(rename = "arri_logc3_to_rec709")]
+    ArriLogC3ToRec709,
+    /// ARRI's ALF2 look files (`.aml`).
+    #[serde(rename = "arri_alf2")]
+    ArriAlf2,
+    /// The person's own LUTs and look files.
+    #[serde(rename = "user")]
+    User,
+}
+
+/// The kind of file an imported look is kept as.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "lowercase")]
+pub enum LookFormat {
+    /// A `.cube` 3D LUT.
+    Cube,
+    /// An ARRI Look File for ALEXA 35 (`.alf4`).
+    Alf4,
+    /// An ARRI custom colour management file (`.alf4c`).
+    Alf4c,
+    /// An ARRI Look File for LogC3 cameras (`.aml`, "ALF2").
+    Aml,
+}
+
 /// One entry of the look library.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 pub struct Look {
@@ -993,6 +1032,12 @@ pub struct Look {
     pub group: LookGroup,
     /// What its LUT expects as input.
     pub input: LookInput,
+    /// The library it belongs to: the Look tab shows one section per library.
+    pub library: LookLibrary,
+    /// The kind of file it is kept as; null for a built-in look.
+    pub format: Option<LookFormat>,
+    /// Points per axis of its 3D table; null for a built-in look.
+    pub lut_size: Option<u32>,
     /// The user's default look.
     pub is_default: bool,
     /// The look's file is gone or its hash changed.

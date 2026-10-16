@@ -286,7 +286,7 @@ describe("DNG and a look with its own display rendering", () => {
       await importing;
     });
     await h!.store.refreshLooks();
-    await h!.store.chooseLook("arri:3000:film-warm-rec709");
+    await h!.store.chooseLook("arri:3000:film-warm-logc3-rec709");
     await h!.user.keyboard("{Meta>}e{/Meta}");
     return screen.findByRole("complementary", { name: "Export" });
   }

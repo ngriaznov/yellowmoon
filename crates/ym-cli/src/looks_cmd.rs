@@ -20,7 +20,7 @@ use ym_core::session::{OpenOptions, PhotoId, PhotoStatus, Session, SessionEnv};
 use ym_core::settings::DevelopSettings;
 use ym_gpu::queue::CancelToken as RenderCancel;
 use ym_looks::import::{CancelToken, ImportError, Progress, Stage};
-use ym_looks::library::{LookId, VerifyOutcome};
+use ym_looks::library::{LookId, LookLibrary, VerifyOutcome};
 
 use crate::cli::{
     InputArg, LooksBakeArgs, LooksCommand, LooksDefaultArgs, LooksImportArgs, LooksListArgs,
@@ -74,6 +74,12 @@ fn group_text(group: &LookGroupInfo) -> String {
     }
 }
 
+/// The LIBRARY column: the library's short word ("LogC4", "ALF2", "Your LUTs"), and "Built in" for
+/// the looks that come with the app.
+fn library_text(library: LookLibrary) -> &'static str {
+    library.qualifier().unwrap_or("Built in")
+}
+
 /// Left-aligned columns separated by two spaces; the last column is not padded.
 fn table(rows: &[Vec<String>]) -> String {
     let columns = rows.iter().map(Vec::len).max().unwrap_or(0);
@@ -108,6 +114,7 @@ fn list_text(looks: &[LookEntry], luts: &[ym_core::looks::DisplayLutEntry]) -> S
         "ID".to_owned(),
         "NAME".to_owned(),
         "GROUP".to_owned(),
+        "LIBRARY".to_owned(),
         "INPUT".to_owned(),
         String::new(),
     ]];
@@ -124,6 +131,7 @@ fn list_text(looks: &[LookEntry], luts: &[ym_core::looks::DisplayLutEntry]) -> S
             // The name of an imported .cube is its file name: text from outside.
             line_text(&l.name),
             line_text(&group_text(&l.group)),
+            library_text(l.library).to_owned(),
             input_word(l.input).to_owned(),
             flags.join(", "),
         ]);
@@ -558,6 +566,7 @@ fn layout(rows: &[(Picture, Picture)]) -> (usize, usize, Vec<u8>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ym_looks::library::LookFormat;
 
     fn pic(w: usize, h: usize, v: u8) -> Picture {
         Picture {
@@ -596,6 +605,9 @@ mod tests {
                 name: "Neutral".into(),
                 group: LookGroupInfo::BuiltIn,
                 input: LookInput::LogC4,
+                library: LookLibrary::BuiltIn,
+                format: None,
+                lut_size: None,
                 is_default: true,
                 missing: false,
             },
@@ -607,6 +619,9 @@ mod tests {
                     name: "Film".into(),
                 },
                 input: LookInput::LogC3Ei800,
+                library: LookLibrary::ArriLogC3,
+                format: Some(LookFormat::Cube),
+                lut_size: Some(33),
                 is_default: false,
                 missing: true,
             },
@@ -622,6 +637,61 @@ mod tests {
             lines[2].contains("arri:3000:film")
                 && lines[2].contains("logc3")
                 && lines[2].ends_with("missing: import again"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn the_look_table_has_a_library_column_with_the_short_word() {
+        let entry = |library: LookLibrary, group: LookGroupInfo, id: &str| LookEntry {
+            id: LookId::parse(id).expect("id"),
+            name: "Film".into(),
+            group,
+            input: LookInput::LogC4,
+            library,
+            format: None,
+            lut_size: None,
+            is_default: false,
+            missing: false,
+        };
+        let arri = || LookGroupInfo::Arri {
+            no: 3000,
+            name: "Film".into(),
+        };
+        let looks = vec![
+            entry(LookLibrary::BuiltIn, LookGroupInfo::BuiltIn, "builtin:film"),
+            entry(LookLibrary::ArriLogC4, arri(), "arri:3000:film"),
+            entry(LookLibrary::ArriLogC3, arri(), "arri:3000:film-logc3"),
+            entry(
+                LookLibrary::ArriLogC3ToRec709,
+                arri(),
+                "arri:3000:film-logc3-rec709",
+            ),
+            entry(LookLibrary::ArriAlf2, arri(), "arri:3000:film-high"),
+            entry(LookLibrary::User, LookGroupInfo::User, "user:film"),
+        ];
+        let text = list_text(&looks, &[]);
+        let rows: Vec<Vec<&str>> = text
+            .lines()
+            .map(|l| l.split("  ").filter(|c| !c.is_empty()).collect())
+            .collect();
+        let header: Vec<&str> = rows[0].iter().map(|c| c.trim()).collect();
+        assert_eq!(
+            header,
+            ["ID", "NAME", "GROUP", "LIBRARY", "INPUT"],
+            "{text}"
+        );
+        let words: Vec<&str> = rows[1..].iter().map(|r| r[3].trim()).collect();
+        assert_eq!(
+            words,
+            [
+                "Built in",
+                "LogC4",
+                "LogC3",
+                "LogC3 to Rec.709",
+                "ALF2",
+                "Your LUTs"
+            ],
             "{text}"
         );
     }
