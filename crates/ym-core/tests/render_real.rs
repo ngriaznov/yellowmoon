@@ -140,3 +140,49 @@ fn the_smallest_real_file_renders_at_full_resolution() {
     );
     assert!(full.rgb.iter().all(|v| v.is_finite()));
 }
+
+/// The Before view (the camera default rendering) of every local real file, at fit with a long edge of
+/// 1616 px, as binary PPM files in the folder named by `YM_BEFORE_OUT` (Display P3 code values, the
+/// viewport's encoding). Local, ignored, a report and not a gate: a script compares the pictures with the
+/// embedded JPEGs of the files (`docs/02`, The Before view). The folders are `testdata/real/files` and
+/// `testdata/readme-photos/src`; files are numbered in sorted order, so no file name leaves the machine.
+/// `YM_BEFORE_OUT=/some/dir cargo test -p ym-core --test render_real -- --ignored dump_before_views`.
+#[test]
+#[ignore = "local check: needs the owner's files and YM_BEFORE_OUT"]
+fn dump_before_views() {
+    let Some(out) = std::env::var_os("YM_BEFORE_OUT").map(PathBuf::from) else {
+        eprintln!("dump_before_views: set YM_BEFORE_OUT to a folder");
+        return;
+    };
+    let mut all = files();
+    let owner = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../testdata/readme-photos/src");
+    let mut more: Vec<PathBuf> = std::fs::read_dir(owner)
+        .map(|d| {
+            d.filter_map(Result::ok)
+                .map(|e| e.path())
+                .filter(|p| p.extension().is_some_and(|x| x.eq_ignore_ascii_case("arw")))
+                .collect()
+        })
+        .unwrap_or_default();
+    more.sort();
+    all.extend(more);
+    std::fs::create_dir_all(&out).expect("output folder");
+    let r = Renderer::neutral_only().expect("render thread");
+    let cancel = CancelToken::new();
+    for (i, path) in all.iter().enumerate() {
+        let (_session, src) = develop(path);
+        let (w, h) = r.final_size(&src, &cancel).expect("size");
+        let cell_h = (1616.0 * h as f64 / w as f64).round();
+        let mut st = ViewportState::new(ViewportRect::cell(1616.0, cell_h, 1.0));
+        st.before = true;
+        let f = r
+            .viewport_frame(&src, &st, &FrameOptions::default(), &cancel)
+            .expect("frame");
+        let mut ppm = format!("P6\n{} {}\n255\n", f.width, f.height).into_bytes();
+        for p in f.rgba.chunks(4) {
+            ppm.extend_from_slice(&p[..3]);
+        }
+        std::fs::write(out.join(format!("before-{i:02}.ppm")), ppm).expect("write");
+        eprintln!("{i:02}: {}x{} written", f.width, f.height);
+    }
+}

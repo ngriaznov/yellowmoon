@@ -13,6 +13,7 @@
 use std::sync::Arc;
 
 use ym_color::aces2::{Aces2Output, Aces2Transform};
+use ym_color::camera_default::{CameraDefault, CameraTone};
 use ym_color::cdl::Cdl;
 use ym_color::consts::Vec3;
 use ym_color::consts::linalg::{self, Mat3};
@@ -23,7 +24,8 @@ use ym_color::display::{
     Frame, Layout, LookSetting, OutputTarget, View, aces2_input_matrix,
 };
 use ym_color::encode::{self, OutputSpace};
-use ym_color::gamut::{LinearAwg4, matrices};
+use ym_color::exposure::white::WhiteLift;
+use ym_color::gamut::{LinearAwg4, LinearRec709, matrices};
 use ym_color::grade::{ColorBalance, Grade, GradeParams, grade_luma};
 use ym_color::logc::{LogC4, logc4_decode_rgb, logc4_encode_rgb};
 use ym_color::look::{
@@ -869,9 +871,27 @@ fn dng_buffer_render_matches_the_pixel_function() {
 
 // ---- the Before view -----------------------------------------------------------------------------
 
+/// A body-shaped camera default for the tests: a published-looking D65 matrix, an as-shot white that
+/// differs from the initial gains.
+fn camera_default() -> CameraDefault {
+    let cm = [
+        [0.7657, -0.2847, -0.0607],
+        [-0.4083, 1.1966, 0.2389],
+        [-0.0684, 0.1418, 0.5844],
+    ];
+    CameraDefault::new(&cm, [2.05, 1.0, 1.48], [1.9, 1.0, 1.6]).unwrap()
+}
+
+fn before_params() -> ChainParams {
+    let mut p = rich_params();
+    p.camera_default = camera_default();
+    p
+}
+
 #[test]
-fn before_view_is_the_clamped_logc4_signal_used_as_code_values() {
-    let p = rich_params();
+fn the_log_reading_points_of_the_before_view_are_the_clamped_logc4_signal() {
+    let mut p = rich_params();
+    p.before = BeforePoint::CameraLog;
     let c = chain(&p);
     let mut after = p.clone();
     after.before = BeforePoint::AfterGrade;
@@ -891,27 +911,92 @@ fn before_view_is_the_clamped_logc4_signal_used_as_code_values() {
     }
     assert!(differs > 20);
     // Mid grey sits at the LogC4 code of 0.18 in every channel when the matrix is neutral.
-    let neutral = chain(&ChainParams::new(
+    let mut np = ChainParams::new(
         [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
         ToneParams::new(0.5, 0.0, 16.0, 0.0).unwrap(),
-    ));
-    let g = neutral.apply_before_pixel([0.18, 0.18, 0.18]);
+    );
+    np.before = BeforePoint::CameraLog;
+    let g = chain(&np).apply_before_pixel([0.18, 0.18, 0.18]);
     for v in g {
         assert!((v - 0.278_395_836_5).abs() < 1e-9);
     }
 }
 
 #[test]
-fn before_view_ignores_look_curve_and_display() {
-    let rich = chain(&rich_params());
-    let mut bare = rich_params();
-    bare.look = None;
-    bare.curves = CurveSet::default();
-    bare.output = OutputTarget::Rec2020;
-    let bare = chain(&bare);
-    for px in pixels() {
-        assert_eq!(rich.apply_before_pixel(px), bare.apply_before_pixel(px));
+fn the_before_view_is_the_camera_default_matrix_curve_and_encode() {
+    let p = before_params();
+    assert_eq!(p.before, BeforePoint::CameraDefault);
+    for target in OutputTarget::ALL {
+        let mut q = p.clone();
+        q.output = target;
+        let c = chain(&q);
+        for px in pixels() {
+            // The independent composition: the folded matrix, the curve per channel, the output
+            // primaries from Rec.709, the output's transfer.
+            let lin = linalg::mul_vec(camera_default().matrix(), px);
+            let shown = lin.map(|x| CameraTone::FITTED.apply(x));
+            let primaries = target.space().from_linear_rec709(LinearRec709(shown));
+            let want = target.space().encode_clamped(primaries);
+            assert_eq!(c.apply_before_pixel(px), want, "{target:?} {px:?}");
+            assert_eq!(c.apply_view_pixel(View::Before, px), want);
+            for v in want {
+                assert!((0.0..=1.0).contains(&v));
+            }
+        }
     }
+}
+
+#[test]
+fn the_before_view_ignores_every_setting_of_the_chain() {
+    let rich = chain(&before_params());
+    // Another fused matrix (exposure and white balance), tone, grade, look, curves, display and white
+    // lift: the Before view is bit-identical, for every output it is asked for.
+    for target in OutputTarget::ALL {
+        let mut a = before_params();
+        a.output = target;
+        let mut b = ChainParams::new(
+            linalg::mul(&fused_matrix(), &linalg::diag([1.3, 0.9, 0.7]))
+                .map(|r| r.map(|v| v * 2.0)),
+            ToneParams::new(0.2, 0.9, 16.0, 0.01).unwrap(),
+        );
+        b.camera_default = camera_default();
+        b.output = target;
+        b.display = ym_color::display::DisplayTransform::Aces2;
+        b.white_lift = WhiteLift::new(0.8, 0.5).unwrap();
+        b.dither = false;
+        let (a, b) = (chain(&a), chain(&b));
+        for px in pixels() {
+            assert_eq!(
+                a.apply_before_pixel(px),
+                b.apply_before_pixel(px),
+                "{target:?}"
+            );
+        }
+    }
+    let mut other = before_params();
+    other.grade.contrast = -60.0;
+    other.grade.saturation = 90.0;
+    other.look = None;
+    other.curves = CurveSet::default();
+    let other = chain(&other);
+    for px in pixels() {
+        assert_eq!(rich.apply_before_pixel(px), other.apply_before_pixel(px));
+    }
+}
+
+#[test]
+fn the_before_view_follows_the_camera_default_and_nothing_else() {
+    let a = chain(&before_params());
+    let mut moved = before_params();
+    moved.camera_default = CameraDefault::neutral();
+    let b = chain(&moved);
+    let differ = pixels()
+        .into_iter()
+        .filter(|&px| a.apply_before_pixel(px) != b.apply_before_pixel(px))
+        .count();
+    assert!(differ > 20, "{differ} pixels differ");
+    assert_eq!(a.camera_default(), &camera_default());
+    assert_eq!(a.before_point(), BeforePoint::CameraDefault);
 }
 
 // ---- encode, dither, buffers ---------------------------------------------------------------------

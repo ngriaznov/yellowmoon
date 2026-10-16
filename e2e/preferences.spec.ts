@@ -200,7 +200,7 @@ test.describe("the menu bar", () => {
     await openApp(page, { mockCurrent: 3 });
     await openPhotos(page);
     await menu(page, "before_after");
-    await expect(page.getByText("Before · camera log")).toBeVisible();
+    await expect(page.getByText("Before · camera default")).toBeVisible();
     await menu(page, "pick");
     await expect(page.locator(".ym-filmstrip__count-label")).toHaveText("1 picked");
     await menu(page, "next_photo");

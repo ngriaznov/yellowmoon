@@ -451,7 +451,7 @@ pub struct Registry {
 
 /// Normalises a Model string for comparison: trimmed of whitespace and NULs, a leading `Sony ` removed,
 /// ASCII case folded.
-fn normalize_model(s: &str) -> String {
+pub(crate) fn normalize_model(s: &str) -> String {
     let t = s.trim_matches(|c: char| c.is_whitespace() || c == '\0');
     let t = match t.get(..5) {
         Some(prefix) if prefix.eq_ignore_ascii_case("sony ") => &t[5..],

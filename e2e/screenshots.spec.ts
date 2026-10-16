@@ -120,7 +120,7 @@ test.describe("Photos", () => {
   test("Before (photos-before.png)", async ({ page }) => {
     await photos(page);
     await page.getByRole("button", { name: "Before" }).click();
-    await expect(page.getByText("Before · camera log")).toBeVisible();
+    await expect(page.getByText("Before · camera default")).toBeVisible();
     await compareScreen(page, "photos-before");
   });
 

@@ -86,18 +86,21 @@ fn the_pixel_readout_agrees_with_the_frame_and_the_letterbox_has_none() {
             );
         }
     }
-    // Before mode reads the camera log: flat, and not what the final view shows.
+    // Before mode shows the camera default rendering, which is not what the final view shows.
     let mut before = st.clone();
     before.before = true;
     let fin = r
         .sample_pixel(&src, &st, (150.0, 150.0), &CancelToken::new())
         .expect("s")
         .expect("in");
-    let log = r
+    let camera_default = r
         .sample_pixel(&src, &before, (150.0, 150.0), &CancelToken::new())
         .expect("s")
         .expect("in");
-    assert_ne!((fin.r, fin.g, fin.b), (log.r, log.g, log.b));
+    assert_ne!(
+        (fin.r, fin.g, fin.b),
+        (camera_default.r, camera_default.g, camera_default.b)
+    );
 }
 
 #[test]

@@ -123,12 +123,12 @@ describe("the photo and the filmstrip", () => {
 });
 
 describe("Before, zoom and the viewport", () => {
-  it("Before flips the photo to the camera log, with its label, and hides the look chip", async () => {
+  it("Before flips the photo to the camera default, with its label, and hides the look chip", async () => {
     await setup();
     await h!.user.click(screen.getByRole("button", { name: "Before" }));
     expect(screen.getByRole("button", { name: "Before" })).toHaveAttribute("aria-pressed", "true");
     const photo = screen.getByRole("main", { name: "Photo" });
-    expect(within(photo).getByText("Before · camera log")).toBeInTheDocument();
+    expect(within(photo).getByText("Before · camera default")).toBeInTheDocument();
     expect(within(photo).queryByText("Neutral · 100%")).toBeNull();
     expect(h!.api.viewport.before).toBe(true);
     await h!.user.keyboard("\\");

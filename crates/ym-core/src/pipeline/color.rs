@@ -21,6 +21,7 @@
 use std::fmt::Write as _;
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 
+use ym_color::camera_default::CameraDefault;
 use ym_color::chain::FusedChain;
 use ym_color::consts::Vec3;
 use ym_color::curve::{Curve, CurveSet};
@@ -33,15 +34,16 @@ use ym_color::grade::{ColorBalance, GradeParams};
 use ym_color::look::LookTransform;
 use ym_color::tone::ToneParams;
 use ym_looks::library::{DisplayInput, Library, LookId};
+use ym_profiles::color_matrices::ColorMatrices;
 use ym_profiles::profile::Profile;
 use ym_profiles::registry::SensorGeometry;
 use ym_raw::decode::RawImage;
 
 use super::RenderError;
 use super::raw::{CaptureMethod, DEFAULT_CAPTURE_METHOD};
-use crate::auto::AutoEstimates;
+use crate::auto::{AutoEstimates, as_shot_gains, as_shot_rggb};
 use crate::session::{PhotoId, PhotoView, PickedWhite, ThumbnailInput};
-use crate::settings::{CurvePoint, DevelopSettings};
+use crate::settings::{AutoOr, CurvePoint, DevelopSettings};
 
 // ---------------------------------------------------------------------------------------------
 // Looks and the display transform
@@ -324,6 +326,22 @@ impl PhotoSource {
         }
     }
 
+    /// The photo as the Before view reads it: the same file, profile, estimates, decode switches, lens
+    /// corrections and geometry, with the Detail controls that live in the raw group (noise reduction
+    /// and capture sharpening) at Auto. The Before view shows the camera default, and no setting
+    /// reaches it; output sharpening is skipped by the view itself. At Auto the raw group is the one
+    /// the final picture uses, so the two share it.
+    #[must_use]
+    pub fn for_before_view(&self) -> Self {
+        if self.settings.noise_reduction.is_auto() && self.settings.sharpen.is_auto() {
+            return self.clone();
+        }
+        let mut settings = self.settings.clone();
+        settings.noise_reduction = AutoOr::Auto;
+        settings.sharpen = AutoOr::Auto;
+        self.with_settings(settings)
+    }
+
     /// The EXIF orientation of the file, 1 to 8.
     #[must_use]
     pub fn exif_orientation(&self) -> u16 {
@@ -377,15 +395,36 @@ pub fn color_key(src: &PhotoSource) -> ColorKey {
 // The colour plan: C1 to C8
 // ---------------------------------------------------------------------------------------------
 
-/// C1 to C6 as one matrix and the parameters of C7.
+/// C1 to C6 as one matrix, the parameters of C7 and the Before view's camera default.
 #[derive(Debug, Clone)]
 pub struct ColorPlan {
     /// The fused chain: matrix, factors, Kelvin and tint readout, clip level.
     pub fused: FusedChain,
     /// C7: roll-off and toe.
     pub tone: ToneParams,
+    /// The Before view: the camera's as-shot white balance, the body's colour matrix and the camera
+    /// gain in one 3x3, and the camera tone curve. It depends on the file and the body only, never on
+    /// a setting.
+    pub camera_default: CameraDefault,
     /// What the plan was made from.
     pub key: ColorKey,
+}
+
+/// The Before view's camera default of a photo (`docs/02`, The Before view): the body's D65 colour matrix
+/// (looked up by the file's Sony model ID, then its Model string, falling back to the A7R IV entry), the
+/// camera's as-shot white balance read from the file (our initial gains `g0` when the file has none),
+/// and `g0`, which the raw stages have already applied to the camera RGB the chain receives.
+///
+/// Nothing here reads a setting. The numbers come from validated data and a validated estimate, so the
+/// constructor does not fail for a photo that got this far; if it ever did, the placeholder
+/// ([`CameraDefault::neutral`]) keeps the picture and the Before view working.
+#[must_use]
+pub fn camera_default_of(src: &PhotoSource, g0: Vec3) -> CameraDefault {
+    let meta = &src.raw.meta;
+    let body = ColorMatrices::shipped().lookup(&meta.make, &meta.model, meta.model_id);
+    let gs = as_shot_gains(as_shot_rggb(&src.raw)).unwrap_or(g0);
+    CameraDefault::new(&body.body.xyz_d65_to_camera, gs, g0)
+        .unwrap_or_else(|_| CameraDefault::neutral())
 }
 
 /// Builds the colour plan of a photo.
@@ -423,6 +462,7 @@ pub fn color_plan(src: &PhotoSource) -> Result<ColorPlan, RenderError> {
     Ok(ColorPlan {
         fused,
         tone,
+        camera_default: camera_default_of(src, g0),
         key: color_key(src),
     })
 }
@@ -539,7 +579,7 @@ fn key_of(src: &PhotoSource, color: &ColorPlan, req: &GradeRequest<'_>, p: &Piec
     let mut key = String::with_capacity(768);
     let _ = write!(
         key,
-        "{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{}|",
+        "{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{}|{:?}|",
         color.key,
         grade_params(s),
         s.curve,
@@ -549,6 +589,9 @@ fn key_of(src: &PhotoSource, color: &ColorPlan, req: &GradeRequest<'_>, p: &Piec
         white_lift(src),
         req.display,
         s.look,
+        // The Before view's parameters: the as-shot white balance and the body's matrix (never a
+        // setting), so that a frame of the Before view is not served for another body or white.
+        color.camera_default,
     );
     match &p.look {
         Some(l) => key.push_str(&l.fingerprint),
@@ -588,7 +631,8 @@ pub fn grade_plan(
     params.curves = curve_set(s)?;
     params.output = req.target;
     params.dither = req.dither;
-    params.before = BeforePoint::CameraLog;
+    params.before = BeforePoint::CameraDefault;
+    params.camera_default = color.camera_default;
     params.white_lift = white_lift(src);
     if let Some(look) = p.look {
         params.look = Some(LookSetting::new(look.transform, s.look_intensity));

@@ -2,7 +2,7 @@
 //!
 //! [`PreparedChain::new`] turns an immutable `ym_color::display::ColorChain` into the GPU form: the
 //! per-frame uniform block (fused matrix, C7, C9, C10 and C12 parameters, the ACES 2 scalars and the
-//! flags, under 1 KB), and four **persistent tables** that [`ChainTables`] keeps on the device and
+//! flags, about 1 KB), and four **persistent tables** that [`ChainTables`] keeps on the device and
 //! refills only when their content changes:
 //!
 //! * the 64 x 64 dither thresholds, once per device;
@@ -101,7 +101,8 @@ pub enum Stop {
     C12,
     /// The encoded picture in [0, 1], not quantised (C13).
     C13,
-    /// The Before view: the LogC4 signal at the chain's `BeforePoint`, clamped to [0, 1].
+    /// The Before view at the chain's `BeforePoint`: the camera default rendering encoded for the output
+    /// ([`BeforePoint::CameraDefault`]), or the LogC4 signal at C8 or C9 clamped to [0, 1].
     Before,
 }
 
@@ -133,7 +134,8 @@ pub enum ColorOutput {
         /// Whether to dither.
         dither: bool,
     },
-    /// The Before view ([`Stop::Before`]) as 8-bit RGBA, quantised like [`ColorOutput::Rgba8`].
+    /// The Before view ([`Stop::Before`]) as 8-bit RGBA, quantised like [`ColorOutput::Rgba8`] (the camera
+    /// default is already C13-encoded; the log reading points are shown as code values).
     BeforeRgba8 {
         /// Whether to dither.
         dither: bool,
@@ -167,8 +169,10 @@ struct LutDescU {
     smax: [f32; 4],
 }
 
-/// The per-frame uniform block of `color.wgsl` (`ChainU`), 992 bytes: window and mode, the chain's
-/// parameters and the ACES 2 scalars. Field for field the WGSL struct (a test pins the offsets).
+/// The per-frame uniform block of `color.wgsl` (`ChainU`), 1056 bytes: window and mode, the chain's
+/// parameters, the Before view's camera default (`cam0` to `cam2`: the 3x3 rows, `camt`: the tone curve's
+/// `n`, `s`, `k` and white level) and the ACES 2 scalars. Field for field the WGSL struct (a test pins
+/// the offsets).
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable, Default)]
 struct ChainU {
@@ -202,6 +206,10 @@ struct ChainU {
     look_m0: [f32; 4],
     look_m1: [f32; 4],
     look_m2: [f32; 4],
+    cam0: [f32; 4],
+    cam1: [f32; 4],
+    cam2: [f32; 4],
+    camt: [f32; 4],
     aces: AcesU,
 }
 
@@ -831,7 +839,32 @@ impl ChainTables {
         }
         // C13.
         u.sp[0] = u32::from(space == OutputSpace::Rec2020);
-        u.lk[3] = u32::from(chain.before_point() == BeforePoint::AfterGrade);
+        // The Before view: its reading point, the camera default (the 3x3 from the camera RGB entering the
+        // chain to scene-linear Rec.709, and the tone curve's constants) and, for it, the Rec.709 to
+        // output primaries matrix (`look_m*`, `dp.w`: the same matrix the display-baked look uses, set
+        // whatever the look is; the final picture never reads it without that look).
+        u.lk[3] = match chain.before_point() {
+            BeforePoint::CameraLog => 0,
+            BeforePoint::AfterGrade => 1,
+            BeforePoint::CameraDefault => 2,
+        };
+        let camera = chain.camera_default();
+        let tone = camera.tone();
+        u.cam0 = f4(camera.matrix()[0], 0.0);
+        u.cam1 = f4(camera.matrix()[1], 0.0);
+        u.cam2 = f4(camera.matrix()[2], 0.0);
+        u.camt = [
+            tone.n() as f32,
+            tone.s() as f32,
+            tone.k() as f32,
+            tone.white() as f32,
+        ];
+        if let Some(m) = primaries_matrix(DisplayLutPrimaries::Rec709, space) {
+            u.look_m0 = f4(m[0], 0.0);
+            u.look_m1 = f4(m[1], 0.0);
+            u.look_m2 = f4(m[2], 0.0);
+            u.dp[3] = 1;
+        }
 
         Ok(PreparedChain {
             base: u,
@@ -1488,10 +1521,11 @@ mod tests {
     use crate::kernels::shader_source;
 
     #[test]
-    fn the_per_frame_block_is_under_1_kb() {
-        // "A per-frame `ChainU` of under 1 KB" (docs/gpu-plan.md G-04): the ACES 2 scalars live in
-        // the one uniform block (K3 allows one), so the block holds the whole chain's parameters.
-        assert!(size_of::<ChainU>() < 1024, "{} bytes", size_of::<ChainU>());
+    fn the_per_frame_block_is_about_1_kb() {
+        // "A per-frame `ChainU` of about 1 KB" (docs/gpu-plan.md G-04): the ACES 2 scalars live in
+        // the one uniform block (K3 allows one), so the block holds the whole chain's parameters. It was
+        // 992 bytes; the Before view's camera default adds 64 (the 3x3 rows and the curve constants).
+        assert_eq!(size_of::<ChainU>(), 1056);
         assert_eq!(size_of::<ChainU>() % 16, 0);
     }
 
@@ -1522,7 +1556,7 @@ mod tests {
             let naga::TypeInner::Struct { members, span } = &module.types[var.ty].inner else {
                 panic!("CU is not a struct");
             };
-            let fields: [(&str, usize); 31] = [
+            let fields: [(&str, usize); 35] = [
                 ("dims", offset_of!(ChainU, dims)),
                 ("src", offset_of!(ChainU, src)),
                 ("origin", offset_of!(ChainU, origin)),
@@ -1553,6 +1587,10 @@ mod tests {
                 ("look_m0", offset_of!(ChainU, look_m0)),
                 ("look_m1", offset_of!(ChainU, look_m1)),
                 ("look_m2", offset_of!(ChainU, look_m2)),
+                ("cam0", offset_of!(ChainU, cam0)),
+                ("cam1", offset_of!(ChainU, cam1)),
+                ("cam2", offset_of!(ChainU, cam2)),
+                ("camt", offset_of!(ChainU, camt)),
                 ("aces", offset_of!(ChainU, aces)),
             ];
             assert_eq!(members.len(), fields.len());

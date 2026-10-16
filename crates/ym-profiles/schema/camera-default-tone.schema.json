@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ngriaznov/yellowmoon/crates/ym-profiles/schema/camera-default-tone.schema.json",
+  "title": "Yellowmoon camera default tone curve",
+  "description": "data/cameras/camera-default-tone.json: the constants of the camera tone curve of the Before view (ym_color::camera_default), the golden table and the fit summary. The constants live in code; a test pins this file to them.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "id", "purpose", "input", "output", "constants_in_code", "curve", "anchors", "table", "fit"],
+  "properties": {
+    "schema": { "const": 1 },
+    "id": { "const": "camera-default-tone" },
+    "purpose": { "type": "string", "minLength": 1 },
+    "input": { "type": "string", "minLength": 1 },
+    "output": { "type": "string", "minLength": 1 },
+    "constants_in_code": { "type": "string", "minLength": 1 },
+    "curve": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "formula", "n", "sigma", "white", "s", "k"],
+      "properties": {
+        "kind": { "const": "naka_rushton_normalised" },
+        "formula": { "type": "string", "minLength": 1 },
+        "n": { "type": "number", "exclusiveMinimum": 0 },
+        "sigma": { "type": "number", "exclusiveMinimum": 0 },
+        "white": { "type": "number", "exclusiveMinimum": 0 },
+        "s": { "type": "number", "exclusiveMinimum": 0 },
+        "k": { "type": "number", "minimum": 1 }
+      }
+    },
+    "anchors": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["middle_grey_x", "middle_grey_y", "middle_grey_srgb_code", "white_x"],
+      "properties": {
+        "middle_grey_x": { "type": "number" },
+        "middle_grey_y": { "type": "number", "minimum": 0, "maximum": 1 },
+        "middle_grey_srgb_code": { "type": "number", "minimum": 0, "maximum": 255 },
+        "white_x": { "type": "number", "exclusiveMinimum": 0 }
+      }
+    },
+    "table": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["note", "points_x_y"],
+      "properties": {
+        "note": { "type": "string" },
+        "points_x_y": {
+          "type": "array",
+          "minItems": 8,
+          "items": {
+            "type": "array",
+            "minItems": 2,
+            "maxItems": 2,
+            "items": { "type": "number", "minimum": 0 }
+          }
+        }
+      }
+    },
+    "fit": {
+      "description": "Aggregate numbers and body names only: no file names and no pixels of the photos the curve was fitted on.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["photos", "bodies", "method", "summary", "per_body"],
+      "properties": {
+        "photos": { "type": "integer", "minimum": 1 },
+        "bodies": { "type": "integer", "minimum": 1 },
+        "method": { "type": "string", "minLength": 1 },
+        "summary": { "type": "string", "minLength": 1 },
+        "per_body": {
+          "type": "object",
+          "minProperties": 1,
+          "propertyNames": { "pattern": "^[A-Za-z0-9-]+$" },
+          "additionalProperties": { "type": "object" }
+        }
+      }
+    }
+  }
+}

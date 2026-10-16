@@ -144,11 +144,11 @@
     {
       const shown = frame() ? frame().src : "";
       key("\\");
-      await waitFor("the Before label", () => /Before · camera log/.test(textOf("[data-viewport]")), 10000);
+      await waitFor("the Before label", () => /Before · camera default/.test(textOf("[data-viewport]")), 10000);
       if (backend === "fallback") await waitFor("a frame of the camera view", () => frame() && loaded(frame()) && frame().src !== shown, config.frameTimeoutMs);
       const camera = await invoke("sample_pixel", { x: 300, y: 200 }).then((v) => v, () => null);
       key("\\");
-      await waitFor("the label is gone", () => !/Before · camera log/.test(textOf("[data-viewport]")), 10000);
+      await waitFor("the label is gone", () => !/Before · camera default/.test(textOf("[data-viewport]")), 10000);
       if (backend === "fallback") await waitFor("the picture is back", () => frame() && loaded(frame()) && frame().src !== shown, config.frameTimeoutMs);
       const developed = await invoke("sample_pixel", { x: 300, y: 200 }).then((v) => v, () => null);
       record("Before shows the camera view: a new frame, and not the developed pixels", !!camera && !!developed && (camera.r !== developed.r || camera.g !== developed.g || camera.b !== developed.b), `camera ${camera ? camera.r + "," + camera.g + "," + camera.b : "none"}, developed ${developed ? developed.r + "," + developed.g + "," + developed.b : "none"}`);

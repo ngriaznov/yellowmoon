@@ -19,17 +19,19 @@
 //!
 //! # The Before view
 //!
-//! `docs/11` says the Before mode "shows the LogC4 signal before look and display transform" and
-//! `docs/16` records the choice as "LogC4 'camera log' (as mocked)". This implementation reads that
-//! as the LogC4 signal the camera processing produced: the output of **C8**, before the primary grade
-//! (the Light and Colour controls), the look, the curve and the display transform
-//! ([`BeforePoint::CameraLog`], the default). [`BeforePoint::AfterGrade`] stops after C9 instead, for
-//! a reading in which only the look, curve and display are "after". The log code values are shown as
-//! if they were the output's display code values: each channel clamped to `[0, 1]`, no transfer
-//! function, no primaries conversion, which is how a log signal looks on a monitor without a view
-//! transform (flat and desaturated). Exposure and white balance live in the fused matrix and cannot
-//! be undone here; the caller builds the Before chain from the same matrix (or from the Auto
-//! matrix, if "before" should also drop manual exposure and white balance).
+//! The Before view shows the photo as the camera would render it by default
+//! ([`BeforePoint::CameraDefault`], the default; `docs/02`, The Before view, and `docs/16`): the camera
+//! RGB that enters the chain goes through one per-photo 3x3 ([`CameraDefault`]: the camera's as-shot
+//! white balance, the body's D65 colour matrix to linear Rec.709 and the camera gain), then the camera
+//! tone curve per channel, then the output primaries and C13 as for the final picture. It does not run
+//! C7 to C12 and no setting reaches it: exposure, white balance, look, grade, curves and display are
+//! all ignored. The raw stages in front of the chain (demosaic, denoise, lens corrections, the decode
+//! switches) are the same as for the final picture, so they change it as they change the raw.
+//!
+//! Two older reading points of the LogC4 signal remain for tests and diagnostics (the app does not use
+//! them): [`BeforePoint::CameraLog`], the output of C8, and [`BeforePoint::AfterGrade`], the output of
+//! C9. Their log code values are shown as if they were display code values: each channel clamped to
+//! `[0, 1]`, no transfer function, no primaries conversion.
 
 use std::fmt;
 use std::sync::Arc;
@@ -37,12 +39,13 @@ use std::sync::Arc;
 use super::dng_inverse::DngDisplayInverse;
 use super::transform::{DisplayTransform, PreparedDisplay};
 use super::{DisplayError, OutputTarget};
+use crate::camera_default::CameraDefault;
 use crate::consts::Vec3;
 use crate::consts::linalg::{self, Mat3};
 use crate::curve::{BakedCurves, CurveSet};
 use crate::encode::{OutputSpace, dither_8bit, quantize};
 use crate::exposure::white::WhiteLift;
-use crate::gamut::LinearAwg4;
+use crate::gamut::{LinearAwg4, LinearRec709};
 use crate::grade::{Grade, GradeParams, grade_luma};
 use crate::logc::LogC4;
 use crate::look::{LookTransform, blend_display_linear, intensity_fraction};
@@ -85,13 +88,18 @@ impl LookSetting {
     }
 }
 
-/// Where the Before view reads the LogC4 signal (see the module docs).
+/// What the Before view shows (see the module docs).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum BeforePoint {
-    /// The output of C8: LogC4 of the camera processing, before the grade, look, curve and display.
+    /// The photo as the camera would render it by default: [`ChainParams::camera_default`] on the
+    /// camera RGB, then the output primaries and C13. No colour stage of the chain runs.
     #[default]
+    CameraDefault,
+    /// The output of C8: LogC4 of the camera processing, before the grade, look, curve and display.
+    /// Diagnostic; the app does not use it.
     CameraLog,
     /// The output of C9: LogC4 with the primary grade applied, before the look, curve and display.
+    /// Diagnostic; the app does not use it.
     AfterGrade,
 }
 
@@ -130,13 +138,18 @@ pub struct ChainParams {
     pub output: OutputTarget,
     /// Whether 8-bit outputs are dithered (`docs/02`, C13). 10 and 16-bit outputs never are.
     pub dither: bool,
-    /// Where the Before view reads the signal.
+    /// What the Before view shows.
     pub before: BeforePoint,
+    /// The Before view's per-photo camera default ([`BeforePoint::CameraDefault`]): the as-shot white
+    /// balance, the body's colour matrix and the camera gain folded into one 3x3, and the camera tone
+    /// curve. [`CameraDefault::neutral`] when the caller does not know the body.
+    pub camera_default: CameraDefault,
 }
 
 impl ChainParams {
     /// Defaults for everything after C7: zero grade, Neutral look, identity curves, ACES 2, the
-    /// viewport output, dither on, Before view at the camera log.
+    /// viewport output, dither on, the Before view showing the camera default (with the neutral
+    /// placeholder for the body: set [`ChainParams::camera_default`]).
     #[must_use]
     pub fn new(matrix: Mat3, tone: ToneParams) -> Self {
         Self {
@@ -149,7 +162,8 @@ impl ChainParams {
             white_lift: WhiteLift::NONE,
             output: OutputTarget::Viewport,
             dither: true,
-            before: BeforePoint::CameraLog,
+            before: BeforePoint::CameraDefault,
+            camera_default: CameraDefault::neutral(),
         }
     }
 }
@@ -224,6 +238,7 @@ pub struct ColorChain {
     space: OutputSpace,
     dither: bool,
     before: BeforePoint,
+    camera_default: CameraDefault,
     /// Set when C12 is not our ACES 2, so the DNG holds the scene values ACES 2 turns into this
     /// chain's picture (see [`ColorChain::dng_inverts_display`]).
     dng_inverse: Option<DngDisplayInverse>,
@@ -293,6 +308,7 @@ impl ColorChain {
             space: params.output.space(),
             dither: params.dither,
             before: params.before,
+            camera_default: params.camera_default,
             dng_inverse: own_rendering.then(|| DngDisplayInverse::new(params.output)),
         })
     }
@@ -321,10 +337,16 @@ impl ColorChain {
         self.dither
     }
 
-    /// Where the Before view reads the signal.
+    /// What the Before view shows.
     #[must_use]
     pub fn before_point(&self) -> BeforePoint {
         self.before
+    }
+
+    /// The camera default the Before view uses at [`BeforePoint::CameraDefault`].
+    #[must_use]
+    pub fn camera_default(&self) -> &CameraDefault {
+        &self.camera_default
     }
 
     /// The white lift this chain applies in front of ACES 2: the lift it was built with when C12 is
@@ -484,16 +506,25 @@ impl ColorChain {
         }
     }
 
-    /// The Before view for one pixel: the LogC4 signal at the chain's [`BeforePoint`], each channel
-    /// clamped to `[0, 1]` and used directly as a display code value (see the module docs).
+    /// The Before view for one pixel, as encoded display code values in `[0, 1]` (not quantised, not
+    /// dithered).
+    ///
+    /// At [`BeforePoint::CameraDefault`]: the camera default's matrix and tone curve on the sanitised
+    /// camera RGB give display-linear Rec.709, which is converted to the output primaries and encoded
+    /// as C13 does for the final picture. At the two LogC4 points: the LogC4 signal at that point, each
+    /// channel clamped to `[0, 1]` and used directly as a display code value (see the module docs).
     #[must_use]
     pub fn apply_before_pixel(&self, camera_rgb: Vec3) -> Vec3 {
-        let s = self.up_to_c11(camera_rgb);
-        let v = match self.before {
-            BeforePoint::CameraLog => s.c8,
-            BeforePoint::AfterGrade => s.c9,
-        };
-        v.0.map(unit)
+        match self.before {
+            BeforePoint::CameraDefault => {
+                let rec709 = self
+                    .camera_default
+                    .display_linear_rec709(camera_rgb.map(sanitize));
+                self.encode(self.space.from_linear_rec709(LinearRec709(rec709)))
+            }
+            BeforePoint::CameraLog => self.up_to_c11(camera_rgb).c8.0.map(unit),
+            BeforePoint::AfterGrade => self.up_to_c11(camera_rgb).c9.0.map(unit),
+        }
     }
 
     /// One pixel of the chosen view as unquantised code values: [`ColorChain::apply_pixel`] for

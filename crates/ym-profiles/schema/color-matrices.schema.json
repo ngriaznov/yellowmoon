@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ngriaznov/yellowmoon/crates/ym-profiles/schema/color-matrices.schema.json",
+  "title": "Yellowmoon body colour matrices",
+  "description": "data/cameras/color-matrices.json: the D65 colour matrix (XYZ to camera RGB) of each Sony body, numbers only, for the Before view (docs/02, The Before view). Embedded in ym-profiles; a body that is not listed uses the fallback entry.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "id", "purpose", "provenance", "matrix", "fallback", "fallback_note", "excluded", "bodies"],
+  "properties": {
+    "schema": { "const": 1 },
+    "id": { "const": "color-matrices" },
+    "purpose": { "type": "string", "minLength": 1 },
+    "provenance": { "type": "string", "minLength": 1 },
+    "matrix": { "type": "string", "minLength": 1 },
+    "fallback": { "description": "The model string of the entry that unlisted bodies use.", "type": "string", "minLength": 1 },
+    "fallback_note": { "type": "string", "minLength": 1 },
+    "excluded": {
+      "description": "Bodies that were looked at and have no usable matrix of their own; they use the fallback.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["model", "reason"],
+        "properties": {
+          "model": { "type": "string", "minLength": 1 },
+          "model_id": { "type": "integer", "minimum": 1, "maximum": 65535 },
+          "reason": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "bodies": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["model_id", "model", "xyz_d65_to_camera"],
+        "properties": {
+          "model_id": { "type": "integer", "minimum": 1, "maximum": 65535 },
+          "model": { "type": "string", "pattern": "^[A-Za-z0-9-]+$" },
+          "xyz_d65_to_camera": {
+            "type": "array",
+            "minItems": 3,
+            "maxItems": 3,
+            "items": {
+              "type": "array",
+              "minItems": 3,
+              "maxItems": 3,
+              "items": { "type": "number", "minimum": -10, "maximum": 10 }
+            }
+          }
+        }
+      }
+    }
+  }
+}

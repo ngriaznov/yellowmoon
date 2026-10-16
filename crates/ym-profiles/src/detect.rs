@@ -103,12 +103,12 @@ pub struct CameraCopy {
     pub note: Option<String>,
 }
 
-fn is_sony(make: &str) -> bool {
+pub(crate) fn is_sony(make: &str) -> bool {
     // An absent Make is treated as Sony: the maker-note ID is the better evidence then.
     make.is_empty() || make.to_ascii_lowercase().starts_with("sony")
 }
 
-fn clean(s: &str) -> String {
+pub(crate) fn clean(s: &str) -> String {
     s.trim_matches(|c: char| c.is_whitespace() || c == '\0')
         .to_string()
 }

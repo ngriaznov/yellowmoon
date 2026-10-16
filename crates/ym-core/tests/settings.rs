@@ -226,17 +226,18 @@ fn the_rust_types_have_the_fields_of_the_typescript_interfaces() {
         "CameraInfo",
         serde_json::to_value(CameraInfo::unknown()).unwrap(),
     );
-    check(
-        "SessionState",
-        serde_json::to_value(SessionState {
-            folder_name: None,
-            photos: vec![],
-            current_index: None,
-            picked: vec![],
-            default_export_folder: None,
-        })
-        .unwrap(),
-    );
+    // The interface also has `opened`, what an `open_paths` or `open_dialog` call did: the shell's answer adds it
+    // (`src-tauri/src/wire.rs`, `OpenSummary`) and the core's `state()` never has it.
+    let mut state = serde_json::to_value(SessionState {
+        folder_name: None,
+        photos: vec![],
+        current_index: None,
+        picked: vec![],
+        default_export_folder: None,
+    })
+    .unwrap();
+    state["opened"] = Value::Null;
+    check("SessionState", state);
     check(
         "PhotoProgress",
         serde_json::to_value(PhotoProgress {

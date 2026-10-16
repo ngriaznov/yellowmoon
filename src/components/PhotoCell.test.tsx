@@ -76,7 +76,7 @@ describe("PhotoCell", () => {
 
   it("shows the Before label and hides the look chip in Before mode", () => {
     render(<PhotoCell lookChip="Neutral · 100%" before native={false} />);
-    expect(screen.getByText("Before · camera log")).toHaveClass("ym-photo-cell__before");
+    expect(screen.getByText("Before · camera default")).toHaveClass("ym-photo-cell__before");
     expect(screen.queryByText("Neutral · 100%")).toBeNull();
   });
 

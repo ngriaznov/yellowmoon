@@ -68,9 +68,9 @@ export function gradeScene(scene: Scene, look: LookGrade, k = 1): Scene {
   return out;
 }
 
-/** The Before view: the scene flattened towards grey, like a camera-log signal. */
+/** The Before view in the mock: the scene as a camera would render it by default, a little duller than the graded picture. */
 export function flatScene(scene: Scene): Scene {
-  const flat = (c: string): string => mix(c, "#7A7F84", 0.45);
+  const flat = (c: string): string => mix(c, "#7A7F84", 0.18);
   return { ...scene, sky: flat(scene.sky), far: flat(scene.far), near: flat(scene.near), sun: flat(scene.sun) };
 }
 

@@ -12,11 +12,6 @@ type Mock = {
   getSettings(id: number): Promise<{ settings: { contrast: number; crop: { rect: { width: number } } | null; orientation: number; exposure: unknown; look: string } }>;
   menuState: unknown;
 };
-declare global {
-  interface Window {
-    __yellowmoon?: { mockApi: unknown };
-  }
-}
 
 const mock = <T>(page: Page, run: (api: Mock) => T | Promise<T>): Promise<T> =>
   page.evaluate(`(${run.toString()})(window.__yellowmoon.mockApi)`) as Promise<T>;

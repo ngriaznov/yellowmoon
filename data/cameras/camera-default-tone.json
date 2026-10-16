@@ -1,0 +1,319 @@
+{
+ "schema": 1,
+ "id": "camera-default-tone",
+ "purpose": "Tone response of the camera's own JPEG engine at its default settings, used by the Before view (the photo as the camera would render it by default). Not used by the final picture.",
+ "input": "scene-linear light per channel in linear Rec.709 (sRGB) primaries, after the camera's as-shot white balance, the body's D65 colour matrix and an exposure of CAMERA_GAIN_EV (+1.11 EV); 0.18 is middle grey",
+ "output": "display-linear in [0, 1] on the same primaries; the caller converts to the output primaries and applies the output transfer (C13)",
+ "constants_in_code": "ym_color::camera_default (TONE_N, TONE_SIGMA, TONE_WHITE, TONE_S, TONE_K); a test pins this file to them",
+ "curve": {
+  "kind": "naka_rushton_normalised",
+  "formula": "y = min(1, k * t / (t + s)), t = x^n (x clamped at 0), s = sigma^n, k = (white^n + s) / white^n; y = 1 for x >= white",
+  "n": 1.6558,
+  "sigma": 0.4569,
+  "white": 2.5,
+  "s": 0.27335805361741283,
+  "k": 1.059954641044243
+ },
+ "anchors": {
+  "middle_grey_x": 0.18,
+  "middle_grey_y": 0.1867513,
+  "middle_grey_srgb_code": 119.7,
+  "white_x": 2.5
+ },
+ "table": {
+  "note": "The same curve sampled every half stop from x = 0.18 * 2^-10 to 0.18 * 2^3 and at x = white. Piecewise cubic monotone (PCHIP) in (ln x, y) reproduces the formula to 0.1 of an 8-bit sRGB code. Tests use it as a golden.",
+  "points_x_y": [
+   [
+    0.0001757812,
+    2.3495235e-06
+   ],
+   [
+    0.0002485922,
+    4.1706323e-06
+   ],
+   [
+    0.0003515625,
+    7.4032666e-06
+   ],
+   [
+    0.0004971845,
+    1.3141467e-05
+   ],
+   [
+    0.000703125,
+    2.3327185e-05
+   ],
+   [
+    0.0009943689,
+    4.140737e-05
+   ],
+   [
+    0.00140625,
+    7.3499983e-05
+   ],
+   [
+    0.001988738,
+    0.0001304628
+   ],
+   [
+    0.0028125,
+    0.00023156234
+   ],
+   [
+    0.003977476,
+    0.0004109767
+   ],
+   [
+    0.005625,
+    0.00072930529
+   ],
+   [
+    0.007954951,
+    0.0012938994
+   ],
+   [
+    0.01125,
+    0.0022946294
+   ],
+   [
+    0.0159099,
+    0.0040663715
+   ],
+   [
+    0.0225,
+    0.0071968163
+   ],
+   [
+    0.03181981,
+    0.012708189
+   ],
+   [
+    0.045,
+    0.022350594
+   ],
+   [
+    0.06363961,
+    0.039036516
+   ],
+   [
+    0.09,
+    0.067370563
+   ],
+   [
+    0.1272792,
+    0.11397446
+   ],
+   [
+    0.18,
+    0.18675133
+   ],
+   [
+    0.2545584,
+    0.29167066
+   ],
+   [
+    0.36,
+    0.42672908
+   ],
+   [
+    0.5091169,
+    0.57733117
+   ],
+   [
+    0.72,
+    0.72059937
+   ],
+   [
+    1.018234,
+    0.83770991
+   ],
+   [
+    1.44,
+    0.92213537
+   ],
+   [
+    2.5,
+    1.0
+   ]
+  ]
+ },
+ "fit": {
+  "photos": 12,
+  "bodies": 10,
+  "method": "per-photo quantile matching of scene luminance (as-shot white balance, the body's D65 colour matrix, +1.11 EV) against the luminance of the camera's embedded JPEG, pooled-channel curves, median across the nine Standard-style photos, Naka-Rushton least squares in sRGB code space with the white pinned at 2.5",
+  "summary": "Mean over the 12 photos of the pixel metrics: median error 4.3 codes, 95th percentile 12.0, DeltaE76 2.9. Middle grey 0.18 lands on code 119.7; the median of the 12 JPEGs at that level is 119.8. Leave-one-photo-out: n 1.636 to 1.662, sigma 0.451 to 0.463.",
+  "per_body": {
+   "DSLR-A300": {
+    "quantile_residual_codes_median_p95": [
+     9.3,
+     11.9
+    ],
+    "gain_offset_ev_best": 0.197,
+    "residual_after_offset_median_p95": [
+     1.3,
+     3.2
+    ],
+    "pixel_per_channel_error_codes_median_p95": [
+     9.4,
+     14.0
+    ],
+    "pixel_dE76_median": 5.2,
+    "chroma_ratio_jpeg_over_ours": 1.03
+   },
+   "DSLR-A500": {
+    "quantile_residual_codes_median_p95": [
+     1.1,
+     2.4
+    ],
+    "gain_offset_ev_best": -0.013,
+    "residual_after_offset_median_p95": [
+     0.8,
+     2.4
+    ],
+    "pixel_per_channel_error_codes_median_p95": [
+     2.8,
+     11.6
+    ],
+    "pixel_dE76_median": 2.7,
+    "chroma_ratio_jpeg_over_ours": 0.84
+   },
+   "ILCE-1": {
+    "quantile_residual_codes_median_p95": [
+     5.4,
+     8.7
+    ],
+    "gain_offset_ev_best": -0.141,
+    "residual_after_offset_median_p95": [
+     1.8,
+     7.8
+    ],
+    "pixel_per_channel_error_codes_median_p95": [
+     4.3,
+     11.7
+    ],
+    "pixel_dE76_median": 2.4,
+    "chroma_ratio_jpeg_over_ours": 0.93,
+    "photos": 3
+   },
+   "ILCE-5000": {
+    "quantile_residual_codes_median_p95": [
+     1.0,
+     7.0
+    ],
+    "gain_offset_ev_best": -0.005,
+    "residual_after_offset_median_p95": [
+     0.8,
+     6.8
+    ],
+    "pixel_per_channel_error_codes_median_p95": [
+     2.6,
+     14.8
+    ],
+    "pixel_dE76_median": 2.3,
+    "chroma_ratio_jpeg_over_ours": 0.94
+   },
+   "ILCE-6300": {
+    "quantile_residual_codes_median_p95": [
+     4.2,
+     7.2
+    ],
+    "gain_offset_ev_best": 0.091,
+    "residual_after_offset_median_p95": [
+     0.7,
+     6.5
+    ],
+    "pixel_per_channel_error_codes_median_p95": [
+     4.8,
+     12.9
+    ],
+    "pixel_dE76_median": 2.9,
+    "chroma_ratio_jpeg_over_ours": 0.92
+   },
+   "ILCE-7M2": {
+    "quantile_residual_codes_median_p95": [
+     1.2,
+     8.3
+    ],
+    "gain_offset_ev_best": -0.012,
+    "residual_after_offset_median_p95": [
+     0.7,
+     8.1
+    ],
+    "pixel_per_channel_error_codes_median_p95": [
+     3.2,
+     11.2
+    ],
+    "pixel_dE76_median": 1.8,
+    "chroma_ratio_jpeg_over_ours": 1.02
+   },
+   "ILCE-7M3": {
+    "quantile_residual_codes_median_p95": [
+     3.5,
+     4.6
+    ],
+    "gain_offset_ev_best": -0.063,
+    "residual_after_offset_median_p95": [
+     0.4,
+     1.5
+    ],
+    "pixel_per_channel_error_codes_median_p95": [
+     4.1,
+     15.3
+    ],
+    "pixel_dE76_median": 3.5,
+    "chroma_ratio_jpeg_over_ours": 1.17
+   },
+   "ILCE-7M4": {
+    "quantile_residual_codes_median_p95": [
+     7.5,
+     12.9
+    ],
+    "gain_offset_ev_best": 0.105,
+    "residual_after_offset_median_p95": [
+     2.4,
+     7.4
+    ],
+    "pixel_per_channel_error_codes_median_p95": [
+     6.0,
+     13.5
+    ],
+    "pixel_dE76_median": 4.2,
+    "chroma_ratio_jpeg_over_ours": 1.09
+   },
+   "NEX-5N": {
+    "quantile_residual_codes_median_p95": [
+     1.3,
+     3.1
+    ],
+    "gain_offset_ev_best": -0.019,
+    "residual_after_offset_median_p95": [
+     0.6,
+     3.7
+    ],
+    "pixel_per_channel_error_codes_median_p95": [
+     3.9,
+     13.5
+    ],
+    "pixel_dE76_median": 3.1,
+    "chroma_ratio_jpeg_over_ours": 0.86
+   },
+   "NEX-7": {
+    "quantile_residual_codes_median_p95": [
+     0.1,
+     2.5
+    ],
+    "gain_offset_ev_best": -0.002,
+    "residual_after_offset_median_p95": [
+     0.1,
+     2.4
+    ],
+    "pixel_per_channel_error_codes_median_p95": [
+     1.9,
+     5.2
+    ],
+    "pixel_dE76_median": 1.6,
+    "chroma_ratio_jpeg_over_ours": 0.78
+   }
+  }
+ }
+}

@@ -35,9 +35,9 @@ export interface PhotoCellProps extends Omit<HTMLAttributes<HTMLElement>, "child
   lookChip?: string;
   /** Bottom-right line: "Sony A1 · DSC04204 · ISO 400 · 1/125 · f/2.8". */
   cameraLine?: string;
-  /** Before mode: shows the yellow "Before · camera log" label and hides the look chip. */
+  /** Before mode: shows the yellow "Before · camera default" label and hides the look chip. */
   before?: boolean;
-  /** Text of the Before label. Default "Before · camera log". */
+  /** Text of the Before label. Default "Before · camera default". */
   beforeLabel?: string;
   /** Pixel readout shown at the top right while ⌥ is held ("R 182 G 164 B 140"). */
   pixelReadout?: string | null;
@@ -88,7 +88,7 @@ export function PhotoCell({
   lookChip,
   cameraLine,
   before = false,
-  beforeLabel = "Before · camera log",
+  beforeLabel = "Before · camera default",
   pixelReadout,
   native = isTauri(),
   onRect,

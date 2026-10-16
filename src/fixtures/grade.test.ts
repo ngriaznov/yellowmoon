@@ -28,7 +28,7 @@ describe("grading the flat scenes", () => {
     expect(Math.abs(g! - b!)).toBeLessThan(8);
   });
 
-  it("the Before view is flatter than the scene", () => {
+  it("the Before view is a little duller than the scene", () => {
     const flat = flatScene(scene);
     expect(flat.sky).not.toBe(scene.sky);
     expect(flat.name).toBe(scene.name);

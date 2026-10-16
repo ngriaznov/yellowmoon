@@ -5,8 +5,9 @@
 mod common;
 
 use common::*;
+use ym_color::camera_default::CameraTone;
+use ym_color::encode::srgb_decode;
 use ym_color::exposure::CAMERA_GAIN_EV;
-use ym_color::logc::logc4_decode;
 use ym_core::pipeline::{
     FrameOptions, PhotoSource, RenderedFrame, Renderer, ViewportRect, ViewportState,
 };
@@ -35,7 +36,9 @@ fn before_view(r: &Renderer, src: &PhotoSource) -> RenderedFrame {
         .expect("frame")
 }
 
-/// The scene-linear value of the exposed signal that the Before view shows (LogC4 code values), centre green.
+/// The scene-linear value of the exposed signal that the Before view shows, centre green: the camera default
+/// renders the exposed signal through the camera tone curve and the sRGB transfer, so the code value is decoded and
+/// the curve inverted (it is monotone; bisection).
 fn exposed_signal(frame: &RenderedFrame) -> f64 {
     let (w, h) = (frame.width / 4, frame.height / 4);
     let g = mean_rgba(
@@ -45,7 +48,18 @@ fn exposed_signal(frame: &RenderedFrame) -> f64 {
         w,
         h,
     )[1];
-    logc4_decode(g / 255.0)
+    let shown = srgb_decode(g / 255.0);
+    let tone = CameraTone::FITTED;
+    let (mut lo, mut hi) = (0.0_f64, tone.white());
+    for _ in 0..60 {
+        let mid = 0.5 * (lo + hi);
+        if tone.apply(mid) < shown {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    0.5 * (lo + hi)
 }
 
 #[test]
@@ -74,8 +88,8 @@ fn a_scene_shot_with_ec_stops_of_compensation_renders_two_to_the_ec_brighter() {
             (key / ec.exp2() - 1.0).abs() < 2e-3,
             "EC {ec}: the raw is {key} times brighter"
         );
-        // And the picture: the exposed signal of the Before view (LogC4 in 8-bit codes, a step of 0.06 stop) is 2^EC
-        // brighter, the whole of the compensation.
+        // And the picture: the exposed signal of the Before view (8-bit codes through the camera tone curve, a step of
+        // 0.03 to 0.05 stop) is 2^EC brighter, the whole of the compensation.
         let signal = exposed_signal(&before_view(&renderer, &bright.source()));
         let stops = (signal / base_signal).log2();
         assert!(

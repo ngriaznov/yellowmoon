@@ -19,6 +19,10 @@ moves the entries below from Unreleased into a dated section for that version.
 
 The app feels like a Mac app: a pan moves only the photo, pinch zooms, text stays put, and it keeps up while you work.
 
+### Changed
+
+- Before shows the photo as a Sony camera would render it by default: its own white balance, colours and tone, without anything Yellowmoon adds. It used to show the flat log picture.
+
 ### Fixed
 
 - A two-finger pan over the photo moves only the photo. The whole window no longer moves with it, and nothing else on the screen bounces or scrolls under your fingers: the header, the filmstrip, the dialogs and the ends of the tool panel stay where they are.

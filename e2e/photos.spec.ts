@@ -339,9 +339,9 @@ test.describe("keyboard shortcuts", () => {
     // \ flips Before
     await page.keyboard.press("\\");
     await expect(page.getByRole("button", { name: "Before" })).toHaveAttribute("aria-pressed", "true");
-    await expect(page.getByText("Before · camera log")).toBeVisible();
+    await expect(page.getByText("Before · camera default")).toBeVisible();
     await page.keyboard.press("\\");
-    await expect(page.getByText("Before · camera log")).toHaveCount(0);
+    await expect(page.getByText("Before · camera default")).toHaveCount(0);
     // Z toggles Fit and 100 %
     await page.keyboard.press("z");
     await expect(page.getByRole("button", { name: /^100%/ })).toBeVisible();

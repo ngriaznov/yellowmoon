@@ -522,6 +522,112 @@ fn the_dng_stop_and_the_before_view_match_the_cpu() {
     }
 }
 
+/// Largest `|gpu - cpu|` of the Before view's camera default over every pixel and channel, in encoded
+/// code values and in display-linear light, for one chain on one device.
+fn camera_default_errors(
+    dev: &TestGpu,
+    chain: &ColorChain,
+    img: &RgbImage,
+    n: usize,
+) -> (f64, f64, usize) {
+    let out = render(dev, chain, img, &[ColorOutput::Stage(Stop::Before)]);
+    let gpu = planar(&out[0]);
+    let space = chain.space();
+    let (mut worst_code, mut worst_linear, mut mid) = (0.0f64, 0.0f64, 0usize);
+    for i in 0..n {
+        let cam = pixel(img, i);
+        let want = chain.apply_view_pixel(View::Before, cam);
+        let mut in_range = true;
+        for ch in 0..3 {
+            let got = f64::from(gpu[ch * n + i]);
+            worst_code = worst_code.max((got - want[ch]).abs());
+            // Display-linear light: decode both encoded values (the CPU one is clamped like the GPU's).
+            let lin_gpu = space.decode_channel(got);
+            let lin_cpu = space.decode_channel(want[ch]);
+            worst_linear = worst_linear.max((lin_gpu - lin_cpu).abs());
+            in_range &= want[ch] > 0.02 && want[ch] < 0.98;
+        }
+        mid += usize::from(in_range);
+    }
+    (worst_code, worst_linear, mid)
+}
+
+#[test]
+fn the_camera_default_before_view_matches_the_cpu_in_every_output_and_storage_mode() {
+    let (w, h) = (67usize, 41usize);
+    let img = camera_image(w, h, 0xCA3E);
+    let n = w * h;
+    for dev in gpus() {
+        let mut worst = (0.0f64, 0.0f64);
+        for target in OutputTarget::ALL {
+            for (name, params) in [
+                ("base", chains::base(target)),
+                ("full", chains::full(target)),
+            ] {
+                assert_eq!(params.before, ym_color::display::BeforePoint::CameraDefault);
+                let chain = ColorChain::new(&params).expect("chain");
+                let (code, linear, mid) = camera_default_errors(dev, &chain, &img, n);
+                assert!(
+                    mid * 10 > n,
+                    "{target:?}/{name}: only {mid} of {n} pixels are mid-range"
+                );
+                // One 10-bit code in the encoded picture, 2e-4 in display-linear light.
+                assert!(
+                    code <= CODE10,
+                    "{:?} {target:?}/{name}: Before differs by {code} (one code is {CODE10})",
+                    dev.mode
+                );
+                assert!(
+                    linear <= 2e-4,
+                    "{:?} {target:?}/{name}: Before differs by {linear} in linear light",
+                    dev.mode
+                );
+                worst = (worst.0.max(code), worst.1.max(linear));
+            }
+        }
+        eprintln!(
+            "camera default Before, {:?}: max |GPU - CPU| {:.2e} in encoded values, {:.2e} in display-linear light",
+            dev.mode, worst.0, worst.1
+        );
+    }
+}
+
+#[test]
+fn the_camera_default_before_view_ignores_every_setting_on_the_device_too() {
+    let (w, h) = (53usize, 37usize);
+    let img = camera_image(w, h, 0xB3F0);
+    for dev in gpus() {
+        // Everything on against nothing on: another fused matrix, tone, grade, look, curves, white lift.
+        let rich = chains::full(OutputTarget::Viewport);
+        let mut bare = chains::base(OutputTarget::Viewport);
+        bare.matrix = chains::fused_matrix().map(|r| r.map(|v| v * 3.0));
+        bare.white_lift = ym_color::exposure::white::WhiteLift::new(0.8, 0.5).expect("lift");
+        let outs = [
+            ColorOutput::Stage(Stop::Before),
+            ColorOutput::BeforeRgba8 { dither: true },
+            ColorOutput::BeforeRgba8 { dither: false },
+        ];
+        let a = render(dev, &ColorChain::new(&rich).expect("chain"), &img, &outs);
+        let b = render(dev, &ColorChain::new(&bare).expect("chain"), &img, &outs);
+        let (fa, fb) = (planar(&a[0]), planar(&b[0]));
+        assert!(
+            fa.iter().zip(fb).all(|(x, y)| x.to_bits() == y.to_bits()),
+            "{:?}: the Before view changed with the settings",
+            dev.mode
+        );
+        for k in 1..3 {
+            let (PixelData::Rgba8(x), PixelData::Rgba8(y)) = (&a[k].data, &b[k].data) else {
+                panic!("not RGBA8");
+            };
+            assert_eq!(
+                x, y,
+                "{:?}: RGBA8 Before changed with the settings",
+                dev.mode
+            );
+        }
+    }
+}
+
 #[test]
 fn non_finite_input_is_sanitised_like_the_cpu() {
     // f16 storage cannot hold NaN or 1e30 faithfully, so this runs on f32 storage.

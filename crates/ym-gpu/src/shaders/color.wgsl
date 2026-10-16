@@ -16,7 +16,7 @@
 // Persistent tables (G-04): the dither thresholds and the ACES 2 tables (`tables`), the four curve
 // tables (`curves`) and the look and display cubes (`look_luts`, `disp_luts`) are separate buffers the
 // host keeps across frames and refills only when their content changes. What changes every frame is
-// this one uniform block (under 1 KB, the ACES 2 scalars included: K3 allows one uniform buffer).
+// this one uniform block (about 1 KB, the ACES 2 scalars included: K3 allows one uniform buffer).
 //
 // A source with a fourth plane (`sp.y` = 1) carries the letterbox mask of the sampler (1 outside the
 // photo): masked pixels are not computed, they are 0 in a stage output (whose own fourth plane
@@ -37,8 +37,8 @@ struct ChainU {
     origin: vec4<u32>,   // x, y: absolute pixel position of the window's (0, 0), for the dither; z, w: its place in the destination
     mode: vec4<u32>,     // x: stop, y: out kind (0 f32 planar, 1 u8 rgba, 2 u16 planar), z: bits, w: dither
     flags: vec4<u32>,    // x: grade bits (1 contrast, 2 saturation), y: curve bits (1 luma, 2 r, 4 g, 8 b), z: look kind (0 none, 1 log-to-log, 2 display-baked), w: display kind (0 ACES 2, 1 display LUT)
-    lk: vec4<u32>,       // x: look input (0 LogC4, 1 LogC3), y: look has CDL, w: before point (0 camera log, 1 after grade)
-    dp: vec4<u32>,       // x: display LUT input (0 LogC4, 1 LogC3), y: display LUT transfer (0 sRGB, 1 gamma), z: apply display-LUT primaries matrix, w: apply look-to-output matrix
+    lk: vec4<u32>,       // x: look input (0 LogC4, 1 LogC3), y: look has CDL, w: before point (0 camera log, 1 after grade, 2 camera default)
+    dp: vec4<u32>,       // x: display LUT input (0 LogC4, 1 LogC3), y: display LUT transfer (0 sRGB, 1 gamma), z: apply display-LUT primaries matrix, w: apply the Rec.709-to-output matrix (look_m*: display-baked look and the Before view)
     sp: vec4<u32>,       // x: output transfer (0 sRGB, 1 BT.1886), y: the source has a mask plane, z: letterbox colour (RGBA8)
     m0: vec4<f32>,       // fused C1-C6 matrix rows
     m1: vec4<f32>,
@@ -59,9 +59,13 @@ struct ChainU {
     disp_m0: vec4<f32>,  // display LUT primaries -> output primaries
     disp_m1: vec4<f32>,
     disp_m2: vec4<f32>,
-    look_m0: vec4<f32>,  // Rec.709 -> output primaries (display-baked look)
+    look_m0: vec4<f32>,  // Rec.709 -> output primaries (display-baked look, Before view)
     look_m1: vec4<f32>,
     look_m2: vec4<f32>,
+    cam0: vec4<f32>,     // Before view, camera default: camera RGB entering the chain -> scene-linear Rec.709, rows
+    cam1: vec4<f32>,
+    cam2: vec4<f32>,
+    camt: vec4<f32>,     // tone curve n, s, k and the white level at which it reaches 1
     aces: AcesU,         // the ACES 2 scalars and matrices (aces2.wgsl)
 };
 
@@ -425,13 +429,44 @@ fn c13_encode_chain(lin: vec3<f32>) -> vec3<f32> {
     return c13_encode(lin, CU.sp.x);
 }
 
+// ---- the Before view: the camera default ---------------------------------------------------------------
+
+// The camera tone curve of ym_color::camera_default::CameraTone: y = min(1, k * t / (t + s)), t = x^n, one
+// channel; 0 for NaN and x <= 0, exactly 1 from the white level up (so t never overflows).
+fn cam_tone(x: f32) -> f32 {
+    if (is_nan_f(x) || x <= 0.0) {
+        return 0.0;
+    }
+    if (x >= CU.camt.w) {
+        return 1.0;
+    }
+    let t = pow(x, CU.camt.x);
+    return min(CU.camt.z * t / (t + CU.camt.y), 1.0);
+}
+
+// ym_color::display::ColorChain::apply_before_pixel at the camera default: the folded 3x3 (as-shot white
+// balance, body matrix, camera gain) to scene-linear Rec.709, the curve per channel, the output primaries
+// and C13. `cam` is the sanitised camera RGB the chain receives.
+fn before_camera_default(cam: vec3<f32>) -> vec3<f32> {
+    let lin = mv3(CU.cam0.xyz, CU.cam1.xyz, CU.cam2.xyz, cam);
+    var shown = vec3<f32>(cam_tone(lin.x), cam_tone(lin.y), cam_tone(lin.z));
+    if (CU.dp.w != 0u) {
+        shown = mv3(CU.look_m0.xyz, CU.look_m1.xyz, CU.look_m2.xyz, shown);
+    }
+    return c13_encode_chain(shown);
+}
+
 // ---- the chain -------------------------------------------------------------------------------------------
 
 // The value at the requested stop (mode.x): 0 C6, 1 C7, 2 C8, 3 C9, 4 C10, 5 C11, 6 DNG (C11
-// decoded to linear AWG4), 7 C12, 8 C13 (unquantised), 9 the Before view.
+// decoded to linear AWG4), 7 C12, 8 C13 (unquantised), 9 the Before view (the camera default encoded for
+// the output, or the LogC4 signal at C8 or C9 as code values).
 fn run_pixel(cam_in: vec3<f32>) -> vec3<f32> {
     let stop = CU.mode.x;
     let cam = vec3<f32>(sanitize(cam_in.x), sanitize(cam_in.y), sanitize(cam_in.z));
+    if (stop == 9u && CU.lk.w == 2u) {
+        return before_camera_default(cam);
+    }
     let c6 = mv3(CU.m0.xyz, CU.m1.xyz, CU.m2.xyz, cam);
     if (stop == 0u) {
         return c6;

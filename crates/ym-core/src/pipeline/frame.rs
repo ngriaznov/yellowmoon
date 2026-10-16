@@ -2016,6 +2016,13 @@ impl Renderer {
         options: &FrameOptions,
         cancel: &CancelToken,
     ) -> Result<RenderedFrame, RenderError> {
+        let before_src;
+        let src = if state.before {
+            before_src = src.for_before_view();
+            &before_src
+        } else {
+            src
+        };
         let mut job = Job::new(self, src, cancel)?;
         let image = job.final_size()?;
         let (dw, dh) = state.device_size();
@@ -2059,6 +2066,13 @@ impl Renderer {
         state: &ViewportState,
         cancel: &CancelToken,
     ) -> Result<usize, RenderError> {
+        let before_src;
+        let src = if state.before {
+            before_src = src.for_before_view();
+            &before_src
+        } else {
+            src
+        };
         let mut job = Job::new(self, src, cancel)?.with_gpu_priority(Priority::TileNeural);
         let plan = job.plan()?;
         let image = job.final_size()?;
@@ -2111,6 +2125,13 @@ impl Renderer {
         css: (f64, f64),
         cancel: &CancelToken,
     ) -> Result<Option<PixelSample>, RenderError> {
+        let before_src;
+        let src = if state.before {
+            before_src = src.for_before_view();
+            &before_src
+        } else {
+            src
+        };
         let mut job = Job::new(self, src, cancel)?;
         let image = job.final_size()?;
         let Some((fx, fy)) = state.final_point_at(image, css) else {

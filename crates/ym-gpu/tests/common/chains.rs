@@ -5,6 +5,7 @@
 
 use std::sync::Arc;
 
+use ym_color::camera_default::CameraDefault;
 use ym_color::cdl::Cdl;
 use ym_color::consts::Vec3;
 use ym_color::consts::linalg::Mat3;
@@ -120,9 +121,21 @@ pub fn display_lut(input: DisplayLutInput, output: DisplayLutOutput) -> DisplayT
     DisplayTransform::arri(ArriDisplayLut::new(Arc::new(lut), input, output).expect("display lut"))
 }
 
+/// A body-shaped camera default for the Before view: a published-looking D65 matrix (strong red-green
+/// overlap, negative off-diagonals), an as-shot white that differs from the initial gains.
+pub fn camera_default() -> CameraDefault {
+    let cm = [
+        [0.7657, -0.2847, -0.0607],
+        [-0.4083, 1.1966, 0.2389],
+        [-0.0684, 0.1418, 0.5844],
+    ];
+    CameraDefault::new(&cm, [2.05, 1.0, 1.48], [1.9, 1.0, 1.6]).expect("camera default")
+}
+
 pub fn base(target: OutputTarget) -> ChainParams {
     let mut p = ChainParams::new(fused_matrix(), tone());
     p.output = target;
+    p.camera_default = camera_default();
     p
 }
 

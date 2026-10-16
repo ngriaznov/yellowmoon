@@ -50,7 +50,8 @@
 //!   `origin` argument of the 8-bit methods), so tiled and whole-image renders agree bit for bit.
 //! * **Non-finite input.** A NaN camera sample counts as 0 and infinities are limited to +-1e30, so
 //!   the output is always a defined code value.
-//! * **Before view.** See [`BeforePoint`] and [`ColorChain::apply_before_pixel`].
+//! * **Before view.** The camera default rendering, outside the stages above. See [`BeforePoint`],
+//!   [`crate::camera_default`] and [`ColorChain::apply_before_pixel`].
 
 mod chain;
 mod dng_inverse;
