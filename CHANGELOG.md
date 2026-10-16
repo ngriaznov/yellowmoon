@@ -9,6 +9,12 @@ moves the entries below from Unreleased into a dated section for that version.
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.1.5] - 2026-10-16
+
+Before matches the camera more closely: no lens vignetting correction, and colours for the A1 II and A3000.
+
 ### Changed
 
 - Before no longer brightens the corners: like the camera's own picture, it leaves out the lens vignetting correction. The A1 II uses the A1's colours, and the A3000 the generic E-mount colours.
