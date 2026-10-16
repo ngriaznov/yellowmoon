@@ -56,7 +56,7 @@ export function Segmented<T extends string>({ options, value, onChange, label, s
     if (!target) return;
     const group = event.currentTarget;
     if (target.value !== value) onChange(target.value);
-    requestAnimationFrame(() => group.querySelector<HTMLElement>(`[data-value="${target.value}"]`)?.focus());
+    group.querySelector<HTMLElement>(`[data-value="${target.value}"]`)?.focus();
   };
   return (
     <SegmentedControl

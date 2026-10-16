@@ -1,3 +1,4 @@
+import { useId } from "react";
 import type { ButtonHTMLAttributes, MouseEvent, ReactNode, Ref } from "react";
 import { Button as GlassButton } from "@/components/glass/button";
 import { Kbd } from "@/components/glass/kbd";
@@ -65,6 +66,10 @@ export function Button({
     onClick?.(event);
   };
   const split = aside !== undefined;
+  // The tooltip replaces the native `title`, which gave assistive technology the button's description even while closed; a hidden
+  // span keeps that.
+  const descriptionId = useId();
+  const describedBy = [rest["aria-describedby"], title ? descriptionId : undefined].filter(Boolean).join(" ") || undefined;
   const glassVariant = variant === "header" ? (pressed ? "tinted" : "ghost") : KIND[variant];
   const button = (
     <GlassButton
@@ -79,6 +84,7 @@ export function Button({
       data-split={split || undefined}
       aria-disabled={disabled || undefined}
       aria-pressed={pressed}
+      aria-describedby={describedBy}
       onClick={handleClick}
     >
       {icon}
@@ -97,7 +103,12 @@ export function Button({
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <span className={cx("inline-flex", block && "flex-1")}>{button}</span>
+        <span className={cx("inline-flex", block && "flex-1")}>
+          {button}
+          <span id={descriptionId} className="sr-only">
+            {title}
+          </span>
+        </span>
       </TooltipTrigger>
       <TooltipContent>{title}</TooltipContent>
     </Tooltip>
