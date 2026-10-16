@@ -1703,7 +1703,8 @@ mod tests {
     }
 
     #[test]
-    fn an_address_of_an_earlier_launch_is_not_served_and_the_same_picture_is_not_the_same_address() {
+    fn an_address_of_an_earlier_launch_is_not_served_and_the_same_picture_is_not_the_same_address()
+    {
         // Version counters start at 1 in every launch: photo 3's first thumbnail is
         // `thumb-3-1.png` in both. The launch id keeps a webview that cached the first from being
         // handed it for the second.
@@ -1719,11 +1720,21 @@ mod tests {
         assert_eq!(after.respond(path_of_url(&new)).0, 200);
         for (name, url) in [("thumbnail", &old), ("look tile", &old_look)] {
             let served = after.serve(path_of_url(url));
-            assert_eq!(served.status, 404, "{name}: an address of the launch before");
+            assert_eq!(
+                served.status, 404,
+                "{name}: an address of the launch before"
+            );
             assert_eq!(served.cache, Cache::Never, "{name}");
         }
         // A path with no launch id, or with the id in the wrong place, is not an address either.
-        for bad in ["/thumb-3-1.png", "thumb-3-1.png", "/bbb", "/bbb/", "//thumb-3-1.png", "/bbb/x/thumb-3-1.png"] {
+        for bad in [
+            "/thumb-3-1.png",
+            "thumb-3-1.png",
+            "/bbb",
+            "/bbb/",
+            "//thumb-3-1.png",
+            "/bbb/x/thumb-3-1.png",
+        ] {
             assert_eq!(after.serve(bad).status, 404, "{bad}");
         }
     }
@@ -1738,7 +1749,11 @@ mod tests {
 
         for url in [&thumb, &tile] {
             let served = store.serve(path_of_url(url));
-            assert_eq!((served.status, served.cache), (200, Cache::Forever), "{url}");
+            assert_eq!(
+                (served.status, served.cache),
+                (200, Cache::Forever),
+                "{url}"
+            );
             assert_eq!(
                 served.cache.header(),
                 "private, max-age=31536000, immutable"
@@ -1748,7 +1763,13 @@ mod tests {
         let frame = store.serve(&at("frame-7.png"));
         assert_eq!((frame.status, frame.cache), (200, Cache::Never));
         assert_eq!(frame.cache.header(), "no-store");
-        for gone in ["frame-8.png", "thumb-1-9.png", "thumb-2-1.png", "look-1-9.png", "look-x.png"] {
+        for gone in [
+            "frame-8.png",
+            "thumb-1-9.png",
+            "thumb-2-1.png",
+            "look-1-9.png",
+            "look-x.png",
+        ] {
             let served = store.serve(&at(gone));
             assert_eq!((served.status, served.cache), (404, Cache::Never), "{gone}");
         }
@@ -1780,28 +1801,47 @@ mod tests {
             })
             .expect("input");
         };
-        let requests: Vec<(&str, Box<dyn Fn()>)> = vec![
+        type Request<'a> = (&'static str, Box<dyn Fn() + 'a>);
+        let requests: Vec<Request<'_>> = vec![
             ("an input", Box::new(pan)),
             ("a settings patch", Box::new(|| vp.invalidate())),
-            ("a mode", Box::new(|| vp.set_mode(&ViewportMode::Fit).expect("mode"))),
+            (
+                "a mode",
+                Box::new(|| vp.set_mode(&ViewportMode::Fit).expect("mode")),
+            ),
             ("Before", Box::new(|| vp.set_before(true))),
             // The cell moved and kept its size.
-            ("a cell that only moved", Box::new(|| {
-                let mut moved = cell(100.0, 80.0);
-                moved.x = crate::wire::Num(40.0);
-                vp.set_rect(&moved).expect("rect");
-            })),
-            ("estimates", Box::new(|| shared.estimates_changed(CorePhotoId(1)))),
+            (
+                "a cell that only moved",
+                Box::new(|| {
+                    let mut moved = cell(100.0, 80.0);
+                    moved.x = crate::wire::Num(40.0);
+                    vp.set_rect(&moved).expect("rect");
+                }),
+            ),
+            (
+                "estimates",
+                Box::new(|| shared.estimates_changed(CorePhotoId(1))),
+            ),
         ];
         for (what, request) in &requests {
             let frame = fly(&shared, Flight::Frame);
             request();
-            assert!(!frame.is_cancelled(), "{what} stopped the frame being drawn");
-            assert!(lock(&shared.state).dirty, "{what} did not ask for a new frame");
+            assert!(
+                !frame.is_cancelled(),
+                "{what} stopped the frame being drawn"
+            );
+            assert!(
+                lock(&shared.state).dirty,
+                "{what} did not ask for a new frame"
+            );
 
             let tiles = fly(&shared, Flight::Tiles);
             request();
-            assert!(tiles.is_cancelled(), "{what} left the sharp-tile pass running");
+            assert!(
+                tiles.is_cancelled(),
+                "{what} left the sharp-tile pass running"
+            );
         }
         // The pass that was asked for is not asked for again until the new round has run.
         assert!(!lock(&shared.state).want_sharp);
@@ -1843,7 +1883,8 @@ mod tests {
     }
 
     #[test]
-    fn a_round_taken_before_a_request_that_makes_its_frame_wrong_gives_up_and_a_later_one_does_not() {
+    fn a_round_taken_before_a_request_that_makes_its_frame_wrong_gives_up_and_a_later_one_does_not()
+    {
         let (vp, _events) = controller();
         let shared = vp.shared();
         vp.set_photo(Some(CorePhotoId(1)));
@@ -1853,9 +1894,15 @@ mod tests {
         // round has registered what it draws: it must not draw photo 1.
         let first = shared.next_work().expect("round");
         assert_eq!(first.photo, Some(CorePhotoId(1)));
-        assert!(!lock(&shared.state).urgent, "taking work answers what was asked");
+        assert!(
+            !lock(&shared.state).urgent,
+            "taking work answers what was asked"
+        );
         vp.set_photo(Some(CorePhotoId(2)));
-        assert!(lock(&shared.state).urgent, "the round for photo 1 is told to give up");
+        assert!(
+            lock(&shared.state).urgent,
+            "the round for photo 1 is told to give up"
+        );
         // The next round is for photo 2 and starts with the flag down.
         let second = shared.next_work().expect("round");
         assert_eq!(second.photo, Some(CorePhotoId(2)));
@@ -1873,7 +1920,10 @@ mod tests {
         vp.set_rect(&cell(100.0, 80.0)).expect("rect");
         std::thread::sleep(Duration::from_millis(5));
         let first = shared.next_work().expect("round");
-        let waited = first.requested_at.expect("a request is behind the round").elapsed();
+        let waited = first
+            .requested_at
+            .expect("a request is behind the round")
+            .elapsed();
         assert!(waited >= Duration::from_millis(5), "{waited:?}");
         // Requests made while that round runs belong to the next one, and the oldest counts.
         vp.invalidate();
@@ -1881,7 +1931,9 @@ mod tests {
         vp.invalidate();
         let second = shared.next_work().expect("round");
         let at = second.requested_at.expect("requests are behind the round");
-        assert!(at > first.requested_at.expect("first") && at.elapsed() >= Duration::from_millis(2));
+        assert!(
+            at > first.requested_at.expect("first") && at.elapsed() >= Duration::from_millis(2)
+        );
         // A round that nobody asked for (the sharp follow-up) has no time to report.
         {
             let mut st = lock(&shared.state);
@@ -1901,7 +1953,10 @@ mod tests {
         let (photo, _) = vp.snapshot_synced();
         let waited = started.elapsed();
         assert_eq!(photo, Some(CorePhotoId(1)));
-        assert!(waited >= SYNC_TIMEOUT - Duration::from_millis(50), "{waited:?}");
+        assert!(
+            waited >= SYNC_TIMEOUT - Duration::from_millis(50),
+            "{waited:?}"
+        );
         assert!(waited < SYNC_TIMEOUT + Duration::from_secs(1), "{waited:?}");
     }
 
@@ -1949,13 +2004,14 @@ mod tests {
         h.open(1);
         h.develop();
         let vp = h.api.viewport();
-        h.rect(200.0, 150.0);
-        h.frame_of_size(200, 150);
+        // A cell smaller than the photo, so that 100 % is a real zoom and there is something to pan.
+        h.rect(100.0, 100.0);
+        h.frame_of_size(100, 100);
         assert!(vp.wait_idle(WAIT));
         h.api
             .viewport_input(&ViewportInput::ToggleZoom {
-                x: crate::wire::Num(100.0),
-                y: crate::wire::Num(75.0),
+                x: crate::wire::Num(50.0),
+                y: crate::wire::Num(50.0),
             })
             .expect("zoom in");
         assert!(vp.wait_idle(WAIT));
@@ -1970,7 +2026,7 @@ mod tests {
             std::thread::spawn(move || {
                 let mut i = 0_u32;
                 while !stop.load(Ordering::SeqCst) {
-                    let dx = if i % 2 == 0 { 2.0 } else { -2.0 };
+                    let dx = if i.is_multiple_of(2) { 2.0 } else { -2.0 };
                     api.viewport_input(&ViewportInput::Pan {
                         dx: crate::wire::Num(dx),
                         dy: crate::wire::Num(0.0),

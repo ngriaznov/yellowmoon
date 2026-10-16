@@ -257,6 +257,22 @@ describe("download", () => {
     expect(update.downloadAndInstall).toHaveBeenCalledTimes(1);
   });
 
+  it("tells its listeners only when the percentage changes, not at each of the thousands of chunks", async () => {
+    // 20 000 chunks of 1 KB of a 20 MB update: the screen has a hundred percents to show.
+    const chunks = Array.from({ length: 20_000 }, () => ({ event: "Progress", data: { chunkLength: 1000 } }) as const);
+    const update = fakeUpdate("0.0.2", [{ event: "Started", data: { contentLength: 20_000_000 } }, ...chunks, { event: "Finished" }]);
+    const u = createUpdater({ check: vi.fn().mockResolvedValue(update), relaunch: vi.fn() });
+    await u.quietCheck();
+    const seen: UpdateState[] = [];
+    u.subscribe(() => seen.push(u.getState()));
+    await u.download();
+    const percents = seen.flatMap((s) => (s.phase === "downloading" && s.percent !== undefined ? [s.percent] : []));
+    // 0 from Started, 1 to 100 from the chunks, and 100 again from Finished.
+    expect(percents.slice(0, 101)).toEqual(Array.from({ length: 101 }, (_, i) => i));
+    expect(seen.length).toBeLessThanOrEqual(105);
+    expect(u.getState()).toEqual({ phase: "ready", version: "0.0.2" });
+  });
+
   it("reports no percentage when the server sends no length", async () => {
     const update = fakeUpdate("0.0.2", [
       { event: "Started", data: {} },

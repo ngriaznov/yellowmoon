@@ -202,7 +202,11 @@ export function createUpdater(deps: UpdaterDeps): Updater {
         setState(total ? { phase: "downloading", version, percent: 0 } : { phase: "downloading", version });
       } else if (event.event === "Progress") {
         received += event.data.chunkLength;
-        if (total) setState({ phase: "downloading", version, percent: Math.min(100, Math.round((received / total) * 100)) });
+        if (total) {
+          const percent = Math.min(100, Math.round((received / total) * 100));
+          // A chunk is a few kilobytes and there are thousands of them; the screen has a hundred percents to show.
+          if (state.phase !== "downloading" || state.percent !== percent) setState({ phase: "downloading", version, percent });
+        }
       } else {
         setState({ phase: "downloading", version, percent: 100 });
       }

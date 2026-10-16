@@ -29,8 +29,13 @@
 //! viewport worker.
 //!
 //! This code cannot be run on Linux. It type-checks against the macOS target (`cargo check
-//! --target aarch64-apple-darwin -p yellowmoon-app`), and the checks that need a Mac are the
-//! "Native viewport" list of `docs/11-ui.md` (HUMAN M0-H4).
+//! --target aarch64-apple-darwin -p yellowmoon-app`; from Linux the build scripts need a stand-in
+//! C compiler, `docs/13-testing.md` §Checking the macOS code on Linux), and the checks that need a
+//! Mac are the "Native viewport" list of `docs/11-ui.md` (HUMAN M0-H4).
+//!
+//! **Timings.** [`FrameSink::present`] times the upload of the frame and the wait for a drawable
+//! (`perf`, with `YM_PERF=1` and in development builds): a wait near one refresh says the worker
+//! sits at the display after every render.
 
 use std::ffi::c_void;
 use std::ptr::NonNull;
@@ -49,6 +54,7 @@ use raw_window_handle::{
 use tauri::{AppHandle, Manager, Runtime};
 use ym_core::pipeline::RenderedFrame;
 
+use crate::perf;
 use crate::viewport::FrameSink;
 use crate::wire::{ViewportBackendKind, ViewportRect};
 
@@ -401,7 +407,11 @@ impl Draw {
             return Err("the frame has the wrong size".to_owned());
         }
         self.configure(width, height);
+        // Timed for `perf` (with `YM_PERF`, and in development builds): the upload is the copy of
+        // the frame into the texture, and the wait for a drawable below is the wait for the display.
+        let upload_timer = perf::timer(perf::Timed::Upload);
         let view = self.upload(frame, width, height);
+        drop(upload_timer);
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("frame"),
             layout: &self.layout,
@@ -413,6 +423,7 @@ impl Draw {
         // Nothing asks for this frame again, so a texture that is not there yet is waited for
         // (a few milliseconds) and a surface that no longer matches the layer is configured
         // again, instead of dropping the frame and leaving the view blank.
+        let acquire_timer = perf::timer(perf::Timed::Acquire);
         let mut attempt = 0;
         let target = loop {
             attempt += 1;
@@ -437,6 +448,7 @@ impl Draw {
                 return Err("the window did not take the picture. Try again".to_owned());
             }
         };
+        drop(acquire_timer);
         let target_view = target
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());

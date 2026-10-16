@@ -5,7 +5,7 @@
  */
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { mockRect } from "../test/raf";
+import { installManualRaf, mockRect } from "../test/raf";
 import { openPhotos, renderApp } from "../test/harness";
 import type { Harness } from "../test/harness";
 import type { MockOptions } from "../api.mock";
@@ -128,6 +128,8 @@ describe.each([undefined, "native", "fallback"] as const)("the pointer over the 
     fireEvent.wheel(cell, { deltaY: 40, clientX: 100, clientY: 50 });
     expect(h!.api.viewport.inputs).toEqual([]);
     fireEvent.wheel(cell, { deltaY: -100, ctrlKey: true, clientX: 100, clientY: 50 });
+    // The wheel is collected for the frame; the end of the gesture sends it.
+    await h!.store.flushViewportInput();
     await waitFor(() => expect(h!.api.viewport.inputs).toHaveLength(1));
     const zoom = h!.api.viewport.inputs[0]!;
     expect(zoom).toMatchObject({ kind: "zoom", x: 100, y: 50 });
@@ -135,6 +137,7 @@ describe.each([undefined, "native", "fallback"] as const)("the pointer over the 
     // The mirror followed the core, so the wheel pans now.
     expect(h!.store.getState().zoom.kind).toBe("percent");
     fireEvent.wheel(cell, { deltaX: 3, deltaY: 12, clientX: 100, clientY: 50 });
+    await h!.store.flushViewportInput();
     await waitFor(() => expect(h!.api.viewport.inputs).toHaveLength(2));
     expect(h!.api.viewport.inputs[1]).toEqual({ kind: "pan", dx: -3, dy: -12 });
   });
@@ -148,6 +151,7 @@ describe.each([undefined, "native", "fallback"] as const)("the pointer over the 
     await h!.store.setZoom({ kind: "percent", value: 100 });
     fireEvent.pointerDown(cell, { clientX: 10, clientY: 10, button: 0, pointerId: 1 });
     fireEvent.pointerMove(cell, { clientX: 30, clientY: 25, pointerId: 1 });
+    fireEvent.pointerUp(window, { clientX: 30, clientY: 25, pointerId: 1 });
     await waitFor(() => expect(h!.api.viewport.inputs).toContainEqual({ kind: "pan", dx: 20, dy: 15 }));
   });
 
@@ -260,5 +264,108 @@ describe("the pixel readout", () => {
     await act(async () => pending[2]!.answer({ r: 7, g: 8, b: 9 }));
     expect(cell.querySelector(".ym-photo-cell__readout")).toBeNull();
     expect(sample).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe("the wheel and the pinch over the photo", () => {
+  const wheel = (init: WheelEventInit): WheelEvent => new WheelEvent("wheel", { bubbles: true, cancelable: true, ...init });
+  const pinch = (type: string, fields: { scale?: number; clientX?: number; clientY?: number } = {}): Event =>
+    Object.assign(new Event(type, { bubbles: true, cancelable: true }), fields);
+
+  it("claims every wheel event over the cell, at Fit and zoomed, so the page cannot bounce (a React onWheel is passive and could not)", async () => {
+    const cell = await setup({ viewport: "native" });
+    mockRect(cell, { left: 0, top: 0, width: 900, height: 600 });
+    const atFit = wheel({ deltaY: 30 });
+    cell.dispatchEvent(atFit);
+    expect(atFit.defaultPrevented).toBe(true);
+    expect(h!.api.viewport.inputs).toEqual([]);
+    await h!.store.setZoom({ kind: "percent", value: 100 });
+    const zoomed = wheel({ deltaY: 30 });
+    cell.dispatchEvent(zoomed);
+    expect(zoomed.defaultPrevented).toBe(true);
+    // The tool panel is not the photo's: its wheel is the browser's.
+    const panel = screen.getByRole("complementary", { name: "Tools" }).querySelector(".ym-tools__scroll") as HTMLElement;
+    const scrolling = wheel({ deltaY: 30 });
+    panel.dispatchEvent(scrolling);
+    expect(scrolling.defaultPrevented).toBe(false);
+  });
+
+  it("sends a hundred wheel events and a frame as one pan with the sum, and sends nothing before the frame", async () => {
+    const raf = installManualRaf();
+    const cell = await setup();
+    mockRect(cell, { left: 0, top: 0, width: 900, height: 600 });
+    await h!.store.setZoom({ kind: "percent", value: 100 });
+    const sent = vi.spyOn(h!.api, "viewportInput");
+    for (let i = 0; i < 100; i++) cell.dispatchEvent(wheel({ deltaX: 1, deltaY: 2 }));
+    expect(sent).not.toHaveBeenCalled();
+    raf.flush();
+    await h!.store.flushViewportInput();
+    expect(sent).toHaveBeenCalledTimes(1);
+    expect(h!.api.viewport.inputs).toEqual([{ kind: "pan", dx: -100, dy: -200 }]);
+  });
+
+  it("zooms about the fingers with a trackpad pinch, and the mirrored zoom follows", async () => {
+    const raf = installManualRaf();
+    const cell = await setup({ viewport: "native" });
+    mockRect(cell, { left: 100, top: 50, width: 900, height: 600 });
+    cell.dispatchEvent(pinch("gesturestart"));
+    const first = pinch("gesturechange", { scale: 1.5, clientX: 400, clientY: 250 });
+    cell.dispatchEvent(first);
+    cell.dispatchEvent(pinch("gesturechange", { scale: 3, clientX: 401, clientY: 250 }));
+    cell.dispatchEvent(pinch("gestureend"));
+    expect(first.defaultPrevented).toBe(true);
+    raf.flush();
+    await h!.store.flushViewportInput();
+    // Both steps were about the same spot (within a pixel): one zoom of 1.5 × 2 = 3, about the fingers in the cell's own pixels.
+    expect(h!.api.viewport.inputs).toHaveLength(1);
+    const zoom = h!.api.viewport.inputs[0]!;
+    expect(zoom).toMatchObject({ kind: "zoom", x: 301, y: 200 });
+    expect(zoom.kind === "zoom" && zoom.factor).toBeCloseTo(3, 9);
+    expect(h!.store.getState().zoom.kind).toBe("percent");
+  });
+
+  it("claims the wheel and the pinch in Pick white and Crop too, and does nothing with them", async () => {
+    const cell = await setup({ viewport: "native" });
+    mockRect(cell, { left: 0, top: 0, width: 900, height: 600 });
+    await h!.user.keyboard("w");
+    await waitFor(() => expect(screen.getByRole("button", { name: "Pick white" })).toHaveAttribute("aria-pressed", "true"));
+    const event = wheel({ deltaY: 40, ctrlKey: true });
+    cell.dispatchEvent(event);
+    const gesture = pinch("gesturechange", { scale: 2, clientX: 5, clientY: 5 });
+    cell.dispatchEvent(gesture);
+    expect(event.defaultPrevented).toBe(true);
+    expect(gesture.defaultPrevented).toBe(true);
+    await h!.store.flushViewportInput();
+    expect(h!.api.viewport.inputs).toEqual([]);
+  });
+
+  it("sends a drag as one pan per frame and the rest when the pointer goes up", async () => {
+    const raf = installManualRaf();
+    const cell = await setup({ viewport: "native" });
+    mockRect(cell, { left: 0, top: 0, width: 900, height: 600 });
+    await h!.store.setZoom({ kind: "percent", value: 100 });
+    fireEvent.pointerDown(cell, { clientX: 10, clientY: 10, button: 0, pointerId: 1 });
+    for (let i = 1; i <= 30; i++) fireEvent.pointerMove(window, { clientX: 10 + i, clientY: 10, pointerId: 1 });
+    expect(h!.api.viewport.inputs).toEqual([]);
+    fireEvent.pointerUp(window, { clientX: 40, clientY: 10, pointerId: 1 });
+    await waitFor(() => expect(h!.api.viewport.inputs).toEqual([{ kind: "pan", dx: 30, dy: 0 }]));
+    raf.flush();
+    await h!.store.flushViewportInput();
+    expect(h!.api.viewport.inputs).toHaveLength(1);
+  });
+});
+
+describe("the cell's place", () => {
+  it("is measured when the cell reports it, not on every pointer move", async () => {
+    const cell = await setup({ viewport: "native" });
+    mockRect(cell, { left: 0, top: 0, width: 900, height: 600 });
+    fireEvent(window, new Event("resize"));
+    const measure = vi.fn(cell.getBoundingClientRect.bind(cell));
+    cell.getBoundingClientRect = measure;
+    for (let i = 0; i < 20; i++) fireEvent.pointerMove(cell, { clientX: 100 + i, clientY: 100 });
+    expect(measure).not.toHaveBeenCalled();
+    // A resize measures again.
+    fireEvent(window, new Event("resize"));
+    expect(measure).toHaveBeenCalledTimes(1);
   });
 });

@@ -131,6 +131,39 @@ describe("running an export", () => {
     expect(store.getState().exportRun?.rows[1]?.state).toBe("running");
   });
 
+  it("applies a burst of progress events as one change, once per batch, and the last one wins", async () => {
+    // The mock's own export is held at the start, so the only events are the ones this test sends.
+    const { api, store } = await opened({ exportHoldAt: 0 });
+    await store.startExport(names, "~/x");
+    // Let the mock's own first report arrive, then count only what this test sends.
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    const jobId = store.getState().exportRun?.jobId ?? -1;
+    let changes = 0;
+    let seen = store.getState().exportRun;
+    const stop = store.subscribe(() => {
+      if (store.getState().exportRun !== seen) changes += 1;
+      seen = store.getState().exportRun;
+    });
+    for (let percent = 1; percent <= 40; percent++) {
+      api.emitEvent("export_progress", { job_id: jobId, file: names[0]!, done: 0, total: 3, file_percent: percent, error: null, skipped: false });
+    }
+    expect(changes, "nothing is drawn per event").toBe(0);
+    await vi.waitFor(() => expect(changes).toBe(1));
+    stop();
+    expect(store.getState().exportRun?.rows[0]?.percent).toBe(40);
+  });
+
+  it("drops a progress event that arrives after the run was cancelled", async () => {
+    const { api, store } = await opened({ exportHoldAt: 0 });
+    await store.startExport(names, "~/x");
+    const jobId = store.getState().exportRun?.jobId ?? -1;
+    api.emitEvent("export_progress", { job_id: jobId, file: names[0]!, done: 0, total: 3, file_percent: 5, error: null, skipped: false });
+    await store.cancelExport();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(store.getState().exportRun).toBeNull();
+  });
+
   it("refuses a second run while one is going, and shows the core's refusal", async () => {
     const { api, store } = await opened();
     await store.startExport(names, "~/x");

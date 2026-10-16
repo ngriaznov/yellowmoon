@@ -328,6 +328,13 @@ fn ask_to_quit<R: Runtime>(app: &AppHandle<R>) {
 /// person would, and the check also wants photos in the session; `YM_SMOKE_HOLD=<s>` waits that
 /// many seconds instead of 4. The viewport job of `.github/workflows/build.yml` uses both to capture
 /// the screen of a Mac while it shows a photo.
+///
+/// `YM_PERF_SCRIPT=1` (with `YM_SMOKE_OPEN`) also drives the page like a hand would, once, from
+/// `YM_PERF_SCRIPT_AT` seconds after the start (20 if not set): 240 ctrl+wheel and 240 pan wheel
+/// events on the photo cell and 60 key presses on the Temperature slider, one every 8 ms or so
+/// ([`SMOKE_PERF_SCRIPT`]). The log (`ym::perf` lines, see `perf`), the script's own numbers and the
+/// page's `window.__ymPerf.snapshot()` (`src/perf.ts`, when the page has it) are what the viewport
+/// job puts in its summary. It never fails the run: the numbers are for reading.
 /// Presses the Start screen's "Open photos" button when it is there and enabled.
 #[cfg(debug_assertions)]
 const SMOKE_OPEN_PHOTOS: &str = r#"(() => {
@@ -356,6 +363,74 @@ const SMOKE_DESCRIBE_PAGE: &str = r##"(() => {
   });
 })()"##;
 
+/// Drives the photo cell and a slider like a hand does (`YM_PERF_SCRIPT`): 240 ctrl+wheel events (zoom
+/// in about the middle of the cell, a little out at the end), 240 pan events and 60 key presses on the
+/// Temperature slider, 8 ms apart (a timer cannot keep to it: the milliseconds each phase took are
+/// in the result). The result is left in `window.__ymPerfResult`; a script that is evaluated does not
+/// wait for promises, so [`SMOKE_PERF_RESULT`] reads it later. What it cannot find is listed in
+/// `missing`.
+#[cfg(debug_assertions)]
+const SMOKE_PERF_SCRIPT: &str = r##"(() => {
+  if (window.__ymPerfRunning) return "already running";
+  window.__ymPerfRunning = true;
+  window.__ymPerfResult = null;
+  const out = { phases: {}, missing: [] };
+  const finish = () => { out.done = true; window.__ymPerfResult = out; };
+  const cell = document.querySelector("[data-viewport]") || document.querySelector(".ym-photo-cell");
+  if (!cell) { out.missing.push("photo cell"); finish(); return "no photo cell"; }
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const box = cell.getBoundingClientRect();
+  const at = { clientX: box.left + box.width / 2, clientY: box.top + box.height / 2 };
+  const wheel = (init) => cell.dispatchEvent(new WheelEvent("wheel", { bubbles: true, cancelable: true, ...at, ...init }));
+  const phase = async (name, count, step) => {
+    const t0 = performance.now();
+    for (let i = 0; i < count; i++) { step(i); await sleep(8); }
+    const ms = Math.round(performance.now() - t0);
+    out.phases[name] = { events: count, ms, interval_ms: Math.round((10 * ms) / count) / 10 };
+  };
+  (async () => {
+    await phase("ctrl_wheel", 240, (i) => wheel({ ctrlKey: true, deltaY: i < 200 ? -2 : 2 }));
+    await phase("pan", 240, (i) => wheel({ deltaX: i % 2 ? 6 : -6, deltaY: i % 2 ? 4 : -4 }));
+    const label = [...document.querySelectorAll("label")].find((l) => l.textContent.trim() === "Temperature");
+    const slider = (label && label.htmlFor && document.getElementById(label.htmlFor)) || document.querySelector("input[type=range]:not(:disabled)");
+    if (!slider) {
+      out.missing.push("Temperature slider");
+    } else {
+      slider.focus();
+      const key = (i) => (Math.floor(i / 10) % 2 ? "ArrowLeft" : "ArrowRight");
+      await phase("slider_keys", 60, (i) => slider.dispatchEvent(new KeyboardEvent("keydown", { key: key(i), shiftKey: true, bubbles: true, cancelable: true })));
+    }
+    finish();
+  })().catch((e) => { out.error = String(e); finish(); });
+  return "started";
+})()"##;
+
+/// The result of [`SMOKE_PERF_SCRIPT`] as a string of JSON, or `"null"` while it runs.
+#[cfg(debug_assertions)]
+const SMOKE_PERF_RESULT: &str = r##"JSON.stringify(window.__ymPerfResult ?? null)"##;
+
+/// The page's own counters (`window.__ymPerf.snapshot()`, `src/perf.ts`) as a string of JSON, or
+/// `"null"` when the page has none. Read with `eval_with_callback`, which does not wait for promises:
+/// `snapshot()` must answer at once.
+#[cfg(debug_assertions)]
+const SMOKE_PERF_PAGE: &str = r##"(() => {
+  try {
+    if (!window.__ymPerf || typeof window.__ymPerf.snapshot !== "function") return "null";
+    const s = window.__ymPerf.snapshot();
+    return typeof s === "string" ? s : JSON.stringify(s);
+  } catch (e) {
+    return JSON.stringify({ error: String(e) });
+  }
+})()"##;
+
+/// The string of JSON a script left, out of what `eval_with_callback` hands the callback (a string
+/// is handed over as JSON again); `None` for `"null"`.
+#[cfg(debug_assertions)]
+fn unwrap_script_json(callback_json: &str) -> Option<String> {
+    let inner = serde_json::from_str::<String>(callback_json).ok()?;
+    (inner != "null").then_some(inner)
+}
+
 #[cfg(debug_assertions)]
 fn smoke_test<R: Runtime>(app: AppHandle<R>, api: Arc<AppApi>) {
     if std::env::var_os("YM_SMOKE").is_none() {
@@ -372,10 +447,19 @@ fn smoke_test<R: Runtime>(app: AppHandle<R>, api: Arc<AppApi>) {
         .ok()
         .and_then(|s| s.parse::<u64>().ok())
         .unwrap_or(4);
+    // `YM_PERF_SCRIPT`: when to drive the page, in seconds after the start.
+    let perf_at = std::env::var_os("YM_PERF_SCRIPT").map(|_| {
+        std::env::var("YM_PERF_SCRIPT_AT")
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(20)
+    });
     std::thread::spawn(move || {
         let start = std::time::Instant::now();
         let until = std::time::Duration::from_secs(hold);
         let mut described = false;
+        let mut perf_started = false;
+        let perf_done = Arc::new(AtomicBool::new(false));
         while start.elapsed() < until {
             std::thread::sleep(std::time::Duration::from_secs(2));
             // Once, after the photo had time to show: what the page has at the photo cell.
@@ -406,6 +490,26 @@ fn smoke_test<R: Runtime>(app: AppHandle<R>, api: Arc<AppApi>) {
                     );
                 });
             }
+            // Once the photo is up: the page is driven like a hand would (`YM_PERF_SCRIPT`), then
+            // polled for its result until it has one.
+            if let Some(at) = perf_at
+                && start.elapsed() >= std::time::Duration::from_secs(at)
+                && let Some(window) = app.get_webview_window("main")
+            {
+                if !perf_started {
+                    perf_started = true;
+                    eprintln!("smoke: perf script starts");
+                    let _ = window.eval(SMOKE_PERF_SCRIPT);
+                } else if !perf_done.load(Ordering::SeqCst) {
+                    let done = Arc::clone(&perf_done);
+                    let _ = window.eval_with_callback(SMOKE_PERF_RESULT, move |json| {
+                        if let Some(result) = unwrap_script_json(&json) {
+                            eprintln!("smoke: perf script {result}");
+                            done.store(true, Ordering::SeqCst);
+                        }
+                    });
+                }
+            }
             // The Start screen lists the photos; its "Open photos" button is enabled once one is
             // ready. On the Photos screen there is no such button and this does nothing.
             if open.is_some()
@@ -413,6 +517,21 @@ fn smoke_test<R: Runtime>(app: AppHandle<R>, api: Arc<AppApi>) {
             {
                 let _ = window.eval(SMOKE_OPEN_PHOTOS);
             }
+        }
+        if perf_started {
+            if !perf_done.load(Ordering::SeqCst) {
+                eprintln!("smoke: perf script did not finish before the run ended");
+            }
+            // The page's own counters and the viewport's last window, while the app still runs.
+            // The callbacks run on the main thread, which this thread leaves a moment for.
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.eval_with_callback(SMOKE_PERF_PAGE, |json| {
+                    let page = unwrap_script_json(&json).unwrap_or_else(|| "null".to_owned());
+                    eprintln!("smoke: perf page {page}");
+                });
+            }
+            perf::log_viewport_window();
+            std::thread::sleep(std::time::Duration::from_millis(1500));
         }
         let info = api.app_info();
         let prefs = api.preferences_get();
@@ -452,7 +571,8 @@ mod tests {
     }
 
     #[test]
-    fn the_frame_protocol_never_caches_frames_and_misses_but_caches_thumbnails_and_tiles_for_good() {
+    fn the_frame_protocol_never_caches_frames_and_misses_but_caches_thumbnails_and_tiles_for_good()
+    {
         let store = FrameStore::new();
         store.put(7, vec![1, 2, 3]);
         let frame_path = path_of(&store.frame_url(7));
@@ -483,7 +603,23 @@ mod tests {
         let stale = frame_response(&other, &path_of(&thumb));
         assert_eq!(stale.status(), 404);
         assert_eq!(stale.headers()["Cache-Control"], "no-store");
-        assert!(frame_response(&store, "/thumb-4-1.png").status() == 404, "no launch id");
+        assert!(
+            frame_response(&store, "/thumb-4-1.png").status() == 404,
+            "no launch id"
+        );
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn a_script_that_has_left_nothing_yet_is_not_a_result() {
+        // `eval_with_callback` hands a string over as JSON again.
+        assert_eq!(unwrap_script_json("\"null\""), None);
+        assert_eq!(unwrap_script_json("null"), None);
+        assert_eq!(unwrap_script_json("not json"), None);
+        assert_eq!(
+            unwrap_script_json(r#""{\"done\":true}""#).as_deref(),
+            Some(r#"{"done":true}"#)
+        );
     }
 
     #[test]

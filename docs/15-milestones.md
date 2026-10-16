@@ -247,6 +247,26 @@ Every flag in `docs/10`; app/CLI byte-identical test.
 Playwright flows and screenshot comparisons for every mocked state.
 *Done when:* CI green.
 
+**M3-16 · Desktop feel** (M3-04, M3-06) *(added 2026-10-16 after the owner's report: "UI in Yellowmoon is sluggish. I can select UI text, when I pan photo with two fingers on trackpad - all app moves.")*
+A two-finger pan or a pinch over the photo moves or zooms only the photo; nothing else on the page scrolls, bounces or zooms. Text is not selectable except fields, the command line, paths, errors, file names, version and legal text. Buttons have the arrow cursor and links the hand; WebKit's page menu (Reload, Back) never opens. `docs/11` §Photos input and desktop feel.
+*Done when:* `src/styles/desktop.node.test.ts`, the Vitest specs (`usePhotoGestures`, `desktopFeel`, `PhotoView`) and `e2e/desktop-feel.spec.ts` pass; on a Mac a two-finger pan at Fit and zoomed, over the header, the filmstrip, the panel's end stops and a dialog moves only the intended content, a pinch zooms the photo about the fingers, and nothing selects by drag, ⌘A, double click on the photo or triple click in the header [M0-H4].
+
+**M3-17 · Viewport progress** (M3-04)
+The core's viewport finishes and shows the frame it is drawing before it starts on newer input, so a gesture that outruns one render still shows the photo moving: only the speculative sharp-tile pass gives way to a request (`docs/01` §Native viewport). Shell side.
+*Done when:* the `viewport.rs` tests (a frame in flight is not cancelled by a request, the tile pass is; a new photo cancels both) and the smoke test (200 `invalidate()` calls 2 ms apart present more than one frame) pass; on a Mac a scripted slider drag on every tool tab shows the photo updating continuously, with `cancelled/presented` in the log [M0-H4].
+
+**M3-18 · Render fan-out** (M3-06, M3-17)
+A frame drawn by the viewport, a wheel zoom or a tile of an export redraws only what shows it, not the Photos screen and the hundreds of look tiles under it. Wheel, pinch and drag input goes to the core once per animation frame, in order, one command at a time. The histogram and the middle readout are asked for at most five times a second while the Light or Curve tab shows them. `docs/11` §Photos input and desktop feel.
+*Done when:* `Photos.render.test.tsx` (50 `render_stats`, 20 zoom steps and an export run leave the screen, the Look tab and the tiles alone), the `ViewportInputQueue` and store specs (100 wheel events and one frame are one `viewport_input`; the histogram throttle) and the Playwright spec (60 wheel events are at most two pans with the summed distance) pass.
+
+**M3-19 · Look tiles** (M3-06, M3-18)
+The Look tab with hundreds of looks stays quick: one `IntersectionObserver` for the grid, only the tiles in view refresh when the settings change (and 400 ms after they stop changing), the others keep their picture and ask again when they come back; at most two `look_thumbnail` requests are out at once, the newest first, and the ones not started when the settings change are dropped as superseded, not failed. Folded sections draw no tiles.
+*Done when:* `LookTab.tiles.test.tsx`, the limiter specs in `store.viewport.test.ts` and `Photos.render.test.tsx` pass; on a Mac a slider drag with the ARRI library imported keeps the photo updating continuously.
+
+**M3-20 · Shell main thread and perf logging** (M3-02, M3-17)
+`ym-frame` answers off the main thread; `render_stats` and `photo_progress` events are coalesced in the emitter; a main-thread watchdog and the viewport counters (`requests`, `presented`, `cancelled`, input to present) go to the local log with `YM_PERF=1` and in debug builds. The page measures itself with `?perf` or `localStorage.ymPerf`: late animation frames, renders of Photos, the Look tab and its tiles, store notifications per second, and the calls and round trips of the api in `window.__ymPerf.snapshot()` (`src/perf.ts`). Nothing is sent anywhere (AGENTS rule 7). Shell side: `docs/01`, `docs/13`.
+*Done when:* the emitter and protocol tests pass, `src/perf.test.ts` and the `?perf` Playwright test pass, and the Mac job prints the log lines in its summary [M0-H4]. The numbers are not a gate yet.
+
 **[HUMAN] M3-H1** Design the Signature look and name it. **M3-H2** Download the five ARRI packages by hand and run the fingerprint script. **M3-H3** Email ARRI about in-app download (optional). **M3-H4** Review the app on a Mac against the mockups; import the real ARRI packages. **M3-H5** Use the app for one real shoot and report friction. **M3-H6** Check DNGs in Lightroom, RawTherapee, darktable, Capture One and Apple Photos.
 
 **Gate M3:** every mocked state implemented; app/CLI parity; DNG gates; Mykyta's review.

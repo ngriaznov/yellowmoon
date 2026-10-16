@@ -8,7 +8,7 @@
 export const GESTURE_EVENTS = ["gesturestart", "gesturechange", "gestureend"] as const;
 
 /** A field, or a text the person may select (and so may copy): the page menu is allowed there. */
-const EDITABLE = 'input, textarea, select, [contenteditable]:not([contenteditable="false"])';
+const EDITABLE = 'input, textarea, [contenteditable]:not([contenteditable="false"])';
 
 const SELECTABLE = new Set(["text", "all", "contain"]);
 

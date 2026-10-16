@@ -57,8 +57,9 @@ export const commands = {
 	looksList: () => __TAURI_INVOKE<Look[]>("looks_list"),
 	/**
 	 *  `look_thumbnail(photo_id, look_id)`: the photo through one look. The answer is the address of
-	 *  a PNG of at most 240 px on the `ym-frame` scheme (`ym-frame://localhost/look-<photo>-<n>.png`,
-	 *  `http://ym-frame.localhost/…` on Windows), like `thumbnail_ready`'s.
+	 *  a PNG of at most 240 px on the `ym-frame` scheme
+	 *  (`ym-frame://localhost/<launch>/look-<photo>-<n>.png`, `http://ym-frame.localhost/…` on
+	 *  Windows), like `thumbnail_ready`'s.
 	 */
 	lookThumbnail: (photoId: PhotoId, lookId: LookId) => __TAURI_INVOKE<string>("look_thumbnail", { photoId, lookId }),
 	/**  `looks_import(path, input)`: a zip, a folder or a `.cube` file. */
@@ -1321,10 +1322,12 @@ export type SourceRecognition = {
  *  is at `url`.
  * 
  *  The picture does not cross the bridge: the shell keeps it and serves it on the `ym-frame`
- *  scheme (`ym-frame://localhost/thumb-<id>-<version>.png`, `http://ym-frame.localhost/…` on
- *  Windows), so an `<img>` loads it. Every new thumbnail of a photo (a look, a crop or a turn was
- *  applied) has a new address. Also the answer of `thumbnails()` for every photo that has one, to
- *  get them again after the webview reloaded.
+ *  scheme (`ym-frame://localhost/<launch>/thumb-<id>-<version>.png`, `http://ym-frame.localhost/…`
+ *  on Windows; `<launch>` is made from the time the app started), so an `<img>` loads it. Every
+ *  new thumbnail of a photo (a look, a crop or a turn was applied) has a new address, and an
+ *  address names the same picture for as long as the app runs (it is served as immutable). Also
+ *  the answer of `thumbnails()` for every photo that has one, to get them again after the webview
+ *  reloaded.
  */
 export type ThumbnailReady = {
 	/**  The photo. */
@@ -1393,7 +1396,10 @@ export type ViewportFrame = {
 	 *  frame follows.
 	 */
 	sharp: boolean,
-	/**  Where the PNG is (the `ym-frame://` scheme, `http://ym-frame.localhost/` on Windows). */
+	/**
+	 *  Where the PNG is (the `ym-frame://` scheme, `http://ym-frame.localhost/` on Windows). Take
+	 *  it as it comes: the path holds an id of this launch of the app.
+	 */
 	url: string,
 };
 

@@ -51,7 +51,12 @@ const TARGET: &str = "ym::perf";
 #[must_use]
 pub fn enabled() -> bool {
     static ON: OnceLock<bool> = OnceLock::new();
-    *ON.get_or_init(|| enabled_by(std::env::var("YM_PERF").ok().as_deref(), cfg!(debug_assertions)))
+    *ON.get_or_init(|| {
+        enabled_by(
+            std::env::var("YM_PERF").ok().as_deref(),
+            cfg!(debug_assertions),
+        )
+    })
 }
 
 /// `YM_PERF` decides when it is set (anything but empty and `0` is on); otherwise development
@@ -539,7 +544,10 @@ mod tests {
         assert!(!enabled_by(None, false));
         assert!(enabled_by(Some("1"), false));
         assert!(enabled_by(Some("yes"), false));
-        assert!(!enabled_by(Some("0"), true), "YM_PERF=0 turns a debug build off");
+        assert!(
+            !enabled_by(Some("0"), true),
+            "YM_PERF=0 turns a debug build off"
+        );
         assert!(!enabled_by(Some(""), true));
     }
 
@@ -563,9 +571,16 @@ mod tests {
             (5, 2, 2)
         );
         assert_eq!((window.cancelled, window.tiles_cancelled), (1, 1));
-        assert_eq!(window.latency_us, vec![20_000], "a frame without a request has no latency");
+        assert_eq!(
+            window.latency_us,
+            vec![20_000],
+            "a frame without a request has no latency"
+        );
         let upload = window.timed[Timed::Upload.index()];
-        assert_eq!((upload.count, upload.total_ns, upload.max_ns), (2, 6_000_000, 4_000_000));
+        assert_eq!(
+            (upload.count, upload.total_ns, upload.max_ns),
+            (2, 6_000_000, 4_000_000)
+        );
         assert!((upload.mean_ms() - 3.0).abs() < 1e-9);
         assert!(!window.is_idle());
 
@@ -590,7 +605,10 @@ mod tests {
         let one = Counters::new();
         one.present(Some(ms(7)));
         let one = one.take();
-        assert_eq!((one.latency_ms(50), one.latency_ms(95)), (Some(7.0), Some(7.0)));
+        assert_eq!(
+            (one.latency_ms(50), one.latency_ms(95)),
+            (Some(7.0), Some(7.0))
+        );
     }
 
     #[test]
@@ -612,9 +630,17 @@ mod tests {
         ] {
             assert!(line.contains(part), "{part} is not in {line}");
         }
-        assert!(!line.contains("upload"), "a kind that was not timed is left out: {line}");
+        assert!(
+            !line.contains("upload"),
+            "a kind that was not timed is left out: {line}"
+        );
         assert!(!line.contains('\n'));
-        assert!(Counters::new().take().line().contains("request to present none"));
+        assert!(
+            Counters::new()
+                .take()
+                .line()
+                .contains("request to present none")
+        );
     }
 
     #[test]
@@ -638,10 +664,15 @@ mod tests {
         assert_eq!(h.worst(), ms(5_000));
         assert_eq!(
             stalls,
-            [false, false, false, false, false, false, false, false, true, true, true, true]
+            [
+                false, false, false, false, false, false, false, false, true, true, true, true
+            ]
         );
         let line = h.line();
-        assert!(line.contains("<4 ms 2") && line.contains("slower 2"), "{line}");
+        assert!(
+            line.contains("<4 ms 2") && line.contains("slower 2"),
+            "{line}"
+        );
         assert!(line.contains("worst 5000.0 ms"), "{line}");
     }
 

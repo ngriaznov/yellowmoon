@@ -110,6 +110,11 @@ jobs:
   # the owner's photos at start (YM_SMOKE_OPEN, debug builds only) and the screen is captured once the photo is drawn. The screenshot
   # and the app's log are the artefact "viewport-<commit>". The job fails when the log does not say that the native viewport showed a
   # picture; whether the picture is visible on the screen (and not covered by the page) is what the screenshot is for.
+  # After the screenshots the app drives its own page like a hand would (YM_PERF_SCRIPT, src-tauri/src/app.rs: 240 ctrl+wheel and 240
+  # pan events on the photo cell, 60 key presses on the Temperature slider, 8 ms apart) with performance logging on (YM_PERF=1,
+  # src-tauri/src/perf.rs), and the numbers it logged go into the job summary: how many frames the viewport presented and cancelled,
+  # the time from an input to the frame that shows it, the main thread's waits, the page's own counters (src/perf.ts). This is the
+  # development profile on a hosted runner, so the counts say more than the times do. The numbers never fail the job (docs/13).
   viewport:
     runs-on: macos-15
     timeout-minutes: 60
@@ -163,7 +168,10 @@ jobs:
           mkdir -p viewport
           # The window behind the page is red instead of paper for this run (YM_SMOKE_WINDOW): a red photo cell would
           # mean the page lets the window through but the viewport's view is not where the cell is.
-          YM_SMOKE=1 YM_SMOKE_WINDOW=red YM_SMOKE_HOLD=90 YM_SMOKE_OPEN="$GITHUB_WORKSPACE/testdata/readme-photos/src" \
+          # The input script starts at 70 s, after both captures (the picture is up within 20 s, the second capture follows 5 s
+          # later, 65 s at the very latest), and the run is held until 100 s so that it can finish and be read.
+          YM_SMOKE=1 YM_SMOKE_WINDOW=red YM_SMOKE_HOLD=100 YM_PERF=1 YM_PERF_SCRIPT=1 YM_PERF_SCRIPT_AT=70 \
+            YM_SMOKE_OPEN="$GITHUB_WORKSPACE/testdata/readme-photos/src" \
             target/debug/yellowmoon-app > viewport/app.log 2>&1 &
           pid=$!
           # One capture early, while the app surely runs, and one once the picture is there (or after 60 s).
@@ -179,6 +187,17 @@ jobs:
           status=0
           wait "$pid" || status=$?
           cat viewport/app.log
+          # The numbers of the input script, for reading: the log's performance lines, the script's own result and the page's counters.
+          # Nothing here can fail the job (grep finds nothing: the summary says so).
+          {
+            echo "### Viewport performance"
+            echo
+            echo "Development profile on a hosted runner (no trackpad): the counts say more than the times. 240 ctrl+wheel, 240 pan and 60 slider key events, about 8 ms apart, on a photo of the owner's set."
+            echo
+            echo '```'
+            grep -E "ym::perf|smoke: perf" viewport/app.log | cut -c1-1500 || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
           if ! grep -q "the native viewport shows a picture" viewport/app.log; then
             echo "::error title=Native viewport::the app never showed a picture in the native viewport (viewport/app.log)"
             exit 1

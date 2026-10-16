@@ -1,5 +1,6 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
+import { Superseded } from "./requestLimiter";
 import type { AppStore } from "./store";
 import { MAX_TILE_RETRIES, useLookThumbnail } from "./useLookThumbnail";
 
@@ -48,6 +49,31 @@ describe("useLookThumbnail", () => {
     const { result } = renderHook(() => useLookThumbnail(store, 4, "builtin:neutral", "k"));
     await waitFor(() => expect(result.current.src).toBe("blob:b"));
     expect(lookThumbnail).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not ask again for a request that was superseded: it is no failure, and it costs no retry", async () => {
+    const { store, lookThumbnail } = fakeStore([() => Promise.reject(new Superseded())]);
+    const { result } = renderHook(() => useLookThumbnail(store, 4, "builtin:neutral", "k"));
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 20));
+    });
+    expect(lookThumbnail).toHaveBeenCalledTimes(1);
+    expect(result.current.src).toBeUndefined();
+  });
+
+  it("keeps the picture it has while it is out of view, and asks for a new one only when it is back with other settings", async () => {
+    const { store, lookThumbnail } = fakeStore([Promise.resolve("blob:a"), Promise.resolve("blob:b")]);
+    const { result, rerender } = renderHook(({ key, enabled }) => useLookThumbnail(store, 4, "builtin:neutral", key, enabled), {
+      initialProps: { key: "k1", enabled: true },
+    });
+    await waitFor(() => expect(result.current.src).toBe("blob:a"));
+    rerender({ key: "k1", enabled: false });
+    rerender({ key: "k2", enabled: false });
+    expect(lookThumbnail).toHaveBeenCalledTimes(1);
+    expect(result.current.src).toBe("blob:a");
+    rerender({ key: "k2", enabled: true });
+    await waitFor(() => expect(result.current.src).toBe("blob:b"));
+    expect(lookThumbnail.mock.calls.map((c) => c[2])).toEqual(["k1", "k2"]);
   });
 
   it("does not ask again for a look the library refuses", async () => {

@@ -9,7 +9,13 @@ moves the entries below from Unreleased into a dated section for that version.
 
 ## [Unreleased]
 
-Nothing yet.
+### Fixed
+
+- A two-finger pan over the photo moves only the photo. The whole window no longer moves with it, and nothing else on the screen bounces or scrolls under your fingers: the header, the filmstrip, the dialogs and the ends of the tool panel stay where they are.
+- Pinching on the trackpad zooms the photo about your fingers. Before, it did nothing. ⌘ or Ctrl with the scroll still zooms.
+- Text in the app is no longer selectable, so dragging over the window, a double click on the photo or ⌘A selects nothing. What you may want to copy still is: fields, the command line in the Export panel and the folder it saves to, the path of the command-line tool, error messages, file names and the About text. Buttons show the arrow, and only links show the pointing hand. The web page's own right-click menu (Reload, Back) no longer opens.
+- The app keeps up while you drag a slider or pan the photo. Scrolling, pinching and dragging over the photo are sent once for each frame that is drawn, and the screen redraws only what changed instead of the whole window for every frame, every step of a zoom and every file an export finishes. The histogram and the middle readout on the Light and Curve tabs update up to five times a second while you work, and once more when you stop, instead of after every frame.
+- The Look tab stays quick with hundreds of looks. Only the looks you can see are drawn again after an edit, and only once you have stopped moving a slider for a moment; the ones you scrolled away from keep their picture until you come back.
 
 ## [0.1.3] - 2026-10-16
 

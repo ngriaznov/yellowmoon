@@ -1678,10 +1678,12 @@ pub struct PhotoProgress {
 /// is at `url`.
 ///
 /// The picture does not cross the bridge: the shell keeps it and serves it on the `ym-frame`
-/// scheme (`ym-frame://localhost/thumb-<id>-<version>.png`, `http://ym-frame.localhost/…` on
-/// Windows), so an `<img>` loads it. Every new thumbnail of a photo (a look, a crop or a turn was
-/// applied) has a new address. Also the answer of `thumbnails()` for every photo that has one, to
-/// get them again after the webview reloaded.
+/// scheme (`ym-frame://localhost/<launch>/thumb-<id>-<version>.png`, `http://ym-frame.localhost/…`
+/// on Windows; `<launch>` is made from the time the app started), so an `<img>` loads it. Every
+/// new thumbnail of a photo (a look, a crop or a turn was applied) has a new address, and an
+/// address names the same picture for as long as the app runs (it is served as immutable). Also
+/// the answer of `thumbnails()` for every photo that has one, to get them again after the webview
+/// reloaded.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type, Event)]
 #[tauri_specta(event_name = "thumbnail_ready")]
 pub struct ThumbnailReady {
@@ -1830,7 +1832,8 @@ pub struct ViewportFrame {
     /// False when the frame was made from a coarser image while sharper tiles render; a sharp
     /// frame follows.
     pub sharp: bool,
-    /// Where the PNG is (the `ym-frame://` scheme, `http://ym-frame.localhost/` on Windows).
+    /// Where the PNG is (the `ym-frame://` scheme, `http://ym-frame.localhost/` on Windows). Take
+    /// it as it comes: the path holds an id of this launch of the app.
     pub url: String,
 }
 

@@ -289,8 +289,9 @@ pub async fn looks_list(state: State<'_, AppState>) -> Result<Vec<Look>, AppErro
 }
 
 /// `look_thumbnail(photo_id, look_id)`: the photo through one look. The answer is the address of
-/// a PNG of at most 240 px on the `ym-frame` scheme (`ym-frame://localhost/look-<photo>-<n>.png`,
-/// `http://ym-frame.localhost/…` on Windows), like `thumbnail_ready`'s.
+/// a PNG of at most 240 px on the `ym-frame` scheme
+/// (`ym-frame://localhost/<launch>/look-<photo>-<n>.png`, `http://ym-frame.localhost/…` on
+/// Windows), like `thumbnail_ready`'s.
 #[tauri::command]
 #[specta::specta]
 pub async fn look_thumbnail(
