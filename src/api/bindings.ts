@@ -1270,8 +1270,10 @@ export type SessionState = {
 };
 
 /**
- *  `settings_changed { photo_id }` (addition): the core changed a photo's settings by itself, after
- *  a `viewport_input` Pick white click. Ask `get_settings` again.
+ *  `settings_changed { photo_id }` (addition): the core changed a photo's settings by itself: after
+ *  a `viewport_input` Pick white click, and once for each photo a `paste_settings` changed. Ask
+ *  `get_settings` again (the webview skips the photos it is pasting onto: the paste's answer says
+ *  what changed).
  */
 export type SettingsChanged = {
 	/**  The photo. */

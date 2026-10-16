@@ -303,3 +303,18 @@
 @media (max-width: 1273px) {
   .ym-screen[data-screen="photos"][data-panel="tools"] .ym-status:not([data-hint="true"]) { display: none; }
 }
+
+/* The Pick white hint is a whole sentence on one line (219 px) and does not fit beside the buttons below about 1347 px: at 1180 px it
+   ran 150 px into the Export cell. There it floats over the top right of the photo area instead, just under the header, on paper. */
+@media (max-width: 1346px) {
+  .ym-status[data-hint="true"] {
+    position: fixed;
+    top: calc(var(--header-h) + 8px);
+    right: calc(var(--panel-w) + 16px);
+    z-index: 30;
+    margin-left: 0;
+    padding: 6px 12px;
+    border: var(--rule) solid var(--ink);
+    background: var(--paper);
+  }
+}

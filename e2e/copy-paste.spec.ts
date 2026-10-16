@@ -92,6 +92,21 @@ test.describe("Add photos", () => {
     expect(scrolls).toBeLessThanOrEqual(0);
     await expect(nav.getByRole("button", { name: "Add photos" })).toBeVisible();
   });
+
+  test("the Pick white hint never runs into the Export cell, at any width from 1180 up", async ({ page }) => {
+    await photos(page);
+    await header(page).getByRole("button", { name: "Pick white" }).click();
+    const hint = page.getByText("Click something neutral: grey or white.");
+    await expect(hint).toBeVisible();
+    for (const width of [1180, 1273, 1300, 1346, 1347, 1440]) {
+      await page.setViewportSize({ width, height: 760 });
+      const cell = (await page.locator(".ym-header__right").boundingBox())!;
+      const box = (await hint.boundingBox())!;
+      expect(box.x + box.width, `the hint's right edge at ${width}`).toBeLessThanOrEqual(cell.x);
+      const scrolls = await page.locator(".ym-header__nav").evaluate((el) => el.scrollWidth - el.clientWidth);
+      expect(scrolls, `the header's overflow at ${width}`).toBeLessThanOrEqual(0);
+    }
+  });
 });
 
 test.describe("Copy settings and Paste", () => {
