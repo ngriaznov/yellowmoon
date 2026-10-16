@@ -380,13 +380,16 @@ impl RenderReport {
     }
 }
 
+/// A cached raw plan with the lens switches (`lens_corrections`, `chromatic_aberration`) it was made for.
+type PlanSlot = ((bool, bool), Arc<RawPlan>);
+
 #[derive(Default)]
 struct GraphState {
     /// The fingerprint of the decoded image the caches belong to.
     fingerprint: Option<u64>,
     /// The raw plan, with R3 (index 0, the final picture's) and without it (index 1, the Before view's:
     /// [`RawPlan::without_vignetting`]), each with the lens switches it was made for.
-    plan: [Option<((bool, bool), Arc<RawPlan>)>; 2],
+    plan: [Option<PlanSlot>; 2],
     sigma: Option<(Vec<u64>, Arc<SigmaPlane>)>,
     groups: Option<ByteLru<(RawParamsKey, usize), Backing>>,
     /// The prepared full-resolution chain, with R3 (index 0) and without it (index 1, the Before view's):
