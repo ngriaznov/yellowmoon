@@ -701,11 +701,19 @@ fn shared_folders(files: &[FileFacts]) -> Vec<&str> {
 /// Looks of one package and group that share a name (ARRI's `1110 Black and White` and
 /// `1111 Black and White` are two looks) get their look code added to the name, so the list of
 /// looks does not show the same name twice.
-fn tell_same_names_apart(files: &mut [RecognizedFile]) {
+///
+/// A file whose hash identified it gets the code if *any* two files of its package share its name,
+/// whether or not the other one is in this source: the name (and with it the id) of a look is the
+/// same whether the whole package is imported or one loose file of it, so the same look is never
+/// two entries (`arri:1000:black-and-white-1111` either way). Files recognised by their names alone
+/// have only the source to go by.
+fn tell_same_names_apart(db: &PackageDb, files: &mut [RecognizedFile]) {
     let key = |package: &str, group_no: u32, name: &str| {
         (package.to_string(), group_no, name.to_lowercase())
     };
-    let mut count: HashMap<(String, u32, String), usize> = HashMap::new();
+    type Counts = HashMap<(String, u32, String), usize>;
+    // The files of this source.
+    let mut count: Counts = HashMap::new();
     for f in files.iter() {
         if let Outcome::ArriLook {
             package,
@@ -717,20 +725,53 @@ fn tell_same_names_apart(files: &mut [RecognizedFile]) {
             *count.entry(key(package, *group_no, name)).or_default() += 1;
         }
     }
+    // Every file a package lists, for the packages that a file of this source was identified by.
+    let mut listed: Counts = HashMap::new();
+    let mut counted: HashSet<&str> = HashSet::new();
+    for f in files.iter() {
+        if let Outcome::ArriLook {
+            package,
+            evidence: Evidence::Fingerprint,
+            ..
+        } = &f.outcome
+            && counted.insert(package.as_str())
+            && let Some(package) = db.package(package)
+        {
+            for fp in &package.fingerprints {
+                if let Outcome::ArriLook {
+                    package: id,
+                    group_no,
+                    name,
+                    ..
+                } = outcome_for(db, package, &fp.path, Evidence::Fingerprint)
+                {
+                    *listed.entry(key(&id, group_no, &name)).or_default() += 1;
+                }
+            }
+        }
+    }
     for f in files.iter_mut() {
         if let Outcome::ArriLook {
             package,
             group_no,
             name,
             file_name: library_name,
+            evidence,
             ..
         } = &mut f.outcome
-            && count
-                .get(&key(package, *group_no, name))
-                .is_some_and(|n| *n > 1)
-            && let Some(code) = look_code(file_stem(library_name))
         {
-            *name = with_code(name, code);
+            let k = key(package, *group_no, name);
+            let here = count.get(&k).copied().unwrap_or(0);
+            let in_package = if *evidence == Evidence::Fingerprint {
+                listed.get(&k).copied().unwrap_or(0)
+            } else {
+                0
+            };
+            if here.max(in_package) > 1
+                && let Some(code) = look_code(file_stem(library_name))
+            {
+                *name = with_code(name, code);
+            }
         }
     }
 }
@@ -987,7 +1028,7 @@ pub fn recognize(
     }
 
     match_by_package(db, source, files, &mut recognized, &mut package_of);
-    tell_same_names_apart(&mut recognized);
+    tell_same_names_apart(db, &mut recognized);
 
     let packages = findings(db, source, &recognized, &package_of, &claimed);
     let issues = issues_for(db, source, ignored, &recognized, &packages);

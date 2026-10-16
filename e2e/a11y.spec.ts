@@ -96,6 +96,31 @@ test.describe("names and landmarks", () => {
     await expectNamed(page, "the zoom menu");
   });
 
+  test("Look tab sections: every header is a named disclosure button, folded or searching", async ({ page }) => {
+    await openApp(page, { ...MOCKUP, mockLibraries: "all" });
+    await openPhotos(page);
+    let snapshot = await expectNamed(page, "the Look tab with every library");
+    for (const name of [
+      "Built in, 2 looks, collapse",
+      "ARRI looks · LogC4, 7 looks, collapse",
+      "ARRI looks · LogC3, 5 looks, collapse",
+      "ARRI looks · LogC3 to Rec.709, 4 looks, collapse",
+      "ARRI looks · LogC3 to Rec.709 · ALF2, 6 looks, collapse",
+      "Your LUTs, 5 looks, collapse",
+    ]) {
+      expect(snapshot, name).toMatch(new RegExp(`- button "${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}" \\[expanded\\]`));
+    }
+    // Folded: no [expanded], the name says expand, and the section holding the current look says so.
+    await page.getByRole("button", { name: "Built in, 2 looks, collapse" }).click();
+    snapshot = await expectNamed(page, "a folded section");
+    expect(snapshot).toContain('- button "Built in, 2 looks, holds the current look, expand"');
+    expect(snapshot).not.toContain('"Built in, 2 looks, holds the current look, expand" [expanded]');
+    // Searching: every header with matches is open and still named.
+    await page.getByRole("searchbox", { name: "Search looks" }).fill("film");
+    snapshot = await expectNamed(page, "a search over folded sections");
+    expect(snapshot).toContain('- button "ARRI looks · LogC4, 2 of 7 looks" [disabled] [expanded]');
+  });
+
   test("Export panel, in each format, and while it runs", async ({ page }) => {
     await openApp(page, { ...MOCKUP, mockExportHold: 1.45 });
     await openPhotos(page);

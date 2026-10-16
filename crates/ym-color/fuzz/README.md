@@ -32,9 +32,10 @@ Runs on 2026-10-12 (AddressSanitizer, 4-vCPU machine, `-rss_limit_mb=2048`), rec
 | `cube_parse` | 3,601 s | 32,511,747 (9,028 per second) | 617 / 2,089 | no crash, timeout or out-of-memory |
 | `look_json` | 241 s | 4,169,092 (17,299 per second) | 1,800 / 4,964 | no crash, timeout or out-of-memory |
 
-`alf_parse` was added on 2026-10-16 (0.1.2). First run the same day (AddressSanitizer, 4-vCPU machine, nightly
+`alf_parse` was added on 2026-10-16 (0.1.3). First run the same day (AddressSanitizer, 4-vCPU machine, nightly
 `cargo-fuzz` 0.13.2, `-rss_limit_mb=2048`, started from the six committed seeds, the evolved corpus kept out of the
 repository): 1,700,423 runs in 121 s (14,053 per second), coverage 1,142, features 3,292, corpus 349 entries,
 no crash, timeout or out-of-memory, resident memory 444 MB at the end. The mutation test in
-`crates/ym-color/tests/alf.rs` (9,000 damaged files per container) checks the same properties on every `cargo test`.
+`crates/ym-color/tests/alf.rs` (3,000 random damages per container, 9,000 in all, plus every cut-off length of each
+container) checks the same properties on every `cargo test`.
 The nightly CI job runs the longer campaigns.

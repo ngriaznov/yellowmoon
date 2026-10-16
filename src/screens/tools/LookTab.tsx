@@ -101,8 +101,9 @@ interface LookSectionProps {
 /**
  * One library of the Look tab: a header that is a disclosure button (label, count, a chevron) over the grid of its tiles. Folded, the
  * tiles are not drawn at all (so their thumbnails are not asked for); a small filled square in the header says the current look is
- * inside. While the search box has text the section is open and the header only reads "2 of 87" (`aria-disabled`), so a search always
- * finds a look in a section that was folded.
+ * inside. While the search box has text the section is open and the header only reads "2 of 87" (`aria-disabled`, and out of the Tab
+ * order: it does nothing, and Tab from the search box goes to the first tile as it always did), so a search always finds a look in a
+ * section that was folded.
  */
 function LookSection({ library, total, shown, searching, collapsed, holdsCurrent, onToggle, children }: LookSectionProps) {
   const open = searching || !collapsed;
@@ -120,6 +121,7 @@ function LookSection({ library, total, shown, searching, collapsed, holdsCurrent
         aria-controls={bodyId}
         aria-label={name}
         aria-disabled={searching || undefined}
+        tabIndex={searching ? -1 : undefined}
         title={searching ? "Clear the search to fold this section." : undefined}
         onClick={() => {
           if (!searching) onToggle();

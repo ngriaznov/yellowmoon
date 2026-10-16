@@ -3,6 +3,8 @@ import type { LookInput, PackageId, SourceRecognition } from "../api/types";
 import {
   anyChecking,
   canAdvance,
+  copiedFiles,
+  copiedLabel,
   copiesLookFiles,
   downloadList,
   downloadTotalMb,
@@ -129,6 +131,31 @@ describe("ARRI Look Files", () => {
     expect(copiesLookFiles(at(2, [pkg(LL4, "look_library_logc4")]))).toBe(false);
     // Nothing planned, nothing copied.
     expect(copiesLookFiles(at(2, [unusable("~/Downloads/x.alf4", "x")]))).toBe(false);
+  });
+
+  it("copied with a package of .cube files, or beside another source, make the Import step name both kinds", () => {
+    // A folder of ARRI's cubes that also holds one of the person's own look files: the importer copies that file too.
+    const mixed = pkg(LL4, "look_library_logc4");
+    if (mixed.recognition.kind === "package") mixed.recognition.look_file_count = 1;
+    const withOwn = at(2, [mixed]);
+    expect(copiedFiles(withOwn)).toEqual({ cubes: true, lookFiles: true });
+    expect(copiedLabel(withOwn)).toBe("Only the .cube files and the look files");
+    // Two sources of different kinds copy both as well (before, "Only the look files" hid the cubes).
+    const two = at(2, [pkg(LL4, "look_library_logc4"), lookFiles("~/Looks/Mine", "folder", "logc4", 3)]);
+    expect(copiedFiles(two)).toEqual({ cubes: true, lookFiles: true });
+    expect(copiedLabel(two)).toBe("Only the .cube files and the look files");
+    // Unknown cubes that were answered, with a look file in the same folder.
+    const unknown = unknownSet(LL4, "logc4", "folder");
+    if (unknown.recognition.kind === "needs_answer") unknown.recognition.look_file_count = 2;
+    const answered = run([{ type: "answer", path: LL4, input: "logc4" }], at(2, [unknown]));
+    expect(copiedLabel(answered)).toBe("Only the .cube files and the look files");
+    // One kind alone keeps the words it had; a source that is not planned copies nothing.
+    expect(copiedLabel(at(2, [pkg(LL4, "look_library_logc4")]))).toBe("Only the .cube files");
+    expect(copiedLabel(at(2, [lookFiles("~/Looks/Mine")]))).toBe("Only the look files");
+    const unplanned = pkg(LL4, "look_library_logc4");
+    if (unplanned.recognition.kind === "package") unplanned.recognition.look_file_count = 1;
+    expect(copiedFiles(at(2, [unusable("~/Downloads/x.zip", "x"), unplanned]))).toEqual({ cubes: true, lookFiles: true });
+    expect(copiedFiles(at(2, [unusable("~/Downloads/x.zip", "x")]))).toEqual({ cubes: false, lookFiles: false });
   });
 
   it("are named with ARRI's two titles when a library is the wrong package", () => {

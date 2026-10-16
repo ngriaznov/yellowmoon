@@ -11,7 +11,10 @@
 //! * the same ARRI look in two forms, a `.cube` and a look file (the LogC4 library comes as 3D LUTs
 //!   and as `.alf4` files and both give the same ids): the `.cube` is the better one (the library's
 //!   look files hold 33 points where its cubes hold 65), so a look file never replaces a `.cube`
-//!   that an earlier import put there, and a `.cube` replaces the look file of an earlier import;
+//!   that an earlier import put there, and a `.cube` replaces the look file of an earlier import.
+//!   The exception is a `.cube` that the library no longer holds intact (deleted or altered): a
+//!   look file is then no reason to keep that entry as it is, so the look file takes its place
+//!   ([`Slot::Repair`]) and importing the 3D-LUT version again brings the `.cube` back;
 //! * the same ARRI look in two forms inside **one** import (a folder that holds both libraries):
 //!   the same rule, so the `.cube` is kept and the look file is left out. [`crate::import`] plans the
 //!   `.cube` files of a package before its look files, so the look file always meets the `.cube`;
@@ -20,9 +23,12 @@
 //!   in: a copy of one of the person's own LUTs under a new name, or a loose file that is already
 //!   one of ARRI's looks, is "already imported" ([`Slot::Same`]). When an ARRI package now claims a
 //!   file that an earlier import put under "Your LUTs", that entry becomes the ARRI look (its ARRI
-//!   id, name, group and place in the library) and no second entry is made ([`Slot::Claim`]). Two
-//!   files of one import are not merged when they are ARRI's: ARRI's names decide which looks a
-//!   package has, even if two of them hold the same LUT;
+//!   id, name, group and place in the library) and no second entry is made ([`Slot::Claim`]). ARRI
+//!   files are never merged with each other: ARRI's names decide which looks a package has, even if
+//!   two of them hold the same LUT. Two files of one import are not, and a file that was identified
+//!   by its hash (its id is ARRI's own, so it is the look that id says) is not folded into an
+//!   earlier ARRI entry with another id either, whichever import that entry came from; only a file
+//!   recognised by its name alone is taken for the ARRI look already there;
 //! * any other collision (a user LUT with the same name but different content, two names that
 //!   slugify alike, a path already taken) gets a number: `film`, `film-2`, `film-3`, so no file of
 //!   the user's is ever overwritten.
@@ -35,7 +41,7 @@ use crate::library::{
     DisplayInput, LookFormat, LookId, sanitize_file_stem, slugify, truncate_to_bytes,
 };
 use crate::manifest::{Manifest, ManifestDisplayLut, ManifestGroup, ManifestLook, Source};
-use crate::recognize::Outcome;
+use crate::recognize::{Evidence, Outcome};
 use crate::recognize::names::{file_name, file_stem};
 
 /// What kind of entry an incoming file becomes.
@@ -68,6 +74,10 @@ pub(crate) struct Spec {
     pub(crate) package: Option<String>,
     /// Whether the file came from an ARRI package (updates replace in place).
     pub(crate) arri: bool,
+    /// Whether the file was identified by its SHA-256. Its id is then ARRI's own, which says which
+    /// looks the package has: an ARRI file that holds the same bytes under another id is another
+    /// look and is never folded into it ([`same_bytes`]).
+    pub(crate) by_hash: bool,
     /// The file name it had.
     pub(crate) original_name: String,
 }
@@ -102,6 +112,7 @@ impl Spec {
                 input,
                 name,
                 file_name: library_name,
+                evidence,
                 ..
             } => {
                 let raw_stem = file_stem(library_name);
@@ -137,6 +148,7 @@ impl Spec {
                     format,
                     package: Some(package.clone()),
                     arri: true,
+                    by_hash: *evidence == Evidence::Fingerprint,
                     original_name,
                 })
             }
@@ -145,6 +157,7 @@ impl Spec {
                 input,
                 target,
                 file_name: library_name,
+                evidence,
                 ..
             } => {
                 let raw_stem = file_stem(library_name);
@@ -164,6 +177,7 @@ impl Spec {
                     format,
                     package: Some(package.clone()),
                     arri: true,
+                    by_hash: *evidence == Evidence::Fingerprint,
                     original_name,
                 })
             }
@@ -183,6 +197,7 @@ impl Spec {
                     format,
                     package: None,
                     arri: false,
+                    by_hash: false,
                     original_name,
                 })
             }
@@ -202,6 +217,7 @@ impl Spec {
                     format,
                     package: None,
                     arri: false,
+                    by_hash: false,
                     original_name,
                 })
             }
@@ -227,6 +243,17 @@ pub(crate) enum Slot {
         id: LookId,
         file: String,
         same_import: bool,
+        /// Where the look file itself would go: used when the `.cube` is gone or altered in the
+        /// library, so that it is no reason to keep the entry as it is ([`Slot::Repair`]).
+        own_file: String,
+    },
+    /// The look is imported as a `.cube` that the library no longer holds intact, and this is its
+    /// look file: the entry moves to `file` (the look file) and the damaged `.cube` at `old_file`
+    /// goes. Decided by [`crate::import::import`] from a look at the disk, never by [`assign`].
+    Repair {
+        id: LookId,
+        file: String,
+        old_file: String,
     },
     /// The same ARRI look is imported as a look file and this is its `.cube`: the entry moves to
     /// `file` and the look file `old_file` goes.
@@ -350,13 +377,21 @@ fn same_bytes(
         SpecKind::Look { input, .. } => {
             let mut same = looks().filter(|l| l.input == *input);
             if spec.arri {
-                // A look of ARRI's that is there already, whatever its name; else the person's
-                // own entry that this package now claims.
+                // A look of ARRI's that is there already, whatever its name (unless this file's
+                // own id is ARRI's: it was identified by its hash, so it is the look its id says
+                // and not another look that happens to hold the same LUT); else the person's own
+                // entry that this package now claims.
                 let all: Vec<&ManifestLook> = same.collect();
-                all.iter()
-                    .find(|l| l.group != ManifestGroup::User)
-                    .map(|l| same_look(l))
-                    .or_else(|| all.first().map(|l| claim(l)))
+                let arri = if spec.by_hash {
+                    None
+                } else {
+                    all.iter().find(|l| l.group != ManifestGroup::User)
+                };
+                arri.map(|l| same_look(l)).or_else(|| {
+                    all.iter()
+                        .find(|l| l.group == ManifestGroup::User)
+                        .map(|l| claim(l))
+                })
             } else if let Some(l) = same.next() {
                 Some(same_look(l))
             } else {
@@ -371,7 +406,9 @@ fn same_bytes(
         SpecKind::Display { input, .. } => manifest
             .display_luts
             .iter()
-            .find(|d| d.sha256 == sha256 && d.input == *input && usable(&d.id))
+            .find(|d| {
+                d.sha256 == sha256 && d.input == *input && usable(&d.id) && !spec.by_hash
+            })
             .map(same_display)
             .or_else(|| {
                 looks()
@@ -449,6 +486,7 @@ fn assign_by_id(manifest: &Manifest, spec: &Spec, sha256: &str, touched: &HashSe
                         same_import: touched.contains(&id),
                         id,
                         file: found.to_string(),
+                        own_file: file,
                     }
                 };
             }
@@ -589,6 +627,7 @@ mod tests {
             | Slot::Existing { id, file }
             | Slot::Superseded { id, file, .. }
             | Slot::Upgrade { id, file, .. }
+            | Slot::Repair { id, file, .. }
             | Slot::Same { id, file, .. }
             | Slot::Claim { id, file, .. } => (id.clone(), file.clone()),
         };
@@ -774,7 +813,7 @@ mod tests {
         put(&mut m, &cube, &sha(1));
         let slot = assign(&m, &alf, &sha(2), &HashSet::new());
         assert!(
-            matches!(&slot, Slot::Superseded { id, file, same_import: false } if id.as_str() == "arri:3000:film" && file == "arri/3000-film/Film.cube"),
+            matches!(&slot, Slot::Superseded { id, file, same_import: false, .. } if id.as_str() == "arri:3000:film" && file == "arri/3000-film/Film.cube"),
             "{slot:?}"
         );
 

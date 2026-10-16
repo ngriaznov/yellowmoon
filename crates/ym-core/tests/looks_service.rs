@@ -642,3 +642,176 @@ fn a_damaged_looks_list_is_logged_without_the_path_of_the_persons_folder() {
     );
     assert!(!log.contains("manifest.json"), "{log}");
 }
+
+/// A data folder like the real one, but with a made-up fingerprint for `bytes`: the LogC4 library's
+/// look 1110 "Gray Test". (The real fingerprints are ARRI's hashes, which no synthetic file has.)
+fn data_with_a_fingerprint_for(bytes: &[u8]) -> tempfile::TempDir {
+    let real = data_root();
+    let data = tempfile::tempdir().expect("data");
+    let builtin = data.path().join("looks").join("builtin");
+    std::fs::create_dir_all(&builtin).expect("dir");
+    for name in ["neutral.json", "signature.json"] {
+        std::fs::copy(
+            real.join("looks").join("builtin").join(name),
+            builtin.join(name),
+        )
+        .expect("copy");
+    }
+    let text = std::fs::read_to_string(real.join("looks").join("arri-packages.json"))
+        .expect("package list");
+    let mut list: serde_json::Value = serde_json::from_str(&text).expect("json");
+    for package in list["packages"].as_array_mut().expect("packages") {
+        package["fingerprints"] = if package["id"] == "look-library-logc4" {
+            serde_json::json!([{
+                "path": "ARRI Look Library for LogC4 (3D-LUTs)/1110 Gray Test.cube",
+                "size": bytes.len(),
+                "lut_size": 5,
+                "sha256": ym_looks::manifest::sha256_hex(bytes),
+            }])
+        } else {
+            serde_json::json!([])
+        };
+    }
+    std::fs::write(
+        data.path().join("looks").join("arri-packages.json"),
+        serde_json::to_vec(&list).expect("json"),
+    )
+    .expect("write");
+    data
+}
+
+#[test]
+fn an_own_look_that_an_arri_package_claims_stays_the_default_look() {
+    // 0.1.0 and 0.1.1 did not know ARRI's files, so people imported them as "Your LUTs" and made
+    // one the default. Importing the real package now turns that entry into the ARRI look, with
+    // its ARRI id: the default look follows it instead of quietly becoming Signature.
+    let f = fixture();
+    let root = f.root.path();
+    let src = tempfile::tempdir().expect("src");
+    let cube = write_cube(src.path(), "Warm.cube", 5);
+    let own = import_cube(&f, &cube).expect("own").added[0].id.clone();
+    assert_eq!(own.as_str(), "user:warm");
+    f.service.set_default(&own).expect("default");
+
+    // The same bytes are now the LogC4 library's look 1110.
+    let data = data_with_a_fingerprint_for(&std::fs::read(&cube).expect("bytes"));
+    let prefs = Arc::new(PreferencesStore::open(root));
+    let service = LookService::open(root, data.path(), Arc::clone(&prefs)).expect("service");
+    let changes = Arc::new(AtomicUsize::new(0));
+    let c = Arc::clone(&changes);
+    service.on_change(move || {
+        c.fetch_add(1, Ordering::SeqCst);
+    });
+    assert_eq!(service.effective_default(), own);
+
+    let result = service
+        .import(
+            &cube,
+            &ImportRequest {
+                input: None,
+                cancel: None,
+            },
+            &mut |_| {},
+        )
+        .expect("import");
+    assert_eq!(result.added.len(), 1);
+    let arri = result.added[0].id.clone();
+    assert_eq!(arri.as_str(), "arri:1000:gray-test");
+    // The entry moved: no `user:warm` any more, and the default look is the ARRI one.
+    assert!(service.list().iter().all(|l| l.id != own));
+    assert_eq!(prefs.get().default_look, arri);
+    assert_eq!(service.effective_default(), arri);
+    assert!(service.list().iter().any(|l| l.id == arri && l.is_default));
+    assert_eq!(
+        PreferencesStore::open(root).get().default_look,
+        arri,
+        "kept on disk"
+    );
+    // And the person is told, with the ids a script would name.
+    assert!(
+        result
+            .notes
+            .iter()
+            .any(|n| n.contains("user:warm is now arri:1000:gray-test.")),
+        "{:?}",
+        result.notes
+    );
+    assert!(
+        result
+            .notes
+            .iter()
+            .any(|n| n.contains("Your default look user:warm is now arri:1000:gray-test")),
+        "{:?}",
+        result.notes
+    );
+    assert!(
+        !result
+            .notes
+            .iter()
+            .any(|n| n.contains("replaced by the 3D-LUT version")),
+        "{:?}",
+        result.notes
+    );
+    assert_eq!(changes.load(Ordering::SeqCst), 1, "one looks_changed");
+}
+
+#[test]
+fn a_default_look_that_was_not_claimed_is_left_alone() {
+    let f = fixture();
+    let root = f.root.path();
+    let src = tempfile::tempdir().expect("src");
+    let cube = write_cube(src.path(), "Warm.cube", 5);
+    let other = write_cube(src.path(), "Other.cube", 3);
+    let own = import_cube(&f, &other).expect("own").added[0].id.clone();
+    f.service.set_default(&own).expect("default");
+
+    let data = data_with_a_fingerprint_for(&std::fs::read(&cube).expect("bytes"));
+    let prefs = Arc::new(PreferencesStore::open(root));
+    let service = LookService::open(root, data.path(), Arc::clone(&prefs)).expect("service");
+    // Warm is imported as the ARRI look; nothing was claimed, so the default stays where it was.
+    let result = service
+        .import(
+            &cube,
+            &ImportRequest {
+                input: None,
+                cancel: None,
+            },
+            &mut |_| {},
+        )
+        .expect("import");
+    assert_eq!(result.added[0].id.as_str(), "arri:1000:gray-test");
+    assert_eq!(prefs.get().default_look, own);
+    assert!(result.notes.is_empty(), "{:?}", result.notes);
+}
+
+#[test]
+fn files_that_were_refused_while_the_rest_came_in_are_said_with_their_reasons() {
+    let f = fixture();
+    let src = tempfile::tempdir().expect("src");
+    write_cube(src.path(), "Good.cube", 5);
+    std::fs::write(src.path().join("Torn.cube"), "LUT_3D_SIZE 5\n0 0 0\n").expect("torn");
+    let result = import_cube(&f, src.path()).expect("the good one is imported");
+    assert_eq!(result.added.len(), 1);
+    assert_eq!(result.added[0].id.as_str(), "user:good");
+    assert_eq!(result.refusals.len(), 1, "{:?}", result.refusals);
+    assert!(
+        result.refusals[0].starts_with("Torn.cube cannot be used. "),
+        "{:?}",
+        result.refusals
+    );
+    // Said once, among the refusals and not among the notes.
+    assert!(
+        result.notes.iter().all(|n| !n.contains("Torn.cube")),
+        "{:?}",
+        result.notes
+    );
+    // A clean import has none.
+    let clean = tempfile::tempdir().expect("clean");
+    write_cube(clean.path(), "Fine.cube", 5);
+    assert!(
+        import_cube(&f, clean.path())
+            .expect("import")
+            .refusals
+            .is_empty()
+    );
+}

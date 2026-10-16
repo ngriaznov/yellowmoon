@@ -124,6 +124,22 @@ fn contents_of(db: &PackageDb, finding: &PackageFinding) -> String {
     }
 }
 
+/// What the recogniser said about the files it refused while others in the same source are fine
+/// ("Torn.alf4 cannot be used. Its checksum does not match, …", and how many more there are): the
+/// row says them, so the person knows before the import which files will not arrive.
+fn refused_notes(found: &Found) -> impl Iterator<Item = String> + '_ {
+    found
+        .issues
+        .iter()
+        .filter(|i| i.kind == IssueKind::Rejected)
+        .map(|i| i.message.clone())
+}
+
+/// How many look files of the person's own the source holds.
+fn own_look_files(found: &Found) -> u32 {
+    u32::try_from(found.files.iter().filter(|f| f.is_own_look_file()).count()).unwrap_or(u32::MAX)
+}
+
 /// The row for look files of the person's own: "ARRI Look Files · LogC4", "3 .alf4 · 33-point".
 /// `None` when the source holds no such file.
 fn look_files_of(found: &Found) -> Option<Recognition> {
@@ -169,6 +185,7 @@ fn look_files_of(found: &Found) -> Option<Recognition> {
     }
     let mut notes =
         vec!["Imported as your own looks, with the input read from each file.".to_owned()];
+    notes.extend(refused_notes(found));
     notes.extend(
         found
             .issues
@@ -234,7 +251,7 @@ fn map(db: &PackageDb, found: &Found) -> Recognition {
                 } => suggested_input.map(look_input),
                 _ => None,
             });
-            let note = found
+            let question = found
                 .issues
                 .iter()
                 .find(|i| i.severity == Severity::Question)
@@ -249,10 +266,15 @@ fn map(db: &PackageDb, found: &Found) -> Recognition {
                     "This isn't one of ARRI's packages. Say what the LUT expects as input."
                         .to_owned()
                 });
+            let note = std::iter::once(question)
+                .chain(refused_notes(found))
+                .collect::<Vec<_>>()
+                .join(" ");
             Recognition::NeedsAnswer {
                 file_count: u32::try_from(asked.len()).unwrap_or(u32::MAX),
                 lut_size,
                 suggestion,
+                look_file_count: own_look_files(found),
                 note,
             }
         }
@@ -293,6 +315,7 @@ fn map(db: &PackageDb, found: &Found) -> Recognition {
                     if found.packages.len() == 2 { "" } else { "s" }
                 ));
             }
+            notes.extend(refused_notes(found));
             let own = found.files.iter().filter(|f| f.is_own_look_file()).count();
             if own > 0 {
                 notes.push(format!(
@@ -310,6 +333,7 @@ fn map(db: &PackageDb, found: &Found) -> Recognition {
                 what: what_of(db, finding),
                 contents: contents_of(db, finding),
                 file_count: u32::try_from(finding.found).unwrap_or(u32::MAX),
+                look_file_count: own_look_files(found),
                 note: (!notes.is_empty()).then(|| notes.join(" ")),
             }
         }
@@ -404,6 +428,145 @@ impl Downloads {
                 watching: false,
                 problem: Some(problem_of(&e)),
             },
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ym_color::alf::AlfFile;
+    use ym_color::lut::Lut3d;
+
+    /// One small package, with the id and the names of ARRI's LogC4 look library.
+    fn db() -> PackageDb {
+        PackageDb::from_json(
+            r#"{
+            "version": 1,
+            "packages": [
+              { "id": "look-library-logc4", "title": "Look Library · LogC4", "role": "looks",
+                "input": "logc4",
+                "zip_name": [ { "all_of": ["look", "logc4"], "none_of": ["logc3"] } ],
+                "expected": { "cube_files": 3, "lut_sizes": [5] },
+                "markers": { "encoding": { "any_of": ["logc4"], "none_of": ["logc3"] },
+                             "display_rendering": "absent", "group_folders": "required" } }
+            ] }"#,
+        )
+        .expect("package list")
+    }
+
+    fn write_cube(dir: &Path, name: &str, title: &str) {
+        std::fs::create_dir_all(dir).expect("folder");
+        let text = Lut3d::identity(5).expect("identity").to_cube_string(title);
+        std::fs::write(dir.join(name), text).expect("cube");
+    }
+
+    /// An `.alf4` from our own writer; with `damaged`, one byte of it flipped.
+    fn write_alf4(dir: &Path, name: &str, damaged: bool) {
+        std::fs::create_dir_all(dir).expect("folder");
+        let lut = Lut3d::identity(5).expect("identity");
+        let mut bytes = AlfFile::alf4(&lut, None, "", "x.cube")
+            .to_bytes()
+            .expect("write");
+        if damaged {
+            let at = bytes.len() - 7;
+            bytes[at] ^= 0x08;
+        }
+        std::fs::write(dir.join(name), bytes).expect("look file");
+    }
+
+    const TORN: &str =
+        "Torn.alf4 cannot be used. Its checksum does not match, so the file is damaged. Download it again.";
+
+    #[test]
+    fn a_folder_of_look_files_names_the_one_that_cannot_be_used() {
+        let dir = tempfile::tempdir().expect("dir");
+        let folder = dir.path().join("Mine");
+        write_alf4(&folder, "Warm.alf4", false);
+        write_alf4(&folder, "Cool.alf4", false);
+        write_alf4(&folder, "Torn.alf4", true);
+        let seen = recognise(&db(), &folder);
+        match seen.recognition {
+            Recognition::LookFiles {
+                file_count: 2,
+                note: Some(note),
+                ..
+            } => {
+                assert!(note.contains(TORN), "{note}");
+                assert!(note.contains("Imported as your own looks"), "{note}");
+            }
+            other => panic!("expected two look files and a note, got {other:?}"),
+        }
+        // Without a damaged file the note says nothing about one.
+        std::fs::remove_file(folder.join("Torn.alf4")).expect("remove");
+        match recognise(&db(), &folder).recognition {
+            Recognition::LookFiles {
+                note: Some(note), ..
+            } => assert!(!note.contains("cannot be used"), "{note}"),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_package_folder_names_a_refused_file_and_counts_the_look_files_it_also_holds() {
+        let dir = tempfile::tempdir().expect("dir");
+        let folder = dir.path().join("Look_Library_LogC4");
+        for (group, name) in [
+            ("3000 Film", "Film_Warm_LogC4.cube"),
+            ("3000 Film", "Film_Cool_LogC4.cube"),
+            ("4000 Mono", "Mono_LogC4.cube"),
+        ] {
+            write_cube(&folder.join(group), name, name);
+        }
+        write_alf4(&folder, "Mine.alf4", false);
+        write_alf4(&folder, "Torn.alf4", true);
+        let seen = recognise(&db(), &folder);
+        match seen.recognition {
+            Recognition::Package {
+                file_count: 3,
+                look_file_count: 1,
+                note: Some(note),
+                ..
+            } => {
+                assert!(note.contains(TORN), "{note}");
+                assert!(
+                    note.contains("It also holds 1 look file of your own"),
+                    "{note}"
+                );
+            }
+            other => panic!("expected the package with one look file, got {other:?}"),
+        }
+        // A package alone has no look files and no refusals.
+        std::fs::remove_file(folder.join("Mine.alf4")).expect("remove");
+        std::fs::remove_file(folder.join("Torn.alf4")).expect("remove");
+        match recognise(&db(), &folder).recognition {
+            Recognition::Package {
+                look_file_count: 0,
+                note,
+                ..
+            } => assert!(note.is_none(), "{note:?}"),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_question_names_a_refused_file_and_counts_the_look_files_beside_it() {
+        let dir = tempfile::tempdir().expect("dir");
+        let folder = dir.path().join("Generic");
+        write_cube(&folder, "Good.cube", "Good");
+        std::fs::write(folder.join("Torn.cube"), "LUT_3D_SIZE 5\n0 0 0\n").expect("torn");
+        write_alf4(&folder, "Own.alf4", false);
+        match recognise(&db(), &folder).recognition {
+            Recognition::NeedsAnswer {
+                file_count: 1,
+                look_file_count: 1,
+                note,
+                ..
+            } => {
+                assert!(note.contains("Torn.cube cannot be used."), "{note}");
+                assert!(note.contains("Say what"), "the question stays: {note}");
+            }
+            other => panic!("expected a question, got {other:?}"),
         }
     }
 }

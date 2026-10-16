@@ -202,6 +202,7 @@ fn import(args: &LooksImportArgs, console: &mut Console) -> Result<u8, Failure> 
     let mut added = 0usize;
     let mut luts = 0usize;
     let mut unchanged = 0usize;
+    let mut refused = false;
     for path in &args.paths {
         let cancel = request.cancel.clone();
         let result = service.import(path, &request, &mut |p: Progress<'_>| {
@@ -228,11 +229,17 @@ fn import(args: &LooksImportArgs, console: &mut Console) -> Result<u8, Failure> 
                 added += r.added.len();
                 luts += r.display_luts_added;
                 unchanged += r.unchanged;
+                refused |= !r.refusals.is_empty();
                 for look in &r.added {
                     data_line(&look.id.to_string());
                 }
-                // What the person should know: an .alf4c's display transforms are not used, a
-                // look that stayed the 3D-LUT version.
+                // Which files were refused and why: the rest was imported, so this is not an
+                // error of the whole, but it must not be missed (`--quiet` keeps it).
+                for refusal in &r.refusals {
+                    console.error(&format!("{}: {}", path_text(path), line_text(refusal)));
+                }
+                // What else the person should know: an .alf4c's display transforms are not used,
+                // a look that stayed the 3D-LUT version.
                 for note in &r.notes {
                     console.info(&line_text(note));
                 }
@@ -274,7 +281,12 @@ fn import(args: &LooksImportArgs, console: &mut Console) -> Result<u8, Failure> 
     if first_failure.is_none() || added + luts + unchanged > 0 {
         console.info(&format!("{}.", parts.join(", ")));
     }
-    Ok(first_failure.map_or(exit::OK, |f| f.code))
+    // Files that were refused while the others came in are "some files failed" (`docs/10`).
+    Ok(
+        first_failure.map_or(if refused { exit::SOME_FAILED } else { exit::OK }, |f| {
+            f.code
+        }),
+    )
 }
 
 fn verify(console: &mut Console) -> Result<u8, Failure> {

@@ -250,6 +250,11 @@ pub struct ImportReport {
     pub unchanged: Vec<ImportedItem>,
     /// Files that could not be used.
     pub rejected: Vec<RejectedFile>,
+    /// The person's own looks that an ARRI package has claimed: (the id they had, the ARRI id
+    /// they have now). The old id is gone from the library, so whatever still names it (the
+    /// default look, a script's `--look`) has to follow. Display LUTs are not listed: a claimed
+    /// own LUT that becomes a display LUT is not a look any more.
+    pub renamed: Vec<(LookId, LookId)>,
     /// Things worth telling the user, for example a damaged looks list that was set aside.
     pub notes: Vec<String>,
 }
@@ -494,6 +499,14 @@ struct Staged {
     existed_before: bool,
 }
 
+/// Whether the file is there and is the one that was imported (its SHA-256 is `sha256`).
+fn intact(path: &Path, sha256: &str) -> bool {
+    hash_file(path).ok().as_deref() == Some(sha256)
+}
+
+/// Most renamed looks a note names one by one.
+const MAX_RENAMED_NOTED: usize = 5;
+
 fn discard(staged: &[Staged]) {
     for s in staged {
         let _ = std::fs::remove_file(&s.temp);
@@ -581,25 +594,33 @@ pub fn import(
         (false, _) => 2,
     });
 
-    // Locate every item in the source again; it must be what `inspect` saw.
+    // Locate every item in the source again; it must be what `inspect` saw. A zip may hold one
+    // name twice (with other bytes), and a source lists those in the same order both times, so
+    // the n-th file of the recognition with a name is the n-th candidate with that name.
     let mut source = Source::open(path)?;
-    let index_of: HashMap<&str, usize> = source
-        .candidates
-        .iter()
-        .enumerate()
-        .map(|(i, c)| (c.rel_path.as_str(), i))
-        .collect();
+    let mut candidates_named: HashMap<&str, Vec<usize>> = HashMap::new();
+    for (i, c) in source.candidates.iter().enumerate() {
+        candidates_named.entry(c.rel_path.as_str()).or_default().push(i);
+    }
+    let mut seen_named: HashMap<&str, usize> = HashMap::new();
+    let mut occurrence: Vec<usize> = Vec::with_capacity(recognition.files.len());
+    for file in &recognition.files {
+        let n = seen_named.entry(file.rel_path.as_str()).or_default();
+        occurrence.push(*n);
+        *n += 1;
+    }
     let located: Vec<usize> = items
         .iter()
         .map(|(i, _)| {
             let rel = &recognition.files[*i].rel_path;
-            index_of
+            candidates_named
                 .get(rel.as_str())
+                .and_then(|named| named.get(occurrence[*i]))
                 .copied()
                 .ok_or_else(|| ImportError::SourceChanged(rel.clone()))
         })
         .collect::<Result<_, _>>()?;
-    drop(index_of);
+    drop(candidates_named);
 
     let looks_dir = library.looks_dir();
     let _lock = LibraryLock::acquire(&looks_dir, options.lock_timeout)?;
@@ -626,8 +647,14 @@ pub fn import(
     let paths = library.paths().clone();
     let mut staged: Vec<Staged> = Vec::new();
     let mut staged_dests: HashSet<PathBuf> = HashSet::new();
-    // Look files that a `.cube` of the same look has replaced; deleted once the list is saved.
+    // Files that another file of the same look has replaced (a look file by its `.cube`, a `.cube`
+    // that is gone or altered by its look file, an own LUT by the ARRI package that claims it);
+    // deleted once the list is saved.
     let mut replaced_files: Vec<String> = Vec::new();
+    // Looks whose look file a `.cube` has replaced, and looks whose damaged `.cube` a look file
+    // has replaced: the two notes that say so.
+    let mut upgraded = 0_usize;
+    let mut repaired = 0_usize;
     // Looks left as the `.cube` that is already there instead of a look file: from an earlier
     // import, and from this one (a folder that holds both libraries).
     let mut kept_cube = 0_usize;
@@ -658,7 +685,26 @@ pub fn import(
             if sha256 != recognized.sha256 {
                 return Err(ImportError::SourceChanged(recognized.rel_path.clone()));
             }
-            let slot = assign(&manifest, spec, &sha256, &touched);
+            let mut slot = assign(&manifest, spec, &sha256, &touched);
+            // The look is imported as a `.cube` from an earlier import, but that file is gone or
+            // altered: it is no reason to keep the entry as it is, so the look file takes its
+            // place. (A `.cube` of this very import is staged and not on disk yet, and is fine.)
+            if let Slot::Superseded {
+                id,
+                file,
+                same_import: false,
+                own_file,
+            } = &slot
+                && !manifest
+                    .look(id)
+                    .is_some_and(|entry| intact(&paths.file(&entry.file), &entry.sha256))
+            {
+                slot = Slot::Repair {
+                    id: id.clone(),
+                    file: own_file.clone(),
+                    old_file: file.clone(),
+                };
+            }
             let (id, file, is_new) = match &slot {
                 Slot::Add { id, file } | Slot::Claim { id, file, .. } => {
                     (id.clone(), file.clone(), true)
@@ -667,7 +713,8 @@ pub fn import(
                 | Slot::Existing { id, file }
                 | Slot::Superseded { id, file, .. }
                 | Slot::Same { id, file, .. }
-                | Slot::Upgrade { id, file, .. } => (id.clone(), file.clone(), false),
+                | Slot::Upgrade { id, file, .. }
+                | Slot::Repair { id, file, .. } => (id.clone(), file.clone(), false),
             };
             // The look is already imported as a `.cube`: that one stays, nothing is written.
             if let Slot::Superseded { same_import, .. } = &slot {
@@ -730,11 +777,21 @@ pub fn import(
             touched.insert(id.clone());
             let mut replaces = None;
             match &slot {
-                Slot::Upgrade { old_file, .. } => replaced_files.push(old_file.clone()),
+                Slot::Upgrade { old_file, .. } => {
+                    replaced_files.push(old_file.clone());
+                    upgraded += 1;
+                }
+                Slot::Repair { old_file, .. } => {
+                    replaced_files.push(old_file.clone());
+                    repaired += 1;
+                }
                 Slot::Claim { old, .. } => {
                     replaced_files.push(old.file.clone());
                     replaces = Some(old.id.clone());
                     claimed += 1;
+                    if matches!(spec.kind, SpecKind::Look { .. }) {
+                        report.renamed.push((old.id.clone(), id.clone()));
+                    }
                 }
                 _ => {}
             }
@@ -743,6 +800,7 @@ pub fn import(
                 Slot::Add { .. }
                 | Slot::Replace { .. }
                 | Slot::Upgrade { .. }
+                | Slot::Repair { .. }
                 | Slot::Claim { .. } => true,
                 // Already imported: write again only if the library's copy is gone or altered.
                 Slot::Existing { .. } => hash_file(&dest).ok().as_deref() != Some(sha256.as_str()),
@@ -792,7 +850,10 @@ pub fn import(
                 report.added.push(item);
             } else if write
                 || changed
-                || matches!(slot, Slot::Replace { .. } | Slot::Upgrade { .. })
+                || matches!(
+                    slot,
+                    Slot::Replace { .. } | Slot::Upgrade { .. } | Slot::Repair { .. }
+                )
             {
                 report.updated.push(item);
             } else {
@@ -889,6 +950,25 @@ pub fn import(
             )
         });
     }
+    if !report.renamed.is_empty() {
+        // The ids are what scripts name (`--look user:warm`), so they are said, a few of them.
+        let shown: Vec<String> = report
+            .renamed
+            .iter()
+            .take(MAX_RENAMED_NOTED)
+            .map(|(old, new)| format!("{old} is now {new}"))
+            .collect();
+        let more = report.renamed.len() - shown.len();
+        report.notes.push(format!(
+            "{}{}. A script or a setting that names the old id needs the new one.",
+            shown.join(", "),
+            if more > 0 {
+                format!(", and {more} more")
+            } else {
+                String::new()
+            }
+        ));
+    }
     if same_bytes > 0 {
         report.notes.push(if same_bytes == 1 {
             "1 file is the same as a LUT that is already imported under another name, so it was not added again."
@@ -899,15 +979,25 @@ pub fn import(
             )
         });
     }
-    if !replaced_files.is_empty() {
+    if upgraded > 0 {
         report.notes.push(format!(
             "{} replaced by the 3D-LUT version, which has more points than the look file.",
-            if replaced_files.len() == 1 {
+            if upgraded == 1 {
                 "1 look was".to_string()
             } else {
-                format!("{} looks were", replaced_files.len())
+                format!("{upgraded} looks were")
             }
         ));
+    }
+    if repaired > 0 {
+        report.notes.push(if repaired == 1 {
+            "The 3D LUT of 1 look was missing or had changed, so that look is now the look file. Import the 3D-LUT version again to get the 3D LUT back."
+                .to_string()
+        } else {
+            format!(
+                "The 3D LUTs of {repaired} looks were missing or had changed, so those looks are now the look files. Import the 3D-LUT version again to get the 3D LUTs back."
+            )
+        });
     }
     progress(Progress {
         stage: Stage::Copy,

@@ -19,10 +19,11 @@ which one with --package.
 Only the Python standard library is used. Run it with `-I` (isolated mode): it reads files from
 the internet.
 
-The ignored entries match the app's importer: __MACOSX folders, "._" files, .DS_Store, .alf4c
-(custom colour management files are never part of a package), .xml, PDFs and everything else that
-is not a look file of the package's kind. Entries whose paths would leave the folder are skipped
-with a warning.
+The ignored entries match the app's importer: __MACOSX folders, "._" files, .DS_Store, .xml,
+PDFs and everything else that is not a look file. .alf4c is never part of a package, so the tool
+skips it (the importer reads it as one of the person's own look files). A zip that holds more than
+one kind of look file (.cube, .alf4, .aml) is refused. Entries whose paths would leave the folder
+are skipped with a warning.
 
 Exit codes: 0 done, 1 something went wrong (message on stderr), 2 usage error.
 """

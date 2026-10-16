@@ -184,6 +184,14 @@ pub struct LooksImportResult {
     /// set aside. Empty (and left out of the JSON) when there is nothing to say.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notes: Vec<String>,
+    /// One sentence for each file of the source that could not be used (damaged, made for another
+    /// display, …) while the others were imported, as the recogniser words them ("Torn.alf4
+    /// cannot be used. Its checksum does not match, so the file is damaged. Download it again."),
+    /// at most 12 and then how many more. The webview names these files on the Recognise step
+    /// before the import, so they are not sent to it; `ym looks import` prints them as errors and
+    /// exits 1 (`docs/10-cli.md`). Empty (and left out of the JSON) when nothing was refused.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub refusals: Vec<String>,
 }
 
 /// How an import is run.
@@ -575,18 +583,49 @@ impl LookService {
         };
         let (recognition, report) =
             ym_looks::import::import_path(&mut lib, &self.packages, path, &options, progress)?;
+        let followed = self.follow_renames(&report);
         self.reload();
         let mut result = self.result_of(&report);
         // What the recognition found worth saying (the display transforms of an `.alf4c` that are
-        // not used), then what the import did.
-        result.notes = recognition
-            .issues
-            .iter()
-            .filter(|i| i.kind == ym_looks::recognize::IssueKind::DisplayTransformsIgnored)
-            .map(|i| i.message.clone())
+        // not used, and the files that were refused while the rest came in, each with its
+        // reason), then what the import did.
+        use ym_looks::recognize::IssueKind;
+        let said = |kind: IssueKind| {
+            recognition
+                .issues
+                .iter()
+                .filter(move |i| i.kind == kind)
+                .map(|i| i.message.clone())
+        };
+        result.refusals = said(IssueKind::Rejected).collect();
+        result.notes = said(IssueKind::DisplayTransformsIgnored)
             .chain(report.notes.iter().cloned())
+            .chain(followed)
             .collect();
         Ok(result)
+    }
+
+    /// The default look is one of the person's own looks that an ARRI package has just claimed
+    /// (its id changed): the preference follows it, so new photos and `ym render` keep using the
+    /// look the person chose. Returns the sentence that says so.
+    fn follow_renames(&self, report: &ImportReport) -> Option<String> {
+        let default = self.prefs.get().default_look;
+        let (_, now) = report.renamed.iter().find(|(old, _)| *old == default)?;
+        let patch = PreferencesPatch {
+            default_look: Some(now.clone()),
+            ..PreferencesPatch::default()
+        };
+        // Failing to save a preference must not undo an import that has happened.
+        if let Err(e) = self.prefs.update(&patch) {
+            tracing::warn!(
+                kind = e.kind(),
+                "could not keep the default look after its id changed: {e}"
+            );
+            return None;
+        }
+        Some(format!(
+            "Your default look {default} is now {now}, so new photos still start with it."
+        ))
     }
 
     fn result_of(&self, report: &ImportReport) -> LooksImportResult {
@@ -610,6 +649,7 @@ impl LookService {
                 .count(),
             unchanged: report.unchanged.len(),
             notes: Vec::new(),
+            refusals: Vec::new(),
         }
     }
 

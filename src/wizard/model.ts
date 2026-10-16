@@ -426,14 +426,42 @@ export function importPlan(state: WizardState): PlanItem[] {
   return plan;
 }
 
+/**
+ * What kinds of files the import copies: `.cube` files, ARRI Look Files (`.alf4`, `.alf4c`, `.aml`), or both. A source that
+ * is a package of one kind can hold the person's own files of the other (`look_file_count`), and two sources can be of
+ * different kinds, so this goes over everything that is planned.
+ */
+export function copiedFiles(state: WizardState): { cubes: boolean; lookFiles: boolean } {
+  const planned = new Set(importPlan(state).map((p) => p.path));
+  let cubes = false;
+  let lookFiles = false;
+  for (const s of state.sources) {
+    const r = s.found?.recognition;
+    if (!planned.has(s.path) || !r) continue;
+    if (r.kind === "look_files") {
+      lookFiles = true;
+    } else if (r.kind === "package") {
+      if (r.contents.includes(".cube")) cubes = true;
+      else lookFiles = true;
+      if ((r.look_file_count ?? 0) > 0) lookFiles = true;
+    } else if (r.kind === "needs_answer") {
+      cubes = true;
+      if ((r.look_file_count ?? 0) > 0) lookFiles = true;
+    }
+  }
+  return { cubes, lookFiles };
+}
+
 /** Whether the import copies ARRI Look Files (`.alf4`, `.alf4c`, `.aml`) as well as, or instead of, `.cube` files. */
 export function copiesLookFiles(state: WizardState): boolean {
-  const planned = new Set(importPlan(state).map((p) => p.path));
-  return state.sources.some((s) => {
-    const r = s.found?.recognition;
-    if (!planned.has(s.path) || !r) return false;
-    return r.kind === "look_files" || (r.kind === "package" && !r.contents.includes(".cube"));
-  });
+  return copiedFiles(state).lookFiles;
+}
+
+/** The Import step's first fact: "Only the .cube files" (the mockup's words), "Only the look files", or both kinds named. */
+export function copiedLabel(state: WizardState): string {
+  const { cubes, lookFiles } = copiedFiles(state);
+  if (cubes && lookFiles) return "Only the .cube files and the look files";
+  return lookFiles ? "Only the look files" : "Only the .cube files";
 }
 
 /**

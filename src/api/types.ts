@@ -409,6 +409,8 @@ export type Recognition =
       contents: string;
       /** Files that will be copied. */
       file_count: number;
+      /** The person's own look files (`.alf4`, `.alf4c`, `.aml`) in the same source, copied too as their own looks; 0 or absent when there are none. */
+      look_file_count?: number;
       note: string | null;
     }
   | {
@@ -429,6 +431,8 @@ export type Recognition =
       /** The LUT size when every file has the same one. */
       lut_size: number | null;
       suggestion: LookInput | null;
+      /** The person's own look files in the same source, copied too; 0 or absent when there are none. */
+      look_file_count?: number;
       note: string;
     }
   | { kind: "unusable"; reason: string; package_id: PackageId | null }

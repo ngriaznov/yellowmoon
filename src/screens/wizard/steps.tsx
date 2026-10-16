@@ -8,7 +8,7 @@ import { isReady } from "../../state/photo";
 import { useLookThumbnail } from "../../state/useLookThumbnail";
 import {
   anyChecking,
-  copiesLookFiles,
+  copiedLabel,
   formatSize,
   joinList,
   offersDisplayChoice,
@@ -291,7 +291,7 @@ export function ImportStep({ wizard }: { wizard: Wizard }) {
       <div className="ym-wizard__facts">
         <div>
           <b>Copied</b>
-          <span>{copiesLookFiles(state) ? "Only the look files" : "Only the .cube files"}, into the app&apos;s looks folder</span>
+          <span>{copiedLabel(state)}, into the app&apos;s looks folder</span>
         </div>
         <div>
           <b>Grouped</b>

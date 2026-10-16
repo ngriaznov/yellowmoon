@@ -230,11 +230,17 @@ describe("the search", () => {
     await h!.user.type(search(), "film warm");
     const logc4 = header("ARRI looks · LogC4, ");
     expect(logc4).toHaveAttribute("aria-disabled", "true");
+    // It does nothing, so Tab skips it: from the search box the next stop is the first tile.
+    expect(logc4).toHaveAttribute("tabindex", "-1");
+    await h!.user.click(search());
+    await h!.user.tab();
+    expect(card().getAllByRole("button", { name: / look, key \d/ })[0]).toHaveFocus();
     await h!.user.click(logc4);
     expect(logc4).toHaveAttribute("aria-expanded", "true");
     expect(h!.store.getState().collapsedLookLibraries).toEqual([]);
     await h!.user.clear(search());
     expect(header("ARRI looks · LogC4, ")).not.toHaveAttribute("aria-disabled");
+    expect(header("ARRI looks · LogC4, ")).not.toHaveAttribute("tabindex");
   });
 
   it("says when nothing matches, and keeps the tile numbers of the whole list while it narrows it", async () => {

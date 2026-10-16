@@ -1137,6 +1137,10 @@ pub enum Recognition {
         contents: String,
         /// Files that will be copied.
         file_count: u32,
+        /// The person's own look files (`.alf4`, `.alf4c`, `.aml`) that sit in the same source
+        /// and are copied too, as the person's own looks. Zero when there are none.
+        #[serde(default)]
+        look_file_count: u32,
         /// A remark that does not stop the import.
         note: Option<String>,
     },
@@ -1162,6 +1166,10 @@ pub enum Recognition {
         lut_size: Option<u32>,
         /// What the names suggest.
         suggestion: Option<LookInput>,
+        /// The person's own look files that sit in the same source and are copied too. Zero when
+        /// there are none.
+        #[serde(default)]
+        look_file_count: u32,
         /// Why the question is asked.
         note: String,
     },

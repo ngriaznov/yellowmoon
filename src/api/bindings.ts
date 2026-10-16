@@ -1022,6 +1022,11 @@ what: string;
 contents: string; 
 /**  Files that will be copied. */
 file_count: number; 
+/**
+ *  The person's own look files (`.alf4`, `.alf4c`, `.aml`) that sit in the same source
+ *  and are copied too, as the person's own looks. Zero when there are none.
+ */
+look_file_count?: number; 
 /**  A remark that does not stop the import. */
 note: string | null } | 
 /**
@@ -1047,6 +1052,11 @@ file_count: number;
 lut_size: number | null; 
 /**  What the names suggest. */
 suggestion: LookInput | null; 
+/**
+ *  The person's own look files that sit in the same source and are copied too. Zero when
+ *  there are none.
+ */
+look_file_count?: number; 
 /**  Why the question is asked. */
 note: string } | 
 /**  Nothing can be imported. */

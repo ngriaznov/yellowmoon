@@ -28,6 +28,12 @@ pub fn count(n: usize, one: &str, many: &str) -> String {
 /// Why a source with no `.cube` files and no look files cannot be imported, and what to choose.
 pub(super) fn nothing_to_import(source: &SourceInfo, ignored: &Ignored) -> String {
     let noun = noun(source);
+    if ignored.xml > 0 && source.kind == SourceKind::File {
+        // One loose file: it is the ALF-1 file, it does not "have" any.
+        return "This file is one of ARRI's older look files (ALF-1, for ALEXA Classic and XT \
+                cameras). Yellowmoon cannot read it. It reads .cube, .alf4, .alf4c and .aml files."
+            .to_string();
+    }
     if ignored.xml > 0 {
         return format!(
             "This {noun} has .xml files. Yellowmoon cannot read ARRI's older look files \
@@ -230,6 +236,26 @@ mod tests {
             "{text}"
         );
         assert!(text.contains(".cube, .alf4, .alf4c and .aml"), "{text}");
+        assert!(text.starts_with("This zip has .xml files."), "{text}");
+    }
+
+    #[test]
+    fn one_loose_older_look_file_is_not_said_to_have_xml_files() {
+        let one = SourceInfo {
+            kind: SourceKind::File,
+            name: "Look.xml".into(),
+        };
+        let xml = Ignored {
+            xml: 1,
+            ..Ignored::default()
+        };
+        let text = nothing_to_import(&one, &xml);
+        assert!(
+            text.starts_with("This file is one of ARRI's older look files (ALF-1"),
+            "{text}"
+        );
+        assert!(!text.contains("has .xml files"), "{text}");
+        assert!(text.contains("It reads .cube, .alf4, .alf4c and .aml files."), "{text}");
     }
 
     #[test]

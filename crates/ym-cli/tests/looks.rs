@@ -676,3 +676,62 @@ fn a_reader_that_goes_away_does_not_make_a_looks_command_panic() {
         .success()
         .stdout(predicate::str::contains("user:warm"));
 }
+
+#[test]
+fn a_damaged_look_file_in_a_folder_is_said_and_the_rest_still_imports_with_exit_1() {
+    let sb = Sandbox::new();
+    let good = write_look_file(&sb, "Good.alf4", "alf4", None);
+    let mut bytes = std::fs::read(&good).expect("read");
+    let at = bytes.len() - 7;
+    bytes[at] ^= 0x08;
+    std::fs::write(sb.root().join("looks").join("Bad.alf4"), bytes).expect("write");
+
+    let out = sb
+        .ym()
+        .args(["looks", "import"])
+        .arg(sb.root().join("looks"))
+        .assert()
+        .code(1)
+        .stdout("user:good\n")
+        .stderr(predicate::str::contains(
+            "Bad.alf4 cannot be used. Its checksum does not match, so the file is damaged. Download it again.",
+        ));
+    // The good one is in the library, the damaged one is not.
+    let _ = out;
+    let list = sb.ym().args(["looks", "list"]).assert().success();
+    let l = lines(&list.get_output().stdout);
+    assert!(l.iter().any(|row| row.starts_with("user:good")), "{l:?}");
+    assert!(l.iter().all(|row| !row.starts_with("user:bad")), "{l:?}");
+    // `--quiet` keeps the refusal: it is an error, not a remark.
+    let quiet = sb.root().join("quiet");
+    std::fs::create_dir_all(&quiet).expect("folder");
+    std::fs::copy(
+        sb.root().join("looks").join("Bad.alf4"),
+        quiet.join("Bad.alf4"),
+    )
+    .expect("copy");
+    std::fs::copy(
+        sb.root().join("looks").join("Good.alf4"),
+        quiet.join("Fine.alf4"),
+    )
+    .expect("copy");
+    sb.ym()
+        .args(["--quiet", "looks", "import"])
+        .arg(&quiet)
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains("Bad.alf4 cannot be used."));
+    // A folder without a refusal still exits 0.
+    let fine = sb.root().join("fine");
+    std::fs::create_dir_all(&fine).expect("folder");
+    std::fs::copy(
+        sb.root().join("looks").join("Good.alf4"),
+        fine.join("Third.alf4"),
+    )
+    .expect("copy");
+    sb.ym()
+        .args(["looks", "import"])
+        .arg(&fine)
+        .assert()
+        .success();
+}

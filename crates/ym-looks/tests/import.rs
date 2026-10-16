@@ -1362,3 +1362,67 @@ fn full_size_logc3_package_with_the_real_patterns() {
     assert_eq!(recognition.packages[0].id, "look-library-logc3");
     assert_eq!(report.added.len(), 87);
 }
+
+#[test]
+fn a_zip_with_two_entries_of_one_path_imports_both_files_from_their_own_entries() {
+    // Two entries of a zip can end up with one path inside the source: `Looks//Mine.cube` and
+    // `Looks/./Mine.cube` are the same path once it is cleaned (the zip reader keeps only one of two
+    // entries with exactly the same name, so this is the way to get two). Each is read from its own
+    // entry: before, both items read the last one and the whole import failed with "changed while
+    // it was being imported", which importing again never fixed.
+    let work = tempfile::tempdir().unwrap();
+    let path = work.path().join("Doubled.zip");
+    let first = cube_text(5, 1, "first");
+    let second = cube_text(5, 2, "second");
+    assert_ne!(first, second);
+    write_zip(
+        &path,
+        &[
+            ("Looks/Mine.cube".to_string(), first.clone().into_bytes()),
+            ("Looks//Mine.cube".to_string(), second.clone().into_bytes()),
+            (
+                "Looks/Other.cube".to_string(),
+                cube_text(5, 3, "other").into_bytes(),
+            ),
+        ],
+    );
+
+    let db = small_db(3);
+    let recognition = inspect(&path, &db, None, &mut no_progress()).unwrap();
+    let named: Vec<&str> = recognition
+        .files
+        .iter()
+        .map(|f| f.rel_path.as_str())
+        .collect();
+    assert_eq!(
+        named.iter().filter(|n| **n == "Looks/Mine.cube").count(),
+        2,
+        "{named:?}"
+    );
+    assert_ne!(recognition.files[0].sha256, recognition.files[1].sha256);
+
+    let mut library = open_library(&work.path().join("app"));
+    let report = import(
+        &mut library,
+        &db,
+        &path,
+        &recognition,
+        &with_input(LookInput::LogC4),
+        &mut no_progress(),
+    )
+    .expect("both entries import");
+    assert_eq!(report.added.len(), 3, "{report:?}");
+    // Each entry's bytes are stored: the two LUTs are two looks.
+    let mut stored: Vec<String> = report
+        .added
+        .iter()
+        .map(|item| sha256_hex(&fs::read(library.looks_dir().join(&item.file)).unwrap()))
+        .collect();
+    stored.sort();
+    let mut wanted: Vec<String> = [first, second, cube_text(5, 3, "other")]
+        .iter()
+        .map(|t| sha256_hex(t.as_bytes()))
+        .collect();
+    wanted.sort();
+    assert_eq!(stored, wanted);
+}

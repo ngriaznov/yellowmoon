@@ -285,6 +285,30 @@ describe("step 3 · Recognise", () => {
     expect(mine.every((l) => l.input === "logc4")).toBe(true);
   });
 
+  it("names both kinds of file on the Import step when a folder of ARRI's cubes holds a look file of the person's own", async () => {
+    await wizard();
+    const folder = "ARRI_LookLibrary_LogC4_with_mine";
+    h!.api.addSource(folder, {
+      source: "folder",
+      size_bytes: null,
+      recognition: {
+        kind: "package",
+        package_id: "look_library_logc4",
+        title: "Look Library · LogC4",
+        what: "Look Library · LogC4 · log to log",
+        contents: "87 .cube · 65-point",
+        file_count: 87,
+        look_file_count: 1,
+        note: "It also holds 1 look file of your own, imported as your own looks.",
+      },
+    });
+    await toRecognise(folder);
+    expect(screen.getAllByRole("row")[1]).toHaveTextContent("It also holds 1 look file of your own, imported as your own looks.");
+    await h!.user.click(next());
+    await screen.findByRole("heading", { level: 1, name: "Imported" }, { timeout: 10_000 });
+    expect(screen.getByText("Only the .cube files and the look files, into the app's looks folder")).toBeInTheDocument();
+  });
+
   it("says an .alf4c's display transforms are not used, and one look file chosen by itself does not stand in for a package", async () => {
     await wizard();
     await toRecognise(FAILURE_ZIPS.ownAlf4c);
