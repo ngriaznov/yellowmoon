@@ -192,11 +192,15 @@ summary:focus-visible,
   }
 }
 
+/* Reduce motion: no transitions at all, and animations jump to their end. (Until 0.1.4 this set transition-duration: 0.001ms on every
+   element; since transition-property defaults to all, every property change of every element then became a transition, and WebKit on
+   the Mac CI runner left the page's background mid-transition at its old paper, which is above !important in the cascade: the photo
+   under the transparent page was hidden.) */
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
   *::after {
     animation-duration: 0.001ms !important;
-    transition-duration: 0.001ms !important;
+    transition-property: none !important;
   }
 }

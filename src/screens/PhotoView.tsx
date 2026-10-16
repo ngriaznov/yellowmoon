@@ -81,13 +81,18 @@ export const PhotoView = memo(function PhotoView({ store, photo, rs, lookName, b
     const screen = document.querySelector<HTMLElement>('.ym-screen[data-screen="photos"]');
     const boxes = [root, document.body, document.getElementById("root"), screen].filter((el): el is HTMLElement => el !== null);
     const before = boxes.map((el) => [el.style.getPropertyValue("background-color"), el.style.getPropertyPriority("background-color")] as const);
-    for (const el of boxes) el.style.setProperty("background-color", "transparent", "important");
+    // No transition either: a transition is above !important, and one that WebKit does not run on leaves the old paper in place.
+    for (const el of boxes) {
+      el.style.setProperty("transition", "none", "important");
+      el.style.setProperty("background-color", "transparent", "important");
+    }
     return () => {
       delete root.dataset.nativeViewport;
       boxes.forEach((el, i) => {
         const [value, priority] = before[i] ?? ["", ""];
         if (value) el.style.setProperty("background-color", value, priority);
         else el.style.removeProperty("background-color");
+        el.style.removeProperty("transition");
       });
     };
   }, [native]);

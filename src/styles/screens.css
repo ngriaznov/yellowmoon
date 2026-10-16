@@ -107,7 +107,7 @@
 :root[data-native-viewport],
 :root[data-native-viewport] body,
 :root[data-native-viewport] #root,
-:root[data-native-viewport] .ym-screen[data-screen="photos"] { background: transparent !important; }
+:root[data-native-viewport] .ym-screen[data-screen="photos"] { background: transparent !important; transition: none !important; }
 .ym-screen[data-screen="photos"] .ym-filmstrip { grid-column: 1; grid-row: 3; }
 .ym-tools {
   display: flex;
