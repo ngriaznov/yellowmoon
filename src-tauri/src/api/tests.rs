@@ -488,7 +488,10 @@ fn opening_more_files_adds_to_the_session_and_says_what_was_new() {
     h.develop();
     // The same folder again: every file is open already, nothing is added, nothing is an error.
     let folder = h.photos.path().to_string_lossy().into_owned();
-    let again = h.api.open_paths(&[folder.clone()]).expect("open again");
+    let again = h
+        .api
+        .open_paths(std::slice::from_ref(&folder))
+        .expect("open again");
     assert_eq!(
         again.opened,
         Some(OpenSummary {

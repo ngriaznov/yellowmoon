@@ -38,6 +38,13 @@ const BUDGETS: Readonly<Record<string, number>> = {
   "photos-before": 0.035,
   "photos-look-teal": 0.08,
   "photos-look-search": 0.03,
+  // The tool panel has a row at its foot, "Copy settings" and "Paste" (the owner's request of 2026-10-16, docs/11 §Copy and paste
+  // settings), 55 px that the mockup does not have, so every tool tab ends there; the header also has "Add photos" and drops the status
+  // text only below 1274 px. The three tabs that had no budget of their own (the others already allow for it) differ by Playwright's
+  // counts of 0.19 % (Colour), 0.30 % (Curve) and 0.27 % (RAW), measured on 2026-10-16: close to the default 0.35 %, so they get a little room.
+  "photos-color": 0.005,
+  "photos-curve": 0.005,
+  "photos-raw": 0.005,
   // The DNG note carries the sentence about other apps, Adobe's notice and the white-balance caveat (docs/09 §Legal): about five lines more than the mockup.
   "export-dng": 0.02,
   // The Sharpening card has a third row, Output (the owner's decision of 2026-10-13, docs/11): the card is 38 px taller than

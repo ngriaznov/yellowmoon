@@ -105,8 +105,9 @@ const AddPhotosButton = memo(function AddPhotosButton({ store }: { store: AppSto
 });
 
 /**
- * The header's "Copy settings" and "Paste" (⇧⌘C, ⇧⌘V; the Edit menu has them and "Paste Settings to Picked" too). Copy needs a photo
- * that is developed; Paste needs something copied as well, and its title names the photo the settings came from.
+ * "Copy settings" and "Paste" (⇧⌘C, ⇧⌘V; the Edit menu has them and "Paste Settings to Picked" too), in the row at the foot of the tool
+ * panel: the header has no room for them at its narrowest (`docs/11` §Copy and paste settings). Copy needs a photo that is developed;
+ * Paste needs something copied as well, and its title names the photo the settings came from.
  */
 const CopyPasteButtons = memo(function CopyPasteButtons({ store, canCopy }: { store: AppStore; canCopy: boolean }) {
   const source = useAppState((s) => s.copied?.source ?? null);
@@ -146,7 +147,7 @@ function ExportCellContainer({ store }: { store: AppStore }) {
 
 /**
  * The Photos screen (`design/mockups/photos.html`, `docs/11-ui.md` §Photos): the header with
- * Before, Crop, Pick white, Add photos, Copy settings, Paste and the zoom menu, the photo, the filmstrip and the tool panel with its
+ * Before, Crop, Pick white, Add photos and the zoom menu, the photo, the filmstrip and the tool panel with its
  * six tabs. The Crop panel and the Export panel replace the tool panel.
  */
 export function Photos() {
@@ -375,6 +376,9 @@ export function Photos() {
             </p>
           ) : null}
         </div>
+        <div className="ym-tools__foot" role="group" aria-label="Copy and paste settings">
+          <CopyPasteButtons store={store} canCopy={rs !== null && photo !== null && isReady(photo)} />
+        </div>
       </aside>
     );
   }
@@ -403,7 +407,6 @@ export function Photos() {
               Pick white
             </Button>
             <AddPhotosButton store={store} />
-            <CopyPasteButtons store={store} canCopy={rs !== null && photo !== null && isReady(photo)} />
             <ZoomMenu store={store} photo={photo} rs={rs} cell={cell} />
             {picking ? (
               <span className="ym-status" data-hint="true" role="status">

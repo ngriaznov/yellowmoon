@@ -37,6 +37,40 @@ describe("the shortcut table of docs/11", () => {
     expect(act(cmd("z", { target: input }))).toBeNull();
   });
 
+  it("⇧⌘C copies the settings, ⇧⌘V pastes them, ⌥⇧⌘V pastes them onto the picked photos", () => {
+    expect(act(cmd("C", { shiftKey: true }))).toBe("copy-settings");
+    expect(act(cmd("c", { shiftKey: true }))).toBe("copy-settings");
+    expect(act(cmd("V", { shiftKey: true }))).toBe("paste-settings");
+    expect(act(cmd("v", { shiftKey: true }))).toBe("paste-settings");
+    expect(act(cmd("V", { shiftKey: true, altKey: true }))).toBe("paste-settings-picked");
+    // ⌥ changes what the key reports (√, ◊): the key's place on the keyboard still names it.
+    expect(act(cmd("◊", { shiftKey: true, altKey: true, code: "KeyV" }))).toBe("paste-settings-picked");
+    expect(act(cmd("√", { altKey: true, shiftKey: true, code: "KeyV" }))).toBe("paste-settings-picked");
+  });
+
+  it("leaves plain ⌘C and ⌘V to the system's Copy and Paste", () => {
+    expect(act(cmd("c"))).toBeNull();
+    expect(act(cmd("v"))).toBeNull();
+    expect(act(cmd("v", { altKey: true }))).toBeNull();
+    expect(act(cmd("c", { altKey: true, shiftKey: true }))).toBeNull();
+    expect(act(key("c", { ctrlKey: true, shiftKey: true }))).toBeNull();
+  });
+
+  it("leaves ⇧⌘C, ⇧⌘V and ⌥⇧⌘V to a text box that has focus", () => {
+    const input = document.createElement("input");
+    input.type = "text";
+    const area = document.createElement("textarea");
+    for (const target of [input, area]) {
+      expect(act(cmd("C", { shiftKey: true, target }))).toBeNull();
+      expect(act(cmd("V", { shiftKey: true, target }))).toBeNull();
+      expect(act(cmd("V", { shiftKey: true, altKey: true, code: "KeyV", target }))).toBeNull();
+    }
+    // A slider is not a text box.
+    const range = document.createElement("input");
+    range.type = "range";
+    expect(act(cmd("C", { shiftKey: true, target: range }))).toBe("copy-settings");
+  });
+
   it("⌘A picks all, ⌘+ and ⌘− zoom, ⌘, opens preferences", () => {
     expect(act(cmd("a"))).toBe("pick-all");
     expect(act(cmd("+", { shiftKey: true }))).toBe("zoom-in");

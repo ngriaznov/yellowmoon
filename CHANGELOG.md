@@ -9,7 +9,11 @@ moves the entries below from Unreleased into a dated section for that version.
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+
+- An **Add photos** button on the Photos screen, after Pick white. It opens the file dialog and adds what you choose after the photos that are open; the photo you are looking at stays where it is, and the new ones develop in the filmstrip. Files or a folder dropped anywhere on the Photos screen are added the same way, and ⌘O does the same as the button. A notice says what happened: "Added 3 photos. 2 were already open.", or "These photos are already open." when there was nothing new. In a window narrower than 1274 px the render status text beside the buttons is left out to make room.
+- **Copy settings and Paste**, to move a photo's settings onto other photos. A row at the foot of the tool panel has the two buttons; the Edit menu has Copy Settings (⇧⌘C), Paste Settings (⇧⌘V) and Paste Settings to Picked (⌥⇧⌘V), which pastes onto every picked photo in one go. Everything is copied except the crop, the turn and the Pick white point, which belong to the photo itself; settings that are Automatic stay Automatic, so each photo keeps its own exposure, white balance and noise, and a white balance that came from a picked white is pasted as the Kelvin and tint it found. Each photo's paste is one step of that photo's Undo. Photos that are still developing or can't be opened are skipped, and the notice says how many. What you copied stays in the app until you quit, also when you open another folder; it is never saved and never put on the system clipboard.
+- The notice bar on the Photos screen no longer covers the tool panel, so the buttons at its foot (Copy settings, Paste, and the Export panel's buttons) stay in reach while a notice shows.
 
 ## [0.1.4] - 2026-10-16
 

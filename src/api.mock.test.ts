@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   clampSettings,
+  copiedPatch,
   createMockApi,
   defaultSettings,
   expandNameTemplate,
@@ -105,10 +106,42 @@ describe("session", () => {
     expect((await api.openDialog("folder"))?.photos).toHaveLength(12);
   });
 
-  it("adding photos to an open session changes nothing", async () => {
+  it("adding photos that are open already changes nothing, and says how many were", async () => {
     const first = await api.openPaths(ARW);
+    expect(first.opened).toEqual({ added: 12, already_open: 0 });
     const again = await api.openPaths(ARW);
     expect(again.photos.map((p) => p.id)).toEqual(first.photos.map((p) => p.id));
+    expect(again.opened).toEqual({ added: 0, already_open: 1 });
+    expect((await api.openPaths(["~/Pictures/Lisbon"])).opened).toEqual({ added: 0, already_open: 12 });
+    // Only an open says what it did.
+    expect((await api.sessionState()).opened).toBeUndefined();
+  });
+
+  it("adds new files after the others, in name order, and develops only those", async () => {
+    await api.openPaths(ARW);
+    api.flush();
+    const state = await api.openPaths(["~/Pictures/Lisbon/DSC09002.ARW", "~/Pictures/Lisbon/DSC09001.ARW", "~/Pictures/Lisbon/dsc04201.arw", "~/Pictures/x.txt"]);
+    expect(state.opened).toEqual({ added: 2, already_open: 1 });
+    expect(state.photos.map((p) => p.file_name).slice(11)).toEqual(["DSC04212.ARW", "DSC09001.ARW", "DSC09002.ARW"]);
+    expect(state.photos.map((p) => p.id)).toEqual(Array.from({ length: 14 }, (_, i) => i + 1));
+    expect(state.current_index).toBe(0);
+    // The old photos are ready and stay so; the new ones wait, then develop.
+    expect(state.photos.slice(0, 12).every((p) => p.status.kind === "ready")).toBe(true);
+    expect(state.photos.slice(12).every((p) => p.status.kind === "waiting")).toBe(true);
+    api.flush();
+    expect((await api.sessionState()).photos.every((p) => p.status.kind === "ready")).toBe(true);
+    // A file name is a photo once.
+    expect((await api.openPaths(["~/Pictures/Lisbon/DSC09001.ARW"])).opened).toEqual({ added: 0, already_open: 1 });
+  });
+
+  it("opens the paths a test queued for the next dialog, of either kind", async () => {
+    await api.openPaths(ARW);
+    api.queueChoice("open", ["~/Pictures/New/DSC09500.ARW"]);
+    const state = await api.openDialog("files");
+    expect(state?.opened).toEqual({ added: 1, already_open: 0 });
+    expect(state?.photos).toHaveLength(13);
+    // The queue is used up: the next dialog is the fixture folder again.
+    expect((await api.openDialog("folder"))?.opened).toEqual({ added: 0, already_open: 12 });
   });
 
   it("honours picked and current from the options", async () => {
@@ -1185,5 +1218,96 @@ describe("optionsFromLocation", () => {
     expect(optionsFromLocation("")).toEqual({});
     expect(optionsFromLocation("?mockSpeed=-3&mockHold=x")).toEqual({});
     expect(optionsFromLocation(undefined as never)).toEqual({});
+  });
+});
+
+describe("copy and paste settings", () => {
+  const ready = async (): Promise<void> => {
+    await api.openPaths(ARW);
+    api.flush();
+  };
+
+  it("copies every setting but the crop, the orientation and the white pick; Auto stays Auto", async () => {
+    await ready();
+    await api.updateSettings(1, {
+      contrast: 20,
+      exposure: { kind: "manual", ev: 1 },
+      crop: { rect: { x: 0, y: 0, width: 0.5, height: 0.5 }, angle_deg: 0, aspect: "free" },
+      orientation: 90,
+      white_pick: [0.5, 0.5],
+    });
+    const patch = await api.copySettings(1);
+    expect(patch).toMatchObject({ contrast: 20, exposure: { kind: "manual", ev: 1 }, sharpen: { kind: "auto" }, noise_reduction: { kind: "auto" }, light_source: "auto" });
+    for (const key of ["crop", "orientation", "white_pick"]) expect(patch).not.toHaveProperty(key);
+    expect(Object.keys(patch).length).toBe(Object.keys(defaultSettings()).length - 3);
+  });
+
+  it("turns a white balance that came from a picked white into the manual Kelvin and tint it resolved to", () => {
+    const rs = resolveSettings(1, { ...defaultSettings(), white_pick: [0.5, 0.5] }, MOCK_ESTIMATES);
+    expect(copiedPatch(rs).white_balance).toEqual({ kind: "manual", kelvin: rs.values.kelvin, tint: rs.values.tint });
+    // A light preset, a manual white balance or no pick are copied as they are.
+    const preset = resolveSettings(1, { ...defaultSettings(), white_pick: [0.5, 0.5], light_source: "tungsten" }, MOCK_ESTIMATES);
+    expect(copiedPatch(preset).white_balance).toEqual({ kind: "auto" });
+    expect(copiedPatch(preset).light_source).toBe("tungsten");
+    const manual = resolveSettings(1, { ...defaultSettings(), white_pick: [0.5, 0.5], white_balance: { kind: "manual", kelvin: 4100, tint: 3 } }, MOCK_ESTIMATES);
+    expect(copiedPatch(manual).white_balance).toEqual({ kind: "manual", kelvin: 4100, tint: 3 });
+    expect(copiedPatch(resolveSettings(1, defaultSettings(), MOCK_ESTIMATES)).white_balance).toEqual({ kind: "auto" });
+  });
+
+  it("refuses to copy a photo that is not developed or cannot be opened", async () => {
+    api.reset({ skipped: { DSC04203: "This file is not a raw file." } });
+    await api.openPaths(ARW);
+    expect((await rejection(api.copySettings(1))).message).toMatch(/still developing/);
+    api.flush();
+    expect((await rejection(api.copySettings(3))).message).toMatch(/can't be opened/);
+    expect(await api.copySettings(2)).toBeDefined();
+    expect((await rejection(api.copySettings(99))).scope).toBe("app");
+  });
+
+  it("pastes onto each photo, leaving its crop, orientation and white pick, and answers with one step per photo", async () => {
+    await ready();
+    await api.updateSettings(1, { contrast: 20, look: "builtin:signature" });
+    await api.updateSettings(2, { contrast: -5, crop: { rect: { x: 0, y: 0, width: 0.5, height: 0.5 }, angle_deg: 0, aspect: "free" }, orientation: 180 });
+    const patch = await api.copySettings(1);
+    const events: number[] = [];
+    api.on("settings_changed", (e) => events.push(e.photo_id));
+    const report = await api.pasteSettings([2, 3, 2, 99], { ...patch, crop: null, orientation: 270, white_pick: [0.1, 0.1] });
+    expect(report.skipped).toEqual([99]);
+    expect(report.pasted.map((p) => p.id)).toEqual([2, 3]);
+    expect(report.pasted[0]).toMatchObject({ before: { contrast: -5, look: "builtin:neutral" }, after: { contrast: 20, look: "builtin:signature" } });
+    expect(report.pasted[0]!.before).not.toHaveProperty("crop");
+    const two = (await api.getSettings(2)).settings;
+    expect(two).toMatchObject({ contrast: 20, orientation: 180, white_pick: null });
+    expect(two.crop).not.toBeNull();
+    expect((await api.getSettings(3)).settings.contrast).toBe(20);
+    expect((await api.getSettings(4)).settings.contrast).toBe(0);
+    await Promise.resolve();
+    expect(events.sort()).toEqual([2, 3]);
+    // The same paste again changes nothing: empty steps, no event.
+    events.length = 0;
+    const again = await api.pasteSettings([2], patch);
+    expect(again.pasted).toEqual([{ id: 2, before: {}, after: {} }]);
+    await Promise.resolve();
+    expect(events).toEqual([]);
+  });
+
+  it("skips photos that are still developing or failed, and refuses a look that is gone", async () => {
+    api.reset({ skipped: { DSC04203: "This file is not a raw file." } });
+    await api.openPaths(ARW);
+    const early = await api.pasteSettings([1, 3], { contrast: 10 });
+    expect(early).toEqual({ pasted: [], skipped: [1, 3] });
+    api.flush();
+    expect((await api.pasteSettings([1, 3], { contrast: 10 })).skipped).toEqual([3]);
+    const error = await rejection(api.pasteSettings([1], { look: "arri:3000:nothing", contrast: 50 }));
+    expect(error.scope).toBe("looks");
+    expect((await api.getSettings(1)).settings.contrast).toBe(10);
+  });
+
+  it("remembers the last menu state it was given", async () => {
+    expect(api.menuState).toBeNull();
+    await api.setMenuState({ copy_settings: true, paste_settings: false, paste_settings_to_picked: true });
+    expect(api.menuState).toEqual({ copy_settings: true, paste_settings: false, paste_settings_to_picked: true });
+    api.reset();
+    expect(api.menuState).toBeNull();
   });
 });
