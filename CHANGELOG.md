@@ -9,15 +9,16 @@ moves the entries below from Unreleased into a dated section for that version.
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.1.4] - 2026-10-16
+
+Before shows the photo as the camera renders it, photos can be added and settings copied between them, and the app feels like a Mac app: a pan moves only the photo, pinch zooms, text stays put, and it keeps up while you work.
+
 ### Added
 
 - An **Add photos** button on the Photos screen, after Pick white. It opens the file dialog and adds what you choose after the photos that are open; the photo you are looking at stays where it is, and the new ones develop in the filmstrip. Files or a folder dropped anywhere on the Photos screen are added the same way, and ⌘O does the same as the button. A notice says what happened: "Added 3 photos. 2 were already open.", or "These photos are already open." when there was nothing new. In a window narrower than 1274 px the render status text beside the buttons is left out to make room.
 - **Copy settings and Paste**, to move a photo's settings onto other photos. A row at the foot of the tool panel has the two buttons; the keys ⇧⌘C, ⇧⌘V and ⌥⇧⌘V (when no text box has focus) and the Edit menu's Copy Settings, Paste Settings and Paste Settings to Picked do the same, the last one pasting onto every picked photo in one go. Everything is copied except the crop, the turn and the Pick white point, which belong to the photo itself; settings that are Automatic stay Automatic, so each photo keeps its own exposure, white balance and noise, and a white balance that came from a picked white is pasted as the Kelvin and tint it found. Each photo's paste is one step of that photo's Undo. Photos that are still developing or can't be opened are skipped, and the notice says how many. What you copied stays in the app until you quit, also when you open another folder; it is never saved and never put on the system clipboard.
-- The notice bar on the Photos screen no longer covers the tool panel, so the buttons at its foot (Copy settings, Paste, and the Export panel's buttons) stay in reach while a notice shows.
-
-## [0.1.4] - 2026-10-16
-
-The app feels like a Mac app: a pan moves only the photo, pinch zooms, text stays put, and it keeps up while you work.
 
 ### Changed
 
@@ -25,6 +26,7 @@ The app feels like a Mac app: a pan moves only the photo, pinch zooms, text stay
 
 ### Fixed
 
+- The notice bar on the Photos screen no longer covers the tool panel, so the buttons at its foot (Copy settings, Paste, and the Export panel's buttons) stay in reach while a notice shows.
 - A two-finger pan over the photo moves only the photo. The whole window no longer moves with it, and nothing else on the screen bounces or scrolls under your fingers: the header, the filmstrip, the dialogs and the ends of the tool panel stay where they are.
 - Pinching on the trackpad zooms the photo about your fingers. Before, it did nothing. ⌘ or Ctrl with the scroll still zooms.
 - Text in the app is no longer selectable, so dragging over the window, a double click on the photo or ⌘A selects nothing. What you may want to copy still is: fields, the command line in the Export panel and the folder it saves to, the path of the command-line tool, error messages, file names and the About text. Buttons show the arrow, and only links show the pointing hand. The web page's own right-click menu (Reload, Back) no longer opens.
