@@ -45,7 +45,7 @@
   text-decoration: none;
   text-transform: uppercase;
   white-space: nowrap;
-  cursor: pointer;
+  cursor: default;
 }
 .ym-export[aria-disabled="true"] { color: var(--muted); cursor: default; }
 .ym-export[aria-current="true"] { background: var(--ink); color: var(--paper); }
@@ -88,7 +88,7 @@
   text-align: left;
   text-transform: uppercase;
   white-space: nowrap;
-  cursor: pointer;
+  cursor: default;
 }
 .ym-menu__item:hover,
 .ym-menu__item:focus-visible { background: var(--ink); color: var(--paper); }

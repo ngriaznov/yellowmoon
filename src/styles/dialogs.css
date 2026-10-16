@@ -57,7 +57,7 @@
   font-weight: var(--fw-heavy);
   letter-spacing: var(--ls-caps);
   text-transform: uppercase;
-  cursor: pointer;
+  cursor: default;
 }
 .ym-pref__defaults { padding: 4px 0 0; border-bottom: var(--rule-control) solid var(--ink); }
 .ym-pref__defaults .ym-card { padding-left: 24px; padding-right: 24px; }

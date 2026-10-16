@@ -10,6 +10,11 @@ html,
 body,
 #root {
   height: 100%;
+  /* An app, not a page: nothing scrolls as a whole, and nothing bounces (docs/11 §Desktop feel). Every screen is a fixed grid whose own
+     boxes scroll. Without these two lines WebKit rubber-bands the whole page on a two-finger pan, and the native photo layer behind the
+     page does not move with it. */
+  overflow: hidden;
+  overscroll-behavior: none;
 }
 
 body {
@@ -40,12 +45,8 @@ textarea {
   color: inherit;
 }
 
+/* A Mac button keeps the arrow; only a link (LinkButton, ResetLink, a real <a>) is a pointing hand (docs/11 §Desktop feel). */
 button {
-  cursor: pointer;
-}
-
-button:disabled,
-[aria-disabled="true"] {
   cursor: default;
 }
 
@@ -56,6 +57,94 @@ a {
 img,
 svg {
   display: block;
+}
+
+/* ---- Desktop feel (docs/11 §Desktop feel, M3-16) -------------------------------------------------------------------------------
+   The owner, 2026-10-16: "UI in Yellowmoon is sluggish. I can select UI text, when I pan photo with two fingers on trackpad - all app
+   moves." Text is not selectable and the arrow is the cursor, as in a Mac app; what a person may want to copy is selectable again
+   (the lists below), and so is every field. */
+html {
+  cursor: default;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+
+/* Safari does not let a field take focus and text inside a box with user-select: none unless the field says so itself. */
+input,
+textarea,
+[contenteditable]:not([contenteditable="false"]),
+/* Paths, commands, errors, file names, version and legal text: what people copy into a bug report or a terminal. */
+.ym-export__code,
+.ym-export__example,
+.ym-export__folder-text,
+.ym-export__problem,
+.ym-pref__hint,
+.ym-about-dialog__version,
+.ym-about-dialog__section,
+.ym-about-dialog__adobe,
+.ym-about-dialog__legal,
+.ym-error-bar > span,
+.ym-photo-note__text,
+.ym-wizard__received-name,
+.ym-wizard__file,
+.ym-wizard__contents,
+.ym-wizard__explain,
+.ym-cube-list__name > span:first-child,
+.ym-cube-list > li > span:not(.ym-cube-list__name),
+.ym-queue__file,
+.ym-queue__note,
+.ym-info-row__value {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+input:not([type]),
+input[type="text"],
+input[type="search"],
+input[type="number"],
+input[type="email"],
+input[type="url"],
+input[type="password"],
+textarea,
+[contenteditable]:not([contenteditable="false"]),
+.ym-export__code,
+.ym-pref__hint,
+.ym-error-bar > span {
+  cursor: text;
+}
+
+/* A picture or a link is never dragged out of the window as a file. */
+img,
+a {
+  -webkit-user-drag: none;
+}
+
+/* A box that scrolls on its own keeps its own end stop but never hands the rest of a gesture to the page (the whole app would move).
+   The filmstrip is a row: it scrolls along, never up and down. */
+.ym-tools__scroll,
+.ym-dialog__body,
+.ym-menu__list,
+.ym-wizard__main,
+.ym-develop-list,
+.ym-step-rail,
+.ym-filmstrip__scroll,
+textarea {
+  overscroll-behavior: contain;
+}
+
+.ym-filmstrip__scroll {
+  overflow-y: hidden;
+}
+
+/* A wheel or a pinch over the photo belongs to the photo (usePhotoGestures), never to the page. */
+.ym-photo-cell {
+  overscroll-behavior: none;
+}
+
+button:disabled,
+[aria-disabled="true"] {
+  cursor: default;
 }
 
 /* Focus (docs/11): a 3 px --focus outline with a 2 px offset on every interactive

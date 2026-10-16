@@ -21,7 +21,7 @@
   font-weight: var(--fw-heavy);
   letter-spacing: 0.02em;
   text-transform: uppercase;
-  cursor: pointer;
+  cursor: default;
 }
 .ym-wizard__cancel[aria-disabled="true"] { color: var(--muted); cursor: default; }
 .ym-wizard__rail { grid-column: 1; grid-row: 2 / 4; border-right: var(--rule) solid var(--ink); }
@@ -44,7 +44,7 @@
   color: #000000;
   font: inherit;
   text-align: left;
-  cursor: pointer;
+  cursor: default;
 }
 .ym-wizard__package[data-on="true"] { background: #fff4cf; }
 .ym-wizard__box { display: flex; align-items: center; justify-content: center; width: 28px; height: 28px; border: var(--rule) solid #000000; background: #ffffff; }

@@ -55,7 +55,7 @@
   text-transform: uppercase;
   white-space: nowrap;
   text-decoration: none;
-  cursor: pointer;
+  cursor: default;
 }
 .ym-btn[data-variant="secondary"] { background: var(--paper); color: var(--ink); }
 .ym-btn[data-size="lg"] { height: var(--button-h); padding: 0 28px; font-size: 16px; }
@@ -184,7 +184,7 @@
   font-weight: var(--fw-heavy);
   letter-spacing: var(--ls-tag);
   text-transform: uppercase;
-  cursor: pointer;
+  cursor: default;
 }
 .ym-auto-toggle[aria-pressed="true"] { background: var(--ink); color: var(--paper); cursor: default; }
 
@@ -344,7 +344,7 @@
   text-transform: uppercase;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
-  cursor: pointer;
+  cursor: default;
 }
 .ym-segmented[data-size="sm"] .ym-segmented__option { height: 30px; font-variant-numeric: normal; }
 .ym-segmented[data-size="lg"] .ym-segmented__option { height: 36px; font-size: var(--fs-small); }
@@ -366,7 +366,7 @@
   border: var(--rule-control) solid var(--ink);
   border-radius: 0;
   background: var(--paper);
-  cursor: pointer;
+  cursor: default;
 }
 .ym-switch[aria-checked="true"] { background: var(--tab); }
 .ym-switch__knob {
@@ -437,7 +437,7 @@
   color: var(--ink);
   font: inherit;
   text-align: left;
-  cursor: pointer;
+  cursor: default;
 }
 .ym-auto-row__label { font-size: var(--fs-label); font-weight: var(--fw-heavy); }
 .ym-auto-row__value {
@@ -503,7 +503,7 @@
   font-weight: var(--fw-heavy);
   letter-spacing: var(--ls-caps);
   text-transform: uppercase;
-  cursor: pointer;
+  cursor: default;
 }
 .ym-tab-bar__tab[aria-selected="true"] { background: var(--tab); color: var(--tab-ink); }
 /* The ring sits over the tab's neighbours and the title block under it, which can be its own colour (the RAW tab is the ring's blue):
@@ -545,7 +545,7 @@
   color: var(--ink);
   font: inherit;
   text-align: left;
-  cursor: pointer;
+  cursor: default;
 }
 .ym-look-tile__picture {
   position: relative;
@@ -641,7 +641,7 @@
   color: var(--ink);
   font-family: inherit;
   text-align: left;
-  cursor: pointer;
+  cursor: default;
 }
 .ym-look-group__toggle[aria-disabled="true"] { cursor: default; }
 .ym-look-group__title { display: flex; align-items: center; gap: 8px; min-width: 0; }
@@ -821,7 +821,7 @@
   border-radius: 0;
   overflow: hidden;
   background: var(--code-bg);
-  cursor: pointer;
+  cursor: default;
 }
 .ym-filmstrip__thumb[aria-current="true"] {
   width: var(--thumb-strip-current-w);
@@ -975,7 +975,7 @@ span.ym-filmstrip__thumb { cursor: default; }
   text-transform: uppercase;
   white-space: nowrap;
 }
-button.ym-update-pill { cursor: pointer; }
+button.ym-update-pill { cursor: default; }
 .ym-update-pill[aria-disabled="true"] { color: var(--muted); cursor: default; }
 .ym-update-pill__square {
   flex-shrink: 0;
@@ -1101,7 +1101,6 @@ button.ym-update-pill { cursor: pointer; }
   cursor: default;
 }
 .ym-step-rail__step[aria-current="step"] { background: var(--brand); color: #000000; }
-.ym-step-rail__step[data-state="done"] { cursor: pointer; }
 .ym-step-rail__mark {
   font-size: var(--fs-step);
   font-weight: var(--fw-heavy);

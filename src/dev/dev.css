@@ -2,6 +2,14 @@
 
 body { background: var(--paper); }
 
+/* The components page is a long page that scrolls as a whole; the app's root does not (global.css, docs/11 §Desktop feel). */
+html,
+body,
+#root {
+  overflow: visible;
+  overscroll-behavior: auto;
+}
+
 /* ---- Replicas: the mockups' screen grids ------------------------------------------------- */
 .rp-screen {
   display: grid;
