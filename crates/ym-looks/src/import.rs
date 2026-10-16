@@ -32,7 +32,12 @@
 //! * **One look, one entry.** The LogC4 library comes as 3D LUTs and as `.alf4` look files and both
 //!   give the same ids. Importing the look files after the `.cube` version leaves the `.cube` (it
 //!   has 65 points where the look files have 33); importing the `.cube` version after the look
-//!   files replaces them.
+//!   files replaces them; and when one import holds both (a folder with both libraries), the
+//!   `.cube` files are planned first, so the look files are left out the same way.
+//! * **The same bytes are never imported twice.** A file whose SHA-256 (with the same input) is
+//!   already in the library is "unchanged" whatever it is called now: no `Mine-2` for a renamed
+//!   copy. If an ARRI package claims a file that an earlier import filed under "Your LUTs", that
+//!   entry becomes the ARRI look in place (see `plan`).
 
 mod plan;
 mod source;
@@ -60,7 +65,7 @@ use crate::manifest::{
 use crate::recognize::{
     CubeSummary, FileFacts, LookFileFacts, Outcome, PackageDb, Recognition, Verdict, recognize,
 };
-use plan::{EntryData, Slot, Spec, apply, assign};
+use plan::{EntryData, Slot, Spec, SpecKind, apply, assign};
 use source::{ReadFailure, Source};
 
 /// Which phase a [`Progress`] report belongs to.
@@ -566,6 +571,16 @@ pub fn import(
         }
     }
 
+    // ARRI's `.cube` files are planned before its look files and before the person's own files, so
+    // that a look file meets the `.cube` of the same look (the `.cube` wins) and an ARRI file can
+    // claim an own LUT of an earlier import but never one of this import. The order within each
+    // kind is the order of the list.
+    items.sort_by_key(|(_, spec)| match (spec.arri, spec.format.is_cube()) {
+        (true, true) => 0_u8,
+        (true, false) => 1,
+        (false, _) => 2,
+    });
+
     // Locate every item in the source again; it must be what `inspect` saw.
     let mut source = Source::open(path)?;
     let index_of: HashMap<&str, usize> = source
@@ -613,8 +628,14 @@ pub fn import(
     let mut staged_dests: HashSet<PathBuf> = HashSet::new();
     // Look files that a `.cube` of the same look has replaced; deleted once the list is saved.
     let mut replaced_files: Vec<String> = Vec::new();
-    // Looks left as the `.cube` that is already there instead of a look file.
+    // Looks left as the `.cube` that is already there instead of a look file: from an earlier
+    // import, and from this one (a folder that holds both libraries).
     let mut kept_cube = 0_usize;
+    let mut kept_cube_here = 0_usize;
+    // Files that are copies of LUTs already in the library under other names.
+    let mut same_bytes = 0_usize;
+    // Entries of the person's own that an ARRI package has claimed.
+    let mut claimed = 0_usize;
     // Ids this import has already settled, so a later file never replaces an earlier one.
     let mut touched: HashSet<LookId> = HashSet::new();
     let total = items.len();
@@ -639,16 +660,23 @@ pub fn import(
             }
             let slot = assign(&manifest, spec, &sha256, &touched);
             let (id, file, is_new) = match &slot {
-                Slot::Add { id, file } => (id.clone(), file.clone(), true),
+                Slot::Add { id, file } | Slot::Claim { id, file, .. } => {
+                    (id.clone(), file.clone(), true)
+                }
                 Slot::Replace { id, file }
                 | Slot::Existing { id, file }
-                | Slot::Superseded { id, file }
+                | Slot::Superseded { id, file, .. }
+                | Slot::Same { id, file, .. }
                 | Slot::Upgrade { id, file, .. } => (id.clone(), file.clone(), false),
             };
-            touched.insert(id.clone());
             // The look is already imported as a `.cube`: that one stays, nothing is written.
-            if matches!(slot, Slot::Superseded { .. }) {
-                kept_cube += 1;
+            if let Slot::Superseded { same_import, .. } = &slot {
+                touched.insert(id.clone());
+                if *same_import {
+                    kept_cube_here += 1;
+                } else {
+                    kept_cube += 1;
+                }
                 report.unchanged.push(ImportedItem {
                     id,
                     name: spec.name.clone(),
@@ -657,15 +685,68 @@ pub fn import(
                 });
                 continue;
             }
-            if let Slot::Upgrade { old_file, .. } = &slot {
-                replaced_files.push(old_file.clone());
+            // These bytes are in the library already, under another name or group: the entry
+            // stays as it is (a missing or altered file is written again, like for any entry).
+            if let Slot::Same {
+                name, display_lut, ..
+            } = &slot
+            {
+                let dest = paths.file(&file);
+                // A file staged by this import is not on disk yet and is not damaged either.
+                let repair = !staged_dests.contains(&dest)
+                    && hash_file(&dest).ok().as_deref() != Some(sha256.as_str());
+                if repair && staged_dests.insert(dest.clone()) {
+                    let existed_before = dest.exists();
+                    if let Some(parent) = dest.parent() {
+                        std::fs::create_dir_all(parent).map_err(|source| ImportError::Io {
+                            path: parent.to_path_buf(),
+                            source,
+                        })?;
+                    }
+                    let temp = stage_write(&dest, &bytes).map_err(|source| ImportError::Io {
+                        path: dest.clone(),
+                        source,
+                    })?;
+                    staged.push(Staged {
+                        temp,
+                        dest,
+                        existed_before,
+                    });
+                }
+                same_bytes += 1;
+                let item = ImportedItem {
+                    id,
+                    name: name.clone(),
+                    file,
+                    display_lut: *display_lut,
+                };
+                if repair {
+                    report.updated.push(item);
+                } else {
+                    report.unchanged.push(item);
+                }
+                continue;
+            }
+            touched.insert(id.clone());
+            let mut replaces = None;
+            match &slot {
+                Slot::Upgrade { old_file, .. } => replaced_files.push(old_file.clone()),
+                Slot::Claim { old, .. } => {
+                    replaced_files.push(old.file.clone());
+                    replaces = Some(old.id.clone());
+                    claimed += 1;
+                }
+                _ => {}
             }
             let dest = paths.file(&file);
             let write = match &slot {
-                Slot::Add { .. } | Slot::Replace { .. } | Slot::Upgrade { .. } => true,
+                Slot::Add { .. }
+                | Slot::Replace { .. }
+                | Slot::Upgrade { .. }
+                | Slot::Claim { .. } => true,
                 // Already imported: write again only if the library's copy is gone or altered.
                 Slot::Existing { .. } => hash_file(&dest).ok().as_deref() != Some(sha256.as_str()),
-                Slot::Superseded { .. } => false,
+                Slot::Superseded { .. } | Slot::Same { .. } => false,
             };
             if write && staged_dests.insert(dest.clone()) {
                 if let Some(parent) = dest.parent() {
@@ -695,15 +776,19 @@ pub fn import(
                     lut_size: recognized.lut_size.unwrap_or(0),
                     imported: &imported_at,
                     url: Some(db.page_url()),
+                    replaces: replaces.as_ref(),
                 },
             );
             let item = ImportedItem {
                 id,
                 name: spec.name.clone(),
                 file,
-                display_lut: matches!(spec.kind, plan::SpecKind::Display { .. }),
+                display_lut: matches!(spec.kind, SpecKind::Display { .. }),
             };
-            if is_new {
+            if matches!(slot, Slot::Claim { .. }) {
+                // Not a new look: the person's entry became ARRI's.
+                report.updated.push(item);
+            } else if is_new {
                 report.added.push(item);
             } else if write
                 || changed
@@ -756,12 +841,15 @@ pub fn import(
         }
         return Err(e.into());
     }
-    // The look files that a `.cube` has replaced are not in the list any more.
+    // The look files that a `.cube` has replaced, and the own LUTs that ARRI's package has
+    // claimed (their ARRI copy is written), are not in the list any more.
     for old in &replaced_files {
         if !manifest
             .looks
             .iter()
-            .any(|l| l.file.eq_ignore_ascii_case(old))
+            .map(|l| l.file.as_str())
+            .chain(manifest.display_luts.iter().map(|d| d.file.as_str()))
+            .any(|f| f.eq_ignore_ascii_case(old))
         {
             let path = paths.file(old);
             if std::fs::remove_file(&path).is_ok()
@@ -780,6 +868,36 @@ pub fn import(
                 format!("{kept_cube} looks were")
             }
         ));
+    }
+    if kept_cube_here > 0 {
+        report.notes.push(if kept_cube_here == 1 {
+            "1 look came both as a 3D LUT and as a look file. The 3D LUT is kept: it has more points."
+                .to_string()
+        } else {
+            format!(
+                "{kept_cube_here} looks came both as 3D LUTs and as look files. The 3D LUTs are kept: they have more points."
+            )
+        });
+    }
+    if claimed > 0 {
+        report.notes.push(if claimed == 1 {
+            "1 of your own LUTs is a file from ARRI's library, so it moved to the ARRI looks. It is not listed twice."
+                .to_string()
+        } else {
+            format!(
+                "{claimed} of your own LUTs are files from ARRI's library, so they moved to the ARRI looks. They are not listed twice."
+            )
+        });
+    }
+    if same_bytes > 0 {
+        report.notes.push(if same_bytes == 1 {
+            "1 file is the same as a LUT that is already imported under another name, so it was not added again."
+                .to_string()
+        } else {
+            format!(
+                "{same_bytes} files are the same as LUTs that are already imported under other names, so they were not added again."
+            )
+        });
     }
     if !replaced_files.is_empty() {
         report.notes.push(format!(
