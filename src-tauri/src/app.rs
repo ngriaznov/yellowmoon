@@ -39,7 +39,13 @@ pub fn run() {
     let protocol_frames = Arc::clone(&frames);
     let builder = commands::builder();
 
-    let app = tauri::Builder::default()
+    let mut app_builder = tauri::Builder::default();
+    // The page measures itself (`src/perf.ts`) when asked with `?perf` or `localStorage.ymPerf`; the Mac
+    // viewport job can do neither, so `YM_PERF` reaches the page as a flag set before its scripts run.
+    if perf::page_requested() {
+        app_builder = app_builder.plugin(perf::page_plugin::<tauri::Wry>());
+    }
+    let app = app_builder
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         // Asynchronous: the handler of a synchronous scheme runs on the main thread (wry calls it from

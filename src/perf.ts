@@ -3,7 +3,8 @@
  * counts what it does itself: the animation frames that came late, how often some screens draw, how often the store tells its
  * listeners, and what the commands and events of the core cost.
  *
- * Off unless the page was opened with `?perf` or `localStorage.ymPerf` is set (`1`). Off, nothing is recorded and nothing is wrapped:
+ * Off unless the page was opened with `?perf`, the shell was started with `YM_PERF` (it sets `window.__YM_PERF__` before the page runs),
+ * or `localStorage.ymPerf` is set (`1`). Off, nothing is recorded and nothing is wrapped:
  * `perfCount` is an empty function and `getApi()` hands out the plain api. On, `window.__ymPerf.snapshot()` returns one JSON object
  * (for Playwright, and for the Mac job that reads it back after a scripted drag). Everything stays in the page: nothing is sent
  * anywhere (AGENTS rule 7).
@@ -204,10 +205,14 @@ export function createPerf(enabled: boolean, now: () => number = () => performan
 }
 
 /**
- * Whether this page was asked to measure: `?perf` (or `?perf=1`) in the address, or `ymPerf` set in `localStorage` (not "0", "false" or
- * empty). Either may be unreadable (a private window, blocked site data): that means off.
+ * Whether this page was asked to measure, in this order: `?perf` (or `?perf=1`) in the address, where `?perf=0` and `?perf=false` say no
+ * and end the question; then `window.__YM_PERF__ === true`, which the shell sets before the page runs when it was started with
+ * `YM_PERF` (the Mac viewport job has no address to add to and no storage to fill); then `ymPerf` set in `localStorage` (not "0",
+ * "false" or empty). The storage may be unreadable (a private window, blocked site data): that means off.
+ *
+ * `shell` is what the shell left in `window.__YM_PERF__`; only the value `true` counts.
  */
-export function perfRequested(search: string, storage: Pick<Storage, "getItem"> | null): boolean {
+export function perfRequested(search: string, storage: Pick<Storage, "getItem"> | null, shell: unknown = shellFlag()): boolean {
   const off = (value: string | null): boolean => value === null || value === "0" || value === "false";
   try {
     const params = new URLSearchParams(search);
@@ -215,12 +220,18 @@ export function perfRequested(search: string, storage: Pick<Storage, "getItem"> 
   } catch {
     // An address that can't be read asks for nothing.
   }
+  if (shell === true) return true;
   try {
     const stored = storage?.getItem("ymPerf") ?? null;
     return !off(stored) && stored !== "";
   } catch {
     return false;
   }
+}
+
+/** What the shell left in `window.__YM_PERF__` (nothing in a browser and in a build that was not asked to measure). */
+function shellFlag(): unknown {
+  return (globalThis as { __YM_PERF__?: unknown }).__YM_PERF__;
 }
 
 function pageStorage(): Storage | null {
@@ -231,7 +242,7 @@ function pageStorage(): Storage | null {
   }
 }
 
-/** The page's measuring: on with `?perf` or `localStorage.ymPerf`. */
+/** The page's measuring: on with `?perf`, `window.__YM_PERF__` (the shell's) or `localStorage.ymPerf`. */
 export const perf: Perf = createPerf(perfRequested(typeof location === "undefined" ? "" : location.search, pageStorage()));
 
 const noop = (): void => undefined;

@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 import type { Page } from "@playwright/test";
-import { openApp, openPhotos, setValue } from "./helpers/app";
+import { dropFiles, openApp, openPhotos, setValue } from "./helpers/app";
 
 // Desktop feel (docs/11 §Desktop feel, M3-16 to M3-18) in a real browser against the mocked API. The owner, 2026-10-16: "UI in Yellowmoon
 // is sluggish. I can select UI text, when I pan photo with two fingers on trackpad - all app moves." What cannot be shown here is WebKit's
@@ -215,6 +215,73 @@ test.describe("text is not selectable, except where people copy it", () => {
     await expect(page.getByRole("dialog", { name: "Preferences" })).toBeVisible();
     expect(await page.locator(".ym-pref__hint").first().evaluate((el) => getComputedStyle(el).userSelect)).toBe("text");
     await page.keyboard.press("Escape");
+  });
+
+  /** The page menu is cancelled over the page and left alone over a selectable text (Copy lives in it). */
+  const menuCancelled = (page: Page, selector: string): Promise<boolean> =>
+    page.evaluate((sel) => {
+      const el = document.querySelector(sel);
+      if (!el) throw new Error(`no ${sel}`);
+      const event = new MouseEvent("contextmenu", { bubbles: true, cancelable: true });
+      el.dispatchEvent(event);
+      return event.defaultPrevented;
+    }, selector);
+
+  /** What a person does with an error before pasting it into a bug report: triple click it, and have the menu offer Copy. */
+  async function expectCopyable(page: Page, selector: string, text: string): Promise<void> {
+    const el = page.locator(selector);
+    await expect(el).toContainText(text);
+    expect(await el.evaluate((node) => getComputedStyle(node).userSelect), `${selector} user-select`).toBe("text");
+    await el.click({ clickCount: 3 });
+    expect(await selection(page), `${selector} selection`).toContain(text);
+    expect(await menuCancelled(page, selector), `${selector} page menu cancelled`).toBe(false);
+  }
+
+  const LOOK_LIBRARY = "ARRI_LookLibrary_LogC4.zip";
+
+  /** From Start, with no ARRI looks imported, into the wizard's second step (the files). */
+  async function wizardFiles(page: Page, extra: Record<string, string | number> = {}): Promise<void> {
+    await openApp(page, { mockLooks: 0, ...extra });
+    await page.getByRole("button", { name: "Import →" }).click();
+    await expect(page.getByRole("heading", { level: 1, name: "Choose what to import" })).toBeVisible();
+    await page.locator(".ym-wizard__footer").getByRole("button", { name: /^Next/ }).click();
+    await expect(page.getByRole("heading", { level: 1, name: "Download from ARRI" })).toBeVisible();
+  }
+
+  test("the error when macOS refuses the Downloads folder can be selected and copied", async ({ page }) => {
+    await wizardFiles(page, { mockDownloadsDenied: 1 });
+    await page.getByRole("switch", { name: "Watch my Downloads folder" }).click();
+    await expectCopyable(page, ".ym-wizard__problem", "Yellowmoon can't open your Downloads folder.");
+  });
+
+  test("the error of a look import that failed can be selected and copied", async ({ page }) => {
+    await wizardFiles(page);
+    await dropFiles(page, [LOOK_LIBRARY]);
+    const footer = page.locator(".ym-wizard__footer");
+    await expect(footer.getByRole("button", { name: /^Next/ })).not.toHaveAttribute("aria-disabled", "true");
+    await footer.getByRole("button", { name: /^Next/ }).click();
+    await expect(page.getByRole("table", { name: "What arrived" })).toBeVisible();
+    await expect(page.getByText("Checking", { exact: true })).toHaveCount(0);
+    await page.evaluate(() => window.__yellowmoon!.mockApi.failNext("looksImport", { scope: "looks", message: "The looks folder can't be written to. Check its permissions." }));
+    await footer.getByRole("button", { name: /^Import/ }).click();
+    await expect(page.getByRole("heading", { level: 1, name: "Not imported" })).toBeVisible();
+    await expectCopyable(page, ".ym-wizard__callout--error > span", "The looks folder can't be written to.");
+    // The button next to it is still a button: nothing to select in it.
+    expect(await page.getByRole("button", { name: "Try again" }).evaluate((el) => getComputedStyle(el).userSelect)).toBe("none");
+  });
+
+  test("the notice of a drop with no ARW files can be selected and copied", async ({ page }) => {
+    await openApp(page);
+    await dropFiles(page, ["notes.txt"]);
+    await expectCopyable(page, ".ym-drop-zone__notice", "No ARW files in what you dropped.");
+  });
+
+  test("a note that is only information is not selectable: the class of the Start notice is not enough", async ({ page }) => {
+    await photos(page);
+    await page.keyboard.press("Meta+e");
+    const note = page.locator(".ym-row-note:not([role='alert'])").first();
+    await expect(note).toBeVisible();
+    expect(await note.evaluate((el) => getComputedStyle(el).userSelect)).toBe("none");
   });
 
   test("typing in the search field and in a value box still works", async ({ page }) => {

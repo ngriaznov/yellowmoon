@@ -10,6 +10,12 @@
   // The helpers shared with the other drivers of the real shell (`kit.js`).
   const { invoke, sleep, send, waitFor, q, qa, loaded, textOf, key, frame, region, zoomLabel, emit, dropPaths } = window.__YM_KIT__;
   const results = [];
+  /**
+   * Where a thumbnail is served: the `ym-frame` scheme, then the launch id (the app's start time in hex milliseconds, a hyphen and a
+   * count: a picture of an earlier run cannot be shown), then the file (`docs/01` IPC). Windows serves the scheme from `http://ym-frame.localhost`.
+   * The shape is the shell's (`src-tauri/src/viewport.rs`, `scheme_url`); `src/api/frameAddress.node.test.ts` checks this pattern against it.
+   */
+  const THUMBNAIL_ADDRESS = /^(ym-frame:\/\/localhost|http:\/\/ym-frame\.localhost)\/[0-9a-f]+-[0-9a-f]+\/thumb-\d+-\d+\.png$/;
 
   function record(name, ok, detail) {
     const entry = { name, ok: !!ok, detail: detail === undefined ? "" : String(detail) };
@@ -85,7 +91,7 @@
     const thumbSources = qa(".ym-filmstrip__thumb img").filter(loaded).map((img) => img.src);
     record(
       "the thumbnails load from the ym-frame scheme, as addresses and not as bytes of the event",
-      thumbSources.length >= 1 && thumbSources.every((src) => /^(ym-frame:\/\/localhost|http:\/\/ym-frame\.localhost)\/thumb-\d+-\d+\.png$/.test(src)),
+      thumbSources.length >= 1 && thumbSources.every((src) => THUMBNAIL_ADDRESS.test(src)),
       thumbSources[0] || "no thumbnail",
     );
     await waitFor("look tiles", () => qa(".ym-look-tile img").filter(loaded).length >= 1, config.lookTimeoutMs);

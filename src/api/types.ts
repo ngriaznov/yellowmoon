@@ -531,7 +531,7 @@ export interface ViewportInfo {
 
 /**
  * `viewport_frame` (addition, fallback viewport only): a new frame of the photo cell is ready. `url` is a PNG
- * (`ym-frame://localhost/frame-<seq>.png`) of the cell's size in device pixels, letterbox included, in Display P3.
+ * (`ym-frame://localhost/<launch>/frame-<seq>.png`) of the cell's size in device pixels, letterbox included, in Display P3.
  * An empty `url` with a size of 0 × 0 says there is no picture any more: take the image away.
  */
 export interface ViewportFrame {
@@ -716,11 +716,12 @@ export interface PhotoProgress {
  * `thumbnail_ready { id, url }`: the photo's thumbnail, a PNG of at most 240 px on its long edge, is at `url`. The picture does not
  * cross the bridge (as an array of byte values it was four times its size in JSON, 125 MB for 500 photos): the shell serves it on the
  * `ym-frame` scheme and an `<img>` loads it. A new thumbnail of the same photo (a look, a crop or a turn was applied) has a new
- * address. `url` is any address an `<img>` can load: the mock makes `blob:` ones.
+ * address, and so does the same thumbnail in the next launch of the app (`<launch>`). `url` is any address an `<img>` can load: the mock makes `blob:` ones.
  */
 export interface ThumbnailReady {
   id: PhotoId;
-  /** Where the PNG is (`ym-frame://localhost/thumb-<id>-<version>.png`, `http://ym-frame.localhost/…` on Windows). */
+  /** Where the PNG is (`ym-frame://localhost/<launch>/thumb-<id>-<version>.png`, `http://ym-frame.localhost/…` on Windows; `<launch>` is the app's
+   * start time in hex milliseconds, a hyphen and a count). */
   url: string;
 }
 

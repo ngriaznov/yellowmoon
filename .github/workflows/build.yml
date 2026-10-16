@@ -198,6 +198,12 @@ jobs:
             grep -E "ym::perf|smoke: perf" viewport/app.log | cut -c1-1500 || true
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+          # The page's counters (src/perf.ts) are switched on by the shell: YM_PERF puts window.__YM_PERF__ in the page before its
+          # scripts run (src-tauri/src/perf.rs, page_plugin). A snapshot of null means the flag never arrived, and the summary would
+          # be missing every render count without anything failing: say so on the run.
+          if grep -q "smoke: perf page null" viewport/app.log; then
+            echo "::warning title=perf::the page had no counters (smoke: perf page null in viewport/app.log): YM_PERF did not reach src/perf.ts"
+          fi
           if ! grep -q "the native viewport shows a picture" viewport/app.log; then
             echo "::error title=Native viewport::the app never showed a picture in the native viewport (viewport/app.log)"
             exit 1

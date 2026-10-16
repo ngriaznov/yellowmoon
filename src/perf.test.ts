@@ -27,6 +27,31 @@ describe("perfRequested", () => {
     expect(perfRequested("", null)).toBe(false);
   });
 
+  it("is on when the shell asks for it (`window.__YM_PERF__ === true`, set before the page runs), with no address and nothing stored", () => {
+    // The Mac viewport job starts the app with YM_PERF=1: the page has no ?perf and no localStorage.ymPerf to be given.
+    expect(perfRequested("", null)).toBe(false);
+    expect(perfRequested("", storage(null), undefined)).toBe(false);
+    expect(perfRequested("", null, true)).toBe(true);
+    expect(perfRequested("", storage(null), true)).toBe(true);
+    // Only the value true counts: a string or a number a page left there is not the shell's flag.
+    for (const other of [false, "1", "true", 1, null, {}]) expect(perfRequested("", null, other), String(other)).toBe(false);
+    // An address that says no still wins over the shell.
+    expect(perfRequested("?perf=0", null, true)).toBe(false);
+  });
+
+  it("reads the shell's flag from the page's global by default", () => {
+    const page = globalThis as { __YM_PERF__?: unknown };
+    try {
+      expect(perfRequested("", null)).toBe(false);
+      page.__YM_PERF__ = true;
+      expect(perfRequested("", null)).toBe(true);
+      expect(perfRequested("", storage("0"))).toBe(true);
+    } finally {
+      delete page.__YM_PERF__;
+    }
+    expect(perfRequested("", null)).toBe(false);
+  });
+
   it("is off, not an error, when the storage cannot be read", () => {
     expect(
       perfRequested("", {

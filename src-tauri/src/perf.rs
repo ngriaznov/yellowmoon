@@ -68,6 +68,36 @@ fn enabled_by(variable: Option<&str>, development_build: bool) -> bool {
     }
 }
 
+/// Whether the page is told to measure itself (`src/perf.ts`). Only when `YM_PERF` asks for it by
+/// name, unlike [`enabled`]: a development build logs from Rust by default, but the page's own
+/// measuring wraps the command bridge and watches every animation frame, and a person running
+/// `tauri dev` did not ask for that. The Mac viewport job starts the app with `YM_PERF=1` and has
+/// no address to add `?perf` to and no `localStorage` to fill, so the shell sets the flag for it.
+#[must_use]
+pub fn page_requested() -> bool {
+    page_requested_by(std::env::var("YM_PERF").ok().as_deref())
+}
+
+/// `YM_PERF` set to anything but empty and `0` (the same reading as [`enabled_by`]).
+fn page_requested_by(variable: Option<&str>) -> bool {
+    variable.is_some_and(|value| !(value.is_empty() || value == "0"))
+}
+
+/// What the page reads before its first script runs: `perfRequested` in `src/perf.ts` takes
+/// `window.__YM_PERF__ === true` as a request to measure.
+const PAGE_FLAG_SCRIPT: &str = "window.__YM_PERF__ = true;";
+
+/// A plugin with no commands whose only job is an initialisation script: Tauri runs it in the main
+/// frame of every webview before the page's own scripts (the window of `tauri.conf.json`
+/// included, which a script added after the window exists would be too late for). It sets the
+/// flag [`page_requested`] stands for; add it to the builder only when that is true.
+#[must_use]
+pub fn page_plugin<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
+    tauri::plugin::Builder::new("ym-perf")
+        .js_init_script(PAGE_FLAG_SCRIPT)
+        .build()
+}
+
 // ---------------------------------------------------------------------------------------------
 // Counters
 // ---------------------------------------------------------------------------------------------
@@ -549,6 +579,39 @@ mod tests {
             "YM_PERF=0 turns a debug build off"
         );
         assert!(!enabled_by(Some(""), true));
+    }
+
+    #[test]
+    fn the_page_measures_only_when_the_variable_asks_for_it_by_name() {
+        // Unlike `enabled_by`, a development build does not turn the page's measuring on.
+        assert!(!page_requested_by(None));
+        assert!(!page_requested_by(Some("")));
+        assert!(!page_requested_by(Some("0")));
+        assert!(page_requested_by(Some("1")));
+        assert!(page_requested_by(Some("yes")));
+    }
+
+    #[test]
+    fn the_plugin_hands_the_page_its_flag_before_the_page_runs() {
+        use tauri::plugin::Plugin;
+        let plugin = page_plugin::<tauri::Wry>();
+        let script = plugin
+            .initialization_script_2()
+            .expect("the plugin has an initialisation script");
+        assert_eq!(script.script, "window.__YM_PERF__ = true;");
+        assert!(script.for_main_frame_only, "the page, not its frames");
+        // `src/perf.ts` reads exactly this name, and only the value `true`.
+        let reader = include_str!("../../src/perf.ts");
+        assert!(reader.contains("__YM_PERF__"), "src/perf.ts reads the flag");
+        assert!(reader.contains("shell === true"));
+    }
+
+    #[test]
+    fn the_plugin_registers_in_a_real_builder() {
+        let app = tauri::test::mock_builder()
+            .plugin(page_plugin())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()));
+        assert!(app.is_ok(), "{:?}", app.err());
     }
 
     #[test]
