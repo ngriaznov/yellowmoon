@@ -69,7 +69,7 @@ Application maths is in `docs/02-colour-pipeline.md` (C10). Intensity 0–100% p
 }
 ```
 
-A look file's entry has `"format": "alf4"` (or `"alf4c"`, `"aml"`) and its `file` ends in that extension; an entry with no `format` is a `.cube`, so a list written by 0.1.1 or earlier reads as it did (a `.cube` entry is written without the key, so a library of cubes is byte for byte what it was). An older build that meets a look file in the list shows the look as unusable (it tries to read the file as a `.cube`); nothing else about the list changes, so the version stays 1.
+A look file's entry has `"format": "alf4"` (or `"alf4c"`, `"aml"`) and its `file` ends in that extension; an entry with no `format` is a `.cube`, so a list written by 0.1.2 or earlier reads as it did (a `.cube` entry is written without the key, so a library of cubes is byte for byte what it was). An older build that meets a look file in the list shows the look as unusable (it tries to read the file as a `.cube`); nothing else about the list changes, so the version stays 1.
 
 The default look and the display rendering choice are preferences (`preferences.json`, `docs/01`), not part of the manifest.
 
@@ -77,7 +77,7 @@ Writes are atomic (write temp, fsync, rename) and take `looks/.lock` so the app 
 
 ## What users can import (checked against ARRI's page and downloads, 15 Oct 2026)
 
-ARRI's Look Files page (https://www.arri.com/en/learn/camera-systems/image-science/look-files; text pasted by Mykyta on 2026-10-15, and the five zips downloaded from it and listed, names only) offers these. The app imports all five: the three **3D-LUT** packages as `.cube` files and the two camera **look-file** packages as ARRI Look Files (since 0.1.2, section *ARRI Look Files* below). The two look-file packages hold the same looks as two of the 3D-LUT packages and are the same wizard package (the Choose step still lists five packages).
+ARRI's Look Files page (https://www.arri.com/en/learn/camera-systems/image-science/look-files; text pasted by Mykyta on 2026-10-15, and the five zips downloaded from it and listed, names only) offers these. The app imports all five: the three **3D-LUT** packages as `.cube` files and the two camera **look-file** packages as ARRI Look Files (since 0.1.3, section *ARRI Look Files* below). The two look-file packages hold the same looks as two of the 3D-LUT packages and are the same wizard package (the Choose step still lists five packages).
 
 | ARRI's title for the download | Size | Contents (read from the real zip) | Role in the app |
 |---|---|---|---|
@@ -141,7 +141,7 @@ Same importer plus one question: what does this LUT expect as input?
 
 Validation: the LUT must parse, be 3D (1D shaper allowed), size 2–129, all values finite. Rejected with a reason otherwise.
 
-## ARRI Look Files (`.alf4`, `.alf4c`, `.aml`; 0.1.2)
+## ARRI Look Files (`.alf4`, `.alf4c`, `.aml`; 0.1.3)
 
 Mykyta's question of 2026-10-16, "Can we also support ALF files?", answered after the formats were worked out from ARRI's public guides, the free Look Library downloads and files that ARRI's own look-builder wrote from LUTs of ours (`docs/14`). The reader is `ym_color::alf` (`crates/ym-color/src/alf.rs`: the byte layouts are in its module documentation); the importer, the manifest and the wizard are `ym-looks`.
 

@@ -16,7 +16,6 @@ moves the entries below from Unreleased into a dated section for that version.
 ### Changed
 
 - Importing again never duplicates a look. The same file under another name is not added a second time (a renamed copy of your own LUT stays one entry, and a file you imported on its own that is one of ARRI's looks becomes that ARRI look when you import ARRI's download), a folder that holds both ARRI libraries (3D LUTs and look files) gives one entry per look, and an import that adds nothing leaves the list of looks untouched.
-- Updates install themselves. The app checks for a new version every hour (was every 6 hours) and, when it finds one, downloads and installs it in the background; the header then says Update ready, which restarts into it at once, and the next launch runs it anyway. Until now the app only offered the update ("Update available") and waited for a click. An update still never interrupts an export, and "Check for updates automatically" in Preferences still switches all of it off.
 
 ## [0.1.2] - 2026-10-16
 

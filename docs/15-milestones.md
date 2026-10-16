@@ -221,7 +221,7 @@ Light, Colour (wheels), Detail, Curve (plot and histogram), RAW (camera card, sw
 
 **M3-09 · ARRI import wizard** (M1-10, M3-H2)
 Recogniser from `data/looks/arri-packages.json`, `tools/looks/fingerprint.py`, Downloads watcher, five-step UI, generic `.cube` question, `looks import/verify/default` CLI parity.
-*Done when:* wizard happy path and failure paths (wrong package, damaged look file, missing file) tested with synthetic packages; Mykyta imports the real packages successfully [M3-H4]. (0.1.2 reads ARRI Look Files too: `docs/08`.)
+*Done when:* wizard happy path and failure paths (wrong package, damaged look file, missing file) tested with synthetic packages; Mykyta imports the real packages successfully [M3-H4]. (0.1.3 reads ARRI Look Files too: `docs/08`.)
 
 **M3-10 · Signature look** (M1-10, M3-H1)
 `looks bake` tool and contact sheets; ship `signature.json` once designed.
