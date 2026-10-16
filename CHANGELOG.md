@@ -9,6 +9,12 @@ moves the entries below from Unreleased into a dated section for that version.
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.1.2] - 2026-10-16
+
+Updates install themselves.
+
 ### Changed
 
 - Updates install themselves. The app checks for a new version every hour (was every 6 hours) and, when it finds one, downloads and installs it in the background; the header then says Update ready, which restarts into it at once, and the next launch runs it anyway. Until now the app only offered the update ("Update available") and waited for a click. An update still never interrupts an export, and "Check for updates automatically" in Preferences still switches all of it off.
