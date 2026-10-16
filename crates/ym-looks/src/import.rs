@@ -150,8 +150,10 @@ pub enum ImportError {
     /// The chosen file or folder is not there.
     #[error("{} was not found. Choose it again.", .0.display())]
     SourceMissing(PathBuf),
-    /// Not a `.cube` file, a folder or a zip.
-    #[error("{0} is not a .cube file, a folder or a zip. Choose one of those.")]
+    /// Not a look file, a folder or a zip.
+    #[error(
+        "{0} is not a look file (.cube, .alf4, .alf4c or .aml), a folder or a zip. Choose one of those."
+    )]
     UnsupportedSource(String),
     /// The zip could not be opened.
     #[error("This zip cannot be opened. {0}. Download it again.")]

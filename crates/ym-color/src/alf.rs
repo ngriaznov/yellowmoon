@@ -365,8 +365,8 @@ pub struct Aml {
 pub enum AlfFile {
     /// An `.alf4`.
     Alf4(Alf4),
-    /// An `.alf4c`.
-    Alf4c(Alf4c),
+    /// An `.alf4c` (boxed: its three LUT slots and design data make it the largest container).
+    Alf4c(Box<Alf4c>),
     /// An `.aml`.
     Aml(Aml),
 }
@@ -709,7 +709,7 @@ fn parse_aml(bytes: &[u8]) -> Result<Aml, AlfError> {
 pub fn parse_file(bytes: &[u8]) -> Result<AlfFile, AlfError> {
     match AlfKind::sniff(bytes).ok_or(AlfError::NotALookFile)? {
         AlfKind::Alf4 => parse_alf4(bytes).map(AlfFile::Alf4),
-        AlfKind::Alf4c => parse_alf4c(bytes).map(AlfFile::Alf4c),
+        AlfKind::Alf4c => parse_alf4c(bytes).map(|f| AlfFile::Alf4c(Box::new(f))),
         AlfKind::Aml => parse_aml(bytes).map(AlfFile::Aml),
     }
 }
@@ -979,7 +979,7 @@ impl AlfFile {
         hdr: Option<&Lut3d>,
         note: &str,
     ) -> Self {
-        Self::Alf4c(Alf4c {
+        Self::Alf4c(Box::new(Alf4c {
             note: note.to_owned(),
             params: cdl_params(cdl),
             cmt: cmt.map(|l| LutBlock::from_lut3d(l, LOGC4_COLORSPACE, "cmt.cube")),
@@ -987,7 +987,7 @@ impl AlfFile {
             hdr: hdr.map(|l| {
                 LutBlock::from_lut3d(l, "com.apple.proapps.colorspace.rec2100.d65.pq", "hdr.cube")
             }),
-        })
+        }))
     }
 
     /// An `.aml` for a Rec.709 target, with the parameters of ARRI's library files. ART CMD

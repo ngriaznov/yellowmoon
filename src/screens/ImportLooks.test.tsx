@@ -232,7 +232,7 @@ describe("step 3 · Recognise", () => {
     expect(screen.getByRole("heading", { level: 1, name: "Check what arrived" })).toBeInTheDocument();
     const row = screen.getAllByRole("row")[1] as HTMLElement;
     expect(within(row).getByText("Not chosen")).toBeInTheDocument();
-    expect(row).toHaveTextContent("This is Look Library · LogC3, not Look Library · LogC4, which you chose. Download 'Look Library for LogC4 (3D-LUTs)' from ARRI's page, or go back and choose this one.");
+    expect(row).toHaveTextContent("This is Look Library · LogC3, not Look Library · LogC4, which you chose. Download 'Look Library for LogC4 (3D-LUTs)' (or 'Look Library for LogC4 (ALF4 Look Files)') from ARRI's page, or go back and choose this one.");
     expect(next()).toHaveAttribute("aria-disabled", "true");
     expect(screen.getByText("Look Library · LogC4 is missing. Go back and add it.")).toBeInTheDocument();
   });

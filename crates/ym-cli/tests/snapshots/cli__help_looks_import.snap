@@ -2,17 +2,17 @@
 source: crates/ym-cli/tests/cli.rs
 expression: "help(&[\"looks\", \"import\"])"
 ---
-Import ARRI look packages, folders of looks or `.cube` files into the look library
+Import ARRI look packages, folders of looks, `.cube` files or ARRI Look Files (`.alf4`, `.alf4c`, `.aml`) into the look library
 
 Usage: ym looks import [OPTIONS] <PATHS>...
 
 Arguments:
   <PATHS>...
-          Zip files, folders or `.cube` files to import
+          Zip files, folders, `.cube` files or ARRI Look Files (`.alf4`, `.alf4c`, `.aml`) to import
 
 Options:
       --input <ENCODING>
-          What a `.cube` file that is not part of an ARRI package expects as input
+          What a `.cube` file that is not part of an ARRI package expects as input. ARRI Look Files say it themselves, so it does not apply to them
 
           Possible values:
           - logc4:        LogC4 / ARRI Wide Gamut 4, log to log

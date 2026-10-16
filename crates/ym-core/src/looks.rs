@@ -172,6 +172,11 @@ pub struct LooksImportResult {
     pub display_luts_added: usize,
     /// Files whose hash matched a look or display LUT that was already imported.
     pub unchanged: usize,
+    /// Things worth telling the person, in plain words: an `.alf4c`'s display transforms are not
+    /// used; looks that stayed or became the 3D-LUT version of a library; a damaged list that was
+    /// set aside. Empty (and left out of the JSON) when there is nothing to say.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
 }
 
 /// How an import is run.
@@ -561,10 +566,20 @@ impl LookService {
             cancel: request.cancel.clone(),
             ..ImportOptions::default()
         };
-        let (_, report) =
+        let (recognition, report) =
             ym_looks::import::import_path(&mut lib, &self.packages, path, &options, progress)?;
         self.reload();
-        Ok(self.result_of(&report))
+        let mut result = self.result_of(&report);
+        // What the recognition found worth saying (the display transforms of an `.alf4c` that are
+        // not used), then what the import did.
+        result.notes = recognition
+            .issues
+            .iter()
+            .filter(|i| i.kind == ym_looks::recognize::IssueKind::DisplayTransformsIgnored)
+            .map(|i| i.message.clone())
+            .chain(report.notes.iter().cloned())
+            .collect();
+        Ok(result)
     }
 
     fn result_of(&self, report: &ImportReport) -> LooksImportResult {
@@ -587,6 +602,7 @@ impl LookService {
                 .filter(|i| i.display_lut)
                 .count(),
             unchanged: report.unchanged.len(),
+            notes: Vec::new(),
         }
     }
 

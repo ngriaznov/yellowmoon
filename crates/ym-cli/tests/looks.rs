@@ -6,6 +6,9 @@ mod common;
 use common::{Sandbox, head, json_lines, lines, names_in, text};
 use predicates::prelude::*;
 use serde_json::Value;
+use ym_color::alf::AlfFile;
+use ym_color::cdl::Cdl;
+use ym_color::lut::Lut3d;
 
 /// An identity 2-point cube with the red channel scaled by `red` and the given title.
 fn cube(title: &str, red: f64) -> String {
@@ -103,6 +106,154 @@ fn a_cube_file_needs_the_input_question_answered() {
         .stderr(predicate::str::contains(
             "Imported 0 looks, 1 already imported.",
         ));
+}
+
+/// A look file written by our own writer from a synthetic LUT (no ARRI file is involved).
+fn write_look_file(sb: &Sandbox, name: &str, kind: &str, cdl: Option<&Cdl>) -> std::path::PathBuf {
+    let dir = sb.root().join("looks");
+    std::fs::create_dir_all(&dir).expect("folder");
+    let lut = Lut3d::bake(5, [0.0; 3], [1.0; 3], |c| {
+        [c[0] * 0.8 + 0.1, c[1], c[2] * 0.9]
+    })
+    .expect("bake");
+    let file = match kind {
+        "alf4" => AlfFile::alf4(&lut, cdl, "", "look.cube"),
+        "aml" => AlfFile::aml(&lut, cdl, "look.cube"),
+        "alf4c" => AlfFile::alf4c(Some(&lut), cdl, Some(&lut), Some(&lut), ""),
+        other => panic!("{other}"),
+    };
+    let path = dir.join(name);
+    std::fs::write(&path, file.to_bytes().expect("write")).expect("write");
+    path
+}
+
+#[test]
+fn arri_look_files_import_without_the_input_question_and_keep_what_they_say() {
+    let sb = Sandbox::new();
+    let cdl = Cdl::new([1.2, 1.0, 0.9], [0.0; 3], [1.0; 3], 1.1).expect("cdl");
+    let alf4 = write_look_file(&sb, "Warm Pull.alf4", "alf4", Some(&cdl));
+    let aml = write_look_file(&sb, "Night.aml", "aml", None);
+    // No `--input`: the files say what they expect.
+    sb.ym()
+        .args(["looks", "import"])
+        .arg(&alf4)
+        .arg(&aml)
+        .assert()
+        .success()
+        .stdout("user:warm-pull\nuser:night\n")
+        .stderr(predicate::str::contains("Imported 2 looks."));
+    let out = sb.ym().args(["looks", "list", "--json"]).assert().success();
+    let v = json_lines(&out.get_output().stdout).remove(0);
+    let looks = v["looks"].as_array().expect("looks");
+    let find = |id: &str| looks.iter().find(|l| l["id"] == id).expect(id);
+    assert_eq!(find("user:warm-pull")["input"], "logc4");
+    assert_eq!(find("user:warm-pull")["name"], "Warm Pull");
+    assert_eq!(find("user:warm-pull")["group"]["kind"], "user");
+    assert_eq!(find("user:night")["input"], "logc3_to_rec709");
+    // The table says the same, with the words of the CLI.
+    let out = sb.ym().args(["looks", "list"]).assert().success();
+    let shown = text(&out.get_output().stdout);
+    assert!(
+        shown.contains("logc3-rec709") && shown.contains("Warm Pull"),
+        "{shown}"
+    );
+    // The copies keep the extension of the kind of file and verify clean.
+    let names: Vec<String> = walk(&sb.home().join("looks"))
+        .iter()
+        .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+        .collect();
+    assert!(names.contains(&"Warm Pull.alf4".to_owned()), "{names:?}");
+    assert!(names.contains(&"Night.aml".to_owned()), "{names:?}");
+    sb.ym()
+        .args(["looks", "verify"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "Checked 2 imported files: all fine.",
+        ));
+    // An answer to the question is not needed and changes nothing.
+    sb.ym()
+        .args(["looks", "import", "--input", "logc3"])
+        .arg(&alf4)
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "Imported 0 looks, 1 already imported.",
+        ));
+
+    // A look file renders: with the imported look, the picture is not the default's.
+    let arw = sb.arw("a.ARW");
+    let out = sb
+        .ym()
+        .args(["render", "--json", "--overwrite", "--look", "warm-pull"])
+        .arg(&arw)
+        .assert()
+        .success();
+    let o = json_lines(&out.get_output().stdout).remove(0);
+    assert_eq!(o["look"]["id"], "user:warm-pull");
+}
+
+#[test]
+fn an_alf4c_says_its_display_transforms_are_not_used_and_a_bad_look_file_says_why() {
+    let sb = Sandbox::new();
+    let alf4c = write_look_file(&sb, "Custom.alf4c", "alf4c", None);
+    sb.ym()
+        .args(["looks", "import"])
+        .arg(&alf4c)
+        .assert()
+        .success()
+        .stdout("user:custom\n")
+        .stderr(predicate::str::contains(
+            "Custom.alf4c: its own display transforms are not used; Yellowmoon's display rendering is.",
+        ));
+    // A damaged file: refused in plain words, nothing is added, exit 1.
+    let mut bytes = std::fs::read(&alf4c).expect("read");
+    let at = bytes.len() - 7;
+    bytes[at] ^= 0x08;
+    let damaged = sb.root().join("looks").join("Damaged.alf4c");
+    std::fs::write(&damaged, bytes).expect("write");
+    sb.ym()
+        .args(["looks", "import"])
+        .arg(&damaged)
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "Damaged.alf4c cannot be used. Its checksum does not match, so the file is damaged. Download it again.",
+        ));
+    // An .alf4c with no creative look, and an .aml made for another display.
+    let lut = Lut3d::identity(3).expect("identity");
+    let no_cmt = sb.root().join("looks").join("NoCmt.alf4c");
+    std::fs::write(
+        &no_cmt,
+        AlfFile::alf4c(None, None, Some(&lut), Some(&lut), "")
+            .to_bytes()
+            .expect("write"),
+    )
+    .expect("write");
+    sb.ym()
+        .args(["looks", "import"])
+        .arg(&no_cmt)
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains("no creative look (CMT)"));
+    let AlfFile::Aml(mut wide) = AlfFile::aml(&lut, None, "x") else {
+        unreachable!()
+    };
+    wide.colorspace = "com.apple.proapps.colorspace.rec2100.d65.pq".to_owned();
+    let pq = sb.root().join("looks").join("Wide.aml");
+    std::fs::write(&pq, AlfFile::Aml(wide).to_bytes().expect("write")).expect("write");
+    sb.ym()
+        .args(["looks", "import"])
+        .arg(&pq)
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "It is made for a Rec.2020 PQ display. Yellowmoon can use ARRI Look Files made for Rec.709.",
+        ));
+    // Only the first one is in the library.
+    let out = sb.ym().args(["looks", "list", "--json"]).assert().success();
+    let v = json_lines(&out.get_output().stdout).remove(0);
+    assert_eq!(v["looks"].as_array().expect("looks").len(), 3);
 }
 
 #[test]
@@ -263,7 +414,7 @@ fn import_of_something_that_is_not_a_look_fails_with_a_message() {
         .assert()
         .code(2)
         .stderr(predicate::str::contains(
-            "is not a .cube file, a folder or a zip",
+            "is not a look file (.cube, .alf4, .alf4c or .aml), a folder or a zip",
         ));
     sb.ym()
         .args(["looks", "import", "/nonexistent/looks.zip"])

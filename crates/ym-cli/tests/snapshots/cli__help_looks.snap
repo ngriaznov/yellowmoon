@@ -8,7 +8,7 @@ Usage: ym looks [OPTIONS] <COMMAND>
 
 Commands:
   list     List the built-in and imported looks, with ids, names, groups and inputs; the default look is marked
-  import   Import ARRI look packages, folders of looks or `.cube` files into the look library
+  import   Import ARRI look packages, folders of looks, `.cube` files or ARRI Look Files (`.alf4`, `.alf4c`, `.aml`) into the look library
   verify   Re-hash every imported look and report missing or changed files
   default  Set the look new photos get
   bake     Developer tool: bake a parametric look to a 33-point LUT and render a contact sheet

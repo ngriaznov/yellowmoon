@@ -342,7 +342,7 @@ fn the_alf2_library_is_the_logc3_to_rec709_look_library_in_three_strengths() {
             look.name,
             format!(
                 "Look 01 · {}{}",
-                &strength[..1].to_uppercase(),
+                strength[..1].to_uppercase(),
                 &strength[1..]
             )
         );

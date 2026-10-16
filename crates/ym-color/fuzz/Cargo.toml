@@ -22,6 +22,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "alf_parse"
+path = "fuzz_targets/alf_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "look_json"
 path = "fuzz_targets/look_json.rs"
 test = false

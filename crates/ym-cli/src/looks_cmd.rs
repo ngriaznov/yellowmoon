@@ -223,6 +223,11 @@ fn import(args: &LooksImportArgs, console: &mut Console) -> Result<u8, Failure> 
                 for look in &r.added {
                     data_line(&look.id.to_string());
                 }
+                // What the person should know: an .alf4c's display transforms are not used, a
+                // look that stayed the 3D-LUT version.
+                for note in &r.notes {
+                    console.info(&line_text(note));
+                }
                 console.detail(&format!(
                     "{}: {} looks, {} display LUTs, {} unchanged.",
                     path_text(path),

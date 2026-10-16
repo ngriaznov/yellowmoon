@@ -852,6 +852,7 @@ fn the_export_preferences_and_looks_types_have_the_fields_of_the_typescript_inte
             added: vec![],
             display_luts_added: 0,
             unchanged: 0,
+            notes: vec![],
         })
         .expect("json"),
     );

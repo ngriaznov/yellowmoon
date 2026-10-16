@@ -542,7 +542,8 @@ pub enum LooksCommand {
     /// List the built-in and imported looks, with ids, names, groups and inputs; the default look
     /// is marked.
     List(LooksListArgs),
-    /// Import ARRI look packages, folders of looks or `.cube` files into the look library.
+    /// Import ARRI look packages, folders of looks, `.cube` files or ARRI Look Files (`.alf4`,
+    /// `.alf4c`, `.aml`) into the look library.
     Import(LooksImportArgs),
     /// Re-hash every imported look and report missing or changed files.
     Verify,
@@ -577,10 +578,11 @@ pub enum InputArg {
 /// Arguments of `ym looks import`.
 #[derive(Debug, Args)]
 pub struct LooksImportArgs {
-    /// Zip files, folders or `.cube` files to import.
+    /// Zip files, folders, `.cube` files or ARRI Look Files (`.alf4`, `.alf4c`, `.aml`) to import.
     #[arg(required = true, value_name = "PATHS")]
     pub paths: Vec<PathBuf>,
-    /// What a `.cube` file that is not part of an ARRI package expects as input.
+    /// What a `.cube` file that is not part of an ARRI package expects as input. ARRI Look Files say
+    /// it themselves, so it does not apply to them.
     #[arg(long, value_enum, value_name = "ENCODING")]
     pub input: Option<InputArg>,
 }

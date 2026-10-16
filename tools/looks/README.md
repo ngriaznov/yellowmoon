@@ -4,13 +4,13 @@ Developer and HUMAN tooling for the look library (`docs/08-looks.md`). Python 3 
 
 ## `fingerprint.py` (HUMAN M3-H2)
 
-Teaches the app to recognise ARRI's five free look packages exactly. Run it once on this Mac after downloading the packages by hand from ARRI's Look Files page:
+Teaches the app to recognise ARRI's five free look packages exactly: the three 3D-LUT packages (`.cube`) and the two Look Files packages (`.alf4` for LogC4, `.aml` for LogC3; 0.1.2). Run it once on this Mac after downloading the packages by hand from ARRI's Look Files page:
 
 ```
 python3 -I tools/looks/fingerprint.py ~/Downloads/<package>.zip [<more zips>…]
 ```
 
-For every `.cube` file in a zip it records the path inside the zip, the size, the LUT size (`LUT_3D_SIZE`) and the SHA-256 in `data/looks/arri-packages.json`, under the matching package's `fingerprints`, with a short `observed` summary (zip name, counts, folder names). It never reads LUT data into its output, and it ignores `__MACOSX`, `._` files, `.alf4`, `.alf2` and PDFs like the importer does. The package is recognised from the zip name and contents using the patterns already in the file; if that is not unique, add `--package <id>` (for example `look-library-logc4`).
+For every look file in a zip (`.cube`, `.alf4` or `.aml`; a package holds one kind) it records the path inside the zip, the size, the LUT size (`LUT_3D_SIZE` of a `.cube`, the LUT size field in the header of a look file) and the SHA-256 in `data/looks/arri-packages.json`, under the matching package's `fingerprints`, with a short `observed` summary (zip name, counts, folder names). It never reads LUT data into its output, and it ignores `__MACOSX`, `._` files, `.alf4c`, `.xml` (ALF-1) and PDFs like the importer does, and any look file that is not of the package's kind. It reads only the header of a look file for the LUT size and checks no checksum: reading the look is the app's job (`ym_color::alf`). The package is recognised from the zip name and contents using the patterns already in the file; if that is not unique, add `--package <id>` (for example `look-library-logc4`).
 
 Other options: `--dry-run` shows what would be written, `--packages <file>` works on another copy, `--reformat` rewrites the list in the tool's layout.
 

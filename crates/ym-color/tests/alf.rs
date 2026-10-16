@@ -700,6 +700,70 @@ fn damaged_files_never_panic() {
                 // Whatever still reads is a usable look.
                 assert!((2..=129).contains(&look.lut.size()));
             }
+            // And whatever still reads as a container is written again as a file that reads back
+            // and is written as the same bytes (the third property of the fuzz target; compared as
+            // bytes because a NaN parameter is not equal to itself).
+            // (A string that was not UTF-8 reads with replacement characters and is not what was in
+            // the file, so a rebuilt file may differ from the one read; those are left out.)
+            if let Ok(file) = alf::parse_file(&damaged)
+                && !format!("{file:?}").contains('\u{FFFD}')
+                && let Ok(rebuilt) = file.to_bytes()
+            {
+                let again = alf::parse_file(&rebuilt).expect("a written file reads back");
+                assert_eq!(again.to_bytes().unwrap(), rebuilt);
+            }
         }
+    }
+}
+
+/// Writes the seed corpus of the `alf_parse` fuzz target (`crates/ym-color/fuzz`): one small valid
+/// file of each container, and an `.alf4c` with design data and one without a CMT.
+/// `YM_WRITE_ALF_SEEDS=fuzz/corpus/alf_parse cargo test -p ym-color --test alf seeds -- --ignored`
+/// (the path is relative to `crates/ym-color`, where cargo runs the test).
+#[test]
+#[ignore = "writes files: set YM_WRITE_ALF_SEEDS to the corpus folder"]
+fn write_the_fuzz_seeds() {
+    let Some(dir) = std::env::var_os("YM_WRITE_ALF_SEEDS").map(std::path::PathBuf::from) else {
+        eprintln!("YM_WRITE_ALF_SEEDS is not set: nothing written");
+        return;
+    };
+    std::fs::create_dir_all(&dir).expect("folder");
+    let AlfFile::Alf4c(mut design) = AlfFile::alf4c(
+        Some(&cube(2)),
+        None,
+        Some(&cube(2)),
+        Some(&cube(2)),
+        "design",
+    ) else {
+        unreachable!()
+    };
+    let sdr = design.sdr.as_mut().unwrap();
+    sdr.extra = b"PK\x03\x04 design".to_vec();
+    sdr.design_key = "key".to_owned();
+    let files: [(&str, Vec<u8>); 6] = [
+        ("alf4_2.alf4", alf4(2, Some(&strong_cdl()))),
+        ("alf4c_2.alf4c", alf4c(2, None)),
+        ("aml_2.aml", aml(2, Some(&strong_cdl()))),
+        (
+            "alf4c_design.alf4c",
+            AlfFile::Alf4c(design).to_bytes().unwrap(),
+        ),
+        (
+            "alf4c_no_cmt.alf4c",
+            AlfFile::alf4c(None, None, Some(&cube(2)), Some(&cube(2)), "")
+                .to_bytes()
+                .unwrap(),
+        ),
+        ("aml_no_lut.aml", {
+            let AlfFile::Aml(mut bare) = AlfFile::aml(&cube(2), None, "x") else {
+                unreachable!()
+            };
+            bare.size = 0;
+            bare.payload.clear();
+            AlfFile::Aml(bare).to_bytes().unwrap()
+        }),
+    ];
+    for (name, bytes) in files {
+        std::fs::write(dir.join(name), bytes).expect("write");
     }
 }

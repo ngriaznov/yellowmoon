@@ -9,6 +9,10 @@ moves the entries below from Unreleased into a dated section for that version.
 
 ## [Unreleased]
 
+### Added
+
+- ARRI Look Files. Yellowmoon now imports `.alf4` (ALEXA 35 looks), `.alf4c` (the creative look of a custom colour management; its own display transforms are not used, Yellowmoon's display rendering is) and `.aml` (looks for LogC3 cameras, made for Rec.709) next to `.cube` files, from the same places: Looks › Import, a folder, a zip or a single file, and `ym looks import`. A look file says what it expects as input, so it asks no question: a LogC4 look gets its colour correction and LUT, a Rec.709 look takes the place of the display rendering. The two Look Files downloads on ARRI's page (87 LogC4 looks, 261 LogC3 looks in three strengths) are recognised as packages, and a look that arrives both as a look file and as a 3D LUT stays one entry (the 3D LUT, which has more points, is kept). The file is kept byte for byte and checked on every load. Files for another colour space, ARRI's older `.xml` look files (ALF-1), damaged files and files with nothing to import are refused with a plain sentence, and the rest of a folder or zip still imports. The look's Intensity setting inside a file is not read (a look opens at 100 %). `docs/08-looks.md` has the formats and what is still open.
+
 ### Changed
 
 - Updates install themselves. The app checks for a new version every hour (was every 6 hours) and, when it finds one, downloads and installs it in the background; the header then says Update ready, which restarts into it at once, and the next launch runs it anyway. Until now the app only offered the update ("Update available") and waited for a click. An update still never interrupts an export, and "Check for updates automatically" in Preferences still switches all of it off.

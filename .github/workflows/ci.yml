@@ -733,6 +733,7 @@ jobs:
           - { crate: ym-raw, target: ycbcr }
           - { crate: ym-raw, target: decode_any, dict: fuzz/dictionaries/tiff.dict }
           - { crate: ym-color, target: cube_parse }
+          - { crate: ym-color, target: alf_parse }
           - { crate: ym-color, target: look_json }
     steps:
       - uses: actions/checkout@v4
