@@ -654,7 +654,8 @@ pub struct OpenOptions {
 pub struct OpenOutcome {
     /// The photos added, in filmstrip order.
     pub added: Vec<PhotoId>,
-    /// ARW files that were already in the session (same file) and so were not added again.
+    /// ARW files that were already in the session (same file) and so were not added again. A file
+    /// counts once, however often the call listed it.
     pub already_open: usize,
     /// Files and folder entries that were ignored: not ARW, or hidden `.` files.
     pub ignored: usize,
@@ -1287,7 +1288,12 @@ impl Session {
             let mut fresh = Vec::new();
             for path in collected.files {
                 let canon = canonical(&path);
-                if st.known.contains(&canon) || !seen.insert(canon.clone()) {
+                // A file listed twice in one call (a folder and a file inside it) is one file:
+                // the repeat is neither added nor counted as already open.
+                if !seen.insert(canon.clone()) {
+                    continue;
+                }
+                if st.known.contains(&canon) {
                     outcome.already_open += 1;
                 } else {
                     fresh.push((absolute(&path), canon));

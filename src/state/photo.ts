@@ -37,6 +37,24 @@ export function folderSubline(session: Pick<SessionState, "photos">): string {
   return date ? `${date} · ${count} ${noun}` : `${count} ${noun}`;
 }
 
+/**
+ * The session after files were added to one that is already open. `snapshot` is what the shell answered `open_paths` or `open_dialog`
+ * with: taken a little before the answer is handled, so about the photos that were open it is older than what the page holds, which
+ * events, clicks and picks have been changing since. The core only appends, so the page's photos keep their places and their entries
+ * (status, picked) and the current photo stays; the snapshot supplies the photos that are new, the folder name and the default export
+ * folder. A status that changed after the snapshot comes as an event, which a snapshot taken earlier would otherwise undo for good.
+ */
+export function mergeSession(old: SessionState, snapshot: SessionState): SessionState {
+  const known = new Set(old.photos.map((p) => p.id));
+  const photos = [...old.photos, ...snapshot.photos.filter((p) => !known.has(p.id))];
+  return {
+    ...snapshot,
+    photos,
+    current_index: old.current_index ?? snapshot.current_index,
+    picked: photos.filter((p) => p.picked).map((p) => p.id),
+  };
+}
+
 /** True when a photo can be shown and edited. */
 export const isReady = (photo: Pick<PhotoSummary, "status">): boolean => photo.status.kind === "ready";
 

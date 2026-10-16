@@ -61,7 +61,7 @@ pub enum AppEvent {
     LooksImportProgress(LooksImportProgress),
     /// `download_found`.
     DownloadFound(DownloadFound),
-    /// `settings_changed` (addition).
+    /// `settings_changed` (addition): after a Pick white click, and for each photo a paste changed.
     SettingsChanged(PhotoId),
     /// `export_busy` (addition).
     ExportBusy(bool),

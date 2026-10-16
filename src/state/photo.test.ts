@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { PhotoStatus, PhotoSummary } from "../api/types";
-import { bytesToUrl, cameraLine, captureDate, developFraction, folderSubline, photoName, shutterLabel } from "./photo";
+import type { PhotoStatus, PhotoSummary, SessionState } from "../api/types";
+import { bytesToUrl, cameraLine, captureDate, developFraction, folderSubline, mergeSession, photoName, shutterLabel } from "./photo";
 
 const photo = (over: Partial<PhotoSummary> = {}): PhotoSummary => ({
   id: 4,
@@ -69,5 +69,41 @@ describe("photo helpers", () => {
   it("turns PNG bytes into an image URL", () => {
     const url = bytesToUrl([137, 80, 78, 71]);
     expect(url).toMatch(/^(data:image\/png;base64,|blob:)/);
+  });
+});
+
+describe("mergeSession", () => {
+  const session = (photos: PhotoSummary[], over: Partial<SessionState> = {}): SessionState => ({
+    folder_name: "Lisbon",
+    photos,
+    current_index: 0,
+    picked: photos.filter((p) => p.picked).map((p) => p.id),
+    default_export_folder: "Lisbon export",
+    ...over,
+  });
+
+  it("keeps the page's own photos and current photo, and appends the photos that are new", () => {
+    const page = session([photo({ id: 1 }), photo({ id: 2, picked: true }), photo({ id: 3 })], { current_index: 2 });
+    const snapshot = session(
+      [photo({ id: 1, status: { kind: "developing", stage: "decode" } }), photo({ id: 2 }), photo({ id: 3 }), photo({ id: 4, status: { kind: "waiting" } })],
+      { current_index: 0, folder_name: "Lisbon and Porto", default_export_folder: "Lisbon and Porto export", opened: { added: 1, already_open: 0 } },
+    );
+    const merged = mergeSession(page, snapshot);
+    expect(merged.photos.map((p) => p.id)).toEqual([1, 2, 3, 4]);
+    expect(merged.photos[0]?.status).toEqual({ kind: "ready" });
+    expect(merged.photos[3]?.status).toEqual({ kind: "waiting" });
+    expect(merged.current_index).toBe(2);
+    expect(merged.picked).toEqual([2]);
+    expect(merged.folder_name).toBe("Lisbon and Porto");
+    expect(merged.default_export_folder).toBe("Lisbon and Porto export");
+    expect(merged.opened).toEqual({ added: 1, already_open: 0 });
+  });
+
+  it("takes the snapshot's current photo when the page had none, and adds nothing for photos it already has", () => {
+    const page = session([], { current_index: null });
+    const snapshot = session([photo({ id: 1 })], { current_index: 0 });
+    expect(mergeSession(page, snapshot).current_index).toBe(0);
+    const same = mergeSession(snapshot, snapshot);
+    expect(same.photos).toHaveLength(1);
   });
 });

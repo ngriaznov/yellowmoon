@@ -6,12 +6,14 @@
 //! shell's own business: Show Looks Folder, the Help links, Report a Problem, About, Quit and the
 //! standard window items.
 //!
-//! Shortcuts are given to the items whose keys do not also type: ⌘, ⌘O ⇧⌘O ⌘E ⌘W ⌘= ⌘- ⌘Q and the
-//! three settings items ⇧⌘C ⇧⌘V ⌥⇧⌘V (no text box uses them: the system's Copy and Paste are plain
-//! ⌘C and ⌘V). ⌘Z, ⇧⌘Z and ⌘A stay with the webview, which sends them to a text box when one has
-//! focus and to the photos otherwise; a menu item bound to them would take the keys away from the
-//! text boxes. The menu shows those items without a key. The single-key shortcuts (P, Z, C, W, \ and
-//! the arrows) are not menu shortcuts for the same reason.
+//! Shortcuts are given to the items whose keys do not also type: ⌘, ⌘O ⇧⌘O ⌘E ⌘W ⌘= ⌘- ⌘Q. ⌘Z,
+//! ⇧⌘Z and ⌘A stay with the webview, which sends them to a text box when one has focus and to the
+//! photos otherwise; a menu item bound to them would take the keys away from the text boxes. So do
+//! the three settings items, whose keys ⇧⌘C, ⇧⌘V and ⌥⇧⌘V are the webview's too: ⇧⌘V and ⌥⇧⌘V mean
+//! "Paste and Match Style" in other apps, and a key that the page leaves alone in a text box falls
+//! through to the menu on macOS and would paste the settings onto photos from there. The menu
+//! shows all of these items without a key. The single-key shortcuts (P, Z, C, W, \ and the arrows)
+//! are not menu shortcuts for the same reason.
 //!
 //! Three items change with what is open: Copy Settings needs a developed current photo, Paste
 //! Settings something copied as well, and Paste Settings to Picked something copied and a picked
@@ -189,19 +191,19 @@ pub fn spec() -> Vec<Menus> {
                 web(
                     "copy_settings",
                     "Copy Settings",
-                    Some("CmdOrCtrl+Shift+C"),
+                    None,
                     MenuAction::CopySettings,
                 ),
                 web(
                     "paste_settings",
                     "Paste Settings",
-                    Some("CmdOrCtrl+Shift+V"),
+                    None,
                     MenuAction::PasteSettings,
                 ),
                 web(
                     "paste_settings_to_picked",
                     "Paste Settings to Picked",
-                    Some("CmdOrCtrl+Alt+Shift+V"),
+                    None,
                     MenuAction::PasteSettingsToPicked,
                 ),
                 Separator,
@@ -632,47 +634,43 @@ mod tests {
                     "CmdOrCtrl+A",
                     "CmdOrCtrl+X",
                     "CmdOrCtrl+C",
-                    "CmdOrCtrl+V"
+                    "CmdOrCtrl+V",
+                    // The webview's table drops these in a text box (`shortcutFor`); a menu item
+                    // bound to them would fire there, because macOS passes the key the page left
+                    // alone on to the menu.
+                    "CmdOrCtrl+Shift+C",
+                    "CmdOrCtrl+Shift+V",
+                    "CmdOrCtrl+Alt+Shift+V"
                 ]
                 .contains(&s),
                 "{s} belongs to the text boxes"
             );
         }
-        // ⌘, ⌘O ⇧⌘O ⌘E ⌘W ⌘= ⌘- and the settings items ⇧⌘C ⇧⌘V ⌥⇧⌘V
-        assert_eq!(seen.len(), 10);
+        // ⌘, ⌘O ⇧⌘O ⌘E ⌘W ⌘= ⌘-
+        assert_eq!(seen.len(), 7);
     }
 
     #[test]
-    fn the_settings_items_have_their_keys_and_follow_the_state() {
+    fn the_settings_items_have_no_native_key_and_follow_the_state() {
         let by_id: std::collections::HashMap<_, _> = items()
             .into_iter()
             .map(|(id, label, shortcut, action)| (id, (label, shortcut, action)))
             .collect();
-        for (id, label, shortcut, action) in [
-            (
-                "copy_settings",
-                "Copy Settings",
-                "CmdOrCtrl+Shift+C",
-                MenuAction::CopySettings,
-            ),
+        // No key: ⇧⌘C, ⇧⌘V and ⌥⇧⌘V are the webview's, which leaves them to a text box.
+        for (id, label, action) in [
+            ("copy_settings", "Copy Settings", MenuAction::CopySettings),
             (
                 "paste_settings",
                 "Paste Settings",
-                "CmdOrCtrl+Shift+V",
                 MenuAction::PasteSettings,
             ),
             (
                 "paste_settings_to_picked",
                 "Paste Settings to Picked",
-                "CmdOrCtrl+Alt+Shift+V",
                 MenuAction::PasteSettingsToPicked,
             ),
         ] {
-            assert_eq!(
-                by_id[id],
-                (label, Some(shortcut), Do::Webview(action)),
-                "{id}"
-            );
+            assert_eq!(by_id[id], (label, None, Do::Webview(action)), "{id}");
             assert_eq!(action_for(id), Some(Do::Webview(action)));
             assert!(STATE_ITEMS.contains(&id));
         }

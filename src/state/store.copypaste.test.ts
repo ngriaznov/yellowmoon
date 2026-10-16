@@ -5,7 +5,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createMockApi } from "../api.mock";
 import type { MockApi, MockOptions } from "../api.mock";
-import type { ResolvedSettings } from "../api/types";
+import type { PasteReport, PhotoSummary, ResolvedSettings, SessionState, SettingsPatch } from "../api/types";
 import { ALREADY_OPEN_NOTICE, createStore, NO_ARW_NOTICE, openedNotice, pastedNotice } from "./store";
 import type { AppStore } from "./store";
 
@@ -137,6 +137,53 @@ describe("adding photos on the Photos screen", () => {
     expect(store.getState().notice).toBeNull();
     await store.openDialog("files");
     expect(store.getState().notice).toBeNull();
+  });
+
+  it("keeps what the page learned after the shell took its snapshot: a status, the current photo and the picks", async () => {
+    const { api, store } = await onPhotos({ current: 3 });
+    await store.setCurrent(5);
+    await store.setPicked(2, true);
+    const page = store.getState().session!;
+    const added: PhotoSummary = { ...page.photos[0]!, id: 99, file_name: "DSC09001.ARW", status: { kind: "waiting" }, picked: false };
+    // The snapshot is older than the page: photo 7 was still developing in it, photo 2 was not picked yet, photo 1 was the current one.
+    const snapshot: SessionState = {
+      ...page,
+      folder_name: "Lisbon and more",
+      photos: [...page.photos.map((p): PhotoSummary => (p.id === 7 ? { ...p, status: { kind: "developing", stage: "thumbnail" } } : { ...p, picked: false })), added],
+      current_index: 0,
+      picked: [],
+      opened: { added: 1, already_open: 0 },
+    };
+    vi.spyOn(api, "openPaths").mockResolvedValue(snapshot);
+    await store.openPaths(["DSC09001.ARW"]);
+
+    const session = store.getState().session!;
+    expect(session.photos.map((p) => p.id)).toEqual([...page.photos.map((p) => p.id), 99]);
+    // The cell that became ready after the snapshot stays ready: no later event would say so again.
+    expect(session.photos.find((p) => p.id === 7)?.status.kind).toBe("ready");
+    expect(session.photos.find((p) => p.id === 99)?.status.kind).toBe("waiting");
+    expect(session.current_index).toBe(page.current_index);
+    expect(session.photos.find((p) => p.id === 2)?.picked).toBe(true);
+    expect(session.picked).toEqual([2]);
+    // What only the snapshot knows is taken from it.
+    expect(session.folder_name).toBe("Lisbon and more");
+    expect(store.getState().notice).toBe("Added 1 photo.");
+    // A picked photo that is ready can still be picked and shown: nothing is stuck.
+    await store.setPicked(7, true);
+    expect(store.getState().session!.picked).toEqual([2, 7]);
+  });
+
+  it("takes the first photo as current when the page had none", async () => {
+    const api = createMockApi({ speed: Number.POSITIVE_INFINITY });
+    const store = createStore(api, 0);
+    stops.push(store.connect());
+    await store.load();
+    await store.openDialog("files");
+    expect(store.getState().session!.current_index).toBe(0);
+    await store.closeSession();
+    await store.openDialog("files");
+    expect(store.getState().session!.current_index).toBe(0);
+    expect(store.getState().session!.photos).toHaveLength(12);
   });
 
   it("leaves the settings of the photos alone", async () => {
@@ -299,6 +346,132 @@ describe("Paste settings", () => {
   });
 });
 
+describe("Paste settings, the edge cases", () => {
+  /** A white picked on the current photo with the white balance back on Auto: its white is a picked one. */
+  async function pickWhiteOnCurrent(store: AppStore): Promise<void> {
+    await store.update({ white_pick: [0.5, 0.5] });
+    await store.update({ white_balance: { kind: "auto" } });
+    const s = settingsOf(store).settings;
+    expect(s.white_pick).not.toBeNull();
+    expect(s.white_balance).toEqual({ kind: "auto" });
+    expect(s.light_source).toBe("auto");
+  }
+
+  it("leaves the photo a picked white came from alone when pasting to picked, and gives the others the manual white", async () => {
+    const { api, store } = await onPhotos();
+    await pickWhiteOnCurrent(store);
+    await store.copySettings();
+    const manual = store.getState().copied!.patch.white_balance;
+    expect(manual?.kind).toBe("manual");
+    await store.pickAll();
+    const spy = vi.spyOn(api, "pasteSettings");
+    await store.pasteSettings("picked");
+
+    // The source is not in the call, and the notice counts the others only.
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(spy.mock.calls[0]![0]).toEqual([2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+    expect(store.getState().notice).toBe("Pasted the settings of DSC04201 to 11 photos.");
+    const source = await api.getSettings(1);
+    expect(source.settings.white_balance).toEqual({ kind: "auto" });
+    expect(source.settings.white_pick).not.toBeNull();
+    for (const id of [2, 7, 12]) expect((await api.getSettings(id)).settings.white_balance).toEqual(manual);
+    // No new step on the source: one Undo takes back the last edit it had (the white balance going back to Auto), not a paste.
+    await store.undo();
+    await vi.waitFor(() => expect(settingsOf(store).settings.white_balance.kind).toBe("manual"));
+  });
+
+  it("says so when the source is the only picked photo, and sends nothing", async () => {
+    const { api, store } = await onPhotos();
+    await pickWhiteOnCurrent(store);
+    await store.copySettings();
+    await store.setPicked(1, true);
+    const spy = vi.spyOn(api, "pasteSettings");
+    await store.pasteSettings("picked");
+    expect(spy).not.toHaveBeenCalled();
+    expect(store.getState().notice).toBe("No other photos are picked.");
+    expect(settingsOf(store).settings.white_balance).toEqual({ kind: "auto" });
+  });
+
+  it("still pastes onto the source when its white was not a picked one", async () => {
+    const { api, store } = await onPhotos();
+    await store.update({ contrast: 15 });
+    await store.copySettings();
+    await store.update({ contrast: 40 });
+    await store.setPicked(1, true);
+    await store.setPicked(2, true);
+    const spy = vi.spyOn(api, "pasteSettings");
+    await store.pasteSettings("picked");
+    // Pasting back onto the source restores it to what was copied.
+    expect(spy.mock.calls[0]![0]).toEqual([1, 2]);
+    expect(settingsOf(store).settings.contrast).toBe(15);
+  });
+
+  it("forgets which photo the settings came from when the session closes, so another session's photo with that id is not left out", async () => {
+    const { store } = await onPhotos();
+    await pickWhiteOnCurrent(store);
+    await store.copySettings();
+    expect(store.getState().copied?.sourceId).toBe(1);
+    await store.closeSession();
+    expect(store.getState().copied?.sourceId).toBeNull();
+    expect(store.getState().copied?.source).toBe("DSC04201");
+  });
+
+  it("gives the photo on screen when the paste lands its new settings, even if the person moved there meanwhile", async () => {
+    const { api, store } = await onPhotos();
+    await editCurrent(store);
+    await store.copySettings();
+    await store.setCurrent(4);
+    await vi.waitFor(() => expect(store.currentSettings()?.photo_id).toBe(4));
+    for (const id of [3, 4, 5]) await store.setPicked(id, true);
+    // Hold the paste in the core, as a slow one over many photos would be.
+    const real = api.pasteSettings;
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const spy = vi.spyOn(api, "pasteSettings").mockImplementation(async (ids: number[], patch: SettingsPatch): Promise<PasteReport> => {
+      await gate;
+      return real(ids, patch);
+    });
+    const pasting = store.pasteSettings("picked");
+    await vi.waitFor(() => expect(spy).toHaveBeenCalled());
+    await store.setCurrent(5);
+    await vi.waitFor(() => expect(store.currentSettings()?.photo_id).toBe(5));
+    expect(settingsOf(store).settings.contrast).toBe(0);
+    release();
+    await pasting;
+
+    // The tool panel of photo 5 has its settings, and they are the pasted ones, not the ones read before the paste.
+    await vi.waitFor(() => expect(store.currentSettings()).not.toBeNull());
+    expect(settingsOf(store).photo_id).toBe(5);
+    expect(settingsOf(store).settings.contrast).toBe(20);
+    expect(store.getState().notice).toBe("Pasted the settings of DSC04201 to 3 photos.");
+  });
+
+  it("keeps the paste a step of its own when a crop was open on the photo", async () => {
+    const { store } = await onPhotos();
+    await store.update({ contrast: 20, look_intensity: 60 });
+    await store.copySettings();
+    await store.setCurrent(2);
+    await vi.waitFor(() => expect(store.currentSettings()?.photo_id).toBe(2));
+    const crop = { rect: { x: 0.1, y: 0.1, width: 0.6, height: 0.6 }, angle_deg: 2, aspect: "free" as const };
+    // The crop is being dragged (not final), the paste comes in, and Done ends the crop.
+    await store.update({ crop, orientation: 90 }, false);
+    await store.pasteSettings("this");
+    expect(settingsOf(store).settings).toMatchObject({ contrast: 20, look_intensity: 60 });
+    await store.update({ crop, orientation: 90 }, true);
+
+    // Two steps: the crop and the paste. The first Undo takes back the crop and the turn only.
+    await store.undo();
+    await vi.waitFor(() => expect(settingsOf(store).settings.orientation).toBe(0));
+    expect(settingsOf(store).settings).toMatchObject({ contrast: 20, look_intensity: 60, crop: null });
+    // The second takes back the paste.
+    expect(store.getState().canUndo).toBe(true);
+    await store.undo();
+    await vi.waitFor(() => expect(settingsOf(store).settings.contrast).toBe(0));
+    expect(settingsOf(store).settings.look_intensity).toBe(100);
+    expect(store.getState().canUndo).toBe(false);
+  });
+});
+
 describe("what is copied stays in memory", () => {
   it("is kept when the session closes, so it can go to another folder", async () => {
     const { store } = await onPhotos();
@@ -343,6 +516,22 @@ describe("the native menu's items", () => {
     // Nothing open: nothing to copy or paste onto, though what was copied is kept.
     await store.closeSession();
     await vi.waitFor(() => expect(api.menuState).toEqual({ copy_settings: false, paste_settings: false, paste_settings_to_picked: false }));
+  });
+
+  it("are all off while a dialog is open, and back when it closes", async () => {
+    const { api, store } = await onPhotos();
+    await store.copySettings();
+    await store.setPicked(4, true);
+    const on = { copy_settings: true, paste_settings: true, paste_settings_to_picked: true };
+    const off = { copy_settings: false, paste_settings: false, paste_settings_to_picked: false };
+    await vi.waitFor(() => expect(api.menuState).toEqual(on));
+    // The Photos keys are switched off under a dialog, and the menu must not do what they would not.
+    for (const overlay of ["preferences", "about", "confirm-close", "import-cube"] as const) {
+      store.openOverlay(overlay);
+      await vi.waitFor(() => expect(api.menuState).toEqual(off));
+      store.closeOverlay();
+      await vi.waitFor(() => expect(api.menuState).toEqual(on));
+    }
   });
 
   it("is told only when it changes", async () => {

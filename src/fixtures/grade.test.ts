@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { adjustScene, developScene, flatScene, gradeScene, LOOK_GRADES, previewDataUrl, previewSvg } from "./grade";
+import { adjustScene, developScene, flatScene, gradeScene, logScene, LOOK_GRADES, previewDataUrl, previewSvg } from "./grade";
 import { SCENES, sceneSvg } from "./scenes";
 
 const scene = SCENES[3]!;
@@ -28,10 +28,18 @@ describe("grading the flat scenes", () => {
     expect(Math.abs(g! - b!)).toBeLessThan(8);
   });
 
-  it("the Before view is a little duller than the scene", () => {
+  it("the Before view is a little duller than the scene, and the mockup's log picture is flatter still", () => {
     const flat = flatScene(scene);
     expect(flat.sky).not.toBe(scene.sky);
     expect(flat.name).toBe(scene.name);
+    const log = logScene(scene);
+    expect(log.name).toBe(scene.name);
+    const spread = (hex: string): number => {
+      const c = [1, 3, 5].map((i) => Number.parseInt(hex.slice(i, i + 2), 16));
+      return Math.max(...c) - Math.min(...c);
+    };
+    expect(spread(log.sky)).toBeLessThan(spread(flat.sky));
+    expect(spread(flat.sky)).toBeLessThanOrEqual(spread(scene.sky));
   });
 
   it("does not move colours that are at the automatic values", () => {

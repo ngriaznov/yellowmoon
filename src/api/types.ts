@@ -579,8 +579,9 @@ export interface ViewportFrame {
 }
 
 /**
- * `settings_changed` (addition): the core changed a photo's settings by itself, after a `viewport_input` Pick white
- * click. Ask `get_settings` again.
+ * `settings_changed` (addition): the core changed a photo's settings by itself: after a `viewport_input` Pick white
+ * click, and once for each photo a `paste_settings` changed. Ask `get_settings` again (the webview skips the photos it is
+ * pasting onto: the paste's answer says what changed).
  */
 export interface SettingsChanged {
   photo_id: PhotoId;
@@ -883,7 +884,7 @@ export interface ApiEvents {
   menu_action: MenuActionEvent;
   /** The fallback viewport has a new frame of the photo cell, or none any more. */
   viewport_frame: ViewportFrame;
-  /** The core changed a photo's settings by itself (a Pick white click); ask for them again. */
+  /** The core changed a photo's settings by itself (a Pick white click, a paste); ask for them again. */
   settings_changed: SettingsChanged;
   /** An export is queued or running, or the queue has just gone quiet. */
   export_busy: ExportBusy;

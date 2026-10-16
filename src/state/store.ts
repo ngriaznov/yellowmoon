@@ -64,7 +64,7 @@ import type { ExportRun } from "../export/run";
 import { diffSettings, PhotoHistory } from "./history";
 import type { HistoryEntry } from "./history";
 import { perfCount } from "../perf";
-import { isReady, photoName, releaseUrl } from "./photo";
+import { isReady, mergeSession, photoName, releaseUrl } from "./photo";
 import { RequestLimiter } from "./requestLimiter";
 import { ViewportInputQueue } from "./viewportInputQueue";
 import type { StreamInput } from "./viewportInputQueue";
@@ -129,6 +129,11 @@ export function pastedNotice(source: string, pasted: number, skipped: number): s
 export interface CopiedSettings {
   /** The photo they came from, as the notices name it: "DSC04213". */
   source: string;
+  /**
+   * The id of that photo while its session is open; null once the session is closed (the next session numbers its photos again, so the
+   * id would name another photo). Paste Settings to Picked uses it to leave the source's own picked white alone.
+   */
+  sourceId: PhotoId | null;
   /** What `copy_settings` answered: everything but the crop, the orientation and the Pick white point. */
   patch: SettingsPatch;
 }
@@ -409,16 +414,17 @@ export class AppStore {
 
   /**
    * Tells the native menu which of the Edit menu's settings items are available: Copy Settings needs a developed current photo, Paste
-   * Settings something copied as well, Paste Settings to Picked something copied and a picked photo. Sent when it changes only.
+   * Settings something copied as well, Paste Settings to Picked something copied and a picked photo. All three are off while a dialog
+   * (Preferences, About, the close question, the .cube import) is open, as the Photos keys are. Sent when it changes only.
    */
   private syncMenu(): void {
-    const { session, copied } = this.state;
+    const { session, copied, overlay } = this.state;
     const current = session && session.current_index !== null ? session.photos[session.current_index] : undefined;
-    const ready = current !== undefined && isReady(current);
+    const ready = current !== undefined && isReady(current) && overlay === null;
     const next: MenuState = {
       copy_settings: ready,
       paste_settings: ready && copied !== null,
-      paste_settings_to_picked: copied !== null && (session?.picked.length ?? 0) > 0,
+      paste_settings_to_picked: overlay === null && copied !== null && (session?.picked.length ?? 0) > 0,
     };
     const was = this.menuState;
     if (next.copy_settings === was.copy_settings && next.paste_settings === was.paste_settings && next.paste_settings_to_picked === was.paste_settings_to_picked) return;
@@ -668,7 +674,7 @@ export class AppStore {
     this.set({ dropNotice: null, opening: true });
     try {
       const session = await this.api.openPaths(toOpen);
-      this.adoptSession(session);
+      this.adoptOpened(session);
       if (addingToPhotos && session.opened) this.showNotice(openedNotice(session.opened));
     } catch (error) {
       const failure = toAppError(error);
@@ -686,7 +692,7 @@ export class AppStore {
     try {
       const session = await this.api.openDialog(kind);
       if (session) {
-        this.adoptSession(session);
+        this.adoptOpened(session);
         if (addingToPhotos && session.opened) this.showNotice(openedNotice(session.opened));
       }
     } catch (error) {
@@ -694,6 +700,16 @@ export class AppStore {
     } finally {
       this.set({ opening: false });
     }
+  }
+
+  /**
+   * Takes the shell's answer to an open. With a session already here the answer is merged into it (`mergeSession`) and not put in its
+   * place: it is a snapshot from before the page handled the events and clicks that came meanwhile, and replacing the page's own state
+   * with it would bring back a status that has since changed, a pick that was toggled or the photo that was current.
+   */
+  private adoptOpened(snapshot: SessionState): void {
+    const old = this.state.session;
+    this.adoptSession(old ? mergeSession(old, snapshot) : snapshot);
   }
 
   /** True while Photos is on screen: files opened now are added to the session, and Photos says what was added. */
@@ -754,8 +770,8 @@ export class AppStore {
       notice: this.state.notice,
       viewportBackend: this.state.viewportBackend,
       exportBusy: this.state.exportBusy,
-      // What was copied is for pasting in another folder too.
-      copied: this.state.copied,
+      // What was copied is for pasting in another folder too; the id of its photo belongs to the closed session.
+      copied: this.state.copied && { ...this.state.copied, sourceId: null },
     };
     this.notify();
     // A fresh session starts at Fit with the camera view off.
@@ -1453,7 +1469,7 @@ export class AppStore {
     try {
       const patch = await this.api.copySettings(photo.id);
       const source = photoName(photo.file_name);
-      this.set({ copied: { source, patch } });
+      this.set({ copied: { source, sourceId: photo.id, patch } });
       this.showNotice(`Copied the settings of ${source}.`);
     } catch (error) {
       this.fail(error);
@@ -1464,20 +1480,30 @@ export class AppStore {
    * Paste settings (⇧⌘V) onto the current photo, or Paste settings to Picked (⌥⇧⌘V) onto every picked photo, the current one too when
    * it is picked. One `paste_settings` for all of them, so five hundred photos are one command. Each photo's change is one undo step
    * in that photo's own history. A photo that is still developing or could not be opened is skipped, and the notice says how many.
-   * The current photo is read again, the settings of the others are dropped and asked for when they are shown, and the filmstrip
-   * thumbnails follow from the core.
+   * The settings of the photo on screen when the answer comes are read again, the settings of the others are dropped and asked for
+   * when they are shown, and the filmstrip thumbnails follow from the core.
+   *
+   * Paste to Picked leaves the source out when its white came from a picked white and still does: the paste would turn that Auto
+   * white balance into the manual one that stands for it on other photos, and change the photo it came from.
    */
   async pasteSettings(scope: "this" | "picked"): Promise<void> {
-    const { session, copied } = this.state;
-    if (!session) return;
-    if (!copied) {
+    if (!this.state.session) return;
+    if (!this.state.copied) {
       this.showNotice("Copy the settings of a photo first.");
       return;
     }
+    const own = scope === "picked" ? await this.pickedWhiteSource(this.state.copied) : null;
+    const { session, copied } = this.state;
+    if (!session || !copied) return;
     const current = this.currentPhoto();
-    const wanted = scope === "this" ? (current ? [current] : []) : session.photos.filter((p) => p.picked);
-    if (wanted.length === 0) {
+    const chosen = scope === "this" ? (current ? [current] : []) : session.photos.filter((p) => p.picked);
+    if (chosen.length === 0) {
       this.showNotice(scope === "this" ? "There is no photo to paste onto." : "No photos are picked.");
+      return;
+    }
+    const wanted = own === null ? chosen : chosen.filter((p) => p.id !== own);
+    if (wanted.length === 0) {
+      this.showNotice("No other photos are picked.");
       return;
     }
     const ids = wanted.filter(isReady).map((p) => p.id);
@@ -1499,18 +1525,46 @@ export class AppStore {
       }
     }
     const changed = report.pasted.filter((p) => Object.keys(p.before).length > 0 || Object.keys(p.after).length > 0);
-    for (const step of changed) this.historyOf(step.id).push({ before: step.before, after: step.after });
-    // What the mirror knew about the other photos is out of date; the current photo's is read again at once.
+    for (const step of changed) {
+      this.historyOf(step.id).push({ before: step.before, after: step.after });
+      // A crop or a slider drag that was open on the photo when the paste landed records its own step when it ends, from the settings it
+      // began with. Those must include the paste, or the step would carry it too and one Undo would take back both.
+      const gesture = this.gestures.get(step.id);
+      if (gesture) gesture.base = { ...gesture.base, ...step.after };
+    }
+    // What the mirror knew about the other photos is out of date. The photo on screen now (it may not be the one that was when the paste
+    // began) and the one that was are read again at once, so neither is left without settings.
+    const shown = new Set<PhotoId>();
+    if (current) shown.add(current.id);
+    const now = this.currentId();
+    if (now !== null) shown.add(now);
     const stale = new Set(changed.map((p) => p.id));
     if (stale.size > 0) {
       const kept: Record<PhotoId, ResolvedSettings> = {};
-      for (const [key, value] of Object.entries(this.state.settings)) if (!stale.has(Number(key)) || Number(key) === current?.id) kept[Number(key)] = value;
+      for (const [key, value] of Object.entries(this.state.settings)) if (!stale.has(Number(key)) || shown.has(Number(key))) kept[Number(key)] = value;
       this.set({ settings: kept });
     }
-    if (current && stale.has(current.id)) await this.resyncSettings(current.id);
+    await Promise.all([...shown].filter((id) => stale.has(id)).map((id) => this.resyncSettings(id)));
     this.syncHistoryFlags();
     const skipped = wanted.length - ids.length + report.skipped.length;
     this.showNotice(pastedNotice(copied.source, report.pasted.length, skipped));
+  }
+
+  /**
+   * The id of the photo the copied settings came from when Paste to Picked must leave it out: the copied white balance is the manual
+   * one that stands for a picked white, and that photo's own white is still a picked one (a Pick white point, the light preset and the
+   * white balance both Auto). Pasting there would swap its Auto for a manual white that renders a little differently and mark it edited.
+   * Otherwise null: a source whose white was not picked, or that was changed since, takes the paste like any photo.
+   */
+  private async pickedWhiteSource(copied: CopiedSettings): Promise<PhotoId | null> {
+    const id = copied.sourceId;
+    if (id === null || copied.patch.white_balance?.kind !== "manual") return null;
+    const photo = this.state.session?.photos.find((p) => p.id === id);
+    if (!photo || !isReady(photo)) return null;
+    await this.ensureSettings(id);
+    const settings = this.state.settings[id]?.settings;
+    const pickedWhite = settings !== undefined && settings.white_pick !== null && settings.light_source === "auto" && settings.white_balance.kind === "auto";
+    return pickedWhite ? id : null;
   }
 
   // --- Looks --------------------------------------------------------------------------------

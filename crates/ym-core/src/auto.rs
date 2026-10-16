@@ -647,7 +647,7 @@ pub fn as_shot_white_scaled(wb_rggb: Option<[f32; 4]>, white_scale: Vec3) -> Opt
 /// The camera's as-shot white balance as gains `[R/G, 1, B/G]` on the body's own raw scale, without any
 /// white scale: what the camera's default rendering multiplies the raw by (a white surface records
 /// `1 / gains`). `None` when the levels are missing or not usable. The Before view's camera default uses
-/// it ([`crate::pipeline::color_plan`]).
+/// it ([`crate::pipeline::color::color_plan`]).
 #[must_use]
 pub fn as_shot_gains(wb_rggb: Option<[f32; 4]>) -> Option<Vec3> {
     let g = shot_gains(wb_rggb)?;

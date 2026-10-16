@@ -8,7 +8,7 @@ import type { FilmstripPhoto } from "../components";
 import { SCENES, SUN_FRACTION_THUMB, sceneSvg } from "../fixtures/scenes";
 import type { Scene } from "../fixtures/scenes";
 import { fixtureUrl } from "../fixtures";
-import { flatScene, gradeScene } from "../fixtures/grade";
+import { flatScene, gradeScene, logScene } from "../fixtures/grade";
 import type { LookGrade } from "../fixtures/grade";
 
 /** The scene of a photo name, "DSC04204". */
@@ -24,7 +24,7 @@ export function sceneDataUrl(scene: Scene, sunFraction = SUN_FRACTION_THUMB): st
 // ---- Look grading (the mockup's flat-shape grade, shared with the mock API) -------------------
 
 export type { LookGrade };
-export { flatScene, gradeScene };
+export { flatScene, gradeScene, logScene };
 
 /** A look in the demo library. */
 export interface DemoLook {

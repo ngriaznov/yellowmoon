@@ -42,7 +42,7 @@ import {
 import type { CurveChannel, TabId } from "../components";
 import type { ColorBalancePoint } from "../api/types";
 import { SCENES } from "../fixtures/scenes";
-import { CURVE_DEMO_POINTS, DEMO_LOOKS, demoHistogram, flatScene, gradeScene, lisbonPhotos, lookThumbnail, sceneDataUrl } from "./demoData";
+import { CURVE_DEMO_POINTS, DEMO_LOOKS, demoHistogram, gradeScene, lisbonPhotos, logScene, lookThumbnail, sceneDataUrl } from "./demoData";
 
 interface SliderDef {
   id: string;
@@ -193,7 +193,8 @@ export function PhotosReplica({
     })
     .filter((g) => g.shown.length > 0);
 
-  const photoStyle = before ? flatScene(scene) : gradeScene(scene, lookDef.grade);
+  // The replica matches design/mockups, whose Before is still the camera log (docs/11: the app shows the camera default).
+  const photoStyle = before ? logScene(scene) : gradeScene(scene, lookDef.grade);
   const photoSrc = sceneDataUrl(photoStyle, 0.09);
 
   const card = (title: string, body: ReactNode, props: Partial<ComponentProps<typeof Card>> = {}) => (
@@ -416,6 +417,7 @@ export function PhotosReplica({
         imageLabel={`Photo ${scene.name}, ${lookChip}`}
         lookChip={lookChip}
         before={before}
+        beforeLabel="Before · camera log"
         cameraLine={`Sony A1 · ${scene.name} · ISO 400 · 1/125 · f/2.8`}
         native={false}
       />

@@ -238,6 +238,25 @@ fn a_mixed_folder_opens_with_per_file_errors_that_block_nothing() {
 }
 
 #[test]
+fn a_file_listed_twice_in_one_call_is_not_counted_as_already_open() {
+    let dir = tempfile::tempdir().unwrap();
+    for (i, name) in ["a.ARW", "b.ARW", "c.ARW"].into_iter().enumerate() {
+        write_plain(dir.path(), name, 0.2 + 0.1 * i as f64);
+    }
+    let (session, _rx) = session_with_events();
+    // A folder and a file inside it, as Finder's list view hands over when both are selected.
+    let both = [dir.path().to_path_buf(), dir.path().join("a.ARW")];
+    let first = session.open(&both, OpenOptions::default());
+    assert_eq!(first.added.len(), 3);
+    assert_eq!(first.already_open, 0, "nothing was open before the drop");
+    settle(&session);
+    // The same drop again: each file counts once, however often it was listed.
+    let again = session.open(&both, OpenOptions::default());
+    assert!(again.added.is_empty());
+    assert_eq!(again.already_open, 3);
+}
+
+#[test]
 fn a_drop_without_arw_files_says_so() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("a.jpg"), b"x").unwrap();

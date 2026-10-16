@@ -74,6 +74,16 @@ export function flatScene(scene: Scene): Scene {
   return { ...scene, sky: flat(scene.sky), far: flat(scene.far), near: flat(scene.near), sun: flat(scene.sun) };
 }
 
+/**
+ * The Before picture of the design mockups: the scene flattened towards grey like a camera-log signal, which is what Before
+ * showed until 0.1.4 (`docs/11`). Only the replica of the mockup draws it, so that it keeps matching `design/mockups`, which
+ * were not changed when Before became the camera default.
+ */
+export function logScene(scene: Scene): Scene {
+  const flat = (c: string): string => mix(c, "#7A7F84", 0.45);
+  return { ...scene, sky: flat(scene.sky), far: flat(scene.far), near: flat(scene.near), sun: flat(scene.sun) };
+}
+
 /** How far a photo's exposure and white balance are from what Automatic chose for it. */
 export interface Adjustment {
   /** Exposure now and as Automatic has it, in EV. */
