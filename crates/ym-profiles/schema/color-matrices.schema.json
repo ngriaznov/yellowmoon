@@ -38,6 +38,7 @@
         "properties": {
           "model_id": { "type": "integer", "minimum": 1, "maximum": 65535 },
           "model": { "type": "string", "pattern": "^[A-Za-z0-9-]+$" },
+          "note": { "description": "Where the numbers of this entry come from when they are not the body's own published ones (a sibling's, the generic E-mount matrix) and who decided it.", "type": "string", "minLength": 1 },
           "xyz_d65_to_camera": {
             "type": "array",
             "minItems": 3,
