@@ -12,8 +12,6 @@
   --ym-fill-strong: color-mix(in oklch, var(--glass-fill-tint) var(--glass-fill-opacity-strong), transparent);
   --ym-muted: var(--glass-label-secondary);
   --ym-primary-ink: color-mix(in oklch, var(--primary) 30%, var(--glass-label));
-  /* The system face: San Francisco on a Mac. (Where it is not installed the next in the list is used.) */
-  --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", Inter, system-ui, "Helvetica Neue", Arial, sans-serif;
 }
 
 body {
