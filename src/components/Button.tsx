@@ -14,8 +14,8 @@ export interface ButtonProps extends Omit<ButtonHTMLAttributes<HTMLButtonElement
    * `header`: a quiet button in a bar (Before, Crop, Pick white). Default `primary`.
    */
   variant?: ButtonVariant;
-  /** `md` is the control height, `lg` the large one (Next, Export, Cancel). */
-  size?: "md" | "lg";
+  /** `sm` is the compact control, `md` the control height, `lg` the large one (Next, Export, Cancel). */
+  size?: "sm" | "md" | "lg";
   /** Fills the row (`flex: 1`), as the footer's Export and Cancel buttons do. */
   block?: boolean;
   /**
@@ -70,13 +70,13 @@ export function Button({
   // span keeps that.
   const descriptionId = useId();
   const describedBy = [rest["aria-describedby"], title ? descriptionId : undefined].filter(Boolean).join(" ") || undefined;
-  const glassVariant = variant === "header" ? (pressed ? "tinted" : "ghost") : KIND[variant];
+  const glassVariant = variant === "header" ? (pressed ? "default" : "ghost") : KIND[variant];
   const button = (
     <GlassButton
       {...rest}
       type="button"
       variant={glassVariant}
-      size={variant === "header" ? "sm" : size === "lg" ? "lg" : "default"}
+      size={variant === "header" || size === "sm" ? "sm" : size === "lg" ? "lg" : "default"}
       className={cx(block && "w-full", split && "justify-between", variant === "header" && "px-2.5", className)}
       data-variant={variant}
       data-size={size}

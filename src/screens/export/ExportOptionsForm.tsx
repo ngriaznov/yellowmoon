@@ -1,7 +1,7 @@
 import { useRef, useState } from "react";
 import { Input } from "@/components/glass/input";
 import type { ApplyScope, BitDepth, ColorSpace, ExportFormat, ExportOptions, ExportEstimate, IfExists, TiffCompression } from "../../api/types";
-import { Card, Field, formats, LinkButton, Segmented, Slider } from "../../components";
+import { Button, Card, Field, formats, Segmented, Slider } from "../../components";
 import { longEdgeRange, snapLongEdge } from "../../export/format";
 import type { ExportModel } from "../../export/model";
 import type { AppStore } from "../../state/store";
@@ -265,9 +265,9 @@ export function ExportOptionsForm({ store, options, mode, model, scope, estimate
         title="Save to"
         action={
           options.destination !== null ? (
-            <LinkButton size="sm" onClick={() => set({ destination: null })}>
+            <Button variant="secondary" size="sm" onClick={() => set({ destination: null })}>
               Use default
-            </LinkButton>
+            </Button>
           ) : undefined
         }
       >
@@ -278,9 +278,9 @@ export function ExportOptionsForm({ store, options, mode, model, scope, estimate
             </svg>
             <span className="ym-export__folder-text">{panel || options.destination !== null ? model.destination : "Next to each source folder"}</span>
           </span>
-          <LinkButton size="sm" onClick={() => void chooseFolder()}>
+          <Button variant="secondary" size="sm" onClick={() => void chooseFolder()}>
             Choose…
-          </LinkButton>
+          </Button>
         </div>
         <Field label="File name" className="ym-export__sub ym-export__sub--roomy">
           <Input
@@ -332,9 +332,9 @@ export function ExportOptionsForm({ store, options, mode, model, scope, estimate
           last
           className="ym-export__cli"
           action={
-            <LinkButton size="sm" disabled={!cli} onClick={() => void copy()}>
+            <Button variant="secondary" size="sm" disabled={!cli} onClick={() => void copy()}>
               {copied ? "Copied" : "Copy"}
-            </LinkButton>
+            </Button>
           }
         >
           <code className="ym-export__code" aria-label="Command line">

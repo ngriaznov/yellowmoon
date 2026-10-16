@@ -46,13 +46,6 @@ html:has(.ym-screen[data-screen="photos"]) #root {
   mask-composite: exclude;
 }
 
-.ym-screen[data-screen="photos"] .ym-header {
-  @apply glass rounded-none;
-  border-width: 0 0 1px 0;
-}
-.ym-screen[data-screen="photos"] .ym-brand {
-  border-right: 1px solid var(--ym-hairline);
-}
 .ym-screen[data-screen="photos"] .ym-brand-title {
   font-size: 1.25rem;
   font-weight: 650;
@@ -65,46 +58,7 @@ html:has(.ym-screen[data-screen="photos"]) #root {
   text-transform: none;
   color: var(--ym-muted);
 }
-.ym-screen[data-screen="photos"] .ym-header__nav {
-  gap: 6px;
-  padding: 0 16px;
-}
-.ym-screen[data-screen="photos"] .ym-header__right {
-  align-items: center;
-  gap: 8px;
-  padding: 0 14px;
-  border-left: 1px solid var(--ym-hairline);
-}
-.ym-export-cell {
-  margin-left: auto;
-}
 /* "Update ready": a small capsule, not a ruled cell. */
-.ym-update-pill {
-  flex: 0 0 auto;
-  height: 30px;
-  padding: 0 12px;
-  border: 0;
-  border-radius: 999px;
-  background: var(--ym-fill);
-  font-size: 0.75rem;
-  font-weight: 600;
-  letter-spacing: 0;
-  text-transform: none;
-}
-.ym-update-pill__square {
-  width: 8px;
-  height: 8px;
-  border: 0;
-  border-radius: 50%;
-}
-.ym-status {
-  margin-left: auto;
-  color: var(--ym-muted);
-  font-size: 0.75rem;
-  font-weight: 500;
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-}
 .ym-status[data-hint="true"] {
   color: var(--glass-label);
   font-weight: 600;
@@ -158,13 +112,6 @@ html:has(.ym-screen[data-screen="photos"]) #root {
 /* A card clips its content (rounded corners), so it would shrink to nothing instead of making the panel scroll. */
 .ym-tools__scroll > * {
   flex-shrink: 0;
-}
-.ym-tools__foot {
-  gap: 6px;
-  padding: 8px 14px;
-  border-top: 1px solid var(--ym-hairline);
-  @apply glass rounded-none;
-  border-width: 1px 0 0 0;
 }
 /* The Export panel is the same shell: its title block sits straight in it, its buttons in a glass footer. */
 .ym-tools > .ym-title-block {
@@ -338,40 +285,6 @@ html:has(.ym-screen[data-screen="photos"]) #root {
   height: 100%;
   object-fit: cover;
 }
-.ym-look-tile__badge {
-  position: absolute;
-  top: 5px;
-  left: 5px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  box-sizing: border-box;
-  min-width: 18px;
-  height: 18px;
-  padding: 0 5px;
-  border-radius: 999px;
-  background: rgb(0 0 0 / 0.55);
-  color: #fff;
-  font-size: 0.625rem;
-  font-weight: 700;
-  font-variant-numeric: tabular-nums;
-}
-.ym-look-tile__default {
-  position: absolute;
-  right: 5px;
-  bottom: 5px;
-  display: flex;
-  align-items: center;
-  height: 16px;
-  padding: 0 7px;
-  border-radius: 999px;
-  background: var(--primary);
-  color: var(--primary-foreground);
-  font-size: 0.5625rem;
-  font-weight: 700;
-  letter-spacing: 0.03em;
-  text-transform: uppercase;
-}
 .ym-look-tile__name {
   max-width: 100%;
   padding: 0 2px;
@@ -426,14 +339,6 @@ html:has(.ym-screen[data-screen="photos"]) #root {
 }
 
 /* ---- The filmstrip ------------------------------------------------------------------------------------------------------------- */
-.ym-filmstrip {
-  @apply glass rounded-none;
-  display: flex;
-  align-items: stretch;
-  box-sizing: border-box;
-  min-width: 0;
-  border-width: 1px 0 0 0;
-}
 .ym-filmstrip__scroll {
   display: flex;
   flex: 1;
@@ -507,17 +412,6 @@ html:has(.ym-screen[data-screen="photos"]) #root {
 }
 span.ym-filmstrip__thumb {
   cursor: default;
-}
-.ym-filmstrip__counter {
-  display: flex;
-  flex-direction: column;
-  flex-shrink: 0;
-  justify-content: center;
-  gap: 4px;
-  box-sizing: border-box;
-  width: 132px;
-  padding: 0 20px;
-  border-left: 1px solid var(--ym-hairline);
 }
 .ym-filmstrip__count {
   font-size: 1.5rem;
@@ -606,4 +500,191 @@ span.ym-filmstrip__thumb {
   padding-right: 0;
   border-bottom-color: var(--ym-hairline);
   border-bottom-width: 1px;
+}
+
+/* ================================================================================================================================
+   Round 2: glass controls in the chrome. The header is no pane any more: its parts float on the aurora as liquid-glass capsules (the
+   control layer), the way glasscn's Toolbar does: one capsule per group of buttons, one for the folder, one for the status, the
+   update pill, the Export button. The filmstrip and its counter are capsules too. Nothing here sets a colour of Yellowmoon. */
+
+.ym-screen[data-screen="photos"] .ym-header {
+  align-items: center;
+  gap: 12px;
+  padding: 0 14px 0 84px; /* 84 px: the traffic lights */
+  border: 0;
+  background: transparent;
+}
+.ym-screen[data-screen="photos"] .ym-brand {
+  @apply glass-liquid rounded-button;
+  position: relative;
+  flex-direction: column;
+  justify-content: center;
+  width: auto;
+  height: 52px;
+  gap: 3px;
+  padding: 0 20px;
+}
+.ym-screen[data-screen="photos"] .ym-header__nav {
+  gap: 10px;
+  padding: 0;
+}
+.ym-screen[data-screen="photos"] .ym-header__right {
+  align-items: center;
+  gap: 10px;
+  width: auto;
+  padding: 0;
+  border: 0;
+}
+.ym-export-cell {
+  margin-left: auto;
+}
+/* The status text is a capsule of its own. */
+.ym-status {
+  @apply glass-liquid rounded-button;
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  height: 36px;
+  margin-left: auto;
+  padding: 0 14px;
+  color: var(--ym-muted);
+  font-size: 0.75rem;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+/* In the narrowest windows the header has no room for the status text (screens.css hid it; this capsule's display would win over that). */
+@media (max-width: 1273px) {
+  .ym-screen[data-screen="photos"][data-panel="tools"] .ym-status:not([data-hint="true"]) {
+    display: none;
+  }
+}
+/* "Update ready": the same capsule, with the status dot. */
+.ym-update-pill {
+  @apply glass-liquid glass-press-liquid rounded-button;
+  position: relative;
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+  height: 36px;
+  padding: 0 14px;
+  border-style: solid;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+}
+.ym-update-pill__square {
+  width: 8px;
+  height: 8px;
+  border: 0;
+  border-radius: 50%;
+}
+/* The filmstrip: a frosted strip and a counter capsule, floating on the aurora. */
+.ym-filmstrip {
+  display: flex;
+  align-items: stretch;
+  box-sizing: border-box;
+  gap: 12px;
+  min-width: 0;
+  padding: 12px 14px 14px;
+}
+.ym-filmstrip__scroll {
+  @apply glass;
+  border-radius: var(--glass-radius-surface-sm, var(--glass-radius-surface));
+}
+.ym-filmstrip__counter {
+  @apply glass;
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  justify-content: center;
+  gap: 4px;
+  box-sizing: border-box;
+  border-radius: var(--glass-radius-surface-sm, var(--glass-radius-surface));
+  width: 132px;
+  padding: 0 20px;
+}
+
+/* The Copy settings / Paste row: a glass button group on the aurora, no pane behind it. */
+.ym-tools__foot {
+  padding: 10px 14px 14px;
+  border: 0;
+  background: transparent;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  box-shadow: none;
+}
+.ym-tools__foot [data-slot="button-group"] {
+  width: 100%;
+}
+.ym-tools__foot [data-slot="button-group"] > * {
+  flex: 1;
+}
+
+/* Look tiles: the badges are glass chips over the picture; the chosen tile has a glass check. */
+.ym-look-tile__badge {
+  position: absolute;
+  top: 5px;
+  left: 5px;
+  height: 20px;
+  min-width: 20px;
+  padding: 0 6px;
+  font-size: 0.625rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.ym-look-tile__default {
+  position: absolute;
+  right: 5px;
+  bottom: 5px;
+  height: 18px;
+  padding: 0 7px;
+  font-size: 0.5625rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+.ym-look-tile__check {
+  @apply glass-liquid rounded-badge;
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  color: var(--primary-ink, var(--glass-label));
+}
+.ym-look-tile__check svg {
+  width: 13px;
+  height: 13px;
+}
+.ym-look-tile__badge,
+.ym-look-tile__default {
+  position: absolute;
+}
+
+/* Export queue rows are glass fills with the tag at the end. */
+.ym-queue {
+  border-top: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.ym-queue__row {
+  box-sizing: border-box;
+  padding: 8px 12px;
+  border: 0;
+  border-radius: calc(var(--glass-radius-control) * 1.2);
+  background: var(--ym-fill);
+  box-shadow: inset 0 0 0 1px var(--ym-hairline);
+}
+.ym-queue__file {
+  font-weight: 600;
+}
+.ym-queue__note {
+  color: var(--ym-muted);
 }

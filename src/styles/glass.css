@@ -160,6 +160,7 @@
   
   
   
+
 }
 
 /* glasscn installs these inside @theme, where Tailwind 4 only keeps a keyframes that an `animate-*` utility uses. The aurora and the
@@ -1076,4 +1077,10 @@
   :is(.glass-illuminate, .glass-prominent)::after {
     background: none;
     }
+}
+  @property --glass-materialize {
+    syntax: "<number>";
+    inherits: false;
+    initial-value: 1;
+
 }
