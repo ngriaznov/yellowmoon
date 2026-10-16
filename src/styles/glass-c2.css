@@ -23,11 +23,12 @@ html.dark {
   --chart-1: var(--brand);
   --chart-2: oklch(0.91 0.12 92);
 
-  /* The ground: a dark aurora warmed by the brand and two tab colours. */
-  --aurora-base: oklch(0.135 0.006 285);
-  --aurora-1: oklch(0.44 0.095 85);
-  --aurora-2: oklch(0.4 0.085 225);
-  --aurora-3: oklch(0.4 0.085 35);
+  /* The ground: a dark aurora in cool hues only (deep blue, teal, violet at low brightness). Nothing warm sits behind a glass pane, so no
+     pane turns olive or brown (round 7). */
+  --aurora-base: oklch(0.125 0.014 262);
+  --aurora-1: oklch(0.36 0.1 262);
+  --aurora-2: oklch(0.4 0.08 212);
+  --aurora-3: oklch(0.34 0.09 298);
 
   /* The rules between the cells: a thin light rim. */
   --rim: color-mix(in oklch, var(--ink) 16%, transparent);
@@ -199,16 +200,13 @@ html:has(.ym-screen[data-screen="photos"]) #root {
   color: var(--glass-label-secondary);
 }
 
-/* The title block: a flat block of the tab colour today; here the same block as tinted glass. */
+/* The title block: a flat block of the tab colour today; here neutral glass (round 7). A tab's colour is a small accent, never a large
+   tint: it shows on the tab's underline and on its controls. */
 .ym-title-block {
   padding: 22px var(--pad-panel);
-  background: color-mix(in oklch, var(--tab, var(--primary)) 30%, transparent);
+  background: color-mix(in oklch, var(--ink) 7%, transparent);
   color: var(--glass-label);
   border-bottom: 1px solid var(--rim);
-}
-.ym-title-block[data-tone="ink"] {
-  background: color-mix(in oklch, var(--ink) 9%, transparent);
-  color: var(--glass-label);
 }
 .ym-title-block__title {
   margin: 0;
@@ -423,7 +421,7 @@ html:has(.ym-screen[data-screen="photos"]) #root {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: var(--primary);
+  background: var(--glass-label-tertiary);
 }
 .ym-look-tile {
   display: flex;
@@ -498,8 +496,6 @@ html:has(.ym-screen[data-screen="photos"]) #root {
   white-space: nowrap;
 }
 .ym-look-tile[aria-pressed="true"] .ym-look-tile__name {
-  background: var(--primary);
-  color: var(--primary-foreground);
   font-weight: var(--fw-heavy);
 }
 .ym-look-tile[aria-disabled="true"] {

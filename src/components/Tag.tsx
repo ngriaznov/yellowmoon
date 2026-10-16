@@ -71,24 +71,27 @@ export interface TagProps {
   title?: string;
 }
 
-/** Which glasscn badge each tag variant uses: soft fills for state, the solid accent for what was changed, red for what failed. */
+/**
+ * Which glasscn badge each tag variant uses: neutral fills for state (a rim for what is under way), the solid accent only for what was
+ * changed by hand, red for what failed. No tinted accent badges: a translucent yellow chip on dark glass reads olive.
+ */
 const BADGE: Readonly<Record<TagVariant, "default" | "tinted" | "secondary" | "outline" | "destructive">> = {
   auto: "secondary",
   edited: "default",
-  on: "tinted",
+  on: "secondary",
   "stand-in": "outline",
-  reduced: "tinted",
-  default: "tinted",
+  reduced: "outline",
+  default: "secondary",
   "cant-open": "destructive",
   waiting: "secondary",
-  developing: "tinted",
+  developing: "outline",
   ready: "secondary",
   skipped: "destructive",
-  done: "default",
-  active: "tinted",
+  done: "secondary",
+  active: "outline",
   failed: "destructive",
-  match: "tinted",
-  recommended: "tinted",
+  match: "secondary",
+  recommended: "outline",
 };
 
 /** A status label: glasscn's `Badge`, a small capsule. */

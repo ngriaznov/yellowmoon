@@ -32,7 +32,7 @@ export function ImportLooks() {
 
   return (
     <div className="ym-screen ym-wizard" data-screen="import-looks" data-step={state.step}>
-      <Aurora className="ym-aurora" />
+      <Aurora className="ym-aurora" animate={false} />
       <header className="ym-header ym-wizard__header" data-tauri-drag-region="">
         <div className="ym-brand" data-tauri-drag-region="deep">
           <span className="ym-brand-title">

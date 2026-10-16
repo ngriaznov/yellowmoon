@@ -229,7 +229,7 @@ export function PhotoCell({
           <img className="ym-photo-cell__image" src={imageSrc} alt="" draggable={false} />
         ) : null}
         {before ? (
-          <Badge variant="default" className="ym-photo-cell__before">
+          <Badge variant="outline" className="ym-photo-cell__before">
             {beforeLabel}
           </Badge>
         ) : null}

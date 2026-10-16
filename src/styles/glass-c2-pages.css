@@ -36,11 +36,11 @@ html:has(.ym-screen[data-screen="import-looks"]) #root {
 }
 
 /* ---- Start ------------------------------------------------------------------------------------------------------------------------ */
-/* The yellow block that says what the app does: the accent as tinted glass, the way a tab's title block is. */
+/* The block that says what the app does: neutral glass. Round 7: yellow is a button accent, never a large tinted area (translucent
+   yellow over dark glass reads olive), so the only yellow on this page is the moon, the primary buttons and the progress fill. */
 .ym-about {
   @apply glass rounded-none;
   border-width: 0 1px 0 0;
-  background-image: linear-gradient(color-mix(in oklch, var(--brand) 32%, transparent), color-mix(in oklch, var(--brand) 12%, transparent));
   color: var(--glass-label);
 }
 .ym-about h1 {
@@ -83,20 +83,20 @@ html:has(.ym-screen[data-screen="import-looks"]) #root {
   justify-content: center;
   gap: 18px;
   padding: 32px;
-  border: 2px dashed color-mix(in oklch, var(--brand) 62%, transparent);
+  border: 2px dashed color-mix(in oklch, var(--ink) 30%, transparent);
   text-align: center;
 }
 .ym-drop-zone[data-active="true"] {
   border-style: solid;
   border-color: var(--brand);
-  background-image: linear-gradient(color-mix(in oklch, var(--brand) 22%, transparent), color-mix(in oklch, var(--brand) 22%, transparent));
+  background-image: linear-gradient(color-mix(in oklch, var(--ink) 8%, transparent), color-mix(in oklch, var(--ink) 8%, transparent));
 }
 .ym-drop-zone__icon {
   width: 88px;
   height: 88px;
   border-radius: calc(var(--glass-radius-surface) * 0.75);
-  background: color-mix(in oklch, var(--brand) 20%, transparent);
-  color: var(--brand);
+  background: color-mix(in oklch, var(--ink) 10%, transparent);
+  color: var(--glass-label);
 }
 .ym-drop-zone__icon svg {
   width: 40px;
@@ -199,6 +199,7 @@ html:has(.ym-screen[data-screen="import-looks"]) #root {
   flex-wrap: nowrap;
   gap: 20px;
   padding: 0 32px;
+  color: var(--glass-label);
   border-right: 1px solid var(--rim);
   border-radius: 0;
   background: transparent;
@@ -207,8 +208,8 @@ html:has(.ym-screen[data-screen="import-looks"]) #root {
   border-right: 0;
 }
 .ym-step[data-on="true"] {
-  background: color-mix(in oklch, var(--brand) 22%, transparent);
-  box-shadow: inset 0 2px 0 var(--brand);
+  background: color-mix(in oklch, var(--ink) 9%, transparent);
+  box-shadow: inset 0 2px 0 color-mix(in oklch, var(--ink) 55%, transparent);
 }
 .ym-step__n {
   align-self: center;
@@ -221,7 +222,7 @@ html:has(.ym-screen[data-screen="import-looks"]) #root {
   font-variant-numeric: tabular-nums;
 }
 .ym-step[data-on="true"] .ym-step__n {
-  color: var(--brand);
+  color: var(--glass-label);
 }
 .ym-step__text {
   gap: 4px;
@@ -266,14 +267,14 @@ html:has(.ym-screen[data-screen="import-looks"]) #root {
   cursor: default;
 }
 .ym-step-rail__step[aria-current="step"] {
-  background: color-mix(in oklch, var(--brand) 18%, transparent);
+  background: color-mix(in oklch, var(--ink) 9%, transparent);
 }
 .ym-step-rail__step[aria-disabled="true"]:hover,
 .ym-step-rail__step[aria-current="step"]:hover {
   background: inherit;
 }
 .ym-step-rail__step[aria-current="step"]:hover {
-  background: color-mix(in oklch, var(--brand) 18%, transparent);
+  background: color-mix(in oklch, var(--ink) 9%, transparent);
 }
 .ym-step-rail__mark {
   width: 44px;
@@ -292,12 +293,12 @@ html:has(.ym-screen[data-screen="import-looks"]) #root {
   height: 24px;
 }
 .ym-step-rail__step[aria-current="step"] .ym-step-rail__mark {
-  background: var(--brand);
-  color: var(--brand-ink);
+  background: var(--glass-label);
+  color: oklch(0.2 0.01 262);
 }
 .ym-step-rail__step[data-state="done"] .ym-step-rail__mark {
-  background: color-mix(in oklch, var(--brand) 22%, transparent);
-  color: var(--brand);
+  background: color-mix(in oklch, var(--ink) 12%, transparent);
+  color: var(--glass-label);
 }
 .ym-step-rail__body {
   gap: 4px;
@@ -313,7 +314,7 @@ html:has(.ym-screen[data-screen="import-looks"]) #root {
   line-height: 1.45;
 }
 .ym-step-rail__step[data-state="locked"] {
-  opacity: 0.62;
+  opacity: 0.86;
 }
 
 .ym-wizard__main {
@@ -347,14 +348,14 @@ html:has(.ym-screen[data-screen="import-looks"]) #root {
   cursor: default;
 }
 .ym-wizard__package[data-on="true"] {
-  background: color-mix(in oklch, var(--brand) 14%, transparent);
+  background: color-mix(in oklch, var(--ink) 9%, transparent);
   box-shadow: inset 0 0 0 2px var(--brand);
 }
 .ym-wizard__package:hover {
   background: color-mix(in oklch, var(--ink) 8%, transparent);
 }
 .ym-wizard__package[data-on="true"]:hover {
-  background: color-mix(in oklch, var(--brand) 18%, transparent);
+  background: color-mix(in oklch, var(--ink) 11%, transparent);
 }
 .ym-wizard__box {
   width: 32px;
@@ -424,12 +425,12 @@ html:has(.ym-screen[data-screen="import-looks"]) #root {
   flex-wrap: nowrap;
   gap: 12px;
   padding: 12px 16px;
-  background: color-mix(in oklch, var(--tab-light) 18%, transparent);
+  background: color-mix(in oklch, var(--ink) 7%, transparent);
   color: var(--glass-label);
   font-weight: var(--fw-semibold);
 }
-.ym-wizard__waiting[data-arrived="true"] {
-  background: color-mix(in oklch, var(--status-ok) 22%, transparent);
+.ym-wizard__waiting[data-arrived="true"] [data-slot="item-media"] {
+  color: var(--status-ok);
 }
 .ym-wizard__waiting [data-slot="item-media"] {
   color: var(--glass-label);
@@ -549,8 +550,8 @@ html:has(.ym-screen[data-screen="import-looks"]) #root {
   object-fit: cover;
 }
 .ym-wizard__tile-more {
-  background: color-mix(in oklch, var(--brand) 18%, transparent);
-  color: var(--brand);
+  background: color-mix(in oklch, var(--ink) 8%, transparent);
+  color: var(--glass-label);
   font-size: 22px;
   font-weight: var(--fw-heavy);
 }
@@ -597,12 +598,9 @@ html:has(.ym-screen[data-screen="import-looks"]) #root {
 .ym-photo-cell__before {
   top: 12px;
   left: 12px;
-  border: 0;
-  box-shadow: 0 2px 8px rgb(0 0 0 / 0.35);
-  background: var(--primary);
-  color: var(--primary-foreground);
   text-transform: uppercase;
 }
+.ym-photo-cell__before,
 .ym-photo-cell__chip,
 .ym-photo-cell__readout {
   border: 1px solid rgb(255 255 255 / 0.2);
@@ -736,7 +734,7 @@ html:has(.ym-screen[data-screen="import-looks"]) #root {
   color: var(--glass-label);
 }
 .ym-error-bar[data-kind="notice"] [data-slot="item-media"] {
-  background: color-mix(in oklch, var(--primary) 24%, transparent);
+  background: color-mix(in oklch, var(--ink) 12%, transparent);
 }
 .ym-screen[data-screen="photos"] ~ .ym-error-bar {
   right: calc(var(--panel-w) + 24px);
@@ -746,7 +744,7 @@ html:has(.ym-screen[data-screen="import-looks"]) #root {
 .ym-about-dialog__adobe {
   padding: 12px 14px;
   border-radius: calc(var(--glass-radius-surface) * 0.5);
-  background: color-mix(in oklch, var(--brand) 16%, transparent);
+  background: color-mix(in oklch, var(--ink) 8%, transparent);
   font-weight: var(--fw-semibold);
   line-height: 1.5;
 }
@@ -795,4 +793,41 @@ html:has(.ym-screen[data-screen="import-looks"]) #root {
   flex-wrap: nowrap;
   padding-inline: 0;
   border-radius: 0;
+}
+
+/* ---- Round 7: yellow is a button accent ------------------------------------------------------------------------------------------- */
+/* A pressed toggle is the solid accent with dark text (Before, Crop, Pick white; an Auto toggle in its tab's colour), not a translucent
+   tint. */
+[data-slot="toggle"][data-state="on"] {
+  background: var(--primary);
+  color: var(--primary-foreground);
+}
+[data-slot="toggle"][data-state="on"]:hover {
+  background: var(--primary);
+  filter: brightness(1.07);
+}
+/* The Default tag on a look tile sits on a picture: a dark chip, as the number is. */
+.ym-look-tile__default {
+  background: rgb(0 0 0 / 0.58);
+  color: #fff;
+}
+
+/* A disabled primary button is not a faded yellow (45 % yellow over dark glass is olive): it is a neutral glass button with muted text. */
+[data-slot="button"][data-variant="primary"][aria-disabled="true"] {
+  background: color-mix(in oklch, var(--ink) 9%, transparent);
+  background-image: none;
+  color: var(--glass-label-tertiary);
+  box-shadow: inset 0 0 0 1px var(--rim);
+  filter: none;
+  opacity: 1;
+}
+[data-slot="button"][data-variant="primary"][aria-disabled="true"] [data-slot="kbd"] {
+  opacity: 0.6;
+}
+
+/* A value changed by hand: a solid ring and text in the tab's colour on a neutral box, not a translucent tint of it. */
+[data-slot="input"][data-changed] {
+  background: transparent;
+  color: var(--primary);
+  box-shadow: inset 0 0 0 1.5px var(--primary);
 }

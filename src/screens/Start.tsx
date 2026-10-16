@@ -74,7 +74,7 @@ export function Start() {
 
   return (
     <div className="ym-screen" data-screen="start">
-      <Aurora className="ym-aurora" />
+      <Aurora className="ym-aurora" animate={false} />
       <Header
         title={busy ? (session?.folder_name ?? "Yellowmoon") : "Yellowmoon"}
         subline={busy && session ? folderSubline(session) : "Drop ARW files to start"}

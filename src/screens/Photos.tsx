@@ -414,7 +414,7 @@ export function Photos() {
 
   return (
     <div className="ym-screen" data-screen="photos" data-panel={panel} data-count={COUNT_IN_HEADER ? "header" : undefined} data-dragging={dragging || undefined}>
-      <Aurora className="ym-aurora" />
+      <Aurora className="ym-aurora" animate={false} />
       <Header titleAs="h1" title={session?.folder_name ?? "Yellowmoon"} subline={session ? folderSubline(session) : ""} export={<ExportCellContainer store={store} />}>
         {exporting ? (
           <>
