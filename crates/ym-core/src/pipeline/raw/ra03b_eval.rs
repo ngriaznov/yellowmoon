@@ -125,6 +125,7 @@ fn bare_params(chromatic_aberration: bool) -> RawParams {
         highlight_recovery: false,
         lens_corrections: true,
         chromatic_aberration,
+        vignetting: true,
         noise_reduction: NoiseReduction {
             luminance: 0.0,
             color: 0.0,
@@ -647,6 +648,7 @@ fn ra03b_real_files_ca_residual() {
             highlight_recovery: true,
             lens_corrections: true,
             chromatic_aberration: true,
+            vignetting: true,
             noise_reduction: NoiseReduction {
                 luminance: est.noise_reduction.luminance as f32,
                 color: est.noise_reduction.color as f32,

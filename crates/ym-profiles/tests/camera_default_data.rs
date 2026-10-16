@@ -67,7 +67,7 @@ fn the_embedded_copy_is_the_file_and_it_loads() {
     let on_disk = std::fs::read_to_string(ColorMatrices::data_path(data_root())).unwrap();
     assert_eq!(EMBEDDED_JSON, on_disk);
     let t = ColorMatrices::from_json(&on_disk).unwrap();
-    assert_eq!(t.bodies().len(), 42);
+    assert_eq!(t.bodies().len(), 44);
     assert_eq!(t.fallback().model, "ILCE-7RM4");
 }
 
@@ -87,11 +87,15 @@ fn the_matrix_table_agrees_with_the_registry_and_the_exclusions() {
         .collect();
     assert_eq!(
         excluded,
-        ["ILCE-7M5", "ILCE-7RM6", "ILCE-1M2", "ILCE-3000"],
-        "the four bodies left out: none published, or the numbers of another body"
+        ["ILCE-7M5", "ILCE-7RM6"],
+        "the two bodies left out: no matrix of their own and no sibling to borrow from"
     );
-    // ILCE-3000 is the one of the four that the profile registry does not list.
+    // The A3000 is in the table (by decision) although the profile registry does not list it.
     assert!(!registry.bodies.iter().any(|b| b.model == "ILCE-3000"));
+    assert_eq!(
+        table.lookup("SONY", "ILCE-3000", Some(302)).how,
+        MatrixMatch::ModelId
+    );
     for body in &registry.bodies {
         let hit = table.lookup("SONY", &body.model, Some(body.model_id));
         if excluded.contains(&body.model.as_str()) {
@@ -117,16 +121,18 @@ fn the_matrix_table_agrees_with_the_registry_and_the_exclusions() {
 
 /// Every entry of the matrix table as Sony publishes it: (model ID, Model string), in file order, which is
 /// the order of the IDs. The IDs are facts about the cameras (maker-note tag 0xB001), pinned here from an
-/// independent public list (exiftool's SonyModelID table) so that a guessed ID cannot slip in:
+/// independent public list so that a guessed ID cannot slip in:
 /// `the_matrix_table_agrees_with_the_registry_and_the_exclusions` walks only the 28 registry bodies.
-/// Sony lists no 402 and 403 in that table's older versions; the profile registry (`docs/03`) has them.
-const PUBLISHED_IDS: [(u16, &str); 42] = [
+/// Sony lists no 402 and 403 in older versions of that list; the profile registry (`docs/03`) has them.
+/// ID 302 is the A3000's (Sony writes it for the A3500 too, under the Model string ILCE-3500).
+const PUBLISHED_IDS: [(u16, &str); 44] = [
     (261, "DSLR-A300"),
     (274, "DSLR-A500"),
     (288, "NEX-5N"),
     (289, "NEX-7"),
     (295, "NEX-6"),
     (296, "NEX-5R"),
+    (302, "ILCE-3000"),
     (305, "NEX-3N"),
     (306, "ILCE-7"),
     (307, "NEX-5T"),
@@ -161,6 +167,7 @@ const PUBLISHED_IDS: [(u16, &str); 42] = [
     (393, "ZV-E1"),
     (396, "ILCE-7CR"),
     (397, "ILCE-7CM2"),
+    (400, "ILCE-1M2"),
     (402, "ILCE-6400A"),
     (403, "ILCE-6100A"),
 ];
@@ -257,6 +264,31 @@ fn the_matrices_of_the_bodies_once_keyed_by_a_neighbouring_id_are_their_own() {
             "{} ({id})",
             body.body.model
         );
+    }
+}
+
+#[test]
+fn the_two_borrowed_entries_carry_the_numbers_they_borrow_and_say_so() {
+    // Owner's decision 2026-10-16 (`docs/STATUS.md`, question 29): the A1 II takes the A1's numbers (same
+    // sensor), the A3000 the generic E-mount numbers (the NEX-5N's). Every other entry is a body's own.
+    let table = ColorMatrices::shipped();
+    let numbers = |id: u16| table.lookup("SONY", "", Some(id)).body.xyz_d65_to_camera;
+    assert_eq!(numbers(400), numbers(384), "ILCE-1M2 = ILCE-1");
+    assert_eq!(numbers(302), numbers(288), "ILCE-3000 = NEX-5N");
+    let doc = matrices_file();
+    let noted: Vec<(&str, &str)> = doc["bodies"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|b| Some((b["model"].as_str()?, b.get("note")?.as_str()?)))
+        .collect();
+    assert_eq!(
+        noted.iter().map(|(m, _)| *m).collect::<Vec<_>>(),
+        ["ILCE-3000", "ILCE-1M2"],
+        "only the two borrowed entries carry a note"
+    );
+    for (model, note) in noted {
+        assert!(note.contains("2026-10-16"), "{model}: {note}");
     }
 }
 
@@ -365,7 +397,8 @@ fn the_golden_table_is_the_curve() {
 #[test]
 fn the_files_carry_only_numbers_and_body_names() {
     // docs/14 rule 8 and the owner's files: no file names, no owner photo names, and no mention of
-    // the tools or projects the numbers were read with.
+    // the tools or projects the numbers were read with. The notes of the two borrowed entries name the
+    // owner's decision, so the bare word is allowed; the owner's files and photos are not.
     for (name, text) in [
         ("color-matrices.json", EMBEDDED_JSON.to_string()),
         (
@@ -383,7 +416,10 @@ fn the_files_carry_only_numbers_and_body_names() {
             ".arw",
             ".jpg",
             ".jpeg",
-            "owner",
+            "owner's file",
+            "owner's photo",
+            "owner photo",
+            "owner file",
             "dsc0",
             "a1m0",
         ] {

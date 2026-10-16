@@ -200,6 +200,11 @@ pub struct RawParams {
     pub lens_corrections: bool,
     /// `decode.chromatic_aberration`.
     pub chromatic_aberration: bool,
+    /// Whether R3 (the lens vignetting gain) runs. On for everything but the Before view, which shows the
+    /// photo as the camera's own picture does, without the correction (`docs/02`, *The Before view*). Not a
+    /// setting: a source made by
+    /// [`PhotoSource::for_before_view`](super::color::PhotoSource::for_before_view) turns it off. Part of the key, so nothing made without R3 is ever served for a picture that has it.
+    pub vignetting: bool,
     /// The resolved noise reduction (R6 and R7).
     pub noise_reduction: NoiseReduction,
     /// The resolved capture sharpening (R8).
@@ -367,6 +372,7 @@ impl RawParams {
             u64::from(self.highlight_recovery),
             u64::from(self.lens_corrections),
             u64::from(self.chromatic_aberration),
+            u64::from(self.vignetting),
             g(self.noise_reduction.luminance),
             g(self.noise_reduction.color),
             g(self.noise_reduction.detail),
@@ -410,6 +416,14 @@ impl RawParams {
     pub fn without_capture_sharpening(mut self) -> Self {
         self.sharpen.amount = 0.0;
         self.diffraction = None;
+        self
+    }
+
+    /// The same parameters with R3, the vignetting gain, left out: the raw front of the Before view. Every
+    /// other stage keeps its parameters; the key differs, so no cache entry of the final picture is read.
+    #[must_use]
+    pub fn without_vignetting(mut self) -> Self {
+        self.vignetting = false;
         self
     }
 
@@ -476,6 +490,20 @@ pub struct RawPlan {
 
 fn table(t: &Option<ym_raw::metadata::LensTable>) -> Option<&[i16]> {
     t.as_ref().map(|t| t.raw.as_slice())
+}
+
+/// Whether R3 has anything to apply to this photo: a mosaic file whose vignetting table (0x7032) is
+/// usable, with the RAW-tab lens switch on. The answer [`RawPlan::new`] reaches for its profile, without
+/// building the plan. When it is false the picture is the same with R3 and without it, so a render that
+/// leaves R3 out (the Before view) shares the raw front of the one that has it.
+#[must_use]
+pub fn has_vignetting_profile(raw: &RawImage, lens_corrections: bool) -> bool {
+    if !lens_corrections || raw.is_reduced() {
+        return false;
+    }
+    let lens = raw.lens.as_ref().or(raw.meta.lens_corrections.as_ref());
+    lens.and_then(|l| LensTags::from_stored(table(&l.vignetting), None, None).ok())
+        .is_some_and(|t| !t.vignetting.is_empty())
 }
 
 /// Whether R1 would flag any photosite of the frame as clipped (`docs/05` R1: raw at or above
@@ -640,8 +668,15 @@ impl RawPlan {
             lens_corrections: params.lens_corrections,
             chromatic_aberration: params.chromatic_aberration,
         };
-        let vignette = VignetteProfile::from_tags(&tags, switches)
-            .map_err(|e| RenderError::Image(format!("The vignetting table is unusable: {e}.")))?;
+        // R3 only when the render asks for it: the Before view leaves the correction out
+        // (`RawParams::vignetting`), and then a table that cannot be used is no reason to refuse.
+        let vignette = if params.vignetting {
+            VignetteProfile::from_tags(&tags, switches).map_err(|e| {
+                RenderError::Image(format!("The vignetting table is unusable: {e}."))
+            })?
+        } else {
+            None
+        };
         let geometry = LensGeometry::new(w, h, &tags, switches)
             .map_err(|e| RenderError::Image(format!("The lens tables are unusable: {e}.")))?;
         let (lens, out_w, out_h) = if geometry.is_identity() {
@@ -673,6 +708,18 @@ impl RawPlan {
             switches,
             notes,
         })
+    }
+
+    /// The same plan without R3: what [`RawPlan::new`] makes for parameters with
+    /// [`RawParams::vignetting`] off. The levels, the lens maps and their crop, the clip answer and the
+    /// notes are the plan's own, so the Before view's raw front differs from the final picture's by the
+    /// vignetting gain alone, and making it costs no pass over the pixels.
+    #[must_use]
+    pub fn without_vignetting(&self) -> Self {
+        Self {
+            vignette: None,
+            ..self.clone()
+        }
     }
 
     /// The scale actually used for a requested reduction `k`: halved until the image is at least
@@ -1944,6 +1991,7 @@ mod tests {
                 highlight_recovery: true,
                 lens_corrections: true,
                 chromatic_aberration: true,
+                vignetting: true,
                 noise_reduction: NoiseReduction {
                     luminance: 0.0,
                     color: 0.0,
@@ -1991,6 +2039,7 @@ mod tests {
             highlight_recovery: true,
             lens_corrections: true,
             chromatic_aberration: true,
+            vignetting: true,
             noise_reduction: NoiseReduction {
                 luminance: 0.0,
                 color: 0.0,
@@ -2431,6 +2480,7 @@ mod tests {
             highlight_recovery: true,
             lens_corrections: true,
             chromatic_aberration: true,
+            vignetting: true,
             noise_reduction: NoiseReduction {
                 luminance: 0.0,
                 color: 0.0,
@@ -3304,6 +3354,154 @@ mod tests {
                 .expect("params")
                 .is_none()
         );
+    }
+
+    /// A file with a vignetting table and a distortion table, as the Before view's tests need it.
+    fn frame_with_lens_tables(w: u32, h: u32) -> (Arc<RawImage>, FrameData) {
+        let (w_us, h_us) = (w as usize, h as usize);
+        let data: Vec<u16> = (0..w_us * h_us)
+            .map(|i| (600.0 + 9000.0 * ((i % w_us) as f64 / w as f64)) as u16)
+            .collect();
+        let mut vignetting = vec![16i16];
+        vignetting.extend((0..16).map(|i| (i * i * 14) as i16));
+        let mut distortion = vec![16i16];
+        distortion.extend((0..16).map(|i| 40 + 25 * i));
+        let bytes = ym_raw::testgen::ArwBuilder::new("ILCE-7RM4", w, h)
+            .black([512; 4])
+            .white([16300; 3])
+            .lens_tables(ym_raw::testgen::LensTables {
+                vignetting: Some(vignetting),
+                chromatic_aberration: None,
+                distortion: Some(distortion),
+            })
+            .build(&data);
+        let raw = Arc::new(
+            ym_raw::decode::decode_bytes(&bytes, &ym_raw::decode::DecodeOptions::default())
+                .expect("decode"),
+        );
+        let frame = FrameData::new(&raw).expect("frame");
+        (raw, frame)
+    }
+
+    #[test]
+    fn the_before_plan_is_the_plan_without_the_vignetting_profile() {
+        let (raw, frame) = frame_with_lens_tables(160, 120);
+        let params = params_for_tests();
+        let with_r3 = RawPlan::new(&raw, &frame, &params).expect("plan");
+        let without = RawPlan::new(&raw, &frame, &params.without_vignetting()).expect("plan");
+        assert!(with_r3.vignette.is_some(), "the file has a vignetting table");
+        assert!(without.vignette.is_none(), "the Before view has no R3");
+        // Distortion and its crop stay: the Before view's geometry is the final picture's.
+        assert!(with_r3.lens.is_some() && without.lens.is_some());
+        assert_eq!(
+            (with_r3.out_w, with_r3.out_h),
+            (without.out_w, without.out_h)
+        );
+        assert!(without.out_w < 160, "the distortion crop is applied");
+        // Derived from the final picture's plan, it is the plan made for parameters without R3: nothing
+        // else differs (levels, lens maps and crop, the clip answer, the notes).
+        assert_eq!(
+            format!("{:?}", with_r3.without_vignetting()),
+            format!("{without:?}")
+        );
+        // The two never share a cache entry.
+        assert_ne!(params.key(), params.without_vignetting().key());
+        assert_eq!(params.without_vignetting().without_vignetting(), params.without_vignetting());
+        // With the lens corrections off there is no profile either way.
+        let mut off = params;
+        off.lens_corrections = false;
+        let a = RawPlan::new(&raw, &frame, &off).expect("plan");
+        assert!(a.vignette.is_none() && a.lens.is_none());
+    }
+
+    #[test]
+    fn r3_has_something_to_apply_only_with_a_usable_table_and_the_switch_on() {
+        let (raw, frame) = frame_with_lens_tables(160, 120);
+        assert!(has_vignetting_profile(&raw, true));
+        assert!(!has_vignetting_profile(&raw, false));
+        // The answer is the plan's: a profile exactly when the function says so.
+        let params = params_for_tests();
+        assert!(RawPlan::new(&raw, &frame, &params).unwrap().vignette.is_some());
+        let mut off = params;
+        off.lens_corrections = false;
+        assert!(RawPlan::new(&raw, &frame, &off).unwrap().vignette.is_none());
+        // A file without the tag has none.
+        let bytes = ym_raw::testgen::ArwBuilder::new("ILCE-7RM4", 160, 120)
+            .black([512; 4])
+            .white([16300; 3])
+            .lens_tables(ym_raw::testgen::LensTables {
+                vignetting: None,
+                chromatic_aberration: None,
+                distortion: None,
+            })
+            .build(&vec![2000u16; 160 * 120]);
+        let bare = ym_raw::decode::decode_bytes(&bytes, &ym_raw::decode::DecodeOptions::default())
+            .expect("decode");
+        assert!(!has_vignetting_profile(&bare, true));
+    }
+
+    #[test]
+    fn the_device_group_without_the_vignetting_gain_matches_reduced_bayer() {
+        // The Before view's raw front: R1, R4, R5, the binning, the light denoise and R9 at 1/k, with no
+        // R3 (`RawParams::vignetting` off), on the device against the CPU reference.
+        let Some(gpu) = device() else { return };
+        let (w, h) = (240u32, 180u32);
+        let (raw, frame) = clipped_frame(w, h);
+        let mut params = params_for_tests().without_vignetting();
+        params.noise_reduction = NoiseReduction {
+            luminance: 40.0,
+            color: 60.0,
+            detail: 70.0,
+        };
+        let plan = RawPlan::new(&raw, &frame, &params).expect("plan");
+        let tags = LensTags {
+            vignetting: vec![],
+            distortion: vec![0, 120, 400, 900, 1600, 2500],
+            ca: vec![0, 5000, 12000, 20000, 0, -5000, -12000, -20000],
+        };
+        let mut plan = plan;
+        plan.switches = LensSwitches::default();
+        plan.lens = Some(
+            LensGeometry::new(w as usize, h as usize, &tags, plan.switches)
+                .expect("lens")
+                .with_auto_crop(),
+        );
+        plan.tags = tags;
+        assert!(plan.vignette.is_none() && plan.has_clipped);
+        let cancel = CancelToken::new();
+        let sigma = sigma_plane(&frame, &plan, &params, &cancel).expect("sigma");
+        let frame = Arc::new(frame);
+        let route = GpuRoute {
+            gpu: Arc::clone(&gpu),
+            range: FRONT_RANGE,
+            spec: JobSpec::new(ym_gpu::queue::Priority::Viewport),
+            token: CancelToken::new(),
+            resident: None,
+        };
+        let resident = route.upload(&frame).expect("upload");
+        let mut worst = 0.0f32;
+        for k in [2usize, 4, 8] {
+            let want =
+                reduced_bayer(&frame, &plan, &params, &sigma, k, &cancel).expect("cpu group");
+            let device_params = reduced_params(&frame, &plan, &params, k)
+                .expect("params")
+                .expect("the device takes them");
+            assert!(device_params.highlight_recovery && device_params.vignette.is_none());
+            assert!(device_params.denoise.is_some() && device_params.lens.is_some());
+            let got = route
+                .reduced(&resident, device_params)
+                .expect("device group");
+            assert_eq!((got.width, got.height), (want.width, want.height), "k = {k}");
+            let d = got.max_abs_diff(&want);
+            eprintln!(
+                "[Before] reduced group without R3, k = {k}: {} x {}, device against reduced_bayer {d:e}",
+                got.width, got.height
+            );
+            worst = worst.max(d);
+        }
+        // The same stages as the test with the gain, minus the gain, so the bound is that test's. First
+        // measured 1.19e-6 (k = 2; 7.2e-7 at k = 4, 4.8e-7 at k = 8).
+        assert!(worst <= 1.9e-6, "{worst:e}");
     }
 }
 

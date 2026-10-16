@@ -392,6 +392,7 @@ fn ra07_real_files_ab() {
             highlight_recovery: true,
             lens_corrections: true,
             chromatic_aberration: true,
+            vignetting: true,
             noise_reduction: NoiseReduction {
                 luminance: est.noise_reduction.luminance as f32,
                 color: est.noise_reduction.color as f32,

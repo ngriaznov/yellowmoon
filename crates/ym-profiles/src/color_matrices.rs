@@ -50,6 +50,10 @@ pub struct BodyMatrix {
     pub model: String,
     /// The D65 colour matrix: XYZ to camera RGB, rows as published (not normalised).
     pub xyz_d65_to_camera: Mat3,
+    /// Where the numbers come from when they are not the body's own published ones (the A1 II takes the
+    /// A1's, the A3000 the generic E-mount matrix), and who decided it; `None` for a body's own.
+    #[serde(default)]
+    pub note: Option<String>,
 }
 
 /// How a lookup found its entry.
@@ -275,20 +279,46 @@ mod tests {
 
     #[test]
     fn bodies_without_a_real_entry_use_the_fallback() {
-        // These four are left out of the table (data/cameras/color-matrices.json, `excluded`): none
-        // published, or the numbers of another body.
+        // These two are left out of the table (data/cameras/color-matrices.json, `excluded`): none
+        // published, or the numbers of another body. The A1 II and the A3000 were left out too until
+        // the owner's decision of 2026-10-16; they have entries now (the next test).
         let t = ColorMatrices::shipped();
-        for (model, id) in [
-            ("ILCE-7M5", Some(407)),
-            ("ILCE-7RM6", Some(410)),
-            ("ILCE-1M2", Some(400)),
-            ("ILCE-3000", None),
-        ] {
+        for (model, id) in [("ILCE-7M5", Some(407)), ("ILCE-7RM6", Some(410))] {
             for l in [t.lookup("SONY", model, id), t.lookup("SONY", model, None)] {
                 assert_eq!(l.how, MatrixMatch::Fallback, "{model}");
                 assert_eq!(l.body.model, "ILCE-7RM4", "{model}");
             }
         }
+    }
+
+    #[test]
+    fn the_a1_ii_and_the_a3000_borrow_numbers_by_decision() {
+        // Owner's decision 2026-10-16 (`docs/STATUS.md`, question 29): the A1 II shares the A1's sensor and
+        // takes the A1's numbers; the A3000 has none of its own and takes the generic E-mount numbers,
+        // which are the NEX-5N's (and the A6000's, A5000's and A5100's).
+        let t = ColorMatrices::shipped();
+        let by_id = |id: u16| t.lookup("SONY", "", Some(id));
+        let a1 = by_id(384);
+        assert_eq!(a1.body.model, "ILCE-1");
+        let a1_ii = by_id(400);
+        assert_eq!((a1_ii.body.model.as_str(), a1_ii.how), ("ILCE-1M2", MatrixMatch::ModelId));
+        assert_eq!(a1_ii.body.xyz_d65_to_camera, a1.body.xyz_d65_to_camera);
+        let nex_5n = by_id(288);
+        assert_eq!(nex_5n.body.model, "NEX-5N");
+        let a3000 = by_id(302);
+        assert_eq!((a3000.body.model.as_str(), a3000.how), ("ILCE-3000", MatrixMatch::ModelId));
+        assert_eq!(a3000.body.xyz_d65_to_camera, nex_5n.body.xyz_d65_to_camera);
+        // Without an ID the Model string finds them too, and neither is the fallback any more.
+        for (model, want) in [("ILCE-1M2", 400), ("ILCE-3000", 302)] {
+            let l = t.lookup("SONY", model, None);
+            assert_eq!((l.how, l.body.model_id), (MatrixMatch::ModelString, want), "{model}");
+        }
+        // Each says where its numbers come from.
+        for body in [a1_ii.body, a3000.body] {
+            let note = body.note.as_deref().unwrap_or_default();
+            assert!(note.contains("2026-10-16"), "{}: {note:?}", body.model);
+        }
+        assert!(a1.body.note.is_none() && nex_5n.body.note.is_none());
     }
 
     #[test]

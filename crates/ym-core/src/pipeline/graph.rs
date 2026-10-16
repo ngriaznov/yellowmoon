@@ -9,10 +9,10 @@
 //! | Cache | Holds | Key |
 //! |---|---|---|
 //! | `frame` | the area copied out of the readout | the photo |
-//! | `plan` | levels, vignetting profile, lens maps and their auto crop | `lens_corrections`, `chromatic_aberration` |
+//! | `plan` | levels, vignetting profile, lens maps and their auto crop; one for the final picture and one for the Before view (the same plan without the vignetting profile) | `lens_corrections`, `chromatic_aberration`, and whether R3 runs |
 //! | `sigma` | the half-resolution noise sigma | the noise model and the gains `g0` |
-//! | `groups` | the raw group's image at 1/k | [`RawParams`] (all of `decode.*`, noise reduction, sharpening, `g0`, noise) and k |
-//! | `full` | the prepared full-resolution chain | [`RawParams`] |
+//! | `groups` | the raw group's image at 1/k | [`RawParams`] (all of `decode.*`, whether R3 runs, noise reduction, sharpening, `g0`, noise) and k |
+//! | `full` | the prepared full-resolution chain; one for the final picture and one for the Before view | [`RawParams`] |
 //! | `tiles` | 512 px tiles of the full-resolution raw group | [`RawParams`] and the tile |
 //! | `color` | the fused matrix and C7 | [`ColorKey`] |
 //! | `grade` | the prepared `ColorChain` | [`GradeKey`] |
@@ -49,8 +49,9 @@ use super::color::{
 use super::geometry::Geometry;
 use super::raw::{
     CaptureMethod, DEVICE_RANGE, FRONT_RANGE, FrameData, FullChain, GpuRoute, RawParams,
-    RawParamsKey, RawPlan, SigmaPlane, diffraction_params, noise_model_is_usable, reduced_bayer,
-    reduced_params, reduced_rgb, sigma_plane, usable_noise_model,
+    RawParamsKey, RawPlan, SigmaPlane, diffraction_params, has_vignetting_profile,
+    noise_model_is_usable, reduced_bayer, reduced_params, reduced_rgb, sigma_plane,
+    usable_noise_model,
 };
 use super::{FrameZoom, NeuralStatus, RenderError, RenderPath, RenderStats};
 use crate::app::gpu::GpuStages;
@@ -383,10 +384,15 @@ impl RenderReport {
 struct GraphState {
     /// The fingerprint of the decoded image the caches belong to.
     fingerprint: Option<u64>,
-    plan: Option<((bool, bool), Arc<RawPlan>)>,
+    /// The raw plan, with R3 (index 0, the final picture's) and without it (index 1, the Before view's:
+    /// [`RawPlan::without_vignetting`]), each with the lens switches it was made for.
+    plan: [Option<((bool, bool), Arc<RawPlan>)>; 2],
     sigma: Option<(Vec<u64>, Arc<SigmaPlane>)>,
     groups: Option<ByteLru<(RawParamsKey, usize), Backing>>,
-    full: Option<(RawParamsKey, Arc<FullChain>)>,
+    /// The prepared full-resolution chain, with R3 (index 0) and without it (index 1, the Before view's):
+    /// one of each, so that flipping to Before and back prepares neither again, and a settings edit
+    /// still replaces the one chain it changes.
+    full: [Option<(RawParamsKey, Arc<FullChain>)>; 2],
     /// The photo's raw words on the device (`GpuReduced` and the range R1..R9 read them), uploaded
     /// once per photo; released with the photo's place among the [`RESIDENT_PHOTOS`].
     resident: Option<Arc<DeviceRaw>>,
@@ -476,7 +482,7 @@ impl PhotoGraph {
         let st = lock(&self.state);
         st.sigma.as_ref().map_or(0, |(_, s)| s.bytes())
             + st.groups.as_ref().map_or(0, ByteLru::used)
-            + st.full.as_ref().map_or(0, |(_, f)| f.bytes())
+            + st.full.iter().flatten().map(|(_, f)| f.bytes()).sum::<usize>()
             + st.tiles.as_ref().map_or(0, ByteLru::used)
             + st.frames.as_ref().map_or(0, ByteLru::used)
             + st.display.as_ref().map_or(0, ByteLru::used)
@@ -486,7 +492,7 @@ impl PhotoGraph {
     /// reduced images: called when the photo is no longer the one being looked at.
     pub fn release_full_resolution(&self) {
         let mut st = lock(&self.state);
-        st.full = None;
+        st.full = [None, None];
         st.tiles = None;
     }
 
@@ -1483,6 +1489,13 @@ impl<'a> Job<'a> {
             highlight_recovery: s.decode.highlight_recovery,
             lens_corrections: s.decode.lens_corrections,
             chromatic_aberration: s.decode.chromatic_aberration,
+            // The Before view shows the photo without the lens vignetting correction, as the camera's own
+            // picture does (`PhotoSource::for_before_view`); every other render has R3. A photo with no
+            // vignetting table to apply (none in the file, the lens switch off, a camera-processed file)
+            // is the same with and without R3, so its Before view shares the final picture's raw front
+            // and its caches: flipping to Before costs no raw work there.
+            vignetting: !(self.src.before_view
+                && has_vignetting_profile(&self.src.raw, s.decode.lens_corrections)),
             noise_reduction: NoiseReduction {
                 luminance: nr.luminance as f32,
                 color: nr.color as f32,
@@ -1520,15 +1533,24 @@ impl<'a> Job<'a> {
         Ok(frame)
     }
 
-    /// The plan for the lens switches in effect.
+    /// The plan for the lens switches in effect, with R3 or, for the Before view, without it. The
+    /// Before view's plan is made from the final picture's when that is cached (the same plan without the
+    /// vignetting profile, [`RawPlan::without_vignetting`]: no pass over the pixels), and from the file
+    /// otherwise; both ways give the plan [`RawPlan::new`] makes for parameters without R3.
     pub fn plan(&mut self) -> Result<Arc<RawPlan>, RenderError> {
         let params = self.params()?;
         let key = (params.lens_corrections, params.chromatic_aberration);
-        let cached = lock(&self.g.state)
-            .plan
-            .as_ref()
-            .filter(|(k, _)| *k == key)
-            .map(|(_, p)| Arc::clone(p));
+        let slot = usize::from(!params.vignetting);
+        let (cached, with_r3) = {
+            let st = lock(&self.g.state);
+            let hit = |i: usize| {
+                st.plan[i]
+                    .as_ref()
+                    .filter(|(k, _)| *k == key)
+                    .map(|(_, p)| Arc::clone(p))
+            };
+            (hit(slot), hit(0))
+        };
         if let Some(plan) = cached {
             // The notes belong to every request that uses the plan, not only the one that made it.
             for n in &plan.notes {
@@ -1536,12 +1558,17 @@ impl<'a> Job<'a> {
             }
             return Ok(plan);
         }
-        let frame = self.frame()?;
-        let plan = Arc::new(RawPlan::new(&self.src.raw, &frame, &params)?);
+        let plan = match with_r3 {
+            Some(full) if slot == 1 => Arc::new(full.without_vignetting()),
+            _ => {
+                let frame = self.frame()?;
+                Arc::new(RawPlan::new(&self.src.raw, &frame, &params)?)
+            }
+        };
         for n in &plan.notes {
             self.note(n);
         }
-        lock(&self.g.state).plan = Some((key, Arc::clone(&plan)));
+        lock(&self.g.state).plan[slot] = Some((key, Arc::clone(&plan)));
         Ok(plan)
     }
 
@@ -1865,7 +1892,8 @@ impl<'a> Job<'a> {
     pub fn full(&mut self, keep: bool) -> Result<Arc<FullChain>, RenderError> {
         let params = self.params()?;
         let key = params.key();
-        if let Some((k, f)) = &lock(&self.g.state).full
+        let slot = usize::from(!params.vignetting);
+        if let Some((k, f)) = &lock(&self.g.state).full[slot]
             && *k == key
         {
             return Ok(Arc::clone(f));
@@ -1890,7 +1918,7 @@ impl<'a> Job<'a> {
         self.runs.full_chains += 1;
         self.timings.raw_ms += t.elapsed().as_secs_f64() * 1000.0;
         if keep {
-            lock(&self.g.state).full = Some((key, Arc::clone(&full)));
+            lock(&self.g.state).full[slot] = Some((key, Arc::clone(&full)));
         } else {
             self.transient_full = Some((key, Arc::clone(&full)));
         }

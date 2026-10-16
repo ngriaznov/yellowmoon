@@ -1910,6 +1910,12 @@ pub(crate) fn sample_view_in_place(
 
 /// A whole view: sample, colour pass, report. Frames of a viewport go through the frame cache.
 pub(crate) fn render_view(mut job: Job<'_>, spec: &ViewSpec) -> Result<RenderedFrame, RenderError> {
+    // The Before view reads a source made for it (`PhotoSource::for_before_view`: no R3), and nothing
+    // else does: the raw front and the colour pass must agree on which picture this is.
+    debug_assert_eq!(
+        job.src.before_view, spec.before,
+        "a Before view is rendered from the source made for it, and only that"
+    );
     let grade = job.grade(spec.target, true)?;
     let sharpening = view_sharpening(&mut job, spec)?;
     let cache_key = spec

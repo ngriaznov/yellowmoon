@@ -237,6 +237,11 @@ pub struct PhotoSource {
     /// Which R8 capture-sharpening method the photo gets: an internal switch (no settings field),
     /// [`DEFAULT_CAPTURE_METHOD`] until the owner decides. Tests and the evaluation tools set it.
     pub capture_method: CaptureMethod,
+    /// Whether this is the photo as the Before view reads it ([`PhotoSource::for_before_view`]): the raw
+    /// stages run without R3, the lens vignetting correction, as the camera's own picture does. False for
+    /// every other render. Set by `for_before_view` and nothing else, so a source made for the Before view
+    /// can only be rendered as the Before view's raw front.
+    pub before_view: bool,
 }
 
 /// A cheap fingerprint of a decoded image: its size, levels, white balance and a few thousand
@@ -282,6 +287,7 @@ impl PhotoSource {
             fingerprint: raw_fingerprint(&raw),
             sensor: view.camera.matched.sensor,
             capture_method: DEFAULT_CAPTURE_METHOD,
+            before_view: false,
             raw,
         }
     }
@@ -314,6 +320,7 @@ impl PhotoSource {
             fingerprint: raw_fingerprint(input.raw),
             sensor: input.camera.matched.sensor,
             capture_method: DEFAULT_CAPTURE_METHOD,
+            before_view: false,
         }
     }
 
@@ -327,19 +334,23 @@ impl PhotoSource {
     }
 
     /// The photo as the Before view reads it: the same file, profile, estimates, decode switches, lens
-    /// corrections and geometry, with the Detail controls that live in the raw group (noise reduction
-    /// and capture sharpening) at Auto. The Before view shows the camera default, and no setting
-    /// reaches it; output sharpening is skipped by the view itself. At Auto the raw group is the one
-    /// the final picture uses, so the two share it.
+    /// corrections (distortion and chromatic aberration, which move pixels, as for the final picture)
+    /// and geometry, with the Detail controls that live in the raw group (noise reduction and capture
+    /// sharpening) at Auto, and **without R3, the lens vignetting correction**. The Before view shows
+    /// the camera default, and no setting reaches it; output sharpening is skipped by the view itself.
+    /// The raw group is the final picture's except for R3, so the Before view has its own raw front,
+    /// keyed apart from the final picture's ([`RawParams::vignetting`](super::raw::RawParams)).
+    /// Owner's decisions of 2026-10-16 (`docs/STATUS.md`, question 29): no vignetting correction, and
+    /// Detail stays at Auto whatever the Detail settings say.
     #[must_use]
     pub fn for_before_view(&self) -> Self {
-        if self.settings.noise_reduction.is_auto() && self.settings.sharpen.is_auto() {
-            return self.clone();
-        }
         let mut settings = self.settings.clone();
         settings.noise_reduction = AutoOr::Auto;
         settings.sharpen = AutoOr::Auto;
-        self.with_settings(settings)
+        Self {
+            before_view: true,
+            ..self.with_settings(settings)
+        }
     }
 
     /// The EXIF orientation of the file, 1 to 8.

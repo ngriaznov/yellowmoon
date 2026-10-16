@@ -88,6 +88,7 @@ fn main() {
         highlight_recovery: false,
         lens_corrections: true,
         chromatic_aberration: true,
+        vignetting: true,
         noise_reduction: NoiseReduction {
             luminance: 0.0,
             color: 0.0,
