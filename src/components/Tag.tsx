@@ -1,4 +1,6 @@
 import type { ButtonHTMLAttributes, ReactNode } from "react";
+import { Badge } from "@/components/glass/badge";
+import { Toggle } from "@/components/glass/toggle";
 import { cx } from "./cx";
 
 /**
@@ -69,12 +71,38 @@ export interface TagProps {
   title?: string;
 }
 
-/** A 22 px boxed status label: 2 px border, 10.5 px 800 caps, 0.05em tracking. */
+/** Which glasscn badge each tag variant uses: soft fills for state, the solid accent for what was changed, red for what failed. */
+const BADGE: Readonly<Record<TagVariant, "default" | "tinted" | "secondary" | "outline" | "destructive">> = {
+  auto: "secondary",
+  edited: "default",
+  on: "tinted",
+  "stand-in": "outline",
+  reduced: "tinted",
+  default: "tinted",
+  "cant-open": "destructive",
+  waiting: "secondary",
+  developing: "tinted",
+  ready: "secondary",
+  skipped: "destructive",
+  done: "default",
+  active: "tinted",
+  failed: "destructive",
+  match: "tinted",
+  recommended: "tinted",
+};
+
+/** A status label: glasscn's `Badge`, a small capsule. */
 export function Tag({ variant, children, size = "md", className, title }: TagProps) {
   return (
-    <span className={cx("ym-tag", className)} data-variant={variant} data-size={size === "md" ? undefined : size} title={title}>
+    <Badge
+      variant={BADGE[variant]}
+      data-variant={variant}
+      data-size={size === "md" ? undefined : size}
+      title={title}
+      className={cx(size === "sm" && "h-4 px-1.5 text-[0.625rem]", size === "lg" && "h-control-xs px-pad-xs", className)}
+    >
       {children ?? TAG_LABELS[variant]}
-    </span>
+    </Badge>
   );
 }
 
@@ -86,22 +114,22 @@ export interface AutoToggleProps extends Omit<ButtonHTMLAttributes<HTMLButtonEle
 }
 
 /**
- * The AUTO button in a card header (Exposure, White balance, Noise reduction). It is a 26 px
- * toggle: ink while the card is automatic, paper with an outline once something was changed;
- * pressing it then restores Auto. Pressing it while automatic does nothing.
+ * The AUTO button in a card header (Exposure, White balance, Noise reduction): glasscn's `Toggle`. On (the accent's tint) while the card
+ * is automatic; once something was changed it is off, and pressing it restores Auto. Pressing it while automatic does nothing.
  */
 export function AutoToggle({ isAuto, onAuto, className, ...rest }: AutoToggleProps) {
   return (
-    <button
+    <Toggle
       {...rest}
-      type="button"
-      className={cx("ym-auto-toggle", className)}
-      aria-pressed={isAuto}
-      onClick={() => {
+      size="sm"
+      variant="outline"
+      pressed={isAuto}
+      className={cx("h-control-xs min-w-0 rounded-button px-2.5 text-xs font-semibold data-[state=on]:bg-primary/16 data-[state=on]:text-primary-ink", className)}
+      onPressedChange={() => {
         if (!isAuto) onAuto();
       }}
     >
       Auto
-    </button>
+    </Toggle>
   );
 }

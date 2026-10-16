@@ -1,4 +1,5 @@
 import { useRef, useState } from "react";
+import { Input } from "@/components/glass/input";
 import type { ApplyScope, BitDepth, ColorSpace, ExportFormat, ExportOptions, ExportEstimate, IfExists, TiffCompression } from "../../api/types";
 import { Card, Field, formats, LinkButton, Segmented, Slider } from "../../components";
 import { longEdgeRange, snapLongEdge } from "../../export/format";
@@ -282,8 +283,9 @@ export function ExportOptionsForm({ store, options, mode, model, scope, estimate
           </LinkButton>
         </div>
         <Field label="File name" className="ym-export__sub ym-export__sub--roomy">
-          <input
+          <Input
             type="text"
+            size="sm"
             className="ym-export__template"
             aria-label="File name template"
             aria-invalid={model.problem !== null || undefined}

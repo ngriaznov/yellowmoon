@@ -1,32 +1,5 @@
-/* Dialogs laid over the window: Preferences, About, the question before closing during an export, the .cube import. */
 
-.ym-dialog-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 40;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 24px;
-  background: rgba(0, 0, 0, 0.45);
-}
-.ym-dialog {
-  display: flex;
-  flex-direction: column;
-  box-sizing: border-box;
-  max-width: 100%;
-  max-height: calc(100vh - 48px);
-  border: var(--rule) solid var(--ink);
-  background: var(--paper);
-  color: var(--ink);
-}
-.ym-dialog:focus { outline: none; }
-.ym-dialog__head { flex-shrink: 0; padding: 22px 24px; background: var(--ink); color: var(--paper); }
-.ym-dialog__title { font-size: 32px; font-weight: var(--fw-heavy); letter-spacing: var(--ls-display); line-height: 1; }
-.ym-dialog__blurb { margin: 12px 0 0; font-size: 15px; line-height: 1.5; }
-.ym-dialog__body { flex: 1; min-height: 0; overflow-y: auto; }
-.ym-dialog__footer { display: flex; flex-shrink: 0; align-items: center; justify-content: flex-end; gap: 12px; padding: 16px 24px; border-top: var(--rule) solid var(--ink); }
-.ym-dialog__footer .ym-btn { min-width: 0; }
+
 .ym-dialog__footer-start { margin-right: auto; }
 .ym-dialog__text { margin: 0; padding: 20px 24px; font-size: var(--fs-body-l); line-height: 1.5; }
 
@@ -37,31 +10,8 @@
 .ym-pref__title { font-size: 15px; font-weight: var(--fw-heavy); }
 .ym-pref__hint { font-size: 12.5px; line-height: 1.45; }
 .ym-pref__control { display: flex; align-items: center; gap: 12px; }
-.ym-pref__select {
-  appearance: none;
-  -webkit-appearance: none;
-  min-width: 200px;
-  max-width: 260px;
-  height: 36px;
-  padding: 0 34px 0 12px;
-  background-image: linear-gradient(45deg, transparent 50%, var(--ink) 50%), linear-gradient(135deg, var(--ink) 50%, transparent 50%);
-  background-position: calc(100% - 17px) 15px, calc(100% - 12px) 15px;
-  background-size: 5px 5px, 5px 5px;
-  background-repeat: no-repeat;
-  border: var(--rule-control) solid var(--ink);
-  border-radius: 0;
-  background-color: var(--paper);
-  color: var(--ink);
-  font: inherit;
-  font-size: var(--fs-small);
-  font-weight: var(--fw-heavy);
-  letter-spacing: var(--ls-caps);
-  text-transform: uppercase;
-  cursor: default;
-}
+
 .ym-pref__defaults { padding: 4px 0 0; border-bottom: var(--rule-control) solid var(--ink); }
-.ym-pref__defaults .ym-card { padding-left: 24px; padding-right: 24px; }
-.ym-pref__defaults .ym-card:last-child { border-bottom: 0; }
 
 /* About */
 .ym-about-dialog__brand { display: flex; align-items: center; gap: 12px; padding: 22px 24px 0; font-size: 28px; font-weight: var(--fw-heavy); letter-spacing: -0.02em; line-height: 1; }

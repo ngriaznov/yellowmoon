@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import type { ReactNode } from "react";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/glass/select";
 import { Button, LinkButton, Segmented, Switch } from "../../components";
 import { exportModel } from "../../export/model";
 import { useAppState, useStore } from "../../state/context";
@@ -77,24 +78,25 @@ export function Preferences() {
       ) : (
         <>
           <Row title="Default look" hint="The look every new photo opens with.">
-            <select
-              className="ym-pref__select"
-              aria-label="Default look"
-              value={defaultLook?.id ?? ""}
-              onChange={(event) => void store.makeDefault(event.target.value)}
-            >
-              {lookOptions.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
+            <Select value={defaultLook?.id ?? ""} onValueChange={(next) => void store.makeDefault(next)}>
+              <SelectTrigger aria-label="Default look" className="w-[220px]">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {lookOptions.map((option) => (
+                  <SelectItem key={option.value} value={option.value}>
+                    {option.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </Row>
           <Row
             title="Display rendering"
             hint={arriLut ? "How log becomes a picture." : "Import ARRI's display LUTs to use them here."}
           >
             <Segmented
+              fit
               label="Display rendering"
               size="md"
               value={usingArri ? "arri" : "ours"}

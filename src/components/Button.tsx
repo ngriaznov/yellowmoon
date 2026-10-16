@@ -1,4 +1,7 @@
 import type { ButtonHTMLAttributes, MouseEvent, ReactNode, Ref } from "react";
+import { Button as GlassButton } from "@/components/glass/button";
+import { Kbd } from "@/components/glass/kbd";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/glass/tooltip";
 import { cx } from "./cx";
 
 /** Visual kind of a `Button`. */
@@ -6,12 +9,11 @@ export type ButtonVariant = "primary" | "secondary" | "header";
 
 export interface ButtonProps extends Omit<ButtonHTMLAttributes<HTMLButtonElement>, "type" | "disabled"> {
   /**
-   * `primary`: ink fill (Open photos, Next, Export N photos). `secondary`: outlined (Open
-   * folder, Cancel, Show in Finder). `header`: borderless caps text in a header cell (Before,
-   * Crop, Pick white). Default `primary`.
+   * `primary`: the accent (Open photos, Next, Export N photos). `secondary`: a soft fill (Open folder, Cancel, Show in Finder).
+   * `header`: a quiet button in a bar (Before, Crop, Pick white). Default `primary`.
    */
   variant?: ButtonVariant;
-  /** `md` is 48 px, `lg` is 56 px (Next, Export, Cancel). Header buttons are always 36 px. */
+  /** `md` is the control height, `lg` the large one (Next, Export, Cancel). */
   size?: "md" | "lg";
   /** Fills the row (`flex: 1`), as the footer's Export and Cancel buttons do. */
   block?: boolean;
@@ -20,9 +22,9 @@ export interface ButtonProps extends Omit<ButtonHTMLAttributes<HTMLButtonElement
    * it can explain itself (`title`). Never removed from the tab order.
    */
   disabled?: boolean;
-  /** Toggle state for header buttons (Before): the active one is brand yellow. */
+  /** Toggle state for header buttons (Before): the active one takes the accent tint. */
   pressed?: boolean;
-  /** A shortcut hint drawn as a boxed chip after the label ("⌘E"). */
+  /** A shortcut hint drawn as a keycap after the label ("⌘E"). */
   shortcut?: string;
   /** Small text at the right end, for a split button ("≈ 450 MB · ⌘↩"). Makes the label sit left. */
   aside?: ReactNode;
@@ -33,10 +35,12 @@ export interface ButtonProps extends Omit<ButtonHTMLAttributes<HTMLButtonElement
   children?: ReactNode;
 }
 
+const KIND = { primary: "prominent", secondary: "secondary" } as const;
+
 /**
- * The buttons of the mockups: caps 800 text, square corners, no shadow. A plain
- * `<button type="button">`; `disabled` uses `aria-disabled` so the button keeps its place in
- * the tab order (the wizard's Next explains why it is locked).
+ * The app's button, drawn by glasscn's `Button` (`src/components/glass/button.tsx`). A plain `<button type="button">`; `disabled`
+ * uses `aria-disabled` so the button keeps its place in the tab order (the wizard's Next explains why it is locked). `title` is shown
+ * as a glass tooltip (the span around the button lets a disabled one explain itself on hover too).
  */
 export function Button({
   variant = "primary",
@@ -49,6 +53,7 @@ export function Button({
   icon,
   className,
   onClick,
+  title,
   children,
   ...rest
 }: ButtonProps) {
@@ -60,11 +65,14 @@ export function Button({
     onClick?.(event);
   };
   const split = aside !== undefined;
-  return (
-    <button
+  const glassVariant = variant === "header" ? (pressed ? "tinted" : "ghost") : KIND[variant];
+  const button = (
+    <GlassButton
       {...rest}
       type="button"
-      className={cx("ym-btn", className)}
+      variant={glassVariant}
+      size={variant === "header" ? "sm" : size === "lg" ? "lg" : "default"}
+      className={cx(block && "w-full", split && "justify-between", variant === "header" && "px-2.5", className)}
       data-variant={variant}
       data-size={size}
       data-block={block || undefined}
@@ -77,36 +85,40 @@ export function Button({
       {split ? (
         <>
           <span>{children}</span>
-          <span className="ym-btn__aside">{aside}</span>
+          <span className="text-xs font-semibold tabular-nums opacity-75">{aside}</span>
         </>
       ) : (
         children
       )}
-      {shortcut ? (
-        <>
-          {" "}
-          <KeyHint>{shortcut}</KeyHint>
-        </>
-      ) : null}
-    </button>
+      {shortcut ? <KeyHint>{shortcut}</KeyHint> : null}
+    </GlassButton>
+  );
+  if (!title) return button;
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span className={cx("inline-flex", block && "flex-1")}>{button}</span>
+      </TooltipTrigger>
+      <TooltipContent>{title}</TooltipContent>
+    </Tooltip>
   );
 }
 
-/** A boxed key hint such as "⌘E", drawn in the current text colour. */
+/** A keycap such as "⌘E", on glass. */
 export function KeyHint({ children, className }: { children: ReactNode; className?: string }) {
-  return <span className={cx("ym-key-hint", className)}>{children}</span>;
+  return <Kbd className={cx("bg-transparent text-current opacity-80", className)}>{children}</Kbd>;
 }
 
 export interface LinkButtonProps extends Omit<ButtonHTMLAttributes<HTMLButtonElement>, "type" | "disabled"> {
   /** `md` is 14 px, `sm` 13 px. */
   size?: "sm" | "md";
-  /** `heavy` (800, default) or `bold` (700, "Start over"). */
+  /** `heavy` (default) or `bold` ("Start over"). */
   weight?: "heavy" | "bold";
   disabled?: boolean;
   children?: ReactNode;
 }
 
-/** An underlined text action: "Change", "Import →", "Choose…", "Start over", "← Back". */
+/** A text action in the accent: "Change", "Import →", "Choose…", "Start over", "← Back". glasscn's `link` button. */
 export function LinkButton({
   size = "md",
   weight = "heavy",
@@ -117,10 +129,12 @@ export function LinkButton({
   ...rest
 }: LinkButtonProps) {
   return (
-    <button
+    <GlassButton
       {...rest}
       type="button"
-      className={cx("ym-link", className)}
+      variant="link"
+      size="xs"
+      className={cx("h-auto! px-0! underline", size === "sm" ? "text-[0.8125rem]!" : "text-sm!", weight === "heavy" ? "font-semibold" : "font-medium", className)}
       data-size={size}
       data-weight={weight}
       aria-disabled={disabled || undefined}
@@ -130,6 +144,6 @@ export function LinkButton({
       }}
     >
       {children}
-    </button>
+    </GlassButton>
   );
 }

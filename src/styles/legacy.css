@@ -1,0 +1,12 @@
+/* The app's own stylesheets, kept as they were but placed in Tailwind's `base` layer. Unlayered CSS beats every layer, so left bare
+   these rules (`h3 { margin: 0 }`, `button { cursor: default }`) would override glasscn's utility classes on the same element. In
+   `base` they still win over Tailwind's preflight (they come after it) and lose to the utilities, which is the order glasscn expects.
+   glass-app.css is not layered: it is the one place that overrides both. */
+@import "./tokens.css" layer(base);
+@import "./global.css" layer(base);
+@import "./components.css" layer(base);
+@import "./app.css" layer(base);
+@import "./screens.css" layer(base);
+@import "./export.css" layer(base);
+@import "./wizard.css" layer(base);
+@import "./dialogs.css" layer(base);

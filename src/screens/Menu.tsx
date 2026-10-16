@@ -123,7 +123,7 @@ export function Menu<T extends string | number>({ label, options, value, onSelec
         },
       })}
       {open ? (
-        <ul id={listId} role="menu" aria-label={label} className="ym-menu__list" data-align={align === "end" ? "end" : undefined}>
+        <ul id={listId} role="menu" aria-label={label} className="ym-menu__list glass-liquid absolute top-full left-0 z-20 mt-1.5 max-h-[min(60vh,420px)] min-w-44 list-none overflow-y-auto rounded-surface-sm p-1.5 text-popover-foreground data-[align=end]:right-0 data-[align=end]:left-auto" data-align={align === "end" ? "end" : undefined}>
           {options.map((option, index) => (
             <li key={option.value} role="none">
               <button
@@ -133,7 +133,7 @@ export function Menu<T extends string | number>({ label, options, value, onSelec
                 type="button"
                 role="menuitemradio"
                 aria-checked={option.value === value}
-                className="ym-menu__item"
+                className="ym-menu__item glass-focus-inset flex h-9 w-full cursor-default items-center justify-between gap-4 rounded-control-sm px-2.5 text-left text-sm whitespace-nowrap hover:bg-fill-strong focus-visible:bg-fill-strong aria-checked:font-semibold aria-checked:after:size-1.5 aria-checked:after:rounded-full aria-checked:after:bg-primary aria-checked:after:content-['']"
                 onKeyDown={(event) => onItemKeyDown(event, index)}
                 onClick={() => {
                   onSelect(option.value);

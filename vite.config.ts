@@ -1,4 +1,5 @@
 import { resolve } from "node:path";
+import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import { configDefaults, defineConfig } from "vitest/config";
 
@@ -6,7 +7,10 @@ const host = process.env.TAURI_DEV_HOST;
 
 // https://vite.dev/config/ and https://v2.tauri.app/start/frontend/vite/
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), tailwindcss()],
+
+  // glasscn's components import each other and the helpers through the shadcn alias.
+  resolve: { alias: { "@": resolve(import.meta.dirname, "src") } },
 
   // Tauri options, applied in `tauri dev` and `tauri build`.
   // 1. Keep Rust compiler errors visible in the terminal.

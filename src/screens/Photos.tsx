@@ -1,4 +1,5 @@
-import { memo, useCallback, useMemo, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useState } from "react";
+import { Aurora } from "@/components/glass/aurora";
 import type { ColorSpace, PhotoSummary, RenderStats, ResolvedSettings, ViewportMode } from "../api/types";
 import { Button, Filmstrip, TabBar, tabPanelProps, TitleBlock, useLatest, useTabShortcuts, useWindowDrop } from "../components";
 import { exportModel } from "../export/model";
@@ -259,9 +260,22 @@ export function Photos() {
     },
     [store],
   );
-  const onRect = useCallback((rect: { width: number; height: number; scale: number }): void => {
+  const onRect = useCallback((rect: { x: number; y: number; width: number; height: number; scale: number }): void => {
     setCell((was) => (was && was.width === rect.width && was.height === rect.height && was.scale === rect.scale ? was : { width: rect.width, height: rect.height, scale: rect.scale }));
+    // The aurora behind the glass panes must leave the photo's rectangle clear: with the native viewport the photo is a layer behind
+    // the transparent page, and anything the page paints there would cover it (`.ym-aurora` masks this rectangle out).
+    const root = document.documentElement.style;
+    root.setProperty("--cell-x", `${rect.x}px`);
+    root.setProperty("--cell-y", `${rect.y}px`);
+    root.setProperty("--cell-w", `${rect.width}px`);
+    root.setProperty("--cell-h", `${rect.height}px`);
   }, []);
+  useEffect(
+    () => () => {
+      for (const name of ["--cell-x", "--cell-y", "--cell-w", "--cell-h"]) document.documentElement.style.removeProperty(name);
+    },
+    [],
+  );
 
   useShortcuts(
     (shortcut) => {
@@ -387,6 +401,7 @@ export function Photos() {
 
   return (
     <div className="ym-screen" data-screen="photos" data-panel={panel} data-dragging={dragging || undefined}>
+      <Aurora className="ym-aurora" />
       <Header titleAs="h1" title={session?.folder_name ?? "Yellowmoon"} subline={session ? folderSubline(session) : ""} export={<ExportCellContainer store={store} />}>
         {exporting ? (
           <>

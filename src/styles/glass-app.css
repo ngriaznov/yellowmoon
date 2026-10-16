@@ -1,0 +1,611 @@
+/* The glasscn skin of the app (experiment, branch claude/glasscn-ui).
+   The controls themselves are glasscn's components (src/components/glass/*, drawn by the wrappers in src/components/). This file does
+   what a component cannot: it places the panes of the Photos screen, and gives the app's own parts (filmstrip, look tiles, histogram,
+   title block, status text) the same material. It uses glasscn's utilities through @apply and its tokens as they are installed
+   (palette theme-dusk, material frosted, shape round). Nothing here sets a Yellowmoon colour: that is the next commit. */
+@reference "./glass.css";
+
+:root {
+  /* glasscn's own labels and fills, under short names. */
+  --ym-hairline: color-mix(in oklch, var(--glass-label) 12%, transparent);
+  --ym-fill: color-mix(in oklch, var(--glass-fill-tint) var(--glass-fill-opacity), transparent);
+  --ym-fill-strong: color-mix(in oklch, var(--glass-fill-tint) var(--glass-fill-opacity-strong), transparent);
+  --ym-muted: var(--glass-label-secondary);
+  --ym-primary-ink: color-mix(in oklch, var(--primary) 30%, var(--glass-label));
+  /* The system face: San Francisco on a Mac. (Where it is not installed the next in the list is used.) */
+  --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", Inter, system-ui, "Helvetica Neue", Arial, sans-serif;
+}
+
+body {
+  font-family: var(--font);
+  color: var(--glass-label);
+}
+/* Glass needs something to frost: the aurora sits behind the page, so the page itself paints nothing on the Photos screen. */
+html:has(.ym-screen[data-screen="photos"]),
+html:has(.ym-screen[data-screen="photos"]) body,
+html:has(.ym-screen[data-screen="photos"]) #root {
+  background: transparent !important;
+}
+
+/* ---- The Photos screen: glass panes over the aurora -------------------------------------------------------------------------- */
+.ym-screen[data-screen="photos"] {
+  background: transparent;
+  color: var(--glass-label);
+}
+
+/* The aurora is page content: with the native viewport the photo is a layer BEHIND the transparent page, so the aurora must not be
+   drawn over the photo's rectangle. Photos sets --cell-x/y/w/h from the cell; the mask cuts that rectangle out. */
+.ym-aurora {
+  -webkit-mask-image: linear-gradient(#000 0 0), linear-gradient(#000 0 0);
+  mask-image: linear-gradient(#000 0 0), linear-gradient(#000 0 0);
+  -webkit-mask-size: 100% 100%, var(--cell-w, 0px) var(--cell-h, 0px);
+  mask-size: 100% 100%, var(--cell-w, 0px) var(--cell-h, 0px);
+  -webkit-mask-position: 0 0, var(--cell-x, 0px) var(--cell-y, 0px);
+  mask-position: 0 0, var(--cell-x, 0px) var(--cell-y, 0px);
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+}
+
+.ym-screen[data-screen="photos"] .ym-header {
+  @apply glass rounded-none;
+  border-width: 0 0 1px 0;
+}
+.ym-screen[data-screen="photos"] .ym-brand {
+  border-right: 1px solid var(--ym-hairline);
+}
+.ym-screen[data-screen="photos"] .ym-brand-title {
+  font-size: 1.25rem;
+  font-weight: 650;
+  letter-spacing: -0.015em;
+}
+.ym-screen[data-screen="photos"] .ym-brand-sub {
+  font-size: 0.75rem;
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--ym-muted);
+}
+.ym-screen[data-screen="photos"] .ym-header__nav {
+  gap: 6px;
+  padding: 0 16px;
+}
+.ym-screen[data-screen="photos"] .ym-header__right {
+  align-items: center;
+  gap: 8px;
+  padding: 0 14px;
+  border-left: 1px solid var(--ym-hairline);
+}
+.ym-export-cell {
+  margin-left: auto;
+}
+/* "Update ready": a small capsule, not a ruled cell. */
+.ym-update-pill {
+  flex: 0 0 auto;
+  height: 30px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--ym-fill);
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+}
+.ym-update-pill__square {
+  width: 8px;
+  height: 8px;
+  border: 0;
+  border-radius: 50%;
+}
+.ym-status {
+  margin-left: auto;
+  color: var(--ym-muted);
+  font-size: 0.75rem;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.ym-status[data-hint="true"] {
+  color: var(--glass-label);
+  font-weight: 600;
+}
+.ym-fit {
+  font-variant-numeric: tabular-nums;
+}
+.ym-caret {
+  width: 0;
+  height: 0;
+  border-top: 5px solid currentColor;
+  border-right: 4px solid transparent;
+  border-left: 4px solid transparent;
+  opacity: 0.7;
+}
+@media (max-width: 1346px) {
+  .ym-status[data-hint="true"] {
+    position: fixed;
+    top: calc(var(--header-h) + 8px);
+    right: calc(var(--panel-w) + 16px);
+    z-index: 30;
+    margin-left: 0;
+    padding: 6px 14px;
+    @apply glass-liquid rounded-button;
+  }
+}
+
+/* The grid places the filmstrip (its rule was part of the old filmstrip block). */
+.ym-screen[data-screen="photos"] .ym-filmstrip {
+  grid-column: 1;
+  grid-row: 3;
+}
+
+/* ---- The tool panel: tabs, then cards on the aurora ------------------------------------------------------------------------- */
+.ym-tools {
+  padding: 12px 0 0;
+  border-left: 1px solid var(--ym-hairline);
+  background: transparent;
+}
+.ym-tools > [role="tablist"],
+.ym-tools > [data-slot="tabs"] {
+  flex-shrink: 0;
+  margin: 0 14px 4px;
+}
+.ym-tools__scroll {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 8px 14px 16px;
+}
+/* A card clips its content (rounded corners), so it would shrink to nothing instead of making the panel scroll. */
+.ym-tools__scroll > * {
+  flex-shrink: 0;
+}
+.ym-tools__foot {
+  gap: 6px;
+  padding: 8px 14px;
+  border-top: 1px solid var(--ym-hairline);
+  @apply glass rounded-none;
+  border-width: 1px 0 0 0;
+}
+/* The Export panel is the same shell: its title block sits straight in it, its buttons in a glass footer. */
+.ym-tools > .ym-title-block {
+  padding: 8px 18px 4px;
+}
+.ym-tools__footer {
+  @apply glass rounded-none;
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 14px;
+  border-width: 1px 0 0 0;
+}
+.ym-tools__notice {
+  padding: 8px 4px;
+  color: var(--ym-muted);
+  font-size: 0.9375rem;
+}
+.ym-stack {
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.ym-look-block {
+  margin-top: 12px;
+}
+
+/* The title of a tab. */
+.ym-title-block {
+  padding: 4px 4px 2px;
+}
+.ym-title-block__title {
+  margin: 0;
+  font-size: 1.75rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.1;
+}
+.ym-title-block__blurb {
+  max-width: 340px;
+  margin: 6px 0 0;
+  color: var(--ym-muted);
+  font-size: 0.875rem;
+  line-height: 1.45;
+}
+
+/* The histogram, as a glass card. */
+.ym-histogram {
+  @apply glass rounded-surface-sm;
+  padding: 14px 16px 12px;
+}
+.ym-histogram__box {
+  position: relative;
+  box-sizing: border-box;
+  height: 88px;
+  overflow: hidden;
+  border-radius: calc(var(--glass-radius-control) * 0.7);
+  background: var(--ym-fill);
+}
+.ym-histogram__box svg {
+  width: 100%;
+  height: 88px;
+}
+.ym-histogram__caption {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 8px;
+  color: var(--ym-muted);
+  font-size: 0.75rem;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---- Look tiles and their groups -------------------------------------------------------------------------------------------- */
+.ym-look-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px 10px;
+}
+.ym-look-group {
+  margin-bottom: 14px;
+}
+.ym-look-group__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+  color: var(--ym-muted);
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+.ym-look-group__count {
+  font-variant-numeric: tabular-nums;
+  font-weight: 500;
+}
+.ym-look-group__toggle {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-family: inherit;
+  text-align: left;
+  cursor: default;
+}
+.ym-look-group__title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.ym-look-group__chevron {
+  box-sizing: border-box;
+  flex: none;
+  width: 7px;
+  height: 7px;
+  margin: -3px 2px 0 2px;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  border-radius: 1px;
+  transform: rotate(45deg);
+}
+.ym-look-group__chevron[data-open="false"] {
+  margin: 0 2px;
+  transform: rotate(-45deg);
+}
+.ym-look-group__marker {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--primary);
+}
+.ym-look-tile {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: default;
+}
+.ym-look-tile__picture {
+  position: relative;
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  aspect-ratio: 3 / 2;
+  overflow: hidden;
+  border-radius: calc(var(--glass-radius-control) * 0.8);
+  background: var(--ym-fill);
+  box-shadow: inset 0 0 0 1px var(--ym-hairline);
+  transition: outline-offset var(--glass-duration) var(--glass-ease);
+}
+.ym-look-tile[aria-pressed="true"] .ym-look-tile__picture {
+  outline: 3px solid var(--primary);
+  outline-offset: 2px;
+}
+.ym-look-tile:focus-visible .ym-look-tile__picture {
+  outline: var(--glass-ring-width) solid var(--ring);
+  outline-offset: 2px;
+}
+.ym-look-tile__picture img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.ym-look-tile__badge {
+  position: absolute;
+  top: 5px;
+  left: 5px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: rgb(0 0 0 / 0.55);
+  color: #fff;
+  font-size: 0.625rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.ym-look-tile__default {
+  position: absolute;
+  right: 5px;
+  bottom: 5px;
+  display: flex;
+  align-items: center;
+  height: 16px;
+  padding: 0 7px;
+  border-radius: 999px;
+  background: var(--primary);
+  color: var(--primary-foreground);
+  font-size: 0.5625rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+.ym-look-tile__name {
+  max-width: 100%;
+  padding: 0 2px;
+  overflow: hidden;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ym-look-tile[aria-pressed="true"] .ym-look-tile__name {
+  color: var(--ym-primary-ink);
+  font-weight: 700;
+}
+.ym-look-tile[aria-disabled="true"] {
+  color: var(--glass-label-tertiary);
+}
+.ym-look-tile[aria-disabled="true"] .ym-look-tile__picture {
+  opacity: 0.45;
+}
+.ym-look-tile__note {
+  color: var(--ym-muted);
+  font-size: 0.6875rem;
+  line-height: 1.3;
+}
+
+/* ---- Progress ------------------------------------------------------------------------------------------------------------------ */
+.ym-progress {
+  position: relative;
+  box-sizing: border-box;
+  height: 12px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--ym-fill-strong);
+}
+.ym-progress[data-size="lg"] {
+  height: 16px;
+}
+.ym-progress__fill {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  border-radius: inherit;
+  background: var(--primary);
+}
+
+/* ---- The photo cell's chips: over the photo, so a tinted scrim, not glass (the page cannot blur a native layer) ---------------------- */
+.ym-photo-cell__chip {
+  border-radius: 999px;
+  background: rgb(18 18 24 / 0.62);
+  color: #fff;
+}
+
+/* ---- The filmstrip ------------------------------------------------------------------------------------------------------------- */
+.ym-filmstrip {
+  @apply glass rounded-none;
+  display: flex;
+  align-items: stretch;
+  box-sizing: border-box;
+  min-width: 0;
+  border-width: 1px 0 0 0;
+}
+.ym-filmstrip__scroll {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 0 20px;
+  overflow-x: auto;
+}
+.ym-filmstrip__thumb {
+  position: relative;
+  flex-shrink: 0;
+  box-sizing: border-box;
+  width: var(--thumb-strip-w);
+  height: var(--thumb-strip-h);
+  padding: 0;
+  border: 0;
+  border-radius: calc(var(--glass-radius-control) * 0.6);
+  overflow: hidden;
+  background: var(--ym-fill);
+  box-shadow: inset 0 0 0 1px var(--ym-hairline);
+  cursor: default;
+  transition:
+    width var(--glass-duration) var(--glass-ease),
+    height var(--glass-duration) var(--glass-ease);
+}
+.ym-filmstrip__thumb[aria-current="true"] {
+  width: var(--thumb-strip-current-w);
+  height: var(--thumb-strip-current-h);
+  outline: 3px solid var(--primary);
+  outline-offset: 2px;
+}
+.ym-filmstrip__thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  pointer-events: none;
+}
+.ym-filmstrip__thumb:focus-visible {
+  outline: var(--glass-ring-width) solid var(--ring);
+  outline-offset: 3px;
+}
+.ym-filmstrip__thumb[data-status="developing"],
+.ym-filmstrip__thumb[data-status="failed"] {
+  background: repeating-linear-gradient(135deg, var(--ym-fill) 0 6px, transparent 6px 12px);
+}
+.ym-filmstrip__failed {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  display: flex;
+  justify-content: center;
+  padding-bottom: 3px;
+}
+.ym-filmstrip__picked {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--primary);
+  box-shadow: 0 0 0 2px #fff;
+}
+.ym-filmstrip__thumb[data-in-export="true"][aria-current="true"] {
+  outline-width: 3px;
+}
+.ym-filmstrip__thumb[data-in-export="false"] {
+  opacity: 0.3;
+}
+span.ym-filmstrip__thumb {
+  cursor: default;
+}
+.ym-filmstrip__counter {
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  justify-content: center;
+  gap: 4px;
+  box-sizing: border-box;
+  width: 132px;
+  padding: 0 20px;
+  border-left: 1px solid var(--ym-hairline);
+}
+.ym-filmstrip__count {
+  font-size: 1.5rem;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+.ym-filmstrip__count-label {
+  color: var(--ym-muted);
+  font-size: 0.75rem;
+  font-weight: 500;
+}
+
+/* ---- Export panel -------------------------------------------------------------------------------------------------------------- */
+.ym-export__footer-pair > * {
+  min-width: 0;
+}
+.ym-export__footer-pair [data-slot="button"] {
+  width: 100%;
+}
+
+/* ---- Dialogs: Preferences rows, About ----------------------------------------------------------------------------------------- */
+.ym-pref {
+  padding: 12px 0;
+  border-bottom: 1px solid var(--ym-hairline);
+}
+.ym-pref:last-child {
+  border-bottom: 0;
+}
+.ym-pref__title {
+  font-size: 0.9375rem;
+  font-weight: 600;
+}
+.ym-pref__hint {
+  color: var(--ym-muted);
+  font-size: 0.8125rem;
+}
+.ym-pref__defaults {
+  padding: 4px 0 8px;
+  border-bottom: 1px solid var(--ym-hairline);
+}
+/* Inside a liquid dialog a card is a fill, not another pane ("never put glass in glass"). */
+.ym-pref__defaults [data-slot="card"] {
+  background-color: var(--ym-fill);
+  background-image: none;
+  border-color: transparent;
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  margin-bottom: 8px;
+}
+.ym-dialog__footer-start {
+  margin-right: auto;
+}
+.ym-dialog__text {
+  margin: 0;
+  padding: 8px 0;
+  font-size: 0.9375rem;
+  line-height: 1.5;
+}
+.ym-about-dialog__section,
+.ym-about-dialog__adobe,
+.ym-about-dialog__legal {
+  padding-left: 0;
+  padding-right: 0;
+  border-bottom-color: var(--ym-hairline);
+  border-bottom-width: 1px;
+}
+.ym-about-dialog__brand {
+  padding-left: 0;
+  padding-right: 0;
+}
+.ym-about-dialog__version {
+  padding-left: 0;
+}
+.ym-about-dialog__adobe {
+  background: var(--ym-fill);
+  color: var(--glass-label);
+  border-radius: calc(var(--glass-radius-control) * 0.8);
+  padding-left: 12px;
+  padding-right: 12px;
+}
+.ym-cube-list > li {
+  padding-left: 0;
+  padding-right: 0;
+  border-bottom-color: var(--ym-hairline);
+  border-bottom-width: 1px;
+}

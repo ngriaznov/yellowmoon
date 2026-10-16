@@ -1,5 +1,6 @@
 import { useLayoutEffect, useRef, useState } from "react";
 import type { ChangeEvent, KeyboardEvent, MouseEvent } from "react";
+import { Input } from "@/components/glass/input";
 import { cx } from "./cx";
 import { clampSnap, editText, parseNumber, roundToStep, sameValue } from "./format";
 import type { TabId } from "./tabs";
@@ -95,15 +96,16 @@ export function ValueBox({
   };
 
   return (
-    <input
+    <Input
       ref={input}
       id={id}
       type="text"
+      size="sm"
       inputMode="decimal"
       autoComplete="off"
       spellCheck={false}
       aria-label={label}
-      className={cx("ym-value-box", className)}
+      className={cx("h-control-sm w-[72px] px-1 text-center text-[0.8125rem] font-semibold tabular-nums data-[changed]:bg-primary/16 data-[changed]:text-primary-ink", className)}
       data-tab={tab}
       data-changed={changed || undefined}
       data-editing={isEditing || undefined}
