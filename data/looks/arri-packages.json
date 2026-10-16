@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "note": "Recognition rules and fingerprints for ARRI's free look packages. Names, sizes, LUT sizes and SHA-256 only; never LUT data. Filled by tools/looks/fingerprint.py in M3-09 (HUMAN M3-H2). See docs/08-looks.md.",
+  "note": "Recognition rules and fingerprints for ARRI's free look packages. Names, sizes, LUT sizes and SHA-256 only; never LUT data. Filled by tools/looks/fingerprint.py in M3-09 (HUMAN M3-H2); the two look-file packages (ALF4 and LogC3 Look Files) were fingerprinted the same way on 2026-10-16. See docs/08-looks.md.",
   "patterns_note": "Checked on 2026-10-15 against the text of ARRI's Look Files page (https://www.arri.com/en/learn/camera-systems/image-science/look-files, pasted by Mykyta) and ARRI's five public downloads from it (unzipped and listed, names only): the three 3D-LUT packages below and the two camera look-file packages. The 3D-LUT zips each hold ONE top folder named for the package and 87 flat .cube files named '<look code> <title>.cube' ('1110 Black and White.cube'; '3250-Cross.cube' with hyphens in the LogC3 to Rec709 one): no group folders, no encoding word in the file names (the zip and folder names carry it: 'LogC4', 'LogC3', 'to Rec709'), the group is the first digit of the look code, the LUT size is 65 (LogC4) or 33 (LogC3). The LogC3 to Rec709 zip also holds a __MACOSX tree of ._ files named .cube that are not LUTs. The camera look-file zips hold .alf4 (LogC4) or .aml (LogC3, three strengths per look) files in group folders; Yellowmoon cannot read them and says which 3D-LUT download to take. The page names the downloads 'Look Library for LogC4 (3D-LUTs)' (log-to-log, 2025-07-30), 'ARRI Look Library LogC3 (3D-LUTs)' (log-to-log, 2024-11-28), 'ARRI Look Library LogC3 (to Rec709) 3D-LUTs' (33 mesh points, 2024-03-12), 'Look Library for LogC4 (ALF4 Look Files)' and 'ARRI Look Library LogC3 (Look Files)' (2023-02-10); it states no download sizes and no LUT size for the LogC3 log-to-log library, so neither is a rule (download_mb is a hint; that library's lut_sizes is empty although its files have 33 points). The two display LUT packages are on ARRI's Technical Downloads page, not on that page; their names ('LogC4 LUT Package'), counts and file naming (ARRI_LogC4-to-Gamma24_Rec709-D65_v1_65.cube) come from ARRI's LUT naming guideline and were not checked against a download. The fingerprints of the three 3D-LUT packages were taken by the agent with tools/looks/fingerprint.py on 2026-10-15 from those downloads, with Mykyta's go-ahead (M3-H2): names, sizes, LUT sizes and SHA-256, no LUT data. How the patterns are used when a file is not in a fingerprint list: the zip_name patterns (on the zip's name or on the folder every file sits in), the encoding and the LUT sizes identify a package as a whole (at least half of expected.cube_files files); group_folders (a four-digit group folder or a look code at the start of the file name) and display_rendering are only read for files whose names say nothing about the package, and then between packages that both fit. Counts are expected values, not gates: more files than expected are imported with a note, fewer are reported as an incomplete download. Download sizes are not used to recognise anything.",
   "page_url": "https://www.arri.com/en/learn/camera-systems/image-science/look-files",
   "display_names": ["gamma24", "rec709", "bt709", "p3", "dcip3", "rec2020", "bt2020", "hlg", "pq", "srgb"],
@@ -563,6 +563,556 @@
         "lut_sizes": [65],
         "top_level_folders": ["ARRI Look Library for LogC4 (3D-LUTs)"],
         "ignored": {}
+      }
+    },
+    {
+      "id": "look-library-logc4-alf4",
+      "title": "Look Library · LogC4",
+      "arri_title": "Look Library for LogC4 (ALF4 Look Files)",
+      "role": "looks",
+      "format": "alf4",
+      "input": "logc4",
+      "download_mb": 17,
+      "zip_name": [
+        { "all_of": ["look", "logc4"], "any_of": ["alf4", "lookfiles"], "none_of": ["logc3", "rec709", "wvo", "3dluts"] }
+      ],
+      "expected": { "cube_files": 87, "groups": 9, "lut_sizes": [33] },
+      "markers": {
+        "encoding": { "any_of": ["logc4"], "none_of": ["logc3"] },
+        "display_rendering": "any",
+        "group_folders": "required"
+      },
+      "fingerprints": [
+        {
+          "path": "ARRI Look Library LogC4 (log-to-log) ALF4/1000 Black-and-White/LL-1110-Black-and-White.alf4",
+          "size": 217246,
+          "lut_size": 33,
+          "sha256": "fe8f9e8ed93ba15d1a38b24f2ffe3e1fad55dd6715afcef25faa053e6098fd61"
+        },
+        {
+          "path": "ARRI Look Library LogC4 (log-to-log) ALF4/1000 Black-and-White/LL-1111-Black-and-White.alf4",
+          "size": 217246,
+          "lut_size": 33,
+          "sha256": "959e2c018cbf58d0998c6b258cf3bed9e87e634aae2ee4b34b872ce7712d9b0f"
+        },
+        {
+          "path": "ARRI Look Library LogC4 (log-to-log) ALF4/1000 Black-and-White/LL-1120-Black-and-White-Night-sky.alf4",
+          "size": 217246,
+          "lut_size": 33,
+          "sha256": "f6be29ed470b07940fd187b70163542fc8c74e220478c1fb6a557a8eb4837710"
+        },
+        {
+          "path": "ARRI Look Library LogC4 (log-to-log) ALF4/2000 Application/LL-2110-Commercial.alf4",
+          "size": 217246,
+          "lut_size": 33,
+          "sha256": "bfa3d7bf28d834656ad7c86a2d2ec2fa42e3590c02657345cc8f05bb40ad850f"
+        },
+        {
+          "path": "ARRI Look Library LogC4 (log-to-log) ALF4/2000 Application/LL-2111-Commercial.alf4",
+          "size": 217246,
+          "lut_size": 33,
+          "sha256": "65032dd51557590bc5cf7b48690c6a9e4d87244c2d39f3c57e052514e0be0ba9"
+        },
+        {
+          "path": "ARRI Look Library LogC4 (log-to-log) ALF4/2000 Application/LL-2120-Fashion.alf4",
+          "size": 217246,
+          "lut_size": 33,
+          "sha256": "64c72f26d48089fb7f846da511df26d889e136d01e1cde48cdb3a0dfb3bd3395"
+        },
+        {
+          "path": "ARRI Look Library LogC4 (log-to-log) ALF4/2000 Application/LL-2121-Fashion.alf4",
+          "size": 217246,
+          "lut_size": 33,
+          "sha256": "076c06d4134dabc13116f59a9e786355a82c2a2fb89f5a1163d5d1b6b12c3286"
+        },
+        {
+          "path": "ARRI Look Library LogC4 (log-to-log) ALF4/2000 Application/LL-2130-Beauty.alf4",
+          "size": 217246,
+          "lut_size": 33,
+          "sha256": "e0eef804fd5b5adac5833e3b8608f2a3385a9cb1ccb149feaca782435d164fb5"
+        },
+        {
+          "path": "ARRI Look Library LogC4 (log-to-log) ALF4/2000 Application/LL-2131-Beauty.alf4",
+          "size": 217246,
+          "lut_size": 33,
+          "sha256": "70cf7def126af487ed045283bcfc3e0053403f30cb4dd4c6ba5623a82e7cafea"
+        },
+        {
+          "path": "ARRI Look Library LogC4 (log-to-log) ALF4/3000 Film/LL-3110-Film-A.alf4",
+          "size": 217246,
+          "lut_size": 33,
+          "sha256": "1c63fd3e148603aba4e888ae6c70b0cb6226405af41c8c465ba4a15990c96a3e"
+        },
+        {
+          "path": "ARRI Look Library LogC4 (log-to-log) ALF4/3000 Film/LL-3111-Film-B.alf4",
+          "size": 217246,
+          "lut_size": 33,
+          "sha256": "0682056907bf46473ae05c034a65e5dd5e26cc1c5ca500a6b6f5d613a6c47fae"
+        },
+        {
+          "path": "ARRI Look Library LogC4 (log-to-log) ALF4/3000 Film/LL-3112-Film-C.alf4",
+          "size": 217246,
+          "lut_size": 33,
+          "sha256": "69a7d6b7c3dd6faa9201e13a82d7b0f59004d534bda494a0770c012f33386087"
+        },
+        {
+          "path": "ARRI Look Library LogC4 (log-to-log) ALF4/3000 Film/LL-3113-Film-D.alf4",
+          "size": 217246,
+          "lut_size": 33,
+          "sha256": "c21be6232ff5f31dec7eed6983f3a9b3519cd496f6c36a56aadfc7aa4e7e1cf8"
+        },
+        {
+          "path": "ARRI Look Library LogC4 (log-to-log) ALF4/3000 Film/LL-3114-Film-E.alf4",
+          "size": 217246,
+          "lut_size": 33,
+          "sha256": "4a1aeb230ad216c8e3f9f6ea0eae85f63cbc7a648b0ebf433974dfaeef2c90c6"
+        },
+        {
+          "path": "ARRI Look Library LogC4 (log-to-log) ALF4/3000 Film/LL-3150-Film-process-Bleach-bypass.alf4",
+          "size": 217246,
+          "lut_size": 33,
+          "sha256": "0ef0f13016dc2799dcf86854e17bb2fadd9f4b79c080603af7d1cbe2b0dc5a8c"
+        },
+        {
+          "path": "ARRI Look Library LogC4 (log-to-log) ALF4/3000 Film/LL-3151-Film-Process-Bleach-bypass.alf4",
+          "size": 217246,
+          "lut_size": 33,
+          "sha256": "21afca4762f1e1568b368df0f3cb4caee73d271a17f66778226fb1c1baa9360b"
+        },
+        {
+          "path": "ARRI Look Library LogC4 (log-to-log) ALF4/3000 Film/LL-3210-Vintage.alf4",
+          "size": 217246,
+          "lut_size": 33,
+          "sha256": "7e48d4cc4991415a0f861855882ec74b179543302ea93e5404d5a04610b7ae9e"
+        },
+        {
+          "path": "ARRI Look Library LogC4 (log-to-log) ALF4/3000 Film/LL-3211-Vintage.alf4",
+          "size": 217246,
+          "lut_size": 33,
+          "sha256": "61284cbcdda8c256f41679b002d991fa453a600bf9ad04c4fa4aa024d6be1a59"
+        },
+        {
+          "path": "ARRI Look Library LogC4 (log-to-log) ALF4/3000 Film/LL-3220-Analog.alf4",
+          "size": 217246,
+          "lut_size": 33,
+          "sha256": "c1f89d5abff0ddcc2097c5ee630ef2e7888a575cf32394a096eacda04640bdec"
+        },
+        {
+          "path": "ARRI Look Library LogC4 (log-to-log) ALF4/3000 Film/LL-3221-Analog.alf4",
+          "size": 217246,
+          "lut_size": 33,
+          "sha256": "b1f1b657dd5dab69c19290cb865c5053e8bf308146cf438119a8bbca85337fd9"
+        },
+        {
+          "path": "ARRI Look Library LogC4 (log-to-log) ALF4/3000 Film/LL-3230-Retro.alf4",
+          "size": 217246,
+          "lut_size": 33,
+          "sha256": "3b8dfe664fe6af9e5dc44449feb1d8600e58bf174ec328f6f2944c90a198336c"
+        },
+        {
+          "path": "ARRI Look Library LogC4 (log-to-log) ALF4/3000 Film/LL-3231-Retro.alf4",
+          "size": 217246,
+          "lut_size": 33,
+          "sha256": "22c90de62901a275d9665403ccb6b97ffe85bd56bcc0e05c4bf1aed80d5ace90"
+        },
+        {
+          "path": "ARRI Look Library LogC4 (log-to-log) ALF4/3000 Film/LL-3240-Faded.alf4",
+          "size": 217246,
+          "lut_size": 33,
+          "sha256": "2da899c3506b093c3382c8320d06d95655cc609fd2fbb80a1421331846f1e9c1"
+        },
+        {
+          "path": "ARRI Look Library LogC4 (log-to-log) ALF4/3000 Film/LL-3241-Faded.alf4",
+          "size": 217246,
+          "lut_size": 33,
+          "sha256": "48618f2a948f0f0732310d32e7c671e51a6497511036f51e4ac0650d3f6aa86b"
+        },
+        {
+          "path": "ARRI Look Library LogC4 (log-to-log) ALF4/3000 Film/LL-3250-Cross.alf4",
+          "size": 217246,
+          "lut_size": 33,
+          "sha256": "cbf0fc37092ba57803aa20d452d4c4c1efac5798870ea2c1b43885523e2e8bfc"
+        },
+        {
+          "path": "ARRI Look Library LogC4 (log-to-log) ALF4/3000 Film/LL-3410-Film-Teal-and-orange.alf4",
+          "size": 217246,
+          "lut_size": 33,
+          "sha256": "aa0acf73ee0d5e7046ad7a425fa1b8faedf38d87a1ae6936c4184cadc2a821d8"
+        },
+        {
+          "path": "ARRI Look Library LogC4 (log-to-log) ALF4/3000 Film/LL-3411-Film-Teal-and-orange.alf4",
+          "size": 217246,
+          "lut_size": 33,
+          "sha256": "d5ea58d5649ec1626cb03a1fb2d957b47921407cc751c2df4ff260092273960b"
+        },
+        {
+          "path": "ARRI Look Library LogC4 (log-to-log) ALF4/3000 Film/LL-3420-Video-Teal-and-orange.alf4",
+          "size": 217246,
+          "lut_size": 33,
+          "sha256": "a360589deffef3dbd24bb9c8b335e1d42b506e8c91546f541d1989972c3f0869"
+        },
+        {
+          "path": "ARRI Look Library LogC4 (log-to-log) ALF4/4000 Tinted/LL-4110-Tinted-Desert.alf4",
+          "size": 217246,
+          "lut_size": 33,
+          "sha256": "231ad90b7fa45b5c124179598d52af7c7aa02dd461cd91b8c101b56f01fa4cb0"
+        },
+        {
+          "path": "ARRI Look Library LogC4 (log-to-log) ALF4/4000 Tinted/LL-4120-Tinted-Sepia.alf4",
+          "size": 217246,
+          "lut_size": 33,
+          "sha256": "34186ca2f65203f608a533118543a207f8d29d8650e8c2665b6b221c2be62125"
+        },
+        {
+          "path": "ARRI Look Library LogC4 (log-to-log) ALF4/4000 Tinted/LL-4130-Tinted-Orange.alf4",
+          "size": 217246,
+          "lut_size": 33,
+          "sha256": "c84eba10bf33dc490f04f48cf136ffa273d4941d2f389d77d18b0b35f0e12236"
+        },
+        {
+          "path": "ARRI Look Library LogC4 (log-to-log) ALF4/4000 Tinted/LL-4131-Tinted-Orange.alf4",
+          "size": 217246,
+          "lut_size": 33,
+          "sha256": "749ce65bfea99276e421dafc48203cd1edbf59c0cb235f1fb4917a571515d1d7"
+        },
+        {
+          "path": "ARRI Look Library LogC4 (log-to-log) ALF4/4000 Tinted/LL-4140-Tinted-Earth.alf4",
+          "size": 217246,
+          "lut_size": 33,
+          "sha256": "c3926d10b4f83355a63be4810c1511f443388b462cc0d757ded65babcc58e5b5"
+        },
+        {
+          "path": "ARRI Look Library LogC4 (log-to-log) ALF4/4000 Tinted/LL-4150-Tinted-White.alf4",
+          "size": 217246,
+          "lut_size": 33,
+          "sha256": "9ac3de129a1ea8b1783c97a62539d8b00cf6a2e3679761c9347e8ed3994a8f7b"
+        },
+        {
+          "path": "ARRI Look Library LogC4 (log-to-log) ALF4/4000 Tinted/LL-4160-Tinted-Teal.alf4",
+          "size": 217246,
+          "lut_size": 33,
+          "sha256": "241c18bc772f7ef436111419a855e2a8da93b2334739fc7f7b38cebac25ac90a"
+        },
+        {
+          "path": "ARRI Look Library LogC4 (log-to-log) ALF4/4000 Tinted/LL-4170-Tinted-Blue-sky.alf4",
+          "size": 217246,
+          "lut_size": 33,
+          "sha256": "7280408980053874262c8a48a25a0d4bac8b3e1c6c47ad764b3de8d577528ab5"
+        },
+        {
+          "path": "ARRI Look Library LogC4 (log-to-log) ALF4/4000 Tinted/LL-4180-Tinted-Ocean.alf4",
+          "size": 217246,
+          "lut_size": 33,
+          "sha256": "26adc9a2fe4bbb9765399c40f8dff43157cb6470e525cdd9bcedf8a1b09c4103"
+        },
+        {
+          "path": "ARRI Look Library LogC4 (log-to-log) ALF4/4000 Tinted/LL-4190-Tinted-Aqua.alf4",
+          "size": 217246,
+          "lut_size": 33,
+          "sha256": "a90ee34d5f54673d48820a00b3b63c60052087999946e9adae0d0fd4a2b1b471"
+        },
+        {
+          "path": "ARRI Look Library LogC4 (log-to-log) ALF4/4000 Tinted/LL-4210-Tinted-Green.alf4",
+          "size": 217246,
+          "lut_size": 33,
+          "sha256": "7eebd2b3a5f9305ba67166fa3eb447d10ea10f85bcea811b3a47a28275030bd6"
+        },
+        {
+          "path": "ARRI Look Library LogC4 (log-to-log) ALF4/4000 Tinted/LL-4220-Tinted-Magenta.alf4",
+          "size": 217246,
+          "lut_size": 33,
+          "sha256": "b3a33f3d7d6df0665f95b6621df4815e3e5540972d6f975986223b2f361eee1c"
+        },
+        {
+          "path": "ARRI Look Library LogC4 (log-to-log) ALF4/4000 Tinted/LL-4230-Tinted-Yellow.alf4",
+          "size": 217246,
+          "lut_size": 33,
+          "sha256": "0d9204b2e8a0b315eb09df3120d9cb6203668202e5360ab5061badef9f44115e"
+        },
+        {
+          "path": "ARRI Look Library LogC4 (log-to-log) ALF4/4000 Tinted/LL-4240-Tinted-Fire.alf4",
+          "size": 217246,
+          "lut_size": 33,
+          "sha256": "0f353d655e94d9a50eb0019f45540736f502b95111f3a7bb0f6fcff64e6bdab2"
+        },
+        {
+          "path": "ARRI Look Library LogC4 (log-to-log) ALF4/5000 Environment/LL-5110-Nature.alf4",
+          "size": 217246,
+          "lut_size": 33,
+          "sha256": "083ed4f07eb1d00970ab58c77e39460981cd97752c60135c15c54a8c09ca313d"
+        },
+        {
+          "path": "ARRI Look Library LogC4 (log-to-log) ALF4/5000 Environment/LL-5111-Nature.alf4",
+          "size": 217246,
+          "lut_size": 33,
+          "sha256": "ac8707b3717f95a16bdfa91ae1e25e43f196df7e6667682ca5ec62e07c44fd32"
+        },
+        {
+          "path": "ARRI Look Library LogC4 (log-to-log) ALF4/5000 Environment/LL-5120-City.alf4",
+          "size": 217246,
+          "lut_size": 33,
+          "sha256": "dad13f3959bc7e86608943dfd14949406a9ba5564e2c261e4330455b6b2f3e54"
+        },
+        {
+          "path": "ARRI Look Library LogC4 (log-to-log) ALF4/5000 Environment/LL-5121-City.alf4",
+          "size": 217246,
+          "lut_size": 33,
+          "sha256": "be04823fd58f3ffce1f7ceb4382d773eed7ac405c60ca3c3e77ad933f9b1b76e"
+        },
+        {
+          "path": "ARRI Look Library LogC4 (log-to-log) ALF4/5000 Environment/LL-5122-City.alf4",
+          "size": 217246,
+          "lut_size": 33,
+          "sha256": "c352bcefeb57ab132c5aa19babf40b9dbb058810307d5bdd611e323156b85def"
+        },
+        {
+          "path": "ARRI Look Library LogC4 (log-to-log) ALF4/5000 Environment/LL-5130-Suburban.alf4",
+          "size": 217246,
+          "lut_size": 33,
+          "sha256": "28e87fa6b85ae04ef3686a88b1d7959738d868111959d4a008c40f6b86633f53"
+        },
+        {
+          "path": "ARRI Look Library LogC4 (log-to-log) ALF4/5000 Environment/LL-5131-Suburban.alf4",
+          "size": 217246,
+          "lut_size": 33,
+          "sha256": "d74d65a9267b33f8434fe2390b145f30ec37ac55e53e0ddf971f3b61cfae8d2b"
+        },
+        {
+          "path": "ARRI Look Library LogC4 (log-to-log) ALF4/5000 Environment/LL-5210-Vibrant.alf4",
+          "size": 217246,
+          "lut_size": 33,
+          "sha256": "b51f8af757b0e8cc248fdc2af4463636864d07649be76e3323ae1558e12bb575"
+        },
+        {
+          "path": "ARRI Look Library LogC4 (log-to-log) ALF4/5000 Environment/LL-5220-Desaturated.alf4",
+          "size": 217246,
+          "lut_size": 33,
+          "sha256": "cd927a74fe41f5a02d0daeb69d60263a47171390bcdddca8ce59e789f2a28df4"
+        },
+        {
+          "path": "ARRI Look Library LogC4 (log-to-log) ALF4/5000 Environment/LL-5230-Saturated.alf4",
+          "size": 217246,
+          "lut_size": 33,
+          "sha256": "177871259555625b5d96c61fe60a1b8188fe7cdd43fb198329ab818a6943ebfa"
+        },
+        {
+          "path": "ARRI Look Library LogC4 (log-to-log) ALF4/6000 Season/LL-6110-Warm.alf4",
+          "size": 217246,
+          "lut_size": 33,
+          "sha256": "53f1dd8f0e2333356274af8d5564e5fe3a8f4a26a30617cd14e3021e7c46d615"
+        },
+        {
+          "path": "ARRI Look Library LogC4 (log-to-log) ALF4/6000 Season/LL-6111-Warm.alf4",
+          "size": 217246,
+          "lut_size": 33,
+          "sha256": "a777640b8f0b347dc16746260c52e02a94905ec40bdc0e00289c8eac497a7882"
+        },
+        {
+          "path": "ARRI Look Library LogC4 (log-to-log) ALF4/6000 Season/LL-6112-Warm.alf4",
+          "size": 217246,
+          "lut_size": 33,
+          "sha256": "d6bef1eec29dcc77d86abbe3ff70e87761a3e044509292426b9a8e03f052611d"
+        },
+        {
+          "path": "ARRI Look Library LogC4 (log-to-log) ALF4/6000 Season/LL-6120-Cold.alf4",
+          "size": 217246,
+          "lut_size": 33,
+          "sha256": "fbf942d0f4713aa7fb894043b255493810b4e3e618926a6472e1efa65d364d3a"
+        },
+        {
+          "path": "ARRI Look Library LogC4 (log-to-log) ALF4/6000 Season/LL-6121-Cold.alf4",
+          "size": 217246,
+          "lut_size": 33,
+          "sha256": "8a975f4936269f85bc8049da1488288b6656747688499e4286b612d2c34122da"
+        },
+        {
+          "path": "ARRI Look Library LogC4 (log-to-log) ALF4/6000 Season/LL-6210-Spring.alf4",
+          "size": 217246,
+          "lut_size": 33,
+          "sha256": "fdbbbd8476abe1d16b9ed89a954d99d59dc97764e62984b0cc4fbbdcfd769850"
+        },
+        {
+          "path": "ARRI Look Library LogC4 (log-to-log) ALF4/6000 Season/LL-6220-Summer.alf4",
+          "size": 217246,
+          "lut_size": 33,
+          "sha256": "2dc0eeb5ed8bfd4635d85802de2d4ccef1e09062a84bb6aa6754553a0f1790d2"
+        },
+        {
+          "path": "ARRI Look Library LogC4 (log-to-log) ALF4/6000 Season/LL-6230-Autumn.alf4",
+          "size": 217246,
+          "lut_size": 33,
+          "sha256": "14402e870890b905416c61eb91358fc3997831278fa8519c13434e38ae1be8ae"
+        },
+        {
+          "path": "ARRI Look Library LogC4 (log-to-log) ALF4/6000 Season/LL-6240-Winter.alf4",
+          "size": 217246,
+          "lut_size": 33,
+          "sha256": "82414ffdbf2d7c14546be3fbdd9386eaa89e637e2c6e0e16d560dab63cc710d3"
+        },
+        {
+          "path": "ARRI Look Library LogC4 (log-to-log) ALF4/6000 Season/LL-6310-Pastel.alf4",
+          "size": 217246,
+          "lut_size": 33,
+          "sha256": "435a1e6f52b7e8744be4498277d32fef42334faefc0870954d4743ec0c89e091"
+        },
+        {
+          "path": "ARRI Look Library LogC4 (log-to-log) ALF4/6000 Season/LL-6311-Pastel.alf4",
+          "size": 217246,
+          "lut_size": 33,
+          "sha256": "9b164dbe41a85b7e2cb025fdf9ffa31c2e98c06c148f4b72010c3befdbb25be6"
+        },
+        {
+          "path": "ARRI Look Library LogC4 (log-to-log) ALF4/6000 Season/LL-6410-Sunset.alf4",
+          "size": 217246,
+          "lut_size": 33,
+          "sha256": "c6558239369d2b5ba2ef8a8293a3c57af6cc85bfe1795dbebef2b46ff38913b8"
+        },
+        {
+          "path": "ARRI Look Library LogC4 (log-to-log) ALF4/6000 Season/LL-6420-Early-Morning.alf4",
+          "size": 217246,
+          "lut_size": 33,
+          "sha256": "330eae29c37d6eb3ca52aa96f24b6d32ea08803171027246036eafd7c54b3700"
+        },
+        {
+          "path": "ARRI Look Library LogC4 (log-to-log) ALF4/6000 Season/LL-6610-Desert.alf4",
+          "size": 217246,
+          "lut_size": 33,
+          "sha256": "af202222978af8aa525aa71c300d38f7da3aa76e45f0a3b3e86e36e138d7efa1"
+        },
+        {
+          "path": "ARRI Look Library LogC4 (log-to-log) ALF4/6000 Season/LL-6620-Snow.alf4",
+          "size": 217246,
+          "lut_size": 33,
+          "sha256": "90175f0d063161531f857d7ab76863f864f4c44d14755333246c66a2afea6a65"
+        },
+        {
+          "path": "ARRI Look Library LogC4 (log-to-log) ALF4/7000 Contrast/LL-7110-Low-Contrast.alf4",
+          "size": 217246,
+          "lut_size": 33,
+          "sha256": "f4e975ea54f153428c5559e41a2577ad7d091d271a411ecc948cf2917131a4f4"
+        },
+        {
+          "path": "ARRI Look Library LogC4 (log-to-log) ALF4/7000 Contrast/LL-7111-Low-Contrast.alf4",
+          "size": 217246,
+          "lut_size": 33,
+          "sha256": "81d97c5f6d6d0d75f3cd30e3b842c90a0271473f28cb1bc905d473a6d8b6fac6"
+        },
+        {
+          "path": "ARRI Look Library LogC4 (log-to-log) ALF4/7000 Contrast/LL-7120-High-Contrast.alf4",
+          "size": 217246,
+          "lut_size": 33,
+          "sha256": "769ea147a6dfa8ff81f63a5e7b910884adcd29f45eb95626766f8c78bd2e5e89"
+        },
+        {
+          "path": "ARRI Look Library LogC4 (log-to-log) ALF4/7000 Contrast/LL-7121-High-Contrast.alf4",
+          "size": 217246,
+          "lut_size": 33,
+          "sha256": "365058ede4df1af1bc4df766a250b1812099cb57fb484951af8345c8b713c7d3"
+        },
+        {
+          "path": "ARRI Look Library LogC4 (log-to-log) ALF4/7000 Contrast/LL-7130-High-Key.alf4",
+          "size": 217246,
+          "lut_size": 33,
+          "sha256": "1e63804c7d53c81d6eeba793809dc39657fb062fa454db4ea6163a8414f891fe"
+        },
+        {
+          "path": "ARRI Look Library LogC4 (log-to-log) ALF4/7000 Contrast/LL-7131-High-Key.alf4",
+          "size": 217246,
+          "lut_size": 33,
+          "sha256": "978e84ed409abeb2a4506a59c4de37b5b811563a2ee7ed0e4fac5bcf933b5869"
+        },
+        {
+          "path": "ARRI Look Library LogC4 (log-to-log) ALF4/7000 Contrast/LL-7140-Low-Key.alf4",
+          "size": 217246,
+          "lut_size": 33,
+          "sha256": "38b5834e00edb805454ec288d9db1319f018dcf558e760b004aae3bc32f67184"
+        },
+        {
+          "path": "ARRI Look Library LogC4 (log-to-log) ALF4/8000 Period/LL-8120-20s.alf4",
+          "size": 217246,
+          "lut_size": 33,
+          "sha256": "1d076177b69fefed9f517fe9a43db8465cd1ee7739a7b5d1b7a2070168f6085e"
+        },
+        {
+          "path": "ARRI Look Library LogC4 (log-to-log) ALF4/8000 Period/LL-8130-30s.alf4",
+          "size": 217246,
+          "lut_size": 33,
+          "sha256": "2ac31624fe83f8d11256f9e147f4291469ff14a214c1e6660d52f1f5e1f2943c"
+        },
+        {
+          "path": "ARRI Look Library LogC4 (log-to-log) ALF4/8000 Period/LL-8140-40s.alf4",
+          "size": 217246,
+          "lut_size": 33,
+          "sha256": "1f5dea2bd5e07e0e5b1a0f36566a79d9d5d2ed97efc38c3e45e67cf26cce067e"
+        },
+        {
+          "path": "ARRI Look Library LogC4 (log-to-log) ALF4/8000 Period/LL-8150-50s.alf4",
+          "size": 217246,
+          "lut_size": 33,
+          "sha256": "28c614054f672e9caf81fc40c0c859130f650ffab8da1516040d661202bbc220"
+        },
+        {
+          "path": "ARRI Look Library LogC4 (log-to-log) ALF4/8000 Period/LL-8160-60s.alf4",
+          "size": 217246,
+          "lut_size": 33,
+          "sha256": "e99a637ede17a4bafeabe2fea2996cb6cf41250444a5998d073831b5e4234a91"
+        },
+        {
+          "path": "ARRI Look Library LogC4 (log-to-log) ALF4/8000 Period/LL-8170-70s.alf4",
+          "size": 217246,
+          "lut_size": 33,
+          "sha256": "20d5b24efe3c9192cad94fe2ea3feb11dedde22e0bed799e7fe20cdb2e01df1d"
+        },
+        {
+          "path": "ARRI Look Library LogC4 (log-to-log) ALF4/8000 Period/LL-8180-80s.alf4",
+          "size": 217246,
+          "lut_size": 33,
+          "sha256": "dbd452d69ab523621a0b14cdb5dd8ec0ca494e1881d538f4ff3c3b0230b7d7ad"
+        },
+        {
+          "path": "ARRI Look Library LogC4 (log-to-log) ALF4/8000 Period/LL-8190-90s.alf4",
+          "size": 217246,
+          "lut_size": 33,
+          "sha256": "887feb954e05ef637e65639a0e8b27a6a9299ad5583e99feb522b8109c0bda7a"
+        },
+        {
+          "path": "ARRI Look Library LogC4 (log-to-log) ALF4/9000 Special/LL-9110-Dream.alf4",
+          "size": 217246,
+          "lut_size": 33,
+          "sha256": "2d67be7f0b012077abca9726cb035be0877f99f20646da073782580c8a37f4f2"
+        },
+        {
+          "path": "ARRI Look Library LogC4 (log-to-log) ALF4/9000 Special/LL-9111-Dream.alf4",
+          "size": 217246,
+          "lut_size": 33,
+          "sha256": "9c7518a8800d79187fa85540f5ee51ea854e646b8a5ecfdfe506703ea2c65131"
+        },
+        {
+          "path": "ARRI Look Library LogC4 (log-to-log) ALF4/9000 Special/LL-9120-Flash-Back.alf4",
+          "size": 217246,
+          "lut_size": 33,
+          "sha256": "6f53cf9c263bf00ec5b6eaed9b21e472fed9e473dae58c4c0ea2bb706f67a51d"
+        },
+        {
+          "path": "ARRI Look Library LogC4 (log-to-log) ALF4/9000 Special/LL-9210-Day-for-Night.alf4",
+          "size": 217246,
+          "lut_size": 33,
+          "sha256": "f3f0268c17963d94b1af3285842d4394b03386ecfe20ae555da3b71bb66612cb"
+        },
+        {
+          "path": "ARRI Look Library LogC4 (log-to-log) ALF4/9000 Special/LL-9211-Day-for-Night.alf4",
+          "size": 217246,
+          "lut_size": 33,
+          "sha256": "b47e0eff4becc02a17981e8519b232e2c8218d8cf78333db2b05ce47dada1413"
+        }
+      ],
+      "observed": {
+        "zip_name": "arri-look-library-logc4-log-to-log-alf4-data.zip",
+        "zip_bytes": 16823854,
+        "files": 87,
+        "lut_sizes": [33],
+        "top_level_folders": ["ARRI Look Library LogC4 (log-to-log) ALF4"],
+        "ignored": { "macos": 99 }
       }
     },
     {
@@ -1680,6 +2230,1600 @@
         "lut_sizes": [33],
         "top_level_folders": ["ARRI Look Library LogC3 to Rec709 3D-LUTs"],
         "ignored": { "macos": 88 }
+      }
+    },
+    {
+      "id": "look-library-logc3-rec709-alf2",
+      "title": "Look Library · LogC3 to Rec.709",
+      "arri_title": "ARRI Look Library LogC3 (Look Files)",
+      "role": "looks",
+      "format": "aml",
+      "input": "logc3_to_rec709",
+      "download_mb": 39,
+      "zip_name": [
+        { "all_of": ["look", "logc3"], "any_of": ["alf2", "lookfiles"], "none_of": ["logc4", "3dluts"] }
+      ],
+      "expected": { "cube_files": 261, "groups": 9, "lut_sizes": [33] },
+      "markers": {
+        "encoding": { "any_of": ["logc3"], "none_of": ["logc4"] },
+        "display_rendering": "any",
+        "group_folders": "required"
+      },
+      "fingerprints": [
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/1000 Black-and-White/LL-1110-Black-and-White-High.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "a3c2318ba38ab98139652a28e67e73da9d14c4a4bf872269ccca85368050f4a3"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/1000 Black-and-White/LL-1110-Black-and-White-Low.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "752c29ce11f09c8f559a98f42b3e7b3163ecc974859eea72503c05f186f99a15"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/1000 Black-and-White/LL-1110-Black-and-White-Medium.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "63084bd63397860af7922e115575ca4c95c0bea4a267967097de5f840b273c14"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/1000 Black-and-White/LL-1111-Black-and-White-High.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "f1388a3ed669aec86189ab275b9bb70db4f5aba77db0a15822c99149cbcc9a8f"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/1000 Black-and-White/LL-1111-Black-and-White-Low.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "7e80259db7196edc7faa7cceec2641a47d102c0c5a875db1fa48d007cca646c8"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/1000 Black-and-White/LL-1111-Black-and-White-Medium.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "14e583b79ae20696dff823a9fd55c5f70d7c693dcaa50448747027aeda41c00f"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/1000 Black-and-White/LL-1120-Black-and-White-Night-sky-High.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "94d6748caa66e405bd26b1f3a73ddefd6a1f159baf0596b12522e9c182fdf899"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/1000 Black-and-White/LL-1120-Black-and-White-Night-sky-Low.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "577db79875f8b1f4cbad96f2678c5236ec92e3fe0c889990ea067f61e9c00028"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/1000 Black-and-White/LL-1120-Black-and-White-Night-sky-Medium.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "3f1793bc6416157b237912af10b4349162c342f335fe16199c99e8867be8c3ec"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/2000 Application/LL-2110-Commercial-High.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "fbb4562ed5c8da0b3a27cd2e1afea6313b4dcde30eb11b8de1386e2081078429"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/2000 Application/LL-2110-Commercial-Low.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "58d88a1b631e4314c2f90b67bd2b4609d3b9496881124a917e4ed97ed5ad19e3"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/2000 Application/LL-2110-Commercial-Medium.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "8548a225bcc7b70880f98006660200a02bbe1a3dd62e99a65e5ac0b31f8e47a1"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/2000 Application/LL-2111-Commercial-High.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "a993f7be9415bfc8da7d7d3eb7aafb1deafdd3f2251eb394498cea9d05481303"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/2000 Application/LL-2111-Commercial-Low.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "bf6c6bd863626acbf8f8ac8a16f3ee1b3788f3ec270a6b21e0a71304e2ce5beb"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/2000 Application/LL-2111-Commercial-Medium.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "ae98d8cbfd35e00c92f5ee4614f8aaabb0dbb53c2175178f190ed1b33a819c5e"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/2000 Application/LL-2120-Fashion-High.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "c97186bbb782e255f0cd435e602267a228c022f8d94331e61fa01d39f4a4d313"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/2000 Application/LL-2120-Fashion-Low.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "93887dd1c2bf2a7b08b38b5b219f75cc503e3f459e3e59c96fcc99f709d31ab0"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/2000 Application/LL-2120-Fashion-Medium.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "e6bef2084079f63a0947c8a11dfb16ded9c27240bbf47fa8013303a46403b6d6"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/2000 Application/LL-2121-Fashion-High.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "f2ef614334f03648d37e7cc882c6033ac2772c995da5220393229c14c750962e"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/2000 Application/LL-2121-Fashion-Low.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "e4787997655006b34263df7a007a7bf400bbbd23efe833d20c260ba10c13fd60"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/2000 Application/LL-2121-Fashion-Medium.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "2b6a79168582325231d30113afb1cfa532b52bea855a5e863bab190d1b608b32"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/2000 Application/LL-2130-Beauty-High.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "a6fcd8f66336847ecb7c152ce0c9ed1f908284213fbd56f21f59cff6781fe2fb"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/2000 Application/LL-2130-Beauty-How.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "c2e5ad1f6ce82335d6cf71442a618d689c39b5f42158efe77b7163f024900e17"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/2000 Application/LL-2130-Beauty-Medium.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "b4197b0140f44cb628527dd9f1aece3a46cf77cba62065a7ed030f21364a023d"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/2000 Application/LL-2131-Beauty-High.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "5f412c00bad854351cc9ce7c3a74993e813495fccf6704f65caad49d6bc7c1ca"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/2000 Application/LL-2131-Beauty-Low.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "bf1694b8c127a0bc7ae548666c3e795ad28d263737959313211939723eb30bd8"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/2000 Application/LL-2131-Beauty-Medium.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "4a5710de8eeea8fd9d94bee06ef5d3783fd2bef333a80cbb6ca15239f349c165"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/3000 Film/LL-3110-Film-A-High.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "d4a48863e72d0b04186243da222f3c7b452c5172fa5edfbcc90545a4030d062a"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/3000 Film/LL-3110-Film-A-Low.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "81a996622d5e46c9f0b617124aa6a0dfb048a5529a2d3dcc8f3efed46bd571d7"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/3000 Film/LL-3110-Film-A-Medium.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "baa988d6f9571e6c0a4963688acaa3a4ae347a95663465f105e3889c7f785d06"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/3000 Film/LL-3111-Film-B-High.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "d8120ca68f7f292a2677c4d74479e1172d073c1f4e092393f3b4b6f4e1bd6841"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/3000 Film/LL-3111-Film-B-Low.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "54498240e4825b593ec2f4f34cf9107d15f17fc94655a7fe38cb0d2aabc33593"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/3000 Film/LL-3111-Film-B-Medium.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "2aee168af49b83108dd26fcc409c3fac4e8de76a350fc7365108eef270073465"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/3000 Film/LL-3112-Film-C-High.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "645682ebddb8b19af83227ea1320df2b860b3db2a224a9abe8842c99e62c0ff0"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/3000 Film/LL-3112-Film-C-Low.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "0db68b150e8559a74f3e67179846f1186240060fed4ba9ffa08d27c115448a0d"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/3000 Film/LL-3112-Film-C-Medium.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "98186b55b12c9a3da3a2d4b71a043ae62794452185eb2847a1ce92c6b4e5766f"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/3000 Film/LL-3113-Film-D-High.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "7d873a482f37189bf72e78ba973d7c92b6ff610d8a8952aead02647e6c8992d3"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/3000 Film/LL-3113-Film-D-Low.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "252badd4abb9f1212dbb10d413fa9b29eb6c233f4a23a349636e1e1722149b54"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/3000 Film/LL-3113-Film-D-Medium.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "72316e17677ba5e67d05f7c102a6e7bd5184d2681e13aec3a5653dc6a9b34781"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/3000 Film/LL-3114-Film-E-High.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "813ab232b366b617eed2f13b2389475a42bef7043078dfcec1d4cf6cc8a80f8e"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/3000 Film/LL-3114-Film-E-Low.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "90f69a36a12e940b0c6a581e70f21abd1bc38eaa91e6ec520edb3359b20bd1c9"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/3000 Film/LL-3114-Film-E-Medium.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "f5e13a06cd17713426b33511aad67b8cb17c4d151fe611c5c34a5dad746fb893"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/3000 Film/LL-3150-Film-process-Bleach-bypass-High.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "e23e48b6c0e8042d4a46af662555271bfdb5204d08da1a98f135ee3cc15fced5"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/3000 Film/LL-3150-Film-process-Bleach-bypass-Low.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "a9b36c1923e6f5bcca49eb2871b2f3fd299498859c3782d195d5342a32f7a470"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/3000 Film/LL-3150-Film-process-Bleach-bypass-Medium.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "c11c24b2168744a24b937fee689d11b97baa8e13ffaf2bcd58107d7d2a7d99ae"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/3000 Film/LL-3151-Film-process-Bleach-bypass-High.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "5b79200c7bd3e9f7c8fb5d6944de302a2cd15327a438e042118210b2847efa36"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/3000 Film/LL-3151-Film-process-Bleach-bypass-Low.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "4828bbaa0ee9109d5f4a1982d89929dca4fd3b3753d5d19d19d4826bc2d4b444"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/3000 Film/LL-3151-Film-process-Bleach-bypass-Medium.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "051d843893ebce8f8a5431a7b559e99ad278aa4e22fe9e221105c509ba8b7690"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/3000 Film/LL-3210-Vintage-High.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "7af337352960b05ccf8b45ee91290a1d27cce3b1c2663f6d5b64679c1c2261ad"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/3000 Film/LL-3210-Vintage-Low.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "d4df6a1b1d8dd6b06652eea9c135f9f1ce1f69520d5a1517cf2729be7a802975"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/3000 Film/LL-3210-Vintage-Medium.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "f0c7af451d398d831835ad37c16d5e1f4e71dac1cf9400d606013268d1fd69be"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/3000 Film/LL-3211-Vintage-High.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "60ffe3b9dd6899993f54b26576625c193f34d2b402f9790fcda86e627facfb6e"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/3000 Film/LL-3211-Vintage-Low.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "02e0009535435c6ff465ef64cf3e3860e8d3b5b85e396f1913639093e76f0e96"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/3000 Film/LL-3211-Vintage-Medium.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "b4274456efd7d26f5a132b5e34417164f6dfc2c98b01561a1be2f8bc45dc8d38"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/3000 Film/LL-3220-Analog-High.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "ea5808bc88c9a8ef5f100284347dd5220fcf5a428f72838059abbf352658a3f5"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/3000 Film/LL-3220-Analog-Low.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "1a184638f4bf172ba36b52acbcbf9588ddcd62ff51a8bc86ee28b0ff1d5b9a3c"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/3000 Film/LL-3220-Analog-Medium.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "b668e0e5e62a992b14ac87a5860dbb2b1f85b18d1cfacc6d0ccbaf0ac28b2c17"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/3000 Film/LL-3221-Analog-High.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "4bd72fcfbca523ed8124d6c930448c46e518747dada2f57317c41cb5f59ff07d"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/3000 Film/LL-3221-Analog-Low.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "5331353d386def59890ff478bf3551aeb9a7b37b2634225afeb42e8b6f406fd8"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/3000 Film/LL-3221-Analog-Medium.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "1fe317023538ed926b3abddc090df737238a21dfb86b85f78eb10a54dec3d107"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/3000 Film/LL-3230-Retro-High.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "538dbfdc4f1108d5ea267bf963c0c9deb268a07c044e2f946cd3eb98754c0eba"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/3000 Film/LL-3230-Retro-Low.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "a2420fa0a83ea5c82a631ea4ce79d84dacba2b691f56ab16b6224efbf68c7285"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/3000 Film/LL-3230-Retro-Medium.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "80977b33c6548bb92ba4dcda585d5abe68f2684ed384a8bec4b332d5e255dfa3"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/3000 Film/LL-3231-Retro-High.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "802a47af90ca3b406231821ecfa45d9c1d3dc68b973d63e2a3e9c7c98b54ff01"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/3000 Film/LL-3231-Retro-Low.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "d9159c8ba1b1f8ba8c75759056989e79135225dc50fc5884c0b53b5cc8455984"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/3000 Film/LL-3231-Retro-Medium.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "7d00805ce5bd9bd9aaf749dbaf0ec78b11d405b0e5b6d40196229f91d7bf21ba"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/3000 Film/LL-3240-Faded-High.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "bcafbb1003ae33f8ba8cdb1ce73726f665a96306c084a0a35e571e69168f8519"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/3000 Film/LL-3240-Faded-Low.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "4ea6e9f47483623673fde2bc5e05866eb3956358aba603ff9f79853b98945d7f"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/3000 Film/LL-3240-Faded-Medium.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "5f4318945b80337bda841b636b5b9c8b53275acefc8b78bde994de5109240ee4"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/3000 Film/LL-3241-Faded-High.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "2969c830eff9ece965cc480034eca6f3b8a2e432460b3af0514ec742e2d67abd"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/3000 Film/LL-3241-Faded-Low.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "afb0391f6343ad9c404a09cc9b8b1642d3b437227cde56a2187bb4009d63b195"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/3000 Film/LL-3241-Faded-Medium.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "fb714b7d206fdad1ed14ce48f77cb47fe5cb7e55f1eac206b823e9b0e504f603"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/3000 Film/LL-3250-Cross-High.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "d4514a38feadb1b32635ed97efcf1f3f0798fa4dcb66a294229883386932a83f"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/3000 Film/LL-3250-Cross-Low.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "5fa12f490f609bae93ba362f172e4d50d1b589ab8ded2c4e6de12c6372143602"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/3000 Film/LL-3250-Cross-Medium.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "4dc20286c59e46c7948e1e4902d32411a9907c19177623e0294ac5a65fdfe450"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/3000 Film/LL-3410-Film-Teal-and-orange-High.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "b425948510fd1cc90f0c376affe674c315d7734e37631d9320cbe5369ec925d8"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/3000 Film/LL-3410-Film-Teal-and-orange-Low.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "eaf026113ade3f9e2a4c45d97e8b7d30dc962af9147586dc60d418fcd955a192"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/3000 Film/LL-3410-Film-Teal-and-orange-Medium.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "e39c2462412b81d13a2cc4654cf364dbd6b82ee82e6cf5e17a4de7270b0d2f72"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/3000 Film/LL-3411-Film-Teal-and-orange-High.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "7ad9316c7395d7951acb66e8f9580ef96da6652ca7c8954d65c2cf947948b5c7"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/3000 Film/LL-3411-Film-Teal-and-orange-Low.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "ae89a18fbc3123607a469678b54757c1f279ca0ac36e21197d5c4546f19424be"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/3000 Film/LL-3411-Film-Teal-and-orange-Medium.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "c87116b4bf8c8f53a5098de9c51dddd8dc699be151fd66eb9e990f1e0c5c9a23"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/3000 Film/LL-3420-Video-Teal-and-orange-High.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "44e43a905c001b398382597f1b8f7fb47b17f1cd1d1d683ea13d701634780021"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/3000 Film/LL-3420-Video-Teal-and-orange-Low.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "005435ec33908fbce70b5a7bd03ef4816e8727fc533dd5ed877d55622341d739"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/3000 Film/LL-3420-Video-Teal-and-orange-Medium.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "863a1e6f73d1babbd7e6792f9daed7fea9574d30bb8bd1eb1a92265fe2a63fc0"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/4000 Tinted/LL-4110-Tinted-Desert-High.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "8815b03e7abaebe427a0d893a30286a39926469925c92a067ff1a96f5056089c"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/4000 Tinted/LL-4110-Tinted-Desert-Low.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "4ffb6f0672852807fe40f824e3a4b910e1538b1f34a9c20e9a55696322a9daa8"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/4000 Tinted/LL-4110-Tinted-Desert-Medium.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "8a9c47005d455af9e440fab40e4480a684142d6636078033b37219b616b18ca9"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/4000 Tinted/LL-4120-Tinted-Sepia-High.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "ec44eab17ca22239ae6dab883d70cb7921125c14da0a2fd4cd5485278a7abdb8"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/4000 Tinted/LL-4120-Tinted-Sepia-Low.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "cfa225a4a3171050b7236b89791d0fc3a7c70a839b34f96e40cada3da31c7d27"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/4000 Tinted/LL-4120-Tinted-Sepia-Medium.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "1bdf6609463ac4a021d753411f6d36118aaa411dddcf13febd9ed67c839f99f4"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/4000 Tinted/LL-4130-Tinted-Orange-High.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "794a651827c19fa0cae434fcf77a91cf457c14e0aa9162c39aacb51c9a1232fd"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/4000 Tinted/LL-4130-Tinted-Orange-Low.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "3f58658fecadd0092374a93e3c207f8f88b1be4989740f7a25512df6a009d966"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/4000 Tinted/LL-4130-Tinted-Orange-Medium.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "d18840af742e4b3ad7d24c9ed61df8786306f67519313d84f365bd5b7373ab1a"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/4000 Tinted/LL-4131-Tinted-Orange-High.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "6f58bcef34339245367fbd9e49e42f7110664e099bad57778065cfcdcb69f86c"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/4000 Tinted/LL-4131-Tinted-Orange-Low.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "ade2c2bc53e51e1f590298a6ae2c95c1d2436cea695d23956af3125e5eda9fdc"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/4000 Tinted/LL-4131-Tinted-Orange-Medium.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "339065d2cbaa90062ad8d53db317c6dc9603b69de5ef78181c6f4ead7c4970dc"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/4000 Tinted/LL-4140-Tinted-Earth-High.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "2f8b2d2255f6ba4c7d4636f69ecc2819b766e7bac88ba23fccb4041476bc18a6"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/4000 Tinted/LL-4140-Tinted-Earth-Low.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "be5503d6806e6ce93c61997dde7fd23396456cc440bec5d5a73436fcb3a5693c"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/4000 Tinted/LL-4140-Tinted-Earth-Medium.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "9ec1a268ec281249e19c5d52c408ac10eeca8247ec69cb1e640a3eaf544b0d32"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/4000 Tinted/LL-4150-Tinted-White-High.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "239af5e07819defc937b50821c664faa8ece28bd2a8f1d502124a55b24cb4479"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/4000 Tinted/LL-4150-Tinted-White-Low.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "30c2eec96bb9649fb29b686706bd863ad3c56ed069064d0c3bf1f01c3341929b"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/4000 Tinted/LL-4150-Tinted-White-Medium.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "5b3202ad19f57f448ccd7639654cad44b052cd41b7fd3564ca142eb957edf42f"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/4000 Tinted/LL-4160-Tinted-Teal-High.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "935e42e4eae32e3ea7b305c0b587b08252620122ab02017f155511217dc379cc"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/4000 Tinted/LL-4160-Tinted-Teal-Low.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "332630e529eba8b994568e0441cb947ff200c119d6b846a303ac1ec1cda04557"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/4000 Tinted/LL-4160-Tinted-Teal-Medium.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "e6f41628999e892f3624d8e78205b880d8e0a484471bb87603d26fa8c4f6c150"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/4000 Tinted/LL-4170-Tinted-Blue-sky-High.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "80613bd0a78273e6bf24f6ff661b16a060d12c6f5b68c002f6fc202d77095923"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/4000 Tinted/LL-4170-Tinted-Blue-sky-Low.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "5bbe2ca560d5b4541d6dcaaae26c5df9070282892d190c2465766dd5058c62ac"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/4000 Tinted/LL-4170-Tinted-Blue-sky-Medium.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "eedce465ba3d8f5be2f5a4c05760177bbfe82723d1bbed0783b440673b9e1808"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/4000 Tinted/LL-4180-Tinted-Ocean-High.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "50e17a6fd17ca42e9d1810c08e7a7e4caa85ab2e6bb9805d3ea1f2ca0316a068"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/4000 Tinted/LL-4180-Tinted-Ocean-Low.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "106ddf9e347ccdd67f9a0f598fbd8862d3710e245f2dcf30f7e023e47ab68dd5"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/4000 Tinted/LL-4180-Tinted-Ocean-Medium.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "0d9b0d46d2edc84f20200c2990bf88d47e78ff475415c231136961bc74cae474"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/4000 Tinted/LL-4190-Tinted-Aqua-High.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "51b27221a891b190d354a1cbf267ffb40e75067f69fa57fb327be2f49d2443b0"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/4000 Tinted/LL-4190-Tinted-Aqua-Low.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "f00109f8d906e2dff7ab927649c4fc25d2bbefee908a75c5e7964e41243f439e"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/4000 Tinted/LL-4190-Tinted-Aqua-Medium.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "ec5d9fd30e93b266725e04143f4332f4cd21ada44004f89a61e5d98cbd1d525d"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/4000 Tinted/LL-4210-Tinted-Green-High.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "b825794594503eb64dc8ac3b5d84e2ce707b74abb981f83fa18e54020b5fe8c3"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/4000 Tinted/LL-4210-Tinted-Green-Low.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "81de69b4799a45ff8e15b71365386cba30c3f9dc1bd91640f32b8306669db71e"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/4000 Tinted/LL-4210-Tinted-Green-Medium.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "db8c681e53b3e0e741ec35daa6b91e9c9ee8f23b83e090fa52e71110a83a0ece"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/4000 Tinted/LL-4220-Tinted-Magenta-High.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "0bd626449e473aefad4e8a5e571a714e47436ece94a45c90fcb282a92ad7300b"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/4000 Tinted/LL-4220-Tinted-Magenta-Low.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "d14c9a50e9b2bbf9a23169c17cccbb4bda4c0df56de4552806c308993c4499c9"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/4000 Tinted/LL-4220-Tinted-Magenta-Medium.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "9d5dc869205a16c550d21b2cf99a756fc86c8eac8cc8d4384154949d8896d4be"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/4000 Tinted/LL-4230-Tinted-Yellow-High.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "70fe84fb0557732d44af51144d0e42bfb907c4a76d5439cb17900bfc3c738287"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/4000 Tinted/LL-4230-Tinted-Yellow-Low.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "9a7a9e172d28d2b129d5633d11cb947dd5d43640ae24c10e923089cbf73d04cc"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/4000 Tinted/LL-4230-Tinted-Yellow-Medium.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "ae12fc7d642a700be618b1fcbeef740b0f2dce79262f74e4359cbc0c3199c845"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/4000 Tinted/LL-4240-Tinted-Fire-High.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "63bc22e244e1f513e427458843a97dc49ac4dbc3a3198f852ebef7a17bf18ee9"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/4000 Tinted/LL-4240-Tinted-Fire-Low.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "08af66f42b4bdfbf5f8e69c71943fa751eafad57170bc84d84de760db48ed0b1"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/4000 Tinted/LL-4240-Tinted-Fire-Medium.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "cc6f13628d265b3b28433d74c4cc90fee7f206947479427e70535a1ccc869f57"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/5000 Environment/LL-5110-Nature-High.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "160fe5b567404d86d5f0aa9625dccea8f9002817a1befd5730dffc69083d60d5"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/5000 Environment/LL-5110-Nature-Low.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "9a8e9cdfca1977a864173592d5a3b301c713824d731f3fff66b15d2ca3fb81ed"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/5000 Environment/LL-5110-Nature-Medium.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "9d723ff02e63b2eadf96b705350cc30f91badeca6f287d743829c2173dde1eed"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/5000 Environment/LL-5111-Nature-High.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "24b43884c39ead56545e0f4ca23e3f9e256d7232ad1fd7d13098fe4e5adba1a5"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/5000 Environment/LL-5111-Nature-Low.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "3b221baf2642b0efb3a9454fe3f290164c33a88e37b6fe742f9687903f50ab46"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/5000 Environment/LL-5111-Nature-Medium.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "40506a58a59376894d8f25c4cebfb2bc04d1eba2191df5bf9c1659d2cca5bc5c"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/5000 Environment/LL-5120-City-High.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "9289911c3df574225de211872bc728304f854182fcc96f5f4f5a844788ceedcc"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/5000 Environment/LL-5120-City-Low.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "5d045594c0d560748c1d970c5c46017990f658877bd2d6665e7b592bee77870f"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/5000 Environment/LL-5120-City-Medium.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "f1c0dcfbd4c2613d0ba00730369a10c7651227fc08359c51ec17f2c98527cfdf"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/5000 Environment/LL-5121-City-High.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "08934a8cbf61ddcebfb80ee1349576ae535f0ac97c29bf164917c92a32d69158"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/5000 Environment/LL-5121-City-Low.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "012e8fe838403da17b2c6481a0404e218dfaf5bbaa5cec360c81c51b26752958"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/5000 Environment/LL-5121-City-Medium.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "aeeace2748c7d323085025786805ee36e23592dcd8f4dd9791e264fc8f0dfca1"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/5000 Environment/LL-5122-City-High.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "e4350f07fdc0f7234a9894f7b51331b2d0728fcb0e9c43fdb8fffc1ba4b0265b"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/5000 Environment/LL-5122-City-Low.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "c816b29da5088f36a8f7c196fb5f1b30ba6c37dc9c7c47f2fd005cfa158a6d9d"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/5000 Environment/LL-5122-City-Medium.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "fe9c2198413bf389b4878e1e69a0cf28b7c387973565beac4ac113c24e2f18ff"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/5000 Environment/LL-5130-Suburban-High.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "acd6db33c14bee7e8b1d115187db1b51e55224089a9dce2d4d51953b1a363b67"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/5000 Environment/LL-5130-Suburban-Low.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "02ca39a1fd896b893df3edb0d6011915d16a0ffd1fa373cfc8dd752a4363f541"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/5000 Environment/LL-5130-Suburban-Medium.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "46a6cdec9f1b3ca9ae4b2834027123d1e99da9320200746a34ec1c1571e38f18"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/5000 Environment/LL-5131-Suburban-High.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "0dc6ede394ffc6e9dd5f5f69d19ebc9befb43a4e0997487345e545af3892042b"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/5000 Environment/LL-5131-Suburban-Low.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "e2215090f5853fc63900ae83ca48ef0c53b20086a7f3a4276d884bcf7e79f20d"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/5000 Environment/LL-5131-Suburban-Medium.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "b298934203813706be8e096fda2e2e50cda084ec99c42ef53adfdca0f977b981"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/5000 Environment/LL-5210-Vibrant-High.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "1f1159946051a5efff479e3a3c17512f7fd8881702f468c03e50407edb40b0d2"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/5000 Environment/LL-5210-Vibrant-Low.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "e8303180fc0dace1fbff86738a26eaafae516f689a2a498646381eb30e5e721e"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/5000 Environment/LL-5210-Vibrant-Medium.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "dc0e4545cd4574769ba931df1b8c6121af44c065cf9ae970d86a6d6a935b1522"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/5000 Environment/LL-5220-Desaturated-High.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "113c3e73b047c774223fe6008697506463018bb721d483f93688577b20fab875"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/5000 Environment/LL-5220-Desaturated-Low.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "6c43c19f383c9369b18fe5c24699ca3236e656a96baf8ae2bd911a2f7de108bf"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/5000 Environment/LL-5220-Desaturated-Medium.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "3b728016d0b74cc3247b0f17ef69b59ee1229355baa37d6fd4c71bf1742736a8"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/5000 Environment/LL-5230-Saturated-High.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "ba426ac49a4141edcc44913a1eaf22f31954a70ebe087fcb03ecad9d9ab35c9a"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/5000 Environment/LL-5230-Saturated-Low.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "53f1da88bc1e26fd0687c7387ba6b1349976ce2ec65d267d30b160752f2999e3"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/5000 Environment/LL-5230-Saturated-Medium.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "96ecbef7d715b219d50c44341823145d74e860d9ea71245abaa7b52737207c26"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/6000 Season/LL-6110-Warm-High.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "2bdf36174290d79cd2c08c4b41d3ef9d90c49cd642640ab67c697e0236573209"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/6000 Season/LL-6110-Warm-Low.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "db48f2caf6afe3496ebb632f1411f73d4c5ca08f6ab50a8b97b2cdd7c4778bdb"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/6000 Season/LL-6110-Warm-Medium.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "41f4740de69e9b0ef45829c02ade9bac0882bd275dd5ce8e6c98839604eac433"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/6000 Season/LL-6111-Warm-High.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "ce092a19a4fb0b1ace9422b2e1db5d926c7c2be9498294410dd23b56b0708f2c"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/6000 Season/LL-6111-Warm-Low.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "240cb880f31f40060634ee776fc852b5c1accaf66be34d56e128dbcb74bf9cbd"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/6000 Season/LL-6111-Warm-Medium.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "3ea19e0bba6d505a4a982ff50e6147ee8b5b5c3d3e6e9f52ee5e97e4733704a7"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/6000 Season/LL-6112-Warm-High.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "36b77e3a1739b877f1884e3cea47e0678a2875e0bf93c8b7626b6f0c3ff8c437"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/6000 Season/LL-6112-Warm-Low.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "0506cf467bf653a0ad211f7b886c436dc5ca26bd9af36a9dfb9465a502b01e6e"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/6000 Season/LL-6112-Warm-Medium.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "28393331eb2bbecfa43490811e7f279659563e58ae453dd2a0a646e0944fac69"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/6000 Season/LL-6120-Cold-High.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "083bf6f88b28a8f600cbb4e5d9263b29627a91bb0f65d711117d1a3c90324f53"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/6000 Season/LL-6120-Cold-Low.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "a41880650e6cfb227d01f2f6e02b0cde8e81e554c8044d166e17d8dc1f5ccfe0"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/6000 Season/LL-6120-Cold-Medium.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "ae63a9f72faa5667c08873e7bb3eac708fe4f0a285d08ffb10a454d92f3578ab"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/6000 Season/LL-6121-Cold-High.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "e9d7c24a0f886b32367fe8112fafe083c828cf9af16b7d779a74062cd4148940"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/6000 Season/LL-6121-Cold-Low.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "7456f59f381044f4197fcf81badf0ec6bf03f8b97ccc66c7f5a9c75b5f9d45cb"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/6000 Season/LL-6121-Cold-Medium.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "4c35c022e6c04bbb5c0af25abd978671cf8775e50b664248c4bda1a885c154a0"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/6000 Season/LL-6210-Spring-High.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "c9edda2d1fc2d265c8920839f2e04f1bd8a5a9f013516aba4fc58b73cc9906ec"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/6000 Season/LL-6210-Spring-Low.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "658dde1d65552a194771ec39de4ef9f0a7360f50342b3615238c953d8e6f6754"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/6000 Season/LL-6210-Spring-Medium.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "8cebdc840764f8a7d8d2c1ff12de9040a07651462e36704dbc1b525079e3a930"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/6000 Season/LL-6220-Summer-High.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "4c9a83776ec81cd3b92616aade851e38d59c293042d834ce768787a5af0115dd"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/6000 Season/LL-6220-Summer-Low.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "dfb4f446853d07fd12175097adaca84eddf7f13dda60ea70441c3a3c7726f913"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/6000 Season/LL-6220-Summer-Medium.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "92af98275d1f6b8a4a1ffd4ed9d0e94c0aabcde7c857079dae9d06c36ee4350a"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/6000 Season/LL-6230-Autumn-High.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "356ca39a158b0b4025d26656a05c712d65957f159acc8bceced206ab5eff910f"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/6000 Season/LL-6230-Autumn-Low.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "5193a004abeee5ee828d7eb2796be51551463fa858d5642d6f167323df600777"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/6000 Season/LL-6230-Autumn-Medium.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "06a1467d71cf0703ea72c8ab4514eb4d65fb0e270acd38a62f8aa21b15c5fc44"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/6000 Season/LL-6240-Winter-High.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "f03075a630379659a1b3523883f6a09ad6df9144347b835cc7900bc0f04fe3e8"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/6000 Season/LL-6240-Winter-Low.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "65a8a6a58b04d4a2fc34ccfe4660213432e3a4f0f0452f6376c05a0128ea5a1b"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/6000 Season/LL-6240-Winter-Medium.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "be0b0118655a0c17732c83dd6a19bfa1cab2079ca70281fbd4ef12bd33187194"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/6000 Season/LL-6310-Pastel-High.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "25b82aca84f6ed37f90a88bb104a15a368e4e0e568d09d769ac661231b773611"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/6000 Season/LL-6310-Pastel-Low.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "94bfcffb4b451fc8fb41b09537ce7db4253a2cfe5cbdc86b3d7d56cafcd8e135"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/6000 Season/LL-6310-Pastel-Medium.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "23739b32d5c83d6f06a6e499f56c51241ea6ffb90251d833be30fb32f62efef0"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/6000 Season/LL-6311-Pastel-High.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "bfac7ff5dcb9e0b8c86bffec8764b60a872de7c580276a113d71c8d6b2fed43a"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/6000 Season/LL-6311-Pastel-Low.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "8f238b76936c82c57f6bd0e6207259a53cb20889e6771332caffaf4ecfae9e30"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/6000 Season/LL-6311-Pastel-Medium.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "b0af6d2aabd862e5c25f8528bd3f5653a0a72591d0bfae6fa2794bbdea1bf737"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/6000 Season/LL-6410-Sunset-High.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "f90672f0eb364a51ad400729bf8363ced4696f5f42a624592ab6759377ad4b44"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/6000 Season/LL-6410-Sunset-Low.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "223117c72aad439bd041f5751632458b2bf044e1601ba193f58cbf4d048b38ea"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/6000 Season/LL-6410-Sunset-Medium.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "4a05781618caf595de4cc02ae34b172ec929a7ca2b33e336c9dd94f80f1d1a91"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/6000 Season/LL-6420-Early-Morning-High.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "bf7c2eef65b840d94fdfe8dd52b62f1239f1961943f2d7930c0f671b7ad4c1e3"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/6000 Season/LL-6420-Early-Morning-Low.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "202d424a162b42027b690cf596c079554324025874143ef27892fa95379690d0"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/6000 Season/LL-6420-Early-Morning-Medium.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "ac6b5a8a18ba40bbfd84592b54c009a8713e1da0a98306bfd4c8b382d358b4ac"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/6000 Season/LL-6610-Desert-High.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "3050cf15d932715dce1dae5248ec7d6655872455b755829eef6e071bb873355e"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/6000 Season/LL-6610-Desert-Low.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "43d7141ee2089bc5ee192886d13f6a455cff56d9c5d85723aacee9ec943e55e1"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/6000 Season/LL-6610-Desert-Medium.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "f47f9e94a52398f2474090f5bcb7ee2002b29c6475230c2989a1ab8936c7274f"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/6000 Season/LL-6620-Snow-High.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "9ceb9a87f06123bb2b84fdd6a93a14090e9b9aa6c9657683896bbabe09e44f1d"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/6000 Season/LL-6620-Snow-Low.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "13c3fd9aa6ec3f982370bc13dd15f89b851ee88e01ea63b0bcfca328b3916cfc"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/6000 Season/LL-6620-Snow-Medium.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "46ef81eae1301f384be6f5a49d1febdc15f902e2d8aa4e262815f2fe405ab4a3"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/7000 Contrast/LL-7110-Low-Contrast-High.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "93c403f255c9d594c1d8cb4c50afbe0924508c247edb1a7cf628c4f7f6bb1f2a"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/7000 Contrast/LL-7110-Low-Contrast-Low.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "0bd796a1991436b360c67bf3f6d350a69714daf8f06ff115aaed279097889317"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/7000 Contrast/LL-7110-Low-Contrast-Medium.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "b27d5e8c44165824b75add1186889630fb84bac0cdc83618614c3a42a1ff66f2"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/7000 Contrast/LL-7111-Low-Contrast-High.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "a5c57353d512ee0894e3e497137eb0a5cafa613abdec85f55d24c0d85e3574db"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/7000 Contrast/LL-7111-Low-Contrast-Low.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "cfbab7ef613dc5ab3ad7af13ae20c4d40501cda0f32228187519d7dfbc6fe70c"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/7000 Contrast/LL-7111-Low-Contrast-Medium.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "d957e50d7fcec25d5234fe23e2455caddfa27e0a7bbec6b0e156c399baf4b44f"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/7000 Contrast/LL-7120-High-Contrast-High.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "3b01358bb6c89550cd3f493c530cf151d30c024f3ff1a4ae1139f081618eba67"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/7000 Contrast/LL-7120-High-Contrast-Low.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "0aa23142ed8fe0b67b13de665894189c5c6fc779433d3b29983808c6b4892baf"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/7000 Contrast/LL-7120-High-Contrast-Medium.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "9e4d72056a6f88980c45d8f097f5399dddab7b45b8624b1186a64ada28615693"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/7000 Contrast/LL-7121-High-Contrast-High.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "7353452dcdddf2cf52a1f9ba5570debd39177e6b64b16d0f6c628fe43b850990"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/7000 Contrast/LL-7121-High-Contrast-Low.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "fad9140a4def399ca26f0c5e7f980b563fa2acaeb94450e0b250b0c84b083063"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/7000 Contrast/LL-7121-High-Contrast-Medium.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "831fe11d463a7c2840db55d7fbad426ea87169cd18a2d640da7200e672886331"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/7000 Contrast/LL-7130-High-Key-High.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "0fb2672f366634cbbfaa0a2de8c39538cc00350f7e7a1cc2ccb1b9592d22636d"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/7000 Contrast/LL-7130-High-Key-Low.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "4821ab2189944a5ad10ca541bcb9743b7119eadd797da4c8f1e4ffcd73342ab9"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/7000 Contrast/LL-7130-High-Key-Medium.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "536afbccf1406701b68c22ec62033fb07960ecbe8fab8c0920a234c0b0013bfa"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/7000 Contrast/LL-7131-High-Key-High.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "a5f0eae8df6b098924e7f4f0cf28f64b49a8de8efa15d394bb69fd8a126b3ca7"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/7000 Contrast/LL-7131-High-Key-Low.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "65822c073e87acb19f669cf86c036b10065c68e8b5c06d19a8c4225f3396bdf2"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/7000 Contrast/LL-7131-High-Key-Medium.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "74bdbcb5cf7d98abb74acaa2f969af98118a4b37bd38e59e0b05a23fc81d73d5"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/7000 Contrast/LL-7140-Low-Key-High.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "59c6a9cefc18ea0cd6e19a988a64d809c0fa93210866680828f1a46a2b08fad2"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/7000 Contrast/LL-7140-Low-Key-Low.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "1daa3c552b1120b1ef67a8c89d754f0455e9e2c2936339ef37088dfd9343bec1"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/7000 Contrast/LL-7140-Low-Key-Medium.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "54d66fd32125dbce304863a0cc2dc055ceeb7e68e403fd70db89b3625d3303e5"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/8000 Period/LL-8120-20s-High.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "9d6c483e7cdc62dad64069797c5294b780177fa732490d6453bcff998268c65b"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/8000 Period/LL-8120-20s-Low.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "b61dab64a8b569b382cb24b5ea26c15f02818b949490dac52f7f6e2da567319a"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/8000 Period/LL-8120-20s-Medium.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "a257c3839feaf9139d0f0b8b28c486059b0e60f79acaf45eba19e62f50d8cd2c"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/8000 Period/LL-8120-30s-High.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "3b0f48a8236e57990272a63e0dd44678f57f12e919832d3d91bb5f977890d7fc"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/8000 Period/LL-8120-30s-Low.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "85d40cc22087118cf7a1829466d65537beeee50feddf0a1669e9a1e8093a06d2"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/8000 Period/LL-8120-30s-Medium.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "cfda8f6babeef131d948e4e0ec157e703f8c191c8182155f67c2469f974332a9"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/8000 Period/LL-8120-40s-High.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "0233fdae0ca124facabe59d89e5789ddec28b4049b4107081c9280b2a9f0eab4"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/8000 Period/LL-8120-40s-Low.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "bf0f183d9bf8518b932a9837027952272a598c9a832463ea58bbceb7d9d4c307"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/8000 Period/LL-8120-40s-Medium.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "20c86c84d539349047865c125d879df5bd1b03e2a21bb194e81fb004adf0603f"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/8000 Period/LL-8150-50s-High.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "b922b41b62711e5210c04e37e644742caecb2540d166c3d7e35b41e961c51483"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/8000 Period/LL-8150-50s-Low.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "5feb10a408561ebea10d3ce2445edd75d7123bf055a02e01ab756b48756ff881"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/8000 Period/LL-8150-50s-Medium.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "d5c975cb15482378d13e52267e5836c17b7d690a306dcfafb86a78eea4701b71"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/8000 Period/LL-8160-60s-High.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "cdb083596b1d574b5bc6a055357bc9357ad42f91e937f284172b509daf9686f2"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/8000 Period/LL-8160-60s-Low.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "943d2fc40f6c0ca9daeba36e6a9783c1924238b75ebafd791873210ea50d6c1c"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/8000 Period/LL-8160-60s-Medium.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "7cc12fd1e77d60879c08bfb055138909fbdb5ec32764fb90bccee36e8435220a"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/8000 Period/LL-8170-70s-High.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "94a22b67d042fa6ffadcaefd2c8779ec2919ad137f7bfdeb676cf61212fec3b1"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/8000 Period/LL-8170-70s-Low.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "486dda80359d3af7f60ec3112fec806e73977cedcc3098f6cd86994f85557f99"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/8000 Period/LL-8170-70s-Medium.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "58ea5e7d91aa758c4c1dc4684aac8262c95fae9e8700b66270efbb1c4da441d8"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/8000 Period/LL-8180-80s-High.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "44309f9c588873fe0d8fcb8cde9257da1247bca74a39ca2a3633a8011b7af38a"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/8000 Period/LL-8180-80s-Low.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "fc84edbb82d5ec7043740a47a36e5dfc277ab1e03ce85380c74c7072138796e1"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/8000 Period/LL-8180-80s-Medium.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "1c09a818a304f34ed551e18afbc6f53c659b4c5fe11df3eba954ca2423ede721"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/8000 Period/LL-8190-90s-High.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "b27ec51ebcf0dd5830732cae97db944e938eaf5ebcff0aa8b1b97218e3961683"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/8000 Period/LL-8190-90s-Low.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "0fc81c0c4714365cf3902f587a4f7fa95427d9b80217b28560804e8e8898ac9b"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/8000 Period/LL-8190-90s-Medium.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "f96ea5f34d5fd2edbec0aeb474134cc0b3a658a7dcf715f463434cc9a31116fa"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/9000 Special/LL-9110-Dream-High.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "e181f1f8c8c0f5c1642297874742b4ea3e49258f45bc07eb750d3890bed2eb79"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/9000 Special/LL-9110-Dream-Low.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "18ed64566be8b4241ddf7030acc8875b87ce95cb13dc13daee2838311ec9d573"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/9000 Special/LL-9110-Dream-Medium.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "92d47c02842adc7ede61ce5b6bf71a9f41ae8f2ada5300a0b0c86500866a8f8f"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/9000 Special/LL-9111-Dream-High.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "b3c552050c19b255cc7fcae819c6167b4337452888498a9c70b4f0c2a15f2f57"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/9000 Special/LL-9111-Dream-Low.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "6c154abd5ad4bd435c2cf8329a89b5c9548aa8c4def73a3cd2b312213f132928"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/9000 Special/LL-9111-Dream-Medium.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "c0d8d06825b2e76f257fa2d1646fffa654b42198ae7834296ed3d5dee41290c6"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/9000 Special/LL-9120-Flash-Back-High.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "db398e953d2d248e87cd07b55d27cafa45100ddec7252cf182f3bcb954d90f89"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/9000 Special/LL-9120-Flash-Back-Low.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "330a86ba95b58fee774471124d0dcbfbc249cca5f16e75080ad2c89e6658f9f9"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/9000 Special/LL-9120-Flash-Back-Medium.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "d7b6e8cd38685ca6fb8060c61b34118cc0a5bcb146bf8d3fda26ab91ec0b62e5"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/9000 Special/LL-9210-Day-for-Night-High.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "40c36649c7c267436d8cae9584d0e5be34de063ed82e85abe3d9f0e61b5757a2"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/9000 Special/LL-9210-Day-for-Night-Low.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "d1d146f49fb5aad3ae0a5c0e5138399efa66e143881bdc9b55bcbd20e9b57022"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/9000 Special/LL-9210-Day-for-Night-Medium.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "bee0a5ffc6e94febb57920a7ca48bf838ea7ec24d6ee35b762cd27bfa21eba00"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/9000 Special/LL-9211-Day-for-Night-High.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "b46f44d8d26fc77efc11379c84ca18cd46b8bb20816a4666c7d36dd9cc37ead7"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/9000 Special/LL-9211-Day-for-Night-Low.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "d9df3f48d3acc2eac616f97707a23779fea50872238632469bb46396336b9a50"
+        },
+        {
+          "path": "ARRI Look Library LogC3 to Rec709 ALF2/9000 Special/LL-9211-Day-for-Night-Medium.aml",
+          "size": 217262,
+          "lut_size": 33,
+          "sha256": "ba12bd0cbc6d71c5ff7c763f287560b7784e21c90e24c02c96d3fb29dc0d28af"
+        }
+      ],
+      "observed": {
+        "zip_name": "ARRI Look Library LogC3 (log-to-Rec709) ALF2_data.zip",
+        "zip_bytes": 38709051,
+        "files": 261,
+        "lut_sizes": [33],
+        "top_level_folders": ["ARRI Look Library LogC3 to Rec709 ALF2"],
+        "ignored": { "macos": 273 }
       }
     },
     {

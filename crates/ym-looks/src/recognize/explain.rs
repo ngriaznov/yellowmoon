@@ -2,7 +2,9 @@
 //!
 //! Short sentences that say what is wrong and what to do next, British spelling, no jargon.
 
-use super::{Ignored, PackageDb, PackageInput, PackageRole, SourceInfo, SourceKind};
+use crate::library::LookFormat;
+
+use super::{Ignored, RecognizedFile, SourceInfo, SourceKind};
 
 /// "zip", "folder" or "file".
 fn noun(source: &SourceInfo) -> &'static str {
@@ -23,87 +25,55 @@ pub fn count(n: usize, one: &str, many: &str) -> String {
     }
 }
 
-/// The titles of the 3D-LUT downloads that replace camera look files, quoted as ARRI's page has
-/// them: `.alf4` files belong to the LogC4 look library, `.alf2` and `.aml` to the LogC3 ones.
-fn lut_titles(db: &PackageDb, logc4: bool, logc3: bool) -> Vec<String> {
-    db.packages
-        .iter()
-        .filter(|p| p.role == PackageRole::Looks)
-        .filter(|p| match p.input {
-            PackageInput::LogC4 => logc4,
-            PackageInput::LogC3 | PackageInput::LogC3ToRec709 => logc3,
-        })
-        .map(|p| format!("'{}'", p.download_title()))
-        .collect()
-}
-
-/// "A", "A or B", "A, B or C".
-fn or_list(items: &[String]) -> String {
-    match items {
-        [] => String::new(),
-        [one] => one.clone(),
-        [init @ .., last] => format!("{} or {last}", init.join(", ")),
-    }
-}
-
-/// "A", "A and B", "A, B and C".
-fn and_list(items: &[&str]) -> String {
-    match items {
-        [] => String::new(),
-        [one] => (*one).to_string(),
-        [init @ .., last] => format!("{} and {last}", init.join(", ")),
-    }
-}
-
-/// Why a source with no `.cube` files cannot be imported, and where to get the right one.
-///
-/// A zip of ARRI's look files for the camera (`.alf4`, `.alf2`, `.aml`) is one of the packages on
-/// ARRI's page that the app cannot use: the message says so and names the 3D-LUT download to take
-/// instead, as ARRI's page titles it.
-pub(super) fn no_cube_files(source: &SourceInfo, ignored: &Ignored, db: &PackageDb) -> String {
+/// Why a source with no `.cube` files and no look files cannot be imported, and what to choose.
+pub(super) fn nothing_to_import(source: &SourceInfo, ignored: &Ignored) -> String {
     let noun = noun(source);
-    let mut extensions: Vec<&str> = Vec::new();
-    if ignored.alf4 > 0 {
-        extensions.push(".alf4");
-    }
-    if ignored.alf2 > 0 {
-        extensions.push(".alf2");
-    }
-    if ignored.aml > 0 {
-        extensions.push(".aml");
-    }
-    if !extensions.is_empty() {
-        let titles = lut_titles(db, ignored.alf4 > 0, ignored.alf2 > 0 || ignored.aml > 0);
-        let what = if titles.is_empty() {
-            "the 3D-LUT (.cube) version".to_string()
-        } else {
-            or_list(&titles)
-        };
+    if ignored.xml > 0 {
         return format!(
-            "These are ARRI look files for the camera ({}). Yellowmoon needs the 3D-LUT version: \
-             download {what} from ARRI's look page.",
-            and_list(&extensions)
+            "This {noun} has .xml files. Yellowmoon cannot read ARRI's older look files \
+             (ALF-1, for ALEXA Classic and XT cameras). It reads .cube, .alf4, .alf4c and .aml \
+             files."
         );
     }
     if ignored.pdf > 0 {
         return format!(
-            "This {noun} has documents (PDF) but no .cube files. \
+            "This {noun} has documents (PDF) but no look files or LUTs. \
              Choose the one that holds the LUTs."
         );
     }
     format!(
-        "This {noun} has no .cube files, so there is nothing to import. \
-         Choose a .cube file, or a folder or zip that holds .cube files."
+        "This {noun} has no .cube, .alf4, .alf4c or .aml files, so there is nothing to import. \
+         Choose a look file or a LUT, or a folder or zip that holds them."
     )
 }
 
-/// Every `.cube` file was rejected.
-pub(super) fn all_rejected(source: &SourceInfo, n: usize, example: &str) -> String {
+/// What the files are, for a sentence about all of them: ".cube files", ".alf4 files" or
+/// "look files" for a mix.
+fn files_word(files: &[RecognizedFile]) -> String {
+    let mut formats: Vec<LookFormat> = Vec::new();
+    for f in files {
+        if !formats.contains(&f.format) {
+            formats.push(f.format);
+        }
+    }
+    match formats.as_slice() {
+        [one] => format!("{} files", one.noun()),
+        _ => "look files".to_string(),
+    }
+}
+
+/// Every file was rejected.
+pub(super) fn all_rejected(source: &SourceInfo, files: &[RecognizedFile], example: &str) -> String {
     let noun = noun(source);
-    if n == 1 {
-        format!("The one .cube file in this {noun} cannot be used. {example}")
+    let what = files_word(files);
+    if files.len() == 1 {
+        let single = what.strip_suffix('s').unwrap_or(&what);
+        format!("The one {single} in this {noun} cannot be used. {example}")
     } else {
-        format!("None of the {n} .cube files in this {noun} can be used. For example: {example}")
+        format!(
+            "None of the {} {what} in this {noun} can be used. For example: {example}",
+            files.len()
+        )
     }
 }
 
@@ -118,6 +88,20 @@ pub(super) fn more_rejected(n: usize) -> String {
         "{} more could not be used either.",
         count(n, "other file", "other files")
     )
+}
+
+/// `.alf4c` files carry display transforms of their own; Yellowmoon uses its own.
+pub(super) fn display_transforms_ignored(names: &[&str]) -> String {
+    match names {
+        [one] => format!(
+            "{one}: its own display transforms are not used; Yellowmoon's display rendering is."
+        ),
+        many => format!(
+            "{} .alf4c files carry display transforms of their own. They are not used; \
+             Yellowmoon's display rendering is.",
+            many.len()
+        ),
+    }
 }
 
 /// A package with fewer files than it should have.
@@ -196,76 +180,94 @@ mod tests {
         }
     }
 
-    fn db() -> PackageDb {
-        PackageDb::from_json(
-            r#"{ "version": 1, "packages": [
-              { "id": "a", "title": "Look Library · LogC4", "arri_title": "Look Library for LogC4 (3D-LUTs)",
-                "role": "looks", "input": "logc4" },
-              { "id": "b", "title": "Look Library · LogC3", "arri_title": "ARRI Look Library LogC3 (3D-LUTs)",
-                "role": "looks", "input": "logc3" },
-              { "id": "c", "title": "Look Library · LogC3 to Rec.709",
-                "arri_title": "ARRI Look Library LogC3 (to Rec709) 3D-LUTs",
-                "role": "looks", "input": "logc3_to_rec709" },
-              { "id": "d", "title": "Display LUTs · LogC4", "role": "display_luts", "input": "logc4" }
-            ] }"#,
-        )
-        .unwrap()
+    fn folder() -> SourceInfo {
+        SourceInfo {
+            kind: SourceKind::Folder,
+            name: "f".into(),
+        }
+    }
+
+    fn recognized(name: &str, format: LookFormat) -> RecognizedFile {
+        RecognizedFile {
+            rel_path: name.into(),
+            name: name.into(),
+            size: 1,
+            sha256: String::new(),
+            lut_size: None,
+            format,
+            outcome: super::super::Outcome::Rejected { reason: "x".into() },
+        }
     }
 
     #[test]
-    fn camera_look_files_say_which_3d_lut_download_to_take() {
-        let alf4 = Ignored {
-            alf4: 87,
-            ..Ignored::default()
-        };
+    fn empty_sources_get_their_own_words() {
+        let none = nothing_to_import(&zip(), &Ignored::default());
         assert_eq!(
-            no_cube_files(&zip(), &alf4, &db()),
-            "These are ARRI look files for the camera (.alf4). Yellowmoon needs the 3D-LUT version: \
-             download 'Look Library for LogC4 (3D-LUTs)' from ARRI's look page."
+            none,
+            "This zip has no .cube, .alf4, .alf4c or .aml files, so there is nothing to import. \
+             Choose a look file or a LUT, or a folder or zip that holds them."
         );
-        let aml = Ignored {
-            aml: 87,
-            ..Ignored::default()
-        };
-        assert_eq!(
-            no_cube_files(&zip(), &aml, &db()),
-            "These are ARRI look files for the camera (.aml). Yellowmoon needs the 3D-LUT version: \
-             download 'ARRI Look Library LogC3 (3D-LUTs)' or \
-             'ARRI Look Library LogC3 (to Rec709) 3D-LUTs' from ARRI's look page."
-        );
-        let both = Ignored {
-            alf4: 1,
-            alf2: 1,
-            aml: 1,
-            ..Ignored::default()
-        };
-        let text = no_cube_files(&zip(), &both, &db());
-        assert!(text.contains("(.alf4, .alf2 and .aml)"), "{text}");
-        assert!(text.contains(
-            "'Look Library for LogC4 (3D-LUTs)', 'ARRI Look Library LogC3 (3D-LUTs)' or"
-        ));
-        // Without a package list the sentence still says what to do.
-        let text = no_cube_files(&zip(), &alf4, &PackageDb::empty());
-        assert!(
-            text.ends_with("download the 3D-LUT (.cube) version from ARRI's look page."),
-            "{text}"
-        );
-    }
-
-    #[test]
-    fn other_empty_sources_get_their_own_words() {
+        assert!(nothing_to_import(&folder(), &Ignored::default()).starts_with("This folder"));
         let pdf = Ignored {
             pdf: 2,
             ..Ignored::default()
         };
-        assert!(no_cube_files(&zip(), &pdf, &db()).contains("PDF"));
-        let none = no_cube_files(&zip(), &Ignored::default(), &db());
-        assert!(none.contains("no .cube files"));
-        let folder = SourceInfo {
-            kind: SourceKind::Folder,
-            name: "f".into(),
+        assert!(nothing_to_import(&zip(), &pdf).contains("PDF"));
+    }
+
+    #[test]
+    fn arris_older_look_files_are_named_and_not_read() {
+        let xml = Ignored {
+            xml: 3,
+            ..Ignored::default()
         };
-        assert!(no_cube_files(&folder, &Ignored::default(), &db()).starts_with("This folder"));
+        let text = nothing_to_import(&zip(), &xml);
+        assert!(
+            text.contains("ALF-1") && text.contains("ALEXA Classic"),
+            "{text}"
+        );
+        assert!(text.contains(".cube, .alf4, .alf4c and .aml"), "{text}");
+    }
+
+    #[test]
+    fn rejections_name_what_the_files_are() {
+        let alf = [recognized("a.alf4", LookFormat::Alf4)];
+        assert_eq!(
+            all_rejected(&zip(), &alf, "a.alf4 cannot be used. Bad."),
+            "The one .alf4 file in this zip cannot be used. a.alf4 cannot be used. Bad."
+        );
+        let cubes = [
+            recognized("a.cube", LookFormat::Cube),
+            recognized("b.cube", LookFormat::Cube),
+        ];
+        assert!(
+            all_rejected(&folder(), &cubes, "e")
+                .starts_with("None of the 2 .cube files in this folder")
+        );
+        let mixed = [
+            recognized("a.cube", LookFormat::Cube),
+            recognized("b.aml", LookFormat::Aml),
+        ];
+        assert!(
+            all_rejected(&zip(), &mixed, "e").starts_with("None of the 2 look files in this zip")
+        );
+    }
+
+    #[test]
+    fn alf4c_display_transforms_are_said_to_be_set_aside() {
+        assert_eq!(
+            display_transforms_ignored(&["Mine.alf4c"]),
+            "Mine.alf4c: its own display transforms are not used; Yellowmoon's display rendering is."
+        );
+        let text = display_transforms_ignored(&["a.alf4c", "b.alf4c"]);
+        assert!(
+            text.starts_with("2 .alf4c files carry display transforms of their own."),
+            "{text}"
+        );
+        assert!(
+            text.ends_with("Yellowmoon's display rendering is."),
+            "{text}"
+        );
     }
 
     #[test]

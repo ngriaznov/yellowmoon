@@ -85,8 +85,9 @@ const LAYOUTS: [&str; 8] = [
     "group number in the middle",
 ];
 
-/// Writes a zip of synthetic 5-point cubes at `paths`, with the junk a Mac and ARRI add: ALF4
-/// files, a PDF, a `.DS_Store`, and a `__MACOSX` tree of AppleDouble files called `.cube`.
+/// Writes a zip of synthetic 5-point cubes at `paths`, with the junk a Mac and ARRI add: `.xml`
+/// files (ARRI's older look files, never read), a PDF, a `.DS_Store`, and a `__MACOSX` tree of
+/// AppleDouble files called `.cube`.
 fn write_looks_zip(dir: &Path, zip_name: &str, paths: &[String]) -> PathBuf {
     write_sized_looks_zip(dir, zip_name, paths, 5)
 }
@@ -100,7 +101,7 @@ fn write_sized_looks_zip(dir: &Path, zip_name: &str, paths: &[String], size: usi
             path.clone(),
             cube_text(size, i as u32 + 1, &title).into_bytes(),
         ));
-        entries.push((path.replace(".cube", ".alf4"), b"binary look file".to_vec()));
+        entries.push((path.replace(".cube", ".xml"), b"<adicam/>".to_vec()));
         // What macOS adds when it zips a folder: `__MACOSX/<same path with ._ before the name>`
         // and `._name` beside the real file. Both are called `.cube` and neither is a LUT.
         let (folder, file) = path.rsplit_once('/').unwrap_or(("", path));
@@ -172,9 +173,9 @@ fn the_real_zip_name_is_recognized_in_every_layout() {
         assert_eq!((finding.found, finding.expected), (n, Some(n)), "{kind}");
         assert_eq!(finding.status, PackageStatus::Complete, "{kind}");
         assert_eq!(finding.lut_sizes, vec![5], "{kind}");
-        // Only the cubes were read: no AppleDouble file, no ALF4, no PDF.
+        // Only the cubes were read: no AppleDouble file, no .xml, no PDF.
         assert_eq!(r.files.len(), n, "{kind}");
-        assert_eq!(r.ignored.alf4, n, "{kind}");
+        assert_eq!(r.ignored.xml, n, "{kind}");
         assert_eq!(r.ignored.macos_metadata, 2 * n + 1, "{kind}");
         assert_eq!(r.ignored.pdf, 1, "{kind}");
         assert_eq!(r.needs_answer_count(), 0, "{kind}");
@@ -566,7 +567,7 @@ fn an_unknown_set_with_an_answer_imports_as_the_users_own_luts_with_that_input()
 }
 
 #[test]
-fn the_three_3d_lut_downloads_are_known_by_the_names_on_arris_page() {
+fn the_downloads_are_known_by_the_names_on_arris_page() {
     let db = small_db(4);
     let ids = |name: &str| -> Vec<String> {
         db.packages_for_zip_name(name)
@@ -592,14 +593,17 @@ fn the_three_3d_lut_downloads_are_known_by_the_names_on_arris_page() {
     );
     assert_eq!(ids("LogC4 LUT Package.zip"), ["display-luts-logc4"]);
     assert_eq!(ids("LogC3 LUT Package.zip"), ["display-luts-logc3"]);
-    // Not 3D-LUT packages: the camera look files on the same page, and the small WVO package.
-    for name in [
-        "Look Library for LogC4 (ALF4 Look Files).zip",
-        "ARRI Look Library LogC3 (Look Files).zip",
-        "LogC4 WVO LUT Package.zip",
-    ] {
-        assert!(ids(name).is_empty(), "{name}: {:?}", ids(name));
-    }
+    // The camera look files on the same page are the look-file packages (and never a 3D-LUT one),
+    // and the small WVO package is none of them.
+    assert_eq!(
+        ids("Look Library for LogC4 (ALF4 Look Files).zip"),
+        ["look-library-logc4-alf4"]
+    );
+    assert_eq!(
+        ids("ARRI Look Library LogC3 (Look Files).zip"),
+        ["look-library-logc3-rec709-alf2"]
+    );
+    assert!(ids("LogC4 WVO LUT Package.zip").is_empty());
     // The page gives no LUT size for the LogC3 log-to-log library, and no sizes for downloads.
     let real = ym_looks::recognize::PackageDb::load(
         &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data/looks/arri-packages.json"),
@@ -630,68 +634,6 @@ fn the_three_3d_lut_downloads_are_known_by_the_names_on_arris_page() {
         real.package("look-library-logc4").unwrap().download_title(),
         "Look Library for LogC4 (3D-LUTs)"
     );
-}
-
-#[test]
-fn camera_look_file_zips_say_which_3d_lut_download_to_take() {
-    // Made-up names and a few dummy bytes: only the extensions matter.
-    let cases: [(&str, &[&str], &str); 4] = [
-        (
-            "Look Library for LogC4 (ALF4 Look Files).zip",
-            &["Looks/Film.alf4", "Looks/Mono.alf4"],
-            "These are ARRI look files for the camera (.alf4). Yellowmoon needs the 3D-LUT version: \
-             download 'Look Library for LogC4 (3D-LUTs)' from ARRI's look page.",
-        ),
-        (
-            "Look Library for LogC4.zip",
-            &["Film.alf4c", "Mono.alf4c", "__MACOSX/._Film.alf4c"],
-            "These are ARRI look files for the camera (.alf4). Yellowmoon needs the 3D-LUT version: \
-             download 'Look Library for LogC4 (3D-LUTs)' from ARRI's look page.",
-        ),
-        (
-            "ARRI Look Library LogC3 (Look Files).zip",
-            &["Looks/Film.aml", "Looks/Mono.aml", "Guide.pdf"],
-            "These are ARRI look files for the camera (.aml). Yellowmoon needs the 3D-LUT version: \
-             download 'ARRI Look Library LogC3 (3D-LUTs)' or \
-             'ARRI Look Library LogC3 (to Rec709) 3D-LUTs' from ARRI's look page.",
-        ),
-        (
-            "looks.zip",
-            &["a.alf4", "b.aml"],
-            "These are ARRI look files for the camera (.alf4 and .aml). Yellowmoon needs the 3D-LUT version: \
-             download 'Look Library for LogC4 (3D-LUTs)', 'ARRI Look Library LogC3 (3D-LUTs)' or \
-             'ARRI Look Library LogC3 (to Rec709) 3D-LUTs' from ARRI's look page.",
-        ),
-    ];
-    for (name, entries, message) in cases {
-        let work = tempfile::tempdir().unwrap();
-        let zip = work.path().join(name);
-        let entries: Vec<(String, Vec<u8>)> = entries
-            .iter()
-            .map(|e| ((*e).to_string(), b"not a LUT".to_vec()))
-            .collect();
-        write_zip(&zip, &entries);
-        let db = small_db(4);
-        let r = inspect(&zip, &db, None, &mut no_progress()).unwrap();
-        assert_eq!(r.verdict(), Verdict::Blocked, "{name}");
-        assert!(r.files.is_empty() && r.packages.is_empty(), "{name}");
-        assert_eq!(r.issues[0].message, message, "{name}");
-        let mut library = open_library(&work.path().join("app"));
-        let err = import(
-            &mut library,
-            &db,
-            &zip,
-            &r,
-            &ImportOptions::default(),
-            &mut no_progress(),
-        )
-        .unwrap_err();
-        assert!(
-            matches!(&err, ImportError::NothingToImport(m) if m == message),
-            "{err}"
-        );
-        assert!(tree(&library.looks_dir()).is_empty(), "{name}");
-    }
 }
 
 /// The three real 3D-LUT shapes: each name, the encoding it expects, and the file names it holds.

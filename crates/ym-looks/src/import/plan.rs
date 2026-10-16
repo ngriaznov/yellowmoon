@@ -8,6 +8,10 @@
 //!   ARRI re-released the file, so the entry is replaced in place. This only applies to entries
 //!   that came from an earlier import: two files of one import that end up with the same id and
 //!   path (names that differ only in punctuation, say) must not replace each other;
+//! * the same ARRI look in two forms, a `.cube` and a look file (the LogC4 library comes as 3D LUTs
+//!   and as `.alf4` files and both give the same ids): the `.cube` is the better one (the library's
+//!   look files hold 33 points where its cubes hold 65), so a look file never replaces a `.cube`
+//!   that an earlier import put there, and a `.cube` replaces the look file of an earlier import;
 //! * any other collision (a user LUT with the same name but different content, two names that
 //!   slugify alike, a path already taken) gets a number: `film`, `film-2`, `film-3`, so no file of
 //!   the user's is ever overwritten.
@@ -16,7 +20,9 @@ use std::collections::HashSet;
 
 use ym_color::look::LookInput;
 
-use crate::library::{DisplayInput, LookId, sanitize_file_stem, slugify, truncate_to_bytes};
+use crate::library::{
+    DisplayInput, LookFormat, LookId, sanitize_file_stem, slugify, truncate_to_bytes,
+};
 use crate::manifest::{Manifest, ManifestDisplayLut, ManifestGroup, ManifestLook, Source};
 use crate::recognize::Outcome;
 use crate::recognize::names::{file_name, file_stem};
@@ -45,6 +51,8 @@ pub(crate) struct Spec {
     pub(crate) folder: String,
     /// File stem to write, already sanitised and including any encoding suffix.
     pub(crate) stem: String,
+    /// The kind of file, which gives the extension.
+    pub(crate) format: LookFormat,
     /// Package id, for ARRI files.
     pub(crate) package: Option<String>,
     /// Whether the file came from an ARRI package (updates replace in place).
@@ -66,11 +74,12 @@ fn encoding_suffix(input: LookInput) -> &'static str {
 
 impl Spec {
     /// The spec for a recognized file, or `None` for a rejected one. `answer` is the user's reply
-    /// to the generic question and applies to files that need it.
+    /// to the generic question and applies to files that need it; `format` is the kind of file.
     pub(crate) fn from_outcome(
         outcome: &Outcome,
         rel_path: &str,
         answer: Option<LookInput>,
+        format: LookFormat,
     ) -> Option<Self> {
         let original_name = file_name(rel_path).to_string();
         let raw_stem = file_stem(rel_path);
@@ -114,6 +123,7 @@ impl Spec {
                     },
                     folder: format!("arri/{group_no:04}-{group_slug}"),
                     stem: format!("{}{suffix}", sanitize_file_stem(raw_stem)),
+                    format,
                     package: Some(package.clone()),
                     arri: true,
                     original_name,
@@ -140,6 +150,7 @@ impl Spec {
                     },
                     folder: "arri-display".to_string(),
                     stem: format!("{}{suffix}", sanitize_file_stem(raw_stem)),
+                    format,
                     package: Some(package.clone()),
                     arri: true,
                     original_name,
@@ -158,6 +169,26 @@ impl Spec {
                     },
                     folder: "user".to_string(),
                     stem: sanitize_file_stem(raw_stem),
+                    format,
+                    package: None,
+                    arri: false,
+                    original_name,
+                })
+            }
+            // A look file of the person's own: its name is the file's, its input the file's.
+            Outcome::OwnLookFile { input, .. } => {
+                let name = raw_stem.trim();
+                let name = if name.is_empty() { "Look" } else { name };
+                Some(Self {
+                    id: LookId::user(&slugify(name)),
+                    name: name.to_string(),
+                    kind: SpecKind::Look {
+                        group: ManifestGroup::User,
+                        input: *input,
+                    },
+                    folder: "user".to_string(),
+                    stem: sanitize_file_stem(raw_stem),
+                    format,
                     package: None,
                     arri: false,
                     original_name,
@@ -177,6 +208,16 @@ pub(crate) enum Slot {
     Replace { id: LookId, file: String },
     /// Already imported with the same content.
     Existing { id: LookId, file: String },
+    /// The same ARRI look is already imported as a `.cube` and this is a look file: the `.cube`
+    /// stays and nothing is written. `file` is the `.cube` entry's file.
+    Superseded { id: LookId, file: String },
+    /// The same ARRI look is imported as a look file and this is its `.cube`: the entry moves to
+    /// `file` and the look file `old_file` goes.
+    Upgrade {
+        id: LookId,
+        file: String,
+        old_file: String,
+    },
 }
 
 /// The stem with a collision number.
@@ -188,14 +229,15 @@ fn numbered_stem(stem: &str, n: u32) -> String {
     }
 }
 
-fn existing<'a>(manifest: &'a Manifest, id: &LookId) -> Option<(&'a str, &'a str)> {
+/// The hash, file and kind of the entry with this id.
+fn existing<'a>(manifest: &'a Manifest, id: &LookId) -> Option<(&'a str, &'a str, LookFormat)> {
     manifest
         .look(id)
-        .map(|l| (l.sha256.as_str(), l.file.as_str()))
+        .map(|l| (l.sha256.as_str(), l.file.as_str(), l.format))
         .or_else(|| {
             manifest
                 .display_lut(id)
-                .map(|d| (d.sha256.as_str(), d.file.as_str()))
+                .map(|d| (d.sha256.as_str(), d.file.as_str(), LookFormat::Cube))
         })
 }
 
@@ -221,20 +263,46 @@ pub(crate) fn assign(
     sha256: &str,
     touched: &HashSet<LookId>,
 ) -> Slot {
+    let extension = spec.format.extension();
     for n in 1..=MAX_COLLISION_NUMBER {
         let id = spec.id.numbered(n);
-        let file = format!("{}/{}.cube", spec.folder, numbered_stem(&spec.stem, n));
+        let file = format!(
+            "{}/{}.{extension}",
+            spec.folder,
+            numbered_stem(&spec.stem, n)
+        );
         match existing(manifest, &id) {
-            Some((sha, found)) if sha == sha256 => {
+            Some((sha, found, _)) if sha == sha256 => {
                 return Slot::Existing {
                     id,
                     file: found.to_string(),
                 };
             }
-            Some((_, found))
+            Some((_, found, _))
                 if spec.arri && !touched.contains(&id) && found.eq_ignore_ascii_case(&file) =>
             {
                 return Slot::Replace { id, file };
+            }
+            // The same look in its other form: the `.cube` is the one to keep.
+            Some((_, found, found_format))
+                if spec.arri
+                    && !touched.contains(&id)
+                    && found_format != spec.format
+                    && (found_format.is_cube() || spec.format.is_cube())
+                    && (!spec.format.is_cube() || !file_taken(manifest, &file)) =>
+            {
+                return if spec.format.is_cube() {
+                    Slot::Upgrade {
+                        id,
+                        file,
+                        old_file: found.to_string(),
+                    }
+                } else {
+                    Slot::Superseded {
+                        id,
+                        file: found.to_string(),
+                    }
+                };
             }
             Some(_) => {}
             None if file_taken(manifest, &file) => {}
@@ -245,7 +313,7 @@ pub(crate) fn assign(
     let short = &sha256[..sha256.len().min(12)];
     Slot::Add {
         id: spec.id.with_slug(&format!("{}-{short}", spec.id.slug())),
-        file: format!("{}/{}-{short}.cube", spec.folder, spec.stem),
+        file: format!("{}/{}-{short}.{extension}", spec.folder, spec.stem),
     }
 }
 
@@ -276,6 +344,7 @@ pub(crate) fn apply(manifest: &mut Manifest, data: &EntryData<'_>) -> bool {
                 group: group.clone(),
                 input: *input,
                 file: data.file.clone(),
+                format: data.spec.format,
                 sha256: data.sha256.clone(),
                 lut_size: data.lut_size,
                 source,
@@ -336,6 +405,7 @@ mod tests {
             },
             &format!("{name}.cube"),
             Some(LookInput::LogC4),
+            LookFormat::Cube,
         )
         .unwrap()
     }
@@ -353,6 +423,7 @@ mod tests {
             },
             &format!("3000 Film/{name}.cube"),
             None,
+            LookFormat::Cube,
         )
         .unwrap()
     }
@@ -360,9 +431,11 @@ mod tests {
     fn put(manifest: &mut Manifest, spec: &Spec, sha: &str) -> Slot {
         let slot = assign(manifest, spec, sha, &HashSet::new());
         let (id, file) = match &slot {
-            Slot::Add { id, file } | Slot::Replace { id, file } | Slot::Existing { id, file } => {
-                (id.clone(), file.clone())
-            }
+            Slot::Add { id, file }
+            | Slot::Replace { id, file }
+            | Slot::Existing { id, file }
+            | Slot::Superseded { id, file }
+            | Slot::Upgrade { id, file, .. } => (id.clone(), file.clone()),
         };
         apply(
             manifest,
@@ -405,7 +478,8 @@ mod tests {
                     note: None
                 },
                 "x.cube",
-                None
+                None,
+                LookFormat::Cube
             )
             .is_none(),
             "no answer, no spec"

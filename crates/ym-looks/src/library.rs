@@ -45,8 +45,8 @@ pub use ids::{
     is_valid_slug, numbered_slug, sanitize_file_stem, slugify, truncate_to_bytes,
 };
 pub use model::{
-    DISABLED_MESSAGE, DisplayInput, DisplayLut, Look, LookGroup, LookStatus, LutLoadError, LutRef,
-    cube_error_text,
+    DISABLED_MESSAGE, DisplayInput, DisplayLut, LoadedLook, Look, LookFormat, LookGroup,
+    LookStatus, LutLoadError, LutRef, cube_error_text,
 };
 pub use resolve::{Candidate, EXIT_LOOK_MISSING, EXIT_USAGE, ResolveError, resolve};
 pub use verify::{VerifyEntry, VerifyOutcome, VerifyReport};
@@ -177,7 +177,7 @@ pub enum LoadError {
         /// Missing or changed.
         status: LookStatus,
     },
-    /// The file no longer parses as a 3D `.cube` LUT.
+    /// The file no longer parses as a 3D `.cube` LUT or an ARRI Look File.
     #[error("{id}: the LUT file is not usable: {reason}")]
     Invalid {
         /// The look.
@@ -225,10 +225,12 @@ impl LoadError {
                 id: id.clone(),
                 source,
             },
-            LutLoadError::Invalid(reason) => Self::Invalid {
-                id: id.clone(),
-                reason,
-            },
+            LutLoadError::Invalid(reason) | LutLoadError::InvalidLookFile(reason) => {
+                Self::Invalid {
+                    id: id.clone(),
+                    reason,
+                }
+            }
         }
     }
 }
@@ -419,6 +421,7 @@ impl Library {
                         path,
                         sha256: m.sha256.clone(),
                         lut_size: m.lut_size,
+                        format: m.format,
                     }),
                     source: m.source.clone(),
                     status,
@@ -455,6 +458,7 @@ impl Library {
                         path,
                         sha256: m.sha256.clone(),
                         lut_size: 0,
+                        format: LookFormat::Cube,
                     },
                     status,
                 }
@@ -605,13 +609,24 @@ impl Library {
         }
         let transform = match &look.lut {
             Some(lut_ref) => {
-                let lut = lut_ref.load().map_err(|e| LoadError::from_lut(id, e))?;
-                LookTransform::new(look.input, look.cdl, Some(lut)).map_err(|e| {
-                    LoadError::Invalid {
+                let loaded = lut_ref
+                    .load_look()
+                    .map_err(|e| LoadError::from_lut(id, e))?;
+                // An ARRI Look File says what it is made for; the list must agree, or the look
+                // would be applied in the wrong encoding.
+                if loaded.input.is_some_and(|input| input != look.input) {
+                    return Err(LoadError::Invalid {
+                        id: id.clone(),
+                        reason: "the look file is not the kind of look it was imported as. Import it again.".to_string(),
+                    });
+                }
+                // A look file's own CDL goes in front of its LUT; a `.cube` has none.
+                LookTransform::new(look.input, loaded.cdl.or(look.cdl), Some(loaded.lut)).map_err(
+                    |e| LoadError::Invalid {
                         id: id.clone(),
                         reason: e.to_string(),
-                    }
-                })?
+                    },
+                )?
             }
             None => {
                 let builtin = self

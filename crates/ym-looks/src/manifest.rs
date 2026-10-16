@@ -36,7 +36,7 @@ use sha2::{Digest, Sha256};
 use ym_color::cube::{MAX_3D_SIZE, MIN_3D_SIZE};
 use ym_color::look::LookInput;
 
-use crate::library::{DisplayInput, IdKind, LookId};
+use crate::library::{DisplayInput, IdKind, LookFormat, LookId};
 
 /// The manifest format version this build reads and writes.
 pub const MANIFEST_VERSION: u32 = 1;
@@ -88,6 +88,10 @@ pub struct ManifestLook {
     pub input: LookInput,
     /// Path relative to the `looks` folder, with `/` separators.
     pub file: String,
+    /// What kind of file it is: `cube` (also when the field is absent: manifests written before
+    /// ARRI Look Files were read), `alf4`, `alf4c` or `aml`.
+    #[serde(default, skip_serializing_if = "LookFormat::is_cube")]
+    pub format: LookFormat,
     /// SHA-256 of the file, lower-case hex.
     pub sha256: String,
     /// Points per axis of the 3D table.
@@ -462,6 +466,7 @@ mod tests {
                 },
                 input: LookInput::LogC4,
                 file: "arri/3000-film/Film.cube".into(),
+                format: LookFormat::Cube,
                 sha256: "a".repeat(64),
                 lut_size: 65,
                 source: Some(Source {

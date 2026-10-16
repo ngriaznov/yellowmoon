@@ -5,6 +5,7 @@ use std::io::{self, Read};
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
+use ym_color::alf::{self, AlfKind};
 use ym_color::cdl::Cdl;
 use ym_color::cube::{self, CubeError, MAX_FILE_BYTES};
 use ym_color::look::LookInput;
@@ -84,6 +85,76 @@ impl LookStatus {
     }
 }
 
+/// The kind of file a look is kept as in the library: the original file, byte for byte.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LookFormat {
+    /// A `.cube` LUT. The only kind before ARRI Look Files were read, so a manifest entry without
+    /// a `format` is this.
+    #[default]
+    Cube,
+    /// An ARRI Look File for ALEXA 35 (`.alf4`): a CDL and a LogC4 LUT.
+    Alf4,
+    /// An ARRI custom colour management file (`.alf4c`): its CDL and creative LUT are used.
+    Alf4c,
+    /// An ARRI Look File for LogC3 cameras (`.aml`): a CDL and a LogC3-to-Rec.709 LUT.
+    Aml,
+}
+
+impl LookFormat {
+    /// The file extension without the dot: `cube`, `alf4`, `alf4c` or `aml`.
+    #[must_use]
+    pub fn extension(self) -> &'static str {
+        match self {
+            Self::Cube => "cube",
+            Self::Alf4 => "alf4",
+            Self::Alf4c => "alf4c",
+            Self::Aml => "aml",
+        }
+    }
+
+    /// The extension with its dot, for messages: `.cube`.
+    #[must_use]
+    pub fn noun(self) -> &'static str {
+        match self {
+            Self::Cube => ".cube",
+            Self::Alf4 => ".alf4",
+            Self::Alf4c => ".alf4c",
+            Self::Aml => ".aml",
+        }
+    }
+
+    /// Whether this is a plain `.cube` LUT (serde skips the field then).
+    #[must_use]
+    pub fn is_cube(&self) -> bool {
+        *self == Self::Cube
+    }
+
+    /// Whether this is one of the ARRI Look File containers.
+    #[must_use]
+    pub fn is_look_file(self) -> bool {
+        !self.is_cube()
+    }
+
+    /// The format of a parsed container.
+    #[must_use]
+    pub fn from_kind(kind: AlfKind) -> Self {
+        match kind {
+            AlfKind::Alf4 => Self::Alf4,
+            AlfKind::Alf4c => Self::Alf4c,
+            AlfKind::Aml => Self::Aml,
+        }
+    }
+
+    /// The format a file name's extension says (case ignored); `None` for any other.
+    #[must_use]
+    pub fn from_extension(extension: &str) -> Option<Self> {
+        [Self::Cube, Self::Alf4, Self::Alf4c, Self::Aml]
+            .into_iter()
+            .find(|f| f.extension().eq_ignore_ascii_case(extension))
+    }
+}
+
 /// Why a LUT file could not be loaded.
 #[derive(Debug, thiserror::Error)]
 pub enum LutLoadError {
@@ -104,36 +175,48 @@ pub enum LutLoadError {
     /// The file no longer parses as a 3D `.cube` LUT.
     #[error("The LUT file is not a usable .cube file: {0}")]
     Invalid(String),
+    /// The file no longer reads as an ARRI Look File, or is not the look it was imported as.
+    #[error("The look file is not usable: {0}")]
+    InvalidLookFile(String),
+}
+
+/// What reading a look's file gives: the LUT, and for a look file its CDL and the encoding it
+/// expects.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LoadedLook {
+    /// The LUT.
+    pub lut: Lut,
+    /// The CDL stored in an ARRI Look File, applied before the LUT; `None` for a `.cube` and for a
+    /// look file whose CDL is the identity.
+    pub cdl: Option<Cdl>,
+    /// The encoding the file says it is made for (look files only); `None` for a `.cube`.
+    pub input: Option<LookInput>,
 }
 
 /// A LUT file in the library: path, SHA-256 and size. Loaded lazily and checked against its hash
 /// every time it is read.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LutRef {
-    /// Absolute path of the copied `.cube` file.
+    /// Absolute path of the copied file (`.cube`, or an ARRI Look File).
     pub path: PathBuf,
     /// SHA-256 recorded at import, lower-case hex.
     pub sha256: String,
     /// Points per axis of the 3D table.
     pub lut_size: usize,
+    /// What kind of file it is.
+    pub format: LookFormat,
 }
 
 impl LutRef {
-    /// Reads the file, checks its SHA-256 and parses it.
-    ///
-    /// # Errors
-    ///
-    /// [`LutLoadError::Missing`] or [`LutLoadError::Changed`] (the look is "disabled"),
-    /// [`LutLoadError::Unreadable`], or [`LutLoadError::Invalid`].
-    pub fn load(&self) -> Result<Lut, LutLoadError> {
+    /// Reads the file (at most `limit` bytes) and checks its SHA-256.
+    fn read_checked(&self, limit: usize) -> Result<Vec<u8>, LutLoadError> {
         let file = match File::open(&self.path) {
             Ok(f) => f,
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Err(LutLoadError::Missing),
             Err(e) => return Err(LutLoadError::Unreadable(e)),
         };
-        let limit = MAX_FILE_BYTES as u64 + 1;
         let mut bytes = Vec::new();
-        file.take(limit)
+        file.take(limit as u64 + 1)
             .read_to_end(&mut bytes)
             .map_err(LutLoadError::Unreadable)?;
         let actual = sha256_hex(&bytes);
@@ -143,9 +226,59 @@ impl LutRef {
                 actual,
             });
         }
+        Ok(bytes)
+    }
+
+    /// Reads a `.cube` file, checks its SHA-256 and parses it. (A look file goes through
+    /// [`LutRef::load_look`], which also gives its CDL.)
+    ///
+    /// # Errors
+    ///
+    /// [`LutLoadError::Missing`] or [`LutLoadError::Changed`] (the look is "disabled"),
+    /// [`LutLoadError::Unreadable`], or [`LutLoadError::Invalid`] (also for a ref that is not a
+    /// `.cube`).
+    pub fn load(&self) -> Result<Lut, LutLoadError> {
+        if self.format.is_look_file() {
+            return Err(LutLoadError::Invalid(format!(
+                "it is a {} look file, not a .cube",
+                self.format.noun()
+            )));
+        }
+        let bytes = self.read_checked(MAX_FILE_BYTES)?;
         cube::parse_bytes(&bytes)
             .and_then(cube::CubeFile::into_lut)
             .map_err(|e| LutLoadError::Invalid(cube_error_text(&e)))
+    }
+
+    /// Reads the file, checks its SHA-256 and reads it as what it is: a `.cube`, or an ARRI Look
+    /// File with its CDL (`docs/08-looks.md` section ARRI Look Files).
+    ///
+    /// # Errors
+    ///
+    /// As [`LutRef::load`], with [`LutLoadError::InvalidLookFile`] for a look file that no longer
+    /// reads, or that is not the kind of look it was imported as.
+    pub fn load_look(&self) -> Result<LoadedLook, LutLoadError> {
+        if self.format.is_cube() {
+            return Ok(LoadedLook {
+                lut: self.load()?,
+                cdl: None,
+                input: None,
+            });
+        }
+        let bytes = self.read_checked(alf::MAX_FILE_BYTES)?;
+        let look = alf::parse(&bytes).map_err(|e| LutLoadError::InvalidLookFile(e.to_string()))?;
+        if LookFormat::from_kind(look.kind) != self.format {
+            return Err(LutLoadError::InvalidLookFile(format!(
+                "it was imported as a {} file but is a {} file. Import it again",
+                self.format.noun(),
+                look.kind
+            )));
+        }
+        Ok(LoadedLook {
+            lut: Lut::from_cube(look.lut),
+            cdl: look.cdl,
+            input: Some(look.input),
+        })
     }
 }
 
@@ -281,6 +414,7 @@ mod tests {
             path: path.clone(),
             sha256: sha256_hex(text.as_bytes()),
             lut_size: 3,
+            format: LookFormat::Cube,
         };
         assert_eq!(lut_ref.load().unwrap().cube.size(), 3);
         std::fs::write(&path, text.replace("0.5", "0.25")).unwrap();

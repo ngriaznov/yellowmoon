@@ -24,15 +24,21 @@
 //! 4. **Nothing fits.** The file gets the generic question (what does it expect as input?), with a
 //!    suggestion when the names hint at one.
 //!
-//! A source with no `.cube` files, or only unusable ones, or ARRI files from a package Yellowmoon
-//! does not know, gets a plain explanation instead ([`Issue`]).
+//! **Look files.** ARRI Look Files (`.alf4`, `.alf4c`, `.aml`) carry their own input and LUT size,
+//! so they need no question. One whose hash is in a package's fingerprints, or that sits in a zip
+//! or folder named for a look-file package (the ALF4 library, the LogC3 look-file library, rule 3
+//! above, per format), is that package's look. Any other look file is the person's own look: it is
+//! imported as it is, with the input the file says ([`Outcome::OwnLookFile`]).
+//!
+//! A source with no `.cube` files or look files, or only unusable ones, or ARRI files from a
+//! package Yellowmoon does not know, gets a plain explanation instead ([`Issue`]).
 
 use std::collections::{HashMap, HashSet};
 
 use serde::Serialize;
 use ym_color::look::LookInput;
 
-use crate::library::{DisplayInput, slugify};
+use crate::library::{DisplayInput, LookFormat, slugify};
 
 mod explain;
 pub mod names;
@@ -46,7 +52,7 @@ pub use packages::{
 
 use names::{
     display_target, file_name, file_stem, fold_alnum, folder_components, group_of,
-    has_display_rendering, look_code, look_name, parse_group_folder,
+    has_display_rendering, look_code, look_name, parse_group_folder, split_strength,
 };
 
 /// What kind of thing the user chose to import.
@@ -70,15 +76,11 @@ pub struct SourceInfo {
     pub name: String,
 }
 
-/// What was set aside without being read as a LUT.
+/// What was set aside without being read as a LUT or a look file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
 pub struct Ignored {
-    /// ARRI Look Files for LogC4 cameras (`.alf4`, `.alf4c`), a binary container the app cannot use.
-    pub alf4: usize,
-    /// ARRI Look Files (`.alf2`).
-    pub alf2: usize,
-    /// ARRI Look Files for LogC3 cameras (`.aml`).
-    pub aml: usize,
+    /// `.xml` files: ARRI's older look files (ALF-1, for ALEXA Classic and XT), which are not read.
+    pub xml: usize,
     /// PDF documents.
     pub pdf: usize,
     /// macOS metadata: `__MACOSX` folders, `._` files, `.DS_Store`.
@@ -100,7 +102,16 @@ pub struct CubeSummary {
     pub has_shaper: bool,
 }
 
-/// What the importer learned about one `.cube` file: no LUT data, only facts.
+/// What a valid ARRI Look File says about itself: no LUT data, only facts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LookFileFacts {
+    /// The encoding the look is made for.
+    pub input: LookInput,
+    /// An `.alf4c` with display transforms of its own, which are not used.
+    pub display_transforms_ignored: bool,
+}
+
+/// What the importer learned about one file: no LUT data, only facts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileFacts {
     /// Path inside the source, `/`-separated.
@@ -109,8 +120,15 @@ pub struct FileFacts {
     pub size: u64,
     /// SHA-256, lower-case hex.
     pub sha256: String,
-    /// What the file is, or why it was rejected (a sentence for the user).
+    /// What kind of file it is: the container of a look file that read (whatever its extension
+    /// says), else what the extension says.
+    pub format: LookFormat,
+    /// What the file is, or why it was rejected (a sentence for the user). For a look file the
+    /// summary has its LUT size and no `TITLE`.
     pub check: Result<CubeSummary, String>,
+    /// What a valid ARRI Look File says about itself; `None` for a `.cube` and for a file that was
+    /// rejected.
+    pub look_file: Option<LookFileFacts>,
 }
 
 /// How a file was identified.
@@ -158,6 +176,14 @@ pub enum Outcome {
         /// How it was identified.
         evidence: Evidence,
     },
+    /// An ARRI Look File that is not part of a known package: the person's own look. The file says
+    /// what it expects as input, so nothing is asked.
+    OwnLookFile {
+        /// What the file says it is made for.
+        input: LookInput,
+        /// An `.alf4c` with display transforms of its own, which are not used.
+        display_transforms_ignored: bool,
+    },
     /// Not from a known package: the generic question applies.
     NeedsAnswer {
         /// What the names and header hint at, if anything.
@@ -172,7 +198,7 @@ pub enum Outcome {
     },
 }
 
-/// One `.cube` file and what it is.
+/// One file and what it is.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct RecognizedFile {
     /// Path inside the source, `/`-separated.
@@ -185,6 +211,8 @@ pub struct RecognizedFile {
     pub sha256: String,
     /// Points per axis, for valid files.
     pub lut_size: Option<usize>,
+    /// `.cube`, or the container of a look file.
+    pub format: LookFormat,
     /// What it is.
     pub outcome: Outcome,
 }
@@ -195,8 +223,14 @@ impl RecognizedFile {
     pub fn is_recognized(&self) -> bool {
         matches!(
             self.outcome,
-            Outcome::ArriLook { .. } | Outcome::ArriDisplay { .. }
+            Outcome::ArriLook { .. } | Outcome::ArriDisplay { .. } | Outcome::OwnLookFile { .. }
         )
+    }
+
+    /// Whether the file is one of the person's own look files (`.alf4`, `.alf4c`, `.aml`).
+    #[must_use]
+    pub fn is_own_look_file(&self) -> bool {
+        matches!(self.outcome, Outcome::OwnLookFile { .. })
     }
 
     /// Whether the file needs the generic input question answered.
@@ -261,9 +295,9 @@ pub enum Severity {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum IssueKind {
-    /// No `.cube` files at all (for example an ALF4-only zip).
-    NoCubeFiles,
-    /// Every `.cube` file was rejected.
+    /// No `.cube` files or look files at all.
+    NoLookFiles,
+    /// Every file was rejected.
     AllRejected,
     /// One file was rejected.
     Rejected,
@@ -277,6 +311,8 @@ pub enum IssueKind {
     NeedsAnswer,
     /// ARRI files from a package Yellowmoon does not know.
     UnknownArriPackage,
+    /// `.alf4c` files whose display transforms are not used.
+    DisplayTransformsIgnored,
 }
 
 /// Something the wizard or CLI should tell the user, in plain words.
@@ -309,7 +345,7 @@ pub enum Verdict {
 pub struct Recognition {
     /// What was chosen.
     pub source: SourceInfo,
-    /// Every `.cube` file, in path order.
+    /// Every `.cube` file and look file, in path order.
     pub files: Vec<RecognizedFile>,
     /// The packages found.
     pub packages: Vec<PackageFinding>,
@@ -408,6 +444,32 @@ fn group_for(db: &PackageDb, path: &str) -> Option<(u32, String)> {
     })
 }
 
+/// The group of a look file: the first digit of the look code in its name decides
+/// (`LL-1120-Black-and-White` is in group 1000), named as the package list names the group; a
+/// file with no code takes the group folder it sits in.
+fn look_file_group(db: &PackageDb, path: &str) -> Option<(u32, String)> {
+    let number = look_code(file_stem(path)).map(|code| code / 1000 * 1000);
+    let Some(number) = number.filter(|n| *n != 0) else {
+        return group_of(path);
+    };
+    let name = db
+        .group_names
+        .get(&number)
+        .cloned()
+        .or_else(|| group_of(path).filter(|(n, _)| *n == number).map(|(_, n)| n))
+        .unwrap_or_else(|| format!("Group {number}"));
+    Some((number, name))
+}
+
+/// [`group_for`] for a file of `format`: look files are grouped by their code first.
+fn group_for_format(db: &PackageDb, path: &str, format: LookFormat) -> Option<(u32, String)> {
+    if format.is_look_file() {
+        look_file_group(db, path)
+    } else {
+        group_for(db, path)
+    }
+}
+
 /// Evidence text for a file: the source's name, its path and its `TITLE`, folded.
 fn evidence_text(source: &SourceInfo, file: &FileFacts, summary: &CubeSummary) -> String {
     let title = summary.title.as_deref().unwrap_or("");
@@ -477,7 +539,8 @@ fn match_pattern<'a>(
         .packages
         .iter()
         .filter(|p| {
-            !p.markers.encoding.is_empty()
+            p.format.is_cube()
+                && !p.markers.encoding.is_empty()
                 && p.markers.encoding.matches_folded(&evidence)
                 && p.markers.display_rendering.allows(has_display)
                 && p.markers.group_folders.allows(has_group)
@@ -506,7 +569,26 @@ fn match_pattern<'a>(
 }
 
 fn outcome_for(db: &PackageDb, package: &Package, path: &str, evidence: Evidence) -> Outcome {
-    outcome_in_group(db, package, path, evidence, group_for(db, path))
+    outcome_in_group(
+        db,
+        package,
+        path,
+        evidence,
+        group_for_format(db, path, package.format),
+    )
+}
+
+/// The display name of a look from its file stem. A `.cube` or `.alf4` has a title; an `.aml` of
+/// the LogC3 library comes in three strengths, so `...-Black-and-White-Low` is "Black and White ·
+/// Low" (a stem that ends in anything else, such as `Beauty-How`, keeps all its words).
+fn title_of(db: &PackageDb, format: LookFormat, stem: &str) -> String {
+    if format == LookFormat::Aml {
+        let (base, strength) = split_strength(stem);
+        if let Some(strength) = strength {
+            return format!("{} · {strength}", look_name(base, &db.display_names));
+        }
+    }
+    look_name(stem, &db.display_names)
 }
 
 /// [`outcome_for`] with the group decided by the caller (`None`: ungrouped).
@@ -540,7 +622,7 @@ fn outcome_in_group(
             group_no,
             group_name,
             input: package.look_input().unwrap_or(LookInput::LogC4),
-            name: look_name(stem, &db.display_names),
+            name: title_of(db, package.format, stem),
             file_name: file_name(path).to_string(),
             evidence,
         }
@@ -648,8 +730,17 @@ fn tell_same_names_apart(files: &mut [RecognizedFile]) {
                 .is_some_and(|n| *n > 1)
             && let Some(code) = look_code(file_stem(library_name))
         {
-            *name = format!("{name} {code}");
+            *name = with_code(name, code);
         }
+    }
+}
+
+/// `name` with a look code added: "Black and White 1110"; for a name with a strength, before it:
+/// "Black and White 1110 · Low".
+fn with_code(name: &str, code: u32) -> String {
+    match name.rsplit_once(" · ") {
+        Some((title, strength)) => format!("{title} {code} · {strength}"),
+        None => format!("{name} {code}"),
     }
 }
 
@@ -717,12 +808,15 @@ fn match_by_package(
         let Some(expected) = package.expected.cube_files else {
             continue;
         };
+        // A package holds files of its own kind: `.cube` LUTs, or look files of one container.
         let members: Vec<usize> = (0..files.len())
             .filter(|&j| match &files[j].check {
                 Ok(summary) => {
-                    lut_size_fits(package, summary.lut_size)
+                    files[j].format == package.format
+                        && lut_size_fits(package, summary.lut_size)
                         && (package_of[j] == Some(i)
                             || recognized[j].needs_answer()
+                            || recognized[j].is_own_look_file()
                             || (decisive && !identified_by_hash(&recognized[j])))
                 }
                 Err(_) => false,
@@ -744,12 +838,12 @@ fn match_by_package(
                         let Ok(summary) = &files[j].check else {
                             return false;
                         };
-                        markers
-                            .group_folders
-                            .allows(group_for(db, &files[j].rel_path).is_some())
-                            && markers
-                                .display_rendering
-                                .allows(names_display_rendering(db, source, &files[j], summary))
+                        markers.group_folders.allows(
+                            group_for_format(db, &files[j].rel_path, db.packages[*i].format)
+                                .is_some(),
+                        ) && markers
+                            .display_rendering
+                            .allows(names_display_rendering(db, source, &files[j], summary))
                     })
                     .count()
             };
@@ -775,7 +869,7 @@ fn match_by_package(
     for (&j, lenient) in members.iter().zip(groups) {
         if package_of[j] != Some(*index) {
             let path = &files[j].rel_path;
-            let group = group_for(db, path).or(lenient);
+            let group = group_for_format(db, path, package.format).or(lenient);
             recognized[j].outcome = outcome_in_group(db, package, path, Evidence::Pattern, group);
         }
         package_of[j] = Some(*index);
@@ -842,6 +936,7 @@ pub fn recognize(
             size: file.size,
             sha256: file.sha256.clone(),
             lut_size: None,
+            format: file.format,
             outcome: Outcome::Rejected {
                 reason: String::new(),
             },
@@ -864,6 +959,12 @@ pub fn recognize(
                     let fp = &db.packages[i].fingerprints[j];
                     out.outcome = outcome_for(db, &db.packages[i], &fp.path, Evidence::Fingerprint);
                     package_index = Some(i);
+                } else if let Some(look) = file.look_file {
+                    // A look file knows its own input; it is a package's only by the package rule.
+                    out.outcome = Outcome::OwnLookFile {
+                        input: look.input,
+                        display_transforms_ignored: look.display_transforms_ignored,
+                    };
                 } else {
                     match match_pattern(db, source, file, summary) {
                         Pattern::Match(package) => {
@@ -1002,8 +1103,8 @@ fn issues_for(
     if files.is_empty() {
         push(
             Severity::Problem,
-            IssueKind::NoCubeFiles,
-            explain::no_cube_files(source, ignored, db),
+            IssueKind::NoLookFiles,
+            explain::nothing_to_import(source, ignored),
         );
         return issues;
     }
@@ -1023,7 +1124,7 @@ fn issues_for(
         push(
             Severity::Problem,
             IssueKind::AllRejected,
-            explain::all_rejected(source, files.len(), &example),
+            explain::all_rejected(source, files, &example),
         );
         return issues;
     }
@@ -1071,6 +1172,27 @@ fn issues_for(
         }
     }
 
+    let setting_aside: Vec<&str> = files
+        .iter()
+        .filter(|f| {
+            matches!(
+                f.outcome,
+                Outcome::OwnLookFile {
+                    display_transforms_ignored: true,
+                    ..
+                }
+            )
+        })
+        .map(|f| f.name.as_str())
+        .collect();
+    if !setting_aside.is_empty() {
+        push(
+            Severity::Info,
+            IssueKind::DisplayTransformsIgnored,
+            explain::display_transforms_ignored(&setting_aside),
+        );
+    }
+
     let asking: Vec<&RecognizedFile> = files.iter().filter(|f| f.needs_answer()).collect();
     if !asking.is_empty() {
         let mut suggestions: Vec<LookInput> = asking
@@ -1102,7 +1224,13 @@ fn issues_for(
             text.contains("arri") || text.contains("alexa")
         });
         if names_arri {
-            let titles: Vec<String> = db.packages.iter().map(|p| p.title.clone()).collect();
+            let mut titles: Vec<String> = Vec::new();
+            for package in &db.packages {
+                // A package that comes as 3D LUTs and as look files has one title.
+                if !titles.contains(&package.title) {
+                    titles.push(package.title.clone());
+                }
+            }
             if !titles.is_empty() {
                 push(
                     Severity::Problem,
@@ -1160,11 +1288,13 @@ mod tests {
             rel_path: path.to_string(),
             size: 1000,
             sha256: format!("{salt:02x}").repeat(32),
+            format: LookFormat::Cube,
             check: Ok(CubeSummary {
                 title: title.map(str::to_string),
                 lut_size: size,
                 has_shaper: false,
             }),
+            look_file: None,
         }
     }
 
@@ -1739,24 +1869,26 @@ mod tests {
 
     #[test]
     fn empty_and_all_rejected_sources_are_explained() {
-        let alf = Ignored {
-            alf4: 5,
+        let xml = Ignored {
+            xml: 5,
             ..Ignored::default()
         };
-        let r = recognize(&db(), &zip("x.zip"), &[], &alf);
+        let r = recognize(&db(), &zip("x.zip"), &[], &xml);
         assert_eq!(r.verdict(), Verdict::Blocked);
-        assert_eq!(r.issues[0].kind, IssueKind::NoCubeFiles);
-        assert_eq!(
-            r.issues[0].message,
-            "These are ARRI look files for the camera (.alf4). Yellowmoon needs the 3D-LUT version: \
-             download 'Look Library for LogC4 (3D-LUTs)' from ARRI's look page."
+        assert_eq!(r.issues[0].kind, IssueKind::NoLookFiles);
+        assert!(
+            r.issues[0].message.contains("ALF-1"),
+            "{}",
+            r.issues[0].message
         );
 
         let bad = FileFacts {
             rel_path: "bad.cube".into(),
             size: 3,
             sha256: "0".repeat(64),
+            format: LookFormat::Cube,
             check: Err("Line 1: unknown keyword.".into()),
+            look_file: None,
         };
         let r = recognize(&db(), &zip("x.zip"), &[bad], &Ignored::default());
         assert_eq!(r.verdict(), Verdict::Blocked);
@@ -1772,7 +1904,9 @@ mod tests {
             rel_path: "bad.cube".into(),
             size: 3,
             sha256: "0".repeat(64),
+            format: LookFormat::Cube,
             check: Err("It is not a text file, so it is not a .cube LUT.".into()),
+            look_file: None,
         });
         let r = recognize(&db(), &zip("x.zip"), &files, &Ignored::default());
         assert_eq!(r.verdict(), Verdict::NeedsAnswer);

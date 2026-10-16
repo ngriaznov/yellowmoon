@@ -10,6 +10,7 @@
 #![warn(missing_docs)]
 
 pub mod aces2;
+pub mod alf;
 pub mod arri;
 pub mod cdl;
 pub mod chain;

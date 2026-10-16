@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
@@ -39,6 +40,51 @@ def write_zip(path: Path, entries: dict[str, bytes]) -> Path:
     return path
 
 
+def alf4_bytes(size: int, seed: int) -> bytes:
+    """A stand-in for an .alf4 file: the marker and the two header fields the tool reads (where the LUT
+    block is, and the LUT size in it), then filler. Not a valid look file; the tool does not check one."""
+    block = 0x558
+    out = bytearray(0x658 + 6 * size**3)
+    out[0:4] = b"3FLA"
+    struct.pack_into("<I", out, 0x68, block)
+    struct.pack_into("<H", out, block + 0x42, size)
+    out[0x700:0x704] = struct.pack("<I", seed)
+    return bytes(out)
+
+
+def aml_bytes(size: int, seed: int) -> bytes:
+    """A stand-in for an .aml file (see alf4_bytes)."""
+    out = bytearray(0x668 + 6 * size**3)
+    out[0:4] = b"KOLA"
+    struct.pack_into("<I", out, 0x18, size)
+    out[0x700:0x704] = struct.pack("<I", seed)
+    return bytes(out)
+
+
+def alf4_package(count: int, size: int) -> dict[str, bytes]:
+    """Entries of a synthetic .alf4 package in ARRI's layout, junk included."""
+    entries: dict[str, bytes] = {}
+    groups = ["1000 Black-and-White", "3000 Film", "4000 Tinted"]
+    root = "ARRI Look Library LogC4 (log-to-log) ALF4"
+    for i in range(count):
+        name = f"{root}/{groups[i % 3]}/LL-{1000 + 10 * (i + 1)}-Look-{i}.alf4"
+        entries[name] = alf4_bytes(size, i + 1)
+        entries[f"__MACOSX/{root}/{groups[i % 3]}/._LL-{1000 + 10 * (i + 1)}-Look-{i}.alf4"] = b"apple double"
+    entries[f"{root}/.DS_Store"] = b"junk"
+    return entries
+
+
+def aml_package(count: int, size: int) -> dict[str, bytes]:
+    """Entries of a synthetic .aml package: three strengths per look."""
+    entries: dict[str, bytes] = {}
+    root = "ARRI Look Library LogC3 to Rec709 ALF2"
+    for i in range(count):
+        for k, strength in enumerate(("Low", "Medium", "High")):
+            entries[f"{root}/1000 Black-and-White/LL-{1110 + i}-Look-{i}-{strength}.aml"] = aml_bytes(size, 3 * i + k)
+    entries[f"{root}/.DS_Store"] = b"junk"
+    return entries
+
+
 def look_package(count: int, size: int, enc: str, display: bool = False) -> dict[str, bytes]:
     """Entries of a synthetic package, junk included."""
     entries: dict[str, bytes] = {}
@@ -49,7 +95,7 @@ def look_package(count: int, size: int, enc: str, display: bool = False) -> dict
         else:
             name = f"{groups[i % 3]}/Look_{i:02d}_{enc}.cube"
         entries[name] = cube_text(size, i + 1, f"{enc} {i}")
-        entries[name.replace(".cube", ".alf4")] = b"binary look"
+        entries[name.replace(".cube", ".xml")] = b"<adicam/>"
         entries["__MACOSX/" + name.replace("/", "/._")] = b"apple double"
     entries["Guide.pdf"] = b"%PDF-1.4"
     return entries
@@ -77,6 +123,8 @@ class FingerprintTests(unittest.TestCase):
             package["expected"]["cube_files"] = 4
             if package["expected"]["lut_sizes"]:
                 package["expected"]["lut_sizes"] = [5]
+            if package.get("format") == "aml":
+                package["expected"]["cube_files"] = 12
         self.db.write_text(json.dumps(data, indent=2))
 
     def tearDown(self) -> None:
@@ -108,7 +156,7 @@ class FingerprintTests(unittest.TestCase):
         self.assertEqual(observed["zip_name"], "ARRI_Look_Library_LogC4.zip")
         self.assertEqual(observed["cube_files"], 4)
         self.assertEqual(observed["top_level_folders"], ["1000 Colour", "3000 Film", "4000 Mono"])
-        self.assertEqual(observed["ignored"], {"alf4": 4, "pdf": 1, "macos": 4})
+        self.assertEqual(observed["ignored"], {"xml": 4, "pdf": 1, "macos": 4})
         # The other packages are untouched.
         self.assertEqual(self.package("look-library-logc3")["fingerprints"], [])
 
@@ -164,12 +212,57 @@ class FingerprintTests(unittest.TestCase):
         self.assertEqual(done.returncode, 1)
         self.assertIn("nope", done.stderr)
 
-    def test_alf4_only_zip_is_refused_with_advice(self) -> None:
-        zip_path = write_zip(self.dir / "ARRI_Look_Library_LogC4.zip", {"3000 Film/a.alf4": b"x", "Guide.pdf": b"y"})
+    def test_a_zip_with_no_look_files_is_refused(self) -> None:
+        zip_path = write_zip(self.dir / "ARRI_Look_Library_LogC4.zip", {"3000 Film/a.xml": b"x", "Guide.pdf": b"y"})
         done = run(zip_path, "--packages", self.db)
         self.assertEqual(done.returncode, 1)
-        self.assertIn("no .cube files", done.stderr)
-        self.assertIn("LUT (.cube)", done.stderr)
+        self.assertIn("no .cube, .alf4 or .aml files", done.stderr)
+
+    def test_fingerprints_the_alf4_library(self) -> None:
+        entries = alf4_package(4, 5)
+        zip_path = write_zip(self.dir / "arri-look-library-logc4-log-to-log-alf4-data.zip", entries)
+        done = run(zip_path, "--packages", self.db)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        package = self.package("look-library-logc4-alf4")
+        prints = package["fingerprints"]
+        self.assertEqual(len(prints), 4)
+        by_path = {p["path"]: p for p in prints}
+        self.assertEqual(sorted(by_path), sorted(n for n in entries if n.endswith(".alf4") and "__MACOSX" not in n))
+        for name, fp in by_path.items():
+            self.assertEqual(fp["size"], len(entries[name]))
+            self.assertEqual(fp["lut_size"], 5, "the LUT size comes from the file's header")
+            self.assertEqual(fp["sha256"], hashlib.sha256(entries[name]).hexdigest())
+            self.assertEqual(set(fp), {"path", "size", "lut_size", "sha256"})
+        observed = package["observed"]
+        self.assertEqual(observed["files"], 4)
+        self.assertNotIn("cube_files", observed)
+        self.assertEqual(observed["top_level_folders"], ["ARRI Look Library LogC4 (log-to-log) ALF4"])
+        self.assertEqual(observed["ignored"], {"macos": 5})
+        # The 3D-LUT package of the same encoding is untouched.
+        self.assertEqual(self.package("look-library-logc4")["fingerprints"], [])
+
+    def test_fingerprints_the_aml_library(self) -> None:
+        entries = aml_package(4, 5)
+        zip_path = write_zip(self.dir / "ARRI Look Library LogC3 (log-to-Rec709) ALF2_data.zip", entries)
+        done = run(zip_path, "--packages", self.db)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        package = self.package("look-library-logc3-rec709-alf2")
+        self.assertEqual(len(package["fingerprints"]), 12)
+        self.assertEqual({p["lut_size"] for p in package["fingerprints"]}, {5})
+        self.assertEqual(package["observed"]["files"], 12)
+        for other in ("look-library-logc3", "look-library-logc3-rec709"):
+            self.assertEqual(self.package(other)["fingerprints"], [], other)
+
+    def test_a_mixed_zip_and_a_wrong_forced_package_are_errors(self) -> None:
+        mixed = {**look_package(2, 5, "LogC4"), **alf4_package(2, 5)}
+        zip_path = write_zip(self.dir / "mixed.zip", mixed)
+        done = run(zip_path, "--package", "look-library-logc4", "--packages", self.db)
+        self.assertEqual(done.returncode, 1)
+        self.assertIn("both", done.stderr)
+        alf = write_zip(self.dir / "alf.zip", alf4_package(2, 5))
+        done = run(alf, "--package", "look-library-logc4", "--packages", self.db)
+        self.assertEqual(done.returncode, 1)
+        self.assertIn("package of .cube files", done.stderr)
 
     def test_not_a_zip_is_an_error_not_a_crash(self) -> None:
         bad = self.dir / "broken.zip"
@@ -231,7 +324,7 @@ class FingerprintTests(unittest.TestCase):
             for fp in package["fingerprints"]:
                 self.assertEqual(set(fp), {"path", "size", "lut_size", "sha256"}, package["id"])
                 self.assertRegex(fp["sha256"], r"^[0-9a-f]{64}$")
-                self.assertTrue(fp["path"].endswith(".cube"), fp["path"])
+                self.assertTrue(fp["path"].endswith((".cube", ".alf4", ".aml")), fp["path"])
                 self.assertLess(len(fp["path"]), 200)
         self.assertNotRegex(shipped.decode(), r"-?\d+\.\d+\s+-?\d+\.\d+\s+-?\d+\.\d+")
 

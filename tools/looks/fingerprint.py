@@ -5,11 +5,12 @@ Usage:
     python3 -I tools/looks/fingerprint.py <zip>... [--package ID] [--packages FILE] [--dry-run]
     python3 -I tools/looks/fingerprint.py --reformat [--packages FILE]
 
-For every zip it lists the .cube files and records, per file, the path inside the zip, the size in
-bytes, the LUT size (the LUT_3D_SIZE header) and the SHA-256. Nothing else leaves the zip: **no LUT
-data is ever read into the output, written, or kept**. The result goes into the matching package's
-"fingerprints" list in arri-packages.json, next to a small "observed" summary (zip name, zip size,
-counts, folder names) that helps refine the name patterns by hand.
+For every zip it lists the look files (.cube LUTs, or ARRI Look Files: .alf4 or .aml; a package is
+one kind) and records, per file, the path inside the zip, the size in bytes, the LUT size (the
+LUT_3D_SIZE header of a .cube; the LUT size field of a look file's header) and the SHA-256. Nothing
+else leaves the zip: **no LUT data is ever read into the output, written, or kept**. The result goes
+into the matching package's "fingerprints" list in arri-packages.json, next to a small "observed"
+summary (zip name, zip size, counts, folder names) that helps refine the name patterns by hand.
 
 The package is recognised from the zip's name and contents using the patterns already in the file
 (zip_name patterns, expected file count, LUT sizes, encoding words). If that is not unique, say
@@ -18,9 +19,10 @@ which one with --package.
 Only the Python standard library is used. Run it with `-I` (isolated mode): it reads files from
 the internet.
 
-The ignored entries match the app's importer: __MACOSX folders, "._" files, .DS_Store, .alf4,
-.alf2, PDFs and everything else that is not a .cube file. Entries whose paths would leave the
-folder are skipped with a warning.
+The ignored entries match the app's importer: __MACOSX folders, "._" files, .DS_Store, .alf4c
+(custom colour management files are never part of a package), .xml, PDFs and everything else that
+is not a look file of the package's kind. Entries whose paths would leave the folder are skipped
+with a warning.
 
 Exit codes: 0 done, 1 something went wrong (message on stderr), 2 usage error.
 """
@@ -30,6 +32,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import struct
 import sys
 import zipfile
 from pathlib import Path, PurePosixPath
@@ -77,13 +80,34 @@ def safe_path(name: str) -> str | None:
 
 
 def classify(path: str) -> str:
-    """cube, alf4, alf2, pdf, macos or other."""
+    """cube, alf4, aml, alf4c, xml, pdf, macos or other."""
     parts = path.split("/")
     name = parts[-1]
     if "__MACOSX" in parts or name.startswith("._") or name == ".DS_Store":
         return "macos"
     ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
-    return {"cube": "cube", "alf4": "alf4", "alf2": "alf2", "pdf": "pdf"}.get(ext, "other")
+    kinds = {"cube": "cube", "alf4": "alf4", "aml": "aml", "alf4c": "alf4c", "xml": "xml", "pdf": "pdf"}
+    return kinds.get(ext, "other")
+
+
+# The kinds a package is made of; the others are ignored, as in the app.
+PACKAGE_KINDS = ("cube", "alf4", "aml")
+
+
+def alf_lut_size(head: bytes, kind: str) -> int:
+    """The LUT size in the header of a .alf4 or .aml file; 0 when the bytes are not that layout.
+
+    Reads two header fields (where the LUT block is, and the size in it), never the LUT itself.
+    """
+    try:
+        if kind == "alf4" and head[:4] == b"3FLA":
+            block = struct.unpack_from("<I", head, 0x68)[0]
+            return struct.unpack_from("<H", head, block + 0x42)[0]
+        if kind == "aml" and head[:4] == b"KOLA":
+            return struct.unpack_from("<I", head, 0x18)[0]
+    except struct.error:
+        pass
+    return 0
 
 
 def lut_size_of_header(head: bytes) -> int:
@@ -107,9 +131,9 @@ def lut_size_of_header(head: bytes) -> int:
 
 
 def read_zip(zip_path: Path) -> dict:
-    """Names, sizes, LUT sizes and hashes of the .cube files in a zip, plus what was ignored."""
-    cubes: dict[str, dict] = {}
-    ignored = {"alf4": 0, "alf2": 0, "pdf": 0, "macos": 0, "other": 0, "unsafe": 0}
+    """Names, sizes, LUT sizes and hashes of the look files in a zip, plus what was ignored."""
+    found: dict[str, dict[str, dict]] = {kind: {} for kind in PACKAGE_KINDS}
+    ignored = {"alf4c": 0, "xml": 0, "pdf": 0, "macos": 0, "other": 0, "unsafe": 0}
     warnings: list[str] = []
     try:
         archive = zipfile.ZipFile(zip_path)
@@ -125,10 +149,10 @@ def read_zip(zip_path: Path) -> dict:
                 warnings.append(f"{zip_path.name}: skipped unsafe entry name {info.filename!r}")
                 continue
             kind = classify(path)
-            if kind != "cube":
+            if kind not in PACKAGE_KINDS:
                 ignored[kind] += 1
                 continue
-            if path in cubes:
+            if path in found[kind]:
                 raise FingerprintError(f"{zip_path.name}: {path} appears twice")
             digest = hashlib.sha256()
             head = b""
@@ -142,14 +166,23 @@ def read_zip(zip_path: Path) -> dict:
                         size += len(chunk)
             except (zipfile.BadZipFile, OSError, RuntimeError) as error:
                 raise FingerprintError(f"{zip_path.name}: cannot read {path} ({error})") from error
-            lut_size = lut_size_of_header(head)
+            lut_size = lut_size_of_header(head) if kind == "cube" else alf_lut_size(head, kind)
             if lut_size == 0:
-                warnings.append(f"{zip_path.name}: {path} has no LUT_3D_SIZE (recorded as 0)")
-            cubes[path] = {"path": path, "size": size, "lut_size": lut_size, "sha256": digest.hexdigest()}
+                what = "LUT_3D_SIZE" if kind == "cube" else "a LUT size in its header"
+                warnings.append(f"{zip_path.name}: {path} has no {what} (recorded as 0)")
+            found[kind][path] = {"path": path, "size": size, "lut_size": lut_size, "sha256": digest.hexdigest()}
+    kinds = [k for k in PACKAGE_KINDS if found[k]]
+    if len(kinds) > 1:
+        raise FingerprintError(
+            f"{zip_path.name}: holds both {' and '.join('.' + k for k in kinds)} files; "
+            "fingerprint one package at a time"
+        )
+    kind = kinds[0] if kinds else "cube"
     return {
         "zip_name": zip_path.name,
         "zip_bytes": zip_path.stat().st_size,
-        "cubes": [cubes[p] for p in sorted(cubes)],
+        "format": kind,
+        "files": [found[kind][p] for p in sorted(found[kind])],
         "ignored": ignored,
         "warnings": warnings,
     }
@@ -165,14 +198,16 @@ def score(package: dict, scan: dict) -> int:
     folded_zip = fold(stem)
     if any(pattern_matches(p, folded_zip) for p in package.get("zip_name", [])):
         points += 3
+    if package.get("format", "cube") != scan["format"]:
+        return -1  # a package of .cube files is not a zip of .alf4 files
     expected = package.get("expected", {})
-    if expected.get("cube_files") == len(scan["cubes"]):
+    if expected.get("cube_files") == len(scan["files"]):
         points += 2
-    sizes = {c["lut_size"] for c in scan["cubes"]}
+    sizes = {c["lut_size"] for c in scan["files"]}
     wanted = set(expected.get("lut_sizes", []))
     if wanted and sizes <= wanted:
         points += 1
-    evidence = fold(stem + " " + " ".join(c["path"] for c in scan["cubes"]))
+    evidence = fold(stem + " " + " ".join(c["path"] for c in scan["files"]))
     if pattern_matches(package.get("markers", {}).get("encoding", {}), evidence):
         points += 1
     return points
@@ -183,6 +218,11 @@ def choose_package(db: dict, scan: dict, forced: str | None) -> dict:
     if forced is not None:
         for package in packages:
             if package["id"] == forced:
+                if package.get("format", "cube") != scan["format"]:
+                    raise FingerprintError(
+                        f"{scan['zip_name']}: holds .{scan['format']} files, but {forced} is a package of "
+                        f".{package.get('format', 'cube')} files"
+                    )
                 return package
         known = ", ".join(p["id"] for p in packages)
         raise FingerprintError(f"no package {forced!r} in the list (known: {known})")
@@ -201,24 +241,25 @@ def choose_package(db: dict, scan: dict, forced: str | None) -> dict:
 def apply_scan(package: dict, scan: dict) -> list[str]:
     """Writes the scan into the package. Returns notes about differences from the patterns."""
     notes: list[str] = []
-    cubes = scan["cubes"]
-    sizes = sorted({c["lut_size"] for c in cubes})
-    folders = sorted({c["path"].split("/")[0] for c in cubes if "/" in c["path"]})
-    package["fingerprints"] = [dict(c) for c in cubes]
+    files = scan["files"]
+    sizes = sorted({c["lut_size"] for c in files})
+    folders = sorted({c["path"].split("/")[0] for c in files if "/" in c["path"]})
+    package["fingerprints"] = [dict(c) for c in files]
     package["observed"] = {
         "zip_name": scan["zip_name"],
         "zip_bytes": scan["zip_bytes"],
-        "cube_files": len(cubes),
+        # The key is "cube_files" for the 3D-LUT packages (as before) and "files" for look files.
+        ("cube_files" if scan["format"] == "cube" else "files"): len(files),
         "lut_sizes": sizes,
         "top_level_folders": folders,
         "ignored": {k: v for k, v in scan["ignored"].items() if v},
     }
     expected = package.setdefault("expected", {})
-    if expected.get("cube_files") not in (None, len(cubes)):
+    if expected.get("cube_files") not in (None, len(files)):
         notes.append(
-            f"{package['id']}: the pattern expected {expected['cube_files']} files, the zip has {len(cubes)}"
+            f"{package['id']}: the pattern expected {expected['cube_files']} files, the zip has {len(files)}"
         )
-    expected["cube_files"] = len(cubes)
+    expected["cube_files"] = len(files)
     if expected.get("lut_sizes") and set(sizes) != set(expected["lut_sizes"]):
         notes.append(f"{package['id']}: the pattern expected LUT sizes {expected['lut_sizes']}, the zip has {sizes}")
     expected["lut_sizes"] = sizes
@@ -295,10 +336,10 @@ def main(argv: list[str] | None = None) -> int:
         seen: dict[str, str] = {}
         for zip_path in args.zips:
             scan = read_zip(zip_path)
-            if not scan["cubes"]:
+            if not scan["files"]:
                 left = ", ".join(f"{v} {k}" for k, v in scan["ignored"].items() if v)
-                detail = f" (ignored: {left}). Download the 'LUT (.cube)' version." if left else ""
-                raise FingerprintError(f"{zip_path.name}: no .cube files{detail}")
+                detail = f" (ignored: {left})" if left else ""
+                raise FingerprintError(f"{zip_path.name}: no .cube, .alf4 or .aml files{detail}")
             package = choose_package(db, scan, args.package)
             if package["id"] in seen:
                 raise FingerprintError(f"{zip_path.name} and {seen[package['id']]} are both {package['id']}")
@@ -308,8 +349,8 @@ def main(argv: list[str] | None = None) -> int:
             for note in apply_scan(package, scan):
                 print("note:", note, file=sys.stderr)
             print(
-                f"{zip_path.name}: {package['id']}, {len(scan['cubes'])} files, "
-                f"LUT sizes {sorted({c['lut_size'] for c in scan['cubes']})}"
+                f"{zip_path.name}: {package['id']}, {len(scan['files'])} files, "
+                f"LUT sizes {sorted({c['lut_size'] for c in scan['files']})}"
             )
         if args.dry_run:
             print(dump({p["id"]: p.get("fingerprints", []) for p in db["packages"] if p["id"] in seen}))

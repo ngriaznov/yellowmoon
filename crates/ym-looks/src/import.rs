@@ -1,18 +1,21 @@
-//! The importer behind the wizard and `ym looks import`: zips, folders and `.cube` files (`docs/08-looks.md` sections Wizard and Any other .cube).
+//! The importer behind the wizard and `ym looks import`: zips, folders, `.cube` files and ARRI Look
+//! Files (`docs/08-looks.md` sections Wizard, Any other .cube and ARRI Look Files).
 //!
 //! Two steps, matching the wizard:
 //!
 //! 1. [`inspect`] (wizard step 3, "Recognise") reads the source without writing anything: it lists
-//!    the `.cube` files, hashes and validates each with [`ym_color::cube`], and runs the
-//!    recognition rules ([`crate::recognize`]). The result says what each file is and explains
-//!    anything wrong in plain words.
-//! 2. [`import`] (step 4, "Import") copies only the `.cube` files into the library, grouped as ARRI
+//!    the `.cube` files and look files (`.alf4`, `.alf4c`, `.aml`), hashes and validates each with
+//!    [`ym_color::cube`] or [`ym_color::alf`], and runs the recognition rules
+//!    ([`crate::recognize`]). The result says what each file is and explains anything wrong in
+//!    plain words.
+//! 2. [`import`] (step 4, "Import") copies only those files into the library, grouped as ARRI
 //!    groups them, hashes each, and writes the manifest. [`import_path`] does both for the CLI.
 //!
 //! What import guarantees:
 //!
 //! * **Originals are read-only** and the copies are byte-for-byte identical (the SHA-256 recorded
-//!   in the manifest is that of the source bytes).
+//!   in the manifest is that of the source bytes). A look file is kept as it came and read again
+//!   when the look is built, so its CDL and LUT always are the file's.
 //! * **All or nothing.** Files are first written to hidden temporary names, then renamed into
 //!   place, then the manifest is replaced atomically. A failure or a cancel before the manifest is
 //!   written removes what was staged and every new file that was already renamed into place. The
@@ -24,8 +27,12 @@
 //! * **Idempotent.** Importing the same files again changes nothing: same id and same hash is
 //!   "unchanged". A file that went missing or was altered in the library is written again.
 //! * **Validation.** A file must parse as a 3D `.cube` LUT (a 1D shaper in front is fine), size 2
-//!   to 129, all values finite. Anything else is rejected with a reason, and the rest still
-//!   imports.
+//!   to 129, all values finite, or as an ARRI Look File whose checksum matches and whose look
+//!   Yellowmoon can use. Anything else is rejected with a reason, and the rest still imports.
+//! * **One look, one entry.** The LogC4 library comes as 3D LUTs and as `.alf4` look files and both
+//!   give the same ids. Importing the look files after the `.cube` version leaves the `.cube` (it
+//!   has 65 points where the look files have 33); importing the `.cube` version after the look
+//!   files replaces them.
 
 mod plan;
 mod source;
@@ -45,13 +52,13 @@ use time::format_description::well_known::Rfc3339;
 use ym_color::cube::{self, CubeError};
 use ym_color::look::LookInput;
 
-use crate::library::{Library, LookId, cube_error_text};
+use crate::library::{Library, LookFormat, LookId, cube_error_text};
 use crate::lock::{DEFAULT_TIMEOUT, LibraryLock, LockError};
 use crate::manifest::{
     Manifest, ManifestError, commit_staged, hash_file, sha256_hex, stage_write, sync_dir,
 };
 use crate::recognize::{
-    CubeSummary, FileFacts, Outcome, PackageDb, Recognition, Verdict, recognize,
+    CubeSummary, FileFacts, LookFileFacts, Outcome, PackageDb, Recognition, Verdict, recognize,
 };
 use plan::{EntryData, Slot, Spec, apply, assign};
 use source::{ReadFailure, Source};
@@ -267,15 +274,34 @@ struct Job {
     index: usize,
     rel_path: String,
     size: u64,
+    /// What the file name says it is.
+    format: LookFormat,
     bytes: Result<Vec<u8>, ReadFailure>,
 }
 
-/// Hashes and validates one file as a 3D `.cube`. Pure; runs on a worker thread.
+/// What a `.cube` file is: its summary, or why it cannot be used.
+fn analyze_cube(bytes: &[u8]) -> Result<CubeSummary, String> {
+    match cube::parse_bytes(bytes) {
+        Ok(file) => match file.lut3d.as_ref() {
+            Some(cube3d) => Ok(CubeSummary {
+                title: file.title.clone(),
+                lut_size: cube3d.size(),
+                has_shaper: file.lut1d.is_some(),
+            }),
+            None => Err(cube_error_text(&CubeError::NoThreeDimensionalLut)),
+        },
+        Err(e) => Err(cube_error_text(&e)),
+    }
+}
+
+/// Hashes and validates one file as a 3D `.cube` or an ARRI Look File. Pure; runs on a worker
+/// thread.
 fn analyze(job: Job) -> (usize, FileFacts) {
     let Job {
         index,
         rel_path,
         size,
+        format,
         bytes,
     } = job;
     let facts = match bytes {
@@ -283,26 +309,49 @@ fn analyze(job: Job) -> (usize, FileFacts) {
             rel_path,
             size,
             sha256: String::new(),
+            format,
             check: Err(failure.sentence()),
+            look_file: None,
         },
         Ok(bytes) => {
             let sha256 = sha256_hex(&bytes);
-            let check = match cube::parse_bytes(&bytes) {
-                Ok(file) => match file.lut3d.as_ref() {
-                    Some(cube3d) => Ok(CubeSummary {
-                        title: file.title.clone(),
-                        lut_size: cube3d.size(),
-                        has_shaper: file.lut1d.is_some(),
-                    }),
-                    None => Err(cube_error_text(&CubeError::NoThreeDimensionalLut)),
-                },
-                Err(e) => Err(cube_error_text(&e)),
-            };
-            FileFacts {
-                rel_path,
-                size: bytes.len() as u64,
-                sha256,
-                check,
+            let size = bytes.len() as u64;
+            if format.is_cube() {
+                FileFacts {
+                    rel_path,
+                    size,
+                    sha256,
+                    format,
+                    check: analyze_cube(&bytes),
+                    look_file: None,
+                }
+            } else {
+                // The container is what the bytes say, whatever the name does.
+                match ym_color::alf::parse(&bytes) {
+                    Ok(look) => FileFacts {
+                        rel_path,
+                        size,
+                        sha256,
+                        format: LookFormat::from_kind(look.kind),
+                        check: Ok(CubeSummary {
+                            title: None,
+                            lut_size: look.lut.size(),
+                            has_shaper: false,
+                        }),
+                        look_file: Some(LookFileFacts {
+                            input: look.input,
+                            display_transforms_ignored: look.display_transforms_ignored,
+                        }),
+                    },
+                    Err(e) => FileFacts {
+                        rel_path,
+                        size,
+                        sha256,
+                        format,
+                        check: Err(e.to_string()),
+                        look_file: None,
+                    },
+                }
             }
         }
     };
@@ -360,9 +409,9 @@ pub fn inspect(
         let mut finished = 0_usize;
         for index in 0..total {
             check_cancel(cancel)?;
-            let (rel_path, size) = {
+            let (rel_path, size, format) = {
                 let c = &source.candidates[index];
-                (c.rel_path.clone(), c.size)
+                (c.rel_path.clone(), c.size, c.format)
             };
             progress(Progress {
                 stage: Stage::Scan,
@@ -376,6 +425,7 @@ pub fn inspect(
                     index,
                     rel_path,
                     size,
+                    format,
                     bytes,
                 })
                 .is_err()
@@ -407,7 +457,9 @@ pub fn inspect(
                     rel_path: source.candidates[i].rel_path.clone(),
                     size: source.candidates[i].size,
                     sha256: String::new(),
+                    format: source.candidates[i].format,
                     check: Err("It could not be checked.".to_string()),
+                    look_file: None,
                 })
             })
             .collect())
@@ -505,7 +557,8 @@ pub fn import(
                 name: file.name.clone(),
                 reason: reason.clone(),
             });
-        } else if let Some(spec) = Spec::from_outcome(&file.outcome, &file.rel_path, options.input)
+        } else if let Some(spec) =
+            Spec::from_outcome(&file.outcome, &file.rel_path, options.input, file.format)
         {
             items.push((i, spec));
         }
@@ -556,6 +609,10 @@ pub fn import(
     let paths = library.paths().clone();
     let mut staged: Vec<Staged> = Vec::new();
     let mut staged_dests: HashSet<PathBuf> = HashSet::new();
+    // Look files that a `.cube` of the same look has replaced; deleted once the list is saved.
+    let mut replaced_files: Vec<String> = Vec::new();
+    // Looks left as the `.cube` that is already there instead of a look file.
+    let mut kept_cube = 0_usize;
     // Ids this import has already settled, so a later file never replaces an earlier one.
     let mut touched: HashSet<LookId> = HashSet::new();
     let total = items.len();
@@ -581,16 +638,32 @@ pub fn import(
             let slot = assign(&manifest, spec, &sha256, &touched);
             let (id, file, is_new) = match &slot {
                 Slot::Add { id, file } => (id.clone(), file.clone(), true),
-                Slot::Replace { id, file } | Slot::Existing { id, file } => {
-                    (id.clone(), file.clone(), false)
-                }
+                Slot::Replace { id, file }
+                | Slot::Existing { id, file }
+                | Slot::Superseded { id, file }
+                | Slot::Upgrade { id, file, .. } => (id.clone(), file.clone(), false),
             };
             touched.insert(id.clone());
+            // The look is already imported as a `.cube`: that one stays, nothing is written.
+            if matches!(slot, Slot::Superseded { .. }) {
+                kept_cube += 1;
+                report.unchanged.push(ImportedItem {
+                    id,
+                    name: spec.name.clone(),
+                    file,
+                    display_lut: false,
+                });
+                continue;
+            }
+            if let Slot::Upgrade { old_file, .. } = &slot {
+                replaced_files.push(old_file.clone());
+            }
             let dest = paths.file(&file);
             let write = match &slot {
-                Slot::Add { .. } | Slot::Replace { .. } => true,
+                Slot::Add { .. } | Slot::Replace { .. } | Slot::Upgrade { .. } => true,
                 // Already imported: write again only if the library's copy is gone or altered.
                 Slot::Existing { .. } => hash_file(&dest).ok().as_deref() != Some(sha256.as_str()),
+                Slot::Superseded { .. } => false,
             };
             if write && staged_dests.insert(dest.clone()) {
                 if let Some(parent) = dest.parent() {
@@ -630,7 +703,10 @@ pub fn import(
             };
             if is_new {
                 report.added.push(item);
-            } else if write || changed || matches!(slot, Slot::Replace { .. }) {
+            } else if write
+                || changed
+                || matches!(slot, Slot::Replace { .. } | Slot::Upgrade { .. })
+            {
                 report.updated.push(item);
             } else {
                 report.unchanged.push(item);
@@ -677,6 +753,41 @@ pub fn import(
             }
         }
         return Err(e.into());
+    }
+    // The look files that a `.cube` has replaced are not in the list any more.
+    for old in &replaced_files {
+        if !manifest
+            .looks
+            .iter()
+            .any(|l| l.file.eq_ignore_ascii_case(old))
+        {
+            let path = paths.file(old);
+            if std::fs::remove_file(&path).is_ok()
+                && let Some(parent) = path.parent()
+            {
+                sync_dir(parent);
+            }
+        }
+    }
+    if kept_cube > 0 {
+        report.notes.push(format!(
+            "{} already imported from the 3D-LUT version, which is kept: it has more points than the look file.",
+            if kept_cube == 1 {
+                "1 look was".to_string()
+            } else {
+                format!("{kept_cube} looks were")
+            }
+        ));
+    }
+    if !replaced_files.is_empty() {
+        report.notes.push(format!(
+            "{} replaced by the 3D-LUT version, which has more points than the look file.",
+            if replaced_files.len() == 1 {
+                "1 look was".to_string()
+            } else {
+                format!("{} looks were", replaced_files.len())
+            }
+        ));
     }
     progress(Progress {
         stage: Stage::Copy,

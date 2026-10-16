@@ -1,8 +1,9 @@
-//! Reading the thing the user chose: one `.cube` file, a folder, or a zip.
+//! Reading the thing the user chose: one look file, a folder, or a zip.
 //!
 //! Listing never reads LUT data. A zip is opened through its central directory and entries are
-//! inflated one at a time, so a 180 MB look package never sits in memory whole. Only `.cube` files
-//! are candidates; `__MACOSX` folders, `._` files, `.DS_Store`, `.alf4`, `.alf4c`, `.alf2`, `.aml`, PDFs and
+//! inflated one at a time, so a 180 MB look package never sits in memory whole. Only look files
+//! are candidates: `.cube` LUTs and ARRI Look Files (`.alf4`, `.alf4c`, `.aml`). `__MACOSX`
+//! folders, `._` files, `.DS_Store`, `.xml` (ARRI's older look files, which are not read), PDFs and
 //! everything else are counted in [`Ignored`] and left alone. Nothing here writes.
 
 use std::fs::{self, File};
@@ -14,6 +15,7 @@ use zip::ZipArchive;
 use zip::result::ZipError;
 
 use super::ImportError;
+use crate::library::LookFormat;
 use crate::recognize::names::file_name;
 use crate::recognize::{Ignored, SourceInfo, SourceKind};
 
@@ -25,14 +27,25 @@ const MAX_DEPTH: usize = 16;
 /// under a gigabyte; this stops a hostile zip (small on disk, enormous when inflated) early.
 pub const MAX_TOTAL_BYTES: u64 = 4 << 30;
 
-/// A `.cube` file inside a source.
+/// A look file (a `.cube` or an ARRI Look File) inside a source.
 #[derive(Debug, Clone)]
 pub(crate) struct Candidate {
     /// `/`-separated path inside the source.
     pub(crate) rel_path: String,
     /// Uncompressed size in bytes.
     pub(crate) size: u64,
+    /// What the file name says it is.
+    pub(crate) format: LookFormat,
     locator: Locator,
+}
+
+/// The most a file of this kind may hold, in bytes.
+pub(crate) fn size_limit(format: LookFormat) -> usize {
+    if format.is_cube() {
+        MAX_FILE_BYTES
+    } else {
+        ym_color::alf::MAX_FILE_BYTES
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -44,8 +57,8 @@ enum Locator {
 /// Why a candidate could not be read.
 #[derive(Debug)]
 pub(crate) enum ReadFailure {
-    /// Over the `.cube` size limit.
-    TooLarge,
+    /// Over the size limit for its kind of file.
+    TooLarge(LookFormat),
     /// An I/O or decompression error, as a sentence.
     Failed(String),
 }
@@ -54,9 +67,10 @@ impl ReadFailure {
     /// A sentence for the person importing.
     pub(crate) fn sentence(&self) -> String {
         match self {
-            Self::TooLarge => format!(
-                "It is larger than the {} MB limit for a .cube file.",
-                MAX_FILE_BYTES / (1024 * 1024)
+            Self::TooLarge(format) => format!(
+                "It is larger than the {} MB limit for a {} file.",
+                size_limit(*format) / (1024 * 1024),
+                format.noun()
             ),
             Self::Failed(reason) => format!("It could not be read: {reason}."),
         }
@@ -82,10 +96,10 @@ pub(crate) struct Source {
 /// What a name inside a source is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum EntryKind {
-    Cube,
-    Alf4,
-    Alf2,
-    Aml,
+    /// A look file: a `.cube` or an ARRI Look File.
+    Look(LookFormat),
+    /// `.xml`: ARRI's older look files (ALF-1), which are not read.
+    Xml,
     Pdf,
     MacMetadata,
     Other,
@@ -103,28 +117,28 @@ fn classify(rel_path: &str) -> EntryKind {
     if rel_path.split('/').any(is_mac_metadata_name) || name == ".DS_Store" {
         return EntryKind::MacMetadata;
     }
-    match name
-        .rsplit_once('.')
-        .map(|(_, ext)| ext.to_ascii_lowercase())
-    {
-        Some(ext) if ext == "cube" => EntryKind::Cube,
-        Some(ext) if ext == "alf4" || ext == "alf4c" => EntryKind::Alf4,
-        Some(ext) if ext == "alf2" => EntryKind::Alf2,
-        Some(ext) if ext == "aml" => EntryKind::Aml,
-        Some(ext) if ext == "pdf" => EntryKind::Pdf,
-        _ => EntryKind::Other,
+    let Some((_, ext)) = name.rsplit_once('.') else {
+        return EntryKind::Other;
+    };
+    if let Some(format) = LookFormat::from_extension(ext) {
+        return EntryKind::Look(format);
+    }
+    if ext.eq_ignore_ascii_case("xml") {
+        EntryKind::Xml
+    } else if ext.eq_ignore_ascii_case("pdf") {
+        EntryKind::Pdf
+    } else {
+        EntryKind::Other
     }
 }
 
 fn tally(ignored: &mut Ignored, kind: EntryKind) {
     match kind {
-        EntryKind::Alf4 => ignored.alf4 += 1,
-        EntryKind::Alf2 => ignored.alf2 += 1,
-        EntryKind::Aml => ignored.aml += 1,
+        EntryKind::Xml => ignored.xml += 1,
         EntryKind::Pdf => ignored.pdf += 1,
         EntryKind::MacMetadata => ignored.macos_metadata += 1,
         EntryKind::Other => ignored.other += 1,
-        EntryKind::Cube => {}
+        EntryKind::Look(_) => {}
     }
 }
 
@@ -227,39 +241,42 @@ impl Source {
                 budget: MAX_TOTAL_BYTES,
             });
         }
-        if classify(&name) == EntryKind::Cube {
-            let candidate = Candidate {
-                rel_path: name.clone(),
-                size: meta.len(),
-                locator: Locator::Path(path.to_path_buf()),
-            };
-            return Ok(Self {
-                info: SourceInfo {
-                    kind: SourceKind::File,
-                    name,
-                },
-                candidates: vec![candidate],
-                ignored: Ignored::default(),
-                opened: Opened::File,
-                budget: MAX_TOTAL_BYTES,
-            });
-        }
-        // A look file for the camera chosen by itself: nothing to read, but the recognition says
-        // which 3D-LUT download to take instead (like a zip of them).
-        let kind = classify(&name);
-        if matches!(kind, EntryKind::Alf4 | EntryKind::Alf2 | EntryKind::Aml) {
-            let mut ignored = Ignored::default();
-            tally(&mut ignored, kind);
-            return Ok(Self {
-                info: SourceInfo {
-                    kind: SourceKind::File,
-                    name,
-                },
-                candidates: Vec::new(),
-                ignored,
-                opened: Opened::File,
-                budget: MAX_TOTAL_BYTES,
-            });
+        match classify(&name) {
+            EntryKind::Look(format) => {
+                let candidate = Candidate {
+                    rel_path: name.clone(),
+                    size: meta.len(),
+                    format,
+                    locator: Locator::Path(path.to_path_buf()),
+                };
+                return Ok(Self {
+                    info: SourceInfo {
+                        kind: SourceKind::File,
+                        name,
+                    },
+                    candidates: vec![candidate],
+                    ignored: Ignored::default(),
+                    opened: Opened::File,
+                    budget: MAX_TOTAL_BYTES,
+                });
+            }
+            // One of ARRI's older look files chosen by itself: nothing to read, but the
+            // recognition says why it cannot be used.
+            EntryKind::Xml => {
+                let mut ignored = Ignored::default();
+                tally(&mut ignored, EntryKind::Xml);
+                return Ok(Self {
+                    info: SourceInfo {
+                        kind: SourceKind::File,
+                        name,
+                    },
+                    candidates: Vec::new(),
+                    ignored,
+                    opened: Opened::File,
+                    budget: MAX_TOTAL_BYTES,
+                });
+            }
+            _ => {}
         }
         Err(ImportError::UnsupportedSource(name))
     }
@@ -271,15 +288,16 @@ impl Source {
             .get(index)
             .cloned()
             .ok_or_else(|| ReadFailure::Failed("it is not in the source".to_string()))?;
-        if candidate.size > MAX_FILE_BYTES as u64 {
-            return Err(ReadFailure::TooLarge);
+        let limit = size_limit(candidate.format);
+        if candidate.size > limit as u64 {
+            return Err(ReadFailure::TooLarge(candidate.format));
         }
         if self.budget == 0 {
             return Err(ReadFailure::Failed(
                 "this source holds far more data than a set of looks".to_string(),
             ));
         }
-        let limit = MAX_FILE_BYTES as u64 + 1;
+        let limit = limit as u64 + 1;
         let capacity = usize::try_from(candidate.size).unwrap_or(0).min(64 << 20);
         let mut bytes = Vec::with_capacity(capacity);
         let failed = |e: io::Error| ReadFailure::Failed(e.to_string());
@@ -305,8 +323,8 @@ impl Source {
         // Count what was inflated even when it is refused: an entry that claims to be small and
         // inflates past the limit must use up the budget, or a zip of them would be read forever.
         self.budget = self.budget.saturating_sub(bytes.len() as u64);
-        if bytes.len() as u64 > MAX_FILE_BYTES as u64 {
-            return Err(ReadFailure::TooLarge);
+        if bytes.len() as u64 > limit - 1 {
+            return Err(ReadFailure::TooLarge(candidate.format));
         }
         Ok(bytes)
     }
@@ -355,9 +373,10 @@ fn list_zip(
             continue;
         };
         match classify(&rel_path) {
-            EntryKind::Cube => candidates.push(Candidate {
+            EntryKind::Look(format) => candidates.push(Candidate {
                 rel_path,
                 size: entry.size(),
+                format,
                 locator: Locator::ZipIndex(index),
             }),
             other => tally(&mut ignored, other),
@@ -415,9 +434,10 @@ fn walk(
             }
         } else if kind.is_file() {
             match classify(&rel_path) {
-                EntryKind::Cube => candidates.push(Candidate {
+                EntryKind::Look(format) => candidates.push(Candidate {
                     size: entry.metadata().map_err(io_error)?.len(),
                     rel_path,
+                    format,
                     locator: Locator::Path(entry.path()),
                 }),
                 other => tally(ignored, other),
@@ -472,13 +492,17 @@ mod tests {
             candidates: vec![Candidate {
                 rel_path: "liar.cube".to_string(),
                 size: 10,
+                format: LookFormat::Cube,
                 locator: Locator::Path(path),
             }],
             ignored: Ignored::default(),
             opened: Opened::File,
             budget: 1000,
         };
-        assert!(matches!(source.read(0), Err(ReadFailure::TooLarge)));
+        assert!(matches!(
+            source.read(0),
+            Err(ReadFailure::TooLarge(LookFormat::Cube))
+        ));
         assert_eq!(source.budget, 0, "the refused read must be counted");
         match source.read(0) {
             Err(ReadFailure::Failed(reason)) => assert!(reason.contains("far more data")),
@@ -491,6 +515,7 @@ mod tests {
         let candidate = |size| Candidate {
             rel_path: "a.cube".to_string(),
             size,
+            format: LookFormat::Cube,
             locator: Locator::ZipIndex(0),
         };
         // Two entries that each claim to inflate to 16 exabytes.
@@ -502,15 +527,41 @@ mod tests {
     }
 
     #[test]
+    fn a_look_file_is_read_up_to_its_own_limit() {
+        // A look file is far smaller than a .cube file may be.
+        assert!(size_limit(LookFormat::Alf4) < size_limit(LookFormat::Cube));
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("big.alf4");
+        let file = File::create(&path).unwrap();
+        file.set_len(size_limit(LookFormat::Alf4) as u64 + 1)
+            .unwrap();
+        drop(file);
+        let mut source = Source::open(&path).unwrap();
+        assert_eq!(source.candidates.len(), 1);
+        assert_eq!(source.candidates[0].format, LookFormat::Alf4);
+        match source.read(0) {
+            Err(failure @ ReadFailure::TooLarge(LookFormat::Alf4)) => {
+                let text = failure.sentence();
+                assert!(text.contains("64 MB") && text.contains(".alf4"), "{text}");
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
     fn names_are_classified() {
-        assert_eq!(classify("a/b.cube"), EntryKind::Cube);
-        assert_eq!(classify("a/B.CUBE"), EntryKind::Cube);
-        assert_eq!(classify("x.alf4"), EntryKind::Alf4);
-        assert_eq!(classify("x.ALF2"), EntryKind::Alf2);
-        assert_eq!(classify("x.alf4c"), EntryKind::Alf4);
-        assert_eq!(classify("x.AML"), EntryKind::Aml);
+        assert_eq!(classify("a/b.cube"), EntryKind::Look(LookFormat::Cube));
+        assert_eq!(classify("a/B.CUBE"), EntryKind::Look(LookFormat::Cube));
+        assert_eq!(classify("x.alf4"), EntryKind::Look(LookFormat::Alf4));
+        assert_eq!(classify("x.alf4c"), EntryKind::Look(LookFormat::Alf4c));
+        assert_eq!(classify("x.AML"), EntryKind::Look(LookFormat::Aml));
+        // There is no ".alf2" file: ALF-2 files are `.aml`.
+        assert_eq!(classify("x.ALF2"), EntryKind::Other);
+        assert_eq!(classify("ARRI/look.xml"), EntryKind::Xml);
         assert_eq!(classify("doc/readme.pdf"), EntryKind::Pdf);
         assert_eq!(classify("__MACOSX/a/b.cube"), EntryKind::MacMetadata);
+        assert_eq!(classify("__MACOSX/a/._b.alf4"), EntryKind::MacMetadata);
+        assert_eq!(classify("a/._b.aml"), EntryKind::MacMetadata);
         assert_eq!(classify("a/._b.cube"), EntryKind::MacMetadata);
         assert_eq!(classify("a/.DS_Store"), EntryKind::MacMetadata);
         assert_eq!(classify("__macosx/a/b.cube"), EntryKind::MacMetadata);

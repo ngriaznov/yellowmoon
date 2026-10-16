@@ -140,9 +140,10 @@ proptest! {
 
 // ---- Recognition on arbitrary facts ---------------------------------------------------------
 
-use ym_looks::library::is_valid_slug;
+use ym_looks::library::{LookFormat, is_valid_slug};
 use ym_looks::recognize::{
-    CubeSummary, FileFacts, Fingerprint, Ignored, Outcome, SourceInfo, SourceKind, recognize,
+    CubeSummary, FileFacts, Fingerprint, Ignored, LookFileFacts, Outcome, SourceInfo, SourceKind,
+    recognize,
 };
 
 /// A path made of pieces that matter to the rules (group folders, encodings, display words) and
@@ -187,21 +188,44 @@ fn facts_strategy() -> impl Strategy<Value = FileFacts> {
         ],
         prop_oneof![Just(5_usize), Just(3), Just(33), Just(65), 2_usize..130],
         any::<bool>(),
+        prop_oneof![
+            Just(LookFormat::Cube),
+            Just(LookFormat::Cube),
+            Just(LookFormat::Alf4),
+            Just(LookFormat::Alf4c),
+            Just(LookFormat::Aml)
+        ],
     )
-        .prop_map(|(rel_path, hash, title, lut_size, valid)| FileFacts {
-            rel_path,
-            size: 1000,
-            sha256: format!("{hash:02x}").repeat(32),
-            check: if valid {
-                Ok(CubeSummary {
-                    title,
-                    lut_size,
-                    has_shaper: false,
-                })
-            } else {
-                Err("It is not a LUT.".to_string())
+        .prop_map(
+            |(rel_path, hash, title, lut_size, valid, format)| FileFacts {
+                // A look file has a look-file name, and no TITLE.
+                rel_path: if format.is_cube() {
+                    rel_path
+                } else {
+                    rel_path.replace(".cube", &format!(".{}", format.extension()))
+                },
+                size: 1000,
+                sha256: format!("{hash:02x}").repeat(32),
+                format,
+                check: if valid {
+                    Ok(CubeSummary {
+                        title: if format.is_cube() { title } else { None },
+                        lut_size,
+                        has_shaper: false,
+                    })
+                } else {
+                    Err("It is not a LUT.".to_string())
+                },
+                look_file: (valid && format.is_look_file()).then_some(LookFileFacts {
+                    input: if format == LookFormat::Aml {
+                        LookInput::LogC3ToRec709
+                    } else {
+                        LookInput::LogC4
+                    },
+                    display_transforms_ignored: format == LookFormat::Alf4c,
+                }),
             },
-        })
+        )
 }
 
 proptest! {
@@ -258,7 +282,12 @@ proptest! {
                     prop_assert!(is_valid_slug(target), "{target:?}");
                     prop_assert!(input.check.is_ok());
                 }
-                Outcome::NeedsAnswer { .. } => prop_assert!(input.check.is_ok()),
+                Outcome::OwnLookFile { .. } => {
+                    prop_assert!(input.look_file.is_some());
+                }
+                Outcome::NeedsAnswer { .. } => {
+                    prop_assert!(input.check.is_ok() && input.format.is_cube());
+                }
                 Outcome::Rejected { .. } => prop_assert!(input.check.is_err()),
             }
         }

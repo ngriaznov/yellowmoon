@@ -82,12 +82,50 @@ pub fn parse_group_folder(component: &str) -> Option<(u32, String)> {
     Some((number, name))
 }
 
+/// The `LL-` that ARRI puts in front of the look code in the file names of its look-file
+/// libraries (`LL-1120-Black-and-White-Night-sky.alf4`), removed. The prefix needs a separator and
+/// a digit after it, so `Llama Look` and `LL` keep their letters.
+#[must_use]
+pub fn strip_library_prefix(stem: &str) -> &str {
+    let bytes = stem.as_bytes();
+    if bytes.len() > 3
+        && bytes[..2].eq_ignore_ascii_case(b"LL")
+        && matches!(bytes[2], b'-' | b'_' | b' ')
+        && bytes[3].is_ascii_digit()
+    {
+        &stem[3..]
+    } else {
+        stem
+    }
+}
+
+/// The strengths ARRI's LogC3 look files come in, in the order of the library.
+pub const STRENGTHS: [&str; 3] = ["Low", "Medium", "High"];
+
+/// Splits the strength word off the end of a look file's stem: `1110-Black-and-White-Low` gives
+/// `("1110-Black-and-White", Some("Low"))`. The word is compared without regard to case and must
+/// be a whole word with something before it; any other stem comes back whole, with `None`. (One of
+/// ARRI's files is called `...-Beauty-How`: a name that is not a strength stays part of the name.)
+#[must_use]
+pub fn split_strength(stem: &str) -> (&str, Option<&'static str>) {
+    let Some((rest, last)) = stem.rsplit_once(['-', '_', ' ']) else {
+        return (stem, None);
+    };
+    let rest = rest.trim_end_matches(['-', '_', ' ']);
+    match STRENGTHS.iter().find(|s| s.eq_ignore_ascii_case(last)) {
+        Some(strength) if !rest.is_empty() => (rest, Some(strength)),
+        _ => (stem, None),
+    }
+}
+
 /// The look code ARRI starts the file names of its Look Library with: four digits, the first of
 /// them the group (`1110 Black and White`, `3250-Cross`, `8120-20s`), then a space, dash,
 /// underscore or dot. What follows must not be only digits and separators, which is a date or a
-/// version (`2024-05-12`, `2024_05`), not a title.
+/// version (`2024-05-12`, `2024_05`), not a title. The `LL-` of the look-file libraries
+/// (`LL-1120-Black-and-White-Night-sky`) is not part of it.
 #[must_use]
 pub fn look_code(stem: &str) -> Option<u32> {
+    let stem = strip_library_prefix(stem);
     let bytes = stem.as_bytes();
     if bytes.len() < 5 || !bytes[..4].iter().all(u8::is_ascii_digit) || bytes[0] == b'0' {
         return None;
@@ -235,6 +273,7 @@ fn is_mesh_word(word: &str) -> bool {
 /// would be left.
 #[must_use]
 pub fn look_name(stem: &str, display_names: &[String]) -> String {
+    let stem = strip_library_prefix(stem);
     let plain = words(stem).join(" ");
     let all = words(stem);
     let is_noise = |w: &str| LEADING_NOISE.contains(&w.to_lowercase().as_str());
@@ -332,6 +371,60 @@ mod tests {
         assert_eq!(look_code("300 Film"), None);
         assert_eq!(look_code("0110 Film"), None);
         assert_eq!(look_code("Film 3000"), None);
+    }
+
+    #[test]
+    fn the_look_file_libraries_prefix_is_not_part_of_the_code_or_the_name() {
+        let d = display();
+        assert_eq!(
+            strip_library_prefix("LL-1120-Black-and-White"),
+            "1120-Black-and-White"
+        );
+        assert_eq!(strip_library_prefix("ll_1120 x"), "1120 x");
+        assert_eq!(strip_library_prefix("Llama-1120"), "Llama-1120");
+        assert_eq!(strip_library_prefix("LL-Look"), "LL-Look");
+        assert_eq!(strip_library_prefix("LL"), "LL");
+        assert_eq!(strip_library_prefix("LL-1"), "1");
+        assert_eq!(look_code("LL-1120-Black-and-White-Night-sky"), Some(1120));
+        assert_eq!(look_code("LL-9211-Day-for-Night"), Some(9211));
+        assert_eq!(look_code("LL-Look"), None);
+        assert_eq!(
+            look_name("LL-1120-Black-and-White-Night-sky", &d),
+            "Black and White Night sky"
+        );
+        assert_eq!(look_name("LL-3250-Cross", &d), "Cross");
+        // The same look as the cube library's "1120 Black and White - Night sky".
+        assert_eq!(
+            look_name("1120 Black and White - Night sky", &d),
+            look_name("LL-1120-Black-and-White-Night-sky", &d)
+        );
+    }
+
+    #[test]
+    fn strengths_are_split_off_whole_words_only() {
+        assert_eq!(
+            split_strength("1110-Black-and-White-Low"),
+            ("1110-Black-and-White", Some("Low"))
+        );
+        assert_eq!(
+            split_strength("1120-Black-and-White-Night-sky-High"),
+            ("1120-Black-and-White-Night-sky", Some("High"))
+        );
+        assert_eq!(
+            split_strength("2130-Beauty-medium"),
+            ("2130-Beauty", Some("Medium"))
+        );
+        assert_eq!(
+            split_strength("2130_Beauty_LOW"),
+            ("2130_Beauty", Some("Low"))
+        );
+        // The misnamed file, a word that is only a strength, and words that end in one.
+        assert_eq!(split_strength("2130-Beauty-How"), ("2130-Beauty-How", None));
+        assert_eq!(split_strength("High"), ("High", None));
+        assert_eq!(split_strength("-High"), ("-High", None));
+        assert_eq!(split_strength("1110-Shallow"), ("1110-Shallow", None));
+        assert_eq!(split_strength("1110-Slow"), ("1110-Slow", None));
+        assert_eq!(split_strength(""), ("", None));
     }
 
     #[test]

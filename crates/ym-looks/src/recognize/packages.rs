@@ -15,6 +15,7 @@
 //!       "title": "Look Library · LogC4",
 //!       "arri_title": "Look Library for LogC4 (3D-LUTs)",  // as on ARRI's page; optional
 //!       "role": "looks",                      // "looks" or "display_luts"
+//!       "format": "cube",                     // "cube" (the default), "alf4" or "aml": what the package's files are
 //!       "input": "logc4",                     // "logc4", "logc3" or "logc3_to_rec709"
 //!       "download_mb": 181,
 //!       "zip_name": [ { "all_of": ["look", "logc4"], "none_of": ["logc3"] } ],
@@ -42,7 +43,7 @@ use serde::{Deserialize, Serialize};
 use ym_color::look::LookInput;
 
 use super::names::fold_alnum;
-use crate::library::DisplayInput;
+use crate::library::{DisplayInput, LookFormat};
 use crate::manifest::is_sha256_hex;
 
 /// The format version of `arri-packages.json` this build reads.
@@ -153,7 +154,8 @@ impl NamePattern {
 /// How many files and what LUT sizes a package should have.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Expected {
-    /// `.cube` files in the package.
+    /// Files in the package: `.cube` files, or look files (`.alf4`, `.aml`) for a package whose
+    /// `format` says so. (The name is from when every package was `.cube` files.)
     #[serde(default)]
     pub cube_files: Option<usize>,
     /// Look groups (informational).
@@ -204,6 +206,11 @@ pub struct Package {
     pub arri_title: Option<String>,
     /// Looks or display LUTs.
     pub role: PackageRole,
+    /// What the package's files are: `.cube` LUTs (the default), or ARRI Look Files. The ALF4
+    /// library and the LogC3 look-file library are the same looks as a 3D-LUT package, delivered
+    /// as camera look files, and have their own entries.
+    #[serde(default, skip_serializing_if = "LookFormat::is_cube")]
+    pub format: LookFormat,
     /// The encoding the LUTs expect.
     pub input: PackageInput,
     /// Download size in megabytes, for the wizard's total.
@@ -386,6 +393,12 @@ impl PackageDb {
             }
             if self.packages[..i].iter().any(|p| p.id == package.id) {
                 return bad(format!("package id {} appears twice", package.id));
+            }
+            if package.format.is_look_file() && package.role == PackageRole::DisplayLuts {
+                return bad(format!(
+                    "{} is a display-LUT package; look files make looks only",
+                    package.id
+                ));
             }
             if package.role == PackageRole::DisplayLuts
                 && package.input == PackageInput::LogC3ToRec709

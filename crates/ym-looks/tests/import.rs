@@ -64,8 +64,8 @@ fn happy_path_for_every_package_kind() {
         assert_eq!(finding.status, PackageStatus::Complete);
         assert_eq!(finding.evidence, Evidence::Pattern);
         assert_eq!(finding.lut_sizes, vec![kind.lut_size()]);
-        // The ALF4 files, the PDF and the macOS junk were set aside, not read as LUTs.
-        assert_eq!(recognition.ignored.alf4, 4);
+        // The .xml files, the PDF and the macOS junk were set aside, not read as LUTs.
+        assert_eq!(recognition.ignored.xml, 4);
         assert_eq!(recognition.ignored.pdf, 1);
         assert_eq!(recognition.ignored.macos_metadata, 4);
         assert!(
@@ -270,7 +270,9 @@ fn progress_reports_file_counts_for_the_wizard() {
 }
 
 #[test]
-fn alf4_only_zip_is_explained_and_nothing_is_written() {
+fn a_zip_of_files_that_are_not_look_files_is_refused_and_nothing_is_written() {
+    // `.alf4` files that are not ARRI Look Files at all (a few dummy bytes): each is rejected
+    // with the reason, the zip has nothing to import, and nothing is written.
     let work = tempfile::tempdir().unwrap();
     let root = work.path().join("app");
     let zip = work.path().join("ARRI_Look_Library_LogC4.zip");
@@ -290,13 +292,22 @@ fn alf4_only_zip_is_explained_and_nothing_is_written() {
     let mut library = open_library(&root);
     let recognition = inspect(&zip, &db, None, &mut no_progress()).unwrap();
     assert_eq!(recognition.verdict(), Verdict::Blocked);
-    assert_eq!(recognition.ignored.alf4, 2);
+    assert_eq!(recognition.files.len(), 2);
+    assert_eq!(recognition.rejected_count(), 2);
+    assert_eq!(recognition.ignored.macos_metadata, 1);
     let issue = &recognition.issues[0];
-    assert_eq!(issue.kind, IssueKind::NoCubeFiles);
-    assert_eq!(
-        issue.message,
-        "These are ARRI look files for the camera (.alf4). Yellowmoon needs the 3D-LUT version: \
-         download 'Look Library for LogC4 (3D-LUTs)' from ARRI's look page."
+    assert_eq!(issue.kind, IssueKind::AllRejected);
+    assert!(
+        issue
+            .message
+            .starts_with("None of the 2 .alf4 files in this zip can be used."),
+        "{}",
+        issue.message
+    );
+    assert!(
+        issue.message.contains("It is not an ARRI Look File"),
+        "{}",
+        issue.message
     );
     let err = import(
         &mut library,
@@ -319,13 +330,18 @@ fn alf4_only_zip_is_explained_and_nothing_is_written() {
 }
 
 #[test]
-fn a_zip_with_no_cube_files_and_no_alf_files_is_explained() {
+fn a_zip_with_no_look_files_is_explained() {
     let work = tempfile::tempdir().unwrap();
     let zip = work.path().join("holiday.zip");
     write_zip(&zip, &[("photo.jpg".to_string(), vec![1, 2, 3])]);
     let recognition = inspect(&zip, &small_db(1), None, &mut no_progress()).unwrap();
     assert_eq!(recognition.verdict(), Verdict::Blocked);
-    assert!(recognition.issues[0].message.contains("no .cube files"));
+    assert!(
+        recognition.issues[0]
+            .message
+            .contains("no .cube, .alf4, .alf4c or .aml files")
+    );
+    assert_eq!(recognition.issues[0].kind, IssueKind::NoLookFiles);
     assert_eq!(recognition.ignored.other, 1);
 }
 
