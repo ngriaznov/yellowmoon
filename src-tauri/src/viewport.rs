@@ -10,11 +10,14 @@
 //!   bridge.
 //! * the **fallback** sink ([`FallbackSink`], everywhere): the frame is encoded as a PNG with the
 //!   Display P3 profile, kept in a [`FrameStore`] and served to the webview at
-//!   `ym-frame://localhost/frame-<seq>.png`; the `viewport_frame` event says when a new one is
-//!   there. The same store and scheme serve the filmstrip's thumbnails
-//!   (`ym-frame://localhost/thumb-<photo>-<version>.png`) and the Look tab's tiles
-//!   (`ym-frame://localhost/look-<photo>-<version>.png`), whichever sink draws the photo. This breaks the rule "full images never cross the bridge" (`docs/01`), and is meant for
-//!   development builds on other systems and as the M0-06 fallback candidate (`docs/16`).
+//!   `ym-frame://localhost/<launch>/frame-<seq>.png`; the `viewport_frame` event says when a new one
+//!   is there. The same store and scheme serve the filmstrip's thumbnails
+//!   (`ym-frame://localhost/<launch>/thumb-<photo>-<version>.png`) and the Look tab's tiles
+//!   (`ym-frame://localhost/<launch>/look-<photo>-<version>.png`), whichever sink draws the photo.
+//!   `<launch>` is made from the start time of the app, so an address from an earlier launch is
+//!   never one of this launch's (see [`FrameStore`]). This breaks the rule "full images never cross
+//!   the bridge" (`docs/01`), and is meant for development builds on other systems and as the
+//!   M0-06 fallback candidate (`docs/16`).
 //!
 //! # Threading
 //!
@@ -23,12 +26,22 @@
 //! size of the final image), asks the renderer for the frame at viewport priority, presents it, and
 //! asks again when the frame was made from a coarser image than the zoom needs
 //! (`FrameOptions::coarse_only`: the tiles are computed at tile priority, then a sharp frame
-//! follows). A newer request cancels the render in flight, so dragging a slider or a photo never
-//! queues frames behind each other.
+//! follows).
+//!
+//! **Latest wins, but a frame in the making is shown.** A request marks the state dirty and wakes
+//! the worker; it does not stop the frame being drawn (a [`Flight::Frame`]). That frame finishes
+//! and is presented, and the next round starts at once from the newest state, so dragging a slider
+//! or a photo never queues frames behind each other *and* the picture follows the hand while the
+//! hand moves. (Every request used to cancel the render in flight, so once a frame took longer than
+//! the gap between two inputs, which is a few milliseconds for a wheel and 16 for a slider, no
+//! frame was ever finished until the hand stopped.) Only work nobody is waiting for gives way: the
+//! pass that computes sharp tiles ([`Flight::Tiles`]), and, for a request that makes the frame
+//! being drawn wrong rather than old (another photo, a cell of another size: [`Shared::request_now`]),
+//! the frame itself.
 
 use std::borrow::Cow;
 use std::collections::{BTreeMap, VecDeque};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError, Weak};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -42,6 +55,7 @@ use ym_core::session::{PhotoId as CorePhotoId, SessionError};
 use ym_gpu::queue::{CancelToken, JobError};
 
 use crate::events::{AppEvent, Emitter};
+use crate::perf;
 use crate::wire::{
     AppError, ErrorScope, PhotoId, ViewportBackendKind, ViewportFrame, ViewportInput, ViewportMode,
     ViewportRect, convert,
@@ -89,11 +103,71 @@ pub trait FrameSink: Send + Sync + 'static {
 
 /// The last few frames of the fallback viewport, the latest thumbnail of every photo and the look
 /// tiles of the Look tab, as PNG files, served to the webview by the `ym-frame` scheme.
-#[derive(Debug, Default)]
+///
+/// **Addresses.** Every address starts with the store's launch id (`ym-frame://localhost/<launch>/…`),
+/// made from the time the store was made, which is the time the app started. The version counters
+/// of thumbnails and tiles start at 1 in every launch, so without it the first thumbnail of
+/// photo 3 would have the same address in two launches, and a webview that kept the answer of the
+/// first (the thumbnails and tiles are served as immutable, see [`Cache`]) would show it for the
+/// second. A request whose launch id is not this store's is a 404.
+#[derive(Debug)]
 pub struct FrameStore {
+    launch: String,
     frames: Mutex<VecDeque<(u32, Arc<Vec<u8>>)>>,
     thumbnails: Mutex<Thumbnails>,
     look_tiles: Mutex<LookTiles>,
+}
+
+impl Default for FrameStore {
+    fn default() -> Self {
+        Self::with_launch_id(new_launch_id())
+    }
+}
+
+/// An id for this launch of the app: the time, in milliseconds since 1970, in hexadecimal, and
+/// how many stores this process made before (two stores of one process, as in the tests, never
+/// share one). It is not a secret; it only has to differ from the ids of earlier launches.
+fn new_launch_id() -> String {
+    static MADE: AtomicU32 = AtomicU32::new(0);
+    let millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis());
+    format!("{millis:x}{:x}", MADE.fetch_add(1, Ordering::Relaxed))
+}
+
+/// How long the webview may keep an answer of the `ym-frame` scheme.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Cache {
+    /// Not at all: a frame of the fallback viewport is replaced by the next one, and an address
+    /// that answered 404 may answer 200 later (a tile that was not made yet).
+    Never,
+    /// For good: a thumbnail or a tile. Its address holds the launch id and a version that is
+    /// never handed out twice, so the same address is always the same picture.
+    Forever,
+}
+
+impl Cache {
+    /// The `Cache-Control` header for the answer.
+    #[must_use]
+    pub fn header(self) -> &'static str {
+        match self {
+            Self::Never => "no-store",
+            Self::Forever => "private, max-age=31536000, immutable",
+        }
+    }
+}
+
+/// What the `ym-frame` scheme answers for an address.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Served {
+    /// The HTTP status: 200, or 404 for an address that is not (or no longer) the store's.
+    pub status: u16,
+    /// The content type.
+    pub mime: &'static str,
+    /// The PNG, or a short plain text.
+    pub body: Cow<'static, [u8]>,
+    /// How long the webview may keep it.
+    pub cache: Cache,
 }
 
 /// A PNG file, shared with the responses that serve it.
@@ -222,6 +296,41 @@ impl FrameStore {
         }
     }
 
+    /// An empty store with this launch id (the tests' way to make two launches).
+    #[must_use]
+    pub fn with_launch_id(launch: String) -> Self {
+        Self {
+            launch,
+            frames: Mutex::new(VecDeque::new()),
+            thumbnails: Mutex::new(Thumbnails::default()),
+            look_tiles: Mutex::new(LookTiles::default()),
+        }
+    }
+
+    /// The id of this launch, the first segment of every address.
+    #[must_use]
+    pub fn launch_id(&self) -> &str {
+        &self.launch
+    }
+
+    /// The address of frame `seq` in the webview.
+    #[must_use]
+    pub fn frame_url(&self, seq: u32) -> String {
+        scheme_url(&self.launch, &format!("frame-{seq}.png"))
+    }
+
+    /// The address of version `version` of a photo's thumbnail in the webview.
+    #[must_use]
+    pub fn thumbnail_url(&self, photo: u32, version: u32) -> String {
+        scheme_url(&self.launch, &format!("thumb-{photo}-{version}.png"))
+    }
+
+    /// The address of version `version` of a look tile of a photo in the webview.
+    #[must_use]
+    pub fn look_tile_url(&self, photo: u32, version: u32) -> String {
+        scheme_url(&self.launch, &format!("look-{photo}-{version}.png"))
+    }
+
     /// Keeps the PNG of frame `seq`.
     pub fn put(&self, seq: u32, png: Vec<u8>) {
         let mut frames = lock(&self.frames);
@@ -264,7 +373,7 @@ impl FrameStore {
         while versions.len() > THUMBNAIL_VERSIONS_KEPT {
             versions.remove(0);
         }
-        thumbnail_url(photo, version)
+        self.thumbnail_url(photo, version)
     }
 
     /// The address of the newest thumbnail of every photo that has one, in photo order.
@@ -276,7 +385,7 @@ impl FrameStore {
             .filter_map(|(photo, versions)| {
                 versions
                     .last()
-                    .map(|(version, _)| (*photo, thumbnail_url(*photo, *version)))
+                    .map(|(version, _)| (*photo, self.thumbnail_url(*photo, *version)))
             })
             .collect()
     }
@@ -300,7 +409,7 @@ impl FrameStore {
         tiles.bytes = tiles.bytes + added - dropped;
         tiles.touch(photo);
         tiles.enforce_budget(photo);
-        look_tile_url(photo, version)
+        self.look_tile_url(photo, version)
     }
 
     /// Forgets every thumbnail and look tile (the session closed). Addresses that were handed out
@@ -335,57 +444,72 @@ impl FrameStore {
             .map(|(_, png)| Arc::clone(png))
     }
 
-    /// The response for a request to `ym-frame://localhost/frame-<seq>.png`,
-    /// `…/thumb-<photo>-<version>.png` or `…/look-<photo>-<version>.png`: the file, or why not.
+    /// What the scheme answers for the path of a request,
+    /// `/<launch>/frame-<seq>.png`, `/<launch>/thumb-<photo>-<version>.png` or
+    /// `/<launch>/look-<photo>-<version>.png`: the file, or a 404. Only a thumbnail or a tile that
+    /// is there is [`Cache::Forever`]; frames and every 404 are [`Cache::Never`].
+    #[must_use]
+    pub fn serve(&self, path: &str) -> Served {
+        match self.find(path) {
+            Some((png, cache)) => Served {
+                status: 200,
+                mime: "image/png",
+                body: Cow::Owned(png.as_ref().clone()),
+                cache,
+            },
+            None => Served {
+                status: 404,
+                mime: "text/plain",
+                body: Cow::Borrowed(b"No such frame."),
+                cache: Cache::Never,
+            },
+        }
+    }
+
+    /// [`FrameStore::serve`] as the tuple the tests compare.
+    #[cfg(test)]
     #[must_use]
     pub fn respond(&self, path: &str) -> (u16, &'static str, Cow<'static, [u8]>) {
-        let name = path
-            .trim_start_matches('/')
-            .strip_suffix(".png")
-            .unwrap_or("");
-        let png = if let Some(seq) = name.strip_prefix("frame-") {
-            seq.parse::<u32>().ok().and_then(|s| self.get(s))
+        let served = self.serve(path);
+        (served.status, served.mime, served.body)
+    }
+
+    fn find(&self, path: &str) -> Option<(Png, Cache)> {
+        let (launch, file) = path.trim_start_matches('/').split_once('/')?;
+        if launch != self.launch {
+            return None;
+        }
+        let name = file.strip_suffix(".png")?;
+        if let Some(seq) = name.strip_prefix("frame-") {
+            Some((self.get(seq.parse().ok()?)?, Cache::Never))
         } else if let Some(rest) = name.strip_prefix("thumb-") {
-            rest.split_once('-').and_then(|(photo, version)| {
-                self.thumbnail(photo.parse().ok()?, version.parse().ok()?)
-            })
+            let (photo, version) = rest.split_once('-')?;
+            let png = self.thumbnail(photo.parse().ok()?, version.parse().ok()?)?;
+            Some((png, Cache::Forever))
         } else if let Some(rest) = name.strip_prefix("look-") {
-            rest.split_once('-').and_then(|(photo, version)| {
-                self.look_tile(photo.parse().ok()?, version.parse().ok()?)
-            })
+            let (photo, version) = rest.split_once('-')?;
+            let png = self.look_tile(photo.parse().ok()?, version.parse().ok()?)?;
+            Some((png, Cache::Forever))
         } else {
             None
-        };
-        match png {
-            Some(png) => (200, "image/png", Cow::Owned(png.as_ref().clone())),
-            None => (404, "text/plain", Cow::Borrowed(b"No such frame.")),
         }
+    }
+
+    /// Holds the look tiles' lock until the value is dropped (a test of a handler that must not
+    /// make the thread that called it wait for it).
+    #[cfg(test)]
+    pub(crate) fn hold_look_tiles(&self) -> impl Drop + '_ {
+        lock(&self.look_tiles)
     }
 }
 
-/// The address of frame `seq` in the webview.
-#[must_use]
-pub fn frame_url(seq: u32) -> String {
-    scheme_url(&format!("frame-{seq}.png"))
-}
-
-/// The address of version `version` of a photo's thumbnail in the webview.
-#[must_use]
-pub fn thumbnail_url(photo: u32, version: u32) -> String {
-    scheme_url(&format!("thumb-{photo}-{version}.png"))
-}
-
-/// The address of version `version` of a look tile of a photo in the webview.
-#[must_use]
-pub fn look_tile_url(photo: u32, version: u32) -> String {
-    scheme_url(&format!("look-{photo}-{version}.png"))
-}
-
-fn scheme_url(file: &str) -> String {
+/// The address of `file` of the launch `launch` in the webview (`http://ym-frame.localhost/…` on
+/// Windows, where the webview serves a custom scheme as a host of `http`).
+fn scheme_url(launch: &str, file: &str) -> String {
     if cfg!(windows) {
-        format!("http://{FRAME_SCHEME}.localhost/{file}")
+        format!("http://{FRAME_SCHEME}.localhost/{launch}/{file}")
     } else {
-        format!("{FRAME_SCHEME}://localhost/{file}")
+        format!("{FRAME_SCHEME}://localhost/{launch}/{file}")
     }
 }
 
@@ -487,6 +611,24 @@ enum Op {
     Before(bool),
 }
 
+/// What the render in flight is, which decides whether a request stops it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Flight {
+    /// A frame that is going to be shown. [`Shared::request`] lets it finish.
+    Frame,
+    /// The pass that makes the sharp tiles of a zoom: nobody waits for it, so [`Shared::request`]
+    /// stops it.
+    Tiles,
+}
+
+/// The cell as the webview last reported it: what a frame depends on (its place does not matter).
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct CellSize {
+    width: f64,
+    height: f64,
+    scale: f64,
+}
+
 struct VState {
     vp: ViewportState,
     /// The webview has reported the photo cell with a usable size. Until it has there is nothing
@@ -504,8 +646,18 @@ struct VState {
     awaiting: bool,
     /// Tiles have just been computed: the next frame asks for sharp pixels.
     want_sharp: bool,
-    /// The render in flight, so that a newer request can stop it.
-    in_flight: Option<CancelToken>,
+    /// The render in flight and what it is, so that a request can stop it when it should. It is
+    /// left in place when the render ends (cancelling a finished token does nothing).
+    in_flight: Option<(CancelToken, Flight)>,
+    /// A request that makes whatever is being drawn wrong was made ([`Shared::request_now`]) since
+    /// the worker took its work: a round that has not begun drawing gives up. Cleared when the
+    /// worker takes work.
+    urgent: bool,
+    /// The size of the cell at the last `viewport_set_rect`, to tell a resize from a move.
+    cell: Option<CellSize>,
+    /// When the oldest request that no round has taken yet was made (for the input-to-present time
+    /// of `perf`).
+    oldest_request: Option<Instant>,
     seq: u32,
     frames: u64,
     /// The last error shown, so that a photo that fails to render does not repeat itself.
@@ -530,13 +682,34 @@ pub struct Shared {
 }
 
 impl Shared {
+    /// A new frame is wanted: an input, a settings patch, a look, a cell that moved or kept its
+    /// size, Before, a mode. The frame being drawn finishes and is shown and the next round starts
+    /// at once from the newest state; only the pass that makes sharp tiles is stopped, because the
+    /// round that follows it makes a coarse frame first.
     fn request(&self, st: &mut VState) {
-        st.dirty = true;
-        st.want_sharp = false;
-        if let Some(token) = &st.in_flight {
+        self.mark_dirty(st);
+        if let Some((token, Flight::Tiles)) = &st.in_flight {
             token.cancel();
         }
         self.wake.notify_all();
+    }
+
+    /// A new frame is wanted and the one being drawn is wrong, not just old: another photo (or
+    /// none), a cell of another size. It is stopped, and so is a round that has not begun drawing.
+    fn request_now(&self, st: &mut VState) {
+        self.mark_dirty(st);
+        st.urgent = true;
+        if let Some((token, _)) = &st.in_flight {
+            token.cancel();
+        }
+        self.wake.notify_all();
+    }
+
+    fn mark_dirty(&self, st: &mut VState) {
+        st.dirty = true;
+        st.want_sharp = false;
+        st.oldest_request.get_or_insert_with(Instant::now);
+        perf::viewport().request();
     }
 
     /// Something about the photo changed (settings, look, display rendering): draw it again.
@@ -592,6 +765,7 @@ impl Shared {
             // `photo_ready`; taking them again at once would spin.
             if st.has_rect && (st.dirty || (!st.ops.is_empty() && !st.awaiting)) {
                 st.dirty = false;
+                st.urgent = false;
                 st.busy = true;
                 st.applying = !st.ops.is_empty();
                 let ops = std::mem::take(&mut st.ops);
@@ -601,6 +775,7 @@ impl Shared {
                     epoch: st.epoch,
                     ops,
                     coarse_only,
+                    requested_at: st.oldest_request.take(),
                 });
             }
             st.busy = false;
@@ -682,7 +857,7 @@ impl Shared {
         self.sink.clear(seq);
     }
 
-    fn present(&self, frame: &RenderedFrame, photo: CorePhotoId) {
+    fn present(&self, frame: &RenderedFrame, photo: CorePhotoId, requested_at: Option<Instant>) {
         let seq = {
             let mut st = lock(&self.state);
             st.seq = st.seq.wrapping_add(1);
@@ -692,6 +867,7 @@ impl Shared {
         match self.sink.present(frame, seq) {
             Ok(()) => {
                 lock(&self.state).frames += 1;
+                perf::viewport().present(requested_at.map(|at| at.elapsed()));
                 if let Ok(stats) = convert(&frame.report.stats()) {
                     self.emitter.emit(AppEvent::RenderStats(stats));
                 }
@@ -707,6 +883,7 @@ impl Shared {
             epoch,
             ops,
             coarse_only,
+            requested_at,
         } = work;
         let Some(core) = self.core() else {
             self.apply_blind(ops, epoch);
@@ -741,18 +918,21 @@ impl Shared {
                 return;
             }
         };
+        perf::viewport().round();
         let cancel = CancelToken::new();
         {
             let mut st = lock(&self.state);
-            st.in_flight = Some(cancel.clone());
-            if st.dirty || !st.ops.is_empty() {
-                // Already out of date: skip to the newer request.
+            st.in_flight = Some((cancel.clone(), Flight::Frame));
+            if st.urgent {
+                // What this round would draw is already wrong (another photo, a cell of another
+                // size): do not start it. (A request that only makes it old does not stop it.)
                 cancel.cancel();
             }
         }
         let image = match core.renderer.final_size(&src, &cancel) {
             Ok(image) => image,
             Err(RenderError::Cancelled) => {
+                perf::viewport().cancelled();
                 self.requeue(ops, epoch);
                 return;
             }
@@ -788,14 +968,15 @@ impl Shared {
             .spawn_viewport_frame(src.clone(), vp.clone(), options);
         {
             let mut st = lock(&self.state);
-            st.in_flight = Some(handle.token().clone());
-            if st.dirty || !st.ops.is_empty() {
+            st.in_flight = Some((handle.token().clone(), Flight::Frame));
+            if st.urgent {
                 handle.cancel();
             }
         }
         let frame = match handle.wait() {
             Ok(Ok(frame)) => frame,
             Ok(Err(RenderError::Cancelled)) | Err(JobError::Cancelled | JobError::Shutdown) => {
+                perf::viewport().cancelled();
                 return;
             }
             Ok(Err(e)) => {
@@ -814,24 +995,32 @@ impl Shared {
             }
         };
         lock(&self.state).last_error = None;
-        self.present(&frame, photo);
+        self.present(&frame, photo, requested_at);
         if !frame.sharp {
             // The zoom needs full-resolution tiles that were not ready: compute them at tile
-            // priority, then draw the sharp frame.
+            // priority, then draw the sharp frame. Nobody waits for this pass, so a request that
+            // is already there (or arrives) stops it: the round that answers it draws a coarse
+            // frame first.
             let tiles = core.renderer.spawn_tiles(src, vp);
             {
                 let mut st = lock(&self.state);
-                st.in_flight = Some(tiles.token().clone());
+                st.in_flight = Some((tiles.token().clone(), Flight::Tiles));
                 if st.dirty || !st.ops.is_empty() {
                     tiles.cancel();
                 }
             }
-            if let Ok(Ok(_)) = tiles.wait() {
-                let mut st = lock(&self.state);
-                if !st.dirty && st.ops.is_empty() {
-                    st.dirty = true;
-                    st.want_sharp = true;
+            match tiles.wait() {
+                Ok(Ok(_)) => {
+                    let mut st = lock(&self.state);
+                    if !st.dirty && st.ops.is_empty() {
+                        st.dirty = true;
+                        st.want_sharp = true;
+                    }
                 }
+                Ok(Err(RenderError::Cancelled)) | Err(JobError::Cancelled | JobError::Shutdown) => {
+                    perf::viewport().tiles_cancelled();
+                }
+                _ => {}
             }
         }
     }
@@ -842,6 +1031,8 @@ struct Work {
     epoch: u64,
     ops: Vec<Op>,
     coarse_only: bool,
+    /// When the oldest request this round answers was made, if one did (a sharp follow-up has none).
+    requested_at: Option<Instant>,
 }
 
 /// What of `ops` still applies once the photo on screen has (or has not) changed: the cell's
@@ -879,6 +1070,9 @@ impl Viewport {
             awaiting: false,
             want_sharp: false,
             in_flight: None,
+            urgent: false,
+            cell: None,
+            oldest_request: None,
             seq: 0,
             frames: 0,
             last_error: None,
@@ -960,7 +1154,8 @@ impl Viewport {
         let kept = for_photo(std::mem::take(&mut st.ops), false);
         st.ops = kept;
         let none = photo.is_none();
-        self.shared.request(&mut st);
+        // What is being drawn is the old photo: stop it.
+        self.shared.request_now(&mut st);
         drop(st);
         if none {
             self.shared.clear_sink();
@@ -986,7 +1181,19 @@ impl Viewport {
             st.has_rect = true;
         }
         st.ops.push(Op::Rect(core_rect));
-        self.shared.request(&mut st);
+        let size = CellSize {
+            width: rect.width.0,
+            height: rect.height.0,
+            scale: rect.scale.0,
+        };
+        if st.cell.replace(size) == Some(size) {
+            // The cell moved (the layout shifted) and kept its size: the frame being drawn is
+            // still the right one.
+            self.shared.request(&mut st);
+        } else {
+            // A frame of the old size would be shown, stretched, in the new cell.
+            self.shared.request_now(&mut st);
+        }
         Ok(())
     }
 
@@ -1083,7 +1290,7 @@ impl Viewport {
 impl Drop for Viewport {
     fn drop(&mut self) {
         self.shared.shutdown.store(true, Ordering::SeqCst);
-        if let Some(token) = &lock(&self.shared.state).in_flight {
+        if let Some((token, _)) = &lock(&self.shared.state).in_flight {
             token.cancel();
         }
         self.shared.wake.notify_all();
@@ -1102,6 +1309,13 @@ pub fn core_id(id: PhotoId) -> CorePhotoId {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The path of an address of the scheme: `/<launch>/<file>`.
+    pub(crate) fn path_of_url(url: &str) -> &str {
+        assert!(url.contains("ym-frame"), "{url}");
+        let host = url.find("localhost/").expect("a localhost address");
+        &url[host + "localhost".len()..]
+    }
 
     fn frame(width: usize, height: usize) -> RenderedFrame {
         RenderedFrame {
@@ -1165,12 +1379,15 @@ mod tests {
         assert_eq!(store.get(5).as_deref(), Some(&vec![5u8; 4]));
         assert_eq!(store.latest().map(|(s, _)| s), Some(5));
 
-        let (status, mime, body) = store.respond("/frame-4.png");
+        let at = |file: &str| format!("/{}/{file}", store.launch_id());
+        let (status, mime, body) = store.respond(&at("frame-4.png"));
         assert_eq!((status, mime), (200, "image/png"));
         assert_eq!(&*body, &[4u8; 4]);
-        assert_eq!(store.respond("/frame-1.png").0, 404);
+        assert_eq!(store.respond(&at("frame-1.png")).0, 404);
         assert_eq!(store.respond("/etc/passwd").0, 404);
-        assert_eq!(store.respond("/frame-x.png").0, 404);
+        assert_eq!(store.respond(&at("frame-x.png")).0, 404);
+        // The address a frame is announced at is the one that serves it.
+        assert_eq!(path_of_url(&store.frame_url(4)), at("frame-4.png"));
         store.clear();
         assert!(store.latest().is_none());
     }
@@ -1178,8 +1395,9 @@ mod tests {
     #[test]
     fn look_tiles_are_kept_per_photo_and_look_and_served_by_address() {
         let store = FrameStore::new();
-        let path = |url: &str| url[url.rfind('/').expect("a path")..].to_owned();
+        let path = |url: &str| path_of_url(url).to_owned();
         let status = |url: &str| store.respond(&path(url)).0;
+        let at = |file: &str| format!("/{}/{file}", store.launch_id());
         let neutral = store.put_look_tile(3, "builtin:neutral", vec![1]);
         let warm = store.put_look_tile(3, "user:warm", vec![2]);
         let other_photo = store.put_look_tile(4, "builtin:neutral", vec![3]);
@@ -1197,16 +1415,11 @@ mod tests {
         assert_eq!((status(&second), status(&third)), (200, 200));
         assert_eq!((status(&warm), status(&other_photo)), (200, 200));
         // A tile is not a thumbnail or a frame, and a version of one photo is not another's.
-        assert_eq!(store.respond("/thumb-3-4.png").0, 404);
-        assert_eq!(store.respond("/frame-4.png").0, 404);
-        assert_eq!(store.respond("/look-4-5.png").0, 404);
-        for bad in [
-            "/look-3.png",
-            "/look-x-1.png",
-            "/look-3-x.png",
-            "/look--.png",
-        ] {
-            assert_eq!(store.respond(bad).0, 404, "{bad}");
+        assert_eq!(store.respond(&at("thumb-3-4.png")).0, 404);
+        assert_eq!(store.respond(&at("frame-4.png")).0, 404);
+        assert_eq!(store.respond(&at("look-4-5.png")).0, 404);
+        for bad in ["look-3.png", "look-x-1.png", "look-3-x.png", "look--.png"] {
+            assert_eq!(store.respond(&at(bad)).0, 404, "{bad}");
         }
         // Closing the session drops them all; the next address does not repeat an old one.
         store.clear_thumbnails();
@@ -1222,7 +1435,7 @@ mod tests {
         // A session of hundreds of photos with the Look tab open would otherwise keep every tile
         // of every photo it ever showed until the session closed.
         let store = FrameStore::with_look_tile_budget(600);
-        let path = |url: &str| url[url.rfind('/').expect("a path")..].to_owned();
+        let path = |url: &str| path_of_url(url).to_owned();
         let status = |url: &str| store.respond(&path(url)).0;
         let mut urls = Vec::new();
         for photo in 1..=4 {
@@ -1260,7 +1473,7 @@ mod tests {
         // Only the newest two tiles of a photo through one look are kept, so asking again for the
         // same tile does not grow the store: 3 x 300 bytes put, 600 held.
         let store = FrameStore::with_look_tile_budget(700);
-        let path = |url: &str| url[url.rfind('/').expect("a path")..].to_owned();
+        let path = |url: &str| path_of_url(url).to_owned();
         let status = |url: &str| store.respond(&path(url)).0;
         let first = store.put_look_tile(1, "builtin:neutral", vec![1; 300]);
         store.put_look_tile(1, "builtin:neutral", vec![1; 300]);
@@ -1407,7 +1620,7 @@ mod tests {
         // Nothing was shown, so nothing is taken away.
         shared.clear_sink();
         assert!(clears().is_empty());
-        shared.present(&frame(8, 6), CorePhotoId(1));
+        shared.present(&frame(8, 6), CorePhotoId(1), None);
         shared.clear_sink();
         shared.clear_sink();
         let gone = clears();
@@ -1423,7 +1636,7 @@ mod tests {
             .expect("the frame");
         assert!(gone[0].seq > shown.seq, "the clear comes after the frame");
         // A new picture, and gone again.
-        shared.present(&frame(8, 6), CorePhotoId(1));
+        shared.present(&frame(8, 6), CorePhotoId(1), None);
         shared.clear_sink();
         assert_eq!(clears().len(), 2);
     }

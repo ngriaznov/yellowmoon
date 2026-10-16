@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { LookId, PhotoId } from "../api/types";
+import { isSuperseded } from "./requestLimiter";
 import type { AppStore } from "./store";
 
 /**
@@ -32,12 +33,16 @@ function isFinal(error: unknown): boolean {
  *   request). The store forgets a failed request; the tile asks again, up to {@link MAX_TILE_RETRIES}
  *   times, unless it has left (it is not drawn any more, or its photo or settings changed) or the
  *   answer is final.
+ * - A request still waiting for a place (the store lets only a few run at once) is dropped when the photo's settings change or the
+ *   person moves to another photo, and rejects as superseded. That is no failure: the tile does not ask again for the old picture
+ *   and does not spend its allowance; if it is still on screen it has already asked for the new one.
  * - An address can stop answering (the shell keeps a bounded amount of tiles and drops the oldest
  *   photos' pictures, so an address from a photo visited a while ago gives 404). When the `<img>`
  *   reports an error the store forgets that address and the tile asks for a new picture, within the
  *   same allowance.
  *
- * `enabled` false (a tile not yet scrolled into view, a look whose file is missing) asks for nothing.
+ * `enabled` false (a tile out of view, a look whose file is missing) asks for nothing and keeps the picture it has; the tile that is
+ * enabled again with other settings asks for a new one.
  */
 export function useLookThumbnail(store: AppStore, photoId: PhotoId | null, lookId: LookId, key: string, enabled = true): LookThumbnail {
   const [src, setSrc] = useState<string | undefined>();
@@ -56,7 +61,7 @@ export function useLookThumbnail(store: AppStore, photoId: PhotoId | null, lookI
         if (live) setSrc(url);
       },
       (error: unknown) => {
-        if (!live || isFinal(error) || spent.current.count >= MAX_TILE_RETRIES) return;
+        if (!live || isSuperseded(error) || isFinal(error) || spent.current.count >= MAX_TILE_RETRIES) return;
         spent.current.count += 1;
         setRound((n) => n + 1);
       },

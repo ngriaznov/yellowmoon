@@ -16,6 +16,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { mockApi } from "./api.mock";
 import { commands } from "./api/bindings";
 import { isTauri } from "./env";
+import { perf } from "./perf";
 import type {
   ApiEventName,
   ApiEvents,
@@ -306,5 +307,6 @@ export const tauriApi: Api = {
 
 /** The API for this environment: Tauri in the app, the in-memory mock in a browser. */
 export function getApi(): Api {
-  return isTauri() ? tauriApi : mockApi;
+  // With `?perf` the api counts its calls, round trips and events (`src/perf.ts`); otherwise this is the plain api.
+  return perf.wrapApi(isTauri() ? tauriApi : mockApi);
 }

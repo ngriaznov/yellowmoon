@@ -60,7 +60,11 @@ import { templateProblem } from "../export/template";
 import type { ExportRun } from "../export/run";
 import { diffSettings, PhotoHistory } from "./history";
 import type { HistoryEntry } from "./history";
+import { perfCount } from "../perf";
 import { isReady, releaseUrl } from "./photo";
+import { RequestLimiter } from "./requestLimiter";
+import { ViewportInputQueue } from "./viewportInputQueue";
+import type { StreamInput } from "./viewportInputQueue";
 import { fitZoomExact, fitZoomOf, showsWhole, zoomAfter } from "./zoom";
 
 /** The screens of the app (`docs/11-ui.md` §Screens that have a window of their own). */
@@ -122,6 +126,8 @@ export interface AppState {
   opening: boolean;
   /** The current photo's histogram, when asked for. */
   histogram: HistogramData | null;
+  /** The display values at the middle of the photo cell, while the Light tab watches them (`watchHistogram`). */
+  middleReadout: PixelSample | null;
   /** Undo and redo are available for the current photo. */
   canUndo: boolean;
   canRedo: boolean;
@@ -176,6 +182,7 @@ export function initialState(): AppState {
     error: null,
     opening: false,
     histogram: null,
+    middleReadout: null,
     canUndo: false,
     canRedo: false,
     preferences: null,
@@ -253,6 +260,18 @@ const MIN_FRAME_PX = 16;
 /** Milliseconds a replaced look thumbnail's URL is kept, so a tile never shows a broken picture. */
 const URL_GRACE_MS = 3000;
 
+/**
+ * The longest a shown histogram goes without being asked for again while frames keep coming: five a second during a drag, and one
+ * after the last frame. A throttle, not a debounce: the plot follows the drag, a little behind.
+ */
+export const HISTOGRAM_THROTTLE_MS = 200;
+
+/**
+ * How many look tiles the core is asked for at once. It has one foreground worker and takes no job off it, so every tile asked for
+ * at once is a job the next frame of the viewport may wait behind: with two, it waits behind one.
+ */
+export const LOOK_THUMBNAIL_CONCURRENCY = 2;
+
 /** A look tile's request: the address it will have (or has), so a tile that fails to load it can be recognised. */
 interface LookThumb {
   promise: Promise<string>;
@@ -276,9 +295,31 @@ export class AppStore {
   /** Photos with a Pick white click on its way to the core: their settings are read when the click is answered. */
   private readonly picks = new Set<PhotoId>();
   private readonly lookThumbs = new Map<PhotoId, { key: string; urls: Map<LookId, LookThumb> }>();
+  /** Holds the look tiles' requests to {@link LOOK_THUMBNAIL_CONCURRENCY} at a time; what waits is dropped when its photo or settings change. */
+  private readonly thumbLimiter = new RequestLimiter<{ photoId: PhotoId; key: string }>(LOOK_THUMBNAIL_CONCURRENCY);
   private rect: ViewportRect | null = null;
+  /**
+   * Wheel, pinch and drag input for the photo, collected and sent once per animation frame (`queueViewportInput`). The zoom mirror
+   * follows once per frame too, when a zoom is closed.
+   */
+  private readonly viewportQueue = new ViewportInputQueue({
+    schedule: (callback) => {
+      if (typeof requestAnimationFrame === "function") requestAnimationFrame(callback);
+      else setTimeout(callback, 16);
+    },
+    send: (event) => this.api.viewportInput(event),
+    mirrorZoom: (factor) => this.set({ zoom: zoomAfter(this.state.zoom, factor, this.fitPercentExact()) }),
+    onError: (error) => this.fail(error),
+  });
   private histogramBusy = false;
   private histogramAgain = false;
+  /** Who has the histogram on show (the Light and Curve tabs): while there is one, `render_stats` keeps it fresh. */
+  private histogramWatchers = 0;
+  /** Of those, who also show the middle readout (the Light tab). */
+  private readoutWatchers = 0;
+  private histogramTimer: ReturnType<typeof setTimeout> | null = null;
+  private readoutBusy = false;
+  private readoutAgain = false;
   /** Export events that arrived before `export_start` answered, by job. */
   private readonly earlyExport: ExportProgress[] = [];
   private starting = false;
@@ -309,6 +350,12 @@ export class AppStore {
 
   private set(patch: Partial<AppState>): void {
     this.state = { ...this.state, ...patch };
+    this.notify();
+  }
+
+  /** Tells every listener that `state` is a new object. */
+  private notify(): void {
+    perfCount("store.notify");
     for (const listener of [...this.listeners]) listener();
   }
 
@@ -329,7 +376,7 @@ export class AppStore {
       for (const apply of changes) next = apply(next);
       if (next === this.state) return;
       this.state = next;
-      for (const listener of [...this.listeners]) listener();
+      this.notify();
     };
     if (this.batchMs > 0) setTimeout(flush, this.batchMs);
     else queueMicrotask(flush);
@@ -344,7 +391,10 @@ export class AppStore {
     this.stops = [
       api.on("photo_progress", (e) => this.onProgress(e)),
       api.on("thumbnail_ready", (e) => this.onThumbnail(e)),
-      api.on("render_stats", (stats) => this.later((s) => ({ ...s, stats }))),
+      api.on("render_stats", (stats) => {
+        this.later((s) => ({ ...s, stats }));
+        this.scheduleHistogram();
+      }),
       api.on("looks_changed", () => {
         void this.refreshLooks();
         void this.refreshDisplayLuts();
@@ -522,7 +572,7 @@ export class AppStore {
     const photos = next.session?.photos ?? [];
     if (restoring && photos.some(isReady)) next = { ...next, screen: "photos" };
     this.state = next;
-    for (const listener of [...this.listeners]) listener();
+    this.notify();
     const current = this.currentPhoto();
     if (current && isReady(current)) void this.ensureSettings(current.id);
     this.syncHistoryFlags();
@@ -581,6 +631,7 @@ export class AppStore {
 
   /** Forgets the session and returns to Start (⌘W, "Start over"). */
   async closeSession(): Promise<void> {
+    this.viewportQueue.clear();
     try {
       await this.api.closeSession();
     } catch (error) {
@@ -614,7 +665,7 @@ export class AppStore {
       viewportBackend: this.state.viewportBackend,
       exportBusy: this.state.exportBusy,
     };
-    for (const listener of [...this.listeners]) listener();
+    this.notify();
     // A fresh session starts at Fit with the camera view off.
     void this.api.viewportSetMode({ kind: "fit" }).catch(() => {});
     void this.api.setBefore(false).catch(() => {});
@@ -640,7 +691,10 @@ export class AppStore {
     // belong to the photo that is left: a portrait after a landscape has another Fit zoom, so they are dropped until the first
     // frame of the new photo reports its own (the status text stays, and the screen estimates the Fit zoom meanwhile).
     const stats = this.state.stats && { ...this.state.stats, zoom_percent: null, fit_percent: null };
-    this.set({ session: { ...session, current_index: index }, histogram: null, zoom: { kind: "fit" }, before: false, stats });
+    // Wheel and drag input that has not been sent was meant for the photo that is left, and so were the tiles not yet asked for.
+    this.viewportQueue.clear();
+    this.thumbLimiter.supersede((t) => t.photoId !== id);
+    this.set({ session: { ...session, current_index: index }, histogram: null, middleReadout: null, zoom: { kind: "fit" }, before: false, stats });
     this.syncHistoryFlags();
     if (isReady(session.photos[index] as PhotoSummary)) void this.ensureSettings(id);
     try {
@@ -945,14 +999,22 @@ export class AppStore {
     }
   }
 
+  /**
+   * A tile of the export finished (`export_progress`: one event per tile and photo). Events that arrive before `export_start` has
+   * answered are held for it; the rest are applied with the other batched events, so a long export draws a few times a second and not
+   * once per event.
+   */
   private onExportProgress(e: ExportProgress): void {
-    const run = this.state.exportRun;
-    if (!run) {
+    if (!this.state.exportRun) {
       if (this.starting) this.earlyExport.push(e);
       return;
     }
-    const next = applyProgress(run, e);
-    if (next !== run) this.set({ exportRun: next });
+    this.later((s) => {
+      const run = s.exportRun;
+      if (!run) return s;
+      const next = applyProgress(run, e);
+      return next === run ? s : { ...s, exportRun: next };
+    });
   }
 
   /** Cancel: the core stops after the current tile and deletes the partial file; the panel goes back to the options. */
@@ -1012,8 +1074,11 @@ export class AppStore {
   }
 
   async setZoom(mode: ViewportMode): Promise<void> {
+    // A wheel zoom still on its way lands first, so it cannot arrive after the mode and zoom the new view.
+    const queued = this.viewportQueue.busy ? this.viewportQueue.flush() : null;
     const previous = this.state.zoom;
     this.set({ zoom: mode });
+    if (queued) await queued;
     try {
       await this.api.viewportSetMode(mode);
     } catch (error) {
@@ -1023,16 +1088,36 @@ export class AppStore {
   }
 
   /**
-   * Forwards pointer input over the photo. A double click flips the mirrored zoom between Fit and 100 %, and a wheel zoom moves it by
-   * the same factor as the core does, at once (the core's own zoom and Fit zoom come back with the next `render_stats`: the Fit zoom
-   * is used from there, `fitPercentExact`), so the header and the drag to pan follow what the photo does.
+   * Collects wheel, pinch and drag input for the photo (a pan, or a zoom about a point of the cell). It is sent once per animation
+   * frame, in order, one command at a time (`ViewportInputQueue`), and the mirrored zoom follows once per frame; a burst of events
+   * costs one command. A drag calls {@link flushViewportInput} when it ends.
+   */
+  queueViewportInput(event: StreamInput): void {
+    this.viewportQueue.push(event);
+  }
+
+  /** Sends what {@link queueViewportInput} has collected, now. Resolves when the core has taken it. */
+  flushViewportInput(): Promise<void> {
+    return this.viewportQueue.flush();
+  }
+
+  /**
+   * Forwards one input over the photo to the core now, after whatever wheel and drag input is waiting (the order of inputs is the
+   * order of events). A double click flips the mirrored zoom between Fit and 100 %, and a zoom moves it by the same factor as the core
+   * does, at once (the core's own zoom and Fit zoom come back with the next `render_stats`: the Fit zoom is used from there,
+   * `fitPercentExact`), so the header and the drag to pan follow what the photo does. The hot path of the wheel is
+   * {@link queueViewportInput}.
    */
   async viewportInput(event: ViewportInput): Promise<void> {
-    if (event.kind === "toggle_zoom") {
-      this.set({ zoom: this.toggledZoom() });
-    } else if (event.kind === "zoom") {
-      this.set({ zoom: zoomAfter(this.state.zoom, event.factor, this.fitPercentExact()) });
+    if (event.kind === "zoom" || event.kind === "pan") {
+      this.viewportQueue.push(event);
+      await this.viewportQueue.flush();
+      return;
     }
+    // A click lands after the input before it: the spot it names is on the picture as that input left it.
+    const queued = this.viewportQueue.busy ? this.viewportQueue.flush() : null;
+    if (event.kind === "toggle_zoom") this.set({ zoom: this.toggledZoom() });
+    if (queued) await queued;
     try {
       await this.api.viewportInput(event);
     } catch (error) {
@@ -1086,6 +1171,8 @@ export class AppStore {
   async pickWhite(x: number, y: number): Promise<void> {
     const id = this.currentId();
     if (id === null) return;
+    // Wheel and drag input still on its way lands first: the click names a spot of the picture as that input left it.
+    if (this.viewportQueue.busy) await this.viewportQueue.flush();
     // Patches in flight land first, so the undo step starts from the settings the core has.
     await this.whenIdle(id);
     const base = this.state.settings[id]?.settings;
@@ -1319,18 +1406,26 @@ export class AppStore {
    * (the core cancels a tile when the person leaves its photo, and a tile that asks again after
    * coming back is handed the same request, which then fails), and a tile whose address stopped
    * answering is dropped by {@link forgetLookThumbnail}.
+   *
+   * At most {@link LOOK_THUMBNAIL_CONCURRENCY} requests are out at once, the newest first. A request that has not started when
+   * its photo's settings change (a new `key`) or the person moves to another photo is dropped and rejects with
+   * `Superseded` (`isSuperseded`): that is not a failure, and whoever still wants the picture asks again.
    */
   lookThumbnail(photoId: PhotoId, lookId: LookId, key: string): Promise<string> {
     let entry = this.lookThumbs.get(photoId);
     if (!entry || entry.key !== key) {
-      if (entry) this.releaseLater([...entry.urls.values()]);
+      if (entry) {
+        this.releaseLater([...entry.urls.values()]);
+        this.thumbLimiter.supersede((t) => t.photoId === photoId && t.key !== key);
+      }
       entry = { key, urls: new Map() };
       this.lookThumbs.set(photoId, entry);
     }
     const cache = entry.urls;
     let thumb = cache.get(lookId);
     if (!thumb) {
-      const made: LookThumb = { promise: this.api.lookThumbnail(photoId, lookId), url: null };
+      const request = this.thumbLimiter.run({ photoId, key }, () => this.api.lookThumbnail(photoId, lookId));
+      const made: LookThumb = { promise: request, url: null };
       thumb = made;
       cache.set(lookId, made);
       // Registered before anyone else sees the promise, so it runs first: a caller that hears the failure and asks again gets a new request.
@@ -1369,6 +1464,7 @@ export class AppStore {
   }
 
   private releaseLookThumbs(): void {
+    this.thumbLimiter.supersede(() => true);
     for (const entry of this.lookThumbs.values()) for (const thumb of entry.urls.values()) void thumb.promise.then(releaseUrl, () => {});
     this.lookThumbs.clear();
   }
@@ -1396,6 +1492,65 @@ export class AppStore {
       // The plot stays as it was; the next render asks again.
     } finally {
       this.histogramBusy = false;
+    }
+  }
+
+  /**
+   * The histogram (and, with `readout`, the display values at the middle of the cell) is on show: the Light and Curve tabs call this
+   * while they are mounted and call the function it returns when they go. It asks once at once, then after the frames the viewport
+   * reports (`render_stats`), at most every {@link HISTOGRAM_THROTTLE_MS}: every request is a job in the one queue of the core that
+   * also draws the viewport, so asking per frame made each frame wait for the plot. Nothing is asked for while nobody watches.
+   */
+  watchHistogram(options: { readout?: boolean } = {}): () => void {
+    const readout = options.readout === true;
+    this.histogramWatchers += 1;
+    if (readout) this.readoutWatchers += 1;
+    void this.requestHistogram();
+    if (readout) void this.refreshMiddleReadout();
+    let watching = true;
+    return () => {
+      if (!watching) return;
+      watching = false;
+      this.histogramWatchers -= 1;
+      if (readout) this.readoutWatchers -= 1;
+      if (this.histogramWatchers === 0 && this.histogramTimer !== null) {
+        clearTimeout(this.histogramTimer);
+        this.histogramTimer = null;
+      }
+    };
+  }
+
+  /** A frame was drawn: asks for the histogram once the throttle allows, if anybody watches it. */
+  private scheduleHistogram(): void {
+    if (this.histogramWatchers === 0 || this.histogramTimer !== null) return;
+    this.histogramTimer = setTimeout(() => {
+      this.histogramTimer = null;
+      if (this.histogramWatchers === 0) return;
+      void this.requestHistogram();
+      if (this.readoutWatchers > 0) void this.refreshMiddleReadout();
+    }, HISTOGRAM_THROTTLE_MS);
+  }
+
+  /** Reads the middle of the cell for the Light tab's caption. One at a time; calls made while one is out collapse into one more. */
+  private async refreshMiddleReadout(): Promise<void> {
+    if (this.readoutBusy) {
+      this.readoutAgain = true;
+      return;
+    }
+    this.readoutBusy = true;
+    try {
+      do {
+        this.readoutAgain = false;
+        const asked = this.currentId();
+        if (asked === null) break;
+        const pixel = await this.samplePixelAt(0.5, 0.5);
+        const same = this.state.middleReadout;
+        if (pixel && this.currentId() === asked && !(same && same.r === pixel.r && same.g === pixel.g && same.b === pixel.b)) {
+          this.set({ middleReadout: pixel });
+        }
+      } while (this.readoutAgain);
+    } finally {
+      this.readoutBusy = false;
     }
   }
 

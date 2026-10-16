@@ -351,6 +351,10 @@ Pin `slint = "=1.18.1"` with features `unstable-wgpu-30`, `unstable-winit-030`, 
 5. Which Mac and displays (a P3 laptop panel and an sRGB external, a trackpad) can run the spike, or may it be queued under "Waiting on Mykyta" as M0-H4 is?
 6. If the rewrite goes ahead, may the Tauri bundler be replaced by `cargo-packager` or a script (section 2.14)?
 
+### Answers (Mykyta, 2026-10-16)
+
+1 and 2: no exception: "my software is Apache 2", so Slint's Royalty-free licence is not used and a spike, if any, runs on a licence-clean toolkit (egui). 4: an sRGB-only viewport is acceptable. 5: the owner's M4 Mac ("Mac Pro M4"; read as a MacBook Pro with its built-in display until he says otherwise). 3 and 6 are open. Recorded in `docs/16`.
+
 ## Sources
 
 All read 2026-10-16. Dates are of the release or commit read, or "master" for files read from the default branch that day.
