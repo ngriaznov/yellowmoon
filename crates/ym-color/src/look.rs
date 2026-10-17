@@ -93,6 +93,12 @@ pub const MAX_PROFILE_POINTS: usize = 64;
 /// Largest chroma multiplier a curve may ask for.
 pub const MAX_SATURATION_FACTOR: f64 = 8.0;
 
+/// The largest value a parametric look's CDL may reach on the unit cube of LogC4 inputs, before its
+/// saturation. A real look stays within about -0.5 to 2; a slope and power that send white to 1000 or
+/// beyond (or to infinity: slope 5.9 with power 1405 does) leave nothing usable, and the hue curves
+/// after the CDL would turn such values into NaN.
+pub const CDL_OUTPUT_LIMIT: f64 = 1000.0;
+
 /// What a look expects as input (`docs/08-looks.md`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum LookInput {
@@ -142,6 +148,16 @@ pub enum LookError {
     /// The cube could not be built.
     #[error("LUT: {0}")]
     Lut(#[from] LutError),
+    /// The CDL sends a LogC4 input inside the unit cube beyond [`CDL_OUTPUT_LIMIT`].
+    #[error(
+        "CDL: the {channel} channel reaches {value:e} at white; a look's CDL must stay below {CDL_OUTPUT_LIMIT}"
+    )]
+    CdlOutOfRange {
+        /// `red`, `green` or `blue`.
+        channel: &'static str,
+        /// What the slope, offset and power make of an input of 1.0 (may be infinite).
+        value: f64,
+    },
 }
 
 /// The intensity as the fraction `k` in `[0, 1]` (a NaN counts as 0).
@@ -605,6 +621,14 @@ impl ParametricLook {
             Some(c) => Cdl::new(c.slope, c.offset, c.power, c.saturation)?,
             None => Cdl::identity(),
         };
+        // Slope >= 0 and power > 0 make each channel's slope-offset-power rise with its input, so an input
+        // of 1.0 gives its largest value on the unit cube.
+        for (k, channel) in ["red", "green", "blue"].into_iter().enumerate() {
+            let value = (cdl.slope[k] + cdl.offset[k]).max(0.0).powf(cdl.power[k]);
+            if value.is_nan() || value >= CDL_OUTPUT_LIMIT {
+                return Err(LookError::CdlOutOfRange { channel, value });
+            }
+        }
         let hue_key = (0.0, 360.0, false);
         check_points(
             "hue_vs_sat",
@@ -775,6 +799,38 @@ impl ParametricLook {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The input the nightly fuzzer found on 2026-10-17 (`fuzz/corpus/look_json/cdl-overflow.json`): the
+    /// blue channel's slope 5.9 and power 1405 send white to infinity, and the CDL's saturation then made
+    /// `inf - inf`, a NaN, out of white.
+    const CDL_OVERFLOW: &str = include_str!("../fuzz/corpus/look_json/cdl-overflow.json");
+
+    #[test]
+    fn a_cdl_that_overflows_at_white_is_refused_with_its_channel() {
+        match ParametricLook::from_json(CDL_OVERFLOW) {
+            Err(LookError::CdlOutOfRange { channel, value }) => {
+                assert_eq!(channel, "blue");
+                assert!(value.is_infinite());
+            }
+            other => panic!("expected CdlOutOfRange, got {other:?}"),
+        }
+        // Just under the limit is accepted and evaluates without a NaN anywhere on the cube's corners.
+        let near = CDL_OVERFLOW.replace("5.90 ", "1.0").replace("1405", "2.9");
+        let look = ParametricLook::from_json(&near).expect("a strong but finite CDL is a look");
+        for corner in 0..8 {
+            let rgb = std::array::from_fn(|k| f64::from((corner >> k) & 1));
+            assert!(look.evaluate(rgb).iter().all(|v| v.is_finite()), "{rgb:?}");
+        }
+        // Blue offset -0.01: 9.99^3.5 is about 3150, over the limit (9.99^3 = 997 would pass).
+        let over = CDL_OVERFLOW.replace("5.90 ", "10.0").replace("1405", "3.5");
+        assert!(matches!(
+            ParametricLook::from_json(&over),
+            Err(LookError::CdlOutOfRange {
+                channel: "blue",
+                ..
+            })
+        ));
+    }
 
     #[test]
     fn neutral_is_identity() {

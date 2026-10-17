@@ -1,6 +1,7 @@
 //! Fuzz target for the parametric look JSON loader and the curve spline behind it. Properties:
-//! parsing never panics; an accepted look evaluates to finite values on the unit cube and bakes
-//! (or reports a typed error, for example a CDL whose output overflows) without panicking.
+//! parsing never panics; an accepted look evaluates without a NaN on the unit cube (a CDL whose
+//! output reaches `CDL_OUTPUT_LIMIT` at white is refused by the parser: `corpus/look_json/cdl-overflow.json`,
+//! found by the nightly run of 2026-10-17) and bakes (or reports a typed error) without panicking.
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
