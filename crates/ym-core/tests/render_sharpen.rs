@@ -368,14 +368,16 @@ fn a_view_at_100_percent_is_the_sharpened_picture_the_export_writes_on_the_devic
     let dev = device(&gpu);
     // The bound is twice the excess over the CPU's one code, per adapter kind. Software (lavapipe):
     // first measured 1.1011 codes at one sample of 1.44 million (0.3.0: 1.0967, two samples), so
-    // 0.2. Hardware (Metal, 498a078, macos-14 and macos-15 alike): 1.2039 codes at five samples, so
+    // 0.2; with pipeline 0.4.0 (the highlight range of C7 and the white lift together) 1.2039 codes
+    // at six samples, Metal's own number, so the hardware slack and twice the count, 12 (owner's
+    // decision of 2026-10-17, `docs/STATUS.md`). Hardware (Metal, 498a078, macos-14 and macos-15 alike): 1.2039 codes at five samples, so
     // 0.41 (twice the excess of 0.2039; run 38694506557 printed the same on both runners). The excess is not the stage (device against CPU on the same input: 3e-7 linear) but its
     // halo limiter's rank counts, which flip on last-bit differences between the device's f32
     // colour chain and the CPU's f64 one: one ulp of input noise in half the samples moves the CPU
     // stage against itself by 0.197 codes. It lands over one code only where the dither is near
     // its extreme.
     let (slack, max_over_one) = if gpu.info().is_software {
-        (0.2, 4)
+        (0.41, 12)
     } else {
         (0.41, 10)
     };

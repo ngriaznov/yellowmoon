@@ -743,6 +743,12 @@ mod view {
     /// twice the 5 codes first measured on lavapipe.
     pub const HALO_FLIP_CODE_BOUND: u8 = 10;
 
+    /// The share of samples over one code a sharpened device frame may have where output
+    /// sharpening's halo limiter flipped ranks: twice the 1.214e-5 measured on lavapipe with
+    /// pipeline 0.4.0 (the highlight range and the white lift together; the bound for every other
+    /// frame is 1e-5). Owner's decision of 2026-10-17 (`docs/STATUS.md`).
+    pub const HALO_FLIP_OVER_BOUND: f64 = 2.5e-5;
+
     pub fn picture(w: u32, h: u32) -> PhotoSource {
         let white = light("sony-ilce-7rm4", 4500.0);
         let scene = Scene::new(w, h, white, Layout::Patchwork, 0.5).noise(2e-4, 2e-6);
@@ -936,22 +942,27 @@ mod view {
             // code with the range at 0 or 1, so not the range itself); the bound is twice that. The
             // white lift alongside the range (this scene's lift is 1.04 stops) leaves it at 5 codes, 1
             // without output sharpening.
-            let worst_allowed = if worst > CODE_BOUND && src.settings.output_sharpening > 0.0 {
+            // The same holds for the share of samples over one code (`HALO_FLIP_OVER_BOUND`): with
+            // the white lift alongside the range, 1.214e-5 at 100 % on lavapipe against the 1e-5 of
+            // every other frame, 4.3e-6 with the lift off.
+            let (worst_allowed, over_allowed) = if (worst > CODE_BOUND || over > 1e-5)
+                && src.settings.output_sharpening > 0.0
+            {
                 let unsharpened = edit(&src, |s| s.output_sharpening = 0.0);
-                let (bare, _, _) = codes(
+                let (bare, bare_over, _) = codes(
                     &frame(&cpu, &unsharpened, &st),
                     &frame(&dev, &unsharpened, &st),
                 );
                 assert!(
-                    bare <= CODE_BOUND,
-                    "{name}: {bare} codes without output sharpening"
+                    bare <= CODE_BOUND && bare_over <= 1e-5,
+                    "{name}: {bare} codes, over 1 code {bare_over:e} without output sharpening"
                 );
                 eprintln!(
-                    "{name}: {worst} codes from the halo limiter's rank flips, {bare} without output sharpening"
+                    "{name}: {worst} codes, over 1 code {over:e} from the halo limiter's rank flips; {bare} codes, {bare_over:e} without output sharpening"
                 );
-                HALO_FLIP_CODE_BOUND
+                (HALO_FLIP_CODE_BOUND, HALO_FLIP_OVER_BOUND)
             } else {
-                CODE_BOUND
+                (CODE_BOUND, 1e-5)
             };
             assert!(
                 worst <= worst_allowed && mean < 0.25,
@@ -962,7 +973,7 @@ mod view {
             // The same on every adapter; a Metal column comes only with the Apple runners' numbers
             // (the `[view stages]` notes above).
             assert!(
-                max <= 0.17 && worst <= worst_allowed && over <= 1e-5 && mean < 1.5e-4,
+                max <= 0.17 && worst <= worst_allowed && over <= over_allowed && mean < 1.5e-4,
                 "{name}: max {max}, {worst} codes, over {over}, mean {mean}"
             );
         }
