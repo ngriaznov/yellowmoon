@@ -48,6 +48,8 @@ export type FromCore = AllTrue<{
   watchStatus: Assignable<B.WatchStatus, T.WatchStatus>;
   pixelSample: Assignable<B.PixelSample, T.PixelSample>;
   histogramData: Assignable<B.HistogramData, T.HistogramData>;
+  chromaScatter: Assignable<B.ChromaScatter, T.ChromaScatter>;
+  chromaSample: Assignable<B.ChromaSample, T.ChromaSample>;
   exportEstimate: Assignable<B.ExportEstimate, T.ExportEstimate>;
   cliLinkResult: Assignable<B.CliLinkResult, T.CliLinkResult>;
   cliLinkStatus: Assignable<B.CliLinkStatus, T.CliLinkStatus>;
@@ -79,6 +81,8 @@ export type Both = AllTrue<{
   crop: Same<T.Crop, B.Crop>;
   curves: Same<T.Curves, B.Curves>;
   colorBalance: Same<T.ColorBalance, B.ColorBalance>;
+  colorWarp: Same<T.ColorWarp, B.ColorWarp>;
+  colorWarpPin: Same<T.ColorWarpPin, B.ColorWarpPin>;
   viewportRect: Same<T.ViewportRect, B.ViewportRect>;
   viewportInput: Same<T.ViewportInput, B.ViewportInput>;
   viewportMode: Same<T.ViewportMode, B.ViewportMode>;

@@ -18,6 +18,12 @@ if (typeof Element !== "undefined") {
   Element.prototype.scrollIntoView ??= () => undefined;
 }
 
+// jsdom has no canvas: its `getContext` prints "not implemented" for every call. The one canvas of the app (the colour warp's plane)
+// is decoration and draws nothing without a context.
+if (typeof HTMLCanvasElement !== "undefined") {
+  HTMLCanvasElement.prototype.getContext = (() => null) as typeof HTMLCanvasElement.prototype.getContext;
+}
+
 afterEach(() => {
   cleanup();
 });

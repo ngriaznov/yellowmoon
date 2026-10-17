@@ -11,7 +11,8 @@ import type { AppStore } from "../state/store";
 import { imageAspectOf, isFullRect } from "./crop/cropMath";
 import { CropOverlay } from "./crop/CropOverlay";
 import type { CropSession } from "./crop/useCropSession";
-import { PickWhiteLayer } from "./PickWhiteLayer";
+import { PickLayer } from "./PickLayer";
+import type { PickMode } from "./PickLayer";
 import { previewUrl } from "./preview";
 
 export interface PhotoViewProps {
@@ -21,9 +22,9 @@ export interface PhotoViewProps {
   /** Names of the looks by id, for the chip ("Neutral · 100%"). */
   lookName: (id: string) => string;
   before: boolean;
-  /** Pick white is on: a crosshair layer covers the photo. */
-  picking: boolean;
-  /** A click in Pick white mode, in CSS pixels from the corner of the cell: the core finds the spot of the photo. */
+  /** Pick white or Pick colour is on: a crosshair layer covers the photo. Null while neither is. */
+  picking: PickMode | null;
+  /** A click in either mode, in CSS pixels from the corner of the cell: the core finds the spot of the photo. */
   onPicked: (point: { x: number; y: number }) => void;
   crop: CropSession | null;
   /** Reports the cell's rectangle, for the "Fit 34%" label. */
@@ -46,7 +47,7 @@ function notReadyNote(photo: PhotoSummary): { title: string; text: string } | nu
 
 /**
  * The photo cell of the Photos screen: the 3:2 viewport with its overlays (look chip, camera
- * line, Before label, ⌥ pixel readout) and, while they are on, the pick-white crosshair or the
+ * line, Before label, ⌥ pixel readout) and, while they are on, the crosshair of Pick white or Pick colour or the
  * crop frame. Who draws the photo depends on the viewport backend (`viewport_info`): the native
  * layer behind a transparent cell (`native`), the shell's pictures of the cell shown as images
  * (`fallback`, from `viewport_frame`), or, with no backend (a browser build on the mock), the
@@ -58,8 +59,8 @@ function notReadyNote(photo: PhotoSummary): { title: string; text: string } | nu
 export const PhotoView = memo(function PhotoView({ store, photo, rs, lookName, before, picking, onPicked, crop, onRect, compactCaption = false }: PhotoViewProps) {
   const backend = useAppState((s) => s.viewportBackend);
   const sentFrame = useAppState((s) => s.viewportFrame);
-  // Only Pick white needs to know whether the picture is letterboxed; the zoom changes on every wheel step and is not read otherwise.
-  const letterboxed = useAppState((s) => picking && showsWhole(s.zoom, store.fitPercentExact()));
+  // Only the pick layer needs to know whether the picture is letterboxed; the zoom changes on every wheel step and is not read otherwise.
+  const letterboxed = useAppState((s) => picking !== null && showsWhole(s.zoom, store.fitPercentExact()));
   const [readout, setReadout] = useState<string | null>(null);
   const probing = useRef(false);
 
@@ -209,7 +210,7 @@ export const PhotoView = memo(function PhotoView({ store, photo, rs, lookName, b
       ) : crop ? (
         <CropOverlay session={crop} />
       ) : picking ? (
-        <PickWhiteLayer displayAspect={displayAspect} letterboxed={letterboxed} onPick={onPicked} />
+        <PickLayer mode={picking} displayAspect={displayAspect} letterboxed={letterboxed} onPick={onPicked} />
       ) : null}
     </PhotoCell>
   );

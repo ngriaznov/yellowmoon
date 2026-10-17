@@ -1030,6 +1030,68 @@ fn the_pixel_readout_finds_the_photo_and_not_the_paper() {
 }
 
 #[test]
+fn pick_colour_and_the_chroma_scatter_cross_the_bridge() {
+    let h = Harness::new();
+    // Asked for while photos are still developing, the scatter is empty, never an error.
+    let opened = h.open(6);
+    let last = opened.photos.last().expect("photos").id;
+    let early = h
+        .api
+        .chroma_scatter(last)
+        .expect("no error while developing");
+    assert!(early.points.len().is_multiple_of(2));
+    h.develop();
+    let id = h.first();
+    let scatter = h.api.chroma_scatter(id).expect("scatter");
+    assert!(!scatter.points.is_empty() && scatter.points.len() <= 2 * 2048);
+    assert_eq!(scatter.points.len() % 2, 0);
+    assert_eq!(h.api.chroma_scatter(id).expect("scatter"), scatter);
+    assert!(h.api.chroma_scatter(PhotoId(9999)).is_err());
+    // Pick colour: the photo's chroma under the pointer, `null` on the paper and for a point that
+    // is not a number.
+    h.rect(300.0, 300.0);
+    assert!(h.api.viewport().wait_idle(WAIT));
+    let inside = h
+        .api
+        .sample_chroma(150.0, 150.0)
+        .expect("chroma")
+        .expect("a point of the photo");
+    assert!(inside.a.0.is_finite() && inside.b.0.is_finite());
+    assert_eq!(
+        serde_json::to_value(inside).expect("json"),
+        json!({ "a": inside.a.0, "b": inside.b.0 })
+    );
+    assert_eq!(h.api.sample_chroma(150.0, 5.0).expect("paper"), None);
+    assert_eq!(
+        h.api.sample_chroma(f64::NAN, 3.0).expect("not a number"),
+        None
+    );
+    // A pin on that colour moves the picture there but not what Pick colour reads (the warp's
+    // input), and the answer is the core's.
+    let pin = json!({ "source": [inside.a.0, inside.b.0], "target": [inside.a.0 + 0.05, inside.b.0],
+        "locked": false, "range": 0.04, "shadows": 1, "highlights": 1, "pivot_ev": 0, "exposure_ev": 0 });
+    let patch: SettingsPatch =
+        serde_json::from_value(json!({ "color_warp": { "pins": [pin] } })).expect("patch");
+    let resolved = h.api.update_settings(id, &patch).expect("update");
+    assert_eq!(resolved.settings.color_warp.pins.len(), 1);
+    assert_eq!(resolved.values.color_warp, resolved.settings.color_warp);
+    assert_eq!(
+        h.api.sample_chroma(150.0, 150.0).expect("chroma"),
+        Some(inside)
+    );
+    // The settings travel with Copy settings and come back in `get_settings`.
+    let copied = h.api.copy_settings(id).expect("copy");
+    assert_eq!(
+        copied.color_warp,
+        Some(resolved.settings.color_warp.clone())
+    );
+    let cleared: SettingsPatch =
+        serde_json::from_value(json!({ "color_warp": { "pins": [] } })).expect("patch");
+    let resolved = h.api.update_settings(id, &cleared).expect("update");
+    assert!(resolved.settings.color_warp.pins.is_empty());
+}
+
+#[test]
 fn a_pick_white_click_becomes_the_photos_white_pick() {
     let h = Harness::new();
     h.open(1);
@@ -2501,7 +2563,13 @@ fn core_types_convert_without_loss() {
         "crop": { "rect": { "x": 0.1, "y": 0.2, "width": 0.6, "height": 0.5 }, "angle_deg": -3, "aspect": "four_by_five" },
         "orientation": 270,
         "decode": { "neural_demosaic": false },
-        "rolloff": { "highlights": 0.2 }
+        "rolloff": { "highlights": 0.2 },
+        "color_warp": { "pins": [
+            { "source": [0.12, 0.03], "target": [0.08, 0.1], "locked": false, "range": 0.06,
+              "shadows": 0.5, "highlights": 1, "pivot_ev": -1.5, "exposure_ev": 0.25 },
+            { "source": [-0.05, -0.1], "target": [-0.05, -0.1], "locked": true, "range": 0.04,
+              "shadows": 1, "highlights": 1, "pivot_ev": 0, "exposure_ev": 0 }
+        ] }
     }))
     .expect("patch");
     h.api.update_settings(id, &patch).expect("update");
@@ -2560,6 +2628,30 @@ fn core_types_convert_without_loss() {
         &histogram,
         &h.api.histogram(id).expect("histogram"),
     );
+    let scatter = core
+        .renderer
+        .chroma_scatter(&src, &CancelToken::new())
+        .expect("scatter");
+    assert_same(
+        "chroma_scatter",
+        &scatter,
+        &h.api.chroma_scatter(id).expect("scatter"),
+    );
+    let sample = ym_core::pipeline::ChromaSample {
+        a: 0.125,
+        b: -0.0625,
+    };
+    let wire: crate::wire::ChromaSample = convert(&sample).expect("sample");
+    assert_same("sample_chroma", &sample, &wire);
+    // A patch's warp crosses as the core's (the nested partial patches of the wire write their
+    // absent parts as `null`, so only the warp is compared).
+    let core_patch: ym_core::settings::SettingsPatch = convert(&patch).expect("core patch");
+    assert_same(
+        "settings_patch.color_warp",
+        &core_patch.color_warp,
+        &patch.color_warp,
+    );
+    assert_eq!(core_patch.color_warp.map(|w| w.pins.len()), Some(2));
 }
 
 #[test]

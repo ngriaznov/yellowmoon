@@ -3,6 +3,7 @@ import type { Page } from "@playwright/test";
 import type { MockOptions } from "../src/api.mock";
 import { configureMock, lookTilesLoaded, openApp, openPhotos, showUpdateReady } from "./helpers/app";
 import { compareScreen } from "./helpers/compare";
+import { WARP_PINS } from "./helpers/states";
 
 // Screenshot comparisons of the screens (docs/11 §Tests): the app at 1440 × 900 at 2× compared with `design/screenshots-c2/*.png`,
 // the references of the dark glass interface (C2). They are the app's own pictures on the mock API, taken with the browser flags of
@@ -60,9 +61,9 @@ test.describe("Start", () => {
 });
 
 test.describe("Photos", () => {
-  async function photos(page: Page): Promise<void> {
+  async function photos(page: Page, settings: MockOptions["initialSettings"] = MOCKUP_SETTINGS): Promise<void> {
     await openApp(page, MOCKUP);
-    await configureMock(page, { initialSettings: MOCKUP_SETTINGS });
+    await configureMock(page, { initialSettings: settings });
     await openPhotos(page);
     await showUpdateReady(page);
     await expect(page.getByText("Neural · 42 ms · Display P3")).toBeVisible();
@@ -89,6 +90,21 @@ test.describe("Photos", () => {
     await photos(page);
     await tab(page, "Colour");
     await compareScreen(page, "photos-color");
+  });
+
+  test("Colour warp: two moving pins and a lock, the card in view, its first pin selected (photos-color-warp.png)", async ({ page }) => {
+    // The owner's request of 2026-10-17 (docs/11 §Colour warp): the sky's blue moved toward teal, the sun's warm white toward orange, a
+    // lock in the magentas. The photo shows the move (the mock warps its flat colours, src/fixtures/warp.ts).
+    await photos(page, { DSC04204: { ...MOCKUP_SETTINGS?.DSC04204, color_warp: { pins: WARP_PINS as never } } });
+    await tab(page, "Colour");
+    // The photo's colours have been drawn behind the plane.
+    await expect(page.locator('.ym-warp-plane:not([data-scatter-points="0"])')).toBeVisible();
+    await page.getByRole("slider", { name: "Pin 1" }).focus();
+    await page.locator(".ym-tools__scroll").evaluate((el) => {
+      el.scrollTop = el.scrollHeight;
+    });
+    await expect(page.getByRole("textbox", { name: "Range value" })).toBeInViewport();
+    await compareScreen(page, "photos-color-warp");
   });
 
   test("Detail (photos-detail.png)", async ({ page }) => {

@@ -11,7 +11,8 @@
 //!   noise `g0_c * sqrt(b + sigma_row^2 + q^2 / 12)`, the matrix (exposure included) mixes them
 //!   into the three AWG4 channels, and the floor is the mean of those three sigmas (`docs/02` C7:
 //!   "the noise model's read noise mapped to linear AWG4 at this exposure");
-//! * `contrast` to `color_balance` become `GradeParams`, the four curves a `CurveSet`;
+//! * `contrast` to `color_balance` become `GradeParams`, the pins of `color_warp` a `WarpParams`
+//!   (stage C9b), the four curves a `CurveSet`;
 //! * the look comes from a [`LookProvider`] (the looks library in the app, [`NeutralOnly`] in tests)
 //!   and the display transform from a [`DisplayChoice`] (ACES 2, or an imported ARRI display LUT).
 //!
@@ -33,6 +34,7 @@ use ym_color::exposure::white::WhiteLift;
 use ym_color::grade::{ColorBalance, GradeParams};
 use ym_color::look::LookTransform;
 use ym_color::tone::ToneParams;
+use ym_color::warp::{Warp, WarpParams};
 use ym_looks::library::{DisplayInput, Library, LookId};
 use ym_profiles::color_matrices::ColorMatrices;
 use ym_profiles::profile::Profile;
@@ -501,6 +503,12 @@ pub fn grade_params(s: &DevelopSettings) -> GradeParams {
     }
 }
 
+/// The colour warp's pins as `ym_color`'s parameters (stage C9b). No pins is the identity.
+#[must_use]
+pub fn warp_params(s: &DevelopSettings) -> WarpParams {
+    s.color_warp.to_color()
+}
+
 fn curve_of(points: &[CurvePoint]) -> Result<Curve, RenderError> {
     let pts: Vec<(f64, f64)> = points.iter().map(|p| (p[0], p[1])).collect();
     Curve::new(&pts).map_err(|e| RenderError::Color(format!("The curve can't be used: {e}.")))
@@ -591,9 +599,12 @@ fn key_of(src: &PhotoSource, color: &ColorPlan, req: &GradeRequest<'_>, p: &Piec
     let mut key = String::with_capacity(768);
     let _ = write!(
         key,
-        "{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{}|{:?}|",
+        "{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{}|{:?}|",
         color.key,
         grade_params(s),
+        // The warp as the chain prepares it: pins that change nothing (locked pins with no pin that
+        // moves, a pin whose target is its source) leave the key, and the frame, as without them.
+        Warp::new(&warp_params(s)),
         s.curve,
         req.target,
         req.dither,
@@ -640,6 +651,7 @@ pub fn grade_plan(
     let key = key_of(src, color, req, &p);
     let mut params = ChainParams::new(*color.fused.matrix(), color.tone);
     params.grade = grade_params(s);
+    params.warp = warp_params(s);
     params.curves = curve_set(s)?;
     params.output = req.target;
     params.dither = req.dither;

@@ -1,8 +1,8 @@
 //! The whole per-pixel colour chain C1 to C13 as one compute pass (`docs/02-colour-pipeline.md`).
 //!
 //! [`PreparedChain::new`] turns an immutable `ym_color::display::ColorChain` into the GPU form: the
-//! per-frame uniform block (fused matrix, C7, C9, C10 and C12 parameters, the ACES 2 scalars and the
-//! flags, about 1 KB), and four **persistent tables** that [`ChainTables`] keeps on the device and
+//! per-frame uniform block (fused matrix, C7, C9, C9b, C10 and C12 parameters, the ACES 2 scalars and
+//! the flags, about 2 KB), and four **persistent tables** that [`ChainTables`] keeps on the device and
 //! refills only when their content changes:
 //!
 //! * the 64 x 64 dither thresholds, once per device;
@@ -46,6 +46,18 @@
 //! A source image with a **fourth plane** is the sampler's output: that plane marks the pixels
 //! outside the photo (the letterbox). Such pixels are not computed: a stage output has 0 there and
 //! carries the mask into its own fourth plane, an RGBA8 output has the background colour.
+//!
+//! # The colour warp (C9b)
+//!
+//! The pins of `ChainParams::warp` travel in the uniform block, not in a table:
+//! [`ChainTables::prepare`] packs what `ym_color::warp::Warp::new` prepares (the CPU's own clamping,
+//! range growth, pivot code, and the rule that still pins, and locks without a moving pin, are left
+//! out) into `warp_n` (the counts), `warp_mv` (three `vec4` rows a moving pin) and `warp_lk` (one row
+//! a lock), 1040 bytes for the 16 pins of `WARP_MAX_PINS`. A pin moves on every frame of a drag, so a
+//! persistent table would be refilled as often as the uniform is written; the uniform needs no
+//! further storage binding (K3), no cache key and no upload of its own. No moving pin gives
+//! `warp_n.x = 0` and the kernel skips the stage, so a chain without a warp renders the bits it
+//! rendered before the stage existed.
 
 use std::any::Any;
 use std::cell::RefCell;
@@ -67,6 +79,7 @@ use ym_color::grade::{
 };
 use ym_color::look::{LookInput, intensity_fraction};
 use ym_color::lut::Lut;
+use ym_color::warp::{WARP_MAX_PINS, Warp, WarpParams};
 
 use super::shader::{KernelId, table};
 use super::util::{OutKind, PixelData, STORAGE_IN, STORAGE_OUT, even, image_bytes, sample_bytes};
@@ -91,6 +104,8 @@ pub enum Stop {
     C8,
     /// After the primary grade.
     C9,
+    /// After the colour warp (`StageTrace::c9b_logc4`), in LogC4.
+    C9b,
     /// After the look (log-to-log looks).
     C10,
     /// After the curves: the DNG stop point, in LogC4.
@@ -113,6 +128,8 @@ impl Stop {
             Stop::C7 => 1,
             Stop::C8 => 2,
             Stop::C9 => 3,
+            // Added after the Before view's 9; the codes of the other stops did not change.
+            Stop::C9b => 10,
             Stop::C10 => 4,
             Stop::C11 => 5,
             Stop::DngLinearAwg4 => 6,
@@ -169,12 +186,23 @@ struct LutDescU {
     smax: [f32; 4],
 }
 
-/// The per-frame uniform block of `color.wgsl` (`ChainU`), 1056 bytes: window and mode, the chain's
+/// Rows (`vec4<f32>`) of one moving pin of the colour warp in [`ChainU`]: [s.x, s.y, delta.x,
+/// delta.y], [1 / (2 rho'^2), shadows, highlights, pivot code], [exposure in stops, 0, 0, 0].
+pub(crate) const WARP_ROWS_PER_MOVE: usize = 3;
+/// Rows of the moving pins in [`ChainU`] (`WARP_MOVE_ROWS` in `color.wgsl`): room for every pin.
+pub(crate) const WARP_MOVE_ROWS: usize = WARP_ROWS_PER_MOVE * WARP_MAX_PINS;
+/// Rows of the locked pins in [`ChainU`] (`WARP_LOCK_ROWS` in `color.wgsl`), one a lock: [l.x, l.y,
+/// 1 / (2 rho^2), 0]. At most `WARP_MAX_PINS - 1` are used (locks count only beside a moving pin);
+/// the sixteenth row keeps the arithmetic of the sizes plain.
+pub(crate) const WARP_LOCK_ROWS: usize = WARP_MAX_PINS;
+
+/// The per-frame uniform block of `color.wgsl` (`ChainU`), 2096 bytes: window and mode, the chain's
 /// parameters, the Before view's camera default (`cam0` to `cam2`: the 3x3 rows, `camt`: the tone curve's
-/// `n`, `s`, `k` and white level) and the ACES 2 scalars. Field for field the WGSL struct (a test pins
+/// `n`, `s`, `k` and white level), the ACES 2 scalars and the colour warp's pins (`warp_n`: the moving
+/// and locked counts, `warp_mv`, `warp_lk`: module notes). Field for field the WGSL struct (a test pins
 /// the offsets).
 #[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable, Default)]
+#[derive(Clone, Copy, Pod, Zeroable)]
 struct ChainU {
     dims: [u32; 4],
     src: [u32; 4],
@@ -211,6 +239,16 @@ struct ChainU {
     cam2: [f32; 4],
     camt: [f32; 4],
     aces: AcesU,
+    warp_n: [u32; 4],
+    warp_mv: [[f32; 4]; WARP_MOVE_ROWS],
+    warp_lk: [[f32; 4]; WARP_LOCK_ROWS],
+}
+
+impl Default for ChainU {
+    /// All zero (`Default` is not derived: the warp's arrays are longer than 32).
+    fn default() -> Self {
+        Self::zeroed()
+    }
 }
 
 #[repr(C)]
@@ -350,6 +388,48 @@ fn grade_uniform(u: &mut ChainU, g: &GradeParams) {
     u.bal1 = [b[2].a as f32, b[2].b as f32, 0.0, 0.0];
     let bc = BALANCE_CENTER_STOPS.map(logc4_at_stops);
     u.bal_ctr = [bc[0] as f32, bc[1] as f32, bc[2] as f32, 0.0];
+}
+
+/// The colour warp's pins as the kernel wants them: what `Warp::new` prepares, packed into the rows of
+/// the uniform block (module notes). Nothing is computed here but the casts to f32.
+fn warp_uniform(u: &mut ChainU, params: &WarpParams) {
+    let warp = Warp::new(params);
+    let (moves, locks) = (warp.moves(), warp.locks());
+    // `Warp::new` keeps at most `WARP_MAX_PINS` pins in all, so both fit; the zips and the `min`s keep
+    // the rows and the counts inside the arrays even if that ever changed.
+    for (rows, m) in u
+        .warp_mv
+        .chunks_exact_mut(WARP_ROWS_PER_MOVE)
+        .zip(moves.iter())
+    {
+        rows[0] = [
+            m.source[0] as f32,
+            m.source[1] as f32,
+            m.delta[0] as f32,
+            m.delta[1] as f32,
+        ];
+        rows[1] = [
+            m.inv_two_sigma_sq as f32,
+            m.shadows as f32,
+            m.highlights as f32,
+            m.pivot_code as f32,
+        ];
+        rows[2] = [m.exposure_ev as f32, 0.0, 0.0, 0.0];
+    }
+    for (row, l) in u.warp_lk.iter_mut().zip(locks.iter()) {
+        *row = [
+            l.at[0] as f32,
+            l.at[1] as f32,
+            l.inv_two_sigma_sq as f32,
+            0.0,
+        ];
+    }
+    u.warp_n = [
+        moves.len().min(WARP_MAX_PINS) as u32,
+        locks.len().min(WARP_LOCK_ROWS) as u32,
+        0,
+        0,
+    ];
 }
 
 /// Limiting RGB to encoding RGB for the ACES 2 output (`None` when they are the same primaries).
@@ -749,6 +829,8 @@ impl ChainTables {
         };
         // C9.
         grade_uniform(&mut u, &params.grade);
+        // C9b.
+        warp_uniform(&mut u, &params.warp);
 
         // C10 and the display-baked look.
         u.flags[2] = match look_kind {
@@ -1521,12 +1603,115 @@ mod tests {
     use crate::kernels::shader_source;
 
     #[test]
-    fn the_per_frame_block_is_about_1_kb() {
+    fn the_per_frame_block_is_about_2_kb() {
         // "A per-frame `ChainU` of about 1 KB" (docs/gpu-plan.md G-04): the ACES 2 scalars live in
         // the one uniform block (K3 allows one), so the block holds the whole chain's parameters. It was
-        // 992 bytes; the Before view's camera default adds 64 (the 3x3 rows and the curve constants).
-        assert_eq!(size_of::<ChainU>(), 1056);
+        // 992 bytes; the Before view's camera default added 64 (the 3x3 rows and the curve constants),
+        // and the colour warp (C9b) 1040: the counts (16), three rows for each of 16 moving pins (768)
+        // and one row for each of 16 locks (256). Still far below the 64 KiB uniform binding the
+        // device asks for (`max_uniform_buffer_binding_size` of `wgpu::Limits::default()`) and the
+        // 16 KiB of wgpu's downlevel limits.
+        assert_eq!(size_of::<ChainU>(), 2096);
         assert_eq!(size_of::<ChainU>() % 16, 0);
+        assert_eq!(
+            size_of::<ChainU>() - offset_of!(ChainU, warp_n),
+            16 + 16 * (WARP_MOVE_ROWS + WARP_LOCK_ROWS)
+        );
+        assert_eq!(WARP_MOVE_ROWS, 48);
+        assert_eq!(WARP_LOCK_ROWS, 16);
+    }
+
+    #[test]
+    fn the_warp_rows_are_what_the_cpu_prepares() {
+        use ym_color::warp::{WarpParams, WarpPin};
+        let pins = vec![
+            WarpPin {
+                range: 0.05,
+                shadows: 0.25,
+                highlights: 0.75,
+                pivot_ev: 1.5,
+                exposure_ev: -0.5,
+                ..WarpPin::moving([0.1, 0.02], [0.04, 0.09])
+            },
+            // A still pin: left out, so the next moving pin takes the second slot.
+            WarpPin::moving([0.2, 0.2], [0.2, 0.2]),
+            WarpPin::locked_at([-0.05, 0.03]),
+            // A long move with the smallest range: the range grows to |delta| / 1.5.
+            WarpPin {
+                range: 0.001,
+                ..WarpPin::moving([0.0, -0.1], [0.0, 0.2])
+            },
+        ];
+        let params = WarpParams { pins };
+        let warp = Warp::new(&params);
+        let mut u = ChainU::default();
+        warp_uniform(&mut u, &params);
+        assert_eq!(u.warp_n, [2, 1, 0, 0]);
+        for (k, m) in warp.moves().iter().enumerate() {
+            let rows = &u.warp_mv[WARP_ROWS_PER_MOVE * k..][..WARP_ROWS_PER_MOVE];
+            let want = [
+                [m.source[0], m.source[1], m.delta[0], m.delta[1]],
+                [m.inv_two_sigma_sq, m.shadows, m.highlights, m.pivot_code],
+                [m.exposure_ev, 0.0, 0.0, 0.0],
+            ];
+            for (row, w) in rows.iter().zip(want) {
+                assert_eq!(*row, w.map(|x| x as f32), "move {k}");
+            }
+        }
+        // The second move's range grew from 0.01 (the smallest) to 0.3 / 1.5.
+        let grown = 0.3 / ym_color::warp::WARP_FOLD_RATIO;
+        let inv = f64::from(u.warp_mv[WARP_ROWS_PER_MOVE + 1][0]);
+        assert!((inv - 1.0 / (2.0 * grown * grown)).abs() < 1e-4, "{inv}");
+        let l = warp.locks()[0];
+        assert_eq!(
+            u.warp_lk[0],
+            [
+                l.at[0] as f32,
+                l.at[1] as f32,
+                l.inv_two_sigma_sq as f32,
+                0.0
+            ]
+        );
+        assert!(
+            u.warp_mv[2 * WARP_ROWS_PER_MOVE..]
+                .iter()
+                .all(|r| *r == [0.0; 4])
+        );
+        assert!(u.warp_lk[1..].iter().all(|r| *r == [0.0; 4]));
+        // No moving pin: nothing at all, the locks included (the kernel skips the stage).
+        for pins in [
+            vec![],
+            vec![WarpPin::locked_at([0.1, 0.0])],
+            vec![
+                WarpPin::moving([0.1, 0.0], [0.1, 0.0]),
+                WarpPin::locked_at([0.0, 0.1]),
+            ],
+        ] {
+            let mut u = ChainU::default();
+            warp_uniform(&mut u, &WarpParams { pins });
+            assert_eq!(
+                bytemuck::bytes_of(&u),
+                bytemuck::bytes_of(&ChainU::default())
+            );
+        }
+        // The maximum: 16 moving pins fill every row of `warp_mv`.
+        let pins: Vec<WarpPin> = (0..20)
+            .map(|i| {
+                let a = f64::from(i) * 0.3;
+                WarpPin::moving(
+                    [0.1 * a.cos(), 0.1 * a.sin()],
+                    [0.12 * a.cos(), 0.1 * a.sin()],
+                )
+            })
+            .collect();
+        let mut u = ChainU::default();
+        warp_uniform(&mut u, &WarpParams { pins });
+        assert_eq!(u.warp_n, [16, 0, 0, 0]);
+        assert!(
+            u.warp_mv
+                .chunks_exact(WARP_ROWS_PER_MOVE)
+                .all(|r| r[1][0] > 0.0)
+        );
     }
 
     #[test]
@@ -1556,7 +1741,7 @@ mod tests {
             let naga::TypeInner::Struct { members, span } = &module.types[var.ty].inner else {
                 panic!("CU is not a struct");
             };
-            let fields: [(&str, usize); 35] = [
+            let fields: [(&str, usize); 38] = [
                 ("dims", offset_of!(ChainU, dims)),
                 ("src", offset_of!(ChainU, src)),
                 ("origin", offset_of!(ChainU, origin)),
@@ -1592,6 +1777,9 @@ mod tests {
                 ("cam2", offset_of!(ChainU, cam2)),
                 ("camt", offset_of!(ChainU, camt)),
                 ("aces", offset_of!(ChainU, aces)),
+                ("warp_n", offset_of!(ChainU, warp_n)),
+                ("warp_mv", offset_of!(ChainU, warp_mv)),
+                ("warp_lk", offset_of!(ChainU, warp_lk)),
             ];
             assert_eq!(members.len(), fields.len());
             for (member, (name, offset)) in members.iter().zip(fields) {
@@ -1599,6 +1787,32 @@ mod tests {
                 assert_eq!(member.offset as usize, offset, "offset of {name}");
             }
             assert_eq!(*span as usize, size_of::<ChainU>(), "size of the block");
+            // The warp's arrays: as many `vec4<f32>` rows as the Rust arrays, 16 bytes apart.
+            for (name, rows) in [("warp_mv", WARP_MOVE_ROWS), ("warp_lk", WARP_LOCK_ROWS)] {
+                let member = members
+                    .iter()
+                    .find(|m| m.name.as_deref() == Some(name))
+                    .expect("warp member");
+                let naga::TypeInner::Array { base, size, stride } = &module.types[member.ty].inner
+                else {
+                    panic!("{name} is not an array");
+                };
+                assert_eq!(*stride, 16, "{name}: stride");
+                assert!(
+                    matches!(size, naga::ArraySize::Constant(n) if n.get() as usize == rows),
+                    "{name}: {size:?} rows, the host packs {rows}"
+                );
+                assert!(
+                    matches!(
+                        module.types[*base].inner,
+                        naga::TypeInner::Vector {
+                            size: naga::VectorSize::Quad,
+                            scalar: naga::Scalar::F32
+                        }
+                    ),
+                    "{name}: rows of vec4<f32>"
+                );
+            }
         }
     }
 

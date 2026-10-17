@@ -1,8 +1,8 @@
 // The per-pixel colour chain C1 to C13 (docs/02-colour-pipeline.md) in one compute pass, mirroring
 // ym_color::display::ColorChain stage by stage:
 //
-//   camera RGB --M--> C6 linear AWG4 --C7--> --C8--> LogC4 --C9--> --C10 look--> --C11 curves-->
-//   --C12 ACES 2 or ARRI display LUT--> display linear --C13--> code values
+//   camera RGB --M--> C6 linear AWG4 --C7--> --C8--> LogC4 --C9--> --C9b warp--> --C10 look-->
+//   --C11 curves--> --C12 ACES 2 or ARRI display LUT--> display linear --C13--> code values
 //
 // C12 on the ACES 2 path starts with the white lift (docs/02, step 1b): a scene-linear gain on the tones
 // above +1 stop (`white_lift_gain`, amount and 1 / span in `CU.fl.z` and `CU.fl.w`, 0 for none and for a
@@ -16,7 +16,8 @@
 // Persistent tables (G-04): the dither thresholds and the ACES 2 tables (`tables`), the four curve
 // tables (`curves`) and the look and display cubes (`look_luts`, `disp_luts`) are separate buffers the
 // host keeps across frames and refills only when their content changes. What changes every frame is
-// this one uniform block (about 1 KB, the ACES 2 scalars included: K3 allows one uniform buffer).
+// this one uniform block (about 2 KB, the ACES 2 scalars and the colour warp's pins included: K3 allows
+// one uniform buffer).
 //
 // A source with a fourth plane (`sp.y` = 1) carries the letterbox mask of the sampler (1 outside the
 // photo): masked pixels are not computed, they are 0 in a stage output (whose own fourth plane
@@ -67,6 +68,9 @@ struct ChainU {
     cam2: vec4<f32>,
     camt: vec4<f32>,     // tone curve n, s, k and the white level at which it reaches 1
     aces: AcesU,         // the ACES 2 scalars and matrices (aces2.wgsl)
+    warp_n: vec4<u32>,   // C9b: x moving pins (0: the stage is skipped), y locked pins
+    warp_mv: array<vec4<f32>, WARP_MOVE_ROWS>,  // three rows a moving pin (c9b_warp)
+    warp_lk: array<vec4<f32>, WARP_LOCK_ROWS>,  // one row a locked pin (c9b_warp)
 };
 
 @group(0) @binding(0) var<uniform> CU: ChainU;
@@ -150,6 +154,80 @@ fn c9_grade(v: vec3<f32>, l: f32) -> vec3<f32> {
         o = vec3<f32>(m) + (o - vec3<f32>(m)) * CU.grade0.z;
     }
     return o;
+}
+
+// ---- C9b: colour warp ----------------------------------------------------------------------------
+
+// The pins of ym_color::warp::Warp (docs/02 C9b), prepared on the host by `Warp::new` (clamped, still
+// pins left out, the range grown for a long move, the pivot as a LogC4 code): `CU.warp_n.x` moving pins
+// of three rows each in `CU.warp_mv`, [s.x, s.y, delta.x, delta.y], [1 / (2 rho'^2), shadows,
+// highlights, pivot code], [exposure in stops, 0, 0, 0], and `CU.warp_n.y` locked pins in `CU.warp_lk`,
+// [l.x, l.y, 1 / (2 rho^2), 0]. No moving pin skips the stage: the output is then bit for bit what it
+// was before the warp existed.
+//
+// Fast-math (K8). Nothing here rests on a rounding (the gate is 2e-4 in LogC4), and nothing may rest
+// on an infinity or a NaN either (Metal's fast-math may assume there are none):
+// * every Gaussian goes through `warp_gauss`, whose exponent is limited to WARP_EXP_LIMIT: an
+//   absurd chroma (a garbage pixel of 1e30) gives exp(-80), a normal number, never exp(-inf);
+// * a neutral pixel returns before any square root is taken (fast-math may compute sqrt(x) as
+//   x * rsqrt(x), a NaN at 0); the threshold, |c| < 1e-12, is far above the denormals a fast-math
+//   device flushes, and the CPU moves such a pixel by less than 1e-20;
+// * the lock product is of factors in [0, 1] and the division is by max(1, sum of reaches) >= 1;
+// * the tone L decodes v limited to WARP_LUMA_CEIL, so the decode's exp2 stays finite in f32 (it
+//   overflows from a code of about 8; real pixels after C9 stay below 3, and from 0.8 up the tonal
+//   weight is the highlights' already).
+// A C port of this function compiled with clang -O3 -ffast-math -ffp-contract=fast -mfma -mrecip=all
+// against -O2 -ffp-contract=off (200 random pin sets of 0 to 16 pins, 80,000 pixels among them exact
+// neutrals, |c| = 1e-13, chroma of 1e30, codes up to 40 and down to -3e31, pixels on a lock): every
+// output finite, the two at most 2.4e-7 apart, exact neutrals unchanged in both.
+const WARP_EXP_LIMIT: f32 = 80.0;
+const WARP_NEUTRAL_R2: f32 = 1.0e-24;
+const WARP_LUMA_CEIL: f32 = 7.5;
+
+fn warp_gauss(d2: f32, inv_two_sigma_sq: f32) -> f32 {
+    return exp(-min(d2 * inv_two_sigma_sq, WARP_EXP_LIMIT));
+}
+
+fn c9b_warp(v: vec3<f32>) -> vec3<f32> {
+    let moves = min(CU.warp_n.x, WARP_MAX_PINS);
+    if (moves == 0u) {
+        return v;
+    }
+    let c = vec2<f32>(dot(E1, v), dot(E2, v));
+    let r2 = dot(c, c);
+    if (r2 < WARP_NEUTRAL_R2) {
+        return v;
+    }
+    let guard = smoothstep(0.0, WARP_NEUTRAL_GUARD, sqrt(r2));
+    var hold = 1.0;
+    let locks = min(CU.warp_n.y, WARP_LOCK_ROWS);
+    for (var j = 0u; j < locks; j++) {
+        let lk = CU.warp_lk[j];
+        let d = c - lk.xy;
+        hold = hold * (1.0 - warp_gauss(dot(d, d), lk.z));
+    }
+    if (hold <= 0.0) {
+        return v;
+    }
+    let l = logc4_encode(dot(Y_AWG4, logc4_decode3(min(v, vec3<f32>(WARP_LUMA_CEIL)))));
+    var reach = 0.0;
+    var shift = vec2<f32>(0.0);
+    var exposure = 0.0;
+    for (var i = 0u; i < moves; i++) {
+        let a = CU.warp_mv[3u * i];
+        let b = CU.warp_mv[3u * i + 1u];
+        let x = CU.warp_mv[3u * i + 2u].x;
+        let d = c - a.xy;
+        let phi = warp_gauss(dot(d, d), b.x);
+        reach = reach + phi;
+        let t = smoothstep(b.w - WARP_TONE_HALF_WIDTH, b.w + WARP_TONE_HALF_WIDTH, l);
+        let w = (b.y + (b.z - b.y) * t) * phi;
+        shift = shift + w * a.zw;
+        exposure = exposure + w * x;
+    }
+    let k = guard * hold / max(reach, 1.0);
+    let dd = k * shift;
+    return v + dd.x * E1 + dd.y * E2 + vec3<f32>(k * exposure * STOP);
 }
 
 // ---- C10: CDL and tetrahedral 3D LUT ---------------------------------------------------------------
@@ -458,9 +536,10 @@ fn before_camera_default(cam: vec3<f32>) -> vec3<f32> {
 
 // ---- the chain -------------------------------------------------------------------------------------------
 
-// The value at the requested stop (mode.x): 0 C6, 1 C7, 2 C8, 3 C9, 4 C10, 5 C11, 6 DNG (C11
+// The value at the requested stop (mode.x): 0 C6, 1 C7, 2 C8, 3 C9, 10 C9b, 4 C10, 5 C11, 6 DNG (C11
 // decoded to linear AWG4), 7 C12, 8 C13 (unquantised), 9 the Before view (the camera default encoded for
-// the output, or the LogC4 signal at C8 or C9 as code values).
+// the output, or the LogC4 signal at C8 or C9 as code values: the reading point "after the grade" is
+// C9, before the warp, as ColorChain::apply_before_pixel).
 fn run_pixel(cam_in: vec3<f32>) -> vec3<f32> {
     let stop = CU.mode.x;
     let cam = vec3<f32>(sanitize(cam_in.x), sanitize(cam_in.y), sanitize(cam_in.z));
@@ -491,7 +570,11 @@ fn run_pixel(cam_in: vec3<f32>) -> vec3<f32> {
     if (stop == 9u) {
         return vec3<f32>(unit(c9.x), unit(c9.y), unit(c9.z));
     }
-    let c10 = c10_look(c9);
+    let c9b = c9b_warp(c9);
+    if (stop == 10u) {
+        return c9b;
+    }
+    let c10 = c10_look(c9b);
     if (stop == 4u) {
         return c10;
     }

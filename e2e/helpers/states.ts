@@ -3,8 +3,8 @@ import type { Browser, BrowserContext, Page } from "@playwright/test";
 import { configureMock, dropFiles, failNext, lookTilesLoaded, openApp, openPhotos, settle, showUpdateReady } from "./app";
 
 // Every page state of the app that can be reached on the mock API: the 30 states of the dark glass interface (C2), the ones its
-// screenshots were taken of and its page audit ran over (`e2e/glass.spec.ts`). A state is a function that leaves a page in it; the
-// numbers in the names are only an order.
+// screenshots were taken of and its page audit ran over (`e2e/glass.spec.ts`), and the two of Colour › Colour warp (2026-10-17). A state
+// is a function that leaves a page in it; the numbers in the names are only an order.
 
 const MOCKUP = { mockCurrent: 3, mockPicked: "2,3,4" } as const;
 const LL4 = "ARRI_LookLibrary_LogC4.zip";
@@ -29,6 +29,16 @@ const MOCKUP_SETTINGS = {
   },
 } as const;
 
+/**
+ * Colour › Colour warp on the mockup's photo: two moving pins (the blue of the sky toward teal, the warm white of the sun toward orange)
+ * and a lock in the magentas. `e2e/screenshots.spec.ts` draws the same pins for `photos-color-warp.png`.
+ */
+export const WARP_PINS = [
+  { source: [-0.088, -0.064], target: [-0.13, 0.03], locked: false, range: 0.04, shadows: 1, highlights: 1, pivot_ev: 0, exposure_ev: 0 },
+  { source: [0.028, 0.032], target: [0.11, 0.07], locked: false, range: 0.04, shadows: 1, highlights: 1, pivot_ev: 0, exposure_ev: 0 },
+  { source: [0.12, -0.11], target: [0.12, -0.11], locked: true, range: 0.04, shadows: 1, highlights: 1, pivot_ev: 0, exposure_ev: 0 },
+] as const;
+
 type Options = Record<string, string | number>;
 
 /** Start, with the update cell showing "Update ready" as the screenshots do. */
@@ -38,9 +48,12 @@ async function start(page: Page, options: Options = { mockLooks: 0 }): Promise<v
 }
 
 /** The Photos screen on the mockup's state (DSC04204 current, three picked), with the mockup's settings on the current photo. */
-async function photos(page: Page, options: Options = MOCKUP, settings: boolean = true): Promise<void> {
+async function photos(page: Page, options: Options = MOCKUP, settings: boolean | Record<string, unknown> = true): Promise<void> {
   await openApp(page, options);
-  if (settings) await configureMock(page, { initialSettings: MOCKUP_SETTINGS as never });
+  if (settings) {
+    const extra = settings === true ? {} : settings;
+    await configureMock(page, { initialSettings: { DSC04204: { ...MOCKUP_SETTINGS.DSC04204, ...extra } } as never });
+  }
   await openPhotos(page);
   await showUpdateReady(page);
   await page.waitForTimeout(300);
@@ -82,6 +95,18 @@ const format = async (page: Page, name: string): Promise<void> => {
   await page.getByRole("radiogroup", { name: "Format" }).getByRole("radio", { name }).click();
   await page.waitForTimeout(300);
 };
+
+/** The Colour tab with the warp's pins, scrolled to the Colour warp card, its first pin selected and the photo's colours drawn. */
+async function colourWarp(page: Page): Promise<void> {
+  await photos(page, MOCKUP, { color_warp: { pins: WARP_PINS } });
+  await tab(page, "Colour");
+  await expect(page.locator('.ym-warp-plane:not([data-scatter-points="0"])')).toBeVisible();
+  await page.getByRole("slider", { name: "Pin 1" }).focus();
+  await page.locator(".ym-tools__scroll").evaluate((el) => {
+    el.scrollTop = el.scrollHeight;
+  });
+  await page.waitForTimeout(300);
+}
 
 /** A state: its name and what leaves a page in it. */
 export type PageState = readonly [name: string, open: (page: Page) => Promise<void>];
@@ -270,6 +295,18 @@ export const STATES: readonly PageState[] = [
       await p.waitForTimeout(600);
       await p.getByRole("button", { name: "← Back to photos" }).click();
       await expect(p.locator("[data-export-strip]")).toBeVisible();
+    },
+  ],
+  // Colour › Colour warp (the owner's request of 2026-10-17): the card with two moving pins and a lock, and Pick colour on the photo.
+  ["31-colour-warp", (p) => colourWarp(p)],
+  [
+    "32-mode-pick-colour",
+    async (p) => {
+      await colourWarp(p);
+      await p.getByRole("button", { name: "Pick colour", exact: true }).click();
+      await expect(p.getByText("Click a colour in the photo.")).toBeVisible();
+      await p.mouse.move(420, 300);
+      await p.waitForTimeout(300);
     },
   ],
 ];

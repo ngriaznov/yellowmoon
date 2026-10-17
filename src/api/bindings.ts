@@ -59,6 +59,8 @@ export const commands = {
 	setMenuState: (state: MenuState) => __TAURI_INVOKE<null>("set_menu_state", { state }),
 	/**  `histogram(photo_id)`: the RGB histogram of the photo as it is rendered now. */
 	histogram: (photoId: PhotoId) => __TAURI_INVOKE<HistogramData>("histogram", { photoId }),
+	/**  `chroma_scatter(photo_id)`: the photo's colours at the colour warp's input, for its plane. */
+	chromaScatter: (photoId: PhotoId) => __TAURI_INVOKE<ChromaScatter>("chroma_scatter", { photoId }),
 	/**  `viewport_info()` (addition): which backend draws the photo, `native` or `fallback`. */
 	viewportInfo: () => __TAURI_INVOKE<ViewportInfo>("viewport_info"),
 	/**  `viewport_set_rect(rect)`: where the photo cell is. */
@@ -71,6 +73,16 @@ export const commands = {
 	setBefore: (before: boolean) => __TAURI_INVOKE<null>("set_before", { before }),
 	/**  `sample_pixel(x, y)`: display values under a point of the photo cell. */
 	samplePixel: (x: number, y: number) => __TAURI_INVOKE<PixelSample>("sample_pixel", { x, y }),
+	/**
+	 *  `sample_chroma(x, y)`: the chroma at the colour warp's input under a point of the photo cell
+	 *  (Pick colour); `null` on the paper around the photo.
+	 */
+	sampleChroma: (x: number, y: number) => __TAURI_INVOKE<{
+	/**  Along `e1`, red against cyan. */
+	a: number,
+	/**  Along `e2`, green against blue. */
+	b: number,
+} | null>("sample_chroma", { x, y }),
 	/**  `looks_list()`. */
 	looksList: () => __TAURI_INVOKE<Look[]>("looks_list"),
 	/**
@@ -245,6 +257,29 @@ export type CameraInfo = {
 	match_kind: MatchKind,
 };
 
+/**
+ *  The chroma under a point of the photo at the colour warp's input (`sample_chroma`): a point of
+ *  the warp's plane.
+ */
+export type ChromaSample = {
+	/**  Along `e1`, red against cyan. */
+	a: number,
+	/**  Along `e2`, green against blue. */
+	b: number,
+};
+
+/**
+ *  The photo's colours at the colour warp's input, for the faint scatter behind the pins
+ *  (`chroma_scatter`).
+ */
+export type ChromaScatter = {
+	/**
+	 *  Flat `[a0, b0, a1, b1, ...]`, at most 2048 points, each coordinate rounded to 1e-4; empty
+	 *  while the photo is still being developed.
+	 */
+	points: number[],
+};
+
 /**  `install_cli_link` result: where the `ym` link was created. */
 export type CliLinkResult = {
 	/**  The link. */
@@ -287,6 +322,35 @@ export type ColorSpace =
 "display_p3" | 
 /**  Rec.2020. */
 "rec2020";
+
+/**  Colour › Colour warp: at most 16 pins, in order; none by default. */
+export type ColorWarp = {
+	/**  The pins. */
+	pins: ColorWarpPin[],
+};
+
+/**
+ *  One pin of Colour › Colour warp (`docs/02` C9b): the colours near `source` move to `target`.
+ *  Points are `[a, b]` on the warp's chroma plane (`ChromaPoint` in `types.ts`).
+ */
+export type ColorWarpPin = {
+	/**  The colour the pin takes hold of. */
+	source: [number, number],
+	/**  Where that colour moves to; a locked pin's target is its source. */
+	target: [number, number],
+	/**  A locked pin holds the colours within its range in place. */
+	locked: boolean,
+	/**  How far the pin reaches across the plane, 0.01 to 0.25. */
+	range: number,
+	/**  How much of the move applies to the shadows, 0 to 1. */
+	shadows: number,
+	/**  How much of the move applies to the highlights, 0 to 1. */
+	highlights: number,
+	/**  Where the shadows end and the highlights begin, stops from middle grey, -6 to +6. */
+	pivot_ev: number,
+	/**  A change of brightness of the pin's colours, stops, -2 to +2. */
+	exposure_ev: number,
+};
 
 /**  The crop (per photo, in memory only): a rectangle, a straighten angle and an aspect. */
 export type Crop = {
@@ -395,6 +459,8 @@ export type DevelopSettings = {
 	color_balance: ColorBalance,
 	/**  Colour › Colour balance, -100 to 100. */
 	saturation: number,
+	/**  Colour › Colour warp: its pins. */
+	color_warp: ColorWarp,
 	/**  Detail › Sharpening: Auto or amount and radius. */
 	sharpen: SharpenSetting,
 	/**
@@ -1213,6 +1279,8 @@ export type ResolvedValues = {
 	color_balance: ColorBalance,
 	/**  `saturation`. */
 	saturation: number,
+	/**  `color_warp`. */
+	color_warp: ColorWarp,
 	/**  The sharpening in effect. */
 	sharpen: SharpenValue,
 	/**  `output_sharpening`. */
@@ -1316,6 +1384,8 @@ export type SettingsPatch = {
 	color_balance?: ColorBalancePatch | null,
 	/**  New saturation. */
 	saturation?: number | null,
+	/**  New colour warp: the whole list of pins (`{ pins: [] }` removes them all). */
+	color_warp?: ColorWarp | null,
 	/**  New sharpening; a manual one may leave out a part. */
 	sharpen?: SharpenPatch | null,
 	/**  New output sharpening amount, percent. */

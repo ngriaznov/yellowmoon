@@ -167,6 +167,38 @@ export interface Curves {
   blue: CurvePoint[];
 }
 
+/**
+ * A point of the colour warp's chroma plane, `[a, b]` = `(e1·v, e2·v)` of a LogC4 pixel `v` (`docs/02` C9b): `a` red against cyan,
+ * `b` green against blue. Scaled back to `|c| ≤ 0.5` by the core.
+ */
+export type ChromaPoint = [a: number, b: number];
+
+/**
+ * One pin of Colour › Colour warp (`docs/02` C9b, `docs/01` `color_warp`). A moving pin takes the colours near `source` to `target`; a
+ * locked pin holds the colours within its range in place (its target is its source, its weights, pivot and exposure the defaults).
+ */
+export interface ColorWarpPin {
+  source: ChromaPoint;
+  /** Where the colour goes; equal to `source` for a pin that has not moved and for a locked pin. */
+  target: ChromaPoint;
+  locked: boolean;
+  /** How far the pin reaches across the plane, 0.01–0.25, default 0.04 (the card shows it ×100). */
+  range: number;
+  /** How much of the move the shadows take, 0–1, default 1. */
+  shadows: number;
+  /** How much of the move the highlights take, 0–1, default 1. */
+  highlights: number;
+  /** Where the shadows end and the highlights begin, in stops from middle grey, −6…6, default 0. */
+  pivot_ev: number;
+  /** A change of brightness for the pin's colours, in stops, −2…2, default 0. */
+  exposure_ev: number;
+}
+
+/** Colour › Colour warp: at most 16 pins; no pins is the identity. A patch replaces the whole list. */
+export interface ColorWarp {
+  pins: ColorWarpPin[];
+}
+
 /** RAW › Decode switches; all true by default. */
 export interface DecodeOptions {
   neural_demosaic: boolean;
@@ -238,6 +270,8 @@ export interface DevelopSettings {
   color_balance: ColorBalance;
   /** Colour › Colour balance, −100…100, default 0. */
   saturation: number;
+  /** Colour › Colour warp: the pins of stage C9b, `{ pins: [] }` by default. */
+  color_warp: ColorWarp;
   /** Detail › Sharpening: `Auto` or `{ amount 0–300, radius_px 0.3–2.5 }`. */
   sharpen: AutoOr<{ amount: number; radius_px: number }>;
   /**
@@ -541,6 +575,20 @@ export type ViewportInput =
 
 /** Fit to the cell, or a fixed zoom (50, 100, 200 %). */
 export type ViewportMode = { kind: "fit" } | { kind: "percent"; value: number };
+
+/**
+ * `chroma_scatter(photo_id)`: the photo's colours on the colour warp's plane, at the warp's input (after C9, before the pins), for the
+ * faint scatter behind the plane. A flat list `[a0, b0, a1, b1, …]` of at most 2048 points.
+ */
+export interface ChromaScatter {
+  points: number[];
+}
+
+/** `sample_chroma(x, y)`: the chroma of the pixel under a point of the photo cell, at the warp's input (Pick colour). */
+export interface ChromaSample {
+  a: number;
+  b: number;
+}
 
 /** Display values under the pointer, 0–255 per channel (`sample_pixel`). */
 export interface PixelSample {

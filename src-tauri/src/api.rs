@@ -18,7 +18,9 @@ use ym_core::app::gpu::{GpuOpener, GpuPolicy, GpuSlot};
 use ym_core::app::{Core, CoreOptions};
 use ym_core::export_queue::{ExportEvent, ExportJob as CoreExportJob, ExportSink};
 use ym_core::pipeline::PhotoSource;
-use ym_core::session::{EventSink, OpenOptions, PhotoId as CorePhotoId, SessionEvent};
+use ym_core::session::{
+    EventSink, OpenOptions, PhotoId as CorePhotoId, SessionError, SessionEvent,
+};
 use ym_gpu::queue::CancelToken;
 use ym_looks::import::Stage;
 use ym_looks::import::watch::WatchConfig;
@@ -29,12 +31,12 @@ use crate::events::{AppEvent, Emitter};
 use crate::thumbs::Thumbnails;
 use crate::viewport::{FrameSink, FrameStore, Viewport, core_id};
 use crate::wire::{
-    AppError, AppInfo, ApplyScope, CliLinkResult, CliLinkStatus, DisplayLut, ErrorScope,
-    ExportEstimate, ExportJob, ExportJobId, HistogramData, Look, LookId, LookInput,
-    LooksImportProgress, LooksImportResult, OpenSummary, PasteReport, PhotoId, PhotoProgress,
-    PixelSample, Preferences, PreferencesPatch, ResolvedSettings, SessionState, SettingsPatch,
-    SourceRecognition, ThumbnailReady, ViewportInfo, ViewportInput, ViewportMode, ViewportRect,
-    WatchStatus, convert,
+    AppError, AppInfo, ApplyScope, ChromaSample, ChromaScatter, CliLinkResult, CliLinkStatus,
+    DisplayLut, ErrorScope, ExportEstimate, ExportJob, ExportJobId, HistogramData, Look, LookId,
+    LookInput, LooksImportProgress, LooksImportResult, OpenSummary, PasteReport, PhotoId,
+    PhotoProgress, PixelSample, Preferences, PreferencesPatch, ResolvedSettings, SessionState,
+    SettingsPatch, SourceRecognition, ThumbnailReady, ViewportInfo, ViewportInput, ViewportMode,
+    ViewportRect, WatchStatus, convert,
 };
 use crate::wizard::{Downloads, recognise};
 
@@ -568,6 +570,32 @@ impl AppApi {
         convert(&histogram)
     }
 
+    /// `chroma_scatter`: the photo's colours at the colour warp's input, for the plane of the Colour
+    /// warp card (`Renderer::chroma_scatter`: the histogram's view, at most 2048 points). Like the
+    /// histogram it is a thumbnail-priority job that a move to another photo cancels. A photo that
+    /// is still being developed has no points yet (an empty list, not an error: the plane is drawn
+    /// without them and asks again after the next `render_stats`).
+    ///
+    /// # Errors
+    ///
+    /// [`AppError`] for an unknown or failed photo and a cancelled render.
+    pub fn chroma_scatter(&self, id: PhotoId) -> Result<ChromaScatter, AppError> {
+        let id = core_id(id);
+        let src = match PhotoSource::from_session(&self.core.session, id) {
+            Ok(src) => src,
+            Err(SessionError::NotReady(_)) => return Ok(ChromaScatter { points: Vec::new() }),
+            Err(e) => return Err(session_error(e)),
+        };
+        let scatter = self
+            .core
+            .renderer
+            .spawn_chroma_scatter(src)
+            .wait()
+            .map_err(job_error)?
+            .map_err(AppError::from)?;
+        convert(&scatter)
+    }
+
     // --- Viewport -----------------------------------------------------------------------------
 
     /// Which backend draws the photo.
@@ -655,6 +683,27 @@ impl AppApi {
             .sample_pixel(&src, &state, (x, y), &CancelToken::new())
             .map_err(AppError::from)?;
         convert(&sample.ok_or_else(outside)?)
+    }
+
+    /// `sample_chroma`: the chroma at the colour warp's input under a point of the cell, in CSS
+    /// pixels from its corner as `sample_pixel` and Pick white take it (`Renderer::sample_chroma`:
+    /// the pixel the readout reads, through the chain to C9, in the final picture also while the
+    /// Before view is shown). `None` (JSON `null`) on the paper around the photo, for a point that is
+    /// not a number and when no photo is shown.
+    ///
+    /// # Errors
+    ///
+    /// [`AppError`] for a photo that cannot be read or rendered.
+    pub fn sample_chroma(&self, x: f64, y: f64) -> Result<Option<ChromaSample>, AppError> {
+        let (photo, state) = self.viewport.snapshot_synced();
+        let Some(photo) = photo else { return Ok(None) };
+        let src = PhotoSource::from_session(&self.core.session, photo).map_err(session_error)?;
+        let sample = self
+            .core
+            .renderer
+            .sample_chroma(&src, &state, (x, y), &CancelToken::new())
+            .map_err(AppError::from)?;
+        sample.map(|s| convert(&s)).transpose()
     }
 
     // --- Looks --------------------------------------------------------------------------------

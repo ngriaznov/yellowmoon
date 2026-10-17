@@ -16,11 +16,12 @@ use tauri_specta::{Builder, collect_commands, collect_events};
 use crate::api::AppApi;
 use crate::system;
 use crate::wire::{
-    self, AppError, AppInfo, ApplyScope, CliLinkResult, CliLinkStatus, DisplayLut, ErrorScope,
-    ExportEstimate, ExportJob, ExportJobId, HistogramData, Look, LookId, LookInput,
-    LooksImportResult, MenuState, Num, OpenKind, PasteReport, PhotoId, PixelSample, Preferences,
-    PreferencesPatch, ResolvedSettings, SessionState, SettingsPatch, SourceRecognition,
-    ThumbnailReady, ViewportInfo, ViewportInput, ViewportMode, ViewportRect, WatchStatus,
+    self, AppError, AppInfo, ApplyScope, ChromaSample, ChromaScatter, CliLinkResult, CliLinkStatus,
+    DisplayLut, ErrorScope, ExportEstimate, ExportJob, ExportJobId, HistogramData, Look, LookId,
+    LookInput, LooksImportResult, MenuState, Num, OpenKind, PasteReport, PhotoId, PixelSample,
+    Preferences, PreferencesPatch, ResolvedSettings, SessionState, SettingsPatch,
+    SourceRecognition, ThumbnailReady, ViewportInfo, ViewportInput, ViewportMode, ViewportRect,
+    WatchStatus,
 };
 
 /// The managed state: the command handlers, or why the application could not start.
@@ -248,6 +249,16 @@ pub async fn histogram(
     run(&state, move |api| api.histogram(photo_id)).await
 }
 
+/// `chroma_scatter(photo_id)`: the photo's colours at the colour warp's input, for its plane.
+#[tauri::command]
+#[specta::specta]
+pub async fn chroma_scatter(
+    state: State<'_, AppState>,
+    photo_id: PhotoId,
+) -> Result<ChromaScatter, AppError> {
+    run(&state, move |api| api.chroma_scatter(photo_id)).await
+}
+
 // --- Viewport ---------------------------------------------------------------------------------
 
 /// `viewport_info()` (addition): which backend draws the photo, `native` or `fallback`.
@@ -311,6 +322,18 @@ pub async fn sample_pixel(
     y: Num,
 ) -> Result<PixelSample, AppError> {
     run(&state, move |api| api.sample_pixel(x.0, y.0)).await
+}
+
+/// `sample_chroma(x, y)`: the chroma at the colour warp's input under a point of the photo cell
+/// (Pick colour); `null` on the paper around the photo.
+#[tauri::command]
+#[specta::specta]
+pub async fn sample_chroma(
+    state: State<'_, AppState>,
+    x: Num,
+    y: Num,
+) -> Result<Option<ChromaSample>, AppError> {
+    run(&state, move |api| api.sample_chroma(x.0, y.0)).await
 }
 
 // --- Looks ------------------------------------------------------------------------------------
@@ -612,12 +635,14 @@ pub fn builder() -> Builder<tauri::Wry> {
             paste_settings,
             set_menu_state,
             histogram,
+            chroma_scatter,
             viewport_info,
             viewport_set_rect,
             viewport_input,
             viewport_set_mode,
             set_before,
             sample_pixel,
+            sample_chroma,
             looks_list,
             look_thumbnail,
             looks_import,

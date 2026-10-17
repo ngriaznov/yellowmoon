@@ -30,7 +30,7 @@ They mirror the app's controls. Anything not given uses the automatic value or t
 | Option | Values | Notes |
 |---|---|---|
 | `--look <look>` | full id (`builtin:neutral`), its slug after the colon (`neutral`), or the display name, case-insensitive | ambiguous → exit 2 listing matches; missing → exit 3 |
-| `--settings <file or ->` | JSON with the `ym:Settings` schema (resolved `DevelopSettings`, `docs/01`) | covers everything the flags can't (colour balance, curve, crop, orientation, white pick); flags given alongside override it; per-file settings via an object keyed by file name |
+| `--settings <file or ->` | JSON with the `ym:Settings` schema (resolved `DevelopSettings`, `docs/01`) | covers everything the flags can't (colour balance, colour warp, curve, crop, orientation, white pick); flags given alongside override it; per-file settings via an object keyed by file name |
 | `--intensity <0–100>` | percent | default 100 |
 | `--exposure auto or <EV>` | absolute EV −4…+4, or `auto` | `--exposure-offset <EV>` adds to auto: resolved per file to `Manual(EV_auto + offset)`, so there's no extra settings field |
 | `--wb auto or <K>[,<tint>]` | 2000–11000, tint −50…50 | `--light day or shade or tungsten or led or fluorescent` sets the light preset |

@@ -64,6 +64,9 @@ expression: shape(&v)
         "number"
       ]
     },
+    "color_warp": {
+      "pins": []
+    },
     "contrast": "number",
     "crop": "null",
     "curve": {

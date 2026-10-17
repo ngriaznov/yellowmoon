@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 
 use common::{Layout, Scene, estimates_of_file, light};
 use serde_json::{Value, json};
+use ym_color::warp::WarpPin;
 use ym_color::wb::LightSource;
 use ym_core::auto::pick_white_sample;
 use ym_core::camera::{CameraCard, CameraInfo};
@@ -17,9 +18,9 @@ use ym_core::session::{
     PhotoId, PhotoProgress, PhotoStage, PhotoStatus, PhotoSummary, SessionState, ThumbnailReady,
 };
 use ym_core::settings::{
-    AutoOr, AutoSeeds, ColorBalance, Crop, CropAspect, Curves, DevelopSettings,
-    NoiseReductionValue, NormRect, Orientation, ResolvedSettings, Rolloff, SettingsError,
-    SettingsField, SettingsPatch, SharpenValue, StageGroup,
+    AutoOr, AutoSeeds, COPY_LEAVES_OUT, ColorBalance, ColorWarp, ColorWarpPin, Crop, CropAspect,
+    Curves, DevelopSettings, NoiseReductionValue, NormRect, Orientation, ResolvedSettings, Rolloff,
+    SettingsError, SettingsField, SettingsPatch, SharpenValue, StageGroup,
 };
 use ym_looks::library::LookId;
 
@@ -63,6 +64,21 @@ fn rich() -> DevelopSettings {
         highlights: [-0.5, 0.5],
     };
     s.saturation = 15.0;
+    s.color_warp = ColorWarp {
+        pins: vec![
+            ColorWarpPin {
+                source: [0.12, 0.03],
+                target: [0.08, 0.1],
+                locked: false,
+                range: 0.06,
+                shadows: 0.5,
+                highlights: 1.0,
+                pivot_ev: -1.5,
+                exposure_ev: 0.25,
+            },
+            ColorWarpPin::from(WarpPin::locked_at([-0.05, -0.1])),
+        ],
+    };
     s.sharpen = AutoOr::Manual(SharpenValue {
         amount: 150.0,
         radius_px: 1.1,
@@ -116,6 +132,7 @@ fn typescript_defaults() -> Value {
         "white_balance": { "kind": "auto" },
         "color_balance": { "shadows": [0, 0], "midtones": [0, 0], "highlights": [0, 0] },
         "saturation": 0,
+        "color_warp": { "pins": [] },
         "sharpen": { "kind": "auto" },
         "output_sharpening": 100,
         "noise_reduction": { "kind": "auto" },
@@ -193,6 +210,14 @@ fn the_rust_types_have_the_fields_of_the_typescript_interfaces() {
         "ColorBalance",
         serde_json::to_value(settings.color_balance).unwrap(),
     );
+    check(
+        "ColorWarp",
+        serde_json::to_value(&settings.color_warp).unwrap(),
+    );
+    check(
+        "ColorWarpPin",
+        serde_json::to_value(settings.color_warp.pins[0]).unwrap(),
+    );
     check("Curves", serde_json::to_value(&settings.curve).unwrap());
     check(
         "DecodeOptions",
@@ -266,6 +291,18 @@ fn the_rust_types_have_the_fields_of_the_typescript_interfaces() {
             fit_percent: None,
         })
         .unwrap(),
+    );
+    // The colour warp's plane and Pick colour.
+    check(
+        "ChromaScatter",
+        serde_json::to_value(ym_core::pipeline::ChromaScatter {
+            points: vec![0.12, -0.03],
+        })
+        .unwrap(),
+    );
+    check(
+        "ChromaSample",
+        serde_json::to_value(ym_core::pipeline::ChromaSample { a: 0.12, b: -0.03 }).unwrap(),
     );
     // The camera card has no TypeScript twin yet; it must at least be plain data.
     let _ = serde_json::to_value(CameraCard {
@@ -538,6 +575,34 @@ fn the_schema_refuses_what_the_core_refuses() {
             json!({ "color_balance": { "shadows": [1.5, 0] } }),
         ),
         (
+            "warp pin without a source",
+            json!({ "color_warp": { "pins": [{ "target": [0.1, 0.0] }] } }),
+        ),
+        (
+            "warp pin with an unknown field",
+            json!({ "color_warp": { "pins": [{ "source": [0.1, 0.0], "strength": 1 }] } }),
+        ),
+        (
+            "warp point outside the plane",
+            json!({ "color_warp": { "pins": [{ "source": [0.7, 0.0] }] } }),
+        ),
+        (
+            "warp target of null",
+            json!({ "color_warp": { "pins": [{ "source": [0.1, 0.0], "target": null }] } }),
+        ),
+        (
+            "warp range above range",
+            json!({ "color_warp": { "pins": [{ "source": [0.1, 0.0], "range": 0.5 }] } }),
+        ),
+        (
+            "warp exposure above range",
+            json!({ "color_warp": { "pins": [{ "source": [0.1, 0.0], "exposure_ev": 3 }] } }),
+        ),
+        (
+            "warp with an unknown field",
+            json!({ "color_warp": { "pins": [], "strength": 1 } }),
+        ),
+        (
             "curve with one point",
             json!({ "curve": { "luma": [[0, 0]] } }),
         ),
@@ -552,6 +617,13 @@ fn the_schema_refuses_what_the_core_refuses() {
     cases.push((
         "curve with 17 points",
         json!({ "curve": { "red": too_many } }),
+    ));
+    let seventeen_pins: Vec<Value> = (0..17)
+        .map(|i| json!({ "source": [0.01 * f64::from(i), 0.1] }))
+        .collect();
+    cases.push((
+        "warp with 17 pins",
+        json!({ "color_warp": { "pins": seventeen_pins } }),
     ));
     for (label, doc) in cases {
         assert!(
@@ -599,6 +671,50 @@ fn the_schema_ranges_are_the_ranges_the_core_clamps_to() {
     );
     assert_eq!(defs["curve"]["maxItems"], json!(MAX_CURVE_POINTS));
     assert_eq!(defs["curve"]["minItems"], json!(MIN_CURVE_POINTS));
+    {
+        use ym_color::warp::*;
+        let pin = &defs["warp_pin"]["properties"];
+        assert_eq!(
+            props["color_warp"]["properties"]["pins"]["maxItems"],
+            json!(WARP_MAX_PINS)
+        );
+        assert_eq!(range(&pin["range"]), (WARP_RANGE_MIN, WARP_RANGE_MAX));
+        assert_eq!(pin["range"]["default"].as_f64(), Some(WARP_RANGE_DEFAULT));
+        assert_eq!(range(&pin["shadows"]), (0.0, 1.0));
+        assert_eq!(range(&pin["highlights"]), (0.0, 1.0));
+        assert_eq!(
+            range(&pin["pivot_ev"]),
+            (-WARP_PIVOT_LIMIT_EV, WARP_PIVOT_LIMIT_EV)
+        );
+        assert_eq!(
+            range(&pin["exposure_ev"]),
+            (-WARP_EXPOSURE_LIMIT_EV, WARP_EXPOSURE_LIMIT_EV)
+        );
+        for item in defs["chroma_point"]["prefixItems"].as_array().unwrap() {
+            assert_eq!(range(item), (-WARP_COORD_LIMIT, WARP_COORD_LIMIT));
+        }
+        // The pin's defaults are what a pin that names only its source reads as.
+        let read: ColorWarpPin = serde_json::from_value(json!({ "source": [0.1, 0.2] })).unwrap();
+        let written = serde_json::to_value(read).unwrap();
+        for key in [
+            "locked",
+            "range",
+            "shadows",
+            "highlights",
+            "pivot_ev",
+            "exposure_ev",
+        ] {
+            assert_eq!(
+                norm(pin[key]["default"].clone()),
+                norm(written[key].clone()),
+                "{key}"
+            );
+        }
+        assert_eq!(
+            props["color_warp"]["default"],
+            serde_json::to_value(ColorWarp::default()).unwrap()
+        );
+    }
     // The schema's defaults are the core's defaults.
     let d = serde_json::to_value(DevelopSettings::default()).unwrap();
     assert_eq!(
@@ -1381,4 +1497,309 @@ fn pinned_settings_record_the_numbers_without_changing_the_picture() {
         .unwrap();
     let m = est.fused_chain(&profile, &manual, None).unwrap();
     assert_ne!(a.matrix(), m.matrix());
+}
+
+// ---------------------------------------------------------------------------------------------
+// Colour warp (docs/02 C9b)
+// ---------------------------------------------------------------------------------------------
+
+fn pin_at(source: [f64; 2], target: [f64; 2]) -> ColorWarpPin {
+    ColorWarpPin::from(WarpPin::moving(source, target))
+}
+
+#[test]
+fn a_warp_pin_may_leave_out_everything_but_its_source_and_is_written_whole() {
+    // Only the source: the rest are the defaults, and the target is the source.
+    let warp: ColorWarp =
+        serde_json::from_value(json!({ "pins": [{ "source": [0.12, 0.03] }] })).unwrap();
+    assert_eq!(
+        warp.pins,
+        vec![ColorWarpPin {
+            source: [0.12, 0.03],
+            target: [0.12, 0.03],
+            locked: false,
+            range: 0.04,
+            shadows: 1.0,
+            highlights: 1.0,
+            pivot_ev: 0.0,
+            exposure_ev: 0.0,
+        }]
+    );
+    // The core writes every field, and what it writes reads back as it was.
+    let written = serde_json::to_value(&warp).unwrap();
+    assert_eq!(
+        keys(&written["pins"][0]),
+        [
+            "exposure_ev",
+            "highlights",
+            "locked",
+            "pivot_ev",
+            "range",
+            "shadows",
+            "source",
+            "target"
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect()
+    );
+    assert_eq!(serde_json::from_value::<ColorWarp>(written).unwrap(), warp);
+    // Every field given: kept as given.
+    let full = json!({ "source": [0.12, 0.03], "target": [0.08, 0.1], "locked": false,
+        "range": 0.06, "shadows": 0.5, "highlights": 0.75, "pivot_ev": -1, "exposure_ev": 0.5 });
+    let pin: ColorWarpPin = serde_json::from_value(full.clone()).unwrap();
+    assert_eq!(norm(serde_json::to_value(pin).unwrap()), norm(full));
+    // A settings document round-trips with and without the optional fields.
+    let s = rich();
+    let back: DevelopSettings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+    assert_eq!(back.color_warp, s.color_warp);
+    let (short, clamped) = DevelopSettings::from_json(
+        r#"{ "color_warp": { "pins": [{ "source": [0.1, 0.0], "target": [0.1, 0.05] }, { "source": [0.0, -0.1], "locked": true }] } }"#,
+        &LookId::builtin("neutral"),
+    )
+    .unwrap();
+    assert!(clamped.is_empty(), "{clamped:?}");
+    assert_eq!(
+        short.color_warp.pins,
+        vec![
+            pin_at([0.1, 0.0], [0.1, 0.05]),
+            ColorWarpPin::from(WarpPin::locked_at([0.0, -0.1]))
+        ]
+    );
+    // A document without the field, or with an empty object, has no pins.
+    let (none, _) = DevelopSettings::from_json("{}", &LookId::builtin("neutral")).unwrap();
+    assert!(none.color_warp.pins.is_empty());
+    assert_eq!(
+        serde_json::from_str::<DevelopSettings>(r#"{ "color_warp": {} }"#)
+            .unwrap()
+            .color_warp,
+        ColorWarp::default()
+    );
+    // Strict about what is not a pin.
+    for bad in [
+        r#"{ "color_warp": { "pins": [{ "target": [0.1, 0.0] }] } }"#,
+        r#"{ "color_warp": { "pins": [{ "source": [0.1, 0.0], "strength": 2 }] } }"#,
+        r#"{ "color_warp": { "pins": [{ "source": [0.1, 0.0], "target": null }] } }"#,
+        r#"{ "color_warp": { "pins": [{ "source": [0.1] }] } }"#,
+        r#"{ "color_warp": { "pins": [{ "source": [0.1, 0.0], "locked": "yes" }] } }"#,
+        r#"{ "color_warp": { "pins": [], "strength": 2 } }"#,
+    ] {
+        assert!(
+            serde_json::from_str::<DevelopSettings>(bad).is_err(),
+            "{bad} should be refused"
+        );
+    }
+}
+
+#[test]
+fn the_warp_keeps_16_pins_and_clamps_each_like_the_stage_does() {
+    let neutral = LookId::builtin("neutral");
+    // 17 pins: the 17th is cut, and the field is reported.
+    let mut s = DevelopSettings::default();
+    s.color_warp.pins = (0..17)
+        .map(|i| pin_at([0.01 * f64::from(i), 0.1], [0.01 * f64::from(i), 0.12]))
+        .collect();
+    let (v, clamped) = s.clone().validated().unwrap();
+    assert_eq!(v.color_warp.pins.len(), 16);
+    assert_eq!(v.color_warp.pins[..], s.color_warp.pins[..16]);
+    assert_eq!(clamped, vec![SettingsField::ColorWarp]);
+    // Points scaled back to |c| <= 0.5, ranges and weights clamped, a locked pin's target is its
+    // source and its weights, pivot and exposure the defaults: what `WarpPin::clamped` does.
+    let wild = ColorWarpPin {
+        source: [3.0, -4.0],
+        target: [0.0, 0.9],
+        locked: false,
+        range: 2.0,
+        shadows: -1.0,
+        highlights: 7.0,
+        pivot_ev: -20.0,
+        exposure_ev: 9.0,
+    };
+    let locked = ColorWarpPin {
+        source: [0.1, 0.0],
+        target: [0.3, 0.3],
+        locked: true,
+        range: 0.001,
+        shadows: 0.2,
+        highlights: 0.3,
+        pivot_ev: 2.0,
+        exposure_ev: 1.0,
+    };
+    let (v, clamped) = DevelopSettings::from_value(
+        json!({ "color_warp": { "pins": [wild, locked] } }),
+        &neutral,
+    )
+    .unwrap();
+    assert_eq!(clamped, vec![SettingsField::ColorWarp]);
+    let [a, b] = [v.color_warp.pins[0], v.color_warp.pins[1]];
+    assert!((a.source[0] - 0.3).abs() < 1e-12 && (a.source[1] + 0.4).abs() < 1e-12);
+    assert!(a.source[0].hypot(a.source[1]) <= 0.5);
+    assert!((a.target[1] - 0.5).abs() < 1e-12 && a.target[0] == 0.0);
+    assert_eq!(
+        (a.range, a.shadows, a.highlights, a.pivot_ev, a.exposure_ev),
+        (0.25, 0.0, 1.0, -6.0, 2.0)
+    );
+    assert_eq!(
+        b,
+        ColorWarpPin {
+            source: [0.1, 0.0],
+            target: [0.1, 0.0],
+            locked: true,
+            range: 0.01,
+            shadows: 1.0,
+            highlights: 1.0,
+            pivot_ev: 0.0,
+            exposure_ev: 0.0,
+        }
+    );
+    // The settings are what the stage renders: clamping them again is the stage's own clamp.
+    for p in &v.color_warp.pins {
+        let c = WarpPin::from(*p).clamped();
+        assert_eq!(c.locked, p.locked);
+        assert_eq!(
+            (c.range, c.shadows, c.highlights, c.pivot_ev, c.exposure_ev),
+            (p.range, p.shadows, p.highlights, p.pivot_ev, p.exposure_ev)
+        );
+        for (x, y) in c
+            .source
+            .iter()
+            .chain(&c.target)
+            .zip(p.source.iter().chain(&p.target))
+        {
+            assert!((x - y).abs() <= 1e-15, "{x} {y}");
+        }
+    }
+    // Checking again changes nothing, also for points that land just outside the disc when they
+    // are scaled back (about one in fifty does): a later patch must not report the warp.
+    let mut rng = 0x2545_f491_4f6c_dd1du64;
+    let mut next = || {
+        rng ^= rng << 13;
+        rng ^= rng >> 7;
+        rng ^= rng << 17;
+        (rng >> 11) as f64 / (1u64 << 53) as f64 * 6.0 - 3.0
+    };
+    let mut s = DevelopSettings::default();
+    s.color_warp.pins = (0..16)
+        .map(|_| pin_at([next(), next()], [next(), next()]))
+        .collect();
+    for _ in 0..200 {
+        let (once, _) = s.clone().validated().unwrap();
+        let (twice, again) = once.clone().validated().unwrap();
+        assert_eq!(twice, once);
+        assert!(again.is_empty(), "{again:?}");
+        for p in &once.color_warp.pins {
+            assert!(p.source[0].hypot(p.source[1]) <= 0.5);
+            assert!(p.target[0].hypot(p.target[1]) <= 0.5);
+        }
+        for p in &mut s.color_warp.pins {
+            *p = pin_at([next(), next()], [next(), next()]);
+        }
+    }
+    // A number that is not finite is an error, as everywhere else; nothing is applied.
+    let breaks: [fn(&mut ColorWarpPin); 4] = [
+        |p: &mut ColorWarpPin| p.source[1] = f64::NAN,
+        |p: &mut ColorWarpPin| p.target[0] = f64::INFINITY,
+        |p: &mut ColorWarpPin| p.range = f64::NAN,
+        |p: &mut ColorWarpPin| p.exposure_ev = f64::NEG_INFINITY,
+    ];
+    for broken in breaks {
+        let mut s = DevelopSettings::default();
+        let mut p = pin_at([0.1, 0.0], [0.1, 0.1]);
+        broken(&mut p);
+        s.color_warp.pins.push(p);
+        assert!(
+            matches!(s.clone().validated(), Err(SettingsError::NotFinite(n)) if n.starts_with("color_warp")),
+            "{p:?}"
+        );
+        let mut t = DevelopSettings::default();
+        let patch = SettingsPatch {
+            color_warp: Some(s.color_warp.clone()),
+            ..SettingsPatch::default()
+        };
+        assert!(t.apply_patch(&patch, None).is_err());
+        assert_eq!(t, DevelopSettings::default());
+    }
+}
+
+#[test]
+fn a_warp_patch_replaces_the_whole_list_and_reset_removes_the_pins() {
+    let neutral = LookId::builtin("neutral");
+    assert_eq!(SettingsField::ColorWarp.name(), "color_warp");
+    assert_eq!(SettingsField::ColorWarp.group(), StageGroup::Grade);
+    assert!(SettingsField::ALL.contains(&SettingsField::ColorWarp));
+    let mut s = DevelopSettings::default();
+    let two = parse_patch(
+        r#"{ "color_warp": { "pins": [{ "source": [0.1, 0.0], "target": [0.1, 0.05] }, { "source": [0.0, 0.1], "locked": true }] } }"#,
+    );
+    let report = apply(&mut s, two);
+    assert_eq!(report.changed, vec![SettingsField::ColorWarp]);
+    assert_eq!(report.first_group(), Some(StageGroup::Grade));
+    assert_eq!(s.color_warp.pins.len(), 2);
+    // A patch is the whole list: one pin replaces the two.
+    let one = parse_patch(
+        r#"{ "color_warp": { "pins": [{ "source": [-0.1, 0.0], "target": [-0.12, 0.0] }] } }"#,
+    );
+    apply(&mut s, one);
+    assert_eq!(s.color_warp.pins, vec![pin_at([-0.1, 0.0], [-0.12, 0.0])]);
+    // A patch that leaves the warp out keeps it, and reports nothing about it.
+    let report = apply(&mut s, parse_patch(r#"{ "contrast": 10 }"#));
+    assert_eq!(report.changed, vec![SettingsField::Contrast]);
+    assert_eq!(s.color_warp.pins.len(), 1);
+    // A value out of range in the patch is clamped and reported.
+    let report = apply(
+        &mut s,
+        parse_patch(r#"{ "color_warp": { "pins": [{ "source": [0.1, 0.0], "range": 9 }] } }"#),
+    );
+    assert_eq!(report.clamped, vec![SettingsField::ColorWarp]);
+    assert_eq!(s.color_warp.pins[0].range, 0.25);
+    // The same list again changes nothing.
+    let same = SettingsPatch::of_field(&s, SettingsField::ColorWarp);
+    assert!(apply(&mut s, same.clone()).changed.is_empty());
+    assert_eq!(
+        serde_json::to_value(&same).unwrap(),
+        json!({ "color_warp": serde_json::to_value(&s.color_warp).unwrap() })
+    );
+    // The card's Reset sends no pins; `reset_field` and the Reset patch agree.
+    let mut by_patch = s.clone();
+    apply(
+        &mut by_patch,
+        parse_patch(r#"{ "color_warp": { "pins": [] } }"#),
+    );
+    let mut by_reset = s.clone();
+    by_reset.reset_field(SettingsField::ColorWarp, &neutral);
+    let mut by_reset_patch = s.clone();
+    apply(
+        &mut by_reset_patch,
+        SettingsPatch::reset(SettingsField::ColorWarp, &neutral),
+    );
+    for t in [&by_patch, &by_reset, &by_reset_patch] {
+        assert!(t.color_warp.pins.is_empty());
+        assert_eq!(t.diff(&s), vec![SettingsField::ColorWarp]);
+    }
+}
+
+#[test]
+fn copy_settings_takes_the_warp_and_resolved_values_carry_it() {
+    // Copy settings takes every field but the photo's own geometry and Pick white point.
+    assert!(!COPY_LEAVES_OUT.contains(&SettingsField::ColorWarp));
+    let dir = tempfile::tempdir().unwrap();
+    let scene = Scene::new(
+        256,
+        192,
+        light("sony-ilce-7rm4", 5200.0),
+        Layout::Patchwork,
+        0.5,
+    );
+    let (_, est, profile) = estimates_of_file(&scene.write(dir.path(), "a.ARW", "ILCE-7RM4"));
+    let s = rich();
+    let resolved = ResolvedSettings::resolve(PhotoId(3), &s, &est, &profile, None).unwrap();
+    assert_eq!(resolved.values.color_warp, s.color_warp);
+    assert_eq!(resolved.pinned_settings().color_warp, s.color_warp);
+    let patch = SettingsPatch::copied_from(&resolved);
+    assert_eq!(patch.color_warp.as_ref(), Some(&s.color_warp));
+    // Pasted onto a photo with pins of its own, the copied list replaces them.
+    let mut other = DevelopSettings::default();
+    other.color_warp.pins = vec![pin_at([0.0, -0.2], [0.05, -0.2])];
+    other.apply_patch(&patch, None).unwrap();
+    assert_eq!(other.color_warp, s.color_warp);
 }

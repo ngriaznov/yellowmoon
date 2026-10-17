@@ -10,6 +10,10 @@
 //! * **Histogram** (`histogram`, an addition to `docs/01`): 64 bins of the LogC4 signal at the
 //!   input of the curve (C10), per channel, scaled so that the tallest bin is 1 (`docs/02` C11:
 //!   "The histogram in the Curve tab is of LogC4 values").
+//! * **Chroma scatter** (`chroma_scatter`, for the plane of the colour warp, `docs/11`): the photo's
+//!   colours at the input of the warp (the C9 output), projected onto its chroma plane
+//!   (`ym_color::warp::chroma_of`), from the same small view as the histogram, at most
+//!   [`CHROMA_SCATTER_MAX_POINTS`] of them.
 //! * **Scheduled calls**: `spawn_*` put a request on the render queue at the priority `docs/01`
 //!   gives it and return a handle.
 
@@ -18,7 +22,8 @@ use std::time::Duration;
 
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
-use ym_color::display::OutputTarget;
+use ym_color::display::{ColorChain, OutputTarget};
+use ym_color::warp::chroma_of;
 use ym_export::DetailStat;
 use ym_gpu::queue::{CancelToken, JobError, JobHandle, Priority};
 use ym_looks::library::LookId;
@@ -26,7 +31,8 @@ use ym_looks::library::LookId;
 use super::RenderError;
 use super::color::{PhotoSource, with_look};
 use super::frame::{
-    FrameOptions, FullImage, FullRequest, RenderedFrame, ViewSpec, render_view, sample_view_routed,
+    FrameOptions, FullImage, FullRequest, RenderedFrame, Sampled, ViewSpec, render_view,
+    sample_view_routed,
 };
 use super::geometry::Affine;
 use super::graph::{Job, Renderer};
@@ -48,6 +54,42 @@ pub struct HistogramData {
     pub green: Vec<f64>,
     /// The blue channel.
     pub blue: Vec<f64>,
+}
+
+/// The most points a [`ChromaScatter`] holds.
+pub const CHROMA_SCATTER_MAX_POINTS: usize = 2048;
+/// The scatter's coordinates are rounded to this step (the plane is drawn 352 px wide for 0.6 units,
+/// so this is far below a pixel and keeps the answer small).
+pub const CHROMA_SCATTER_STEP: f64 = 1e-4;
+
+/// The `chroma_scatter` response of `src/api/types.ts`: the photo's colours at the input of the colour
+/// warp (C9b), as points `(a, b)` of its chroma plane, flat: `[a0, b0, a1, b1, ...]`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ChromaScatter {
+    /// At most [`CHROMA_SCATTER_MAX_POINTS`] points, each coordinate rounded to
+    /// [`CHROMA_SCATTER_STEP`].
+    pub points: Vec<f64>,
+}
+
+/// The pixels of a sampled view that are inside the photo, every `stride`-th of them so that at most
+/// `max` are left: a fixed stride over the pixels in reading order, so the same view gives the same
+/// points.
+fn every_nth_inside(sampled: &Sampled, max: usize) -> Vec<usize> {
+    let n = sampled.img.width * sampled.img.height;
+    let outside = sampled.outside.as_deref();
+    let inside: Vec<usize> = (0..n)
+        .filter(|&i| !outside.is_some_and(|o| o[i] != 0))
+        .collect();
+    let stride = inside.len().div_ceil(max.max(1)).max(1);
+    inside.into_iter().step_by(stride).collect()
+}
+
+/// A coordinate of the scatter: rounded to [`CHROMA_SCATTER_STEP`], never `-0`. Dividing the count
+/// of steps by their number per unit gives the double nearest to the decimal, so the JSON says
+/// `0.1234` and not `0.12340000000000001`.
+fn scatter_coordinate(v: f64) -> f64 {
+    const STEPS_PER_UNIT: f64 = 1e4;
+    (v * STEPS_PER_UNIT).round() / STEPS_PER_UNIT + 0.0
 }
 
 /// Encodes 8-bit RGB as a PNG.
@@ -182,16 +224,15 @@ impl Renderer {
         encode_png_rgb8(tw, th, &rgb)
     }
 
-    /// The histogram of the photo as rendered now (see the module documentation).
-    ///
-    /// # Errors
-    ///
-    /// [`RenderError`] for unusable data or a cancelled job.
-    pub fn histogram(
+    /// The small view of the whole photo that the histogram and the chroma scatter read, and the
+    /// grade chain of the photo as it is rendered now: `read` gets the sampled camera RGB (with the
+    /// letterbox mask) and the chain.
+    fn panel_view<T>(
         &self,
         src: &PhotoSource,
         cancel: &CancelToken,
-    ) -> Result<HistogramData, RenderError> {
+        read: impl FnOnce(&Sampled, &ColorChain) -> T,
+    ) -> Result<T, RenderError> {
         let mut job = Job::new(self, src, cancel)?.with_gpu_priority(Priority::Thumbnail);
         let image = job.final_size()?;
         let (tw, th) = thumbnail_size(image, HISTOGRAM_LONG_EDGE_PX);
@@ -214,43 +255,63 @@ impl Renderer {
             dither_origin: (0, 0),
         };
         let grade = job.grade(OutputTarget::Viewport, false)?;
-        // The sample comes from the device group when the sampler is there; the counting stays on
+        // The sample comes from the device group when the sampler is there; the reading stays on
         // the CPU (a few thousand pixels through the f64 trace: `docs/gpu-plan.md` X-14).
         let view = sample_view_routed(&mut job, &spec)?;
-        let img = &view.sampled.img;
-        let n = img.width * img.height;
-        let outside = view.sampled.outside.as_deref();
-        let counts: [[u64; HISTOGRAM_BINS]; 3] = (0..n)
-            .into_par_iter()
-            .fold(
-                || [[0u64; HISTOGRAM_BINS]; 3],
-                |mut acc, i| {
-                    if outside.is_some_and(|o| o[i] != 0) {
-                        return acc;
-                    }
-                    let p = img.pixel(i % img.width, i / img.width);
-                    let t = grade
-                        .chain
-                        .trace([f64::from(p[0]), f64::from(p[1]), f64::from(p[2])]);
-                    for (c, acc_c) in acc.iter_mut().enumerate() {
-                        let v = t.c10_logc4.0[c].clamp(0.0, 1.0);
-                        let bin = ((v * HISTOGRAM_BINS as f64) as usize).min(HISTOGRAM_BINS - 1);
-                        acc_c[bin] += 1;
-                    }
-                    acc
-                },
-            )
-            .reduce(
-                || [[0u64; HISTOGRAM_BINS]; 3],
-                |mut a, b| {
-                    for c in 0..3 {
-                        for i in 0..HISTOGRAM_BINS {
-                            a[c][i] += b[c][i];
+        let out = read(&view.sampled, &grade.chain);
+        job.finish(
+            view.scale,
+            super::graph::ComputeDevice::Cpu,
+            OutputTarget::Viewport,
+        );
+        Ok(out)
+    }
+
+    /// The histogram of the photo as rendered now (see the module documentation).
+    ///
+    /// # Errors
+    ///
+    /// [`RenderError`] for unusable data or a cancelled job.
+    pub fn histogram(
+        &self,
+        src: &PhotoSource,
+        cancel: &CancelToken,
+    ) -> Result<HistogramData, RenderError> {
+        let counts = self.panel_view(src, cancel, |sampled, chain| {
+            let img = &sampled.img;
+            let n = img.width * img.height;
+            let outside = sampled.outside.as_deref();
+            (0..n)
+                .into_par_iter()
+                .fold(
+                    || [[0u64; HISTOGRAM_BINS]; 3],
+                    |mut acc, i| {
+                        if outside.is_some_and(|o| o[i] != 0) {
+                            return acc;
                         }
-                    }
-                    a
-                },
-            );
+                        let p = img.pixel(i % img.width, i / img.width);
+                        let t = chain.trace([f64::from(p[0]), f64::from(p[1]), f64::from(p[2])]);
+                        for (c, acc_c) in acc.iter_mut().enumerate() {
+                            let v = t.c10_logc4.0[c].clamp(0.0, 1.0);
+                            let bin =
+                                ((v * HISTOGRAM_BINS as f64) as usize).min(HISTOGRAM_BINS - 1);
+                            acc_c[bin] += 1;
+                        }
+                        acc
+                    },
+                )
+                .reduce(
+                    || [[0u64; HISTOGRAM_BINS]; 3],
+                    |mut a, b| {
+                        for c in 0..3 {
+                            for i in 0..HISTOGRAM_BINS {
+                                a[c][i] += b[c][i];
+                            }
+                        }
+                        a
+                    },
+                )
+        })?;
         let peak = counts.iter().flatten().copied().max().unwrap_or(0).max(1) as f64;
         let norm = |c: usize| -> Vec<f64> {
             counts[c]
@@ -258,16 +319,41 @@ impl Renderer {
                 .map(|&v| ((v as f64 / peak) * 1000.0).round() / 1000.0)
                 .collect()
         };
-        job.finish(
-            view.scale,
-            super::graph::ComputeDevice::Cpu,
-            OutputTarget::Viewport,
-        );
         Ok(HistogramData {
             red: norm(0),
             green: norm(1),
             blue: norm(2),
         })
+    }
+
+    /// The photo's colours at the input of the colour warp (the C9 output, `StageTrace::c9_logc4`),
+    /// projected onto the warp's chroma plane with `ym_color::warp::chroma_of`: the faint scatter
+    /// behind the pins (`docs/11` Colour warp). It reads the histogram's view (the whole photo at
+    /// most 192 px on the long edge, the letterbox left out) and keeps every `n`-th pixel in reading
+    /// order so that at most [`CHROMA_SCATTER_MAX_POINTS`] are left, so the same photo and settings
+    /// give the same points; each coordinate is rounded to [`CHROMA_SCATTER_STEP`]. The warp itself
+    /// does not move them (they are what the pins take hold of); everything before it does.
+    ///
+    /// # Errors
+    ///
+    /// [`RenderError`] for unusable data or a cancelled job.
+    pub fn chroma_scatter(
+        &self,
+        src: &PhotoSource,
+        cancel: &CancelToken,
+    ) -> Result<ChromaScatter, RenderError> {
+        let points = self.panel_view(src, cancel, |sampled, chain| {
+            let img = &sampled.img;
+            every_nth_inside(sampled, CHROMA_SCATTER_MAX_POINTS)
+                .par_iter()
+                .flat_map_iter(|&i| {
+                    let p = img.pixel(i % img.width, i / img.width);
+                    let t = chain.trace([f64::from(p[0]), f64::from(p[1]), f64::from(p[2])]);
+                    chroma_of(t.c9_logc4).map(scatter_coordinate)
+                })
+                .collect::<Vec<f64>>()
+        })?;
+        Ok(ChromaScatter { points })
     }
 
     // --- Scheduled calls -------------------------------------------------------------------
@@ -371,6 +457,24 @@ impl Renderer {
         )
     }
 
+    /// Queues the chroma scatter of a photo at [`Priority::Thumbnail`]. Like the histogram it is a
+    /// request of a panel for the photo on screen, and moving to another photo cancels it (see
+    /// [`Renderer::spawn_look_thumbnail`]).
+    #[must_use]
+    pub fn spawn_chroma_scatter(
+        &self,
+        src: PhotoSource,
+    ) -> JobHandle<Result<ChromaScatter, RenderError>> {
+        let r = self.clone();
+        let id = src.id;
+        self.scheduler().submit_superseded(
+            Priority::Thumbnail,
+            id,
+            move |token| r.chroma_scatter(&src, token),
+            || Err(RenderError::Cancelled),
+        )
+    }
+
     /// Queues a full-resolution render at [`Priority::Export`]; navigation never cancels it. It runs
     /// on the export worker, which starts it when no viewport frame, tile pass or thumbnail is
     /// waiting and looks again before every tile, so browsing is not held up by an export
@@ -443,5 +547,48 @@ impl ThumbnailRenderer for PhotoThumbnails {
                 Some(Err(e)) => return Err(e.to_string()),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod scatter_tests {
+    use ym_gpu::cpu::RgbImage;
+
+    use super::*;
+
+    #[test]
+    fn the_scatter_keeps_every_nth_pixel_inside_the_photo_and_at_most_the_limit() {
+        // 10 x 10 with the first row on the paper: 90 pixels inside.
+        let mut outside = vec![0u8; 100];
+        outside[..10].fill(1);
+        let sampled = Sampled {
+            img: RgbImage::new(10, 10),
+            outside: Some(outside),
+        };
+        let all = every_nth_inside(&sampled, 1000);
+        assert_eq!(all, (10..100).collect::<Vec<_>>());
+        // 90 pixels for at most 40: every third, 30 of them, from the first inside.
+        let some = every_nth_inside(&sampled, 40);
+        assert_eq!(some.len(), 30);
+        assert_eq!(&some[..3], &[10, 13, 16]);
+        assert_eq!(every_nth_inside(&sampled, 45).len(), 45);
+        // No mask: every pixel is inside.
+        let whole = Sampled {
+            img: RgbImage::new(10, 10),
+            outside: None,
+        };
+        assert_eq!(every_nth_inside(&whole, 2048).len(), 100);
+    }
+
+    #[test]
+    fn scatter_coordinates_are_the_nearest_decimals_of_four_places() {
+        assert_eq!(scatter_coordinate(0.123_449), 0.1234);
+        assert_eq!(scatter_coordinate(-0.123_46), -0.1235);
+        assert_eq!(
+            serde_json::to_string(&[scatter_coordinate(0.123_4), scatter_coordinate(0.3)]).unwrap(),
+            "[0.1234,0.3]"
+        );
+        // Never `-0`.
+        assert!(scatter_coordinate(-0.000_01).is_sign_positive());
     }
 }

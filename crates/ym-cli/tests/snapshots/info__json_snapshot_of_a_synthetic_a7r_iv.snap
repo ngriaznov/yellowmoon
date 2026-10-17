@@ -110,6 +110,9 @@ expression: v
         0.0
       ]
     },
+    "color_warp": {
+      "pins": []
+    },
     "contrast": 0.0,
     "crop": null,
     "curve": {

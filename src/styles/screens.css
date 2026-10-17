@@ -99,14 +99,14 @@
 .ym-photo-note__title { font-size: var(--fs-h2); font-weight: var(--fw-heavy); letter-spacing: -0.02em; }
 .ym-photo-note__text { max-width: 420px; font-size: var(--fs-body-l); line-height: 1.5; }
 
-/* The photo cell's overlays: the pick-white layer and the crop frame. */
-.ym-pick-white {
+/* The photo cell's overlays: the pick layer (Pick white, Pick colour) and the crop frame. */
+.ym-pick-layer {
   position: absolute;
   inset: 0;
   cursor: crosshair;
   outline-offset: -3px;
 }
-.ym-pick-white__mark { position: absolute; width: 28px; height: 28px; margin: -14px 0 0 -14px; pointer-events: none; }
+.ym-pick-layer__mark { position: absolute; width: 28px; height: 28px; margin: -14px 0 0 -14px; pointer-events: none; }
 .ym-crop { position: absolute; inset: 0; overflow: hidden; }
 .ym-crop__image { position: absolute; user-select: none; touch-action: none; }
 .ym-crop__frame {

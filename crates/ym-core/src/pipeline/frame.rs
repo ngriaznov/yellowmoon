@@ -56,6 +56,7 @@ use std::sync::{Arc, Weak};
 use rayon::prelude::*;
 use ym_color::consts::Vec3;
 use ym_color::display::{ColorChain, Frame, Layout, OutputTarget, View};
+use ym_color::warp::chroma_of;
 use ym_gpu::cpu::output_sharpen::{OutputSharpen, scale_for_edges};
 use ym_gpu::cpu::resample::sample_catmull_rom;
 use ym_gpu::cpu::{Rect, RgbImage};
@@ -119,6 +120,16 @@ pub struct PixelSample {
     pub g: u8,
     /// Blue.
     pub b: u8,
+}
+
+/// The chroma of the colour under a point at the input of the colour warp (`sample_chroma`): the
+/// point of the warp's plane, `(e1·v, e2·v)` of the C9 output (`ym_color::warp::chroma_of`).
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ChromaSample {
+    /// Along `e1`, red against cyan.
+    pub a: f64,
+    /// Along `e2`, green against blue.
+    pub b: f64,
 }
 
 /// What a full-resolution render produces.
@@ -2116,6 +2127,47 @@ impl Renderer {
         Ok(made as usize)
     }
 
+    /// The camera RGB under a point of the cell (the raw group's output, before C1, sampled at the
+    /// scale the viewport uses) and the grade plan of the photo: what [`Renderer::sample_pixel`] and
+    /// [`Renderer::sample_chroma`] read. `None` outside the photo (the letterbox).
+    fn point_reading(
+        &self,
+        src: &PhotoSource,
+        state: &ViewportState,
+        css: (f64, f64),
+        before: bool,
+        cancel: &CancelToken,
+    ) -> Result<Option<(Vec3, Arc<GradePlan>)>, RenderError> {
+        let mut job = Job::new(self, src, cancel)?;
+        let image = job.final_size()?;
+        let Some((fx, fy)) = state.final_point_at(image, css) else {
+            return Ok(None);
+        };
+        let zoom = state.zoom(image);
+        // A 1 x 1 view of exactly that point, at the scale the viewport uses.
+        let spec = ViewSpec {
+            out_w: 1,
+            out_h: 1,
+            view_to_final: Affine::scale_translate(1.0, 1.0, fx - 0.5, fy - 0.5),
+            k: scale_for_zoom(zoom),
+            target: OutputTarget::Viewport,
+            before,
+            coarse_only: false,
+            cache: false,
+            background: self.options().background,
+            gpu_priority: Priority::Viewport,
+            dither_origin: (0, 0),
+        };
+        let grade = job.grade(OutputTarget::Viewport, false)?;
+        let view = sample_view_in_place(&mut job, &spec)?;
+        if view.sampled.outside.is_some() {
+            return Ok(None);
+        }
+        let rgb = pixel_rgb(&view.sampled.img);
+        job.finish(view.scale, ComputeDevice::Cpu, OutputTarget::Viewport);
+        Ok(Some((rgb, grade)))
+    }
+
     /// Display values (0 to 255) under a point of the cell, as the viewport shows them (the Before
     /// view included), without the dither and **before output sharpening** (a readout is of the
     /// colour at a point; the stage needs the neighbourhood of a whole view). `None` outside the
@@ -2138,45 +2190,64 @@ impl Renderer {
         } else {
             src
         };
-        let mut job = Job::new(self, src, cancel)?;
-        let image = job.final_size()?;
-        let Some((fx, fy)) = state.final_point_at(image, css) else {
+        let Some((rgb, grade)) = self.point_reading(src, state, css, state.before, cancel)? else {
             return Ok(None);
         };
-        let zoom = state.zoom(image);
-        // A 1 x 1 view of exactly that point, at the scale the viewport uses.
-        let spec = ViewSpec {
-            out_w: 1,
-            out_h: 1,
-            view_to_final: Affine::scale_translate(1.0, 1.0, fx - 0.5, fy - 0.5),
-            k: scale_for_zoom(zoom),
-            target: OutputTarget::Viewport,
-            before: state.before,
-            coarse_only: false,
-            cache: false,
-            background: self.options().background,
-            gpu_priority: Priority::Viewport,
-            dither_origin: (0, 0),
-        };
-        let grade = job.grade(OutputTarget::Viewport, false)?;
-        let view = sample_view_in_place(&mut job, &spec)?;
-        if view.sampled.outside.is_some() {
-            return Ok(None);
-        }
-        let rgb = pixel_rgb(&view.sampled.img);
         let kind = if state.before {
             View::Before
         } else {
             View::Final
         };
         let v = grade.chain.apply_view_pixel(kind, rgb);
-        job.finish(view.scale, ComputeDevice::Cpu, OutputTarget::Viewport);
         let q = |c: f64| (c.clamp(0.0, 1.0) * 255.0).round() as u8;
         Ok(Some(PixelSample {
             r: q(v[0]),
             g: q(v[1]),
             b: q(v[2]),
         }))
+    }
+
+    /// The camera RGB under a point of the cell that [`Renderer::sample_chroma`] reads (and
+    /// [`Renderer::sample_pixel`] outside the Before view): the raw group's output at the point, before
+    /// C1. `None` outside the photo. For checks and diagnostics.
+    ///
+    /// # Errors
+    ///
+    /// [`RenderError`] for unusable data or a cancelled job.
+    pub fn camera_rgb_at(
+        &self,
+        src: &PhotoSource,
+        state: &ViewportState,
+        css: (f64, f64),
+        cancel: &CancelToken,
+    ) -> Result<Option<Vec3>, RenderError> {
+        Ok(self
+            .point_reading(src, state, css, false, cancel)?
+            .map(|(rgb, _)| rgb))
+    }
+
+    /// The chroma of the colour under a point of the cell at the input of the colour warp: the pixel
+    /// [`Renderer::sample_pixel`] reads, through the photo's chain to C9
+    /// (`StageTrace::c9_logc4`), projected with `ym_color::warp::chroma_of` (Pick colour on the
+    /// Colour warp card, `docs/11`). Always the final picture's colour, also while the Before view is
+    /// shown (the pins act on the final picture; Before leaves the warp out). `None` outside the
+    /// photo (the letterbox).
+    ///
+    /// # Errors
+    ///
+    /// [`RenderError`] for unusable data or a cancelled job.
+    pub fn sample_chroma(
+        &self,
+        src: &PhotoSource,
+        state: &ViewportState,
+        css: (f64, f64),
+        cancel: &CancelToken,
+    ) -> Result<Option<ChromaSample>, RenderError> {
+        let Some((rgb, grade)) = self.point_reading(src, state, css, false, cancel)? else {
+            return Ok(None);
+        };
+        let [a, b] = chroma_of(grade.chain.trace(rgb).c9_logc4);
+        Ok(Some(ChromaSample { a, b }))
     }
 
     /// Where a click in the cell lands in the space `DevelopSettings::white_pick` uses: fractions

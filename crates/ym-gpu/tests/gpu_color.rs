@@ -2,7 +2,8 @@
 //! `ym_color::display::ColorChain`, stage by stage, on random inputs, in every storage mode the
 //! device supports.
 //!
-//! Gates (`docs/02` section Tests, `docs/15`): C7 to C11 within 2e-4 in LogC4 units; the displayed
+//! Gates (`docs/02` section Tests, `docs/15`): C7 to C11 (C9b, the colour warp, included) within 2e-4
+//! in LogC4 units; the displayed
 //! result (C12 and C13) within 1 code value at 10 bits; tiles equal the whole image; the 8-bit
 //! dither is the CPU's. Inputs are f16-representable, so the CPU reference sees exactly what the
 //! GPU reads; the remaining difference is f32 against f64 arithmetic.
@@ -83,6 +84,7 @@ fn every_stage_matches_the_cpu_trace() {
         Stop::C7,
         Stop::C8,
         Stop::C9,
+        Stop::C9b,
         Stop::C10,
         Stop::C11,
         Stop::C12,
@@ -101,10 +103,11 @@ fn every_stage_matches_the_cpu_trace() {
                         || name.starts_with("baked-look/srgb/25")
                         || name.starts_with("display-lut/p3")
                         || name.starts_with("logc3-look/35")
+                        || name.starts_with("warp/full")
                 })
                 .collect()
         };
-        let mut summary: Vec<(String, [f64; 8])> = Vec::new();
+        let mut summary: Vec<(String, [f64; 9])> = Vec::new();
         for (name, params) in selected {
             let chain = ColorChain::new(&params).expect("chain");
             let traces: Vec<StageTrace> = cams.iter().map(|&c| chain.trace(c)).collect();
@@ -117,9 +120,30 @@ fn every_stage_matches_the_cpu_trace() {
                 mid * 10 > n,
                 "{name}: only {mid} of {n} pixels are mid-range"
             );
+            // And a warp must move a good part of them (by more than five times the gate), or C9b
+            // would be compared where it is the identity. The four `warp/` cases, measured on Mesa
+            // lavapipe in all three storage modes: C9b 4.5e-7, C10 4.5e-7, C11 4.8e-7 (gate 2e-4),
+            // C13 4.2e-6 (gate one 10-bit code).
+            let warped = traces
+                .iter()
+                .filter(|t| {
+                    (0..3).any(|k| (t.c9b_logc4.0[k] - t.c9_logc4.0[k]).abs() > 5.0 * LOGC4_GATE)
+                })
+                .count();
+            assert_eq!(
+                params.warp.is_identity(),
+                warped == 0,
+                "{name}: {warped} pixels warped"
+            );
+            if name.starts_with("warp/") {
+                assert!(
+                    warped * 5 > n,
+                    "{name}: only {warped} of {n} pixels are warped"
+                );
+            }
             let outs: Vec<ColorOutput> = stops.iter().map(|&s| ColorOutput::Stage(s)).collect();
             let gpu = render(dev, &chain, &img, &outs);
-            let mut maxes = [0.0f64; 8];
+            let mut maxes = [0.0f64; 9];
             for (k, stop) in stops.iter().enumerate() {
                 let g = planar(&gpu[k]);
                 let cpu: Vec<Vec3> = traces
@@ -129,6 +153,7 @@ fn every_stage_matches_the_cpu_trace() {
                         Stop::C7 => t.c7_linear_awg4,
                         Stop::C8 => t.c8_logc4.0,
                         Stop::C9 => t.c9_logc4.0,
+                        Stop::C9b => t.c9b_logc4.0,
                         Stop::C10 => t.c10_logc4.0,
                         Stop::C11 => t.c11_logc4.0,
                         Stop::C12 => t.c12_display_linear,
@@ -158,14 +183,18 @@ fn every_stage_matches_the_cpu_trace() {
             }
             summary.push((name, maxes));
         }
-        let mut worst = [0.0f64; 8];
-        for (_, m) in &summary {
-            for k in 0..8 {
+        let mut worst = [0.0f64; 9];
+        let mut warp_worst = [0.0f64; 9];
+        for (name, m) in &summary {
+            for k in 0..9 {
                 worst[k] = worst[k].max(m[k]);
+                if name.starts_with("warp/") {
+                    warp_worst[k] = warp_worst[k].max(m[k]);
+                }
             }
         }
         eprintln!(
-            "{:?}: {} chains, worst |GPU - CPU| per stage: C6 {:.1e}, C7 {:.1e}, C8 {:.1e}, C9 {:.1e}, C10 {:.1e}, C11 {:.1e} (LogC4; gate {LOGC4_GATE:.0e}), C12 {:.1e} (display-linear), C13 {:.1e} (code values; gate {CODE10:.1e})",
+            "{:?}: {} chains, worst |GPU - CPU| per stage: C6 {:.1e}, C7 {:.1e}, C8 {:.1e}, C9 {:.1e}, C9b {:.1e}, C10 {:.1e}, C11 {:.1e} (LogC4; gate {LOGC4_GATE:.0e}), C12 {:.1e} (display-linear), C13 {:.1e} (code values; gate {CODE10:.1e})",
             dev.mode,
             summary.len(),
             worst[0],
@@ -175,7 +204,12 @@ fn every_stage_matches_the_cpu_trace() {
             worst[4],
             worst[5],
             worst[6],
-            worst[7]
+            worst[7],
+            worst[8]
+        );
+        eprintln!(
+            "{:?}: the warp chains alone: C9b {:.1e}, C10 {:.1e}, C11 {:.1e} (LogC4), C13 {:.1e} (code values)",
+            dev.mode, warp_worst[4], warp_worst[5], warp_worst[6], warp_worst[8]
         );
     }
 }
@@ -183,8 +217,14 @@ fn every_stage_matches_the_cpu_trace() {
 /// Controls set one at a time, in combinations and to random values: the fixed chains above set
 /// every grade control at once, so a mistake in how one control (or one sign, or one zone) is
 /// handled when the others are zero would hide in them. 60 seeded parameter sets: a random subset
-/// of the C9 controls, random monotone curves and a random CDL look at a random intensity, for all
-/// four outputs.
+/// of the C9 controls, random monotone curves, a random CDL look at a random intensity and a random
+/// colour warp (0 to 18 pins, about a third locked, some still, controls drawn beyond their ranges:
+/// `chains::random_warp`, from a stream of its own so the other draws are those of the sets before
+/// the warp existed), for all four outputs, checked at C9, C9b, C10, C11 and C13.
+///
+/// Measured on Mesa lavapipe, the same in all three storage modes: C9 2.2e-7, C9b 6.6e-7, C10 6.4e-7,
+/// C11 5.2e-7 against the 2e-4 gate, C13 3.4e-5 against one 10-bit code (9.8e-4); 57 of the 60 sets
+/// have a warp that acts, and 31 % of all pixels move by more than 1e-3.
 #[test]
 fn random_parameter_sets_match_the_cpu_trace() {
     use std::sync::Arc;
@@ -199,7 +239,8 @@ fn random_parameter_sets_match_the_cpu_trace() {
     let n = w * h;
     for dev in gpus() {
         let mut rng = common::Rng(0x9A7A);
-        let mut worst = [0.0f64; 4];
+        let mut worst = [0.0f64; 5];
+        let (mut warped_sets, mut warped_pixels) = (0usize, 0usize);
         for round in 0..60 {
             let control = |rng: &mut common::Rng, p: f64| {
                 if rng.unit() < p {
@@ -271,6 +312,9 @@ fn random_parameter_sets_match_the_cpu_trace() {
                     intensity,
                 ));
             }
+            let mut warp_rng = common::Rng(0x3A2B_0000 + round as u64);
+            params.warp = chains::random_warp(&mut warp_rng);
+            warped_sets += usize::from(!params.warp.is_identity());
             let chain = ColorChain::new(&params).expect("chain");
             let gpu = render(
                 dev,
@@ -278,6 +322,7 @@ fn random_parameter_sets_match_the_cpu_trace() {
                 &img,
                 &[
                     ColorOutput::Stage(Stop::C9),
+                    ColorOutput::Stage(Stop::C9b),
                     ColorOutput::Stage(Stop::C10),
                     ColorOutput::Stage(Stop::C11),
                     ColorOutput::Stage(Stop::C13),
@@ -285,7 +330,15 @@ fn random_parameter_sets_match_the_cpu_trace() {
             );
             for i in 0..n {
                 let t = chain.trace(pixel(&img, i));
-                let cpu = [t.c9_logc4.0, t.c10_logc4.0, t.c11_logc4.0, t.c13_encoded];
+                let cpu = [
+                    t.c9_logc4.0,
+                    t.c9b_logc4.0,
+                    t.c10_logc4.0,
+                    t.c11_logc4.0,
+                    t.c13_encoded,
+                ];
+                warped_pixels +=
+                    usize::from((0..3).any(|k| (t.c9b_logc4.0[k] - t.c9_logc4.0[k]).abs() > 1e-3));
                 for (k, out) in gpu.iter().enumerate() {
                     let v = planar(out);
                     for ch in 0..3 {
@@ -295,15 +348,273 @@ fn random_parameter_sets_match_the_cpu_trace() {
             }
         }
         eprintln!(
-            "{:?}: 60 random parameter sets, worst |GPU - CPU|: C9 {:.1e}, C10 {:.1e}, C11 {:.1e} (LogC4; gate {LOGC4_GATE:.0e}), C13 {:.1e} (gate {CODE10:.1e})",
-            dev.mode, worst[0], worst[1], worst[2], worst[3]
+            "{:?}: 60 random parameter sets ({warped_sets} with a warp that acts, {warped_pixels} of {} pixels moved by more than 1e-3), worst |GPU - CPU|: C9 {:.1e}, C9b {:.1e}, C10 {:.1e}, C11 {:.1e} (LogC4; gate {LOGC4_GATE:.0e}), C13 {:.1e} (gate {CODE10:.1e})",
+            dev.mode,
+            60 * n,
+            worst[0],
+            worst[1],
+            worst[2],
+            worst[3],
+            worst[4]
         );
-        for (k, gate) in [LOGC4_GATE, LOGC4_GATE, LOGC4_GATE, CODE10]
+        // Not vacuous: most sets warp, and a good part of their pixels moves.
+        assert!(warped_sets >= 40, "{warped_sets} of 60 sets warp");
+        assert!(warped_pixels * 10 > 60 * n, "{warped_pixels} pixels warped");
+        for (k, gate) in [LOGC4_GATE, LOGC4_GATE, LOGC4_GATE, LOGC4_GATE, CODE10]
             .into_iter()
             .enumerate()
         {
             assert!(worst[k] <= gate, "{:?} stage {k}: {}", dev.mode, worst[k]);
         }
+    }
+}
+
+/// The renders of `chain` at every stop that could show a stray warp, as raw bits: C9, C9b, C10, C11,
+/// C13 and the DNG stop as f32 planes, and the 8-bit (dithered) and 16-bit pictures.
+fn warp_witness(dev: &TestGpu, chain: &ColorChain, img: &RgbImage) -> Vec<ColorImage> {
+    render(
+        dev,
+        chain,
+        img,
+        &[
+            ColorOutput::Stage(Stop::C9),
+            ColorOutput::Stage(Stop::C9b),
+            ColorOutput::Stage(Stop::C10),
+            ColorOutput::Stage(Stop::C11),
+            ColorOutput::Stage(Stop::DngLinearAwg4),
+            ColorOutput::Stage(Stop::C13),
+            ColorOutput::Rgba8 { dither: true },
+            ColorOutput::U16 { bits: 16 },
+        ],
+    )
+}
+
+fn same_bits(a: &ColorImage, b: &ColorImage) -> bool {
+    match (&a.data, &b.data) {
+        (PixelData::F32Planar(x), PixelData::F32Planar(y)) => {
+            x.len() == y.len() && x.iter().zip(y).all(|(p, q)| p.to_bits() == q.to_bits())
+        }
+        _ => a == b,
+    }
+}
+
+/// C9b, exactness (`docs/02`): a warp that moves nothing (no pins, locked pins only, still pins, pins
+/// past the sixteenth) is skipped, so every output is bit for bit the output of the same chain
+/// without a warp, and C9b is C9 bit for bit.
+#[test]
+fn a_warp_that_moves_nothing_leaves_every_output_bit_identical() {
+    use ym_color::warp::{WarpParams, WarpPin};
+    let img = camera_image(45, 31, 0x1DE7);
+    let still = |s: [f64; 2]| WarpPin {
+        range: 0.2,
+        shadows: 0.0,
+        pivot_ev: 3.0,
+        ..WarpPin::moving(s, s)
+    };
+    let identities: Vec<(&str, Vec<WarpPin>)> = vec![
+        ("no pins", vec![]),
+        (
+            "locked pins only",
+            vec![
+                WarpPin::locked_at([0.03, 0.02]),
+                WarpPin {
+                    range: 0.25,
+                    ..WarpPin::locked_at([-0.02, 0.0])
+                },
+            ],
+        ),
+        ("still pins", vec![still([0.04, 0.0]), still([0.0, -0.03])]),
+        (
+            "still and locked pins",
+            vec![still([0.04, 0.0]), WarpPin::locked_at([0.0, 0.02])],
+        ),
+        ("a moving pin after sixteen locks", {
+            let mut pins = vec![WarpPin::locked_at([0.02, 0.02]); 16];
+            pins.push(WarpPin::moving([0.03, 0.0], [0.0, 0.05]));
+            pins
+        }),
+    ];
+    for dev in gpus() {
+        for target in [OutputTarget::Viewport, OutputTarget::Srgb] {
+            let params = chains::full(target);
+            let plain = warp_witness(dev, &ColorChain::new(&params).expect("chain"), &img);
+            assert!(same_bits(&plain[0], &plain[1]), "no warp: C9b is C9");
+            for (name, pins) in &identities {
+                let mut p = params.clone();
+                p.warp = WarpParams { pins: pins.clone() };
+                assert!(p.warp.is_identity(), "{name}");
+                let got = warp_witness(dev, &ColorChain::new(&p).expect("chain"), &img);
+                for (k, (a, b)) in got.iter().zip(&plain).enumerate() {
+                    assert!(
+                        same_bits(a, b),
+                        "{:?} {target:?} {name}: output {k} changed",
+                        dev.mode
+                    );
+                }
+            }
+            // The control: one moving pin changes C9b and what follows, not C9.
+            let mut p = params.clone();
+            p.warp = WarpParams {
+                pins: vec![WarpPin::moving([0.03, 0.0], [0.0, 0.05])],
+            };
+            let got = warp_witness(dev, &ColorChain::new(&p).expect("chain"), &img);
+            assert!(same_bits(&got[0], &plain[0]), "C9 is before the warp");
+            for k in 1..got.len() {
+                assert!(!same_bits(&got[k], &plain[k]), "{target:?}: output {k}");
+            }
+        }
+    }
+}
+
+/// The uniform packing at its limits: 16 moving pins (every row of `warp_mv`), 1 moving pin and 15
+/// locks (every row of `warp_lk` a lock can use), 8 and 8, and 16 moving pins followed by locks (the
+/// preparation ignores the pins past the sixteenth, so must the kernel). The sources are the C9
+/// chroma of pixels of the image itself, far apart, each with a range that reaches some pixels, so a
+/// pin packed into the wrong row, or read from the wrong one, moves pixels by up to its move (0.02 or
+/// more, 100 times the gate). Each moving pin moves its own pixel on the device, and each lock holds
+/// its own.
+///
+/// Measured on Mesa lavapipe, the same in all three storage modes: C9b 4.8e-7, C10 5.1e-7, C11 4.7e-7
+/// (gate 2e-4), C13 4.7e-6 (gate one 10-bit code, 9.8e-4).
+#[test]
+fn the_most_pins_the_uniform_holds_match_the_cpu() {
+    use ym_color::warp::{WARP_MAX_PINS, WarpParams, WarpPin, chroma_of};
+    let (w, h) = (96usize, 64usize);
+    let img = camera_image(w, h, 0x16F1);
+    let n = w * h;
+    let base = chains::full(OutputTarget::Viewport);
+    let chain0 = ColorChain::new(&base).expect("chain");
+    // Candidate pixels: chroma between 0.03 and 0.12 (where a pin acts and the guard is 1), taken
+    // greedily so that any two are at least 0.03 apart.
+    let traces: Vec<_> = (0..n).map(|i| chain0.trace(pixel(&img, i))).collect();
+    let mut spots: Vec<(usize, [f64; 2])> = Vec::new();
+    for (i, t) in traces.iter().enumerate() {
+        let c = chroma_of(t.c9_logc4);
+        let r = c[0].hypot(c[1]);
+        if (0.03..0.12).contains(&r)
+            && spots
+                .iter()
+                .all(|(_, s)| (s[0] - c[0]).hypot(s[1] - c[1]) > 0.03)
+        {
+            spots.push((i, c));
+        }
+    }
+    assert!(spots.len() >= 2 * WARP_MAX_PINS, "{} spots", spots.len());
+    // Moves of 0.02 to 0.032 and ranges of 0.012 to 0.024: some ranges grow to fit the move, some
+    // do not.
+    let moving = |k: usize, c: [f64; 2]| {
+        let (a, len) = (k as f64 * 0.7, 0.02 + 0.003 * (k % 5) as f64);
+        WarpPin {
+            range: 0.012 + 0.004 * (k % 4) as f64,
+            shadows: 0.6 + 0.1 * (k % 3) as f64,
+            highlights: 1.0 - 0.1 * (k % 5) as f64,
+            pivot_ev: -3.0 + 0.4 * k as f64,
+            exposure_ev: 0.1 * (k as f64 - 8.0),
+            ..WarpPin::moving(c, [c[0] + len * a.cos(), c[1] + len * a.sin()])
+        }
+    };
+    let locked = |c: [f64; 2]| WarpPin {
+        range: 0.012,
+        ..WarpPin::locked_at(c)
+    };
+    let sets: Vec<(&str, Vec<WarpPin>, usize)> = vec![
+        (
+            "16 moving",
+            (0..16).map(|k| moving(k, spots[k].1)).collect(),
+            0,
+        ),
+        (
+            "1 moving, 15 locks",
+            std::iter::once(moving(0, spots[0].1))
+                .chain((1..16).map(|k| locked(spots[k].1)))
+                .collect(),
+            15,
+        ),
+        (
+            "8 moving, 8 locks",
+            (0..16)
+                .map(|k| {
+                    if k % 2 == 0 {
+                        moving(k, spots[k].1)
+                    } else {
+                        locked(spots[k].1)
+                    }
+                })
+                .collect(),
+            8,
+        ),
+        (
+            "16 moving, then locks (ignored)",
+            (0..16)
+                .map(|k| moving(k, spots[k].1))
+                .chain((16..20).map(|k| locked(spots[k].1)))
+                .collect(),
+            0,
+        ),
+    ];
+    for dev in gpus() {
+        let mut worst = [0.0f64; 4];
+        for (name, pins, lock_count) in &sets {
+            let mut params = base.clone();
+            params.warp = WarpParams { pins: pins.clone() };
+            let warp = ym_color::warp::Warp::new(&params.warp);
+            assert_eq!(warp.locks().len(), *lock_count, "{name}");
+            let chain = ColorChain::new(&params).expect("chain");
+            let outs = render(
+                dev,
+                &chain,
+                &img,
+                &[
+                    ColorOutput::Stage(Stop::C9),
+                    ColorOutput::Stage(Stop::C9b),
+                    ColorOutput::Stage(Stop::C10),
+                    ColorOutput::Stage(Stop::C11),
+                    ColorOutput::Stage(Stop::C13),
+                ],
+            );
+            let g: Vec<&[f32]> = outs.iter().map(planar).collect();
+            // Every moving pin moves its own pixel, and every lock holds its own (to an f32 rounding
+            // of the lock's factor near 0).
+            for (k, pin) in pins.iter().take(WARP_MAX_PINS).enumerate() {
+                let i = spots[k].0;
+                let shift = (0..3)
+                    .map(|ch| (g[1][ch * n + i] - g[0][ch * n + i]).abs())
+                    .fold(0.0f32, f32::max);
+                if pin.locked {
+                    assert!(
+                        shift <= 1e-6,
+                        "{:?} {name}: lock {k} moved by {shift}",
+                        dev.mode
+                    );
+                } else {
+                    assert!(
+                        shift > 5e-3,
+                        "{:?} {name}: pin {k} moved by {shift}",
+                        dev.mode
+                    );
+                }
+            }
+            for i in 0..n {
+                let t = chain.trace(pixel(&img, i));
+                let cpu = [t.c9b_logc4.0, t.c10_logc4.0, t.c11_logc4.0, t.c13_encoded];
+                for (k, want) in cpu.iter().enumerate() {
+                    for ch in 0..3 {
+                        let d = (f64::from(g[k + 1][ch * n + i]) - want[ch]).abs();
+                        worst[k] = worst[k].max(d);
+                        let gate = if k == 3 { CODE10 } else { LOGC4_GATE };
+                        assert!(
+                            d <= gate,
+                            "{:?} {name}: stage {k} at pixel {i}/{ch}: {d:e}",
+                            dev.mode
+                        );
+                    }
+                }
+            }
+        }
+        eprintln!(
+            "{:?}: the most pins, worst |GPU - CPU|: C9b {:.1e}, C10 {:.1e}, C11 {:.1e} (LogC4; gate {LOGC4_GATE:.0e}), C13 {:.1e} (gate {CODE10:.1e})",
+            dev.mode, worst[0], worst[1], worst[2], worst[3]
+        );
     }
 }
 

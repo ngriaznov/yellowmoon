@@ -31,11 +31,14 @@
 //! ([`PatchReport::clamped`] lists them); a value that is not a number, a curve that is not a curve
 //! and a rotation that is not a quarter turn are errors ([`SettingsError`]). A step (0.01 EV, 50 K)
 //! is the UI's granularity: the core keeps the value it is given, so `--wb 5025` means 5025 K.
+//! The colour warp keeps at most [`WARP_MAX_PINS`] pins (later ones are cut) and clamps each pin the
+//! way `ym_color::warp::WarpPin::clamped` does ([`ColorWarp`]).
 
 use serde::{Deserialize, Deserializer, Serialize};
 use ym_color::chain::ChainError;
 use ym_color::exposure::ExposureSetting as ColorExposure;
 use ym_color::exposure::white::OFFSET_RANGE_EV;
+use ym_color::warp::{WARP_COORD_LIMIT, WARP_MAX_PINS, WARP_RANGE_DEFAULT, WarpParams, WarpPin};
 use ym_color::wb::{LightSource, WbReadout, WhiteBalance as ColorWhiteBalance};
 use ym_looks::library::LookId;
 use ym_profiles::profile::Profile;
@@ -183,6 +186,8 @@ pub enum SettingsField {
     ColorBalance,
     /// `saturation`.
     Saturation,
+    /// `color_warp`.
+    ColorWarp,
     /// `sharpen`.
     Sharpen,
     /// `output_sharpening`.
@@ -205,7 +210,7 @@ pub enum SettingsField {
 
 impl SettingsField {
     /// Every field, in the order of the settings table.
-    pub const ALL: [SettingsField; 23] = [
+    pub const ALL: [SettingsField; 24] = [
         SettingsField::Look,
         SettingsField::LookIntensity,
         SettingsField::Exposure,
@@ -220,6 +225,7 @@ impl SettingsField {
         SettingsField::WhiteBalance,
         SettingsField::ColorBalance,
         SettingsField::Saturation,
+        SettingsField::ColorWarp,
         SettingsField::Sharpen,
         SettingsField::OutputSharpening,
         SettingsField::NoiseReduction,
@@ -249,6 +255,7 @@ impl SettingsField {
             Self::WhiteBalance => "white_balance",
             Self::ColorBalance => "color_balance",
             Self::Saturation => "saturation",
+            Self::ColorWarp => "color_warp",
             Self::Sharpen => "sharpen",
             Self::OutputSharpening => "output_sharpening",
             Self::NoiseReduction => "noise_reduction",
@@ -284,6 +291,7 @@ impl SettingsField {
             | Self::Black
             | Self::ColorBalance
             | Self::Saturation
+            | Self::ColorWarp
             | Self::Curve => StageGroup::Grade,
         }
     }
@@ -441,6 +449,143 @@ pub struct ColorBalance {
     pub midtones: ColorBalancePoint,
     /// The highlights wheel.
     pub highlights: ColorBalancePoint,
+}
+
+/// A point of the colour warp's chroma plane, `[a, b]`: the chroma of a LogC4 pixel along the
+/// colour-balance axes of C9 (`a` red against cyan, `b` green against blue; `docs/02` C9b).
+pub type ChromaPoint = [f64; 2];
+
+/// One pin of Colour › Colour warp (`docs/02` C9b): it moves the colours near `source` to `target`.
+///
+/// JSON: every field but `source` may be left out when reading (`target` is then `source`, `locked`
+/// false, `range` 0.04, `shadows` and `highlights` 1, `pivot_ev` and `exposure_ev` 0); unknown fields
+/// are refused, and writing always writes every field. The values are clamped when the settings are
+/// checked ([`ColorWarp`]).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(from = "ColorWarpPinDocument")]
+pub struct ColorWarpPin {
+    /// The colour the pin takes hold of.
+    pub source: ChromaPoint,
+    /// Where that colour moves to; a locked pin's target is its source.
+    pub target: ChromaPoint,
+    /// A locked pin holds the colours within its range in place.
+    pub locked: bool,
+    /// How far the pin reaches across the plane, 0.01 to 0.25 (chroma units).
+    pub range: f64,
+    /// How much of the move applies to the shadows, 0 to 1.
+    pub shadows: f64,
+    /// How much of the move applies to the highlights, 0 to 1.
+    pub highlights: f64,
+    /// Where the shadows end and the highlights begin, in stops from middle grey, -6 to +6.
+    pub pivot_ev: f64,
+    /// A change of brightness of the pin's colours, in stops, -2 to +2.
+    pub exposure_ev: f64,
+}
+
+/// A pin as a document may write it: everything but `source` has a default.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ColorWarpPinDocument {
+    source: ChromaPoint,
+    #[serde(default, deserialize_with = "present")]
+    target: Option<ChromaPoint>,
+    #[serde(default)]
+    locked: bool,
+    #[serde(default = "default_warp_range")]
+    range: f64,
+    #[serde(default = "one")]
+    shadows: f64,
+    #[serde(default = "one")]
+    highlights: f64,
+    #[serde(default)]
+    pivot_ev: f64,
+    #[serde(default)]
+    exposure_ev: f64,
+}
+
+/// A field that may be left out but not `null`: present means `Some`.
+fn present<'de, D, T>(d: D) -> Result<Option<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    T::deserialize(d).map(Some)
+}
+
+fn default_warp_range() -> f64 {
+    WARP_RANGE_DEFAULT
+}
+
+fn one() -> f64 {
+    1.0
+}
+
+impl From<ColorWarpPinDocument> for ColorWarpPin {
+    fn from(d: ColorWarpPinDocument) -> Self {
+        Self {
+            source: d.source,
+            target: d.target.unwrap_or(d.source),
+            locked: d.locked,
+            range: d.range,
+            shadows: d.shadows,
+            highlights: d.highlights,
+            pivot_ev: d.pivot_ev,
+            exposure_ev: d.exposure_ev,
+        }
+    }
+}
+
+impl From<ColorWarpPin> for WarpPin {
+    fn from(p: ColorWarpPin) -> Self {
+        Self {
+            source: p.source,
+            target: p.target,
+            locked: p.locked,
+            range: p.range,
+            shadows: p.shadows,
+            highlights: p.highlights,
+            pivot_ev: p.pivot_ev,
+            exposure_ev: p.exposure_ev,
+        }
+    }
+}
+
+impl From<WarpPin> for ColorWarpPin {
+    fn from(p: WarpPin) -> Self {
+        Self {
+            source: p.source,
+            target: p.target,
+            locked: p.locked,
+            range: p.range,
+            shadows: p.shadows,
+            highlights: p.highlights,
+            pivot_ev: p.pivot_ev,
+            exposure_ev: p.exposure_ev,
+        }
+    }
+}
+
+/// Colour › Colour warp: its pins, in order; no pins by default (the stage is then skipped).
+///
+/// At most [`WARP_MAX_PINS`]: checking the settings cuts the list there and clamps each pin as
+/// `WarpPin::clamped` does (points scaled back to `|c| <= 0.5`, the range to 0.01…0.25, the tonal
+/// weights to 0…1, the pivot to ±6 and the exposure to ±2 stops; a locked pin's target is its source,
+/// and its weights, pivot and exposure are the defaults). A patch replaces the whole list.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct ColorWarp {
+    /// The pins.
+    pub pins: Vec<ColorWarpPin>,
+}
+
+impl ColorWarp {
+    /// The same pins as `ym-color`'s parameters, for stage C9b.
+    #[must_use]
+    pub fn to_color(&self) -> WarpParams {
+        WarpParams {
+            pins: self.pins.iter().copied().map(WarpPin::from).collect(),
+        }
+    }
 }
 
 /// A curve control point, `[x, y]` within [0, 1]².
@@ -677,6 +822,8 @@ pub struct DevelopSettings {
     pub color_balance: ColorBalance,
     /// Colour › Colour balance and Look › Tone, -100 to 100; subtractive (docs/02 C9).
     pub saturation: f64,
+    /// Colour › Colour warp: the pins of stage C9b (docs/02); none by default.
+    pub color_warp: ColorWarp,
     /// Detail › Sharpening: Auto or amount and radius.
     pub sharpen: SharpenSetting,
     /// Detail › Sharpening › Output: the strength of the output sharpening in percent, 0 to 200,
@@ -732,6 +879,7 @@ impl DevelopSettings {
             white_balance: AutoOr::Auto,
             color_balance: ColorBalance::default(),
             saturation: 0.0,
+            color_warp: ColorWarp::default(),
             sharpen: AutoOr::Auto,
             output_sharpening: OUTPUT_SHARPENING_DEFAULT,
             noise_reduction: AutoOr::Auto,
@@ -769,6 +917,7 @@ impl DevelopSettings {
             SettingsField::WhiteBalance => self.white_balance == o.white_balance,
             SettingsField::ColorBalance => self.color_balance == o.color_balance,
             SettingsField::Saturation => self.saturation == o.saturation,
+            SettingsField::ColorWarp => self.color_warp == o.color_warp,
             SettingsField::Sharpen => self.sharpen == o.sharpen,
             SettingsField::OutputSharpening => self.output_sharpening == o.output_sharpening,
             SettingsField::NoiseReduction => self.noise_reduction == o.noise_reduction,
@@ -800,6 +949,7 @@ impl DevelopSettings {
             SettingsField::WhiteBalance => self.white_balance = d.white_balance,
             SettingsField::ColorBalance => self.color_balance = d.color_balance,
             SettingsField::Saturation => self.saturation = d.saturation,
+            SettingsField::ColorWarp => self.color_warp = d.color_warp,
             SettingsField::Sharpen => self.sharpen = d.sharpen,
             SettingsField::OutputSharpening => self.output_sharpening = d.output_sharpening,
             SettingsField::NoiseReduction => self.noise_reduction = d.noise_reduction,
@@ -970,6 +1120,10 @@ impl DevelopSettings {
             changed |= c;
         }
         note(SettingsField::ColorBalance, changed);
+        note(
+            SettingsField::ColorWarp,
+            normalise_warp(&mut self.color_warp)?,
+        );
         let mut changed = false;
         for (name, v) in [
             ("rolloff.highlights", &mut self.rolloff.highlights),
@@ -1031,6 +1185,57 @@ fn clamp_to_disc(name: &'static str, [a, b]: [f64; 2]) -> Result<([f64; 2], bool
     } else {
         Ok(([a + 0.0, b + 0.0], false))
     }
+}
+
+/// Cuts the colour warp to [`WARP_MAX_PINS`] pins and clamps each one as `WarpPin::clamped` does.
+/// A number that is not finite, in any pin, is an error. Returns whether anything changed.
+fn normalise_warp(warp: &mut ColorWarp) -> Result<bool, SettingsError> {
+    for pin in &warp.pins {
+        for (name, values) in [
+            ("color_warp.source", &pin.source[..]),
+            ("color_warp.target", &pin.target[..]),
+            ("color_warp.range", &[pin.range][..]),
+            ("color_warp.shadows", &[pin.shadows][..]),
+            ("color_warp.highlights", &[pin.highlights][..]),
+            ("color_warp.pivot_ev", &[pin.pivot_ev][..]),
+            ("color_warp.exposure_ev", &[pin.exposure_ev][..]),
+        ] {
+            if !values.iter().all(|v| v.is_finite()) {
+                return Err(SettingsError::NotFinite(name));
+            }
+        }
+    }
+    let before = warp.pins.clone();
+    warp.pins.truncate(WARP_MAX_PINS);
+    for pin in &mut warp.pins {
+        let c = WarpPin::from(*pin).clamped();
+        *pin = ColorWarpPin {
+            source: within_warp_disc(c.source),
+            target: within_warp_disc(c.target),
+            locked: c.locked,
+            range: c.range + 0.0,
+            shadows: c.shadows + 0.0,
+            highlights: c.highlights + 0.0,
+            pivot_ev: c.pivot_ev + 0.0,
+            exposure_ev: c.exposure_ev + 0.0,
+        };
+    }
+    Ok(warp.pins != before)
+}
+
+/// A point that `WarpPin::clamped` scaled back onto the disc of radius [`WARP_COORD_LIMIT`], moved
+/// inside it by the last ulp when rounding left it just outside (`p * limit / |p|` lands outside in
+/// about one case in fifty): a second check must find nothing to change, or every later patch would
+/// report the warp as changed.
+fn within_warp_disc(p: ChromaPoint) -> ChromaPoint {
+    let mut p = p;
+    for _ in 0..8 {
+        if p[0].hypot(p[1]) <= WARP_COORD_LIMIT {
+            break;
+        }
+        p = [p[0] * (1.0 - f64::EPSILON), p[1] * (1.0 - f64::EPSILON)];
+    }
+    [p[0] + 0.0, p[1] + 0.0]
 }
 
 /// Clamps a curve's points into the unit square, sorts them by `x` and checks the rules of
@@ -1213,7 +1418,8 @@ pub struct CurvesPatch {
 /// The JSON is `Partial<DevelopSettings>` of `src/api/types.ts`, with two generosities: the nested
 /// objects (`decode`, `rolloff`, `color_balance`, `curve`) may carry only the parts to change, and
 /// a manual `white_balance`, `sharpen` or `noise_reduction` may leave out a part, which then keeps
-/// its current (resolved) value. `crop: null` and `white_pick: null` clear the field.
+/// its current (resolved) value. `crop: null` and `white_pick: null` clear the field. `color_warp`
+/// replaces the whole list of pins (`{ "pins": [] }` removes them all).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SettingsPatch {
@@ -1259,6 +1465,9 @@ pub struct SettingsPatch {
     /// New saturation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub saturation: Option<f64>,
+    /// New colour warp: the whole list of pins.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color_warp: Option<ColorWarp>,
     /// New sharpening.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sharpen: Option<AutoOr<SharpenManualPatch>>,
@@ -1429,6 +1638,7 @@ impl SettingsPatch {
                 });
             }
             SettingsField::Saturation => p.saturation = Some(from.saturation),
+            SettingsField::ColorWarp => p.color_warp = Some(from.color_warp.clone()),
             SettingsField::Sharpen => {
                 p.sharpen = Some(match from.sharpen {
                     AutoOr::Auto => AutoOr::Auto,
@@ -1517,6 +1727,7 @@ impl SettingsPatch {
             white_balance,
             color_balance,
             saturation,
+            color_warp,
             sharpen,
             output_sharpening,
             noise_reduction,
@@ -1658,6 +1869,9 @@ impl DevelopSettings {
         if let Some(v) = patch.saturation {
             next.saturation = v;
         }
+        if let Some(v) = &patch.color_warp {
+            next.color_warp = v.clone();
+        }
         if let Some(s) = &patch.sharpen {
             next.sharpen = match s {
                 AutoOr::Auto => AutoOr::Auto,
@@ -1794,6 +2008,7 @@ fn patch_touches(p: &SettingsPatch, field: SettingsField) -> bool {
         SettingsField::WhiteBalance => p.white_balance.is_some(),
         SettingsField::ColorBalance => p.color_balance.is_some(),
         SettingsField::Saturation => p.saturation.is_some(),
+        SettingsField::ColorWarp => p.color_warp.is_some(),
         SettingsField::Sharpen => p.sharpen.is_some(),
         SettingsField::OutputSharpening => p.output_sharpening.is_some(),
         SettingsField::NoiseReduction => p.noise_reduction.is_some(),
@@ -1863,6 +2078,8 @@ pub struct ResolvedValues {
     pub color_balance: ColorBalance,
     /// `saturation`.
     pub saturation: f64,
+    /// `color_warp`.
+    pub color_warp: ColorWarp,
     /// The sharpening in effect.
     pub sharpen: SharpenValue,
     /// `output_sharpening`.
@@ -1942,6 +2159,7 @@ impl ResolvedSettings {
             tint,
             color_balance: settings.color_balance,
             saturation: settings.saturation,
+            color_warp: settings.color_warp.clone(),
             sharpen: settings.sharpen.manual().copied().unwrap_or(auto_sharpen),
             output_sharpening: settings.output_sharpening,
             noise_reduction: settings

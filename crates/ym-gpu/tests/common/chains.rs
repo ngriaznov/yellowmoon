@@ -19,6 +19,7 @@ use ym_color::grade::{ColorBalance, GradeParams};
 use ym_color::look::{LookInput, LookTransform};
 use ym_color::lut::{Lut, Lut1d, Lut3d};
 use ym_color::tone::ToneParams;
+use ym_color::warp::{WARP_MAX_PINS, WarpParams, WarpPin};
 use ym_gpu::cpu::RgbImage;
 
 use super::{Rng, f16_round};
@@ -148,6 +149,104 @@ pub fn full(target: OutputTarget) -> ChainParams {
     p
 }
 
+/// Colour warp pins (C9b) placed where the colours of [`camera_image`] are after C9 (half its pixels
+/// have a chroma `|c|` under 0.02, a tenth over 0.06; tones from 3 stops under grey to 4 over): moves
+/// with the default and with split tonal weights, pivots under and over grey, exposure up and down, a
+/// long move with the smallest range (the range grows), an exposure-only pin, a lock between them and a
+/// still pin (left out by the preparation).
+pub fn warp_pins() -> WarpParams {
+    WarpParams {
+        pins: vec![
+            WarpPin {
+                range: 0.05,
+                ..WarpPin::moving([0.045, 0.015], [0.015, 0.06])
+            },
+            WarpPin {
+                range: 0.06,
+                shadows: 1.0,
+                highlights: 0.2,
+                pivot_ev: -2.0,
+                exposure_ev: -0.6,
+                ..WarpPin::moving([-0.03, 0.04], [-0.07, 0.0])
+            },
+            WarpPin {
+                range: 0.04,
+                shadows: 0.0,
+                highlights: 1.0,
+                pivot_ev: 1.0,
+                exposure_ev: 0.8,
+                ..WarpPin::moving([-0.02, -0.05], [0.01, -0.08])
+            },
+            WarpPin {
+                range: 0.01,
+                ..WarpPin::moving([0.06, -0.03], [-0.04, -0.09])
+            },
+            WarpPin {
+                range: 0.03,
+                exposure_ev: 1.2,
+                ..WarpPin::moving([0.0, -0.03], [0.0, -0.03])
+            },
+            WarpPin {
+                range: 0.025,
+                ..WarpPin::locked_at([0.03, 0.03])
+            },
+            WarpPin::moving([0.1, 0.1], [0.1, 0.1]),
+        ],
+    }
+}
+
+/// A random set of 0 to [`WARP_MAX_PINS`] pins (and sometimes a few more, which are ignored): about a
+/// third locked, some still, sources mostly where the colours of [`camera_image`] are and sometimes
+/// beyond the limit of 0.5, and every control drawn a little beyond its range now and then, so the
+/// preparation's clamping is exercised too.
+pub fn random_warp(rng: &mut Rng) -> WarpParams {
+    let count = (rng.next_u64() % (WARP_MAX_PINS as u64 + 3)) as usize;
+    let point = |rng: &mut Rng, reach: f64| {
+        let (r, a) = (
+            reach * rng.unit().sqrt(),
+            rng.range(0.0, std::f64::consts::TAU),
+        );
+        [r * a.cos(), r * a.sin()]
+    };
+    let pins = (0..count)
+        .map(|_| {
+            let source = if rng.unit() < 0.05 {
+                point(rng, 0.7)
+            } else {
+                point(rng, 0.12)
+            };
+            let range = rng.range(0.005, 0.3);
+            if rng.unit() < 0.3 {
+                return WarpPin {
+                    range,
+                    ..WarpPin::locked_at(source)
+                };
+            }
+            let offset = point(rng, 0.15);
+            let target = if rng.unit() < 0.15 {
+                source
+            } else {
+                [source[0] + offset[0], source[1] + offset[1]]
+            };
+            WarpPin {
+                source,
+                target,
+                locked: false,
+                range,
+                shadows: rng.range(-0.1, 1.1),
+                highlights: rng.range(-0.1, 1.1),
+                pivot_ev: rng.range(-7.0, 7.0),
+                exposure_ev: if rng.unit() < 0.5 {
+                    rng.range(-2.5, 2.5)
+                } else {
+                    0.0
+                },
+            }
+        })
+        .collect();
+    WarpParams { pins }
+}
+
 /// All named configurations the parity tests cover.
 pub fn cases() -> Vec<(String, ChainParams)> {
     let mut v: Vec<(String, ChainParams)> = Vec::new();
@@ -252,6 +351,22 @@ pub fn cases() -> Vec<(String, ChainParams)> {
     p.display = display_lut(DisplayLutInput::LogC4, DisplayLutOutput::REC709_G24);
     p.white_lift = lift;
     v.push(("lift/display-lut-ignores-it".into(), p));
+    // The colour warp (C9b): alone, after the full grade and before the look and the curves, and
+    // feeding a display LUT and a display-baked look.
+    let mut p = base(OutputTarget::Viewport);
+    p.warp = warp_pins();
+    v.push(("warp/auto/viewport".into(), p));
+    let mut p = full(OutputTarget::Srgb);
+    p.warp = warp_pins();
+    v.push(("warp/full/srgb".into(), p));
+    let mut p = full(OutputTarget::Srgb);
+    p.display = display_lut(DisplayLutInput::LogC3Ei800, DisplayLutOutput::REC709_G24);
+    p.warp = warp_pins();
+    v.push(("warp/display-lut".into(), p));
+    let mut p = full(OutputTarget::Viewport);
+    p.look = Some(LookSetting::new(baked_look(), 60.0));
+    p.warp = warp_pins();
+    v.push(("warp/baked-look/60".into(), p));
     v
 }
 

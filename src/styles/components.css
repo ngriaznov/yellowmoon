@@ -106,6 +106,47 @@
 }
 .ym-wheel[data-disabled="true"] { opacity: 0.5; }
 
+/* ---- WarpPlane (Colour › Colour warp) ---------------------------------------------------------
+   A square as wide as its column: the hue field and the photo's colours on two canvases, the rings, the axes and the pins on an SVG
+   above them. The pins' sizes are set by WarpPlane.tsx (a 10 px ring, a 10 px dot); here only how they are painted. */
+.ym-warp { display: flex; flex-direction: column; gap: 12px; }
+.ym-warp__tools { display: flex; align-items: center; gap: 8px; }
+.ym-warp__tools .ym-warp__delete { margin-left: auto; }
+.ym-warp__rows { margin-top: 8px; }
+.ym-warp-plane {
+  position: relative;
+  box-sizing: border-box;
+  width: 100%;
+  aspect-ratio: 1;
+  overflow: hidden;
+  background: var(--paper);
+  border: var(--rule-control) solid var(--ink);
+  cursor: crosshair;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.ym-warp-plane:focus { outline: none; }
+.ym-warp-plane__field,
+.ym-warp-plane__scatter,
+.ym-warp-plane__overlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+.ym-warp-plane__overlay { overflow: visible; }
+.ym-warp-plane__ring { fill: none; stroke: rgba(0, 0, 0, 0.18); stroke-width: 1; }
+.ym-warp-plane__axis { fill: none; stroke: rgba(0, 0, 0, 0.18); stroke-width: 1; }
+.ym-warp-plane__pin { cursor: grab; outline: none; }
+.ym-warp-plane__line { stroke: var(--ink); stroke-width: 1.5; }
+.ym-warp-plane__source,
+.ym-warp-plane__lock { fill: none; stroke: var(--ink); stroke-width: 2; }
+.ym-warp-plane__lock-mark { fill: var(--ink); }
+.ym-warp-plane__target { stroke: var(--ink); stroke-width: 1.5; }
+.ym-warp-plane__halo { fill: none; stroke: var(--tab); stroke-width: 2; }
+.ym-warp-plane__pin:focus-visible .ym-warp-plane__halo { stroke-width: 3; }
+
 /* ---- CurvePlot and Histogram --------------------------------------------------------------- */
 .ym-curve { display: flex; flex-direction: column; gap: 10px; }
 .ym-curve__plot {

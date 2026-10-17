@@ -227,6 +227,13 @@ fn every_grade_control_and_the_look_only_rebuild_the_grade_group_with(rig: Rig) 
             "color_balance",
             Box::new(|s| s.color_balance.shadows = [0.3, -0.2]),
         ),
+        (
+            "color_warp",
+            Box::new(|s| {
+                s.color_warp.pins =
+                    vec![ym_color::warp::WarpPin::moving([0.1, 0.02], [0.06, 0.08]).into()];
+            }),
+        ),
         ("look_intensity", Box::new(|s| s.look_intensity = 40.0)),
         (
             "curve red",

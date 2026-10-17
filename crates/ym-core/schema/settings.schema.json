@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/ngriaznov/yellowmoon/crates/ym-core/schema/settings.schema.json",
   "title": "Yellowmoon DevelopSettings",
-  "description": "The settings of one photo (docs/01 section DevelopSettings): the JSON of the ym:Settings XMP property, of `ym render --settings`, of the golden-image manifest and of the IPC types in src/api/types.ts. Every property is optional when reading (a missing one takes its default, shown here); unknown properties are refused. Values outside their ranges are clamped by the core, not refused; the ranges here are the ones the core clamps to. Not expressible in JSON Schema and checked by the core: colour-balance points lie in the unit disc (a longer vector is scaled back to its circle), curve points are sorted by x with no two at the same x (a curve is sorted when read), a crop rectangle lies in the unit square (it is moved or shrunk to fit).",
+  "description": "The settings of one photo (docs/01 section DevelopSettings): the JSON of the ym:Settings XMP property, of `ym render --settings`, of the golden-image manifest and of the IPC types in src/api/types.ts. Every property is optional when reading (a missing one takes its default, shown here); unknown properties are refused. Values outside their ranges are clamped by the core, not refused; the ranges here are the ones the core clamps to. Not expressible in JSON Schema and checked by the core: colour-balance points lie in the unit disc (a longer vector is scaled back to its circle), colour-warp points lie in the disc of radius 0.5 (likewise), a locked warp pin's target is its source, curve points are sorted by x with no two at the same x (a curve is sorted when read), a crop rectangle lies in the unit square (it is moved or shrunk to fit).",
   "type": "object",
   "additionalProperties": false,
   "properties": {
@@ -44,6 +44,20 @@
       }
     },
     "saturation": { "$ref": "#/$defs/percent" },
+    "color_warp": {
+      "description": "Colour > Colour warp (docs/02 C9b): pins that move chosen colours across the chroma plane, in order. At most 16 (the core cuts the rest). No pins by default, which skips the stage. A patch replaces the whole list.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "pins": {
+          "type": "array",
+          "maxItems": 16,
+          "items": { "$ref": "#/$defs/warp_pin" },
+          "default": []
+        }
+      },
+      "default": { "pins": [] }
+    },
     "sharpen": { "$ref": "#/$defs/sharpen" },
     "output_sharpening": {
       "description": "Detail > Sharpening > Output: the strength of the sharpening applied to the picture at the size it is shown or written, in percent (0 is off). A plain number, not Auto; the UI steps by 5. A document without it reads as 100.",
@@ -220,6 +234,32 @@
       "items": false,
       "minItems": 2,
       "default": [0, 0]
+    },
+    "warp_pin": {
+      "description": "One pin of the colour warp: the colours near `source` move to `target`. Every property but `source` may be left out and takes the default shown (`target`: the source). A locked pin holds the colours within its range in place; its target is its source and its weights, pivot and exposure are the defaults.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source"],
+      "properties": {
+        "source": { "$ref": "#/$defs/chroma_point" },
+        "target": { "$ref": "#/$defs/chroma_point" },
+        "locked": { "type": "boolean", "default": false },
+        "range": { "type": "number", "minimum": 0.01, "maximum": 0.25, "default": 0.04 },
+        "shadows": { "type": "number", "minimum": 0, "maximum": 1, "default": 1 },
+        "highlights": { "type": "number", "minimum": 0, "maximum": 1, "default": 1 },
+        "pivot_ev": { "type": "number", "minimum": -6, "maximum": 6, "default": 0 },
+        "exposure_ev": { "type": "number", "minimum": -2, "maximum": 2, "default": 0 }
+      }
+    },
+    "chroma_point": {
+      "description": "[a, b] on the chroma plane of the colour warp (a: red against cyan, b: green against blue) with a^2 + b^2 <= 0.25 (the core scales a longer vector back to |c| = 0.5).",
+      "type": "array",
+      "prefixItems": [
+        { "type": "number", "minimum": -0.5, "maximum": 0.5 },
+        { "type": "number", "minimum": -0.5, "maximum": 0.5 }
+      ],
+      "items": false,
+      "minItems": 2
     },
     "curve": {
       "description": "2 to 16 control points [x, y] in [0, 1]^2, x strictly increasing. Default: the identity [[0, 0], [1, 1]].",

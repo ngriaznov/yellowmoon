@@ -34,6 +34,19 @@ export { LookTile } from "./LookTile";
 export type { LookTileProps } from "./LookTile";
 export { Wheel, WheelGroup, WHEEL_KEY_STEP } from "./Wheel";
 export type { WheelProps } from "./Wheel";
+export { WarpPlane, WARP_KEY_STEP } from "./WarpPlane";
+export type { WarpPlaneProps, WarpTool } from "./WarpPlane";
+export {
+  clampPin,
+  hueName,
+  lockedPin,
+  movingPin,
+  pinValueText,
+  WARP_COORD_LIMIT,
+  WARP_MAX_PINS,
+  WARP_PLANE_EXTENT,
+  WARP_RANGE_DEFAULT,
+} from "./warpMath";
 export { CURVE_CHANNEL_LABELS, CURVE_COLORS, CurvePlot, PLOT_HEIGHT, PLOT_WIDTH } from "./CurvePlot";
 export type { CurveChannel, CurvePlotProps } from "./CurvePlot";
 export { Histogram, histogramMax, histogramPath } from "./Histogram";

@@ -33,6 +33,7 @@ use ym_color::look::{
 };
 use ym_color::lut::{Lut, Lut3d};
 use ym_color::tone::ToneParams;
+use ym_color::warp::{Warp, WarpParams, WarpPin};
 
 // ---- helpers -----------------------------------------------------------------------------------
 
@@ -170,6 +171,28 @@ fn rich_params() -> ChainParams {
     p
 }
 
+/// A colour warp that reaches every test pixel: a wide pin pulling warm colours toward green, a second
+/// one with exposure and tonal weights, and a lock.
+fn warp_params() -> WarpParams {
+    WarpParams {
+        pins: vec![
+            WarpPin {
+                range: 0.25,
+                ..WarpPin::moving([0.05, 0.0], [0.05, 0.08])
+            },
+            WarpPin {
+                range: 0.06,
+                shadows: 0.3,
+                highlights: 1.0,
+                pivot_ev: 1.0,
+                exposure_ev: 0.5,
+                ..WarpPin::moving([-0.05, -0.08], [-0.09, -0.05])
+            },
+            WarpPin::locked_at([-0.15, 0.1]),
+        ],
+    }
+}
+
 fn chain(p: &ChainParams) -> ColorChain {
     ColorChain::new(p).unwrap()
 }
@@ -190,9 +213,11 @@ fn aces2_of_linear_awg4(linear: Vec3, output: Aces2Output) -> Vec3 {
 
 #[test]
 fn trace_equals_an_independent_composition_of_the_stage_modules() {
-    let p = rich_params();
+    let mut p = rich_params();
+    p.warp = warp_params();
     let c = chain(&p);
     let grade = Grade::new(&p.grade);
+    let warp = Warp::new(&p.warp);
     let baked = p.curves.bake();
     let look = logc4_look();
     let aces = Aces2Transform::new(Aces2Output::Viewport);
@@ -203,7 +228,8 @@ fn trace_equals_an_independent_composition_of_the_stage_modules() {
         let lin = LinearAwg4(c7);
         let c8 = lin.to_logc4();
         let c9 = grade.apply(c8, grade_luma(lin));
-        let c10 = blend_logc4(c9, look.eval_logc4(c9).unwrap(), 80.0);
+        let c9b = warp.apply(c9);
+        let c10 = blend_logc4(c9b, look.eval_logc4(c9b).unwrap(), 80.0);
         let c11 = baked.apply(c10);
         let ap0 = linalg::mul_vec(&aces2_input_matrix(), logc4_decode_rgb(c11.0));
         let c12 = aces.transform_ap0_linear(ap0);
@@ -212,6 +238,7 @@ fn trace_equals_an_independent_composition_of_the_stage_modules() {
         assert_close(t.c7_linear_awg4, c7, 1e-14, "c7");
         assert_close(t.c8_logc4.0, c8.0, 1e-14, "c8");
         assert_close(t.c9_logc4.0, c9.0, 1e-14, "c9");
+        assert_close(t.c9b_logc4.0, c9b.0, 1e-14, "c9b");
         assert_close(t.c10_logc4.0, c10.0, 1e-14, "c10");
         assert_close(t.c11_logc4.0, c11.0, 1e-14, "c11");
         assert_close(t.c12_display_linear, c12, 1e-14, "c12");
@@ -222,14 +249,16 @@ fn trace_equals_an_independent_composition_of_the_stage_modules() {
     }
 }
 
-/// Which of the trace's stages are bit-identical between two chains, as eight flags (C6 to C13).
-fn same_stages(a: &ColorChain, b: &ColorChain, px: Vec3) -> [bool; 8] {
+/// Which of the trace's stages are bit-identical between two chains, as nine flags (C6 to C13, with
+/// C9b after C9).
+fn same_stages(a: &ColorChain, b: &ColorChain, px: Vec3) -> [bool; 9] {
     let (x, y) = (a.trace(px), b.trace(px));
     [
         x.c6_linear_awg4 == y.c6_linear_awg4,
         x.c7_linear_awg4 == y.c7_linear_awg4,
         x.c8_logc4 == y.c8_logc4,
         x.c9_logc4 == y.c9_logc4,
+        x.c9b_logc4 == y.c9b_logc4,
         x.c10_logc4 == y.c10_logc4,
         x.c11_logc4 == y.c11_logc4,
         x.c12_display_linear == y.c12_display_linear,
@@ -237,7 +266,7 @@ fn same_stages(a: &ColorChain, b: &ColorChain, px: Vec3) -> [bool; 8] {
     ]
 }
 
-/// `first_changed` is the index (C6 = 0 ... C13 = 7) of the first stage whose value must differ;
+/// `first_changed` is the index (C6 = 0 ... C13 = 8) of the first stage whose value must differ;
 /// everything before it must be bit-identical, everything from it on must differ.
 fn check_toggle(name: &str, change: impl FnOnce(&mut ChainParams), first_changed: usize) {
     let base = rich_params();
@@ -261,7 +290,7 @@ fn check_toggle(name: &str, change: impl FnOnce(&mut ChainParams), first_changed
 
 #[test]
 fn each_stage_changed_alone_moves_only_itself_and_what_follows() {
-    // Index: C6 = 0, C7 = 1, C8 = 2, C9 = 3, C10 = 4, C11 = 5, C12 = 6, C13 = 7.
+    // Index: C6 = 0, C7 = 1, C8 = 2, C9 = 3, C9b = 4, C10 = 5, C11 = 6, C12 = 7, C13 = 8.
     check_toggle("matrix (C1-C6)", |p| p.matrix[0][0] *= 1.1, 0);
     check_toggle(
         "tone (C7)",
@@ -269,27 +298,28 @@ fn each_stage_changed_alone_moves_only_itself_and_what_follows() {
         1,
     );
     check_toggle("grade (C9)", |p| p.grade.contrast = -30.0, 3);
+    check_toggle("colour warp (C9b)", |p| p.warp = warp_params(), 4);
     check_toggle(
         "look (C10)",
         |p| p.look = Some(LookSetting::new(other_logc4_look(), 80.0)),
-        4,
+        5,
     );
     check_toggle(
         "look intensity (C10)",
         |p| p.look = Some(LookSetting::new(logc4_look(), 30.0)),
-        4,
+        5,
     );
     check_toggle(
         "curve (C11)",
         |p| {
             p.curves.luma = Curve::new(&[(0.0, 0.0), (0.5, 0.45), (1.0, 1.0)]).unwrap();
         },
-        5,
+        6,
     );
     check_toggle(
         "output primaries (C12)",
         |p| p.output = OutputTarget::Srgb,
-        6,
+        7,
     );
 }
 
@@ -305,7 +335,7 @@ fn display_transform_change_leaves_every_logc4_stage_alone() {
     check_toggle(
         "display transform (C12)",
         |p| p.display = DisplayTransform::arri(lut),
-        6,
+        7,
     );
 }
 

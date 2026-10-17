@@ -21,6 +21,8 @@ import { toAppError } from "../api";
 import type {
   ApplyScope,
   AppError,
+  ChromaSample,
+  ChromaScatter,
   CliLinkStatus,
   DevelopSettings,
   DisplayLut,
@@ -56,6 +58,7 @@ import type {
   ViewportRect,
 } from "../api/types";
 import { filterArwPaths } from "../components/useWindowDrop";
+import { clampToDisc, movingPin, WARP_COORD_LIMIT, WARP_MAX_PINS } from "../components/warpMath";
 import { isTauri } from "../env";
 import { defaultExportOptions, defaultScope, sameOptions } from "../export/options";
 import { applyProgress, startRun } from "../export/run";
@@ -173,6 +176,13 @@ export interface AppState {
   histogram: HistogramData | null;
   /** The display values at the middle of the photo cell, while the Light tab watches them (`watchHistogram`). */
   middleReadout: PixelSample | null;
+  /** The current photo's colours on the colour warp's plane, while the Colour tab shows it (`watchChromaScatter`). */
+  chromaScatter: ChromaScatter | null;
+  /**
+   * The selected pin of Colour › Colour warp: an index into the current photo's `color_warp.pins`, or null. It belongs to the window,
+   * not to the settings (nothing about it is undone or copied); a new photo starts with none, and an index past the end counts as none.
+   */
+  warpPin: number | null;
   /** Undo and redo are available for the current photo. */
   canUndo: boolean;
   canRedo: boolean;
@@ -230,6 +240,8 @@ export function initialState(): AppState {
     opening: false,
     histogram: null,
     middleReadout: null,
+    chromaScatter: null,
+    warpPin: null,
     canUndo: false,
     canRedo: false,
     preferences: null,
@@ -264,6 +276,7 @@ const DIRECT_KEYS: ReadonlySet<string> = new Set([
   "light_source",
   "color_balance",
   "saturation",
+  "color_warp",
   "output_sharpening",
   "curve",
   "decode",
@@ -372,6 +385,11 @@ export class AppStore {
   private histogramTimer: ReturnType<typeof setTimeout> | null = null;
   private readoutBusy = false;
   private readoutAgain = false;
+  private scatterBusy = false;
+  private scatterAgain = false;
+  /** Who shows the colour warp's plane (the Colour tab): while there is one, `render_stats` keeps its scatter fresh. */
+  private scatterWatchers = 0;
+  private scatterTimer: ReturnType<typeof setTimeout> | null = null;
   /** Export events that arrived before `export_start` answered, by job. */
   private readonly earlyExport: ExportProgress[] = [];
   private starting = false;
@@ -469,6 +487,7 @@ export class AppStore {
       api.on("render_stats", (stats) => {
         this.later((s) => ({ ...s, stats }));
         this.scheduleHistogram();
+        this.scheduleChromaScatter();
       }),
       api.on("looks_changed", () => {
         void this.refreshLooks();
@@ -802,7 +821,16 @@ export class AppStore {
     // Wheel and drag input that has not been sent was meant for the photo that is left, and so were the tiles not yet asked for.
     this.viewportQueue.clear();
     this.thumbLimiter.supersede((t) => t.photoId !== id);
-    this.set({ session: { ...session, current_index: index }, histogram: null, middleReadout: null, zoom: { kind: "fit" }, before: false, stats });
+    this.set({
+      session: { ...session, current_index: index },
+      histogram: null,
+      middleReadout: null,
+      chromaScatter: null,
+      warpPin: null,
+      zoom: { kind: "fit" },
+      before: false,
+      stats,
+    });
     this.syncHistoryFlags();
     if (isReady(session.photos[index] as PhotoSummary)) void this.ensureSettings(id);
     try {
@@ -1314,6 +1342,43 @@ export class AppStore {
     return this.samplePixel(rect ? u * rect.width : u, rect ? v * rect.height : v);
   }
 
+  /**
+   * Pick colour (Colour › Colour warp, `docs/11`): asks the core for the chroma under a click on the photo cell (CSS pixels from its
+   * corner, as Pick white) at the warp's input, and adds a moving pin there with its target on its source, selected, so the next drag
+   * on the plane moves it. One undo step. A click on the paper around the photo adds nothing, and nor does one at sixteen pins (the
+   * selection goes, so the card says why).
+   */
+  async pickColor(x: number, y: number): Promise<void> {
+    const id = this.currentId();
+    if (id === null) return;
+    // Wheel and drag input still on its way lands first: the click names a spot of the picture as that input left it.
+    if (this.viewportQueue.busy) await this.viewportQueue.flush();
+    // Patches in flight land first, so the new pin joins the pins the core has.
+    await this.whenIdle(id);
+    let sample: ChromaSample | null;
+    try {
+      sample = await this.api.sampleChroma(x, y);
+    } catch (error) {
+      this.fail(error);
+      return;
+    }
+    const rs = this.state.settings[id];
+    if (!sample || !rs || this.currentId() !== id) return;
+    const pins = rs.settings.color_warp.pins;
+    if (pins.length >= WARP_MAX_PINS) {
+      this.selectWarpPin(null);
+      return;
+    }
+    const next = [...pins, movingPin(clampToDisc([sample.a, sample.b], WARP_COORD_LIMIT))];
+    this.selectWarpPin(next.length - 1);
+    await this.update({ color_warp: { pins: next } }, true);
+  }
+
+  /** Selects a pin of the colour warp (an index into the current photo's pins), or none. */
+  selectWarpPin(index: number | null): void {
+    if (index !== this.state.warpPin) this.set({ warpPin: index });
+  }
+
   // --- Settings -----------------------------------------------------------------------------
 
   /** Settings of the current photo, when they have arrived. */
@@ -1773,6 +1838,60 @@ export class AppStore {
     } finally {
       this.readoutBusy = false;
     }
+  }
+
+  // --- The colour warp's scatter --------------------------------------------------------------
+
+  /** Asks for the current photo's colours on the warp's plane. Calls made while one is in flight collapse into one more. */
+  async requestChromaScatter(): Promise<void> {
+    if (this.currentId() === null) return;
+    if (this.scatterBusy) {
+      this.scatterAgain = true;
+      return;
+    }
+    this.scatterBusy = true;
+    try {
+      do {
+        this.scatterAgain = false;
+        const asked = this.currentId();
+        if (asked === null) break;
+        const data = await this.api.chromaScatter(asked);
+        if (this.currentId() === asked) this.set({ chromaScatter: data });
+      } while (this.scatterAgain);
+    } catch {
+      // The dots stay as they were; the next render asks again.
+    } finally {
+      this.scatterBusy = false;
+    }
+  }
+
+  /**
+   * The colour warp's plane is on show (the Colour tab calls this while it is mounted and calls the function it returns when it goes):
+   * the photo's colours are asked for at once, then after the frames the viewport reports, at most every {@link HISTOGRAM_THROTTLE_MS},
+   * as the histogram is (`watchHistogram`). Nothing is asked for while nobody watches.
+   */
+  watchChromaScatter(): () => void {
+    this.scatterWatchers += 1;
+    void this.requestChromaScatter();
+    let watching = true;
+    return () => {
+      if (!watching) return;
+      watching = false;
+      this.scatterWatchers -= 1;
+      if (this.scatterWatchers === 0 && this.scatterTimer !== null) {
+        clearTimeout(this.scatterTimer);
+        this.scatterTimer = null;
+      }
+    };
+  }
+
+  /** A frame was drawn: asks for the scatter once the throttle allows, if anybody watches it. */
+  private scheduleChromaScatter(): void {
+    if (this.scatterWatchers === 0 || this.scatterTimer !== null) return;
+    this.scatterTimer = setTimeout(() => {
+      this.scatterTimer = null;
+      if (this.scatterWatchers > 0) void this.requestChromaScatter();
+    }, HISTOGRAM_THROTTLE_MS);
   }
 
   // --- Undo and redo ------------------------------------------------------------------------

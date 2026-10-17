@@ -50,6 +50,7 @@ use crate::grade::{Grade, GradeParams, grade_luma};
 use crate::logc::LogC4;
 use crate::look::{LookTransform, blend_display_linear, intensity_fraction};
 use crate::tone::ToneParams;
+use crate::warp::{Warp, WarpParams};
 
 /// Largest magnitude a camera sample may have; NaN counts as 0 (see the module docs of [`super`]).
 const INPUT_LIMIT: f64 = 1e30;
@@ -123,6 +124,8 @@ pub struct ChainParams {
     pub tone: ToneParams,
     /// Stage C9: the primary grade. All zero is the identity.
     pub grade: GradeParams,
+    /// Stage C9b: the colour warp's pins. No pins is the identity.
+    pub warp: WarpParams,
     /// Stage C10: the look and its intensity. `None` is Neutral.
     pub look: Option<LookSetting>,
     /// Stage C11: the four curves (baked into 1024-entry tables by [`ColorChain::new`]).
@@ -156,6 +159,7 @@ impl ChainParams {
             matrix,
             tone,
             grade: GradeParams::default(),
+            warp: WarpParams::default(),
             look: None,
             curves: CurveSet::default(),
             display: DisplayTransform::Aces2,
@@ -182,6 +186,8 @@ pub struct StageTrace {
     pub c8_logc4: LogC4,
     /// After the primary grade (C9).
     pub c9_logc4: LogC4,
+    /// After the colour warp (C9b).
+    pub c9b_logc4: LogC4,
     /// After the look (C10), log-to-log looks only.
     pub c10_logc4: LogC4,
     /// After the curve (C11): the DNG stop point.
@@ -215,6 +221,7 @@ struct UpToC11 {
     c7: Vec3,
     c8: LogC4,
     c9: LogC4,
+    c9b: LogC4,
     c10: LogC4,
     c11: LogC4,
 }
@@ -231,6 +238,7 @@ pub struct ColorChain {
     matrix: Mat3,
     tone: ToneParams,
     grade: Grade,
+    warp: Warp,
     look: LookStage,
     curves: BakedCurves,
     display: PreparedDisplay,
@@ -301,6 +309,7 @@ impl ColorChain {
             matrix: params.matrix,
             tone: params.tone,
             grade: Grade::new(&params.grade),
+            warp: Warp::new(&params.warp),
             look,
             curves: params.curves.bake(),
             display: PreparedDisplay::new(&params.display, params.output, params.white_lift),
@@ -423,13 +432,15 @@ impl ColorChain {
         let linear = LinearAwg4(c7);
         let c8 = linear.to_logc4();
         let c9 = self.grade.apply(c8, grade_luma(linear));
-        let c10 = self.c10(c9);
+        let c9b = self.warp.apply(c9);
+        let c10 = self.c10(c9b);
         let c11 = self.curves.apply(c10);
         UpToC11 {
             c6,
             c7,
             c8,
             c9,
+            c9b,
             c10,
             c11,
         }
@@ -447,6 +458,7 @@ impl ColorChain {
             c7_linear_awg4: s.c7,
             c8_logc4: s.c8,
             c9_logc4: s.c9,
+            c9b_logc4: s.c9b,
             c10_logc4: s.c10,
             c11_logc4: s.c11,
             c12_display_linear: c12,

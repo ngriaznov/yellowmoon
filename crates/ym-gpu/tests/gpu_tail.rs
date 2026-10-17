@@ -371,6 +371,93 @@ fn the_tail_matches_the_cpu_export_in_every_configuration() {
     }
 }
 
+/// The export tail runs the colour warp (C9b, `docs/02`) with the rest of the colour pass: an export
+/// of a warped chain, shrunk and sharpened, matches the CPU export of the same chain with the bounds
+/// of [`the_tail_matches_the_cpu_export_in_every_configuration`], and differs from the export without
+/// the warp. The pins sit on the scene's own colours (the C9 chroma of three of its pixels, a third of
+/// a turn apart in hue): two moves, one with exposure and split tonal weights, and a lock. First
+/// measured on Mesa lavapipe: at most 1 code off, 0.9999 exact; 56 % of the codes differ from the
+/// export without the warp.
+#[test]
+fn the_export_tail_applies_the_colour_warp() {
+    use ym_color::warp::{WarpParams, WarpPin, chroma_of};
+    let Some(dev) = common::gpu() else { return };
+    let sc = exact_scene(240, 360, 1, 0, 23);
+    let out = (180, 270);
+    let mut params = chains::full(OutputTarget::Srgb);
+    let plain = Arc::new(ColorChain::new(&params).expect("chain"));
+    let n = sc.camera.width * sc.camera.height;
+    let mut colours: Vec<[f64; 2]> = (0..n)
+        .map(|i| chroma_of(plain.trace(chains::pixel(&sc.camera, i)).c9_logc4))
+        .filter(|c| c[0].hypot(c[1]) > 0.03)
+        .collect();
+    assert!(
+        colours.len() * 20 > n,
+        "{} coloured pixels of {n}",
+        colours.len()
+    );
+    colours.sort_by(|a, b| a[1].atan2(a[0]).total_cmp(&b[1].atan2(b[0])));
+    let at = |f: f64| colours[(f * (colours.len() - 1) as f64) as usize];
+    let (s1, s2, l) = (at(0.2), at(0.53), at(0.86));
+    params.warp = WarpParams {
+        pins: vec![
+            WarpPin {
+                range: 0.06,
+                ..WarpPin::moving(s1, [s1[0] * 0.4 - s1[1], s1[1] * 0.4 + s1[0]])
+            },
+            WarpPin {
+                range: 0.05,
+                shadows: 0.3,
+                highlights: 1.0,
+                exposure_ev: 0.7,
+                ..WarpPin::moving(s2, [s2[0] * 1.6, s2[1] * 1.6])
+            },
+            WarpPin {
+                range: 0.04,
+                ..WarpPin::locked_at(l)
+            },
+        ],
+    };
+    let warped = Arc::new(ColorChain::new(&params).expect("chain"));
+    let (space, format) = (OutputSpace::Srgb, format_of(false));
+    let (got, _) = codes(
+        &run_tail(dev, &sc, &warped, out, 100.0, format, space, 128),
+        out,
+    );
+    let (without, _) = codes(
+        &run_tail(dev, &sc, &plain, out, 100.0, format, space, 128),
+        out,
+    );
+    let want: Vec<u32> = cpu_codes(&sc, &warped, out, 100.0, space, false)
+        .eight
+        .expect("8 bit")
+        .iter()
+        .map(|&v| u32::from(v))
+        .collect();
+    let d = diff_codes(&got, &want);
+    let changed = diff_codes(&got, &without);
+    ci_note(
+        "tail warp",
+        &format!(
+            "warped export against the CPU: max {}, {:.4} exact; {:.3} of the codes differ from the unwarped export",
+            d.max,
+            d.exact_share(),
+            1.0 - changed.exact_share()
+        ),
+    );
+    assert!(
+        1.0 - changed.exact_share() > 0.05,
+        "the warp changed only {:.4} of the codes",
+        1.0 - changed.exact_share()
+    );
+    assert!(d.max <= MAX_CODE_DIFF_8, "max {}", d.max);
+    assert!(
+        d.exact_share() >= MIN_EXACT_8,
+        "{:.4} exact",
+        d.exact_share()
+    );
+}
+
 /// The whole picture through the host wrappers of the kernels, one stage after the other and no
 /// slabs, chunks or windows: sampler, colour pass, resize, sharpening, C13.
 fn device_whole(dev: &TestGpu, c: &Config) -> Vec<u32> {

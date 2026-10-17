@@ -33,6 +33,8 @@ import type {
   AppInfo,
   ApplyScope,
   AutoEstimates,
+  ChromaSample,
+  ChromaScatter,
   CliLinkResult,
   CliLinkStatus,
   DevelopSettings,
@@ -80,8 +82,10 @@ import type {
 import { expandNameTemplate, FILE_EXTENSION, sanitizeStem, slugify } from "./export/template";
 import { version as APP_VERSION } from "../package.json";
 import { fixtureUrl } from "./fixtures";
-import { developScene, previewSvg } from "./fixtures/grade";
+import { clampPins } from "./components/warpMath";
+import { adjustScene, developScene, previewSvg } from "./fixtures/grade";
 import type { Adjustment } from "./fixtures/grade";
+import { hexChroma, sceneScatter } from "./fixtures/warp";
 import { sceneHistogram } from "./fixtures/histogram";
 import { scenePng, hexToRgb } from "./fixtures/png";
 import { layerAt, SCENES, type Scene } from "./fixtures/scenes";
@@ -346,6 +350,7 @@ export function defaultSettings(look: LookId = NEUTRAL): DevelopSettings {
     white_balance: { kind: "auto" },
     color_balance: { shadows: [0, 0], midtones: [0, 0], highlights: [0, 0] },
     saturation: 0,
+    color_warp: { pins: [] },
     sharpen: { kind: "auto" },
     output_sharpening: 100,
     noise_reduction: { kind: "auto" },
@@ -392,6 +397,8 @@ export function clampSettings(s: DevelopSettings): DevelopSettings {
       midtones: unitDisc(s.color_balance.midtones),
       highlights: unitDisc(s.color_balance.highlights),
     },
+    // The core's rule (`WarpPin::clamped`): the first sixteen pins, every value in its range. Settings from before the warp have none.
+    color_warp: { pins: clampPins(s.color_warp?.pins ?? []) },
     orientation: (((Math.round(s.orientation / 90) * 90) % 360 + 360) % 360) as DevelopSettings["orientation"],
     white_pick: s.white_pick ? [clamp(s.white_pick[0], 0, 1), clamp(s.white_pick[1], 0, 1)] : null,
     crop: s.crop
@@ -1331,18 +1338,28 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     }
   }
 
-  /** The photo as it is developed now: adjusted by what differs from Automatic, then through its look. */
-  function developed(rec: PhotoRecord, lookId: LookId = rec.settings.look, intensity = rec.settings.look_intensity): Scene {
+  /** How a photo differs from Automatic (its exposure and white balance), with or without its colour warp. */
+  function adjustmentOf(rec: PhotoRecord, warp: boolean): Adjustment {
     const { values } = resolveSettings(rec.summary.id, rec.settings, MOCK_ESTIMATES);
-    const adjustment: Adjustment = {
+    return {
       ev: values.exposure_ev,
       autoEv: MOCK_ESTIMATES.exposure_ev,
       kelvin: values.kelvin,
       autoKelvin: MOCK_ESTIMATES.kelvin,
       tint: values.tint,
       autoTint: MOCK_ESTIMATES.tint,
+      warp: warp ? values.color_warp.pins : undefined,
     };
-    return developScene(rec.scene, { slug: lookSlug(lookId), intensity }, adjustment);
+  }
+
+  /** The photo as it is developed now: adjusted by what differs from Automatic, moved by its colour warp, then through its look. */
+  function developed(rec: PhotoRecord, lookId: LookId = rec.settings.look, intensity = rec.settings.look_intensity): Scene {
+    return developScene(rec.scene, { slug: lookSlug(lookId), intensity }, adjustmentOf(rec, true));
+  }
+
+  /** The photo's colours where the colour warp takes them: adjusted, not yet warped, not yet through the look (`docs/02` C9b). */
+  function warpInput(rec: PhotoRecord): Scene {
+    return adjustScene(rec.scene, adjustmentOf(rec, false));
   }
 
   /**
@@ -1870,6 +1887,13 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
         return sceneHistogram(developed(rec), shift);
       }),
 
+    chromaScatter: (photoId) =>
+      run("chromaScatter", (): ChromaScatter => {
+        const rec = photo(photoId);
+        // The photo's colours at the warp's input, seeded by the photo so the dots are the same on every run.
+        return { points: sceneScatter(warpInput(rec), 7919 * photoId + 17) };
+      }),
+
     viewportInfo: () => run("viewportInfo", (): ViewportInfo | null => (options.viewport === null ? null : { backend: options.viewport })),
     viewportSetRect: (rect) =>
       run("viewportSetRect", () => {
@@ -1922,6 +1946,18 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
         const layer = layerAt(rec.scene, clamp(point[0], 0, 1), clamp(point[1], 0, 1));
         const [r, g, b] = hexToRgb(rec.scene[layer]);
         return { r, g, b };
+      }),
+
+    sampleChroma: (x, y) =>
+      run("sampleChroma", (): ChromaSample | null => {
+        const rec = photos[current];
+        if (!rec) fail("viewport", "Open a photo first.");
+        // On the paper around a letterboxed picture there is no colour to pick.
+        const point = photoPointAt(rec, x, y);
+        if (!point) return null;
+        const scene = warpInput(rec);
+        const [a, b] = hexChroma(scene[layerAt(scene, clamp(point[0], 0, 1), clamp(point[1], 0, 1))]);
+        return { a, b };
       }),
 
     looksList: () => run("looksList", () => looks),

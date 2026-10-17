@@ -47,11 +47,15 @@ import {
   useTabShortcuts,
   useWindowDrop,
   ValueBox,
+  WarpPlane,
   Wheel,
   WheelGroup,
+  lockedPin,
+  movingPin,
+  pinValueText,
 } from "../components";
-import type { CurveChannel, ExportQueueItem, TabId, TagVariant } from "../components";
-import type { ColorBalancePoint } from "../api/types";
+import type { CurveChannel, ExportQueueItem, TabId, TagVariant, WarpTool } from "../components";
+import type { ColorBalancePoint, ColorWarpPin } from "../api/types";
 import { CURVE_DEMO_POINTS, DEMO_LOOKS, demoHistogram, demoLumaHistogram, lisbonPhotos, lookThumbnail, photoUrl } from "./demoData";
 
 // ---- Layout helpers --------------------------------------------------------------------------
@@ -87,6 +91,7 @@ const SECTIONS = [
   ["tabbar", "TabBar"],
   ["look", "LookTile"],
   ["wheel", "Wheel"],
+  ["warp", "WarpPlane"],
   ["curve", "CurvePlot"],
   ["filmstrip", "Filmstrip"],
   ["photo", "PhotoCell"],
@@ -129,6 +134,7 @@ export function ComponentsPage() {
       <TabBarSection />
       <LookSection />
       <WheelSection />
+      <WarpSection />
       <CurveSection />
       <FilmstripSection />
       <PhotoSection />
@@ -639,6 +645,52 @@ function WheelSection() {
       <Demo title="Centred, disabled" frame="free">
         <Wheel label="Centred" value={[0, 0]} onChange={() => undefined} />
         <Wheel label="Disabled" value={[0.3, 0.2]} onChange={() => undefined} disabled />
+      </Demo>
+    </Section>
+  );
+}
+
+// ---- WarpPlane ---------------------------------------------------------------------------------
+
+/** A photo's colours for the demo: a cloud of blues around the first pin's source. */
+const WARP_DEMO_SCATTER = Array.from({ length: 400 }, (_, i) => [-0.09 + 0.02 * Math.sin(i * 1.9), -0.06 + 0.02 * Math.cos(i * 2.7)]).flat();
+
+function WarpSection() {
+  const [pins, setPins] = useState<ColorWarpPin[]>([movingPin([-0.09, -0.06], [-0.13, 0.03]), movingPin([0.05, 0.05], [0.12, 0.07]), lockedPin([0.12, -0.11])]);
+  const [selected, setSelected] = useState<number | null>(0);
+  const [tool, setTool] = useState<WarpTool>("move");
+  const [log, setLog] = useState("");
+  return (
+    <Section
+      id="warp"
+      title="WarpPlane"
+      lead="Colour › Colour warp's chroma plane. Press on empty plane to add a pin (Move or Lock) and drag it; press a pin to select and move it; double-click puts a target back on its source. Tab reaches each pin: arrows move it (Shift ×10), Home resets its target, Delete removes it. Sixteen pins at most."
+    >
+      <Demo title="Live · two moves and a lock" tab="color">
+        <div style={{ display: "flex", flexDirection: "column", gap: 10, width: 352 }}>
+          <Segmented
+            label="Pin tool"
+            value={tool}
+            onChange={setTool}
+            options={[
+              { value: "move", label: "Move" },
+              { value: "lock", label: "Lock" },
+            ]}
+          />
+          <WarpPlane
+            pins={pins}
+            selected={selected}
+            onSelect={setSelected}
+            tool={tool}
+            scatter={WARP_DEMO_SCATTER}
+            onChange={(next, final) => {
+              setPins(next);
+              const pin = selected === null ? next.at(-1) : (next[selected] ?? next.at(-1));
+              setLog(`${next.length} pins${pin ? ` · ${pinValueText(pin)}` : ""}${final ? " (final)" : ""}`);
+            }}
+          />
+          <div className="dev-output">{log || "drag a colour"}</div>
+        </div>
       </Demo>
     </Section>
   );

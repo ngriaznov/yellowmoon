@@ -16,7 +16,10 @@
 //! * `SettingsPatch` is the core's patch, a little more generous than `Partial<DevelopSettings>`:
 //!   nested objects (`decode`, `rolloff`, `color_balance`, `curve`) and a manual `white_balance`,
 //!   `sharpen` or `noise_reduction` may leave parts out, and `crop` and `white_pick` may be `null`
-//!   to clear them. Everything `Partial<DevelopSettings>` accepts is accepted.
+//!   to clear them. Everything `Partial<DevelopSettings>` accepts is accepted. `color_warp` is the
+//!   whole list of pins, as in `types.ts`.
+//! * A colour-warp pin on the bridge has every field (`ColorWarpPin` of `types.ts`); only a settings
+//!   document (`ym render --settings`, `ym:Settings`) may leave out all but `source`.
 //! * `MatchKind` has no `forced` variant (only the CLI's `--profile` makes one).
 //! * `UpdateState` is the flat object of `docs/01` with `percent` and `message` optional, as
 //!   `types.ts` has it.
@@ -428,6 +431,35 @@ pub struct ColorBalance {
     pub highlights: [Num; 2],
 }
 
+/// One pin of Colour › Colour warp (`docs/02` C9b): the colours near `source` move to `target`.
+/// Points are `[a, b]` on the warp's chroma plane (`ChromaPoint` in `types.ts`).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Type)]
+pub struct ColorWarpPin {
+    /// The colour the pin takes hold of.
+    pub source: [Num; 2],
+    /// Where that colour moves to; a locked pin's target is its source.
+    pub target: [Num; 2],
+    /// A locked pin holds the colours within its range in place.
+    pub locked: bool,
+    /// How far the pin reaches across the plane, 0.01 to 0.25.
+    pub range: Num,
+    /// How much of the move applies to the shadows, 0 to 1.
+    pub shadows: Num,
+    /// How much of the move applies to the highlights, 0 to 1.
+    pub highlights: Num,
+    /// Where the shadows end and the highlights begin, stops from middle grey, -6 to +6.
+    pub pivot_ev: Num,
+    /// A change of brightness of the pin's colours, stops, -2 to +2.
+    pub exposure_ev: Num,
+}
+
+/// Colour › Colour warp: at most 16 pins, in order; none by default.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
+pub struct ColorWarp {
+    /// The pins.
+    pub pins: Vec<ColorWarpPin>,
+}
+
 /// Luma plus R, G and B curves, 2 to 16 control points `[x, y]` within [0, 1]² each.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
 pub struct Curves {
@@ -547,6 +579,8 @@ pub struct DevelopSettings {
     pub color_balance: ColorBalance,
     /// Colour › Colour balance, -100 to 100.
     pub saturation: Num,
+    /// Colour › Colour warp: its pins.
+    pub color_warp: ColorWarp,
     /// Detail › Sharpening: Auto or amount and radius.
     pub sharpen: SharpenSetting,
     /// Detail › Sharpening › Output: the strength of the sharpening of the picture at the size it
@@ -746,6 +780,9 @@ pub struct SettingsPatch {
     /// New saturation.
     #[serde(default)]
     pub saturation: Option<Num>,
+    /// New colour warp: the whole list of pins (`{ pins: [] }` removes them all).
+    #[serde(default)]
+    pub color_warp: Option<ColorWarp>,
     /// New sharpening; a manual one may leave out a part.
     #[serde(default)]
     pub sharpen: Option<SharpenPatch>,
@@ -807,6 +844,7 @@ impl Serialize for SettingsPatch {
         entry(&mut map, "white_balance", &self.white_balance)?;
         entry(&mut map, "color_balance", &self.color_balance)?;
         entry(&mut map, "saturation", &self.saturation)?;
+        entry(&mut map, "color_warp", &self.color_warp)?;
         entry(&mut map, "sharpen", &self.sharpen)?;
         entry(&mut map, "output_sharpening", &self.output_sharpening)?;
         entry(&mut map, "noise_reduction", &self.noise_reduction)?;
@@ -916,6 +954,8 @@ pub struct ResolvedValues {
     pub color_balance: ColorBalance,
     /// `saturation`.
     pub saturation: Num,
+    /// `color_warp`.
+    pub color_warp: ColorWarp,
     /// The sharpening in effect.
     pub sharpen: SharpenValue,
     /// `output_sharpening`.
@@ -1376,6 +1416,25 @@ pub struct PixelSample {
     pub g: u8,
     /// Blue.
     pub b: u8,
+}
+
+/// The chroma under a point of the photo at the colour warp's input (`sample_chroma`): a point of
+/// the warp's plane.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Type)]
+pub struct ChromaSample {
+    /// Along `e1`, red against cyan.
+    pub a: Num,
+    /// Along `e2`, green against blue.
+    pub b: Num,
+}
+
+/// The photo's colours at the colour warp's input, for the faint scatter behind the pins
+/// (`chroma_scatter`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
+pub struct ChromaScatter {
+    /// Flat `[a0, b0, a1, b1, ...]`, at most 2048 points, each coordinate rounded to 1e-4; empty
+    /// while the photo is still being developed.
+    pub points: Vec<Num>,
 }
 
 /// Per-channel histogram of the current render, for the Light tab and the Curve plot.

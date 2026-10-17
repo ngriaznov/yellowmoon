@@ -585,6 +585,57 @@ fn a_settings_file_is_the_same_settings_as_the_apps() {
 }
 
 #[test]
+fn a_colour_warp_is_the_same_picture_through_the_app_and_the_binary() {
+    let sb = Sandbox::new();
+    let arw = sb.arw("DSC00001.ARW");
+    let app = App::open(&[&arw]);
+    // A white balance far from the light gives the photo colours for the pins to move: a moving
+    // pin on the neutral axis with the largest range (it reaches every colour of the photo), a
+    // second one with tonal weights, a pivot and an exposure, and a lock. Pins written short, as a
+    // settings file may.
+    let doc = serde_json::json!({
+        "white_balance": { "kind": "manual", "kelvin": 2500, "tint": 30 },
+        "color_warp": { "pins": [
+            { "source": [0.0, 0.0], "target": [0.06, 0.04], "range": 0.25 },
+            { "source": [-0.1, -0.1], "target": [-0.05, -0.12], "range": 0.1, "shadows": 0.3,
+              "highlights": 0.9, "pivot_ev": -1.0, "exposure_ev": 0.4 },
+            { "source": [0.15, -0.05], "locked": true }
+        ] }
+    });
+    let (settings, clamped) =
+        DevelopSettings::from_value(doc.clone(), &app.core.looks.effective_default())
+            .expect("settings");
+    assert!(clamped.is_empty(), "{clamped:?}");
+    assert_eq!(settings.color_warp.pins.len(), 3);
+    app.core
+        .session
+        .replace_settings(app.photo, settings)
+        .expect("replace");
+    // The JPEG (the finished picture) and the DNG (the warp travels in the LogC4 grade into it).
+    let file = sb.root().join("warp.json");
+    std::fs::write(&file, doc.to_string()).expect("write");
+    for (name, format) in [("jpeg", FormatKind::Jpeg), ("dng", FormatKind::Dng)] {
+        let options = ExportOptions {
+            format,
+            ..ExportOptions::default()
+        };
+        let from_app = app.export(options, &sb.root().join(format!("app-{name}")));
+        let from_cli = cli_export(
+            &sb,
+            &[&arw],
+            &[
+                "--format",
+                name,
+                "--settings",
+                file.to_str().expect("utf-8"),
+            ],
+            &sb.root().join(format!("cli-{name}")),
+        );
+        assert_same_files(&from_app, &from_cli, &format!("colour warp, {name}"));
+    }
+}
+
+#[test]
 fn the_settings_an_export_records_reproduce_the_file() {
     let sb = Sandbox::new();
     let arw = sb.arw("DSC00001.ARW");

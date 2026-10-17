@@ -18,6 +18,7 @@ import { useCropSession } from "./crop/useCropSession";
 import { ExportPanel } from "./export/ExportPanel";
 import { ExportCell, Header } from "./Header";
 import { Menu } from "./Menu";
+import type { PickMode } from "./PickLayer";
 import { PhotoView } from "./PhotoView";
 import { lookSlugOf } from "./preview";
 import { ColorTab } from "./tools/ColorTab";
@@ -184,7 +185,8 @@ export function Photos() {
   const preferences = useAppState((s) => (s.panel === "export" ? s.preferences : null));
   const overlay = useAppState((s) => s.overlay);
   const [tab, setTab] = useState<TabId>("look");
-  const [picking, setPicking] = useState(false);
+  // Pick white (the header) or Pick colour (Colour › Colour warp): one crosshair layer over the photo, so the two are exclusive.
+  const [picking, setPicking] = useState<PickMode | null>(null);
   // Files dropped anywhere on the window are added to the session, as on Start (`docs/11` §Photos); a dialog takes the drop away.
   const { dragging } = useWindowDrop({ onDrop: (paths) => void store.openPaths(paths), enabled: overlay === null });
   const [cell, setCell] = useState<{ width: number; height: number; scale: number } | null>(null);
@@ -231,7 +233,7 @@ export function Photos() {
   const select = useCallback(
     (id: number | string) => {
       cropSession.current?.cancel();
-      setPicking(false);
+      setPicking(null);
       void store.setCurrent(Number(id));
     },
     [store, cropSession],
@@ -241,7 +243,7 @@ export function Photos() {
   /** ← and →. A crop in progress stays: leaving it is a click on another photo or on Cancel. */
   const stepPhoto = (direction: -1 | 1): void => {
     if (crop.session) return;
-    setPicking(false);
+    setPicking(null);
     void store.step(direction);
   };
 
@@ -257,21 +259,29 @@ export function Photos() {
 
   const startCrop = (): void => {
     if (!rs || !photo || !isReady(photo)) return;
-    setPicking(false);
+    setPicking(null);
     store.setPanel("tools");
     crop.start();
   };
   const togglePicking = (): void => {
     if (!rs || !photo || !isReady(photo) || cropping) return;
-    setPicking((on) => !on);
+    setPicking((mode) => (mode === "white" ? null : "white"));
   };
+  // Pick colour, from the Colour warp card's toggle. It turns Pick white off, and stays on for several clicks until Esc or the toggle.
+  const setPickingColor = useCallback((on: boolean): void => {
+    setPicking((mode) => (on ? "color" : mode === "color" ? null : mode));
+  }, []);
   const onPicked = useCallback(
     (point: { x: number; y: number }): void => {
-      setPicking(false);
       setTab("color");
+      if (picking === "color") {
+        void store.pickColor(point.x, point.y);
+        return;
+      }
+      setPicking(null);
       void store.pickWhite(point.x, point.y);
     },
-    [store],
+    [store, picking],
   );
   const onRect = useCallback((rect: { x: number; y: number; width: number; height: number; scale: number }): void => {
     setCell((was) => (was && was.width === rect.width && was.height === rect.height && was.scale === rect.scale ? was : { width: rect.width, height: rect.height, scale: rect.scale }));
@@ -356,7 +366,7 @@ export function Photos() {
           void store.pasteSettings("picked");
           return true;
         case "escape":
-          if (picking) setPicking(false);
+          if (picking) setPicking(null);
           else if (crop.session) crop.session.cancel();
           else if (panel === "export") store.closeExport();
           else return false;
@@ -368,7 +378,7 @@ export function Photos() {
           return false;
       }
     },
-    { tab: panel === "tools" ? tab : undefined, mode: cropping ? "crop" : picking ? "pick-white" : null },
+    { tab: panel === "tools" ? tab : undefined, mode: cropping ? "crop" : picking === "white" ? "pick-white" : picking === "color" ? "pick-color" : null },
     overlay === null,
   );
 
@@ -389,7 +399,7 @@ export function Photos() {
             ) : tab === "light" ? (
               <LightTab store={store} photo={photo} rs={rs} />
             ) : tab === "color" ? (
-              <ColorTab store={store} photo={photo} rs={rs} />
+              <ColorTab store={store} photo={photo} rs={rs} pickingColor={picking === "color"} onPickColor={setPickingColor} />
             ) : tab === "detail" ? (
               <DetailTab store={store} photo={photo} rs={rs} />
             ) : tab === "curve" ? (
@@ -438,14 +448,14 @@ export function Photos() {
             <Button variant="header" pressed={cropping} disabled={!rs} onClick={() => (cropping ? crop.session?.cancel() : startCrop())} title="Crop (C)">
               Crop
             </Button>
-            <Button variant="header" pressed={picking} disabled={!rs || cropping} onClick={togglePicking} title="Pick white (W)">
+            <Button variant="header" pressed={picking === "white"} disabled={!rs || cropping} onClick={togglePicking} title="Pick white (W)">
               Pick white
             </Button>
             <AddPhotosButton store={store} />
             <ZoomMenu store={store} photo={photo} rs={rs} cell={cell} />
             {picking ? (
               <span className="ym-status" data-hint="true" role="status">
-                Click something neutral: grey or white.
+                {picking === "color" ? "Click a colour in the photo." : "Click something neutral: grey or white."}
               </span>
             ) : COUNT_IN_HEADER ? (
               <span className="ym-status-group">

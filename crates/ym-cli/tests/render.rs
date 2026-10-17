@@ -762,6 +762,99 @@ fn the_output_sharpening_option_is_in_the_settings_the_json_reports() {
     assert!(a != b && a != c && b != c);
 }
 
+/// The image data of a PNG (its IDAT chunks, concatenated): the pixels as the encoder wrote them,
+/// without the XMP packet, which records the settings and so differs between the files compared.
+fn png_image_data(path: &std::path::Path) -> Vec<u8> {
+    let bytes = std::fs::read(path).expect("png");
+    assert_eq!(&bytes[..8], b"\x89PNG\r\n\x1a\n", "a PNG");
+    let mut at = 8;
+    let mut data = Vec::new();
+    while at + 12 <= bytes.len() {
+        let len = u32::from_be_bytes(bytes[at..at + 4].try_into().expect("length")) as usize;
+        if &bytes[at + 4..at + 8] == b"IDAT" {
+            data.extend_from_slice(&bytes[at + 8..at + 8 + len]);
+        }
+        at += 12 + len;
+    }
+    assert!(!data.is_empty(), "image data");
+    data
+}
+
+#[test]
+fn a_colour_warp_in_a_settings_file_moves_colours_and_locked_pins_alone_do_not() {
+    let sb = Sandbox::new();
+    let arw = sb.arw("a.ARW");
+    // A white balance far from the light, so that the photo has colour for the pins to move; the
+    // same in every file.
+    let render = |warp: Value, dir: &str| {
+        let file = sb.root().join(format!("{dir}.json"));
+        let doc = json!({
+            "white_balance": { "kind": "manual", "kelvin": 2500, "tint": 30 },
+            "color_warp": warp,
+        });
+        std::fs::write(&file, doc.to_string()).expect("write");
+        let out = sb
+            .ym()
+            .args([
+                "render", "--json", "--format", "png", "--bits", "8", "--out",
+            ])
+            .arg(sb.root().join(dir))
+            .arg("--settings")
+            .arg(&file)
+            .arg(&arw)
+            .assert()
+            .success();
+        let o = json_lines(&out.get_output().stdout).remove(0);
+        let pixels = png_image_data(std::path::Path::new(o["output"].as_str().expect("output")));
+        (o, pixels)
+    };
+    let (none, plain) = render(json!({ "pins": [] }), "none");
+    assert_eq!(none["settings"]["color_warp"], json!({ "pins": [] }));
+    // One pin on the neutral axis with the largest range moves every colour of the photo (neutrals
+    // themselves never move). The file names only the source, target and range; the settings the
+    // JSON reports (and the file records) have every field.
+    let (moved, warped) = render(
+        json!({ "pins": [{ "source": [0.0, 0.0], "target": [0.06, 0.04], "range": 0.25 }] }),
+        "moved",
+    );
+    assert_eq!(
+        moved["settings"]["color_warp"]["pins"][0],
+        json!({ "source": [0.0, 0.0], "target": [0.06, 0.04], "locked": false, "range": 0.25,
+            "shadows": 1.0, "highlights": 1.0, "pivot_ev": 0.0, "exposure_ev": 0.0 })
+    );
+    assert_ne!(warped, plain, "the warp moves the photo's colours");
+    // Locked pins alone change nothing, byte for byte.
+    let (_, locked) = render(
+        json!({ "pins": [{ "source": [0.1, 0.0], "locked": true }, { "source": [-0.05, -0.1], "locked": true, "range": 0.2 }] }),
+        "locked",
+    );
+    assert_eq!(locked, plain, "locked pins alone are no warp");
+    // Out of range: limited, with a warning that names the field.
+    let file = sb.root().join("wild.json");
+    std::fs::write(
+        &file,
+        json!({ "color_warp": { "pins": [{ "source": [0.9, 0.0], "range": 3 }] } }).to_string(),
+    )
+    .expect("write");
+    let out = sb
+        .ym()
+        .args(["render", "--json", "--out"])
+        .arg(sb.root().join("wild"))
+        .arg("--settings")
+        .arg(&file)
+        .arg(&arw)
+        .assert()
+        .success();
+    let o = json_lines(&out.get_output().stdout).remove(0);
+    assert_eq!(
+        o["settings"]["color_warp"]["pins"][0]["source"],
+        json!([0.5, 0.0])
+    );
+    assert_eq!(o["settings"]["color_warp"]["pins"][0]["range"], json!(0.25));
+    let err = text(&out.get_output().stderr);
+    assert!(err.contains("color_warp"), "{err}");
+}
+
 #[test]
 fn exit_code_3_when_a_look_is_missing() {
     let sb = Sandbox::new();

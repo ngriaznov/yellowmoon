@@ -3,8 +3,8 @@ import type { Page } from "@playwright/test";
 // The page audit of the dark glass interface (C2): on a page, no element of ours stands where glasscn has a component. Every visible
 // control must be a glasscn component (it, or an ancestor within a few levels, carries a glasscn `data-slot`), and every row, surface and
 // badge that glasscn has a counterpart for (`Item`, `Card`, `Badge`, `Progress`, …) must be that component. What is ours and has no
-// counterpart (the colour wheels, the curve plot, the histogram, look tiles, the photo cell, the layout bands) is listed, so that the list
-// of what is left is visible and a new element of ours with a counterpart is caught.
+// counterpart (the colour wheels, the curve plot, the colour warp's plane, the histogram, look tiles, the photo cell, the layout bands)
+// is listed, so that the list of what is left is visible and a new element of ours with a counterpart is caught.
 
 /** Elements of the app that are not glasscn components but have one: [selector, glasscn component]. Each must be empty on every page. */
 export const HAS_COUNTERPART: ReadonlyArray<readonly [string, string]> = [
@@ -24,7 +24,8 @@ export const HAS_COUNTERPART: ReadonlyArray<readonly [string, string]> = [
 export const NO_COUNTERPART: ReadonlyArray<readonly [string, string]> = [
   [".ym-wheel__disc", "colour wheel (shadows, midtones, highlights)"], [".ym-curve__plot", "curve plot"], [".ym-curve__point", "curve point"],
   [".ym-histogram__box", "histogram"], [".ym-filmstrip__thumb", "filmstrip thumbnail"], [".ym-look-tile", "look tile (a picture button)"],
-  [".ym-crop__frame", "crop frame"], [".ym-crop__handle", "crop handle"], [".ym-pick-white", "pick-white layer"],
+  [".ym-warp-plane", "colour warp plane and its pins"],
+  [".ym-crop__frame", "crop frame"], [".ym-crop__handle", "crop handle"], [".ym-pick-layer", "pick layer (Pick white, Pick colour)"],
   [".ym-photo-cell", "photo cell (the native viewport shows through)"], ["[role=table]", "wizard table (glasscn has no table)"],
   [".ym-moon", "moon mark"], [".ym-card", "tool-panel section (a ruled band of one glass pane, by the layout rule; glasscn's Card is a floating pane)"],
   [".ym-title-block", "title block (a tinted band of the pane)"], [".ym-field", "label + control row (glasscn has no Field)"],

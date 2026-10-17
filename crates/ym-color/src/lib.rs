@@ -32,4 +32,5 @@ pub mod lut;
 pub mod sensor_map;
 pub mod spectral;
 pub mod tone;
+pub mod warp;
 pub mod wb;

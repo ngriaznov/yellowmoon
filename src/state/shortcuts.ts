@@ -56,8 +56,8 @@ export interface KeyLike {
 export interface ShortcutContext {
   /** The tab on screen; 1–9 pick looks only on the Look tab. */
   tab?: TabId;
-  /** A modal-like mode is on (crop, pick white): the letter keys that start modes are ignored. */
-  mode?: "crop" | "pick-white" | null;
+  /** A modal-like mode is on (crop, pick white, pick colour): the number keys that pick looks are ignored. */
+  mode?: "crop" | "pick-white" | "pick-color" | null;
 }
 
 /** True when the target takes typed text. */

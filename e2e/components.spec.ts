@@ -27,7 +27,7 @@ test.describe("the dev page", () => {
     await page.goto("/components.html");
     await expect(page).toHaveTitle("Yellowmoon · Components");
     await ready(page);
-    for (const name of ["Foundations", "Slider", "ValueBox", "Segmented", "Switch", "Card", "TabBar and TitleBlock", "LookTile", "Wheel", "CurvePlot and Histogram", "Filmstrip", "PhotoCell", "UpdatePill", "ExportQueueList and DevelopList", "DropZone", "StepRail"]) {
+    for (const name of ["Foundations", "Slider", "ValueBox", "Segmented", "Switch", "Card", "TabBar and TitleBlock", "LookTile", "Wheel", "WarpPlane", "CurvePlot and Histogram", "Filmstrip", "PhotoCell", "UpdatePill", "ExportQueueList and DevelopList", "DropZone", "StepRail"]) {
       await expect(page.getByRole("heading", { level: 2, name, exact: true })).toBeVisible();
     }
     expect(problems).toEqual([]);

@@ -1,8 +1,9 @@
 import { memo } from "react";
 import { AutoToggle, Card, formats, ResetLink, Segmented, Slider, Tag, Wheel, WheelGroup } from "../../components";
 import type { ColorBalance, ColorBalancePoint, LightSource } from "../../api/types";
+import { ColorWarpCard } from "./ColorWarpCard";
+import type { ColorWarpCardProps } from "./ColorWarpCard";
 import { KelvinSlider, SaturationSlider, setWhiteBalance, whiteBalanceState, whiteBalanceToAuto } from "./controls";
-import type { TabProps } from "./shared";
 
 /** The light presets, in the order of the mockup. */
 export const LIGHT_OPTIONS: ReadonlyArray<{ value: LightSource; label: string; ariaLabel: string }> = [
@@ -22,11 +23,14 @@ const WHEELS = [
 
 const ZERO_BALANCE: ColorBalance = { shadows: [0, 0], midtones: [0, 0], highlights: [0, 0] };
 
+/** The Colour tab's props: those of every tab, and Pick colour's state, which the Photos screen keeps (it owns the crosshair layer). */
+export type ColorTabProps = ColorWarpCardProps;
+
 /**
- * Colour: White balance (light presets, Kelvin, Tint) and Colour balance (three wheels and
- * Saturation). A picked white shows here with the EDITED tag.
+ * Colour: White balance (light presets, Kelvin, Tint), Colour balance (three wheels and Saturation) and Colour warp (the chroma plane
+ * with its pins and Pick colour). A picked white shows here with the EDITED tag.
  */
-export const ColorTab = memo(function ColorTab({ store, rs }: TabProps) {
+export const ColorTab = memo(function ColorTab({ store, photo, rs, pickingColor, onPickColor }: ColorTabProps) {
   const { settings, values, estimates } = rs;
   const { picked, isAuto: whiteIsAuto } = whiteBalanceState(rs);
   const toAuto = (): void => whiteBalanceToAuto(store);
@@ -81,6 +85,7 @@ export const ColorTab = memo(function ColorTab({ store, rs }: TabProps) {
         </WheelGroup>
         <SaturationSlider store={store} rs={rs} />
       </Card>
+      <ColorWarpCard store={store} photo={photo} rs={rs} pickingColor={pickingColor} onPickColor={onPickColor} />
     </>
   );
 });

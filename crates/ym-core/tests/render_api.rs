@@ -6,11 +6,14 @@ use std::sync::Arc;
 
 use common::*;
 use ym_color::cdl::Cdl;
-use ym_color::display::OutputTarget;
+use ym_color::display::{OutputTarget, View};
 use ym_color::look::{LookInput, LookTransform};
+use ym_color::warp::{WarpPin, chroma_of};
+use ym_core::pipeline::color::{GradeRequest, color_plan, grade_key, grade_plan};
 use ym_core::pipeline::{
-    FrameOptions, FullRequest, FullTarget, LookProblem, LookProvider, NeutralOnly, PhotoSource,
-    RenderError, RenderOptions, Renderer, ResolvedLook, ViewportMode, ViewportRect, ViewportState,
+    ChromaSample, DisplayChoice, FrameOptions, FullRequest, FullTarget, LookProblem, LookProvider,
+    NeutralOnly, PhotoSource, RenderError, RenderOptions, Renderer, ResolvedLook, ViewportMode,
+    ViewportRect, ViewportState,
 };
 use ym_core::scheduler::MemoryBudget;
 use ym_core::session::{EventSink, OpenOptions, Session, SessionEvent};
@@ -761,4 +764,259 @@ fn a_thumbnail_keeps_its_detail_statistic_for_the_size_estimate_and_a_look_tile_
     assert_eq!(r.thumbnail_detail(src.id), None);
     assert!(r.thumbnail_png(&src, &CancelToken::new()).is_err());
     assert_eq!(r.thumbnail_detail(src.id), None);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Colour warp (docs/02 C9b): the render, the grade key, the chroma scatter and Pick colour
+// ---------------------------------------------------------------------------------------------
+
+fn with_pins(src: &PhotoSource, pins: &[WarpPin]) -> PhotoSource {
+    edit(src, |s| {
+        s.color_warp.pins = pins.iter().copied().map(Into::into).collect();
+    })
+}
+
+/// The most saturated colour of the photo at the warp's input, from the chroma scatter.
+fn most_colourful(r: &Renderer, src: &PhotoSource) -> [f64; 2] {
+    let scatter = r.chroma_scatter(src, &CancelToken::new()).expect("scatter");
+    scatter
+        .points
+        .chunks_exact(2)
+        .map(|p| [p[0], p[1]])
+        .max_by(|a, b| a[0].hypot(a[1]).total_cmp(&b[0].hypot(b[1])))
+        .expect("points")
+}
+
+/// A pin that moves the colour `c` by 0.05 across the plane, at right angles to its hue.
+fn moving_pin(c: [f64; 2]) -> WarpPin {
+    let r = c[0].hypot(c[1]);
+    WarpPin::moving(c, [c[0] - 0.05 * c[1] / r, c[1] + 0.05 * c[0] / r])
+}
+
+/// The grade chain the renderer makes for `src` (Neutral-only looks, ACES 2), built here.
+fn chain_of(src: &PhotoSource) -> std::sync::Arc<ym_color::display::ColorChain> {
+    let color = color_plan(src).expect("colour plan");
+    let req = GradeRequest {
+        target: OutputTarget::Viewport,
+        dither: false,
+        display: &DisplayChoice::Aces2,
+        looks: &NeutralOnly,
+    };
+    grade_plan(src, &color, &req).expect("grade plan").chain
+}
+
+#[test]
+fn a_colour_warp_moves_the_picture_and_locked_pins_alone_change_nothing() {
+    let d = Developed::new(&patchwork(), MODEL);
+    let src = d.source();
+    let colour = most_colourful(&Renderer::neutral_only().expect("renderer"), &src);
+    assert!(colour[0].hypot(colour[1]) > 0.05, "{colour:?}");
+    // Each render on a renderer of its own and without the frame cache: the chain itself decides.
+    let frame = |src: &PhotoSource, before: bool| {
+        let mut st = state(300.0, 200.0);
+        st.before = before;
+        Renderer::neutral_only()
+            .expect("renderer")
+            .viewport_frame(
+                src,
+                &st,
+                &FrameOptions {
+                    no_cache: true,
+                    ..FrameOptions::default()
+                },
+                &CancelToken::new(),
+            )
+            .expect("frame")
+            .rgba
+    };
+    let none = frame(&src, false);
+    let moved = frame(&with_pins(&src, &[moving_pin(colour)]), false);
+    assert_ne!(
+        moved, none,
+        "a pin that moves a colour of the photo changes the picture"
+    );
+    let changed = moved.iter().zip(&none).filter(|(a, b)| a != b).count();
+    assert!(
+        changed < none.len() / 2,
+        "only the pin's colours move: {changed}"
+    );
+    // Locked pins alone, and a pin whose target is its source, are byte for byte no warp.
+    for (what, pins) in [
+        (
+            "locked pins",
+            vec![
+                WarpPin::locked_at(colour),
+                WarpPin::locked_at([-colour[0], -colour[1]]),
+            ],
+        ),
+        ("a pin that stays", vec![WarpPin::moving(colour, colour)]),
+    ] {
+        assert!(frame(&with_pins(&src, &pins), false) == none, "{what}");
+    }
+    // Before is the camera default: the warp is not in it.
+    assert!(frame(&with_pins(&src, &[moving_pin(colour)]), true) == frame(&src, true));
+}
+
+#[test]
+fn the_grade_key_follows_the_warp_as_the_chain_prepares_it() {
+    let d = Developed::new(&patchwork(), MODEL);
+    let src = d.source();
+    let color = color_plan(&src).expect("colour plan");
+    let req = GradeRequest {
+        target: OutputTarget::Viewport,
+        dither: true,
+        display: &DisplayChoice::Aces2,
+        looks: &NeutralOnly,
+    };
+    let key = |pins: &[WarpPin]| grade_key(&with_pins(&src, pins), &color, &req);
+    let none = key(&[]);
+    let a = moving_pin([0.1, 0.02]);
+    let b = moving_pin([0.1, 0.03]);
+    assert_ne!(key(&[a]), none, "a pin that moves re-renders");
+    assert_ne!(key(&[a]), key(&[b]), "so does moving it");
+    assert_ne!(
+        key(&[a]),
+        key(&[a, WarpPin::locked_at([0.0, 0.1])]),
+        "and a lock"
+    );
+    // What changes nothing keeps the key, so the cached frame is served.
+    assert_eq!(key(&[WarpPin::locked_at([0.1, 0.0])]), none);
+    assert_eq!(key(&[WarpPin::moving([0.1, 0.0], [0.1, 0.0])]), none);
+    // The plan's chain carries the pins (the device path reads them from its parameters).
+    let plan = grade_plan(&with_pins(&src, &[a]), &color, &req).expect("plan");
+    assert_eq!(plan.chain.params().warp.pins, vec![a]);
+    assert_eq!(plan.key, key(&[a]));
+}
+
+#[test]
+fn the_chroma_scatter_is_a_fixed_sample_of_the_photo_at_the_warps_input() {
+    let d = Developed::new(&patchwork(), MODEL);
+    let src = d.source();
+    let r = Renderer::neutral_only().expect("renderer");
+    let scatter = |r: &Renderer, src: &PhotoSource| {
+        r.chroma_scatter(src, &CancelToken::new())
+            .expect("scatter")
+            .points
+    };
+    let points = scatter(&r, &src);
+    // 600 x 400 is read at 192 x 128 (as the histogram): every 12th pixel, 2048 points.
+    assert_eq!(points.len(), 2 * 2048);
+    for v in &points {
+        assert!(
+            ((v * 1e4).round() - v * 1e4).abs() < 1e-6,
+            "{v} on the 1e-4 grid"
+        );
+        assert!(v.abs() < 1.0, "{v}");
+    }
+    // The same photo and settings give the same points, from this renderer or another.
+    assert_eq!(scatter(&r, &src), points);
+    assert_eq!(
+        scatter(&Renderer::neutral_only().expect("renderer"), &src),
+        points
+    );
+    // The scheduled call answers the same.
+    let queued = r
+        .spawn_chroma_scatter(src.clone())
+        .wait()
+        .expect("job")
+        .expect("scatter");
+    assert_eq!(queued.points, points);
+    // The JSON is `{ points: number[] }`.
+    assert_eq!(
+        serde_json::to_value(&queued).expect("json")["points"]
+            .as_array()
+            .map(Vec::len),
+        Some(points.len())
+    );
+    // The points are the warp's input: a pin does not move them.
+    let colour = most_colourful(&r, &src);
+    assert_eq!(scatter(&r, &with_pins(&src, &[moving_pin(colour)])), points);
+    // Everything before the warp does: a white balance for a warmer light makes the picture bluer.
+    let wb = |kelvin: f64| {
+        scatter(
+            &r,
+            &edit(&src, |s| {
+                s.white_balance =
+                    AutoOr::Manual(ym_core::settings::WhiteBalanceValue { kelvin, tint: 0.0 });
+            }),
+        )
+    };
+    let mean_b = |p: &[f64]| p.iter().skip(1).step_by(2).sum::<f64>() / (p.len() / 2) as f64;
+    let (warm, cool) = (wb(3000.0), wb(8000.0));
+    assert_eq!(warm.len(), points.len());
+    assert!(
+        mean_b(&warm) + 0.01 < mean_b(&cool),
+        "green against blue: {} at 3000 K, {} at 8000 K",
+        mean_b(&warm),
+        mean_b(&cool)
+    );
+}
+
+#[test]
+fn pick_colour_reads_the_warp_input_of_the_pixel_under_the_pointer() {
+    let d = Developed::new(&patchwork(), MODEL);
+    let src = d.source();
+    let r = Renderer::neutral_only().expect("renderer");
+    // A 300 x 300 cell: the 3:2 photo is letterboxed above and below.
+    let st = state(300.0, 300.0);
+    let chroma = |src: &PhotoSource, st: &ViewportState, at: (f64, f64)| {
+        r.sample_chroma(src, st, at, &CancelToken::new())
+            .expect("sample")
+    };
+    assert_eq!(chroma(&src, &st, (150.0, 5.0)), None);
+    assert_eq!(chroma(&src, &st, (150.0, 295.0)), None);
+    let chain = chain_of(&src);
+    let q = |c: f64| (c.clamp(0.0, 1.0) * 255.0).round() as u8;
+    let mut colourful = None;
+    // Neutral patches, and the coloured patches 8 (green) and 13 (blue) of the patchwork: 50 px
+    // columns, 37.5 px rows from y = 75.
+    for at in [
+        (75.5, 131.5),
+        (175.5, 169.5),
+        (225.5, 94.5),
+        (25.5, 94.5),
+        (125.5, 131.5),
+        (75.5, 169.5),
+    ] {
+        let rgb = r
+            .camera_rgb_at(&src, &st, at, &CancelToken::new())
+            .expect("rgb")
+            .expect("inside");
+        // The pixel is the one the readout reads...
+        let pixel = r
+            .sample_pixel(&src, &st, at, &CancelToken::new())
+            .expect("pixel")
+            .expect("inside");
+        let shown = chain.apply_view_pixel(View::Final, rgb);
+        assert_eq!(
+            (pixel.r, pixel.g, pixel.b),
+            (q(shown[0]), q(shown[1]), q(shown[2]))
+        );
+        // ... and its chroma at the warp's input is the answer, exactly.
+        let [a, b] = chroma_of(chain.trace(rgb).c9_logc4);
+        let got = chroma(&src, &st, at).expect("inside");
+        assert_eq!(got, ChromaSample { a, b }, "{at:?}");
+        if a.hypot(b) > 0.05 {
+            colourful = Some((at, got));
+        }
+    }
+    // A pin on that colour changes what is shown there, not what Pick colour reads; nor does the
+    // Before view.
+    let (at, got) = colourful.expect("a coloured patch under one of the points");
+    let pinned = with_pins(&src, &[moving_pin([got.a, got.b])]);
+    assert_eq!(chroma(&pinned, &st, at), Some(got));
+    assert_ne!(
+        r.sample_pixel(&pinned, &st, at, &CancelToken::new())
+            .expect("pixel"),
+        r.sample_pixel(&src, &st, at, &CancelToken::new())
+            .expect("pixel")
+    );
+    let mut before = st.clone();
+    before.before = true;
+    assert_eq!(chroma(&src, &before, at), Some(got));
+    // JSON: `{ a, b }`.
+    assert_eq!(
+        serde_json::to_value(got).expect("json"),
+        serde_json::json!({ "a": got.a, "b": got.b })
+    );
 }

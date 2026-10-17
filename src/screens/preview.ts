@@ -22,7 +22,15 @@ export function previewUrl(photo: PhotoSummary, rs: ResolvedSettings | null, bef
   const graded = developScene(
     scene,
     { slug: lookSlugOf(values.look), intensity: values.look_intensity },
-    { ev: values.exposure_ev, autoEv: estimates.exposure_ev, kelvin: values.kelvin, autoKelvin: estimates.kelvin, tint: values.tint, autoTint: estimates.tint },
+    {
+      ev: values.exposure_ev,
+      autoEv: estimates.exposure_ev,
+      kelvin: values.kelvin,
+      autoKelvin: estimates.kelvin,
+      tint: values.tint,
+      autoTint: estimates.tint,
+      warp: values.color_warp.pins,
+    },
   );
   return previewDataUrl(graded, geometry);
 }

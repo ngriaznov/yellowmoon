@@ -8,8 +8,10 @@
  * Nothing here is colour science. It exists so that screenshots of the app can be compared with
  * the mockups' screenshots, and so that a change in a control is visible in a browser.
  */
+import type { ColorWarpPin } from "../api/types";
 import { sceneBody, SVG_HEIGHT, SVG_WIDTH, SUN_FRACTION_PHOTO } from "./scenes";
 import type { Scene } from "./scenes";
+import { warpScene } from "./warp";
 
 type Rgb = [number, number, number];
 
@@ -94,12 +96,15 @@ export interface Adjustment {
   autoKelvin: number;
   tint: number;
   autoTint: number;
+  /** Colour › Colour warp's pins (`fixtures/warp.ts`): they move the colours after the light changes, before the look. */
+  warp?: readonly ColorWarpPin[];
 }
 
 /**
  * Warms, cools, tints and brightens the four colours in proportion to the distance from the
  * automatic values: 4000 K is a full step of warmth, 50 tint a quarter of magenta or green,
- * one EV about a fifth of the way to white or black.
+ * one EV about a fifth of the way to white or black. Then the colour warp's pins move them, as
+ * the core's C9b follows the white balance and the grade.
  */
 export function adjustScene(scene: Scene, a: Adjustment): Scene {
   const dk = (a.kelvin - a.autoKelvin) / 4000;
@@ -119,7 +124,7 @@ export function adjustScene(scene: Scene, a: Adjustment): Scene {
     c = mix(c, light, lightAmount);
     out[key] = c;
   }
-  return out;
+  return a.warp && a.warp.length > 0 ? warpScene(out, a.warp) : out;
 }
 
 /** What `developScene` needs to know. */

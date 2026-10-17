@@ -13,8 +13,10 @@ use ym_color::gamut::{awg4_luminance_row, matrices};
 use ym_color::grade::{
     BRIGHTNESS_SIGMA, COLOR_BALANCE_STRENGTH, E1, E2, ZONE_CONTROL_SIGMA, ZONE_SIGMA,
 };
+use ym_color::warp::{WARP_MAX_PINS, WARP_NEUTRAL_GUARD, WARP_TONE_HALF_WIDTH};
 
 use super::aces;
+use super::color::{WARP_LOCK_ROWS, WARP_MOVE_ROWS};
 use crate::device::StorageMode;
 
 /// The kernels of the crate.
@@ -524,8 +526,19 @@ fn constants() -> String {
         ("BALANCE_STRENGTH", COLOR_BALANCE_STRENGTH),
         ("WHITE_LIFT_KNEE", white::KNEE_EV),
         ("WHITE_LIFT_GREY", TARGET_GREY),
+        ("WARP_NEUTRAL_GUARD", WARP_NEUTRAL_GUARD),
+        ("WARP_TONE_HALF_WIDTH", WARP_TONE_HALF_WIDTH),
     ] {
         let _ = writeln!(s, "const {n}: f32 = {};", f(v));
+    }
+    // The colour warp's pin count and the sizes of its rows in the colour kernel's uniform block
+    // (`kernels::color`, `ChainU`).
+    for (n, v) in [
+        ("WARP_MAX_PINS", WARP_MAX_PINS),
+        ("WARP_MOVE_ROWS", WARP_MOVE_ROWS),
+        ("WARP_LOCK_ROWS", WARP_LOCK_ROWS),
+    ] {
+        let _ = writeln!(s, "const {n}: u32 = {v}u;");
     }
     // The luma that drives the white lift (`ym_color::exposure::white::drive_luma`).
     let _ = writeln!(

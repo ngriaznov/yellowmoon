@@ -24,6 +24,7 @@ describe("components.html page", () => {
       "TabBar and TitleBlock",
       "LookTile",
       "Wheel",
+      "WarpPlane",
       "CurvePlot and Histogram",
       "Filmstrip",
       "PhotoCell",

@@ -24,6 +24,8 @@ import type {
   AppError,
   ApplyScope,
   AppInfo,
+  ChromaSample,
+  ChromaScatter,
   CliLinkResult,
   CliLinkStatus,
   DisplayLut,
@@ -110,6 +112,11 @@ export interface Api {
    * Addition to `docs/01`; ask again after every `render_stats` event.
    */
   histogram(photoId: PhotoId): Promise<HistogramData>;
+  /**
+   * `chroma_scatter` (addition, the colour warp of 2026-10-17): the photo's colours on the colour warp's plane, at the warp's input, at
+   * most 2048 points, for the faint scatter behind Colour › Colour warp. Ask again after `render_stats`, as for the histogram.
+   */
+  chromaScatter(photoId: PhotoId): Promise<ChromaScatter>;
 
   // --- Native viewport -----------------------------------------------------
 
@@ -129,6 +136,11 @@ export interface Api {
   setBefore(before: boolean): Promise<void>;
   /** `sample_pixel`: display values under a point, for the readout and Pick white. */
   samplePixel(x: number, y: number): Promise<PixelSample>;
+  /**
+   * `sample_chroma` (addition, the colour warp's Pick colour): the chroma of the pixel under a point of the photo cell (CSS pixels from
+   * its corner, as Pick white) at the warp's input. `null` on the paper around a letterboxed photo.
+   */
+  sampleChroma(x: number, y: number): Promise<ChromaSample | null>;
 
   // --- Looks ---------------------------------------------------------------
 
@@ -276,6 +288,7 @@ export const tauriApi: Api = {
   pasteSettings: (photoIds, patch) => narrowed(commands.pasteSettings(photoIds, patch)),
   setMenuState: (state) => unit(commands.setMenuState(state)),
   histogram: (photoId) => commands.histogram(photoId),
+  chromaScatter: (photoId) => commands.chromaScatter(photoId),
 
   viewportInfo: () => commands.viewportInfo(),
   viewportSetRect: (rect) => unit(commands.viewportSetRect(rect)),
@@ -283,6 +296,7 @@ export const tauriApi: Api = {
   viewportSetMode: (mode) => unit(commands.viewportSetMode(mode)),
   setBefore: (before) => unit(commands.setBefore(before)),
   samplePixel: (x, y) => commands.samplePixel(x, y),
+  sampleChroma: (x, y) => commands.sampleChroma(x, y),
 
   looksList: () => commands.looksList(),
   lookThumbnail: (photoId, lookId) => commands.lookThumbnail(photoId, lookId),

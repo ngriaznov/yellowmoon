@@ -1259,6 +1259,12 @@ fn edit_everything() -> SettingsPatch {
             highlights: Some([-0.1, 0.1]),
         }),
         saturation: Some(15.0),
+        color_warp: Some(ym_core::settings::ColorWarp {
+            pins: vec![
+                ym_color::warp::WarpPin::moving([0.12, 0.03], [0.08, 0.1]).into(),
+                ym_color::warp::WarpPin::locked_at([-0.05, -0.1]).into(),
+            ],
+        }),
         sharpen: Some(AutoOr::Manual(SharpenManualPatch {
             amount: Some(80.0),
             radius_px: Some(1.2),
@@ -1338,6 +1344,11 @@ fn pasting_takes_every_setting_but_the_crop_the_turn_and_the_white_pick() {
     assert!(
         patch.crop.is_none() && patch.orientation.is_none() && patch.white_pick.is_none(),
         "the copy leaves out the crop, the turn and the white pick"
+    );
+    assert_eq!(
+        patch.color_warp.as_ref().map(|w| w.pins.len()),
+        Some(2),
+        "the copy takes the colour warp's pins"
     );
     let own: Vec<_> = [b, c]
         .iter()
