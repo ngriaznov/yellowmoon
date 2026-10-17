@@ -16,7 +16,7 @@
 //! | Decode | black, white, clip mask | [`raw::FrameData`] (the area copy) | the photo |
 //! | Raw | R1, R3 to R9 | an `RgbImage` per scale, or the tiles at 100 % | `decode.*`, noise reduction, sharpening, the gains `g0`, the noise model |
 //! | Colour | C1 to C8 | [`color::ColorPlan`] (fused matrix, tone) | light, white balance, pick, exposure, `rolloff` (the highlight range and the toe) |
-//! | Grade | C9 to C13 (C9b, the colour warp, included) | [`color::GradePlan`] (the prepared `ColorChain`) | everything else (the colour warp's pins as the chain prepares them), and the colour key |
+//! | Grade | C9 to C13 (C9b, the colour warp, included) | [`color::GradePlan`] (the prepared `ColorChain`) | everything else (the colour warp's pins as the chain prepares them, the white lift of C12 included: the automatic amount of the photo's estimates and `white_offset_ev`, [`color::white_lift`]), and the colour key |
 //! | Geometry | crop, straighten, orientation | nothing: applied when sampling | `crop`, `orientation` |
 //! | Output | output sharpening of the finished picture, then C13 | the display-linear frame of a view ([`frame`] module documentation) | `output_sharpening` (and every group above) |
 //!

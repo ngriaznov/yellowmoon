@@ -30,11 +30,11 @@ a release build is not needed), takes the camera's embedded JPEG and computes, p
 
 `ym render --format dng --exposure 0` is the scene-linear picture (C1 to C11, linear AWG4, before the display transform;
 the EV scale is exact because C7 is the identity below the ALEXA's clip with the highlight range at 0, `docs/02`).
-`ym render --format tiff` is the display render. Both are made with the Neutral look and the highlights as recorded
-(`--look builtin:neutral --rolloff 0,0.5`: the highlight range at 0, the low-light toe at its default): the study
-measures the exposure, and the default look (Signature, since pipeline 0.3.0) and the default highlight range (0.5,
-since pipeline 0.4.0) change the contrast and the highlights on purpose, and the DNG carries both, which would move the
-quantile match of G3. The photos are never modified: renders go to `--out`, big files are deleted after reduction unless
+`ym render --format tiff` is the display render. Both are made with the Neutral look, the highlights as recorded and no
+white lift (`--look builtin:neutral --rolloff 0,0.5 --white-offset -3`: the highlight range at 0, the low-light toe at
+its default, the lift off): the study measures the exposure, and the default look (Signature) and the automatic white
+lift (both since pipeline 0.3.0) and the default highlight range (1, since pipeline 0.4.0) change the contrast and the
+highlights on purpose, and the DNG carries all three, which would move the quantile match of G3. The photos are never modified: renders go to `--out`, big files are deleted after reduction unless
 `--keep-renders`, and a small cache (`<out>/cache/`) lets `--reuse` redo the arithmetic without rendering again.
 
 `--gate` turns the run into the M1-08 gate (docs/13, docs/15; Mykyta's decision of 2026-10-13): the metric is G3, a file passes
@@ -104,8 +104,8 @@ EXIT_GATE_NOT_MET = 3
 #: The three `ym` calls made for each photo (what a report built from the cache shows instead of recorded commands).
 COMMAND_TEMPLATES = [
     "ym info <file> --json --quiet",
-    "ym render <file> --json --quiet --overwrite --out <work>/renders --format dng --name {name}_eval_dng_ev0 --exposure 0 --look builtin:neutral --rolloff 0,0.5",
-    "ym render <file> --json --quiet --overwrite --out <work>/renders --format tiff --name {name}_eval_tiff --bits 16 --compression none --colour-space srgb --look builtin:neutral --rolloff 0,0.5",
+    "ym render <file> --json --quiet --overwrite --out <work>/renders --format dng --name {name}_eval_dng_ev0 --exposure 0 --look builtin:neutral --rolloff 0,0.5 --white-offset -3",
+    "ym render <file> --json --quiet --overwrite --out <work>/renders --format tiff --name {name}_eval_tiff --bits 16 --compression none --colour-space srgb --look builtin:neutral --rolloff 0,0.5 --white-offset -3",
 ]
 
 
@@ -215,9 +215,10 @@ class Ym:
         args = ["render", str(path), "--json", "--quiet", "--overwrite", "--out", str(out), "--format", fmt, "--name", "{name}_eval_" + (fmt if exposure is None else f"{fmt}_ev{exposure}")]
         if fmt == "tiff":
             args += ["--bits", "16", "--compression", "none", "--colour-space", "srgb"]
-        # The study is about the exposure: the Neutral look and the highlights as recorded (the default look and the
-        # default highlight range change the picture on purpose, and the DNG carries both).
-        args += ["--look", "builtin:neutral", "--rolloff", "0,0.5"]
+        # The study is about the exposure: the Neutral look, the highlights as recorded and no white lift (the default
+        # look, the default highlight range and the automatic lift change the picture on purpose, and the DNG carries
+        # all three).
+        args += ["--look", "builtin:neutral", "--rolloff", "0,0.5", "--white-offset", "-3"]
         if exposure is not None:
             args += ["--exposure", exposure]
         if self.display != "aces2":

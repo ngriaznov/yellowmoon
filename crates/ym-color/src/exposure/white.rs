@@ -11,6 +11,18 @@
 //! near white. The lift is the missing white, sized from the photo's own highlights; mid grey and
 //! everything below +1 stop stay where they are.
 //!
+//! # Alongside the highlight range
+//!
+//! Since pipeline 0.4.0 the chain also has C7's highlight range ([`crate::tone::HighlightRange`]): on the
+//! scene side, before LogC4, it takes the camera's top stop (from one stop under the Sony clip up) onto
+//! the ALEXA's, so the clipped highlights of a photo land at white. The two do different jobs and both
+//! run: the range moves where the **clip** lands and leaves everything under its knee (about +2.6 stops
+//! over grey at the camera's exposure) untouched; the lift is sized from the photo's **own brightest
+//! tones**, wherever they are, and acts from +1 stop. The order is C7 (the range), C8 to C11, then C12
+//! step 1b (the lift), step 1a (the placement) and ACES 2. The estimator sees the photo through the
+//! default C7, so the tones the range already took to white need no lift and get less of one
+//! ([`estimate_white`]).
+//!
 //! # The stage ([`WhiteLift`])
 //!
 //! Scene-linear, on the C11 output decoded to linear AWG4, **before the display placement and ACES 2, on
@@ -35,14 +47,16 @@
 //! The luma has the Rec.709 weights, which are all positive, and not the AWG4 `Y` row, whose blue weight
 //! is slightly negative (`-0.036`): with the `Y` row a saturated blue's own output would fall when its
 //! blue channel rises. A neutral value is its own luma either way (both rows sum to 1), so what the
-//! estimator measures on the neutral axis is what the stage does to a neutral.
+//! estimator measures on the neutral axis is what the stage does to a neutral. It is the same luma C7's
+//! highlight range reads ([`crate::tone::luma`]).
 //!
 //! # The estimator ([`estimate_white`])
 //!
 //! A pure CPU function of the 1/8 preview, like [`super::auto_exposure`]: same input, same two
 //! scalars, whatever the thread count (it uses none). On the preview as the render sees it (balanced
 //! with the initial gains, vignetting gain applied, through the fused matrix at the photo's exposure and
-//! the C7 shoulder):
+//! C7 at its default amounts, the highlight range at 1: a photo whose highlights the range takes to white
+//! has its 99.5th percentile there already, so it gets less lift, or none):
 //!
 //! 1. `L` = stops over grey of the luma ([`drive_luma`]) of every pixel. `P` is its 99.5th percentile (the brightest
 //!    half percent of the photo) and `B` the 99.5th percentile of a box-blurred copy of `L` (the
@@ -71,15 +85,17 @@
 //! * A pixel with a non-finite channel counts as the darkest value.
 //! * The reference look is applied to the neutral axis only; the picture's colours do not enter the
 //!   sizing (the lift is meant for white, and neutral is what white is).
+//! * C7 is the one the caller passes (the default amounts, not the user's: a move of RAW › Range does
+//!   not re-size the lift). The neutral axis of steps 3 and 4 has no C7: the percentiles are already
+//!   past it.
 
-use crate::consts::REC709_LUMA_WEIGHTS;
 use crate::consts::Vec3;
 use crate::consts::linalg::Mat3;
 use crate::display::{ChainParams, ColorChain, OutputTarget};
 use crate::exposure::{ExposureError, LUMINANCE_FLOOR, PreviewRgb, TARGET_GREY};
 use crate::logc::LogC4;
 use crate::look::LookTransform;
-use crate::tone::ToneParams;
+use crate::tone::{self, ToneParams};
 
 /// Tones up to this many stops over middle grey are untouched by the lift.
 pub const KNEE_EV: f64 = 1.0;
@@ -215,12 +231,10 @@ impl WhiteLift {
 }
 
 /// The luma that drives the lift: the Rec.709 weights on the linear AWG4 triple (all positive; a
-/// neutral value is its own luma).
+/// neutral value is its own luma). The same luma as C7's highlight range ([`tone::luma`]).
 #[must_use]
 pub fn drive_luma(awg4: Vec3) -> f64 {
-    REC709_LUMA_WEIGHTS[0] * awg4[0]
-        + REC709_LUMA_WEIGHTS[1] * awg4[1]
-        + REC709_LUMA_WEIGHTS[2] * awg4[2]
+    tone::luma(awg4)
 }
 
 /// What [`estimate_white`] found for one photo.
@@ -287,10 +301,8 @@ struct Reference<'a> {
 impl<'a> Reference<'a> {
     fn new(look: Option<&'a LookTransform>) -> Result<Self, WhiteError> {
         let identity: Mat3 = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
-        // A shoulder whose knee is far above any value the tests below feed it is the identity.
-        let tone = ToneParams::new(0.0, 0.0, 1e12, 0.0)
-            .map_err(|e| WhiteError::Reference(e.to_string()))?;
-        let mut params = ChainParams::new(identity, tone);
+        // C7 off (no highlight range, no cap, no toe): the values fed here are already past C7.
+        let mut params = ChainParams::new(identity, ToneParams::IDENTITY);
         params.output = OutputTarget::Srgb;
         params.dither = false;
         let display = ColorChain::new(&params).map_err(|e| WhiteError::Reference(e.to_string()))?;
@@ -397,8 +409,9 @@ fn smoothstep(t: f64) -> f64 {
 /// `matrix` is the fused C1 to C6 matrix **at the exposure the photo renders with** (camera RGB
 /// balanced with the initial gains to linear AWG4, `2^EV` included: `FusedChain::matrix` of the
 /// all-Auto chain), `preview` the preview as the render sees it (`Preview::metered`), `tone` the C7
-/// parameters of the default render and `reference` the look the amount is sized for (the Signature
-/// look; `None` sizes it for the bare ACES 2 picture).
+/// parameters of the default render (the highlight range at its default amount with this chain's clip
+/// level, `ClipLevel::luma`: the lift is sized for what is left after the range) and `reference` the look
+/// the amount is sized for (the Signature look; `None` sizes it for the bare ACES 2 picture).
 ///
 /// A matrix with a non-finite entry, a preview with no pixel and a reference rendering that cannot be
 /// built give [`WhiteEstimate::none`] / an error as documented; every other input gives a finite
@@ -423,8 +436,9 @@ pub fn estimate_white(
         return Ok(WhiteEstimate::none());
     };
 
-    // 1. Stops over middle grey of every pixel, through the fused matrix and the C7 shoulder.
+    // 1. Stops over middle grey of every pixel, through the fused matrix and C7 (the highlight range).
     let floor_stops = (LUMINANCE_FLOOR / TARGET_GREY).log2();
+    let tone = tone.prepare();
     let mut stops = vec![0.0f32; pixels];
     for (i, out) in stops.iter_mut().enumerate() {
         let p = &preview.rgb[3 * i..3 * i + 3];

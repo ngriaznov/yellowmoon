@@ -2,8 +2,9 @@
 //!
 //! [`PreparedChain::new`] turns an immutable `ym_color::display::ColorChain` into the GPU form: the
 //! per-frame uniform block (fused matrix, C7 (the highlight range and the toe), C9, C9b, C10 and C12
-//! parameters, the ACES 2 scalars and the flags, about 2 KB), and four **persistent tables** that
-//! [`ChainTables`] keeps on the device and refills only when their content changes:
+//! parameters (the white lift of step 1b among them), the ACES 2 scalars and the flags, about 2 KB),
+//! and four **persistent tables** that [`ChainTables`] keeps on the device and refills only when their
+//! content changes:
 //!
 //! * the 64 x 64 dither thresholds, once per device;
 //! * the ACES 2 tables, once per device and output;
@@ -73,6 +74,7 @@ use ym_color::display::{
     DisplayTransform, OutputTarget,
 };
 use ym_color::encode::{OutputSpace, dither_threshold};
+use ym_color::exposure::white::WhiteLift;
 use ym_color::gamut::matrices;
 use ym_color::grade::{
     BALANCE_CENTER_STOPS, CONTRAST_EXPONENT, GradeParams, ZONE_CENTER_STOPS, logc4_at_stops,
@@ -349,11 +351,11 @@ fn lut_data(lut: &Lut) -> (Vec<f32>, LutDescU) {
     (luts, d)
 }
 
-/// The grade parameters as the kernel wants them (the same preparation as `Grade::new`).
 /// C7 into the block: the highlight range's knee, Sony clip and expansion (stops over grey) and the toe's
 /// width in `tone` (`[knee, clip, tau, expansion]`), the ALEXA cap in `fl.z`. No range
 /// (`HighlightRange::NONE`, from `ToneParams::IDENTITY`) is a knee, clip and cap of
-/// `HIGHLIGHT_OFF_STOPS` (1e30, a finite f32: K8) and an expansion of 0; `fl.w` stays 0.
+/// `HIGHLIGHT_OFF_STOPS` (1e30, a finite f32: K8) and an expansion of 0. `fl.w` is the white lift's
+/// ([`white_lift_uniform`]).
 fn tone_uniform(u: &mut ChainU, tone: &ToneParams) {
     let range = tone.range();
     u.tone = [
@@ -365,6 +367,24 @@ fn tone_uniform(u: &mut ChainU, tone: &ToneParams) {
     u.fl[2] = range.cap_stops as f32;
 }
 
+/// C12 step 1b into the block: the white lift's amount in stops in `fl.w` and the reciprocal of its
+/// ramp's span in `grade0.w` (the two lanes the range and the grade leave free). No lift
+/// ([`WhiteLift::NONE`], the exact identity, and what `ColorChain::white_lift` gives for a display LUT) is
+/// 0 in both, and the shader then skips the stage; with a lift the span is at least `MIN_SPAN_EV`, so the
+/// reciprocal is at most 4 (finite: K8). Written after [`grade_uniform`], which fills the whole of
+/// `grade0`.
+fn white_lift_uniform(u: &mut ChainU, lift: WhiteLift) {
+    if lift.is_identity() {
+        u.fl[3] = 0.0;
+        u.grade0[3] = 0.0;
+    } else {
+        u.fl[3] = lift.amount_ev() as f32;
+        u.grade0[3] = (1.0 / lift.span_ev()) as f32;
+    }
+}
+
+/// The grade parameters as the kernel wants them (the same preparation as `Grade::new`). `grade0.w` is
+/// the white lift's ([`white_lift_uniform`]), written after this.
 fn grade_uniform(u: &mut ChainU, g: &GradeParams) {
     let contrast_gain = (CONTRAST_EXPONENT * clamp_control(g.contrast) / 100.0).exp2();
     // Saturation is subtractive: the shader pivots on the pixel's brightest channel (`Grade::apply`).
@@ -923,6 +943,9 @@ impl ChainTables {
                 tables = self.dither(ctx)?;
             }
         }
+        // C12 step 1b: the white lift (ACES 2 path only: `ColorChain::white_lift` is the identity for a
+        // display LUT), after the grade, whose row it shares.
+        white_lift_uniform(&mut u, chain.white_lift());
         // C13.
         u.sp[0] = u32::from(space == OutputSpace::Rec2020);
         // The Before view: its reading point, the camera default (the 3x3 from the camera RGB entering the
@@ -1747,6 +1770,60 @@ mod tests {
         assert!(off.is_finite() && off >= 1e30);
         assert_eq!(u.tone, [off, off, 0.0, 0.0]);
         assert_eq!(u.fl, [0.0, 0.0, off, 0.0]);
+        assert!(
+            bytemuck::cast_slice::<ChainU, f32>(std::slice::from_ref(&u))
+                .iter()
+                .all(|v| v.is_finite())
+        );
+    }
+
+    #[test]
+    fn the_white_lift_takes_the_lanes_the_range_and_the_grade_leave_free() {
+        use ym_color::exposure::white::MIN_SPAN_EV;
+        use ym_color::tone::HIGHLIGHT_CAP_STOPS;
+        // Everything a chain writes into the rows the lift shares: the range (`fl.z`), the look and the
+        // display LUT (`fl.x`, `fl.y`) and a grade (`grade0.xyz`).
+        let tone = ToneParams::new(1.0, 0.5, 0.18 * 3.58_f64.exp2(), 0.002).expect("tone");
+        let grade = GradeParams {
+            contrast: 20.0,
+            brightness: -10.0,
+            saturation: 15.0,
+            ..GradeParams::default()
+        };
+        let base = || {
+            let mut u = ChainU::default();
+            tone_uniform(&mut u, &tone);
+            grade_uniform(&mut u, &grade);
+            u.fl[0] = 0.7;
+            u.fl[1] = 2.4;
+            u
+        };
+        let lift = WhiteLift::new(1.15, 2.78).expect("lift");
+        let mut u = base();
+        let (fl, grade0) = (u.fl, u.grade0);
+        white_lift_uniform(&mut u, lift);
+        assert_eq!(u.fl, [fl[0], fl[1], HIGHLIGHT_CAP_STOPS as f32, 1.15]);
+        assert_eq!(u.fl[2], fl[2], "the range's cap is kept");
+        assert_eq!(&u.grade0[..3], &grade0[..3], "the grade is kept");
+        assert_eq!(u.grade0[3], (1.0 / lift.span_ev()) as f32);
+        assert_eq!(u.tone, base().tone, "the range's row is not touched");
+        // A narrow ramp is at least MIN_SPAN_EV wide: the reciprocal is at most 4.
+        let mut u = base();
+        white_lift_uniform(&mut u, WhiteLift::new(3.0, 0.0).expect("lift"));
+        assert_eq!(u.grade0[3], (1.0 / MIN_SPAN_EV) as f32);
+        assert_eq!(u.grade0[3], 4.0);
+        // No lift is 0 in both lanes (the shader skips the stage), whatever was there.
+        let mut u = base();
+        u.fl[3] = 9.0;
+        u.grade0[3] = 9.0;
+        white_lift_uniform(&mut u, WhiteLift::NONE);
+        assert_eq!((u.fl[3], u.grade0[3]), (0.0, 0.0));
+        assert_eq!(u.fl[2], HIGHLIGHT_CAP_STOPS as f32);
+        // Every lane finite (K8), with the range off too.
+        let mut u = ChainU::default();
+        tone_uniform(&mut u, &ToneParams::IDENTITY);
+        grade_uniform(&mut u, &GradeParams::default());
+        white_lift_uniform(&mut u, WhiteLift::new(3.0, 1.0).expect("lift"));
         assert!(
             bytemuck::cast_slice::<ChainU, f32>(std::slice::from_ref(&u))
                 .iter()

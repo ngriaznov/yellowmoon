@@ -16,6 +16,8 @@
 //!   "the noise model's read noise mapped to linear AWG4 at this exposure");
 //! * `contrast` to `color_balance` become `GradeParams`, the pins of `color_warp` a `WarpParams`
 //!   (stage C9b), the four curves a `CurveSet`;
+//! * the photo's automatic white lift and `white_offset_ev` become the `WhiteLift` of C12 step 1b
+//!   ([`white_lift`]), which acts after C11, alongside the highlight range of C7;
 //! * the look comes from a [`LookProvider`] (the looks library in the app, [`NeutralOnly`] in tests)
 //!   and the display transform from a [`DisplayChoice`] (ACES 2, or an imported ARRI display LUT).
 //!
@@ -33,6 +35,7 @@ use ym_color::display::{
     ArriDisplayLut, BeforePoint, ChainParams, ColorChain, DisplayLutInput, DisplayLutOutput,
     DisplayTransform, LookSetting, OutputTarget,
 };
+use ym_color::exposure::white::WhiteLift;
 use ym_color::grade::{ColorBalance, GradeParams};
 use ym_color::look::LookTransform;
 use ym_color::tone::ToneParams;
@@ -588,12 +591,21 @@ fn pieces(src: &PhotoSource, req: &GradeRequest<'_>) -> Pieces {
     }
 }
 
+/// The white lift a photo renders with: the automatic amount and anchor of its estimates plus the
+/// user's offset (`white_offset_ev`), `docs/02` C12 step 1b. It acts after C11, alongside C7's
+/// highlight range (which [`color_plan`] puts in the tone), and has an effect on the ACES 2 path only;
+/// the chain ignores it for an imported ARRI display LUT.
+#[must_use]
+pub fn white_lift(src: &PhotoSource) -> WhiteLift {
+    src.estimates.white.lift(src.settings.white_offset_ev)
+}
+
 fn key_of(src: &PhotoSource, color: &ColorPlan, req: &GradeRequest<'_>, p: &Pieces) -> GradeKey {
     let s = &src.settings;
     let mut key = String::with_capacity(768);
     let _ = write!(
         key,
-        "{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{}|{:?}|",
+        "{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{}|{:?}|",
         color.key,
         grade_params(s),
         // The warp as the chain prepares it: pins that change nothing (locked pins with no pin that
@@ -603,6 +615,7 @@ fn key_of(src: &PhotoSource, color: &ColorPlan, req: &GradeRequest<'_>, p: &Piec
         req.target,
         req.dither,
         s.look_intensity,
+        white_lift(src),
         req.display,
         s.look,
         // The Before view's parameters: the as-shot white balance and the body's matrix (never a
@@ -650,6 +663,7 @@ pub fn grade_plan(
     params.dither = req.dither;
     params.before = BeforePoint::CameraDefault;
     params.camera_default = color.camera_default;
+    params.white_lift = white_lift(src);
     if let Some(look) = p.look {
         params.look = Some(LookSetting::new(look.transform, s.look_intensity));
     }

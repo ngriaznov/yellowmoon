@@ -135,8 +135,9 @@ pub struct ChainParams {
     pub display: DisplayTransform,
     /// Stage C12 step 1b: the white lift, a scene-linear gain on the tones above +1 stop over middle
     /// grey, before the display placement and ACES 2 (`docs/02`). Only the ACES 2 path has it: an
-    /// imported ARRI display LUT keeps ARRI's highlights and ignores the lift. [`WhiteLift::NONE`] is
-    /// the identity.
+    /// imported ARRI display LUT keeps ARRI's highlights and ignores the lift. It works alongside C7's
+    /// highlight range ([`ChainParams::tone`]), which acts on the scene side before LogC4; both run.
+    /// [`WhiteLift::NONE`] is the identity.
     pub white_lift: WhiteLift,
     /// Stage C13: which output the display-linear values are encoded for.
     pub output: OutputTarget,

@@ -1246,6 +1246,7 @@ fn edit_everything() -> SettingsPatch {
         highlights: Some(-30.0),
         shadows: Some(25.0),
         white: Some(5.0),
+        white_offset_ev: Some(0.5),
         black: Some(-4.0),
         light_source: Some(LightSource::Day),
         white_balance: Some(AutoOr::Manual(WhiteBalanceManualPatch {
@@ -1439,6 +1440,7 @@ fn auto_stays_auto_and_each_photo_keeps_its_own_estimates() {
     );
     assert_eq!(r.values.exposure_ev, 0.7);
     assert_eq!((r.values.kelvin, r.values.tint), (4300.0, 7.0));
+    assert_eq!(r.settings.white_offset_ev, 0.5);
     assert_eq!(
         (r.settings.rolloff.highlights, r.settings.rolloff.low_light),
         (0.7, 0.3),

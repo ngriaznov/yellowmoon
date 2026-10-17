@@ -939,14 +939,14 @@ impl LookProvider for CubeLook {
 }
 
 /// The picture the user sees is the export's picture: with a look that is a cube and a CDL (the
-/// shape of the default look), a look intensity below 100, the highlight range at 1 (the camera's
-/// clip on the ALEXA's, C7), contrast, saturation and a curve edit, the tail's export is the CPU
-/// export. These are
+/// shape of the default look), a look intensity below 100, a white offset (the white lift's manual
+/// part, C12 step 1b), the highlight range at 1 (the camera's clip on the ALEXA's, C7), contrast,
+/// saturation and a curve edit, the tail's export is the CPU export. These are
 /// stages of the colour chain, which the tail runs from the very chain object the CPU path uses; the
 /// test is the end-to-end proof, with the persistent tables of the device (the look's cube is
 /// uploaded once for the twelve tiles of the picture, not per tile).
 #[test]
-fn a_look_a_highlight_range_and_a_curve_come_out_of_the_tail_as_they_do_of_the_cpu() {
+fn a_look_a_white_offset_a_highlight_range_and_a_curve_come_out_of_the_tail_as_they_do_of_the_cpu() {
     let Some(gpu) = gpu() else { return };
     let shot = Shot::new();
     let home = tempfile::tempdir().expect("home");
@@ -964,6 +964,7 @@ fn a_look_a_highlight_range_and_a_curve_come_out_of_the_tail_as_they_do_of_the_c
     shot.edit(SettingsPatch {
         look: Some(LookId::parse("user:cube").expect("look id")),
         look_intensity: Some(70.0),
+        white_offset_ev: Some(0.4),
         rolloff: Some(RolloffPatch {
             highlights: Some(1.0),
             low_light: None,
@@ -1016,7 +1017,7 @@ fn a_look_a_highlight_range_and_a_curve_come_out_of_the_tail_as_they_do_of_the_c
         let s_tail = stats(&want_raw, &got);
         let s_cpu = stats(&want_cpu, &got);
         ci_note(&format!(
-            "{label}, look + highlight range + curve: tail against the CPU colour pass {} over 1, max {}; against the CPU export {} over 1, max {}",
+            "{label}, look + white offset + highlight range + curve: tail against the CPU colour pass {} over 1, max {}; against the CPU export {} over 1, max {}",
             s_tail.over_one, s_tail.max, s_cpu.over_one, s_cpu.max
         ));
         if sixteen {

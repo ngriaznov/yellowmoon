@@ -24,6 +24,7 @@ use ym_color::display::{
     Frame, Layout, LookSetting, OutputTarget, View, aces2_input_matrix,
 };
 use ym_color::encode::{self, OutputSpace};
+use ym_color::exposure::white::WhiteLift;
 use ym_color::gamut::{LinearAwg4, LinearRec709, matrices};
 use ym_color::grade::{ColorBalance, Grade, GradeParams, grade_luma};
 use ym_color::logc::{LogC4, logc4_decode_rgb, logc4_encode_rgb};
@@ -982,7 +983,8 @@ fn the_before_view_is_the_camera_default_matrix_curve_and_encode() {
 fn the_before_view_ignores_every_setting_of_the_chain() {
     let rich = chain(&before_params());
     // Another fused matrix (exposure and white balance), tone (the highlight range among it), grade,
-    // look, curves and display: the Before view is bit-identical, for every output it is asked for.
+    // look, curves, display and white lift: the Before view is bit-identical, for every output it is
+    // asked for.
     for target in OutputTarget::ALL {
         let mut a = before_params();
         a.output = target;
@@ -994,6 +996,7 @@ fn the_before_view_ignores_every_setting_of_the_chain() {
         b.camera_default = camera_default();
         b.output = target;
         b.display = ym_color::display::DisplayTransform::Aces2;
+        b.white_lift = WhiteLift::new(0.8, 0.5).unwrap();
         b.dither = false;
         let (a, b) = (chain(&a), chain(&b));
         for px in pixels() {

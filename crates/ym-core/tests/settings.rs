@@ -51,6 +51,7 @@ fn rich() -> DevelopSettings {
     s.highlights = -30.0;
     s.shadows = 25.0;
     s.white = 4.0;
+    s.white_offset_ev = 0.4;
     s.black = -9.0;
     s.light_source = LightSource::Tungsten;
     s.white_balance = AutoOr::Manual(ym_core::settings::WhiteBalanceValue {
@@ -126,6 +127,7 @@ fn typescript_defaults() -> Value {
         "look_intensity": 100,
         "exposure": { "kind": "auto" },
         "contrast": 0, "brightness": 0, "highlights": 0, "shadows": 0, "white": 0, "black": 0,
+        "white_offset_ev": 0,
         "light_source": "auto",
         "white_balance": { "kind": "auto" },
         "color_balance": { "shadows": [0, 0], "midtones": [0, 0], "highlights": [0, 0] },
@@ -355,6 +357,7 @@ fn resolved_settings_have_the_shape_of_the_typescript_type() {
     want.extend(
         [
             "exposure_ev",
+            "white_ev",
             "kelvin",
             "tint",
             "sharpen",
@@ -506,10 +509,6 @@ fn the_schema_refuses_what_the_core_refuses() {
     let (_, v) = schema();
     let mut cases: Vec<(&str, Value)> = vec![
         ("unknown field", json!({ "exposur": { "kind": "auto" } })),
-        (
-            "the white lift's offset, removed in pipeline 0.4.0",
-            json!({ "white_offset_ev": 0 }),
-        ),
         (
             "manual without ev",
             json!({ "exposure": { "kind": "manual" } }),
@@ -1192,6 +1191,10 @@ fn reset_restores_every_field_to_its_default() {
     assert!(s.exposure.is_auto() && s.white_balance.is_auto() && s.noise_reduction.is_auto());
     assert_eq!(s.light_source, LightSource::Auto);
     assert!(s.white_pick.is_none());
+    assert_eq!(
+        s.white_offset_ev, 0.0,
+        "the White row of the Automatic card is Auto again"
+    );
     assert_eq!(
         s.rolloff,
         rich().rolloff,

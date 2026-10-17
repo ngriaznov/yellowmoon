@@ -568,6 +568,9 @@ pub struct DevelopSettings {
     pub shadows: Num,
     /// -100 to 100.
     pub white: Num,
+    /// Light › White › Offset: stops added to the automatic white lift, -3 to +3, default 0 (the
+    /// automatic amount; a plain number, not Auto).
+    pub white_offset_ev: Num,
     /// -100 to 100.
     pub black: Num,
     /// Colour › White balance, the light presets.
@@ -761,6 +764,9 @@ pub struct SettingsPatch {
     /// New white.
     #[serde(default)]
     pub white: Option<Num>,
+    /// New white lift offset, in stops.
+    #[serde(default)]
+    pub white_offset_ev: Option<Num>,
     /// New black.
     #[serde(default)]
     pub black: Option<Num>,
@@ -834,6 +840,7 @@ impl Serialize for SettingsPatch {
         entry(&mut map, "highlights", &self.highlights)?;
         entry(&mut map, "shadows", &self.shadows)?;
         entry(&mut map, "white", &self.white)?;
+        entry(&mut map, "white_offset_ev", &self.white_offset_ev)?;
         entry(&mut map, "black", &self.black)?;
         entry(&mut map, "light_source", &self.light_source)?;
         entry(&mut map, "white_balance", &self.white_balance)?;
@@ -896,6 +903,8 @@ pub struct NoiseModel {
 pub struct AutoEstimates {
     /// `EV_auto`.
     pub exposure_ev: Num,
+    /// The automatic white lift in stops (0 when nothing is above +1 stop).
+    pub white_ev: Num,
     /// The Auto Kelvin.
     pub kelvin: Num,
     /// The Auto tint.
@@ -931,6 +940,10 @@ pub struct ResolvedValues {
     pub shadows: Num,
     /// `white`.
     pub white: Num,
+    /// `white_offset_ev`.
+    pub white_offset_ev: Num,
+    /// The white lift in effect in stops: the automatic amount plus the offset, never below 0.
+    pub white_ev: Num,
     /// `black`.
     pub black: Num,
     /// `light_source`.
