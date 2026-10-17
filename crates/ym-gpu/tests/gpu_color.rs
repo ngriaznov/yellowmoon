@@ -161,16 +161,17 @@ fn every_stage_matches_the_cpu_trace() {
                     })
                     .collect();
                 // Linear stages: relative to the size of the input terms (C7 also to its output: the
-                // highlight range multiplies a pixel by up to 2^6, and f32 log2 and exp2 make its gain
-                // good to a relative 1e-5 where the range is steepest); LogC4: the 2e-4 gate;
-                // display-linear: 2e-4 relative plus a small floor; code values: one 10-bit code.
+                // highlight range multiplies a pixel by up to 2^6, and the f32 log2 and exp2 of its gain
+                // are good to a relative 1e-5 where the range is steepest, 5e-5 leaving room for a
+                // log2 a few ulp off; 5e-5 is 5e-6 in LogC4); LogC4: the 2e-4 gate; display-linear:
+                // 2e-4 relative plus a small floor; code values: one 10-bit code.
                 let cams_ref = &cams;
                 let tol = |i: usize| -> f64 {
                     let mag: f64 = cams_ref[i].iter().map(|v| v.abs()).sum();
                     match stop {
                         Stop::C6 => 6e-6 * mag + 1e-9,
                         Stop::C7 => {
-                            6e-6 * mag + 2e-5 * cpu[i].iter().map(|v| v.abs()).sum::<f64>() + 1e-9
+                            6e-6 * mag + 5e-5 * cpu[i].iter().map(|v| v.abs()).sum::<f64>() + 1e-9
                         }
                         Stop::C12 => 5e-4 * cpu[i].iter().cloned().fold(0.0f64, f64::max).max(0.02),
                         Stop::C13 => CODE10,

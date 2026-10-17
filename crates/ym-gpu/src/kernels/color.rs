@@ -99,7 +99,7 @@ use crate::tiles::{Tile, TilePlan};
 pub enum Stop {
     /// The fused matrix applied: linear AWG4 (C1 to C6).
     C6,
-    /// After the roll-off and toe: linear AWG4.
+    /// After the highlight range and the toe: linear AWG4.
     C7,
     /// LogC4 encode.
     C8,
@@ -1747,9 +1747,11 @@ mod tests {
         assert!(off.is_finite() && off >= 1e30);
         assert_eq!(u.tone, [off, off, 0.0, 0.0]);
         assert_eq!(u.fl, [0.0, 0.0, off, 0.0]);
-        assert!(bytemuck::cast_slice::<ChainU, f32>(std::slice::from_ref(&u))
-            .iter()
-            .all(|v| v.is_finite()));
+        assert!(
+            bytemuck::cast_slice::<ChainU, f32>(std::slice::from_ref(&u))
+                .iter()
+                .all(|v| v.is_finite())
+        );
     }
 
     #[test]

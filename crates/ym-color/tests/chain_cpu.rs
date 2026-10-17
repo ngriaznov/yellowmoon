@@ -1359,10 +1359,7 @@ fn neutral_ramp_through_aces2_is_monotone_and_stays_neutral() {
 fn aces2_white_point_matches_the_encoding_white() {
     // A D65-neutral AWG4 white lands on the display's D65 white: equal channels, near 1.
     let identity = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
-    let c = chain(&ChainParams::new(
-        identity,
-        ToneParams::IDENTITY,
-    ));
+    let c = chain(&ChainParams::new(identity, ToneParams::IDENTITY));
     let white = c.apply_pixel([16.0, 16.0, 16.0]);
     assert!(
         white

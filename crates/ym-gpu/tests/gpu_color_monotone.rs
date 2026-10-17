@@ -57,7 +57,8 @@ fn the_highlight_range_and_toe_never_decrease_with_the_input() {
     ramp.retain(|v| *v <= 60.0);
     ramp.sort_by(|a, b| a.partial_cmp(b).expect("finite"));
     assert!(
-        ramp.last().is_some_and(|&top| f64::from(top) > 0.18 * HIGHLIGHT_CAP_STOPS.exp2() * 1.5),
+        ramp.last()
+            .is_some_and(|&top| f64::from(top) > 0.18 * HIGHLIGHT_CAP_STOPS.exp2() * 1.5),
         "the ramp must pass the cap: top {:?}",
         ramp.last()
     );
@@ -77,14 +78,15 @@ fn the_highlight_range_and_toe_never_decrease_with_the_input() {
                         let out = run(dev, &params, px, Stop::C7);
                         for i in 1..out.len() {
                             // Where the CPU holds the luma at the cap a grey is flat, and the f32 log2 and
-                            // exp2 of the gain wiggle by a few 1e-7; everywhere else the output rises by
-                            // at least the input's step (0.4 %), so only the last bits may wiggle.
+                            // exp2 of the gain wiggle by a few 1e-7 (allowed: 1e-5, for a log2 a few ulp
+                            // off as Metal's fast-math one is); everywhere else the output rises by at
+                            // least the input's step (0.4 %), so only the last bits may wiggle.
                             let y = luma(px[i].map(f64::from));
                             let s = (y / 0.18).log2();
                             let at_cap = y > 0.0 && range.stops(s) >= HIGHLIGHT_CAP_STOPS - 1e-9;
                             ranged += usize::from(y > 0.0 && range.gain(y) > 1.0);
                             capped += usize::from(at_cap);
-                            let rel = if at_cap { 4e-6 } else { 6e-7 };
+                            let rel = if at_cap { 1e-5 } else { 6e-7 };
                             for (ch, (&a, &b)) in out[i - 1].iter().zip(&out[i]).enumerate() {
                                 if label == "one channel" && ch != 0 {
                                     continue;
@@ -102,22 +104,28 @@ fn the_highlight_range_and_toe_never_decrease_with_the_input() {
             }
         }
     }
-    assert!(ranged > 10_000 && capped > 10_000, "{ranged} ranged, {capped} capped samples");
+    assert!(
+        ranged > 10_000 && capped > 10_000,
+        "{ranged} ranged, {capped} capped samples"
+    );
     eprintln!(
         "C7 monotone over {checked} parameter sets x {} ramp points ({ranged} samples in the range, {capped} at the cap)",
         grey.len()
     );
 }
 
-/// The ALEXA cap on the device: a grey ramp far past it comes out at `0.18 * 2^7.64` (35.9) to f32
-/// precision, and nothing comes out above it.
+/// The ALEXA cap on the device: a coloured ramp from half a stop to eight stops past it comes out with
+/// its luma at `0.18 * 2^7.64` (35.9) to f32 precision and its channel ratios kept, whatever the amount
+/// and the clip (one inside the fade, the Auto clip, one over the cap).
 #[test]
 fn nothing_leaves_the_device_above_the_alexa_clip() {
     let Some(dev) = f32_device() else { return };
     let cap = (0.18 * HIGHLIGHT_CAP_STOPS.exp2()) as f32;
     let px: Vec<[f32; 3]> = (0..200)
         .map(|i| {
-            let v = 0.18 * (7.7 + 0.25 * f64::from(i)).exp2();
+            // The luma is 0.66 v: 8.5 to 16.5 stops for v is 7.9 to 15.9 for the luma, over the cap from
+            // the first pixel.
+            let v = 0.18 * (8.5 + 0.04 * f64::from(i)).exp2();
             [v as f32, (0.6 * v) as f32, (0.2 * v) as f32]
         })
         .collect();
@@ -127,8 +135,9 @@ fn nothing_leaves_the_device_above_the_alexa_clip() {
             let out = run(dev, &ChainParams::new(IDENTITY, tone), &px, Stop::C7);
             for (o, p) in out.iter().zip(&px) {
                 let y = luma(o.map(f64::from));
+                // The f32 log2 of up to 16 stops, a few ulp off (Metal's fast-math), is a relative 1e-5.
                 assert!(
-                    (y / f64::from(cap) - 1.0).abs() < 4e-6,
+                    (y / f64::from(cap) - 1.0).abs() < 1e-5,
                     "r {r} clip {clip_stops}: {p:?} -> {o:?} (luma {y}, cap {cap})"
                 );
                 // The ratios are the input's.

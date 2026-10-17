@@ -103,7 +103,9 @@ pub enum ToneError {
 /// highlight range reads. The weights are all positive, so raising a channel never lowers it.
 #[must_use]
 pub fn luma(rgb: Vec3) -> f64 {
-    REC709_LUMA_WEIGHTS[0] * rgb[0] + REC709_LUMA_WEIGHTS[1] * rgb[1] + REC709_LUMA_WEIGHTS[2] * rgb[2]
+    REC709_LUMA_WEIGHTS[0] * rgb[0]
+        + REC709_LUMA_WEIGHTS[1] * rgb[1]
+        + REC709_LUMA_WEIGHTS[2] * rgb[2]
 }
 
 /// Stops over [`HIGHLIGHT_GREY`] of a positive luma, as `log2(y) - log2(0.18)` so that no luma, however

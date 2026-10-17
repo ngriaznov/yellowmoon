@@ -50,7 +50,7 @@ fn reference_stops(r: f64, clip_luma: f64, s: f64) -> f64 {
 
 fn reference_apply(r: f64, clip_luma: f64, rgb: [f64; 3]) -> [f64; 3] {
     let y = 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2];
-    if !(y > 0.0) {
+    if y.is_nan() || y <= 0.0 {
         return rgb;
     }
     let s = (y / 0.18).log2();
@@ -93,7 +93,10 @@ fn the_range_matches_the_documented_formula() {
                 let want = reference_stops(r, c, s);
                 let got = range.stops(s);
                 worst = worst.max((got - want).abs());
-                assert!((got - want).abs() < 1e-12, "r {r} h {h} s {s}: {got} vs {want}");
+                assert!(
+                    (got - want).abs() < 1e-12,
+                    "r {r} h {h} s {s}: {got} vs {want}"
+                );
                 // The pixel: gain against the reference, three channels.
                 let rgb = [clip_at(s) * 1.3, clip_at(s) * 0.9, clip_at(s) * 0.7];
                 let want = reference_apply(r, c, rgb);
@@ -160,8 +163,14 @@ fn the_slope_is_continuous_at_the_knee_and_at_the_clip() {
                 let want = 1.0 + 2.0 * range.expansion_stops / (c - k);
                 let left = (range.stops(c) - range.stops(c - eps)) / eps;
                 let right = (range.stops(c + eps) - range.stops(c)) / eps;
-                assert!((left - want).abs() < 1e-4 * want, "clip left slope {left} vs {want}");
-                assert!((right - want).abs() < 1e-4 * want, "clip right slope {right} vs {want}");
+                assert!(
+                    (left - want).abs() < 1e-4 * want,
+                    "clip left slope {left} vs {want}"
+                );
+                assert!(
+                    (right - want).abs() < 1e-4 * want,
+                    "clip right slope {right} vs {want}"
+                );
             }
         }
     }
@@ -183,7 +192,10 @@ fn s_prime_never_falls_and_rises_at_least_as_fast_as_s_up_to_the_cap() {
                 let t = range.stops(next);
                 assert!(t >= prev, "r {r} h {h} s {next}: {t} < {prev}");
                 if t < HIGHLIGHT_CAP_STOPS {
-                    assert!(t - prev >= (next - s) * (1.0 - 1e-9), "slope under 1 at {next}");
+                    assert!(
+                        t - prev >= (next - s) * (1.0 - 1e-9),
+                        "slope under 1 at {next}"
+                    );
                 } else {
                     assert_eq!(t, HIGHLIGHT_CAP_STOPS, "flat at the cap");
                 }
@@ -197,7 +209,11 @@ fn s_prime_never_falls_and_rises_at_least_as_fast_as_s_up_to_the_cap() {
                     let mut x = -2.0;
                     let mut prev = t.apply_rgb([x; 3])[0];
                     while x < 400.0 {
-                        x += if x < 0.0 { 0.0137 } else { (x * 0.01).max(1e-4) };
+                        x += if x < 0.0 {
+                            0.0137
+                        } else {
+                            (x * 0.01).max(1e-4)
+                        };
                         let f = t.apply_rgb([x; 3])[0];
                         assert!(
                             f >= prev - 1e-14 * prev.abs().max(1.0),
@@ -277,7 +293,10 @@ fn r_zero_is_the_identity_below_the_cap() {
         assert_eq!(t.range().expansion_stops, 0.0);
         let mut s = -10.0;
         while s < HIGHLIGHT_CAP_STOPS - 1e-9 {
-            for rgb in [grey(s), [clip_at(s) * 1.2, clip_at(s) * 0.8, clip_at(s) * 0.6]] {
+            for rgb in [
+                grey(s),
+                [clip_at(s) * 1.2, clip_at(s) * 0.8, clip_at(s) * 0.6],
+            ] {
                 if luma(rgb) >= clip_at(HIGHLIGHT_CAP_STOPS) {
                     continue;
                 }
@@ -293,7 +312,11 @@ fn the_expansion_fades_out_as_the_clip_nears_middle_grey() {
     let span = HIGHLIGHT_CAP_STOPS;
     // Nothing at or under 1.25 stops, all of it from 2 stops, linear in between.
     for h in [0.0, 0.5, 1.0, 1.1, 1.25] {
-        assert_eq!(HighlightRange::new(1.0, clip_at(h)).expansion_stops, 0.0, "h {h}");
+        assert_eq!(
+            HighlightRange::new(1.0, clip_at(h)).expansion_stops,
+            0.0,
+            "h {h}"
+        );
     }
     for h in [2.0, 2.5, 3.58, 5.0] {
         let e = HighlightRange::new(1.0, clip_at(h)).expansion_stops;
@@ -302,7 +325,10 @@ fn the_expansion_fades_out_as_the_clip_nears_middle_grey() {
     for h in [1.4, 1.625, 1.9] {
         let range = HighlightRange::new(1.0, clip_at(h));
         let w = (h - 1.0 - 0.25) / 0.75;
-        assert!((range.expansion_stops - w * (span - h)).abs() < 1e-12, "h {h}");
+        assert!(
+            (range.expansion_stops - w * (span - h)).abs() < 1e-12,
+            "h {h}"
+        );
         assert_eq!(range.knee_stops, 1.0, "the knee stays at +1 stop");
     }
     // Continuous in the clip level: no jump anywhere on a fine sweep.
@@ -418,7 +444,8 @@ fn the_identity_changes_no_bit_of_any_finite_pixel() {
 #[test]
 fn the_display_codes_of_docs_02_are_reproduced() {
     // docs/02 C7, Display result: a neutral at Auto (the clip 3.58 stops over grey), ACES 2 with the
-    // placement, no look, sRGB codes, at r = 0, 0.5 and 1.
+    // placement, no look, sRGB codes, at r = 0, 0.5 and 1. Measured: 16 of the 18 codes as quoted, two
+    // one code off (r = 0 at +3.33 stops: 224, r = 1 at +3.33: 249), the rounding of the report's table.
     let stops = [1.0, 2.0, 2.58, 3.08, 3.33, 3.58];
     let want: [(f64, [i32; 6]); 3] = [
         (0.0, [158, 192, 208, 220, 225, 229]),
