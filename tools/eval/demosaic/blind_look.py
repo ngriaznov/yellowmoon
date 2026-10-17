@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
-"""RA-05 / RA-H4: the blind look for the R6 demosaic default.
+"""The blind look for the R6 demosaic default.
 
 Renders photos with two R6 demosaic methods (the current default and a candidate), hides which is which
 behind randomised A/B labels, and builds a page to compare them. Nothing here changes a default: the owner
-decides after looking (`docs/algorithms/TASKS.md` RA-05, RA-H4).
+decides after looking (`docs/05` R6).
 
     # 1. a `ym` with the test-only switch (YM_FORCE_DEMOSAIC), see README.md
     cargo build -p ym-cli --features force-demosaic
 
     # 2. render, crop, randomise, write the page and the key
-    python3 -I tools/eval/demosaic/blind_look.py render --ym target/debug/ym --out testdata/ra05
+    python3 -I tools/eval/demosaic/blind_look.py render --ym target/debug/ym --out testdata/demosaic_gate
 
-    # 3. open testdata/ra05/index.html, pick, "Download results", then
-    python3 -I tools/eval/demosaic/blind_look.py score --out testdata/ra05 --picks ra05-picks.json
+    # 3. open testdata/demosaic_gate/index.html, pick, "Download results", then
+    python3 -I tools/eval/demosaic/blind_look.py score --out testdata/demosaic_gate --picks ra05-picks.json
 
 What `render` writes under `--out` (git-ignored, never committed):
 
@@ -675,7 +675,7 @@ def cmd_render(args: argparse.Namespace) -> int:
 def _write_outputs(out: Path, args: argparse.Namespace, ym: Path, entries: dict[str, dict[str, Any]]) -> None:
     labels = {item: {"A": e["A"], "B": e["B"]} for item, e in entries.items()}
     key = {
-        "about": "Which R6 demosaic method is A and which is B for every file of the blind look (RA-05, RA-H4). "
+        "about": "Which R6 demosaic method is A and which is B for every file of the blind look (the R6 demosaic default, docs/05). "
         "Do not open this before you have answered.",
         "seed": args.seed,
         "baseline": args.baseline,
@@ -706,7 +706,7 @@ def main(argv: list[str] | None = None) -> int:
     sub = ap.add_subparsers(dest="cmd", required=True)
     r = sub.add_parser("render", help="render both methods, crop, randomise, write the page and the key")
     r.add_argument("--ym", default="target/debug/ym", help="a `ym` built with --features force-demosaic")
-    r.add_argument("--out", default="testdata/ra05")
+    r.add_argument("--out", default="testdata/demosaic_gate")
     r.add_argument("--real", default="testdata/real/files")
     r.add_argument("--synthetic", default="testdata/synthetic/arw")
     r.add_argument("--baseline", default=BASELINE, help=f"the current default (default {BASELINE})")
@@ -717,7 +717,7 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--keep-renders", action="store_true", help="keep the full-size PNG of every render under <out>/renders (large)")
     r.set_defaults(fn=cmd_render)
     s = sub.add_parser("score", help="tally the answers downloaded from the page against key.json")
-    s.add_argument("--out", default="testdata/ra05")
+    s.add_argument("--out", default="testdata/demosaic_gate")
     s.add_argument("--picks", required=True, help="the ra05-picks.json the page downloads")
     s.add_argument("--json", help="also write the tallies here")
     s.set_defaults(fn=cmd_score)

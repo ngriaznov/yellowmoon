@@ -1,12 +1,12 @@
-//! The adaptive ratio demosaic on the GPU (RA-09): the WGSL port of
+//! The adaptive ratio demosaic on the GPU: the WGSL port of
 //! [`crate::cpu::demosaic::adaptive_ratio`], specified in
 //! `docs/algorithms/01-adaptive-ratio-demosaic.md` (section 5 lists the GPU notes, section 11 the CA
 //! path). It is R6's classical demosaic, `Method::AdaptiveRatio`, including the CA-aware green
 //! refinement, the shadow sharpening and the shadow colour matching, and the entry that undoes R4 on
 //! the balanced mosaic the chain hands to R6 ([`Balance::Balanced`]).
 //!
-//! The render runs it through [`crate::chain::GpuChain`] (G-03): [`encode_demosaic`] is the device-in,
-//! device-out entry point (`docs/gpu-plan.md` section 4.3), and the host wrappers ([`demosaic`],
+//! The render runs it through [`crate::chain::GpuChain`]: [`encode_demosaic`] is the device-in,
+//! device-out entry point (`docs/17-gpu.md` section 3), and the host wrappers ([`demosaic`],
 //! [`demosaic_tiled`], [`demosaic_planned`]) upload a mosaic, run the passes and read the planes back,
 //! for the parity tests and for the chain's hand-off.
 //!
@@ -586,7 +586,7 @@ pub fn padded_pixels(core: Rect) -> u64 {
 /// scratch with shadow colour matching (the input, 4 bytes per photosite of the rectangle that
 /// carries [`Derived::halo_px`] pixels of context, and the three output planes of the core are
 /// smaller). A test checks it against the 128 MiB design binding at
-/// [`crate::chain::MAX_PHYS_AREA`] (`docs/gpu-plan.md` K4).
+/// [`crate::chain::MAX_PHYS_AREA`] (`docs/17-gpu.md` K4).
 #[must_use]
 pub fn max_binding_bytes(core: Rect) -> u64 {
     let scratch = padded_pixels(core) * PLANES_MATCH as u64 * 4;
@@ -980,13 +980,14 @@ mod tests {
         &src[start..end]
     }
 
-    /// K8 (`docs/gpu-plan.md`): every fast-math barrier of every kernel is an OR with a run-time zero,
-    /// never an XOR. An XOR applied twice cancels (`x ^ z ^ z == x`, which a compiler folds) and
-    /// fast-math folds the `0 + x` that starts a running sum, so a product lost its barrier and was
-    /// fused into the next sum (the Metal model of the adaptive ratio: 617 935 samples of 2 638
-    /// demosaic calls off the written order, against 0 with the OR). A barrier is a function whose body
-    /// is `bitcast<f32>(bitcast<u32>(x) OP word)`; the test scans the text of every kernel, and it
-    /// must find the six kernel families that have one (so that it cannot pass by finding none).
+    /// K8 (`docs/17-gpu.md`): every fast-math barrier of every kernel is an OR with a run-time
+    /// zero, never an XOR. An XOR applied twice cancels (`x ^ z ^ z == x`, which a compiler folds)
+    /// and fast-math folds the `0 + x` that starts a running sum, so a product lost its barrier and
+    /// was fused into the next sum (the Metal model of the adaptive ratio: 617 935 samples of 2 638
+    /// demosaic calls off the written order, against 0 with the OR). A barrier is a function whose
+    /// body is `bitcast<f32>(bitcast<u32>(x) OP word)`; the test scans the text of every kernel,
+    /// and it must find the six kernel families that have one (so that it cannot pass by finding
+    /// none).
     #[test]
     fn every_fast_math_barrier_is_an_or_never_an_xor() {
         let mut families = BTreeSet::new();

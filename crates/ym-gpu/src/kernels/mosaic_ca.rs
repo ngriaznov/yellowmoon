@@ -1,5 +1,5 @@
-//! R5b, the lateral chromatic aberration corrected on the mosaic, on the device (G-07,
-//! `docs/05-raw-processing.md` section R9, "Real files").
+//! R5b, the lateral chromatic aberration corrected on the mosaic, on the device
+//! (`docs/05-raw-processing.md` section R9, "Real files").
 //!
 //! The CPU reference is [`crate::cpu::lens::correct_mosaic_ca`]: every red and blue photosite takes its
 //! colour's value at the position where green shows the same feature, a Catmull-Rom sample of the

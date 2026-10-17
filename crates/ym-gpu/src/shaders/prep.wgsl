@@ -1,4 +1,4 @@
-// R1 normalise, R3 vignetting and R4 gains in one pass, and the clip mask (G-07): the GPU port of
+// R1 normalise, R3 vignetting and R4 gains in one pass, and the clip mask: the GPU port of
 // `cpu::normalize::normalize_tile`, `cpu::vignette::apply_vignette` and `cpu::gains::apply_gains`
 // (`docs/05-raw-processing.md` sections R1, R3 and R4) for a rectangle of the frame, read from the
 // photo's resident raw words.

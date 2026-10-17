@@ -1,4 +1,4 @@
-// R7 detail re-injection (G-06): the GPU port of `ym_gpu::cpu::detail::inject_detail`
+// R7 detail re-injection: the GPU port of `ym_gpu::cpu::detail::inject_detail`
 // (`docs/05-raw-processing.md` section R7, "Detail"): `Y += beta * (Y_classical - Y_net)`, the same
 // delta added to the three channels, so `R - Y` and `B - Y` are unchanged. In the classical path the
 // "network output" is the denoised image and `Y_classical` the demosaic before the denoise, so the
@@ -37,7 +37,7 @@ struct DtParams {
 // (x ^ z ^ z == x for every z, and compilers fold it), and fast-math folds a sum that starts at 0
 // (`0 + x` is x), so the first `opaque(acc + opaque(t))` of a running sum becomes the bare `t`, which
 // the next sum then fuses into a multiply-add (seen in clang's code for the adaptive ratio kernel;
-// docs/gpu-plan.md K8). An OR is idempotent: (x | z) | z == x | z, still one barrier.
+// docs/17-gpu.md K8). An OR is idempotent: (x | z) | z == x | z, still one barrier.
 fn opaque(x: f32) -> f32 {
     return bitcast<f32>(bitcast<u32>(x) | dt.org.w);
 }

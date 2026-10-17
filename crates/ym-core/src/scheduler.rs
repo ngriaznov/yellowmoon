@@ -76,8 +76,8 @@ impl Default for MemoryBudget {
     }
 }
 
-/// A GPU that shares the RAM gets this share of it, as a divisor: `RAM / 4` (`docs/gpu-plan.md`
-/// section 4.8, STATUS question 16).
+/// A GPU that shares the RAM gets this share of it, as a divisor: `RAM / 4` (`docs/17-gpu.md`
+/// section 8, STATUS question 16).
 pub const UNIFIED_GPU_RAM_DIVISOR: u64 = 4;
 /// The least GPU budget on a machine whose GPU shares the RAM.
 pub const UNIFIED_GPU_MIN_BYTES: u64 = 512 << 20;
@@ -127,10 +127,9 @@ impl MemoryBudget {
     /// leaves it: 8 GB gives 2 GiB and 2.8 GiB, 16 GB 4 GiB and 5.6 GiB, 64 GB 4 GiB and 6 GiB. With
     /// the RAM unknown nothing changes.
     ///
-    /// *History.* The first form of the rule (`docs/gpu-plan.md` section 4.8, G-01) lowered the CPU
-    /// budget by the whole GPU amount, which cut every Apple-silicon Mac to 2 GiB of CPU budget
-    /// while only the colour pass used the device (the graph caches fall to a third and the finished
-    /// frames to a third with it). The GPU rule is unchanged; the CPU rule only claims what the 0.6
+    /// *History.* The first form of the rule lowered the CPU budget by the whole GPU amount, which
+    /// cut every Apple-silicon Mac to 2 GiB of CPU budget while only the colour pass used the device
+    /// (the graph caches fall to a third and the finished frames to a third with it). The GPU rule is unchanged; the CPU rule only claims what the 0.6
     /// bound still allows. Proposal pending the owner's answer (STATUS question 16); the whole rule
     /// is this function and the constants above.
     #[must_use]
@@ -1051,7 +1050,7 @@ mod tests {
 
     #[test]
     fn a_gpu_that_shares_the_ram_takes_a_quarter_of_it_and_the_cpu_keeps_what_the_bound_leaves() {
-        // 8, 16 and 64 GB unified machines (docs/gpu-plan.md section 4.8): the CPU budget is
+        // 8, 16 and 64 GB unified machines (docs/17-gpu.md section 8): the CPU budget is
         // min(its own, 0.6 x RAM - GPU), not its own minus the whole GPU amount (which cut every
         // Mac to 2 GiB).
         for (ram, gpu, cpu) in [
@@ -1070,7 +1069,7 @@ mod tests {
     #[test]
     fn on_a_unified_machine_cpu_and_gpu_together_stay_under_six_tenths_of_the_ram() {
         let (num, den) = UNIFIED_TOTAL_RAM_SHARE;
-        assert_eq!((num, den), (3, 5), "the bound of the plan is 0.6");
+        assert_eq!((num, den), (3, 5), "the bound is 0.6");
         // Every RAM size from 4 GiB to 1 TiB in steps of 1 GiB, and some that are not round.
         let sizes = (4..=1024u64).map(|g| g * GIB).chain([
             (6 * GIB) + (123 << 20),

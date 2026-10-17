@@ -1,4 +1,4 @@
-//! The export tail on the device, in the render pipeline (`docs/gpu-plan.md` section 4.10, G-08).
+//! The export tail on the device, in the render pipeline (`docs/17-gpu.md` section 10).
 //!
 //! # What it is
 //!

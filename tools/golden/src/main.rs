@@ -122,7 +122,8 @@ struct CheckArgs {
     #[arg(long, value_enum, default_value = "stored")]
     reference: Reference,
     /// With `--device gpu`: which set of gates is the starting point: `calibrated` (the default: twice the first run
-    /// on lavapipe) or `plan` (what `docs/gpu-plan.md` proposed). The four options below replace single values.
+    /// on lavapipe) or `plan` (the first proposal, made before any GPU picture was measured). The four options below
+    /// replace single values.
     #[arg(long, value_enum, default_value = "calibrated")]
     gpu_gates: GateSet,
     /// With `--device gpu`: the median ΔE00 may not exceed this.
@@ -145,7 +146,7 @@ struct CheckArgs {
 enum GateSet {
     /// Twice the first lavapipe run ([`GpuGate::CALIBRATED`]).
     Calibrated,
-    /// The plan's proposal ([`GpuGate::PLAN`]).
+    /// The first proposal ([`GpuGate::PLAN`]).
     Plan,
 }
 

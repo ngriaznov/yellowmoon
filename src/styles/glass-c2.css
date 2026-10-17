@@ -1,4 +1,4 @@
-/* Variant C2: the current layout, dark glass, glasscn's own controls (experiment, branch claude/glasscn-ui).
+/* Variant C2: the current layout, dark glass, glasscn's own controls.
    Two halves, and no rule here restyles a glasscn control:
    1. Tokens. The dark palette (glasscn's own `.dark` material is used as it is), the yellow accent, a colour per tab, Figtree.
    2. Layout. The cells of the screen sit where they sit today, edge to edge, with the sizes and spacing of the mockups; their surfaces
@@ -154,7 +154,7 @@ html:has(.ym-screen[data-screen="photos"]) #root {
   }
 }
 
-/* Round 5, variant (a): the count beside the render status, same type ("Neural · 42 ms · Display P3 · 4 of 12 · 3 picked"). It needs
+/* Variant (a): the count beside the render status, same type ("Neural · 42 ms · Display P3 · 4 of 12 · 3 picked"). It needs
    about 270 px, so it is there from 1440 px and the strip's caption takes over below that (see `COUNT_IN_HEADER` in Photos.tsx). */
 .ym-status-group {
   display: flex;
@@ -219,7 +219,7 @@ html:has(.ym-screen[data-screen="photos"]) #root {
   color: var(--glass-label-secondary);
 }
 
-/* The title block: a flat block of the tab colour today; here neutral glass (round 7). A tab's colour is a small accent, never a large
+/* The title block: a flat block of the tab colour today; here neutral glass. A tab's colour is a small accent, never a large
    tint: it shows on the tab's underline and on its controls. */
 .ym-title-block {
   padding: 22px var(--pad-panel);
@@ -535,7 +535,7 @@ html:has(.ym-screen[data-screen="photos"]) #root {
 }
 
 /* The filmstrip row: the strip of thumbnails and, in its own cell, the counter. One glass surface, a rim above it and between them.
-   Round 4: the thumbnails fill the row. The row keeps the height the layout gives it (what is left under the photo, never less than
+   The thumbnails fill the row. The row keeps the height the layout gives it (what is left under the photo, never less than
    --filmstrip-min-h); each thumbnail is as tall as that row less the tool panel's inset (--pad-panel, 24 px) above and below, so the space
    from a thumbnail to the edge of its cell is the space from a control to the edge of the tool panel. The row is a size container so
    the thumbnails can read its height; the scroller keeps the same inset on its left and right. */
@@ -543,7 +543,7 @@ html:has(.ym-screen[data-screen="photos"]) #root {
   @apply glass rounded-none;
   --strip-inset: var(--pad-panel);
   --strip-gap: 8px;
-  /* Round 5: the strip has a surface of its own, so the warm part of the aurora no longer sits under warm thumbnails. Three tried, one
+  /* The strip has a surface of its own, so the warm part of the aurora no longer sits under warm thumbnails. Three tried, one
      chosen: change --strip-surface to --strip-neutral, --strip-graphite, --strip-blue or --strip-tab and nothing else. --strip-alpha is how much of the
      colour covers the glass (100% is an opaque surface; less lets the aurora and the blur through). */
   --strip-alpha: 96%;

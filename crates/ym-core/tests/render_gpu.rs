@@ -2,7 +2,7 @@
 //!
 //! * The colour pass of viewport frames and thumbnails: the frames agree within the parity
 //!   tolerances of `ym-gpu`.
-//! * G-03, the raw chain: with [`GpuStages::RAW_CHAIN`] the R6 demosaic of every full-resolution tile
+//! * The raw chain: with [`GpuStages::RAW_CHAIN`] the R6 demosaic of every full-resolution tile
 //!   (the 100 % view, the export) runs on the device, one device job per tile with the render's own
 //!   cancel token and priority. A 100 % frame and a full photo agree with the CPU render within the
 //!   tolerances of the kernel; a forced demosaic method, a stage that is off and a policy that holds
@@ -11,13 +11,13 @@
 //!   bit the CPU render, with the note; a strict policy (`Require`) fails the photo instead; a
 //!   cancelled render and a navigation leave the pool at its baseline.
 //!
-//! * G-07, the raw front: `GpuStages::ALL` includes [`GpuStages::RAW_FRONT`], so the same tiles run
+//! * The raw front: `GpuStages::ALL` includes [`GpuStages::RAW_FRONT`], so the same tiles run
 //!   R1 to R9 (`R1..R9`) from the photo's raw words, uploaded once per photo; `gpu_reduced.rs` has the
 //!   tests of the front itself and of the fit-view group. The tests below that name a range say
 //!   `R1..R9` for that reason; the R6 to R8 route behind the CPU's front is what `RAW_CHAIN` alone
 //!   runs.
 //!
-//! * G-05, the view stages: with the members of [`GpuStages`] for the sampler, the colour chain,
+//! * The view stages: with the members of [`GpuStages`] for the sampler, the colour chain,
 //!   output sharpening and C13, a viewport frame, a thumbnail and a look tile are one device job each
 //!   (sampler, C1 to C12, stage, C13, one readback), a move of the Output slider is one small job on
 //!   the resident display-linear frame, and a view too big for one storage binding is cut into bands
@@ -149,7 +149,7 @@ fn gpu_and_cpu_frames_agree_within_the_parity_tolerance() {
         assert!(worst <= 2, "{name}: worst difference {worst} codes");
         assert!(mean < 0.25, "{name}: mean difference {mean}");
     }
-    // The Before view is the colour kernel's RGBA8 stop, on the device since G-05.
+    // The Before view is the colour kernel's RGBA8 stop, on the device.
     let mut before = st.clone();
     before.before = true;
     let a = cpu
@@ -177,7 +177,7 @@ fn gpu_and_cpu_frames_agree_within_the_parity_tolerance() {
 }
 
 // ---------------------------------------------------------------------------------------------
-// The raw chain on the device (G-03)
+// The raw chain on the device
 // ---------------------------------------------------------------------------------------------
 
 /// A scene of 1.2 Mpixel: with 512 px export tiles a full render is six device jobs. A neutral
@@ -369,7 +369,7 @@ fn the_renders_of_a_dng_have_no_capture_sharpening_on_the_device_and_match_the_c
         });
     });
     // Every stage but the export tail: with `GpuStages::EXPORT_TAIL` the colour stage of the DNG's
-    // two renders runs on the device too (G-08, `tests/gpu_export.rs` compares it with the CPU's),
+    // two renders runs on the device too (`tests/gpu_export.rs` compares it with the CPU's),
     // while the display render of a host frame colours on the CPU, so the two would differ by the
     // colour stage's f32 rounding and not be equal bit for bit. This test is about R8.
     let no_tail = GpuStages::RAW_CHAIN
@@ -698,7 +698,7 @@ fn a_device_error_of_a_strict_render_is_the_export_error_kind_gpu() {
 }
 
 // ---------------------------------------------------------------------------------------------
-// The view stages on the device (G-05)
+// The view stages on the device
 // ---------------------------------------------------------------------------------------------
 
 mod view {
@@ -722,16 +722,16 @@ mod view {
     /// Apple runners' first numbers are read from these.
     pub fn ci_note(text: &str) {
         let mut err = std::io::stderr();
-        let _ = writeln!(err, "[G-05] {text}");
+        let _ = writeln!(err, "[view stages] {text}");
         if std::env::var_os("GITHUB_ACTIONS").is_some() {
-            let _ = writeln!(err, "::notice title=G-05 view stages::{text}");
+            let _ = writeln!(err, "::notice title=View stages::{text}");
         }
     }
 
     /// The largest difference in codes a device frame may have from the CPU's: the bound of the
     /// colour pass's parity test above (`gpu_and_cpu_frames_agree_within_the_parity_tolerance`),
     /// twice the one code measured on lavapipe with the whole view on the device. The same on every
-    /// adapter: a Metal column comes only with the Apple runners' numbers (the `[G-05]` CI notes).
+    /// adapter: a Metal column comes only with the Apple runners' numbers (the `[view stages]` CI notes).
     pub const CODE_BOUND: u8 = 2;
 
     pub fn picture(w: u32, h: u32) -> PhotoSource {
@@ -911,7 +911,8 @@ mod view {
             );
             eprintln!("{line}");
             ci_note(&format!("{} {line}", gpu.info().name));
-            // The golden gates of the GPU plan (section 7), which a whole GPU render must meet.
+            // The first proposal of golden gates (`docs/17-gpu.md` section 12), which a whole GPU
+            // render must meet.
             assert!(
                 median <= 0.02 && p99 <= 0.05 && max <= 0.5,
                 "{name}: {median} {p99} {max}"
@@ -923,7 +924,7 @@ mod view {
             // The view stages alone come in far below them: twice the first values measured on
             // lavapipe (ΔE00 max 0.082, one code at worst, none over one code, mean 7.1e-5 codes).
             // The same on every adapter; a Metal column comes only with the Apple runners' numbers
-            // (the `[G-05]` notes above).
+            // (the `[view stages]` notes above).
             assert!(
                 max <= 0.17 && worst <= CODE_BOUND && over <= 1e-5 && mean < 1.5e-4,
                 "{name}: max {max}, {worst} codes, over {over}, mean {mean}"
@@ -1876,7 +1877,7 @@ mod faults {
 
     #[test]
     fn an_export_whose_route_goes_away_between_tiles_starts_again_on_the_cpu() {
-        // Never a mix of devices in one file (`docs/gpu-plan.md` 4.9): the route is decided by flags
+        // Never a mix of devices in one file (`docs/17-gpu.md` section 9): the route is decided by flags
         // that other requests can set while an export is under way, so the export itself must notice
         // that its first tiles ran on the device and the rest cannot, and render the whole photo on
         // the CPU. The event happens inside the export's own progress callback, that is between two

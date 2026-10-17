@@ -252,7 +252,7 @@ fn device_index(device: ComputeDevice) -> usize {
 ///
 /// Starts from the numbers measured on the development machine ([`RENDER_S_PER_MP_PRIOR`],
 /// [`ENCODE_S_PER_MP_PRIOR`]) for both: no speed of the graphics card has been measured yet (the
-/// Mac session of the GPU plan, M0-H4, does), so the estimate for the device path starts as the
+/// Mac checks of `docs/STATUS.md`, M0-H4, do), so the estimate for the device path starts as the
 /// CPU's. Every exported photo then replaces the numbers of the path it took: the first sample
 /// outright, later ones as a running mean that weighs the newest half. A photo that fell back to
 /// the CPU teaches the CPU numbers and leaves the device's alone.
@@ -1201,7 +1201,7 @@ fn export_photo_unguarded(
     let mut overlapped = false;
     if is_dng {
         // A DNG is two renders, the raw pixels and the preview, and one file is wholly device or
-        // wholly CPU (`docs/gpu-plan.md` 4.9). A device error that fires once is spent by the render
+        // wholly CPU (`docs/17-gpu.md` section 9). A device error that fires once is spent by the render
         // it hits, so the other render would go on running on the device: when the raw render fell
         // back to the CPU the preview is made on the CPU reference path, and when only the preview
         // fell back the raw pixels are made again on it (`FullImage::fell_back_to_cpu`).

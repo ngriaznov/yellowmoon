@@ -1,4 +1,4 @@
-// R8 Richardson-Lucy capture sharpening (G-06): the GPU port of
+// R8 Richardson-Lucy capture sharpening: the GPU port of
 // `ym_gpu::cpu::sharpen::richardson_lucy_whole` (`docs/05-raw-processing.md` section R8). Deconvolution
 // of the linear luma with a Gaussian PSF whose sigma grows with the squared radius from the frame
 // centre, `sigma(r) = rho (1 + r^2 / 4)`, damped against noise, `n = round(A / 30)` iterations (0 to 10):

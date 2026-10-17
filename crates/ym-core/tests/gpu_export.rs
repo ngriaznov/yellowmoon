@@ -1,4 +1,4 @@
-//! G-08: the export tail on the device (Mesa lavapipe in CI) through `export_photo`.
+//! The export tail on the device (Mesa lavapipe in CI) through `export_photo`.
 //!
 //! With [`GpuStages::EXPORT_TAIL`] a JPEG, TIFF or PNG export never makes the host frame of display-
 //! linear f32: the device samples, colours, resizes, sharpens and encodes the picture, and the
@@ -74,9 +74,9 @@ fn gpu() -> Option<Arc<Gpu>> {
 /// A line for the log and, on GitHub Actions, an annotation (the numbers the Apple runners measure).
 fn ci_note(text: &str) {
     let mut err = std::io::stderr();
-    let _ = writeln!(err, "[G-08] {text}");
+    let _ = writeln!(err, "[export tail] {text}");
     if std::env::var_os("GITHUB_ACTIONS").is_some() {
-        let _ = writeln!(err, "::notice title=G-08 export tail::{text}");
+        let _ = writeln!(err, "::notice title=Export tail::{text}");
     }
 }
 
@@ -330,7 +330,7 @@ fn apply_variant(shot: &Shot, pct: f64, straighten: bool) {
 
 /// What [`the_tail_writes_the_cpu_pixels_in_every_format`] allows of the sharpened and the JPEG
 /// exports, for one kind of adapter. Each value is twice the first measured one (nothing is loosened
-/// without Mykyta): software on Mesa lavapipe, hardware on the Apple runners (G-09, from the fifteen
+/// without Mykyta): software on Mesa lavapipe, hardware on the Apple runners (from the fifteen
 /// cases that run 38694506557 printed on macos-14 and macos-15, identical to the digit).
 struct TailBounds {
     /// Sharpened 16 bit: the share of samples more than 1 code off, more than 8 codes off, and the
@@ -397,7 +397,7 @@ fn the_tail_writes_the_cpu_pixels_in_every_format() {
     // CPU in f64, the tail on the device in f32, and the output-sharpening limiter decides on a rank
     // of luma values, so last-bit differences flip a few pixels (`docs/algorithms/04` section 10).
     // Metal (4c5939f, run 38694506557, macos-14 and macos-15 alike) printed all fifteen cases; the
-    // hardware column is twice the worst of them (G-09), see [`HARDWARE`]: the sharpened 8-bit
+    // hardware column is twice the worst of them, see [`HARDWARE`]: the sharpened 8-bit
     // exports 6 of 1.62 M codes over 1, at most 2, 0.99988 exact; the sharpened 16-bit exports
     // 413 / 157 over 1 / over 8 of 1.62 M (2.55e-4 / 9.7e-5), at most 551; the JPEGs at most 5 codes
     // and 2.1e-4 over 1, 0.99829 exact. The sharpening kernel alone matches lavapipe's bits there.
@@ -473,7 +473,7 @@ fn the_tail_writes_the_cpu_pixels_in_every_format() {
             let n = s.n as f64;
             let exact = s.exact as f64 / n;
             if sixteen && pct == 0.0 {
-                // The plan's bound for the 16-bit C13: within 8 codes. First measured: 1 code.
+                // The starting bound for the 16-bit C13: within 8 codes. First measured: 1 code.
                 check(s.max <= 2, format!("{name} {label}: max {}", s.max));
             } else if sixteen {
                 // Sharpening amplifies the f32 against f64 colour difference at the few pixels
@@ -504,7 +504,8 @@ fn the_tail_writes_the_cpu_pixels_in_every_format() {
                 );
             } else if pct > 0.0 {
                 // A rank flip moves a dithered 8-bit code by more than one (see above); on a software
-                // adapter none did (the C13 bound of the plan: within one code, 99 % exact).
+                // adapter none did (the C13 bound of `docs/17-gpu.md` section 12: within one code,
+                // 99 % exact).
                 check(
                     s.max <= bounds.sharp8_max
                         && s.over_one as f64
@@ -518,7 +519,8 @@ fn the_tail_writes_the_cpu_pixels_in_every_format() {
                 worst8 = worst8.max(s.max);
                 min_exact8 = min_exact8.min(exact);
             } else {
-                // The C13 bound of the plan: within one code, 99 % of the codes exact.
+                // The C13 bound of `docs/17-gpu.md` section 12: within one code, 99 % of the codes
+                // exact.
                 check(s.max <= 1, format!("{name} {label}: max {}", s.max));
                 check(exact >= 0.99, format!("{name} {label}: {exact} exact"));
                 worst8 = worst8.max(s.max);
@@ -667,13 +669,14 @@ fn device_and_cpu_exports_agree_within_the_golden_metric() {
                 "{name}, {label}: golden median {median:.4} p99 {p99:.4} max {max:.4}; codes max {} over one {}",
                 s.max, s.over_one
             ));
-            // The plan's gates (docs/gpu-plan.md section 7): 0.02 / 0.05 / 0.5.
-            // JPEG: the median and the 99th percentile are the plan's, the maximum is not. The DCT and
+            // The first proposal of gates (docs/17-gpu.md section 12): 0.02 / 0.05 / 0.5.
+            // JPEG: the median and the 99th percentile are those, the maximum is not. The DCT and
             // the quantiser turn a one-code difference of the 8-bit input (the PNG 8 of the same
             // variant is within 0.065 of the CPU's) into up to 5 codes in a block, and the ΔE of a
             // dark block moves with them: first measured maxima 1.51 (full size), 0.58 (long edge
-            // 500), 0.98 (straightened crop). The bound is twice the largest, and the plan's 0.5 is
-            // reported as not met for JPEG (`docs/09`, "As built (G-08)"; Questions for Mykyta).
+            // 500), 0.98 (straightened crop). The bound is twice the largest, and the proposed 0.5 is
+            // reported as not met for JPEG (`docs/09`, "As built (export tail on the device)";
+            // Questions for Mykyta).
             let max_gate = if label == "JPEG" { 3.0 } else { 0.5 };
             assert!(
                 median <= 0.02 && p99 <= 0.05 && max <= max_gate,
@@ -1013,7 +1016,7 @@ fn a_look_a_white_offset_and_a_curve_come_out_of_the_tail_as_they_do_of_the_cpu(
             s_tail.over_one, s_tail.max, s_cpu.over_one, s_cpu.max
         ));
         if sixteen {
-            // The plan's C13 bound for 16 bit is 8 codes; first measured on lavapipe is below it.
+            // The starting C13 bound for 16 bit is 8 codes; first measured on lavapipe is below it.
             assert!(s_tail.max <= 8, "{label}: max {}", s_tail.max);
             // The look is in the picture: Neutral is far from it.
             assert!(
@@ -1219,7 +1222,7 @@ fn jpeg_of_codes(codes: &[u32], width: usize, height: usize) -> Vec<u32> {
     decode_jpeg(&file).2
 }
 
-/// The JPEG gap to the CPU export (maximum ΔE 1.5 against the plan's 0.5, `docs/09`) is the quantiser
+/// The JPEG gap to the CPU export (maximum ΔE 1.5 against the proposed 0.5, `docs/09`) is the quantiser
 /// and nothing else: the JPEG of the device export is, pixel for pixel, the JPEG of the 8-bit codes
 /// of the device's PNG, and the CPU's the JPEG of the CPU's codes. So the picture the device makes
 /// differs from the CPU's by the one-code differences of the PNG 8 (maximum ΔE 0.06), and the DCT
@@ -1346,9 +1349,10 @@ fn rss_mib() -> Option<(u64, u64)> {
 /// 50 MP (8688 x 5792) through the export queue's code path: the tail never holds the picture on the
 /// host, a DNG still does. Records the ledger's peak (the reservation the export makes) and the
 /// process's resident set (what the operating system saw) for each. Ignored: it writes a 100 MB raw
-/// file, and renders 50 MP three times (minutes on lavapipe); wave 5 runs it on Metal.
+/// file, and renders 50 MP three times (minutes on lavapipe); the Metal CI runs it
+/// (`.github/workflows/mac-gpu.yml`).
 #[test]
-#[ignore = "50 MP: run with --release -- --ignored (wave 5 runs it on Metal)"]
+#[ignore = "50 MP: run with --release -- --ignored (the Metal CI runs it)"]
 fn fifty_megapixels_leave_no_host_frame_and_a_dng_keeps_its_own() {
     let Some(gpu) = gpu() else { return };
     let white = light("sony-ilce-7rm4", 4500.0);
@@ -1714,7 +1718,7 @@ mod faults {
         )
     }
 
-    /// Plan section 4.9: a shader of the tail that does not compile is a property of the machine,
+    /// `docs/17-gpu.md` section 9: a shader of the tail that does not compile is a property of the machine,
     /// not of the photo, so the tail is off for the rest of the process. The photo that met it was
     /// made again on the CPU (the fault test above); the next one must not try the shader again.
     #[test]

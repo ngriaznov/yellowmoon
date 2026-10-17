@@ -3,7 +3,7 @@
 //!
 //! * [`spike`]: the M0-07 chain, R1 normalise and R4 gains, bilinear demosaic, a fixed 3x3 matrix and
 //!   the sRGB transfer, tiled with halos, GPU against the CPU reference within 1e-3.
-//! * [`adaptive_ratio`]: the RA-09 adaptive ratio demosaic (R6's classical method: green with the
+//! * [`adaptive_ratio`]: the adaptive ratio demosaic (R6's classical method: green with the
 //!   noise-regularised ratio, green refinement with the optional CA weighting, chroma, shadow
 //!   sharpening and shadow colour matching), eleven pipelines of `adaptive_ratio.wgsl`, f32 planes in
 //!   every storage mode, GPU against `cpu::demosaic::adaptive_ratio`.
@@ -11,12 +11,12 @@
 //!   roll-off and toe, C8 LogC4, C9 grade, C10 CDL and tetrahedral LUT, C11 curves, C12 ACES 2 or an
 //!   ARRI display LUT, C13 encode and dither), mirroring `ym_color::display::ColorChain` stage by
 //!   stage.
-//! * [`diffraction`]: the RA-09 R8 diffraction deconvolution (nine passes of `diffraction.wgsl`,
+//! * [`diffraction`]: the R8 diffraction deconvolution (nine passes of `diffraction.wgsl`,
 //!   f32 planes in every storage mode, the planner stays on the CPU), GPU against
 //!   `cpu::sharpen::diffraction`.
-//! * [`log_guided`]: the RA-09 log-guided fast demosaic (all-float form, four dispatches), GPU
+//! * [`log_guided`]: the log-guided fast demosaic (all-float form, four dispatches), GPU
 //!   against `cpu::demosaic::log_guided::demosaic_float`.
-//! * [`output_sharpen`]: the RA-09 output sharpening stage (luma unsharp mask with three threshold
+//! * [`output_sharpen`]: the output sharpening stage (luma unsharp mask with three threshold
 //!   methods and the halo limiter), eight passes of `output_sharpen.wgsl`, f32 planes in every
 //!   storage mode, GPU against `cpu::output_sharpen`.
 //!
@@ -27,12 +27,11 @@
 //!
 //! # Kernels registered ahead of their implementation
 //!
-//! The device foundation (G-02) registers a [`KernelId`] for every kernel family the GPU plan
-//! (`docs/gpu-plan.md` section 11) still has to write, each with a stub WGSL module
-//! ([`KernelId::is_placeholder`]) and an empty Rust module below, so the ids, the warm-up sets
-//! ([`KernelSet`]) and the offline checks (`tests/shaders_naga.rs`) exist before the kernels do. The
-//! task that writes a kernel fills its module, replaces the stub in `shader.rs` with its own `.wgsl`
-//! and removes the id from [`KernelId::placeholder_owner`].
+//! The device foundation registers a [`KernelId`] for every kernel family still to be written, each
+//! with a stub WGSL module ([`KernelId::is_placeholder`]) and an empty Rust module below, so the
+//! ids, the warm-up sets ([`KernelSet`]) and the offline checks (`tests/shaders_naga.rs`) exist
+//! before the kernels do. The task that writes a kernel fills its module, replaces the stub in
+//! `shader.rs` with its own `.wgsl` and removes the id from [`KernelId::placeholder_owner`].
 
 pub mod adaptive_ratio;
 pub mod bilateral;

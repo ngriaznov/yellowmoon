@@ -1,9 +1,8 @@
-//! RA-03b: the lateral CA left after R9, with and without the CA-aware green refinement of the
-//! adaptive ratio demosaic (`docs/algorithms/TASKS.md` RA-03b, spec 01 section 3.6). Measurement
-//! only: nothing here changes a default.
+//! The lateral CA left after R9, with and without the CA-aware green refinement of the adaptive
+//! ratio demosaic (spec 01 sections 3.6 and 11). Measurement only: nothing here changes a default.
 //!
 //! ```text
-//! CARGO_INCREMENTAL=0 cargo run -p ym-gpu --example ra03b_ca_residual \
+//! CARGO_INCREMENTAL=0 cargo run -p ym-gpu --example ca_green_residual \
 //!     --config 'profile.dev.package.ym-gpu.opt-level=3' \
 //!     [-- [--size WxH] [--noise SIGMA] [--seed N] [--diagnose] [--out DIR]]
 //! ```
@@ -33,7 +32,7 @@
 //! R9, which corrects the full tag value afterwards, over-corrects, and the residual it leaves has
 //! the opposite sign.
 //!
-//! The output folder (default `testdata/ra03b`, git-ignored) gets `synthetic_seed<N>_noise<S>.md`.
+//! The output folder (default `testdata/ca_green_residual`, git-ignored) gets `synthetic_seed<N>_noise<S>.md`.
 
 use std::path::PathBuf;
 use std::time::Instant;
@@ -205,7 +204,7 @@ fn main() {
     let mut noise_sigma = 0.0f32;
     let mut seed = 2024u64;
     let mut diagnose = false;
-    let mut out_dir = PathBuf::from("testdata/ra03b");
+    let mut out_dir = PathBuf::from("testdata/ca_green_residual");
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut i = 0;
     while i < args.len() {
@@ -268,7 +267,7 @@ fn main() {
         report.push('\n');
     };
     say(format!(
-        "RA-03b synthetic CA scene (seed {seed}), {fw} x {fh}, noise sigma {noise_sigma}, window of the residual: {} px patches, red and blue against green along the radius after R9 (RMS, px).\n",
+        "CA-aware green refinement, synthetic CA scene (seed {seed}), {fw} x {fh}, noise sigma {noise_sigma}, window of the residual: {} px patches, red and blue against green along the radius after R9 (RMS, px).\n",
         opts.patch_px
     ));
     for (strength, distortion) in [

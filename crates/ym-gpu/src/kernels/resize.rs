@@ -1,6 +1,6 @@
-//! The Lanczos-3 resize of the export tail (`docs/gpu-plan.md` G-08, `docs/09-export.md` section
-//! Pixel pipeline per format): the planner that both the CPU resize (`ym_export::resize`) and the
-//! kernel read their taps from, and the kernel itself.
+//! The Lanczos-3 resize of the export tail (`docs/17-gpu.md` section 10, `docs/09-export.md`
+//! section Pixel pipeline per format): the planner that both the CPU resize (`ym_export::resize`)
+//! and the kernel read their taps from, and the kernel itself.
 //!
 //! # The planner
 //!
@@ -8,8 +8,8 @@
 //! the Lanczos window of half-width 3 scaled by the shrink factor (so a shrink also filters
 //! aliasing), taps outside the image dropped and the rest normalised to sum to 1. It is planned in
 //! `f64` and shared by the CPU resize and the kernel, so the two cannot disagree on a weight
-//! (`K7` of the plan: constants are written once, from the CPU planner). The kernel gets the taps
-//! rounded to `f32` ([`PreparedTaps`]).
+//! (`K7` of `docs/17-gpu.md`: constants are written once, from the CPU planner). The kernel gets
+//! the taps rounded to `f32` ([`PreparedTaps`]).
 //!
 //! # The kernel
 //!

@@ -1,15 +1,15 @@
-//! Review of G-07: the raw-front kernels on degenerate sizes. A kernel wrapper must refuse what it
-//! cannot take with an error and must not panic, and a frame of one photosite or one column must
+//! The raw-front kernels on degenerate sizes (added in review). A kernel wrapper must refuse what
+//! it cannot take with an error and must not panic, and a frame of one photosite or one column must
 //! give the CPU's values where the CPU stage takes it.
 //!
 //! Skipped, loudly, when no adapter opens, unless `YM_REQUIRE_GPU=1`.
 
 mod common;
-#[path = "g07/mod.rs"]
-mod g07;
+#[path = "front_common/mod.rs"]
+mod front_common;
 
 use common::{TestGpu, gpus};
-use g07::{RawScene, cpu_front, full_levels, on_device, uneven_levels, vignette_profile};
+use front_common::{RawScene, cpu_front, full_levels, on_device, uneven_levels, vignette_profile};
 use ym_gpu::cpu::{Cfa, Rect};
 use ym_gpu::device::{GpuError, StorageMode};
 use ym_gpu::kernels::highlights as hl;
@@ -157,8 +157,8 @@ fn the_wrappers_refuse_degenerate_input_with_an_error() {
         );
         // A sigma plane of a frame below 2 x 2.
         let tiny = DeviceRaw::upload(ctx, "e", 1, 5, s.cfa, &s.data[..5], None)?;
-        let model = g07::noise_model();
-        let sp = g07::ref_sigma_params(&s, GAINS, &model);
+        let model = front_common::noise_model();
+        let sp = front_common::ref_sigma_params(&s, GAINS, &model);
         note(
             "sigma of a column",
             sigma::sigma_plane(ctx, &tiny, &levels, &sp).map(|_| ()),

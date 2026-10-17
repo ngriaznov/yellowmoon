@@ -1,9 +1,9 @@
-//! G-07: R9, the lens resample (`shaders/lens.wgsl`, `kernels::lens`), against
+//! R9, the lens resample (`shaders/lens.wgsl`, `kernels::lens`), against
 //! `cpu::resample::resample_lens`: the distortion and CA tables of `LensGeometry`, the output
 //! positions kept small (the integer pixel index plus the fraction of the displacement, D4).
 //!
 //! What is asserted, and what was measured on lavapipe (Mesa 25.2, LLVM 20.1; first measured value,
-//! the bound is twice that, `docs/gpu-plan.md` X-16):
+//! the bound is twice that, `docs/17-gpu.md` section 12):
 //!
 //! | Case | Asserted | Measured |
 //! |---|---|---|
@@ -16,16 +16,16 @@
 //! `YM_REQUIRE_GPU=1`); the Metal runners run the same file (`mac-gpu.yml`).
 
 mod common;
-#[path = "g06/mod.rs"]
-mod g06;
-#[path = "g07/mod.rs"]
-mod g07;
+#[path = "denoise_common/mod.rs"]
+mod denoise_common;
+#[path = "front_common/mod.rs"]
+mod front_common;
 
 use common::exact::{assert_poison_neutral, assert_tiles_equal_whole};
 use common::limits::assert_max_binding_bytes;
 use common::{TestGpu, gpus};
-use g06::compare;
-use g07::on_device;
+use denoise_common::compare;
+use front_common::on_device;
 use ym_gpu::cpu::lens::{LensGeometry, LensSwitches, LensTags};
 use ym_gpu::cpu::resample::resample_lens;
 use ym_gpu::cpu::synth;
@@ -33,8 +33,8 @@ use ym_gpu::cpu::{Placement, Rect, RgbImage};
 use ym_gpu::device::StorageMode;
 use ym_gpu::kernels::lens as klens;
 
-/// Largest `|gpu - cpu|` of the resample (white 1.0) on frames of a few hundred pixels. The plan's
-/// number is 1e-5; the bound is twice the first measured value (2.9e-6).
+/// Largest `|gpu - cpu|` of the resample (white 1.0) on frames of a few hundred pixels. The
+/// starting threshold is 1e-5; the bound is twice the first measured value (2.9e-6).
 const BOUND: f32 = 6e-6;
 /// The same at the far corner of a 50 MP frame on synthetic content with hard edges (gradients of
 /// about one per pixel), where the displacement is about 160 pixels and an `f32` position holds it to
@@ -118,7 +118,7 @@ fn r9_matches_the_cpu() {
             }
         }
     }
-    eprintln!("[G-07] R9: worst {worst:e} ({worst_case})");
+    eprintln!("[raw front] R9: worst {worst:e} ({worst_case})");
     assert!(worst <= BOUND, "{worst:e} {worst_case}");
 }
 
@@ -150,7 +150,7 @@ fn r9_tiles_equal_the_whole_output() {
         });
         let want = resample_lens(&img, &geo, Rect::whole(cw, ch)).expect("cpu");
         let worst = compare(&whole, &want.data).max;
-        eprintln!("[G-07] R9 tiles of a 230 x 170 frame, {kind:?}: worst {worst:e}");
+        eprintln!("[raw front] R9 tiles of a 230 x 170 frame, {kind:?}: worst {worst:e}");
         assert!(worst <= BOUND, "{kind:?}: {worst:e}");
     }
 }
@@ -201,7 +201,7 @@ fn r9_at_the_far_corner_and_the_centre_of_a_50_mp_frame() {
         }
     }
     eprintln!(
-        "[G-07] R9 at 8658 x 5772: natural worst {worst:e}, hostile noise patch {worst_stress:e}"
+        "[raw front] R9 at 8658 x 5772: natural worst {worst:e}, hostile noise patch {worst_stress:e}"
     );
     assert!(worst <= CORNER_BOUND, "{worst:e}");
     assert!(worst_stress <= CORNER_BOUND, "{worst_stress:e}");

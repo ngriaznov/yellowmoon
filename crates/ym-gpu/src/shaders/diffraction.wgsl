@@ -1,4 +1,4 @@
-// R8 diffraction deconvolution (RA-09): the GPU port of `ym_gpu::cpu::sharpen::diffraction`
+// R8 diffraction deconvolution: the GPU port of `ym_gpu::cpu::sharpen::diffraction`
 // (docs/algorithms/03-diffraction-deconvolution.md, sections 3.4 to 3.12). The planner (PSF kernel,
 // sigma_G, the noise constants) stays on the CPU and arrives as taps and uniforms; every per-pixel
 // stage runs here.
@@ -171,7 +171,7 @@ fn blur_source(i: u32) -> f32 {
 // (x ^ z ^ z == x for every z, and compilers fold it), and fast-math folds a sum that starts at 0
 // (`0 + x` is x), so the first `opaque(acc + opaque(t))` of a running sum becomes the bare `t`, which
 // the next sum then fuses into a multiply-add (seen in clang's code for the adaptive ratio kernel;
-// docs/gpu-plan.md K8). An OR is idempotent: (x | z) | z == x | z, still one barrier.
+// docs/17-gpu.md K8). An OR is idempotent: (x | z) | z == x | z, still one barrier.
 //
 // Every value that a later operation could be rewritten against is hidden, the error terms included.
 // The first version hid only the rounded results and left the error sum `(a - ad) + (b - bb)` of

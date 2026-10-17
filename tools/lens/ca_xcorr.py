@@ -6,7 +6,7 @@ every block of a band-passed pair of planes is cross-correlated by FFT, the peak
 sub-pixel fit, and the 2-D displacement is projected on the unit vector away from the optical centre.
 Positive is outward; the tangential component is reported as a noise floor (a lateral CA has none).
 It exists so that a finding of `real_eval.py` can be checked by a method that cannot share its
-mistakes (RA-03c review).  Local evaluation only (real files, never committed).
+mistakes (asked for in review).  Local evaluation only (real files, never committed).
 
     python3 -I tools/lens/ca_xcorr.py selftest
     python3 -I tools/lens/ca_xcorr.py rgb DUMP.f32 META.json [--full] [--coarse]   # a `lens_eval_dump` image

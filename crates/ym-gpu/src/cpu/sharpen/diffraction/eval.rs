@@ -1,7 +1,7 @@
 //! Evaluation helpers for the R8 A/B of `docs/algorithms/03-diffraction-deconvolution.md` section
 //! 6.3: edge profile, MTF50, rise distance, overshoot and flat-patch noise, measured on a luma
-//! plane. Used by `examples/ra07_ab.rs` (synthetic scenes) and by the local real-file comparison
-//! in `ym-core` (`pipeline::raw` tests, ignored); nothing in the render path calls them.
+//! plane. Used by `examples/capture_sharpen_ab.rs` (synthetic scenes) and by the local real-file
+//! comparison in `ym-core` (`pipeline::raw` tests, ignored); nothing in the render path calls them.
 //!
 //! The edge measurement is the slanted-edge idea reduced to what an A/B needs: every pixel is
 //! projected on the edge normal, the edge spread function (ESF) is the mean luma in bins of 1/4

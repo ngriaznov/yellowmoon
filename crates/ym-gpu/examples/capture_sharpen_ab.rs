@@ -1,13 +1,13 @@
-//! A/B of the two R8 capture-sharpening methods on synthetic scenes (RA-07, spec
+//! A/B of the two R8 capture-sharpening methods on synthetic scenes (spec
 //! `docs/algorithms/03-diffraction-deconvolution.md` section 6.3): Richardson-Lucy with the Auto
 //! values against diffraction deconvolution, and, from f/11, the noise-gate variant of section 7.1
 //! item 1.
 //!
 //! ```text
-//! cargo run -p ym-gpu --example ra07_ab [-- <output-dir>]
+//! cargo run -p ym-gpu --example capture_sharpen_ab [-- <output-dir>]
 //! ```
 //!
-//! The output directory (default `testdata/ra07/synthetic`, git-ignored) gets `results.json`
+//! The output directory (default `testdata/capture_sharpen_ab/synthetic`, git-ignored) gets `results.json`
 //! (every number, plus the normalised edge profiles) and PNG strips of crops. The table is also
 //! printed.
 //!
@@ -297,7 +297,10 @@ fn write_strip(
 
 fn main() {
     let out_dir: PathBuf = std::env::args().nth(1).map_or_else(
-        || Path::new(env!("CARGO_MANIFEST_DIR")).join("../../testdata/ra07/synthetic"),
+        || {
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../testdata/capture_sharpen_ab/synthetic")
+        },
         PathBuf::from,
     );
     std::fs::create_dir_all(&out_dir).expect("output directory");
@@ -392,7 +395,7 @@ fn main() {
     }
     print!("{table}");
     let doc = json!({
-        "description": "RA-07 A/B: Richardson-Lucy Auto vs diffraction deconvolution on synthetic scenes (docs/algorithms/03 section 6.3)",
+        "description": "Capture-sharpening A/B: Richardson-Lucy Auto vs diffraction deconvolution on synthetic scenes (docs/algorithms/03 section 6.3)",
         "pitch_um": PITCH_UM,
         "g0": G0,
         "noise_models": isos().iter().map(|i| json!({"name": i.name, "a": i.model.a, "b": i.model.b, "sigma_row": i.model.sigma_row})).collect::<Vec<_>>(),

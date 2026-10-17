@@ -1,10 +1,10 @@
-//! G-07: the reduced fit-view path on the device: the sigma plane (`shaders/sigma.wgsl`), the k x k
+//! The reduced fit-view path on the device: the sigma plane (`shaders/sigma.wgsl`), the k x k
 //! binning (`shaders/bin.wgsl`) and the sigma it leaves, against the CPU functions of `ym-core`
-//! (copied into `tests/g07/mod.rs`; `crates/ym-core/tests/gpu_reduced.rs` runs the originals), and the
-//! whole group `GpuReduced` against `reduced_bayer`.
+//! (copied into `tests/front_common/mod.rs`; `crates/ym-core/tests/gpu_reduced.rs` runs the
+//! originals), and the whole group `GpuReduced` against `reduced_bayer`.
 //!
 //! What is asserted, and what was measured on lavapipe (Mesa 25.2, LLVM 20.1; first measured value,
-//! the bound is twice that, `docs/gpu-plan.md` X-16):
+//! the bound is twice that, `docs/17-gpu.md` section 12):
 //!
 //! | Case | Asserted | Measured |
 //! |---|---|---|
@@ -16,15 +16,15 @@
 //! | a poisoned device and a plain one | bit-identical, finite | 0 differing |
 
 mod common;
-#[path = "g06/mod.rs"]
-mod g06;
-#[path = "g07/mod.rs"]
-mod g07;
+#[path = "denoise_common/mod.rs"]
+mod denoise_common;
+#[path = "front_common/mod.rs"]
+mod front_common;
 
 use common::exact::assert_poison_neutral;
 use common::limits::assert_max_binding_bytes;
 use common::{TestGpu, gpus};
-use g07::{
+use front_common::{
     RawScene, compare_scaled, noise_model, on_device, ref_bin_mosaic, ref_binned_sigma,
     ref_gain_plane, ref_noise_factor, ref_sigma_params, ref_sigma_plane, uneven_levels,
     vignette_profile,
@@ -40,10 +40,11 @@ use ym_gpu::stream::PassList;
 
 /// Largest relative difference `|gpu - cpu| / max(cpu, 1e-6)` of the sigma plane (measured 0: the
 /// CPU's bits) and of the binned sigma (measured 2.3e-7, the root and the division of the device).
-/// The plan's number is 1e-5; the bound is twice the larger measured value.
+/// The starting threshold is 1e-5; the bound is twice the larger measured value.
 const SIGMA_BOUND: f32 = 5e-7;
-/// Largest `|gpu - cpu|` of the binning (white 1.0; measured 0: the CPU's bits). The plan's number is
-/// 1e-6, kept: it is the margin for a platform whose division and fused multiply-add differ.
+/// Largest `|gpu - cpu|` of the binning (white 1.0; measured 0: the CPU's bits). The starting
+/// threshold is 1e-6, kept: it is the margin for a platform whose division and fused multiply-add
+/// differ.
 const BIN_BOUND: f32 = 1e-6;
 /// The same with the vignetting gain (values up to 4 after the gains; measured 0: the gain is formed
 /// in double-floats, `front_vig.wgsl`). One ulp is allowed.
@@ -80,7 +81,7 @@ fn the_sigma_plane_matches_the_cpu() {
             let levels = if (n + w) % 2 == 0 {
                 uneven_levels()
             } else {
-                g07::full_levels()
+                front_common::full_levels()
             };
             let scene = RawScene::new(w, h, cfa, 3 + n as u64, &levels);
             let want = ref_sigma_plane(&scene, &levels, G0, &model);
@@ -97,7 +98,7 @@ fn the_sigma_plane_matches_the_cpu() {
             }
         }
     }
-    eprintln!("[G-07] sigma plane: worst relative difference {worst:e} ({worst_at})");
+    eprintln!("[fit view] sigma plane: worst relative difference {worst:e} ({worst_at})");
     assert!(worst <= SIGMA_BOUND, "{worst:e} {worst_at}");
 }
 
@@ -130,7 +131,7 @@ fn the_binning_matches_the_cpu_for_every_phase_and_slab_height() {
                 for slab in [0usize, 3, 1000] {
                     let (m2, t2) = (m.clone(), table.clone());
                     let got = on_device(dev, move |ctx| bin::bin_mosaic(ctx, &m2, k, None, slab));
-                    worst = worst.max(g06::compare(&got.data, &want.data).max);
+                    worst = worst.max(denoise_common::compare(&got.data, &want.data).max);
                     // With the profile: the CPU multiplies the binned planes by the gain plane.
                     let gains = ref_gain_plane(&profile, w, h, k, ow, oh);
                     let mut want_v = want.clone();
@@ -148,7 +149,7 @@ fn the_binning_matches_the_cpu_for_every_phase_and_slab_height() {
             }
         }
     }
-    eprintln!("[G-07] bin: worst {worst:e}; with the vignetting gain (scaled) {worst_vig:e}");
+    eprintln!("[fit view] bin: worst {worst:e}; with the vignetting gain (scaled) {worst_vig:e}");
     assert!(worst <= BIN_BOUND, "{worst:e}");
     assert!(worst_vig <= BIN_VIG_BOUND, "{worst_vig:e}");
 }
@@ -214,7 +215,7 @@ fn the_binned_sigma_matches_the_cpu() {
             }
         }
     }
-    eprintln!("[G-07] binned sigma: worst relative difference {worst:e}");
+    eprintln!("[fit view] binned sigma: worst relative difference {worst:e}");
     assert!(worst <= SIGMA_BOUND, "{worst:e}");
 }
 
@@ -265,10 +266,10 @@ fn the_bindings_fit_the_design_binding() {
 // ---------------------------------------------------------------------------------------------
 
 /// Largest `|gpu - cpu| / max(1, |cpu|)` of the whole reduced group against the CPU composition of
-/// the stages (R1, R4, R5, the binning, the vignetting gain, the sigma, the bilateral denoise and R9
-/// at `1/k`), on frames of a few hundred photosites. The plan's number for the group is the sum of the
-/// kernels' (about 1e-5 with the denoise); the bound is twice the first measured value (9.8e-7, R5,
-/// the vignetting gain, the denoise and R9 together).
+/// the stages (R1, R4, R5, the binning, the vignetting gain, the sigma, the bilateral denoise and
+/// R9 at `1/k`), on frames of a few hundred photosites. The starting threshold for the group is the
+/// sum of the kernels' (about 1e-5 with the denoise); the bound is twice the first measured value
+/// (9.8e-7, R5, the vignetting gain, the denoise and R9 together).
 const GROUP_BOUND: f32 = 2e-6;
 /// The pieces a case of the group switches on.
 #[derive(Clone, Copy, Debug)]
@@ -285,7 +286,7 @@ struct Case {
 /// it. Measured per case: 7.0e-7 without R9, 5.7e-6 for R9 alone at k = 8, 9.5e-6 for the whole group
 /// at k = 8 and 2.0e-5 at k = 4; the bound is twice the largest.
 const GROUP_BOUND_50MP: f32 = 4e-5;
-/// The same at `k = 2` (G-10): R9's `f32` displacement is in binned pixels, so it doubles each time
+/// The same at `k = 2`: R9's `f32` displacement is in binned pixels, so it doubles each time
 /// `k` halves (9.5e-6 at k = 8, 2.0e-5 at k = 4); first measured 4.47e-5 for the whole group; the
 /// bound is twice that.
 const GROUP_BOUND_50MP_K2: f32 = 9e-5;
@@ -318,9 +319,9 @@ fn cpu_reduced(
     c: Case,
     profile: &ym_gpu::cpu::vignette::VignetteProfile,
 ) -> ym_gpu::cpu::RgbImage {
-    let (mut m, mask) = g07::cpu_front(scene, levels, G0, None);
+    let (mut m, mask) = front_common::cpu_front(scene, levels, G0, None);
     if c.recovery {
-        g07::cpu_highlights(&mut m, &mask);
+        front_common::cpu_highlights(&mut m, &mask);
     }
     let mut img = ref_bin_mosaic(&m, c.k);
     let (ow, oh) = (img.width, img.height);
@@ -467,7 +468,7 @@ fn the_reduced_group_matches_the_cpu() {
             let levels = if (n + w) % 2 == 0 {
                 uneven_levels()
             } else {
-                g07::full_levels()
+                front_common::full_levels()
             };
             let scene = RawScene::new(w, h, cfa, 11 + n as u64, &levels);
             for c in &cases {
@@ -520,7 +521,7 @@ fn the_reduced_group_matches_the_cpu() {
     let lensed = cpu_reduced(&scene, &levels, Case { lens: true, ..base }, &profile);
     assert!(lensed.width < plain.width || lensed.data != plain.data);
     eprintln!(
-        "[G-07] reduced group: worst scaled difference {:e} ({})",
+        "[fit view] reduced group: worst scaled difference {:e} ({})",
         worst.0, worst.1
     );
     assert!(worst.0 <= GROUP_BOUND, "{:e} {}", worst.0, worst.1);
@@ -564,9 +565,10 @@ fn the_reduced_group_gives_the_same_bits_for_every_slab_height() {
     }
 }
 
-/// Review of G-10: the smallest frames the reduced path accepts (one block and a few more, odd sizes,
-/// every CFA phase), made in bands of one row (`k = 8`, slabs of 8 rows) and in one piece: the same
-/// bits, finite, and never a panic; a frame that holds no block is refused with an error.
+/// Review of the fit view in bands: the smallest frames the reduced path accepts (one block and a
+/// few more, odd sizes, every CFA phase), made in bands of one row (`k = 8`, slabs of 8 rows) and
+/// in one piece: the same bits, finite, and never a panic; a frame that holds no block is refused
+/// with an error.
 #[test]
 fn the_smallest_frames_give_the_same_bits_in_bands_of_one_row_and_in_one_piece() {
     let Some(dev) = f32_device() else { return };
@@ -649,11 +651,12 @@ fn the_smallest_frames_give_the_same_bits_in_bands_of_one_row_and_in_one_piece()
     );
 }
 
-/// Review of G-10 (D7 for the stepwise run). The steps of two groups, each taken as a job of its own
-/// the way `GpuRoute::reduced_resident` takes them (the run's state travels from job to job), with
-/// another group made whole between every two steps on the same poisoned device, give each group the
-/// bits of a run that nothing interrupted: nothing a step leaves on the device (the reducer's
-/// partials, the bands so far, the sigma) is read or recycled by anything else.
+/// Review of the fit view in bands (D7 for the stepwise run). The steps of two groups, each taken
+/// as a job of its own the way `GpuRoute::reduced_resident` takes them (the run's state travels
+/// from job to job), with another group made whole between every two steps on the same poisoned
+/// device, give each group the bits of a run that nothing interrupted: nothing a step leaves on the
+/// device (the reducer's partials, the bands so far, the sigma) is read or recycled by anything
+/// else.
 #[test]
 fn steps_interleaved_with_other_jobs_give_the_bits_of_an_uninterrupted_run() {
     use std::sync::Arc;
@@ -883,7 +886,7 @@ fn the_reduced_group_refuses_what_the_kernels_refuse() {
 /// far corner), the vignetting gain, the denoise and R9, against the CPU composition. The frame is a
 /// smooth gradient with hashed noise (the natural-scene generator would need 600 MB for its image).
 #[test]
-#[ignore = "50 MP: 100 MB of words and the CPU composition; run with --ignored (wave 5 runs it on Metal)"]
+#[ignore = "50 MP: 100 MB of words and the CPU composition; run with --ignored (mac-gpu.yml runs it on Metal)"]
 fn a_50_mp_frame_matches_the_cpu_in_default_slabs() {
     let Some(dev) = f32_device() else { return };
     let (w, h) = (8658usize, 5772usize);
@@ -937,7 +940,7 @@ fn a_50_mp_frame_matches_the_cpu_in_default_slabs() {
         assert_eq!((got.width, got.height), (want.width, want.height));
         let (e, at) = compare_scaled(&got.data, &want.data);
         eprintln!(
-            "[G-07] 50 MP reduced group {c:?}: worst scaled difference {e:e} (sample {at} of {})",
+            "[fit view] 50 MP reduced group {c:?}: worst scaled difference {e:e} (sample {at} of {})",
             got.data.len()
         );
         worst = worst.max(e);
@@ -945,15 +948,16 @@ fn a_50_mp_frame_matches_the_cpu_in_default_slabs() {
     assert!(worst <= GROUP_BOUND_50MP, "{worst:e}");
 }
 
-/// The fit view of a 50 MP photo on a retina display is the group at `k = 2`, whose picture is three
-/// planes of 4329 x 2886 `f32` (150 MB), more than the 128 MiB design binding. G-07 refused it
-/// cleanly (the CPU made the group, and the result depended on the device's binding limit); G-10 makes
-/// the group in bands of full-width rows (`RowBands`), so no buffer of the run, the binning, the
-/// denoise and R9 included, is above the binding: every stage of the group on, against the CPU
-/// composition, with the largest buffer of the result checked against the constant (the device here
-/// has the 128 MiB of lavapipe, so a binding that is too large would fail the run itself).
+/// The fit view of a 50 MP photo on a retina display is the group at `k = 2`, whose picture is
+/// three planes of 4329 x 2886 `f32` (150 MB), more than the 128 MiB design binding. The device
+/// first refused it cleanly (the CPU made the group, and the result depended on the device's
+/// binding limit); now it makes the group in bands of full-width rows (`RowBands`), so no buffer of
+/// the run, the binning, the denoise and R9 included, is above the binding: every stage of the
+/// group on, against the CPU composition, with the largest buffer of the result checked against the
+/// constant (the device here has the 128 MiB of lavapipe, so a binding that is too large would fail
+/// the run itself).
 #[test]
-#[ignore = "50 MP: 100 MB of words and the CPU composition; run with --ignored (wave 5 runs it on Metal)"]
+#[ignore = "50 MP: 100 MB of words and the CPU composition; run with --ignored (mac-gpu.yml runs it on Metal)"]
 fn a_50_mp_frame_at_k_2_fits_the_design_binding_or_is_refused_cleanly() {
     let Some(dev) = f32_device() else { return };
     let (w, h) = (8658usize, 5772usize);
@@ -1017,7 +1021,7 @@ fn a_50_mp_frame_at_k_2_fits_the_design_binding_or_is_refused_cleanly() {
         }
         for (stage, max, total, n) in &longest {
             eprintln!(
-                "[G-10] reduced step `{stage}`: {n} step(s), longest {max:.1} ms, together {total:.1} ms"
+                "[fit view] reduced step `{stage}`: {n} step(s), longest {max:.1} ms, together {total:.1} ms"
             );
         }
         let picture = run.finish()?;
@@ -1030,7 +1034,7 @@ fn a_50_mp_frame_at_k_2_fits_the_design_binding_or_is_refused_cleanly() {
     assert_eq!((got.width, got.height), (want.width, want.height));
     let (e, at) = compare_scaled(&got.data, &want.data);
     eprintln!(
-        "[G-10] 50 MP k = 2, every stage: {} x {} in {bands} bands (largest buffer {} MiB), {steps} steps, worst scaled difference {e:e} (sample {at}), {:.1} s",
+        "[fit view] 50 MP k = 2, every stage: {} x {} in {bands} bands (largest buffer {} MiB), {steps} steps, worst scaled difference {e:e} (sample {at}), {:.1} s",
         got.width,
         got.height,
         largest >> 20,
@@ -1051,40 +1055,44 @@ fn a_50_mp_frame_at_k_2_fits_the_design_binding_or_is_refused_cleanly() {
     );
 }
 
-/// Review of G-07: `LP_NUM_THREADS=1` against the default thread count of the software adapter,
-/// bit-identical, for the reduced group: the offsets reduction (a tree per workgroup and a fold, D2),
-/// the sigma plane, the binning, the binned sigma, the denoise and R9, in slabs of several heights.
+/// Review of the fit view: `LP_NUM_THREADS=1` against the default thread count of the software
+/// adapter, bit-identical, for the reduced group: the offsets reduction (a tree per workgroup and a
+/// fold, D2), the sigma plane, the binning, the binned sigma, the denoise and R9, in slabs of
+/// several heights.
 #[test]
 fn the_reduced_group_is_thread_count_independent() {
     let Some(dev) = f32_device() else { return };
-    g06::assert_thread_count_independent("the_reduced_group_is_thread_count_independent", || {
-        let profile = vignette_profile();
-        let levels = uneven_levels();
-        let mut h = g06::FNV_START;
-        for (n, (cfa, w, ht, k, slab)) in [
-            (Cfa::RGGB, 150usize, 118usize, 2usize, 24usize),
-            (Cfa::GBRG, 131, 77, 4, 16),
-            (Cfa::BGGR, 160, 96, 8, 1024),
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            let scene = RawScene::new(w, ht, cfa, 31 + n as u64, &levels);
-            let c = Case {
-                k,
-                recovery: true,
-                vignette: true,
-                denoise: true,
-                lens: true,
-            };
-            h = g06::fnv(h, &run_group(dev, &scene, levels, c, &profile, slab).data);
-        }
-        h
-    });
+    denoise_common::assert_thread_count_independent(
+        "the_reduced_group_is_thread_count_independent",
+        || {
+            let profile = vignette_profile();
+            let levels = uneven_levels();
+            let mut h = denoise_common::FNV_START;
+            for (n, (cfa, w, ht, k, slab)) in [
+                (Cfa::RGGB, 150usize, 118usize, 2usize, 24usize),
+                (Cfa::GBRG, 131, 77, 4, 16),
+                (Cfa::BGGR, 160, 96, 8, 1024),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let scene = RawScene::new(w, ht, cfa, 31 + n as u64, &levels);
+                let c = Case {
+                    k,
+                    recovery: true,
+                    vignette: true,
+                    denoise: true,
+                    lens: true,
+                };
+                h = denoise_common::fnv(h, &run_group(dev, &scene, levels, c, &profile, slab).data);
+            }
+            h
+        },
+    );
 }
 
-/// Review of G-07: a differential fuzz of the reduced group against the CPU composition: random
-/// frame sizes (odd and even), phases, factors, switches, levels and slab heights. The tile
+/// Review of the fit view: a differential fuzz of the reduced group against the CPU composition:
+/// random frame sizes (odd and even), phases, factors, switches, levels and slab heights. The tile
 /// independence of the slabs is the second oracle (a slab of any height gives the bits of one).
 #[test]
 fn a_fuzz_of_the_reduced_group_matches_the_cpu_and_every_slab_height() {
@@ -1105,7 +1113,7 @@ fn a_fuzz_of_the_reduced_group_matches_the_cpu_and_every_slab_height() {
         let levels = if pick(2) == 0 {
             uneven_levels()
         } else {
-            g07::full_levels()
+            front_common::full_levels()
         };
         let scene = RawScene::new(w, h, cfa, 900 + case, &levels);
         let c = Case {

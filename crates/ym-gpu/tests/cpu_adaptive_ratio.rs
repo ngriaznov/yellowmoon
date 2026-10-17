@@ -1,11 +1,11 @@
-//! The adaptive ratio demosaic (`Method::AdaptiveRatio`, RA-03,
+//! The adaptive ratio demosaic (`Method::AdaptiveRatio`,
 //! `docs/algorithms/01-adaptive-ratio-demosaic.md`).
 //!
 //! * `vectors_match_within_their_tolerance`: every vector of
 //!   `tests/cpu_data/adaptive_ratio_demosaic/` (made by the C++ oracle, never hand-edited) through
 //!   the whole-piece routine and through the banded one, within the vector's tolerance (1e-5), and
 //!   `derived_values_match_the_vectors` (1e-9 relative). The CA vector `ca_weighting` is the
-//!   CA path's (RA-03b) and is checked in `cpu_adaptive_ratio_ca.rs`.
+//!   CA path's and is checked in `cpu_adaptive_ratio_ca.rs`.
 //! * The property tests of spec section 6.2: flat field, balanced entry, CFA-phase equivariance,
 //!   tiling parity, receptive field, scale behaviour, robustness, negative residual, determinism
 //!   across thread counts.

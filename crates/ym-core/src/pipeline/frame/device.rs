@@ -1,4 +1,4 @@
-//! The view stages on the device (`docs/gpu-plan.md` G-05): the geometry sampler, the colour chain
+//! The view stages on the device (`docs/17-gpu.md` section 11): the geometry sampler, the colour chain
 //! C1 to C12, output sharpening and C13 of a viewport frame, a thumbnail or a look tile, as device jobs.
 //!
 //! # What a job is
@@ -20,7 +20,7 @@
 //! # Which stage runs where
 //!
 //! [`ViewStages`] says what the device runs for a request, from the [`GpuStages`] the renderer was
-//! given. A member that is off keeps the host boundary it had before the wave: the sampler off means
+//! given. A member that is off keeps a host boundary at its edges: the sampler off means
 //! the CPU samples and the device gets the sampled pixels uploaded; the colour pass off means the CPU
 //! colours. In a view the output sharpening and C13 are **one device pass** (the fused tail of
 //! `ym_gpu::kernels::output_sharpen`, bit for bit the chained pair): the device runs them when both
@@ -32,7 +32,7 @@
 //! A device error in any job is the caller's to answer: the whole request is made on the CPU, with a
 //! note (never a frame of both). A buffer that does not fit ([`GpuError::OutOfBudget`] and
 //! [`GpuError::BufferTooLarge`]) is tried once more after the pool and the persistent tables were let
-//! go ([`ViewRoute::run`]; `docs/gpu-plan.md` 4.9).
+//! go ([`ViewRoute::run`]; `docs/17-gpu.md` section 9).
 //!
 //! # No rayon on the device thread
 //!
@@ -112,7 +112,7 @@ pub(super) struct ViewRoute {
     pub band_bytes: u64,
     /// The largest uploaded camera RGB of one device pass: the same constant as the frame's (a
     /// renderer constant, not the device's limit, so that the cut does not depend on the machine:
-    /// `docs/gpu-plan.md` N-1).
+    /// `docs/17-gpu.md` section 4).
     pub source_bytes: u64,
 }
 

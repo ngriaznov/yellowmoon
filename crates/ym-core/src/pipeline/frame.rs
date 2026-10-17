@@ -36,7 +36,7 @@
 //! Because geometry is applied *before* the pointwise colour chain, a crop or a rotation never
 //! re-runs a raw or colour group, and the colour chain only touches the pixels that are shown.
 //!
-//! # On the device (G-05)
+//! # On the device
 //!
 //! With a GPU and the view stages on (`RenderOptions::gpu_stages`), steps 3 to 5 and the output
 //! sharpening are one device job per frame: sampler, C1 to C12, stage and C13 fused, one readback
@@ -211,7 +211,7 @@ pub struct FullImage {
     /// The device failed during this render and the CPU made the picture again (the note in
     /// [`RenderReport::notes`] says why): the picture is the CPU reference's. The typed signal for an
     /// export that is more than one render (a DNG is its raw pixels and its preview), so that the
-    /// file is wholly device or wholly CPU (`docs/gpu-plan.md` section 4.9): the render that follows
+    /// file is wholly device or wholly CPU (`docs/17-gpu.md` section 9): the render that follows
     /// a fallen-back one runs on the CPU too, and one that fell back after the first went on the
     /// device is made again on the CPU.
     pub fell_back_to_cpu: bool,
@@ -228,7 +228,7 @@ pub(crate) use ym_gpu::cpu::sampler::Sampled;
 /// that fell outside the photo.
 ///
 /// The arithmetic is `ym-gpu`'s CPU port of the device sampler ([`ym_gpu::cpu::sampler`], the
-/// reference of the kernel and the one implementation since G-05): a [`Grid`] only hands it the
+/// reference of the kernel and the one implementation): a [`Grid`] only hands it the
 /// numbers of its position chain ([`Grid::sampler_grid`]). The port is a verbatim move of what this
 /// function was, and `tests::the_sampler_of_ym_gpu_is_the_function_this_was` keeps the old code and
 /// requires the same bits.
@@ -2940,7 +2940,7 @@ mod sharpening_tests {
     }
 }
 
-/// The sampler as it was before G-05 moved it into `ym-gpu` (`ym_gpu::cpu::sampler`), kept verbatim as
+/// The sampler as it was before it moved into `ym-gpu` (`ym_gpu::cpu::sampler`), kept verbatim as
 /// the reference of the bit-equality test below.
 #[cfg(test)]
 mod reference_sampler {

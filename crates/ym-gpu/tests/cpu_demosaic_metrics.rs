@@ -1,15 +1,15 @@
-//! Unit tests of the RA-05 gate's measurement code (`tests/common/ra05_metrics.rs`): the zipper and
-//! false-colour metrics, the sRGB decode, the noise-model scaling. The gate itself (the tables of
-//! `docs/05` R6) is `cargo run -p ym-gpu --example ra05_gate`.
+//! Unit tests of the demosaic gate's measurement code (`tests/common/demosaic_metrics.rs`): the
+//! zipper and false-colour metrics, the sRGB decode, the noise-model scaling. The gate itself (the
+//! tables of `docs/05` R6) is `cargo run -p ym-gpu --example demosaic_gate`.
 //!
 //! The module's own tests run here (it is included, not a dependency). On top of them this file
 //! checks that the metrics rank the real methods the way the literature says: bilinear zippers
 //! and shows false colour at saturated edges, the directional methods much less.
 
-#[path = "common/ra05_metrics.rs"]
-mod ra05_metrics;
+#[path = "common/demosaic_metrics.rs"]
+mod demosaic_metrics;
 
-use ra05_metrics::{
+use demosaic_metrics::{
     BORDER_PX, LabImage, PRIMARY, SENSITIVITY, artifacts, artifacts_row, demosaic_sets_root,
     linearize, load_set, mean_finite, psnr_row, synthetic_set,
 };
@@ -83,7 +83,7 @@ fn the_psnr_row_has_one_value_per_column_and_scale_does_not_break_it() {
         .into_iter()
         .next()
         .expect("a synthetic image");
-    for scale in ra05_metrics::SCALES {
+    for scale in demosaic_metrics::SCALES {
         let row = psnr_row(&truth, scale, &PRIMARY);
         assert_eq!(row.len(), PRIMARY.len());
         assert!(
@@ -132,9 +132,9 @@ fn images_without_an_interior_give_no_rate_and_no_panic() {
 
 /// The measurement protocol against the numbers in `docs/05` R6, on Kodak when it is there
 /// (`tools/fetch/demosaic-sets.sh`): the gamma-encoded values must reproduce the M1-12 table
-/// (bilinear 29.82, Menon 38.88, LMMSE 39.16) and the sRGB-decoded values the RA-05 table at scale 1
-/// (Menon 36.14, LMMSE 36.41, adaptive ratio 36.38, log-guided 32.53). A change of the decode, the
-/// border, the clamp or the noise model of the gate shows up here. Run with
+/// (bilinear 29.82, Menon 38.88, LMMSE 39.16) and the sRGB-decoded values the demosaic gate's
+/// table at scale 1 (Menon 36.14, LMMSE 36.41, adaptive ratio 36.38, log-guided 32.53). A change of
+/// the decode, the border, the clamp or the noise model of the gate shows up here. Run with
 /// `cargo test -p ym-gpu --test cpu_demosaic_metrics --release -- --ignored --nocapture`.
 #[test]
 #[ignore = "needs testdata/demosaic/kodak (tools/fetch/demosaic-sets.sh)"]

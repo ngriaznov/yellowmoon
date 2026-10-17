@@ -15,7 +15,7 @@
 //!
 //! `YM_BIN=$PWD/target/debug/ym cargo test -p yellowmoon-app --test app_cli_parity`
 //!
-//! The R6 demosaic method forced (RA-04, `docs/algorithms/01-adaptive-ratio-demosaic.md` section 10). The default is the
+//! The R6 demosaic method forced (`docs/algorithms/01-adaptive-ratio-demosaic.md` section 10). The default is the
 //! adaptive ratio demosaic, which the first test runs on both sides. The second test keeps the method that is no longer the
 //! default honest: it gives the app's renderer `RenderOptions::demosaic = menon` and starts `ym` with
 //! `YM_FORCE_DEMOSAIC=menon`, and it checks that forcing the adaptive ratio demosaic by name gives the default's bytes while
@@ -24,7 +24,7 @@
 //! variable: the test notices that, says so and passes, unless `YM_REQUIRE_FORCE_DEMOSAIC` is set, which the CI job sets once
 //! it builds the binary that way).
 //!
-//! Two legs for the graphics policy (`docs/gpu-plan.md` section 7, G-09). The CPU leg starts `ym` with `YELLOWMOON_GPU=off`
+//! Two legs for the graphics policy (`docs/17-gpu.md` section 12). The CPU leg starts `ym` with `YELLOWMOON_GPU=off`
 //! (the app's core here has no device): without it `ym` would run `auto`, which on a Mac with Metal puts every stage on the
 //! device, and the comparison would be the device against the CPU. The GPU leg opens the device the way the application
 //! does (`open_gpu(On)`, attached to the core) and starts `ym` with `YELLOWMOON_GPU=on`: the same eleven cases, byte for

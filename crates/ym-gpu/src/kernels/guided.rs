@@ -1,4 +1,4 @@
-//! R7 colour noise reduction on the GPU (G-06): the guided filter of the two chroma planes.
+//! R7 colour noise reduction on the GPU: the guided filter of the two chroma planes.
 //!
 //! The WGSL port (`shaders/guided.wgsl`) of [`crate::cpu::detail::chroma_guided_whole`], specified in
 //! `docs/05` section R7: a guided filter (He et al.) of `R - Y` and `B - Y`, guided by `Y`, with the
@@ -83,7 +83,7 @@ pub fn radius_px(color: f32) -> usize {
 /// The largest storage binding (bytes) a guided stage needs for an input rectangle of `rect` pixels:
 /// the six-plane scratch (the input's three planes, the four-plane scratch and the output are
 /// smaller). A test checks it against the 128 MiB design binding at
-/// [`crate::chain::MAX_PHYS_AREA`] (`docs/gpu-plan.md` K4).
+/// [`crate::chain::MAX_PHYS_AREA`] (`docs/17-gpu.md` K4).
 #[must_use]
 pub fn max_binding_bytes(rect: Rect) -> u64 {
     (6 * rect.w * rect.h) as u64 * 4

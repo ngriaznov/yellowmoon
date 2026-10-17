@@ -1,4 +1,4 @@
-//! RA-03b: the CA-aware green refinement of the adaptive ratio demosaic
+//! The CA-aware green refinement of the adaptive ratio demosaic
 //! (`docs/algorithms/01-adaptive-ratio-demosaic.md` section 3.6, `INTEGRATION.md` section 6).
 //!
 //! * **The vector.** `ca_weighting` (a 32 x 32 tile at frame (4800, 3330) of a 6048 x 4024 frame)

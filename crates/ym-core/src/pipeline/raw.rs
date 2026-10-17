@@ -224,7 +224,7 @@ pub struct RawParams {
 
 /// Which R8 capture-sharpening method a photo is given (`docs/algorithms/03-diffraction-deconvolution.md`
 /// section 1.2). An internal switch with no settings field and no UI: Richardson-Lucy is the
-/// default until the owner decides (RA-H2).
+/// default until Mykyta's choice of the R8 default (`docs/STATUS.md`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CaptureMethod {
     /// Richardson-Lucy with a Gaussian PSF.
@@ -236,7 +236,7 @@ pub enum CaptureMethod {
 }
 
 /// The method every photo gets. Changing it changes every render, so it moves only with the
-/// owner's decision (RA-H2).
+/// owner's decision (Mykyta's choice of the R8 default, `docs/STATUS.md`).
 pub const DEFAULT_CAPTURE_METHOD: CaptureMethod = CaptureMethod::RichardsonLucy;
 
 /// The 35 mm film diagonal in micrometres, `sqrt(36^2 + 24^2) mm` as the spec writes it
@@ -1629,7 +1629,7 @@ impl FullChain {
     }
 
     /// [`run_tile_gpu`](Self::run_tile_gpu) for the range [`FRONT_RANGE`] with the tile left on the
-    /// device (`GpuChain::run_tile_device`, `docs/gpu-plan.md` G-10): the same job and the same bits,
+    /// device (`GpuChain::run_tile_device`, `docs/17-gpu.md` section 3): the same job and the same bits,
     /// no readback, so that the sampler and the colour chain of an export read the tile where it is.
     ///
     /// # Errors
@@ -1669,13 +1669,13 @@ impl FullChain {
 }
 
 /// The stages the renderer runs on the device for the raw group of a full-resolution photo: the adaptive
-/// ratio demosaic, the bilateral denoise, R7 and capture sharpening (`StageRange::DEMOSAIC_TO_SHARPEN`,
-/// G-06). A route of this range never makes the full-resolution sigma map ([`FullChain::sigma_map_built`]).
+/// ratio demosaic, the bilateral denoise, R7 and capture sharpening (`StageRange::DEMOSAIC_TO_SHARPEN`).
+/// A route of this range never makes the full-resolution sigma map ([`FullChain::sigma_map_built`]).
 pub const DEVICE_RANGE: StageRange = StageRange::DEMOSAIC_TO_SHARPEN;
 
 /// The stages the renderer runs on the device when both [`GpuStages::RAW_CHAIN`] and
 /// [`GpuStages::RAW_FRONT`] are on: the whole classical chain R1 to R9 from the raw words that sit on
-/// the device (`StageRange::RAW_TO_LENS`, G-07). With the front off the range is [`DEVICE_RANGE`].
+/// the device (`StageRange::RAW_TO_LENS`). With the front off the range is [`DEVICE_RANGE`].
 ///
 /// [`GpuStages::RAW_CHAIN`]: crate::app::gpu::GpuStages::RAW_CHAIN
 /// [`GpuStages::RAW_FRONT`]: crate::app::gpu::GpuStages::RAW_FRONT
@@ -1687,7 +1687,7 @@ const DEVICE_POLL: std::time::Duration = std::time::Duration::from_millis(5);
 /// How the device work of a render's tiles reaches the device: the device, the range of stages it
 /// runs, and what every job of the render carries. One route per render, so all of its jobs have one
 /// priority and one cancel token (cancelling the render, or navigating away from its photo, reaches
-/// the queued ones; `docs/gpu-plan.md` 4.7).
+/// the queued ones; `docs/17-gpu.md` section 7).
 #[derive(Clone)]
 pub struct GpuRoute {
     /// The device.
@@ -1776,7 +1776,7 @@ impl GpuRoute {
     /// ([`GpuReduced`]), made as a series of jobs of the route: one per slab of the offsets sweep, per
     /// band of the binning, of the denoise and of R9, and one for the sigma planes. Each is a few
     /// megapixels of work at the most, so that a viewport frame queued behind them waits for one of
-    /// them and not for the whole group (`docs/gpu-plan.md` K5; at `k = 2` of a 50 MP photo the whole
+    /// them and not for the whole group (`docs/17-gpu.md` K5; at `k = 2` of a 50 MP photo the whole
     /// group was 26 steps and 12 seconds on lavapipe, the longest step 3.6 s). The run's state (the
     /// bands so far, the reducer) travels from one job to the next; a cancelled render drops it, and
     /// the buffers go back to the pool.
@@ -2284,7 +2284,7 @@ mod tests {
         }
     }
     // -----------------------------------------------------------------------------------------
-    // R8 diffraction deconvolution: pixel pitch, gate, method choice (RA-07)
+    // R8 diffraction deconvolution: pixel pitch, gate, method choice
     // -----------------------------------------------------------------------------------------
 
     use ym_profiles::registry::{ProfileStore, SensorGeometry};
@@ -2625,7 +2625,7 @@ mod tests {
         assert!(d.max_abs_diff(&tiled) <= 1e-4, "{}", d.max_abs_diff(&tiled));
     }
 
-    /// RA-04: a full render with the adaptive ratio demosaic forced (what
+    /// A full render with the adaptive ratio demosaic forced (what
     /// `RenderOptions::demosaic` does) is the whole-frame `demosaic_with` call.
     ///
     /// How it is compared: every stage but R1, R4 and R6 is off (no denoise, no R7 control, no R8,
@@ -2952,7 +2952,7 @@ mod tests {
     }
 
     // ------------------------------------------------------------------------------------------
-    // G-06: the lazy full-resolution sigma map and the device's expansion of the half plane
+    // The lazy full-resolution sigma map and the device's expansion of the half plane
     // ------------------------------------------------------------------------------------------
 
     /// A frame with a step edge, the noise reduction on (so that the denoise, R7 and R8 all run), a
@@ -3335,13 +3335,14 @@ mod tests {
             );
             let d = got.max_abs_diff(&want);
             eprintln!(
-                "[G-07] reduced group k = {k}: {} x {}, device against reduced_bayer {d:e}",
+                "[raw front] reduced group k = {k}: {} x {}, device against reduced_bayer {d:e}",
                 got.width, got.height
             );
             worst = worst.max(d);
         }
         // R5, the gain, the denoise and R9 together. First measured 9.5e-7 (k = 2; 8.3e-7 at k = 4,
-        // 6.0e-7 at k = 8); twice that, the same on every adapter (the plan's number is 1e-5).
+        // 6.0e-7 at k = 8); twice that, the same on every adapter (`docs/17-gpu.md` section 12
+        // starts at 1e-5).
         assert!(worst <= 1.9e-6, "{worst:e}");
         // The parameters the device refuses give no group: an odd factor, one beyond the kernels'.
         assert!(
@@ -3521,7 +3522,7 @@ mod tests {
 }
 
 #[cfg(test)]
-mod ra03b_eval;
+mod ca_green_eval;
 
 #[cfg(test)]
-mod ra07_eval;
+mod capture_sharpen_eval;

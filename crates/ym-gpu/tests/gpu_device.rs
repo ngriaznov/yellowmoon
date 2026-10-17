@@ -1,6 +1,6 @@
 //! Device ownership, the pool's byte accounting and the priority queue on a real device; the
-//! foundation of the GPU wave (`docs/gpu-plan.md` G-02): f32 storage by default, poison mode, the
-//! lost and tainted device, shared cancel tokens, kernel sets and the burn-compatible request.
+//! device foundation of `docs/17-gpu.md`: f32 storage by default, poison mode, the lost and tainted
+//! device, shared cancel tokens, kernel sets and the burn-compatible request.
 //!
 //! The queue's ordering, cancellation and shutdown rules are unit-tested without a GPU in
 //! `src/queue.rs`; here the same rules are checked with the real context on the device thread, and
@@ -442,7 +442,7 @@ fn every_available_storage_mode_opens_a_device() {
 }
 
 // ---------------------------------------------------------------------------------------------
-// G-02: poison mode
+// Poison mode
 // ---------------------------------------------------------------------------------------------
 
 fn words(bytes: &[u8]) -> Vec<u32> {
@@ -525,7 +525,7 @@ fn without_poison_a_recycled_buffer_keeps_what_the_last_job_left() {
 }
 
 // ---------------------------------------------------------------------------------------------
-// G-02: lost and tainted devices
+// Lost and tainted devices
 // ---------------------------------------------------------------------------------------------
 
 #[test]
@@ -590,7 +590,7 @@ fn a_device_destroyed_in_the_middle_of_a_job_fails_its_transfers_and_never_hangs
                 let up = ym_gpu::stream::upload_bytes(ctx, &buf, 0, &[1u8; 64]);
                 let down = read_bytes(ctx, &buf, 0, 64).map(|_| ());
                 let mut passes = PassList::new(ctx, "doomed");
-                // A placeholder kernel (one storage binding), whichever one the plan has left.
+                // A placeholder kernel (one storage binding), whichever one is left.
                 let any = KernelId::ALL
                     .into_iter()
                     .find(|k| k.is_placeholder())
@@ -771,7 +771,7 @@ fn poison_follows_the_environment_variable() {
 }
 
 // ---------------------------------------------------------------------------------------------
-// G-02: shared cancel tokens
+// Shared cancel tokens
 // ---------------------------------------------------------------------------------------------
 
 /// Occupies the device thread until the returned sender is used.
@@ -897,7 +897,7 @@ fn run_with_token_reports_cancelled_before_the_job_starts() {
 }
 
 // ---------------------------------------------------------------------------------------------
-// G-02: kernel sets, shared device handles, the request
+// Kernel sets, shared device handles, the request
 // ---------------------------------------------------------------------------------------------
 
 /// The number the `Debug` output of the kernels reports as compiled.
@@ -931,7 +931,8 @@ fn warm_up_sets_compile_their_real_kernels_and_a_placeholder_compiles_on_request
         );
         ctx.warm_up()?;
         assert_eq!(compiled(ctx), real(KernelSet::All));
-        // The placeholders are valid pipelines: the plan's later tasks drop into ids that compile.
+        // The placeholders are valid pipelines: a kernel that replaces one drops into an id that
+        // compiles.
         for id in KernelId::ALL.into_iter().filter(|k| k.is_placeholder()) {
             ctx.kernels().pipeline(ctx, id)?;
         }
@@ -1008,15 +1009,15 @@ fn the_ml_feature_requests_what_cubecl_requests() {
 }
 
 // ---------------------------------------------------------------------------------------------
-// G-02 review: the existing kernels read nothing they did not write, NaN-proof
+// Review: the existing kernels read nothing they did not write, NaN-proof
 // ---------------------------------------------------------------------------------------------
 
-/// Acceptance (2) of G-02 says the existing kernel tests pass under poison, but several of their
-/// error measures skip a NaN (`fold(0.0, f64::max)`, `ratio > worst`, `f32::max`), so a kernel that
-/// read a poisoned buffer could still pass them. This module is the NaN-proof version: every existing
-/// host wrapper runs on the poisoned test device and on a plain one (fresh buffers are zeros there),
-/// whole frame and tiled (so recycled buffers are exercised), and the two must give the same bits and
-/// no NaN or infinity anywhere. A stale read cannot satisfy that.
+/// The existing kernel tests must pass under poison, but several of their error measures skip a NaN
+/// (`fold(0.0, f64::max)`, `ratio > worst`, `f32::max`), so a kernel that read a poisoned buffer
+/// could still pass them. This module is the NaN-proof version: every existing host wrapper runs on
+/// the poisoned test device and on a plain one (fresh buffers are zeros there), whole frame and
+/// tiled (so recycled buffers are exercised), and the two must give the same bits and no NaN or
+/// infinity anywhere. A stale read cannot satisfy that.
 mod existing_kernels {
     use super::*;
 
@@ -1372,7 +1373,7 @@ mod existing_kernels {
 }
 
 // ---------------------------------------------------------------------------------------------
-// G-02: fault injection (feature `fault-injection`)
+// Fault injection (feature `fault-injection`)
 // ---------------------------------------------------------------------------------------------
 
 #[cfg(feature = "fault-injection")]

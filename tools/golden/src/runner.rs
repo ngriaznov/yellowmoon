@@ -485,14 +485,14 @@ pub enum Reference {
     Render,
 }
 
-/// What a picture made on the device may differ from the CPU's by (`docs/gpu-plan.md` section 7): the ΔE00 statistics
+/// What a picture made on the device may differ from the CPU's by (`docs/17-gpu.md` section 12): the ΔE00 statistics
 /// of the 1/4 downsample, and the share of the samples of the full-resolution picture that differ by more than
 /// [`codes_threshold`](Self::codes_threshold) codes of 16 bits.
 ///
-/// Two sets exist. [`PLAN`](Self::PLAN) is what the plan proposed before any GPU picture had been measured.
-/// [`CALIBRATED`](Self::CALIBRATED) is the default: the plan says the gates are "calibrated on the first lavapipe run",
+/// Two sets exist. [`PLAN`](Self::PLAN) is the first proposal, made before any GPU picture had been measured.
+/// [`CALIBRATED`](Self::CALIBRATED) is the default: that proposal says the gates are "calibrated on the first lavapipe run",
 /// and the project's rule for such a number is twice the first measured value (`tools/golden/README.md`, "GPU mode",
-/// has the measurements and what they mean). It is tighter than the plan for the median and the 99th percentile and
+/// has the measurements and what they mean). It is tighter than the proposal for the median and the 99th percentile and
 /// looser for the maximum and the count, which a handful of limiter flips on the charts' hard edges decide.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
 pub struct GpuGate {
@@ -509,7 +509,7 @@ pub struct GpuGate {
 }
 
 impl GpuGate {
-    /// The gates the plan proposed (median 0.02, p99 0.05, max 0.5; fewer than 1e-3 of the samples more than 8 codes
+    /// The first proposed gates (median 0.02, p99 0.05, max 0.5; fewer than 1e-3 of the samples more than 8 codes
     /// off). On Mesa lavapipe the default synthetic set gives a maximum of 1.86 (one file) and a count of 3.7e-3, so
     /// this set fails 50 of 61 files; it stays for the day Mykyta wants to hold the line there.
     pub const PLAN: Self = Self {
@@ -521,7 +521,7 @@ impl GpuGate {
     };
 
     /// Twice the worst of the first run on Mesa lavapipe over the 61 files of the default synthetic set (2026-10-15,
-    /// commit 4c5939f plus G-09): median 1.003e-4, p99 1.066e-2, maximum 1.855, share 3.66e-3.
+    /// commit 4c5939f plus the GPU checks): median 1.003e-4, p99 1.066e-2, maximum 1.855, share 3.66e-3.
     pub const CALIBRATED: Self = Self {
         median: 2.1e-4,
         p99: 2.2e-2,

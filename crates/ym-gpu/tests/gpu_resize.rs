@@ -1,4 +1,4 @@
-//! G-08: the Lanczos-3 resize of the export tail (`kernels::resize`, `shaders/resize.wgsl`) against
+//! The Lanczos-3 resize of the export tail (`kernels::resize`, `shaders/resize.wgsl`) against
 //! the CPU resize (`ym_export::resize::resize_lanczos3`, whose taps are `kernels::resize::Taps`).
 //!
 //! The CPU reference here is that function on planar images: the same taps, `f64` sums, the
@@ -8,18 +8,18 @@
 //!   scenes, shrinks (also by a large factor), enlargements, odd sizes and the identity size.
 //! * **A flat field is exact** (bit for bit), for any value and any size, by the difference form.
 //! * **Step overshoot** under 10 % of the step, like the CPU resize.
-//! * **Rows are independent** (D5 of the plan): the horizontal pass over bands of rows and the
-//!   vertical pass over bands of output rows, each reading a gathered window with its own first row,
-//!   give the whole image's bits.
+//! * **Rows are independent** (D5 of `docs/17-gpu.md`): the horizontal pass over bands of rows and
+//!   the vertical pass over bands of output rows, each reading a gathered window with its own first
+//!   row, give the whole image's bits.
 //! * Bad ranges are refused, a wide row works (index arithmetic at 8658 px), the number of threads
 //!   of the software adapter changes no bit, and the kernel's largest binding fits the design size.
 //! * Poison: every test device fills its buffers with NaN, so a read of what nobody wrote fails.
 
 mod common;
-#[path = "g06/mod.rs"]
-mod g06;
-#[path = "g08/mod.rs"]
-mod g08;
+#[path = "denoise_common/mod.rs"]
+mod denoise_common;
+#[path = "export_common/mod.rs"]
+mod export_common;
 
 use common::{TestGpu, gpus};
 use ym_gpu::cpu::synth;
@@ -36,7 +36,8 @@ use ym_gpu::stream::PassList;
 /// Largest absolute difference to the CPU reference over [`cases`], white = 1. First measured
 /// maximum on Mesa lavapipe: 3.58e-7 (three ulps of a value near 1, on the 64 x 64 enlargement to
 /// 190 x 190: the f32 sum of the taps against the CPU's f64 sum, and the f32 intermediate image on
-/// both sides). The bound is twice that and is never loosened. The plan's proposal was 1e-5.
+/// both sides). The bound is twice that and is never loosened. The starting threshold
+/// (`docs/17-gpu.md` section 12) was 1e-5.
 const VALUE_BOUND: f32 = 7.2e-7;
 
 fn run<R: Send + 'static>(
@@ -49,7 +50,7 @@ fn run<R: Send + 'static>(
 }
 
 fn cpu_resize(img: &RgbImage, out_w: usize, out_h: usize) -> Vec<f32> {
-    g08::cpu_resize(&img.data, img.width, img.height, out_w, out_h)
+    export_common::cpu_resize(&img.data, img.width, img.height, out_w, out_h)
 }
 
 fn gpu_resize(dev: &TestGpu, img: &RgbImage, out_w: usize, out_h: usize) -> Vec<f32> {
@@ -102,7 +103,7 @@ fn matches_the_cpu_resize_on_scenes_of_every_kind_of_size() {
             let want = cpu_resize(&img, ow, oh);
             let got = gpu_resize(dev, &img, ow, oh);
             assert_eq!(got.len(), want.len());
-            let e = g06::compare(&got, &want);
+            let e = denoise_common::compare(&got, &want);
             assert!(
                 e.max.is_finite() && e.max <= VALUE_BOUND,
                 "{w}x{h} -> {ow}x{oh}: max error {:e} at sample {}, bound {VALUE_BOUND:e}",
@@ -114,7 +115,7 @@ fn matches_the_cpu_resize_on_scenes_of_every_kind_of_size() {
             }
         }
         eprintln!(
-            "[G-08] resize on {}: worst error {:e} ({})",
+            "[export tail] resize on {}: worst error {:e} ({})",
             dev.gpu.info().name,
             worst.0,
             worst.1
@@ -155,7 +156,7 @@ fn the_identity_size_keeps_the_pixels_within_rounding() {
     for dev in gpus() {
         let img = scene(64, 48, 7);
         let got = gpu_resize(dev, &img, 64, 48);
-        let e = g06::compare(&got, &img.data);
+        let e = denoise_common::compare(&got, &img.data);
         assert!(e.max < 1e-6, "identity: {:e}", e.max);
     }
 }
@@ -322,7 +323,7 @@ fn a_wide_row_works() {
         let (ow, oh) = (2000usize, 3usize);
         let want = cpu_resize(&img, ow, oh);
         let got = gpu_resize(dev, &img, ow, oh);
-        let e = g06::compare(&got, &want);
+        let e = denoise_common::compare(&got, &want);
         assert!(e.max <= VALUE_BOUND, "{:e} at {}", e.max, e.at);
     }
 }
@@ -332,14 +333,14 @@ fn the_number_of_threads_of_the_software_adapter_changes_no_bit() {
     if common::gpu().is_none() {
         return;
     }
-    g06::assert_thread_count_independent(
+    denoise_common::assert_thread_count_independent(
         "the_number_of_threads_of_the_software_adapter_changes_no_bit",
         || {
             let dev = common::gpu().expect("device");
-            let mut h = g06::FNV_START;
+            let mut h = denoise_common::FNV_START;
             for (i, &((w, ht), (ow, oh))) in cases().iter().enumerate() {
                 let img = scene(w, ht, 300 + i as u64);
-                h = g06::fnv(h, &gpu_resize(dev, &img, ow, oh));
+                h = denoise_common::fnv(h, &gpu_resize(dev, &img, ow, oh));
             }
             h
         },

@@ -1,4 +1,4 @@
-//! R8 diffraction deconvolution on the GPU (RA-09): the WGSL port of
+//! R8 diffraction deconvolution on the GPU: the WGSL port of
 //! [`crate::cpu::sharpen::diffraction`], specified in
 //! `docs/algorithms/03-diffraction-deconvolution.md` (sections 3.4 to 3.12; section 5 lists the GPU
 //! notes).
@@ -67,7 +67,7 @@
 //!   `f32` of the exact value, which is what the CPU's `f64` sum rounds to except where the exact
 //!   value lies within about 2^-24 ulp of a rounding boundary (a rate of order one pixel in 10^7):
 //!   the luma plane has the CPU's bits (`tests/gpu_diffraction.rs` counts 0 differences in 240000
-//!   pixels; the RA-09 review counted 0 in a further 17.3 million random, 14-bit and balanced
+//!   pixels; a review of the kernel counted 0 in a further 17.3 million random, 14-bit and balanced
 //!   lumas) and the large frame drops to 4.8e-7. Two things are needed to make it work, and
 //!   both were found by measurement: every rounded intermediate **and every error term** goes through
 //!   `opaque` (an OR with the uniform `zero`, which the compiler cannot fold), because the optimiser
@@ -229,7 +229,7 @@ struct ParamsU {
     gauss_off: u32,
     /// Always 0. The luma expansion ORs its rounded intermediates with it, which hides them from the
     /// shader compiler (it cannot know the value), so that it cannot fuse or cancel the error terms.
-    /// An OR, not an XOR: an XOR applied twice cancels, an OR does not (`docs/gpu-plan.md` K8).
+    /// An OR, not an XOR: an XOR applied twice cancels, an OR does not (`docs/17-gpu.md` K8).
     zero: u32,
     luma_r: f32,
     luma_g: f32,

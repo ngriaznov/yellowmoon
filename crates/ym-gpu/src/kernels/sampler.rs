@@ -1,5 +1,5 @@
-//! The geometry sampler on the device (`docs/gpu-plan.md` G-04): camera RGB through a grid that maps
-//! the pixels of a view or an export to positions in a pixel buffer, through the camera's EXIF
+//! The geometry sampler on the device (`docs/17-gpu.md` section 11): camera RGB through a grid that
+//! maps the pixels of a view or an export to positions in a pixel buffer, through the camera's EXIF
 //! orientation, the user's quarter turns, the straighten angle and the crop. The CPU reference is
 //! [`crate::cpu::sampler`], whose module notes describe the model and the three kernels (a pixel
 //! copy, Catmull-Rom, a box of bilinear sub-samples).
@@ -17,11 +17,12 @@
 //! position, split in `f64` into an integer part and a fraction (the row entries also carry the offset
 //! and the integer origin of the source image). A position is the sum of one column entry and one row
 //! entry, the integers added as integers and the fractions as `f32`, so no `f32` value of order 1e4
-//! occurs (D4 of the plan) and the position is exact to a fraction's precision, about 1e-7 px. The
-//! entries depend on the absolute column and row only, not on the window: a tile and the whole frame
-//! sample every pixel with the same bits (D5). The inside test is not an `f32` comparison either: the
-//! host gives the exact interval of columns the CPU predicate accepts for every row and sub-sample
-//! ([`SamplerGrid::inside_rows`]), so the mask equals the CPU's bit for bit.
+//! occurs (D4 of `docs/17-gpu.md`) and the position is exact to a fraction's precision, about
+//! 1e-7 px. The entries depend on the absolute column and row only, not on the window: a tile and
+//! the whole frame sample every pixel with the same bits (D5). The inside test is not an `f32`
+//! comparison either: the host gives the exact interval of columns the CPU predicate accepts for
+//! every row and sub-sample ([`SamplerGrid::inside_rows`]), so the mask equals the CPU's bit for
+//! bit.
 //!
 //! # Entry points
 //!
@@ -114,7 +115,7 @@ pub(super) fn body() -> String {
 }
 
 /// The size of the largest storage binding a sampling pass writing the `window` makes (K4 of
-/// `docs/gpu-plan.md`): the four-plane output, 16 bytes a pixel. (The source image is the caller's.)
+/// `docs/17-gpu.md`): the four-plane output, 16 bytes a pixel. (The source image is the caller's.)
 pub fn max_binding_bytes(window: Rect) -> u64 {
     16 * even(window.w) as u64 * window.h as u64
 }

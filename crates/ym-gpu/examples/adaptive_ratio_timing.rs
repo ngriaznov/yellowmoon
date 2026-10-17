@@ -1,4 +1,4 @@
-//! Timing of the adaptive ratio demosaic against Menon and LMMSE (RA-03).
+//! Timing of the adaptive ratio demosaic against Menon and LMMSE.
 //!
 //! Run: `cargo run -p ym-gpu --example adaptive_ratio_timing [-- <megapixels>]` (default 8 MP).
 //! Add `--release` for numbers that mean something for shipping code; the dev profile of this

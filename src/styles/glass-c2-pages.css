@@ -1,4 +1,4 @@
-/* Variant C2, round 6: the pages that still wore the old look, brought to the same dark glass (experiment, branch claude/glasscn-ui).
+/* Variant C2: the pages that still wore the old look, brought to the same dark glass.
    Start, the Import ARRI looks wizard, the modes on the photo (Before, the pixel readout, Crop, Pick white), the error bar, and the
    rest of the dialogs and tabs. The layout of every page is the one it has today (the same cells, edge to edge, in the same places);
    what changed is what they are made of: glass surfaces with a thin light rim for each rule, glasscn's own components for every control
@@ -36,7 +36,7 @@ html:has(.ym-screen[data-screen="import-looks"]) #root {
 }
 
 /* ---- Start ------------------------------------------------------------------------------------------------------------------------ */
-/* The block that says what the app does: neutral glass. Round 7: yellow is a button accent, never a large tinted area (translucent
+/* The block that says what the app does: neutral glass. Yellow is a button accent, never a large tinted area (translucent
    yellow over dark glass reads olive), so the only yellow on this page is the moon, the primary buttons and the progress fill. */
 .ym-about {
   @apply glass rounded-none;
@@ -833,7 +833,7 @@ html:has(.ym-screen[data-screen="import-looks"]) #root {
   border-radius: 0;
 }
 
-/* ---- Round 7: yellow is a button accent ------------------------------------------------------------------------------------------- */
+/* ---- Yellow is a button accent ---------------------------------------------------------------------------------------------------- */
 /* A pressed toggle is the solid accent with dark text (Before, Crop, Pick white; an Auto toggle in its tab's colour), not a translucent
    tint. */
 [data-slot="toggle"][data-state="on"] {

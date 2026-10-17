@@ -1,5 +1,4 @@
-//! Command streams: how work gets onto the device and results back (`docs/gpu-plan.md` section
-//! 4.3).
+//! Command streams: how work gets onto the device and results back (`docs/17-gpu.md` section 3).
 //!
 //! * [`PassList`] records a chain of compute passes into one command encoder, owns the temporaries
 //!   and uniforms of the chain until the work has finished, and [`submit`](PassList::submit)s them
@@ -48,7 +47,7 @@ use crate::pool::PooledBuffer;
 pub const MAX_GROUPS_PER_DIMENSION: u32 = 65_535;
 
 /// Bytes moved per queue write or per readback chunk: 64 MiB, half of one 128 MiB storage binding
-/// (`docs/gpu-plan.md` 1.3 N-1), so the largest plane the plan has (a 61 MP raw plane, 115 MiB)
+/// (`docs/17-gpu.md` section 4), so the largest plane on the device (a 61 MP raw plane, 115 MiB)
 /// goes in two chunks.
 pub const CHUNK_BYTES: u64 = 64 << 20;
 
@@ -188,7 +187,7 @@ impl CounterSnapshot {
 
 /// Waits for `submission` (or for the queue to drain when `None`) for at most `timeout`. A timeout
 /// taints the device: a job that has not finished in that time is a hung GPU, and whatever it was
-/// computing must not be used (`docs/gpu-plan.md` 4.9).
+/// computing must not be used (`docs/17-gpu.md` section 9).
 fn wait_submission(
     device: &wgpu::Device,
     health: &DeviceHealth,

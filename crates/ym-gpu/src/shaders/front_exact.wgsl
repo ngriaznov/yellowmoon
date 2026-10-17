@@ -1,4 +1,4 @@
-// Exactly rounded arithmetic for the raw-front kernels (G-07, K8 of docs/gpu-plan.md): products with
+// Exactly rounded arithmetic for the raw-front kernels (K8 of docs/17-gpu.md): products with
 // their error terms and a correctly rounded quotient, none of it fused or re-associated by a fast-math
 // compiler (every operation passes through `opaque`, `front_opaque.wgsl`, included before this file).
 

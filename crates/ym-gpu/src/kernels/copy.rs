@@ -1,5 +1,5 @@
-//! Copying a rectangle of one device image into another (`docs/gpu-plan.md` G-10): the crop of a
-//! tile whose last stages were identities, the assembly of the parts of a demosaic core that was
+//! Copying a rectangle of one device image into another (`docs/17-gpu.md` section 11): the crop of
+//! a tile whose last stages were identities, the assembly of the parts of a demosaic core that was
 //! cut ([`crate::chain::MAX_PHYS_AREA`]), and the pieces of a window across tiles. The kernel moves
 //! samples and computes on none, so the result has the bits of the source whatever the compiler
 //! does to arithmetic (fast-math included); the CPU reference is a copy of the rows

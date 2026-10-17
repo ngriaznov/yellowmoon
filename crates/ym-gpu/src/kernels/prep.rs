@@ -1,5 +1,5 @@
 //! The photo's raw words on the device, and R1 normalise, R3 vignetting, R4 gains and the clip mask in
-//! one pass (G-07, `docs/gpu-plan.md` section 11).
+//! one pass (`docs/17-gpu.md` section 11).
 //!
 //! # The raw words, uploaded once
 //!

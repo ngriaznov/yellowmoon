@@ -1,10 +1,10 @@
-//! Helpers shared by the G-08 test files (`gpu_resize.rs`, `gpu_tail.rs`): the CPU reference of an
-//! export (sampler, colour chain, Lanczos-3 resize, output sharpening, C13) written from the same
-//! pieces the CPU export uses, scenes and grids, and error statistics that treat a NaN as an
+//! Helpers shared by the export tail tests (`gpu_resize.rs`, `gpu_tail.rs`): the CPU reference of
+//! an export (sampler, colour chain, Lanczos-3 resize, output sharpening, C13) written from the
+//! same pieces the CPU export uses, scenes and grids, and error statistics that treat a NaN as an
 //! infinite error.
 //!
-//! A directory module (`tests/g08/mod.rs`), so cargo does not build it as a test binary of its own;
-//! the files include it with `#[path = "g08/mod.rs"] mod g08;`.
+//! A directory module (`tests/export_common/mod.rs`), so cargo does not build it as a test binary
+//! of its own; the files include it with `#[path = "export_common/mod.rs"] mod export_common;`.
 
 #![allow(dead_code)]
 
@@ -22,9 +22,9 @@ use ym_gpu::kernels::resize::Taps;
 /// Metal runner measured (the first Apple run supplies the hardware columns).
 pub fn ci_note(what: &str, text: &str) {
     let mut err = std::io::stderr();
-    let _ = writeln!(err, "[G-08] {text}");
+    let _ = writeln!(err, "[export tail] {text}");
     if std::env::var_os("GITHUB_ACTIONS").is_some() {
-        let _ = writeln!(err, "::notice title=G-08 {what}::{text}");
+        let _ = writeln!(err, "::notice title=Export {what}::{text}");
     }
 }
 

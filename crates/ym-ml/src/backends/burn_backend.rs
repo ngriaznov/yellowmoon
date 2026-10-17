@@ -17,7 +17,7 @@
 //! The application's device is imported with [`import_device`]: `ym-gpu` opens the one wgpu device of the
 //! process (`ym_core::app::gpu::open_gpu`, feature `ml` of `ym-gpu` so that the device is requested the way
 //! cubecl requests one), and burn registers that device and its queue instead of acquiring another
-//! (`docs/gpu-plan.md` section 8). Register it **once** and clone the returned [`Device`]: burn does not
+//! (`docs/17-gpu.md` section 14). Register it **once** and clone the returned [`Device`]: burn does not
 //! detect a second registration of the same handles. Burn's work and `ym-gpu`'s work then share one queue
 //! and one memory budget; flush burn's work (reading a tensor does) before a `ym-gpu` job reads what burn wrote.
 

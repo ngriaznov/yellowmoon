@@ -1,4 +1,4 @@
-//! R9, the lens resample, on the device (G-07, `docs/05-raw-processing.md` section R9).
+//! R9, the lens resample, on the device (`docs/05-raw-processing.md` section R9).
 //!
 //! The CPU reference is [`crate::cpu::resample::resample_lens`]: one Catmull-Rom sample per colour
 //! plane at the source position of [`LensGeometry`] (distortion for all three planes, the lateral CA

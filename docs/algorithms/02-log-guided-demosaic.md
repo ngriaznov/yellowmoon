@@ -316,7 +316,7 @@ which equals the formula above up to rounding.
 | 3.6 | About 4 adds with running sums, plus one division per measure. |
 | 3.7 | About 15 flops and one or two divisions. |
 
-Planes: A, L, Lh, C, Dh, Dv, D̄, Ē, as u16 in the fixed form. They can stream through 5-row ring buffers. It should cost a few times bilinear and much less than Menon. Measure it in RA-06.
+Planes: A, L, Lh, C, Dh, Dv, D̄, Ē, as u16 in the fixed form. They can stream through 5-row ring buffers. It should cost a few times bilinear and much less than Menon. Measure it (section 6.4).
 
 **GPU (WGSL).** Every step is per pixel over a small neighbourhood, with no global reductions. The headroom H is a frame constant passed as a uniform, and only the fixed form uses it. A natural split:
 
@@ -376,8 +376,8 @@ The reference's `-DSELF_TEST` runs all of them.
 ### 6.4 Quality gate in Yellowmoon
 
 - **PSNR**: 10 px border excluded, `metrics::psnr`, mosaicked as RGGB. Compare against Bilinear, Menon and LMMSE on the synthetic set of `tests/cpu_demosaic.rs`, and on Kodak, McMaster and PixelShift200 where they can be fetched. Run in linear light and at signal scales 1.0, 0.1 and 0.01, as `docs/05` did for LMMSE. Use the float form and p from a zero-noise model (p = 1).
-- **What the reference shows** (40×40 scenes, float form): edges +4.6 dB over bilinear (36.4 vs 31.9 dB), diagonal edge +1.8, zone plate +3.5, texture +1.5. Its position against Menon was not measured here. The RA-06 gate (within 1 dB of Menon on the synthetic set, < 300 ms for the 1/4-resolution fit preview on M1) decides whether it replaces the current preview path. Report the numbers either way.
-- **Visual**: zipper and false-colour metrics against Menon, and the fit view of the nine local real files at `guide_detail` 0. *[As built the two metrics are not in `cpu/metrics.rs`: they are defined in `crates/ym-gpu/tests/common/ra05_metrics.rs`, tested in `tests/cpu_demosaic_metrics.rs` and run by `examples/ra05_gate.rs`. At signal scale 1 log-guided has 46.5, 56.9 and 41.3 % zipper pixels on the procedural set, Kodak and McMaster against Menon's 39.1, 34.3 and 41.8 %, and 15.9, 15.2 and 9.3 % false-colour pixels against 15.3, 7.6 and 11.2 % (`docs/05` R6).]*
+- **What the reference shows** (40×40 scenes, float form): edges +4.6 dB over bilinear (36.4 vs 31.9 dB), diagonal edge +1.8, zone plate +3.5, texture +1.5. Its position against Menon was not measured here. The gate (within 1 dB of Menon on the synthetic set, < 300 ms for the 1/4-resolution fit preview on M1) decides whether it replaces the current preview path. Report the numbers either way.
+- **Visual**: zipper and false-colour metrics against Menon, and the fit view of the nine local real files at `guide_detail` 0. *[As built the two metrics are not in `cpu/metrics.rs`: they are defined in `crates/ym-gpu/tests/common/demosaic_metrics.rs`, tested in `tests/cpu_demosaic_metrics.rs` and run by `examples/demosaic_gate.rs`. At signal scale 1 log-guided has 46.5, 56.9 and 41.3 % zipper pixels on the procedural set, Kodak and McMaster against Menon's 39.1, 34.3 and 41.8 %, and 15.9, 15.2 and 9.3 % false-colour pixels against 15.3, 7.6 and 11.2 % (`docs/05` R6).]*
 
 ---
 
@@ -398,7 +398,7 @@ The reference's `-DSELF_TEST` runs all of them.
 
 | Question | Default meanwhile |
 |---|---|
-| Which renders switch to this method? | `k = 1` preview renders (thumbnails of small photos or crops, the coarse frame before full-resolution tiles), after the RA-06 gate passes. Binning stays for `k ≥ 2` until note 6 is measured. *[As built: none. The gate passed, but no render switched; section 9.3. The method is reachable through the test-only switch only.]* |
+| Which renders switch to this method? | `k = 1` preview renders (thumbnails of small photos or crops, the coarse frame before full-resolution tiles), after the gate of section 6.4 passes. Binning stays for `k ≥ 2` until note 6 is measured. *[As built: none. The gate passed, but no render switched; section 9.3. The method is reachable through the test-only switch only.]* |
 | Fixed or float form in the product? | Float form on CPU and GPU. Fixed form for the vectors and as an integer-only fallback. |
 | How is H chosen when the frame maximum is unknown? | H = 4 (headroom_log2 = 2). |
 | Does `p` follow the pooled noise model or the photo's own? | Whatever `RawParams::noise` carries (the pooled model when it is used). |
@@ -420,7 +420,7 @@ The reference implements this specification as written. Where the behaviour coul
 
 ---
 
-## 9. As built (RA-06)
+## 9. As built
 
 Decisions and measurements recorded when the method was implemented (`crates/ym-gpu/src/cpu/demosaic/log_guided.rs`). The specification above is unchanged.
 
@@ -451,7 +451,7 @@ Decisions and measurements recorded when the method was implemented (`crates/ym-
 | McMaster | 0.1 | 32.31 | 34.21 | 34.61 | 33.54 | -0.68 |
 | McMaster | 0.01 | 32.31 | 34.21 | 33.60 | 33.66 | -0.55 |
 
-  The gate (within 1 dB of Menon on the synthetic set) holds at every scale. On Kodak, whose images are saturated and gamma-encoded photographs, the method is 6.5 to 7 dB below Menon, and only 2.1 to 2.6 dB above bilinear; at scale 1 the per-image gap on the synthetic set ranges from +1.9 (zone plate) to -3.1 dB (natural 3). PixelShift200 is not available here. *[Note from RA-05: the Kodak and McMaster rows of this table are the gamma-encoded protocol (the sRGB codes mosaicked as they are), not the linear light that section 6.4 asks for. In linear light, `docs/05` R6, log-guided is 3.4 to 3.6 dB below Menon on Kodak (32.53 against 36.14 dB at scale 1) and 0.5 to 1.0 dB below on McMaster (34.54 against 35.54); the synthetic rows are linear already.]*
+  The gate (within 1 dB of Menon on the synthetic set) holds at every scale. On Kodak, whose images are saturated and gamma-encoded photographs, the method is 6.5 to 7 dB below Menon, and only 2.1 to 2.6 dB above bilinear; at scale 1 the per-image gap on the synthetic set ranges from +1.9 (zone plate) to -3.1 dB (natural 3). PixelShift200 is not available here. *[Note from the R6 demosaic gate: the Kodak and McMaster rows of this table are the gamma-encoded protocol (the sRGB codes mosaicked as they are), not the linear light that section 6.4 asks for. In linear light, `docs/05` R6, log-guided is 3.4 to 3.6 dB below Menon on Kodak (32.53 against 36.14 dB at scale 1) and 0.5 to 1.0 dB below on McMaster (34.54 against 35.54); the synthetic rows are linear already.]*
 - **CPU time** (`... -- timing`, release build, mosaic of 1/4, 1/2 and full resolution of a 24 MP (6000x4000) and a 61 MP (9504x6336) frame, 4 shared x86-64 cores at load average 8 to 12, so wall times are inflated and CPU seconds are the dependable number). CPU time relative to bilinear and Menon, float form of this method:
 
 | Frame | Resolution | CPU vs bilinear | CPU vs Menon |
@@ -466,11 +466,11 @@ Decisions and measurements recorded when the method was implemented (`crates/ym-
 
 ### 9.3 Use for the fit view and thumbnails
 
-The numbers meet the targets (within 1 dB on the synthetic set, about twice as fast as Menon), but **no preview render demosaics today**, so there is no preview method to switch: the fit view and the thumbnails at `k >= 2` bin the mosaic (`bin_mosaic`) and never run R6. Only `k = 1` renders do (thumbnails of small photos or small crops), and those read the tiles of the full-resolution chain: the tiles are cached under the same key as the 100 % view, and exports run the same chain. Using this method there needs a second chain with its own cache key, so that its pixels cannot reach the 100 % view or an export, and it would only speed up a rare case. The comparison of 7.1 note 6 (demosaic then downsample against binning at `k = 2`) was not evaluated. `ym-core` is therefore unchanged. The gap on Kodak (-6.95 dB) is a further reason to keep Menon wherever a real photograph is shown at full resolution. The GPU port (RA-09) is the place where this method pays off.
+The numbers meet the targets (within 1 dB on the synthetic set, about twice as fast as Menon), but **no preview render demosaics today**, so there is no preview method to switch: the fit view and the thumbnails at `k >= 2` bin the mosaic (`bin_mosaic`) and never run R6. Only `k = 1` renders do (thumbnails of small photos or small crops), and those read the tiles of the full-resolution chain: the tiles are cached under the same key as the 100 % view, and exports run the same chain. Using this method there needs a second chain with its own cache key, so that its pixels cannot reach the 100 % view or an export, and it would only speed up a rare case. The comparison of 7.1 note 6 (demosaic then downsample against binning at `k = 2`) was not evaluated. `ym-core` is therefore unchanged. The gap on Kodak (-6.95 dB) is a further reason to keep Menon wherever a real photograph is shown at full resolution. The GPU port (section 10) is the place where this method pays off.
 
 ---
 
-## 10. As built (RA-09)
+## 10. As built
 
 The GPU port of the all-float form (3.9), recorded when it was implemented. The specification above is unchanged. Files: `crates/ym-gpu/src/shaders/log_guided.wgsl`, `crates/ym-gpu/src/kernels/log_guided.rs` (wrapper, `KernelId::LogGuided`), `crates/ym-gpu/tests/gpu_log_guided.rs` (parity tests).
 

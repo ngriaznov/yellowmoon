@@ -4,9 +4,10 @@
 # log2/exp2/pow accuracy), parity of every kernel with its CPU reference, tile = whole frame, run-to-run determinism,
 # and that the app (with the native Metal viewport in src-tauri/src/native.rs) builds and its tests pass on macOS.
 # They do not measure speed (shared VM, paravirtual GPU) or how the viewport looks on screen: those stay M0-H4 on a
-# physical Mac (tools/dev/mac-gpu-check.sh). Runs on every push except checkpoints, on pull requests, and by hand.
+# physical Mac (tools/dev/mac-gpu-check.sh). Runs on every push except work-in-progress checkpoint commits, on pull
+# requests, and by hand.
 #
-# G-09 added to the job below: the large tests that are #[ignore]d by default (a 50 MP and a 70 MP frame through the raw front,
+# The job below also runs the large tests that are #[ignore]d by default (a 50 MP and a 70 MP frame through the raw front,
 # the reduced path, the chain's corner tiles, the export tail and the spike), the encode-split bench (print only), the GPU
 # golden subset (`golden check --device gpu`, the device against the CPU of the same machine), one of the owner's photos
 # through the same comparison, and the determinism and fault suites (tests/gpu_determinism.rs and tests/gpu_faults.rs run
@@ -16,8 +17,8 @@
 name: Mac GPU (Metal)
 
 on:
-  # Every push except checkpoints (the jobs skip those): a path filter missed the commit that closes a wave, whose code
-  # had already gone in with earlier checkpoint commits.
+  # Every push except work-in-progress checkpoint commits (the jobs skip those): a path filter missed the commit that
+  # finishes a piece of work whose code had already gone in with earlier checkpoint commits.
   push:
     branches: [main, "claude/**"]
   pull_request:
@@ -44,14 +45,14 @@ defaults:
 jobs:
   metal:
     name: Kernels on Metal (${{ matrix.runner }})
-    # Checkpoint commits snapshot work in progress (half-finished lanes) and are not expected to build; skip them.
+    # Checkpoint commits snapshot work in progress and are not expected to build; skip them.
     if: ${{ github.event_name != 'push' || !startsWith(github.event.head_commit.message, 'Checkpoint') }}
     strategy:
       fail-fast: false
       matrix:
         runner: [macos-15, macos-14]   # both Apple silicon (arm64)
     runs-on: ${{ matrix.runner }}
-    # The run of 4c5939f took 50 minutes with a warm dependency cache (ym-gpu 16, ym-core 28); the steps G-09 added (the 50 and
+    # The run of 4c5939f took 50 minutes with a warm dependency cache (ym-gpu 16, ym-core 28); the steps added after it (the 50 and
     # 70 MP tests, the encode split, the synthetic set and the golden subset, one 50 MP photo twice, the bench) are another
     # 30 to 45 by estimate, and the first run of a new cache key is cold. The numbers of the first runs go to docs/13.
     timeout-minutes: 150
@@ -209,7 +210,7 @@ jobs:
 
   app:
     name: App and workspace on macOS
-    # Checkpoint commits snapshot work in progress (half-finished lanes) and are not expected to build; skip them.
+    # Checkpoint commits snapshot work in progress and are not expected to build; skip them.
     if: ${{ github.event_name != 'push' || !startsWith(github.event.head_commit.message, 'Checkpoint') }}
     runs-on: macos-15
     timeout-minutes: 90

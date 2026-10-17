@@ -1,4 +1,4 @@
-//! RA-06 evaluation of the log-guided demosaic (`docs/algorithms/02-log-guided-demosaic.md`
+//! Evaluation of the log-guided demosaic (`docs/algorithms/02-log-guided-demosaic.md`
 //! section 6.4): timings against bilinear, Menon and LMMSE, and PSNR on the synthetic set and on
 //! Kodak and McMaster.
 //!

@@ -1,8 +1,8 @@
-//! The geometry sampler (`docs/gpu-plan.md` G-04): camera RGB sampled through a grid that maps the
-//! pixels of a view or an export to positions in a pixel buffer, through the camera's EXIF
+//! The geometry sampler (`docs/17-gpu.md` section 11): camera RGB sampled through a grid that maps
+//! the pixels of a view or an export to positions in a pixel buffer, through the camera's EXIF
 //! orientation, the user's quarter turns, the straighten angle and the crop. This is the CPU
-//! reference of `shaders/sampler.wgsl` and, since G-04, the implementation `ym-core` calls (a port of
-//! its `pipeline::frame::sample_to_camera`, with its `Grid` reduced to plain data, [`SamplerGrid`]).
+//! reference of `shaders/sampler.wgsl` and the implementation `ym-core` calls (a port of its
+//! `pipeline::frame::sample_to_camera`, with its `Grid` reduced to plain data, [`SamplerGrid`]).
 //!
 //! # The model
 //!
@@ -29,8 +29,8 @@
 //! composition is affine), and [`SamplerGrid::inside_rows`] gives, per output row and sub-sample, the
 //! exact interval of pixels the CPU predicate accepts. The kernel evaluates positions in `f32`
 //! relative to the window it reads (the positions are small displacements, never absolute
-//! coordinates of order 1e4: D4 of the plan) and takes the inside test from those intervals, so its
-//! mask equals the CPU's bit for bit.
+//! coordinates of order 1e4: D4 of `docs/17-gpu.md`) and takes the inside test from those
+//! intervals, so its mask equals the CPU's bit for bit.
 
 use rayon::prelude::*;
 

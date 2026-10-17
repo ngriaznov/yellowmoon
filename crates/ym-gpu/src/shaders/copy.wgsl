@@ -1,4 +1,4 @@
-// Copies a rectangle of a planar image into another planar image (G-10): the crop of a tile on the
+// Copies a rectangle of a planar image into another planar image: the crop of a tile on the
 // device (the stages that were identities leave a larger image than the tile needs), the assembly of
 // the parts of a demosaic core that was cut, and the window a stage reads out of a picture held in
 // bands. Data movement only: no sample is computed on, so the bits are the source's under any

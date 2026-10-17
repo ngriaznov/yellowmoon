@@ -1,10 +1,10 @@
-//! G-06: the R7 kernels, the colour guided filter (`shaders/guided.wgsl`, `kernels::guided`) and the
+//! The R7 kernels, the colour guided filter (`shaders/guided.wgsl`, `kernels::guided`) and the
 //! detail re-injection (`shaders/detail.wgsl`, `kernels::detail`), against their CPU references
 //! `cpu::detail::{chroma_guided_whole, inject_detail}`, and the R6 denoise to R7 sequence of one tile
 //! with its pre-denoise copy.
 //!
 //! What is asserted, and what was measured on lavapipe (Mesa 25.2, LLVM 20.1; first measured value,
-//! the bound is twice that, `docs/gpu-plan.md` X-16):
+//! the bound is twice that, `docs/17-gpu.md` section 12):
 //!
 //! | Case | Asserted | Measured |
 //! |---|---|---|
@@ -20,15 +20,15 @@
 //! the Metal runners run the same file (`mac-gpu.yml`).
 
 mod common;
-#[path = "g06/mod.rs"]
-mod g06;
+#[path = "denoise_common/mod.rs"]
+mod denoise_common;
 
 use common::exact::{
     assert_all_finite, assert_bit_equal, assert_poison_neutral, assert_tiles_equal_whole,
 };
 use common::limits::assert_max_binding_bytes;
 use common::{TestGpu, gpus};
-use g06::{
+use denoise_common::{
     FNV_START, bright_flat_scene, chroma_noisy_scene, compare, fnv, noisy_scene, sigma_plane,
 };
 use ym_gpu::chain::MAX_PHYS_AREA;
@@ -58,13 +58,13 @@ const INJECT_BOUND: f32 = 1.2e-7;
 /// The denoise to injection sequence of a tile, software adapter: twice the first measured value
 /// (6.6e-7, the `exp` of the bilateral filter).
 const SEQUENCE_BOUND: f32 = 1.4e-6;
-/// Hardware adapters, for the tests that print what they measured on Metal (macos-14 and macos-15, run 38694506557,
-/// G-09): the guided filter and the detail injection gave the CPU's bits there (worst 0), so the hardware bound is the
+/// Hardware adapters, for the tests that print what they measured on Metal (macos-14 and macos-15, run 38694506557):
+/// the guided filter and the detail injection gave the CPU's bits there (worst 0), so the hardware bound is the
 /// software one, two ulp and one ulp at white. Metal contracts and re-associates sums and has its own division, which
 /// the kernels hide behind exact sums.
 ///
 /// For the tests whose Metal value was not printed yet (the bright flat scenes, the tiles and the denoise-to-injection
-/// sequence now print it): the plan's starting value for neighbourhood stages (`docs/gpu-plan.md` section 7), to be
+/// sequence now print it): the starting value for neighbourhood stages (`docs/17-gpu.md` section 12), to be
 /// lowered to twice what the next Metal run prints.
 const HW_BOUND: f32 = 1e-5;
 
@@ -187,7 +187,7 @@ fn guided_matches_the_cpu() {
         assert_all_finite(&format!("case {i} {w}x{h}"), &got.data);
         let e = compare(&got.data, &want.data);
         eprintln!(
-            "[G-06] guided case {i} {w}x{h} C {color} (radius {}): max {:.3e} at {} mean {:.2e}",
+            "[R6..R8] guided case {i} {w}x{h} C {color} (radius {}): max {:.3e} at {} mean {:.2e}",
             radius_px(color),
             e.max,
             e.at,
@@ -198,7 +198,7 @@ fn guided_matches_the_cpu() {
         let limit = bound(dev, GUIDED_BOUND);
         assert!(e.max <= limit, "case {i} {w}x{h}: {:e} > {limit:e}", e.max);
     }
-    g06::ci_note(
+    denoise_common::ci_note(
         "guided",
         &format!(
             "guided filter on {}: worst {worst:.3e} over {total} samples",
@@ -237,13 +237,13 @@ fn guided_on_bright_flat_scenes_and_without_regularisation() {
         );
         let e = compare(&got.data, &want.data);
         eprintln!(
-            "[G-06] guided bright flat {i}: level {level} noise {sigma} C {color} sigma {sig_in}: max {:.3e} mean {:.2e}",
+            "[R6..R8] guided bright flat {i}: level {level} noise {sigma} C {color} sigma {sig_in}: max {:.3e} mean {:.2e}",
             e.max, e.mean
         );
         worst = worst.max(e.max);
         assert!(e.max <= bound_unmeasured(dev, GUIDED_BOUND), "{:e}", e.max);
     }
-    g06::ci_note(
+    denoise_common::ci_note(
         "guided bright flat",
         &format!(
             "guided filter, bright flat scenes on {}: worst {worst:.3e}",
@@ -266,7 +266,7 @@ fn guided_leaves_the_luma_alone_and_a_zero_strength_is_a_copy() {
     );
     let (a, b) = (img.luma_plane(), got.luma_plane());
     let e = compare(&b, &a);
-    eprintln!("[G-06] guided luma change: max {:.3e}", e.max);
+    eprintln!("[R6..R8] guided luma change: max {:.3e}", e.max);
     assert!(e.max < 2e-6, "the luma changed by {:e}", e.max);
     // The chroma noise went down.
     let n = img.plane_len();
@@ -330,13 +330,13 @@ fn guided_tiles_equal_the_whole_frame_bit_for_bit() {
         let want = chroma_guided_whole(&img, &NoiseSigma::Plane(&plane), 0, color);
         let e = compare(&whole, &want.data);
         eprintln!(
-            "[G-06] guided C {color} 203x157 tiles: against the CPU max {:.3e}",
+            "[R6..R8] guided C {color} 203x157 tiles: against the CPU max {:.3e}",
             e.max
         );
         worst = worst.max(e.max);
         assert!(e.max <= bound_unmeasured(dev, GUIDED_BOUND), "{:e}", e.max);
     }
-    g06::ci_note(
+    denoise_common::ci_note(
         "guided tiles",
         &format!(
             "guided filter, 203x157 tiles on {}: against the CPU worst {worst:.3e}",
@@ -398,13 +398,13 @@ fn detail_injection_matches_the_cpu() {
         });
         let e = compare(&got.data, &want.data);
         eprintln!(
-            "[G-06] inject case {i} {w}x{h} beta {beta}: max {:.3e}",
+            "[R6..R8] inject case {i} {w}x{h} beta {beta}: max {:.3e}",
             e.max
         );
         worst = worst.max(e.max);
         assert!(e.max <= bound(dev, INJECT_BOUND), "{:e}", e.max);
     }
-    g06::ci_note(
+    denoise_common::ci_note(
         "detail",
         &format!(
             "detail injection on {}: worst {worst:.3e}",
@@ -514,10 +514,10 @@ fn the_denoise_to_detail_sequence_of_a_tile_matches_the_cpu_stage_sequence() {
     });
     let e = compare(&got, &want.data);
     eprintln!(
-        "[G-06] R6 denoise -> R7 sequence on {r2:?}: max {:.3e} mean {:.2e}",
+        "[R6..R8] R6 denoise -> R7 sequence on {r2:?}: max {:.3e} mean {:.2e}",
         e.max, e.mean
     );
-    g06::ci_note(
+    denoise_common::ci_note(
         "denoise to injection",
         &format!(
             "R6 denoise to R7 sequence on {}: max {:.3e}",
@@ -574,7 +574,7 @@ fn a_poisoned_device_and_a_plain_one_give_the_same_bits() {
 #[test]
 fn thread_count_does_not_change_a_bit() {
     let Some(dev) = f32_device() else { return };
-    g06::assert_thread_count_independent("thread_count_does_not_change_a_bit", || {
+    denoise_common::assert_thread_count_independent("thread_count_does_not_change_a_bit", || {
         let mut h = FNV_START;
         for (w, hh, seed, color) in [(97usize, 61usize, 1u64, 50.0f32), (203, 157, 2, 100.0)] {
             let img = chroma_noisy_scene(w, hh, seed, 0.02);

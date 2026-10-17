@@ -1,21 +1,21 @@
-//! RA-05 demosaic gate (`docs/algorithms/TASKS.md` RA-05, `docs/05` R6): PSNR, zipper and
+//! The demosaic gate (spec 01 section 6.3, `docs/05` R6): PSNR, zipper and
 //! false-colour numbers for Bilinear, Menon, LMMSE, AdaptiveRatio and LogGuided, and the R6 rule's
 //! verdict. Measurement only: nothing here changes `DEFAULT_METHOD` (the owner chose `AdaptiveRatio`
-//! after the blind look, RA-H4).
+//! after the blind look of 2026-10-13).
 //!
 //! ```text
-//! CARGO_INCREMENTAL=0 cargo run -p ym-gpu --example ra05_gate \
+//! CARGO_INCREMENTAL=0 cargo run -p ym-gpu --example demosaic_gate \
 //!     --config 'profile.dev.package.ym-gpu.opt-level=3' [-- psnr|metrics|noisy|all] [--out DIR]
 //! ```
 //!
-//! The output folder (default `testdata/ra05`, git-ignored) gets `numbers.md` (every table that is
+//! The output folder (default `testdata/demosaic_gate`, git-ignored) gets `numbers.md` (every table that is
 //! printed) and `gate.json` (the same numbers). The sets: the procedural set of
 //! `tests/cpu_demosaic.rs`, Kodak and McMaster from `testdata/demosaic` (`tools/fetch/demosaic-sets.sh`),
 //! and, if they are ever fetchable, Gharbi hard/moire and PixelShift200 (a folder per set next to
 //! kodak and mcmaster: `gharbi_hard`, `gharbi_moire`, `pixelshift200`; they are read when present).
 //!
 //! The protocol, the noise models and the definitions of zipper and false colour are in
-//! `tests/common/ra05_metrics.rs` (shared with the unit tests in `tests/cpu_demosaic_metrics.rs`).
+//! `tests/common/demosaic_metrics.rs` (shared with the unit tests in `tests/cpu_demosaic_metrics.rs`).
 //!
 //! * `psnr`: linear light (sRGB decoded) at signal scales 1, 0.1 and 0.01 with a 10 px border
 //!   excluded, mean of per-image dB; the gamma-encoded values at scale 1 for continuity with the
@@ -34,10 +34,10 @@ use ym_gpu::cpu::metrics::psnr;
 use ym_gpu::cpu::{Cfa, NoiseDn, NoiseSigma, RgbImage, synth};
 use ym_noise::model::NoiseModel;
 
-#[path = "../tests/common/ra05_metrics.rs"]
-mod ra05_metrics;
+#[path = "../tests/common/demosaic_metrics.rs"]
+mod demosaic_metrics;
 
-use ra05_metrics::{
+use demosaic_metrics::{
     Artifacts, BORDER_PX, LabImage, PRIMARY, SCALES, SENSITIVITY, Variant, artifacts,
     demosaic_sets_root, linearize, load_set, mean_finite, psnr_row, run_variant, synthetic_set,
 };
@@ -398,7 +398,7 @@ fn metrics_for_set(report: &mut Report, set: &Set) -> Value {
 // Noisy inputs
 // ---------------------------------------------------------------------------------------------
 
-/// One ISO-like noise level: stand-ins for plausible full-frame values (as `examples/ra07_ab.rs`
+/// One ISO-like noise level: stand-ins for plausible full-frame values (as `examples/capture_sharpen_ab.rs`
 /// uses), not measurements. Row noise is left out.
 struct Level {
     name: &'static str,
@@ -542,14 +542,16 @@ fn image_set(dir: &str, name: &str) -> Option<(Set, Set)> {
 
 fn main() {
     let mut mode = "all".to_owned();
-    let mut out_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../testdata/ra05");
+    let mut out_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../testdata/demosaic_gate");
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
             "--out" => out_dir = PathBuf::from(args.next().expect("--out needs a folder")),
             "psnr" | "metrics" | "noisy" | "all" => mode = a,
             other => {
-                eprintln!("usage: ra05_gate [psnr|metrics|noisy|all] [--out DIR] (got {other})");
+                eprintln!(
+                    "usage: demosaic_gate [psnr|metrics|noisy|all] [--out DIR] (got {other})"
+                );
                 std::process::exit(2);
             }
         }
@@ -557,7 +559,7 @@ fn main() {
     std::fs::create_dir_all(&out_dir).expect("create the output folder");
     let mut report = Report::default();
     let mut json = json!({
-        "about": "RA-05 demosaic gate: measurement only. Protocol in crates/ym-gpu/tests/common/ra05_metrics.rs.",
+        "about": "Demosaic gate: measurement only. Protocol in crates/ym-gpu/tests/common/demosaic_metrics.rs.",
         "border_px": BORDER_PX,
         "scales": SCALES,
         "noise_models": {
@@ -640,13 +642,13 @@ fn main() {
     if matches!(mode.as_str(), "metrics" | "all") {
         report.line("## Zipper and false colour (signal scale 1, linear light)\n");
         report.line(format!(
-            "Definitions (tests/common/ra05_metrics.rs): edge pixel = an 8-neighbour more than {} CIE 1976 Lab units away in the ground truth; \
+            "Definitions (tests/common/demosaic_metrics.rs): edge pixel = an 8-neighbour more than {} CIE 1976 Lab units away in the ground truth; \
              zipper = the difference to the nearest-in-colour neighbour grew by more than {} in the demosaiced image (after Lu and Tan 2003); \
              false colour = chroma difference to the truth (CIEDE2000, lightness equalised) above {}. \
              `cpu/metrics.rs` has no such metrics, they are defined in the measurement code.\n",
-            ra05_metrics::EDGE_DELTA_E,
-            ra05_metrics::ZIPPER_DELTA_E,
-            ra05_metrics::FALSE_COLOUR_DELTA_E00
+            demosaic_metrics::EDGE_DELTA_E,
+            demosaic_metrics::ZIPPER_DELTA_E,
+            demosaic_metrics::FALSE_COLOUR_DELTA_E00
         ));
         let mut v = Vec::new();
         for set in &linear_sets {

@@ -1,5 +1,5 @@
-//! Per-frame inputs of the demosaic methods that need more than the mosaic (RA-02,
-//! `docs/algorithms/INTEGRATION.md` sections 2 to 4 and 6).
+//! Per-frame inputs of the demosaic methods that need more than the mosaic
+//! (`docs/algorithms/INTEGRATION.md` sections 2 to 4 and 6).
 //!
 //! [`DemosaicInputs`] is what [`demosaic_with`](super::demosaic_with) takes besides the mosaic and
 //! the method: the R4 gains, the noise model on the 16-bit working scale ([`NoiseDn`]) and, for
@@ -11,7 +11,7 @@
 //! optical centre. This module defines the type, checks it (strictly increasing radii, at least
 //! two knots, finite numbers: the oracle's `curve_valid`) and evaluates a curve (linear between
 //! knots, linear extrapolation of the first and last segment); `LensGeometry::ca_curves`
-//! (`cpu::lens`) builds them from the R9 lens knots (RA-03b).
+//! (`cpu::lens`) builds them from the R9 lens knots.
 
 use super::super::noise::NoiseDn;
 

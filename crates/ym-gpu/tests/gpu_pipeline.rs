@@ -496,7 +496,7 @@ fn the_tile_size_follows_the_device_budget() {
 }
 
 // ------------------------------------------------------------------------------------------------
-// G-04: the view tail on the device: sampler, colour, output sharpening and C13 as device images
+// The view tail on the device: sampler, colour, output sharpening and C13 as device images
 // ------------------------------------------------------------------------------------------------
 
 use common::chains::camera_image;
@@ -543,7 +543,8 @@ fn on_gpu<R: Send + 'static>(
 fn the_encode_kernel_matches_the_cpu_c13() {
     // `ym_color::encode::encode_8bit_dithered` and `quantize` are the CPU's C13: the 8-bit codes must
     // be within one code and 99 % exact (f32 against f64 moves a value across a dither threshold now
-    // and then), the 16-bit codes within 8 (docs/gpu-plan.md G-08 states the same).
+    // and then), the 16-bit codes within 8 (the export tail's bound in `tests/gpu_tail.rs` is the
+    // same).
     let (w, h) = (131usize, 47usize);
     let img = linear_image(w, h, 0xC13);
     for (space, origin) in [
@@ -939,7 +940,7 @@ fn the_device_view_road_equals_the_host_wrapper_road_bit_for_bit() {
 }
 
 // ------------------------------------------------------------------------------------------------
-// G-04 review: windows of every width and position, and the stride a band must have
+// Review of the view tail: windows of every width and position, and the stride a band must have
 // ------------------------------------------------------------------------------------------------
 
 #[test]

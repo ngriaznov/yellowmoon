@@ -1,4 +1,4 @@
-// RA-09: log-guided fast demosaic, the all-float form of docs/algorithms/02-log-guided-demosaic.md
+// Log-guided fast demosaic, the all-float form of docs/algorithms/02-log-guided-demosaic.md
 // section 3.9 (CPU reference: ym_gpu::cpu::demosaic::log_guided::demosaic_float).
 //
 // One entry point, four dispatches (the spec's section 5 split), selected by `u.ctl.x`:
@@ -40,8 +40,8 @@
 // neither fuse nor re-associate them (the second differences, written as differences of differences
 // to stay exact, would otherwise be folded back into `(a + b) - 2 c`). A C port of this file compiled
 // with clang -O2 and -O3 -ffast-math -ffp-contract=fast -mfma, with `log2` 2 ulp and a reciprocal 1
-// ulp off, gives at most 1.8e-7 of the peak on the stripes at every scale (docs/gpu-plan.md
-// section 12).
+// ulp off, gives at most 1.8e-7 of the peak on the stripes at every scale (docs/17-gpu.md
+// section 13).
 
 struct U {
     dims: vec4<u32>,   // x: width, y: height, z: stride (even), w: plane length (stride * height)

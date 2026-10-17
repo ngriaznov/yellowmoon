@@ -1,4 +1,4 @@
-//! RA-04: the adaptive ratio demosaic inside the CPU chain (`Chain::run_tile`, stage R6).
+//! The adaptive ratio demosaic inside the CPU chain (`Chain::run_tile`, stage R6).
 //!
 //! R6 gets the balanced mosaic of R4/R5. For `Method::AdaptiveRatio` the chain passes its gains
 //! `g0` and its noise model to `demosaic_with`, which divides every photosite by `g0` of its
@@ -542,7 +542,8 @@ fn the_default_method_chain_is_the_adaptive_ratio_chain() {
 #[test]
 fn the_other_methods_are_not_changed_by_the_gains_of_the_chain() {
     // Menon, Bilinear and LMMSE take the balanced mosaic and ignore the
-    // inputs, so the chain gives what `demosaic(m, method)` gives, as before RA-04.
+    // inputs, so the chain gives what `demosaic(m, method)` gives, as before the adaptive ratio
+    // joined the chain.
     let (w, h) = (90, 70);
     let data = raw_of(w, h, Cfa::RGGB, 8, 1.0);
     let raw = frame(&data, w, h, Cfa::RGGB);

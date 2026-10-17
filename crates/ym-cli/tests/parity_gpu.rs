@@ -1,4 +1,4 @@
-//! App and CLI parity with the raw chain on the device (G-03, `docs/gpu-plan.md` section 7): the same
+//! App and CLI parity with the raw chain on the device (`docs/17-gpu.md` section 12): the same
 //! job exported through the app's path (`Core::export_start`, the device attached the way the
 //! application attaches it) and through the `ym` binary with `YELLOWMOON_GPU=on` gives
 //! byte-identical files, whatever the number of photos in flight.

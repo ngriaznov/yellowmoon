@@ -16,7 +16,7 @@ use rayon::prelude::*;
 use ym_color::encode::OutputSpace;
 use ym_gpu::cpu::output_sharpen::OutputSharpen;
 // The kernel and the taps are planned once, in `ym-gpu`, and used by this CPU resize and by the
-// kernel of the export tail on the device (`docs/gpu-plan.md` G-08), so that the two cannot disagree
+// kernel of the export tail on the device (`docs/17-gpu.md` section 10), so that the two cannot disagree
 // on a weight.
 pub use ym_gpu::kernels::resize::{LANCZOS_A, Taps, lanczos3};
 

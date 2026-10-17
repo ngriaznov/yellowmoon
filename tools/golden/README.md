@@ -34,7 +34,7 @@ cargo run -p golden --release -- update --note "why the pictures changed"
 `--testdata DIR` (else `$YM_TESTDATA`, else `testdata/`), `--refs DIR`, `--expected FILE`, `--jobs N`, `--report FILE`
 (everything as JSON), `--quiet`.
 
-**What a render is.** One `ym render --cpu --json --quiet --settings <the entry's settings> --format png --bits 16 --colour-space srgb` (with `YELLOWMOON_GPU=off`: golden hashes pin the CPU reference, `docs/gpu-plan.md` section 7)
+**What a render is.** One `ym render --cpu --json --quiet --settings <the entry's settings> --format png --bits 16 --colour-space srgb` (with `YELLOWMOON_GPU=off`: golden hashes pin the CPU reference, `docs/17-gpu.md` section 12)
 process per file, in an empty `YELLOWMOON_HOME` (so the user's default look, display rendering and imported looks cannot
 change it). One process per file because a photo's automatic exposure and pooled noise model depend on the other photos
 of the same run (`docs/01`, Session): the same file rendered in other company would give other pixels. A render that takes
@@ -83,7 +83,7 @@ keeps the hashes in `expected.json` and the pictures under `testdata/golden/refs
 ## GPU mode: `golden check --device gpu` and `golden device-check`
 
 The hashes of `expected.json` pin the CPU reference (`golden check` renders with `ym render --cpu` and `YELLOWMOON_GPU=off`). The device is held
-to the CPU's pictures instead, within gates (`docs/gpu-plan.md` section 7, `docs/13` "GPU golden"):
+to the CPU's pictures instead, within gates (`docs/17-gpu.md` section 12, `docs/13` "GPU golden"):
 
 ```bash
 cargo build --release -p ym-cli && cargo build --release -p golden
@@ -106,21 +106,21 @@ pixels hash to `expected.json`'s own is `identical` without reading one; a missi
 written on (a Mac: another libm moves the CPU hashes by a code) and where the question is how far the device is from the CPU of the same machine.
 The Metal CI job uses it; the lavapipe job uses the stored pictures.
 
-**The gates** (`GpuGate`, replaced one by one by `--gpu-median`, `--gpu-p99`, `--gpu-max`, `--gpu-codes-share`; `--gpu-gates plan` starts from the plan's
+**The gates** (`GpuGate`, replaced one by one by `--gpu-median`, `--gpu-p99`, `--gpu-max`, `--gpu-codes-share`; `--gpu-gates plan` starts from the first
 proposal): the ΔE00 of the 1/4 downsample (a box filter in linear light, CIEDE2000 in Lab, `ym_color::deltae`: the statistic of the CPU mode) must have a median, a
 99th percentile and a maximum under the gates, and the share of the samples of the full-resolution picture that differ by more than 8 codes of 16 bits
 must stay under its gate. The report (`--report FILE`) has, per file, the device `ym` reported, its notes, the ΔE00 statistics and the count.
 
-| Gate | Plan (proposed) | Calibrated (default) | First run on lavapipe, 61 files | Ten-file subset |
+| Gate | Proposed (`plan`) | Calibrated (default) | First run on lavapipe, 61 files | Ten-file subset |
 |---|---|---|---|---|
 | median ΔE00 | 0.02 | 2.1e-4 | worst 1.003e-4 | 9.8e-5 |
 | 99th percentile | 0.05 | 2.2e-2 | worst 1.066e-2 | 9.2e-3 |
 | maximum | 0.5 | 3.8 | worst 1.855 (`D6500__ILCE-7SM3__iso400__rggb__12b__packed12`), then 1.176 (`D6500__DSC-RX100M4 craw`) and four files between 0.55 and 0.57; the other 55 under 0.5 | 0.548 |
 | samples more than 8 codes off | 1e-3 | 7.4e-3 | worst 3.66e-3 (largest difference 40741 codes) | 3.34e-3 |
 
-The plan calls its gates "proposed ... calibrated on the first lavapipe run", and the project's rule for a calibrated number is twice the first measured value, so the default is twice
-the worst of the 61 files (Mesa 25.2, LLVM 20.1, commit 4c5939f plus G-09, 2026-10-15). It is **tighter than the plan for the median and the 99th percentile
-and looser for the maximum and the count**: with the plan's gates 50 of the 61 files fail, all of them on the count of samples (6 also on the maximum). What moves is not a stage but the output sharpening's halo
+The first proposal calls its gates "proposed ... calibrated on the first lavapipe run", and the project's rule for a calibrated number is twice the first measured value, so the default is twice
+the worst of the 61 files (Mesa 25.2, LLVM 20.1, commit 4c5939f plus the GPU checks, 2026-10-15). It is **tighter than the proposal for the median and the 99th percentile
+and looser for the maximum and the count**: with the proposed gates 50 of the 61 files fail, all of them on the count of samples (6 also on the maximum). What moves is not a stage but the output sharpening's halo
 limiter, which decides on a rank of luma values: the device's f32 colour chain and the CPU's f64 one differ in the last bits, and a pixel at a hard edge of the chart (the charts' patch
 borders) takes the other side of a rank (`docs/algorithms/04` section 10; the sharpening kernel alone matches the CPU to 3e-7). A median of 1e-4 and a 99th percentile of 1e-2 say that
 the rest of the picture is the CPU's to the last code or two. Metal will have its own numbers (its f32 chain differs in other last bits); the Metal CI job prints them, and the gates are

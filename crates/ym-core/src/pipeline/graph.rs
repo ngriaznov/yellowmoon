@@ -68,12 +68,12 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 }
 
 /// How many photos keep their raw words on the device at a time: the one being looked at and the one
-/// before it (`docs/gpu-plan.md` G-07). The words of a 50 MP photo are 100 MB; a photo that is not
+/// before it (`docs/17-gpu.md` section 7). The words of a 50 MP photo are 100 MB; a photo that is not
 /// among the two is uploaded again when it is next rendered.
 pub const RESIDENT_PHOTOS: usize = 2;
 
-/// The default of [`RenderOptions::view_band_bytes`]: 128 MiB, the storage binding the GPU plan
-/// designs every device pass for (`docs/gpu-plan.md` N-1, K4).
+/// The default of [`RenderOptions::view_band_bytes`]: 128 MiB, the storage binding every device
+/// pass is designed for (`docs/17-gpu.md` section 4, K4).
 pub const VIEW_BAND_BYTES: u64 = 128 << 20;
 
 /// What [`Renderer::prefetch_raw`] did.
@@ -110,25 +110,25 @@ pub struct RenderOptions {
     /// The stages the device may run (`Auto` runs [`GpuStages::SIGNED_OFF`], `On` and `Require`
     /// run all of them). All of them by default: a renderer given a device and no policy holds
     /// nothing back. The raw chain ([`GpuStages::RAW_CHAIN`], R6 to R8 of full-resolution
-    /// tiles: the demosaic, the denoise, R7 and capture sharpening) consults it; the wiring tasks of the GPU wave consult it one stage at a time, and a
-    /// stage that is off keeps its host boundary.
+    /// tiles: the demosaic, the denoise, R7 and capture sharpening) consults it; the other ranges
+    /// consult it one stage at a time, and a stage that is off keeps its host boundary.
     pub gpu_stages: GpuStages,
     /// Whether a device error is a failure of the photo (`GpuPolicy::Require`, `--require-gpu`)
     /// instead of a fall-back to the CPU. Off by default.
     pub gpu_strict: bool,
     /// The largest storage binding, in bytes, that one device pass of a view may need: a four-plane
     /// f32 frame takes `16 * width * rows` of it. A view whose frame needs more (the Metal limit is
-    /// 2 GiB, lavapipe's 128 MiB, and the plan designs for the lower, `docs/gpu-plan.md` N-1) is cut
-    /// into horizontal bands that are rendered one after the other and put together, which gives
-    /// the same pixels bit for bit (every device stage of a view is tile-exact). A constant of the
-    /// renderer and not the device's limit, so that the cut does not depend on the machine.
-    /// [`VIEW_BAND_BYTES`] by default.
+    /// 2 GiB, lavapipe's 128 MiB, and every kernel is designed for the lower, `docs/17-gpu.md`
+    /// section 4) is cut into horizontal bands that are rendered one after the other and put
+    /// together, which gives the same pixels bit for bit (every device stage of a view is
+    /// tile-exact). A constant of the renderer and not the device's limit, so that the cut does not
+    /// depend on the machine. [`VIEW_BAND_BYTES`] by default.
     pub view_band_bytes: u64,
     /// Whether the caches of the raw group (the reduced groups and the tiles of the 100 % view) keep
-    /// what the device made where it is, on the device, for the sampler to read (`docs/gpu-plan.md`
-    /// G-10, `Backing`): no readback after the raw chain and no upload before the sampler. Has an
+    /// what the device made where it is, on the device, for the sampler to read (`docs/17-gpu.md`
+    /// section 3, `Backing`): no readback after the raw chain and no upload before the sampler. Has an
     /// effect only with a device that runs the sampler ([`GpuStages::SAMPLER`]). Off keeps host
-    /// images, as before G-10; the frames are the same either way, bit for bit (the sampler reads the
+    /// images; the frames are the same either way, bit for bit (the sampler reads the
     /// same samples), and the tests compare the two. On by default.
     pub resident_caches: bool,
     /// The colour of the letterbox around the photo (the paper colour).
@@ -231,7 +231,7 @@ pub enum ComputeDevice {
     Gpu,
 }
 
-/// Where one range of raw stages ran (`docs/gpu-plan.md` N-6: a render can be both, so the report
+/// Where one range of raw stages ran (`docs/17-gpu.md` section 9: a render can be both, so the report
 /// has one value per range, next to the single `device` of the colour pass).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RangeDevice {
@@ -415,12 +415,12 @@ pub struct PhotoGraph {
     counters: StageCounters,
     budget: MemoryBudget,
     /// A device error ended the GPU route of this photo's raw chain: from then on it renders on the
-    /// CPU (`docs/gpu-plan.md` 4.9). The caches may hold tiles of both devices, which differ within
+    /// CPU (`docs/17-gpu.md` section 9). The caches may hold tiles of both devices, which differ within
     /// the tolerances of the kernels; an export restarts the photo wholly on the CPU.
     raw_gpu_failed: AtomicBool,
     /// A device error ended the GPU route of this photo's view stages (the sampler, the colour pass,
     /// output sharpening and C13 of frames, thumbnails and look tiles): from then on the CPU makes
-    /// its frames, quietly (`docs/gpu-plan.md` 4.9).
+    /// its frames, quietly (`docs/17-gpu.md` section 9).
     view_gpu_failed: AtomicBool,
     /// When the photo's raw words were last used on the device, in ticks of the renderer's clock
     /// (the order of the two-photo LRU).
@@ -586,8 +586,8 @@ struct Inner {
     scheduler: JobScheduler,
     ledger: Arc<MemoryLedger>,
     /// A shader of the raw chain failed to compile on this machine: the device does not run the raw
-    /// chain for the rest of the process (`docs/gpu-plan.md` 4.9, "shader: disable that kernel
-    /// family for the process").
+    /// chain for the rest of the process (`docs/17-gpu.md` section 9, "Shader: that kernel family
+    /// is off for the process").
     raw_gpu_disabled: AtomicBool,
     /// The clock of the two-photo LRU of resident raw words ([`PhotoGraph::resident_tick`]).
     resident_clock: AtomicU64,
@@ -601,8 +601,8 @@ struct Inner {
     prefetch_gate: Mutex<()>,
     /// A shader of the export tail (the sampler, colour, resize, sharpening and C13 kernels as the
     /// tail runs them, and the DNG's device colour stage) failed to compile on this machine: the
-    /// device does not run the tail for the rest of the process (`docs/gpu-plan.md` 4.9, "shader:
-    /// disable that kernel family for the process"). The photo that met the error was already made
+    /// device does not run the tail for the rest of the process (`docs/17-gpu.md` section 9,
+    /// "Shader: that kernel family is off for the process"). The photo that met the error was already made
     /// again on the CPU; without the flag every later export would try the same shader and fail the
     /// same way before it fell back.
     tail_gpu_disabled: AtomicBool,
@@ -1085,7 +1085,7 @@ pub(crate) struct ViewGpu {
     pub stages: GpuStages,
 }
 
-/// What a cache of the raw group holds for one key (`docs/gpu-plan.md` G-10): a host image, or the
+/// What a cache of the raw group holds for one key (`docs/17-gpu.md` section 3): a host image, or the
 /// buffers the device made it in, which stay on the device for the sampler to read.
 ///
 /// An entry is one or the other and never both: a consumer that needs host pixels (the CPU colour
@@ -1228,7 +1228,7 @@ impl Pixels {
 }
 
 /// A tile of the full-resolution raw group: the host's image, or one the device made and left where it
-/// is (`docs/gpu-plan.md` G-10), for the stages that follow on the device to read.
+/// is (`docs/17-gpu.md` section 3), for the stages that follow on the device to read.
 pub enum TileImage {
     /// Camera RGB on the host.
     Host(RgbImage),
@@ -1262,7 +1262,7 @@ pub(crate) struct Job<'a> {
     /// cancelling a photo's navigation jobs reaches all of the request's queued jobs or none.
     gpu_priority: Priority,
     /// An export restarts the whole photo on the CPU after a device error, instead of finishing the
-    /// tiles that are left on the CPU (never a mix of devices in one export, `docs/gpu-plan.md` 4.9).
+    /// tiles that are left on the CPU (never a mix of devices in one export, `docs/17-gpu.md` section 9).
     restartable: bool,
     /// The device error that asked for such a restart ([`Job::take_gpu_restart`]).
     restart: Option<String>,
@@ -1367,8 +1367,8 @@ impl<'a> Job<'a> {
 
     /// This request runs with `opts` instead of the renderer's options of the moment it began. The
     /// export that falls back to the CPU after a device error uses it with no device, so that the
-    /// whole photo is made on the CPU reference path and nothing is left sticky on the photo
-    /// (G-08). Call before anything reads [`Job::options`].
+    /// whole photo is made on the CPU reference path and nothing is left sticky on the photo.
+    /// Call before anything reads [`Job::options`].
     #[must_use]
     pub fn with_options(mut self, opts: Arc<RenderOptions>) -> Self {
         self.opts = opts;
@@ -2367,7 +2367,7 @@ impl<'a> Job<'a> {
     /// view stages off for the process. A strict policy fails the request; any other policy notes
     /// why the CPU makes this frame, and ends the route for the photo (view caches may then hold
     /// frames of both devices, which differ within the tolerances of the kernels; viewing only,
-    /// `docs/gpu-plan.md` 4.9). A buffer that does not fit (out of budget, too large) is a property
+    /// `docs/17-gpu.md` section 9). A buffer that does not fit (out of budget, too large) is a property
     /// of the request and not of the photo: the CPU makes this frame, and the next one tries the
     /// device again.
     ///

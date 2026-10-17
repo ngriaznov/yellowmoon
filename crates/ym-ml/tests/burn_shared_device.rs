@@ -1,4 +1,4 @@
-//! The application's wgpu device imported into burn (`docs/gpu-plan.md` sections 8 and 7, G-09; feature `burn`).
+//! The application's wgpu device imported into burn (`docs/17-gpu.md` sections 14 and 12; feature `burn`).
 //!
 //! `ym-gpu` opens the device (its `ml` feature requests it the way cubecl requests one: every adapter feature but
 //! `MAPPABLE_PRIMARY_BUFFERS` and the experimental ones, the adapter's limits), burn registers that device and queue
@@ -11,7 +11,7 @@
 //! 4. burn runs again afterwards, and gives the same bytes as before the kernel.
 //!
 //! Without the experimental opt-in: the device is requested without the experimental features and burn accepts
-//! it, so the one documented `unsafe` of the plan is not needed. Runs on any wgpu adapter, Mesa lavapipe included
+//! it, so no `unsafe` is needed for it. Runs on any wgpu adapter, Mesa lavapipe included
 //! (`WGPU_BACKEND=vulkan`); Metal on the Apple runners. Without an adapter the test is skipped with a message,
 //! unless `YM_REQUIRE_GPU=1` (the `docs/13` convention).
 #![cfg(feature = "burn")]

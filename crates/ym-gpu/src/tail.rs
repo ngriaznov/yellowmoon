@@ -1,4 +1,4 @@
-//! The export tail on the device (`docs/gpu-plan.md` section 4.10, G-08): the rendered camera RGB of
+//! The export tail on the device (`docs/17-gpu.md` section 10): the rendered camera RGB of
 //! an export goes through the geometry sampler, the colour chain C1 to C12, the Lanczos-3 resize,
 //! output sharpening and C13, and comes back as encoded bands that the CPU writers pull. No
 //! display-linear frame is ever held on the host: at 50 MP that frame is 600 MB.
@@ -24,22 +24,24 @@
 //! sharpening needs the stage's halo above and below), so the tail is a pipeline of **row stores**:
 //! a store holds the pieces (slabs or chunks) not yet consumed, a stage takes the rows it needs
 //! (copying across piece borders when it must), and a piece is released as soon as no later row
-//! needs it. The pieces are never larger than [`SLAB_BYTES`] (the design binding of the plan, N-1),
-//! so at 61 MP the device holds a few slabs and one chunk of scratch, not the 700 MB picture.
+//! needs it. The pieces are never larger than [`SLAB_BYTES`] (the design binding, `docs/17-gpu.md`
+//! section 4), so at 61 MP the device holds a few slabs and one chunk of scratch, not the 700 MB
+//! picture.
 //!
 //! # Determinism
 //!
 //! The chunk boundaries are functions of the picture's size and the settings alone (never of timing,
-//! the device or the tile order), and every kernel is per-pixel or tile-exact (D4, D5 of the plan):
-//! the bytes do not depend on how the rows were cut, and `tests/gpu_tail.rs` checks it.
+//! the device or the tile order), and every kernel is per-pixel or tile-exact (D4, D5 of
+//! `docs/17-gpu.md`): the bytes do not depend on how the rows were cut, and `tests/gpu_tail.rs`
+//! checks it.
 //!
 //! # Cancel, errors
 //!
 //! Every job of a tail carries the render's cancel token and the request's priority and owner
 //! ([`TailRoute`]); a render that is cancelled while a job is queued stops waiting at once. A device
-//! error is the caller's to answer (the whole photo goes to the CPU, `docs/gpu-plan.md` 4.9): this
-//! module never continues on the CPU. A buffer that does not fit (out of budget, too large) is tried
-//! once more after the pool and the persistent colour tables were let go.
+//! error is the caller's to answer (the whole photo goes to the CPU, `docs/17-gpu.md` section 9):
+//! this module never continues on the CPU. A buffer that does not fit (out of budget, too large) is
+//! tried once more after the pool and the persistent colour tables were let go.
 
 use std::collections::VecDeque;
 use std::ops::{Deref, Range};
@@ -65,9 +67,9 @@ use crate::queue::{CancelToken, JobSpec};
 use crate::stream::PassList;
 use crate::tiles::DESIGN_BINDING_BYTES;
 
-/// The largest storage binding of one piece of the tail: the design binding of the plan (128 MiB,
-/// `docs/gpu-plan.md` N-1), a constant and not the device's limit, so that the cut does not depend
-/// on the machine.
+/// The largest storage binding of one piece of the tail: the design binding (128 MiB,
+/// `docs/17-gpu.md` section 4), a constant and not the device's limit, so that the cut does not
+/// depend on the machine.
 pub const SLAB_BYTES: u64 = DESIGN_BINDING_BYTES;
 /// Rows of a slab of the rendered picture at most: half a tile row of the export (1024 px), so that
 /// at 61 MP (9504 px wide) a four-plane slab is 78 MB.
@@ -339,8 +341,9 @@ fn window(
 /// The slabs of the rendered picture that a tile needs and the picture does not have yet, one
 /// `(width, rows)` each: four planes (red, green, blue and the letterbox mask), zeroed, so that a tile
 /// that never arrives (outside the photo) is black. All of them are made in **one job and one
-/// submission**: a tile of 1024 rows over slabs of 512 opens two at once, and the plan's bound of three
-/// submissions per tile (the chain's job, this one, the tile's own) holds at any size.
+/// submission**: a tile of 1024 rows over slabs of 512 opens two at once, and the bound of three
+/// submissions per tile (the chain's job, this one, the tile's own; `docs/17-gpu.md` section 7)
+/// holds at any size.
 fn slabs_job(
     ctx: &GpuContext,
     token: &CancelToken,
@@ -755,9 +758,9 @@ impl<'a> ExportTail<'a> {
     }
 
     /// [`add_tile`](Self::add_tile) for a tile the raw chain left on the device
-    /// (`GpuChain::run_tile_device`, `docs/gpu-plan.md` G-10): the camera RGB is bound as it is, so
-    /// the tile makes no trip through the host (a readback and an upload of 12 MB for a 1024 px tile).
-    /// The bits are the host path's: a readback and an upload of `f32` change none.
+    /// (`GpuChain::run_tile_device`, `docs/17-gpu.md` section 3): the camera RGB is bound as it is,
+    /// so the tile makes no trip through the host (a readback and an upload of 12 MB for a 1024 px
+    /// tile). The bits are the host path's: a readback and an upload of `f32` change none.
     ///
     /// # Errors
     ///
@@ -1122,7 +1125,7 @@ mod tests {
 
     #[test]
     fn the_constants_are_consistent() {
-        // A four-plane slab of the widest frame the plan names (9504 px, 61 MP) fits the design
+        // A four-plane slab of the widest frame designed for (9504 px, 61 MP) fits the design
         // binding at the nominal slab height; a three-plane gathered window of a sharpening chunk
         // does too.
         assert!(16 * 9504 * SLAB_ROWS as u64 <= SLAB_BYTES);

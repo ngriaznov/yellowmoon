@@ -1,4 +1,4 @@
-//! G-04: the geometry sampler (`kernels::sampler`, `shaders/sampler.wgsl`) against its CPU port
+//! The geometry sampler (`kernels::sampler`, `shaders/sampler.wgsl`) against its CPU port
 //! (`cpu::sampler`, a port of `ym-core`'s `sample_to_camera`).
 //!
 //! What is compared, and with which bound:
@@ -11,9 +11,9 @@
 //!   maximum (recorded in the constant's note) and is never loosened.
 //! * **The outside mask is identical** in every case (the host hands the kernel the CPU predicate's
 //!   own intervals), as is the zero in the outside pixels.
-//! * **Windows are independent** (D5 of the plan): a tile of the output equals the same pixels of the
-//!   whole output bit for bit, for exact and for general grids, and so does sampling from a cut-out
-//!   source image with another origin.
+//! * **Windows are independent** (D5 of `docs/17-gpu.md`): a tile of the output equals the same
+//!   pixels of the whole output bit for bit, for exact and for general grids, and so does sampling
+//!   from a cut-out source image with another origin.
 //! * **The far corner** of an 8658 x 5772 frame is sampled as exactly as the near one (D4).
 //! * Poison: a poisoned and a plain device give the same bits and nothing is NaN.
 
@@ -21,14 +21,14 @@ mod common;
 
 /// Prints like `println!` and writes the same line to the process's own stderr as well (the harness captures `println!` and
 /// `eprintln!`, not this), so that the numbers of a passing test reach the CI log of the Apple runners, from which a
-/// hardware column is made (G-09). No annotation: the budget of those is spent by the older notes.
+/// hardware column is made. No annotation: the budget of those is spent by the older notes.
 macro_rules! note {
     ($($arg:tt)*) => {{
         let line = format!($($arg)*);
         println!("{line}");
         let _ = std::io::Write::write_fmt(
             &mut std::io::stderr(),
-            format_args!("[G-09 {}] {line}\n", file!().rsplit('/').next().unwrap_or("")),
+            format_args!("[{}] {line}\n", file!().rsplit('/').next().unwrap_or("")),
         );
     }};
 }
@@ -45,11 +45,11 @@ use ym_gpu::queue::{JobSpec, Priority};
 /// The first measured maximum on Mesa lavapipe (192 cases, every orientation and turn, Catmull-Rom
 /// and box) was 5.96e-7, ten ulps of a value near 0.5: the positions are exact to a fraction's
 /// precision, what is left is the f32 rounding of the Catmull-Rom weights and sums (the CPU port
-/// computes its `t` in f64 and rounds once). The bound is twice that and is never loosened. The plan's
-/// proposal was 5e-6.
+/// computes its `t` in f64 and rounds once). The bound is twice that and is never loosened. The
+/// first proposal was 5e-6.
 const VALUE_BOUND: f64 = 1.2e-6;
 /// The same on a hardware adapter (fast-math contracts the weights and sums into fused multiply-adds
-/// and divides with a reciprocal): the plan's proposal, 5e-6, until the Metal run gives a number.
+/// and divides with a reciprocal): the first proposal, 5e-6, until the Metal run gives a number.
 const VALUE_BOUND_HARDWARE: f64 = 5e-6;
 
 fn run<R: Send + 'static>(

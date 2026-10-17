@@ -1,4 +1,4 @@
-//! Speed of output sharpening (`docs/algorithms/04-output-sharpening.md`, RA-08): milliseconds per
+//! Speed of output sharpening (`docs/algorithms/04-output-sharpening.md`): milliseconds per
 //! megapixel for the screen and print presets, one thread and all threads.
 //!
 //! Run: `cargo run -p ym-gpu --example output_sharpen_bench -- 6 24` (frame sizes in megapixels,

@@ -1,5 +1,5 @@
 //! The fault surface of the device: what the tests can break on purpose, to prove that a GPU error
-//! ends in the CPU fallback and never in a wrong picture (`docs/gpu-plan.md` sections 4.9 and 7).
+//! ends in the CPU fallback and never in a wrong picture (`docs/17-gpu.md` sections 9 and 12).
 //!
 //! Everything that can fail is a *hook* in the code that runs in a normal build too: an allocation
 //! ([`FaultState::on_allocation`]), a pipeline compile ([`FaultState::on_pipeline`]), the start of a

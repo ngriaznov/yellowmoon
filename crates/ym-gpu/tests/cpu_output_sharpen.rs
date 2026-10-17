@@ -1,4 +1,4 @@
-//! Output sharpening (RA-08 part 1, `docs/algorithms/04-output-sharpening.md`).
+//! Output sharpening, the CPU port (`docs/algorithms/04-output-sharpening.md`).
 //!
 //! * `vectors_*`: every vector of `tests/cpu_data/output_sharpening/` (the C++ oracle's output,
 //!   never hand-edited): the derived plan (stages, kernels, halo) and the sharpened pixels within
@@ -1393,7 +1393,7 @@ fn fnv1a(samples: &[f32]) -> u64 {
 /// These frames do: 173 x 300 is three bands (the last one 44 rows), 1 x 300 and 5 x 259 are
 /// narrow ones with the widest receptive fields. The digests are those of the C++ reference's
 /// output on exactly these inputs, taken when the port's output was verified bit-identical to it
-/// (the reviewer's differential run, RA-08). They are not the port's own output, and nothing from
+/// (the reviewer's differential run). They are not the port's own output, and nothing from
 /// the reference is stored here but these numbers. A change of any bit of any sample fails. The
 /// inputs use no `ln` or `cos` (see [`busy_portable`]), so a platform's libm cannot move a bit.
 #[test]

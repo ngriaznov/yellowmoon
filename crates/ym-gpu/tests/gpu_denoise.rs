@@ -1,13 +1,13 @@
-//! G-06: the R6 bilateral denoise kernel (`shaders/bilateral.wgsl`, `kernels::bilateral`) against its
+//! The R6 bilateral denoise kernel (`shaders/bilateral.wgsl`, `kernels::bilateral`) against its
 //! CPU reference `cpu::denoise::bilateral_whole`, and the noise-sigma plane of a tile
 //! (`shaders/sigma_expand.wgsl`) against the rule of `ym-core`'s `full_sigma_map`.
 //!
 //! What is asserted, and what was measured on lavapipe (Mesa 25.2, LLVM 20.1; first measured value,
-//! the bound is twice that, `docs/gpu-plan.md` X-16):
+//! the bound is twice that, `docs/17-gpu.md` section 12):
 //!
 //! | Case | Asserted | Measured |
 //! |---|---|---|
-//! | 14 frames from 1 x 1 to 200 x 150, noise 0.002 to 0.03, scalar and plane sigma, scale 0.6 to 2.2, strength 0.5 to 2.5, radius 1 to 4 | max `abs(gpu - cpu)` at most [`BOUND`] (software adapters; hardware: [`HW_BOUND`], the plan's starting value, tightened from the Metal numbers) | 4.17e-7 (131 x 97, radius 4); at most 3.6e-7 elsewhere; no sample over 2e-6 |
+//! | 14 frames from 1 x 1 to 200 x 150, noise 0.002 to 0.03, scalar and plane sigma, scale 0.6 to 2.2, strength 0.5 to 2.5, radius 1 to 4 | max `abs(gpu - cpu)` at most [`BOUND`] (software adapters; hardware: [`HW_BOUND`], the starting threshold, tightened from the Metal numbers) | 4.17e-7 (131 x 97, radius 4); at most 3.6e-7 elsewhere; no sample over 2e-6 |
 //! | zero sigma, zero scale or zero strength | the input, bit for bit | 0 differing |
 //! | tiles (two sizes, the stage's own 2 px of context) | bit-identical to the whole frame | 0 differing |
 //! | a poisoned device and a plain one | bit-identical, finite | 0 differing |
@@ -18,15 +18,15 @@
 //! the Metal runners run the same file (`mac-gpu.yml`).
 
 mod common;
-#[path = "g06/mod.rs"]
-mod g06;
+#[path = "denoise_common/mod.rs"]
+mod denoise_common;
 
 use common::exact::{
     assert_all_finite, assert_bit_equal, assert_poison_neutral, assert_tiles_equal_whole,
 };
 use common::limits::assert_max_binding_bytes;
 use common::{TestGpu, gpus};
-use g06::{FNV_START, compare, fnv, noisy_scene, sigma_plane};
+use denoise_common::{FNV_START, compare, fnv, noisy_scene, sigma_plane};
 use ym_gpu::chain::MAX_PHYS_AREA;
 use ym_gpu::cpu::denoise::{BilateralParams, bilateral_whole};
 use ym_gpu::cpu::tiling::{Halo, Rect};
@@ -41,12 +41,12 @@ use ym_gpu::queue::{JobSpec, Priority};
 /// (4.17e-7 on lavapipe).
 const BOUND: f32 = 8.4e-7;
 /// The same on a hardware adapter for the 14 frames of `matches_the_cpu_on_every_frame...`, which print their worst
-/// value (`ci_note`). Metal (macos-14 and macos-15, run 38694506557, `[G-06] bilateral on Apple Paravirtual device`):
-/// 6.557e-7, so twice that (G-09; fast-math contracts and re-associates the sums, `exp` and the divisions are the
+/// value (`ci_note`). Metal (macos-14 and macos-15, run 38694506557, the line `bilateral on Apple Paravirtual device`):
+/// 6.557e-7, so twice that (fast-math contracts and re-associates the sums, `exp` and the divisions are the
 /// driver's).
 const HW_BOUND: f32 = 1.32e-6;
-/// The same for the tests whose Metal value was not printed yet (the tile test now prints it): the plan's starting
-/// value for neighbourhood stages (`docs/gpu-plan.md` section 7), to be lowered to twice what the next Metal run prints.
+/// The same for the tests whose Metal value was not printed yet (the tile test now prints it): the starting
+/// value for neighbourhood stages (`docs/17-gpu.md` section 12), to be lowered to twice what the next Metal run prints.
 const HW_BOUND_UNMEASURED: f32 = 1e-5;
 
 fn bound(dev: &TestGpu) -> f32 {
@@ -204,9 +204,10 @@ fn matches_the_cpu() {
         let got = run_gpu(dev, &img, Rect::whole(w, h), sigma.clone(), scale, p);
         assert_all_finite(&format!("case {i} {w}x{h}"), &got.data);
         let e = compare(&got.data, &want.data);
-        let over = g06::Err::over(&got.data, &want.data, 2e-6) as f64 / got.data.len() as f64;
+        let over =
+            denoise_common::Err::over(&got.data, &want.data, 2e-6) as f64 / got.data.len() as f64;
         eprintln!(
-            "[G-06] bilateral case {i} {w}x{h} {p:?} scale {scale}: max {:.3e} at {} mean {:.2e}, over 2e-6: {over:.2e}",
+            "[R6..R8] bilateral case {i} {w}x{h} {p:?} scale {scale}: max {:.3e} at {} mean {:.2e}, over 2e-6: {over:.2e}",
             e.max, e.at, e.mean
         );
         worst = worst.max(e.max);
@@ -215,7 +216,7 @@ fn matches_the_cpu() {
         let limit = bound(dev);
         assert!(e.max <= limit, "case {i} {w}x{h}: {:e} > {limit:e}", e.max);
     }
-    g06::ci_note(
+    denoise_common::ci_note(
         "bilateral",
         &format!(
             "bilateral on {}: worst {worst:.3e} over {total} samples, worst share over 2e-6 {worst_over:.2e}",
@@ -300,7 +301,7 @@ fn tiles_equal_the_whole_frame_bit_for_bit() {
     // And the whole frame is the CPU's within the bound.
     let want = cpu_reference(&img, &SigmaOwned::Plane(plane), 1.3, &p);
     let e = compare(&whole, &want.data);
-    g06::ci_note(
+    denoise_common::ci_note(
         "bilateral tiles",
         &format!(
             "bilateral 203x157 tiles on {}: against the CPU max {:.3e}",
@@ -413,7 +414,7 @@ fn the_sigma_plane_has_the_cpus_bits_for_every_cell() {
         move |ctx| expand_sigma(ctx, &SigmaInput::Plane(&plane), Rect::new(5, 6, 33, 21))
     });
     assert_bit_equal("plane source", &got, &plane);
-    eprintln!("[G-06] sigma plane: {cells_checked} cells bit-identical to the CPU rule");
+    eprintln!("[R6..R8] sigma plane: {cells_checked} cells bit-identical to the CPU rule");
 }
 
 #[test]
@@ -489,7 +490,7 @@ fn the_bilateral_stage_and_the_sigma_plane_run_in_one_pass_list_without_a_readba
 #[test]
 fn thread_count_does_not_change_a_bit() {
     let Some(dev) = f32_device() else { return };
-    g06::assert_thread_count_independent("thread_count_does_not_change_a_bit", || {
+    denoise_common::assert_thread_count_independent("thread_count_does_not_change_a_bit", || {
         let mut h = FNV_START;
         for (w, hh, seed) in [(97usize, 61usize, 1u64), (203, 157, 2)] {
             let img = noisy_scene(w, hh, seed, 0.012);
@@ -510,7 +511,8 @@ fn thread_count_does_not_change_a_bit() {
 
 #[test]
 fn bindings_fit_the_design_binding_at_the_largest_rectangle() {
-    // The largest compute rectangle of the plan: MAX_PHYS_AREA pixels, here 1600 x 1562.
+    // The largest compute rectangle (`docs/17-gpu.md` section 4): MAX_PHYS_AREA pixels, here
+    // 1600 x 1562.
     let side = (MAX_PHYS_AREA as f64).sqrt() as usize;
     assert_max_binding_bytes(
         "bilateral",

@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# RA-05: the numbers of the R6 demosaic gate (docs/05 R6, docs/algorithms/TASKS.md), measurement only.
+# The numbers of the R6 demosaic gate (docs/05 R6, docs/algorithms/01 section 6.3), measurement only.
 #
 #   tools/eval/demosaic/gate.sh            # PSNR, zipper, false colour, noisy inputs, then the 50 MP timing
 #   tools/eval/demosaic/gate.sh psnr       # the tables only (about 2 minutes on four cores)
 #   tools/eval/demosaic/gate.sh timing     # the 50 MP timing only (about 5 minutes)
 #   tools/eval/demosaic/gate.sh blind      # build `ym` with the test-only switch and make the blind-look set
 #
-# Output goes to testdata/ra05/ (git-ignored): numbers.md, gate.json, timing.md, timing.json, and for
+# Output goes to testdata/demosaic_gate/ (git-ignored): numbers.md, gate.json, timing.md, timing.json, and for
 # `blind` key.json, index.html and images/. Kodak and McMaster come from tools/fetch/demosaic-sets.sh.
 #
 # The Rust parts run in the workspace's dev profile with the ym-gpu crate compiled like a release build
@@ -34,12 +34,12 @@ case "$what" in
     ;;
 esac
 if [ "$what" = all ] || [ "$what" = psnr ]; then
-  cargo run -p ym-gpu --example ra05_gate "${RELEASE_LIKE[@]}" -- all
+  cargo run -p ym-gpu --example demosaic_gate "${RELEASE_LIKE[@]}" -- all
 fi
 if [ "$what" = all ] || [ "$what" = timing ]; then
-  cargo run -p ym-gpu --example ra05_timing "${RELEASE_LIKE[@]}"
+  cargo run -p ym-gpu --example demosaic_timing "${RELEASE_LIKE[@]}"
 fi
 if [ "$what" = blind ]; then
   cargo build -p ym-cli --features force-demosaic "${RELEASE_LIKE[@]}"
-  python3 -I tools/eval/demosaic/blind_look.py render --ym target/debug/ym --out testdata/ra05 "${@:2}"
+  python3 -I tools/eval/demosaic/blind_look.py render --ym target/debug/ym --out testdata/demosaic_gate "${@:2}"
 fi

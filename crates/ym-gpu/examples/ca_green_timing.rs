@@ -1,7 +1,7 @@
-//! Timing of the CA path of the adaptive ratio demosaic against the plain path (RA-03b).
+//! Timing of the CA path of the adaptive ratio demosaic against the plain path.
 //!
 //! ```text
-//! CARGO_INCREMENTAL=0 cargo run -p ym-gpu --example ra03b_timing \
+//! CARGO_INCREMENTAL=0 cargo run -p ym-gpu --example ca_green_timing \
 //!     --config 'profile.dev.package.ym-gpu.opt-level=3' [-- <megapixels>]
 //! ```
 //!

@@ -1,4 +1,4 @@
-//! The k x k binning of the fit view on the device, and the sigma it leaves (G-07, `docs/01`: the
+//! The k x k binning of the fit view on the device, and the sigma it leaves (`docs/01`: the
 //! reduced path).
 //!
 //! The CPU reference is `ym-core`'s `bin_mosaic` (one pixel per `k x k` block with all three

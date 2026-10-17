@@ -1,4 +1,4 @@
-//! Helpers shared by the G-07 test files (`gpu_front.rs`, `gpu_lens.rs`, `gpu_reduced.rs`,
+//! Helpers shared by the raw front tests (`gpu_front.rs`, `gpu_lens.rs`, `gpu_reduced.rs`,
 //! `gpu_chain.rs`): raw scenes with clipping, the CPU front of the chain (R1, R3, R4, R5, R5b) on a
 //! whole frame, and a device job runner.
 //!

@@ -1,5 +1,5 @@
 //! Where the time of an export goes on the CPU: the encode split behind the export tail on the device
-//! (`docs/09-export.md`, "Where the time goes", `docs/gpu-plan.md` G-08).
+//! (`docs/09-export.md`, "Where the time goes", `docs/17-gpu.md` section 10).
 //!
 //! The test is ignored by default (it needs a release build and a quiet machine). Run it with
 //!

@@ -1520,7 +1520,7 @@ fn pair_groups(w: usize, h: usize) -> (u32, u32) {
 }
 
 /// The size of the largest storage binding a colour pass over the `window` makes (K4 of
-/// `docs/gpu-plan.md`): a four-plane source or destination of f32 samples, 16 bytes a pixel.
+/// `docs/17-gpu.md`): a four-plane source or destination of f32 samples, 16 bytes a pixel.
 pub fn max_binding_bytes(window: Rect) -> u64 {
     16 * even(window.w) as u64 * window.h as u64
 }
@@ -1604,13 +1604,14 @@ mod tests {
 
     #[test]
     fn the_per_frame_block_is_about_2_kb() {
-        // "A per-frame `ChainU` of about 1 KB" (docs/gpu-plan.md G-04): the ACES 2 scalars live in
-        // the one uniform block (K3 allows one), so the block holds the whole chain's parameters. It was
-        // 992 bytes; the Before view's camera default added 64 (the 3x3 rows and the curve constants),
-        // and the colour warp (C9b) 1040: the counts (16), three rows for each of 16 moving pins (768)
-        // and one row for each of 16 locks (256). Still far below the 64 KiB uniform binding the
-        // device asks for (`max_uniform_buffer_binding_size` of `wgpu::Limits::default()`) and the
-        // 16 KiB of wgpu's downlevel limits.
+        // The per-frame `ChainU` (`docs/17-gpu.md` section 11) was meant to be about 1 KB: the
+        // ACES 2 scalars live in the one uniform block (K3 allows one), so the block holds the
+        // whole chain's parameters. It was 992 bytes; the Before view's camera default added 64
+        // (the 3x3 rows and the curve constants), and the colour warp (C9b) 1040: the counts (16),
+        // three rows for each of 16 moving pins (768) and one row for each of 16 locks (256). Still
+        // far below the 64 KiB uniform binding the device asks for
+        // (`max_uniform_buffer_binding_size` of `wgpu::Limits::default()`) and the 16 KiB of wgpu's
+        // downlevel limits.
         assert_eq!(size_of::<ChainU>(), 2096);
         assert_eq!(size_of::<ChainU>() % 16, 0);
         assert_eq!(

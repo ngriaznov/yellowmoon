@@ -1,6 +1,5 @@
-//! Shared plumbing of the raw-algorithms package (RA-02, `docs/algorithms/INTEGRATION.md`
-//! sections 2 to 4): the noise model on the 16-bit working scale, `demosaic_with` and the CA curve
-//! type.
+//! Shared plumbing of the raw-algorithms package (`docs/algorithms/INTEGRATION.md` sections 2 to
+//! 4): the noise model on the 16-bit working scale, `demosaic_with` and the CA curve type.
 //!
 //! * `noise_dn_matches_the_vectors`: [`NoiseDn::from_model`] against the numbers the C++ oracle
 //!   wrote into the vectors' `derived` fields (adaptive ratio `g_dn`/`r_dn`, log-guided
@@ -11,7 +10,7 @@
 //! * `ca_curves_from_the_vector_*`: the `ca_weighting` curves load into [`CaCurves`] and give the
 //!   misregistration the spec states for that tile (0.68 to 0.72 px).
 //!
-//! Added in review (RA-02 reviewer):
+//! Added in review:
 //!
 //! * `noise_dn_matches_the_oracle_on_models_beyond_the_vectors`: 40 more models, bit-exact
 //!   against the C++ references' own derivation (zero model, extremes, log-uniform draws).
@@ -513,9 +512,9 @@ fn full_chain(noise: Option<NoiseDn>) -> Chain {
 
 #[test]
 fn the_noise_field_of_the_chain_changes_nothing_yet() {
-    // RA-02 is plumbing: no stage reads `Chain::noise`, so whole-frame and tiled output are the
-    // same bits with no model, the zero model and a rich one. (RA-04 and RA-07 change this test
-    // when a stage starts reading the field.)
+    // The field alone is plumbing: no stage of this chain reads `Chain::noise`, so whole-frame and
+    // tiled output are the same bits with no model, the zero model and a rich one. (The adaptive
+    // ratio demosaic and the diffraction deconvolution read the field; this chain uses neither.)
     let (w, h) = (97, 71);
     let img = synth::natural(w, h, 5);
     let m = synth::mosaic_from_rgb(&img, Cfa::RGGB);

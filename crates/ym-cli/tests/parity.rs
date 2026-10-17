@@ -6,7 +6,7 @@
 //! app folder, its own renderer and its own thread layout, so the test also stands for "different
 //! machines of the same build".
 //!
-//! Two legs (`docs/gpu-plan.md` section 7, G-09). The CPU leg gives the binary `--cpu` and the app no
+//! Two legs (`docs/17-gpu.md` section 12). The CPU leg gives the binary `--cpu` and the app no
 //! device: both are the CPU reference whatever graphics card the machine has (without the flag `ym`
 //! would run `auto`, which on a Mac puts every stage on the device while this process's core has none,
 //! and the comparison would be CPU against GPU). The GPU leg opens the device the way the app does
@@ -687,7 +687,7 @@ fn the_settings_an_export_records_reproduce_the_file() {
 }
 
 // ---------------------------------------------------------------------------------------------
-// RA-04: the R6 method forced for the whole render (the default is the adaptive ratio demosaic)
+// The R6 method forced for the whole render (the default is the adaptive ratio demosaic)
 // ---------------------------------------------------------------------------------------------
 
 /// The test-only switch: the `ym` binary of this test run reads it (the `force-demosaic` feature of

@@ -1,9 +1,9 @@
-//! G-07: the raw front on the device against the CPU stages. `prep` (R1 normalise, R3 vignetting, R4
+//! The raw front on the device against the CPU stages. `prep` (R1 normalise, R3 vignetting, R4
 //! gains and the clip bits, `shaders/prep.wgsl`) here; the R5 highlight reconstruction and the R5b
 //! lateral CA on the mosaic are added by the tests further down.
 //!
 //! What is asserted, and what was measured on lavapipe (Mesa 25.2, LLVM 20.1; first measured value,
-//! the bound is twice that, `docs/gpu-plan.md` X-16):
+//! the bound is twice that, `docs/17-gpu.md` section 12):
 //!
 //! | Case | Asserted | Measured |
 //! |---|---|---|
@@ -19,15 +19,15 @@
 //! `YM_REQUIRE_GPU=1`); the Metal runners run the same file (`mac-gpu.yml`).
 
 mod common;
-#[path = "g06/mod.rs"]
-mod g06;
-#[path = "g07/mod.rs"]
-mod g07;
+#[path = "denoise_common/mod.rs"]
+mod denoise_common;
+#[path = "front_common/mod.rs"]
+mod front_common;
 
 use common::exact::{assert_bit_equal, assert_poison_neutral, assert_tiles_equal_whole};
 use common::limits::assert_max_binding_bytes;
 use common::{TestGpu, gpus};
-use g07::{
+use front_common::{
     RawScene, compare_scaled, cpu_front, crop, full_levels, on_device, uneven_levels,
     vignette_profile,
 };
@@ -154,7 +154,7 @@ fn prep_with_the_profile_matches_the_cpu() {
             }
         }
     }
-    eprintln!("[G-07] prep with the profile: worst {worst:e} ({worst_at})");
+    eprintln!("[raw front] prep with the profile: worst {worst:e} ({worst_at})");
     assert!(worst <= VIGNETTE_BOUND, "{worst:e} at {worst_at}");
 }
 
@@ -226,7 +226,7 @@ fn tiles_of_the_prep_pass_equal_the_whole_frame() {
     // And the whole frame is the CPU's within the bound.
     let (cpu, _) = cpu_front(&scene, &levels, GAINS, Some(&profile));
     let worst = compare_scaled(&whole, &cpu.data).0;
-    eprintln!("[G-07] prep tiles of a 203 x 157 frame against the CPU: worst {worst:e}");
+    eprintln!("[raw front] prep tiles of a 203 x 157 frame against the CPU: worst {worst:e}");
     assert!(worst <= VIGNETTE_BOUND, "{worst:e}");
 }
 
@@ -315,7 +315,7 @@ fn two_slabs_give_the_bits_of_one() {
 /// A 70 MP header (9792 x 7168 photosites): the words need two slabs of at most 128 MiB, the corner
 /// tile still has the CPU's values. Takes a few seconds on lavapipe.
 #[test]
-#[ignore = "70 MP: 140 MB of words; run with --ignored (wave 5 runs it on Metal)"]
+#[ignore = "70 MP: 140 MB of words; run with --ignored (mac-gpu.yml runs it on Metal)"]
 fn a_70_mp_frame_runs_through_two_slabs() {
     let Some(dev) = f32_device() else { return };
     let (w, h) = (9792usize, 7168usize);
@@ -367,7 +367,7 @@ fn a_70_mp_frame_runs_through_two_slabs() {
         ym_gpu::cpu::vignette::apply_vignette(&mut m, &profile);
         ym_gpu::cpu::gains::apply_gains(&mut m, GAINS);
         let e = compare_scaled(g, &m.data).0;
-        eprintln!("[G-07] 70 MP tile {r:?}: worst {e:e}");
+        eprintln!("[raw front] 70 MP tile {r:?}: worst {e:e}");
         assert!(e <= VIGNETTE_BOUND, "{r:?}: {e:e}");
     }
 }
@@ -416,7 +416,7 @@ fn the_far_corner_of_a_50_mp_frame_has_the_cpus_gain() {
         ym_gpu::cpu::gains::apply_gains(&mut m, GAINS);
         worst = worst.max(compare_scaled(g, &m.data).0);
     }
-    eprintln!("[G-07] far corner of 8658 x 5772: worst {worst:e}");
+    eprintln!("[raw front] far corner of 8658 x 5772: worst {worst:e}");
     assert!(worst <= VIGNETTE_BOUND, "{worst:e}");
 }
 
@@ -429,18 +429,18 @@ fn the_binding_of_a_prep_pass_fits_the_design_binding() {
 // R5 highlight reconstruction
 // ---------------------------------------------------------------------------------------------
 
-use g07::{cpu_highlights, highlight_scenes};
+use front_common::{cpu_highlights, highlight_scenes};
 use ym_gpu::cpu::highlights;
 use ym_gpu::cpu::tiling::Halo;
 use ym_gpu::kernels::highlights as hl;
 
 /// Largest `|gpu - cpu|` of the apply pass (values up to about 3 after the gains) with the CPU's
 /// offsets, on the ten scenes. Measured 0 (the cube root is correctly rounded and the CPU's is the
-/// glibc one, which agrees on these values): the plan's number is kept as the margin for a libm whose
-/// `cbrtf` is one ulp off in one case of ten.
+/// glibc one, which agrees on these values): the starting threshold (`docs/17-gpu.md` section 12)
+/// is kept as the margin for a libm whose `cbrtf` is one ulp off in one case of ten.
 const HIGHLIGHT_BOUND: f32 = 1e-6;
-/// Largest relative difference of the device offsets from the CPU's. Measured 7.0e-8; the plan's
-/// number is 1e-6, kept for the same reason.
+/// Largest relative difference of the device offsets from the CPU's. Measured 7.0e-8; the starting
+/// threshold is 1e-6, kept for the same reason.
 const OFFSET_BOUND: f32 = 1e-6;
 
 /// prep (no vignette) then the apply pass for the `core` of the `rect` of the frame, on the device,
@@ -525,7 +525,9 @@ fn r5_matches_the_cpu_on_the_ten_synthetic_highlight_scenes() {
         changed >= 8,
         "only {changed} of ten scenes had something to reconstruct"
     );
-    eprintln!("[G-07] R5 apply on ten scenes ({changed} changed): worst {worst:e} ({worst_scene})");
+    eprintln!(
+        "[raw front] R5 apply on ten scenes ({changed} changed): worst {worst:e} ({worst_scene})"
+    );
     assert!(worst <= HIGHLIGHT_BOUND, "{worst:e} {worst_scene}");
 }
 
@@ -565,7 +567,7 @@ fn an_odd_sized_frame_leaves_its_last_row_and_column_alone() {
     highlights::apply_offsets(&mut cpu, &mask, &off).expect("apply");
     let gpu = run_highlights(dev, &scene, levels, Rect::whole(w, h), Rect::whole(w, h), o);
     let e = compare_scaled(&gpu, &cpu.data);
-    eprintln!("[G-07] R5 on a 61 x 47 frame: worst {:e}", e.0);
+    eprintln!("[raw front] R5 on a 61 x 47 frame: worst {:e}", e.0);
     assert!(e.0 <= HIGHLIGHT_BOUND, "{:e}", e.0);
 }
 
@@ -620,7 +622,7 @@ fn the_device_offsets_match_the_cpus_within_1e_6() {
         }
         cases += 1;
     }
-    eprintln!("[G-07] chroma offsets, {cases} runs: worst relative difference {worst:e}");
+    eprintln!("[raw front] chroma offsets, {cases} runs: worst relative difference {worst:e}");
     assert!(worst <= OFFSET_BOUND, "{worst:e}");
 }
 
@@ -680,8 +682,8 @@ use ym_gpu::cpu::lens::{self, LensGeometry, LensSwitches, LensTags};
 use ym_gpu::cpu::synth;
 use ym_gpu::kernels::mosaic_ca;
 
-/// Largest `|gpu - cpu|` of R5b on natural content (white 1.0): the plan's number is 1e-5, the bound is
-/// twice the first measured value (3.0e-7, about one ulp of the values), see the test.
+/// Largest `|gpu - cpu|` of R5b on natural content (white 1.0): the starting threshold is 1e-5, the
+/// bound is twice the first measured value (3.0e-7, about one ulp of the values), see the test.
 const MOSAIC_CA_BOUND: f32 = 6e-7;
 /// Lens tags with a lateral CA of up to a few pixels at the corner of a 200-pixel frame.
 fn ca_tags() -> LensTags {
@@ -732,7 +734,7 @@ fn r5b_matches_the_cpu_for_every_phase_and_odd_sizes() {
             }
         }
     }
-    eprintln!("[G-07] R5b: worst {worst:e} ({worst_at})");
+    eprintln!("[raw front] R5b: worst {worst:e} ({worst_at})");
     assert!(worst <= MOSAIC_CA_BOUND, "{worst:e} {worst_at}");
 }
 
@@ -754,7 +756,7 @@ fn r5b_tiles_with_the_stage_halo_equal_the_whole_frame() {
     let mut cpu = m.clone();
     lens::correct_mosaic_ca(&mut cpu, &curves).expect("cpu");
     let worst = compare_scaled(&whole, &cpu.data).0;
-    eprintln!("[G-07] R5b tiles of a 203 x 157 frame against the CPU: worst {worst:e}");
+    eprintln!("[raw front] R5b tiles of a 203 x 157 frame against the CPU: worst {worst:e}");
     assert!(worst <= MOSAIC_CA_BOUND, "{worst:e}");
 }
 
@@ -783,7 +785,7 @@ fn r5b_at_the_far_corner_of_a_50_mp_frame() {
     let want = crop(&cpu.data, rect.w, rel);
     let e = compare_scaled(&gpu, &want);
     eprintln!(
-        "[G-07] R5b at the far corner of 8658 x 5772: worst {:e}",
+        "[raw front] R5b at the far corner of 8658 x 5772: worst {:e}",
         e.0
     );
     assert!(e.0 <= MOSAIC_CA_BOUND, "{:e}", e.0);

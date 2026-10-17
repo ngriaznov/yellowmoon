@@ -1,7 +1,7 @@
-//! G-10: device residency through the renderer (Mesa lavapipe in CI).
+//! Device residency through the renderer (Mesa lavapipe in CI).
 //!
-//! The caches of the raw group keep what the device made where it is ([`Backing`], `docs/gpu-plan.md`
-//! G-10): the reduced group of a fit view as bands of rows, the tiles of the 100 % view as images, and
+//! The caches of the raw group keep what the device made where it is ([`Backing`], `docs/17-gpu.md`
+//! section 3): the reduced group of a fit view as bands of rows, the tiles of the 100 % view as images, and
 //! the sampler reads them in place. What is checked here:
 //!
 //! * **Same bytes.** A frame made from a resident group or resident tiles equals the frame made with
@@ -231,7 +231,7 @@ fn a_resident_fit_frame_reads_back_the_frame_and_nothing_else() {
     let (host_reads, host_submits, host_frame) = counted(false);
     let (resident_reads, resident_submits, resident_frame) = counted(true);
     eprintln!(
-        "[G-10] fit frame, first of a photo: host caches {host_reads} readbacks and {host_submits} submissions; resident {resident_reads} readbacks and {resident_submits} submissions"
+        "[residency] fit frame, first of a photo: host caches {host_reads} readbacks and {host_submits} submissions; resident {resident_reads} readbacks and {resident_submits} submissions"
     );
     assert_eq!(
         resident_reads, 1,
@@ -302,7 +302,7 @@ fn a_100_percent_frame_from_resident_tiles_is_the_host_round_trip_bit_for_bit() 
         assert_eq!(b.report.scale, 1, "{name}: full resolution");
         same_frame(&a, &b, name);
         eprintln!(
-            "[G-10] 100 % {name}: resident frame {} readbacks, {} submissions",
+            "[residency] 100 % {name}: resident frame {} readbacks, {} submissions",
             after.readbacks - before.readbacks,
             after.submissions - before.submissions
         );
@@ -335,7 +335,7 @@ fn a_pan_over_cached_resident_tiles_makes_no_tile_and_reads_back_the_frame_only(
     same_frame(&reference, &again, "graded, cached tiles");
     let window_bytes = 12 * 300 * 200;
     eprintln!(
-        "[G-10] 100 % pan over cached tiles: resident {} B uploaded, {} readbacks, {} submissions; host caches {} B uploaded",
+        "[residency] 100 % pan over cached tiles: resident {} B uploaded, {} readbacks, {} submissions; host caches {} B uploaded",
         resident_ran.uploaded_bytes,
         resident_ran.readbacks,
         resident_ran.submissions,
@@ -371,14 +371,14 @@ fn the_ledger_holds_the_caches_and_gives_them_back_with_the_tiles_and_the_photo(
     let with_tiles = pool_in_use(&gpu);
     assert!(with_tiles > with_group, "the tiles are held too");
     eprintln!(
-        "[G-10] ledger: baseline {baseline} B, photo with its group {with_group} B, with tiles {with_tiles} B"
+        "[residency] ledger: baseline {baseline} B, photo with its group {with_group} B, with tiles {with_tiles} B"
     );
 
     // Navigating away lets go of the tiles (the full-resolution intermediates), keeps the group and
     // the words (the photo left is the one before the current one).
     r.navigate(other.id);
     let after_navigation = pool_in_use(&gpu);
-    eprintln!("[G-10] ledger after navigating away: {after_navigation} B");
+    eprintln!("[residency] ledger after navigating away: {after_navigation} B");
     assert!(
         after_navigation < with_tiles,
         "the tiles of the photo left are let go of ({after_navigation} B, with tiles {with_tiles} B)"
@@ -393,7 +393,7 @@ fn the_ledger_holds_the_caches_and_gives_them_back_with_the_tiles_and_the_photo(
     assert_eq!(end, baseline, "the ledger is back at its baseline");
 }
 
-/// Review of G-10: the readout of the pixel under the pointer is asked for on every move of the mouse
+/// The readout of the pixel under the pointer is asked for on every move of the mouse
 /// over the photo. It reads one pixel; it must not bring the group (or the tiles) back to the host
 /// and replace the cache entries with host images, which is what a host read of a resident cache does
 /// (`Job::demote`): the next frame would upload the window again, and the residency would be gone
@@ -591,7 +591,7 @@ fn an_export_reads_back_the_bands_and_hands_the_ledger_back() {
     let (without_front, _) = run(&behind);
     let tiles = 900usize.div_ceil(256) * 600usize.div_ceil(256);
     eprintln!(
-        "[G-10] export of 900 x 600 in {tiles} tiles: raw front on the device {} readbacks, {} submissions, {} dispatches; front behind the CPU {} readbacks, {} submissions",
+        "[residency] export of 900 x 600 in {tiles} tiles: raw front on the device {} readbacks, {} submissions, {} dispatches; front behind the CPU {} readbacks, {} submissions",
         with_front.readbacks,
         with_front.submissions,
         with_front.dispatches,
@@ -698,7 +698,7 @@ mod faults {
             let info = gpu.info();
             let _ = writeln!(
                 std::io::stderr(),
-                "[G-10] {}: the recovered device's frame (the CPU's group) against the resident one (the device's group): {differing} of {} bytes differ, at most {most} codes",
+                "[residency] {}: the recovered device's frame (the CPU's group) against the resident one (the device's group): {differing} of {} bytes differ, at most {most} codes",
                 info.name,
                 again.rgba.len()
             );
@@ -730,7 +730,7 @@ mod faults {
     /// and the next Metal run prints the measured value.
     const HARDWARE_CODES: u8 = 4;
 
-    /// Review of G-10: a 100 % view whose tiles are made by the device until one of them fails and
+    /// A 100 % view whose tiles are made by the device until one of them fails and
     /// by the CPU after that. The cache then holds device tiles and a host tile side by side; the
     /// frame is made of them as the host caches (the same two tiles read back, the same CPU tile)
     /// make it, bit for bit, and the tiles the device made stay what they were.

@@ -44,7 +44,7 @@ export function exportStatusText(stats: RenderStats): string {
 const PhotoStrip = memo(Filmstrip);
 
 /**
- * Where "4 of 12 · 3 picked" is shown. The shipped answer is the filmstrip's own caption. Variant (a) of round 5 puts it in the header
+ * Where "4 of 12 · 3 picked" is shown. The shipped answer is the filmstrip's own caption. Variant (a) puts it in the header
  * beside the status text instead (windows 1440 px and wider; narrower ones keep the caption, there is no room); `?count=header` turns
  * it on in the dev page so that both can be looked at.
  */

@@ -1,17 +1,18 @@
-// The geometry sampler (docs/gpu-plan.md G-04): camera RGB through a grid that maps output pixels to
-// buffer positions (orientation, quarter turns, straighten, crop), the GPU twin of
+// The geometry sampler (docs/17-gpu.md section 11): camera RGB through a grid that maps output
+// pixels to buffer positions (orientation, quarter turns, straighten, crop), the GPU twin of
 // `ym_gpu::cpu::sampler::sample_to_camera`. Three kernels: a pixel copy, Catmull-Rom, and a box of
-// n x n bilinear sub-samples. The output is a four-plane image: R, G, B and a plane that is 1.0 where
-// the pixel is outside the photo (the letterbox) and 0.0 inside; outside pixels are 0 in R, G, B.
+// n x n bilinear sub-samples. The output is a four-plane image: R, G, B and a plane that is 1.0
+// where the pixel is outside the photo (the letterbox) and 0.0 inside; outside pixels are 0 in
+// R, G, B.
 //
-// Positions (D4 and D5 of the plan). The host collapses the position chain into one affine map in f64
-// and splits what each column and each row of the *picture* contributes into an integer part and a
-// fraction in [0, 1): `cols` for the x part (J * (X, 0)), `rows` for the y part (J * (0, Y) + the
-// offset, less the integer origin of the source image). A source position is the sum of one entry of
-// each: the integer parts are added as integers and the two fractions as f32, so there is no f32
-// value of order 1e4 anywhere and the precision is that of a fraction (1e-7 px). The entries depend
-// only on the absolute column and row, never on the window being rendered, so a tile and the whole
-// frame sample every pixel with the same bits.
+// Positions (D4 and D5 of docs/17-gpu.md). The host collapses the position chain into one affine
+// map in f64 and splits what each column and each row of the *picture* contributes into an integer
+// part and a fraction in [0, 1): `cols` for the x part (J * (X, 0)), `rows` for the y part
+// (J * (0, Y) + the offset, less the integer origin of the source image). A source position is the
+// sum of one entry of each: the integer parts are added as integers and the two fractions as f32, so
+// there is no f32 value of order 1e4 anywhere and the precision is that of a fraction (1e-7 px). The
+// entries depend only on the absolute column and row, never on the window being rendered, so a tile
+// and the whole frame sample every pixel with the same bits.
 //
 // The inside test is not evaluated here either. The host gives, for every output row and sub-sample,
 // the exact interval of columns the CPU's f64 predicate accepts (`inside`), so the mask equals the

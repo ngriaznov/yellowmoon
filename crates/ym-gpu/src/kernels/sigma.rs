@@ -1,4 +1,4 @@
-//! The noise sigma plane of a photo at half resolution, on the device (G-07, `docs/06-noise.md`).
+//! The noise sigma plane of a photo at half resolution, on the device (`docs/06-noise.md`).
 //!
 //! The CPU reference is `ym-core`'s `sigma_plane`: R1 and R4 on the mosaic (no vignetting), the four
 //! CFA positions of each 2 x 2 cell smoothed by a 5 x 5 box and put through the noise model

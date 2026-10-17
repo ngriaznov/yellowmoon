@@ -1,5 +1,5 @@
-//! G-09: the device path is deterministic (`docs/gpu-plan.md` sections 4.5 D7 and D8, and the determinism list of
-//! section 7). Same machine, same adapter and driver: the same input, settings and version give the same bytes,
+//! The device path is deterministic (`docs/17-gpu.md` D7 and D8, and the determinism list of
+//! section 12). Same machine, same adapter and driver: the same input, settings and version give the same bytes,
 //! whatever else the device did before, beside or between the jobs of an export. Mesa lavapipe in CI, Metal on the
 //! Apple runners (`.github/workflows/mac-gpu.yml`); the device is opened in poison mode, so a kernel that reads
 //! what an earlier job left behind fails the comparison instead of passing by luck.

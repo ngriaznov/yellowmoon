@@ -1,4 +1,4 @@
-//! Output sharpening on the GPU (RA-09, device entry points G-04): the WGSL port of
+//! Output sharpening on the GPU: the WGSL port of
 //! [`crate::cpu::output_sharpen`], specified in `docs/algorithms/04-output-sharpening.md`.
 //!
 //! [`PreparedSharpen::new`] derives the stages of an [`OutputSharpen`] for an output scale with the
@@ -89,7 +89,7 @@
 //!   flip and transpose runs, the two 2048 x 1365 limiter cases); the MSL of the shader before the
 //!   change reproduces Metal's 1.959e-3 on the 2048 px export exactly. The tests therefore hold
 //!   hardware adapters to the lavapipe bounds (`tests/gpu_output_sharpen.rs`), and
-//!   `docs/gpu-plan.md` section 12 has the numbers.
+//!   `docs/17-gpu.md` section 13 has the numbers.
 //!
 //! The cost: the luma and the gradient take a 26-step integer square root, and the window, the
 //! accumulation and the transfer take up to eleven exact divisions per pixel (about 25 operations
@@ -124,7 +124,7 @@ use crate::tiles::{Tile, TilePlan};
 pub const BYTES_PER_PIXEL: u64 = 4 * (3 + 1 + 1 + 1 + 1 + 1 + 4 + 4 + 3);
 
 /// The size of the largest storage binding a run over the `compute` rectangle makes (K4 of
-/// `docs/gpu-plan.md`): four `f32` planes, either the limiter's working buffers or a source image
+/// `docs/17-gpu.md`): four `f32` planes, either the limiter's working buffers or a source image
 /// with a mask plane.
 pub fn max_binding_bytes(compute: Rect) -> u64 {
     16 * even(compute.w) as u64 * compute.h as u64

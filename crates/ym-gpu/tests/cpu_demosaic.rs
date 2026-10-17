@@ -10,9 +10,9 @@
 //!   with `YM_TESTDATA`); run with
 //!   `cargo test -p ym-gpu --test cpu_demosaic --release -- --ignored --nocapture`.
 //!
-//! The RA-05 gate of the R6 default (linear light at signal scales 1, 0.1 and 0.01, zipper and
-//! false-colour metrics, noisy inputs, CPU time per 50 MP) is `examples/ra05_gate.rs` and
-//! `examples/ra05_timing.rs`, run by `tools/eval/demosaic/gate.sh`; its metrics are tested in
+//! The gate of the R6 default (linear light at signal scales 1, 0.1 and 0.01, zipper and
+//! false-colour metrics, noisy inputs, CPU time per 50 MP) is `examples/demosaic_gate.rs` and
+//! `examples/demosaic_timing.rs`, run by `tools/eval/demosaic/gate.sh`; its metrics are tested in
 //! `tests/cpu_demosaic_metrics.rs`.
 
 use std::path::{Path, PathBuf};

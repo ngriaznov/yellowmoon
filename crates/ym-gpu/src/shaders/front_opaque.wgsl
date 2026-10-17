@@ -1,4 +1,4 @@
-// The runtime zero of the raw-front kernels (G-07, K8 of docs/gpu-plan.md). Every kernel of the family
+// The runtime zero of the raw-front kernels (K8 of docs/17-gpu.md). Every kernel of the family
 // (prep, highlights, mosaic CA, lens, sigma, bin) keeps `zero` as the first member of its uniform block
 // `pu`, and the host writes +0.0 bits into `zero.x`. A value OR-ed with it is hidden from the compiler:
 // Metal compiles with fast-math, which re-associates sums and contracts a product that meets a sum

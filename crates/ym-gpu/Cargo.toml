@@ -11,7 +11,7 @@ publish = false
 
 [dependencies]
 ym-color.workspace = true
-# `NoiseDn::from_model` converts the noise model of the sigma map (`cpu::noise`, RA-02). ym-noise
+# `NoiseDn::from_model` converts the noise model of the sigma map (`cpu::noise`). ym-noise
 # does not depend on this crate.
 ym-noise.workspace = true
 thiserror.workspace = true
@@ -28,8 +28,8 @@ libm = "0.2"
 
 [features]
 # Off by default, so no normal build changes. `ml` makes the device request exactly what cubecl (burn's
-# wgpu backend) requests from an adapter, so the device can be imported into burn (`docs/gpu-plan.md`
-# section 8): every adapter feature except `MAPPABLE_PRIMARY_BUFFERS`, the adapter's limits, no experimental
+# wgpu backend) requests from an adapter, so the device can be imported into burn (`docs/17-gpu.md`
+# section 14): every adapter feature except `MAPPABLE_PRIMARY_BUFFERS`, the adapter's limits, no experimental
 # opt-in. The `ml-backends` CI job turns it on; the application never does.
 ml = []
 # Fault injection for the fallback tests (`GpuFault`, `YM_GPU_FAULT`): out of budget, a bad shader, a lost
@@ -42,7 +42,7 @@ tiff.workspace = true
 serde_json.workspace = true
 # Offline WGSL validation and translation to MSL (Metal), SPIR-V (Vulkan) and HLSL (DirectX 12) (no GPU
 # needed); MIT OR Apache-2.0, already in the tree via wgpu. `hlsl-out` adds no dependency (a feature of naga
-# itself); it is the only offline check of the DX12 path (`docs/gpu-plan.md` N-9).
+# itself); it is the only offline check of the DX12 path (`docs/17-gpu.md` section 6).
 naga = { version = "30", features = ["wgsl-in", "msl-out", "spv-out", "hlsl-out"] }
 
 # Plain-main benchmarks (no external harness): `cargo bench -p ym-gpu --bench cpu_stages`.

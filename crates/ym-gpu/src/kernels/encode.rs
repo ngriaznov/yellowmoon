@@ -1,7 +1,7 @@
 //! C13 on the device: the output transfer function, the quantiser, the blue-noise dither and the
-//! letterbox of a display-linear image (`docs/02-colour-pipeline.md`, stage C13; `docs/gpu-plan.md`
-//! G-04). It turns the f32 result of the colour chain and of output sharpening into what a consumer
-//! reads:
+//! letterbox of a display-linear image (`docs/02-colour-pipeline.md`, stage C13; `docs/17-gpu.md`
+//! section 11). It turns the f32 result of the colour chain and of output sharpening into what a
+//! consumer reads:
 //!
 //! * [`Encoding::Rgba8`]: one word per pixel, the viewport's and the thumbnails' format, with the
 //!   letterbox painted where the source's mask plane says the pixel is outside the photo;
@@ -101,7 +101,7 @@ pub fn band_bytes(encoding: Encoding, width: usize, rows: usize) -> u64 {
 }
 
 /// The size of the largest storage binding an encode pass over the `window` makes (K4 of
-/// `docs/gpu-plan.md`): the four-plane source, 16 bytes a pixel.
+/// `docs/17-gpu.md`): the four-plane source, 16 bytes a pixel.
 pub fn max_binding_bytes(window: Rect) -> u64 {
     16 * even(window.w) as u64 * window.h as u64
 }

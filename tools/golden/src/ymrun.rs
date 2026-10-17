@@ -8,7 +8,7 @@
 //! export defaults) and imported looks cannot change a golden render.
 //!
 //! The golden hashes pin the CPU reference: the process gets `--cpu` and `YELLOWMOON_GPU=off`, so that no graphics
-//! device is opened and a machine with a GPU cannot move a hash (`docs/gpu-plan.md` section 7). GPU renders are
+//! device is opened and a machine with a GPU cannot move a hash (`docs/17-gpu.md` section 12). GPU renders are
 //! compared with the stored CPU pictures within a tolerance, in a mode of their own (`golden check --device gpu`):
 //! the process then gets `--require-gpu` and `YELLOWMOON_GPU=require`, so that a fallback to the CPU is an error and
 //! not a pass, and the JSON it prints (`device`, `notes`) is read back so that the report can say what ran where.

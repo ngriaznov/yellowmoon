@@ -1,8 +1,8 @@
-//! G-06: the R8 Richardson-Lucy kernel (`shaders/richardson_lucy.wgsl`, `kernels::richardson_lucy`)
+//! The R8 Richardson-Lucy kernel (`shaders/richardson_lucy.wgsl`, `kernels::richardson_lucy`)
 //! against its CPU reference `cpu::sharpen::richardson_lucy_whole`.
 //!
 //! What is asserted, and what was measured on lavapipe (Mesa 25.2, LLVM 20.1; first measured value,
-//! the bound is twice that, `docs/gpu-plan.md` X-16):
+//! the bound is twice that, `docs/17-gpu.md` section 12):
 //!
 //! | Case | Asserted | Measured |
 //! |---|---|---|
@@ -16,15 +16,15 @@
 //! the Metal runners run the same file (`mac-gpu.yml`).
 
 mod common;
-#[path = "g06/mod.rs"]
-mod g06;
+#[path = "denoise_common/mod.rs"]
+mod denoise_common;
 
 use common::exact::{
     assert_all_finite, assert_bit_equal, assert_poison_neutral, assert_tiles_equal_whole,
 };
 use common::limits::assert_max_binding_bytes;
 use common::{TestGpu, gpus};
-use g06::{FNV_START, compare, fnv, placed, sigma_plane};
+use denoise_common::{FNV_START, compare, fnv, placed, sigma_plane};
 use ym_gpu::chain::MAX_PHYS_AREA;
 use ym_gpu::cpu::filters::gaussian_kernel;
 use ym_gpu::cpu::sharpen::{SharpenParams, richardson_lucy_whole};
@@ -45,12 +45,12 @@ const BOUND_N4: f32 = 1.5e-6;
 const BOUND: f32 = 1.5e-6;
 /// Hardware adapters, `matches_the_cpu_for_every_iteration_count`, which prints its worst value by iteration count: Metal
 /// (macos-14 and macos-15, run 38694506557) gave 2.38e-7 (n = 1) rising to 1.19e-6 (n = 4) and 2.26e-6 (n = 10), so the
-/// bounds are twice the worst of n up to 4 and of n up to 10 (G-09).
+/// bounds are twice the worst of n up to 4 and of n up to 10.
 const HW_BOUND_N4: f32 = 2.38e-6;
 /// See [`HW_BOUND_N4`]: n from 5 to 10.
 const HW_BOUND_N10: f32 = 4.52e-6;
-/// Hardware adapters, the tests whose Metal value was not printed yet (the tile and PSF tests now print it): the plan's
-/// starting value for Richardson-Lucy (`docs/gpu-plan.md` section 7), to be lowered to twice what the next Metal run prints.
+/// Hardware adapters, the tests whose Metal value was not printed yet (the tile and PSF tests now print it): the
+/// starting value for Richardson-Lucy (`docs/17-gpu.md` section 12), to be lowered to twice what the next Metal run prints.
 const HW_BOUND: f32 = 5e-5;
 /// The distance of a tile beyond the halo cap from the whole frame: twice the first measured value
 /// (2.1e-7; the CPU's own bands differ from its whole-frame run by 9.5e-7 there).
@@ -243,7 +243,7 @@ fn matches_the_cpu_for_every_iteration_count() {
         let e = compare(&got.data, &want.data);
         let n = params.iterations();
         eprintln!(
-            "[G-06] rl case {i} {w}x{h} n {n} radius {radius} frame {frame:?}: max {:.3e} at {} mean {:.2e}",
+            "[R6..R8] rl case {i} {w}x{h} n {n} radius {radius} frame {frame:?}: max {:.3e} at {} mean {:.2e}",
             e.max, e.at, e.mean
         );
         worst_by_n[n] = worst_by_n[n].max(e.max);
@@ -264,7 +264,7 @@ fn matches_the_cpu_for_every_iteration_count() {
     let line: Vec<String> = (1..=10)
         .map(|n| format!("n{n} {:.2e}", worst_by_n[n]))
         .collect();
-    g06::ci_note(
+    denoise_common::ci_note(
         "richardson-lucy",
         &format!(
             "Richardson-Lucy on {}: worst by iterations: {}",
@@ -321,7 +321,7 @@ fn tiles_with_the_plans_halo_equal_the_whole_frame_bit_for_bit() {
     });
     let want = cpu_reference(&img, &SigmaOwned::Plane(plane), &params);
     let e = compare(&whole, &want.data);
-    g06::ci_note(
+    denoise_common::ci_note(
         "rl tiles",
         &format!(
             "Richardson-Lucy 203x157 tiles (n 4) on {}: against the CPU max {:.3e}",
@@ -364,7 +364,7 @@ fn beyond_the_halo_cap_a_tile_differs_from_the_whole_frame_by_a_little() {
         let e = compare(&tile.data, &want.data);
         worst = worst.max(e.max);
     }
-    g06::ci_note(
+    denoise_common::ci_note(
         "rl beyond the cap",
         &format!(
             "Richardson-Lucy beyond the cap (n 10, exact radius 120, halo 24) on {}: tile against whole {worst:.3e}",
@@ -377,7 +377,7 @@ fn beyond_the_halo_cap_a_tile_differs_from_the_whole_frame_by_a_little() {
     let plane2 = plane.clone();
     let banded = ym_gpu::cpu::sharpen::richardson_lucy(&img, &params, &NoiseSigma::Plane(&plane2));
     eprintln!(
-        "[G-06] rl beyond the cap on the CPU: banded against whole {:.3e}",
+        "[R6..R8] rl beyond the cap on the CPU: banded against whole {:.3e}",
         compare(&banded.data, &cpu_whole.data).max
     );
 }
@@ -408,7 +408,7 @@ fn the_psf_follows_the_position_in_the_frame() {
         worst = worst.max(e);
         assert!(e <= bound(dev, BOUND_N4), "{e:e}");
     }
-    g06::ci_note(
+    denoise_common::ci_note(
         "rl psf",
         &format!(
             "Richardson-Lucy, PSF at the centre and the far corner on {}: against the CPU worst {worst:.3e}",
@@ -482,7 +482,7 @@ fn a_poisoned_device_and_a_plain_one_give_the_same_bits() {
 #[test]
 fn thread_count_does_not_change_a_bit() {
     let Some(dev) = f32_device() else { return };
-    g06::assert_thread_count_independent("thread_count_does_not_change_a_bit", || {
+    denoise_common::assert_thread_count_independent("thread_count_does_not_change_a_bit", || {
         let mut h = FNV_START;
         for (w, hh, seed, amount) in [(97usize, 61usize, 1u64, 120.0f32), (203, 157, 2, 300.0)] {
             let img = soft_scene(w, hh, seed, 0.004);

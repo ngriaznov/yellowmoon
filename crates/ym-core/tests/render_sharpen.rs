@@ -4,8 +4,8 @@
 //! letterbox and the Before view change nothing they should not.
 //!
 //! Every test runs twice: on the CPU (`Renderer::neutral_only`, the reference) and on the device
-//! (`*_on_the_device`: the sampler, the colour chain, output sharpening and C13 on Mesa lavapipe,
-//! G-05; the raw chain stays on the CPU so that the difference is the view stages alone). The two must
+//! (`*_on_the_device`: the sampler, the colour chain, output sharpening and C13 on Mesa lavapipe;
+//! the raw chain stays on the CPU so that the difference is the view stages alone). The two must
 //! meet the same assertions: the same run counts, the same agreement with the export within a code.
 mod common;
 
@@ -333,7 +333,7 @@ fn a_view_at_100_percent_is_the_sharpened_picture_the_export_writes_with(
     }
     let _ = writeln!(
         std::io::stderr(),
-        "[G-05] 100 % view against the export: worst {worst:.4} codes at {worst_at:?}, {over_one} samples over 1.0, {moved} samples moved by the stage"
+        "[view stages] 100 % view against the export: worst {worst:.4} codes at {worst_at:?}, {over_one} samples over 1.0, {moved} samples moved by the stage"
     );
     assert!(
         worst <= 1.0 + slack,
@@ -341,7 +341,7 @@ fn a_view_at_100_percent_is_the_sharpened_picture_the_export_writes_with(
     );
     // A shift of the whole picture could hide under the slack; rank-count flips touch a handful
     // of samples (measured: 0 on the CPU, 2 on lavapipe, 5 on Metal). The caps are twice the
-    // measured counts (G-09): 4 on a software adapter, 10 on hardware, and 2 on the CPU, where a
+    // measured counts: 4 on a software adapter, 10 on hardware, and 2 on the CPU, where a
     // count of zero cannot be asked of another libm.
     assert!(
         over_one <= max_over_one,
@@ -369,7 +369,7 @@ fn a_view_at_100_percent_is_the_sharpened_picture_the_export_writes_on_the_devic
     // The bound is twice the excess over the CPU's one code, per adapter kind. Software (lavapipe):
     // first measured 1.1011 codes at one sample of 1.44 million (0.3.0: 1.0967, two samples), so
     // 0.2. Hardware (Metal, 498a078, macos-14 and macos-15 alike): 1.2039 codes at five samples, so
-    // 0.41 (twice the excess of 0.2039, G-09: run 38694506557 printed the same on both runners). The excess is not the stage (device against CPU on the same input: 3e-7 linear) but its
+    // 0.41 (twice the excess of 0.2039; run 38694506557 printed the same on both runners). The excess is not the stage (device against CPU on the same input: 3e-7 linear) but its
     // halo limiter's rank counts, which flip on last-bit differences between the device's f32
     // colour chain and the CPU's f64 one: one ulp of input noise in half the samples moves the CPU
     // stage against itself by 0.197 codes. It lands over one code only where the dither is near
@@ -394,7 +394,7 @@ fn a_view_at_100_percent_is_the_sharpened_picture_the_export_writes_on_the_devic
     let worst = worst_difference(&a, &b);
     let _ = writeln!(
         std::io::stderr(),
-        "[G-05] {}: the 100 % view on the device differs from the CPU's by {worst} codes",
+        "[view stages] {}: the 100 % view on the device differs from the CPU's by {worst} codes",
         gpu.info().name
     );
     assert!(worst <= 2);

@@ -1,4 +1,4 @@
-// The noise sigma plane at half resolution (G-07): the GPU port of `ym-core`'s `sigma_plane`, which is
+// The noise sigma plane at half resolution: the GPU port of `ym-core`'s `sigma_plane`, which is
 // R1 and R4 on the mosaic (no vignetting) followed by `ym_noise::sigma_map::sigma_quad`
 // (`docs/06-noise.md`). One thread per 2 x 2 cell:
 //

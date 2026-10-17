@@ -256,7 +256,7 @@ impl Renderer {
         };
         let grade = job.grade(OutputTarget::Viewport, false)?;
         // The sample comes from the device group when the sampler is there; the reading stays on
-        // the CPU (a few thousand pixels through the f64 trace: `docs/gpu-plan.md` X-14).
+        // the CPU (a few thousand pixels through the f64 trace: `docs/17-gpu.md` section 11).
         let view = sample_view_routed(&mut job, &spec)?;
         let out = read(&view.sampled, &grade.chain);
         job.finish(

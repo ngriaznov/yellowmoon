@@ -1,4 +1,4 @@
-//! RA-09: the log-guided fast demosaic kernel (`shaders/log_guided.wgsl`,
+//! The log-guided fast demosaic kernel (`shaders/log_guided.wgsl`,
 //! `kernels::log_guided`) against its CPU reference
 //! `cpu::demosaic::log_guided::demosaic_float` (spec `docs/algorithms/02-log-guided-demosaic.md`
 //! section 3.9, the all-float form).
@@ -42,14 +42,14 @@ mod common;
 
 /// Prints like `println!` and writes the same line to the process's own stderr as well (the harness captures `println!` and
 /// `eprintln!`, not this), so that the numbers of a passing test reach the CI log of the Apple runners, from which a
-/// hardware column is made (G-09). No annotation: the budget of those is spent by the older notes.
+/// hardware column is made. No annotation: the budget of those is spent by the older notes.
 macro_rules! note {
     ($($arg:tt)*) => {{
         let line = format!($($arg)*);
         println!("{line}");
         let _ = std::io::Write::write_fmt(
             &mut std::io::stderr(),
-            format_args!("[G-09 {}] {line}\n", file!().rsplit('/').next().unwrap_or("")),
+            format_args!("[{}] {line}\n", file!().rsplit('/').next().unwrap_or("")),
         );
     }};
 }

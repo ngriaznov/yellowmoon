@@ -1,4 +1,4 @@
-//! `ym doctor --bench FILE` (G-09, `docs/10-cli.md`): the timings of the render path on one photo, as a report that names
+//! `ym doctor --bench FILE` (`docs/10-cli.md`): the timings of the render path on one photo, as a report that names
 //! no file. Runs on the CPU reference (`YELLOWMOON_GPU=off`) everywhere, and on the device where an adapter opens
 //! (Mesa lavapipe in CI, Metal on the Apple runners).
 

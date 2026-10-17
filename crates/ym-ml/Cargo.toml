@@ -31,7 +31,7 @@ sha2.workspace = true
 hex.workspace = true
 safetensors = "0.8"
 burn = { version = "0.22", default-features = false, features = ["std", "wgpu"], optional = true }
-# The device the image pipeline owns (`docs/gpu-plan.md` section 8); `ml` makes it importable into burn. Only with `burn`.
+# The device the image pipeline owns (`docs/17-gpu.md` section 14); `ml` makes it importable into burn. Only with `burn`.
 ym-gpu = { workspace = true, optional = true, features = ["ml"] }
 # `load-dynamic`: ONNX Runtime is loaded at run time from ORT_DYLIB_PATH (nothing is downloaded at build time).
 ort = { version = "=2.0.0-rc.13", default-features = false, features = ["std", "load-dynamic"], optional = true }

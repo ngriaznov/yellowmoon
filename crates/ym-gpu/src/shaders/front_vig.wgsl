@@ -1,4 +1,4 @@
-// R3's vignetting gain on the device (G-07): `1 / max(G(r), 1e-4)` with `G` the piecewise-linear
+// R3's vignetting gain on the device: `1 / max(G(r), 1e-4)` with `G` the piecewise-linear
 // interpolation of the lens knots (`cpu::vignette::VignetteProfile`, `cpu::spline::LinearKnots`), the
 // knot `i` of `n` at the normalised radius `(i + 0.5) / (n - 1)`. The CPU forms the gain in f64 and
 // multiplies the photosite by `gain as f32`; so that the device multiplies by the same f32, the gain is
@@ -6,7 +6,7 @@
 // integer `X^2 + Y^2` of the doubled offset of the pixel centre from the frame centre under a
 // double-float square root, `u = sqrt(X^2 + Y^2) (n - 1) / sqrt(w^2 + h^2) - 0.5` (the constant is a
 // pair too), the knot index and the fraction come from the pair, and the quotient is a double-float
-// reciprocal. The radius never forms a large float position (D4 of docs/gpu-plan.md): the same value
+// reciprocal. The radius never forms a large float position (D4 of docs/17-gpu.md): the same value
 // in a tile as in the whole frame.
 //
 // A kernel that includes this file has the member `vig: VigU` in its uniform `pu` and includes

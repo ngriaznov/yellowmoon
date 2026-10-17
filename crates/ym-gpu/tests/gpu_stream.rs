@@ -1,4 +1,4 @@
-//! Device images, command streams and chunked transfers (G-02, `docs/gpu-plan.md` 4.3): `GpuImage`,
+//! Device images, command streams and chunked transfers (`docs/17-gpu.md` section 3): `GpuImage`,
 //! `PassList`, `Pending`, the counters, the chunked upload and readback (of the raw words too: the
 //! photo's own resident words are `DeviceRaw`, tested in `gpu_front`), and the test helpers of
 //! `common` (tile = whole, poison-neutral, the 128 MiB design binding).
@@ -31,7 +31,7 @@ fn job() -> JobSpec {
 
 /// A kernel that is still a placeholder (it writes one NaN into binding 0 and nothing else), for the
 /// tests of the pass list that only need *a* dispatch. The first one in `KernelId::ALL`, so the
-/// tests do not name the kernel of a task that may already have replaced it.
+/// tests do not name a kernel that a real one may already have replaced.
 fn placeholder() -> KernelId {
     KernelId::ALL
         .into_iter()
@@ -273,7 +273,7 @@ fn pass_timings_are_reported_when_the_adapter_has_timestamp_queries() {
 #[test]
 fn a_61_megapixel_raw_plane_goes_up_and_comes_back_bit_exact_in_chunks() {
     let Some(dev) = gpu() else { return };
-    // 9504 x 6336: the largest readout the plan keeps resident, 115 MiB of u16 (one 128 MiB binding).
+    // 9504 x 6336: the largest readout kept resident, 115 MiB of u16 (one 128 MiB binding).
     let (w, h) = (9504usize, 6336usize);
     let samples: Vec<u16> = (0..w * h)
         .map(|i| ((i as u32).wrapping_mul(2_654_435_761) >> 16) as u16)

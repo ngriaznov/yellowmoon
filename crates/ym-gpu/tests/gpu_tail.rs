@@ -1,4 +1,4 @@
-//! G-08: the export tail (`tail::ExportTail`) against the CPU export of the same picture: the
+//! The export tail (`tail::ExportTail`) against the CPU export of the same picture: the
 //! sampler, the colour chain C1 to C12, the Lanczos-3 resize, output sharpening and C13, in the
 //! order and with the settings `ym_export` uses.
 //!
@@ -14,14 +14,14 @@
 //! * Poison: every test device fills its buffers with NaN, so a read of what nobody wrote fails.
 
 mod common;
-#[path = "g08/mod.rs"]
-mod g08;
+#[path = "export_common/mod.rs"]
+mod export_common;
 
 use std::sync::Arc;
 
 use common::TestGpu;
 use common::chains;
-use g08::{Scene, ci_note, cpu_codes, diff_codes, exact_scene, rotated_scene};
+use export_common::{Scene, ci_note, cpu_codes, diff_codes, exact_scene, rotated_scene};
 use ym_color::display::{ColorChain, Frame, Layout, OutputTarget};
 use ym_color::encode::OutputSpace;
 use ym_gpu::cpu::RgbImage;
@@ -36,13 +36,14 @@ use ym_gpu::tail::{
 
 /// The largest difference between a device code and the CPU's, 8 bit. The first measured maximum
 /// on Mesa lavapipe over [`configs`] was 1 (the dither flips a code when the f32 colour chain and
-/// the f64 one land on two sides of a threshold); the bound is the plan's "one code".
+/// the f64 one land on two sides of a threshold); the bound is the "one code" of `docs/17-gpu.md`
+/// section 12.
 const MAX_CODE_DIFF_8: u32 = 1;
-/// The share of 8-bit codes that must be exact (the plan: at least 99 %). The first measured
-/// minimum over [`configs`] was 0.9999.
+/// The share of 8-bit codes that must be exact (`docs/17-gpu.md` section 12: at least 99 %). The
+/// first measured minimum over [`configs`] was 0.9999.
 const MIN_EXACT_8: f64 = 0.99;
-/// The largest difference, 16 bit, of an export that is not sharpened (the plan: 8 codes). The first
-/// measured maximum was 1.
+/// The largest difference, 16 bit, of an export that is not sharpened (the first proposal: 8
+/// codes). The first measured maximum was 1.
 const MAX_CODE_DIFF_16: u32 = 8;
 /// Output sharpening amplifies a difference in the colour pass at a few pixels, where its halo
 /// limiter decides on a rank of luma values that the f32 and f64 chains order differently (the
@@ -221,7 +222,7 @@ fn feed_regions(
         let mut ox = 0;
         while ox < sc.w {
             let tw = tile.min(sc.w - ox);
-            if !g08::tile_is_outside(sc, (ox, oy), tw, th) {
+            if !export_common::tile_is_outside(sc, (ox, oy), tw, th) {
                 let (image, origin) = region(ox, oy, tw, th);
                 tail.add_tile(image, origin, (ox, oy), tw, th)?;
             }
@@ -316,7 +317,7 @@ fn the_tail_matches_the_cpu_export_in_every_configuration() {
             let over = (0..got.len())
                 .filter(|&i| got[i].abs_diff(want[i]) > MAX_CODE_DIFF_16)
                 .count();
-            // The share over 8 codes is printed for the 16-bit exports too (G-09): `MAX_FLIP_SHARE_16`
+            // The share over 8 codes is printed for the 16-bit exports too: `MAX_FLIP_SHARE_16`
             // is held by this number, and Metal's value is what a hardware column is made of.
             ci_note(
                 "tail parity",
@@ -538,7 +539,7 @@ fn device_whole(dev: &TestGpu, c: &Config) -> Vec<u32> {
 
 /// The slabs, the windows across their borders, the chunks of the resize and of the sharpening and
 /// the order of the passes do not show: the tail's codes are the codes of the same kernels run on
-/// the whole picture at once (the sharpening stage is tile-exact, D5 of the plan).
+/// the whole picture at once (the sharpening stage is tile-exact, D5 of `docs/17-gpu.md`).
 #[test]
 fn the_tail_is_the_whole_frame_device_chain_bit_for_bit() {
     let Some(dev) = common::gpu() else { return };
@@ -935,7 +936,7 @@ fn assert_tail_matches_cpu(
             // sharpening kernel alone matches lavapipe's bits there; floor 6, two pixels.
             let floor = if dev.gpu.info().is_software { 2.0 } else { 6.0 };
             if over > 0 {
-                // Printed where a flip happened (G-09), so that the next Metal run measures the floor.
+                // Printed where a flip happened, so that the next Metal run measures the floor.
                 ci_note(
                     "tiny pictures",
                     &format!("{label}: {over} over {MAX_CODE_DIFF_16}, max {}", d.max),
@@ -1058,7 +1059,7 @@ fn extreme_resizes_match_the_cpu_export() {
                 out.1
             );
         }
-        // ... and the CPU export's codes within the bounds of the plan.
+        // ... and the CPU export's codes within the bounds above.
         for pct in [0.0, 100.0] {
             assert_tail_matches_cpu(dev, "extreme resize", &sc, out, pct, false, 300);
         }
@@ -1145,9 +1146,9 @@ fn fingerprint(bands: &[Band]) -> u64 {
 /// 50 MP (8688 x 5792) through the tail in 1024 px tiles: what the device holds between two tile rows and at its peak,
 /// against the 800 MB the four planes of the rendered picture would be, and the same codes twice.
 /// Ignored: it makes a 600 MB camera image and runs the colour chain over 50 million pixels (about
-/// a minute on lavapipe in a test build); wave 5 runs it on Metal.
+/// a minute on lavapipe in a test build); `mac-gpu.yml` runs it on Metal.
 #[test]
-#[ignore = "50 MP: run with --ignored (wave 5 runs it on Metal)"]
+#[ignore = "50 MP: run with --ignored (mac-gpu.yml runs it on Metal)"]
 fn fifty_megapixels_leave_a_few_slabs_on_the_device_and_the_same_bytes_twice() {
     let Some(gpu) = common::start_unpoisoned(StoragePreference::Auto) else {
         return;

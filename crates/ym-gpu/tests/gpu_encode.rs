@@ -1,4 +1,4 @@
-//! G-03: the device entry points of the kernels (`encode_*`) chained on the device against the host
+//! The device entry points of the kernels (`encode_*`) chained on the device against the host
 //! wrappers they are the layer under.
 //!
 //! The chain keeps a tile's planes on the device from the mosaic to the end of the raw stages: the

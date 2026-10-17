@@ -1,4 +1,4 @@
-//! The log-guided fast demosaic on the GPU (RA-09): `shaders/log_guided.wgsl`, the all-float form of
+//! The log-guided fast demosaic on the GPU: `shaders/log_guided.wgsl`, the all-float form of
 //! `docs/algorithms/02-log-guided-demosaic.md` section 3.9, against its CPU reference
 //! [`cpu::demosaic::log_guided::demosaic_float`](crate::cpu::demosaic::log_guided::demosaic_float).
 //!
@@ -83,14 +83,15 @@
 //!   With all three, the C port compiled with clang `-O2` or `-O3 -ffast-math -ffp-contract=fast
 //!   -mfma`, `log2` 2 ulp and a reciprocal 1 ulp off, gives at most 1.8e-7 of the peak on the
 //!   stripes of `huge_values_in_strongly_directional_frames_stay_finite_and_match` at every scale
-//!   (`docs/gpu-plan.md` section 12); the divisions left to the device move a sample by an ulp or
+//!   (`docs/17-gpu.md` section 13); the divisions left to the device move a sample by an ulp or
 //!   two and decide nothing discontinuous (where the two box means tie, the two blend weights are
 //!   both 1).
 //!
 //! Not wired into a render path (the log-guided demosaic is a test-switch method on the CPU only,
-//! `docs/gpu-plan.md` section 5). [`encode_demosaic`] is the device-in, device-out entry point of the
-//! plan's shape (`f32` planes, a [`PassList`]); the host wrappers upload, run and
-//! read back, for the tests, and still support the `f16` storage modes of the legacy kernels.
+//! `docs/17-gpu.md` section 11). [`encode_demosaic`] is the device-in, device-out entry point of
+//! the shape of `docs/17-gpu.md` section 3 (`f32` planes, a [`PassList`]); the host wrappers
+//! upload, run and read back, for the tests, and still support the `f16` storage modes of the
+//! legacy kernels.
 
 use bytemuck::{Pod, Zeroable};
 
@@ -230,10 +231,10 @@ fn record(
 /// a new [`GpuImage`] (device in, device out; the host wrappers [`demosaic`], [`demosaic_tiled`] and
 /// [`demosaic_planned`] are a thin layer on the same passes).
 ///
-/// `input` is the one-plane mosaic in `f32` (the planes of the plan are `f32` in every storage mode;
-/// a device opened with an `f16` storage mode for the legacy kernels is refused here), `cfa` the
-/// pattern at its first photosite. The output keeps the input's [`Placement`](crate::cpu::Placement).
-/// Nothing is submitted.
+/// `input` is the one-plane mosaic in `f32` (image planes are `f32` in every storage mode,
+/// `docs/17-gpu.md` section 2; a device opened with an `f16` storage mode for the legacy kernels is
+/// refused here), `cfa` the pattern at its first photosite. The output keeps the input's
+/// [`Placement`](crate::cpu::Placement). Nothing is submitted.
 ///
 /// # Errors
 ///

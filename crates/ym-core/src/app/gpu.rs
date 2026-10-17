@@ -1,5 +1,5 @@
 //! The one place that opens the graphics device: the policy, the stages it may run, and the slot
-//! the application and `ym` both get back (`docs/gpu-plan.md` section 4.1).
+//! the application and `ym` both get back (`docs/17-gpu.md` section 1).
 //!
 //! * [`GpuPolicy`] says what a person or a developer asked for: `Auto` (the default: a hardware
 //!   adapter, and only the stages signed off, [`GpuStages::SIGNED_OFF`]), `On` (any adapter,
@@ -16,9 +16,7 @@
 //! * The device is asked for through an [`AdapterProbe`], so the decision (four policies against a
 //!   hardware adapter, a software adapter and none) is tested without a graphics card.
 //!
-//! In this version the stage set is read by nobody: the colour pass of viewport frames and thumbnails
-//! uses the device when there is one, as before, and every other stage runs on the CPU. The wiring
-//! tasks of the GPU wave consult [`GpuStages`] one stage at a time.
+//! The renderer consults [`GpuStages`] one stage at a time (`RenderOptions::gpu_stages`).
 
 use std::fmt;
 use std::path::PathBuf;
@@ -40,7 +38,7 @@ pub const GPU_ENV: &str = "YELLOWMOON_GPU";
 
 /// The parts of the image pipeline that can run on the device, as a small bit set. Each member is a
 /// range that can be switched on and off on its own; a member that is off keeps the host boundary
-/// it has today (`docs/gpu-plan.md` sections 4.1 and 6).
+/// it has today (`docs/17-gpu.md` section 1).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct GpuStages(u8);
 
@@ -66,7 +64,7 @@ impl GpuStages {
     /// R1 to R9 runs on the device from the photo's resident raw words, uploaded once), R9 lens
     /// resample, and the reduced fit-view group (the noise sigma plane, the R5 chroma offsets, the
     /// `k x k` binning, the denoise and R9 at 1/k) that never builds a full-resolution frame on the
-    /// host (G-07). Signed off on 2026-10-15 ([`GpuStages::SIGNED_OFF`]).
+    /// host. Signed off on 2026-10-15 ([`GpuStages::SIGNED_OFF`]).
     pub const RAW_FRONT: Self = Self(1 << 6);
     /// Every stage.
     pub const ALL: Self = Self(0b111_1111);
@@ -77,7 +75,7 @@ impl GpuStages {
     /// Signed off on 2026-10-14 (Mykyta), after every suite passed on macOS 14 and 15 (Metal CI run
     /// 38557455494, commit 6d277b8): the raw chain (R6 to R8), the sampler, the colour chain,
     /// output sharpening and C13. On 2026-10-15, by the same rule, after Metal CI run 38694506557
-    /// (commit 4c5939f): the export tail (G-08) and the raw front (G-07), so `Auto` on a hardware
+    /// (commit 4c5939f): the export tail and the raw front, so `Auto` on a hardware
     /// adapter now runs every stage. Before 2026-10-14 only the colour pass was signed off (since
     /// M0-07).
     pub const SIGNED_OFF: Self = Self(
@@ -91,11 +89,11 @@ impl GpuStages {
     );
 
     /// The stages of an export that run on the device in this version: the raw chain (R6 to R8 of
-    /// every full-resolution tile: demosaic, denoise, R7 and capture sharpening; G-03, G-06) and the
-    /// raw front (R1 to R5b and R9 of every tile, G-07), and the export tail: the sampler, the colour
+    /// every full-resolution tile: demosaic, denoise, R7 and capture sharpening) and the
+    /// raw front (R1 to R5b and R9 of every tile), and the export tail: the sampler, the colour
     /// chain, the Lanczos-3 resize, output sharpening and C13 of the written picture, which the CPU
-    /// writers pull as encoded bands (G-08). Decides whether `ym` warms the kernels up while photos
-    /// decode; **the wiring tasks add their stages here**.
+    /// writers pull as encoded bands. Decides whether `ym` warms the kernels up while photos
+    /// decode; **a stage that exports run on the device is added here**.
     pub const USED_BY_EXPORTS: Self =
         Self(Self::RAW_CHAIN.0 | Self::RAW_FRONT.0 | Self::EXPORT_TAIL.0);
 
@@ -1271,7 +1269,7 @@ mod tests {
         assert_eq!(GpuPolicy::Require.stages(), GpuStages::ALL);
         assert_eq!(GpuPolicy::Off.stages(), GpuStages::NONE);
         // Signed off on 2026-10-14 (the raw chain and the view stages) and on 2026-10-15 (the
-        // export tail, G-08, and the raw front, G-07): every stage.
+        // export tail and the raw front): every stage.
         assert_eq!(
             GpuStages::SIGNED_OFF.names(),
             [
@@ -1318,11 +1316,12 @@ mod tests {
 
     #[test]
     fn the_raw_chain_is_the_stage_of_an_export_on_the_device() {
-        // G-03: the R6 demosaic of every export tile; G-07: R1 to R5b and R9 of every tile. The
-        // wiring tasks that follow add theirs.
+        // The raw chain: the R6 demosaic of every export tile; the raw front: R1 to R5b and R9 of
+        // every tile.
         assert!(GpuStages::USED_BY_EXPORTS.contains(GpuStages::RAW_CHAIN));
         assert!(GpuStages::USED_BY_EXPORTS.contains(GpuStages::RAW_FRONT));
-        // G-08: the sampler, colour chain, resize, sharpening and C13 of the written picture.
+        // The export tail: the sampler, colour chain, resize, sharpening and C13 of the written
+        // picture.
         assert!(GpuStages::USED_BY_EXPORTS.contains(GpuStages::EXPORT_TAIL));
     }
 
@@ -1428,8 +1427,8 @@ mod tests {
 
     #[test]
     fn the_warm_up_starts_for_a_stage_the_device_runs_and_for_nothing_else() {
-        // The branch the wiring tasks switch on when they add their stages to
-        // `GpuStages::USED_BY_EXPORTS`: it must start the job (and only then).
+        // The branch taken when `GpuStages::USED_BY_EXPORTS` holds a stage the device runs: it
+        // must start the job (and only then).
         let slot = open_gpu(GpuPolicy::On, MemoryBudget::default());
         if !slot.is_using() {
             assert!(

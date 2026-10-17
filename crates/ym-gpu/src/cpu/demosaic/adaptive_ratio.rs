@@ -1,6 +1,6 @@
 //! Adaptive ratio demosaic (`Method::AdaptiveRatio`), specified in
-//! `docs/algorithms/01-adaptive-ratio-demosaic.md` (RA-03; the CA-aware path of passes 1 and 2 is
-//! RA-03b).
+//! `docs/algorithms/01-adaptive-ratio-demosaic.md` (section 9; the CA-aware path of passes 1 and 2
+//! is section 11).
 //!
 //! A three-pass Bayer demosaic:
 //!
@@ -61,7 +61,7 @@
 //!   whole-piece routine on each band's *core* rows only (no wasted work on the context rows).
 //!   The band layout depends on the image height alone, so the result is identical for every
 //!   thread count and equal to [`demosaic_whole`] bit for bit.
-//! * **CA-aware path (RA-03b).** With `DemosaicInputs::ca = Some(curves)` the two lateral CA
+//! * **CA-aware path.** With `DemosaicInputs::ca = Some(curves)` the two lateral CA
 //!   curves ([`CaCurves`]) drive the pass-1 relaxation factor `f` and the pass-2 weighting `kappa`
 //!   (spec 3.6). The misregistration `|shift_R(r) - shift_B(r)|` of every R and B site is computed
 //!   once per band in `f64` from the site's own pixel centre, `sqrt` and the curves' linear

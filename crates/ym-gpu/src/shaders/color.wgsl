@@ -13,7 +13,7 @@
 // samples are read through the storage accessors (f16 or f32), look cubes and curves are f32
 // storage (never hardware-filtered, never rounded to f16).
 //
-// Persistent tables (G-04): the dither thresholds and the ACES 2 tables (`tables`), the four curve
+// Persistent tables: the dither thresholds and the ACES 2 tables (`tables`), the four curve
 // tables (`curves`) and the look and display cubes (`look_luts`, `disp_luts`) are separate buffers the
 // host keeps across frames and refills only when their content changes. What changes every frame is
 // this one uniform block (about 2 KB, the ACES 2 scalars and the colour warp's pins included: K3 allows

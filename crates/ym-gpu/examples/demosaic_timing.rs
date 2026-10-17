@@ -1,8 +1,8 @@
-//! RA-05: CPU time of every demosaic method on a 50 MP frame, single-thread and parallel
-//! (`docs/algorithms/TASKS.md` RA-05).
+//! CPU time of every demosaic method on a 50 MP frame, single-thread and parallel (the timing of
+//! the demosaic gate, `docs/05` R6).
 //!
 //! ```text
-//! CARGO_INCREMENTAL=0 cargo run -p ym-gpu --example ra05_timing \
+//! CARGO_INCREMENTAL=0 cargo run -p ym-gpu --example demosaic_timing \
 //!     --config 'profile.dev.package.ym-gpu.opt-level=3' \
 //!     --config 'profile.dev.package.ym-gpu.debug-assertions=false' \
 //!     --config 'profile.dev.package.ym-gpu.overflow-checks=false' \
@@ -109,7 +109,7 @@ struct Row<'a> {
 
 fn main() {
     let mut mp_arg = 50.0f64;
-    let mut out_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../testdata/ra05");
+    let mut out_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../testdata/demosaic_gate");
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         if a == "--out" {
@@ -117,7 +117,7 @@ fn main() {
         } else if let Ok(v) = a.parse() {
             mp_arg = v;
         } else {
-            eprintln!("usage: ra05_timing [<megapixels>] [--out DIR] (got {a})");
+            eprintln!("usage: demosaic_timing [<megapixels>] [--out DIR] (got {a})");
             std::process::exit(2);
         }
     }

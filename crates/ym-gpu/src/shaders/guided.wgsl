@@ -1,4 +1,4 @@
-// R7 colour noise reduction (G-06): the GPU port of `ym_gpu::cpu::detail::chroma_guided_whole`
+// R7 colour noise reduction: the GPU port of `ym_gpu::cpu::detail::chroma_guided_whole`
 // (`docs/05-raw-processing.md` section R7, "Colour"). A guided filter (He et al.) of the two chroma
 // planes R - Y and B - Y, guided by the luma Y, with a box radius r = round(2 + 6 C / 100) (2 to 8) and
 // a per-pixel eps = max(sigma^2 (C / 50)^2, 1e-10), then the image is rebuilt from the filtered
@@ -69,7 +69,7 @@ struct GdParams {
 // (x ^ z ^ z == x for every z, and compilers fold it), and fast-math folds a sum that starts at 0
 // (`0 + x` is x), so the first `opaque(acc + opaque(t))` of a running sum becomes the bare `t`, which
 // the next sum then fuses into a multiply-add (seen in clang's code for the adaptive ratio kernel;
-// docs/gpu-plan.md K8). An OR is idempotent: (x | z) | z == x | z, still one barrier.
+// docs/17-gpu.md K8). An OR is idempotent: (x | z) | z == x | z, still one barrier.
 fn opaque(x: f32) -> f32 {
     return bitcast<f32>(bitcast<u32>(x) | gp.sig.w);
 }

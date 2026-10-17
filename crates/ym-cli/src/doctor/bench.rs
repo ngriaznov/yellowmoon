@@ -1,5 +1,5 @@
 //! `ym doctor --bench <file.ARW>`: what the render path costs on this machine, for one photo (`docs/10-cli.md`,
-//! `docs/gpu-plan.md` section 9, the Mac checklist of `tools/dev/mac-gpu-check.sh`).
+//! `docs/17-gpu.md` section 15, the Mac checklist of `tools/dev/mac-gpu-check.sh`).
 //!
 //! The report follows the graphics policy in force (`YELLOWMOON_GPU`, else `auto`), so the same command measures the
 //! device path (`YELLOWMOON_GPU=on` or `require`) and the CPU reference (`YELLOWMOON_GPU=off`). It times

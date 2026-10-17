@@ -30,138 +30,138 @@ pub enum KernelId {
     SpikeMatrix,
     /// The whole colour chain C1 to C13.
     Color,
-    /// RA-09: the log-guided fast demosaic (four dispatches of one entry point).
+    /// The log-guided fast demosaic (four dispatches of one entry point).
     LogGuided,
-    /// RA-09 output sharpening, pass 1: the luma plane `L`.
+    /// Output sharpening, pass 1: the luma plane `L`.
     OutputSharpenLuma,
-    /// RA-09 output sharpening: the horizontal part `t` of the difference-form high-pass.
+    /// Output sharpening: the horizontal part `t` of the difference-form high-pass.
     OutputSharpenHighpassRows,
-    /// RA-09 output sharpening: the vertical part `h` of the difference-form high-pass.
+    /// Output sharpening: the vertical part `h` of the difference-form high-pass.
     OutputSharpenHighpassCols,
-    /// RA-09 output sharpening: the numerator and denominator planes of the gain maps.
+    /// Output sharpening: the numerator and denominator planes of the gain maps.
     OutputSharpenGainTerms,
-    /// RA-09 output sharpening: one half of a separable blur of 1 to 4 planes.
+    /// Output sharpening: one half of a separable blur of 1 to 4 planes.
     OutputSharpenBlur,
-    /// RA-09 output sharpening: the stage's delta, added to `D` and `Hacc`.
+    /// Output sharpening: the stage's delta, added to `D` and `Hacc`.
     OutputSharpenAccumulate,
-    /// RA-09 output sharpening: the halo limiter's 5 x 5 envelope window.
+    /// Output sharpening: the halo limiter's 5 x 5 envelope window.
     OutputSharpenWindow,
-    /// RA-09 output sharpening: the limiter's clamp and the ratio transfer to RGB.
+    /// Output sharpening: the limiter's clamp and the ratio transfer to RGB.
     OutputSharpenTransfer,
-    /// RA-09 diffraction deconvolution: luma, inverse noise variance and clip penalty.
+    /// Diffraction deconvolution: luma, inverse noise variance and clip penalty.
     DiffractionLuma,
-    /// RA-09 diffraction deconvolution: the 5 x 5 lower and upper envelope estimates.
+    /// Diffraction deconvolution: the 5 x 5 lower and upper envelope estimates.
     DiffractionEnvelope,
-    /// RA-09 diffraction deconvolution: the dark and bright layers.
+    /// Diffraction deconvolution: the dark and bright layers.
     DiffractionLayers,
-    /// RA-09 diffraction deconvolution: the horizontal half of the Gaussian high-pass.
+    /// Diffraction deconvolution: the horizontal half of the Gaussian high-pass.
     DiffractionGaussRows,
-    /// RA-09 diffraction deconvolution: the vertical half of the Gaussian high-pass.
+    /// Diffraction deconvolution: the vertical half of the Gaussian high-pass.
     DiffractionGaussCols,
-    /// RA-09 diffraction deconvolution: the PSF convolutions of the layers and the residual.
+    /// Diffraction deconvolution: the PSF convolutions of the layers and the residual.
     DiffractionPsf,
-    /// RA-09 diffraction deconvolution: the horizontal sums of the weighted moments.
+    /// Diffraction deconvolution: the horizontal sums of the weighted moments.
     DiffractionMomentRows,
-    /// RA-09 diffraction deconvolution: the vertical sums of the moments and the per-pixel solve.
+    /// Diffraction deconvolution: the vertical sums of the moments and the per-pixel solve.
     DiffractionSolve,
-    /// RA-09 diffraction deconvolution: the coefficient smoothing, the correction and the transfer.
+    /// Diffraction deconvolution: the coefficient smoothing, the correction and the transfer.
     DiffractionOutput,
-    /// RA-09 adaptive ratio demosaic, pass 0: the padded, scaled mosaic and the native samples.
+    /// Adaptive ratio demosaic, pass 0: the padded, scaled mosaic and the native samples.
     AdaptiveRatioPrepare,
-    /// RA-09 adaptive ratio demosaic, pass 1: green at the R and B sites.
+    /// Adaptive ratio demosaic, pass 1: green at the R and B sites.
     AdaptiveRatioGreen,
-    /// RA-09 adaptive ratio demosaic, pass 2: the green refinement (with the CA weighting).
+    /// Adaptive ratio demosaic, pass 2: the green refinement (with the CA weighting).
     AdaptiveRatioRefine,
-    /// RA-09 adaptive ratio demosaic, pass 3 step 1: B at R sites and R at B sites.
+    /// Adaptive ratio demosaic, pass 3 step 1: B at R sites and R at B sites.
     AdaptiveRatioStep1,
-    /// RA-09 adaptive ratio demosaic, pass 3 step 2: R and B at G sites.
+    /// Adaptive ratio demosaic, pass 3 step 2: R and B at G sites.
     AdaptiveRatioStep2,
-    /// RA-09 adaptive ratio demosaic, pass 3 step 3: the luma proxy of the shadow sharpening.
+    /// Adaptive ratio demosaic, pass 3 step 3: the luma proxy of the shadow sharpening.
     AdaptiveRatioLuma,
-    /// RA-09 adaptive ratio demosaic, pass 3 step 3: the diagonal shadow sharpening.
+    /// Adaptive ratio demosaic, pass 3 step 3: the diagonal shadow sharpening.
     AdaptiveRatioSharpen,
-    /// RA-09 adaptive ratio demosaic, shadow colour matching: the bilinear demosaic of one channel.
+    /// Adaptive ratio demosaic, shadow colour matching: the bilinear demosaic of one channel.
     AdaptiveRatioSimple,
-    /// RA-09 adaptive ratio demosaic, shadow colour matching: the low-pass and squared error of one channel.
+    /// Adaptive ratio demosaic, shadow colour matching: the low-pass and squared error of one channel.
     AdaptiveRatioLowErr,
-    /// RA-09 adaptive ratio demosaic, shadow colour matching: the noise-adaptive blend and the exit.
+    /// Adaptive ratio demosaic, shadow colour matching: the noise-adaptive blend and the exit.
     AdaptiveRatioMatch,
-    /// RA-09 adaptive ratio demosaic: the exit without shadow colour matching.
+    /// Adaptive ratio demosaic: the exit without shadow colour matching.
     AdaptiveRatioExit,
-    /// G-04: the geometry sampler (orientation, straighten, crop, copy / Catmull-Rom / box).
+    /// The geometry sampler (orientation, straighten, crop, copy / Catmull-Rom / box).
     Sampler,
-    /// G-04: C13 with dither and the letterbox to RGBA8 or 8 / 16-bit interleaved bands.
+    /// C13 with dither and the letterbox to RGBA8 or 8 / 16-bit interleaved bands.
     Encode,
-    /// G-07: R1 normalise, R3 vignetting and R4 gains of a rectangle, from the resident raw words.
+    /// R1 normalise, R3 vignetting and R4 gains of a rectangle, from the resident raw words.
     Prep,
-    /// G-07: the R1 clip bits of a rectangle (one bit per photosite) from the words and the steps.
+    /// The R1 clip bits of a rectangle (one bit per photosite) from the words and the steps.
     PrepMask,
-    /// G-07: R5 highlight reconstruction, the superpixel planes of a rectangle.
+    /// R5 highlight reconstruction, the superpixel planes of a rectangle.
     HighlightsSuper,
-    /// G-07: R5 highlight reconstruction, applying the chroma offsets.
+    /// R5 highlight reconstruction, applying the chroma offsets.
     Highlights,
-    /// G-07: R5b lateral chromatic aberration on the mosaic.
+    /// R5b lateral chromatic aberration on the mosaic.
     MosaicCa,
-    /// G-07: R9 lens resampling.
+    /// R9 lens resampling.
     Lens,
-    /// G-07: the half-resolution noise sigma plane, from the resident raw words.
+    /// The half-resolution noise sigma plane, from the resident raw words.
     Sigma,
-    /// G-07: the k x k mosaic binning of the fit view, with the vignetting gain at the binned pixels.
+    /// The k x k mosaic binning of the fit view, with the vignetting gain at the binned pixels.
     Bin,
-    /// G-07: the sigma of the binned image, from the half-resolution sigma plane.
+    /// The sigma of the binned image, from the half-resolution sigma plane.
     BinSigma,
-    /// G-07: the fixed-order reduction of the R5 chroma offsets (reduced path): one partial per workgroup.
+    /// The fixed-order reduction of the R5 chroma offsets (reduced path): one partial per workgroup.
     Reduce,
-    /// G-07: the fold of the partials of the R5 chroma-offset reduction, in index order.
+    /// The fold of the partials of the R5 chroma-offset reduction, in index order.
     ReduceFold,
-    /// G-06: the noise sigma of a tile, expanded from the half-resolution plane (or filled).
+    /// The noise sigma of a tile, expanded from the half-resolution plane (or filled).
     SigmaExpand,
-    /// G-06: the 5 x 5 opponent bilateral denoise of R6.
+    /// The 5 x 5 opponent bilateral denoise of R6.
     Bilateral,
-    /// G-06: the R7 chroma guided filter, pass 1: horizontal window means of the six quantities.
+    /// The R7 chroma guided filter, pass 1: horizontal window means of the six quantities.
     Guided,
-    /// G-06: the R7 chroma guided filter, pass 2: vertical means and the coefficients a and b.
+    /// The R7 chroma guided filter, pass 2: vertical means and the coefficients a and b.
     GuidedCols,
-    /// G-06: the R7 chroma guided filter, pass 3: horizontal means of the coefficients.
+    /// The R7 chroma guided filter, pass 3: horizontal means of the coefficients.
     GuidedSmoothRows,
-    /// G-06: the R7 chroma guided filter, pass 4: vertical means and the output.
+    /// The R7 chroma guided filter, pass 4: vertical means and the output.
     GuidedOutput,
-    /// G-06: R7 detail re-injection, the classical luma plane (the luma of the image before the denoise).
+    /// R7 detail re-injection, the classical luma plane (the luma of the image before the denoise).
     DetailLuma,
-    /// G-06: R7 detail re-injection: `Y += beta (Y_classical - Y)`.
+    /// R7 detail re-injection: `Y += beta (Y_classical - Y)`.
     Detail,
-    /// G-06: R8 Richardson-Lucy, the level of every pixel's PSF and the starting planes.
+    /// R8 Richardson-Lucy, the level of every pixel's PSF and the starting planes.
     RichardsonLucy,
-    /// G-06: R8 Richardson-Lucy, the horizontal half of a blur with the pixel's kernel.
+    /// R8 Richardson-Lucy, the horizontal half of a blur with the pixel's kernel.
     RlBlurRows,
-    /// G-06: R8 Richardson-Lucy, the vertical half of the forward blur and the damped ratio.
+    /// R8 Richardson-Lucy, the vertical half of the forward blur and the damped ratio.
     RlBlurColsRatio,
-    /// G-06: R8 Richardson-Lucy, the vertical half of the transposed blur and the update.
+    /// R8 Richardson-Lucy, the vertical half of the transposed blur and the update.
     RlBlurColsUpdate,
-    /// G-06: R8 Richardson-Lucy, the core of the result.
+    /// R8 Richardson-Lucy, the core of the result.
     RlOutput,
-    /// G-08: the Lanczos-3 resize of the export tail (one separable pass per dispatch).
+    /// The Lanczos-3 resize of the export tail (one separable pass per dispatch).
     Resize,
-    /// G-10: copies a rectangle of a planar image into another (the crop of a tile, the parts of a
+    /// Copies a rectangle of a planar image into another (the crop of a tile, the parts of a
     /// cut demosaic core, the pieces of a window).
     Copy,
-    /// A permanent stub (G-07): the one placeholder that stays. It writes a NaN into its single
+    /// A permanent stub: the one placeholder that stays. It writes a NaN into its single
     /// storage binding and nothing else, so the tests of the pass list, the pool and a lost device,
-    /// which need *a* dispatch with one binding, have one now that every kernel of the plan is real.
+    /// which need *a* dispatch with one binding, have one now that every other kernel is real.
     /// No stage is ever wired to it.
     Probe,
 }
 
 impl KernelId {
     /// All kernels, placeholders included (see [`KernelId::is_placeholder`]), in the order a cold
-    /// start needs them (`docs/gpu-plan.md` G-10, the warm-up order): the kernels of the fit view of
-    /// a mosaic photo (the reduced group: R1 to R5, the binning, the sigma, the light denoise, R9),
-    /// the copy that puts the pieces of an image together, the view stages (the sampler, the colour
-    /// chain, output sharpening, C13), the full-resolution raw chain (the demosaic, the denoise, R7,
-    /// capture sharpening, diffraction), the export tail's resize, and last the spikes and the probe,
-    /// which no render uses. [`KernelSet::kernels`] and `warm_up` compile in this order, so that what
-    /// the first frame of the first photo waits for is compiled before what only a zoomed view or an
-    /// export needs.
+    /// start needs them (`docs/17-gpu.md` section 7, the warm-up order): the kernels of the fit
+    /// view of a mosaic photo (the reduced group: R1 to R5, the binning, the sigma, the light
+    /// denoise, R9), the copy that puts the pieces of an image together, the view stages (the
+    /// sampler, the colour chain, output sharpening, C13), the full-resolution raw chain (the
+    /// demosaic, the denoise, R7, capture sharpening, diffraction), the export tail's resize, and
+    /// last the spikes and the probe, which no render uses. [`KernelSet::kernels`] and `warm_up`
+    /// compile in this order, so that what the first frame of the first photo waits for is compiled
+    /// before what only a zoomed view or an export needs.
     pub const ALL: [KernelId; 62] = [
         // The fit view of a mosaic photo.
         KernelId::Prep,
@@ -300,18 +300,17 @@ impl KernelId {
         }
     }
 
-    /// The task that owns this kernel while it is still a placeholder, `None` for a real kernel.
+    /// Who a placeholder kernel is for, `None` for a real kernel.
     ///
-    /// A placeholder is registered ahead of its implementation so that the id, its warm-up set and
-    /// the offline checks exist: its WGSL is a stub that writes NaN into its first binding and does
-    /// nothing else, [`warm_up`](crate::device::GpuContext::warm_up) skips it, and the tests list
-    /// it. The task that implements the kernel replaces the stub with `include_str!` of its own
-    /// `.wgsl` in `KernelId::body` and deletes the id from this match (two small edits, reported).
+    /// A placeholder's WGSL is a stub that writes NaN into its first binding and does nothing
+    /// else; [`warm_up`](crate::device::GpuContext::warm_up) skips it, and the tests list it. A
+    /// kernel registered before its implementation gets an arm here until its own `.wgsl` replaces
+    /// the stub in `KernelId::body`.
     pub const fn placeholder_owner(self) -> Option<&'static str> {
-        // Every family the plan registered ahead of its implementation is real now (G-07 wrote the
-        // last of them); a later task that registers another adds an arm here. The probe stays.
+        // Every other kernel is real. The probe stays a stub on purpose, so that the offline checks
+        // always have a placeholder to check.
         match self {
-            KernelId::Probe => Some("G-07"),
+            KernelId::Probe => Some("the offline shader checks"),
             _ => None,
         }
     }
@@ -450,7 +449,7 @@ impl KernelSet {
 fn placeholder_body(id: KernelId) -> String {
     let owner = id.placeholder_owner().unwrap_or("?");
     format!(
-        "// PLACEHOLDER kernel `{name}`, registered by G-02. {owner} replaces this stub with the real kernel.\n\
+        "// PLACEHOLDER kernel `{name}`, a stub (owner: {owner}).\n\
          // It writes a NaN into binding 0 and nothing else.\n\
          @group(0) @binding(0) var<storage, read_write> placeholder_out: array<f32>;\n\
          \n\

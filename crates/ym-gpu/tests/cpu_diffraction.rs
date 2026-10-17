@@ -1,4 +1,4 @@
-//! R8 diffraction deconvolution (RA-07, `docs/algorithms/03-diffraction-deconvolution.md`).
+//! R8 diffraction deconvolution (`docs/algorithms/03-diffraction-deconvolution.md`).
 //!
 //! * `vectors_*`: every vector of `tests/cpu_data/diffraction_deconvolution/` within its stated
 //!   tolerance (planner vectors 1e-6, image vectors 2e-5, exact vectors bit-equal), and the

@@ -8,7 +8,7 @@
 //! every machine, instead of on the one adapter that lacks it. Only the two f16 storage modes (legacy,
 //! reached by `StoragePreference::Force`) add the capability their own declarations need
 //! (`SHADER_FLOAT16` for `enable f16;`, `SHADER_FLOAT16_IN_FLOAT32` for `pack2x16float`). A source lint then checks the kernel contract of
-//! `docs/gpu-plan.md` section 4.6 and the determinism rules that can be read off the source
+//! `docs/17-gpu.md` section 6 and the determinism rules that can be read off the source
 //! (K1 to K3, D3, D6); the lint itself is proved on seeded bad shaders.
 
 use naga::back::{hlsl, msl, spv};
@@ -137,7 +137,7 @@ fn the_aces2_input_matrix_constant_is_the_cpu_matrix_with_the_display_placement(
 
 #[test]
 fn the_adaptive_ratio_passes_share_one_source_and_each_has_one_entry_point() {
-    // RA-09: eleven pipelines of `adaptive_ratio.wgsl`, f32 planes in every storage mode, so the text
+    // Eleven pipelines of `adaptive_ratio.wgsl`, f32 planes in every storage mode, so the text
     // of a pass differs between storage modes only by the generated prelude (and not at all in its
     // buffers: no f16 anywhere).
     let passes: Vec<KernelId> = KernelId::ALL
@@ -168,9 +168,9 @@ fn placeholder_kernels_are_marked_in_name_and_text_and_write_nothing_but_a_nan()
         .into_iter()
         .filter(|id| id.is_placeholder())
         .collect();
-    // Every kernel the plan registered ahead of its implementation is real now (G-04's sampler and
-    // encode, G-06's denoise, R7 and Richardson-Lucy, G-07's raw front, G-08's resize): the one
-    // placeholder left is the permanent probe. A kernel that goes back to a stub, or a stage wired to
+    // Every kernel registered ahead of its implementation is real now (the sampler and encode, the
+    // denoise, R7 and Richardson-Lucy, the raw front, the resize): the one placeholder left is the
+    // permanent probe. A kernel that goes back to a stub, or a stage wired to
     // the probe, shows up here.
     assert_eq!(placeholders, [KernelId::Probe], "{placeholders:?}");
     for id in &placeholders {

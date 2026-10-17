@@ -1,4 +1,4 @@
-// R6 bilateral denoise (G-06): the GPU port of `ym_gpu::cpu::denoise::bilateral_whole`
+// R6 bilateral denoise: the GPU port of `ym_gpu::cpu::denoise::bilateral_whole`
 // (`docs/05-raw-processing.md` section R6, "Denoise"). A 5 x 5 (radius `rad`, up to 4) bilateral filter
 // in the opponent space (Y, R - Y, B - Y) with the luma weights of `cpu::LUMA`:
 //

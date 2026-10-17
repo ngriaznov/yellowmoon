@@ -439,7 +439,7 @@ impl Grid {
     }
 
     /// The same grid as plain data for the sampler of `ym-gpu` ([`SamplerGrid`], the CPU reference of
-    /// the device kernel and, since G-05, the implementation `sample_to_camera` calls): every number
+    /// the device kernel and the implementation `sample_to_camera` calls): every number
     /// the position chain reads, nothing else, so the two cannot disagree about where a pixel samples.
     #[must_use]
     pub fn sampler_grid(&self) -> SamplerGrid {

@@ -1,4 +1,4 @@
-// RA-09: the adaptive ratio demosaic on the GPU (docs/algorithms/01-adaptive-ratio-demosaic.md; CPU
+// The adaptive ratio demosaic on the GPU (docs/algorithms/01-adaptive-ratio-demosaic.md; CPU
 // reference: ym_gpu::cpu::demosaic::adaptive_ratio). The three passes of the spec (green, green
 // refinement with the optional CA weighting, chroma with the shadow sharpening and the shadow colour
 // matching) are cut into 11 dispatches, one pipeline each (see `kernels/adaptive_ratio.rs`, which
@@ -38,7 +38,7 @@
 // evaluation in 10 of 258 cases, probably NIR re-associating chains with constants); with the barriers
 // it gives the strict bits. A model of Apple's compiler (naga's MSL of these passes
 // compiled with clang -O2 -ffast-math -ffp-contract=fast -mfma -mrecip=all) gives the bits of the
-// strict compile on every case it was run on (docs/gpu-plan.md section 12).
+// strict compile on every case it was run on (docs/17-gpu.md section 13).
 //
 // Inputs. The host refuses a mosaic with NaN, infinity or a value whose scaled magnitude would
 // overflow the squares of the matching step (see `kernels/adaptive_ratio.rs`), so the shader has no

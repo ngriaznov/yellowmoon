@@ -1,4 +1,4 @@
-//! RA-06: the log-guided fast demosaic (`Method::LogGuided`,
+//! The log-guided fast demosaic (`Method::LogGuided`,
 //! `docs/algorithms/02-log-guided-demosaic.md`).
 //!
 //! * `vectors_*`: the 16 vectors of `tests/cpu_data/log_guided_demosaic/` (made by the
@@ -209,8 +209,8 @@ fn vectors_through_the_method_dispatch_with_the_default_detail() {
 
 #[test]
 fn the_default_method_is_the_adaptive_ratio_demosaic_and_log_guided_is_listed_once() {
-    // The default of R6 is the adaptive ratio demosaic (the owner's decision of 2026-10-13, RA-H4);
-    // the log-guided demosaic is a preview method and never the default.
+    // The default of R6 is the adaptive ratio demosaic (the owner's decision after the blind look
+    // of 2026-10-13); the log-guided demosaic is a preview method and never the default.
     assert_eq!(demosaic::DEFAULT_METHOD, Method::AdaptiveRatio);
     assert_ne!(demosaic::DEFAULT_METHOD, Method::LogGuided);
     assert!(
@@ -878,7 +878,7 @@ fn synthetic_set() -> Vec<RgbImage> {
 
 #[test]
 fn on_the_synthetic_set_it_is_within_one_db_of_menon_at_every_signal_scale() {
-    // The RA-06 gate: the mean PSNR over the synthetic set, a 10 px border excluded, at signal
+    // The quality gate: the mean PSNR over the synthetic set, a 10 px border excluded, at signal
     // scales 1, 0.1 and 0.01 (peak scaled along), p from a zero-noise model.
     let set = synthetic_set();
     for scale in [1.0f32, 0.1, 0.01] {
@@ -1085,7 +1085,7 @@ fn degenerate_sizes_are_defined() {
     );
 }
 
-/// A plain transcription of spec section 3.9 (the float form), written for the review of RA-06:
+/// A plain transcription of spec section 3.9 (the float form), written for the review of the port:
 /// planes over the padded frame, the 5x5 box as 25 sequential additions, the site class read
 /// from the CFA at each pixel. It is slow and simple on purpose. The tests compare the optimised
 /// implementation (separable box, per-row passes, stride-2 site loops) with it byte for byte, on

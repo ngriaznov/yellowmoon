@@ -1,10 +1,10 @@
 //! Local A/B of R8 Richardson-Lucy and diffraction deconvolution on the real files of
-//! `testdata/real/files` (RA-07, `docs/algorithms/03-diffraction-deconvolution.md` section 6.3).
+//! `testdata/real/files` (`docs/algorithms/03-diffraction-deconvolution.md` section 6.3).
 //!
 //! The raw files are never committed, so this test is ignored and skips what it cannot find:
 //!
 //! ```text
-//! cargo test -p ym-core --lib ra07_real_files -- --ignored --nocapture
+//! cargo test -p ym-core --lib capture_sharpen_real_files -- --ignored --nocapture
 //! ```
 //!
 //! For every decodable file it runs R1 to R7 (lens resample off, so that R8 is the last stage and
@@ -13,7 +13,7 @@
 //! the registry or the crop factor), and diffraction with the noise-gate variant of spec section 7.1
 //! item 1. On two windows picked from the raw data it measures the 10 to 90 % rise distance, MTF50,
 //! overshoot and undershoot of the strongest clean edge and the luma noise of the flattest area.
-//! Results go to `testdata/ra07/real/` (`results.json` and PNG strips, git-ignored).
+//! Results go to `testdata/capture_sharpen_ab/real/` (`results.json` and PNG strips, git-ignored).
 
 use std::path::{Path, PathBuf};
 
@@ -306,8 +306,8 @@ fn stats_json(s: &ym_gpu::cpu::sharpen::diffraction::eval::EdgeStats, sd_ratio: 
 }
 
 #[test]
-#[ignore = "local evaluation on testdata/real/files, which is never committed: cargo test -p ym-core --lib ra07_real_files -- --ignored --nocapture"]
-fn ra07_real_files_ab() {
+#[ignore = "local evaluation on testdata/real/files, which is never committed: cargo test -p ym-core --lib capture_sharpen_real_files -- --ignored --nocapture"]
+fn capture_sharpen_real_files_ab() {
     let repo: PathBuf = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let files_dir = repo.join("testdata/real/files");
     let Ok(rd) = std::fs::read_dir(&files_dir) else {
@@ -320,7 +320,7 @@ fn ra07_real_files_ab() {
         .filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("arw")))
         .collect();
     files.sort();
-    let out_dir = repo.join("testdata/ra07/real");
+    let out_dir = repo.join("testdata/capture_sharpen_ab/real");
     std::fs::create_dir_all(&out_dir).expect("output directory");
     // Crops of an earlier run (a file that has no clean edge now) must not stay behind.
     for entry in std::fs::read_dir(&out_dir)
@@ -583,7 +583,7 @@ fn ra07_real_files_ab() {
         records.push(record);
     }
     let doc = json!({
-        "description": "RA-07 A/B on the real files of testdata/real/files: R1-R7 (lens resample off), then R8 off / Richardson-Lucy Auto / diffraction / diffraction with the noise-gate variant",
+        "description": "Capture sharpening A/B on the real files of testdata/real/files: R1-R7 (lens resample off), then R8 off / Richardson-Lucy Auto / diffraction / diffraction with the noise-gate variant",
         "records": records,
     });
     std::fs::write(

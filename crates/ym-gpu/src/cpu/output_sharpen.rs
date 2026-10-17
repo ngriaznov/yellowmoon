@@ -1,5 +1,5 @@
 //! Output sharpening for rendered and exported pixels, specified in
-//! `docs/algorithms/04-output-sharpening.md` (RA-08).
+//! `docs/algorithms/04-output-sharpening.md`.
 //!
 //! A luma unsharp mask in linear light with three threshold methods, optional halo suppression
 //! and a hue-preserving ratio transfer back to RGB (`RGB_out = RGB_in * clamp(L' / L, 0, 16)`).

@@ -1,5 +1,4 @@
-//! R8 diffraction deconvolution, specified in `docs/algorithms/03-diffraction-deconvolution.md`
-//! (RA-07).
+//! R8 diffraction deconvolution, specified in `docs/algorithms/03-diffraction-deconvolution.md`.
 //!
 //! A second capture-sharpening method beside Richardson-Lucy (`super::richardson_lucy`). The blur
 //! that diffraction adds depends only on the f-number, the wavelength and the pixel pitch, so it is
@@ -55,7 +54,8 @@
 //! # Evaluation
 //!
 //! [`eval`] holds the edge, MTF and noise measures of the A/B of spec section 6.3, used by the
-//! `ra07_ab` example and the local real-file comparison; the render path does not call them.
+//! `capture_sharpen_ab` example and the local real-file comparison; the render path does not call
+//! them.
 //!
 //! # Not covered here
 //!

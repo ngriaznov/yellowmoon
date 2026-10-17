@@ -1,5 +1,5 @@
-//! G-10: device residency (`docs/gpu-plan.md` section 11, task G-10). What stays on the device
-//! between two jobs, and the proof that keeping it there changes no bit.
+//! Device residency (`docs/17-gpu.md` sections 3, 7 and 8; `docs/05` "Device residency"). What
+//! stays on the device between two jobs, and the proof that keeping it there changes no bit.
 //!
 //! * **A resident tile is the host tile.** `GpuChain::run_tile_device` leaves the tile of the raw
 //!   chain on the device; its readback equals `run_tile_front` bit for bit (cropped on the device
@@ -18,8 +18,8 @@
 //!   by the pool ledger, never come near 2 GiB, and give everything back.
 
 mod common;
-#[path = "g08/mod.rs"]
-mod g08;
+#[path = "export_common/mod.rs"]
+mod export_common;
 
 use std::sync::Arc;
 
@@ -297,10 +297,10 @@ fn a_tile_left_on_the_device_is_the_tile_read_back_bit_for_bit_and_costs_one_sub
     }
 }
 
-/// Review of G-10: the smallest tiles. A tile of one pixel, a row, a column or a 2 x 2 square, at
-/// the corners and at odd origins, crops a much larger image of the stages on the device (the stages
-/// that were identities leave the margins they were asked for): the readback must still be the host
-/// tile's bits and the job one submission.
+/// Review of device residency: the smallest tiles. A tile of one pixel, a row, a column or a 2 x 2
+/// square, at the corners and at odd origins, crops a much larger image of the stages on the device
+/// (the stages that were identities leave the margins they were asked for): the readback must still
+/// be the host tile's bits and the job one submission.
 #[test]
 fn the_smallest_tiles_are_the_host_tile_bit_for_bit() {
     let Some(dev) = f32_device() else { return };
@@ -1012,16 +1012,17 @@ fn a_cold_start_compiles_the_fit_view_then_the_view_stages_then_the_full_resolut
 }
 
 // ---------------------------------------------------------------------------------------------
-// What recording costs (the UniformArena / BindGroupCache / ReadbackRing decision, X-17)
+// What recording costs (the UniformArena / BindGroupCache / ReadbackRing decision, `docs/17-gpu.md`
+// section 3)
 // ---------------------------------------------------------------------------------------------
 
-/// The measurement the plan asks for before an arena of uniforms, a cache of bind groups or a ring of
-/// readback buffers is built (`docs/gpu-plan.md` V-2, X-17): the CPU time of recording one dispatch
+/// The measurement that decides whether an arena of uniforms, a cache of bind groups or a ring of
+/// readback buffers is built (`docs/17-gpu.md` section 3): the CPU time of recording one dispatch
 /// (a uniform buffer from the pool, a queue write, a bind group, a compute pass), the number of
 /// dispatches, uploads and submissions a tile costs, and the share of the tile's wall time that
-/// recording is. The numbers go to the log (`[G-10] ...`, and a GitHub annotation); the bounds are
-/// sanity bounds. The Mac session (M0-H4) reads the same lines on Metal, where a tile takes
-/// milliseconds and the share may be larger than on lavapipe.
+/// recording is. The numbers go to the log (`[device residency] ...`, and a GitHub annotation); the
+/// bounds are sanity bounds. The Mac session (M0-H4) reads the same lines on Metal, where a tile
+/// takes milliseconds and the share may be larger than on lavapipe.
 #[test]
 fn what_recording_costs_per_dispatch_and_per_tile_is_measured_for_the_arena_decision() {
     use std::time::{Duration, Instant};
@@ -1101,9 +1102,9 @@ fn what_recording_costs_per_dispatch_and_per_tile_is_measured_for_the_arena_deci
         share * 1e2
     ));
     for line in &lines {
-        eprintln!("[G-10] {line}");
+        eprintln!("[device residency] {line}");
         if std::env::var_os("GITHUB_ACTIONS").is_some() {
-            eprintln!("::notice title=G-10 recording cost::{line}");
+            eprintln!("::notice title=Recording cost::{line}");
         }
     }
     assert!(
@@ -1245,11 +1246,12 @@ fn through_the_tail(
     }
 }
 
-/// The plan's bound of three submissions per tile (the chain's job, the tail's tile job, the slabs the
-/// tile opens) holds when a tile is taller than a slab: a tile of 1024 rows over slabs of 512 opens two
-/// of them, and they are made by one job (the 50 MP run of `fifty_megapixels_...` found four
-/// submissions when each slab was a job of its own). The camera RGB here is a pattern, the chain is
-/// not involved: the tail's share is one job for the slabs a tile opens and one for the tile.
+/// The bound of three submissions per tile (`docs/17-gpu.md` section 7: the chain's job, the tail's
+/// tile job, the slabs the tile opens) holds when a tile is taller than a slab: a tile of 1024 rows
+/// over slabs of 512 opens two of them, and they are made by one job (the 50 MP run of
+/// `fifty_megapixels_...` found four submissions when each slab was a job of its own). The camera
+/// RGB here is a pattern, the chain is not involved: the tail's share is one job for the slabs a
+/// tile opens and one for the tile.
 #[test]
 fn a_tile_taller_than_a_slab_opens_its_slabs_in_one_job() {
     let Some(gpu) = private_device() else { return };
@@ -1290,7 +1292,9 @@ fn a_tile_taller_than_a_slab_opens_its_slabs_in_one_job() {
         oy += th;
     }
     tail.finish().expect("finish");
-    eprintln!("[G-10] tail submissions of tiles of 1024 rows over slabs of 512: {per_tile:?}");
+    eprintln!(
+        "[device residency] tail submissions of tiles of 1024 rows over slabs of 512: {per_tile:?}"
+    );
     // The first tile of a row opens two slabs and is the tile's own job: two submissions. (A tile row
     // of 2300 rows: 1024, 1024 and 252; the last tile row opens one slab at most.)
     assert_eq!(per_tile[0], 2, "two slabs in one job, and the tile");
@@ -1370,7 +1374,7 @@ fn tiles_handed_over_on_the_device_make_the_bands_the_host_copies_make() {
             resident.worst_tile_submissions
         );
         eprintln!(
-            "[G-10] {name}: {} tiles, at most {} submissions per tile (host copies: {}), readbacks {} (host copies: {})",
+            "[device residency] {name}: {} tiles, at most {} submissions per tile (host copies: {}), readbacks {} (host copies: {})",
             resident.tiles,
             resident.worst_tile_submissions,
             host.worst_tile_submissions,
@@ -1386,12 +1390,13 @@ fn tiles_handed_over_on_the_device_make_the_bands_the_host_copies_make() {
 
 /// 50 MP (8688 x 5792): the raw chain's tiles of 1024 px, from the photo's resident words, through
 /// the export tail with the tiles left on the device. By the pool ledger the whole run (the words,
-/// the tiles in flight, the slabs, the sharpening window, the bands) peaks under 2 GiB (the plan's
-/// gate; the host path has the same working set plus a tile's readback and upload), and the device
-/// holds only the words once the run is over. Ignored: it makes 100 MB of words and runs the chain
-/// over 50 million pixels (minutes on lavapipe in a test build); wave 5 runs it on Metal.
+/// the tiles in flight, the slabs, the sharpening window, the bands) peaks under 2 GiB (the gate of
+/// `docs/17-gpu.md` section 8; the host path has the same working set plus a tile's readback and
+/// upload), and the device holds only the words once the run is over. Ignored: it makes 100 MB of
+/// words and runs the chain over 50 million pixels (minutes on lavapipe in a test build);
+/// `mac-gpu.yml` runs it on Metal.
 #[test]
-#[ignore = "50 MP: run with --ignored (wave 5 runs it on Metal)"]
+#[ignore = "50 MP: run with --ignored (mac-gpu.yml runs it on Metal)"]
 fn fifty_megapixels_through_the_chain_and_the_tail_stay_under_two_gib() {
     let Some(gpu) = common::start_unpoisoned(ym_gpu::device::StoragePreference::Auto) else {
         return;
@@ -1436,7 +1441,7 @@ fn fifty_megapixels_through_the_chain_and_the_tail_stay_under_two_gib() {
     let rows: usize = run.bands.iter().map(|b| b.rows).sum();
     assert_eq!(rows, oh, "the bands cover the picture");
     eprintln!(
-        "[G-10] 50 MP chain + tail ({ow} x {oh}, {} tiles): {seconds:.0} s, at most {} submissions per tile, peak in use {} MiB (the gate: 2048 MiB), in use after {} MiB (before {} MiB)",
+        "[device residency] 50 MP chain + tail ({ow} x {oh}, {} tiles): {seconds:.0} s, at most {} submissions per tile, peak in use {} MiB (the gate: 2048 MiB), in use after {} MiB (before {} MiB)",
         run.tiles,
         run.worst_tile_submissions,
         peak >> 20,
@@ -1446,7 +1451,7 @@ fn fifty_megapixels_through_the_chain_and_the_tail_stay_under_two_gib() {
     let mean = run.chain_seconds.iter().sum::<f64>() / run.chain_seconds.len().max(1) as f64;
     let longest = run.chain_seconds.iter().copied().fold(0.0, f64::max);
     eprintln!(
-        "[G-10] 50 MP chain job per 1024 px tile (about 1.1 MP of mosaic each): mean {mean:.2} s, longest {longest:.2} s over {} tiles",
+        "[device residency] 50 MP chain job per 1024 px tile (about 1.1 MP of mosaic each): mean {mean:.2} s, longest {longest:.2} s over {} tiles",
         run.chain_seconds.len()
     );
     assert!(peak < 2 << 30, "peak {peak} bytes");

@@ -1,4 +1,4 @@
-//! The binding size the kernels are designed for (`docs/gpu-plan.md` K4 and N-1).
+//! The binding size the kernels are designed for (`docs/17-gpu.md` K4 and section 4).
 //!
 //! Lavapipe, the CI adapter, reports a 128 MiB storage binding although the device asks for more.
 //! A kernel module exports `max_binding_bytes(rect)`, the size of its largest binding for a compute
@@ -21,8 +21,8 @@ pub fn assert_fits_design_binding(what: &str, bytes: u64) {
 }
 
 /// K4: checks a kernel module's `max_binding_bytes(rect)` at `rect` (the largest compute rectangle
-/// the plan allows) against the design binding, and that it grows with the rectangle (a function
-/// that ignores its argument would pass the first check for the wrong reason).
+/// of `docs/17-gpu.md` section 4) against the design binding, and that it grows with the rectangle
+/// (a function that ignores its argument would pass the first check for the wrong reason).
 pub fn assert_max_binding_bytes(what: &str, rect: Rect, max_binding_bytes: impl Fn(Rect) -> u64) {
     let at_max = max_binding_bytes(rect);
     assert_fits_design_binding(&format!("{what} at {}x{}", rect.w, rect.h), at_max);

@@ -1,4 +1,4 @@
-//! RA-03b: the CA-aware green refinement of the adaptive ratio demosaic through the whole render
+//! The CA-aware green refinement of the adaptive ratio demosaic through the whole render
 //! (`docs/algorithms/01-adaptive-ratio-demosaic.md` section 3.6, `INTEGRATION.md` section 6).
 //!
 //! * `ca_tables_in_the_file_drive_the_ca_path_of_the_full_chain`: a synthetic ARW with CA tables
@@ -15,13 +15,13 @@
 //!   will move it from), so the correct output has no colour fringes at all. The displacement of
 //!   red and blue against green left after R9 (`metrics::lateral_ca_residual`) must be no larger
 //!   with the CA path than without it.
-//! * `ra03b_real_files_ca_residual` (ignored, local files only): the same measurement on the
+//! * `ca_green_real_files_residual` (ignored, local files only): the same measurement on the
 //!   photographs of `testdata/real/files` that carry a 0x7035 table, patch by patch, with the CA
 //!   path and without it, and with R9 *without* the CA correction as the scale of what there was
-//!   to correct. Results go to `testdata/ra03b/real/results.json` (git-ignored):
+//!   to correct. Results go to `testdata/ca_green_residual/real/results.json` (git-ignored):
 //!
 //! ```text
-//! cargo test -p ym-core --lib ra03b_real_files -- --ignored --nocapture
+//! cargo test -p ym-core --lib ca_green_real_files -- --ignored --nocapture
 //! ```
 
 use std::path::{Path, PathBuf};
@@ -588,8 +588,8 @@ struct Strip {
 }
 
 #[test]
-#[ignore = "local evaluation on testdata/real/files, which is never committed: cargo test -p ym-core --lib ra03b_real_files -- --ignored --nocapture"]
-fn ra03b_real_files_ca_residual() {
+#[ignore = "local evaluation on testdata/real/files, which is never committed: cargo test -p ym-core --lib ca_green_real_files -- --ignored --nocapture"]
+fn ca_green_real_files_residual() {
     let repo: PathBuf = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let files_dir = repo.join("testdata/real/files");
     let Ok(rd) = std::fs::read_dir(&files_dir) else {
@@ -602,7 +602,7 @@ fn ra03b_real_files_ca_residual() {
         .filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("arw")))
         .collect();
     files.sort();
-    let out_dir = repo.join("testdata/ra03b/real");
+    let out_dir = repo.join("testdata/ca_green_residual/real");
     std::fs::create_dir_all(&out_dir).expect("output directory");
     let env = SessionEnv::load(&repo.join("data")).expect("the data folder");
     let cancel = CancelToken::new();

@@ -1,4 +1,4 @@
-//! R8 Richardson-Lucy capture sharpening on the GPU (G-06).
+//! R8 Richardson-Lucy capture sharpening on the GPU.
 //!
 //! The WGSL port (`shaders/richardson_lucy.wgsl`) of [`crate::cpu::sharpen::richardson_lucy_whole`],
 //! specified in `docs/05` section R8: Richardson-Lucy deconvolution of the linear luma with a Gaussian
@@ -151,7 +151,7 @@ impl RlPlan {
 /// The largest storage binding (bytes) a Richardson-Lucy stage needs for an input rectangle of
 /// `rect` pixels: the five-plane working buffer (the input's three planes and the core's three are
 /// smaller). A test checks it against the 128 MiB design binding at
-/// [`crate::chain::MAX_PHYS_AREA`] (`docs/gpu-plan.md` K4).
+/// [`crate::chain::MAX_PHYS_AREA`] (`docs/17-gpu.md` K4).
 #[must_use]
 pub fn max_binding_bytes(rect: Rect) -> u64 {
     WORK_PLANES * (rect.w * rect.h) as u64 * 4

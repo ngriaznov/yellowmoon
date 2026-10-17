@@ -1,4 +1,4 @@
-// The Lanczos-3 resize of the export tail (docs/gpu-plan.md G-08), the GPU twin of
+// The Lanczos-3 resize of the export tail (docs/17-gpu.md section 10), the GPU twin of
 // `ym_export::resize::resize_lanczos3`: one separable pass per dispatch, horizontal (every output
 // column from a run of columns of the same row) or vertical (every output row from a run of rows of
 // the same column), three planes at a time.

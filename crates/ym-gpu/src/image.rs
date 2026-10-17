@@ -1,5 +1,5 @@
 //! Images that live on the device: [`GpuImage`] (planar f32), with the host-to-device and
-//! device-to-host helpers the tests and the wiring use (`docs/gpu-plan.md` section 4.3). The raw
+//! device-to-host helpers the tests and the wiring use (`docs/17-gpu.md` section 3). The raw
 //! words of a photo are not an image: they live in [`crate::kernels::prep::DeviceRaw`].
 //!
 //! # Layout
@@ -8,8 +8,8 @@
 //! plane after the other, in a single storage buffer. `stride` is `width` rounded up to an even
 //! number, like every other image buffer of the crate (`kernels::util::even`); the padding column is
 //! zero on upload and kernels never read it. The sample type is **f32 in every storage mode**
-//! (`docs/gpu-plan.md` X-3): the storage modes of [`crate::device::StorageMode`] belong to the legacy
-//! kernels and their tests.
+//! (`docs/17-gpu.md` section 2): the storage modes of [`crate::device::StorageMode`] belong to the
+//! legacy kernels and their tests.
 //!
 //! Buffers come from the pool ([`crate::pool`]) and go back to it when the image is dropped, so a
 //! resident image is an ordinary value that caches can hold behind an `Arc`.
@@ -60,7 +60,7 @@ impl GpuImage {
     /// # Errors
     ///
     /// [`GpuError::InvalidInput`] for an empty image, a plane count other than 1, 3 or 4, or an
-    /// image whose sample count does not fit a `u32` index (K4 of the plan);
+    /// image whose sample count does not fit a `u32` index (K4 of `docs/17-gpu.md`);
     /// [`GpuError::BufferTooLarge`] when it does not fit one storage binding;
     /// [`GpuError::OutOfBudget`] when the budget cannot hold it.
     pub fn alloc(
@@ -265,7 +265,7 @@ impl GpuImage {
 }
 
 /// A tall picture held as bands of full-width rows, each band in a buffer of its own, so that no
-/// storage binding has to hold the whole picture (`docs/gpu-plan.md` K4: at most 128 MiB). The fit
+/// storage binding has to hold the whole picture (`docs/17-gpu.md` K4: at most 128 MiB). The fit
 /// view of a 50 MP photo at `k = 2` is 4344 x 2896 pixels, 150 MB in three planes; as bands of a few
 /// hundred rows it is a dozen buffers of 5 to 30 MB.
 ///

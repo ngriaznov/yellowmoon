@@ -2,7 +2,7 @@
 //! only the groups after the first one it affects. Each test reads the stage runs of one request.
 //!
 //! The tests that read the run counts of one request run twice: on the CPU (the reference) and with
-//! the view stages on the device (`*_on_the_device`, G-05: the sampler, the colour chain, output
+//! the view stages on the device (`*_on_the_device`: the sampler, the colour chain, output
 //! sharpening and C13 on Mesa lavapipe; the raw chain stays on the CPU). The device road counts what
 //! the CPU road counts, stage for stage.
 mod common;

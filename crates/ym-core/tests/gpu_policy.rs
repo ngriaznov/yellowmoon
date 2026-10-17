@@ -1,4 +1,4 @@
-//! The graphics policy end to end (`docs/gpu-plan.md` task G-01): one place opens the device, a
+//! The graphics policy end to end (`docs/17-gpu.md` section 1): one place opens the device, a
 //! renderer can be given the device and the memory budget after it is made, and nothing about the
 //! default render changes in this version. The policy matrix itself (four policies against a
 //! hardware adapter, a software one and none, flag, environment and default) is in
@@ -125,8 +125,8 @@ fn no_code_outside_open_gpu_creates_a_device() {
         // The only place: `SystemProbe` calls `Gpu::start`.
         (file.ends_with("crates/ym-core/src/app/gpu.rs") && needle == "Gpu::start(")
             // The Mac's native viewport owns a *presentation* device: it draws the RGBA8 frames
-            // the core made into the window's surface and computes nothing (`docs/gpu-plan.md`
-            // section 6, "Native viewport (Mac)": unchanged).
+            // the core made into the window's surface and computes nothing (`docs/01-architecture.md`,
+            // "Native viewport").
             || file.ends_with("src-tauri/src/native.rs")
     };
     let mut offences = Vec::new();
@@ -273,7 +273,7 @@ fn attaching_the_device_changes_no_byte_of_a_full_render_that_runs_no_raw_stage_
         return;
     };
     // The export render is the CPU reference unless the raw chain is among the stages the device
-    // runs (G-03): with the stages `Auto` runs, or none, the pixels of a full render with a device
+    // runs: with the stages `Auto` runs, or none, the pixels of a full render with a device
     // attached are those of one without (`AGENTS.md` hard rule 8; `golden check` pins the same
     // thing on the whole synthetic set). With every stage the demosaic runs on the device, and the
     // picture agrees with the CPU's within the kernel's tolerances (`tests/render_gpu.rs`).

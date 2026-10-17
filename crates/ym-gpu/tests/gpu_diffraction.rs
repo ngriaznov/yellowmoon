@@ -1,4 +1,4 @@
-//! RA-09: the R8 diffraction deconvolution kernel (`shaders/diffraction.wgsl`,
+//! The R8 diffraction deconvolution kernel (`shaders/diffraction.wgsl`,
 //! `kernels::diffraction`) against its CPU reference `cpu::sharpen::diffraction` (spec
 //! `docs/algorithms/03-diffraction-deconvolution.md`, sections 3.4 to 3.12 and the GPU notes of
 //! section 5).
@@ -62,14 +62,14 @@ mod common;
 
 /// Prints like `println!` and writes the same line to the process's own stderr as well (the harness captures `println!` and
 /// `eprintln!`, not this), so that the numbers of a passing test reach the CI log of the Apple runners, from which a
-/// hardware column is made (G-09). No annotation: the budget of those is spent by the older notes.
+/// hardware column is made. No annotation: the budget of those is spent by the older notes.
 macro_rules! note {
     ($($arg:tt)*) => {{
         let line = format!($($arg)*);
         println!("{line}");
         let _ = std::io::Write::write_fmt(
             &mut std::io::stderr(),
-            format_args!("[G-09 {}] {line}\n", file!().rsplit('/').next().unwrap_or("")),
+            format_args!("[{}] {line}\n", file!().rsplit('/').next().unwrap_or("")),
         );
     }};
 }
@@ -784,16 +784,16 @@ fn hostile_values_do_not_produce_nan_or_inf_and_match_the_cpu() {
 
 #[test]
 fn hostile_values_that_the_stage_acts_on_match_the_cpu() {
-    // Review of RA-09: in the test above, every 9 x 9 window of the 0.1 fraction of samples up to 4
-    // holds a sample far above white, and at f/1 and f/50 the CPU port returns its input unchanged
-    // (the clip penalty gates the frame, or the fit explains too little and fades out), so that
-    // comparison is an identity there and proves little about the solve. Here the values are
-    // uniform in [-0.05, 0.7] (below the clip threshold, a tenth of them negative), without and with
-    // 1 % of the pixels at up to 4 (windows near a spike are gated, the rest is not), strength 3,
-    // zero noise model. From f/1 to f/8 the stage must change the frame, or the check means nothing
-    // (from f/16 on, pure noise is faded out by the fit and the CPU returns its input, so those
-    // optics are left to the other tests). Measured on lavapipe: changes up to 2.0 (strength 3
-    // extrapolates), |gpu - cpu| at most 1.3e-6.
+    // Review of the kernel: in the test above, every 9 x 9 window of the 0.1 fraction of samples up
+    // to 4 holds a sample far above white, and at f/1 and f/50 the CPU port returns its input
+    // unchanged (the clip penalty gates the frame, or the fit explains too little and fades out),
+    // so that comparison is an identity there and proves little about the solve. Here the values
+    // are uniform in [-0.05, 0.7] (below the clip threshold, a tenth of them negative), without and
+    // with 1 % of the pixels at up to 4 (windows near a spike are gated, the rest is not), strength
+    // 3, zero noise model. From f/1 to f/8 the stage must change the frame, or the check means
+    // nothing (from f/16 on, pure noise is faded out by the fit and the CPU returns its input, so
+    // those optics are left to the other tests). Measured on lavapipe: changes up to 2.0 (strength
+    // 3 extrapolates), |gpu - cpu| at most 1.3e-6.
     let Some(dev) = device() else { return };
     let mut worst = 0.0f64;
     let mut seed = 9500u64;

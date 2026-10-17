@@ -1,4 +1,4 @@
-// The photo's raw words on the device, read by the raw-front kernels (G-07). `DeviceRaw` keeps the
+// The photo's raw words on the device, read by the raw-front kernels. `DeviceRaw` keeps the
 // words of a readout in one or two row slabs (a slab is at most one 128 MiB binding: a 61 MP plane of
 // u16 fits one, a 70 MP plane needs two), two samples per u32, the first in the low half, linear in
 // the slab (`(y - first_row) * width + x`). The cRAW quantisation step is a second pair of slabs: mode

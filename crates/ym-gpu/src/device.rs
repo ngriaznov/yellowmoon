@@ -22,12 +22,13 @@
 //! # Storage mode
 //!
 //! Image planes that cross a kernel boundary are **f32 in memory** in every storage mode
-//! (`docs/gpu-plan.md` X-3: the f16 errors measured 7.9e-4 to 6e-3 against the CPU reference, and the
-//! raw-algorithm kernels already require f32). [`StoragePreference::Auto`] therefore resolves to
-//! [`StorageMode::F32`] on every device. The two f16 modes remain for the legacy kernels and their
-//! tests: [`StoragePreference::Force`] with [`StorageMode::F16Native`] (`array<f16>`, needs
-//! `SHADER_F16`) or [`StorageMode::F16Packed`] (`array<u32>` holding two halves, packed with
-//! `pack2x16float`). The choice is made once at start-up and written into every generated shader.
+//! (`docs/17-gpu.md` section 2: the f16 errors measured 7.9e-4 to 6e-3 against the CPU reference,
+//! and the raw-algorithm kernels already require f32). [`StoragePreference::Auto`] therefore
+//! resolves to [`StorageMode::F32`] on every device. The two f16 modes remain for the legacy
+//! kernels and their tests: [`StoragePreference::Force`] with [`StorageMode::F16Native`]
+//! (`array<f16>`, needs `SHADER_F16`) or [`StorageMode::F16Packed`] (`array<u32>` holding two
+//! halves, packed with `pack2x16float`). The choice is made once at start-up and written into every
+//! generated shader.
 //!
 //! # Health: lost and tainted devices
 //!
@@ -37,7 +38,7 @@
 //! allocation, submission or readback of a job fails with [`GpuError::DeviceLost`], and so does a
 //! readback that takes longer than [`GpuConfig::readback_timeout`] (30 s). Rebuilding the device (at
 //! most twice, then the GPU is off for the process) is the integrator's job
-//! (`docs/gpu-plan.md` 4.9).
+//! (`docs/17-gpu.md` section 9).
 //!
 //! # Pipeline cache
 //!
@@ -60,7 +61,7 @@
 //! clones with the device and the queue, the shape burn's wgpu backend imports. With the cargo
 //! feature `ml` the device is requested the way cubecl requests one (every adapter feature except
 //! `MAPPABLE_PRIMARY_BUFFERS` and the experimental ones, the adapter's limits) so that burn can use
-//! it; without the feature nothing changes (`docs/gpu-plan.md` section 8).
+//! it; without the feature nothing changes (`docs/17-gpu.md` section 14).
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -206,8 +207,8 @@ impl StorageMode {
 /// Which storage mode to use.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum StoragePreference {
-    /// f32 on every device ([`StorageMode::F32`]): image planes are f32 in memory (`docs/gpu-plan.md`
-    /// X-3). The f16 modes are reached only through [`StoragePreference::Force`].
+    /// f32 on every device ([`StorageMode::F32`]): image planes are f32 in memory (`docs/17-gpu.md`
+    /// section 2). The f16 modes are reached only through [`StoragePreference::Force`].
     #[default]
     Auto,
     /// A specific mode; start-up fails if the device cannot do it.
@@ -239,7 +240,7 @@ pub struct GpuConfig {
     /// default: nothing is timed in a normal run.
     pub timestamps: bool,
     /// The longest a readback waits for the GPU. When it expires the device is tainted and the
-    /// readback fails with [`GpuError::DeviceLost`] (`docs/gpu-plan.md` 4.9). 30 s by default.
+    /// readback fails with [`GpuError::DeviceLost`] (`docs/17-gpu.md` section 9). 30 s by default.
     pub readback_timeout: Duration,
     /// A fault to arm when the device opens (feature `fault-injection`; `YM_GPU_FAULT` is read when
     /// this is `None`). [`Gpu::set_fault`] arms one later.
@@ -591,7 +592,7 @@ impl GpuContext {
             .contains(wgpu::DownlevelFlags::SHADER_F16_IN_F32);
 
         let storage_mode = match config.storage {
-            // f32 on every device (module notes, `docs/gpu-plan.md` X-3).
+            // f32 on every device (module notes, `docs/17-gpu.md` section 2).
             StoragePreference::Auto => StorageMode::F32,
             StoragePreference::Force(mode) => {
                 let ok = match mode {
@@ -620,7 +621,7 @@ impl GpuContext {
         if want_cache {
             required_features |= wgpu::Features::PIPELINE_CACHE;
         }
-        // Timestamps are optional and only requested when asked for (K6 of `docs/gpu-plan.md`).
+        // Timestamps are optional and only requested when asked for (K6 of `docs/17-gpu.md`).
         let timestamp_query =
             config.timestamps && adapter_features.contains(wgpu::Features::TIMESTAMP_QUERY);
         if timestamp_query {
@@ -938,7 +939,7 @@ impl Drop for GpuContext {
 /// With the `ml` feature the device is requested the way cubecl requests one, so burn can import
 /// it: every adapter feature except `MAPPABLE_PRIMARY_BUFFERS` and the experimental ones (a device
 /// cannot hold those without the `unsafe` opt-in), and exactly the adapter's limits
-/// (`docs/gpu-plan.md` section 8).
+/// (`docs/17-gpu.md` section 14).
 #[cfg(feature = "ml")]
 fn ml_request(
     _features: wgpu::Features,

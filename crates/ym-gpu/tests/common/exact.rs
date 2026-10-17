@@ -1,5 +1,5 @@
 //! Bit-level comparisons for the kernel tests: tile = whole frame, device = host wrapper, poisoned
-//! run = plain run (`docs/gpu-plan.md` D5, D7 and X-10).
+//! run = plain run (`docs/17-gpu.md` D5 and D7).
 //!
 //! A value is compared by its bits, so `NaN == NaN` when the bits agree and `-0.0 != 0.0`: the claim of
 //! these tests is "the same bytes", not "close".
@@ -136,7 +136,7 @@ pub fn plain_gpu() -> Option<&'static Gpu> {
         .as_ref()
 }
 
-/// X-10 / D7: runs `run` on the poisoned test device (every buffer starts as NaN) and on a plain one
+/// D7: runs `run` on the poisoned test device (every buffer starts as NaN) and on a plain one
 /// (every new buffer starts as zeros), requires the same bits from both and no NaN or infinity in the
 /// result. Returns the result. Skips (returning `None`) when there is no adapter.
 pub fn assert_poison_neutral(what: &str, run: impl Fn(&Gpu) -> Vec<f32>) -> Option<Vec<f32>> {

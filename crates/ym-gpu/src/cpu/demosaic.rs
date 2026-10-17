@@ -53,7 +53,7 @@
 //! clip, and are tile-consistent with the halos in [`Method::halo`]. The output keeps the input's
 //! [`Placement`](super::Placement).
 //!
-//! # Inputs besides the mosaic (RA-02)
+//! # Inputs besides the mosaic
 //!
 //! [`demosaic_with`] takes [`DemosaicInputs`]: the R4 gains, the noise model on the 16-bit working
 //! scale ([`NoiseDn`](super::NoiseDn)) and optional lateral CA curves ([`CaCurves`]). The three
@@ -101,12 +101,12 @@ pub enum Method {
 
 /// The default classical method: the adaptive ratio demosaic ([`Method::AdaptiveRatio`]).
 ///
-/// The owner's decision of 2026-10-13, after the RA-05 measurement and the blind look RA-H4
-/// (`docs/05-raw-processing.md` section R6, `docs/16-risks-and-decisions.md`): the R6 rule picks
-/// the method with the best PSNR on linear light, which is the adaptive ratio demosaic, and the
-/// owner accepted its extra CPU time. Until then the default was [`Method::Menon`], which stays
-/// selectable together with LMMSE, bilinear and the log-guided demosaic (the test-only switch of
-/// `ym_core::pipeline::graph::RenderOptions::demosaic`).
+/// The owner's decision of 2026-10-13, after the demosaic gate's measurements and his blind look
+/// of the same day (`docs/05-raw-processing.md` section R6, `docs/16-risks-and-decisions.md`): the
+/// R6 rule picks the method with the best PSNR on linear light, which is the adaptive ratio
+/// demosaic, and the owner accepted its extra CPU time. Until then the default was
+/// [`Method::Menon`], which stays selectable together with LMMSE, bilinear and the log-guided
+/// demosaic (the test-only switch of `ym_core::pipeline::graph::RenderOptions::demosaic`).
 ///
 /// Because the adaptive ratio demosaic reads the R4 gains and the noise model, a chain that runs
 /// it passes both (`Chain::gains`, `Chain::noise`); a noise model it cannot use is read as zero

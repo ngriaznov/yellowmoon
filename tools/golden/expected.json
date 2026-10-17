@@ -386,7 +386,7 @@
     },
     {
       "pipeline_version": "0.1.2",
-      "note": "pipeline 0.1.2: R6 default adaptive ratio demosaic (owner decision RA-H4; linear-light PSNR 36.05 dB vs Menon 34.43) and output sharpening 100 % screen preset (owner decision RA-H3)",
+      "note": "pipeline 0.1.2: R6 default adaptive ratio demosaic (owner decision after the blind look of 2026-10-13; linear-light PSNR 36.05 dB vs Menon 34.43) and output sharpening 100 % screen preset (owner decision of 2026-10-13)",
       "changed": 61,
       "added": 0,
       "max_delta_e_2000": 26.314406830901873

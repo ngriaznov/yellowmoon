@@ -1,9 +1,9 @@
-//! Helpers shared by the G-06 test files (`gpu_denoise.rs`, `gpu_detail.rs`, `gpu_rl.rs`,
-//! `gpu_chain.rs`): scenes, NaN-proof error statistics, and the check that the number of threads of
-//! the software adapter changes no bit.
+//! Helpers shared by the tests of the R6 to R8 kernels (`gpu_denoise.rs`, `gpu_detail.rs`,
+//! `gpu_rl.rs`, `gpu_chain.rs`): scenes, NaN-proof error statistics, and the check that the number
+//! of threads of the software adapter changes no bit.
 //!
-//! A directory module (`tests/g06/mod.rs`), so cargo does not build it as a test binary of its own;
-//! the files include it with `#[path = "g06/mod.rs"] mod g06;`.
+//! A directory module (`tests/denoise_common/mod.rs`), so cargo does not build it as a test binary
+//! of its own; the files include it with `#[path = "denoise_common/mod.rs"] mod denoise_common;`.
 
 #![allow(dead_code)]
 
@@ -148,9 +148,9 @@ pub fn sigma_plane(w: usize, h: usize, seed: u64) -> Vec<f32> {
 pub fn ci_note(what: &str, text: &str) {
     use std::io::Write as _;
     let mut err = std::io::stderr();
-    let _ = writeln!(err, "[G-06] {text}");
+    let _ = writeln!(err, "[R6..R8] {text}");
     if std::env::var_os("GITHUB_ACTIONS").is_some() {
-        let _ = writeln!(err, "::notice title=G-06 {what}::{text}");
+        let _ = writeln!(err, "::notice title=R6..R8 {what}::{text}");
     }
 }
 
@@ -169,16 +169,16 @@ pub fn fnv(mut h: u64, data: &[f32]) -> u64 {
 pub const FNV_START: u64 = 0xCBF2_9CE4_8422_2325;
 
 /// The check that the software adapter's thread count changes no bit (`LP_NUM_THREADS=1` against the
-/// default, `docs/gpu-plan.md` section 7): `compute` runs the cases and returns a hash of every bit
+/// default, `docs/17-gpu.md` section 12): `compute` runs the cases and returns a hash of every bit
 /// they produce. The test calls this with its own name; the function runs `compute` here, then runs the same test in a child
 /// process with `LP_NUM_THREADS=1` (the variable is read when the adapter starts, so it cannot be set
 /// in a running process) and requires the same hash. In the child it prints the hash and returns.
 /// Does nothing when there is no adapter (the caller returns before).
 pub fn assert_thread_count_independent(test_name: &str, compute: impl Fn() -> u64) {
-    const CHILD: &str = "YM_G06_CHILD_HASH";
+    const CHILD: &str = "YM_THREAD_CHECK_CHILD";
     let here = compute();
     if std::env::var_os(CHILD).is_some() {
-        println!("G06_HASH={here:016x}");
+        println!("THREAD_CHECK_HASH={here:016x}");
         return;
     }
     let exe = std::env::current_exe().expect("the test binary's path");
@@ -197,7 +197,7 @@ pub fn assert_thread_count_independent(test_name: &str, compute: impl Fn() -> u6
     // The harness prints `test <name> ... ` before the test's own output, so the hash is not at the
     // start of a line.
     let there = text
-        .split_once("G06_HASH=")
+        .split_once("THREAD_CHECK_HASH=")
         .and_then(|(_, rest)| rest.get(..16))
         .unwrap_or_else(|| panic!("the child printed no hash:\n{text}"));
     assert_eq!(

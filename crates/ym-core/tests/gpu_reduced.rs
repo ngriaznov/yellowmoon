@@ -1,4 +1,4 @@
-//! G-07, the raw front and the fit-view path in the render path (Mesa lavapipe in CI) against the CPU
+//! The raw front and the fit-view path in the render path (Mesa lavapipe in CI) against the CPU
 //! reference.
 //!
 //! * The fit view and the thumbnails (`Job::group(k)`): with [`GpuStages::RAW_FRONT`] the reduced
@@ -155,15 +155,13 @@ fn the_fit_view_group_runs_on_the_device_from_words_uploaded_once() {
     assert_eq!(b.report.runs.sigma_planes, 0);
     assert_eq!(a.report.runs.sigma_planes, 1);
     let (worst, mean) = codes(&a, &b);
-    eprintln!(
-        "[G-07] fit view, device group against CPU group: worst {worst} codes, mean {mean:e}"
-    );
+    eprintln!("[fit view] device group against CPU group: worst {worst} codes, mean {mean:e}");
     // Twice the first measured values (1 code, mean 1.7e-5): the same on every adapter.
     assert!(worst <= 2 && mean <= 3.4e-5, "{worst} {mean}");
     // And the whole renderer against the CPU one.
     let c = fit_frame(&cpu, &src, 300.0, 200.0);
     let (worst, mean) = codes(&c, &b);
-    eprintln!("[G-07] fit view, device against CPU: worst {worst} codes, mean {mean:e}");
+    eprintln!("[fit view] device against CPU: worst {worst} codes, mean {mean:e}");
     // Twice the first measured values (1 code, mean 6.3e-5).
     assert!(worst <= 2 && mean <= 1.3e-4, "{worst} {mean}");
 

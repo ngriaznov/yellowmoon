@@ -1,0 +1,177 @@
+# 17 · The GPU path
+
+Every image stage after decoding runs on the wgpu device (Metal on Apple silicon), in the app and in `ym`, exports included (the owner's direction of 2026-10-13, `docs/16`). The CPU path stays: it is the reference every kernel is tested against, the fallback when the device fails, and what the golden hashes pin. This file holds the contracts of the device path. The stages themselves are specified in `docs/02` (colour), `docs/05` (raw processing, with the measured numbers) and `docs/algorithms/` (the four raw algorithms); `docs/13` has the test layers and gates.
+
+## 1. Device policy, flags, one device
+
+- `GpuPolicy { Auto, On, Off, Require }` and one `open_gpu(policy, budget) -> GpuSlot` in `ym-core` (`app/gpu.rs`, or a `GpuOpener` for the knobs tests and the app need). The app and `ym` both call it, and nothing else creates a compute device (`tests/gpu_policy.rs` scans the sources). Adapter choice is `pick_adapter` (high-performance first), so a dual-GPU Mac picks the same adapter in both front ends.
+- **Auto:** hardware adapters only, never a software one (lavapipe, WARP). **On:** any adapter, every stage (CI, development). **Off:** never; the CPU reference. **Require:** like On, strict: no silent fallback. `--require-gpu` exits 4 when no device opens at start, and a device error during a photo fails that photo with kind `gpu`. Precedence is the flag, then `YELLOWMOON_GPU=auto|on|off|require` (`1` reads as `on`), then `Auto`. `ym render --cpu` is `Off`; with `--require-gpu` it is a usage error (exit 2).
+- `GpuStages` is a small bit set, one member per range that can be switched on its own: `RAW_FRONT` (R1 to R5b, R9 and the reduced fit-view group), `RAW_CHAIN` (R6 to R8), `SAMPLER`, `COLOR` (C1 to C12), `OUTPUT_SHARPEN`, `ENCODE` (C13) and `EXPORT_TAIL`. `On` and `Require` run all of them. `Auto` runs `SIGNED_OFF`: a member joins once its parity, tile and determinism suites pass on the Metal CI runners (`.github/workflows/mac-gpu.yml`); a physical-Mac session can still remove one. Since 2026-10-15 every member is signed off, so `Auto` on a hardware adapter runs the whole chain. A member that is off keeps a host boundary at its edges.
+- `ym` opens the device in the background at launch (while photos decode), warms up the kernel sets its exports need (`GpuStages::USED_BY_EXPORTS`) as an Export-priority job, and attaches the device to `Core` (`Renderer::set_gpu`) before the export queue is built, so one export is wholly on the device or wholly on the CPU.
+- The device is recorded in no file and no XMP, and `PIPELINE_VERSION` does not depend on it. `ym render --json` reports `device` (the path the export took, `ExportReport.device`) and `notes`.
+
+## 2. Precision
+
+Every image plane that crosses a kernel boundary is f32, in every storage mode. `StoragePreference::Auto` resolves to `F32`, which also drops `enable f16;` from every kernel's prelude. f16 planes were measured 7.9e-4 to 6e-3 off the CPU reference, and the raw-algorithm kernels need f32 anyway. `Force(F16Native | F16Packed)` remains for the legacy kernels and their tests only. Raw words are `u16` pairs; look cubes and tables are f32.
+
+## 3. Types and entry points (`ym-gpu`, which does not depend on `ym-core`)
+
+```text
+GpuImage  { buf: PooledBuffer, width, height, stride /* even */, planes /* 1, 3, 4 */, place: Placement }   // planar f32
+DeviceRaw { words: 2 x u16 per u32, qstep, width, height, cfa }        // a photo's raw words, uploaded once (kernels/prep.rs)
+RowBands                                                               // an image held as bands of rows (the reduced path)
+PassList  { encoder, kept-alive buffers, uniform slots, dispatch count } -> submit() -> Pending
+// each kernel module:
+pub fn encode_<stage>(ctx, passes: &mut PassList, inputs: &GpuImage.., params) -> Result<GpuImage, GpuError>   // device in, device out
+pub fn <stage>(ctx, host inputs..) -> Result<RgbImage, GpuError>        // thin host wrapper: upload, encode_, submit, read back
+GpuChain<'a> { chain: &'a Chain, prepared: &'a Prepared, sigma: SigmaHalf<'a>, range: StageRange }
+  run_tile(ctx, &RawFrame, out: Rect, cancel) -> Result<RgbImage, GpuError>                  // same contract as Chain::run_tile
+  run_tile_device(runner, &Arc<DeviceRaw>, out: Rect, cancel) -> Result<GpuImage, GpuError>  // the tile stays on the device
+GpuReduced::run(ctx, &DeviceRaw, &ReducedParams, cancel)                // the fit-view group, in bands of rows, as a series of jobs
+```
+
+- `SigmaHalf { width, height, data, gains }` and `ReducedParams` are plain data built by `ym-core` from the sigma plane, the gain plane and the raw plan.
+- `GpuChain` is built from the same `Chain` and `Prepared` the CPU uses and walks `Chain::stages()` with `TilePlan` and `required_input_rect`, so settings, stage choice and halos have one source; the noise model comes through `Chain::noise_dn()`.
+- `StageRange { first, last }` is the test and gating lever: stages outside it run on the CPU tile stepper (`cpu/chain.rs`), and the boundary is a host copy.
+- Resident images are plain `Arc` values: a `PooledBuffer` returns to the pool on drop. `ym-core`'s `ByteLru` caches hold `Backing { Cpu, Gpu }` entries for the reduced groups and the 100 % tiles (`RenderOptions::resident_caches`, on by default). A host consumer reads an entry back and the entry becomes a host one; reading one pixel under the pointer samples on the device and reads back one pixel (`sample_view_in_place`), so it does not undo the residency.
+- Recording a dispatch costs about 66 µs on lavapipe (a chain tile of 248 x 186 records 42 dispatches, 1.0 % of its time), so there is no uniform arena, bind-group cache or readback ring; the printed numbers of `tests/gpu_residency.rs` decide if that changes.
+
+## 4. Tiles, halos and the design binding
+
+- **The design binding.** Lavapipe reports a 128 MiB storage binding although the context asks for up to 2 GiB. Every kernel is designed for 128 MiB (`ym_gpu::tiles::DESIGN_BINDING_BYTES`), a constant and not the device's limit, so the app and `ym` cut every frame the same way on every machine. Consequences: the adaptive ratio scratch is 12 planes x 4 B = 48 B per compute pixel, so a compute rectangle stays at or below `MAX_PHYS_AREA` = 2.5 Mpixel (120 MB); a 61 MP raw plane (115 MiB) fits one binding; the display-linear export frame (600 MB at 50 MP) is held in slabs of at most `SLAB_BYTES` = 128 MiB.
+- **Logical tiles** are the CPU's constants: `tile_px` 512 for the 100 % view, `full_tile_px` 1024 for exports, the same `Job::region` rectangles. The device budget decides how many tiles are in flight, never their shape. An allocation failure is an error and a CPU fallback, never a smaller tile.
+- **The split rule.** A compute rectangle above `MAX_PHYS_AREA` is split in halves recursively, a function of the rectangle alone, each half with its full halos. Everything except Richardson–Lucy beyond its 24 px halo cap is tile-exact, so the split changes pixels by at most 2e-7.
+- **Halos** are those of `docs/05`, from `Chain::stages()`; mosaic origins are even; outputs are in lens-crop coordinates; display-domain output sharpening uses `SharpenPlan::halo_px(scale)` (17 px at full size, at most 21).
+
+## 5. Determinism rules
+
+- **D1** No float atomics anywhere; integer atomics only if ever needed.
+- **D2** No order-dependent reduction on the device except the R5 chroma-offset reduction of the reduced path: a per-workgroup binary tree in thread-index order, partials to a buffer, a second pass folding the partials in index order with compensated summation, counts in `u32`.
+- **D3** No subgroup operations.
+- **D4** No whole-row running sums (box filters, prefix sums): fixed-length direct sums (radius at most 8) or blocked sums with absolute block origins, so a pixel never depends on the tile origin. Positions, dither and noise use absolute frame coordinates; source positions are small displacements or a per-tile f64 rebase (integer origin plus an f32 2x2 over local coordinates), never absolute f32 coordinates of order 1e4. Test: the far corner of an 8658 x 5772 frame.
+- **D5** A pixel depends only on its receptive field: tiles equal the whole frame bit for bit on the device, for every kernel and for the chain, at two tile sizes (Richardson–Lucy beyond its cap is the stated exception).
+- **D6** Operation order as in the specs; `fma()` is not called; NaN by bit test (`common.wgsl::is_nan_f`). Kernels must also hold under Metal's fast-math (K8, section 13).
+- **D7** A job's output never depends on what ran before it (poison test: every acquired buffer starts as NaN) or on how viewport and export jobs interleave (an export with viewport jobs injected between its tiles equals one without).
+- **D8** Same machine, adapter and driver: identical bytes between runs and between the app and `ym` (one `open_gpu`). Across machines, or against the CPU path: within the stated tolerances only.
+
+## 6. Kernel contract
+
+Checked offline in `tests/shaders_naga.rs` (MSL, SPIR-V and HLSL translation, the latter the only offline check of the DX12 path, against the baseline `Capabilities::empty()`) and by a source lint.
+
+- **K1** Core WGSL only; no `enable` except `f16` in legacy modes; no subgroups, push constants, binding arrays, 64-bit integers, float atomics or texture sampling.
+- **K2** Workgroups 16 x 16 or 256; workgroup memory at most 16 KiB.
+- **K3** At most 8 storage buffers plus 1 uniform per stage.
+- **K4** At most 65535 workgroups per dimension; `u32` indexing guarded (`plane_len * planes <= u32::MAX`); no binding above 128 MiB at the largest rectangle (each kernel module exports `max_binding_bytes(rect)` and a test checks it at `MAX_PHYS_AREA`).
+- **K5** A job (one tile x stage group, or one sharpening strip) is short enough for the Windows TDR (2 s) and the Metal watchdog; about 30 ms on an M1 is the design figure.
+- **K6** Features required at device creation: none beyond compute. Used when present: `TIMESTAMP_QUERY` (and `_INSIDE_PASSES`), `PIPELINE_CACHE`, legacy `SHADER_F16`.
+- **K7** Constants are written from `ym_color::consts` and the CPU planners, never typed twice.
+- **K8** Correct under fast-math and under strict IEEE. Metal compiles with fast-math and wgpu cannot switch it off (section 13), so a kernel whose result depends on a rounding (a decision that compares sums, a rank count, an error-free transformation) hides every operation that matters from the compiler with a barrier and computes divisions and square roots exactly (`ar_div`/`ar_sqrt`, `sharpen_div`/`sharpen_sqrt`, `lg_log2`/`lg_exp2` are the patterns). **The barrier is an OR, never an XOR:** `bitcast<f32>(bitcast<u32>(x) | zero)`, where `zero` is a uniform word that is `+0.0` bits at run time and that the compiler cannot know. An XOR applied twice cancels (`x ^ z ^ z == x`, folded by the compiler) and fast-math folds the `0 + x` that starts a running sum, so the first product of an unrolled sum loses its barrier and is fused into the next sum; an OR is idempotent. One operation per barrier: every product that meets a sum, every partial sum and every difference gets its own. A lib test (`every_fast_math_barrier_is_an_or_never_an_xor`, `kernels/adaptive_ratio.rs`) scans every kernel's source for the XOR form. The zero word must stay `+0.0` on the host (a `-0.0` would set every sign bit).
+
+## 7. Jobs, cancellation and priority
+
+- A GPU job is one tile x stage group (raw front, detail, lens and colour) or one sharpening strip. A tile taller than a slab opens its slabs in one job, so a tile is at most three submissions.
+- The render's own `CancelToken` is passed to the job (`Scheduler::submit_with_token`, `Gpu::run_with_token`); it is checked at job start, between stage groups and before readback. A submitted command buffer cannot be stopped, so cancel latency is one job.
+- At most two jobs of an export are in flight, so a viewport job queued behind them waits for one or two tiles. `JobScheduler::wait_for_foreground` stays the export gate: the export worker still does CPU work per tile (planning, sampling, encoding) that competes with the viewport.
+- Priorities: viewport frame `Viewport`; 100 % tile prefetch `TileNeural`; thumbnails, look tiles and the histogram sample `Thumbnail`; export `Export`. `Job` carries a `gpu_priority` for raw tiles.
+- A queued job's closure holds the photo's mosaic, so `Renderer::navigate` also calls `gpu.scheduler().cancel_navigation(Some(left))`: queued jobs of a photo left behind are resolved at once, not only flagged.
+- At most two photos keep their raw words on the device: the one being looked at and the one before it. `Renderer::prefetch_raw` / `spawn_raw_prefetch` upload a neighbour at Thumbnail priority under the same rule; the app does not call them yet.
+- `KernelId::ALL` is the first-use order (fit view, view stages, full-resolution chain, tail), and `warm_up` (`ym-core` `app/gpu.rs`) compiles the kernels in that order. It is one job, which a viewport job cannot pass. `KernelSet { View, Raw, Tail, All }` names the groups; `ym` warms the sets its exports need.
+
+## 8. Memory
+
+- The pool ledger is the authority (wgpu has no portable "memory left").
+- On `DeviceType::IntegratedGpu` (Apple silicon) the GPU budget is `clamp(RAM / 4, 512 MiB, 4 GiB)` and the CPU budget becomes `min(cpu, 0.6 x RAM - gpu)`, never below its floor, so the two stay under 0.6 of the RAM (`MemoryBudget::for_unified_memory`, unit-tested). `open_gpu` passes the GPU budget into `GpuConfig`. Discrete GPUs keep separate budgets.
+- Gate (lavapipe, `--release`): the 50 MP full chain peaks under 2 GiB by the pool ledger, and the ledger returns to its resident set after an export and after navigation (measured: 600 MiB peak, back to 0).
+- `OutOfBudget` / `BufferTooLarge`: trim the pool, retry once, then the CPU for that photo.
+- The 200 MB expanded sigma map is built only when the CPU runs the chain; the device expands the half-resolution plane itself, with the CPU's rule (`sigma(x, y) = plane[y/2][x/2] * gain(cell centre)`).
+- The reduced path normalises the mosaic once on the device from the resident `u16` words, where the CPU normalises it twice (for the sigma plane and for `reduced_bayer`).
+- With resident caches the cache budget is `min(cpu_bytes / 6, gpu_bytes / 8)`.
+
+## 9. Errors and fallback
+
+Per photo, never per tile, and never a mix of device and CPU tiles in one export.
+
+- `GpuError` classes. Out of budget or too large: retry once, then the CPU. Shader: that kernel family is off for the process, then the CPU (a shader that fails in the export tail switches the tail off, `export_tail_disabled`). Device lost or tainted (an uncaptured error, a readback timeout of 30 s): the context is rebuilt at most twice, then the GPU is off for the process with one note. Cancelled: propagates.
+- A viewport frame or thumbnail falls back for that request with the note "The graphics card could not render this frame, so the CPU did: …". A photo that fails mid-session renders on the CPU from then on (view caches may then hold device and CPU tiles of one photo, which differ within tolerance; viewing only).
+- An export restarts the whole photo on the CPU: the report carries `device = cpu` and the note, and `ym` warns and exits 0, unless `Require` (kind `gpu`, nothing written for that photo). A restart sets `raw_gpu_failed`, so it never continues on device stages behind the CPU's front. A DNG whose device error fires once makes its preview and its raw plane on the CPU reference path too (`FullImage::fell_back_to_cpu`).
+- `RenderReport` records the device per range of raw stages (a render can be both), next to the overall `device`.
+
+## 10. The export tail
+
+```text
+for each tile row (1024 rows, one Export-priority job per tile x stage group):
+    GpuChain tile (run_tile_device, ExportTail::add_tile_device) -> sampler -> C1..C12 f32 -> written at the tile's x offset into the slab of the row
+slabs: at most 128 MiB each (1024 rows x 8658 px x 3 f32 = 106 MB)
+no resize:  sharpen rows of slab r-1 (needs 17 to 21 rows from slab r) -> C13 -> u8/u16 bands
+resize:     horizontal Lanczos-3 pass as a slab completes -> mid slab; after the last row a vertical pass -> the small final image -> sharpen strips -> C13 -> bands
+bands (128 rows): readback -> bounded channel (depth 3) -> BandSource -> writer
+DNG: the colour stage per tile on the device (Stop::DngLinearAwg4), read back into the host f32 frame; the p99.99 white and the writer stay on the CPU
+```
+
+- `BandSource` (`ym-export`: `width`, `height`, `rows_u8`, `rows_u16`) is implemented by `ImageRef` (the CPU path) and by `GpuBands` (`ym-core`). TIFF and PNG pull bands as they come, so encoding overlaps the device work; the JPEG writer needs the whole 8-bit image before it encodes, so a JPEG export is a device phase followed by an encode phase. There is no device JPEG front end; the encoders stay on the CPU (`docs/09`).
+- Resize taps come from the CPU in f64 (difference form, so a flat field is exact); dither is at absolute coordinates; cancel and progress are polled per tile job and per band, and the partial file is deleted.
+
+## 11. Where each stage runs
+
+| Stage | CPU reference | On the device |
+|---|---|---|
+| Decode, metadata | `ym-raw` | no |
+| Estimates on the 1/8 preview (noise model, illuminant, exposure) | `ym-noise`, `ym-color::illum`, `ym-core/src/auto.rs` | no |
+| Raw upload | `FrameData::new` | `DeviceRaw`, once per photo |
+| R1 normalise, mask, qstep; R3 vignetting; R4 gains | `cpu/{normalize,vignette,gains}.rs` | `prep` (one pass) |
+| R5 highlights | `cpu/highlights.rs` | apply on the device; the full chain's chroma offsets come from the CPU (exact f64) as uniforms, the reduced path's from a device reduction (D2) within 1e-6 relative |
+| R5b lateral CA on the mosaic | `cpu/lens.rs::correct_mosaic_ca` | `mosaic_ca` |
+| R2 sigma plane (half resolution) | `ym-core` `pipeline/raw.rs::sigma_plane` | CPU for the full chain (cached per photo); `sigma` on the reduced path; full resolution expanded on the device from `SigmaHalf` |
+| R6 adaptive ratio (the default) | `cpu/demosaic/adaptive_ratio.rs` | `adaptive_ratio` |
+| R6 Menon, LMMSE, bilinear, log-guided (test-only switch) | `cpu/demosaic*.rs` | no: a forced method runs that photo's raw chain on the CPU with a note (log-guided has a device entry point that no render path uses) |
+| R6 bilateral denoise | `cpu/denoise.rs` | `bilateral` |
+| R7 chroma guided filter, detail injection | `cpu/detail.rs` | `guided`, `detail` |
+| R8 Richardson–Lucy (default), diffraction | `cpu/sharpen.rs`, `cpu/sharpen/diffraction.rs` | `richardson_lucy`, `diffraction` |
+| R9 lens resample | `cpu/resample.rs` | `lens` |
+| Reduced fit-view group (bin 1/k, gain, sigma, denoise, R9 at 1/k) | `pipeline/raw.rs::{bin_mosaic, reduced_bayer, finish_lens}` | `GpuReduced`, in bands of rows |
+| Geometry sampler | `ym-gpu` `cpu/sampler.rs` (what `ym-core` calls) | `sampler` |
+| C1 to C12 | `ym-color::display::ColorChain` | `color.wgsl` and `aces2.wgsl` with a persistent `ChainTables` set (ACES 2 and dither tables once per device, curve tables per curve edit, look cubes in an LRU keyed by content) and a per-frame `ChainU` uniform block |
+| Output sharpening | `cpu/output_sharpen.rs` | `output_sharpen` |
+| C13, dither, quantise | `ym-color::encode`, `ym-export/pixels.rs` | `encode` (RGBA8 for views, u8/u16 bands for exports) |
+| Lanczos-3 resize | `ym-export/src/resize.rs` | `resize` (export tail) |
+| Before view | `ColorChain::render_u8(View::Before)` | `Stop::Before` (RGBA8) |
+| Histogram (192 px, 64 bins) | `pipeline/thumbs.rs::histogram` | the sample comes from the device group; the counts stay on the CPU (a few thousand pixels through the f64 trace) |
+| Thumbnails, look tiles | `pipeline/thumbs.rs` | the view job at Thumbnail priority |
+| DNG (C11 to AWG4, p99.99 white, u16) | `render_full_with`, `ym-export/dng.rs` | the colour stage (`Stop::DngLinearAwg4`); the white and the writer stay on the CPU |
+| Encoders, ICC, EXIF, XMP | `ym-export` | no |
+| Camera-processed files (Lossless M/S) | `ym-raw`, `ym-core` | no |
+| Neural demosaic | `ym-ml` | section 14 |
+
+A viewport frame is one device job: group or composed tile window, sampler, C1 to C12, output sharpening, C13, RGBA8, one readback. `DisplayFrame` holds the display-linear frame on the device, so an Output slider move re-runs sharpening and C13 only. Rectangle moves between resident images use the copy kernel (`copy.wgsl`: `encode_copy_rect`, `encode_crop`, `encode_gather`, pure data movement; `encode_gather` refuses overlapping pieces).
+
+## 12. Tests, goldens and CI
+
+- **Goldens pin the CPU reference.** `tools/golden` runs `ym render --cpu` with `YELLOWMOON_GPU=off`; `golden check` must report every file identical.
+- **Per-kernel parity:** vectors or random frames against the CPU reference with a stated maximum absolute error; 2048 x 1365 in 1024 px tiles; tiles equal the whole frame bit for bit; a poison run (NaN fill of every acquired buffer); `LP_NUM_THREADS=1` against the default identical; all four CFA phases and odd sizes where relevant. Starting thresholds (white = 1.0): pointwise stages (R1/R3/R4, sampler copy, C13) 1e-6; neighbourhood stages (bilateral, R7, R5b, R9, resize, sigma) 1e-5; Richardson–Lucy 5e-5 for n up to 4 (measured up to n = 10); R5 offsets 1e-6 relative; adaptive ratio as documented (1.4e-6 vectors, 7.4e-6 random, tie flips counted separately, at most 1.65e-4 of samples on real mosaics); C7 to C11 and the display transform 1.2e-5 LogC4, one 10-bit code; output sharpening 4.3e-5; C13 u8 within one code with at least 99 % exact; resize 1e-5 relative, flat field exact, step overshoot under 10 %. **A threshold is fixed at twice the first measured value and is never loosened without Mykyta.**
+- **Chain parity** (`tests/gpu_chain.rs`): a `StageRange` matrix. A range holding only stage `s` equals the CPU chain within `s`'s threshold; `R6..R6`, `R6..R8` and `R1..R9` equal it within the sum; end to end, camera RGB within 1e-4 of white, tie flips counted separately.
+- **GPU golden** (`golden check --device gpu`, `docs/13`, `tools/golden/README.md`): `ym render --require-gpu`, so a fallback cannot pass; a file passes only if its JSON says `"device": "gpu"` and no note mentions the graphics card. Compared with the stored CPU pictures by the 1/4-downsample ΔE00 statistic and a full-resolution count. The gates in force are twice the worst first-run value (median 2.1e-4, p99 2.2e-2, max 3.8, count 7.4e-3), because the output-sharpening halo limiter ranks luma values and the device's f32 colour chain moves a few ranks; `--gpu-gates plan` gives the first proposal (0.02, 0.05, 0.5, 1e-3). Ten files per push (`tools/golden/gpu-subset.txt`), all nightly.
+- **App = CLI:** `crates/ym-cli/tests/parity.rs` and `src-tauri/tests/app_cli_parity.rs` each have a CPU leg (`--cpu`, `YELLOWMOON_GPU=off`, `GpuPolicy::Off`) and a device leg (`YELLOWMOON_GPU=on`, `GpuPolicy::On`).
+- **Determinism** (`crates/ym-core/tests/gpu_determinism.rs`): repeat; a new device; A then B then A with resident and host view caches; cancel then the next export; viewport jobs injected between tiles; 1, 2 and 4 exports in flight; a child process with `LP_NUM_THREADS=1`.
+- **Fault injection** (feature `fault-injection`, `YM_GPU_FAULT=oom | shader | lost | cancel@N | tile@N | upload@N`; `crates/ym-core/tests/gpu_faults.rs`): the fallback result equals the CPU reference bit for bit, the note is present, the pool ledger returns to its baseline, `Require` fails the photo, a cancelled job leaves no resident state.
+- **Offline:** `shaders_naga.rs` and the source lint (section 6).
+- **CI:** the `gpu-lavapipe` job runs `cargo test -p ym-gpu --release` and the GPU tests of `ym-core` and `ym-export` with `YM_REQUIRE_GPU=1`. `.github/workflows/mac-gpu.yml` runs on GitHub's Apple-silicon runners (macos-14 and macos-15, Apple's paravirtualised GPU): `ym doctor`, the `ym-gpu` and renderer GPU suites with `WGPU_BACKEND=metal YM_REQUIRE_GPU=1`, the `#[ignore]`d 50 and 70 MP tests, the GPU golden subset against the CPU of the same machine, one owner photo and `ym doctor --bench` (print only). Every GPU test is added to that workflow, so each stage is checked on real Metal (MSL translation, Apple's compiler, fast-math, parity, tile = whole, determinism).
+- **Physical Mac:** what the hosted machines cannot tell (section 15) is `tools/dev/mac-gpu-check.sh`, one command that runs the parity suites and `ym doctor --bench` and writes one JSON for `docs/STATUS.md` (M0-H4).
+
+## 13. Metal and fast-math
+
+Metal compiles every kernel with fast-math: wgpu-hal sets only the language version and `preserveInvariance` on `MTLCompileOptions`, and offers no switch. The compiler may re-associate sums, contract `a * b + c` into a fused multiply-add, divide by a reciprocal product, use approximate `sqrt`, `log2` and `exp2`, and assume no NaN or infinity. Kernels are written to hold under that and under strict IEEE (K8).
+
+- **Model of Apple's compiler.** naga's MSL of a kernel (the text wgpu hands to Metal, with the real buffer slots) is compiled as C++ with clang through a small Metal shim, once strict (`-fno-fast-math -ffp-contract=off`) and once as Metal does (`-O2`/`-O3 -ffast-math -ffp-contract=fast -mfma`, `-mrecip=all` for an approximate division and square root), and the dispatches a lavapipe run records are replayed through it. The strict build gives lavapipe's bits; the fast build reproduced Metal's worst differences to the digit. The scripts are scratch tooling, not in the repository.
+- **Output sharpening.** Metal's `sqrt` left a quarter to a third of the lumas 1 or 2 ulp off, and one ulp can flip a limiter rank count (4.7e-4 to 2.1e-3 at that pixel); its division is a reciprocal product, and it fused the gain-map blur into multiply-adds. The kernel uses integer square roots, corrects every quotient with the exact integer remainder (correctly rounded, also under `-mrecip`), and puts every product, partial sum and difference whose rounding matters behind the barrier. The luma test asserts the CPU's bits on every adapter.
+- **Log-guided.** Metal's fast `log2` is up to 3 ulp off, and an ulp of L near 116 is a relative 5e-6 of the guide `2^L`. The kernel has its own `lg_log2` and a two-part `lg_exp2(Lc, acc)`, so `Lc + acc` is never rounded to an ulp of 116, with every filter sum pinned.
+- **Adaptive ratio.** Fused and re-associated decision sums and the approximate division move near-ties, and every later value depends on a decision. Every product, sum and difference is behind the barrier, and every quotient and the CA square root are exact as above; the model then gives lavapipe's bits on every vector, random frame and the strong-lens corner. The same OR barrier is used in `diffraction.wgsl`, `guided.wgsl` and `detail.wgsl`.
+- **Cost.** In the scalar model the adaptive ratio passes run 3.9 times as long (the barriers 1.15 times, the exact division the rest); lavapipe's tiled 2048 x 1365 sharpening takes 4.2 s instead of 3.3 s. Device timing is a Mac check.
+- **Switching fast-math off instead** is not done. (a) A patched wgpu-hal could call `setFastMathEnabled(false)` or set `MTLMathMode::Safe` (macOS 15); it would stop re-association and the reciprocal division for every kernel, but contraction under the default is undocumented and the precise `log2` is still not correctly rounded, so the pinned kernels would stay; it is a fork to rebase on every wgpu update. (b) MSL passthrough shaders with `#pragma METAL fp math_mode(safe)` and `fp contract(off)` need MSL 3.2 (macOS 15), explicit layouts, a runtime naga and a second `unsafe`. (c) Upstream wgpu has no math-mode option. The pinned kernels work under fast-math and under IEEE on every backend; an opt-in `MTLMathMode` upstream would be revisited only if Mac measurements show the exact divisions cost real time.
+
+## 14. The ML seam
+
+`GpuContext` keeps its `Instance` and `Adapter` (`Gpu::wgpu_setup()`). The cargo feature `ml` of `ym-gpu` (off by default, so no normal build changes) makes device creation request exactly what cubecl requests (the adapter's features minus `MAPPABLE_PRIMARY_BUFFERS`, its limits, no experimental opt-in). `ym_ml::backends::burn_backend::import_device(&Gpu)` hands the device to burn (`Device::wgpu_options().setup(WgpuSetup)`); `crates/ym-ml/tests/burn_shared_device.rs` runs a tensor op, a `jdd` golden tile and then a `ym-gpu` kernel on the same device. Burn work would run as GPU jobs on the device thread at `TileNeural` or `Export` priority. Tensor interop on the device (`WgpuResource` and a buffer copy with an explicit burn sync) waits for the Mac benchmark of the ML runtime (M0-08); until then the neural path uses host tiles.
+
+## 15. What CI cannot check
+
+Lavapipe is correct and slow; the Metal CI runners add real Metal correctness (MSL, Apple's compiler, fast-math numerics) but no meaningful speed. Together they check kernel logic against the CPU reference, tile = whole, determinism, binding and dispatch limits at the design binding, memory accounting, cancellation and fallback. They say nothing about: the speed of any stage or the targets of `docs/05` (16 ms colour edit, 300 ms fit preview, 1.5 s for 100 % tiles, 6 s export); first-launch compile time (Metal has no wgpu pipeline cache); register pressure of the large passes; unified-memory pressure on an 8 GB Mac; watchdog behaviour; whether export tiles make the compositor drop frames. Those are the Mac checks of `docs/STATUS.md` (M0-H4), run with `tools/dev/mac-gpu-check.sh`.

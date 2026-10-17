@@ -1,6 +1,7 @@
-//! Measurement code of the RA-05 demosaic gate (`docs/algorithms/TASKS.md` RA-05, `docs/05` R6),
-//! shared by `examples/ra05_gate.rs` (the tables) and `tests/cpu_demosaic_metrics.rs` (the unit
-//! tests of the metrics). Included with `#[path]`, so every user sees the same code.
+//! Measurement code of the demosaic gate (`docs/algorithms/01-adaptive-ratio-demosaic.md` section
+//! 6.3, `docs/05` R6), shared by `examples/demosaic_gate.rs` (the tables) and
+//! `tests/cpu_demosaic_metrics.rs` (the unit tests of the metrics). Included with `#[path]`, so
+//! every user sees the same code.
 //!
 //! # Protocol
 //!

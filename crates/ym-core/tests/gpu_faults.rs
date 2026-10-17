@@ -1,9 +1,9 @@
-//! G-09: device faults at the level of the export (`docs/gpu-plan.md` sections 4.9 and 7, feature `fault-injection`).
+//! Device faults at the level of the export (`docs/17-gpu.md` sections 9 and 12, feature `fault-injection`).
 //!
 //! `render_gpu.rs` breaks the device under single renders, frames and thumbnails, and `gpu_export.rs` under the
-//! export tail in a few formats. This file is the matrix the plan asks for, one level up: every fault that
-//! `YM_GPU_FAULT` knows (`oom`, `shader`, `lost`, `cancel@N`, `tile@N`) against every export format, in both policies
-//! and through the export queue the application and `ym` share. What must hold in every cell:
+//! export tail in a few formats. This file is the matrix `docs/17-gpu.md` section 12 asks for, one level up: every
+//! fault that `YM_GPU_FAULT` knows (`oom`, `shader`, `lost`, `cancel@N`, `tile@N`) against every export format, in
+//! both policies and through the export queue the application and `ym` share. What must hold in every cell:
 //!
 //! * **The policy that falls back** (`Auto`, `On`): the file is the CPU export of the same photo bit for bit, the
 //!   report says `device = cpu` and carries the note ("The graphics card could not render this photo, so the CPU
@@ -246,7 +246,7 @@ fn every_fault_makes_the_whole_photo_again_on_the_cpu_in_every_format() {
     }
 }
 
-/// The contract of `docs/gpu-plan.md` 4.9 for a DNG whose device error fires once (`tile@N`): the whole photo
+/// The contract of `docs/17-gpu.md` section 9 for a DNG whose device error fires once (`tile@N`): the whole photo
 /// again on the CPU, `device = cpu`, the CPU's bytes. A DNG is two renders (the raw pixels, then the preview), and
 /// an error that fires once is spent by the render it hits. `tile@1` and `tile@4` hit the raw render (six tiles:
 /// the preview must then be made on the CPU too), `tile@7` and `tile@10` the preview (the raw pixels, made on the

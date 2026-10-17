@@ -1,4 +1,4 @@
-// The k x k binning of the fit view and the sigma that binning leaves (G-07): the GPU port of
+// The k x k binning of the fit view and the sigma that binning leaves: the GPU port of
 // `ym-core`'s `bin_mosaic` (with the vignetting gain of `gain_plane` multiplied in) and
 // `binned_sigma` (`docs/01`, the reduced path).
 //

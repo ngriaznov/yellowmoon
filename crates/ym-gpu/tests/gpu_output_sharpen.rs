@@ -1,4 +1,4 @@
-//! RA-09: the output sharpening kernel (`kernels::output_sharpen`, `shaders/output_sharpen.wgsl`)
+//! The output sharpening kernel (`kernels::output_sharpen`, `shaders/output_sharpen.wgsl`)
 //! against its CPU reference (`cpu::output_sharpen`, spec `docs/algorithms/04-output-sharpening.md`).
 //!
 //! # What is compared, and with which bound
@@ -85,7 +85,7 @@ const LARGE_FRAME_MAX_BOUND: f64 = 2e-4;
 
 // ---- Metal (hardware adapters) ---------------------------------------------------------------------
 //
-// Metal compiles with fast-math and wgpu has no switch for it. Wave 2 gave hardware adapters looser
+// Metal compiles with fast-math and wgpu has no switch for it. Hardware adapters first had looser
 // bounds of their own (twice the Metal baseline at d629dbe); the Metal run of b6f2e4b then failed four
 // of these tests on later cases (vectors 1.36e-5, noisy p99.9 1.5e-4, the flipped image 8.6e-4, the
 // 2048 px export 1.96e-3). None of that was inherent to `f32`: Metal's `sqrt` left a third of the
@@ -95,7 +95,7 @@ const LARGE_FRAME_MAX_BOUND: f64 = 2e-4;
 // square roots and quotients in integer arithmetic, correctly rounded (`output_sharpen.wgsl`), so a
 // hardware adapter computes lavapipe's bits: a C port of the shader compiled with clang `-O2`/`-O3
 // -ffast-math -ffp-contract=fast -mfma`, with a square root and a reciprocal 1 to 2 ulp off, gives the
-// bits of the strict build on every case of these tests (`docs/gpu-plan.md` section 12). So there is
+// bits of the strict build on every case of these tests (`docs/17-gpu.md` section 13). So there is
 // no hardware column any more: every adapter meets the bounds above. On hardware the tests still
 // write their numbers to the CI log (`ci_note`).
 
@@ -108,9 +108,9 @@ fn hardware(dev: &TestGpu) -> bool {
 fn ci_note(text: &str) {
     use std::io::Write as _;
     let mut err = std::io::stderr();
-    let _ = writeln!(err, "[G-04] {text}");
+    let _ = writeln!(err, "[output sharpening] {text}");
     if std::env::var_os("GITHUB_ACTIONS").is_some() {
-        let _ = writeln!(err, "::notice title=G-04 output sharpening::{text}");
+        let _ = writeln!(err, "::notice title=Output sharpening::{text}");
     }
 }
 
@@ -1540,7 +1540,7 @@ fn a_side_beyond_the_dispatch_limit_is_refused_not_panicked() {
 }
 
 // ------------------------------------------------------------------------------------------------
-// G-04: device in, device out; the fused C13 tail; identities that are exact by construction
+// Device in, device out; the fused C13 tail; identities that are exact by construction
 // ------------------------------------------------------------------------------------------------
 
 use ym_color::encode::OutputSpace;
@@ -2213,7 +2213,7 @@ fn the_passes_pin_every_rounding_the_limiter_sees() {
     // K8, the source side of the test above and of `luma_has_the_cpu_bits`: lavapipe neither fuses nor
     // re-associates, so it cannot show that a barrier went missing. Every square root and division of
     // the passes is the shader's integer one, and the sums and products named here go through `opaque`
-    // (the clang fast-math model of `docs/gpu-plan.md` section 12 needs each of these groups: without
+    // (the clang fast-math model of `docs/17-gpu.md` section 13 needs each of these groups: without
     // the blur's, the 2048 px export from 6000 px moves by 1.96e-3, as it did on Metal).
     let src = include_str!("../src/shaders/output_sharpen.wgsl");
     let passes_start = src.find("fn sharpen_luma(").expect("the passes");

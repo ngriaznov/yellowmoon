@@ -1,5 +1,5 @@
 //! Log-guided fast demosaic (`Method::LogGuided`), specified in
-//! `docs/algorithms/02-log-guided-demosaic.md` (RA-06).
+//! `docs/algorithms/02-log-guided-demosaic.md`.
 //!
 //! A fast Bayer demosaic for previews and thumbnails. It builds a luminance guide in the log
 //! domain (the geometric mean of the three channels, with a read-noise offset `p`), then fills each

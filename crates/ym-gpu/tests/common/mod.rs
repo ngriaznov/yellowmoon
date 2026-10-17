@@ -4,7 +4,7 @@
 //!
 //! **Every test device runs in poison mode** (`GpuConfig::poison`): the pool fills each buffer with
 //! NaN before handing it out, so a kernel that reads what it did not write fails its test instead of
-//! passing by luck on a fresh, zeroed buffer (`docs/gpu-plan.md` X-10). [`start_unpoisoned`] gives a
+//! passing by luck on a fresh, zeroed buffer (`docs/17-gpu.md` D7). [`start_unpoisoned`] gives a
 //! device without it, for the tests that compare the two.
 //!
 //! Further helpers: [`exact`] (tile = whole frame, bit comparisons) and [`limits`] (the 128 MiB

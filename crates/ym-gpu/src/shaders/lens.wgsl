@@ -1,4 +1,4 @@
-// R9 lens resample (G-07): the GPU port of `cpu::resample::resample_lens` (`docs/05-raw-processing.md`
+// R9 lens resample: the GPU port of `cpu::resample::resample_lens` (`docs/05-raw-processing.md`
 // section R9). One Catmull-Rom resample per colour plane from the output pixel to the source position
 // the lens tables give: distortion `F(r)` for all three planes, the lateral CA factors `K_red(r)` and
 // `K_blue(r)` for red and blue (only when the geometry keeps its CA in R9; with the CA on the mosaic

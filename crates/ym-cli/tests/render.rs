@@ -976,7 +976,7 @@ fn require_gpu_exits_4_when_no_adapter_opens() {
         .stderr(predicate::str::is_empty());
 }
 
-// --- the graphics policy (`docs/gpu-plan.md` G-01) -------------------------------------------
+// --- the graphics policy (`docs/17-gpu.md` section 1) ----------------------------------------
 
 /// Whether a graphics adapter opens on this machine (lavapipe counts), asked of `ym doctor`.
 fn adapter_opens(sb: &Sandbox) -> bool {

@@ -125,6 +125,7 @@ Don't reopen these without new evidence. The reasoning is in `research/`.
 | Release and updates | `docs/12-distribution.md`, `templates/` |
 | Tests and gates | `docs/13-testing.md`, `docs/test-photo-sources.md` |
 | Licences | `docs/14-licensing.md`, `NOTICE` |
+| The GPU path | `docs/17-gpu.md` |
 | Task plan | `docs/15-milestones.md` |
 | Risks and open decisions | `docs/16-risks-and-decisions.md` |
 | Progress | `docs/STATUS.md` |

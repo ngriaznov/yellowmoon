@@ -1029,7 +1029,7 @@ fn bad_bit_depths_and_mismatched_plans_are_refused() {
 }
 
 // ------------------------------------------------------------------------------------------------
-// G-04: persistent tables, device in / device out, the mask plane, the Before view as RGBA8
+// Persistent tables, device in / device out, the mask plane, the Before view as RGBA8
 // ------------------------------------------------------------------------------------------------
 
 use std::sync::Arc;
@@ -1506,7 +1506,7 @@ fn a_prepared_chain_from_the_cache_renders_the_bits_of_a_fresh_one() {
 
 #[test]
 fn preparing_an_unchanged_chain_costs_microseconds() {
-    // "An unchanged chain costs under 0.2 ms of CPU" (docs/gpu-plan.md G-04): the average over many
+    // "An unchanged chain costs under 0.2 ms of CPU" (docs/05, view kernels): the average over many
     // prepares of the same chain through the device's own tables.
     let mut p = chains::full(OutputTarget::Viewport);
     p.look = Some(LookSetting::new(logc4_look(), 70.0));
@@ -1530,8 +1530,8 @@ fn preparing_an_unchanged_chain_costs_microseconds() {
 
 #[test]
 fn device_images_need_an_f32_device() {
-    // The f16 modes are the legacy kernels' (`docs/gpu-plan.md` X-3): a device image cannot be bound
-    // to a kernel that reads f16, and says so instead of reading garbage.
+    // The f16 modes are the legacy kernels' (`docs/17-gpu.md` section 2): a device image cannot be
+    // bound to a kernel that reads f16, and says so instead of reading garbage.
     for dev in gpus().iter().skip(1) {
         let img = camera_image(8, 8, 1);
         let chain = ColorChain::new(&chains::base(OutputTarget::Srgb)).expect("chain");

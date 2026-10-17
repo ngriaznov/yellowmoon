@@ -1,4 +1,4 @@
-// Output sharpening (RA-09): the GPU port of `ym_gpu::cpu::output_sharpen`
+// Output sharpening: the GPU port of `ym_gpu::cpu::output_sharpen`
 // (docs/algorithms/04-output-sharpening.md). A luma unsharp mask in linear light with three
 // threshold methods, an optional halo limiter and a ratio transfer back to RGB.
 //
@@ -26,7 +26,7 @@
 // quotients are made correctly rounded with integer arithmetic (`sharpen_sqrt`, `sharpen_div`).
 // IEEE arithmetic is unchanged by both (lavapipe gives the same bits as before), and naga's MSL of
 // these passes compiled with clang -O2/-O3 -ffast-math -ffp-contract=fast -mfma -mrecip=all gives
-// lavapipe's bits on every case of the tests (docs/gpu-plan.md section 12, "Metal after wave 2").
+// lavapipe's bits on every case of the tests (docs/17-gpu.md section 13).
 
 struct SharpenParams {
     width: u32,      // compute rectangle, pixels

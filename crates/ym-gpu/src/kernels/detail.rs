@@ -1,4 +1,4 @@
-//! R7 detail re-injection on the GPU (G-06): `Y += beta * (Y_classical - Y_net)`.
+//! R7 detail re-injection on the GPU: `Y += beta * (Y_classical - Y_net)`.
 //!
 //! The WGSL port (`shaders/detail.wgsl`) of [`crate::cpu::detail::inject_detail`], specified in
 //! `docs/05` section R7. In the classical path `Y_net` is the denoised image and `Y_classical` the

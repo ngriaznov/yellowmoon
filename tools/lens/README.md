@@ -16,7 +16,7 @@ repository is ours.
 | `compare_with_darktable.py` | The gates: `vignette` (gain within 0.5%), `distortion` (line positions within 0.2 px, `--horizontal` for horizontal lines), `ca` (red, green, blue within 0.2 px), `selftest` (checks the script on synthetic data, needs no darktable). |
 | `lens_io.py` | Reads the gzipped PFM files. |
 
-## Real-file evaluation (RA-03c; local files only, nothing committed)
+## Real-file evaluation (local files only, nothing committed)
 
 The oracle above checks our maths against darktable on *synthetic* files. These scripts check the
 *reading of the tables* against real ARW files (`testdata/real/files`, `testdata/readme-photos/src`;

@@ -1,23 +1,23 @@
 //! The device chain: stages of the raw-processing chain (`docs/05`) run on the wgpu device, the rest
-//! on the CPU stepper, for one tile at a time (`docs/gpu-plan.md` sections 4.3 and 11, task G-03).
+//! on the CPU stepper, for one tile at a time (`docs/17-gpu.md` section 3).
 //!
 //! [`GpuChain`] is built from the very `Chain` and `Prepared` the CPU uses, and walks the same
 //! stages with the same rectangles ([`TileRun`](crate::cpu::chain::TileRun)), so the settings, the stage choice and the halos are
 //! single-sourced. A [`StageRange`] says which stages run on the device; every stage outside it runs
 //! on the CPU stepper and the boundary is a host copy. There are two ranges so far:
 //!
-//! * R6 ([`StageRange::DEMOSAIC`], G-03): the CPU runs R1 to R5b exactly as today and hands the
+//! * R6 ([`StageRange::DEMOSAIC`]): the CPU runs R1 to R5b exactly as today and hands the
 //!   balanced mosaic over, the device runs the adaptive ratio demosaic (including the R4 undo, the CA
 //!   path and the shadow colour matching of the kernel), the planes come back as an [`RgbImage`] and
 //!   the CPU continues with R6's bilateral denoise, R7, R8 and R9.
-//! * R6 to R8 ([`StageRange::DEMOSAIC_TO_SHARPEN`], G-06): the same hand-off, and the planes stay on
+//! * R6 to R8 ([`StageRange::DEMOSAIC_TO_SHARPEN`]): the same hand-off, and the planes stay on
 //!   the device through the bilateral denoise, the R7 colour guided filter and detail re-injection
 //!   and R8 (Richardson-Lucy, or diffraction deconvolution) as one job with one readback; the CPU
 //!   runs R9 on what comes back. The noise sigma of the stages is expanded on the device from the
 //!   photo's half-resolution plane ([`GpuChain::with_sigma`]), so the 200 MB full-resolution map of the
 //!   CPU chain is never built for this range.
 //!
-//! * R1 to R9 ([`StageRange::RAW_TO_LENS`], G-07): the whole classical chain from the photo's raw
+//! * R1 to R9 ([`StageRange::RAW_TO_LENS`]): the whole classical chain from the photo's raw
 //!   words, resident on the device ([`DeviceRaw`], uploaded once per photo): R1 normalise, R3
 //!   vignetting and R4 gains in one pass, R5 highlights with the CPU's chroma offsets, R5b lateral CA
 //!   on the mosaic, the demosaic and the stages after it as above, and R9 on the device too, one job
@@ -40,11 +40,11 @@
 //! # Splitting a big rectangle
 //!
 //! The adaptive ratio demosaic needs 48 bytes of scratch per padded pixel in one storage binding, and
-//! the design binding is 128 MiB (the size lavapipe reports; `docs/gpu-plan.md` N-1). A core whose
-//! padded plane ([`adaptive_ratio::padded_pixels`]) is above [`MAX_PHYS_AREA`] is cut in halves
-//! along its longer side, recursively, each half computed from its own rectangle with the full halo
-//! ([`split_core`]). The rule reads the rectangle only, never the device, so the application and `ym`
-//! cut alike. The kernel is tile-exact, so a split changes no bit.
+//! the design binding is 128 MiB (the size lavapipe reports; `docs/17-gpu.md` section 4). A core
+//! whose padded plane ([`adaptive_ratio::padded_pixels`]) is above [`MAX_PHYS_AREA`] is cut in
+//! halves along its longer side, recursively, each half computed from its own rectangle with the
+//! full halo ([`split_core`]). The rule reads the rectangle only, never the device, so the
+//! application and `ym` cut alike. The kernel is tile-exact, so a split changes no bit.
 
 use std::sync::Arc;
 
@@ -78,7 +78,7 @@ use crate::kernels::sigma::encode_sigma_plane;
 use crate::queue::CancelToken;
 use crate::stream::PassList;
 
-/// The most padded pixels one device rectangle has: 2.5 Mpixel (`docs/gpu-plan.md` section 4.4). The
+/// The most padded pixels one device rectangle has: 2.5 Mpixel (`docs/17-gpu.md` section 4). The
 /// adaptive ratio scratch is 12 planes of 4 bytes with shadow colour matching, 48 bytes per pixel, so
 /// 2.5 Mpixel are 120 MB in one binding, under the 128 MiB design binding
 /// ([`crate::tiles::DESIGN_BINDING_BYTES`]) of lavapipe. A constant and not a device limit, so that
@@ -161,8 +161,8 @@ impl RawStage {
     }
 }
 
-/// The stages that run on the device, first to last (both included). The test and gating lever of
-/// the plan: stages outside the range run on the CPU stepper.
+/// The stages that run on the device, first to last (both included). The test and gating lever
+/// (`docs/17-gpu.md` section 3): stages outside the range run on the CPU stepper.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct StageRange {
     /// The first stage on the device.
@@ -178,14 +178,14 @@ impl StageRange {
         last: RawStage::Demosaic,
     };
 
-    /// R6 to R8 (G-06): the adaptive ratio demosaic, the bilateral denoise, R7 and capture sharpening,
+    /// R6 to R8: the adaptive ratio demosaic, the bilateral denoise, R7 and capture sharpening,
     /// one device job with one readback.
     pub const DEMOSAIC_TO_SHARPEN: StageRange = StageRange {
         first: RawStage::Demosaic,
         last: RawStage::Sharpen,
     };
 
-    /// R1 to R9 (G-07): the whole chain from the resident raw words, R9 included.
+    /// R1 to R9: the whole chain from the resident raw words, R9 included.
     pub const RAW_TO_LENS: StageRange = StageRange {
         first: RawStage::Normalize,
         last: RawStage::Lens,
@@ -291,10 +291,10 @@ impl DeviceWork {
         self.run_ref(ctx, cancel)
     }
 
-    /// Runs the work and leaves the tile on the device (`docs/gpu-plan.md` G-10): the same stages and
-    /// the same bits as [`run`](Self::run), without the readback. Only the work that ends the
-    /// chain on the device ([`GpuChain::run_tile_device`]) can: the range R6 hands a mosaic back to
-    /// the CPU by design.
+    /// Runs the work and leaves the tile on the device (`docs/17-gpu.md` section 3): the same
+    /// stages and the same bits as [`run`](Self::run), without the readback. Only the work that
+    /// ends the chain on the device ([`GpuChain::run_tile_device`]) can: the range R6 hands a
+    /// mosaic back to the CPU by design.
     ///
     /// # Errors
     ///
@@ -374,8 +374,8 @@ impl DemosaicWork {
     }
 
     /// Runs the work; a device that is out of memory or refuses a buffer is given one more try after
-    /// the pool let go of what it holds unused (`docs/gpu-plan.md` 4.9: "trim the pool, retry once,
-    /// then the CPU"; the integrator answers a second failure with the CPU chain).
+    /// the pool let go of what it holds unused (`docs/17-gpu.md` section 8: "trim the pool, retry
+    /// once, then the CPU"; the integrator answers a second failure with the CPU chain).
     fn run(&self, ctx: &GpuContext, cancel: &CancelToken) -> Result<RgbImage, GpuError> {
         let parts = split_core(self.core);
         match self.run_split(ctx, cancel, &parts) {
@@ -528,7 +528,7 @@ impl FrontShape {
 }
 
 /// The raw front of one tile on the device: the resident photo, what R1 to R5b need, and the
-/// demosaic after it (G-07).
+/// demosaic after it.
 #[derive(Debug)]
 pub struct FrontWork {
     raw: Arc<DeviceRaw>,
@@ -696,7 +696,7 @@ impl FrontWork {
     }
 }
 
-/// R9 on the device after the stages: the geometry and the output rectangle (G-07).
+/// R9 on the device after the stages: the geometry and the output rectangle.
 #[derive(Debug)]
 struct LensWork {
     table: LensTable,
@@ -710,7 +710,7 @@ enum RawInput {
     Mosaic(Box<DemosaicWork>),
     /// The demosaiced planes (a mosaic below 2 x 2 photosites was demosaiced on the CPU).
     Image(RgbImage),
-    /// The photo's raw words on the device: R1 to R5b run first, then the demosaic (G-07).
+    /// The photo's raw words on the device: R1 to R5b run first, then the demosaic.
     Front(Box<FrontWork>),
 }
 
@@ -801,7 +801,7 @@ impl RawWork {
     }
 
     /// Runs the work; a device that is out of memory or refuses a buffer is given one more try after
-    /// the pool let go of what it holds unused (`docs/gpu-plan.md` 4.9).
+    /// the pool let go of what it holds unused (`docs/17-gpu.md` section 9).
     fn run(&self, ctx: &GpuContext, cancel: &CancelToken) -> Result<RgbImage, GpuError> {
         self.run_retrying(ctx, cancel, false)?.into_host()
     }
@@ -1487,8 +1487,8 @@ impl<'a> GpuChain<'a> {
     }
 
     /// [`run_tile_front`](Self::run_tile_front) with the tile left on the device
-    /// (`docs/gpu-plan.md` G-10, `run_tile_device`): the same job, the same bits, no readback, so the
-    /// sampler and the colour chain that follow in a view or an export read it where it is
+    /// (`docs/17-gpu.md` section 3, `run_tile_device`): the same job, the same bits, no readback,
+    /// so the sampler and the colour chain that follow in a view or an export read it where it is
     /// (`ExportTail::add_tile_device`, the resident group and tile caches of `ym-core`). The image
     /// is the tile's rectangle of the output, `out.w x out.h`, three planes, placed at `out` in the
     /// output frame.
@@ -1667,7 +1667,7 @@ pub struct ReducedDenoise {
 }
 
 /// What the reduced fit-view path needs besides the photo's raw words, as plain data (`ym-core` builds
-/// it from the `RawPlan` and the `RawParams`, `docs/gpu-plan.md` section 4.3).
+/// it from the `RawPlan` and the `RawParams`, `docs/17-gpu.md` section 3).
 #[derive(Clone, Debug)]
 pub struct ReducedParams {
     /// The binning factor: even, 2 to 16 (`RawPlan::effective_scale`).
@@ -1710,7 +1710,7 @@ enum Phase {
 }
 
 /// The reduced fit-view path on the device: R1 to R9 at `1/k` of the resolution, from the resident raw
-/// words, never building a full-resolution frame on the host (`docs/gpu-plan.md` N-8). The CPU
+/// words, never building a full-resolution frame on the host (`docs/17-gpu.md` section 8). The CPU
 /// reference is `ym-core`'s `reduced_bayer`.
 ///
 /// # Bands and steps
@@ -1718,12 +1718,12 @@ enum Phase {
 /// The picture is made, and handed on from stage to stage, as **bands of full-width rows**
 /// ([`RowBands`], `REDUCED_SLAB_ROWS / k` rows of the result each): every band is a buffer of its own,
 /// so no binding is larger than a band whatever the photo, where one buffer for the picture was 150 MB
-/// at `k = 2` of a 50 MP photo and 180 MB at 61 MP, over the 128 MiB design binding (`docs/gpu-plan.md`
-/// K4). The bands are also the unit of **work**: one call of [`ReducedRun::step`] does one slab of
-/// the offsets sweep, one band of the binning, the sigma planes, one band of the denoise or one band
-/// of R9 (a few megapixels at the most), so that the caller can submit every step as a job of its own
-/// and a viewport frame can run between two of them (K5, `docs/gpu-plan.md` G-10). [`GpuReduced::run`]
-/// does them one after the other.
+/// at `k = 2` of a 50 MP photo and 180 MB at 61 MP, over the 128 MiB design binding
+/// (`docs/17-gpu.md` K4). The bands are also the unit of **work**: one call of [`ReducedRun::step`]
+/// does one slab of the offsets sweep, one band of the binning, the sigma planes, one band of the
+/// denoise or one band of R9 (a few megapixels at the most), so that the caller can submit every
+/// step as a job of its own and a viewport frame can run between two of them (K5, `docs/17-gpu.md`
+/// section 7). [`GpuReduced::run`] does them one after the other.
 ///
 /// A band is computed from the rows it needs (`RowBands::window`): the bilateral reads two rows of
 /// context, R9 the rows of its source rectangle (`LensTable::source_rect`), and both are tile-exact,

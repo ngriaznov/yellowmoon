@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# One command for the Mac session of the GPU wave (docs/gpu-plan.md section 9, M0-H4): runs the GPU suites on this
+# One command for the Mac session of the GPU checks (docs/17-gpu.md section 15, M0-H4): runs the GPU suites on this
 # machine's graphics card, times the render path of one photo, compares the device with the CPU on that photo, and
 # writes ONE JSON file for docs/STATUS.md.
 #
@@ -10,7 +10,7 @@
 #                    app folder there too, so nothing lands in the user's real one). It refuses a name that does not end
 #                    in .json, a folder, and a file that git tracks.
 #   --photo FILE.ARW the photo for the timings and for the CPU against device comparison (a 50 MP Sony file makes the
-#                    numbers of the plan's targets). Without it only the suites run.
+#                    numbers of the performance targets of docs/05). Without it only the suites run.
 #   --repeat N       exports of the same JPEG that must come out byte for byte equal (default 10).
 #   --with-cpu       also time the CPU path (YELLOWMOON_GPU=off), for the comparison; slow on a large photo.
 #   --skip-tests     only the photo; the suites take a while.

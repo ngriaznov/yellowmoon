@@ -181,7 +181,7 @@ pub fn delta_e_stats(a: &Rgb16, b: &Rgb16) -> Result<DeltaStats> {
 }
 
 /// How far apart two pictures are at full resolution, in codes of 16 bits (the GPU mode of `golden check` holds the
-/// share of samples above a threshold against a gate, `docs/gpu-plan.md` section 7).
+/// share of samples above a threshold against a gate, `docs/17-gpu.md` section 12).
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
 pub struct CodeStats {
     /// Samples compared (`3 * width * height`).

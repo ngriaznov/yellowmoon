@@ -157,7 +157,7 @@ fn demosaic_tiles_match_for_every_method_and_phase() {
     }
 }
 
-/// The same with the per-frame inputs the chain passes (RA-04): unequal gains and a noise model
+/// The same with the per-frame inputs the chain passes: unequal gains and a noise model
 /// whose SNR at 18 % grey is below 25 dB, so that the adaptive ratio demosaic runs with shadow
 /// colour matching (halo 13). The mosaic is the *balanced* one, as in the chain; the method
 /// divides by the gains inside, which is pointwise, so tiles still equal the whole frame.

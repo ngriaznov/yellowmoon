@@ -1,4 +1,4 @@
-//! R5 highlight reconstruction on the device (G-07, `docs/05-raw-processing.md` section R5).
+//! R5 highlight reconstruction on the device (`docs/05-raw-processing.md` section R5).
 //!
 //! The CPU reference is [`crate::cpu::highlights`]: superpixels of 2 x 2 photosites, the opposed
 //! estimate from the unclipped other channels over the 3 x 3 neighbourhood, the global chroma offsets
@@ -8,7 +8,7 @@
 //!   core, with the offsets in a small buffer ([`Offsets`]). The full chain gets the CPU's offsets from
 //!   `Chain::prepare` ([`Offsets::from_host`]); the clip bits are those of [`super::prep`];
 //! * [`OffsetReducer`]: the reduced path's own offsets, a reduction over the reference superpixels in
-//!   a fixed order (D2 of `docs/gpu-plan.md`): per workgroup a binary tree in thread-index order, the
+//!   a fixed order (D2 of `docs/17-gpu.md`): per workgroup a binary tree in thread-index order, the
 //!   partials of every workgroup of every slab, then one workgroup that folds them in index order with
 //!   compensated summation. The differences `value - estimate` are formed as exact two-float
 //!   sums, so the result does not depend on the order of the terms beyond the final rounding.

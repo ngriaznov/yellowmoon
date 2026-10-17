@@ -1,4 +1,4 @@
-// R5b lateral chromatic aberration corrected on the mosaic (G-07): the GPU port of
+// R5b lateral chromatic aberration corrected on the mosaic: the GPU port of
 // `cpu::lens::correct_mosaic_ca` (`docs/05-raw-processing.md` section R9, "Real files"). Every red and
 // every blue photosite takes the value its colour has at the position where the lens put the feature
 // that green shows at the photosite, interpolated with the Catmull-Rom weights of R9 from the

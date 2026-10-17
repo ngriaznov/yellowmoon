@@ -169,7 +169,7 @@ pub fn chroma(rgb: [f64; 3]) -> f64 {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Lateral chromatic aberration left in an image (RA-03b)
+// Lateral chromatic aberration left in an image
 // ---------------------------------------------------------------------------------------------
 
 /// Settings of [`lateral_ca_residual`]. The defaults suit a 1:1 render of a photograph or of a
@@ -394,7 +394,8 @@ fn patch_shift(
 /// displaced outward. After a perfect correction the numbers are zero up to the interpolation and
 /// the demosaic's own error; a lens with CA that is not corrected shows its full displacement.
 ///
-/// This is a measurement tool for tests and the local evaluation of RA-03b, not part of the render.
+/// This is a measurement tool for tests and the local evaluation of the CA-aware green
+/// refinement, not part of the render.
 pub fn lateral_ca_residual(
     img: &RgbImage,
     centre_px: (f64, f64),

@@ -1,4 +1,4 @@
-// The noise sigma of a tile (G-06): one f32 plane for a rectangle of the frame, made from one of two
+// The noise sigma of a tile: one f32 plane for a rectangle of the frame, made from one of two
 // sources. Mode 0 fills the rectangle with one value (the chain's scalar sigma). Mode 1 expands the
 // half-resolution plane of the photo with the rule of `ym_core::pipeline::raw::full_sigma_map`: the
 // sigma of the 2 x 2 cell the pixel sits in (the cell index clamped to the plane, `(x / 2).min(w - 1)`

@@ -1,4 +1,4 @@
-//! G-03: the device chain (`ym_gpu::chain`) against the CPU chain (`cpu::chain::Chain`), range R6.
+//! The device chain (`ym_gpu::chain`) against the CPU chain (`cpu::chain::Chain`), range R6.
 //!
 //! `GpuChain` steps the very `Chain` and `Prepared` the CPU uses; the CPU runs R1 to R5b, the
 //! adaptive ratio demosaic runs on the device (including the R4 undo, the CA path and the shadow
@@ -22,19 +22,19 @@ mod common;
 
 /// Prints like `eprintln!` and writes the same line to the process's own stderr as well (the harness captures `eprintln!`,
 /// not this), so that the numbers of a passing test reach the CI log of the Apple runners, from which a hardware column
-/// is made (G-09). No annotation: the budget of those is spent by the older notes.
+/// is made. No annotation: the budget of those is spent by the older notes.
 macro_rules! note {
     ($($arg:tt)*) => {{
         let line = format!($($arg)*);
         eprintln!("{line}");
         let _ = std::io::Write::write_fmt(
             &mut std::io::stderr(),
-            format_args!("[G-09 {}] {line}\n", file!().rsplit('/').next().unwrap_or("")),
+            format_args!("[{}] {line}\n", file!().rsplit('/').next().unwrap_or("")),
         );
     }};
 }
-#[path = "g06/mod.rs"]
-mod g06;
+#[path = "denoise_common/mod.rs"]
+mod denoise_common;
 
 use std::sync::Arc;
 
@@ -782,7 +782,7 @@ fn the_chain_refuses_what_the_device_does_not_run() {
     }
     assert_eq!(StageRange::DEMOSAIC.label(), "R6");
     assert_eq!(StageRange::DEMOSAIC_TO_SHARPEN.label(), "R6..R8");
-    // G-07: the whole chain from the raw words is a range of its own (it reads the resident words,
+    // The whole chain from the raw words is a range of its own (it reads the resident words,
     // so `run_tile` refuses it and `run_tile_front` runs it).
     assert_eq!(StageRange::RAW_TO_LENS.label(), "R1..R9");
     assert!(GpuChain::new(&chain, &prepared, StageRange::RAW_TO_LENS).is_ok());
@@ -1051,8 +1051,9 @@ fn a_corner_tile_of_a_strong_lens_is_split_and_equals_the_unsplit_run() {
     assert_within("strong lens corner against the CPU", &s, STRONG_LENS);
 }
 
-/// The 50 MP frame size (8658 x 5772) through a corner tile: the split rule on the size the plan
-/// names. Slow on lavapipe; `cargo test -p ym-gpu --release --test gpu_chain -- --ignored`.
+/// The 50 MP frame size (8658 x 5772) through a corner tile: the split rule on the size
+/// `docs/17-gpu.md` names. Slow on lavapipe;
+/// `cargo test -p ym-gpu --release --test gpu_chain -- --ignored`.
 #[test]
 #[ignore = "50 MP frame: run with --release -- --ignored"]
 fn a_50_mp_frame_corner_tile_is_split_within_the_design_binding() {
@@ -1303,7 +1304,7 @@ fn the_work_refuses_a_bad_mosaic_before_it_reaches_the_device() {
 }
 
 // ---------------------------------------------------------------------------------------------
-// G-06: the range R6 to R8
+// The range R6 to R8
 // ---------------------------------------------------------------------------------------------
 
 /// The whole R6..R8 chain on tie-free content against the CPU chain, all cases together (the three
@@ -1326,9 +1327,9 @@ const RAW_GROUP_TIE_PRONE: Limits = Limits {
 
 /// The stages after the demosaic on the very planes the device demosaic made: R6..R8 against R6..R6
 /// (the CPU runs the same stages after the same device demosaic), so a tie flip of the demosaic is
-/// in both and only the kernels of G-06 differ. Largest difference over all 96 cases: first measured
-/// 5.2e-6 (mean of the case maxima 1.2e-6; the stage kernels alone are at 4e-7 to 7e-7), the bound is
-/// twice that.
+/// in both and only the denoise, R7 and R8 kernels differ. Largest difference over all 96 cases:
+/// first measured 5.2e-6 (mean of the case maxima 1.2e-6; the stage kernels alone are at 4e-7 to
+/// 7e-7), the bound is twice that.
 const POST_STAGES_LARGEST: f64 = 1.1e-5;
 
 /// Tiles of a chain whose Richardson-Lucy runs past the halo cap (n = 10, radius 1.8: exact radius
@@ -1406,8 +1407,8 @@ fn r6_to_r8_matches_the_cpu_chain() {
 #[test]
 fn the_stages_after_the_demosaic_match_the_cpu_stages_on_the_same_planes() {
     // R6..R6 and R6..R8 share the device demosaic bit for bit; what differs is who runs the denoise,
-    // R7 and R8. So this difference is the error of the G-06 kernels in the chain, without the tie
-    // flips of the demosaic that the comparison with the CPU chain carries.
+    // R7 and R8. So this difference is the error of the denoise, R7 and R8 kernels in the chain,
+    // without the tie flips of the demosaic that the comparison with the CPU chain carries.
     let Some(dev) = f32_device_or_skip() else {
         return;
     };
@@ -1442,7 +1443,7 @@ fn the_stages_after_the_demosaic_match_the_cpu_stages_on_the_same_planes() {
         }
     }
     note!(
-        "[G-06] stages after the demosaic, R6..R8 against R6..R6: worst {worst:.3e}, mean of the maxima {:.3e}",
+        "[R6..R8] stages after the demosaic, R6..R8 against R6..R6: worst {worst:.3e}, mean of the maxima {:.3e}",
         sum / n as f64
     );
     assert!(worst <= POST_STAGES_LARGEST, "{worst:e}");
@@ -1659,7 +1660,7 @@ fn every_option_of_the_stages_after_the_demosaic_matches_the_cpu_and_the_tiles()
                 let on_device = tiles_of(&|r| setup.gpu(dev, r));
                 let on_cpu = tiles_of(&|r| setup.cpu(r));
                 note!(
-                    "[G-06] beyond the halo cap ({lens:?}): tiles against whole, device {on_device:.3e}, CPU {on_cpu:.3e}"
+                    "[R6..R8] beyond the halo cap ({lens:?}): tiles against whole, device {on_device:.3e}, CPU {on_cpu:.3e}"
                 );
                 assert!(on_device <= BEYOND_CAP_CHAIN, "{on_device:e}");
             } else {
@@ -1675,7 +1676,7 @@ fn every_option_of_the_stages_after_the_demosaic_matches_the_cpu_and_the_tiles()
             }
         }
     }
-    note!("[G-06] stage options against R6..R6: worst {worst_post:.3e}");
+    note!("[R6..R8] stage options against R6..R6: worst {worst_post:.3e}");
 }
 
 #[test]
@@ -1705,8 +1706,8 @@ fn thread_count_does_not_change_a_bit() {
     let Some(dev) = f32_device_or_skip() else {
         return;
     };
-    g06::assert_thread_count_independent("thread_count_does_not_change_a_bit", || {
-        let mut h = g06::FNV_START;
+    denoise_common::assert_thread_count_independent("thread_count_does_not_change_a_bit", || {
+        let mut h = denoise_common::FNV_START;
         for (cfa, lens, noise, variant, seed) in [
             (
                 Cfa::RGGB,
@@ -1719,7 +1720,7 @@ fn thread_count_does_not_change_a_bit() {
         ] {
             let setup = setup_for(Scene::new(120, 90, cfa, seed), lens, noise, variant);
             let (ow, oh) = setup.output_size();
-            h = g06::fnv(h, &setup.gpu(dev, Rect::new(3, 2, ow - 6, oh - 5)).data);
+            h = denoise_common::fnv(h, &setup.gpu(dev, Rect::new(3, 2, ow - 6, oh - 5)).data);
         }
         h
     });
@@ -1844,7 +1845,7 @@ fn the_raw_group_with_diffraction_deconvolution_matches_the_cpu() {
 
 /// Small frames through the whole R6..R8 chain: halos far larger than the frame, mosaics below 2 x 2
 /// (the CPU demosaics them, the stages after run on the device), every sample finite. R6..R8 against
-/// R6..R6 on the same device demosaic: only the G-06 kernels differ.
+/// R6..R6 on the same device demosaic: only the denoise, R7 and R8 kernels differ.
 #[test]
 fn small_frames_through_the_raw_group_match_the_cpu_stages() {
     let Some(dev) = f32_device_or_skip() else {
@@ -1889,7 +1890,7 @@ fn small_frames_through_the_raw_group_match_the_cpu_stages() {
             }
         }
     }
-    note!("[G-06] small frames, R6..R8 against R6..R6: worst {worst:.3e}");
+    note!("[R6..R8] small frames, R6..R8 against R6..R6: worst {worst:.3e}");
 }
 
 #[test]
@@ -1982,16 +1983,16 @@ fn the_raw_group_records_one_submission_and_one_readback_per_tile() {
             Ok((raw8, ctx.counters().since(before)))
         })
         .expect("job");
-    eprintln!("[G-06] one tile: R6..R8 {raw8:?}, R6 {raw6:?}");
+    eprintln!("[R6..R8] one tile: R6..R8 {raw8:?}, R6 {raw6:?}");
     assert_eq!((raw8.submissions, raw8.readbacks), (1, 1));
     assert_eq!((raw6.submissions, raw6.readbacks), (1, 1));
     assert!(raw8.dispatches > raw6.dispatches + 10);
 }
 
-/// Review of G-06: a tile whose demosaic core is cut (a corner tile of a strong lens) is still one
-/// tile for the `tile@N` fault of the fault-injection feature. The raw group made the hook fire twice
-/// for such a tile (once for the group, once inside the cut demosaic), so `tile@2` failed the first
-/// cut tile and `tile@N` named other tiles than it says.
+/// Review of the R6..R8 kernels: a tile whose demosaic core is cut (a corner tile of a strong lens)
+/// is still one tile for the `tile@N` fault of the fault-injection feature. The raw group made the
+/// hook fire twice for such a tile (once for the group, once inside the cut demosaic), so `tile@2`
+/// failed the first cut tile and `tile@N` named other tiles than it says.
 #[cfg(feature = "fault-injection")]
 #[test]
 fn a_cut_demosaic_core_is_still_one_tile_for_the_tile_fault() {
@@ -2044,7 +2045,7 @@ fn a_cut_demosaic_core_is_still_one_tile_for_the_tile_fault() {
 }
 
 // ---------------------------------------------------------------------------------------------
-// G-07: the whole chain R1..R9 from the resident raw words
+// The whole chain R1..R9 from the resident raw words
 // ---------------------------------------------------------------------------------------------
 //
 // `GpuChain::run_tile_front`: R1, R3, R4 in one pass, R5 with the CPU's chroma offsets, R5b, the
@@ -2146,7 +2147,7 @@ fn r1_to_r9_matches_the_cpu_chain() {
     free.print("R1..R9 chain, tie-free content");
     prone.print("R1..R9 chain, tie-prone content");
     note!(
-        "[G-07] R1..R9 against R6..R8 behind the CPU's front (tie-free): largest {against_handoff:e}"
+        "[raw front] R1..R9 against R6..R8 behind the CPU's front (tie-free): largest {against_handoff:e}"
     );
     assert_within("R1..R9 chain, tie-free content", &free, FRONT_TIE_FREE);
     assert_within("R1..R9 chain, tie-prone content", &prone, FRONT_TIE_PRONE);
@@ -2461,7 +2462,7 @@ fn small_frames_through_the_front_chain_match_the_cpu_chain() {
             }
         }
     }
-    note!("[G-07] small frames, R1..R9 against the CPU chain: worst {worst:.3e}");
+    note!("[raw front] small frames, R1..R9 against the CPU chain: worst {worst:.3e}");
 }
 
 #[test]
@@ -2546,7 +2547,7 @@ fn the_front_chain_records_one_submission_and_one_readback_per_tile() {
             Ok(ctx.counters().since(before))
         })
         .expect("job");
-    eprintln!("[G-07] one tile, R1..R9: {front:?}");
+    eprintln!("[raw front] one tile, R1..R9: {front:?}");
     assert_eq!((front.submissions, front.readbacks), (1, 1));
 }
 
@@ -2637,10 +2638,10 @@ fn a_50_mp_frame_corner_tile_runs_the_whole_front_chain_and_is_split() {
     assert_within("50 MP corner tile, R1..R9", &s, FIFTY_MP_CORNER_FRONT);
 }
 
-/// Review of G-07: a front with neither R5 nor R5b (highlight recovery off, a lens without a CA
-/// table) cut into parts. The parts of a cut core start at any photosite, so a part's mosaic can start
-/// at an odd one; with no stage to align it the front must still leave exactly the rectangle the
-/// demosaic reads. Every part, and the whole, must give the same bits.
+/// Review of the raw front: a front with neither R5 nor R5b (highlight recovery off, a lens without
+/// a CA table) cut into parts. The parts of a cut core start at any photosite, so a part's mosaic
+/// can start at an odd one; with no stage to align it the front must still leave exactly the
+/// rectangle the demosaic reads. Every part, and the whole, must give the same bits.
 #[test]
 fn splitting_the_front_chain_without_highlights_and_mosaic_ca_changes_no_bit() {
     let Some(dev) = f32_device_or_skip() else {
@@ -2703,47 +2704,50 @@ fn splitting_the_front_chain_without_highlights_and_mosaic_ca_changes_no_bit() {
     }
 }
 
-/// Review of G-07: `LP_NUM_THREADS=1` against the default thread count of the software adapter,
-/// bit-identical, for the whole chain from the resident words (R1, R3, R4, R5 with the CPU's offsets,
-/// R5b, the demosaic, R6 to R8 and R9) — the thread-count check of `thread_count_does_not_change_a_bit`
-/// covers R6..R8 only.
+/// Review of the raw front: `LP_NUM_THREADS=1` against the default thread count of the software
+/// adapter, bit-identical, for the whole chain from the resident words (R1, R3, R4, R5 with the
+/// CPU's offsets, R5b, the demosaic, R6 to R8 and R9) — the thread-count check of
+/// `thread_count_does_not_change_a_bit` covers R6..R8 only.
 #[test]
 fn the_front_chain_is_thread_count_independent() {
     let Some(dev) = f32_device_or_skip() else {
         return;
     };
-    g06::assert_thread_count_independent("the_front_chain_is_thread_count_independent", || {
-        let mut h = g06::FNV_START;
-        for (cfa, lens, noise, variant, seed) in [
-            (
-                Cfa::RGGB,
-                Lens::Full,
-                high_noise(),
-                Variant::HalfWithGains,
-                2901u64,
-            ),
-            (
-                Cfa::GBRG,
-                Lens::Vignette,
-                low_noise(),
-                Variant::Scalar,
-                2902,
-            ),
-        ] {
-            let setup = setup_for(Scene::new(120, 90, cfa, seed), lens, noise, variant).front();
-            let (ow, oh) = setup.output_size();
-            h = g06::fnv(h, &setup.gpu(dev, Rect::new(3, 2, ow - 6, oh - 5)).data);
-        }
-        h
-    });
+    denoise_common::assert_thread_count_independent(
+        "the_front_chain_is_thread_count_independent",
+        || {
+            let mut h = denoise_common::FNV_START;
+            for (cfa, lens, noise, variant, seed) in [
+                (
+                    Cfa::RGGB,
+                    Lens::Full,
+                    high_noise(),
+                    Variant::HalfWithGains,
+                    2901u64,
+                ),
+                (
+                    Cfa::GBRG,
+                    Lens::Vignette,
+                    low_noise(),
+                    Variant::Scalar,
+                    2902,
+                ),
+            ] {
+                let setup = setup_for(Scene::new(120, 90, cfa, seed), lens, noise, variant).front();
+                let (ow, oh) = setup.output_size();
+                h = denoise_common::fnv(h, &setup.gpu(dev, Rect::new(3, 2, ow - 6, oh - 5)).data);
+            }
+            h
+        },
+    );
 }
 
-/// Review of G-07: a differential fuzz of the whole front. Random frames (odd and even, tiny to a
-/// hundred photosites), phases, lens kinds (none, vignetting, vignetting + distortion + CA on the
-/// mosaic), highlight recovery on and off, lossy and lossless words, and random tiles of the output.
-/// Two oracles per case: the tile equals the same rectangle of the whole front bit for bit (D5), and
-/// the front equals the device chain behind the CPU's own front (R6..R8) up to the front's rounding,
-/// which isolates R1 to R5b and R9 from the demosaic's decisions.
+/// Review of the raw front: a differential fuzz of the whole front. Random frames (odd and even,
+/// tiny to a hundred photosites), phases, lens kinds (none, vignetting, vignetting + distortion +
+/// CA on the mosaic), highlight recovery on and off, lossy and lossless words, and random tiles of
+/// the output. Two oracles per case: the tile equals the same rectangle of the whole front bit for
+/// bit (D5), and the front equals the device chain behind the CPU's own front (R6..R8) up to the
+/// front's rounding, which isolates R1 to R5b and R9 from the demosaic's decisions.
 #[test]
 fn a_fuzz_of_the_front_chain_keeps_tiles_exact_and_the_front_on_the_cpus_values() {
     let Some(dev) = f32_device_or_skip() else {

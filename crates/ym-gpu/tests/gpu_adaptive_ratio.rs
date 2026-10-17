@@ -1,6 +1,6 @@
-//! RA-09: the adaptive ratio demosaic kernel (`shaders/adaptive_ratio.wgsl`,
-//! `kernels::adaptive_ratio`) against its CPU reference `cpu::demosaic::adaptive_ratio` (spec
-//! `docs/algorithms/01-adaptive-ratio-demosaic.md`; RA-03 plain path, RA-03b CA path).
+//! The adaptive ratio demosaic kernel (`shaders/adaptive_ratio.wgsl`, `kernels::adaptive_ratio`)
+//! against its CPU reference `cpu::demosaic::adaptive_ratio` (spec
+//! `docs/algorithms/01-adaptive-ratio-demosaic.md`; the plain path and the CA path).
 //!
 //! What is compared, with which bound (each asserted, each printed with `--nocapture`) and what
 //! was measured on lavapipe (Mesa 25.2, LLVM 20.1). "Over" counts samples that differ from the CPU
@@ -50,14 +50,14 @@ mod common;
 
 /// Prints like `println!` and writes the same line to the process's own stderr as well (the harness captures `println!` and
 /// `eprintln!`, not this), so that the numbers of a passing test reach the CI log of the Apple runners, from which a
-/// hardware column is made (G-09). No annotation: the budget of those is spent by the older notes.
+/// hardware column is made. No annotation: the budget of those is spent by the older notes.
 macro_rules! note {
     ($($arg:tt)*) => {{
         let line = format!($($arg)*);
         println!("{line}");
         let _ = std::io::Write::write_fmt(
             &mut std::io::stderr(),
-            format_args!("[G-09 {}] {line}\n", file!().rsplit('/').next().unwrap_or("")),
+            format_args!("[{}] {line}\n", file!().rsplit('/').next().unwrap_or("")),
         );
     }};
 }

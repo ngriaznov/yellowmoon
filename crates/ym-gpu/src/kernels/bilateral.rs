@@ -1,7 +1,7 @@
-//! R6 bilateral denoise on the GPU (G-06), and the noise-sigma plane of a tile that this stage, the
+//! R6 bilateral denoise on the GPU, and the noise-sigma plane of a tile that this stage, the
 //! R7 colour filter and Richardson-Lucy read.
 //!
-//! [`encode_bilateral`] is the device-in, device-out entry point (`docs/gpu-plan.md` section 4.3); the
+//! [`encode_bilateral`] is the device-in, device-out entry point (`docs/17-gpu.md` section 3); the
 //! host wrapper [`bilateral`] uploads an image, runs it and reads the core back, for the parity tests.
 //! The CPU reference is [`crate::cpu::denoise::bilateral_whole`]: a 5 x 5 bilateral filter in the
 //! opponent space `(Y, R - Y, B - Y)` with the spatial weights of `BilateralParams` and a range
@@ -48,7 +48,7 @@ use crate::stream::PassList;
 pub const MAX_RADIUS_PX: usize = 4;
 
 /// The half-resolution noise sigma of a photo and the vignetting gain at the centre of each of its
-/// cells, as plain data (`docs/gpu-plan.md` section 4.3): the pieces `ym-core` already has
+/// cells, as plain data (`docs/17-gpu.md` section 3): the pieces `ym-core` already has
 /// (`SigmaPlane` and `gain_plane`). Cell `(cx, cy)` covers the photosites `(2 cx, 2 cy)` to
 /// `(2 cx + 1, 2 cy + 1)`; the last cell also covers the odd edge of an odd-sized frame.
 #[derive(Clone, Copy, Debug)]
@@ -410,7 +410,7 @@ fn check_params(p: &BilateralParams) -> Result<(), GpuError> {
 
 /// The largest storage binding (bytes) a bilateral stage needs for a compute rectangle of `rect`
 /// pixels: the three planes of the input (the output and the sigma plane are smaller). A test checks
-/// it against the 128 MiB design binding at [`crate::chain::MAX_PHYS_AREA`] (`docs/gpu-plan.md` K4).
+/// it against the 128 MiB design binding at [`crate::chain::MAX_PHYS_AREA`] (`docs/17-gpu.md` K4).
 #[must_use]
 pub fn max_binding_bytes(rect: Rect) -> u64 {
     GpuImage::buffer_bytes(rect.w, rect.h, 3)

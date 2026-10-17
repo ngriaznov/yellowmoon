@@ -1,4 +1,4 @@
-//! The writers pull their pixels through [`BandSource`] (`docs/gpu-plan.md` G-08): the bytes of a
+//! The writers pull their pixels through [`BandSource`] (`docs/17-gpu.md` section 10): the bytes of a
 //! file written from the rows of an [`ImageBands`] are those of the file written from the image,
 //! a source that fails ends the export without a file, and the rows of a picture are only handed
 //! out in order.

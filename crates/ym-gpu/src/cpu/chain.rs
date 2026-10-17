@@ -173,7 +173,7 @@ impl Chain {
     }
 
     /// The lateral CA curves for the CA-aware green refinement of the adaptive ratio demosaic
-    /// (`docs/algorithms/01-adaptive-ratio-demosaic.md` section 3.6, RA-03b): the R9 CA of
+    /// (`docs/algorithms/01-adaptive-ratio-demosaic.md` sections 3.6 and 11): the R9 CA of
     /// [`lens`](Self::lens), sampled by [`LensGeometry::ca_curves`]. `None` (the plain path) for
     /// every other method, for a chain without a lens stage, for a lens without CA (no 0x7035
     /// table, or `decode.chromatic_aberration` off, which `LensGeometry::new` already applied) and

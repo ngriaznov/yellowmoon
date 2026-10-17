@@ -1,4 +1,4 @@
-// R5 highlight reconstruction on the mosaic, opposed-channel method (G-07): the GPU port of
+// R5 highlight reconstruction on the mosaic, opposed-channel method: the GPU port of
 // `cpu::highlights` (`docs/05-raw-processing.md` section R5, clean-room from the five-step
 // description). Four entry points share this file:
 //

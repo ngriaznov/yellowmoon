@@ -74,8 +74,8 @@ impl MemoryBudget {
     pub const UNIFIED_SUM_PERCENT: u64 = 60;
 
     /// The GPU budget of a machine whose GPU shares `ram_bytes` of memory with the CPU
-    /// (`DeviceType::IntegratedGpu`, `docs/gpu-plan.md` 4.8): a quarter of the RAM, between 512 MiB
-    /// and 4 GiB. One line to change if the Mac says otherwise (STATUS question 4).
+    /// (`DeviceType::IntegratedGpu`, `docs/17-gpu.md` section 8): a quarter of the RAM, between
+    /// 512 MiB and 4 GiB. One line to change if the Mac says otherwise (STATUS question 4).
     pub fn for_unified_memory(ram_bytes: u64) -> Self {
         Self {
             bytes: (ram_bytes / Self::UNIFIED_RAM_DIVISOR)
