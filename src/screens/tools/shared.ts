@@ -31,11 +31,5 @@ export const AUTO = { kind: "auto" } as const;
 /** The default of Detail › Sharpening › Output, in percent (`DevelopSettings.output_sharpening`). */
 export const OUTPUT_SHARPENING_DEFAULT = 100;
 
-/** The default of Light › White › Offset, in stops (`DevelopSettings.white_offset_ev`): the automatic white lift as it is. */
-export const WHITE_OFFSET_DEFAULT = 0;
-
-/** The range of Light › White › Offset, in stops (`DevelopSettings.white_offset_ev`). */
-export const WHITE_OFFSET_RANGE_EV = [-3, 3] as const;
-
 /** Shows a tint: "0", "+4", "−3" (with a true minus). The automatic tint is not a whole number: 0.3 reads "0", not "+0". */
 export const tintLabel = (tint: number): string => formats.signed(tint);
