@@ -946,7 +946,7 @@ impl LookProvider for CubeLook {
 /// test is the end-to-end proof, with the persistent tables of the device (the look's cube is
 /// uploaded once for the twelve tiles of the picture, not per tile).
 #[test]
-fn a_look_a_white_offset_a_highlight_range_and_a_curve_come_out_of_the_tail_as_they_do_of_the_cpu() {
+fn a_look_a_white_offset_the_range_and_a_curve_come_out_of_the_tail_as_on_the_cpu() {
     let Some(gpu) = gpu() else { return };
     let shot = Shot::new();
     let home = tempfile::tempdir().expect("home");

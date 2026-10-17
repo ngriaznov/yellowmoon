@@ -294,11 +294,12 @@ fn a_full_render_and_a_100_percent_frame_on_the_device_match_the_cpu() {
     // Twice the first measured values (worst 4.8e-4, share over 1e-3 zero, mean 2.6e-8), with the worst
     // allowance raised for a gain on the highlights: the one tie-flipped demosaic sample of the
     // patchwork (the single worst pixel and its two neighbours, at a noise texture of 4e-3 between
-    // neighbours) is multiplied by the local gain of what acts on its tones. That was the white lift of
-    // pipeline 0.3.0 (1.41e-3 with it, 8.4e-4 without); since pipeline 0.4.0 it is the highlight range of
-    // C7, whose slope above the knee is more than 1 (measured on lavapipe: worst 8.38e-4, none over 1e-3,
-    // mean 5.2e-8). The allowance stays at 2e-3. The range's own parity is gated in `ym-gpu`
-    // (`gpu_color_highlight_range`).
+    // neighbours) is multiplied by the local gain of what acts on its tones: the white lift (C12 step
+    // 1b; this scene is high-key, a lift of 1.04 stops) and, since pipeline 0.4.0, the highlight range
+    // of C7 alongside it, whose slope above the knee is more than 1. Measured on lavapipe: 1.41e-3 with
+    // the lift (pipeline 0.3.0, and 0.4.0 with the range: share over 1e-3 8.5e-7, mean 6.3e-8), 8.4e-4
+    // without it (8.38e-4 with the range alone). The allowance stays at 2e-3. The stages' own parity is
+    // gated in `ym-gpu` (`gpu_color_white_lift`, `gpu_color_highlight_range`).
     assert!(
         worst < 2e-3 && over <= 1e-5 && mean < 1e-6,
         "{worst} {over} {mean}"
@@ -929,11 +930,12 @@ mod view {
             // flipped a rank (`docs/05`, the output sharpening row of the parity table: up to 8.3e-3
             // display-linear within 8 px of a flipped pixel): the same frame without output
             // sharpening must then be within `CODE_BOUND`, so the colour pass and the sampler never
-            // hide behind it. First seen with pipeline 0.4.0 (the highlight range in place of the
-            // white lift changed the patches' levels), on lavapipe at 100 %: 5 codes on six samples
-            // at one edge of a dark patch (codes 18 to 23), with the amount at 100 only (one code
-            // at 0 and at 200, and one code with the range at 0 or 1, so not the range itself); the
-            // bound is twice that.
+            // hide behind it. First seen with pipeline 0.4.0 (the highlight range of C7 changed the
+            // patches' levels), on lavapipe at 100 %: 5 codes on six samples at one edge of a dark
+            // patch (codes 18 to 23), with the amount at 100 only (one code at 0 and at 200, and one
+            // code with the range at 0 or 1, so not the range itself); the bound is twice that. The
+            // white lift alongside the range (this scene's lift is 1.04 stops) leaves it at 5 codes, 1
+            // without output sharpening.
             let worst_allowed = if worst > CODE_BOUND && src.settings.output_sharpening > 0.0 {
                 let unsharpened = edit(&src, |s| s.output_sharpening = 0.0);
                 let (bare, _, _) = codes(

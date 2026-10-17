@@ -6,8 +6,9 @@
 //!
 //! ACES 2 SDR is a cinema rendering with a flat shoulder: 1.4 scene stops above the placed middle grey
 //! lift the display by about 0.4 stop, so a photo whose brightest tones sit 2 to 3 stops over grey ends
-//! at light grey (the 99.5th percentile of the display luma code is 147 to 218 on the 12 local photos
-//! at +0.85 EV against 161 to 247 in their camera JPEGs). The cameras' own tone curves put such tones
+//! at light grey (measured for pipeline 0.3.0, before the lift: the 99.5th percentile of the display
+//! luma code was 147 to 218 on the 12 local photos at +0.85 EV against 161 to 247 in their camera
+//! JPEGs). The cameras' own tone curves put such tones
 //! near white. The lift is the missing white, sized from the photo's own highlights; mid grey and
 //! everything below +1 stop stay where they are.
 //!
@@ -20,8 +21,8 @@
 //! over grey at the camera's exposure) untouched; the lift is sized from the photo's **own brightest
 //! tones**, wherever they are, and acts from +1 stop. The order is C7 (the range), C8 to C11, then C12
 //! step 1b (the lift), step 1a (the placement) and ACES 2. The estimator sees the photo through the
-//! default C7, so the tones the range already took to white need no lift and get less of one
-//! ([`estimate_white`]).
+//! default C7, so a photo whose brightest tones the range already took to white gets less lift, or
+//! none ([`estimate_white`]).
 //!
 //! # The stage ([`WhiteLift`])
 //!

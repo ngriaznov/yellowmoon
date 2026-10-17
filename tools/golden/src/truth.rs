@@ -540,7 +540,7 @@ mod tests {
     }
 
     #[test]
-    fn the_truth_is_developed_without_the_default_look_the_white_lift_and_with_the_highlights_as_recorded() {
+    fn the_truth_has_no_default_look_no_white_lift_and_the_highlights_as_recorded() {
         use serde_json::json;
         // An entry with no settings gets the Neutral look, the highlight range at 0 and no lift; the toe is not
         // named, so it reads as its default.
