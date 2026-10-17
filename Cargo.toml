@@ -85,7 +85,10 @@ insta = { version = "1", features = ["json"] }
 # App shell (Tauri 2 stable line; 3.x is alpha and is not used).
 tauri = { version = "2", features = ["macos-private-api"] }
 tauri-build = "2"
-tauri-plugin-updater = "2"
+# The updater without its `zip` feature: on macOS it unpacks Yellowmoon.app.tar.gz with tar and flate2, which it always
+# includes there. `zip` (zip 4.x: yanked, with open advisories) serves only Windows installers and Linux AppImages, which
+# Yellowmoon does not ship. rustls-tls and system-proxy are the other two default features, kept.
+tauri-plugin-updater = { version = "2", default-features = false, features = ["rustls-tls", "system-proxy"] }
 tauri-plugin-dialog = "2"
 # Typed IPC. The rc line is pinned exactly: specta, tauri-specta and specta-typescript must move together.
 specta = "=2.0.0-rc.25"
