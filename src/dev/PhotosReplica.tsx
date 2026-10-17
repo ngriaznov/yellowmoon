@@ -92,7 +92,7 @@ const NR = reg(
   S("nrc", "Colour", 0, 100, 1, 50, formats.integer),
   S("nrd", "Detail", 0, 100, 1, 50, formats.integer),
 );
-const ROLL = reg(S("hro", "Highlights", 0, 1, 0.01, 0.5, formats.fixed2), S("lro", "Low light", 0, 1, 0.01, 0.5, formats.fixed2));
+const ROLL = reg(S("hro", "Highlights", 0, 1, 0.01, 1, formats.fixed2), S("lro", "Low light", 0, 1, 0.01, 0.5, formats.fixed2));
 
 const LIGHTS = [
   { value: "auto", label: "Auto" },
