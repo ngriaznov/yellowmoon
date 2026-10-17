@@ -47,6 +47,26 @@ test.describe("tabs", () => {
     await expect(page.getByRole("tab", { name: "Colour" })).toHaveAttribute("aria-selected", "true");
     await expect(page.getByRole("tabpanel")).toHaveAttribute("aria-labelledby", "ym-tab-color");
   });
+
+  test("the labels sit in the middle of the tab row and the underline on its rim", async ({ page }) => {
+    // The owner's report of 2026-10-17: the labels sat in the row's top 32 px and the underline floated 13 px above the rim.
+    await photos(page);
+    await page.getByRole("tab", { name: "Light" }).click();
+    const g = await page.locator(".ym-tools").evaluate((tools) => {
+      const rect = (el: Element | null) => el!.getBoundingClientRect();
+      const row = rect(tools.querySelector(':scope > [data-slot="tabs"]'));
+      const label = (() => {
+        const range = document.createRange();
+        range.selectNodeContents(tools.querySelector('[data-slot="tabs-trigger"][data-state="active"]')!);
+        return range.getBoundingClientRect();
+      })();
+      const line = rect(tools.querySelector('[data-slot="tabs-indicator"]'));
+      const rim = parseFloat(getComputedStyle(tools.querySelector(':scope > [data-slot="tabs"]')!).borderBottomWidth);
+      return { rowMid: (row.top + row.bottom - rim) / 2, labelMid: (label.top + label.bottom) / 2, lineBottom: line.bottom, rimTop: row.bottom - rim };
+    });
+    expect(Math.abs(g.labelMid - g.rowMid), JSON.stringify(g)).toBeLessThanOrEqual(1);
+    expect(Math.abs(g.lineBottom - g.rimTop), JSON.stringify(g)).toBeLessThanOrEqual(0.5);
+  });
 });
 
 test.describe("sliders and their boxes", () => {

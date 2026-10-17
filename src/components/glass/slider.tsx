@@ -5,6 +5,11 @@ import { Slider as SliderPrimitive } from "radix-ui"
 type SliderProps = React.ComponentProps<typeof SliderPrimitive.Root> & {
   /** `progress` is thumbless (a scrubber, like a media timeline); the track thickens while dragged. */
   variant?: "default" | "progress"
+  /**
+   * Local change to the registry copy (Yellowmoon): `sm` is a round 16 px knob instead of the 24 × 36 px capsule, for a short track
+   * where the capsule would take a third of the travel (the tool panel's slider rows; the owner's request of 2026-10-17).
+   */
+  size?: "default" | "sm"
   /** Tick marks: `true` for one per step (up to 21), or the values to mark. */
   ticks?: boolean | number[]
   /** The range grows from this value instead of `min` (e.g. 0 on a −10…10 balance). */
@@ -32,6 +37,7 @@ function Slider({
   step = 1,
   orientation = "horizontal",
   variant = "default",
+  size = "default",
   ticks,
   neutralValue,
   minIcon,
@@ -67,6 +73,7 @@ function Slider({
     <SliderPrimitive.Root
       data-slot="slider"
       data-variant={variant}
+      data-size={size}
       data-dragging={dragging || undefined}
       defaultValue={defaultValue}
       value={value}
@@ -96,7 +103,11 @@ function Slider({
       onLostPointerCapture={endDrag}
       className={cn(
         "group/slider relative flex w-full touch-none items-center select-none data-disabled:opacity-50 data-vertical:h-full data-vertical:min-h-40 data-vertical:w-auto data-vertical:flex-col",
-        variant === "default" ? "data-horizontal:min-h-knob data-vertical:min-w-knob" : "data-horizontal:min-h-3 data-vertical:min-w-3",
+        variant !== "default"
+          ? "data-horizontal:min-h-3 data-vertical:min-w-3"
+          : size === "sm"
+            ? "data-horizontal:min-h-[calc(1rem*var(--glass-density))] data-vertical:min-w-[calc(1rem*var(--glass-density))]"
+            : "data-horizontal:min-h-knob data-vertical:min-w-knob",
         !(minIcon || maxIcon) && className
       )}
       {...props}
@@ -142,8 +153,10 @@ function Slider({
           data-glass-motion
           className={cn(
             "glass-knob-lens relative block shrink-0 rounded-button border border-glass-border shadow-glass-knob glass-focus hit-area data-disabled:pointer-events-none motion-reduce:transition-none",
-            // a capsule, wider along the track
-            "data-horizontal:h-knob data-horizontal:w-[calc(2.25rem*var(--glass-density))] data-vertical:h-[calc(2.25rem*var(--glass-density))] data-vertical:w-knob",
+            // a capsule, wider along the track; `sm` is a round knob
+            size === "sm"
+              ? "size-[calc(1rem*var(--glass-density))]"
+              : "data-horizontal:h-knob data-horizontal:w-[calc(2.25rem*var(--glass-density))] data-vertical:h-[calc(2.25rem*var(--glass-density))] data-vertical:w-knob",
             variant === "progress" && "size-0! border-0 opacity-0 focus-visible:size-knob! focus-visible:opacity-100"
           )}
         >

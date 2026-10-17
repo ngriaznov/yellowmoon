@@ -182,11 +182,19 @@ html:has(.ym-screen[data-screen="photos"]) #root {
 }
 .ym-tools > [data-slot="tabs"] {
   display: flex;
+  flex-direction: row;
   flex-shrink: 0;
-  align-items: center;
+  align-items: stretch;
   height: var(--tab-h);
   padding: 0 12px;
   border-bottom: 1px solid var(--rim);
+}
+/* The list and its tabs take the row's full height, so the labels sit in the middle of the row and the underline on its rim. (glasscn
+   stacks the list over its panels and gives a tab its control height, 32 px: the labels sat in the row's top 32 px and the underline
+   floated 13 px above the rim.) */
+.ym-tools > [data-slot="tabs"] > [data-slot="tabs-list"],
+.ym-tools > [data-slot="tabs"] [data-slot="tabs-trigger"] {
+  height: auto;
 }
 .ym-tools__foot {
   gap: 8px;

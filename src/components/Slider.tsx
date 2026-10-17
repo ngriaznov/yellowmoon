@@ -53,8 +53,8 @@ export interface SliderProps {
 }
 
 /**
- * Slider row: a 92 px label, glasscn's slider (a soft track, an accent range that grows from the default, a capsule knob that turns into
- * a lens while dragged), a 72 px value box and a 40 px Reset column, 38 px high. The knob is Radix's `role="slider"`, named by the label.
+ * Slider row: a 92 px label, glasscn's slider (a soft track, an accent range that grows from the default, its small round 16 px knob that
+ * turns into a lens while dragged), a 72 px value box and a 40 px Reset column, 38 px high. The knob is Radix's `role="slider"`, named by the label.
  *
  * Keys (Radix): arrows step, Shift+arrow or PageUp/PageDown ×10, Home/End to the limits; the same keys with ⌘, ⌃ or ⌥ are left alone. Double-click the track to reset. The component is
  * controlled; while a drag or a patch is in flight it shows its own value so the knob never lags behind the pointer.
@@ -185,6 +185,7 @@ export function Slider({
           step={step}
           value={[roundToStep(shown, step)]}
           neutralValue={hasDefault ? defaultValue : undefined}
+          size="sm"
           disabled={disabled}
           onValueChange={onValueChange}
         />

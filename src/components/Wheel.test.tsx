@@ -41,18 +41,19 @@ describe("Wheel", () => {
     expect((container.querySelector(".ym-wheel__puck") as HTMLElement).style.background).toBe("rgb(255, 90, 31)");
   });
 
-  it("puts the puck inside the rim: 88 px inside the border, the puck 14 px", () => {
+  it("puts the puck inside the rim: 90 px inside the 1 px rim, the puck 10 px", () => {
     const { container, rerender } = setup({ value: [0, 0] });
     const puck = container.querySelector(".ym-wheel__puck") as HTMLElement;
-    expect([puck.style.left, puck.style.top]).toEqual(["37px", "37px"]);
+    expect([puck.style.width, puck.style.height]).toEqual(["10px", "10px"]);
+    expect([puck.style.left, puck.style.top]).toEqual(["40px", "40px"]);
     rerender(<Wheel label="Shadows" value={[1, 0]} onChange={() => undefined} />);
-    expect(puck.style.left).toBe("74px");
-    expect(puck.style.top).toBe("37px");
+    expect(puck.style.left).toBe("80px");
+    expect(puck.style.top).toBe("40px");
   });
 
   it("drags: one patch per frame, a final one on release, kept inside the unit disc", () => {
     const { disc, onChange } = setup();
-    fireEvent.pointerDown(disc, { button: 0, clientX: 46 + 18.5, clientY: 46 });
+    fireEvent.pointerDown(disc, { button: 0, clientX: 46 + 20, clientY: 46 });
     fireEvent.pointerMove(window, { clientX: 46 + 30, clientY: 46 - 10 });
     fireEvent.pointerMove(window, { clientX: 46 + 100, clientY: 46 });
     expect(onChange).not.toHaveBeenCalled();
@@ -67,9 +68,9 @@ describe("Wheel", () => {
     expect(onChange.mock.calls[1]?.[1]).toBe(true);
   });
 
-  it("measures the pointer up as positive b", () => {
+  it("measures the pointer up as positive b (20 px is half the 40 px travel)", () => {
     const { disc, onChange } = setup();
-    fireEvent.pointerDown(disc, { button: 0, clientX: 46, clientY: 46 - 18.5 });
+    fireEvent.pointerDown(disc, { button: 0, clientX: 46, clientY: 46 - 20 });
     fireEvent.pointerUp(window);
     const [point] = onChange.mock.calls.at(-1) as [[number, number], boolean];
     expect(point[0]).toBeCloseTo(0, 12);

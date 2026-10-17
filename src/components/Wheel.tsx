@@ -24,9 +24,14 @@ export interface WheelProps {
   className?: string;
 }
 
-/** Radius, in pixels, that the puck centre travels for a point of length 1: stays inside the rim. */
-const PUCK_HALF = 7;
-const BORDER = 2;
+/**
+ * The puck's size in pixels: a small round point, so it covers little of the wheel and travels further (the owner's request of
+ * 2026-10-17; it was 16 px). Set on the element here, so the travel below and the drawn size cannot disagree.
+ */
+const PUCK = 10;
+const PUCK_HALF = PUCK / 2;
+/** The disc's rim, 1 px in the glass interface (`glass-c2-pages.css`). */
+const BORDER = 1;
 const sameSpot = (a: ColorBalancePoint, b: ColorBalancePoint): boolean =>
   Math.abs(a[0] - b[0]) < 1e-4 && Math.abs(a[1] - b[1]) < 1e-4;
 
@@ -34,9 +39,9 @@ const sameSpot = (a: ColorBalancePoint, b: ColorBalancePoint): boolean =>
 export const WHEEL_KEY_STEP = 0.02;
 
 /**
- * Colour balance wheel (`docs/11-ui.md` §Components): a 92 px disc (88 px inside its 2 px
- * border) with a hue gradient fading to paper at the centre, faint cross hairs and a square
- * puck. Drag the puck; double-click resets it to the centre. The puck takes the colour of its
+ * Colour balance wheel (`docs/11-ui.md` §Components): a 92 px disc (90 px inside its 1 px
+ * rim) with a hue gradient fading to the ground at the centre, faint cross hairs and a small round
+ * 10 px puck. Drag the puck; double-click resets it to the centre. The puck takes the colour of its
  * direction. Keyboard: arrows move the puck (Shift ×10), Home, Delete or Backspace centre it.
  * It is exposed as a slider whose value is the strength (0–100 %) and whose text gives
  * the strength and the hue angle.
@@ -144,7 +149,7 @@ export function Wheel({ label, value, onChange, size = 92, disabled = false, tab
         <div className="ym-wheel__fade" />
         <div className="ym-wheel__axis-v" />
         <div className="ym-wheel__axis-h" />
-        <div className="ym-wheel__puck" style={{ left, top, background: puckColor(shown) }} />
+        <div className="ym-wheel__puck" style={{ left, top, width: PUCK, height: PUCK, background: puckColor(shown) }} />
       </div>
       <span className="ym-wheel__label">{label}</span>
     </div>

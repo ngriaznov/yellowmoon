@@ -657,8 +657,7 @@ html:has(.ym-screen[data-screen="import-looks"]) #root {
   background: rgb(255 255 255 / 0.26);
 }
 .ym-wheel__puck {
-  width: 16px;
-  height: 16px;
+  /* 10 px across, set by Wheel.tsx (PUCK), which also works out its travel. */
   border: 2px solid #fff;
   border-radius: 50%;
   box-shadow: 0 1px 5px rgb(0 0 0 / 0.6);

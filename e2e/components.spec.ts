@@ -53,9 +53,10 @@ test.describe("the dev page", () => {
       };
       return { track: box('[data-slot="slider-track"]'), knob: box('[data-slot="slider-thumb"]'), value: box('[data-slot="input"]') };
     });
-    // glasscn's slider: a 6 px soft track and a 36 × 24 capsule knob; the box is its small input.
+    // glasscn's slider: a 6 px soft track and its small round 16 px knob (`size="sm"`, the owner's request of 2026-10-17: the 36 × 24
+    // capsule took a third of the travel); the box is its small input.
     expect(geometry.track.h).toBe(6);
-    expect(geometry.knob).toEqual({ w: 36, h: 24 });
+    expect(geometry.knob).toEqual({ w: 16, h: 16 });
     expect(geometry.value.w).toBe(72);
     expect(geometry.value.h).toBeLessThanOrEqual(38);
     const columns = await slider.evaluate((el) => getComputedStyle(el).gridTemplateColumns.split(" ").map((c) => Math.round(parseFloat(c))));
@@ -155,6 +156,11 @@ test.describe("wheel and curve in a real browser", () => {
     const box = (await wheel.boundingBox())!;
     expect(Math.round(box.width)).toBe(92);
     expect(Math.round(box.height)).toBe(92);
+    // A small round point (10 px, the owner's request of 2026-10-17), in the very middle of the disc while centred.
+    const rest = (await wheel.locator(".ym-wheel__puck").boundingBox())!;
+    expect([rest.width, rest.height]).toEqual([10, 10]);
+    expect(Math.abs(rest.x + rest.width / 2 - (box.x + box.width / 2))).toBeLessThanOrEqual(0.5);
+    expect(Math.abs(rest.y + rest.height / 2 - (box.y + box.height / 2))).toBeLessThanOrEqual(0.5);
     await page.mouse.move(box.x + 46, box.y + 46);
     await page.mouse.down();
     await page.mouse.move(box.x + 46 + 200, box.y + 46, { steps: 4 });
