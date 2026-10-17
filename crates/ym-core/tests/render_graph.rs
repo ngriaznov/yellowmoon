@@ -285,11 +285,11 @@ fn a_white_balance_change_does_not_rerun_r3_to_r9_with(rig: Rig) {
             Box::new(|s| s.light_source = ym_color::wb::LightSource::Tungsten),
         ),
         (
-            "roll-off highlights",
+            "highlight range",
             Box::new(|s| s.rolloff.highlights = 0.9),
         ),
         (
-            "roll-off low light",
+            "low-light toe",
             Box::new(|s| s.rolloff.low_light = 0.1),
         ),
     ];

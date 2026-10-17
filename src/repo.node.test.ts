@@ -77,6 +77,17 @@ describe("copy (docs/11 tab blurbs)", () => {
   });
 });
 
+describe("copy (docs/11 Range card, owner's decision of 2026-10-17)", () => {
+  const NOTE =
+    "Highlights moves the brightest tones the camera recorded: 0 keeps them where they were, 1 takes them to white. Low light softens the noise near black.";
+
+  it("the note under the RAW tab's Range sliders is word for word the same in the component and docs/11", () => {
+    expect(read("src/screens/tools/RawTab.tsx")).toContain(`"${NOTE}"`);
+    expect(read("docs/11-ui.md")).toContain(`"${NOTE}"`);
+    expect(read("src/screens/tools/RawTab.tsx")).toContain('<Card title="Range"');
+  });
+});
+
 describe("the oldest macOS the app runs on (owner's decision of 2026-10-17, docs/16; STATUS question 30)", () => {
   /** macOS 14 Sonoma ships Safari 17: Tailwind 4's CSS (`@property`, `color-mix()`, `:has()`, `@layer`) needs 16.4. */
   const MINIMUM = "14.0";

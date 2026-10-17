@@ -40,6 +40,7 @@ use crate::exposure::{ExposureError, ExposureSetting};
 use crate::gamut::{self, LinearAwg4};
 use crate::sensor_map::SensorMapTables;
 use crate::spectral::{AlexaWhite, Locus};
+use crate::tone;
 use crate::wb::{
     self, KELVIN_MAX_K, KELVIN_MIN_K, LightSource, PickWhiteError, SceneLight, WbError, WbReadout,
     WhiteBalance,
@@ -108,21 +109,31 @@ impl Default for ChainSettings {
     }
 }
 
-/// The clip level for the highlight roll-off (stage C7), after C1 to C6.
+/// The clip level for the highlight range (stage C7), after C1 to C6.
 ///
 /// A neutral surface brightens until the first camera channel clips. After C1 that surface is
 /// `[s, s, s]` and channel `c` clips at `s = 1 / w_scene[c]`, so the first clip is at
 /// `balanced = min_c 1 / w_scene[c]` (1 unless the light is redder or bluer than the green channel
-/// sees). Mapped through the matrix, that point is the AWG4 triple `awg4`; C7 acts on the largest
-/// channel, so `n = max(awg4)` is the clip level `c` of the roll-off formulas.
+/// sees). Mapped through the matrix, that point is the AWG4 triple `awg4`. C7's highlight range reads
+/// it as a luma, [`ClipLevel::luma`] (the Rec.709 weights, the norm the stage applies to every pixel):
+/// the Sony clip `Y_clip` of the range's formulas (`docs/02`, C7).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ClipLevel {
     /// The smallest per-channel clip of a neutral surface after C1.
     pub balanced: f64,
     /// That point after C1 to C6: `M * [balanced; 3]`.
     pub awg4: Vec3,
-    /// `max(awg4)`: the clip level for C7's norm `n = max(R, G, B)`.
+    /// `max(awg4)`: its largest channel, a diagnostic.
     pub n: f64,
+}
+
+impl ClipLevel {
+    /// The luma of the clipped neutral ([`tone::luma`] of [`ClipLevel::awg4`]): `Y_clip`, the clip level
+    /// C7's highlight range takes ([`tone::ToneParams::new`]).
+    #[must_use]
+    pub fn luma(&self) -> f64 {
+        tone::luma(self.awg4)
+    }
 }
 
 /// The clip level of a chain matrix for a scene light (see [`ClipLevel`]).
@@ -339,7 +350,7 @@ impl FusedChain {
         self.readout
     }
 
-    /// The clip level for the highlight roll-off (stage C7).
+    /// The clip level for the highlight range (stage C7).
     #[must_use]
     pub fn clip(&self) -> &ClipLevel {
         &self.clip

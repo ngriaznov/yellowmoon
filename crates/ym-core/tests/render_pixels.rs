@@ -82,7 +82,7 @@ fn centre_of(img: &ym_core::pipeline::FullImage) -> [f64; 3] {
 #[test]
 fn the_exposed_signal_of_a_neutral_field_is_two_to_the_ev_times_the_balanced_value() {
     // This checks R1 (black and white), R4 (the gains), the fused matrix (white preserving, one stop per
-    // EV), the roll-off (identity far below the knee) and C8 to C11 and back, end to end: the DNG's
+    // EV), the highlight range (identity below the knee) and C8 to C11 and back, end to end: the DNG's
     // pixels (scene-linear AWG4 after the whole LogC4 chain) of a neutral field move by exactly a stop
     // for an EV. The Before view cannot show this any more: it ignores the exposure.
     let white = light(PROFILE, 5500.0);
@@ -116,6 +116,95 @@ fn the_exposed_signal_of_a_neutral_field_is_two_to_the_ev_times_the_balanced_val
         let got = centre_of(&dng(&src))[1];
         let expect = 2f64.powf(src.estimates.exposure.ev) * v;
         assert!((got / expect - 1.0).abs() < 0.03, "auto: {got} vs {expect}");
+    }
+}
+
+/// The highlight range (`rolloff.highlights`, `docs/02` C7) on a neutral ramp whose top third clips on
+/// the sensor, at a manual EV of +1 (the clip is then `log2(2 / 0.18)` = 3.47 stops over grey, about
+/// where a Sony photo at Auto has it): 0 against 1 moves the clipped highlights a long way, 0.5 lands
+/// between them, and every pixel under the knee (one stop below the clip) is the same bit for bit. The
+/// DNG's pixels carry it: at 1 the clip lands on the ALEXA's EI 800 clip, `HIGHLIGHT_CAP_STOPS` over
+/// grey, and nothing goes past it.
+#[test]
+fn the_highlight_range_moves_the_clipped_highlights_and_nothing_under_the_knee() {
+    use ym_color::display::OutputTarget;
+    use ym_color::tone::HIGHLIGHT_CAP_STOPS;
+
+    let white = light(PROFILE, 5500.0);
+    // `Layout::Ramp`: luminance from 0.1 to 1 of the level along x. The balanced neutral is
+    // `0.9 * lum / max(white)` and clips at 1, so with a level of 1.6 the clip is at t = 0.66 and the
+    // knee (half the clip) at t = 0.27.
+    let level = 1.6;
+    let scene = Scene::new(640, 48, white, Layout::Ramp, level);
+    let d = Developed::new(&scene, MODEL);
+    let r = Renderer::neutral_only().expect("render thread");
+    let base = edit(&manual_ev(&d.source(), 1.0), |s| s.output_sharpening = 0.0);
+    let render = |highlights: f64, target: FullTarget| {
+        let src = edit(&base, |s| s.rolloff.highlights = highlights);
+        r.render_full(&src, &FullRequest { target }, &CancelToken::new())
+            .expect("render")
+    };
+    let peak = white.iter().copied().fold(0.0, f64::max);
+    let balanced_at = |x: usize, w: usize| {
+        let t = x as f64 / (w - 1) as f64;
+        0.9 * level * (0.1 + 0.9 * t) / peak
+    };
+    // The mean of a band of columns, per channel; and the columns under the knee with a margin
+    // (balanced under 0.45, 0.15 stop under the knee, for the demosaic's reach across the ramp).
+    let band = |img: &ym_core::pipeline::FullImage, x0: usize, x1: usize| {
+        let mut sum = [0.0f64; 3];
+        for y in 0..img.height {
+            for x in x0..x1 {
+                for (c, s) in sum.iter_mut().enumerate() {
+                    *s += f64::from(img.rgb[(y * img.width + x) * 3 + c]);
+                }
+            }
+        }
+        sum.map(|v| v / ((x1 - x0) * img.height) as f64)
+    };
+
+    let display = FullTarget::DisplayLinear(OutputTarget::Viewport);
+    let (lo, mid, hi) = (render(0.0, display), render(0.5, display), render(1.0, display));
+    let w = lo.width;
+    let under = (0..w).take_while(|&x| balanced_at(x, w) < 0.45).count();
+    assert!(under > w / 5, "{under} columns under the knee");
+    for img in [&mid, &hi] {
+        for y in 0..img.height {
+            let row = (y * w) * 3;
+            assert_eq!(
+                img.rgb[row..row + 3 * under],
+                lo.rgb[row..row + 3 * under],
+                "row {y}: a pixel under the knee moved"
+            );
+        }
+    }
+    // The clipped band: brighter with each step of the range.
+    let clipped = (0..w).find(|&x| balanced_at(x, w) > 1.1).expect("a clipped band");
+    let (a, b, c) = (band(&lo, clipped, w), band(&mid, clipped, w), band(&hi, clipped, w));
+    eprintln!("clipped band, display-linear: 0 {a:?}, 0.5 {b:?}, 1 {c:?}");
+    for ch in 0..3 {
+        assert!(a[ch] + 0.05 < b[ch] && b[ch] + 0.01 < c[ch], "channel {ch}: {a:?} {b:?} {c:?}");
+    }
+
+    // The DNG's pixels: scene-linear AWG4, the range in them.
+    let (dng_lo, dng_hi) = (render(0.0, FullTarget::DngLinearAwg4), render(1.0, FullTarget::DngLinearAwg4));
+    let max_of = |img: &ym_core::pipeline::FullImage| img.rgb.iter().copied().fold(0.0f32, f32::max);
+    let cap = 0.18 * HIGHLIGHT_CAP_STOPS.exp2();
+    let (m_lo, m_hi) = (f64::from(max_of(&dng_lo)), f64::from(max_of(&dng_hi)));
+    eprintln!("DNG maximum: {m_lo} at 0, {m_hi} at 1 (the ALEXA clip {cap})");
+    assert!(m_lo < 4.0, "at 0 the clip stays where it was recorded (2): {m_lo}");
+    assert!(
+        m_hi > 0.9 * cap && m_hi < cap * (1.0 + 1e-3),
+        "at 1 the clip lands on the ALEXA clip {cap}: {m_hi}"
+    );
+    assert_eq!((dng_lo.width, dng_lo.height), (w, lo.height));
+    for y in 0..dng_lo.height {
+        let row = (y * w) * 3;
+        assert_eq!(
+            dng_hi.rgb[row..row + 3 * under],
+            dng_lo.rgb[row..row + 3 * under],
+            "DNG row {y}: a pixel under the knee moved"
+        );
     }
 }
 

@@ -201,7 +201,7 @@ describe("the tabs", () => {
       ["3", "Colour", ["White balance", "Colour balance"]],
       ["4", "Detail", ["Sharpening", "Noise reduction"]],
       ["5", "Curve", ["Curve"]],
-      ["6", "RAW", ["Camera", "Decode", "Roll-off"]],
+      ["6", "RAW", ["Camera", "Decode", "Range"]],
       ["1", "Look", ["Automatic", "Look"]],
     ];
     for (const [key, title, cards] of expected) {

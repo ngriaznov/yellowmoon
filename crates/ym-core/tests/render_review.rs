@@ -884,7 +884,7 @@ fn a_renderer_that_remembers_draws_the_pictures_of_one_that_does_not() {
             5 => {
                 s.rolloff.highlights = unit();
                 s.rolloff.low_light = unit();
-                what = "roll-off".into();
+                what = "highlight range and toe".into();
             }
             6 => {
                 s.exposure = if unit() < 0.3 {

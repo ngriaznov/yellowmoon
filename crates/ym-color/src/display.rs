@@ -8,7 +8,7 @@
 //! | Stage | Module |
 //! |---|---|
 //! | C1 to C6 (fused 3x3, supplied by the caller) | [`crate::chain`] (the matrix is taken as `[[f64; 3]; 3]`) |
-//! | C7 highlight roll-off and low-light toe | [`crate::tone`] |
+//! | C7 highlight range and low-light toe | [`crate::tone`] |
 //! | C8 LogC4 encode | [`crate::logc`] |
 //! | C9 primary grade | [`crate::grade`] |
 //! | C10 look (CDL, LUT, intensity) | [`crate::look`] |

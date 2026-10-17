@@ -1,4 +1,4 @@
-//! The colour groups: C1 to C8 (the fused matrix, roll-off and toe) and C9 to C13 (grade, look,
+//! The colour groups: C1 to C8 (the fused matrix, highlight range and toe) and C9 to C13 (grade, look,
 //! curve, display transform, encode), built from a photo's settings and estimates
 //! (`docs/02-colour-pipeline.md`).
 //!
@@ -6,7 +6,10 @@
 //! [`AutoEstimates::fused_chain`](crate::auto::AutoEstimates::fused_chain)), the per-pixel stages are
 //! `ym_color::display::ColorChain`; this module maps the settings onto their parameters:
 //!
-//! * `rolloff.*` and the noise floor become `ToneParams`; the **noise floor** is the read noise of
+//! * `rolloff.*`, the clip level and the noise floor become `ToneParams` (C7): `rolloff.highlights`
+//!   is the highlight range, which places the camera's clip (the luma of the clipped neutral after
+//!   C1 to C6, `ClipLevel::luma`, so it follows the exposure) between where it was recorded and the
+//!   ALEXA's EI 800 clip; `rolloff.low_light` is the toe. The **noise floor** is the read noise of
 //!   the photo's noise model carried through the fused matrix: the balanced channels have the
 //!   noise `g0_c * sqrt(b + sigma_row^2 + q^2 / 12)`, the matrix (exposure included) mixes them
 //!   into the three AWG4 channels, and the floor is the mean of those three sigmas (`docs/02` C7:
@@ -30,7 +33,6 @@ use ym_color::display::{
     ArriDisplayLut, BeforePoint, ChainParams, ColorChain, DisplayLutInput, DisplayLutOutput,
     DisplayTransform, LookSetting, OutputTarget,
 };
-use ym_color::exposure::white::WhiteLift;
 use ym_color::grade::{ColorBalance, GradeParams};
 use ym_color::look::LookTransform;
 use ym_color::tone::ToneParams;
@@ -413,7 +415,7 @@ pub fn color_key(src: &PhotoSource) -> ColorKey {
 pub struct ColorPlan {
     /// The fused chain: matrix, factors, Kelvin and tint readout, clip level.
     pub fused: FusedChain,
-    /// C7: roll-off and toe.
+    /// C7: the highlight range and the low-light toe.
     pub tone: ToneParams,
     /// The Before view: the camera's as-shot white balance, the body's colour matrix and the camera
     /// gain in one 3x3, and the camera tone curve. It depends on the file and the body only, never on
@@ -471,7 +473,7 @@ pub fn color_plan(src: &PhotoSource) -> Result<ColorPlan, RenderError> {
         .sum::<f64>()
         / 3.0;
     let r = &src.settings.rolloff;
-    let tone = ToneParams::new(r.highlights, r.low_light, fused.clip().n, floor)
+    let tone = ToneParams::new(r.highlights, r.low_light, fused.clip().luma(), floor)
         .map_err(|e| RenderError::Color(e.to_string()))?;
     Ok(ColorPlan {
         fused,
@@ -586,20 +588,12 @@ fn pieces(src: &PhotoSource, req: &GradeRequest<'_>) -> Pieces {
     }
 }
 
-/// The white lift a photo renders with: the automatic amount and anchor of its estimates plus the
-/// user's offset (`white_offset_ev`), `docs/02` C12 step 1b. It has an effect on the ACES 2 path only;
-/// the chain ignores it for an imported ARRI display LUT.
-#[must_use]
-pub fn white_lift(src: &PhotoSource) -> WhiteLift {
-    src.estimates.white.lift(src.settings.white_offset_ev)
-}
-
 fn key_of(src: &PhotoSource, color: &ColorPlan, req: &GradeRequest<'_>, p: &Pieces) -> GradeKey {
     let s = &src.settings;
     let mut key = String::with_capacity(768);
     let _ = write!(
         key,
-        "{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{}|{:?}|",
+        "{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{}|{:?}|",
         color.key,
         grade_params(s),
         // The warp as the chain prepares it: pins that change nothing (locked pins with no pin that
@@ -609,7 +603,6 @@ fn key_of(src: &PhotoSource, color: &ColorPlan, req: &GradeRequest<'_>, p: &Piec
         req.target,
         req.dither,
         s.look_intensity,
-        white_lift(src),
         req.display,
         s.look,
         // The Before view's parameters: the as-shot white balance and the body's matrix (never a
@@ -657,7 +650,6 @@ pub fn grade_plan(
     params.dither = req.dither;
     params.before = BeforePoint::CameraDefault;
     params.camera_default = color.camera_default;
-    params.white_lift = white_lift(src);
     if let Some(look) = p.look {
         params.look = Some(LookSetting::new(look.transform, s.look_intensity));
     }

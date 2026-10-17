@@ -2,8 +2,8 @@
 //! section The Before view): the raw stages as for the final picture, then the camera's as-shot white
 //! balance, the body's D65 colour matrix, the camera gain and the camera tone curve, and nothing else.
 //!
-//! * it is bit-identical across any edit of the user's settings (light, colour, look, tone, curve, white
-//!   lift, detail), on the CPU and on the device;
+//! * it is bit-identical across any edit of the user's settings (light, colour, look, tone, curve, the
+//!   highlight range, detail), on the CPU and on the device;
 //! * a scene the camera got right (as-shot white balance of the true light) renders R = G = B, for bodies
 //!   with different matrices;
 //! * middle grey after the camera gain lands on sRGB code 119.7;
@@ -125,7 +125,6 @@ fn edits() -> Vec<Edit> {
         ("shadows", Box::new(|s| s.shadows = 50.0)),
         ("black", Box::new(|s| s.black = 30.0)),
         ("white", Box::new(|s| s.white = -30.0)),
-        ("white offset", Box::new(|s| s.white_offset_ev = 2.0)),
         ("saturation", Box::new(|s| s.saturation = 80.0)),
         ("look intensity", Box::new(|s| s.look_intensity = 20.0)),
         (
@@ -135,7 +134,8 @@ fn edits() -> Vec<Edit> {
                 s.curve.red = vec![[0.0, 0.0], [0.5, 0.7], [1.0, 1.0]];
             }),
         ),
-        ("roll-off", Box::new(|s| s.rolloff.highlights = 40.0)),
+        ("highlight range", Box::new(|s| s.rolloff.highlights = 1.0)),
+        ("low light", Box::new(|s| s.rolloff.low_light = 1.0)),
         (
             "noise reduction",
             Box::new(|s| {

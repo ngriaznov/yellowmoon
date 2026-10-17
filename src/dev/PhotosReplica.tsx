@@ -369,7 +369,14 @@ export function PhotosReplica({
               ))}
             </Rows>,
           )}
-          {card("Roll-off", ROLL.map(slider), { action: <ResetLink size="card" onClick={() => reset(ROLL)} /> })}
+          {card(
+            "Range",
+            <>
+              {ROLL.map(slider)}
+              <RowNote>Highlights moves the brightest tones the camera recorded: 0 keeps them where they were, 1 takes them to white. Low light softens the noise near black.</RowNote>
+            </>,
+            { action: <ResetLink size="card" onClick={() => reset(ROLL)} /> },
+          )}
         </>
       );
       break;

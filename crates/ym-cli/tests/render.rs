@@ -632,6 +632,8 @@ fn a_settings_file_that_does_not_parse_is_a_usage_error_and_nothing_is_rendered(
             r#"{ "curve2": {} }"#,
             "not a setting or the name of an ARW file",
         ),
+        // Removed with the white lift in pipeline 0.4.0: refused like any unknown field.
+        (r#"{ "white_offset_ev": -3 }"#, "white_offset_ev"),
     ] {
         std::fs::write(&file, content).expect("write");
         sb.ym()
@@ -681,6 +683,11 @@ fn exit_code_2_for_usage_errors() {
         (vec!["--output-sharpening", "-5"], "between 0 and 200"),
         (vec!["--output-sharpening", "a lot"], "is not a number"),
         (vec!["--no-such-flag"], "unexpected argument"),
+        // The white lift and its offset were removed in pipeline 0.4.0 (the highlight range of
+        // `--rolloff` took their place): a script that still passes it gets the usage error.
+        (vec!["--white-offset", "0"], "unexpected argument"),
+        (vec!["--rolloff", "1.5,0.5"], "the highlight range"),
+        (vec!["--rolloff", "0.5,-1"], "the low-light toe"),
     ];
     for (flags, needle) in cases {
         sb.ym()

@@ -66,7 +66,6 @@ use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use ym_color::consts::Vec3;
 use ym_color::exposure::{BurstFrame, burst_groups, share_burst_ev};
-use ym_color::look::{LookTransform, ParametricLook};
 use ym_looks::library::LookId;
 use ym_noise::estimate::PoolKey;
 use ym_noise::priors::{NoisePrior, PriorStore};
@@ -515,11 +514,6 @@ pub struct SessionEnv {
     pub thumbnails: Option<Arc<dyn ThumbnailRenderer>>,
     /// The user's default look: the look of every photo opened from now on.
     pub default_look: LookId,
-    /// The look the white lift is sized for: Signature, read from `<data>/looks/builtin/signature.json`
-    /// by [`SessionEnv::load`] (`None`, the identity look, when the file is missing or unusable). It
-    /// does not follow the user's default look: the lift of a photo is what the picture needs on top
-    /// of the Signature look (`docs/02` C12 step 1b).
-    pub reference_look: Option<Arc<LookTransform>>,
     /// Threads of the decode pool.
     pub decode_threads: usize,
     /// A profile id that replaces the detected one (the CLI's `--profile`).
@@ -531,21 +525,6 @@ pub struct SessionEnv {
 pub fn default_decode_threads() -> usize {
     let cpus = std::thread::available_parallelism().map_or(2, std::num::NonZero::get);
     cpus.saturating_sub(2).clamp(1, 6)
-}
-
-/// The Signature look the white lift is sized for: `<data_root>/looks/builtin/signature.json`, baked
-/// like any built-in look. `None` when there is no such file or it cannot be used (the lift is then
-/// sized for the bare ACES 2 picture).
-fn load_reference_look(data_root: &Path) -> Option<Arc<LookTransform>> {
-    let text = std::fs::read_to_string(
-        data_root
-            .join("looks")
-            .join("builtin")
-            .join("signature.json"),
-    )
-    .ok()?;
-    let look = ParametricLook::from_json(&text).ok()?.to_transform().ok()?;
-    Some(Arc::new(look))
 }
 
 impl SessionEnv {
@@ -571,7 +550,6 @@ impl SessionEnv {
             // No look library is attached yet, so the identity look; `Core::open` sets the user's
             // default look (Signature out of the box) with `with_default_look`.
             default_look: LookId::neutral(),
-            reference_look: load_reference_look(data_root),
             decode_threads: default_decode_threads(),
             forced_profile: None,
         })
@@ -1888,7 +1866,7 @@ impl Session {
         let view = self.view(id)?;
         let raw = self.raw_image(id)?;
         let model = self.inner.env.illuminants.get(view.profile.id.as_str());
-        let estimates = AutoEstimates::compute_with_look(
+        let estimates = AutoEstimates::compute_scaled(
             &raw,
             &AutoInputs {
                 profile: &view.profile,
@@ -1896,7 +1874,6 @@ impl Session {
                 priors: &self.inner.env.priors,
             },
             view.camera.matched.white_scale,
-            self.inner.env.reference_look.as_deref(),
         )?;
         let estimates = Arc::new(estimates);
         let changed = {
@@ -2346,7 +2323,7 @@ impl Inner {
         // Estimates.
         let started = Instant::now();
         let model = self.env.illuminants.get(profile.id.as_str());
-        let estimates = match AutoEstimates::compute_with_look(
+        let estimates = match AutoEstimates::compute_scaled(
             &raw,
             &AutoInputs {
                 profile: &profile,
@@ -2354,7 +2331,6 @@ impl Inner {
                 priors: &self.env.priors,
             },
             camera.matched.white_scale,
-            self.env.reference_look.as_deref(),
         ) {
             Ok(e) => Arc::new(e),
             Err(e) => return fail(PhotoStage::Estimate, e.to_string()),

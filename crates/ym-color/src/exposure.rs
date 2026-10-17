@@ -24,6 +24,8 @@
 //!    as it does in the camera's JPEG.
 //! 5. Highlight guard: if more than 0.5 % of the unmasked pixels would exceed linear 8.0 after the
 //!    exposure, lower `EV_auto` until they do not, by at most 1 EV. It can only lower the exposure.
+//!    8.0 is 5.47 stops over middle grey, about the clip of an ALEXA (ALEV III) at EI 180, not at
+//!    EI 800 (7.64 stops, linear 35.9: the cap of C7's highlight range); the level is kept as it is.
 //! 6. Frames of the same camera within 2 s of each other and with identical exposure settings share the
 //!    median `EV_auto` ([`share_burst_ev`]); with a constant gain that is the constant unless the guard
 //!    acted on some frame.
@@ -58,14 +60,6 @@
 //! exposure, [`jpeg_median_luminance`] the median `Y` of the decoded JPEG (sRGB decoded to linear light,
 //! Rec.709 luminance), [`exposure_error_ev`] their ratio in stops and [`evaluate_gate`] the pass rate and
 //! the outliers for review. Decoding the JPEG and reading the files is the caller's job.
-//!
-//! # The white lift
-//!
-//! [`white`] holds the other automatic estimate that is made on the same preview: the per-photo lift of
-//! the tones above +1 stop over middle grey (`docs/02`, C12 step 1b), its scene-linear stage
-//! ([`white::WhiteLift`]) and its estimator ([`white::estimate_white`]).
-
-pub mod white;
 
 use serde::{Deserialize, Serialize};
 
@@ -94,7 +88,8 @@ pub const EV_LIMIT: f64 = 3.0;
 pub const PERCENTILE_LOW: f64 = 0.01;
 /// Pixels above this quantile of the unmasked luminances are ignored.
 pub const PERCENTILE_HIGH: f64 = 0.99;
-/// The highlight guard's linear level after exposure.
+/// The highlight guard's linear level after exposure: 5.47 stops over middle grey, about the clip of an
+/// ALEXA at EI 180, not at EI 800 (whose clip, 7.64 stops, is [`crate::tone::HIGHLIGHT_CAP_STOPS`]).
 pub const GUARD_LEVEL: f64 = 8.0;
 /// The highlight guard's fraction of unmasked pixels allowed above [`GUARD_LEVEL`].
 pub const GUARD_FRACTION: f64 = 0.005;
