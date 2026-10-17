@@ -9,6 +9,10 @@ moves the entries below from Unreleased into a dated section for that version.
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.1.10] - 2026-10-17
+
 Highlights that end where an ALEXA's would: the camera's clipping point now lands at white, and can be placed anywhere from where it was recorded up to white.
 
 ### Changed
