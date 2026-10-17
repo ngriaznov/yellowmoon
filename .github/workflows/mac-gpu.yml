@@ -147,7 +147,7 @@ jobs:
         run: |
           target/release/golden check --device gpu --reference render --subset tools/golden/gpu-subset.txt \
             --ym target/release/ym --require-all --report golden-gpu-${{ matrix.runner }}.json 2>&1 | tee golden-gpu-${{ matrix.runner }}.txt
-      # One of the owner's photos (Mykyta allows them in CI, NOTICE item 10): the readme-photos branch, raw files in Git LFS,
+      # One of the owner's photos (the owner's own photos, allowed in CI: docs/16, 2026-10-14): the readme-photos branch, raw files in Git LFS,
       # cached by the checksums of tools/fetch/owner-photos.sha256. The cache holds the files and not the clone's .git
       # (persist-credentials is off, so no token can end up in a cache).
       - name: Owner photos (readme-photos branch, Git LFS)

@@ -37,7 +37,7 @@ Options (`node tools/social-card/render.mjs --help`):
 
 ## Licence
 
-The photo is © Mykyta Griaznov, used with permission (NOTICE item 10), like the README screenshots. Figtree is under the SIL Open Font License (`design/fonts/OFL.txt`).
+The photo is the owner's own, like the README screenshots. Figtree is under the SIL Open Font License (`design/fonts/OFL.txt`).
 
 ## Tests
 

@@ -116,7 +116,7 @@ A `files` entry: `id` (`rawdb:ILCE-1/<name>`), `source`, `body`, `name`, `source
 
 ## Mykyta's own photos (`owner-photos.sh`)
 
-`tools/fetch/owner-photos.sh` clones or updates the `readme-photos` branch into `testdata/readme-photos/src/`, pulls its Git LFS files and checks every file against `tools/fetch/owner-photos.sha256` (`--verify` checks without network). The photos are © Mykyta Griaznov; he permits them as test and evaluation data, in CI and in published images made from them (`docs/test-photo-sources.md`, NOTICE item 10). In CI prefer `actions/checkout` with `ref: readme-photos`, `lfs: true` and a cache keyed on `owner-photos.sha256`: Git LFS bandwidth on a free account is limited.
+`tools/fetch/owner-photos.sh` clones or updates the `readme-photos` branch into `testdata/readme-photos/src/`, pulls its Git LFS files and checks every file against `tools/fetch/owner-photos.sha256` (`--verify` checks without network). The photos are © Mykyta Griaznov; he permits them as test and evaluation data, in CI and in published images made from them (`docs/test-photo-sources.md`). In CI prefer `actions/checkout` with `ref: readme-photos`, `lfs: true` and a cache keyed on `owner-photos.sha256`: Git LFS bandwidth on a free account is limited.
 
 ## Tier 2: finding Play Raw files
 

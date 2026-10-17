@@ -27,7 +27,7 @@ REQUIRED_RESOURCES = {
     "THIRD-PARTY.md": "the licence texts of the Rust crates, JavaScript packages and fonts (NOTICE item 9, About)",
 }
 
-#: Phrases a complete BSD 3-Clause text has, and what NOTICE must carry for colour-demosaicing (item 8) and for glasscn (item 11).
+#: Phrases a complete BSD 3-Clause text has, and what NOTICE must carry for colour-demosaicing (item 8) and for glasscn (item 10).
 NOTICE_PHRASES = (
     ("Colour Developers", "the copyright holder of the ported Menon demosaic"),
     ("Redistributions in binary form must reproduce", "the BSD 3-Clause conditions (clause 2) for the Menon demosaic"),

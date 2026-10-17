@@ -42,7 +42,7 @@ None of the three repositories gives a licence for these files that this project
 
 ## Mykyta's own photos (test data, CI and published images allowed)
 
-Mykyta permits his own Sony photos in the repository (2026-10-14): the raw files live on the `readme-photos` branch in Git LFS (never merged; about 45 MB each), with his reference exports in `ref-export/`. They may be used as test and evaluation data, in CI, and in images the repository and its README publish; they stay © Mykyta Griaznov (NOTICE item 10) and are never bundled with the app. `tools/fetch/owner-photos.sh` fetches them into `testdata/readme-photos/src/` and checks their SHA-256 (`tools/fetch/owner-photos.sha256`). Today: three Sony A1 photos (A1M01454, A1M01739, A1M01749), daylight landscapes. They are not taken for V1 (they existed already), so the V1 data rule is kept; they are not a golden set on their own (three files, one body, one kind of light).
+Mykyta permits his own Sony photos in the repository (2026-10-14): the raw files live on the `readme-photos` branch in Git LFS (never merged; about 45 MB each), with his reference exports in `ref-export/`. They may be used as test and evaluation data, in CI, and in images the repository and its README publish; they are his own and are never bundled with the app; no credit is given for them (his decision of 2026-10-17). `tools/fetch/owner-photos.sh` fetches them into `testdata/readme-photos/src/` and checks their SHA-256 (`tools/fetch/owner-photos.sha256`). Today: three Sony A1 photos (A1M01454, A1M01739, A1M01749), daylight landscapes. They are not taken for V1 (they existed already), so the V1 data rule is kept; they are not a golden set on their own (three files, one body, one kind of light).
 
 ## No test shoots in V1
 

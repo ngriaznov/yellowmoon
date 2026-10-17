@@ -135,7 +135,7 @@ jobs:
       - name: Build the frontend
         run: npm ci && npm run build
 
-      # The owner's photos (Mykyta allows them in CI, NOTICE item 10), as in mac-gpu.yml.
+      # The owner's photos (the owner's own photos, allowed in CI: docs/16, 2026-10-14), as in mac-gpu.yml.
       - name: Owner photos (readme-photos branch, Git LFS)
         id: owner
         uses: actions/cache@v4
