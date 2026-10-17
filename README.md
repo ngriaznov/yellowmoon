@@ -23,8 +23,6 @@ One raw file from a Sony A1: on the left as the camera renders it, on the right 
 |---|---|
 | ![The camera's own rendering of the photo](docs/images/readme/compare-sony.jpg) | ![The same raw file developed by Yellowmoon with the Signature look](docs/images/readme/compare-yellowmoon.jpg) |
 
-Photo © Mykyta Griaznov, used with permission and not covered by the Apache License (`NOTICE`).
-
 ## Why
 
 I like how ARRI looks, but I can't afford an ALEXA. I've used LUTs that smart people make, and they're hit-or-miss: a LUT is static, and it can't know what light a photo was taken in.
