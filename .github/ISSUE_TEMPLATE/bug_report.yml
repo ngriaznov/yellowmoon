@@ -45,7 +45,7 @@ body:
     id: macos
     attributes:
       label: macOS version and Mac
-      description: For example macOS 15.5 on a MacBook Pro with M3, or macOS 12.7 on an Intel iMac.
+      description: For example macOS 15.5 on a MacBook Pro with M3, or macOS 14.7 on an Intel iMac.
       placeholder: "macOS 15.5, MacBook Pro M3"
     validations:
       required: true

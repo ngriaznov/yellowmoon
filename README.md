@@ -59,7 +59,7 @@ brew tap ngriaznov/yellowmoon https://github.com/ngriaznov/yellowmoon
 brew install --cask yellowmoon
 ```
 
-Yellowmoon needs macOS 12 or later. It draws its windows with the web engine that comes with macOS, and the interface needs a recent one (Safari 16.4 or later): on macOS 12 and 13, install the latest system and Safari updates first, or the controls may not draw correctly.
+Yellowmoon needs macOS 14 Sonoma or later, on Apple silicon or Intel.
 
 Open the `.dmg` and drag Yellowmoon to Applications. The app updates itself: it checks for a new version every hour and installs it in the background; click **Update ready** at the top right to restart into it now, or it runs the next time you open Yellowmoon (Yellowmoon › Check for Updates… checks at once). Versions 0.1.x are test releases.
 
@@ -68,7 +68,7 @@ Open the `.dmg` and drag Yellowmoon to Applications. The app updates itself: it 
 Yellowmoon is free and is not signed with an Apple Developer ID, so the first time you open it macOS stops it with "Apple could not verify Yellowmoon is free of malware" (or "Yellowmoon is damaged and can't be opened"). The app is fine; macOS only knows that it was downloaded and not notarised by Apple. Allow it once, in one of these ways:
 
 - **macOS 15 Sequoia and later.** Open Yellowmoon and choose **Done** in the warning. Open **System Settings › Privacy & Security**, scroll down to **Security**, click **Open Anyway** next to "Yellowmoon was blocked to protect your Mac", and confirm with your password or Touch ID. Open Yellowmoon again and choose **Open Anyway**.
-- **macOS 12 to 14.** In Applications, Control-click (or right-click) Yellowmoon, choose **Open**, then **Open** again in the warning.
+- **macOS 14 Sonoma.** In Applications, Control-click (or right-click) Yellowmoon, choose **Open**, then **Open** again in the warning.
 - **Terminal, any version** (also when macOS says the app is damaged). Remove the download mark, then open the app as usual:
 
   ```

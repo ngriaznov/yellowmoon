@@ -34,8 +34,7 @@
 
 .ym-row-note { margin: 10px 0 0; font-size: 13px; line-height: 1.5; }
 
-/* The wheel, the curve grid and the histogram use rgba() where the mockup uses color-mix(in srgb, ink 22%, transparent): the same colours, and
-   Safari before 16.2 (macOS 12 can still be on 15) drops a declaration with color-mix in it. */
+/* The wheel, the curve grid and the histogram use rgba() where the mockup uses color-mix(in srgb, ink 22%, transparent): the same colours. */
 /* ---- Wheel -------------------------------------------------------------------------------- */
 .ym-wheels {
   display: grid;

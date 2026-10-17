@@ -47,11 +47,10 @@ export default defineConfig({
         components: resolve(import.meta.dirname, "components.html"),
       },
     },
-    // The script and style syntax is lowered to Safari 15, which macOS 12 ships. That is the syntax only: the dark glass interface's
-    // CSS (Tailwind 4: @layer, :has(), @property, color-mix()) needs WebKit 16.4 or later, which macOS 12 and 13 have only after
-    // their latest system and Safari updates (macOS 13.3 and later ship it). The minimum is the owner's open question 30 in
-    // docs/STATUS.md; until he answers, the README and the changelog tell people on 12 and 13 to update.
-    target: "safari15",
+    // The script and style syntax is lowered to Safari 17, which macOS 14 ships: the oldest macOS the app runs on
+    // (`minimumSystemVersion` in src-tauri/tauri.conf.json; owner's decision of 2026-10-17, docs/16). The dark glass interface's CSS
+    // (Tailwind 4: @layer, :has(), @property, color-mix()) needs WebKit 16.4 or later, so every supported Mac has it.
+    target: "safari17",
     minify: process.env.TAURI_ENV_DEBUG ? false : "esbuild",
     sourcemap: !!process.env.TAURI_ENV_DEBUG,
   },

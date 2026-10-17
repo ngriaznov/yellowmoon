@@ -9,7 +9,9 @@ moves the entries below from Unreleased into a dated section for that version.
 
 ## [Unreleased]
 
-Nothing yet.
+### Changed
+
+- Yellowmoon now needs macOS 14 Sonoma or later. If your Mac runs macOS 12 or 13, keep version 0.1.6: this update installs by itself but will not open there, so download 0.1.6 again from GitHub Releases if that happens.
 
 ## [0.1.6] - 2026-10-16
 

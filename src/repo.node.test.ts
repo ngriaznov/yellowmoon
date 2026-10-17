@@ -77,27 +77,27 @@ describe("copy (docs/11 tab blurbs)", () => {
   });
 });
 
-describe("the web engine the interface needs (docs/STATUS.md question 30)", () => {
-  /** macOS 13.3 is the first release to ship Safari 16.4 (`@property`, with `color-mix()`, `:has()` and `@layer`: what Tailwind 4 needs). */
-  const FIRST_WITH_16_4 = [13, 3];
+describe("the oldest macOS the app runs on (owner's decision of 2026-10-17, docs/16; STATUS question 30)", () => {
+  /** macOS 14 Sonoma ships Safari 17: Tailwind 4's CSS (`@property`, `color-mix()`, `:has()`, `@layer`) needs 16.4. */
+  const MINIMUM = "14.0";
 
-  const minimum = (): number[] => {
-    const conf = JSON.parse(read("src-tauri/tauri.conf.json")) as { bundle: { macOS: { minimumSystemVersion: string } } };
-    return conf.bundle.macOS.minimumSystemVersion.split(".").map(Number);
-  };
-  const older = (a: number[], b: number[]): boolean => (a[0] ?? 0) < (b[0] ?? 0) || ((a[0] ?? 0) === (b[0] ?? 0) && (a[1] ?? 0) < (b[1] ?? 0));
+  const minimumOf = (path: string): string =>
+    (JSON.parse(read(path)) as { bundle: { macOS: { minimumSystemVersion: string } } }).bundle.macOS.minimumSystemVersion;
 
-  it("does not call Safari 15 the oldest WebKit the app supports: only its syntax is lowered to that", () => {
-    const vite = read("vite.config.ts");
-    expect(vite).not.toMatch(/oldest WebKit the app supports/);
-    expect(vite).toMatch(/16\.4/);
+  it("is the same in the bundle, its template, the Homebrew cask and the build target", () => {
+    expect(minimumOf("src-tauri/tauri.conf.json")).toBe(MINIMUM);
+    expect(minimumOf("templates/tauri.conf.json")).toBe(MINIMUM);
+    for (const cask of ["Casks/yellowmoon.rb", "templates/Casks/yellowmoon.rb"]) {
+      expect(read(cask)).toMatch(/depends_on macos: ">= :sonoma"/);
+    }
+    // The build lowers its syntax to the Safari that the oldest supported macOS ships.
+    expect(read("vite.config.ts")).toMatch(/target: "safari17"/);
   });
 
-  it("tells people on a macOS that ships an older engine to update, while the minimum allows one", () => {
-    if (!older(minimum(), FIRST_WITH_16_4)) return; // the owner raised the minimum: nothing left to say
-    expect(read("README.md")).toMatch(/macOS 12 and 13, install the latest system and Safari updates/);
-    // The note goes out with the first release of the glass interface (0.1.6); a later release moves Unreleased on.
-    expect(read("CHANGELOG.md")).toMatch(/macOS 12 and 13, install the latest system and Safari updates/);
+  it("is what the README and the overview say", () => {
+    expect(read("README.md")).toMatch(/Yellowmoon needs macOS 14 Sonoma or later/);
+    expect(read("README.md")).not.toMatch(/macOS 12|macOS 13/);
+    expect(read("docs/00-overview.md")).toMatch(/Platform: macOS 14 Sonoma or later/);
   });
 });
 

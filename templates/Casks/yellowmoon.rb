@@ -13,7 +13,7 @@ cask "yellowmoon" do
   end
 
   auto_updates true
-  depends_on macos: ">= :monterey"
+  depends_on macos: ">= :sonoma"
 
   app "Yellowmoon.app"
   binary "#{appdir}/Yellowmoon.app/Contents/MacOS/yellowmoon-cli", target: "yellowmoon"

@@ -4,7 +4,7 @@
 
 A desktop raw processor for photos from Sony cameras. It reads ARW files, develops them automatically, and renders them with the colour of an ARRI ALEXA cinema camera (ALEV III sensor: ALEXA Classic, XT, SXT, Mini, LF and Mini LF). The user can pick a look, nudge a few controls, and export. Nothing is kept afterwards except the exported files.
 
-- Platform: macOS 12 or later, universal binary (Apple silicon and Intel). The photo is drawn by a native GPU view (wgpu on Metal).
+- Platform: macOS 14 Sonoma or later (owner's decision of 2026-10-17, `docs/16`), universal binary (Apple silicon and Intel). The photo is drawn by a native GPU view (wgpu on Metal).
 - Licence: Apache-2.0. A personal art project on Mykyta's GitHub account (`github.com/ngriaznov/yellowmoon`), set up like github.com/ngriaznov/plugout: GitHub Releases, a Homebrew cask in the same repo, and in-app auto-update.
 - Two front ends on one Rust core: the Tauri app, and a command-line tool `ym` that gives bit-identical results.
 - Name: Yellowmoon, one word. The command is `ym` (decision 2026-10-12). Brand colour #FFC20E, the yellow moon mark.
