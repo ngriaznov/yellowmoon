@@ -70,16 +70,37 @@ impl Drained {
     }
 }
 
+/// Linux's ETXTBSY: an executable that some process still has open for writing cannot be started.
+const TEXT_FILE_BUSY: i32 = 26;
+
+/// Starts `cmd`, trying again for up to a second while Linux says the executable is busy (ETXTBSY). A program
+/// written a moment ago (the stand-in `ym` of a test) can be held open for writing by a child that another thread
+/// of this process forked in the instant before the file was closed, until that child runs its own program; on
+/// 2026-10-17 CI failed once on exactly that. Any other error is returned at once.
+fn spawn_when_not_busy(cmd: &mut Command) -> std::io::Result<std::process::Child> {
+    let mut tries = 0;
+    loop {
+        match cmd.spawn() {
+            Err(e)
+                if e.raw_os_error() == Some(TEXT_FILE_BUSY)
+                    && cfg!(target_os = "linux")
+                    && tries < 20 =>
+            {
+                tries += 1;
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            result => return result,
+        }
+    }
+}
+
 /// Runs `cmd` to the end and returns its status, stdout and stderr; stops it (and says so) after `timeout`.
 fn run_with_timeout(
     cmd: &mut Command,
     timeout: Duration,
 ) -> Result<(std::process::ExitStatus, Vec<u8>, Vec<u8>)> {
-    let mut child = cmd
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .context("starting the process")?;
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = spawn_when_not_busy(cmd).context("starting the process")?;
     // The pipes are drained while the process runs, so a chatty process cannot fill them and block.
     let out = child.stdout.take().map(Drained::start);
     let err = child.stderr.take().map(Drained::start);
@@ -492,6 +513,37 @@ mod tests {
         if std::env::var_os("GOLDEN_RENDER_TIMEOUT_SECS").is_none() {
             assert_eq!(render_timeout(), RENDER_TIMEOUT);
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_program_still_open_for_writing_is_started_once_it_is_closed() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("golden-busy-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("dir");
+        let script = dir.join("busy");
+        std::fs::write(&script, "#!/bin/sh\nexit 7\n").expect("script");
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        // A writer holds the file open, as a child forked by another thread can; it lets go after 200 ms.
+        let writer = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&script)
+            .expect("open for writing");
+        let busy = Command::new(&script)
+            .spawn()
+            .expect_err("Linux refuses to start a program open for writing");
+        assert_eq!(busy.raw_os_error(), Some(TEXT_FILE_BUSY));
+        let releaser = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(200));
+            drop(writer);
+        });
+        let status = spawn_when_not_busy(&mut Command::new(&script))
+            .expect("started once the writer is gone")
+            .wait()
+            .expect("wait");
+        releaser.join().expect("releaser");
+        assert_eq!(status.code(), Some(7));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
