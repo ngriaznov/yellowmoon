@@ -1192,7 +1192,11 @@ fn reset_restores_every_field_to_its_default() {
     assert!(s.exposure.is_auto() && s.white_balance.is_auto() && s.noise_reduction.is_auto());
     assert_eq!(s.light_source, LightSource::Auto);
     assert!(s.white_pick.is_none());
-    assert_eq!(s.rolloff, rich().rolloff, "the highlight range is not part of Re-run");
+    assert_eq!(
+        s.rolloff,
+        rich().rolloff,
+        "the highlight range is not part of Re-run"
+    );
     assert!(!s.sharpen.is_auto(), "sharpening is not part of Re-run");
     assert_eq!(s.contrast, 12.0);
 }

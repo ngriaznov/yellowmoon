@@ -2248,15 +2248,25 @@ mod tests {
         // C7 took their place): a document or a patch that still has the field is refused, with no
         // compatibility shim.
         let neutral = LookId::builtin("neutral");
-        for text in [r#"{ "white_offset_ev": 0 }"#, r#"{ "white_offset_ev": -3 }"#] {
+        for text in [
+            r#"{ "white_offset_ev": 0 }"#,
+            r#"{ "white_offset_ev": -3 }"#,
+        ] {
             let err = DevelopSettings::from_json(text, &neutral).expect_err("refused");
             assert!(
                 matches!(&err, SettingsError::Parse(m) if m.contains("white_offset_ev")),
                 "{err}"
             );
-            assert!(serde_json::from_str::<SettingsPatch>(text).is_err(), "{text}");
+            assert!(
+                serde_json::from_str::<SettingsPatch>(text).is_err(),
+                "{text}"
+            );
         }
-        assert!(SettingsField::ALL.iter().all(|f| f.name() != "white_offset_ev"));
+        assert!(
+            SettingsField::ALL
+                .iter()
+                .all(|f| f.name() != "white_offset_ev")
+        );
         assert!(serde_json::from_str::<SettingsField>(r#""white_offset_ev""#).is_err());
     }
 

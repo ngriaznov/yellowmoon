@@ -164,7 +164,11 @@ fn the_highlight_range_moves_the_clipped_highlights_and_nothing_under_the_knee()
     };
 
     let display = FullTarget::DisplayLinear(OutputTarget::Viewport);
-    let (lo, mid, hi) = (render(0.0, display), render(0.5, display), render(1.0, display));
+    let (lo, mid, hi) = (
+        render(0.0, display),
+        render(0.5, display),
+        render(1.0, display),
+    );
     let w = lo.width;
     let under = (0..w).take_while(|&x| balanced_at(x, w) < 0.45).count();
     assert!(under > w / 5, "{under} columns under the knee");
@@ -179,20 +183,36 @@ fn the_highlight_range_moves_the_clipped_highlights_and_nothing_under_the_knee()
         }
     }
     // The clipped band: brighter with each step of the range.
-    let clipped = (0..w).find(|&x| balanced_at(x, w) > 1.1).expect("a clipped band");
-    let (a, b, c) = (band(&lo, clipped, w), band(&mid, clipped, w), band(&hi, clipped, w));
+    let clipped = (0..w)
+        .find(|&x| balanced_at(x, w) > 1.1)
+        .expect("a clipped band");
+    let (a, b, c) = (
+        band(&lo, clipped, w),
+        band(&mid, clipped, w),
+        band(&hi, clipped, w),
+    );
     eprintln!("clipped band, display-linear: 0 {a:?}, 0.5 {b:?}, 1 {c:?}");
     for ch in 0..3 {
-        assert!(a[ch] + 0.05 < b[ch] && b[ch] + 0.01 < c[ch], "channel {ch}: {a:?} {b:?} {c:?}");
+        assert!(
+            a[ch] + 0.05 < b[ch] && b[ch] + 0.01 < c[ch],
+            "channel {ch}: {a:?} {b:?} {c:?}"
+        );
     }
 
     // The DNG's pixels: scene-linear AWG4, the range in them.
-    let (dng_lo, dng_hi) = (render(0.0, FullTarget::DngLinearAwg4), render(1.0, FullTarget::DngLinearAwg4));
-    let max_of = |img: &ym_core::pipeline::FullImage| img.rgb.iter().copied().fold(0.0f32, f32::max);
+    let (dng_lo, dng_hi) = (
+        render(0.0, FullTarget::DngLinearAwg4),
+        render(1.0, FullTarget::DngLinearAwg4),
+    );
+    let max_of =
+        |img: &ym_core::pipeline::FullImage| img.rgb.iter().copied().fold(0.0f32, f32::max);
     let cap = 0.18 * HIGHLIGHT_CAP_STOPS.exp2();
     let (m_lo, m_hi) = (f64::from(max_of(&dng_lo)), f64::from(max_of(&dng_hi)));
     eprintln!("DNG maximum: {m_lo} at 0, {m_hi} at 1 (the ALEXA clip {cap})");
-    assert!(m_lo < 4.0, "at 0 the clip stays where it was recorded (2): {m_lo}");
+    assert!(
+        m_lo < 4.0,
+        "at 0 the clip stays where it was recorded (2): {m_lo}"
+    );
     assert!(
         m_hi > 0.9 * cap && m_hi < cap * (1.0 + 1e-3),
         "at 1 the clip lands on the ALEXA clip {cap}: {m_hi}"

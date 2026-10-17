@@ -4,9 +4,9 @@
 //   camera RGB --M--> C6 linear AWG4 --C7--> --C8--> LogC4 --C9--> --C9b warp--> --C10 look-->
 //   --C11 curves--> --C12 ACES 2 or ARRI display LUT--> display linear --C13--> code values
 //
-// C12 on the ACES 2 path starts with the white lift (docs/02, step 1b): a scene-linear gain on the tones
-// above +1 stop (`white_lift_gain`, amount and 1 / span in `CU.fl.z` and `CU.fl.w`, 0 for none and for a
-// display LUT), then the placement and ACES 2. The DNG stop (6) carries it too.
+// C7 is the highlight range (docs/02 C7: a gain on the luma's stops over grey above a knee, up to the
+// ALEXA clip; `c7_range`, its numbers in `CU.tone` and `CU.fl.z`) and then the low-light toe. C12 on the
+// ACES 2 path is the placement (folded into AWG4_TO_AP0) and ACES 2; the DNG stop (6) is C11 decoded.
 //
 // `mode.x` selects the stop (so each stage can be checked against `ColorChain::trace`), `mode.y` the
 // output format. One thread handles two horizontally adjacent pixels. All maths is f32; image
@@ -44,14 +44,14 @@ struct ChainU {
     m0: vec4<f32>,       // fused C1-C6 matrix rows
     m1: vec4<f32>,
     m2: vec4<f32>,
-    tone: vec4<f32>,     // knee, span, tau
+    tone: vec4<f32>,     // C7: x the range's knee, y the Sony clip (stops over grey; 1e30: none), z the toe's tau, w the range's expansion (stops; 0: none)
     grade0: vec4<f32>,   // contrast gain, brightness, saturation gain
     zone_amt: vec4<f32>, // shadows, highlights, black, white (each / 100)
     zone_ctr: vec4<f32>, // their centres (LogC4 codes)
     bal0: vec4<f32>,     // (a, b) shadows, (a, b) midtones
     bal1: vec4<f32>,     // (a, b) highlights
     bal_ctr: vec4<f32>,  // zone centres
-    fl: vec4<f32>,       // x: look intensity fraction, y: display LUT gamma, z: white lift amount (stops, 0: none), w: 1 / the lift's ramp span (1 / stops)
+    fl: vec4<f32>,       // x: look intensity fraction, y: display LUT gamma, z: the highlight range's cap (stops over grey; 1e30: none), w: unused (0)
     cdl_slope: vec4<f32>,  // w: saturation
     cdl_offset: vec4<f32>,
     cdl_power: vec4<f32>,
@@ -83,31 +83,57 @@ struct ChainU {
 
 //@ACCESSORS img ro
 
-// ---- C7: highlight roll-off and low-light toe ----------------------------------------------------
+// ---- C7: highlight range and low-light toe ---------------------------------------------------------
 
+// The highlight range of ym_color::tone::HighlightRange (docs/02 C7). With s the stops over grey of the
+// luma (Rec.709 weights on the AWG4 triple), s' = s + E * phi(u) above the knee, u = (s - knee) / (clip -
+// knee), phi = u^2 up to the clip and 2u - 1 above it, then s' = min(s', cap); the pixel is multiplied by
+// 2^(s' - s). Where s' is s (below the knee and the cap, or no range at all) the pixel is returned
+// untouched, bit for bit. The host writes the knee and the clip into `CU.tone.xy`, the expansion E into
+// `CU.tone.w` (0: none) and the cap into `CU.fl.z`; no range is a knee and a cap of 1e30 (HIGHLIGHT_OFF_STOPS,
+// finite for Metal's fast-math, K8). Every value here is finite: the camera samples are sanitised to at
+// most 1e30, so with any exposure the controls allow the luma stays under about 1e32, its stops under
+// about 110 and the gain at the cap over about 2^-102, a normal f32. The two branch points (the knee and
+// u = 1) are where the map is C1, so a rounding that moves a pixel across one moves its value by nothing
+// measurable.
+fn c7_range(rgb: vec3<f32>) -> vec3<f32> {
+    let y = dot(LUMA_709, rgb);
+    if (is_nan_f(y) || y <= 0.0) {
+        return rgb;
+    }
+    let s = log2(y / HIGHLIGHT_GREY);
+    let knee = CU.tone.x;
+    let e = CU.tone.w;
+    var sp = s;
+    if (e > 0.0 && s > knee) {
+        // E > 0 only when the span is at least HIGHLIGHT_MIN_SPAN_STOPS (0.25), so the division is safe.
+        let u = (s - knee) / (CU.tone.y - knee);
+        sp = s + e * select(2.0 * u - 1.0, u * u, u <= 1.0);
+    }
+    sp = min(sp, CU.fl.z);
+    if (sp == s) {
+        return rgb;
+    }
+    return rgb * exp2(sp - s);
+}
+
+// C7: the highlight range, then the toe on the gained pixel's norm n = max(R, G, B):
+// n^2 / (n^2 + tau^2) as 1 / (1 + (tau / n)^2), 0 for n = 0; tau = 0 returns the range's output untouched.
+// tau / n is limited to 1e18 in size so that its square stays finite (K8): the scale is then at most
+// 1e-36, which is the CPU's 0 to every digit that reaches a picture.
 fn c7_tone(rgb: vec3<f32>) -> vec3<f32> {
-    let n = max(rgb.x, max(rgb.y, rgb.z));
-    let k = CU.tone.x;
-    let span = CU.tone.y;
+    let g = c7_range(rgb);
     let tau = CU.tone.z;
-    var m = n;
-    if (n > k) {
-        m = k + span * tanh(min((n - k) / span, 20.0));
+    if (tau == 0.0) {
+        return g;
     }
-    var toe = 1.0;
-    if (tau != 0.0) {
-        if (m == 0.0) {
-            toe = 0.0;
-        } else {
-            let r = tau / m;
-            toe = 1.0 / (1.0 + r * r);
-        }
-    }
-    var s = toe;
+    let n = max(g.x, max(g.y, g.z));
+    var toe = 0.0;
     if (n != 0.0) {
-        s = (m / n) * toe;
+        let r = clamp(tau / n, -1.0e18, 1.0e18);
+        toe = 1.0 / (1.0 + r * r);
     }
-    return rgb * s;
+    return g * toe;
 }
 
 // ---- C9: primary grade ---------------------------------------------------------------------------
@@ -415,30 +441,6 @@ fn c11_curves(v: vec3<f32>) -> vec3<f32> {
     return o;
 }
 
-// ---- C12 step 1b: the white lift ------------------------------------------------------------------------
-
-// The scene-linear gain of ym_color::exposure::white::WhiteLift: 2^(A * smoothstep((s - knee) / span)) with s the
-// stops over middle grey of the luma (Rec.709 weights on the AWG4 triple). Exactly 1 up to the knee. Only
-// called when the amount is not 0 (`CU.fl.z`), which the host sets for the ACES 2 path alone.
-fn white_lift_gain(lin: vec3<f32>) -> f32 {
-    let y = dot(LUMA_709, lin);
-    if (is_nan_f(y) || y <= 0.0) {
-        return 1.0;
-    }
-    let stops = log2(y * (1.0 / WHITE_LIFT_GREY));
-    let t = clamp((stops - WHITE_LIFT_KNEE) * CU.fl.w, 0.0, 1.0);
-    return exp2(CU.fl.z * (t * t * (3.0 - 2.0 * t)));
-}
-
-// C11 decoded to linear AWG4 and lifted: the scene values ACES 2 takes in (before the placement).
-fn lifted_scene(v: vec3<f32>) -> vec3<f32> {
-    let lin = logc4_decode3(v);
-    if (CU.fl.z == 0.0) {
-        return lin;
-    }
-    return lin * white_lift_gain(lin);
-}
-
 // ---- C12: display transform --------------------------------------------------------------------------
 
 fn srgb_decode(e: f32) -> f32 {
@@ -465,7 +467,7 @@ fn disp_decode(code: f32) -> f32 {
 
 fn display_ours(v: vec3<f32>) -> vec3<f32> {
     if (CU.flags.w == 0u) {
-        let ap0 = mv3(AWG4_TO_AP0_0, AWG4_TO_AP0_1, AWG4_TO_AP0_2, lifted_scene(v));
+        let ap0 = mv3(AWG4_TO_AP0_0, AWG4_TO_AP0_1, AWG4_TO_AP0_2, logc4_decode3(v));
         return aces2_display_linear(ap0);
     }
     var input = v;
@@ -583,12 +585,9 @@ fn run_pixel(cam_in: vec3<f32>) -> vec3<f32> {
         return c11;
     }
     if (stop == 6u) {
-        // The DNG's pixels: C11 decoded, with the white lift when C12 is our ACES 2 (the host sets
-        // the amount only then); a look with its own display rendering has its own highlights.
-        if (CU.flags.z == 2u && CU.fl.x > 0.0) {
-            return logc4_decode3(c11);
-        }
-        return lifted_scene(c11);
+        // The DNG's pixels: C11 decoded to linear AWG4 (the inverse of a display rendering that is not
+        // ours is the CPU's alone, ColorChain::apply_dng_pixel).
+        return logc4_decode3(c11);
     }
     let c12 = c12_display(c11);
     if (stop == 7u) {

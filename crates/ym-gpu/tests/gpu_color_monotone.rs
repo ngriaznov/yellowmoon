@@ -1,5 +1,5 @@
-//! M1-09 monotonicity on the GPU: C7 (roll-off and toe) and every C9 control behave as the CPU
-//! reference promises (`docs/02` sections C7 and C9, `ym-color` tests `tone.rs` and `grade.rs`).
+//! M1-09 monotonicity on the GPU: C7 (the highlight range and the toe) and every C9 control behave as
+//! the CPU reference promises (`docs/02` sections C7 and C9, `ym-color` tests `tone.rs` and `grade.rs`).
 //!
 //! Runs on the f32-storage device (strict ramps need unrounded inputs) and, for the C9 control
 //! sweeps, on every device.
@@ -12,7 +12,7 @@ use ym_color::consts::LOGC4_GRAY;
 use ym_color::consts::linalg::IDENTITY;
 use ym_color::display::{ChainParams, ColorChain};
 use ym_color::grade::{ColorBalance, GradeParams};
-use ym_color::tone::ToneParams;
+use ym_color::tone::{HIGHLIGHT_CAP_STOPS, ToneParams, luma};
 use ym_gpu::cpu::RgbImage;
 use ym_gpu::device::StorageMode;
 use ym_gpu::kernels::PixelData;
@@ -45,42 +45,53 @@ fn f32_device() -> Option<&'static TestGpu> {
 }
 
 #[test]
-fn the_roll_off_and_toe_never_decrease_with_the_input() {
+fn the_highlight_range_and_toe_never_decrease_with_the_input() {
     let Some(dev) = f32_device() else { return };
-    // A grey ramp from slightly negative to 60 (log spaced above 0), and one channel ramped while
-    // the others stay fixed.
+    // A grey ramp from slightly negative to 60 (log spaced above 0), and one channel ramped while the
+    // others stay fixed.
     let mut ramp: Vec<f32> = vec![-0.01, -0.001, 0.0];
-    // 4000 log-spaced points from 1e-5 to 60 (2^22.5 apart): the ramp must run through the knee of
-    // every parameter set below (the knee is at most `clip * 2^-0.5`, 11.3 for clip 16), or the
-    // shoulder's tanh would go untested.
+    // 4000 log-spaced points from 1e-5 to 60 (2^22.5 apart): the ramp runs through the knee (at least
+    // +1 stop, 0.36), the Sony clip (1 to 6 stops over grey below) and the ALEXA cap (7.64 stops, 35.9)
+    // of every parameter set, and through the toe's noise floors.
     ramp.extend((0..4000).map(|i| 1e-5 * (i as f32 * 0.005_630_54).exp2()));
     ramp.retain(|v| *v <= 60.0);
     ramp.sort_by(|a, b| a.partial_cmp(b).expect("finite"));
     assert!(
-        ramp.last().is_some_and(|&top| top > 50.0),
-        "the ramp must reach the highlights: top {:?}",
+        ramp.last().is_some_and(|&top| f64::from(top) > 0.18 * HIGHLIGHT_CAP_STOPS.exp2() * 1.5),
+        "the ramp must pass the cap: top {:?}",
         ramp.last()
     );
     let grey: Vec<[f32; 3]> = ramp.iter().map(|&v| [v, v, v]).collect();
     let chroma: Vec<[f32; 3]> = ramp.iter().map(|&v| [v, 0.4, 0.05]).collect();
     let mut checked = 0;
+    let (mut ranged, mut capped) = (0usize, 0usize);
     for highlights in [0.0, 0.3, 0.5, 1.0] {
         for low_light in [0.0, 0.25, 0.5, 1.0] {
-            for clip in [1.0, 16.0] {
+            for clip_stops in [1.0, 1.6, 2.0, 3.58, 6.0] {
                 for floor in [0.0, 0.002, 0.02] {
+                    let clip = 0.18 * f64::exp2(clip_stops);
                     let tone = ToneParams::new(highlights, low_light, clip, floor).expect("tone");
+                    let range = tone.range();
                     let params = ChainParams::new(IDENTITY, tone);
                     for (label, px) in [("grey", &grey), ("one channel", &chroma)] {
                         let out = run(dev, &params, px, Stop::C7);
                         for i in 1..out.len() {
+                            // Where the CPU holds the luma at the cap a grey is flat, and the f32 log2 and
+                            // exp2 of the gain wiggle by a few 1e-7; everywhere else the output rises by
+                            // at least the input's step (0.4 %), so only the last bits may wiggle.
+                            let y = luma(px[i].map(f64::from));
+                            let s = (y / 0.18).log2();
+                            let at_cap = y > 0.0 && range.stops(s) >= HIGHLIGHT_CAP_STOPS - 1e-9;
+                            ranged += usize::from(y > 0.0 && range.gain(y) > 1.0);
+                            capped += usize::from(at_cap);
+                            let rel = if at_cap { 4e-6 } else { 6e-7 };
                             for (ch, (&a, &b)) in out[i - 1].iter().zip(&out[i]).enumerate() {
                                 if label == "one channel" && ch != 0 {
                                     continue;
                                 }
-                                // f32 rounding of the scale may wiggle the last bits.
                                 assert!(
-                                    b >= a - 6e-7 * a.abs().max(1e-3),
-                                    "{label} h={highlights} l={low_light} clip={clip} floor={floor}: output fell from {a} to {b} at input {:?}",
+                                    b >= a - rel * a.abs().max(1e-3),
+                                    "{label} h={highlights} l={low_light} clip={clip_stops} floor={floor}: output fell from {a} to {b} at input {:?}",
                                     px[i]
                                 );
                             }
@@ -91,10 +102,40 @@ fn the_roll_off_and_toe_never_decrease_with_the_input() {
             }
         }
     }
+    assert!(ranged > 10_000 && capped > 10_000, "{ranged} ranged, {capped} capped samples");
     eprintln!(
-        "C7 monotone over {checked} parameter sets x {} ramp points",
+        "C7 monotone over {checked} parameter sets x {} ramp points ({ranged} samples in the range, {capped} at the cap)",
         grey.len()
     );
+}
+
+/// The ALEXA cap on the device: a grey ramp far past it comes out at `0.18 * 2^7.64` (35.9) to f32
+/// precision, and nothing comes out above it.
+#[test]
+fn nothing_leaves_the_device_above_the_alexa_clip() {
+    let Some(dev) = f32_device() else { return };
+    let cap = (0.18 * HIGHLIGHT_CAP_STOPS.exp2()) as f32;
+    let px: Vec<[f32; 3]> = (0..200)
+        .map(|i| {
+            let v = 0.18 * (7.7 + 0.25 * f64::from(i)).exp2();
+            [v as f32, (0.6 * v) as f32, (0.2 * v) as f32]
+        })
+        .collect();
+    for r in [0.0, 0.5, 1.0] {
+        for clip_stops in [1.0, 3.58, 9.0] {
+            let tone = ToneParams::new(r, 0.0, 0.18 * f64::exp2(clip_stops), 0.0).expect("tone");
+            let out = run(dev, &ChainParams::new(IDENTITY, tone), &px, Stop::C7);
+            for (o, p) in out.iter().zip(&px) {
+                let y = luma(o.map(f64::from));
+                assert!(
+                    (y / f64::from(cap) - 1.0).abs() < 4e-6,
+                    "r {r} clip {clip_stops}: {p:?} -> {o:?} (luma {y}, cap {cap})"
+                );
+                // The ratios are the input's.
+                assert!((f64::from(o[1] / o[0]) - 0.6).abs() < 1e-6);
+            }
+        }
+    }
 }
 
 fn grade_chain(g: GradeParams) -> ChainParams {
