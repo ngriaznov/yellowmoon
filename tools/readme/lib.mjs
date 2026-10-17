@@ -5,10 +5,15 @@ import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpat
 import { basename, dirname, extname, join, relative, resolve, sep } from "node:path";
 
 /** Every state the tool can capture, in the order it captures them. `light` needs a second photo to be worth it. */
-export const ALL_STATES = ["start", "look", "light", "colour", "detail", "export"];
+export const ALL_STATES = ["start", "look", "light", "colour", "colour-warp", "detail", "export"];
 /** The PNG each state is written to (the name of the state is the name of the file). */
-export const FILE_OF_STATE = { start: "start-ready", look: "photo-look", light: "photo-light", colour: "photo-colour", detail: "photo-detail", export: "photo-export" };
-const PICK_KEYS = ["look", "light", "colour", "detail", "export"];
+export const FILE_OF_STATE = { start: "start-ready", look: "photo-look", light: "photo-light", colour: "photo-colour", "colour-warp": "photo-colour-warp", detail: "photo-detail", export: "photo-export" };
+const PICK_KEYS = ["look", "light", "colour", "colour-warp", "detail", "export"];
+
+/** The most pins `--warp` may add (the card's own limit, `WARP_MAX_PINS`). */
+export const WARP_MAX_PINS = 16;
+/** How far `--warp` may move a pin on the chroma plane, either way on each axis (the plane's edge, `WARP_PLANE_EXTENT`). */
+export const WARP_MOVE_LIMIT = 0.3;
 
 /** The ways a capture can be reduced to an 8-bit PNG (`--palette`): one palette over the whole picture, or one per kind of region. */
 export const PALETTES = ["whole", "regions"];
@@ -29,6 +34,7 @@ Runs the real app (the debug Tauri shell, under Xvfb) on your photos and writes 
   photo-look    a photo open, Look tab
   photo-light   a second photo, Light tab
   photo-colour  the most colourful photo, Colour tab (the white balance card)
+  photo-colour-warp  the same photo, Colour tab scrolled to the Colour warp card (with the pins of --warp, if any)
   photo-detail  a photo, Detail tab
   photo-export  the Export panel over a photo
 
@@ -43,7 +49,12 @@ Options
                        ("--pick look=first,light=2,colour=colourful,detail=DSC04204,export=last").
                        Values: first, second, last, colourful, a number (1 is the first in the filmstrip),
                        or a file name (or part of one). Default: first for look, detail and export; the second
-                       photo for light; the most colourful for colour.
+                       photo for light; the most colourful for colour; colour-warp takes the photo of colour.
+  --warp <pins>        pins for photo-colour-warp, added the way a person does (Pick colour, a click on the photo, then the
+                       arrow keys): "x,y:da,db; x,y:da,db". x,y is the spot of the photo cell that is clicked, as a share of
+                       its width and height (0 to 1); da,db is how far the pin is moved on the chroma plane (right and up,
+                       at most ${WARP_MOVE_LIMIT} either way; the plane is 0.6 across). The pins are removed again after the picture.
+                       Default: none (the card with the photo's colours on the plane).
   --states <list>      comma-separated, from: ${ALL_STATES.join(", ")} (default: all; light is left out for one photo)
   --scale <1|2>        device scale of the screen (default 2, like a Retina display; the window is 1440 x 900 CSS pixels)
   --palette <mode>     how a capture is cut down to an 8-bit PNG (default whole):
@@ -77,7 +88,7 @@ export class UsageError extends Error {}
  * `--photos` takes every following word up to the next flag, so `--photos a.ARW b.ARW --out x` works as well as `--photos a --photos b`.
  */
 export function parseArgs(argv) {
-  const o = { photos: [], out: null, name: null, exportTo: null, pick: "", states: null, scale: 2, palette: "whole", maxKb: 600, minColours: null, dither: null, oneX: "auto", optimise: true, build: false, dist: null, binary: null, data: null, stableMs: 1500, timeoutMin: 20, keepRaw: false, help: false };
+  const o = { photos: [], out: null, name: null, exportTo: null, pick: "", states: null, scale: 2, palette: "whole", maxKb: 600, minColours: null, dither: null, oneX: "auto", optimise: true, build: false, dist: null, binary: null, data: null, stableMs: 1500, timeoutMin: 20, keepRaw: false, warp: [], help: false };
   const value = (flag, i) => {
     const v = argv[i + 1];
     if (v === undefined || (v.startsWith("--") && v.length > 2)) throw new UsageError(`${flag} needs a value`);
@@ -130,6 +141,9 @@ export function parseArgs(argv) {
         break;
       case "--states":
         o.states = next().split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
+        break;
+      case "--warp":
+        o.warp = parseWarp(next());
         break;
       case "--scale":
         o.scale = number(flag, next(), 1);
@@ -214,11 +228,37 @@ export function parsePick(text) {
     let state = part.slice(0, at).trim().toLowerCase();
     const photo = part.slice(at + 1).trim();
     if (state === "color") state = "colour";
+    if (state === "color-warp") state = "colour-warp";
     if (!PICK_KEYS.includes(state)) throw new UsageError(`--pick: ${state} takes no photo; the states with a photo are ${PICK_KEYS.join(", ")}`);
     if (!photo) throw new UsageError(`--pick: ${state}= needs a photo`);
     pick[state] = photo;
   }
   return pick;
+}
+
+/**
+ * Reads `--warp`: "x,y:da,db; x,y:da,db", one pin each. Returns `[{ at: [x, y], move: [da, db] }]`. `x,y` is a spot of the photo cell as
+ * a share of its width and height; `da,db` moves the pin on the chroma plane (`:da,db` may be left out: the pin is added and not moved).
+ * Throws `UsageError`.
+ */
+export function parseWarp(text) {
+  const pins = [];
+  for (const part of String(text || "").split(";").map((s) => s.trim()).filter(Boolean)) {
+    const [spot, move = "0,0", extra] = part.split(":").map((s) => s.trim());
+    const pair = (words, what) => {
+      const n = words.split(",").map((w) => (w.trim() === "" ? NaN : Number(w)));
+      if (n.length !== 2 || !n.every(Number.isFinite)) throw new UsageError(`--warp: ${what} is two numbers, not "${words}" (in "${part}")`);
+      return n;
+    };
+    if (extra !== undefined) throw new UsageError(`--warp: one colon per pin, between the spot and the move (in "${part}")`);
+    const at = pair(spot, "the spot x,y");
+    const by = pair(move, "the move da,db");
+    if (at.some((v) => v < 0 || v > 1)) throw new UsageError(`--warp: the spot is a share of the photo cell, from 0 to 1 (in "${part}")`);
+    if (by.some((v) => Math.abs(v) > WARP_MOVE_LIMIT)) throw new UsageError(`--warp: a move is at most ${WARP_MOVE_LIMIT} either way (in "${part}")`);
+    pins.push({ at, move: by });
+  }
+  if (pins.length > WARP_MAX_PINS) throw new UsageError(`--warp: at most ${WARP_MAX_PINS} pins`);
+  return pins;
 }
 
 /** The states to capture, in order: `requested` (or all), without `light` for a single photo unless it was asked for by name. */

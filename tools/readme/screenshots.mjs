@@ -102,6 +102,7 @@ const config = {
   paths: drop.paths,
   states,
   pick,
+  warp: options.warp,
   cssWidth,
   cssHeight,
   exportShown: options.exportTo ?? `~/Pictures/${drop.folder} export`,

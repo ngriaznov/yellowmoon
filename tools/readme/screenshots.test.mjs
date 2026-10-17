@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { listen, serveFrontend } from "../../e2e/real/host.mjs";
-import { ALL_STATES, PALETTES, UsageError, chooseStates, cssColours, findPhotos, findTools, formatSize, halve, licenceProblem, paletteDefaults, parseArgs, parsePick, planDrop, pngSize, realPlace, scaleRects, shrinkPng, shrinkShot, spread, topColours, USAGE } from "./lib.mjs";
+import { ALL_STATES, FILE_OF_STATE, PALETTES, UsageError, WARP_MAX_PINS, chooseStates, cssColours, findPhotos, findTools, formatSize, halve, licenceProblem, paletteDefaults, parseArgs, parsePick, parseWarp, planDrop, pngSize, realPlace, scaleRects, shrinkPng, shrinkShot, spread, topColours, USAGE } from "./lib.mjs";
 
 let work;
 beforeAll(() => {
@@ -80,6 +80,7 @@ describe("parsePick and chooseStates", () => {
     expect(parsePick("DSC04204")).toEqual({ all: "DSC04204" });
     expect(parsePick("look=first, colour=colourful ,export=3")).toEqual({ look: "first", colour: "colourful", export: "3" });
     expect(parsePick("color=2")).toEqual({ colour: "2" });
+    expect(parsePick("colour-warp=last, color-warp=2")).toEqual({ "colour-warp": "2" });
     expect(parsePick("")).toEqual({});
   });
 
@@ -88,10 +89,43 @@ describe("parsePick and chooseStates", () => {
     expect(() => parsePick("look=")).toThrow(/needs a photo/);
   });
 
+  it("captures the Colour warp card after the Colour tab, into a file of its own", () => {
+    expect(ALL_STATES.indexOf("colour-warp")).toBe(ALL_STATES.indexOf("colour") + 1);
+    expect(FILE_OF_STATE["colour-warp"]).toBe("photo-colour-warp");
+    expect(Object.keys(FILE_OF_STATE).sort()).toEqual([...ALL_STATES].sort());
+    expect(chooseStates(["colour-warp"], 3)).toEqual(["colour-warp"]);
+    expect(parseArgs(["--photos", "p", "--out", "o", "--states", "colour,colour-warp"]).states).toEqual(["colour", "colour-warp"]);
+  });
+
   it("leaves out the Light tab for a single photo, unless it is asked for", () => {
     expect(chooseStates(null, 1)).toEqual(ALL_STATES.filter((s) => s !== "light"));
     expect(chooseStates(null, 3)).toEqual(ALL_STATES);
     expect(chooseStates(["export", "light"], 1)).toEqual(["light", "export"]);
+  });
+});
+
+describe("parseWarp", () => {
+  it("reads a spot of the photo and a move on the plane for each pin", () => {
+    expect(parseWarp("0.35,0.9:-0.014,0")).toEqual([{ at: [0.35, 0.9], move: [-0.014, 0] }]);
+    expect(parseWarp(" 0.1, 0.2 : 0.01 ,-0.02 ; 1,0 ")).toEqual([
+      { at: [0.1, 0.2], move: [0.01, -0.02] },
+      { at: [1, 0], move: [0, 0] },
+    ]);
+    expect(parseWarp("")).toEqual([]);
+    expect(parseArgs(["--photos", "p", "--out", "o"]).warp).toEqual([]);
+    expect(parseArgs(["--photos", "p", "--out", "o", "--warp", "0.5,0.5:0.02,0.01"]).warp).toEqual([{ at: [0.5, 0.5], move: [0.02, 0.01] }]);
+  });
+
+  it("refuses a spot off the photo cell, a move off the plane, a malformed pin and too many pins", () => {
+    expect(() => parseWarp("1.2,0.5")).toThrow(/share of the photo cell/);
+    expect(() => parseWarp("0.5,-0.1")).toThrow(/share of the photo cell/);
+    expect(() => parseWarp("0.5,0.5:0.31,0")).toThrow(/at most 0.3/);
+    expect(() => parseWarp("0.5:0.01,0")).toThrow(/two numbers/);
+    expect(() => parseWarp("0.5,0.5:0.01")).toThrow(/two numbers/);
+    expect(() => parseWarp("0.5,0.5:a,0")).toThrow(/two numbers/);
+    expect(() => parseWarp("0.5,0.5:0,0:0,0")).toThrow(/one colon/);
+    expect(() => parseWarp(Array(WARP_MAX_PINS + 1).fill("0.5,0.5").join(";"))).toThrow(/at most 16 pins/);
+    expect(() => parseWarp("1.2,0.5")).toThrow(UsageError);
   });
 });
 

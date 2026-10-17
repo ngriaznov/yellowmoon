@@ -17,6 +17,7 @@ It reuses the machinery of `npm run e2e:shell` (`e2e/real/host.mjs`: the server 
 | `photo-look.png` | a photo open, Look tab (Automatic card, intensity, look tiles) | the first |
 | `photo-light.png` | Light tab (exposure, histogram, highlights and shadows); left out for a single photo | the second |
 | `photo-colour.png` | Colour tab (white balance card, colour balance wheels) | the most colourful |
+| `photo-colour-warp.png` | Colour tab scrolled to the Colour warp card: the photo's colours on the chroma plane, and the pins of `--warp` if any (removed again afterwards) | that of `photo-colour` |
 | `photo-detail.png` | Detail tab (sharpening, noise reduction) | the first |
 | `photo-export.png` | Export panel over a photo | the first |
 | `*-1x.png` | the same at half size, written when it is less than 60 % of the 2x file (always, with `--one-x always`) | |
@@ -43,13 +44,24 @@ The "most colourful" photo is worked out from the thumbnails of the filmstrip (H
 --pick DSC04204                 one photo for every state
 ```
 
-A pick is `first`, `second`, `last`, `colourful`, a number (1 is the first in the filmstrip) or a file name, or part of one. Landscape photos with a lot of sky and colour make the best pictures: a portrait photo is letterboxed on the paper-white cell, as the app draws it.
+A pick is `first`, `second`, `last`, `colourful`, a number (1 is the first in the filmstrip) or a file name, or part of one. `colour-warp` shows the photo of `colour` unless it is given one of its own (`--pick colour-warp=2`). Landscape photos with a lot of sky and colour make the best pictures: a portrait photo is letterboxed on the paper-white cell, as the app draws it.
 
 `--export-to "~/Pictures/Lisbon export"` is the folder the Export panel says it saves to. The default is that sentence with the folder's name, as in the mockup; the real default is next to the photos and would put your own paths on the picture. Nothing is exported either way.
 
 Other options (`npm run readme:screenshots -- --help`): `--states`, `--scale 1`, `--palette`, `--max-kb`, `--min-colours`, `--dither`, `--one-x`, `--no-optimise`, `--keep-raw`, `--dist`, `--binary`, `--data`, `--stable-ms`, `--timeout-min`.
 
 The debug app reads the repository's `data/` folder at run time. When the app was built before a change to `data/` (the app then refuses every photo with an "unknown field" error), or `data/` is being edited, give `--data` a copy: `git archive HEAD data | tar -x -C /tmp/snapshot` and `--data /tmp/snapshot/data`.
+
+## Pins on the Colour warp card
+
+```
+--warp "0.35,0.9:-0.014,0"                     one pin: the colour at 35 % across and 90 % down the photo, moved left on the plane
+--warp "0.35,0.9:-0.014,0; 0.4,0.43:0.01,0"     two pins
+```
+
+Without `--warp` the card shows the photo's colours on the plane and no pins. With it, each pin is added the way a person adds one: Pick colour on, a click on the photo at `x,y` (a share of the photo cell's width and height; the photo fills the cell at Fit for a landscape photo), then the arrow keys on the new pin until it has moved by `da,db` on the chroma plane (right and up; one key press is 0.002, with Shift 0.02). The log prints each pin as the core holds it. After the picture the card's Reset removes the pins, so the states after it show the photo as it was.
+
+The plane is 0.6 across and a photo's colours usually sit within 0.05 of its middle, so moves are small: 0.01 to 0.02 is a visible change. A pin on a colour close to grey moves everything near grey with it (the first try of the README picture turned a dry field pink); try a move with `ym render --settings` (a `color_warp` document) before taking the picture. The README picture is one pin on the grass of A1M01749, moved 0.014 to the left: greener, cooler grass, with the sky and the dry field left as they were.
 
 ## Size
 
@@ -71,7 +83,7 @@ On the glass interface this mode comes out wrong, which is why `whole` is the de
 
 ## What counts as "final"
 
-A picture is taken only when, on the Photos screen: a frame of the cell's exact size is drawn, no "Still developing" note covers the photo, every thumbnail of the filmstrip is drawn, every look tile on the Look tab shows the open photo (the address of a tile names the photo it was made from), the Light tab's histogram has its curves, the Export panel has its size estimate, and the page has not changed for 1.5 s. After the picture it looks again, and takes it again if anything moved. Before each photo picture the photo is drawn once more (Before on, then off), so the render time in the header is a warm one.
+A picture is taken only when, on the Photos screen: a frame of the cell's exact size is drawn, no "Still developing" note covers the photo, every thumbnail of the filmstrip is drawn, every look tile on the Look tab shows the open photo (the address of a tile names the photo it was made from), the Light tab's histogram has its curves, the Colour warp plane has the photo's colours, the Export panel has its size estimate, and the page has not changed for 1.5 s. After the picture it looks again, and takes it again if anything moved. Before each photo picture the photo is drawn once more (Before on, then off), so the render time in the header is a warm one. After the pins of `--warp` it is drawn twice: the first time can take the late frame of the last key press for its own, and the header then shows that frame's cold time.
 
 ## Updating the README
 

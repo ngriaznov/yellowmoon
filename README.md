@@ -11,7 +11,9 @@ Yellowmoon is a free, open-source raw processor for macOS. Drop in ARW files fro
 | | |
 |---|---|
 | ![Light tab: exposure, histogram, highlights and shadows](docs/images/readme/photo-light.png) | ![Colour tab: white balance and colour balance](docs/images/readme/photo-colour.png) |
-| ![Detail tab: sharpening and noise reduction](docs/images/readme/photo-detail.png) | ![Export panel](docs/images/readme/photo-export.png) |
+| ![Colour warp: one pin on the grass, moved towards green](docs/images/readme/photo-colour-warp.png) | ![Detail tab: sharpening and noise reduction](docs/images/readme/photo-detail.png) |
+
+![Export panel](docs/images/readme/photo-export.png)
 
 The screenshots are of the development build on Linux (`tools/readme`), in the dark glass interface; on a Mac the photo is drawn by a native Metal view.
 

@@ -2,8 +2,9 @@
 // Plain browser JavaScript, no imports; the helpers come from e2e/real/kit.js.
 //
 // It opens the photos the way a person does (a drop on the window), waits until everything on screen is final, and asks the runner for a
-// picture of the screen in each state: the Start screen with the photos ready, the Look, Light, Colour and Detail tabs, and the Export
-// panel. A state is never captured while a frame, a thumbnail, a look tile or the histogram is still on its way.
+// picture of the screen in each state: the Start screen with the photos ready, the Look, Light, Colour and Detail tabs, the Colour tab's
+// Colour warp card, and the Export panel. A state is never captured while a frame, a thumbnail, a look tile, the histogram or the colours
+// of the warp plane are still on their way.
 (function () {
   "use strict";
   const config = window.__SMOKE__;
@@ -11,6 +12,12 @@
 
   /** The tool tabs by the name of a state: the key that picks the tab (⌘1 to ⌘4) and the words of its title block. */
   const TABS = { look: { key: "1", title: "Look" }, light: { key: "2", title: "Light" }, colour: { key: "3", title: "Colour" }, detail: { key: "4", title: "Detail" } };
+  /** The tab each photo state shows. */
+  const STATE_TAB = { look: "look", light: "light", colour: "colour", "colour-warp": "colour", detail: "detail" };
+  /** How far one press of an arrow key moves a warp pin on the chroma plane (`WARP_KEY_STEP`); with Shift, ten times as far. */
+  const WARP_KEY_STEP = 0.002;
+  /** On while the Colour warp card is captured: the plane must show the photo's colours before the picture is taken. */
+  let warpShown = false;
   const note = (text) => send("note", { text });
   const device = (n) => Math.round(n * (window.devicePixelRatio || 1));
   const rectOf = (el) => {
@@ -102,6 +109,10 @@
         }
       } else if (activeTab() === "light") {
         if (!qa(".ym-histogram svg path").some((p) => (p.getAttribute("d") || "").length > 10)) why.push("the histogram is empty");
+      } else if (activeTab() === "colour" && warpShown) {
+        const plane = q(".ym-warp-plane");
+        if (!plane) why.push("no Colour warp card");
+        else if (Number(plane.getAttribute("data-scatter-points") || 0) === 0) why.push("the warp plane has no colours of the photo yet");
       }
     } else why.push("unexpected screen: " + screen);
     return { ready: why.length === 0, why: why.join("; "), signature: document.body.innerHTML + "|" + (frame() ? frame().src : "") };
@@ -252,6 +263,105 @@
     await waitFor(`the ${tab.title} tab`, () => activeTab() === tab.title.toLowerCase() && textOf(".ym-title-block__title").trim() === tab.title, 10000);
   }
 
+  // --- The Colour warp card -------------------------------------------------------------------------------------------------------
+
+  const warpCard = () => {
+    const plane = q(".ym-warp-plane");
+    return plane ? plane.closest("section") : null;
+  };
+  const warpPin = (n) => q(`.ym-warp-plane [aria-label="Pin ${n}"]`);
+  const pinCount = () => qa('.ym-warp-plane [aria-label^="Pin "]').length;
+  const buttonOf = (root, words) => qa("button", root).find((b) => b.textContent.trim() === words);
+
+  /** Scrolls the tool panel so the card's bottom is at the panel's bottom (or back to the top), at once. */
+  function scrollPanel(card, toCard) {
+    const panel = card.closest(".ym-tools__scroll");
+    if (!panel) throw new Error("the Colour warp card is not in the tool panel");
+    panel.scrollTop = toCard ? panel.scrollTop + card.getBoundingClientRect().bottom - panel.getBoundingClientRect().bottom : 0;
+  }
+
+  /**
+   * Presses an arrow key on a pin `times` times (Shift moves ten steps), each once the pin is drawn where the last one put it. A pin at the
+   * edge of the plane stops there: the presses end and the log says so (the check of the pins afterwards names the move it got).
+   */
+  async function nudge(n, keyName, times, shift) {
+    for (let i = 0; i < times; i++) {
+      const pin = warpPin(n);
+      const before = pin.innerHTML;
+      pin.focus({ preventScroll: true });
+      pin.dispatchEvent(new KeyboardEvent("keydown", { key: keyName, shiftKey: shift, bubbles: true, cancelable: true }));
+      const moved = await waitFor(`pin ${n} to move`, () => warpPin(n) && warpPin(n).innerHTML !== before, 5000).then(() => true, () => false);
+      if (!moved) {
+        note(`pin ${n} does not move further with ${keyName} (the edge of the plane?)`);
+        return;
+      }
+    }
+  }
+
+  /**
+   * Adds the pins of `--warp` the way a person does: Pick colour on, a click on the photo for each (the pin's source is the colour under
+   * the click), then the arrow keys on the pin to move it. Checks the pins the core holds afterwards.
+   */
+  async function addWarpPins(photo) {
+    const card = warpCard();
+    const pick = buttonOf(card, "Pick colour");
+    if (!pick) throw new Error("no Pick colour button on the Colour warp card");
+    if (pick.getAttribute("aria-pressed") !== "true") pick.click();
+    for (const [i, wanted] of config.warp.entries()) {
+      const n = i + 1;
+      const layer = await waitFor("the Pick colour layer over the photo", () => q('.ym-pick-layer[data-mode="color"]'), 10000);
+      const box = layer.getBoundingClientRect();
+      const count = pinCount();
+      layer.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, button: 0, clientX: box.left + wanted.at[0] * box.width, clientY: box.top + wanted.at[1] * box.height }));
+      await waitFor(`pin ${n} from the click at ${wanted.at.join(", ")} (on the paper around the photo, or the photo is not ready?)`, () => pinCount() === count + 1, 30000);
+      for (const [axis, plus, minus] of [[0, "ArrowRight", "ArrowLeft"], [1, "ArrowUp", "ArrowDown"]]) {
+        const steps = Math.round(Math.abs(wanted.move[axis]) / WARP_KEY_STEP);
+        const keyName = wanted.move[axis] >= 0 ? plus : minus;
+        await nudge(n, keyName, Math.floor(steps / 10), true);
+        await nudge(n, keyName, steps % 10, false);
+      }
+    }
+    if (pick.getAttribute("aria-pressed") === "true") pick.click();
+    await waitFor("Pick colour off", () => !q(".ym-pick-layer"), 10000);
+    // The pins as the core has them: each moved by what was asked (a pin stops at the edge of the plane).
+    await sleep(500);
+    const resolved = await invoke("get_settings", { photoId: photo.id });
+    const pins = resolved.settings.color_warp.pins;
+    note("warp pins: " + pins.map((p) => `[${p.source.map((v) => v.toFixed(3))}] -> [${p.target.map((v) => v.toFixed(3))}]`).join(", "));
+    if (pins.length !== config.warp.length) throw new Error(`the core has ${pins.length} warp pins, not ${config.warp.length}`);
+    config.warp.forEach((wanted, i) => {
+      const moved = [pins[i].target[0] - pins[i].source[0], pins[i].target[1] - pins[i].source[1]];
+      if (moved.some((v, axis) => Math.abs(v - wanted.move[axis]) > WARP_KEY_STEP / 2)) note(`pin ${i + 1} moved by ${moved.map((v) => v.toFixed(3)).join(", ")}, not ${wanted.move.join(", ")} (the edge of the plane?)`);
+    });
+  }
+
+  /** The Colour warp card in view, with the pins of `--warp`, captured; then the pins removed and the panel scrolled back to the top. */
+  async function shootWarp(photo) {
+    const card = await waitFor("the Colour warp card", warpCard, 10000);
+    scrollPanel(card, true);
+    warpShown = true;
+    try {
+      if (config.warp && config.warp.length) {
+        await addWarpPins(photo);
+        // Drawn again with the pins, twice: the first time can take the late frame of the last key for its own. After the second the frame
+        // on screen has every pin and the time in the header is a warm one, as for every photo picture.
+        await refresh();
+        await refresh();
+      }
+      scrollPanel(card, true);
+      await shoot("photo-colour-warp", `${photo.name}, Colour tab, Colour warp card` + (config.warp && config.warp.length ? ` with ${config.warp.length} pin(s)` : ""));
+    } finally {
+      warpShown = false;
+    }
+    if (pinCount() > 0) {
+      const reset = buttonOf(card, "Reset");
+      if (!reset) throw new Error("no Reset on the Colour warp card");
+      reset.click();
+      await waitFor("the warp pins removed", () => pinCount() === 0, 10000);
+    }
+    scrollPanel(card, false);
+  }
+
   /**
    * Makes the webview 1440 x 900 CSS pixels, the size of the mockups. The window the app opens is 1440 x 900 with its menu bar inside
    * (25 px on Linux), so the page is 875 px tall; the page can't resize the window (the capabilities do not allow it), so the runner is
@@ -312,11 +422,14 @@
     const photos = await readyPhotos();
     note("photos: " + photos.map((p) => p.file).join(", "));
     const wanted = { look: "first", light: photos.length > 1 ? "second" : "first", colour: "colourful", detail: "first", export: "first" };
+    const pick = config.pick || {};
+    // The Colour warp card shows the photo of the Colour tab unless it is given one of its own.
+    const pickOf = (state) => pick[state] || (state === "colour-warp" ? pick.colour : undefined) || pick.all || wanted[STATE_TAB[state] || state];
     // Each state in turn, the photo it asks for and the tab it shows; Export is last (it replaces the tool panel).
-    for (const state of ["look", "light", "colour", "detail", "export"]) {
+    for (const state of ["look", "light", "colour", "colour-warp", "detail", "export"]) {
       if (!config.states.includes(state)) continue;
-      const photo = await choose((config.pick && (config.pick[state] || config.pick.all)) || wanted[state], photos);
-      if (!photo) throw new Error(`--pick for ${state}: no photo named ${(config.pick && config.pick[state]) || ""}`);
+      const photo = await choose(pickOf(state), photos);
+      if (!photo) throw new Error(`--pick for ${state}: no photo named ${pickOf(state)}`);
       await show(photo);
       await refresh();
       if (state === "export") {
@@ -325,9 +438,12 @@
           await waitFor("the Export panel", () => q("aside[aria-label=Export]"), 10000);
         }
         await shoot("photo-export", `the Export panel over ${photo.name}`);
+      } else if (state === "colour-warp") {
+        await openTab("colour");
+        await shootWarp(photo);
       } else {
         await openTab(state);
-        await shoot(state === "look" ? "photo-look" : state === "light" ? "photo-light" : state === "colour" ? "photo-colour" : "photo-detail", `${photo.name}, ${TABS[state].title} tab`);
+        await shoot(`photo-${state}`, `${photo.name}, ${TABS[state].title} tab`);
       }
     }
   }
