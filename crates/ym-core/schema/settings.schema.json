@@ -19,13 +19,6 @@
     "highlights": { "$ref": "#/$defs/percent" },
     "shadows": { "$ref": "#/$defs/percent" },
     "white": { "$ref": "#/$defs/percent" },
-    "white_offset_ev": {
-      "description": "Light > White lift: stops added to the automatic white lift, the per-photo gain on the tones above +1 stop over middle grey (docs/02 C12 step 1b). 0 is the automatic amount; a negative offset of the automatic amount, or more, gives no lift. A plain number, not Auto; the UI steps by 0.05. A document without it reads as 0.",
-      "type": "number",
-      "minimum": -3,
-      "maximum": 3,
-      "default": 0
-    },
     "black": { "$ref": "#/$defs/percent" },
     "light_source": {
       "description": "Colour > White balance presets.",
@@ -90,12 +83,24 @@
       }
     },
     "rolloff": {
-      "description": "RAW > Roll-off, each 0 to 1.",
+      "description": "RAW > Range, each 0 to 1 (docs/02 C7). The name is kept from the earlier roll-off card.",
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "highlights": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.5 },
-        "low_light": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.5 }
+        "highlights": {
+          "description": "The highlight range: where the camera's clipping point lands, from where it was recorded (0) to white, the clip of an ALEXA at EI 800 (1). Mid grey and everything under the knee, one stop below the camera's clip, never move.",
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "default": 1
+        },
+        "low_light": {
+          "description": "The low-light toe: softens the noise near black (0 is off).",
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "default": 0.5
+        }
       }
     },
     "crop": {

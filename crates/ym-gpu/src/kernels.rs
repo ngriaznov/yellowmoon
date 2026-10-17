@@ -8,9 +8,9 @@
 //!   sharpening and shadow colour matching), eleven pipelines of `adaptive_ratio.wgsl`, f32 planes in
 //!   every storage mode, GPU against `cpu::demosaic::adaptive_ratio`.
 //! * [`color`]: the whole per-pixel colour chain C1 to C13 as one compute pass (fused matrix, C7
-//!   roll-off and toe, C8 LogC4, C9 grade, C10 CDL and tetrahedral LUT, C11 curves, C12 ACES 2 or an
-//!   ARRI display LUT, C13 encode and dither), mirroring `ym_color::display::ColorChain` stage by
-//!   stage.
+//!   highlight range and toe, C8 LogC4, C9 grade, C10 CDL and tetrahedral LUT, C11 curves, C12 ACES 2
+//!   or an ARRI display LUT, C13 encode and dither), mirroring `ym_color::display::ColorChain` stage
+//!   by stage.
 //! * [`diffraction`]: the R8 diffraction deconvolution (nine passes of `diffraction.wgsl`,
 //!   f32 planes in every storage mode, the planner stays on the CPU), GPU against
 //!   `cpu::sharpen::diffraction`.

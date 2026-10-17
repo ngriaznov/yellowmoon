@@ -297,7 +297,7 @@ test.describe("controls with the real mouse", () => {
     await expect(plot.getByRole("slider")).toHaveCount(2);
   });
 
-  test("the RAW switches toggle and the roll-off sliders move", async ({ page }) => {
+  test("the RAW switches toggle and the range sliders move", async ({ page }) => {
     await photos(page);
     await tabs(page).getByRole("tab", { name: "RAW" }).click();
     const sw = page.getByRole("switch", { name: "Neural demosaic" });

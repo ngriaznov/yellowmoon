@@ -98,7 +98,7 @@ fn drt_gate_against_opencolorio_for_all_four_outputs() {
                     )
                 })
                 .collect();
-            // The chain's matrix takes AP0 to AWG4; roll-off off, zero grade, Neutral, curves
+            // The chain's matrix takes AP0 to AWG4; C7 off, zero grade, Neutral, curves
             // identity: C8 to C13 only.
             // The ACES 2 path applies the display placement 2^k before the transform (docs/02 C12
             // step 1a) and the vectors do not include it: scale the input matrix by 2^-k so it cancels.

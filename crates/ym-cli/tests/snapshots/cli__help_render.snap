@@ -61,9 +61,6 @@ Light:
       --black <N>
           Black point, -100 to 100
 
-      --white-offset <EV>
-          Stops added to each photo's automatic white lift, -3 to 3. 0 is the automatic amount; an offset that takes the lift to 0 or below switches it off (`--white-offset -3` always does). The lift only acts with the built-in ACES 2 display rendering, and a DNG carries it
-
 Colour:
       --wb <auto|K[,TINT]>
           White balance: `auto`, or a temperature in kelvin (2000 to 11000) with an optional tint (-50 to 50), as `5200` or `5200,4`
@@ -106,7 +103,7 @@ RAW:
           Switch the chromatic-aberration correction off
 
       --rolloff <HIGHLIGHTS,LOW-LIGHT>
-          Roll-off of the highlights and of the low light, 0 to 1 each, as `0.5,0.5`
+          Highlight range and low-light toe, 0 to 1 each, as `1,0.5` (the defaults). Highlights: where the camera's clipping point lands, from where it was recorded (0) to white, the clip of an ALEXA at EI 800 (1)
 
       --profile <ID>
           Force a camera profile, for comparisons (for example `sony-ilce-7rm4`)

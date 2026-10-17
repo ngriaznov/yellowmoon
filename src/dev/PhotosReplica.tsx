@@ -92,7 +92,7 @@ const NR = reg(
   S("nrc", "Colour", 0, 100, 1, 50, formats.integer),
   S("nrd", "Detail", 0, 100, 1, 50, formats.integer),
 );
-const ROLL = reg(S("hro", "Highlights", 0, 1, 0.01, 0.5, formats.fixed2), S("lro", "Low light", 0, 1, 0.01, 0.5, formats.fixed2));
+const ROLL = reg(S("hro", "Highlights", 0, 1, 0.01, 1, formats.fixed2), S("lro", "Low light", 0, 1, 0.01, 0.5, formats.fixed2));
 
 const LIGHTS = [
   { value: "auto", label: "Auto" },
@@ -369,7 +369,14 @@ export function PhotosReplica({
               ))}
             </Rows>,
           )}
-          {card("Roll-off", ROLL.map(slider), { action: <ResetLink size="card" onClick={() => reset(ROLL)} /> })}
+          {card(
+            "Range",
+            <>
+              {ROLL.map(slider)}
+              <RowNote>Highlights moves the brightest tones the camera recorded: 0 keeps them where they were, 1 takes them to white. Low light softens the noise near black.</RowNote>
+            </>,
+            { action: <ResetLink size="card" onClick={() => reset(ROLL)} /> },
+          )}
         </>
       );
       break;

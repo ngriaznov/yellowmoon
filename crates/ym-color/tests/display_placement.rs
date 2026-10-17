@@ -49,9 +49,9 @@ fn gain() -> f64 {
     DISPLAY_PLACEMENT_EV.exp2()
 }
 
-/// No roll-off in reach, no toe: C7 is the identity.
+/// C7 off: no highlight range, no cap, no toe.
 fn tone_off() -> ToneParams {
-    ToneParams::new(0.5, 0.0, 1.0e6, 0.0).unwrap()
+    ToneParams::IDENTITY
 }
 
 fn chain_with(matrix: Mat3, tone: ToneParams, output: OutputTarget) -> ColorChain {
@@ -163,19 +163,17 @@ fn the_placement_equals_an_exposure_offset_of_plus_k_on_the_neutral_look() {
                 "{target:?} {px:?}: {got:?} against {want:?}"
             );
         }
-        // C7 on (highlight shoulder, no toe): C7 is homogeneous, so the placed chain at clip level
-        // `c` equals the unplaced transform of the scene exposed +k with the clip level `2^k * c`.
-        let clip = 4.0;
-        let tone = ToneParams::new(0.5, 0.0, clip, 0.0).unwrap();
-        let tone_exposed = ToneParams::new(0.5, 0.0, clip * gain(), 0.0).unwrap();
+        // C7 on (the highlight range at an Auto-like clip, no toe): the placement comes after C7, so
+        // the placed chain equals the unplaced transform of the C7 output exposed +k. The range is
+        // not homogeneous (its knee floor and the ALEXA cap are fixed stops over grey), so the
+        // placement is not the same as more exposure in front of C7.
+        let tone = ToneParams::new(0.5, 0.0, 0.18 * 3.58_f64.exp2(), 0.0).unwrap();
         let placed = chain_with(IDENTITY, tone, target);
+        let mut ranged = 0;
         for px in scene_pixels(0x5EED_0002, 400) {
-            let c7_placed = tone.apply_rgb(px);
-            let c7_exposed = tone_exposed.apply_rgb(px.map(|v| v * gain()));
-            assert!(
-                max_diff(c7_exposed, c7_placed.map(|v| v * gain())) < 1e-9 * (1.0 + px[0]),
-                "C7 is not homogeneous at {px:?}"
-            );
+            let c7 = tone.apply_rgb(px);
+            ranged += usize::from(c7 != px);
+            let c7_exposed = c7.map(|v| v * gain());
             let ap0 = linalg::mul_vec(&matrices().awg4_to_ap0, c7_exposed);
             let want = reference.transform_ap0_linear(ap0);
             let got = placed.trace(px).c12_display_linear;
@@ -184,6 +182,7 @@ fn the_placement_equals_an_exposure_offset_of_plus_k_on_the_neutral_look() {
                 "{target:?} {px:?}: {got:?} against {want:?}"
             );
         }
+        assert!(ranged > 20, "only {ranged} pixels reach the range");
     }
 }
 

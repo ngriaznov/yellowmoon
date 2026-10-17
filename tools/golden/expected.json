@@ -3,370 +3,370 @@
   "description": "Expected pixel hashes of the golden pictures (docs/13-testing.md, section Golden images). Written by `golden update`, which needs a --note for every change to an existing picture; the note is kept in `log`. The pictures themselves live in testdata/golden/refs (git-ignored).",
   "entries": {
     "synthetic/chart__D5500__ILCE-7RM4__iso400__rggb__14b__lossless-l": {
-      "pixels_sha256": "31de10cb2a582371e1f6f7287083b993c1b7c0bee13127f70c4014259c62508c",
+      "pixels_sha256": "e28dfe955d1b7951bf4dae94ea152a04f16e4fe26d3011144dccfb7aa8a85c43",
       "width": 1248,
       "height": 832,
-      "pipeline_version": "0.3.0"
+      "pipeline_version": "0.4.0"
     },
     "synthetic/chart__D6500__DSC-RX100M4__iso400__rggb__12b__packed12": {
-      "pixels_sha256": "f1477a1b60ab4ae010012c58faca6f175cd6a217a1ef576b7d17d403b0848b13",
+      "pixels_sha256": "f31b0f2799a5e121987e2bc118dc010c823e59f5b7f93fbc592345bf7ae73afa",
       "width": 1248,
       "height": 832,
-      "pipeline_version": "0.3.0"
+      "pipeline_version": "0.4.0"
     },
     "synthetic/chart__D6500__DSC-RX100M4__iso400__rggb__14b__craw": {
-      "pixels_sha256": "24300efdb6b40344a7b3806a596029b8b5028a9641ec5c433bf6eb4f84541d29",
+      "pixels_sha256": "4dc543d9546f2d1f2124a3e9e6589e60aac70932a661c2f573b2b26ecc796f8b",
       "width": 1248,
       "height": 832,
-      "pipeline_version": "0.3.0"
+      "pipeline_version": "0.4.0"
     },
     "synthetic/chart__D6500__DSC-RX100M4__iso400__rggb__14b__lossless-l": {
-      "pixels_sha256": "bf3089c1adc5d1e168c4a60d1c349053ca027ee4be8437d4f1fca775593b089e",
+      "pixels_sha256": "d1b74691019b7a5464c4f0b1c721eb93aed5ef0a67c91be87aefed059db1e4c7",
       "width": 1248,
       "height": 832,
-      "pipeline_version": "0.3.0"
+      "pipeline_version": "0.4.0"
     },
     "synthetic/chart__D6500__DSC-RX100M4__iso400__rggb__14b__lossless-ms": {
-      "pixels_sha256": "7a42d90a0e5cede27e3cec0741698b49ef814c4d3fedcb61868e93f596e8fba6",
+      "pixels_sha256": "1d1c22b3ecc04560e9ef2ae2cb10aa5564b663e40dacb4a84ac3830bd97c9c6b",
       "width": 1248,
       "height": 832,
-      "pipeline_version": "0.3.0"
+      "pipeline_version": "0.4.0"
     },
     "synthetic/chart__D6500__DSC-RX100M4__iso400__rggb__14b__uncompressed14": {
-      "pixels_sha256": "bf3089c1adc5d1e168c4a60d1c349053ca027ee4be8437d4f1fca775593b089e",
+      "pixels_sha256": "d1b74691019b7a5464c4f0b1c721eb93aed5ef0a67c91be87aefed059db1e4c7",
       "width": 1248,
       "height": 832,
-      "pipeline_version": "0.3.0"
+      "pipeline_version": "0.4.0"
     },
     "synthetic/chart__D6500__ILCE-1__iso400__rggb__12b__packed12": {
-      "pixels_sha256": "fd295b4d4058d0b7049331b9af7ecd3c50c4fee1f48f3b474a5e966a93e50019",
+      "pixels_sha256": "3cf631450f90bb9c3850a3b190d77255762e39b7a84a3bef894dc437302fa884",
       "width": 1248,
       "height": 832,
-      "pipeline_version": "0.3.0"
+      "pipeline_version": "0.4.0"
     },
     "synthetic/chart__D6500__ILCE-1__iso400__rggb__14b__craw": {
-      "pixels_sha256": "4a25adc2fa164702ba5607f06c2d843500189caec8be31038a9234a404fafc32",
+      "pixels_sha256": "4a346840290882b9b8c42358de07268ae92a43a431e13597a65d71769cd517a8",
       "width": 1248,
       "height": 832,
-      "pipeline_version": "0.3.0"
+      "pipeline_version": "0.4.0"
     },
     "synthetic/chart__D6500__ILCE-1__iso400__rggb__14b__lossless-l": {
-      "pixels_sha256": "7fbb9101bb2e069b52f68e42b39c9efe930592a860f98429877a1d91029f9603",
+      "pixels_sha256": "ef4052585c36d5c6cdda1e657295fa9a017192db7095953d6dff96bc097fbed1",
       "width": 1248,
       "height": 832,
-      "pipeline_version": "0.3.0"
+      "pipeline_version": "0.4.0"
     },
     "synthetic/chart__D6500__ILCE-1__iso400__rggb__14b__lossless-ms": {
-      "pixels_sha256": "9c1bb251ad43c671e2966440ff64582de63db24dcbead20f5551e71d297ac099",
+      "pixels_sha256": "3d7178bbf36a1041787330b978c69faec422de7bbfdbaecfcbbf513953df0df2",
       "width": 1248,
       "height": 832,
-      "pipeline_version": "0.3.0"
+      "pipeline_version": "0.4.0"
     },
     "synthetic/chart__D6500__ILCE-1__iso400__rggb__14b__uncompressed14": {
-      "pixels_sha256": "7fbb9101bb2e069b52f68e42b39c9efe930592a860f98429877a1d91029f9603",
+      "pixels_sha256": "ef4052585c36d5c6cdda1e657295fa9a017192db7095953d6dff96bc097fbed1",
       "width": 1248,
       "height": 832,
-      "pipeline_version": "0.3.0"
+      "pipeline_version": "0.4.0"
     },
     "synthetic/chart__D6500__ILCE-6400__iso400__rggb__12b__packed12": {
-      "pixels_sha256": "ef51d189dae97820bcb9951a3f7aad26a1bea9c75adc0aea31fbf2ad81803d4b",
+      "pixels_sha256": "c7763f77bc4bc6ec19182205c936ff25b4aa73c054e9e171195c1a542de772ba",
       "width": 1248,
       "height": 832,
-      "pipeline_version": "0.3.0"
+      "pipeline_version": "0.4.0"
     },
     "synthetic/chart__D6500__ILCE-6400__iso400__rggb__14b__craw": {
-      "pixels_sha256": "1f026a301866cc1276bf3942a7133f05dab8ed0a0eb3440d63b2e5e18fbd449b",
+      "pixels_sha256": "050d3fead3f58a3d92876d46709929954692d85b3a5b62739dedf06e910e0268",
       "width": 1248,
       "height": 832,
-      "pipeline_version": "0.3.0"
+      "pipeline_version": "0.4.0"
     },
     "synthetic/chart__D6500__ILCE-6400__iso400__rggb__14b__lossless-l": {
-      "pixels_sha256": "8c9a847ee72c0ab6f06850f039bfe26a8696c295af6e477a1d2439847cec8d71",
+      "pixels_sha256": "2bea89b85942c44c2435eaf80aa2161c4d2f479b1eefe49946958f31536f239e",
       "width": 1248,
       "height": 832,
-      "pipeline_version": "0.3.0"
+      "pipeline_version": "0.4.0"
     },
     "synthetic/chart__D6500__ILCE-6400__iso400__rggb__14b__lossless-ms": {
-      "pixels_sha256": "7f3b2913f5787aea53e7ccfc5e147ca1569d5eab8d106b5d2d7cc454c0beef47",
+      "pixels_sha256": "1b4f3d6a5515751ae1199a8ad74cbd8c051009d3d95d5659fe1c6ec7a46b2b60",
       "width": 1248,
       "height": 832,
-      "pipeline_version": "0.3.0"
+      "pipeline_version": "0.4.0"
     },
     "synthetic/chart__D6500__ILCE-6400__iso400__rggb__14b__uncompressed14": {
-      "pixels_sha256": "8c9a847ee72c0ab6f06850f039bfe26a8696c295af6e477a1d2439847cec8d71",
+      "pixels_sha256": "2bea89b85942c44c2435eaf80aa2161c4d2f479b1eefe49946958f31536f239e",
       "width": 1248,
       "height": 832,
-      "pipeline_version": "0.3.0"
+      "pipeline_version": "0.4.0"
     },
     "synthetic/chart__D6500__ILCE-7M3__iso400__rggb__12b__packed12": {
-      "pixels_sha256": "b11bb6d6a5e6f92824cc5455207460645e2e0f65b376656b1efbfebfe22ea27c",
+      "pixels_sha256": "e4fde5b1de6d8e9593238098a522612a7be4973216debcce7dba165e7a2e8249",
       "width": 1248,
       "height": 832,
-      "pipeline_version": "0.3.0"
+      "pipeline_version": "0.4.0"
     },
     "synthetic/chart__D6500__ILCE-7M3__iso400__rggb__14b__craw": {
-      "pixels_sha256": "6d899a6a3b583747daa3c54ee4bc82933886f5173d05799e98f009cd63e4df50",
+      "pixels_sha256": "34940a1cb3e182ab967de55896ad179293426d21ad02b647e2bae9d7328b1522",
       "width": 1248,
       "height": 832,
-      "pipeline_version": "0.3.0"
+      "pipeline_version": "0.4.0"
     },
     "synthetic/chart__D6500__ILCE-7M3__iso400__rggb__14b__lossless-l": {
-      "pixels_sha256": "52d64333c8e3177231af3669d8ab9f8c8e2ab497d76f24500578bc9f5bc42113",
+      "pixels_sha256": "b46f4f98d547de0b80e6d3b2b347b369f0c00985edcf9aa2bca57fb4dd34a551",
       "width": 1248,
       "height": 832,
-      "pipeline_version": "0.3.0"
+      "pipeline_version": "0.4.0"
     },
     "synthetic/chart__D6500__ILCE-7M3__iso400__rggb__14b__lossless-ms": {
-      "pixels_sha256": "7d05652209dd7d165fb2cd564d9c9d56a046420a86d1a006cc1a104453a8e826",
+      "pixels_sha256": "7968bc7c8c820f9b46119886b935f207fb13237bfe0751f0c7ed2044f8d8c5cb",
       "width": 1248,
       "height": 832,
-      "pipeline_version": "0.3.0"
+      "pipeline_version": "0.4.0"
     },
     "synthetic/chart__D6500__ILCE-7M3__iso400__rggb__14b__uncompressed14": {
-      "pixels_sha256": "52d64333c8e3177231af3669d8ab9f8c8e2ab497d76f24500578bc9f5bc42113",
+      "pixels_sha256": "b46f4f98d547de0b80e6d3b2b347b369f0c00985edcf9aa2bca57fb4dd34a551",
       "width": 1248,
       "height": 832,
-      "pipeline_version": "0.3.0"
+      "pipeline_version": "0.4.0"
     },
     "synthetic/chart__D6500__ILCE-7RM4__iso100__rggb__14b__lossless-l": {
-      "pixels_sha256": "3f4222d94320a6449c2308a74dbd2385c5941140775d573e8a9dc98cfe18bebd",
+      "pixels_sha256": "cdaec991bf8b1614fe9aff9b49fef169cf90608eb4ea2aac0aeb71918ccc6115",
       "width": 1248,
       "height": 832,
-      "pipeline_version": "0.3.0"
+      "pipeline_version": "0.4.0"
     },
     "synthetic/chart__D6500__ILCE-7RM4__iso12800__rggb__14b__lossless-l": {
-      "pixels_sha256": "4b4d5822e0f4475846f62691c240b78c1b43c82aec739d9860d6bb79df5f297e",
+      "pixels_sha256": "9d765bb2eb998df3035e054feb9c6a590703405290a8001c30108ffc453799d9",
       "width": 1248,
       "height": 832,
-      "pipeline_version": "0.3.0"
+      "pipeline_version": "0.4.0"
     },
     "synthetic/chart__D6500__ILCE-7RM4__iso3200__rggb__14b__lossless-l": {
-      "pixels_sha256": "b92ed80242f2460bea37907dd853ea5194290d3e49a5d02ab460b56a8dc10659",
+      "pixels_sha256": "99b3fe9800a6486ff427bd7be6d22e71f1851e39e3f2a1300f03684ec679f738",
       "width": 1248,
       "height": 832,
-      "pipeline_version": "0.3.0"
+      "pipeline_version": "0.4.0"
     },
     "synthetic/chart__D6500__ILCE-7RM4__iso400__bggr__14b__craw": {
-      "pixels_sha256": "ffa50b1fbb9c8c76278841b7bf6ee43bb808eef7e0cf8b427789ebe67781a681",
+      "pixels_sha256": "383743668bf7f54b402ffbd238b9517739174ac6bad1ea191674e165a46045d5",
       "width": 1248,
       "height": 832,
-      "pipeline_version": "0.3.0"
+      "pipeline_version": "0.4.0"
     },
     "synthetic/chart__D6500__ILCE-7RM4__iso400__bggr__14b__lossless-l": {
-      "pixels_sha256": "4bdf70d5cd835d30048e780458a752a3f659d8a3624945b70148a78aa0802c64",
+      "pixels_sha256": "7acdd13c813ccd35baede45d7d2abb45270d56117479485a24bf424b705e1d97",
       "width": 1248,
       "height": 832,
-      "pipeline_version": "0.3.0"
+      "pipeline_version": "0.4.0"
     },
     "synthetic/chart__D6500__ILCE-7RM4__iso400__bggr__14b__uncompressed14": {
-      "pixels_sha256": "4bdf70d5cd835d30048e780458a752a3f659d8a3624945b70148a78aa0802c64",
+      "pixels_sha256": "7acdd13c813ccd35baede45d7d2abb45270d56117479485a24bf424b705e1d97",
       "width": 1248,
       "height": 832,
-      "pipeline_version": "0.3.0"
+      "pipeline_version": "0.4.0"
     },
     "synthetic/chart__D6500__ILCE-7RM4__iso400__gbrg__14b__craw": {
-      "pixels_sha256": "b4896623b1ebca9eacfaad9f50ac7992b406795277a5a1836290f1db0bb5f226",
+      "pixels_sha256": "761260cff28a93b8b45184736e185b856a0c2ff6e9f00f9838a63a4b840e7a25",
       "width": 1248,
       "height": 832,
-      "pipeline_version": "0.3.0"
+      "pipeline_version": "0.4.0"
     },
     "synthetic/chart__D6500__ILCE-7RM4__iso400__gbrg__14b__lossless-l": {
-      "pixels_sha256": "d7d96d8c0989a33655538682626addc0453a43c779b8f4bc4b1368c770a23794",
+      "pixels_sha256": "6a61bf28ef1d7032277577afe6f467701f0ecf20a6f853471a3663a349455b5f",
       "width": 1248,
       "height": 832,
-      "pipeline_version": "0.3.0"
+      "pipeline_version": "0.4.0"
     },
     "synthetic/chart__D6500__ILCE-7RM4__iso400__gbrg__14b__uncompressed14": {
-      "pixels_sha256": "d7d96d8c0989a33655538682626addc0453a43c779b8f4bc4b1368c770a23794",
+      "pixels_sha256": "6a61bf28ef1d7032277577afe6f467701f0ecf20a6f853471a3663a349455b5f",
       "width": 1248,
       "height": 832,
-      "pipeline_version": "0.3.0"
+      "pipeline_version": "0.4.0"
     },
     "synthetic/chart__D6500__ILCE-7RM4__iso400__grbg__14b__craw": {
-      "pixels_sha256": "eb73809c024399ddbf40044801a2bfb9ac13321d25288c554f6395d3b9b0a585",
+      "pixels_sha256": "e8a1148dc0343602257f32e0e81f705ca13cc9eaf04487ce81dbea5c854e0a50",
       "width": 1248,
       "height": 832,
-      "pipeline_version": "0.3.0"
+      "pipeline_version": "0.4.0"
     },
     "synthetic/chart__D6500__ILCE-7RM4__iso400__grbg__14b__lossless-l": {
-      "pixels_sha256": "028419875affb2f23d8d096cbd988867dc53e38683ad6bf748487bca27eef212",
+      "pixels_sha256": "0877d3d4042a4b5f56d4e8a34775fa83957d187a0b4081f69a0639136b28f1b0",
       "width": 1248,
       "height": 832,
-      "pipeline_version": "0.3.0"
+      "pipeline_version": "0.4.0"
     },
     "synthetic/chart__D6500__ILCE-7RM4__iso400__grbg__14b__uncompressed14": {
-      "pixels_sha256": "028419875affb2f23d8d096cbd988867dc53e38683ad6bf748487bca27eef212",
+      "pixels_sha256": "0877d3d4042a4b5f56d4e8a34775fa83957d187a0b4081f69a0639136b28f1b0",
       "width": 1248,
       "height": 832,
-      "pipeline_version": "0.3.0"
+      "pipeline_version": "0.4.0"
     },
     "synthetic/chart__D6500__ILCE-7RM4__iso400__rggb__12b__packed12": {
-      "pixels_sha256": "f87cff24c5fbcb3349650031b7c92c29838c9ca168b1f3a30d0e2a3ee8de71cf",
+      "pixels_sha256": "84fbf7abf97ebaa8832c9c3d5eb1bc46a7531ce9f3dfc885f0122e377acb3f43",
       "width": 1248,
       "height": 832,
-      "pipeline_version": "0.3.0"
+      "pipeline_version": "0.4.0"
     },
     "synthetic/chart__D6500__ILCE-7RM4__iso400__rggb__14b__craw": {
-      "pixels_sha256": "185f1770fa4ac6265aa1c11fc7de419a8725e9bf4689df6a7ac546b4425d6bf6",
+      "pixels_sha256": "eef975459225c0231097b110d9e4516be4f53970dddc93c9e31a565975534e02",
       "width": 1248,
       "height": 832,
-      "pipeline_version": "0.3.0"
+      "pipeline_version": "0.4.0"
     },
     "synthetic/chart__D6500__ILCE-7RM4__iso400__rggb__14b__lossless-l": {
-      "pixels_sha256": "0e454847dd49ae5958cf7f4f0e9d7831d3074f6b9f1d3e8097d0573b91aad1c9",
+      "pixels_sha256": "993deae73ad515fc4ae6610c193559e7eaa246037db5586a4077aa6008a56113",
       "width": 1248,
       "height": 832,
-      "pipeline_version": "0.3.0"
+      "pipeline_version": "0.4.0"
     },
     "synthetic/chart__D6500__ILCE-7RM4__iso400__rggb__14b__lossless-ms": {
-      "pixels_sha256": "45023b43b21771dde246b8ff374d3b7e854e981873734d71c04831937829b8a7",
+      "pixels_sha256": "08d16eb62c1198fb4b4ec53a2c70b1d0f4004f095c44a5ee4bd044cec59cff64",
       "width": 1248,
       "height": 832,
-      "pipeline_version": "0.3.0"
+      "pipeline_version": "0.4.0"
     },
     "synthetic/chart__D6500__ILCE-7RM4__iso400__rggb__14b__uncompressed14": {
-      "pixels_sha256": "0e454847dd49ae5958cf7f4f0e9d7831d3074f6b9f1d3e8097d0573b91aad1c9",
+      "pixels_sha256": "993deae73ad515fc4ae6610c193559e7eaa246037db5586a4077aa6008a56113",
       "width": 1248,
       "height": 832,
-      "pipeline_version": "0.3.0"
+      "pipeline_version": "0.4.0"
     },
     "synthetic/chart__D6500__ILCE-7RM4__iso800__rggb__14b__lossless-l": {
-      "pixels_sha256": "af6c8e7995e2ebad7748c78d778d716ea82d42c9174b8b0ae1be892811720fd7",
+      "pixels_sha256": "d7841462c74458d27e7a7291f56466384e553ae4c72f71c00ae7f541aeedf260",
       "width": 1248,
       "height": 832,
-      "pipeline_version": "0.3.0"
+      "pipeline_version": "0.4.0"
     },
     "synthetic/chart__D6500__ILCE-7SM3__iso400__rggb__12b__packed12": {
-      "pixels_sha256": "24094d15be7f6f29f94425c683ea469a9fbc8f0ec418d1c6adfad7eb6101d51d",
+      "pixels_sha256": "3862572948d8cb2e6d9a6ccec2161d8552d2e4f80266339f58cd441e6fd8af45",
       "width": 1248,
       "height": 832,
-      "pipeline_version": "0.3.0"
+      "pipeline_version": "0.4.0"
     },
     "synthetic/chart__D6500__ILCE-7SM3__iso400__rggb__14b__craw": {
-      "pixels_sha256": "ee04bdda26b59474a082b2a6be76a839322c5e208a61d8da2065f36332f8a613",
+      "pixels_sha256": "4466081b87c96e25a2f13412b694c97ae22bdef4e0ed88463228bfe4dc89d5df",
       "width": 1248,
       "height": 832,
-      "pipeline_version": "0.3.0"
+      "pipeline_version": "0.4.0"
     },
     "synthetic/chart__D6500__ILCE-7SM3__iso400__rggb__14b__lossless-l": {
-      "pixels_sha256": "3c30160dee3f67d3ff29961a0f5b0bbe8bcc117ea9515e8e2acd088c899d9eb8",
+      "pixels_sha256": "4bab65d2c3063472b2d7fda02e64f235cae346936368d97b69cbd3e0ee744bc8",
       "width": 1248,
       "height": 832,
-      "pipeline_version": "0.3.0"
+      "pipeline_version": "0.4.0"
     },
     "synthetic/chart__D6500__ILCE-7SM3__iso400__rggb__14b__lossless-ms": {
-      "pixels_sha256": "ed486100e39bcc7b998e23a30ce52a0db6efd1be660bcee8ff7a3c44229e1640",
+      "pixels_sha256": "26c79bcd601e7569304f6cb12958f5d2a558096af3de9e83bc5d21c610abfbd4",
       "width": 1248,
       "height": 832,
-      "pipeline_version": "0.3.0"
+      "pipeline_version": "0.4.0"
     },
     "synthetic/chart__D6500__ILCE-7SM3__iso400__rggb__14b__uncompressed14": {
-      "pixels_sha256": "3c30160dee3f67d3ff29961a0f5b0bbe8bcc117ea9515e8e2acd088c899d9eb8",
+      "pixels_sha256": "4bab65d2c3063472b2d7fda02e64f235cae346936368d97b69cbd3e0ee744bc8",
       "width": 1248,
       "height": 832,
-      "pipeline_version": "0.3.0"
+      "pipeline_version": "0.4.0"
     },
     "synthetic/chart__D7500__ILCE-7RM4__iso400__rggb__14b__lossless-l": {
-      "pixels_sha256": "c108ee3298be8a9d05c19d71af8796b9501a9c5cb14e1821c294deba46cc0344",
+      "pixels_sha256": "593cf3b16e8992369f9f45bedcf929c0e21e4eb578e6d89abea9ee3281b008b6",
       "width": 1248,
       "height": 832,
-      "pipeline_version": "0.3.0"
+      "pipeline_version": "0.4.0"
     },
     "synthetic/chart__F11__ILCE-7RM4__iso400__rggb__14b__lossless-l": {
-      "pixels_sha256": "98b6078463e255f932726c2d95de05a19472827dcf66157a04e3da77cff79f46",
+      "pixels_sha256": "a8aab0417e9b511d5cdb0229d6eb0652671fe22675fb97bf1c59b0cce0678283",
       "width": 1248,
       "height": 832,
-      "pipeline_version": "0.3.0"
+      "pipeline_version": "0.4.0"
     },
     "synthetic/chart__LEDB3__DSC-RX100M4__iso400__rggb__14b__craw": {
-      "pixels_sha256": "f2a0fd575007e41a8dde2e20d84a702bab64bbafc4a3cf011f8c14580258135d",
+      "pixels_sha256": "f5d7c9100ed11a58715a50db6df5ba62c8b56ca6e512be61a594518fccf19308",
       "width": 1248,
       "height": 832,
-      "pipeline_version": "0.3.0"
+      "pipeline_version": "0.4.0"
     },
     "synthetic/chart__LEDB3__ILCE-1__iso400__rggb__14b__lossless-l": {
-      "pixels_sha256": "779451b597cba048764507dbf3b331e7256e89193d9e56bcd89edefc55446412",
+      "pixels_sha256": "f12e78b5e030682178245146deec58a3fa5f02f6ea5d798d192d06672d681683",
       "width": 1248,
       "height": 832,
-      "pipeline_version": "0.3.0"
+      "pipeline_version": "0.4.0"
     },
     "synthetic/chart__LEDB3__ILCE-6400__iso400__rggb__14b__craw": {
-      "pixels_sha256": "2b2c4973921a20958bf0585bcdf1baa3914ab8eeb068f28642d85348f3285ba1",
+      "pixels_sha256": "7e038113a58fee9b5f014d5c4c5b9b2661701ff8bcbdc671ac9aa1fd889a3bbf",
       "width": 1248,
       "height": 832,
-      "pipeline_version": "0.3.0"
+      "pipeline_version": "0.4.0"
     },
     "synthetic/chart__LEDB3__ILCE-7M3__iso400__rggb__14b__uncompressed14": {
-      "pixels_sha256": "f21aac40d255f53b90035d21a1261a2974ceb80868f816a92d04f504f541be46",
+      "pixels_sha256": "66af7dd30f36a185cd8f06c5dfe274059aaa38afa0a867f2d6e7a4d56dcff25f",
       "width": 1248,
       "height": 832,
-      "pipeline_version": "0.3.0"
+      "pipeline_version": "0.4.0"
     },
     "synthetic/chart__LEDB3__ILCE-7RM4__iso400__rggb__14b__lossless-l": {
-      "pixels_sha256": "7935de86b1894e4f4ef40af9b04aff9435e2daa0b27382819fa8dde936cf1425",
+      "pixels_sha256": "c289a9e803b6b092ae22e88336995c5d9c4a3a963fababa58c31c2c0d0493299",
       "width": 1248,
       "height": 832,
-      "pipeline_version": "0.3.0"
+      "pipeline_version": "0.4.0"
     },
     "synthetic/chart__LEDB3__ILCE-7SM3__iso400__rggb__14b__lossless-l": {
-      "pixels_sha256": "5ce9423e6b2bc07c27d87fdcb59d286a607490989e41dce4289fcc47b12cc2d9",
+      "pixels_sha256": "f8dfb3850196efb8b959b18be17f5ef7d9f37ac68419f2ae6c53d1ef0b7cd584",
       "width": 1248,
       "height": 832,
-      "pipeline_version": "0.3.0"
+      "pipeline_version": "0.4.0"
     },
     "synthetic/chart__LEDV2__ILCE-7RM4__iso400__rggb__14b__lossless-l": {
-      "pixels_sha256": "70ee80f2d89c88c1a012f0b29d9f8737aba985a1c110775d60154b1149abc75c",
+      "pixels_sha256": "53cb769558a07139ce26c9ce7741a73e993b574f1941e9d429136841f191b864",
       "width": 1248,
       "height": 832,
-      "pipeline_version": "0.3.0"
+      "pipeline_version": "0.4.0"
     },
     "synthetic/chart__bb2850__DSC-RX100M4__iso400__rggb__14b__craw": {
-      "pixels_sha256": "aa0beab507a746b76f68fb87f56eb02f79fef9f2c1b3899a568f9fc182610022",
+      "pixels_sha256": "efb0c32966188246c87637e2081cfa271907c9881e7393c2ec75bd0c60b712c2",
       "width": 1248,
       "height": 832,
-      "pipeline_version": "0.3.0"
+      "pipeline_version": "0.4.0"
     },
     "synthetic/chart__bb2850__ILCE-1__iso400__rggb__14b__lossless-l": {
-      "pixels_sha256": "92dd9e3b5e1ea3e4bd960b6ffa49052f845e53a78b480e8ef1f602aa11a4498f",
+      "pixels_sha256": "56c6c6c217ee0acb439c9590311ec18c0cb65c08b7f226043e02b1f492689c39",
       "width": 1248,
       "height": 832,
-      "pipeline_version": "0.3.0"
+      "pipeline_version": "0.4.0"
     },
     "synthetic/chart__bb2850__ILCE-6400__iso400__rggb__14b__craw": {
-      "pixels_sha256": "18a5ccbef58882f9c34e01d2d1c5160590071005539be8a0886fd2563ddb0be6",
+      "pixels_sha256": "a1fb445fab8c929137ec9dfa21938f66bad6bfc8bc602fdc37547817b17fd32f",
       "width": 1248,
       "height": 832,
-      "pipeline_version": "0.3.0"
+      "pipeline_version": "0.4.0"
     },
     "synthetic/chart__bb2850__ILCE-7M3__iso400__rggb__14b__uncompressed14": {
-      "pixels_sha256": "7bd4798af9ac7b5dd8b2e9cb517a87b72e29a2271d25fe753ba1a920eb6d220e",
+      "pixels_sha256": "4bc8778ba0754f55272b434236908d588dd477d0e743e0c4dbafe6d6b744c3ae",
       "width": 1248,
       "height": 832,
-      "pipeline_version": "0.3.0"
+      "pipeline_version": "0.4.0"
     },
     "synthetic/chart__bb2850__ILCE-7RM4__iso400__rggb__14b__lossless-l": {
-      "pixels_sha256": "6dc699df9527ffbd62a5d2be677071d113cf0fd49016a8761d12ac023e249196",
+      "pixels_sha256": "51838d4ad9044439703c7c1815b3607befcd3a5c39a7685e5508f12612977753",
       "width": 1248,
       "height": 832,
-      "pipeline_version": "0.3.0"
+      "pipeline_version": "0.4.0"
     },
     "synthetic/chart__bb2850__ILCE-7SM3__iso400__rggb__14b__lossless-l": {
-      "pixels_sha256": "5bf9a0b1a1848e1bc1172693a49d6ecc2d97952a9845555c23a138d45d31205e",
+      "pixels_sha256": "9c37aaaafe09f29580e1e59ed912f705a7c0079735af0aa739c2cba7da941921",
       "width": 1248,
       "height": 832,
-      "pipeline_version": "0.3.0"
+      "pipeline_version": "0.4.0"
     },
     "synthetic/chart__bb3200__ILCE-7RM4__iso400__rggb__14b__lossless-l": {
-      "pixels_sha256": "8d84752ffa4eab4948ec079536876a5514fc2789879c1b1ac35bd74ae87d9df5",
+      "pixels_sha256": "3bfded8a5dacfda14e086b9ef04cbed0ebd8f3730333a6d545409284ac416d8d",
       "width": 1248,
       "height": 832,
-      "pipeline_version": "0.3.0"
+      "pipeline_version": "0.4.0"
     },
     "synthetic/chart__mixed__ILCE-7RM4__iso400__rggb__14b__lossless-l": {
-      "pixels_sha256": "8c938f714161646b82d0dc02290d6fdba4c7f7c54d55f23ef10d6861ad007262",
+      "pixels_sha256": "6429b5a3b4828c8314f39262097d4dcc8769532aff976207a63773d209d7a38d",
       "width": 1248,
       "height": 832,
-      "pipeline_version": "0.3.0"
+      "pipeline_version": "0.4.0"
     }
   },
   "log": [
@@ -403,7 +403,21 @@
       "note": "default look Signature (B: LogC4 luma curve slope 1.25, saturation 1.20); white scale for stand-in bodies (D-01); per-photo white lift (D-02); owner decisions 2026-10-14",
       "changed": 61,
       "added": 0,
-      "max_delta_e_2000": 25.115281499939474
+      "max_delta_e_2000": 25.11528149993947
+    },
+    {
+      "pipeline_version": "0.4.0",
+      "note": "pipeline 0.4.0: the highlight range (docs/02 C7) replaces the highlight roll-off and the white lift; the golden truth develops highlights as recorded (rolloff.highlights 0), the picture default is 0.5",
+      "changed": 61,
+      "added": 0,
+      "max_delta_e_2000": 17.2852122399083
+    },
+    {
+      "pipeline_version": "0.4.0",
+      "note": "The highlight range's default is 1, the clip at white (owner's choice of 2026-10-17, after the before-and-after at 0, 0.5 and 1; it was 0.5). Pictures with highlights within about a stop of the camera's clip are brighter there; nothing under the knee moves. The truth develops highlights as recorded and does not change.",
+      "changed": 61,
+      "added": 0,
+      "max_delta_e_2000": 6.746530769541786
     }
   ]
 }

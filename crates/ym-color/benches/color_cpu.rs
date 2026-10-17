@@ -49,8 +49,9 @@ fn main() {
         let p = pixel(i);
         [logc4_decode(p[0]), logc4_decode(p[1]), logc4_decode(p[2])]
     });
-    let tone = ToneParams::new(0.5, 0.5, 16.0, 0.003).unwrap();
-    bench("C7 roll-off and toe", |i| {
+    // The clip at a Sony body's Auto exposure (3.58 stops over grey), so the range acts.
+    let tone = ToneParams::new(0.5, 0.5, 0.18 * 3.58_f64.exp2(), 0.003).unwrap();
+    bench("C7 highlight range and toe", |i| {
         let p = pixel(i);
         tone.apply(LinearAwg4([p[0] * 20.0, p[1] * 2.0, p[2]]))
     });

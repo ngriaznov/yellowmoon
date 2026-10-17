@@ -271,7 +271,6 @@ const DIRECT_KEYS: ReadonlySet<string> = new Set([
   "highlights",
   "shadows",
   "white",
-  "white_offset_ev",
   "black",
   "light_source",
   "color_balance",
@@ -296,8 +295,6 @@ export function applyDirect(rs: ResolvedSettings, patch: SettingsPatch): Resolve
     settings[key] = value;
     values[key] = value;
     if (key === "light_source") auto = { ...auto, light_source: value === "auto" };
-    // The lift in effect follows the offset at once: the automatic amount plus the offset, never below 0 (the core's rule).
-    if (key === "white_offset_ev") values.white_ev = Math.min(3, Math.max(0, rs.estimates.white_ev + (value as number)));
   }
   return { ...rs, settings: settings as unknown as DevelopSettings, values: values as unknown as ResolvedSettings["values"], auto };
 }

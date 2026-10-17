@@ -160,13 +160,19 @@ fn every_stage_matches_the_cpu_trace() {
                         _ => t.c13_encoded,
                     })
                     .collect();
-                // Linear stages: relative to the size of the input terms; LogC4: the 2e-4 gate;
-                // display-linear: 2e-4 relative plus a small floor; code values: one 10-bit code.
+                // Linear stages: relative to the size of the input terms (C7 also to its output: the
+                // highlight range multiplies a pixel by up to 2^6, and the f32 log2 and exp2 of its gain
+                // are good to a relative 1e-5 where the range is steepest, 5e-5 leaving room for a
+                // log2 a few ulp off; 5e-5 is 5e-6 in LogC4); LogC4: the 2e-4 gate; display-linear:
+                // 2e-4 relative plus a small floor; code values: one 10-bit code.
                 let cams_ref = &cams;
                 let tol = |i: usize| -> f64 {
                     let mag: f64 = cams_ref[i].iter().map(|v| v.abs()).sum();
                     match stop {
-                        Stop::C6 | Stop::C7 => 6e-6 * mag + 1e-9,
+                        Stop::C6 => 6e-6 * mag + 1e-9,
+                        Stop::C7 => {
+                            6e-6 * mag + 5e-5 * cpu[i].iter().map(|v| v.abs()).sum::<f64>() + 1e-9
+                        }
                         Stop::C12 => 5e-4 * cpu[i].iter().cloned().fold(0.0f64, f64::max).max(0.02),
                         Stop::C13 => CODE10,
                         _ => LOGC4_GATE,
@@ -908,11 +914,12 @@ fn the_camera_default_before_view_ignores_every_setting_on_the_device_too() {
     let (w, h) = (53usize, 37usize);
     let img = camera_image(w, h, 0xB3F0);
     for dev in gpus() {
-        // Everything on against nothing on: another fused matrix, tone, grade, look, curves, white lift.
+        // Everything on against nothing on: another fused matrix, tone (the highlight range at full
+        // strength), grade, look, curves.
         let rich = chains::full(OutputTarget::Viewport);
         let mut bare = chains::base(OutputTarget::Viewport);
         bare.matrix = chains::fused_matrix().map(|r| r.map(|v| v * 3.0));
-        bare.white_lift = ym_color::exposure::white::WhiteLift::new(0.8, 0.5).expect("lift");
+        bare.tone = chains::range_tone(1.0, chains::AUTO_CLIP_STOPS);
         let outs = [
             ColorOutput::Stage(Stop::Before),
             ColorOutput::BeforeRgba8 { dither: true },

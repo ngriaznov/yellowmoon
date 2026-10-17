@@ -1,9 +1,9 @@
 //! The whole per-pixel colour chain C1 to C13 as one compute pass (`docs/02-colour-pipeline.md`).
 //!
 //! [`PreparedChain::new`] turns an immutable `ym_color::display::ColorChain` into the GPU form: the
-//! per-frame uniform block (fused matrix, C7, C9, C9b, C10 and C12 parameters, the ACES 2 scalars and
-//! the flags, about 2 KB), and four **persistent tables** that [`ChainTables`] keeps on the device and
-//! refills only when their content changes:
+//! per-frame uniform block (fused matrix, C7 (the highlight range and the toe), C9, C9b, C10 and C12
+//! parameters, the ACES 2 scalars and the flags, about 2 KB), and four **persistent tables** that
+//! [`ChainTables`] keeps on the device and refills only when their content changes:
 //!
 //! * the 64 x 64 dither thresholds, once per device;
 //! * the ACES 2 tables, once per device and output;
@@ -79,6 +79,7 @@ use ym_color::grade::{
 };
 use ym_color::look::{LookInput, intensity_fraction};
 use ym_color::lut::Lut;
+use ym_color::tone::ToneParams;
 use ym_color::warp::{WARP_MAX_PINS, Warp, WarpParams};
 
 use super::shader::{KernelId, table};
@@ -98,7 +99,7 @@ use crate::tiles::{Tile, TilePlan};
 pub enum Stop {
     /// The fused matrix applied: linear AWG4 (C1 to C6).
     C6,
-    /// After the roll-off and toe: linear AWG4.
+    /// After the highlight range and the toe: linear AWG4.
     C7,
     /// LogC4 encode.
     C8,
@@ -349,6 +350,21 @@ fn lut_data(lut: &Lut) -> (Vec<f32>, LutDescU) {
 }
 
 /// The grade parameters as the kernel wants them (the same preparation as `Grade::new`).
+/// C7 into the block: the highlight range's knee, Sony clip and expansion (stops over grey) and the toe's
+/// width in `tone` (`[knee, clip, tau, expansion]`), the ALEXA cap in `fl.z`. No range
+/// (`HighlightRange::NONE`, from `ToneParams::IDENTITY`) is a knee, clip and cap of
+/// `HIGHLIGHT_OFF_STOPS` (1e30, a finite f32: K8) and an expansion of 0; `fl.w` stays 0.
+fn tone_uniform(u: &mut ChainU, tone: &ToneParams) {
+    let range = tone.range();
+    u.tone = [
+        range.knee_stops as f32,
+        range.clip_stops as f32,
+        tone.toe_tau() as f32,
+        range.expansion_stops as f32,
+    ];
+    u.fl[2] = range.cap_stops as f32;
+}
+
 fn grade_uniform(u: &mut ChainU, g: &GradeParams) {
     let contrast_gain = (CONTRAST_EXPONENT * clamp_control(g.contrast) / 100.0).exp2();
     // Saturation is subtractive: the shader pivots on the pixel's brightest channel (`Grade::apply`).
@@ -819,14 +835,9 @@ impl ChainTables {
             m0: f4(params.matrix[0], 0.0),
             m1: f4(params.matrix[1], 0.0),
             m2: f4(params.matrix[2], 0.0),
-            tone: [
-                params.tone.knee() as f32,
-                (params.tone.shoulder_limit() - params.tone.knee()) as f32,
-                params.tone.toe_tau() as f32,
-                0.0,
-            ],
             ..ChainU::default()
         };
+        tone_uniform(&mut u, &params.tone);
         // C9.
         grade_uniform(&mut u, &params.grade);
         // C9b.
@@ -911,13 +922,6 @@ impl ChainTables {
                 // The ACES 2 section is never read; the dither section is all this chain needs.
                 tables = self.dither(ctx)?;
             }
-        }
-        // C12 step 1b: the white lift (ACES 2 path only: `ColorChain::white_lift` is the identity for a
-        // display LUT). Amount in stops and the reciprocal of the ramp's span; 0 switches it off.
-        let lift = chain.white_lift();
-        if !lift.is_identity() {
-            u.fl[2] = lift.amount_ev() as f32;
-            u.fl[3] = (1.0 / lift.span_ev()) as f32;
         }
         // C13.
         u.sp[0] = u32::from(space == OutputSpace::Rec2020);
@@ -1712,6 +1716,41 @@ mod tests {
             u.warp_mv
                 .chunks_exact(WARP_ROWS_PER_MOVE)
                 .all(|r| r[1][0] > 0.0)
+        );
+    }
+
+    #[test]
+    fn the_tone_rows_carry_the_highlight_range_and_no_range_is_finite() {
+        use ym_color::tone::{HIGHLIGHT_CAP_STOPS, HIGHLIGHT_OFF_STOPS};
+        // The Auto clip of a Sony body, 3.58 stops over grey: knee 2.58, expansion half the way to the cap.
+        let tone = ToneParams::new(0.5, 0.5, 0.18 * 3.58_f64.exp2(), 0.002).expect("tone");
+        let mut u = ChainU::default();
+        tone_uniform(&mut u, &tone);
+        let r = tone.range();
+        assert_eq!(
+            u.tone,
+            [
+                r.knee_stops as f32,
+                r.clip_stops as f32,
+                tone.toe_tau() as f32,
+                r.expansion_stops as f32
+            ]
+        );
+        assert!((f64::from(u.tone[0]) - 2.58).abs() < 1e-6);
+        assert!((f64::from(u.tone[3]) - 0.5 * (HIGHLIGHT_CAP_STOPS - 3.58)).abs() < 1e-6);
+        assert_eq!(u.fl, [0.0, 0.0, HIGHLIGHT_CAP_STOPS as f32, 0.0]);
+        // C7 off: knee and cap 1e30, finite in f32 (Metal's fast-math assumes no infinity), no
+        // expansion, no toe.
+        let mut u = ChainU::default();
+        tone_uniform(&mut u, &ToneParams::IDENTITY);
+        let off = HIGHLIGHT_OFF_STOPS as f32;
+        assert!(off.is_finite() && off >= 1e30);
+        assert_eq!(u.tone, [off, off, 0.0, 0.0]);
+        assert_eq!(u.fl, [0.0, 0.0, off, 0.0]);
+        assert!(
+            bytemuck::cast_slice::<ChainU, f32>(std::slice::from_ref(&u))
+                .iter()
+                .all(|v| v.is_finite())
         );
     }
 

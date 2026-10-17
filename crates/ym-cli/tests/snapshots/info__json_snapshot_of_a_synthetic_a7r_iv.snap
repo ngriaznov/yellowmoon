@@ -21,8 +21,7 @@ expression: v
       "amount": 102.9,
       "radius_px": 0.8
     },
-    "tint": -24.96,
-    "white_ev": 0.9149
+    "tint": -24.96
   },
   "black": [
     512.0,
@@ -80,7 +79,7 @@ expression: v
     "intensity": 100
   },
   "notes": [],
-  "pipeline_version": "0.3.0",
+  "pipeline_version": "0.4.0",
   "preview": "[preview location]",
   "raw": {
     "bits_per_sample": 14,
@@ -180,7 +179,7 @@ expression: v
     "orientation": 0,
     "output_sharpening": 100.0,
     "rolloff": {
-      "highlights": 0.5,
+      "highlights": 1.0,
       "low_light": 0.5
     },
     "saturation": 0.0,
@@ -194,7 +193,6 @@ expression: v
     "white_balance": {
       "kind": "auto"
     },
-    "white_offset_ev": 0.0,
     "white_pick": null
   },
   "status": "ok",

@@ -3,8 +3,8 @@
 //! `aces2_vectors.rs` checks the ACES 2 port on AP0 inputs; `display_transform.rs` and `chain_cpu.rs`
 //! compose the finished stage modules. Neither would notice a wrong colour space between them (the
 //! AWG4 to AP0 step, the LogC4 decode, which output uses which limiting gamut, which transfer C13
-//! applies). This file does: LogC4 code values go through `ColorChain` (identity matrix, no
-//! roll-off, zero grade, Neutral look, identity curves, ACES 2) and the result is compared with
+//! applies). This file does: LogC4 code values go through `ColorChain` (identity matrix, C7 off,
+//! zero grade, Neutral look, identity curves, ACES 2) and the result is compared with
 //! OpenColorIO 2.6.0's built-in `ARRI_LOGC4_to_ACES2065-1`, followed by the built-in ACES 2.0
 //! SDR 100 nit output transform and the built-in display transform of the same output
 //! (float32 CPU renderer). The vectors below were generated with this script (numpy and
@@ -269,14 +269,14 @@ fn expected(target: OutputTarget) -> &'static [[f64; 3]; 40] {
     }
 }
 
-/// A chain that does nothing before C12: roll-off out of reach, zero grade. The ACES 2 path applies
+/// A chain that does nothing before C12: C7 off ([`ToneParams::IDENTITY`]), zero grade. The ACES 2 path applies
 /// the display placement `2^DISPLAY_PLACEMENT_EV` before the transform (`docs/02` C12 step 1a) and
 /// OpenColorIO's vectors do not include it, so the fused matrix is `2^-k` times the identity: the
 /// placement then cancels and the chain is compared with the transform itself.
 fn bare(target: OutputTarget) -> ColorChain {
     let g = (-DISPLAY_PLACEMENT_EV).exp2();
     let scale = [[g, 0.0, 0.0], [0.0, g, 0.0], [0.0, 0.0, g]];
-    let mut p = ChainParams::new(scale, ToneParams::new(0.5, 0.0, 1.0e6, 0.0).unwrap());
+    let mut p = ChainParams::new(scale, ToneParams::IDENTITY);
     p.output = target;
     ColorChain::new(&p).unwrap()
 }

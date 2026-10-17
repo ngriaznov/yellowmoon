@@ -14,7 +14,6 @@ use ym_color::display::{
     ArriDisplayLut, ChainParams, DisplayLutInput, DisplayLutOutput, DisplayLutPrimaries,
     DisplayLutTransfer, DisplayTransform, LookSetting, OutputTarget,
 };
-use ym_color::exposure::white::WhiteLift;
 use ym_color::grade::{ColorBalance, GradeParams};
 use ym_color::look::{LookInput, LookTransform};
 use ym_color::lut::{Lut, Lut1d, Lut3d};
@@ -35,13 +34,28 @@ pub fn fused_matrix() -> Mat3 {
     m.map(|row| row.map(|v| v * gain))
 }
 
+/// C7 with the Sony clip 6.5 stops over grey (luma 16): the highlight range acts on the brightest few
+/// percent of [`camera_image`] (from 5.5 stops), the toe near black.
 pub fn tone() -> ToneParams {
     ToneParams::new(0.5, 0.5, 16.0, 0.002).expect("tone")
 }
 
-/// A tone stage that changes nothing for any sensible value (knee far above the data, no toe).
+/// The clip luma of a Sony body at the camera's exposure: 3.58 stops over middle grey (`docs/02` C7).
+pub const AUTO_CLIP_STOPS: f64 = 3.58;
+
+/// The clip luma `stops` over middle grey.
+pub fn clip_luma(stops: f64) -> f64 {
+    0.18 * stops.exp2()
+}
+
+/// C7 with the highlight range at `highlights` and the clip `clip_stops` over grey, the toe as [`tone`].
+pub fn range_tone(highlights: f64, clip_stops: f64) -> ToneParams {
+    ToneParams::new(highlights, 0.5, clip_luma(clip_stops), 0.002).expect("tone")
+}
+
+/// C7 off: no highlight range, no cap, no toe.
 pub fn identity_tone() -> ToneParams {
-    ToneParams::new(0.0, 0.0, 1.0e12, 0.0).expect("tone")
+    ToneParams::IDENTITY
 }
 
 pub fn grade_params() -> GradeParams {
@@ -329,28 +343,7 @@ pub fn cases() -> Vec<(String, ChainParams)> {
     p.display = display_lut(DisplayLutInput::LogC4, DisplayLutOutput::REC709_G24);
     p.look = Some(LookSetting::new(baked_look(), 60.0));
     v.push(("display-lut+baked-look".into(), p));
-    // The white lift (C12 step 1b): alone, with everything on, a narrow strong ramp, on the own branch of
-    // a display-baked look, and (ignored) with a display LUT.
-    let lift = WhiteLift::new(1.1, 2.8).expect("lift");
-    for t in [OutputTarget::Viewport, OutputTarget::Srgb] {
-        let mut p = base(t);
-        p.white_lift = lift;
-        v.push((format!("lift/auto/{}", t.name()), p));
-        let mut p = full(t);
-        p.white_lift = lift;
-        v.push((format!("lift/full/{}", t.name()), p));
-    }
-    let mut p = base(OutputTarget::Viewport);
-    p.white_lift = WhiteLift::new(2.6, 1.3).expect("lift");
-    v.push(("lift/strong-narrow".into(), p));
-    let mut p = full(OutputTarget::Srgb);
-    p.look = Some(LookSetting::new(baked_look(), 25.0));
-    p.white_lift = lift;
-    v.push(("lift/baked-look/25".into(), p));
-    let mut p = full(OutputTarget::Srgb);
-    p.display = display_lut(DisplayLutInput::LogC4, DisplayLutOutput::REC709_G24);
-    p.white_lift = lift;
-    v.push(("lift/display-lut-ignores-it".into(), p));
+    v.extend(range_cases());
     // The colour warp (C9b): alone, after the full grade and before the look and the curves, and
     // feeding a display LUT and a display-baked look.
     let mut p = base(OutputTarget::Viewport);
@@ -367,6 +360,44 @@ pub fn cases() -> Vec<(String, ChainParams)> {
     p.look = Some(LookSetting::new(baked_look(), 60.0));
     p.warp = warp_pins();
     v.push(("warp/baked-look/60".into(), p));
+    v
+}
+
+/// The highlight range of C7 (`docs/02`): 0, 0.5 and 1 at the clip of a Sony body at Auto (3.58 stops over
+/// grey, so a fifth of [`camera_image`] lies above the knee), with everything on, a clip inside the fade
+/// (1.6 stops: the knee stays at +1 stop and the expansion is partly faded), a clip over the ALEXA's (the
+/// Exposure 5 stops up: no expansion, only the cap, which a fifth of the pixels reach), and the range in
+/// front of a display-baked look and of a display LUT (both see it, as everything after C7 does).
+pub fn range_cases() -> Vec<(String, ChainParams)> {
+    let mut v: Vec<(String, ChainParams)> = Vec::new();
+    for r in [0.0, 0.5, 1.0] {
+        let mut p = base(OutputTarget::Viewport);
+        p.tone = range_tone(r, AUTO_CLIP_STOPS);
+        v.push((format!("range/auto/{r}/viewport"), p));
+    }
+    let mut p = base(OutputTarget::Srgb);
+    p.tone = range_tone(0.5, AUTO_CLIP_STOPS);
+    v.push(("range/auto/0.5/srgb".into(), p));
+    for t in [OutputTarget::Viewport, OutputTarget::Rec2020] {
+        let mut p = full(t);
+        p.tone = range_tone(1.0, AUTO_CLIP_STOPS);
+        v.push((format!("range/full/1/{}", t.name()), p));
+    }
+    let mut p = base(OutputTarget::Srgb);
+    p.tone = range_tone(1.0, 1.6);
+    v.push(("range/fade/1.6".into(), p));
+    let mut p = base(OutputTarget::Srgb);
+    p.matrix = fused_matrix().map(|row| row.map(|x| x * 32.0));
+    p.tone = range_tone(0.5, AUTO_CLIP_STOPS + 5.0);
+    v.push(("range/over-the-cap".into(), p));
+    let mut p = full(OutputTarget::Srgb);
+    p.tone = range_tone(0.5, AUTO_CLIP_STOPS);
+    p.look = Some(LookSetting::new(baked_look(), 25.0));
+    v.push(("range/baked-look/25".into(), p));
+    let mut p = full(OutputTarget::Srgb);
+    p.tone = range_tone(1.0, AUTO_CLIP_STOPS);
+    p.display = display_lut(DisplayLutInput::LogC3Ei800, DisplayLutOutput::REC709_G24);
+    v.push(("range/display-lut".into(), p));
     v
 }
 

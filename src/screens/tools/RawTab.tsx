@@ -28,6 +28,10 @@ export function cameraNote(camera: CameraInfo): string {
 export const REDUCED_NOTE =
   "This file was saved in the camera as Lossless M or S. The camera has already processed it, so colour emulation is approximate. Use Lossless L or uncompressed for best results.";
 
+/** The note under the Range card's sliders (`docs/11-ui.md` §Photos, "Range card"). */
+export const RANGE_NOTE =
+  "Highlights moves the brightest tones the camera recorded: 0 keeps them where they were, 1 takes them to white. Low light softens the noise near black.";
+
 const SWITCHES: ReadonlyArray<[keyof DecodeOptions, string]> = [
   ["neural_demosaic", "Neural demosaic"],
   ["highlight_recovery", "Highlight recovery"],
@@ -35,7 +39,7 @@ const SWITCHES: ReadonlyArray<[keyof DecodeOptions, string]> = [
   ["chromatic_aberration", "Chromatic aberration"],
 ];
 
-/** RAW: the camera and its profile, the decode switches and the roll-off sliders. */
+/** RAW: the camera and its profile, the decode switches and the range sliders. */
 export const RawTab = memo(function RawTab({ store, photo, rs }: TabProps) {
   const { camera } = photo;
   const { decode, rolloff } = rs.settings;
@@ -62,14 +66,14 @@ export const RawTab = memo(function RawTab({ store, photo, rs }: TabProps) {
           ))}
         </Rows>
       </Card>
-      <Card title="Roll-off" action={<ResetLink size="card" onClick={() => void store.update({ rolloff: { highlights: 0.5, low_light: 0.5 } })} />}>
+      <Card title="Range" action={<ResetLink size="card" onClick={() => void store.update({ rolloff: { highlights: 1, low_light: 0.5 } })} />}>
         <Slider
           label="Highlights"
           value={rolloff.highlights}
           min={0}
           max={1}
           step={0.01}
-          defaultValue={0.5}
+          defaultValue={1}
           format={formats.fixed2}
           onChange={(highlights, final) => void store.update({ rolloff: { ...rolloff, highlights } }, final)}
         />
@@ -83,6 +87,7 @@ export const RawTab = memo(function RawTab({ store, photo, rs }: TabProps) {
           format={formats.fixed2}
           onChange={(low_light, final) => void store.update({ rolloff: { ...rolloff, low_light } }, final)}
         />
+        <RowNote>{RANGE_NOTE}</RowNote>
       </Card>
     </>
   );

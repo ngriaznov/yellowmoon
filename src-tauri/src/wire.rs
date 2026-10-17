@@ -486,10 +486,12 @@ pub struct DecodeOptions {
     pub chromatic_aberration: bool,
 }
 
-/// RAW › Roll-off, each 0 to 1; 0.5 by default.
+/// RAW › Range (`docs/02` C7), each 0 to 1: Highlights 1 and Low light 0.5 by default. The name
+/// `rolloff` is kept from the earlier roll-off card.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Type)]
 pub struct Rolloff {
-    /// Highlight shoulder length.
+    /// The highlight range: where the camera's clipping point lands, from where it was recorded (0)
+    /// to white, the clip of an ALEXA at EI 800 (1).
     pub highlights: Num,
     /// Low-light toe strength.
     pub low_light: Num,
@@ -566,9 +568,6 @@ pub struct DevelopSettings {
     pub shadows: Num,
     /// -100 to 100.
     pub white: Num,
-    /// Light › White › Offset: stops added to the automatic white lift, -3 to +3, default 0 (the
-    /// automatic amount; a plain number, not Auto).
-    pub white_offset_ev: Num,
     /// -100 to 100.
     pub black: Num,
     /// Colour › White balance, the light presets.
@@ -592,7 +591,7 @@ pub struct DevelopSettings {
     pub curve: Curves,
     /// RAW › Decode switches.
     pub decode: DecodeOptions,
-    /// RAW › Roll-off.
+    /// RAW › Range: the highlight range and the low-light toe.
     pub rolloff: Rolloff,
     /// Crop; null when the photo isn't cropped.
     pub crop: Option<Crop>,
@@ -685,11 +684,11 @@ pub struct DecodePatch {
     pub chromatic_aberration: Option<bool>,
 }
 
-/// Roll-off amounts to change.
+/// RAW › Range amounts to change.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize, Type)]
 #[serde(deny_unknown_fields)]
 pub struct RolloffPatch {
-    /// New highlight shoulder.
+    /// New highlight range.
     #[serde(default)]
     pub highlights: Option<Num>,
     /// New low-light toe.
@@ -762,9 +761,6 @@ pub struct SettingsPatch {
     /// New white.
     #[serde(default)]
     pub white: Option<Num>,
-    /// New white lift offset, in stops.
-    #[serde(default)]
-    pub white_offset_ev: Option<Num>,
     /// New black.
     #[serde(default)]
     pub black: Option<Num>,
@@ -798,7 +794,7 @@ pub struct SettingsPatch {
     /// Decode switches to change.
     #[serde(default)]
     pub decode: Option<DecodePatch>,
-    /// Roll-off amounts to change.
+    /// RAW › Range amounts to change.
     #[serde(default)]
     pub rolloff: Option<RolloffPatch>,
     /// New crop; `null` removes it.
@@ -838,7 +834,6 @@ impl Serialize for SettingsPatch {
         entry(&mut map, "highlights", &self.highlights)?;
         entry(&mut map, "shadows", &self.shadows)?;
         entry(&mut map, "white", &self.white)?;
-        entry(&mut map, "white_offset_ev", &self.white_offset_ev)?;
         entry(&mut map, "black", &self.black)?;
         entry(&mut map, "light_source", &self.light_source)?;
         entry(&mut map, "white_balance", &self.white_balance)?;
@@ -901,8 +896,6 @@ pub struct NoiseModel {
 pub struct AutoEstimates {
     /// `EV_auto`.
     pub exposure_ev: Num,
-    /// The automatic white lift in stops (0 when nothing is above +1 stop).
-    pub white_ev: Num,
     /// The Auto Kelvin.
     pub kelvin: Num,
     /// The Auto tint.
@@ -938,10 +931,6 @@ pub struct ResolvedValues {
     pub shadows: Num,
     /// `white`.
     pub white: Num,
-    /// `white_offset_ev`.
-    pub white_offset_ev: Num,
-    /// The white lift in effect in stops: the automatic amount plus the offset, never below 0.
-    pub white_ev: Num,
     /// `black`.
     pub black: Num,
     /// `light_source`.

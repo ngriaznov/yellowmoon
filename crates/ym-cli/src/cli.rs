@@ -127,11 +127,6 @@ pub struct RenderArgs {
     /// Black point, -100 to 100.
     #[arg(long, value_name = "N", value_parser = signed_percent, allow_negative_numbers = true, help_heading = H_LIGHT)]
     pub black: Option<f64>,
-    /// Stops added to each photo's automatic white lift, -3 to 3. 0 is the automatic amount; an
-    /// offset that takes the lift to 0 or below switches it off (`--white-offset -3` always does).
-    /// The lift only acts with the built-in ACES 2 display rendering, and a DNG carries it.
-    #[arg(long, value_name = "EV", value_parser = white_offset, allow_negative_numbers = true, help_heading = H_LIGHT)]
-    pub white_offset: Option<f64>,
 
     /// White balance: `auto`, or a temperature in kelvin (2000 to 11000) with an optional tint
     /// (-50 to 50), as `5200` or `5200,4`.
@@ -167,7 +162,8 @@ pub struct RenderArgs {
     /// Switch the chromatic-aberration correction off.
     #[arg(long, help_heading = H_RAW)]
     pub no_ca: bool,
-    /// Roll-off of the highlights and of the low light, 0 to 1 each, as `0.5,0.5`.
+    /// Highlight range and low-light toe, 0 to 1 each, as `1,0.5` (the defaults). Highlights: where the camera's
+    /// clipping point lands, from where it was recorded (0) to white, the clip of an ALEXA at EI 800 (1).
     #[arg(long, value_name = "HIGHLIGHTS,LOW-LIGHT", value_parser = rolloff, help_heading = H_RAW)]
     pub rolloff: Option<RolloffArg>,
     /// Force a camera profile, for comparisons (for example `sony-ilce-7rm4`).
@@ -379,9 +375,9 @@ pub enum SharpenArg {
 /// `--rolloff`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RolloffArg {
-    /// Highlight roll-off, 0 to 1.
+    /// The highlight range, 0 to 1 (`docs/02` C7).
     pub highlights: f64,
-    /// Low-light roll-off, 0 to 1.
+    /// The low-light toe, 0 to 1.
     pub low_light: f64,
 }
 
@@ -482,15 +478,11 @@ fn output_sharpening(text: &str) -> Result<f64, String> {
     in_range(text, "the output sharpening", 0.0, 200.0)
 }
 
-fn white_offset(text: &str) -> Result<f64, String> {
-    in_range(text, "the white offset", -3.0, 3.0)
-}
-
 fn rolloff(text: &str) -> Result<RolloffArg, String> {
     let p = parts(text, 2, "`HIGHLIGHTS,LOW-LIGHT`")?;
     Ok(RolloffArg {
-        highlights: in_range(p[0], "the highlight roll-off", 0.0, 1.0)?,
-        low_light: in_range(p[1], "the low-light roll-off", 0.0, 1.0)?,
+        highlights: in_range(p[0], "the highlight range", 0.0, 1.0)?,
+        low_light: in_range(p[1], "the low-light toe", 0.0, 1.0)?,
     })
 }
 

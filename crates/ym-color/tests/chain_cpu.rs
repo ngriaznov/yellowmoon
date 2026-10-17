@@ -24,7 +24,6 @@ use ym_color::display::{
     Frame, Layout, LookSetting, OutputTarget, View, aces2_input_matrix,
 };
 use ym_color::encode::{self, OutputSpace};
-use ym_color::exposure::white::WhiteLift;
 use ym_color::gamut::{LinearAwg4, LinearRec709, matrices};
 use ym_color::grade::{ColorBalance, Grade, GradeParams, grade_luma};
 use ym_color::logc::{LogC4, logc4_decode_rgb, logc4_encode_rgb};
@@ -65,12 +64,14 @@ fn fused_matrix() -> Mat3 {
     m.map(|row| row.map(|v| v * gain))
 }
 
+/// C7 with the clip where a Sony body's is at Auto (3.58 stops over grey, luma 2.15): the highlight
+/// range acts from 2.58 stops (1.08) up, the ALEXA cap from 7.64 (35.9).
 fn tone() -> ToneParams {
-    ToneParams::new(0.5, 0.5, 16.0, 0.002).unwrap()
+    ToneParams::new(0.5, 0.5, 0.18 * 3.58_f64.exp2(), 0.002).unwrap()
 }
 
 /// Representative camera pixels: greys over many stops, saturated colours, near black, highlights
-/// into the roll-off, and a slightly negative sample.
+/// into the highlight range and up to the cap, and a slightly negative sample.
 fn pixels() -> Vec<Vec3> {
     let mut v = vec![
         [0.18, 0.18, 0.18],
@@ -273,8 +274,9 @@ fn check_toggle(name: &str, change: impl FnOnce(&mut ChainParams), first_changed
     let mut other = base.clone();
     change(&mut other);
     let (a, b) = (chain(&base), chain(&other));
-    // A mid-tone, moderately saturated pixel, and a bright one for the roll-off.
-    for px in [[0.4, 0.25, 0.15], [9.0, 7.0, 5.0], [0.06, 0.05, 0.09]] {
+    // A mid-tone, moderately saturated pixel, a bright one in the highlight range (3.5 stops over grey,
+    // under the clip, so it is not display white) and a dark one.
+    for px in [[0.4, 0.25, 0.15], [2.0, 1.6, 1.2], [0.06, 0.05, 0.09]] {
         let same = same_stages(&a, &b, px);
         for (i, same) in same.iter().enumerate() {
             if i < first_changed {
@@ -759,7 +761,7 @@ fn near_display_white_a_tinted_colour_keeps_its_tint_in_the_dng() {
         .unwrap(),
     );
     let identity = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
-    let mut p = ChainParams::new(identity, ToneParams::new(0.5, 0.0, 1.0e6, 0.0).unwrap());
+    let mut p = ChainParams::new(identity, ToneParams::IDENTITY);
     p.output = OutputTarget::Srgb;
     p.display = display;
     let c = chain(&p);
@@ -979,20 +981,19 @@ fn the_before_view_is_the_camera_default_matrix_curve_and_encode() {
 #[test]
 fn the_before_view_ignores_every_setting_of_the_chain() {
     let rich = chain(&before_params());
-    // Another fused matrix (exposure and white balance), tone, grade, look, curves, display and white
-    // lift: the Before view is bit-identical, for every output it is asked for.
+    // Another fused matrix (exposure and white balance), tone (the highlight range among it), grade,
+    // look, curves and display: the Before view is bit-identical, for every output it is asked for.
     for target in OutputTarget::ALL {
         let mut a = before_params();
         a.output = target;
         let mut b = ChainParams::new(
             linalg::mul(&fused_matrix(), &linalg::diag([1.3, 0.9, 0.7]))
                 .map(|r| r.map(|v| v * 2.0)),
-            ToneParams::new(0.2, 0.9, 16.0, 0.01).unwrap(),
+            ToneParams::new(1.0, 0.9, 2.15, 0.01).unwrap(),
         );
         b.camera_default = camera_default();
         b.output = target;
         b.display = ym_color::display::DisplayTransform::Aces2;
-        b.white_lift = WhiteLift::new(0.8, 0.5).unwrap();
         b.dither = false;
         let (a, b) = (chain(&a), chain(&b));
         for px in pixels() {
@@ -1301,7 +1302,7 @@ fn lab_of_display_p3(encoded: Vec3) -> Vec3 {
 #[test]
 fn neutral_ramp_through_aces2_is_monotone_and_stays_neutral() {
     let identity = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
-    let tone_off = ToneParams::new(0.5, 0.0, 1.0e6, 0.0).unwrap();
+    let tone_off = ToneParams::IDENTITY;
     let c = chain(&ChainParams::new(identity, tone_off));
     // From -8 to +7 stops around grey in third-stop steps.
     let steps: Vec<f64> = (0..=45).map(|i| -8.0 + f64::from(i) / 3.0).collect();
@@ -1358,10 +1359,7 @@ fn neutral_ramp_through_aces2_is_monotone_and_stays_neutral() {
 fn aces2_white_point_matches_the_encoding_white() {
     // A D65-neutral AWG4 white lands on the display's D65 white: equal channels, near 1.
     let identity = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
-    let c = chain(&ChainParams::new(
-        identity,
-        ToneParams::new(0.5, 0.0, 1.0e6, 0.0).unwrap(),
-    ));
+    let c = chain(&ChainParams::new(identity, ToneParams::IDENTITY));
     let white = c.apply_pixel([16.0, 16.0, 16.0]);
     assert!(
         white
@@ -1376,7 +1374,7 @@ fn c13_srgb_differs_from_the_aces2_references_moncurve_by_under_1e5() {
     // reference's continuous moncurve (slope 12.9232 below 0.0030399). Bound the difference, which peaks
     // near linear 0.00304 at 9.8e-6 (0.0025 of an 8-bit code, 0.64 of a 16-bit code).
     let identity = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
-    let tone_off = ToneParams::new(0.5, 0.0, 1.0e6, 0.0).unwrap();
+    let tone_off = ToneParams::IDENTITY;
     for target in OutputTarget::ALL {
         let mut p = ChainParams::new(identity, tone_off);
         p.output = target;
