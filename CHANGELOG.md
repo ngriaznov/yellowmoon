@@ -21,6 +21,10 @@ Highlights that end where an ALEXA's would: the camera's clipping point can be p
 
 - **The white lift** (Light › White, its Offset slider, and the White row of the Automatic card). The highlight range takes its place. A settings file or `ym render --settings` document that still names `white_offset_ev` is refused; remove the key. `ym render --white-offset` is gone.
 
+### Fixed
+
+- A cancelled export gives its graphics memory back before the next picture is drawn. Work of the export that had not started yet used to keep its memory until its own turn in the queue.
+
 ## [0.1.9] - 2026-10-17
 
 A colour warp on the Colour tab: pins that move chosen colours across a colour plane, as in DaVinci Resolve.
