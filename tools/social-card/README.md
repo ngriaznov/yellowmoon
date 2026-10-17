@@ -22,7 +22,7 @@ The run fails when Figtree did not load, an image is missing, any text is closer
 
 ## The page
 
-`card.html` is one file with inline CSS and an SVG mark. Its colours come from the dark glass interface (`src/styles/glass-c2.css`): the paper, the still, cool aurora and the glass frame. Yellow is only the mark. `render.mjs` puts the font (`design/fonts/figtree-latin-wght-normal.woff2`, OFL) in as a data URI when it renders, because a page opened from a file may not load a font from another file.
+`card.html` is one file with inline CSS and an SVG mark. Its colours come from the dark glass interface (`src/styles/glass-c2.css`): the paper, the still, neutral graphite aurora (grey blobs, no hue, since 0.1.8) and the glass frame. Yellow is only the mark. `render.mjs` puts the font (`design/fonts/figtree-latin-wght-normal.woff2`, OFL) in as a data URI when it renders, because a page opened from a file may not load a font from another file.
 
 Options (`node tools/social-card/render.mjs --help`):
 

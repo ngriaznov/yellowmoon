@@ -23,17 +23,18 @@
 <style>
 :root {
   /* The C2 dark-glass tokens (src/styles/glass.css .dark, glass-c2.css html.dark on origin/claude/glasscn-ui). */
-  --aurora-base: oklch(0.125 0.014 262);
-  --aurora-1: oklch(0.36 0.1 262);   /* deep blue */
-  --aurora-2: oklch(0.4 0.08 212);   /* teal */
-  --aurora-3: oklch(0.34 0.09 298);  /* violet */
+  /* The neutral graphite ground of the interface (0.1.8, src/styles/glass-c2.css): grey blobs, no hue. */
+  --aurora-base: oklch(0.116 0 0);
+  --aurora-1: oklch(0.326 0 0);
+  --aurora-2: oklch(0.339 0 0);
+  --aurora-3: oklch(0.315 0 0);
   --paper: #0f0f10;
   --brand: #ffc20e;                  /* the moon, and one small detail. Never a large area. */
   --ink: oklch(0.985 0 0);
   --ink-2: rgb(255 255 255 / 0.62);  /* tagline */
   --ink-3: rgb(255 255 255 / 0.5);   /* small line */
   --rim: rgb(255 255 255 / 0.16);
-  --glass-tint: oklch(0.24 0.012 285);
+  --glass-tint: oklch(0.24 0 0);
   --font: "Figtree", sans-serif;
   --margin: 64px;                    /* nothing but pictures closer than this to an edge */
 }
@@ -115,7 +116,7 @@ body[data-variant="A"] .v-a, body[data-variant="B"] .v-b, body[data-variant="C"]
 .v-c .shade {
   position: absolute; inset: 0;
   background:
-    linear-gradient(0deg, rgb(11 13 20 / 0.9) 0%, rgb(11 13 20 / 0.72) 18%, rgb(11 13 20 / 0.4) 36%, rgb(11 13 20 / 0.12) 54%, rgb(11 13 20 / 0) 70%);
+    linear-gradient(0deg, rgb(12 12 12 / 0.9) 0%, rgb(12 12 12 / 0.72) 18%, rgb(12 12 12 / 0.4) 36%, rgb(12 12 12 / 0.12) 54%, rgb(12 12 12 / 0) 70%);
 }
 .v-c .copy { position: absolute; left: var(--margin); bottom: var(--margin); }
 .v-c .row { display: flex; align-items: center; gap: 20px; }
@@ -123,7 +124,7 @@ body[data-variant="A"] .v-a, body[data-variant="B"] .v-b, body[data-variant="C"]
 .v-c .wordmark { font-size: 86px; }
 .v-c .tagline { margin-top: 20px; font-size: 32px; line-height: 1.2; color: rgb(255 255 255 / 0.74); }
 .v-c .small { position: absolute; right: var(--margin); bottom: var(--margin); font-size: 19px; color: rgb(255 255 255 / 0.62);
-  padding: 9px 18px 10px; border-radius: 999px; border: 1px solid var(--rim); background: rgb(20 22 30 / 0.5);
+  padding: 9px 18px 10px; border-radius: 999px; border: 1px solid var(--rim); background: rgb(22 22 22 / 0.5);
   -webkit-backdrop-filter: blur(20px) saturate(160%); backdrop-filter: blur(20px) saturate(160%); }
 </style>
 </head>
@@ -147,12 +148,12 @@ body[data-variant="A"] .v-a, body[data-variant="B"] .v-b, body[data-variant="C"]
     <symbol id="mark-tile" viewBox="50 50 412 412">
       <rect x="51" y="51" width="410" height="410" rx="79" fill="url(#tile-fill)"/>
       <rect x="52.5" y="52.5" width="407" height="407" rx="77.5" fill="none" stroke="url(#tile-rim)" stroke-width="3"/>
-      <circle cx="256" cy="256" r="135" fill="#08090c" fill-opacity="0.9"/>
+      <circle cx="256" cy="256" r="135" fill="#0a0a0a" fill-opacity="0.9"/>
       <circle cx="256" cy="256" r="135" fill="none" stroke="#fff" stroke-opacity="0.1" stroke-width="2"/>
       <circle cx="256" cy="256" r="101" fill="url(#disc)"/>
     </symbol>
     <symbol id="mark-bare" viewBox="119 119 274 274">
-      <circle cx="256" cy="256" r="135" fill="#08090c" fill-opacity="0.62"/>
+      <circle cx="256" cy="256" r="135" fill="#0a0a0a" fill-opacity="0.62"/>
       <circle cx="256" cy="256" r="135" fill="none" stroke="#fff" stroke-opacity="0.22" stroke-width="3"/>
       <circle cx="256" cy="256" r="101" fill="url(#disc)"/>
     </symbol>
