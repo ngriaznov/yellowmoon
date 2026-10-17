@@ -118,6 +118,7 @@ const RENDER_STATS: RenderStats = { ms: 42, path: "neural", space: "display_p3",
 /** What "Auto" resolves to for every photo in the mock. */
 export const MOCK_ESTIMATES: AutoEstimates = {
   exposure_ev: 0.3,
+  white_ev: 0.8,
   kelvin: 5450,
   tint: 0,
   light_class: "daylight",
@@ -343,6 +344,7 @@ export function defaultSettings(look: LookId = NEUTRAL): DevelopSettings {
     highlights: 0,
     shadows: 0,
     white: 0,
+    white_offset_ev: 0,
     black: 0,
     light_source: "auto",
     white_balance: { kind: "auto" },
@@ -385,6 +387,7 @@ export function clampSettings(s: DevelopSettings): DevelopSettings {
     highlights: pct(s.highlights),
     shadows: pct(s.shadows),
     white: pct(s.white),
+    white_offset_ev: clamp(s.white_offset_ev, -3, 3),
     black: pct(s.black),
     saturation: pct(s.saturation),
     output_sharpening: clamp(s.output_sharpening, 0, 200),
@@ -445,6 +448,7 @@ export function resolveSettings(photoId: PhotoId, settings: DevelopSettings, est
   const values: ResolvedValues = {
     ...rest,
     exposure_ev: exposure.kind === "manual" ? exposure.ev : estimates.exposure_ev,
+    white_ev: clamp(estimates.white_ev + settings.white_offset_ev, 0, 3),
     kelvin: white_balance.kind === "manual" ? white_balance.kelvin : (preset?.kelvin ?? estimates.kelvin),
     tint: white_balance.kind === "manual" ? white_balance.tint : (preset?.tint ?? estimates.tint),
     sharpen:
@@ -1817,10 +1821,11 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     rerunAuto: (photoId) =>
       run("rerunAuto", () => {
         const rec = photo(photoId);
-        // Exposure, white balance (including the light preset and a picked white) and noise.
+        // Exposure, white (the lift's offset), white balance (including the light preset and a picked white) and noise.
         rec.settings = {
           ...rec.settings,
           exposure: { kind: "auto" },
+          white_offset_ev: 0,
           light_source: "auto",
           white_balance: { kind: "auto" },
           white_pick: null,
