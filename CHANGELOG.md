@@ -9,6 +9,12 @@ moves the entries below from Unreleased into a dated section for that version.
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.1.8] - 2026-10-17
+
+A neutral graphite interface, so nothing on screen tints your photo, with centred tabs, smaller slider knobs and a smaller point on the colour wheels.
+
 ### Changed
 
 - The interface is now a neutral graphite grey instead of a cool blue. Nothing behind the panes or in them has a hue any more, so the colour on screen is your photo's, the yellow buttons' and the tabs'.
