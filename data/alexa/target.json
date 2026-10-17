@@ -14,7 +14,7 @@
       "52 measured camera spectral sensitivities and 190 training reflectances (rawtoaces-data, Apache-2.0)"
     ],
     "licence": "Apache-2.0 (ours), derived from AMPAS-licensed and Apache-2.0 data; see NOTICE",
-    "fit_script": "research/alexa-ssf/scripts/estimate_alexa.py (copied unchanged to training/alexa/estimate_alexa.py)",
+    "fit_script": "training/alexa/estimate_alexa.py",
     "recommended_variant": {
       "prior": "all",
       "K": 4,

@@ -1,4 +1,4 @@
-"""Evaluation of the sensor map: port of ``research/alexa-ssf/scripts/sony_profiles.py``.
+"""Evaluation of the sensor map, as published in ``research/alexa-ssf/out/sony_profiles.csv``.
 
 "Own" and "A7R IV" numbers of ``docs/03`` and ``docs/13`` ("Camera profiles"): the ΔE00 between
 the ALEXA rendering of a scene and the rendering of the same scene from a Sony body through a
@@ -12,7 +12,7 @@ published ``sony_profiles.csv``, which was produced with the research objective.
 
 Both images go through ARRI's matrix at the light's CCT (``ssf_core.interpolate_matrix``).
 
-    python3 -m training.sensor_map.evaluate           # reproduces research/.../sony_profiles.csv
+    python3 -m training.sensor_map.evaluate           # reproduces research/alexa-ssf/out/sony_profiles.csv
 
 Also holds the pieces the gate reuses: :func:`render_error_with_matrix`.
 """

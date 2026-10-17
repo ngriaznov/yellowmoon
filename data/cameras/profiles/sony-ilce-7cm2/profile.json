@@ -2938,8 +2938,8 @@
       "sha256": "3d09bc262c47a76622a936e4b416ccfe459a0012e161109b6145916febbf32c6",
       "note": "ALEV III spectral sensitivity ESTIMATE (not a measurement), data/alexa/target.json"
     },
-    "fit_script": "training/sensor_map/fit.py@bcc8aa7161298b86752f44f998f0df198320bac7",
-    "fit_sources_sha256": "99c681770e12c05be794c8e45622b6d3ed6546e4144ff1ca09ad94260b13db0d",
+    "fit_script": "training/sensor_map/fit.py@72e5942c89ef606d061b842e7157bfa328531da3",
+    "fit_sources_sha256": "faa43bab7732ee65830462a44e157202ee746a96e4e3d83764e9f35c9041b537",
     "sensor_map_objective": "lab-optimal white-preserving 3x3 (docs/02 §C2, decision 2026-10-12)",
     "fit_solver": "scipy 1.18.1 optimize.least_squares(method='lm', analytic Jacobian, xtol=1e-15, ftol=1e-15, gtol=1e-15, max_nfev=500) from the Y^(-2/3) weighted-RGB solution, then up to 8 Gauss-Newton steps (stop below 1e-13); numpy 2.5.3",
     "colour_science": "0.4.7",

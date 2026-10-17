@@ -1,7 +1,7 @@
 """Estimate ALEXA (ALEV III, SUP 3.x) spectral sensitivities from ARRI's
 published CCT-dependent native -> ACES AP0 matrices, and run diagnostics.
 
-Copied from research/alexa-ssf/scripts/estimate_alexa.py. The numerics are unchanged; the
+The numerics are those of the published estimate (research/alexa-ssf/README.md); the
 inputs come from testdata/sources (tools/fetch/spectral.sh) and the outputs go to
 testdata/out/alexa/estimate/ (git-ignored), not over the committed data/alexa/ files.
 Compare with ``python3 -m training.alexa.compare_estimate``. ~10 min on 4 cores.

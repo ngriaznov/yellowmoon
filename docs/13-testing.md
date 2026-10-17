@@ -167,7 +167,7 @@ Independent readers check the set: LibRaw (rawpy) reproduces the mosaic exactly 
 
 | Area | Test | Gate | Milestone |
 |---|---|---|---|
-| ALEXA curve | leave-one-camera-out on 52 cameras, reproduced in CI from `research/alexa-ssf/scripts/` | median RFSE ≤ 3%; emulation ΔE00 median ≤ 0.3 | M1 |
+| ALEXA curve | leave-one-camera-out on 52 cameras, reproduced in CI by `training/alexa/` (`.github/workflows/alexa-curve.yml`) | median RFSE ≤ 3%; emulation ΔE00 median ≤ 0.3 | M1 |
 | ALEXA curve | compare with HdM SXT curve and CIC 2015 figure, if obtainable | report only | M1 |
 | Sensor map | 99 CES samples × 9 held-out lights | per-light ΔE00 median ≤ 0.5, p95 ≤ 1.2 | M1 |
 | Illuminant estimate | held-out synthetic scenes; Cube++ test split; NUS-8 Sony (report only) | median angular error ≤ 2° synthetic, ≤ 3° Cube++; sensor-map gate holds with estimated lights | M1 |

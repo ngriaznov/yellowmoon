@@ -2,19 +2,13 @@
 
 An open, shippable stand-in for the ALEXA sensor's spectral sensitivities, for the Sony A1 → ALEXA emulation project. **It is an estimate, not a measurement.** It is fitted so that the colour matrices these curves would receive match ARRI's own ALEXA matrices at 17 colour temperatures, using a spectral prior built from 52 measured camera curves.
 
-![Estimated ALEXA curves compared with the measured Sony A7R IV and ARRI D-21](out/alexa_alev3_estimate.png)
-
 ## Files
 
 | File | What it is |
 |---|---|
-| `out/alexa_alev3_estimate_380_780_5.csv` | Recommended curve, 380–780 nm at 5 nm, each channel peak = 1, with min/max/std across 24 variants |
-| `out/alexa_alev3_estimate_380_780_5.json` | Same curve in rawtoaces-data's JSON format (drop-in next to the Sony files) |
-| `out/variants.csv` | All 24 ensemble members (for training-time augmentation or sensitivity tests) |
-| `out/diagnostics.json` | Every number quoted below |
-| `out/loo_results.csv` | Per-camera leave-one-out validation results |
-| `scripts/` | Full pipeline: `fetch_sources.sh`, `ssf_core.py`, `validate_loo.py`, `estimate_alexa.py`, `plot_curves.py` |
-| `NOTICE` | Required attributions (AMPAS license for the ARRI matrices, Apache-2.0 rawtoaces-data) |
+| `out/sony_profiles.csv` | The sensor-map result below (each body's own profile and the A7R IV profile against the ALEXA estimate, 138 colours, 9 lights). `crates/ym-profiles/tests/sensor_map_eval.rs` and `training/sensor_map/evaluate.py` reproduce it |
+
+The curve itself ships in `data/alexa/` (`alexa_alev3_estimate_380_780_5.json`, the `.csv` with the ensemble band, `variants.csv`, `target.json`). The scripts live in `training/alexa/` (estimate and leave-one-out validation) and `training/sensor_map/evaluate.py` (the sensor-map result).
 
 Channel scale is not identifiable from white-balanced matrices, so each channel is normalised to peak 1. That doesn't matter for emulation, because both cameras are white-balanced before mapping and only the curve shapes enter.
 
@@ -64,7 +58,7 @@ Channel scale is not identifiable from white-balanced matrices, so each channel 
 
 - **Peaks:** R 590, G 530, B 460 nm, the same as the A7R IV. The two curves are 4.4% RFSE apart, while each is about 9% from the D-21.
 - **Broader red shoulder than the A7R IV** from 610 to 660 nm: 0.44 vs 0.26 of peak at 650 nm. That fits ARRI's statements that the ALEXA keeps some far red for skin.
-- **Beyond about 660 nm the curve is mostly the prior.** Human colour matching is nearly blind there, so the matrices barely constrain it. The estimate falls to near zero by 690 nm, but ALEXA's hot mirror is reported near 700 nm. Treat 660–720 nm as unknown (shaded on the chart; the ensemble spans 0–0.08 at 680 nm).
+- **Beyond about 660 nm the curve is mostly the prior.** Human colour matching is nearly blind there, so the matrices barely constrain it. The estimate falls to near zero by 690 nm, but ALEXA's hot mirror is reported near 700 nm. Treat 660–720 nm as unknown (the ensemble spans 0–0.08 at 680 nm).
 
 ## First result for the sensor map: A7R IV → ALEXA estimate
 
@@ -82,7 +76,7 @@ Fitted on the 190 training reflectances, scored on the 99 CES. Both images are r
 | Hybrid LED (LED-BH1) | 1.43 / 2.72 | 1.16 / 2.77 | 0.20 / 0.68 | 0.20 / 0.64 |
 | RGB LED (LED-RGB1) | 1.39 / 3.33 | 1.13 / 2.73 | 0.25 / 0.80 | 0.22 / 0.72 |
 
-**Readings for the plan:**
+**Readings:**
 - **The sensor difference itself is moderate:** about 1.4 ΔE00 median and up to about 3.3 at p95 with no mapping.
 - **Conditioning on the light is the big win.** One global 3×3 works only near the light it was fitted at; tungsten stays at 1.19 / 2.62. A 3×3 chosen per light brings every case to 0.16–0.45 median and at most 1.09 at p95.
 - **Non-linearity adds little.** Root-polynomial per light gains another 0.00–0.13 median. A small model that predicts per-light coefficients from the illuminant estimate is enough; a large per-pixel network isn't justified by this data.
@@ -95,7 +89,7 @@ Fitted on the 190 training reflectances, scored on the 99 CES. Both images are r
 - The far-red tail above about 660 nm is not determined by the data.
 - The leave-one-out tests assume ARRI made its matrices the P-2013-001 way. A different ARRI recipe would add error not captured here; wrongly assuming the illuminant model cost +0.4% RFSE in the test.
 
-## Next checks
+## Checks not done
 
 1. Download HdM's `camera_responses.zip` in a browser and compare its ALEXA SXT curve against this estimate and against ARRI's 17 matrices (`ssf_core.camera_matrices` does this in one call).
 2. Digitise Fig. 1 of Leonhardt & Brendel (CIC 2015) and compare. It is ARRI's own five-camera mean.
@@ -104,13 +98,14 @@ Fitted on the 190 training reflectances, scored on the 99 CES. Both images are r
 ## Reproduce
 
 ```bash
-bash scripts/fetch_sources.sh
-pip install colour-science==0.4.7 scipy matplotlib
-python3 scripts/validate_loo.py      # ~5 min on 2 cores
-python3 scripts/estimate_alexa.py    # ~5 min on 2 cores
-python3 scripts/plot_curves.py
+tools/fetch/spectral.sh                       # the inputs, into testdata/ (pinned commits, SHA-256 checked)
+python3 -m training.alexa.validate_loo        # leave-one-camera-out, then: python3 -m training.alexa.check_loo
+python3 -m training.alexa.estimate_alexa      # the curve and its ensemble, then compare_estimate against data/alexa/
+python3 -m training.sensor_map.evaluate       # reproduces out/sony_profiles.csv
 ```
+
+colour-science 0.4.7 (`training/README.md`).
 
 ## License
 
-The scripts and the derived curves are offered under Apache-2.0. The curves are derived from AMPAS-licensed ARRI matrices and Apache-2.0 rawtoaces-data. `NOTICE` carries the required attributions and must travel with the data. No endorsement by ARRI or A.M.P.A.S. is implied.
+The scripts and the derived curves are offered under Apache-2.0. The curves are derived from AMPAS-licensed ARRI matrices and Apache-2.0 rawtoaces-data; the repository's `NOTICE` (items 1 to 3) carries the required attributions. No endorsement by ARRI or A.M.P.A.S. is implied.

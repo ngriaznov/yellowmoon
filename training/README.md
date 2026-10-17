@@ -29,17 +29,17 @@ Python 3.12 is what CI uses; 3.13 gives the same numbers. Set `YM_TESTDATA` to m
 | `synth/` | the synthetic golden set: spectral scenes, noise, ground truth (stand-in for the CC0 corpus): see `synth/README.md` |
 | `white_scale/` | the white scale of stand-in bodies (`docs/03`): our own reader of the camera's white-balance presets (`sr2.py`), the two references and the fit (`reference.py`, `fit.py`), the table that `build_registry` copies into the registry (`white_scale.json`), the published colour matrices it cross-checks with (`colour_matrices.json`) |
 
-`alexa/ssf_core.py`, `validate_loo.py` and `estimate_alexa.py` are copies of `research/alexa-ssf/scripts/` with only the
-input and output locations changed; `research/` stays as it is.
+`alexa/ssf_core.py`, `validate_loo.py` and `estimate_alexa.py` are the scripts of the ALEXA curve estimate
+(`research/alexa-ssf/README.md`: method and validation), with their numerics as they were published.
 
 ## Commands
 
 | Command | Does | Time (4 cores) |
 |---|---|---|
-| `python3 -m training.alexa.validate_loo` | leave-one-camera-out over the 52 cameras → `testdata/out/alexa/loo_results.csv` (byte-identical to `research/alexa-ssf/out/loo_results.csv`); `--quick` runs only the shipped variant (K=4, λ=1) | 5–10 min (full), ~2 min (`--quick`) |
+| `python3 -m training.alexa.validate_loo` | leave-one-camera-out over the 52 cameras → `testdata/out/alexa/loo_results.csv` (the per-camera results behind the published table); `--quick` runs only the shipped variant (K=4, λ=1) | 5–10 min (full), ~2 min (`--quick`) |
 | `python3 -m training.alexa.check_loo` | compares the run with the published numbers (median RFSE 2.2 %, emulation ΔE00 median 0.23, plus the other published figures) within ±0.1, and with the `docs/13` gate (RFSE ≤ 3 %, ΔE00 ≤ 0.3); non-zero exit on failure | 1 s |
 | `python3 -m training.alexa.estimate_alexa` then `compare_estimate` | regenerates `data/alexa/*` into `testdata/out/alexa/estimate/` and checks it equals the shipped files | ~10 min |
-| `python3 -m training.sensor_map.evaluate` | ported `sony_profiles.py`: reproduces `research/alexa-ssf/out/sony_profiles.csv` | 5 s |
+| `python3 -m training.sensor_map.evaluate` | reproduces `research/alexa-ssf/out/sony_profiles.csv` (the published sensor-map result) | 5 s |
 | `python3 -m training.sensor_map.build_profiles` | writes the 11 `data/cameras/profiles/*/profile.json` (`--check` compares without writing) | 20 s |
 | `python3 -m training.sensor_map.build_registry` / `build_target` | write `data/cameras/registry.json` / `data/alexa/target.json` | 1 s |
 | `python3 -m training.white_scale.fit --write` / `--check` / `--report` | fits the white scale of every stand-in body that has files in `testdata/readme-photos/src` and writes `white_scale.json` (run `build_registry` after) / compares a fresh fit with it / prints both references' residuals for those files and for `--local` | 2 s |

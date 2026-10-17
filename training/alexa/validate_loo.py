@@ -10,9 +10,8 @@ For each of the 52 measured cameras in rawtoaces-data:
 Writes ``testdata/out/alexa/loo_results.csv`` (git-ignored); ``check_loo`` compares it
 with the published numbers.
 
-Copied from research/alexa-ssf/scripts/validate_loo.py. The numerics are unchanged;
-what changed is the I/O (fetched inputs under testdata/sources, output under
-testdata/out) and two options: ``--jobs`` (worker count; results do not depend on it) and
+The numerics are those of the published estimate (research/alexa-ssf/README.md). Inputs
+come from testdata/sources, the output goes under testdata/out, and there are two options: ``--jobs`` (worker count; results do not depend on it) and
 ``--quick`` (only the recommended variant K=4, lam=1, which is what ``check_loo`` scores).
 
     python3 -m training.alexa.validate_loo            # full grid, ~5 min on 2 cores

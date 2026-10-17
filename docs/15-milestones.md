@@ -70,10 +70,10 @@ Goal: correct ALEXA-style colour end to end through the CLI, with the classical 
 
 **M1-02 · Spectral engine** (M1-01)
 Load rawtoaces-format curves; fit scripts precompute `w_A` and camera-locus tables (blackbody, CIE daylight, and the class reference lights) into `profile.json`; runtime interpolation and RGB ↔ CCT/Duv in `ym-color`. The `colorimetry` crate is a dev-dependency only, for cross-checks.
-*Done when:* runtime values match `research/alexa-ssf/scripts/ssf_core.py` to 1e-6 on a test grid; `cargo tree -e normal` shows no `colorimetry` in shipped crates.
+*Done when:* runtime values match `training/alexa/ssf_core.py` to 1e-6 on a test grid; `cargo tree -e normal` shows no `colorimetry` in shipped crates.
 
 **M1-03 · ALEXA curve validation in CI** (M0-02)
-Run `research/alexa-ssf/scripts/validate_loo.py` (move to `training/alexa/`) in a Python CI job with pinned colour-science 0.4.7; fetch sources by script.
+Run `training/alexa/validate_loo.py` in a Python CI job with pinned colour-science 0.4.7; fetch sources by script.
 *Done when:* the job reproduces the published LOO numbers (median RFSE 2.2%, emulation ΔE00 median 0.23) within ±0.1.
 
 **M1-04 · Profiles, registry and detection** (M1-02, M0-04)

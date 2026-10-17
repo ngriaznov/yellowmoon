@@ -45,8 +45,7 @@ def build() -> dict:
                 "(rawtoaces-data, Apache-2.0)",
             ],
             "licence": "Apache-2.0 (ours), derived from AMPAS-licensed and Apache-2.0 data; see NOTICE",
-            "fit_script": "research/alexa-ssf/scripts/estimate_alexa.py "
-                          "(copied unchanged to training/alexa/estimate_alexa.py)",
+            "fit_script": "training/alexa/estimate_alexa.py",
             "recommended_variant": {"prior": "all", "K": 4, "lam": 1.0, "conv": "rta"},
             "validation": {
                 "method": "leave-one-camera-out over the 52 measured cameras (training/alexa/validate_loo.py, "

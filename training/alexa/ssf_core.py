@@ -12,9 +12,9 @@ Conventions follow Academy P-2013-001 as implemented by colour-science
 (`colour.matrix_idt`): white-balanced camera RGB, CAT02 adaptation of the
 scene colorimetry to the ACES white, CIE Lab error.
 
-Copied from research/alexa-ssf/scripts/ssf_core.py. The only change is where the
-fetched inputs live (testdata/sources/, see tools/fetch/spectral.sh); the numerics are
-untouched so that the published leave-one-out numbers reproduce. Run scripts that
+The fetched inputs live in testdata/sources/ (tools/fetch/spectral.sh); the numerics are
+those of the published estimate (research/alexa-ssf/README.md), so that its leave-one-out
+numbers reproduce. Run scripts that
 import this module from the repository root as ``python3 -m training.<pkg>.<module>``.
 """
 

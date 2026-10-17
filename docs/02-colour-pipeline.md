@@ -145,7 +145,7 @@ Rows of this matrix sum to 1 within 1e-15. Don't take AP0 from a library that st
 
 Maps white-balanced Sony RGB to white-balanced emulated ALEV III RGB for the scene light. Exposure-invariant (linear) and white-preserving (`M·[1,1,1]ᵀ = [1,1,1]ᵀ`) by construction.
 
-**Offline fit** (Python in `training/sensor_map/fit.py`; the earlier objective is a port of `research/alexa-ssf/scripts/sony_profiles.py::fit_map`, see step 3):
+**Offline fit** (Python in `training/sensor_map/fit.py`; the earlier objective is the one of the published sensor-map result, `research/alexa-ssf/out/sony_profiles.csv` (`fit.fit_map_weighted_rgb`), see step 3):
 
 1. Inputs: the camera profile's spectral curves `S_P`, the ALEXA estimate `S_A` (`data/alexa/alexa_alev3_estimate_380_780_5.json`), the 190 rawtoaces training reflectances (Apache-2.0), and reference light SPDs.
 2. Reference lights per class:
@@ -563,7 +563,7 @@ Results (`data/models/illum/MODEL_CARD.md` has all of them for all 11 profiles; 
 
 - LogC4 encode/decode round trip within 1e-12 relative (1e-14 absolute near zero) over [−0.02, 400]. LogC3 round trip within 1e-7 absolute (the published EI 800 constants leave a 2.5e-7 step at `cut`, so values near `cut` don't round-trip more tightly). Spot values above; `LogC3 encode(0.18)` equals 400/1023 within 2e-8.
 - Matrices against the constants to 1e-9; derived ARRI rows sum to 1 within 1e-12; interpolation equals table values at table CCTs.
-- `w_A` and the CCT locus against the Python reference (`research/alexa-ssf/scripts/ssf_core.py`) to 1e-6.
+- `w_A` and the CCT locus against the Python reference (`training/alexa/ssf_core.py`) to 1e-6.
 - Sensor map: white preservation to 1e-12; gate numbers above.
 - CDL against ASC reference examples; cube parser against malformed inputs (fuzz with `cargo fuzz` for one hour in M1). **As built (M1-10):** `crates/ym-color/fuzz` has three targets, `cube_parse` (`.cube` text, with the committed seeds in `fuzz/corpus/cube_parse`: `parse_bytes` never panics or aborts on allocation, an accepted file is self-consistent, sampling it at NaN, infinite and huge inputs stays finite, and writing it out and parsing it again gives the same cube), `alf_parse` (the ARRI Look File reader of 0.1.3, `docs/08`: `alf::parse_file` and `alf::parse` never panic or abort on allocation, an accepted look is a LUT of 2 to 129 points with finite entries and a valid CDL, and its container is written again as a file that reads back and is written as the same bytes; the checksum and the size field are repaired between reads, so the fuzzer reaches the tables behind them) and `look_json` (the parametric look loader and its curve spline, `docs/08`: no panic, no NaN in the output, `bake` succeeds or returns a typed error). Runs on 2026-10-12 (AddressSanitizer, 4-vCPU machine, `-rss_limit_mb=2048`): `cube_parse` one hour (3,601 s), 32,511,747 runs (9,028 per second, coverage 617, features 2,089), `look_json` 241 s, 4,169,092 runs (17,299 per second, 1,800 / 4,964); no crash, timeout or out-of-memory, resident memory 489 to 537 MB at the end. A 10-second run on the code of 2026-10-13 (352,596 runs of `cube_parse`) found nothing either. The nightly `fuzz` job of `ci.yml` runs all three for 10 minutes each (`docs/13-testing.md`); the one-hour run is not repeated there.
 - Tetrahedral interpolation against OCIO-generated vectors: ≤ 1 code value at 10 bits.
