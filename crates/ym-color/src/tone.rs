@@ -63,9 +63,9 @@ pub const ALEXA_CLIP_EI: f64 = 800.0;
 
 /// `log2((1 - 256 / 65535) * ei / 4)`: stops over 0.18 at which an ALEV III clips (ARRI's LogC3 formula).
 ///
-/// Grey sits at `0.01 * 400 / ei` over black and the signal is linear up to the 16-bit white, so the
-/// clip is `(1 - 256 / 65535) / (0.18 * 0.01 * 400 / ei) * 0.18` in scene-linear terms; at EI 800 that is
-/// 7.638 stops, linear 35.86 (the LogC3 clip code 0.9539).
+/// Grey sits at `0.01 * 400 / ei` of the sensor's range over black and the signal is linear up to the
+/// 16-bit white, `1 - 256 / 65535`, so the clip is `(1 - 256 / 65535) * ei / 4` times grey: at EI 800
+/// 7.638 stops, scene-linear 35.86 (the LogC3 clip code 0.9539).
 #[must_use]
 pub fn alexa_clip_stops(ei: f64) -> f64 {
     ((1.0 - 256.0 / 65535.0) * ei / 4.0).log2()

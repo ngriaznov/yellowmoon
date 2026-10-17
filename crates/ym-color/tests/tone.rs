@@ -444,13 +444,12 @@ fn the_identity_changes_no_bit_of_any_finite_pixel() {
 #[test]
 fn the_display_codes_of_docs_02_are_reproduced() {
     // docs/02 C7, Display result: a neutral at Auto (the clip 3.58 stops over grey), ACES 2 with the
-    // placement, no look, sRGB codes, at r = 0, 0.5 and 1. Measured: 16 of the 18 codes as quoted, two
-    // one code off (r = 0 at +3.33 stops: 224, r = 1 at +3.33: 249), the rounding of the report's table.
+    // placement, no look, sRGB codes, at r = 0, 0.5 and 1, exactly as docs/02 quotes them.
     let stops = [1.0, 2.0, 2.58, 3.08, 3.33, 3.58];
     let want: [(f64, [i32; 6]); 3] = [
-        (0.0, [158, 192, 208, 220, 225, 229]),
+        (0.0, [158, 192, 208, 220, 224, 229]),
         (0.5, [158, 192, 208, 229, 240, 248]),
-        (1.0, [158, 192, 208, 236, 248, 254]),
+        (1.0, [158, 192, 208, 236, 249, 254]),
     ];
     for (r, codes) in want {
         let mut params = ChainParams::new(IDENTITY, p(r, 0.0, clip_at(3.58), 0.0));
@@ -462,9 +461,7 @@ fn the_display_codes_of_docs_02_are_reproduced() {
             .map(|&s| (chain.apply_pixel(grey(s))[1] * 255.0).round() as i32)
             .collect();
         println!("r = {r}: codes {got:?} (docs/02: {codes:?})");
-        for (g, w) in got.iter().zip(codes) {
-            assert!((g - w).abs() <= 1, "r = {r}: {got:?} vs {codes:?}");
-        }
+        assert_eq!(got, codes, "r = {r}");
     }
 }
 
