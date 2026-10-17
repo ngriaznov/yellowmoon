@@ -2,8 +2,10 @@
 //!
 //! For every scene the real `ym` binary develops the file with its default settings and writes a DNG. The two defaults
 //! that are not the sensor's colour are switched off, because the truth is the colour of the scene and not a look: the
-//! look is Neutral (the default look is Signature since pipeline 0.3.0) and the white lift is 0 (it is a gain on the
-//! highlights, [`truth_settings`]). The DNG holds the picture after the whole colour chain up to the look and curve
+//! look is Neutral (the default look is Signature since pipeline 0.3.0) and the highlight range is 0, "as recorded"
+//! (`rolloff.highlights`, a gain on the highlights that is the identity at 0 below the ALEXA's clip, `docs/02` C7;
+//! the default 0.5 moves the camera's clip on purpose; [`truth_settings`]). The low-light toe keeps its value. The DNG
+//! holds the picture after the whole colour chain up to the look and curve
 //! (C1 to C11, `docs/02`), decoded back to linear AWG4: the last place before the display transform where the colour
 //! can be compared with an ALEXA-referred truth without going through a tone curve. The sidecar of the scene holds,
 //! for every patch, what an ALEXA would have recorded of the same scene (the ALEXA estimate of `docs/02` C3 to C6, in
@@ -72,6 +74,9 @@ pub struct PatchResult {
     /// The probe's name (`rta-017`, `neutral-0.18`, `ladder-hue0-ev-3`, ...).
     pub name: String,
     /// The probe's group (`chart`, `neutral`, `ladder`, `shadow`, `black`, `highlight`, `gradient`, `rolloff`).
+    /// `rolloff` is the scene's six-stop highlight ramps; with the highlight range at 0 (as recorded) their
+    /// unclipped samples measure the colour of bright tones with C7 the identity (until pipeline 0.4.0 they went
+    /// through the old roll-off shoulder at 0.5).
     pub group: String,
     /// ΔE00 between the render and the ALEXA-estimate truth.
     pub render: f64,
@@ -205,18 +210,25 @@ pub fn group_stats(
         .collect()
 }
 
-/// The settings a scene is developed with for the truth: the entry's own, with the Neutral look and no white lift
-/// unless the entry sets them. The default look (Signature) and the automatic white lift change the picture on purpose;
-/// the truth measures the colour of the scene, so a number here moves only when the sensor map or the white balance does.
+/// The settings a scene is developed with for the truth: the entry's own, with the Neutral look and the highlight range
+/// at 0 ("as recorded", `rolloff.highlights`) unless the entry sets them. The default look (Signature) and the default
+/// highlight range (0.5, which places the camera's clip higher) change the picture on purpose; the truth measures the
+/// colour of the scene, so a number here moves only when the sensor map or the white balance does. An entry's own
+/// `rolloff.low_light` stays (a `rolloff` with only `highlights` reads the toe as its default, 0.5).
 #[must_use]
 pub fn truth_settings(base: &serde_json::Value) -> serde_json::Value {
     let mut settings = base.clone();
     if let Some(map) = settings.as_object_mut() {
         map.entry("look")
             .or_insert_with(|| serde_json::Value::from("builtin:neutral"));
-        // -3 is the lowest offset: the automatic amount can never be larger than 2 stops, so the lift is off.
-        map.entry("white_offset_ev")
-            .or_insert_with(|| serde_json::Value::from(-3));
+        let rolloff = map
+            .entry("rolloff")
+            .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+        // A `rolloff` that is not an object is passed on as it is (ym refuses it, loudly).
+        if let Some(r) = rolloff.as_object_mut() {
+            r.entry("highlights")
+                .or_insert_with(|| serde_json::Value::from(0));
+        }
     }
     settings
 }
@@ -523,21 +535,30 @@ mod tests {
     }
 
     #[test]
-    fn the_truth_is_developed_without_the_default_look_and_the_white_lift() {
+    fn the_truth_is_developed_without_the_default_look_and_with_the_highlights_as_recorded() {
         use serde_json::json;
-        // An entry with no settings gets the Neutral look and no lift.
+        // An entry with no settings gets the Neutral look and the highlight range at 0; the toe is not named, so it
+        // reads as its default.
         let plain = truth_settings(&json!({}));
         assert_eq!(plain["look"], "builtin:neutral");
-        assert_eq!(plain["white_offset_ev"], -3);
+        assert_eq!(plain["rolloff"], json!({"highlights": 0}));
+        assert!(plain.get("white_offset_ev").is_none());
         // What the entry sets itself stays.
-        let own = truth_settings(
-            &json!({"look": "builtin:signature", "white_offset_ev": 0.5, "exposure": {"ev": 1.0}}),
-        );
+        let own = truth_settings(&json!({
+            "look": "builtin:signature",
+            "rolloff": {"highlights": 0.5, "low_light": 0.2},
+            "exposure": {"ev": 1.0}
+        }));
         assert_eq!(own["look"], "builtin:signature");
-        assert_eq!(own["white_offset_ev"], 0.5);
+        assert_eq!(own["rolloff"], json!({"highlights": 0.5, "low_light": 0.2}));
         assert_eq!(own["exposure"]["ev"], 1.0);
-        // Something that is not an object is passed on as it is (ym refuses it, loudly).
+        // An entry that sets only the toe keeps it and gets the highlights as recorded.
+        let toe = truth_settings(&json!({"rolloff": {"low_light": 0.0}}));
+        assert_eq!(toe["rolloff"], json!({"highlights": 0, "low_light": 0.0}));
+        // Something that is not an object is passed on as it is (ym refuses it, loudly), and so is a `rolloff` that
+        // is not one.
         assert_eq!(truth_settings(&json!(3)), json!(3));
+        assert_eq!(truth_settings(&json!({"rolloff": 1}))["rolloff"], json!(1));
     }
 
     #[test]
