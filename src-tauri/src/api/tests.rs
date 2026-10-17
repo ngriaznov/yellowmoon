@@ -463,8 +463,6 @@ fn settings_errors_are_plain_sentences_and_change_nothing() {
         json!({ "rolloff": { "highlight": 0.2 } }),
         json!({ "color_balance": { "shadow": [0.1, 0.1] } }),
         json!({ "curve": { "lumna": [[0, 0], [1, 1]] } }),
-        // Removed with the white lift in pipeline 0.4.0: refused like any unknown field.
-        json!({ "white_offset_ev": 0.5 }),
     ] {
         assert!(
             serde_json::from_value::<SettingsPatch>(typo.clone()).is_err(),

@@ -915,11 +915,12 @@ fn the_camera_default_before_view_ignores_every_setting_on_the_device_too() {
     let img = camera_image(w, h, 0xB3F0);
     for dev in gpus() {
         // Everything on against nothing on: another fused matrix, tone (the highlight range at full
-        // strength), grade, look, curves.
+        // strength), grade, look, curves, white lift.
         let rich = chains::full(OutputTarget::Viewport);
         let mut bare = chains::base(OutputTarget::Viewport);
         bare.matrix = chains::fused_matrix().map(|r| r.map(|v| v * 3.0));
         bare.tone = chains::range_tone(1.0, chains::AUTO_CLIP_STOPS);
+        bare.white_lift = ym_color::exposure::white::WhiteLift::new(0.8, 0.5).expect("lift");
         let outs = [
             ColorOutput::Stage(Stop::Before),
             ColorOutput::BeforeRgba8 { dither: true },

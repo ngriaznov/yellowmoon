@@ -141,11 +141,13 @@ cargo run -p golden --release -- truth [--set synthetic] [--filter TEXT] [--patc
 ```
 
 For every scene of the set (one ARW per sidecar: the plain mosaic is preferred over cRAW and Lossless M/S) the real `ym`
-writes a DNG with default settings, except that the look is Neutral and the highlight range is 0, "as recorded"
-(`rolloff.highlights`; the default look is Signature since pipeline 0.3.0, and since pipeline 0.4.0 the default range of 0.5
-places the camera's clip higher, `docs/02` C7; the truth is the colour of the scene, not a look, and the DNG carries both).
-At 0 the range is the identity below the ALEXA's clip, so the `rolloff` probes (the scenes' six-stop highlight ramps)
-measure the colour of bright, unclipped tones with no tone stage in between. An entry's own `look` or `rolloff` is kept.
+writes a DNG with default settings, except that the look is Neutral, the highlight range is 0, "as recorded"
+(`rolloff.highlights`), and the white lift is 0 (`white_offset_ev` -3). The default look is Signature since pipeline 0.3.0,
+the highlights get an automatic lift since pipeline 0.3.0 (`docs/02` C12 step 1b), and since pipeline 0.4.0 the default
+range of 1 places the camera's clip at white (`docs/02` C7); the truth is the colour of the scene, not a look, and the DNG
+carries all three. At 0 the range is the identity below the ALEXA's clip, so the `rolloff` probes (the scenes' six-stop
+highlight ramps) measure the colour of bright, unclipped tones with no tone stage in between. An entry's own `look`,
+`rolloff` or `white_offset_ev` is kept.
 The DNG holds the picture after the colour chain up to the look and curve (C1 to C11),
 as linear AWG4: the last place before the display transform where Yellowmoon's colour can be compared with the ALEXA
 estimate in the sidecar without going through a tone curve. Per patch, the interior is averaged in linear light, the picture is scaled by 0.18

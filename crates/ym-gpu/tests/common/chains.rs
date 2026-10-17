@@ -14,6 +14,7 @@ use ym_color::display::{
     ArriDisplayLut, ChainParams, DisplayLutInput, DisplayLutOutput, DisplayLutPrimaries,
     DisplayLutTransfer, DisplayTransform, LookSetting, OutputTarget,
 };
+use ym_color::exposure::white::WhiteLift;
 use ym_color::grade::{ColorBalance, GradeParams};
 use ym_color::look::{LookInput, LookTransform};
 use ym_color::lut::{Lut, Lut1d, Lut3d};
@@ -344,6 +345,33 @@ pub fn cases() -> Vec<(String, ChainParams)> {
     p.look = Some(LookSetting::new(baked_look(), 60.0));
     v.push(("display-lut+baked-look".into(), p));
     v.extend(range_cases());
+    // The white lift (C12 step 1b): alone, with everything on, a narrow strong ramp, behind the highlight
+    // range at its default (both stages run: the range on the scene side, the lift after C11), on the own
+    // branch of a display-baked look, and (ignored) with a display LUT.
+    let lift = WhiteLift::new(1.1, 2.8).expect("lift");
+    for t in [OutputTarget::Viewport, OutputTarget::Srgb] {
+        let mut p = base(t);
+        p.white_lift = lift;
+        v.push((format!("lift/auto/{}", t.name()), p));
+        let mut p = full(t);
+        p.white_lift = lift;
+        v.push((format!("lift/full/{}", t.name()), p));
+    }
+    let mut p = base(OutputTarget::Viewport);
+    p.white_lift = WhiteLift::new(2.6, 1.3).expect("lift");
+    v.push(("lift/strong-narrow".into(), p));
+    let mut p = base(OutputTarget::Srgb);
+    p.tone = range_tone(1.0, AUTO_CLIP_STOPS);
+    p.white_lift = lift;
+    v.push(("lift/behind-the-range".into(), p));
+    let mut p = full(OutputTarget::Srgb);
+    p.look = Some(LookSetting::new(baked_look(), 25.0));
+    p.white_lift = lift;
+    v.push(("lift/baked-look/25".into(), p));
+    let mut p = full(OutputTarget::Srgb);
+    p.display = display_lut(DisplayLutInput::LogC4, DisplayLutOutput::REC709_G24);
+    p.white_lift = lift;
+    v.push(("lift/display-lut-ignores-it".into(), p));
     // The colour warp (C9b): alone, after the full grade and before the look and the curves, and
     // feeding a display LUT and a display-baked look.
     let mut p = base(OutputTarget::Viewport);

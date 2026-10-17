@@ -7,6 +7,8 @@ use ym_color::consts::{
     LOGC3_EI800, LOGC4, LOGC4_GRAY, LOGC4_STOP, REC709_LUMA_WEIGHTS, linalg::Mat3,
 };
 use ym_color::display::aces2_input_matrix;
+use ym_color::exposure::TARGET_GREY;
+use ym_color::exposure::white;
 use ym_color::gamut::{awg4_luminance_row, matrices};
 use ym_color::grade::{
     BRIGHTNESS_SIGMA, COLOR_BALANCE_STRENGTH, E1, E2, ZONE_CONTROL_SIGMA, ZONE_SIGMA,
@@ -523,6 +525,8 @@ fn constants() -> String {
         ("ZONE_SIGMA", ZONE_SIGMA),
         ("BALANCE_STRENGTH", COLOR_BALANCE_STRENGTH),
         ("HIGHLIGHT_GREY", HIGHLIGHT_GREY),
+        ("WHITE_LIFT_KNEE", white::KNEE_EV),
+        ("WHITE_LIFT_GREY", TARGET_GREY),
         ("WARP_NEUTRAL_GUARD", WARP_NEUTRAL_GUARD),
         ("WARP_TONE_HALF_WIDTH", WARP_TONE_HALF_WIDTH),
     ] {
@@ -537,7 +541,8 @@ fn constants() -> String {
     ] {
         let _ = writeln!(s, "const {n}: u32 = {v}u;");
     }
-    // The luma of C7's highlight range (`ym_color::tone::luma`).
+    // The luma of C7's highlight range (`ym_color::tone::luma`) and of the white lift
+    // (`ym_color::exposure::white::drive_luma`, the same weights).
     let _ = writeln!(
         s,
         "const LUMA_709: vec3<f32> = {};",

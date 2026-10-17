@@ -127,6 +127,11 @@ pub struct RenderArgs {
     /// Black point, -100 to 100.
     #[arg(long, value_name = "N", value_parser = signed_percent, allow_negative_numbers = true, help_heading = H_LIGHT)]
     pub black: Option<f64>,
+    /// Stops added to each photo's automatic white lift, -3 to 3. 0 is the automatic amount; an
+    /// offset that takes the lift to 0 or below switches it off (`--white-offset -3` always does).
+    /// The lift only acts with the built-in ACES 2 display rendering, and a DNG carries it.
+    #[arg(long, value_name = "EV", value_parser = white_offset, allow_negative_numbers = true, help_heading = H_LIGHT)]
+    pub white_offset: Option<f64>,
 
     /// White balance: `auto`, or a temperature in kelvin (2000 to 11000) with an optional tint
     /// (-50 to 50), as `5200` or `5200,4`.
@@ -476,6 +481,10 @@ fn sharpen(text: &str) -> Result<SharpenArg, String> {
 
 fn output_sharpening(text: &str) -> Result<f64, String> {
     in_range(text, "the output sharpening", 0.0, 200.0)
+}
+
+fn white_offset(text: &str) -> Result<f64, String> {
+    in_range(text, "the white offset", -3.0, 3.0)
 }
 
 fn rolloff(text: &str) -> Result<RolloffArg, String> {

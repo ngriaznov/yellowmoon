@@ -58,6 +58,7 @@ use crate::aces2::Aces2Transform;
 use crate::consts::Vec3;
 use crate::consts::linalg::{self, Mat3};
 use crate::encode::{OutputSpace, srgb_decode};
+use crate::exposure::white::WhiteLift;
 use crate::gamut::matrices;
 use crate::logc::{LogC4, logc4_decode_rgb};
 use crate::lut::Lut;
@@ -377,6 +378,7 @@ enum Kind {
     Aces2 {
         transform: &'static Aces2Transform,
         awg4_to_ap0: Mat3,
+        lift: WhiteLift,
     },
     Arri {
         lut: ArriDisplayLut,
@@ -387,11 +389,12 @@ enum Kind {
 impl PreparedDisplay {
     /// Prepares `transform` for `output`. Builds (or fetches) the ACES 2 tables, which takes
     /// 10 to 35 ms the first time per limiting gamut.
-    pub(crate) fn new(transform: &DisplayTransform, output: OutputTarget) -> Self {
+    pub(crate) fn new(transform: &DisplayTransform, output: OutputTarget, lift: WhiteLift) -> Self {
         let kind = match transform {
             DisplayTransform::Aces2 => Kind::Aces2 {
                 transform: Aces2Transform::shared(output.aces2()),
                 awg4_to_ap0: aces2_input_matrix(),
+                lift,
             },
             DisplayTransform::ArriDisplayLut(lut) => Kind::Arri {
                 to_output: primaries_matrix(lut.output.primaries, output.space()),
@@ -401,14 +404,25 @@ impl PreparedDisplay {
         Self { kind }
     }
 
+    /// The white lift in front of ACES 2 ([`WhiteLift::NONE`] for a display LUT).
+    pub(crate) fn white_lift(&self) -> WhiteLift {
+        match &self.kind {
+            Kind::Aces2 { lift, .. } => *lift,
+            Kind::Arri { .. } => WhiteLift::NONE,
+        }
+    }
+
     /// C12: LogC4 to display-linear RGB in the output's primaries (1.0 is 100 nit white).
     pub(crate) fn display_linear(&self, v: LogC4) -> Vec3 {
         match &self.kind {
             Kind::Aces2 {
                 transform,
                 awg4_to_ap0,
+                lift,
             } => {
-                let ap0 = linalg::mul_vec(awg4_to_ap0, logc4_decode_rgb(v.0));
+                // Step 1b, the white lift (scene-linear, before the placement in `awg4_to_ap0`).
+                let scene = lift.apply(logc4_decode_rgb(v.0));
+                let ap0 = linalg::mul_vec(awg4_to_ap0, scene);
                 transform.transform_ap0_linear(ap0)
             }
             Kind::Arri { lut, to_output } => {

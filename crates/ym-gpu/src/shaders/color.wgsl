@@ -6,7 +6,10 @@
 //
 // C7 is the highlight range (docs/02 C7: a gain on the luma's stops over grey above a knee, up to the
 // ALEXA clip; `c7_range`, its numbers in `CU.tone` and `CU.fl.z`) and then the low-light toe. C12 on the
-// ACES 2 path is the placement (folded into AWG4_TO_AP0) and ACES 2; the DNG stop (6) is C11 decoded.
+// ACES 2 path starts with the white lift (docs/02, step 1b): a scene-linear gain on the tones above +1 stop
+// (`white_lift_gain`, the amount in `CU.fl.w`, 0 for none and for a display LUT, and 1 / span in
+// `CU.grade0.w`), alongside the range; then the placement (folded into AWG4_TO_AP0) and ACES 2. The DNG
+// stop (6) is C11 decoded, with the lift.
 //
 // `mode.x` selects the stop (so each stage can be checked against `ColorChain::trace`), `mode.y` the
 // output format. One thread handles two horizontally adjacent pixels. All maths is f32; image
@@ -45,13 +48,13 @@ struct ChainU {
     m1: vec4<f32>,
     m2: vec4<f32>,
     tone: vec4<f32>,     // C7: x the range's knee, y the Sony clip (stops over grey; 1e30: none), z the toe's tau, w the range's expansion (stops; 0: none)
-    grade0: vec4<f32>,   // contrast gain, brightness, saturation gain
+    grade0: vec4<f32>,   // contrast gain, brightness, saturation gain; w: 1 / the white lift's ramp span (1 / stops, C12 step 1b; 0 with no lift)
     zone_amt: vec4<f32>, // shadows, highlights, black, white (each / 100)
     zone_ctr: vec4<f32>, // their centres (LogC4 codes)
     bal0: vec4<f32>,     // (a, b) shadows, (a, b) midtones
     bal1: vec4<f32>,     // (a, b) highlights
     bal_ctr: vec4<f32>,  // zone centres
-    fl: vec4<f32>,       // x: look intensity fraction, y: display LUT gamma, z: the highlight range's cap (stops over grey; 1e30: none), w: unused (0)
+    fl: vec4<f32>,       // x: look intensity fraction, y: display LUT gamma, z: the highlight range's cap (stops over grey; 1e30: none), w: the white lift's amount (stops, 0: none)
     cdl_slope: vec4<f32>,  // w: saturation
     cdl_offset: vec4<f32>,
     cdl_power: vec4<f32>,
@@ -441,6 +444,32 @@ fn c11_curves(v: vec3<f32>) -> vec3<f32> {
     return o;
 }
 
+// ---- C12 step 1b: the white lift ------------------------------------------------------------------------
+
+// The scene-linear gain of ym_color::exposure::white::WhiteLift: 2^(A * smoothstep((s - knee) / span)) with s the
+// stops over middle grey of the luma (Rec.709 weights on the AWG4 triple, the luma of C7's range too). Exactly 1
+// up to the knee. Only called when the amount (`CU.fl.w`) is not 0, which the host sets for the ACES 2 path
+// alone; the span is then at least 0.25 stop, so 1 / span (`CU.grade0.w`) is at most 4 and every value here is
+// finite (K8).
+fn white_lift_gain(lin: vec3<f32>) -> f32 {
+    let y = dot(LUMA_709, lin);
+    if (is_nan_f(y) || y <= 0.0) {
+        return 1.0;
+    }
+    let stops = log2(y * (1.0 / WHITE_LIFT_GREY));
+    let t = clamp((stops - WHITE_LIFT_KNEE) * CU.grade0.w, 0.0, 1.0);
+    return exp2(CU.fl.w * (t * t * (3.0 - 2.0 * t)));
+}
+
+// C11 decoded to linear AWG4 and lifted: the scene values ACES 2 takes in (before the placement).
+fn lifted_scene(v: vec3<f32>) -> vec3<f32> {
+    let lin = logc4_decode3(v);
+    if (CU.fl.w == 0.0) {
+        return lin;
+    }
+    return lin * white_lift_gain(lin);
+}
+
 // ---- C12: display transform --------------------------------------------------------------------------
 
 fn srgb_decode(e: f32) -> f32 {
@@ -467,7 +496,7 @@ fn disp_decode(code: f32) -> f32 {
 
 fn display_ours(v: vec3<f32>) -> vec3<f32> {
     if (CU.flags.w == 0u) {
-        let ap0 = mv3(AWG4_TO_AP0_0, AWG4_TO_AP0_1, AWG4_TO_AP0_2, logc4_decode3(v));
+        let ap0 = mv3(AWG4_TO_AP0_0, AWG4_TO_AP0_1, AWG4_TO_AP0_2, lifted_scene(v));
         return aces2_display_linear(ap0);
     }
     var input = v;
@@ -585,9 +614,14 @@ fn run_pixel(cam_in: vec3<f32>) -> vec3<f32> {
         return c11;
     }
     if (stop == 6u) {
-        // The DNG's pixels: C11 decoded to linear AWG4 (the inverse of a display rendering that is not
-        // ours is the CPU's alone, ColorChain::apply_dng_pixel).
-        return logc4_decode3(c11);
+        // The DNG's pixels: C11 decoded to linear AWG4, with the white lift when C12 is our ACES 2 (the
+        // host sets the amount only then); a look with its own display rendering has its own highlights
+        // (and the inverse of a display rendering that is not ours is the CPU's alone,
+        // ColorChain::apply_dng_pixel).
+        if (CU.flags.z == 2u && CU.fl.x > 0.0) {
+            return logc4_decode3(c11);
+        }
+        return lifted_scene(c11);
     }
     let c12 = c12_display(c11);
     if (stop == 7u) {

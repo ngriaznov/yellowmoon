@@ -15,11 +15,8 @@ Highlights that end where an ALEXA's would: the camera's clipping point now land
 
 - **RAW › Range › Highlights** (the card was Roll-off) now moves where the camera's clipping point lands, from where it was recorded (0) to white (1), as an ALEXA's own video output places its clip at white. Everything up to a stop under the clip is left alone, so mid grey never moves. The default is 1, the clip at white. The old highlight roll-off changed at most a few codes on real photos and is gone.
 - Imported ARRI display LUTs and the LogC3-to-Rec.709 looks now receive the full highlight range, up to the clip an ALEXA at EI 800 would have, and apply ARRI's own shoulder to it.
+- The white lift (Light › White) now sizes itself after the highlight range: a photo whose highlights the range already took to white gets less lift, and a photo whose brightest areas sit well under the clip gets the lift it had before.
 - Every picture's brightest tones change (pipeline 0.4.0).
-
-### Removed
-
-- **The white lift** (Light › White, its Offset slider, and the White row of the Automatic card). The highlight range takes its place. A settings file or `ym render --settings` document that still names `white_offset_ev` is refused; remove the key. `ym render --white-offset` is gone.
 
 ### Fixed
 

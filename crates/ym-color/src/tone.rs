@@ -38,6 +38,12 @@
 //! weights are positive, every output channel is non-decreasing in each non-negative input channel
 //! below the cap.
 //!
+//! The range works alongside the per-photo **white lift** of C12 step 1b ([`crate::exposure::white`]):
+//! the range moves where the camera's clip lands, on the scene side before LogC4; the lift, after C11 and
+//! on the ACES 2 path only, lifts the photo's own brightest tones from +1 stop over grey, and is sized
+//! through this stage at its default amounts, so highlights the range already took to white get less of
+//! it.
+//!
 //! # The low-light toe
 //!
 //! `rolloff.low_light = r_l` (0 to 1, default 0.5). `tau = 4 r_l sigma_floor` and

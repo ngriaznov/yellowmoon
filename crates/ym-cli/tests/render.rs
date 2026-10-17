@@ -462,7 +462,7 @@ fn flags_become_settings_and_the_exposure_offset_is_relative_to_each_photos_auto
 
 #[test]
 fn the_remaining_flags_of_docs_10_reach_the_settings_of_the_file() {
-    // The flags above are checked in the test before; these six are the rest of the table.
+    // The flags above are checked in the test before; these seven are the rest of the table.
     let sb = Sandbox::new();
     let arw = sb.arw("a.ARW");
     let out = sb
@@ -476,6 +476,8 @@ fn the_remaining_flags_of_docs_10_reach_the_settings_of_the_file() {
             "22",
             "--white",
             "33",
+            "--white-offset",
+            "-0.5",
             "--no-neural",
             "--no-highlight-recovery",
             "--no-lens",
@@ -489,6 +491,7 @@ fn the_remaining_flags_of_docs_10_reach_the_settings_of_the_file() {
     assert_eq!(s["brightness"], 11.0);
     assert_eq!(s["shadows"], 22.0);
     assert_eq!(s["white"], 33.0);
+    assert_eq!(s["white_offset_ev"], -0.5);
     assert_eq!(
         s["decode"],
         json!({
@@ -632,8 +635,6 @@ fn a_settings_file_that_does_not_parse_is_a_usage_error_and_nothing_is_rendered(
             r#"{ "curve2": {} }"#,
             "not a setting or the name of an ARW file",
         ),
-        // Removed with the white lift in pipeline 0.4.0: refused like any unknown field.
-        (r#"{ "white_offset_ev": -3 }"#, "white_offset_ev"),
     ] {
         std::fs::write(&file, content).expect("write");
         sb.ym()
@@ -683,9 +684,8 @@ fn exit_code_2_for_usage_errors() {
         (vec!["--output-sharpening", "-5"], "between 0 and 200"),
         (vec!["--output-sharpening", "a lot"], "is not a number"),
         (vec!["--no-such-flag"], "unexpected argument"),
-        // The white lift and its offset were removed in pipeline 0.4.0 (the highlight range of
-        // `--rolloff` took their place): a script that still passes it gets the usage error.
-        (vec!["--white-offset", "0"], "unexpected argument"),
+        (vec!["--white-offset", "3.5"], "between -3 and 3"),
+        (vec!["--white-offset", "a lot"], "is not a number"),
         (vec!["--rolloff", "1.5,0.5"], "the highlight range"),
         (vec!["--rolloff", "0.5,-1"], "the low-light toe"),
     ];

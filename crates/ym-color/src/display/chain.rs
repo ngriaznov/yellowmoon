@@ -44,6 +44,7 @@ use crate::consts::Vec3;
 use crate::consts::linalg::{self, Mat3};
 use crate::curve::{BakedCurves, CurveSet};
 use crate::encode::{OutputSpace, dither_8bit, quantize};
+use crate::exposure::white::WhiteLift;
 use crate::gamut::{LinearAwg4, LinearRec709};
 use crate::grade::{Grade, GradeParams, grade_luma};
 use crate::logc::LogC4;
@@ -132,6 +133,12 @@ pub struct ChainParams {
     pub curves: CurveSet,
     /// Stage C12: ACES 2 or an imported ARRI display LUT.
     pub display: DisplayTransform,
+    /// Stage C12 step 1b: the white lift, a scene-linear gain on the tones above +1 stop over middle
+    /// grey, before the display placement and ACES 2 (`docs/02`). Only the ACES 2 path has it: an
+    /// imported ARRI display LUT keeps ARRI's highlights and ignores the lift. It works alongside C7's
+    /// highlight range ([`ChainParams::tone`]), which acts on the scene side before LogC4; both run.
+    /// [`WhiteLift::NONE`] is the identity.
+    pub white_lift: WhiteLift,
     /// Stage C13: which output the display-linear values are encoded for.
     pub output: OutputTarget,
     /// Whether 8-bit outputs are dithered (`docs/02`, C13). 10 and 16-bit outputs never are.
@@ -158,6 +165,7 @@ impl ChainParams {
             look: None,
             curves: CurveSet::default(),
             display: DisplayTransform::Aces2,
+            white_lift: WhiteLift::NONE,
             output: OutputTarget::Viewport,
             dither: true,
             before: BeforePoint::CameraDefault,
@@ -306,7 +314,7 @@ impl ColorChain {
             warp: Warp::new(&params.warp),
             look,
             curves: params.curves.bake(),
-            display: PreparedDisplay::new(&params.display, params.output),
+            display: PreparedDisplay::new(&params.display, params.output, params.white_lift),
             output: params.output,
             space: params.output.space(),
             dither: params.dither,
@@ -350,6 +358,13 @@ impl ColorChain {
     #[must_use]
     pub fn camera_default(&self) -> &CameraDefault {
         &self.camera_default
+    }
+
+    /// The white lift this chain applies in front of ACES 2: the lift it was built with when C12 is
+    /// our ACES 2, [`WhiteLift::NONE`] for an imported ARRI display LUT (which ignores it).
+    #[must_use]
+    pub fn white_lift(&self) -> WhiteLift {
+        self.display.white_lift()
     }
 
     /// Whether the look includes its own display rendering (LogC3 to Rec.709), which replaces C12.
@@ -498,9 +513,9 @@ impl ColorChain {
     pub fn apply_dng_pixel(&self, camera_rgb: Vec3) -> Vec3 {
         let c11 = self.up_to_c11(camera_rgb).c11;
         match &self.dng_inverse {
-            // C12 is our ACES 2: the pixels are the scene values it takes in (the placement is in
-            // front of it, carried by `BaselineExposure`).
-            None => c11.to_linear().0,
+            // C12 is our ACES 2: the pixels are the scene values it takes in, with the white lift
+            // (a scene-linear gain, in front of the placement that `BaselineExposure` carries).
+            None => self.display.white_lift().apply(c11.to_linear().0),
             Some(inverse) => inverse.scene_awg4(self.c12(c11)),
         }
     }
