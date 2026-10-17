@@ -9,6 +9,12 @@ moves the entries below from Unreleased into a dated section for that version.
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.1.9] - 2026-10-17
+
+A colour warp on the Colour tab: pins that move chosen colours across a colour plane, as in DaVinci Resolve.
+
 ### Added
 
 - **Colour warp** on the Colour tab, like DaVinci Resolve's Color Warper: drag on the colour plane to move a colour, and nearby colours follow smoothly. Lock holds a colour in place, Pick colour takes a colour from the photo, and each pin has Range, Shadows, Highlights, Pivot and Exposure. Greys never move. The plane shows your photo's own colours as faint dots.
