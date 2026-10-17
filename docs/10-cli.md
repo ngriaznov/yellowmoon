@@ -38,9 +38,8 @@ They mirror the app's controls. Anything not given uses the automatic value or t
 | `--nr auto or <L>,<C>,<D>` | 0–100 each | |
 | `--sharpen auto or <amount>,<radius>` | 0–300, 0.3–2.5 | capture sharpening (R8) |
 | `--output-sharpening <0–200>` | percent, default 100 | Detail › Sharpening › Output (`docs/algorithms/04`): sharpens JPEG, TIFF and PNG files at the size they are written, right after the resize; 0 is off and leaves the bytes of an export without the stage; a value outside 0–200 is a usage error (exit 2); a DNG is never sharpened (`--output-sharpening` and `--sharpen` with `--format dng` are warned about and ignored: a DNG carries no capture sharpening either, `docs/09`). It is the field `output_sharpening` of the settings object. |
-| `--white-offset <EV>` | −3…3 stops, default 0 | Light › White › Offset (`docs/02` C12 step 1b, owner's decision of 2026-10-14): stops added to each photo's **automatic white lift**, the per-photo gain on the tones above +1 stop over middle grey that gives the brightest tones of a high-key photo a real white. The automatic amount is sized from the photo's own highlights when it is opened and reported as `auto.white_ev` in the JSON (0 for a low-key photo); 0 is that amount, a negative offset lowers it, an offset that takes it to 0 or below switches the lift off (`--white-offset -3` always does), a positive one adds to it (up to 3 stops in all). A value outside −3…3 is a usage error (exit 2). The lift acts only with the built-in ACES 2 display rendering (an imported ARRI display LUT and a LogC3-to-Rec.709 look keep ARRI's own highlights), and **a DNG carries it** (it is a scene-linear gain, baked into the DNG's pixels like the look, `docs/09`). It is the field `white_offset_ev` of the settings object, and the lift in effect is `values.white_ev` of the panel's state. |
 | `--no-neural`, `--no-highlight-recovery`, `--no-lens`, `--no-ca` | flags | RAW › Decode switches |
-| `--rolloff <highlights>,<low-light>` | 0–1 each | |
+| `--rolloff <highlights>,<low-light>` | 0–1 each, default 0.5,0.5 | RAW › Range (`docs/02` C7). Highlights is the **highlight range** (owner's decision of 2026-10-17): where the camera's clipping point lands, from where it was recorded (0) to white, the clip of an ALEXA at EI 800 (1); mid grey and everything under the knee one stop below the clip never move. Low light is the toe near black. (`--white-offset`, the offset of the white lift, was removed with the lift in pipeline 0.4.0: a script that passes it gets the usage error.) |
 | `--profile <id>` | camera profile id | forces a profile, for comparisons |
 | `--display aces2 or arri` | | display transform (arri needs imported display LUTs) |
 | `--format jpeg or tiff or png or dng` | | default from preferences, else jpeg. The help of `dng` is "DNG with the look baked in. Apps other than Adobe's show the stored linear image darker until their own exposure handling is applied. With a look that includes its own display rendering, the DNG is close to, not the same as, the picture you see." The second and third sentences are `ym_export::dng::OTHER_APPS_NOTE` and `ym_export::dng::OWN_DISPLAY_NOTE`, used word for word by the Export panel's DNG paragraph; tests compare both with the constants (`docs/09`). |
@@ -69,7 +68,7 @@ One object per input file, written when that file finishes, in completion order:
   "status": "ok",
   "camera": { "body": "Sony A1", "model_id": 384, "profile": "sony-ilce-7rm4", "profile_version": "1.0.0", "match": "default" },
   "look": { "id": "builtin:neutral", "intensity": 100 },
-  "auto": { "exposure_ev": 1.11, "white_ev": 0.77, "kelvin": 5450, "tint": 0, "light_class": "daylight", "light_confidence": 0.82,
+  "auto": { "exposure_ev": 1.11, "kelvin": 5450, "tint": 0, "light_class": "daylight", "light_confidence": 0.82,
             "noise": { "a": 1.9e-5, "b": 3.1e-7 } },
   "settings": { "...": "resolved settings, same as ym:Settings" },
   "device": "cpu",
