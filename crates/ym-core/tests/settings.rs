@@ -142,7 +142,7 @@ fn typescript_defaults() -> Value {
             "neural_demosaic": true, "highlight_recovery": true,
             "lens_corrections": true, "chromatic_aberration": true
         },
-        "rolloff": { "highlights": 0.5, "low_light": 0.5 },
+        "rolloff": { "highlights": 1, "low_light": 0.5 },
         "crop": null,
         "orientation": 0,
         "white_pick": null
@@ -725,7 +725,7 @@ fn the_schema_ranges_are_the_ranges_the_core_clamps_to() {
     assert_eq!(props["look_intensity"]["default"], json!(100));
     assert_eq!(
         props["rolloff"]["properties"]["highlights"]["default"],
-        json!(0.5)
+        json!(1)
     );
 }
 
@@ -987,7 +987,7 @@ fn nested_objects_may_carry_only_the_parts_to_change() {
     assert_eq!(
         s.rolloff,
         Rolloff {
-            highlights: 0.5,
+            highlights: 1.0,
             low_light: 0.9
         }
     );

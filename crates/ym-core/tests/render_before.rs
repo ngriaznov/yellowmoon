@@ -134,7 +134,7 @@ fn edits() -> Vec<Edit> {
                 s.curve.red = vec![[0.0, 0.0], [0.5, 0.7], [1.0, 1.0]];
             }),
         ),
-        ("highlight range", Box::new(|s| s.rolloff.highlights = 1.0)),
+        ("highlight range", Box::new(|s| s.rolloff.highlights = 0.0)),
         ("low light", Box::new(|s| s.rolloff.low_light = 1.0)),
         (
             "noise reduction",

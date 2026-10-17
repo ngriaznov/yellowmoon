@@ -4,7 +4,7 @@
 //! that are not the sensor's colour are switched off, because the truth is the colour of the scene and not a look: the
 //! look is Neutral (the default look is Signature since pipeline 0.3.0) and the highlight range is 0, "as recorded"
 //! (`rolloff.highlights`, a gain on the highlights that is the identity at 0 below the ALEXA's clip, `docs/02` C7;
-//! the default 0.5 moves the camera's clip on purpose; [`truth_settings`]). The low-light toe keeps its value. The DNG
+//! the default 1 moves the camera's clip on purpose; [`truth_settings`]). The low-light toe keeps its value. The DNG
 //! holds the picture after the whole colour chain up to the look and curve
 //! (C1 to C11, `docs/02`), decoded back to linear AWG4: the last place before the display transform where the colour
 //! can be compared with an ALEXA-referred truth without going through a tone curve. The sidecar of the scene holds,
@@ -212,7 +212,7 @@ pub fn group_stats(
 
 /// The settings a scene is developed with for the truth: the entry's own, with the Neutral look and the highlight range
 /// at 0 ("as recorded", `rolloff.highlights`) unless the entry sets them. The default look (Signature) and the default
-/// highlight range (0.5, which places the camera's clip higher) change the picture on purpose; the truth measures the
+/// highlight range (1, which places the camera's clip at white) change the picture on purpose; the truth measures the
 /// colour of the scene, so a number here moves only when the sensor map or the white balance does. An entry's own
 /// `rolloff.low_light` stays (a `rolloff` with only `highlights` reads the toe as its default, 0.5).
 #[must_use]

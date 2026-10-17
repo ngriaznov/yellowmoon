@@ -486,8 +486,8 @@ pub struct DecodeOptions {
     pub chromatic_aberration: bool,
 }
 
-/// RAW › Range (`docs/02` C7), each 0 to 1; 0.5 by default. The name `rolloff` is kept from the
-/// earlier roll-off card.
+/// RAW › Range (`docs/02` C7), each 0 to 1: Highlights 1 and Low light 0.5 by default. The name
+/// `rolloff` is kept from the earlier roll-off card.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Type)]
 pub struct Rolloff {
     /// The highlight range: where the camera's clipping point lands, from where it was recorded (0)

@@ -1291,8 +1291,8 @@ export type ResolvedValues = {
 };
 
 /**
- *  RAW › Range (`docs/02` C7), each 0 to 1; 0.5 by default. The name `rolloff` is kept from the
- *  earlier roll-off card.
+ *  RAW › Range (`docs/02` C7), each 0 to 1: Highlights 1 and Low light 0.5 by default. The name
+ *  `rolloff` is kept from the earlier roll-off card.
  */
 export type Rolloff = {
 	/**

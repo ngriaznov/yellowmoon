@@ -9,11 +9,11 @@ moves the entries below from Unreleased into a dated section for that version.
 
 ## [Unreleased]
 
-Highlights that end where an ALEXA's would: the camera's clipping point can be placed anywhere from where it was recorded up to white.
+Highlights that end where an ALEXA's would: the camera's clipping point now lands at white, and can be placed anywhere from where it was recorded up to white.
 
 ### Changed
 
-- **RAW › Range › Highlights** (the card was Roll-off) now moves where the camera's clipping point lands, from where it was recorded (0) to white (1), as an ALEXA's own video output places its clip at white. Everything up to a stop under the clip is left alone, so mid grey never moves. The default is halfway while a blind comparison decides. The old highlight roll-off changed at most a few codes on real photos and is gone.
+- **RAW › Range › Highlights** (the card was Roll-off) now moves where the camera's clipping point lands, from where it was recorded (0) to white (1), as an ALEXA's own video output places its clip at white. Everything up to a stop under the clip is left alone, so mid grey never moves. The default is 1, the clip at white. The old highlight roll-off changed at most a few codes on real photos and is gone.
 - Imported ARRI display LUTs and the LogC3-to-Rec.709 looks now receive the full highlight range, up to the clip an ALEXA at EI 800 would have, and apply ARRI's own shoulder to it.
 - Every picture's brightest tones change (pipeline 0.4.0).
 

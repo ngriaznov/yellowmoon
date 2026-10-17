@@ -179,7 +179,7 @@ expression: v
     "orientation": 0,
     "output_sharpening": 100.0,
     "rolloff": {
-      "highlights": 0.5,
+      "highlights": 1.0,
       "low_light": 0.5
     },
     "saturation": 0.0,

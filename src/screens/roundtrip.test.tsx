@@ -349,14 +349,14 @@ describe("every control round-trips through update_settings", () => {
     await h.user.click(screen.getByRole("switch", { name: "Neural demosaic" }));
     expect(await lastPatch(spy, "on again")).toEqual({ decode: { ...state, neural_demosaic: true } });
 
-    expect(valueOf("Highlights")).toBe("0.50");
+    expect(valueOf("Highlights")).toBe("1.00");
     await driveTyped(spy, [
       { label: "Highlights", typed: "0.7", patch: { rolloff: { highlights: 0.7, low_light: 0.5 } }, shows: "0.70" },
       { label: "Low light", typed: "0.25", patch: { rolloff: { highlights: 0.7, low_light: 0.25 } }, shows: "0.25" },
     ]);
     spy.mockClear();
     await h.user.click(within(screen.getByRole("region", { name: "Range" })).getByRole("button", { name: "Reset" }));
-    expect(await lastPatch(spy, "Range reset")).toEqual({ rolloff: { highlights: 0.5, low_light: 0.5 } });
+    expect(await lastPatch(spy, "Range reset")).toEqual({ rolloff: { highlights: 1, low_light: 0.5 } });
     await waitFor(() => expect(valueOf("Low light")).toBe("0.50"));
   });
 

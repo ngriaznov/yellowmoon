@@ -30,7 +30,7 @@
 //! gain = 2^(s' - s); rgb' = gain * rgb
 //! ```
 //!
-//! `r = rolloff.highlights` (0 to 1, default 0.5). `E`, `s_k` and `h_S` are computed once per chain
+//! `r = rolloff.highlights` (0 to 1, default 1). `E`, `s_k` and `h_S` are computed once per chain
 //! ([`ToneParams::range`]). The gain is exactly 1 for `s <= s_k` (and below the cap), and then the pixel
 //! is returned unchanged, bit for bit. `s'` is continuous with a continuous slope at the knee and at
 //! `u = 1`, non-decreasing in `s`, and the Sony clip lands on `min(h_S + E, h_A)`. All three channels are

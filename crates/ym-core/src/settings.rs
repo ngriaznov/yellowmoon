@@ -638,13 +638,13 @@ impl Default for DecodeOptions {
     }
 }
 
-/// RAW › Range (`docs/02` C7), each 0 to 1; 0.5 by default. The JSON name `rolloff` is kept from
-/// the earlier roll-off card.
+/// RAW › Range (`docs/02` C7), each 0 to 1: Highlights 1 and Low light 0.5 by default. The JSON name
+/// `rolloff` is kept from the earlier roll-off card.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct Rolloff {
     /// The highlight range of C7 (`docs/02`): where the camera's clipping point lands, from where
-    /// it was recorded (0) to white, the clip of an ALEXA at EI 800 (1); default 0.5. Mid grey and
+    /// it was recorded (0) to white, the clip of an ALEXA at EI 800 (1); default 1. Mid grey and
     /// everything under the knee, one stop below the camera's clip, never move.
     pub highlights: f64,
     /// Low-light toe strength (C7).
@@ -654,7 +654,7 @@ pub struct Rolloff {
 impl Default for Rolloff {
     fn default() -> Self {
         Self {
-            highlights: 0.5,
+            highlights: 1.0,
             low_light: 0.5,
         }
     }
@@ -2202,7 +2202,7 @@ mod tests {
         assert_eq!(
             s.rolloff,
             Rolloff {
-                highlights: 0.5,
+                highlights: 1.0,
                 low_light: 0.5
             }
         );

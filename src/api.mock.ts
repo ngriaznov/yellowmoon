@@ -359,7 +359,7 @@ export function defaultSettings(look: LookId = NEUTRAL): DevelopSettings {
       blue: [[0, 0], [1, 1]],
     },
     decode: { neural_demosaic: true, highlight_recovery: true, lens_corrections: true, chromatic_aberration: true },
-    rolloff: { highlights: 0.5, low_light: 0.5 },
+    rolloff: { highlights: 1, low_light: 0.5 },
     crop: null,
     orientation: 0,
     white_pick: null,

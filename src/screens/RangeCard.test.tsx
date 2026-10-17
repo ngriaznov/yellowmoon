@@ -49,15 +49,16 @@ describe("the Range card on the RAW tab", () => {
     expect(screen.queryByRole("region", { name: "Roll-off" })).toBeNull();
   });
 
-  it("has Highlights and Low light, 0 to 1, both at 0.50 out of the box", async () => {
+  it("has Highlights and Low light, 0 to 1, at 1.00 and 0.50 out of the box", async () => {
     await setup();
     const sliders = range().getAllByRole("slider");
     expect(sliders.map((s: HTMLElement) => sliderName(s))).toEqual(["Highlights", "Low light"]);
     for (const label of ["Highlights", "Low light"]) {
       const slider = sliderOf(label);
       expect([slider.getAttribute("aria-valuemin"), slider.getAttribute("aria-valuemax")], label).toEqual(["0", "1"]);
-      expect(valueOf(label), label).toBe("0.50");
     }
+    expect(valueOf("Highlights")).toBe("1.00");
+    expect(valueOf("Low light")).toBe("0.50");
   });
 
   it("says under the sliders what they do, in the words of docs/11", async () => {
@@ -73,7 +74,7 @@ describe("the Range card on the RAW tab", () => {
     expect(screen.getByRole("region", { name: "Range" }).textContent).not.toMatch(/ARRI|ALEXA/i);
   });
 
-  it("a typed value is a rolloff patch that keeps the other slider, and Reset sends both back to 0.5", async () => {
+  it("a typed value is a rolloff patch that keeps the other slider, and Reset sends them back to 1 and 0.5", async () => {
     const spy = await setup();
     await type("Highlights", "0");
     expect(await lastPatch(spy)).toEqual({ rolloff: { highlights: 0, low_light: 0.5 } });
@@ -86,8 +87,8 @@ describe("the Range card on the RAW tab", () => {
 
     spy.mockClear();
     await h.user.click(range().getByRole("button", { name: "Reset" }));
-    expect(await lastPatch(spy)).toEqual({ rolloff: { highlights: 0.5, low_light: 0.5 } });
-    await waitFor(() => expect(valueOf("Highlights")).toBe("0.50"));
+    expect(await lastPatch(spy)).toEqual({ rolloff: { highlights: 1, low_light: 0.5 } });
+    await waitFor(() => expect(valueOf("Highlights")).toBe("1.00"));
     expect(valueOf("Low light")).toBe("0.50");
   });
 
@@ -118,7 +119,7 @@ describe("the Range card on the RAW tab", () => {
       raf.restore();
     }
     await h.user.keyboard("{Meta>}z{/Meta}");
-    await waitFor(() => expect(valueOf("Highlights")).toBe("0.50"));
+    await waitFor(() => expect(valueOf("Highlights")).toBe("1.00"));
     expect(h.store.getState().canUndo).toBe(false);
   });
 });
