@@ -142,12 +142,13 @@ Every control in the UI and every CLI flag maps to one field. Defaults reproduce
 | `noise_reduction` | `Auto` or `{ luminance, color, detail }` 0–100 | Auto | Detail › Noise reduction |
 | `curve` | luma + R, G, B: up to 16 control points each in [0,1]² | identity | Curve |
 | `decode` | `{ neural_demosaic, highlight_recovery, lens_corrections, chromatic_aberration }` bools | all true | RAW › Decode |
-| `rolloff` | `{ highlights 0–1, low_light 0–1 }` | 0.5, 0.5 | RAW › Range: `highlights` is the highlight range of C7 (`docs/02`: where the camera's clip lands, 0 as recorded, 1 at the ALEXA's EI 800 clip; the field kept its name when its meaning changed on 2026-10-17), `low_light` the toe. (`white_offset_ev`, the white lift's offset, was removed on 2026-10-17 with the lift: a settings document or patch that still has it is refused like any unknown key.) |
+| `white_offset_ev` | stops, −3…+3, step 0.05; a plain number (not Auto) | 0 | Light › White › Offset: added to the photo's **automatic white lift** (`docs/02` C12 step 1b); 0 is the automatic amount, a negative offset of the amount or more gives no lift. A document without the field reads as 0. Belongs to the Grade group (the lift sits in front of ACES 2); `ResolvedValues` also carries `white_ev`, the lift in effect (`auto.white_ev + offset`, never below 0), and `AutoEstimates.white_ev` the automatic amount |
+| `rolloff` | `{ highlights 0–1, low_light 0–1 }` | 1, 0.5 | RAW › Range: `highlights` is the highlight range of C7 (`docs/02`: where the camera's clip lands, 0 as recorded, 1 at the ALEXA's EI 800 clip; the field kept its name when its meaning changed on 2026-10-17; the default 1 is the owner's choice of the same day), `low_light` the toe. It works alongside the white lift (`white_offset_ev`, above). |
 | `crop` | `Option<{ rect in [0,1]², angle_deg −45…45, aspect: Free/Original/1:1/4:5/16:9 }>` | None | Crop (header) |
 | `orientation` | 0, 90, 180, 270 degrees, applied after the camera's EXIF orientation | 0 | Crop › Rotate 90° |
 | `white_pick` | `Option<(x, y)>` sampled point | None | Pick white (header) |
 
-"Auto" values resolve against `AutoEstimates` at render time. The UI shows the resolved value with an AUTO tag; moving a slider turns it to `Manual`. "Reset" restores `Auto`. "Re-run" on the Automatic card recomputes `AutoEstimates` and resets exposure, WB and noise to Auto.
+"Auto" values resolve against `AutoEstimates` at render time. The UI shows the resolved value with an AUTO tag; moving a slider turns it to `Manual`. "Reset" restores `Auto`. "Re-run" on the Automatic card recomputes `AutoEstimates` and resets exposure, the white lift's offset, WB and noise to Auto.
 
 **Applying to several photos.** The Look card's "Apply to" (This photo / Picked / All) copies `look` and `look_intensity` to those photos. Other controls apply to the current photo only. **Copy settings and Paste settings** (the owner's request of 2026-10-16, `docs/11` §Copy and paste settings) are the one way to move the rest between photos: `copy_settings(photo_id)` makes a `SettingsPatch` from a photo's settings (`SettingsPatch::copied_from`: every field but `crop`, `orientation` and `white_pick`, which belong to the photo's own geometry and pixels; Auto stays Auto; a white balance that came from a picked white, meaning a white picked with the light preset and the white balance both Auto, becomes the manual Kelvin and tint it resolved to; a manual white balance next to a pick, and a preset chosen after a pick, are copied as they are), and `paste_settings(photo_ids, patch)` applies a patch to many photos in one call (`Session::paste_settings`). The patch lives in the webview store for the running app only: never written to disk (hard rule 4), never put on the system clipboard. Export can target the current photo, picked photos or all.
 
@@ -171,10 +172,10 @@ Each photo's render is a fixed chain of stages (`docs/02` and `docs/05`). Each s
 | Stage group | Invalidated by |
 |---|---|
 | Decode, black/white, clip mask | never within a session |
-| Noise estimate, illuminant estimate, auto exposure | Re-run |
+| Noise estimate, illuminant estimate, auto exposure, white lift estimate | Re-run |
 | Vignetting, highlights, demosaic+denoise, detail controls, sharpening, lens resample (R3–R9) | `decode.*`, `noise_reduction`, `sharpen` |
 | WB, sensor map, ARRI matrix, AWG4, exposure, highlight range and toe, LogC4 (C1–C8) | `light_source`, `white_balance`, `white_pick`, `exposure`, `rolloff.*` |
-| Primary grade, look, curve and ACES 2 (DRT), display encode (C9–C13) | everything else (except `output_sharpening`) |
+| Primary grade, look, curve, white lift and ACES 2 (DRT), display encode (C9–C13) | everything else (except `output_sharpening`); the white lift's amount is the photo's automatic one plus `white_offset_ev` |
 | Geometry (crop, straighten, orientation) | `crop`, `orientation`: applied when sampling for display and export; no pixel stage re-runs |
 | Output sharpening (the last stage: the display-linear picture at the size it is shown or written, then C13) | `output_sharpening`; it also re-runs after every change above, because it sharpens what they made. Moving its slider re-runs only this stage on the display-linear frame already rendered. |
 

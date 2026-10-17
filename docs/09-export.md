@@ -78,7 +78,7 @@ Goal: a Yellowmoon DNG opens in other raw editors looking like our render, and k
 
 ### What a DNG carries
 
-Owner's decision of 2026-10-14: **a DNG carries every change Yellowmoon makes except sharpening.** Where each stage and setting of a render goes in a DNG (the columns say how: *pixels* are the LinearRaw data, *tag* a TIFF/DNG tag, *profile* the fitted `ProfileToneCurve` and `ProfileLookTable`); "before" is the state until that decision. Four rows changed with it. (The white lift of C12, a fifth row added the same day, was removed with pipeline 0.4.0 on 2026-10-17: the highlight range of C7 took its place.)
+Owner's decision of 2026-10-14: **a DNG carries every change Yellowmoon makes except sharpening.** Where each stage and setting of a render goes in a DNG (the columns say how: *pixels* are the LinearRaw data, *tag* a TIFF/DNG tag, *profile* the fitted `ProfileToneCurve` and `ProfileLookTable`); "before" is the state until that decision. Four rows changed with it; the white lift (C12, below) is a fifth, added the same day.
 
 | Stage or setting | Before | Now |
 |---|---|---|
@@ -93,6 +93,7 @@ Owner's decision of 2026-10-14: **a DNG carries every change Yellowmoon makes ex
 | C10 look (CDL and LUT) and its intensity, log-to-log | pixels | unchanged |
 | C10 look with its own display rendering (LogC3 to Rec.709) | **refused** (the DNG option was disabled) | **pixels, approximate**: the scene values ACES 2 turns into the look's picture (below) |
 | C11 curves | pixels | unchanged |
+| **C12 white lift** (`white_offset_ev`, the automatic amount sized per photo, `docs/02` C12 step 1b; ACES 2 path only) | not in the app yet | **pixels**: a scene-linear gain (`2^(A · smoothstep)` on the luma, ratios kept, exactly 1 up to +1 stop), baked into the AWG4 pixels after the look and curve and before the fitted profile, like the look. Nothing of it is left to undo in the other app, and the DNG's pixels through ACES 2 with the placement are the app's picture to 1e-5 of display light (`tests/white_lift.rs`). With an imported ARRI display LUT, or a look with its own display rendering at 100 %, the picture has no lift (ARRI's highlights) and neither has the DNG; at an intermediate intensity the app blends our lifted C12 with the look's, and the DNG's inverse step takes that blend as it is |
 | C12 ACES 2 | profile (tone curve and look table fitted to the plain transform) | unchanged |
 | C12 display placement (`DISPLAY_PLACEMENT_EV`, +0.85) | not in the app yet | `BaselineExposure` (`+ k`; the DNG opens as bright as the app) |
 | C12 imported ARRI display LUT (Preferences › Display rendering) | **not in the pixels**: the preview showed the LUT's picture, Adobe's renderer showed ACES 2 | **pixels, approximate**, like a look with its own rendering |
