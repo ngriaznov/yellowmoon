@@ -15,8 +15,10 @@
 //!   ([`TilePlan::tile_rows`](crate::tiles::TilePlan::tile_rows)); the queue then lets a viewport
 //!   job in between them.
 //! * **Cancellation.** Every job has a [`CancelToken`]. Cancelling a job that has not started
-//!   resolves its handle with [`JobError::Cancelled`] at once and the closure never runs. Cancelling
-//!   a running job only sets the flag; the closure decides when to stop.
+//!   resolves its handle with [`JobError::Cancelled`] and the closure never runs: the worker drops
+//!   every cancelled job still in the queue before it runs the next one, so what such a closure holds
+//!   (the device buffers of a cancelled render) is let go of then, not when the job's own turn would
+//!   have come. Cancelling a running job only sets the flag; the closure decides when to stop.
 //!   [`Scheduler::cancel_navigation`] (moving to another photo) cancels the pending and running
 //!   *viewport* and *tile* jobs of that photo; thumbnail and export jobs are never cancelled by
 //!   navigation. An export is cancelled only through its own token (the user's "cancel").
@@ -534,8 +536,28 @@ impl<C: 'static> Drop for Scheduler<C> {
     }
 }
 
+/// Takes the jobs whose token is set out of the queue, leaving the others in their order.
+fn take_cancelled<C>(heap: &mut BinaryHeap<Entry<C>>) -> Vec<Entry<C>> {
+    if !heap.iter().any(|e| e.token.is_cancelled()) {
+        return Vec::new();
+    }
+    let (cancelled, kept): (Vec<_>, Vec<_>) = std::mem::take(heap)
+        .into_vec()
+        .into_iter()
+        .partition(|e| e.token.is_cancelled());
+    *heap = BinaryHeap::from(kept);
+    cancelled
+}
+
 fn worker_loop<C>(inner: &Inner<C>, ctx: &mut C) {
     loop {
+        // Jobs cancelled before they started are resolved, and their closures dropped, before
+        // anything else runs (outside the lock, like every dispatch).
+        let cancelled = take_cancelled(&mut lock(&inner.state).heap);
+        for e in cancelled {
+            let token = e.token.clone();
+            (e.job)(Dispatch::Cancelled, &token);
+        }
         let (entry, shutting_down) = {
             let mut st = lock(&inner.state);
             loop {
@@ -654,6 +676,41 @@ mod tests {
         assert_eq!(victim.wait(), Err(JobError::Cancelled));
         survivor.wait().expect("survivor");
         assert_eq!(ran.load(Ordering::SeqCst), 10);
+    }
+
+    /// Sets its flag when dropped: stands for a buffer that a job's closure holds.
+    struct Held(Arc<AtomicBool>);
+
+    impl Drop for Held {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+
+    #[test]
+    fn a_cancelled_job_lets_go_of_what_it_holds_before_a_higher_priority_job_runs() {
+        // A cancelled export job that is still queued under a viewport job is dropped first, so
+        // what its closure captured (the device buffers of a cancelled render) is released before
+        // the viewport job runs, not when the export job's own turn comes.
+        let s = scheduler();
+        let (open, g) = gate(&s);
+        let dropped = Arc::new(AtomicBool::new(false));
+        let held = Held(Arc::clone(&dropped));
+        let export = s.submit(JobSpec::new(Priority::Export), move |_, _| {
+            let _keep = &held;
+        });
+        export.cancel();
+        let seen = Arc::clone(&dropped);
+        let viewport = s.submit(JobSpec::new(Priority::Viewport), move |_, _| {
+            seen.load(Ordering::SeqCst)
+        });
+        open.send(()).expect("open");
+        g.wait().expect("gate");
+        assert!(
+            viewport.wait().expect("viewport"),
+            "the cancelled job still held its closure when the viewport job ran"
+        );
+        assert_eq!(export.wait(), Err(JobError::Cancelled));
     }
 
     #[test]

@@ -9,7 +9,9 @@ moves the entries below from Unreleased into a dated section for that version.
 
 ## [Unreleased]
 
-Nothing yet.
+### Fixed
+
+- A cancelled export gives its graphics memory back before the next picture is drawn. Work of the export that had not started yet used to keep its memory until its own turn in the queue.
 
 ## [0.1.9] - 2026-10-17
 
