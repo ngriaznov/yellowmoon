@@ -294,7 +294,7 @@ html:has(.ym-screen[data-screen="import-looks"]) #root {
 }
 .ym-step-rail__step[aria-current="step"] .ym-step-rail__mark {
   background: var(--glass-label);
-  color: oklch(0.2 0.01 262);
+  color: oklch(0.2 0 0);
 }
 .ym-step-rail__step[data-state="done"] .ym-step-rail__mark {
   background: color-mix(in oklch, var(--ink) 12%, transparent);
@@ -637,7 +637,7 @@ html:has(.ym-screen[data-screen="import-looks"]) #root {
   margin: -7px 0 0 -7px;
   border: 2px solid var(--brand);
   border-radius: 50%;
-  background: oklch(0.2 0.01 285);
+  background: oklch(0.2 0 0);
   box-shadow: 0 1px 4px rgb(0 0 0 / 0.5);
 }
 .ym-crop__thirds i {
@@ -691,7 +691,7 @@ html:has(.ym-screen[data-screen="import-looks"]) #root {
 }
 .ym-curve__point {
   rx: 50%;
-  fill: oklch(0.2 0.01 285);
+  fill: oklch(0.2 0 0);
   stroke: var(--primary);
   stroke-width: 2.5;
 }
@@ -719,7 +719,7 @@ html:has(.ym-screen[data-screen="import-looks"]) #root {
   padding: 12px 14px 12px 12px;
   border-radius: var(--glass-radius-surface);
   /* Near-opaque, so whatever is under the bar does not read through it. */
-  background-color: oklch(0.19 0.012 285 / 0.95);
+  background-color: oklch(0.19 0 0 / 0.95);
   background-image: linear-gradient(color-mix(in oklch, var(--destructive) 26%, transparent), color-mix(in oklch, var(--destructive) 26%, transparent));
   color: var(--glass-label);
   font-size: var(--fs-body);

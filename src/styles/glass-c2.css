@@ -23,12 +23,21 @@ html.dark {
   --chart-1: var(--brand);
   --chart-2: oklch(0.91 0.12 92);
 
-  /* The ground: a dark aurora in cool hues only (deep blue, teal, violet at low brightness). Nothing warm sits behind a glass pane, so no
-     pane turns olive or brown (round 7). */
-  --aurora-base: oklch(0.125 0.014 262);
-  --aurora-1: oklch(0.36 0.1 262);
-  --aurora-2: oklch(0.4 0.08 212);
-  --aurora-3: oklch(0.34 0.09 298);
+  /* The ground: neutral graphite, the owner's choice of 2026-10-17 ("like the moon is grey"). glasscn's Graphite palette (theme-graphite:
+     the ground oklch(0.116 0.006 285.4), blobs at 0.315 to 0.339) with every hue taken out: its blobs lean blue-violet, and the frost's
+     saturate(180%) carried that onto every pane. A grey surround also leaves the photo's colours to be judged against nothing tinted.
+     Nothing in the ground or the material has a hue; the colour is in the yellow buttons, the tab accents and the photos. */
+  --aurora-base: oklch(0.116 0 0);
+  --aurora-1: oklch(0.326 0 0);
+  --aurora-2: oklch(0.339 0 0);
+  --aurora-3: oklch(0.315 0 0);
+
+  /* glasscn's dark material puts hue 285 (a faint violet) in the frost, the fills and the grey labels: neutral here, at the same lightness. */
+  --glass-tint: oklch(0.24 0 0);
+  --glass-fill-tint: oklch(0.6 0 0);
+  --glass-label-secondary: oklch(0.88 0 0);
+  --glass-label-tertiary: oklch(0.62 0 0);
+  --glass-label-quaternary: oklch(0.45 0 0);
 
   /* The rules between the cells: a thin light rim. */
   --rim: color-mix(in oklch, var(--ink) 16%, transparent);
@@ -535,13 +544,15 @@ html:has(.ym-screen[data-screen="photos"]) #root {
   --strip-inset: var(--pad-panel);
   --strip-gap: 8px;
   /* Round 5: the strip has a surface of its own, so the warm part of the aurora no longer sits under warm thumbnails. Three tried, one
-     chosen: change --strip-surface to --strip-graphite, --strip-blue or --strip-tab and nothing else. --strip-alpha is how much of the
+     chosen: change --strip-surface to --strip-neutral, --strip-graphite, --strip-blue or --strip-tab and nothing else. --strip-alpha is how much of the
      colour covers the glass (100% is an opaque surface; less lets the aurora and the blur through). */
   --strip-alpha: 96%;
+  /* The neutral graphite ground (2026-10-17): the strip is the same grey as the panes, a little darker at the foot. */
+  --strip-neutral: linear-gradient(to bottom, color-mix(in oklch, oklch(0.27 0 0) var(--strip-alpha), transparent), color-mix(in oklch, oklch(0.17 0 0) var(--strip-alpha), transparent));
   --strip-graphite: linear-gradient(to bottom, color-mix(in oklch, oklch(0.3 0.008 255) var(--strip-alpha), transparent), color-mix(in oklch, oklch(0.2 0.008 255) var(--strip-alpha), transparent));
   --strip-blue: linear-gradient(to bottom, color-mix(in oklch, oklch(0.27 0.045 232) var(--strip-alpha), transparent), color-mix(in oklch, oklch(0.165 0.035 240) var(--strip-alpha), transparent));
   --strip-tab: linear-gradient(to bottom, color-mix(in oklab, color-mix(in oklab, var(--primary) 9%, oklch(0.23 0.004 255)) var(--strip-alpha), transparent), color-mix(in oklab, color-mix(in oklab, var(--primary) 3%, oklch(0.16 0.004 255)) var(--strip-alpha), transparent));
-  --strip-surface: var(--strip-blue);
+  --strip-surface: var(--strip-neutral);
   container-type: size;
   position: relative;
   display: flex;

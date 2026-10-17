@@ -9,7 +9,10 @@ moves the entries below from Unreleased into a dated section for that version.
 
 ## [Unreleased]
 
-Nothing yet.
+### Changed
+
+- The interface is now a neutral graphite grey instead of a cool blue. Nothing behind the panes or in them has a hue any more, so the colour on screen is your photo's, the yellow buttons' and the tabs'.
+- The tool tabs sit in the middle of their row, sliders have a small round knob that leaves more room to drag, and the point on the colour wheels is smaller.
 
 ## [0.1.7] - 2026-10-17
 
