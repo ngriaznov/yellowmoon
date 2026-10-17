@@ -34,9 +34,9 @@ impl Rng {
 
 const IDENTITY: [[f64; 3]; 3] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
 
-/// A chain that does nothing before C12: identity matrix, no roll-off, zero grade, Neutral look.
+/// A chain that does nothing before C12: identity matrix, C7 off, zero grade, Neutral look.
 fn bare(display: DisplayTransform, output: OutputTarget) -> ColorChain {
-    let mut p = ChainParams::new(IDENTITY, ToneParams::new(0.5, 0.0, 1.0e6, 0.0).unwrap());
+    let mut p = ChainParams::new(IDENTITY, ToneParams::IDENTITY);
     p.display = display;
     p.output = output;
     ColorChain::new(&p).unwrap()

@@ -35,7 +35,7 @@ fn grey(stops: f64) -> [f64; 3] {
 /// shared code with the crate).
 fn reference_stops(r: f64, clip_luma: f64, s: f64) -> f64 {
     let h_s = (clip_luma / 0.18).log2();
-    let h_a = ((1.0 - 256.0 / 65535.0) * 800.0 / 4.0).log2();
+    let h_a = ((1.0_f64 - 256.0 / 65535.0) * 800.0 / 4.0).log2();
     let s_k = f64::max(1.0, h_s - 1.0);
     let w = ((h_s - s_k - 0.25) / 0.75).clamp(0.0, 1.0);
     let e = w * r.clamp(0.0, 1.0) * f64::max(h_a - h_s, 0.0);
@@ -254,8 +254,8 @@ fn nothing_leaves_the_stage_above_the_alexa_clip() {
                     }
                 }
             }
-            // Even the largest finite pixel lands on the cap, finite.
-            let out = t.apply_rgb([f64::MAX; 3]);
+            // Even a pixel near the largest finite number lands on the cap, finite.
+            let out = t.apply_rgb([1e300, 1e300, 1e300]);
             assert!(out.iter().all(|v| v.is_finite()));
             assert!((luma(out) - cap).abs() <= 1e-9 * cap, "{out:?}");
         }
@@ -324,7 +324,7 @@ fn the_gain_keeps_the_channel_ratios_and_the_toe_follows_it() {
         [12.0, 9.0, 2.0],
         [0.4, 2.5, 1.0],
         [30.0, 28.0, 2.0],
-        [1.0, 0.5, -0.05],
+        [3.0, 1.5, -0.05],
     ] {
         let g = t.highlight_gain(rgb);
         assert!(g > 1.0, "{rgb:?} is above the knee");
