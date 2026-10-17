@@ -128,7 +128,7 @@ fn the_exposed_signal_of_a_neutral_field_is_two_to_the_ev_times_the_balanced_val
 #[test]
 fn the_highlight_range_moves_the_clipped_highlights_and_nothing_under_the_knee() {
     use ym_color::display::OutputTarget;
-    use ym_color::tone::HIGHLIGHT_CAP_STOPS;
+    use ym_color::tone::{HIGHLIGHT_CAP_STOPS, luma};
 
     let white = light(PROFILE, 5500.0);
     // `Layout::Ramp`: luminance from 0.1 to 1 of the level along x. The balanced neutral is
@@ -182,7 +182,8 @@ fn the_highlight_range_moves_the_clipped_highlights_and_nothing_under_the_knee()
             );
         }
     }
-    // The clipped band: brighter with each step of the range.
+    // The clipped band: brighter with each step of the range (measured: about 0.809, 0.985 and 0.992;
+    // ACES 2 compresses the last step, sRGB codes 232, 253 and 254).
     let clipped = (0..w)
         .find(|&x| balanced_at(x, w) > 1.1)
         .expect("a clipped band");
@@ -194,7 +195,7 @@ fn the_highlight_range_moves_the_clipped_highlights_and_nothing_under_the_knee()
     eprintln!("clipped band, display-linear: 0 {a:?}, 0.5 {b:?}, 1 {c:?}");
     for ch in 0..3 {
         assert!(
-            a[ch] + 0.05 < b[ch] && b[ch] + 0.01 < c[ch],
+            a[ch] + 0.1 < b[ch] && b[ch] + 0.002 < c[ch],
             "channel {ch}: {a:?} {b:?} {c:?}"
         );
     }
@@ -204,17 +205,23 @@ fn the_highlight_range_moves_the_clipped_highlights_and_nothing_under_the_knee()
         render(0.0, FullTarget::DngLinearAwg4),
         render(1.0, FullTarget::DngLinearAwg4),
     );
-    let max_of =
-        |img: &ym_core::pipeline::FullImage| img.rgb.iter().copied().fold(0.0f32, f32::max);
+    // The range caps the luma (`docs/02` C7), so that is what is compared with the ALEXA clip; one
+    // channel of a pixel at the cap can be a little over it (the demosaic's slight colour there).
+    let max_luma = |img: &ym_core::pipeline::FullImage| {
+        img.rgb
+            .chunks_exact(3)
+            .map(|p| luma([f64::from(p[0]), f64::from(p[1]), f64::from(p[2])]))
+            .fold(0.0f64, f64::max)
+    };
     let cap = 0.18 * HIGHLIGHT_CAP_STOPS.exp2();
-    let (m_lo, m_hi) = (f64::from(max_of(&dng_lo)), f64::from(max_of(&dng_hi)));
-    eprintln!("DNG maximum: {m_lo} at 0, {m_hi} at 1 (the ALEXA clip {cap})");
+    let (m_lo, m_hi) = (max_luma(&dng_lo), max_luma(&dng_hi));
+    eprintln!("DNG maximum luma: {m_lo} at 0, {m_hi} at 1 (the ALEXA clip {cap})");
     assert!(
         m_lo < 4.0,
         "at 0 the clip stays where it was recorded (2): {m_lo}"
     );
     assert!(
-        m_hi > 0.9 * cap && m_hi < cap * (1.0 + 1e-3),
+        m_hi > 0.9 * cap && m_hi < cap * (1.0 + 1e-4),
         "at 1 the clip lands on the ALEXA clip {cap}: {m_hi}"
     );
     assert_eq!((dng_lo.width, dng_lo.height), (w, lo.height));

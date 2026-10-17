@@ -292,10 +292,13 @@ fn a_full_render_and_a_100_percent_frame_on_the_device_match_the_cpu() {
         "full render, device against CPU: worst {worst:e}, share over 1e-3 {over:e}, mean {mean:e}"
     );
     // Twice the first measured values (worst 4.8e-4, share over 1e-3 zero, mean 2.6e-8), with the worst
-    // allowance raised for the white lift: this scene is high-key (a lift of 1.04 stops), and the lift
-    // multiplies the one tie-flipped demosaic sample of the patchwork (the single worst pixel and its
-    // two neighbours, at a noise texture of 4e-3 between neighbours) by its local gain, 8.4e-4 without
-    // the lift and 1.41e-3 with it. The lift's own parity is gated in `ym-gpu` (`gpu_color_white_lift`).
+    // allowance raised for a gain on the highlights: the one tie-flipped demosaic sample of the
+    // patchwork (the single worst pixel and its two neighbours, at a noise texture of 4e-3 between
+    // neighbours) is multiplied by the local gain of what acts on its tones. That was the white lift of
+    // pipeline 0.3.0 (1.41e-3 with it, 8.4e-4 without); since pipeline 0.4.0 it is the highlight range of
+    // C7, whose slope above the knee is more than 1 (measured on lavapipe: worst 8.38e-4, none over 1e-3,
+    // mean 5.2e-8). The allowance stays at 2e-3. The range's own parity is gated in `ym-gpu`
+    // (`gpu_color_highlight_range`).
     assert!(
         worst < 2e-3 && over <= 1e-5 && mean < 1e-6,
         "{worst} {over} {mean}"
@@ -734,6 +737,11 @@ mod view {
     /// adapter: a Metal column comes only with the Apple runners' numbers (the `[view stages]` CI notes).
     pub const CODE_BOUND: u8 = 2;
 
+    /// The largest difference in codes a sharpened device frame may have from the CPU's where output
+    /// sharpening's halo limiter flipped a rank (see `device_frames_equal_the_cpu_frames_within_the_golden_metric`):
+    /// twice the 5 codes first measured on lavapipe.
+    pub const HALO_FLIP_CODE_BOUND: u8 = 10;
+
     pub fn picture(w: u32, h: u32) -> PhotoSource {
         let white = light("sony-ilce-7rm4", 4500.0);
         let scene = Scene::new(w, h, white, Layout::Patchwork, 0.5).noise(2e-4, 2e-6);
@@ -917,8 +925,34 @@ mod view {
                 median <= 0.02 && p99 <= 0.05 && max <= 0.5,
                 "{name}: {median} {p99} {max}"
             );
+            // A sample past `CODE_BOUND` is allowed only where output sharpening's halo limiter
+            // flipped a rank (`docs/05`, the output sharpening row of the parity table: up to 8.3e-3
+            // display-linear within 8 px of a flipped pixel): the same frame without output
+            // sharpening must then be within `CODE_BOUND`, so the colour pass and the sampler never
+            // hide behind it. First seen with pipeline 0.4.0 (the highlight range in place of the
+            // white lift changed the patches' levels), on lavapipe at 100 %: 5 codes on six samples
+            // at one edge of a dark patch (codes 18 to 23), with the amount at 100 only (one code
+            // at 0 and at 200, and one code with the range at 0 or 1, so not the range itself); the
+            // bound is twice that.
+            let worst_allowed = if worst > CODE_BOUND && src.settings.output_sharpening > 0.0 {
+                let unsharpened = edit(&src, |s| s.output_sharpening = 0.0);
+                let (bare, _, _) = codes(
+                    &frame(&cpu, &unsharpened, &st),
+                    &frame(&dev, &unsharpened, &st),
+                );
+                assert!(
+                    bare <= CODE_BOUND,
+                    "{name}: {bare} codes without output sharpening"
+                );
+                eprintln!(
+                    "{name}: {worst} codes from the halo limiter's rank flips, {bare} without output sharpening"
+                );
+                HALO_FLIP_CODE_BOUND
+            } else {
+                CODE_BOUND
+            };
             assert!(
-                worst <= CODE_BOUND && mean < 0.25,
+                worst <= worst_allowed && mean < 0.25,
                 "{name}: {worst} codes, mean {mean}"
             );
             // The view stages alone come in far below them: twice the first values measured on
@@ -926,7 +960,7 @@ mod view {
             // The same on every adapter; a Metal column comes only with the Apple runners' numbers
             // (the `[view stages]` notes above).
             assert!(
-                max <= 0.17 && worst <= CODE_BOUND && over <= 1e-5 && mean < 1.5e-4,
+                max <= 0.17 && worst <= worst_allowed && over <= 1e-5 && mean < 1.5e-4,
                 "{name}: max {max}, {worst} codes, over {over}, mean {mean}"
             );
         }
