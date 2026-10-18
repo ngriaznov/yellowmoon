@@ -167,6 +167,8 @@ test.describe("the flow", () => {
     // The shell keeps 256 MiB of tiles and answers 404 for the addresses of the photos used least recently. The mock's addresses are
     // `blob:` URLs, so revoking them makes the next load of the same address fail the same way.
     await photos(page);
+    // The tiles stay in view for the whole test: their pictures are what it follows from one photo to the next.
+    await showFirstLookTile(page);
     await lookTilesLoaded(page);
     const srcs = () => page.locator(".ym-look-tile img").evaluateAll((images) => (images as HTMLImageElement[]).map((i) => i.src));
     const first = await srcs();
