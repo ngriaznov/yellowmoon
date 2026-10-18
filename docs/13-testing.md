@@ -228,6 +228,8 @@ Per light (A7R IV, ISO 400, chart median): D 5500 0.49, D 6500 0.61, D 7500 0.53
 
 Gates of `docs/18` §8: Rust–Python parity to 1e-9 (`crates/ym-color/tests/autoset_vectors.rs` for the model, `crates/ym-core/tests/autoset_labels.rs` for the exposure label), equivariance of the exposure under raw scaling (darker frames; brighter frames that clip are covered by the rescue gate), G3 on normal scenes only (owner's decision of 2026-10-18), rescue of files rendered ±2 EV off, and the blind A/B below as the acceptance gate (≥ 60 % pooled wins against the rule before `autoset`, Lightroom Auto and the camera JPEG; no stratum below 45 %).
 
+The gate 5 test is the kit in `tools/eval/ab/` (a kit of its own; the protocol below is the whole-app A/B of M4, whose page `tools/abtest` is still to be written): `ab.sh prepare` renders the owner's photos in the variants and writes the blind page, `ab.sh score` applies gate 5 to the exported `results.json`, and `tools/eval/ab/README.md` is the owner's guide. Its unit tests run in CI's fetch-tools job (stdlib Python, no `ym`, no network). Only the owner runs it, on the owner's own photos: the page makes no network request and nothing leaves the machine.
+
 ## Blind A/B protocol [HUMAN]
 
 - 50 A1 photos covering daylight, shade, tungsten, LED, mixed light, night, skin, foliage, high ISO.

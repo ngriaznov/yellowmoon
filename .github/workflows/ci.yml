@@ -122,8 +122,9 @@ jobs:
 
   # Scripts under tools/fetch: shellcheck plus the stdlib unit tests, which run against a local HTTP
   # server and never touch the network (the corpus hosts are not needed to prove the script logic). The same job runs the other
-  # stdlib-only Python tool tests: tools/oracle (the metadata gate's command line), tools/looks (the ARRI package fingerprints)
-  # and tools/golden (the LibRaw oracle verdicts), and shellchecks the developer and oracle scripts.
+  # stdlib-only Python tool tests: tools/oracle (the metadata gate's command line), tools/looks (the ARRI package fingerprints),
+  # tools/golden (the LibRaw oracle verdicts) and tools/eval/ab (the blind A/B kit of docs/18 gate 5), and shellchecks the
+  # developer and oracle scripts.
   fetch-tools:
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
@@ -137,12 +138,13 @@ jobs:
         run: |
           python3 -I -m unittest discover -s tools/fetch -p 'test_*.py' -v
           python3 -I -m unittest discover -s tools/fetch/autoset -p 'test_*.py' -v
-      - name: oracle, looks and golden tool tests (stdlib only)
+      - name: oracle, looks, golden, dev and blind A/B tool tests (stdlib only)
         run: |
           python3 -I -m unittest discover -s tools/oracle -p 'test_*.py' -v
           python3 -I -m unittest discover -s tools/looks -p 'test_*.py' -v
           python3 -I -m unittest discover -s tools/golden -p 'test_*.py' -v
           python3 -I -m unittest discover -s tools/dev -p 'test_*.py' -v
+          python3 -I -m unittest discover -s tools/eval/ab -p 'test_*.py' -v
 
   # M0-07: WGSL kernels against their CPU references on Mesa lavapipe (software Vulkan): correctness
   # only, speed means nothing here. Metal behaviour and timings are checked on a Mac (HUMAN M0-H4).
