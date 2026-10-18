@@ -1,0 +1,174 @@
+# 18 · Automatic settings (`autoset`)
+
+Owner's direction (2026-10-18): the automatic settings should understand the scene and set each photo the way a professional photographer would, so an everyday photo looks punchy and finished when it opens, clearly better than Lightroom Auto and the camera's JPEG. Research: `research/ml-auto-settings-2026-10-18.md`. Decisions of the same day (`docs/16`): **full rescue** (Auto ignores the camera's exposure and any dialled compensation), **contrast becomes a bounded per-photo Auto setting**, the **G3 gate applies to normal scenes only and acceptance is a blind A/B**, and **scene understanding comes from our own encoder** labelled offline by Apache-2.0 vision-language models.
+
+This spec covers version 1 (`autoset` v1: exposure and contrast from a small learned model, temperature from a preferred-white rule) and lists what follows. Specs win over the research where they differ.
+
+## 1. What changes for the user
+
+| Setting | Before | With `autoset` v1 |
+|---|---|---|
+| Exposure (Auto) | the camera's exposure: a constant `CAMERA_GAIN_EV` +1.11 for every photo | the model chooses where the photo's key sits, from what is in the frame and how bright the scene was; a photo shot a stop under or over comes out the same (full rescue) |
+| Temperature and tint (Auto) | the estimated light, fully neutralised | the **preferred white**: daylight stays neutral; warm light (tungsten, sunsets) and dim scenes keep part of their warmth (§5) |
+| Contrast | a plain number, default 0 | **Auto or Manual**, like Exposure: Auto is the model's bounded per-photo contrast; moving the slider makes it Manual; Reset returns to Auto |
+| White lift | per photo, sized at the photo's exposure | unchanged; it is sized at the new exposure |
+| Highlight guard, burst sharing | as `docs/02` | unchanged; burst sharing also applies to Auto contrast |
+
+When the model file is missing, cannot be read, or is unsure (§4.4), every value falls back continuously to the behaviour before `autoset`. `PIPELINE_VERSION` goes to 0.5.0.
+
+## 2. Where it runs
+
+Once per photo, on the CPU, in `AutoEstimates::compute_with_look` (`crates/ym-core/src/auto.rs`), after the illuminant estimate and the exposure meter and **before** the white-lift estimate, so the lift is sized at the new exposure. Everything is f64, single-threaded, in a fixed order: the same file gives the same bytes on every machine (AGENTS rule 8); the app and `ym` share the code (rule 6). Cost budget: features ≤ 40 ms on the 1/8 preview of a 61 MP file (order statistics with `select_nth_unstable_by`, never a full sort), inference ≤ 1 ms.
+
+Code: `ym_color::autoset` (pure functions over plain buffers: `features`, `model`, `apply`, `preferred_white`), wired in `ym-core` (`auto.rs`, `settings.rs`, `pipeline/color.rs`).
+
+## 3. Inputs: the feature vector (v1, 39 values)
+
+Built from the **metering preview** (`Preview::metered(g0)`: the 1/8 preview, `g0`-balanced, vignetting gain applied) through the fused C1–C6 matrix at EV 0 (`matrix_ev0`, as `auto_exposure` uses it). For every pixel `i` with finite channels: `Y_i` = the AWG4 `Y` row applied to the pixel (as `auto_exposure` computes it), floored at 1e-6; `s_i = log2(Y_i / 0.18)` (stops over middle grey at EV 0). `M_i = max(R, G, B)` of the AWG4 pixel, floored at 1e-6; `t_i = log2(M_i / 0.18)`. Clipped pixels are **included** in the quantiles (they are the highlights); non-finite pixels are skipped. The **key** `m = log2(mean_luminance / 0.18)` with `mean_luminance` the centre-weighted geometric mean that `auto_exposure` already reports (`AutoExposure::mean_luminance`); when the meter has no usable pixel, autoset is not run (fallback).
+
+Quantiles are the linearly interpolated quantiles of `docs/02` ("Percentiles"), computed with selection, never a full sort.
+
+| Index | Name | Definition |
+|---|---|---|
+| 0 | `key_bv` | `Bv_settings + m`, with `Bv_settings = log2(N²/t) − log2(ISO/100)` (`ShotInfo::bv`); 0 when unknown |
+| 1 | `bv_known` | 1 when `Bv_settings` is known, else 0 |
+| 2–18 | `q01 … q999` | quantiles of `s − m` at p = 0.01, 0.02, 0.05, 0.10, 0.20, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80, 0.90, 0.95, 0.98, 0.99, 0.995, 0.999 |
+| 19–23 | `mq50 … mq999` | quantiles of `t − m` at p = 0.50, 0.90, 0.98, 0.995, 0.999 |
+| 24 | `clip_headroom` | `log2(clip_y / 0.18) − m`, `clip_y` the AWG4 `Y` of the clipped neutral at EV 0 (`FusedChain::clip()` at EV 0) |
+| 25 | `clipped_share` | share of preview pixels whose clip mask is 1 |
+| 26 | `centre_minus_key` | mean of `s` over the central third (both axes) minus `m` |
+| 27 | `top_minus_bottom` | mean of `s` over the top third minus over the bottom third (after orientation is **not** applied: sensor orientation) |
+| 28 | `bright_share` | share of pixels with `s − m > 2` |
+| 29 | `dark_share` | share of pixels with `s − m < −3` |
+| 30–33 | `p_daylight … p_led` | the scene light's class probabilities (daylight, tungsten, fluorescent, LED) |
+| 34 | `mired` | `1e6 / cct_k / 100` of the scene light |
+| 35 | `duv` | the scene light's Duv × 100 |
+| 36 | `light_confidence` | the scene light's confidence |
+| 37 | `log_iso` | `log2(ISO / 100)`, 0 when unknown |
+| 38 | `flash` | 1 when EXIF Flash says the flash fired, else 0 |
+
+**Equivariance (full rescue by construction).** Scaling the raw data by 2^k (with the exposure settings changed by k, so the scene is the same) shifts every `s`, `t` and `m` by k: features 2–23 and 26–29 are unchanged, `key_bv` is unchanged (`Bv_settings` moves by −k, `m` by +k), only `clip_headroom` moves by −k (less headroom when brighter), as it physically does. The model predicts where the key belongs, not a gain, so the result is the same however the camera exposed. Exposure compensation is **not** an input (owner's decision: full rescue).
+
+## 4. The model
+
+### 4.1 Outputs
+
+Two heads, each a mean and a log-variance:
+
+- `key_target`: where the key should sit after exposure, in stops over grey. The exposure the model asks for is `EV_model = key_target − m`.
+- `contrast`: the C9 contrast (−100…100 units of `DevelopSettings::contrast`, `docs/02` C9), bounded to ±`CONTRAST_LIMIT` = 30 in v1.
+
+### 4.2 Architecture
+
+An ensemble of **5** multilayer perceptrons, each `39 → 32 → 32 → 4` with `tanh` hidden units (outputs: key mean, key log-variance, contrast mean, contrast log-variance); inputs standardised with the stored mean and standard deviation. About 2,500 parameters per member. Combination: the mean of the members' means; the variance is the mean of the members' variances plus the variance of their means (the mixture variance).
+
+### 4.3 File format (`data/models/autoset/autoset.json`)
+
+```json
+{
+  "format": "yellowmoon-autoset",
+  "format_version": 1,
+  "model_version": "1.0.0",
+  "feature_names": ["key_bv", "bv_known", "..."],
+  "input_mean": [39 numbers], "input_std": [39 numbers],
+  "activation": "tanh",
+  "outputs": ["key_target", "key_logvar", "contrast", "contrast_logvar"],
+  "prior_sigma": {"key_target": 0.75, "contrast": 10.0},
+  "contrast_limit": 30.0,
+  "members": [ {"layers": [ {"w": T, "b": T}, {"w": T, "b": T}, {"w": T, "b": T} ]}, ... 5 ],
+  "sha256": "hex of the concatenated little-endian f32 bytes of every tensor, members in order, layers in order, w before b"
+}
+```
+
+`T` = `{"shape": [rows, cols], "data_b64": base64 of little-endian f32, row-major}` (the `illum` convention, `crates/ym-color/src/illum/format.rs`). `w` has shape `[out, in]`; a layer computes `y = W·x + b` in **f64** from the f32 values. The reader refuses a wrong `format`, `format_version`, feature count, shape or SHA-256, and any non-finite value (`AutosetError`). Weights trained on CC BY-SA data are CC BY-SA 4.0 with their own `LICENSE` in the folder (`docs/14` rule 5); v1 is trained on CC0 data only and is Apache-2.0.
+
+### 4.4 Applying it: shrink towards the rule
+
+With the ensemble mean `μ` and variance `σ²` of a head and its prior sigma `σ0`, the weight `w = σ0² / (σ0² + σ²)` (in (0, 1]: certain predictions apply, doubtful ones fade):
+
+- `EV_auto_before_guard = clamp(CAMERA_GAIN_EV + w_ev · (μ_key − m − CAMERA_GAIN_EV), −EV_LIMIT, +EV_LIMIT)`; then the highlight guard (`docs/02` step 5) and the burst median (step 6) as before.
+- `contrast_auto = clamp(w_c · μ_contrast, −contrast_limit, +contrast_limit)`, rounded to 0.1; frames of a burst share the median.
+- Both weights and sigmas are reported (`AutoSummary`): `ev_confidence = w_ev`, `contrast_confidence = w_c`.
+
+No model, a model that fails to load, or no usable preview pixel: `w = 0` (the rule, contrast 0). The value written into exports (`ym:Settings` XMP) records `autoset` = the model version or `"none"`.
+
+## 5. Preferred white (rule, v1)
+
+Auto white balance sets the **user white** of the chain (C4–C5) to a preferred white derived from the scene light; the scene light itself (C1–C3, the spectral sensor map) is never changed (`docs/02`, scene light versus user white). Only when white balance is Auto and the light source is Auto.
+
+With the scene light's `mired_s = 1e6 / cct_k`, `duv_s`, the reference `mired_ref = 1e6 / 6000` (a surface neutral, Zhai and Luo 2017) and the scene key brightness `B = key_bv` (§3):
+
+```
+warm  = max(0, mired_s − mired_ref)                       mired warmer than the reference
+D_w   = 1 − R_warm · smoothstep(warm / W_span)            R_warm = 0.30, W_span = 150 mired
+D_low = 1 − R_dim · smoothstep((B_dim − B) / B_span)      R_dim = 0.15, B_dim = 2, B_span = 4 (only when key_bv is known)
+D     = clamp(D_w · D_low, 0.5, 1)
+mired_u = mired_ref + D · (mired_s − mired_ref)   when mired_s > mired_ref, else mired_s
+duv_u   = duv_s                                    (tint casts are neutralised fully)
+```
+
+`smoothstep(x) = 0` for x ≤ 0, `3x² − 2x³` on (0, 1), 1 for x ≥ 1. With `D = 1` the photo is fully neutralised (as before); `D < 1` balances for a cooler light than the scene's, so part of the warm cast stays. At 3000 K in a bright scene `D = 0.70`: the photo is balanced for about 3530 K (`mired_u` = 283). The constants are a starting point for the owner's blind test ([HUMAN] AS-H2); the setting `white_preference` (0 … 1, default 1) scales `1 − D` (0 = fully neutral, the old behaviour). The temperature readout shows the user white.
+
+A learned preferred-white map (Cube++ neutral against camera-AWB pairs, about 600 parameters) replaces the constants in a later version (§9).
+
+## 6. Labels and training (`training/autoset/`)
+
+**Data (v1).** CC0 Sony ARWs from raw.pixls.us and RawDB (196 + 229 listed, overlapping; deduplicated by SHA-256; manifest with source, licence and checksum in `tools/fetch/autoset/manifest.json`; never committed raw files). Files are streamed: download, dump, delete (disk). The 12 local photos and `testdata/readme-photos` are **evaluation only** (licences unclear or the owner's own; `docs/test-photo-sources.md`).
+
+**Dump** (`cargo run -p ym-core --release --example autoset_dump -- <files> > rows.jsonl`): one JSON line per file with the 39 features, `m`, the camera's embedded JPEG statistics for the label fits, metadata (DRO mode, creative style, flash, metering mode, exposure compensation, body), and the contrast-fit table (§6.2); plus one augmentation line per k ∈ {−2, −1, −0.5, +0.5, +1, +2}: the same file scaled by 2^k with re-clipping at the sensor clip, with its own features (`key_target` label unchanged, §3).
+
+### 6.1 Exposure label
+
+The G3 fit of `docs/02` (`tools/eval/study.py`): the scene level `x` at EV 0 that the camera's JPEG renders as middle grey, by quantile matching our scene-linear luminance (at the JPEG's size) against the JPEG's linear luminance over the 0.02 … 0.98 quantiles, restricted to the mid-tone band −2 … +1 stop around grey. `L = log2(0.18 / x)` is the exposure that puts our grey where the camera put it; the label is `key_target = L + m`. Files whose embedded JPEG was made with DRO or HDR on, or with a non-Standard creative style, are kept with a doubled label variance (their mid-tones are tone-mapped).
+
+### 6.2 Contrast label
+
+At the exposure label `L`, the dump renders the preview through the real chain (default look, default white, white lift as estimated) at contrast c ∈ {−40, −30, …, +40} and records the display luma quantiles (p = 0.05, 0.10, 0.25, 0.50, 0.75, 0.90, 0.95) for each c, plus the same quantiles of the camera JPEG. The label is the c that minimises the squared difference of the inter-quantile spreads (p90 − p10 and p75 − p25), interpolated between grid points, clamped to ±40. The residual becomes the label variance. (Contrast fitted to a camera's tone curve partly measures that curve; this is why the head is bounded and shrunk.)
+
+### 6.3 Objective
+
+Per member: Gaussian negative log-likelihood of each head against its label, with the label variance added to the predicted variance; L2 weight decay; the augmentation rows enter with the same `key_target`; seeds fixed (member i uses seed 1000 + i); full-batch Adam, early stopping on a held-out 15 % of **scenes** (all files and augmentations of a scene stay together; scenes = files of the same body within 10 s, or the same SHA-256 prefix group of raw.pixls.us duplicates). JAX on the CPU (`training/requirements.txt`).
+
+### 6.4 Exports
+
+`python3 -m training.autoset.export` writes `data/models/autoset/autoset.json`, `MODEL_CARD.md` (data, licences, metrics, failure cases, git SHA), `SHA256SUMS`, and `crates/ym-color/tests/data/autoset/vectors.json` (inputs, member outputs and combined outputs computed in numpy f64 from the stored f32 weights); `crates/ym-color/tests/autoset.rs` must reproduce every vector to 1e-9.
+
+## 7. Settings, interface and command line
+
+- `DevelopSettings::contrast` becomes `ContrastSetting = AutoOr<ContrastValue { value }>` (the `ExposureSetting` pattern; JSON `{"kind":"auto"}` / `{"kind":"manual","value":12}`). A plain number in an older settings document reads as Manual with that value, except 0, which reads as Auto (0 was the default). `AutoFlags.contrast`; `ResolvedValues.contrast` is the effective contrast; `AutoEstimates` gains `contrast`, `ev_confidence`, `contrast_confidence`, `autoset_version`.
+- `DevelopSettings::white_preference` (0 … 1, default 1; §5).
+- Light tab: the Contrast slider shows the effective value with an AUTO state like Exposure; moving it makes it Manual; its Reset returns Auto. Look tab: the Automatic card gains a **Contrast** row (value, AUTO/EDITED, → Light); the Tone card's AUTO speaks for white balance **and** contrast, and its Reset sends both to Auto. The Automatic card's Exposure row keeps its place. No new card.
+- `ym render --contrast <auto|N>`; `--white-preference <0..1>`; `ym info --json` reports the new estimates.
+- Copy/Paste settings carry both as any setting does.
+
+## 8. Gates (owner's decision of 2026-10-18)
+
+1. **Determinism and parity:** Rust against Python ≤ 1e-9 (vectors); the same file gives the same estimates whatever the thread count; app and `ym` bit-identical (existing parity tests).
+2. **Equivariance:** the dump's augmentation rows: `EV_model` moves by −k ± 0.05 EV for |k| ≤ 2 on every file (features make it exact up to clipping).
+3. **G3 on normal scenes only (no regression):** on held-out scenes that the camera exposed normally (|EC| < 0.3, no DRO/HDR, Standard style), `|EV_auto − L|` median ≤ 0.25 EV and ≤ 0.5 EV on 90 % of files.
+4. **Rescue:** files rendered at −2 … +2 EV off their label come back within ±0.3 EV of it on 90 % of held-out files.
+5. **Blind A/B** ([HUMAN] AS-H1, the acceptance gate): about 150 photos, everyday strata; `autoset` against the rule before it, against Lightroom Auto and against the camera JPEG; pass at ≥ 60 % pooled wins against each (Wilson lower bound > 50 %), no stratum below 45 %, no rise in gross failures (a photo that needs more than 0.5 EV or 10 mired of correction).
+6. Golden images: re-baselined for 0.5.0 with a note; the golden **truth** keeps its settings (Neutral look, highlight range 0, lift off) plus contrast Manual 0 and `white_preference` 0, and exposure Manual at the pre-autoset rule, so its numbers do not move.
+
+## 9. Later versions (not v1)
+
+- **SceneNet** (rank 4 of the research): our own 1–4 M-parameter encoder, trained from scratch on Open Images V7 CC BY images, labelled offline by Apache-2.0 VLM teachers (Qwen3-VL, InternVL3.5, Gemma 4; never Gemma 3, Llama, MobileCLIP, DINOv3), audited on 300 images by the owner ([HUMAN] AS-H3); 16 scene probabilities feed `autoset`, with per-scene professional priors. Labelling needs a GPU machine.
+- Learned preferred white (Cube++ pairs), `illum` v2 (Cube++, metadata, cross-body), HDR+ (CC BY-SA, phone DNGs: needs a DNG reader and generic matrices), Play Raw (CC BY-SA, manual inventory).
+- Stage 2: a differentiable proxy of the chain, preferences from the owner's A/B choices, a Hu-style critic on owner-approved renders.
+
+## 10. Tasks
+
+| ID | Task | Acceptance |
+|---|---|---|
+| AS-01 | This spec; `docs/02`, `07`, `13`, `15`, `16`, `STATUS` | done in the branch |
+| AS-02 | `ym-raw`: EXIF BrightnessValue, MeteringMode, Flash, ExposureProgram, SceneCaptureType; Sony maker note: DRO mode, creative style, scene mode | unit tests on synthetic IFDs; values on the local ARWs match exiftool where installed |
+| AS-03 | `ym_color::autoset`: features, model reader and ensemble, shrinkage, preferred white | unit tests: feature layout, equivariance, determinism, format refusals, a hand-made test model, the rule's numbers of §5 |
+| AS-04 | `training/autoset`: dataset, labels (§6.1–6.2), training (§6.3), exports and vectors (§6.4) | pytest on synthetic rows; vectors reproduced by Rust to 1e-9 |
+| AS-05 | `ym-core` example `autoset_dump` | JSONL per §6 for the local files; deterministic |
+| AS-06 | `tools/fetch/autoset`: CC0 Sony ARW manifest and the streaming dataset build | manifest with SHA-256 and licence per file; rerunnable |
+| AS-07 | `ym-core` integration: estimates, exposure, contrast `AutoOr`, preferred white in the chain's Auto arm, `white_preference`, XMP, CLI, wire types, `PIPELINE_VERSION` 0.5.0 | tests; golden truth unchanged; parity app/CLI |
+| AS-08 | Frontend: contrast Auto/Manual, Automatic card Contrast row, Tone card AUTO, mock, tests, references | vitest, e2e |
+| AS-09 | Train v1, evaluate (gates 2–4), golden re-baseline, contact sheets for the owner | numbers in STATUS |
+| AS-H1 | [HUMAN] blind A/B sessions on a Mac (including Lightroom Auto renders) | gate 5 |
+| AS-H2 | [HUMAN] preferred-white constants by eye | §5 constants |
+| AS-H3 | [HUMAN] SceneNet: teacher labelling on a GPU machine, 300-image audit | §9 |

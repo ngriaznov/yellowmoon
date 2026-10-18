@@ -9,6 +9,7 @@ Crates: `ym-ml` (runtime), `ym-gpu` (shared device). Training code: `training/` 
 | `jdd` | joint demosaic + denoise (+ cRAW de-banding) | 0.2–1 M params | export, 1:1 tiles |
 | `jdd-ms` | denoise only, for Lossless M/S RGB input | ≤ 0.5 M params | M/S files (optional; classical fallback otherwise) |
 | `illum` | illuminant estimate: FFCC filter + class head | < 50 k params | once per photo, CPU |
+| `autoset` | automatic exposure (where the key sits) and contrast, `docs/18` | 5 × ~2.5 k params (ensemble MLP, f64 Rust) | once per photo, CPU |
 | `smap` | sensor map MLP (only if it beats the table blend, `docs/02`) | ≤ 5 k params | once per photo, CPU |
 
 Everything else in the pipeline is analytic.

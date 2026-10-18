@@ -224,6 +224,10 @@ Four tiers, so CI works for everyone (a fifth source, local-eval, sits outside t
 
 Per light (A7R IV, ISO 400, chart median): D 5500 0.49, D 6500 0.61, D 7500 0.53, FL11 0.67, blackbody 2800 0.68 and 3200 K 1.17, LED-B3 0.73, LED-V2 0.95, the mixed scene 2.05 (one light assumed for a mixture of two). Noise shows at high ISO: D 6500 at ISO 100 0.49, 800 0.93, 3200 1.02, 12800 2.24. Bodies under D 6500, ISO 400: A7R IV 0.61, A7 III 0.62, A7S III 0.38, A6400 0.53, RX100 IV 0.73, the A1 on the A7R IV stand-in 0.44. The sensor-map gate (median at most 0.5 per held-out light, with true lights, no noise) is a different, stricter measurement; this one includes the light estimate (within 200 K of the truth in these scenes), the noise, the demosaic and the exposure scaling. It is a number to report: no threshold is defined for it. The scenes, noise and lights are synthetic assumptions (`training/synth/README.md`); the number says how well the chain recovers spectral reflectances seen through the published Sony curves, not how it does on real cameras.
 
+## Automatic settings (`autoset`)
+
+Gates of `docs/18` §8: Rust–Python parity to 1e-9 (`crates/ym-color/tests/autoset.rs`), equivariance of the exposure under raw scaling, G3 on normal scenes only (owner's decision of 2026-10-18), rescue of files rendered ±2 EV off, and the blind A/B below as the acceptance gate (≥ 60 % pooled wins against the rule before `autoset`, Lightroom Auto and the camera JPEG; no stratum below 45 %).
+
 ## Blind A/B protocol [HUMAN]
 
 - 50 A1 photos covering daylight, shade, tungsten, LED, mixed light, night, skin, foliage, high ISO.

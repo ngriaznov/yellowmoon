@@ -273,6 +273,10 @@ The Look tab with hundreds of looks stays quick: one `IntersectionObserver` for 
 
 ---
 
+## AS · Automatic settings (`docs/18`)
+
+The learned automatic settings of the owner's 2026-10-18 direction: tasks AS-01 … AS-09 and [HUMAN] AS-H1 … AS-H3 are listed with their acceptance in `docs/18` §10.
+
 ## M4 · Beta to 1.0
 
 **M4-01 · Betas** 0.9.x releases to a small group; local panic log; triage. *Done when:* no open crash or data-loss bugs.
