@@ -11,7 +11,7 @@ moves the entries below from Unreleased into a dated section for that version.
 
 ### Added
 
-- **Automatic settings (`autoset`, `docs/18`).** When the model file is present (`data/models/autoset/autoset.json`), the automatic exposure and contrast come from a small learned model, shrunk towards the camera's own gain where the model is unsure. Without the file, the rule stays. Contrast is now Auto or Manual, like Exposure: moving the slider makes it Manual, Reset and Re-run return it to Auto. `ym render --contrast auto|N` and `--white-preference 0..1`; exports record the model's version as `ym:Autoset`; `ym info --json` and `ym render --json` report the contrast and the confidences.
+- **Automatic settings (`autoset`, `docs/18`).** The automatic exposure is chosen per photo by a small learned model (`data/models/autoset/autoset.json`, v1.0.0, trained on CC0 Sony files) from what is in the frame, whatever the camera's exposure was (full rescue). Contrast is Auto or Manual like Exposure; Auto is the model's bounded per-photo contrast, a doubtful one fading to 0. The Automatic card gains a Contrast row; `ym render --contrast auto|N`. Without the model file, exposure and contrast are those of 0.4.0. Without the file, the rule stays. Contrast is now Auto or Manual, like Exposure: moving the slider makes it Manual, Reset and Re-run return it to Auto. `ym render --contrast auto|N` and `--white-preference 0..1`; exports record the model's version as `ym:Autoset`; `ym info --json` and `ym render --json` report the contrast and the confidences.
 
 ### Changed
 
