@@ -47,7 +47,7 @@ Quantiles are the linearly interpolated quantiles of `docs/02` ("Percentiles"), 
 | 37 | `log_iso` | `log2(ISO / 100)`, 0 when unknown |
 | 38 | `flash` | 1 when EXIF Flash says the flash fired, else 0 |
 
-**Equivariance (full rescue by construction).** Scaling the raw data by 2^k (with the exposure settings changed by k, so the scene is the same) shifts every `s`, `t` and `m` by k: features 2–23 and 26–29 are unchanged, `key_bv` is unchanged (`Bv_settings` moves by −k, `m` by +k), only `clip_headroom` moves by −k (less headroom when brighter), as it physically does. The model predicts where the key belongs, not a gain, so the result is the same however the camera exposed. Exposure compensation is **not** an input (owner's decision: full rescue).
+**Equivariance (full rescue by construction).** Scaling the raw data by 2^k (with the exposure settings changed by k, so the scene is the same) shifts every `s`, `t` and `m` by k: features 2–23 and 26–29 are unchanged, `key_bv` is unchanged (`Bv_settings` moves by −k, `m` by +k), only `clip_headroom` moves by −k (less headroom when brighter), as it physically does. This holds exactly while no pixel newly clips: the key is the meter's mean over unclipped pixels, so a frame brightened until its highlights clip moves `m` by less than k (the training labels account for it, §6.3). The model predicts where the key belongs, not a gain, so the result is the same however the camera exposed. Exposure compensation is **not** an input (owner's decision: full rescue).
 
 ## 4. The model
 
@@ -115,7 +115,7 @@ A learned preferred-white map (Cube++ neutral against camera-AWB pairs, about 60
 
 **Data (v1).** CC0 Sony ARWs from raw.pixls.us and RawDB (196 + 211 listed on 2026-10-18, overlapping: 228 distinct files from 99 bodies, 8.5 GiB, deduplicated by SHA-256; manifest with source, licence and checksum in `tools/fetch/autoset/manifest.json`; never committed raw files). Files are streamed: download, dump, delete (disk). The 12 local photos and `testdata/readme-photos` are **evaluation only** (licences unclear or the owner's own; `docs/test-photo-sources.md`).
 
-**Dump** (`cargo run -p ym-core --release --example autoset_dump -- <files> > rows.jsonl`): one JSON line per file with the 39 features, `m`, the camera's embedded JPEG statistics for the label fits, metadata (DRO mode, creative style, flash, metering mode, exposure compensation, body), and the contrast-fit table (§6.2); plus one augmentation line per k ∈ {−2, −1, −0.5, +0.5, +1, +2}: the same file scaled by 2^k with re-clipping at the sensor clip, with its own features (`key_target` label unchanged, §3).
+**Dump** (`cargo run -p ym-core --release --example autoset_dump -- <files> > rows.jsonl`): one JSON line per file with the 39 features, `m`, the camera's embedded JPEG statistics for the label fits, metadata (DRO mode, creative style, flash, metering mode, exposure compensation, body), and the contrast-fit table (§6.2); plus one augmentation line per k ∈ {−2, −1, −0.5, +0.5, +1, +2}: the same file scaled by 2^k with re-clipping at the sensor clip, with its own features (its exposure label is the file's `L − k`, §6.3).
 
 **Row schema** (one JSON object per line; `aug_k = 0` rows carry the label tables, augmentation rows do not):
 
@@ -132,7 +132,7 @@ A learned preferred-white map (Cube++ neutral against camera-AWB pairs, about 60
                   "ours": [[7 display-luma quantiles] for each grid value], "jpeg": [7 numbers]}}
 ```
 
-`scene_q` are quantiles of our scene-linear luminance at EV 0 (AWG4 `Y`, the metering chain) after an area resize to the embedded JPEG's size; `jpeg_q` of the JPEG's linear Rec.709 luminance (sRGB decoded, or Adobe RGB when the EXIF interoperability index says R03). `label_ev` is §6.1's `L`, computed in Rust from the two tables (the training code recomputes it and must agree to 1e-9). Display luma for the contrast fit is Rec.709 luma of the sRGB-encoded render, 0–1. Unknown metadata is `null`.
+`scene_q` are quantiles of our scene-linear luminance at EV 0 (AWG4 `Y` of the metered preview through the metering chain) and the JPEG's at a common size: when the aspect ratios differ by more than 2 % the JPEG is first cropped centrally to the preview's (letterbox bars), then each dimension is area-averaged down to the smaller of the two images'; `jpeg_q` of the JPEG's linear Rec.709 luminance (sRGB decoded, or Adobe RGB when EXIF ColorSpace (0xA001) is 0xFFFF, uncalibrated, which Sony writes together with the interoperability index R03). `label_ev` is §6.1's `L`, computed in Rust from the two tables (the training code recomputes it and must agree to 1e-9). Display luma for the contrast fit is Rec.709 luma of the sRGB-encoded render, 0–1. Unknown metadata is `null`.
 
 ### 6.1 Exposure label
 
@@ -145,15 +145,15 @@ The G3 fit of `docs/02` (`tools/eval/study.py`): the scene level `x` at EV 0 tha
 
 ### 6.2 Contrast label
 
-At the exposure label `L`, the dump renders the preview through the real chain (default look, default white, white lift as estimated) at contrast c ∈ {−40, −30, …, +40} and records the display luma quantiles (p = 0.05, 0.10, 0.25, 0.50, 0.75, 0.90, 0.95) for each c, plus the same quantiles of the camera JPEG. The label is the c that minimises the squared difference of the inter-quantile spreads (p90 − p10 and p75 − p25), with the spreads interpolated linearly between grid points (the minimum is exact on each segment), clamped to ±40. The variance is `(ρ/g)²`, `ρ` the distance between the two pairs of spreads at the minimum and `g` the speed of the spreads per contrast unit on that segment, clamped to [4, 1600]. Augmentation rows inherit both labels of their file. (Contrast fitted to a camera's tone curve partly measures that curve; this is why the head is bounded and shrunk.)
+At the exposure label `L`, the dump renders the preview through the real chain (the app's default look, Signature; default white; white lift as estimated) at contrast c ∈ {−40, −30, …, +40} and records the display luma quantiles (p = 0.05, 0.10, 0.25, 0.50, 0.75, 0.90, 0.95) for each c, plus the same quantiles of the camera JPEG. The label is the c that minimises the squared difference of the inter-quantile spreads (p90 − p10 and p75 − p25), with the spreads interpolated linearly between grid points (the minimum is exact on each segment), clamped to ±40. The variance is `(ρ/g)²`, `ρ` the distance between the two pairs of spreads at the minimum and `g` the speed of the spreads per contrast unit on that segment, clamped to [4, 1600]. Augmentation rows inherit both labels of their file. (Contrast fitted to a camera's tone curve partly measures that curve; this is why the head is bounded and shrunk.)
 
 ### 6.3 Objective
 
-Per member: Gaussian negative log-likelihood of each head against its label, with the label variance added to the predicted variance; L2 weight decay; the augmentation rows enter with the same `key_target`; seeds fixed (member i uses seed 1000 + i); full-batch Adam, early stopping on a held-out 15 % of **scenes** (all files and augmentations of a scene stay together; scenes = files of the same body within 10 s, or the same SHA-256 prefix group of raw.pixls.us duplicates). JAX on the CPU (`training/requirements.txt`).
+Per member: Gaussian negative log-likelihood of each head against its label, with the label variance added to the predicted variance; L2 weight decay; an augmentation row asks for the exposure `L − k` (`key_target = L − k + m_aug`; this is the file's `key_target` when no pixel newly clips, and corrects for the metered key moving less than k when highlights clip at k > 0); every **scene** has the same total weight in the loss (a body's nine raw modes of one scene count as one scene); seeds fixed (member i uses seed 1000 + i); full-batch Adam, early stopping on a held-out 15 % of **scenes** (all files and augmentations of a scene stay together; scenes = files of the same body within 10 s, or the same SHA-256 prefix group of raw.pixls.us duplicates). JAX on the CPU (`training/requirements.txt`).
 
 ### 6.4 Exports
 
-`python3 -m training.autoset.export` writes `data/models/autoset/autoset.json`, `MODEL_CARD.md` (data, licences, metrics, failure cases, git SHA), `SHA256SUMS`, and `crates/ym-color/tests/data/autoset/vectors.json` (inputs, member outputs and combined outputs computed in numpy f64 from the stored f32 weights); `crates/ym-color/tests/autoset.rs` must reproduce every vector to 1e-9.
+`python3 -m training.autoset.export` writes `data/models/autoset/autoset.json`, `MODEL_CARD.md` (data, licences, metrics, failure cases, git SHA), `SHA256SUMS`, and `crates/ym-color/tests/data/autoset/vectors.json` (inputs, member outputs and combined outputs computed in numpy f64 from the stored f32 weights); `crates/ym-color/tests/autoset_vectors.rs` must reproduce every vector to 1e-9.
 
 ## 7. Settings, interface and command line
 
@@ -166,7 +166,7 @@ Per member: Gaussian negative log-likelihood of each head against its label, wit
 ## 8. Gates (owner's decision of 2026-10-18)
 
 1. **Determinism and parity:** Rust against Python ≤ 1e-9 (vectors); the same file gives the same estimates whatever the thread count; app and `ym` bit-identical (existing parity tests).
-2. **Equivariance:** the dump's augmentation rows: `EV_model` moves by −k ± 0.05 EV for |k| ≤ 2 on every file (features make it exact up to clipping).
+2. **Equivariance:** the dump's augmentation rows with k < 0 (nothing newly clips): `EV_model` moves by −k ± 0.05 EV for every file. Frames brightened by k > 0 lose highlights, so their features and key move by less than k; they are covered by gate 4.
 3. **G3 on normal scenes only (no regression):** on held-out scenes that the camera exposed normally (|EC| < 0.3, no DRO/HDR, Standard style), `|EV_auto − L|` median ≤ 0.25 EV and ≤ 0.5 EV on 90 % of files.
 4. **Rescue:** files rendered at −2 … +2 EV off their label come back within ±0.3 EV of it on 90 % of held-out files.
 5. **Blind A/B** ([HUMAN] AS-H1, the acceptance gate): about 150 photos, everyday strata; `autoset` against the rule before it, against Lightroom Auto and against the camera JPEG; pass at ≥ 60 % pooled wins against each (Wilson lower bound > 50 %), no stratum below 45 %, no rise in gross failures (a photo that needs more than 0.5 EV or 10 mired of correction).

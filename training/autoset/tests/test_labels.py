@@ -132,11 +132,30 @@ class Targets(unittest.TestCase):
         base = ~prep.is_aug
         for i in np.nonzero(prep.is_aug)[0]:
             j = prep.base[i]
-            self.assertEqual(prep.key_target[i], prep.key_target[j])
+            # the synthetic augmentations clip nothing, so the key moves by k and key_target stays the file's
+            self.assertAlmostEqual(prep.key_target[i], prep.key_target[j], places=12)
             self.assertEqual(prep.contrast[i], prep.contrast[j])
             self.assertAlmostEqual(prep.level[i], prep.level[j] - prep.aug_k[i], places=12)
         self.assertTrue(prep.key_ok[base].all())
         self.assertTrue(np.allclose(prep.key_target[base] - prep.key[base], prep.level[base]))
+
+    def test_an_augmentation_whose_key_moved_less_than_k_still_asks_for_level_minus_k(self) -> None:
+        # Highlights that clip at +k keep the metered key from moving the whole k: the label is the exposure L - k all the
+        # same, so key_target of that row is L - k + key_aug, not the file's key_target.
+        objs, _ = synthetic.make_dataset(2)
+        objs = copy.deepcopy(objs)
+        for o in objs:
+            if o["aug_k"] > 0.0:
+                o["key"] = o["key"] - 0.25 * o["aug_k"]
+        prep = ds.prepare(rw.read_objects(objs))
+        moved = 0
+        for i in np.nonzero(prep.is_aug)[0]:
+            j = prep.base[i]
+            self.assertAlmostEqual(prep.level[i], prep.level[j] - prep.aug_k[i], places=12)
+            if prep.aug_k[i] > 0.0:
+                self.assertNotAlmostEqual(prep.key_target[i], prep.key_target[j], places=6)
+                moved += 1
+        self.assertGreater(moved, 0)
 
     def test_a_label_ev_that_disagrees_is_an_error(self) -> None:
         objs, _ = synthetic.make_dataset(2)

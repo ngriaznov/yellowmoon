@@ -226,7 +226,7 @@ Per light (A7R IV, ISO 400, chart median): D 5500 0.49, D 6500 0.61, D 7500 0.53
 
 ## Automatic settings (`autoset`)
 
-Gates of `docs/18` §8: Rust–Python parity to 1e-9 (`crates/ym-color/tests/autoset.rs`), equivariance of the exposure under raw scaling, G3 on normal scenes only (owner's decision of 2026-10-18), rescue of files rendered ±2 EV off, and the blind A/B below as the acceptance gate (≥ 60 % pooled wins against the rule before `autoset`, Lightroom Auto and the camera JPEG; no stratum below 45 %).
+Gates of `docs/18` §8: Rust–Python parity to 1e-9 (`crates/ym-color/tests/autoset_vectors.rs` for the model, `crates/ym-core/tests/autoset_labels.rs` for the exposure label), equivariance of the exposure under raw scaling (darker frames; brighter frames that clip are covered by the rescue gate), G3 on normal scenes only (owner's decision of 2026-10-18), rescue of files rendered ±2 EV off, and the blind A/B below as the acceptance gate (≥ 60 % pooled wins against the rule before `autoset`, Lightroom Auto and the camera JPEG; no stratum below 45 %).
 
 ## Blind A/B protocol [HUMAN]
 

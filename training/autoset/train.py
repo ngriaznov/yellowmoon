@@ -71,7 +71,8 @@ class MemberReport:
 
 
 def _head_nll(mu, logvar, y, label_var, mask):
-    """Mean Gaussian NLL of one head over the rows with a label (``mask``); the label variance adds to the predicted one."""
+    """Weighted mean Gaussian NLL of one head (``mask`` holds the row weights, 0 without a label); the label variance adds to the
+    predicted one."""
     var = jnp.exp(jnp.clip(logvar, -md.LOGVAR_LIMIT, md.LOGVAR_LIMIT)) + label_var
     nll = 0.5 * (jnp.log(var) + (y - mu) ** 2 / var)
     return jnp.sum(mask * nll) / jnp.maximum(jnp.sum(mask), 1.0)
@@ -154,13 +155,30 @@ def train_member(seed: int, z_tr, t_tr: tuple, z_va, t_va, cfg: TrainConfig, ste
     return arrays, report
 
 
+def scene_weights(scene: np.ndarray, ok: np.ndarray) -> np.ndarray:
+    """Per-row weights that give every scene the same total weight among the rows with a label (0 for the others).
+
+    A scene with nine near-identical files (one body's raw modes) or with its augmentations counts as much as a scene of one
+    file: the loss is a mean over scenes, not over rows (docs/18 section 6.3).
+    """
+    w = np.zeros(len(scene), dtype=np.float64)
+    if not ok.any():
+        return w
+    labels, counts = np.unique(scene[ok], return_counts=True)
+    per = dict(zip(labels.tolist(), counts.tolist()))
+    w[ok] = [1.0 / per[s] for s in scene[ok].tolist()]
+    return w
+
+
 def _targets(prep: ds.Prepared, idx: np.ndarray) -> Targets:
-    """Label arrays for the rows ``idx``; rows without a label carry 0 (and variance 1) with mask 0."""
+    """Label arrays for the rows ``idx``; rows without a label carry 0 (and variance 1) with weight 0. The weights balance the
+    scenes (:func:`scene_weights`); the loss divides by their sum."""
     ok_k = prep.key_ok[idx]
     ok_c = prep.con_ok[idx]
+    scene = prep.scene[idx]
     return (
-        np.where(ok_k, prep.key_target[idx], 0.0), np.where(ok_k, prep.key_var[idx], 1.0), ok_k.astype(np.float64),
-        np.where(ok_c, prep.contrast[idx], 0.0), np.where(ok_c, prep.contrast_var[idx], 1.0), ok_c.astype(np.float64),
+        np.where(ok_k, prep.key_target[idx], 0.0), np.where(ok_k, prep.key_var[idx], 1.0), scene_weights(scene, ok_k),
+        np.where(ok_c, prep.contrast[idx], 0.0), np.where(ok_c, prep.contrast_var[idx], 1.0), scene_weights(scene, ok_c),
     )
 
 

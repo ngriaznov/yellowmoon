@@ -77,7 +77,7 @@ def build(metrics: dict, model_doc: dict | None, *, date: str, git_sha: str) -> 
       "limit 30. Weights `w = s0^2 / (s0^2 + variance)`, applied as in `docs/18` section 4.4.\n")
     w("## Training data and licences\n")
     w("Dataset rows (`docs/18` section 6): one line per file with its 39 features, the label tables and the augmentations (scaled "
-      "by 2^k, k in -2, -1, -0.5, +0.5, +1, +2; labels inherited from the file). Every file and augmentation of a scene is in the "
+      "by 2^k, k in -2, -1, -0.5, +0.5, +1, +2; the file's exposure label moved by -k and its contrast label). Every file and augmentation of a scene is in the "
       "same split.\n")
     if sources:
         w("| Source | Licence | Files | Scenes | Bodies |")

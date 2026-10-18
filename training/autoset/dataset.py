@@ -1,8 +1,9 @@
-"""The training table of ``autoset`` (docs/18 section 6): labels per row, augmentations inheriting their file's labels, and splits.
+"""The training table of ``autoset`` (docs/18 section 6): labels per row, augmentations labelled from their file, and splits.
 
 ``prepare`` computes the labels of every file from its tables, checks the ``label_ev`` written by the dump against them (they must
 agree to :data:`LABEL_TOLERANCE`; a disagreement is an error, not a row to drop), and gives each augmentation its file's
-``key_target`` and contrast label (section 6.3: "the augmentation rows enter with the same ``key_target``").
+exposure label moved by its ``k`` (``key_target = L - k + key_aug``, which is the file's ``key_target`` when no pixel newly clips)
+and its file's contrast label (section 6.3).
 
 Splits are by scene (section 6.3): every file and augmentation of a scene lands on the same side.
 """
@@ -101,7 +102,9 @@ def prepare(read: ReadResult) -> Prepared:
     for i in range(n):
         j = base[i]
         if j != i:
-            key_target[i] = key_target[j]
+            # The same scene exposed 2**k more: the exposure it needs is the file's level minus k, wherever the clipped
+            # highlights left the augmentation's key (docs/18 section 6.3). Without new clipping this is the file's key_target.
+            key_target[i] = (key_target[j] - key[j]) - aug_k[i] + key[i]
             key_var[i] = key_var[j]
             contrast[i] = contrast[j]
             contrast_var[i] = contrast_var[j]

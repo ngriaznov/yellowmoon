@@ -91,6 +91,15 @@ class Training(unittest.TestCase):
 
 
 class Splits(unittest.TestCase):
+    def test_scene_weights_give_every_scene_the_same_total(self) -> None:
+        scene = np.array([0, 0, 0, 1, 2, 2, 3])
+        ok = np.array([True, True, True, True, True, False, False])
+        w = tr.scene_weights(scene, ok)
+        self.assertEqual(w.tolist(), [1 / 3, 1 / 3, 1 / 3, 1.0, 1.0, 0.0, 0.0])
+        totals = {s: w[scene == s].sum() for s in (0, 1, 2)}
+        self.assertTrue(all(abs(t - 1.0) < 1e-12 for t in totals.values()))
+        self.assertEqual(tr.scene_weights(scene, np.zeros(7, dtype=bool)).tolist(), [0.0] * 7)
+
     def test_the_holdout_takes_whole_scenes(self) -> None:
         prep = _prepared(20)
         scenes = ds.labelled_scenes(prep)
