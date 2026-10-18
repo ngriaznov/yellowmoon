@@ -782,5 +782,14 @@ class BuildTests(Base):
         self.assertTrue(lines[0].startswith(self.entry_raw["id"] + "\t"))
 
 
+class MainTests(unittest.TestCase):
+    def test_an_unexpected_os_error_is_reported_without_a_traceback(self) -> None:
+        with mock.patch.object(autoset, "run", side_effect=OSError(13, "Permission denied")):
+            code, out = run_cli(["list", "--manifest", "/nonexistent-autoset.json"])
+        self.assertEqual(code, autoset.EXIT_FAILED)
+        self.assertIn("error: [Errno 13] Permission denied", out)
+        self.assertNotIn("Traceback", out)
+
+
 if __name__ == "__main__":
     unittest.main()

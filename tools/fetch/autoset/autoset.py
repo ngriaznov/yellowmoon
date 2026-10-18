@@ -838,10 +838,10 @@ def download_verified(http: Http, e: Dict[str, Any], part: Path, raw: Path) -> N
         digest, size = http.call(e["url"], consume, what=e["id"])
     except (HttpStatusError, TransientError, PolicyError) as err:
         raise FileFailure("download", str(err)) from None
-    except OSError as err:  # the local write failed
+    except OSError as err:  # a local write or a read on the connection failed
         if err.errno == errno.ENOSPC:
             raise DiskError(f"the disk filled up while downloading {e['id']}: {err}") from None
-        raise FileFailure("download", f"cannot write {part}: {err}") from None
+        raise FileFailure("download", f"the download failed: {err}") from None
     if e["size"] is not None and size != e["size"]:
         raise FileFailure("verify", f"the file has {size} bytes; the manifest says {e['size']}")
     if digest != e["sha256"]:
@@ -1221,9 +1221,11 @@ def cmd_verify_rows(args: argparse.Namespace, m: Dict[str, Any]) -> int:
             per_key[key] += rows_per_sha[e["sha256"]]
     print(f"rows: {total} in {len(rows_per_sha)} files of the manifest's {len(m['files'])}")
     print(f"files with an aug_k = 0 row: {len(base_sha)}")
-    print("source\tbody\tfiles with rows\trows")
+    print("source\tbody\tfiles with rows\trows (only the body and source pairs that have rows)")
     for key in sorted(entries_key):
-        print(f"{key[0]}\t{key[1]}\t{files_key[key]} of {entries_key[key]}\t{per_key[key]}")
+        if files_key[key]:
+            print(f"{key[0]}\t{key[1]}\t{files_key[key]} of {entries_key[key]}\t{per_key[key]}")
+    print(f"bodies with rows: {len({k[1] for k in files_key if files_key[k]})} of {len({k[1] for k in entries_key})}")
     if errors:
         for err in errors[:20]:
             print(f"error: {err}")
@@ -1320,6 +1322,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     except AutosetError as err:
         log(f"error: {err}")
         return err.exit_code
+    except OSError as err:  # for example an unwritable rows file: say so, without a traceback
+        log(f"error: {err}")
+        return EXIT_FAILED
     except KeyboardInterrupt:
         log("interrupted: the file in progress was removed; rows already written are kept")
         return EXIT_INTERRUPTED

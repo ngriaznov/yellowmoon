@@ -113,7 +113,7 @@ A learned preferred-white map (Cube++ neutral against camera-AWB pairs, about 60
 
 ## 6. Labels and training (`training/autoset/`)
 
-**Data (v1).** CC0 Sony ARWs from raw.pixls.us and RawDB (196 + 229 listed, overlapping; deduplicated by SHA-256; manifest with source, licence and checksum in `tools/fetch/autoset/manifest.json`; never committed raw files). Files are streamed: download, dump, delete (disk). The 12 local photos and `testdata/readme-photos` are **evaluation only** (licences unclear or the owner's own; `docs/test-photo-sources.md`).
+**Data (v1).** CC0 Sony ARWs from raw.pixls.us and RawDB (196 + 211 listed on 2026-10-18, overlapping: 228 distinct files from 99 bodies, 8.5 GiB, deduplicated by SHA-256; manifest with source, licence and checksum in `tools/fetch/autoset/manifest.json`; never committed raw files). Files are streamed: download, dump, delete (disk). The 12 local photos and `testdata/readme-photos` are **evaluation only** (licences unclear or the owner's own; `docs/test-photo-sources.md`).
 
 **Dump** (`cargo run -p ym-core --release --example autoset_dump -- <files> > rows.jsonl`): one JSON line per file with the 39 features, `m`, the camera's embedded JPEG statistics for the label fits, metadata (DRO mode, creative style, flash, metering mode, exposure compensation, body), and the contrast-fit table (§6.2); plus one augmentation line per k ∈ {−2, −1, −0.5, +0.5, +1, +2}: the same file scaled by 2^k with re-clipping at the sensor clip, with its own features (`key_target` label unchanged, §3).
 

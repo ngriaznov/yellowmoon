@@ -1,6 +1,6 @@
 # tools/fetch/autoset
 
-The CC0 Sony ARW files for the autoset training set (`docs/18-auto-settings.md` section 6). Files are streamed: each one is downloaded, checked, run through the dump program, and deleted, so the disk never holds more than one raw file. Raw files are never committed; the manifest (`manifest.json`) is the only thing in the repository, and it has no timestamps.
+The CC0 Sony ARW files for the autoset training set (`docs/18-auto-settings.md` section 6). Files are streamed: each one is downloaded, checked, run through the dump program, and deleted, so the disk holds one raw file at a time. Raw files are never committed. Committed here: the scripts and `manifest.json` (which has no timestamps, so its CI cache key only changes when the file list does).
 
 ```
 tools/fetch/autoset.sh refresh [--source pixls|rawdb|all] [--dry-run] [--accept-changed]
@@ -35,7 +35,7 @@ Each file entry, one per line in `manifest.json`, sorted by (body, source, name)
 | `url` | percent-encoded download URL |
 | `sha256` | lower-case SHA-256 (verified after every download) |
 | `size` | exact byte count (RawDB), or `null` |
-| `size_approx` | the listing's text, for example `10.55MB` (pixls); used for the disk check only |
+| `size_approx` | the listing's text, for example `10.55MB` (pixls); used for the disk check and the summary total only |
 | `licence` | `CC0-1.0` |
 | `also` | ids of the same file in the other source (or in the same source under another name) |
 
@@ -53,7 +53,7 @@ For each entry, in manifest order (`--body`, `--id` filter it):
 6. Append all rows in one write, then flush and fsync.
 7. Delete the raw file and any `.part` (also on failure), unless `--keep`.
 
-A file-level failure (download, verify, dump, rows) is written to `failures.jsonl` as `{"id", "sha256", "stage", "error"}` and the run goes on; the record is removed when the file later succeeds. A host that cannot be reached at all stops the run with exit 4 and records nothing. Ctrl-C removes the `.part` and the raw file in progress and exits 130; rows already written are kept.
+A file-level failure (download, verify, dump, rows) is written to `failures.jsonl` as `{"id", "sha256", "stage", "error"}` and the run goes on; the record is removed when the file later succeeds. A host that cannot be reached at all stops the run with exit 4 and records nothing. Ctrl-C removes the `.part` and the raw file in progress (the raw file stays with `--keep`) and exits 130; rows already written are kept.
 
 Paths:
 
