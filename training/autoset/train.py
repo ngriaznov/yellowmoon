@@ -8,7 +8,8 @@ predicted variance (``exp(clip(logvar, +-20))``), the two heads summed, plus an 
 Full-batch Adam (lr 1e-2, 3000 steps; written out here, optax is not a dependency). Member ``i`` is initialised from seed
 ``1000 + i``. Early stopping keeps the checkpoint with the lowest held-out NLL, evaluated every 25 steps, and stops after 40
 evaluations without a new best; the held-out 15 % of scenes is chosen with a fixed seed, so a file and its augmentations never
-split. Standardisation uses the training rows only. The shipped model is rounded to float32 storage before it is evaluated.
+split. Standardisation uses the training rows only, rounded to the float32 values the file stores, so the model trains with the
+numbers it ships with. The model is rounded to float32 storage before it is evaluated.
 
 ``--kfold K`` is the evaluation: K folds by scene, each with its own ensemble, predictions pooled over the folds and summarised by
 ``evaluation.summarise``. Without ``--out`` the final model is not written. Everything is float64; JAX runs on the CPU.
@@ -170,8 +171,9 @@ def train_ensemble(prep: ds.Prepared, train_idx: np.ndarray, holdout_idx: np.nda
     if len(train_idx) == 0:
         raise ValueError("no labelled training rows")
     X = prep.X[train_idx]
-    mean = X.mean(axis=0)
-    std = np.maximum(X.std(axis=0), md.STD_FLOOR)
+    # the statistics are stored as float32 (section 4.3): train with those numbers, so that the file is what was trained
+    mean = np.asarray(X.mean(axis=0), dtype=np.float32).astype(np.float64)
+    std = np.asarray(np.maximum(X.std(axis=0), md.STD_FLOOR), dtype=np.float32).astype(np.float64)
     z_tr = jnp.asarray((X - mean) / std)
     t_tr = tuple(jnp.asarray(a) for a in _targets(prep, train_idx))
     z_va = t_va = None

@@ -80,7 +80,7 @@ An ensemble of **5** multilayer perceptrons, each `39 → 32 → 32 → 4` with 
 }
 ```
 
-`T` = `{"shape": [rows, cols], "data_b64": base64 of little-endian f32, row-major}` (the `illum` convention, `crates/ym-color/src/illum/format.rs`). `w` has shape `[out, in]`; a layer computes `y = W·x + b` in **f64** from the f32 values. The reader refuses a wrong `format`, `format_version`, feature count, shape or SHA-256, and any non-finite value (`AutosetError`). Weights trained on CC BY-SA data are CC BY-SA 4.0 with their own `LICENSE` in the folder (`docs/14` rule 5); v1 is trained on CC0 data only and is Apache-2.0.
+`T` = `{"shape": [rows, cols], "data_b64": base64 of little-endian f32, row-major}` (the `illum` convention, `crates/ym-color/src/illum/format.rs`). `w` has shape `[out, in]`, `b` shape `[out]`; the SHA-256 covers the member tensors only (not the input statistics or the constants); a layer computes `y = W·x + b` in **f64** from the f32 values. The reader refuses a wrong `format`, `format_version`, feature count, shape or SHA-256, and any non-finite value (`AutosetError`). Weights trained on CC BY-SA data are CC BY-SA 4.0 with their own `LICENSE` in the folder (`docs/14` rule 5); v1 is trained on CC0 data only and is Apache-2.0.
 
 ### 4.4 Applying it: shrink towards the rule
 
@@ -136,11 +136,16 @@ A learned preferred-white map (Cube++ neutral against camera-AWB pairs, about 60
 
 ### 6.1 Exposure label
 
-The G3 fit of `docs/02` (`tools/eval/study.py`): the scene level `x` at EV 0 that the camera's JPEG renders as middle grey, by quantile matching our scene-linear luminance (at the JPEG's size) against the JPEG's linear luminance over the 0.02 … 0.98 quantiles, restricted to the mid-tone band −2 … +1 stop around grey. `L = log2(0.18 / x)` is the exposure that puts our grey where the camera put it; the label is `key_target = L + m`. Files whose embedded JPEG was made with DRO or HDR on, or with a non-Standard creative style, are kept with a doubled label variance (their mid-tones are tone-mapped).
+The G3 fit of `docs/02` (`tools/eval/study.py`): the scene level `x` at EV 0 that the camera's JPEG renders as middle grey, by quantile matching our scene-linear luminance (at the JPEG's size) against the JPEG's linear luminance. `L = log2(0.18 / x)` is the exposure that puts our grey where the camera put it; the label is `key_target = L + m`. Precisely (`training/autoset/labels.py`, ported to Rust in the dump; the two agree to 1e-9):
+
+1. Take the table points of the 0.02 … 0.98 quantiles (`INNER` of the 999-point grid).
+2. **Mid-tone band:** keep the points whose JPEG linear luminance lies in `[0.18·2^−2, 0.18·2^+1]` = [0.045, 0.36] (−2 … +1 stop around grey); with fewer than 20 such points, keep all of step 1.
+3. Make the curve monotone (cumulative maximum of each column, `quantile_curve_from_tables`) and read `x` where it reaches 0.18 (`camera_gain_ev`: log-log interpolation between the bracketing points, linear extrapolation from the two outermost points, no label when 0.18 is more than 2 stops outside the JPEG column). On a dense table only the bracketing pair matters, so the band changes `L` only where the table has a gap reaching past it; it sets which points the variance below sees.
+4. **Variance** (EV²): `V_L = 0.05² · f + min(r², 1)`, with `f = 4` (the standard deviation doubled) when the camera's JPEG was made with DRO or HDR on or with a non-Standard creative style (their mid-tones are tone-mapped; an unknown value does not flag), else 1; `r` is the rms residual of `log2(jpeg)` about its least-squares line on `log2(scene)` over the points used, divided by the line's slope (scene stops).
 
 ### 6.2 Contrast label
 
-At the exposure label `L`, the dump renders the preview through the real chain (default look, default white, white lift as estimated) at contrast c ∈ {−40, −30, …, +40} and records the display luma quantiles (p = 0.05, 0.10, 0.25, 0.50, 0.75, 0.90, 0.95) for each c, plus the same quantiles of the camera JPEG. The label is the c that minimises the squared difference of the inter-quantile spreads (p90 − p10 and p75 − p25), interpolated between grid points, clamped to ±40. The residual becomes the label variance. (Contrast fitted to a camera's tone curve partly measures that curve; this is why the head is bounded and shrunk.)
+At the exposure label `L`, the dump renders the preview through the real chain (default look, default white, white lift as estimated) at contrast c ∈ {−40, −30, …, +40} and records the display luma quantiles (p = 0.05, 0.10, 0.25, 0.50, 0.75, 0.90, 0.95) for each c, plus the same quantiles of the camera JPEG. The label is the c that minimises the squared difference of the inter-quantile spreads (p90 − p10 and p75 − p25), with the spreads interpolated linearly between grid points (the minimum is exact on each segment), clamped to ±40. The variance is `(ρ/g)²`, `ρ` the distance between the two pairs of spreads at the minimum and `g` the speed of the spreads per contrast unit on that segment, clamped to [4, 1600]. Augmentation rows inherit both labels of their file. (Contrast fitted to a camera's tone curve partly measures that curve; this is why the head is bounded and shrunk.)
 
 ### 6.3 Objective
 

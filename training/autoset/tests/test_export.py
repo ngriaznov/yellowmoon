@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import math
 import tempfile
@@ -82,6 +84,22 @@ class Vectors(unittest.TestCase):
         self.assertEqual(vectors["model_file"], "test_model.json")
         self.assertEqual(len(vectors["cases"]), ex.VECTOR_COUNT)
         self.assertEqual(loaded.model_version, ex.TEST_VERSION)
+
+
+class CommandLine(unittest.TestCase):
+    def test_the_command_writes_the_vectors_of_a_model_file(self) -> None:
+        model = random_model(seed=5, members=5)
+        with tempfile.TemporaryDirectory() as tmp:
+            model_path = Path(tmp) / "m.json"
+            model_path.write_text(json.dumps(model.to_json()), encoding="utf-8")
+            vectors_path = Path(tmp) / "out" / "vectors.json"
+            with contextlib.redirect_stdout(io.StringIO()):
+                code = ex.main(["--model", str(model_path), "--vectors", str(vectors_path)])
+            self.assertEqual(code, 0)
+            doc = json.loads(vectors_path.read_text(encoding="utf-8"))
+        self.assertEqual(doc["model_file"], "m.json")
+        self.assertEqual(doc["model_sha256"], model.payload_sha256())
+        self.assertEqual(len(doc["cases"]), ex.VECTOR_COUNT)
 
 
 class Committed(unittest.TestCase):
