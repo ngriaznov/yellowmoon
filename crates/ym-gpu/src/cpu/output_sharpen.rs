@@ -118,6 +118,14 @@ const HALO_WINDOW_RADIUS: usize = 2;
 const HALO_WINDOW_SAMPLES: usize = (2 * HALO_WINDOW_RADIUS + 1) * (2 * HALO_WINDOW_RADIUS + 1);
 /// Smallest count that triggers the plateau pull of the envelope: `(N + 1) >> 2`.
 const HALO_RANK_MIN: i32 = ((HALO_WINDOW_SAMPLES + 1) >> 2) as i32;
+/// Default tie tolerance of the halo limiter, relative to the window's centre: `2^-12`.
+pub const HALO_TIE_TOLERANCE: f32 = 1.0 / 4096.0;
+/// Largest tie tolerance: `2^-4`. Below 1/2 a sample within the tolerance lies within a factor of
+/// two of the centre, so its difference to the centre is exact in `f32` and `f64` alike.
+const HALO_TIE_TOLERANCE_MAX: f32 = 0.0625;
+/// With a tie tolerance, the plateau pull fades out over the last quarter before the two sides
+/// spread equally (`d_near` from `0.75 d_far` to `d_far`) instead of switching off there.
+const HALO_PULL_FADE: f64 = 0.25;
 /// Epsilon of the gain-map denominator (units of `d` squared).
 const GAIN_EPSILON: f32 = 1e-10;
 /// Floor of the luma in the transfer.
@@ -245,6 +253,14 @@ pub struct OutputSharpen {
     pub luma_weights: [f32; 3],
     /// More whole-image stages; empty in Yellowmoon v1.
     pub extra_stages: Vec<ExtraStage>,
+    /// Tie tolerance of the halo limiter, relative to the centre of its window, 0 to 1/16 (spec
+    /// section 3.5). Above 0 the limiter is continuous: a sample within `|c| * halo_tie_tolerance`
+    /// of the centre `c` counts on both sides, the counts and sums change smoothly over the next
+    /// tolerance, and the plateau pull fades instead of switching. The default
+    /// [`HALO_TIE_TOLERANCE`] (`2^-12`) keeps the last bits of a device's `f32` colour chain from
+    /// flipping the limiter where values tie in exact arithmetic; 0 gives the reference's exact
+    /// comparisons and switches.
+    pub halo_tie_tolerance: f32,
 }
 
 impl Default for OutputSharpen {
@@ -271,6 +287,7 @@ impl OutputSharpen {
             print_distance: 5000.0,
             luma_weights: REFERENCE_LUMA_WEIGHTS,
             extra_stages: Vec::new(),
+            halo_tie_tolerance: HALO_TIE_TOLERANCE,
         }
     }
 
@@ -322,6 +339,12 @@ impl OutputSharpen {
             .any(|w| !w.is_finite() || *w <= 0.0)
         {
             return Err(bad("luma_weights", "must all be finite and above 0"));
+        }
+        if !in_range(self.halo_tie_tolerance, 0.0, HALO_TIE_TOLERANCE_MAX) {
+            return Err(bad(
+                "halo_tie_tolerance",
+                "must be a number from 0 to 0.0625",
+            ));
         }
         for e in &self.extra_stages {
             if !in_range(e.amount_pct, 0.0, AMOUNT_MAX_PCT) {
@@ -506,6 +529,7 @@ pub struct SharpenPlan {
     scale: f32,
     max_taps: usize,
     halo_enabled: bool,
+    halo_tie_tolerance: f32,
 }
 
 impl SharpenPlan {
@@ -533,6 +557,11 @@ impl SharpenPlan {
     /// The luma weights.
     pub fn luma_weights(&self) -> [f32; 3] {
         self.luma_weights
+    }
+
+    /// The halo limiter's tie tolerance, relative to the window's centre.
+    pub fn halo_tie_tolerance(&self) -> f32 {
+        self.halo_tie_tolerance
     }
 
     /// Sigma of the halo-limiter's smoothing kernel: `2 s` (f32).
@@ -808,6 +837,7 @@ fn make_plan(p: &OutputSharpen, s: f32) -> SharpenPlan {
         scale: s,
         max_taps,
         halo_enabled,
+        halo_tie_tolerance: p.halo_tie_tolerance,
     }
 }
 
@@ -1034,26 +1064,99 @@ fn gradient_gain(
 /// Width of the window (5) and radius (2) of the halo limiter.
 const WINDOW_SPAN: usize = 2 * HALO_WINDOW_RADIUS + 1;
 
-/// The counts and difference sums of the window comparisons for `P` adjacent pixels whose centres
-/// are `ca` (of `L`) and `sa` (of `S`), in the order
-/// `[n_lo, n_hi, n_slo, n_shi, e_lo, e_hi, e_slo, e_shi]`: how many window samples are `<=` and
-/// `>=` the centre, and the sums of their differences to it (spec section 3.5).
+/// The tie tolerance `τ = |c| * rel` of a window centre `c` (spec section 3.5), one `f32` product as
+/// on the device, and its inverse (`f64::MAX` for `τ = 0`, which makes [`soft_side`] an exact
+/// comparison).
+#[inline(always)]
+fn tie_tolerance(c: f32, rel: f32) -> (f64, f64) {
+    let t = f64::from(c.abs() * rel);
+    (t, if t > 0.0 { 1.0 / t } else { f64::MAX })
+}
+
+/// How much a sample `d` from the centre counts on the low side and on the high side (spec section
+/// 3.5): fully within `τ` of the centre (on both sides) and on its own side, not at all beyond `2τ`
+/// on the other side, linearly between. With `τ = 0` (`inv = f64::MAX`) these are the exact
+/// comparisons `d <= 0` and `d >= 0`. A NaN counts on neither side.
+#[inline(always)]
+fn soft_side(d: f64, inv: f64) -> (f64, f64) {
+    (unit(2.0 - d * inv), unit(2.0 + d * inv))
+}
+
+/// `w` limited to `[0, 1]`, with a NaN giving 0.
+#[inline(always)]
+fn unit(w: f64) -> f64 {
+    if w >= 1.0 {
+        1.0
+    } else if w > 0.0 {
+        w
+    } else {
+        0.0
+    }
+}
+
+/// The part of a difference `d` beyond the tolerance `t`: `d` shrunk towards 0 by `t`, 0 within it
+/// (a NaN stays NaN and is dropped by the sums' `min` and `max`).
+#[inline(always)]
+fn beyond(d: f64, t: f64) -> f64 {
+    let inside = if d < -t {
+        -t
+    } else if d > t {
+        t
+    } else {
+        d
+    };
+    d - inside
+}
+
+/// The window centres of `P` adjacent pixels in `L` and `S`, their tie tolerances and the
+/// tolerances' inverses.
+struct Centres<const P: usize> {
+    l: [f64; P],
+    s: [f64; P],
+    tl: [f64; P],
+    ts: [f64; P],
+    inv_l: [f64; P],
+    inv_s: [f64; P],
+}
+
+impl<const P: usize> Centres<P> {
+    /// The pixels `i..i + P` of the planes `l` and `s`, with the relative tie tolerance `tie`.
+    #[inline(always)]
+    fn at(l: &[f32], s: &[f32], i: usize, tie: f32) -> Centres<P> {
+        let tl: [(f64, f64); P] = std::array::from_fn(|j| tie_tolerance(l[i + j], tie));
+        let ts: [(f64, f64); P] = std::array::from_fn(|j| tie_tolerance(s[i + j], tie));
+        Centres {
+            l: std::array::from_fn(|j| f64::from(l[i + j])),
+            s: std::array::from_fn(|j| f64::from(s[i + j])),
+            tl: tl.map(|t| t.0),
+            ts: ts.map(|t| t.0),
+            inv_l: tl.map(|t| t.1),
+            inv_s: ts.map(|t| t.1),
+        }
+    }
+}
+
+/// The counts and difference sums of the window comparisons for `P` adjacent pixels with the
+/// centres `c`, in the order `[n_lo, n_hi, n_slo, n_shi, e_lo, e_hi, e_slo, e_shi]`: how much
+/// each window sample counts at or below and at or above the centre ([`soft_side`]), and the sums
+/// of the parts of the differences beyond the tolerance ([`beyond`]), below and above (spec
+/// section 3.5). With a tolerance of 0 these are the reference's exact counts and sums.
 ///
 /// `rows` are the offsets of the five window rows in the padded planes `lp` and `sp`, and `x` is
 /// the column of the first pixel. The 25 samples of each pixel are visited window row by window
 /// row, left to right, as in the reference, so every sum has the reference's bits. The pixels of
 /// the group are independent lanes (the compiler keeps their accumulators in registers and
 /// vectorises across them); compares become selects, so there is no branch per sample. Counts
-/// are `f64` (exact) so every lane has the same width, and comparing two `f32` values equals
-/// comparing the same values as `f64`.
+/// are `f64` (exact) so every lane has the same width. The difference of two `f32` values is exact
+/// in `f64`, and wherever it is near the tolerance it is exact in `f32` too, so the device makes
+/// the same decisions from the same values.
 #[inline(always)]
 fn window_sums<const P: usize>(
     lp: &[f32],
     sp: &[f32],
     rows: &[usize; WINDOW_SPAN],
     x: usize,
-    ca: [f64; P],
-    sa: [f64; P],
+    c: &Centres<P>,
 ) -> [[f64; P]; 8] {
     let mut acc = [[0.0f64; P]; 8];
     for &base in rows {
@@ -1065,29 +1168,48 @@ fn window_sums<const P: usize>(
             for j in 0..P {
                 let lq = f64::from(lr[dx + j]);
                 let sq = f64::from(sr[dx + j]);
-                let (c, sc) = (ca[j], sa[j]);
-                let dl = lq - c;
-                let ds = sq - sc;
-                let (le, ge) = (lq <= c, lq >= c);
-                let (sle, sge) = (sq <= sc, sq >= sc);
-                acc[0][j] += if le { 1.0 } else { 0.0 };
-                acc[1][j] += if ge { 1.0 } else { 0.0 };
-                acc[2][j] += if sle { 1.0 } else { 0.0 };
-                acc[3][j] += if sge { 1.0 } else { 0.0 };
-                acc[4][j] += if le { dl } else { 0.0 };
-                acc[5][j] += if ge { dl } else { 0.0 };
-                acc[6][j] += if sle { ds } else { 0.0 };
-                acc[7][j] += if sge { ds } else { 0.0 };
+                let dl = lq - c.l[j];
+                let ds = sq - c.s[j];
+                // A NaN is in no count and adds nothing (`max` and `min` drop it).
+                let (lo, hi) = soft_side(dl, c.inv_l[j]);
+                let (slo, shi) = soft_side(ds, c.inv_s[j]);
+                let el = beyond(dl, c.tl[j]);
+                let es = beyond(ds, c.ts[j]);
+                acc[0][j] += lo;
+                acc[1][j] += hi;
+                acc[2][j] += slo;
+                acc[3][j] += shi;
+                acc[4][j] += el.min(0.0);
+                acc[5][j] += el.max(0.0);
+                acc[6][j] += es.min(0.0);
+                acc[7][j] += es.max(0.0);
             }
         }
     }
     acc
 }
 
-/// The four envelope maps of one pixel from its window sums: `[v_hi, w_hi, v_lo, w_lo]` (spec
-/// section 3.5), `f64` arithmetic stored as `f32`.
+/// The weight of the plateau pull on the side whose spread per sample is `near`, when the other
+/// side's is `far` (spec section 3.5, with a tie tolerance): the reference's `far / (near + far / N)`
+/// while `near <= 0.75 far`, fading linearly to 0 at `near = far`, and with `eps` in the denominator
+/// so that it also fades as both spreads vanish. 0 when `far <= near` or either is NaN.
 #[inline(always)]
-fn envelope(ca: f64, sa: f64, sums: [f64; 8]) -> [f32; 4] {
+fn pull_weight(near: f64, far: f64, eps: f64) -> f64 {
+    let inv_n = 1.0f64 / HALO_WINDOW_SAMPLES as f64;
+    if far > near {
+        let fade = ((far - near) / (HALO_PULL_FADE * far)).min(1.0);
+        fade * far / (near + far * inv_n + eps)
+    } else {
+        0.0
+    }
+}
+
+/// The four envelope maps of one pixel from its window sums: `[v_hi, w_hi, v_lo, w_lo]` (spec
+/// section 3.5), `f64` arithmetic stored as `f32`. `tl` is the centre's tie tolerance in `L` and
+/// `soft` says whether a tolerance is in use; without one the plateau pull switches as in the
+/// reference.
+#[inline(always)]
+fn envelope(ca: f64, sa: f64, sums: [f64; 8], tl: f64, soft: bool) -> [f32; 4] {
     let inv_n = 1.0f64 / HALO_WINDOW_SAMPLES as f64;
     let inv_r = 1.0f64 / HALO_WINDOW_RADIUS as f64;
     let [n_lo, n_hi, n_slo, n_shi, e_lo, e_hi, e_slo, e_shi] = sums;
@@ -1104,6 +1226,22 @@ fn envelope(ca: f64, sa: f64, sums: [f64; 8]) -> [f32; 4] {
     let d_lo = -m_lo / n_lo;
     // On the flat side of an edge, pull the envelope to the plateau of L.
     let rank_min = f64::from(HALO_RANK_MIN);
+    if soft {
+        // Continuous: the count condition `n > k_min` ramps over one count, the switch on the
+        // spreads fades (`pull_weight`), and `eps` is the spread of one sample `τ` beyond the tie.
+        let eps = 2.0 * tl * inv_n * inv_n;
+        let t_hi = (n_hi - rank_min).clamp(0.0, 1.0) * pull_weight(d_hi, d_lo, eps);
+        let t_lo = (n_lo - rank_min).clamp(0.0, 1.0) * pull_weight(d_lo, d_hi, eps);
+        if t_hi > 0.0 {
+            v_hi += max_l * t_hi;
+            w_hi += t_hi;
+        }
+        if t_lo > 0.0 {
+            v_lo += min_l * t_lo;
+            w_lo += t_lo;
+        }
+        return [v_hi as f32, w_hi as f32, v_lo as f32, w_lo as f32];
+    }
     if n_hi > rank_min && d_hi < d_lo {
         let t = d_lo / (d_hi + d_lo * inv_n);
         v_hi += max_l * t;
@@ -1119,8 +1257,8 @@ fn envelope(ca: f64, sa: f64, sums: [f64; 8]) -> [f32; 4] {
 
 /// Robust local envelopes of `L` and of `S = L + Hacc` on a 5 x 5 window (spec section 3.5):
 /// returns `(v_hi, w_hi, v_lo, w_lo)`. Sums are taken over differences to the centre value, so a
-/// flat window gives exact zeros; the arithmetic is `f64`.
-fn halo_maps(l: &[f32], s: &[f32], w: usize, h: usize) -> [Vec<f32>; 4] {
+/// flat window gives exact zeros; the arithmetic is `f64`. `tie` is the relative tie tolerance.
+fn halo_maps(l: &[f32], s: &[f32], w: usize, h: usize, tie: f32) -> [Vec<f32>; 4] {
     const R: usize = HALO_WINDOW_RADIUS;
     let stride = w + 2 * R;
     // Mirrored copies of both planes, so the 25 reads of a pixel never branch.
@@ -1144,8 +1282,9 @@ fn halo_maps(l: &[f32], s: &[f32], w: usize, h: usize) -> [Vec<f32>; 4] {
         vec![0.0f32; w * h],
         vec![0.0f32; w * h],
     ];
-    let mut finish = |o: usize, ca: f64, sa: f64, sums: [f64; 8]| {
-        for (plane, v) in out.iter_mut().zip(envelope(ca, sa, sums)) {
+    let soft = tie > 0.0;
+    let mut finish = |o: usize, ca: f64, sa: f64, tl: f64, sums: [f64; 8]| {
+        for (plane, v) in out.iter_mut().zip(envelope(ca, sa, sums, tl, soft)) {
             plane[o] = v;
         }
     };
@@ -1157,17 +1296,22 @@ fn halo_maps(l: &[f32], s: &[f32], w: usize, h: usize) -> [Vec<f32>; 4] {
             let i = y * w + x;
             if w - x >= 2 {
                 // Two pixels at a time: the two f64 lanes of a vector.
-                let ca = [f64::from(l[i]), f64::from(l[i + 1])];
-                let sa = [f64::from(s[i]), f64::from(s[i + 1])];
-                let sums = window_sums::<2>(&lp, &sp, &rows, x, ca, sa);
-                for j in 0..2 {
-                    finish(i + j, ca[j], sa[j], std::array::from_fn(|k| sums[k][j]));
+                let c = Centres::<2>::at(l, s, i, tie);
+                let sums = window_sums(&lp, &sp, &rows, x, &c);
+                for (j, ((&cl, &cs), &tl)) in c.l.iter().zip(&c.s).zip(&c.tl).enumerate() {
+                    finish(i + j, cl, cs, tl, std::array::from_fn(|k| sums[k][j]));
                 }
                 x += 2;
             } else {
-                let (ca, sa) = (f64::from(l[i]), f64::from(s[i]));
-                let sums = window_sums::<1>(&lp, &sp, &rows, x, [ca], [sa]);
-                finish(i, ca, sa, std::array::from_fn(|k| sums[k][0]));
+                let c = Centres::<1>::at(l, s, i, tie);
+                let sums = window_sums(&lp, &sp, &rows, x, &c);
+                finish(
+                    i,
+                    c.l[0],
+                    c.s[0],
+                    c.tl[0],
+                    std::array::from_fn(|k| sums[k][0]),
+                );
                 x += 1;
             }
         }
@@ -1293,7 +1437,7 @@ fn band_ratio(
     // The halo-map kernel exists exactly when some stage sends part of its delta to the limiter.
     if let Some(kh) = &kernels.halo {
         let s: Vec<f32> = luma.iter().zip(&limited).map(|(&l, &hv)| l + hv).collect();
-        let maps = halo_maps(luma, &s, w, h);
+        let maps = halo_maps(luma, &s, w, h, plan.halo_tie_tolerance);
         drop(s);
         let [b_v_hi, b_w_hi, b_v_lo, b_w_lo] = maps.map(|m| blur(&m, w, h, kh));
         for i in 0..n {
@@ -1423,7 +1567,7 @@ mod tests {
     }
 
     /// The window pass as the spec writes it: per pixel, 25 samples, branches, `f64` sums.
-    fn halo_maps_pixelwise(l: &[f32], s: &[f32], w: usize, h: usize) -> [Vec<f32>; 4] {
+    fn halo_maps_pixelwise(l: &[f32], s: &[f32], w: usize, h: usize, tie: f32) -> [Vec<f32>; 4] {
         let r = 2isize;
         let mut out = [
             vec![0.0f32; w * h],
@@ -1436,51 +1580,105 @@ mod tests {
                 let c = l[y * w + x];
                 let sc = s[y * w + x];
                 let (ca, sa) = (f64::from(c), f64::from(sc));
-                let (mut n_lo, mut n_hi, mut n_slo, mut n_shi) = (0i32, 0i32, 0i32, 0i32);
+                let (tl, ts) = (f64::from(c.abs() * tie), f64::from(sc.abs() * tie));
+                // How much a difference counts below and above the centre: fully within the
+                // tolerance and on its own side, linearly down to 0 at twice the tolerance on the
+                // other side; exact comparisons without a tolerance.
+                let weights = |d: f64, t: f64| -> (f64, f64) {
+                    if t > 0.0 {
+                        let inv = 1.0 / t;
+                        let lo = (2.0 - d * inv).clamp(0.0, 1.0);
+                        let hi = (2.0 + d * inv).clamp(0.0, 1.0);
+                        (lo, hi)
+                    } else {
+                        (f64::from(u8::from(d <= 0.0)), f64::from(u8::from(d >= 0.0)))
+                    }
+                };
+                // The part of a difference beyond the tolerance.
+                let excess = |d: f64, t: f64| -> f64 {
+                    if d > t {
+                        d - t
+                    } else if d < -t {
+                        d + t
+                    } else {
+                        0.0
+                    }
+                };
+                let (mut n_lo, mut n_hi, mut n_slo, mut n_shi) = (0.0f64, 0.0f64, 0.0f64, 0.0f64);
                 let (mut e_lo, mut e_hi, mut e_slo, mut e_shi) = (0.0f64, 0.0f64, 0.0f64, 0.0f64);
                 for dy in -r..=r {
                     let yy = mirror(y as isize + dy, h);
                     for dx in -r..=r {
                         let xx = mirror(x as isize + dx, w);
-                        let lq = l[yy * w + xx];
-                        let sq = s[yy * w + xx];
-                        if lq <= c {
-                            n_lo += 1;
-                            e_lo += f64::from(lq) - ca;
+                        let dl = f64::from(l[yy * w + xx]) - ca;
+                        let ds = f64::from(s[yy * w + xx]) - sa;
+                        if !dl.is_nan() {
+                            let (lo, hi) = weights(dl, tl);
+                            n_lo += lo;
+                            n_hi += hi;
+                            let e = excess(dl, tl);
+                            if e < 0.0 {
+                                e_lo += e;
+                            } else if e > 0.0 {
+                                e_hi += e;
+                            }
                         }
-                        if lq >= c {
-                            n_hi += 1;
-                            e_hi += f64::from(lq) - ca;
-                        }
-                        if sq <= sc {
-                            n_slo += 1;
-                            e_slo += f64::from(sq) - sa;
-                        }
-                        if sq >= sc {
-                            n_shi += 1;
-                            e_shi += f64::from(sq) - sa;
+                        if !ds.is_nan() {
+                            let (lo, hi) = weights(ds, ts);
+                            n_slo += lo;
+                            n_shi += hi;
+                            let e = excess(ds, ts);
+                            if e < 0.0 {
+                                e_slo += e;
+                            } else if e > 0.0 {
+                                e_shi += e;
+                            }
                         }
                     }
                 }
                 let (inv_n, inv_r) = (1.0f64 / 25.0, 1.0f64 / 2.0);
-                let m_hi = 2.0 * e_hi / f64::from(n_hi);
-                let m_lo = 2.0 * e_lo / f64::from(n_lo);
+                let m_hi = 2.0 * e_hi / n_hi;
+                let m_lo = 2.0 * e_lo / n_lo;
                 let (max_l, min_l) = (ca + m_hi, ca + m_lo);
-                let mut w_hi = fmax64(1.0 - f64::from((n_hi - n_shi).abs()) * inv_r, inv_n);
-                let mut v_hi = (sa + 2.0 * e_shi / f64::from(n_shi)) * w_hi;
-                let mut w_lo = fmax64(1.0 - f64::from((n_lo - n_slo).abs()) * inv_r, inv_n);
-                let mut v_lo = (sa + 2.0 * e_slo / f64::from(n_slo)) * w_lo;
-                let d_hi = m_hi / f64::from(n_hi);
-                let d_lo = -m_lo / f64::from(n_lo);
-                if n_hi > 6 && d_hi < d_lo {
-                    let t = d_lo / (d_hi + d_lo * inv_n);
-                    v_hi += max_l * t;
-                    w_hi += t;
-                }
-                if n_lo > 6 && d_lo < d_hi {
-                    let t = d_hi / (d_lo + d_hi * inv_n);
-                    v_lo += min_l * t;
-                    w_lo += t;
+                let mut w_hi = fmax64(1.0 - (n_hi - n_shi).abs() * inv_r, inv_n);
+                let mut v_hi = (sa + 2.0 * e_shi / n_shi) * w_hi;
+                let mut w_lo = fmax64(1.0 - (n_lo - n_slo).abs() * inv_r, inv_n);
+                let mut v_lo = (sa + 2.0 * e_slo / n_slo) * w_lo;
+                let d_hi = m_hi / n_hi;
+                let d_lo = -m_lo / n_lo;
+                if tie > 0.0 {
+                    // The pull fades over the last quarter before the spreads are equal, and with
+                    // the spreads themselves (eps), and ramps in over one count above 6.
+                    let eps = 2.0 * tl * inv_n * inv_n;
+                    let pull = |near: f64, far: f64, n: f64| -> f64 {
+                        if far > near {
+                            let fade = ((far - near) / (0.25 * far)).min(1.0);
+                            (n - 6.0).clamp(0.0, 1.0) * (fade * far / (near + far * inv_n + eps))
+                        } else {
+                            0.0
+                        }
+                    };
+                    let t = pull(d_hi, d_lo, n_hi);
+                    if t > 0.0 {
+                        v_hi += max_l * t;
+                        w_hi += t;
+                    }
+                    let t = pull(d_lo, d_hi, n_lo);
+                    if t > 0.0 {
+                        v_lo += min_l * t;
+                        w_lo += t;
+                    }
+                } else {
+                    if n_hi > 6.0 && d_hi < d_lo {
+                        let t = d_lo / (d_hi + d_lo * inv_n);
+                        v_hi += max_l * t;
+                        w_hi += t;
+                    }
+                    if n_lo > 6.0 && d_lo < d_hi {
+                        let t = d_hi / (d_lo + d_hi * inv_n);
+                        v_lo += min_l * t;
+                        w_lo += t;
+                    }
                 }
                 let i = y * w + x;
                 out[0][i] = v_hi as f32;
@@ -1507,28 +1705,31 @@ mod tests {
         for (w, h) in sizes {
             for (noise, seed) in [(0.0f32, 1u64), (0.004, 2), (0.05, 3)] {
                 let l = plane(w, h, noise, seed + (w * h) as u64);
-                // S = L + a halo-limited delta that is zero in places (exact ties), positive and
-                // negative elsewhere.
+                // S = L + a halo-limited delta that is zero in places (exact ties), a few ulps
+                // in others (ties within the tolerance), positive and negative elsewhere.
                 let s: Vec<f32> = l
                     .iter()
                     .enumerate()
-                    .map(|(i, &v)| match i % 4 {
+                    .map(|(i, &v)| match i % 5 {
                         0 => v,
                         1 => v + 0.01,
                         2 => v - 0.02,
+                        3 => v * (1.0 + 3.0 * f32::EPSILON),
                         _ => v + 0.0007 * (i % 11) as f32,
                     })
                     .collect();
-                let fast = halo_maps(&l, &s, w, h);
-                let slow = halo_maps_pixelwise(&l, &s, w, h);
-                for (k, (a, b)) in fast.iter().zip(&slow).enumerate() {
-                    assert!(bits_equal(a, b), "{w}x{h} noise {noise} map {k}");
-                }
-                // And with S = L exactly (no halo-limited delta anywhere).
-                let fast = halo_maps(&l, &l, w, h);
-                let slow = halo_maps_pixelwise(&l, &l, w, h);
-                for (a, b) in fast.iter().zip(&slow) {
-                    assert!(bits_equal(a, b), "{w}x{h} noise {noise}, S = L");
+                for tie in [0.0, HALO_TIE_TOLERANCE, HALO_TIE_TOLERANCE_MAX] {
+                    let fast = halo_maps(&l, &s, w, h, tie);
+                    let slow = halo_maps_pixelwise(&l, &s, w, h, tie);
+                    for (k, (a, b)) in fast.iter().zip(&slow).enumerate() {
+                        assert!(bits_equal(a, b), "{w}x{h} noise {noise} tie {tie} map {k}");
+                    }
+                    // And with S = L exactly (no halo-limited delta anywhere).
+                    let fast = halo_maps(&l, &l, w, h, tie);
+                    let slow = halo_maps_pixelwise(&l, &l, w, h, tie);
+                    for (a, b) in fast.iter().zip(&slow) {
+                        assert!(bits_equal(a, b), "{w}x{h} noise {noise} tie {tie}, S = L");
+                    }
                 }
             }
         }

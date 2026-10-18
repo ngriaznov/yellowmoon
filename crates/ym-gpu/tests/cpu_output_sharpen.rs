@@ -301,6 +301,8 @@ fn params_of(v: &Value) -> (OutputSharpen, f32) {
                 lw[2].as_f64().expect("w") as f32,
             ],
             extra_stages,
+            // The reference compares exactly; the tie tolerance is ours (spec 7.1 item 5).
+            halo_tie_tolerance: 0.0,
         },
         f32_of(p, "scale"),
     )
@@ -575,6 +577,86 @@ fn property_threshold_zero_is_homogeneous_of_degree_one() {
             assert!(bit_equal(&a, &b), "f({k} x) != {k} f(x) for {:?}", p.method);
         }
     }
+}
+
+/// A clean chart like the golden set's: a white patch clipped flat at 1, a dark band under it and
+/// grey patches, with horizontal and vertical edges and no noise, so whole rows and columns tie.
+fn chart_scene(w: usize, h: usize) -> RgbImage {
+    let mut img = RgbImage::new(w, h);
+    for y in 0..h {
+        for x in 0..w {
+            let v = if y < h / 3 {
+                if x < w / 2 { 1.0f32 } else { 0.62 }
+            } else if y == h / 3 {
+                0.012
+            } else if x < w / 3 {
+                0.18
+            } else {
+                0.035
+            };
+            img.set_pixel(x, y, [v, v * 0.97, v * 0.9]);
+        }
+    }
+    img
+}
+
+/// `img` with every sample moved by up to `ulps` units in the last place (seeded): how the
+/// device's `f32` colour chain differs from the CPU's `f64` one.
+fn jitter_ulps(img: &RgbImage, ulps: u64, seed: u64) -> RgbImage {
+    let mut rng = Rng(seed);
+    let mut out = img.clone();
+    for v in &mut out.data {
+        let k = (rng.next() % (2 * ulps + 1)) as i64 - ulps as i64;
+        *v = f32::from_bits((i64::from(v.to_bits()) + k) as u32);
+    }
+    out
+}
+
+/// A checkerboard of 1 px cells: every window sample ties with a mirrored one.
+fn checkerboard(w: usize, h: usize) -> RgbImage {
+    let mut img = RgbImage::new(w, h);
+    for y in 0..h {
+        for x in 0..w {
+            let v = if (x + y) % 2 == 0 { 0.7f32 } else { 0.1 };
+            img.set_pixel(x, y, [v, v * 0.9, v * 0.8]);
+        }
+    }
+    img
+}
+
+#[test]
+fn last_bit_changes_of_the_input_do_not_flip_the_limiter_on_ties() {
+    // Spec 3.5 and 7.1 item 5: with exact comparisons, values that tie (the rows of a clean edge, a
+    // clipped patch, a checkerboard) stop tying when the input moves by an ulp, as the device's f32
+    // colour chain moves it, a rank count flips and the pixel moves by up to 1e-1: the golden check
+    // on the device failed on that. With the tie tolerance the limiter is continuous, and the output
+    // moves about as much as the input did.
+    let mut worst = (0.0f64, 0.0f64);
+    for (name, img) in [
+        ("chart", chart_scene(96, 64)),
+        ("checkerboard", checkerboard(64, 48)),
+    ] {
+        for (p, s) in param_sets() {
+            if p.halo_pct == 0.0 && p.extra_stages.iter().all(|e| e.halo_pct == 0.0) {
+                continue; // no limiter, no comparisons
+            }
+            let mut exact = p.clone();
+            exact.halo_tie_tolerance = 0.0;
+            for seed in 1..=4 {
+                let moved = jitter_ulps(&img, 8, seed);
+                let d_tol = max_abs_diff(&sharpen(&p, s, &img), &sharpen(&p, s, &moved));
+                let d_exact = max_abs_diff(&sharpen(&exact, s, &img), &sharpen(&exact, s, &moved));
+                eprintln!(
+                    "{name:<12} {:?} s {s}: tolerance {d_tol:.3e}, exact {d_exact:.3e}",
+                    p.method
+                );
+                worst = (worst.0.max(d_tol), worst.1.max(d_exact));
+            }
+        }
+    }
+    // Measured: 4.9e-6 with the tolerance, 1.5e-1 with exact comparisons.
+    assert!(worst.0 <= 2e-5, "with the tie tolerance: {:e}", worst.0);
+    assert!(worst.1 >= 1e-2, "exact comparisons: {:e}", worst.1);
 }
 
 #[test]
@@ -1433,7 +1515,9 @@ fn oracle_digests_of_frames_taller_than_one_band() {
         0x510e_59a7_8763_381e,
         16,
     ));
-    for (i, (p, s, img, digest, halo)) in cases.iter().enumerate() {
+    for (i, (p, s, img, digest, halo)) in cases.iter_mut().enumerate() {
+        // The reference compares exactly; the tie tolerance is ours (spec 7.1 item 5).
+        p.halo_tie_tolerance = 0.0;
         assert_eq!(p.halo_px(*s), Ok(*halo), "case {i}: halo_px");
         let out = sharpen(p, *s, img);
         assert_eq!(

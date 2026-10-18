@@ -9,7 +9,9 @@ moves the entries below from Unreleased into a dated section for that version.
 
 ## [Unreleased]
 
-Nothing yet.
+### Changed
+
+- Output sharpening: the halo limiter no longer switches on tiny differences, so the graphics card and the CPU sharpen hard edges and clipped areas alike. Sharpened pictures change very slightly at a few edge pixels (pipeline 0.4.1).
 
 ## [0.1.10] - 2026-10-17
 

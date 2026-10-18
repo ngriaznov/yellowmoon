@@ -18,12 +18,14 @@
 //
 // Fast-math (K8). Metal compiles with fast-math and wgpu cannot switch it off: the compiler may fuse
 // `a * b + c` into one multiply-add, re-associate sums and products, and its `sqrt` and `a / b` are
-// not correctly rounded. The limiter compares luma values and S = L + Hacc for order, so the last bit
-// of any of them flips a rank count where two values tie within an ulp, and a flipped count moves a
-// pixel by up to 2e-3 (the Metal runs at b6f2e4b). So every operation whose rounding matters is
-// pinned: each product that meets an addition, each partial sum and each difference passes through
-// `opaque` (one operation per barrier, nothing left to fuse or re-associate), and the square roots and
-// quotients are made correctly rounded with integer arithmetic (`sharpen_sqrt`, `sharpen_div`).
+// not correctly rounded. The limiter compares luma values and S = L + Hacc for order, so with exact
+// comparisons (tie tolerance 0) the last bit of any of them flips a rank count where two values tie
+// within an ulp, and a flipped count moves a pixel by up to 2e-3 (the Metal runs at b6f2e4b); with
+// the tolerance the limiter is continuous, but its soft counts still amplify a last-bit change. So
+// every operation whose rounding matters is pinned: each product that meets an addition, each partial
+// sum and each difference passes through `opaque` (one operation per barrier, nothing left to fuse or
+// re-associate), and the square roots and quotients are made correctly rounded with integer
+// arithmetic (`sharpen_sqrt`, `sharpen_div`).
 // IEEE arithmetic is unchanged by both (lavapipe gives the same bits as before), and naga's MSL of
 // these passes compiled with clang -O2/-O3 -ffast-math -ffp-contract=fast -mfma -mrecip=all gives
 // lavapipe's bits on every case of the tests (docs/17-gpu.md section 13).
@@ -70,7 +72,7 @@ struct SharpenParams {
     bg: u32,         // fused C13: the letterbox colour, RGBA8 packed
     copy_only: u32,  // transfer: ratio 1, no luma, no stages (a setup without a stage)
     zero: u32,       // always 0 at run time and unknown to the compiler (see `opaque`)
-    pad0: u32,
+    tie_rel: f32,    // the halo limiter's tie tolerance, relative to the window's centre (spec 3.5)
     pad1: u32,
     pad2: u32,
 };
@@ -94,7 +96,8 @@ const LUMA_FLOOR: f32 = 1e-20;
 const RATIO_MAX: f32 = 16.0;
 const HALO_INV_N: f32 = 0.04;   // 1 / 25 samples of the 5 x 5 window
 const HALO_INV_R: f32 = 0.5;    // 1 / window radius 2
-const HALO_K_MIN: i32 = 6;      // (25 + 1) >> 2
+const HALO_K_MIN_F: f32 = 6.0;  // (25 + 1) >> 2
+const HALO_PULL_FADE: f32 = 0.25; // with a tie tolerance the pull fades over the last quarter (spec 3.5)
 
 // std::max(a, b) and std::min(a, b) of the reference.
 fn fmax_(a: f32, b: f32) -> f32 {
@@ -401,11 +404,53 @@ fn sharpen_accumulate(gid: vec3<u32>) {
     }
 }
 
+// The tie tolerance of a window centre `c` (spec 3.5): |c| times the relative tolerance, one f32
+// product as on the CPU (pinned, so nothing folds it into a later expression).
+fn tie_tolerance(c: f32) -> f32 {
+    return opaque(abs(c) * sp.tie_rel);
+}
+
+// How much a difference `d` from the window centre counts at or below it (spec 3.5): fully within the
+// tolerance `t` and below it, falling linearly to 0 at 2t above it, (2t - d) / t clamped to [0, 1].
+// Where that is between 0 and 1, 2t - d is exact in f32 (d is within a factor of two of 2t), so the
+// weight is the exact value correctly rounded, as close to the CPU's f64 weight as f32 allows. With
+// t = 0 the exact comparison d <= 0. A NaN counts nowhere (the CPU's `max` and `min` drop it too).
+// The count at or above the centre is side_weight(-d, t).
+fn side_weight(d: f32, t: f32) -> f32 {
+    if (t > 0.0) {
+        let w = sharpen_div(opaque(opaque(2.0 * t) - d), t);
+        return select(fmin_(fmax_(w, 0.0), 1.0), 0.0, is_nan_f(w));
+    }
+    return select(0.0, 1.0, d <= 0.0);
+}
+
+// The part of a difference `d` beyond the tolerance `t` (spec 3.5): d shrunk towards 0 by t.
+fn beyond(d: f32, t: f32) -> f32 {
+    let inside = select(select(d, t, d > t), -t, d < -t);
+    return opaque(d - inside);
+}
+
+// The weight of the plateau pull on the side whose spread per sample is `near`, when the other side's
+// is `far` (spec 3.5, with a tie tolerance): far / (near + far / N + eps) while near <= 0.75 far,
+// fading linearly to 0 at near = far. 0 when far <= near or either is NaN.
+fn pull_weight(near: f32, far: f32, eps: f32) -> f32 {
+    if (!(far > near)) {
+        return 0.0;
+    }
+    let fade = fmin_(sharpen_div(opaque(far - near), opaque(HALO_PULL_FADE * far)), 1.0);
+    let den = opaque(opaque(near + opaque(far * HALO_INV_N)) + eps);
+    return sharpen_div(opaque(fade * far), den);
+}
+
 // The four envelope maps of the halo limiter (spec 3.5) on the 5 x 5 window, written to work_a planes
-// 0 to 3 as v_hi, w_hi, v_lo, w_lo. Counts are exact comparisons of f32 values; the sums are f32 sums
-// of differences to the centre, window row by row, left to right. S, every difference and every
-// running sum are pinned, the quotients are exact (`sharpen_div`) and each product that meets a sum is
-// pinned, so the counts compare the bits lavapipe compares.
+// 0 to 3 as v_hi, w_hi, v_lo, w_lo. With a tie tolerance (sp.tie_rel > 0) the limiter is continuous:
+// a sample counts on each side by `side_weight` and adds its difference `beyond` the tolerance, and
+// the plateau pull fades (`pull_weight`) and ramps in over one count above k_min; values that tie in
+// exact arithmetic then tie on every path, although the colour chain in f32 moves them by a few ulps.
+// With the tolerance at 0 this is the reference's exact comparison and switch. The sums are f32 sums,
+// window row by row, left to right. S, every difference and every running sum are pinned, the
+// quotients are exact (`sharpen_div`) and each product that meets a sum is pinned, so a device
+// computes the bits lavapipe computes.
 fn sharpen_window(gid: vec3<u32>) {
     if (gid.x >= sp.width || gid.y >= sp.height) {
         return;
@@ -417,10 +462,12 @@ fn sharpen_window(gid: vec3<u32>) {
     let i = gid.y * sp.width + gid.x;
     let c = lum[i];
     let s = opaque(c + hacc[i]);
-    var n_lo = 0;
-    var n_hi = 0;
-    var n_slo = 0;
-    var n_shi = 0;
+    let tl = tie_tolerance(c);
+    let ts = tie_tolerance(s);
+    var n_lo = 0.0;
+    var n_hi = 0.0;
+    var n_slo = 0.0;
+    var n_shi = 0.0;
     var e_lo = 0.0;
     var e_hi = 0.0;
     var e_slo = 0.0;
@@ -431,49 +478,58 @@ fn sharpen_window(gid: vec3<u32>) {
             let o = row + u32(mir(x + dx, w));
             let l = lum[o];
             let sl = opaque(l + hacc[o]);
-            if (l <= c) {
-                n_lo = n_lo + 1;
-                e_lo = opaque(e_lo + opaque(l - c));
-            }
-            if (l >= c) {
-                n_hi = n_hi + 1;
-                e_hi = opaque(e_hi + opaque(l - c));
-            }
-            if (sl <= s) {
-                n_slo = n_slo + 1;
-                e_slo = opaque(e_slo + opaque(sl - s));
-            }
-            if (sl >= s) {
-                n_shi = n_shi + 1;
-                e_shi = opaque(e_shi + opaque(sl - s));
-            }
+            let dl = opaque(l - c);
+            let ds = opaque(sl - s);
+            n_lo = opaque(n_lo + side_weight(dl, tl));
+            n_hi = opaque(n_hi + side_weight(-dl, tl));
+            n_slo = opaque(n_slo + side_weight(ds, ts));
+            n_shi = opaque(n_shi + side_weight(-ds, ts));
+            // A NaN difference fails both comparisons and adds nothing.
+            let el = beyond(dl, tl);
+            let es = beyond(ds, ts);
+            e_lo = opaque(e_lo + select(0.0, el, el < 0.0));
+            e_hi = opaque(e_hi + select(0.0, el, el > 0.0));
+            e_slo = opaque(e_slo + select(0.0, es, es < 0.0));
+            e_shi = opaque(e_shi + select(0.0, es, es > 0.0));
         }
     }
-    let nlo = f32(n_lo);
-    let nhi = f32(n_hi);
-    let nslo = f32(n_slo);
-    let nshi = f32(n_shi);
     // Robust local maximum / minimum of L: c + 2 mean(l - c) over the samples on one side.
-    let m_hi = opaque(sharpen_div(2.0 * e_hi, nhi));
-    let m_lo = opaque(sharpen_div(2.0 * e_lo, nlo));
+    let m_hi = opaque(sharpen_div(2.0 * e_hi, n_hi));
+    let m_lo = opaque(sharpen_div(2.0 * e_lo, n_lo));
     let max_l = c + m_hi;
     let min_l = c + m_lo;
-    var w_hi = fmax_(1.0 - f32(abs(n_hi - n_shi)) * HALO_INV_R, HALO_INV_N);
-    var v_hi = opaque(s + opaque(sharpen_div(2.0 * e_shi, nshi))) * w_hi;
-    var w_lo = fmax_(1.0 - f32(abs(n_lo - n_slo)) * HALO_INV_R, HALO_INV_N);
-    var v_lo = opaque(s + opaque(sharpen_div(2.0 * e_slo, nslo))) * w_lo;
-    let d_hi = opaque(sharpen_div(m_hi, nhi));
-    let d_lo = opaque(sharpen_div(-m_lo, nlo));
+    var w_hi = fmax_(1.0 - opaque(abs(opaque(n_hi - n_shi)) * HALO_INV_R), HALO_INV_N);
+    var v_hi = opaque(s + opaque(sharpen_div(2.0 * e_shi, n_shi))) * w_hi;
+    var w_lo = fmax_(1.0 - opaque(abs(opaque(n_lo - n_slo)) * HALO_INV_R), HALO_INV_N);
+    var v_lo = opaque(s + opaque(sharpen_div(2.0 * e_slo, n_slo))) * w_lo;
+    let d_hi = opaque(sharpen_div(m_hi, n_hi));
+    let d_lo = opaque(sharpen_div(-m_lo, n_lo));
     // On the flat side of an edge, pull the envelope to the plateau of L.
-    if (n_hi > HALO_K_MIN && d_hi < d_lo) {
-        let t = opaque(sharpen_div(d_lo, opaque(d_hi + opaque(d_lo * HALO_INV_N))));
-        v_hi = opaque(v_hi) + opaque(max_l * t);
-        w_hi = w_hi + t;
-    }
-    if (n_lo > HALO_K_MIN && d_lo < d_hi) {
-        let t = opaque(sharpen_div(d_hi, opaque(d_lo + opaque(d_hi * HALO_INV_N))));
-        v_lo = opaque(v_lo) + opaque(min_l * t);
-        w_lo = w_lo + t;
+    if (sp.tie_rel > 0.0) {
+        let eps = opaque(opaque(opaque(2.0 * tl) * HALO_INV_N) * HALO_INV_N);
+        let g_hi = fmin_(fmax_(opaque(n_hi - HALO_K_MIN_F), 0.0), 1.0);
+        let g_lo = fmin_(fmax_(opaque(n_lo - HALO_K_MIN_F), 0.0), 1.0);
+        let t_hi = opaque(g_hi * pull_weight(d_hi, d_lo, eps));
+        let t_lo = opaque(g_lo * pull_weight(d_lo, d_hi, eps));
+        if (t_hi > 0.0) {
+            v_hi = opaque(v_hi) + opaque(max_l * t_hi);
+            w_hi = w_hi + t_hi;
+        }
+        if (t_lo > 0.0) {
+            v_lo = opaque(v_lo) + opaque(min_l * t_lo);
+            w_lo = w_lo + t_lo;
+        }
+    } else {
+        if (n_hi > HALO_K_MIN_F && d_hi < d_lo) {
+            let t = opaque(sharpen_div(d_lo, opaque(d_hi + opaque(d_lo * HALO_INV_N))));
+            v_hi = opaque(v_hi) + opaque(max_l * t);
+            w_hi = w_hi + t;
+        }
+        if (n_lo > HALO_K_MIN_F && d_lo < d_hi) {
+            let t = opaque(sharpen_div(d_hi, opaque(d_lo + opaque(d_hi * HALO_INV_N))));
+            v_lo = opaque(v_lo) + opaque(min_l * t);
+            w_lo = w_lo + t;
+        }
     }
     work_a[i] = v_hi;
     work_a[sp.plane + i] = w_hi;
