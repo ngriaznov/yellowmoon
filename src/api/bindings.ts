@@ -362,6 +362,20 @@ export type ColorWarpPin = {
 	exposure_ev: number,
 };
 
+/**
+ *  `contrast`: Auto, or a manual value from -100 to 100. The JSON is `{ "kind": "auto" }` or
+ *  `{ "kind": "manual", "value": 12 }`.
+ * 
+ *  (As `ExposureSetting`: each setting has its own enum with the same JSON as `types.ts`'s `AutoOr`.)
+ */
+export type ContrastSetting = 
+/**  Resolve from the photo's automatic estimates. */
+{ kind: "auto" } | 
+/**  The user's value. */
+{ kind: "manual"; 
+/**  Contrast, -100 to 100. */
+value: number };
+
 /**  The crop (per photo, in memory only): a rectangle, a straighten angle and an aspect. */
 export type Crop = {
 	/**  The frame. */
@@ -678,20 +692,6 @@ export type ExposureSetting =
 { kind: "manual"; 
 /**  Absolute exposure in stops, -4 to +4. */
 ev: number };
-
-/**
- *  `contrast`: Auto, or a manual value from -100 to 100. The JSON is `{ "kind": "auto" }` or
- *  `{ "kind": "manual", "value": 12 }`.
- *
- *  (As `ExposureSetting`: each setting has its own enum with the same JSON as `types.ts`'s `AutoOr`.)
- */
-export type ContrastSetting =
-/**  Resolve from the photo's automatic estimates. */
-{ kind: "auto" } |
-/**  The user's value. */
-{ kind: "manual";
-/**  Contrast, -100 to 100. */
-value: number };
 
 /**  Per-channel histogram of the current render, for the Light tab and the Curve plot. */
 export type HistogramData = {

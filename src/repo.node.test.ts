@@ -60,9 +60,10 @@ describe("design tokens", () => {
 });
 
 describe("copy (docs/11 tab blurbs)", () => {
-  // Since 0.2.0 Auto exposure is the camera's own, so the Light tab no longer says it is set for each photo.
-  const LIGHT = "Exposure starts at your camera's own. Adjust it from there.";
-  const OLD = "Exposure is set for each photo automatically.";
+  // Since 0.5.0 Auto exposure and Auto contrast are chosen for each photo (docs/18); before that the line said exposure
+  // started at the camera's own, and before 0.2.0 that it was set for each photo automatically.
+  const LIGHT = "Exposure and contrast are set for each photo. Adjust them from there.";
+  const OLDS = ["Exposure is set for each photo automatically.", "Exposure starts at your camera's own. Adjust it from there."];
 
   it("the Light blurb is the same in the component, the mockup and docs/11", () => {
     expect(read("src/components/tabs.ts")).toContain(`blurb: "${LIGHT}"`);
@@ -70,9 +71,9 @@ describe("copy (docs/11 tab blurbs)", () => {
     expect(read("docs/11-ui.md")).toContain(`Light "${LIGHT}"`);
   });
 
-  it("the old Light blurb is gone from the component, the mockup and docs/11", () => {
-    for (const file of ["src/components/tabs.ts", "design/mockups/photos.html", "docs/11-ui.md"]) {
-      expect(read(file), file).not.toContain(OLD);
+  it("the old Light blurbs are gone from the component and the mockup", () => {
+    for (const file of ["src/components/tabs.ts", "design/mockups/photos.html"]) {
+      for (const old of OLDS) expect(read(file), file).not.toContain(old);
     }
   });
 });

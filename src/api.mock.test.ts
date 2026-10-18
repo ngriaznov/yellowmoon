@@ -378,7 +378,7 @@ describe("settings", () => {
     expect((await api.rerunAuto(1)).values.output_sharpening).toBe(60);
   });
 
-  it("rerunAuto resets exposure, white balance and noise to Auto", async () => {
+  it("rerunAuto resets exposure, contrast, white balance and noise to Auto", async () => {
     await api.updateSettings(1, {
       exposure: { kind: "manual", ev: 1 },
       light_source: "tungsten",
@@ -387,8 +387,8 @@ describe("settings", () => {
       contrast: { kind: "manual", value: 20 },
     });
     const r = await api.rerunAuto(1);
-    expect(r.auto).toEqual({ exposure: true, contrast: false, light_source: true, white_balance: true, sharpen: true, noise_reduction: true });
-    expect(r.values.contrast).toBe(20); // other controls are not touched, contrast included (`docs/01`)
+    expect(r.auto).toEqual({ exposure: true, contrast: true, light_source: true, white_balance: true, sharpen: true, noise_reduction: true });
+    expect(r.values.contrast).toBe(4.2); // the photo's automatic contrast (`docs/01`: Re-run resets it with exposure)
   });
 
   it("gives each photo its own automatic contrast: a tenth, within ±30, with the model's confidences and version", async () => {

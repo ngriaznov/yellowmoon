@@ -18,7 +18,7 @@ describe("TitleBlock", () => {
   it("has the six titles and blurbs of the mockup", () => {
     expect(TABS.map((t) => t.label)).toEqual(["Look", "Light", "Colour", "Detail", "Curve", "RAW"]);
     expect(TABS.find((t) => t.id === "curve")?.blurb).toBe("Fine contrast, for all channels or one at a time.");
-    expect(TABS.find((t) => t.id === "light")?.blurb).toBe("Exposure starts at your camera's own. Adjust it from there.");
+    expect(TABS.find((t) => t.id === "light")?.blurb).toBe("Exposure and contrast are set for each photo. Adjust them from there.");
   });
 
   it("can be the Export panel's black block", () => {

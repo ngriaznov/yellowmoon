@@ -1838,10 +1838,11 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     rerunAuto: (photoId) =>
       run("rerunAuto", () => {
         const rec = photo(photoId);
-        // Exposure, white (the lift's offset), white balance (including the light preset and a picked white) and noise.
+        // Exposure, contrast, white (the lift's offset), white balance (including the light preset and a picked white) and noise.
         rec.settings = {
           ...rec.settings,
           exposure: { kind: "auto" },
+          contrast: { kind: "auto" },
           white_offset_ev: 0,
           light_source: "auto",
           white_balance: { kind: "auto" },

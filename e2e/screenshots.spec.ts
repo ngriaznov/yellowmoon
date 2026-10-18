@@ -157,8 +157,10 @@ test.describe("Photos", () => {
     await photos(page);
     await page.getByRole("searchbox", { name: "Search looks" }).fill("film");
     await expect(page.getByText("2 of 7")).toBeVisible();
-    await expect.poll(async () => page.locator(".ym-look-tile img").count()).toBe(2);
+    // Since the Automatic card's Contrast row (docs/18) the grid starts just below the panel's fold at this size, and a tile asks
+    // for its picture only once it shows: lookTilesLoaded scrolls the first one into view, waits, and scrolls back.
     await lookTilesLoaded(page);
+    await expect.poll(async () => page.locator(".ym-look-tile img").count()).toBe(2);
     await compareScreen(page, "photos-look-search");
   });
 });

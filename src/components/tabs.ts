@@ -19,7 +19,7 @@ export interface TabInfo {
 /** The tabs in bar order. ⌘1 selects the first, ⌘6 the last. */
 export const TABS: readonly TabInfo[] = [
   { id: "look", label: "Look", blurb: "Every photo is developed automatically. Pick a look and how strongly to apply it." },
-  { id: "light", label: "Light", blurb: "Exposure starts at your camera's own. Adjust it from there." },
+  { id: "light", label: "Light", blurb: "Exposure and contrast are set for each photo. Adjust them from there." },
   {
     id: "color",
     label: "Colour",
