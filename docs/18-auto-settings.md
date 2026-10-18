@@ -182,7 +182,7 @@ Per member: Gaussian negative log-likelihood of each head against its label, wit
 2. **Equivariance:** the dump's augmentation rows with k < 0 (nothing newly clips): `EV_model` moves by −k ± 0.05 EV for every file. Frames brightened by k > 0 lose highlights, so their features and key move by less than k; they are covered by gate 4.
 3. **G3 on normal scenes only (no regression):** on held-out scenes that the camera exposed normally (|EC| < 0.3, no DRO/HDR, Standard style), `|EV_auto − L|` median ≤ 0.25 EV and ≤ 0.5 EV on 90 % of files.
 4. **Rescue:** files rendered at −2 … +2 EV off their label come back within ±0.3 EV of it on 90 % of held-out files.
-5. **Blind A/B** ([HUMAN] AS-H1, the acceptance gate): about 150 photos, everyday strata; `autoset` against the rule before it, against Lightroom Auto and against the camera JPEG; pass at ≥ 60 % pooled wins against each (Wilson lower bound > 50 %), no stratum below 45 %, no rise in gross failures (a photo that needs more than 0.5 EV or 10 mired of correction).
+5. **Blind A/B** ([HUMAN] AS-H1, the acceptance gate): about 150 photos in everyday strata, the owner's or any others (the pictures are never committed). Three versions of each photo: `autoset` (the new automatic settings), the rule before it (the old automatic settings) and the camera JPEG (the camera's default rendering). Pass at ≥ 60 % pooled wins against each of the two (Wilson lower bound > 50 %), no stratum below 45 %, no rise in gross failures (a photo that needs more than 0.5 EV or 10 mired of correction). Lightroom Auto is not compared (owner's decision of 2026-10-18, `docs/16`).
 6. Golden images: re-baselined for 0.5.0 with a note; the golden **truth** keeps its settings (Neutral look, highlight range 0, lift off) plus contrast Manual 0 and `white_preference` 0, and exposure Manual at the pre-autoset rule, so its numbers do not move.
 
 ## 9. Later versions (not v1)
@@ -204,6 +204,6 @@ Per member: Gaussian negative log-likelihood of each head against its label, wit
 | AS-07 | `ym-core` integration: estimates, exposure, contrast `AutoOr`, preferred white in the chain's Auto arm, `white_preference`, XMP, CLI, wire types, `PIPELINE_VERSION` 0.5.0 | tests; golden truth unchanged; parity app/CLI |
 | AS-08 | Frontend: contrast Auto/Manual, Automatic card Contrast row, Tone card AUTO, mock, tests, references | vitest, e2e |
 | AS-09 | Train v1, evaluate (gates 2–4), golden re-baseline, contact sheets for the owner | numbers in STATUS |
-| AS-H1 | [HUMAN] blind A/B sessions on a Mac (including Lightroom Auto renders) | gate 5 |
+| AS-H1 | [HUMAN] blind A/B sessions (the owner answers the blind page) | gate 5 |
 | AS-H2 | [HUMAN] preferred-white constants by eye | §5 constants |
 | AS-H3 | [HUMAN] SceneNet: teacher labelling on a GPU machine, 300-image audit | §9 |
