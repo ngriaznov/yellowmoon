@@ -13,7 +13,8 @@
 //! (only previews of a few pixels have one).
 //!
 //! The quantiles are linearly interpolated as in [`exposure::quantile`](crate::exposure), but found by selection
-//! ([`select_ranks`]), never by a full sort: about 40 ms for a 1/8 preview of a 61 MP file.
+//! ([`select_ranks`]), never by a full sort. The budget for the whole pass is 40 ms on a 1/8 preview of a 61 MP file
+//! (`docs/18` §2).
 
 use crate::consts::linalg::{Mat3, mul_vec};
 use crate::exposure::{PreviewRgb, TARGET_GREY, interpolate};
@@ -67,8 +68,8 @@ pub const FEATURE_NAMES: [&str; FEATURE_COUNT] = [
     "flash",
 ];
 
-/// The luminance and channel-maximum floor before the logarithm (`docs/18` §3). It is 1e-6, not the 1e-4 of the
-/// exposure meter: the features see the very dark tones that the percentiles of the exposure band discard.
+/// The luminance and channel-maximum floor before the logarithm, 1e-6 (`docs/18` §3). It is lower than the exposure
+/// meter's [`LUMINANCE_FLOOR`](crate::exposure::LUMINANCE_FLOOR) of 1e-4, as the spec sets.
 pub const FLOOR: f64 = 1e-6;
 
 /// Probabilities of the quantiles of `s - m` (features 2 to 18, `q01` to `q999`).
@@ -151,8 +152,8 @@ pub fn features(inputs: &FeatureInputs<'_>) -> Result<Features, AutosetError> {
     let quantiles_s = quantiles(&mut scan.s, &PROBABILITIES_S, |s| s);
     // The logarithm is monotone, so the quantiles of `t` are the logarithms of the quantiles of `M`: selection runs
     // on the channel maxima, and only the picked neighbours take a logarithm.
-    let quantiles_t = quantiles(&mut scan.m, &PROBABILITIES_T, |m| {
-        (m / TARGET_GREY).log2() - key
+    let quantiles_t = quantiles(&mut scan.maxima, &PROBABILITIES_T, |max_channel| {
+        (max_channel / TARGET_GREY).log2() - key
     });
 
     let (key_bv, bv_known) = match inputs.bv_settings.filter(|bv| bv.is_finite()) {
@@ -225,9 +226,9 @@ impl Region {
 struct Scan {
     /// `s - m` of every usable pixel, in reading order (reordered by the quantiles).
     s: Vec<f64>,
-    /// `M` of every usable pixel, in the same order: the largest AWG4 channel, floored at [`FLOOR`]. `t - m` is its
-    /// logarithm, which the quantiles take at the end.
-    m: Vec<f64>,
+    /// The largest AWG4 channel `M` of every usable pixel, in the same order, floored at [`FLOOR`]. The quantiles of
+    /// `t` are taken on these, and their logarithms at the end.
+    maxima: Vec<f64>,
     /// Usable pixels above [`BRIGHT_STOPS`] (strictly).
     bright: usize,
     /// Usable pixels below [`DARK_STOPS`] (strictly).
@@ -250,7 +251,7 @@ impl Scan {
         let pixels = width * height;
         let mut scan = Scan {
             s: Vec::with_capacity(pixels),
-            m: Vec::with_capacity(pixels),
+            maxima: Vec::with_capacity(pixels),
             bright: 0,
             dark: 0,
             clipped: 0,
@@ -279,7 +280,7 @@ impl Scan {
                     continue;
                 }
                 let s = (y_lum.max(FLOOR) / TARGET_GREY).log2() - key;
-                let m = awg[0].max(awg[1]).max(awg[2]).max(FLOOR);
+                let max_channel = awg[0].max(awg[1]).max(awg[2]).max(FLOOR);
                 let third = if y < th {
                     Some(Third::Top)
                 } else if y >= height - th {
@@ -289,14 +290,14 @@ impl Scan {
                 } else {
                     None
                 };
-                scan.push(s, m, third);
+                scan.push(s, max_channel, third);
             }
         }
         scan
     }
 
-    /// Records one usable pixel: its `s - m`, its `M`, and its place in the thirds.
-    fn push(&mut self, s: f64, m: f64, third: Option<Third>) {
+    /// Records one usable pixel: its `s - m`, its largest channel, and its place in the thirds.
+    fn push(&mut self, s: f64, max_channel: f64, third: Option<Third>) {
         if s > BRIGHT_STOPS {
             self.bright += 1;
         }
@@ -311,7 +312,7 @@ impl Scan {
             None => {}
         }
         self.s.push(s);
-        self.m.push(m);
+        self.maxima.push(max_channel);
     }
 }
 
@@ -346,6 +347,8 @@ fn quantiles<const N: usize>(
         // Both ranks are in `ranks` by construction, so `partition_point` finds their slots exactly.
         let a = map(picked[ranks.partition_point(|&r| r < lo)]);
         let b = map(picked[ranks.partition_point(|&r| r < hi)]);
+        // A monotone map keeps `a <= b`. The swap only guards `interpolate`'s clamp against an ulp-level break.
+        let (a, b) = if a <= b { (a, b) } else { (b, a) };
         interpolate(a, b, frac)
     })
 }

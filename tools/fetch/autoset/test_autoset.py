@@ -11,13 +11,14 @@ seen on the live sites when the manifest was written, so these tests prove the l
 
 from __future__ import annotations
 
+import collections
 import contextlib
-import errno
 import hashlib
 import io
 import json
 import os
 import shlex
+import shutil
 import socket
 import socketserver
 import sys
@@ -216,7 +217,7 @@ if mode == "nan":
 base = {"file": os.path.basename(path), "sha256": digest, "source": source, "licence": "CC0-1.0", "body": None,
         "capture_time": "2024-05-01T10:12:33", "aug_k": 0.0, "features": features, "key": -1.0,
         "meta": {"dro": "off", "iso": 100}, "label_ev": 0.5}
-rows = [dict(base)]
+rows = [dict(base, aug_k=-1.0 if mode == "no_base" else 0.0)]
 if mode != "no_base":
     rows.append(dict(base, aug_k=-1.0))
 if mode == "sha_other":
@@ -255,7 +256,7 @@ class Base(unittest.TestCase):
         Handler.state = State()
         Handler.state.base = self.base
         self.tmp = Path(tempfile.mkdtemp(prefix="autoset-test-"))
-        self.addCleanup(lambda: __import__("shutil").rmtree(self.tmp, ignore_errors=True))
+        self.addCleanup(shutil.rmtree, self.tmp, True)
         self.dump_script = self.tmp / "fake_dump.py"
         self.dump_script.write_text(FAKE_DUMP, encoding="utf-8")
         env = mock.patch.dict(os.environ, {"NO_PROXY": "127.0.0.1,localhost", "no_proxy": "127.0.0.1,localhost",
@@ -304,7 +305,7 @@ def manifest_for(entries: List[Dict[str, Any]], base: str) -> Dict[str, Any]:
 
 class ParsingTests(unittest.TestCase):
     def test_pixls_keeps_only_cc0_sony_arw(self) -> None:
-        stats: Any = __import__("collections").Counter()
+        stats: collections.Counter[str] = collections.Counter()
         cands = autoset.parse_pixls(listing("https://example.invalid"), stats)
         self.assertEqual(len(cands), 2)
         a = next(c for c in cands if c.name == NAME_A)
@@ -321,16 +322,12 @@ class ParsingTests(unittest.TestCase):
         self.assertEqual(stats["pixls CC0 ARW rows"], 2)
 
     def test_pixls_url_is_percent_encoded(self) -> None:
-        cands = autoset.parse_pixls(listing(self.base_url()), __import__("collections").Counter())
+        cands = autoset.parse_pixls(listing("https://raw.pixls.us"), collections.Counter())
         a = next(c for c in cands if c.name == NAME_A)
         self.assertTrue(a.url.endswith("/files/Sony%20-%20TEST-1%20-%2014bit%20(3:2).ARW"), a.url)
 
-    @staticmethod
-    def base_url() -> str:
-        return "https://raw.pixls.us"
-
-    def test_rawdb_keeps_cc0_arw_and_filters_maker_is_done_by_caller(self) -> None:
-        stats: Any = __import__("collections").Counter()
+    def test_rawdb_keeps_cc0_arw_only(self) -> None:
+        stats: collections.Counter[str] = collections.Counter()
         cands = autoset.rawdb_candidates(RAWDB_DETAILS["TEST-RAW-1"], "TEST-RAW-1", "https://rawdb.dnglab.org/api/download", stats)
         self.assertEqual([c.name for c in cands], [NAME_RAWDB, "TEST-RAW-1_shared.ARW"])
         b = cands[0]
@@ -346,7 +343,7 @@ class ParsingTests(unittest.TestCase):
         detail = {"maker": "Sony", "categories": {"raw_modes": [
             {"path": "raw_modes/DSC-HX95_ISO_100_12bits_Sony ARW Compressed.ARW", "extension": "ARW",
              "size": 5, "license": "CC0 1.0", "sha256": "a" * 64, "tags": ["12bits"]}]}}
-        (c,) = autoset.rawdb_candidates(detail, "DSC-HX95", "https://rawdb.dnglab.org/api/download", __import__("collections").Counter())
+        (c,) = autoset.rawdb_candidates(detail, "DSC-HX95", "https://rawdb.dnglab.org/api/download", collections.Counter())
         self.assertEqual(c.url, "https://rawdb.dnglab.org/api/download/Sony/DSC-HX95/raw_modes/DSC-HX95_ISO_100_12bits_Sony%20ARW%20Compressed.ARW")
         self.assertEqual(c.name, "DSC-HX95_ISO_100_12bits_Sony ARW Compressed.ARW")
 
@@ -391,16 +388,14 @@ class ParsingTests(unittest.TestCase):
         self.assertEqual([e["id"] for e in files], ["rawdb:M/a.ARW"])
 
     def test_format_manifest_is_valid_json_with_one_entry_per_line(self) -> None:
-        m = manifest_for([make_entry("pixls:M/a.ARW", autoset.PIXLS, "M", "a.ARW", "https://raw.pixls.us/a", "e" * 64, None),
-                          make_entry("rawdb:M/b.ARW", autoset.RAWDB, "M", "b.ARW", "https://rawdb.dnglab.org/b", "f" * 64, 9)],
-                         "https://raw.pixls.us")
-        m["sources"] = autoset.DEFAULT_SOURCES
+        files = [make_entry("pixls:M/a.ARW", autoset.PIXLS, "M", "a.ARW", "https://raw.pixls.us/a", "e" * 64, None),
+                 make_entry("rawdb:M/b.ARW", autoset.RAWDB, "M", "b.ARW", "https://rawdb.dnglab.org/b", "f" * 64, 9)]
         text = autoset.format_manifest({"schema_version": 1, "description": autoset.DESCRIPTION,
-                                        "sources": autoset.DEFAULT_SOURCES, "files": m["files"]})
+                                        "sources": autoset.DEFAULT_SOURCES, "files": files})
         self.assertEqual(json.loads(text)["files"][1]["size"], 9)
         entry_lines = [line for line in text.splitlines() if line.startswith("   {")]
         self.assertEqual(len(entry_lines), 2)
-        self.assertNotIn("time", text.lower())
+        self.assertNotIn("time", text.lower())  # no timestamps: the CI cache key hashes this file
 
     def test_validate_manifest_refuses_policy_breaches(self) -> None:
         good = make_entry("rawdb:M/a.ARW", autoset.RAWDB, "M", "a.ARW", "https://rawdb.dnglab.org/a", "a" * 64, 1)
@@ -454,7 +449,8 @@ class ResolveDumpTests(unittest.TestCase):
 
     def test_missing_default_builds_it_with_cargo_then_refuses_if_still_missing(self) -> None:
         with mock.patch.dict(os.environ), mock.patch.object(autoset, "DEFAULT_DUMP", Path("/nonexistent/autoset_dump")), \
-                mock.patch.object(autoset.subprocess, "run", return_value=mock.Mock(returncode=1)) as run:
+                mock.patch.object(autoset.subprocess, "run", return_value=mock.Mock(returncode=1)) as run, \
+                contextlib.redirect_stderr(io.StringIO()):
             os.environ.pop("YM_AUTOSET_DUMP", None)
             with self.assertRaises(autoset.SetupError):
                 autoset.resolve_dump(None)
@@ -466,8 +462,13 @@ class ResolveDumpTests(unittest.TestCase):
 
 
 class RefreshTests(Base):
+    def write_skeleton(self) -> None:
+        """An empty manifest whose sources point at the local server (refresh reads them from here)."""
+        self.manifest_path().write_text(json.dumps(manifest_for([], self.base)), encoding="utf-8")
+
     def test_refresh_writes_the_merged_manifest(self) -> None:
         path = self.manifest_path()
+        self.write_skeleton()
         code, _ = run_cli(["refresh", "--manifest", str(path), "--delay", "0"])
         self.assertEqual(code, autoset.EXIT_OK)
         m = json.loads(path.read_text(encoding="utf-8"))
@@ -486,15 +487,18 @@ class RefreshTests(Base):
 
     def test_refresh_dry_run_writes_nothing(self) -> None:
         path = self.manifest_path()
+        self.write_skeleton()
+        before = path.read_text(encoding="utf-8")
         code, out = run_cli(["refresh", "--manifest", str(path), "--delay", "0", "--dry-run"])
         self.assertEqual(code, autoset.EXIT_OK)
-        self.assertFalse(path.exists())
+        self.assertEqual(path.read_text(encoding="utf-8"), before)
         self.assertIn("dry run", out)
+        self.assertIn("pixls: 2 CC0 Sony ARW rows", out)
 
     def test_refresh_refuses_a_changed_hash(self) -> None:
         path = self.manifest_path()
         old = manifest_for([make_entry("pixls:TEST-1/" + NAME_A, autoset.PIXLS, "TEST-1", NAME_A,
-                                       self.base + "/files/" + NAME_A, "9" * 64, None)], self.base)
+                                       autoset.quote_url_path(self.base + "/files/" + NAME_A), "9" * 64, None)], self.base)
         path.write_text(json.dumps(old), encoding="utf-8")
         before = path.read_text(encoding="utf-8")
         code, out = run_cli(["refresh", "--manifest", str(path), "--delay", "0"])
@@ -578,7 +582,7 @@ class BuildTests(Base):
         self.assertEqual(len(self.rows()), 2)
 
     def test_sha_mismatch_appends_nothing_records_it_and_deletes_the_file(self) -> None:
-        bad = dict(self.entry_ok, url=f"{self.base}/bad/{NAME_A}", sha256=sha(FILES[NAME_A]))
+        bad = dict(self.entry_ok, url=autoset.quote_url_path(f"{self.base}/bad/{NAME_A}"), sha256=sha(FILES[NAME_A]))
         self.write_manifest([bad])
         code, out = self.build()
         self.assertEqual(code, autoset.EXIT_FAILED, out)
@@ -663,12 +667,13 @@ class BuildTests(Base):
         self.assertEqual(self.rows(), [])
 
     def test_disk_check_needs_twice_the_size_plus_one_gib(self) -> None:
-        seen: List[int] = []
+        # entry_ok has only an approximate size ("0.01MB"): the check uses that figure
+        need = 2 * autoset.parse_size_approx("0.01MB") + autoset.DISK_MARGIN
         self.write_manifest([self.entry_ok])
-        with mock.patch.object(autoset, "disk_free_bytes", lambda path: (seen.append(1), 2 * 4000 + (1 << 30) - 1)[1]):
+        with mock.patch.object(autoset, "disk_free_bytes", lambda path: need - 1):
             code, _ = self.build()
         self.assertEqual(code, autoset.EXIT_DISK)
-        with mock.patch.object(autoset, "disk_free_bytes", lambda path: 2 * 4000 + (1 << 30)):
+        with mock.patch.object(autoset, "disk_free_bytes", lambda path: need):
             code, _ = self.build()
         self.assertEqual(code, autoset.EXIT_OK)
 
@@ -729,19 +734,26 @@ class BuildTests(Base):
         self.assertEqual(code, autoset.EXIT_EMPTY)
         self.assertIn("refresh", out)
 
-    def test_retry_gives_up_on_a_refused_network_without_recording_anything(self) -> None:
+    def test_refused_host_stops_the_run_and_records_nothing(self) -> None:
         probe = socket.socket()
         probe.bind(("127.0.0.1", 0))
         port = probe.getsockname()[1]
         probe.close()
-        dead = dict(self.entry_ok, url=f"http://127.0.0.1:{port}/files/{NAME_A}")
+        dead = dict(self.entry_ok, url=autoset.quote_url_path(f"http://127.0.0.1:{port}/files/{NAME_A}"))
         self.write_manifest([dead])
-        code, _ = self.build()
-        self.assertEqual(code, autoset.EXIT_NETWORK)
+        code, out = self.build()
+        self.assertEqual(code, autoset.EXIT_NETWORK, out)
         self.assertEqual(self.failure_records(), [])
 
+    def test_a_url_with_a_space_is_refused_by_policy_not_retried(self) -> None:
+        raw_space = dict(self.entry_ok, url=f"{self.base}/files/{NAME_A}")
+        self.write_manifest([raw_space])
+        code, out = self.build()
+        self.assertEqual(code, autoset.EXIT_FAILED)
+        self.assertIn("percent-encoded", out)
+        self.assertEqual([h for h in self.hits if h.startswith("/files/")], [])
 
-class VerifyRowsTests(BuildTests):
+
     def test_verify_rows_accepts_what_build_wrote_and_lists_counts(self) -> None:
         self.write_manifest([self.entry_ok, self.entry_raw])
         self.assertEqual(self.build()[0], autoset.EXIT_OK)

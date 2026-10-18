@@ -279,7 +279,9 @@ def quote_url_path(url: str) -> str:
 
 def url_problem(url: str) -> Optional[str]:
     """Why ``url`` may not be fetched, or None. https only, to the source hosts and the storage domain;
-    plain http is allowed to loopback only (the tests)."""
+    plain http is allowed to loopback only (the tests). The URL must already be percent-encoded."""
+    if any(ch <= " " or ch == "\x7f" for ch in url):
+        return f"the URL has a space or a control character; it must be percent-encoded: {url!r}"
     parts = urllib.parse.urlsplit(url)
     host = (parts.hostname or "").lower()
     if parts.scheme == "http" and host in LOOPBACK_HOSTS:

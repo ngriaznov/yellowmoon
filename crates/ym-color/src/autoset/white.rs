@@ -54,9 +54,9 @@ fn smoothstep(x: f64) -> f64 {
 
 /// The `(cct_k, duv)` of the user white for a scene light (`docs/18` §5).
 ///
-/// `cct_k` and `duv` are the scene light's own readout (its `SceneLight::cct_k` and `duv`); `key_bv` the brightness of
-/// the scene (`Features::values[0]` when the settings' Bv is known, `None` otherwise); `strength` the `white_preference`
-/// setting, 0 to 1, which scales `1 - D` (values outside are clamped; NaN counts as 0).
+/// `cct_k` and `duv` are the scene light's own readout (its `SceneLight::cct_k` and `duv`); `key_bv` the brightness
+/// of the scene (`Features::values[0]` when the settings' Bv is known, `None` otherwise); `strength` the
+/// `white_preference` setting, 0 to 1, which scales `1 - D` (values outside are clamped; NaN counts as 0).
 ///
 /// The result is the input, unchanged, when `strength` is 0, when the light is no warmer than the reference, when
 /// `D` is 1 (the photo is neutralised as before), and when `cct_k` is not positive and finite. Otherwise only the mired

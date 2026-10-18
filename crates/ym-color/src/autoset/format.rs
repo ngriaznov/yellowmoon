@@ -127,10 +127,11 @@ fn tensor(
     shape: &[usize],
     name: &str,
 ) -> Result<(Vec<f64>, Vec<u8>), AutosetError> {
-    if t.dtype.as_deref().is_some_and(|dtype| dtype != "f32le") {
+    if let Some(dtype) = t.dtype.as_deref()
+        && dtype != "f32le"
+    {
         return Err(bad(format!(
-            "tensor {name} has dtype {:?}, expected f32le",
-            t.dtype.as_deref().unwrap_or_default()
+            "tensor {name} has dtype {dtype:?}, expected f32le"
         )));
     }
     let count = shape

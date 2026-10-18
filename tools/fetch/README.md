@@ -9,6 +9,7 @@ Scripts that download test data into `testdata/` (git-ignored) and check it agai
 | `manifest.json` | The body list, the source definitions, and (once refreshed) one entry per file with size, SHA-256 and licence |
 | `ymfetch.py` | The implementation, Python 3.8+ standard library only. The two `.sh` files are thin wrappers that run it with `python3 -I` |
 | `test_ymfetch.py` | Unit tests against a local HTTP server; no network. `python3 -I -m unittest discover -s tools/fetch -p 'test_*.py'` |
+| `autoset.sh`, `autoset/` | The autoset training set (`docs/18` section 6): CC0 Sony ARW files from raw.pixls.us and RawDB, streamed one at a time (download, verify, dump, append rows, delete) into `testdata/autoset/`. The manifest is `autoset/manifest.json`; usage and rules are in `autoset/README.md`. Unit tests: `python3 -I -m unittest discover -s tools/fetch/autoset -p 'test_*.py'` |
 | `spectral.sh` | Not part of this tool: fetches the spectral inputs (rawtoaces-data, aces-dev) for the colour scripts |
 | `synthetic.sh` | Not part of this tool: generates the synthetic golden set (physically based ARW scenes with ALEXA ground truth) into `testdata/synthetic/` — the CI-safe stand-in while the CC0 corpus is unreachable (`training/synth/`, `tools/golden synth`) |
 | `cubepp.sh` | Not part of this tool: Cube++ (CC BY 4.0) for the illuminant estimator's M1-06 gate; needs zenodo.org, unreachable from the build environment |

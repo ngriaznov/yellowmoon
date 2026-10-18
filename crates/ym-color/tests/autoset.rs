@@ -1,4 +1,5 @@
-//! AS-03, the automatic settings (`docs/18-auto-settings.md`): the feature vector (§3), the model file and the ensemble
+//! AS-03, the automatic settings (`docs/18-auto-settings.md`): the feature vector (§3), the model file and the
+//! ensemble
 //! (§4.2 and §4.3), the shrinkage (§4.4) and the preferred white (§5).
 //!
 //! The model here is hand-made: two small members whose outputs are computed by hand in the test, and refusals made by

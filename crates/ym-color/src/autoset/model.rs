@@ -12,7 +12,7 @@ use super::AutosetError;
 use super::features::{FEATURE_COUNT, FEATURE_NAMES};
 use super::format::{self, Layer};
 
-/// The clamp of a member's log-variance before the exponential (`docs/18` §4.4).
+/// The clamp of a member's log-variance before the exponential, which keeps every variance finite and positive.
 const LOGVAR_LIMIT: f64 = 20.0;
 
 /// Outputs of a member: key mean, key log-variance, contrast mean, contrast log-variance.
@@ -35,7 +35,8 @@ pub struct Prediction {
     pub key_target: f64,
     /// The variance of `key_target`: the mean of the members' variances plus the variance of their means.
     pub key_var: f64,
-    /// The contrast the model asks for, in the contrast units of the C9 stage (before the bound of [`apply`](super::apply)).
+    /// The contrast the model asks for, in the contrast units of the C9 stage (before the bound of
+    /// [`apply`](super::apply)).
     pub contrast: f64,
     /// The variance of `contrast`, by the same mixture rule.
     pub contrast_var: f64,
@@ -121,8 +122,9 @@ impl AutosetModel {
         self.members.len()
     }
 
-    /// Every member's output for the features `x`: `[key mean, key log-variance, contrast mean, contrast log-variance]`,
-    /// the raw network outputs (the log-variances are clamped only when they become variances).
+    /// Every member's output for the features `x`: `[key mean, key log-variance, contrast mean,
+    /// contrast log-variance]`, the raw network outputs (the log-variances are clamped only when they become
+    /// variances).
     #[must_use]
     pub fn member_outputs(&self, x: &[f64; FEATURE_COUNT]) -> Vec<[f64; MEMBER_OUTPUTS]> {
         let z: [f64; FEATURE_COUNT] =
