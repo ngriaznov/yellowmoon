@@ -189,8 +189,8 @@ Per member: Gaussian negative log-likelihood of each head against its label, wit
 ## 9. Later versions (not v1)
 
 - **SceneNet** (rank 4 of the research): our own 1–4 M-parameter encoder, trained from scratch on Open Images V7 CC BY images, labelled offline by Apache-2.0 VLM teachers (Qwen3-VL, InternVL3.5, Gemma 4; never Gemma 3, Llama, MobileCLIP, DINOv3), audited on 300 images by the owner ([HUMAN] AS-H3); 16 scene probabilities feed `autoset`, with per-scene professional priors. Labelling needs a GPU machine.
-- Learned preferred white (Cube++ pairs), `illum` v2 (Cube++, metadata, cross-body), HDR+ (CC BY-SA, phone DNGs: needs a DNG reader and generic matrices), Play Raw (CC BY-SA, manual inventory).
-- Stage 2: a differentiable proxy of the chain, preferences from the owner's A/B choices, a Hu-style critic on owner-approved renders.
+- Learned preferred white (Cube++ pairs), `illum` v2 (Cube++, metadata, cross-body), HDR+ (CC BY-SA, phone DNGs: needs a DNG reader and generic matrices), Play Raw raws (CC BY-SA) as inputs and test photos; the forum's edits are not training targets (the owner, 2026-10-18, `docs/16`).
+- Stage 2: the owner as teacher. Pick-the-best sessions (several renders of each photo, the owner picks one) and the owner's A/B choices become preferences, through a differentiable proxy of the chain and a Hu-style critic on owner-approved renders (rewritten from the MIT code and trained on clean inputs; Hu's released weights and MIT-Adobe FiveK stay out, `docs/14` rule 5).
 
 ## 10. Tasks
 
