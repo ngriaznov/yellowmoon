@@ -361,7 +361,7 @@ pub struct ContrastValue {
 
 /// `contrast`: Auto (the photo's bounded per-photo contrast from `autoset`, `docs/18` section 4.4) or a manual value
 /// from -100 to 100. JSON: `{ "kind": "auto" }` or `{ "kind": "manual", "value": 12 }`; an older document may give a
-/// plain number, read by [`contrast_document`].
+/// plain number, which reads as Manual with that value, except 0, which reads as Auto (0 was the default).
 pub type ContrastSetting = AutoOr<ContrastValue>;
 
 impl ContrastSetting {
@@ -877,7 +877,7 @@ pub struct DevelopSettings {
     pub exposure: ExposureSetting,
     /// Light › Exposure › Contrast and Look › Tone: Auto (the photo's bounded contrast from `autoset`, `docs/18`
     /// section 4.4) or a manual value, -100 to 100. Auto is the default. A plain number in an older document reads as
-    /// Manual with that value, and 0 as Auto ([`contrast_document`]).
+    /// Manual with that value, and 0 as Auto.
     #[serde(deserialize_with = "contrast_document")]
     pub contrast: ContrastSetting,
     /// -100 to 100.
@@ -1533,7 +1533,7 @@ pub struct SettingsPatch {
     /// New exposure (Manual to set it, Auto to reset it).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exposure: Option<ExposureSetting>,
-    /// New contrast: Auto, or Manual with its value. A plain number is read as [`contrast_document`] reads it.
+    /// New contrast: Auto, or Manual with its value. A plain number reads as Manual with that value, and 0 as Auto.
     #[serde(
         default,
         deserialize_with = "contrast_patch",
