@@ -386,6 +386,14 @@ const HARDWARE: TailBounds = TailBounds {
 fn the_tail_writes_the_cpu_pixels_in_every_format() {
     let Some(gpu) = gpu() else { return };
     let shot = Shot::new();
+    // The software and Metal bounds below were measured on this shot with the Auto white fully neutral. Since pipeline
+    // 0.5.0 the default keeps part of a 4500 K light's warmth (`docs/18` section 5), which moves the sharpening
+    // limiter's rank flips; the preferred white is part of the C1 to C6 matrix both paths take from the CPU, so the
+    // tail's parity is tested as before with it off.
+    shot.edit(SettingsPatch {
+        white_preference: Some(0.0),
+        ..SettingsPatch::default()
+    });
     let home = tempfile::tempdir().expect("home");
     let raw_only = context(home.path(), renderer(Some(Arc::clone(&gpu)), RAW, false));
     let with_tail = context(

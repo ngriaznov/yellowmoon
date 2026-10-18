@@ -448,16 +448,8 @@ fn flags_become_settings_and_the_exposure_offset_is_relative_to_each_photos_auto
         assert_eq!(s["rolloff"], json!({ "highlights": 0.3, "low_light": 0.7 }));
         assert_eq!(o["look"]["intensity"], 80);
     }
-    // Auto exposure is the camera's gain whatever the photo (docs/02, interim rule of 2026-10-14), so the two photos
-    // have one automatic exposure and the offset lands on one number: the offset is relative to it, not absolute.
-    let evs: Vec<f64> = objects
-        .iter()
-        .map(|o| o["settings"]["exposure"]["ev"].as_f64().expect("ev"))
-        .collect();
-    let want = ym_color::exposure::CAMERA_GAIN_EV - 0.5;
-    for ev in &evs {
-        assert!((ev - want).abs() < 1e-9, "{evs:?}, want {want}");
-    }
+    // Since pipeline 0.5.0 each photo has its own automatic exposure (`docs/18`), so the offset lands on a number of
+    // its own for each: the loop above checks it against the photo's own `auto.exposure_ev`.
 }
 
 #[test]
@@ -505,8 +497,15 @@ fn the_remaining_flags_of_docs_10_reach_the_settings_of_the_file() {
     for key in ["highlights", "black", "saturation"] {
         assert_eq!(s[key], 0.0, "{key}");
     }
-    // Contrast is Auto, and the record writes it as the number it resolved to (as it does the exposure).
-    assert_eq!(s["contrast"], json!({ "kind": "manual", "value": 0.0 }));
+    // Contrast is Auto, and the record writes it as the number it resolved to (as it does the exposure): the photo's
+    // own automatic contrast (`docs/18` section 4.4).
+    let auto_contrast = objects[0]["auto"]["contrast"]
+        .as_f64()
+        .expect("auto contrast");
+    assert_eq!(
+        s["contrast"],
+        json!({ "kind": "manual", "value": auto_contrast })
+    );
 }
 
 #[test]
@@ -600,9 +599,14 @@ fn a_settings_object_keyed_by_file_name_gives_each_photo_its_own() {
         -40.0,
         "names match without regard to case"
     );
+    let auto_c = objects
+        .iter()
+        .find(|o| o["input"].as_str().is_some_and(|i| i.ends_with("c.ARW")))
+        .and_then(|o| o["auto"]["contrast"].as_f64())
+        .expect("c.ARW auto contrast");
     assert_eq!(
         contrast("c.ARW"),
-        0.0,
+        auto_c,
         "a photo with no entry is developed automatically"
     );
 }

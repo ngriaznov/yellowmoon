@@ -268,17 +268,33 @@ fn the_before_view_of_a_neutral_field_is_the_camera_default_of_the_as_shot_signa
 
 #[test]
 fn a_neutral_field_renders_neutral_under_any_light_with_a_right_as_shot_balance() {
+    // With the preferred white off (`white_preference` 0) the Auto white neutralises any light. At the default a warm
+    // light keeps part of its warmth (`docs/18` section 5) and daylight stays neutral.
     for cct in [3000.0, 4200.0, 5500.0, 7500.0] {
         let scene = Scene::new(400, 300, light(PROFILE, cct), Layout::Uniform, 0.3);
         let d = Developed::new(&scene, MODEL);
         let r = Renderer::neutral_only().expect("render thread");
-        let f = render(&r, &d.source(), &state(200.0, 150.0));
+        let mut src = d.source();
+        src.settings.white_preference = 0.0;
+        let f = render(&r, &src, &state(200.0, 150.0));
         let m = centre(&f);
         assert!(
             (m[0] - m[1]).abs() < 1.5 && (m[2] - m[1]).abs() < 1.5,
             "{cct} K: {m:?}"
         );
         assert!(m[1] > 20.0 && m[1] < 235.0, "{cct} K: {m:?}");
+        let warm = centre(&render(&r, &d.source(), &state(200.0, 150.0)));
+        if cct < 4000.0 {
+            assert!(
+                warm[0] - warm[2] > 5.0,
+                "{cct} K keeps warmth at the default: {warm:?}"
+            );
+        } else if cct >= 5500.0 {
+            assert!(
+                (warm[0] - warm[1]).abs() < 1.5 && (warm[2] - warm[1]).abs() < 1.5,
+                "{cct} K stays neutral at the default: {warm:?}"
+            );
+        }
     }
 }
 

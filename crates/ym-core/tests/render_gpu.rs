@@ -186,7 +186,13 @@ fn gpu_and_cpu_frames_agree_within_the_parity_tolerance() {
 fn scene() -> PhotoSource {
     let white = light("sony-ilce-7rm4", 4500.0);
     let scene = Scene::new(1300, 900, white, Layout::Patchwork, 0.5).noise(2e-4, 2e-6);
-    Developed::new(&scene, MODEL).source()
+    let mut src = Developed::new(&scene, MODEL).source();
+    // The bounds below were measured on this scene with the Auto white fully neutral; since pipeline 0.5.0 the default
+    // keeps part of a 4500 K light's warmth (`docs/18` section 5), which moves the output sharpening's rank flips. The
+    // preferred white only changes the C1 to C6 matrix, which both paths take from the CPU, so the parity it tests
+    // is the same with it off.
+    src.settings.white_preference = 0.0;
+    src
 }
 
 fn renderer_with(
