@@ -30,8 +30,8 @@ import page  # noqa: E402
 import plan as planlib  # noqa: E402
 import score as scorelib  # noqa: E402
 
-#: Names that must appear nowhere in the page or in plan.js: the variants and their sources.
-FORBIDDEN_NAMES = ("autoset", "lightroom", "camera", "neutral", "preference")
+#: Names that must appear nowhere in the page or in plan.js: the variants and the preferred white's name.
+FORBIDDEN_NAMES = ("autoset", "camera", "rule", "preference")
 #: Ordinary words that must not appear in the visible markup (the CSS keyword `auto` is not visible text).
 FORBIDDEN_VISIBLE_WORDS = (r"\brule\b", r"\bauto\b", r"\bwhite\b")
 
@@ -102,11 +102,6 @@ def camera_bytes(stem: str) -> bytes:
     return b"\xff\xd8\xff\xe0camera of " + stem.encode() + b"\xff\xd9"
 
 
-def lightroom_bytes(stem: str) -> bytes:
-    """The JPEG of a Lightroom export for a photo."""
-    return b"\xff\xd8\xff\xe0lightroom of " + stem.encode() + b"\xff\xd9"
-
-
 def write_arw(path: Path, jpeg: Optional[bytes]) -> None:
     """A fake ARW: a header line with the embedded JPEG's offset (256) and length, then the JPEG, then some raw bytes.
     With `jpeg` None the header has no preview."""
@@ -130,34 +125,25 @@ def read_log(path: Path) -> List[Dict[str, object]]:
 
 
 def variant_of_call(call: Dict[str, object]) -> str:
-    """Which variant a logged `render` call made, from its flags."""
+    """Which variant a logged `render` call made: the rule carries the rule's flags, autoset none."""
     args = call["args"]  # type: ignore[index]
     if "--contrast" in args:  # type: ignore[operator]
         return "rule"
-    if "--white-preference" in args:  # type: ignore[operator]
-        return "autoset-neutral"
     return "autoset"
 
 
 class PlanTests(unittest.TestCase):
-    """The photos, the strata, the Lightroom matches and the trial plan."""
+    """The photos, the strata and the trial plan."""
 
     def setUp(self) -> None:
         self.root = Path(tempfile.mkdtemp(prefix="ab-plan-"))
         self.addCleanup(shutil.rmtree, self.root, True)
 
-    def photo_list(self, count: int, lightroom_every: int = 2) -> List[planlib.PlanPhoto]:
+    def photo_list(self, count: int) -> List[planlib.PlanPhoto]:
         photos = []
         for number in range(1, count + 1):
             stratum = ("portrait", "landscape", "night", "other")[number % 4]
-            photos.append(
-                planlib.PlanPhoto(
-                    number=number,
-                    stem=f"DSC{number:05d}",
-                    stratum=stratum,
-                    lightroom=number % lightroom_every == 0,
-                )
-            )
+            photos.append(planlib.PlanPhoto(number=number, stem=f"DSC{number:05d}", stratum=stratum))
         return photos
 
     def test_find_photos_takes_strata_from_folders_and_skips_hidden_files(self) -> None:
@@ -180,24 +166,6 @@ class PlanTests(unittest.TestCase):
             [("night", "c"), ("other", "top"), ("portrait", "a"), ("portrait", "b")],
         )
 
-    def test_lightroom_matches_by_stem_ignoring_case_and_skips_shared_stems(self) -> None:
-        raw = [
-            planlib.Photo("DSC0001", "portrait", self.root / "DSC0001.ARW"),
-            planlib.Photo("dsc0002", "portrait", self.root / "dsc0002.ARW"),
-            planlib.Photo("DSC0003", "night", self.root / "night" / "DSC0003.ARW"),
-            planlib.Photo("DSC0003", "other", self.root / "DSC0003.ARW"),
-            planlib.Photo("DSC0004", "other", self.root / "DSC0004.ARW"),
-        ]
-        export = self.root / "export"
-        export.mkdir()
-        for name in ("dsc0001.JPG", "DSC0002.jpeg", "DSC0003.jpg", "DSC0004.png", "._DSC0004.jpg"):
-            (export / name).write_bytes(b"\xff\xd8")
-        matches, notes = planlib.match_lightroom(raw, export)
-        self.assertEqual(set(matches), {0, 1})
-        self.assertEqual(matches[0].name, "dsc0001.JPG")
-        self.assertEqual(matches[1].name, "DSC0002.jpeg")
-        self.assertTrue(any("DSC0003" in note for note in notes))
-
     def test_the_plan_is_deterministic_for_a_seed(self) -> None:
         photos = self.photo_list(40)
         first = planlib.build_trials(photos, 7)
@@ -206,16 +174,20 @@ class PlanTests(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertNotEqual(first, other)
 
-    def test_every_photo_gets_its_comparisons_and_lightroom_only_when_matched(self) -> None:
-        photos = self.photo_list(12, lightroom_every=3)
-        trials = planlib.build_trials(photos, 1)
+    def test_every_photo_has_exactly_two_trials_one_per_comparison(self) -> None:
+        photos = self.photo_list(12)
+        plan = planlib.build_plan(photos, 1, {"ym": "ym"})
+        self.assertEqual(len(plan["trials"]), 2 * len(photos))  # type: ignore[arg-type]
         for photo in photos:
-            names = sorted(t.comparison for t in trials if t.number == photo.number)
-            expected = ["camera", "neutral", "rule"] + (["lightroom"] if photo.lightroom else [])
-            self.assertEqual(names, sorted(expected), f"photo {photo.number}")
+            mine = [t for t in plan["trials"] if t["number"] == photo.number]  # type: ignore[union-attr]
+            names = sorted(t["comparison"] for t in mine)
+            self.assertEqual(names, sorted(planlib.COMPARISONS), f"photo {photo.number}")
+            for trial in mine:
+                other = planlib.COMPARISONS[trial["comparison"]]
+                self.assertEqual({trial["left"], trial["right"]}, {"autoset", other})
 
     def test_sides_are_balanced_within_each_comparison(self) -> None:
-        photos = self.photo_list(301, lightroom_every=2)
+        photos = self.photo_list(301)
         trials = planlib.build_trials(photos, 3)
         for name in planlib.COMPARISONS:
             group = [t for t in trials if t.comparison == name]
@@ -226,7 +198,7 @@ class PlanTests(unittest.TestCase):
 
     def test_the_odd_trial_of_a_comparison_goes_either_side(self) -> None:
         # One photo gives one trial per comparison, an odd count: over many seeds the trial should land on each side.
-        photos = self.photo_list(1, lightroom_every=99)
+        photos = self.photo_list(1)
         left_is_autoset = 0
         for seed in range(100):
             for trial in planlib.build_trials(photos, seed):
@@ -249,20 +221,25 @@ class PlanTests(unittest.TestCase):
         self.assertEqual(first["plan_id"], same["plan_id"])
         self.assertNotEqual(first["plan_id"], later["plan_id"])
 
-    def test_picture_paths_hide_the_variant_names(self) -> None:
-        photos = self.photo_list(8, lightroom_every=2)
+    def test_no_picture_path_in_the_plan_contains_a_variant_name(self) -> None:
+        photos = self.photo_list(8)
         plan = planlib.build_plan(photos, 9, {"ym": "ym"})
         pattern = re.compile(r"^pictures/[0-9a-f]{8}/\d{4}_DSC\d{5}\.jpg$")
+        paths: List[str] = []
         for entry in plan["photos"]:
-            for path in entry["pictures"].values():
-                self.assertRegex(path, pattern)
-                for word in ("autoset", "rule", "camera", "lightroom", "neutral"):
-                    self.assertNotIn(word, path.lower())
+            paths.extend(entry["pictures"].values())
+        for trial in plan["trials"]:
+            paths.extend(trial["pictures"].values())
+        self.assertEqual(len(paths), len(planlib.VARIANTS) * len(photos) + 2 * len(plan["trials"]))
+        for path in paths:
+            self.assertRegex(path, pattern)
+            for word in planlib.VARIANTS:
+                self.assertNotIn(word, path.lower())
         self.assertEqual(len({v["code"] for v in plan["variants"].values()}), len(plan["variants"]))
 
 
 class PrepareHarness(unittest.TestCase):
-    """A small test set (five raw files in four strata, two with Lightroom exports) rendered through the fake `ym`."""
+    """A small test set (five raw files in four strata) rendered through the fake `ym`."""
 
     def setUp(self) -> None:
         self.root = Path(tempfile.mkdtemp(prefix="ab-prepare-"))
@@ -279,8 +256,6 @@ class PrepareHarness(unittest.TestCase):
         (self.data / "cameras").mkdir()
         (self.data / "cameras" / "profile.json").write_text("{}")
         self.photos = self.root / "photos"
-        self.lightroom = self.root / "lightroom"
-        self.lightroom.mkdir()
         self.scratch = self.root / "scratch"
         self.scratch.mkdir()
         self.log = self.root / "ym.log"
@@ -293,8 +268,6 @@ class PrepareHarness(unittest.TestCase):
             ("portrait/P1.arw", "P1"),
         ):
             write_arw(self.photos / relpath, camera_bytes(stem))
-        (self.lightroom / "L1.jpg").write_bytes(lightroom_bytes("L1"))
-        (self.lightroom / "p1.JPEG").write_bytes(lightroom_bytes("P1"))
         env = mock.patch.dict(os.environ, {"FAKE_YM_LOG": str(self.log)})
         env.start()
         self.addCleanup(env.stop)
@@ -306,7 +279,6 @@ class PrepareHarness(unittest.TestCase):
         base: Dict[str, object] = {
             "photos": self.photos,
             "out": self.out,
-            "lightroom": self.lightroom,
             "long_edge": 900,
             "seed": planlib.DEFAULT_SEED,
             "ym": self.ym,
@@ -332,6 +304,7 @@ class PrepareTests(PrepareHarness):
         self.prepare()
         calls = [c for c in read_log(self.log) if c["cmd"] == "render"]
         self.assertTrue(calls)
+        variants_by_stem: Dict[str, List[str]] = {}
         for call in calls:
             args = call["args"]
             for flag in ("--cpu", "--quiet", "--json", "--overwrite"):
@@ -341,21 +314,20 @@ class PrepareTests(PrepareHarness):
             self.assertEqual(args[args.index("--long-edge") + 1], "900")
             self.assertTrue(call["home_empty"], "each render gets an empty YELLOWMOON_HOME")
             variant = variant_of_call(call)
+            variants_by_stem.setdefault(str(call["stem"]), []).append(variant)
             if variant == "rule":
                 self.assertEqual(args[args.index("--white-preference") + 1], "0")
                 self.assertEqual(args[args.index("--contrast") + 1], "0")
                 self.assertFalse(call["model"], "the rule runs without models/autoset")
                 self.assertNotEqual(call["data"], str(self.data))
-            elif variant == "autoset-neutral":
-                self.assertEqual(args[args.index("--white-preference") + 1], "0")
-                self.assertNotIn("--contrast", args)
-                self.assertTrue(call["model"])
-                self.assertEqual(call["data"], str(self.data))
             else:
                 self.assertNotIn("--white-preference", args)
                 self.assertNotIn("--contrast", args)
                 self.assertTrue(call["model"])
                 self.assertEqual(call["data"], str(self.data))
+        self.assertEqual(sorted(variants_by_stem), ["L1", "L2", "N1", "P1", "T1"])
+        for stem, variants in variants_by_stem.items():
+            self.assertEqual(sorted(variants), ["autoset", "rule"], f"{stem}: two renders, and no camera render")
 
     def test_the_rule_copy_is_deleted_and_the_shipped_data_is_untouched(self) -> None:
         rule_calls = [c for c in self.prepare_then_log() if c["cmd"] == "render" and variant_of_call(c) == "rule"]
@@ -374,23 +346,12 @@ class PrepareTests(PrepareHarness):
         self.prepare()
         self.assertEqual(self.raw_hashes(), before)
 
-    def test_camera_and_lightroom_pictures_are_byte_copies(self) -> None:
+    def test_camera_pictures_are_byte_copies_of_the_embedded_jpeg(self) -> None:
         result = self.prepare()
+        self.assertTrue(result.plan["photos"])  # type: ignore[index]
         for entry in result.plan["photos"]:  # type: ignore[index]
-            stem = entry["stem"]
             camera = self.out / entry["pictures"]["camera"]
-            self.assertEqual(camera.read_bytes(), camera_bytes(stem))
-            if entry["lightroom"]:
-                lightroom = self.out / entry["pictures"]["lightroom"]
-                self.assertEqual(lightroom.read_bytes(), lightroom_bytes(stem))
-            else:
-                self.assertNotIn("lightroom", entry["pictures"])
-
-    def test_only_matched_photos_have_lightroom_comparisons(self) -> None:
-        result = self.prepare()
-        lightroom_stems = {t["stem"] for t in result.plan["trials"] if t["comparison"] == "lightroom"}  # type: ignore[index]
-        self.assertEqual(lightroom_stems, {"L1", "P1"})
-        self.assertEqual(result.lightroom_matched, 2)
+            self.assertEqual(camera.read_bytes(), camera_bytes(entry["stem"]))
 
     def test_a_failing_render_drops_the_photo_from_every_trial(self) -> None:
         with mock.patch.dict(os.environ, {"FAKE_YM_FAIL": "P1"}):
@@ -401,7 +362,8 @@ class PrepareTests(PrepareHarness):
         self.assertEqual([s["stem"] for s in result.skipped], ["P1"])
         problems = result.skipped[0]["problems"]
         self.assertIn("fake failure for P1", problems[0]["reason"])  # type: ignore[index]
-        self.assertEqual(len(plan["trials"]), 4 + 4 + 1 + 4)  # type: ignore[arg-type,index]
+        self.assertEqual(len(plan["photos"]), 4)  # type: ignore[arg-type]
+        self.assertEqual(len(plan["trials"]), 2 * 4)  # type: ignore[arg-type]
 
     def test_a_photo_without_an_embedded_jpeg_is_skipped(self) -> None:
         write_arw(self.photos / "landscape" / "L2.ARW", None)
@@ -409,12 +371,6 @@ class PrepareTests(PrepareHarness):
         skipped = {s["stem"]: s for s in result.skipped}
         self.assertIn("L2", skipped)
         self.assertIn("embedded JPEG", skipped["L2"]["problems"][0]["reason"])  # type: ignore[index]
-
-    def test_a_lightroom_file_that_is_not_a_jpeg_drops_its_photo(self) -> None:
-        (self.lightroom / "L1.jpg").write_bytes(b"not a jpeg")
-        result = self.prepare()
-        self.assertIn("L1", {s["stem"] for s in result.skipped})
-        self.assertNotIn("L1", {t["stem"] for t in result.plan["trials"]})  # type: ignore[index]
 
     def test_the_number_of_jobs_does_not_change_the_plan(self) -> None:
         one = self.prepare(jobs=1, out=self.root / "out-one")
@@ -443,6 +399,17 @@ class PrepareTests(PrepareHarness):
             for side in ("left", "right"):
                 self.assertTrue((self.out / trial["pictures"][side]).is_file())
 
+    def test_the_files_the_page_loads_have_no_variant_name_in_their_paths(self) -> None:
+        self.prepare()
+        served = [path.relative_to(self.out).as_posix() for path in self.out.rglob("*") if path.is_file()]
+        served = [rel for rel in served if rel != "plan.json"]  # the key: the only file that names the variants
+        self.assertIn("index.html", served)
+        self.assertIn("plan.js", served)
+        self.assertEqual(len([rel for rel in served if rel.startswith("pictures/")]), len(planlib.VARIANTS) * 5)
+        for rel in served:
+            for word in planlib.VARIANTS:
+                self.assertNotIn(word, rel.lower(), rel)
+
     def test_an_interrupt_removes_the_temporary_copy_of_the_data_folder(self) -> None:
         with mock.patch.object(ab, "make_pictures", side_effect=KeyboardInterrupt):
             with self.assertRaises(KeyboardInterrupt):
@@ -466,13 +433,15 @@ class CommandLineTests(PrepareHarness):
 
     def test_prepare_writes_the_summary_and_exits_zero(self) -> None:
         code, text = self.run_main(
-            ["prepare", str(self.photos), "--out", str(self.out), "--lightroom", str(self.lightroom),
-             "--ym", str(self.ym), "--data", str(self.data), "--jobs", "2", "--long-edge", "900"]
+            ["prepare", str(self.photos), "--out", str(self.out), "--ym", str(self.ym), "--data", str(self.data),
+             "--jobs", "2", "--long-edge", "900"]
         )
         self.assertEqual(code, 0)
         self.assertIn("photos: 5 found, 5 in the test", text)
+        self.assertIn("trials: 10 (rule 5, camera 5)", text)
         self.assertIn("open ", text)
         self.assertIn(str(self.out.resolve() / "index.html"), text)
+        self.assertNotIn("Lightroom", text)
 
     def test_usage_errors_exit_two(self) -> None:
         empty = self.root / "no-raw-files"
@@ -482,7 +451,6 @@ class CommandLineTests(PrepareHarness):
             ["prepare", str(self.root / "missing")],
             ["prepare", str(self.photos), "--ym", str(self.root / "no-such-ym")],
             ["prepare", str(self.photos), "--ym", str(self.ym), "--data", str(self.root / "empty")],
-            ["prepare", str(self.photos), "--ym", str(self.ym), "--data", str(self.data), "--lightroom", "/no/such"],
             ["prepare", str(empty), "--ym", str(self.ym), "--data", str(self.data)],
             ["score", str(self.root / "missing.json")],
         ]
@@ -539,7 +507,7 @@ class PageTests(unittest.TestCase):
             self.assertIsNone(re.search(pattern, visible), pattern)
 
     def test_plan_js_names_no_variant_and_carries_the_trials(self) -> None:
-        photos = [planlib.PlanPhoto(number=1, stem="DSC1", stratum="other", lightroom=True)]
+        photos = [planlib.PlanPhoto(number=1, stem="DSC1", stratum="other")]
         plan = planlib.build_plan(photos, 1, {"ym": "ym"})
         text = page.plan_js(plan).lower()
         self.assertIn("window.ym_ab_plan = {", text)
@@ -592,19 +560,21 @@ class ScoreTests(unittest.TestCase):
         self.assertAlmostEqual(tally.share, 0.625)
         self.assertAlmostEqual(tally.lower, scorelib.wilson_lower(2, 3))
 
-    def test_all_gates_pass_on_a_clear_result(self) -> None:
+    def test_both_gates_pass_on_a_clear_result(self) -> None:
         plan, results = make_case(
             [
                 ("rule", "portrait", 70, 20, 10, 1, 5),
                 ("camera", "portrait", 70, 20, 10, 1, 5),
-                ("lightroom", "portrait", 70, 20, 10, 1, 5),
-                ("neutral", "portrait", 40, 60, 0, 0, 0),
             ]
         )
         report = score_answers(plan, results)
+        self.assertEqual(sorted(report["comparisons"]), ["camera", "rule"])  # type: ignore[arg-type]
         self.assertEqual(report["comparisons"]["rule"]["verdict"], "PASS")  # type: ignore[index]
-        self.assertEqual(report["comparisons"]["neutral"]["verdict"], "reported")  # type: ignore[index]
+        self.assertEqual(report["comparisons"]["camera"]["verdict"], "PASS")  # type: ignore[index]
         self.assertEqual(report["gate"]["verdict"], "PASS")  # type: ignore[index]
+        text = scorelib.format_report(report)
+        self.assertIn("Gate 5 (docs/18 section 8): PASS", text)
+        self.assertNotIn("Lightroom", text)
 
     def test_a_pooled_share_below_sixty_percent_fails(self) -> None:
         plan, results = make_case([("rule", "portrait", 55, 40, 5, 0, 0)])
@@ -645,7 +615,6 @@ class ScoreTests(unittest.TestCase):
                 ("rule", "a", 100, 0, 0, 0, 0),
                 ("rule", "b", 45, 55, 0, 0, 0),
                 ("camera", "a", 60, 40, 0, 0, 0),
-                ("lightroom", "a", 60, 40, 0, 0, 0),
             ]
         )
         report = score_answers(plan, results)
@@ -654,31 +623,23 @@ class ScoreTests(unittest.TestCase):
         self.assertEqual(report["comparisons"]["camera"]["verdict"], "PASS")  # type: ignore[index]
         self.assertEqual(report["gate"]["verdict"], "PASS")  # type: ignore[index]
 
-    def test_a_missing_lightroom_comparison_leaves_the_gate_undecided(self) -> None:
+    def test_a_comparison_with_no_answers_yet_leaves_the_gate_undecided(self) -> None:
         plan, results = make_case(
             [("rule", "a", 70, 20, 10, 0, 0), ("camera", "a", 70, 20, 10, 0, 0)]
         )
-        report = score_answers(plan, results)
-        self.assertEqual(report["comparisons"]["lightroom"]["verdict"], "NOT RUN")  # type: ignore[index]
+        report = score_answers(plan, drop_answers(plan, results, "camera"))
+        self.assertEqual(report["comparisons"]["camera"]["verdict"], "NOT RUN")  # type: ignore[index]
+        self.assertEqual(report["comparisons"]["rule"]["verdict"], "PASS")  # type: ignore[index]
         self.assertEqual(report["gate"]["verdict"], "NOT DECIDED")  # type: ignore[index]
-        self.assertTrue(report["complete"], "every planned trial is answered; the Lightroom set is simply absent")
+        self.assertFalse(report["complete"])
+        self.assertIn("Gate 5 (docs/18 section 8): NOT DECIDED (provisional)", scorelib.format_report(report))
 
-    def test_a_failure_outranks_a_missing_comparison(self) -> None:
-        plan, results = make_case([("rule", "a", 10, 90, 0, 0, 0)])
-        self.assertEqual(score_answers(plan, results)["gate"]["verdict"], "FAIL")  # type: ignore[index]
-
-    def test_the_neutral_comparison_is_reported_not_gated(self) -> None:
+    def test_a_failure_outranks_an_unanswered_comparison(self) -> None:
         plan, results = make_case(
-            [
-                ("rule", "a", 70, 20, 10, 0, 0),
-                ("camera", "a", 70, 20, 10, 0, 0),
-                ("lightroom", "a", 70, 20, 10, 0, 0),
-                ("neutral", "a", 0, 100, 0, 0, 0),
-            ]
+            [("rule", "a", 10, 90, 0, 0, 0), ("camera", "a", 70, 20, 10, 0, 0)]
         )
-        report = score_answers(plan, results)
-        self.assertEqual(report["comparisons"]["neutral"]["verdict"], "reported")  # type: ignore[index]
-        self.assertEqual(report["gate"]["verdict"], "PASS")  # type: ignore[index]
+        report = score_answers(plan, drop_answers(plan, results, "camera"))
+        self.assertEqual(report["gate"]["verdict"], "FAIL")  # type: ignore[index]
 
     def test_results_of_another_plan_are_refused(self) -> None:
         plan, results = make_case([("rule", "a", 1, 0, 0, 0, 0)])
@@ -701,8 +662,7 @@ class ScoreTests(unittest.TestCase):
                 scorelib.trial_answers(plan, bad)
 
     def test_score_finds_the_plan_next_to_the_results_and_writes_score_json(self) -> None:
-        plan, results = make_case([("rule", "a", 70, 20, 10, 0, 0), ("camera", "a", 70, 20, 10, 0, 0),
-                                   ("lightroom", "a", 70, 20, 10, 0, 0)])
+        plan, results = make_case([("rule", "a", 70, 20, 10, 0, 0), ("camera", "a", 70, 20, 10, 0, 0)])
         folder = Path(tempfile.mkdtemp(prefix="ab-score-"))
         self.addCleanup(shutil.rmtree, folder, True)
         (folder / "plan.json").write_text(json.dumps(plan), encoding="utf-8")
@@ -773,6 +733,13 @@ def make_case(spec: Sequence[Tuple[str, str, int, int, int, int, int]]) -> Tuple
         "answers": answers,
     }
     return plan, results
+
+
+def drop_answers(plan: Dict[str, object], results: Dict[str, object], comparison: str) -> Dict[str, object]:
+    """The results without the answers to the trials of one comparison, as an export made before they are answered."""
+    ids = {trial["id"] for trial in plan["trials"] if trial["comparison"] == comparison}  # type: ignore[index]
+    answers = [row for row in results["answers"] if row["trial"] not in ids]  # type: ignore[index]
+    return {**results, "answers": answers}
 
 
 def score_answers(plan: Dict[str, object], results: Dict[str, object]) -> Dict[str, object]:

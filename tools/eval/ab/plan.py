@@ -11,7 +11,6 @@ import json
 import os
 import random
 import re
-from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Mapping, Sequence, Tuple
@@ -20,19 +19,16 @@ DEFAULT_SEED = 20261018
 OTHER_STRATUM = "other"
 PLAN_FORMAT = "yellowmoon-ab-plan"
 #: Every picture the plan can show. `autoset` is the picture under test; the others are what it is compared with.
-VARIANTS: Tuple[str, ...] = ("autoset", "rule", "camera", "lightroom", "autoset-neutral")
+VARIANTS: Tuple[str, ...] = ("autoset", "rule", "camera")
 #: Comparison key (used in plan and score files) -> the variant that `autoset` is compared with.
 COMPARISONS: Mapping[str, str] = {
     "rule": "rule",
     "camera": "camera",
-    "lightroom": "lightroom",
-    "neutral": "autoset-neutral",
 }
-#: The comparisons that decide gate 5. The neutral comparison is reported only.
-GATED: Tuple[str, ...] = ("rule", "camera", "lightroom")
+#: The comparisons that decide gate 5.
+GATED: Tuple[str, ...] = ("rule", "camera")
 #: The folder under the out folder that holds the pictures; one subfolder per variant, named by its code.
 PICTURES_DIR = "pictures"
-JPEG_SUFFIXES = (".jpg", ".jpeg")
 _UNSAFE_IN_NAME = re.compile(r"[^A-Za-z0-9_.-]")
 
 
@@ -47,12 +43,11 @@ class Photo:
 
 @dataclass(frozen=True)
 class PlanPhoto:
-    """A photo that is in the test: its number (names its pictures), stem, stratum and Lightroom match."""
+    """A photo that is in the test: its number (names its pictures), stem and stratum."""
 
     number: int
     stem: str
     stratum: str
-    lightroom: bool
 
 
 @dataclass(frozen=True)
@@ -88,36 +83,6 @@ def find_photos(folder: Path) -> List[Photo]:
     return sorted(found, key=lambda photo: (photo.stratum, photo.stem.lower(), str(photo.path)))
 
 
-def match_lightroom(photos: Sequence[Photo], folder: Path) -> Tuple[Dict[int, Path], List[str]]:
-    """The Lightroom export of each photo, matched by file stem (case-insensitive) in the top level of `folder`.
-
-    Returns a map from the photo's index in `photos` to its JPEG, and notes for the summary. A stem that more than
-    one raw file has is not matched: the export could belong to either of them.
-    """
-    exports: Dict[str, List[Path]] = {}
-    for name in sorted(os.listdir(folder)):
-        path = folder / name
-        stem, ext = os.path.splitext(name)
-        if name.startswith(".") or ext.lower() not in JPEG_SUFFIXES or not path.is_file():
-            continue
-        exports.setdefault(stem.lower(), []).append(path)
-    raw_counts = Counter(photo.stem.lower() for photo in photos)
-    matches: Dict[int, Path] = {}
-    notes: List[str] = []
-    for index, photo in enumerate(photos):
-        key = photo.stem.lower()
-        candidates = exports.get(key)
-        if not candidates:
-            continue
-        if raw_counts[key] > 1:
-            notes.append(f"{photo.stem}: more than one raw file has this name, so it has no Lightroom match")
-            continue
-        if len(candidates) > 1:
-            notes.append(f"{photo.stem}: {len(candidates)} JPEGs have this name, {candidates[0].name} is used")
-        matches[index] = candidates[0]
-    return matches, notes
-
-
 def variant_code(seed: int, variant: str) -> str:
     """The folder code of a variant. It keeps the variant names out of the page's paths; it is not a secret."""
     return hashlib.sha256(f"yellowmoon-ab/{seed}/{variant}".encode()).hexdigest()[:8]
@@ -134,32 +99,22 @@ def picture_relpath(seed: int, variant: str, number: int, stem: str) -> str:
     return f"{PICTURES_DIR}/{variant_code(seed, variant)}/{picture_name(number, stem)}.jpg"
 
 
-def comparisons_of(photo: PlanPhoto) -> List[str]:
-    """The comparisons a photo takes part in: Lightroom only when the photo has a Lightroom export."""
-    return [name for name in COMPARISONS if name != "lightroom" or photo.lightroom]
-
-
 def build_trials(photos: Sequence[PlanPhoto], seed: int) -> List[Trial]:
-    """Every comparison of every photo, shuffled, with the sides chosen at random.
+    """Every comparison of every photo (two trials per photo), shuffled, with the sides chosen at random.
 
     Within each comparison the sides are balanced exactly (half the trials have `autoset` on the left, to within one
     when the count is odd) and then shuffled, so no comparison has a side bias. The trial ids are 1, 2, ... in the order
     shown. Everything is drawn from one `random.Random(seed)`, so the same photos and seed give the same plan.
     """
     rng = random.Random(seed)
-    by_comparison: Dict[str, List[PlanPhoto]] = {name: [] for name in COMPARISONS}
-    for photo in photos:
-        for name in comparisons_of(photo):
-            by_comparison[name].append(photo)
     drafts: List[Tuple[PlanPhoto, str, str, str]] = []
     for name, variant in COMPARISONS.items():
-        items = by_comparison[name]
-        left_count = len(items) // 2
-        if len(items) % 2 and rng.random() < 0.5:
+        left_count = len(photos) // 2
+        if len(photos) % 2 and rng.random() < 0.5:
             left_count += 1  # the odd trial goes to either side, at random, so no side is favoured
-        autoset_left = [True] * left_count + [False] * (len(items) - left_count)
+        autoset_left = [True] * left_count + [False] * (len(photos) - left_count)
         rng.shuffle(autoset_left)
-        for photo, left_is_autoset in zip(items, autoset_left):
+        for photo, left_is_autoset in zip(photos, autoset_left):
             if left_is_autoset:
                 left, right = "autoset", variant
             else:
@@ -190,17 +145,12 @@ def build_plan(photos: Sequence[PlanPhoto], seed: int, provenance: Mapping[str, 
     trials = build_trials(photos, seed)
     photo_entries: List[Dict[str, object]] = []
     for photo in photos:
-        pictures = {
-            variant: picture_relpath(seed, variant, photo.number, photo.stem)
-            for variant in VARIANTS
-            if variant != "lightroom" or photo.lightroom
-        }
+        pictures = {variant: picture_relpath(seed, variant, photo.number, photo.stem) for variant in VARIANTS}
         photo_entries.append(
             {
                 "number": photo.number,
                 "stem": photo.stem,
                 "stratum": photo.stratum,
-                "lightroom": photo.lightroom,
                 "pictures": pictures,
             }
         )
@@ -224,7 +174,7 @@ def build_plan(photos: Sequence[PlanPhoto], seed: int, provenance: Mapping[str, 
     identity = {
         "seed": seed,
         "provenance": dict(provenance),
-        "photos": [[p.number, p.stem, p.stratum, p.lightroom] for p in photos],
+        "photos": [[p.number, p.stem, p.stratum] for p in photos],
         "trials": [[t.id, t.comparison, t.left, t.right] for t in trials],
     }
     digest = hashlib.sha256(json.dumps(identity, sort_keys=True, separators=(",", ":")).encode("utf-8"))

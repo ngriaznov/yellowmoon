@@ -1,11 +1,11 @@
-"""The pictures of the blind A/B: the `ym` renders of the three variants, the camera's embedded JPEG and the Lightroom
-exports. Stdlib only.
+"""The pictures of the blind A/B: the `ym` renders of `autoset` and of the rule, and the camera's embedded JPEG.
+Stdlib only.
 
 Every `ym` call gets a new, empty home folder (so the user's preferences and imported looks cannot change a
 picture), the `--cpu` renderer and the data folder of its variant. The `rule` variant runs on a temporary copy of
 the data folder without `models/autoset`: `ym` then uses the rule of the time before automatic settings
-(docs/18 section 4.4), with `--contrast 0 --white-preference 0` as docs/18 section 8 gives it. The originals are
-only ever read.
+(docs/18 section 4.4), with `--contrast 0 --white-preference 0` as docs/18 section 8 gives it. The camera's JPEG is
+copied byte for byte from the raw file. The originals are only ever read.
 """
 
 from __future__ import annotations
@@ -28,7 +28,6 @@ RENDER_TIMEOUT_S = 1800.0
 #: The flags each rendered variant adds to the shared render flags.
 RENDER_FLAGS: Mapping[str, Tuple[str, ...]] = {
     "autoset": (),
-    "autoset-neutral": ("--white-preference", "0"),
     "rule": ("--white-preference", "0", "--contrast", "0"),
 }
 
@@ -39,13 +38,12 @@ class PictureError(Exception):
 
 @dataclass(frozen=True)
 class PhotoJob:
-    """One photo to make pictures of: its number, stem and stratum, the raw file, and its Lightroom export if any."""
+    """One photo to make pictures of: its number, stem and stratum, and the raw file."""
 
     number: int
     stem: str
     stratum: str
     raw: Path
-    lightroom: Optional[Path] = None
 
 
 @dataclass(frozen=True)
@@ -60,11 +58,6 @@ class Pictures:
     seed: int
     long_edge: int
     timeout_s: float = RENDER_TIMEOUT_S
-
-
-def tasks_for(job: PhotoJob) -> List[str]:
-    """The variants a photo needs, in the plan's order. Lightroom only when the photo has an export."""
-    return [variant for variant in VARIANTS if variant != "lightroom" or job.lightroom is not None]
 
 
 def ym_environment(data: Path, home: Path, base: Optional[Mapping[str, str]] = None) -> Dict[str, str]:
@@ -127,7 +120,7 @@ def run_ym(pictures: Pictures, args: Sequence[str], data: Path) -> Dict[str, obj
 
 
 def write_picture(pictures: Pictures, variant: str, job: PhotoJob, blob: bytes) -> None:
-    """Writes the bytes of a picture (camera or Lightroom) to its place in the out folder, atomically."""
+    """Writes the bytes of a picture (the camera's JPEG) to its place in the out folder, atomically."""
     target = pictures.out / picture_relpath(pictures.seed, variant, job.number, job.stem)
     target.parent.mkdir(parents=True, exist_ok=True)
     part = target.with_name(target.name + ".part")
@@ -136,7 +129,7 @@ def write_picture(pictures: Pictures, variant: str, job: PhotoJob, blob: bytes) 
 
 
 def render_picture(pictures: Pictures, job: PhotoJob, variant: str) -> None:
-    """Renders one photo in one of the three `ym` variants: autoset, autoset-neutral and rule."""
+    """Renders one photo in one of the two `ym` variants: autoset and the rule."""
     rel = picture_relpath(pictures.seed, variant, job.number, job.stem)
     target = pictures.out / rel
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -184,23 +177,11 @@ def camera_picture(pictures: Pictures, job: PhotoJob) -> None:
     write_picture(pictures, "camera", job, blob)
 
 
-def lightroom_picture(pictures: Pictures, job: PhotoJob) -> None:
-    """Copies the Lightroom export of the photo, byte for byte."""
-    if job.lightroom is None:
-        raise PictureError("there is no Lightroom export for this photo")
-    blob = job.lightroom.read_bytes()
-    if blob[:2] != JPEG_START:
-        raise PictureError(f"{job.lightroom.name} is not a JPEG")
-    write_picture(pictures, "lightroom", job, blob)
-
-
 def run_task(pictures: Pictures, job: PhotoJob, variant: str) -> Optional[str]:
     """Makes one picture. Returns None on success, else the reason it failed."""
     try:
         if variant == "camera":
             camera_picture(pictures, job)
-        elif variant == "lightroom":
-            lightroom_picture(pictures, job)
         else:
             render_picture(pictures, job, variant)
     except (PictureError, OSError, ValueError) as exc:
@@ -219,13 +200,13 @@ def make_pictures(
     Returns the failures: for each photo that failed in any variant, the (variant, reason) pairs.
     """
     failures: Dict[int, List[Tuple[str, str]]] = {}
-    remaining = {job.number: len(tasks_for(job)) for job in jobs}
+    remaining = {job.number: len(VARIANTS) for job in jobs}
     finished = 0
     with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
         pending = {
             pool.submit(run_task, pictures, job, variant): (job, variant)
             for job in jobs
-            for variant in tasks_for(job)
+            for variant in VARIANTS
         }
         for future in concurrent.futures.as_completed(pending):
             job, variant = pending[future]

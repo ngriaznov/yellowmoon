@@ -157,8 +157,8 @@ def build(metrics: dict, model_doc: dict | None, *, date: str, git_sha: str) -> 
     w("* The exposure label is the camera's own tone placement, so the model learns the camera's choice where its JPEG is "
       "tone-mapped (DRO, HDR, creative styles); those labels carry double variance.\n"
       "* The contrast label partly measures the camera's tone curve, which is why its head is bounded at +-30 and shrunk.\n"
-      "* Nothing here was judged by eye. The blind A/B against Lightroom Auto and the camera JPEG (`docs/18` gate 5, AS-H1) decides "
-      "whether the model is better than the rule before it.\n")
+      "* Nothing here was judged by eye. The blind A/B against the rule before it and the camera JPEG (`docs/18` gate 5, AS-H1) decides "
+      "whether the model ships.\n")
     return "\n".join(out) + "\n"
 
 

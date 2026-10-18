@@ -85,5 +85,5 @@ The ten largest EV errors on held-out files (file names as in the dataset):
 
 * The exposure label is the camera's own tone placement, so the model learns the camera's choice where its JPEG is tone-mapped (DRO, HDR, creative styles); those labels carry double variance.
 * The contrast label partly measures the camera's tone curve, which is why its head is bounded at +-30 and shrunk.
-* Nothing here was judged by eye. The blind A/B against Lightroom Auto and the camera JPEG (`docs/18` gate 5, AS-H1) decides whether the model is better than the rule before it.
+* Nothing here was judged by eye. The blind A/B against the rule before it and the camera JPEG (`docs/18` gate 5, AS-H1) decides whether the model ships.
 

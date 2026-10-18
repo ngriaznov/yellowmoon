@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The blind A/B for gate 5 of docs/18 section 8 (AS-H1): make the test on your photos, then score your answers.
 #
-#   tools/eval/ab/ab.sh prepare PHOTOS_DIR [--out DIR] [--lightroom DIR] [--long-edge 2000] [--seed N]
+#   tools/eval/ab/ab.sh prepare PHOTOS_DIR [--out DIR] [--long-edge 2000] [--seed N]
 #                                          [--ym PATH] [--data DIR] [--jobs N]
 #   tools/eval/ab/ab.sh score RESULTS_JSON [--plan PLAN_JSON]
 #

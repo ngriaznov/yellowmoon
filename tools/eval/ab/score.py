@@ -1,6 +1,6 @@
 """The score of the blind A/B: wins, losses and ties per comparison, the Wilson bound, the strata and gate 5.
 
-Gate 5 of docs/18 section 8, for each of the rule, the camera JPEG and Lightroom Auto:
+Gate 5 of docs/18 section 8, for each of autoset against the rule and autoset against the camera's JPEG:
 
 * the pooled win share of autoset is at least 60 %, ties counting as half a win;
 * the Wilson 95 % lower bound of the win share is above 50 %, with ties left out of the count (so the bound is over
@@ -8,8 +8,7 @@ Gate 5 of docs/18 section 8, for each of the rule, the camera JPEG and Lightroom
 * no stratum has a win share below 45 %;
 * autoset's needs-a-fix rate is not higher than the other picture's.
 
-The comparison with autoset's white preference switched off is reported and not gated: it answers whether the
-preferred white helps. Stdlib only.
+Stdlib only.
 """
 
 from __future__ import annotations
@@ -35,8 +34,6 @@ _EPS = 1e-12
 LABELS: Mapping[str, str] = {
     "rule": "autoset vs rule (before autoset)",
     "camera": "autoset vs camera JPEG",
-    "lightroom": "autoset vs Lightroom Auto",
-    "neutral": "autoset vs white preference off",
 }
 
 
@@ -221,10 +218,8 @@ def _below_stratum_gate(part: Tally) -> bool:
     return bool(part.trials and (part.share or 0.0) + _EPS < STRATUM_GATE)
 
 
-def gate_one(name: str, tally_all: Tally, strata: Mapping[str, Tally]) -> Tuple[str, List[str]]:
-    """The verdict of one comparison and the reasons it fails. "reported" for the comparisons that are not gated."""
-    if name not in GATED:
-        return "reported", []
+def gate_one(tally_all: Tally, strata: Mapping[str, Tally]) -> Tuple[str, List[str]]:
+    """The verdict of one comparison and the reasons it fails: PASS, FAIL, NOT RUN (no answers yet) or NO DATA."""
     if tally_all.trials == 0:
         return "NOT RUN", ["there are no answers for this comparison"]
     if tally_all.decisive == 0:
@@ -264,13 +259,12 @@ def build_report(plan: Mapping[str, object], rows: Sequence[Tuple[dict, str, dic
     verdicts: Dict[str, str] = {}
     for name, variant in COMPARISONS.items():
         bucket = buckets[name]
-        verdict, reasons = gate_one(name, bucket.overall, bucket.strata)
+        verdict, reasons = gate_one(bucket.overall, bucket.strata)
         verdicts[name] = verdict
         entry = bucket.overall.as_dict()
         entry.update(
             {
                 "against": variant,
-                "gated": name in GATED,
                 "needs_fix": {
                     "autoset": bucket.overall.fix_rate(True),
                     "other": bucket.overall.fix_rate(False),
@@ -337,12 +331,11 @@ def format_report(report: Mapping[str, object]) -> str:
     lines.append("")
     lines.append("Strata, win share (in the gate, a stratum below 45 % fails):")
     for name, entry in comparisons.items():
-        heading = LABELS[name] + ("" if entry["gated"] else " (reported, not gated)")
-        lines.append(f"  {heading}")
+        lines.append(f"  {LABELS[name]}")
         if not entry["strata"]:
             lines.append("    no answers yet")
         for stratum, part in entry["strata"].items():
-            marker = "   below 45 %" if part["below_gate"] and entry["gated"] else ""
+            marker = "   below 45 %" if part["below_gate"] else ""
             lines.append(f"    {stratum:<22}{pct(part['share']):>9}   {part['trials']} trials{marker}")
     unresolved = ("FAIL", "NOT RUN", "NO DATA")
     failing = [(name, entry) for name, entry in comparisons.items() if entry["verdict"] in unresolved]

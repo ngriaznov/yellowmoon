@@ -1,19 +1,22 @@
 # Blind A/B for automatic settings (gate 5, docs/18 section 8)
 
-This kit answers one question with your own photos: does `autoset`, the automatic settings of v1,
-make pictures you prefer? You look at two versions of the same photo, side by side, without being
-told which is which, and pick one. The kit then scores your picks against gate 5.
+This kit answers one question with your own photos: does `autoset`, the new automatic settings, make
+pictures you prefer? You look at two versions of the same photo, side by side, without being told
+which is which, and pick one. The kit then scores your picks against gate 5.
 
-Each photo is compared with:
+There are three versions of each photo:
 
-- **the rule before autoset** (the camera's exposure, contrast 0, the preferred white off);
-- **the camera's own JPEG** (the picture embedded in the raw file, copied as it is);
-- **Lightroom Auto** (only for photos that have a Lightroom export, see below).
+- **autoset** (the new automatic settings), the picture under test;
+- **the rule** (the old automatic settings: the camera's exposure, the light fully neutralised,
+  contrast 0);
+- **the camera's JPEG** (the camera's own rendering), the picture embedded in the raw file, copied as
+  it is.
 
-A fourth comparison, autoset against autoset with the preferred white turned off, is reported but
-does not decide the gate. It tells you whether the warmth the preferred white keeps is one you want.
+Each photo gives two trials, one per comparison: autoset against the rule, and autoset against the
+camera's JPEG.
 
-**Gate 5 passes** when, for each of the rule, the camera JPEG and Lightroom Auto:
+**Gate 5 passes** when, for both comparisons (autoset against the rule, and autoset against the
+camera's JPEG):
 
 - autoset wins at least 60 % of the trials (a tie counts as half a win);
 - the lower end of the 95 % Wilson interval of the win share is above 50 % (ties are left out of
@@ -28,9 +31,10 @@ Nothing is uploaded. The renders, the page and the answers stay on your Mac.
 - This repository on your Mac, and Rust (`rustup`).
 - Python 3.9 or newer (`python3 --version`; the Xcode command line tools provide it).
 - Your Sony ARW files, in one folder. Subfolders are strata (below).
-- About 2 GB of free disk for about 150 photos.
-- Time: rendering takes a while, because every photo is rendered three times. Start it in the
-  evening. The progress lines show how far it has got.
+- About 2 GB of free disk for about 150 photos. Each photo leaves two renders and a copy of the
+  camera's JPEG in the out folder.
+- Time: rendering takes a while, because every photo is rendered twice. Start it in the evening. The
+  progress lines show how far it has got.
 
 ## 1. Build the renderer
 
@@ -41,19 +45,7 @@ From the repository folder:
 This makes `target/release/ym`, which the kit uses. It renders on the CPU, so the pictures do not
 depend on the graphics card.
 
-## 2. Make the Lightroom set (optional, but it gives the Lightroom comparison)
-
-1. In Lightroom, select the photos. In the Develop module's Basic panel, click **Auto**, and make no
-   other edit.
-2. Export each photo as a JPEG. In the export dialog, set **Rename To** to **Filename**, so that
-   `DSC04204.ARW` becomes `DSC04204.jpg`. The size and quality of the export do not matter.
-3. Put all the JPEGs in one folder, at the top level (not in subfolders). A photo is matched by its
-   file name without the extension, ignoring case (`.jpg` or `.jpeg`). A photo without an export
-   simply has no Lightroom comparison.
-
-Without this folder the kit still runs, but gate 5 cannot pass: it needs all three comparisons.
-
-## 3. Choose the photos (strata)
+## 2. Choose the photos (strata)
 
 Put the photos in folders named for the kind of picture. Each folder is a stratum, and the score
 shows each stratum on its own. Photos directly in the top folder count as `other`.
@@ -72,15 +64,17 @@ Aim for at least 15 photos in each folder. A stratum with a few photos can pass 
 and the score shows how many trials each one has. Choose the photos before you look at any version,
 and keep the hard ones: a test that leaves out the difficult photos tells you little.
 
-## 4. Make the test
+Each photo gives two trials. So 15 photos in a folder give 30 trials for that stratum, and 150
+photos give 300 trials in all.
 
-    tools/eval/ab/ab.sh prepare ~/Pictures/ab-test --lightroom ~/Pictures/ab-lr
+## 3. Make the test
 
-For each photo the kit renders three versions (autoset, the rule, autoset with the white preference
-off), copies the camera JPEG and, when there is one, the Lightroom export, and writes the page. It
-prints a summary: the photos, the strata, the number of trials, any photo that was left out, and the
-command that opens the page. A photo that fails in any version is left out of every trial, and the
-summary says why.
+    tools/eval/ab/ab.sh prepare ~/Pictures/ab-test
+
+For each photo the kit renders two versions (autoset, and the rule), copies the camera's JPEG, and
+writes the page. It prints a summary: the photos, the strata, the number of trials, any photo that
+was left out, and the command that opens the page. A photo that fails in any version is left out of
+every trial, and the summary says why.
 
 Useful options:
 
@@ -95,7 +89,7 @@ Useful options:
 If you run `prepare` again into a folder that holds another test, the old `plan.json` is replaced.
 Answers given to the old test no longer match.
 
-## 5. Answer the trials
+## 4. Answer the trials
 
 Open the page the summary prints. With the default folder, that is:
 
@@ -127,14 +121,14 @@ Your answers are saved in this browser and come back when you reload the page. Y
 time. When every trial is answered, press **Export results**. Your browser saves `results.json`,
 usually in Downloads. You can also export part of the way; the score then says it is provisional.
 
-## 6. Score the answers
+## 5. Score the answers
 
     tools/eval/ab/ab.sh score ~/Downloads/results.json
 
 The kit prints one table with a row per comparison: the wins, losses and ties of autoset, the win
-share, the Wilson bound, the "needs a fix" rates and the verdict. Under it come the strata, and the reasons
-for any failure. The last line gives the verdict of gate 5. It also writes `score.json` next to the
-results.
+share, the Wilson bound, the "needs a fix" rates and the verdict. Under it come the strata, and the
+reasons for any failure. The last line gives the verdict of gate 5. It also writes `score.json` next
+to the results.
 
 The score finds `plan.json` next to the results, or in the default test folder. If it cannot find
 the plan, pass it: `ab.sh score RESULTS_JSON --plan PLAN_JSON`. Results from another test are refused.
@@ -143,23 +137,20 @@ the plan, pass it: `ab.sh score RESULTS_JSON --plan PLAN_JSON`. Results from ano
 
 - The page is `index.html` with its code inside, plus `plan.js`, which lists the trials. It loads
   nothing from the network, and the kit sends nothing anywhere.
-- The raw files are only read. The renders and the camera and Lightroom copies are written to the
-  out folder.
+- The raw files are only read. The renders and the camera's JPEG copies are written to the out
+  folder.
 - The out folder holds your file names (`plan.json`) and your photos (the pictures). Delete it when
   you have finished, or keep it out of any shared folder. Do not commit it.
 
 ## Known limits
 
-- **Sizes.** The camera JPEG and the Lightroom exports are used as they are. The page shows every
-  picture scaled to fit the same box, so a file with more pixels than the screen is scaled down and
-  a render shown larger than its pixels is enlarged. If that is a concern, make the test again with
-  `--long-edge 3000`.
+- **Sizes.** The camera's JPEG is used as it is. The page shows every picture scaled to fit the same
+  box, so a file with more pixels than the screen is scaled down and a render shown larger than its
+  pixels is enlarged. If that is a concern, make the test again with `--long-edge 3000`.
 - **The rule.** The rule uses a temporary copy of the data folder without the autoset model, and
   `--contrast 0 --white-preference 0`. The copy is deleted at the end.
 - **Your preferences.** Each render gets its own empty home folder, so your preferences and imported
   looks cannot change the test. The renders use the built-in default look.
-- **Lightroom matches.** A name shared by two raw files has no Lightroom match, and the summary says
-  so.
 - **Repeat.** Running `prepare` again with the same photos, seed and renderer gives the same plan
   and the same pictures.
 
