@@ -117,6 +117,23 @@ A learned preferred-white map (Cube++ neutral against camera-AWB pairs, about 60
 
 **Dump** (`cargo run -p ym-core --release --example autoset_dump -- <files> > rows.jsonl`): one JSON line per file with the 39 features, `m`, the camera's embedded JPEG statistics for the label fits, metadata (DRO mode, creative style, flash, metering mode, exposure compensation, body), and the contrast-fit table (§6.2); plus one augmentation line per k ∈ {−2, −1, −0.5, +0.5, +1, +2}: the same file scaled by 2^k with re-clipping at the sensor clip, with its own features (`key_target` label unchanged, §3).
 
+**Row schema** (one JSON object per line; `aug_k = 0` rows carry the label tables, augmentation rows do not):
+
+```json
+{"file": "Sony - ILCE-7M4 - 14bit (3:2).ARW", "sha256": "…", "source": "raw.pixls.us", "licence": "CC0-1.0",
+ "body": "ILCE-7M4", "capture_time": "2024-05-01T10:12:33", "aug_k": 0.0,
+ "features": [39 numbers], "key": -1.234,
+ "meta": {"dro": "off", "creative_style": "standard", "hdr": "off", "flash": 0, "metering": "multi",
+          "ec": 0.0, "iso": 100, "exposure_time_s": 0.004, "f_number": 5.6},
+ "g3": {"grid": "linspace(0.001, 0.999, 999)", "scene_q": [999 numbers], "jpeg_q": [999 numbers]},
+ "label_ev": 1.08,
+ "contrast_fit": {"grid": [-40, -30, -20, -10, 0, 10, 20, 30, 40],
+                  "p": [0.05, 0.10, 0.25, 0.50, 0.75, 0.90, 0.95],
+                  "ours": [[7 display-luma quantiles] for each grid value], "jpeg": [7 numbers]}}
+```
+
+`scene_q` are quantiles of our scene-linear luminance at EV 0 (AWG4 `Y`, the metering chain) after an area resize to the embedded JPEG's size; `jpeg_q` of the JPEG's linear Rec.709 luminance (sRGB decoded, or Adobe RGB when the EXIF interoperability index says R03). `label_ev` is §6.1's `L`, computed in Rust from the two tables (the training code recomputes it and must agree to 1e-9). Display luma for the contrast fit is Rec.709 luma of the sRGB-encoded render, 0–1. Unknown metadata is `null`.
+
 ### 6.1 Exposure label
 
 The G3 fit of `docs/02` (`tools/eval/study.py`): the scene level `x` at EV 0 that the camera's JPEG renders as middle grey, by quantile matching our scene-linear luminance (at the JPEG's size) against the JPEG's linear luminance over the 0.02 … 0.98 quantiles, restricted to the mid-tone band −2 … +1 stop around grey. `L = log2(0.18 / x)` is the exposure that puts our grey where the camera put it; the label is `key_target = L + m`. Files whose embedded JPEG was made with DRO or HDR on, or with a non-Standard creative style, are kept with a doubled label variance (their mid-tones are tone-mapped).
