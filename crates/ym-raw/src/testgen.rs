@@ -766,6 +766,9 @@ pub struct ArwBuilder {
     payload: Option<std::sync::Arc<dyn RawPayload>>,
     sony_raw_file_type: Option<u16>,
     omit_bits_per_sample: bool,
+    extra_exif: Vec<Ent>,
+    extra_maker: Vec<Ent>,
+    creative_style_9416: Option<u8>,
 }
 
 impl ArwBuilder {
@@ -817,7 +820,31 @@ impl ArwBuilder {
             payload: None,
             sony_raw_file_type: None,
             omit_bits_per_sample: false,
+            extra_exif: Vec::new(),
+            extra_maker: Vec::new(),
+            creative_style_9416: None,
         }
+    }
+
+    /// Adds an entry to the EXIF directory, replacing the default entry with the same tag.
+    /// `value` holds the little-endian bytes of `count` values of type `ty` (a `field_type`).
+    pub fn exif_entry(mut self, tag: u16, ty: u16, count: u32, value: Vec<u8>) -> Self {
+        self.extra_exif.push(Ent::bytes(tag, ty, value, count));
+        self
+    }
+
+    /// Adds an entry to the Sony maker-note directory, replacing the default entry with the same
+    /// tag. `value` is laid out as in [`ArwBuilder::exif_entry`].
+    pub fn maker_entry(mut self, tag: u16, ty: u16, count: u32, value: Vec<u8>) -> Self {
+        self.extra_maker.push(Ent::bytes(tag, ty, value, count));
+        self
+    }
+
+    /// Writes the `CreativeStyle` code (byte 55 of the table, before enciphering) in the 0x9416
+    /// table. Only has an effect when the 0x9416 table is written (see [`ArwBuilder::iso_table`]).
+    pub fn creative_style_9416(mut self, code: u8) -> Self {
+        self.creative_style_9416 = Some(code);
+        self
     }
 
     /// Leaves the `BitsPerSample` tag out of the raw directory (for detection tests).
@@ -1495,6 +1522,10 @@ fn blocks(
             &[(240, 10), (700, 10), (28, 10), (28, 10)],
         ));
     }
+    for extra in &b.extra_exif {
+        exif.retain(|e| e.tag != extra.tag);
+        exif.push(extra.clone());
+    }
     let exif_bytes = serialize_ifd(plan.exif, &exif, 0);
 
     // --- GPS ----------------------------------------------------------------------------------
@@ -1755,6 +1786,8 @@ fn sony_table(b: &ArwBuilder, older: bool) -> Vec<u8> {
     if older {
         // Stored first byte 0x8B (the layout of the A7 III to A7R IV and A9 bodies).
         plain[0] = crate::makernote::decipher_byte(0x8B);
+    } else if let Some(code) = b.creative_style_9416 {
+        plain[crate::makernote::CREATIVE_STYLE_9416_OFFSET] = code;
     }
     plain.iter().map(|byte| encipher_byte(*byte)).collect()
 }
@@ -1792,6 +1825,10 @@ fn maker_note(b: &ArwBuilder, plan: &Plan) -> Vec<u8> {
         SonyIsoTable::Tag9405 => entries.push(Ent::undefined(0x9405, &sony_table(b, true))),
         SonyIsoTable::Tag9416 => entries.push(Ent::undefined(0x9416, &sony_table(b, false))),
         SonyIsoTable::None => {}
+    }
+    for extra in &b.extra_maker {
+        entries.retain(|e| e.tag != extra.tag);
+        entries.push(extra.clone());
     }
     let header_len = b.maker_note_header.len();
     let mut out = b.maker_note_header.clone();

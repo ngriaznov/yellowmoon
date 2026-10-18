@@ -19,12 +19,23 @@
 //! | `0x2001` | `PreviewImage`: a 32-byte proprietary header (JPEG length, width, height, ...) then a JPEG | [`SonyMakerNote::preview`] |
 //! | `0x9416` | enciphered table of the newest bodies; the 16-bit word at byte 4 is `SonyISO` | [`SonyMakerNote::iso`] |
 //! | `0x9405` | enciphered table of older E-mount bodies; same word at byte 4, valid when the first byte is one of eight known values | [`SonyMakerNote::iso`] |
+//! | `0xB020` | `CreativeStyle`, a string (`Standard`, `Vivid`, ...; newer bodies write Creative Look codes such as `FL` here too) | [`SonyMakerNote::creative_style`] |
+//! | `0x9416` byte 55 | the same `CreativeStyle` as a code, enciphered; read only when `0xB020` is absent or empty, and not on the ILCE-7M5 | [`SonyMakerNote::creative_style`] |
+//! | `0xB023` | `SceneMode`, 32 bit | [`SonyMakerNote::scene_mode`] |
+//! | `0xB025` | `DynamicRangeOptimizer` (DRO), 32 bit | [`SonyMakerNote::dro_mode`] |
 //!
 //! `SonyISO` is `100 * 2^(16 - v / 256)` for the stored word `v`. The enciphered tags use a byte
 //! substitution cipher ([`decipher_byte`]); only the bytes needed are deciphered, and a tag that
 //! is too short, has an unknown first byte or yields an implausible value reads as unknown.
+//!
+//! The code tables are ExifTool's Sony tag documentation (`https://exiftool.org/TagNames/Sony.html`,
+//! tags 0xB020, 0xB023, 0xB025 and the Tag9416 section for offset 55). The plain tags are the
+//! ones every ILCE body in the local test set writes (ILCE-5000 to ILCE-7M4 and the A1), and
+//! ExifTool's `0x200B` is not DRO (it is `MultiFrameNoiseReduction`).
 
-use crate::tiff::{ByteOrder, Entry, Tiff, field_type};
+use serde::{Deserialize, Serialize};
+
+use crate::tiff::{ByteOrder, Entry, Ifd, Tiff, field_type};
 
 /// `SonyModelID`.
 pub const TAG_MODEL_ID: u16 = 0xB001;
@@ -36,11 +47,30 @@ pub const TAG_PREVIEW_IMAGE: u16 = 0x2001;
 pub const TAG_9405: u16 = 0x9405;
 /// Enciphered table with `SonyISO` for the newest bodies.
 pub const TAG_9416: u16 = 0x9416;
+/// `CreativeStyle` as a string (plain, not enciphered).
+pub const TAG_CREATIVE_STYLE: u16 = 0xB020;
+/// `SceneMode` (32 bit).
+pub const TAG_SCENE_MODE: u16 = 0xB023;
+/// `DynamicRangeOptimizer` (32 bit).
+pub const TAG_DRO_MODE: u16 = 0xB025;
 
 /// Length of the header in front of the maker note's IFD.
 pub const HEADER_LEN: u64 = 12;
 /// Length of the proprietary header in front of the JPEG in tag 0x2001.
 pub const PREVIEW_HEADER_LEN: u64 = 32;
+
+/// Byte of the deciphered 0x9416 table that holds the `CreativeStyle` code (ExifTool's Tag9416
+/// section, index 55). Read only when tag 0xB020 is absent or empty.
+pub const CREATIVE_STYLE_9416_OFFSET: usize = 55;
+/// The `SonyModelID` of the ILCE-7M5, whose 0x9416 table has other offsets after its release mode
+/// (ExifTool's Tag9416 section). Its `CreativeStyle` is not read from the table.
+pub const MODEL_ID_ILCE_7M5: u16 = 407;
+
+/// The fewest bytes a 0x9416 table can have (above its ISO word and the shortest layout
+/// LibRaw trusts).
+const TAG_9416_MIN_COUNT: u32 = 0x76;
+/// The fewest bytes a 0x9405 table can have.
+const TAG_9405_MIN_COUNT: u32 = 0x64;
 
 /// First bytes of tag 0x9405 (as stored, enciphered) that mark a layout with `SonyISO` at byte 4.
 const TAG_9405_VALID_FIRST_BYTES: [u8; 8] = [0x25, 0x3A, 0x76, 0x7E, 0x8B, 0x9A, 0xB3, 0xE1];
@@ -92,6 +122,222 @@ pub fn encipher_byte(byte: u8) -> u8 {
     ENCIPHER[usize::from(byte)]
 }
 
+/// Sony's Dynamic Range Optimizer mode (`DynamicRangeOptimizer`, tag 0xB025). The codes are
+/// ExifTool's Sony values.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DroMode {
+    /// 0: off.
+    Off,
+    /// 1: standard.
+    Standard,
+    /// 2: advanced auto.
+    AdvancedAuto,
+    /// 3: auto.
+    Auto,
+    /// 8 to 12: advanced level 1 to 5 (`Advanced Lv1` to `Advanced Lv5`).
+    AdvancedLevel(u8),
+    /// 16 to 23: level 1 to 8 (`Lv1` to `Lv8`).
+    Level(u8),
+    /// Any other value, kept as written.
+    Other(u32),
+}
+
+impl DroMode {
+    /// The mode for a `DynamicRangeOptimizer` code.
+    pub fn from_code(code: u32) -> Self {
+        match code {
+            0 => Self::Off,
+            1 => Self::Standard,
+            2 => Self::AdvancedAuto,
+            3 => Self::Auto,
+            8..=12 => Self::AdvancedLevel((code - 7) as u8),
+            16..=23 => Self::Level((code - 15) as u8),
+            other => Self::Other(other),
+        }
+    }
+}
+
+/// Sony's scene mode (`SceneMode`, tag 0xB023). The codes are ExifTool's Sony values.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SceneMode {
+    /// 0: standard.
+    Standard,
+    /// 1: portrait.
+    Portrait,
+    /// 2: text.
+    Text,
+    /// 3: night scene.
+    NightScene,
+    /// 4: sunset.
+    Sunset,
+    /// 5: sports.
+    Sports,
+    /// 6: landscape.
+    Landscape,
+    /// 7: night portrait.
+    NightPortrait,
+    /// 8: macro.
+    Macro,
+    /// 9: super macro.
+    SuperMacro,
+    /// 16: auto.
+    Auto,
+    /// 17: night view or portrait.
+    NightViewPortrait,
+    /// 18: sweep panorama.
+    SweepPanorama,
+    /// 19: handheld night shot.
+    HandheldNightShot,
+    /// 20: anti motion blur.
+    AntiMotionBlur,
+    /// 21: continuous priority AE.
+    ContinuousPriorityAe,
+    /// 22: auto plus.
+    AutoPlus,
+    /// 23: 3D sweep panorama.
+    SweepPanorama3d,
+    /// 24: superior auto.
+    SuperiorAuto,
+    /// 25: high sensitivity.
+    HighSensitivity,
+    /// 26: fireworks.
+    Fireworks,
+    /// 27: food.
+    Food,
+    /// 28: pet.
+    Pet,
+    /// 33: HDR.
+    Hdr,
+    /// 65535: the camera wrote "not applicable".
+    NotAvailable,
+    /// Any other value, kept as written.
+    Other(u32),
+}
+
+impl SceneMode {
+    /// The mode for a `SceneMode` code.
+    pub fn from_code(code: u32) -> Self {
+        match code {
+            0 => Self::Standard,
+            1 => Self::Portrait,
+            2 => Self::Text,
+            3 => Self::NightScene,
+            4 => Self::Sunset,
+            5 => Self::Sports,
+            6 => Self::Landscape,
+            7 => Self::NightPortrait,
+            8 => Self::Macro,
+            9 => Self::SuperMacro,
+            16 => Self::Auto,
+            17 => Self::NightViewPortrait,
+            18 => Self::SweepPanorama,
+            19 => Self::HandheldNightShot,
+            20 => Self::AntiMotionBlur,
+            21 => Self::ContinuousPriorityAe,
+            22 => Self::AutoPlus,
+            23 => Self::SweepPanorama3d,
+            24 => Self::SuperiorAuto,
+            25 => Self::HighSensitivity,
+            26 => Self::Fireworks,
+            27 => Self::Food,
+            28 => Self::Pet,
+            33 => Self::Hdr,
+            65_535 => Self::NotAvailable,
+            other => Self::Other(other),
+        }
+    }
+}
+
+/// Sony's Creative Style (`CreativeStyle`, tag 0xB020, or the code in the 0x9416 table). Newer
+/// bodies write Creative Look codes in the same setting (`FL`, `VV2`, `IN`, `SH`, `FL2`, `FL3`);
+/// those, and any other name the crate does not list, read as [`CreativeStyle::Other`] with the
+/// text the camera wrote.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CreativeStyle {
+    /// `Standard`.
+    Standard,
+    /// `Vivid`.
+    Vivid,
+    /// `Neutral`.
+    Neutral,
+    /// `Portrait`.
+    Portrait,
+    /// `Landscape`.
+    Landscape,
+    /// `Clear`.
+    Clear,
+    /// `Deep`.
+    Deep,
+    /// `Light`.
+    Light,
+    /// `Sunset`.
+    Sunset,
+    /// `Nightview` (night view or portrait).
+    NightView,
+    /// `Autumnleaves`.
+    AutumnLeaves,
+    /// `BW` (black and white).
+    BlackAndWhite,
+    /// `Sepia`.
+    Sepia,
+    /// Any other style: a Creative Look code (`FL`, `VV2`, ...), `AdobeRGB`, `Real`, `None`, `Off`
+    /// (code 255), or a numeric code the crate does not name, written as `code <n>`.
+    Other(String),
+}
+
+impl CreativeStyle {
+    /// The style named by tag 0xB020 (matched without regard to case). An empty name is not a
+    /// style; the caller checks that.
+    pub fn from_name(name: &str) -> Self {
+        match name.to_ascii_lowercase().as_str() {
+            "standard" => Self::Standard,
+            "vivid" => Self::Vivid,
+            "neutral" => Self::Neutral,
+            "portrait" => Self::Portrait,
+            "landscape" => Self::Landscape,
+            "clear" => Self::Clear,
+            "deep" => Self::Deep,
+            "light" => Self::Light,
+            "sunset" => Self::Sunset,
+            "nightview" => Self::NightView,
+            "autumnleaves" => Self::AutumnLeaves,
+            "bw" => Self::BlackAndWhite,
+            "sepia" => Self::Sepia,
+            _ => Self::Other(name.to_owned()),
+        }
+    }
+
+    /// The style for a code of the enciphered 0x9416 table (byte 55 once deciphered).
+    pub fn from_table_code(code: u8) -> Self {
+        match code {
+            0 => Self::Standard,
+            1 => Self::Vivid,
+            2 => Self::Neutral,
+            3 => Self::Portrait,
+            4 => Self::Landscape,
+            5 => Self::BlackAndWhite,
+            6 => Self::Clear,
+            7 => Self::Deep,
+            8 => Self::Light,
+            9 => Self::Sunset,
+            10 => Self::NightView,
+            11 => Self::AutumnLeaves,
+            13 => Self::Sepia,
+            15 => Self::Other("FL".to_owned()),
+            16 => Self::Other("VV2".to_owned()),
+            17 => Self::Other("IN".to_owned()),
+            18 => Self::Other("SH".to_owned()),
+            19 => Self::Other("FL2".to_owned()),
+            20 => Self::Other("FL3".to_owned()),
+            255 => Self::Other("Off".to_owned()),
+            other => Self::Other(format!("code {other}")),
+        }
+    }
+}
+
 /// What was read from a Sony maker note.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SonyMakerNote {
@@ -104,6 +350,12 @@ pub struct SonyMakerNote {
     /// File position and length of the JPEG in `PreviewImage` (tag 0x2001), after its 32-byte
     /// header.
     pub preview: Option<(u64, u64)>,
+    /// The Dynamic Range Optimizer mode (tag 0xB025).
+    pub dro_mode: Option<DroMode>,
+    /// The Creative Style: tag 0xB020 when it has a name, else the 0x9416 table's code.
+    pub creative_style: Option<CreativeStyle>,
+    /// The scene mode (tag 0xB023).
+    pub scene_mode: Option<SceneMode>,
 }
 
 /// True when `prefix` (the first bytes of a MakerNote value) starts with one of the Sony headers.
@@ -175,7 +427,52 @@ pub fn parse(tiff: &Tiff, entry: &Entry, sony_family: bool) -> Option<SonyMakerN
             break;
         }
     }
+    note.dro_mode = ifd
+        .get(TAG_DRO_MODE)
+        .and_then(|e| unsigned_32(&reader, e))
+        .map(DroMode::from_code);
+    note.scene_mode = ifd
+        .get(TAG_SCENE_MODE)
+        .and_then(|e| unsigned_32(&reader, e))
+        .map(SceneMode::from_code);
+    note.creative_style = creative_style(&reader, &ifd, note.model_id);
     Some(note)
+}
+
+/// The first value of an unsigned 32-bit maker-note tag (SHORT or LONG). Any other type reads as
+/// absent.
+fn unsigned_32(reader: &Tiff, entry: &Entry) -> Option<u32> {
+    if !matches!(entry.ty, field_type::SHORT | field_type::LONG) {
+        return None;
+    }
+    let value = *reader.uints(entry, 1).ok()?.first()?;
+    u32::try_from(value).ok()
+}
+
+/// `CreativeStyle`: the name in tag 0xB020 when it has one (an ASCII string). When it does not,
+/// the code in the enciphered 0x9416 table at [`CREATIVE_STYLE_9416_OFFSET`], which is not read
+/// for the ILCE-7M5 (its offsets differ) and needs the same table size as the ISO word.
+fn creative_style(reader: &Tiff, ifd: &Ifd, model_id: Option<u16>) -> Option<CreativeStyle> {
+    let named = ifd
+        .get(TAG_CREATIVE_STYLE)
+        .filter(|e| e.ty == field_type::ASCII)
+        .and_then(|e| reader.ascii(e).ok())
+        .filter(|name| !name.is_empty());
+    if let Some(name) = named {
+        return Some(CreativeStyle::from_name(&name));
+    }
+    let table = ifd.get(TAG_9416)?;
+    if model_id == Some(MODEL_ID_ILCE_7M5)
+        || !matches!(table.ty, field_type::UNDEFINED | field_type::BYTE)
+        || table.count <= TAG_9416_MIN_COUNT
+    {
+        return None;
+    }
+    let head = reader
+        .entry_prefix(table, CREATIVE_STYLE_9416_OFFSET as u64 + 1)
+        .ok()?;
+    let code = *head.get(CREATIVE_STYLE_9416_OFFSET)?;
+    Some(CreativeStyle::from_table_code(decipher_byte(code)))
 }
 
 fn other_order(order: ByteOrder) -> ByteOrder {
@@ -221,7 +518,11 @@ fn sony_iso(tiff: &Tiff, entry: &Entry) -> Option<u32> {
         return None;
     }
     // The same minimum sizes LibRaw demands before it trusts the layout.
-    let min_count = if entry.tag == TAG_9405 { 0x64 } else { 0x76 };
+    let min_count = if entry.tag == TAG_9405 {
+        TAG_9405_MIN_COUNT
+    } else {
+        TAG_9416_MIN_COUNT
+    };
     if entry.count <= min_count {
         return None;
     }
@@ -718,5 +1019,271 @@ mod tests {
         assert!(!has_sony_header(b"Nikon\0\x02\x10"));
         assert!(!has_sony_header(b"SONY"));
         assert!(!has_sony_header(b""));
+    }
+
+    // --- DRO, scene mode and creative style -------------------------------------------------
+
+    /// A 32-bit value in the file's byte order (for an inline LONG entry).
+    fn long(order: ByteOrder, v: u32) -> [u8; 4] {
+        match order {
+            ByteOrder::Little => v.to_le_bytes(),
+            ByteOrder::Big => v.to_be_bytes(),
+        }
+    }
+
+    /// Parses a maker note with the older header and the given entries.
+    fn note_with(order: ByteOrder, entries: Vec<(u16, u16, u32, Val)>) -> Option<SonyMakerNote> {
+        let (buf, entry) = note(order, HEADER, entries);
+        parse_note(order, &buf, &entry)
+    }
+
+    /// A deciphered 0x9416 table of `len` zero bytes whose `CreativeStyle` byte is `code`.
+    fn style_table(len: usize, code: u8) -> Vec<u8> {
+        let mut table = vec![0u8; len];
+        table[CREATIVE_STYLE_9416_OFFSET] = encipher_byte(code);
+        table
+    }
+
+    /// A 16-byte ASCII value holding `name`, NUL padded as Sony writes it.
+    fn name_bytes(name: &str) -> Vec<u8> {
+        let mut value = name.as_bytes().to_vec();
+        value.resize(16, 0);
+        value
+    }
+
+    #[test]
+    fn dro_mode_codes_map_to_the_sony_modes() {
+        for order in [ByteOrder::Little, ByteOrder::Big] {
+            for (code, mode) in [
+                (0, DroMode::Off),
+                (1, DroMode::Standard),
+                (2, DroMode::AdvancedAuto),
+                (3, DroMode::Auto),
+                (8, DroMode::AdvancedLevel(1)),
+                (12, DroMode::AdvancedLevel(5)),
+                (16, DroMode::Level(1)),
+                (23, DroMode::Level(8)),
+                (4, DroMode::Other(4)),
+                (13, DroMode::Other(13)),
+                (24, DroMode::Other(24)),
+                (u32::MAX, DroMode::Other(u32::MAX)),
+            ] {
+                let entries = vec![(
+                    TAG_DRO_MODE,
+                    field_type::LONG,
+                    1,
+                    Val::Inline(long(order, code)),
+                )];
+                let parsed = note_with(order, entries).expect("maker note");
+                assert_eq!(parsed.dro_mode, Some(mode), "code {code} in {order:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn scene_mode_codes_map_and_not_applicable_is_its_own_mode() {
+        let order = ByteOrder::Little;
+        for (code, mode) in [
+            (0, SceneMode::Standard),
+            (7, SceneMode::NightPortrait),
+            (16, SceneMode::Auto),
+            (23, SceneMode::SweepPanorama3d),
+            (33, SceneMode::Hdr),
+            (65_535, SceneMode::NotAvailable),
+            (99, SceneMode::Other(99)),
+        ] {
+            let entries = vec![(
+                TAG_SCENE_MODE,
+                field_type::LONG,
+                1,
+                Val::Inline(long(order, code)),
+            )];
+            let parsed = note_with(order, entries).expect("maker note");
+            assert_eq!(parsed.scene_mode, Some(mode), "code {code}");
+        }
+    }
+
+    #[test]
+    fn plain_tags_of_the_wrong_type_or_missing_read_as_none() {
+        let order = ByteOrder::Little;
+        let parsed = note_with(
+            order,
+            vec![
+                (TAG_DRO_MODE, field_type::ASCII, 4, Val::Inline(*b"3\0\0\0")),
+                (
+                    TAG_SCENE_MODE,
+                    field_type::BYTE,
+                    4,
+                    Val::Inline([16, 0, 0, 0]),
+                ),
+                // A number where the name belongs.
+                (
+                    TAG_CREATIVE_STYLE,
+                    field_type::LONG,
+                    1,
+                    Val::Inline(long(order, 1)),
+                ),
+            ],
+        )
+        .expect("maker note");
+        assert_eq!(parsed.dro_mode, None);
+        assert_eq!(parsed.scene_mode, None);
+        assert_eq!(parsed.creative_style, None);
+
+        let parsed = note_with(
+            order,
+            vec![(
+                TAG_MODEL_ID,
+                field_type::SHORT,
+                1,
+                Val::Inline(short(order, 375)),
+            )],
+        )
+        .expect("maker note");
+        assert_eq!(parsed.dro_mode, None);
+        assert_eq!(parsed.scene_mode, None);
+        assert_eq!(parsed.creative_style, None);
+    }
+
+    #[test]
+    fn creative_style_names_map_to_the_styles() {
+        let order = ByteOrder::Little;
+        let other = |s: &str| CreativeStyle::Other(s.to_owned());
+        for (name, style) in [
+            ("Standard", CreativeStyle::Standard),
+            ("Vivid", CreativeStyle::Vivid),
+            ("Neutral", CreativeStyle::Neutral),
+            ("Portrait", CreativeStyle::Portrait),
+            ("Landscape", CreativeStyle::Landscape),
+            ("Clear", CreativeStyle::Clear),
+            ("Deep", CreativeStyle::Deep),
+            ("Light", CreativeStyle::Light),
+            ("Sunset", CreativeStyle::Sunset),
+            ("Nightview", CreativeStyle::NightView),
+            ("Autumnleaves", CreativeStyle::AutumnLeaves),
+            ("BW", CreativeStyle::BlackAndWhite),
+            ("Sepia", CreativeStyle::Sepia),
+            // Matched without regard to case.
+            ("vivid", CreativeStyle::Vivid),
+            // Creative Look codes and other names are kept as written.
+            ("FL", other("FL")),
+            ("VV2", other("VV2")),
+            ("AdobeRGB", other("AdobeRGB")),
+            ("None", other("None")),
+        ] {
+            let entries = vec![(
+                TAG_CREATIVE_STYLE,
+                field_type::ASCII,
+                16,
+                Val::Data(name_bytes(name)),
+            )];
+            let parsed = note_with(order, entries).expect("maker note");
+            assert_eq!(parsed.creative_style, Some(style), "{name}");
+        }
+    }
+
+    #[test]
+    fn a_name_wins_over_the_table_and_an_empty_name_falls_back_to_it() {
+        let order = ByteOrder::Little;
+        let table = || {
+            (
+                TAG_9416,
+                field_type::UNDEFINED,
+                0x200,
+                Val::Data(style_table(0x200, 2)),
+            )
+        };
+        let name = |s: &str| {
+            (
+                TAG_CREATIVE_STYLE,
+                field_type::ASCII,
+                16,
+                Val::Data(name_bytes(s)),
+            )
+        };
+
+        let parsed = note_with(order, vec![name("Vivid"), table()]).expect("maker note");
+        assert_eq!(parsed.creative_style, Some(CreativeStyle::Vivid));
+
+        let parsed = note_with(order, vec![name(""), table()]).expect("maker note");
+        assert_eq!(parsed.creative_style, Some(CreativeStyle::Neutral));
+
+        let parsed = note_with(order, vec![name("")]).expect("maker note");
+        assert_eq!(parsed.creative_style, None);
+    }
+
+    #[test]
+    fn creative_style_table_codes_map_to_the_styles() {
+        let order = ByteOrder::Little;
+        for (code, style) in [
+            (0, CreativeStyle::Standard),
+            (1, CreativeStyle::Vivid),
+            (2, CreativeStyle::Neutral),
+            (3, CreativeStyle::Portrait),
+            (4, CreativeStyle::Landscape),
+            (5, CreativeStyle::BlackAndWhite),
+            (6, CreativeStyle::Clear),
+            (7, CreativeStyle::Deep),
+            (8, CreativeStyle::Light),
+            (9, CreativeStyle::Sunset),
+            (10, CreativeStyle::NightView),
+            (11, CreativeStyle::AutumnLeaves),
+            (13, CreativeStyle::Sepia),
+            (15, CreativeStyle::Other("FL".to_owned())),
+            (16, CreativeStyle::Other("VV2".to_owned())),
+            (17, CreativeStyle::Other("IN".to_owned())),
+            (18, CreativeStyle::Other("SH".to_owned())),
+            (19, CreativeStyle::Other("FL2".to_owned())),
+            (20, CreativeStyle::Other("FL3".to_owned())),
+            (255, CreativeStyle::Other("Off".to_owned())),
+            (12, CreativeStyle::Other("code 12".to_owned())),
+            (21, CreativeStyle::Other("code 21".to_owned())),
+        ] {
+            let entries = vec![(
+                TAG_9416,
+                field_type::UNDEFINED,
+                0x200,
+                Val::Data(style_table(0x200, code)),
+            )];
+            let parsed = note_with(order, entries).expect("maker note");
+            assert_eq!(parsed.creative_style, Some(style), "code {code}");
+        }
+    }
+
+    #[test]
+    fn the_table_is_not_read_for_the_ilce_7m5_or_when_it_is_too_short_or_the_wrong_type() {
+        let order = ByteOrder::Little;
+        let model = |id: u16| {
+            (
+                TAG_MODEL_ID,
+                field_type::SHORT,
+                1,
+                Val::Inline(short(order, id)),
+            )
+        };
+        let table =
+            |ty: u16, len: usize| (TAG_9416, ty, len as u32, Val::Data(style_table(len, 2)));
+
+        // The ILCE-7M5 has other offsets: no style from the table.
+        let parsed = note_with(
+            order,
+            vec![
+                model(MODEL_ID_ILCE_7M5),
+                table(field_type::UNDEFINED, 0x200),
+            ],
+        )
+        .expect("maker note");
+        assert_eq!(parsed.creative_style, None);
+        // Another body with the same table reads it.
+        let parsed = note_with(order, vec![model(388), table(field_type::UNDEFINED, 0x200)])
+            .expect("maker note");
+        assert_eq!(parsed.creative_style, Some(CreativeStyle::Neutral));
+        // A table no longer than the ISO word needs is not trusted.
+        let parsed =
+            note_with(order, vec![table(field_type::UNDEFINED, 0x76)]).expect("maker note");
+        assert_eq!(parsed.creative_style, None);
+        // A table of another type is not a table.
+        let parsed = note_with(order, vec![table(field_type::SHORT, 0x200)]).expect("maker note");
+        assert_eq!(parsed.creative_style, None);
     }
 }

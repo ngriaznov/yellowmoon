@@ -11,6 +11,12 @@
 //! `DateTimeOriginal` 0x9003 with `SubSecTimeOriginal` 0x9291 and `OffsetTimeOriginal` 0x9011
 //! (`OffsetTime` 0x9010 when that is missing), and the maker note 0x927C.
 //!
+//! The exposure context, read as [`ExifInfo::brightness_value`], [`ExifInfo::metering_mode`],
+//! [`ExifInfo::flash`], [`ExifInfo::exposure_program`] and [`ExifInfo::scene_capture_type`]: the
+//! tags `BrightnessValue` 0x9203, `MeteringMode` 0x9207, `Flash` 0x9209, `ExposureProgram` 0x8822
+//! and `SceneCaptureType` 0xA406. Their value tables are the EXIF ones, as ExifTool's EXIF tag
+//! documentation lists them.
+//!
 //! ISO comes from these EXIF tags (and from the Sony maker note, see [`resolve_iso`]):
 //! `ISOSpeedRatings` 0x8827 (16 bit, saturates at 65535), `SensitivityType` 0x8830,
 //! `StandardOutputSensitivity` 0x8831, `RecommendedExposureIndex` 0x8832 and `ISOSpeed` 0x8833
@@ -21,7 +27,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::tiff::{Entry, Ifd, IfdKind, IfdNode, Tiff, tag};
+use crate::tiff::{Entry, Ifd, IfdKind, IfdNode, Tiff, field_type, tag};
 
 /// Where the ISO value came from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -238,6 +244,143 @@ pub struct GpsInfo {
     pub utc_time: Option<String>,
 }
 
+/// The range of `BrightnessValue` that is accepted, in EV. A value outside it cannot come from a
+/// real exposure, so it is a corrupt tag and reads as absent.
+pub const BRIGHTNESS_RANGE_EV: std::ops::RangeInclusive<f64> = -50.0..=50.0;
+
+/// `MeteringMode` (0x9207): how the camera measured the light. The codes are the EXIF ones.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MeteringMode {
+    /// 0: not known.
+    Unknown,
+    /// 1: the average of the whole frame.
+    Average,
+    /// 2: the average, weighted towards the centre.
+    CenterWeighted,
+    /// 3: a spot.
+    Spot,
+    /// 4: several spots.
+    MultiSpot,
+    /// 5: several zones (EXIF "multi-segment"; the camera's pattern or evaluative metering).
+    Multi,
+    /// 6: part of the frame.
+    Partial,
+    /// Any other code. EXIF uses 255 for "other", which is kept as written.
+    Other(u16),
+}
+
+impl MeteringMode {
+    /// The mode for a `MeteringMode` code.
+    pub fn from_code(code: u16) -> Self {
+        match code {
+            0 => Self::Unknown,
+            1 => Self::Average,
+            2 => Self::CenterWeighted,
+            3 => Self::Spot,
+            4 => Self::MultiSpot,
+            5 => Self::Multi,
+            6 => Self::Partial,
+            other => Self::Other(other),
+        }
+    }
+}
+
+/// `ExposureProgram` (0x8822): the shooting mode the camera was set to. The codes are the EXIF
+/// ones.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExposureProgram {
+    /// 0: not defined.
+    NotDefined,
+    /// 1: manual exposure.
+    Manual,
+    /// 2: normal program (EXIF "Program AE").
+    ProgramAe,
+    /// 3: aperture priority.
+    AperturePriorityAe,
+    /// 4: shutter speed priority.
+    ShutterPriorityAe,
+    /// 5: creative program, biased towards depth of field (EXIF "Creative (Slow speed)").
+    CreativeProgram,
+    /// 6: action program, biased towards a fast shutter (EXIF "Action (High speed)").
+    ActionProgram,
+    /// 7: portrait mode.
+    Portrait,
+    /// 8: landscape mode.
+    Landscape,
+    /// Any other code. Code 9 (bulb) is not standard EXIF; some Canon bodies write it.
+    Other(u16),
+}
+
+impl ExposureProgram {
+    /// The program for an `ExposureProgram` code.
+    pub fn from_code(code: u16) -> Self {
+        match code {
+            0 => Self::NotDefined,
+            1 => Self::Manual,
+            2 => Self::ProgramAe,
+            3 => Self::AperturePriorityAe,
+            4 => Self::ShutterPriorityAe,
+            5 => Self::CreativeProgram,
+            6 => Self::ActionProgram,
+            7 => Self::Portrait,
+            8 => Self::Landscape,
+            other => Self::Other(other),
+        }
+    }
+}
+
+/// `SceneCaptureType` (0xA406): the kind of scene the camera assumed. The codes are the EXIF ones.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SceneCaptureType {
+    /// 0: a standard scene.
+    Standard,
+    /// 1: landscape.
+    Landscape,
+    /// 2: portrait.
+    Portrait,
+    /// 3: night scene.
+    Night,
+    /// Any other code. EXIF uses 4 for "other" (some Samsung bodies write it); kept as written.
+    Other(u16),
+}
+
+impl SceneCaptureType {
+    /// The scene type for a `SceneCaptureType` code.
+    pub fn from_code(code: u16) -> Self {
+        match code {
+            0 => Self::Standard,
+            1 => Self::Landscape,
+            2 => Self::Portrait,
+            3 => Self::Night,
+            other => Self::Other(other),
+        }
+    }
+}
+
+/// `Flash` (0x9209): whether the flash fired, and the code as written.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct FlashInfo {
+    /// Bit 0 of the code: the flash fired.
+    pub fired: bool,
+    /// The whole code as written. Bits 1 and 2 give the strobe return light, bits 3 and 4 the
+    /// flash mode, bit 5 is set when the camera has no flash unit and bit 6 when red-eye
+    /// reduction is on (the EXIF Flash values; ExifTool lists the same).
+    pub raw: u16,
+}
+
+impl FlashInfo {
+    /// The flash state for a `Flash` code.
+    pub fn from_code(raw: u16) -> Self {
+        Self {
+            fired: raw & 1 == 1,
+            raw,
+        }
+    }
+}
+
 /// Everything the EXIF directories tell us.
 #[derive(Clone, Debug, Default)]
 pub struct ExifInfo {
@@ -263,6 +406,17 @@ pub struct ExifInfo {
     pub lens_model: Option<String>,
     /// `LensMake`.
     pub lens_make: Option<String>,
+    /// `BrightnessValue`, the APEX brightness `Bv` in EV. `None` unless the tag is a signed
+    /// rational, finite and within [`BRIGHTNESS_RANGE_EV`].
+    pub brightness_value: Option<f64>,
+    /// `MeteringMode`.
+    pub metering_mode: Option<MeteringMode>,
+    /// `Flash`.
+    pub flash: Option<FlashInfo>,
+    /// `ExposureProgram`.
+    pub exposure_program: Option<ExposureProgram>,
+    /// `SceneCaptureType`.
+    pub scene_capture_type: Option<SceneCaptureType>,
     /// `DateTimeOriginal` with sub-second and offset.
     pub capture_time: Option<CaptureTime>,
     /// The sensitivity tags.
@@ -319,6 +473,20 @@ pub fn read(tiff: &Tiff, nodes: &[IfdNode]) -> ExifInfo {
         .find_map(|ifd| text(tiff, ifd, tag::LENS_MAKE))
         .filter(|s| !s.is_empty());
 
+    info.brightness_value = exif_ifds().find_map(|ifd| brightness_value(tiff, ifd));
+    info.metering_mode = exif_ifds()
+        .find_map(|ifd| short_value(tiff, ifd, tag::METERING_MODE))
+        .map(MeteringMode::from_code);
+    info.flash = exif_ifds()
+        .find_map(|ifd| short_value(tiff, ifd, tag::FLASH))
+        .map(FlashInfo::from_code);
+    info.exposure_program = exif_ifds()
+        .find_map(|ifd| short_value(tiff, ifd, tag::EXPOSURE_PROGRAM))
+        .map(ExposureProgram::from_code);
+    info.scene_capture_type = exif_ifds()
+        .find_map(|ifd| short_value(tiff, ifd, tag::SCENE_CAPTURE_TYPE))
+        .map(SceneCaptureType::from_code);
+
     if let Some(datetime) = exif_ifds().find_map(|ifd| text(tiff, ifd, tag::DATE_TIME_ORIGINAL)) {
         let subsec = exif_ifds().find_map(|ifd| text(tiff, ifd, tag::SUB_SEC_TIME_ORIGINAL));
         let offset = exif_ifds()
@@ -374,6 +542,29 @@ fn float(tiff: &Tiff, ifd: &Ifd, tag: u16) -> Option<f64> {
         .filter(|v| v.is_finite())
 }
 
+/// The first value of a 16-bit EXIF code. Only SHORT and LONG entries count (any other type reads
+/// as absent), and a LONG value above 65535 cannot be a code and reads as absent too.
+fn short_value(tiff: &Tiff, ifd: &Ifd, tag: u16) -> Option<u16> {
+    let entry = ifd.get(tag)?;
+    if !matches!(entry.ty, field_type::SHORT | field_type::LONG) {
+        return None;
+    }
+    let value = *tiff.uints(entry, 1).ok()?.first()?;
+    u16::try_from(value).ok()
+}
+
+/// `BrightnessValue`: the first value of a signed rational (SRATIONAL) when it is finite and
+/// within [`BRIGHTNESS_RANGE_EV`]. A zero denominator, another type or an out-of-range value
+/// reads as absent.
+fn brightness_value(tiff: &Tiff, ifd: &Ifd) -> Option<f64> {
+    let entry = ifd.get(tag::BRIGHTNESS_VALUE)?;
+    if entry.ty != field_type::SRATIONAL {
+        return None;
+    }
+    let value = *tiff.floats(entry, 1).ok()?.first()?;
+    (value.is_finite() && BRIGHTNESS_RANGE_EV.contains(&value)).then_some(value)
+}
+
 fn floats(tiff: &Tiff, ifd: &Ifd, tag: u16, n: usize) -> Option<Vec<f64>> {
     let values = tiff.floats(ifd.get(tag)?, n).ok()?;
     (values.len() == n && values.iter().all(|v| v.is_finite())).then_some(values)
@@ -427,6 +618,7 @@ fn read_gps(tiff: &Tiff, ifd: &Ifd) -> GpsInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tiff::ByteOrder;
 
     #[test]
     fn parses_exif_dates_with_subsec_and_offset() {
@@ -541,5 +733,296 @@ mod tests {
             IsoSource::ExifIsoSpeedRatings.name(),
             "exif_iso_speed_ratings"
         );
+    }
+
+    // --- exposure context: BrightnessValue, MeteringMode, Flash, ExposureProgram, SceneCaptureType
+
+    /// One directory entry of a synthetic EXIF directory: tag, type, count and the value bytes in
+    /// the file's byte order.
+    type DirEntry = (u16, u16, u32, Vec<u8>);
+
+    fn u16_bytes(order: ByteOrder, v: u16) -> [u8; 2] {
+        match order {
+            ByteOrder::Little => v.to_le_bytes(),
+            ByteOrder::Big => v.to_be_bytes(),
+        }
+    }
+
+    fn u32_bytes(order: ByteOrder, v: u32) -> [u8; 4] {
+        match order {
+            ByteOrder::Little => v.to_le_bytes(),
+            ByteOrder::Big => v.to_be_bytes(),
+        }
+    }
+
+    /// A TIFF whose IFD0 holds only the `ExifIFD` pointer, and whose EXIF directory holds
+    /// `entries`. Values of more than four bytes are written after the directory; shorter values
+    /// are left-justified in the entry, as TIFF stores them.
+    fn tiff_with_exif(order: ByteOrder, entries: &[DirEntry]) -> Vec<u8> {
+        let mut file = match order {
+            ByteOrder::Little => b"II".to_vec(),
+            ByteOrder::Big => b"MM".to_vec(),
+        };
+        file.extend_from_slice(&u16_bytes(order, 42));
+        file.extend_from_slice(&u32_bytes(order, 8));
+        // IFD0 at 8: one LONG entry pointing at the EXIF directory, and no next directory.
+        let exif_at = 8 + 2 + 12 + 4;
+        file.extend_from_slice(&u16_bytes(order, 1));
+        file.extend_from_slice(&u16_bytes(order, tag::EXIF_IFD));
+        file.extend_from_slice(&u16_bytes(order, field_type::LONG));
+        file.extend_from_slice(&u32_bytes(order, 1));
+        file.extend_from_slice(&u32_bytes(order, exif_at as u32));
+        file.extend_from_slice(&u32_bytes(order, 0));
+        assert_eq!(file.len(), exif_at);
+
+        let table_len = 2 + entries.len() * 12 + 4;
+        let mut tail = Vec::new();
+        file.extend_from_slice(&u16_bytes(order, entries.len() as u16));
+        for (tag_no, ty, count, value) in entries {
+            file.extend_from_slice(&u16_bytes(order, *tag_no));
+            file.extend_from_slice(&u16_bytes(order, *ty));
+            file.extend_from_slice(&u32_bytes(order, *count));
+            if value.len() <= 4 {
+                let mut field = [0u8; 4];
+                field[..value.len()].copy_from_slice(value);
+                file.extend_from_slice(&field);
+            } else {
+                let at = exif_at + table_len + tail.len();
+                file.extend_from_slice(&u32_bytes(order, at as u32));
+                tail.extend_from_slice(value);
+            }
+        }
+        file.extend_from_slice(&u32_bytes(order, 0));
+        file.extend_from_slice(&tail);
+        file
+    }
+
+    /// Reads the EXIF fields of a synthetic file with the given entries.
+    fn read_exif(order: ByteOrder, entries: &[DirEntry]) -> ExifInfo {
+        let file = tiff_with_exif(order, entries);
+        let (tiff, first) = Tiff::open(&file).expect("header");
+        let nodes = tiff.walk(first).expect("IFD0");
+        read(&tiff, &nodes)
+    }
+
+    fn short(order: ByteOrder, tag_no: u16, value: u16) -> DirEntry {
+        (
+            tag_no,
+            field_type::SHORT,
+            1,
+            u16_bytes(order, value).to_vec(),
+        )
+    }
+
+    fn long(order: ByteOrder, tag_no: u16, value: u32) -> DirEntry {
+        (
+            tag_no,
+            field_type::LONG,
+            1,
+            u32_bytes(order, value).to_vec(),
+        )
+    }
+
+    fn srational(order: ByteOrder, tag_no: u16, num: i32, den: i32) -> DirEntry {
+        let value = [u32_bytes(order, num as u32), u32_bytes(order, den as u32)].concat();
+        (tag_no, field_type::SRATIONAL, 1, value)
+    }
+
+    #[test]
+    fn reads_the_exposure_context_in_both_byte_orders() {
+        for order in [ByteOrder::Little, ByteOrder::Big] {
+            let info = read_exif(
+                order,
+                &[
+                    short(order, tag::EXPOSURE_PROGRAM, 3),
+                    srational(order, tag::BRIGHTNESS_VALUE, -3, 2),
+                    short(order, tag::METERING_MODE, 5),
+                    short(order, tag::FLASH, 0x19),
+                    short(order, tag::SCENE_CAPTURE_TYPE, 2),
+                ],
+            );
+            assert_eq!(
+                info.exposure_program,
+                Some(ExposureProgram::AperturePriorityAe),
+                "{order:?}"
+            );
+            assert_eq!(info.brightness_value, Some(-1.5), "{order:?}");
+            assert_eq!(info.metering_mode, Some(MeteringMode::Multi), "{order:?}");
+            assert_eq!(
+                info.flash,
+                Some(FlashInfo {
+                    fired: true,
+                    raw: 0x19
+                }),
+                "{order:?}"
+            );
+            assert_eq!(
+                info.scene_capture_type,
+                Some(SceneCaptureType::Portrait),
+                "{order:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_directory_without_the_tags_reads_as_none() {
+        let info = read_exif(ByteOrder::Little, &[]);
+        assert_eq!(info.brightness_value, None);
+        assert_eq!(info.metering_mode, None);
+        assert_eq!(info.flash, None);
+        assert_eq!(info.exposure_program, None);
+        assert_eq!(info.scene_capture_type, None);
+    }
+
+    #[test]
+    fn flash_fired_is_bit_zero_and_the_code_is_kept() {
+        // Values from the EXIF Flash table: "Fired" values are odd, "Did not fire" ones even.
+        for (raw, fired) in [
+            (0x00, false),
+            (0x01, true),
+            (0x05, true),
+            (0x08, false),
+            (0x09, true),
+            (0x10, false),
+            (0x19, true),
+            (0x20, false),
+            (0x41, true),
+        ] {
+            let info = read_exif(
+                ByteOrder::Little,
+                &[short(ByteOrder::Little, tag::FLASH, raw)],
+            );
+            assert_eq!(info.flash, Some(FlashInfo { fired, raw }), "{raw:#x}");
+        }
+    }
+
+    #[test]
+    fn standard_codes_map_to_their_variants_and_others_are_kept() {
+        use ExposureProgram as P;
+        use MeteringMode as M;
+        use SceneCaptureType as S;
+        for (code, mode) in [
+            (0, M::Unknown),
+            (1, M::Average),
+            (2, M::CenterWeighted),
+            (3, M::Spot),
+            (4, M::MultiSpot),
+            (5, M::Multi),
+            (6, M::Partial),
+            (255, M::Other(255)),
+            (7, M::Other(7)),
+        ] {
+            assert_eq!(M::from_code(code), mode, "metering {code}");
+        }
+        for (code, program) in [
+            (0, P::NotDefined),
+            (1, P::Manual),
+            (2, P::ProgramAe),
+            (3, P::AperturePriorityAe),
+            (4, P::ShutterPriorityAe),
+            (5, P::CreativeProgram),
+            (6, P::ActionProgram),
+            (7, P::Portrait),
+            (8, P::Landscape),
+            (9, P::Other(9)),
+            (u16::MAX, P::Other(u16::MAX)),
+        ] {
+            assert_eq!(P::from_code(code), program, "program {code}");
+        }
+        for (code, scene) in [
+            (0, S::Standard),
+            (1, S::Landscape),
+            (2, S::Portrait),
+            (3, S::Night),
+            (4, S::Other(4)),
+        ] {
+            assert_eq!(S::from_code(code), scene, "scene {code}");
+        }
+        // The codes come through the reader too, including the "other" codes.
+        let info = read_exif(
+            ByteOrder::Little,
+            &[
+                short(ByteOrder::Little, tag::METERING_MODE, 255),
+                short(ByteOrder::Little, tag::EXPOSURE_PROGRAM, 9),
+                short(ByteOrder::Little, tag::SCENE_CAPTURE_TYPE, 4),
+            ],
+        );
+        assert_eq!(info.metering_mode, Some(M::Other(255)));
+        assert_eq!(info.exposure_program, Some(P::Other(9)));
+        assert_eq!(info.scene_capture_type, Some(S::Other(4)));
+    }
+
+    #[test]
+    fn wrong_types_read_as_absent() {
+        let le = ByteOrder::Little;
+        let info = read_exif(
+            le,
+            &[
+                // Text where a code belongs.
+                (tag::METERING_MODE, field_type::ASCII, 2, b"5\0".to_vec()),
+                // Bytes are not a 16-bit code (only SHORT and LONG are).
+                (tag::FLASH, field_type::BYTE, 1, vec![9]),
+                // A rational or signed short where a code belongs.
+                (
+                    tag::EXPOSURE_PROGRAM,
+                    field_type::RATIONAL,
+                    1,
+                    [3u8, 0, 0, 0, 1, 0, 0, 0].to_vec(),
+                ),
+                (tag::SCENE_CAPTURE_TYPE, field_type::SSHORT, 1, vec![2, 0]),
+                // An unsigned rational where BrightnessValue is a signed one.
+                (
+                    tag::BRIGHTNESS_VALUE,
+                    field_type::RATIONAL,
+                    1,
+                    [3u8, 0, 0, 0, 2, 0, 0, 0].to_vec(),
+                ),
+            ],
+        );
+        assert_eq!(info.metering_mode, None);
+        assert_eq!(info.flash, None);
+        assert_eq!(info.exposure_program, None);
+        assert_eq!(info.scene_capture_type, None);
+        assert_eq!(info.brightness_value, None);
+
+        // LONG is an accepted integer type for a code.
+        let info = read_exif(le, &[long(le, tag::METERING_MODE, 2)]);
+        assert_eq!(info.metering_mode, Some(MeteringMode::CenterWeighted));
+    }
+
+    #[test]
+    fn out_of_range_values_read_as_absent_and_never_panic() {
+        let le = ByteOrder::Little;
+        // A code above 16 bits is not a code.
+        let info = read_exif(
+            le,
+            &[
+                long(le, tag::METERING_MODE, 0x1_0005),
+                long(le, tag::FLASH, u32::MAX),
+            ],
+        );
+        assert_eq!(info.metering_mode, None);
+        assert_eq!(info.flash, None);
+
+        // A zero denominator (NaN), extreme values and values outside the accepted range.
+        for (num, den) in [
+            (1, 0),
+            (i32::MAX, 1),
+            (i32::MIN, 1),
+            (51, 1),
+            (-51, 1),
+            (i32::MIN, -1),
+        ] {
+            let info = read_exif(le, &[srational(le, tag::BRIGHTNESS_VALUE, num, den)]);
+            assert_eq!(info.brightness_value, None, "{num}/{den}");
+        }
+        // The edges of the accepted range are kept.
+        let edge =
+            |num| read_exif(le, &[srational(le, tag::BRIGHTNESS_VALUE, num, 1)]).brightness_value;
+        assert_eq!(edge(50), Some(50.0));
+        assert_eq!(edge(-50), Some(-50.0));
+        // A count of zero has no value.
+        let info = read_exif(le, &[(tag::FLASH, field_type::SHORT, 0, Vec::new())]);
+        assert_eq!(info.flash, None);
     }
 }

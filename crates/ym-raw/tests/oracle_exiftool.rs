@@ -11,8 +11,11 @@ use std::path::Path;
 use std::process::Command;
 
 use serde_json::Value;
+use ym_raw::exif::{ExposureProgram, FlashInfo, MeteringMode, SceneCaptureType};
+use ym_raw::makernote::{CreativeStyle, DroMode, SceneMode};
 use ym_raw::metadata::{probe, read_preview};
-use ym_raw::testgen::{ArwBuilder, ThumbnailIfd, gradient_mosaic};
+use ym_raw::testgen::{ArwBuilder, SonyIsoTable, ThumbnailIfd, gradient_mosaic};
+use ym_raw::tiff::{field_type, tag};
 
 fn exiftool() -> Option<Command> {
     let candidates: Vec<Command> = match std::env::var_os("YM_EXIFTOOL") {
@@ -491,6 +494,124 @@ fn exiftool_reads_exposure_and_focal_length_from_the_enciphered_tables() {
             );
         } else {
             assert!(!t.contains_key("Sony:FocalLength"), "{name}");
+        }
+    }
+}
+
+#[test]
+fn exiftool_agrees_with_the_reader_on_the_exposure_context_and_sony_codes() {
+    if !oracle_ready() {
+        return;
+    }
+    let dir = tempfile::tempdir().expect("tempdir");
+    let short = |v: u16| v.to_le_bytes().to_vec();
+    let long = |v: u32| v.to_le_bytes().to_vec();
+    let name16 = |s: &str| {
+        let mut bytes = s.as_bytes().to_vec();
+        bytes.resize(16, 0);
+        bytes
+    };
+    // (name, builder, the codes the file holds, checked against ExifTool and the reader)
+    let cases: [(&str, ArwBuilder); 2] = [
+        (
+            "ILCE-7M3, plain tags",
+            ArwBuilder::new("ILCE-7M3", 96, 64)
+                .exif_entry(
+                    tag::BRIGHTNESS_VALUE,
+                    field_type::SRATIONAL,
+                    1,
+                    [(-3i32).to_le_bytes(), 2i32.to_le_bytes()].concat(),
+                )
+                .exif_entry(tag::FLASH, field_type::SHORT, 1, short(0x19))
+                .exif_entry(tag::EXPOSURE_PROGRAM, field_type::SHORT, 1, short(3))
+                .exif_entry(tag::SCENE_CAPTURE_TYPE, field_type::SHORT, 1, short(2))
+                .maker_entry(
+                    ym_raw::makernote::TAG_CREATIVE_STYLE,
+                    field_type::ASCII,
+                    16,
+                    name16("Vivid"),
+                )
+                .maker_entry(
+                    ym_raw::makernote::TAG_DRO_MODE,
+                    field_type::LONG,
+                    1,
+                    long(3),
+                )
+                .maker_entry(
+                    ym_raw::makernote::TAG_SCENE_MODE,
+                    field_type::LONG,
+                    1,
+                    long(6),
+                ),
+        ),
+        (
+            "ILCE-7M4, Creative Look code only in the 0x9416 table",
+            ArwBuilder::new("ILCE-7M4", 96, 64)
+                .iso_table(SonyIsoTable::Tag9416)
+                .creative_style_9416(15),
+        ),
+    ];
+    for (index, (name, builder)) in cases.into_iter().enumerate() {
+        let path = dir.path().join(format!("context{index}.ARW"));
+        builder
+            .write_to(&path, &gradient_mosaic(96, 64, 600, 16_000, 5))
+            .expect("write");
+        let ours = probe(&path).unwrap_or_else(|e| panic!("{name}: {e}"));
+        let t = tags(&path);
+        let code = |key: &str| numbers(get(&t, key))[0];
+
+        if index == 0 {
+            assert_eq!(code("ExifIFD:BrightnessValue"), -1.5, "{name}");
+            assert_eq!(ours.brightness_value, Some(-1.5), "{name}");
+            assert_eq!(code("ExifIFD:MeteringMode"), 5.0, "{name}");
+            assert_eq!(
+                ours.metering_mode,
+                Some(MeteringMode::Multi),
+                "{name}: metering"
+            );
+            assert_eq!(code("ExifIFD:Flash"), 25.0, "{name}");
+            assert_eq!(
+                ours.flash,
+                Some(FlashInfo {
+                    fired: true,
+                    raw: 0x19
+                }),
+                "{name}: flash"
+            );
+            assert_eq!(code("ExifIFD:ExposureProgram"), 3.0, "{name}");
+            assert_eq!(
+                ours.exposure_program,
+                Some(ExposureProgram::AperturePriorityAe),
+                "{name}: exposure program"
+            );
+            assert_eq!(code("ExifIFD:SceneCaptureType"), 2.0, "{name}");
+            assert_eq!(
+                ours.scene_capture_type,
+                Some(SceneCaptureType::Portrait),
+                "{name}: scene capture type"
+            );
+            assert_eq!(code("Sony:DynamicRangeOptimizer"), 3.0, "{name}");
+            assert_eq!(ours.dro_mode, Some(DroMode::Auto), "{name}: DRO");
+            assert_eq!(
+                get(&t, "Sony:CreativeStyle").as_str(),
+                Some("Vivid"),
+                "{name}: CreativeStyle"
+            );
+            assert_eq!(
+                ours.creative_style,
+                Some(CreativeStyle::Vivid),
+                "{name}: creative style"
+            );
+            assert_eq!(code("Sony:SceneMode"), 6.0, "{name}");
+            assert_eq!(ours.scene_mode, Some(SceneMode::Landscape), "{name}: scene");
+        } else {
+            // ExifTool reads the 0x9416 byte at offset 55 as CreativeStyle 15 (FL).
+            assert_eq!(code("Sony:CreativeStyle"), 15.0, "{name}");
+            assert_eq!(
+                ours.creative_style,
+                Some(CreativeStyle::Other("FL".to_owned())),
+                "{name}: creative style"
+            );
         }
     }
 }

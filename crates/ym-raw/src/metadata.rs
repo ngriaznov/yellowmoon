@@ -38,11 +38,14 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use crate::error::RawError;
-use crate::exif::{self, CaptureTime, GpsInfo, IsoSource};
+use crate::exif::{
+    self, CaptureTime, ExposureProgram, FlashInfo, GpsInfo, IsoSource, MeteringMode,
+    SceneCaptureType,
+};
 use crate::layout::{
     CfaPattern, ChromaSubsampling, DecodeKind, Layout, MAX_DIMENSION, MAX_PIXELS, Rect,
 };
-use crate::makernote;
+use crate::makernote::{self, CreativeStyle, DroMode, SceneMode};
 use crate::quirks;
 use crate::sr2;
 use crate::tiff::{
@@ -264,6 +267,27 @@ pub struct RawMetadata {
     pub lens_model: Option<String>,
     /// `DateTimeOriginal` with sub-second and offset when the file has them.
     pub capture_time: Option<CaptureTime>,
+    /// EXIF `BrightnessValue` (tag 0x9203): the APEX brightness the camera measured, in EV. `None`
+    /// when the tag is missing, not a signed rational or out of range.
+    pub brightness_value: Option<f64>,
+    /// EXIF `MeteringMode` (tag 0x9207): how the camera measured the light.
+    pub metering_mode: Option<MeteringMode>,
+    /// EXIF `Flash` (tag 0x9209): whether the flash fired (bit 0), and the code as written.
+    pub flash: Option<FlashInfo>,
+    /// EXIF `ExposureProgram` (tag 0x8822): the shooting mode the camera was set to.
+    pub exposure_program: Option<ExposureProgram>,
+    /// EXIF `SceneCaptureType` (tag 0xA406): the kind of scene the camera assumed.
+    pub scene_capture_type: Option<SceneCaptureType>,
+    /// Sony Dynamic Range Optimizer mode (maker note tag 0xB025). `None` when the tag is missing.
+    /// Tag 0xB04F, another DRO tag with the codes Off, Standard and Plus that some compact cameras
+    /// write, is not read.
+    pub dro_mode: Option<DroMode>,
+    /// Sony Creative Style: the name in maker note tag 0xB020, or, when that is absent or empty,
+    /// the code in the enciphered 0x9416 table (not on the ILCE-7M5). Creative Look codes read as
+    /// `CreativeStyle::Other`.
+    pub creative_style: Option<CreativeStyle>,
+    /// Sony scene mode (maker note tag 0xB023).
+    pub scene_mode: Option<SceneMode>,
     /// EXIF orientation, 1 to 8 (1 = upright).
     pub orientation: u16,
     /// Width of the raw image in samples (the whole readout, including masked margins).
@@ -526,6 +550,14 @@ pub fn probe_source(source: &dyn ByteSource) -> Result<RawMetadata, RawError> {
         focal_length_35mm: exif.focal_length_35mm,
         lens_model: exif.lens_model,
         capture_time: exif.capture_time,
+        brightness_value: exif.brightness_value,
+        metering_mode: exif.metering_mode,
+        flash: exif.flash,
+        exposure_program: exif.exposure_program,
+        scene_capture_type: exif.scene_capture_type,
+        dro_mode: maker.as_ref().and_then(|m| m.dro_mode),
+        creative_style: maker.as_ref().and_then(|m| m.creative_style.clone()),
+        scene_mode: maker.as_ref().and_then(|m| m.scene_mode),
         orientation: exif.orientation.unwrap_or(1),
         width: best.width,
         height: best.height,
@@ -1222,6 +1254,7 @@ fn find_preview(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testgen::{ArwBuilder, SonyIsoTable};
 
     fn params(compression: u16, bits: u16, photometric: u16, samples: u16) -> RawParams {
         RawParams {
@@ -1596,5 +1629,172 @@ mod tests {
         .err()
         .expect("error");
         assert!(matches!(error, RawError::Corrupt { .. }));
+    }
+
+    // --- exposure context and Sony fields through the whole probe ----------------------------
+
+    /// A probe of a synthetic 16 x 16 file written by `builder`.
+    fn probe_with(builder: ArwBuilder) -> RawMetadata {
+        let file = builder.build(&vec![1000u16; 16 * 16]);
+        probe_bytes(&file).expect("the synthetic file probes")
+    }
+
+    /// A 16-byte ASCII value holding `name`, NUL padded.
+    fn name16(name: &str) -> Vec<u8> {
+        let mut value = name.as_bytes().to_vec();
+        value.resize(16, 0);
+        value
+    }
+
+    #[test]
+    fn the_exposure_and_sony_fields_come_from_the_file() {
+        let meta = probe_with(
+            ArwBuilder::new("ILCE-7M3", 16, 16)
+                .exif_entry(
+                    tag::BRIGHTNESS_VALUE,
+                    field_type::SRATIONAL,
+                    1,
+                    [(-3i32).to_le_bytes(), 2i32.to_le_bytes()].concat(),
+                )
+                .exif_entry(
+                    tag::METERING_MODE,
+                    field_type::SHORT,
+                    1,
+                    2u16.to_le_bytes().to_vec(),
+                )
+                .exif_entry(
+                    tag::FLASH,
+                    field_type::SHORT,
+                    1,
+                    0x19u16.to_le_bytes().to_vec(),
+                )
+                .exif_entry(
+                    tag::EXPOSURE_PROGRAM,
+                    field_type::SHORT,
+                    1,
+                    1u16.to_le_bytes().to_vec(),
+                )
+                .exif_entry(
+                    tag::SCENE_CAPTURE_TYPE,
+                    field_type::SHORT,
+                    1,
+                    2u16.to_le_bytes().to_vec(),
+                )
+                .maker_entry(
+                    makernote::TAG_CREATIVE_STYLE,
+                    field_type::ASCII,
+                    16,
+                    name16("Vivid"),
+                )
+                .maker_entry(
+                    makernote::TAG_DRO_MODE,
+                    field_type::LONG,
+                    1,
+                    3u32.to_le_bytes().to_vec(),
+                )
+                .maker_entry(
+                    makernote::TAG_SCENE_MODE,
+                    field_type::LONG,
+                    1,
+                    6u32.to_le_bytes().to_vec(),
+                ),
+        );
+        assert_eq!(meta.brightness_value, Some(-1.5));
+        assert_eq!(meta.metering_mode, Some(MeteringMode::CenterWeighted));
+        assert_eq!(
+            meta.flash,
+            Some(FlashInfo {
+                fired: true,
+                raw: 0x19
+            })
+        );
+        assert_eq!(meta.exposure_program, Some(ExposureProgram::Manual));
+        assert_eq!(meta.scene_capture_type, Some(SceneCaptureType::Portrait));
+        assert_eq!(meta.creative_style, Some(CreativeStyle::Vivid));
+        assert_eq!(meta.dro_mode, Some(DroMode::Auto));
+        assert_eq!(meta.scene_mode, Some(SceneMode::Landscape));
+    }
+
+    #[test]
+    fn a_default_file_reads_its_builder_codes_and_none_for_the_new_sony_tags() {
+        let meta = probe_with(ArwBuilder::new("ILCE-7RM4", 16, 16));
+        // The builder writes MeteringMode 5, ExposureProgram 2 and Flash 0 by default.
+        assert_eq!(meta.metering_mode, Some(MeteringMode::Multi));
+        assert_eq!(meta.exposure_program, Some(ExposureProgram::ProgramAe));
+        assert_eq!(
+            meta.flash,
+            Some(FlashInfo {
+                fired: false,
+                raw: 0
+            })
+        );
+        // Absent from the default file.
+        assert_eq!(meta.brightness_value, None);
+        assert_eq!(meta.scene_capture_type, None);
+        assert_eq!(meta.dro_mode, None);
+        assert_eq!(meta.creative_style, None);
+        assert_eq!(meta.scene_mode, None);
+    }
+
+    #[test]
+    fn creative_style_falls_back_to_the_enciphered_table_except_on_the_ilce_7m5() {
+        let with_table = |model: &str| {
+            probe_with(
+                ArwBuilder::new(model, 16, 16)
+                    .iso_table(SonyIsoTable::Tag9416)
+                    .creative_style_9416(15),
+            )
+        };
+        assert_eq!(
+            with_table("ILCE-7M4").creative_style,
+            Some(CreativeStyle::Other("FL".to_owned()))
+        );
+        assert_eq!(with_table("ILCE-7M5").creative_style, None);
+        // A name in the plain tag is used whatever the table says.
+        let named = probe_with(
+            ArwBuilder::new("ILCE-7M4", 16, 16)
+                .iso_table(SonyIsoTable::Tag9416)
+                .creative_style_9416(15)
+                .maker_entry(
+                    makernote::TAG_CREATIVE_STYLE,
+                    field_type::ASCII,
+                    16,
+                    name16("Neutral"),
+                ),
+        );
+        assert_eq!(named.creative_style, Some(CreativeStyle::Neutral));
+    }
+
+    #[test]
+    fn a_broken_new_tag_reads_as_none_and_the_file_still_probes() {
+        let meta = probe_with(
+            ArwBuilder::new("ILCE-7M3", 16, 16)
+                .exif_entry(
+                    tag::BRIGHTNESS_VALUE,
+                    field_type::ASCII,
+                    4,
+                    b"abc\0".to_vec(),
+                )
+                .exif_entry(tag::FLASH, field_type::RATIONAL, 1, vec![0; 8])
+                .maker_entry(
+                    makernote::TAG_DRO_MODE,
+                    field_type::ASCII,
+                    4,
+                    b"3\0\0\0".to_vec(),
+                )
+                .maker_entry(
+                    makernote::TAG_CREATIVE_STYLE,
+                    field_type::LONG,
+                    1,
+                    1u32.to_le_bytes().to_vec(),
+                ),
+        );
+        assert_eq!(meta.brightness_value, None);
+        assert_eq!(meta.flash, None);
+        assert_eq!(meta.dro_mode, None);
+        assert_eq!(meta.creative_style, None);
+        // The rest of the file is still read.
+        assert_eq!((meta.width, meta.height), (16, 16));
+        assert_eq!(meta.model, "ILCE-7M3");
     }
 }
