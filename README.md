@@ -97,7 +97,7 @@ ym looks import ~/Downloads/<ARRI look package>.zip
 
 ## Licence and credits
 
-Apache-2.0. See `NOTICE` for third-party data and credits, including ARRI's published ALEXA colour matrices (via the Academy's aces-dev, AMPAS licence) and Weta's Sony sensor measurements (rawtoaces-data, Apache-2.0).
+Apache-2.0. Model weights in `data/models/` carry the licence their model card states (a model trained on ShareAlike data is CC BY-SA 4.0, with its own `LICENSE` file). See `NOTICE` for third-party data and credits, including ARRI's published ALEXA colour matrices (via the Academy's aces-dev, AMPAS licence) and Weta's Sony sensor measurements (rawtoaces-data, Apache-2.0).
 
 This product includes DNG technology under license by Adobe.
 

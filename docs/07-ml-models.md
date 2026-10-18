@@ -73,7 +73,7 @@ Two backends behind this trait:
 
 - Golden tiles (20 fixed inputs committed under `crates/ym-ml/tests/data/`) run through PyTorch, ONNX Runtime and the chosen runtime. Max abs difference ≤ 2e-3 (f16) in the output's linear units. Runs on every model change.
 - Each weight file has a version and SHA-256; the version goes into export XMP.
-- `data/models/<name>/MODEL_CARD.md`: purpose, architecture, parameters, training data and licences, metrics on every gate set, known failure cases, date, git SHA of the training code.
+- `data/models/<name>/MODEL_CARD.md`: purpose, architecture, parameters, training data and licences, **the weights' own licence** (Apache-2.0, or CC BY-SA 4.0 when any training data is CC BY-SA, with that folder's own `LICENSE`; `docs/14` rule 5), metrics on every gate set, known failure cases, date, git SHA of the training code.
 
 ## Gates (M2)
 
