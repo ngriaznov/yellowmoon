@@ -121,6 +121,8 @@ pub mod tag {
     pub const F_NUMBER: u16 = 0x829D;
     /// `ExifIFD` pointer.
     pub const EXIF_IFD: u16 = 0x8769;
+    /// `ExposureProgram`.
+    pub const EXPOSURE_PROGRAM: u16 = 0x8822;
     /// `GPSInfo` (GPS IFD pointer).
     pub const GPS_IFD: u16 = 0x8825;
     /// `ISOSpeedRatings`.
@@ -139,8 +141,14 @@ pub mod tag {
     pub const OFFSET_TIME_ORIGINAL: u16 = 0x9011;
     /// `OffsetTime`.
     pub const OFFSET_TIME: u16 = 0x9010;
+    /// `BrightnessValue` (APEX).
+    pub const BRIGHTNESS_VALUE: u16 = 0x9203;
     /// `ExposureBiasValue`.
     pub const EXPOSURE_BIAS_VALUE: u16 = 0x9204;
+    /// `MeteringMode`.
+    pub const METERING_MODE: u16 = 0x9207;
+    /// `Flash`.
+    pub const FLASH: u16 = 0x9209;
     /// `FocalLength`.
     pub const FOCAL_LENGTH: u16 = 0x920A;
     /// `MakerNote`.
@@ -149,6 +157,8 @@ pub mod tag {
     pub const SUB_SEC_TIME_ORIGINAL: u16 = 0x9291;
     /// `FocalLengthIn35mmFilm`.
     pub const FOCAL_LENGTH_35MM: u16 = 0xA405;
+    /// `SceneCaptureType`.
+    pub const SCENE_CAPTURE_TYPE: u16 = 0xA406;
     /// `LensMake`.
     pub const LENS_MAKE: u16 = 0xA433;
     /// `LensModel`.
