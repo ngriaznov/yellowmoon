@@ -99,7 +99,7 @@ pub struct Photo {
     path: PathBuf,               // original, never written
     meta: RawMetadata,           // camera, lens, exposure, dimensions, compression, timestamps
     camera: CameraMatch,         // detected body + profile used + why (exact / sensor family / default)
-    auto: AutoEstimates,         // illuminant, exposure, WB, noise model, sharpening — computed once
+    auto: AutoEstimates,         // illuminant, exposure, contrast and its confidences (autoset, docs/18), WB, noise model, sharpening — computed once
     settings: DevelopSettings,   // user offsets from auto; defaults = "Auto" everywhere
     caches: PhotoCaches,         // decoded mosaic, previews; evictable
 }

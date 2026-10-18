@@ -1087,7 +1087,10 @@ fn replacing_the_settings_clamps_them_like_a_patch() {
     s.exposure = ym_core::settings::ExposureSetting::manual_ev(-9.0);
     let r = session.replace_settings(id, s).unwrap();
     assert_eq!(r.values.exposure_ev, -4.0);
-    assert_eq!(r.settings.contrast, ym_core::settings::ContrastSetting::manual_value(100.0));
+    assert_eq!(
+        r.settings.contrast,
+        ym_core::settings::ContrastSetting::manual_value(100.0)
+    );
     let mut bad = ym_core::settings::DevelopSettings::default();
     bad.curve.luma = vec![[0.5, 0.5]];
     assert!(session.replace_settings(id, bad).is_err());
@@ -1427,7 +1430,10 @@ fn auto_stays_auto_and_each_photo_keeps_its_own_estimates() {
     let r = session.settings(b).unwrap();
     assert!(r.auto.exposure && r.auto.light_source && r.auto.white_balance);
     assert!(r.auto.sharpen && r.auto.noise_reduction);
-    assert_eq!(r.settings.contrast, ym_core::settings::ContrastSetting::manual_value(20.0));
+    assert_eq!(
+        r.settings.contrast,
+        ym_core::settings::ContrastSetting::manual_value(20.0)
+    );
     // The automatic values are b's own, from b's pixels, and nothing changed them.
     assert_eq!(r.estimates, estimates_before);
     assert_eq!(r.values.exposure_ev, r.estimates.exposure_ev);
@@ -1573,7 +1579,10 @@ fn a_photo_that_cannot_be_adjusted_is_skipped_and_a_bad_patch_changes_nothing() 
     let r = session2.settings(ids2[1]).unwrap().settings;
     assert!(r.crop.is_none() && r.white_pick.is_none());
     assert_eq!(r.orientation, Orientation::Deg0);
-    assert_eq!(r.contrast, ym_core::settings::ContrastSetting::manual_value(12.0));
+    assert_eq!(
+        r.contrast,
+        ym_core::settings::ContrastSetting::manual_value(12.0)
+    );
 
     // A patch that cannot be applied changes no photo, not even the ones before the bad value.
     let before = session.settings(a).unwrap().settings;
@@ -1586,7 +1595,10 @@ fn a_photo_that_cannot_be_adjusted_is_skipped_and_a_bad_patch_changes_nothing() 
         Err(SessionError::Settings(_))
     ));
     assert_eq!(session.settings(a).unwrap().settings, before);
-    assert_eq!(session.settings(c).unwrap().settings.contrast, ym_core::settings::ContrastSetting::manual_value(12.0));
+    assert_eq!(
+        session.settings(c).unwrap().settings.contrast,
+        ym_core::settings::ContrastSetting::manual_value(12.0)
+    );
 }
 
 #[test]

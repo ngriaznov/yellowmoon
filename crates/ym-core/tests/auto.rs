@@ -65,9 +65,17 @@ fn the_as_shot_fallback_reads_the_light_back_from_the_white_balance() {
             "{cct} K read back as {scene_k} K"
         );
         if cct < 4000.0 {
-            assert!(s.kelvin > cct + 50.0, "{cct} K: the Auto white reads {} K", s.kelvin);
+            assert!(
+                s.kelvin > cct + 50.0,
+                "{cct} K: the Auto white reads {} K",
+                s.kelvin
+            );
         } else if cct >= 6000.0 {
-            assert!((s.kelvin - cct).abs() <= 50.0, "{cct} K: the Auto white reads {} K", s.kelvin);
+            assert!(
+                (s.kelvin - cct).abs() <= 50.0,
+                "{cct} K: the Auto white reads {} K",
+                s.kelvin
+            );
         }
         assert_eq!(s.light_class, class, "{cct} K");
         assert_eq!(s.light_confidence, 0.5);

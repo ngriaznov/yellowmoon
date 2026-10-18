@@ -563,7 +563,10 @@ fn load_autoset(data_root: &Path) -> (Option<Arc<AutosetModel>>, Option<String>)
         .join("autoset")
         .join("autoset.json");
     if !path.exists() {
-        return (None, Some(format!("there is no model file at {}", path.display())));
+        return (
+            None,
+            Some(format!("there is no model file at {}", path.display())),
+        );
     }
     match AutosetModel::load(&path) {
         Ok(model) => (Some(Arc::new(model)), None),
@@ -1016,10 +1019,11 @@ impl State {
         // The burst medians (exposure, Auto contrast), or the values the photo already serves.
         let (ev, contrast) = match shared {
             Some(medians) => medians,
-            None => old.as_ref().map_or(
-                (own.exposure.own_ev, own.autoset.own_contrast),
-                |e| (e.exposure.ev, e.autoset.contrast),
-            ),
+            None => old
+                .as_ref()
+                .map_or((own.exposure.own_ev, own.autoset.own_contrast), |e| {
+                    (e.exposure.ev, e.autoset.contrast)
+                }),
         };
         let group_version = self.photos[i]
             .pool_key

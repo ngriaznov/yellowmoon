@@ -119,7 +119,10 @@ fn edits() -> Vec<Edit> {
             "white balance",
             Box::new(|s| s.white_balance = AutoOr::manual_kelvin(3200.0, 20.0)),
         ),
-        ("contrast", Box::new(|s| s.contrast = ym_core::settings::ContrastSetting::manual_value(60.0))),
+        (
+            "contrast",
+            Box::new(|s| s.contrast = ym_core::settings::ContrastSetting::manual_value(60.0)),
+        ),
         ("brightness", Box::new(|s| s.brightness = -40.0)),
         ("highlights", Box::new(|s| s.highlights = -50.0)),
         ("shadows", Box::new(|s| s.shadows = 50.0)),
@@ -184,7 +187,13 @@ fn the_before_view_is_bit_identical_across_every_edit() {
             fin.rgba, reference.rgba,
             "{name}: Before is not the final picture"
         );
-        let moved = view(r, &edit(&src, |s| s.contrast = ym_core::settings::ContrastSetting::manual_value(60.0)), false);
+        let moved = view(
+            r,
+            &edit(&src, |s| {
+                s.contrast = ym_core::settings::ContrastSetting::manual_value(60.0)
+            }),
+            false,
+        );
         assert_ne!(
             moved.rgba, fin.rgba,
             "{name}: contrast moves the final picture"
@@ -379,7 +388,9 @@ fn the_pixel_readout_follows_the_before_view() {
             );
         }
         // The readout also ignores the settings.
-        let edited = edit(&src, |s| s.contrast = ym_core::settings::ContrastSetting::manual_value(70.0));
+        let edited = edit(&src, |s| {
+            s.contrast = ym_core::settings::ContrastSetting::manual_value(70.0)
+        });
         let t = r
             .sample_pixel(&edited, &st, (x, y), &CancelToken::new())
             .expect("sample")
@@ -797,9 +808,16 @@ fn a_source_made_for_the_before_view_says_so() {
     assert!(b.before_view);
     // Detail is at Auto; everything else of the settings is as it was (no setting reaches the view anyway).
     assert!(b.settings.noise_reduction.is_auto() && b.settings.sharpen.is_auto());
-    assert_eq!(b.settings.contrast, ym_core::settings::ContrastSetting::manual_value(40.0));
+    assert_eq!(
+        b.settings.contrast,
+        ym_core::settings::ContrastSetting::manual_value(40.0)
+    );
     // The flag survives an edit of the settings, and the original is not marked.
-    assert!(edit(&b, |s| s.contrast = ym_core::settings::ContrastSetting::manual_value(10.0)).before_view);
+    assert!(
+        edit(&b, |s| s.contrast =
+            ym_core::settings::ContrastSetting::manual_value(10.0))
+        .before_view
+    );
     assert!(!strong.before_view);
     // The camera default is the same for both: it comes from the file and the body.
     let g0 = src.estimates.initial_gains().expect("gains");

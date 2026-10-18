@@ -72,7 +72,8 @@ pub fn base_env() -> SessionEnv {
         // No automatic settings model either: the photos take the rule, whatever the data folder holds. The
         // tests that want the model inject it with `SessionEnv::with_autoset`.
         env.autoset = None;
-        env.autoset_error = Some("the tests take the rule (no automatic settings model)".to_owned());
+        env.autoset_error =
+            Some("the tests take the rule (no automatic settings model)".to_owned());
         env.decode_threads = 2;
         env
     })

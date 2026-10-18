@@ -1151,7 +1151,10 @@ mod view {
         // Edits of the grade: a control, a curve, the look's intensity, white balance.
         type Edit = Box<dyn Fn(&mut DevelopSettings)>;
         let edits: Vec<(&str, Edit)> = vec![
-            ("contrast", Box::new(|s| s.contrast = ym_core::settings::ContrastSetting::manual_value(30.0))),
+            (
+                "contrast",
+                Box::new(|s| s.contrast = ym_core::settings::ContrastSetting::manual_value(30.0)),
+            ),
             ("saturation", Box::new(|s| s.saturation = -25.0)),
             (
                 "curve",

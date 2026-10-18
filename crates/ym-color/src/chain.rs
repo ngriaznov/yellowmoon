@@ -126,17 +126,32 @@ impl Default for ChainSettings {
 /// scene light, or the scene light itself when the preferred white does not apply. It does not apply to a picked white
 /// (Pick white renders the spot neutral, `docs/11`) or to a light preset (the user's white is the preset), and a
 /// `white_preference` of 0 gives the scene light, unchanged.
-fn preferred_white_of(scene: &SceneLight, settings: &ChainSettings) -> (f64, f64) {
+///
+/// Where the CCT moves, the Duv is scaled by the ratio of the locus's Duv scales at the two CCTs. The tint of a light is
+/// its Duv over that scale (`wb::scene_tint`), so with the scene's Duv kept as it is the user light would carry a
+/// different tint, and the C3·C4 product a tint cast of up to a tenth of the tint (2.5 units at 3450 K). With the scaled
+/// Duv the user light has the scene's own tint, and the cast is neutralised fully, as `docs/18` section 5 intends.
+fn preferred_white_of(scene: &SceneLight, settings: &ChainSettings, locus: &Locus) -> (f64, f64) {
     if settings.picked_white.is_some() || settings.light_source != LightSource::Auto {
         return (scene.cct_k, scene.duv);
     }
-    preferred_white(
+    let (cct_u, duv_u) = preferred_white(
         scene.cct_k,
         scene.duv,
         settings.key_bv,
         settings.white_preference,
         &PreferredWhite::default(),
-    )
+    );
+    if cct_u == scene.cct_k {
+        return (cct_u, duv_u);
+    }
+    let ratio = locus.duv_scale_at(cct_u) / locus.duv_scale_at(scene.cct_k);
+    let ratio = if ratio.is_finite() && ratio > 0.0 {
+        ratio
+    } else {
+        1.0
+    };
+    (cct_u, duv_u * ratio)
 }
 
 /// The clip level for the highlight range (stage C7), after C1 to C6.
@@ -290,7 +305,7 @@ impl FusedChain {
         let w_a_scene = wb::scene_alexa_white(tables.alexa_white, tables.locus, &scene);
         let (g_user, c3_c4, user_cct_k, readout) = match settings.white_balance {
             WhiteBalance::Auto => {
-                let (cct_u, duv_u) = preferred_white_of(&scene, settings);
+                let (cct_u, duv_u) = preferred_white_of(&scene, settings, tables.locus);
                 if cct_u == scene.cct_k && duv_u == scene.duv {
                     (
                         w_a_scene.map(|w| 1.0 / w),

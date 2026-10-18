@@ -4,12 +4,12 @@ expression: v
 ---
 {
   "auto": {
-    "autoset_version": "none",
-    "contrast": 0.0,
-    "contrast_confidence": 0.0,
-    "ev_confidence": 0.0,
-    "exposure_ev": 1.11,
-    "kelvin": 3450.0,
+    "autoset_version": "1.0.0",
+    "contrast": 1.6,
+    "contrast_confidence": 0.2563,
+    "ev_confidence": 0.8481,
+    "exposure_ev": -0.3762,
+    "kelvin": 3900.0,
     "light_class": "daylight",
     "light_confidence": 0.2839,
     "noise": {
@@ -25,8 +25,8 @@ expression: v
       "amount": 102.9,
       "radius_px": 0.8
     },
-    "tint": -24.96,
-    "white_ev": 0.7829
+    "tint": -24.97,
+    "white_ev": 0.2413
   },
   "black": [
     512.0,
@@ -119,7 +119,7 @@ expression: v
     },
     "contrast": {
       "kind": "manual",
-      "value": 0.0
+      "value": 1.6
     },
     "crop": null,
     "curve": {
@@ -171,7 +171,7 @@ expression: v
       "neural_demosaic": true
     },
     "exposure": {
-      "ev": 1.11,
+      "ev": -0.3762,
       "kind": "manual"
     },
     "highlights": 0.0,

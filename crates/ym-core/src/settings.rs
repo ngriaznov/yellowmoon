@@ -406,7 +406,7 @@ where
 /// an object is the `AutoOr` form (`{ "kind": ... }`, unknown fields refused).
 fn contrast_from_value(value: serde_json::Value) -> Result<ContrastSetting, String> {
     match value.as_f64() {
-        Some(v) if v == 0.0 => Ok(AutoOr::Auto),
+        Some(0.0) => Ok(AutoOr::Auto),
         Some(v) => Ok(AutoOr::Manual(ContrastValue { value: v })),
         None => serde_json::from_value(value).map_err(|e| e.to_string()),
     }

@@ -14,8 +14,8 @@ use serde_json::json;
 use ym_color::autoset::AutosetModel;
 use ym_color::exposure::{BurstFrame, CAMERA_GAIN_EV, ShotSettings, burst_groups, share_burst_ev};
 use ym_core::auto::AutosetEstimates;
-use ym_core::pipeline::color::grade_params;
 use ym_core::pipeline::PhotoSource;
+use ym_core::pipeline::color::grade_params;
 use ym_core::session::{OpenOptions, PhotoId, Session, SessionEnv};
 use ym_core::settings::{
     AutoOr, ContrastSetting, DevelopSettings, ExposureSetting, SettingsError, SettingsField,
@@ -48,7 +48,9 @@ fn contrast_reads_the_auto_or_form_and_a_plain_number_of_an_older_document() {
     assert_eq!(DevelopSettings::default().contrast, AutoOr::Auto);
     let auto = read(json!({ "contrast": { "kind": "auto" } })).unwrap().0;
     assert_eq!(auto.contrast, AutoOr::Auto);
-    let manual = read(json!({ "contrast": { "kind": "manual", "value": 12 } })).unwrap().0;
+    let manual = read(json!({ "contrast": { "kind": "manual", "value": 12 } }))
+        .unwrap()
+        .0;
     assert_eq!(manual.contrast, ContrastSetting::manual_value(12.0));
     // Documents written before autoset: a plain number is Manual with that value ...
     let old = read(json!({ "contrast": 12 })).unwrap().0;
@@ -58,8 +60,14 @@ fn contrast_reads_the_auto_or_form_and_a_plain_number_of_an_older_document() {
         ContrastSetting::manual_value(-7.5)
     );
     // ... except 0, which was the default and reads as Auto.
-    assert_eq!(read(json!({ "contrast": 0 })).unwrap().0.contrast, AutoOr::Auto);
-    assert_eq!(read(json!({ "contrast": 0.0 })).unwrap().0.contrast, AutoOr::Auto);
+    assert_eq!(
+        read(json!({ "contrast": 0 })).unwrap().0.contrast,
+        AutoOr::Auto
+    );
+    assert_eq!(
+        read(json!({ "contrast": 0.0 })).unwrap().0.contrast,
+        AutoOr::Auto
+    );
     // A value that is not a number is refused, and so is an unknown field of the object.
     assert!(matches!(
         read(json!({ "contrast": "lots" })),
@@ -67,7 +75,8 @@ fn contrast_reads_the_auto_or_form_and_a_plain_number_of_an_older_document() {
     ));
     assert!(read(json!({ "contrast": { "kind": "manual", "value": 1, "extra": 2 } })).is_err());
     // Out of range is clamped to the range and reported.
-    let (clamped, fields) = read(json!({ "contrast": { "kind": "manual", "value": 400 } })).unwrap();
+    let (clamped, fields) =
+        read(json!({ "contrast": { "kind": "manual", "value": 400 } })).unwrap();
     assert_eq!(clamped.contrast, ContrastSetting::manual_value(100.0));
     assert!(fields.contains(&SettingsField::Contrast));
 }
@@ -87,8 +96,10 @@ fn contrast_writes_the_auto_or_form_and_reads_it_back() {
         ContrastSetting::manual_value(12.0),
         ContrastSetting::manual_value(-100.0),
     ] {
-        let mut s = DevelopSettings::default();
-        s.contrast = contrast;
+        let s = DevelopSettings {
+            contrast,
+            ..DevelopSettings::default()
+        };
         let value = serde_json::to_value(&s).unwrap();
         let (back, _) = DevelopSettings::from_value(value, &LookId::neutral()).unwrap();
         assert_eq!(back, s, "{contrast:?}");
@@ -100,16 +111,28 @@ fn white_preference_defaults_to_the_preferred_white_and_is_clamped_to_its_range(
     assert_eq!(WHITE_PREFERENCE_DEFAULT, 1.0);
     assert_eq!(DevelopSettings::default().white_preference, 1.0);
     // A document without the field reads as the default.
-    assert_eq!(read(json!({ "look": "builtin:neutral" })).unwrap().0.white_preference, 1.0);
     assert_eq!(
-        read(json!({ "white_preference": 0.25 })).unwrap().0.white_preference,
+        read(json!({ "look": "builtin:neutral" }))
+            .unwrap()
+            .0
+            .white_preference,
+        1.0
+    );
+    assert_eq!(
+        read(json!({ "white_preference": 0.25 }))
+            .unwrap()
+            .0
+            .white_preference,
         0.25
     );
     let (high, fields) = read(json!({ "white_preference": 3 })).unwrap();
     assert_eq!(high.white_preference, 1.0);
     assert!(fields.contains(&SettingsField::WhitePreference));
     assert_eq!(
-        read(json!({ "white_preference": -1 })).unwrap().0.white_preference,
+        read(json!({ "white_preference": -1 }))
+            .unwrap()
+            .0
+            .white_preference,
         0.0
     );
 }
@@ -151,15 +174,17 @@ fn a_patch_takes_either_form_of_contrast_and_the_preference() {
 
 #[test]
 fn re_run_on_the_automatic_card_resets_contrast_with_the_other_automatic_values() {
-    let mut s = DevelopSettings::default();
-    s.contrast = ContrastSetting::manual_value(-20.0);
-    s.exposure = ExposureSetting::manual_ev(0.5);
-    s.white_balance = AutoOr::Manual(WhiteBalanceValue {
-        kelvin: 4200.0,
-        tint: 3.0,
-    });
-    s.white_offset_ev = 1.0;
-    s.white_preference = 0.25;
+    let mut s = DevelopSettings {
+        contrast: ContrastSetting::manual_value(-20.0),
+        exposure: ExposureSetting::manual_ev(0.5),
+        white_balance: AutoOr::Manual(WhiteBalanceValue {
+            kelvin: 4200.0,
+            tint: 3.0,
+        }),
+        white_offset_ev: 1.0,
+        white_preference: 0.25,
+        ..DevelopSettings::default()
+    };
     s.reset_automatic();
     assert_eq!(s.contrast, AutoOr::Auto);
     assert_eq!(s.exposure, AutoOr::Auto);
@@ -169,12 +194,18 @@ fn re_run_on_the_automatic_card_resets_contrast_with_the_other_automatic_values(
     assert_eq!(s.white_preference, 0.25);
 
     // The field's own Reset (the Light tab's Reset and the Tone card's) also returns contrast to Auto.
-    let mut t = DevelopSettings::default();
-    t.contrast = ContrastSetting::manual_value(7.0);
+    let mut t = DevelopSettings {
+        contrast: ContrastSetting::manual_value(7.0),
+        ..DevelopSettings::default()
+    };
     let reset = SettingsPatch::reset(SettingsField::Contrast, &LookId::neutral());
     t.apply_patch(&reset, None).unwrap();
     assert_eq!(t.contrast, AutoOr::Auto);
-    assert!(SettingsPatch::reset(SettingsField::Contrast, &LookId::neutral()).contrast.is_some());
+    assert!(
+        SettingsPatch::reset(SettingsField::Contrast, &LookId::neutral())
+            .contrast
+            .is_some()
+    );
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -186,7 +217,11 @@ fn write_photo(dir: &Path, name: &str, level: f64, capture_time: Option<&str>) -
     let scene = Scene::new(256, 192, light(PROFILE, 5200.0), Layout::Patchwork, level);
     let mut builder = scene.builder(MODEL);
     if let Some(time) = capture_time {
-        builder = builder.capture_time(time, "00", None).exposure_time(1, 250).f_number(8, 1).iso(100);
+        builder = builder
+            .capture_time(time, "00", None)
+            .exposure_time(1, 250)
+            .f_number(8, 1)
+            .iso(100);
     }
     let path = dir.join(name);
     builder
@@ -213,10 +248,14 @@ fn with_the_test_model_a_photo_takes_the_model_values_and_says_so() {
     let id: PhotoId = session.photo_ids()[0];
     let est = session.estimates(id).expect("estimates");
 
-    assert_eq!(est.autoset.version, "0.0.0-test");
+    let version = test_model().version().to_owned();
+    assert_eq!(est.autoset.version, version);
     assert!(est.autoset.ev_confidence > 0.0 && est.autoset.ev_confidence <= 1.0);
     assert!(est.autoset.contrast_confidence > 0.0 && est.autoset.contrast_confidence <= 1.0);
-    assert!(est.autoset.contrast.abs() <= 30.0, "bounded to the contrast limit");
+    assert!(
+        est.autoset.contrast.abs() <= 30.0,
+        "bounded to the contrast limit"
+    );
     assert!(
         (est.autoset.contrast * 10.0 - (est.autoset.contrast * 10.0).round()).abs() < 1e-9,
         "a multiple of 0.1"
@@ -225,7 +264,7 @@ fn with_the_test_model_a_photo_takes_the_model_values_and_says_so() {
     assert_ne!(est.exposure.meter.ev_before_guard, CAMERA_GAIN_EV);
     // The summary the bridge shows carries the same numbers.
     let summary = session.settings(id).unwrap().estimates;
-    assert_eq!(summary.autoset_version, "0.0.0-test");
+    assert_eq!(summary.autoset_version, version);
     assert_eq!(summary.contrast, est.autoset.contrast);
     assert_eq!(summary.ev_confidence, est.autoset.ev_confidence);
     assert_eq!(summary.contrast_confidence, est.autoset.contrast_confidence);
@@ -285,7 +324,10 @@ fn an_auto_contrast_is_the_effective_contrast_and_a_manual_one_overrides_it() {
     let manual = session.settings(id).unwrap();
     assert!(!manual.auto.contrast);
     assert_eq!(manual.values.contrast, 12.0);
-    assert_eq!(manual.estimates.contrast, auto.estimates.contrast, "the estimate is still reported");
+    assert_eq!(
+        manual.estimates.contrast, auto.estimates.contrast,
+        "the estimate is still reported"
+    );
     let source = PhotoSource::from_session(&session, id).unwrap();
     assert_eq!(
         grade_params(&source.settings, source.estimates.autoset.contrast).contrast,
@@ -314,9 +356,17 @@ fn a_burst_shares_the_median_auto_contrast_rounded_to_a_tenth() {
     };
     let frames = [frame(0.0), frame(1.0), frame(2.0), frame(60.0)];
     let groups = burst_groups(&frames);
-    assert_eq!(groups, [0, 0, 0, 1], "three frames within 2 s, one a minute later");
+    assert_eq!(
+        groups,
+        [0, 0, 0, 1],
+        "three frames within 2 s, one a minute later"
+    );
     let shared = share_burst_ev(&frames, &[10.0, 11.0, 30.0, -4.0]);
-    assert_eq!(shared, [11.0, 11.0, 11.0, -4.0], "the median of a burst, and a lone frame is its own");
+    assert_eq!(
+        shared,
+        [11.0, 11.0, 11.0, -4.0],
+        "the median of a burst, and a lone frame is its own"
+    );
     // An even burst: the mean of the middle two, rounded to a tenth.
     let even = share_burst_ev(&frames[..2], &[10.0, 10.04]);
     assert_eq!(even, [10.02, 10.02]);
@@ -341,6 +391,9 @@ fn photos_of_one_burst_share_the_rounded_median_contrast() {
     let median = ym_color::autoset::round_contrast((own[0] + own[1]) / 2.0);
     for id in ids {
         let served = session.estimates(id).unwrap();
-        assert_eq!(served.autoset.contrast, median, "the burst's median contrast");
+        assert_eq!(
+            served.autoset.contrast, median,
+            "the burst's median contrast"
+        );
     }
 }

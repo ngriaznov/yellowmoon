@@ -191,7 +191,10 @@ fn build() -> Result<Report, Failure> {
             .map(|m| (m.version().to_owned(), m.sha256().to_owned()))
             .map_err(|e| e.to_string())
     } else {
-        Err(format!("there is no model file at {}", autoset_path.display()))
+        Err(format!(
+            "there is no model file at {}",
+            autoset_path.display()
+        ))
     };
 
     let store = ProfileStore::load(&data_folder)

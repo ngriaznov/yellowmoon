@@ -175,17 +175,18 @@ fn an_a1_photo_reads_its_light_on_the_profiles_scale_without_a_model() {
                 w.truth[c]
             );
         }
+        // The scene light the estimator found (the Auto white is the preferred one, `docs/18` section 5).
         assert!(
-            (est.summary().kelvin - cct).abs() <= 50.0,
+            (est.illuminant.scene.cct_k - cct).abs() <= 50.0,
             "{cct} K read as {}",
-            est.summary().kelvin
+            est.illuminant.scene.cct_k
         );
         // Without the scale the same file reads as another light: the error this exists to remove.
         let unscaled = compute(&w.raw, None, None);
         assert!(
-            (unscaled.summary().kelvin - cct).abs() > 150.0,
+            (unscaled.illuminant.scene.cct_k - cct).abs() > 150.0,
             "{cct} K read as {} without the scale",
-            unscaled.summary().kelvin
+            unscaled.illuminant.scene.cct_k
         );
         // The mosaic is balanced with the body's own white: g0 = 1 / w_body, whatever the profile.
         let g0 = est.initial_gains().unwrap();
@@ -220,9 +221,9 @@ fn the_estimator_sees_the_body_on_the_profiles_scale() {
                 "{truth} K (as shot {as_shot:?}) on the profile's scale: {err:.2} degrees"
             );
             assert!(
-                (est.summary().kelvin - truth).abs() <= 250.0,
+                (est.illuminant.scene.cct_k - truth).abs() <= 250.0,
                 "{truth} K read as {}",
-                est.summary().kelvin
+                est.illuminant.scene.cct_k
             );
             // The same file without the scale: the estimator is trained on the profile's raw, so the error is the
             // body's offset (the angle between the two whites) or more.

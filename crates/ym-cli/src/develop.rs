@@ -18,8 +18,8 @@ use serde_json::Value;
 use ym_color::wb::LightSource;
 use ym_core::settings::{
     AutoOr, ContrastSetting, DecodePatch, DevelopSettings, ExposureSetting,
-    NoiseReductionManualPatch, RolloffPatch,
-    SettingsField, SettingsPatch, SharpenManualPatch, WhiteBalanceManualPatch,
+    NoiseReductionManualPatch, RolloffPatch, SettingsField, SettingsPatch, SharpenManualPatch,
+    WhiteBalanceManualPatch,
 };
 use ym_looks::library::LookId;
 

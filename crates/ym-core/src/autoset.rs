@@ -29,7 +29,8 @@ use crate::auto::{AutoError, Preview};
 /// (`AutoExposure::mean_luminance`, which `AutoEstimates` keeps in `exposure.meter`). Everything here is the
 /// computation `AutoEstimates::compute_with_look` makes, so the photo's own estimates give the same numbers.
 ///
-/// The metering chain is `color.metering_chain` (every colour setting on Auto, EV 0), the pixels are
+/// The metering chain is `color.metering_chain` (every colour setting on Auto, EV 0, and the neutral Auto white of
+/// `white_preference` 0: the chain the model was trained on, whatever the setting says), the pixels are
 /// `preview.metered(g0)` with `g0 = color.initial_gains()`, and the clip level is the AWG4 `Y` of the clipped
 /// neutral of that chain (not the Rec.709 luma of `ClipLevel::luma`). The brightness value of the shot comes from
 /// the metadata (`ShotInfo::bv`), the ISO and the flash from the metadata too.

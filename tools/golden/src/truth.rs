@@ -236,9 +236,9 @@ pub fn truth_settings(base: &serde_json::Value) -> serde_json::Value {
             .or_insert_with(|| serde_json::Value::from(0));
         // The exposure of the rule (`CAMERA_GAIN_EV`, no model): the same number the automatic exposure gives these
         // charts, so the picture does not move.
-        map.entry("exposure").or_insert_with(|| {
-            serde_json::json!({"kind": "manual", "ev": ym_color::exposure::CAMERA_GAIN_EV})
-        });
+        map.entry("exposure").or_insert_with(
+            || serde_json::json!({"kind": "manual", "ev": ym_color::exposure::CAMERA_GAIN_EV}),
+        );
         let rolloff = map
             .entry("rolloff")
             .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
@@ -564,7 +564,10 @@ mod tests {
         // The automatic contrast and the preferred white are off, and the exposure is the rule's.
         assert_eq!(plain["contrast"], json!({"kind": "manual", "value": 0}));
         assert_eq!(plain["white_preference"], 0);
-        assert_eq!(plain["exposure"], json!({"kind": "manual", "ev": ym_color::exposure::CAMERA_GAIN_EV}));
+        assert_eq!(
+            plain["exposure"],
+            json!({"kind": "manual", "ev": ym_color::exposure::CAMERA_GAIN_EV})
+        );
         // What the entry sets itself stays.
         let own = truth_settings(&json!({
             "look": "builtin:signature",

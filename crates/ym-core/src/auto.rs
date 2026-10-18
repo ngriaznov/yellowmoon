@@ -1371,13 +1371,7 @@ impl AutoEstimates {
         // The features of `autoset` (`docs/18` section 3). They are made for every photo, since the preferred white
         // reads the key's brightness whether or not a model runs. A feature error is not a failed photo: the rule
         // stands and the preferred white has no brightness.
-        let features = photo_features(
-            meta,
-            &preview,
-            &color,
-            tables,
-            measurement.mean_luminance(),
-        );
+        let features = photo_features(meta, &preview, &color, tables, measurement.mean_luminance());
         let (applied, key_bv, autoset) = match features {
             Ok(features) => {
                 let key_bv = (features.values[1] > 0.5).then_some(features.values[0]);

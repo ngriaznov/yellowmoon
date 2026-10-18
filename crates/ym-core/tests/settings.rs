@@ -47,6 +47,7 @@ fn rich() -> DevelopSettings {
     s.look_intensity = 62.5;
     s.exposure = AutoOr::Manual(ym_core::settings::ExposureValue { ev: -1.25 });
     s.contrast = ym_core::settings::ContrastSetting::manual_value(12.0);
+    s.white_preference = 0.5;
     s.brightness = -7.5;
     s.highlights = -30.0;
     s.shadows = 25.0;
@@ -126,10 +127,11 @@ fn typescript_defaults() -> Value {
         "look": "builtin:neutral",
         "look_intensity": 100,
         "exposure": { "kind": "auto" },
-        "contrast": 0, "brightness": 0, "highlights": 0, "shadows": 0, "white": 0, "black": 0,
+        "contrast": { "kind": "auto" }, "brightness": 0, "highlights": 0, "shadows": 0, "white": 0, "black": 0,
         "white_offset_ev": 0,
         "light_source": "auto",
         "white_balance": { "kind": "auto" },
+        "white_preference": 1,
         "color_balance": { "shadows": [0, 0], "midtones": [0, 0], "highlights": [0, 0] },
         "saturation": 0,
         "color_warp": { "pins": [] },
@@ -418,7 +420,10 @@ fn unknown_fields_and_malformed_values_are_refused() {
     // A partial document is fine.
     let partial: DevelopSettings =
         serde_json::from_str(r#"{"contrast": 10, "decode": {"lens_corrections": false}}"#).unwrap();
-    assert_eq!(partial.contrast, ym_core::settings::ContrastSetting::manual_value(10.0));
+    assert_eq!(
+        partial.contrast,
+        ym_core::settings::ContrastSetting::manual_value(10.0)
+    );
     assert!(!partial.decode.lens_corrections && partial.decode.neural_demosaic);
 }
 
@@ -793,7 +798,10 @@ fn values_out_of_range_are_clamped_and_reported() {
         s.exposure,
         ym_core::settings::ExposureSetting::manual_ev(4.0)
     );
-    assert_eq!(s.contrast, ym_core::settings::ContrastSetting::manual_value(-100.0));
+    assert_eq!(
+        s.contrast,
+        ym_core::settings::ContrastSetting::manual_value(-100.0)
+    );
     assert_eq!(s.look_intensity, 100.0);
     assert_eq!(
         s.rolloff,
@@ -1201,7 +1209,8 @@ fn reset_restores_every_field_to_its_default() {
         "the highlight range is not part of Re-run"
     );
     assert!(!s.sharpen.is_auto(), "sharpening is not part of Re-run");
-    assert_eq!(s.contrast, ym_core::settings::ContrastSetting::manual_value(12.0));
+    // Contrast is on the Automatic card: Re-run returns it to Auto (the Automatic card's Contrast row).
+    assert_eq!(s.contrast, ym_core::settings::AutoOr::Auto);
 }
 
 #[test]
@@ -1261,7 +1270,7 @@ fn output_sharpening_is_a_plain_number_in_a_patch_with_its_own_stage_group() {
         SettingsPatch::of_field(&s, SettingsField::OutputSharpening),
     );
     assert_eq!(other.output_sharpening, 50.0);
-    assert_eq!(other.contrast, ym_core::settings::ContrastSetting::manual_value(0.0));
+    assert_eq!(other.contrast, ym_core::settings::AutoOr::Auto);
 }
 
 #[test]
@@ -1285,7 +1294,10 @@ fn settings_read_from_a_file_are_clamped_and_checked() {
     s.rolloff.highlights = -3.0;
     s.curve.red = vec![[0.9, 0.1], [0.1, 0.9]];
     let (clean, clamped) = s.validated().unwrap();
-    assert_eq!(clean.contrast, ym_core::settings::ContrastSetting::manual_value(100.0));
+    assert_eq!(
+        clean.contrast,
+        ym_core::settings::ContrastSetting::manual_value(100.0)
+    );
     assert_eq!(clean.rolloff.highlights, 0.0);
     assert_eq!(clean.curve.red, vec![[0.1, 0.9], [0.9, 0.1]]);
     for f in [
@@ -1331,8 +1343,9 @@ fn auto_values_resolve_against_the_estimates_and_say_so() {
         (r.values.kelvin, r.values.tint),
         (summary.kelvin, summary.tint)
     );
+    // A 4300 K light is warm: its Auto white is the preferred one, 4450 K (`docs/18` section 5).
     assert!(
-        (r.values.kelvin - 4300.0).abs() <= 50.0,
+        (r.values.kelvin - 4450.0).abs() <= 50.0,
         "{}",
         r.values.kelvin
     );
@@ -1384,7 +1397,13 @@ fn a_light_preset_shows_its_kelvin_while_white_balance_is_auto() {
         assert!(!r.auto.light_source && r.auto.white_balance);
     }
     // LED and fluorescent keep the estimated chromaticity.
-    let auto = with(LightSource::Auto);
+    // The Auto white of a warm light is the preferred one (`docs/18` section 5); the presets keep the estimated
+    // chromaticity, which is the Auto white at a preference of 0.
+    let auto = {
+        let mut s = DevelopSettings::default();
+        s.white_preference = 0.0;
+        resolve_with(&s, &est, &profile, None)
+    };
     for preset in [LightSource::Led, LightSource::Fluorescent] {
         let r = with(preset);
         assert!(

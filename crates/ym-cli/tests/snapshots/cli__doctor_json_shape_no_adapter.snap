@@ -4,8 +4,8 @@ expression: shape(&v)
 ---
 {
   "autoset": {
-    "reason": "string",
-    "version": "null"
+    "sha256": "string",
+    "version": "string"
   },
   "data_folder": "string",
   "gpu": {

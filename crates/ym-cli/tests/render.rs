@@ -551,7 +551,10 @@ fn a_settings_file_applies_to_every_photo_and_flags_override_it() {
         .assert()
         .success();
     for o in json_lines(&out.get_output().stdout) {
-        assert_eq!(o["settings"]["contrast"], json!({ "kind": "manual", "value": 30.0 }));
+        assert_eq!(
+            o["settings"]["contrast"],
+            json!({ "kind": "manual", "value": 30.0 })
+        );
         assert_eq!(o["settings"]["saturation"], -20.0, "the flag wins");
         assert_eq!(o["settings"]["exposure"]["ev"], 0.25);
     }
@@ -584,7 +587,11 @@ fn a_settings_object_keyed_by_file_name_gives_each_photo_its_own() {
         objects
             .iter()
             .find(|o| o["input"].as_str().is_some_and(|i| i.ends_with(name)))
-            .map(|o| o["settings"]["contrast"]["value"].as_f64().expect("contrast"))
+            .map(|o| {
+                o["settings"]["contrast"]["value"]
+                    .as_f64()
+                    .expect("contrast")
+            })
             .expect(name)
     };
     assert_eq!(contrast("a.ARW"), 40.0);

@@ -91,21 +91,15 @@ fn auto_chain(
     .unwrap()
 }
 
-fn max_relative_difference(a: &[[f64; 3]; 3], b: &[[f64; 3]; 3]) -> f64 {
-    let mut worst: f64 = 0.0;
-    for (ra, rb) in a.iter().zip(b) {
-        for (x, y) in ra.iter().zip(rb) {
-            let scale = x.abs().max(y.abs()).max(1e-12);
-            worst = worst.max((x - y).abs() / scale);
-        }
-    }
-    worst
-}
-
 #[test]
 fn a_zero_preference_is_the_neutral_auto_white_of_the_chain_before_autoset() {
     for p in all_profiles() {
-        for (cct, duv) in [(3000.0, 0.0), (2850.0, 0.004), (4200.0, -0.002), (6500.0, 0.0)] {
+        for (cct, duv) in [
+            (3000.0, 0.0),
+            (2850.0, 0.004),
+            (4200.0, -0.002),
+            (6500.0, 0.0),
+        ] {
             let s = scene(&p, cct, duv);
             let chain = auto_chain(&p, &s, 0.0, Some(8.0));
             // The Auto arm of the chain before `autoset`: C3 and C4 cancel exactly, the user's CCT is the scene's,
@@ -122,12 +116,40 @@ fn a_zero_preference_is_the_neutral_auto_white_of_the_chain_before_autoset() {
 }
 
 #[test]
+fn the_preferred_white_keeps_the_scene_tint_so_only_the_warmth_moves() {
+    // The user's light has the scene's own tint (the Duv is scaled by the locus's Duv scale at the new CCT), so the
+    // readout's tint is the scene's: the C3 and C4 tints cancel and only the warmth changes.
+    for p in all_profiles() {
+        for (cct, duv) in [(3000.0, 0.004), (3450.0, -0.003), (2800.0, 0.01)] {
+            let s = scene(&p, cct, duv);
+            let warm = auto_chain(&p, &s, 1.0, Some(8.0));
+            let own = wb::auto_readout(&p.white, &p.locus, &s);
+            assert!(
+                (warm.readout().tint - own.tint).abs() < 0.5,
+                "cct {cct} K duv {duv}: the Auto white's tint {} against the scene's {}",
+                warm.readout().tint,
+                own.tint
+            );
+            assert!(
+                warm.readout().kelvin_k > own.kelvin_k,
+                "cct {cct} K keeps warmth"
+            );
+        }
+    }
+}
+
+#[test]
 fn a_daylight_scene_is_unchanged_at_full_strength() {
     // Above the reference (6000 K) the preferred white is the scene's own light: the chain is the same bit for
     // bit at every strength, and with or without a brightness.
     for p in all_profiles() {
         // 5500 K is warmer than the 6000 K reference, so the rule applies to it; the test starts above the reference.
-        for (cct, duv) in [(6500.0, 0.0), (6000.0, 0.003), (7500.0, -0.004), (10000.0, 0.0)] {
+        for (cct, duv) in [
+            (6500.0, 0.0),
+            (6000.0, 0.003),
+            (7500.0, -0.004),
+            (10000.0, 0.0),
+        ] {
             let s = scene(&p, cct, duv);
             let neutral = auto_chain(&p, &s, 0.0, Some(9.0));
             assert_eq!(
@@ -135,7 +157,11 @@ fn a_daylight_scene_is_unchanged_at_full_strength() {
                 neutral,
                 "cct {cct} K duv {duv}"
             );
-            assert_eq!(auto_chain(&p, &s, 1.0, None), neutral, "cct {cct} K, no brightness");
+            assert_eq!(
+                auto_chain(&p, &s, 1.0, None),
+                neutral,
+                "cct {cct} K, no brightness"
+            );
         }
     }
 }
@@ -200,7 +226,10 @@ fn the_readout_as_manual_gives_nearly_the_auto_picture() {
     for rgb in [[0.3, 0.3, 0.3], [0.2, 0.05, 0.1], [0.05, 0.25, 0.1]] {
         let a = auto.apply(rgb).0;
         let m = manual.apply(rgb).0;
-        let (na, nm) = (a.iter().fold(0.0_f64, |x, v| x.max(v.abs())), m.iter().fold(0.0_f64, |x, v| x.max(v.abs())));
+        let (na, nm) = (
+            a.iter().fold(0.0_f64, |x, v| x.max(v.abs())),
+            m.iter().fold(0.0_f64, |x, v| x.max(v.abs())),
+        );
         for c in 0..3 {
             worst = worst.max((a[c] / na - m[c] / nm).abs());
         }
