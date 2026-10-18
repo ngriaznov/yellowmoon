@@ -1,4 +1,5 @@
-"""The blind page: `index.html` (the same file for every plan) and `plan.js` (the trials and the picture paths).
+"""The blind page: `index.html` (the same file for every plan) and `plan.js` (the trials, the picture paths and how many
+quarter turns each picture is turned by).
 
 The page is one file with inline CSS and JavaScript. It loads nothing from the network, and it never names a variant:
 the picture paths are folder codes (`plan.py`). It runs from `file://`, so `plan.js` is a script, not a JSON request.
@@ -9,7 +10,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Mapping
+from typing import Dict, Mapping
 
 PAGE_FILE = "index.html"
 PLAN_JS_FILE = "plan.js"
@@ -70,6 +71,7 @@ kbd {
 .side { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
 .frame {
   display: block;
+  position: relative;
   width: 100%;
   height: clamp(260px, calc(100vh - 380px), 980px);
   padding: 0;
@@ -80,7 +82,8 @@ kbd {
   overflow: hidden;
   cursor: zoom-in;
 }
-.frame img { display: block; width: 100%; height: 100%; object-fit: contain; }
+/* The script sets each picture's size and turn (fitPicture), so the picture's own box is what is measured. */
+.frame img { position: absolute; left: 50%; top: 50%; display: block; }
 .flags { display: flex; justify-content: center; }
 .flag {
   font: inherit;
@@ -272,10 +275,53 @@ body.full #full-hint { display: block; }
     }, 4000);
   }
 
-  function setPicture(img, path) {
-    if (img.getAttribute("data-path") === path) { return; }
-    img.setAttribute("data-path", path);
-    img.src = path;
+  function setPicture(img, picture) {
+    if (img.getAttribute("data-path") === picture.path) { return; }
+    img.setAttribute("data-path", picture.path);
+    img.setAttribute("data-turns", String(picture.turns));
+    img.src = picture.path;
+  }
+
+  function turnsOf(img) {
+    var turns = parseInt(img.getAttribute("data-turns"), 10);
+    return isNaN(turns) ? 0 : ((turns % 4) + 4) % 4;
+  }
+
+  // The frame's inside (without border and padding), exact to the fraction: clientWidth and clientHeight round, and a
+  // frame 840.5 px tall would be read as 841 px, one pixel too tall for the picture.
+  function innerBox(frame) {
+    var rect = frame.getBoundingClientRect();
+    var style = window.getComputedStyle(frame);
+    function sum(first, second) { return parseFloat(style[first]) + parseFloat(style[second]); }
+    return {
+      width: rect.width - sum("borderLeftWidth", "borderRightWidth") - sum("paddingLeft", "paddingRight"),
+      height: rect.height - sum("borderTopWidth", "borderBottomWidth") - sum("paddingTop", "paddingBottom")
+    };
+  }
+
+  // Sizes a picture to fit its frame, then turns it clockwise by its quarter turns. A quarter turn swaps the sides of
+  // the box the picture is fitted into, so the turned picture fits the frame. The picture's box is its own size, so its
+  // bounding box is the picture. Like object-fit: contain, a small picture is enlarged to fit.
+  function fitPicture(img) {
+    var inside = innerBox(img.parentNode);
+    var turns = turnsOf(img);
+    var boxW = inside.width;
+    var boxH = inside.height;
+    if (turns % 2 === 1) {
+      var swap = boxW;
+      boxW = boxH;
+      boxH = swap;
+    }
+    if (!img.naturalWidth || !img.naturalHeight || boxW <= 0 || boxH <= 0) { return; }
+    var scale = Math.min(boxW / img.naturalWidth, boxH / img.naturalHeight);
+    img.style.width = Math.floor(img.naturalWidth * scale) + "px";
+    img.style.height = Math.floor(img.naturalHeight * scale) + "px";
+    img.style.transform = "translate(-50%, -50%) rotate(" + (turns * 90) + "deg)";
+  }
+
+  function fitAll() {
+    fitPicture($("img-left"));
+    fitPicture($("img-right"));
   }
 
   function preload(path) {
@@ -303,8 +349,8 @@ body.full #full-hint { display: block; }
     renderFlags();
     var next = plan.trials[cur + 1];
     if (next) {
-      preload(next.pictures.left);
-      preload(next.pictures.right);
+      preload(next.pictures.left.path);
+      preload(next.pictures.right.path);
     }
   }
 
@@ -418,6 +464,15 @@ body.full #full-hint { display: block; }
     setFull(!document.body.classList.contains("full"));
   });
   document.addEventListener("keydown", onKey);
+  $("img-left").addEventListener("load", fitAll);
+  $("img-right").addEventListener("load", fitAll);
+  if (typeof window.ResizeObserver === "function") {
+    var frameSizes = new window.ResizeObserver(fitAll);
+    frameSizes.observe($("frame-left"));
+    frameSizes.observe($("frame-right"));
+  } else {
+    window.addEventListener("resize", fitAll);
+  }
 
   render();
   if (state.order.length > 0) { save(); }
@@ -428,16 +483,20 @@ body.full #full-hint { display: block; }
 """
 
 
+def _trial_pictures(trial: Mapping[str, object]) -> Dict[str, Dict[str, object]]:
+    """The two pictures of a trial for the page: each one's path and its quarter turns clockwise."""
+    paths: Mapping[str, str] = trial["pictures"]  # type: ignore[assignment]
+    turns: Mapping[str, int] = trial["turns"]  # type: ignore[assignment]
+    return {side: {"path": paths[side], "turns": turns[side]} for side in ("left", "right")}
+
+
 def plan_js(plan: Mapping[str, object]) -> str:
-    """The script `plan.js`: the plan id, the number of trials, and each trial's two picture paths."""
+    """The script `plan.js`: the plan id, the number of trials, and each trial's two pictures (path and turns)."""
     trials = plan["trials"]  # type: ignore[index]
     payload = {
         "plan_id": plan["plan_id"],  # type: ignore[index]
         "trial_count": len(trials),  # type: ignore[arg-type]
-        "trials": [
-            {"id": t["id"], "pictures": {"left": t["pictures"]["left"], "right": t["pictures"]["right"]}}  # type: ignore[index]
-            for t in trials  # type: ignore[union-attr]
-        ],
+        "trials": [{"id": t["id"], "pictures": _trial_pictures(t)} for t in trials],  # type: ignore[index]
     }
     return "window.YM_AB_PLAN = " + json.dumps(payload, separators=(",", ":"), ensure_ascii=True) + ";\n"
 

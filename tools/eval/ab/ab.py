@@ -5,7 +5,8 @@
                                            [--ym PATH] [--data DIR] [--jobs N]
     tools/eval/ab/ab.sh score RESULTS_JSON [--plan PLAN_JSON]
 
-`prepare` renders each photo as autoset and as the rule before autoset, and copies the camera's own JPEG. It writes
+`prepare` renders each photo as autoset and as the rule before autoset, and copies the camera's own JPEG (the page turns
+it upright from the raw file's orientation). It writes
 `index.html` (the blind page), `plan.js` (what the page shows), `plan.json` (the key, for scoring) and the pictures
 under `pictures/`. `score` reads the `results.json` the page exports, applies gate 5 and writes `score.json` next to
 the results. Nothing is uploaded.
@@ -50,6 +51,7 @@ from renders import (  # noqa: E402
     Pictures,
     copy_rule_data,
     make_pictures,
+    raw_turns,
     ym_environment,
 )
 from score import ScoreError, format_report, score_results  # noqa: E402
@@ -160,7 +162,13 @@ def prepare(options: PrepareOptions, log: Callable[[str], None] = stderr_log) ->
         }
         rule_data = copy_rule_data(options.data, scratch)
         jobs = [
-            PhotoJob(number=number, stem=photo.stem, stratum=photo.stratum, raw=photo.path)
+            PhotoJob(
+                number=number,
+                stem=photo.stem,
+                stratum=photo.stratum,
+                raw=photo.path,
+                camera_turns=raw_turns(photo.path),
+            )
             for number, photo in enumerate(photos, start=1)
         ]
         pictures = Pictures(
@@ -189,7 +197,10 @@ def prepare(options: PrepareOptions, log: Callable[[str], None] = stderr_log) ->
         kept = [job for job in jobs if job.number not in failures]
         if not kept:
             raise PrepareFailed("no photo rendered in every variant, so there is no test; see the reasons above")
-        plan_photos = [PlanPhoto(number=job.number, stem=job.stem, stratum=job.stratum) for job in kept]
+        plan_photos = [
+            PlanPhoto(number=job.number, stem=job.stem, stratum=job.stratum, camera_turns=job.camera_turns)
+            for job in kept
+        ]
         plan = build_plan(plan_photos, options.seed, provenance)
         plan["skipped"] = skipped
         plan_path = options.out / PLAN_FILE

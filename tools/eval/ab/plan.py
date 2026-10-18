@@ -43,11 +43,20 @@ class Photo:
 
 @dataclass(frozen=True)
 class PlanPhoto:
-    """A photo that is in the test: its number (names its pictures), stem and stratum."""
+    """A photo that is in the test: its number (names its pictures), stem and stratum, and the quarter turns that show
+    its camera's JPEG upright (0 to 3, from the raw file's orientation)."""
 
     number: int
     stem: str
     stratum: str
+    camera_turns: int = 0
+
+
+def picture_turns(photo: PlanPhoto, variant: str) -> int:
+    """The quarter turns clockwise that show a picture of `photo` upright on the page. A render is already upright,
+    because `ym` applies the raw file's orientation, so it is 0. The camera's JPEG is stored in sensor orientation, so
+    it takes the turns of its raw file."""
+    return photo.camera_turns if variant == "camera" else 0
 
 
 @dataclass(frozen=True)
@@ -139,23 +148,30 @@ def build_plan(photos: Sequence[PlanPhoto], seed: int, provenance: Mapping[str, 
     """The plan document (`plan.json`): the photos, their pictures, and the trials in the order the page shows them.
 
     `provenance` records what made the pictures (the `ym` version, the long edge, the model's hash). The plan id is a
-    hash of the design and of the provenance, so a different render or a different set of photos gets a new id and
-    the page keeps the answers of each plan apart.
+    hash of the design, of the provenance and of the quarter turns of every picture, so a different render, a
+    different set of photos or a different turn gets a new id and the page keeps the answers of each plan apart.
+
+    Each photo entry and each trial side also records the quarter turns of its picture (`turns`). The page reads them
+    from `plan.js`; scoring does not need them.
     """
     trials = build_trials(photos, seed)
+    by_number = {photo.number: photo for photo in photos}
     photo_entries: List[Dict[str, object]] = []
     for photo in photos:
         pictures = {variant: picture_relpath(seed, variant, photo.number, photo.stem) for variant in VARIANTS}
+        turns = {variant: picture_turns(photo, variant) for variant in VARIANTS}
         photo_entries.append(
             {
                 "number": photo.number,
                 "stem": photo.stem,
                 "stratum": photo.stratum,
                 "pictures": pictures,
+                "turns": turns,
             }
         )
     trial_entries: List[Dict[str, object]] = []
     for trial in trials:
+        photo = by_number[trial.number]
         trial_entries.append(
             {
                 "id": trial.id,
@@ -169,12 +185,16 @@ def build_plan(photos: Sequence[PlanPhoto], seed: int, provenance: Mapping[str, 
                     "left": picture_relpath(seed, trial.left, trial.number, trial.stem),
                     "right": picture_relpath(seed, trial.right, trial.number, trial.stem),
                 },
+                "turns": {
+                    "left": picture_turns(photo, trial.left),
+                    "right": picture_turns(photo, trial.right),
+                },
             }
         )
     identity = {
         "seed": seed,
         "provenance": dict(provenance),
-        "photos": [[p.number, p.stem, p.stratum] for p in photos],
+        "photos": [[p.number, p.stem, p.stratum, [picture_turns(p, v) for v in VARIANTS]] for p in photos],
         "trials": [[t.id, t.comparison, t.left, t.right] for t in trials],
     }
     digest = hashlib.sha256(json.dumps(identity, sort_keys=True, separators=(",", ":")).encode("utf-8"))

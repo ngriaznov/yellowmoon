@@ -144,6 +144,9 @@ the plan, pass it: `ab.sh score RESULTS_JSON --plan PLAN_JSON`. Results from ano
 
 ## Known limits
 
+- **The camera's JPEG.** The camera's JPEG is shown turned upright from the raw file's orientation, as the
+  renders are; its pixels are the camera's own. Some cameras set to 16:9 store a 16:9 JPEG, which is shown
+  as it is.
 - **Sizes.** The camera's JPEG is used as it is. The page shows every picture scaled to fit the same
   box, so a file with more pixels than the screen is scaled down and a render shown larger than its
   pixels is enlarged. If that is a concern, make the test again with `--long-edge 3000`.

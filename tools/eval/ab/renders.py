@@ -5,7 +5,9 @@ Every `ym` call gets a new, empty home folder (so the user's preferences and imp
 picture), the `--cpu` renderer and the data folder of its variant. The `rule` variant runs on a temporary copy of
 the data folder without `models/autoset`: `ym` then uses the rule of the time before automatic settings
 (docs/18 section 4.4), with `--contrast 0 --white-preference 0` as docs/18 section 8 gives it. The camera's JPEG is
-copied byte for byte from the raw file. The originals are only ever read.
+copied byte for byte from the raw file, and it is not re-encoded. Its pixels are stored in sensor orientation, so the
+page turns it upright by the raw file's EXIF orientation (`raw_turns`), as `ym` turns the renders. The originals are
+only ever read.
 """
 
 from __future__ import annotations
@@ -14,6 +16,7 @@ import concurrent.futures
 import json
 import os
 import shutil
+import struct
 import subprocess
 import tempfile
 from dataclasses import dataclass
@@ -25,6 +28,14 @@ from plan import VARIANTS, picture_name, picture_relpath
 JPEG_START = b"\xff\xd8"
 QUALITY = 92
 RENDER_TIMEOUT_S = 1800.0
+#: EXIF Orientation (IFD0 tag 0x0112) -> quarter turns clockwise that show the camera's JPEG upright. Sony cameras do
+#: not write the mirrored values (2, 4, 5, 7), so those are shown as their unmirrored turns and the mirror is ignored.
+ORIENTATION_TURNS: Mapping[int, int] = {1: 0, 2: 0, 3: 2, 4: 2, 5: 1, 6: 1, 7: 3, 8: 3}
+ORIENTATION_TAG = 0x0112
+TIFF_TYPE_SHORT = 3
+TIFF_LITTLE_ENDIAN = b"II*\x00"
+TIFF_BIG_ENDIAN = b"MM\x00*"
+IFD_ENTRY_BYTES = 12
 #: The flags each rendered variant adds to the shared render flags.
 RENDER_FLAGS: Mapping[str, Tuple[str, ...]] = {
     "autoset": (),
@@ -38,12 +49,14 @@ class PictureError(Exception):
 
 @dataclass(frozen=True)
 class PhotoJob:
-    """One photo to make pictures of: its number, stem and stratum, and the raw file."""
+    """One photo to make pictures of: its number, stem and stratum, the raw file, and the quarter turns that show the
+    camera's JPEG upright (`raw_turns`)."""
 
     number: int
     stem: str
     stratum: str
     raw: Path
+    camera_turns: int = 0
 
 
 @dataclass(frozen=True)
@@ -156,6 +169,44 @@ def render_picture(pictures: Pictures, job: PhotoJob, variant: str) -> None:
     run_ym(pictures, args, data)
     if not target.is_file() or target.stat().st_size == 0:
         raise PictureError(f"ym wrote no picture to {target.name}")
+
+
+def raw_orientation(path: Path) -> int:
+    """The EXIF orientation (1 to 8) that the raw file records in IFD0, or 1 when it has none, the value is out of
+    range, or the file is missing, unreadable or not a TIFF file.
+
+    An ARW is a TIFF file: the first eight bytes give the byte order and the offset of IFD0, and IFD0 holds the
+    orientation as a SHORT (tag 0x0112). Only the header and IFD0 are read, and this never raises.
+    """
+    try:
+        with open(path, "rb") as handle:
+            header = handle.read(8)
+            if header[:4] == TIFF_LITTLE_ENDIAN:
+                order = "<"
+            elif header[:4] == TIFF_BIG_ENDIAN:
+                order = ">"
+            else:
+                return 1
+            (ifd_offset,) = struct.unpack(order + "I", header[4:8])
+            handle.seek(ifd_offset)
+            (count,) = struct.unpack(order + "H", handle.read(2))
+            entries = handle.read(count * IFD_ENTRY_BYTES)
+    except (OSError, struct.error, ValueError, OverflowError):
+        return 1
+    for start in range(0, len(entries) - IFD_ENTRY_BYTES + 1, IFD_ENTRY_BYTES):
+        tag, kind = struct.unpack_from(order + "HH", entries, start)
+        if tag != ORIENTATION_TAG:
+            continue
+        if kind != TIFF_TYPE_SHORT:
+            return 1
+        (value,) = struct.unpack_from(order + "H", entries, start + 8)
+        return value if value in ORIENTATION_TURNS else 1
+    return 1
+
+
+def raw_turns(path: Path) -> int:
+    """The quarter turns clockwise that show the camera's JPEG of a raw file upright: its orientation, mapped."""
+    return ORIENTATION_TURNS[raw_orientation(path)]
 
 
 def camera_picture(pictures: Pictures, job: PhotoJob) -> None:

@@ -7,12 +7,15 @@ No `ym`, no network and no raw files are needed:
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import math
 import os
+import random
 import re
 import shutil
 import signal
+import struct
 import sys
 import tempfile
 import unittest
@@ -28,6 +31,7 @@ sys.path.insert(0, str(HERE))
 import ab  # noqa: E402
 import page  # noqa: E402
 import plan as planlib  # noqa: E402
+import renders  # noqa: E402
 import score as scorelib  # noqa: E402
 
 #: Names that must appear nowhere in the page or in plan.js: the variants and the preferred white's name.
@@ -51,7 +55,6 @@ import sys
 args = sys.argv[1:]
 log = os.environ.get("FAKE_YM_LOG")
 
-
 def record(**fields):
     if log:
         with open(log, "a", encoding="utf-8") as handle:
@@ -68,7 +71,9 @@ home_empty = not os.listdir(home)
 if args[:1] == ["info"]:
     source = args[-1]
     with open(source, "rb") as handle:
-        first = handle.readline().decode("ascii", "replace").split()
+        head = handle.read(256)
+    start = head.find(b"FAKEARW")
+    first = head[start:].split(b"\n", 1)[0].decode("ascii", "replace").split() if start >= 0 else []
     fields = dict(part.split("=", 1) for part in first[1:] if "=" in part)
     stem = os.path.splitext(os.path.basename(source))[0]
     record(cmd="info", stem=stem, data=data, model=model, home_empty=home_empty)
@@ -102,16 +107,51 @@ def camera_bytes(stem: str) -> bytes:
     return b"\xff\xd8\xff\xe0camera of " + stem.encode() + b"\xff\xd9"
 
 
-def write_arw(path: Path, jpeg: Optional[bytes]) -> None:
-    """A fake ARW: a header line with the embedded JPEG's offset (256) and length, then the JPEG, then some raw bytes.
-    With `jpeg` None the header has no preview."""
+def tiff_file(
+    orientation: Optional[int] = 1,
+    big_endian: bool = False,
+    tag: int = 0x0112,
+    orientation_type: int = 3,
+) -> bytes:
+    """A TIFF header with IFD0 at offset 8: one entry for `tag` (the Orientation by default, a SHORT unless
+    `orientation_type` says otherwise) holding `orientation`, or no entry at all when `orientation` is None."""
+    order = ">" if big_endian else "<"
+    magic = b"MM\x00*" if big_endian else b"II*\x00"
+    entries = b""
+    count = 0
+    if orientation is not None:
+        count = 1
+        value = struct.pack(order + "H", orientation) + b"\x00\x00"
+        entries = struct.pack(order + "HHI", tag, orientation_type, 1) + value
+    ifd = struct.pack(order + "H", count) + entries + struct.pack(order + "I", 0)
+    return magic + struct.pack(order + "I", 8) + ifd
+
+
+def write_arw(path: Path, jpeg: Optional[bytes], orientation: Optional[int] = 1) -> None:
+    """A fake ARW: a TIFF header whose IFD0 holds the orientation (none when `orientation` is None), a line with the
+    embedded JPEG's offset (256) and length that the fake `ym` reads, the JPEG at offset 256, then some raw bytes. With
+    `jpeg` None the line says there is no preview."""
     path.parent.mkdir(parents=True, exist_ok=True)
+    head = tiff_file(orientation).ljust(64, b" ")
     if jpeg is None:
-        body = b"FAKEARW NOPREVIEW\n" + b"x" * 300
+        body = head + b"FAKEARW NOPREVIEW\n" + b"x" * 300
     else:
-        header = f"FAKEARW OFFSET=256 LENGTH={len(jpeg)}\n".encode("ascii")
-        body = header.ljust(256, b" ") + jpeg
+        line = f"FAKEARW OFFSET=256 LENGTH={len(jpeg)}\n".encode("ascii")
+        body = (head + line).ljust(256, b" ") + jpeg
     path.write_bytes(body + b"RAWDATA" * 40)
+
+
+class CountingReader(io.BytesIO):
+    """A BytesIO that counts the bytes it hands out, to show how much of a file the code reads."""
+
+    def __init__(self, data: bytes) -> None:
+        super().__init__(data)
+        self.read_total = 0
+
+    def read(self, size: Optional[int] = -1) -> bytes:
+        chunk = super().read(size)
+        self.read_total += len(chunk)
+        return chunk
 
 
 def sha256_of(path: Path) -> str:
@@ -221,6 +261,16 @@ class PlanTests(unittest.TestCase):
         self.assertEqual(first["plan_id"], same["plan_id"])
         self.assertNotEqual(first["plan_id"], later["plan_id"])
 
+    def test_the_plan_id_changes_when_a_camera_turn_changes(self) -> None:
+        photos = self.photo_list(6)
+        turned = list(photos)
+        turned[2] = planlib.PlanPhoto(number=3, stem=photos[2].stem, stratum=photos[2].stratum, camera_turns=1)
+        upright = planlib.build_plan(photos, 1, {"ym": "ym"})
+        again = planlib.build_plan(photos, 1, {"ym": "ym"})
+        sideways = planlib.build_plan(turned, 1, {"ym": "ym"})
+        self.assertEqual(upright["plan_id"], again["plan_id"])
+        self.assertNotEqual(upright["plan_id"], sideways["plan_id"])
+
     def test_no_picture_path_in_the_plan_contains_a_variant_name(self) -> None:
         photos = self.photo_list(8)
         plan = planlib.build_plan(photos, 9, {"ym": "ym"})
@@ -236,6 +286,145 @@ class PlanTests(unittest.TestCase):
             for word in planlib.VARIANTS:
                 self.assertNotIn(word, path.lower())
         self.assertEqual(len({v["code"] for v in plan["variants"].values()}), len(plan["variants"]))
+
+
+class RawOrientationTests(unittest.TestCase):
+    """The orientation a raw file records in IFD0, and the turns the page takes from it: synthetic TIFF headers."""
+
+    def setUp(self) -> None:
+        self.root = Path(tempfile.mkdtemp(prefix="ab-orient-"))
+        self.addCleanup(shutil.rmtree, self.root, True)
+
+    def write(self, data: bytes, name: str = "raw.ARW") -> Path:
+        path = self.root / name
+        path.write_bytes(data)
+        return path
+
+    def test_little_endian_orientations_are_read(self) -> None:
+        for value in (1, 3, 6, 8):
+            self.assertEqual(renders.raw_orientation(self.write(tiff_file(value))), value, value)
+
+    def test_big_endian_orientations_are_read(self) -> None:
+        for value in (1, 3, 6, 8):
+            path = self.write(tiff_file(value, big_endian=True))
+            self.assertEqual(renders.raw_orientation(path), value, value)
+
+    def test_the_mirrored_values_are_read_as_recorded(self) -> None:
+        for value in (2, 4, 5, 7):
+            self.assertEqual(renders.raw_orientation(self.write(tiff_file(value))), value, value)
+
+    def test_a_missing_orientation_is_one(self) -> None:
+        self.assertEqual(renders.raw_orientation(self.write(tiff_file(None))), 1)
+
+    def test_another_tag_is_not_the_orientation(self) -> None:
+        self.assertEqual(renders.raw_orientation(self.write(tiff_file(6, tag=0x010F))), 1)
+
+    def test_out_of_range_values_are_one(self) -> None:
+        for value in (0, 9, 255, 65535):
+            self.assertEqual(renders.raw_orientation(self.write(tiff_file(value))), 1, value)
+
+    def test_an_orientation_that_is_not_a_short_is_one(self) -> None:
+        self.assertEqual(renders.raw_orientation(self.write(tiff_file(6, orientation_type=4))), 1)
+
+    def test_a_truncated_file_is_one_until_the_orientation_entry_is_complete(self) -> None:
+        full = tiff_file(6)
+        entry_end = 8 + 2 + 12  # header, count and the one entry: the orientation is complete at byte 22
+        for length in range(len(full)):
+            expected = 6 if length >= entry_end else 1
+            self.assertEqual(renders.raw_orientation(self.write(full[:length])), expected, length)
+
+    def test_garbage_and_wrong_headers_are_one(self) -> None:
+        noise = bytes(random.Random(3).randrange(256) for _ in range(500))
+        good = tiff_file(6)
+        cases = [
+            b"",
+            b"not a raw file at all",
+            noise,
+            b"II+\x00" + good[4:],  # wrong magic
+            b"II*\x00" + b"\xff\xff\xff\xff",  # IFD0 beyond the end of the file
+            b"II*\x00" + struct.pack("<I", 8) + b"\xff\xff",  # 65535 entries, none present
+            b"MM\x00*" + good[4:],  # big-endian header, little-endian contents
+        ]
+        for data in cases:
+            self.assertEqual(renders.raw_orientation(self.write(data)), 1, data[:12])
+
+    def test_a_missing_file_a_folder_and_a_bad_name_are_one(self) -> None:
+        self.assertEqual(renders.raw_orientation(self.root / "missing.ARW"), 1)
+        self.assertEqual(renders.raw_orientation(self.root), 1)
+        self.assertEqual(renders.raw_orientation(Path("bad\x00name.ARW")), 1)
+
+    def test_only_the_header_and_ifd0_are_read(self) -> None:
+        reader = CountingReader(tiff_file(6) + b"\x00" * (4 * 1024 * 1024))
+        with mock.patch.object(renders, "open", create=True, side_effect=lambda *args, **kwargs: reader):
+            self.assertEqual(renders.raw_orientation(self.root / "big.ARW"), 6)
+        self.assertLess(reader.read_total, 1024)
+
+    def test_the_mapping_turns_orientations_clockwise(self) -> None:
+        self.assertEqual(
+            dict(renders.ORIENTATION_TURNS),
+            {1: 0, 2: 0, 3: 2, 4: 2, 5: 1, 6: 1, 7: 3, 8: 3},
+        )
+        self.assertEqual(sorted(renders.ORIENTATION_TURNS), list(range(1, 9)))
+
+    def test_raw_turns_maps_the_file_orientation_to_quarter_turns(self) -> None:
+        for orientation, turns in ((1, 0), (6, 1), (3, 2), (8, 3)):
+            self.assertEqual(renders.raw_turns(self.write(tiff_file(orientation))), turns, orientation)
+        self.assertEqual(renders.raw_turns(self.root / "missing.ARW"), 0)
+
+
+class TurnTests(unittest.TestCase):
+    """The turns of each picture in the plan and in `plan.js`: a render is upright, the camera's JPEG takes its raw's."""
+
+    def photos(self) -> List[planlib.PlanPhoto]:
+        return [
+            planlib.PlanPhoto(number=1, stem="DSC00001", stratum="portrait", camera_turns=1),
+            planlib.PlanPhoto(number=2, stem="DSC00002", stratum="landscape"),
+            planlib.PlanPhoto(number=3, stem="DSC00003", stratum="night", camera_turns=3),
+            planlib.PlanPhoto(number=4, stem="DSC00004", stratum="other", camera_turns=2),
+        ]
+
+    def test_every_picture_of_plan_js_has_its_turns_and_renders_are_zero(self) -> None:
+        photos = self.photos()
+        plan = planlib.build_plan(photos, 4, {"ym": "ym"})
+        text = page.plan_js(plan)
+        payload = json.loads(text.split("=", 1)[1].strip().rstrip(";"))
+        camera_turns = {photo.number: photo.camera_turns for photo in photos}
+        by_id = {trial["id"]: trial for trial in plan["trials"]}  # type: ignore[index]
+        self.assertEqual(len(payload["trials"]), len(plan["trials"]))  # type: ignore[arg-type]
+        pictures = 0
+        for entry in payload["trials"]:
+            trial = by_id[entry["id"]]
+            for side in ("left", "right"):
+                picture = entry["pictures"][side]
+                pictures += 1
+                self.assertEqual(picture["path"], trial["pictures"][side])
+                self.assertIsInstance(picture["turns"], int)
+                variant = trial[side]
+                expected = camera_turns[trial["number"]] if variant == "camera" else 0
+                self.assertEqual(picture["turns"], expected, f"trial {trial['id']} {side} {variant}")
+        self.assertEqual(pictures, 2 * len(plan["trials"]))  # type: ignore[arg-type]
+
+    def test_plan_json_records_the_turns_of_every_picture(self) -> None:
+        photos = self.photos()
+        plan = planlib.build_plan(photos, 4, {"ym": "ym"})
+        for entry in plan["photos"]:  # type: ignore[index]
+            self.assertEqual(set(entry["turns"]), set(planlib.VARIANTS))
+            self.assertEqual(entry["turns"]["autoset"], 0)
+            self.assertEqual(entry["turns"]["rule"], 0)
+            photo = next(p for p in photos if p.number == entry["number"])
+            self.assertEqual(entry["turns"]["camera"], photo.camera_turns)
+        for trial in plan["trials"]:  # type: ignore[union-attr]
+            self.assertEqual(set(trial["turns"]), {"left", "right"})
+            for side in ("left", "right"):
+                photo = next(p for p in photos if p.number == trial["number"])
+                self.assertEqual(trial["turns"][side], planlib.picture_turns(photo, trial[side]))
+
+    def test_a_plan_without_turns_still_validates_and_scores(self) -> None:
+        plan, results = make_case([("rule", "a", 2, 1, 0, 0, 0), ("camera", "a", 1, 2, 0, 0, 0)])
+        self.assertNotIn("turns", plan["trials"][0])  # type: ignore[index]
+        scorelib.validate_plan(plan, Path("plan.json"))
+        report = score_answers(plan, results)
+        self.assertEqual(report["answered"], len(results["answers"]))  # type: ignore[index]
 
 
 class PrepareHarness(unittest.TestCase):
@@ -352,6 +541,28 @@ class PrepareTests(PrepareHarness):
         for entry in result.plan["photos"]:  # type: ignore[index]
             camera = self.out / entry["pictures"]["camera"]
             self.assertEqual(camera.read_bytes(), camera_bytes(entry["stem"]))
+
+    def test_a_raw_shot_upright_gets_one_turn_on_its_camera_picture_only(self) -> None:
+        write_arw(self.photos / "portrait" / "P1.arw", camera_bytes("P1"), orientation=6)
+        result = self.prepare()
+        turns = {entry["stem"]: entry["turns"] for entry in result.plan["photos"]}  # type: ignore[index]
+        self.assertEqual(turns["P1"]["camera"], 1)
+        self.assertEqual((turns["P1"]["autoset"], turns["P1"]["rule"]), (0, 0))
+        for stem in ("L1", "L2", "N1", "T1"):
+            self.assertEqual(turns[stem]["camera"], 0, stem)
+        plan_doc = json.loads((self.out / "plan.json").read_text(encoding="utf-8"))
+        self.assertEqual(plan_doc["plan_id"], result.plan["plan_id"])
+        payload = json.loads((self.out / "plan.js").read_text(encoding="utf-8").split("=", 1)[1].strip().rstrip(";"))
+        shown = {entry["id"]: entry["pictures"] for entry in payload["trials"]}
+        checked = 0
+        for trial in plan_doc["trials"]:
+            if trial["stem"] != "P1":
+                continue
+            for side in ("left", "right"):
+                expected = 1 if trial[side] == "camera" else 0
+                self.assertEqual(shown[trial["id"]][side]["turns"], expected, f"trial {trial['id']} {side}")
+                checked += 1
+        self.assertEqual(checked, 2 * 2, "two trials of P1, two sides each")
 
     def test_a_failing_render_drops_the_photo_from_every_trial(self) -> None:
         with mock.patch.dict(os.environ, {"FAKE_YM_FAIL": "P1"}):
