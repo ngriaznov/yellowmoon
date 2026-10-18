@@ -32,6 +32,7 @@ fn estimates_of(raw: &RawImage, env: &SessionEnv) -> AutoEstimates {
             illuminant_model: None,
             priors: &env.priors,
             autoset: None,
+            embedded_jpeg: None,
         },
     )
     .expect("estimates")
@@ -485,6 +486,7 @@ fn photos_that_cannot_be_analysed_say_so_in_plain_words() {
             illuminant_model: None,
             priors: &env.priors,
             autoset: None,
+            embedded_jpeg: None,
         },
     )
     .expect_err("no level range");

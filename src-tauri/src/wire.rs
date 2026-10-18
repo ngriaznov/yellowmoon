@@ -935,6 +935,10 @@ pub struct AutoEstimates {
     pub contrast_confidence: Num,
     /// The `autoset` model version, or "none" when no model is loaded.
     pub autoset_version: String,
+    /// The camera's exposure label `L` in stops, when a model made the exposure and the JPEG gives one.
+    pub camera_ev: Option<Num>,
+    /// True when the camera's exposure label raised the model's exposure (the camera floor).
+    pub camera_floor: bool,
     /// The automatic white lift in stops (0 when nothing is above +1 stop).
     pub white_ev: Num,
     /// The Auto Kelvin.

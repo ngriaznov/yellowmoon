@@ -355,6 +355,10 @@ export interface AutoEstimates {
   contrast_confidence: number;
   /** The version of the `autoset` model, or "none" when no model is loaded. Kept for the wire; not shown in this version. */
   autoset_version: string;
+  /** The camera's exposure label `L` in stops (`docs/18` section 6.1), when a model made the exposure and the photo's JPEG gives one; null otherwise. Kept for the wire; not shown in this version. */
+  camera_ev?: number | null;
+  /** True when `camera_ev` raised the model's exposure to the camera's own (the camera floor, `docs/18` section 4.4). Kept for the wire; not shown in this version. */
+  camera_floor?: boolean;
   /** The automatic white lift in stops, 0 for a photo with nothing above +1 stop to lift (the Automatic card's White row). */
   white_ev: number;
   kelvin: number;

@@ -109,6 +109,7 @@ fn compute(
         illuminant_model: model,
         priors: &env.priors,
         autoset: None,
+        embedded_jpeg: None,
     };
     match scale {
         Some(s) => AutoEstimates::compute_scaled(raw, &inputs, s).unwrap(),
@@ -313,6 +314,7 @@ fn an_unusable_scale_is_refused_before_anything_is_computed() {
                 illuminant_model: None,
                 priors: &env.priors,
                 autoset: None,
+                embedded_jpeg: None,
             },
             bad,
         )

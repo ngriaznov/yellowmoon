@@ -215,6 +215,10 @@ export type AutoEstimates = {
 	contrast_confidence: number,
 	/**  The `autoset` model version, or "none" when no model is loaded. */
 	autoset_version: string,
+	/**  The camera's exposure label `L` in stops, when a model made the exposure and the JPEG gives one. */
+	camera_ev: number | null,
+	/**  True when the camera's exposure label raised the model's exposure (the camera floor). */
+	camera_floor: boolean,
 	/**  The automatic white lift in stops (0 when nothing is above +1 stop). */
 	white_ev: number,
 	/**  The Auto Kelvin. */

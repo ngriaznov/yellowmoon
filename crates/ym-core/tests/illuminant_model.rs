@@ -59,6 +59,7 @@ fn run(
             illuminant_model: Some(model),
             priors: &env.priors,
             autoset: None,
+            embedded_jpeg: None,
         },
     )
     .unwrap();

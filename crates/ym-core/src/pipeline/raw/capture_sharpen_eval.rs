@@ -364,6 +364,7 @@ fn capture_sharpen_real_files_ab() {
                 illuminant_model: None,
                 priors: &env.priors,
                 autoset: None,
+                embedded_jpeg: None,
             },
         )
         .expect("estimates");

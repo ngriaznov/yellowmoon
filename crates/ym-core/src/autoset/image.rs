@@ -4,6 +4,7 @@
 //! Everything here is plain arithmetic in f64 on row-major buffers: no decoder and no file access (the dump decodes
 //! the JPEG with `zune-jpeg`).
 
+use ym_color::consts::Vec3;
 use ym_color::exposure::srgb_to_linear;
 
 /// Rec.709 luminance weights of linear sRGB (`tools/eval/metrics.py`, `SRGB_Y_ROW`; `ym_color`'s gate uses the same).
@@ -155,6 +156,28 @@ pub fn fit_to_preview(
         (w, h) = (cw, ch);
     }
     (buffer, w, h)
+}
+
+/// The image at the common size: unchanged when it is already `cw` x `ch`, else area-averaged down to it.
+#[must_use]
+pub fn to_common(values: Vec<f64>, sw: usize, sh: usize, cw: usize, ch: usize) -> Vec<f64> {
+    if (sw, sh) == (cw, ch) {
+        values
+    } else {
+        area_resize(&values, sw, sh, cw, ch)
+    }
+}
+
+/// The camera RGB of pixel `i` of an interleaved `f32` buffer, widened to `f64`; `None` when a channel is not finite.
+///
+/// # Panics
+///
+/// If the buffer holds fewer than `i + 1` pixels.
+#[must_use]
+pub fn rgb_of(buffer: &[f32], i: usize) -> Option<Vec3> {
+    let p = &buffer[3 * i..3 * i + 3];
+    let rgb = [f64::from(p[0]), f64::from(p[1]), f64::from(p[2])];
+    rgb.iter().all(|v| v.is_finite()).then_some(rgb)
 }
 
 /// Linear luminance of an sRGB-encoded 8-bit RGB image (IEC 61966-2-1 decoding, then the Rec.709 weights), one value

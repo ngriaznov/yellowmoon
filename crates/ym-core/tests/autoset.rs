@@ -12,7 +12,9 @@ use std::path::{Path, PathBuf};
 use common::{Layout, Scene, base_env, light, settle};
 use serde_json::json;
 use ym_color::autoset::AutosetModel;
-use ym_color::exposure::{BurstFrame, CAMERA_GAIN_EV, ShotSettings, burst_groups, share_burst_ev};
+use ym_color::exposure::{
+    BurstFrame, CAMERA_GAIN_EV, EV_LIMIT, ShotSettings, burst_groups, share_burst_ev,
+};
 use ym_core::auto::AutosetEstimates;
 use ym_core::pipeline::PhotoSource;
 use ym_core::pipeline::color::grade_params;
@@ -274,6 +276,66 @@ fn with_the_test_model_a_photo_takes_the_model_values_and_says_so() {
     let twice = again.estimates(again.photo_ids()[0]).unwrap();
     assert_eq!(twice.autoset, est.autoset);
     assert_eq!(twice.exposure.meter, est.exposure.meter);
+}
+
+#[test]
+fn a_model_photo_is_never_darker_than_its_camera_label() {
+    // The synthetic photo has its embedded JPEG (the generated preview), so its camera label `L` is known and the
+    // model's exposure is at least `L` (the camera floor, `docs/18` sections 4.4 and 6.1). It is `L` itself when the
+    // floor raised the exposure, and clamped to the exposure limit like the model's own value.
+    let dir = tempfile::tempdir().unwrap();
+    write_photo(dir.path(), "DSC00001.ARW", 0.3, None);
+    let session = develop(base_env().with_autoset(test_model()), dir.path());
+    let est = session
+        .estimates(session.photo_ids()[0])
+        .expect("estimates");
+    let camera = est
+        .autoset
+        .camera_ev
+        .expect("the synthetic photo's JPEG gives a label");
+    assert!(camera.is_finite());
+    let floor = camera.clamp(-EV_LIMIT, EV_LIMIT);
+    let before_guard = est.exposure.meter.ev_before_guard;
+    assert!(
+        before_guard >= floor - 1e-12,
+        "{before_guard} below {floor}"
+    );
+    if est.autoset.camera_floor {
+        assert_eq!(before_guard, floor, "a raised exposure is the label");
+    }
+    // The summary the bridge shows carries the same label and flag.
+    let summary = session.settings(session.photo_ids()[0]).unwrap().estimates;
+    assert_eq!(summary.camera_ev, Some(camera));
+    assert_eq!(summary.camera_floor, est.autoset.camera_floor);
+}
+
+#[test]
+fn a_model_photo_without_its_jpeg_keeps_the_model_exposure_and_has_no_label() {
+    // No maker-note preview and no thumbnail: the file has no embedded JPEG to read a label from.
+    let dir = tempfile::tempdir().unwrap();
+    let scene = Scene::new(256, 192, light(PROFILE, 5200.0), Layout::Patchwork, 0.3);
+    let path = dir.path().join("DSC00002.ARW");
+    scene
+        .builder(MODEL)
+        .preview(None)
+        .thumbnail(None)
+        .write_to(&path, &scene.mosaic())
+        .expect("write the synthetic ARW");
+    let session = develop(base_env().with_autoset(test_model()), dir.path());
+    let est = session
+        .estimates(session.photo_ids()[0])
+        .expect("estimates");
+    assert_eq!(est.autoset.version, test_model().version());
+    assert_eq!(est.autoset.camera_ev, None);
+    assert!(!est.autoset.camera_floor);
+    assert_eq!(
+        session
+            .settings(session.photo_ids()[0])
+            .unwrap()
+            .estimates
+            .camera_ev,
+        None
+    );
 }
 
 #[test]

@@ -55,6 +55,8 @@
 //! exposure changed get [`SessionEvent::EstimatesChanged`].
 
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
+use std::fs::File;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc;
@@ -1958,6 +1960,13 @@ impl Session {
         let view = self.view(id)?;
         let raw = self.raw_image(id)?;
         let model = self.inner.env.illuminants.get(view.profile.id.as_str());
+        // The camera's exposure label needs the embedded JPEG, and only a model uses the label.
+        let jpeg = self
+            .inner
+            .env
+            .autoset
+            .as_ref()
+            .and_then(|_| read_embedded_jpeg(&view.path, &raw.meta));
         let estimates = AutoEstimates::compute_with_look(
             &raw,
             &AutoInputs {
@@ -1965,6 +1974,7 @@ impl Session {
                 illuminant_model: model.map(|m| &**m),
                 priors: &self.inner.env.priors,
                 autoset: self.inner.env.autoset.as_deref(),
+                embedded_jpeg: jpeg.as_deref(),
             },
             view.camera.matched.white_scale,
             self.inner.env.reference_look.as_deref(),
@@ -2417,6 +2427,12 @@ impl Inner {
         // Estimates.
         let started = Instant::now();
         let model = self.env.illuminants.get(profile.id.as_str());
+        // The camera's exposure label needs the embedded JPEG, and only a model uses the label.
+        let jpeg = self
+            .env
+            .autoset
+            .as_ref()
+            .and_then(|_| read_embedded_jpeg(&path, &raw.meta));
         let estimates = match AutoEstimates::compute_with_look(
             &raw,
             &AutoInputs {
@@ -2424,6 +2440,7 @@ impl Inner {
                 illuminant_model: model.map(|m| &**m),
                 priors: &self.env.priors,
                 autoset: self.env.autoset.as_deref(),
+                embedded_jpeg: jpeg.as_deref(),
             },
             camera.matched.white_scale,
             self.env.reference_look.as_deref(),
@@ -2552,6 +2569,38 @@ impl Inner {
             };
             lead.finish(Some(raw.clone()));
             return Ok(raw);
+        }
+    }
+}
+
+/// The bytes of a photo's embedded JPEG preview (`RawMetadata::preview`), read from the original file, which is only
+/// read: the preview's own byte range is read, nothing else. `None` when the file has no preview or the range cannot
+/// be read; the photo then keeps the model's exposure (`docs/18` section 6.1).
+fn read_embedded_jpeg(path: &Path, meta: &RawMetadata) -> Option<Vec<u8>> {
+    let jpeg = meta.preview?;
+    let read = || -> std::io::Result<Option<Vec<u8>>> {
+        let mut file = File::open(path)?;
+        let len = file.metadata()?.len();
+        let in_file = jpeg
+            .offset
+            .checked_add(jpeg.length)
+            .is_some_and(|end| end <= len);
+        let Ok(size) = usize::try_from(jpeg.length) else {
+            return Ok(None);
+        };
+        if !in_file {
+            return Ok(None);
+        }
+        let mut bytes = vec![0; size];
+        file.seek(SeekFrom::Start(jpeg.offset))?;
+        file.read_exact(&mut bytes)?;
+        Ok(Some(bytes))
+    };
+    match read() {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            tracing::debug!(%error, "the embedded JPEG cannot be read");
+            None
         }
     }
 }

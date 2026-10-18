@@ -295,6 +295,7 @@ mod extreme_frames {
                 illuminant_model: None,
                 priors: &env.priors,
                 autoset: None,
+                embedded_jpeg: None,
             },
         )
         .map_err(|e| e.to_string())

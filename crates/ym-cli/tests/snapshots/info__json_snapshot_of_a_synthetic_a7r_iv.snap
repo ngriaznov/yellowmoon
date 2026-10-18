@@ -5,6 +5,8 @@ expression: v
 {
   "auto": {
     "autoset_version": "1.0.0",
+    "camera_ev": -0.4373,
+    "camera_floor": false,
     "contrast": 1.6,
     "contrast_confidence": 0.2563,
     "ev_confidence": 0.8481,
@@ -84,7 +86,7 @@ expression: v
     "intensity": 100
   },
   "notes": [],
-  "pipeline_version": "0.5.0",
+  "pipeline_version": "0.5.1",
   "preview": "[preview location]",
   "raw": {
     "bits_per_sample": 14,

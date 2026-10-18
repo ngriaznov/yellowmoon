@@ -2,8 +2,10 @@
 //!
 //! A head with mean `mu` and variance `var` gets the weight `w = sigma0² / (sigma0² + var)`, in (0, 1]. The exposure
 //! is the one the model asks for, in full: full rescue (owner's decision of 2026-10-18), so it never falls back
-//! towards the camera's exposure; its weight is only reported, as the exposure's confidence. The contrast is `w`
-//! times the predicted contrast: a doubtful contrast fades to 0.
+//! towards the camera's exposure; its weight is only reported, as the exposure's confidence. The camera floor
+//! (`ym_core::autoset::camera::camera_floor`, `docs/18` section 6.1) then raises it to the camera's own exposure
+//! label where that is higher, which needs the photo's embedded JPEG and so is decided in `ym-core`. The contrast is
+//! `w` times the predicted contrast: a doubtful contrast fades to 0.
 
 use crate::exposure::{CAMERA_GAIN_EV, EV_LIMIT};
 
@@ -15,7 +17,7 @@ use super::{AutosetModel, Prediction};
 pub struct Applied {
     /// `EV_auto` before the highlight guard (`docs/02`, step 4): the exposure the model asks for
     /// (`key_target - key`), clamped to plus or minus [`EV_LIMIT`]; the camera gain only when the prediction is
-    /// not usable.
+    /// not usable. `ym-core` raises it to the camera's exposure label when that is higher (the camera floor).
     pub ev_before_guard: f64,
     /// The exposure's confidence `sigma0² / (sigma0² + var)`, in (0, 1]; 0 for the rule
     /// (`AutoSummary::ev_confidence`). Reported only: it does not move the exposure.

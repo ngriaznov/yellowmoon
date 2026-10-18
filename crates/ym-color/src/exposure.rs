@@ -315,7 +315,8 @@ pub(crate) fn interpolate(a: f64, b: f64, frac: f64) -> f64 {
 /// The measured part of auto exposure: steps 1 to 3 of the rule, and the pixels the highlight guard (step 5) reads.
 ///
 /// [`measure_exposure`] makes it from a preview once. The exposure is then decided by [`Measurement::guarded`] from
-/// the step-4 value: the camera gain of the rule, or the value the learned model asks for (`docs/18` section 4.4).
+/// the step-4 value: the camera gain of the rule, or the value the learned model asks for (`docs/18` section 4.4),
+/// raised to the camera's exposure label when that is higher (section 6.1, `ym_core::autoset::camera::camera_floor`).
 /// The model needs the mean luminance this measurement reports, so the two steps are kept apart rather than
 /// metering the preview twice. [`auto_exposure`] is the rule alone.
 #[derive(Debug, Clone, PartialEq)]

@@ -176,6 +176,7 @@ Per member: Gaussian negative log-likelihood of each head against its label, wit
 - *Plain numbers.* A plain number of contrast is read as Manual, 0 as Auto, in a settings document, a `--settings` file and a settings patch of the core (old documents). The bridge (`types.ts`) takes the `kind` forms only; its generated bindings (`src/api/bindings.ts`) come from the Tauri side.
 - *Burst.* The Auto contrast of a burst is the median of the group's own contrasts, rounded to 0.1 (`round_contrast`), as the exposure's median is shared.
 - *Pipeline 0.5.0.* The golden **truth** settings gain contrast Manual 0, `white_preference` 0 and exposure Manual at `CAMERA_GAIN_EV` (`tools/golden/src/truth.rs`, `truth_settings`).
+- *Pipeline 0.5.1, the camera floor.* `L` is computed when a photo opens, from its embedded JPEG read by byte range from the original (`ym_core::autoset::camera`, the same code as the dump), only when a model is loaded; a file without the JPEG, a JPEG that does not decode, or a label that is not finite keeps the model's exposure. The decoder (`zune-jpeg`) picks AVX2, SSE or NEON code at run time and has no switch to force its scalar code; on x86_64 its SIMD and scalar builds decode the previews of 206 local ARW files to the same bytes, and a test pins the decoded bytes of two subsampled JPEGs (4:2:2 and 4:2:0) so that the macOS run checks NEON (rule 8). `AutoSummary` reports `camera_ev` and `camera_floor`.
 
 ## 8. Gates (owner's decision of 2026-10-18)
 
@@ -184,7 +185,7 @@ Per member: Gaussian negative log-likelihood of each head against its label, wit
 3. **G3 on normal scenes only (no regression):** on held-out scenes that the camera exposed normally (|EC| < 0.3, no DRO/HDR, Standard style), `|EV_auto − L|` median ≤ 0.25 EV and ≤ 0.5 EV on 90 % of files.
 4. **Rescue:** files rendered at −2 … +2 EV off their label come back within ±0.3 EV of it on 90 % of held-out files. With the camera floor, an augmentation row's camera exposure is the file's `L − k` (the camera would have rendered the shifted frame shifted too), so the floor is the row's own label.
 5. **Blind A/B** ([HUMAN] AS-H1, the acceptance gate): about 150 photos in everyday strata, the owner's or any others (the pictures are never committed). Three versions of each photo: `autoset` (the new automatic settings), the rule before it (the old automatic settings) and the camera JPEG (the camera's default rendering). Pass at ≥ 60 % pooled wins against each of the two (Wilson lower bound > 50 %), no stratum below 45 %, no rise in gross failures (a photo that needs more than 0.5 EV or 10 mired of correction). Lightroom Auto is not compared (owner's decision of 2026-10-18, `docs/16`).
-6. Golden images: re-baselined for 0.5.0 with a note; the golden **truth** keeps its settings (Neutral look, highlight range 0, lift off) plus contrast Manual 0 and `white_preference` 0, and exposure Manual at the pre-autoset rule, so its numbers do not move.
+6. Golden images: re-baselined for 0.5.0 and for 0.5.1 (the camera floor) with a note; the golden **truth** keeps its settings (Neutral look, highlight range 0, lift off) plus contrast Manual 0 and `white_preference` 0, and exposure Manual at the pre-autoset rule, so its numbers do not move.
 
 ## 9. Later versions (not v1)
 

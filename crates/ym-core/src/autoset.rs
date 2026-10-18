@@ -6,9 +6,12 @@
 //! * [`scaled_preview`] is the same photo exposed `2^k` times more (the dataset's augmentation, section 6).
 //! * [`labels`] is the exposure label `L` of section 6.1 and the quantile tables it reads, ported from
 //!   `training/autoset/labels.py` (the two agree to 1e-9 on the fixtures of `tests/data/autoset/labels.json`).
+//! * [`camera`] makes `L` of a photo from its embedded JPEG ([`camera::camera_exposure`], shared by the dump and the
+//!   app) and the camera floor that the app puts under the learned exposure ([`camera::camera_floor`]).
 //! * [`image`] has the image operations of the dump: the area resize, the central crop, the quarter turn and the
 //!   luminance of the embedded JPEG.
 
+pub mod camera;
 pub mod image;
 pub mod labels;
 

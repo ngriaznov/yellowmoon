@@ -278,6 +278,7 @@ pub fn estimates_of_file(
             illuminant_model: None,
             priors: &env.priors,
             autoset: None,
+            embedded_jpeg: None,
         },
     )
     .expect("estimates");

@@ -5,6 +5,8 @@ expression: shape(&v)
 {
   "auto": {
     "autoset_version": "string",
+    "camera_ev": "number",
+    "camera_floor": "bool",
     "contrast": "number",
     "contrast_confidence": "number",
     "ev_confidence": "number",

@@ -31,6 +31,11 @@
 //!    (step 6) needs the other photos, so the session does it ([`burst_frame`]) and stores the
 //!    shared value in [`ExposureResult::ev`] (`own_ev` keeps the photo's own).
 //!
+//!    With an `autoset` model (`docs/18` section 4.4) the exposure before the guard is the model's, and it is never
+//!    below the camera's own exposure label `L` (section 6.1) when the photo's embedded JPEG gives one:
+//!    `EV_before_guard = max(EV_model, L)`, the camera floor ([`crate::autoset::camera::camera_floor`]). Without a
+//!    model, the rule's camera gain stands and `L` is not used.
+//!
 //!    3b. **The white lift** (`ym_color::exposure::white`, `docs/02` C12 step 1b): the same preview, through
 //!    the all-Auto chain at the photo's exposure and C7 at its defaults (`Rolloff::default()`: the
 //!    highlight range at 1, so highlights the range already takes to white need less lift), sized for the
@@ -53,9 +58,10 @@ use std::sync::Arc;
 
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
-use ym_color::autoset::{AutosetModel, apply, rule_only};
+use ym_color::autoset::{Applied, AutosetModel, apply, rule_only};
 use ym_color::chain::{ChainError, ColorEstimates, FusedChain, ProfileTables};
 use ym_color::consts::Vec3;
+use ym_color::consts::linalg::Mat3;
 use ym_color::exposure::white::{WhiteEstimate, estimate_white};
 use ym_color::exposure::{
     AutoExposure, BurstFrame, ExposureError, ExposureSetting, PreviewRgb, ShotSettings,
@@ -82,6 +88,7 @@ use ym_raw::decode::RawImage;
 use ym_raw::layout::{CfaColor, DecodeKind, Layout, Rect};
 use ym_raw::metadata::RawMetadata;
 
+use crate::autoset::camera::{adobe_rgb_of, camera_exposure, camera_floor};
 use crate::autoset::photo_features;
 use crate::settings::{
     DevelopSettings, NoiseReductionValue, Rolloff, SharpenValue, WHITE_PREFERENCE_DEFAULT,
@@ -1095,7 +1102,8 @@ pub fn noise_prior(priors: &PriorStore, meta: &RawMetadata) -> NoisePrior {
 // ---------------------------------------------------------------------------------------------
 
 /// The automatic exposure of a photo: the camera's own exposure (`ym_color::exposure::CAMERA_GAIN_EV`, `docs/02`
-/// Auto exposure), lowered by the highlight guard when the picture would clip, and shared across a burst.
+/// Auto exposure) without a model, or the model's exposure raised to the camera's own exposure label (`docs/18`
+/// sections 4.4 and 6.1); lowered by the highlight guard when the picture would clip, and shared across a burst.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ExposureResult {
     /// `EV_auto` in effect: the burst median once the session has shared it, else `own_ev`.
@@ -1159,11 +1167,18 @@ pub struct AutosetEstimates {
     pub contrast_confidence: f64,
     /// The model's version, or `"none"` when no model made the estimates (`AutoSummary::autoset_version`).
     pub version: String,
+    /// The camera's exposure label `L` of the photo (`docs/18` section 6.1), in stops, when a model made the
+    /// exposure and the photo's embedded JPEG gives a finite label (`AutoSummary::camera_ev`); `None` for the rule,
+    /// for a photo without its JPEG, and for a label that is not known.
+    pub camera_ev: Option<f64>,
+    /// True when `L` raised the model's exposure to the camera's own (the camera floor, `docs/18` section 4.4;
+    /// `AutoSummary::camera_floor`).
+    pub camera_floor: bool,
 }
 
 impl AutosetEstimates {
     /// The estimates when no model is used: the camera gain (the exposure is the rule's), contrast 0, both
-    /// confidences 0 and the version `"none"` (`docs/18` section 4.4).
+    /// confidences 0, no camera label and the version `"none"` (`docs/18` section 4.4).
     #[must_use]
     pub fn rule() -> Self {
         Self {
@@ -1172,6 +1187,8 @@ impl AutosetEstimates {
             ev_confidence: 0.0,
             contrast_confidence: 0.0,
             version: NO_MODEL_VERSION.to_owned(),
+            camera_ev: None,
+            camera_floor: false,
         }
     }
 }
@@ -1190,6 +1207,11 @@ pub struct AutoInputs<'a> {
     /// The automatic settings model (`docs/18`), if the session has one; `None` gives the rule (the camera gain and
     /// contrast 0) for the exposure and the contrast. The preferred white does not need it.
     pub autoset: Option<&'a AutosetModel>,
+    /// The bytes of the photo's embedded JPEG preview (`RawMetadata::preview`), for the camera's exposure label `L`
+    /// of `docs/18` section 6.1: with a model, the exposure is never below `L` (the camera floor). `None` when the
+    /// caller does not have them (or does not want the label): the model's exposure stands and
+    /// [`AutosetEstimates::camera_ev`] is unknown. Read only when the model runs.
+    pub embedded_jpeg: Option<&'a [u8]>,
 }
 
 /// Per-photo automatic estimates, computed once from the decoded raw and recomputed by Re-run.
@@ -1230,6 +1252,13 @@ pub struct AutoSummary {
     pub contrast_confidence: f64,
     /// The `autoset` model version, or "none" when no model made the estimates.
     pub autoset_version: String,
+    /// The camera's exposure label `L` in stops (`docs/18` section 6.1), when a model made the exposure and the
+    /// photo's embedded JPEG gives a label; `null` otherwise.
+    pub camera_ev: Option<f64>,
+    /// True when `camera_ev` raised the model's exposure to the camera's own, the camera floor (`docs/18` section
+    /// 4.4). False when there is no label.
+    #[serde(default)]
+    pub camera_floor: bool,
     /// The automatic white lift in stops (0 for a photo with nothing above +1 stop to lift): the
     /// Automatic card's White row. The lift in effect is this plus `white_offset_ev`.
     pub white_ev: f64,
@@ -1377,13 +1406,26 @@ impl AutoEstimates {
                 let key_bv = (features.values[1] > 0.5).then_some(features.values[0]);
                 match inputs.autoset {
                     Some(model) => {
-                        let applied = apply(&model.predict(&features.values), features.key, model);
+                        let model_applied =
+                            apply(&model.predict(&features.values), features.key, model);
+                        // The camera floor (`docs/18` sections 4.4 and 6.1): the model's exposure is never below the
+                        // camera's own exposure label, when the photo's embedded JPEG gives one.
+                        let camera_ev = inputs.embedded_jpeg.and_then(|jpeg| {
+                            camera_label(jpeg, meta, &preview, &balanced, metering.matrix())
+                        });
+                        let floor = camera_floor(&model_applied, camera_ev);
+                        let applied = Applied {
+                            ev_before_guard: floor.ev_before_guard,
+                            ..model_applied
+                        };
                         let autoset = AutosetEstimates {
                             contrast: applied.contrast,
                             own_contrast: applied.contrast,
                             ev_confidence: applied.ev_weight,
                             contrast_confidence: applied.contrast_weight,
                             version: model.version().to_owned(),
+                            camera_ev,
+                            camera_floor: floor.raised,
                         };
                         (applied, key_bv, autoset)
                     }
@@ -1393,7 +1435,8 @@ impl AutoEstimates {
             Err(_) => (rule_only(), None, AutosetEstimates::rule()),
         };
         color.key_bv = key_bv;
-        // Step 4 (the model's value or the camera gain) and step 5, the highlight guard, on it.
+        // Step 4 (the model's value, never below the camera's label, or the camera gain) and step 5, the highlight
+        // guard, on it.
         let meter = measurement.guarded(applied.ev_before_guard);
         color.ev_auto = meter.ev_auto;
         // The Auto readout the White balance row shows: the Kelvin and tint of the Auto white at the default
@@ -1506,6 +1549,8 @@ impl AutoEstimates {
             ev_confidence: self.autoset.ev_confidence,
             contrast_confidence: self.autoset.contrast_confidence,
             autoset_version: self.autoset.version.clone(),
+            camera_ev: self.autoset.camera_ev,
+            camera_floor: self.autoset.camera_floor,
             white_ev: self.white.amount_ev,
             kelvin: self.readout.kelvin_k,
             tint: self.readout.tint,
@@ -1517,6 +1562,26 @@ impl AutoEstimates {
             },
             sharpen: self.sharpen,
             noise_reduction: self.noise_reduction,
+        }
+    }
+}
+
+/// The camera's exposure label `L` of a photo from its embedded JPEG (`docs/18` section 6.1), when it is known. A JPEG
+/// that cannot be read, or a photo with no usable pixel, has no label: that is not a failed photo, and the model's
+/// exposure stands.
+fn camera_label(
+    jpeg: &[u8],
+    meta: &RawMetadata,
+    preview: &Preview,
+    balanced: &[f32],
+    matrix: &Mat3,
+) -> Option<f64> {
+    match camera_exposure(jpeg, adobe_rgb_of(meta), preview, balanced, matrix) {
+        Ok(Some(camera)) => camera.level.filter(|level| level.is_finite()),
+        Ok(None) => None,
+        Err(error) => {
+            tracing::debug!(%error, "no camera exposure label");
+            None
         }
     }
 }

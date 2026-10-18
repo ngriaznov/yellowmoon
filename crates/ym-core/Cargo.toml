@@ -28,6 +28,9 @@ rayon.workspace = true
 tracing.workspace = true
 # PNG bytes of the thumbnails and look tiles (MIT OR Apache-2.0, already in the workspace).
 png.workspace = true
+# Decodes the embedded JPEG preview of a photo for its camera exposure label (`docs/18` section 6.1), the floor of the
+# automatic exposure (MIT OR Apache-2.0 OR Zlib; the same version as ym-color's dev-dependency).
+zune-jpeg = "0.5"
 
 [features]
 # TEST-ONLY. Lets the environment variable `YM_FORCE_DEMOSAIC=<method name>` choose the R6 demosaic
@@ -54,8 +57,5 @@ ym-raw = { workspace = true, features = ["testgen"] }
 # JSON Schema validation of settings documents against `schema/settings.schema.json` (MIT; default
 # features, which resolve references over HTTP and from files, are off, as in ym-profiles).
 jsonschema = { version = "0.58", default-features = false }
-# Decodes the embedded JPEG previews of real files for the auto-exposure comparison in
-# tests/real_files.rs (MIT OR Apache-2.0 OR Zlib; the same version as ym-color's dev-dependency).
-zune-jpeg = "0.5"
 # The SHA-256 of each file in the autoset dataset dump (examples/autoset_dump.rs, docs/18 section 6).
 sha2.workspace = true

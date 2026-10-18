@@ -639,6 +639,7 @@ fn ca_green_real_files_residual() {
                 illuminant_model: None,
                 priors: &env.priors,
                 autoset: None,
+                embedded_jpeg: None,
             },
         )
         .expect("estimates");

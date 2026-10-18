@@ -33,16 +33,12 @@ use std::time::{Duration, Instant};
 use rayon::prelude::*;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-use ym_color::consts::Vec3;
-use ym_color::consts::linalg::Mat3;
 use ym_color::display::{ColorChain, OutputTarget};
 use ym_color::exposure::{EXPOSURE_MAX_EV, EXPOSURE_MIN_EV, PreviewRgb, auto_exposure};
-use ym_color::gamut::awg4_luminance_row;
 use ym_core::auto::{Preview, build_preview, tables_of};
-use ym_core::autoset::image::{
-    SRGB_Y_ROW, adobe_rgb_luminance, area_resize, encoded_luma, fit_to_preview, srgb_luminance,
-};
-use ym_core::autoset::labels::{exposure_label, quantile_grid, quantile_table};
+use ym_core::autoset::camera::{ASPECT_TOLERANCE, adobe_rgb_of, camera_exposure, decode_jpeg};
+use ym_core::autoset::image::{SRGB_Y_ROW, encoded_luma, fit_to_preview, rgb_of, to_common};
+use ym_core::autoset::labels::quantile_table;
 use ym_core::autoset::{photo_features, scaled_preview};
 use ym_core::data_dir::find_data_dir;
 use ym_core::pipeline::color::{GradeRequest, LookProvider, color_plan, grade_plan};
@@ -63,10 +59,6 @@ const CONTRAST_GRID: [f64; 9] = [-40.0, -30.0, -20.0, -10.0, 0.0, 10.0, 20.0, 30
 const CONTRAST_P: [f64; 7] = [0.05, 0.10, 0.25, 0.50, 0.75, 0.90, 0.95];
 /// The name of the exposure tables' grid in the rows (`training/autoset/rows.py`).
 const GRID_NAME: &str = "linspace(0.001, 0.999, 999)";
-/// The embedded JPEG and the preview are brought to a common size; their aspect ratios may differ by this much.
-const ASPECT_TOLERANCE: f64 = 0.02;
-/// The EXIF ColorSpace of the camera's Adobe RGB mode (uncalibrated).
-const COLOR_SPACE_UNCALIBRATED: u16 = 0xFFFF;
 /// How long one photo may take to develop before it is skipped.
 const DEVELOP_TIMEOUT: Duration = Duration::from_secs(900);
 const USAGE: &str = "usage: autoset_dump [--source S] [--licence L] [--no-aug] FILE_OR_FOLDER...  (JSON lines on stdout)";
@@ -418,7 +410,8 @@ struct ContrastOut {
 }
 
 /// The label tables of a photo, from its embedded JPEG. A file without a usable JPEG keeps its features and gets no
-/// label (the note says why); a failure of the colour chain itself fails the file.
+/// label (the note says why); a failure of the colour chain itself fails the file. The level and the tables are
+/// `ym_core::autoset::camera::camera_exposure`, which the app uses too.
 fn labels_of(
     name: &str,
     bytes: &[u8],
@@ -432,30 +425,7 @@ fn labels_of(
         eprintln!("note {name}: no embedded JPEG, so no exposure label");
         return Ok(LabelsOut::none());
     };
-    let (jw, jh, jrgb) = match decode_jpeg(jpeg) {
-        Ok(decoded) => decoded,
-        Err(reason) => {
-            eprintln!(
-                "note {name}: the embedded JPEG cannot be decoded ({reason}), so no exposure label"
-            );
-            return Ok(LabelsOut::none());
-        }
-    };
-    let (pw, ph) = (preview.width, preview.height);
-    let (rgb, w, h) = fit_to_preview(&jrgb, jw, jh, (pw, ph), ASPECT_TOLERANCE);
-    // The common size: the smaller of the two in each direction, the larger image area-averaged down to it.
-    let (cw, ch) = (pw.min(w), ph.min(h));
-    let adobe = meta.color_space == Some(COLOR_SPACE_UNCALIBRATED);
-    let linear = if adobe {
-        adobe_rgb_luminance(&rgb)
-    } else {
-        srgb_luminance(&rgb)
-    };
-    let mut jpeg_linear = to_common(linear, w, h, cw, ch);
-    let mut jpeg_display = to_common(encoded_luma(&rgb), w, h, cw, ch);
-
-    // Our scene luminance: the metering chain at EV 0 on the metered, g0-balanced preview, every pixel (no clip mask,
-    // no floor), at the common size.
+    // Our scene luminance is metered on the metered, g0-balanced preview through the metering chain at EV 0.
     let g0 = view
         .estimates
         .initial_gains()
@@ -466,46 +436,65 @@ fn labels_of(
         .metering_chain(tables_of(&view.profile))
         .map_err(|error| error.to_string())?;
     let balanced = preview.metered(g0);
-    let mut scene_linear = to_common(
-        scene_luminance(&balanced, pw * ph, metering.matrix()),
-        pw,
-        ph,
-        cw,
-        ch,
-    );
-    let grid = quantile_grid();
-    let scene_q = quantile_table(&mut scene_linear, &grid);
-    let jpeg_q = quantile_table(&mut jpeg_linear, &grid);
-    if !scene_q.iter().chain(&jpeg_q).all(|v| v.is_finite()) {
-        eprintln!("note {name}: no usable pixel for the exposure label");
-        return Ok(LabelsOut::none());
-    }
-    let level = exposure_label(&scene_q, &jpeg_q);
-    let contrast_fit = match level {
-        Some(level) => Some(contrast_fit(
-            name,
-            view,
-            raw,
-            &balanced,
-            FitContext {
-                looks,
-                preview: (pw, ph),
-                common: (cw, ch),
-            },
-            level,
-            &mut jpeg_display,
-        )?),
+    let camera = match camera_exposure(
+        jpeg,
+        adobe_rgb_of(meta),
+        preview,
+        &balanced,
+        metering.matrix(),
+    ) {
+        Ok(Some(camera)) => camera,
+        Ok(None) => {
+            eprintln!("note {name}: no usable pixel for the exposure label");
+            return Ok(LabelsOut::none());
+        }
+        Err(error) => {
+            eprintln!("note {name}: {error}, so no exposure label");
+            return Ok(LabelsOut::none());
+        }
+    };
+    let (pw, ph) = (preview.width, preview.height);
+    let contrast_fit = match camera.level {
+        Some(level) => {
+            let (mut jpeg_display, common) = jpeg_display_luma(jpeg, (pw, ph))?;
+            Some(contrast_fit(
+                name,
+                view,
+                raw,
+                &balanced,
+                FitContext {
+                    looks,
+                    preview: (pw, ph),
+                    common,
+                },
+                level,
+                &mut jpeg_display,
+            )?)
+        }
         None => None,
     };
     Ok(LabelsOut {
         g3: Some(G3Out {
             grid: GRID_NAME,
-            scene_q,
-            jpeg_q,
+            scene_q: camera.scene_q,
+            jpeg_q: camera.jpeg_q,
         }),
-        label_ev: level,
+        label_ev: camera.level,
         contrast_fit,
     })
+}
+
+/// The JPEG's display luma (`encoded_luma`, the Rec.709 weights on the encoded values) fitted to the preview and at the
+/// common size, as the contrast fit reads it (section 6.2), with that size.
+fn jpeg_display_luma(
+    jpeg: &[u8],
+    preview: (usize, usize),
+) -> Result<(Vec<f64>, (usize, usize)), String> {
+    let (jw, jh, jrgb) = decode_jpeg(jpeg).map_err(|error| error.to_string())?;
+    let (rgb, w, h) = fit_to_preview(&jrgb, jw, jh, preview, ASPECT_TOLERANCE);
+    let common = (preview.0.min(w), preview.1.min(h));
+    let display = to_common(encoded_luma(&rgb), w, h, common.0, common.1);
+    Ok((display, common))
 }
 
 /// What the contrast fit needs besides the photo: the look provider (the dataset's default look) and the sizes of the
@@ -591,61 +580,12 @@ fn display_luma(chain: &ColorChain, balanced: &[f32], pixels: usize) -> Vec<f64>
         .collect()
 }
 
-/// `Y` of the AWG4 row on every pixel of the metered preview at EV 0 (`auto_exposure`'s own luminance, folded with the
-/// matrix), NaN where a value is not finite. Every pixel counts, clipped ones too.
-fn scene_luminance(balanced: &[f32], pixels: usize, matrix: &Mat3) -> Vec<f64> {
-    let row = luminance_row(matrix);
-    (0..pixels)
-        .map(|i| match rgb_of(balanced, i) {
-            None => f64::NAN,
-            Some(c) => {
-                let y = row[0] * c[0] + row[1] * c[1] + row[2] * c[2];
-                if y.is_finite() { y } else { f64::NAN }
-            }
-        })
-        .collect()
-}
-
-/// The luminance row of the metering chain: the AWG4 `Y` row applied after the matrix (`PreviewRgb::luminance_row`).
-fn luminance_row(matrix: &Mat3) -> Vec3 {
-    let y = awg4_luminance_row();
-    std::array::from_fn(|c| y[0] * matrix[0][c] + y[1] * matrix[1][c] + y[2] * matrix[2][c])
-}
-
-/// The camera RGB of pixel `i` of an interleaved buffer, `None` when a channel is not finite.
-fn rgb_of(buffer: &[f32], i: usize) -> Option<Vec3> {
-    let p = &buffer[3 * i..3 * i + 3];
-    let rgb = [f64::from(p[0]), f64::from(p[1]), f64::from(p[2])];
-    rgb.iter().all(|v| v.is_finite()).then_some(rgb)
-}
-
-/// The image at the common size: unchanged when it is already that size, else area-averaged down to it.
-fn to_common(values: Vec<f64>, sw: usize, sh: usize, cw: usize, ch: usize) -> Vec<f64> {
-    if (sw, sh) == (cw, ch) {
-        values
-    } else {
-        area_resize(&values, sw, sh, cw, ch)
-    }
-}
-
 /// The embedded JPEG's bytes, from the file (`meta.preview`), when they lie inside the file.
 fn embedded_jpeg<'a>(bytes: &'a [u8], meta: &RawMetadata) -> Option<&'a [u8]> {
     let jpeg = meta.preview?;
     let start = usize::try_from(jpeg.offset).ok()?;
     let end = start.checked_add(usize::try_from(jpeg.length).ok()?)?;
     bytes.get(start..end)
-}
-
-/// The embedded JPEG as 8-bit RGB: width, height and interleaved pixels.
-fn decode_jpeg(jpeg: &[u8]) -> Result<(usize, usize, Vec<u8>), String> {
-    let mut decoder = zune_jpeg::JpegDecoder::new(io::Cursor::new(jpeg));
-    let pixels = decoder.decode().map_err(|error| format!("{error:?}"))?;
-    let info = decoder.info().ok_or("it has no header")?;
-    let (w, h) = (usize::from(info.width), usize::from(info.height));
-    if w == 0 || h == 0 || pixels.len() != w * h * 3 {
-        return Err("it is not an RGB image".to_owned());
-    }
-    Ok((w, h, pixels))
 }
 
 // ---------------------------------------------------------------------------------------------

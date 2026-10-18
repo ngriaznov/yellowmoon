@@ -122,6 +122,8 @@ export const MOCK_ESTIMATES: AutoEstimates = {
   ev_confidence: 0.86,
   contrast_confidence: 0.58,
   autoset_version: "1.0.0",
+  camera_ev: 0.12,
+  camera_floor: false,
   white_ev: 0.8,
   kelvin: 5450,
   tint: 0,
