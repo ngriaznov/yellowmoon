@@ -15,6 +15,9 @@ serde.workspace = true
 serde_json.workspace = true
 # SHA-256 check of the illuminant model's tensors at load (illum). MIT OR Apache-2.0, already in the workspace.
 sha2.workspace = true
+# Base64 of the automatic settings model's tensors (autoset, the illum convention). MIT OR Apache-2.0, already in the
+# lock file through other crates (0.23.1).
+base64 = "0.23"
 
 [dev-dependencies]
 proptest.workspace = true

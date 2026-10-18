@@ -216,7 +216,7 @@ pub struct PreviewRgb<'a> {
 }
 
 impl PreviewRgb<'_> {
-    fn validate(&self) -> Result<(), ExposureError> {
+    pub(crate) fn validate(&self) -> Result<(), ExposureError> {
         // Saturating: a size that overflows `usize` can never equal a slice length, so it is refused
         // as a wrong size instead of wrapping (release) or panicking (debug).
         let pixels = self.width.saturating_mul(self.height);
@@ -243,7 +243,7 @@ impl PreviewRgb<'_> {
     }
 
     /// The luminance row of the camera RGB, `Y_awg4 * M`, so one dot product per pixel gives `Y`.
-    fn luminance_row(matrix_ev0: &Mat3) -> Vec3 {
+    pub(crate) fn luminance_row(matrix_ev0: &Mat3) -> Vec3 {
         let y = awg4_luminance_row();
         std::array::from_fn(|c| {
             y[0] * matrix_ev0[0][c] + y[1] * matrix_ev0[1][c] + y[2] * matrix_ev0[2][c]
@@ -287,19 +287,23 @@ pub struct AutoExposure {
     pub metered: bool,
 }
 
-/// Linearly interpolated quantile of a sorted slice (numpy's default); `q` in 0 to 1.
-///
-/// The interpolation is written as `a + (b - a) * frac` (from `b` for `frac >= 0.5`, as numpy does) and
-/// kept inside `[a, b]`: it returns exactly `a` when `a == b`. The form `(1 - frac) * a + frac * b` is
-/// off by an ulp for some equal neighbours, and a percentile that lands one ulp above a run of equal
-/// luminances (a flat or black frame, the floor value of many dark pixels) would drop that whole run
-/// from the band.
-fn quantile(sorted: &[f64], q: f64) -> f64 {
+/// Linearly interpolated quantile of a sorted slice (numpy's default); `q` in 0 to 1. The interpolation
+/// is [`interpolate`].
+pub(crate) fn quantile(sorted: &[f64], q: f64) -> f64 {
     let pos = q.clamp(0.0, 1.0) * (sorted.len() - 1) as f64;
     let lo = pos.floor() as usize;
     let hi = pos.ceil() as usize;
-    let frac = pos - lo as f64;
-    let (a, b) = (sorted[lo], sorted[hi]);
+    interpolate(sorted[lo], sorted[hi], pos - lo as f64)
+}
+
+/// The interpolation between the neighbours `a <= b` at `frac` (0 to 1) of a quantile: `a + (b - a) * frac`,
+/// written from `b` for `frac >= 0.5` as numpy does, and kept inside `[a, b]`.
+///
+/// The form `(1 - frac) * a + frac * b` is off by an ulp for some equal neighbours, and a percentile that
+/// lands one ulp above a run of equal luminances (a flat or black frame, the floor value of many dark
+/// pixels) would drop that whole run from the band. This returns exactly `a` when `a == b`. The selection
+/// quantiles of `autoset` share it, so they agree with [`quantile`] bit for bit.
+pub(crate) fn interpolate(a: f64, b: f64, frac: f64) -> f64 {
     let v = if frac >= 0.5 {
         b - (b - a) * (1.0 - frac)
     } else {

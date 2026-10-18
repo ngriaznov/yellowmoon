@@ -13,6 +13,7 @@
 pub mod aces2;
 pub mod alf;
 pub mod arri;
+pub mod autoset;
 pub mod camera_default;
 pub mod cdl;
 pub mod chain;

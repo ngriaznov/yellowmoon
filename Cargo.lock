@@ -11136,6 +11136,7 @@ dependencies = [
 name = "ym-color"
 version = "0.1.10"
 dependencies = [
+ "base64 0.23.1",
  "proptest",
  "serde",
  "serde_json",

@@ -1,0 +1,4 @@
+# Python dependencies of the autoset training (training/autoset/). Not shipped.
+# The ensemble is trained in float64 with JAX on the CPU (no optax: Adam is written out in train.py).
+numpy>=1.26         # reproduced with 2.5.3
+jax>=0.4.30         # reproduced with 0.11.2 (CPU)
