@@ -1,9 +1,9 @@
-//! The shrinkage of the prediction towards the camera-gain rule (`docs/18-auto-settings.md` §4.4).
+//! How a prediction becomes the photo's settings (`docs/18-auto-settings.md` §4.4).
 //!
-//! A head with mean `mu` and variance `var` gets the weight `w = sigma0² / (sigma0² + var)`, in (0, 1]: a certain
-//! prediction applies in full, a doubtful one fades back to the rule. The exposure is the camera gain moved by `w`
-//! towards the exposure the model asks for; the contrast is `w` times the predicted contrast. Both weights are
-//! reported as the confidences of the photo.
+//! A head with mean `mu` and variance `var` gets the weight `w = sigma0² / (sigma0² + var)`, in (0, 1]. The exposure
+//! is the one the model asks for, in full: full rescue (owner's decision of 2026-10-18), so it never falls back
+//! towards the camera's exposure; its weight is only reported, as the exposure's confidence. The contrast is `w`
+//! times the predicted contrast: a doubtful contrast fades to 0.
 
 use crate::exposure::{CAMERA_GAIN_EV, EV_LIMIT};
 
@@ -13,11 +13,12 @@ use super::{AutosetModel, Prediction};
 /// behind each.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Applied {
-    /// `EV_auto` before the highlight guard (`docs/02`, step 4): the camera gain moved by `ev_weight` towards the
-    /// model's exposure, clamped to plus or minus [`EV_LIMIT`].
+    /// `EV_auto` before the highlight guard (`docs/02`, step 4): the exposure the model asks for
+    /// (`key_target - key`), clamped to plus or minus [`EV_LIMIT`]; the camera gain only when the prediction is
+    /// not usable.
     pub ev_before_guard: f64,
-    /// The exposure's weight, in (0, 1]; 0 for the rule. It is the confidence of the exposure
-    /// (`AutoSummary::ev_confidence`).
+    /// The exposure's confidence `sigma0² / (sigma0² + var)`, in (0, 1]; 0 for the rule
+    /// (`AutoSummary::ev_confidence`). Reported only: it does not move the exposure.
     pub ev_weight: f64,
     /// The Auto contrast: the contrast weight times the predicted contrast, bounded to the model's contrast limit and
     /// rounded to 0.1.
@@ -51,8 +52,8 @@ pub fn round_contrast(x: f64) -> f64 {
     round_tenth(x)
 }
 
-/// Shrinks a prediction towards the rule (`docs/18` §4.4). `key` is the key `m` the photo was metered at
-/// (`Features::key`); the exposure the model asks for is `key_target - key`.
+/// The settings of a prediction (`docs/18` §4.4). `key` is the key `m` the photo was metered at (`Features::key`);
+/// the exposure is `key_target - key`, the contrast is shrunk towards 0 by its weight.
 #[must_use]
 pub fn apply(prediction: &Prediction, key: f64, model: &AutosetModel) -> Applied {
     let sigma = model.prior_sigma();
@@ -60,8 +61,7 @@ pub fn apply(prediction: &Prediction, key: f64, model: &AutosetModel) -> Applied
     let ev_weight = weight(sigma.key_target, prediction.key_target, prediction.key_var);
     let contrast_weight = weight(sigma.contrast, prediction.contrast, prediction.contrast_var);
     let ev = if ev_weight > 0.0 && key.is_finite() {
-        let asked = prediction.key_target - key;
-        CAMERA_GAIN_EV + ev_weight * (asked - CAMERA_GAIN_EV)
+        prediction.key_target - key
     } else {
         CAMERA_GAIN_EV
     };

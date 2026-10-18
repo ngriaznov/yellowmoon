@@ -241,7 +241,7 @@ class AutosetModel:
         return combine(self.member_outputs(X))
 
     def apply(self, key_mean: float, key_var: float, contrast_mean: float, contrast_var: float, key: float) -> Applied:
-        """The shrinkage rule of section 4.4 with this model's prior sigmas and contrast limit."""
+        """Section 4.4 with this model's prior sigmas and contrast limit: the exposure in full, the contrast shrunk."""
         return apply_rule(key_mean, key_var, contrast_mean, contrast_var, key, prior_key=self.prior_sigma_key,
                           prior_contrast=self.prior_sigma_contrast, contrast_limit=self.contrast_limit)
 
@@ -317,10 +317,10 @@ class Applied:
 def apply_rule(key_mean: float, key_var: float, contrast_mean: float, contrast_var: float, key: float, *,
                prior_key: float = PRIOR_SIGMA_KEY, prior_contrast: float = PRIOR_SIGMA_CONTRAST,
                contrast_limit: float = CONTRAST_LIMIT) -> Applied:
-    """Section 4.4 for one photo: ``EV = clamp(CAMERA_GAIN_EV + w_ev (mu_key - key - CAMERA_GAIN_EV))`` and
-    ``contrast = round_0.1(clamp(w_c mu_contrast))``."""
+    """Section 4.4 for one photo: ``EV = clamp(mu_key - key)`` (full rescue: the exposure is the model's, ``w_ev`` is only its
+    reported confidence) and ``contrast = round_0.1(clamp(w_c mu_contrast))``."""
     w_ev = weight(prior_key, key_var)
-    ev_raw = CAMERA_GAIN_EV + w_ev * (key_mean - key - CAMERA_GAIN_EV)
+    ev_raw = key_mean - key
     ev = min(max(ev_raw, -EV_LIMIT), EV_LIMIT)
     w_c = weight(prior_contrast, contrast_var)
     c_raw = min(max(w_c * contrast_mean, -contrast_limit), contrast_limit)

@@ -28,7 +28,7 @@ def _recompute(case: dict, model: md.AutosetModel) -> dict:
     kv += sum((outs[i, 0] - km) ** 2 for i in range(m)) / m
     cv += sum((outs[i, 2] - cm) ** 2 for i in range(m)) / m
     w_ev = model.prior_sigma_key**2 / (model.prior_sigma_key**2 + kv)
-    ev = min(max(1.11 + w_ev * (km - case["key"] - 1.11), -3.0), 3.0)
+    ev = min(max(km - case["key"], -3.0), 3.0)  # full rescue: the exposure is the model's in full (docs/18 section 4.4)
     w_c = model.prior_sigma_contrast**2 / (model.prior_sigma_contrast**2 + cv)
     c_raw = min(max(w_c * cm, -model.contrast_limit), model.contrast_limit)
     return {"combined": {"key_mean": km, "key_var": kv, "contrast_mean": cm, "contrast_var": cv},

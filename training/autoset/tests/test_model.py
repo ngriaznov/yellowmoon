@@ -158,9 +158,11 @@ class Rule(unittest.TestCase):
         self.assertAlmostEqual(a.ev, 1.4, places=12)
         self.assertEqual(a.ev_confidence, 1.0)
 
-    def test_a_doubtful_prediction_falls_back_to_the_camera_gain(self) -> None:
+    def test_a_doubtful_exposure_still_applies_and_a_doubtful_contrast_fades(self) -> None:
+        # Full rescue (owner's decision of 2026-10-18): the exposure is the model's whatever its confidence.
         a = md.apply_rule(key_mean=-2.0, key_var=1e12, contrast_mean=25.0, contrast_var=1e12, key=0.0)
-        self.assertAlmostEqual(a.ev, md.CAMERA_GAIN_EV, places=9)
+        self.assertAlmostEqual(a.ev, -2.0, places=12)
+        self.assertLess(a.ev_confidence, 1e-9)
         self.assertAlmostEqual(a.contrast, 0.0, places=9)
 
     def test_ev_and_contrast_are_clamped(self) -> None:

@@ -45,7 +45,7 @@ class TrainConfig:
     members: int = md.N_MEMBERS
     steps: int = 3000
     lr: float = 1e-2
-    weight_decay: float = 1e-3
+    weight_decay: float = 1e-2
     eval_every: int = 25
     patience: int = 40
     holdout: float = 0.15
@@ -278,7 +278,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--members", type=int, default=md.N_MEMBERS)
     ap.add_argument("--steps", type=int, default=3000)
     ap.add_argument("--lr", type=float, default=1e-2)
-    ap.add_argument("--weight-decay", type=float, default=1e-3)
+    ap.add_argument("--weight-decay", type=float, default=1e-2)
     ap.add_argument("--holdout", type=float, default=0.15)
     ap.add_argument("--seed", type=int, default=20261018, help="the seed of the scene split")
     args = ap.parse_args(argv)

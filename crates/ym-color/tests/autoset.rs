@@ -974,12 +974,8 @@ fn the_weights_shrink_the_prediction_by_its_variance() {
     let p = prediction(0.0 + 2.0, 0.75 * 0.75, 25.0, 100.0);
     let a = apply(&p, 0.0, &model);
     assert_close(a.ev_weight, 0.5, 1e-15, "ev weight");
-    assert_close(
-        a.ev_before_guard,
-        CAMERA_GAIN_EV + 0.5 * (2.0 - CAMERA_GAIN_EV),
-        1e-12,
-        "ev",
-    );
+    // Full rescue: the exposure is the model's in full whatever its weight, which is only reported.
+    assert_close(a.ev_before_guard, 2.0, 1e-12, "ev");
     assert_close(a.contrast_weight, 0.5, 1e-15, "contrast weight");
     assert_eq!(a.contrast, 12.5);
     // Variance three times sigma0 squared: weight a quarter.
@@ -1027,11 +1023,12 @@ fn the_exposure_is_clamped_and_the_contrast_rounded() {
 }
 
 #[test]
-fn a_doubtful_or_broken_prediction_fades_to_the_rule() {
+fn a_doubtful_contrast_fades_and_a_broken_prediction_gives_the_rule() {
     let model = AutosetModel::from_json(&hand_model_json().to_string()).unwrap();
-    let doubtful = apply(&prediction(4.0, 1e6, 20.0, 1e6), 0.0, &model);
+    // A doubtful exposure still applies (full rescue, owner's decision of 2026-10-18): only its confidence is low.
+    let doubtful = apply(&prediction(2.5, 1e6, 20.0, 1e6), 0.0, &model);
     assert!(doubtful.ev_weight < 1e-5);
-    assert!((doubtful.ev_before_guard - CAMERA_GAIN_EV).abs() < 1e-5);
+    assert_eq!(doubtful.ev_before_guard, 2.5);
     assert!(doubtful.contrast.abs() < 1e-3);
     let nan = apply(&prediction(f64::NAN, 0.1, f64::NAN, 0.1), 0.0, &model);
     assert_eq!(nan.ev_weight, 0.0);

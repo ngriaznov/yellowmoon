@@ -14,7 +14,7 @@ This spec covers version 1 (`autoset` v1: exposure and contrast from a small lea
 | White lift | per photo, sized at the photo's exposure | unchanged; it is sized at the new exposure |
 | Highlight guard, burst sharing | as `docs/02` | unchanged; burst sharing also applies to Auto contrast |
 
-When the model file is missing, cannot be read, or is unsure (§4.4), every value falls back continuously to the behaviour before `autoset`. `PIPELINE_VERSION` goes to 0.5.0.
+When the model file is missing or cannot be read, every value is the behaviour before `autoset`. An unsure contrast fades to 0; an unsure exposure still applies (full rescue, §4.4), and its confidence is reported. `PIPELINE_VERSION` goes to 0.5.0.
 
 ## 2. Where it runs
 
@@ -82,15 +82,15 @@ An ensemble of **5** multilayer perceptrons, each `39 → 32 → 32 → 4` with 
 
 `T` = `{"shape": [rows, cols], "data_b64": base64 of little-endian f32, row-major}` (the `illum` convention, `crates/ym-color/src/illum/format.rs`). `w` has shape `[out, in]`, `b` shape `[out]`; the SHA-256 covers the member tensors only (not the input statistics or the constants); a layer computes `y = W·x + b` in **f64** from the f32 values. The reader refuses a wrong `format`, `format_version`, feature count, shape or SHA-256, and any non-finite value (`AutosetError`). Weights trained on CC BY-SA data are CC BY-SA 4.0 with their own `LICENSE` in the folder (`docs/14` rule 5); v1 is trained on CC0 data only and is Apache-2.0.
 
-### 4.4 Applying it: shrink towards the rule
+### 4.4 Applying it
 
-With the ensemble mean `μ` and variance `σ²` of a head and its prior sigma `σ0`, the weight `w = σ0² / (σ0² + σ²)` (in (0, 1]: certain predictions apply, doubtful ones fade):
+With the ensemble mean `μ` and variance `σ²` of a head and its prior sigma `σ0`, the weight `w = σ0² / (σ0² + σ²)` (in (0, 1]: 1 for a certain prediction, towards 0 for a doubtful one):
 
-- `EV_auto_before_guard = clamp(CAMERA_GAIN_EV + w_ev · (μ_key − m − CAMERA_GAIN_EV), −EV_LIMIT, +EV_LIMIT)`; then the highlight guard (`docs/02` step 5) and the burst median (step 6) as before.
-- `contrast_auto = clamp(w_c · μ_contrast, −contrast_limit, +contrast_limit)`, rounded to 0.1; frames of a burst share the median.
-- Both weights and sigmas are reported (`AutoSummary`): `ev_confidence = w_ev`, `contrast_confidence = w_c`.
+- **Exposure: the model's, in full.** `EV_auto_before_guard = clamp(μ_key − m, −EV_LIMIT, +EV_LIMIT)`; then the highlight guard (`docs/02` step 5) and the burst median (step 6) as before. The weight `w_ev` is reported, not applied: full rescue (owner's decision of 2026-10-18, confirmed after the first evaluation, §8) means the exposure never falls back towards the camera's own. (The first draft shrank the exposure towards `CAMERA_GAIN_EV`; the evaluation showed that this keeps half of a misexposed frame's error, 0.5 to 0.9 EV at ±2 EV, while the model alone holds 0.25 EV at any offset. Shrinking towards the typical key instead did not help either.)
+- `contrast_auto = clamp(w_c · μ_contrast, −contrast_limit, +contrast_limit)`, rounded to 0.1; frames of a burst share the median. A doubtful contrast fades to 0.
+- Both weights are reported (`AutoSummary`): `ev_confidence = w_ev`, `contrast_confidence = w_c`.
 
-No model, a model that fails to load, or no usable preview pixel: `w = 0` (the rule, contrast 0). The value written into exports (`ym:Settings` XMP) records `autoset` = the model version or `"none"`.
+No model, a model that fails to load, a prediction that is not finite, or no usable preview pixel: the rule (`CAMERA_GAIN_EV`, contrast 0, both weights 0). The value written into exports (`ym:Settings` XMP) records `autoset` = the model version or `"none"`.
 
 ## 5. Preferred white (rule, v1)
 
@@ -166,6 +166,7 @@ Per member: Gaussian negative log-likelihood of each head against its label, wit
 **As built (AS-07).** The integration follows the text above with these decisions where the spec is silent (`docs/02` and `docs/STATUS.md` say the same).
 
 - *Metering on the neutral white.* The exposure and the features are metered on the all-Auto chain with the neutral Auto white (`ChainSettings::default`, `white_preference` 0). The model was trained on that chain (the dump of 2026-10-18), so the preferred white of section 5 does not move the features; `white_preference` changes the picture, never the exposure's input.
+- *Duv of the user white.* Section 5 keeps `duv_u = duv_s`, which is meant to neutralise the tint cast fully. The tint of a light is its Duv over the locus's Duv scale at its CCT (`wb::scene_tint`), so with the Duv kept literally the user light's tint differs from the scene's by about a tenth of its value (2.5 units for a 3450 K scene of tint -25, 1.7 % of the green channel). The chain therefore scales the Duv by `duv_scale(mired_u) / duv_scale(mired_s)` where the CCT moved: the user light has the scene's tint, and the spec's intent holds. The rule's function `preferred_white` keeps `duv_u = duv_s`, as specified.
 - *The preferred white needs no model.* Section 5 is a rule of the scene light and its brightness, so it applies with or without the model file. A picked white (Pick white renders the spot neutral, `docs/11`) and a light preset (the user's white is the preset) are unchanged, as is the Manual white balance.
 - *The lift.* The white lift is estimated on the neutral Auto white, as the exposure is, and sized at the new exposure; the preferred white does not change it ("unchanged" in section 1).
 - *Re-run.* `reset_automatic` returns contrast to Auto with exposure, the white lift's offset, the white balance and noise; `white_preference` is a preference and stays.
