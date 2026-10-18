@@ -1,0 +1,937 @@
+{
+ "config": {
+  "eval_every": 25,
+  "folds": 5,
+  "holdout": 0.15,
+  "lr": 0.01,
+  "member_seed_base": 1000,
+  "members": 5,
+  "patience": 40,
+  "seed": 20261018,
+  "steps": 3000,
+  "weight_decay": 0.01
+ },
+ "data": {
+  "augmentations": 1290,
+  "files": 215,
+  "files_flagged": 183,
+  "files_normal": 29,
+  "files_with_contrast_label": 215,
+  "files_with_key_label": 215,
+  "rows": 1505,
+  "rows_with_contrast_label": 1505,
+  "rows_with_key_label": 1505,
+  "scenes": 176
+ },
+ "evaluation": {
+  "augmentation": {
+   "by_k": {
+    "-0.5": {
+     "equivariance": {
+      "bias": -0.025146559622952768,
+      "mae": 0.025146559622952768,
+      "max_abs": 0.04514043526099387,
+      "median_abs": 0.026394871127600306,
+      "n": 31,
+      "p90_abs": 0.03986482218942733,
+      "within_0p05": 1.0
+     },
+     "rescue_vs_label": {
+      "bias": -0.06614948607363931,
+      "mae": 0.27647435528210845,
+      "max_abs": 0.872473359748589,
+      "median_abs": 0.19161832569513448,
+      "n": 31,
+      "p90_abs": 0.6258297734809,
+      "within_0p3": 0.7096774193548387
+     }
+    },
+    "-1": {
+     "equivariance": {
+      "bias": -0.051105260595989105,
+      "mae": 0.051105260595989105,
+      "max_abs": 0.09194359820227205,
+      "median_abs": 0.05411248678741232,
+      "n": 31,
+      "p90_abs": 0.07794988268778869,
+      "within_0p05": 0.41935483870967744
+     },
+     "rescue_vs_label": {
+      "bias": -0.09210818704667562,
+      "mae": 0.28387986220438977,
+      "max_abs": 0.8444946656042398,
+      "median_abs": 0.18608355832211032,
+      "n": 31,
+      "p90_abs": 0.6519636687730443,
+      "within_0p3": 0.7096774193548387
+     }
+    },
+    "-2": {
+     "equivariance": {
+      "bias": -0.10546389724723113,
+      "mae": 0.10546389724723113,
+      "max_abs": 0.18903666963968524,
+      "median_abs": 0.11153367709065432,
+      "n": 31,
+      "p90_abs": 0.15453313019000614,
+      "within_0p05": 0.16129032258064516
+     },
+     "rescue_vs_label": {
+      "bias": -0.14646682369791772,
+      "mae": 0.3018479716323352,
+      "max_abs": 0.8700261845916937,
+      "median_abs": 0.2653137645251169,
+      "n": 31,
+      "p90_abs": 0.7076549938545065,
+      "within_0p3": 0.5806451612903226
+     }
+    },
+    "0.5": {
+     "equivariance": {
+      "bias": 0.02938977894489471,
+      "mae": 0.039604529958117016,
+      "max_abs": 0.15352769974010477,
+      "median_abs": 0.02623311012901275,
+      "n": 31,
+      "p90_abs": 0.13042359148051363,
+      "within_0p05": 0.8387096774193549
+     },
+     "rescue_vs_label": {
+      "bias": -0.011613147505791841,
+      "mae": 0.2627776150877507,
+      "max_abs": 0.9295790128488117,
+      "median_abs": 0.19638124820992742,
+      "n": 31,
+      "p90_abs": 0.6426636759462208,
+      "within_0p3": 0.6774193548387096
+     }
+    },
+    "1": {
+     "equivariance": {
+      "bias": 0.07810703999481788,
+      "mae": 0.08204819919886118,
+      "max_abs": 0.35944968669224353,
+      "median_abs": 0.057571910087617195,
+      "n": 31,
+      "p90_abs": 0.161624206371481,
+      "within_0p05": 0.4838709677419355
+     },
+     "rescue_vs_label": {
+      "bias": 0.03710411354413134,
+      "mae": 0.2592570738853848,
+      "max_abs": 0.9825231285988316,
+      "median_abs": 0.2255004498491202,
+      "n": 31,
+      "p90_abs": 0.646969371657969,
+      "within_0p3": 0.7096774193548387
+     }
+    },
+    "2": {
+     "equivariance": {
+      "bias": 0.23104244058401482,
+      "mae": 0.23137218814293659,
+      "max_abs": 0.8472134485615972,
+      "median_abs": 0.1712609857466164,
+      "n": 31,
+      "p90_abs": 0.4997813510314899,
+      "within_0p05": 0.16129032258064516
+     },
+     "rescue_vs_label": {
+      "bias": 0.1900395141333283,
+      "mae": 0.2953126500208046,
+      "max_abs": 1.1476675261394074,
+      "median_abs": 0.222191048627971,
+      "n": 31,
+      "p90_abs": 0.6156776527875065,
+      "within_0p3": 0.7096774193548387
+     }
+    }
+   },
+   "equivariance": {
+    "bias": 0.0261372570095924,
+    "mae": 0.08912343912768128,
+    "max_abs": 0.8472134485615972,
+    "median_abs": 0.04808204095561264,
+    "n": 186,
+    "p90_abs": 0.17951952520056175,
+    "within_0p05": 0.510752688172043
+   },
+   "rescue_vs_label": {
+    "bias": -0.014865669441094145,
+    "mae": 0.27992492135212893,
+    "max_abs": 1.1476675261394074,
+    "median_abs": 0.21142045004489665,
+    "n": 186,
+    "p90_abs": 0.6504147139865686,
+    "within_0p3": 0.6827956989247311
+   },
+   "rows": 186
+  },
+  "calibration": {
+   "contrast_within_1_sd": 0.6774193548387096,
+   "contrast_within_2_sd": 0.9354838709677419,
+   "key_within_1_sd": 0.7741935483870968,
+   "key_within_2_sd": 0.967741935483871
+  },
+  "contrast": {
+   "constant_zero_vs_label": {
+    "bias": 2.5190817632398175,
+    "mae": 18.040165656086224,
+    "max_abs": 40.0,
+    "median_abs": 17.20465358569246,
+    "n": 31,
+    "p90_abs": 34.2737348157955,
+    "within_10": 0.3870967741935484,
+    "within_5": 0.22580645161290322
+   },
+   "model_vs_label": {
+    "bias": 7.741662488871937,
+    "mae": 18.47109487464274,
+    "max_abs": 45.332984997098926,
+    "median_abs": 17.062879263138854,
+    "n": 31,
+    "p90_abs": 38.90844071634062,
+    "within_10": 0.3225806451612903,
+    "within_5": 0.1935483870967742
+   },
+   "normal_constant_zero_vs_label": {
+    "bias": -20.93758441184023,
+    "mae": 20.93758441184023,
+    "max_abs": 20.93758441184023,
+    "median_abs": 20.93758441184023,
+    "n": 1,
+    "p90_abs": 20.93758441184023,
+    "within_10": 0.0,
+    "within_5": 0.0
+   },
+   "normal_model_vs_label": {
+    "bias": -16.479013225674763,
+    "mae": 16.479013225674763,
+    "max_abs": 16.479013225674763,
+    "median_abs": 16.479013225674763,
+    "n": 1,
+    "p90_abs": 16.479013225674763,
+    "within_10": 0.0,
+    "within_5": 0.0
+   },
+   "rows": 31
+  },
+  "ev": {
+   "constant_heldout_files": {
+    "bias": 0.11323315555219639,
+    "mae": 0.25238933200133884,
+    "max_abs": 0.6101810424508767,
+    "median_abs": 0.21390303675063427,
+    "n": 31,
+    "p90_abs": 0.4570970316898364,
+    "within_0p3": 0.6129032258064516,
+    "within_0p5": 0.9032258064516129
+   },
+   "constant_normal_files": {
+    "bias": 0.3628087227661867,
+    "mae": 0.3628087227661867,
+    "max_abs": 0.3628087227661867,
+    "median_abs": 0.3628087227661867,
+    "n": 1,
+    "p90_abs": 0.3628087227661867,
+    "within_0p3": 0.0,
+    "within_0p5": 1.0
+   },
+   "heldout_files": {
+    "bias": -0.04100292645068655,
+    "mae": 0.26958895791162407,
+    "max_abs": 0.9004479637677583,
+    "median_abs": 0.19782537084213075,
+    "n": 31,
+    "p90_abs": 0.6190207323685615,
+    "within_0p3": 0.6774193548387096,
+    "within_0p5": 0.8064516129032258
+   },
+   "normal_files": {
+    "bias": -0.7330510107395387,
+    "mae": 0.7330510107395387,
+    "max_abs": 0.7330510107395387,
+    "median_abs": 0.7330510107395387,
+    "n": 1,
+    "p90_abs": 0.7330510107395387,
+    "within_0p3": 0.0,
+    "within_0p5": 0.0
+   }
+  },
+  "evaluated_files": 31,
+  "failures": [
+   {
+    "body": "SLT-A65V",
+    "error_ev": 0.9004479637677583,
+    "ev_model": 2.4675449954575948,
+    "file": "Sony - SLT-A65 - 12bit 12bit compressed (3:2).ARW",
+    "flagged": true,
+    "level_ev": 1.5670970316898365,
+    "normal": false
+   },
+   {
+    "body": "DSC-RX100M7",
+    "error_ev": -0.7507583649875289,
+    "ev_model": -0.057190347255195784,
+    "file": "Sony - DSC-RX100M7 - 12bit 12bit compressed (3:2).ARW",
+    "flagged": true,
+    "level_ev": 0.6935680177323331,
+    "normal": false
+   },
+   {
+    "body": "DSLR-A290",
+    "error_ev": -0.7330510107395387,
+    "ev_model": 0.01414026649427469,
+    "file": "Sony - DSLR-A290 - 12bit 12bit compressed (3:2).ARW",
+    "flagged": false,
+    "level_ev": 0.7471912772338134,
+    "normal": true
+   },
+   {
+    "body": "NEX-3N",
+    "error_ev": 0.6190207323685615,
+    "ev_model": 1.8538730915477606,
+    "file": "Sony - NEX-3N - 12bit 12bit compressed (3:2).ARW",
+    "flagged": true,
+    "level_ev": 1.234852359179199,
+    "normal": false
+   },
+   {
+    "body": "ILME-FX2",
+    "error_ev": 0.6059313220951832,
+    "ev_model": 2.003445583518723,
+    "file": "Sony - ILME-FX2 - 12bit (3:2).ARW",
+    "flagged": true,
+    "level_ev": 1.3975142614235396,
+    "normal": false
+   },
+   {
+    "body": "ILCE-3000",
+    "error_ev": -0.6008547050164722,
+    "ev_model": 0.5025718932336246,
+    "file": "Sony - ILCE-3000 - 12bit 12bit compressed (3:2).ARW",
+    "flagged": true,
+    "level_ev": 1.1034265982500968,
+    "normal": false
+   },
+   {
+    "body": "DSC-RX1RM3",
+    "error_ev": -0.4611406300984229,
+    "ev_model": 0.632906242964439,
+    "file": "Sony - DSC-RX1RM3 - 14bit uncompressed (3:2).ARW",
+    "flagged": true,
+    "level_ev": 1.0940468730628619,
+    "normal": false
+   },
+   {
+    "body": "DSC-RX100M3",
+    "error_ev": -0.4550545237789753,
+    "ev_model": 0.35939592043247187,
+    "file": "Sony - DSC-RX100M3 - 12bit 12bit compressed (3:2).ARW",
+    "flagged": true,
+    "level_ev": 0.8144504442114472,
+    "normal": false
+   },
+   {
+    "body": "ILCE-1",
+    "error_ev": -0.3445641801427217,
+    "ev_model": 0.7046809440411479,
+    "file": "Sony - ILCE-1 - 14bit 14bit compressed (3:2).ARW",
+    "flagged": true,
+    "level_ev": 1.0492451241838696,
+    "normal": false
+   },
+   {
+    "body": "DSC-RX100M6",
+    "error_ev": 0.3105185673189892,
+    "ev_model": 0.8515349899427755,
+    "file": "Sony - DSC-RX100M6 - 12bit 12bit compressed (4:3).arw",
+    "flagged": true,
+    "level_ev": 0.5410164226237864,
+    "normal": false
+   }
+  ],
+  "final_model": {
+   "holdout_scenes": 26,
+   "members": [
+    {
+     "best_holdout_nll": 3.17611781475448,
+     "best_step": 75,
+     "final_loss": 1.84090342649739,
+     "seed": 1000,
+     "steps": 1075
+    },
+    {
+     "best_holdout_nll": 3.3132872088729375,
+     "best_step": 75,
+     "final_loss": 2.253200059062269,
+     "seed": 1001,
+     "steps": 1075
+    },
+    {
+     "best_holdout_nll": 3.254908395435917,
+     "best_step": 75,
+     "final_loss": 1.8035809172125483,
+     "seed": 1002,
+     "steps": 1075
+    },
+    {
+     "best_holdout_nll": 3.378054720660236,
+     "best_step": 75,
+     "final_loss": 1.816939610520581,
+     "seed": 1003,
+     "steps": 1075
+    },
+    {
+     "best_holdout_nll": 5.811591836543822,
+     "best_step": 75,
+     "final_loss": 2.4104645474069537,
+     "seed": 1004,
+     "steps": 1075
+    }
+   ],
+   "train_scenes": 150
+  },
+  "folds": null,
+  "label_summary": {
+   "contrast": {
+    "mean": -2.5190817632398175,
+    "sd": 22.36466992282857
+   },
+   "flagged_share": 0.967741935483871,
+   "level_ev": {
+    "mean": 0.9967668444478037,
+    "sd": 0.2826793902197716
+   },
+   "normal_share": 0.03225806451612903
+  },
+  "mode": "final",
+  "model": {
+   "members": 5,
+   "model_version": "1.0.0",
+   "parameters_per_member": 2468,
+   "sha256": "2145d5795e4cd3c5ad94e9135407ddbe300666579b18e60c0bf56a32e1381deb"
+  }
+ },
+ "final_model": {
+  "augmentation": {
+   "by_k": {
+    "-0.5": {
+     "equivariance": {
+      "bias": -0.025146559622952768,
+      "mae": 0.025146559622952768,
+      "max_abs": 0.04514043526099387,
+      "median_abs": 0.026394871127600306,
+      "n": 31,
+      "p90_abs": 0.03986482218942733,
+      "within_0p05": 1.0
+     },
+     "rescue_vs_label": {
+      "bias": -0.06614948607363931,
+      "mae": 0.27647435528210845,
+      "max_abs": 0.872473359748589,
+      "median_abs": 0.19161832569513448,
+      "n": 31,
+      "p90_abs": 0.6258297734809,
+      "within_0p3": 0.7096774193548387
+     }
+    },
+    "-1": {
+     "equivariance": {
+      "bias": -0.051105260595989105,
+      "mae": 0.051105260595989105,
+      "max_abs": 0.09194359820227205,
+      "median_abs": 0.05411248678741232,
+      "n": 31,
+      "p90_abs": 0.07794988268778869,
+      "within_0p05": 0.41935483870967744
+     },
+     "rescue_vs_label": {
+      "bias": -0.09210818704667562,
+      "mae": 0.28387986220438977,
+      "max_abs": 0.8444946656042398,
+      "median_abs": 0.18608355832211032,
+      "n": 31,
+      "p90_abs": 0.6519636687730443,
+      "within_0p3": 0.7096774193548387
+     }
+    },
+    "-2": {
+     "equivariance": {
+      "bias": -0.10546389724723113,
+      "mae": 0.10546389724723113,
+      "max_abs": 0.18903666963968524,
+      "median_abs": 0.11153367709065432,
+      "n": 31,
+      "p90_abs": 0.15453313019000614,
+      "within_0p05": 0.16129032258064516
+     },
+     "rescue_vs_label": {
+      "bias": -0.14646682369791772,
+      "mae": 0.3018479716323352,
+      "max_abs": 0.8700261845916937,
+      "median_abs": 0.2653137645251169,
+      "n": 31,
+      "p90_abs": 0.7076549938545065,
+      "within_0p3": 0.5806451612903226
+     }
+    },
+    "0.5": {
+     "equivariance": {
+      "bias": 0.02938977894489471,
+      "mae": 0.039604529958117016,
+      "max_abs": 0.15352769974010477,
+      "median_abs": 0.02623311012901275,
+      "n": 31,
+      "p90_abs": 0.13042359148051363,
+      "within_0p05": 0.8387096774193549
+     },
+     "rescue_vs_label": {
+      "bias": -0.011613147505791841,
+      "mae": 0.2627776150877507,
+      "max_abs": 0.9295790128488117,
+      "median_abs": 0.19638124820992742,
+      "n": 31,
+      "p90_abs": 0.6426636759462208,
+      "within_0p3": 0.6774193548387096
+     }
+    },
+    "1": {
+     "equivariance": {
+      "bias": 0.07810703999481788,
+      "mae": 0.08204819919886118,
+      "max_abs": 0.35944968669224353,
+      "median_abs": 0.057571910087617195,
+      "n": 31,
+      "p90_abs": 0.161624206371481,
+      "within_0p05": 0.4838709677419355
+     },
+     "rescue_vs_label": {
+      "bias": 0.03710411354413134,
+      "mae": 0.2592570738853848,
+      "max_abs": 0.9825231285988316,
+      "median_abs": 0.2255004498491202,
+      "n": 31,
+      "p90_abs": 0.646969371657969,
+      "within_0p3": 0.7096774193548387
+     }
+    },
+    "2": {
+     "equivariance": {
+      "bias": 0.23104244058401482,
+      "mae": 0.23137218814293659,
+      "max_abs": 0.8472134485615972,
+      "median_abs": 0.1712609857466164,
+      "n": 31,
+      "p90_abs": 0.4997813510314899,
+      "within_0p05": 0.16129032258064516
+     },
+     "rescue_vs_label": {
+      "bias": 0.1900395141333283,
+      "mae": 0.2953126500208046,
+      "max_abs": 1.1476675261394074,
+      "median_abs": 0.222191048627971,
+      "n": 31,
+      "p90_abs": 0.6156776527875065,
+      "within_0p3": 0.7096774193548387
+     }
+    }
+   },
+   "equivariance": {
+    "bias": 0.0261372570095924,
+    "mae": 0.08912343912768128,
+    "max_abs": 0.8472134485615972,
+    "median_abs": 0.04808204095561264,
+    "n": 186,
+    "p90_abs": 0.17951952520056175,
+    "within_0p05": 0.510752688172043
+   },
+   "rescue_vs_label": {
+    "bias": -0.014865669441094145,
+    "mae": 0.27992492135212893,
+    "max_abs": 1.1476675261394074,
+    "median_abs": 0.21142045004489665,
+    "n": 186,
+    "p90_abs": 0.6504147139865686,
+    "within_0p3": 0.6827956989247311
+   },
+   "rows": 186
+  },
+  "calibration": {
+   "contrast_within_1_sd": 0.6774193548387096,
+   "contrast_within_2_sd": 0.9354838709677419,
+   "key_within_1_sd": 0.7741935483870968,
+   "key_within_2_sd": 0.967741935483871
+  },
+  "contrast": {
+   "constant_zero_vs_label": {
+    "bias": 2.5190817632398175,
+    "mae": 18.040165656086224,
+    "max_abs": 40.0,
+    "median_abs": 17.20465358569246,
+    "n": 31,
+    "p90_abs": 34.2737348157955,
+    "within_10": 0.3870967741935484,
+    "within_5": 0.22580645161290322
+   },
+   "model_vs_label": {
+    "bias": 7.741662488871937,
+    "mae": 18.47109487464274,
+    "max_abs": 45.332984997098926,
+    "median_abs": 17.062879263138854,
+    "n": 31,
+    "p90_abs": 38.90844071634062,
+    "within_10": 0.3225806451612903,
+    "within_5": 0.1935483870967742
+   },
+   "normal_constant_zero_vs_label": {
+    "bias": -20.93758441184023,
+    "mae": 20.93758441184023,
+    "max_abs": 20.93758441184023,
+    "median_abs": 20.93758441184023,
+    "n": 1,
+    "p90_abs": 20.93758441184023,
+    "within_10": 0.0,
+    "within_5": 0.0
+   },
+   "normal_model_vs_label": {
+    "bias": -16.479013225674763,
+    "mae": 16.479013225674763,
+    "max_abs": 16.479013225674763,
+    "median_abs": 16.479013225674763,
+    "n": 1,
+    "p90_abs": 16.479013225674763,
+    "within_10": 0.0,
+    "within_5": 0.0
+   },
+   "rows": 31
+  },
+  "ev": {
+   "constant_heldout_files": {
+    "bias": 0.11323315555219639,
+    "mae": 0.25238933200133884,
+    "max_abs": 0.6101810424508767,
+    "median_abs": 0.21390303675063427,
+    "n": 31,
+    "p90_abs": 0.4570970316898364,
+    "within_0p3": 0.6129032258064516,
+    "within_0p5": 0.9032258064516129
+   },
+   "constant_normal_files": {
+    "bias": 0.3628087227661867,
+    "mae": 0.3628087227661867,
+    "max_abs": 0.3628087227661867,
+    "median_abs": 0.3628087227661867,
+    "n": 1,
+    "p90_abs": 0.3628087227661867,
+    "within_0p3": 0.0,
+    "within_0p5": 1.0
+   },
+   "heldout_files": {
+    "bias": -0.04100292645068655,
+    "mae": 0.26958895791162407,
+    "max_abs": 0.9004479637677583,
+    "median_abs": 0.19782537084213075,
+    "n": 31,
+    "p90_abs": 0.6190207323685615,
+    "within_0p3": 0.6774193548387096,
+    "within_0p5": 0.8064516129032258
+   },
+   "normal_files": {
+    "bias": -0.7330510107395387,
+    "mae": 0.7330510107395387,
+    "max_abs": 0.7330510107395387,
+    "median_abs": 0.7330510107395387,
+    "n": 1,
+    "p90_abs": 0.7330510107395387,
+    "within_0p3": 0.0,
+    "within_0p5": 0.0
+   }
+  },
+  "evaluated_files": 31,
+  "failures": [
+   {
+    "body": "SLT-A65V",
+    "error_ev": 0.9004479637677583,
+    "ev_model": 2.4675449954575948,
+    "file": "Sony - SLT-A65 - 12bit 12bit compressed (3:2).ARW",
+    "flagged": true,
+    "level_ev": 1.5670970316898365,
+    "normal": false
+   },
+   {
+    "body": "DSC-RX100M7",
+    "error_ev": -0.7507583649875289,
+    "ev_model": -0.057190347255195784,
+    "file": "Sony - DSC-RX100M7 - 12bit 12bit compressed (3:2).ARW",
+    "flagged": true,
+    "level_ev": 0.6935680177323331,
+    "normal": false
+   },
+   {
+    "body": "DSLR-A290",
+    "error_ev": -0.7330510107395387,
+    "ev_model": 0.01414026649427469,
+    "file": "Sony - DSLR-A290 - 12bit 12bit compressed (3:2).ARW",
+    "flagged": false,
+    "level_ev": 0.7471912772338134,
+    "normal": true
+   },
+   {
+    "body": "NEX-3N",
+    "error_ev": 0.6190207323685615,
+    "ev_model": 1.8538730915477606,
+    "file": "Sony - NEX-3N - 12bit 12bit compressed (3:2).ARW",
+    "flagged": true,
+    "level_ev": 1.234852359179199,
+    "normal": false
+   },
+   {
+    "body": "ILME-FX2",
+    "error_ev": 0.6059313220951832,
+    "ev_model": 2.003445583518723,
+    "file": "Sony - ILME-FX2 - 12bit (3:2).ARW",
+    "flagged": true,
+    "level_ev": 1.3975142614235396,
+    "normal": false
+   },
+   {
+    "body": "ILCE-3000",
+    "error_ev": -0.6008547050164722,
+    "ev_model": 0.5025718932336246,
+    "file": "Sony - ILCE-3000 - 12bit 12bit compressed (3:2).ARW",
+    "flagged": true,
+    "level_ev": 1.1034265982500968,
+    "normal": false
+   },
+   {
+    "body": "DSC-RX1RM3",
+    "error_ev": -0.4611406300984229,
+    "ev_model": 0.632906242964439,
+    "file": "Sony - DSC-RX1RM3 - 14bit uncompressed (3:2).ARW",
+    "flagged": true,
+    "level_ev": 1.0940468730628619,
+    "normal": false
+   },
+   {
+    "body": "DSC-RX100M3",
+    "error_ev": -0.4550545237789753,
+    "ev_model": 0.35939592043247187,
+    "file": "Sony - DSC-RX100M3 - 12bit 12bit compressed (3:2).ARW",
+    "flagged": true,
+    "level_ev": 0.8144504442114472,
+    "normal": false
+   },
+   {
+    "body": "ILCE-1",
+    "error_ev": -0.3445641801427217,
+    "ev_model": 0.7046809440411479,
+    "file": "Sony - ILCE-1 - 14bit 14bit compressed (3:2).ARW",
+    "flagged": true,
+    "level_ev": 1.0492451241838696,
+    "normal": false
+   },
+   {
+    "body": "DSC-RX100M6",
+    "error_ev": 0.3105185673189892,
+    "ev_model": 0.8515349899427755,
+    "file": "Sony - DSC-RX100M6 - 12bit 12bit compressed (4:3).arw",
+    "flagged": true,
+    "level_ev": 0.5410164226237864,
+    "normal": false
+   }
+  ],
+  "final_model": {
+   "holdout_scenes": 26,
+   "members": [
+    {
+     "best_holdout_nll": 3.17611781475448,
+     "best_step": 75,
+     "final_loss": 1.84090342649739,
+     "seed": 1000,
+     "steps": 1075
+    },
+    {
+     "best_holdout_nll": 3.3132872088729375,
+     "best_step": 75,
+     "final_loss": 2.253200059062269,
+     "seed": 1001,
+     "steps": 1075
+    },
+    {
+     "best_holdout_nll": 3.254908395435917,
+     "best_step": 75,
+     "final_loss": 1.8035809172125483,
+     "seed": 1002,
+     "steps": 1075
+    },
+    {
+     "best_holdout_nll": 3.378054720660236,
+     "best_step": 75,
+     "final_loss": 1.816939610520581,
+     "seed": 1003,
+     "steps": 1075
+    },
+    {
+     "best_holdout_nll": 5.811591836543822,
+     "best_step": 75,
+     "final_loss": 2.4104645474069537,
+     "seed": 1004,
+     "steps": 1075
+    }
+   ],
+   "train_scenes": 150
+  },
+  "folds": null,
+  "label_summary": {
+   "contrast": {
+    "mean": -2.5190817632398175,
+    "sd": 22.36466992282857
+   },
+   "flagged_share": 0.967741935483871,
+   "level_ev": {
+    "mean": 0.9967668444478037,
+    "sd": 0.2826793902197716
+   },
+   "normal_share": 0.03225806451612903
+  },
+  "mode": "final",
+  "model": {
+   "members": 5,
+   "model_version": "1.0.0",
+   "parameters_per_member": 2468,
+   "sha256": "2145d5795e4cd3c5ad94e9135407ddbe300666579b18e60c0bf56a32e1381deb"
+  }
+ },
+ "rows": {
+  "examples": {},
+  "file": "testdata/autoset/rows.jsonl",
+  "lines": 1505,
+  "rejected": {},
+  "usable": 1505
+ },
+ "sources": [
+  {
+   "bodies": [
+    "DSC-HX95",
+    "DSC-HX99",
+    "DSC-RX0",
+    "DSC-RX0M2",
+    "DSC-RX1",
+    "DSC-RX10",
+    "DSC-RX100",
+    "DSC-RX100M2",
+    "DSC-RX100M3",
+    "DSC-RX100M4",
+    "DSC-RX100M5",
+    "DSC-RX100M5A",
+    "DSC-RX100M6",
+    "DSC-RX100M7",
+    "DSC-RX100M7A",
+    "DSC-RX10M3",
+    "DSC-RX10M4",
+    "DSC-RX1R",
+    "DSC-RX1RM2",
+    "DSC-RX1RM3",
+    "DSLR-A200",
+    "DSLR-A230",
+    "DSLR-A290",
+    "DSLR-A350",
+    "DSLR-A380",
+    "DSLR-A390",
+    "DSLR-A450",
+    "DSLR-A500",
+    "DSLR-A560",
+    "DSLR-A700",
+    "DSLR-A900",
+    "ILCA-68",
+    "ILCA-77M2",
+    "ILCA-99M2",
+    "ILCE-1",
+    "ILCE-1M2",
+    "ILCE-3000",
+    "ILCE-3500",
+    "ILCE-5000",
+    "ILCE-5100",
+    "ILCE-6000",
+    "ILCE-6001",
+    "ILCE-6100",
+    "ILCE-6300",
+    "ILCE-6400",
+    "ILCE-6400A",
+    "ILCE-6500",
+    "ILCE-6600",
+    "ILCE-6700",
+    "ILCE-7",
+    "ILCE-7C",
+    "ILCE-7CM2",
+    "ILCE-7CR",
+    "ILCE-7M2",
+    "ILCE-7M3",
+    "ILCE-7M4",
+    "ILCE-7M5",
+    "ILCE-7R",
+    "ILCE-7RM2",
+    "ILCE-7RM3",
+    "ILCE-7RM3A",
+    "ILCE-7RM4",
+    "ILCE-7RM4A",
+    "ILCE-7RM5",
+    "ILCE-7S",
+    "ILCE-7SM2",
+    "ILCE-7SM3",
+    "ILCE-9",
+    "ILCE-9M2",
+    "ILCE-9M3",
+    "ILCE-QX1",
+    "ILME-FX2",
+    "ILME-FX3",
+    "ILME-FX30",
+    "NEX-3N",
+    "NEX-5",
+    "NEX-5N",
+    "NEX-5T",
+    "NEX-6",
+    "NEX-C3",
+    "NEX-F3",
+    "SLT-A33",
+    "SLT-A35",
+    "SLT-A37",
+    "SLT-A55V",
+    "SLT-A57",
+    "SLT-A58",
+    "SLT-A65V",
+    "SLT-A77V",
+    "SLT-A99V",
+    "UMC-R10C",
+    "ZV-1",
+    "ZV-1M2",
+    "ZV-E1",
+    "ZV-E10",
+    "ZV-E10M2"
+   ],
+   "files": 191,
+   "licence": "CC0-1.0",
+   "scenes": 154,
+   "source": "raw.pixls.us"
+  },
+  {
+   "bodies": [
+    "DSC-RX100",
+    "DSC-RX10M5",
+    "DSLR-A900",
+    "ILCE-6700",
+    "ILCE-7M4",
+    "ILCE-7RM3A",
+    "ILCE-7RM5",
+    "ILCE-7RM6",
+    "ILCE-7SM3",
+    "ZV-E10M2"
+   ],
+   "files": 24,
+   "licence": "CC0-1.0",
+   "scenes": 22,
+   "source": "rawdb.dnglab.org"
+  }
+ ]
+}

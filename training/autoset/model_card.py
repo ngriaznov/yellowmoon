@@ -61,8 +61,9 @@ def build(metrics: dict, model_doc: dict | None, *, date: str, git_sha: str) -> 
     w("Decides where the key of a photo sits and how much contrast it gets, from the photo's brightness statistics "
       "(`docs/18` section 3). The exposure head predicts the key target (where the key should sit after exposure, in stops over "
       "middle grey); the file's exposure is that target minus the key, so a photo shot a stop under or over comes out the same "
-      "(full rescue). The contrast head predicts the C9 contrast. Both are shrunk towards today's rule when the ensemble is unsure "
-      "(section 4.4). Settings are chosen per photo; nothing is stored per photo.\n")
+      "(full rescue). The exposure applies in full; its weight is reported as a confidence only. The contrast head predicts the "
+      "C9 contrast, shrunk towards 0 when the ensemble is unsure (section 4.4). Settings are chosen per photo; nothing is stored "
+      "per photo.\n")
     w("## Files\n")
     w("| File | Model version | Members | Parameters per member | SHA-256 of the member tensors |")
     w("|---|---|---|---|---|")
@@ -79,6 +80,12 @@ def build(metrics: dict, model_doc: dict | None, *, date: str, git_sha: str) -> 
     w("Dataset rows (`docs/18` section 6): one line per file with its 39 features, the label tables and the augmentations (scaled "
       "by 2^k, k in -2, -1, -0.5, +0.5, +1, +2; the file's exposure label moved by -k and its contrast label). Every file and augmentation of a scene is in the "
       "same split.\n")
+    licences = sorted({s["licence"] for s in sources}) if sources else []
+    if licences and all(lic == "CC0-1.0" for lic in licences):
+        w("**Licence of the weights:** Apache-2.0, as the rest of Yellowmoon: every training file is CC0 (`docs/14` rule 5).\n")
+    elif licences:
+        w(f"**Licence of the weights:** check `docs/14` rule 5 for the training licences {', '.join(licences)}; weights trained on "
+          "CC BY-SA data are CC BY-SA 4.0 with their own `LICENSE` in this folder.\n")
     if sources:
         w("| Source | Licence | Files | Scenes | Bodies |")
         w("|---|---|---|---|---|")

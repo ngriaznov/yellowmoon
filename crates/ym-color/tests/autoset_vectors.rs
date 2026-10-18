@@ -2,8 +2,8 @@
 //! `python3 -m training.autoset.export` wrote from the stored f32 weights (numpy f64) is reproduced to 1e-9:
 //! the raw member outputs, the ensemble mean and mixture variance, and the §4.4 application.
 //!
-//! The vectors and the small test model live in `tests/data/autoset/`; the shipped model gets its own
-//! vectors file from the same exporter once it is trained.
+//! The vectors and the small test model live in `tests/data/autoset/`; the shipped model
+//! (`data/models/autoset/autoset.json`) has its own vectors there, `vectors_v1.json`, from the same exporter.
 
 use std::path::{Path, PathBuf};
 
@@ -38,13 +38,13 @@ fn vectors(file: &str) -> Value {
     doc
 }
 
-fn check(doc: &Value) -> usize {
+fn check(doc: &Value, model_dir: &Path) -> usize {
     let model_file = doc["model_file"].as_str().expect("model_file");
     let name = Path::new(model_file)
         .file_name()
         .expect("a file name")
         .to_owned();
-    let model = AutosetModel::load(&data_dir().join(name)).expect("the model loads");
+    let model = AutosetModel::load(&model_dir.join(name)).expect("the model loads");
     assert_eq!(model.version(), doc["model_version"].as_str().unwrap());
     assert_eq!(model.sha256(), doc["model_sha256"].as_str().unwrap());
     let constants = &doc["constants"];
@@ -141,6 +141,14 @@ fn check(doc: &Value) -> usize {
 
 #[test]
 fn the_test_model_reproduces_the_training_code() {
-    let n = check(&vectors("vectors.json"));
+    let n = check(&vectors("vectors.json"), &data_dir());
+    assert!(n >= 20, "only {n} vectors");
+}
+
+/// The model the app ships (`data/models/autoset/autoset.json`) against the vectors the exporter wrote from it.
+#[test]
+fn the_shipped_model_reproduces_the_training_code() {
+    let shipped = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data/models/autoset");
+    let n = check(&vectors("vectors_v1.json"), &shipped);
     assert!(n >= 20, "only {n} vectors");
 }

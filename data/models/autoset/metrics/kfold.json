@@ -1,0 +1,716 @@
+{
+ "config": {
+  "eval_every": 25,
+  "folds": 5,
+  "holdout": 0.15,
+  "lr": 0.01,
+  "member_seed_base": 1000,
+  "members": 5,
+  "patience": 40,
+  "seed": 20261018,
+  "steps": 3000,
+  "weight_decay": 0.01
+ },
+ "data": {
+  "augmentations": 1290,
+  "files": 215,
+  "files_flagged": 183,
+  "files_normal": 29,
+  "files_with_contrast_label": 215,
+  "files_with_key_label": 215,
+  "rows": 1505,
+  "rows_with_contrast_label": 1505,
+  "rows_with_key_label": 1505,
+  "scenes": 176
+ },
+ "evaluation": {
+  "augmentation": {
+   "by_k": {
+    "-0.5": {
+     "equivariance": {
+      "bias": -0.019061284342270564,
+      "mae": 0.019065489846210773,
+      "max_abs": 0.041616897002600295,
+      "median_abs": 0.019187339711980833,
+      "n": 215,
+      "p90_abs": 0.03288463928722729,
+      "within_0p05": 1.0
+     },
+     "rescue_vs_label": {
+      "bias": 0.026538839451661467,
+      "mae": 0.4086657637024137,
+      "max_abs": 2.5898202974551228,
+      "median_abs": 0.25413821453378094,
+      "n": 215,
+      "p90_abs": 0.8348964590490586,
+      "within_0p3": 0.5488372093023256
+     }
+    },
+    "-1": {
+     "equivariance": {
+      "bias": -0.038408229228681645,
+      "mae": 0.03841853178514034,
+      "max_abs": 0.08409281110008227,
+      "median_abs": 0.03883261212402189,
+      "n": 215,
+      "p90_abs": 0.0668702399626337,
+      "within_0p05": 0.7023255813953488
+     },
+     "rescue_vs_label": {
+      "bias": 0.007191894565250397,
+      "mae": 0.4111220743422537,
+      "max_abs": 2.5793016697736104,
+      "median_abs": 0.23852574291470008,
+      "n": 215,
+      "p90_abs": 0.8547555645662106,
+      "within_0p3": 0.5441860465116279
+     }
+    },
+    "-2": {
+     "equivariance": {
+      "bias": -0.07787288422996692,
+      "mae": 0.07790004570458423,
+      "max_abs": 0.16869121667988063,
+      "median_abs": 0.0759886272488206,
+      "n": 215,
+      "p90_abs": 0.1342908341997936,
+      "within_0p05": 0.2558139534883721
+     },
+     "rescue_vs_label": {
+      "bias": -0.03227276043603488,
+      "mae": 0.41785087532497084,
+      "max_abs": 2.5602634228954577,
+      "median_abs": 0.26439100675733274,
+      "n": 215,
+      "p90_abs": 0.8966785435496549,
+      "within_0p3": 0.5348837209302325
+     }
+    },
+    "0.5": {
+     "equivariance": {
+      "bias": 0.05023796582962548,
+      "mae": 0.0570054116014324,
+      "max_abs": 0.9689277799009952,
+      "median_abs": 0.026315372349338118,
+      "n": 215,
+      "p90_abs": 0.1541915503743078,
+      "within_0p05": 0.7255813953488373
+     },
+     "rescue_vs_label": {
+      "bias": 0.09583808962355751,
+      "mae": 0.4066853654578473,
+      "max_abs": 2.8137757127025322,
+      "median_abs": 0.2593026634872386,
+      "n": 215,
+      "p90_abs": 0.7860376443148436,
+      "within_0p3": 0.5488372093023256
+     }
+    },
+    "1": {
+     "equivariance": {
+      "bias": 0.10221889146015531,
+      "mae": 0.1200024234006082,
+      "max_abs": 1.2000295819582587,
+      "median_abs": 0.06275871224040619,
+      "n": 215,
+      "p90_abs": 0.2887047060607279,
+      "within_0p05": 0.40930232558139534
+     },
+     "rescue_vs_label": {
+      "bias": 0.14781901525408736,
+      "mae": 0.41312074981560487,
+      "max_abs": 3.2604417676818005,
+      "median_abs": 0.2530927406047375,
+      "n": 215,
+      "p90_abs": 0.8876874299408073,
+      "within_0p3": 0.5534883720930233
+     }
+    },
+    "2": {
+     "equivariance": {
+      "bias": 0.2388834967774091,
+      "mae": 0.2570208534534515,
+      "max_abs": 1.405772570987628,
+      "median_abs": 0.15969271890749193,
+      "n": 215,
+      "p90_abs": 0.5938516831349966,
+      "within_0p05": 0.14883720930232558
+     },
+     "rescue_vs_label": {
+      "bias": 0.2844836205713411,
+      "mae": 0.45342823345639915,
+      "max_abs": 3.3909132653836718,
+      "median_abs": 0.2484007437682152,
+      "n": 215,
+      "p90_abs": 1.0489631299833406,
+      "within_0p3": 0.5534883720930233
+     }
+    }
+   },
+   "equivariance": {
+    "bias": 0.04266632604437846,
+    "mae": 0.0949021259652379,
+    "max_abs": 1.405772570987628,
+    "median_abs": 0.04358014543832489,
+    "n": 1290,
+    "p90_abs": 0.23286330635887773,
+    "within_0p05": 0.5403100775193799
+   },
+   "rescue_vs_label": {
+    "bias": 0.08826644983831049,
+    "mae": 0.41847884368324834,
+    "max_abs": 3.3909132653836718,
+    "median_abs": 0.2531094534214973,
+    "n": 1290,
+    "p90_abs": 0.9067697295561354,
+    "within_0p3": 0.5472868217054263
+   },
+   "rows": 1290
+  },
+  "calibration": {
+   "contrast_within_1_sd": 0.5720930232558139,
+   "contrast_within_2_sd": 0.8790697674418605,
+   "key_within_1_sd": 0.7069767441860465,
+   "key_within_2_sd": 0.9162790697674419
+  },
+  "contrast": {
+   "constant_zero_vs_label": {
+    "bias": -3.7234271326733497,
+    "mae": 22.082010729940258,
+    "max_abs": 40.0,
+    "median_abs": 21.773139349115173,
+    "n": 215,
+    "p90_abs": 40.0,
+    "within_10": 0.2651162790697674,
+    "within_5": 0.15348837209302327
+   },
+   "model_vs_label": {
+    "bias": 0.826316538053443,
+    "mae": 21.12456920277704,
+    "max_abs": 53.197619730434624,
+    "median_abs": 19.182036896991203,
+    "n": 215,
+    "p90_abs": 41.16423695049619,
+    "within_10": 0.3209302325581395,
+    "within_5": 0.13953488372093023
+   },
+   "normal_constant_zero_vs_label": {
+    "bias": -7.202333087743243,
+    "mae": 20.492074862377354,
+    "max_abs": 40.0,
+    "median_abs": 20.93758441184023,
+    "n": 29,
+    "p90_abs": 34.73880569918513,
+    "within_10": 0.2413793103448276,
+    "within_5": 0.10344827586206896
+   },
+   "normal_model_vs_label": {
+    "bias": -4.00926983621751,
+    "mae": 18.550151049571113,
+    "max_abs": 42.66323910294621,
+    "median_abs": 18.76080631891191,
+    "n": 29,
+    "p90_abs": 34.176974788133286,
+    "within_10": 0.3793103448275862,
+    "within_5": 0.13793103448275862
+   },
+   "rows": 215
+  },
+  "ev": {
+   "constant_heldout_files": {
+    "bias": 0.264950543449998,
+    "mae": 0.36029864468847456,
+    "max_abs": 3.322483680891434,
+    "median_abs": 0.19102800540792597,
+    "n": 215,
+    "p90_abs": 0.7127536765306863,
+    "within_0p3": 0.6930232558139535,
+    "within_0p5": 0.813953488372093
+   },
+   "constant_normal_files": {
+    "bias": 0.38694832124197975,
+    "mae": 0.4111237103798957,
+    "max_abs": 1.8848931954083576,
+    "median_abs": 0.10511811323960552,
+    "n": 29,
+    "p90_abs": 1.6737166967782189,
+    "within_0p3": 0.6551724137931034,
+    "within_0p5": 0.7586206896551724
+   },
+   "heldout_files": {
+    "bias": 0.04560012379393206,
+    "mae": 0.40773527421350647,
+    "max_abs": 2.611607208953038,
+    "median_abs": 0.2606986520065796,
+    "n": 215,
+    "p90_abs": 0.8172761828530183,
+    "within_0p3": 0.5581395348837209,
+    "within_0p5": 0.7348837209302326
+   },
+   "normal_files": {
+    "bias": 0.19060971386529799,
+    "mae": 0.5773598744825486,
+    "max_abs": 2.611607208953038,
+    "median_abs": 0.32469140215695735,
+    "n": 29,
+    "p90_abs": 1.7448521255851572,
+    "within_0p3": 0.4827586206896552,
+    "within_0p5": 0.5862068965517241
+   }
+  },
+  "evaluated_files": 215,
+  "failures": [
+   {
+    "body": "DSC-RX100",
+    "error_ev": 2.611607208953038,
+    "ev_model": 1.8367140135446804,
+    "file": "DSC-RX100_ISO_640_12bits_Sony ARW Compressed.ARW",
+    "flagged": false,
+    "level_ev": -0.7748931954083575,
+    "normal": true
+   },
+   {
+    "body": "DSC-RX1RM3",
+    "error_ev": 2.6006644145901827,
+    "ev_model": 0.8816229708064078,
+    "file": "Sony - DSC-RX1RM3 - 4:3.ARW",
+    "flagged": true,
+    "level_ev": -1.719041443783775,
+    "normal": false
+   },
+   {
+    "body": "ILCE-7M2",
+    "error_ev": -2.4191703384401517,
+    "ev_model": -1.2866260971526085,
+    "file": "Sony - ILCE-7M2 - 12bit 12bit compressed (3:2).arw",
+    "flagged": true,
+    "level_ev": 1.1325442412875433,
+    "normal": false
+   },
+   {
+    "body": "DSC-RX1RM3",
+    "error_ev": 1.9649867919373116,
+    "ev_model": 0.9050633894699072,
+    "file": "Sony - DSC-RX1RM3 - 3:2.ARW",
+    "flagged": true,
+    "level_ev": -1.0599234024674045,
+    "normal": false
+   },
+   {
+    "body": "ILME-FX3",
+    "error_ev": 1.8841918561848938,
+    "ev_model": 3.2444995417455353,
+    "file": "Sony - ILME-FX3 - 14bit (3:2).ARW",
+    "flagged": true,
+    "level_ev": 1.3603076855606415,
+    "normal": false
+   },
+   {
+    "body": "ILCE-7CR",
+    "error_ev": 1.8393655034747058,
+    "ev_model": 1.2275468921047055,
+    "file": "Sony - ILCE-7CR - losseless compressed (4:3).ARW",
+    "flagged": false,
+    "level_ev": -0.6118186113700004,
+    "normal": true
+   },
+   {
+    "body": "ILCE-7CR",
+    "error_ev": 1.829203136989653,
+    "ev_model": 1.218305069116544,
+    "file": "Sony - ILCE-7CR - losseless compressed (4:3).ARW",
+    "flagged": false,
+    "level_ev": -0.6108980678731091,
+    "normal": true
+   },
+   {
+    "body": "DSC-RX1R",
+    "error_ev": 1.7421366902765052,
+    "ev_model": 2.86374574663915,
+    "file": "Sony - DSC-RX1R - 14bit 14bit compressed (3:2).ARW",
+    "flagged": true,
+    "level_ev": 1.1216090563626446,
+    "normal": false
+   },
+   {
+    "body": "ILCE-7CR",
+    "error_ev": 1.7237643727340333,
+    "ev_model": 1.171843018729537,
+    "file": "Sony - ILCE-7CR - losseless compressed (4:3).ARW",
+    "flagged": false,
+    "level_ev": -0.5519213540044963,
+    "normal": true
+   },
+   {
+    "body": "ILCE-7C",
+    "error_ev": -1.5486473411816646,
+    "ev_model": -0.5196359423453858,
+    "file": "Sony - ILCE-7C - 14bit 14bit uncompressed (3:2).ARW",
+    "flagged": true,
+    "level_ev": 1.0290113988362788,
+    "normal": false
+   }
+  ],
+  "folds": [
+   {
+    "fold": 0,
+    "holdout_scenes": 21,
+    "members": [
+     {
+      "best_holdout_nll": 3.1324023332730917,
+      "best_step": 75,
+      "final_loss": 1.9756627445785544,
+      "seed": 1000,
+      "steps": 1075
+     },
+     {
+      "best_holdout_nll": 7.2053136915279845,
+      "best_step": 75,
+      "final_loss": 1.875851051376416,
+      "seed": 1001,
+      "steps": 1075
+     },
+     {
+      "best_holdout_nll": 3.385802332548348,
+      "best_step": 100,
+      "final_loss": 1.8882367656291528,
+      "seed": 1002,
+      "steps": 1100
+     },
+     {
+      "best_holdout_nll": 4.607195929605218,
+      "best_step": 75,
+      "final_loss": 1.9093001490094572,
+      "seed": 1003,
+      "steps": 1075
+     },
+     {
+      "best_holdout_nll": 5.335820222905449,
+      "best_step": 75,
+      "final_loss": 1.8596212831247965,
+      "seed": 1004,
+      "steps": 1075
+     }
+    ],
+    "test_scenes": 36,
+    "train_scenes": 119
+   },
+   {
+    "fold": 1,
+    "holdout_scenes": 21,
+    "members": [
+     {
+      "best_holdout_nll": 3.597022770186237,
+      "best_step": 75,
+      "final_loss": 1.791628009018619,
+      "seed": 1000,
+      "steps": 1075
+     },
+     {
+      "best_holdout_nll": 3.437368939791658,
+      "best_step": 75,
+      "final_loss": 2.0223097673864716,
+      "seed": 1001,
+      "steps": 1075
+     },
+     {
+      "best_holdout_nll": 7.0887703200745324,
+      "best_step": 50,
+      "final_loss": 2.08133274392647,
+      "seed": 1002,
+      "steps": 1050
+     },
+     {
+      "best_holdout_nll": 3.5881749482100314,
+      "best_step": 75,
+      "final_loss": 1.7925319177695573,
+      "seed": 1003,
+      "steps": 1075
+     },
+     {
+      "best_holdout_nll": 3.859777749189366,
+      "best_step": 75,
+      "final_loss": 1.7893024632073091,
+      "seed": 1004,
+      "steps": 1075
+     }
+    ],
+    "test_scenes": 35,
+    "train_scenes": 120
+   },
+   {
+    "fold": 2,
+    "holdout_scenes": 21,
+    "members": [
+     {
+      "best_holdout_nll": 12.739958948070894,
+      "best_step": 100,
+      "final_loss": 1.7351978524815852,
+      "seed": 1000,
+      "steps": 1100
+     },
+     {
+      "best_holdout_nll": 14.066097178562774,
+      "best_step": 75,
+      "final_loss": 1.8542134324357324,
+      "seed": 1001,
+      "steps": 1075
+     },
+     {
+      "best_holdout_nll": 13.152531076293933,
+      "best_step": 75,
+      "final_loss": 1.78788635461223,
+      "seed": 1002,
+      "steps": 1075
+     },
+     {
+      "best_holdout_nll": 12.903356212825198,
+      "best_step": 50,
+      "final_loss": 1.7461299530201717,
+      "seed": 1003,
+      "steps": 1050
+     },
+     {
+      "best_holdout_nll": 5.679930334325184,
+      "best_step": 75,
+      "final_loss": 1.7582252869808204,
+      "seed": 1004,
+      "steps": 1075
+     }
+    ],
+    "test_scenes": 35,
+    "train_scenes": 120
+   },
+   {
+    "fold": 3,
+    "holdout_scenes": 21,
+    "members": [
+     {
+      "best_holdout_nll": 4.463165389892676,
+      "best_step": 75,
+      "final_loss": 1.7696435270376674,
+      "seed": 1000,
+      "steps": 1075
+     },
+     {
+      "best_holdout_nll": 4.585743021113653,
+      "best_step": 75,
+      "final_loss": 1.66472999959816,
+      "seed": 1001,
+      "steps": 1075
+     },
+     {
+      "best_holdout_nll": 11.857337986788217,
+      "best_step": 75,
+      "final_loss": 1.7900885980270353,
+      "seed": 1002,
+      "steps": 1075
+     },
+     {
+      "best_holdout_nll": 8.291523586698396,
+      "best_step": 50,
+      "final_loss": 1.8099341013421422,
+      "seed": 1003,
+      "steps": 1050
+     },
+     {
+      "best_holdout_nll": 7.281748010905313,
+      "best_step": 50,
+      "final_loss": 1.8349727086144472,
+      "seed": 1004,
+      "steps": 1050
+     }
+    ],
+    "test_scenes": 35,
+    "train_scenes": 120
+   },
+   {
+    "fold": 4,
+    "holdout_scenes": 21,
+    "members": [
+     {
+      "best_holdout_nll": 7.637060802544706,
+      "best_step": 100,
+      "final_loss": 1.7884857395654443,
+      "seed": 1000,
+      "steps": 1100
+     },
+     {
+      "best_holdout_nll": 6.141123295298931,
+      "best_step": 75,
+      "final_loss": 1.7715027831302923,
+      "seed": 1001,
+      "steps": 1075
+     },
+     {
+      "best_holdout_nll": 9.688937583406606,
+      "best_step": 75,
+      "final_loss": 1.8026556189489462,
+      "seed": 1002,
+      "steps": 1075
+     },
+     {
+      "best_holdout_nll": 7.915243993626808,
+      "best_step": 100,
+      "final_loss": 1.7582282297620995,
+      "seed": 1003,
+      "steps": 1100
+     },
+     {
+      "best_holdout_nll": 10.98467975401524,
+      "best_step": 75,
+      "final_loss": 1.7852164457923185,
+      "seed": 1004,
+      "steps": 1075
+     }
+    ],
+    "test_scenes": 35,
+    "train_scenes": 120
+   }
+  ],
+  "label_summary": {
+   "contrast": {
+    "mean": 3.7234271326733497,
+    "sd": 25.720744144045106
+   },
+   "flagged_share": 0.8511627906976744,
+   "level_ev": {
+    "mean": 0.8450494565500021,
+    "sd": 0.6190231399151648
+   },
+   "normal_share": 0.13488372093023257
+  },
+  "mode": "kfold"
+ },
+ "rows": {
+  "examples": {},
+  "file": "testdata/autoset/rows.jsonl",
+  "lines": 1505,
+  "rejected": {},
+  "usable": 1505
+ },
+ "sources": [
+  {
+   "bodies": [
+    "DSC-HX95",
+    "DSC-HX99",
+    "DSC-RX0",
+    "DSC-RX0M2",
+    "DSC-RX1",
+    "DSC-RX10",
+    "DSC-RX100",
+    "DSC-RX100M2",
+    "DSC-RX100M3",
+    "DSC-RX100M4",
+    "DSC-RX100M5",
+    "DSC-RX100M5A",
+    "DSC-RX100M6",
+    "DSC-RX100M7",
+    "DSC-RX100M7A",
+    "DSC-RX10M3",
+    "DSC-RX10M4",
+    "DSC-RX1R",
+    "DSC-RX1RM2",
+    "DSC-RX1RM3",
+    "DSLR-A200",
+    "DSLR-A230",
+    "DSLR-A290",
+    "DSLR-A350",
+    "DSLR-A380",
+    "DSLR-A390",
+    "DSLR-A450",
+    "DSLR-A500",
+    "DSLR-A560",
+    "DSLR-A700",
+    "DSLR-A900",
+    "ILCA-68",
+    "ILCA-77M2",
+    "ILCA-99M2",
+    "ILCE-1",
+    "ILCE-1M2",
+    "ILCE-3000",
+    "ILCE-3500",
+    "ILCE-5000",
+    "ILCE-5100",
+    "ILCE-6000",
+    "ILCE-6001",
+    "ILCE-6100",
+    "ILCE-6300",
+    "ILCE-6400",
+    "ILCE-6400A",
+    "ILCE-6500",
+    "ILCE-6600",
+    "ILCE-6700",
+    "ILCE-7",
+    "ILCE-7C",
+    "ILCE-7CM2",
+    "ILCE-7CR",
+    "ILCE-7M2",
+    "ILCE-7M3",
+    "ILCE-7M4",
+    "ILCE-7M5",
+    "ILCE-7R",
+    "ILCE-7RM2",
+    "ILCE-7RM3",
+    "ILCE-7RM3A",
+    "ILCE-7RM4",
+    "ILCE-7RM4A",
+    "ILCE-7RM5",
+    "ILCE-7S",
+    "ILCE-7SM2",
+    "ILCE-7SM3",
+    "ILCE-9",
+    "ILCE-9M2",
+    "ILCE-9M3",
+    "ILCE-QX1",
+    "ILME-FX2",
+    "ILME-FX3",
+    "ILME-FX30",
+    "NEX-3N",
+    "NEX-5",
+    "NEX-5N",
+    "NEX-5T",
+    "NEX-6",
+    "NEX-C3",
+    "NEX-F3",
+    "SLT-A33",
+    "SLT-A35",
+    "SLT-A37",
+    "SLT-A55V",
+    "SLT-A57",
+    "SLT-A58",
+    "SLT-A65V",
+    "SLT-A77V",
+    "SLT-A99V",
+    "UMC-R10C",
+    "ZV-1",
+    "ZV-1M2",
+    "ZV-E1",
+    "ZV-E10",
+    "ZV-E10M2"
+   ],
+   "files": 191,
+   "licence": "CC0-1.0",
+   "scenes": 154,
+   "source": "raw.pixls.us"
+  },
+  {
+   "bodies": [
+    "DSC-RX100",
+    "DSC-RX10M5",
+    "DSLR-A900",
+    "ILCE-6700",
+    "ILCE-7M4",
+    "ILCE-7RM3A",
+    "ILCE-7RM5",
+    "ILCE-7RM6",
+    "ILCE-7SM3",
+    "ZV-E10M2"
+   ],
+   "files": 24,
+   "licence": "CC0-1.0",
+   "scenes": 22,
+   "source": "rawdb.dnglab.org"
+  }
+ ]
+}
