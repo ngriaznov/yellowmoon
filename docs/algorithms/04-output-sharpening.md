@@ -105,6 +105,7 @@ For the tiling contract (`tiling::Stage::halo_px`), declare the exact `halo_px(p
 | `scale` | f32 | 1.0 | (0, 1] | Output long edge / rendered long edge (§2.4) |
 | `luma_weights` | [f32; 3] | `[0.299, 0.587, 0.114]` | each finite and > 0 | Weights of the luma (§2.6). A zero weight would make a pure-colour pixel invisible to the luma. |
 | `extra_stages` | list | empty | — | More whole-image stages (§2.7). Empty in Yellowmoon v1. |
+| `halo_tie_tolerance` | f32 | `2^-12` (1/4096) | 0 to 1/16 | Yellowmoon's addition (§7.1 item 5): makes the limiter continuous; a window sample within `|centre| · halo_tie_tolerance` of the centre counts as equal to it, and the counts and the plateau pull change smoothly around their old switches (§3.5). 0 gives the reference's exact comparisons and switches. Not a user setting. |
 
 Validation rejects NaN and out-of-range values, and method values other than 0 to 2.
 
@@ -339,22 +340,33 @@ The stages run in ascending σ (§2.7). With one stage, that is just the output 
 
 ```
 c = L(p),  S(p) = L(p) + Hacc(p)                        f32 (S(q) for each window sample likewise)
+τ_l = |c| · tie,  τ_s = |S(p)| · tie                    f32 products, tie = halo_tie_tolerance
 over the 25 samples q, with differences taken in f64:
-  L(q) ≤ c    → n_lo  += 1, e_lo  += L(q) − c
-  L(q) ≥ c    → n_hi  += 1, e_hi  += L(q) − c
-  S(q) ≤ S(p) → n_slo += 1, e_slo += S(q) − S(p)
-  S(q) ≥ S(p) → n_shi += 1, e_shi += S(q) − S(p)
-(a sample equal to the centre counts on both sides; the centre always does, so every count ≥ 1)
+  δ = L(q) − c:   n_lo += clamp((2τ_l − δ)/τ_l, 0, 1)   n_hi += clamp((2τ_l + δ)/τ_l, 0, 1)
+                  ε = δ − clamp(δ, −τ_l, τ_l)            e_lo += min(ε, 0)    e_hi += max(ε, 0)
+  σ = S(q) − S(p): the same with τ_s, n_slo, n_shi, e_slo, e_shi
+(a sample within τ of the centre counts fully on both sides and adds nothing; one more than 2τ away
+ counts on its own side only; between, its weight on the other side falls linearly. The centre
+ counts on both sides, so every count ≥ 1. A NaN difference counts nowhere and adds nothing. With
+ τ = 0 the weights are the reference's exact comparisons L(q) ≤ c and L(q) ≥ c, and ε = δ)
 
 m_hi = 2·e_hi/n_hi  (≥ 0)        m_lo = 2·e_lo/n_lo  (≤ 0)
 maxL = c + m_hi                  minL = c + m_lo           robust local max / min: 2·mean(values ≥ c) − c
 w_hi = max(1 − |n_hi − n_shi|/2, 1/25)      v_hi = (S(p) + 2·e_shi/n_shi) · w_hi
 w_lo = max(1 − |n_lo − n_slo|/2, 1/25)      v_lo = (S(p) + 2·e_slo/n_slo) · w_lo
 d_hi = m_hi/n_hi                 d_lo = −m_lo/n_lo
-if n_hi > 6 and d_hi < d_lo:  t = d_lo/(d_hi + d_lo/25);  v_hi += maxL·t;  w_hi += t
-if n_lo > 6 and d_lo < d_hi:  t = d_hi/(d_lo + d_hi/25);  v_lo += minL·t;  w_lo += t
+tie = 0 (the reference):
+  if n_hi > 6 and d_hi < d_lo:  t = d_lo/(d_hi + d_lo/25);  v_hi += maxL·t;  w_hi += t
+  if n_lo > 6 and d_lo < d_hi:  t = d_hi/(d_lo + d_hi/25);  v_lo += minL·t;  w_lo += t
+tie > 0 (continuous):
+  η = 2·τ_l/N²                                               the spread of one sample τ_l beyond the tie
+  pull(near, far) = 0 if far ≤ near, else min((far − near)/(0.25·far), 1) · far/(near + far/25 + η)
+  t = clamp(n_hi − 6, 0, 1) · pull(d_hi, d_lo);  if t > 0: v_hi += maxL·t;  w_hi += t
+  t = clamp(n_lo − 6, 0, 1) · pull(d_lo, d_hi);  if t > 0: v_lo += minL·t;  w_lo += t
 store v_hi, w_hi, v_lo, w_lo as f32                       (all of the above in f64)
 ```
+
+Why the tolerance (Yellowmoon, 2026-10-18; the reference has `tie = 0`). The reference's limiter is discontinuous: its counts compare exactly, one count moves `w_hi` by 0.5, and the plateau pull switches from 0 to about 1 at `d_hi = d_lo` and from 0 to 25 as the spreads leave 0. Values that are equal in exact arithmetic (the rows of a clean edge, a clipped patch, mirrored neighbourhoods) are equal on the CPU, whose `f64` colour chain rounds them alike, and a few ulps apart on a device, whose `f32` colour chain does not, so the two paths fell on different sides: on the golden charts the device's pixels differed from the CPU's by up to 118 of 255 codes at a patch edge. With the tolerance every quantity of the limiter is a continuous function of the samples, so a last-bit difference moves the output by about as much as it moves the input. It equals the reference wherever no sample lies within `2τ` of the centre, the spreads differ by more than a quarter and the counts are whole: the rule only changes what the reference decided by a hair. `2^-12` is far above the device's last-bit differences (about `1e-6` relative) and far below a visible step (an 8-bit code is about 1 % in linear light). A plain tolerance (counting `|δ| ≤ τ` as equal, with the switches kept) was tried first: it fixed the ties but moved the discontinuity to `|δ| = τ`, where smooth content flipped instead (a 5 × 1030 test picture went from 0 to 18 samples over 8 codes of 16 bits); §7.1 item 5 has the measurements.
 
 What the maps mean:
 
@@ -408,6 +420,7 @@ R', G', B' = R·ratio, G·ratio, B·ratio
 | Gradient | 0.3125, 0.09375, ramp 0.25 (to `5·g0`) | §3.3 |
 | Automatic method | 0.65, 0.1, 0.004, 0.1, 0.025 | §2.7 |
 | Limiter window | r = 2 (5 × 5), N = 25, k_min = 6, 1/r = 0.5, 1/N = 0.04 | §3.5 |
+| Limiter tie tolerance, pull fade, pull floor | `2^-12` of the centre; the last quarter before `d_hi = d_lo`; `η = 2τ/N²` (Yellowmoon; the reference has none) | §3.5 |
 | Halo-map kernel | `2s` | §2.3 |
 | Luma floor, ratio cap | 1e-20, 16 | §3.7 |
 
@@ -485,7 +498,7 @@ Cost per stage per pixel: a `2n`-tap high-pass, two `2n_2`-tap blurs for the gai
   1. Compute the high-pass and the window sums in difference form (§3.2, §3.5). Then flat regions give exact zeros in f32, as they do in f64. With plain sums in f32 (`Σ k·L` minus the centre afterwards, `Σ l` minus `n·c` afterwards), pixels near clean synthetic edges differ from the f64 result by up to 1e-2.
   2. Compute the luma exactly as in §3.1.
 
-  Even then, values that are equal in exact arithmetic but computed along different paths can sit one ulp apart and flip a count. This happens on clean, symmetric synthetic content (diagonal edges, checkerboards) with the limiter on, and changes isolated pixels by up to about 1e-2.
+  Even then, values that are equal in exact arithmetic but computed along different paths can sit one ulp apart and flip a count. With exact comparisons (`halo_tie_tolerance = 0`, the reference) this happens on clean, symmetric synthetic content (diagonal edges, checkerboards) with the limiter on, and changes isolated pixels by up to about 1e-2. With the tie tolerance (§3.5) the limiter is continuous and such values count alike on both paths; what is left is the `f32` rounding of the sums, which the soft counts amplify by up to `1/τ` (the worst noisy frame of the parity tests, print preset with long kernels, 9.3e-6; the screen preset under 5e-6).
 - **GPU parity metric:**
   - On noisy or photographic content: max abs error ≤ 1e-5. The reference's f32-accumulation mode reproduces a GPU's arithmetic closely, and gives 4.8e-7 on the self-test image and at most 7.2e-7 on every vector.
   - On clean synthetic content with the limiter on: compare the 99.9th percentile of the error, and report the maximum.
@@ -571,6 +584,7 @@ There is no PSNR target, because sharpening is a look.
    - applying the threshold to an encoded luma.
 4. **Display-linear placement.** The stage runs after the display transform, where highlights are already compressed by the tone curve. That is the natural place in Yellowmoon's chain, but compare it with running the stage on scene-linear camera RGB, before the output colour conversion, on a full-size export.
 5. **Limiter robustness.** The rank counts and the `t` weights make the limiter discontinuous (§5.4). A tolerance in the comparisons (for example counting `|l − c| ≤ 1e-6` as equal), or smooth ranks, would make it continuous and GPU parity tight. Check that it does not change the look.
+   *[Adopted 2026-10-18 as a continuous limiter with a relative tie tolerance, `halo_tie_tolerance = 2^-12` (§3.5), because the device failed the golden check on chart patch edges once autoset moved their exposure: up to 118 of 255 codes where clipped or flat values tied. Measured on the CPU port, a frame against itself moved by up to 8 ulps per sample (as the device's `f32` colour chain moves it), the five limiter parameter sets of the self-test, four seeds, worst change: clean chart 1.1e-1 → 4.9e-6, checkerboard 1.3e-1 → 1.1e-6, bars scene 1.1e-1 → 1.2e-4, noise-free sky gradient with a skyline 3.1e-2 → 3.5e-5, the bars and the sky with noise 1.1e-3 → 2.3e-4 and 5.0e-5. A plain tolerance (counting `|δ| ≤ τ` as equal, the switches kept) gave 8.8e-5, 1.1e-6, 1.4e-3, 8.3e-3 (the plateau pull's switch on the gradient), 2.5e-3 and 9.4e-4, and on the device a 5 × 1030 export that had matched gained 18 samples over 8 codes of 16 bits; it was dropped. End to end on lavapipe, the chart that failed (bb2850, ILCE-7SM3, 8-bit PNG, exposures −0.3 to +1 EV): worst CPU-to-device difference 76 to 110 codes → 3 to 10 (without output sharpening the same renders differ by up to 4). Look, CPU against CPU: golden charts per file median ΔE00 0.000 to 0.001, p99 0.05 to 0.18, max 1.1 to 5.5; five real photos at full size median 0, p99.9 0.63 to 0.93, max 1.1 to 7.9 (161 to 6786 of about 20 million pixels over ΔE00 1), dark undershoot samples along edges that look the same at 6× zoom. A larger tolerance makes the limiter less sensitive and moves the look further (`2^-10`: the noisy bars 1.1e-4, the look up to twice as far).]*
 6. **Step in the radius map at R = 0.5** (σ' 0.621 → 0.650). A UI with fine radius steps shows a small jump. A continuous map is `0.97·sqrt(R − 0.09)` up to the crossing point with `0.7R + 0.3`.
 7. **Method-0 compensation `1/(1 − T)`** sharpens strong edges slightly more than amount alone suggests. Method 1 has no compensation. Check that the methods look equally strong at the same amount.
 8. **Kernel truncation.** In screen mode the gain kernel is capped at 13 taps (±6 px) for σ ≥ 1.15, where the tap rule asks for more. The high-pass kernel is never capped in screen mode (σ ≤ 2.05 gives at most 13 taps). Compare 33-tap gain kernels for σ ≥ 1.15.
@@ -611,13 +625,14 @@ Where an implementation could reasonably differ, the reference makes the followi
 
 Decisions made while porting (the module's doc comment repeats the numerical ones):
 
-1. **API.** `OutputSharpen` holds the user parameters of §2.1 (`mode`, `method`, `amount_pct`, `radius_px`, `threshold_levels`, `halo_pct`, `print_distance`, `luma_weights`, `extra_stages`) with `screen()`, `print()` and `with_amount_pct()`. `plan(scale)` derives the stages (`SharpenPlan`, `StagePlan`), `halo_px(scale)` gives the exact receptive field, `max_halo_px()` the mode bound (21 px screen, 41 px print), and `apply`, `apply_in_place`, `apply_interleaved`, `apply_interleaved_in_place` run the stage. The planar and the interleaved forms give the same bits (the luma plane and the ratio plane are shared).
+1. **API.** `OutputSharpen` holds the user parameters of §2.1 (`mode`, `method`, `amount_pct`, `radius_px`, `threshold_levels`, `halo_pct`, `print_distance`, `luma_weights`, `extra_stages`, `halo_tie_tolerance`) with `screen()`, `print()` and `with_amount_pct()`. `plan(scale)` derives the stages (`SharpenPlan`, `StagePlan`), `halo_px(scale)` gives the exact receptive field, `max_halo_px()` the mode bound (21 px screen, 41 px print), and `apply`, `apply_in_place`, `apply_interleaved`, `apply_interleaved_in_place` run the stage. The planar and the interleaved forms give the same bits (the luma plane and the ratio plane are shared).
 2. **`scale` is an argument**, not a parameter field (§2.1 lists it among the parameters): the settings do not know the output size. It is validated in (0, 1]. `scale_for_edges(out_long_edge, rendered_long_edge)` is the `f64` division of §2.4 rounded to `f32`, at most 1.
 3. **Radius cap, not rejection.** `radius_px` above 2.5 in Screen mode is capped, and `print_distance` is capped through the 15 px radius cap; validation rejects only NaN, infinity and negative values (the oracle's `validate()`; §2.1 says "values above 2.5 are capped"). Extra stages are limited to 0 to 15 px.
 4. **`erf`** comes from the `libm` crate (§2.3 allows it). The kernel taps differ from the vectors' `%.17g` kernels by at most 1.7e-16.
 5. **Bands.** The run processes bands of 128 core rows plus the exact `halo_px` above and below, in parallel (§5.2 and §5.3). The result is bit-identical for every band height from 1 row to the whole frame and for every thread count (both are tested).
 6. **Not ported:** the reference's f32-accumulation mode (`Accumulation::F32`, §5.4). It is an aid for the GPU port (section 10), which can compare against a CPU run written for it.
 7. **Kernel caps (review).** `gaussian_kernel(sigma, max_taps)` rounds a cap down to an odd number of at least 3, so a cap of 0 or an even cap cannot panic or lose the centre tap; the spec's caps of 13 and 33 are untouched. A test compares FNV-1a digests of the oracle's output on frames taller than one 128-row band (173 x 300 across the seven parameter sets, 1 x 300 with the 41 px print halo, 5 x 259 with three stages), so the band path is checked against the oracle and not only against the port.
+8. **Tie tolerance (2026-10-18).** `halo_tie_tolerance` (default `HALO_TIE_TOLERANCE`, `2^-12`) is ours, not the reference's (§3.5, §7.1 item 5). The oracle tests (the 16 vectors on the CPU and the GPU, the band digests) set it to 0, so they keep checking every other part against the reference bit for bit (at 0 the soft counts are the exact comparisons, `f64::MAX` standing in for `1/τ`, and the pull takes the reference's branch). The rule is tested by the window pass against a plainly written per-pixel loop at 0, `2^-12` and `1/16`, by `last_bit_changes_of_the_input_do_not_flip_the_limiter_on_ties` (a clean chart and a checkerboard moved by 8 ulps: 4.9e-6 against 1.5e-1 with exact comparisons) and by the GPU parity tests at the default. The tolerance is `|c| · tie` as one `f32` product on both paths, and it keeps `f(2x) = 2 f(x)` bit for bit. The device computes a sample's weight as the quotient `(2τ − δ)/τ`, whose numerator is exact wherever the weight is between 0 and 1.
 
 Measured (Linux x86-64, 4 shared cores, load average 6 to 8; `opt-level = 3`, no LTO; synthetic noisy 3:2 frame, interleaved in-place run, `cargo run -p ym-gpu --example output_sharpen_bench`):
 
@@ -671,11 +686,14 @@ Measured, CPU only: the JPEG at quality 92 grows by +1.27 % (ILCE-7M3), +4.29 % 
 | Frames 1 x 1 to 17 x 31, every mode and method | 1.13e-6 |
 | 2048 x 1365 photographic frame, tiled in 512 px, no limiter | 7.2e-7 |
 | Same, print preset (no limiter) | 9.5e-7 |
-| Same, screen preset with the limiter | 4.3e-5 (26 of 8.4 million samples over 1e-5); 99.9th percentile 2.4e-7 |
+| Same, screen preset with the limiter | 4.3e-5 (26 of 8.4 million samples over 1e-5); 99.9th percentile 2.4e-7. With the tie tolerance (2026-10-18): 2.3e-6, no sample over 1e-5 |
 | Same, 2048 px export from 6000 px | 4.6e-5 (6 samples over 1e-5) |
 | Isolated clean vertical and horizontal edges, limiter on | 3.0e-7 |
-| Isolated clean diagonal edge, limiter on | 3.7e-5 (screen preset, 0.5 % of the samples over 1e-5) to 3.7e-4 (print distance 30000, method 2, halo 40: 9 % over 1e-5) |
-| Noiseless bars and checkerboards, limiter on | 1.5e-4 to 8.3e-3 (0.3 to 19 % of the pixels have a different rank count); the same frames without the limiter 4.8e-7 |
+| Isolated clean diagonal edge, limiter on | 3.7e-5 (screen preset, 0.5 % of the samples over 1e-5) to 3.7e-4 (print distance 30000, method 2, halo 40: 9 % over 1e-5). With the tie tolerance: 2.4e-7 |
+| Noiseless bars and checkerboards, limiter on | 1.5e-4 to 8.3e-3 (0.3 to 19 % of the pixels have a different rank count); the same frames without the limiter 4.8e-7. With the tie tolerance: 9.1e-6 at most, except the bars with the screen preset, 1.5e-5 (70 of 14058 samples over 1e-5) |
+| Noisy and photographic frames, with the tie tolerance | 9.3e-6 (print distance 30000, method 2, halo 40; the `f32` sums amplified by the soft counts), 6.5e-6 with three stages; the screen preset under 4e-6 |
+
+The rows above were measured with exact comparisons, as the reference has them; the tie tolerance (§3.5) was added on 2026-10-18 and its numbers are given where they differ. The vectors are still compared with the tolerance at 0, against the oracle, and the kernel takes the reference's exact branch there.
 
 **What is not bit-exact, and why.**
 

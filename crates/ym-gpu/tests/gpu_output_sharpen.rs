@@ -10,12 +10,14 @@
 //!   with the seven parameter sets of the reference's self-test, sizes that are not multiples of the
 //!   workgroup, tile size or halo, whole-frame and tiled. On noisy or photographic content the bound
 //!   is [`NOISY_BOUND`] (1e-5, spec 5.4) on the **maximum** absolute error over all samples.
-//! * Clean synthetic content with the halo limiter on: spec 5.4 says the limiter counts window
-//!   samples by exact comparison, so values that are equal in exact arithmetic but one ulp apart after
-//!   `f32` accumulation can flip a count. Isolated noiseless edges: the bound is on the 99.9th
-//!   percentile ([`CLEAN_P999_BOUND`]). Periodic content (bars, checkerboards: thousands of
-//!   reflection ties): the maximum is capped by [`CLEAN_MAX_BOUND`] and the number of samples over
-//!   [`NOISY_BOUND`] is printed; the same frames without the limiter meet the tight bound.
+//! * Clean synthetic content with the halo limiter on: the reference counts window samples by exact
+//!   comparison (spec 5.4), so values that are equal in exact arithmetic but one ulp apart after `f32`
+//!   accumulation could flip a count. Since the tie tolerance (spec 3.5, default `2^-12`) the limiter
+//!   is continuous and such values count alike on both paths, so these frames come within 1.5e-5; the
+//!   bounds stay as they were. Isolated noiseless edges: the bound is on the 99.9th percentile
+//!   ([`CLEAN_P999_BOUND`]). Periodic content (bars, checkerboards: thousands of reflection ties): the
+//!   maximum is capped by [`CLEAN_MAX_BOUND`] and the number of samples over [`NOISY_BOUND`] is
+//!   printed; the same frames without the limiter meet the tight bound.
 //! * A large frame (2048 x 1365) through the tiling path with the screen preset at full size and at
 //!   the scale of a 2048 px export from 6000 px.
 //! * Tiles equal the whole frame **bit for bit** on the GPU (the tiling contract of spec 5.2); two runs
@@ -27,13 +29,16 @@
 //!
 //! # Measured (Mesa lavapipe, llvmpipe on LLVM 20.1.2)
 //!
-//! Maximum absolute error against the CPU port: the 16 vectors 7.15e-7 (asserted within 2e-6, and
-//! within each vector's own tolerance, 0 for the bit-exact ones); noisy and photographic frames
-//! 1.43e-6 (asserted 1e-5); white noise 4.9e-6 relative (asserted 1e-5); tiny frames 1.13e-6; flip
-//! and transpose 7.2e-7; isolated vertical and horizontal edges 3e-7; the 2048 x 1365 frame without
-//! the limiter 9.5e-7, with it 4.3e-5 on 26 of 8.4 million samples (rank flips, see
-//! `periodic_clean_content_moves_rank_counts_only_inside_the_documented_bound`; asserted
-//! 99.9th percentile 1e-5 and maximum 2e-4). The kernel is bit-identical to the C++ reference's
+//! Maximum absolute error against the CPU port: the 16 vectors 7.15e-7 (tie tolerance 0; asserted
+//! within 2e-6, and within each vector's own tolerance, 0 for the bit-exact ones); noisy and
+//! photographic frames 9.3e-6 with the print preset's long kernels, the screen preset under 4e-6
+//! (asserted 1e-5; 1.43e-6 with exact comparisons, the soft counts amplify the `f32` sums); white
+//! noise 4.9e-6 relative (asserted 1e-5); tiny frames 1.13e-6; flip and transpose 6.8e-6; isolated
+//! edges, the diagonal too, 2.4e-7; the 2048 x 1365 frame without the limiter 9.5e-7, with it 2.3e-6,
+//! no sample over 1e-5 (4.3e-5 on 26 of 8.4 million samples with exact comparisons; asserted 99.9th
+//! percentile 1e-5 and maximum 2e-4); bars and checkerboards with the limiter 1.5e-5 (1.5e-4 to
+//! 8.3e-3 with exact comparisons). With the tie tolerance at 0 the kernel is bit-identical to the
+//! C++ reference's
 //! `Accumulation::F32` mode on all 37 cases checked with a scratch driver fed by the ignored test
 //! `dump_cases_for_the_cpp_oracle` (see
 //! `docs/algorithms/04-output-sharpening.md` section 10), so every difference from the CPU port is the
@@ -80,7 +85,8 @@ const CLEAN_MAX_BOUND: f64 = 2e-2;
 const DIAGONAL_P999_BOUND: f64 = 1e-3;
 /// A 2.8 MP photographic-like frame with the limiter on: the maximum error. Among 70 million window
 /// pairs a few thousand differ by less than the `f32` rounding of the accumulations, so a handful of
-/// rank counts flip even with noise; measured 4.3e-5 on 26 of 8.4 million samples.
+/// rank counts flipped even with noise: 4.3e-5 on 26 of 8.4 million samples with exact comparisons,
+/// 2.3e-6 with the tie tolerance (the limiter is continuous).
 const LARGE_FRAME_MAX_BOUND: f64 = 2e-4;
 
 // ---- Metal (hardware adapters) ---------------------------------------------------------------------
@@ -527,6 +533,8 @@ fn params_of(v: &Value) -> (OutputSharpen, f32) {
                 lw[2].as_f64().expect("w") as f32,
             ],
             extra_stages,
+            // The reference compares exactly; the tie tolerance is ours (spec 7.1 item 5).
+            halo_tie_tolerance: 0.0,
         },
         f32_of(p, "scale"),
     )
@@ -796,11 +804,12 @@ fn isolated_clean_edges_with_the_limiter_on_stay_within_the_percentile_bound() {
 fn periodic_clean_content_moves_rank_counts_only_inside_the_documented_bound() {
     // Noiseless bars and checkerboards are the worst case of spec 5.4: thousands of window samples are
     // equal in exact arithmetic (reflections of each other), the f64 path rounds them to equal f32
-    // values and the f32 path does not, so the limiter's counts differ. Measured on lavapipe against
-    // the C++ oracle (the GPU is bit-identical to the oracle's f32-accumulation mode on all of
-    // these): with the limiter on, 0.3 % to 19 % of the pixels have a different rank count, every
-    // sample over 1e-5 lies within 8 px of such a pixel, and the largest error is 8.3e-3. Without the
-    // limiter the same content matches within 1e-5.
+    // values and the f32 path does not. With exact comparisons (the reference) the limiter's counts
+    // then differ: 0.3 % to 19 % of the pixels have a different rank count, every sample over 1e-5
+    // lies within 8 px of such a pixel, and the largest error is 8.3e-3 (lavapipe against the C++
+    // oracle, to whose f32-accumulation mode the GPU is bit-identical). With the tie tolerance the
+    // limiter is continuous and the ties hold on both paths: 1.5e-5 at most (the bars with the screen
+    // preset). Without the limiter the same content matches within 1e-5.
     let Some(dev) = gpus().first() else { return };
     let frames: Vec<(&str, RgbImage)> = vec![
         ("bars+diagonal 71x66", busy_scene(71, 66)),
@@ -2231,8 +2240,13 @@ fn the_passes_pin_every_rounding_the_limiter_sees() {
         "hacc[i] = hacc[i] + opaque(sp.a_halo * s);",
         "let s = opaque(c + hacc[i]);",
         "let sl = opaque(l + hacc[o]);",
-        "e_shi = opaque(e_shi + opaque(sl - s));",
-        "let d_hi = opaque(sharpen_div(m_hi, nhi));",
+        "let ds = opaque(sl - s);",
+        "e_shi = opaque(e_shi + select(0.0, es, es > 0.0));",
+        "n_shi = opaque(n_shi + side_weight(-ds, ts));",
+        "let w = sharpen_div(opaque(opaque(2.0 * t) - d), t);",
+        "return opaque(d - inside);",
+        "let den = opaque(opaque(near + opaque(far * HALO_INV_N)) + eps);",
+        "let d_hi = opaque(sharpen_div(m_hi, n_hi));",
         "v_hi = opaque(v_hi) + opaque(max_l * t);",
         "ratio = opaque(sharpen_div(lp, l));",
     ] {

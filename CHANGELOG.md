@@ -16,6 +16,7 @@ moves the entries below from Unreleased into a dated section for that version.
 ### Changed
 
 - Auto white balance keeps part of a warm light's colour: the preferred white of `docs/18` section 5 (`white_preference`, default 1). `0` gives the neutral white of 0.4.0. Pictures of warm light change for this reason; the exposure and the white lift do not.
+- Output sharpening: the halo limiter no longer switches on tiny differences, so the graphics card and the CPU sharpen hard edges and clipped areas alike. Sharpened pictures change very slightly at a few edge pixels (pipeline 0.4.1).
 - Pipeline 0.5.0.
 
 ## [0.1.10] - 2026-10-17

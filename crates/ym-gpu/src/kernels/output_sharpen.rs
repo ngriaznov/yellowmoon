@@ -248,7 +248,9 @@ struct ParamsU {
     /// Always 0: the shader ORs the terms whose rounding matters with it so that no compiler can
     /// re-associate or fuse them (`opaque` in `output_sharpen.wgsl`). Nothing sets it.
     zero: u32,
-    pad: [u32; 3],
+    /// The halo limiter's relative tie tolerance (`SharpenPlan::halo_tie_tolerance`).
+    tie_rel: f32,
+    pad: [u32; 2],
 }
 
 /// A kernel in the tap table.
@@ -680,6 +682,7 @@ impl PreparedSharpen {
             luma_r: weights[0],
             luma_g: weights[1],
             luma_b: weights[2],
+            tie_rel: self.plan.halo_tie_tolerance(),
             in_stride: src.stride as u32,
             in_plane: src.plane_len() as u32,
             in_x: window.x as u32,
@@ -1239,9 +1242,9 @@ mod tests {
             ("bg", offset_of!(ParamsU, bg)),
             ("copy_only", offset_of!(ParamsU, copy_only)),
             ("zero", offset_of!(ParamsU, zero)),
-            ("pad0", offset_of!(ParamsU, pad)),
-            ("pad1", offset_of!(ParamsU, pad) + 4),
-            ("pad2", offset_of!(ParamsU, pad) + 8),
+            ("tie_rel", offset_of!(ParamsU, tie_rel)),
+            ("pad1", offset_of!(ParamsU, pad)),
+            ("pad2", offset_of!(ParamsU, pad) + 4),
         ];
         assert_eq!(members.len(), fields.len());
         for (member, (name, offset)) in members.iter().zip(fields) {
