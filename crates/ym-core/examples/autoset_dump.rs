@@ -135,18 +135,29 @@ impl DatasetLooks {
             })?;
         let default = LookId::parse(DEFAULT_LOOK)
             .map_err(|_| format!("the default look {DEFAULT_LOOK} is not a valid look id"))?;
-        let enabled = library.get(&default).is_some_and(|look| look.is_enabled());
-        if !enabled {
-            return Err(format!(
-                "The default look {default} is not in the data folder. The dataset needs it for the contrast fit: \
-                 restore {} from the repository, then run the dump again.",
-                builtin.join("signature.json").display()
-            ));
+        let file = builtin.join(format!("{}.json", default.slug()));
+        match library.get(&default) {
+            None => {
+                return Err(format!(
+                    "The default look {default} is missing or cannot be read: {} is not in the data folder. The \
+                     dataset needs it for the contrast fit, so restore it from the repository, then run the dump again.",
+                    file.display()
+                ));
+            }
+            Some(look) if !look.is_enabled() => {
+                return Err(format!(
+                    "The default look {default} cannot be used: its file {} is missing or changed. Restore it from the \
+                     repository, then run the dump again.",
+                    file.display()
+                ));
+            }
+            Some(_) => {}
         }
         if let Err(error) = library.transform(&default) {
             return Err(format!(
-                "The default look {default} cannot be used ({error}). Restore its file from the repository, then run the \
-                 dump again."
+                "The default look {default} cannot be used ({error}). Restore {} from the repository, then run the dump \
+                 again.",
+                file.display()
             ));
         }
         Ok(Self { library, default })
