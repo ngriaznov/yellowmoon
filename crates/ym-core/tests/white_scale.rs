@@ -108,6 +108,7 @@ fn compute(
         profile,
         illuminant_model: model,
         priors: &env.priors,
+        autoset: None,
     };
     match scale {
         Some(s) => AutoEstimates::compute_scaled(raw, &inputs, s).unwrap(),
@@ -251,6 +252,7 @@ fn pick_white_on_an_a1_photo_returns_the_light_on_the_profiles_scale() {
             LightSource::Auto,
             WhiteBalance::Auto,
             ExposureSetting::Auto,
+            0.0,
             Some(sample),
         )
         .unwrap();
@@ -280,6 +282,7 @@ fn pick_white_on_an_a1_photo_returns_the_light_on_the_profiles_scale() {
             LightSource::Auto,
             WhiteBalance::Auto,
             ExposureSetting::Auto,
+            0.0,
             Some(at_clip),
         )
         .unwrap_err();
@@ -308,6 +311,7 @@ fn an_unusable_scale_is_refused_before_anything_is_computed() {
                 profile,
                 illuminant_model: None,
                 priors: &env.priors,
+                autoset: None,
             },
             bad,
         )

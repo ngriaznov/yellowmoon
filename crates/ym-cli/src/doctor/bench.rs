@@ -304,11 +304,13 @@ pub fn run(path: &Path, repeat: u32) -> Result<Value, Failure> {
         let st = ViewportState::new(ViewportRect::cell(1440.0, 960.0, 1.0));
         let base = frame(&src, &st)?;
         let mut s = src.settings.clone();
-        s.contrast = if s.contrast > 50.0 {
+        // The effective contrast (the photo's own when it is Auto), moved to a manual value.
+        let current = s.contrast.resolve(src.estimates.autoset.contrast);
+        s.contrast = ym_core::settings::ContrastSetting::manual_value(if current > 50.0 {
             5.0
         } else {
-            s.contrast + 20.0
-        };
+            current + 20.0
+        });
         let edited = frame(&src.with_settings(s), &st)?;
         let mut v = phase.frame(
             "colour-only edit, 1440 x 960 cell",

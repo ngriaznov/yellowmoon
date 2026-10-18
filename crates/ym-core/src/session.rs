@@ -64,6 +64,7 @@ use std::time::{Duration, Instant};
 
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
+use ym_color::autoset::{AutosetModel, round_contrast};
 use ym_color::consts::Vec3;
 use ym_color::exposure::{BurstFrame, burst_groups, share_burst_ev};
 use ym_color::look::{LookTransform, ParametricLook};
@@ -509,6 +510,12 @@ pub struct SessionEnv {
     pub priors: Arc<PriorStore>,
     /// Illuminant estimator models by profile (the as-shot fallback where there is none).
     pub illuminants: Arc<IlluminantModels>,
+    /// The automatic settings model (`docs/18`), read from `<data>/models/autoset/autoset.json` by
+    /// [`SessionEnv::load`]. `None` when it is missing or cannot be used: the photos then use the rule.
+    pub autoset: Option<Arc<AutosetModel>>,
+    /// Why there is no automatic settings model (the file is missing, or the reason it cannot be used), for
+    /// `ym doctor`; `None` when [`SessionEnv::autoset`] is loaded.
+    pub autoset_error: Option<String>,
     /// Where progress events go.
     pub events: EventSink,
     /// The thumbnail hook, if the render graph is attached.
@@ -548,24 +555,46 @@ fn load_reference_look(data_root: &Path) -> Option<Arc<LookTransform>> {
     Some(Arc::new(look))
 }
 
+/// The automatic settings model of a data folder (`docs/18` section 4.3): `<data_root>/models/autoset/autoset.json`.
+/// A missing or unusable file gives `None` and the reason; the photos then use the rule.
+fn load_autoset(data_root: &Path) -> (Option<Arc<AutosetModel>>, Option<String>) {
+    let path = data_root
+        .join("models")
+        .join("autoset")
+        .join("autoset.json");
+    if !path.exists() {
+        return (None, Some(format!("there is no model file at {}", path.display())));
+    }
+    match AutosetModel::load(&path) {
+        Ok(model) => (Some(Arc::new(model)), None),
+        Err(e) => {
+            tracing::warn!(error = %e, "automatic settings model not usable; using the rule");
+            (None, Some(e.to_string()))
+        }
+    }
+}
+
 impl SessionEnv {
-    /// Loads the profiles, the noise priors and the illuminant models from a data folder
-    /// (`<data_root>/cameras`, `<data_root>/models/illum`, ...).
+    /// Loads the profiles, the noise priors, the illuminant models and the automatic settings model from a data
+    /// folder (`<data_root>/cameras`, `<data_root>/models/illum`, `<data_root>/models/autoset`, ...).
     ///
     /// # Errors
     ///
-    /// [`SessionError::Data`] when the profiles or priors cannot be read (a missing illuminant
-    /// model is not an error: that profile uses the as-shot fallback).
+    /// [`SessionError::Data`] when the profiles or priors cannot be read (a missing illuminant model or automatic
+    /// settings model is not an error: that profile uses the as-shot fallback, the photos the rule).
     pub fn load(data_root: &Path) -> Result<Self, SessionError> {
         let profiles =
             ProfileStore::load(data_root).map_err(|e| SessionError::Data(e.to_string()))?;
         let priors = PriorStore::load_dir(&data_root.join("cameras").join("noise"))
             .map_err(|e| SessionError::Data(e.to_string()))?;
         let illuminants = IlluminantModels::load(data_root, &profiles);
+        let (autoset, autoset_error) = load_autoset(data_root);
         Ok(Self {
             profiles: Arc::new(profiles),
             priors: Arc::new(priors),
             illuminants: Arc::new(illuminants),
+            autoset,
+            autoset_error,
             events: EventSink::none(),
             thumbnails: None,
             // No look library is attached yet, so the identity look; `Core::open` sets the user's
@@ -591,6 +620,15 @@ impl SessionEnv {
     #[must_use]
     pub fn with_events(mut self, events: EventSink) -> Self {
         self.events = events;
+        self
+    }
+
+    /// Uses this automatic settings model instead of the one of the data folder (tests and tools). The reason
+    /// [`SessionEnv::autoset_error`] is cleared.
+    #[must_use]
+    pub fn with_autoset(mut self, model: AutosetModel) -> Self {
+        self.autoset = Some(Arc::new(model));
+        self.autoset_error = None;
         self
     }
 
@@ -935,11 +973,28 @@ impl State {
         } else {
             evs
         };
+        // The Auto contrast is shared the way the exposure is (`docs/18` section 4.4): the burst median, rounded to
+        // a tenth.
+        let contrasts: Vec<f64> = with
+            .iter()
+            .filter_map(|&i| self.photos[i].own.as_ref().map(|o| o.autoset.own_contrast))
+            .collect();
+        let shared_contrasts = if frames.len() == with.len() {
+            share_burst_ev(&frames, &contrasts)
+                .into_iter()
+                .map(round_contrast)
+                .collect()
+        } else {
+            contrasts
+        };
         let current = self.current;
         let mut changed = Vec::new();
         for (slot, &i) in with.iter().enumerate() {
             let ev = shared.get(slot).copied().unwrap_or(0.0);
-            if let Some(id) = self.refresh_photo(i, Some(ev), priors, current == Some(i)) {
+            let contrast = shared_contrasts.get(slot).copied().unwrap_or(0.0);
+            if let Some(id) =
+                self.refresh_photo(i, Some((ev, contrast)), priors, current == Some(i))
+            {
                 changed.push(id);
             }
         }
@@ -952,14 +1007,20 @@ impl State {
     fn refresh_photo(
         &mut self,
         i: usize,
-        shared_ev: Option<f64>,
+        shared: Option<(f64, f64)>,
         priors: &PriorStore,
         is_current: bool,
     ) -> Option<PhotoId> {
         let own = self.photos[i].own.clone()?;
         let old = self.photos[i].effective.clone();
-        let ev = shared_ev
-            .unwrap_or_else(|| old.as_ref().map_or(own.exposure.own_ev, |e| e.exposure.ev));
+        // The burst medians (exposure, Auto contrast), or the values the photo already serves.
+        let (ev, contrast) = match shared {
+            Some(medians) => medians,
+            None => old.as_ref().map_or(
+                (own.exposure.own_ev, own.autoset.own_contrast),
+                |e| (e.exposure.ev, e.autoset.contrast),
+            ),
+        };
         let group_version = self.photos[i]
             .pool_key
             .as_ref()
@@ -970,7 +1031,10 @@ impl State {
         let ev_moved = old
             .as_ref()
             .is_none_or(|o| (o.exposure.ev - ev).abs() > 1e-12);
-        if !noise_stale && !ev_moved {
+        let contrast_moved = old
+            .as_ref()
+            .is_none_or(|o| (o.autoset.contrast - contrast).abs() > 1e-12);
+        if !noise_stale && !ev_moved && !contrast_moved {
             return None;
         }
         // The noise: pooled when the photo has a pool, else its own; unchanged when only the
@@ -992,20 +1056,22 @@ impl State {
                 .map_or_else(|| own.noise.clone(), |o| o.noise.clone())
         };
         let noise_moved = old.as_ref().is_some_and(|o| o.noise.model != noise.model);
-        let mut next = if (ev - own.exposure.own_ev).abs() < 1e-12 {
+        let mut next = if (ev - own.exposure.own_ev).abs() < 1e-12
+            && (contrast - own.autoset.own_contrast).abs() < 1e-12
+        {
             (*own).clone()
         } else {
-            own.with_shared_ev(ev)
+            own.with_shared_burst(ev, contrast)
         };
         next = next.with_noise(noise);
         let photo = &mut self.photos[i];
         photo.noise_version = noise_version;
-        let changed = old.is_none() || ev_moved || noise_moved;
+        let changed = old.is_none() || ev_moved || contrast_moved || noise_moved;
         if changed {
             photo.effective = Some(Arc::new(next));
             photo.version += 1;
         }
-        let react = old.is_some() && (ev_moved || (noise_moved && is_current));
+        let react = old.is_some() && (ev_moved || contrast_moved || (noise_moved && is_current));
         react.then_some(photo.id)
     }
 
@@ -1894,6 +1960,7 @@ impl Session {
                 profile: &view.profile,
                 illuminant_model: model.map(|m| &**m),
                 priors: &self.inner.env.priors,
+                autoset: self.inner.env.autoset.as_deref(),
             },
             view.camera.matched.white_scale,
             self.inner.env.reference_look.as_deref(),
@@ -2352,6 +2419,7 @@ impl Inner {
                 profile: &profile,
                 illuminant_model: model.map(|m| &**m),
                 priors: &self.env.priors,
+                autoset: self.env.autoset.as_deref(),
             },
             camera.matched.white_scale,
             self.env.reference_look.as_deref(),

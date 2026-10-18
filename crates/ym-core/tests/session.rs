@@ -984,7 +984,7 @@ fn settings_commands_resolve_clamp_and_stay_in_memory() {
     assert_eq!(r.values.exposure_ev, 4.0);
     // A rejected patch leaves the settings as they were.
     let bad = SettingsPatch {
-        contrast: Some(f64::NAN),
+        contrast: Some(ym_core::settings::ContrastSetting::manual_value(f64::NAN)),
         ..Default::default()
     };
     assert!(matches!(
@@ -1083,11 +1083,11 @@ fn replacing_the_settings_clamps_them_like_a_patch() {
     settle(&session);
     let id = session.photo_ids()[0];
     let mut s = ym_core::settings::DevelopSettings::default();
-    s.contrast = 500.0;
+    s.contrast = ym_core::settings::ContrastSetting::manual_value(500.0);
     s.exposure = ym_core::settings::ExposureSetting::manual_ev(-9.0);
     let r = session.replace_settings(id, s).unwrap();
     assert_eq!(r.values.exposure_ev, -4.0);
-    assert_eq!(r.settings.contrast, 100.0);
+    assert_eq!(r.settings.contrast, ym_core::settings::ContrastSetting::manual_value(100.0));
     let mut bad = ym_core::settings::DevelopSettings::default();
     bad.curve.luma = vec![[0.5, 0.5]];
     assert!(session.replace_settings(id, bad).is_err());
@@ -1119,7 +1119,7 @@ fn rerun_recomputes_the_estimates_and_resets_exposure_white_balance_and_noise() 
             amount: Some(200.0),
             radius_px: Some(1.0),
         })),
-        contrast: Some(20.0),
+        contrast: Some(ym_core::settings::ContrastSetting::manual_value(20.0)),
         ..Default::default()
     };
     session.update_settings(id, &patch).unwrap();
@@ -1130,7 +1130,10 @@ fn rerun_recomputes_the_estimates_and_resets_exposure_white_balance_and_noise() 
     assert!(r.settings.white_pick.is_none());
     // Sharpening and the other controls are not part of Re-run.
     assert!(!r.auto.sharpen);
-    assert_eq!(r.values.contrast, 20.0);
+    // Contrast is an automatic value on the Automatic card: Re-run returns it to Auto as well, to the photo's own
+    // contrast (0 under the rule, as no model is loaded here).
+    assert!(r.auto.contrast);
+    assert_eq!(r.values.contrast, 0.0);
     // The estimates were recomputed (same pixels, same answer) and the version moved on.
     let after = session.view(id).unwrap();
     assert!(after.estimates_version > before.estimates_version);
@@ -1241,7 +1244,8 @@ fn edit_everything() -> SettingsPatch {
         look: Some(LookId::builtin("signature")),
         look_intensity: Some(60.0),
         exposure: Some(ExposureSetting::manual_ev(0.7)),
-        contrast: Some(12.0),
+        contrast: Some(ym_core::settings::ContrastSetting::manual_value(12.0)),
+        white_preference: Some(0.5),
         brightness: Some(-8.0),
         highlights: Some(-30.0),
         shadows: Some(25.0),
@@ -1380,7 +1384,7 @@ fn auto_stays_auto_and_each_photo_keeps_its_own_estimates() {
         .update_settings(
             a,
             &SettingsPatch {
-                contrast: Some(20.0),
+                contrast: Some(ym_core::settings::ContrastSetting::manual_value(20.0)),
                 ..Default::default()
             },
         )
@@ -1423,7 +1427,7 @@ fn auto_stays_auto_and_each_photo_keeps_its_own_estimates() {
     let r = session.settings(b).unwrap();
     assert!(r.auto.exposure && r.auto.light_source && r.auto.white_balance);
     assert!(r.auto.sharpen && r.auto.noise_reduction);
-    assert_eq!(r.settings.contrast, 20.0);
+    assert_eq!(r.settings.contrast, ym_core::settings::ContrastSetting::manual_value(20.0));
     // The automatic values are b's own, from b's pixels, and nothing changed them.
     assert_eq!(r.estimates, estimates_before);
     assert_eq!(r.values.exposure_ev, r.estimates.exposure_ev);
@@ -1569,12 +1573,12 @@ fn a_photo_that_cannot_be_adjusted_is_skipped_and_a_bad_patch_changes_nothing() 
     let r = session2.settings(ids2[1]).unwrap().settings;
     assert!(r.crop.is_none() && r.white_pick.is_none());
     assert_eq!(r.orientation, Orientation::Deg0);
-    assert_eq!(r.contrast, 12.0);
+    assert_eq!(r.contrast, ym_core::settings::ContrastSetting::manual_value(12.0));
 
     // A patch that cannot be applied changes no photo, not even the ones before the bad value.
     let before = session.settings(a).unwrap().settings;
     let bad = SettingsPatch {
-        contrast: Some(f64::NAN),
+        contrast: Some(ym_core::settings::ContrastSetting::manual_value(f64::NAN)),
         ..Default::default()
     };
     assert!(matches!(
@@ -1582,7 +1586,7 @@ fn a_photo_that_cannot_be_adjusted_is_skipped_and_a_bad_patch_changes_nothing() 
         Err(SessionError::Settings(_))
     ));
     assert_eq!(session.settings(a).unwrap().settings, before);
-    assert_eq!(session.settings(c).unwrap().settings.contrast, 12.0);
+    assert_eq!(session.settings(c).unwrap().settings.contrast, ym_core::settings::ContrastSetting::manual_value(12.0));
 }
 
 #[test]
@@ -1594,7 +1598,7 @@ fn the_patches_of_a_paste_undo_and_redo_it_and_a_second_paste_changes_nothing() 
         .update_settings(
             b,
             &SettingsPatch {
-                contrast: Some(-10.0),
+                contrast: Some(ym_core::settings::ContrastSetting::manual_value(-10.0)),
                 ..Default::default()
             },
         )

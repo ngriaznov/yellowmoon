@@ -44,6 +44,13 @@ fn round_tenth(x: f64) -> f64 {
     if rounded == 0.0 { 0.0 } else { rounded }
 }
 
+/// The Auto contrast rounded to a tenth, as [`apply`] rounds a photo's own (`docs/18` §4.4). The burst median of the
+/// contrasts is rounded the same way, so every value a photo serves is a multiple of 0.1.
+#[must_use]
+pub fn round_contrast(x: f64) -> f64 {
+    round_tenth(x)
+}
+
 /// Shrinks a prediction towards the rule (`docs/18` §4.4). `key` is the key `m` the photo was metered at
 /// (`Features::key`); the exposure the model asks for is `key_target - key`.
 #[must_use]

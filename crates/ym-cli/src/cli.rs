@@ -109,9 +109,9 @@ pub struct RenderArgs {
     /// Stops added to each photo's automatic exposure.
     #[arg(long, value_name = "EV", value_parser = finite, allow_negative_numbers = true, help_heading = H_LIGHT)]
     pub exposure_offset: Option<f64>,
-    /// Contrast, -100 to 100.
-    #[arg(long, value_name = "N", value_parser = signed_percent, allow_negative_numbers = true, help_heading = H_LIGHT)]
-    pub contrast: Option<f64>,
+    /// Contrast, -100 to 100, or `auto`: the photo's own contrast from the automatic settings (`docs/18`).
+    #[arg(long, value_name = "auto|N", value_parser = contrast, allow_negative_numbers = true, help_heading = H_LIGHT)]
+    pub contrast: Option<ContrastArg>,
     /// Brightness, -100 to 100.
     #[arg(long, value_name = "N", value_parser = signed_percent, allow_negative_numbers = true, help_heading = H_LIGHT)]
     pub brightness: Option<f64>,
@@ -137,6 +137,11 @@ pub struct RenderArgs {
     /// (-50 to 50), as `5200` or `5200,4`.
     #[arg(long, value_name = "auto|K[,TINT]", value_parser = white_balance, allow_negative_numbers = true, help_heading = H_COLOR)]
     pub wb: Option<WbArg>,
+    /// How much of a warm light's colour the Auto white keeps, 0 to 1: 0 is fully neutral (the chain before
+    /// automatic settings), 1 (the default) the preferred white (`docs/18` section 5). Acts only on an Auto white
+    /// balance with an Auto light.
+    #[arg(long, value_name = "0..1", value_parser = white_preference, allow_negative_numbers = true, help_heading = H_COLOR)]
+    pub white_preference: Option<f64>,
     /// Light preset instead of the estimated light.
     #[arg(long, value_enum, ignore_case = true, value_name = "LIGHT", help_heading = H_COLOR)]
     pub light: Option<LightArg>,
@@ -324,6 +329,15 @@ pub enum LightArg {
     Fluorescent,
 }
 
+/// `--contrast`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ContrastArg {
+    /// The photo's own contrast from the automatic settings.
+    Auto,
+    /// A manual contrast, -100 to 100.
+    Value(f64),
+}
+
 /// `--exposure`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ExposureArg {
@@ -417,6 +431,18 @@ fn signed_percent(text: &str) -> Result<f64, String> {
 
 fn percent(text: &str) -> Result<f64, String> {
     in_range(text, "the value", 0.0, 100.0)
+}
+
+fn contrast(text: &str) -> Result<ContrastArg, String> {
+    if text.trim().eq_ignore_ascii_case("auto") {
+        return Ok(ContrastArg::Auto);
+    }
+    in_range(text, "the contrast", -100.0, 100.0).map(ContrastArg::Value)
+}
+
+/// `--white-preference`: 0 (fully neutral) to 1 (the preferred white), `docs/18` section 5.
+fn white_preference(text: &str) -> Result<f64, String> {
+    in_range(text, "the white preference", 0.0, 1.0)
 }
 
 fn exposure(text: &str) -> Result<ExposureArg, String> {
@@ -648,6 +674,32 @@ mod tests {
             "{text}"
         );
         assert!(text.ends_with(')'), "{text}");
+    }
+
+    #[test]
+    fn contrast_takes_auto_or_a_number_from_minus_100_to_100() {
+        assert_eq!(contrast("auto"), Ok(ContrastArg::Auto));
+        assert_eq!(contrast(" AUTO "), Ok(ContrastArg::Auto));
+        assert_eq!(contrast("-20"), Ok(ContrastArg::Value(-20.0)));
+        assert_eq!(contrast("100"), Ok(ContrastArg::Value(100.0)));
+        for bad in ["101", "-101", "x", ""] {
+            assert!(contrast(bad).is_err(), "{bad}");
+        }
+        let message = contrast("500").expect_err("out of range");
+        assert!(
+            message.contains("the contrast") && message.contains("between"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn white_preference_is_a_number_from_0_to_1() {
+        assert_eq!(white_preference("0"), Ok(0.0));
+        assert_eq!(white_preference("0.5"), Ok(0.5));
+        assert_eq!(white_preference("1"), Ok(1.0));
+        assert!(white_preference("1.5").is_err() && white_preference("-0.1").is_err());
+        let message = white_preference("2").expect_err("out of range");
+        assert!(message.contains("white preference"), "{message}");
     }
 
     #[test]

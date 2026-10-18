@@ -58,6 +58,7 @@ fn run(
             profile,
             illuminant_model: Some(model),
             priors: &env.priors,
+            autoset: None,
         },
     )
     .unwrap();
@@ -74,7 +75,9 @@ fn run(
     ));
     (
         angle_deg(est.color.w_scene_initial, truth),
-        est.summary().kelvin,
+        // The scene light the estimator found (the Auto white is the preferred one, `docs/18` section 5, and keeps
+        // part of a warm light's warmth, so it is not the light itself).
+        est.illuminant.scene.cct_k,
         used_prior,
     )
 }

@@ -3,6 +3,10 @@ source: crates/ym-cli/tests/cli.rs
 expression: shape(&v)
 ---
 {
+  "autoset": {
+    "reason": "string",
+    "version": "null"
+  },
   "data_folder": "string",
   "gpu": {
     "available": "bool",

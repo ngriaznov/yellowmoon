@@ -62,6 +62,8 @@ struct Report {
     neural: NeuralStatus,
     weights: Vec<ModelFile>,
     illuminant_models: Vec<ModelFile>,
+    /// The automatic settings model (`docs/18`): its version and SHA-256, or why there is none.
+    autoset: Result<(String, String), String>,
     profiles: Vec<(String, String, String)>,
     looks_built_in: usize,
     looks_imported: usize,
@@ -177,6 +179,20 @@ fn build() -> Result<Report, Failure> {
     let all = hash_models(&models, &["metrics"]);
     let (illuminant_models, weights): (Vec<_>, Vec<_>) =
         all.into_iter().partition(|m| m.name.starts_with("illum/"));
+    // The automatic settings model is read as the session reads it; a missing or unusable file means the photos
+    // take the rule (`docs/18` section 4.4), and the report says so.
+    let weights: Vec<_> = weights
+        .into_iter()
+        .filter(|m| !m.name.starts_with("autoset/"))
+        .collect();
+    let autoset_path = models.join("autoset").join("autoset.json");
+    let autoset = if autoset_path.exists() {
+        ym_color::autoset::AutosetModel::load(&autoset_path)
+            .map(|m| (m.version().to_owned(), m.sha256().to_owned()))
+            .map_err(|e| e.to_string())
+    } else {
+        Err(format!("there is no model file at {}", autoset_path.display()))
+    };
 
     let store = ProfileStore::load(&data_folder)
         .map_err(|e| Failure::failed(format!("The camera profiles can't be read: {e}")))?;
@@ -204,6 +220,7 @@ fn build() -> Result<Report, Failure> {
         neural: NeuralStatus::probe(Some(&data_folder)),
         weights,
         illuminant_models,
+        autoset,
         profiles,
         looks_built_in: looks
             .iter()
@@ -333,6 +350,10 @@ fn to_json(r: &Report) -> Value {
         },
         "model_weights": model_values(&r.weights),
         "illuminant_models": model_values(&r.illuminant_models),
+        "autoset": match &r.autoset {
+            Ok((version, sha256)) => json!({ "version": version, "sha256": sha256 }),
+            Err(reason) => json!({ "version": null, "reason": reason }),
+        },
         "profiles": r.profiles.iter().map(|(id, version, name)| json!({ "id": id, "version": version, "name": name })).collect::<Vec<_>>(),
         "looks": {
             "built_in": r.looks_built_in,
@@ -475,6 +496,13 @@ fn to_text(r: &Report) -> String {
             ),
         );
     }
+    row(
+        "Automatic settings",
+        match &r.autoset {
+            Ok((version, sha256)) => format!("model {version}  sha256 {}", short(sha256)),
+            Err(reason) => format!("none ({reason}); the photos use the rule"),
+        },
+    );
     for (i, (id, version, _)) in r.profiles.iter().enumerate() {
         row(
             if i == 0 { "Camera profiles" } else { "" },

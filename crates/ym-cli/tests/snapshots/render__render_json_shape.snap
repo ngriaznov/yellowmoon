@@ -4,6 +4,10 @@ expression: shape(&v)
 ---
 {
   "auto": {
+    "autoset_version": "string",
+    "contrast": "number",
+    "contrast_confidence": "number",
+    "ev_confidence": "number",
     "exposure_ev": "number",
     "kelvin": "number",
     "light_class": "string",
@@ -67,7 +71,10 @@ expression: shape(&v)
     "color_warp": {
       "pins": []
     },
-    "contrast": "number",
+    "contrast": {
+      "kind": "string",
+      "value": "number"
+    },
     "crop": "null",
     "curve": {
       "blue": [
@@ -129,7 +136,8 @@ expression: shape(&v)
       "kind": "string"
     },
     "white_offset_ev": "number",
-    "white_pick": "null"
+    "white_pick": "null",
+    "white_preference": "number"
   },
   "status": "string",
   "timings_ms": {

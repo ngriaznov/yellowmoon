@@ -31,6 +31,7 @@ fn estimates_of(raw: &RawImage, env: &SessionEnv) -> AutoEstimates {
             profile,
             illuminant_model: None,
             priors: &env.priors,
+            autoset: None,
         },
     )
     .expect("estimates")
@@ -55,12 +56,19 @@ fn the_as_shot_fallback_reads_the_light_back_from_the_white_balance() {
         let est = estimates_of(&raw, &env);
         assert_eq!(est.illuminant.source, IlluminantSource::AsShotFallback);
         let s = est.summary();
-        // The as-shot levels are stored as integers, the readout is rounded to 50 K.
+        // The as-shot levels are stored as integers: the scene light reads back to 50 K. The Auto white is the
+        // preferred one (`docs/18` section 5): a light warmer than 4000 K keeps part of its warmth, and daylight
+        // (6000 K and above, the reference) is unchanged.
+        let scene_k = est.illuminant.scene.cct_k;
         assert!(
-            (s.kelvin - cct).abs() <= 50.0,
-            "{cct} K read back as {} K",
-            s.kelvin
+            (scene_k - cct).abs() <= 50.0,
+            "{cct} K read back as {scene_k} K"
         );
+        if cct < 4000.0 {
+            assert!(s.kelvin > cct + 50.0, "{cct} K: the Auto white reads {} K", s.kelvin);
+        } else if cct >= 6000.0 {
+            assert!((s.kelvin - cct).abs() <= 50.0, "{cct} K: the Auto white reads {} K", s.kelvin);
+        }
         assert_eq!(s.light_class, class, "{cct} K");
         assert_eq!(s.light_confidence, 0.5);
         assert!(s.tint.abs() < 3.0, "tint {}", s.tint);
@@ -468,6 +476,7 @@ fn photos_that_cannot_be_analysed_say_so_in_plain_words() {
             profile,
             illuminant_model: None,
             priors: &env.priors,
+            autoset: None,
         },
     )
     .expect_err("no level range");

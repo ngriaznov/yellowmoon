@@ -861,7 +861,7 @@ fn a_renderer_that_remembers_draws_the_pictures_of_one_that_does_not() {
         let what: String;
         match (unit() * 24.0) as u32 {
             0 => {
-                s.contrast = unit() * 80.0 - 40.0;
+                s.contrast = ym_core::settings::ContrastSetting::manual_value(unit() * 80.0 - 40.0);
                 what = "contrast".into();
             }
             1 => {
@@ -1085,7 +1085,7 @@ fn threads_asking_for_different_pictures_of_one_photo_each_get_their_own() {
         .map(|i| {
             let mut s = base.settings.clone();
             match i % 4 {
-                0 => s.contrast = 10.0 * i as f64,
+                0 => s.contrast = ym_core::settings::ContrastSetting::manual_value(10.0 * i as f64),
                 1 => {
                     s.exposure = AutoOr::Manual(ym_core::settings::ExposureValue {
                         ev: 0.25 * i as f64 - 1.0,

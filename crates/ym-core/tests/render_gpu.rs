@@ -102,7 +102,7 @@ fn gpu_and_cpu_frames_agree_within_the_parity_tolerance() {
         (
             "graded",
             edit(&src, |s| {
-                s.contrast = 30.0;
+                s.contrast = ym_core::settings::ContrastSetting::manual_value(30.0);
                 s.brightness = 10.0;
                 s.saturation = 20.0;
                 s.color_balance.highlights = [0.4, -0.3];
@@ -1151,7 +1151,7 @@ mod view {
         // Edits of the grade: a control, a curve, the look's intensity, white balance.
         type Edit = Box<dyn Fn(&mut DevelopSettings)>;
         let edits: Vec<(&str, Edit)> = vec![
-            ("contrast", Box::new(|s| s.contrast = 30.0)),
+            ("contrast", Box::new(|s| s.contrast = ym_core::settings::ContrastSetting::manual_value(30.0))),
             ("saturation", Box::new(|s| s.saturation = -25.0)),
             (
                 "curve",

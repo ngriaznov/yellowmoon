@@ -51,6 +51,7 @@ Embed an ICC profile in every JPEG, TIFF and PNG: sRGB IEC61966-2.1, Display P3,
 | `ym:Look`, `ym:LookSHA256`, `ym:LookIntensity` | `arri:3000:…`, `…`, `100` |
 | `ym:DisplayTransform` | `aces2-sdr100-p3lim` or `arri-display:…` |
 | `ym:Models` | `jdd 1.2.0 (sha256…)` |
+| `ym:Autoset` | `1.0.0`, or `none` when the rule chose the exposure and the contrast: the version of the automatic settings model (`docs/18`, the `autoset` estimate of the export) |
 | `ym:Settings` | compact JSON of the resolved DevelopSettings |
 
 - No sidecars. Nothing is written anywhere except the exported file.
@@ -189,7 +190,7 @@ Crate `ym-export`. It depends on `ym-color` only (not on `ym-raw` or `ym-core`):
 
 **EXIF (`exif.rs`).** Built from `ExifInfo` (make, model, lens make and model, exposure time, f-number, ISO, focal length and 35 mm equivalent, exposure compensation, capture time with sub-seconds and UTC offset, optional GPS), never copied from the source: orientation 1, no thumbnail, no maker note, no serial numbers, text reduced to ASCII. `ComponentsConfiguration` is Y, Cb, Cr plus `YCbCrPositioning` for JPEG and R, G, B for TIFF and PNG; `ColorSpace` is 1 for sRGB and 0xFFFF for the others. ISO above 65,535 uses `ISOSpeed` with `SensitivityType` 3. With "Remove location" on, the GPS directory is not written (the output is byte-identical to one made without a position; tested). `DateTime` (IFD0) is the capture time.
 
-**XMP (`xmp.rs`).** `xmp:CreatorTool`, `xmp:CreateDate`, `xmp:ModifyDate` and `xmp:MetadataDate` (all the capture time), `dc:format`, then the ten `ym:` properties in the order of the table above; `ym:Settings` is the compact JSON of a `serde_json::Value` (keys sorted). Fixed property order, no padding.
+**XMP (`xmp.rs`).** `xmp:CreatorTool`, `xmp:CreateDate`, `xmp:ModifyDate` and `xmp:MetadataDate` (all the capture time), `dc:format`, then the eleven `ym:` properties in the order of the table above; `ym:Settings` is the compact JSON of a `serde_json::Value` (keys sorted). Fixed property order, no padding.
 
 **Resize (`resize.rs`).** Lanczos-3, separable, support scaled by the reduction factor, taps outside the image dropped and weights renormalised: the same convolution as Pillow's `LANCZOS`, to which it is compared on float images (worst difference 0, six size pairs). Accumulation in f64, so a flat field is exact. Step-edge overshoot stays under 10 %; the zone-plate test bounds the output to [-0.10, 1.10] for shrink factors 2, 3 and 5. The long edge never upscales; the short edge is rounded half up. The UI grid (1000 px up in 20 px steps, then the full size) is `Size::ui_long_edge_choices`; the library accepts any long edge from 16 to 65,535 px.
 

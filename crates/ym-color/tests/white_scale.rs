@@ -271,6 +271,7 @@ fn a_scaled_chain_still_lands_the_scene_white_on_neutral() {
             w_scene_initial: scene.w_scene,
             white_scale: SCALE,
             ev_auto: 0.6,
+            key_bv: None,
         };
         let chain = estimates
             .chain(
@@ -278,6 +279,7 @@ fn a_scaled_chain_still_lands_the_scene_white_on_neutral() {
                 LightSource::Auto,
                 WhiteBalance::Auto,
                 ExposureSetting::Auto,
+                0.0,
                 None,
             )
             .unwrap();

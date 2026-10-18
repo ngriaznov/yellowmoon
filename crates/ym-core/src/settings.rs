@@ -75,6 +75,13 @@ pub const WHITE_OFFSET_RANGE_EV: (f64, f64) = (-OFFSET_RANGE_EV, OFFSET_RANGE_EV
 pub const NOISE_REDUCTION_RANGE: (f64, f64) = (0.0, 100.0);
 /// Range of both amounts of RAW › Range (`rolloff`): the highlight range and the low-light toe.
 pub const ROLLOFF_RANGE: (f64, f64) = (0.0, 1.0);
+
+/// `white_preference`: how much of a warm light's colour the Auto white keeps, 0 (fully neutral) to 1 (the preferred
+/// white, `docs/18` section 5).
+pub const WHITE_PREFERENCE_RANGE: (f64, f64) = (0.0, 1.0);
+
+/// The default `white_preference`: the preferred white (`docs/18` section 5). A document without the field reads as this.
+pub const WHITE_PREFERENCE_DEFAULT: f64 = 1.0;
 /// Range of the crop's straighten angle (degrees).
 pub const CROP_ANGLE_RANGE_DEG: (f64, f64) = (-45.0, 45.0);
 /// The most control points one curve may have.
@@ -183,6 +190,8 @@ pub enum SettingsField {
     LightSource,
     /// `white_balance`.
     WhiteBalance,
+    /// `white_preference`.
+    WhitePreference,
     /// `color_balance`.
     ColorBalance,
     /// `saturation`.
@@ -211,7 +220,7 @@ pub enum SettingsField {
 
 impl SettingsField {
     /// Every field, in the order of the settings table.
-    pub const ALL: [SettingsField; 24] = [
+    pub const ALL: [SettingsField; 25] = [
         SettingsField::Look,
         SettingsField::LookIntensity,
         SettingsField::Exposure,
@@ -224,6 +233,7 @@ impl SettingsField {
         SettingsField::Black,
         SettingsField::LightSource,
         SettingsField::WhiteBalance,
+        SettingsField::WhitePreference,
         SettingsField::ColorBalance,
         SettingsField::Saturation,
         SettingsField::ColorWarp,
@@ -254,6 +264,7 @@ impl SettingsField {
             Self::Black => "black",
             Self::LightSource => "light_source",
             Self::WhiteBalance => "white_balance",
+            Self::WhitePreference => "white_preference",
             Self::ColorBalance => "color_balance",
             Self::Saturation => "saturation",
             Self::ColorWarp => "color_warp",
@@ -276,6 +287,7 @@ impl SettingsField {
             Self::Decode | Self::NoiseReduction | Self::Sharpen => StageGroup::Raw,
             Self::LightSource
             | Self::WhiteBalance
+            | Self::WhitePreference
             | Self::WhitePick
             | Self::Exposure
             | Self::Rolloff => StageGroup::Color,
@@ -337,6 +349,67 @@ impl<M> AutoOr<M> {
 pub struct ExposureValue {
     /// Absolute exposure in stops, -4 to +4.
     pub ev: f64,
+}
+
+/// A manual contrast.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ContrastValue {
+    /// Contrast, -100 to 100.
+    pub value: f64,
+}
+
+/// `contrast`: Auto (the photo's bounded per-photo contrast from `autoset`, `docs/18` section 4.4) or a manual value
+/// from -100 to 100. JSON: `{ "kind": "auto" }` or `{ "kind": "manual", "value": 12 }`; an older document may give a
+/// plain number, read by [`contrast_document`].
+pub type ContrastSetting = AutoOr<ContrastValue>;
+
+impl ContrastSetting {
+    /// A manual contrast.
+    #[must_use]
+    pub fn manual_value(value: f64) -> Self {
+        Self::Manual(ContrastValue { value })
+    }
+
+    /// The contrast in effect: the manual value, or `auto` (the photo's estimate) while the setting is Auto.
+    #[must_use]
+    pub fn resolve(&self, auto: f64) -> f64 {
+        match self {
+            Self::Auto => auto,
+            Self::Manual(m) => m.value,
+        }
+    }
+}
+
+/// Reads `contrast` from a settings document, the `ym:Settings` of a file or a golden manifest: the `AutoOr` form, or
+/// a plain number from a document written before `autoset`, which reads as Manual with that value, except 0, which
+/// reads as Auto (0 was the default then). See [`contrast_from_value`].
+fn contrast_document<'de, D>(d: D) -> Result<ContrastSetting, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(d)?;
+    contrast_from_value(value).map_err(serde::de::Error::custom)
+}
+
+/// As [`contrast_document`] for a patch: a field that is absent or `null` is no change (`None`).
+fn contrast_patch<'de, D>(d: D) -> Result<Option<ContrastSetting>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Option::<serde_json::Value>::deserialize(d)?
+        .map(|value| contrast_from_value(value).map_err(serde::de::Error::custom))
+        .transpose()
+}
+
+/// The contrast setting of one JSON value: a finite number is the old form (0 is Auto, any other number Manual), and
+/// an object is the `AutoOr` form (`{ "kind": ... }`, unknown fields refused).
+fn contrast_from_value(value: serde_json::Value) -> Result<ContrastSetting, String> {
+    match value.as_f64() {
+        Some(v) if v == 0.0 => Ok(AutoOr::Auto),
+        Some(v) => Ok(AutoOr::Manual(ContrastValue { value: v })),
+        None => serde_json::from_value(value).map_err(|e| e.to_string()),
+    }
 }
 
 /// A manual white balance.
@@ -802,8 +875,11 @@ pub struct DevelopSettings {
     pub look_intensity: f64,
     /// Light › Exposure: Auto or an absolute value, -4 to +4 EV.
     pub exposure: ExposureSetting,
-    /// Light › Exposure and Look › Tone, -100 to 100.
-    pub contrast: f64,
+    /// Light › Exposure › Contrast and Look › Tone: Auto (the photo's bounded contrast from `autoset`, `docs/18`
+    /// section 4.4) or a manual value, -100 to 100. Auto is the default. A plain number in an older document reads as
+    /// Manual with that value, and 0 as Auto ([`contrast_document`]).
+    #[serde(deserialize_with = "contrast_document")]
+    pub contrast: ContrastSetting,
     /// -100 to 100.
     pub brightness: f64,
     /// Light › High dynamic range, -100 to 100.
@@ -823,6 +899,10 @@ pub struct DevelopSettings {
     pub light_source: LightSource,
     /// Colour › White balance: Auto or Kelvin and tint (the Kelvin also as Look › Tone › Temperature).
     pub white_balance: WhiteBalanceSetting,
+    /// How much of a warm light's colour the Auto white keeps, 0 to 1, default 1 (`docs/18` section 5): 0 is fully
+    /// neutral, 1 the preferred white. A plain number, not Auto; a document without the field reads as 1. No control
+    /// in the app in this version.
+    pub white_preference: f64,
     /// The three colour-balance wheels.
     pub color_balance: ColorBalance,
     /// Colour › Colour balance and Look › Tone, -100 to 100; subtractive (docs/02 C9).
@@ -873,7 +953,7 @@ impl DevelopSettings {
             look,
             look_intensity: 100.0,
             exposure: AutoOr::Auto,
-            contrast: 0.0,
+            contrast: AutoOr::Auto,
             brightness: 0.0,
             highlights: 0.0,
             shadows: 0.0,
@@ -882,6 +962,7 @@ impl DevelopSettings {
             black: 0.0,
             light_source: LightSource::Auto,
             white_balance: AutoOr::Auto,
+            white_preference: WHITE_PREFERENCE_DEFAULT,
             color_balance: ColorBalance::default(),
             saturation: 0.0,
             color_warp: ColorWarp::default(),
@@ -920,6 +1001,7 @@ impl DevelopSettings {
             SettingsField::Black => self.black == o.black,
             SettingsField::LightSource => self.light_source == o.light_source,
             SettingsField::WhiteBalance => self.white_balance == o.white_balance,
+            SettingsField::WhitePreference => self.white_preference == o.white_preference,
             SettingsField::ColorBalance => self.color_balance == o.color_balance,
             SettingsField::Saturation => self.saturation == o.saturation,
             SettingsField::ColorWarp => self.color_warp == o.color_warp,
@@ -952,6 +1034,7 @@ impl DevelopSettings {
             SettingsField::Black => self.black = d.black,
             SettingsField::LightSource => self.light_source = d.light_source,
             SettingsField::WhiteBalance => self.white_balance = d.white_balance,
+            SettingsField::WhitePreference => self.white_preference = d.white_preference,
             SettingsField::ColorBalance => self.color_balance = d.color_balance,
             SettingsField::Saturation => self.saturation = d.saturation,
             SettingsField::ColorWarp => self.color_warp = d.color_warp,
@@ -967,11 +1050,13 @@ impl DevelopSettings {
         }
     }
 
-    /// What "Re-run" on the Automatic card resets: exposure, white balance (the light preset, the
+    /// What "Re-run" on the Automatic card resets: exposure, contrast, white balance (the light preset, the
     /// Kelvin and tint and a picked white) and noise reduction go back to Auto, and the white lift's
-    /// offset (the Automatic card's White row) back to 0, the automatic amount.
+    /// offset (the Automatic card's White row) back to 0, the automatic amount. `white_preference` is a
+    /// preference, not an automatic value, and stays as it is.
     pub fn reset_automatic(&mut self) {
         self.exposure = AutoOr::Auto;
+        self.contrast = AutoOr::Auto;
         self.light_source = LightSource::Auto;
         self.white_balance = AutoOr::Auto;
         self.white_pick = None;
@@ -1042,8 +1127,19 @@ impl DevelopSettings {
         let (v, c) = clamp_to("look_intensity", self.look_intensity, LOOK_INTENSITY_RANGE)?;
         self.look_intensity = v;
         note(SettingsField::LookIntensity, c);
+        if let AutoOr::Manual(m) = &mut self.contrast {
+            let (v, c) = clamp_to("contrast", m.value, PERCENT_RANGE)?;
+            m.value = v;
+            note(SettingsField::Contrast, c);
+        }
+        let (v, c) = clamp_to(
+            "white_preference",
+            self.white_preference,
+            WHITE_PREFERENCE_RANGE,
+        )?;
+        self.white_preference = v;
+        note(SettingsField::WhitePreference, c);
         for (name, field, value) in [
-            ("contrast", SettingsField::Contrast, &mut self.contrast),
             (
                 "brightness",
                 SettingsField::Brightness,
@@ -1437,9 +1533,13 @@ pub struct SettingsPatch {
     /// New exposure (Manual to set it, Auto to reset it).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exposure: Option<ExposureSetting>,
-    /// New contrast.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub contrast: Option<f64>,
+    /// New contrast: Auto, or Manual with its value. A plain number is read as [`contrast_document`] reads it.
+    #[serde(
+        default,
+        deserialize_with = "contrast_patch",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub contrast: Option<ContrastSetting>,
     /// New brightness.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub brightness: Option<f64>,
@@ -1464,6 +1564,9 @@ pub struct SettingsPatch {
     /// New white balance.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub white_balance: Option<AutoOr<WhiteBalanceManualPatch>>,
+    /// New white preference, 0 to 1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub white_preference: Option<f64>,
     /// Colour-balance wheels to change.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color_balance: Option<ColorBalancePatch>,
@@ -1635,6 +1738,7 @@ impl SettingsPatch {
                     }),
                 });
             }
+            SettingsField::WhitePreference => p.white_preference = Some(from.white_preference),
             SettingsField::ColorBalance => {
                 p.color_balance = Some(ColorBalancePatch {
                     shadows: Some(from.color_balance.shadows),
@@ -1730,6 +1834,7 @@ impl SettingsPatch {
             black,
             light_source,
             white_balance,
+            white_preference,
             color_balance,
             saturation,
             color_warp,
@@ -1817,6 +1922,9 @@ impl DevelopSettings {
         }
         if let Some(v) = patch.contrast {
             next.contrast = v;
+        }
+        if let Some(v) = patch.white_preference {
+            next.white_preference = v;
         }
         if let Some(v) = patch.brightness {
             next.brightness = v;
@@ -2011,6 +2119,7 @@ fn patch_touches(p: &SettingsPatch, field: SettingsField) -> bool {
         SettingsField::Black => p.black.is_some(),
         SettingsField::LightSource => p.light_source.is_some(),
         SettingsField::WhiteBalance => p.white_balance.is_some(),
+        SettingsField::WhitePreference => p.white_preference.is_some(),
         SettingsField::ColorBalance => p.color_balance.is_some(),
         SettingsField::Saturation => p.saturation.is_some(),
         SettingsField::ColorWarp => p.color_warp.is_some(),
@@ -2036,6 +2145,8 @@ fn patch_touches(p: &SettingsPatch, field: SettingsField) -> bool {
 pub struct AutoFlags {
     /// `exposure` is Auto.
     pub exposure: bool,
+    /// `contrast` is Auto.
+    pub contrast: bool,
     /// `light_source` is Auto.
     pub light_source: bool,
     /// `white_balance` is Auto.
@@ -2055,7 +2166,8 @@ pub struct ResolvedValues {
     pub look_intensity: f64,
     /// The exposure in stops (`EV_auto` while `exposure` is Auto).
     pub exposure_ev: f64,
-    /// `contrast`.
+    /// The contrast in effect: the manual value, or the photo's Auto contrast while `contrast` is Auto
+    /// (`docs/18` section 4.4).
     pub contrast: f64,
     /// `brightness`.
     pub brightness: f64,
@@ -2067,6 +2179,8 @@ pub struct ResolvedValues {
     pub white: f64,
     /// `white_offset_ev`.
     pub white_offset_ev: f64,
+    /// `white_preference`.
+    pub white_preference: f64,
     /// The white lift in effect in stops: the automatic amount plus `white_offset_ev`, never below 0
     /// (`docs/02` C12 step 1b).
     pub white_ev: f64,
@@ -2151,12 +2265,13 @@ impl ResolvedSettings {
             look: settings.look.clone(),
             look_intensity: settings.look_intensity,
             exposure_ev: chain.exposure_ev(),
-            contrast: settings.contrast,
+            contrast: settings.contrast.resolve(estimates.autoset.contrast),
             brightness: settings.brightness,
             highlights: settings.highlights,
             shadows: settings.shadows,
             white: settings.white,
             white_offset_ev: settings.white_offset_ev,
+            white_preference: settings.white_preference,
             white_ev: estimates.white.lift(settings.white_offset_ev).amount_ev(),
             black: settings.black,
             light_source: settings.light_source,
@@ -2185,6 +2300,7 @@ impl ResolvedSettings {
             values,
             auto: AutoFlags {
                 exposure: settings.exposure.is_auto(),
+                contrast: settings.contrast.is_auto(),
                 light_source: settings.light_source == LightSource::Auto,
                 white_balance: settings.white_balance.is_auto(),
                 sharpen: settings.sharpen.is_auto(),
@@ -2208,9 +2324,10 @@ impl ResolvedSettings {
 
     /// The settings as an export records them (`ym:Settings`, the CLI's `settings` object).
     ///
-    /// Exposure, sharpening and noise reduction that are Auto are written as the manual values
+    /// Exposure, contrast, sharpening and noise reduction that are Auto are written as the manual values
     /// they resolved to: a Manual value renders exactly like the Auto it came from, and the file
-    /// then says which numbers were used. White balance is left as it is: a manual white balance
+    /// then says which numbers were used (the model that chose them is in the `ym:Autoset` property of
+    /// an export). White balance is left as it is: a manual white balance
     /// at the Kelvin and tint shown does *not* render like Auto (the tint scales the green gain,
     /// and Kelvin is rounded to 50 K), so an Auto white balance stays Auto here and the numbers it
     /// resolved to are in the `auto` object of the CLI output.
@@ -2219,6 +2336,9 @@ impl ResolvedSettings {
         let mut s = self.settings.clone();
         if s.exposure.is_auto() {
             s.exposure = ExposureSetting::manual_ev(self.values.exposure_ev);
+        }
+        if s.contrast.is_auto() {
+            s.contrast = ContrastSetting::manual_value(self.values.contrast);
         }
         if s.sharpen.is_auto() {
             s.sharpen = AutoOr::Manual(self.values.sharpen);

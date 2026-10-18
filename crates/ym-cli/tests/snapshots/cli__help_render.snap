@@ -43,8 +43,8 @@ Light:
       --exposure-offset <EV>
           Stops added to each photo's automatic exposure
 
-      --contrast <N>
-          Contrast, -100 to 100
+      --contrast <auto|N>
+          Contrast, -100 to 100, or `auto`: the photo's own contrast from the automatic settings (`docs/18`)
 
       --brightness <N>
           Brightness, -100 to 100
@@ -67,6 +67,9 @@ Light:
 Colour:
       --wb <auto|K[,TINT]>
           White balance: `auto`, or a temperature in kelvin (2000 to 11000) with an optional tint (-50 to 50), as `5200` or `5200,4`
+
+      --white-preference <0..1>
+          How much of a warm light's colour the Auto white keeps, 0 to 1: 0 is fully neutral (the chain before automatic settings), 1 (the default) the preferred white (`docs/18` section 5). Acts only on an Auto white balance with an Auto light
 
       --light <LIGHT>
           Light preset instead of the estimated light

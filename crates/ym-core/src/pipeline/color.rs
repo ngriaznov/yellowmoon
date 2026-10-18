@@ -396,10 +396,11 @@ pub fn color_key(src: &PhotoSource) -> ColorKey {
     // `{:?}` of an f64 is its shortest round-trip form, so equal text is equal bits.
     let _ = write!(
         k,
-        "{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}",
+        "{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}",
         src.estimates.color,
         s.light_source,
         s.white_balance,
+        s.white_preference,
         s.exposure,
         s.white_pick,
         src.picked_white(),
@@ -490,12 +491,14 @@ pub fn color_plan(src: &PhotoSource) -> Result<ColorPlan, RenderError> {
 // The grade plan: C9 to C13
 // ---------------------------------------------------------------------------------------------
 
-/// The grade controls of the settings as `ym_color`'s parameters.
+/// The grade controls of the settings as `ym_color`'s parameters. `auto_contrast` is the photo's Auto contrast
+/// (`AutoEstimates::autoset`, `docs/18` section 4.4), which `contrast` resolves to while it is Auto: the grade then
+/// uses the effective value everywhere (the render, the thumbnails, the look tiles and the exports).
 #[must_use]
-pub fn grade_params(s: &DevelopSettings) -> GradeParams {
+pub fn grade_params(s: &DevelopSettings, auto_contrast: f64) -> GradeParams {
     let b = |p: [f64; 2]| ColorBalance { a: p[0], b: p[1] };
     GradeParams {
-        contrast: s.contrast,
+        contrast: s.contrast.resolve(auto_contrast),
         brightness: s.brightness,
         shadows: s.shadows,
         highlights: s.highlights,
@@ -607,7 +610,7 @@ fn key_of(src: &PhotoSource, color: &ColorPlan, req: &GradeRequest<'_>, p: &Piec
         key,
         "{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{}|{:?}|",
         color.key,
-        grade_params(s),
+        grade_params(s, src.estimates.autoset.contrast),
         // The warp as the chain prepares it: pins that change nothing (locked pins with no pin that
         // moves, a pin whose target is its source) leave the key, and the frame, as without them.
         Warp::new(&warp_params(s)),
@@ -656,7 +659,7 @@ pub fn grade_plan(
     let p = pieces(src, req);
     let key = key_of(src, color, req, &p);
     let mut params = ChainParams::new(*color.fused.matrix(), color.tone);
-    params.grade = grade_params(s);
+    params.grade = grade_params(s, src.estimates.autoset.contrast);
     params.warp = warp_params(s);
     params.curves = curve_set(s)?;
     params.output = req.target;

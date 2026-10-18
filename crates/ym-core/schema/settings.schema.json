@@ -14,7 +14,7 @@
     },
     "look_intensity": { "type": "number", "minimum": 0, "maximum": 100, "default": 100 },
     "exposure": { "$ref": "#/$defs/exposure" },
-    "contrast": { "$ref": "#/$defs/percent" },
+    "contrast": { "$ref": "#/$defs/contrast" },
     "brightness": { "$ref": "#/$defs/percent" },
     "highlights": { "$ref": "#/$defs/percent" },
     "shadows": { "$ref": "#/$defs/percent" },
@@ -33,6 +33,13 @@
       "default": "auto"
     },
     "white_balance": { "$ref": "#/$defs/white_balance" },
+    "white_preference": {
+      "description": "How much of a warm light's colour the Auto white keeps (docs/18 section 5): 0 is fully neutral, 1 the preferred white. A plain number, not Auto; a document without it reads as 1.",
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1,
+      "default": 1
+    },
     "color_balance": {
       "description": "Three wheels, each a point [a, b] in the unit disc.",
       "type": "object",
@@ -162,6 +169,23 @@
   },
   "$defs": {
     "percent": { "type": "number", "minimum": -100, "maximum": 100, "default": 0 },
+    "contrast": {
+      "description": "Auto (the photo's bounded contrast from autoset, docs/18 section 4.4), or a manual contrast from -100 to 100 (the UI steps by 1). A plain number is an older document: it reads as Manual with that value, and 0 as Auto.",
+      "oneOf": [
+        { "$ref": "#/$defs/auto" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "value"],
+          "properties": {
+            "kind": { "const": "manual" },
+            "value": { "type": "number", "minimum": -100, "maximum": 100 }
+          }
+        },
+        { "type": "number", "minimum": -100, "maximum": 100 }
+      ],
+      "default": { "kind": "auto" }
+    },
     "exposure": {
       "description": "Auto, or an absolute exposure in stops (the UI steps by 0.01).",
       "oneOf": [

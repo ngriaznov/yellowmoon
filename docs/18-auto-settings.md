@@ -163,6 +163,17 @@ Per member: Gaussian negative log-likelihood of each head against its label, wit
 - `ym render --contrast <auto|N>`; `--white-preference <0..1>`; `ym info --json` reports the new estimates.
 - Copy/Paste settings carry both as any setting does.
 
+**As built (AS-07).** The integration follows the text above with these decisions where the spec is silent (`docs/02` and `docs/STATUS.md` say the same).
+
+- *Metering on the neutral white.* The exposure and the features are metered on the all-Auto chain with the neutral Auto white (`ChainSettings::default`, `white_preference` 0). The model was trained on that chain (the dump of 2026-10-18), so the preferred white of section 5 does not move the features; `white_preference` changes the picture, never the exposure's input.
+- *The preferred white needs no model.* Section 5 is a rule of the scene light and its brightness, so it applies with or without the model file. A picked white (Pick white renders the spot neutral, `docs/11`) and a light preset (the user's white is the preset) are unchanged, as is the Manual white balance.
+- *The lift.* The white lift is estimated on the neutral Auto white, as the exposure is, and sized at the new exposure; the preferred white does not change it ("unchanged" in section 1).
+- *Re-run.* `reset_automatic` returns contrast to Auto with exposure, the white lift's offset, the white balance and noise; `white_preference` is a preference and stays.
+- *Exports.* `ym:Settings` is the settings record of `pinned_settings`: contrast is pinned to the value it resolved to while Auto, as exposure is (a Manual value renders like the Auto it came from, and the file says which number was used). `ym:Autoset` is a separate property holding the model's version or `none`: the settings record must stay readable by `ym render --settings`, whose reader refuses unknown fields. The XMP property list is in `docs/09`.
+- *Plain numbers.* A plain number of contrast is read as Manual, 0 as Auto, in a settings document, a `--settings` file and a settings patch of the core (old documents). The bridge (`types.ts`) takes the `kind` forms only; its generated bindings (`src/api/bindings.ts`) come from the Tauri side.
+- *Burst.* The Auto contrast of a burst is the median of the group's own contrasts, rounded to 0.1 (`round_contrast`), as the exposure's median is shared.
+- *Pipeline 0.5.0.* The golden **truth** settings gain contrast Manual 0, `white_preference` 0 and exposure Manual at `CAMERA_GAIN_EV` (`tools/golden/src/truth.rs`, `truth_settings`).
+
 ## 8. Gates (owner's decision of 2026-10-18)
 
 1. **Determinism and parity:** Rust against Python ≤ 1e-9 (vectors); the same file gives the same estimates whatever the thread count; app and `ym` bit-identical (existing parity tests).

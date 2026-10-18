@@ -428,7 +428,7 @@ fn flags_become_settings_and_the_exposure_offset_is_relative_to_each_photos_auto
             (ev - (auto_ev - 0.5)).abs() < 1e-9,
             "{ev} vs {auto_ev} - 0.5"
         );
-        assert_eq!(s["contrast"], 20.0);
+        assert_eq!(s["contrast"], json!({ "kind": "manual", "value": 20.0 }));
         assert_eq!(s["saturation"], -15.0);
         assert_eq!(
             s["white_balance"],
@@ -502,9 +502,11 @@ fn the_remaining_flags_of_docs_10_reach_the_settings_of_the_file() {
         })
     );
     // Untouched, they are what the photo opens with.
-    for key in ["contrast", "highlights", "black", "saturation"] {
+    for key in ["highlights", "black", "saturation"] {
         assert_eq!(s[key], 0.0, "{key}");
     }
+    // Contrast is Auto, and the record writes it as the number it resolved to (as it does the exposure).
+    assert_eq!(s["contrast"], json!({ "kind": "manual", "value": 0.0 }));
 }
 
 #[test]
@@ -549,7 +551,7 @@ fn a_settings_file_applies_to_every_photo_and_flags_override_it() {
         .assert()
         .success();
     for o in json_lines(&out.get_output().stdout) {
-        assert_eq!(o["settings"]["contrast"], 30.0);
+        assert_eq!(o["settings"]["contrast"], json!({ "kind": "manual", "value": 30.0 }));
         assert_eq!(o["settings"]["saturation"], -20.0, "the flag wins");
         assert_eq!(o["settings"]["exposure"]["ev"], 0.25);
     }
@@ -582,7 +584,7 @@ fn a_settings_object_keyed_by_file_name_gives_each_photo_its_own() {
         objects
             .iter()
             .find(|o| o["input"].as_str().is_some_and(|i| i.ends_with(name)))
-            .map(|o| o["settings"]["contrast"].as_f64().expect("contrast"))
+            .map(|o| o["settings"]["contrast"]["value"].as_f64().expect("contrast"))
             .expect(name)
     };
     assert_eq!(contrast("a.ARW"), 40.0);
@@ -610,9 +612,10 @@ fn settings_can_come_from_stdin_and_values_out_of_range_are_limited_with_a_warni
         .assert()
         .success()
         .stderr(predicate::str::contains("out-of-range values for contrast"));
+    // The record writes contrast in its `kind` form, pinned to the value it had (here Manual, clamped to 100).
     assert_eq!(
         json_lines(&out.get_output().stdout)[0]["settings"]["contrast"],
-        100.0
+        serde_json::json!({ "kind": "manual", "value": 100.0 })
     );
 }
 

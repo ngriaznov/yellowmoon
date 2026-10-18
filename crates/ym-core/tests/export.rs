@@ -492,7 +492,7 @@ fn exports_are_byte_identical_across_threads_contexts_and_processes() {
         &d.session,
         d.id,
         SettingsPatch {
-            contrast: Some(12.0),
+            contrast: Some(ym_core::settings::ContrastSetting::manual_value(12.0)),
             ..crop_of(0.1, 0.1, 0.7, 0.6)
         },
     );

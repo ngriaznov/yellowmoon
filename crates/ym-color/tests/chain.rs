@@ -243,6 +243,8 @@ fn the_matrix_is_the_documented_product_for_random_pixels() {
                 exposure_ev: 0.0,
                 picked_white: None,
                 white_scale: [1.0; 3],
+                white_preference: 0.0,
+                key_bv: None,
             },
         ] {
             let chain = FusedChain::build(p.tables(), &estimate, w_init, &settings).unwrap();
@@ -627,6 +629,8 @@ fn a_pick_is_replaced_by_day_shade_and_tungsten_but_kept_by_led_and_fluorescent(
                     exposure_ev: 0.0,
                     picked_white: Some(sample),
                     white_scale: [1.0; 3],
+                    white_preference: 0.0,
+                    key_bv: None,
                 },
             )
             .unwrap()
@@ -927,6 +931,7 @@ fn color_estimates_resolve_exposure_and_build_the_metering_chain() {
         w_scene_initial: scene.w_scene,
         white_scale: [1.0; 3],
         ev_auto: 0.75,
+        key_bv: None,
     };
     let auto = estimates
         .chain(
@@ -934,6 +939,7 @@ fn color_estimates_resolve_exposure_and_build_the_metering_chain() {
             LightSource::Auto,
             WhiteBalance::Auto,
             ExposureSetting::Auto,
+            0.0,
             None,
         )
         .unwrap();
@@ -944,6 +950,7 @@ fn color_estimates_resolve_exposure_and_build_the_metering_chain() {
             LightSource::Auto,
             WhiteBalance::Auto,
             ExposureSetting::Manual { ev: -1.25 },
+            0.0,
             None,
         )
         .unwrap();
@@ -956,6 +963,7 @@ fn color_estimates_resolve_exposure_and_build_the_metering_chain() {
             LightSource::Auto,
             WhiteBalance::Auto,
             ExposureSetting::Manual { ev: 4.5 },
+            0.0,
             None,
         )
         .unwrap_err();
@@ -970,6 +978,7 @@ fn color_estimates_resolve_exposure_and_build_the_metering_chain() {
             LightSource::Auto,
             WhiteBalance::Auto,
             ExposureSetting::Auto,
+            0.0,
             None
         )
         .is_ok()

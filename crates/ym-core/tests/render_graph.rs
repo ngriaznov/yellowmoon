@@ -216,7 +216,7 @@ fn every_grade_control_and_the_look_only_rebuild_the_grade_group_with(rig: Rig) 
     let src = rig.source();
     rig.runs(&src);
     let edits: Vec<(&str, Edit)> = vec![
-        ("contrast", Box::new(|s| s.contrast = 20.0)),
+        ("contrast", Box::new(|s| s.contrast = ym_core::settings::ContrastSetting::manual_value(20.0))),
         ("brightness", Box::new(|s| s.brightness = -20.0)),
         ("highlights", Box::new(|s| s.highlights = 30.0)),
         ("shadows", Box::new(|s| s.shadows = 30.0)),
@@ -559,7 +559,7 @@ fn at_100_percent_tiles_are_cached_across_pans_and_color_edits_with(rig: Rig) {
     assert!(first.tiles >= 4, "{first:?}");
     assert_eq!((first.full_chains, first.raw_groups), (1, 0), "{first:?}");
     // A colour-only edit finds every tile, and the full chain, cached.
-    let edited = edit(&src, |s| s.contrast = 15.0);
+    let edited = edit(&src, |s| s.contrast = ym_core::settings::ContrastSetting::manual_value(15.0));
     let r = rig.runs_with(&edited, &state, FrameOptions::default());
     assert_eq!((r.tiles, r.full_chains, r.raw_work()), (0, 0, 0), "{r:?}");
     // A small pan inside the same tiles computes nothing new either.

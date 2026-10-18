@@ -34,6 +34,7 @@
 //! tint that Auto shows renders the Auto picture times the green gain `2^(-t/100)`.
 
 use crate::arri::ArriTable;
+use crate::autoset::{PreferredWhite, preferred_white};
 use crate::consts::Vec3;
 use crate::consts::linalg::{self, Mat3};
 use crate::exposure::{ExposureError, ExposureSetting};
@@ -95,9 +96,19 @@ pub struct ChainSettings {
     /// to its profile's, `[1, 1, 1]` for a body whose profile was measured on it. Only Pick white needs it (the
     /// clip level of the sample); the rest of the chain works on the profile's scale already.
     pub white_scale: Vec3,
+    /// How much of a warm light's colour the Auto white keeps: the `white_preference` setting, 0 to 1 (`docs/18`
+    /// section 5). 0 is the fully neutral Auto white of the chain before `autoset`; 1 is the preferred white. It acts
+    /// only on an Auto white balance with an Auto light and no picked white.
+    pub white_preference: f64,
+    /// The brightness value of the scene's key (`docs/18` section 3, `key_bv`), `None` when the shot's settings are
+    /// unknown. The preferred white's dim term reads it.
+    pub key_bv: Option<f64>,
 }
 
 impl Default for ChainSettings {
+    /// The metering chain's settings: every colour setting on Auto, EV 0, and the neutral Auto white
+    /// (`white_preference` 0). Exposure and the features of `autoset` are metered on this chain, as the model was
+    /// trained, so the preferred white does not move them.
     fn default() -> Self {
         Self {
             light_source: LightSource::Auto,
@@ -105,8 +116,27 @@ impl Default for ChainSettings {
             exposure_ev: 0.0,
             picked_white: None,
             white_scale: wb::IDENTITY_WHITE_SCALE,
+            white_preference: 0.0,
+            key_bv: None,
         }
     }
+}
+
+/// The CCT and Duv of the user's white for an Auto white balance (`docs/18` section 5): the preferred white of the
+/// scene light, or the scene light itself when the preferred white does not apply. It does not apply to a picked white
+/// (Pick white renders the spot neutral, `docs/11`) or to a light preset (the user's white is the preset), and a
+/// `white_preference` of 0 gives the scene light, unchanged.
+fn preferred_white_of(scene: &SceneLight, settings: &ChainSettings) -> (f64, f64) {
+    if settings.picked_white.is_some() || settings.light_source != LightSource::Auto {
+        return (scene.cct_k, scene.duv);
+    }
+    preferred_white(
+        scene.cct_k,
+        scene.duv,
+        settings.key_bv,
+        settings.white_preference,
+        &PreferredWhite::default(),
+    )
 }
 
 /// The clip level for the highlight range (stage C7), after C1 to C6.
@@ -259,12 +289,39 @@ impl FusedChain {
         // C3 and C4.
         let w_a_scene = wb::scene_alexa_white(tables.alexa_white, tables.locus, &scene);
         let (g_user, c3_c4, user_cct_k, readout) = match settings.white_balance {
-            WhiteBalance::Auto => (
-                w_a_scene.map(|w| 1.0 / w),
-                [1.0; 3],
-                scene.cct_k,
-                wb::auto_readout(tables.alexa_white, tables.locus, &scene),
-            ),
+            WhiteBalance::Auto => {
+                let (cct_u, duv_u) = preferred_white_of(&scene, settings);
+                if cct_u == scene.cct_k && duv_u == scene.duv {
+                    (
+                        w_a_scene.map(|w| 1.0 / w),
+                        [1.0; 3],
+                        scene.cct_k,
+                        wb::auto_readout(tables.alexa_white, tables.locus, &scene),
+                    )
+                } else {
+                    // The user's white is the preferred white (`docs/18` section 5): the light at the preferred CCT
+                    // and the scene's Duv. C3 keeps the scene's own white and C4 the user's, so C3 times C4 is their
+                    // ratio, and the Kelvin and tint shown are the user's light, which switching to Manual reproduces.
+                    let user = SceneLight {
+                        cct_k: cct_u,
+                        duv: duv_u,
+                        ..scene
+                    };
+                    let w_a_user = wb::scene_alexa_white(tables.alexa_white, tables.locus, &user);
+                    let g_user = w_a_user.map(|w| 1.0 / w);
+                    let product = [
+                        g_user[0] * w_a_scene[0],
+                        g_user[1] * w_a_scene[1],
+                        g_user[2] * w_a_scene[2],
+                    ];
+                    (
+                        g_user,
+                        product,
+                        cct_u,
+                        wb::auto_readout(tables.alexa_white, tables.locus, &user),
+                    )
+                }
+            }
             WhiteBalance::Manual { kelvin, tint } => {
                 let g = wb::manual_user_gains(tables.alexa_white, kelvin, tint);
                 let product = [
@@ -377,10 +434,15 @@ pub struct ColorEstimates {
     pub white_scale: Vec3,
     /// The automatic exposure in stops (`crate::exposure`).
     pub ev_auto: f64,
+    /// The brightness value of the scene's key (`docs/18` section 3), `None` when the shot's settings are unknown
+    /// (`autoset`'s `key_bv`, read by the preferred white).
+    pub key_bv: Option<f64>,
 }
 
 impl ColorEstimates {
-    /// The chain for a set of colour settings: the exposure setting resolves against `ev_auto`.
+    /// The chain for a set of colour settings: the exposure setting resolves against `ev_auto`, and
+    /// `white_preference` (0 to 1) is the strength of the preferred white of an Auto white balance (`docs/18`
+    /// section 5, [`ChainSettings::white_preference`]).
     ///
     /// # Errors
     ///
@@ -391,6 +453,7 @@ impl ColorEstimates {
         light_source: LightSource,
         white_balance: WhiteBalance,
         exposure: ExposureSetting,
+        white_preference: f64,
         picked_white: Option<Vec3>,
     ) -> Result<FusedChain, ChainError> {
         exposure.validate()?;
@@ -404,6 +467,8 @@ impl ColorEstimates {
                 exposure_ev: exposure.resolve(self.ev_auto),
                 picked_white,
                 white_scale: self.white_scale,
+                white_preference,
+                key_bv: self.key_bv,
             },
         )
     }

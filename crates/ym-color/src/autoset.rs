@@ -20,7 +20,7 @@ mod white;
 
 pub use features::{FEATURE_COUNT, FEATURE_NAMES, FeatureInputs, Features, features};
 pub use model::{AutosetModel, Prediction, PriorSigma};
-pub use shrink::{Applied, apply, rule_only};
+pub use shrink::{Applied, apply, round_contrast, rule_only};
 pub use white::{PreferredWhite, preferred_white};
 
 use crate::exposure::ExposureError;

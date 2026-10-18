@@ -212,11 +212,13 @@ pub fn group_stats(
 }
 
 /// The settings a scene is developed with for the truth: the entry's own, with the Neutral look, the highlight range
-/// at 0 ("as recorded", `rolloff.highlights`) and no white lift (`white_offset_ev` -3) unless the entry sets them. The
-/// default look (Signature), the default highlight range (1, which places the camera's clip at white) and the
-/// automatic white lift change the picture on purpose; the truth measures the colour of the scene, so a number here
-/// moves only when the sensor map or the white balance does. An entry's own `rolloff.low_light` stays (a `rolloff`
-/// with only `highlights` reads the toe as its default, 0.5).
+/// at 0 ("as recorded", `rolloff.highlights`), no white lift (`white_offset_ev` -3), contrast Manual 0, the preferred
+/// white off (`white_preference` 0) and the exposure Manual at the rule's value (the camera gain, `docs/18` section 8,
+/// gate 6), unless the entry sets them. The default look (Signature), the default highlight range (1, which places the
+/// camera's clip at white), the automatic white lift, the automatic contrast and the preferred white change the picture
+/// on purpose; the truth measures the colour of the scene, so a number here moves only when the sensor map or the white
+/// balance does. An entry's own `rolloff.low_light` stays (a `rolloff` with only `highlights` reads the toe as its
+/// default, 0.5).
 #[must_use]
 pub fn truth_settings(base: &serde_json::Value) -> serde_json::Value {
     let mut settings = base.clone();
@@ -226,6 +228,17 @@ pub fn truth_settings(base: &serde_json::Value) -> serde_json::Value {
         // -3 is the lowest offset: the automatic amount can never be larger than 2 stops, so the lift is off.
         map.entry("white_offset_ev")
             .or_insert_with(|| serde_json::Value::from(-3));
+        // The automatic contrast of `autoset` is off: a Manual 0 is the contrast the truth was measured with.
+        map.entry("contrast")
+            .or_insert_with(|| serde_json::json!({"kind": "manual", "value": 0}));
+        // The preferred white is off: the Auto white is the fully neutral one, as the truth needs.
+        map.entry("white_preference")
+            .or_insert_with(|| serde_json::Value::from(0));
+        // The exposure of the rule (`CAMERA_GAIN_EV`, no model): the same number the automatic exposure gives these
+        // charts, so the picture does not move.
+        map.entry("exposure").or_insert_with(|| {
+            serde_json::json!({"kind": "manual", "ev": ym_color::exposure::CAMERA_GAIN_EV})
+        });
         let rolloff = map
             .entry("rolloff")
             .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
@@ -548,6 +561,10 @@ mod tests {
         assert_eq!(plain["look"], "builtin:neutral");
         assert_eq!(plain["rolloff"], json!({"highlights": 0}));
         assert_eq!(plain["white_offset_ev"], -3);
+        // The automatic contrast and the preferred white are off, and the exposure is the rule's.
+        assert_eq!(plain["contrast"], json!({"kind": "manual", "value": 0}));
+        assert_eq!(plain["white_preference"], 0);
+        assert_eq!(plain["exposure"], json!({"kind": "manual", "ev": ym_color::exposure::CAMERA_GAIN_EV}));
         // What the entry sets itself stays.
         let own = truth_settings(&json!({
             "look": "builtin:signature",

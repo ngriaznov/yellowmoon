@@ -363,6 +363,7 @@ fn capture_sharpen_real_files_ab() {
                 profile: &profile,
                 illuminant_model: None,
                 priors: &env.priors,
+                autoset: None,
             },
         )
         .expect("estimates");

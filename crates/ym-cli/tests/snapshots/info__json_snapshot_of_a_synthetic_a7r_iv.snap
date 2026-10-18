@@ -4,6 +4,10 @@ expression: v
 ---
 {
   "auto": {
+    "autoset_version": "none",
+    "contrast": 0.0,
+    "contrast_confidence": 0.0,
+    "ev_confidence": 0.0,
     "exposure_ev": 1.11,
     "kelvin": 3450.0,
     "light_class": "daylight",
@@ -80,7 +84,7 @@ expression: v
     "intensity": 100
   },
   "notes": [],
-  "pipeline_version": "0.4.0",
+  "pipeline_version": "0.5.0",
   "preview": "[preview location]",
   "raw": {
     "bits_per_sample": 14,
@@ -113,7 +117,10 @@ expression: v
     "color_warp": {
       "pins": []
     },
-    "contrast": 0.0,
+    "contrast": {
+      "kind": "manual",
+      "value": 0.0
+    },
     "crop": null,
     "curve": {
       "blue": [
@@ -195,7 +202,8 @@ expression: v
       "kind": "auto"
     },
     "white_offset_ev": 0.0,
-    "white_pick": null
+    "white_pick": null,
+    "white_preference": 1.0
   },
   "status": "ok",
   "tone_curve": null,

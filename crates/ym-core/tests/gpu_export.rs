@@ -969,7 +969,7 @@ fn a_look_a_white_offset_the_range_and_a_curve_come_out_of_the_tail_as_on_the_cp
             highlights: Some(1.0),
             low_light: None,
         }),
-        contrast: Some(15.0),
+        contrast: Some(ym_core::settings::ContrastSetting::manual_value(15.0)),
         saturation: Some(10.0),
         output_sharpening: Some(0.0),
         ..SettingsPatch::default()

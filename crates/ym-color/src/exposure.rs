@@ -312,23 +312,37 @@ pub(crate) fn interpolate(a: f64, b: f64, frac: f64) -> f64 {
     v.clamp(a, b)
 }
 
-/// The automatic exposure of a preview: steps 1 to 5 of the spec. `EV_auto` is [`CAMERA_GAIN_EV`], lowered by the
-/// highlight guard when the picture would clip; the centre-weighted geometric mean is reported and moves nothing.
+/// The measured part of auto exposure: steps 1 to 3 of the rule, and the pixels the highlight guard (step 5) reads.
+///
+/// [`measure_exposure`] makes it from a preview once. The exposure is then decided by [`Measurement::guarded`] from
+/// the step-4 value: the camera gain of the rule, or the value the learned model asks for (`docs/18` section 4.4).
+/// The model needs the mean luminance this measurement reports, so the two steps are kept apart rather than
+/// metering the preview twice. [`auto_exposure`] is the rule alone.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Measurement {
+    /// `Y` of every unmasked pixel, floored at [`LUMINANCE_FLOOR`], sorted ascending. Empty when nothing could be
+    /// metered.
+    sorted: Vec<f64>,
+    /// The centre-weighted geometric mean luminance at EV 0 (0 when nothing could be metered).
+    mean_luminance: f64,
+    /// Pixels inside the percentile band that entered the mean.
+    metered_pixels: usize,
+}
+
+/// Steps 1 to 3 of the rule for a preview (see [`auto_exposure`]): the luminances, the percentile band and the
+/// centre-weighted mean. None of it depends on the exposure.
 ///
 /// `matrix_ev0` is the fused C1 to C6 matrix at EV 0 (`FusedChain::matrix` of a chain built with
-/// `exposure_ev = 0`). The camera's exposure compensation is not an input: the raw already holds it and it
-/// reaches the picture in full.
+/// `exposure_ev = 0`).
 ///
 /// # Errors
 ///
 /// [`ExposureError::BufferSize`] or [`ExposureError::MaskSize`] for buffers of the wrong length.
-pub fn auto_exposure(
+pub fn measure_exposure(
     preview: &PreviewRgb<'_>,
     matrix_ev0: &Mat3,
-) -> Result<AutoExposure, ExposureError> {
+) -> Result<Measurement, ExposureError> {
     preview.validate()?;
-    // Step 4: the camera's gain, whatever the scene.
-    let ev_before_guard = CAMERA_GAIN_EV.clamp(-EV_LIMIT, EV_LIMIT);
     let luminances = preview.luminances(matrix_ev0);
     let mut sorted: Vec<f64> = luminances
         .iter()
@@ -337,14 +351,10 @@ pub fn auto_exposure(
         .collect();
     let n = sorted.len();
     if n == 0 {
-        return Ok(AutoExposure {
-            ev_auto: ev_before_guard,
-            ev_before_guard,
-            guard_reduction_ev: 0.0,
+        return Ok(Measurement {
+            sorted,
             mean_luminance: 0.0,
-            unmasked_pixels: 0,
             metered_pixels: 0,
-            metered: false,
         });
     }
     sorted.sort_unstable_by(f64::total_cmp);
@@ -385,25 +395,95 @@ pub fn auto_exposure(
         (sum_w, sum_wl, metered_pixels) = weighted_log_sum(false);
     }
     let mean_luminance = (sum_wl / sum_w).exp();
-
-    // Step 5: the largest EV with at most floor(0.005 n) pixels above the guard level.
-    let allowed = (GUARD_FRACTION * n as f64).floor() as usize;
-    let threshold_y = sorted[n - 1 - allowed.min(n - 1)];
-    let ev_guard = (GUARD_LEVEL / threshold_y).log2();
-    let ev_auto = if ev_before_guard > ev_guard {
-        ev_guard.max(ev_before_guard - GUARD_MAX_REDUCTION_EV)
-    } else {
-        ev_before_guard
-    };
-    Ok(AutoExposure {
-        ev_auto,
-        ev_before_guard,
-        guard_reduction_ev: ev_before_guard - ev_auto,
+    Ok(Measurement {
+        sorted,
         mean_luminance,
-        unmasked_pixels: n,
         metered_pixels,
-        metered: true,
     })
+}
+
+impl Measurement {
+    /// Pixels that were not masked and are finite (`AutoExposure::unmasked_pixels`).
+    #[must_use]
+    pub fn unmasked_pixels(&self) -> usize {
+        self.sorted.len()
+    }
+
+    /// Whether anything could be metered. False means there is no mean luminance and the guard has nothing to read
+    /// (`AutoExposure::metered`).
+    #[must_use]
+    pub fn metered(&self) -> bool {
+        !self.sorted.is_empty()
+    }
+
+    /// The centre-weighted geometric mean luminance at EV 0, 0 when nothing could be metered (`docs/02`, step 3).
+    #[must_use]
+    pub fn mean_luminance(&self) -> f64 {
+        self.mean_luminance
+    }
+
+    /// Pixels inside the percentile band that entered the mean (`AutoExposure::metered_pixels`).
+    #[must_use]
+    pub fn metered_pixels(&self) -> usize {
+        self.metered_pixels
+    }
+
+    /// Step 5, the highlight guard, on the step-4 exposure `ev_before_guard` (stops; the camera gain of the rule or
+    /// the model's value, already clamped to plus or minus [`EV_LIMIT`]). The result is the largest exposure at which
+    /// at most `floor(0.005 n)` unmasked pixels exceed [`GUARD_LEVEL`], and no lower than `ev_before_guard` minus one
+    /// stop; it never raises the exposure. With nothing metered the exposure is `ev_before_guard` itself.
+    #[must_use]
+    pub fn guarded(&self, ev_before_guard: f64) -> AutoExposure {
+        let n = self.sorted.len();
+        if n == 0 {
+            return AutoExposure {
+                ev_auto: ev_before_guard,
+                ev_before_guard,
+                guard_reduction_ev: 0.0,
+                mean_luminance: 0.0,
+                unmasked_pixels: 0,
+                metered_pixels: 0,
+                metered: false,
+            };
+        }
+        // Step 5: the largest EV with at most floor(0.005 n) pixels above the guard level.
+        let allowed = (GUARD_FRACTION * n as f64).floor() as usize;
+        let threshold_y = self.sorted[n - 1 - allowed.min(n - 1)];
+        let ev_guard = (GUARD_LEVEL / threshold_y).log2();
+        let ev_auto = if ev_before_guard > ev_guard {
+            ev_guard.max(ev_before_guard - GUARD_MAX_REDUCTION_EV)
+        } else {
+            ev_before_guard
+        };
+        AutoExposure {
+            ev_auto,
+            ev_before_guard,
+            guard_reduction_ev: ev_before_guard - ev_auto,
+            mean_luminance: self.mean_luminance,
+            unmasked_pixels: n,
+            metered_pixels: self.metered_pixels,
+            metered: true,
+        }
+    }
+}
+
+/// The automatic exposure of a preview: steps 1 to 5 of the spec. `EV_auto` is [`CAMERA_GAIN_EV`], lowered by the
+/// highlight guard when the picture would clip; the centre-weighted geometric mean is reported and moves nothing.
+///
+/// `matrix_ev0` is the fused C1 to C6 matrix at EV 0 (`FusedChain::matrix` of a chain built with
+/// `exposure_ev = 0`). The camera's exposure compensation is not an input: the raw already holds it and it
+/// reaches the picture in full.
+///
+/// # Errors
+///
+/// [`ExposureError::BufferSize`] or [`ExposureError::MaskSize`] for buffers of the wrong length.
+pub fn auto_exposure(
+    preview: &PreviewRgb<'_>,
+    matrix_ev0: &Mat3,
+) -> Result<AutoExposure, ExposureError> {
+    // Step 4: the camera's gain, whatever the scene.
+    let measurement = measure_exposure(preview, matrix_ev0)?;
+    Ok(measurement.guarded(CAMERA_GAIN_EV.clamp(-EV_LIMIT, EV_LIMIT)))
 }
 
 /// The median luminance of the preview at an exposure: `Y` at EV 0 times `2^ev` over **every** pixel

@@ -17,12 +17,15 @@ use std::path::Path;
 use serde_json::Value;
 use ym_color::wb::LightSource;
 use ym_core::settings::{
-    AutoOr, DecodePatch, DevelopSettings, ExposureSetting, NoiseReductionManualPatch, RolloffPatch,
+    AutoOr, ContrastSetting, DecodePatch, DevelopSettings, ExposureSetting,
+    NoiseReductionManualPatch, RolloffPatch,
     SettingsField, SettingsPatch, SharpenManualPatch, WhiteBalanceManualPatch,
 };
 use ym_looks::library::LookId;
 
-use crate::cli::{ExposureArg, LightArg, NrArg, RenderArgs, RolloffArg, SharpenArg, WbArg};
+use crate::cli::{
+    ContrastArg, ExposureArg, LightArg, NrArg, RenderArgs, RolloffArg, SharpenArg, WbArg,
+};
 
 /// The options of `ym render` that change a photo's settings.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -36,7 +39,7 @@ pub struct Overrides {
     /// `--exposure-offset`.
     pub exposure_offset: Option<f64>,
     /// `--contrast`.
-    pub contrast: Option<f64>,
+    pub contrast: Option<ContrastArg>,
     /// `--brightness`.
     pub brightness: Option<f64>,
     /// `--highlights`.
@@ -53,6 +56,8 @@ pub struct Overrides {
     pub saturation: Option<f64>,
     /// `--wb`.
     pub wb: Option<WbArg>,
+    /// `--white-preference`.
+    pub white_preference: Option<f64>,
     /// `--light`.
     pub light: Option<LightArg>,
     /// `--nr`.
@@ -73,6 +78,14 @@ pub struct Overrides {
     pub rolloff: Option<RolloffArg>,
 }
 
+/// The contrast setting an option names: `auto`, or a manual value.
+fn contrast_setting(arg: ContrastArg) -> ContrastSetting {
+    match arg {
+        ContrastArg::Auto => AutoOr::Auto,
+        ContrastArg::Value(v) => ContrastSetting::manual_value(v),
+    }
+}
+
 impl Overrides {
     /// The overrides of a `render` command; `look` is the id `--look` resolved to.
     pub fn from_args(args: &RenderArgs, look: Option<LookId>) -> Self {
@@ -90,6 +103,7 @@ impl Overrides {
             black: args.black,
             saturation: args.saturation,
             wb: args.wb,
+            white_preference: args.white_preference,
             light: args.light,
             nr: args.nr,
             sharpen: args.sharpen,
@@ -108,7 +122,8 @@ impl Overrides {
         let mut p = SettingsPatch {
             look: self.look.clone(),
             look_intensity: self.intensity,
-            contrast: self.contrast,
+            contrast: self.contrast.map(contrast_setting),
+            white_preference: self.white_preference,
             brightness: self.brightness,
             highlights: self.highlights,
             shadows: self.shadows,
@@ -352,7 +367,7 @@ mod tests {
         let SettingsFile::Global(s) = &loaded.file else {
             panic!("global");
         };
-        assert_eq!(s.contrast, 20.0);
+        assert_eq!(s.contrast, ContrastSetting::manual_value(20.0));
         assert_eq!(s.exposure, ExposureSetting::manual_ev(0.5));
         assert!(s.sharpen.is_auto());
         assert_eq!(s.look, neutral());
@@ -381,7 +396,7 @@ mod tests {
         let loaded = SettingsFile::parse(text, &neutral()).expect("parses");
         let file = &loaded.file;
         let one = file.for_file(Path::new("/x/DSC00001.ARW")).expect("entry");
-        assert_eq!(one.contrast, 10.0);
+        assert_eq!(one.contrast, ContrastSetting::manual_value(10.0));
         let two = file.for_file(Path::new("/x/DSC00002.ARW")).expect("entry");
         assert_eq!(two.saturation, -5.0);
         assert!(file.for_file(Path::new("/x/DSC00003.ARW")).is_none());
@@ -441,7 +456,7 @@ mod tests {
         let SettingsFile::Global(s) = &loaded.file else {
             panic!("global");
         };
-        assert_eq!(s.contrast, 100.0);
+        assert_eq!(s.contrast, ContrastSetting::manual_value(100.0));
         assert_eq!(loaded.clamped, [(String::new(), vec!["contrast"])]);
     }
 
@@ -498,11 +513,11 @@ mod tests {
             (
                 "--contrast",
                 Overrides {
-                    contrast: Some(21.0),
+                    contrast: Some(ContrastArg::Value(21.0)),
                     ..Overrides::default()
                 },
                 SettingsPatch {
-                    contrast: Some(21.0),
+                    contrast: Some(ContrastSetting::manual_value(21.0)),
                     ..SettingsPatch::default()
                 },
             ),

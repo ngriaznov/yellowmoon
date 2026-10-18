@@ -127,6 +127,7 @@ pub fn metadata() -> Metadata {
                 look_intensity_pct: Some(100),
                 display_transform: Some("aces2-sdr100-p3lim".into()),
                 models: Some("jdd 1.2.0 (sha256:abc)".into()),
+                autoset: Some("none".into()),
                 settings: Some(serde_json::json!({"exposure": "auto", "contrast": 0})),
             },
         },

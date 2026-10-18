@@ -1182,6 +1182,7 @@ fn export_photo_unguarded(
                 look_intensity_pct: Some(rounded_percent(photo.source.settings.look_intensity)),
                 display_transform: Some(display_transform_id(&display, space)),
                 models: None,
+                autoset: Some(photo.resolved.estimates.autoset_version.clone()),
                 settings: serde_json::to_value(photo.resolved.pinned_settings()).ok(),
             },
         },

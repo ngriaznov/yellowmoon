@@ -142,7 +142,7 @@ pub fn develop_fields(view: &PhotoView, resolved: &ResolvedSettings) -> Object {
     );
     out.insert(
         "auto",
-        serde_json::to_value(resolved.estimates).unwrap_or(Value::Null),
+        serde_json::to_value(&resolved.estimates).unwrap_or(Value::Null),
     );
     out.insert(
         "settings",

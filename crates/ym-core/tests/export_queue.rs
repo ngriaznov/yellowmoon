@@ -260,7 +260,7 @@ fn settings_are_snapshotted_when_the_job_is_queued() {
                 *id,
                 &SettingsPatch {
                     saturation: Some(60.0),
-                    contrast: Some(-30.0),
+                    contrast: Some(ym_core::settings::ContrastSetting::manual_value(-30.0)),
                     ..SettingsPatch::exposure_ev(1.5)
                 },
             )

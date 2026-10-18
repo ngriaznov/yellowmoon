@@ -44,7 +44,8 @@
 //!    (`pool_key`). A Lossless M or S file has no mosaic to measure and gets the prior alone.
 //! 5. **Sharpening Auto** (`docs/05` R8) and **noise reduction Auto** (`docs/05` R7), from
 //!    `ym_gpu::cpu` so the Automatic card and the render agree by construction.
-//! 6. **Kelvin and tint readouts**: the Auto readout of the all-Auto, EV 0 chain.
+//! 6. **Kelvin and tint readouts**: the Auto readout of the photo's Auto white at the default `white_preference`
+//!    (the preferred white, `docs/18` section 5).
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -52,12 +53,13 @@ use std::sync::Arc;
 
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
+use ym_color::autoset::{AutosetModel, apply, rule_only};
 use ym_color::chain::{ChainError, ColorEstimates, FusedChain, ProfileTables};
 use ym_color::consts::Vec3;
 use ym_color::exposure::white::{WhiteEstimate, estimate_white};
 use ym_color::exposure::{
     AutoExposure, BurstFrame, ExposureError, ExposureSetting, PreviewRgb, ShotSettings,
-    auto_exposure,
+    measure_exposure,
 };
 use ym_color::illum::{IllumError, IlluminantEstimate, IlluminantModel, RawPreview, ShotInfo};
 use ym_color::look::LookTransform;
@@ -80,7 +82,10 @@ use ym_raw::decode::RawImage;
 use ym_raw::layout::{CfaColor, DecodeKind, Layout, Rect};
 use ym_raw::metadata::RawMetadata;
 
-use crate::settings::{DevelopSettings, NoiseReductionValue, Rolloff, SharpenValue};
+use crate::autoset::photo_features;
+use crate::settings::{
+    DevelopSettings, NoiseReductionValue, Rolloff, SharpenValue, WHITE_PREFERENCE_DEFAULT,
+};
 
 /// Preview block size: one preview pixel is the mean of this many photosites per side (1/8).
 pub const PREVIEW_BLOCK_PX: usize = 8;
@@ -1137,6 +1142,43 @@ fn capture_seconds(t: &ym_raw::exif::CaptureTime) -> f64 {
 // AutoEstimates
 // ---------------------------------------------------------------------------------------------
 
+/// The automatic settings `autoset` decides for a photo besides the exposure (`docs/18` section 4.4): the Auto contrast
+/// and the confidences of both learned values, and the model that made them.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AutosetEstimates {
+    /// The Auto contrast in effect: the burst median once the session has shared it, else [`own_contrast`]
+    /// (`docs/18` section 4.4). 0 with no model.
+    ///
+    /// [`own_contrast`]: AutosetEstimates::own_contrast
+    pub contrast: f64,
+    /// The Auto contrast of this photo alone: a multiple of 0.1 within the model's contrast limit.
+    pub own_contrast: f64,
+    /// How far the model's exposure is trusted, in (0, 1] (`AutoSummary::ev_confidence`); 0 for the rule.
+    pub ev_confidence: f64,
+    /// How far the model's contrast is trusted, in (0, 1] (`AutoSummary::contrast_confidence`); 0 for the rule.
+    pub contrast_confidence: f64,
+    /// The model's version, or `"none"` when no model made the estimates (`AutoSummary::autoset_version`).
+    pub version: String,
+}
+
+impl AutosetEstimates {
+    /// The estimates when no model is used: the camera gain (the exposure is the rule's), contrast 0, both
+    /// confidences 0 and the version `"none"` (`docs/18` section 4.4).
+    #[must_use]
+    pub fn rule() -> Self {
+        Self {
+            contrast: 0.0,
+            own_contrast: 0.0,
+            ev_confidence: 0.0,
+            contrast_confidence: 0.0,
+            version: NO_MODEL_VERSION.to_owned(),
+        }
+    }
+}
+
+/// The `autoset_version` of an estimate that no model made (`docs/18` section 4.4, and `ym:Autoset`).
+pub const NO_MODEL_VERSION: &str = "none";
+
 /// What the inputs of [`AutoEstimates::compute`] are besides the decoded image.
 pub struct AutoInputs<'a> {
     /// The camera profile the photo uses.
@@ -1145,6 +1187,9 @@ pub struct AutoInputs<'a> {
     pub illuminant_model: Option<&'a IlluminantModel>,
     /// Noise priors by body.
     pub priors: &'a PriorStore,
+    /// The automatic settings model (`docs/18`), if the session has one; `None` gives the rule (the camera gain and
+    /// contrast 0) for the exposure and the contrast. The preferred white does not need it.
+    pub autoset: Option<&'a AutosetModel>,
 }
 
 /// Per-photo automatic estimates, computed once from the decoded raw and recomputed by Re-run.
@@ -1156,6 +1201,8 @@ pub struct AutoEstimates {
     pub color: ColorEstimates,
     /// The automatic exposure.
     pub exposure: ExposureResult,
+    /// The automatic contrast and the confidences of the learned values (`docs/18` section 4.4).
+    pub autoset: AutosetEstimates,
     /// The white lift: the automatic amount and the anchor (`docs/02` C12 step 1b). Add the user's
     /// `white_offset_ev` with [`WhiteEstimate::lift`].
     pub white: WhiteEstimate,
@@ -1170,10 +1217,19 @@ pub struct AutoEstimates {
 }
 
 /// The `auto` object of `src/api/types.ts` (`AutoEstimates` there) and of `ym render --json`.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AutoSummary {
     /// `EV_auto`.
     pub exposure_ev: f64,
+    /// What Auto contrast resolves to (`docs/18`): a multiple of 0.1 within the model's contrast limit, 0 with
+    /// the rule.
+    pub contrast: f64,
+    /// How far the model's exposure is trusted, 0 to 1 (`ev_confidence`); 0 with the rule.
+    pub ev_confidence: f64,
+    /// How far the model's contrast is trusted, 0 to 1 (`contrast_confidence`); 0 with the rule.
+    pub contrast_confidence: f64,
+    /// The `autoset` model version, or "none" when no model made the estimates.
+    pub autoset_version: String,
     /// The automatic white lift in stops (0 for a photo with nothing above +1 stop to lift): the
     /// Automatic card's White row. The lift in effect is this plus `white_offset_ev`.
     pub white_ev: f64,
@@ -1298,6 +1354,7 @@ impl AutoEstimates {
             w_scene_initial,
             white_scale,
             ev_auto: 0.0,
+            key_bv: None,
         };
         let tables = tables_of(inputs.profile);
         let metering = color.metering_chain(tables)?;
@@ -1309,8 +1366,55 @@ impl AutoEstimates {
             rgb: &balanced,
             clip_mask: Some(&preview.clip),
         };
-        let meter = auto_exposure(&preview_rgb, metering.matrix())?;
+        // Steps 1 to 3 of the rule: the key `m` that the features and the highlight guard both need.
+        let measurement = measure_exposure(&preview_rgb, metering.matrix())?;
+        // The features of `autoset` (`docs/18` section 3). They are made for every photo, since the preferred white
+        // reads the key's brightness whether or not a model runs. A feature error is not a failed photo: the rule
+        // stands and the preferred white has no brightness.
+        let features = photo_features(
+            meta,
+            &preview,
+            &color,
+            tables,
+            measurement.mean_luminance(),
+        );
+        let (applied, key_bv, autoset) = match features {
+            Ok(features) => {
+                let key_bv = (features.values[1] > 0.5).then_some(features.values[0]);
+                match inputs.autoset {
+                    Some(model) => {
+                        let applied = apply(&model.predict(&features.values), features.key, model);
+                        let autoset = AutosetEstimates {
+                            contrast: applied.contrast,
+                            own_contrast: applied.contrast,
+                            ev_confidence: applied.ev_weight,
+                            contrast_confidence: applied.contrast_weight,
+                            version: model.version().to_owned(),
+                        };
+                        (applied, key_bv, autoset)
+                    }
+                    None => (rule_only(), key_bv, AutosetEstimates::rule()),
+                }
+            }
+            Err(_) => (rule_only(), None, AutosetEstimates::rule()),
+        };
+        color.key_bv = key_bv;
+        // Step 4 (the model's value or the camera gain) and step 5, the highlight guard, on it.
+        let meter = measurement.guarded(applied.ev_before_guard);
         color.ev_auto = meter.ev_auto;
+        // The Auto readout the White balance row shows: the Kelvin and tint of the Auto white at the default
+        // `white_preference`, the preferred white of a warm light (`docs/18` section 5). The metering chain is the
+        // neutral one, so it cannot give this readout.
+        let readout = color
+            .chain(
+                tables,
+                LightSource::Auto,
+                WhiteBalance::Auto,
+                ExposureSetting::Auto,
+                WHITE_PREFERENCE_DEFAULT,
+                None,
+            )?
+            .readout();
         let white = white_lift_estimate(&color, tables, &preview_rgb, reference_look)?;
         let noise = estimate_noise(raw, inputs.priors)?;
         let (sharpen, noise_reduction) =
@@ -1323,11 +1427,12 @@ impl AutoEstimates {
                 own_ev: meter.ev_auto,
                 meter,
             },
+            autoset,
             white,
             noise,
             sharpen,
             noise_reduction,
-            readout: metering.readout(),
+            readout,
         })
     }
 
@@ -1337,6 +1442,15 @@ impl AutoEstimates {
         let mut s = self.clone();
         s.exposure.ev = ev;
         s.color.ev_auto = ev;
+        s
+    }
+
+    /// The same estimates with the burst medians of the exposure and of the Auto contrast (`docs/02` step 6,
+    /// `docs/18` section 4.4). The contrast is the median rounded to a tenth, as the photo's own is.
+    #[must_use]
+    pub fn with_shared_burst(&self, ev: f64, contrast: f64) -> Self {
+        let mut s = self.with_shared_ev(ev);
+        s.autoset.contrast = contrast;
         s
     }
 
@@ -1376,6 +1490,7 @@ impl AutoEstimates {
             settings.light_source,
             settings.white_balance.to_color(),
             settings.exposure.to_color(),
+            settings.white_preference,
             picked_white.filter(|_| settings.white_pick.is_some()),
         )
     }
@@ -1393,6 +1508,10 @@ impl AutoEstimates {
             .0;
         AutoSummary {
             exposure_ev: self.exposure.ev,
+            contrast: self.autoset.contrast,
+            ev_confidence: self.autoset.ev_confidence,
+            contrast_confidence: self.autoset.contrast_confidence,
+            autoset_version: self.autoset.version.clone(),
             white_ev: self.white.amount_ev,
             kelvin: self.readout.kelvin_k,
             tint: self.readout.tint,
@@ -1419,11 +1538,15 @@ fn white_lift_estimate(
     preview: &PreviewRgb<'_>,
     reference_look: Option<&LookTransform>,
 ) -> Result<WhiteEstimate, AutoError> {
+    // The estimates are made on the neutral Auto white, as the exposure is (`docs/18` section 7): the lift is the
+    // white lift of the photo before `autoset`, sized at the photo's exposure, and the preferred white only changes the
+    // picture's white balance.
     let chain = color.chain(
         tables,
         LightSource::Auto,
         WhiteBalance::Auto,
         ExposureSetting::Auto,
+        0.0,
         None,
     )?;
     let rolloff = Rolloff::default();

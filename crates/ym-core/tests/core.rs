@@ -644,7 +644,7 @@ fn the_cli_preview_of_a_real_session() {
         .update_settings(
             ids[0],
             &SettingsPatch {
-                contrast: Some(20.0),
+                contrast: Some(ym_core::settings::ContrastSetting::manual_value(20.0)),
                 ..SettingsPatch::default()
             },
         )

@@ -372,6 +372,19 @@ fn develop_rows(view: &PhotoView, resolved: &ResolvedSettings) -> Vec<(&'static 
             format!("{} EV", format_signed_ev(e.exposure_ev)),
         ),
         (
+            "Auto contrast",
+            if e.autoset_version == "none" {
+                format!("{}, no model", trim_number(e.contrast, 1))
+            } else {
+                format!(
+                    "{}, model {}, {}% sure",
+                    trim_number(e.contrast, 1),
+                    e.autoset_version,
+                    (e.contrast_confidence * 100.0).round()
+                )
+            },
+        ),
+        (
             "Auto light",
             format!(
                 "{}, {}% sure",

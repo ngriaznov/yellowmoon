@@ -37,6 +37,9 @@ pub struct YmInfo {
     pub display_transform: Option<String>,
     /// `ym:Models`, the networks used (`jdd 1.2.0 (sha256…)`).
     pub models: Option<String>,
+    /// `ym:Autoset`, the version of the automatic settings model that chose the exposure and the contrast, or `none`
+    /// when the rule did (`docs/18` section 4.4).
+    pub autoset: Option<String>,
     /// `ym:Settings`, the resolved develop settings; written as compact JSON.
     pub settings: Option<serde_json::Value>,
 }
@@ -117,7 +120,7 @@ pub fn build_xmp(info: &XmpInfo, mime: &str) -> Result<Vec<u8>, ExportError> {
     let ym = &info.ym;
     let intensity = ym.look_intensity_pct.map(|pct| pct.to_string());
     // Fixed order, as in docs/09.
-    let fields: [(&str, Option<&str>); 9] = [
+    let fields: [(&str, Option<&str>); 10] = [
         ("ym:PipelineVersion", ym.pipeline_version.as_deref()),
         ("ym:Profile", ym.profile.as_deref()),
         ("ym:ProfileVersion", ym.profile_version.as_deref()),
@@ -127,6 +130,7 @@ pub fn build_xmp(info: &XmpInfo, mime: &str) -> Result<Vec<u8>, ExportError> {
         ("ym:LookIntensity", intensity.as_deref()),
         ("ym:DisplayTransform", ym.display_transform.as_deref()),
         ("ym:Models", ym.models.as_deref()),
+        ("ym:Autoset", ym.autoset.as_deref()),
     ];
     for (name, value) in fields {
         if let Some(v) = value {
@@ -173,6 +177,7 @@ mod tests {
                 look_intensity_pct: Some(100),
                 display_transform: Some("aces2-sdr100-p3lim".into()),
                 models: Some("jdd 1.2.0 (sha256:ff)".into()),
+                autoset: Some("1.0.0".into()),
                 settings: Some(
                     serde_json::json!({ "exposure": { "manual_ev": 0.3 }, "look": "x" }),
                 ),
@@ -197,11 +202,13 @@ mod tests {
             "LookIntensity",
             "DisplayTransform",
             "Models",
+            "Autoset",
             "Settings",
         ] {
             assert!(xmp.contains(&format!("<ym:{name}>")), "{name}");
         }
         assert!(xmp.contains("<ym:LookIntensity>100</ym:LookIntensity>"));
+        assert!(xmp.contains("<ym:Autoset>1.0.0</ym:Autoset>"));
         // Compact JSON with sorted keys, escaped for XML.
         assert!(xmp.contains(
             "<ym:Settings>{&quot;exposure&quot;:{&quot;manual_ev&quot;:0.3},&quot;look&quot;:&quot;x&quot;}</ym:Settings>"
