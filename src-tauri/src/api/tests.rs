@@ -360,10 +360,11 @@ fn the_output_sharpening_crosses_the_bridge_as_a_plain_number() {
     );
     // The patch of one field leaves the others alone.
     let patch: SettingsPatch =
-        serde_json::from_value(json!({ "output_sharpening": 60, "contrast": 5 })).expect("patch");
+        serde_json::from_value(json!({ "output_sharpening": 60, "contrast": { "kind": "manual", "value": 5 } }))
+            .expect("patch");
     let after = h.api.update_settings(id, &patch).expect("update");
     assert_eq!(after.settings.output_sharpening, Num(60.0));
-    assert!((after.settings.contrast.0 - 5.0).abs() < 1e-9);
+    assert_eq!(after.settings.contrast, ContrastSetting::Manual { value: Num(5.0) });
 }
 
 #[test]
@@ -378,7 +379,7 @@ fn settings_round_trip_with_the_json_the_frontend_sends() {
 
     let patch: SettingsPatch = serde_json::from_value(json!({
         "exposure": { "kind": "manual", "ev": 0.5 },
-        "contrast": 20,
+        "contrast": { "kind": "manual", "value": 20 },
         "color_balance": { "shadows": [0.2, -0.1] },
         "curve": { "luma": [[0, 0], [0.5, 0.6], [1, 1]] },
         "crop": {
@@ -393,7 +394,7 @@ fn settings_round_trip_with_the_json_the_frontend_sends() {
     let after = h.api.update_settings(id, &patch).expect("update");
     assert!((after.values.exposure_ev.0 - 0.5).abs() < 1e-9);
     assert!(!after.auto.exposure);
-    assert!((after.settings.contrast.0 - 20.0).abs() < 1e-9);
+    assert_eq!(after.settings.contrast, ContrastSetting::Manual { value: Num(20.0) });
     assert_eq!(after.settings.color_balance.shadows, [Num(0.2), Num(-0.1)]);
     assert_eq!(after.settings.color_balance.midtones, [Num(0.0), Num(0.0)]);
     assert_eq!(after.settings.curve.luma.len(), 3);
@@ -413,7 +414,7 @@ fn settings_round_trip_with_the_json_the_frontend_sends() {
     let cleared = h.api.update_settings(id, &clear).expect("clear");
     assert!(cleared.auto.exposure);
     assert!(cleared.settings.crop.is_none() && cleared.settings.white_pick.is_none());
-    assert!((cleared.settings.contrast.0 - 20.0).abs() < 1e-9);
+    assert_eq!(cleared.settings.contrast, ContrastSetting::Manual { value: Num(20.0) });
 
     // A patch without the key leaves the crop alone.
     let set: SettingsPatch = serde_json::from_value(json!({
@@ -440,20 +441,16 @@ fn settings_errors_are_plain_sentences_and_change_nothing() {
     let id = h.first();
     // A curve with one point is not a curve.
     let bad: SettingsPatch =
-        serde_json::from_value(json!({ "contrast": 5, "curve": { "luma": [[0.5, 0.5]] } }))
+        serde_json::from_value(
+            json!({ "contrast": { "kind": "manual", "value": 5 }, "curve": { "luma": [[0.5, 0.5]] } }),
+        )
             .expect("parses");
     let err = h.api.update_settings(id, &bad).expect_err("refused");
     assert_eq!(err.scope, ErrorScope::Render);
     assert!(!err.message.is_empty());
-    assert!(
-        (h.api
-            .get_settings(id)
-            .expect("settings")
-            .settings
-            .contrast
-            .0)
-            .abs()
-            < 1e-9
+    assert_eq!(
+        h.api.get_settings(id).expect("settings").settings.contrast,
+        ContrastSetting::Auto
     );
     // A misspelt field is an error, not a patch that silently does nothing (`docs/01`
     // DevelopSettings), also inside the nested objects and in the preferences.
@@ -473,7 +470,7 @@ fn settings_errors_are_plain_sentences_and_change_nothing() {
         serde_json::from_value::<PreferencesPatch>(json!({ "remove_location": true })).is_err()
     );
     // The same patch spelt right is fine.
-    assert!(serde_json::from_value::<SettingsPatch>(json!({ "contrast": 1 })).is_ok());
+    assert!(serde_json::from_value::<SettingsPatch>(json!({ "contrast": { "kind": "auto" } })).is_ok());
 }
 
 #[test]
@@ -579,7 +576,7 @@ fn copy_and_paste_settings_move_a_photos_settings_onto_others() {
     let ids: Vec<_> = state.photos.iter().map(|p| p.id).collect();
     let edit: SettingsPatch = serde_json::from_value(json!({
         "exposure": { "kind": "manual", "ev": 0.6 },
-        "contrast": 25,
+        "contrast": { "kind": "manual", "value": 25 },
         "look": "builtin:neutral",
         "look_intensity": 45,
         "crop": { "rect": { "x": 0.1, "y": 0.1, "width": 0.5, "height": 0.5 }, "angle_deg": 2, "aspect": "free" },
@@ -590,7 +587,7 @@ fn copy_and_paste_settings_move_a_photos_settings_onto_others() {
 
     let copied = h.api.copy_settings(ids[0]).expect("copy");
     assert!(copied.crop.is_none() && copied.orientation.is_none() && copied.white_pick.is_none());
-    assert_eq!(copied.contrast, Some(Num(25.0)));
+    assert_eq!(copied.contrast, Some(ContrastSetting::Manual { value: Num(25.0) }));
     let before_events = h.events.events().len();
 
     let report = h
@@ -627,7 +624,7 @@ fn copy_and_paste_settings_move_a_photos_settings_onto_others() {
 
     // A look that is not in the library is refused as `apply_look` refuses it, and nothing changes.
     let gone: SettingsPatch =
-        serde_json::from_value(json!({ "look": "arri:3000:nothing", "contrast": -5 }))
+        serde_json::from_value(json!({ "look": "arri:3000:nothing", "contrast": { "kind": "manual", "value": -5 } }))
             .expect("patch");
     let err = h
         .api
@@ -874,7 +871,7 @@ fn choosing_photos_while_everything_else_changes_never_stalls_the_viewport() {
                         2 => api.set_before(i % 2 == 0),
                         3 => {
                             let patch: SettingsPatch =
-                                serde_json::from_value(json!({ "contrast": (i % 40) as i32 - 20 }))
+                                serde_json::from_value(json!({ "contrast": { "kind": "manual", "value": (i % 40) as i32 - 20 } }))
                                     .expect("patch");
                             api.update_settings(photo, &patch).expect("update");
                         }

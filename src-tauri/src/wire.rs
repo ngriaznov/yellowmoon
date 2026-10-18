@@ -335,6 +335,22 @@ pub enum ExposureSetting {
     },
 }
 
+/// `contrast`: Auto, or a manual value from -100 to 100. The JSON is `{ "kind": "auto" }` or
+/// `{ "kind": "manual", "value": 12 }`.
+///
+/// (As `ExposureSetting`: each setting has its own enum with the same JSON as `types.ts`'s `AutoOr`.)
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Type)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ContrastSetting {
+    /// Resolve from the photo's automatic estimates.
+    Auto,
+    /// The user's value.
+    Manual {
+        /// Contrast, -100 to 100.
+        value: Num,
+    },
+}
+
 /// `white_balance`: Auto, or Kelvin and tint.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Type)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -558,8 +574,8 @@ pub struct DevelopSettings {
     pub look_intensity: Num,
     /// Light › Exposure: Auto or an absolute value, -4 to +4 EV.
     pub exposure: ExposureSetting,
-    /// -100 to 100.
-    pub contrast: Num,
+    /// Light › Exposure › Contrast: Auto, or a manual value from -100 to 100.
+    pub contrast: ContrastSetting,
     /// -100 to 100.
     pub brightness: Num,
     /// Light › High dynamic range, -100 to 100.
@@ -577,6 +593,8 @@ pub struct DevelopSettings {
     pub light_source: LightSource,
     /// Colour › White balance: Auto or Kelvin and tint.
     pub white_balance: WhiteBalanceSetting,
+    /// How much of a warm light's colour the Auto white keeps, 0 to 1, default 1 (a plain number, not Auto; no control in the app yet).
+    pub white_preference: Num,
     /// The three colour-balance wheels.
     pub color_balance: ColorBalance,
     /// Colour › Colour balance, -100 to 100.
@@ -749,9 +767,12 @@ pub struct SettingsPatch {
     /// New exposure (Manual to set it, Auto to reset it).
     #[serde(default)]
     pub exposure: Option<ExposureSetting>,
-    /// New contrast.
+    /// New contrast: Auto, or a manual value.
     #[serde(default)]
-    pub contrast: Option<Num>,
+    pub contrast: Option<ContrastSetting>,
+    /// New white preference, 0 to 1 (a plain number).
+    #[serde(default)]
+    pub white_preference: Option<Num>,
     /// New brightness.
     #[serde(default)]
     pub brightness: Option<Num>,
@@ -836,6 +857,7 @@ impl Serialize for SettingsPatch {
         entry(&mut map, "look_intensity", &self.look_intensity)?;
         entry(&mut map, "exposure", &self.exposure)?;
         entry(&mut map, "contrast", &self.contrast)?;
+        entry(&mut map, "white_preference", &self.white_preference)?;
         entry(&mut map, "brightness", &self.brightness)?;
         entry(&mut map, "highlights", &self.highlights)?;
         entry(&mut map, "shadows", &self.shadows)?;
@@ -865,6 +887,8 @@ impl Serialize for SettingsPatch {
 pub struct AutoFlags {
     /// `exposure` is Auto.
     pub exposure: bool,
+    /// `contrast` is Auto.
+    pub contrast: bool,
     /// `light_source` is Auto.
     pub light_source: bool,
     /// `white_balance` is Auto.
@@ -899,10 +923,18 @@ pub struct NoiseModel {
 }
 
 /// Per-photo automatic estimates (`AutoEstimates` in `types.ts`).
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Type)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
 pub struct AutoEstimates {
     /// `EV_auto`.
     pub exposure_ev: Num,
+    /// What Auto contrast resolves to, a multiple of 0.1 within -30 to 30.
+    pub contrast: Num,
+    /// Confidence of the exposure estimate, 0 to 1.
+    pub ev_confidence: Num,
+    /// Confidence of the contrast estimate, 0 to 1.
+    pub contrast_confidence: Num,
+    /// The `autoset` model version, or "none" when no model is loaded.
+    pub autoset_version: String,
     /// The automatic white lift in stops (0 when nothing is above +1 stop).
     pub white_ev: Num,
     /// The Auto Kelvin.
@@ -952,6 +984,8 @@ pub struct ResolvedValues {
     pub kelvin: Num,
     /// The tint the White balance row shows.
     pub tint: Num,
+    /// `white_preference`.
+    pub white_preference: Num,
     /// `color_balance`.
     pub color_balance: ColorBalance,
     /// `saturation`.

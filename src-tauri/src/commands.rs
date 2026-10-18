@@ -841,13 +841,13 @@ mod tests {
         let pasted = call(
             &window,
             "paste_settings",
-            json!({ "photoIds": [id, 9999], "patch": { "contrast": 33 } }),
+            json!({ "photoIds": [id, 9999], "patch": { "contrast": { "kind": "manual", "value": 33 } } }),
         )
         .expect("paste_settings");
         assert_eq!(pasted["skipped"], json!([9999]));
         assert_eq!(pasted["pasted"][0]["id"], json!(id));
-        assert_eq!(pasted["pasted"][0]["before"], json!({ "contrast": 0.0 }));
-        assert_eq!(pasted["pasted"][0]["after"], json!({ "contrast": 33.0 }));
+        assert_eq!(pasted["pasted"][0]["before"], json!({ "contrast": { "kind": "auto" } }));
+        assert_eq!(pasted["pasted"][0]["after"], json!({ "contrast": { "kind": "manual", "value": 33.0 } }));
         let err = call(&window, "copy_settings", json!({ "photoId": 9999 })).expect_err("unknown");
         assert_eq!(err["scope"], json!("open"));
         assert!(

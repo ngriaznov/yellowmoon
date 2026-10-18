@@ -9,7 +9,14 @@ moves the entries below from Unreleased into a dated section for that version.
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+
+- **Automatic settings (`autoset`, `docs/18`).** When the model file is present (`data/models/autoset/autoset.json`), the automatic exposure and contrast come from a small learned model, shrunk towards the camera's own gain where the model is unsure. Without the file, the rule stays. Contrast is now Auto or Manual, like Exposure: moving the slider makes it Manual, Reset and Re-run return it to Auto. `ym render --contrast auto|N` and `--white-preference 0..1`; exports record the model's version as `ym:Autoset`; `ym info --json` and `ym render --json` report the contrast and the confidences.
+
+### Changed
+
+- Auto white balance keeps part of a warm light's colour: the preferred white of `docs/18` section 5 (`white_preference`, default 1). `0` gives the neutral white of 0.4.0. Pictures of warm light change for this reason; the exposure and the white lift do not.
+- Pipeline 0.5.0.
 
 ## [0.1.10] - 2026-10-17
 
