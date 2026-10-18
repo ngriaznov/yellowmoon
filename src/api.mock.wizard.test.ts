@@ -332,7 +332,7 @@ describe("the estimate's extra fields", () => {
   it("counts photos with adjustments beyond the look", async () => {
     expect((await api.exportEstimate(job("picked"))).adjusted_photos).toBe(0);
     // The current photo is DSC04204 (id 4), and it is picked with DSC04203 (id 3).
-    await api.updateSettings(4, { contrast: 12 });
+    await api.updateSettings(4, { contrast: { kind: "manual", value: 12 } });
     await api.updateSettings(3, { look: "builtin:signature", look_intensity: 60 });
     expect((await api.exportEstimate(job("picked"))).adjusted_photos).toBe(1);
     expect((await api.exportEstimate(job("this"))).adjusted_photos).toBe(1);

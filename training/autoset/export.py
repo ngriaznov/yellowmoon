@@ -2,6 +2,10 @@
 
     python3 -m training.autoset.export --model data/models/autoset/autoset.json --vectors crates/ym-color/tests/data/autoset/vectors.json
     python3 -m training.autoset.export --test-model        # writes test_model.json and vectors.json in that folder
+    python3 -m training.autoset.export --label-fixtures crates/ym-core/tests/data/autoset/labels.json
+
+``--label-fixtures`` writes the exposure-label cases that ``crates/ym-core/tests/autoset_labels.rs`` reproduces to 1e-9
+(docs/18 section 6.1): synthetic tables, edge cases, and the quantile check against numpy's default method.
 
 The vectors are computed in numpy float64 from the stored float32 weights, after the file is decoded exactly as the Rust reader
 decodes it (base64 little-endian float32 to float64; the constants from the JSON numbers). The document::
@@ -31,6 +35,7 @@ from typing import Any
 import numpy as np
 
 from training.autoset import dataset as ds
+from training.autoset import labels
 from training.autoset import model as md
 from training.autoset import rows as rw
 from training.autoset import synthetic
@@ -47,6 +52,12 @@ TEST_STEPS = 50
 TEST_VERSION = "0.0.0-test"
 TIE_MARGIN = 1e-6
 DATA_DIR = paths.REPO_ROOT / "crates" / "ym-color" / "tests" / "data" / "autoset"
+LABEL_FIXTURE_FORMAT = "yellowmoon-autoset-label-fixtures"
+LABEL_FIXTURE_VERSION = 1
+#: Significant digits of the stored tables. The levels are computed from the stored numbers, so the rounding is part of
+#: the fixture and the Rust side reads exactly what Python used.
+LABEL_FIXTURE_DIGITS = 6
+LABEL_FIXTURE_SEED = 20261018
 
 
 def _tie_margin(x: float) -> float:
@@ -142,17 +153,119 @@ def write_test_model(out_dir: Path = DATA_DIR) -> dict[str, Path]:
     return {"model": model_path, "vectors": vectors_path}
 
 
+def _rounded(values) -> list[float]:
+    """The table with ``LABEL_FIXTURE_DIGITS`` significant digits, as floats (exact JSON round trip)."""
+    out = []
+    for v in values:
+        v = float(v)
+        if not math.isfinite(v):
+            raise ValueError("a fixture table holds a value that is not finite")
+        out.append(float(f"{v:.{LABEL_FIXTURE_DIGITS}g}"))
+    return out
+
+
+def _level_of(name: str, scene_q: list[float], jpeg_q: list[float]) -> float | None:
+    """Python's exposure label of the two tables, through the training code's own row path (``rows``, ``labels``)."""
+    obj = {"file": f"fixture-{name}.ARW", "sha256": "0" * 64, "aug_k": 0.0, "features": [0.0] * rw.FEATURE_COUNT,
+           "key": 0.0, "g3": {"grid": rw.G3_GRID, "scene_q": scene_q, "jpeg_q": jpeg_q}}
+    level, _ = labels.exposure_label(rw.parse_row(obj))
+    return None if not math.isfinite(level) else float(level)
+
+
+def _edge_tables() -> list[tuple[str, np.ndarray, np.ndarray]]:
+    """Hand-made tables for the cases of the label rules (band, ties, extrapolation, no label), on the 999-point grid."""
+    p = labels.GRID
+    out: list[tuple[str, np.ndarray, np.ndarray]] = []
+    # A dark scene whose camera JPEG never reaches the band (its top is 0.04): 0.18 is more than two stops above it.
+    jpeg = 0.001 + 0.04 * p
+    out.append(("dark-never-reaches-band", 0.5 * jpeg, jpeg))
+    # Exactly 19 and 20 points of the table in the mid-tone band: below 19 the band is not used (all 961 points are).
+    for n_band in (19, 20):
+        k0 = 499
+        idx = np.arange(len(p))
+        below = 0.001 + 0.04 * idx / k0
+        in_band = 0.05 + 0.3 * (idx - k0) / n_band
+        above = 0.37 + 0.6 * (idx - k0 - n_band) / (len(p) - k0 - n_band)
+        jpeg = np.where(idx < k0, below, np.where(idx < k0 + n_band, in_band, above))
+        scene = jpeg * np.where(jpeg > 0.36, 1.3, 0.7)  # a shoulder above the band, a lower scene below it
+        assert int(((jpeg >= labels.BAND_LO) & (jpeg <= labels.BAND_HI) & labels.INNER).sum()) == n_band
+        out.append((f"band-{n_band}", scene, jpeg))
+    # Ties: a staircase of 21 values, the JPEG a fixed fraction of the scene.
+    scene = 0.05 + 0.4 * np.floor(p * 20.0) / 20.0
+    out.append(("ties-staircase", scene, 0.7 * scene))
+    # A dip: the scene is lower for p in [0.30, 0.35], so the cumulative maximum acts.
+    scene = 0.1 + 0.8 * p
+    scene = np.where((p >= 0.30) & (p <= 0.35), scene * 0.8, scene)
+    out.append(("non-monotone-dip", scene, 0.4 * (0.1 + 0.8 * p)))
+    # The JPEG is above 0.9 everywhere: 0.18 is more than two stops below its column, so no label.
+    out.append(("too-bright-no-grey", 0.9 * (0.6 + 0.4 * p), 0.9 + 0.09 * p))
+    # A flat table: the curve has no spread, so there is no level.
+    out.append(("flat-table", np.full(len(p), 0.3), np.full(len(p), 0.2)))
+    # Non-positive scene values (black-subtraction noise, the first tenth of the grid) are dropped from the fit.
+    out.append(("non-positive-scene", 0.3 * (p - 0.1), 0.05 + 0.25 * p))
+    # Zeros at the bottom of the JPEG column are dropped too.
+    out.append(("zero-jpeg-plateau", 0.6 * (0.1 + p), np.maximum(0.0, 0.3 * (0.1 + p) - 0.02)))
+    # The JPEG column tops out just above 0.045 (0.18 is within four times it, and too few points are in the band), so
+    # the level comes from the extrapolation past the last point.
+    jpeg = 0.046 * p
+    out.append(("extrapolate-top", 0.5 * jpeg, jpeg))
+    return out
+
+
+def build_label_fixtures(seed: int = LABEL_FIXTURE_SEED) -> dict[str, Any]:
+    """The label fixtures: the training code's exposure label for each case, and the quantile check against numpy."""
+    cases: list[dict[str, Any]] = []
+    for row in synthetic.make_dataset(10, seed=seed, augment=False)[0][:6]:
+        g3 = row["g3"]
+        scene_q, jpeg_q = _rounded(g3["scene_q"]), _rounded(g3["jpeg_q"])
+        cases.append({"name": f"synthetic-{len(cases):02d}", "scene_q": scene_q, "jpeg_q": jpeg_q,
+                      "level_ev": _level_of(f"synthetic-{len(cases):02d}", scene_q, jpeg_q)})
+    for row in synthetic.make_dataset(2, seed=seed + 1, augment=False, shoulder=True)[0]:
+        g3 = row["g3"]
+        name = f"shoulder-{len([c for c in cases if c['name'].startswith('shoulder')]):02d}"
+        scene_q, jpeg_q = _rounded(g3["scene_q"]), _rounded(g3["jpeg_q"])
+        cases.append({"name": name, "scene_q": scene_q, "jpeg_q": jpeg_q, "level_ev": _level_of(name, scene_q, jpeg_q)})
+    for name, scene, jpeg in _edge_tables():
+        scene_q, jpeg_q = _rounded(scene), _rounded(jpeg)
+        cases.append({"name": name, "scene_q": scene_q, "jpeg_q": jpeg_q, "level_ev": _level_of(name, scene_q, jpeg_q)})
+    # numpy's default quantile method on a list of values, at the 999 grid probabilities.
+    rng = np.random.default_rng(seed)
+    values = _rounded(np.exp(rng.normal(-1.0, 0.8, 97)))
+    expected = np.quantile(np.asarray(values, dtype=np.float64), labels.GRID)
+    return {
+        "format": LABEL_FIXTURE_FORMAT,
+        "format_version": LABEL_FIXTURE_VERSION,
+        "numpy": np.__version__,
+        "grid": [float(v) for v in labels.GRID],
+        "cases": cases,
+        "quantiles": {"values": values, "expected": [float(v) for v in expected]},
+    }
+
+
+def write_label_fixtures(path: Path) -> int:
+    """Writes :func:`build_label_fixtures` to ``path``; returns the number of cases."""
+    doc = build_label_fixtures()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(jsonfmt.dumps(doc), encoding="utf-8")
+    return len(doc["cases"])
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--model", type=Path, help="a model file (docs/18 section 4.3); its vectors are written to --vectors")
     ap.add_argument("--vectors", type=Path, help="where to write the vectors of --model")
     ap.add_argument("--test-model", action="store_true", help="write the test model and its vectors to --out-dir")
     ap.add_argument("--out-dir", type=Path, default=DATA_DIR)
+    ap.add_argument("--label-fixtures", type=Path, help="write the exposure-label fixtures to this file (labels.json)")
     args = ap.parse_args(argv)
     if args.test_model:
         paths_written = write_test_model(args.out_dir)
         for p in paths_written.values():
             print(f"wrote {p} ({p.stat().st_size} bytes)")
+        return 0
+    if args.label_fixtures is not None:
+        count = write_label_fixtures(args.label_fixtures)
+        print(f"wrote {args.label_fixtures} ({count} cases)")
         return 0
     if args.model is None or args.vectors is None:
         ap.error("give --model and --vectors, or --test-model")

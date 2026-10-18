@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 import type { Page } from "@playwright/test";
-import { dropFiles, openApp, openPhotos, setValue } from "./helpers/app";
+import { dropFiles, openApp, openPhotos, setValue, showFirstLookTile } from "./helpers/app";
 
 // Desktop feel (docs/11 §Desktop feel, M3-16 to M3-18) in a real browser against the mocked API. The owner, 2026-10-16: "UI in Yellowmoon
 // is sluggish. I can select UI text, when I pan photo with two fingers on trackpad - all app moves." What cannot be shown here is WebKit's
@@ -346,6 +346,8 @@ test.describe("measuring", () => {
 
     await openApp(page, { ...MOCKUP, perf: 1 });
     await openPhotos(page);
+    // The look tiles ask for their pictures once they show; the first row is below the panel's visible part at 1440 × 900 (AS-08).
+    await showFirstLookTile(page);
     await frames(page, 5);
     const snapshot = await page.evaluate(() =>
       (window as unknown as { __ymPerf: { snapshot: () => Record<string, unknown> } }).__ymPerf.snapshot(),

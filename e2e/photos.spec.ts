@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 import type { Page } from "@playwright/test";
-import { configureMock, failNext, lookTilesLoaded, openApp, openPhotos, recordCalls, setUpdateState, setValue, settle, showUpdateReady, watchErrors } from "./helpers/app";
+import { configureMock, failNext, lookTilesLoaded, openApp, openPhotos, recordCalls, setUpdateState, setValue, settle, showFirstLookTile, showUpdateReady, watchErrors } from "./helpers/app";
 
 // Photos screen (tasks M3-06, M3-07, M3-08 UI) in a real browser against the mocked API: layout, the
 // flow Start → open → look → every tab, keyboard shortcuts, Crop and Pick white by mouse, and the error
@@ -129,6 +129,7 @@ test.describe("the flow", () => {
 
   test("look thumbnails load lazily: the tiles in view first, the rest as they scroll into view, all decodable", async ({ page }) => {
     await photos(page);
+    await showFirstLookTile(page);
     await settle(page);
     const sizes = () => page.locator(".ym-look-tile img").evaluateAll((images) => (images as HTMLImageElement[]).map((i) => [i.naturalWidth, i.naturalHeight]));
     const first = await sizes();
@@ -211,12 +212,12 @@ test.describe("controls with the real mouse", () => {
     await expect(valueBox(page, "Exposure")).toHaveAttribute("data-changed", "true");
     // A changed value is drawn in its tab's colour (Light's #2ec4f4): the text and a ring.
     await expect(valueBox(page, "Exposure")).toHaveCSS("color", "rgb(46, 196, 244)");
-    await expect(page.getByRole("region", { name: "Exposure" }).getByRole("button", { name: "Auto" })).toHaveAttribute("aria-pressed", "false");
+    await expect(page.getByRole("region", { name: "Exposure" }).getByRole("button", { name: "Auto", exact: true })).toHaveAttribute("aria-pressed", "false");
     await page.getByRole("button", { name: "Reset Exposure" }).click();
     await expect(valueBox(page, "Exposure")).toHaveValue("+0.30");
-    await expect(page.getByRole("region", { name: "Exposure" }).getByRole("button", { name: "Auto" })).toHaveAttribute("aria-pressed", "true");
+    await expect(page.getByRole("region", { name: "Exposure" }).getByRole("button", { name: "Auto", exact: true })).toHaveAttribute("aria-pressed", "true");
     await setValue(page, "Exposure", "-2");
-    await page.getByRole("region", { name: "Exposure" }).getByRole("button", { name: "Auto" }).click();
+    await page.getByRole("region", { name: "Exposure" }).getByRole("button", { name: "Auto", exact: true }).click();
     await expect(valueBox(page, "Exposure")).toHaveValue("+0.30");
   });
 
@@ -364,15 +365,16 @@ test.describe("keyboard shortcuts", () => {
     await photos(page);
     await page.keyboard.press("Meta+2");
     await setValue(page, "Contrast", "30");
-    await expect(valueBox(page, "Contrast")).toHaveValue("+30");
+    await expect(valueBox(page, "Contrast")).toHaveValue("+30.0");
     await setValue(page, "Brightness", "-10");
     await page.keyboard.press("Meta+z");
     await expect(valueBox(page, "Brightness")).toHaveValue("0");
-    await expect(valueBox(page, "Contrast")).toHaveValue("+30");
+    await expect(valueBox(page, "Contrast")).toHaveValue("+30.0");
     await page.keyboard.press("Meta+z");
-    await expect(valueBox(page, "Contrast")).toHaveValue("0");
+    // Undone to Auto: the photo's own contrast (photo 4 of the mockup, +1.5).
+    await expect(valueBox(page, "Contrast")).toHaveValue("+1.5");
     await page.keyboard.press("Meta+Shift+z");
-    await expect(valueBox(page, "Contrast")).toHaveValue("+30");
+    await expect(valueBox(page, "Contrast")).toHaveValue("+30.0");
   });
 
   test("keys that type don't act as shortcuts in a text box", async ({ page }) => {
@@ -537,8 +539,8 @@ test.describe("error states", () => {
     await page.keyboard.press("Meta+2");
     await setValue(page, "Contrast", "40");
     await expect(page.getByRole("alert")).toHaveText(/The photo couldn't be drawn\. Try the change again\./);
-    // The control goes back to what the core has.
-    await expect(valueBox(page, "Contrast")).toHaveValue("0");
+    // The control goes back to what the core has: Auto, the photo's own contrast.
+    await expect(valueBox(page, "Contrast")).toHaveValue("+1.5");
     await page.getByRole("alert").getByRole("button", { name: "Dismiss" }).click();
     await expect(page.getByRole("alert")).toHaveCount(0);
   });

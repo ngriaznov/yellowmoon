@@ -411,12 +411,13 @@ describe("undo, redo and closing", () => {
   it("⌘Z and ⇧⌘Z undo and redo a change for this photo", async () => {
     await setup();
     await openTab(h!, "Light");
-    await h!.store.update({ contrast: 30 });
-    await waitFor(() => expect(screen.getByRole("textbox", { name: "Contrast value" })).toHaveValue("+30"));
+    await h!.store.update({ contrast: { kind: "manual", value: 30 } });
+    await waitFor(() => expect(screen.getByRole("textbox", { name: "Contrast value" })).toHaveValue("+30.0"));
+    // Undo takes the change back to Auto, which shows the photo's own estimate (photo 4 of the mockup: +1.5).
     await h!.user.keyboard("{Meta>}z{/Meta}");
-    await waitFor(() => expect(screen.getByRole("textbox", { name: "Contrast value" })).toHaveValue("0"));
+    await waitFor(() => expect(screen.getByRole("textbox", { name: "Contrast value" })).toHaveValue("+1.5"));
     await h!.user.keyboard("{Meta>}{Shift>}z{/Shift}{/Meta}");
-    await waitFor(() => expect(screen.getByRole("textbox", { name: "Contrast value" })).toHaveValue("+30"));
+    await waitFor(() => expect(screen.getByRole("textbox", { name: "Contrast value" })).toHaveValue("+30.0"));
   });
 
   it("⌘W closes the session and shows Start", async () => {

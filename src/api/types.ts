@@ -252,8 +252,11 @@ export interface DevelopSettings {
   look_intensity: number;
   /** Light › Exposure: `Auto` or `Manual(ev)` in −4…+4, step 0.01. */
   exposure: AutoOr<{ ev: number }>;
-  /** −100…100, default 0. */
-  contrast: number;
+  /**
+   * Light › Exposure › Contrast: `Auto` (the model's bounded contrast for this photo, `autoset`, `docs/18` §4) or `Manual(value)` in
+   * −100…100, step 1. Auto is the default for a new photo.
+   */
+  contrast: AutoOr<{ value: number }>;
   /** −100…100, default 0. */
   brightness: number;
   /** Light › High dynamic range, each −100…100, default 0. */
@@ -272,6 +275,11 @@ export interface DevelopSettings {
   light_source: LightSource;
   /** Colour › White balance: `Auto` or `Manual { kelvin 2000–11000 step 50, tint −50…50 }`. */
   white_balance: AutoOr<{ kelvin: number; tint: number }>;
+  /**
+   * How much of a warm light's colour the Auto white keeps, 0…1, default 1 (`docs/18` §5): 0 is fully neutral, 1 the preferred white.
+   * A plain number, not Auto. No control in the app in this version (the CLI and the settings documents only).
+   */
+  white_preference: number;
   color_balance: ColorBalance;
   /** Colour › Colour balance, −100…100, default 0. */
   saturation: number;
@@ -322,6 +330,8 @@ export interface PasteReport {
 /** Which `Auto` fields are still automatic; the UI shows the AUTO tag for these. */
 export interface AutoFlags {
   exposure: boolean;
+  /** Light › Exposure › Contrast is Auto. */
+  contrast: boolean;
   light_source: boolean;
   white_balance: boolean;
   sharpen: boolean;
@@ -337,6 +347,14 @@ export type LightClass = "daylight" | "tungsten" | "fluorescent" | "led";
  */
 export interface AutoEstimates {
   exposure_ev: number;
+  /** What Auto contrast resolves to: a multiple of 0.1 within ±30 (the Automatic card's Contrast row). */
+  contrast: number;
+  /** 0–1: how far the model's exposure is trusted (`docs/18` §4.4). Kept for the CLI and the wire; not shown in this version. */
+  ev_confidence: number;
+  /** 0–1: how far the model's contrast is trusted (`docs/18` §4.4). Kept for the CLI and the wire; not shown in this version. */
+  contrast_confidence: number;
+  /** The version of the `autoset` model, or "none" when no model is loaded. Kept for the wire; not shown in this version. */
+  autoset_version: string;
   /** The automatic white lift in stops, 0 for a photo with nothing above +1 stop to lift (the Automatic card's White row). */
   white_ev: number;
   kelvin: number;
@@ -355,9 +373,11 @@ export interface AutoEstimates {
 /** `DevelopSettings` with every `Auto` replaced by the number it resolves to. */
 export type ResolvedValues = Omit<
   DevelopSettings,
-  "exposure" | "white_balance" | "sharpen" | "noise_reduction"
+  "exposure" | "contrast" | "white_balance" | "sharpen" | "noise_reduction"
 > & {
   exposure_ev: number;
+  /** The effective contrast: the Auto value (the estimate) or the manual one. */
+  contrast: number;
   /** The white lift in effect in stops: the automatic amount plus `white_offset_ev`, never below 0. */
   white_ev: number;
   kelvin: number;

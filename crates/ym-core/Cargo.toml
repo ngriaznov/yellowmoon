@@ -57,3 +57,5 @@ jsonschema = { version = "0.58", default-features = false }
 # Decodes the embedded JPEG previews of real files for the auto-exposure comparison in
 # tests/real_files.rs (MIT OR Apache-2.0 OR Zlib; the same version as ym-color's dev-dependency).
 zune-jpeg = "0.5"
+# The SHA-256 of each file in the autoset dataset dump (examples/autoset_dump.rs, docs/18 section 6).
+sha2.workspace = true

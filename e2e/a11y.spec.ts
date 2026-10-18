@@ -244,7 +244,7 @@ test.describe("keyboard only", () => {
     await box.click();
     await box.fill("80");
     await box.press("Escape");
-    await expect(box).toHaveValue("+25");
+    await expect(box).toHaveValue("+25.0");
   });
 
   test("the wizard: Tab reaches Next, Return moves on, Back returns", async ({ page }) => {

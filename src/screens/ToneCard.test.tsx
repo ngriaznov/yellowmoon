@@ -2,7 +2,9 @@
  * The Look tab's Tone card (owner's decision of 2026-10-13, `docs/16`): Temperature, Contrast and
  * Saturation are the same settings as Colour › White balance › Kelvin, Light › Exposure › Contrast
  * and Colour › Colour balance › Saturation. Moving either copy moves the other, with undo, redo and
- * Reset, and Temperature keeps the Kelvin control's Auto semantics.
+ * Reset, and Temperature keeps the Kelvin control's Auto semantics. Contrast is Auto or Manual as on
+ * the Light tab, and the card's AUTO speaks for Temperature and Contrast together (`docs/18` §7).
+ * The mockup's current photo (photo 4) resolves Auto contrast to +1.5 (`estimatesFor`).
  */
 import { screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -34,7 +36,7 @@ async function lastPatch(spy: UpdateSpy): Promise<SettingsPatch> {
 }
 
 const tone = (): ReturnType<typeof within> => within(screen.getByRole("region", { name: "Tone" }));
-const autoButton = (): HTMLElement => tone().getByRole("button", { name: "Auto temperature" });
+const autoButton = (): HTMLElement => tone().getByRole("button", { name: "Auto temperature and contrast" });
 
 describe("the Tone card on the Look tab", () => {
   it("sits under the Look card with Temperature, Contrast and Saturation in that order, and no Tint", async () => {
@@ -46,9 +48,9 @@ describe("the Tone card on the Look tab", () => {
       .map((s: HTMLElement) => sliderName(s));
     expect(labels).toEqual(["Temperature", "Contrast", "Saturation"]);
     expect(tone().queryByRole("slider", { name: "Tint" })).toBeNull();
-    // The Auto Kelvin with the AUTO tag; Contrast and Saturation start at 0.
+    // The Auto Kelvin with the AUTO tag; Contrast is Auto at the photo's own value, and Saturation starts at 0.
     expect(valueOf("Temperature")).toBe("5450 K");
-    expect(valueOf("Contrast")).toBe("0");
+    expect(valueOf("Contrast")).toBe("+1.5");
     expect(valueOf("Saturation")).toBe("0");
     expect(autoButton()).toHaveAttribute("aria-pressed", "true");
   });
@@ -83,14 +85,53 @@ describe("the Tone card on the Look tab", () => {
   it("Contrast: moving either copy moves the other", async () => {
     const spy = await setup();
     await type("Contrast", "35");
-    expect(await lastPatch(spy)).toEqual({ contrast: 35 });
+    expect(await lastPatch(spy)).toEqual({ contrast: { kind: "manual", value: 35 } });
     await openTab(h, "Light");
-    await waitFor(() => expect(valueOf("Contrast")).toBe("+35"));
+    await waitFor(() => expect(valueOf("Contrast")).toBe("+35.0"));
     spy.mockClear();
     await type("Contrast", "-60");
-    expect(await lastPatch(spy)).toEqual({ contrast: -60 });
+    expect(await lastPatch(spy)).toEqual({ contrast: { kind: "manual", value: -60 } });
     await openTab(h, "Look");
-    await waitFor(() => expect(valueOf("Contrast")).toBe("−60"));
+    await waitFor(() => expect(valueOf("Contrast")).toBe("−60.0"));
+  });
+
+  it("Contrast is Auto on both tabs until it is moved: its AUTO toggle is pressed, and a Reset brings Auto back", async () => {
+    const spy = await setup();
+    const contrastAuto = (): HTMLElement => tone().getByRole("button", { name: "Auto contrast" });
+    expect(contrastAuto()).toHaveAttribute("aria-pressed", "true");
+    // Pressing a pressed AUTO does nothing.
+    await h.user.click(contrastAuto());
+    expect(spy).not.toHaveBeenCalled();
+    await type("Contrast", "12");
+    await waitFor(() => expect(valueOf("Contrast")).toBe("+12.0"));
+    expect(tone().queryByRole("button", { name: "Auto contrast" })).toBeNull();
+    spy.mockClear();
+    await h.user.click(screen.getByRole("button", { name: "Reset Contrast" }));
+    expect(await lastPatch(spy)).toEqual({ contrast: { kind: "auto" } });
+    await waitFor(() => expect(valueOf("Contrast")).toBe("+1.5"));
+    expect(contrastAuto()).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("the card's AUTO is pressed only while Temperature and Contrast are both Auto, and one press sends both to Auto", async () => {
+    const spy = await setup();
+    expect(autoButton()).toHaveAttribute("aria-pressed", "true");
+    // Contrast alone is manual: the card is not automatic.
+    await type("Contrast", "12");
+    await waitFor(() => expect(autoButton()).toHaveAttribute("aria-pressed", "false"));
+    spy.mockClear();
+    await h.user.click(autoButton());
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(await lastPatch(spy)).toEqual({ white_balance: { kind: "auto" }, light_source: "auto", white_pick: null, contrast: { kind: "auto" } });
+    await waitFor(() => expect(autoButton()).toHaveAttribute("aria-pressed", "true"));
+    expect(valueOf("Contrast")).toBe("+1.5");
+    // Temperature alone is manual, and the same press sends both again (Contrast is Auto already).
+    await type("Temperature", "6000");
+    await waitFor(() => expect(autoButton()).toHaveAttribute("aria-pressed", "false"));
+    spy.mockClear();
+    await h.user.click(autoButton());
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(await lastPatch(spy)).toEqual({ white_balance: { kind: "auto" }, light_source: "auto", white_pick: null, contrast: { kind: "auto" } });
+    await waitFor(() => expect(autoButton()).toHaveAttribute("aria-pressed", "true"));
   });
 
   it("Temperature: moving it makes the white balance Manual at that Kelvin with the Auto tint, on both tabs", async () => {
@@ -149,7 +190,8 @@ describe("the Tone card on the Look tab", () => {
     await waitFor(() => expect(autoButton()).toHaveAttribute("aria-pressed", "false"));
     spy.mockClear();
     await h.user.click(autoButton());
-    expect(await lastPatch(spy)).toEqual({ white_balance: { kind: "auto" }, light_source: "auto", white_pick: null });
+    // The card's AUTO sends both of its settings, Temperature and Contrast, in one update.
+    expect(await lastPatch(spy)).toEqual({ white_balance: { kind: "auto" }, light_source: "auto", white_pick: null, contrast: { kind: "auto" } });
     await waitFor(() => expect(autoButton()).toHaveAttribute("aria-pressed", "true"));
     expect(valueOf("Temperature")).toBe("5450 K");
   });
@@ -197,7 +239,7 @@ describe("the Tone card on the Look tab", () => {
     expect(valueOf("Saturation")).toBe("0");
   });
 
-  it("each slider's Reset puts it back: Contrast and Saturation to 0", async () => {
+  it("each slider's Reset puts it back: Contrast to Auto, Saturation to 0", async () => {
     const spy = await setup();
     await type("Contrast", "20");
     await type("Saturation", "-45");
@@ -206,11 +248,11 @@ describe("the Tone card on the Look tab", () => {
     await h.user.click(screen.getByRole("button", { name: "Reset Saturation" }));
     expect(await lastPatch(spy)).toEqual({ saturation: 0 });
     await waitFor(() => expect(valueOf("Saturation")).toBe("0"));
-    expect(valueOf("Contrast")).toBe("+20");
+    expect(valueOf("Contrast")).toBe("+20.0");
     await h.user.click(screen.getByRole("button", { name: "Reset Contrast" }));
-    await waitFor(() => expect(valueOf("Contrast")).toBe("0"));
+    await waitFor(() => expect(valueOf("Contrast")).toBe("+1.5"));
     await openTab(h, "Light");
-    expect(valueOf("Contrast")).toBe("0");
+    expect(valueOf("Contrast")).toBe("+1.5");
   });
 
   it("the card's Reset puts Temperature on Auto and Contrast and Saturation at 0", async () => {
@@ -221,9 +263,9 @@ describe("the Tone card on the Look tab", () => {
     await waitFor(() => expect(valueOf("Saturation")).toBe("+18"));
     spy.mockClear();
     await h.user.click(tone().getByRole("button", { name: "Reset" }));
-    expect(await lastPatch(spy)).toEqual({ white_balance: { kind: "auto" }, light_source: "auto", white_pick: null, contrast: 0, saturation: 0 });
+    expect(await lastPatch(spy)).toEqual({ white_balance: { kind: "auto" }, light_source: "auto", white_pick: null, contrast: { kind: "auto" }, saturation: 0 });
     await waitFor(() => expect(valueOf("Temperature")).toBe("5450 K"));
-    expect(valueOf("Contrast")).toBe("0");
+    expect(valueOf("Contrast")).toBe("+1.5");
     expect(valueOf("Saturation")).toBe("0");
     expect(autoButton()).toHaveAttribute("aria-pressed", "true");
   });

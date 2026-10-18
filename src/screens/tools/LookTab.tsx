@@ -12,7 +12,7 @@ import type { LookLibraryInfo } from "../../state/looks";
 import type { AppStore } from "../../state/store";
 import { useLookThumbnail } from "../../state/useLookThumbnail";
 import { shortBody } from "./RawTab";
-import { ContrastSlider, KelvinSlider, SaturationSlider, whiteBalanceState, whiteBalanceToAuto } from "./controls";
+import { ContrastSlider, KelvinSlider, SaturationSlider, toneToAuto, whiteBalanceState } from "./controls";
 import { AUTO, tintLabel } from "./shared";
 import type { TabProps } from "./shared";
 
@@ -204,22 +204,30 @@ function LookSection({ library, total, shown, searching, collapsed, holdsCurrent
  * built from the same controls (`controls.tsx`): moving one copy moves the other, with undo, redo
  * and Reset. Temperature keeps the Kelvin control's Auto semantics: it shows the photo's Auto Kelvin,
  * moving it makes the white balance Manual at that Kelvin with the Auto tint, and its Reset goes
- * back to Auto. As on the Exposure card, the AUTO button speaks for the white balance only. Tint
- * stays on the Colour tab. The card's Reset sends Auto for the white balance (a picked white and a
- * light preset go with it, as on the Colour tab) and puts Contrast and Saturation at 0.
+ * back to Auto. Contrast is Auto or Manual as on the Light tab (`docs/18` §7). The card's AUTO speaks
+ * for the white balance and the contrast: it is pressed only while both are Auto, and pressing it
+ * sends both to Auto in one update. Tint stays on the Colour tab. The card's Reset sends Auto for the
+ * white balance (a picked white and a light preset go with it, as on the Colour tab) and for the
+ * contrast, and puts Saturation at 0.
  */
 export function ToneCard({ store, rs }: { store: AppStore; rs: ResolvedSettings }) {
   const { picked, isAuto } = whiteBalanceState(rs);
+  const toneAuto = isAuto && rs.auto.contrast;
   return (
     <Card
       title="Tone"
       tag={
         <>
           {picked ? <Tag variant="edited" title="White picked from the photo" /> : null}
-          <AutoToggle isAuto={isAuto} onAuto={() => whiteBalanceToAuto(store)} aria-label="Auto temperature" />
+          <AutoToggle isAuto={toneAuto} onAuto={() => toneToAuto(store)} aria-label="Auto temperature and contrast" />
         </>
       }
-      action={<ResetLink size="card" onClick={() => void store.update({ white_balance: AUTO, light_source: "auto", white_pick: null, contrast: 0, saturation: 0 })} />}
+      action={
+        <ResetLink
+          size="card"
+          onClick={() => void store.update({ white_balance: AUTO, light_source: "auto", white_pick: null, contrast: AUTO, saturation: 0 })}
+        />
+      }
     >
       <KelvinSlider store={store} rs={rs} label="Temperature" />
       <ContrastSlider store={store} rs={rs} />
@@ -301,6 +309,13 @@ export const LookTab = memo(function LookTab({ store, photo, rs, onOpenTab }: Lo
             label="Exposure"
             value={`${formats.ev(values.exposure_ev)} EV`}
             isAuto={auto.exposure}
+            tabLabel="Light"
+            onOpen={() => onOpenTab("light")}
+          />
+          <AutoRow
+            label="Contrast"
+            value={formats.signed1(values.contrast)}
+            isAuto={auto.contrast}
             tabLabel="Light"
             onOpen={() => onOpenTab("light")}
           />

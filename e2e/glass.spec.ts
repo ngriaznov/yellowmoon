@@ -111,11 +111,11 @@ test.describe("sliders and their boxes", () => {
     await contrast.click();
     await contrast.fill("25");
     await contrast.press("Enter");
-    await expect(contrast).toHaveValue("+25");
+    await expect(contrast).toHaveValue("+25.0");
     await contrast.click();
     await contrast.fill("90");
     await contrast.press("Escape");
-    await expect(contrast).toHaveValue("+25");
+    await expect(contrast).toHaveValue("+25.0");
     await expect(page.getByRole("button", { name: "Reset Contrast" })).toHaveCount(1);
   });
 

@@ -117,6 +117,11 @@ pub enum AutoError {
     /// A white was unusable.
     #[error("This photo can't be analysed ({0}). Skip it and open the others.")]
     White(#[from] WbError),
+    /// The automatic settings' features could not be computed (`docs/18` section 3).
+    #[error(
+        "This photo can't be analysed for its automatic settings ({0}). Skip it and open the others."
+    )]
+    Autoset(#[from] ym_color::autoset::AutosetError),
 }
 
 // ---------------------------------------------------------------------------------------------

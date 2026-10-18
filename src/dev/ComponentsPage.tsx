@@ -488,6 +488,7 @@ function CardSection() {
         <Card title="Automatic" tab="look" action={<ResetLink size="card" label="Re-run" />}>
           <Rows>
             <AutoRow label="Exposure" value="+0.30 EV" isAuto tabLabel="Light" onOpen={() => undefined} />
+            <AutoRow label="Contrast" value="+4.2" isAuto tabLabel="Light" onOpen={() => undefined} />
             <AutoRow label="White balance" value="6200 K · tint +4" isAuto={false} tabLabel="Colour" onOpen={() => undefined} />
             <AutoRow label="Noise" value="Luminance 30" isAuto tabLabel="Detail" onOpen={() => undefined} />
             <AutoRow label="Camera" value="A1 · A7R IV profile" isAuto tabLabel="RAW" onOpen={() => undefined} />

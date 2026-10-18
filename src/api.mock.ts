@@ -9,9 +9,9 @@
  *  - development that takes about 4 s for 12 photos (`photo_progress`, then `thumbnail_ready`
  *    with a real PNG), and an export that takes about 1.25 s per photo (`export_progress`);
  *  - the built-in looks (Neutral, Signature) and the imported look names of `photos.html`;
- *  - settings that resolve against fixed automatic estimates (+0.30 EV, 5450 K, tint 0), a
- *    light preset that resolves to a fixed kelvin, and a picked white that resolves to a kelvin
- *    and tint from the colour under the point;
+ *  - settings that resolve against fixed automatic estimates (+0.30 EV, 5450 K, tint 0), each photo with its own
+ *    automatic contrast (`estimatesFor`, +4.2 for the first), a light preset that resolves to a fixed kelvin, and a
+ *    picked white that resolves to a kelvin and tint from the colour under the point;
  *  - look thumbnails, histograms and re-sent photo thumbnails drawn with the mockup's flat-shape
  *    grading (`fixtures/grade.ts`).
  *
@@ -115,9 +115,13 @@ const DECODE_SHARE = 0.4;
 // The mock has no zoom of its own to report: the screen estimates it (`fit_percent: null`).
 const RENDER_STATS: RenderStats = { ms: 42, path: "neural", space: "display_p3", zoom_percent: null, fit_percent: null };
 
-/** What "Auto" resolves to for every photo in the mock. */
+/** What "Auto" resolves to for the first photo of the mock; the other photos vary the contrast (`estimatesFor`). */
 export const MOCK_ESTIMATES: AutoEstimates = {
   exposure_ev: 0.3,
+  contrast: 4.2,
+  ev_confidence: 0.86,
+  contrast_confidence: 0.58,
+  autoset_version: "1.0.0",
   white_ev: 0.8,
   kelvin: 5450,
   tint: 0,
@@ -127,6 +131,15 @@ export const MOCK_ESTIMATES: AutoEstimates = {
   sharpen: { amount: 120, radius_px: 0.8 },
   noise_reduction: { luminance: 30, color: 50, detail: 50 },
 };
+
+/** What Auto contrast resolves to for the photos of the mock, in photo order (a multiple of 0.1 within ±30; the first is `MOCK_ESTIMATES`'). */
+const MOCK_CONTRAST: readonly number[] = [4.2, -2.0, 0, 1.5, -0.5, 3.1, -3.4, 2.4, 0.6, -1.1, 5.0, -1.5];
+
+/** The automatic estimates of photo `id` in the mock: `MOCK_ESTIMATES`, with the photo's own contrast. */
+export function estimatesFor(id: PhotoId): AutoEstimates {
+  const contrast = MOCK_CONTRAST[(id - 1) % MOCK_CONTRAST.length] ?? MOCK_ESTIMATES.contrast;
+  return contrast === MOCK_ESTIMATES.contrast ? MOCK_ESTIMATES : { ...MOCK_ESTIMATES, contrast };
+}
 
 const NEUTRAL: LookId = "builtin:neutral";
 
@@ -339,7 +352,7 @@ export function defaultSettings(look: LookId = NEUTRAL): DevelopSettings {
     look,
     look_intensity: 100,
     exposure: { kind: "auto" },
-    contrast: 0,
+    contrast: { kind: "auto" },
     brightness: 0,
     highlights: 0,
     shadows: 0,
@@ -348,6 +361,7 @@ export function defaultSettings(look: LookId = NEUTRAL): DevelopSettings {
     black: 0,
     light_source: "auto",
     white_balance: { kind: "auto" },
+    white_preference: 1,
     color_balance: { shadows: [0, 0], midtones: [0, 0], highlights: [0, 0] },
     saturation: 0,
     color_warp: { pins: [] },
@@ -382,12 +396,12 @@ export function clampSettings(s: DevelopSettings): DevelopSettings {
   const out: DevelopSettings = {
     ...s,
     look_intensity: clamp(s.look_intensity, 0, 100),
-    contrast: pct(s.contrast),
     brightness: pct(s.brightness),
     highlights: pct(s.highlights),
     shadows: pct(s.shadows),
     white: pct(s.white),
     white_offset_ev: clamp(s.white_offset_ev, -3, 3),
+    white_preference: clamp(s.white_preference, 0, 1),
     black: pct(s.black),
     saturation: pct(s.saturation),
     output_sharpening: clamp(s.output_sharpening, 0, 200),
@@ -415,6 +429,7 @@ export function clampSettings(s: DevelopSettings): DevelopSettings {
       : null,
   };
   if (s.exposure.kind === "manual") out.exposure = { kind: "manual", ev: clamp(s.exposure.ev, -4, 4) };
+  if (s.contrast.kind === "manual") out.contrast = { kind: "manual", value: pct(s.contrast.value) };
   if (s.white_balance.kind === "manual") {
     out.white_balance = {
       kind: "manual",
@@ -442,12 +457,13 @@ export function clampSettings(s: DevelopSettings): DevelopSettings {
 
 /** Resolves every `Auto` against the estimates and reports which fields are still automatic. */
 export function resolveSettings(photoId: PhotoId, settings: DevelopSettings, estimates: AutoEstimates): ResolvedSettings {
-  const { exposure, white_balance, sharpen, noise_reduction, ...rest } = settings;
+  const { exposure, contrast, white_balance, sharpen, noise_reduction, ...rest } = settings;
   // A light preset stands in for the estimated light while White balance is Auto.
   const preset = settings.light_source === "auto" ? null : LIGHT_PRESETS[settings.light_source];
   const values: ResolvedValues = {
     ...rest,
     exposure_ev: exposure.kind === "manual" ? exposure.ev : estimates.exposure_ev,
+    contrast: contrast.kind === "manual" ? contrast.value : estimates.contrast,
     white_ev: clamp(estimates.white_ev + settings.white_offset_ev, 0, 3),
     kelvin: white_balance.kind === "manual" ? white_balance.kelvin : (preset?.kelvin ?? estimates.kelvin),
     tint: white_balance.kind === "manual" ? white_balance.tint : (preset?.tint ?? estimates.tint),
@@ -466,6 +482,7 @@ export function resolveSettings(photoId: PhotoId, settings: DevelopSettings, est
     values,
     auto: {
       exposure: exposure.kind === "auto",
+      contrast: contrast.kind === "auto",
       light_source: settings.light_source === "auto",
       white_balance: white_balance.kind === "auto",
       sharpen: sharpen.kind === "auto",
@@ -1120,7 +1137,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     const rect = cellRect();
     const width = Math.round(rect.width * rect.scale);
     const height = Math.round(rect.height * rect.scale);
-    const { values } = resolveSettings(rec.summary.id, rec.settings, MOCK_ESTIMATES);
+    const { values } = resolveSettings(rec.summary.id, rec.settings, estimatesFor(rec.summary.id));
     const picture = previewSvg(developed(rec), {
       orientation: values.orientation,
       angle_deg: values.crop?.angle_deg ?? 0,
@@ -1340,7 +1357,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
 
   /** How a photo differs from Automatic (its exposure and white balance), with or without its colour warp. */
   function adjustmentOf(rec: PhotoRecord, warp: boolean): Adjustment {
-    const { values } = resolveSettings(rec.summary.id, rec.settings, MOCK_ESTIMATES);
+    const { values } = resolveSettings(rec.summary.id, rec.settings, estimatesFor(rec.summary.id));
     return {
       ev: values.exposure_ev,
       autoEv: MOCK_ESTIMATES.exposure_ev,
@@ -1791,7 +1808,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
       }),
 
     getSettings: (photoId) =>
-      run("getSettings", () => resolveSettings(photoId, photo(photoId).settings, MOCK_ESTIMATES)),
+      run("getSettings", () => resolveSettings(photoId, photo(photoId).settings, estimatesFor(photoId))),
     updateSettings: (photoId, patch: SettingsPatch) =>
       run("updateSettings", () => {
         const rec = photo(photoId);
@@ -1805,7 +1822,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
         emitSoon("render_stats", RENDER_STATS);
         scheduleThumbnail(rec);
         if (rec === photos[current]) sendFrame();
-        return resolveSettings(photoId, rec.settings, MOCK_ESTIMATES);
+        return resolveSettings(photoId, rec.settings, estimatesFor(photoId));
       }),
     applyLook: (scope, lookId, intensity) =>
       run("applyLook", () => {
@@ -1834,14 +1851,14 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
         emitSoon("render_stats", RENDER_STATS);
         scheduleThumbnail(rec);
         if (rec === photos[current]) sendFrame();
-        return resolveSettings(photoId, rec.settings, MOCK_ESTIMATES);
+        return resolveSettings(photoId, rec.settings, estimatesFor(photoId));
       }),
     copySettings: (photoId) =>
       run("copySettings", () => {
         const rec = photo(photoId);
         if (rec.skipReason) fail("open", "This file can't be opened, so there are no settings to copy.");
         if (rec.phase < 3) fail("open", "That photo is still developing. Try again in a moment.");
-        return copiedPatch(resolveSettings(photoId, rec.settings, MOCK_ESTIMATES));
+        return copiedPatch(resolveSettings(photoId, rec.settings, estimatesFor(photoId)));
       }),
     pasteSettings: (photoIds, patch: SettingsPatch) =>
       run("pasteSettings", (): PasteReport => {
@@ -1880,7 +1897,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     histogram: (photoId) =>
       run("histogram", (): HistogramData => {
         const rec = photo(photoId);
-        const { values } = resolveSettings(photoId, rec.settings, MOCK_ESTIMATES);
+        const { values } = resolveSettings(photoId, rec.settings, estimatesFor(photoId));
         // Exposure moves the plot along the tonal scale. Before does not: the core's histogram is always that of the
         // finished picture (docs/02).
         const shift = (values.exposure_ev - MOCK_ESTIMATES.exposure_ev) * 0.06;

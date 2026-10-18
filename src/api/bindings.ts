@@ -207,6 +207,14 @@ export type ApplyScope =
 export type AutoEstimates = {
 	/**  `EV_auto`. */
 	exposure_ev: number,
+	/**  What Auto contrast resolves to, a multiple of 0.1 within -30 to 30. */
+	contrast: number,
+	/**  Confidence of the exposure estimate, 0 to 1. */
+	ev_confidence: number,
+	/**  Confidence of the contrast estimate, 0 to 1. */
+	contrast_confidence: number,
+	/**  The `autoset` model version, or "none" when no model is loaded. */
+	autoset_version: string,
 	/**  The automatic white lift in stops (0 when nothing is above +1 stop). */
 	white_ev: number,
 	/**  The Auto Kelvin. */
@@ -229,6 +237,8 @@ export type AutoEstimates = {
 export type AutoFlags = {
 	/**  `exposure` is Auto. */
 	exposure: boolean,
+	/**  `contrast` is Auto. */
+	contrast: boolean,
 	/**  `light_source` is Auto. */
 	light_source: boolean,
 	/**  `white_balance` is Auto. */
@@ -434,8 +444,8 @@ export type DevelopSettings = {
 	look_intensity: number,
 	/**  Light › Exposure: Auto or an absolute value, -4 to +4 EV. */
 	exposure: ExposureSetting,
-	/**  -100 to 100. */
-	contrast: number,
+	/**  Light › Exposure › Contrast: Auto, or a manual value from -100 to 100. */
+	contrast: ContrastSetting,
 	/**  -100 to 100. */
 	brightness: number,
 	/**  Light › High dynamic range, -100 to 100. */
@@ -455,6 +465,8 @@ export type DevelopSettings = {
 	light_source: LightSource,
 	/**  Colour › White balance: Auto or Kelvin and tint. */
 	white_balance: WhiteBalanceSetting,
+	/**  How much of a warm light's colour the Auto white keeps, 0 to 1, default 1 (a plain number, not Auto; no control in the app yet). */
+	white_preference: number,
 	/**  The three colour-balance wheels. */
 	color_balance: ColorBalance,
 	/**  Colour › Colour balance, -100 to 100. */
@@ -666,6 +678,20 @@ export type ExposureSetting =
 { kind: "manual"; 
 /**  Absolute exposure in stops, -4 to +4. */
 ev: number };
+
+/**
+ *  `contrast`: Auto, or a manual value from -100 to 100. The JSON is `{ "kind": "auto" }` or
+ *  `{ "kind": "manual", "value": 12 }`.
+ *
+ *  (As `ExposureSetting`: each setting has its own enum with the same JSON as `types.ts`'s `AutoOr`.)
+ */
+export type ContrastSetting =
+/**  Resolve from the photo's automatic estimates. */
+{ kind: "auto" } |
+/**  The user's value. */
+{ kind: "manual";
+/**  Contrast, -100 to 100. */
+value: number };
 
 /**  Per-channel histogram of the current render, for the Light tab and the Curve plot. */
 export type HistogramData = {
@@ -1275,6 +1301,8 @@ export type ResolvedValues = {
 	kelvin: number,
 	/**  The tint the White balance row shows. */
 	tint: number,
+	/**  `white_preference`. */
+	white_preference: number,
 	/**  `color_balance`. */
 	color_balance: ColorBalance,
 	/**  `saturation`. */
@@ -1368,8 +1396,10 @@ export type SettingsPatch = {
 	look_intensity?: number | null,
 	/**  New exposure (Manual to set it, Auto to reset it). */
 	exposure?: ExposureSetting | null,
-	/**  New contrast. */
-	contrast?: number | null,
+	/**  New contrast: Auto, or a manual value. */
+	contrast?: ContrastSetting | null,
+	/**  New white preference, 0 to 1 (a plain number). */
+	white_preference?: number | null,
 	/**  New brightness. */
 	brightness?: number | null,
 	/**  New highlights. */

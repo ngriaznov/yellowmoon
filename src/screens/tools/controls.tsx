@@ -1,4 +1,4 @@
-import { formats, Slider } from "../../components";
+import { AutoToggle, formats, Slider } from "../../components";
 import type { ResolvedSettings } from "../../api/types";
 import type { AppStore } from "../../state/store";
 import { AUTO, manualOrAuto } from "./shared";
@@ -9,7 +9,7 @@ import { AUTO, manualOrAuto } from "./shared";
  * the Look tab's Tone card (owner's decision of 2026-10-13, `docs/16`). They are one setting each:
  * both copies are built from the code below, read the same resolved value and send the same patch
  * through `store.update`, so moving one moves the other, and undo, redo and Reset treat them as
- * any other field.
+ * any other field. Contrast is Auto or Manual, like Exposure (`docs/18` §7), in both copies.
  */
 
 /** What the White balance card and the Tone card both need to know about the white balance. */
@@ -29,6 +29,14 @@ export function whiteBalanceState(rs: ResolvedSettings): WhiteBalanceState {
 /** Back to Auto: white balance, light preset and picked white (the AUTO button and the cards' Reset). */
 export function whiteBalanceToAuto(store: AppStore): void {
   void store.update({ white_balance: AUTO, light_source: "auto", white_pick: null });
+}
+
+/**
+ * Back to Auto on the Tone card, whose AUTO speaks for white balance and contrast: both in one update, so one undo step. The card's Reset
+ * also puts Saturation at 0 (`LookTab.tsx`).
+ */
+export function toneToAuto(store: AppStore): void {
+  void store.update({ white_balance: AUTO, light_source: "auto", white_pick: null, contrast: AUTO });
 }
 
 /**
@@ -74,17 +82,26 @@ export function KelvinSlider({ store, rs, label = "Kelvin" }: ControlProps & { l
   );
 }
 
-/** Contrast, -100 to 100, default 0 (Light › Exposure and Look › Tone). */
+/**
+ * Contrast, −100 to 100 in steps of 1 (Light › Exposure and Look › Tone), Auto or Manual like Exposure (`docs/18` §7). The row shows the
+ * effective value to a tenth, as the Automatic card's row does (the Auto value has one). Its default marker is the automatic value, and a
+ * value equal to it is Auto; moving the knob or typing makes it Manual; its Reset goes back to Auto. While it is Auto the Reset column
+ * holds the row's AUTO toggle, pressed, as the card headers have it.
+ */
 export function ContrastSlider({ store, rs }: ControlProps) {
+  const { values, estimates, auto } = rs;
+  const toAuto = (): void => void store.update({ contrast: AUTO });
   return (
     <Slider
       label="Contrast"
-      value={rs.values.contrast}
+      value={values.contrast}
       min={-100}
       max={100}
-      defaultValue={0}
-      format={formats.signed}
-      onChange={(contrast, final) => void store.update({ contrast }, final)}
+      defaultValue={estimates.contrast}
+      format={formats.signed1}
+      onChange={(value, final) => void store.update({ contrast: manualOrAuto({ value }, { value: estimates.contrast }) }, final)}
+      onReset={toAuto}
+      status={auto.contrast ? <AutoToggle aria-label="Auto contrast" isAuto onAuto={toAuto} /> : undefined}
     />
   );
 }

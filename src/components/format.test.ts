@@ -88,6 +88,14 @@ describe("formats", () => {
     expect(formats.signed(-17.5)).toBe(`${MINUS}17`);
   });
 
+  it("signed1 has a tenth, a plus or a real minus, and no sign at zero (the automatic contrast)", () => {
+    expect(formats.signed1(4.2)).toBe("+4.2");
+    expect(formats.signed1(-2)).toBe(`${MINUS}2.0`);
+    expect(formats.signed1(0)).toBe("0.0");
+    expect(formats.signed1(-0.04)).toBe("0.0");
+    expect(formats.signed1(25)).toBe("+25.0");
+  });
+
   it("ev has two decimals and no sign at zero", () => {
     expect(formats.ev(0.3)).toBe("+0.30");
     expect(formats.ev(-1.25)).toBe(`${MINUS}1.25`);

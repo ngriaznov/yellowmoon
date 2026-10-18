@@ -1,4 +1,5 @@
 import { useEffect, useId, useRef } from "react";
+import type { ReactNode } from "react";
 import { Slider as GlassSlider } from "@/components/glass/slider";
 import { cx } from "./cx";
 import { clampSnap, roundToStep, sameValue } from "./format";
@@ -43,6 +44,11 @@ export interface SliderProps {
   onReset?: () => void;
   /** Overrides the "differs from default" test (the fill, the box colour and the Reset link). */
   changed?: boolean;
+  /**
+   * What the Reset column shows while the value is not changed: an automatic value passes its AUTO toggle here, as the card headers
+   * have it, so the row says it is automatic. A changed value shows Reset in that place as usual.
+   */
+  status?: ReactNode;
   /** Tab whose colour fills the bar and the changed box. Inherited from `data-tab` when omitted. */
   tab?: TabId;
   disabled?: boolean;
@@ -71,6 +77,7 @@ export function Slider({
   onChange,
   onReset,
   changed: changedProp,
+  status,
   tab,
   disabled = false,
   resetColumn = true,
@@ -203,7 +210,7 @@ export function Slider({
         disabled={disabled}
       />
       {resetColumn ? (
-        <div className="flex justify-end">{changed && !disabled ? <ResetLink aria-label={`Reset ${label}`} onClick={reset} /> : null}</div>
+        <div className="flex justify-end">{changed && !disabled ? <ResetLink aria-label={`Reset ${label}`} onClick={reset} /> : status}</div>
       ) : null}
     </div>
   );

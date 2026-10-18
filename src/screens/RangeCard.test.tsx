@@ -136,13 +136,13 @@ describe("the white lift is back beside the Range card (owner's decision of 2026
     expect(white.getByRole("button", { name: "Auto white" })).toHaveAttribute("aria-pressed", "true");
   });
 
-  it("the Automatic card has its five rows again: Exposure, White, White balance, Noise and Camera", async () => {
+  it("the Automatic card has its six rows: Exposure, Contrast, White, White balance, Noise and Camera", async () => {
     await setup();
     await openTab(h, "Look");
     const rows = within(screen.getByRole("region", { name: "Automatic" })).getAllByRole("button", { name: /Open / });
-    expect(rows.map((r) => r.getAttribute("aria-label")?.replace(/ .*$/, ""))).toEqual(["Exposure", "White", "White", "Noise", "Camera"]);
-    expect(rows[1]).toHaveAccessibleName("White +0.80 EV, Auto. Open Light");
-    expect(rows[2]).toHaveAccessibleName(/^White balance /);
+    expect(rows.map((r) => r.getAttribute("aria-label")?.replace(/ .*$/, ""))).toEqual(["Exposure", "Contrast", "White", "White", "Noise", "Camera"]);
+    expect(rows[2]).toHaveAccessibleName("White +0.80 EV, Auto. Open Light");
+    expect(rows[3]).toHaveAccessibleName(/^White balance /);
   });
 
   it("the settings carry both: the white lift's offset at 0 and the range at 1 and 0.5", async () => {

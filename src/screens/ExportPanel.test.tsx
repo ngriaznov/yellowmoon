@@ -280,7 +280,7 @@ describe("the command line", () => {
     expect(screen.queryByText(/adjustments this command doesn't include/)).toBeNull();
     h!.unmount();
     await setup();
-    await h!.store.update({ contrast: 25 });
+    await h!.store.update({ contrast: { kind: "manual", value: 25 } });
     await h!.user.keyboard("{Meta>}e{/Meta}");
     expect(await screen.findByText("1 photo has adjustments this command doesn't include.")).toBeInTheDocument();
     await h!.user.click(radio("Photos", "All · 12"));

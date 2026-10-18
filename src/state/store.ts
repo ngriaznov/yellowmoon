@@ -266,7 +266,6 @@ export function initialState(): AppState {
 const DIRECT_KEYS: ReadonlySet<string> = new Set([
   "look",
   "look_intensity",
-  "contrast",
   "brightness",
   "highlights",
   "shadows",
@@ -284,13 +283,22 @@ const DIRECT_KEYS: ReadonlySet<string> = new Set([
   "crop",
   "orientation",
   "white_pick",
+  "white_preference",
 ]);
 
-/** The mirrored settings with a patch applied to the fields that need no resolving. */
+/**
+ * The mirrored settings with a patch applied to the fields that need no resolving. Contrast is Auto or Manual: a manual value shows at
+ * once, an Auto one waits for the core (it resolves against the estimates, as Exposure's does).
+ */
 export function applyDirect(rs: ResolvedSettings, patch: SettingsPatch): ResolvedSettings {
   const settings = { ...rs.settings } as Record<string, unknown>;
   const values = { ...rs.values } as Record<string, unknown>;
   let auto = rs.auto;
+  if (patch.contrast?.kind === "manual") {
+    settings.contrast = patch.contrast;
+    values.contrast = patch.contrast.value;
+    auto = { ...auto, contrast: false };
+  }
   for (const [key, value] of Object.entries(patch)) {
     if (value === undefined || !DIRECT_KEYS.has(key)) continue;
     settings[key] = value;

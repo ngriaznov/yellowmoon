@@ -25,6 +25,7 @@
 
 pub mod app;
 pub mod auto;
+pub mod autoset;
 pub mod camera;
 pub mod cli_preview;
 pub mod data_dir;

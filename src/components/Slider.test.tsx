@@ -229,6 +229,17 @@ describe("Slider reset", () => {
     expect(onChange).not.toHaveBeenCalled();
   });
 
+  it("shows its status in the Reset column while the value is the default, and Reset instead once it changes", async () => {
+    const user = userEvent.setup();
+    const { rerender, onChange } = setup({ status: <span>AUTO</span> });
+    expect(screen.getByText("AUTO")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Reset Exposure" })).toBeNull();
+    rerender(<Slider label="Exposure" value={-1.2} min={-4} max={4} step={0.01} defaultValue={0.3} format={formats.ev} onChange={onChange} status={<span>AUTO</span>} />);
+    expect(screen.queryByText("AUTO")).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Reset Exposure" }));
+    expect(onChange).toHaveBeenCalledWith(0.3, true);
+  });
+
   it("does nothing on a double click when there is no default", () => {
     const { root, onChange } = setup({ defaultValue: undefined, value: 1 });
     fireEvent.doubleClick(root);

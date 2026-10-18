@@ -45,7 +45,7 @@ test.describe("the Tone card", () => {
     expect(ys).toEqual([...ys].sort((a, b) => a - b));
     await expect(tone(page).getByRole("slider", { name: "Tint" })).toHaveCount(0);
     await expect(valueBox(page, "Temperature")).toHaveValue("5450 K");
-    await expect(page.getByRole("button", { name: "Auto temperature" })).toHaveAttribute("aria-pressed", "true");
+    await expect(page.getByRole("button", { name: "Auto temperature and contrast" })).toHaveAttribute("aria-pressed", "true");
     // Nothing was taken from the other tabs.
     await openTab(page, "Light");
     await expect(page.getByRole("slider", { name: "Contrast" })).toBeVisible();
@@ -60,7 +60,7 @@ test.describe("the Tone card", () => {
     await setValue(page, "Contrast", "-20");
     await setValue(page, "Temperature", "6500");
     await expect(valueBox(page, "Temperature")).toHaveValue("6500 K");
-    await expect(page.getByRole("button", { name: "Auto temperature" })).toHaveAttribute("aria-pressed", "false");
+    await expect(page.getByRole("button", { name: "Auto temperature and contrast" })).toHaveAttribute("aria-pressed", "false");
 
     await openTab(page, "Colour");
     await expect(valueBox(page, "Saturation")).toHaveValue("+35");
@@ -68,7 +68,7 @@ test.describe("the Tone card", () => {
     await expect(valueBox(page, "Tint")).toHaveValue("0");
     await expect(whiteBalanceAuto(page)).toHaveAttribute("aria-pressed", "false");
     await openTab(page, "Light");
-    await expect(valueBox(page, "Contrast")).toHaveValue("−20");
+    await expect(valueBox(page, "Contrast")).toHaveValue("−20.0");
 
     // And back: the Colour and Light tabs move the Look tab's rows.
     await setValue(page, "Contrast", "45");
@@ -77,7 +77,7 @@ test.describe("the Tone card", () => {
     await setValue(page, "Kelvin", "4300");
     await openTab(page, "Look");
     await expect(valueBox(page, "Saturation")).toHaveValue("−10");
-    await expect(valueBox(page, "Contrast")).toHaveValue("+45");
+    await expect(valueBox(page, "Contrast")).toHaveValue("+45.0");
     await expect(valueBox(page, "Temperature")).toHaveValue("4300 K");
   });
 
@@ -113,7 +113,7 @@ test.describe("the Tone card", () => {
     await page.getByRole("button", { name: "Reset Temperature" }).click();
     await expect(valueBox(page, "Temperature")).toHaveValue("5450 K");
     expect((await calls()).at(-1)!.args[1]).toEqual({ white_balance: { kind: "auto" }, light_source: "auto", white_pick: null });
-    await expect(page.getByRole("button", { name: "Auto temperature" })).toHaveAttribute("aria-pressed", "true");
+    await expect(page.getByRole("button", { name: "Auto temperature and contrast" })).toHaveAttribute("aria-pressed", "true");
     await openTab(page, "Colour");
     await expect(valueBox(page, "Kelvin")).toHaveValue("5450 K");
     await expect(whiteBalanceAuto(page)).toHaveAttribute("aria-pressed", "true");

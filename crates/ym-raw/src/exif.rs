@@ -417,6 +417,8 @@ pub struct ExifInfo {
     pub exposure_program: Option<ExposureProgram>,
     /// `SceneCaptureType`.
     pub scene_capture_type: Option<SceneCaptureType>,
+    /// `ColorSpace` as written: 1 for sRGB, 0xFFFF (uncalibrated) for Adobe RGB.
+    pub color_space: Option<u16>,
     /// `DateTimeOriginal` with sub-second and offset.
     pub capture_time: Option<CaptureTime>,
     /// The sensitivity tags.
@@ -486,6 +488,7 @@ pub fn read(tiff: &Tiff, nodes: &[IfdNode]) -> ExifInfo {
     info.scene_capture_type = exif_ifds()
         .find_map(|ifd| short_value(tiff, ifd, tag::SCENE_CAPTURE_TYPE))
         .map(SceneCaptureType::from_code);
+    info.color_space = exif_ifds().find_map(|ifd| short_value(tiff, ifd, tag::COLOR_SPACE));
 
     if let Some(datetime) = exif_ifds().find_map(|ifd| text(tiff, ifd, tag::DATE_TIME_ORIGINAL)) {
         let subsec = exif_ifds().find_map(|ifd| text(tiff, ifd, tag::SUB_SEC_TIME_ORIGINAL));

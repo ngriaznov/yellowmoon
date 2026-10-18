@@ -101,7 +101,7 @@ describe("every control round-trips through update_settings", () => {
 
     await driveTyped(spy, [
       { label: "Exposure", typed: "1.5", patch: { exposure: { kind: "manual", ev: 1.5 } }, shows: "+1.50" },
-      { label: "Contrast", typed: "-25", patch: { contrast: -25 }, shows: "−25" },
+      { label: "Contrast", typed: "-25", patch: { contrast: { kind: "manual", value: -25 } }, shows: "−25.0" },
       { label: "Brightness", typed: "10", patch: { brightness: 10 }, shows: "+10" },
       { label: "Highlights", typed: "-18", patch: { highlights: -18 }, shows: "−18" },
       { label: "Shadows", typed: "12", patch: { shadows: 12 }, shows: "+12" },
@@ -115,9 +115,9 @@ describe("every control round-trips through update_settings", () => {
     spy.mockClear();
     sliderOf("Contrast").focus();
     await h.user.keyboard("{End}");
-    expect(await lastPatch(spy, "Contrast End")).toEqual({ contrast: 100 });
+    expect(await lastPatch(spy, "Contrast End")).toEqual({ contrast: { kind: "manual", value: 100 } });
     await h.user.keyboard("{Home}");
-    await waitFor(() => expect(valueOf("Contrast")).toBe("−100"));
+    await waitFor(() => expect(valueOf("Contrast")).toBe("−100.0"));
 
     // Reset on Exposure goes back to Auto, not to a manual +0.30.
     spy.mockClear();
@@ -126,11 +126,11 @@ describe("every control round-trips through update_settings", () => {
     await waitFor(() => expect(valueOf("Exposure")).toBe("+0.30"));
     expect(exposureCard.getByRole("button", { name: "Auto" })).toHaveAttribute("aria-pressed", "true");
 
-    // The card's Reset puts the three sliders back at once.
+    // The card's Reset puts the three sliders back at once: Contrast to Auto, which shows the photo's own estimate.
     spy.mockClear();
     await h.user.click(exposureCard.getByRole("button", { name: "Reset" }));
-    expect(await lastPatch(spy, "Exposure card reset")).toEqual({ exposure: { kind: "auto" }, contrast: 0, brightness: 0 });
-    await waitFor(() => expect(valueOf("Contrast")).toBe("0"));
+    expect(await lastPatch(spy, "Exposure card reset")).toEqual({ exposure: { kind: "auto" }, contrast: { kind: "auto" }, brightness: 0 });
+    await waitFor(() => expect(valueOf("Contrast")).toBe("+1.5"));
 
     spy.mockClear();
     await h.user.click(within(screen.getByRole("region", { name: "High dynamic range" })).getByRole("button", { name: "Reset" }));
@@ -377,10 +377,11 @@ describe("every control round-trips through update_settings", () => {
     const spy = await setup();
     await openTab(h, "Light");
     await type("Contrast", "20");
-    expect(await lastPatch(spy, "Contrast")).toEqual({ contrast: 20 });
+    expect(await lastPatch(spy, "Contrast")).toEqual({ contrast: { kind: "manual", value: 20 } });
     await h.user.keyboard("{ArrowRight}");
     await waitFor(() => expect(h.store.currentSettings()?.photo_id).toBe(5));
-    await waitFor(() => expect(valueOf("Contrast")).toBe("0"));
+    // Photo 5 is Auto, and shows its own automatic contrast.
+    await waitFor(() => expect(valueOf("Contrast")).toBe("−0.5"));
     spy.mockClear();
     await type("Contrast", "9");
     expect(spy.mock.calls.at(-1)?.[0]).toBe(5);

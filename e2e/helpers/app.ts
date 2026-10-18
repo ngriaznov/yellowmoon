@@ -66,11 +66,33 @@ export async function openPhotos(page: Page): Promise<void> {
 }
 
 /**
+ * Scrolls the tool panel until its first look tile shows, when no tile does, and returns the scroll position the panel had before, or
+ * `null` when it did not move. On the Look tab at 1440 × 900 the Automatic card's Contrast row (AS-08, `docs/11`) puts the first row of
+ * tiles just below the panel's visible part, and a tile asks for its picture only once it shows; a scroll of 116 px brings that row in
+ * and leaves the second one out.
+ */
+export async function showFirstLookTile(page: Page): Promise<number | null> {
+  return page.evaluate(() => {
+    const scroller = document.querySelector<HTMLElement>(".ym-tools__scroll");
+    const tile = document.querySelector<HTMLElement>(".ym-look-tile");
+    if (!scroller || !tile) return null;
+    const box = scroller.getBoundingClientRect();
+    const r = tile.getBoundingClientRect();
+    if (r.bottom > box.top && r.top < box.bottom) return null;
+    const before = scroller.scrollTop;
+    scroller.scrollTop += r.bottom - box.bottom + 8;
+    return before;
+  });
+}
+
+/**
  * Waits until every look tile that shows in the tool panel, even by a few pixels, has its picture. A tile asks for its picture when
  * it first scrolls into view, so a capture taken after "two tiles have loaded" can still catch the ones along the bottom edge half
- * drawn.
+ * drawn. When no tile shows yet, the panel is scrolled to the first one first (`showFirstLookTile`), and then back where it was: a
+ * tile keeps its picture once it has one, and the captures of the other tabs start from the panel's own position.
  */
 export async function lookTilesLoaded(page: Page): Promise<void> {
+  const before = await showFirstLookTile(page);
   await page.waitForFunction(() => {
     const scroller = document.querySelector(".ym-tools__scroll");
     if (!scroller) return false;
@@ -84,6 +106,12 @@ export async function lookTilesLoaded(page: Page): Promise<void> {
       return !!img && img.complete && img.naturalWidth > 0;
     });
   });
+  if (before !== null) {
+    await page.evaluate((top) => {
+      const scroller = document.querySelector<HTMLElement>(".ym-tools__scroll");
+      if (scroller) scroller.scrollTop = top;
+    }, before);
+  }
 }
 
 /** Waits until every picture on the page has loaded, and two frames have been drawn. */

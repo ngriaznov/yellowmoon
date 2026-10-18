@@ -64,6 +64,11 @@ export const formats = {
     const text = Math.abs(value).toFixed(2);
     return (text === "0.00" ? "" : value > 0 ? "+" : MINUS) + text;
   },
+  /** 4.2 → "+4.2", -2 → "−2.0", 0 → "0.0". Contrast, whose automatic value has a tenth. */
+  signed1: (value: number): string => {
+    const text = Math.abs(value).toFixed(1);
+    return (text === "0.0" ? "" : value > 0 ? "+" : MINUS) + text;
+  },
   /** 5450 → "5450 K". */
   kelvin: (value: number): string => `${Math.round(value)} K`,
   /** 100 → "100%". */

@@ -11,10 +11,10 @@ import type { TabProps } from "./shared";
 const EMPTY_HISTOGRAM = { red: [0, 0], green: [0, 0], blue: [0, 0] };
 
 /**
- * Light: Exposure (with the AUTO tag), White (the automatic white lift and its offset) and High
- * dynamic range (`docs/11-ui.md` §Photos). Exposure is Automatic until the person moves it; Reset and
- * the AUTO button go back to Automatic, not to the number Automatic resolves to. The White card's
- * Offset is a plain number of stops added to the automatic lift: 0 is Automatic.
+ * Light: Exposure (with the AUTO tag; Contrast and Brightness under it), White (the automatic white lift and its offset) and High
+ * dynamic range (`docs/11-ui.md` §Photos). Exposure and Contrast are Automatic until the person moves them; Reset and the AUTO button
+ * go back to Automatic, not to the number Automatic resolves to. The Exposure card's Reset puts Exposure and Contrast back to Automatic
+ * and Brightness to 0. The White card's Offset is a plain number of stops added to the automatic lift: 0 is Automatic.
  */
 export const LightTab = memo(function LightTab({ store, photo, rs }: TabProps) {
   const { values, estimates, auto } = rs;
@@ -40,7 +40,7 @@ export const LightTab = memo(function LightTab({ store, photo, rs }: TabProps) {
         title="Exposure"
         tag={<AutoToggle isAuto={auto.exposure} onAuto={() => void store.update({ exposure: AUTO })} />}
         action={
-          <ResetLink size="card" onClick={() => void store.update({ exposure: AUTO, contrast: 0, brightness: 0 })} />
+          <ResetLink size="card" onClick={() => void store.update({ exposure: AUTO, contrast: AUTO, brightness: 0 })} />
         }
       >
         <Slider

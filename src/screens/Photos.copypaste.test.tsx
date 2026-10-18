@@ -24,7 +24,7 @@ const header = (): HTMLElement => screen.getByRole("navigation", { name: "Action
 const foot = (): HTMLElement => within(tools()).getByRole("group", { name: "Copy and paste settings" });
 const copyButton = (): HTMLElement => within(foot()).getByRole("button", { name: "Copy settings" });
 const pasteButton = (): HTMLElement => within(foot()).getByRole("button", { name: "Paste" });
-const contrastOf = (id: number): Promise<number> => h!.api.getSettings(id).then((rs) => rs.settings.contrast);
+const contrastOf = (id: number) => h!.api.getSettings(id).then((rs) => rs.settings.contrast);
 
 const dropOnWindow = (...names: string[]): void => {
   const data = { types: ["Files"], files: names.map((name) => ({ name })), dropEffect: "none" };
@@ -151,7 +151,7 @@ describe("Copy settings and Paste", () => {
 
   it("copy on one photo and paste on another: its settings follow, its crop does not, and Undo puts it back", async () => {
     await setup();
-    await h!.store.update({ contrast: 25, exposure: { kind: "manual", ev: 0.9 }, orientation: 90 });
+    await h!.store.update({ contrast: { kind: "manual", value: 25 }, exposure: { kind: "manual", ev: 0.9 }, orientation: 90 });
     await h!.user.click(copyButton());
     expect(await screen.findByRole("status")).toHaveTextContent("Copied the settings of DSC04204.");
     expect(pasteButton()).not.toHaveAttribute("aria-disabled");
@@ -161,7 +161,7 @@ describe("Copy settings and Paste", () => {
     await waitFor(() => expect(h!.store.currentSettings()?.photo_id).toBe(6));
     await h!.store.update({ crop: { rect: { x: 0.2, y: 0.1, width: 0.5, height: 0.7 }, angle_deg: 0, aspect: "free" } });
     await h!.user.click(pasteButton());
-    await waitFor(() => expect(h!.store.currentSettings()?.settings.contrast).toBe(25));
+    await waitFor(() => expect(h!.store.currentSettings()?.settings.contrast).toEqual({ kind: "manual", value: 25 }));
     const pasted = h!.store.currentSettings()!;
     expect(pasted.settings.exposure).toEqual({ kind: "manual", ev: 0.9 });
     expect(pasted.settings.orientation).toBe(0);
@@ -170,13 +170,13 @@ describe("Copy settings and Paste", () => {
     // The sliders show it.
     await waitFor(() => expect(screen.getByRole("tab", { name: "Light" })).toBeInTheDocument());
     await h!.user.click(screen.getByRole("tab", { name: "Light" }));
-    await waitFor(() => expect((screen.getByRole("textbox", { name: "Contrast value" }) as HTMLInputElement).value).toBe("+25"));
+    await waitFor(() => expect((screen.getByRole("textbox", { name: "Contrast value" }) as HTMLInputElement).value).toBe("+25.0"));
 
     await h!.user.keyboard("{Meta>}z{/Meta}");
-    await waitFor(() => expect(h!.store.currentSettings()?.settings.contrast).toBe(0));
+    await waitFor(() => expect(h!.store.currentSettings()?.settings.contrast).toEqual({ kind: "auto" }));
     expect(h!.store.currentSettings()?.settings.crop?.rect.width).toBe(0.5);
     // The photo it came from kept its settings.
-    expect(await contrastOf(4)).toBe(25);
+    expect(await contrastOf(4)).toEqual({ kind: "manual", value: 25 });
   });
 
   it("are off for a photo that is not developed", async () => {
@@ -193,7 +193,7 @@ describe("Copy settings and Paste", () => {
 
   it("⇧⌘C copies and ⇧⌘V pastes, and plain ⌘C and ⌘V are not theirs", async () => {
     await setup();
-    await h!.store.update({ contrast: 14 });
+    await h!.store.update({ contrast: { kind: "manual", value: 14 } });
     await h!.user.keyboard("{Meta>}c{/Meta}");
     expect(h!.store.getState().copied).toBeNull();
     await h!.user.keyboard("{Meta>}{Shift>}c{/Shift}{/Meta}");
@@ -201,20 +201,20 @@ describe("Copy settings and Paste", () => {
     await h!.store.setCurrent(7);
     await waitFor(() => expect(h!.store.currentSettings()?.photo_id).toBe(7));
     await h!.user.keyboard("{Meta>}v{/Meta}");
-    expect(await contrastOf(7)).toBe(0);
+    expect(await contrastOf(7)).toEqual({ kind: "auto" });
     await h!.user.keyboard("{Meta>}{Shift>}v{/Shift}{/Meta}");
-    await waitFor(async () => expect(await contrastOf(7)).toBe(14));
+    await waitFor(async () => expect(await contrastOf(7)).toEqual({ kind: "manual", value: 14 }));
   });
 
   it("⌥⇧⌘V pastes onto every picked photo", async () => {
     await setup();
-    await h!.store.update({ contrast: 18 });
+    await h!.store.update({ contrast: { kind: "manual", value: 18 } });
     await h!.user.keyboard("{Meta>}{Shift>}c{/Shift}{/Meta}");
     await waitFor(() => expect(h!.store.getState().copied).not.toBeNull());
     await h!.user.keyboard("{Meta>}{Alt>}{Shift>}v{/Shift}{/Alt}{/Meta}");
-    await waitFor(async () => expect(await contrastOf(3)).toBe(18));
-    expect(await contrastOf(5)).toBe(18);
-    expect(await contrastOf(1)).toBe(0);
+    await waitFor(async () => expect(await contrastOf(3)).toEqual({ kind: "manual", value: 18 }));
+    expect(await contrastOf(5)).toEqual({ kind: "manual", value: 18 });
+    expect(await contrastOf(1)).toEqual({ kind: "auto" });
     expect(screen.getByRole("status")).toHaveTextContent("Pasted the settings of DSC04204 to 3 photos.");
   });
 

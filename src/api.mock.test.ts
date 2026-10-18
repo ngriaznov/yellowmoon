@@ -320,21 +320,24 @@ describe("settings", () => {
   it("starts at Auto everywhere, resolved against the estimates", async () => {
     const r = await api.getSettings(1);
     expect(r.photo_id).toBe(1);
-    expect(r.auto).toEqual({ exposure: true, light_source: true, white_balance: true, sharpen: true, noise_reduction: true });
-    expect(r.values).toMatchObject({ exposure_ev: 0.3, kelvin: 5450, tint: 0 });
+    expect(r.auto).toEqual({ exposure: true, contrast: true, light_source: true, white_balance: true, sharpen: true, noise_reduction: true });
+    expect(r.values).toMatchObject({ exposure_ev: 0.3, contrast: 4.2, kelvin: 5450, tint: 0, white_preference: 1 });
     expect(r.values.sharpen).toEqual({ amount: 120, radius_px: 0.8 });
     expect(r.values.noise_reduction).toEqual({ luminance: 30, color: 50, detail: 50 });
     expect(r.estimates).toEqual(MOCK_ESTIMATES);
     expect(r.settings.exposure).toEqual({ kind: "auto" });
+    expect(r.settings.contrast).toEqual({ kind: "auto" });
     expect(r.settings).toEqual(defaultSettings());
   });
 
   it("turns a field Manual when patched, and keeps the other fields Auto", async () => {
-    const r = await api.updateSettings(1, { exposure: { kind: "manual", ev: -0.5 }, contrast: 12 });
+    const r = await api.updateSettings(1, { exposure: { kind: "manual", ev: -0.5 }, contrast: { kind: "manual", value: 12 } });
     expect(r.settings.exposure).toEqual({ kind: "manual", ev: -0.5 });
     expect(r.values.exposure_ev).toBe(-0.5);
+    expect(r.settings.contrast).toEqual({ kind: "manual", value: 12 });
     expect(r.values.contrast).toBe(12);
     expect(r.auto.exposure).toBe(false);
+    expect(r.auto.contrast).toBe(false);
     expect(r.auto.white_balance).toBe(true);
     // Persisted: a fresh read agrees, and another photo is untouched.
     expect((await api.getSettings(1)).values.exposure_ev).toBe(-0.5);
@@ -346,7 +349,7 @@ describe("settings", () => {
       exposure: { kind: "manual", ev: 9 },
       white_balance: { kind: "manual", kelvin: 500, tint: 80 },
       sharpen: { kind: "manual", amount: 999, radius_px: 0 },
-      contrast: -400,
+      contrast: { kind: "manual", value: -400 },
       look_intensity: 250,
       rolloff: { highlights: 3, low_light: -1 },
     });
@@ -381,17 +384,58 @@ describe("settings", () => {
       light_source: "tungsten",
       white_balance: { kind: "manual", kelvin: 3200, tint: 5 },
       noise_reduction: { kind: "manual", luminance: 80, color: 80, detail: 10 },
-      contrast: 20,
+      contrast: { kind: "manual", value: 20 },
     });
     const r = await api.rerunAuto(1);
-    expect(r.auto).toEqual({ exposure: true, light_source: true, white_balance: true, sharpen: true, noise_reduction: true });
-    expect(r.values.contrast).toBe(20); // other controls are not touched
+    expect(r.auto).toEqual({ exposure: true, contrast: false, light_source: true, white_balance: true, sharpen: true, noise_reduction: true });
+    expect(r.values.contrast).toBe(20); // other controls are not touched, contrast included (`docs/01`)
+  });
+
+  it("gives each photo its own automatic contrast: a tenth, within ±30, with the model's confidences and version", async () => {
+    const estimates = await Promise.all([1, 2, 3, 4].map(async (id) => (await api.getSettings(id)).estimates));
+    // The first photo is the one MOCK_ESTIMATES describes; the others vary the contrast.
+    expect(estimates[0]).toEqual(MOCK_ESTIMATES);
+    expect(estimates.map((e) => e.contrast)).toEqual([4.2, -2, 0, 1.5]);
+    for (const e of estimates) {
+      expect(Math.abs(e.contrast)).toBeLessThanOrEqual(30);
+      expect(Math.round(e.contrast * 10)).toBeCloseTo(e.contrast * 10, 9);
+      for (const confidence of [e.ev_confidence, e.contrast_confidence]) {
+        expect(confidence).toBeGreaterThanOrEqual(0);
+        expect(confidence).toBeLessThanOrEqual(1);
+      }
+      expect(e.autoset_version).toBe("1.0.0");
+    }
+  });
+
+  it("resolves Auto contrast to the photo's own estimate, and a manual one to itself", async () => {
+    const auto = await api.getSettings(2);
+    expect(auto.values.contrast).toBe(-2);
+    expect(auto.auto.contrast).toBe(true);
+    const manual = await api.updateSettings(2, { contrast: { kind: "manual", value: 7 } });
+    expect(manual.values.contrast).toBe(7);
+    expect(manual.auto.contrast).toBe(false);
+    const back = await api.updateSettings(2, { contrast: { kind: "auto" } });
+    expect(back.values.contrast).toBe(-2);
+    expect(back.auto.contrast).toBe(true);
+    // Photo 1 is not touched.
+    expect((await api.getSettings(1)).values.contrast).toBe(4.2);
+  });
+
+  it("keeps the white preference as a plain number from 0 to 1, 1 by default, and copies it like any setting", async () => {
+    api.flush();
+    expect((await api.getSettings(1)).settings.white_preference).toBe(1);
+    expect((await api.updateSettings(1, { white_preference: 0.6 })).values.white_preference).toBe(0.6);
+    expect((await api.updateSettings(1, { white_preference: 3 })).values.white_preference).toBe(1);
+    expect((await api.updateSettings(1, { white_preference: -1 })).values.white_preference).toBe(0);
+    await api.updateSettings(1, { white_preference: 0.25 });
+    expect(await api.copySettings(1)).toMatchObject({ white_preference: 0.25 });
+    expect((await api.getSettings(2)).settings.white_preference).toBe(1);
   });
 
   it("emits render_stats after a change", async () => {
     const stats: unknown[] = [];
     api.on("render_stats", (e) => stats.push(e));
-    await api.updateSettings(1, { contrast: 5 });
+    await api.updateSettings(1, { contrast: { kind: "manual", value: 5 } });
     await vi.advanceTimersByTimeAsync(1);
     expect(stats).toEqual([{ ms: 42, path: "neural", space: "display_p3", zoom_percent: null, fit_percent: null }]);
   });
@@ -901,7 +945,7 @@ describe("viewport", () => {
       expect(svg).toContain('width="2000" height="1332"');
       expect(svg).toContain('<rect width="100%" height="100%" fill="#FFFFFF"/>');
       // A change of settings, the photo, Before and the zoom each send a new, newer frame.
-      await api.updateSettings(1, { contrast: 10 });
+      await api.updateSettings(1, { contrast: { kind: "manual", value: 10 } });
       await api.setCurrent(2);
       await api.setBefore(true);
       await api.viewportSetMode({ kind: "percent", value: 100 });
@@ -1148,7 +1192,7 @@ describe("what the screens need beyond docs/01", () => {
     api.on("thumbnail_ready", (e) => seen.push(e.id));
     await api.updateSettings(4, { look: "arri:3000:teal-and-orange" });
     await api.updateSettings(4, { look_intensity: 50 });
-    await api.updateSettings(4, { contrast: 3 });
+    await api.updateSettings(4, { contrast: { kind: "manual", value: 3 } });
     await vi.advanceTimersByTimeAsync(200);
     expect(seen).toEqual([4]);
   });
@@ -1241,14 +1285,14 @@ describe("copy and paste settings", () => {
   it("copies every setting but the crop, the orientation and the white pick; Auto stays Auto", async () => {
     await ready();
     await api.updateSettings(1, {
-      contrast: 20,
+      contrast: { kind: "manual", value: 20 },
       exposure: { kind: "manual", ev: 1 },
       crop: { rect: { x: 0, y: 0, width: 0.5, height: 0.5 }, angle_deg: 0, aspect: "free" },
       orientation: 90,
       white_pick: [0.5, 0.5],
     });
     const patch = await api.copySettings(1);
-    expect(patch).toMatchObject({ contrast: 20, exposure: { kind: "manual", ev: 1 }, sharpen: { kind: "auto" }, noise_reduction: { kind: "auto" }, light_source: "auto" });
+    expect(patch).toMatchObject({ contrast: { kind: "manual", value: 20 }, exposure: { kind: "manual", ev: 1 }, sharpen: { kind: "auto" }, noise_reduction: { kind: "auto" }, light_source: "auto" });
     for (const key of ["crop", "orientation", "white_pick"]) expect(patch).not.toHaveProperty(key);
     expect(Object.keys(patch).length).toBe(Object.keys(defaultSettings()).length - 3);
   });
@@ -1277,21 +1321,21 @@ describe("copy and paste settings", () => {
 
   it("pastes onto each photo, leaving its crop, orientation and white pick, and answers with one step per photo", async () => {
     await ready();
-    await api.updateSettings(1, { contrast: 20, look: "builtin:signature" });
-    await api.updateSettings(2, { contrast: -5, crop: { rect: { x: 0, y: 0, width: 0.5, height: 0.5 }, angle_deg: 0, aspect: "free" }, orientation: 180 });
+    await api.updateSettings(1, { contrast: { kind: "manual", value: 20 }, look: "builtin:signature" });
+    await api.updateSettings(2, { contrast: { kind: "manual", value: -5 }, crop: { rect: { x: 0, y: 0, width: 0.5, height: 0.5 }, angle_deg: 0, aspect: "free" }, orientation: 180 });
     const patch = await api.copySettings(1);
     const events: number[] = [];
     api.on("settings_changed", (e) => events.push(e.photo_id));
     const report = await api.pasteSettings([2, 3, 2, 99], { ...patch, crop: null, orientation: 270, white_pick: [0.1, 0.1] });
     expect(report.skipped).toEqual([99]);
     expect(report.pasted.map((p) => p.id)).toEqual([2, 3]);
-    expect(report.pasted[0]).toMatchObject({ before: { contrast: -5, look: "builtin:neutral" }, after: { contrast: 20, look: "builtin:signature" } });
+    expect(report.pasted[0]).toMatchObject({ before: { contrast: { kind: "manual", value: -5 }, look: "builtin:neutral" }, after: { contrast: { kind: "manual", value: 20 }, look: "builtin:signature" } });
     expect(report.pasted[0]!.before).not.toHaveProperty("crop");
     const two = (await api.getSettings(2)).settings;
-    expect(two).toMatchObject({ contrast: 20, orientation: 180, white_pick: null });
+    expect(two).toMatchObject({ contrast: { kind: "manual", value: 20 }, orientation: 180, white_pick: null });
     expect(two.crop).not.toBeNull();
-    expect((await api.getSettings(3)).settings.contrast).toBe(20);
-    expect((await api.getSettings(4)).settings.contrast).toBe(0);
+    expect((await api.getSettings(3)).settings.contrast).toEqual({ kind: "manual", value: 20 });
+    expect((await api.getSettings(4)).settings.contrast).toEqual({ kind: "auto" });
     await Promise.resolve();
     expect(events.sort()).toEqual([2, 3]);
     // The same paste again changes nothing: empty steps, no event.
@@ -1305,13 +1349,13 @@ describe("copy and paste settings", () => {
   it("skips photos that are still developing or failed, and refuses a look that is gone", async () => {
     api.reset({ skipped: { DSC04203: "This file is not a raw file." } });
     await api.openPaths(ARW);
-    const early = await api.pasteSettings([1, 3], { contrast: 10 });
+    const early = await api.pasteSettings([1, 3], { contrast: { kind: "manual", value: 10 } });
     expect(early).toEqual({ pasted: [], skipped: [1, 3] });
     api.flush();
-    expect((await api.pasteSettings([1, 3], { contrast: 10 })).skipped).toEqual([3]);
-    const error = await rejection(api.pasteSettings([1], { look: "arri:3000:nothing", contrast: 50 }));
+    expect((await api.pasteSettings([1, 3], { contrast: { kind: "manual", value: 10 } })).skipped).toEqual([3]);
+    const error = await rejection(api.pasteSettings([1], { look: "arri:3000:nothing", contrast: { kind: "manual", value: 50 } }));
     expect(error.scope).toBe("looks");
-    expect((await api.getSettings(1)).settings.contrast).toBe(10);
+    expect((await api.getSettings(1)).settings.contrast).toEqual({ kind: "manual", value: 10 });
   });
 
   it("remembers the last menu state it was given", async () => {

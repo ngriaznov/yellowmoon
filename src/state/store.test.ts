@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createMockApi } from "../api.mock";
+import { createMockApi, estimatesFor, MOCK_ESTIMATES } from "../api.mock";
 import type { MockApi, MockOptions } from "../api.mock";
 import type { ResolvedSettings, SettingsPatch } from "../api/types";
 import { applyDirect, createStore, NO_ARW_NOTICE } from "./store";
@@ -308,13 +308,14 @@ describe("applyDirect", () => {
     const { store } = await opened();
     const rs = settingsOf(store);
     const next = applyDirect(rs, {
-      contrast: 12,
+      contrast: { kind: "manual", value: 12 },
       output_sharpening: 35,
       light_source: "tungsten",
       exposure: { kind: "manual", ev: 1 },
     });
-    expect(next.settings.contrast).toBe(12);
+    expect(next.settings.contrast).toEqual({ kind: "manual", value: 12 });
     expect(next.values.contrast).toBe(12);
+    expect(next.auto.contrast).toBe(false);
     // The output sharpening is a plain number: the slider shows it at once, without waiting for the
     // core (whose answer comes after the stage has run on the new amount).
     expect(next.settings.output_sharpening).toBe(35);
@@ -323,6 +324,18 @@ describe("applyDirect", () => {
     // Exposure has to be resolved by the core.
     expect(next.settings.exposure).toEqual({ kind: "auto" });
     expect(next.values.exposure_ev).toBe(rs.values.exposure_ev);
+  });
+
+  it("leaves an Auto contrast to the core, which resolves it, and shows a white preference at once", async () => {
+    const { store } = await opened();
+    const rs = settingsOf(store);
+    const auto = applyDirect(rs, { contrast: { kind: "auto" } });
+    expect(auto.settings.contrast).toEqual(rs.settings.contrast);
+    expect(auto.values.contrast).toBe(rs.values.contrast);
+    expect(auto.auto.contrast).toBe(rs.auto.contrast);
+    const preference = applyDirect(rs, { white_preference: 0.4 });
+    expect(preference.settings.white_preference).toBe(0.4);
+    expect(preference.values.white_preference).toBe(0.4);
   });
 });
 
@@ -360,7 +373,7 @@ describe("changing settings", () => {
   it("does nothing before the settings have arrived", async () => {
     const { api, store } = await connected();
     const spy = vi.spyOn(api, "updateSettings");
-    await store.update({ contrast: 4 });
+    await store.update({ contrast: { kind: "manual", value: 4 } });
     expect(spy).not.toHaveBeenCalled();
   });
 
@@ -375,14 +388,14 @@ describe("changing settings", () => {
       if (calls.length === 1) await gate;
       return real(id, patch);
     });
-    const first = store.update({ contrast: 10 }, false);
-    const second = store.update({ contrast: 20 }, false);
-    const third = store.update({ contrast: 30, brightness: 5 }, false);
-    const last = store.update({ contrast: 40 }, true);
+    const first = store.update({ contrast: { kind: "manual", value: 10 } }, false);
+    const second = store.update({ contrast: { kind: "manual", value: 20 } }, false);
+    const third = store.update({ contrast: { kind: "manual", value: 30 }, brightness: 5 }, false);
+    const last = store.update({ contrast: { kind: "manual", value: 40 } }, true);
     release();
     await Promise.all([first, second, third, last]);
     // One in flight, then everything that came after it, as one patch.
-    expect(calls).toEqual([{ contrast: 10 }, { contrast: 40, brightness: 5 }]);
+    expect(calls).toEqual([{ contrast: { kind: "manual", value: 10 } }, { contrast: { kind: "manual", value: 40 }, brightness: 5 }]);
     expect(settingsOf(store).values.contrast).toBe(40);
     expect(settingsOf(store).values.brightness).toBe(5);
   });
@@ -398,29 +411,30 @@ describe("changing settings", () => {
       if (calls.length === 1) await gate;
       return real(id, patch);
     });
-    const a = store.update({ contrast: 10 }, true);
-    const b = store.update({ contrast: 20 }, true);
+    const a = store.update({ contrast: { kind: "manual", value: 10 } }, true);
+    const b = store.update({ contrast: { kind: "manual", value: 20 } }, true);
     const c = store.update({ brightness: 7 }, false);
     release();
     await Promise.all([a, b, c]);
-    expect(calls).toEqual([{ contrast: 10 }, { contrast: 20 }, { brightness: 7 }]);
+    expect(calls).toEqual([{ contrast: { kind: "manual", value: 10 } }, { contrast: { kind: "manual", value: 20 } }, { brightness: 7 }]);
   });
 
   it("shows the error and asks the core again when a patch fails", async () => {
     const { api, store } = await opened();
     api.failNext("updateSettings", { scope: "render", message: "The photo couldn't be drawn. Try the change again." });
-    await store.update({ contrast: 33 });
+    await store.update({ contrast: { kind: "manual", value: 33 } });
     expect(store.getState().error?.message).toBe("The photo couldn't be drawn. Try the change again.");
     // The optimistic value was taken back by asking the core.
-    await vi.waitFor(() => expect(settingsOf(store).values.contrast).toBe(0));
+    await vi.waitFor(() => expect(settingsOf(store).values.contrast).toBe(MOCK_ESTIMATES.contrast));
   });
 
   it("keeps each photo's settings apart", async () => {
     const { store } = await opened();
-    await store.update({ contrast: 9 });
+    await store.update({ contrast: { kind: "manual", value: 9 } });
     await store.step(1);
     await vi.waitFor(() => expect(settingsOf(store).photo_id).toBe(2));
-    expect(settingsOf(store).values.contrast).toBe(0);
+    // Photo 2 has its own automatic contrast, and it is Auto.
+    expect(settingsOf(store).values.contrast).toBe(estimatesFor(2).contrast);
     await store.step(-1);
     expect(settingsOf(store).values.contrast).toBe(9);
   });
@@ -429,15 +443,15 @@ describe("changing settings", () => {
 describe("undo and redo", () => {
   it("takes back a change and puts it back, for the current photo", async () => {
     const { api, store } = await opened();
-    await store.update({ contrast: 25 });
+    await store.update({ contrast: { kind: "manual", value: 25 } });
     expect(store.getState().canUndo).toBe(true);
     const spy = vi.spyOn(api, "updateSettings");
     await store.undo();
-    expect(spy).toHaveBeenLastCalledWith(1, { contrast: 0 });
-    expect(settingsOf(store).values.contrast).toBe(0);
+    expect(spy).toHaveBeenLastCalledWith(1, { contrast: { kind: "auto" } });
+    expect(settingsOf(store).values.contrast).toBe(MOCK_ESTIMATES.contrast);
     expect(store.getState().canRedo).toBe(true);
     await store.redo();
-    expect(spy).toHaveBeenLastCalledWith(1, { contrast: 25 });
+    expect(spy).toHaveBeenLastCalledWith(1, { contrast: { kind: "manual", value: 25 } });
     expect(settingsOf(store).values.contrast).toBe(25);
     expect(store.getState().canRedo).toBe(false);
   });
@@ -481,7 +495,7 @@ describe("undo and redo", () => {
 
   it("has a history for each photo", async () => {
     const { store } = await opened();
-    await store.update({ contrast: 25 });
+    await store.update({ contrast: { kind: "manual", value: 25 } });
     await store.step(1);
     await vi.waitFor(() => expect(settingsOf(store).photo_id).toBe(2));
     expect(store.getState().canUndo).toBe(false);
@@ -493,7 +507,7 @@ describe("undo and redo", () => {
 
   it("a new change ends the redo chain", async () => {
     const { store } = await opened();
-    await store.update({ contrast: 5 });
+    await store.update({ contrast: { kind: "manual", value: 5 } });
     await store.undo();
     await store.update({ brightness: 6 });
     expect(store.getState().canRedo).toBe(false);
@@ -511,7 +525,7 @@ describe("undo and redo", () => {
     const { store } = await opened();
     // Values cycle between 2 and 90, so every change differs from the one before.
     const value = (i: number): number => (i % 90) + 1;
-    for (let i = 1; i <= 105; i++) await store.update({ contrast: value(i) });
+    for (let i = 1; i <= 105; i++) await store.update({ contrast: { kind: "manual", value: value(i) } });
     for (let i = 0; i < 120; i++) await store.undo();
     // 105 changes, the oldest five forgotten: the oldest step left takes contrast back to what change 5 made it.
     expect(settingsOf(store).values.contrast).toBe(value(5));
@@ -530,9 +544,9 @@ describe("undo and redo", () => {
 
   it("waits for a patch in flight before it undoes", async () => {
     const { store } = await opened();
-    void store.update({ contrast: 14 }, true);
+    void store.update({ contrast: { kind: "manual", value: 14 } }, true);
     await store.undo();
-    expect(settingsOf(store).values.contrast).toBe(0);
+    expect(settingsOf(store).values.contrast).toBe(MOCK_ESTIMATES.contrast);
   });
 });
 
@@ -800,7 +814,7 @@ describe("the viewport", () => {
 
   it("updates the status line from render_stats", async () => {
     const { store } = await opened();
-    await store.update({ contrast: 3 });
+    await store.update({ contrast: { kind: "manual", value: 3 } });
     await vi.waitFor(() => expect(store.getState().stats).toEqual({ ms: 42, path: "neural", space: "display_p3", zoom_percent: null, fit_percent: null }));
   });
 
@@ -816,7 +830,7 @@ describe("the viewport", () => {
 describe("closing the session", () => {
   it("returns to a clean Start and keeps the looks", async () => {
     const { api, store } = await opened({ picked: [1] });
-    await store.update({ contrast: 4 });
+    await store.update({ contrast: { kind: "manual", value: 4 } });
     await store.setZoom({ kind: "percent", value: 100 });
     await store.toggleBefore();
     await store.closeSession();
@@ -830,12 +844,12 @@ describe("closing the session", () => {
 
   it("can open again afterwards, with fresh history", async () => {
     const { api, store } = await opened();
-    await store.update({ contrast: 4 });
+    await store.update({ contrast: { kind: "manual", value: 4 } });
     await store.closeSession();
     await store.openDialog("files");
     api.flush();
     await vi.waitFor(() => expect(store.currentSettings()).not.toBeNull());
     expect(store.getState().canUndo).toBe(false);
-    expect(settingsOf(store).values.contrast).toBe(0);
+    expect(settingsOf(store).values.contrast).toBe(MOCK_ESTIMATES.contrast);
   });
 });

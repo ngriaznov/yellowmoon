@@ -43,7 +43,7 @@ describe("the Edit menu's settings items", () => {
     await vi.waitFor(() => expect(store.getState().session?.photos.every((p) => p.status.kind === "ready")).toBe(true));
     await store.openPhotos();
     await vi.waitFor(() => expect(store.currentSettings()).not.toBeNull());
-    await store.update({ contrast: 30 });
+    await store.update({ contrast: { kind: "manual", value: 30 } });
     const copy = vi.spyOn(store, "copySettings");
     const paste = vi.spyOn(store, "pasteSettings");
 

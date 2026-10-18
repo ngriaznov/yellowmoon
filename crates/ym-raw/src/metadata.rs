@@ -278,6 +278,9 @@ pub struct RawMetadata {
     pub exposure_program: Option<ExposureProgram>,
     /// EXIF `SceneCaptureType` (tag 0xA406): the kind of scene the camera assumed.
     pub scene_capture_type: Option<SceneCaptureType>,
+    /// EXIF `ColorSpace` (tag 0xA001) as written: 1 for sRGB, 0xFFFF (uncalibrated) for the Adobe RGB
+    /// mode. `None` when the tag is missing.
+    pub color_space: Option<u16>,
     /// Sony Dynamic Range Optimizer mode (maker note tag 0xB025). `None` when the tag is missing.
     /// Tag 0xB04F, another DRO tag with the codes Off, Standard and Plus that some compact cameras
     /// write, is not read.
@@ -555,6 +558,7 @@ pub fn probe_source(source: &dyn ByteSource) -> Result<RawMetadata, RawError> {
         flash: exif.flash,
         exposure_program: exif.exposure_program,
         scene_capture_type: exif.scene_capture_type,
+        color_space: exif.color_space,
         dro_mode: maker.as_ref().and_then(|m| m.dro_mode),
         creative_style: maker.as_ref().and_then(|m| m.creative_style.clone()),
         scene_mode: maker.as_ref().and_then(|m| m.scene_mode),
@@ -1713,6 +1717,21 @@ mod tests {
         assert_eq!(meta.creative_style, Some(CreativeStyle::Vivid));
         assert_eq!(meta.dro_mode, Some(DroMode::Auto));
         assert_eq!(meta.scene_mode, Some(SceneMode::Landscape));
+    }
+
+    #[test]
+    fn the_colour_space_tag_is_read_as_written() {
+        // The builder writes ColorSpace 1 (sRGB) by default.
+        let default = probe_with(ArwBuilder::new("ILCE-7M3", 16, 16));
+        assert_eq!(default.color_space, Some(1));
+        // The Adobe RGB mode writes 0xFFFF (uncalibrated), which replaces the default entry.
+        let adobe = probe_with(ArwBuilder::new("ILCE-7M3", 16, 16).exif_entry(
+            tag::COLOR_SPACE,
+            field_type::SHORT,
+            1,
+            0xFFFFu16.to_le_bytes().to_vec(),
+        ));
+        assert_eq!(adobe.color_space, Some(0xFFFF));
     }
 
     #[test]

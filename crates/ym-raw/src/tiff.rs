@@ -155,6 +155,8 @@ pub mod tag {
     pub const MAKER_NOTE: u16 = 0x927C;
     /// `SubSecTimeOriginal`.
     pub const SUB_SEC_TIME_ORIGINAL: u16 = 0x9291;
+    /// `ColorSpace`: 1 for sRGB, 0xFFFF (uncalibrated) for Adobe RGB, which Sony writes in its Adobe RGB mode.
+    pub const COLOR_SPACE: u16 = 0xA001;
     /// `FocalLengthIn35mmFilm`.
     pub const FOCAL_LENGTH_35MM: u16 = 0xA405;
     /// `SceneCaptureType`.

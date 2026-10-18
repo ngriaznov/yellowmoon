@@ -110,7 +110,7 @@ describe("the White row of the Automatic card", () => {
     await setup();
     // Between Exposure and White balance, as the owner asked.
     const rows = within(screen.getByRole("region", { name: "Automatic" })).getAllByRole("button", { name: /Open / });
-    expect(rows.map((r) => r.getAttribute("aria-label")?.split(" ")[0])).toEqual(["Exposure", "White", "White", "Noise", "Camera"]);
+    expect(rows.map((r) => r.getAttribute("aria-label")?.split(" ")[0])).toEqual(["Exposure", "Contrast", "White", "White", "Noise", "Camera"]);
     const row = whiteRow(/^White \+0\.80 EV, Auto\. Open Light$/);
     await h.user.click(row);
     await waitFor(() => expect(screen.getByRole("tab", { name: "Light" })).toHaveAttribute("aria-selected", "true"));
