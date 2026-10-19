@@ -167,23 +167,37 @@ test.describe("the flow", () => {
     // The shell keeps 256 MiB of tiles and answers 404 for the addresses of the photos used least recently. The mock's addresses are
     // `blob:` URLs, so revoking them makes the next load of the same address fail the same way.
     await photos(page);
-    // The tiles stay in view for the whole test: their pictures are what it follows from one photo to the next.
+    const loaded = () =>
+      page.locator(".ym-look-tile img").evaluateAll((images) =>
+        (images as HTMLImageElement[]).filter((i) => i.complete && i.naturalWidth > 0).map((i) => i.src),
+      );
     await showFirstLookTile(page);
     await lookTilesLoaded(page);
-    const srcs = () => page.locator(".ym-look-tile img").evaluateAll((images) => (images as HTMLImageElement[]).map((i) => i.src));
-    const first = await srcs();
+    const first = await loaded();
     expect(first.length).toBeGreaterThanOrEqual(2);
+    // The tiles' pictures once each has one that is none of `old`. Right after a move to another photo the tiles still show the
+    // pictures of the photo before, loaded, so reading them then (or after `lookTilesLoaded`, which can pass on those) catches the
+    // wrong photo: the test failed about one run in 40 that way. A tile asks for its picture only while it shows, and the panel
+    // may not show it after a move, so every look brings the first row of tiles into view.
+    const picturesOtherThan = async (old: string[]): Promise<string[]> => {
+      let now: string[] = [];
+      await expect
+        .poll(async () => {
+          await showFirstLookTile(page);
+          now = await loaded();
+          return now.length >= first.length && now.every((src) => !old.includes(src));
+        })
+        .toBe(true);
+      return now;
+    };
     await page.getByRole("button", { name: "Show DSC04206" }).click();
     await expect(page.getByRole("img", { name: /^Photo DSC04206/ })).toBeVisible();
-    await expect.poll(async () => (await srcs()).some((src) => first.includes(src))).toBe(false);
-    await lookTilesLoaded(page);
+    const second = await picturesOtherThan(first);
     await page.evaluate((urls) => urls.forEach((u) => URL.revokeObjectURL(u)), first);
     await page.getByRole("button", { name: /^Show DSC04204/ }).click();
     await expect(page.getByRole("img", { name: /^Photo DSC04204/ })).toBeVisible();
-    await lookTilesLoaded(page);
-    const again = await srcs();
-    expect(again.length).toBeGreaterThanOrEqual(first.length);
-    expect(again.filter((src) => first.includes(src))).toEqual([]);
+    // The core still holds DSC04204's first addresses: they fail, the tiles drop them and ask again, and the new pictures load.
+    await picturesOtherThan([...first, ...second]);
   });
 });
 
