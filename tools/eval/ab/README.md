@@ -85,6 +85,9 @@ Useful options:
 - `--seed N`: the seed of the trial order and the sides (default 20261018). The same photos and seed
   give the same test.
 - `--ym PATH`, `--data DIR`: other renderer or data folders (normally not needed).
+- `--resume`: finish a run that stopped part way. Run the same command again with `--resume`, and the
+  kit keeps the pictures it already made (with the same photos, `--out` and `--seed`) and makes only
+  the missing ones. Without it, every picture is made again.
 
 If you run `prepare` again into a folder that holds another test, the old `plan.json` is replaced.
 Answers given to the old test no longer match.

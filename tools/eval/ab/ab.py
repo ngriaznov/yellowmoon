@@ -84,6 +84,7 @@ class PrepareOptions:
     data: Path
     jobs: int
     scratch_root: Optional[Path] = None
+    resume: bool = False
 
 
 @dataclass
@@ -179,6 +180,7 @@ def prepare(options: PrepareOptions, log: Callable[[str], None] = stderr_log) ->
             scratch=scratch,
             seed=options.seed,
             long_edge=options.long_edge,
+            resume=options.resume,
         )
         log(f"Rendering {len(jobs)} photos, {options.jobs} at a time")
         failures = make_pictures(pictures, jobs, options.jobs, log)
@@ -259,6 +261,11 @@ def build_parser() -> argparse.ArgumentParser:
     prep.add_argument("--ym", type=Path, default=DEFAULT_YM, help="the ym binary (default target/release/ym)")
     prep.add_argument("--data", type=Path, default=DEFAULT_DATA, help="the data folder (default data/)")
     prep.add_argument("--jobs", type=int, default=default_jobs(), help="renders at the same time (default: CPUs / 2)")
+    prep.add_argument(
+        "--resume",
+        action="store_true",
+        help="keep the pictures an earlier run with the same photos, --out and --seed already made, and make the rest",
+    )
 
     score = sub.add_parser("score", help="score the results.json the page exported")
     score.add_argument("results", type=Path, metavar="RESULTS_JSON")
@@ -293,6 +300,7 @@ def run_prepare(args: argparse.Namespace) -> int:
         ym=args.ym,
         data=args.data,
         jobs=args.jobs,
+        resume=args.resume,
     )
     try:
         result = prepare(options)

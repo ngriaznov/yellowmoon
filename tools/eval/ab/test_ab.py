@@ -564,6 +564,34 @@ class PrepareTests(PrepareHarness):
                 checked += 1
         self.assertEqual(checked, 2 * 2, "two trials of P1, two sides each")
 
+    def test_resume_keeps_the_pictures_already_made_and_makes_the_rest(self) -> None:
+        first = self.prepare()
+        pictures = sorted(p for p in (self.out / "pictures").rglob("*") if p.is_file())
+        self.assertTrue(pictures)
+        # A run that stopped part way: one picture is gone, and the others are kept.
+        missing = pictures[0]
+        missing.unlink()
+        kept = {p: p.read_bytes() for p in pictures[1:]}
+        self.log.unlink()
+        second = self.prepare(resume=True)
+        self.assertEqual(second.plan["plan_id"], first.plan["plan_id"])
+        self.assertTrue(missing.is_file(), "the missing picture is made again")
+        for path, blob in kept.items():
+            self.assertEqual(path.read_bytes(), blob)
+        renders = [c for c in read_log(self.log) if c["cmd"] == "render"]
+        self.assertLessEqual(len(renders), 1, "only the missing picture is rendered")
+        # Without --resume every picture is made again.
+        self.log.unlink(missing_ok=True)
+        self.prepare()
+        self.assertGreater(len([c for c in read_log(self.log) if c["cmd"] == "render"]), 1)
+
+    def test_resume_remakes_a_file_that_is_not_a_jpeg(self) -> None:
+        self.prepare()
+        picture = sorted(p for p in (self.out / "pictures").rglob("*.jpg") if p.is_file())[0]
+        picture.write_bytes(b"not a jpeg")
+        self.prepare(resume=True)
+        self.assertEqual(picture.read_bytes()[:2], b"\xff\xd8")
+
     def test_a_failing_render_drops_the_photo_from_every_trial(self) -> None:
         with mock.patch.dict(os.environ, {"FAKE_YM_FAIL": "P1"}):
             result = self.prepare()

@@ -71,6 +71,9 @@ class Pictures:
     seed: int
     long_edge: int
     timeout_s: float = RENDER_TIMEOUT_S
+    #: Keep a picture an earlier run already made (`prepare --resume`). Both `ym` and the camera copy write through a
+    #: temporary file and a rename, so a picture that is there is whole; it must still start like a JPEG.
+    resume: bool = False
 
 
 def ym_environment(data: Path, home: Path, base: Optional[Mapping[str, str]] = None) -> Dict[str, str]:
@@ -228,8 +231,21 @@ def camera_picture(pictures: Pictures, job: PhotoJob) -> None:
     write_picture(pictures, "camera", job, blob)
 
 
+def picture_is_made(pictures: Pictures, job: PhotoJob, variant: str) -> bool:
+    """Whether the picture of `variant` is already in the out folder: a non-empty file that starts like a JPEG."""
+    target = pictures.out / picture_relpath(pictures.seed, variant, job.number, job.stem)
+    try:
+        with target.open("rb") as handle:
+            return handle.read(2) == JPEG_START
+    except OSError:
+        return False
+
+
 def run_task(pictures: Pictures, job: PhotoJob, variant: str) -> Optional[str]:
-    """Makes one picture. Returns None on success, else the reason it failed."""
+    """Makes one picture, or keeps the one an earlier run made when resuming. Returns None on success, else the
+    reason it failed."""
+    if pictures.resume and picture_is_made(pictures, job, variant):
+        return None
     try:
         if variant == "camera":
             camera_picture(pictures, job)

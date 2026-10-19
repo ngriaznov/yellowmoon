@@ -7,8 +7,8 @@
 //! whole folder is missing. `signature.json` is the look new photos get out of the box (owner's
 //! decisions of 2026-10-14 and 2026-10-19: a LogC4 luma curve and CDL saturation 1.45). It is
 //! read like any other file here: listed when it is present, not listed when it is not, and a
-//! folder without it
-//! leaves the default look at Neutral (`LookService::effective_default` in `ym-core`).
+//! folder without it leaves the default look at Neutral (`LookService::effective_default` in
+//! `ym-core`).
 
 use std::collections::HashSet;
 use std::fs;
