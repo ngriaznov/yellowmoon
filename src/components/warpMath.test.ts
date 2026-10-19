@@ -32,8 +32,9 @@ import {
 } from "./warpMath";
 
 // The values below are worked out by hand from the formulas of docs/02 C9b (the CPU reference is crates/ym-color/src/warp.rs):
-//   δ = t − s, ρ' = max(ρ, |δ|/1.5), φ = exp(−|c − s|²/(2ρ'²)), n = max(1, Σφ), λ = Π(1 − exp(−|c − l|²/(2ρ²))),
-//   g = smoothstep(0, 0.02, |c|), D = g·λ·Σ(w φ δ)/n, E = g·λ·Σ(w φ x)/n.
+//   δ = t − s, φ = exp(−|c − s|²/(2ρ²)), n = max(1, Σφ), λ = Π(1 − exp(−|c − l|²/(2ρ²))), g = smoothstep(0, 0.02, |c|), γ = g·λ,
+//   N = clamp(ceil(1.25·Σ|δ|/(ρ√e)), 1, 64). With N = 1 (a move of up to 1.32 ranges) D = γ·Σ(w φ δ)/n; with more, the pixel follows
+//   N steps while each centre slides to s + γ·w·δ. E = γ·Σ(w φ x)/n.
 
 const mid = logc4AtStops(0);
 const close = (a: readonly number[], b: readonly number[], digits = 12): void => {
@@ -79,19 +80,20 @@ describe("the warp (the CPU reference's maths)", () => {
     }
   });
 
-  it("follows the Gaussian around the source: one range away the move is exp(−½) of it", () => {
-    // s = (0.1, 0), δ = (0, 0.06): |δ|/1.5 = 0.04 = ρ, so ρ' = 0.04. At c = (0.14, 0), |c − s| = ρ': φ = exp(−0.5) = 0.6065307, n = 1.
-    const warp = prepareWarp([movingPin([0.1, 0], [0.1, 0.06])]);
+  it("follows the Gaussian around the source: one range away a short move is exp(−½) of it", () => {
+    // s = (0.1, 0), δ = (0, 0.05), ρ = 0.04: 1.25 · 0.05 / (0.04 √e) = 0.95, one step. At c = (0.14, 0), |c − s| = ρ: φ = exp(−0.5).
+    const warp = prepareWarp([movingPin([0.1, 0], [0.1, 0.05])]);
+    expect(warp.steps).toBe(1);
     const { d, e } = warpDisplacement(warp, [0.14, 0], mid);
-    close(d, [0, 0.06 * 0.6065306597126334], 12);
+    close(d, [0, 0.05 * 0.6065306597126334], 12);
     expect(e).toBe(0);
   });
 
   it("fades out toward neutral: half the guard gives half the weight", () => {
     // c = (0.01, 0): g = smoothstep(0, 0.02, 0.01) = 0.5; |c − s| = 0.09, φ = exp(−0.0081 / 0.0032) = exp(−2.53125).
-    const warp = prepareWarp([movingPin([0.1, 0], [0.1, 0.06])]);
+    const warp = prepareWarp([movingPin([0.1, 0], [0.1, 0.05])]);
     const { d } = warpDisplacement(warp, [0.01, 0], mid);
-    close(d, [0, 0.5 * Math.exp(-2.53125) * 0.06], 14);
+    close(d, [0, 0.5 * Math.exp(-2.53125) * 0.05], 14);
     // Neutral itself never moves, whatever the pin.
     expect(warpDisplacement(prepareWarp([{ ...movingPin([0.03, 0], [0.2, 0.1]), range: WARP_RANGE_MAX, exposure_ev: 1 }]), [0, 0], mid)).toEqual({ d: [0, 0], e: 0 });
     for (const n of [0.1, 0.3, 0.6, 0.9]) {
@@ -99,10 +101,35 @@ describe("the warp (the CPU reference's maths)", () => {
     }
   });
 
-  it("grows the range of a long move: |δ| = 0.25 gives ρ' = 0.25/1.5", () => {
-    const warp = prepareWarp([{ ...movingPin([0.1, 0], [-0.1, 0.15]), range: 0.01 }]);
-    const sigma = 0.25 / 1.5;
-    expect(warp.moves[0]?.invTwoSigmaSq).toBeCloseTo(1 / (2 * sigma * sigma), 10);
+  it("keeps the range of a long move and follows it in steps: |δ| = 0.25 at ρ = 0.01 takes 19", () => {
+    const s: [number, number] = [0.1, 0];
+    const t: [number, number] = [-0.1, 0.15];
+    const warp = prepareWarp([{ ...movingPin(s, t), range: 0.01 }]);
+    expect(warp.moves[0]?.invTwoSigmaSq).toBeCloseTo(1 / (2 * 0.01 * 0.01), 10);
+    // ceil(1.25 · 0.25 / (0.01 √e)) = ceil(18.95) = 19.
+    expect(warp.steps).toBe(19);
+    // The source lands on the target.
+    close(chromaOf(applyWarp(warp, pixelAt(0.4, s))), t, 12);
+    // A colour three ranges beside the source moves by at most exp(−4.5) of the move (the grown range of 0.167 moved it by 0.98 of it).
+    const across: [number, number] = [0.6, 0.8]; // perpendicular to δ = (−0.2, 0.15) / 0.25
+    const { d } = warpDisplacement(warp, [s[0] + 0.03 * across[0], s[1] + 0.03 * across[1]], mid);
+    expect(Math.hypot(d[0], d[1])).toBeLessThan(Math.exp(-4.5) * 0.25);
+    expect(Math.hypot(d[0], d[1])).toBeGreaterThan(0);
+  });
+
+  it("moves the source by its share of a long move: tonal weight 0.4 gives 0.4 of it", () => {
+    const warp = prepareWarp([{ ...movingPin([0.1, 0], [0.1, 0.3]), range: 0.01, shadows: 0.4, highlights: 0.4 }]);
+    expect(warp.steps).toBe(23);
+    close(chromaOf(applyWarp(warp, pixelAt(0.4, [0.1, 0]))), [0.1, 0.12], 12);
+  });
+
+  it("takes the step count from every moving pin, at most 64", () => {
+    expect(prepareWarp([]).steps).toBe(0);
+    expect(prepareWarp([lockedPin([0.1, 0])]).steps).toBe(0);
+    expect(prepareWarp([{ ...movingPin([0.1, 0]), exposure_ev: 1 }]).steps).toBe(1);
+    expect(prepareWarp([movingPin([0.1, 0], [0.1, 0.1])]).steps).toBe(2);
+    expect(prepareWarp([{ ...movingPin([0.5, 0], [-0.5, 0]), range: 0.01 }]).steps).toBe(64);
+    expect(prepareWarp([movingPin([0.1, 0], [0.1, 0.1]), movingPin([-0.1, 0], [-0.1, 0.1])]).steps).toBe(4);
   });
 
   it("holds a locked pin's colour at every tone, and lets a colour one range off the lock move by 1 − exp(−½) of the move", () => {
