@@ -45,10 +45,10 @@ pub(crate) fn availability() -> Availability {
 
 /// Which model answers and on which macOS.
 fn info() -> AdvisorInfo {
-    AdvisorInfo {
-        model: read_text(ym_apple_auto_model).unwrap_or_else(|| "unknown".to_owned()),
-        os: read_text(ym_apple_auto_os).unwrap_or_else(|| "unknown".to_owned()),
-    }
+    AdvisorInfo::new(
+        read_text(ym_apple_auto_model).unwrap_or_else(|| "unknown".to_owned()),
+        read_text(ym_apple_auto_os).unwrap_or_else(|| "unknown".to_owned()),
+    )
 }
 
 /// Calls one of the string functions with a buffer of [`INFO_BYTES`].

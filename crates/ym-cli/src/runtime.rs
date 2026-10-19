@@ -72,6 +72,27 @@ pub struct CoreSettings {
     /// with the mode of `--apple-auto` ([`AppleAutoMode::FromPreference`] without it); `None` hands it
     /// none, which is Apple Auto off (`doctor --bench`, which times the render path only).
     pub apple_auto: Option<AppleAutoMode>,
+    /// Instructions for Apple Auto's model for this run instead of the `apple_auto_instructions`
+    /// preference (`--apple-auto-instructions FILE`, read by [`read_instructions`]).
+    pub apple_auto_instructions: Option<String>,
+}
+
+/// Reads `--apple-auto-instructions FILE` (`docs/19` section 8): the file's text as UTF-8, at most
+/// 2000 characters (`ym_core::apple_auto::INSTRUCTIONS_MAX_CHARS`). An empty file is the default
+/// instructions.
+///
+/// # Errors
+///
+/// A usage [`Failure`] (exit code 2) when the file cannot be read or is too long.
+pub fn read_instructions(path: &std::path::Path) -> Result<String, Failure> {
+    let text = std::fs::read_to_string(path).map_err(|e| {
+        Failure::usage(format!(
+            "Can't read the instructions for Apple Intelligence from {}: {e}.",
+            path.display()
+        ))
+    })?;
+    ym_core::apple_auto::check_instructions(&text).map_err(Failure::usage)?;
+    Ok(text)
 }
 
 /// The core and the channel its export queue reports on.
@@ -121,6 +142,9 @@ impl Runtime {
             options.advisor = Some(ym_apple::system_advisor());
             options.apple_auto = mode;
         }
+        options
+            .apple_auto_instructions
+            .clone_from(&settings.apple_auto_instructions);
         let core = Core::open(options).map_err(|e| core_failure(&e))?;
         Ok(Self::over(core, events))
     }
@@ -333,10 +357,9 @@ mod tests {
     impl ym_core::apple_auto::AutoAdvisor for Switch {
         fn availability(&self) -> ym_core::apple_auto::Availability {
             if self.0.load(Ordering::SeqCst) {
-                ym_core::apple_auto::Availability::Available(ym_core::apple_auto::AdvisorInfo {
-                    model: "Switch".to_owned(),
-                    os: "test".to_owned(),
-                })
+                ym_core::apple_auto::Availability::Available(
+                    ym_core::apple_auto::AdvisorInfo::new("Switch", "test"),
+                )
             } else {
                 ym_core::apple_auto::Availability::Unavailable(
                     UnavailableReason::AppleIntelligenceOff,
@@ -347,10 +370,12 @@ mod tests {
         fn ask(
             &self,
             _picture: &ym_core::apple_auto::AdvisorPicture,
+            _instructions: &str,
         ) -> Result<ym_core::apple_auto::AdvisorAnswer, ym_core::apple_auto::AdvisorError> {
             Ok(ym_core::apple_auto::AdvisorAnswer {
-                steps: ym_core::apple_auto::AutoSteps::default(),
+                steps: ym_core::apple_auto::AutoSteps::keep(),
                 scene: String::new(),
+                plan: String::new(),
             })
         }
     }

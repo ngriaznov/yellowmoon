@@ -6,7 +6,10 @@
 //! those `ym-core` computes; nothing is worked out again.
 
 use serde_json::{Value, json};
-use ym_core::apple_auto::{AppleAuto, AutoSteps, FailureKind, PROMPT_VERSION, TABLE_VERSION};
+use ym_core::apple_auto::{
+    AppleAuto, AutoSteps, FailureKind, HighlightColor, PROMPT_VERSION, ShadowColor, TABLE_VERSION,
+    steps_json, strength_name,
+};
 use ym_core::camera::PhotoCamera;
 use ym_core::session::PhotoView;
 use ym_core::settings::ResolvedSettings;
@@ -137,11 +140,12 @@ pub enum AppleAutoField {
 }
 
 /// The per-photo `apple_auto` object of `ym info --json` and `ym render --json` (`docs/19` section
-/// 8): `{ "state", "reason", "model", "os", "prompt", "table" }`, with `steps` and `scene` when the
-/// photo was answered. `reason` is the wire name of why Apple Auto is not available
-/// (`unavailable`) or why the request failed (`failed`), else null; `model` and `os` name the model
-/// that answered or was asked, null otherwise. `steps` are the photo's own answer, as `ym:AppleAuto`
-/// records them; the steps in effect can be its burst's (`docs/19` section 5).
+/// 8): `{ "state", "reason", "model", "os", "instructions", "instructions_sha256", "prompt",
+/// "table" }`, with `steps`, `scene` and `plan` when the photo was answered. `reason` is the wire
+/// name of why Apple Auto is not available (`unavailable`) or why the request failed (`failed`),
+/// else null; `model`, `os` and the instructions name the model that answered or was asked and what
+/// it read, null otherwise. `steps` are the photo's own answer, as `ym:AppleAuto` records them, a
+/// step the model left empty `null`; the steps in effect can be its burst's (`docs/19` section 5).
 #[must_use]
 pub fn apple_auto_value(apple: &AppleAuto) -> Value {
     let (state, reason, info) = match apple {
@@ -164,55 +168,67 @@ pub fn apple_auto_value(apple: &AppleAuto) -> Value {
         "reason": reason,
         "model": info.map(|i| i.model.as_str()),
         "os": info.map(|i| i.os.as_str()),
+        "instructions": info.map(|i| i.instructions.instructions),
+        "instructions_sha256": info.map(|i| i.instructions.instructions_sha256.as_str()),
         "prompt": PROMPT_VERSION,
         "table": TABLE_VERSION,
     });
     if let (AppleAuto::Answered { answer, .. }, Value::Object(map)) = (apple, &mut value) {
-        let s = answer.steps;
-        map.insert(
-            "steps".to_owned(),
-            json!({
-                "exposure": s.exposure,
-                "white": s.white,
-                "contrast": s.contrast,
-                "saturation": s.saturation,
-            }),
-        );
+        map.insert("steps".to_owned(), steps_json(&answer.steps));
         map.insert("scene".to_owned(), json!(answer.scene));
+        map.insert("plan".to_owned(), json!(answer.plan));
     }
     value
 }
 
-/// What the steps do, in words, in the order exposure, white, contrast, saturation, and only the
-/// ones that change something: `Brighter +0.3 EV · warmer 10 mired · contrast +15`, or `No change`
-/// when every step is keep. The numbers are the table's (`docs/19` section 5).
+/// What the steps do, in words, in the order of the table (exposure, highlights, shadows, black,
+/// contrast, warmth, tint, saturation, the shadows' colour, the highlights' colour), and only the
+/// ones that were set and change something: `Brighter +0.3 EV · highlights -20 · cooler 10 mired ·
+/// teal shadows (medium)`, or `No change` when every step that was set is keep or none. The numbers
+/// are the table's (`docs/19` section 5).
 #[must_use]
 pub fn steps_text(steps: AutoSteps) -> String {
     let Some(v) = steps.values() else {
-        return format!(
-            "steps out of range (exposure {}, white {}, contrast {}, saturation {})",
-            steps.exposure, steps.white, steps.contrast, steps.saturation
-        );
+        return format!("steps out of range ({steps:?})");
     };
     let mut parts: Vec<String> = Vec::new();
-    if steps.exposure != 0 {
-        let word = if steps.exposure > 0 {
-            "brighter"
-        } else {
-            "darker"
-        };
+    let changed = |step: Option<i8>| step.is_some_and(|s| s != 0);
+    if let Some(e) = steps.exposure.filter(|e| *e != 0) {
+        let word = if e > 0 { "brighter" } else { "darker" };
         parts.push(format!("{word} {:+.1} EV", v.exposure_ev));
     }
-    if steps.white != 0 {
-        // A warmer picture is a lower mired of the user's white (`AppleValues::white_shift_mired`).
-        let word = if steps.white > 0 { "warmer" } else { "cooler" };
-        parts.push(format!("{word} {:.0} mired", v.white_shift_mired.abs()));
+    if changed(steps.highlights) {
+        parts.push(format!("highlights {:+.0}", v.highlights));
     }
-    if steps.contrast != 0 {
+    if changed(steps.shadows) {
+        parts.push(format!("shadows {:+.0}", v.shadows));
+    }
+    if changed(steps.blacks) {
+        parts.push(format!("black {:+.0}", v.black));
+    }
+    if changed(steps.contrast) {
         parts.push(format!("contrast {:+.0}", v.contrast));
     }
-    if steps.saturation != 0 {
+    if let Some(w) = steps.white.filter(|w| *w != 0) {
+        // A warmer picture is a lower mired of the user's white (`AppleValues::white_shift_mired`).
+        let word = if w > 0 { "warmer" } else { "cooler" };
+        parts.push(format!("{word} {:.0} mired", v.white_shift_mired.abs()));
+    }
+    if changed(steps.tint) {
+        parts.push(format!("tint {:+.0}", v.tint_shift));
+    }
+    if changed(steps.saturation) {
         parts.push(format!("saturation {:+.0}", v.saturation));
+    }
+    if let (Some(c), Some(s)) = (steps.shadow_color, steps.shadow_color_strength)
+        && c != ShadowColor::None
+    {
+        parts.push(format!("{} shadows ({})", c.name(), strength_name(s)));
+    }
+    if let (Some(c), Some(s)) = (steps.highlight_color, steps.highlight_color_strength)
+        && c != HighlightColor::None
+    {
+        parts.push(format!("{} highlights ({})", c.name(), strength_name(s)));
     }
     if parts.is_empty() {
         return "No change".to_owned();
@@ -237,9 +253,9 @@ fn failure_text(kind: FailureKind, message: &str) -> String {
 /// Auto values use (`AutoEstimates::apple_steps`: its own answer, or its burst's), `None` when Auto
 /// is the rule.
 ///
-/// * answered: what the steps do and the scene, `Brighter +0.3 EV · contrast +15 · "Backlit
-///   portrait at dusk"` (`No change · "…"` for keep on every step), with `(shared with its burst)`
-///   when the burst's steps differ from the photo's own;
+/// * answered: what the steps do, the scene and the plan, `Brighter +0.3 EV · contrast +15 · scene
+///   "Backlit portrait at dusk" · plan "Warm, soft contrast"` (`No change · …` for keep on every
+///   step), with `(shared with its burst)` when the burst's steps differ from the photo's own;
 /// * failed: `Failed (macOS asked Yellowmoon to wait); Yellowmoon's own Auto`, or the burst's
 ///   steps when the burst has them;
 /// * `Off`, `Not available (Apple Intelligence is off in System Settings)`, and
@@ -258,7 +274,11 @@ pub fn apple_auto_text(apple: &AppleAuto, in_effect: Option<AutoSteps>) -> Strin
             }
             let scene = answer.scene.trim();
             if !scene.is_empty() {
-                text.push_str(&format!(" · \"{}\"", line_text(scene)));
+                text.push_str(&format!(" · scene \"{}\"", line_text(scene)));
+            }
+            let plan = answer.plan.trim();
+            if !plan.is_empty() {
+                text.push_str(&format!(" · plan \"{}\"", line_text(plan)));
             }
             text
         }

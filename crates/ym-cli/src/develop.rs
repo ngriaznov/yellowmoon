@@ -27,8 +27,8 @@ use crate::cli::{
     ExposureArg, LightArg, NrArg, PercentArg, RenderArgs, RolloffArg, SharpenArg, WbArg,
 };
 
-/// `--contrast` or `--saturation` as a setting: `auto` is Auto (0, or Apple Auto's value for the
-/// photo, `docs/19` section 5), a number is a manual value.
+/// `--contrast`, `--saturation`, `--highlights`, `--shadows` or `--black` as a setting: `auto` is
+/// Auto (0, or Apple Auto's value for the photo, `docs/19` section 5), a number is a manual value.
 fn percent_setting(arg: PercentArg) -> PercentSetting {
     match arg {
         PercentArg::Auto => AutoOr::Auto,
@@ -52,15 +52,15 @@ pub struct Overrides {
     /// `--brightness`.
     pub brightness: Option<f64>,
     /// `--highlights`.
-    pub highlights: Option<f64>,
+    pub highlights: Option<PercentArg>,
     /// `--shadows`.
-    pub shadows: Option<f64>,
+    pub shadows: Option<PercentArg>,
     /// `--white`.
     pub white: Option<f64>,
     /// `--white-offset`.
     pub white_offset: Option<f64>,
     /// `--black`.
-    pub black: Option<f64>,
+    pub black: Option<PercentArg>,
     /// `--saturation`.
     pub saturation: Option<PercentArg>,
     /// `--wb`.
@@ -123,11 +123,11 @@ impl Overrides {
             // `auto` is Auto, a number a manual value (`docs/19` section 8).
             contrast: self.contrast.map(percent_setting),
             brightness: self.brightness,
-            highlights: self.highlights,
-            shadows: self.shadows,
+            highlights: self.highlights.map(percent_setting),
+            shadows: self.shadows.map(percent_setting),
             white: self.white,
             white_offset_ev: self.white_offset,
-            black: self.black,
+            black: self.black.map(percent_setting),
             saturation: self.saturation.map(percent_setting),
             output_sharpening: self.output_sharpening,
             ..SettingsPatch::default()

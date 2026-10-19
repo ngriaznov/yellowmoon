@@ -100,7 +100,8 @@ pub struct RenderArgs {
     #[arg(long, value_name = "aces2|arri", help_heading = H_LOOK)]
     pub display: Option<String>,
     /// A JSON file of settings (the `ym:Settings` schema), or `-` for stdin. It covers what these
-    /// options can't: colour balance, curves, crop, orientation, white pick.
+    /// options can't: colour balance (`{ "kind": "auto" }` puts a shadows or highlights wheel back
+    /// to Auto), curves, crop, orientation, white pick.
     #[arg(long, value_name = "FILE", help_heading = H_LOOK)]
     pub settings: Option<PathBuf>,
 
@@ -117,18 +118,18 @@ pub struct RenderArgs {
     /// Brightness, -100 to 100.
     #[arg(long, value_name = "N", value_parser = signed_percent, allow_negative_numbers = true, help_heading = H_LIGHT)]
     pub brightness: Option<f64>,
-    /// Highlights, -100 to 100.
-    #[arg(long, value_name = "N", value_parser = signed_percent, allow_negative_numbers = true, help_heading = H_LIGHT)]
-    pub highlights: Option<f64>,
-    /// Shadows, -100 to 100.
-    #[arg(long, value_name = "N", value_parser = signed_percent, allow_negative_numbers = true, help_heading = H_LIGHT)]
-    pub shadows: Option<f64>,
+    /// Highlights, -100 to 100, or `auto` (the default: 0, or the value Apple Auto chose).
+    #[arg(long, value_name = "auto|N", value_parser = percent_or_auto, allow_negative_numbers = true, help_heading = H_LIGHT)]
+    pub highlights: Option<PercentArg>,
+    /// Shadows, -100 to 100, or `auto` (the default: 0, or the value Apple Auto chose).
+    #[arg(long, value_name = "auto|N", value_parser = percent_or_auto, allow_negative_numbers = true, help_heading = H_LIGHT)]
+    pub shadows: Option<PercentArg>,
     /// White point, -100 to 100.
     #[arg(long, value_name = "N", value_parser = signed_percent, allow_negative_numbers = true, help_heading = H_LIGHT)]
     pub white: Option<f64>,
-    /// Black point, -100 to 100.
-    #[arg(long, value_name = "N", value_parser = signed_percent, allow_negative_numbers = true, help_heading = H_LIGHT)]
-    pub black: Option<f64>,
+    /// Black point, -100 to 100, or `auto` (the default: 0, or the value Apple Auto chose).
+    #[arg(long, value_name = "auto|N", value_parser = percent_or_auto, allow_negative_numbers = true, help_heading = H_LIGHT)]
+    pub black: Option<PercentArg>,
     /// Stops added to each photo's automatic white lift, -3 to 3. 0 is the automatic amount; an
     /// offset that takes the lift to 0 or below switches it off (`--white-offset -3` always does).
     /// The lift only acts with the built-in ACES 2 display rendering, and a DNG carries it.
@@ -222,11 +223,16 @@ pub struct RenderArgs {
     /// Beats YELLOWMOON_GPU.
     #[arg(long, help_heading = H_RUN)]
     pub cpu: bool,
-    /// Apple Auto for this run. On a Mac with Apple Intelligence, Apple's on-device model sets each photo's
-    /// automatic exposure, contrast and saturation and makes its white warmer or cooler. Default: the app's
-    /// setting where Apple Auto is available, off elsewhere.
+    /// Apple Auto for this run. On a Mac with Apple Intelligence, Apple's on-device model grades each photo:
+    /// it sets the automatic exposure, highlights, shadows, black, contrast, warmth, tint and saturation and
+    /// the colours of the shadows and highlights. Default: the app's setting where Apple Auto is available,
+    /// off elsewhere.
     #[arg(long, value_enum, ignore_case = true, value_name = "on|off", hide_possible_values = true, help_heading = H_RUN)]
     pub apple_auto: Option<AppleAutoArg>,
+    /// A text file with instructions for Apple's model, used for this run instead of those in Preferences
+    /// (at most 2000 characters; an empty file is the default instructions).
+    #[arg(long, value_name = "FILE", help_heading = H_RUN)]
+    pub apple_auto_instructions: Option<PathBuf>,
 }
 
 impl RenderArgs {
@@ -362,7 +368,7 @@ pub enum ExposureArg {
     Ev(f64),
 }
 
-/// `--contrast` and `--saturation`.
+/// `--contrast`, `--saturation`, `--highlights`, `--shadows` and `--black`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PercentArg {
     /// The photo's Auto value: 0, or Apple Auto's (`docs/19` section 5).
@@ -565,9 +571,10 @@ pub struct InfoArgs {
     /// Force a camera profile, for comparisons (for example `sony-ilce-7rm4`).
     #[arg(long, value_name = "ID")]
     pub profile: Option<String>,
-    /// Apple Auto for this run. On a Mac with Apple Intelligence, Apple's on-device model sets each photo's
-    /// automatic exposure, contrast and saturation and makes its white warmer or cooler. Default: the app's
-    /// setting where Apple Auto is available, off elsewhere.
+    /// Apple Auto for this run. On a Mac with Apple Intelligence, Apple's on-device model grades each photo:
+    /// it sets the automatic exposure, highlights, shadows, black, contrast, warmth, tint and saturation and
+    /// the colours of the shadows and highlights. Default: the app's setting where Apple Auto is available,
+    /// off elsewhere.
     #[arg(
         long,
         value_enum,
@@ -576,6 +583,10 @@ pub struct InfoArgs {
         hide_possible_values = true
     )]
     pub apple_auto: Option<AppleAutoArg>,
+    /// A text file with instructions for Apple's model, used for this run instead of those in Preferences
+    /// (at most 2000 characters; an empty file is the default instructions).
+    #[arg(long, value_name = "FILE")]
+    pub apple_auto_instructions: Option<PathBuf>,
 }
 
 /// Arguments of `ym doctor`.

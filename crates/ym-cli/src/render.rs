@@ -39,7 +39,9 @@ use crate::develop::{LoadedSettings, Overrides, SettingsFile};
 use crate::exit::{self, Failure};
 use crate::inputs::{self, Expanded, Problem};
 use crate::report::{AppleAutoField, Object, develop_fields, render_error, render_ok};
-use crate::runtime::{BackgroundGpu, CoreSettings, Runtime, gpu_line, interrupted};
+use crate::runtime::{
+    BackgroundGpu, CoreSettings, Runtime, gpu_line, interrupted, read_instructions,
+};
 use crate::text::{data_path, line_text, lossy, path_text};
 
 /// The longest file name the progress line shows. With the bar and the counts the line is then
@@ -344,10 +346,16 @@ fn run_checked(args: &RenderArgs, console: &mut Console) -> Result<u8, Failure> 
 
     // The data folder, the preferences, the look library and Apple Auto's advisor.
     let apple_auto = AppleAutoArg::mode(args.apple_auto);
+    let apple_auto_instructions = args
+        .apple_auto_instructions
+        .as_deref()
+        .map(read_instructions)
+        .transpose()?;
     let rt = Runtime::open(&CoreSettings {
         jobs: args.jobs,
         forced_profile: args.profile.clone(),
         apple_auto: Some(apple_auto),
+        apple_auto_instructions,
     })?;
     let core = &rt.core;
     if let Some(notice) = rt.apple_auto_notice(apple_auto) {

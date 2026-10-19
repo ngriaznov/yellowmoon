@@ -571,7 +571,7 @@ private func askModel(rgbx: [UInt8], width: Int, height: Int, instructions: Stri
     let options = GenerationOptions(samplingMode: .greedy, temperature: nil, maximumResponseTokens: 320)
     var last: GeneratedContent?
     do {
-        let stream = try session.streamResponse(
+        let stream = session.streamResponse(
             generating: Answer.self, includeSchemaInPrompt: true, options: options
         ) {
             promptText

@@ -37,7 +37,7 @@ use crate::exit::{self, Failure};
 use crate::report::{
     AppleAutoField, Object, apple_auto_text, camera_json, develop_fields, error_value, match_word,
 };
-use crate::runtime::{CoreSettings, Runtime, interrupted};
+use crate::runtime::{CoreSettings, Runtime, interrupted, read_instructions};
 use crate::text::{lossy, path_text};
 
 /// Why `run_to` stopped early.
@@ -103,11 +103,17 @@ fn run_to(args: &InfoArgs, console: &mut Console, out: &mut dyn Write) -> Result
 
     // The estimates need the core; files that cannot even be read do not.
     let apple_auto = AppleAutoArg::mode(args.apple_auto);
+    let apple_auto_instructions = args
+        .apple_auto_instructions
+        .as_deref()
+        .map(read_instructions)
+        .transpose()?;
     let runtime = if entries.iter().any(|e| e.probe.is_ok()) {
         Some(Runtime::open(&CoreSettings {
             jobs: None,
             forced_profile: args.profile.clone(),
             apple_auto: Some(apple_auto),
+            apple_auto_instructions,
         })?)
     } else {
         None

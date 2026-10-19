@@ -15,7 +15,9 @@ use ym_core::app::gpu::{
     probe_adapter,
 };
 use ym_core::apple_auto::{
-    Activity, AppleAutoMode, AppleAutoStatus, Availability, PROMPT_VERSION, TABLE_VERSION,
+    Activity, AppleAutoMode, AppleAutoStatus, Availability, DEFAULT_INSTRUCTIONS,
+    INSTRUCTIONS_MAX_CHARS, InstructionsId, PROMPT_VERSION, TABLE_VERSION,
+    effective_instructions,
 };
 use ym_core::data_dir::find_data_dir;
 use ym_core::looks::{LookGroupInfo, LookService};
@@ -207,7 +209,10 @@ fn build() -> Result<Report, Failure> {
         gpu,
         plan,
         neural: NeuralStatus::probe(Some(&data_folder)),
-        apple_auto: apple_auto_status(prefs.get().apple_auto),
+        apple_auto: apple_auto_status(
+            prefs.get().apple_auto,
+            &prefs.get().apple_auto_instructions,
+        ),
         weights,
         illuminant_models,
         profiles,
@@ -266,8 +271,9 @@ fn gpu_report() -> (Result<GpuInfo, String>, GpuPlan) {
 
 /// Apple Auto on this computer, as `Core::apple_auto_status` gives it to the app's Preferences
 /// (`docs/19` sections 1, 2 and 8), without opening a session: the advisor the app and `ym` use
-/// (`ym_apple::system_advisor`, read now) and the `apple_auto` preference.
-fn apple_auto_status(preference: bool) -> AppleAutoStatus {
+/// (`ym_apple::system_advisor`, read now), the `apple_auto` preference and the person's own
+/// instructions (`apple_auto_instructions`, `""` for the default).
+fn apple_auto_status(preference: bool, own_instructions: &str) -> AppleAutoStatus {
     let availability = ym_apple::system_advisor().availability();
     let active = Activity::decide(
         true,
@@ -276,8 +282,9 @@ fn apple_auto_status(preference: bool) -> AppleAutoStatus {
         Some(&availability),
     )
     .is_active();
+    let text = effective_instructions(own_instructions);
     let (available, reason, info) = match availability {
-        Availability::Available(info) => (true, None, Some(info)),
+        Availability::Available(info) => (true, None, Some(info.with_instructions(text))),
         Availability::Unavailable(reason) => (false, Some(reason), None),
     };
     AppleAutoStatus {
@@ -289,11 +296,15 @@ fn apple_auto_status(preference: bool) -> AppleAutoStatus {
         active,
         prompt: PROMPT_VERSION,
         table: TABLE_VERSION,
+        instructions: InstructionsId::of(text),
+        own_instructions: own_instructions.to_owned(),
+        default_instructions: DEFAULT_INSTRUCTIONS.to_owned(),
+        instructions_max_chars: INSTRUCTIONS_MAX_CHARS,
     }
 }
 
 /// The `apple_auto` object of `doctor --json`: `{ "available", "reason", "model", "os",
-/// "preference", "prompt", "table" }` (`docs/19` section 8).
+/// "preference", "prompt", "table", "instructions", "instructions_sha256" }` (`docs/19` section 8).
 fn apple_auto_value(s: &AppleAutoStatus) -> Value {
     json!({
         "available": s.available,
@@ -303,12 +314,15 @@ fn apple_auto_value(s: &AppleAutoStatus) -> Value {
         "preference": s.preference,
         "prompt": s.prompt,
         "table": s.table,
+        "instructions": s.instructions.instructions,
+        "instructions_sha256": s.instructions.instructions_sha256,
     })
 }
 
 /// The `Apple Auto` row: `available · Apple Intelligence · AFM 3 Core · macOS 27.0.1 (27A404) ·
-/// prompt 1 · table 1` (with `· turned off in Preferences` when the preference is off), or `not
-/// available (this is not a Mac)`.
+/// prompt 2 · table 2` (with `· edited instructions (<digest>)` when the person wrote their own, and
+/// `· turned off in Preferences` when the preference is off), or `not available (this is not a
+/// Mac)`.
 fn apple_auto_text(s: &AppleAutoStatus) -> String {
     match (&s.info, s.reason) {
         (Some(info), _) if s.available => {
@@ -599,11 +613,10 @@ mod tests {
         assert!(INCLUDES.contains("does not include photos, file names, locations"));
     }
 
-    fn status(available: bool, preference: bool) -> AppleAutoStatus {
-        let info = ym_core::apple_auto::AdvisorInfo {
-            model: "AFM 3 Core".to_owned(),
-            os: "27.0.1 (27A404)".to_owned(),
-        };
+    fn status(available: bool, preference: bool, own: &str) -> AppleAutoStatus {
+        let text = effective_instructions(own);
+        let info = ym_core::apple_auto::AdvisorInfo::new("AFM 3 Core", "27.0.1 (27A404)")
+            .with_instructions(text);
         AppleAutoStatus {
             available,
             reason: (!available).then_some(ym_core::apple_auto::UnavailableReason::MacosTooOld),
@@ -613,31 +626,46 @@ mod tests {
             active: available && preference,
             prompt: PROMPT_VERSION,
             table: TABLE_VERSION,
+            instructions: InstructionsId::of(text),
+            own_instructions: own.to_owned(),
+            default_instructions: DEFAULT_INSTRUCTIONS.to_owned(),
+            instructions_max_chars: INSTRUCTIONS_MAX_CHARS,
         }
     }
 
     #[test]
     fn the_apple_auto_row_names_the_model_or_why_not() {
         assert_eq!(
-            apple_auto_text(&status(true, true)),
-            "available · Apple Intelligence · AFM 3 Core · macOS 27.0.1 (27A404) · prompt 1 · table 1"
+            apple_auto_text(&status(true, true, "")),
+            "available · Apple Intelligence · AFM 3 Core · macOS 27.0.1 (27A404) · prompt 2 · table 2"
         );
         assert!(
-            apple_auto_text(&status(true, false)).ends_with("table 1 · turned off in Preferences")
+            apple_auto_text(&status(true, false, ""))
+                .ends_with("table 2 · turned off in Preferences")
+        );
+        let edited = InstructionsId::of("Moody.").instructions_sha256;
+        assert_eq!(
+            apple_auto_text(&status(true, true, "Moody.")),
+            format!(
+                "available · Apple Intelligence · AFM 3 Core · macOS 27.0.1 (27A404) · prompt 2 · table 2 · edited instructions ({edited})"
+            )
         );
         assert_eq!(
-            apple_auto_text(&status(false, true)),
+            apple_auto_text(&status(false, true, "")),
             "not available (it needs macOS 27 or later)"
         );
+        let sha = InstructionsId::default().instructions_sha256;
         assert_eq!(
-            apple_auto_value(&status(false, true)),
+            apple_auto_value(&status(false, true, "")),
             json!({ "available": false, "reason": "macos_too_old", "model": null, "os": null,
-                    "preference": true, "prompt": 1, "table": 1 })
+                    "preference": true, "prompt": 2, "table": 2,
+                    "instructions": "default", "instructions_sha256": sha })
         );
         assert_eq!(
-            apple_auto_value(&status(true, false)),
+            apple_auto_value(&status(true, false, "Moody.")),
             json!({ "available": true, "reason": null, "model": "AFM 3 Core", "os": "27.0.1 (27A404)",
-                    "preference": false, "prompt": 1, "table": 1 })
+                    "preference": false, "prompt": 2, "table": 2,
+                    "instructions": "edited", "instructions_sha256": edited })
         );
     }
 
