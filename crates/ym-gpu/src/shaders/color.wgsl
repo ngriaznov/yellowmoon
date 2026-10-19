@@ -48,7 +48,7 @@ struct ChainU {
     m1: vec4<f32>,
     m2: vec4<f32>,
     tone: vec4<f32>,     // C7: x the range's knee, y the Sony clip (stops over grey; 1e30: none), z the toe's tau, w the range's expansion (stops; 0: none)
-    grade0: vec4<f32>,   // contrast gain, brightness, saturation gain; w: 1 / the white lift's ramp span (1 / stops, C12 step 1b; 0 with no lift)
+    grade0: vec4<f32>,   // x: contrast slope k at grey, y: brightness, z: saturation factor (< 1 blend, > 1 boost F); w: 1 / the white lift's ramp span (1 / stops, C12 step 1b; 0 with no lift)
     zone_amt: vec4<f32>, // shadows, highlights, black, white (each / 100)
     zone_ctr: vec4<f32>, // their centres (LogC4 codes)
     bal0: vec4<f32>,     // (a, b) shadows, (a, b) midtones
@@ -146,10 +146,79 @@ fn bump(l: f32, mu: f32, sigma: f32) -> f32 {
     return exp(-0.5 * z * z);
 }
 
+// Contrast (ym_color::grade::contrast_curve, docs/02 C9): the tone curve T_k on the luma, fixed at black
+// (CONTRAST_BLACK, the code of linear 0), grey and the top code value (CONTRAST_TOP). Between them
+// h_k(t) = k t / (1 + (k - 1) t) scaled into each half, beyond them the line of slope 1 / k through the end.
+// k (CU.grade0.x) is 2^(0.6 c / 100), from 0.66 to 1.52: t stays in [0, 1] on the curved pieces, so every
+// divisor is at least 0.66 (K8: nothing rests on an infinity, and nothing on a rounding at the 2e-4 gate).
+fn contrast_h(t: f32, k: f32) -> f32 {
+    return k * t / (1.0 + (k - 1.0) * t);
+}
+
+fn contrast_curve(x: f32, k: f32) -> f32 {
+    if (x >= CONTRAST_TOP) {
+        return CONTRAST_TOP + (x - CONTRAST_TOP) / k;
+    }
+    if (x >= GRAY) {
+        return GRAY + (CONTRAST_TOP - GRAY) * contrast_h((x - GRAY) / (CONTRAST_TOP - GRAY), k);
+    }
+    if (x > CONTRAST_BLACK) {
+        return GRAY - (GRAY - CONTRAST_BLACK) * contrast_h((GRAY - x) / (GRAY - CONTRAST_BLACK), k);
+    }
+    return CONTRAST_BLACK + (x - CONTRAST_BLACK) / k;
+}
+
+// Below this distance r of the darkest channel under the luminance, the boost's chroma scale is taken
+// from its series (f32 would lose the digits of 1 - q^F to cancellation; see c9_saturation).
+const SAT_SERIES_LIMIT: f32 = 0.05;
+
+// Saturation (ym_color::grade::saturate, docs/02 C9): in linear AWG4, the chroma rgb - Y scaled about the
+// luminance Y by lambda, rgb' = Y + lambda (rgb - Y), then encoded again. `f` (CU.grade0.z) below 1 is the
+// blend 1 + s / 100; above 1 it is F = 1 + SATURATION_BOOST s / 100 and lambda = (1 - q^F) / r with
+// q = min / Y and r = 1 - q (the CPU's -expm1(F ln(1 - r)) / r): F for r <= 0 (every channel at or above Y,
+// the CPU's r < 1e-9), falling to 1 as the darkest channel nears 0. A pixel with Y <= 0 or a channel at or
+// below 0 is returned as it came for F > 1, as is a pixel with a code above SAT_CODE_LIMIT (7.5) for any f.
+//
+// Fast-math (K8) and f32: the decode of a code up to 7.5 is at most 2^120 and the encode of the result at
+// most about 1e37, both finite (a code of 10, which Contrast -100 can make of a sanitised 1e30, would
+// overflow the decode). The division by Y happens only for 0 < min < Y, and q is kept at least 1e-30, so
+// pow's log2 sees a normal number. For r < SAT_SERIES_LIMIT, 1 - q^F in f32 would cancel (an ulp of q^F
+// over r is 1e-5 of lambda at r = 0.005, and lambda times a chroma that can be many times Y where the blue
+// weight of Y is negative); there lambda is the series F (1 - (F-1)/2 r (1 - (F-2)/3 r (1 - (F-3)/4 r))),
+// whose first neglected term is below 1e-7 of lambda. Above it a fast pow off by 1e-6 moves lambda by at
+// most 2e-5. The CPU reference is f64 throughout; nothing here rests on a rounding at the 2e-4 gate.
+fn c9_saturation(v: vec3<f32>, f: f32) -> vec3<f32> {
+    if (max(v.x, max(v.y, v.z)) > SAT_CODE_LIMIT) {
+        return v;
+    }
+    let rgb = logc4_decode3(v);
+    let y = dot(Y_AWG4, rgb);
+    var lambda = f;
+    if (f > 1.0) {
+        let m = min(rgb.x, min(rgb.y, rgb.z));
+        if (y <= 0.0 || m <= 0.0) {
+            return v;
+        }
+        if (m < y) {
+            let q = max(m / y, 1.0e-30);
+            let r = 1.0 - q;
+            if (r < SAT_SERIES_LIMIT) {
+                let t3 = 1.0 - 0.25 * (f - 3.0) * r;
+                let t2 = 1.0 - (f - 2.0) / 3.0 * r * t3;
+                lambda = f * (1.0 - 0.5 * (f - 1.0) * r * t2);
+            } else {
+                lambda = (1.0 - pow(q, f)) / r;
+            }
+        }
+    }
+    return logc4_encode3(vec3<f32>(y) + lambda * (rgb - vec3<f32>(y)));
+}
+
 fn c9_grade(v: vec3<f32>, l: f32) -> vec3<f32> {
     var o = v;
     if ((CU.flags.x & 1u) != 0u) {
-        o = vec3<f32>(GRAY) + (o - vec3<f32>(GRAY)) * CU.grade0.x;
+        // Contrast: one offset for all three channels, the luma's change on the curve.
+        o = o + vec3<f32>(contrast_curve(l, CU.grade0.x) - l);
     }
     var shift = CU.grade0.y * STOP * bump(l, GRAY, BRIGHTNESS_SIGMA);
     if (CU.zone_amt.x != 0.0) {
@@ -178,9 +247,7 @@ fn c9_grade(v: vec3<f32>, l: f32) -> vec3<f32> {
         o = o + w * (CU.bal1.x * E1 + CU.bal1.y * E2);
     }
     if ((CU.flags.x & 2u) != 0u) {
-        // Saturation is subtractive: about the brightest channel M, so M and neutrals stay put.
-        let m = max(o.x, max(o.y, o.z));
-        o = vec3<f32>(m) + (o - vec3<f32>(m)) * CU.grade0.z;
+        o = c9_saturation(o, CU.grade0.z);
     }
     return o;
 }

@@ -34,7 +34,7 @@ They mirror the app's controls. Anything not given uses the automatic value or t
 | `--intensity <0–100>` | percent | default 100 |
 | `--exposure auto or <EV>` | absolute EV −4…+4, or `auto` | `--exposure-offset <EV>` adds to auto: resolved per file to `Manual(EV_auto + offset)`, so there's no extra settings field |
 | `--wb auto or <K>[,<tint>]` | 2000–11000, tint −50…50 | `--light day or shade or tungsten or led or fluorescent` sets the light preset |
-| `--contrast`, `--brightness`, `--highlights`, `--shadows`, `--white`, `--black`, `--saturation` | −100…100 | `--saturation` is subtractive (`docs/02` C9): more makes colours denser and darker, less makes them paler, and the brightest channel and neutrals stay. |
+| `--contrast`, `--brightness`, `--highlights`, `--shadows`, `--white`, `--black`, `--saturation` | −100…100 | `--contrast` bends the tones around mid grey and keeps black and the top code value (`docs/02` C9). `--saturation` scales colour about each pixel's luminance (`docs/02` C9): more makes colours stronger, less makes them greyer, and brightness and neutrals stay. |
 | `--nr auto or <L>,<C>,<D>` | 0–100 each | |
 | `--sharpen auto or <amount>,<radius>` | 0–300, 0.3–2.5 | capture sharpening (R8) |
 | `--output-sharpening <0–200>` | percent, default 100 | Detail › Sharpening › Output (`docs/algorithms/04`): sharpens JPEG, TIFF and PNG files at the size they are written, right after the resize; 0 is off and leaves the bytes of an export without the stage; a value outside 0–200 is a usage error (exit 2); a DNG is never sharpened (`--output-sharpening` and `--sharpen` with `--format dng` are warned about and ignored: a DNG carries no capture sharpening either, `docs/09`). It is the field `output_sharpening` of the settings object. |

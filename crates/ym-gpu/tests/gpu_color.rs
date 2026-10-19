@@ -100,6 +100,7 @@ fn every_stage_matches_the_cpu_trace() {
                 .filter(|(name, _)| {
                     name.starts_with("full/viewport")
                         || name.starts_with("saturation")
+                        || name.starts_with("contrast")
                         || name.starts_with("baked-look/srgb/25")
                         || name.starts_with("display-lut/p3")
                         || name.starts_with("logc3-look/35")
@@ -122,8 +123,10 @@ fn every_stage_matches_the_cpu_trace() {
             );
             // And a warp must move a good part of them (by more than five times the gate), or C9b
             // would be compared where it is the identity. The four `warp/` cases, measured on Mesa
-            // lavapipe in all three storage modes: C9b 4.5e-7, C10 4.5e-7, C11 4.8e-7 (gate 2e-4),
-            // C13 4.2e-6 (gate one 10-bit code).
+            // lavapipe in all three storage modes (with the contrast and saturation of 2026-10-19):
+            // C9b 4.8e-7, C10 5.1e-7, C11 5.8e-7 (gate 2e-4), C13 4.1e-6 (gate one 10-bit code). The
+            // `contrast/` and `saturation/` cases (alone and on the full chain, -100 to 100) are in
+            // the per-stage line printed below: C9 5.3e-7 on every chain.
             let warped = traces
                 .iter()
                 .filter(|t| {
@@ -228,9 +231,10 @@ fn every_stage_matches_the_cpu_trace() {
 /// `chains::random_warp`, from a stream of its own so the other draws are those of the sets before
 /// the warp existed), for all four outputs, checked at C9, C9b, C10, C11 and C13.
 ///
-/// Measured on Mesa lavapipe, the same in all three storage modes: C9 2.2e-7, C9b 6.6e-7, C10 6.4e-7,
-/// C11 5.2e-7 against the 2e-4 gate, C13 3.4e-5 against one 10-bit code (9.8e-4); 57 of the 60 sets
-/// have a warp that acts, and 31 % of all pixels move by more than 1e-3.
+/// Measured on Mesa lavapipe, the same in all three storage modes (with the contrast and saturation of
+/// 2026-10-19): C9 4.2e-7, C9b 6.6e-7, C10 6.4e-7, C11 7.1e-7 against the 2e-4 gate, C13 3.4e-5
+/// against one 10-bit code (9.8e-4); 57 of the 60 sets have a warp that acts, and 30 % of all pixels
+/// move by more than 1e-3.
 #[test]
 fn random_parameter_sets_match_the_cpu_trace() {
     use std::sync::Arc;
@@ -480,8 +484,9 @@ fn a_warp_that_moves_nothing_leaves_every_output_bit_identical() {
 /// more, 100 times the gate). Each moving pin moves its own pixel on the device, and each lock holds
 /// its own.
 ///
-/// Measured on Mesa lavapipe, the same in all three storage modes: C9b 4.8e-7, C10 5.1e-7, C11 4.7e-7
-/// (gate 2e-4), C13 4.7e-6 (gate one 10-bit code, 9.8e-4).
+/// Measured on Mesa lavapipe, the same in all three storage modes (with the contrast and saturation of
+/// 2026-10-19): C9b 6.5e-7, C10 6.1e-7, C11 6.3e-7 (gate 2e-4), C13 5.7e-6 (gate one 10-bit code,
+/// 9.8e-4).
 #[test]
 fn the_most_pins_the_uniform_holds_match_the_cpu() {
     use ym_color::warp::{WARP_MAX_PINS, WarpParams, WarpPin, chroma_of};
@@ -490,14 +495,15 @@ fn the_most_pins_the_uniform_holds_match_the_cpu() {
     let n = w * h;
     let base = chains::full(OutputTarget::Viewport);
     let chain0 = ColorChain::new(&base).expect("chain");
-    // Candidate pixels: chroma between 0.03 and 0.12 (where a pin acts and the guard is 1), taken
-    // greedily so that any two are at least 0.03 apart.
+    // Candidate pixels: chroma between 0.03 and 0.15 (where a pin acts and the guard is 1), taken
+    // greedily so that any two are at least 0.03 apart. (0.12 until the saturation of 2026-10-19,
+    // which spreads the image's chroma less: 29 spots fitted below 0.12.)
     let traces: Vec<_> = (0..n).map(|i| chain0.trace(pixel(&img, i))).collect();
     let mut spots: Vec<(usize, [f64; 2])> = Vec::new();
     for (i, t) in traces.iter().enumerate() {
         let c = chroma_of(t.c9_logc4);
         let r = c[0].hypot(c[1]);
-        if (0.03..0.12).contains(&r)
+        if (0.03..0.15).contains(&r)
             && spots
                 .iter()
                 .all(|(_, s)| (s[0] - c[0]).hypot(s[1] - c[1]) > 0.03)

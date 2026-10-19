@@ -44,7 +44,7 @@ Light:
           Stops added to each photo's automatic exposure
 
       --contrast <N>
-          Contrast, -100 to 100
+          Contrast, -100 to 100 (around mid grey; black and the brightest tones stay where they are)
 
       --brightness <N>
           Brightness, -100 to 100
@@ -80,7 +80,7 @@ Colour:
           - fluorescent: Fluorescent light at the estimated colour
 
       --saturation <N>
-          Saturation, -100 to 100 (subtractive: more makes colours denser and darker, less makes them paler)
+          Saturation, -100 to 100 (more makes colours stronger, less makes them greyer; brightness stays)
 
 Detail:
       --nr <auto|L,C,D>

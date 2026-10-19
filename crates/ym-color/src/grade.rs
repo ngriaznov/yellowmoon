@@ -7,14 +7,53 @@
 //!
 //! | Control | Range | Operation |
 //! |---|---|---|
-//! | Contrast `c` | -100..100 | `v = g + (v - g) 2^(0.6 c / 100)` |
+//! | Contrast `c` | -100..100 | `v += T_k(L) - L`, the tone curve [`contrast_curve`] with slope `k = 2^(0.6 c / 100)` at grey |
 //! | Brightness `b` | -100..100 | `v += (b / 100) S bump(L; g, 2.5 S)` |
 //! | Shadows, Highlights, Black, White | -100..100 | `v += (x / 100) 1.5 S bump(L; centre, 1.5 S)`, centres at grey -3, +3, -6, +6 stops |
 //! | Colour balance (shadows, midtones, highlights) | `(a, b)` in the unit disc | `v += 0.03 (a e1 + b e2) zone(L)` |
-//! | Saturation `s` | -100..100 | `v = M + (v - M) (1 + s / 100)`, `M = max(r, g, b)` of the pixel at this point |
+//! | Saturation `s` | -100..100 | in linear AWG4, the chroma `rgb - Y` scaled about the luminance `Y` ([`saturate`]) |
 //!
 //! with `bump(L; mu, sigma) = exp(-(L - mu)^2 / (2 sigma^2))`, `e1 = (1, -1/2, -1/2) / sqrt(1.5)` and
 //! `e2 = (0, 1, -1) / sqrt(2)`. All constants are starting values (`docs/02`).
+//!
+//! # Contrast (the design of 2026-10-19)
+//!
+//! A tone curve `T` on the pixel's luma `L`, fixed at three points: black `a` (the code of linear 0,
+//! [`CONTRAST_BLACK`]), grey `g` (the pivot) and the top code value `b = 1` ([`CONTRAST_TOP`]). With
+//! `h_k(t) = k t / (1 + (k - 1) t)`, which runs from `h(0) = 0` to `h(1) = 1` with the slope `k` at 0
+//! and `1 / k` at 1 and is increasing for every `k > 0`:
+//!
+//! * `g <= x <= b`: `T(x) = g + (b - g) h_k((x - g) / (b - g))`;
+//! * `a <= x < g`: `T(x) = g - (g - a) h_k((g - x) / (g - a))`;
+//! * above `b` and below `a`: the straight line through the end with the slope `1 / k`.
+//!
+//! `T` is continuous, has a continuous slope (`k` at grey from both sides, `1 / k` at both ends) and
+//! is increasing for all `x`. The change is one common offset `T(L) - L` added to all three
+//! channels: where LogC4 is logarithmic (above its toe) a common offset is a common gain in linear
+//! light, so the channel ratios, and with them the hue, are kept, while the luma follows `T`. The
+//! slope at grey is the one the old control had (`2^(0.6 c / 100)` about grey), so the slider feels
+//! the same around mid grey; unlike the old control, black and the top code value stay where they
+//! are, and the slope toward them flattens (`c > 0`) or steepens (`c < 0`) instead of the whole
+//! range stretching about grey. `c = 0` skips the step (bit-exact identity). The rows after Contrast
+//! keep using the original `L`.
+//!
+//! # Saturation (the design of 2026-10-19)
+//!
+//! In linear AWG4: `rgb = decode(v)` and `Y` its luminance (the AWG4 `Y` row, the weights of `L`).
+//! The chroma `rgb - Y` is scaled about `Y` by a factor `lambda`, `rgb' = Y + lambda (rgb - Y)`, and
+//! the result is encoded to LogC4 again. As the `Y` row sums to 1, `Y` is unchanged: more saturation
+//! does not make a colour darker or lighter.
+//!
+//! * `s < 0`: `lambda = 1 + s / 100`, an even blend toward grey (`-100` is the grey of the same `Y`).
+//! * `s > 0`: `F = 1 + SATURATION_BOOST s / 100`. With `r = (Y - min(rgb)) / Y` (0 for a neutral, 1
+//!   when the darkest channel is at 0: scaling the chroma by `1 / r` would take that channel to
+//!   zero), `r' = 1 - (1 - r)^F` and `lambda = r' / r`. A muted colour (small `r`) has its chroma
+//!   scaled by nearly `F`, a strong one (r near 1) by nearly 1, and the darkest channel ends at
+//!   `Y (1 - r') >= 0`: positive saturation never pushes a channel below zero. A pixel with `Y <= 0`
+//!   or a channel at or below 0 (`r >= 1`) is left as it is.
+//!
+//! `s = 0` skips the step (bit-exact identity). The ASC CDL saturation inside looks (C10, Rec.709
+//! weights) is a standard and is not changed.
 //!
 //! # Decisions where the spec is silent
 //!
@@ -24,14 +63,18 @@
 //! * **Zone shape.** `zone(L)` is `bump(L; centre, ZONE_SIGMA)` with `ZONE_SIGMA = 1.5 S`, centred at
 //!   -3, 0 and +3 stops. The zones are Gaussian bumps, not a partition of unity, so colour balance
 //!   leaves the extremes of the range alone.
-//! * **Saturation is subtractive.** The pivot is `M`, the brightest channel of the pixel after the
-//!   controls above it (owner's decision of 2026-10-13, `docs/16`), not the luma `L`. More
-//!   saturation makes a colour denser and darker, less makes it paler and lighter, and the brightest
-//!   channel and every neutral pixel stay where they are. At `s = -100` every channel equals `M`
-//!   (a neutral at the pixel's brightest channel). Saturation does not clamp, as nothing else in C9
-//!   does: a channel that goes below LogC4 black at `s > 0` is passed on as it is (C8 and the DRT
-//!   take negatives). The ASC CDL saturation inside looks (C10, Rec.709 weights) is a standard and
-//!   is not changed.
+//! * **Saturation where `r` is small or negative.** Below [`SATURATION_SMALL_R`] (1e-9), `lambda` is
+//!   its limit `F`. That covers `r < 0` too: the blue weight of the AWG4 `Y` row is negative, so a
+//!   blue or violet pixel whose red and green are nearly equal can have every channel above `Y`. No
+//!   channel can then reach zero as the chroma grows, and the formula `r' / r` would exceed `F`
+//!   without bound as `Y` goes to 0 (at `s = 100` it would scale the chroma of the linear blue
+//!   `(0.02, 0.02, 0.57)`, `Y = 0.0002`, by 101); such pixels get the plain factor `F`. `r'` is computed as `-expm1(F ln(1 - r))`, the same number without the
+//!   cancellation of `1 - (1 - r)^F` when `r` is small.
+//! * **Saturation of absurd codes.** A pixel with a code above [`SATURATION_CODE_LIMIT`] (7.5, linear
+//!   about 7e32, 112 stops over grey; no photo comes near it) is passed on unchanged, so that the f32
+//!   kernel's decode and encode stay finite; real pixels after C9 stay below 3.
+//! * Nothing in C9 clamps: Colour balance and the zone controls can take a channel below the LogC4
+//!   code of black, and C8's inverse, C10 and the DRT take it as it is.
 //! * **Sign.** For Shadows, Highlights, Black and White a positive value raises the pixel (brighter),
 //!   a negative value lowers it. Positive brightness brightens.
 //! * Out-of-range control values are clamped to their range; a colour-balance vector longer than 1
@@ -39,25 +82,25 @@
 //!
 //! # Monotonicity (what the tests check)
 //!
-//! * *Per pixel, in the control value:* contrast moves `v` away from `g` more the higher the value
-//!   (for `v > g` the output is non-decreasing in `c`, for `v < g` non-increasing). Brightness,
-//!   Shadows, Highlights, Black and White add a non-negative bump times the control, so every
-//!   output channel is non-decreasing in the control. Saturation scales `v - M` by a
-//!   non-decreasing factor, so `|v - M|` is non-decreasing in `s` for every channel; `M` and neutral
-//!   pixels are unchanged, and for `s > 0` each non-maximum channel goes down (for `s < 0`, up
-//!   toward `M`). Colour balance displaces `v` by
-//!   `0.03 r zone(L)` along a fixed direction, so the displacement length is non-decreasing in the
-//!   radius `r`.
+//! * *Per pixel, in the control value:* for a luma between black and the top code value, Contrast
+//!   moves every channel away from grey more the higher the value (up for `L > g`, down for `L < g`;
+//!   `h_k(t)` grows with `k` for `0 < t < 1`); beyond the ends the line of slope `1 / k` pulls the
+//!   other way. Brightness, Shadows, Highlights, Black and White add a non-negative bump times the
+//!   control, so every output channel is non-decreasing in the control. Saturation scales the
+//!   chroma about `Y` by a factor that is non-decreasing in `s` (`(1 - r)^F` falls as `F` grows).
+//!   Colour balance displaces `v` by `0.03 r zone(L)` along a fixed direction, so the displacement
+//!   length is non-decreasing in the radius `r`.
 //! * *As a tone map on a neutral ramp:* with one control moved over its full range, the output for
-//!   neutral input is strictly increasing in the input (the slope stays above 0.39).
+//!   neutral input is strictly increasing in the input (the slope stays above 0.39; for Contrast it
+//!   is between `2^-0.6 = 0.66` and `2^0.6 = 1.52`).
 //! * *Not guaranteed:* several tonal controls stacked at their extremes (for example Shadows, Black
 //!   and Brightness all at -100 with Contrast at -100) can fold the neutral ramp, because each bump
 //!   contributes a slope of up to 0.4 to 0.6 and the slopes add. `tests/grade.rs` prints the worst
 //!   slopes. A UI that allows the full stack should limit or re-fit the combination.
 
-use crate::consts::{LOGC4_GRAY, LOGC4_STOP, MIDDLE_GRAY, Vec3};
-use crate::gamut::LinearAwg4;
-use crate::logc::{LogC4, logc4_encode};
+use crate::consts::{LOGC4, LOGC4_GRAY, LOGC4_STOP, MIDDLE_GRAY, Vec3};
+use crate::gamut::{LinearAwg4, awg4_luminance};
+use crate::logc::{LogC4, logc4_decode_rgb, logc4_encode, logc4_encode_rgb};
 
 /// Width of the brightness bump, `2.5 S`, in LogC4 code values.
 pub const BRIGHTNESS_SIGMA: f64 = 2.5 * LOGC4_STOP;
@@ -67,8 +110,23 @@ pub const ZONE_CONTROL_SIGMA: f64 = 1.5 * LOGC4_STOP;
 pub const ZONE_SIGMA: f64 = 1.5 * LOGC4_STOP;
 /// Peak displacement of colour balance at radius 1, in LogC4 code values.
 pub const COLOR_BALANCE_STRENGTH: f64 = 0.03;
-/// Contrast gain exponent: `2^(0.6 c / 100)`.
+/// Contrast slope exponent: the slope of the tone curve at grey is `k = 2^(0.6 c / 100)`.
 pub const CONTRAST_EXPONENT: f64 = 0.6;
+/// The lower fixed point of the contrast curve: the LogC4 code of linear 0, `encode(0) = c =
+/// 0.09286` (the constant `c` of LogC4, as `log2(64) - 6 = 0`).
+pub const CONTRAST_BLACK: f64 = LOGC4.c;
+/// The upper fixed point of the contrast curve: the top code value 1.0 (linear 469.8, about 11.35
+/// stops over grey).
+pub const CONTRAST_TOP: f64 = 1.0;
+/// How strongly positive saturation scales chroma: `F = 1 + SATURATION_BOOST s / 100` (a starting
+/// value the owner tunes by eye; `F = 2` at `s = 100`).
+pub const SATURATION_BOOST: f64 = 1.0;
+/// Below this distance `r` of the darkest channel under the luminance (as a fraction of the
+/// luminance), positive saturation uses its limit, the full factor `F` (see [`saturation_chroma_scale`]).
+pub const SATURATION_SMALL_R: f64 = 1e-9;
+/// Saturation passes on a pixel with a code value above this unchanged (linear about 7e32, 112 stops
+/// over grey), so the f32 kernel's decode and encode stay finite. No photo comes near it.
+pub const SATURATION_CODE_LIMIT: f64 = 7.5;
 
 /// Stops from middle grey of the Black, Shadows, Highlights and White controls.
 pub const ZONE_CENTER_STOPS: [f64; 4] = [-3.0, 3.0, -6.0, 6.0];
@@ -179,23 +237,119 @@ fn clamp_control(x: f64) -> f64 {
     }
 }
 
+/// The slope at grey of the contrast curve for the control value `contrast` (clamped to
+/// -100..100): `k = 2^(0.6 c / 100)`, 1 at 0, `2^0.6 = 1.52` at 100 and `2^-0.6 = 0.66` at -100.
+#[must_use]
+pub fn contrast_slope(contrast: f64) -> f64 {
+    (CONTRAST_EXPONENT * clamp_control(contrast) / 100.0).exp2()
+}
+
+/// `h_k(t) = k t / (1 + (k - 1) t)`: `h(0) = 0`, `h(1) = 1`, slope `k` at 0 and `1 / k` at 1, increasing
+/// on `[0, 1]` for every `k > 0` (the denominator runs from 1 to `k`).
+fn contrast_h(t: f64, k: f64) -> f64 {
+    k * t / (1.0 + (k - 1.0) * t)
+}
+
+/// The contrast tone curve `T_k` of stage C9 on a LogC4 code `x`, for the slope `k > 0` at grey
+/// ([`contrast_slope`]). It fixes black ([`CONTRAST_BLACK`]), grey and the top code value
+/// ([`CONTRAST_TOP`]); between them it is `h_k` scaled into each half (`g + (b - g) h_k((x - g) /
+/// (b - g))` above grey, `g - (g - a) h_k((g - x) / (g - a))` below), and beyond them the straight
+/// line of slope `1 / k` through the end. Continuous, with a continuous slope (`k` at grey, `1 / k`
+/// at both ends), increasing for all `x`; `T(a) = a`, `T(g) = g` and `T(b) = b` exactly.
+#[must_use]
+pub fn contrast_curve(x: f64, k: f64) -> f64 {
+    let (a, g, b) = (CONTRAST_BLACK, LOGC4_GRAY, CONTRAST_TOP);
+    if x >= b {
+        b + (x - b) / k
+    } else if x >= g {
+        g + (b - g) * contrast_h((x - g) / (b - g), k)
+    } else if x > a {
+        g - (g - a) * contrast_h((g - x) / (g - a), k)
+    } else {
+        a + (x - a) / k
+    }
+}
+
+/// The factor `lambda` by which positive saturation scales the chroma of a pixel whose darkest
+/// channel lies the fraction `r = (Y - min) / Y` of its luminance below the luminance, for
+/// `F = 1 + SATURATION_BOOST s / 100`: `r' / r` with `r' = 1 - (1 - r)^F`, computed as
+/// `-expm1(F ln(1 - r)) / r`. It falls from `F` (a muted colour, `r` near 0) to 1 (`r` near 1, a
+/// channel near 0). Below [`SATURATION_SMALL_R`], negative `r` included, it is the limit `F`; at
+/// `r >= 1` (a channel at or below 0) it is 1, as the pixel is left.
+#[must_use]
+pub fn saturation_chroma_scale(r: f64, f: f64) -> f64 {
+    if r < SATURATION_SMALL_R {
+        f
+    } else if r >= 1.0 {
+        1.0
+    } else {
+        -(f * (-r).ln_1p()).exp_m1() / r
+    }
+}
+
+/// The saturation factor for the control value `saturation` (clamped to -100..100): `1 + s / 100`
+/// for `s < 0` (the blend toward grey), `F = 1 + SATURATION_BOOST s / 100` for `s > 0`, and 1 (off)
+/// at 0. A factor below 1 is a blend, above 1 a boost; the GPU kernel reads it the same way.
+#[must_use]
+pub fn saturation_factor(saturation: f64) -> f64 {
+    let s = clamp_control(saturation) / 100.0;
+    if s < 0.0 {
+        1.0 + s
+    } else {
+        1.0 + SATURATION_BOOST * s
+    }
+}
+
+/// The saturation of stage C9 on a linear AWG4 triple for a prepared factor (see
+/// [`saturation_factor`]), or `None` where the pixel is left as it is (`s > 0` with `Y <= 0` or a
+/// channel at or below 0).
+fn saturate_rgb(rgb: Vec3, factor: f64) -> Option<Vec3> {
+    let y = awg4_luminance(rgb);
+    let lambda = if factor < 1.0 {
+        factor
+    } else {
+        if y <= 0.0 || y.is_nan() {
+            return None;
+        }
+        let m = rgb[0].min(rgb[1]).min(rgb[2]);
+        let r = (y - m) / y;
+        if r >= 1.0 {
+            return None;
+        }
+        saturation_chroma_scale(r, factor)
+    };
+    Some(rgb.map(|c| y + lambda * (c - y)))
+}
+
+/// Saturation `s` (-100..100, clamped) of stage C9 on a linear AWG4 pixel: its chroma `rgb - Y` scaled
+/// about its luminance `Y`, by `1 + s / 100` below 0 and by [`saturation_chroma_scale`] above. `Y` is
+/// kept, so are neutrals and the direction of the chroma (the hue); for `s > 0` no channel goes below
+/// 0, and a pixel with `Y <= 0` or a channel at or below 0 is returned unchanged.
+#[must_use]
+pub fn saturate(rgb: LinearAwg4, saturation: f64) -> LinearAwg4 {
+    let factor = saturation_factor(saturation);
+    if factor == 1.0 {
+        return rgb;
+    }
+    LinearAwg4(saturate_rgb(rgb.0, factor).unwrap_or(rgb.0))
+}
+
 /// Stage C9 with its zone centres precomputed.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Grade {
-    contrast_gain: f64,
+    contrast_slope: f64,
     brightness: f64,
     zone_amounts: [f64; 4],
     zone_centers: [f64; 4],
     balance: [ColorBalance; 3],
     balance_centers: [f64; 3],
-    saturation_gain: f64,
+    saturation_factor: f64,
 }
 
 impl Grade {
-    /// Precomputes the gains and zone centres for `params`.
+    /// Precomputes the slopes, factors and zone centres for `params`.
     #[must_use]
     pub fn new(params: &GradeParams) -> Self {
-        let c = clamp_control(params.contrast);
         let zone_amounts = [
             clamp_control(params.shadows),
             clamp_control(params.highlights),
@@ -204,7 +358,7 @@ impl Grade {
         ]
         .map(|x| x / 100.0);
         Self {
-            contrast_gain: (CONTRAST_EXPONENT * c / 100.0).exp2(),
+            contrast_slope: contrast_slope(params.contrast),
             brightness: clamp_control(params.brightness) / 100.0,
             zone_amounts,
             zone_centers: ZONE_CENTER_STOPS.map(logc4_at_stops),
@@ -214,7 +368,7 @@ impl Grade {
                 params.balance_highlights.clamped(),
             ],
             balance_centers: BALANCE_CENTER_STOPS.map(logc4_at_stops),
-            saturation_gain: 1.0 + clamp_control(params.saturation) / 100.0,
+            saturation_factor: saturation_factor(params.saturation),
         }
     }
 
@@ -222,10 +376,11 @@ impl Grade {
     #[must_use]
     pub fn apply(&self, v: LogC4, l: f64) -> LogC4 {
         let mut out = v.0;
-        // 1. Contrast about grey.
-        if self.contrast_gain != 1.0 {
+        // 1. Contrast: the tone curve on the luma, as one offset for all three channels.
+        if self.contrast_slope != 1.0 {
+            let offset = contrast_curve(l, self.contrast_slope) - l;
             for c in &mut out {
-                *c = LOGC4_GRAY + (*c - LOGC4_GRAY) * self.contrast_gain;
+                *c += offset;
             }
         }
         // 2. Brightness: a midtone lift.
@@ -249,11 +404,10 @@ impl Grade {
                 }
             }
         }
-        // 5. Saturation, subtractive: about the brightest channel M, so M and neutrals stay put.
-        if self.saturation_gain != 1.0 {
-            let m = out[0].max(out[1]).max(out[2]);
-            for c in &mut out {
-                *c = m + (*c - m) * self.saturation_gain;
+        // 5. Saturation: the chroma scaled about the luminance, in linear AWG4.
+        if self.saturation_factor != 1.0 && out.iter().all(|&c| c <= SATURATION_CODE_LIMIT) {
+            if let Some(rgb) = saturate_rgb(logc4_decode_rgb(out), self.saturation_factor) {
+                out = logc4_encode_rgb(rgb);
             }
         }
         LogC4(out)

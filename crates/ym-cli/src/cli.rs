@@ -109,7 +109,7 @@ pub struct RenderArgs {
     /// Stops added to each photo's automatic exposure.
     #[arg(long, value_name = "EV", value_parser = finite, allow_negative_numbers = true, help_heading = H_LIGHT)]
     pub exposure_offset: Option<f64>,
-    /// Contrast, -100 to 100.
+    /// Contrast, -100 to 100 (around mid grey; black and the brightest tones stay where they are).
     #[arg(long, value_name = "N", value_parser = signed_percent, allow_negative_numbers = true, help_heading = H_LIGHT)]
     pub contrast: Option<f64>,
     /// Brightness, -100 to 100.
@@ -140,7 +140,7 @@ pub struct RenderArgs {
     /// Light preset instead of the estimated light.
     #[arg(long, value_enum, ignore_case = true, value_name = "LIGHT", help_heading = H_COLOR)]
     pub light: Option<LightArg>,
-    /// Saturation, -100 to 100 (subtractive: more makes colours denser and darker, less makes them paler).
+    /// Saturation, -100 to 100 (more makes colours stronger, less makes them greyer; brightness stays).
     #[arg(long, value_name = "N", value_parser = signed_percent, allow_negative_numbers = true, help_heading = H_COLOR)]
     pub saturation: Option<f64>,
 

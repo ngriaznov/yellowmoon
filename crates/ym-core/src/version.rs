@@ -5,7 +5,7 @@
 ///
 /// Bump it whenever the output pixels change for the same input and settings. It is written into
 /// every export's XMP (`ym:PipelineVersion`) and printed by `ym --version`.
-pub const PIPELINE_VERSION: &str = "0.4.2";
+pub const PIPELINE_VERSION: &str = "0.4.3";
 
 /// Version of the application and the command-line tool: the workspace package version.
 pub fn app_version() -> &'static str {

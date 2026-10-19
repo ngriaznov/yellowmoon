@@ -269,8 +269,9 @@ pub fn cases() -> Vec<(String, ChainParams)> {
         v.push((format!("auto/{}", t.name()), base(t)));
         v.push((format!("full/{}", t.name()), full(t)));
     }
-    // Subtractive saturation (C9, about the brightest channel): alone, and on top of the full grade,
-    // look and curves. -100 and 100 are the ends of the control, 60 and -60 are in the middle.
+    // Saturation (C9, the chroma scaled about the luminance in linear AWG4) and Contrast (C9, the tone
+    // curve on the luma): alone, and on top of the full grade, look and curves. -100 and 100 are the
+    // ends of the control, 60 and -60 are in the middle.
     for sat in [-100.0, -60.0, 60.0, 100.0] {
         let mut p = base(OutputTarget::Viewport);
         p.grade.saturation = sat;
@@ -278,6 +279,14 @@ pub fn cases() -> Vec<(String, ChainParams)> {
         let mut p = full(OutputTarget::Viewport);
         p.grade.saturation = sat;
         v.push((format!("saturation+full/{sat:+}"), p));
+    }
+    for contrast in [-100.0, -60.0, 60.0, 100.0] {
+        let mut p = base(OutputTarget::Viewport);
+        p.grade.contrast = contrast;
+        v.push((format!("contrast/{contrast:+}"), p));
+        let mut p = full(OutputTarget::Viewport);
+        p.grade.contrast = contrast;
+        v.push((format!("contrast+full/{contrast:+}"), p));
     }
     // A CDL without a LUT, and a LUT without a CDL (the kernel's two optional parts of C10).
     let mut p = full(OutputTarget::Viewport);

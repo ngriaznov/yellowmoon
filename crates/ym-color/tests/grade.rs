@@ -1,25 +1,46 @@
 //! M1-09 (C9): the primary grade. Formulas against an independent transcription of the table in
-//! docs/02, and monotonicity of every control (what "monotonic" means per control is documented in
+//! docs/02, the properties of the contrast curve and of the saturation (design of 2026-10-19), and
+//! monotonicity of every control (what "monotonic" means per control is documented in
 //! `ym_color::grade`).
 
 use proptest::prelude::*;
 use ym_color::consts::{LOGC4_GRAY, LOGC4_STOP, Vec3};
-use ym_color::gamut::LinearAwg4;
+use ym_color::gamut::{LinearAwg4, awg4_luminance};
 use ym_color::grade::{
-    BALANCE_CENTER_STOPS, BRIGHTNESS_SIGMA, COLOR_BALANCE_STRENGTH, CONTRAST_EXPONENT,
-    ColorBalance, E1, E2, Grade, GradeParams, ZONE_CENTER_STOPS, ZONE_CONTROL_SIGMA, ZONE_SIGMA,
-    bump, grade_luma, logc4_at_stops,
+    BALANCE_CENTER_STOPS, BRIGHTNESS_SIGMA, COLOR_BALANCE_STRENGTH, CONTRAST_BLACK,
+    CONTRAST_EXPONENT, CONTRAST_TOP, ColorBalance, E1, E2, Grade, GradeParams, SATURATION_BOOST,
+    SATURATION_CODE_LIMIT, SATURATION_SMALL_R, ZONE_CENTER_STOPS, ZONE_CONTROL_SIGMA, ZONE_SIGMA,
+    bump, contrast_curve, contrast_slope, grade_luma, logc4_at_stops, saturate,
+    saturation_chroma_scale,
 };
 use ym_color::logc::{LogC4, logc4_decode, logc4_encode};
 
-/// Straight transcription of the C9 table, independent of `Grade` (no precomputation).
+/// The AWG4 luminance row, typed out (`[0.2545, 0.7815, -0.0360]`).
+const Y_ROW: Vec3 = [0.254524176404027, 0.781477732712002, -0.036001909116029];
+
+/// Straight transcription of the C9 table, independent of `Grade` (no precomputation, no shared
+/// helpers): the contrast curve written out per segment, the saturation with `1 - (1 - r)^F` as the
+/// spec writes it.
 fn reference(p: &GradeParams, v: Vec3, l: f64) -> Vec3 {
     let g = 0.2783958365482653;
     let s = 0.9071358748778103 / 14.0;
+    let black = 0.09286412512218964;
     let mut v = v;
-    let c = p.contrast;
-    for x in &mut v {
-        *x = g + (*x - g) * 2.0_f64.powf(0.6 * c / 100.0);
+    if p.contrast != 0.0 {
+        let k = 2.0_f64.powf(0.6 * p.contrast / 100.0);
+        let h = |t: f64| k * t / (1.0 + (k - 1.0) * t);
+        let t_of_l = if l > 1.0 {
+            1.0 + (l - 1.0) / k
+        } else if l >= g {
+            g + (1.0 - g) * h((l - g) / (1.0 - g))
+        } else if l >= black {
+            g - (g - black) * h((g - l) / (g - black))
+        } else {
+            black + (l - black) / k
+        };
+        for x in &mut v {
+            *x += t_of_l - l;
+        }
     }
     let mut add = (p.brightness / 100.0) * s * (-(l - g).powi(2) / (2.0 * (2.5 * s).powi(2))).exp();
     for (x, stops) in [
@@ -51,10 +72,25 @@ fn reference(p: &GradeParams, v: Vec3, l: f64) -> Vec3 {
             v[k] += 0.03 * (bal.a * e1[k] + bal.b * e2[k]) * zone;
         }
     }
-    // Saturation is subtractive: about the brightest channel of the pixel at this point.
-    let m = v[0].max(v[1]).max(v[2]);
-    for x in &mut v {
-        *x = m + (*x - m) * (1.0 + p.saturation / 100.0);
+    if p.saturation != 0.0 {
+        let rgb = v.map(logc4_decode);
+        let y = Y_ROW[0] * rgb[0] + Y_ROW[1] * rgb[1] + Y_ROW[2] * rgb[2];
+        let lambda = if p.saturation < 0.0 {
+            Some(1.0 + p.saturation / 100.0)
+        } else {
+            let f = 1.0 + p.saturation / 100.0;
+            let r = (y - rgb[0].min(rgb[1]).min(rgb[2])) / y;
+            if y <= 0.0 || r >= 1.0 {
+                None
+            } else if r < 1e-9 {
+                Some(f)
+            } else {
+                Some((1.0 - (1.0 - r).powf(f)) / r)
+            }
+        };
+        if let Some(lambda) = lambda {
+            v = rgb.map(|c| logc4_encode(y + lambda * (c - y)));
+        }
     }
     v
 }
@@ -95,30 +131,172 @@ fn constants_are_the_documented_ones() {
     assert!((bump(1.3, 1.0, 0.3) - (-0.5_f64).exp()).abs() < 1e-15);
 }
 
+// ---- Contrast: the tone curve on the luma (design of 2026-10-19) --------------------------------
+
+/// The slopes the control's range spans: `2^-0.6` to `2^0.6`.
+const K_MIN: f64 = 0.659_753_955_386_447_1;
+const K_MAX: f64 = 1.515_716_566_510_398;
+
+/// Central-difference slope of `T_k` at `x` from the left and from the right (one-sided, step `h`).
+fn one_sided_slopes(x: f64, k: f64, h: f64) -> (f64, f64) {
+    let left = (contrast_curve(x, k) - contrast_curve(x - h, k)) / h;
+    let right = (contrast_curve(x + h, k) - contrast_curve(x, k)) / h;
+    (left, right)
+}
+
 #[test]
-fn contrast_formula_and_fixed_point() {
+fn contrast_constants_and_slope() {
+    assert_eq!(CONTRAST_BLACK, logc4_encode(0.0));
+    assert!((CONTRAST_BLACK - 0.092_864_125_1).abs() < 1e-10);
+    assert_eq!(CONTRAST_TOP, 1.0);
+    assert_eq!(CONTRAST_EXPONENT, 0.6);
+    assert_eq!(contrast_slope(0.0), 1.0);
+    assert!((contrast_slope(100.0) - K_MAX).abs() < 1e-15);
+    assert!((contrast_slope(-100.0) - K_MIN).abs() < 1e-15);
+    assert!((K_MIN * K_MAX - 1.0).abs() < 1e-15);
+    // Clamped like every control.
+    assert_eq!(contrast_slope(400.0), contrast_slope(100.0));
+    assert_eq!(contrast_slope(f64::NAN), 1.0);
+}
+
+#[test]
+fn the_contrast_curve_fixes_black_grey_and_the_top_code_value() {
+    for c in (-100..=100).step_by(5) {
+        let k = contrast_slope(f64::from(c));
+        assert_eq!(contrast_curve(LOGC4_GRAY, k), LOGC4_GRAY, "c={c}");
+        assert_eq!(contrast_curve(CONTRAST_BLACK, k), CONTRAST_BLACK, "c={c}");
+        assert_eq!(contrast_curve(CONTRAST_TOP, k), CONTRAST_TOP, "c={c}");
+        // And it stays inside [black, top] between them.
+        for i in 0..=100 {
+            let x = CONTRAST_BLACK + (CONTRAST_TOP - CONTRAST_BLACK) * f64::from(i) / 100.0;
+            let t = contrast_curve(x, k);
+            assert!(
+                (CONTRAST_BLACK..=CONTRAST_TOP).contains(&t),
+                "c={c} x={x}: {t}"
+            );
+        }
+    }
+    // k = 1 is the identity everywhere.
+    for x in [-1.0, 0.0, 0.05, 0.2, 0.2784, 0.5, 1.0, 3.0] {
+        assert!((contrast_curve(x, 1.0) - x).abs() < 1e-15, "{x}");
+    }
+}
+
+#[test]
+fn the_contrast_curve_has_slope_k_at_grey_and_one_over_k_at_both_ends() {
+    let h = 1e-7;
+    for k in [K_MIN, 0.8, 0.95, 1.05, 1.3, K_MAX] {
+        for (x, want) in [
+            (LOGC4_GRAY, k),
+            (CONTRAST_BLACK, 1.0 / k),
+            (CONTRAST_TOP, 1.0 / k),
+        ] {
+            let (left, right) = one_sided_slopes(x, k, h);
+            // One-sided differences of a C2-almost-everywhere curve: error ~ |T''| h.
+            assert!(
+                (left - want).abs() < 1e-5,
+                "k={k} x={x}: left {left} vs {want}"
+            );
+            assert!(
+                (right - want).abs() < 1e-5,
+                "k={k} x={x}: right {right} vs {want}"
+            );
+        }
+        // Beyond the ends the curve is the straight line of slope 1 / k.
+        for x in [-0.5, 0.0, 0.05, 1.2, 2.0, 7.0] {
+            let want = if x > CONTRAST_TOP {
+                CONTRAST_TOP + (x - CONTRAST_TOP) / k
+            } else {
+                CONTRAST_BLACK + (x - CONTRAST_BLACK) / k
+            };
+            assert!((contrast_curve(x, k) - want).abs() < 1e-15, "k={k} x={x}");
+        }
+    }
+}
+
+proptest! {
+    /// Increasing and C1 for every slope the control can give, everywhere (below black and above the
+    /// top code value included): the curve rises between any two points, and the slopes from the left
+    /// and the right agree.
+    #[test]
+    fn the_contrast_curve_is_increasing_and_c1(
+        k in K_MIN..=K_MAX, x in -0.6f64..2.5, dx in 1e-6f64..0.5,
+    ) {
+        let (t0, t1) = (contrast_curve(x, k), contrast_curve(x + dx, k));
+        prop_assert!(t1 > t0, "k={k}: T({x}) = {t0}, T({}) = {t1}", x + dx);
+        // The slope is between min(k, 1/k) and max(k, 1/k), so the rise is too.
+        let (lo, hi) = (k.min(1.0 / k), k.max(1.0 / k));
+        prop_assert!(t1 - t0 >= lo * dx * (1.0 - 1e-8) && t1 - t0 <= hi * dx * (1.0 + 1e-8));
+        let h = 1e-6;
+        let (left, right) = one_sided_slopes(x, k, h);
+        prop_assert!((left - right).abs() < 1e-4, "k={k} x={x}: slopes {left} and {right}");
+        // And at the three points where the pieces meet (|T''| <= 8.5, so one-sided differences over
+        // 1e-7 agree to about 1e-6 where the slope is continuous).
+        for j in [CONTRAST_BLACK, LOGC4_GRAY, CONTRAST_TOP] {
+            let (left, right) = one_sided_slopes(j, k, 1e-7);
+            prop_assert!((left - right).abs() < 1e-5, "k={k} at {j}: slopes {left} and {right}");
+        }
+    }
+}
+
+#[test]
+fn contrast_offsets_all_three_channels_by_the_change_of_the_luma() {
+    for c in [-100.0, -60.0, -30.0, 30.0, 60.0, 100.0] {
+        let g = Grade::new(&GradeParams {
+            contrast: c,
+            ..Default::default()
+        });
+        let k = contrast_slope(c);
+        for lin in [
+            [0.18, 0.18, 0.18],
+            [0.4, 0.2, 0.05],
+            [0.02, 0.03, 0.2],
+            [3.0, 1.5, 0.9],
+            [0.004, 0.002, 0.001],
+            [900.0, 400.0, 200.0],
+        ] {
+            let lin = LinearAwg4(lin);
+            let (v, l) = (lin.to_logc4().0, grade_luma(lin));
+            let out = g.apply_linear(lin).0;
+            let want = contrast_curve(l, k) - l;
+            for ch in 0..3 {
+                assert!(
+                    (out[ch] - v[ch] - want).abs() < 1e-15,
+                    "c={c} {lin:?} ch {ch}"
+                );
+            }
+            // On the log segment a common offset is a common gain on `x + 64 / a` (a gain on x where x
+            // is well above 0.029): the channel ratios of that quantity are kept.
+            let shifted = |code: f64| logc4_decode(code) + 64.0 / 2231.8263090676883;
+            if v.iter().all(|&x| x >= 0.0) && out.iter().all(|&x| x >= 0.0) {
+                let gain = shifted(out[0]) / shifted(v[0]);
+                for ch in 1..3 {
+                    let gk = shifted(out[ch]) / shifted(v[ch]);
+                    assert!(
+                        (gk / gain - 1.0).abs() < 1e-12,
+                        "c={c} {lin:?}: {gk} vs {gain}"
+                    );
+                }
+            }
+        }
+    }
+    // A neutral grey card stays at grey, a neutral black at black, a neutral at the top code at the top.
+    let g = Grade::new(&GradeParams {
+        contrast: 73.0,
+        ..Default::default()
+    });
+    for x in [LOGC4_GRAY, CONTRAST_BLACK, CONTRAST_TOP] {
+        assert_eq!(g.apply(LogC4([x; 3]), x).0, [x; 3]);
+    }
+    // +100 at a luma half way from grey to the top: g + (1 - g) h(1/2) with h(1/2) = k / (1 + k).
+    let l = 0.5 * (LOGC4_GRAY + 1.0);
+    let k = K_MAX;
+    let want = LOGC4_GRAY + (1.0 - LOGC4_GRAY) * k / (1.0 + k);
     let g = Grade::new(&GradeParams {
         contrast: 100.0,
         ..Default::default()
     });
-    // Grey is the fixed point.
-    let out = g.apply(LogC4([LOGC4_GRAY; 3]), LOGC4_GRAY).0;
-    for c in out {
-        assert!((c - LOGC4_GRAY).abs() < 1e-15);
-    }
-    // 2^0.6 about grey for +100.
-    let out = g.apply(LogC4([0.5, 0.2, 0.7]), 0.4).0;
-    let gain = 2.0_f64.powf(0.6);
-    for (o, i) in out.iter().zip([0.5, 0.2, 0.7]) {
-        assert!((o - (LOGC4_GRAY + (i - LOGC4_GRAY) * gain)).abs() < 1e-14);
-    }
-    // -100 is the inverse gain.
-    let g = Grade::new(&GradeParams {
-        contrast: -100.0,
-        ..Default::default()
-    });
-    let out = g.apply(LogC4([0.5; 3]), 0.5).0;
-    assert!((out[0] - (LOGC4_GRAY + (0.5 - LOGC4_GRAY) / gain)).abs() < 1e-14);
+    assert!((g.apply(LogC4([l; 3]), l).0[0] - want).abs() < 1e-15);
 }
 
 #[test]
@@ -174,9 +352,12 @@ fn matches_an_independent_transcription_of_the_table() {
         for (v, l) in lv {
             let got = g.apply(LogC4(v), l).0;
             let want = reference(&p, v, l);
+            // The saturation's `1 - (1 - r)^F` in the transcription loses a few digits to
+            // cancellation where `Grade` uses expm1 and ln_1p; 1e-11 code values is far below anything
+            // a picture shows.
             for k in 0..3 {
                 assert!(
-                    (got[k] - want[k]).abs() < 1e-13,
+                    (got[k] - want[k]).abs() < 1e-11,
                     "x={x} v={v:?}: {got:?} vs {want:?}"
                 );
             }
@@ -203,7 +384,7 @@ proptest! {
         let got = Grade::new(&p).apply(LogC4([r, gg, bb]), l).0;
         let want = reference(&p, [r, gg, bb], l);
         for i in 0..3 {
-            prop_assert!((got[i] - want[i]).abs() < 1e-12);
+            prop_assert!((got[i] - want[i]).abs() < 1e-10, "{got:?} vs {want:?}");
         }
     }
 }
@@ -245,73 +426,78 @@ fn color_balance_displacement() {
 }
 
 #[test]
-fn saturation_pivots_on_the_brightest_channel() {
-    // M = 0.5 is the red channel; L (0.33) plays no part.
-    let v = [0.5, 0.3, 0.1];
-    let l = 0.33;
-    let m = 0.5;
+fn saturation_scales_the_chroma_about_the_luminance() {
+    // A pixel with every channel above 0: Y = 0.17496.
+    let lin = [0.40, 0.12, 0.05];
+    let y = awg4_luminance(lin);
+    assert!((y - (0.2545241764 * 0.40 + 0.7814777327 * 0.12 - 0.0360019091 * 0.05)).abs() < 1e-9);
+    let v = LinearAwg4(lin).to_logc4().0;
+    let l = 0.33; // L plays no part in Saturation
     let sat = |s: f64| {
-        Grade::new(&GradeParams {
+        let out = Grade::new(&GradeParams {
             saturation: s,
             ..Default::default()
         })
         .apply(LogC4(v), l)
-        .0
+        .0;
+        out.map(logc4_decode)
     };
-    // -100: every channel equals M, a neutral at the pixel's brightest channel.
-    assert_eq!(sat(-100.0), [m, m, m]);
-    // +100: the distance below M doubles, M stays.
-    let double = sat(100.0);
-    assert_eq!(double[0], m);
-    for k in 0..3 {
-        assert!((double[k] - (m + 2.0 * (v[k] - m))).abs() < 1e-15);
+    let close = |a: Vec3, b: Vec3| (0..3).all(|k| (a[k] - b[k]).abs() < 1e-13);
+    // -100: grey at the same luminance.
+    assert!(close(sat(-100.0), [y; 3]), "{:?}", sat(-100.0));
+    // -50: half way to it.
+    assert!(close(sat(-50.0), lin.map(|c| y + 0.5 * (c - y))));
+    // +60: F = 1.6 and r from the darkest channel (blue).
+    let f = 1.0 + SATURATION_BOOST * 0.6;
+    let r = (y - 0.05) / y;
+    let r2 = 1.0 - (1.0 - r).powf(f);
+    let lambda = r2 / r;
+    assert!(lambda > 1.0 && lambda < f, "{lambda}");
+    let want = lin.map(|c| y + lambda * (c - y));
+    assert!(close(sat(60.0), want), "{:?} vs {want:?}", sat(60.0));
+    // The darkest channel lands at Y (1 - r').
+    assert!((sat(60.0)[2] - y * (1.0 - r2)).abs() < 1e-13);
+    // The luminance is the same at every setting.
+    for s in [-100.0, -40.0, 25.0, 60.0, 100.0] {
+        let out = sat(s);
+        assert!((awg4_luminance(out) - y).abs() < 1e-13 * y, "s={s}");
     }
-    assert!((double[1] - 0.1).abs() < 1e-15 && (double[2] - (-0.3)).abs() < 1e-15);
-    // -50: halfway to M.
-    let half = sat(-50.0);
-    for k in 0..3 {
-        assert!((half[k] - (m + 0.5 * (v[k] - m))).abs() < 1e-15);
-    }
-    // More saturation makes the colour denser and darker, less makes it paler and lighter.
-    assert!(double[1] < v[1] && double[2] < v[2]);
-    assert!(half[1] > v[1] && half[2] > v[2]);
-    assert!(half[1] < m && half[2] < m);
     // The pivot does not depend on L.
+    let g = Grade::new(&GradeParams {
+        saturation: 63.0,
+        ..Default::default()
+    });
     for l in [0.0, 0.2, 0.9, 5.0] {
-        let g = Grade::new(&GradeParams {
-            saturation: 63.0,
-            ..Default::default()
-        });
         assert_eq!(g.apply(LogC4(v), l), g.apply(LogC4(v), 0.33));
     }
 }
 
 #[test]
-fn saturation_pivots_on_the_brightest_channel_after_the_controls_before_it() {
-    // M is the brightest channel at this point of C9: with contrast on, it is the contrasted one.
-    let v = [0.55, 0.20, 0.35];
-    let p = GradeParams {
-        contrast: 60.0,
-        saturation: -100.0,
-        ..Default::default()
-    };
-    let out = Grade::new(&p).apply(LogC4(v), 0.4).0;
-    let gain = (CONTRAST_EXPONENT * 0.6).exp2();
-    let m = LOGC4_GRAY + (0.55 - LOGC4_GRAY) * gain;
-    for c in out {
-        assert!((c - m).abs() < 1e-14, "{out:?} vs {m}");
-    }
-    // And a lift from brightness moves M with the pixel.
-    let p = GradeParams {
-        brightness: 80.0,
-        saturation: -100.0,
-        ..Default::default()
-    };
-    let l = LOGC4_GRAY;
-    let out = Grade::new(&p).apply(LogC4(v), l).0;
-    let m = 0.55 + 0.8 * LOGC4_STOP;
-    for c in out {
-        assert!((c - m).abs() < 1e-14, "{out:?} vs {m}");
+fn saturation_acts_on_the_pixel_the_controls_before_it_produced() {
+    // With Contrast and Brightness on, -100 is the grey of the luminance after them.
+    let lin = LinearAwg4([0.55, 0.20, 0.35]);
+    let (v, l) = (lin.to_logc4().0, grade_luma(lin));
+    for p in [
+        GradeParams {
+            contrast: 60.0,
+            ..Default::default()
+        },
+        GradeParams {
+            brightness: 80.0,
+            ..Default::default()
+        },
+    ] {
+        let before = Grade::new(&p).apply(LogC4(v), l).0;
+        let y = awg4_luminance(before.map(logc4_decode));
+        let out = Grade::new(&GradeParams {
+            saturation: -100.0,
+            ..p
+        })
+        .apply(LogC4(v), l)
+        .0;
+        for c in out.map(logc4_decode) {
+            assert!((c - y).abs() < 1e-13, "{out:?} vs {y}");
+        }
     }
 }
 
@@ -359,7 +545,8 @@ fn out_of_range_controls_are_clamped() {
 /// Sample pixels: neutral ramp and coloured pixels, each with its luma.
 fn sample_pixels() -> Vec<(Vec3, f64)> {
     let mut out = Vec::new();
-    for k in 0..=40 {
+    // From below black to above the top code value.
+    for k in 0..=48 {
         let v = 0.05 + 0.95 * f64::from(k) / 40.0;
         out.push(([v, v, v], v));
     }
@@ -412,35 +599,54 @@ fn every_scalar_control_is_monotone_in_its_value() {
             }
         }
     }
-    // Contrast: moves away from grey as the value rises (above grey up, below grey down).
+    // Contrast: for a luma between black and the top code value, every channel moves away from grey
+    // as the value rises (up above grey, down below it); beyond the ends the line of slope 1 / k pulls
+    // the other way (toward the end), and at grey and at the ends nothing moves.
     let grades = sweep(|p, x| p.contrast = x);
+    let mut directions = [0usize; 3];
     for (v, l) in sample_pixels() {
+        let dir = if l > CONTRAST_TOP || (l < LOGC4_GRAY && l >= CONTRAST_BLACK) {
+            -1.0
+        } else if l < CONTRAST_BLACK || l > LOGC4_GRAY {
+            1.0
+        } else {
+            0.0
+        };
+        directions[(dir + 1.0) as usize] += 1;
         let mut prev = grades[0].apply(LogC4(v), l).0;
         for g in &grades[1..] {
             let cur = g.apply(LogC4(v), l).0;
             for k in 0..3 {
-                if v[k] > LOGC4_GRAY {
-                    assert!(cur[k] >= prev[k] - 1e-15, "contrast up: {v:?}");
-                } else if v[k] < LOGC4_GRAY {
-                    assert!(cur[k] <= prev[k] + 1e-15, "contrast down: {v:?}");
-                }
+                assert!(
+                    (cur[k] - prev[k]) * dir >= -1e-15,
+                    "contrast: {v:?} l={l} channel {k}: {} -> {}",
+                    prev[k],
+                    cur[k]
+                );
             }
             prev = cur;
         }
     }
-    // Saturation: the distance of each channel from M (the brightest channel) grows with the
-    // control; M and neutral pixels do not move.
+    assert!(directions[0] > 5 && directions[2] > 5, "{directions:?}");
+    // Saturation: the distance of each channel from the luminance Y (in linear AWG4) grows with the
+    // control; Y does not move.
     let grades = sweep(|p, x| p.saturation = x);
     for (v, l) in sample_pixels() {
-        let m = v[0].max(v[1]).max(v[2]);
+        let y = awg4_luminance(v.map(logc4_decode));
         let mut prev = [0.0; 3];
         for (i, g) in grades.iter().enumerate() {
-            let o = g.apply(LogC4(v), l).0;
-            assert_eq!(o[0].max(o[1]).max(o[2]), m, "saturation moved M: {v:?}");
+            let o = g.apply(LogC4(v), l).0.map(logc4_decode);
+            assert!(
+                (awg4_luminance(o) - y).abs() <= 1e-13 * y.abs().max(1e-3),
+                "saturation moved Y: {v:?}"
+            );
             for k in 0..3 {
-                let dist = (o[k] - m).abs();
+                let dist = (o[k] - y).abs();
                 if i > 0 {
-                    assert!(dist >= prev[k] - 1e-15, "saturation: {v:?} channel {k}");
+                    assert!(
+                        dist >= prev[k] - 1e-13 * y.abs().max(1e-3),
+                        "saturation: {v:?} channel {k}"
+                    );
                 }
                 prev[k] = dist;
             }
@@ -563,8 +769,12 @@ fn gray_card_unchanged_by_color_only_controls() {
         saturation: 80.0,
         ..Default::default()
     });
+    // Through linear and back: the same code to the last bits.
     let v = [0.35, 0.35, 0.35];
-    assert_eq!(g.apply(LogC4(v), 0.35).0, v);
+    let out = g.apply(LogC4(v), 0.35).0;
+    for c in out {
+        assert!((c - 0.35).abs() < 1e-15, "{out:?}");
+    }
     // And sanity of the decode round trip used by the helper.
     assert!((logc4_decode(logc4_encode(0.18)) - 0.18).abs() < 1e-14);
 }
@@ -614,10 +824,11 @@ fn infinite_color_balance_vectors_stay_finite_and_inside_the_unit_disc() {
     assert!((c.a - 1.0).abs() < 1e-12 && c.b == 0.0);
 }
 
-// ---- Subtractive saturation (owner's decision of 2026-10-13, docs/16) ---------------------------
+// ---- Against the grade of pipeline 0.4.2 (contrast about grey, subtractive saturation) ----------
 
-/// The grade as it was before that decision, copied from the old `Grade::apply`: saturation about
-/// the luma `L`. At `s = 0` the new code must give the same bytes.
+/// The grade as it was before the design of 2026-10-19, copied from the old `Grade::apply`: contrast
+/// as a gain about grey on every channel, saturation about the brightest channel `M`. At `c = 0` and
+/// `s = 0` the new code must give the same bytes.
 fn legacy_apply(p: &GradeParams, v: Vec3, l: f64) -> Vec3 {
     let clamp = |x: f64| {
         if x.is_nan() {
@@ -663,8 +874,9 @@ fn legacy_apply(p: &GradeParams, v: Vec3, l: f64) -> Vec3 {
         }
     }
     if saturation_gain != 1.0 {
+        let m = out[0].max(out[1]).max(out[2]);
         for c in &mut out {
-            *c = l + (*c - l) * saturation_gain;
+            *c = m + (*c - m) * saturation_gain;
         }
     }
     out
@@ -674,120 +886,280 @@ fn bits(v: Vec3) -> [u64; 3] {
     v.map(f64::to_bits)
 }
 
-fn max3(v: Vec3) -> f64 {
-    v[0].max(v[1]).max(v[2])
-}
-
-/// Every control but Saturation (which is 0), at random values.
+/// Every control but Contrast and Saturation (which are 0), at random values.
 fn any_params() -> impl Strategy<Value = GradeParams> {
     let c = || -100.0f64..=100.0;
     let w = || -0.7f64..=0.7;
-    (
-        (c(), c(), c(), c(), c(), c()),
-        (w(), w(), w(), w(), w(), w()),
+    ((c(), c(), c(), c(), c()), (w(), w(), w(), w(), w(), w())).prop_map(
+        |((brightness, shadows, highlights, black, white), (a1, b1, a2, b2, a3, b3))| GradeParams {
+            contrast: 0.0,
+            brightness,
+            shadows,
+            highlights,
+            black,
+            white,
+            balance_shadows: ColorBalance { a: a1, b: b1 },
+            balance_midtones: ColorBalance { a: a2, b: b2 },
+            balance_highlights: ColorBalance { a: a3, b: b3 },
+            saturation: 0.0,
+        },
     )
-        .prop_map(
-            |(
-                (contrast, brightness, shadows, highlights, black, white),
-                (a1, b1, a2, b2, a3, b3),
-            )| {
-                GradeParams {
-                    contrast,
-                    brightness,
-                    shadows,
-                    highlights,
-                    black,
-                    white,
-                    balance_shadows: ColorBalance { a: a1, b: b1 },
-                    balance_midtones: ColorBalance { a: a2, b: b2 },
-                    balance_highlights: ColorBalance { a: a3, b: b3 },
-                    saturation: 0.0,
-                }
-            },
-        )
 }
 
 fn any_logc4() -> impl Strategy<Value = Vec3> {
     prop::array::uniform3(-0.2f64..1.3)
 }
 
+/// A linear AWG4 pixel: mostly positive, from 2^-12 to 2^6 of grey, with some channels below 0.
+fn any_linear() -> impl Strategy<Value = Vec3> {
+    (
+        -12.0f64..6.0,
+        prop::array::uniform3(-0.15f64..1.0),
+        prop::array::uniform3(0.0f64..1.0),
+    )
+        .prop_map(|(stops, mix, below)| {
+            let lum = 0.18 * stops.exp2();
+            let mut rgb = mix.map(|m| lum * (0.05 + m));
+            // About one pixel in eight has a channel below 0 (out-of-gamut colours).
+            if below[0] < 0.125 {
+                rgb[(below[1] * 3.0) as usize % 3] = -lum * 0.05 * below[2];
+            }
+            rgb
+        })
+}
+
 #[test]
-fn the_legacy_copy_differs_from_the_new_grade_when_saturation_is_on() {
+fn the_legacy_copy_differs_from_the_new_grade_when_contrast_or_saturation_is_on() {
     // Guards the byte-identity test below against being vacuous.
+    let v = [0.5, 0.3, 0.1];
+    for p in [
+        GradeParams {
+            saturation: 50.0,
+            ..Default::default()
+        },
+        GradeParams {
+            contrast: 50.0,
+            ..Default::default()
+        },
+    ] {
+        let new = Grade::new(&p).apply(LogC4(v), 0.33).0;
+        let old = legacy_apply(&p, v, 0.33);
+        assert_ne!(bits(new), bits(old), "{p:?}");
+    }
+    // The old saturation kept the brightest channel and lowered the others (darker); the new one
+    // keeps the luminance.
     let p = GradeParams {
         saturation: 50.0,
         ..Default::default()
     };
-    let v = [0.5, 0.3, 0.1];
+    let y = |v: Vec3| awg4_luminance(v.map(logc4_decode));
     let new = Grade::new(&p).apply(LogC4(v), 0.33).0;
     let old = legacy_apply(&p, v, 0.33);
-    assert_ne!(bits(new), bits(old));
-    // The old pivot was L: the old code moved the pixel's brightest channel.
-    assert!((old[0] - 0.5).abs() > 1e-3 && new[0] == 0.5);
+    assert!(y(old) < 0.9 * y(v));
+    assert!((y(new) - y(v)).abs() < 1e-13);
+    // The old contrast moved black and the top code value; the new one keeps both.
+    let p = GradeParams {
+        contrast: 60.0,
+        ..Default::default()
+    };
+    for x in [CONTRAST_BLACK, CONTRAST_TOP] {
+        assert_eq!(Grade::new(&p).apply(LogC4([x; 3]), x).0, [x; 3]);
+        assert!((legacy_apply(&p, [x; 3], x)[0] - x).abs() > 0.02);
+    }
 }
 
 proptest! {
-    /// Saturation 0 renders exactly as before the change, for every other control and any pixel.
+    /// Contrast 0 and Saturation 0 render exactly as before the change, for every other control and
+    /// any pixel.
     #[test]
-    fn saturation_zero_is_byte_identical_to_the_old_grade(
-        p in any_params(), v in any_logc4(), l in -0.2f64..1.3, negative_zero in any::<bool>(),
+    fn contrast_and_saturation_zero_are_byte_identical_to_the_old_grade(
+        p in any_params(), v in any_logc4(), l in -0.2f64..1.3,
+        negative_zero in any::<(bool, bool)>(),
     ) {
-        let p = GradeParams { saturation: if negative_zero { -0.0 } else { 0.0 }, ..p };
+        let p = GradeParams {
+            contrast: if negative_zero.0 { -0.0 } else { 0.0 },
+            saturation: if negative_zero.1 { -0.0 } else { 0.0 },
+            ..p
+        };
         let got = Grade::new(&p).apply(LogC4(v), l).0;
         prop_assert_eq!(bits(got), bits(legacy_apply(&p, v, l)));
     }
 
-    /// With only Saturation moved, the brightest channel stays and no channel crosses it.
+    /// The luminance stays and the chroma keeps its direction (the hue): `rgb' - Y` is `rgb - Y`
+    /// times one factor, at least 0 (exactly 0 at -100), for any pixel and any setting.
     #[test]
-    fn saturation_keeps_the_brightest_channel_and_the_others_move_one_way(
-        p in any_params(), s in -100.0f64..=100.0, v in any_logc4(), l in -0.2f64..1.3,
-    ) {
-        let without = Grade::new(&p).apply(LogC4(v), l).0;
-        let with = Grade::new(&GradeParams { saturation: s, ..p }).apply(LogC4(v), l).0;
-        let m = max3(without);
-        prop_assert_eq!(max3(with), m);
-        let gain = 1.0 + s / 100.0;
+    fn saturation_keeps_the_luminance_and_the_hue(rgb in any_linear(), s in -100.0f64..=100.0) {
+        let y = awg4_luminance(rgb);
+        let out = saturate(LinearAwg4(rgb), s).0;
+        let scale = rgb.iter().fold(0.0f64, |a, c| a.max(c.abs()));
+        prop_assert!((awg4_luminance(out) - y).abs() <= 1e-14 * scale, "{rgb:?} s={s}: {out:?}");
+        // The common factor, from the channel farthest from Y.
+        let far = (0..3)
+            .max_by(|&a, &b| (rgb[a] - y).abs().total_cmp(&(rgb[b] - y).abs()))
+            .unwrap_or(0);
+        let lambda = (out[far] - y) / (rgb[far] - y);
+        prop_assert!(lambda >= -1e-12, "{rgb:?} s={s}: lambda {lambda}");
         for k in 0..3 {
-            // The formula, from the pixel the controls before Saturation produced.
-            prop_assert!(((with[k] - m) - (without[k] - m) * gain).abs() < 1e-12);
-            if without[k] == m {
-                prop_assert_eq!(with[k], m);
-            }
-            if s > 0.0 {
-                prop_assert!(with[k] <= without[k] + 1e-13, "s={s}: {without:?} -> {with:?}");
-            } else if s < 0.0 {
-                prop_assert!(with[k] >= without[k] - 1e-13 && with[k] <= m + 1e-13, "s={s}: {without:?} -> {with:?}");
+            prop_assert!(
+                (out[k] - y - lambda * (rgb[k] - y)).abs() <= 1e-13 * scale,
+                "{rgb:?} s={s}: {out:?}"
+            );
+        }
+        if s < 0.0 {
+            prop_assert!((lambda - (1.0 + s / 100.0)).abs() < 1e-12);
+        } else {
+            prop_assert!(lambda >= 1.0 - 1e-12 && lambda <= 1.0 + SATURATION_BOOST * s / 100.0 + 1e-12);
+        }
+    }
+
+    /// For s > 0 no channel goes below zero: the darkest lands at `Y (1 - r') >= 0` (or above `Y`
+    /// where every channel is above it), and a pixel with `Y <= 0` or a channel at or below 0 is
+    /// left exactly as it is.
+    #[test]
+    fn positive_saturation_never_takes_a_channel_below_zero(rgb in any_linear(), s in 0.0f64..=100.0) {
+        let y = awg4_luminance(rgb);
+        let min = rgb[0].min(rgb[1]).min(rgb[2]);
+        let out = saturate(LinearAwg4(rgb), s).0;
+        if y <= 0.0 || min <= 0.0 {
+            prop_assert_eq!(bits(out), bits(rgb));
+        } else {
+            let min_out = out[0].min(out[1]).min(out[2]);
+            prop_assert!(min_out >= -1e-15 * y, "{rgb:?} s={s}: {out:?}");
+            let r = (y - min) / y;
+            if r >= SATURATION_SMALL_R {
+                let f = 1.0 + SATURATION_BOOST * s / 100.0;
+                let r2 = 1.0 - (1.0 - r).powf(f);
+                prop_assert!((min_out - y * (1.0 - r2)).abs() <= 1e-12 * y, "{rgb:?} s={s}");
+            } else {
+                prop_assert!(min_out >= y * (1.0 - 1e-12));
             }
         }
     }
 
-    /// Neutral pixels (after the tonal controls, which keep a neutral neutral) are unchanged.
+    /// The chroma grows with s, channel by channel, and the luminance does not move.
     #[test]
-    fn neutral_pixels_are_unchanged_by_saturation_at_any_setting(
-        p in any_params(), s in -100.0f64..=100.0, x in -0.2f64..1.3, l in -0.2f64..1.3,
-    ) {
-        let p = GradeParams {
-            balance_shadows: ColorBalance::default(),
-            balance_midtones: ColorBalance::default(),
-            balance_highlights: ColorBalance::default(),
-            ..p
-        };
-        let without = Grade::new(&p).apply(LogC4([x; 3]), l).0;
-        let with = Grade::new(&GradeParams { saturation: s, ..p }).apply(LogC4([x; 3]), l).0;
-        prop_assert_eq!(without[0], without[1]);
-        prop_assert_eq!(without[1], without[2]);
-        prop_assert_eq!(with, without);
+    fn saturation_is_monotone_in_its_value(rgb in any_linear(), s in -100.0f64..100.0, ds in 0.0f64..50.0) {
+        let y = awg4_luminance(rgb);
+        let a = saturate(LinearAwg4(rgb), s).0;
+        let b = saturate(LinearAwg4(rgb), (s + ds).min(100.0)).0;
+        let scale = rgb.iter().fold(0.0f64, |m, c| m.max(c.abs()));
+        for k in 0..3 {
+            prop_assert!((b[k] - y).abs() >= (a[k] - y).abs() - 1e-13 * scale, "{rgb:?} {s} +{ds}");
+        }
     }
 
-    /// s = -100 makes every channel equal to M, whatever came before.
+    /// Neutral pixels are unchanged (up to rounding), at any setting.
     #[test]
-    fn minus_100_collapses_every_channel_onto_the_brightest(
+    fn neutral_pixels_are_unchanged_by_saturation(x in -0.5f64..500.0, s in -100.0f64..=100.0) {
+        let out = saturate(LinearAwg4([x; 3]), s).0;
+        for c in out {
+            prop_assert!((c - x).abs() <= 1e-14 * x.abs().max(1e-3), "{x} s={s}: {out:?}");
+        }
+    }
+
+    /// s = -100 is the grey of the pixel's own luminance, whatever came before.
+    #[test]
+    fn minus_100_is_the_grey_of_the_same_luminance(
         p in any_params(), v in any_logc4(), l in -0.2f64..1.3,
     ) {
         let without = Grade::new(&p).apply(LogC4(v), l).0;
         let with = Grade::new(&GradeParams { saturation: -100.0, ..p }).apply(LogC4(v), l).0;
-        prop_assert_eq!(with, [max3(without); 3]);
+        let y = awg4_luminance(without.map(logc4_decode));
+        for c in with {
+            prop_assert!((c - logc4_encode(y)).abs() < 1e-13);
+        }
     }
+}
+
+#[test]
+fn the_chroma_scale_falls_from_f_to_one_as_the_colour_gets_stronger() {
+    for s in [1.0, 10.0, 30.0, 60.0, 100.0] {
+        let f = 1.0 + SATURATION_BOOST * s / 100.0;
+        // The limits: F for a neutral (and below it), 1 at a channel on 0.
+        assert_eq!(saturation_chroma_scale(0.0, f), f);
+        assert_eq!(saturation_chroma_scale(-0.5, f), f);
+        assert_eq!(saturation_chroma_scale(-1e30, f), f);
+        assert_eq!(saturation_chroma_scale(SATURATION_SMALL_R / 2.0, f), f);
+        assert_eq!(saturation_chroma_scale(1.0, f), 1.0);
+        assert_eq!(saturation_chroma_scale(7.0, f), 1.0);
+        // Continuous at the small-r switch and at r = 1.
+        assert!((saturation_chroma_scale(SATURATION_SMALL_R, f) - f).abs() < 1e-8);
+        assert!((saturation_chroma_scale(1.0 - 1e-12, f) - 1.0).abs() < 1e-9);
+        // Muted colours gain more than strong ones: non-increasing in r, between 1 and F.
+        let mut prev = f;
+        for i in 0..=2000 {
+            let r = f64::from(i) / 2000.0 * (1.0 - 1e-9);
+            let lambda = saturation_chroma_scale(r, f);
+            assert!(lambda <= prev + 1e-15, "s={s} r={r}: {lambda} > {prev}");
+            assert!(
+                (1.0 - 1e-15..=f + 1e-15).contains(&lambda),
+                "s={s} r={r}: {lambda}"
+            );
+            // The same number as the spec's 1 - (1 - r)^F over r, where that does not cancel.
+            if r > 1e-3 {
+                let direct = (1.0 - (1.0 - r).powf(f)) / r;
+                assert!((lambda - direct).abs() < 1e-12, "s={s} r={r}");
+            }
+            prev = lambda;
+        }
+    }
+    // And non-decreasing in s at every r.
+    for i in 0..=100 {
+        let r = f64::from(i) / 100.0 * 0.999;
+        let mut prev = 1.0;
+        for s in 0..=100 {
+            let lambda = saturation_chroma_scale(r, 1.0 + SATURATION_BOOST * f64::from(s) / 100.0);
+            assert!(lambda >= prev - 1e-15, "r={r} s={s}");
+            prev = lambda;
+        }
+    }
+}
+
+#[test]
+fn deep_blues_with_every_channel_above_the_luminance_get_the_plain_factor() {
+    // The blue weight of Y is negative: this pixel has Y = 0.0002 and every channel above it, so r is
+    // about -100. The spec's r' / r would scale its chroma by 101 at s = 100; it gets F = 2.
+    let rgb = [0.02, 0.02, 0.57];
+    let y = awg4_luminance(rgb);
+    assert!(y > 0.0 && y < 3e-4, "{y}");
+    let out = saturate(LinearAwg4(rgb), 100.0).0;
+    for k in 0..3 {
+        assert!((out[k] - (y + 2.0 * (rgb[k] - y))).abs() < 1e-15, "{out:?}");
+    }
+    // A blue with Y <= 0 is left alone.
+    let rgb = [0.01, 0.003, 0.2];
+    assert!(awg4_luminance(rgb) <= 0.0);
+    assert_eq!(saturate(LinearAwg4(rgb), 60.0).0, rgb);
+}
+
+#[test]
+fn pixels_saturation_leaves_alone_keep_their_codes_bit_for_bit() {
+    let g = Grade::new(&GradeParams {
+        saturation: 70.0,
+        ..Default::default()
+    });
+    for lin in [
+        [0.4, -0.01, 0.1],  // a channel below 0
+        [0.3, 0.0, 0.2],    // a channel at 0
+        [0.01, 0.003, 0.2], // Y <= 0
+        [-0.01, -0.02, -0.005],
+    ] {
+        let v = LinearAwg4(lin).to_logc4().0;
+        assert_eq!(bits(g.apply(LogC4(v), 0.3).0), bits(v), "{lin:?}");
+    }
+    // Codes above the limit are passed on (the f32 kernel could not decode them).
+    for v in [[SATURATION_CODE_LIMIT + 0.1, 0.5, 0.4], [9.0, 9.5, 8.0]] {
+        for s in [-100.0, -30.0, 30.0, 100.0] {
+            let g = Grade::new(&GradeParams {
+                saturation: s,
+                ..Default::default()
+            });
+            assert_eq!(bits(g.apply(LogC4(v), 0.3).0), bits(v));
+        }
+    }
+    // At the limit itself saturation still acts.
+    let v = [SATURATION_CODE_LIMIT, 7.0, 6.5];
+    assert_ne!(bits(g.apply(LogC4(v), 0.3).0), bits(v));
 }
 
 #[test]
@@ -800,18 +1172,17 @@ fn neutral_ramp_is_unchanged_for_every_saturation_value() {
         for k in 0..=60 {
             let x = -0.1 + 1.4 * f64::from(k) / 60.0;
             for l in [0.0, x, 0.8] {
-                assert_eq!(g.apply(LogC4([x; 3]), l).0, [x; 3], "s={s} x={x}");
+                let out = g.apply(LogC4([x; 3]), l).0;
+                for c in out {
+                    assert!((c - x).abs() < 1e-14, "s={s} x={x}: {out:?}");
+                }
             }
         }
     }
 }
 
 #[test]
-fn saturation_does_not_raise_luma_on_saturated_patches() {
-    // Rec.709 luma of the linear values the LogC4 triple stands for.
-    let luma = |v: Vec3| {
-        0.2126 * logc4_decode(v[0]) + 0.7152 * logc4_decode(v[1]) + 0.0722 * logc4_decode(v[2])
-    };
+fn saturation_keeps_the_luminance_of_saturated_patches() {
     let patches: [Vec3; 10] = [
         [0.80, 0.05, 0.03],
         [0.04, 0.60, 0.06],
@@ -827,36 +1198,26 @@ fn saturation_does_not_raise_luma_on_saturated_patches() {
     for lin in patches {
         let v = LinearAwg4(lin).to_logc4().0;
         let l = grade_luma(LinearAwg4(lin));
-        let neutral = luma([max3(v); 3]);
-        let base = luma(v);
-        let mut prev = f64::INFINITY;
-        // Luma falls as the control rises, everywhere on the scale.
+        let y = awg4_luminance(lin);
+        let mut prev_chroma = 0.0;
         for s in (-100..=100).step_by(10) {
             let out = Grade::new(&GradeParams {
                 saturation: f64::from(s),
                 ..Default::default()
             })
             .apply(LogC4(v), l)
-            .0;
-            let y = luma(out);
-            assert!(y <= prev + 1e-12, "{lin:?}: luma rose at s={s}");
-            prev = y;
-            if s > 0 {
-                assert!(
-                    y < base,
-                    "{lin:?}: luma did not fall at s={s}: {y} vs {base}"
-                );
-            } else if s < 0 {
-                assert!(y > base && y <= neutral + 1e-12, "{lin:?}: s={s}");
+            .0
+            .map(logc4_decode);
+            // Neither darker nor lighter at any setting.
+            assert!((awg4_luminance(out) - y).abs() < 1e-12 * y, "{lin:?} s={s}");
+            // The chroma grows with the control.
+            let chroma: f64 = out.iter().map(|c| (c - y).powi(2)).sum::<f64>().sqrt();
+            assert!(chroma >= prev_chroma - 1e-12, "{lin:?} s={s}");
+            prev_chroma = chroma;
+            // For s > 0 no channel that was above 0 goes below it.
+            if s > 0 && lin.iter().all(|&c| c > 0.0) {
+                assert!(out.iter().all(|&c| c >= 0.0), "{lin:?} s={s}: {out:?}");
             }
         }
-        // s = -100 is the neutral at the brightest channel, the lightest the pixel gets.
-        let out = Grade::new(&GradeParams {
-            saturation: -100.0,
-            ..Default::default()
-        })
-        .apply(LogC4(v), l)
-        .0;
-        assert!((luma(out) - neutral).abs() < 1e-12 * neutral.abs().max(1.0));
     }
 }

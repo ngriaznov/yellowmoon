@@ -77,7 +77,8 @@ use ym_color::encode::{OutputSpace, dither_threshold};
 use ym_color::exposure::white::WhiteLift;
 use ym_color::gamut::matrices;
 use ym_color::grade::{
-    BALANCE_CENTER_STOPS, CONTRAST_EXPONENT, GradeParams, ZONE_CENTER_STOPS, logc4_at_stops,
+    BALANCE_CENTER_STOPS, GradeParams, ZONE_CENTER_STOPS, contrast_slope, logc4_at_stops,
+    saturation_factor,
 };
 use ym_color::look::{LookInput, intensity_fraction};
 use ym_color::lut::Lut;
@@ -383,22 +384,24 @@ fn white_lift_uniform(u: &mut ChainU, lift: WhiteLift) {
     }
 }
 
-/// The grade parameters as the kernel wants them (the same preparation as `Grade::new`). `grade0.w` is
-/// the white lift's ([`white_lift_uniform`]), written after this.
+/// The grade parameters as the kernel wants them (the same preparation as `Grade::new`): the
+/// contrast curve's slope at grey `k` in `grade0.x`, the brightness in `grade0.y` and the saturation
+/// factor in `grade0.z` (below 1 the blend toward grey, above 1 the boost `F`; `saturation_factor`).
+/// A control at 0 clears its flag bit, and the kernel skips it. `grade0.w` is the white lift's
+/// ([`white_lift_uniform`]), written after this.
 fn grade_uniform(u: &mut ChainU, g: &GradeParams) {
-    let contrast_gain = (CONTRAST_EXPONENT * clamp_control(g.contrast) / 100.0).exp2();
-    // Saturation is subtractive: the shader pivots on the pixel's brightest channel (`Grade::apply`).
-    let saturation_gain = 1.0 + clamp_control(g.saturation) / 100.0;
-    if contrast_gain != 1.0 {
+    let slope = contrast_slope(g.contrast);
+    let saturation = saturation_factor(g.saturation);
+    if slope != 1.0 {
         u.flags[0] |= 1;
     }
-    if saturation_gain != 1.0 {
+    if saturation != 1.0 {
         u.flags[0] |= 2;
     }
     u.grade0 = [
-        contrast_gain as f32,
+        slope as f32,
         (clamp_control(g.brightness) / 100.0) as f32,
-        saturation_gain as f32,
+        saturation as f32,
         0.0,
     ];
     let amounts = [g.shadows, g.highlights, g.black, g.white].map(|x| clamp_control(x) / 100.0);

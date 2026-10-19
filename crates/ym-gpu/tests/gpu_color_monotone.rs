@@ -7,11 +7,13 @@
 mod common;
 
 use common::chains::identity_tone;
-use common::{TestGpu, gpus};
+use common::{Rng, TestGpu, f16_round, gpus};
 use ym_color::consts::LOGC4_GRAY;
 use ym_color::consts::linalg::IDENTITY;
 use ym_color::display::{ChainParams, ColorChain};
-use ym_color::grade::{ColorBalance, GradeParams};
+use ym_color::gamut::awg4_luminance;
+use ym_color::grade::{CONTRAST_BLACK, CONTRAST_TOP, ColorBalance, GradeParams};
+use ym_color::logc::{logc4_decode, logc4_encode};
 use ym_color::tone::{HIGHLIGHT_CAP_STOPS, ToneParams, luma};
 use ym_gpu::cpu::RgbImage;
 use ym_gpu::device::StorageMode;
@@ -212,11 +214,15 @@ fn every_tonal_control_raises_or_keeps_every_channel() {
 #[test]
 fn contrast_saturation_and_color_balance_are_monotone_in_their_control() {
     let px = probe_pixels();
-    let gray = LOGC4_GRAY as f32;
     for dev in gpus() {
-        // Contrast moves a channel away from grey: up above it, down below it.
-        let base = run(dev, &grade_chain(GradeParams::default()), &px, Stop::C9);
-        let mut prev = base.clone();
+        // Contrast: for a luma between black and the top code value every channel moves away from grey
+        // as the value rises (up above grey, down below it); beyond the ends toward the end. The
+        // chain's matrix and C7 are the identity, so the luma is the camera value's.
+        let lumas: Vec<f64> = px
+            .iter()
+            .map(|p| logc4_encode(awg4_luminance(p.map(f64::from))))
+            .collect();
+        let mut prev = run(dev, &grade_chain(GradeParams::default()), &px, Stop::C9);
         for step in 1..=10 {
             let g = GradeParams {
                 contrast: 10.0 * f64::from(step),
@@ -224,20 +230,29 @@ fn contrast_saturation_and_color_balance_are_monotone_in_their_control() {
             };
             let out = run(dev, &grade_chain(g), &px, Stop::C9);
             for (i, (a, b)) in prev.iter().zip(&out).enumerate() {
+                let l = lumas[i];
+                let dir = if l > CONTRAST_TOP || (l < LOGC4_GRAY && l >= CONTRAST_BLACK) {
+                    -1.0
+                } else if l < CONTRAST_BLACK || l > LOGC4_GRAY {
+                    1.0
+                } else {
+                    0.0
+                };
                 for ch in 0..3 {
-                    if base[i][ch] > gray {
-                        assert!(b[ch] >= a[ch] - 2e-6, "contrast up: pixel {i} ch {ch}");
-                    } else {
-                        assert!(b[ch] <= a[ch] + 2e-6, "contrast down: pixel {i} ch {ch}");
-                    }
+                    assert!(
+                        (b[ch] - a[ch]) * dir >= -2e-6,
+                        "{:?} contrast: pixel {i} ch {ch}: {} -> {} (luma {l})",
+                        dev.mode,
+                        a[ch],
+                        b[ch]
+                    );
                 }
             }
             prev = out;
         }
-        // Saturation scales every difference between channels (v - M) by 1 + s/100, so the spread
-        // between the channels never shrinks as the control rises.
-        let neutral = run(dev, &grade_chain(GradeParams::default()), &px, Stop::C9);
-        let mut prev_dist: Vec<f32> = vec![0.0; px.len()];
+        // Saturation scales the chroma about the luminance by a factor that rises with the control:
+        // the distance of every channel from Y (in linear light) never shrinks as the control rises.
+        let mut prev_dist: Vec<[f64; 3]> = vec![[0.0; 3]; px.len()];
         for step in 0..=20 {
             let g = GradeParams {
                 saturation: -100.0 + 10.0 * f64::from(step),
@@ -245,19 +260,22 @@ fn contrast_saturation_and_color_balance_are_monotone_in_their_control() {
             };
             let out = run(dev, &grade_chain(g), &px, Stop::C9);
             for i in 0..px.len() {
-                // The pivot M is not known here without a second render, so measure the spread: the
-                // sum of the distances between channels.
-                let spread = (out[i][0] - out[i][1]).abs()
-                    + (out[i][1] - out[i][2]).abs()
-                    + (out[i][0] - out[i][2]).abs();
-                assert!(
-                    spread >= prev_dist[i] - 3e-6,
-                    "{:?} saturation: pixel {i} lost spread",
-                    dev.mode
-                );
-                prev_dist[i] = spread;
+                let lin = px[i].map(f64::from);
+                let y = awg4_luminance(lin);
+                let o = out[i].map(|c| logc4_decode(f64::from(c)));
+                // f32 codes: a relative 5e-6 of the largest channel, and no less than 2e-8 (near black an
+                // ulp of a code is about 2e-9 in linear light, and the decode's exp2 near 2^6 about the same).
+                let tol = 5e-6 * lin.iter().fold(4e-3f64, |m, c| m.max(c.abs()));
+                for ch in 0..3 {
+                    let d = (o[ch] - y).abs();
+                    assert!(
+                        d >= prev_dist[i][ch] - tol,
+                        "{:?} saturation: pixel {i} ch {ch} lost chroma at step {step}",
+                        dev.mode
+                    );
+                    prev_dist[i][ch] = d;
+                }
             }
-            let _ = &neutral;
         }
         // Colour balance displaces along a fixed direction; the displacement grows with the radius.
         for angle in [0.3f64, 1.9, 4.0] {
@@ -360,12 +378,12 @@ fn a_single_control_at_its_extremes_keeps_the_neutral_ramp_increasing() {
     }
 }
 
-/// Saturation is subtractive (`docs/02` C9, owner's decision of 2026-10-13): the pivot is the
-/// pixel's brightest channel M. Checked on the kernel's own C9 output, not only against the CPU:
-/// M and neutral pixels stay, `s > 0` pushes the other channels down, `s < 0` pulls them up to M,
-/// and `s = -100` makes every channel equal to M.
+/// Saturation keeps the luminance (`docs/02` C9, design of 2026-10-19), checked on the kernel's own
+/// C9 output, not only against the CPU: `Y` stays, neutrals stay, the chroma keeps its direction
+/// (the hue), `s > 0` never takes a channel below 0, `s = -100` is the grey of the same `Y`, and a
+/// pixel `s > 0` leaves alone (`Y <= 0` or a channel at or below 0) keeps its codes bit for bit.
 #[test]
-fn saturation_is_subtractive_on_the_gpu() {
+fn saturation_keeps_the_luminance_on_the_gpu() {
     let mut px = probe_pixels();
     px.extend([
         [0.8, 0.05, 0.03],
@@ -373,6 +391,10 @@ fn saturation_is_subtractive_on_the_gpu() {
         [0.03, 0.08, 0.7],
         [4.0, 1.0, 0.2],
         [0.2, 0.2, 0.05],
+        [0.02, 0.02, 0.57], // every channel above Y (r < 0): the plain factor F
+        [0.1, 0.1184, 0.5], // r near 0 with a large chroma
+        [0.4, -0.01, 0.1],  // a channel below 0: left alone for s > 0
+        [0.01, 0.003, 0.2], // Y < 0: left alone for s > 0
     ]);
     for dev in gpus() {
         let base = run(dev, &grade_chain(GradeParams::default()), &px, Stop::C9);
@@ -383,40 +405,185 @@ fn saturation_is_subtractive_on_the_gpu() {
                 ..GradeParams::default()
             };
             let out = run(dev, &grade_chain(g), &px, Stop::C9);
-            let gain = (1.0 + s / 100.0) as f32;
             for (i, (a, b)) in base.iter().zip(&out).enumerate() {
-                let m = a[0].max(a[1]).max(a[2]);
-                let ctx = format!("{:?} s={s} pixel {i} {:?}: {a:?} -> {b:?}", dev.mode, px[i]);
+                let lin = a.map(|c| logc4_decode(f64::from(c)));
+                let o = b.map(|c| logc4_decode(f64::from(c)));
+                let y = awg4_luminance(lin);
+                let min = lin[0].min(lin[1]).min(lin[2]);
+                // The scale of the f32 errors: the largest channel, and no less than 4e-3 (near black an
+                // ulp of a code is about 2e-9 in linear light, and the decode's exp2 near 2^6 about the same).
+                let big = lin.iter().fold(4e-3f64, |m, c| m.max(c.abs()));
+                let ctx = format!(
+                    "{:?} s={s} pixel {i} {:?}: {lin:?} -> {o:?}",
+                    dev.mode, px[i]
+                );
+                if s > 0.0 && (y <= 0.0 || min <= 0.0) {
+                    assert_eq!(
+                        a.map(f32::to_bits),
+                        b.map(f32::to_bits),
+                        "left alone, {ctx}"
+                    );
+                    continue;
+                }
+                // The luminance, to the f32 precision of the codes (an ulp of a code is a relative 6e-7 of
+                // its linear value; 5e-6 of the largest channel leaves room for a log2 or exp2 a few ulp
+                // off, as Metal's fast-math ones are).
                 assert!(
-                    (b[0].max(b[1]).max(b[2]) - m).abs() <= 1e-7,
-                    "M moved, {ctx}"
+                    (awg4_luminance(o) - y).abs() <= 5e-6 * big,
+                    "Y moved, {ctx}"
                 );
                 let neutral = (a[0] - a[1]).abs() <= 1e-7 && (a[1] - a[2]).abs() <= 1e-7;
-                if !neutral {
-                    coloured += 1;
-                }
-                for ch in 0..3 {
-                    let want = m + (a[ch] - m) * gain;
-                    assert!((b[ch] - want).abs() <= 3e-6, "formula, {ctx}");
-                    if neutral {
-                        assert!((b[ch] - a[ch]).abs() <= 1e-7, "neutral moved, {ctx}");
-                    } else if s > 0.0 {
-                        assert!(
-                            b[ch] <= a[ch] + 2e-6,
-                            "s > 0 must not raise a channel, {ctx}"
-                        );
-                    } else {
-                        assert!(
-                            b[ch] >= a[ch] - 2e-6 && b[ch] <= m + 2e-6,
-                            "s < 0 must move a channel up toward M, {ctx}"
-                        );
+                if neutral {
+                    for ch in 0..3 {
+                        assert!((b[ch] - a[ch]).abs() <= 1e-6, "neutral moved, {ctx}");
                     }
+                    continue;
+                }
+                coloured += 1;
+                // The hue: rgb' - Y is rgb - Y times one factor, between 0 and F.
+                let far = (0..3)
+                    .max_by(|&p, &q| (lin[p] - y).abs().total_cmp(&(lin[q] - y).abs()))
+                    .unwrap_or(0);
+                let lambda = (o[far] - y) / (lin[far] - y);
+                assert!(
+                    (-1e-5..=1.0 + s.max(0.0) / 100.0 + 1e-4).contains(&lambda),
+                    "{lambda}, {ctx}"
+                );
+                for ch in 0..3 {
+                    assert!(
+                        (o[ch] - y - lambda * (lin[ch] - y)).abs() <= 1e-5 * big,
+                        "hue, {ctx}"
+                    );
                     if s == -100.0 {
-                        assert!((b[ch] - m).abs() <= 1e-6, "s = -100 gives M, {ctx}");
+                        assert!((o[ch] - y).abs() <= 5e-6 * big, "s = -100 gives Y, {ctx}");
+                    }
+                }
+                if s > 0.0 {
+                    assert!(
+                        o.iter().all(|&c| c >= -1e-6 * big),
+                        "a channel went below 0, {ctx}"
+                    );
+                }
+            }
+        }
+        assert!(
+            coloured >= 6 * 12,
+            "the probe must hold coloured pixels: {coloured}"
+        );
+    }
+}
+
+/// Parity of the new Contrast and Saturation (`docs/02` C9) with the CPU reference on pixels made for
+/// their branches: a grey ramp from 2^-12 to 2^12 of grey (below black and above the top code value
+/// after the curve), deep blues with every channel above `Y` (r < 0), r near 0 with a large chroma,
+/// r on both sides of the kernel's series limit (0.05), r near 1, channels at and below 0, `Y <= 0`,
+/// negative lumas and 400 seeded random colours, for every pair of Contrast and Saturation in
+/// {-100, -60, -30, 0, 30, 60, 100}, alone and with the other controls set, at C9, in every storage
+/// mode (inputs are f16-representable).
+///
+/// Measured on Mesa lavapipe, the same in all three storage modes: worst |GPU - CPU| at C9 4.7e-5 in
+/// LogC4 code values against the 2e-4 gate, at a code of -46 (a far out-of-gamut blue whose luminance
+/// is negative, at Saturation -100: an f32 ulp there is 4e-6); 1.2e-5 among the codes of photos (-0.2
+/// to 1.5), at the darkest channel of a strong orange after a boost (linear (20.8, 10.9, 0.04): the
+/// channel ends near 0 as `Y - lambda (Y - min)`, a difference of two numbers near 14 in f32, where a
+/// code near black is most sensitive). The CPU reference is f64.
+#[test]
+fn contrast_and_saturation_match_the_cpu_on_every_branch() {
+    let mut px: Vec<[f32; 3]> = (-12..=12)
+        .map(|s| {
+            let x = 0.18 * (s as f32).exp2();
+            [x, x, x]
+        })
+        .collect();
+    px.extend([
+        [0.02, 0.02, 0.57],
+        [0.02, 0.02, 0.3],
+        [0.05, 0.05, 0.3],
+        [0.1, 0.1184, 0.5],
+        [0.1, 0.1185, 0.5],
+        [0.4, 0.38, 0.36],
+        [0.5, 0.2, 0.1],
+        [0.9, 0.7, 0.05],
+        [0.9, 0.7, 0.001],
+        [0.3, 0.0, 0.2],
+        [0.4, -0.01, 0.1],
+        [0.01, 0.003, 0.2],
+        [-0.01, -0.02, -0.005],
+        [-0.004, 0.01, 0.02],
+        [60.0, 30.0, 5.0],
+        [400.0, 600.0, 300.0],
+        [3000.0, 1000.0, 200.0],
+    ]);
+    // r = 1 - min / Y on both sides of the series limit, and near 1: red and green set, blue solved.
+    for r in [0.001, 0.01, 0.049, 0.0501, 0.051, 0.2, 0.9, 0.999] {
+        let (red, green) = (0.3f64, 0.25f64);
+        // min = blue = (1 - r) Y with Y = wr red + wg green + wb blue.
+        let w = ym_color::gamut::awg4_luminance_row();
+        let blue = (1.0 - r) * (w[0] * red + w[1] * green) / (1.0 - (1.0 - r) * w[2]);
+        px.push([red as f32, green as f32, blue as f32]);
+    }
+    let mut rng = Rng(0xC0_5A7);
+    for _ in 0..400 {
+        let lum = 0.18 * rng.range(-10.0, 7.0).exp2();
+        px.push([0, 1, 2].map(|_| (lum * rng.range(-0.05, 2.0)) as f32));
+    }
+    let px: Vec<[f32; 3]> = px.into_iter().map(|p| p.map(f16_round)).collect();
+    let values = [-100.0, -60.0, -30.0, 0.0, 30.0, 60.0, 100.0];
+    let others = GradeParams {
+        brightness: -20.0,
+        shadows: 30.0,
+        highlights: -25.0,
+        white: 15.0,
+        balance_midtones: ColorBalance { a: 0.3, b: -0.4 },
+        ..GradeParams::default()
+    };
+    for dev in gpus() {
+        let mut worst = 0.0f64;
+        let mut at = String::new();
+        // The same among the codes a photo has after C9 (-0.2 to 1.5): the largest differences are
+        // at the codes of far out-of-gamut colours (a negative luminance graded to -46), an f32 ulp
+        // of which is 4e-6.
+        let mut worst_photo = 0.0f64;
+        for c in values {
+            for s in values {
+                for with_others in [false, true] {
+                    let base = if with_others {
+                        others
+                    } else {
+                        GradeParams::default()
+                    };
+                    let g = GradeParams {
+                        contrast: c,
+                        saturation: s,
+                        ..base
+                    };
+                    let params = grade_chain(g);
+                    let chain = ColorChain::new(&params).expect("chain");
+                    let out = run(dev, &params, &px, Stop::C9);
+                    for (i, (o, p)) in out.iter().zip(&px).enumerate() {
+                        let cpu = chain.trace(p.map(f64::from)).c9_logc4.0;
+                        for ch in 0..3 {
+                            let d = (f64::from(o[ch]) - cpu[ch]).abs();
+                            if (-0.2..=1.5).contains(&cpu[ch]) {
+                                worst_photo = worst_photo.max(d);
+                            }
+                            if d > worst {
+                                worst = d;
+                                at = format!(
+                                    "c={c} s={s} others={with_others} pixel {i} {p:?} ch {ch}: GPU {} CPU {}",
+                                    o[ch], cpu[ch]
+                                );
+                            }
+                        }
                     }
                 }
             }
         }
-        assert!(coloured >= 6 * 8, "the probe must hold coloured pixels");
+        eprintln!(
+            "{:?}: contrast x saturation on {} pixels, worst |GPU - CPU| at C9 {worst:.1e} (gate 2e-4) at {at}; {worst_photo:.1e} among codes from -0.2 to 1.5",
+            dev.mode,
+            px.len()
+        );
+        assert!(worst <= 2e-4, "{:?}: {worst} at {at}", dev.mode);
     }
 }

@@ -11,7 +11,8 @@ use ym_color::exposure::TARGET_GREY;
 use ym_color::exposure::white;
 use ym_color::gamut::{awg4_luminance_row, matrices};
 use ym_color::grade::{
-    BRIGHTNESS_SIGMA, COLOR_BALANCE_STRENGTH, E1, E2, ZONE_CONTROL_SIGMA, ZONE_SIGMA,
+    BRIGHTNESS_SIGMA, COLOR_BALANCE_STRENGTH, CONTRAST_BLACK, CONTRAST_TOP, E1, E2,
+    SATURATION_CODE_LIMIT, ZONE_CONTROL_SIGMA, ZONE_SIGMA,
 };
 use ym_color::tone::HIGHLIGHT_GREY;
 use ym_color::warp::{WARP_MAX_PINS, WARP_NEUTRAL_GUARD, WARP_TONE_HALF_WIDTH};
@@ -524,6 +525,9 @@ fn constants() -> String {
         ("ZONE_CONTROL_SIGMA", ZONE_CONTROL_SIGMA),
         ("ZONE_SIGMA", ZONE_SIGMA),
         ("BALANCE_STRENGTH", COLOR_BALANCE_STRENGTH),
+        ("CONTRAST_BLACK", CONTRAST_BLACK),
+        ("CONTRAST_TOP", CONTRAST_TOP),
+        ("SAT_CODE_LIMIT", SATURATION_CODE_LIMIT),
         ("HIGHLIGHT_GREY", HIGHLIGHT_GREY),
         ("WHITE_LIFT_KNEE", white::KNEE_EV),
         ("WHITE_LIFT_GREY", TARGET_GREY),
