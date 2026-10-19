@@ -55,6 +55,14 @@ Nothing is uploaded. The renders, the page and the answers stay on your Mac.
 You do not need to open the app for the test. The kit uses only the `ym` inside it:
 `~/Applications/Yellowmoon.app/Contents/MacOS/ym`.
 
+**Or build `ym` from the branch** (needs Rust and Xcode 27, whose macOS 27 SDK the bridge is compiled with):
+
+    git checkout claude/apple-auto
+    cargo build --release -p ym-cli
+
+The kit then uses `target/release/ym` with the repository's `data/` folder by itself, so `--ym` can be left out in
+step 4 (for step 2: `YELLOWMOON_DATA=data target/release/ym doctor`).
+
 ## 2. Check that Apple Auto is available
 
     ~/Applications/Yellowmoon.app/Contents/MacOS/ym doctor
