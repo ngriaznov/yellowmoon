@@ -84,20 +84,20 @@
       "model": "ILCE-7RM4A"
     },
     "390": {
-      "white_scale": [1.0, 1.0, 1.0],
+      "white_scale": [0.892, 1.0, 1.0987],
       "source": {
-        "kind": "none",
+        "kind": "matrix",
         "files": [],
-        "note": "No file with white-balance presets of this body or of a body with the same colour matrix was available; its whites are not corrected."
+        "note": "No file with white-balance presets of this body was available, so the scale comes from its published colour matrix at D65: the matrix's white of D65 put on the A7R IV locus at 6504 K, which moves the body's whites by 3.24 degrees (owner's decision of 2026-10-19). On the measured bodies this reference comes within 3 degrees of the scale of their own curves; the presets of a file of the body would replace it."
       },
       "model": "ILCE-7RM5"
     },
     "396": {
-      "white_scale": [1.0, 1.0, 1.0],
+      "white_scale": [0.892, 1.0, 1.0987],
       "source": {
-        "kind": "none",
+        "kind": "matrix",
         "files": [],
-        "note": "No file with white-balance presets of this body or of a body with the same colour matrix was available; its whites are not corrected."
+        "note": "No file with white-balance presets of this body was available, so the scale comes from its published colour matrix at D65: the matrix's white of D65 put on the A7R IV locus at 6504 K, which moves the body's whites by 3.24 degrees (owner's decision of 2026-10-19). On the measured bodies this reference comes within 3 degrees of the scale of their own curves; the presets of a file of the body would replace it."
       },
       "model": "ILCE-7CR"
     },
@@ -232,38 +232,38 @@
       "model": "ILCE-1"
     },
     "400": {
-      "white_scale": [1.0, 1.0, 1.0],
+      "white_scale": [0.8675, 1.0, 1.0861],
       "source": {
-        "kind": "none",
+        "kind": "sibling",
         "files": [],
-        "note": "No file with white-balance presets of this body was available, and it does not take the scale of the Sony A1: their published colour matrices differ (largest per-coefficient difference 0.1672, limit 0.02). Its whites are not corrected."
+        "note": "Takes the scale of the Sony A1: the two share a sensor (owner's decision of 2026-10-19), although their published colour matrices differ (largest per-coefficient difference 0.1672, over the 0.02 of the matrix rule). No file of this body was available, so the presets were not read."
       },
       "model": "ILCE-1M2"
     },
     "392": {
-      "white_scale": [1.0, 1.0, 1.0],
+      "white_scale": [0.7799, 1.0, 1.0606],
       "source": {
-        "kind": "none",
+        "kind": "matrix",
         "files": [],
-        "note": "No file with white-balance presets of this body or of a body with the same colour matrix was available; its whites are not corrected."
+        "note": "No file with white-balance presets of this body was available, so the scale comes from its published colour matrix at D65: the matrix's white of D65 put on the A7R IV locus at 6504 K, which moves the body's whites by 3.81 degrees (owner's decision of 2026-10-19). On the measured bodies this reference comes within 3 degrees of the scale of their own curves; the presets of a file of the body would replace it."
       },
       "model": "ILCE-9M3"
     },
     "407": {
-      "white_scale": [1.0, 1.0, 1.0],
+      "white_scale": [0.8557, 1.0, 1.0852],
       "source": {
-        "kind": "none",
+        "kind": "matrix",
         "files": [],
-        "note": "No file with white-balance presets of this body or of a body with the same colour matrix was available; its whites are not corrected."
+        "note": "No file with white-balance presets of this body was available, so the scale comes from its published colour matrix at D65: the matrix's white of D65 put on the A7R IV locus at 6504 K, which moves the body's whites by 3.31 degrees (owner's decision of 2026-10-19). On the measured bodies this reference comes within 3 degrees of the scale of their own curves; the presets of a file of the body would replace it."
       },
       "model": "ILCE-7M5"
     },
     "410": {
-      "white_scale": [1.0, 1.0, 1.0],
+      "white_scale": [0.8375, 1.0, 1.1267],
       "source": {
-        "kind": "none",
+        "kind": "matrix",
         "files": [],
-        "note": "No file with white-balance presets of this body or of a body with the same colour matrix was available; its whites are not corrected."
+        "note": "No file with white-balance presets of this body was available, so the scale comes from its published colour matrix at D65: the matrix's white of D65 put on the A7R IV locus at 6504 K, which moves the body's whites by 4.34 degrees (owner's decision of 2026-10-19). On the measured bodies this reference comes within 3 degrees of the scale of their own curves; the presets of a file of the body would replace it."
       },
       "model": "ILCE-7RM6"
     }

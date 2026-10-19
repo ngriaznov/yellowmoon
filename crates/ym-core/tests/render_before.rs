@@ -262,17 +262,19 @@ fn patchwork_with_id(model: &str, id: u16) -> PhotoSource {
 }
 
 #[test]
-fn the_a1_ii_uses_the_a1s_colours_and_the_a3000_the_generic_e_mount_ones() {
-    // Owner's decision 2026-10-16 (`docs/STATUS.md`, question 29). The camera default of a file depends on
-    // its as-shot white and the body's matrix, so equal scenes on bodies that share a matrix give equal
-    // camera defaults, and a body with a matrix of its own gives another.
+fn the_a1_ii_uses_its_own_colours_and_the_a3000_the_generic_e_mount_ones() {
+    // The camera default of a file depends on its as-shot white and the body's matrix, so equal scenes on
+    // bodies that share a matrix give equal camera defaults, and a body with a matrix of its own gives
+    // another. The A3000 borrows the NEX-5N's by the owner's decision of 2026-10-16 (`docs/STATUS.md`,
+    // question 29); the A1 II, which borrowed the A1's until 2026-10-19, has its own (question 31).
     let g0 = |src: &PhotoSource| src.estimates.initial_gains().expect("gains");
     let default_of = |src: &PhotoSource| camera_default_of(src, g0(src));
     let a1 = default_of(&patchwork("ILCE-1"));
     let a7r4 = default_of(&patchwork("ILCE-7RM4"));
     // The A1 II, by its ID (400, written by `patchwork`) and by its Model string alone.
-    assert_eq!(default_of(&patchwork("ILCE-1M2")), a1);
-    assert_ne!(default_of(&patchwork("ILCE-1M2")), a7r4);
+    let a1_ii = default_of(&patchwork("ILCE-1M2"));
+    assert_ne!(a1_ii, a1);
+    assert_ne!(a1_ii, a7r4);
     let by_string = {
         let scene = Scene::new(600, 400, WHITE, Layout::Patchwork, 0.4);
         let dir = tempfile::tempdir().expect("dir");
@@ -283,7 +285,7 @@ fn the_a1_ii_uses_the_a1s_colours_and_the_a3000_the_generic_e_mount_ones() {
             .expect("write");
         Developed::open(dir).source()
     };
-    assert_eq!(default_of(&by_string), a1);
+    assert_eq!(default_of(&by_string), a1_ii);
     // The A3000 (ID 302, and the Model string alone) and the A3500 (the same ID): the NEX-5N's numbers.
     let nex_5n = default_of(&patchwork("NEX-5N"));
     assert_ne!(nex_5n, a7r4);

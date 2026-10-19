@@ -666,10 +666,10 @@ fn the_registry_schema_and_rules_refuse_broken_sensor_fields() {
 #[test]
 fn white_scales_are_recorded_with_their_source() {
     // docs/03, White scale of stand-in bodies: a body with a profile of its own or of its sensor has [1, 1, 1];
-    // a stand-in body has the scale fitted on the presets of its own files, a sibling's, or [1, 1, 1] with the
-    // statement that nothing was measured. Every body says which.
+    // a stand-in body has the scale fitted on the presets of its own files, a sibling's, the scale of its own
+    // published colour matrix, or [1, 1, 1] with the statement that nothing was measured. Every body says which.
     let reg = store().registry();
-    let (mut own, mut same, mut none) = (0, 0, 0);
+    let (mut own, mut same, mut presets, mut sibling, mut matrix) = (0, 0, 0, 0, 0);
     for b in &reg.bodies {
         let src = b
             .white_scale_source
@@ -686,18 +686,30 @@ fn white_scales_are_recorded_with_their_source() {
                 same += 1;
                 assert_eq!(b.white_scale, IDENTITY_WHITE_SCALE, "{}", b.model);
             }
-            (BodyMatch::Default, WhiteScaleKind::None) => {
-                none += 1;
-                assert_eq!(b.white_scale, IDENTITY_WHITE_SCALE, "{}", b.model);
+            (BodyMatch::Default, WhiteScaleKind::Presets) => presets += 1,
+            (BodyMatch::Default, WhiteScaleKind::Sibling) => sibling += 1,
+            (BodyMatch::Default, WhiteScaleKind::Matrix) => {
+                matrix += 1;
+                assert_ne!(b.white_scale, IDENTITY_WHITE_SCALE, "{}", b.model);
+                assert!(
+                    src.files.is_empty() && src.residual.is_none(),
+                    "{}",
+                    b.model
+                );
+                assert!(
+                    src.note.contains("published colour matrix at D65"),
+                    "{}",
+                    b.model
+                );
             }
-            (BodyMatch::Default, WhiteScaleKind::Presets | WhiteScaleKind::Sibling) => {}
             (m, k) => panic!("{}: match {m:?} with white scale source {k:?}", b.model),
         }
     }
     assert_eq!((own, same), (11, 10));
+    assert_eq!((presets, sibling), (1, 1), "the A1, and the A1 II after it");
     assert_eq!(
-        none, 6,
-        "the A1 II, A7R V, A7CR, A9 III, A7 V and A7R VI have no data"
+        matrix, 5,
+        "the A7R V, A7CR, A9 III, A7 V and A7R VI: no file, so their published matrices"
     );
 
     // The A1: fitted on the presets stored in the owner's three photos.
@@ -719,24 +731,16 @@ fn white_scales_are_recorded_with_their_source() {
     assert!(res.matrix_mean_preset_angle_deg > 2.0 || res.matrix_daylight_k < 5000.0);
     assert_eq!(res.matrix_scale[1], 1.0);
 
-    // The A1 II does not take the A1's scale: its own published colour matrix is 0.1672 from the A1's, over the
-    // 0.02 of the sibling check (the two were the same only while a lookup by Model-string prefix gave the A1 II
-    // the A1's entry). The refused pairing stays in its note.
+    // The A1 II takes the A1's scale by the owner's decision of 2026-10-19 (the two share a sensor), although
+    // its own published colour matrix is 0.1672 from the A1's, over the 0.02 of the matrix rule; its note says
+    // both.
     let a1m2 = reg.body_by_model_id(400).unwrap();
     let src = a1m2.white_scale_source.as_ref().unwrap();
-    assert_eq!(src.kind, WhiteScaleKind::None);
-    assert_eq!(a1m2.white_scale, IDENTITY_WHITE_SCALE);
-    assert!(
-        src.note.contains("Sony A1:") && src.note.contains("0.1672"),
-        "{}",
-        src.note
-    );
-    // No body takes another's scale today; the kind stays in the format for a stand-in whose matrix matches.
-    assert!(reg.bodies.iter().all(|b| {
-        b.white_scale_source
-            .as_ref()
-            .is_some_and(|s| s.kind != WhiteScaleKind::Sibling)
-    }));
+    assert_eq!(src.kind, WhiteScaleKind::Sibling);
+    assert_eq!(a1m2.white_scale, a1.white_scale);
+    for word in ["Sony A1:", "owner's decision of 2026-10-19", "0.1672"] {
+        assert!(src.note.contains(word), "{word}: {}", src.note);
+    }
 }
 
 #[test]
@@ -752,7 +756,7 @@ fn the_registry_schema_and_rules_refuse_broken_white_scales() {
             .position(|b| b["model_id"] == id)
             .unwrap()
     };
-    let (a7r4, a1, a7c, rm5) = (index(375), index(384), index(381), index(390));
+    let (a7r4, a1, a7c, rm5, a1m2) = (index(375), index(384), index(381), index(390), index(400));
     type Mutation = Box<dyn Fn(&mut Value)>;
     // (name, body index, mutation)
     let broken: Vec<(&str, usize, Mutation)> = vec![
@@ -851,7 +855,21 @@ fn the_registry_schema_and_rules_refuse_broken_white_scales() {
             "none with a scale",
             rm5,
             Box::new(|b| {
-                b["white_scale"] = json!([0.9, 1.0, 1.1]);
+                b["white_scale_source"]["kind"] = json!("none");
+            }),
+        ),
+        (
+            "a matrix scale of [1, 1, 1]",
+            rm5,
+            Box::new(|b| {
+                b["white_scale"] = json!([1.0, 1.0, 1.0]);
+            }),
+        ),
+        (
+            "a sibling of [1, 1, 1]",
+            a1m2,
+            Box::new(|b| {
+                b["white_scale"] = json!([1.0, 1.0, 1.0]);
             }),
         ),
         (
@@ -872,7 +890,7 @@ fn the_registry_schema_and_rules_refuse_broken_white_scales() {
             }),
         ),
         (
-            "a residual on a body that measured nothing",
+            "a residual on a matrix scale",
             rm5,
             Box::new(|b| {
                 b["white_scale_source"]["residual"] = json!({

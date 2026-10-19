@@ -213,8 +213,11 @@ pub enum WhiteScaleKind {
     SameSensor,
     /// Fitted on the white-balance presets stored in the body's own files.
     Presets,
-    /// Taken from another body whose published colour matrix is the same.
+    /// Taken from another body: one whose published colour matrix is the same, or one that shares its
+    /// sensor by the owner's decision.
     Sibling,
+    /// From the body's own published colour matrix at D65, for a stand-in body without files.
+    Matrix,
     /// Nothing was measured: the scale is `[1, 1, 1]` and the body's whites are not corrected.
     None,
 }
@@ -384,7 +387,10 @@ impl Body {
             BodyMatch::SensorFamily => source.kind == WhiteScaleKind::SameSensor,
             BodyMatch::Default => matches!(
                 source.kind,
-                WhiteScaleKind::Presets | WhiteScaleKind::Sibling | WhiteScaleKind::None
+                WhiteScaleKind::Presets
+                    | WhiteScaleKind::Sibling
+                    | WhiteScaleKind::Matrix
+                    | WhiteScaleKind::None
             ),
         };
         if !kind_ok {
@@ -402,10 +408,10 @@ impl Body {
         }
         if matches!(
             source.kind,
-            WhiteScaleKind::Presets | WhiteScaleKind::Sibling
+            WhiteScaleKind::Presets | WhiteScaleKind::Sibling | WhiteScaleKind::Matrix
         ) && identity
         {
-            return Err(bad("a fitted or inherited scale is not [1, 1, 1]"));
+            return Err(bad("a fitted, inherited or matrix scale is not [1, 1, 1]"));
         }
         if (source.kind == WhiteScaleKind::Presets) != source.residual.is_some() {
             return Err(bad("the residuals belong to kind presets, and only to it"));
@@ -960,10 +966,18 @@ mod tests {
             ..source(WhiteScaleKind::Sibling)
         });
         assert!(refused(&bad));
-        // A sibling takes a scale and says so.
-        let mut ok = r.clone();
-        ok.bodies[3].white_scale_source = Some(source(WhiteScaleKind::Sibling));
-        ok.validate().unwrap();
+        // A sibling and a matrix scale take a scale and say so; a matrix scale names no files.
+        for kind in [WhiteScaleKind::Sibling, WhiteScaleKind::Matrix] {
+            let mut ok = r.clone();
+            ok.bodies[3].white_scale_source = Some(source(kind));
+            ok.validate().unwrap();
+        }
+        let mut bad = r.clone();
+        bad.bodies[3].white_scale_source = Some(WhiteScaleSource {
+            files: vec!["a.ARW".to_string()],
+            ..source(WhiteScaleKind::Matrix)
+        });
+        assert!(refused(&bad));
         // Unusable numbers.
         for scale in [
             [0.0, 1.0, 1.0],

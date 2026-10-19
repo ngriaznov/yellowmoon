@@ -183,7 +183,7 @@ class Registry(unittest.TestCase):
             elif b["match"] == "sensor_family":
                 self.assertEqual((src["kind"], s), ("same_sensor", [1.0, 1.0, 1.0]), b["model"])
             else:
-                self.assertIn(src["kind"], ("presets", "sibling", "none"))
+                self.assertIn(src["kind"], ("presets", "sibling", "matrix", "none"))
                 if src["kind"] == "none":
                     self.assertEqual(s, [1.0, 1.0, 1.0])
                 else:
@@ -197,16 +197,30 @@ class Registry(unittest.TestCase):
         self.assertTrue(lo <= res["daylight_k_after"] <= hi)
         self.assertTrue(res["matrix_mean_preset_angle_deg"] > fit_mod.MEAN_ANGLE_LIMIT_DEG or not lo <= res["matrix_daylight_k"] <= hi)
 
-    def test_the_a1_ii_does_not_take_the_a1s_scale(self):
-        # Its own published matrix is 0.1672 from the A1's, over the limit of the sibling check, so the pairing of
-        # SIBLING_OF is refused and the note says so.
+    def test_the_a1_ii_takes_the_a1s_scale_by_decision(self):
+        # Its own published matrix is 0.1672 from the A1's, over the limit of the sibling check; the owner decided
+        # that the two share a sensor (2026-10-19), so it takes the A1's scale and the note says both.
         m = ref.load_matrices()
-        self.assertGreater(ref.matrix_difference(m[400], m[384]), rd.SIBLING_LIMIT)
-        a1m2 = next(b for b in self.registry["bodies"] if b["model_id"] == 400)
-        self.assertEqual(a1m2["white_scale"], [1.0, 1.0, 1.0])
-        self.assertEqual(a1m2["white_scale_source"]["kind"], "none")
-        self.assertIn("Sony A1:", a1m2["white_scale_source"]["note"])
-        self.assertIn(f"{ref.matrix_difference(m[400], m[384]):.4f}", a1m2["white_scale_source"]["note"])
+        diff = ref.matrix_difference(m[400], m[384])
+        self.assertGreater(diff, rd.SIBLING_LIMIT)
+        self.assertIn(400, fit_mod.SIBLING_BY_DECISION)
+        bodies = {b["model_id"]: b for b in self.registry["bodies"]}
+        a1m2 = bodies[400]
+        self.assertEqual(a1m2["white_scale"], bodies[384]["white_scale"])
+        self.assertEqual(a1m2["white_scale_source"]["kind"], "sibling")
+        for word in ("Sony A1:", "owner's decision of 2026-10-19", f"{diff:.4f}"):
+            self.assertIn(word, a1m2["white_scale_source"]["note"])
+
+    def test_a_stand_in_without_files_has_the_scale_of_its_published_matrix(self):
+        # Reference (b) for the stand-ins with neither files nor a sibling (owner's decision of 2026-10-19): the
+        # scale is the matrix's, rounded as the fit rounds, on the body's own profile.
+        m = ref.load_matrices()
+        shipped = [b for b in self.registry["bodies"] if b["white_scale_source"]["kind"] == "matrix"]
+        self.assertEqual(sorted(b["model_id"] for b in shipped), [390, 392, 396, 407, 410])
+        for b in shipped:
+            s = ref.matrix_scale(ref.load_profile(b["profile"]), m[b["model_id"]])
+            self.assertEqual(b["white_scale"], fit_mod._round3(s), b["model"])
+            self.assertEqual(b["white_scale_source"]["files"], [])
 
     def test_bodies_share_a_published_matrix_only_where_the_registry_pairs_them(self):
         # A lookup by Model-string prefix once gave the A1 II the A1's matrix (and the A7 V and A7R VI those of the
@@ -231,16 +245,12 @@ class Registry(unittest.TestCase):
 
     def test_the_before_views_table_has_the_same_published_matrices(self):
         # data/cameras/color-matrices.json (the Before view) and colour_matrices.json hold the same published
-        # numbers for every registry body, except the A1 II: the Before view gives it the A1's by the owner's
-        # decision of 2026-10-16 (docs/STATUS.md, questions 29 and 31).
+        # numbers for every registry body.
         before = json.loads((paths.REPO_ROOT / "data" / "cameras" / "color-matrices.json").read_text())
         by_id = {b["model_id"]: b["xyz_d65_to_camera"] for b in before["bodies"]}
         m = ref.load_matrices()
         for b in rd.BODIES:
             self.assertIn(b.model_id, by_id, b.model)
-            if b.model_id == 400:
-                self.assertEqual(by_id[400], by_id[384], "the A1 II takes the A1's numbers in the Before view")
-                continue
             self.assertEqual(by_id[b.model_id], m[b.model_id].tolist(), b.model)
 
     def test_the_stand_in_profile_of_every_scaled_body_is_the_registrys_default(self):

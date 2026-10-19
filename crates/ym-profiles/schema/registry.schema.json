@@ -81,8 +81,8 @@
             "required": ["kind", "files", "note"],
             "properties": {
               "kind": {
-                "description": "'own_curves': the profile was measured on this body. 'same_sensor': the body shares the measured body's sensor. 'presets': fitted on the white-balance presets stored in the body's own files. 'sibling': taken from another body whose published colour matrix is the same. 'none': nothing was measured; the whites are not corrected.",
-                "enum": ["own_curves", "same_sensor", "presets", "sibling", "none"]
+                "description": "'own_curves': the profile was measured on this body. 'same_sensor': the body shares the measured body's sensor. 'presets': fitted on the white-balance presets stored in the body's own files. 'sibling': taken from another body, one whose published colour matrix is the same or one that shares its sensor by the owner's decision. 'matrix': from the body's own published colour matrix at D65, for a stand-in body without files. 'none': nothing was measured; the whites are not corrected.",
+                "enum": ["own_curves", "same_sensor", "presets", "sibling", "matrix", "none"]
               },
               "files": {
                 "description": "The files the presets were read from (names only), for kind 'presets'; empty otherwise.",
@@ -196,13 +196,17 @@
             "if": { "properties": { "match": { "const": "default" } }, "required": ["match"] },
             "then": {
               "properties": {
-                "white_scale_source": { "properties": { "kind": { "enum": ["presets", "sibling", "none"] } } }
+                "white_scale_source": { "properties": { "kind": { "enum": ["presets", "sibling", "matrix", "none"] } } }
               }
             }
           },
           {
             "if": { "properties": { "white_scale_source": { "properties": { "kind": { "const": "none" } }, "required": ["kind"] } }, "required": ["white_scale_source"] },
             "then": { "properties": { "white_scale": { "const": [1, 1, 1] } } }
+          },
+          {
+            "if": { "properties": { "white_scale_source": { "properties": { "kind": { "enum": ["presets", "sibling", "matrix"] } }, "required": ["kind"] } }, "required": ["white_scale_source"] },
+            "then": { "properties": { "white_scale": { "not": { "const": [1, 1, 1] } } } }
           }
         ]
       }

@@ -12,15 +12,16 @@
 * a stand-in body (``default``) with files in ``--photos`` gets reference (a): the scale that puts the presets of
   its files on the locus of its profile (``reference.fit_presets``); all files of a body must carry the same
   presets (they are a property of the body and its firmware, not of the shot), and the test is exact;
-* a stand-in body without files whose published colour matrix equals that of a fitted body (largest
-  per-coefficient difference after row normalisation at most 0.02, the limit of the sibling check) takes that
-  body's scale and says so; one listed in ``SIBLING_OF`` whose matrix differs more keeps ``[1, 1, 1]`` and its
-  note names the body and the difference;
-* any other stand-in body has ``[1, 1, 1]`` and says that nothing was measured.
+* a stand-in body without files listed in ``SIBLING_OF`` takes the scale of its fitted body when their published
+  colour matrices agree (largest per-coefficient difference after row normalisation at most 0.02, the limit of the
+  sibling check) or when the owner decided that the two share a sensor (``SIBLING_BY_DECISION``), and says which;
+* any other stand-in body without files gets reference (b), the scale of its published colour matrix at D65
+  (``reference.matrix_scale``; owner's decision of 2026-10-19), and says so;
+* a stand-in body without files or a published matrix has ``[1, 1, 1]`` and says that nothing was measured.
 
-Reference (b), the published colour matrix at D65, is computed for every body with files and recorded next to the
-presets' residuals, but does not set the scale (docs/03 says why). The presets are read from the files with our own
-reader (``sr2.py``); the matrices are numbers in ``colour_matrices.json``.
+Reference (b) is also computed for every body with files and recorded next to the presets' residuals, but there it
+does not set the scale (docs/03 says why). The presets are read from the files with our own reader (``sr2.py``); the
+matrices are numbers in ``colour_matrices.json``.
 """
 
 from __future__ import annotations
@@ -40,9 +41,11 @@ from training.white_scale import sr2
 RESULT_JSON = Path(__file__).resolve().parent / "white_scale.json"
 PHOTOS_DIR = paths.TESTDATA / "readme-photos" / "src"
 LOCAL_DIR = paths.TESTDATA / "real" / "files"
-#: Model ID -> the stand-in body whose scale it takes when its published matrix equals that body's. The A1 II's own
-#: matrix differs from the A1's (0.1672), so it is considered and refused, and the refusal is recorded (docs/03).
+#: Model ID -> the stand-in body whose scale it takes when its published matrix equals that body's.
 SIBLING_OF = {400: 384}
+#: Siblings the owner decided share the fitted body's sensor although their published matrices differ: the A1 II's is
+#: 0.1672 from the A1's ("All questions yes", 2026-10-19, docs/STATUS.md question 31).
+SIBLING_BY_DECISION = {400: "2026-10-19"}
 #: The files of a fitted body that live in the owner's photo folder are found by their Model string.
 DECIMALS = 4
 #: Daylight presets are labelled by the maker as a typical temperature (docs/03); the check window of the task.
@@ -164,29 +167,10 @@ def fit_all(photos: Path) -> dict:
             }
         elif b.model_id in fitted:
             entry = fitted[b.model_id]
-        elif b.model_id in SIBLING_OF and SIBLING_OF[b.model_id] in fitted:
-            base = rd.BODY_BY_ID[SIBLING_OF[b.model_id]]
-            diff = ref.matrix_difference(matrices[b.model_id], matrices[base.model_id])
-            if diff <= rd.SIBLING_LIMIT:
-                entry = {
-                    "white_scale": list(fitted[base.model_id]["white_scale"]),
-                    "source": {
-                        "kind": "sibling",
-                        "files": [],
-                        "note": (
-                            f"Takes the scale of the {base.body}: the published colour matrices of the two bodies agree "
-                            f"(largest per-coefficient difference {diff:.4f}, limit {rd.SIBLING_LIMIT}). No file of this body was "
-                            "available, so the presets were not read."
-                        ),
-                    },
-                }
-            else:
-                entry = _none(b)
-                entry["source"]["note"] = (
-                    "No file with white-balance presets of this body was available, and it does not take the scale of "
-                    f"the {base.body}: their published colour matrices differ (largest per-coefficient difference "
-                    f"{diff:.4f}, limit {rd.SIBLING_LIMIT}). Its whites are not corrected."
-                )
+        elif (sibling := _sibling(b, fitted, matrices)) is not None:
+            entry = sibling
+        elif b.model_id in matrices:
+            entry = _matrix(b, matrices[b.model_id])
         else:
             entry = _none(b)
         entry["model"] = b.model
@@ -202,13 +186,67 @@ def fit_all(photos: Path) -> dict:
     }
 
 
+def _sibling(b: rd.Body, fitted: dict[int, dict], matrices) -> dict | None:
+    """The fitted body's scale for a body of ``SIBLING_OF``, when the matrices agree or the owner decided; else ``None``."""
+    if b.model_id not in SIBLING_OF or SIBLING_OF[b.model_id] not in fitted:
+        return None
+    base = rd.BODY_BY_ID[SIBLING_OF[b.model_id]]
+    diff = ref.matrix_difference(matrices[b.model_id], matrices[base.model_id])
+    if diff <= rd.SIBLING_LIMIT:
+        why = (
+            f"the published colour matrices of the two bodies agree (largest per-coefficient difference {diff:.4f}, "
+            f"limit {rd.SIBLING_LIMIT})"
+        )
+    elif b.model_id in SIBLING_BY_DECISION:
+        why = (
+            f"the two share a sensor (owner's decision of {SIBLING_BY_DECISION[b.model_id]}), although their published "
+            f"colour matrices differ (largest per-coefficient difference {diff:.4f}, over the {rd.SIBLING_LIMIT} of "
+            "the matrix rule)"
+        )
+    else:
+        return None
+    return {
+        "white_scale": list(fitted[base.model_id]["white_scale"]),
+        "source": {
+            "kind": "sibling",
+            "files": [],
+            "note": (
+                f"Takes the scale of the {base.body}: {why}. No file of this body was available, so the presets were "
+                "not read."
+            ),
+        },
+    }
+
+
+def _matrix(b: rd.Body, xyz_to_camera) -> dict:
+    """Reference (b) for a stand-in body without files: the scale of its published colour matrix at D65."""
+    profile = ref.load_profile(b.profile)
+    scale = _round3(ref.matrix_scale(profile, xyz_to_camera))
+    white = ref.locus_white(profile, ref.D65_K)
+    angle = ref.angle_deg(white, ref.scaled(white, scale))
+    return {
+        "white_scale": scale,
+        "source": {
+            "kind": "matrix",
+            "files": [],
+            "note": (
+                "No file with white-balance presets of this body was available, so the scale comes from its published "
+                f"colour matrix at D65: the matrix's white of D65 put on the {rd.PROFILE_BY_ID[b.profile].display_name} "
+                f"locus at 6504 K, which moves the body's whites by {angle:.2f} degrees (owner's decision of 2026-10-19). "
+                "On the measured bodies this reference comes within 3 degrees of the scale of their own curves; the "
+                "presets of a file of the body would replace it."
+            ),
+        },
+    }
+
+
 def _none(b: rd.Body) -> dict:
     return {
         "white_scale": [1.0, 1.0, 1.0],
         "source": {
             "kind": "none",
             "files": [],
-            "note": "No file with white-balance presets of this body or of a body with the same colour matrix was available; its whites are not corrected.",
+            "note": "No file with white-balance presets of this body and no published colour matrix of it was available; its whites are not corrected.",
         },
     }
 
@@ -262,15 +300,16 @@ def report(photos: Path, local: Path | None) -> None:
         m = ref.matrix_scale(s_prof, matrices[b.model_id])
         w = ref.locus_white(p, ref.D65_K)
         print(f"{b.model:12s} [{truth[0]:.3f}, {truth[2]:.3f}] [{m[0]:.3f}, {m[2]:.3f}] {ref.angle_deg(ref.scaled(w, truth), ref.scaled(w, m)):6.2f}")
-    print("\nthe published matrix of the stand-ins without data (not applied; angle from the profile's D65 white):")
-    print(f"{'body':12s} {'matrix s':>16s} {'angle':>6s}")
+    print("\nthe published matrix of the stand-ins without files (angle from the profile's D65 white; kind as shipped):")
+    print(f"{'body':12s} {'matrix s':>16s} {'angle':>6s}  kind")
     for b in reg["bodies"]:
-        if b["white_scale_source"]["kind"] != "none":
+        if b["match"] != "default" or b["white_scale_source"]["files"]:
             continue
         p = ref.load_profile(b["profile"])
         w = ref.locus_white(p, ref.D65_K)
         m = ref.matrix_scale(p, matrices[b["model_id"]])
-        print(f"{b['model']:12s} [{m[0]:.3f}, {m[2]:.3f}] {ref.angle_deg(w, ref.scaled(w, m)):6.2f}")
+        kind = b["white_scale_source"]["kind"]
+        print(f"{b['model']:12s} [{m[0]:.3f}, {m[2]:.3f}] {ref.angle_deg(w, ref.scaled(w, m)):6.2f}  {kind}")
 
 
 def main(argv: list[str] | None = None) -> int:

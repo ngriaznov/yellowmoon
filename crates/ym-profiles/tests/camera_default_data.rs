@@ -265,12 +265,21 @@ fn the_matrices_of_the_bodies_once_keyed_by_a_neighbouring_id_are_their_own() {
 }
 
 #[test]
-fn the_a7_v_and_the_a7r_vi_carry_their_own_published_numbers() {
-    // A lookup by Model-string prefix returns the 2013 A7's numbers for "ILCE-7M5" and the 2013 A7R's for
-    // "ILCE-7RM6" (the same fault gave the A1 II the A1's in the white-scale table, `docs/03`). Pinned here,
-    // rounded as published, and checked against those older bodies.
+fn the_a1_ii_a7_v_and_a7r_vi_carry_their_own_published_numbers() {
+    // A lookup by Model-string prefix returns the A1's numbers for "ILCE-1M2", the 2013 A7's for "ILCE-7M5"
+    // and the 2013 A7R's for "ILCE-7RM6" (`docs/03`, *The A1 II*). Pinned here, rounded as published, and
+    // checked against those older bodies. The A1 II took the A1's by decision from 2026-10-16 to 2026-10-19.
     let table = ColorMatrices::shipped();
-    let pinned: [(u16, u16, [[f64; 3]; 3]); 2] = [
+    let pinned: [(u16, u16, [[f64; 3]; 3]); 3] = [
+        (
+            400, // ILCE-1M2, not the ILCE-1 (384)
+            384,
+            [
+                [1.0058, -0.4074, -0.0932],
+                [-0.4777, 1.2731, 0.2274],
+                [-0.0544, 0.1282, 0.6102],
+            ],
+        ),
         (
             407, // ILCE-7M5, not the ILCE-7 (306)
             306,
@@ -308,12 +317,11 @@ fn the_a7_v_and_the_a7r_vi_carry_their_own_published_numbers() {
 }
 
 #[test]
-fn the_two_borrowed_entries_carry_the_numbers_they_borrow_and_say_so() {
-    // Owner's decision 2026-10-16 (`docs/STATUS.md`, question 29): the A1 II takes the A1's numbers (same
-    // sensor), the A3000 the generic E-mount numbers (the NEX-5N's). Every other entry is a body's own.
+fn the_borrowed_entry_carries_the_numbers_it_borrows_and_says_so() {
+    // Owner's decision 2026-10-16 (`docs/STATUS.md`, question 29): the A3000 takes the generic E-mount
+    // numbers (the NEX-5N's). Every other entry is a body's own, the A1 II's too since 2026-10-19.
     let table = ColorMatrices::shipped();
     let numbers = |id: u16| table.lookup("SONY", "", Some(id)).body.xyz_d65_to_camera;
-    assert_eq!(numbers(400), numbers(384), "ILCE-1M2 = ILCE-1");
     assert_eq!(numbers(302), numbers(288), "ILCE-3000 = NEX-5N");
     let doc = matrices_file();
     let noted: Vec<(&str, &str)> = doc["bodies"]
@@ -324,8 +332,8 @@ fn the_two_borrowed_entries_carry_the_numbers_they_borrow_and_say_so() {
         .collect();
     assert_eq!(
         noted.iter().map(|(m, _)| *m).collect::<Vec<_>>(),
-        ["ILCE-3000", "ILCE-1M2"],
-        "only the two borrowed entries carry a note"
+        ["ILCE-3000"],
+        "only the borrowed entry carries a note"
     );
     for (model, note) in noted {
         assert!(note.contains("2026-10-16"), "{model}: {note}");
@@ -437,7 +445,7 @@ fn the_golden_table_is_the_curve() {
 #[test]
 fn the_files_carry_only_numbers_and_body_names() {
     // docs/14 rule 8 and the owner's files: no file names, no owner photo names, and no mention of
-    // the tools or projects the numbers were read with. The notes of the two borrowed entries name the
+    // the tools or projects the numbers were read with. The note of the borrowed entry names the
     // owner's decision, so the bare word is allowed; the owner's files and photos are not.
     for (name, text) in [
         ("color-matrices.json", EMBEDDED_JSON.to_string()),

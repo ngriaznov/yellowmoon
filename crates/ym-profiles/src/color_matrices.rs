@@ -50,8 +50,8 @@ pub struct BodyMatrix {
     pub model: String,
     /// The D65 colour matrix: XYZ to camera RGB, rows as published (not normalised).
     pub xyz_d65_to_camera: Mat3,
-    /// Where the numbers come from when they are not the body's own published ones (the A1 II takes the
-    /// A1's, the A3000 the generic E-mount matrix), and who decided it; `None` for a body's own.
+    /// Where the numbers come from when they are not the body's own published ones (the A3000 takes the
+    /// generic E-mount matrix), and who decided it; `None` for a body's own.
     #[serde(default)]
     pub note: Option<String>,
 }
@@ -300,10 +300,11 @@ mod tests {
     }
 
     #[test]
-    fn the_a1_ii_and_the_a3000_borrow_numbers_by_decision() {
-        // Owner's decision 2026-10-16 (`docs/STATUS.md`, question 29): the A1 II shares the A1's sensor and
-        // takes the A1's numbers; the A3000 has none of its own and takes the generic E-mount numbers,
-        // which are the NEX-5N's (and the A6000's, A5000's and A5100's).
+    fn the_a1_ii_has_its_own_numbers_and_the_a3000_borrows_by_decision() {
+        // Owner's decisions: the A3000 has no numbers of its own and takes the generic E-mount numbers, which
+        // are the NEX-5N's (and the A6000's, A5000's and A5100's; 2026-10-16, `docs/STATUS.md` question 29).
+        // The A1 II took the A1's from 2026-10-16 until its own published matrix was found; it has that one
+        // since 2026-10-19 (question 31).
         let t = ColorMatrices::shipped();
         let by_id = |id: u16| t.lookup("SONY", "", Some(id));
         let a1 = by_id(384);
@@ -313,7 +314,8 @@ mod tests {
             (a1_ii.body.model.as_str(), a1_ii.how),
             ("ILCE-1M2", MatrixMatch::ModelId)
         );
-        assert_eq!(a1_ii.body.xyz_d65_to_camera, a1.body.xyz_d65_to_camera);
+        assert_ne!(a1_ii.body.xyz_d65_to_camera, a1.body.xyz_d65_to_camera);
+        assert!(a1_ii.body.note.is_none());
         let nex_5n = by_id(288);
         assert_eq!(nex_5n.body.model, "NEX-5N");
         let a3000 = by_id(302);
@@ -331,11 +333,9 @@ mod tests {
                 "{model}"
             );
         }
-        // Each says where its numbers come from.
-        for body in [a1_ii.body, a3000.body] {
-            let note = body.note.as_deref().unwrap_or_default();
-            assert!(note.contains("2026-10-16"), "{}: {note:?}", body.model);
-        }
+        // The borrowed entry says where its numbers come from.
+        let note = a3000.body.note.as_deref().unwrap_or_default();
+        assert!(note.contains("2026-10-16"), "{note:?}");
         assert!(a1.body.note.is_none() && nex_5n.body.note.is_none());
     }
 
