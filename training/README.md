@@ -28,6 +28,7 @@ Python 3.12 is what CI uses; 3.13 gives the same numbers. Set `YM_TESTDATA` to m
 | `jdd/` | joint demosaic + denoise network: data generator, training, export, model card (M2-04, M2-05): see `jdd/README.md` |
 | `synth/` | the synthetic golden set: spectral scenes, noise, ground truth (stand-in for the CC0 corpus): see `synth/README.md` |
 | `white_scale/` | the white scale of stand-in bodies (`docs/03`): our own reader of the camera's white-balance presets (`sr2.py`), the two references and the fit (`reference.py`, `fit.py`), the table that `build_registry` copies into the registry (`white_scale.json`), the published colour matrices it cross-checks with (`colour_matrices.json`) |
+| `other_makes/` | research only, not shipped: the Canon and Nikon curves of rawtoaces-data measured against the profile checks (`check.py`), with the published colour matrices of Canon and Nikon bodies it compares them with (`colour_matrices.json`); results in `research/canon-nikon-curves/` |
 
 `alexa/ssf_core.py`, `validate_loo.py` and `estimate_alexa.py` are the scripts of the ALEXA curve estimate
 (`research/alexa-ssf/README.md`: method and validation), with their numerics as they were published.
@@ -46,6 +47,7 @@ Python 3.12 is what CI uses; 3.13 gives the same numbers. Set `YM_TESTDATA` to m
 | `python3 -m unittest training.white_scale.test_white_scale` | the SR2 reader, the fit, and that the registry carries `white_scale.json` | 1 s |
 | `python3 -m training.sensor_map.validate_profiles` | schema + semantic checks of all shipped camera data (needs no fetched sources) | 5 s |
 | `python3 -m training.sensor_map.gate` | sensor-map gate (M1-05) for all 11 profiles | 10 s |
+| `python3 -m training.other_makes.check` | the Canon and Nikon research checks (emulation, curves against matrices, sibling candidates, sensor-map gate and headroom) → `research/canon-nikon-curves/*.csv`; `--skip-emulation` leaves out the two emulation tables | 3 min (15 s with `--skip-emulation`) |
 | `python3 -m training.sensor_map.check_reference` | checks `spectral_reference.json` against the shipped profile (stale content digest of `profile.json` without its provenance block, `runtime_ref` reproduces every field) | 2 s |
 | `python3 -m training.sensor_map.spectral_reference` | regenerates `crates/ym-color/tests/data/spectral_reference.json` (`--study` prints the interpolation study) | 10 s (1 min for `--study`) |
 | `python3 -m training.sensor_map.export_fixtures` | writes `testdata/spectral/` for a Rust port of the evaluation (never committed) | 10 s |
