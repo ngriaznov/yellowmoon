@@ -458,11 +458,13 @@ def diagnostics(rows: Sequence[Row], comparison: str = "rule") -> Dict[str, obje
         )
     losses.sort(key=lambda item: (str(item["stratum"]), str(item["stem"]), int(item["trial"])))  # type: ignore[arg-type]
     step_rows = []
-    for (index, value, strength), part in sorted(by_step.items(), key=lambda item: (item[0][0], str(item[0][1]), str(item[0][2]))):
+    ordered = sorted(by_step.items(), key=lambda item: (item[0][0], str(item[0][1]), str(item[0][2])))
+    for (index, value, strength), part in ordered:
         name = ANSWER_FIELDS[index]
         if name in COLOR_FIELDS:
             words = f"{value} {COLOR_TONES[name]}, {STRENGTH_WORDS.get(strength, strength)}"  # type: ignore[arg-type]
-            step_rows.append({**_group(f"{name} {value} {strength} ({words})", part), "field": name, "step": value, "strength": strength})
+            label = f"{name} {value} {strength} ({words})"
+            step_rows.append({**_group(label, part), "field": name, "step": value, "strength": strength})
         else:
             words = STEP_WORDS[name][value]  # type: ignore[index]
             step_rows.append({**_group(f"{name} {value:+d} ({words})", part), "field": name, "step": value})

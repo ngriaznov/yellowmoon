@@ -36,7 +36,16 @@ COMPARISONS: Mapping[str, str] = {
 GATED: Tuple[str, ...] = ("rule",)
 #: The numeric steps of Apple's answer (docs/19 sections 4 and 5, prompt version 2), in the order of the table, as `ym`
 #: prints them (`white` is the warmth), and the range of each step.
-STEP_FIELDS: Tuple[str, ...] = ("exposure", "highlights", "shadows", "blacks", "contrast", "white", "tint", "saturation")
+STEP_FIELDS: Tuple[str, ...] = (
+    "exposure",
+    "highlights",
+    "shadows",
+    "blacks",
+    "contrast",
+    "white",
+    "tint",
+    "saturation",
+)
 STEP_RANGE: Mapping[str, Tuple[int, int]] = {name: (-3, 3) if name == "exposure" else (-2, 2) for name in STEP_FIELDS}
 #: The colours of the shadows and the highlights: each colour field, the field of its strength and the colours it may
 #: name (docs/19 section 5).
@@ -223,8 +232,8 @@ def build_plan(
     """The plan document (`plan.json`): the photos, their pictures, and the trials in the order the page shows them.
 
     `provenance` records what made the pictures (the `ym` version, the long edge, Apple's model, macOS, the prompt and
-    table versions, and which instructions the model read with their digest). The plan id is a hash of the design, of the provenance, of every photo's steps and of the quarter
-    turns of every picture, so a different render, another answer, a different set of photos or a different turn gets
+    table versions, and which instructions the model read with their digest). The plan id is a hash of the design, of
+    the provenance, of every photo's steps and of the quarter turns of every picture, so a different render, another answer, a different set of photos or a different turn gets
     a new id and the page keeps the answers of each plan apart. `details` adds fields to a photo's entry (the Auto
     values of its renders, for the diagnostics); it is not part of the id.
 

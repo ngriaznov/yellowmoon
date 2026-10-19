@@ -312,6 +312,13 @@ def kept_record(pictures: Pictures, variant: str, job: PhotoJob) -> Optional[Dic
     return record
 
 
+def instructions_flag(pictures: Pictures, variant: str) -> List[str]:
+    """`--apple-auto-instructions FILE` for an `apple` render with instructions of its own, else nothing."""
+    if variant != "apple" or pictures.instructions is None:
+        return []
+    return ["--apple-auto-instructions", str(pictures.instructions)]
+
+
 def render_picture(pictures: Pictures, job: PhotoJob, variant: str) -> Dict[str, object]:
     """Renders one photo with Apple Auto on (`apple`) or off (`rule`) and returns `ym`'s record of it, which is also
     kept under `records/`. With --resume, a render an earlier run made is kept and its record returned."""
@@ -337,7 +344,7 @@ def render_picture(pictures: Pictures, job: PhotoJob, variant: str) -> Dict[str,
         "--out",
         str(target.parent),
         *RENDER_FLAGS[variant],
-        *(["--apple-auto-instructions", str(pictures.instructions)] if variant == "apple" and pictures.instructions else []),
+        *instructions_flag(pictures, variant),
         str(job.raw),
     ]
     record = run_ym(pictures, args)
@@ -603,11 +610,13 @@ def process_photo(pictures: Pictures, job: PhotoJob, apple_gate: threading.Semap
         return Outcome("failed", answer.reason, values=values)
     said = {"steps": answer.steps, "scene": answer.scene, "plan": answer.plan, "instructions": answer.instructions}
     if not changed_fields(answer.steps):
-        return Outcome("unchanged", "every step it set is keep or none", values=values, **said)  # type: ignore[arg-type]
+        why = "every step it set is keep or none"
+        return Outcome("unchanged", why, values=values, **said)  # type: ignore[arg-type]
     try:
         rule = render_picture(pictures, job, "rule")
     except (PictureError, OSError, ValueError) as exc:
-        return Outcome("error", f"with Apple Auto off: {_problem(exc)}", values=values, **said)  # type: ignore[arg-type]
+        why = f"with Apple Auto off: {_problem(exc)}"
+        return Outcome("error", why, values=values, **said)  # type: ignore[arg-type]
     values["rule"] = auto_values(rule)
     if same_pixels(picture_path(pictures, "apple", job), picture_path(pictures, "rule", job)):
         return Outcome("unchanged", "the two pictures are the same", values=values, **said)  # type: ignore[arg-type]

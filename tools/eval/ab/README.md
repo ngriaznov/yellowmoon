@@ -6,8 +6,9 @@ picks against the gate that decides whether Apple Auto stays on by default (AA-1
 
 The two versions of each photo:
 
-- **Apple Auto**: Apple's on-device model looks at the photo and sets its exposure, a warmer or cooler white, its
-  contrast and its saturation (`docs/19`). This is the picture under test.
+- **Apple Auto**: Apple's on-device model looks at the photo and grades it: exposure, highlights, shadows, black
+  level, contrast, warmth, tint, saturation and the colours of the shadows and highlights (`docs/19`, prompt version
+  2). This is the picture under test.
 - **The rule**: Apple Auto off, Yellowmoon's own Auto, the same on every computer.
 
 Both are made at the defaults, as a new photo opens in the app: the built-in default look and every setting at Auto.
@@ -16,8 +17,8 @@ JPEG**; that comparison is reported, but it is not part of the gate.
 
 Two kinds of photo give no trial, and the kit counts both:
 
-- a photo where Apple's answer **changed nothing** (it answered "keep" for all four, or its picture came out the same
-  as the rule's), because there would be nothing to choose between;
+- a photo where Apple's answer **changed nothing** (every value it set was "keep" or "none", or its picture came out
+  the same as the rule's), because there would be nothing to choose between;
 - a photo where Apple's answer **failed** (for example no answer within 30 seconds), because its picture is the rule's.
 
 **The gate** passes when, for Apple Auto against the rule:
@@ -67,7 +68,8 @@ step 4 (for step 2: `YELLOWMOON_DATA=data target/release/ym doctor`).
 
     ~/Applications/Yellowmoon.app/Contents/MacOS/ym doctor
 
-The row **Apple Auto** should read `available · Apple Intelligence · <model> · macOS 27… · prompt 1 · table 1`. If it
+The row **Apple Auto** should read `available · Apple Intelligence · <model> · macOS 27… · prompt 2 · table 2`, with
+the instructions it reads (`default`, or `edited` when you changed them in Preferences). If it
 adds "turned off in Preferences", that is fine: the test turns Apple Auto on for its own renders. If it says
 `not available (…)`, the words in brackets say what to change, for example "Apple Intelligence is off in System
 Settings" or "Apple Intelligence is still downloading its model". The kit checks this too, and stops with the same
@@ -128,6 +130,11 @@ Useful options:
   pictures it already made (with the same photos, `--out` and `--seed`) and makes only the missing ones. Without it,
   every picture is made again and Apple is asked again.
 - `--data DIR`: another data folder (not needed: the `ym` inside the app uses the app's own).
+- `--instructions FILE`: the instructions Apple's model reads, from a text file, instead of the default ones
+  (`docs/19` section 2; at most 2000 characters). The test never uses the instructions you saved in Preferences, so
+  to test your own, copy them into a file and pass it here. The plan and the summary record which instructions were
+  read (`default` or `edited`) with the first 12 hex digits of their SHA-256; `--resume` asks Apple again for every
+  photo whose answer was given to other instructions.
 
 If you run `prepare` again into a folder that holds another test, the old `plan.json` is replaced. Answers given to
 the old test no longer match.
@@ -170,14 +177,15 @@ export part of the way; the score then says not every trial is answered.
 
 The kit prints a table with a row per comparison: Apple Auto's wins, losses and ties, the win share, the Wilson bound,
 the "needs a fix" rates and the verdict. Under it come the strata, then what helps tune the table of `docs/19`
-section 5: Apple Auto's win share by what it did (brighter, darker, warmer, cooler, more or less contrast, more or less
-saturation), for photos where it changed one thing only, and step by step, and the trials it lost, with the scene
-Apple's model described. The last line gives the verdict of the gate, with its provisional thresholds. It also writes
+section 5: Apple Auto's win share by what it did (brighter or darker, the highlights, the shadows and the black level,
+more or less contrast, warmer or cooler, greener or more magenta, more or less saturation), by the colour it gave the
+shadows or the highlights, for photos where it changed one thing only, and step by step; how often Apple's model left
+each field empty (it then set nothing); and the trials it lost, with the scene Apple's model described and its plan. The last line gives the verdict of the gate, with its provisional thresholds. It also writes
 `score.json` next to the results.
 
 **Send the lead `score.json`.** It holds the numbers, Apple's model and macOS version, and the diagnostics. Or send
 `results.json` and the test folder's `plan.json`. These files hold your photos' file names and Apple's short scene
-descriptions, but no pictures.
+descriptions and plans, but no pictures.
 
 The score finds `plan.json` next to the results, or in the default test folder. If it cannot find the plan, pass it:
 `ab.sh score RESULTS_JSON --plan PLAN_JSON`. Results from another test are refused.

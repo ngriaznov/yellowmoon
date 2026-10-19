@@ -40,6 +40,22 @@ FORBIDDEN_NAMES = ("apple", "camera", "rule", "intelligence", "autoset", "prefer
 FORBIDDEN_VISIBLE_WORDS = (r"\brule\b", r"\bauto\b", r"\bwhite\b", r"\bapple\b", r"\bai\b")
 MODEL = "AFM 3 Core"
 MACOS = "27.0.1 (27A404)"
+#: The digest of the default instructions as the fake `ym` reports it.
+DEFAULT_SHA = "6a8a034fb24b"
+
+
+def S(
+    exposure: Optional[int] = None,
+    white: Optional[int] = None,
+    contrast: Optional[int] = None,
+    saturation: Optional[int] = None,
+    **more: object,
+) -> planlib.Steps:
+    """A photo's steps in the order of ANSWER_FIELDS: the fields given, every other left empty (None: nothing set)."""
+    named = {"exposure": exposure, "white": white, "contrast": contrast, "saturation": saturation, **more}
+    unknown = set(named) - set(planlib.ANSWER_FIELDS)
+    assert not unknown, unknown
+    return tuple(named.get(name) for name in planlib.ANSWER_FIELDS)  # type: ignore[misc]
 
 
 def visible_markup(text: str) -> str:
@@ -283,14 +299,14 @@ def plan_photos(count: int, with_camera: bool = True) -> List[planlib.PlanPhoto]
     photos = []
     for number in range(1, count + 1):
         stratum = ("portrait", "landscape", "night", "other")[number % 4]
-        steps = ((number % 3) - 1, 0, 1, 0)
+        steps = S((number % 3) - 1, 0, 1, 0)
         photos.append(
             planlib.PlanPhoto(
                 number=number,
                 stem=f"DSC{number:05d}",
                 stratum=stratum,
                 has_camera=with_camera,
-                steps=steps if any(steps) else (1, 0, 0, 0),
+                steps=steps if planlib.changed_fields(steps) else S(1, 0, 0, 0),
                 scene=f"scene {number}",
             )
         )
@@ -356,7 +372,7 @@ class PlanTests(unittest.TestCase):
 
     def test_a_photo_without_a_camera_picture_gives_only_the_trial_against_the_rule(self) -> None:
         photos = plan_photos(6)
-        photos[2] = planlib.PlanPhoto(number=3, stem=photos[2].stem, stratum=photos[2].stratum, steps=(1, 0, 0, 0))
+        photos[2] = planlib.PlanPhoto(number=3, stem=photos[2].stem, stratum=photos[2].stratum, steps=S(1, 0, 0, 0))
         plan = planlib.build_plan(photos, 1, {"ym": "ym"})
         mine = [t["comparison"] for t in plan["trials"] if t["number"] == 3]  # type: ignore[union-attr]
         self.assertEqual(mine, ["rule"])
@@ -404,7 +420,7 @@ class PlanTests(unittest.TestCase):
         photos = plan_photos(6)
         other = list(photos)
         other[1] = planlib.PlanPhoto(
-            number=2, stem=photos[1].stem, stratum=photos[1].stratum, has_camera=True, steps=(-2, 0, 0, 0)
+            number=2, stem=photos[1].stem, stratum=photos[1].stratum, has_camera=True, steps=S(-2, 0, 0, 0)
         )
         self.assertNotEqual(
             planlib.build_plan(photos, 1, {"ym": "ym"})["plan_id"],
@@ -643,25 +659,57 @@ class JpegDigestTests(unittest.TestCase):
 class AppleAnswerTests(unittest.TestCase):
     """Reading Apple's answer from the record of a render with Apple Auto on (docs/19 section 8)."""
 
-    def answered(self, steps: Dict[str, object]) -> Dict[str, object]:
+    def answered(self, steps: object) -> Dict[str, object]:
         return {
             "auto_source": "apple",
-            "apple_auto": {"state": "answered", "reason": None, "steps": steps, "scene": "A dog on a beach"},
+            "apple_auto": {
+                "state": "answered",
+                "reason": None,
+                "steps": steps,
+                "scene": "A dog on a beach",
+                "plan": "Warm, soft late light",
+                "instructions": "edited",
+                "instructions_sha256": "0123456789ab",
+            },
         }
 
-    def test_an_answer_gives_its_steps_and_scene(self) -> None:
-        answer = renders.apple_answer(self.answered({"exposure": -2, "white": 1, "contrast": 0, "saturation": -1}))
+    def test_an_answer_gives_its_steps_scene_plan_and_instructions(self) -> None:
+        steps = {name: None for name in planlib.ANSWER_FIELDS}
+        steps.update({"exposure": -2, "highlights": -1, "blacks": 2, "white": 1, "tint": -2, "saturation": -1,
+                      "shadow_color": "teal", "shadow_color_strength": 3, "highlight_color": "none"})
+        answer = renders.apple_answer(self.answered(steps))
         self.assertTrue(answer.answered)
-        self.assertEqual(answer.steps, (-2, 1, 0, -1))
+        self.assertEqual(
+            answer.steps,
+            S(-2, 1, None, -1, highlights=-1, blacks=2, tint=-2, shadow_color="teal", shadow_color_strength=3,
+              highlight_color="none"),
+        )
         self.assertEqual(answer.scene, "A dog on a beach")
+        self.assertEqual(answer.plan, "Warm, soft late light")
+        self.assertEqual(answer.instructions, ("edited", "0123456789ab"))
+
+    def test_a_field_left_empty_or_missing_sets_nothing(self) -> None:
+        # null is what ym prints for a field the model did not fill; a record of prompt version 1 has four fields.
+        answer = renders.apple_answer(self.answered({"exposure": 1, "white": None, "contrast": 0, "saturation": 0}))
+        self.assertTrue(answer.answered)
+        self.assertEqual(answer.steps, S(1, None, 0, 0))
+        self.assertEqual(planlib.changed_fields(answer.steps), ["exposure"])
 
     def test_steps_out_of_range_or_missing_are_a_bad_answer(self) -> None:
         for steps in (
             {"exposure": 4, "white": 0, "contrast": 0, "saturation": 0},
             {"exposure": 0, "white": -3, "contrast": 0, "saturation": 0},
-            {"exposure": 0, "white": 0, "contrast": 0},
+            {"exposure": 0, "highlights": 3},
             {"exposure": 0, "white": 0, "contrast": True, "saturation": 0},
             {"exposure": 0.5, "white": 0, "contrast": 0, "saturation": 0},
+            {"shadow_color": "purple", "shadow_color_strength": 1},
+            {"highlight_color": "warm", "highlight_color_strength": 4},
+            {"shadow_color": "teal", "shadow_color_strength": 0},
+            {"shadow_color": 2},
+            {name: None for name in planlib.ANSWER_FIELDS},
+            {},
+            None,
+            [1, 0, 1, 0],
         ):
             answer = renders.apple_answer(self.answered(steps))
             self.assertFalse(answer.answered, steps)
@@ -839,7 +887,11 @@ class PrepareTests(PrepareHarness):
     def test_the_plan_records_the_model_macos_prompt_and_table(self) -> None:
         result = self.prepare()
         apple = result.plan["provenance"]["apple_auto"]  # type: ignore[index]
-        self.assertEqual(apple, {"available": True, "reason": None, "model": MODEL, "os": MACOS, "prompt": 1, "table": 1})
+        self.assertEqual(
+            apple,
+            {"available": True, "reason": None, "model": MODEL, "os": MACOS, "prompt": 2, "table": 2,
+             "instructions": "default", "instructions_sha256": DEFAULT_SHA},
+        )
         self.assertEqual(result.plan["provenance"]["ym"], "ym 9.9.9-test (pipeline 0.0.0, fake)")  # type: ignore[index]
         on_disk = json.loads((self.out / "plan.json").read_text(encoding="utf-8"))
         self.assertEqual(on_disk["provenance"]["apple_auto"]["model"], MODEL)
@@ -891,7 +943,9 @@ class PrepareTests(PrepareHarness):
         steps = {"T1": [0, 0, 0, 0]}
         with mock.patch.dict(os.environ, {"FAKE_YM_STEPS": json.dumps(steps)}):
             result = self.prepare()
-        self.assertEqual([(item["stem"], item["reason"]) for item in result.unchanged], [("T1", "every step is keep")])
+        self.assertEqual(
+            [(item["stem"], item["reason"]) for item in result.unchanged], [("T1", "every step it set is keep or none")]
+        )
         self.assertNotIn("T1", {t["stem"] for t in result.plan["trials"]})  # type: ignore[union-attr]
         self.assertNotIn("T1", {c["stem"] for c in self.renders_logged() if c["mode"] == "off"})
         self.assertEqual(result.plan["counts"]["unchanged"], 1)  # type: ignore[index]
@@ -918,14 +972,68 @@ class PrepareTests(PrepareHarness):
         with mock.patch.dict(os.environ, {"FAKE_YM_STEPS": json.dumps(steps)}):
             result = self.prepare()
         entry = next(p for p in result.plan["photos"] if p["stem"] == "L1")  # type: ignore[union-attr]
-        self.assertEqual(entry["steps"], {"exposure": -1, "white": 2, "contrast": 0, "saturation": 1})
+        self.assertEqual(entry["steps"], planlib.steps_dict(S(-1, 2, 0, 1)))
+        self.assertIsNone(entry["steps"]["highlights"], "a field the model left empty is null")
         self.assertEqual(entry["scene"], "Scene of L1")
+        self.assertEqual(entry["plan"], "Plan for L1")
         self.assertAlmostEqual(entry["auto_values"]["apple"]["exposure_ev"], 0.2)
         self.assertAlmostEqual(entry["auto_values"]["rule"]["exposure_ev"], 0.5)
         self.assertEqual(entry["auto_values"]["apple"]["saturation"], 15.0)
         for trial in result.plan["trials"]:  # type: ignore[union-attr]
             if trial["stem"] == "L1":
                 self.assertEqual(trial["steps"], entry["steps"])
+
+    def test_a_colour_alone_is_a_change_and_a_colour_without_a_strength_is_none(self) -> None:
+        steps = {
+            "L1": {"shadow_color": "teal", "shadow_color_strength": 2},
+            "T1": {"exposure": 0, "shadow_color": "blue", "highlight_color": "none", "highlight_color_strength": 3},
+        }
+        with mock.patch.dict(os.environ, {"FAKE_YM_STEPS": json.dumps(steps)}):
+            result = self.prepare()
+        self.assertIn("L1", {t["stem"] for t in result.plan["trials"]})  # type: ignore[union-attr]
+        self.assertEqual(
+            [(item["stem"], item["reason"]) for item in result.unchanged], [("T1", "every step it set is keep or none")]
+        )
+
+    def test_instructions_from_a_file_reach_the_apple_renders_and_the_plan(self) -> None:
+        text = "Grade it like a quiet documentary."
+        path = self.root / "instructions.txt"
+        path.write_text(text + "\n", encoding="utf-8")
+        result = self.prepare(instructions=path)
+        digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
+        apple = result.plan["provenance"]["apple_auto"]  # type: ignore[index]
+        self.assertEqual((apple["instructions"], apple["instructions_sha256"]), ("edited", digest))
+        for call in self.renders_logged():
+            flag = "--apple-auto-instructions" in call["args"]  # type: ignore[operator]
+            self.assertEqual(flag, call["mode"] == "on", call)
+            if flag:
+                args = call["args"]
+                self.assertEqual(args[args.index("--apple-auto-instructions") + 1], str(path))  # type: ignore
+        # The default text in a file is the default; the plan id changes with the instructions.
+        default = self.root / "default.txt"
+        default.write_text("  \n", encoding="utf-8")
+        again = self.prepare(instructions=default)
+        apple = again.plan["provenance"]["apple_auto"]  # type: ignore[index]
+        self.assertEqual((apple["instructions"], apple["instructions_sha256"]), ("default", DEFAULT_SHA))
+        self.assertNotEqual(again.plan["plan_id"], result.plan["plan_id"])
+
+    def test_resume_asks_again_where_the_instructions_changed(self) -> None:
+        self.prepare()
+        path = self.root / "instructions.txt"
+        path.write_text("Moody and dark.", encoding="utf-8")
+        self.log.unlink()
+        self.prepare(resume=True, instructions=path)
+        modes = sorted(str(c["mode"]) for c in self.renders_logged())
+        self.assertEqual(modes, ["on"] * len(self.STEMS), "every Apple render is made again, no rule render")
+
+    def test_instructions_too_long_are_a_usage_error(self) -> None:
+        path = self.root / "long.txt"
+        path.write_text("x" * 2001 + "\n", encoding="utf-8")
+        with self.assertRaises(ab.UsageError) as caught:
+            self.prepare(instructions=path)
+        self.assertIn("2001 characters long; at most 2000 fit", str(caught.exception))
+        path.write_text("x" * 2000 + "\r\n", encoding="utf-8")
+        self.prepare(instructions=path)
 
     def test_the_originals_are_never_written(self) -> None:
         before = self.raw_hashes()
@@ -1126,7 +1234,9 @@ class CommandLineTests(PrepareHarness):
         with mock.patch.dict(os.environ, env):
             code, text, _ = self.run_main(self.prepare_argv())
         self.assertEqual(code, 0)
-        self.assertIn(f"Apple Auto: {MODEL} · macOS {MACOS} · prompt 1 · table 1", text)
+        self.assertIn(
+            f"Apple Auto: {MODEL} · macOS {MACOS} · prompt 2 · table 2 · instructions default ({DEFAULT_SHA})", text
+        )
         self.assertIn("photos: 6 found, 4 in the test", text)
         self.assertIn("Apple Auto left 1 of 6 photos as they were: they give no trial.", text)
         self.assertIn("Apple Auto failed on 1 of 6 photos: they are left out.", text)
@@ -1249,7 +1359,7 @@ class PageTests(unittest.TestCase):
             self.assertIsNone(re.search(pattern, visible), pattern)
 
     def test_plan_js_names_no_variant_and_carries_the_trials(self) -> None:
-        photos = [planlib.PlanPhoto(number=1, stem="DSC1", stratum="other", has_camera=True, steps=(1, 0, 0, 0),
+        photos = [planlib.PlanPhoto(number=1, stem="DSC1", stratum="other", has_camera=True, steps=S(1, 0, 0, 0),
                                     scene="A red apple on a table")]
         plan = planlib.build_plan(photos, 1, {"ym": "ym", "apple_auto": {"model": MODEL}})
         text = page.plan_js(plan).lower()
@@ -1415,7 +1525,12 @@ class ScoreTests(unittest.TestCase):
             ["slightly brighter", "darker, more contrast", "darker, more contrast"],
         )
         self.assertTrue(all(loss["scene"].startswith("scene of trial") for loss in losses))
+        self.assertEqual(losses[0]["left_empty"], "highlights, shadows, blacks, tint, shadow_color, highlight_color")
+        self.assertEqual(diag["left_empty"]["trials"], 8)  # type: ignore[index]
+        self.assertEqual(diag["left_empty"]["fields"]["tint"], 8)  # type: ignore[index]
+        self.assertEqual(diag["left_empty"]["fields"]["exposure"], 0)  # type: ignore[index]
         text = scorelib.format_report(score_answers(plan, results))
+        self.assertIn("Fields Apple's model left empty (they set nothing), of 8 trials:", text)
         self.assertIn("For tuning the table (docs/19 section 5)", text)
         self.assertIn("Trials Apple Auto lost against the rule (3)", text)
         self.assertIn('"scene of trial', text)
@@ -1432,10 +1547,53 @@ class ScoreTests(unittest.TestCase):
         self.assertEqual(diag["losses"][0]["changes"], "much cooler")  # type: ignore[index]
 
     def test_steps_in_words(self) -> None:
-        self.assertEqual(scorelib.steps_words((3, -2, 2, -1)),
-                         "much brighter, much cooler, much more contrast, less saturation")
-        self.assertEqual(scorelib.steps_words((0, 0, 0, 0)), "no change")
+        self.assertEqual(scorelib.steps_words(S(3, -2, 2, -1)),
+                         "much brighter, much more contrast, much cooler, less saturation")
+        self.assertEqual(
+            scorelib.steps_words(S(highlights=-1, blacks=1, tint=2, shadow_color="teal", shadow_color_strength=2,
+                                   highlight_color="warm", highlight_color_strength=1)),
+            "darker highlights, lifted blacks, much more magenta, teal shadows (medium), warm highlights (subtle)",
+        )
+        self.assertEqual(scorelib.steps_words(S(0, 0, 0, 0)), "no change")
+        # A colour without a strength, none, and empty fields change nothing.
+        nothing = S(shadow_color="teal", highlight_color="none", highlight_color_strength=2)
+        self.assertEqual(scorelib.steps_words(nothing), "no change")
         self.assertEqual(scorelib.steps_words(None), "unknown")
+        self.assertEqual(
+            scorelib.empty_words(S(1, 0, 0, 0)), "highlights, shadows, blacks, tint, shadow_color, highlight_color"
+        )
+
+    def test_the_diagnostics_split_the_wins_by_the_colours_and_say_the_plan_of_a_loss(self) -> None:
+        teal = S(shadow_color="teal", shadow_color_strength=2)
+        both = S(1, highlights=-1, shadow_color="teal", shadow_color_strength=1, highlight_color="warm",
+                 highlight_color_strength=3)
+        plan, results = make_case([("rule", "a", 2, 1, 0, 0, 0, teal), ("rule", "b", 1, 1, 0, 0, 0, both)])
+        for trial in plan["trials"]:  # type: ignore[union-attr]
+            trial["plan"] = f"plan of trial {trial['id']}"
+        diag = score_answers(plan, results)["diagnostics"]
+        by_color = {g["label"]: g for g in diag["by_color"]}  # type: ignore[index]
+        self.assertEqual(by_color["teal shadows"]["trials"], 5)
+        self.assertAlmostEqual(by_color["teal shadows"]["share"], 0.6)
+        self.assertEqual(by_color["warm highlights"]["trials"], 2)
+        self.assertEqual(by_color["blue shadows"]["trials"], 0)
+        single = {g["label"]: g for g in diag["by_single_change"]}  # type: ignore[index]
+        self.assertEqual(single["only shadow_color"]["trials"], 3)
+        self.assertEqual(single["two or more changes"]["trials"], 2)
+        by_step = {g["label"]: g for g in diag["by_step"]}  # type: ignore[index]
+        self.assertEqual(by_step["shadow_color teal 2 (teal shadows, medium)"]["trials"], 3)
+        self.assertEqual(by_step["highlight_color warm 3 (warm highlights, strong)"]["trials"], 2)
+        self.assertEqual(by_step["highlights -1 (darker highlights)"]["trials"], 2)
+        by_direction = {g["label"]: g for g in diag["by_direction"]}  # type: ignore[index]
+        self.assertEqual(by_direction["darker highlights"]["trials"], 2)
+        losses = diag["losses"]  # type: ignore[index]
+        self.assertEqual([loss["changes"] for loss in losses], [
+            "teal shadows (medium)",
+            "slightly brighter, darker highlights, teal shadows (subtle), warm highlights (strong)",
+        ])
+        self.assertEqual(losses[0]["plan"], "plan of trial 3")
+        text = scorelib.format_report(score_answers(plan, results))
+        self.assertIn("By the colour of the shadows or the highlights:", text)
+        self.assertIn('"scene of trial 3" (plan: "plan of trial 3"); teal shadows (medium)', text)
 
     def test_results_of_another_plan_are_refused(self) -> None:
         plan, results = make_case([("rule", "a", 1, 0, 0, 0, 0)])
@@ -1499,12 +1657,15 @@ Spec = Tuple  # (comparison, stratum, wins, losses, ties, flags on Apple, flags 
 def make_case(spec: Sequence[Spec]) -> Tuple[Dict[str, object], Dict[str, object]]:
     """A plan and the results of it. Each spec line is (comparison, stratum, wins, losses, ties, flags on Apple's
     picture, flags on the other picture[, steps]); the first `flags` trials of a group carry the flag, and the steps
-    default to (1, 0, 0, 0). The plan lists the comparisons it has, as `prepare` writes it."""
+    (four numbers for exposure, white, contrast and saturation, or a whole steps tuple) default to S(1, 0, 0, 0). The
+    plan lists the comparisons it has, as `prepare` writes it."""
     trials: List[Dict[str, object]] = []
     answers: List[Dict[str, object]] = []
     for line in spec:
         comparison, stratum, wins, losses, ties, flags_apple, flags_other = line[:7]
-        steps = line[7] if len(line) > 7 else (1, 0, 0, 0)
+        steps = line[7] if len(line) > 7 else S(1, 0, 0, 0)
+        if len(steps) == 4:
+            steps = S(*steps)
         other = planlib.COMPARISONS[comparison]
         outcomes = ["win"] * wins + ["loss"] * losses + ["tie"] * ties
         for index, outcome in enumerate(outcomes):
