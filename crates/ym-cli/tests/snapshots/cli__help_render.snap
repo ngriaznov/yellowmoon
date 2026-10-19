@@ -34,7 +34,7 @@ Look and display:
           Display rendering: `aces2`, or `arri` (an imported ARRI display LUT: the one chosen in the app, else the only one imported; or give its id)
 
       --settings <FILE>
-          A JSON file of settings (the `ym:Settings` schema), or `-` for stdin. It covers what these options can't: colour balance, curves, crop, orientation, white pick
+          A JSON file of settings (the `ym:Settings` schema), or `-` for stdin. It covers what these options can't: colour balance (`{ "kind": "auto" }` puts a shadows or highlights wheel back to Auto), curves, crop, orientation, white pick
 
 Light:
       --exposure <auto|EV>
@@ -49,17 +49,17 @@ Light:
       --brightness <N>
           Brightness, -100 to 100
 
-      --highlights <N>
-          Highlights, -100 to 100
+      --highlights <auto|N>
+          Highlights, -100 to 100, or `auto` (the default: 0, or the value Apple Auto chose)
 
-      --shadows <N>
-          Shadows, -100 to 100
+      --shadows <auto|N>
+          Shadows, -100 to 100, or `auto` (the default: 0, or the value Apple Auto chose)
 
       --white <N>
           White point, -100 to 100
 
-      --black <N>
-          Black point, -100 to 100
+      --black <auto|N>
+          Black point, -100 to 100, or `auto` (the default: 0, or the value Apple Auto chose)
 
       --white-offset <EV>
           Stops added to each photo's automatic white lift, -3 to 3. 0 is the automatic amount; an offset that takes the lift to 0 or below switches it off (`--white-offset -3` always does). The lift only acts with the built-in ACES 2 display rendering, and a DNG carries it
@@ -174,7 +174,10 @@ Run:
           Render on the CPU only and open no graphics device. The golden images are made this way. Beats YELLOWMOON_GPU
 
       --apple-auto <on|off>
-          Apple Auto for this run. On a Mac with Apple Intelligence, Apple's on-device model sets each photo's automatic exposure, contrast and saturation and makes its white warmer or cooler. Default: the app's setting where Apple Auto is available, off elsewhere
+          Apple Auto for this run. On a Mac with Apple Intelligence, Apple's on-device model grades each photo: it sets the automatic exposure, highlights, shadows, black, contrast, warmth, tint and saturation and the colours of the shadows and highlights. Default: the app's setting where Apple Auto is available, off elsewhere
+
+      --apple-auto-instructions <FILE>
+          A text file with instructions for Apple's model, used for this run instead of those in Preferences (at most 2000 characters; an empty file is the default instructions)
 
 Examples:
   ym render ~/Pictures/2026-10-04 --look neutral --format jpeg --long-edge 3000 --out ~/Exports

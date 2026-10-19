@@ -533,22 +533,22 @@ mod tests {
             (
                 "--highlights",
                 Overrides {
-                    highlights: Some(-12.0),
+                    highlights: Some(PercentArg::Value(-12.0)),
                     ..Overrides::default()
                 },
                 SettingsPatch {
-                    highlights: Some(-12.0),
+                    highlights: Some(PercentSetting::manual_value(-12.0)),
                     ..SettingsPatch::default()
                 },
             ),
             (
                 "--shadows",
                 Overrides {
-                    shadows: Some(22.0),
+                    shadows: Some(PercentArg::Value(22.0)),
                     ..Overrides::default()
                 },
                 SettingsPatch {
-                    shadows: Some(22.0),
+                    shadows: Some(PercentSetting::manual_value(22.0)),
                     ..SettingsPatch::default()
                 },
             ),
@@ -566,11 +566,11 @@ mod tests {
             (
                 "--black",
                 Overrides {
-                    black: Some(-44.0),
+                    black: Some(PercentArg::Auto),
                     ..Overrides::default()
                 },
                 SettingsPatch {
-                    black: Some(-44.0),
+                    black: Some(AutoOr::Auto),
                     ..SettingsPatch::default()
                 },
             ),
@@ -636,7 +636,7 @@ mod tests {
         // Together they add up, field by field.
         let all = Overrides {
             brightness: Some(11.0),
-            shadows: Some(22.0),
+            shadows: Some(PercentArg::Value(22.0)),
             white: Some(33.0),
             no_neural: true,
             no_highlight_recovery: true,
@@ -646,7 +646,11 @@ mod tests {
         let p = all.patch(0.0);
         assert_eq!(
             (p.brightness, p.shadows, p.white),
-            (Some(11.0), Some(22.0), Some(33.0))
+            (
+                Some(11.0),
+                Some(PercentSetting::manual_value(22.0)),
+                Some(33.0)
+            )
         );
         assert_eq!(
             p.decode,

@@ -20,20 +20,11 @@ fn photo(sb: &Sandbox) -> PathBuf {
     sb.arw("a.ARW")
 }
 
-/// The steps of an `apple_auto` object.
+/// The steps of an `apple_auto` object (every key there, `null` for a step left empty).
 fn steps_of(apple_auto: &Value) -> AutoSteps {
-    let step = |key: &str| -> i8 {
-        let v = apple_auto["steps"][key]
-            .as_i64()
-            .unwrap_or_else(|| panic!("steps.{key} in {apple_auto}"));
-        i8::try_from(v).expect("a step")
-    };
-    AutoSteps {
-        exposure: step("exposure"),
-        white: step("white"),
-        contrast: step("contrast"),
-        saturation: step("saturation"),
-    }
+    let steps = apple_auto["steps"].as_object().expect("steps");
+    assert_eq!(steps.len(), 12, "every step is there: {apple_auto}");
+    serde_json::from_value(apple_auto["steps"].clone()).expect("the steps")
 }
 
 /// `ym render --json` of one photo with `flags`, through `cmd`, into `out`.
@@ -71,20 +62,53 @@ fn render_json_says_apple_made_the_auto_values_and_what_it_answered() {
     assert_eq!(a["reason"], Value::Null);
     assert_eq!(a["model"], "Test advisor");
     assert_eq!(a["os"], "test");
-    assert_eq!(a["prompt"], 1);
-    assert_eq!(a["table"], 1);
+    assert_eq!(a["prompt"], 2);
+    assert_eq!(a["table"], 2);
     assert_eq!(a["scene"], "Test picture");
+    assert_eq!(a["plan"], "Test plan: You");
+    assert_eq!(a["instructions"], "default");
+    assert_eq!(
+        a["instructions_sha256"],
+        ym_core::apple_auto::InstructionsId::default().instructions_sha256
+    );
     let steps = steps_of(a);
-    // The test advisor's answer on this photo: darker, more contrast.
+    // The test advisor's answer on this photo: darker, darker highlights, more contrast, teal
+    // shadows; it leaves the blacks, the tint and the highlights' colour empty.
     assert_eq!(
         steps,
         AutoSteps {
-            exposure: -1,
-            white: 0,
-            contrast: 1,
-            saturation: 0
+            exposure: Some(-1),
+            highlights: Some(-1),
+            shadows: Some(0),
+            blacks: None,
+            contrast: Some(1),
+            white: Some(0),
+            tint: None,
+            saturation: Some(0),
+            shadow_color: Some(ym_core::apple_auto::ShadowColor::Teal),
+            shadow_color_strength: Some(1),
+            highlight_color: None,
+            highlight_color_strength: None,
         },
         "{a}"
+    );
+    assert_eq!(a["steps"]["blacks"], Value::Null);
+    assert_eq!(a["steps"]["shadow_color"], "teal");
+    // The new Auto values.
+    assert_eq!(v["auto"]["highlights"], TABLE.highlights[1]);
+    assert_eq!(v["auto"]["black"], 0.0);
+    assert_eq!(
+        v["auto"]["balance_shadows"],
+        json!([-0.866 * 0.3, -0.5 * 0.3])
+    );
+    assert_eq!(v["auto"]["balance_highlights"], json!([0.0, 0.0]));
+    assert_eq!(
+        v["settings"]["highlights"],
+        json!({ "kind": "manual", "value": -20.0 })
+    );
+    assert_eq!(
+        v["settings"]["color_balance"]["shadows"],
+        json!({ "kind": "manual", "point": [-0.866 * 0.3, -0.5 * 0.3] })
     );
     // The answer is in the Auto values and in the settings the file records, pinned to them.
     assert_eq!(v["auto"]["contrast"], TABLE.contrast[3]);
@@ -234,7 +258,7 @@ fn the_apple_auto_preference_decides_unless_the_run_says_otherwise() {
     let text_report = sb.ym_fake().arg("doctor").assert().success();
     let text_report = text(&text_report.get_output().stdout);
     assert!(
-        text_report.contains("table 1 · turned off in Preferences"),
+        text_report.contains("table 2 · turned off in Preferences"),
         "{text_report}"
     );
 }
@@ -258,7 +282,17 @@ fn info_json_has_the_apple_auto_object_and_the_auto_values_in_effect() {
             .map(String::as_str)
             .collect::<Vec<_>>(),
         [
-            "model", "os", "prompt", "reason", "scene", "state", "steps", "table"
+            "instructions",
+            "instructions_sha256",
+            "model",
+            "os",
+            "plan",
+            "prompt",
+            "reason",
+            "scene",
+            "state",
+            "steps",
+            "table"
         ],
         "{a}"
     );
@@ -284,7 +318,8 @@ fn info_json_has_the_apple_auto_object_and_the_auto_values_in_effect() {
     let off = json_lines(&off.get_output().stdout).remove(0);
     assert_eq!(
         off["apple_auto"],
-        json!({ "state": "off", "reason": null, "model": null, "os": null, "prompt": 1, "table": 1 })
+        json!({ "state": "off", "reason": null, "model": null, "os": null,
+                "instructions": null, "instructions_sha256": null, "prompt": 2, "table": 2 })
     );
     assert_eq!(off["auto_source"], "rule");
     if cfg!(not(target_os = "macos")) {
@@ -297,7 +332,8 @@ fn info_json_has_the_apple_auto_object_and_the_auto_values_in_effect() {
         let here = json_lines(&here.get_output().stdout).remove(0);
         assert_eq!(
             here["apple_auto"],
-            json!({ "state": "unavailable", "reason": "not_a_mac", "model": null, "os": null, "prompt": 1, "table": 1 })
+            json!({ "state": "unavailable", "reason": "not_a_mac", "model": null, "os": null,
+                    "instructions": null, "instructions_sha256": null, "prompt": 2, "table": 2 })
         );
         assert_eq!(
             here["auto"]["apple"],
@@ -324,7 +360,7 @@ fn info_text_has_an_apple_auto_row() {
     };
     assert_eq!(
         row(sb.ym_fake(), &[]),
-        "Darker -0.3 EV · contrast +15 · \"Test picture\""
+        "Darker -0.3 EV · highlights -20 · contrast +15 · teal shadows (subtle) · scene \"Test picture\" · plan \"Test plan: You\""
     );
     assert_eq!(row(sb.ym_fake(), &["--apple-auto", "off"]), "Off");
     if cfg!(not(target_os = "macos")) {
@@ -346,14 +382,16 @@ fn doctor_reports_apple_auto_and_the_model() {
         v["apple_auto"],
         json!({
             "available": true, "reason": null, "model": "Test advisor", "os": "test",
-            "preference": true, "prompt": 1, "table": 1
+            "preference": true, "prompt": 2, "table": 2,
+            "instructions": "default",
+            "instructions_sha256": ym_core::apple_auto::InstructionsId::default().instructions_sha256,
         })
     );
     let out = sb.ym_fake().arg("doctor").assert().success();
     let report = text(&out.get_output().stdout);
     assert!(
         report.contains(
-            "Apple Auto         available · Apple Intelligence · Test advisor · macOS test · prompt 1 · table 1\n"
+            "Apple Auto         available · Apple Intelligence · Test advisor · macOS test · prompt 2 · table 2\n"
         ),
         "{report}"
     );
@@ -368,7 +406,9 @@ fn doctor_reports_apple_auto_and_the_model() {
             v["apple_auto"],
             json!({
                 "available": false, "reason": "not_a_mac", "model": null, "os": null,
-                "preference": true, "prompt": 1, "table": 1
+                "preference": true, "prompt": 2, "table": 2,
+                "instructions": "default",
+                "instructions_sha256": ym_core::apple_auto::InstructionsId::default().instructions_sha256,
             })
         );
         let out = sb.ym().arg("doctor").assert().success();
@@ -460,11 +500,14 @@ fn an_export_records_which_auto_made_it_in_its_xmp() {
     let apple = render_json(sb.ym_fake(), &arw, &[], &sb.root().join("apple"));
     let xmp = xmp_of(&apple);
     assert!(xmp.contains("<ym:Auto>apple</ym:Auto>"), "ym:Auto");
+    let sha = ym_core::apple_auto::InstructionsId::default().instructions_sha256;
+    let want = format!(
+        r#"{{"instructions":"default","instructions_sha256":"{sha}","model":"Test advisor","os":"test","plan":"Test plan: You","prompt":2,"result":"answered","scene":"Test picture","steps":{{"blacks":null,"contrast":1,"exposure":-1,"highlight_color":null,"highlight_color_strength":null,"highlights":-1,"saturation":0,"shadow_color":"teal","shadow_color_strength":1,"shadows":0,"tint":null,"white":0}},"table":2}}"#
+    )
+    .replace('"', "&quot;");
     assert!(
-        xmp.contains(
-            "<ym:AppleAuto>{&quot;model&quot;:&quot;Test advisor&quot;,&quot;os&quot;:&quot;test&quot;,&quot;prompt&quot;:1,&quot;result&quot;:&quot;answered&quot;,&quot;scene&quot;:&quot;Test picture&quot;,&quot;steps&quot;:{&quot;contrast&quot;:1,&quot;exposure&quot;:-1,&quot;saturation&quot;:0,&quot;white&quot;:0},&quot;table&quot;:1}</ym:AppleAuto>"
-        ),
-        "ym:AppleAuto"
+        xmp.contains(&format!("<ym:AppleAuto>{want}</ym:AppleAuto>")),
+        "ym:AppleAuto in {xmp}"
     );
     let rule = render_json(
         sb.ym_fake(),
@@ -509,4 +552,141 @@ fn the_json_of_a_file_with_apple_auto_has_this_shape() {
         .into_iter()
         .collect();
     insta::assert_json_snapshot!("render_json_shape_apple_auto", Value::Object(picked));
+}
+
+#[test]
+fn the_instructions_come_from_the_preference_or_a_file_for_one_run() {
+    use ym_core::apple_auto::InstructionsId;
+    let sb = Sandbox::new();
+    let arw = photo(&sb);
+    // The preference: `ym` reads the app's instructions; the test advisor's plan names their first
+    // word, and the reports say they were edited.
+    std::fs::write(
+        sb.home().join("preferences.json"),
+        json!({ "apple_auto_instructions": "Moody night grade." }).to_string(),
+    )
+    .expect("write preferences");
+    let v = render_json(sb.ym_fake(), &arw, &[], &sb.root().join("pref"));
+    assert_eq!(v["apple_auto"]["plan"], "Test plan: Moody");
+    assert_eq!(v["apple_auto"]["instructions"], "edited");
+    assert_eq!(
+        v["apple_auto"]["instructions_sha256"],
+        InstructionsId::of("Moody night grade.").instructions_sha256
+    );
+    let doctor = sb.ym_fake().args(["doctor", "--json"]).assert().success();
+    let doctor: Value = serde_json::from_slice(&doctor.get_output().stdout).expect("JSON");
+    assert_eq!(doctor["apple_auto"]["instructions"], "edited");
+    // A file for one run wins over the preference, in `render` and `info`.
+    let file = sb.root().join("instructions.txt");
+    std::fs::write(&file, "Bright, airy and warm.").expect("write");
+    let flag = ["--apple-auto-instructions", file.to_str().expect("utf-8")];
+    let v = render_json(sb.ym_fake(), &arw, &flag, &sb.root().join("file"));
+    assert_eq!(v["apple_auto"]["plan"], "Test plan: Bright,");
+    let info = sb
+        .ym_fake()
+        .args(["info", "--json"])
+        .args(flag)
+        .arg(&arw)
+        .assert()
+        .success();
+    let info = json_lines(&info.get_output().stdout).remove(0);
+    assert_eq!(info["apple_auto"]["plan"], "Test plan: Bright,");
+    // An empty file is the default instructions.
+    let empty = sb.root().join("empty.txt");
+    std::fs::write(&empty, "").expect("write");
+    let v = render_json(
+        sb.ym_fake(),
+        &arw,
+        &["--apple-auto-instructions", empty.to_str().expect("utf-8")],
+        &sb.root().join("empty"),
+    );
+    assert_eq!(v["apple_auto"]["plan"], "Test plan: You");
+    assert_eq!(v["apple_auto"]["instructions"], "default");
+    // Too long, or not there: a usage error (exit code 2) with a plain message.
+    let long = sb.root().join("long.txt");
+    std::fs::write(&long, "x".repeat(2001)).expect("write");
+    let out = sb
+        .ym_fake()
+        .args(["render", "--apple-auto-instructions"])
+        .arg(&long)
+        .arg(&arw)
+        .assert()
+        .code(2);
+    assert!(
+        text(&out.get_output().stderr).contains("At most 2000"),
+        "{}",
+        text(&out.get_output().stderr)
+    );
+    let out = sb
+        .ym_fake()
+        .args(["info", "--apple-auto-instructions"])
+        .arg(sb.root().join("missing.txt"))
+        .arg(&arw)
+        .assert()
+        .code(2);
+    assert!(
+        text(&out.get_output().stderr).contains("Can't read the instructions"),
+        "{}",
+        text(&out.get_output().stderr)
+    );
+}
+
+#[test]
+fn highlights_shadows_and_black_take_auto() {
+    let sb = Sandbox::new();
+    let arw = photo(&sb);
+    // A settings file sets them by hand; `auto` puts the Apple Auto values back.
+    let settings = sb.root().join("s.json");
+    std::fs::write(
+        &settings,
+        json!({ "highlights": 30, "shadows": -10, "black": 5,
+                "color_balance": { "shadows": [0.2, 0.1] } })
+        .to_string(),
+    )
+    .expect("write");
+    let s = settings.to_str().expect("utf-8");
+    let manual = render_json(sb.ym_fake(), &arw, &["--settings", s], &sb.root().join("m"));
+    assert_eq!(
+        manual["settings"]["highlights"],
+        json!({ "kind": "manual", "value": 30.0 })
+    );
+    assert_eq!(
+        manual["settings"]["color_balance"]["shadows"],
+        json!({ "kind": "manual", "point": [0.2, 0.1] })
+    );
+    let auto = render_json(
+        sb.ym_fake(),
+        &arw,
+        &[
+            "--settings",
+            s,
+            "--highlights",
+            "auto",
+            "--shadows",
+            "AUTO",
+            "--black",
+            "auto",
+        ],
+        &sb.root().join("a"),
+    );
+    // Pinned to the numbers Apple Auto's answer resolved to.
+    assert_eq!(
+        auto["settings"]["highlights"],
+        json!({ "kind": "manual", "value": TABLE.highlights[1] })
+    );
+    assert_eq!(
+        auto["settings"]["shadows"],
+        json!({ "kind": "manual", "value": 0.0 })
+    );
+    assert_eq!(
+        auto["settings"]["black"],
+        json!({ "kind": "manual", "value": 0.0 })
+    );
+    for bad in ["autos", "101", ""] {
+        sb.ym()
+            .args(["render", "--black", bad])
+            .arg(&arw)
+            .assert()
+            .code(2);
+    }
 }

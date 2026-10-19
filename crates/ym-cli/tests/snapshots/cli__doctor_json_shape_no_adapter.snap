@@ -5,6 +5,8 @@ expression: shape(&v)
 {
   "apple_auto": {
     "available": "bool",
+    "instructions": "string",
+    "instructions_sha256": "string",
     "model": "string",
     "os": "string",
     "preference": "bool",

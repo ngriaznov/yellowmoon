@@ -773,6 +773,7 @@ mod tests {
                 json,
                 profile: None,
                 apple_auto: None,
+                apple_auto_instructions: None,
             };
             let mut console = Console::new(true, false, true);
             let result = run_to(&args, &mut console, &mut Closed);
@@ -794,6 +795,7 @@ mod tests {
             json: false,
             profile: None,
             apple_auto: None,
+            apple_auto_instructions: None,
         };
         let mut out = Vec::new();
         let mut console = Console::new(true, false, true);

@@ -385,25 +385,29 @@ mod tests {
         assert_eq!(number(f64::NAN), Value::Null);
     }
 
+    /// Steps with the four steps of prompt version 1 set, every other step keep and no colour.
     fn steps(exposure: i8, white: i8, contrast: i8, saturation: i8) -> AutoSteps {
         AutoSteps {
-            exposure,
-            white,
-            contrast,
-            saturation,
+            exposure: Some(exposure),
+            white: Some(white),
+            contrast: Some(contrast),
+            saturation: Some(saturation),
+            ..AutoSteps::keep()
         }
     }
 
-    fn answered(s: AutoSteps, scene: &str) -> AppleAuto {
+    fn info() -> ym_core::apple_auto::AdvisorInfo {
+        ym_core::apple_auto::AdvisorInfo::new("AFM 3 Core", "27.0.1 (27A404)")
+    }
+
+    fn answered(s: AutoSteps, scene: &str, plan: &str) -> AppleAuto {
         AppleAuto::Answered {
             answer: ym_core::apple_auto::AdvisorAnswer {
                 steps: s,
                 scene: scene.to_owned(),
+                plan: plan.to_owned(),
             },
-            info: ym_core::apple_auto::AdvisorInfo {
-                model: "AFM 3 Core".to_owned(),
-                os: "27.0.1 (27A404)".to_owned(),
-            },
+            info: info(),
         }
     }
 
@@ -416,31 +420,63 @@ mod tests {
         );
         assert_eq!(
             steps_text(steps(-3, -2, -1, 2)),
-            "Darker -1.0 EV · cooler 20 mired · contrast -15 · saturation +30"
+            "Darker -1.0 EV · contrast -15 · cooler 20 mired · saturation +30"
         );
         assert_eq!(steps_text(steps(0, 1, 0, 0)), "Warmer 10 mired");
         assert_eq!(steps_text(steps(0, 0, 0, -2)), "Saturation -30");
         assert!(steps_text(steps(5, 0, 0, 0)).starts_with("steps out of range"));
+        // Every control, in the order of the table, and the colours with their strengths.
+        let all = AutoSteps {
+            exposure: Some(-1),
+            highlights: Some(-2),
+            shadows: Some(1),
+            blacks: Some(-1),
+            contrast: Some(1),
+            white: Some(-1),
+            tint: Some(1),
+            saturation: Some(-1),
+            shadow_color: Some(ShadowColor::Teal),
+            shadow_color_strength: Some(2),
+            highlight_color: Some(HighlightColor::Warm),
+            highlight_color_strength: Some(1),
+        };
+        assert_eq!(
+            steps_text(all),
+            "Darker -0.3 EV · highlights -40 · shadows +15 · black -15 · contrast +15 · cooler 10 mired · tint +5 · saturation -15 · teal shadows (medium) · warm highlights (subtle)"
+        );
+        // Only what was set is listed; none and a colour without a strength are not.
+        let some = AutoSteps {
+            tint: Some(-2),
+            shadow_color: Some(ShadowColor::None),
+            highlight_color: Some(HighlightColor::Gold),
+            ..AutoSteps::default()
+        };
+        assert_eq!(steps_text(some), "Tint -10");
+        let keep_only = AutoSteps {
+            blacks: Some(0),
+            ..AutoSteps::default()
+        };
+        assert_eq!(steps_text(keep_only), "No change");
     }
 
     #[test]
     fn the_apple_auto_row_says_what_happened() {
         use ym_core::apple_auto::UnavailableReason;
-        let a = answered(steps(1, 0, 1, 0), "Backlit portrait at dusk");
+        let a = answered(steps(1, 0, 1, 0), "Backlit portrait at dusk", "Warm and soft");
         assert_eq!(
             apple_auto_text(&a, Some(steps(1, 0, 1, 0))),
-            "Brighter +0.3 EV · contrast +15 · \"Backlit portrait at dusk\""
+            "Brighter +0.3 EV · contrast +15 · scene \"Backlit portrait at dusk\" · plan \"Warm and soft\""
         );
         // A burst's shared steps are the ones in effect, and the row says so.
         assert_eq!(
             apple_auto_text(&a, Some(steps(0, 0, 1, 0))),
-            "Contrast +15 (shared with its burst) · \"Backlit portrait at dusk\""
+            "Contrast +15 (shared with its burst) · scene \"Backlit portrait at dusk\" · plan \"Warm and soft\""
         );
         // A scene with a control character in it does nothing to the terminal.
-        let hostile = answered(steps(0, 0, 0, 0), "a\u{1b}[2Jb");
+        let hostile = answered(steps(0, 0, 0, 0), "a\u{1b}[2Jb", "");
         assert_eq!(
             apple_auto_text(&hostile, Some(steps(0, 0, 0, 0))),
-            "No change · \"a\\x1b[2Jb\""
+            "No change · scene \"a\\x1b[2Jb\""
         );
         assert_eq!(apple_auto_text(&AppleAuto::Off, None), "Off");
         assert_eq!(
@@ -455,10 +491,7 @@ mod tests {
         let failed = |kind, message: &str| AppleAuto::Failed {
             kind,
             message: message.to_owned(),
-            info: ym_core::apple_auto::AdvisorInfo {
-                model: "m".to_owned(),
-                os: "o".to_owned(),
-            },
+            info: ym_core::apple_auto::AdvisorInfo::new("m", "o"),
         };
         assert_eq!(
             apple_auto_text(&failed(FailureKind::RateLimited, "busy"), None),
@@ -475,16 +508,34 @@ mod tests {
     }
 
     #[test]
-    fn the_apple_auto_object_has_steps_and_scene_only_when_answered() {
-        use ym_core::apple_auto::UnavailableReason;
-        let v = apple_auto_value(&answered(steps(1, -1, 1, 0), "Dusk"));
+    fn the_apple_auto_object_has_steps_scene_and_plan_only_when_answered() {
+        use ym_core::apple_auto::{InstructionsId, UnavailableReason};
+        let sha = InstructionsId::default().instructions_sha256;
+        let v = apple_auto_value(&answered(
+            AutoSteps {
+                exposure: Some(1),
+                white: Some(-1),
+                contrast: Some(1),
+                saturation: Some(0),
+                ..AutoSteps::default()
+            },
+            "Dusk",
+            "Cool and moody",
+        ));
         assert_eq!(
             v,
             json!({
                 "state": "answered", "reason": null, "model": "AFM 3 Core", "os": "27.0.1 (27A404)",
-                "prompt": 1, "table": 1,
-                "steps": { "exposure": 1, "white": -1, "contrast": 1, "saturation": 0 },
-                "scene": "Dusk"
+                "instructions": "default", "instructions_sha256": sha,
+                "prompt": 2, "table": 2,
+                "steps": {
+                    "exposure": 1, "highlights": null, "shadows": null, "blacks": null,
+                    "contrast": 1, "white": -1, "tint": null, "saturation": 0,
+                    "shadow_color": null, "shadow_color_strength": null,
+                    "highlight_color": null, "highlight_color_strength": null
+                },
+                "scene": "Dusk",
+                "plan": "Cool and moody"
             })
         );
         let v = apple_auto_value(&AppleAuto::Unavailable {
@@ -492,23 +543,27 @@ mod tests {
         });
         assert_eq!(
             v,
-            json!({ "state": "unavailable", "reason": "not_a_mac", "model": null, "os": null, "prompt": 1, "table": 1 })
+            json!({ "state": "unavailable", "reason": "not_a_mac", "model": null, "os": null,
+                    "instructions": null, "instructions_sha256": null, "prompt": 2, "table": 2 })
         );
         let v = apple_auto_value(&AppleAuto::Failed {
             kind: FailureKind::RateLimited,
             message: "busy".to_owned(),
-            info: ym_core::apple_auto::AdvisorInfo {
-                model: "AFM 3 Core".to_owned(),
-                os: "27.0.1 (27A404)".to_owned(),
-            },
+            info: info().with_instructions("Moody."),
         });
         assert_eq!(v["state"], "failed");
         assert_eq!(v["reason"], "rate_limited");
         assert_eq!(v["model"], "AFM 3 Core");
-        assert!(v.get("steps").is_none() && v.get("scene").is_none());
+        assert_eq!(v["instructions"], "edited");
+        assert_eq!(
+            v["instructions_sha256"],
+            InstructionsId::of("Moody.").instructions_sha256
+        );
+        assert!(v.get("steps").is_none() && v.get("scene").is_none() && v.get("plan").is_none());
         assert_eq!(
             apple_auto_value(&AppleAuto::Off),
-            json!({ "state": "off", "reason": null, "model": null, "os": null, "prompt": 1, "table": 1 })
+            json!({ "state": "off", "reason": null, "model": null, "os": null,
+                    "instructions": null, "instructions_sha256": null, "prompt": 2, "table": 2 })
         );
     }
 
