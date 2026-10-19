@@ -16,7 +16,9 @@ use ym_color::grade::{
     ZONE_SIGMA,
 };
 use ym_color::tone::HIGHLIGHT_GREY;
-use ym_color::warp::{WARP_MAX_PINS, WARP_NEUTRAL_GUARD, WARP_TONE_HALF_WIDTH};
+use ym_color::warp::{
+    WARP_EXP_LIMIT, WARP_MAX_PINS, WARP_MAX_STEPS, WARP_NEUTRAL_GUARD, WARP_TONE_HALF_WIDTH,
+};
 
 use super::aces;
 use super::color::{WARP_LOCK_ROWS, WARP_MOVE_ROWS};
@@ -536,15 +538,17 @@ fn constants() -> String {
         ("WHITE_LIFT_GREY", TARGET_GREY),
         ("WARP_NEUTRAL_GUARD", WARP_NEUTRAL_GUARD),
         ("WARP_TONE_HALF_WIDTH", WARP_TONE_HALF_WIDTH),
+        ("WARP_EXP_LIMIT", WARP_EXP_LIMIT),
     ] {
         let _ = writeln!(s, "const {n}: f32 = {};", f(v));
     }
-    // The colour warp's pin count and the sizes of its rows in the colour kernel's uniform block
-    // (`kernels::color`, `ChainU`).
+    // The colour warp's pin count, the sizes of its rows in the colour kernel's uniform block
+    // (`kernels::color`, `ChainU`) and the most flow steps a frame takes.
     for (n, v) in [
         ("WARP_MAX_PINS", WARP_MAX_PINS),
         ("WARP_MOVE_ROWS", WARP_MOVE_ROWS),
         ("WARP_LOCK_ROWS", WARP_LOCK_ROWS),
+        ("WARP_MAX_STEPS", WARP_MAX_STEPS as usize),
     ] {
         let _ = writeln!(s, "const {n}: u32 = {v}u;");
     }

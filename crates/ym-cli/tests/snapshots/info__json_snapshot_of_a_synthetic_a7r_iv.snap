@@ -80,7 +80,7 @@ expression: v
     "intensity": 100
   },
   "notes": [],
-  "pipeline_version": "0.4.3",
+  "pipeline_version": "0.4.4",
   "preview": "[preview location]",
   "raw": {
     "bits_per_sample": 14,

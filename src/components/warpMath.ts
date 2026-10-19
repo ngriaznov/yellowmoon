@@ -30,8 +30,12 @@ export const WARP_RANGE_MIN = 0.01;
 export const WARP_RANGE_MAX = 0.25;
 /** The range of a new pin. */
 export const WARP_RANGE_DEFAULT = 0.04;
-/** A move longer than this many ranges grows the range to `|δ| / WARP_FOLD_RATIO`, so one pin never folds the plane. */
-export const WARP_FOLD_RATIO = 1.5;
+/** The safety factor of the flow's steps: `N = ceil(WARP_STEP_SAFETY · Σ|δ| / (ρ√e))`, so no step can fold the plane for one pin. */
+export const WARP_STEP_SAFETY = 1.25;
+/** The most flow steps a frame takes (one pin never needs more than 61). */
+export const WARP_MAX_STEPS = 64;
+/** Every Gaussian's exponent is limited to this (`exp(−80)` rather than `exp(−∞)`). */
+export const WARP_EXP_LIMIT = 80;
 /** Chroma below which the warp fades out: `g = smoothstep(0, WARP_NEUTRAL_GUARD, |c|)`. */
 export const WARP_NEUTRAL_GUARD = 0.02;
 /** Half the width of a pin's tonal crossover, in stops (`WARP_TONE_HALF_WIDTH` is this many `LOGC4_STOP`). */
@@ -160,7 +164,7 @@ export interface PreparedMove {
   source: ChromaPoint;
   /** `target − source`. */
   delta: ChromaPoint;
-  /** `1 / (2ρ'²)`, the range grown for a long move. */
+  /** `1 / (2ρ²)` with the pin's own range. */
   invTwoSigmaSq: number;
   shadows: number;
   highlights: number;
@@ -181,25 +185,40 @@ export interface PreparedWarp {
   moves: PreparedMove[];
   /** Empty when no pin acts. */
   locks: PreparedLock[];
+  /** The flow's steps, 1 to `WARP_MAX_STEPS` (0 when no pin acts). */
+  steps: number;
+}
+
+/**
+ * The number of flow steps for moves `delta` at ranges `range` (`flow_steps`): `clamp(ceil(1.25 · Σ|δ| / (ρ√e)), 1, 64)`. The Lipschitz
+ * constant of one pin's move field is `|δ| / (ρ√e)`; a step of `1/N` of it is one to one while `N` is larger.
+ */
+export function flowSteps(moves: ReadonlyArray<{ delta: ChromaPoint; range: number }>): number {
+  const sqrtE = Math.sqrt(Math.E);
+  let lipschitz = 0;
+  for (const { delta, range } of moves) lipschitz += Math.sqrt(delta[0] * delta[0] + delta[1] * delta[1]) / (range * sqrtE);
+  const n = Math.ceil(WARP_STEP_SAFETY * lipschitz);
+  return Number.isNaN(n) ? WARP_MAX_STEPS : clamp(n, 1, WARP_MAX_STEPS);
 }
 
 /**
  * Prepares the pins (`Warp::new`): the first sixteen, clamped. Pins that neither move nor change exposure are left out (they would only
- * dilute their neighbours), and so are the locks when no pin acts.
+ * dilute their neighbours), and so are the locks when no pin acts. The number of flow steps comes from the moving pins' moves and ranges.
  */
 export function prepareWarp(pins: readonly ColorWarpPin[]): PreparedWarp {
   const moves: PreparedMove[] = [];
   const locks: PreparedLock[] = [];
+  const reach: Array<{ delta: ChromaPoint; range: number }> = [];
   for (const pin of clampPins(pins)) {
     if (pin.locked) {
       locks.push({ at: pin.source, invTwoSigmaSq: 1 / (2 * pin.range * pin.range) });
     } else if (pinActs(pin)) {
       const delta: ChromaPoint = [pin.target[0] - pin.source[0], pin.target[1] - pin.source[1]];
-      const sigma = Math.max(pin.range, Math.hypot(delta[0], delta[1]) / WARP_FOLD_RATIO);
+      reach.push({ delta, range: pin.range });
       moves.push({
         source: pin.source,
         delta,
-        invTwoSigmaSq: 1 / (2 * sigma * sigma),
+        invTwoSigmaSq: 1 / (2 * pin.range * pin.range),
         shadows: pin.shadows,
         highlights: pin.highlights,
         pivotCode: logc4AtStops(pin.pivot_ev),
@@ -207,7 +226,8 @@ export function prepareWarp(pins: readonly ColorWarpPin[]): PreparedWarp {
       });
     }
   }
-  return { moves, locks: moves.length === 0 ? [] : locks };
+  if (moves.length === 0) return { moves, locks: [], steps: 0 };
+  return { moves, locks, steps: flowSteps(reach) };
 }
 
 /** Whether the stage changes nothing (no pin acts). */
@@ -219,7 +239,18 @@ export interface Displacement {
   e: number;
 }
 
-/** The displacement of the chroma `c` at the tone `l` (`Warp::displacement`). */
+/** A Gaussian `exp(−d2 · invTwoSigmaSq)` with its exponent limited to `WARP_EXP_LIMIT`. */
+const gauss = (d2: number, invTwoSigmaSq: number): number => Math.exp(-Math.min(d2 * invTwoSigmaSq, WARP_EXP_LIMIT));
+
+/** A moving pin's tonal weight at the tone `l`: Shadows below the pivot, Highlights above it. */
+const tonalWeight = (m: PreparedMove, l: number): number =>
+  m.shadows + (m.highlights - m.shadows) * smoothstep(m.pivotCode - WARP_TONE_HALF_WIDTH, m.pivotCode + WARP_TONE_HALF_WIDTH, l);
+
+/**
+ * The displacement of the chroma `c` at the tone `l` (`Warp::displacement`). The pixel follows a flow of `warp.steps` steps while each
+ * pin's centre slides from its source by the share of its move this pixel takes, `γ·w·δ` (γ: the neutral guard times the locks' hold at
+ * `c`, w: the pin's tonal weight at `l`): `c += (γ/N) · Σ(w φ δ) / max(1, Σφ)`. The exposure is the one-step formula at `c`.
+ */
 export function warpDisplacement(warp: PreparedWarp, c: ChromaPoint, l: number): Displacement {
   const none: Displacement = { d: [0, 0], e: 0 };
   if (warp.moves.length === 0) return none;
@@ -227,26 +258,44 @@ export function warpDisplacement(warp: PreparedWarp, c: ChromaPoint, l: number):
   if (guard === 0) return none;
   let hold = 1;
   for (const lock of warp.locks) {
-    const d2 = (c[0] - lock.at[0]) ** 2 + (c[1] - lock.at[1]) ** 2;
-    hold *= 1 - Math.exp(-d2 * lock.invTwoSigmaSq);
+    hold *= 1 - gauss((c[0] - lock.at[0]) ** 2 + (c[1] - lock.at[1]) ** 2, lock.invTwoSigmaSq);
   }
   if (hold === 0) return none;
+  const gamma = guard * hold;
+  const weights = warp.moves.map((m) => tonalWeight(m, l));
+  const shares = weights.map((w) => gamma * w);
   let reach = 0;
+  let exposure = 0;
+  warp.moves.forEach((m, i) => {
+    const phi = gauss((c[0] - m.source[0]) ** 2 + (c[1] - m.source[1]) ** 2, m.invTwoSigmaSq);
+    reach += phi;
+    exposure += (weights[i] as number) * phi * m.exposureEv;
+  });
+  const e = (gamma / Math.max(1, reach)) * exposure;
+  const n = warp.steps;
+  const h = gamma / n;
   let d0 = 0;
   let d1 = 0;
-  let exposure = 0;
-  for (const m of warp.moves) {
-    const d2 = (c[0] - m.source[0]) ** 2 + (c[1] - m.source[1]) ** 2;
-    const phi = Math.exp(-d2 * m.invTwoSigmaSq);
-    reach += phi;
-    const t = smoothstep(m.pivotCode - WARP_TONE_HALF_WIDTH, m.pivotCode + WARP_TONE_HALF_WIDTH, l);
-    const w = (m.shadows + (m.highlights - m.shadows) * t) * phi;
-    d0 += w * m.delta[0];
-    d1 += w * m.delta[1];
-    exposure += w * m.exposureEv;
+  for (let k = 0; k < n; k++) {
+    const tau = k / n;
+    const p0 = c[0] + d0;
+    const p1 = c[1] + d1;
+    let sum = 0;
+    let v0 = 0;
+    let v1 = 0;
+    warp.moves.forEach((m, i) => {
+      const slide = tau * (shares[i] as number);
+      const phi = gauss((p0 - (m.source[0] + slide * m.delta[0])) ** 2 + (p1 - (m.source[1] + slide * m.delta[1])) ** 2, m.invTwoSigmaSq);
+      sum += phi;
+      const wphi = (weights[i] as number) * phi;
+      v0 += wphi * m.delta[0];
+      v1 += wphi * m.delta[1];
+    });
+    const step = h / Math.max(1, sum);
+    d0 += step * v0;
+    d1 += step * v1;
   }
-  const k = (guard * hold) / Math.max(1, reach);
-  return { d: [k * d0, k * d1], e: k * exposure };
+  return { d: [d0, d1], e };
 }
 
 /** Applies the warp to one LogC4 pixel (`Warp::apply`). */

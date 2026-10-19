@@ -167,8 +167,8 @@ pub fn full(target: OutputTarget) -> ChainParams {
 /// Colour warp pins (C9b) placed where the colours of [`camera_image`] are after C9 (half its pixels
 /// have a chroma `|c|` under 0.02, a tenth over 0.06; tones from 3 stops under grey to 4 over): moves
 /// with the default and with split tonal weights, pivots under and over grey, exposure up and down, a
-/// long move with the smallest range (the range grows), an exposure-only pin, a lock between them and a
-/// still pin (left out by the preparation).
+/// long move with the smallest range (the flow takes 12 steps for the set), an exposure-only pin, a
+/// lock between them and a still pin (left out by the preparation).
 pub fn warp_pins() -> WarpParams {
     WarpParams {
         pins: vec![
