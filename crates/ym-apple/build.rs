@@ -8,9 +8,17 @@
 //! * links that library, the Swift runtime (the paths `swiftc -print-target-info` reports), the
 //!   compiler runtime (`clang_rt.osx`, which holds `__isPlatformVersionAtLeast`, the function behind
 //!   Swift's `#available`), Foundation and CoreGraphics;
-//! * links FoundationModels **weakly** (`-weak_framework`) for this crate's own tests and examples,
-//!   sets `cfg(ym_apple_bridge)` and tells the binaries that depend on this crate, through the
-//!   `links` metadata `DEP_YM_APPLE_AUTO_BRIDGE=1`, that they must link FoundationModels weakly too.
+//! * links FoundationModels **weakly** (`-weak_framework`) and adds `/usr/lib/swift` to the run path
+//!   for this crate's own tests and examples, sets `cfg(ym_apple_bridge)` and tells the binaries
+//!   that depend on this crate, through the `links` metadata `DEP_YM_APPLE_AUTO_BRIDGE=1`, that they
+//!   must do both too.
+//!
+//! Why the run path: macOS keeps the Swift runtime in `/usr/lib/swift`. A binary linked for a macOS
+//! older than 12 (rustc's default deployment target is 11.0 when `MACOSX_DEPLOYMENT_TARGET` is not
+//! set, as in a plain `cargo build`) gets the concurrency runtime from the SDK's back-deployment
+//! name, `@rpath/libswift_Concurrency.dylib`, and stops at launch ("no LC_RPATH's found") unless a
+//! run path leads to it. Linked for macOS 12 or later it loads `/usr/lib/swift` directly, and the
+//! run path is unused.
 //!
 //! Why the binaries do the weak link themselves: FoundationModels exists only from macOS 26, and the
 //! app and `ym` start on macOS 14. A weak link (`LC_LOAD_WEAK_DYLIB`) lets them start where the
@@ -168,8 +176,9 @@ fn build_bridge() -> Result<(), String> {
 
     println!("cargo::rustc-link-lib=framework=Foundation");
     println!("cargo::rustc-link-lib=framework=CoreGraphics");
-    // This crate's own tests and examples; the binaries of other crates add it themselves.
+    // This crate's own tests and examples; the binaries of other crates add both themselves.
     println!("cargo::rustc-link-arg=-Wl,-weak_framework,FoundationModels");
+    println!("cargo::rustc-link-arg=-Wl,-rpath,/usr/lib/swift");
     println!("cargo::rustc-cfg=ym_apple_bridge");
     Ok(())
 }

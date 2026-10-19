@@ -22,6 +22,9 @@ then asks twice about a synthetic 768 × 512 picture and prints the steps, the s
 request and whether the second answer repeated the first. `YELLOWMOON_TEST_APPLE_AUTO=fake` runs it
 against the test advisor.
 
-A binary that depends on this crate must link FoundationModels weakly when the bridge is built: its
-build script passes `-Wl,-weak_framework,FoundationModels` when `DEP_YM_APPLE_AUTO_BRIDGE` is `1`
-(see `crates/ym-cli/build.rs`). Without it the link fails.
+A binary that depends on this crate must link FoundationModels weakly and find the Swift runtime in
+macOS when the bridge is built: its build script passes `-Wl,-weak_framework,FoundationModels` and
+`-Wl,-rpath,/usr/lib/swift` when `DEP_YM_APPLE_AUTO_BRIDGE` is `1` (see `crates/ym-cli/build.rs`).
+Without the first the link fails; without the second a binary linked for a macOS older than 12
+(rustc's default when `MACOSX_DEPLOYMENT_TARGET` is not set) stops at launch, as it loads the
+concurrency runtime through `@rpath`.

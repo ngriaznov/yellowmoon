@@ -1,5 +1,6 @@
 //! Embeds the short git commit hash as `YM_GIT_SHA` for `ym --version`, and links FoundationModels
-//! weakly when Apple Auto's Swift bridge is built (`weak_link_foundation_models`).
+//! weakly and finds the Swift runtime in macOS when Apple Auto's Swift bridge is built
+//! (`link_apple_auto_bridge`).
 //!
 //! Falls back to `unknown` when git or the repository is not available (for example when building
 //! from a source archive).
@@ -23,19 +24,24 @@ fn main() {
         emit_rerun_hints(&manifest_dir);
     }
 
-    weak_link_foundation_models();
+    link_apple_auto_bridge();
 }
 
 /// Apple Auto (`docs/19-apple-auto.md` section 11): when `ym-apple` compiled its Swift bridge, which
 /// it says through its `links` metadata (`DEP_YM_APPLE_AUTO_BRIDGE=1`, only on Apple silicon with
 /// the macOS 27 SDK), link FoundationModels weakly, so that `ym` still starts on macOS 14 to 26 where
-/// the framework does not exist. The bridge's Swift object carries no link to the framework, and a
-/// library's build script cannot pass linker arguments to the binaries that use it, so each binary
-/// does it in its own build script (`src-tauri/build.rs` too; `crates/ym-apple/build.rs` explains
-/// more). Nothing happens while `ym-cli` does not depend on `ym-apple`, or on any other target.
-fn weak_link_foundation_models() {
+/// the framework does not exist, and add `/usr/lib/swift` to the run path, where macOS keeps the
+/// Swift runtime: a binary linked for a macOS older than 12 (rustc's default deployment target is
+/// 11.0 when `MACOSX_DEPLOYMENT_TARGET` is not set) loads the concurrency runtime as
+/// `@rpath/libswift_Concurrency.dylib` and would stop at launch without it. The bridge's Swift object
+/// carries no link to the framework, and a library's build script cannot pass linker arguments to
+/// the binaries that use it, so each binary does it in its own build script (`src-tauri/build.rs`
+/// too; `crates/ym-apple/build.rs` explains more). Nothing happens while `ym-cli` does not depend on
+/// `ym-apple`, or on any other target.
+fn link_apple_auto_bridge() {
     if std::env::var("DEP_YM_APPLE_AUTO_BRIDGE").is_ok_and(|bridge| bridge == "1") {
         println!("cargo:rustc-link-arg=-Wl,-weak_framework,FoundationModels");
+        println!("cargo:rustc-link-arg=-Wl,-rpath,/usr/lib/swift");
     }
 }
 

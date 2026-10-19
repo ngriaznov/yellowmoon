@@ -180,6 +180,15 @@ jobs:
           target/release/ym doctor | tee doctor.txt || echo "::warning title=ym doctor::exited with $? (informational)"
           grep 'Apple Auto' doctor.txt
           target/release/ym doctor --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["apple_auto"])'
+      # rustc links for macOS 11.0 when MACOSX_DEPLOYMENT_TARGET is not set (a plain cargo build, the sidecar of
+      # `npm run tauri dev`), and below macOS 12 the Swift concurrency runtime is loaded through @rpath: ym must
+      # still start, through the /usr/lib/swift run path its build.rs adds (docs/19 section 11).
+      - name: ym linked without a deployment target starts
+        run: |
+          env -u MACOSX_DEPLOYMENT_TARGET cargo build -p ym-cli --release --target aarch64-apple-darwin
+          otool -L target/aarch64-apple-darwin/release/ym | grep swift || true
+          otool -l target/aarch64-apple-darwin/release/ym | grep -A2 'cmd LC_RPATH' | grep -q '/usr/lib/swift'
+          target/aarch64-apple-darwin/release/ym --version
       - name: Put the probe and ym side by side for the older-macOS job
         run: mkdir -p older && cp target/release/examples/probe target/release/ym older/
       - name: Keep the probe and ym for the older-macOS job
