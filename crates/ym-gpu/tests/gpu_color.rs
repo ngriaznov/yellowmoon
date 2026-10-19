@@ -100,6 +100,7 @@ fn every_stage_matches_the_cpu_trace() {
                 .filter(|(name, _)| {
                     name.starts_with("full/viewport")
                         || name.starts_with("saturation")
+                        || name.starts_with("contrast")
                         || name.starts_with("baked-look/srgb/25")
                         || name.starts_with("display-lut/p3")
                         || name.starts_with("logc3-look/35")
@@ -121,9 +122,12 @@ fn every_stage_matches_the_cpu_trace() {
                 "{name}: only {mid} of {n} pixels are mid-range"
             );
             // And a warp must move a good part of them (by more than five times the gate), or C9b
-            // would be compared where it is the identity. The four `warp/` cases, measured on Mesa
-            // lavapipe in all three storage modes: C9b 4.5e-7, C10 4.5e-7, C11 4.8e-7 (gate 2e-4),
-            // C13 4.2e-6 (gate one 10-bit code).
+            // would be compared where it is the identity. The four `warp/` cases (the flow's 12
+            // steps), measured on Mesa lavapipe in all three storage modes (with the contrast and
+            // saturation of 2026-10-19, the contrast's colour step and the saturation boost 1.5
+            // included): C9b 4.2e-7, C10 4.5e-7, C11 4.9e-7 (gate 2e-4), C13 at most 4.2e-5 (gate one
+            // 10-bit code). The `contrast/` and `saturation/` cases (alone and on the full chain, -100
+            // to 100) are in the per-stage line printed below: C9 8.4e-7 on every chain.
             let warped = traces
                 .iter()
                 .filter(|t| {
@@ -228,9 +232,10 @@ fn every_stage_matches_the_cpu_trace() {
 /// `chains::random_warp`, from a stream of its own so the other draws are those of the sets before
 /// the warp existed), for all four outputs, checked at C9, C9b, C10, C11 and C13.
 ///
-/// Measured on Mesa lavapipe, the same in all three storage modes: C9 2.2e-7, C9b 6.6e-7, C10 6.4e-7,
-/// C11 5.2e-7 against the 2e-4 gate, C13 3.4e-5 against one 10-bit code (9.8e-4); 57 of the 60 sets
-/// have a warp that acts, and 31 % of all pixels move by more than 1e-3.
+/// Measured on Mesa lavapipe, the same in all three storage modes (with the contrast and saturation of
+/// 2026-10-19, the contrast's colour step and the saturation boost 1.5 included): C9 4.3e-7, C9b
+/// 6.6e-7, C10 6.4e-7, C11 6.2e-7 against the 2e-4 gate, C13 2.0e-5 against one 10-bit code
+/// (9.8e-4); 57 of the 60 sets have a warp that acts, and 29 % of all pixels move by more than 1e-3.
 #[test]
 fn random_parameter_sets_match_the_cpu_trace() {
     use std::sync::Arc;
@@ -480,8 +485,9 @@ fn a_warp_that_moves_nothing_leaves_every_output_bit_identical() {
 /// more, 100 times the gate). Each moving pin moves its own pixel on the device, and each lock holds
 /// its own.
 ///
-/// Measured on Mesa lavapipe, the same in all three storage modes: C9b 4.8e-7, C10 5.1e-7, C11 4.7e-7
-/// (gate 2e-4), C13 4.7e-6 (gate one 10-bit code, 9.8e-4).
+/// Measured on Mesa lavapipe, the same in all three storage modes (with the contrast and saturation of
+/// 2026-10-19, the contrast's colour step and the saturation boost 1.5 included): C9b 9.1e-7, C10
+/// 8.7e-7, C11 8.2e-7 (gate 2e-4), C13 4.4e-6 (gate one 10-bit code, 9.8e-4).
 #[test]
 fn the_most_pins_the_uniform_holds_match_the_cpu() {
     use ym_color::warp::{WARP_MAX_PINS, WarpParams, WarpPin, chroma_of};
@@ -490,14 +496,15 @@ fn the_most_pins_the_uniform_holds_match_the_cpu() {
     let n = w * h;
     let base = chains::full(OutputTarget::Viewport);
     let chain0 = ColorChain::new(&base).expect("chain");
-    // Candidate pixels: chroma between 0.03 and 0.12 (where a pin acts and the guard is 1), taken
-    // greedily so that any two are at least 0.03 apart.
+    // Candidate pixels: chroma between 0.03 and 0.15 (where a pin acts and the guard is 1), taken
+    // greedily so that any two are at least 0.03 apart. (0.12 until the saturation of 2026-10-19,
+    // which spreads the image's chroma less: 29 spots fitted below 0.12.)
     let traces: Vec<_> = (0..n).map(|i| chain0.trace(pixel(&img, i))).collect();
     let mut spots: Vec<(usize, [f64; 2])> = Vec::new();
     for (i, t) in traces.iter().enumerate() {
         let c = chroma_of(t.c9_logc4);
         let r = c[0].hypot(c[1]);
-        if (0.03..0.12).contains(&r)
+        if (0.03..0.15).contains(&r)
             && spots
                 .iter()
                 .all(|(_, s)| (s[0] - c[0]).hypot(s[1] - c[1]) > 0.03)
@@ -506,8 +513,8 @@ fn the_most_pins_the_uniform_holds_match_the_cpu() {
         }
     }
     assert!(spots.len() >= 2 * WARP_MAX_PINS, "{} spots", spots.len());
-    // Moves of 0.02 to 0.032 and ranges of 0.012 to 0.024: some ranges grow to fit the move, some
-    // do not.
+    // Moves of 0.02 to 0.032 and ranges of 0.012 to 0.024, from under one range to 2.7 ranges: the
+    // flow takes 23 steps for the 16 moving pins together.
     let moving = |k: usize, c: [f64; 2]| {
         let (a, len) = (k as f64 * 0.7, 0.02 + 0.003 * (k % 5) as f64);
         WarpPin {
@@ -560,6 +567,7 @@ fn the_most_pins_the_uniform_holds_match_the_cpu() {
     ];
     for dev in gpus() {
         let mut worst = [0.0f64; 4];
+        let mut least = f32::INFINITY;
         for (name, pins, lock_count) in &sets {
             let mut params = base.clone();
             params.warp = WarpParams { pins: pins.clone() };
@@ -593,11 +601,15 @@ fn the_most_pins_the_uniform_holds_match_the_cpu() {
                         dev.mode
                     );
                 } else {
+                    // Overlapping pins share: the least moved is a short move whose neighbours
+                    // dilute it (6.1e-3 on Mesa lavapipe); a pin read from the wrong row would
+                    // leave its pixel where it was.
                     assert!(
-                        shift > 5e-3,
+                        shift > 1e-3,
                         "{:?} {name}: pin {k} moved by {shift}",
                         dev.mode
                     );
+                    least = least.min(shift);
                 }
             }
             for i in 0..n {
@@ -618,9 +630,92 @@ fn the_most_pins_the_uniform_holds_match_the_cpu() {
             }
         }
         eprintln!(
-            "{:?}: the most pins, worst |GPU - CPU|: C9b {:.1e}, C10 {:.1e}, C11 {:.1e} (LogC4; gate {LOGC4_GATE:.0e}), C13 {:.1e} (gate {CODE10:.1e})",
+            "{:?}: the most pins, worst |GPU - CPU|: C9b {:.1e}, C10 {:.1e}, C11 {:.1e} (LogC4; gate {LOGC4_GATE:.0e}), C13 {:.1e} (gate {CODE10:.1e}); the least a pin moved its own pixel: {least:.1e}",
             dev.mode, worst[0], worst[1], worst[2], worst[3]
         );
+    }
+}
+
+/// C9b where the flow stretches most (`docs/02` C9b): a long move at the smallest range. Colours just
+/// behind the source, on the line of the move, in a sliver about `2 rho^2 / |delta|` long, are
+/// stretched along the path, so the flow there magnifies the rounding of f32 (up to about
+/// `|delta|^2 / (2 rho^2)` times). The pixels are the camera triple of one colour of middling chroma,
+/// each channel scaled by up to 1 % either way (f16-representable), so their C9 chroma is a cloud
+/// about 1e-3 across around the pin's source, sliver included; the pin moves that colour by 0.48
+/// across neutral at range 0.01 (the flow's 37 steps).
+///
+/// Measured on Mesa lavapipe, the same in all three storage modes: C9b 7.2e-5 against the 2e-4 gate,
+/// with 34 % of the pixels stretched (moved by a tenth to nine tenths of the move). The magnification
+/// grows with the move: the same cloud moved by 0.68 gave 9.3e-5, by 0.87 (the source at 0.37 sent
+/// to 0.5 on the far side) 2.0e-4, so the longest moves at range 0.01 reach the gate (docs/02 C9b).
+#[test]
+fn a_long_narrow_move_matches_the_cpu_where_the_flow_stretches() {
+    use ym_color::warp::{WARP_RANGE_MIN, WarpParams, WarpPin, chroma_of};
+    let params = chains::base(OutputTarget::Viewport);
+    let chain0 = ColorChain::new(&params).expect("chain");
+    let seed = camera_image(64, 64, 0x10_4E);
+    let (i0, s) = (0..64 * 64)
+        .map(|i| (i, chroma_of(chain0.trace(pixel(&seed, i)).c9_logc4)))
+        .find(|(_, c)| (0.08..0.12).contains(&c[0].hypot(c[1])))
+        .expect("a colour of middling chroma");
+    let cam = pixel(&seed, i0);
+    let (w, h) = (128usize, 96usize);
+    let n = w * h;
+    let mut rng = common::Rng(0x5117_C9B0);
+    let rgb: Vec<f32> = (0..n)
+        .flat_map(|_| {
+            let k = [
+                rng.range(0.99, 1.01),
+                rng.range(0.99, 1.01),
+                rng.range(0.99, 1.01),
+            ];
+            (0..3).map(move |ch| common::f16_round((cam[ch] * k[ch]) as f32))
+        })
+        .collect();
+    let img = RgbImage::from_interleaved(w, h, &rgb).expect("image");
+    // The target: the source turned by 150 degrees, at 0.4 from neutral.
+    let (sin, cos) = 150f64.to_radians().sin_cos();
+    let r = 0.4 / s[0].hypot(s[1]);
+    let t = [r * (s[0] * cos - s[1] * sin), r * (s[0] * sin + s[1] * cos)];
+    let delta = (t[0] - s[0]).hypot(t[1] - s[1]);
+    let mut params = params;
+    params.warp = WarpParams {
+        pins: vec![WarpPin {
+            range: WARP_RANGE_MIN,
+            ..WarpPin::moving(s, t)
+        }],
+    };
+    let warp = ym_color::warp::Warp::new(&params.warp);
+    assert_eq!(warp.steps(), 37, "|delta| = {delta}");
+    let chain = ColorChain::new(&params).expect("chain");
+    let traces: Vec<StageTrace> = (0..n).map(|i| chain.trace(pixel(&img, i))).collect();
+    // Not vacuous: a good part of the cloud is stretched along the path.
+    let stretched = traces
+        .iter()
+        .filter(|t| {
+            let (a, b) = (chroma_of(t.c9_logc4), chroma_of(t.c9b_logc4));
+            let moved = (b[0] - a[0]).hypot(b[1] - a[1]) / delta;
+            (0.1..0.9).contains(&moved)
+        })
+        .count();
+    assert!(stretched * 10 > n, "{stretched} of {n} pixels stretched");
+    for dev in gpus() {
+        let outs = render(dev, &chain, &img, &[ColorOutput::Stage(Stop::C9b)]);
+        let g = planar(&outs[0]);
+        let mut worst = 0.0f64;
+        for (i, t) in traces.iter().enumerate() {
+            for ch in 0..3 {
+                let d = (f64::from(g[ch * n + i]) - t.c9b_logc4.0[ch]).abs();
+                worst = worst.max(d);
+            }
+        }
+        eprintln!(
+            "{:?}: a long narrow move (|delta| {delta:.2}, range 0.01, {} steps), {} of {n} pixels stretched, worst |GPU - CPU| at C9b {worst:.1e} (gate {LOGC4_GATE:.0e})",
+            dev.mode,
+            warp.steps(),
+            stretched
+        );
+        assert!(worst <= LOGC4_GATE, "{:?}: {worst:e}", dev.mode);
     }
 }
 

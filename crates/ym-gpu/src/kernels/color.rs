@@ -52,9 +52,10 @@
 //!
 //! The pins of `ChainParams::warp` travel in the uniform block, not in a table:
 //! [`ChainTables::prepare`] packs what `ym_color::warp::Warp::new` prepares (the CPU's own clamping,
-//! range growth, pivot code, and the rule that still pins, and locks without a moving pin, are left
-//! out) into `warp_n` (the counts), `warp_mv` (three `vec4` rows a moving pin) and `warp_lk` (one row
-//! a lock), 1040 bytes for the 16 pins of `WARP_MAX_PINS`. A pin moves on every frame of a drag, so a
+//! pivot code, number of flow steps, and the rule that still pins, and locks without a moving pin,
+//! are left out) into `warp_n` (the moving and locked counts and the flow's steps), `warp_mv` (three
+//! `vec4` rows a moving pin) and `warp_lk` (one row a lock), 1040 bytes for the 16 pins of
+//! `WARP_MAX_PINS`. A pin moves on every frame of a drag, so a
 //! persistent table would be refilled as often as the uniform is written; the uniform needs no
 //! further storage binding (K3), no cache key and no upload of its own. No moving pin gives
 //! `warp_n.x = 0` and the kernel skips the stage, so a chain without a warp renders the bits it
@@ -77,7 +78,8 @@ use ym_color::encode::{OutputSpace, dither_threshold};
 use ym_color::exposure::white::WhiteLift;
 use ym_color::gamut::matrices;
 use ym_color::grade::{
-    BALANCE_CENTER_STOPS, CONTRAST_EXPONENT, GradeParams, ZONE_CENTER_STOPS, logc4_at_stops,
+    BALANCE_CENTER_STOPS, GradeParams, ZONE_CENTER_STOPS, contrast_slope, logc4_at_stops,
+    saturation_factor,
 };
 use ym_color::look::{LookInput, intensity_fraction};
 use ym_color::lut::Lut;
@@ -190,7 +192,7 @@ struct LutDescU {
 }
 
 /// Rows (`vec4<f32>`) of one moving pin of the colour warp in [`ChainU`]: [s.x, s.y, delta.x,
-/// delta.y], [1 / (2 rho'^2), shadows, highlights, pivot code], [exposure in stops, 0, 0, 0].
+/// delta.y], [1 / (2 rho^2), shadows, highlights, pivot code], [exposure in stops, 0, 0, 0].
 pub(crate) const WARP_ROWS_PER_MOVE: usize = 3;
 /// Rows of the moving pins in [`ChainU`] (`WARP_MOVE_ROWS` in `color.wgsl`): room for every pin.
 pub(crate) const WARP_MOVE_ROWS: usize = WARP_ROWS_PER_MOVE * WARP_MAX_PINS;
@@ -202,7 +204,7 @@ pub(crate) const WARP_LOCK_ROWS: usize = WARP_MAX_PINS;
 /// The per-frame uniform block of `color.wgsl` (`ChainU`), 2096 bytes: window and mode, the chain's
 /// parameters, the Before view's camera default (`cam0` to `cam2`: the 3x3 rows, `camt`: the tone curve's
 /// `n`, `s`, `k` and white level), the ACES 2 scalars and the colour warp's pins (`warp_n`: the moving
-/// and locked counts, `warp_mv`, `warp_lk`: module notes). Field for field the WGSL struct (a test pins
+/// and locked counts and the flow's steps, `warp_mv`, `warp_lk`: module notes). Field for field the WGSL struct (a test pins
 /// the offsets).
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -383,22 +385,24 @@ fn white_lift_uniform(u: &mut ChainU, lift: WhiteLift) {
     }
 }
 
-/// The grade parameters as the kernel wants them (the same preparation as `Grade::new`). `grade0.w` is
-/// the white lift's ([`white_lift_uniform`]), written after this.
+/// The grade parameters as the kernel wants them (the same preparation as `Grade::new`): the
+/// contrast curve's slope at grey `k` in `grade0.x`, the brightness in `grade0.y` and the saturation
+/// factor in `grade0.z` (below 1 the blend toward grey, above 1 the boost `F`; `saturation_factor`).
+/// A control at 0 clears its flag bit, and the kernel skips it. `grade0.w` is the white lift's
+/// ([`white_lift_uniform`]), written after this.
 fn grade_uniform(u: &mut ChainU, g: &GradeParams) {
-    let contrast_gain = (CONTRAST_EXPONENT * clamp_control(g.contrast) / 100.0).exp2();
-    // Saturation is subtractive: the shader pivots on the pixel's brightest channel (`Grade::apply`).
-    let saturation_gain = 1.0 + clamp_control(g.saturation) / 100.0;
-    if contrast_gain != 1.0 {
+    let slope = contrast_slope(g.contrast);
+    let saturation = saturation_factor(g.saturation);
+    if slope != 1.0 {
         u.flags[0] |= 1;
     }
-    if saturation_gain != 1.0 {
+    if saturation != 1.0 {
         u.flags[0] |= 2;
     }
     u.grade0 = [
-        contrast_gain as f32,
+        slope as f32,
         (clamp_control(g.brightness) / 100.0) as f32,
-        saturation_gain as f32,
+        saturation as f32,
         0.0,
     ];
     let amounts = [g.shadows, g.highlights, g.black, g.white].map(|x| clamp_control(x) / 100.0);
@@ -463,7 +467,7 @@ fn warp_uniform(u: &mut ChainU, params: &WarpParams) {
     u.warp_n = [
         moves.len().min(WARP_MAX_PINS) as u32,
         locks.len().min(WARP_LOCK_ROWS) as u32,
-        0,
+        warp.steps(),
         0,
     ];
 }
@@ -1664,7 +1668,7 @@ mod tests {
             // A still pin: left out, so the next moving pin takes the second slot.
             WarpPin::moving([0.2, 0.2], [0.2, 0.2]),
             WarpPin::locked_at([-0.05, 0.03]),
-            // A long move with the smallest range: the range grows to |delta| / 1.5.
+            // A long move with the smallest range: the range stays, the flow takes more steps.
             WarpPin {
                 range: 0.001,
                 ..WarpPin::moving([0.0, -0.1], [0.0, 0.2])
@@ -1674,7 +1678,9 @@ mod tests {
         let warp = Warp::new(&params);
         let mut u = ChainU::default();
         warp_uniform(&mut u, &params);
-        assert_eq!(u.warp_n, [2, 1, 0, 0]);
+        // ceil(1.25 (0.0922 / (0.05 sqrt(e)) + 0.3 / (0.01 sqrt(e)))) = ceil(24.14) = 25 steps.
+        assert_eq!(warp.steps(), 25);
+        assert_eq!(u.warp_n, [2, 1, 25, 0]);
         for (k, m) in warp.moves().iter().enumerate() {
             let rows = &u.warp_mv[WARP_ROWS_PER_MOVE * k..][..WARP_ROWS_PER_MOVE];
             let want = [
@@ -1686,10 +1692,9 @@ mod tests {
                 assert_eq!(*row, w.map(|x| x as f32), "move {k}");
             }
         }
-        // The second move's range grew from 0.01 (the smallest) to 0.3 / 1.5.
-        let grown = 0.3 / ym_color::warp::WARP_FOLD_RATIO;
+        // The second move keeps its range, clamped to 0.01 (the smallest).
         let inv = f64::from(u.warp_mv[WARP_ROWS_PER_MOVE + 1][0]);
-        assert!((inv - 1.0 / (2.0 * grown * grown)).abs() < 1e-4, "{inv}");
+        assert!((inv - 1.0 / (2.0 * 0.01 * 0.01)).abs() < 1e-3, "{inv}");
         let l = warp.locks()[0];
         assert_eq!(
             u.warp_lk[0],
@@ -1734,7 +1739,8 @@ mod tests {
             .collect();
         let mut u = ChainU::default();
         warp_uniform(&mut u, &WarpParams { pins });
-        assert_eq!(u.warp_n, [16, 0, 0, 0]);
+        // Sixteen moves of 0.02 |cos a| at the default range: ceil(3.98) = 4 steps.
+        assert_eq!(u.warp_n, [16, 0, 4, 0]);
         assert!(
             u.warp_mv
                 .chunks_exact(WARP_ROWS_PER_MOVE)

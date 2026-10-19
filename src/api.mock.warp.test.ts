@@ -126,7 +126,7 @@ describe("the picture follows the pins", () => {
     const rgb = (hex: string) => [1, 3, 5].map((i) => Number.parseInt(hex.slice(i, i + 2), 16));
     expect(rgb(moved.sky)[0]).toBeGreaterThan(rgb(SCENE.sky)[0]!);
     expect(rgb(moved.sky)[2]).toBeLessThan(rgb(SCENE.sky)[2]!);
-    // A long move reaches far (its range grows to |δ|/1.5): the pale far hill goes with it, unless a lock holds it.
+    // The pale far hill lies on the move's way (a quarter of a range from its line), so the flow sweeps it along, unless a lock holds it.
     expect(moved.far).not.toBe(SCENE.far);
     const held = warpScene(SCENE, [movingPin(hexChroma(SCENE.sky), [0.1, 0.1]), lockedPin(hexChroma(SCENE.far))]);
     expect(held.far).toBe(SCENE.far);

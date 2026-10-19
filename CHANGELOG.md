@@ -16,9 +16,15 @@ moves the entries below from Unreleased into a dated section for that version.
 
 ### Changed
 
+- **Contrast** works around mid grey as before but no longer pushes the darkest and brightest tones past black and white: it bends toward them instead, so blacks stay black. Colours keep their hue as contrast changes, and more contrast adds some colour as it adds contrast (less contrast takes some away).
+- **Saturation** no longer makes colours darker. More saturation makes colours stronger at the same brightness, about as strongly as before, and less makes them greyer, down to grey at -100. Muted colours gain the most, colours that are already strong gain less, and no colour is pushed past black. The Signature look and other looks are unchanged. Photos with Contrast and Saturation at 0 render exactly as before (pipeline 0.4.3).
 - `ym render --json` and `ym info --json`, and the settings an export records in its metadata (`ym:Settings`), now write contrast and saturation as Auto or a value, for example `{"kind": "manual", "value": 0}`, where they used to write a plain number. The JSON's `auto` object also lists the automatic contrast and saturation and where Auto came from. Scripts that read contrast or saturation as numbers need updating.
 - The Signature look, the default look for new photos, is richer: more contrast (a steeper curve around mid grey, darker shadows, brighter lights) and more colour (saturation 1.45, was 1.20). Mid grey stays where it was. Built-in looks are now prepared at a finer grid of 65 points, so the stronger curve stays smooth (pipeline 0.4.2).
 - Output sharpening: the halo limiter no longer switches on tiny differences, so the graphics card and the CPU sharpen hard edges and clipped areas alike. Sharpened pictures change very slightly at a few edge pixels (pipeline 0.4.1).
+
+### Fixed
+
+- Colour warp: Range now limits how far a pin's change reaches, even after a long drag; before, a long drag widened it so far that most of the picture moved. Colours that lie in the way of a long drag still move with it. Short moves look as they did (pipeline 0.4.4).
 
 ## [0.1.10] - 2026-10-17
 

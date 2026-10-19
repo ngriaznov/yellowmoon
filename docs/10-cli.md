@@ -34,7 +34,7 @@ They mirror the app's controls. Anything not given uses the automatic value or t
 | `--intensity <0–100>` | percent | default 100 |
 | `--exposure auto or <EV>` | absolute EV −4…+4, or `auto` | `--exposure-offset <EV>` adds to auto: resolved per file to `Manual(EV_auto + offset)`, so there's no extra settings field |
 | `--wb auto or <K>[,<tint>]` | 2000–11000, tint −50…50 | `--light day or shade or tungsten or led or fluorescent` sets the light preset |
-| `--contrast auto or <N>`, `--saturation auto or <N>` | −100…100, or `auto` | `auto` is the photo's Auto value: 0, or the value Apple Auto chose (`docs/19` section 5); it is the default, and puts back a value a `--settings` file set by hand. A number is a manual value. `--saturation` is subtractive (`docs/02` C9): more makes colours denser and darker, less makes them paler, and the brightest channel and neutrals stay. |
+| `--contrast auto or <N>`, `--saturation auto or <N>` | −100…100, or `auto` | `auto` is the photo's Auto value: 0, or the value Apple Auto chose (`docs/19` section 5); it is the default, and puts back a value a `--settings` file set by hand. A number is a manual value. `--contrast` bends the tones around mid grey and keeps black and the top code value (`docs/02` C9). `--saturation` scales colour about each pixel's luminance (`docs/02` C9): more makes colours stronger, less makes them greyer, and brightness and neutrals stay. |
 | `--brightness`, `--highlights`, `--shadows`, `--white`, `--black` | −100…100 | |
 | `--nr auto or <L>,<C>,<D>` | 0–100 each | |
 | `--sharpen auto or <amount>,<radius>` | 0–300, 0.3–2.5 | capture sharpening (R8) |

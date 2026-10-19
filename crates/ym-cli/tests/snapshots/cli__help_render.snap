@@ -44,7 +44,7 @@ Light:
           Stops added to each photo's automatic exposure
 
       --contrast <auto|N>
-          Contrast, -100 to 100, or `auto` (the default: 0, or the value Apple Auto chose)
+          Contrast, -100 to 100, or `auto` (the default: 0, or the value Apple Auto chose). Around mid grey; black and the brightest tones stay where they are
 
       --brightness <N>
           Brightness, -100 to 100
@@ -80,7 +80,7 @@ Colour:
           - fluorescent: Fluorescent light at the estimated colour
 
       --saturation <auto|N>
-          Saturation, -100 to 100, or `auto` (the default: 0, or the value Apple Auto chose). Subtractive: more makes colours denser and darker, less makes them paler
+          Saturation, -100 to 100, or `auto` (the default: 0, or the value Apple Auto chose). More makes colours stronger, less makes them greyer; brightness stays
 
 Detail:
       --nr <auto|L,C,D>

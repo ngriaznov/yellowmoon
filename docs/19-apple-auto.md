@@ -4,7 +4,7 @@ On Macs where Apple Intelligence's on-device model can look at a photo, that mod
 
 The owner's decision of 2026-10-19 (`docs/16`): "We allow apple-native path for mac platforms and option remains invisible for others. Apple-only automatic exposure, contrast and temperature, saturation - turned on by default - is an app setting, that can be turned off for people who like more control." The white is a nudge of the estimate ("2 - nudge"): the model never picks the kelvin itself. Results may differ between Macs and after macOS updates ("1 - thanks fine"). The research behind it is `research/scene-understanding-2026-10-19.md`; `docs/18` is the parked `autoset` spec on the branch `claude/autoset` and is not on `main`.
 
-Everything in this file is new after Yellowmoon 0.1.10. `PIPELINE_VERSION` stays 0.4.2: with Apple Auto off the pixels do not change. The table of section 5 and the prompt of section 4 are first versions, which the owner tunes by eye and in the blind A/B of section 13.
+Everything in this file is new after Yellowmoon 0.1.10. Apple Auto does not change `PIPELINE_VERSION` (0.4.2 when it was built, 0.4.4 after the new Contrast and Saturation and the colour warp's fix were merged into its branch): with Apple Auto off the pixels do not change. The table of section 5 and the prompt of section 4 are first versions, which the owner tunes by eye and in the blind A/B of section 13.
 
 ## 1. Where it runs
 

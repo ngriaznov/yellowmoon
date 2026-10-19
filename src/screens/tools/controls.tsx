@@ -101,7 +101,7 @@ export function ContrastSlider({ store, rs }: ControlProps) {
   return <PercentSlider store={store} rs={rs} field="contrast" label="Contrast" />;
 }
 
-/** Saturation (Colour › Colour balance and Look › Tone): Auto or −100…100, the detent at the Auto value. It is subtractive (`docs/02` C9). */
+/** Saturation (Colour › Colour balance and Look › Tone): Auto or −100…100, the detent at the Auto value. It keeps the luminance (`docs/02` C9). */
 export function SaturationSlider({ store, rs }: ControlProps) {
   return <PercentSlider store={store} rs={rs} field="saturation" label="Saturation" />;
 }

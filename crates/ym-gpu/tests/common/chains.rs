@@ -167,8 +167,8 @@ pub fn full(target: OutputTarget) -> ChainParams {
 /// Colour warp pins (C9b) placed where the colours of [`camera_image`] are after C9 (half its pixels
 /// have a chroma `|c|` under 0.02, a tenth over 0.06; tones from 3 stops under grey to 4 over): moves
 /// with the default and with split tonal weights, pivots under and over grey, exposure up and down, a
-/// long move with the smallest range (the range grows), an exposure-only pin, a lock between them and a
-/// still pin (left out by the preparation).
+/// long move with the smallest range (the flow takes 12 steps for the set), an exposure-only pin, a
+/// lock between them and a still pin (left out by the preparation).
 pub fn warp_pins() -> WarpParams {
     WarpParams {
         pins: vec![
@@ -269,8 +269,9 @@ pub fn cases() -> Vec<(String, ChainParams)> {
         v.push((format!("auto/{}", t.name()), base(t)));
         v.push((format!("full/{}", t.name()), full(t)));
     }
-    // Subtractive saturation (C9, about the brightest channel): alone, and on top of the full grade,
-    // look and curves. -100 and 100 are the ends of the control, 60 and -60 are in the middle.
+    // Saturation (C9, the chroma scaled about the luminance in linear AWG4) and Contrast (C9, the tone
+    // curve on the luma): alone, and on top of the full grade, look and curves. -100 and 100 are the
+    // ends of the control, 60 and -60 are in the middle.
     for sat in [-100.0, -60.0, 60.0, 100.0] {
         let mut p = base(OutputTarget::Viewport);
         p.grade.saturation = sat;
@@ -278,6 +279,14 @@ pub fn cases() -> Vec<(String, ChainParams)> {
         let mut p = full(OutputTarget::Viewport);
         p.grade.saturation = sat;
         v.push((format!("saturation+full/{sat:+}"), p));
+    }
+    for contrast in [-100.0, -60.0, 60.0, 100.0] {
+        let mut p = base(OutputTarget::Viewport);
+        p.grade.contrast = contrast;
+        v.push((format!("contrast/{contrast:+}"), p));
+        let mut p = full(OutputTarget::Viewport);
+        p.grade.contrast = contrast;
+        v.push((format!("contrast+full/{contrast:+}"), p));
     }
     // A CDL without a LUT, and a LUT without a CDL (the kernel's two optional parts of C10).
     let mut p = full(OutputTarget::Viewport);

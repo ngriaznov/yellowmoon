@@ -873,7 +873,8 @@ pub struct DevelopSettings {
     /// Light › Exposure: Auto or an absolute value, -4 to +4 EV.
     pub exposure: ExposureSetting,
     /// Light › Exposure and Look › Tone: Auto (0, or Apple Auto's contrast, `docs/19` section 5) or a
-    /// manual value, -100 to 100. Auto is the default; a plain number in an older document reads as
+    /// manual value, -100 to 100: a tone curve on the luma about mid grey that keeps black and the top
+    /// code value (docs/02 C9). Auto is the default; a plain number in an older document reads as
     /// Manual with that value, and 0 as Auto.
     #[serde(deserialize_with = "percent_document")]
     pub contrast: ContrastSetting,
@@ -899,7 +900,8 @@ pub struct DevelopSettings {
     /// The three colour-balance wheels.
     pub color_balance: ColorBalance,
     /// Colour › Colour balance and Look › Tone: Auto (0, or Apple Auto's saturation, `docs/19` section
-    /// 5) or a manual value, -100 to 100; subtractive (docs/02 C9). Read like `contrast`.
+    /// 5) or a manual value, -100 to 100; the chroma scaled about the luminance, which stays (docs/02
+    /// C9). Read like `contrast`.
     #[serde(deserialize_with = "percent_document")]
     pub saturation: SaturationSetting,
     /// Colour › Colour warp: the pins of stage C9b (docs/02); none by default.

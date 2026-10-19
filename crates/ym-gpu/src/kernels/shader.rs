@@ -11,10 +11,14 @@ use ym_color::exposure::TARGET_GREY;
 use ym_color::exposure::white;
 use ym_color::gamut::{awg4_luminance_row, matrices};
 use ym_color::grade::{
-    BRIGHTNESS_SIGMA, COLOR_BALANCE_STRENGTH, E1, E2, ZONE_CONTROL_SIGMA, ZONE_SIGMA,
+    BRIGHTNESS_SIGMA, COLOR_BALANCE_STRENGTH, CONTRAST_BLACK, CONTRAST_COLOR,
+    CONTRAST_NEUTRAL_CHROMA, CONTRAST_TOP, E1, E2, SATURATION_CODE_LIMIT, ZONE_CONTROL_SIGMA,
+    ZONE_SIGMA,
 };
 use ym_color::tone::HIGHLIGHT_GREY;
-use ym_color::warp::{WARP_MAX_PINS, WARP_NEUTRAL_GUARD, WARP_TONE_HALF_WIDTH};
+use ym_color::warp::{
+    WARP_EXP_LIMIT, WARP_MAX_PINS, WARP_MAX_STEPS, WARP_NEUTRAL_GUARD, WARP_TONE_HALF_WIDTH,
+};
 
 use super::aces;
 use super::color::{WARP_LOCK_ROWS, WARP_MOVE_ROWS};
@@ -524,20 +528,27 @@ fn constants() -> String {
         ("ZONE_CONTROL_SIGMA", ZONE_CONTROL_SIGMA),
         ("ZONE_SIGMA", ZONE_SIGMA),
         ("BALANCE_STRENGTH", COLOR_BALANCE_STRENGTH),
+        ("CONTRAST_BLACK", CONTRAST_BLACK),
+        ("CONTRAST_TOP", CONTRAST_TOP),
+        ("CONTRAST_COLOR", CONTRAST_COLOR),
+        ("CONTRAST_NEUTRAL", CONTRAST_NEUTRAL_CHROMA),
+        ("SAT_CODE_LIMIT", SATURATION_CODE_LIMIT),
         ("HIGHLIGHT_GREY", HIGHLIGHT_GREY),
         ("WHITE_LIFT_KNEE", white::KNEE_EV),
         ("WHITE_LIFT_GREY", TARGET_GREY),
         ("WARP_NEUTRAL_GUARD", WARP_NEUTRAL_GUARD),
         ("WARP_TONE_HALF_WIDTH", WARP_TONE_HALF_WIDTH),
+        ("WARP_EXP_LIMIT", WARP_EXP_LIMIT),
     ] {
         let _ = writeln!(s, "const {n}: f32 = {};", f(v));
     }
-    // The colour warp's pin count and the sizes of its rows in the colour kernel's uniform block
-    // (`kernels::color`, `ChainU`).
+    // The colour warp's pin count, the sizes of its rows in the colour kernel's uniform block
+    // (`kernels::color`, `ChainU`) and the most flow steps a frame takes.
     for (n, v) in [
         ("WARP_MAX_PINS", WARP_MAX_PINS),
         ("WARP_MOVE_ROWS", WARP_MOVE_ROWS),
         ("WARP_LOCK_ROWS", WARP_LOCK_ROWS),
+        ("WARP_MAX_STEPS", WARP_MAX_STEPS as usize),
     ] {
         let _ = writeln!(s, "const {n}: u32 = {v}u;");
     }
