@@ -27,11 +27,12 @@
 //! scene is neutralised too (`docs/03-camera-profiles.md`).
 //!
 //! **Apple Auto's nudge** (`docs/19` section 5) moves the user's white of an Auto white balance (light
-//! source Auto, no picked white) by [`ChainSettings::white_shift_mired`] along the locus: `g_user` is
-//! `1 / w_A(E_user)`, the scene's tinted, class-blended white moved as the locus moves from `CCT_scene`
-//! to `CCT_user = 1e6 / (1e6 / CCT_scene + m)` ([`wb::nudged_alexa_white`]), the ARRI matrix takes
-//! `CCT_user` and the readout is [`wb::nudged_readout`]. With `m = 0` none of this runs and the chain is
-//! the Auto chain bit for bit.
+//! source Auto, no picked white) by [`ChainSettings::white_shift_mired`] along the locus and its tint
+//! by [`ChainSettings::tint_shift`]: `g_user` is `1 / w_A(E_user)`, the scene's tinted, class-blended
+//! white moved as the locus moves from `CCT_scene` to `CCT_user = 1e6 / (1e6 / CCT_scene + m)` and
+//! given the scene's tint plus the tint nudge ([`wb::nudged_alexa_white`]), the ARRI matrix takes
+//! `CCT_user` and the readout is [`wb::nudged_readout`]. With `m = 0` and a tint nudge of 0 none of
+//! this runs and the chain is the Auto chain bit for bit.
 //!
 //! **Manual white balance** leaves the scene light alone and puts the user's `E_user` (blackbody below
 //! 4000 K, CIE daylight from there, at the user's Kelvin, then the tint) in C4 and the user's Kelvin in
@@ -106,6 +107,10 @@ pub struct ChainSettings {
     /// warmer). It acts only while the white balance and the light source are Auto and no white is
     /// picked; 0, the default, is the chain without Apple Auto, bit for bit.
     pub white_shift_mired: f64,
+    /// Apple Auto's nudge of the white's tint, in tint units (`docs/19` section 5; positive is more
+    /// magenta, as a manual tint is), added to the scene's own tint and held in -50 to 50. It acts
+    /// when the white shift does; 0, the default, is the chain without Apple Auto, bit for bit.
+    pub tint_shift: f64,
 }
 
 impl Default for ChainSettings {
@@ -117,6 +122,7 @@ impl Default for ChainSettings {
             picked_white: None,
             white_scale: wb::IDENTITY_WHITE_SCALE,
             white_shift_mired: 0.0,
+            tint_shift: 0.0,
         }
     }
 }
@@ -272,19 +278,20 @@ impl FusedChain {
 
         // C3 and C4.
         let w_a_scene = wb::scene_alexa_white(tables.alexa_white, tables.locus, &scene);
-        let nudged = settings.white_shift_mired != 0.0
+        let nudged = (settings.white_shift_mired != 0.0 || settings.tint_shift != 0.0)
             && settings.light_source == LightSource::Auto
             && settings.picked_white.is_none();
         let (g_user, c3_c4, user_cct_k, readout) = match settings.white_balance {
             // Apple Auto's nudge (`docs/19` section 5): the user's white is the scene's white moved
-            // along the locus to the nudged CCT, keeping the scene's classes and tint, and the ARRI
-            // matrix takes that CCT, as for a manual Kelvin.
+            // along the locus to the nudged CCT, keeping the scene's classes, with the scene's tint
+            // plus the tint nudge, and the ARRI matrix takes that CCT, as for a manual Kelvin.
             WhiteBalance::Auto if nudged => {
                 let (cct_k, w_a_user) = wb::nudged_alexa_white(
                     tables.alexa_white,
                     tables.locus,
                     &scene,
                     settings.white_shift_mired,
+                    settings.tint_shift,
                 );
                 let g = w_a_user.map(|w| 1.0 / w);
                 let product = [
@@ -301,6 +308,7 @@ impl FusedChain {
                         tables.locus,
                         &scene,
                         settings.white_shift_mired,
+                        settings.tint_shift,
                     ),
                 )
             }
@@ -425,6 +433,9 @@ pub struct ColorEstimates {
     /// Apple Auto's nudge of the Auto white in mired (`docs/19` section 5), 0 without an answer: what
     /// [`ChainSettings::white_shift_mired`] gets.
     pub white_shift_mired: f64,
+    /// Apple Auto's nudge of the Auto white's tint (`docs/19` section 5), 0 without an answer: what
+    /// [`ChainSettings::tint_shift`] gets.
+    pub tint_shift: f64,
 }
 
 impl ColorEstimates {
@@ -453,6 +464,7 @@ impl ColorEstimates {
                 picked_white,
                 white_scale: self.white_scale,
                 white_shift_mired: self.white_shift_mired,
+                tint_shift: self.tint_shift,
             },
         )
     }
@@ -482,6 +494,7 @@ impl ColorEstimates {
             &ChainSettings {
                 white_scale: self.white_scale,
                 white_shift_mired: self.white_shift_mired,
+                tint_shift: self.tint_shift,
                 ..ChainSettings::default()
             },
         )

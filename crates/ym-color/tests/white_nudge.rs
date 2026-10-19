@@ -148,6 +148,7 @@ fn no_nudge_is_the_auto_chain_bit_for_bit() {
                     white_scale: wb::IDENTITY_WHITE_SCALE,
                     ev_auto: ev,
                     white_shift_mired: 0.0,
+                    tint_shift: 0.0,
                 };
                 let via = estimates
                     .chain(
@@ -409,6 +410,157 @@ fn every_kind_of_light_gets_the_nudge_in_the_right_direction_across_the_range() 
                     );
                 }
             }
+        }
+    }
+}
+
+fn tinted(ev: f64, shift: f64, tint: f64) -> ChainSettings {
+    ChainSettings {
+        tint_shift: tint,
+        ..auto(ev, shift)
+    }
+}
+
+/// Green over the mean of red and blue of the scene white in AWG4: above 1 is greener than neutral.
+fn greenness(p: &Profile, scene: &SceneLight, w_init: [f64; 3], shift: f64, tint: f64) -> f64 {
+    let chain = FusedChain::build(p.tables(), scene, w_init, &tinted(0.0, shift, tint)).unwrap();
+    let v = chain.apply(balanced_white(scene, w_init)).0;
+    v[1] / (0.5 * (v[0] + v[2]))
+}
+
+#[test]
+fn no_tint_nudge_is_the_chain_without_it_bit_for_bit() {
+    // A tint shift of 0 (or -0) changes nothing: alone it is the Auto chain, and with a white shift
+    // it is the white nudge as it was before the tint nudge existed.
+    for p in all_profiles() {
+        for scene in scenes(&p) {
+            let w_init = p.locus.rgb_at(5600.0);
+            for m in [0.0, -10.0, 20.0] {
+                let plain = FusedChain::build(p.tables(), &scene, w_init, &auto(0.3, m)).unwrap();
+                for zero in [0.0, -0.0] {
+                    let explicit =
+                        FusedChain::build(p.tables(), &scene, w_init, &tinted(0.3, m, zero))
+                            .unwrap();
+                    assert_eq!(plain, explicit, "{} {m}", p.id);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn a_magenta_tint_nudge_takes_green_out_of_the_scene_white_and_a_green_one_adds_it() {
+    for p in all_profiles() {
+        for scene in scenes(&p) {
+            let w_init = scene.w_scene;
+            for m in [0.0, -10.0] {
+                let g: Vec<f64> = [-10.0, -5.0, 0.0, 5.0, 10.0]
+                    .iter()
+                    .map(|&t| greenness(&p, &scene, w_init, m, t))
+                    .collect();
+                // More magenta (a positive tint) is less green, monotonically.
+                assert!(
+                    g.windows(2).all(|w| w[0] > w[1]),
+                    "{} at {} K, {m} mired: {g:?}",
+                    p.id,
+                    scene.cct_k
+                );
+                // A step is small: 5 tint units move G/((R+B)/2) by a few percent.
+                assert!(
+                    g[3] / g[2] > 0.95 && g[3] / g[2] < 0.995,
+                    "{}: {g:?}",
+                    p.id
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn the_tint_readout_follows_the_tint_nudge_and_the_kelvin_stays() {
+    for p in all_profiles() {
+        for scene in scenes(&p) {
+            let w_init = scene.w_scene;
+            let plain = FusedChain::build(p.tables(), &scene, w_init, &auto(0.0, 0.0)).unwrap();
+            for t in [-10.0, -5.0, 5.0, 10.0] {
+                let nudged =
+                    FusedChain::build(p.tables(), &scene, w_init, &tinted(0.0, 0.0, t)).unwrap();
+                assert_eq!(nudged.readout().kelvin_k, plain.readout().kelvin_k, "{}", p.id);
+                let expected = (plain.readout().tint + t).clamp(-50.0, 50.0);
+                assert!(
+                    (nudged.readout().tint - expected).abs() < 1e-6,
+                    "{} {t}: {} vs {expected}",
+                    p.id,
+                    nudged.readout().tint
+                );
+                // The ARRI matrix keeps the scene's CCT.
+                assert_eq!(nudged.stages().user_cct_k, plain.stages().user_cct_k);
+                // Only red and blue of C3·C4 move; green stays exactly 1.
+                assert_eq!(nudged.stages().c3_c4[1], 1.0);
+            }
+        }
+    }
+}
+
+#[test]
+fn the_tint_nudge_holds_the_tint_in_its_range() {
+    let p = &all_profiles()[0];
+    // A scene well on the green side: its own tint is near the top of the range.
+    let day = ClassProbabilities::only(LightClass::Daylight);
+    let scene = exact_estimate(p, 5200.0, -0.03, day);
+    let own = wb::scene_tint(&p.locus, &scene);
+    assert!(own > 30.0, "{own}");
+    assert_eq!(wb::nudged_tint(&p.locus, &scene, 0.0), 0.0);
+    assert_eq!(
+        wb::nudged_tint(&p.locus, &scene, 20.0),
+        (50.0 - own).max(0.0)
+    );
+    assert_eq!(wb::nudged_tint(&p.locus, &scene, -10.0), -10.0);
+    assert_eq!(wb::nudged_tint(&p.locus, &scene, f64::NAN), 0.0);
+}
+
+#[test]
+fn a_preset_a_picked_white_and_a_manual_white_balance_get_no_tint_nudge() {
+    for p in all_profiles() {
+        let scene = estimate_at(
+            &p,
+            4300.0,
+            0.002,
+            ClassProbabilities::new(0.6, 0.2, 0.1, 0.1).unwrap(),
+        );
+        let w_init = p.locus.rgb_at(5600.0);
+        let g0 = wb::initial_gains(w_init).unwrap();
+        let sample = [0.3 * g0[0] * 0.9, 0.3, 0.3 * g0[2] * 1.1];
+        for settings in [
+            ChainSettings {
+                light_source: LightSource::Day,
+                ..ChainSettings::default()
+            },
+            ChainSettings {
+                picked_white: Some(sample),
+                ..ChainSettings::default()
+            },
+            ChainSettings {
+                white_balance: WhiteBalance::Manual {
+                    kelvin: 3600.0,
+                    tint: 7.0,
+                },
+                ..ChainSettings::default()
+            },
+        ] {
+            let plain = FusedChain::build(p.tables(), &scene, w_init, &settings).unwrap();
+            let shifted = FusedChain::build(
+                p.tables(),
+                &scene,
+                w_init,
+                &ChainSettings {
+                    tint_shift: 10.0,
+                    white_shift_mired: -10.0,
+                    ..settings
+                },
+            )
+            .unwrap();
+            assert_eq!(plain, shifted, "{} {settings:?}", p.id);
         }
     }
 }

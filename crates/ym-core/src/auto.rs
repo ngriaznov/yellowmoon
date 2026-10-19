@@ -1336,6 +1336,7 @@ impl AutoEstimates {
             white_scale,
             ev_auto: 0.0,
             white_shift_mired: 0.0,
+            tint_shift: 0.0,
         };
         let tables = tables_of(inputs.profile);
         let metering = color.metering_chain(tables)?;
