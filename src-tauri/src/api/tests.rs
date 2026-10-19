@@ -400,7 +400,12 @@ fn settings_round_trip_with_the_json_the_frontend_sends() {
         after.settings.contrast,
         PercentSetting::Manual { value: Num(20.0) }
     );
-    assert_eq!(after.settings.color_balance.shadows, [Num(0.2), Num(-0.1)]);
+    assert_eq!(
+        after.settings.color_balance.shadows,
+        crate::wire::BalanceSetting::Manual {
+            point: [Num(0.2), Num(-0.1)]
+        }
+    );
     assert_eq!(after.settings.color_balance.midtones, [Num(0.0), Num(0.0)]);
     assert_eq!(after.settings.curve.luma.len(), 3);
     assert_eq!(after.settings.orientation, crate::wire::Orientation(90));
@@ -1748,15 +1753,15 @@ struct Scripted(Result<ym_core::apple_auto::AdvisorAnswer, ym_core::apple_auto::
 
 impl ym_core::apple_auto::AutoAdvisor for Scripted {
     fn availability(&self) -> ym_core::apple_auto::Availability {
-        ym_core::apple_auto::Availability::Available(ym_core::apple_auto::AdvisorInfo {
-            model: "Scripted".into(),
-            os: "test".into(),
-        })
+        ym_core::apple_auto::Availability::Available(ym_core::apple_auto::AdvisorInfo::new(
+            "Scripted", "test",
+        ))
     }
 
     fn ask(
         &self,
         _: &ym_core::apple_auto::AdvisorPicture,
+        _: &str,
     ) -> Result<ym_core::apple_auto::AdvisorAnswer, ym_core::apple_auto::AdvisorError> {
         self.0.clone()
     }
@@ -1772,29 +1777,43 @@ fn prefs_patch(value: serde_json::Value) -> PreferencesPatch {
 
 #[test]
 fn apple_auto_reaches_the_webview_through_the_settings_the_status_and_settings_changed() {
-    use ym_core::apple_auto::{AdvisorAnswer, AutoSteps};
+    use ym_core::apple_auto::{AdvisorAnswer, AutoSteps, ShadowColor};
     let answer = AdvisorAnswer {
         steps: AutoSteps {
-            exposure: 0,
-            white: 0,
-            contrast: 2,
-            saturation: -1,
+            exposure: Some(0),
+            white: Some(0),
+            contrast: Some(2),
+            saturation: Some(-1),
+            highlights: Some(-1),
+            shadow_color: Some(ShadowColor::Teal),
+            shadow_color_strength: Some(2),
+            ..AutoSteps::default()
         },
         scene: "A grey gradient".into(),
+        plan: "Teal shadows, more contrast".into(),
     };
     let h = Harness::with_advisor(Arc::new(Scripted(Ok(answer))));
     let status = h.api.apple_auto_status().expect("status");
     assert!(status.available && status.active && status.preference);
     assert_eq!(status.reason, None);
+    let sha = ym_core::apple_auto::InstructionsId::default().instructions_sha256;
     assert_eq!(
         status.info,
         Some(AppleAutoInfo {
             model: "Scripted".into(),
-            os: "test".into()
+            os: "test".into(),
+            instructions: crate::wire::AppleAutoInstructions::Default,
+            instructions_sha256: sha.clone(),
         })
     );
     assert_eq!(status.mode, AppleAutoMode::FromPreference);
-    assert_eq!((status.prompt, status.table), (1, 1));
+    assert_eq!((status.prompt, status.table), (2, 2));
+    assert_eq!(status.own_instructions, "");
+    assert_eq!(
+        status.default_instructions,
+        ym_core::apple_auto::DEFAULT_INSTRUCTIONS
+    );
+    assert_eq!(status.instructions_max_chars, 2000);
 
     h.open(1);
     h.develop();
@@ -1814,13 +1833,31 @@ fn apple_auto_reaches_the_webview_through_the_settings_the_status_and_settings_c
     assert_eq!(
         answer.steps,
         AppleAutoSteps {
-            exposure: 0,
-            white: 0,
-            contrast: 2,
-            saturation: -1
+            exposure: Some(0),
+            highlights: Some(-1),
+            shadows: None,
+            blacks: None,
+            contrast: Some(2),
+            white: Some(0),
+            tint: None,
+            saturation: Some(-1),
+            shadow_color: Some(crate::wire::AppleShadowColor::Teal),
+            shadow_color_strength: Some(2),
+            highlight_color: None,
+            highlight_color_strength: None,
         }
     );
     assert_eq!(answer.scene, "A grey gradient");
+    assert_eq!(answer.plan, "Teal shadows, more contrast");
+    assert_eq!(rs.estimates.apple_steps, Some(answer.steps));
+    assert_eq!(rs.estimates.highlights, Num(-20.0));
+    assert_eq!(rs.values.highlights, Num(-20.0));
+    assert_eq!(rs.settings.highlights, PercentSetting::Auto);
+    assert!(rs.auto.highlights && rs.auto.balance_shadows);
+    assert_eq!(
+        rs.values.color_balance.shadows,
+        [Num(-0.866 * 0.55), Num(-0.5 * 0.55)]
+    );
     assert_eq!(info.model, "Scripted");
     assert_eq!(rs.estimates.source, AutoSource::Apple);
     assert_eq!(
@@ -1882,6 +1919,43 @@ fn apple_auto_reaches_the_webview_through_the_settings_the_status_and_settings_c
     assert!(matches!(apple_state(&h, id), AppleAuto::Answered { .. }));
     assert_eq!(h.api.core().session.apple_auto_asks(), asks);
     assert!(h.api.preferences_get().expect("prefs").apple_auto);
+
+    // New instructions: saved, every photo asked again; too long: refused with a plain message.
+    let asks = h.api.core().session.apple_auto_asks();
+    let err = h
+        .api
+        .preferences_set(&prefs_patch(
+            json!({ "apple_auto_instructions": "x".repeat(2001) }),
+        ))
+        .expect_err("too long");
+    assert!(format!("{err:?}").contains("At most 2000"), "{err:?}");
+    let prefs = h
+        .api
+        .preferences_set(&prefs_patch(
+            json!({ "apple_auto_instructions": "Moody and cool." }),
+        ))
+        .expect("instructions");
+    assert_eq!(prefs.apple_auto_instructions, "Moody and cool.");
+    wait_until("the answer to the new instructions", || {
+        h.api.core().session.apple_auto_asks() > asks
+            && matches!(apple_state(&h, id), AppleAuto::Answered { .. })
+    });
+    let status = h.api.apple_auto_status().expect("status");
+    assert_eq!(
+        status.instructions,
+        crate::wire::AppleAutoInstructions::Edited
+    );
+    assert_eq!(status.own_instructions, "Moody and cool.");
+    let AppleAuto::Answered { info, .. } = apple_state(&h, id) else {
+        panic!("answered");
+    };
+    assert_eq!(info.instructions, crate::wire::AppleAutoInstructions::Edited);
+    // Back to the default: the preference is cleared.
+    let prefs = h
+        .api
+        .preferences_set(&prefs_patch(json!({ "apple_auto_instructions": "" })))
+        .expect("default");
+    assert_eq!(prefs.apple_auto_instructions, "");
 }
 
 #[test]
@@ -1905,7 +1979,10 @@ fn a_failed_question_crosses_the_bridge_and_auto_stays_the_rule() {
             message: "Not this one.".into(),
             info: AppleAutoInfo {
                 model: "Scripted".into(),
-                os: "test".into()
+                os: "test".into(),
+                instructions: crate::wire::AppleAutoInstructions::Default,
+                instructions_sha256: ym_core::apple_auto::InstructionsId::default()
+                    .instructions_sha256,
             }
         }
     );

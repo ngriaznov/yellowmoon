@@ -888,7 +888,12 @@ mod tests {
             call(&window, "apple_auto_status", json!({})).expect("apple_auto_status"),
             json!({
                 "available": false, "reason": null, "info": null, "preference": true,
-                "mode": "from_preference", "active": false, "prompt": 1, "table": 1
+                "mode": "from_preference", "active": false, "prompt": 2, "table": 2,
+                "instructions": "default",
+                "instructions_sha256": ym_core::apple_auto::InstructionsId::default().instructions_sha256,
+                "own_instructions": "",
+                "default_instructions": ym_core::apple_auto::DEFAULT_INSTRUCTIONS,
+                "instructions_max_chars": 2000
             })
         );
         let err = call(&window, "copy_settings", json!({ "photoId": 9999 })).expect_err("unknown");

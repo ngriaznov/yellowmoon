@@ -226,10 +226,12 @@ info: AppleAutoInfo };
 
 /**  One answer of Apple's model (the core's `AdvisorAnswer`). */
 export type AppleAutoAnswer = {
-	/**  The four steps. */
+	/**  The steps. */
 	steps: AppleAutoSteps,
 	/**  What the photo shows, in a few words (for reports only). */
 	scene: string,
+	/**  The look the model gives the photo, in a few words (the Automatic card shows it). */
+	plan: string,
 };
 
 /**  Why one request to Apple's model failed (`docs/19` sections 6 and 8; the core's `FailureKind`). */
@@ -257,13 +259,24 @@ export type AppleAutoFailure =
 /**  Anything else; the message says what. */
 "other";
 
-/**  Which model answers (the core's `AdvisorInfo`). */
+/**  Which model answers, and with which instructions (the core's `AdvisorInfo`). */
 export type AppleAutoInfo = {
 	/**  The model variant's display name: "AFM 3 Core". */
 	model: string,
 	/**  The macOS version and build: "27.0.1 (27A404)". */
 	os: string,
+	/**  The default instructions or the person's own. */
+	instructions: AppleAutoInstructions,
+	/**  The first 12 hex digits of the SHA-256 of the instructions. */
+	instructions_sha256: string,
 };
+
+/**  Whether Apple's model read the default instructions or the person's own (`docs/19` section 2). */
+export type AppleAutoInstructions = 
+/**  The default instructions. */
+"default" | 
+/**  The person's own. */
+"edited";
 
 /**
  *  How a run decides whether Apple Auto is used (the core's `AppleAutoMode`); the app always
@@ -323,22 +336,77 @@ export type AppleAutoStatus = {
 	prompt: number,
 	/**  The table's version. */
 	table: number,
+	/**  The default instructions or the person's own. */
+	instructions: AppleAutoInstructions,
+	/**  The first 12 hex digits of the SHA-256 of the instructions. */
+	instructions_sha256: string,
+	/**  The person's own instructions, `""` for the default. */
+	own_instructions: string,
+	/**  The default instructions, for Preferences' text field and its Reset to default. */
+	default_instructions: string,
+	/**  The longest instructions the model is given, in characters. */
+	instructions_max_chars: number,
 };
 
 /**
- *  The four steps of an answer (the core's `AutoSteps`): exposure -3 to +3, the others -2 to +2,
- *  0 for keep.
+ *  The steps of an answer (the core's `AutoSteps`), each null when the model left the field empty:
+ *  exposure -3 to +3, the other numbers -2 to +2 (0 for keep), the colours of the shadows and the
+ *  highlights with their strengths 1 to 3.
  */
 export type AppleAutoSteps = {
 	/**  Darker (negative) or brighter. */
-	exposure: number,
-	/**  Cooler (negative) or warmer. */
-	white: number,
+	exposure: number | null,
+	/**  Darker (negative) or brighter highlights. */
+	highlights: number | null,
+	/**  Darker (negative) or brighter shadows. */
+	shadows: number | null,
+	/**  Deeper (negative) or lifted blacks. */
+	blacks: number | null,
 	/**  Less (negative) or more contrast. */
-	contrast: number,
+	contrast: number | null,
+	/**  The model's warmth: cooler (negative) or warmer. */
+	white: number | null,
+	/**  Greener (negative) or more magenta. */
+	tint: number | null,
 	/**  Less (negative) or more saturation. */
-	saturation: number,
+	saturation: number | null,
+	/**  The colour of the shadows. */
+	shadow_color: AppleShadowColor | null,
+	/**  Its strength, 1 (subtle) to 3 (strong). */
+	shadow_color_strength: number | null,
+	/**  The colour of the highlights. */
+	highlight_color: AppleHighlightColor | null,
+	/**  Its strength, 1 (subtle) to 3 (strong). */
+	highlight_color_strength: number | null,
 };
+
+/**  The colour Apple Auto gives the highlights (the core's `HighlightColor`). */
+export type AppleHighlightColor = 
+/**  A neutral grade. */
+"none" | 
+/**  Warm. */
+"warm" | 
+/**  Gold. */
+"gold" | 
+/**  Cool. */
+"cool" | 
+/**  Pink. */
+"pink";
+
+/**  The colour Apple Auto gives the shadows (the core's `ShadowColor`). */
+export type AppleShadowColor = 
+/**  A neutral grade. */
+"none" | 
+/**  Teal. */
+"teal" | 
+/**  Blue. */
+"blue" | 
+/**  Green. */
+"green" | 
+/**  Amber. */
+"amber" | 
+/**  Magenta. */
+"magenta";
 
 /**  "Apply to" on the Look card, and the scope of `apply_look` and of an export. */
 export type ApplyScope = 
@@ -363,10 +431,22 @@ export type AutoEstimates = {
 	contrast: number,
 	/**  What `saturation: Auto` resolves to: 0, or Apple Auto's saturation. */
 	saturation: number,
+	/**  What `highlights: Auto` resolves to: 0, or Apple Auto's highlights. */
+	highlights: number,
+	/**  What `shadows: Auto` resolves to: 0, or Apple Auto's shadows. */
+	shadows: number,
+	/**  What `black: Auto` resolves to: 0, or Apple Auto's black level. */
+	black: number,
+	/**  What the shadows wheel's Auto resolves to: `[0, 0]`, or Apple Auto's shadow colour. */
+	balance_shadows: [number, number],
+	/**  What the highlights wheel's Auto resolves to: `[0, 0]`, or Apple Auto's highlight colour. */
+	balance_highlights: [number, number],
 	/**  Which Auto made these values. */
 	source: AutoSource,
 	/**  Where the photo stands with Apple Auto. */
 	apple: AppleAuto,
+	/**  Apple Auto's steps in effect (the photo's answer, or its burst's), null when Auto is the rule. */
+	apple_steps: AppleAutoSteps | null,
 	/**  The most probable light class. */
 	light_class: LightClass,
 	/**  Confidence of the light estimate, 0 to 1. */
@@ -385,6 +465,16 @@ export type AutoFlags = {
 	exposure: boolean,
 	/**  `contrast` is Auto. */
 	contrast: boolean,
+	/**  `highlights` is Auto. */
+	highlights: boolean,
+	/**  `shadows` is Auto. */
+	shadows: boolean,
+	/**  `black` is Auto. */
+	black: boolean,
+	/**  The shadows colour-balance wheel is Auto. */
+	balance_shadows: boolean,
+	/**  The highlights colour-balance wheel is Auto. */
+	balance_highlights: boolean,
 	/**  `saturation` is Auto. */
 	saturation: boolean,
 	/**  `light_source` is Auto. */
@@ -406,6 +496,31 @@ export type AutoSource =
 "rule" | 
 /**  Apple Auto's answer (the photo's own or its burst's). */
 "apple";
+
+/**
+ *  A shadows or highlights wheel in a patch: either form of [`BalanceSetting`], or a plain point,
+ *  which the core reads as Manual at that point, except `[0, 0]`, which it reads as Auto (the form
+ *  of a settings document written before Apple Auto's prompt version 2). The webview sends the
+ *  tagged form.
+ */
+export type BalancePatch = 
+/**  `{ "kind": "auto" }` or `{ "kind": "manual", "point": [a, b] }`. */
+BalanceSetting | 
+/**  A plain point: Manual, or Auto for `[0, 0]`. */
+[number, number];
+
+/**
+ *  The shadows or highlights colour-balance wheel: Auto (`[0, 0]`, or the colour Apple Auto gave
+ *  that zone, `docs/19` section 5) or a manual point. The JSON is `{ "kind": "auto" }` or
+ *  `{ "kind": "manual", "point": [a, b] }`.
+ */
+export type BalanceSetting = 
+/**  Resolve from the photo's automatic estimates. */
+{ kind: "auto" } | 
+/**  The user's point. */
+{ kind: "manual"; 
+/**  `[a, b]` within the unit disc. */
+point: [number, number] };
 
 /**  The detected body and the profile used for it. */
 export type CameraInfo = {
@@ -462,24 +577,37 @@ export type CliLinkStatus = {
 	path: string | null,
 };
 
-/**  Colour balance wheels; each point is `[a, b]` within the unit disc and `[0, 0]` by default. */
+/**
+ *  Colour balance wheels: the shadows and highlights wheels are Auto or a point, the midtones wheel
+ *  a point `[a, b]` within the unit disc, `[0, 0]` by default.
+ */
 export type ColorBalance = {
+	/**  The shadows wheel. */
+	shadows: BalanceSetting,
+	/**  The midtones wheel. */
+	midtones: [number, number],
+	/**  The highlights wheel. */
+	highlights: BalanceSetting,
+};
+
+/**  Colour-balance wheels to change. */
+export type ColorBalancePatch = {
+	/**  New shadows wheel: Auto, a manual point, or a plain point (`[0, 0]` is Auto). */
+	shadows?: BalancePatch | null,
+	/**  New midtones wheel. */
+	midtones?: [number, number] | null,
+	/**  New highlights wheel: Auto, a manual point, or a plain point (`[0, 0]` is Auto). */
+	highlights?: BalancePatch | null,
+};
+
+/**  The three wheels' points in effect (`ResolvedValues.color_balance`). */
+export type ColorBalancePoints = {
 	/**  The shadows wheel. */
 	shadows: [number, number],
 	/**  The midtones wheel. */
 	midtones: [number, number],
 	/**  The highlights wheel. */
 	highlights: [number, number],
-};
-
-/**  Colour-balance wheels to change. */
-export type ColorBalancePatch = {
-	/**  New shadows wheel. */
-	shadows?: [number, number] | null,
-	/**  New midtones wheel. */
-	midtones?: [number, number] | null,
-	/**  New highlights wheel. */
-	highlights?: [number, number] | null,
 };
 
 /**  Colour spaces the viewport and the exports can use. */
@@ -606,10 +734,10 @@ export type DevelopSettings = {
 	contrast: PercentSetting,
 	/**  -100 to 100. */
 	brightness: number,
-	/**  Light › High dynamic range, -100 to 100. */
-	highlights: number,
-	/**  -100 to 100. */
-	shadows: number,
+	/**  Light › High dynamic range › Highlights: Auto or a value, -100 to 100. */
+	highlights: PercentSetting,
+	/**  Light › High dynamic range › Shadows: Auto or a value, -100 to 100. */
+	shadows: PercentSetting,
 	/**  -100 to 100. */
 	white: number,
 	/**
@@ -617,8 +745,8 @@ export type DevelopSettings = {
 	 *  automatic amount; a plain number, not Auto).
 	 */
 	white_offset_ev: number,
-	/**  -100 to 100. */
-	black: number,
+	/**  Light › High dynamic range › Black: Auto or a value, -100 to 100. */
+	black: PercentSetting,
 	/**  Colour › White balance, the light presets. */
 	light_source: LightSource,
 	/**  Colour › White balance: Auto or Kelvin and tint. */
@@ -1196,7 +1324,8 @@ export type PastedPhoto = {
 };
 
 /**
- *  `contrast` or `saturation` in a patch: either form of [`PercentSetting`], or a plain number,
+ *  `contrast`, `highlights`, `shadows`, `black` or `saturation` in a patch: either form of
+ *  [`PercentSetting`], or a plain number,
  *  which the core reads as Manual with that value, except 0, which it reads as Auto (the form of a
  *  settings document written before Apple Auto, `docs/19` section 5). The webview sends the tagged
  *  form.
@@ -1208,8 +1337,9 @@ PercentSetting |
 number;
 
 /**
- *  `contrast` and `saturation`: Auto (0, or Apple Auto's value for the photo, `docs/19` section 5)
- *  or a manual value. The JSON is `{ "kind": "auto" }` or `{ "kind": "manual", "value": 12 }`.
+ *  `contrast`, `highlights`, `shadows`, `black` and `saturation`: Auto (0, or Apple Auto's value for
+ *  the photo, `docs/19` section 5) or a manual value. The JSON is `{ "kind": "auto" }` or
+ *  `{ "kind": "manual", "value": 12 }`.
  */
 export type PercentSetting = 
 /**  Resolve from the photo's automatic estimates. */
@@ -1316,6 +1446,11 @@ export type Preferences = {
 	last_used_folders: LastUsedFolders,
 	/**  Auto with Apple Intelligence (`docs/19` section 2); acts only where Apple Auto is available. */
 	apple_auto: boolean,
+	/**
+	 *  Instructions for Apple Intelligence (`docs/19` section 2): the person's own, at most 2000
+	 *  characters; `""` is the default.
+	 */
+	apple_auto_instructions: string,
 };
 
 /**  A partial update of the preferences. */
@@ -1336,6 +1471,11 @@ export type PreferencesPatch = {
 	last_used_folders?: LastUsedFolders | null,
 	/**  New value of "Auto with Apple Intelligence". */
 	apple_auto?: boolean | null,
+	/**
+	 *  New instructions for Apple Intelligence (`""` or the default text: the default); at most
+	 *  2000 characters, longer text is refused.
+	 */
+	apple_auto_instructions?: string | null,
 };
 
 /**  What the recogniser made of one source (`looks_recognise`). */
@@ -1453,9 +1593,9 @@ export type ResolvedValues = {
 	contrast: number,
 	/**  `brightness`. */
 	brightness: number,
-	/**  `highlights`. */
+	/**  The highlights in effect: the manual value, or the photo's Auto value. */
 	highlights: number,
-	/**  `shadows`. */
+	/**  The shadows in effect. */
 	shadows: number,
 	/**  `white`. */
 	white: number,
@@ -1463,7 +1603,7 @@ export type ResolvedValues = {
 	white_offset_ev: number,
 	/**  The white lift in effect in stops: the automatic amount plus the offset, never below 0. */
 	white_ev: number,
-	/**  `black`. */
+	/**  The black in effect. */
 	black: number,
 	/**  `light_source`. */
 	light_source: LightSource,
@@ -1471,8 +1611,8 @@ export type ResolvedValues = {
 	kelvin: number,
 	/**  The tint the White balance row shows. */
 	tint: number,
-	/**  `color_balance`. */
-	color_balance: ColorBalance,
+	/**  The wheels' points in effect. */
+	color_balance: ColorBalancePoints,
 	/**  The saturation in effect: the manual value, or the photo's Auto saturation. */
 	saturation: number,
 	/**  `color_warp`. */
@@ -1570,16 +1710,16 @@ export type SettingsPatch = {
 	contrast?: PercentPatch | null,
 	/**  New brightness. */
 	brightness?: number | null,
-	/**  New highlights. */
-	highlights?: number | null,
-	/**  New shadows. */
-	shadows?: number | null,
+	/**  New highlights: Auto, a manual value, or a plain number (0 is Auto). */
+	highlights?: PercentPatch | null,
+	/**  New shadows: Auto, a manual value, or a plain number (0 is Auto). */
+	shadows?: PercentPatch | null,
 	/**  New white. */
 	white?: number | null,
 	/**  New white lift offset, in stops. */
 	white_offset_ev?: number | null,
-	/**  New black. */
-	black?: number | null,
+	/**  New black: Auto, a manual value, or a plain number (0 is Auto). */
+	black?: PercentPatch | null,
 	/**  New light preset. */
 	light_source?: LightSource | null,
 	/**  New white balance; a manual one may leave out Kelvin or tint. */
