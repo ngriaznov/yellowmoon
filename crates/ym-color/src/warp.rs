@@ -554,13 +554,20 @@ mod tests {
         assert_eq!(steps(vec![pin([0.1, 0.0], [0.1, 0.2], 0.01)]), 16);
         // The longest move at the smallest range needs 61 for one-to-one, 76 with the safety factor:
         // the cap of 64 still keeps one pin one to one.
-        assert_eq!(steps(vec![pin([0.5, 0.0], [-0.5, 0.0], 0.01)]), WARP_MAX_STEPS);
+        assert_eq!(
+            steps(vec![pin([0.5, 0.0], [-0.5, 0.0], 0.01)]),
+            WARP_MAX_STEPS
+        );
         assert!(f64::from(WARP_MAX_STEPS) > 1.0 / (WARP_RANGE_MIN * std::f64::consts::E.sqrt()));
         // Pins add up: four moves of 0.1 at the default range take ceil(4 * 1.52 * 1.25) = 8.
         let four = (0..4)
             .map(|i| {
                 let a = f64::from(i);
-                pin([0.1 * a.cos(), 0.1 * a.sin()], [0.1 * a.cos(), 0.1 * a.sin() + 0.1], 0.04)
+                pin(
+                    [0.1 * a.cos(), 0.1 * a.sin()],
+                    [0.1 * a.cos(), 0.1 * a.sin() + 0.1],
+                    0.04,
+                )
             })
             .collect();
         assert_eq!(steps(four), 8);
@@ -599,9 +606,15 @@ mod tests {
             let k = guard * hold / reach.max(1.0);
             ([k * d0, k * d1], k * x)
         };
-        for (i, c) in [[0.1, 0.02], [0.08, 0.0], [0.03, -0.05], [-0.07, 0.03], [0.011, 0.0]]
-            .into_iter()
-            .enumerate()
+        for (i, c) in [
+            [0.1, 0.02],
+            [0.08, 0.0],
+            [0.03, -0.05],
+            [-0.07, 0.03],
+            [0.011, 0.0],
+        ]
+        .into_iter()
+        .enumerate()
         {
             let l = logc4_at_stops(f64::from(i as u8) - 2.0);
             assert_eq!(warp.displacement(c, l), one_step(c, l), "{c:?}");
@@ -913,7 +926,10 @@ mod tests {
         // Two identical pins take their colour where one takes it (not twice as far), for a short
         // move (one step) and a long one (the two take twice the steps of one).
         let s = [0.1, 0.0];
-        for (t, range) in [([0.1, 0.06], WARP_RANGE_DEFAULT), ([0.1, 0.3], WARP_RANGE_MIN)] {
+        for (t, range) in [
+            ([0.1, 0.06], WARP_RANGE_DEFAULT),
+            ([0.1, 0.3], WARP_RANGE_MIN),
+        ] {
             let pin = WarpPin {
                 range,
                 ..WarpPin::moving(s, t)

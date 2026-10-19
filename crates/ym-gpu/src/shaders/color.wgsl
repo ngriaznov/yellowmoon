@@ -200,8 +200,10 @@ fn c9_grade(v: vec3<f32>, l: f32) -> vec3<f32> {
 // gamma (the neutral guard times the locks' hold) and the tonal weights w are the pixel's own, taken
 // once. The exposure is the one-step formula at the pixel's own chroma.
 //
-// Fast-math (K8). Nothing here rests on a rounding (the gate is 2e-4 in LogC4), and nothing may rest
-// on an infinity or a NaN either (Metal's fast-math may assume there are none):
+// Fast-math (K8). Nothing here rests on a rounding (the gate is 2e-4 in LogC4) except in the thin
+// sliver just behind the source of a long, narrow move, which the flow stretches along the path and
+// where it magnifies whatever rounding there is (docs/02 C9b); and nothing may rest on an infinity or
+// a NaN (Metal's fast-math may assume there are none):
 // * every Gaussian goes through `warp_gauss`, whose exponent is limited to WARP_EXP_LIMIT: an
 //   absurd chroma (a garbage pixel of 1e30) gives exp(-80), a normal number, never exp(-inf);
 // * a neutral pixel returns before any square root is taken (fast-math may compute sqrt(x) as

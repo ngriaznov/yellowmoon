@@ -14,6 +14,10 @@ moves the entries below from Unreleased into a dated section for that version.
 - The Signature look, the default look for new photos, is richer: more contrast (a steeper curve around mid grey, darker shadows, brighter lights) and more colour (saturation 1.45, was 1.20). Mid grey stays where it was. Built-in looks are now prepared at a finer grid of 65 points, so the stronger curve stays smooth (pipeline 0.4.2).
 - Output sharpening: the halo limiter no longer switches on tiny differences, so the graphics card and the CPU sharpen hard edges and clipped areas alike. Sharpened pictures change very slightly at a few edge pixels (pipeline 0.4.1).
 
+### Fixed
+
+- Colour warp: Range now limits how far a pin's change reaches, even after a long drag; before, a long drag widened it so far that most of the picture moved. Colours that lie in the way of a long drag still move with it. Short moves look as they did (pipeline 0.4.3).
+
 ## [0.1.10] - 2026-10-17
 
 Highlights that end where an ALEXA's would: the camera's clipping point now lands at white, and can be placed anywhere from where it was recorded up to white.
