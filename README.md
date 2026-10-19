@@ -2,7 +2,7 @@
 
 **Cinema colour for Sony raw files.**
 
-Yellowmoon is a free, open-source raw processor for macOS. Drop in ARW files from any Sony camera and every photo comes out developed, with the colour of a cinema camera: exposure, white balance, noise and colour are handled automatically. Pick a look, adjust a little if you want, export. Done. It's fast: everything after decoding runs on the Mac's graphics card through Metal, in the app and in the `ym` command-line tool, exports included.
+Yellowmoon is a free, open-source raw processor for macOS. Drop in ARW files from any Sony camera and every photo comes out developed, with the colour of a cinema camera: exposure, white balance, noise and colour are handled automatically. Pick a look, adjust a little if you want, export. Done. It's fast: everything after decoding runs on the Mac's graphics card, in the app and in the `ym` command-line tool, exports included. The GPU code is written for [wgpu](https://wgpu.rs), which runs it on Metal, not in Metal directly.
 
 ## Screenshots
 
@@ -15,7 +15,7 @@ Yellowmoon is a free, open-source raw processor for macOS. Drop in ARW files fro
 
 ![Export panel](docs/images/readme/photo-export.png)
 
-The screenshots are of the development build on Linux (`tools/readme`), in the dark glass interface; on a Mac the photo is drawn by a native Metal view.
+The screenshots are of the development build on Linux (`tools/readme`), in the dark glass interface; on a Mac the photo is drawn by a native view, a Metal layer that wgpu draws into.
 
 ## Sony's colour and Yellowmoon's
 
