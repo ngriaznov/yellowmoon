@@ -2,12 +2,13 @@
 //!
 //! A built-in look is a parametric look file (`yellowmoon.parametric-look/1`, parsed and baked by
 //! [`ym_color::look::ParametricLook`]): a luma tone curve, a CDL and hue-vs-sat, hue-vs-hue and
-//! luma-vs-sat curves in LogC4, baked into a 33-point cube when the look is first used. The id is
+//! luma-vs-sat curves in LogC4, baked into a 65-point cube when the look is first used. The id is
 //! `builtin:<file stem>`. `neutral.json` is the identity; Neutral exists even when the file or the
 //! whole folder is missing. `signature.json` is the look new photos get out of the box (owner's
-//! decision of 2026-10-14: a LogC4 luma curve and CDL saturation 1.20). It is read like any other
-//! file here: listed when it is present, not listed when it is not, and a folder without it
-//! leaves the default look at Neutral (`LookService::effective_default` in `ym-core`).
+//! decisions of 2026-10-14 and 2026-10-19: a LogC4 luma curve and CDL saturation 1.45). It is
+//! read like any other file here: listed when it is present, not listed when it is not, and a
+//! folder without it leaves the default look at Neutral (`LookService::effective_default` in
+//! `ym-core`).
 
 use std::collections::HashSet;
 use std::fs;
@@ -222,7 +223,10 @@ mod tests {
         assert_eq!(set.items[1].name, "Test Signature");
         let transform = set.items[1].transform().unwrap();
         assert!(!transform.is_identity());
-        assert_eq!(transform.lut().unwrap().cube.size(), 33);
+        assert_eq!(
+            transform.lut().unwrap().cube.size(),
+            ym_color::lut::BAKE_SIZE
+        );
     }
 
     #[test]

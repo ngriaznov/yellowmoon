@@ -1,5 +1,5 @@
 //! M1-10 (C10): look application: Neutral, LogC4 / LogC3 / LogC3-to-Rec.709 inputs, the intensity
-//! blend, and parametric looks (JSON schema, curves, 33-point bake).
+//! blend, and parametric looks (JSON schema, curves, 65-point bake).
 
 use ym_color::cdl::Cdl;
 use ym_color::consts::{Vec3, linalg};
@@ -224,9 +224,9 @@ fn the_documented_example_parses_and_bakes() {
     assert!(!look.is_identity());
     let t = look.to_transform().unwrap();
     assert_eq!(t.lut().unwrap().cube.size(), BAKE_SIZE);
-    assert_eq!(BAKE_SIZE, 33);
+    assert_eq!(BAKE_SIZE, 65);
     assert_eq!(t.input(), LookInput::LogC4);
-    // A baked 33^3 cube is within a small error of the exact evaluation.
+    // A baked 65^3 cube is within a small error of the exact evaluation.
     let mut worst = 0.0_f64;
     let mut seed = 99_u64;
     let mut next = || {
@@ -243,7 +243,7 @@ fn the_documented_example_parses_and_bakes() {
             worst = worst.max((exact[c] - baked[c]).abs());
         }
     }
-    println!("33^3 bake of the example look: max |baked - exact| = {worst:e} LogC4 code values");
+    println!("65^3 bake of the example look: max |baked - exact| = {worst:e} LogC4 code values");
     // The worst points are the most saturated reds near the blue-channel floor; typical error is ~1e-4.
     assert!(worst < 1.0e-2, "{worst:e}");
 }

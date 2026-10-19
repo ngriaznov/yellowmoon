@@ -19,7 +19,7 @@
 //! # Parametric looks (`data/looks/builtin/*.json`)
 //!
 //! A [`ParametricLook`] is a luma tone curve, a CDL and three colour curves, all evaluated in LogC4,
-//! and is **baked** into a 33-point cube ([`ParametricLook::bake`], [`ParametricLook::to_transform`])
+//! and is **baked** into a 65-point cube ([`ParametricLook::bake`], [`ParametricLook::to_transform`])
 //! when loaded, like every parametric look, so the CPU and the GPU read it as an ordinary cube and
 //! need no kernel of their own for it.
 //!
@@ -777,7 +777,7 @@ impl ParametricLook {
         })?)
     }
 
-    /// Bakes the look into the 33-point cube used at load time and wraps it as a LogC4 look.
+    /// Bakes the look into the 65-point cube used at load time and wraps it as a LogC4 look.
     ///
     /// # Errors
     ///

@@ -22,7 +22,7 @@ expression: v
       "radius_px": 0.8
     },
     "tint": -24.96,
-    "white_ev": 0.7829
+    "white_ev": 0.4827
   },
   "black": [
     512.0,
@@ -80,7 +80,7 @@ expression: v
     "intensity": 100
   },
   "notes": [],
-  "pipeline_version": "0.4.1",
+  "pipeline_version": "0.4.2",
   "preview": "[preview location]",
   "raw": {
     "bits_per_sample": 14,

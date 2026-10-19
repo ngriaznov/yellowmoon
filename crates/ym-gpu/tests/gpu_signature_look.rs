@@ -1,5 +1,5 @@
 //! The built-in Signature look (`data/looks/builtin/signature.json`: a LogC4 luma curve and CDL
-//! saturation 1.20, baked into a 33-point cube) through the existing GPU look path, against the CPU
+//! saturation 1.45, baked into a 65-point cube) through the existing GPU look path, against the CPU
 //! reference `ym_color::display::ColorChain`.
 //!
 //! A parametric look is only a cube once loaded, so the colour kernel needs nothing new for it: this

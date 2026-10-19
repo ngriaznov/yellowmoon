@@ -86,7 +86,10 @@ fn the_shipped_builtin_folder_lists_neutral_then_signature() {
     assert_eq!(signature.input, LookInput::LogC4);
     let transform = library.transform(&signature.id).unwrap();
     assert!(!transform.is_identity());
-    assert_eq!(transform.lut().unwrap().cube.size(), 33);
+    assert_eq!(
+        transform.lut().unwrap().cube.size(),
+        ym_color::lut::BAKE_SIZE
+    );
     // Mid grey stays where it is; a warm colour is moved.
     let grey = LogC4([0.278_395_836_5; 3]);
     let out = transform.eval_logc4(grey).unwrap().0;
@@ -129,8 +132,11 @@ fn signature_is_picked_up_when_present_and_not_listed_when_absent() {
     assert_eq!(signature.name, "Test Signature");
     assert_eq!(signature.input, LookInput::LogC4);
     let transform = library.transform(&signature.id).unwrap();
-    // Baked to a 33-point cube by ym-color, and it does something.
-    assert_eq!(transform.lut().unwrap().cube.size(), 33);
+    // Baked to a cube of ym-color's bake size, and it does something.
+    assert_eq!(
+        transform.lut().unwrap().cube.size(),
+        ym_color::lut::BAKE_SIZE
+    );
     let v = LogC4([0.5, 0.4, 0.3]);
     assert_ne!(transform.eval_logc4(v).unwrap(), v);
 

@@ -1,11 +1,11 @@
 //! The `luma_curve` field of parametric looks and the built-in Signature look
 //! (`data/looks/builtin/signature.json`, `docs/08-looks.md`): a LogC4 luma curve applied as
-//! `v += T(L) - L`, then ASC CDL saturation 1.20, baked into a 33-point cube like every parametric
+//! `v += T(L) - L`, then ASC CDL saturation 1.45, baked into a 65-point cube like every parametric
 //! look (so the CPU and the GPU need no kernel of their own for it).
 //!
-//! The constants of Signature were chosen by eye (owner's decision of 2026-10-14); nothing here fits
+//! The constants of Signature were chosen by eye (owner's decisions of 2026-10-14 and 2026-10-19); nothing here fits
 //! them to anything. What is tested: the file parses to what the spec says, mid grey and neutrals
-//! stay where they are, the look is monotone, the 33-point cube follows the exact look to one 8-bit
+//! stay where they are, the look is monotone, the 65-point cube follows the exact look to one 8-bit
 //! display code, and intensity 0 and 100 are exactly Neutral and exactly the look.
 
 use std::sync::Arc;
@@ -56,8 +56,8 @@ fn the_file_is_the_documented_look() {
     assert_eq!(look.name(), "Signature");
     assert!(!look.is_identity());
 
-    // The 15 points of candidate B of the look preview, and CDL saturation 1.20 with no slope,
-    // offset or power.
+    // The 15 points of strength B of the richer look (2026-10-19), and CDL saturation 1.45 with no
+    // slope, offset or power.
     let curve = look.luma_curve().expect("a luma curve");
     assert_eq!(curve.points().len(), 15);
     assert_eq!((curve.points()[0].x, curve.points()[0].y), (0.0, 0.0));
@@ -76,13 +76,13 @@ fn the_file_is_the_documented_look() {
     assert_eq!(cdl.slope, [1.0; 3]);
     assert_eq!(cdl.offset, [0.0; 3]);
     assert_eq!(cdl.power, [1.0; 3]);
-    assert_eq!(cdl.saturation, 1.2);
+    assert_eq!(cdl.saturation, 1.45);
 
     let t = look.to_transform().expect("bakes");
     assert_eq!(t.input(), LookInput::LogC4);
     assert!(!t.is_identity() && !t.includes_display_rendering());
     assert_eq!(t.lut().expect("a cube").cube.size(), BAKE_SIZE);
-    assert_eq!(BAKE_SIZE, 33);
+    assert_eq!(BAKE_SIZE, 65);
 }
 
 /// Values of the same curve from an independent implementation (the research prototype's
@@ -93,17 +93,17 @@ fn the_curve_matches_an_independent_fritsch_carlson() {
     let look = signature();
     let curve = look.luma_curve().expect("curve");
     let reference = [
-        (0.05, 0.051_227_521_194),
-        (0.1, 0.098_359_371_533),
-        (0.15, 0.138_149_591_053),
-        (0.2, 0.186_774_749_491),
-        (0.3, 0.304_978_892_859),
-        (0.4, 0.426_405_137_793),
-        (0.5, 0.534_746_556_880),
-        (0.6, 0.633_876_589_670),
-        (0.7, 0.728_498_196_591),
-        (0.9, 0.909_792_994_686),
-        (0.99, 0.990_921_005_449),
+        (0.05, 0.051_963_027_995),
+        (0.1, 0.097_375_278_148),
+        (0.15, 0.131_039_532_110),
+        (0.2, 0.178_839_486_607),
+        (0.3, 0.307_966_051_363),
+        (0.4, 0.442_248_031_414),
+        (0.5, 0.555_594_702_383),
+        (0.6, 0.654_202_874_989),
+        (0.7, 0.745_597_508_054),
+        (0.9, 0.915_668_934_751),
+        (0.99, 0.991_473_620_644),
     ];
     for (x, want) in reference {
         let got = curve.eval(x);
@@ -122,51 +122,51 @@ fn the_look_matches_the_prototype_on_colour_triples() {
     let reference: [(Vec3, Vec3); 12] = [
         (
             [0.2784, 0.2784, 0.2784],
-            [0.278_400_862_532, 0.278_400_862_532, 0.278_400_862_532],
+            [0.278_401_380_022, 0.278_401_380_022, 0.278_401_380_022],
         ),
         (
             [0.5, 0.4, 0.3],
-            [0.548_566_520_293, 0.428_566_520_293, 0.308_566_520_293],
+            [0.588_881_313_069, 0.443_881_313_069, 0.298_881_313_069],
         ),
         (
             [0.3, 0.5, 0.35],
-            [0.304_933_550_257, 0.544_933_550_257, 0.364_933_550_257],
+            [0.288_829_407_110, 0.578_829_407_110, 0.361_329_407_110],
         ),
         (
             [0.3, 0.38, 0.52],
-            [0.302_048_349_134, 0.398_048_349_134, 0.566_048_349_134],
+            [0.293_773_958_030, 0.409_773_958_030, 0.612_773_958_030],
         ),
         (
             [0.45, 0.2, 0.55],
-            [0.489_574_259_369, 0.189_574_259_369, 0.609_574_259_369],
+            [0.535_624_027_917, 0.173_124_027_917, 0.680_624_027_917],
         ),
         (
             [0.6, 0.45, 0.35],
-            [0.659_923_109_255, 0.479_923_109_255, 0.359_923_109_255],
+            [0.712_170_072_898, 0.494_670_072_898, 0.349_670_072_898],
         ),
         (
             [0.15, 0.2, 0.18],
-            [0.128_622_369_341, 0.188_622_369_341, 0.164_622_369_341],
+            [0.110_865_092_856, 0.183_365_092_856, 0.154_365_092_856],
         ),
         (
             [0.7, 0.65, 0.6],
-            [0.739_388_506_806, 0.679_388_506_806, 0.619_388_506_806],
+            [0.768_609_412_174, 0.696_109_412_174, 0.623_609_412_174],
         ),
         (
             [0.4, 0.2, 0.1],
-            [0.438_047_474_941, 0.198_047_474_941, 0.078_047_474_941],
+            [0.482_286_778_147, 0.192_286_778_147, 0.047_286_778_147],
         ),
         (
             [0.1, 0.1, 0.1],
-            [0.098_359_371_533, 0.098_359_371_533, 0.098_359_371_533],
+            [0.097_375_278_148, 0.097_375_278_148, 0.097_375_278_148],
         ),
         (
             [0.9, 0.85, 0.8],
-            [0.921_793_026_886, 0.861_793_026_886, 0.801_793_026_886],
+            [0.940_456_439_720, 0.867_956_439_720, 0.795_456_439_720],
         ),
         (
             [0.35, 0.6, 0.2],
-            [0.350_780_893_505, 0.650_780_893_505, 0.170_780_893_505],
+            [0.329_413_617_631, 0.691_913_617_631, 0.111_913_617_631],
         ),
     ];
     for (input, want) in reference {
@@ -203,7 +203,7 @@ fn mid_grey_is_unchanged_to_1e_minus_6() {
     // The cube is a little less exact between its grid points; it is still far inside a display code.
     let baked = look.to_transform().expect("bakes");
     let b = baked.eval_logc4(LogC4([g; 3])).expect("log look").0;
-    println!("mid grey: 33^3 cube moves it by {:.2e}", b[0] - g);
+    println!("mid grey: 65^3 cube moves it by {:.2e}", b[0] - g);
     assert!((b[0] - g).abs() < 5e-4, "{b:?}");
 }
 
@@ -657,7 +657,7 @@ fn random_scene(n: usize, seed: u64) -> Vec<Vec3> {
 }
 
 #[test]
-fn the_33_cube_follows_the_exact_look_to_one_display_code_on_synthetic_scenes() {
+fn the_baked_cube_follows_the_exact_look_to_one_display_code_on_synthetic_scenes() {
     let scenes: [(&str, Vec<Vec3>); 3] = [
         ("neutral ramp -8 to +6 stops", neutral_ramp()),
         ("hue sweep, 4 saturations x 8 exposures", colour_sweep()),
@@ -669,19 +669,19 @@ fn the_33_cube_follows_the_exact_look_to_one_display_code_on_synthetic_scenes() 
     for (name, scene) in scenes {
         let (worst, at) = worst_display_code_error(&scene);
         println!(
-            "33^3 cube vs exact look, {name}: worst {worst:.3} display codes (8 bit sRGB) at {at:?}"
+            "65^3 cube vs exact look, {name}: worst {worst:.3} display codes (8 bit sRGB) at {at:?}"
         );
         assert!(worst <= 1.0, "{name}: {worst:.3} codes at {at:?}");
     }
 }
 
 /// The cube against the exact look in LogC4 code values, for the record. Near-neutral colours (the
-/// ones a photo is made of) are followed to about 1e-3. The largest errors are strongly saturated
+/// ones a photo is made of) are followed to about 6e-4. The largest errors are strongly saturated
 /// colours with one channel far above the others (here a blue code of 0.93 next to a red of 0.34, a
 /// ratio of hundreds in linear light): the AWG4 luminance row has a negative blue entry, so `L` falls and bends quickly
-/// there, finer than the 1/32 grid. No display shows such a colour.
+/// there, finer than the 1/64 grid. No display shows such a colour.
 #[test]
-fn the_33_cube_error_in_logc4_values() {
+fn the_baked_cube_error_in_logc4_values() {
     let look = signature();
     let baked = look.to_transform().expect("bakes");
     let mut rng = Rng(99);
@@ -705,7 +705,7 @@ fn the_33_cube_error_in_logc4_values() {
         }
     }
     println!(
-        "33^3 cube of Signature: worst |cube - exact| {worst:.2e} at {worst_at:?}; near-neutral colours {worst_neutralish:.2e} (LogC4 code values)"
+        "65^3 cube of Signature: worst |cube - exact| {worst:.2e} at {worst_at:?}; near-neutral colours {worst_neutralish:.2e} (LogC4 code values)"
     );
     assert!(worst < 5e-2, "{worst:e}");
     assert!(worst_neutralish < 2e-3, "{worst_neutralish:e}");

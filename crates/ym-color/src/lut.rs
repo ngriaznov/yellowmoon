@@ -8,7 +8,7 @@
 //!   interpolation, input clamped to its domain.
 //! * [`Lut`]: an optional shaper followed by a cube, the form a `.cube` file takes.
 //! * [`Lut3d::bake`]: samples any function on the grid, which is how parametric looks become a
-//!   33-point cube (see [`crate::look`]).
+//!   65-point cube (see [`crate::look`]).
 //! * [`Lut3d::to_cube_string`]: writes a `.cube` file that [`crate::cube::parse`] reads back exactly.
 
 use std::fmt::Write as _;
@@ -16,8 +16,10 @@ use std::fmt::Write as _;
 use crate::consts::Vec3;
 use crate::cube::MAX_3D_SIZE;
 
-/// Size of the cube that parametric built-in looks are baked into.
-pub const BAKE_SIZE: usize = 33;
+/// Size of the cube that parametric built-in looks are baked into. 65 points (it was 33 until the
+/// richer Signature look of 2026-10-19, whose steeper luma curve a 33-point cube followed only to
+/// 1.35 display codes on saturated colours; the error falls with the square of the spacing).
+pub const BAKE_SIZE: usize = 65;
 
 fn lerp3(a: Vec3, b: Vec3, t: f64) -> Vec3 {
     [
