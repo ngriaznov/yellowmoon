@@ -149,6 +149,24 @@ fn nothing_leaves_the_device_above_the_alexa_clip() {
     }
 }
 
+/// Which way Contrast moves every channel of a pixel whose luma is `l` as the control rises: away
+/// from grey between black and the top code value (+1 above grey, -1 below), toward the end beyond
+/// them (the line of slope `1 / k`); at grey, black and the top code value nothing moves.
+fn contrast_direction(l: f64) -> f64 {
+    let side = if l > LOGC4_GRAY {
+        1.0
+    } else if l < LOGC4_GRAY {
+        -1.0
+    } else {
+        0.0
+    };
+    if (CONTRAST_BLACK..=CONTRAST_TOP).contains(&l) {
+        side
+    } else {
+        -side
+    }
+}
+
 fn grade_chain(g: GradeParams) -> ChainParams {
     let mut p = ChainParams::new(IDENTITY, identity_tone());
     p.grade = g;
@@ -231,16 +249,10 @@ fn contrast_saturation_and_color_balance_are_monotone_in_their_control() {
             let out = run(dev, &grade_chain(g), &px, Stop::C9);
             for (i, (a, b)) in prev.iter().zip(&out).enumerate() {
                 let l = lumas[i];
-                let dir = if l > CONTRAST_TOP || (l < LOGC4_GRAY && l >= CONTRAST_BLACK) {
-                    -1.0
-                } else if l < CONTRAST_BLACK || l > LOGC4_GRAY {
-                    1.0
-                } else {
-                    0.0
-                };
+                let dir = contrast_direction(l);
                 for ch in 0..3 {
                     assert!(
-                        (b[ch] - a[ch]) * dir >= -2e-6,
+                        f64::from(b[ch] - a[ch]) * dir >= -2e-6,
                         "{:?} contrast: pixel {i} ch {ch}: {} -> {} (luma {l})",
                         dev.mode,
                         a[ch],

@@ -564,6 +564,24 @@ fn sample_pixels() -> Vec<(Vec3, f64)> {
     out
 }
 
+/// Which way Contrast moves every channel of a pixel whose luma is `l` as the control rises: away
+/// from grey between black and the top code value (+1 above grey, -1 below), toward the end beyond
+/// them (the line of slope `1 / k`); at grey, black and the top code value nothing moves.
+fn contrast_direction(l: f64) -> f64 {
+    let side = if l > LOGC4_GRAY {
+        1.0
+    } else if l < LOGC4_GRAY {
+        -1.0
+    } else {
+        0.0
+    };
+    if (CONTRAST_BLACK..=CONTRAST_TOP).contains(&l) {
+        side
+    } else {
+        -side
+    }
+}
+
 fn sweep(set: impl Fn(&mut GradeParams, f64)) -> Vec<Grade> {
     (-100..=100)
         .step_by(5)
@@ -605,13 +623,7 @@ fn every_scalar_control_is_monotone_in_its_value() {
     let grades = sweep(|p, x| p.contrast = x);
     let mut directions = [0usize; 3];
     for (v, l) in sample_pixels() {
-        let dir = if l > CONTRAST_TOP || (l < LOGC4_GRAY && l >= CONTRAST_BLACK) {
-            -1.0
-        } else if l < CONTRAST_BLACK || l > LOGC4_GRAY {
-            1.0
-        } else {
-            0.0
-        };
+        let dir = contrast_direction(l);
         directions[(dir + 1.0) as usize] += 1;
         let mut prev = grades[0].apply(LogC4(v), l).0;
         for g in &grades[1..] {

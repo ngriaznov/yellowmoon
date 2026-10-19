@@ -11,7 +11,7 @@ moves the entries below from Unreleased into a dated section for that version.
 
 ### Changed
 
-- **Contrast** works around mid grey as before but no longer pushes the darkest and brightest tones past black and white: it bends toward them instead, so they stay where they are. Colours keep their hue as contrast changes.
+- **Contrast** works around mid grey as before but no longer pushes the darkest and brightest tones past black and white: it bends toward them instead, so they stay where they are. Colours keep their hue as contrast changes, and more contrast no longer adds saturation of its own.
 - **Saturation** no longer makes colours darker. More saturation makes colours stronger at the same brightness, and less makes them greyer, down to grey at -100. Muted colours gain the most, colours that are already strong gain less, and no colour is pushed past black. The Signature look and other looks are unchanged. Photos with Contrast and Saturation at 0 render exactly as before (pipeline 0.4.3).
 - The Signature look, the default look for new photos, is richer: more contrast (a steeper curve around mid grey, darker shadows, brighter lights) and more colour (saturation 1.45, was 1.20). Mid grey stays where it was. Built-in looks are now prepared at a finer grid of 65 points, so the stronger curve stays smooth (pipeline 0.4.2).
 - Output sharpening: the halo limiter no longer switches on tiny differences, so the graphics card and the CPU sharpen hard edges and clipped areas alike. Sharpened pictures change very slightly at a few edge pixels (pipeline 0.4.1).

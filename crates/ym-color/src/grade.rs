@@ -29,8 +29,9 @@
 //!
 //! `T` is continuous, has a continuous slope (`k` at grey from both sides, `1 / k` at both ends) and
 //! is increasing for all `x`. The change is one common offset `T(L) - L` added to all three
-//! channels: where LogC4 is logarithmic (above its toe) a common offset is a common gain in linear
-//! light, so the channel ratios, and with them the hue, are kept, while the luma follows `T`. The
+//! channels: on LogC4's log segment a common offset multiplies `x + 64 / a_LogC4` (`x + 0.029`) by a
+//! common gain, which is a common gain in linear light wherever `x` is well above 0.029, so the
+//! channel ratios, and with them the hue, are kept, while the luma follows `T`. The
 //! slope at grey is the one the old control had (`2^(0.6 c / 100)` about grey), so the slider feels
 //! the same around mid grey; unlike the old control, black and the top code value stay where they
 //! are, and the slope toward them flattens (`c > 0`) or steepens (`c < 0`) instead of the whole
@@ -405,10 +406,11 @@ impl Grade {
             }
         }
         // 5. Saturation: the chroma scaled about the luminance, in linear AWG4.
-        if self.saturation_factor != 1.0 && out.iter().all(|&c| c <= SATURATION_CODE_LIMIT) {
-            if let Some(rgb) = saturate_rgb(logc4_decode_rgb(out), self.saturation_factor) {
-                out = logc4_encode_rgb(rgb);
-            }
+        if self.saturation_factor != 1.0
+            && out.iter().all(|&c| c <= SATURATION_CODE_LIMIT)
+            && let Some(rgb) = saturate_rgb(logc4_decode_rgb(out), self.saturation_factor)
+        {
+            out = logc4_encode_rgb(rgb);
         }
         LogC4(out)
     }
