@@ -74,6 +74,7 @@ use ym_core::pipeline::{DeviceFrame, RenderedFrame};
 use ym_gpu::device::Gpu;
 
 use crate::perf::{self, Drawn};
+use crate::present::{self, FRAME_FORMAT, SURFACE_FORMAT};
 use crate::viewport::FrameSink;
 use crate::wire::{ViewportBackendKind, ViewportRect};
 
@@ -94,56 +95,6 @@ const PAPER_SRGB: [f64; 3] = [
 
 /// How long creating the view on the main thread may take before we give up and use the fallback.
 const MAIN_THREAD_TIMEOUT: Duration = Duration::from_secs(5);
-
-/// The texture format of the surface: what the core's 8-bit frames are drawn into. A non-sRGB
-/// format, so that the shader's output is written as it is (the frame is already encoded).
-const SURFACE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8Unorm;
-
-/// The texture a host frame is uploaded to: the bytes of the core's frame, not decoded.
-const FRAME_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
-
-/// One triangle that covers the whole target, shared by both pipelines.
-const VERTEX: &str = r"
-@vertex
-fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
-    let corners = array<vec2<f32>, 3>(vec2(-1.0, -1.0), vec2(3.0, -1.0), vec2(-1.0, 3.0));
-    return vec4<f32>(corners[i], 0.0, 1.0);
-}
-";
-
-/// Draws an uploaded host frame texel for texel (the frame and the surface have the same size).
-const HOST_FRAGMENT: &str = r"
-@group(0) @binding(0) var frame: texture_2d<f32>;
-
-@fragment
-fn fs(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
-    let size = vec2<i32>(textureDimensions(frame));
-    let at = clamp(vec2<i32>(pos.xy), vec2<i32>(0, 0), size - vec2<i32>(1, 1));
-    return textureLoad(frame, at, 0);
-}
-";
-
-/// Draws a frame the core's device kept texel for texel, from the view job's RGBA8 buffer: one
-/// `u32` per pixel, row-major, R in the low byte (`ym_core::pipeline::DeviceFrame`).
-/// `unpack4x8unorm` gives `c / 255` per channel, as the host pipeline's texture read does.
-const DEVICE_FRAGMENT: &str = r"
-struct Size {
-    width: u32,
-    height: u32,
-    pad0: u32,
-    pad1: u32,
-}
-
-@group(0) @binding(0) var<storage, read> frame: array<u32>;
-@group(0) @binding(1) var<uniform> size: Size;
-
-@fragment
-fn fs(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
-    let x = min(u32(pos.x), size.width - 1u);
-    let y = min(u32(pos.y), size.height - 1u);
-    return unpack4x8unorm(frame[y * size.width + x]);
-}
-";
 
 /// What [`FrameSink::present`] says when the sink has no surface any more (it was lost with the
 /// core's device and none of its own could be made).
@@ -184,19 +135,21 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// Runs `f` with the validation and out-of-memory errors of `device` captured on this thread, and
-/// turns one into an error of `f`. On the core's device an error nobody captures taints the device,
-/// which ends the renderer's use of it for the process (`ym_gpu::device`); a mistake of the
-/// viewport must stay the viewport's.
+/// Runs `f` with the validation, internal and out-of-memory errors of `device` captured on this
+/// thread, and turns one into an error of `f`. On the core's device an error nobody captures
+/// taints the device, which ends the renderer's use of it for the process (`ym_gpu::device`); a
+/// mistake of the viewport must stay the viewport's.
 fn captured<T>(device: &wgpu::Device, f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
     let memory = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+    let internal = device.push_error_scope(wgpu::ErrorFilter::Internal);
     let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
     let result = f();
-    // The inner scope first.
+    // The innermost scope first.
     let invalid = pollster::block_on(validation.pop());
+    let broken = pollster::block_on(internal.pop());
     let out_of_memory = pollster::block_on(memory.pop());
     let value = result?;
-    match invalid.or(out_of_memory) {
+    match invalid.or(broken).or(out_of_memory) {
         Some(e) => Err(format!(
             "the graphics device refused the viewport's work: {e}"
         )),
@@ -298,66 +251,11 @@ struct DevicePipe {
     gpu: Weak<Gpu>,
 }
 
-/// A full-screen-triangle pipeline with `fragment` and `layout`.
-fn pipeline(
-    device: &wgpu::Device,
-    label: &str,
-    fragment: &str,
-    layout: &wgpu::BindGroupLayout,
-) -> wgpu::RenderPipeline {
-    let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some(label),
-        source: wgpu::ShaderSource::Wgsl(format!("{VERTEX}{fragment}").into()),
-    });
-    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: Some(label),
-        bind_group_layouts: &[Some(layout)],
-        immediate_size: 0,
-    });
-    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some(label),
-        layout: Some(&pipeline_layout),
-        vertex: wgpu::VertexState {
-            module: &module,
-            entry_point: Some("vs"),
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
-            buffers: &[],
-        },
-        primitive: wgpu::PrimitiveState::default(),
-        depth_stencil: None,
-        multisample: wgpu::MultisampleState::default(),
-        fragment: Some(wgpu::FragmentState {
-            module: &module,
-            entry_point: Some("fs"),
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
-            targets: &[Some(wgpu::ColorTargetState {
-                format: SURFACE_FORMAT,
-                blend: None,
-                write_mask: wgpu::ColorWrites::ALL,
-            })],
-        }),
-        multiview_mask: None,
-        cache: None,
-    })
-}
-
 impl HostPipe {
     fn new(device: &wgpu::Device) -> Self {
-        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("frame"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Texture {
-                    sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                    view_dimension: wgpu::TextureViewDimension::D2,
-                    multisampled: false,
-                },
-                count: None,
-            }],
-        });
+        let layout = present::host_layout(device);
         Self {
-            pipeline: pipeline(device, "frame", HOST_FRAGMENT, &layout),
+            pipeline: present::host_pipeline(device, &layout),
             layout,
             frame: None,
         }
@@ -413,31 +311,7 @@ impl HostPipe {
 
 impl DevicePipe {
     fn new(device: &wgpu::Device, gpu: Weak<Gpu>) -> Self {
-        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("device frame"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-            ],
-        });
+        let layout = present::device_layout(device);
         let size = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("device frame size"),
             size: 16,
@@ -445,7 +319,7 @@ impl DevicePipe {
             mapped_at_creation: false,
         });
         Self {
-            pipeline: pipeline(device, "device frame", DEVICE_FRAGMENT, &layout),
+            pipeline: present::device_pipeline(device, &layout),
             layout,
             size,
             written: (0, 0),
@@ -463,9 +337,7 @@ impl DevicePipe {
         height: u32,
     ) -> wgpu::BindGroup {
         if self.written != (width, height) {
-            let words = [width, height, 0, 0];
-            let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
-            queue.write_buffer(&self.size, 0, &bytes);
+            queue.write_buffer(&self.size, 0, &present::size_uniform(width, height));
             self.written = (width, height);
         }
         device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -846,27 +718,7 @@ impl Draw {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("frame"),
             });
-        {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("frame"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &target_view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-            pass.set_pipeline(pipeline);
-            pass.set_bind_group(0, &bind_group, &[]);
-            pass.draw(0..3, 0..1);
-        }
+        present::encode_draw(&mut encoder, &target_view, pipeline, &bind_group);
         // On the core's device this is the core's queue: the pass runs after the view job that
         // wrote the buffer, which was submitted before the frame was handed over.
         self.queue.submit([encoder.finish()]);

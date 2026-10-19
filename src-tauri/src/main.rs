@@ -20,6 +20,8 @@ mod menu;
 #[cfg(target_os = "macos")]
 mod native;
 mod perf;
+#[cfg(target_os = "macos")]
+mod present;
 mod system;
 #[cfg(test)]
 mod testing;
