@@ -11,8 +11,9 @@
 //!   into a [`GpuSlot`]: the device when one is to be used, the reason when not, the adapter that was
 //!   seen, the stages and the memory budgets that apply. **Nothing else in the application, the
 //!   command line or the core creates a compute device** (`tests/gpu_policy.rs` scans the sources
-//!   for it); the native viewport of the Mac app keeps its own presentation device, which draws
-//!   frames and computes nothing.
+//!   for it). The native viewport of the Mac app draws with this device (`docs/17-gpu.md` section
+//!   16) and opens a presentation device of its own, which draws frames and computes nothing, only
+//!   when the core has none.
 //! * The device is asked for through an [`AdapterProbe`], so the decision (four policies against a
 //!   hardware adapter, a software adapter and none) is tested without a graphics card.
 //!

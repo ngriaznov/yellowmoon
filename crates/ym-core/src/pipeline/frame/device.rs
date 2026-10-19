@@ -17,6 +17,15 @@
 //! Output slider is one small job that sharpens and encodes it again ([`tail_job`]) and runs no
 //! sampler and no colour pass.
 //!
+//! # The device frame
+//!
+//! A request for the native viewport (`ViewSpec::output` is [`FrameOutput::Device`]) asks the jobs to
+//! keep the RGBA8 frame where the kernels wrote it: the job records the same passes, submits them and
+//! waits for them as before, but reads nothing back, and hands back the pool buffer itself
+//! ([`Rgba8::Device`]). The viewport draws that buffer into its surface on the same queue
+//! (`docs/17-gpu.md` section 16). The bands of a view cut into bands are gathered into one buffer on
+//! the device ([`gather_job`]); every other request reads back as before.
+//!
 //! # Which stage runs where
 //!
 //! [`ViewStages`] says what the device runs for a request, from the [`GpuStages`] the renderer was
@@ -57,10 +66,11 @@ use ym_gpu::kernels::copy::{Piece, encode_gather};
 use ym_gpu::kernels::encode::{C13, Encoding, encode_c13};
 use ym_gpu::kernels::output_sharpen::{FusedC13, PreparedSharpen};
 use ym_gpu::kernels::sampler::encode_sample;
+use ym_gpu::pool::PooledBuffer;
 use ym_gpu::queue::{CancelToken, JobSpec, Priority};
-use ym_gpu::stream::PassList;
+use ym_gpu::stream::{PassList, ReadId, upload_bytes};
 
-use super::{Job, ViewSpec};
+use super::{FrameOutput, Job, ViewSpec};
 use crate::app::gpu::GpuStages;
 use crate::pipeline::graph::ViewGpu;
 
@@ -114,6 +124,10 @@ pub(super) struct ViewRoute {
     /// renderer constant, not the device's limit, so that the cut does not depend on the machine:
     /// `docs/17-gpu.md` section 4).
     pub source_bytes: u64,
+    /// The largest RGBA8 frame the device can hold in one buffer and bind whole: what a frame cut
+    /// into bands may be to be gathered on the device ([`gather_job`]). The device's own limit: it
+    /// decides only where the finished bytes are, never the pixels.
+    pub frame_bytes: u64,
 }
 
 impl ViewRoute {
@@ -125,6 +139,12 @@ impl ViewRoute {
             token: job.cancel.clone(),
             band_bytes: job.options().view_band_bytes,
             source_bytes: job.options().view_band_bytes,
+            frame_bytes: {
+                let limits = &gpu.gpu.info().limits;
+                limits
+                    .max_storage_buffer_binding_size
+                    .min(limits.max_buffer_size)
+            },
             gpu: gpu.gpu,
         }
     }
@@ -331,6 +351,45 @@ impl DeviceDisplay {
     }
 }
 
+/// The RGBA8 frame a job made (`4 * width * height` bytes, row-major, the letterbox painted):
+/// read back, or kept on the device where the kernels wrote it (module notes, "The device frame").
+pub(crate) enum Rgba8 {
+    /// The bytes on the host.
+    Host(Vec<u8>),
+    /// The pool buffer the kernels wrote: the same bytes from offset 0 ([`PooledBuffer::size`] of
+    /// them).
+    Device(Arc<PooledBuffer>),
+}
+
+impl Rgba8 {
+    /// The size of the frame in bytes.
+    pub(crate) fn byte_len(&self) -> u64 {
+        match self {
+            Self::Host(bytes) => bytes.len() as u64,
+            Self::Device(buffer) => buffer.size(),
+        }
+    }
+}
+
+/// Whether a request keeps its RGBA8 frame on the device.
+fn keeps(output: FrameOutput) -> bool {
+    output == FrameOutput::Device
+}
+
+/// Submits the passes of a job that made the RGBA8 frame `dst`, waits for them and returns the
+/// frame: the readback `read` when there is one, else `dst` itself.
+fn finish_rgba(
+    passes: PassList<'_>,
+    dst: Arc<PooledBuffer>,
+    read: Option<ReadId>,
+) -> Result<Rgba8, GpuError> {
+    let mut done = passes.submit()?.finish()?;
+    Ok(match read {
+        Some(read) => Rgba8::Host(done.take(read)),
+        None => Rgba8::Device(dst),
+    })
+}
+
 // ---------------------------------------------------------------------------------------------
 // Recording
 // ---------------------------------------------------------------------------------------------
@@ -393,14 +452,15 @@ fn input_image(
 /// Records the tail over a resident display: C13 of the whole view first when the photo does not fill
 /// it (the pixels outside the stage's window are the letterbox, which the mask paints), then output
 /// sharpening fused with C13 over the photo's bounding box, writing its core into the same RGBA8
-/// buffer. Returns the buffer and the readback of it.
+/// buffer. Returns the buffer and, when `read`, the readback of it.
 fn record_tail(
     ctx: &GpuContext,
     passes: &mut PassList<'_>,
     display: &GpuImage,
     bounds: Option<Bounds>,
     tail: &TailWork,
-) -> Result<(Arc<ym_gpu::pool::PooledBuffer>, ym_gpu::stream::ReadId), GpuError> {
+    read: bool,
+) -> Result<(Arc<PooledBuffer>, Option<ReadId>), GpuError> {
     let (w, h) = tail.view;
     let halo = tail.halo;
     let view_rect = Rect::new(halo, halo, w, h);
@@ -447,7 +507,7 @@ fn record_tail(
             },
         )?;
     }
-    let read = passes.read(&dst, 0, bytes)?;
+    let read = read.then(|| passes.read(&dst, 0, bytes)).transpose()?;
     Ok((dst, read))
 }
 
@@ -468,6 +528,8 @@ pub(super) struct PlainJob {
     pub background: [u8; 3],
     /// The place of the frame's pixel (0, 0) in the picture the dither is counted in.
     pub origin: (usize, usize),
+    /// Where the finished frame goes.
+    pub output: FrameOutput,
 }
 
 /// The RGBA8 frame of a [`PlainJob`].
@@ -475,7 +537,7 @@ pub(super) fn plain_job(
     ctx: &GpuContext,
     token: &CancelToken,
     job: &PlainJob,
-) -> Result<Vec<u8>, GpuError> {
+) -> Result<Rgba8, GpuError> {
     token.check()?;
     let mut passes = PassList::new(ctx, "view plain");
     let sampled = input_image(ctx, &mut passes, &job.input)?;
@@ -495,10 +557,11 @@ pub(super) fn plain_job(
         w,
         (0, 0),
     )?;
-    let read = passes.read(&dst, 0, bytes)?;
+    let read = (!keeps(job.output))
+        .then(|| passes.read(&dst, 0, bytes))
+        .transpose()?;
     token.check()?;
-    let mut done = passes.submit()?.finish()?;
-    Ok(done.take(read))
+    finish_rgba(passes, dst, read)
 }
 
 /// A sharpened frame: sampler (or an upload), the colour pass to C12, then the tail on the device or
@@ -516,13 +579,15 @@ pub(super) struct DisplayJob {
     pub keep: bool,
     /// The device's identity, for the resident frame ([`ViewRoute::gpu_ref`]).
     pub gpu: Weak<Gpu>,
+    /// Where the RGBA8 frame of the tail goes.
+    pub output: FrameOutput,
 }
 
 /// What a [`DisplayJob`] made.
 #[derive(Default)]
 pub(super) struct DisplayOut {
     /// The RGBA8 frame, when the job ran the tail.
-    pub rgba: Option<Vec<u8>>,
+    pub rgba: Option<Rgba8>,
     /// The resident display-linear frame, when the job was asked to keep it.
     pub resident: Option<DeviceDisplay>,
     /// The display-linear frame read back (dense planar, `planes` planes), when the job had no tail.
@@ -559,7 +624,16 @@ pub(super) fn display_job(
     let tail_read = job
         .tail
         .as_ref()
-        .map(|tail| record_tail(ctx, &mut passes, &display, job.bounds, tail))
+        .map(|tail| {
+            record_tail(
+                ctx,
+                &mut passes,
+                &display,
+                job.bounds,
+                tail,
+                !keeps(job.output),
+            )
+        })
         .transpose()?;
     let planar_read = if job.tail.is_none() {
         Some(display.encode_read(&mut passes)?)
@@ -569,8 +643,11 @@ pub(super) fn display_job(
     token.check()?;
     let mut done = passes.submit()?.finish()?;
     let mut out = DisplayOut::default();
-    if let Some((_dst, read)) = tail_read {
-        out.rgba = Some(done.take(read));
+    if let Some((dst, read)) = tail_read {
+        out.rgba = Some(match read {
+            Some(read) => Rgba8::Host(done.take(read)),
+            None => Rgba8::Device(dst),
+        });
     }
     if let Some(read) = planar_read {
         let planes = display.planes;
@@ -587,15 +664,88 @@ pub(super) fn display_job(
 }
 
 /// The tail over a resident display: the slider's job.
+pub(super) struct TailJob {
+    /// The resident display-linear frame.
+    pub display: Arc<DeviceDisplay>,
+    /// The tail.
+    pub tail: TailWork,
+    /// Where the RGBA8 frame goes.
+    pub output: FrameOutput,
+}
+
+/// Runs a [`TailJob`].
 pub(super) fn tail_job(
     ctx: &GpuContext,
     token: &CancelToken,
-    (display, tail): &(Arc<DeviceDisplay>, TailWork),
-) -> Result<Vec<u8>, GpuError> {
+    job: &TailJob,
+) -> Result<Rgba8, GpuError> {
     token.check()?;
     let mut passes = PassList::new(ctx, "view tail");
-    let (_dst, read) = record_tail(ctx, &mut passes, &display.image, display.bounds, tail)?;
+    let (dst, read) = record_tail(
+        ctx,
+        &mut passes,
+        &job.display.image,
+        job.display.bounds,
+        &job.tail,
+        !keeps(job.output),
+    )?;
     token.check()?;
+    finish_rgba(passes, dst, read)
+}
+
+/// The bands of a view cut into bands, put together on the device: one RGBA8 buffer of `bytes`
+/// bytes, the bands' rows one after the other (a band is whole rows of the view, so it is one
+/// contiguous piece of the frame).
+pub(super) struct GatherJob {
+    /// The bands, top to bottom: the device's own, and the host's (a band that is nothing but
+    /// paper is painted on the host).
+    pub parts: Vec<Rgba8>,
+    /// The size of the frame.
+    pub bytes: u64,
+}
+
+/// Runs a [`GatherJob`]: a buffer copy per band the device made, an upload per band the host made.
+/// The copies move the bytes and change none.
+pub(super) fn gather_job(
+    ctx: &GpuContext,
+    token: &CancelToken,
+    job: &GatherJob,
+) -> Result<Rgba8, GpuError> {
+    token.check()?;
+    let total: u64 = job.parts.iter().map(Rgba8::byte_len).sum();
+    if total != job.bytes {
+        return Err(GpuError::InvalidInput(format!(
+            "the bands hold {total} bytes, the frame {}",
+            job.bytes
+        )));
+    }
+    let mut passes = PassList::new(ctx, "view bands");
+    let dst = passes.keep(ctx.pool().acquire("view rgba8", job.bytes, IMAGE_USAGE)?);
+    let mut at = 0;
+    for part in &job.parts {
+        match part {
+            Rgba8::Device(band) => {
+                passes
+                    .encoder()
+                    .copy_buffer_to_buffer(band, 0, &dst, at, band.size());
+            }
+            Rgba8::Host(bytes) => upload_bytes(ctx, &dst, at, bytes)?,
+        }
+        at += part.byte_len();
+    }
+    token.check()?;
+    finish_rgba(passes, dst, None)
+}
+
+/// Reads an RGBA8 frame the device kept back to the host (`DeviceFrame::read`).
+pub(crate) fn read_job(
+    ctx: &GpuContext,
+    token: &CancelToken,
+    buffer: &Arc<PooledBuffer>,
+) -> Result<Vec<u8>, GpuError> {
+    token.check()?;
+    let mut passes = PassList::new(ctx, "device frame readback");
+    let read = passes.read(buffer, 0, buffer.size())?;
     let mut done = passes.submit()?.finish()?;
     Ok(done.take(read))
 }
@@ -773,12 +923,18 @@ mod tests {
             background: [255, 255, 255],
             gpu_priority: Priority::Viewport,
             dither_origin: (0, 0),
+            output: FrameOutput::Device,
         };
         let bands = bands_of(&spec, 8);
         assert_eq!(bands.iter().map(|b| b.out_h).collect::<Vec<_>>(), [8, 8, 7]);
         let mut row = 0;
         for b in &bands {
             assert_eq!((b.out_w, b.k, b.cache), (40, 2, true));
+            assert_eq!(
+                b.output,
+                FrameOutput::Device,
+                "a band keeps the view's output"
+            );
             assert_eq!(b.dither_origin, (0, row));
             // The band's pixel (x, y) is the view's pixel (x, y + row): same place in the picture.
             for (x, y) in [(0.5, 0.5), (39.5, b.out_h as f64 - 0.5)] {

@@ -21,6 +21,7 @@ use ym_core::pipeline::PhotoSource;
 use ym_core::session::{
     EventSink, OpenOptions, PhotoId as CorePhotoId, SessionError, SessionEvent,
 };
+use ym_gpu::device::Gpu;
 use ym_gpu::queue::CancelToken;
 use ym_looks::import::Stage;
 use ym_looks::import::watch::WatchConfig;
@@ -156,17 +157,27 @@ fn touches_thumbnail(patch: &SettingsPatch) -> bool {
 impl AppApi {
     /// Builds the core and the viewport and starts the background threads.
     ///
+    /// The graphics device is opened first, and `make_sink` makes the viewport's sink with it (the
+    /// device the core renders with, `None` when the core uses the CPU): the native viewport draws
+    /// with that device, so a frame the core makes there is drawn from there
+    /// (`docs/01` §Native viewport).
+    ///
     /// # Errors
     ///
     /// [`AppError`] when the data folder cannot be read or a thread cannot start.
     pub fn start(
         config: AppConfig,
         emitter: Arc<dyn Emitter>,
-        sink: Arc<dyn FrameSink>,
+        make_sink: impl FnOnce(Option<&Arc<Gpu>>) -> Arc<dyn FrameSink>,
         frames: Arc<FrameStore>,
         elevate: Box<dyn Elevate + Send + Sync>,
         cli: Option<CliLink>,
     ) -> Result<Arc<Self>, AppError> {
+        let mut options = CoreOptions::new(config.data_root.clone(), config.app_root.clone());
+        // The device is opened here and nowhere else (`ym_core::app::gpu`), as `ym` opens it: the
+        // same policy, the same adapter, the same budgets. The viewport's sink is made with it.
+        let slot = open_app_gpu(config.gpu, options.render.budget);
+        let sink = make_sink(slot.gpu());
         let viewport = Viewport::new(Arc::clone(&emitter), sink);
         let shared = viewport.shared();
 
@@ -212,7 +223,6 @@ impl AppApi {
             })
         };
 
-        let mut options = CoreOptions::new(config.data_root.clone(), config.app_root.clone());
         options.session_events = session_events;
         options.export_events = export_events;
         options.home = config.home.clone();
@@ -220,9 +230,6 @@ impl AppApi {
         if let Some(threads) = config.decode_threads {
             options.decode_threads = threads;
         }
-        // The device is opened here and nowhere else (`ym_core::app::gpu`), as `ym` opens it: the
-        // same policy, the same adapter, the same budgets.
-        let slot = open_app_gpu(config.gpu, options.render.budget);
         slot.apply_to(&mut options.render);
         // The ground of the interface is dark: the letterbox of a viewport frame, a thumbnail and a look tile is that colour, as the
         // window behind the webview is (`native.rs`). Exports have no letterbox, so no file changes.

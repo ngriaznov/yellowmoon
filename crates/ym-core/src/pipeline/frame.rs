@@ -46,10 +46,20 @@
 //! under the stage stays resident on the device, so a move of the Output slider is one small job.
 //! The CPU stage, where it runs, is cut into strips that each look at the cancel token
 //! (`sharpen_photo`).
+//!
+//! # The device frame
+//!
+//! The native viewport asks for its frames with [`FrameOutput::Device`]
+//! ([`Renderer::viewport_frame_to`]): a frame the device makes is then not read back but handed over
+//! as a [`DeviceFrame`] (the pool buffer the kernels wrote), which the viewport draws straight into
+//! its surface on the same queue (`docs/17-gpu.md` section 16). The bytes are those of the readback.
+//! A frame the CPU makes (no device, a device error, a view magnified above 100 %) is a host frame
+//! whatever was asked; every other request reads back as before.
 
 mod device;
 mod export_tail;
 
+use std::borrow::Cow;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Weak};
 
@@ -62,12 +72,13 @@ use ym_gpu::cpu::resample::sample_catmull_rom;
 use ym_gpu::cpu::{Rect, RgbImage};
 use ym_gpu::device::{Gpu, GpuError};
 use ym_gpu::kernels::copy::Piece;
+use ym_gpu::pool::PooledBuffer;
 use ym_gpu::queue::{CancelToken, JobSpec, Priority};
 use ym_gpu::tail::{TailRoute, colour_device_tile_to_host, colour_tile_to_host};
 
 use self::device::{
-    Bounds, CameraSource, DeviceDisplay, DeviceInput, DisplayJob, PlainJob, TailWork, Upload,
-    ViewRoute,
+    Bounds, CameraSource, DeviceDisplay, DeviceInput, DisplayJob, GatherJob, PlainJob, Rgba8,
+    TailJob, TailWork, Upload, ViewRoute,
 };
 pub use self::export_tail::{BAND_DEPTH, GpuBands, TailRequest};
 use super::color::{GradePlan, PhotoSource};
@@ -87,12 +98,152 @@ pub struct RenderedFrame {
     /// Height in pixels.
     pub height: usize,
     /// `4 * width * height` bytes, row-major. Alpha is 255 everywhere (the letterbox is painted).
+    /// Empty when the frame stayed on the device ([`RenderedFrame::on_device`]).
     pub rgba: Vec<u8>,
+    /// The frame on the device, for a request that asked for one ([`FrameOutput::Device`]) and
+    /// that the device made; [`RenderedFrame::rgba`] is then empty. `None` for every other frame.
+    pub on_device: Option<DeviceFrame>,
     /// False when the frame was made from a coarser image than the zoom asks for because the
     /// full-resolution tiles were not ready ([`FrameOptions::coarse_only`]).
     pub sharp: bool,
     /// What the request did.
     pub report: RenderReport,
+}
+
+impl RenderedFrame {
+    /// The bytes the frame holds, on the host or on the device (what a cache of frames keeps
+    /// alive; the device pool's ledger counts the device's).
+    #[must_use]
+    pub fn bytes(&self) -> usize {
+        self.rgba.len()
+            + self
+                .on_device
+                .as_ref()
+                .map_or(0, |d| usize::try_from(d.byte_len()).unwrap_or(usize::MAX))
+    }
+
+    /// The RGBA8 bytes on the host: [`RenderedFrame::rgba`], or the device frame read back (one
+    /// device job; tests, and a viewport that cannot draw the device's buffer).
+    ///
+    /// # Errors
+    ///
+    /// The device's error when the frame is on a device that is gone or fails.
+    pub fn host_rgba(&self) -> Result<Cow<'_, [u8]>, GpuError> {
+        match &self.on_device {
+            Some(frame) => frame.read().map(Cow::Owned),
+            None => Ok(Cow::Borrowed(&self.rgba)),
+        }
+    }
+}
+
+/// Where a finished frame's bytes go (`docs/17-gpu.md` section 16).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FrameOutput {
+    /// Read back into [`RenderedFrame::rgba`]: every consumer but the native viewport.
+    #[default]
+    Host,
+    /// Kept on the device when the device makes the frame ([`RenderedFrame::on_device`]): the
+    /// native viewport, which draws it from there. A frame the CPU makes is a host frame anyway.
+    Device,
+}
+
+/// A finished RGBA8 frame that stayed on the device: the pool buffer the view job's kernels wrote,
+/// not read back (`docs/17-gpu.md` section 16). Its bytes are those [`RenderedFrame::rgba`] would
+/// hold: `4 * width * height` of them from offset 0, row-major, R, G, B, A per pixel (a
+/// little-endian `u32` per pixel with R in the low byte), Display P3 sRGB-encoded for a viewport.
+///
+/// The buffer is on loan from the device's pool: it counts against the device's memory budget while
+/// any clone of the frame lives, and goes back to the pool when the last one is dropped. Work that
+/// reads it (a present on the same queue) is submitted before the frame is dropped, and the queue
+/// runs it before any later job that is given the same buffer.
+#[derive(Clone)]
+pub struct DeviceFrame {
+    buffer: Arc<PooledBuffer>,
+    width: usize,
+    height: usize,
+    gpu: Weak<Gpu>,
+}
+
+impl std::fmt::Debug for DeviceFrame {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DeviceFrame")
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .field("buffer", &*self.buffer)
+            .finish_non_exhaustive()
+    }
+}
+
+impl PartialEq for DeviceFrame {
+    /// The same buffer (a frame served again from the cache is the same frame).
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.buffer, &other.buffer)
+            && (self.width, self.height) == (other.width, other.height)
+    }
+}
+
+impl DeviceFrame {
+    /// Width in pixels.
+    #[must_use]
+    pub fn width(&self) -> usize {
+        self.width
+    }
+
+    /// Height in pixels.
+    #[must_use]
+    pub fn height(&self) -> usize {
+        self.height
+    }
+
+    /// The size of the frame in bytes: `4 * width * height`.
+    #[must_use]
+    pub fn byte_len(&self) -> u64 {
+        4 * self.width as u64 * self.height as u64
+    }
+
+    /// The storage buffer that holds the frame: [`DeviceFrame::byte_len`] bytes from offset 0
+    /// (the wgpu buffer may be longer, its pool size class). [`PooledBuffer::binding`] binds exactly
+    /// the frame's bytes.
+    #[must_use]
+    pub fn buffer(&self) -> &PooledBuffer {
+        &self.buffer
+    }
+
+    /// Whether the frame lives on `gpu` (a [`Weak`] of the device handle: two handles are the same
+    /// device exactly when they point to the same allocation, which a live `Weak` keeps from being
+    /// reused).
+    #[must_use]
+    pub fn is_on(&self, gpu: &Weak<Gpu>) -> bool {
+        Weak::ptr_eq(&self.gpu, gpu)
+    }
+
+    /// The device the frame lives on, while it is there.
+    #[must_use]
+    pub fn device(&self) -> Option<Arc<Gpu>> {
+        self.gpu.upgrade()
+    }
+
+    /// Whether a request on `gpu` (the renderer's device now) may serve this frame from a cache:
+    /// the same device, and not lost.
+    fn usable_with(&self, gpu: Option<&Arc<Gpu>>) -> bool {
+        gpu.is_some_and(|g| self.is_on(&Arc::downgrade(g)) && !g.is_lost())
+    }
+
+    /// Reads the frame back to the host: one job of viewport priority on its device.
+    ///
+    /// # Errors
+    ///
+    /// [`GpuError::Shutdown`] when the device is gone, else the job's error.
+    pub fn read(&self) -> Result<Vec<u8>, GpuError> {
+        let gpu = self.device().ok_or(GpuError::Shutdown)?;
+        let buffer = Arc::clone(&self.buffer);
+        let bytes = usize::try_from(self.byte_len()).unwrap_or(usize::MAX);
+        let mut rgba = gpu.run(JobSpec::new(Priority::Viewport), move |ctx, token| {
+            device::read_job(ctx, token, &buffer)
+        })?;
+        rgba.truncate(bytes);
+        Ok(rgba)
+    }
 }
 
 /// The frame of a viewport state (an alias that names the use).
@@ -991,7 +1142,7 @@ fn magnify_and_encode(
 
 /// A finished frame and where it came from.
 struct Done {
-    rgba: Vec<u8>,
+    rgba: Rgba8,
     /// Where the colour chain ran.
     device: ComputeDevice,
     /// The reduction of the raw group.
@@ -1076,6 +1227,7 @@ fn plain_pass(
                 before: spec.before,
                 background: spec.background,
                 origin: spec.dither_origin,
+                output: spec.output,
             };
             let Some(rgba) = attempt(job, r.run(data, device::plain_job))? else {
                 return Ok(Flow::Cpu);
@@ -1097,7 +1249,7 @@ fn plain_pass(
     job.runs.color_passes += 1;
     job.timings.pass_ms += millis(started);
     Ok(Flow::Done(Done {
-        rgba,
+        rgba: Rgba8::Host(rgba),
         device: ComputeDevice::Cpu,
         scale,
         sharp,
@@ -1133,7 +1285,7 @@ impl StageWindow {
 /// RGBA8 frame when the tail ran in the same job, and where things ran.
 struct Built {
     display: Option<DisplayFrame>,
-    rgba: Option<Vec<u8>>,
+    rgba: Option<Rgba8>,
     scale: usize,
     sharp: bool,
     device: ComputeDevice,
@@ -1176,6 +1328,7 @@ fn build_display(
                 tail: plan.work.cloned(),
                 keep: plan.keep && plan.work.is_some(),
                 gpu: r.gpu_ref(),
+                output: read.output,
             };
             let Some(out) = attempt(job, r.run(data, device::display_job))? else {
                 return Ok(None);
@@ -1272,6 +1425,8 @@ fn build_display_in_bands(
             tail: None,
             keep: false,
             gpu: route.gpu_ref(),
+            // No tail: the job reads the display-linear frame back for the CPU, and makes no RGBA8.
+            output: FrameOutput::Host,
         };
         let Some(out) = attempt(job, route.run(data, device::display_job))? else {
             return Ok(None);
@@ -1351,7 +1506,7 @@ fn sharpened_pass(
         rgba.par_chunks_mut(4)
             .for_each(|d| d[..3].copy_from_slice(&spec.background));
         return Ok(Flow::Done(Done {
-            rgba,
+            rgba: Rgba8::Host(rgba),
             device: ComputeDevice::Cpu,
             scale: 1,
             sharp: true,
@@ -1383,7 +1538,7 @@ fn sharpened_pass(
         .filter(|d| !(spec.coarse_only && !d.sharp))
         .filter(|d| d.usable(tail_gpu.as_ref()));
     let (scale, sharp, device);
-    let mut rgba: Option<Vec<u8>> = None;
+    let mut rgba: Option<Rgba8> = None;
     let display: Option<Arc<DisplayFrame>>;
     match cached {
         Some(d) => {
@@ -1434,8 +1589,12 @@ fn sharpened_pass(
                     return Ok(Flow::Cpu);
                 };
                 let started = std::time::Instant::now();
-                let Some(rgba) = attempt(job, r.run((Arc::clone(d), tail), device::tail_job))?
-                else {
+                let data = TailJob {
+                    display: Arc::clone(d),
+                    tail,
+                    output: spec.output,
+                };
+                let Some(rgba) = attempt(job, r.run(data, device::tail_job))? else {
                     return Ok(Flow::Cpu);
                 };
                 job.runs.output_passes += 1;
@@ -1446,7 +1605,7 @@ fn sharpened_pass(
                 let Some(host) = display.host() else {
                     return Ok(Flow::Cpu);
                 };
-                match geometry.origin {
+                Rgba8::Host(match geometry.origin {
                     None => sharpen_and_encode(
                         job,
                         &host,
@@ -1458,7 +1617,7 @@ fn sharpened_pass(
                     Some(origin) => {
                         magnify_and_encode(job, &host, origin, sharpening, grade, spec, image)?
                     }
-                }
+                })
             }
         },
         // A pass that made neither a frame nor a display has nothing to finish: the CPU road.
@@ -1575,7 +1734,20 @@ fn banded(
         .map(|sh| whole_window(job, spec, sh))
         .transpose()?;
     let halo = sharpening.map_or(0, |s| s.halo);
-    let mut rgba = Vec::with_capacity(4 * spec.out_w * spec.out_h);
+    // The bands of a frame that stays on the device are gathered there, into one buffer the device
+    // can bind whole; a frame larger than that is read back band by band, as every frame is.
+    let frame_bytes = 4 * spec.out_w as u64 * spec.out_h as u64;
+    let host_bands;
+    let spec = if spec.output == FrameOutput::Device && frame_bytes > route.frame_bytes {
+        host_bands = ViewSpec {
+            output: FrameOutput::Host,
+            ..spec.clone()
+        };
+        &host_bands
+    } else {
+        spec
+    };
+    let mut parts = Vec::new();
     let (mut scale, mut sharp) = (1, true);
     let mut row = 0;
     for band in device::bands_of(spec, rows) {
@@ -1587,7 +1759,7 @@ fn banded(
         row += band.out_h;
         match whole(job, &band, grade, sharpening, Some(route), window)? {
             Flow::Done(done) if done.device == ComputeDevice::Gpu || done.paper => {
-                rgba.extend_from_slice(&done.rgba);
+                parts.push(done.rgba);
                 // A band of paper says nothing of the raw group; of the others the coarsest counts,
                 // as `sharp` says that one of them was made from less than the zoom asks for.
                 if !done.paper {
@@ -1598,6 +1770,24 @@ fn banded(
             Flow::Done(_) | Flow::Cpu => return Ok(Flow::Cpu),
         }
     }
+    let rgba = if parts.iter().any(|p| matches!(p, Rgba8::Device(_))) {
+        let data = GatherJob {
+            parts,
+            bytes: frame_bytes,
+        };
+        let Some(rgba) = attempt(job, route.run(data, device::gather_job))? else {
+            return Ok(Flow::Cpu);
+        };
+        rgba
+    } else {
+        let mut rgba = Vec::with_capacity(4 * spec.out_w * spec.out_h);
+        for part in parts {
+            if let Rgba8::Host(bytes) = part {
+                rgba.extend_from_slice(&bytes);
+            }
+        }
+        Rgba8::Host(rgba)
+    };
     Ok(Flow::Done(Done {
         rgba,
         device: ComputeDevice::Gpu,
@@ -1764,6 +1954,9 @@ pub(crate) struct ViewSpec {
     /// for a whole view, `(0, row)` for a band of one ([`device::bands_of`]), so that a band
     /// dithers as the same rows of the whole view do.
     pub dither_origin: (usize, usize),
+    /// Where the finished frame goes: [`FrameOutput::Device`] for the native viewport's frames
+    /// only.
+    pub output: FrameOutput,
 }
 
 /// The sampled camera RGB of a view and how it was found.
@@ -1936,6 +2129,11 @@ pub(crate) fn render_view(mut job: Job<'_>, spec: &ViewSpec) -> Result<RenderedF
     if let Some(key) = &cache_key
         && let Some(hit) = job.g.cached_frame(key)
         && !(spec.coarse_only && !hit.sharp)
+        // A frame kept on the device serves a request on that device only, while it works.
+        && hit
+            .on_device
+            .as_ref()
+            .is_none_or(|d| d.usable_with(job.options().gpu.as_ref()))
     {
         job.runs.frame_hits += 1;
         let (scale, device) = (hit.report.scale, hit.report.device);
@@ -1946,13 +2144,34 @@ pub(crate) fn render_view(mut job: Job<'_>, spec: &ViewSpec) -> Result<RenderedF
     let route = job
         .view_gpu()?
         .map(|gpu| ViewRoute::new(&job, gpu, spec.gpu_priority));
+    let gpu = route.as_ref().map(ViewRoute::gpu_ref);
     let done = render_pass(&mut job, spec, &grade, sharpening.as_ref(), route)?;
+    let (rgba, on_device) = match (done.rgba, gpu) {
+        (Rgba8::Host(rgba), _) => (rgba, None),
+        (Rgba8::Device(buffer), Some(gpu)) => (
+            Vec::new(),
+            Some(DeviceFrame {
+                buffer,
+                width: spec.out_w,
+                height: spec.out_h,
+                gpu,
+            }),
+        ),
+        // Only a device job keeps a frame on the device, and a request without a route runs none.
+        (Rgba8::Device(_), None) => {
+            return Err(RenderError::Image(
+                "This frame can't be shown: it was made on a graphics card the request did not use."
+                    .to_owned(),
+            ));
+        }
+    };
     let graph = Arc::clone(&job.g);
     let report = job.finish(done.scale, done.device, spec.target);
     let frame = RenderedFrame {
         width: spec.out_w,
         height: spec.out_h,
-        rgba: done.rgba,
+        rgba,
+        on_device,
         sharp: done.sharp,
         report,
     };
@@ -1998,6 +2217,11 @@ fn frame_key(
     if sharpening.is_some() {
         key.push_str(&format!("|os{:?}", job.src.settings.output_sharpening));
     }
+    // A frame kept on the device and one read back are the same pixels in different places; each
+    // request is served the kind it asked for.
+    if spec.output == FrameOutput::Device {
+        key.push_str("|device");
+    }
     Ok(key)
 }
 
@@ -2033,6 +2257,25 @@ impl Renderer {
         options: &FrameOptions,
         cancel: &CancelToken,
     ) -> Result<RenderedFrame, RenderError> {
+        self.viewport_frame_to(src, state, options, FrameOutput::Host, cancel)
+    }
+
+    /// [`Renderer::viewport_frame`] with the place the frame's bytes go: with
+    /// [`FrameOutput::Device`] a frame the device makes stays there ([`RenderedFrame::on_device`],
+    /// the same bytes the readback gives), for the native viewport to draw straight from the
+    /// device's memory (`docs/17-gpu.md` section 16).
+    ///
+    /// # Errors
+    ///
+    /// [`RenderError`] for unusable data or a cancelled job.
+    pub fn viewport_frame_to(
+        &self,
+        src: &PhotoSource,
+        state: &ViewportState,
+        options: &FrameOptions,
+        output: FrameOutput,
+        cancel: &CancelToken,
+    ) -> Result<RenderedFrame, RenderError> {
         let before_src;
         let src = if state.before {
             before_src = src.for_before_view();
@@ -2056,6 +2299,7 @@ impl Renderer {
             background: self.options().background,
             gpu_priority: Priority::Viewport,
             dither_origin: (0, 0),
+            output,
         };
         let mut frame = render_view(job, &spec)?;
         // The zoom belongs to the request, not to the pixels (a cached frame is served for the
@@ -2157,6 +2401,7 @@ impl Renderer {
             background: self.options().background,
             gpu_priority: Priority::Viewport,
             dither_origin: (0, 0),
+            output: FrameOutput::Host,
         };
         let grade = job.grade(OutputTarget::Viewport, false)?;
         let view = sample_view_in_place(&mut job, &spec)?;

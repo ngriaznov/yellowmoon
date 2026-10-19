@@ -1121,6 +1121,14 @@ impl Gpu {
         self.shared.health.reason()
     }
 
+    /// The device's lost and tainted flags as they stand (no callbacks are delivered first, unlike
+    /// [`Gpu::is_lost`]). [`DeviceHealth::lost`] alone says whether the wgpu device itself is gone,
+    /// which is what a presenter that draws with the device (the native viewport) needs to know: a
+    /// tainted device no longer computes for the renderer, but it still draws.
+    pub fn health(&self) -> &DeviceHealth {
+        &self.shared.health
+    }
+
     /// A snapshot of the upload, readback, submission and dispatch counters
     /// ([`GpuContext::counters`]).
     pub fn counters(&self) -> CounterSnapshot {

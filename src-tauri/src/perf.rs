@@ -11,8 +11,10 @@
 //!   histogram of all waits is logged every 5 s.
 //! * **The viewport.** [`viewport`] counts the requests the worker gets, the rounds it runs, the
 //!   frames it presents and the rounds that were cancelled, and keeps the time from a request to
-//!   the frame that shows it (p50 and p95), the time the native sink waits for a drawable and the
-//!   time it spends uploading a frame.
+//!   the frame that shows it (p50 and p95), the time the native sink waits for a drawable, the
+//!   time it spends uploading a frame and the time it takes to record and submit its pass. The
+//!   native sink also counts how it drew each frame ([`Drawn`]): straight from the core's device
+//!   (zero-copy, no upload) or uploaded from the host.
 //! * **Handlers.** `viewport_set_rect` (it runs on the main thread) and the `ym-frame` handler are
 //!   timed with [`timer`].
 //!
@@ -114,15 +116,18 @@ pub enum Timed {
     Acquire,
     /// The native sink uploading a frame to its texture.
     Upload,
+    /// The native sink recording its pass into the drawable and submitting it (with the present).
+    Pass,
 }
 
 impl Timed {
     /// Every kind, in the order of the log line.
-    const ALL: [Self; 4] = [
+    const ALL: [Self; 5] = [
         Self::SetRect,
         Self::FrameHandler,
         Self::Acquire,
         Self::Upload,
+        Self::Pass,
     ];
 
     fn name(self) -> &'static str {
@@ -131,6 +136,7 @@ impl Timed {
             Self::FrameHandler => "ym-frame",
             Self::Acquire => "acquire",
             Self::Upload => "upload",
+            Self::Pass => "pass",
         }
     }
 
@@ -140,8 +146,21 @@ impl Timed {
             Self::FrameHandler => 1,
             Self::Acquire => 2,
             Self::Upload => 3,
+            Self::Pass => 4,
         }
     }
+}
+
+/// How the native sink drew a frame.
+// Only the native sink (macOS) draws.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Drawn {
+    /// Straight from the buffer the core's device wrote it to: no upload, no copy through the
+    /// processor.
+    ZeroCopy,
+    /// From host bytes, uploaded to a texture first.
+    Uploaded,
 }
 
 /// Count, total and worst of a kind of timing, for lock-free recording.
@@ -217,8 +236,10 @@ pub struct Counters {
     presented: AtomicU64,
     cancelled: AtomicU64,
     tiles_cancelled: AtomicU64,
+    zero_copy: AtomicU64,
+    uploaded: AtomicU64,
     latencies_us: Mutex<Vec<u32>>,
-    timed: [Stat; 4],
+    timed: [Stat; 5],
 }
 
 impl Counters {
@@ -230,8 +251,16 @@ impl Counters {
             presented: AtomicU64::new(0),
             cancelled: AtomicU64::new(0),
             tiles_cancelled: AtomicU64::new(0),
+            zero_copy: AtomicU64::new(0),
+            uploaded: AtomicU64::new(0),
             latencies_us: Mutex::new(Vec::new()),
-            timed: [Stat::new(), Stat::new(), Stat::new(), Stat::new()],
+            timed: [
+                Stat::new(),
+                Stat::new(),
+                Stat::new(),
+                Stat::new(),
+                Stat::new(),
+            ],
         }
     }
 
@@ -290,6 +319,18 @@ impl Counters {
         }
     }
 
+    /// The native sink drew a frame, the way `how` says.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    pub fn drawn(&self, how: Drawn) {
+        if self.live() {
+            match how {
+                Drawn::ZeroCopy => &self.zero_copy,
+                Drawn::Uploaded => &self.uploaded,
+            }
+            .fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
     /// Adds one timing.
     pub fn time(&self, kind: Timed, d: Duration) {
         if self.live() {
@@ -312,6 +353,8 @@ impl Counters {
             presented: self.presented.swap(0, Ordering::Relaxed),
             cancelled: self.cancelled.swap(0, Ordering::Relaxed),
             tiles_cancelled: self.tiles_cancelled.swap(0, Ordering::Relaxed),
+            zero_copy: self.zero_copy.swap(0, Ordering::Relaxed),
+            uploaded: self.uploaded.swap(0, Ordering::Relaxed),
             latency_us,
             timed: Timed::ALL.map(|kind| self.timed[kind.index()].take()),
         }
@@ -345,10 +388,14 @@ pub struct Window {
     pub cancelled: u64,
     /// Sharp-tile passes given up for a newer request.
     pub tiles_cancelled: u64,
+    /// Frames the native sink drew straight from the core's device ([`Drawn::ZeroCopy`]).
+    pub zero_copy: u64,
+    /// Frames the native sink uploaded from the host first ([`Drawn::Uploaded`]).
+    pub uploaded: u64,
     /// Request-to-present times in microseconds, sorted.
     pub latency_us: Vec<u32>,
     /// Timings, in the order of [`Timed::ALL`].
-    pub timed: [StatWindow; 4],
+    pub timed: [StatWindow; 5],
 }
 
 impl Window {
@@ -360,6 +407,8 @@ impl Window {
             && self.presented == 0
             && self.cancelled == 0
             && self.tiles_cancelled == 0
+            && self.zero_copy == 0
+            && self.uploaded == 0
             && self.timed.iter().all(|t| t.count == 0)
     }
 
@@ -390,6 +439,13 @@ impl Window {
                 ));
             }
             _ => line.push_str(", request to present none"),
+        }
+        // Only a native sink draws; the fallback viewport's lines leave this out.
+        if self.zero_copy > 0 || self.uploaded > 0 {
+            line.push_str(&format!(
+                ", drawn zero-copy {} uploaded {}",
+                self.zero_copy, self.uploaded
+            ));
         }
         for (kind, stat) in Timed::ALL.into_iter().zip(&self.timed) {
             if stat.count > 0 {
@@ -628,12 +684,16 @@ mod tests {
         counters.tiles_cancelled();
         counters.time(Timed::Upload, ms(2));
         counters.time(Timed::Upload, ms(4));
+        counters.drawn(Drawn::ZeroCopy);
+        counters.drawn(Drawn::ZeroCopy);
+        counters.drawn(Drawn::Uploaded);
         let window = counters.take();
         assert_eq!(
             (window.requests, window.rounds, window.presented),
             (5, 2, 2)
         );
         assert_eq!((window.cancelled, window.tiles_cancelled), (1, 1));
+        assert_eq!((window.zero_copy, window.uploaded), (2, 1));
         assert_eq!(
             window.latency_us,
             vec![20_000],
@@ -650,6 +710,10 @@ mod tests {
         let again = counters.take();
         assert!(again.is_idle(), "{again:?}");
         assert_eq!(again.latency_ms(50), None);
+
+        // A window in which the sink only drew is not idle.
+        counters.drawn(Drawn::Uploaded);
+        assert!(!counters.take().is_idle());
     }
 
     #[test]
@@ -681,6 +745,8 @@ mod tests {
         counters.round();
         counters.present(Some(ms(12)));
         counters.time(Timed::Acquire, ms(6));
+        counters.time(Timed::Pass, ms(1));
+        counters.drawn(Drawn::ZeroCopy);
         let line = counters.take().line();
         for part in [
             "requests 1",
@@ -689,13 +755,19 @@ mod tests {
             "cancelled 0",
             "p50 12.0 ms",
             "p95 12.0 ms",
+            "drawn zero-copy 1 uploaded 0",
             "acquire mean 6.00 ms max 6.00 ms (n 1)",
+            "pass mean 1.00 ms max 1.00 ms (n 1)",
         ] {
             assert!(line.contains(part), "{part} is not in {line}");
         }
         assert!(
-            !line.contains("upload"),
+            !line.contains("upload mean"),
             "a kind that was not timed is left out: {line}"
+        );
+        assert!(
+            !Counters::new().take().line().contains("drawn"),
+            "a sink that drew nothing (the fallback viewport) is left out"
         );
         assert!(!line.contains('\n'));
         assert!(

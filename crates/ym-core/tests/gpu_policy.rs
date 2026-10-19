@@ -124,9 +124,10 @@ fn no_code_outside_open_gpu_creates_a_device() {
     let allowed = |file: &str, needle: &str| {
         // The only place: `SystemProbe` calls `Gpu::start`.
         (file.ends_with("crates/ym-core/src/app/gpu.rs") && needle == "Gpu::start(")
-            // The Mac's native viewport owns a *presentation* device: it draws the RGBA8 frames
-            // the core made into the window's surface and computes nothing (`docs/01-architecture.md`,
-            // "Native viewport").
+            // The Mac's native viewport draws with the core's device, and owns a *presentation*
+            // device only when the core has none (or lost it): it draws the RGBA8 frames the core
+            // made into the window's surface and computes nothing (`docs/01-architecture.md`,
+            // "Native viewport"; `docs/17-gpu.md` section 16).
             || file.ends_with("src-tauri/src/native.rs")
     };
     let mut offences = Vec::new();
