@@ -168,6 +168,44 @@ fn contrast_curve(x: f32, k: f32) -> f32 {
     return CONTRAST_BLACK + (x - CONTRAST_BLACK) / k;
 }
 
+// Contrast with its colour step (ym_color::grade::contrast_pixel, docs/02 C9): u = v + T(l) - l on all
+// three channels, then u's chroma c_u = (e1.u, e2.u) scaled by f = 1 + beta (|c_p| / |c_u| - 1), with
+// c_p the chroma of T on each channel of v and beta = CONTRAST_COLOR, keeping its direction:
+// u + (f - 1) (c_u.x e1 + c_u.y e2). |c_u| below CONTRAST_NEUTRAL leaves the pixel at u. As e1 and e2
+// sum to 0, c_u is the chroma of v, and it is taken from v (as on the CPU): in f32 the rounding of the
+// offset would otherwise add to it.
+//
+// Fast-math (K8). Nothing rests on a rounding at the 2e-4 gate, nor on an infinity or a NaN:
+// * an exact neutral (equal channels) returns u first, whatever a fused dot product makes of its chroma
+//   (with FMA, e1.v of three equal codes can round to a few 1e-9 instead of 0);
+// * the neutral test squares c_u only where both components are below CONTRAST_NEUTRAL (1e-9), so the
+//   square cannot overflow, and one that underflows to 0 is a neutral anyway;
+// * both chromas are divided by m = max(|c_u.x|, |c_u.y|), at least 7e-10 past the test, so their
+//   squares stay near 1 for any code (a sanitised 1e30 makes codes near 1e32, whose squares would
+//   overflow f32);
+// * the squared ratio is limited to [min(k, 1/k)^2, max(k, 1/k)^2] (k from 0.66 to 1.52), the range of
+//   T's slope, which the exact ratio never leaves: the square root never sees 0, even where f32 rounds
+//   the per-channel curve of a chroma of a few ulp to a neutral.
+fn c9_contrast(v: vec3<f32>, l: f32, k: f32) -> vec3<f32> {
+    let u = v + vec3<f32>(contrast_curve(l, k) - l);
+    if (v.x == v.y && v.y == v.z) {
+        return u;
+    }
+    let cu = vec2<f32>(dot(E1, v), dot(E2, v));
+    let m = max(abs(cu.x), abs(cu.y));
+    if (m < CONTRAST_NEUTRAL && dot(cu, cu) < CONTRAST_NEUTRAL * CONTRAST_NEUTRAL) {
+        return u;
+    }
+    let p = vec3<f32>(contrast_curve(v.x, k), contrast_curve(v.y, k), contrast_curve(v.z, k));
+    let a = cu / m;
+    let b = vec2<f32>(dot(E1, p), dot(E2, p)) / m;
+    let lo = min(k, 1.0 / k);
+    let hi = max(k, 1.0 / k);
+    let ratio = sqrt(clamp(dot(b, b) / dot(a, a), lo * lo, hi * hi));
+    let g = CONTRAST_COLOR * (ratio - 1.0);
+    return u + g * (cu.x * E1 + cu.y * E2);
+}
+
 // Below this distance r of the darkest channel under the luminance, the boost's chroma scale is taken
 // from its series (f32 would lose the digits of 1 - q^F to cancellation; see c9_saturation).
 const SAT_SERIES_LIMIT: f32 = 0.05;
@@ -217,8 +255,9 @@ fn c9_saturation(v: vec3<f32>, f: f32) -> vec3<f32> {
 fn c9_grade(v: vec3<f32>, l: f32) -> vec3<f32> {
     var o = v;
     if ((CU.flags.x & 1u) != 0u) {
-        // Contrast: one offset for all three channels, the luma's change on the curve.
-        o = o + vec3<f32>(contrast_curve(l, CU.grade0.x) - l);
+        // Contrast: one offset for all three channels, the luma's change on the curve, then part of the
+        // colour the curve on each channel would add.
+        o = c9_contrast(o, l, CU.grade0.x);
     }
     var shift = CU.grade0.y * STOP * bump(l, GRAY, BRIGHTNESS_SIGMA);
     if (CU.zone_amt.x != 0.0) {

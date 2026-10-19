@@ -7,7 +7,7 @@
 //!
 //! | Control | Range | Operation |
 //! |---|---|---|
-//! | Contrast `c` | -100..100 | `v += T_k(L) - L`, the tone curve [`contrast_curve`] with slope `k = 2^(0.6 c / 100)` at grey |
+//! | Contrast `c` | -100..100 | `u = v + T_k(L) - L`, the tone curve [`contrast_curve`] with slope `k = 2^(0.6 c / 100)` at grey, then `u`'s chroma moved part of the way toward that of `T_k` on each channel ([`contrast_pixel`]) |
 //! | Brightness `b` | -100..100 | `v += (b / 100) S bump(L; g, 2.5 S)` |
 //! | Shadows, Highlights, Black, White | -100..100 | `v += (x / 100) 1.5 S bump(L; centre, 1.5 S)`, centres at grey -3, +3, -6, +6 stops |
 //! | Colour balance (shadows, midtones, highlights) | `(a, b)` in the unit disc | `v += 0.03 (a e1 + b e2) zone(L)` |
@@ -28,15 +28,32 @@
 //! * above `b` and below `a`: the straight line through the end with the slope `1 / k`.
 //!
 //! `T` is continuous, has a continuous slope (`k` at grey from both sides, `1 / k` at both ends) and
-//! is increasing for all `x`. The change is one common offset `T(L) - L` added to all three
-//! channels: on LogC4's log segment a common offset multiplies `x + 64 / a_LogC4` (`x + 0.029`) by a
-//! common gain, which is a common gain in linear light wherever `x` is well above 0.029, so the
-//! channel ratios, and with them the hue, are kept, while the luma follows `T`. The
-//! slope at grey is the one the old control had (`2^(0.6 c / 100)` about grey), so the slider feels
-//! the same around mid grey; unlike the old control, black and the top code value stay where they
-//! are, and the slope toward them flattens (`c > 0`) or steepens (`c < 0`) instead of the whole
-//! range stretching about grey. `c = 0` skips the step (bit-exact identity). The rows after Contrast
-//! keep using the original `L`.
+//! is increasing for all `x`. The tonal change is one common offset `T(L) - L` added to all three
+//! channels, `u = v + (T(L) - L)`: on LogC4's log segment a common offset multiplies
+//! `x + 64 / a_LogC4` (`x + 0.029`) by a common gain, which is a common gain in linear light wherever
+//! `x` is well above 0.029, so the channel ratios, and with them the hue, are kept, while the luma
+//! follows `T`. The slope at grey is the one the old control had (`2^(0.6 c / 100)` about grey), so
+//! the slider feels the same around mid grey; unlike the old control, black and the top code value
+//! stay where they are, and the slope toward them flattens (`c > 0`) or steepens (`c < 0`) instead
+//! of the whole range stretching about grey. `c = 0` skips the step (bit-exact identity). The rows
+//! after Contrast keep using the original `L`.
+//!
+//! **The colour step** (the owner's answer of 2026-10-19: contrast adds part of the colour a curve on
+//! each channel would). `u` keeps the chroma of `v`, where the same curve on each channel,
+//! `p = (T(v_r), T(v_g), T(v_b))`, would spread the channels apart about grey (`c > 0`) or draw them
+//! together. With the chroma of a LogC4 triple in the colour-balance plane, `c_x = (e1 . x, e2 . x)`:
+//!
+//! * `f = 1 + beta (|c_p| / |c_u| - 1)` with `beta =` [`CONTRAST_COLOR`] (0.5);
+//! * `v' = u + (f - 1) (c_u1 e1 + c_u2 e2)`: `u`'s chroma scaled by `f`, its direction (the hue in the
+//!   plane) kept;
+//! * `f = 1` (`v' = u`) where `|c_u|` is below [`CONTRAST_NEUTRAL_CHROMA`]: neutrals stay neutral.
+//!
+//! `e1` and `e2` sum to 0, so the mean of the three channels (the position along the neutral axis) is
+//! `u`'s. `T`'s slope lies between `min(k, 1 / k)` and `max(k, 1 / k)`, so (mean value theorem on each
+//! channel difference) `|c_p| / |c_u|` does too; the ratio is limited to that interval, which only
+//! guards rounding, and `f` lies between `1 - beta (1 - min)` and `1 + beta (max - 1)`: 0.83 to 1.26
+//! at the ends of the range. `beta = 0` is the hue-keeping offset alone, `beta = 1` gives `u` the
+//! chroma length of the per-channel curve.
 //!
 //! # Saturation (the design of 2026-10-19)
 //!
@@ -84,9 +101,11 @@
 //! # Monotonicity (what the tests check)
 //!
 //! * *Per pixel, in the control value:* for a luma between black and the top code value, Contrast
-//!   moves every channel away from grey more the higher the value (up for `L > g`, down for `L < g`;
-//!   `h_k(t)` grows with `k` for `0 < t < 1`); beyond the ends the line of slope `1 / k` pulls the
-//!   other way. Brightness, Shadows, Highlights, Black and White add a non-negative bump times the
+//!   moves the mean of the three channels (and every channel of a neutral) away from grey more the
+//!   higher the value (up for `L > g`, down for `L < g`; `h_k(t)` grows with `k` for `0 < t < 1`);
+//!   beyond the ends the line of slope `1 / k` pulls the other way. The colour step scales a
+//!   coloured pixel's chroma by `f` (between 0.83 and 1.26) without moving that mean, so a single
+//!   channel of a coloured pixel is not promised to move with the mean. Brightness, Shadows, Highlights, Black and White add a non-negative bump times the
 //!   control, so every output channel is non-decreasing in the control. Saturation scales the
 //!   chroma about `Y` by a factor that is non-decreasing in `s` (`(1 - r)^F` falls as `F` grows).
 //!   Colour balance displaces `v` by `0.03 r zone(L)` along a fixed direction, so the displacement
@@ -102,6 +121,7 @@
 use crate::consts::{LOGC4, LOGC4_GRAY, LOGC4_STOP, MIDDLE_GRAY, Vec3};
 use crate::gamut::{LinearAwg4, awg4_luminance};
 use crate::logc::{LogC4, logc4_decode_rgb, logc4_encode, logc4_encode_rgb};
+use crate::warp::chroma_of;
 
 /// Width of the brightness bump, `2.5 S`, in LogC4 code values.
 pub const BRIGHTNESS_SIGMA: f64 = 2.5 * LOGC4_STOP;
@@ -119,9 +139,19 @@ pub const CONTRAST_BLACK: f64 = LOGC4.c;
 /// The upper fixed point of the contrast curve: the top code value 1.0 (linear 469.8, about 11.35
 /// stops over grey).
 pub const CONTRAST_TOP: f64 = 1.0;
-/// How strongly positive saturation scales chroma: `F = 1 + SATURATION_BOOST s / 100` (a starting
-/// value the owner tunes by eye; `F = 2` at `s = 100`).
-pub const SATURATION_BOOST: f64 = 1.0;
+/// The colour step of Contrast, `beta`: the fraction of the way from the hue-keeping result's chroma
+/// length `|c_u|` to the length `|c_p|` the same curve on each channel would give (owner's answer of
+/// 2026-10-19; a tunable starting value). 0 is the hue-keeping offset alone, 1 the per-channel
+/// curve's chroma length; the direction of the chroma is kept at every value.
+pub const CONTRAST_COLOR: f64 = 0.5;
+/// Below this chroma length `|c_u|` (LogC4 code values in the C9 plane) Contrast leaves a pixel at
+/// `u`, its colour step off: neutrals stay neutral, and nothing divides by a vanishing length.
+pub const CONTRAST_NEUTRAL_CHROMA: f64 = 1e-9;
+/// How strongly positive saturation scales chroma: `F = 1 + SATURATION_BOOST s / 100` (`F = 2.5` at
+/// `s = 100`). Set so that Saturation +60 raises the mean CIELAB chroma of the owner's three photos by
+/// about as much as the subtractive control of 0.4.2 did (+73.6 % against +72.9 %; owner's answer of
+/// 2026-10-19, the sweep in `docs/02` C9). Tunable.
+pub const SATURATION_BOOST: f64 = 1.5;
 /// Below this distance `r` of the darkest channel under the luminance (as a fraction of the
 /// luminance), positive saturation uses its limit, the full factor `F` (see [`saturation_chroma_scale`]).
 pub const SATURATION_SMALL_R: f64 = 1e-9;
@@ -271,6 +301,38 @@ pub fn contrast_curve(x: f64, k: f64) -> f64 {
     }
 }
 
+/// Contrast of stage C9 on the LogC4 pixel `v` whose luma is `l`, for the slope `k > 0` at grey
+/// ([`contrast_slope`]) and the colour fraction `color` (`beta`; the grade uses [`CONTRAST_COLOR`]).
+///
+/// `u = v + (T_k(l) - l)` on all three channels ([`contrast_curve`]); then, unless `u`'s chroma
+/// `c_u = (e1 . u, e2 . u)` is shorter than [`CONTRAST_NEUTRAL_CHROMA`], `u`'s chroma is scaled by
+/// `f = 1 + color (|c_p| / |c_u| - 1)`, where `c_p` is the chroma of `T_k` on each channel of `v`:
+/// `u + (f - 1) (c_u1 e1 + c_u2 e2)`. The ratio is limited to `[min(k, 1 / k), max(k, 1 / k)]`, the
+/// range of `T_k`'s slope, which it lies in exactly (this only guards rounding). Keeps the mean of
+/// the channels (`u`'s) and the direction of the chroma; `color = 0` is `u`.
+#[must_use]
+pub fn contrast_pixel(v: Vec3, l: f64, k: f64, color: f64) -> Vec3 {
+    let offset = contrast_curve(l, k) - l;
+    let u = v.map(|x| x + offset);
+    // `u`'s chroma is `v`'s (e1 and e2 sum to 0); taken from `v`, it carries no rounding of the offset.
+    let [cu1, cu2] = chroma_of(LogC4(v));
+    let length_u = cu1.hypot(cu2);
+    if length_u < CONTRAST_NEUTRAL_CHROMA {
+        return u;
+    }
+    let [cp1, cp2] = chroma_of(LogC4(v.map(|x| contrast_curve(x, k))));
+    // `max` then `min`, not `clamp`: no panic whatever `k` is.
+    let ratio = (cp1.hypot(cp2) / length_u)
+        .max(k.min(1.0 / k))
+        .min(k.max(1.0 / k));
+    let g = color * (ratio - 1.0);
+    let mut out = u;
+    for (i, o) in out.iter_mut().enumerate() {
+        *o += g * (cu1 * E1[i] + cu2 * E2[i]);
+    }
+    out
+}
+
 /// The factor `lambda` by which positive saturation scales the chroma of a pixel whose darkest
 /// channel lies the fraction `r = (Y - min) / Y` of its luminance below the luminance, for
 /// `F = 1 + SATURATION_BOOST s / 100`: `r' / r` with `r' = 1 - (1 - r)^F`, computed as
@@ -377,12 +439,10 @@ impl Grade {
     #[must_use]
     pub fn apply(&self, v: LogC4, l: f64) -> LogC4 {
         let mut out = v.0;
-        // 1. Contrast: the tone curve on the luma, as one offset for all three channels.
+        // 1. Contrast: the tone curve on the luma, as one offset for all three channels, then part of
+        //    the colour the same curve on each channel would add.
         if self.contrast_slope != 1.0 {
-            let offset = contrast_curve(l, self.contrast_slope) - l;
-            for c in &mut out {
-                *c += offset;
-            }
+            out = contrast_pixel(out, l, self.contrast_slope, CONTRAST_COLOR);
         }
         // 2. Brightness: a midtone lift.
         let lift = self.brightness * LOGC4_STOP * bump(l, LOGC4_GRAY, BRIGHTNESS_SIGMA);

@@ -12,7 +12,10 @@ use ym_color::consts::LOGC4_GRAY;
 use ym_color::consts::linalg::IDENTITY;
 use ym_color::display::{ChainParams, ColorChain};
 use ym_color::gamut::awg4_luminance;
-use ym_color::grade::{CONTRAST_BLACK, CONTRAST_TOP, ColorBalance, GradeParams};
+use ym_color::grade::{
+    CONTRAST_BLACK, CONTRAST_COLOR, CONTRAST_TOP, ColorBalance, E1, E2, GradeParams,
+    SATURATION_BOOST, contrast_curve, contrast_slope,
+};
 use ym_color::logc::{logc4_decode, logc4_encode};
 use ym_color::tone::{HIGHLIGHT_CAP_STOPS, ToneParams, luma};
 use ym_gpu::cpu::RgbImage;
@@ -233,9 +236,11 @@ fn every_tonal_control_raises_or_keeps_every_channel() {
 fn contrast_saturation_and_color_balance_are_monotone_in_their_control() {
     let px = probe_pixels();
     for dev in gpus() {
-        // Contrast: for a luma between black and the top code value every channel moves away from grey
-        // as the value rises (up above grey, down below it); beyond the ends toward the end. The
-        // chain's matrix and C7 are the identity, so the luma is the camera value's.
+        // Contrast: for a luma between black and the top code value the mean of the three channels
+        // (and every channel of a neutral) moves away from grey as the value rises (up above grey, down
+        // below it); beyond the ends toward the end. The colour step keeps the mean, so a channel of a
+        // coloured pixel need not follow it. The chain's matrix and C7 are the identity, so the luma is
+        // the camera value's.
         let lumas: Vec<f64> = px
             .iter()
             .map(|p| logc4_encode(awg4_luminance(p.map(f64::from))))
@@ -250,9 +255,19 @@ fn contrast_saturation_and_color_balance_are_monotone_in_their_control() {
             for (i, (a, b)) in prev.iter().zip(&out).enumerate() {
                 let l = lumas[i];
                 let dir = contrast_direction(l);
+                let neutral = px[i][0] == px[i][1] && px[i][1] == px[i][2];
+                let mean =
+                    |x: &[f32; 3]| (f64::from(x[0]) + f64::from(x[1]) + f64::from(x[2])) / 3.0;
+                assert!(
+                    (mean(b) - mean(a)) * dir >= -2e-6,
+                    "{:?} contrast: pixel {i}: mean {} -> {} (luma {l})",
+                    dev.mode,
+                    mean(a),
+                    mean(b)
+                );
                 for ch in 0..3 {
                     assert!(
-                        f64::from(b[ch] - a[ch]) * dir >= -2e-6,
+                        !neutral || f64::from(b[ch] - a[ch]) * dir >= -2e-6,
                         "{:?} contrast: pixel {i} ch {ch}: {} -> {} (luma {l})",
                         dev.mode,
                         a[ch],
@@ -458,7 +473,7 @@ fn saturation_keeps_the_luminance_on_the_gpu() {
                     .unwrap_or(0);
                 let lambda = (o[far] - y) / (lin[far] - y);
                 assert!(
-                    (-1e-5..=1.0 + s.max(0.0) / 100.0 + 1e-4).contains(&lambda),
+                    (-1e-5..=1.0 + SATURATION_BOOST * s.max(0.0) / 100.0 + 1e-4).contains(&lambda),
                     "{lambda}, {ctx}"
                 );
                 for ch in 0..3 {
@@ -482,6 +497,156 @@ fn saturation_keeps_the_luminance_on_the_gpu() {
             coloured >= 6 * 12,
             "the probe must hold coloured pixels: {coloured}"
         );
+    }
+}
+
+fn chroma(x: [f64; 3]) -> [f64; 2] {
+    [
+        E1[0] * x[0] + E1[1] * x[1] + E1[2] * x[2],
+        E2[0] * x[0] + E2[1] * x[1] + E2[2] * x[2],
+    ]
+}
+
+/// Contrast's colour step (`docs/02` C9, the owner's answer of 2026-10-19) on the kernel's own C9
+/// output, not only against the CPU: the mean of the three channels moves by `T(L) - L` (the colour
+/// step keeps it), the chroma keeps its direction (the hue) and is scaled by `f` between
+/// `1 - beta (1 - min(k, 1/k))` and `1 + beta (max(k, 1/k) - 1)`, the `f` of the formula, neutrals stay
+/// exactly neutral, and midtones gain colour for c > 0 and lose it for c < 0. Inputs are
+/// f16-representable, so every storage mode sees the same pixels.
+#[test]
+fn contrast_keeps_the_hue_and_adds_colour_on_the_gpu() {
+    let mut px = probe_pixels();
+    px.extend([
+        [0.8, 0.05, 0.03],
+        [0.04, 0.6, 0.06],
+        [0.03, 0.08, 0.7],
+        [4.0, 1.0, 0.2],
+        [60.0, 30.0, 5.0],
+        [-0.004, 0.01, 0.02],
+        [0.0002, 0.0001, 0.0003],
+        // Midtones: every LogC4 channel between 0.21 and 0.55.
+        [0.25, 0.18, 0.12],
+        [0.10, 0.16, 0.30],
+        [0.15, 0.28, 0.14],
+        [0.9, 0.5, 0.25],
+    ]);
+    let px: Vec<[f32; 3]> = px.into_iter().map(|p| p.map(f16_round)).collect();
+    let lumas: Vec<f64> = px
+        .iter()
+        .map(|p| logc4_encode(awg4_luminance(p.map(f64::from))))
+        .collect();
+    for dev in gpus() {
+        // With every control at 0 C9 is C8: the kernel's own v.
+        let v_all = run(dev, &grade_chain(GradeParams::default()), &px, Stop::C9);
+        let (mut checked, mut midtones) = (0usize, 0usize);
+        let mut worst_f = 0.0f64;
+        for c in [-100.0, -60.0, -30.0, 30.0, 60.0, 100.0] {
+            let k = contrast_slope(c);
+            let (lo, hi) = (k.min(1.0 / k), k.max(1.0 / k));
+            let g = GradeParams {
+                contrast: c,
+                ..GradeParams::default()
+            };
+            let out = run(dev, &grade_chain(g), &px, Stop::C9);
+            for i in 0..px.len() {
+                let (v, o) = (v_all[i].map(f64::from), out[i].map(f64::from));
+                let l = lumas[i];
+                let ctx = format!("{:?} c={c} pixel {i} {:?}: {v:?} -> {o:?}", dev.mode, px[i]);
+                let big = v.iter().fold(1.0f64, |m, x| m.max(x.abs()));
+                let mean = |x: [f64; 3]| (x[0] + x[1] + x[2]) / 3.0;
+                let shift = contrast_curve(l, k) - l;
+                assert!(
+                    (mean(o) - mean(v) - shift).abs() <= 2e-6 * big,
+                    "mean, {ctx}"
+                );
+                if v_all[i][0] == v_all[i][1] && v_all[i][1] == v_all[i][2] {
+                    assert!(
+                        out[i][0] == out[i][1] && out[i][1] == out[i][2],
+                        "neutral, {ctx}"
+                    );
+                    continue;
+                }
+                let (cv, co) = (chroma(v), chroma(o));
+                let (lv, lo_) = (cv[0].hypot(cv[1]), co[0].hypot(co[1]));
+                if lv < 1e-2 {
+                    continue;
+                }
+                checked += 1;
+                // The same direction: parallel, and the same way round.
+                assert!(
+                    (cv[0] * co[1] - cv[1] * co[0]).abs() <= 1e-6 * big * (lv + lo_),
+                    "hue, {ctx}"
+                );
+                assert!(cv[0] * co[0] + cv[1] * co[1] > 0.0, "hue, {ctx}");
+                let f = lo_ / lv;
+                let p = v.map(|x| contrast_curve(x, k));
+                let cp = chroma(p);
+                let want = 1.0 + CONTRAST_COLOR * (cp[0].hypot(cp[1]) / lv - 1.0);
+                worst_f = worst_f.max((f - want).abs());
+                assert!((f - want).abs() <= 1e-4, "f {f} vs {want}, {ctx}");
+                assert!(
+                    f >= 1.0 - CONTRAST_COLOR * (1.0 - lo) - 1e-4
+                        && f <= 1.0 + CONTRAST_COLOR * (hi - 1.0) + 1e-4,
+                    "f {f}, {ctx}"
+                );
+                if v.iter().all(|x| (0.21..=0.55).contains(x)) {
+                    midtones += 1;
+                    assert_eq!(f > 1.0, c > 0.0, "midtone colour, f {f}, {ctx}");
+                }
+            }
+        }
+        assert!(
+            checked >= 6 * 15 && midtones >= 6 * 3,
+            "{checked} coloured, {midtones} midtone checks"
+        );
+        eprintln!(
+            "{:?}: contrast colour step on {checked} coloured pixel settings, worst |f - f_formula| {worst_f:.1e}",
+            dev.mode
+        );
+    }
+}
+
+/// Contrast on chromas of a few f32 ulps (the colour step's neutral test and its guarded division and
+/// square root, `docs/02` C9) and on exact neutrals, on the f32-storage device (f16 cannot hold them):
+/// every output finite and within the gate of the CPU, exact neutrals exactly neutral.
+#[test]
+fn contrast_on_near_neutrals_matches_the_cpu() {
+    let Some(dev) = f32_device() else { return };
+    let mut px: Vec<[f32; 3]> = Vec::new();
+    for s in -10..=8 {
+        let x = 0.18 * (s as f32).exp2();
+        let up = f32::from_bits(x.to_bits() + 1);
+        let up3 = f32::from_bits(x.to_bits() + 3);
+        px.extend([
+            [x, x, x],
+            [x, up, x],
+            [up, x, x],
+            [x, x, up3],
+            [x, x * (1.0 + 1e-6), x],
+            [x * (1.0 - 1e-5), x, x * (1.0 + 1e-5)],
+        ]);
+    }
+    for c in [-100.0, -60.0, -30.0, 30.0, 60.0, 100.0] {
+        let g = GradeParams {
+            contrast: c,
+            ..GradeParams::default()
+        };
+        let params = grade_chain(g);
+        let chain = ColorChain::new(&params).expect("chain");
+        let out = run(dev, &params, &px, Stop::C9);
+        let mut worst = 0.0f64;
+        for (i, (o, p)) in out.iter().zip(&px).enumerate() {
+            let cpu = chain.trace(p.map(f64::from)).c9_logc4.0;
+            for ch in 0..3 {
+                assert!(o[ch].is_finite(), "c={c} pixel {i} {p:?}: {o:?}");
+                worst = worst.max((f64::from(o[ch]) - cpu[ch]).abs());
+            }
+            if p[0] == p[1] && p[1] == p[2] {
+                assert!(o[0] == o[1] && o[1] == o[2], "c={c} neutral {p:?}: {o:?}");
+            }
+        }
+        eprintln!("contrast {c} on near neutrals: worst |GPU - CPU| at C9 {worst:.1e}");
+        assert!(worst <= 2e-4, "c={c}: {worst}");
     }
 }
 

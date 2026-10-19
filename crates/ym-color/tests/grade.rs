@@ -1,22 +1,27 @@
 //! M1-09 (C9): the primary grade. Formulas against an independent transcription of the table in
-//! docs/02, the properties of the contrast curve and of the saturation (design of 2026-10-19), and
-//! monotonicity of every control (what "monotonic" means per control is documented in
-//! `ym_color::grade`).
+//! docs/02, the properties of the contrast curve, of its colour step and of the saturation (design
+//! and owner's answers of 2026-10-19), and monotonicity of every control (what "monotonic" means per
+//! control is documented in `ym_color::grade`).
 
 use proptest::prelude::*;
 use ym_color::consts::{LOGC4_GRAY, LOGC4_STOP, Vec3};
 use ym_color::gamut::{LinearAwg4, awg4_luminance};
 use ym_color::grade::{
-    BALANCE_CENTER_STOPS, BRIGHTNESS_SIGMA, COLOR_BALANCE_STRENGTH, CONTRAST_BLACK,
-    CONTRAST_EXPONENT, CONTRAST_TOP, ColorBalance, E1, E2, Grade, GradeParams, SATURATION_BOOST,
-    SATURATION_CODE_LIMIT, SATURATION_SMALL_R, ZONE_CENTER_STOPS, ZONE_CONTROL_SIGMA, ZONE_SIGMA,
-    bump, contrast_curve, contrast_slope, grade_luma, logc4_at_stops, saturate,
-    saturation_chroma_scale,
+    BALANCE_CENTER_STOPS, BRIGHTNESS_SIGMA, COLOR_BALANCE_STRENGTH, CONTRAST_BLACK, CONTRAST_COLOR,
+    CONTRAST_EXPONENT, CONTRAST_NEUTRAL_CHROMA, CONTRAST_TOP, ColorBalance, E1, E2, Grade,
+    GradeParams, SATURATION_BOOST, SATURATION_CODE_LIMIT, SATURATION_SMALL_R, ZONE_CENTER_STOPS,
+    ZONE_CONTROL_SIGMA, ZONE_SIGMA, bump, contrast_curve, contrast_pixel, contrast_slope,
+    grade_luma, logc4_at_stops, saturate, saturation_chroma_scale,
 };
 use ym_color::logc::{LogC4, logc4_decode, logc4_encode};
 
 /// The AWG4 luminance row, typed out (`[0.2545, 0.7815, -0.0360]`).
 const Y_ROW: Vec3 = [0.254524176404027, 0.781477732712002, -0.036001909116029];
+
+/// The documented constants, typed out: Contrast's colour step `beta` and the saturation boost
+/// `alpha` (`docs/02` C9).
+const BETA: f64 = 0.5;
+const ALPHA: f64 = 1.5;
 
 /// Straight transcription of the C9 table, independent of `Grade` (no precomputation, no shared
 /// helpers): the contrast curve written out per segment, the saturation with `1 - (1 - r)^F` as the
@@ -26,21 +31,44 @@ fn reference(p: &GradeParams, v: Vec3, l: f64) -> Vec3 {
     let s = 0.9071358748778103 / 14.0;
     let black = 0.09286412512218964;
     let mut v = v;
+    let e1 = [
+        1.0 / 1.5_f64.sqrt(),
+        -0.5 / 1.5_f64.sqrt(),
+        -0.5 / 1.5_f64.sqrt(),
+    ];
+    let e2 = [0.0, 1.0 / 2.0_f64.sqrt(), -1.0 / 2.0_f64.sqrt()];
     if p.contrast != 0.0 {
         let k = 2.0_f64.powf(0.6 * p.contrast / 100.0);
         let h = |t: f64| k * t / (1.0 + (k - 1.0) * t);
-        let t_of_l = if l > 1.0 {
-            1.0 + (l - 1.0) / k
-        } else if l >= g {
-            g + (1.0 - g) * h((l - g) / (1.0 - g))
-        } else if l >= black {
-            g - (g - black) * h((g - l) / (g - black))
-        } else {
-            black + (l - black) / k
+        let t = |x: f64| {
+            if x > 1.0 {
+                1.0 + (x - 1.0) / k
+            } else if x >= g {
+                g + (1.0 - g) * h((x - g) / (1.0 - g))
+            } else if x >= black {
+                g - (g - black) * h((g - x) / (g - black))
+            } else {
+                black + (x - black) / k
+            }
         };
-        for x in &mut v {
-            *x += t_of_l - l;
-        }
+        // u = v + (T(L) - L); p = T on each channel; u's chroma scaled toward |c_p| by BETA.
+        let u = v.map(|x| x + t(l) - l);
+        let p = v.map(t);
+        let chroma = |x: Vec3| {
+            [
+                e1[0] * x[0] + e1[1] * x[1] + e1[2] * x[2],
+                e2[0] * x[0] + e2[1] * x[1] + e2[2] * x[2],
+            ]
+        };
+        let (cu, cp) = (chroma(u), chroma(p));
+        let len_u = (cu[0] * cu[0] + cu[1] * cu[1]).sqrt();
+        let len_p = (cp[0] * cp[0] + cp[1] * cp[1]).sqrt();
+        let f = if len_u < 1e-9 {
+            1.0
+        } else {
+            1.0 + BETA * (len_p / len_u - 1.0)
+        };
+        v = [0, 1, 2].map(|i| u[i] + (f - 1.0) * (cu[0] * e1[i] + cu[1] * e2[i]));
     }
     let mut add = (p.brightness / 100.0) * s * (-(l - g).powi(2) / (2.0 * (2.5 * s).powi(2))).exp();
     for (x, stops) in [
@@ -55,12 +83,6 @@ fn reference(p: &GradeParams, v: Vec3, l: f64) -> Vec3 {
     for x in &mut v {
         *x += add;
     }
-    let e1 = [
-        1.0 / 1.5_f64.sqrt(),
-        -0.5 / 1.5_f64.sqrt(),
-        -0.5 / 1.5_f64.sqrt(),
-    ];
-    let e2 = [0.0, 1.0 / 2.0_f64.sqrt(), -1.0 / 2.0_f64.sqrt()];
     for (bal, stops) in [
         (p.balance_shadows, -3.0),
         (p.balance_midtones, 0.0),
@@ -78,7 +100,7 @@ fn reference(p: &GradeParams, v: Vec3, l: f64) -> Vec3 {
         let lambda = if p.saturation < 0.0 {
             Some(1.0 + p.saturation / 100.0)
         } else {
-            let f = 1.0 + p.saturation / 100.0;
+            let f = 1.0 + ALPHA * p.saturation / 100.0;
             let r = (y - rgb[0].min(rgb[1]).min(rgb[2])) / y;
             if y <= 0.0 || r >= 1.0 {
                 None
@@ -129,6 +151,9 @@ fn constants_are_the_documented_ones() {
     assert_eq!(COLOR_BALANCE_STRENGTH, 0.03);
     assert!((bump(1.0, 1.0, 0.3) - 1.0).abs() < 1e-16);
     assert!((bump(1.3, 1.0, 0.3) - (-0.5_f64).exp()).abs() < 1e-15);
+    assert_eq!(CONTRAST_COLOR, BETA);
+    assert_eq!(CONTRAST_NEUTRAL_CHROMA, 1e-9);
+    assert_eq!(SATURATION_BOOST, ALPHA);
 }
 
 // ---- Contrast: the tone curve on the luma (design of 2026-10-19) --------------------------------
@@ -241,11 +266,8 @@ proptest! {
 
 #[test]
 fn contrast_offsets_all_three_channels_by_the_change_of_the_luma() {
+    // The hue-keeping part (`contrast_pixel` with the colour step at 0): one offset on all channels.
     for c in [-100.0, -60.0, -30.0, 30.0, 60.0, 100.0] {
-        let g = Grade::new(&GradeParams {
-            contrast: c,
-            ..Default::default()
-        });
         let k = contrast_slope(c);
         for lin in [
             [0.18, 0.18, 0.18],
@@ -257,7 +279,7 @@ fn contrast_offsets_all_three_channels_by_the_change_of_the_luma() {
         ] {
             let lin = LinearAwg4(lin);
             let (v, l) = (lin.to_logc4().0, grade_luma(lin));
-            let out = g.apply_linear(lin).0;
+            let out = contrast_pixel(v, l, k, 0.0);
             let want = contrast_curve(l, k) - l;
             for ch in 0..3 {
                 assert!(
@@ -280,6 +302,23 @@ fn contrast_offsets_all_three_channels_by_the_change_of_the_luma() {
             }
         }
     }
+    // The grade's Contrast is that with the colour step `CONTRAST_COLOR`, and it moves the mean of
+    // the three channels by the change of the luma.
+    for c in [-100.0, -60.0, -30.0, 30.0, 60.0, 100.0] {
+        let g = Grade::new(&GradeParams {
+            contrast: c,
+            ..Default::default()
+        });
+        let k = contrast_slope(c);
+        for lin in [[0.4, 0.2, 0.05], [0.02, 0.03, 0.2], [3.0, 1.5, 0.9]] {
+            let lin = LinearAwg4(lin);
+            let (v, l) = (lin.to_logc4().0, grade_luma(lin));
+            let out = g.apply_linear(lin).0;
+            assert_eq!(out, contrast_pixel(v, l, k, CONTRAST_COLOR), "c={c}");
+            let mean = |x: Vec3| (x[0] + x[1] + x[2]) / 3.0;
+            assert!((mean(out) - mean(v) - (contrast_curve(l, k) - l)).abs() < 1e-15);
+        }
+    }
     // A neutral grey card stays at grey, a neutral black at black, a neutral at the top code at the top.
     let g = Grade::new(&GradeParams {
         contrast: 73.0,
@@ -297,6 +336,140 @@ fn contrast_offsets_all_three_channels_by_the_change_of_the_luma() {
         ..Default::default()
     });
     assert!((g.apply(LogC4([l; 3]), l).0[0] - want).abs() < 1e-15);
+}
+
+// ---- Contrast's colour step (the owner's answer of 2026-10-19) ---------------------------------
+
+fn chroma(x: Vec3) -> [f64; 2] {
+    [
+        E1[0] * x[0] + E1[1] * x[1] + E1[2] * x[2],
+        E2[0] * x[0] + E2[1] * x[1] + E2[2] * x[2],
+    ]
+}
+
+fn length(c: [f64; 2]) -> f64 {
+    c[0].hypot(c[1])
+}
+
+fn mean(x: Vec3) -> f64 {
+    (x[0] + x[1] + x[2]) / 3.0
+}
+
+fn largest(x: Vec3) -> f64 {
+    x.iter().fold(1.0f64, |m, c| m.max(c.abs()))
+}
+
+/// The hue-keeping result `u = v + (T(L) - L)`, written out.
+fn offset_only(v: Vec3, l: f64, k: f64) -> Vec3 {
+    let d = contrast_curve(l, k) - l;
+    v.map(|x| x + d)
+}
+
+/// LogC4 codes from below black to above the top code value, so every piece of the curve is hit.
+fn any_code() -> impl Strategy<Value = Vec3> {
+    prop::array::uniform3(-0.3f64..1.6)
+}
+
+proptest! {
+    /// The colour step only scales `u`'s chroma: its direction (the hue in the C9 plane) and the mean
+    /// of the three channels (the position on the neutral axis) are `u`'s, and the length is
+    /// `f |c_u|` with `f = 1 + beta (|c_p| / |c_u| - 1)`, which lies between `1 - beta (1 - min(k, 1/k))`
+    /// and `1 + beta (max(k, 1/k) - 1)`.
+    #[test]
+    fn the_colour_step_keeps_the_hue_and_the_mean_and_scales_the_chroma(
+        v in any_code(), l in -0.3f64..1.6, c in -100.0f64..=100.0, beta in 0.0f64..=1.0,
+    ) {
+        let k = contrast_slope(c);
+        let u = offset_only(v, l, k);
+        let out = contrast_pixel(v, l, k, beta);
+        let (cu, co) = (chroma(u), chroma(out));
+        let eps = 1e-14 * largest(out);
+        // Parallel and the same way round: the hue is u's.
+        prop_assert!(
+            (cu[0] * co[1] - cu[1] * co[0]).abs() <= eps * (length(cu) + length(co)),
+            "{v:?} l={l} c={c} beta={beta}: {cu:?} vs {co:?}"
+        );
+        prop_assert!(cu[0] * co[0] + cu[1] * co[1] >= -eps * eps);
+        prop_assert!((mean(out) - mean(u)).abs() <= eps, "{v:?}: mean {} vs {}", mean(out), mean(u));
+        if length(chroma(v)) >= 1e-6 {
+            let f = length(co) / length(cu);
+            let cp = chroma(v.map(|x| contrast_curve(x, k)));
+            let want = 1.0 + beta * (length(cp) / length(chroma(v)) - 1.0);
+            prop_assert!((f - want).abs() < 1e-8, "{v:?} c={c} beta={beta}: f {f} vs {want}");
+            let (lo, hi) = (k.min(1.0 / k), k.max(1.0 / k));
+            prop_assert!(f >= 1.0 - beta * (1.0 - lo) - 1e-8 && f <= 1.0 + beta * (hi - 1.0) + 1e-8);
+        }
+    }
+
+    /// `beta = 0` is the hue-keeping offset alone, `beta = 1` gives `u` the chroma length of the
+    /// curve on each channel, and the grade's Contrast is the step at `CONTRAST_COLOR`.
+    #[test]
+    fn beta_zero_is_the_offset_and_beta_one_the_per_channel_length(
+        v in any_code(), l in -0.3f64..1.6, c in -100.0f64..=100.0,
+    ) {
+        let k = contrast_slope(c);
+        prop_assert_eq!(contrast_pixel(v, l, k, 0.0), offset_only(v, l, k));
+        let full = contrast_pixel(v, l, k, 1.0);
+        let cp = chroma(v.map(|x| contrast_curve(x, k)));
+        if length(chroma(v)) >= 1e-6 {
+            prop_assert!(
+                (length(chroma(full)) - length(cp)).abs() <= 1e-12 * largest(full),
+                "{v:?} c={c}: {} vs {}", length(chroma(full)), length(cp)
+            );
+        }
+        if c != 0.0 {
+            let g = Grade::new(&GradeParams { contrast: c, ..Default::default() });
+            prop_assert_eq!(g.apply(LogC4(v), l).0, contrast_pixel(v, l, k, CONTRAST_COLOR));
+        }
+    }
+
+    /// Neutrals are untouched by the colour step: a neutral (and a chroma below
+    /// `CONTRAST_NEUTRAL_CHROMA`) gets the offset alone, so a neutral stays neutral.
+    #[test]
+    fn neutrals_get_the_offset_alone(
+        x in -0.3f64..1.6, l in -0.3f64..1.6, c in -100.0f64..=100.0, tiny in -6.9e-10f64..6.9e-10,
+    ) {
+        let k = contrast_slope(c);
+        let out = contrast_pixel([x; 3], l, k, CONTRAST_COLOR);
+        prop_assert_eq!(out, offset_only([x; 3], l, k));
+        prop_assert!(out[0] == out[1] && out[1] == out[2]);
+        // |c| = |tiny| sqrt(2/3) < 1e-9 for a chroma along one channel.
+        let v = [x + tiny, x, x];
+        prop_assert_eq!(contrast_pixel(v, l, k, CONTRAST_COLOR), offset_only(v, l, k));
+    }
+}
+
+#[test]
+fn contrast_adds_colour_in_the_midtones_as_a_curve_on_each_channel_would() {
+    // Channels between 0.21 and 0.55, where the curve's slope is above 1 for every c > 0 and below 1
+    // for every c < 0: more contrast adds colour, less takes it away.
+    let mid = [
+        [0.40, 0.30, 0.24],
+        [0.22, 0.33, 0.50],
+        [0.30, 0.45, 0.28],
+        [0.54, 0.40, 0.21],
+    ];
+    // Deep shadows (channels 0.10 to 0.14, where the slope is below 1 for c > 0): more contrast
+    // takes colour away there, as the curve on each channel would.
+    let deep = [[0.14, 0.11, 0.10], [0.10, 0.12, 0.14]];
+    for c in [10.0, 30.0, 60.0, 100.0, -10.0, -30.0, -60.0, -100.0] {
+        let g = Grade::new(&GradeParams {
+            contrast: c,
+            ..Default::default()
+        });
+        for (set, more_in_midtones) in [(&mid[..], true), (&deep[..], false)] {
+            for &v in set {
+                let l = mean(v);
+                let f = length(chroma(g.apply(LogC4(v), l).0)) / length(chroma(v));
+                let gains = (f > 1.0) == (c > 0.0);
+                assert_eq!(gains, more_in_midtones, "c={c} {v:?}: f {f}");
+            }
+        }
+    }
+    // At the ends of the range the factor is within 0.83 to 1.26.
+    let (lo, hi) = (contrast_slope(-100.0), contrast_slope(100.0));
+    assert!((1.0 - CONTRAST_COLOR * (1.0 - lo) - 0.8299).abs() < 1e-4);
+    assert!((1.0 + CONTRAST_COLOR * (hi - 1.0) - 1.2579).abs() < 1e-4);
 }
 
 #[test]
@@ -617,20 +790,30 @@ fn every_scalar_control_is_monotone_in_its_value() {
             }
         }
     }
-    // Contrast: for a luma between black and the top code value, every channel moves away from grey
-    // as the value rises (up above grey, down below it); beyond the ends the line of slope 1 / k pulls
-    // the other way (toward the end), and at grey and at the ends nothing moves.
+    // Contrast: for a luma between black and the top code value, the mean of the three channels (and
+    // every channel of a neutral) moves away from grey as the value rises (up above grey, down below
+    // it); beyond the ends the line of slope 1 / k pulls the other way (toward the end), and at grey
+    // and at the ends nothing moves. The colour step leaves the mean where it is, so a single channel
+    // of a coloured pixel is not promised to follow it.
     let grades = sweep(|p, x| p.contrast = x);
     let mut directions = [0usize; 3];
+    let mean = |x: Vec3| (x[0] + x[1] + x[2]) / 3.0;
     for (v, l) in sample_pixels() {
         let dir = contrast_direction(l);
         directions[(dir + 1.0) as usize] += 1;
+        let neutral = v[0] == v[1] && v[1] == v[2];
         let mut prev = grades[0].apply(LogC4(v), l).0;
         for g in &grades[1..] {
             let cur = g.apply(LogC4(v), l).0;
+            assert!(
+                (mean(cur) - mean(prev)) * dir >= -1e-15,
+                "contrast: {v:?} l={l}: mean {} -> {}",
+                mean(prev),
+                mean(cur)
+            );
             for k in 0..3 {
                 assert!(
-                    (cur[k] - prev[k]) * dir >= -1e-15,
+                    !neutral || (cur[k] - prev[k]) * dir >= -1e-15,
                     "contrast: {v:?} l={l} channel {k}: {} -> {}",
                     prev[k],
                     cur[k]
@@ -1130,13 +1313,14 @@ fn the_chroma_scale_falls_from_f_to_one_as_the_colour_gets_stronger() {
 #[test]
 fn deep_blues_with_every_channel_above_the_luminance_get_the_plain_factor() {
     // The blue weight of Y is negative: this pixel has Y = 0.0002 and every channel above it, so r is
-    // about -100. The spec's r' / r would scale its chroma by 101 at s = 100; it gets F = 2.
+    // about -100. The spec's r' / r would scale its chroma by about 150 at s = 100; it gets F = 2.5.
     let rgb = [0.02, 0.02, 0.57];
     let y = awg4_luminance(rgb);
     assert!(y > 0.0 && y < 3e-4, "{y}");
     let out = saturate(LinearAwg4(rgb), 100.0).0;
+    let f = 1.0 + ALPHA;
     for k in 0..3 {
-        assert!((out[k] - (y + 2.0 * (rgb[k] - y))).abs() < 1e-15, "{out:?}");
+        assert!((out[k] - (y + f * (rgb[k] - y))).abs() < 1e-15, "{out:?}");
     }
     // A blue with Y <= 0 is left alone.
     let rgb = [0.01, 0.003, 0.2];
