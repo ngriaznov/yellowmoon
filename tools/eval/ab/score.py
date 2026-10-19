@@ -472,8 +472,13 @@ def _photos_line(counts: object) -> Optional[str]:
     )
 
 
+def _trials(count: object) -> str:
+    """"1 trial", "2 trials"."""
+    return f"{count} trial" if count == 1 else f"{count} trials"
+
+
 def _group_line(group: Mapping[str, object]) -> str:
-    return f"    {str(group['label']):<40}{pct(group['share']):>9}   {group['trials']} trials"  # type: ignore[index]
+    return f"    {str(group['label']):<40}{pct(group['share']):>9}   {_trials(group['trials'])}"  # type: ignore[index]
 
 
 def format_report(report: Mapping[str, object]) -> str:
@@ -518,7 +523,7 @@ def format_report(report: Mapping[str, object]) -> str:
             lines.append("    no answers yet")
         for stratum, part in strata.items():
             marker = "   below 45 %" if part["below_gate"] else ""
-            lines.append(f"    {stratum:<22}{pct(part['share']):>9}   {part['trials']} trials{marker}")  # type: ignore
+            lines.append(f"    {stratum:<22}{pct(part['share']):>9}   {_trials(part['trials'])}{marker}")  # type: ignore
     diag = report.get("diagnostics")
     if isinstance(diag, dict):
         lines.append("")
