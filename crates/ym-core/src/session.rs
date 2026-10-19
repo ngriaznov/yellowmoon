@@ -53,6 +53,24 @@
 //! from [`Session::view`] / [`Session::estimates`]. Both are deterministic functions of the set of
 //! photos, never of which job finished first. When a burst's median moves, the photos whose
 //! exposure changed get [`SessionEvent::EstimatesChanged`].
+//!
+//! # Apple Auto
+//!
+//! With an advisor ([`SessionEnv::with_apple_auto`], `docs/19`), the session has one more thread,
+//! the Apple Auto worker. While Apple Auto acts ([`crate::apple_auto::Activity`]: an advisor, the
+//! preference or the run's mode on, and the advisor available) it asks about one photo at a time:
+//! the photo on screen first, then the photos an export is waiting for, then the others in
+//! filmstrip order. The picture it shows the model is rendered from the photo's own estimates by the
+//! [`PictureRenderer`] hook, after the development job's thumbnail (or by the worker when its turn
+//! comes, decoding the file again). The answer (or the failure) is kept in memory; the served
+//! estimates take its values (burst frames share the median of their steps) and the photo, and any
+//! photo whose values moved, get [`SessionEvent::EstimatesChanged`] and a new thumbnail. Nothing
+//! waits for the worker except an export ([`Session::estimates_final`]) and
+//! [`Session::wait_idle`]; the viewer shows the rule meanwhile. The advisor is never called on a
+//! caller's thread or under the session's lock. A panic in a request (the advisor, the picture,
+//! storing the result, the event sink) fails that photo with kind `other` and the worker goes on;
+//! a worker that cannot start, or stops, leaves the session as one without an advisor, so nothing
+//! waits for it.
 
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -76,9 +94,14 @@ use ym_raw::decode::RawImage;
 use ym_raw::error::RawError;
 use ym_raw::metadata::RawMetadata;
 
+use crate::apple_auto::{
+    Activity, AdvisorAnswer, AdvisorError, AdvisorPicture, AppleAuto, AppleAutoMode,
+    AppleAutoStatus, AutoAdvisor, AutoSteps, Availability, FailureKind, PROMPT_VERSION, RETRIES,
+    RETRY_PAUSE_MS, TABLE_VERSION, share_burst_steps,
+};
 use crate::auto::{
     AutoError, AutoEstimates, AutoInputs, IlluminantModels, NoisePool, POOL_MAX_FILES, burst_frame,
-    meta_image_size, noise_prior, pick_white_sample, pool_key,
+    meta_image_size, noise_prior, pick_white_sample, pool_key, tables_of,
 };
 use crate::camera::{CameraCard, CameraInfo, PhotoCamera};
 use crate::data_dir::{DataDirError, find_data_dir};
@@ -500,6 +523,79 @@ pub trait ThumbnailRenderer: Send + Sync {
     fn render(&self, input: &ThumbnailInput<'_>) -> Result<Vec<u8>, String>;
 }
 
+/// What Apple Auto's picture is made from (`docs/19` section 3).
+pub struct PictureInput<'a> {
+    /// The photo.
+    pub id: PhotoId,
+    /// The decoded raw data.
+    pub raw: &'a Arc<RawImage>,
+    /// The camera match.
+    pub camera: &'a PhotoCamera,
+    /// The profile the photo uses.
+    pub profile: &'a Arc<Profile>,
+    /// The photo's own estimates: the rule for this photo alone (its own exposure after the
+    /// highlight guard and its own noise, not the burst median or the pooled noise, and no Apple
+    /// values), so the picture depends on the photo alone and not on the order photos develop in.
+    pub estimates: &'a Arc<AutoEstimates>,
+    /// True when the request was abandoned (the session closed): stop early.
+    pub cancelled: &'a dyn Fn() -> bool,
+}
+
+/// The hook that renders the picture Apple Auto's model sees (`docs/19` section 3): the photo at its
+/// default settings through the Signature look and ACES 2, at 768 px on the long edge, on the CPU
+/// reference path, 8-bit sRGB. Implemented by the render graph
+/// ([`crate::pipeline::AdvisorPictures`]); tests may give a cheaper one.
+pub trait PictureRenderer: Send + Sync {
+    /// Renders one picture. An `Err` fails the photo's request with [`FailureKind::Other`].
+    ///
+    /// # Errors
+    ///
+    /// Whatever the renderer reports.
+    fn render(&self, input: &PictureInput<'_>) -> Result<AdvisorPicture, String>;
+}
+
+/// Apple Auto's part of a [`SessionEnv`] (`docs/19` sections 2, 6 and 12).
+#[derive(Clone)]
+pub struct AppleAutoEnv {
+    /// What looks at the photos: Apple's model through `ym-apple`, or a test advisor.
+    pub advisor: Arc<dyn AutoAdvisor>,
+    /// What renders the pictures it sees.
+    pub pictures: Arc<dyn PictureRenderer>,
+    /// The `apple_auto` preference when the session starts ([`Session::set_apple_auto_preference`]
+    /// changes it).
+    pub preference: bool,
+    /// How the run decides ([`Session::set_apple_auto_mode`] changes it).
+    pub mode: AppleAutoMode,
+    /// The pause before a request that macOS asked to wait is tried again: [`RETRY_PAUSE_MS`]
+    /// (tests shorten it).
+    pub retry_pause: Duration,
+}
+
+impl AppleAutoEnv {
+    /// Apple Auto with this advisor and picture renderer, the preference on, the mode
+    /// [`AppleAutoMode::FromPreference`] and the documented retry pause.
+    #[must_use]
+    pub fn new(advisor: Arc<dyn AutoAdvisor>, pictures: Arc<dyn PictureRenderer>) -> Self {
+        Self {
+            advisor,
+            pictures,
+            preference: true,
+            mode: AppleAutoMode::FromPreference,
+            retry_pause: Duration::from_millis(RETRY_PAUSE_MS),
+        }
+    }
+}
+
+impl std::fmt::Debug for AppleAutoEnv {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AppleAutoEnv")
+            .field("preference", &self.preference)
+            .field("mode", &self.mode)
+            .field("retry_pause", &self.retry_pause)
+            .finish_non_exhaustive()
+    }
+}
+
 /// Everything a session needs from outside: the loaded data, the event sink and the knobs.
 #[derive(Clone)]
 pub struct SessionEnv {
@@ -524,6 +620,9 @@ pub struct SessionEnv {
     pub decode_threads: usize,
     /// A profile id that replaces the detected one (the CLI's `--profile`).
     pub forced_profile: Option<String>,
+    /// Apple Auto, when the app or `ym` gives an advisor (`docs/19`); `None` everywhere else, which
+    /// is Apple Auto off.
+    pub apple_auto: Option<AppleAutoEnv>,
 }
 
 /// The decode pool size: `min(available_parallelism - 2, 6)`, at least one.
@@ -574,6 +673,7 @@ impl SessionEnv {
             reference_look: load_reference_look(data_root),
             decode_threads: default_decode_threads(),
             forced_profile: None,
+            apple_auto: None,
         })
     }
 
@@ -605,6 +705,13 @@ impl SessionEnv {
     #[must_use]
     pub fn with_default_look(mut self, look: LookId) -> Self {
         self.default_look = look;
+        self
+    }
+
+    /// Gives the session Apple Auto (`docs/19`): an advisor and the renderer of its pictures.
+    #[must_use]
+    pub fn with_apple_auto(mut self, apple: AppleAutoEnv) -> Self {
+        self.apple_auto = Some(apple);
         self
     }
 
@@ -791,6 +898,42 @@ pub struct PickedWhite {
     pub sample: Vec3,
 }
 
+/// Where the picture Apple Auto's model sees stands, while the photo waits for its turn.
+#[derive(Debug, Clone, Default)]
+enum PictureSlot {
+    /// None: the worker renders it when the photo's turn comes.
+    #[default]
+    Empty,
+    /// The development job is rendering it: the worker leaves the photo until it is there.
+    Rendering,
+    /// Rendered, waiting for its turn (dropped once the answer arrives, hard rule 4).
+    Ready(Arc<AdvisorPicture>),
+}
+
+/// What a photo's served estimates were made from, besides its own: the rule's exposure after the
+/// burst median, and Apple Auto's steps in effect and state.
+#[derive(Debug, Clone, PartialEq)]
+struct Served {
+    rule_ev: f64,
+    steps: Option<AutoSteps>,
+    state: AppleAuto,
+}
+
+/// What a refresh of the served estimates changed.
+#[derive(Debug, Default)]
+struct Refresh {
+    /// Photos a viewer should react to (`estimates_changed`).
+    changed: Vec<PhotoId>,
+    /// Photos whose picture changed because Apple Auto's values moved: their thumbnails are rendered
+    /// again.
+    repaint: Vec<PhotoId>,
+}
+
+/// How many Apple Auto pictures the development jobs keep in memory at once (about 1.2 MB each).
+/// A photo developed beyond that has its picture rendered by the worker when its turn comes, from
+/// the file again (the same bytes: the picture depends on the photo alone).
+const PICTURES_HELD: usize = 64;
+
 struct Photo {
     id: PhotoId,
     path: PathBuf,
@@ -812,6 +955,55 @@ struct Photo {
     pick: Option<PickedWhite>,
     /// Bumped whenever the effective estimates change; the render graph's cache key.
     version: u64,
+    /// Apple Auto's result for the current `own` estimates ([`AppleAuto::Answered`] or
+    /// [`AppleAuto::Failed`]); kept while Apple Auto is off, dropped by Re-run.
+    apple_result: Option<AppleAuto>,
+    /// The picture Apple Auto's model will see.
+    apple_picture: PictureSlot,
+    /// What `effective` was made from (see [`Served`]).
+    served: Option<Served>,
+    /// Apple Auto moved the photo's values before its first thumbnail was out: the development job
+    /// renders the thumbnail again when it is done.
+    repaint: bool,
+}
+
+/// The session's Apple Auto switches and what the worker is doing.
+#[derive(Debug, Clone)]
+struct AppleState {
+    has_advisor: bool,
+    mode: AppleAutoMode,
+    preference: bool,
+    /// The last availability read; `None` before the first.
+    availability: Option<Availability>,
+    /// The photos an export waits for, in the order they were asked for.
+    urgent: Vec<PhotoId>,
+    /// The photo being asked about.
+    in_flight: Option<PhotoId>,
+}
+
+impl Default for AppleState {
+    /// No advisor, the preference on (its default) and the run following it.
+    fn default() -> Self {
+        Self {
+            has_advisor: false,
+            mode: AppleAutoMode::FromPreference,
+            preference: true,
+            availability: None,
+            urgent: Vec::new(),
+            in_flight: None,
+        }
+    }
+}
+
+impl AppleState {
+    fn activity(&self) -> Activity {
+        Activity::decide(
+            self.has_advisor,
+            self.mode,
+            self.preference,
+            self.availability.as_ref(),
+        )
+    }
 }
 
 struct GroupPool {
@@ -840,6 +1032,7 @@ struct State {
     pools: HashMap<PoolKey, GroupPool>,
     cache: MosaicCache,
     default_look: LookId,
+    apple: AppleState,
 }
 
 impl State {
@@ -856,16 +1049,24 @@ impl State {
             pools: HashMap::new(),
             cache: MosaicCache::default(),
             default_look,
+            apple: AppleState::default(),
         }
     }
 
     /// Forgets every photo. Ids keep counting: a command or job that outlives the close names an
-    /// id that no longer exists, instead of a different photo of the next session.
+    /// id that no longer exists, instead of a different photo of the next session. Apple Auto's
+    /// switches stay; its answers go with the photos.
     fn clear(&mut self) {
         let look = self.default_look.clone();
         let next_id = self.next_id;
+        let apple = AppleState {
+            urgent: Vec::new(),
+            in_flight: None,
+            ..self.apple.clone()
+        };
         *self = Self::new(look);
         self.next_id = next_id;
+        self.apple = apple;
     }
 
     fn photo(&self, id: PhotoId) -> Option<&Photo> {
@@ -914,11 +1115,12 @@ impl State {
         self.cache.entries.retain(|(id, _)| window.contains(id));
     }
 
-    /// Recomputes the burst median exposure of every photo with estimates and, for the photos
-    /// whose pooled noise is out of date, the pooled noise. Returns the photos whose served
-    /// estimates changed in a way a viewer should react to: a different exposure, or a different
-    /// noise model on the current photo.
-    fn refresh_effective(&mut self, priors: &PriorStore) -> Vec<PhotoId> {
+    /// Recomputes the burst median exposure of every photo with estimates, Apple Auto's steps (each
+    /// photo's answer, shared across its burst, `docs/19` section 5) and, for the photos whose pooled
+    /// noise is out of date, the pooled noise. Returns the photos whose served estimates changed in a
+    /// way a viewer should react to (a different exposure, Apple Auto's values or state, or a
+    /// different noise model on the current photo) and those whose picture Apple Auto changed.
+    fn refresh_effective(&mut self, priors: &PriorStore) -> Refresh {
         let with: Vec<usize> = (0..self.photos.len())
             .filter(|&i| self.photos[i].own.is_some())
             .collect();
@@ -930,36 +1132,78 @@ impl State {
             .iter()
             .filter_map(|&i| self.photos[i].own.as_ref().map(|o| o.exposure.own_ev))
             .collect();
-        let shared = if frames.len() == with.len() {
+        let grouped = frames.len() == with.len();
+        let shared = if grouped {
             share_burst_ev(&frames, &evs)
         } else {
             evs
         };
+        // Apple Auto: each photo's state, and the steps of its burst (the median of the answered
+        // frames' steps; the rule when none answered).
+        let activity = self.apple.activity();
+        let states: Vec<AppleAuto> = with
+            .iter()
+            .map(|&i| activity.photo_state(self.photos[i].apple_result.as_ref()))
+            .collect();
+        let groups: Vec<usize> = if grouped {
+            burst_groups(&frames)
+        } else {
+            (0..with.len()).collect()
+        };
+        let group_count = groups.iter().copied().max().map_or(0, |g| g + 1);
+        let mut members: Vec<Vec<Option<AutoSteps>>> = vec![Vec::new(); group_count];
+        for (slot, g) in groups.iter().enumerate() {
+            members[*g].push(states[slot].steps());
+        }
+        let group_steps: Vec<Option<AutoSteps>> =
+            members.iter().map(|m| share_burst_steps(m)).collect();
         let current = self.current;
-        let mut changed = Vec::new();
+        let mut refresh = Refresh::default();
         for (slot, &i) in with.iter().enumerate() {
-            let ev = shared.get(slot).copied().unwrap_or(0.0);
-            if let Some(id) = self.refresh_photo(i, Some(ev), priors, current == Some(i)) {
-                changed.push(id);
+            let served = Served {
+                rule_ev: shared.get(slot).copied().unwrap_or(0.0),
+                steps: groups.get(slot).and_then(|g| group_steps[*g]),
+                state: states[slot].clone(),
+            };
+            if let Some((id, repaint)) =
+                self.refresh_photo(i, Some(served), priors, current == Some(i))
+            {
+                refresh.changed.push(id);
+                if repaint {
+                    refresh.repaint.push(id);
+                }
             }
         }
-        changed
+        refresh
     }
 
-    /// Rebuilds one photo's served estimates when the burst median or the pooled noise moved;
-    /// returns its id when a viewer should react. Cheap when nothing moved: the pooled model is
-    /// refitted only for a photo whose pool was rebuilt since.
+    /// Rebuilds one photo's served estimates when the burst median, Apple Auto's steps or state or
+    /// the pooled noise moved; returns its id when a viewer should react, with whether Apple Auto's
+    /// values (and so its picture) moved. `served` of `None` keeps what the photo was served from
+    /// (the pooled noise alone is refreshed). Cheap when nothing moved: the pooled model is refitted
+    /// only for a photo whose pool was rebuilt since.
     fn refresh_photo(
         &mut self,
         i: usize,
-        shared_ev: Option<f64>,
+        served: Option<Served>,
         priors: &PriorStore,
         is_current: bool,
-    ) -> Option<PhotoId> {
+    ) -> Option<(PhotoId, bool)> {
         let own = self.photos[i].own.clone()?;
         let old = self.photos[i].effective.clone();
-        let ev = shared_ev
-            .unwrap_or_else(|| old.as_ref().map_or(own.exposure.own_ev, |e| e.exposure.ev));
+        let served = served
+            .or_else(|| self.photos[i].served.clone())
+            .unwrap_or(Served {
+                rule_ev: own.exposure.own_ev,
+                steps: None,
+                state: AppleAuto::Off,
+            });
+        let values = served.steps.and_then(|s| s.values());
+        // `EV = EV_rule + delta`, the rule's value itself when there is no change (bit for bit).
+        let ev = match values {
+            Some(v) if v.exposure_ev != 0.0 => served.rule_ev + v.exposure_ev,
+            _ => served.rule_ev,
+        };
         let group_version = self.photos[i]
             .pool_key
             .as_ref()
@@ -970,11 +1214,19 @@ impl State {
         let ev_moved = old
             .as_ref()
             .is_none_or(|o| (o.exposure.ev - ev).abs() > 1e-12);
-        if !noise_stale && !ev_moved {
+        // Apple Auto's values (what the pixels see; no answer is the rule, all zeros), its steps (an
+        // answer of keep is Apple's source with the rule's values) and the photo's state.
+        let apple_moved = old.as_ref().is_some_and(|o| {
+            o.apple_steps.and_then(|s| s.values()).unwrap_or_default() != values.unwrap_or_default()
+        });
+        let steps_moved = old.as_ref().is_some_and(|o| o.apple_steps != served.steps);
+        let state_moved = old.as_ref().is_some_and(|o| o.apple != served.state);
+        if !noise_stale && !ev_moved && !apple_moved && !steps_moved && !state_moved {
+            self.photos[i].served = Some(served);
             return None;
         }
         // The noise: pooled when the photo has a pool, else its own; unchanged when only the
-        // exposure moved.
+        // exposure or Apple Auto moved.
         let mut noise_version = self.photos[i].noise_version;
         let noise = if noise_stale {
             let pooled = match (self.photos[i].pool_key.clone(), self.photos[i].meta.clone()) {
@@ -992,21 +1244,33 @@ impl State {
                 .map_or_else(|| own.noise.clone(), |o| o.noise.clone())
         };
         let noise_moved = old.as_ref().is_some_and(|o| o.noise.model != noise.model);
-        let mut next = if (ev - own.exposure.own_ev).abs() < 1e-12 {
+        let mut next = if (served.rule_ev - own.exposure.own_ev).abs() < 1e-12 {
             (*own).clone()
         } else {
-            own.with_shared_ev(ev)
+            own.with_shared_ev(served.rule_ev)
         };
         next = next.with_noise(noise);
+        if (served.steps.is_some() || served.state != AppleAuto::Off)
+            && let Some(profile) = self.photos[i].profile.clone()
+        {
+            next = next.with_apple(served.steps, served.state.clone(), tables_of(&profile));
+        }
         let photo = &mut self.photos[i];
         photo.noise_version = noise_version;
-        let changed = old.is_none() || ev_moved || noise_moved;
+        photo.served = Some(served);
+        let changed =
+            old.is_none() || ev_moved || noise_moved || apple_moved || steps_moved || state_moved;
         if changed {
             photo.effective = Some(Arc::new(next));
             photo.version += 1;
         }
-        let react = old.is_some() && (ev_moved || (noise_moved && is_current));
-        react.then_some(photo.id)
+        let react = old.is_some()
+            && (ev_moved
+                || apple_moved
+                || steps_moved
+                || state_moved
+                || (noise_moved && is_current));
+        react.then_some((photo.id, apple_moved))
     }
 
     /// Whether the estimates of photo `id` that depend on other photos are final: every photo that
@@ -1037,23 +1301,24 @@ impl State {
         }
         let resolved =
             |p: &Photo| p.own.is_some() || matches!(p.summary.status, PhotoStatus::Skipped { .. });
-        if photo.burst.is_some() {
-            let members: Vec<usize> = (0..self.photos.len())
-                .filter(|&j| self.photos[j].burst.is_some())
-                .collect();
-            let frames: Vec<BurstFrame> = members
-                .iter()
-                .filter_map(|&j| self.photos[j].burst.clone())
-                .collect();
-            let groups = burst_groups(&frames);
-            let mine = members.iter().position(|&j| j == i).map(|k| groups[k]);
-            if members
-                .iter()
-                .zip(&groups)
-                .any(|(&j, &g)| Some(g) == mine && !resolved(&self.photos[j]))
-            {
-                return Ok(false);
-            }
+        // Apple Auto, while it acts: the photo has its answer or its failure (`docs/19` section 6).
+        let apple_active = self.apple.activity().is_active();
+        let settled = |p: &Photo| {
+            !apple_active
+                || p.apple_result.is_some()
+                || matches!(p.summary.status, PhotoStatus::Skipped { .. })
+        };
+        if !settled(photo) {
+            return Ok(false);
+        }
+        // Every frame of the burst has its estimates, and, with Apple Auto, its answer: the burst
+        // shares both.
+        if self
+            .burst_of(i)
+            .into_iter()
+            .any(|j| !(resolved(&self.photos[j]) && settled(&self.photos[j])))
+        {
+            return Ok(false);
         }
         if let Some(key) = &photo.pool_key
             && self
@@ -1064,6 +1329,77 @@ impl State {
             return Ok(false);
         }
         Ok(true)
+    }
+
+    /// The indices of the frames of photo `i`'s burst, `i` included, in filmstrip order; `[i]` for a
+    /// photo without a capture record. As in [`State::estimates_final`], the groups are made over
+    /// every photo with a capture record, estimated or not, so a frame still developing is a member.
+    fn burst_of(&self, i: usize) -> Vec<usize> {
+        if self.photos[i].burst.is_none() {
+            return vec![i];
+        }
+        let members: Vec<usize> = (0..self.photos.len())
+            .filter(|&j| self.photos[j].burst.is_some())
+            .collect();
+        let frames: Vec<BurstFrame> = members
+            .iter()
+            .filter_map(|&j| self.photos[j].burst.clone())
+            .collect();
+        let groups = burst_groups(&frames);
+        let mine = members.iter().position(|&j| j == i).map(|k| groups[k]);
+        members
+            .iter()
+            .zip(&groups)
+            .filter(|&(_, &g)| Some(g) == mine)
+            .map(|(&j, _)| j)
+            .collect()
+    }
+
+    /// Whether Apple Auto still has to ask about the photo: it has its own estimates, is not
+    /// skipped, and has no result for them.
+    fn apple_wanted(p: &Photo) -> bool {
+        p.own.is_some()
+            && p.apple_result.is_none()
+            && !matches!(p.summary.status, PhotoStatus::Skipped { .. })
+    }
+
+    /// The photo the Apple Auto worker asks about next (`docs/19` section 6): the photo on screen,
+    /// then the photos an export waits for, then the others in filmstrip order. A photo whose
+    /// picture the development job is still rendering waits for it. `None` while Apple Auto does not
+    /// act or a request is in flight.
+    fn next_apple_task(&self) -> Option<usize> {
+        if self.apple.in_flight.is_some() || !self.apple.activity().is_active() {
+            return None;
+        }
+        let eligible = |i: usize| {
+            let p = &self.photos[i];
+            Self::apple_wanted(p) && !matches!(p.apple_picture, PictureSlot::Rendering)
+        };
+        self.current
+            .filter(|&c| eligible(c))
+            .or_else(|| {
+                self.apple
+                    .urgent
+                    .iter()
+                    .filter_map(|id| self.index.get(id).copied())
+                    .find(|&i| eligible(i))
+            })
+            .or_else(|| (0..self.photos.len()).find(|&i| eligible(i)))
+    }
+
+    /// Whether the Apple Auto worker has work: a request in flight, or a photo to ask about while
+    /// Apple Auto acts.
+    fn apple_busy(&self) -> bool {
+        self.apple.in_flight.is_some()
+            || (self.apple.activity().is_active() && self.photos.iter().any(Self::apple_wanted))
+    }
+
+    /// How many pictures the development jobs hold or are rendering.
+    fn pictures_held(&self) -> usize {
+        self.photos
+            .iter()
+            .filter(|p| !matches!(p.apple_picture, PictureSlot::Empty))
+            .count()
     }
 
     /// Rebuilds the noise pool of a photo's group when the set of estimates in it changed; the
@@ -1124,6 +1460,8 @@ enum JobKind {
     Develop,
     /// Decode again so a neighbour of the current photo is cached.
     Prefetch,
+    /// Render the thumbnail again: Apple Auto moved the photo's values.
+    Thumbnail,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1160,6 +1498,13 @@ struct Inner {
     /// The decodes of [`Session::raw_image`] in progress: callers that ask for a photo that is
     /// being decoded wait for that decode instead of reading the file again.
     decoding: SingleFlight<PhotoId, Arc<RawImage>>,
+    /// Wakes the Apple Auto worker, and whoever waits for it to be idle (paired with `state`).
+    apple_wake: Condvar,
+    /// The Apple Auto worker is inside a request: the advisor's call can block for up to
+    /// [`crate::apple_auto::REQUEST_TIMEOUT_MS`], so dropping the session does not wait for it.
+    apple_asking: AtomicBool,
+    /// Calls of the advisor's `ask`, retries included (for tests and diagnostics).
+    apple_asks: AtomicU64,
 }
 
 /// The session: photos in memory, the current photo, the picked set, the decode pool.
@@ -1169,6 +1514,8 @@ struct Inner {
 pub struct Session {
     inner: Arc<Inner>,
     workers: Mutex<Vec<JoinHandle<()>>>,
+    /// The Apple Auto worker, when the session has an advisor.
+    apple_worker: Mutex<Option<JoinHandle<()>>>,
 }
 
 /// A photo as the render graph and the export queue need it: everything immutable about the
@@ -1227,9 +1574,20 @@ impl Session {
     pub fn new(env: SessionEnv) -> Self {
         let threads = env.decode_threads.max(1);
         let default_look = env.default_look.clone();
+        let mut state = State::new(default_look);
+        if let Some(apple) = &env.apple_auto {
+            state.apple = AppleState {
+                has_advisor: true,
+                mode: apple.mode,
+                preference: apple.preference,
+                availability: Some(apple.advisor.availability()),
+                urgent: Vec::new(),
+                in_flight: None,
+            };
+        }
         let inner = Arc::new(Inner {
             env,
-            state: Mutex::new(State::new(default_look)),
+            state: Mutex::new(state),
             emit_lock: Mutex::new(()),
             epoch: AtomicU64::new(1),
             shutdown: AtomicBool::new(false),
@@ -1240,6 +1598,9 @@ impl Session {
             jobs_started: AtomicU64::new(0),
             raw_decodes: AtomicU64::new(0),
             decoding: SingleFlight::new(),
+            apple_wake: Condvar::new(),
+            apple_asking: AtomicBool::new(false),
+            apple_asks: AtomicU64::new(0),
         });
         let workers: Vec<JoinHandle<()>> = (0..threads)
             .filter_map(|n| {
@@ -1251,9 +1612,22 @@ impl Session {
                     .ok()
             })
             .collect();
+        let apple_worker = inner.env.apple_auto.as_ref().and_then(|_| {
+            let inner = Arc::clone(&inner);
+            std::thread::Builder::new()
+                .name("ym-apple-auto".to_owned())
+                .spawn(move || inner.apple_worker())
+                .map_err(|e| tracing::error!(error = %e, "could not start the Apple Auto thread"))
+                .ok()
+        });
+        if inner.env.apple_auto.is_some() && apple_worker.is_none() {
+            // No worker: the session behaves as one without an advisor (`docs/19` section 6).
+            inner.apple_worker_gone();
+        }
         Self {
             inner,
             workers: Mutex::new(workers),
+            apple_worker: Mutex::new(apple_worker),
         }
     }
 
@@ -1273,6 +1647,9 @@ impl Session {
     /// then develop while the caller carries on. The new photos are in the filmstrip in the order
     /// of their paths (case-insensitive); the first photo of an empty session becomes current.
     pub fn open(&self, paths: &[PathBuf], options: OpenOptions) -> OpenOutcome {
+        // Apple Auto may have become available, or stopped being, since the last look (`docs/19`
+        // section 1: read again when a session opens).
+        self.refresh_apple_auto();
         let inner = &self.inner;
         let epoch = inner.epoch.load(Ordering::SeqCst);
         let collected = collect(paths, options.recursive);
@@ -1876,9 +2253,10 @@ impl Session {
     }
 
     /// `rerun_auto`: recomputes a photo's automatic estimates from its pixels and sets exposure,
-    /// white balance (the light preset, Kelvin and tint and a picked white) and noise reduction
-    /// back to Auto. Runs on the calling thread and decodes the photo again when its mosaic is not
-    /// cached.
+    /// white balance (the light preset, Kelvin and tint and a picked white), the white lift's offset
+    /// and noise reduction back to Auto, and contrast and saturation too while Apple Auto acts on
+    /// the photo ([`DevelopSettings::reset_automatic`]). Runs on the calling thread and decodes the
+    /// photo again when its mosaic is not cached.
     ///
     /// # Errors
     ///
@@ -1906,24 +2284,42 @@ impl Session {
             }
             let i = *st.index.get(&id).ok_or(SessionError::UnknownPhoto(id))?;
             let key = st.photos[i].pool_key.clone();
+            // Contrast and saturation go back to Auto only while Apple Auto acts on the photo (its
+            // state pending, answered or failed: the Automatic card shows their rows; `docs/19`
+            // section 5); otherwise Re-run leaves them as they were before Apple Auto.
+            let apple_acts = st
+                .apple
+                .activity()
+                .photo_state(st.photos[i].apple_result.as_ref())
+                .acts();
             {
                 let p = &mut st.photos[i];
                 p.own = Some(estimates.clone());
                 p.own_gen += 1;
                 p.effective = Some(estimates);
-                p.settings.reset_automatic();
+                p.settings.reset_automatic(apple_acts);
                 p.pick = None;
                 p.version += 1;
+                // Apple Auto asks again about the new estimates (`docs/19` section 6); an answer
+                // to the old ones that is still on its way is dropped.
+                p.apple_result = None;
+                p.apple_picture = PictureSlot::Empty;
+                p.served = None;
             }
             if let Some(key) = key {
                 st.rebuild_pool(&key, &self.inner.env.priors);
             }
             st.refresh_effective(&self.inner.env.priors)
         };
-        for other in changed.into_iter().filter(|c| *c != id) {
-            self.inner
-                .emit(epoch, SessionEvent::EstimatesChanged { id: other });
-        }
+        self.inner.apple_wake.notify_all();
+        let Refresh { changed, repaint } = changed;
+        self.inner.after_refresh(
+            epoch,
+            Refresh {
+                changed: changed.into_iter().filter(|c| *c != id).collect(),
+                repaint: repaint.into_iter().filter(|c| *c != id).collect(),
+            },
+        );
         self.settings(id)
     }
 
@@ -1978,10 +2374,26 @@ impl Session {
         self.inner.raw_decodes.load(Ordering::SeqCst)
     }
 
-    /// Waits until no job is queued or running; false when `timeout` ran out first.
+    /// Waits until no job is queued or running, and, while Apple Auto acts, until every photo has
+    /// its answer or its failure (`ym` waits for the answers of the photos it develops, `docs/19`
+    /// section 6); false when `timeout` ran out first.
     #[must_use]
     pub fn wait_idle(&self, timeout: Duration) -> bool {
         let deadline = Instant::now() + timeout;
+        loop {
+            if !self.wait_jobs(deadline) || !self.wait_apple(deadline) {
+                return false;
+            }
+            // An answer can queue a thumbnail; idle means both at once.
+            let q = lock(&self.inner.queue);
+            if q.jobs.is_empty() && q.running == 0 {
+                return true;
+            }
+        }
+    }
+
+    /// Waits until the decode pool has nothing queued or running; false at `deadline`.
+    fn wait_jobs(&self, deadline: Instant) -> bool {
         let mut q = lock(&self.inner.queue);
         while !q.jobs.is_empty() || q.running > 0 {
             let now = Instant::now();
@@ -1992,6 +2404,24 @@ impl Session {
                 .inner
                 .idle
                 .wait_timeout(q, deadline - now)
+                .unwrap_or_else(PoisonError::into_inner)
+                .0;
+        }
+        true
+    }
+
+    /// Waits until the Apple Auto worker has nothing to do; false at `deadline`.
+    fn wait_apple(&self, deadline: Instant) -> bool {
+        let mut st = lock(&self.inner.state);
+        while st.apple_busy() {
+            let now = Instant::now();
+            if now >= deadline {
+                return false;
+            }
+            st = self
+                .inner
+                .apple_wake
+                .wait_timeout(st, deadline - now)
                 .unwrap_or_else(PoisonError::into_inner)
                 .0;
         }
@@ -2026,6 +2456,117 @@ impl Session {
         }
         inner.current_hint.store(NO_PHOTO, Ordering::SeqCst);
         lock(&inner.state).clear();
+        // A worker pausing between retries looks again, and whoever waits for it.
+        inner.apple_wake.notify_all();
+    }
+
+    // --- Apple Auto ----------------------------------------------------------------------------
+
+    /// Reads Apple Auto's availability again (`docs/19` section 1: when a session opens, when
+    /// Preferences opens, when the preferences change and before each export) and brings every
+    /// photo in step with it. Returns what the advisor said; `None` without an advisor, and once
+    /// the Apple Auto worker is gone (it could not start, or it stopped), which is the same. Cheap:
+    /// no model call.
+    pub fn refresh_apple_auto(&self) -> Option<Availability> {
+        let apple = self.inner.env.apple_auto.as_ref()?;
+        if !lock(&self.inner.state).apple.has_advisor {
+            // The worker is gone (it could not start, or it stopped): as without an advisor.
+            return None;
+        }
+        let availability = apple.advisor.availability();
+        let read = availability.clone();
+        self.inner
+            .change_apple(move |a| a.availability = Some(availability));
+        Some(read)
+    }
+
+    /// Sets the `apple_auto` preference (`docs/19` section 2) and reads the availability again.
+    /// Off: every photo goes back to the rule at once, and the answers already received are kept;
+    /// on: the photos without an answer are asked.
+    pub fn set_apple_auto_preference(&self, on: bool) {
+        let availability = self
+            .inner
+            .env
+            .apple_auto
+            .as_ref()
+            .map(|a| a.advisor.availability());
+        self.inner.change_apple(move |a| {
+            a.preference = on;
+            if availability.is_some() {
+                a.availability = availability;
+            }
+        });
+    }
+
+    /// Sets how this run decides on Apple Auto (the CLI's `--apple-auto on|off`, `docs/19` section
+    /// 8). As for the preference, answers are kept and photos without one are asked when it acts.
+    pub fn set_apple_auto_mode(&self, mode: AppleAutoMode) {
+        self.inner.change_apple(move |a| a.mode = mode);
+    }
+
+    /// Apple Auto's status for the app's Preferences and `ym doctor`, with the availability read
+    /// again.
+    #[must_use]
+    pub fn apple_auto_status(&self) -> AppleAutoStatus {
+        let availability = self.refresh_apple_auto();
+        let st = lock(&self.inner.state);
+        let (available, reason, info) = match availability {
+            Some(Availability::Available(info)) => (true, None, Some(info)),
+            Some(Availability::Unavailable(reason)) => (false, Some(reason), None),
+            None => (false, None, None),
+        };
+        AppleAutoStatus {
+            available,
+            reason,
+            info,
+            preference: st.apple.preference,
+            mode: st.apple.mode,
+            active: st.apple.activity().is_active(),
+            prompt: PROMPT_VERSION,
+            table: TABLE_VERSION,
+        }
+    }
+
+    /// Whether Apple Auto acts for this session now (without reading the availability again).
+    #[must_use]
+    pub fn apple_auto_active(&self) -> bool {
+        lock(&self.inner.state).apple.activity().is_active()
+    }
+
+    /// Moves photos up the Apple Auto worker's order: an export is waiting for them (`docs/19`
+    /// section 6). They come after the photo on screen, in the order given, each followed by the
+    /// frames of its burst that have no answer yet (in filmstrip order): a photo's export waits for
+    /// its whole burst's answers ([`Session::estimates_final`]), so they move up with it.
+    pub fn prioritise_apple_auto(&self, ids: &[PhotoId]) {
+        let mut st = lock(&self.inner.state);
+        let mut order: Vec<PhotoId> = Vec::with_capacity(ids.len());
+        for id in ids {
+            order.push(*id);
+            if let Some(&i) = st.index.get(id) {
+                order.extend(
+                    st.burst_of(i)
+                        .into_iter()
+                        .map(|j| &st.photos[j])
+                        .filter(|p| {
+                            p.apple_result.is_none()
+                                && !matches!(p.summary.status, PhotoStatus::Skipped { .. })
+                        })
+                        .map(|p| p.id),
+                );
+            }
+        }
+        for id in order {
+            if !st.apple.urgent.contains(&id) {
+                st.apple.urgent.push(id);
+            }
+        }
+    }
+
+    /// Calls of the advisor's `ask` since the session was created, retries included (for tests and
+    /// diagnostics).
+    #[must_use]
+    pub fn apple_auto_asks(&self) -> u64 {
+        self.inner.apple_asks.load(Ordering::SeqCst)
     }
 }
 
@@ -2038,12 +2579,24 @@ impl Drop for Session {
         }
         self.inner.shutdown.store(true, Ordering::SeqCst);
         self.inner.work.notify_all();
+        {
+            let _st = lock(&self.inner.state);
+            self.inner.apple_wake.notify_all();
+        }
         let handles = std::mem::take(&mut *lock(&self.workers));
         let me = std::thread::current().id();
         for h in handles {
             if h.thread().id() != me {
                 let _ = h.join();
             }
+        }
+        // The Apple Auto worker is joined unless it is inside a request, which can block for up to
+        // 30 s: then it ends on its own when the advisor answers, and drops the answer.
+        if let Some(h) = lock(&self.apple_worker).take()
+            && h.thread().id() != me
+            && !self.inner.apple_asking.load(Ordering::SeqCst)
+        {
+            let _ = h.join();
         }
     }
 }
@@ -2164,6 +2717,10 @@ impl Inner {
                     settings,
                     pick: None,
                     version: 0,
+                    apple_result: None,
+                    apple_picture: PictureSlot::Empty,
+                    served: None,
+                    repaint: false,
                 }
             }
             Err(error) => Photo {
@@ -2197,6 +2754,10 @@ impl Inner {
                 settings,
                 pick: None,
                 version: 0,
+                apple_result: None,
+                apple_picture: PictureSlot::Empty,
+                served: None,
+                repaint: false,
             },
         }
     }
@@ -2238,6 +2799,7 @@ impl Inner {
                     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match job.kind {
                         JobKind::Develop => self.develop(&job),
                         JobKind::Prefetch => self.prefetch(job.photo),
+                        JobKind::Thumbnail => self.refresh_thumbnail(job.epoch, job.photo),
                     }));
                 if let Err(payload) = run {
                     let message = payload
@@ -2247,7 +2809,8 @@ impl Inner {
                         .unwrap_or_default();
                     tracing::error!(photo = job.photo.0, panic = %message, "a decode job panicked");
                     // Only a development job decides a photo's fate; a failed prefetch just
-                    // means the next render decodes the file again. Reporting must not take the
+                    // means the next render decodes the file again (and a failed thumbnail keeps the
+                    // one that is there). Reporting must not take the
                     // thread down either (a sink that panics), or the pool would shrink.
                     if job.kind == JobKind::Develop {
                         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -2364,7 +2927,7 @@ impl Inner {
             ms = started.elapsed().as_millis() as u64,
             "estimated"
         );
-        let (changed, served) = {
+        let changed = {
             let mut st = lock(&self.state);
             if !self.live(epoch) {
                 return;
@@ -2373,12 +2936,21 @@ impl Inner {
                 return;
             };
             let key = st.photos[i].pool_key.clone();
+            // Apple Auto's picture is rendered by this job, after the thumbnail, while there is room
+            // for it; the worker leaves the photo until it is there.
+            let picture = self.env.apple_auto.is_some()
+                && st.apple.activity().is_active()
+                && st.photos[i].apple_result.is_none()
+                && st.pictures_held() < PICTURES_HELD;
             {
                 let p = &mut st.photos[i];
                 p.own = Some(estimates.clone());
                 p.own_gen += 1;
-                p.effective = Some(estimates);
+                p.effective = Some(Arc::clone(&estimates));
                 p.version += 1;
+                if picture {
+                    p.apple_picture = PictureSlot::Rendering;
+                }
             }
             if let Some(key) = key {
                 st.rebuild_pool(&key, &self.env.priors);
@@ -2386,11 +2958,25 @@ impl Inner {
             let changed = st.refresh_effective(&self.env.priors);
             st.cache_offer(id, raw.clone());
             let served = st.photos[i].effective.clone();
-            (changed, served)
+            let claim = picture.then(|| PictureClaim {
+                inner: self,
+                id,
+                generation: st.photos[i].own_gen,
+                done: false,
+            });
+            (changed, served, claim)
         };
-        for other in changed.into_iter().filter(|c| *c != id) {
-            self.emit(epoch, SessionEvent::EstimatesChanged { id: other });
-        }
+        let (changed, served, claim) = changed;
+        // A photo with estimates is work for the Apple Auto worker (unless its picture is coming).
+        self.apple_wake.notify_all();
+        let Refresh { changed, repaint } = changed;
+        self.after_refresh(
+            epoch,
+            Refresh {
+                changed: changed.into_iter().filter(|c| *c != id).collect(),
+                repaint: repaint.into_iter().filter(|c| *c != id).collect(),
+            },
+        );
         let Some(served) = served else { return };
         if !self.progress(epoch, id, PhotoStage::Estimate, true, None)
             || !self.progress(epoch, id, PhotoStage::Thumbnail, false, None)
@@ -2432,7 +3018,42 @@ impl Inner {
                 Err(reason) => return fail(PhotoStage::Thumbnail, reason),
             }
         }
-        self.progress(epoch, id, PhotoStage::Thumbnail, true, None);
+        if !self.progress(epoch, id, PhotoStage::Thumbnail, true, None) {
+            return;
+        }
+        // Apple Auto moved the photo's values while its thumbnail was being made: make it again.
+        let repaint = {
+            let mut st = lock(&self.state);
+            st.index
+                .get(&id)
+                .copied()
+                .is_some_and(|i| std::mem::take(&mut st.photos[i].repaint))
+        };
+        if repaint && self.env.thumbnails.is_some() {
+            self.enqueue(epoch, &[id], JobKind::Thumbnail);
+        }
+
+        // Apple Auto's picture, from the photo's own estimates.
+        if let (Some(mut claim), Some(apple)) = (claim, &self.env.apple_auto) {
+            let cancelled = || !self.live(epoch);
+            let rendered = catch_panic(|| {
+                apple.pictures.render(&PictureInput {
+                    id,
+                    raw: &raw,
+                    camera: &camera,
+                    profile: &profile,
+                    estimates: &estimates,
+                    cancelled: &cancelled,
+                })
+            });
+            match rendered {
+                Ok(picture) => claim.finish(Some(picture)),
+                Err(reason) => {
+                    tracing::warn!(photo = id.0, %reason, "the Apple Auto picture could not be rendered; the worker tries again");
+                    claim.finish(None);
+                }
+            }
+        }
     }
 
     fn raw_image(&self, id: PhotoId) -> Result<Arc<RawImage>, SessionError> {
@@ -2481,6 +3102,471 @@ impl Inner {
             lead.finish(Some(raw.clone()));
             return Ok(raw);
         }
+    }
+
+    // --- Apple Auto ----------------------------------------------------------------------------
+
+    /// Tells the viewers about photos whose served estimates changed (`estimates_changed`) and
+    /// renders again the thumbnails of those whose picture Apple Auto changed (when the session
+    /// renders thumbnails): now for a photo that is ready, after its first thumbnail for one that is
+    /// still developing.
+    fn after_refresh(&self, epoch: u64, refresh: Refresh) {
+        for id in refresh.changed {
+            self.emit(epoch, SessionEvent::EstimatesChanged { id });
+        }
+        if refresh.repaint.is_empty() || self.env.thumbnails.is_none() {
+            return;
+        }
+        let ready: Vec<PhotoId> = {
+            let mut st = lock(&self.state);
+            if !self.live(epoch) {
+                return;
+            }
+            let mut ready = Vec::new();
+            for id in refresh.repaint {
+                if let Some(&i) = st.index.get(&id) {
+                    let p = &mut st.photos[i];
+                    match p.summary.status {
+                        PhotoStatus::Ready => ready.push(id),
+                        PhotoStatus::Skipped { .. } => {}
+                        _ => p.repaint = true,
+                    }
+                }
+            }
+            ready
+        };
+        self.enqueue(epoch, &ready, JobKind::Thumbnail);
+    }
+
+    /// Changes Apple Auto's switches (the preference, the mode, the availability) and brings every
+    /// photo in step: the served estimates are rebuilt, the viewers told, the worker woken.
+    fn change_apple(&self, change: impl FnOnce(&mut AppleState)) {
+        let epoch = self.epoch.load(Ordering::SeqCst);
+        let refresh = {
+            let mut st = lock(&self.state);
+            let before = st.apple.activity();
+            change(&mut st.apple);
+            if st.apple.activity() == before {
+                return;
+            }
+            st.refresh_effective(&self.env.priors)
+        };
+        self.apple_wake.notify_all();
+        self.after_refresh(epoch, refresh);
+    }
+
+    /// The body of the Apple Auto worker (see the module documentation). A request is panic-safe as
+    /// a whole: a panic anywhere in it (the advisor, the picture, storing the result, refreshing
+    /// the served estimates, the event sink) fails that photo with kind `other` and the worker goes
+    /// on with the next ([`Inner::apple_recover`]). Should the worker end in a panic outside a
+    /// request (choosing the next photo), its guard turns Apple Auto off for the session
+    /// ([`Inner::apple_worker_gone`]), so neither an export nor `wait_idle` waits for it.
+    fn apple_worker(self: &Arc<Self>) {
+        let Some(apple) = self.env.apple_auto.clone() else {
+            return;
+        };
+        let _guard = WorkerGuard(self);
+        while let Some(task) = self.next_apple_request() {
+            let request = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                self.apple_asking.store(true, Ordering::SeqCst);
+                let outcome = self.apple_request(&apple, &task);
+                self.apple_asking.store(false, Ordering::SeqCst);
+                self.apple_store(&task, outcome);
+            }));
+            if let Err(payload) = request {
+                self.apple_asking.store(false, Ordering::SeqCst);
+                self.apple_recover(&task, panic_message(payload.as_ref()));
+            }
+        }
+    }
+
+    /// Waits for the photo the worker asks about next and marks it in flight; `None` when the
+    /// session is shutting down.
+    fn next_apple_request(&self) -> Option<AppleTask> {
+        let mut st = lock(&self.state);
+        loop {
+            if self.shutdown.load(Ordering::SeqCst) {
+                return None;
+            }
+            if let Some(i) = st.next_apple_task() {
+                let p = &mut st.photos[i];
+                let picture = match std::mem::take(&mut p.apple_picture) {
+                    PictureSlot::Ready(picture) => Some(picture),
+                    PictureSlot::Empty | PictureSlot::Rendering => None,
+                };
+                let task = AppleTask {
+                    epoch: self.epoch.load(Ordering::SeqCst),
+                    id: p.id,
+                    generation: p.own_gen,
+                    picture,
+                    camera: p.camera.clone(),
+                    profile: p.profile.clone(),
+                    own: p.own.clone(),
+                };
+                st.apple.in_flight = Some(task.id);
+                return Some(task);
+            }
+            st = self
+                .apple_wake
+                .wait(st)
+                .unwrap_or_else(PoisonError::into_inner);
+        }
+    }
+
+    /// A request panicked: the photo is failed with kind `other` and the panic's message (unless
+    /// the session closed, Re-run replaced its estimates or Apple Auto is not available, when it is
+    /// left to be asked again), so it uses the rule and an export of it does not wait; the served
+    /// estimates are rebuilt and the viewers told as for any result. Every step is guarded, so a
+    /// panic that comes back here cannot stop the worker: the request ends and whoever waits is
+    /// woken whatever happens.
+    fn apple_recover(&self, task: &AppleTask, message: String) {
+        tracing::error!(photo = task.id.0, %message, "an Apple Auto request stopped unexpectedly; the photo uses Yellowmoon's own Auto");
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let refresh = {
+                let mut st = lock(&self.state);
+                let info = match &st.apple.availability {
+                    Some(Availability::Available(info)) => Some(info.clone()),
+                    _ => None,
+                };
+                let i = st
+                    .index
+                    .get(&task.id)
+                    .copied()
+                    .filter(|&i| st.photos[i].own_gen == task.generation);
+                match (info, i) {
+                    (Some(info), Some(i)) if self.live(task.epoch) => {
+                        let p = &mut st.photos[i];
+                        p.apple_result = Some(AppleAuto::Failed {
+                            kind: FailureKind::Other,
+                            message,
+                            info,
+                        });
+                        p.apple_picture = PictureSlot::Empty;
+                        st.apple.urgent.retain(|id| *id != task.id);
+                        Some(st.refresh_effective(&self.env.priors))
+                    }
+                    _ => None,
+                }
+            };
+            if let Some(refresh) = refresh {
+                self.after_refresh(task.epoch, refresh);
+            }
+        }));
+        {
+            let mut st = lock(&self.state);
+            if st.apple.in_flight == Some(task.id) {
+                st.apple.in_flight = None;
+            }
+        }
+        self.apple_wake.notify_all();
+    }
+
+    /// The Apple Auto worker is gone: its thread could not be started, or it ended in a panic
+    /// outside a request. Apple Auto is then off for the session, as without an advisor (no
+    /// availability, nothing asked, every photo the rule), so nothing waits for a worker that
+    /// will not come. Guarded: called while a panic unwinds, it must not panic again.
+    fn apple_worker_gone(&self) {
+        tracing::error!("the Apple Auto worker stopped; Apple Auto is off for this session");
+        lock(&self.state).apple.in_flight = None;
+        let off = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.change_apple(|a| a.has_advisor = false);
+        }));
+        if off.is_err() {
+            lock(&self.state).apple.has_advisor = false;
+        }
+        self.apple_wake.notify_all();
+    }
+
+    /// One request: the picture (rendered now when the development job did not leave one), the
+    /// availability, then the advisor, tried again [`RETRIES`] times after a wait for the failures
+    /// macOS asks to wait after. `None` when the request was abandoned (the session closed, or Apple
+    /// Auto stopped being available before the call).
+    fn apple_request(&self, apple: &AppleAutoEnv, task: &AppleTask) -> Option<AppleAuto> {
+        let info = match apple.advisor.availability() {
+            Availability::Available(info) => info,
+            unavailable @ Availability::Unavailable(_) => {
+                // Read before the call: the photo is not failed, it waits for Apple Auto to be back.
+                self.change_apple(move |a| a.availability = Some(unavailable));
+                return None;
+            }
+        };
+        let failed = |message: String| AppleAuto::Failed {
+            kind: FailureKind::Other,
+            message,
+            info: info.clone(),
+        };
+        let picture = match &task.picture {
+            Some(picture) => Arc::clone(picture),
+            None => match self.render_picture(apple, task) {
+                Ok(picture) => Arc::new(picture),
+                Err(None) => return None,
+                Err(Some(message)) => return Some(failed(message)),
+            },
+        };
+        let mut retries = 0;
+        loop {
+            if !self.live(task.epoch) {
+                return None;
+            }
+            self.apple_asks.fetch_add(1, Ordering::SeqCst);
+            let answer = catch_panic(|| {
+                apple
+                    .advisor
+                    .ask(&picture)
+                    .and_then(AdvisorAnswer::checked)
+                    .map_err(|e: AdvisorError| AnswerError::Advisor((e.kind, e.message)))
+            });
+            match answer {
+                Ok(answer) => return Some(AppleAuto::Answered { answer, info }),
+                Err(AnswerError::Advisor((kind, _))) if kind.retried() && retries < RETRIES => {
+                    retries += 1;
+                    if !self.apple_pause(task.epoch, apple.retry_pause) {
+                        return None;
+                    }
+                }
+                Err(AnswerError::Advisor((kind, message))) => {
+                    return Some(AppleAuto::Failed {
+                        kind,
+                        message,
+                        info,
+                    });
+                }
+                Err(AnswerError::Panicked(message)) => return Some(failed(message)),
+            }
+        }
+    }
+
+    /// Renders the picture of a photo whose development job left none: from the file again (or the
+    /// mosaic cache). `Err(None)` when the photo is gone, `Err(Some(reason))` when it cannot be
+    /// rendered.
+    fn render_picture(
+        &self,
+        apple: &AppleAutoEnv,
+        task: &AppleTask,
+    ) -> Result<AdvisorPicture, Option<String>> {
+        let (Some(camera), Some(profile), Some(own)) = (&task.camera, &task.profile, &task.own)
+        else {
+            return Err(None);
+        };
+        let raw = match self.raw_image(task.id) {
+            Ok(raw) => raw,
+            Err(SessionError::UnknownPhoto(_)) => return Err(None),
+            Err(e) => return Err(Some(e.to_string())),
+        };
+        let cancelled = || !self.live(task.epoch);
+        catch_panic(|| {
+            apple.pictures.render(&PictureInput {
+                id: task.id,
+                raw: &raw,
+                camera,
+                profile,
+                estimates: own,
+                cancelled: &cancelled,
+            })
+        })
+        .map_err(|e| self.live(task.epoch).then_some(e))
+    }
+
+    /// Waits `pause` between two tries of a request; false when the session closed or is shutting
+    /// down meanwhile.
+    fn apple_pause(&self, epoch: u64, pause: Duration) -> bool {
+        let deadline = Instant::now() + pause;
+        let mut st = lock(&self.state);
+        loop {
+            if !self.live(epoch) {
+                return false;
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                return true;
+            }
+            st = self
+                .apple_wake
+                .wait_timeout(st, deadline - now)
+                .unwrap_or_else(PoisonError::into_inner)
+                .0;
+        }
+    }
+
+    /// Keeps what a request came to and serves it: the photo's result is stored (unless the session
+    /// closed or Re-run replaced the estimates meanwhile), its picture dropped, the served estimates
+    /// rebuilt, the viewers told and the worker woken for the next photo.
+    fn apple_store(&self, task: &AppleTask, outcome: Option<AppleAuto>) {
+        let refresh = {
+            let mut st = lock(&self.state);
+            let stored = outcome.and_then(|outcome| {
+                if !self.live(task.epoch) {
+                    return None;
+                }
+                let i = *st.index.get(&task.id)?;
+                if st.photos[i].own_gen != task.generation {
+                    return None;
+                }
+                let p = &mut st.photos[i];
+                p.apple_result = Some(outcome);
+                p.apple_picture = PictureSlot::Empty;
+                st.apple.urgent.retain(|id| *id != task.id);
+                Some(())
+            });
+            stored.map(|()| st.refresh_effective(&self.env.priors))
+        };
+        if let Some(refresh) = refresh {
+            self.after_refresh(task.epoch, refresh);
+        }
+        // The request ends only now, after the thumbnails it calls for are queued: whoever waits for
+        // the session to be idle never sees the gap between the two.
+        {
+            let mut st = lock(&self.state);
+            if st.apple.in_flight == Some(task.id) {
+                st.apple.in_flight = None;
+            }
+        }
+        self.apple_wake.notify_all();
+    }
+
+    /// Renders a photo's thumbnail again with its estimates now (Apple Auto moved its values).
+    fn refresh_thumbnail(&self, epoch: u64, id: PhotoId) {
+        let Some(renderer) = &self.env.thumbnails else {
+            return;
+        };
+        let snapshot = {
+            let st = lock(&self.state);
+            st.photo(id).and_then(|p| {
+                if p.summary.status != PhotoStatus::Ready {
+                    return None;
+                }
+                Some((
+                    p.camera.clone()?,
+                    p.profile.clone()?,
+                    p.effective.clone()?,
+                    p.settings.clone(),
+                ))
+            })
+        };
+        let Some((camera, profile, estimates, settings)) = snapshot else {
+            return;
+        };
+        let Ok(raw) = self.raw_image(id) else {
+            return;
+        };
+        let cancelled = || !self.live(epoch);
+        match renderer.render(&ThumbnailInput {
+            id,
+            raw: &raw,
+            camera: &camera,
+            profile: &profile,
+            estimates: &estimates,
+            settings: &settings,
+            cancelled: &cancelled,
+        }) {
+            Ok(png_bytes) => {
+                self.emit(
+                    epoch,
+                    SessionEvent::ThumbnailReady(ThumbnailReady { id, png_bytes }),
+                );
+            }
+            Err(reason) => {
+                tracing::debug!(photo = id.0, %reason, "a thumbnail could not be rendered again");
+            }
+        }
+    }
+}
+
+/// The Apple Auto worker's guard: dropped while the worker's thread unwinds from a panic outside a
+/// request, it turns Apple Auto off for the session ([`Inner::apple_worker_gone`]).
+struct WorkerGuard<'a>(&'a Inner);
+
+impl Drop for WorkerGuard<'_> {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            self.0.apple_worker_gone();
+        }
+    }
+}
+
+/// A request of the Apple Auto worker: the photo, the estimates it is about and what its picture
+/// is made from.
+struct AppleTask {
+    epoch: u64,
+    id: PhotoId,
+    /// `own_gen` when the request was made: an answer to estimates that Re-run replaced is dropped.
+    generation: u64,
+    picture: Option<Arc<AdvisorPicture>>,
+    camera: Option<PhotoCamera>,
+    profile: Option<Arc<Profile>>,
+    own: Option<Arc<AutoEstimates>>,
+}
+
+/// The development job's hold on a photo's picture slot ([`PictureSlot::Rendering`]). Finished with
+/// the picture, or dropped (an early return, a panic), it fills or empties the slot and wakes the
+/// worker, so the photo is never left waiting for a picture that will not come.
+struct PictureClaim<'a> {
+    inner: &'a Inner,
+    id: PhotoId,
+    generation: u64,
+    done: bool,
+}
+
+impl PictureClaim<'_> {
+    fn finish(&mut self, picture: Option<AdvisorPicture>) {
+        if std::mem::replace(&mut self.done, true) {
+            return;
+        }
+        {
+            let mut st = lock(&self.inner.state);
+            if let Some(&i) = st.index.get(&self.id) {
+                let p = &mut st.photos[i];
+                if p.own_gen == self.generation && matches!(p.apple_picture, PictureSlot::Rendering)
+                {
+                    p.apple_picture = match picture {
+                        Some(picture) if p.apple_result.is_none() => {
+                            PictureSlot::Ready(Arc::new(picture))
+                        }
+                        _ => PictureSlot::Empty,
+                    };
+                }
+            }
+        }
+        self.inner.apple_wake.notify_all();
+    }
+}
+
+impl Drop for PictureClaim<'_> {
+    fn drop(&mut self) {
+        self.finish(None);
+    }
+}
+
+/// Why an answer did not come.
+enum AnswerError {
+    /// The advisor said why.
+    Advisor((FailureKind, String)),
+    /// The advisor's call panicked.
+    Panicked(String),
+}
+
+/// Runs `f`, turning a panic into an error with its message, so that a misbehaving advisor or
+/// picture renderer fails one photo instead of the worker.
+fn catch_panic<T, E: From<String>>(f: impl FnOnce() -> Result<T, E>) -> Result<T, E> {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
+        Ok(result) => result,
+        Err(payload) => Err(E::from(panic_message(payload.as_ref()))),
+    }
+}
+
+/// What a caught panic says, as a failure's message: `it stopped unexpectedly (<the panic's text>)`.
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+    let message = payload
+        .downcast_ref::<&str>()
+        .map(|m| (*m).to_owned())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_default();
+    format!("it stopped unexpectedly ({message})")
+}
+
+impl From<String> for AnswerError {
+    fn from(message: String) -> Self {
+        Self::Panicked(message)
     }
 }
 

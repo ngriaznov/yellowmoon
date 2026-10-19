@@ -31,7 +31,7 @@ def fake_ym(directory: Path, name: str = "ym") -> Path:
     path.write_text(
         "#!/bin/sh\n"
         'if [ "$1" = info ] && [ "$2" = --json ]; then\n'
-        "  printf '{\"status\": \"fake\", \"argv\": [\"%s\", \"%s\", \"%s\"]}\\n' \"$1\" \"$2\" \"$3\"\n"
+        "  printf '{\"status\": \"fake\", \"argv\": [\"%s\", \"%s\", \"%s\", \"%s\", \"%s\"]}\\n' \"$1\" \"$2\" \"$3\" \"$4\" \"$5\"\n"
         "  exit 0\n"
         "fi\n"
         "exit 3\n"
@@ -57,7 +57,7 @@ class Command(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             binary = fake_ym(Path(tmp))
             result = compare_metadata.ours(str(binary), "photo.ARW")
-        self.assertEqual(result["argv"], ["info", "--json", "photo.ARW"])
+        self.assertEqual(result["argv"], ["info", "--json", "photo.ARW", "--apple-auto", "off"])
 
     def test_a_missing_binary_is_a_usage_error_that_names_ym(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -5,6 +5,9 @@ import { createMockApi, FAILURE_ZIPS, LOOK_FILE_ZIPS, PACKAGE_FACTS, PACKAGE_ZIP
 import type { MockApi } from "./api.mock";
 import type { AppError, DownloadFound, ExportJob, ExportOptions, ExportProgress, LooksImportProgress } from "./api/types";
 
+/** A manual contrast or saturation (`docs/19` section 5: Auto or a value). */
+const manual = (value: number) => ({ kind: "manual", value }) as const;
+
 const ARW = ["~/Pictures/Lisbon/DSC04201.ARW"];
 const downloads = (name: string): string => `~/Downloads/${name}`;
 
@@ -332,7 +335,7 @@ describe("the estimate's extra fields", () => {
   it("counts photos with adjustments beyond the look", async () => {
     expect((await api.exportEstimate(job("picked"))).adjusted_photos).toBe(0);
     // The current photo is DSC04204 (id 4), and it is picked with DSC04203 (id 3).
-    await api.updateSettings(4, { contrast: 12 });
+    await api.updateSettings(4, { contrast: manual(12) });
     await api.updateSettings(3, { look: "builtin:signature", look_intensity: 60 });
     expect((await api.exportEstimate(job("picked"))).adjusted_photos).toBe(1);
     expect((await api.exportEstimate(job("this"))).adjusted_photos).toBe(1);

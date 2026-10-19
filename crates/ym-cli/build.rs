@@ -1,4 +1,5 @@
-//! Embeds the short git commit hash as `YM_GIT_SHA` for `ym --version`.
+//! Embeds the short git commit hash as `YM_GIT_SHA` for `ym --version`, and links FoundationModels
+//! weakly when Apple Auto's Swift bridge is built (`weak_link_foundation_models`).
 //!
 //! Falls back to `unknown` when git or the repository is not available (for example when building
 //! from a source archive).
@@ -20,6 +21,21 @@ fn main() {
 
     if sha.is_some() {
         emit_rerun_hints(&manifest_dir);
+    }
+
+    weak_link_foundation_models();
+}
+
+/// Apple Auto (`docs/19-apple-auto.md` section 11): when `ym-apple` compiled its Swift bridge, which
+/// it says through its `links` metadata (`DEP_YM_APPLE_AUTO_BRIDGE=1`, only on Apple silicon with
+/// the macOS 27 SDK), link FoundationModels weakly, so that `ym` still starts on macOS 14 to 26 where
+/// the framework does not exist. The bridge's Swift object carries no link to the framework, and a
+/// library's build script cannot pass linker arguments to the binaries that use it, so each binary
+/// does it in its own build script (`src-tauri/build.rs` too; `crates/ym-apple/build.rs` explains
+/// more). Nothing happens while `ym-cli` does not depend on `ym-apple`, or on any other target.
+fn weak_link_foundation_models() {
+    if std::env::var("DEP_YM_APPLE_AUTO_BRIDGE").is_ok_and(|bridge| bridge == "1") {
+        println!("cargo:rustc-link-arg=-Wl,-weak_framework,FoundationModels");
     }
 }
 

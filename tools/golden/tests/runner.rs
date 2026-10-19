@@ -34,7 +34,8 @@ impl Bench {
             fs::write(b.testdata().join("in").join(name), b"arw").unwrap();
         }
         fs::create_dir_all(b.root().join("pics")).unwrap();
-        // The stub prints what `ym render --json` prints and copies the picture the settings name. Under
+        // The stub prints what `ym render --json` prints and copies the picture the settings name, and refuses a
+        // render without `--apple-auto off` (the golden pictures are Yellowmoon's own Auto everywhere). Under
         // YELLOWMOON_GPU=require (the GPU mode of the runner) it says `device: gpu`, copies `picture_gpu` when the
         // settings have one, and `fallback` makes it say what a quiet fallback looks like: `device` (the JSON says cpu)
         // or `note` (the JSON says gpu and carries the fallback note). `ym doctor --json` answers with an adapter unless
@@ -48,17 +49,20 @@ if [ "$1" = "doctor" ]; then
   fi
   exit 0
 fi
-out=""; settings=""; input=""
+out=""; settings=""; input=""; apple=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --out) out="$2"; shift ;;
     --settings) settings="$2"; shift ;;
     render|--json|--quiet|--overwrite|--cpu|--require-gpu) ;;
+    --apple-auto) apple="$2"; shift ;;
     --format|--bits|--colour-space|--name|--quality) shift ;;
     *) input="$1" ;;
   esac
   shift
 done
+# The golden pictures are Yellowmoon's own Auto on every machine (docs/19 section 7).
+if [ "$apple" != "off" ]; then echo "golden renders without --apple-auto off" >&2; exit 2; fi
 pic=$(sed -n 's/.*"picture":"\([^"]*\)".*/\1/p' "$settings")
 dev=cpu
 notes='[]'

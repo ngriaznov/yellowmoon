@@ -386,7 +386,7 @@ mod tests {
     fn adjusted_photos_are_those_the_command_does_not_reproduce() {
         let plain = with_look("neutral", 100.0);
         let mut warm = plain.clone();
-        warm.saturation = 20.0;
+        warm.saturation = crate::settings::PercentSetting::manual_value(20.0);
         let other_look = with_look("signature", 100.0);
         let all = [&plain, &warm, &other_look];
         let look = LookId::builtin("neutral");

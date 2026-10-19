@@ -4,6 +4,7 @@ import type { ColorBalance, ColorBalancePoint, LightSource } from "../../api/typ
 import { ColorWarpCard } from "./ColorWarpCard";
 import type { ColorWarpCardProps } from "./ColorWarpCard";
 import { KelvinSlider, SaturationSlider, setWhiteBalance, whiteBalanceState, whiteBalanceToAuto } from "./controls";
+import { AUTO } from "./shared";
 
 /** The light presets, in the order of the mockup. */
 export const LIGHT_OPTIONS: ReadonlyArray<{ value: LightSource; label: string; ariaLabel: string }> = [
@@ -69,7 +70,7 @@ export const ColorTab = memo(function ColorTab({ store, photo, rs, pickingColor,
       </Card>
       <Card
         title="Colour balance"
-        action={<ResetLink size="card" onClick={() => void store.update({ color_balance: ZERO_BALANCE, saturation: 0 })} />}
+        action={<ResetLink size="card" onClick={() => void store.update({ color_balance: ZERO_BALANCE, saturation: AUTO })} />}
       >
         <WheelGroup>
           {WHEELS.map(([key, label]) => (

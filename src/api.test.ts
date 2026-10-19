@@ -1,6 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ExportJob, ViewportRect } from "./api/types";
 
+/** A manual contrast or saturation (`docs/19` section 5: Auto or a value). */
+const manual = (value: number) => ({ kind: "manual", value }) as const;
+
 const invoke = vi.fn();
 const listen = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({ invoke: (...args: unknown[]) => invoke(...args) }));
@@ -38,11 +41,11 @@ const calls: Row[] = [
   ["setCurrent", () => tauriApi.setCurrent(3), "set_current", { photoId: 3 }, true],
   ["setPicked", () => tauriApi.setPicked(3, true), "set_picked", { photoId: 3, picked: true }, true],
   ["getSettings", () => tauriApi.getSettings(3), "get_settings", { photoId: 3 }],
-  ["updateSettings", () => tauriApi.updateSettings(3, { contrast: 4 }), "update_settings", { photoId: 3, patch: { contrast: 4 } }],
+  ["updateSettings", () => tauriApi.updateSettings(3, { contrast: manual(4) }), "update_settings", { photoId: 3, patch: { contrast: manual(4) } }],
   ["applyLook", () => tauriApi.applyLook("all", "builtin:neutral", 80), "apply_look", { scope: "all", lookId: "builtin:neutral", intensity: 80 }, true],
   ["rerunAuto", () => tauriApi.rerunAuto(3), "rerun_auto", { photoId: 3 }],
   ["copySettings", () => tauriApi.copySettings(3), "copy_settings", { photoId: 3 }],
-  ["pasteSettings", () => tauriApi.pasteSettings([4, 5], { contrast: 4 }), "paste_settings", { photoIds: [4, 5], patch: { contrast: 4 } }],
+  ["pasteSettings", () => tauriApi.pasteSettings([4, 5], { contrast: manual(4) }), "paste_settings", { photoIds: [4, 5], patch: { contrast: manual(4) } }],
   ["setMenuState", () => tauriApi.setMenuState({ copy_settings: true, paste_settings: false, paste_settings_to_picked: false }), "set_menu_state", { state: { copy_settings: true, paste_settings: false, paste_settings_to_picked: false } }, true],
   ["histogram", () => tauriApi.histogram(3), "histogram", { photoId: 3 }],
   ["chromaScatter", () => tauriApi.chromaScatter(3), "chroma_scatter", { photoId: 3 }],
@@ -78,6 +81,7 @@ const calls: Row[] = [
   ["preferencesGet", () => tauriApi.preferencesGet(), "preferences_get", undefined],
   ["preferencesSet", () => tauriApi.preferencesSet({ remove_location_from_exports: true }), "preferences_set", { patch: { remove_location_from_exports: true } }],
   ["installCliLink", () => tauriApi.installCliLink(), "install_cli_link", undefined],
+  ["appleAutoStatus", () => tauriApi.appleAutoStatus(), "apple_auto_status", undefined],
   ["cliLinkStatus", () => tauriApi.cliLinkStatus(), "cli_link_status", undefined],
   ["appInfo", () => tauriApi.appInfo(), "app_info", undefined],
 ];
@@ -97,7 +101,7 @@ describe("tauriApi commands", () => {
   });
 
   it("covers every method of the mock, so the two can't drift apart", () => {
-    const mockOnly = ["options", "configure", "reset", "flush", "failNext", "cancelNextDialog", "fixtureUrl", "viewport", "menuState", "system", "queueChoice", "addSource", "removeSource", "simulateDownload", "emitEvent"];
+    const mockOnly = ["options", "configure", "reset", "flush", "failNext", "cancelNextDialog", "fixtureUrl", "viewport", "menuState", "system", "queueChoice", "addSource", "removeSource", "simulateDownload", "emitEvent", "setAppleAuto"];
     const mock = createMockApi();
     const contract = Object.keys(mock).filter((k) => !mockOnly.includes(k)).sort();
     expect(Object.keys(tauriApi).sort()).toEqual(contract);

@@ -1,7 +1,7 @@
 //! `golden check` and `golden update`: render the golden files through `ym`, compare with the stored pictures.
 //!
 //! ```text
-//! ym render --json --settings <entry settings> --format png --bits 16 <file>
+//! ym render --apple-auto off --json --settings <entry settings> --format png --bits 16 <file>
 //!    -> 16-bit sRGB PNG -> pixel hash
 //!         hash == expected.json            identical                          (pass, nothing else needed)
 //!         hash differs, reference picture  ΔE00 per pixel on a 1/4 downsample (median, p99, max)

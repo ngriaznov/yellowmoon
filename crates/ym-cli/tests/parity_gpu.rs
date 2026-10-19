@@ -7,6 +7,8 @@
 //! the tests skip with a notice, unless `YM_REQUIRE_GPU=1` turns that into a failure. A GPU export is
 //! not the CPU export (the kernels agree with the CPU within their tolerances, not bit for bit,
 //! `docs/05`), so the CPU path is not compared here: `parity.rs` does that with `--cpu` semantics.
+//! Apple Auto is off on both sides (no advisor in the app's core, `--apple-auto off` for the
+//! binary), so a Mac with Apple Intelligence compares the same pictures (`docs/19` section 7).
 
 mod common;
 
@@ -106,7 +108,7 @@ fn cli_export(sb: &Sandbox, inputs: &[&Path], flags: &[&str], dir: &Path) -> Vec
     let out = sb
         .ym()
         .env("YELLOWMOON_GPU", "on")
-        .arg("render")
+        .args(["render", "--apple-auto", "off"])
         .args(inputs)
         .args(flags)
         .arg("--out")
@@ -195,7 +197,7 @@ fn the_binary_really_renders_the_raw_chain_on_the_device_under_the_on_policy() {
     let out = sb
         .ym()
         .env("YELLOWMOON_GPU", "on")
-        .args(["render", "--json", "--quiet"])
+        .args(["render", "--json", "--quiet", "--apple-auto", "off"])
         .arg(&arw)
         .arg("--out")
         .arg(sb.root().join("json"))

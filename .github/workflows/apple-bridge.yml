@@ -1,0 +1,233 @@
+# Apple Auto's Swift bridge (docs/19-apple-auto.md section 11) on GitHub's xcode-27 runner image.
+#
+# Why this runner: crates/ym-apple/swift/AppleAuto.swift uses Foundation Models APIs that first ship in the macOS 27 SDK
+# (Attachment, capabilities, variant, LanguageModelError), and only the xcode-27 image (macOS 27, Xcode 27, Apple silicon)
+# has that SDK. On macos-14, macos-15 and macos-26 build.rs builds the stub, so they cannot check the bridge, and Linux has
+# no Swift at all. A virtual Mac has no Apple Intelligence, so here the model reports itself unavailable (device_not_eligible
+# or apple_intelligence_off is expected): the job proves that the Swift compiles and links, that the binary carries the bridge
+# and links FoundationModels weakly, that clippy and the tests pass with the bridge, and that the probe runs. Answers from the
+# model itself are checked on a physical Mac (docs/19 section 13, "Waiting on Mykyta").
+#
+# The second job runs the same probe binary on older macOS, where FoundationModels does not exist (14, 15) or lacks its
+# macOS 27 symbols (26). It must start and report macos_too_old, which only a weak link allows.
+#
+# Runs on every push that touches the bridge, Checkpoint commits included (unlike mac-gpu.yml): nothing else can check it.
+name: Apple Auto bridge (Xcode 27)
+
+on:
+  push:
+    branches: [main, "claude/**"]
+    paths:
+      - "crates/ym-apple/**"
+      - "crates/ym-core/src/apple_auto.rs"
+      - "crates/ym-cli/build.rs"
+      - "crates/ym-cli/Cargo.toml"
+      - "src-tauri/build.rs"
+      - ".github/workflows/apple-bridge.yml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+  pull_request:
+    paths:
+      - "crates/ym-apple/**"
+      - "crates/ym-core/src/apple_auto.rs"
+      - "crates/ym-cli/build.rs"
+      - "crates/ym-cli/Cargo.toml"
+      - "src-tauri/build.rs"
+      - ".github/workflows/apple-bridge.yml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A newer push to a work branch replaces the run under way; every push to main gets its own run.
+concurrency:
+  group: apple-bridge-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  # The app's minimumSystemVersion: the binaries (and so the Swift, build.rs follows this) target macOS 14.
+  MACOSX_DEPLOYMENT_TARGET: "14.0"
+
+defaults:
+  run:
+    shell: bash   # bash -eo pipefail: a failing command before `tee` fails the step
+
+jobs:
+  bridge:
+    name: Bridge on macOS 27 (xcode-27)
+    runs-on: xcode-27
+    timeout-minutes: 60
+    env:
+      # macOS 27's dyld refuses the proc-macro dylibs that Rust 1.97 builds in release with Cargo's default strip
+      # ("mis-aligned LINKEDIT string pool", run 39249052552), so nothing is stripped on this runner. The step "Proc macros
+      # and stripping on this image" below shows the cause on a two-crate project at every run.
+      CARGO_PROFILE_RELEASE_STRIP: "none"
+      CARGO_PROFILE_RELEASE_BUILD_OVERRIDE_STRIP: "none"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust toolchain from rust-toolchain.toml
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: apple-bridge-xcode27
+          cache-on-failure: true
+          save-if: ${{ github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/claude/') }}
+      - name: The machine, Xcode and the SDK
+        run: |
+          sw_vers
+          uname -m
+          xcodebuild -version
+          xcrun --sdk macosx --show-sdk-version
+          xcrun --sdk macosx --show-sdk-path
+          xcrun --sdk macosx swiftc --version
+          framework="$(xcrun --sdk macosx --show-sdk-path)/System/Library/Frameworks/FoundationModels.framework"
+          ls -d "$framework"
+          # The session initialisers and the error types of this SDK, for reference when the Swift needs a change.
+          interface=$(ls "$framework"/Modules/FoundationModels.swiftmodule/*.swiftinterface 2>/dev/null | head -1 || true)
+          [ -z "$interface" ] || grep -nE 'convenience init.*\(model|init.*\(tools|enum (GenerationError|Error)|enum LanguageModelError|@available.*deprecated' "$interface" | cut -c1-300 | head -60 || true
+      # A diagnosis for the release workflows, print only: a proc macro and a crate that uses it, built in release with Cargo's
+      # default strip and without stripping, with the pinned Rust and with every other toolchain on the image.
+      - name: Proc macros and stripping on this image (print only)
+        run: |
+          rustup toolchain list
+          work=$(mktemp -d)
+          cd "$work"
+          cargo +1.97.0 new -q --lib pm
+          cargo +1.97.0 new -q --lib user
+          printf '\n[lib]\nproc-macro = true\n' >> pm/Cargo.toml
+          echo 'use proc_macro::TokenStream; #[proc_macro] pub fn answer(_: TokenStream) -> TokenStream { "42".parse().unwrap() }' > pm/src/lib.rs
+          echo 'pm = { path = "../pm" }' >> user/Cargo.toml
+          echo 'pub fn f() -> u32 { pm::answer!() }' > user/src/lib.rs
+          cd user
+          for toolchain in $(rustup toolchain list | awk '{print $1}'); do
+            for strip in debuginfo none; do
+              if CARGO_PROFILE_RELEASE_STRIP=$strip CARGO_PROFILE_RELEASE_BUILD_OVERRIDE_STRIP=$strip \
+                cargo "+$toolchain" build -q --release --target-dir "../target-$toolchain-$strip" 2> err.txt; then
+                echo "$toolchain, strip=$strip: the proc macro loads"
+              else
+                echo "$toolchain, strip=$strip: FAILS"
+                grep -m1 -E 'LINKEDIT|dlopen|error' err.txt || true
+              fi
+            done
+          done
+      - name: Build ym-apple and the probe with the bridge
+        run: cargo build -p ym-apple --release --examples
+      - name: What build.rs did (the link instructions and swiftc's diagnostics)
+        if: ${{ !cancelled() }}
+        run: |
+          for dir in target/release/build/ym-apple-*/; do
+            [ -f "$dir/output" ] || continue
+            echo "== $dir"
+            cat "$dir/output"
+            echo "-- stderr"
+            cat "$dir/stderr"
+          done
+      - name: The probe and the rlib carry the bridge (nm)
+        run: |
+          nm target/release/examples/probe | grep -E ' _ym_apple_auto_(availability|model|os|ask)$' | tee nm-probe.txt
+          test "$(wc -l < nm-probe.txt)" -eq 4
+          rlib=$(ls -t target/release/deps/libym_apple-*.rlib | head -1)
+          echo "rlib: $rlib"
+          # nm exits non-zero on the rlib's metadata member, which is not an object file.
+          { nm "$rlib" 2>/dev/null || true; } | grep -E ' T _ym_apple_auto_ask$'
+      - name: FoundationModels is a weak load, nothing needs an rpath (otool)
+        run: |
+          otool -L target/release/examples/probe
+          otool -l target/release/examples/probe > loads.txt
+          grep -A2 'cmd LC_LOAD_WEAK_DYLIB' loads.txt | tee weak.txt
+          grep -q 'FoundationModels.framework' weak.txt
+          if grep -A2 'cmd LC_LOAD_DYLIB$' loads.txt | grep FoundationModels; then
+            echo "FoundationModels is linked strongly: the binary would not start before macOS 26"
+            exit 1
+          fi
+          if otool -L target/release/examples/probe | grep '@rpath'; then
+            echo "a library is loaded through @rpath: it would have to ship with the binary"
+            exit 1
+          fi
+          grep -A2 'cmd LC_BUILD_VERSION' loads.txt
+      - name: Clippy with the bridge (src/bridge.rs is compiled only here)
+        run: cargo clippy -p ym-apple --release --all-targets -- -D warnings
+      - name: ym-apple's tests with the bridge
+        run: cargo test -p ym-apple --release -- --nocapture
+      - name: Probe (Apple's model; a virtual Mac is expected to report it unavailable)
+        run: target/release/examples/probe | tee probe.txt
+      - name: Probe with the test advisor
+        env:
+          YELLOWMOON_TEST_APPLE_AUTO: fake
+        run: target/release/examples/probe
+      # ym hands the core ym_apple::system_advisor() (docs/19 section 8), so the real binary must carry the bridge and
+      # link FoundationModels weakly through its own build.rs (crates/ym-cli/build.rs), not only the probe.
+      - name: Build ym with the bridge
+        run: cargo build -p ym-cli --release
+      - name: ym carries the bridge and links FoundationModels weakly (nm, otool)
+        run: |
+          nm target/release/ym | grep -E ' _ym_apple_auto_(availability|model|os|ask)$' | tee nm-ym.txt
+          test "$(wc -l < nm-ym.txt)" -eq 4
+          otool -l target/release/ym > ym-loads.txt
+          grep -A2 'cmd LC_LOAD_WEAK_DYLIB' ym-loads.txt | grep -q 'FoundationModels.framework'
+          if grep -A2 'cmd LC_LOAD_DYLIB$' ym-loads.txt | grep FoundationModels; then
+            echo "ym links FoundationModels strongly: it would not start before macOS 26"
+            exit 1
+          fi
+      - name: ym doctor (Apple Auto's row; a virtual Mac is expected to report it unavailable)
+        env:
+          YELLOWMOON_DATA: ${{ github.workspace }}/data
+        run: |
+          target/release/ym doctor | tee doctor.txt || echo "::warning title=ym doctor::exited with $? (informational)"
+          grep 'Apple Auto' doctor.txt
+          target/release/ym doctor --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["apple_auto"])'
+      - name: Put the probe and ym side by side for the older-macOS job
+        run: mkdir -p older && cp target/release/examples/probe target/release/ym older/
+      - name: Keep the probe and ym for the older-macOS job
+        uses: actions/upload-artifact@v4
+        with:
+          name: probe-xcode27
+          path: older/
+          if-no-files-found: error
+      - name: The stub on this Mac (YM_APPLE_BRIDGE=off)
+        env:
+          YM_APPLE_BRIDGE: "off"
+        run: |
+          cargo test -p ym-apple --release
+          cargo run -p ym-apple --release --example probe | tee probe-off.txt
+          grep -q 'BuiltWithoutSupport' probe-off.txt
+
+  older-macos:
+    name: The probe starts on ${{ matrix.runner }}
+    needs: bridge
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-14, macos-15, macos-26]   # all Apple silicon
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    steps:
+      # ym doctor needs the data folder (a release ym finds it only inside an app bundle, docs/01 "Finding data/").
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: data
+      - uses: actions/download-artifact@v4
+        with:
+          name: probe-xcode27
+          path: older
+      - name: Run the probe built with the macOS 27 SDK
+        working-directory: older
+        run: |
+          sw_vers
+          ls -la
+          chmod +x probe ym
+          otool -L probe
+          ./probe | tee probe.txt
+          grep -q 'MacosTooOld' probe.txt
+      - name: ym built with the macOS 27 SDK starts here and says why Apple Auto is not available
+        working-directory: older
+        env:
+          YELLOWMOON_DATA: ${{ github.workspace }}/data
+        run: |
+          ./ym --version
+          ./ym doctor --json > doctor.json || echo "::warning title=ym doctor::exited with $? (informational)"
+          python3 -c 'import json; a = json.load(open("doctor.json"))["apple_auto"]; print(a); assert a["reason"] == "macos_too_old", a'

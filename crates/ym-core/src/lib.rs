@@ -6,7 +6,8 @@
 //! `ym-*` library crates; only `src-tauri` and `ym-cli` depend on it.
 //!
 //! The modules: [`settings`] (`DevelopSettings`, its patch, `ResolvedSettings`), [`auto`] (the
-//! per-photo automatic estimates), [`camera`] (camera match, STAND-IN and REDUCED, the camera
+//! per-photo automatic estimates), [`apple_auto`] (Apple Auto's advisor, steps and table,
+//! `docs/19`), [`camera`] (camera match, STAND-IN and REDUCED, the camera
 //! card), [`session`] (opening files, the decode pool, progress events, the mosaic cache and the
 //! settings commands), [`pipeline`] (the render graph: `Renderer`, the stage caches, geometry, the
 //! viewport state and frames, thumbnails, look tiles, histogram, Pick white sampling, full-size
@@ -24,6 +25,7 @@
 #![warn(missing_docs)]
 
 pub mod app;
+pub mod apple_auto;
 pub mod auto;
 pub mod camera;
 pub mod cli_preview;

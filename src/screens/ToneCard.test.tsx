@@ -10,6 +10,9 @@ import type { SettingsPatch } from "../api/types";
 import { openPhotos, openTab, renderApp, sliderName, sliderOf, valueOf } from "../test/harness";
 import type { Harness, UpdateSpy } from "../test/harness";
 
+/** A manual contrast or saturation (`docs/19` section 5: Auto or a value). */
+const manual = (value: number) => ({ kind: "manual", value }) as const;
+
 let h: Harness;
 afterEach(() => h?.unmount());
 
@@ -64,31 +67,31 @@ describe("the Tone card on the Look tab", () => {
   it("Saturation: moving either copy moves the other", async () => {
     const spy = await setup();
     await type("Saturation", "40");
-    expect(await lastPatch(spy)).toEqual({ saturation: 40 });
+    expect(await lastPatch(spy)).toEqual({ saturation: manual(40) });
     await waitFor(() => expect(valueOf("Saturation")).toBe("+40"));
     await openTab(h, "Colour");
     expect(valueOf("Saturation")).toBe("+40");
     spy.mockClear();
     await type("Saturation", "-25");
-    expect(await lastPatch(spy)).toEqual({ saturation: -25 });
+    expect(await lastPatch(spy)).toEqual({ saturation: manual(-25) });
     await openTab(h, "Look");
     await waitFor(() => expect(valueOf("Saturation")).toBe("−25"));
     // The key steps the slider by one, as it does on the Colour tab.
     sliderOf("Saturation").focus();
     await h.user.keyboard("{ArrowRight}");
     await waitFor(() => expect(valueOf("Saturation")).toBe("−24"));
-    expect(h.store.currentSettings()?.settings.saturation).toBe(-24);
+    expect(h.store.currentSettings()?.settings.saturation).toEqual(manual(-24));
   });
 
   it("Contrast: moving either copy moves the other", async () => {
     const spy = await setup();
     await type("Contrast", "35");
-    expect(await lastPatch(spy)).toEqual({ contrast: 35 });
+    expect(await lastPatch(spy)).toEqual({ contrast: manual(35) });
     await openTab(h, "Light");
     await waitFor(() => expect(valueOf("Contrast")).toBe("+35"));
     spy.mockClear();
     await type("Contrast", "-60");
-    expect(await lastPatch(spy)).toEqual({ contrast: -60 });
+    expect(await lastPatch(spy)).toEqual({ contrast: manual(-60) });
     await openTab(h, "Look");
     await waitFor(() => expect(valueOf("Contrast")).toBe("−60"));
   });
@@ -197,14 +200,14 @@ describe("the Tone card on the Look tab", () => {
     expect(valueOf("Saturation")).toBe("0");
   });
 
-  it("each slider's Reset puts it back: Contrast and Saturation to 0", async () => {
+  it("each slider's Reset puts it back: Contrast and Saturation to Auto, which is 0 without Apple Auto", async () => {
     const spy = await setup();
     await type("Contrast", "20");
     await type("Saturation", "-45");
     await waitFor(() => expect(valueOf("Saturation")).toBe("−45"));
     spy.mockClear();
     await h.user.click(screen.getByRole("button", { name: "Reset Saturation" }));
-    expect(await lastPatch(spy)).toEqual({ saturation: 0 });
+    expect(await lastPatch(spy)).toEqual({ saturation: { kind: "auto" } });
     await waitFor(() => expect(valueOf("Saturation")).toBe("0"));
     expect(valueOf("Contrast")).toBe("+20");
     await h.user.click(screen.getByRole("button", { name: "Reset Contrast" }));
@@ -213,7 +216,7 @@ describe("the Tone card on the Look tab", () => {
     expect(valueOf("Contrast")).toBe("0");
   });
 
-  it("the card's Reset puts Temperature on Auto and Contrast and Saturation at 0", async () => {
+  it("the card's Reset puts Temperature, Contrast and Saturation on Auto", async () => {
     const spy = await setup();
     await type("Temperature", "4000");
     await type("Contrast", "12");
@@ -221,7 +224,7 @@ describe("the Tone card on the Look tab", () => {
     await waitFor(() => expect(valueOf("Saturation")).toBe("+18"));
     spy.mockClear();
     await h.user.click(tone().getByRole("button", { name: "Reset" }));
-    expect(await lastPatch(spy)).toEqual({ white_balance: { kind: "auto" }, light_source: "auto", white_pick: null, contrast: 0, saturation: 0 });
+    expect(await lastPatch(spy)).toEqual({ white_balance: { kind: "auto" }, light_source: "auto", white_pick: null, contrast: { kind: "auto" }, saturation: { kind: "auto" } });
     await waitFor(() => expect(valueOf("Temperature")).toBe("5450 K"));
     expect(valueOf("Contrast")).toBe("0");
     expect(valueOf("Saturation")).toBe("0");

@@ -153,6 +153,33 @@ test.describe("names and landmarks", () => {
   });
 });
 
+test.describe("Apple Auto (docs/19)", () => {
+  test("the Automatic card's rows and line and the Preferences switch are named", async ({ page }) => {
+    await openApp(page, { ...MOCKUP, mockAppleAuto: "answered" });
+    await openPhotos(page);
+    let snapshot = await expectNamed(page, "Photos with Apple Auto");
+    expect(snapshot).toContain('button "Contrast +15, Auto. Open Tone"');
+    expect(snapshot).toContain('button "Saturation −15, Auto. Open Tone"');
+    expect(snapshot).toContain("Set with Apple Intelligence.");
+    await page.keyboard.press("Meta+,");
+    await expect(page.getByRole("switch", { name: "Auto with Apple Intelligence" })).toBeVisible();
+    snapshot = await expectNamed(page, "Preferences with Apple Auto");
+    expect(snapshot).toMatch(/switch "Auto with Apple Intelligence" \[checked\]/);
+  });
+
+  test("the switch flips from the keyboard, and the rows are Tab stops with the ring", async ({ page }) => {
+    await openApp(page, { ...MOCKUP, mockAppleAuto: "answered" });
+    await openPhotos(page);
+    await tabTo(page, (el) => el.getAttribute("aria-label") === "Contrast +15, Auto. Open Tone");
+    await expect(page.locator(":focus")).toHaveCSS("outline-width", "3px");
+    await page.keyboard.press("Meta+,");
+    const toggle = page.getByRole("switch", { name: "Auto with Apple Intelligence" });
+    await toggle.focus();
+    await page.keyboard.press("Space");
+    await expect(toggle).toHaveAttribute("aria-checked", "false");
+  });
+});
+
 /** Presses Tab until the focused element satisfies `matches` (it runs in the page, so it can't use anything outside itself), at most `limit` times. */
 async function tabTo(page: Page, matches: (el: Element) => boolean, limit = 80): Promise<void> {
   for (let i = 0; i < limit; i++) {

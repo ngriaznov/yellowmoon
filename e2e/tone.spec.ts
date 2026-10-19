@@ -90,10 +90,15 @@ test.describe("the Tone card", () => {
     await expect(tone(page)).toBeInViewport({ ratio: 1 });
     const calls = await recordCalls(page, "updateSettings");
     await dragSlider(page, "Saturation", 0.8);
-    const patches = (await calls()).map((c) => c.args[1] as { saturation: number });
+    // Auto or a value (docs/19 section 5): a manual value, or Auto where the drag passes the Auto value (0 here).
+    type Percent = { kind: "auto" } | { kind: "manual"; value: number };
+    const patches = (await calls()).map((c) => {
+      const saturation = (c.args[1] as { saturation: Percent }).saturation;
+      return saturation.kind === "manual" ? saturation.value : 0;
+    });
     expect(patches.length).toBeGreaterThanOrEqual(2);
-    expect(patches.every((p) => Number.isInteger(p.saturation) && p.saturation >= -100 && p.saturation <= 100)).toBe(true);
-    const last = patches.at(-1)!.saturation;
+    expect(patches.every((p) => Number.isInteger(p) && p >= -100 && p <= 100)).toBe(true);
+    const last = patches.at(-1)!;
     expect(last).toBeGreaterThan(40);
     await expect(valueBox(page, "Saturation")).toHaveValue(`+${last}`);
     await openTab(page, "Colour");

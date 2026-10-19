@@ -3,6 +3,15 @@ source: crates/ym-cli/tests/cli.rs
 expression: shape(&v)
 ---
 {
+  "apple_auto": {
+    "available": "bool",
+    "model": "string",
+    "os": "string",
+    "preference": "bool",
+    "prompt": "number",
+    "reason": "null",
+    "table": "number"
+  },
   "data_folder": "string",
   "gpu": {
     "available": "bool",

@@ -232,7 +232,9 @@ mod concurrency {
                         .update_settings(
                             big,
                             &SettingsPatch {
-                                contrast: Some(contrast),
+                                contrast: Some(ym_core::settings::PercentSetting::manual_value(
+                                    contrast,
+                                )),
                                 exposure: Some(AutoOr::Manual(ym_core::settings::ExposureValue {
                                     ev: 0.5,
                                 })),
@@ -246,7 +248,11 @@ mod concurrency {
             slider.join().unwrap();
             let settings = session.settings(big).unwrap();
             assert_eq!(settings.settings.white_pick, Some(point), "round {round}");
-            assert_eq!(settings.settings.contrast, contrast, "round {round}");
+            assert_eq!(
+                settings.settings.contrast,
+                ym_core::settings::PercentSetting::manual_value(contrast),
+                "round {round}"
+            );
             assert_eq!(
                 settings.settings.exposure,
                 AutoOr::Manual(ym_core::settings::ExposureValue { ev: 0.5 }),
@@ -663,8 +669,14 @@ mod reading_settings {
             DevelopSettings::from_json(r#"{ "contrast": 20, "saturation": 250 }"#, &signature)
                 .unwrap();
         assert_eq!(s.look, signature);
-        assert_eq!(s.contrast, 20.0);
-        assert_eq!(s.saturation, 100.0);
+        assert_eq!(
+            s.contrast,
+            ym_core::settings::PercentSetting::manual_value(20.0)
+        );
+        assert_eq!(
+            s.saturation,
+            ym_core::settings::PercentSetting::manual_value(100.0)
+        );
         assert_eq!(clamped, vec![SettingsField::Saturation]);
         // A look the document names wins, and so does an empty document's default.
         let (s, _) =
@@ -745,7 +757,9 @@ mod stress {
                                 let _ = session.update_settings(
                                     id,
                                     &SettingsPatch {
-                                        contrast: Some(v),
+                                        contrast: Some(
+                                            ym_core::settings::PercentSetting::manual_value(v),
+                                        ),
                                         ..SettingsPatch::default()
                                     },
                                 );

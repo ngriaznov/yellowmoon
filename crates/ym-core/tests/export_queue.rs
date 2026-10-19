@@ -259,8 +259,8 @@ fn settings_are_snapshotted_when_the_job_is_queued() {
             .update_settings(
                 *id,
                 &SettingsPatch {
-                    saturation: Some(60.0),
-                    contrast: Some(-30.0),
+                    saturation: Some(ym_core::settings::PercentSetting::manual_value(60.0)),
+                    contrast: Some(ym_core::settings::PercentSetting::manual_value(-30.0)),
                     ..SettingsPatch::exposure_ev(1.5)
                 },
             )
@@ -674,7 +674,7 @@ fn the_estimate_counts_bytes_seconds_and_what_a_command_cannot_carry() {
         .update_settings(
             f.ids[0],
             &SettingsPatch {
-                saturation: Some(10.0),
+                saturation: Some(ym_core::settings::PercentSetting::manual_value(10.0)),
                 ..SettingsPatch::default()
             },
         )

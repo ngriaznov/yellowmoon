@@ -19,8 +19,10 @@
 //!
 //! # Auto and Manual
 //!
-//! `exposure`, `white_balance`, `sharpen` and `noise_reduction` are [`AutoOr`]: `Auto` resolves
-//! against [`AutoEstimates`] when the photo is rendered, `Manual` is the user's value. A patch that
+//! `exposure`, `contrast`, `white_balance`, `saturation`, `sharpen` and `noise_reduction` are
+//! [`AutoOr`]: `Auto` resolves against [`AutoEstimates`] when the photo is rendered, `Manual` is the
+//! user's value. Auto contrast and saturation are 0 unless Apple Auto answered for the photo
+//! (`docs/19` section 5); a plain number in an older document reads as Manual, and 0 as Auto. A patch that
 //! carries a `Manual` value is what "moving a slider" sends; a patch that carries `Auto` is Reset.
 //! [`ResolvedSettings`] answers what the panel shows: every `Auto` replaced by the number it
 //! resolves to, and which fields are still automatic (the AUTO and EDITED tags).
@@ -337,6 +339,74 @@ impl<M> AutoOr<M> {
 pub struct ExposureValue {
     /// Absolute exposure in stops, -4 to +4.
     pub ev: f64,
+}
+
+/// A manual contrast or saturation.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PercentValue {
+    /// -100 to 100.
+    pub value: f64,
+}
+
+/// `contrast` or `saturation`: Auto (0, or Apple Auto's value for the photo, `docs/19` section 5) or a
+/// manual value from -100 to 100. JSON: `{ "kind": "auto" }` or `{ "kind": "manual", "value": 12 }`;
+/// an older document may give a plain number, which reads as Manual with that value, except 0, which
+/// reads as Auto (0 was the default).
+pub type PercentSetting = AutoOr<PercentValue>;
+/// `contrast`: Auto or a manual value ([`PercentSetting`]).
+pub type ContrastSetting = PercentSetting;
+/// `saturation`: Auto or a manual value ([`PercentSetting`]).
+pub type SaturationSetting = PercentSetting;
+
+impl PercentSetting {
+    /// A manual value.
+    #[must_use]
+    pub fn manual_value(value: f64) -> Self {
+        Self::Manual(PercentValue { value })
+    }
+
+    /// The value in effect: the manual value, or `auto` (the photo's Auto value) while the setting is
+    /// Auto.
+    #[must_use]
+    pub fn resolve(&self, auto: f64) -> f64 {
+        match self {
+            Self::Auto => auto,
+            Self::Manual(m) => m.value,
+        }
+    }
+}
+
+/// Reads `contrast` or `saturation` from a settings document, the `ym:Settings` of a file or a golden
+/// manifest: the `AutoOr` form, or a plain number from a document written before Apple Auto, which
+/// reads as Manual with that value, except 0, which reads as Auto ([`percent_from_value`]).
+fn percent_document<'de, D>(d: D) -> Result<PercentSetting, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(d)?;
+    percent_from_value(value).map_err(serde::de::Error::custom)
+}
+
+/// As [`percent_document`] for a patch: a field that is absent or `null` is no change (`None`).
+fn percent_patch<'de, D>(d: D) -> Result<Option<PercentSetting>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Option::<serde_json::Value>::deserialize(d)?
+        .map(|value| percent_from_value(value).map_err(serde::de::Error::custom))
+        .transpose()
+}
+
+/// The setting of one JSON value: a number is the old form (0 is Auto, any other number Manual; one
+/// out of range is clamped later like any manual value), an object the `AutoOr` form (`{ "kind": ...
+/// }`, unknown fields refused).
+fn percent_from_value(value: serde_json::Value) -> Result<PercentSetting, String> {
+    match value.as_f64() {
+        Some(0.0) => Ok(AutoOr::Auto),
+        Some(v) => Ok(PercentSetting::manual_value(v)),
+        None => serde_json::from_value(value).map_err(|e| e.to_string()),
+    }
 }
 
 /// A manual white balance.
@@ -802,8 +872,11 @@ pub struct DevelopSettings {
     pub look_intensity: f64,
     /// Light › Exposure: Auto or an absolute value, -4 to +4 EV.
     pub exposure: ExposureSetting,
-    /// Light › Exposure and Look › Tone, -100 to 100.
-    pub contrast: f64,
+    /// Light › Exposure and Look › Tone: Auto (0, or Apple Auto's contrast, `docs/19` section 5) or a
+    /// manual value, -100 to 100. Auto is the default; a plain number in an older document reads as
+    /// Manual with that value, and 0 as Auto.
+    #[serde(deserialize_with = "percent_document")]
+    pub contrast: ContrastSetting,
     /// -100 to 100.
     pub brightness: f64,
     /// Light › High dynamic range, -100 to 100.
@@ -825,8 +898,10 @@ pub struct DevelopSettings {
     pub white_balance: WhiteBalanceSetting,
     /// The three colour-balance wheels.
     pub color_balance: ColorBalance,
-    /// Colour › Colour balance and Look › Tone, -100 to 100; subtractive (docs/02 C9).
-    pub saturation: f64,
+    /// Colour › Colour balance and Look › Tone: Auto (0, or Apple Auto's saturation, `docs/19` section
+    /// 5) or a manual value, -100 to 100; subtractive (docs/02 C9). Read like `contrast`.
+    #[serde(deserialize_with = "percent_document")]
+    pub saturation: SaturationSetting,
     /// Colour › Colour warp: the pins of stage C9b (docs/02); none by default.
     pub color_warp: ColorWarp,
     /// Detail › Sharpening: Auto or amount and radius.
@@ -873,7 +948,7 @@ impl DevelopSettings {
             look,
             look_intensity: 100.0,
             exposure: AutoOr::Auto,
-            contrast: 0.0,
+            contrast: AutoOr::Auto,
             brightness: 0.0,
             highlights: 0.0,
             shadows: 0.0,
@@ -883,7 +958,7 @@ impl DevelopSettings {
             light_source: LightSource::Auto,
             white_balance: AutoOr::Auto,
             color_balance: ColorBalance::default(),
-            saturation: 0.0,
+            saturation: AutoOr::Auto,
             color_warp: ColorWarp::default(),
             sharpen: AutoOr::Auto,
             output_sharpening: OUTPUT_SHARPENING_DEFAULT,
@@ -969,9 +1044,18 @@ impl DevelopSettings {
 
     /// What "Re-run" on the Automatic card resets: exposure, white balance (the light preset, the
     /// Kelvin and tint and a picked white) and noise reduction go back to Auto, and the white lift's
-    /// offset (the Automatic card's White row) back to 0, the automatic amount.
-    pub fn reset_automatic(&mut self) {
+    /// offset (the Automatic card's White row) back to 0, the automatic amount. Contrast and
+    /// saturation go back to Auto only when `apple_auto` says Apple Auto acts on the photo (its state
+    /// is pending, answered or failed: the card then shows their rows, [`AppleAuto::acts`]);
+    /// otherwise they stay as they are, as before Apple Auto (`docs/19` section 5).
+    ///
+    /// [`AppleAuto::acts`]: crate::apple_auto::AppleAuto::acts
+    pub fn reset_automatic(&mut self, apple_auto: bool) {
         self.exposure = AutoOr::Auto;
+        if apple_auto {
+            self.contrast = AutoOr::Auto;
+            self.saturation = AutoOr::Auto;
+        }
         self.light_source = LightSource::Auto;
         self.white_balance = AutoOr::Auto;
         self.white_pick = None;
@@ -1042,8 +1126,21 @@ impl DevelopSettings {
         let (v, c) = clamp_to("look_intensity", self.look_intensity, LOOK_INTENSITY_RANGE)?;
         self.look_intensity = v;
         note(SettingsField::LookIntensity, c);
-        for (name, field, value) in [
+        for (name, field, setting) in [
             ("contrast", SettingsField::Contrast, &mut self.contrast),
+            (
+                "saturation",
+                SettingsField::Saturation,
+                &mut self.saturation,
+            ),
+        ] {
+            if let AutoOr::Manual(m) = setting {
+                let (v, c) = clamp_to(name, m.value, PERCENT_RANGE)?;
+                m.value = v;
+                note(field, c);
+            }
+        }
+        for (name, field, value) in [
             (
                 "brightness",
                 SettingsField::Brightness,
@@ -1057,11 +1154,6 @@ impl DevelopSettings {
             ("shadows", SettingsField::Shadows, &mut self.shadows),
             ("white", SettingsField::White, &mut self.white),
             ("black", SettingsField::Black, &mut self.black),
-            (
-                "saturation",
-                SettingsField::Saturation,
-                &mut self.saturation,
-            ),
         ] {
             let (v, c) = clamp_to(name, *value, PERCENT_RANGE)?;
             *value = v;
@@ -1437,9 +1529,14 @@ pub struct SettingsPatch {
     /// New exposure (Manual to set it, Auto to reset it).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exposure: Option<ExposureSetting>,
-    /// New contrast.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub contrast: Option<f64>,
+    /// New contrast: Auto (Reset), or Manual with its value. A plain number reads as Manual with that
+    /// value, and 0 as Auto.
+    #[serde(
+        default,
+        deserialize_with = "percent_patch",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub contrast: Option<ContrastSetting>,
     /// New brightness.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub brightness: Option<f64>,
@@ -1467,9 +1564,14 @@ pub struct SettingsPatch {
     /// Colour-balance wheels to change.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color_balance: Option<ColorBalancePatch>,
-    /// New saturation.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub saturation: Option<f64>,
+    /// New saturation: Auto (Reset), or Manual with its value. A plain number reads as Manual with
+    /// that value, and 0 as Auto.
+    #[serde(
+        default,
+        deserialize_with = "percent_patch",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub saturation: Option<SaturationSetting>,
     /// New colour warp: the whole list of pins.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color_warp: Option<ColorWarp>,
@@ -1749,8 +1851,8 @@ impl SettingsPatch {
     /// settings): every field of the photo's settings but [`COPY_LEAVES_OUT`], which belong to
     /// the photo's own geometry and pixels (the crop and the turn, and the point of Pick white).
     ///
-    /// * Auto stays Auto (exposure, light preset, white balance, sharpening, noise reduction): each
-    ///   photo gets its own automatic values. Manual values are taken as they are, and so is the
+    /// * Auto stays Auto (exposure, contrast, light preset, white balance, saturation, sharpening,
+    ///   noise reduction): each photo gets its own automatic values (with Apple Auto, its own answer). Manual values are taken as they are, and so is the
     ///   white lift's offset (a number of stops added to each photo's own automatic amount).
     /// * A white balance that came from a picked white (a white picked, the light preset and the
     ///   white balance both Auto) becomes a manual white balance at the Kelvin and tint the pick
@@ -2036,6 +2138,10 @@ fn patch_touches(p: &SettingsPatch, field: SettingsField) -> bool {
 pub struct AutoFlags {
     /// `exposure` is Auto.
     pub exposure: bool,
+    /// `contrast` is Auto.
+    pub contrast: bool,
+    /// `saturation` is Auto.
+    pub saturation: bool,
     /// `light_source` is Auto.
     pub light_source: bool,
     /// `white_balance` is Auto.
@@ -2055,7 +2161,8 @@ pub struct ResolvedValues {
     pub look_intensity: f64,
     /// The exposure in stops (`EV_auto` while `exposure` is Auto).
     pub exposure_ev: f64,
-    /// `contrast`.
+    /// The contrast in effect: the manual value, or the photo's Auto contrast while `contrast` is Auto
+    /// (0 without Apple Auto, `docs/19` section 5).
     pub contrast: f64,
     /// `brightness`.
     pub brightness: f64,
@@ -2081,7 +2188,8 @@ pub struct ResolvedValues {
     pub tint: f64,
     /// `color_balance`.
     pub color_balance: ColorBalance,
-    /// `saturation`.
+    /// The saturation in effect: the manual value, or the photo's Auto saturation while `saturation` is
+    /// Auto (0 without Apple Auto).
     pub saturation: f64,
     /// `color_warp`.
     pub color_warp: ColorWarp,
@@ -2151,7 +2259,7 @@ impl ResolvedSettings {
             look: settings.look.clone(),
             look_intensity: settings.look_intensity,
             exposure_ev: chain.exposure_ev(),
-            contrast: settings.contrast,
+            contrast: settings.contrast.resolve(estimates.contrast),
             brightness: settings.brightness,
             highlights: settings.highlights,
             shadows: settings.shadows,
@@ -2163,7 +2271,7 @@ impl ResolvedSettings {
             kelvin: kelvin_k,
             tint,
             color_balance: settings.color_balance,
-            saturation: settings.saturation,
+            saturation: settings.saturation.resolve(estimates.saturation),
             color_warp: settings.color_warp.clone(),
             sharpen: settings.sharpen.manual().copied().unwrap_or(auto_sharpen),
             output_sharpening: settings.output_sharpening,
@@ -2185,6 +2293,8 @@ impl ResolvedSettings {
             values,
             auto: AutoFlags {
                 exposure: settings.exposure.is_auto(),
+                contrast: settings.contrast.is_auto(),
+                saturation: settings.saturation.is_auto(),
                 light_source: settings.light_source == LightSource::Auto,
                 white_balance: settings.white_balance.is_auto(),
                 sharpen: settings.sharpen.is_auto(),
@@ -2208,9 +2318,10 @@ impl ResolvedSettings {
 
     /// The settings as an export records them (`ym:Settings`, the CLI's `settings` object).
     ///
-    /// Exposure, sharpening and noise reduction that are Auto are written as the manual values
-    /// they resolved to: a Manual value renders exactly like the Auto it came from, and the file
-    /// then says which numbers were used. White balance is left as it is: a manual white balance
+    /// Exposure, contrast, saturation, sharpening and noise reduction that are Auto are written as the
+    /// manual values they resolved to: a Manual value renders exactly like the Auto it came from, and
+    /// the file then says which numbers were used (which Auto chose them is in `ym:Auto` and
+    /// `ym:AppleAuto`, `docs/19` section 9). White balance is left as it is: a manual white balance
     /// at the Kelvin and tint shown does *not* render like Auto (the tint scales the green gain,
     /// and Kelvin is rounded to 50 K), so an Auto white balance stays Auto here and the numbers it
     /// resolved to are in the `auto` object of the CLI output.
@@ -2219,6 +2330,12 @@ impl ResolvedSettings {
         let mut s = self.settings.clone();
         if s.exposure.is_auto() {
             s.exposure = ExposureSetting::manual_ev(self.values.exposure_ev);
+        }
+        if s.contrast.is_auto() {
+            s.contrast = PercentSetting::manual_value(self.values.contrast);
+        }
+        if s.saturation.is_auto() {
+            s.saturation = PercentSetting::manual_value(self.values.saturation);
         }
         if s.sharpen.is_auto() {
             s.sharpen = AutoOr::Manual(self.values.sharpen);

@@ -6,6 +6,7 @@
 //! those `ym-core` computes; nothing is worked out again.
 
 use serde_json::{Value, json};
+use ym_core::apple_auto::{AppleAuto, AutoSteps, FailureKind, PROMPT_VERSION, TABLE_VERSION};
 use ym_core::camera::PhotoCamera;
 use ym_core::session::PhotoView;
 use ym_core::settings::ResolvedSettings;
@@ -13,7 +14,7 @@ use ym_core::version::PIPELINE_VERSION;
 use ym_profiles::detect::MatchKind;
 use ym_raw::metadata::RawMetadata;
 
-use crate::text::escape_json_controls;
+use crate::text::{escape_json_controls, line_text};
 
 /// A JSON object whose keys keep the order they were added in, so the output reads like the
 /// example in `docs/10` (`input`, `output`, `status`, `camera`, …) and not alphabetically.
@@ -125,12 +126,165 @@ pub fn error_value(kind: &str, message: &str) -> Value {
     json!({ "kind": kind, "message": message })
 }
 
-/// `camera`, `look`, `auto` and `settings` of a developed photo, ready to be merged into an object.
+/// When `apple_auto` goes into a photo's object: `info` always has it, `render` only for a photo
+/// Apple Auto acted on (`docs/19` section 8).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AppleAutoField {
+    /// Every photo (`ym info --json`).
+    Always,
+    /// A photo that was asked: answered, failed or still pending (`ym render --json`).
+    WhenActive,
+}
+
+/// The per-photo `apple_auto` object of `ym info --json` and `ym render --json` (`docs/19` section
+/// 8): `{ "state", "reason", "model", "os", "prompt", "table" }`, with `steps` and `scene` when the
+/// photo was answered. `reason` is the wire name of why Apple Auto is not available
+/// (`unavailable`) or why the request failed (`failed`), else null; `model` and `os` name the model
+/// that answered or was asked, null otherwise. `steps` are the photo's own answer, as `ym:AppleAuto`
+/// records them; the steps in effect can be its burst's (`docs/19` section 5).
+#[must_use]
+pub fn apple_auto_value(apple: &AppleAuto) -> Value {
+    let (state, reason, info) = match apple {
+        AppleAuto::Off => ("off", Value::Null, None),
+        AppleAuto::Unavailable { reason } => (
+            "unavailable",
+            serde_json::to_value(reason).unwrap_or(Value::Null),
+            None,
+        ),
+        AppleAuto::Pending => ("pending", Value::Null, None),
+        AppleAuto::Answered { info, .. } => ("answered", Value::Null, Some(info)),
+        AppleAuto::Failed { kind, info, .. } => (
+            "failed",
+            serde_json::to_value(kind).unwrap_or(Value::Null),
+            Some(info),
+        ),
+    };
+    let mut value = json!({
+        "state": state,
+        "reason": reason,
+        "model": info.map(|i| i.model.as_str()),
+        "os": info.map(|i| i.os.as_str()),
+        "prompt": PROMPT_VERSION,
+        "table": TABLE_VERSION,
+    });
+    if let (AppleAuto::Answered { answer, .. }, Value::Object(map)) = (apple, &mut value) {
+        let s = answer.steps;
+        map.insert(
+            "steps".to_owned(),
+            json!({
+                "exposure": s.exposure,
+                "white": s.white,
+                "contrast": s.contrast,
+                "saturation": s.saturation,
+            }),
+        );
+        map.insert("scene".to_owned(), json!(answer.scene));
+    }
+    value
+}
+
+/// What the steps do, in words, in the order exposure, white, contrast, saturation, and only the
+/// ones that change something: `Brighter +0.3 EV · warmer 10 mired · contrast +15`, or `No change`
+/// when every step is keep. The numbers are the table's (`docs/19` section 5).
+#[must_use]
+pub fn steps_text(steps: AutoSteps) -> String {
+    let Some(v) = steps.values() else {
+        return format!(
+            "steps out of range (exposure {}, white {}, contrast {}, saturation {})",
+            steps.exposure, steps.white, steps.contrast, steps.saturation
+        );
+    };
+    let mut parts: Vec<String> = Vec::new();
+    if steps.exposure != 0 {
+        let word = if steps.exposure > 0 {
+            "brighter"
+        } else {
+            "darker"
+        };
+        parts.push(format!("{word} {:+.1} EV", v.exposure_ev));
+    }
+    if steps.white != 0 {
+        // A warmer picture is a lower mired of the user's white (`AppleValues::white_shift_mired`).
+        let word = if steps.white > 0 { "warmer" } else { "cooler" };
+        parts.push(format!("{word} {:.0} mired", v.white_shift_mired.abs()));
+    }
+    if steps.contrast != 0 {
+        parts.push(format!("contrast {:+.0}", v.contrast));
+    }
+    if steps.saturation != 0 {
+        parts.push(format!("saturation {:+.0}", v.saturation));
+    }
+    if parts.is_empty() {
+        return "No change".to_owned();
+    }
+    let text = parts.join(" · ");
+    let mut chars = text.chars();
+    chars.next().map_or_else(String::new, |first| {
+        first.to_uppercase().chain(chars).collect()
+    })
+}
+
+/// A failure in words: the kind's words, with Apple's message for a failure of no known kind.
+fn failure_text(kind: FailureKind, message: &str) -> String {
+    if kind == FailureKind::Other && !message.trim().is_empty() {
+        format!("{}: {}", kind.words(), line_text(message.trim()))
+    } else {
+        kind.words().to_owned()
+    }
+}
+
+/// The **Apple Auto** row of `ym info` (`docs/19` section 8). `in_effect` is the steps the photo's
+/// Auto values use (`AutoEstimates::apple_steps`: its own answer, or its burst's), `None` when Auto
+/// is the rule.
 ///
-/// `settings` is the document an export records as `ym:Settings`
+/// * answered: what the steps do and the scene, `Brighter +0.3 EV · contrast +15 · "Backlit
+///   portrait at dusk"` (`No change · "…"` for keep on every step), with `(shared with its burst)`
+///   when the burst's steps differ from the photo's own;
+/// * failed: `Failed (macOS asked Yellowmoon to wait); Yellowmoon's own Auto`, or the burst's
+///   steps when the burst has them;
+/// * `Off`, `Not available (Apple Intelligence is off in System Settings)`, and
+///   `Waiting for Apple Intelligence` for a photo still waiting for its answer.
+#[must_use]
+pub fn apple_auto_text(apple: &AppleAuto, in_effect: Option<AutoSteps>) -> String {
+    match apple {
+        AppleAuto::Off => "Off".to_owned(),
+        AppleAuto::Unavailable { reason } => format!("Not available ({})", reason.words()),
+        AppleAuto::Pending => "Waiting for Apple Intelligence".to_owned(),
+        AppleAuto::Answered { answer, .. } => {
+            let steps = in_effect.unwrap_or(answer.steps);
+            let mut text = steps_text(steps);
+            if steps != answer.steps {
+                text.push_str(" (shared with its burst)");
+            }
+            let scene = answer.scene.trim();
+            if !scene.is_empty() {
+                text.push_str(&format!(" · \"{}\"", line_text(scene)));
+            }
+            text
+        }
+        AppleAuto::Failed { kind, message, .. } => {
+            let why = failure_text(*kind, message);
+            match in_effect {
+                Some(steps) => format!("Failed ({why}); its burst's answer: {}", steps_text(steps)),
+                None => format!("Failed ({why}); Yellowmoon's own Auto"),
+            }
+        }
+    }
+}
+
+/// `camera`, `look`, `auto`, `auto_source`, `apple_auto` and `settings` of a developed photo, ready
+/// to be merged into an object.
+///
+/// `auto_source` is which Auto made the automatic values (`rule` or `apple`, as `ym:Auto` records
+/// it); `apple_auto` is [`apple_auto_value`], always or only for a photo Apple Auto acted on
+/// (`field`). `settings` is the document an export records as `ym:Settings`
 /// ([`ResolvedSettings::pinned_settings`]): feed it back with `--settings` to get the same file.
 #[must_use]
-pub fn develop_fields(view: &PhotoView, resolved: &ResolvedSettings) -> Object {
+pub fn develop_fields(
+    view: &PhotoView,
+    resolved: &ResolvedSettings,
+    field: AppleAutoField,
+) -> Object {
     let mut out = Object::new();
     out.insert("camera", camera_json(&view.camera, &view.meta));
     out.insert(
@@ -142,8 +296,14 @@ pub fn develop_fields(view: &PhotoView, resolved: &ResolvedSettings) -> Object {
     );
     out.insert(
         "auto",
-        serde_json::to_value(resolved.estimates).unwrap_or(Value::Null),
+        serde_json::to_value(&resolved.estimates).unwrap_or(Value::Null),
     );
+    out.insert("auto_source", resolved.estimates.source.name());
+    let apple = &resolved.estimates.apple;
+    let acted = !matches!(apple, AppleAuto::Off | AppleAuto::Unavailable { .. });
+    if field == AppleAutoField::Always || acted {
+        out.insert("apple_auto", apple_auto_value(apple));
+    }
     out.insert(
         "settings",
         serde_json::to_value(resolved.pinned_settings()).unwrap_or(Value::Null),
@@ -203,6 +363,133 @@ mod tests {
         assert_eq!(number(80.5).to_string(), "80.5");
         assert_eq!(number(-0.0).to_string(), "0");
         assert_eq!(number(f64::NAN), Value::Null);
+    }
+
+    fn steps(exposure: i8, white: i8, contrast: i8, saturation: i8) -> AutoSteps {
+        AutoSteps {
+            exposure,
+            white,
+            contrast,
+            saturation,
+        }
+    }
+
+    fn answered(s: AutoSteps, scene: &str) -> AppleAuto {
+        AppleAuto::Answered {
+            answer: ym_core::apple_auto::AdvisorAnswer {
+                steps: s,
+                scene: scene.to_owned(),
+            },
+            info: ym_core::apple_auto::AdvisorInfo {
+                model: "AFM 3 Core".to_owned(),
+                os: "27.0.1 (27A404)".to_owned(),
+            },
+        }
+    }
+
+    #[test]
+    fn the_steps_read_as_what_they_do_in_the_order_of_docs_19() {
+        assert_eq!(steps_text(steps(0, 0, 0, 0)), "No change");
+        assert_eq!(
+            steps_text(steps(1, 0, 1, 0)),
+            "Brighter +0.3 EV · contrast +15"
+        );
+        assert_eq!(
+            steps_text(steps(-3, -2, -1, 2)),
+            "Darker -1.0 EV · cooler 20 mired · contrast -15 · saturation +30"
+        );
+        assert_eq!(steps_text(steps(0, 1, 0, 0)), "Warmer 10 mired");
+        assert_eq!(steps_text(steps(0, 0, 0, -2)), "Saturation -30");
+        assert!(steps_text(steps(5, 0, 0, 0)).starts_with("steps out of range"));
+    }
+
+    #[test]
+    fn the_apple_auto_row_says_what_happened() {
+        use ym_core::apple_auto::UnavailableReason;
+        let a = answered(steps(1, 0, 1, 0), "Backlit portrait at dusk");
+        assert_eq!(
+            apple_auto_text(&a, Some(steps(1, 0, 1, 0))),
+            "Brighter +0.3 EV · contrast +15 · \"Backlit portrait at dusk\""
+        );
+        // A burst's shared steps are the ones in effect, and the row says so.
+        assert_eq!(
+            apple_auto_text(&a, Some(steps(0, 0, 1, 0))),
+            "Contrast +15 (shared with its burst) · \"Backlit portrait at dusk\""
+        );
+        // A scene with a control character in it does nothing to the terminal.
+        let hostile = answered(steps(0, 0, 0, 0), "a\u{1b}[2Jb");
+        assert_eq!(
+            apple_auto_text(&hostile, Some(steps(0, 0, 0, 0))),
+            "No change · \"a\\x1b[2Jb\""
+        );
+        assert_eq!(apple_auto_text(&AppleAuto::Off, None), "Off");
+        assert_eq!(
+            apple_auto_text(
+                &AppleAuto::Unavailable {
+                    reason: UnavailableReason::AppleIntelligenceOff
+                },
+                None
+            ),
+            "Not available (Apple Intelligence is off in System Settings)"
+        );
+        let failed = |kind, message: &str| AppleAuto::Failed {
+            kind,
+            message: message.to_owned(),
+            info: ym_core::apple_auto::AdvisorInfo {
+                model: "m".to_owned(),
+                os: "o".to_owned(),
+            },
+        };
+        assert_eq!(
+            apple_auto_text(&failed(FailureKind::RateLimited, "busy"), None),
+            "Failed (macOS asked Yellowmoon to wait); Yellowmoon's own Auto"
+        );
+        assert_eq!(
+            apple_auto_text(&failed(FailureKind::Other, "The model said no."), None),
+            "Failed (an error: The model said no.); Yellowmoon's own Auto"
+        );
+        assert_eq!(
+            apple_auto_text(&failed(FailureKind::Timeout, ""), Some(steps(-1, 0, 0, 0))),
+            "Failed (no answer within 30 seconds); its burst's answer: Darker -0.3 EV"
+        );
+    }
+
+    #[test]
+    fn the_apple_auto_object_has_steps_and_scene_only_when_answered() {
+        use ym_core::apple_auto::UnavailableReason;
+        let v = apple_auto_value(&answered(steps(1, -1, 1, 0), "Dusk"));
+        assert_eq!(
+            v,
+            json!({
+                "state": "answered", "reason": null, "model": "AFM 3 Core", "os": "27.0.1 (27A404)",
+                "prompt": 1, "table": 1,
+                "steps": { "exposure": 1, "white": -1, "contrast": 1, "saturation": 0 },
+                "scene": "Dusk"
+            })
+        );
+        let v = apple_auto_value(&AppleAuto::Unavailable {
+            reason: UnavailableReason::NotAMac,
+        });
+        assert_eq!(
+            v,
+            json!({ "state": "unavailable", "reason": "not_a_mac", "model": null, "os": null, "prompt": 1, "table": 1 })
+        );
+        let v = apple_auto_value(&AppleAuto::Failed {
+            kind: FailureKind::RateLimited,
+            message: "busy".to_owned(),
+            info: ym_core::apple_auto::AdvisorInfo {
+                model: "AFM 3 Core".to_owned(),
+                os: "27.0.1 (27A404)".to_owned(),
+            },
+        });
+        assert_eq!(v["state"], "failed");
+        assert_eq!(v["reason"], "rate_limited");
+        assert_eq!(v["model"], "AFM 3 Core");
+        assert!(v.get("steps").is_none() && v.get("scene").is_none());
+        assert_eq!(
+            apple_auto_value(&AppleAuto::Off),
+            json!({ "state": "off", "reason": null, "model": null, "os": null, "prompt": 1, "table": 1 })
+        );
     }
 
     #[test]

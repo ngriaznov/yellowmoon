@@ -10,21 +10,30 @@ import { preferredDisplayLut } from "../../wizard/model";
 import { ExportOptionsForm } from "../export/ExportOptionsForm";
 import { Dialog } from "./Dialog";
 
+/** The title of the Apple Auto row (`docs/19` section 2). */
+export const APPLE_AUTO_TITLE = "Auto with Apple Intelligence";
+
+/** Its hint, word for word from `docs/19` section 2. */
+export const APPLE_AUTO_HINT =
+  "Apple's on-device model looks at each photo and sets its exposure, contrast and saturation, and makes the white warmer or cooler. It runs on this Mac and sends nothing anywhere. Turn it off to use Yellowmoon's own Auto, the same on every computer.";
+
 interface RowProps {
   title: string;
   hint?: ReactNode;
+  /** The hint is a paragraph: shown whole, where a hint is otherwise cut after two lines. */
+  longHint?: boolean;
   children: ReactNode;
 }
 
 /** One row of Preferences: a title and a line of help at the left, the control at the right. */
-function Row({ title, hint, children }: RowProps) {
+function Row({ title, hint, longHint = false, children }: RowProps) {
   return (
     <Item size="sm" role="group" aria-label={title} className="ym-pref">
       <ItemContent className="ym-pref__text">
         <ItemTitle className="ym-pref__title" aria-hidden="true">
           {title}
         </ItemTitle>
-        {hint ? <ItemDescription className="ym-pref__hint">{hint}</ItemDescription> : null}
+        {hint ? <ItemDescription className={longHint ? "ym-pref__hint line-clamp-none" : "ym-pref__hint"}>{hint}</ItemDescription> : null}
       </ItemContent>
       <ItemActions className="ym-pref__control">{children}</ItemActions>
     </Item>
@@ -33,7 +42,9 @@ function Row({ title, hint, children }: RowProps) {
 
 /**
  * Preferences (⌘,, `docs/11-ui.md` §Preferences): a small window in the same style, one column of rows. Everything here is
- * a preference of `docs/01` §Persistence and is saved as soon as it changes; nothing needs a Save button.
+ * a preference of `docs/01` §Persistence and is saved as soon as it changes; nothing needs a Save button. "Auto with Apple
+ * Intelligence" is there only while Apple Auto is available on this computer, which is asked each time the window opens
+ * (`docs/19` sections 1 and 2): absent everywhere else, the browser build included.
  */
 export function Preferences() {
   const store = useStore();
@@ -41,6 +52,7 @@ export function Preferences() {
   const looks = useAppState((s) => s.looks);
   const luts = useAppState((s) => s.displayLuts);
   const cli = useAppState((s) => s.cliLink);
+  const appleAuto = useAppState((s) => s.appleAuto);
   const exportOptions = useAppState((s) => s.exportOptions);
   const session = useAppState((s) => s.session);
   const settings = useAppState((s) => s.settings);
@@ -112,6 +124,15 @@ export function Preferences() {
               ]}
             />
           </Row>
+          {appleAuto?.available ? (
+            <Row title={APPLE_AUTO_TITLE} hint={APPLE_AUTO_HINT} longHint>
+              <Switch
+                label={APPLE_AUTO_TITLE}
+                checked={prefs.apple_auto}
+                onChange={(on) => void store.setPreferences({ apple_auto: on })}
+              />
+            </Row>
+          ) : null}
           <Row title="Export defaults" hint="Format, quality, size, where files go and how they are named.">
             <LinkButton aria-expanded={editing} onClick={() => setEditing((on) => !on)}>
               {editing ? "Hide" : "Edit…"}

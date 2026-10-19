@@ -31,6 +31,10 @@ import type {
   ApiEvents,
   AppError,
   AppInfo,
+  AppleAuto,
+  AppleAutoAnswer,
+  AppleAutoInfo,
+  AppleAutoStatus,
   ApplyScope,
   AutoEstimates,
   ChromaSample,
@@ -57,6 +61,7 @@ import type {
   OpenKind,
   PackageId,
   PasteReport,
+  PercentSetting,
   PhotoId,
   PhotoStage,
   PhotoStatus,
@@ -115,18 +120,80 @@ const DECODE_SHARE = 0.4;
 // The mock has no zoom of its own to report: the screen estimates it (`fit_percent: null`).
 const RENDER_STATS: RenderStats = { ms: 42, path: "neural", space: "display_p3", zoom_percent: null, fit_percent: null };
 
-/** What "Auto" resolves to for every photo in the mock. */
+/** What "Auto" resolves to for every photo in the mock, with Apple Auto off (Yellowmoon's own Auto, "the rule"). */
 export const MOCK_ESTIMATES: AutoEstimates = {
   exposure_ev: 0.3,
   white_ev: 0.8,
   kelvin: 5450,
   tint: 0,
+  contrast: 0,
+  saturation: 0,
+  source: "rule",
+  apple: { state: "off" },
   light_class: "daylight",
   light_confidence: 0.82,
   noise: { a: 1.9e-5, b: 3.1e-7 },
   sharpen: { amount: 120, radius_px: 0.8 },
   noise_reduction: { luminance: 30, color: 50, detail: 50 },
 };
+
+/**
+ * How the mock plays Apple Auto (`docs/19`; `?mockAppleAuto=…`). `none` (the default) is the browser build and every computer the app
+ * has no advisor on: not available, no reason, every photo `off`, so every screen is the one without Apple Auto. `unavailable` is a
+ * Mac where Apple Intelligence is off. `pending`, `answered` and `failed` are a Mac where it is available: with the preference on,
+ * every developed photo is waiting for its answer, has the answer of {@link MOCK_APPLE_ANSWER}, or failed (no answer within 30
+ * seconds); with the preference off every photo is `off`.
+ */
+export type MockAppleAuto = "none" | "unavailable" | "pending" | "answered" | "failed";
+
+const APPLE_AUTO_MODES: readonly MockAppleAuto[] = ["none", "unavailable", "pending", "answered", "failed"];
+
+/** The model the mock's Apple Auto says it is (the example of `docs/19` section 7). */
+export const MOCK_APPLE_INFO: AppleAutoInfo = { model: "AFM 3 Core", os: "27.0.1 (27A404)" };
+
+/** The answer every photo gets while the mock's Apple Auto answers: a little brighter and warmer, more contrast, less saturation. */
+export const MOCK_APPLE_ANSWER: AppleAutoAnswer = {
+  steps: { exposure: 1, white: 1, contrast: 1, saturation: -1 },
+  scene: "Street in late sun",
+};
+
+/** The table of `docs/19` section 5 (`ym_core::apple_auto::TABLE`, table version 1), by step. */
+const APPLE_TABLE = {
+  exposure_ev: { [-3]: -1, [-2]: -0.6, [-1]: -0.3, 0: 0, 1: 0.3, 2: 0.6, 3: 1 } as Record<number, number>,
+  warmer_mired: { [-2]: -20, [-1]: -10, 0: 0, 1: 10, 2: 20 } as Record<number, number>,
+  percent: { [-2]: -30, [-1]: -15, 0: 0, 1: 15, 2: 30 } as Record<number, number>,
+};
+
+/** Where a photo stands with the mock's Apple Auto, given the mode and the `apple_auto` preference (the core's `Activity::photo_state`). */
+export function mockAppleState(mode: MockAppleAuto, preference: boolean): AppleAuto {
+  if (mode === "none") return { state: "off" };
+  if (mode === "unavailable") return { state: "unavailable", reason: "apple_intelligence_off" };
+  if (!preference) return { state: "off" };
+  if (mode === "pending") return { state: "pending" };
+  if (mode === "failed") return { state: "failed", kind: "timeout", message: "", info: MOCK_APPLE_INFO };
+  return { state: "answered", answer: MOCK_APPLE_ANSWER, info: MOCK_APPLE_INFO };
+}
+
+/**
+ * What Auto resolves to for a photo of the mock: {@link MOCK_ESTIMATES}, with the answer's values while Apple Auto has answered
+ * (`docs/19` section 5: the exposure added to the rule's, the white made warmer along the locus and read to 50 K, contrast and
+ * saturation from the table).
+ */
+export function mockEstimates(mode: MockAppleAuto, preference: boolean): AutoEstimates {
+  const apple = mockAppleState(mode, preference);
+  if (apple.state !== "answered") return { ...MOCK_ESTIMATES, apple };
+  const { steps } = apple.answer;
+  const mired = 1e6 / MOCK_ESTIMATES.kelvin - (APPLE_TABLE.warmer_mired[steps.white] ?? 0);
+  return {
+    ...MOCK_ESTIMATES,
+    exposure_ev: Math.round((MOCK_ESTIMATES.exposure_ev + (APPLE_TABLE.exposure_ev[steps.exposure] ?? 0)) * 100) / 100,
+    kelvin: Math.round(1e6 / mired / 50) * 50,
+    contrast: APPLE_TABLE.percent[steps.contrast] ?? 0,
+    saturation: APPLE_TABLE.percent[steps.saturation] ?? 0,
+    source: "apple",
+    apple,
+  };
+}
 
 const NEUTRAL: LookId = "builtin:neutral";
 
@@ -260,6 +327,8 @@ export interface MockOptions {
   importHoldAt?: number;
   /** Keep the preferences in `localStorage` so a reload of the page keeps them (`?mockPersist=1`). Default false. */
   persistPreferences?: boolean;
+  /** How the mock plays Apple Auto (`?mockAppleAuto=none|unavailable|pending|answered|failed`). Default `none`: not available. */
+  appleAuto?: MockAppleAuto;
   /**
    * The viewport backend the mock claims to be (`?mockViewport=native|fallback`). `null` (the default): none, and the Photos screen
    * draws the fixture picture itself, as a browser build does. `native`: the screen leaves the cell transparent, as in the app on a
@@ -318,6 +387,12 @@ export interface MockApi extends Api {
   emitEvent<E extends ApiEventName>(event: E, payload: ApiEvents[E]): void;
   /** Make a zip "land in Downloads": a `download_found` event when the watcher is on; resolves to whether it was sent. */
   simulateDownload(fileName: string): boolean;
+  /**
+   * Change how Apple Auto behaves, as when its answers arrive (`pending` to `answered` or `failed`) or Apple Intelligence is switched on
+   * or off: every developed photo whose Auto values or state change gets `settings_changed` and a new thumbnail, as the shell sends for
+   * the core's `estimates_changed`.
+   */
+  setAppleAuto(mode: MockAppleAuto): void;
 }
 
 /** What `MockApi.system` has recorded. */
@@ -339,7 +414,7 @@ export function defaultSettings(look: LookId = NEUTRAL): DevelopSettings {
     look,
     look_intensity: 100,
     exposure: { kind: "auto" },
-    contrast: 0,
+    contrast: { kind: "auto" },
     brightness: 0,
     highlights: 0,
     shadows: 0,
@@ -349,7 +424,7 @@ export function defaultSettings(look: LookId = NEUTRAL): DevelopSettings {
     light_source: "auto",
     white_balance: { kind: "auto" },
     color_balance: { shadows: [0, 0], midtones: [0, 0], highlights: [0, 0] },
-    saturation: 0,
+    saturation: { kind: "auto" },
     color_warp: { pins: [] },
     sharpen: { kind: "auto" },
     output_sharpening: 100,
@@ -376,20 +451,30 @@ function unitDisc([a, b]: [number, number]): [number, number] {
   return length > 1 ? [a / length, b / length] : [a, b];
 }
 
+/**
+ * `contrast` or `saturation` as the core reads it (`docs/19` section 5): the `AutoOr` form, or a plain number from an older document,
+ * which is Manual with that value except 0, which is Auto; a manual value is clamped to −100…100.
+ */
+export function percentSetting(value: PercentSetting | number | undefined): PercentSetting {
+  if (value === undefined || value === 0) return { kind: "auto" };
+  if (typeof value === "number") return { kind: "manual", value: clamp(value, -100, 100) };
+  return value.kind === "manual" ? { kind: "manual", value: clamp(value.value, -100, 100) } : { kind: "auto" };
+}
+
 /** Clamps every value to the ranges of `docs/01` §DevelopSettings, as the core does. */
 export function clampSettings(s: DevelopSettings): DevelopSettings {
   const pct = (v: number) => clamp(v, -100, 100);
   const out: DevelopSettings = {
     ...s,
     look_intensity: clamp(s.look_intensity, 0, 100),
-    contrast: pct(s.contrast),
+    contrast: percentSetting(s.contrast),
     brightness: pct(s.brightness),
     highlights: pct(s.highlights),
     shadows: pct(s.shadows),
     white: pct(s.white),
     white_offset_ev: clamp(s.white_offset_ev, -3, 3),
     black: pct(s.black),
-    saturation: pct(s.saturation),
+    saturation: percentSetting(s.saturation),
     output_sharpening: clamp(s.output_sharpening, 0, 200),
     rolloff: { highlights: clamp(s.rolloff.highlights, 0, 1), low_light: clamp(s.rolloff.low_light, 0, 1) },
     color_balance: {
@@ -442,12 +527,14 @@ export function clampSettings(s: DevelopSettings): DevelopSettings {
 
 /** Resolves every `Auto` against the estimates and reports which fields are still automatic. */
 export function resolveSettings(photoId: PhotoId, settings: DevelopSettings, estimates: AutoEstimates): ResolvedSettings {
-  const { exposure, white_balance, sharpen, noise_reduction, ...rest } = settings;
+  const { exposure, contrast, white_balance, saturation, sharpen, noise_reduction, ...rest } = settings;
   // A light preset stands in for the estimated light while White balance is Auto.
   const preset = settings.light_source === "auto" ? null : LIGHT_PRESETS[settings.light_source];
   const values: ResolvedValues = {
     ...rest,
     exposure_ev: exposure.kind === "manual" ? exposure.ev : estimates.exposure_ev,
+    contrast: contrast.kind === "manual" ? contrast.value : estimates.contrast,
+    saturation: saturation.kind === "manual" ? saturation.value : estimates.saturation,
     white_ev: clamp(estimates.white_ev + settings.white_offset_ev, 0, 3),
     kelvin: white_balance.kind === "manual" ? white_balance.kelvin : (preset?.kelvin ?? estimates.kelvin),
     tint: white_balance.kind === "manual" ? white_balance.tint : (preset?.tint ?? estimates.tint),
@@ -466,6 +553,8 @@ export function resolveSettings(photoId: PhotoId, settings: DevelopSettings, est
     values,
     auto: {
       exposure: exposure.kind === "auto",
+      contrast: contrast.kind === "auto",
+      saturation: saturation.kind === "auto",
       light_source: settings.light_source === "auto",
       white_balance: white_balance.kind === "auto",
       sharpen: sharpen.kind === "auto",
@@ -546,6 +635,7 @@ function defaultPreferences(): Preferences {
     check_for_updates_automatically: true,
     watch_downloads_during_import: false,
     last_used_folders: { open: null, export: null, looks_import: null },
+    apple_auto: true,
   };
 }
 
@@ -569,6 +659,7 @@ const DEFAULT_OPTIONS: Required<MockOptions> = {
   exportHoldAt: Number.POSITIVE_INFINITY,
   importHoldAt: Number.POSITIVE_INFINITY,
   persistPreferences: false,
+  appleAuto: "none",
   viewport: null,
 };
 
@@ -591,7 +682,9 @@ function withDefaults(...layers: MockOptions[]): Required<MockOptions> {
  * looks), `mockLibraries=all` (looks in every section of the Look tab), `mockMissing=film-warm,film-cool`, `mockHold=5.4`, `mockDownloads=ARRI_LookLibrary_LogC4.zip` (zips that
  * land in Downloads while the wizard watches), `mockDownloadsDenied=1`, `mockExisting=DSC04204_neutral.jpg`,
  * `mockExportFails=DSC04204:reason`, `mockExportHold=1.45` (an export waits there until `flush()`), `mockImportHold=40` (a look import waits at 40 files until `flush()`) and `mockPersist=1`
- * (preferences survive a reload) and `mockViewport=native` or `fallback` (the mock behaves like that viewport backend of the app).
+ * (preferences survive a reload), `mockViewport=native` or `fallback` (the mock behaves like that viewport backend of the app) and
+ * `mockAppleAuto=unavailable|pending|answered|failed` (Apple Auto as on a Mac where it is not available, or where every photo is waiting
+ * for its answer, has it, or failed; `MockAppleAuto`).
  */
 export function optionsFromLocation(search: string | undefined = typeof location === "undefined" ? undefined : location.search): MockOptions {
   if (search === undefined) return {};
@@ -648,6 +741,8 @@ export function optionsFromLocation(search: string | undefined = typeof location
   if (params.get("mockPersist") === "1") out.persistPreferences = true;
   const viewportBackend = params.get("mockViewport");
   if (viewportBackend === "native" || viewportBackend === "fallback") out.viewport = viewportBackend;
+  const appleAuto = params.get("mockAppleAuto");
+  if (appleAuto !== null && (APPLE_AUTO_MODES as readonly string[]).includes(appleAuto)) out.appleAuto = appleAuto as MockAppleAuto;
   return out;
 }
 
@@ -1120,7 +1215,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     const rect = cellRect();
     const width = Math.round(rect.width * rect.scale);
     const height = Math.round(rect.height * rect.scale);
-    const { values } = resolveSettings(rec.summary.id, rec.settings, MOCK_ESTIMATES);
+    const { values } = resolveSettings(rec.summary.id, rec.settings, estimates());
     const picture = previewSvg(developed(rec), {
       orientation: values.orientation,
       angle_deg: values.crop?.angle_deg ?? 0,
@@ -1184,6 +1279,45 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
   function persist(): void {
     if (!options.persistPreferences) return;
     writeStored({ preferences, importedPackages, userLooks, cliLink });
+  }
+
+  // --- Apple Auto ---------------------------------------------------------------------------
+
+  /** What Auto resolves to now: the same for every photo, with Apple Auto's answer while it has one. */
+  function estimates(): AutoEstimates {
+    return mockEstimates(options.appleAuto, preferences.apple_auto);
+  }
+
+  /** The core's `apple_auto_status`. */
+  function appleAutoStatus(): AppleAutoStatus {
+    const mode = options.appleAuto;
+    const available = mode !== "none" && mode !== "unavailable";
+    return {
+      available,
+      reason: mode === "unavailable" ? "apple_intelligence_off" : null,
+      info: available ? MOCK_APPLE_INFO : null,
+      preference: preferences.apple_auto,
+      mode: "from_preference",
+      active: available && preferences.apple_auto,
+      prompt: 1,
+      table: 1,
+    };
+  }
+
+  /**
+   * Runs `change` and tells about every developed photo whose estimates moved, as the shell does for the core's `estimates_changed`
+   * (`docs/19` section 6): `settings_changed`, a new thumbnail and, for the photo on screen, a new frame.
+   */
+  function changingEstimates(change: () => void): void {
+    const before = JSON.stringify(estimates());
+    change();
+    if (JSON.stringify(estimates()) === before) return;
+    for (const rec of photos) {
+      if (rec.phase < 3 || rec.skipReason) continue;
+      emitSoon("settings_changed", { photo_id: rec.summary.id });
+      scheduleThumbnail(rec);
+    }
+    sendFrame();
   }
 
   function syncDefaultLook(): void {
@@ -1340,7 +1474,8 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
 
   /** How a photo differs from Automatic (its exposure and white balance), with or without its colour warp. */
   function adjustmentOf(rec: PhotoRecord, warp: boolean): Adjustment {
-    const { values } = resolveSettings(rec.summary.id, rec.settings, MOCK_ESTIMATES);
+    // Against the rule's values, so Apple Auto's answer shows in the picture as the change it is.
+    const { values } = resolveSettings(rec.summary.id, rec.settings, estimates());
     return {
       ev: values.exposure_ev,
       autoEv: MOCK_ESTIMATES.exposure_ev,
@@ -1791,7 +1926,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
       }),
 
     getSettings: (photoId) =>
-      run("getSettings", () => resolveSettings(photoId, photo(photoId).settings, MOCK_ESTIMATES)),
+      run("getSettings", () => resolveSettings(photoId, photo(photoId).settings, estimates())),
     updateSettings: (photoId, patch: SettingsPatch) =>
       run("updateSettings", () => {
         const rec = photo(photoId);
@@ -1805,7 +1940,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
         emitSoon("render_stats", RENDER_STATS);
         scheduleThumbnail(rec);
         if (rec === photos[current]) sendFrame();
-        return resolveSettings(photoId, rec.settings, MOCK_ESTIMATES);
+        return resolveSettings(photoId, rec.settings, estimates());
       }),
     applyLook: (scope, lookId, intensity) =>
       run("applyLook", () => {
@@ -1821,10 +1956,15 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     rerunAuto: (photoId) =>
       run("rerunAuto", () => {
         const rec = photo(photoId);
-        // Exposure, white (the lift's offset), white balance (including the light preset and a picked white) and noise.
+        // Exposure, white (the lift's offset), white balance (including the light preset and a picked white) and noise; contrast and
+        // saturation too while Apple Auto acts on the photo (pending, answered or failed: the Automatic card shows their rows), and
+        // otherwise they stay as they are (`docs/19` sections 5 and 10).
+        const apple = estimates().apple.state;
+        const appleActs = apple === "pending" || apple === "answered" || apple === "failed";
         rec.settings = {
           ...rec.settings,
           exposure: { kind: "auto" },
+          ...(appleActs ? { contrast: { kind: "auto" }, saturation: { kind: "auto" } } : {}),
           white_offset_ev: 0,
           light_source: "auto",
           white_balance: { kind: "auto" },
@@ -1834,14 +1974,14 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
         emitSoon("render_stats", RENDER_STATS);
         scheduleThumbnail(rec);
         if (rec === photos[current]) sendFrame();
-        return resolveSettings(photoId, rec.settings, MOCK_ESTIMATES);
+        return resolveSettings(photoId, rec.settings, estimates());
       }),
     copySettings: (photoId) =>
       run("copySettings", () => {
         const rec = photo(photoId);
         if (rec.skipReason) fail("open", "This file can't be opened, so there are no settings to copy.");
         if (rec.phase < 3) fail("open", "That photo is still developing. Try again in a moment.");
-        return copiedPatch(resolveSettings(photoId, rec.settings, MOCK_ESTIMATES));
+        return copiedPatch(resolveSettings(photoId, rec.settings, estimates()));
       }),
     pasteSettings: (photoIds, patch: SettingsPatch) =>
       run("pasteSettings", (): PasteReport => {
@@ -1880,7 +2020,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     histogram: (photoId) =>
       run("histogram", (): HistogramData => {
         const rec = photo(photoId);
-        const { values } = resolveSettings(photoId, rec.settings, MOCK_ESTIMATES);
+        const { values } = resolveSettings(photoId, rec.settings, estimates());
         // Exposure moves the plot along the tonal scale. Before does not: the core's histogram is always that of the
         // finished picture (docs/02).
         const shift = (values.exposure_ev - MOCK_ESTIMATES.exposure_ev) * 0.06;
@@ -2126,7 +2266,10 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
             fail("preferences", "Those display LUTs aren't imported. Import ARRI's display LUTs first.");
           }
         }
-        preferences = next as unknown as Preferences;
+        // Apple Auto follows its preference at once: off, every photo back to the rule; on, the answers (kept) come back.
+        changingEstimates(() => {
+          preferences = next as unknown as Preferences;
+        });
         if (patch.default_look !== undefined) {
           syncDefaultLook();
           emitSoon("looks_changed", null);
@@ -2141,6 +2284,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
         return { path: cliLink };
       }),
     cliLinkStatus: () => run("cliLinkStatus", (): CliLinkStatus => ({ installed: cliLink !== null, path: cliLink })),
+    appleAutoStatus: () => run("appleAutoStatus", appleAutoStatus),
     appInfo: () => run("appInfo", (): AppInfo => ({ version: APP_VERSION, pipeline_version: "1.0.0" })),
 
     chooseFolder: (start) =>
@@ -2183,6 +2327,12 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     removeSource(fileName) {
       sources.delete(fileName.toLowerCase());
     },
+    setAppleAuto(mode) {
+      changingEstimates(() => {
+        options = withDefaults(options, { appleAuto: mode });
+      });
+    },
+
     simulateDownload(fileName) {
       if (!watching) return false;
       const fixture = sources.get(fileName.toLowerCase());

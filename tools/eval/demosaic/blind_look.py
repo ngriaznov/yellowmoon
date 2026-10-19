@@ -25,7 +25,8 @@ What `render` writes under `--out` (git-ignored, never committed):
   runner renders with default settings (`testdata/synthetic/arw`, the `default` set of
   `tools/golden/manifest.json`).
 * **Renders.** One `ym render` per photo and method, defaults as the app has them (an empty
-  `YELLOWMOON_HOME`: the Neutral look, ACES 2, automatic development), the classical demosaic forced
+  `YELLOWMOON_HOME`: the Neutral look, ACES 2, automatic development with Yellowmoon's own Auto, `--apple-auto off`,
+  so that a Mac with Apple Intelligence makes the same pictures, `docs/19`), the classical demosaic forced
   (`--no-neural`), PNG with 8 bits, the method picked by `YM_FORCE_DEMOSAIC`. The two renders of a photo
   differ in the R6 method only; the exposure and colour estimates do not read the demosaic.
 * **Full frames** are re-encoded as JPEG (quality 92, no chroma subsampling) from the PNG; **crops** are cut
@@ -273,7 +274,7 @@ def render_one(ym: Path, src: Path, method: str, out_dir: Path, home: Path) -> t
     home.mkdir(parents=True, exist_ok=True)
     env = dict(os.environ, YELLOWMOON_HOME=str(home), YM_FORCE_DEMOSAIC=method)
     cmd = [
-        str(ym), "render", "--json", "--quiet", "--overwrite", "--no-neural",
+        str(ym), "render", "--json", "--quiet", "--overwrite", "--no-neural", "--apple-auto", "off",
         "--format", "png", "--bits", "8", "--colour-space", "srgb",
         "--name", "{name}", "--out", str(out_dir), str(src),
     ]  # fmt: skip

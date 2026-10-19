@@ -2,6 +2,9 @@ import { describe, expect, it } from "vitest";
 import { defaultSettings } from "../api.mock";
 import { diffSettings, HISTORY_LIMIT, PhotoHistory } from "./history";
 
+/** A manual contrast or saturation (`docs/19` section 5: Auto or a value). */
+const manual = (value: number) => ({ kind: "manual", value }) as const;
+
 describe("diffSettings", () => {
   it("is null when nothing changed", () => {
     expect(diffSettings(defaultSettings(), defaultSettings())).toBeNull();
@@ -9,10 +12,10 @@ describe("diffSettings", () => {
 
   it("lists only the fields that changed, with their old and new values", () => {
     const before = defaultSettings();
-    const after = { ...before, contrast: 12, exposure: { kind: "manual" as const, ev: 0.7 } };
+    const after = { ...before, contrast: manual(12), exposure: { kind: "manual" as const, ev: 0.7 } };
     expect(diffSettings(before, after)).toEqual({
-      before: { contrast: 0, exposure: { kind: "auto" } },
-      after: { contrast: 12, exposure: { kind: "manual", ev: 0.7 } },
+      before: { contrast: { kind: "auto" }, exposure: { kind: "auto" } },
+      after: { contrast: manual(12), exposure: { kind: "manual", ev: 0.7 } },
     });
   });
 
@@ -33,7 +36,7 @@ describe("diffSettings", () => {
 });
 
 describe("PhotoHistory", () => {
-  const entry = (n: number) => ({ before: { contrast: n - 1 }, after: { contrast: n } });
+  const entry = (n: number) => ({ before: { brightness: n - 1 }, after: { brightness: n } });
 
   it("undoes and redoes in order", () => {
     const history = new PhotoHistory();

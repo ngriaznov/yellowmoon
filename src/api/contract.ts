@@ -41,6 +41,8 @@ export type FromCore = AllTrue<{
   resolvedSettings: Assignable<B.ResolvedSettings, T.ResolvedSettings>;
   developSettings: Assignable<B.DevelopSettings, T.DevelopSettings>;
   autoEstimates: Assignable<B.AutoEstimates, T.AutoEstimates>;
+  appleAuto: Assignable<B.AppleAuto, T.AppleAuto>;
+  appleAutoStatus: Assignable<B.AppleAutoStatus, T.AppleAutoStatus>;
   look: Assignable<B.Look, T.Look>;
   looksImportResult: Assignable<B.LooksImportResult, T.LooksImportResult>;
   sourceRecognition: Assignable<B.SourceRecognition, T.SourceRecognition>;
@@ -90,6 +92,13 @@ export type Both = AllTrue<{
   viewportBackendKind: Same<T.ViewportBackendKind, B.ViewportBackendKind>;
   errorScope: Same<T.ErrorScope, B.ErrorScope>;
   lightSource: Same<T.LightSource, B.LightSource>;
+  percentSetting: Same<T.PercentSetting, B.PercentSetting>;
+  autoSource: Same<T.AutoSource, B.AutoSource>;
+  appleAutoReason: Same<T.AppleAutoReason, B.AppleAutoReason>;
+  appleAutoFailure: Same<T.AppleAutoFailure, B.AppleAutoFailure>;
+  appleAutoMode: Same<T.AppleAutoMode, B.AppleAutoMode>;
+  appleAutoInfo: Same<T.AppleAutoInfo, B.AppleAutoInfo>;
+  appleAutoSteps: Same<T.AppleAutoSteps, B.AppleAutoSteps>;
   lookInput: Same<T.LookInput, B.LookInput>;
   lookGroup: Same<T.LookGroup, B.LookGroup>;
   lookLibrary: Same<T.LookLibrary, B.LookLibrary>;

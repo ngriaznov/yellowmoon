@@ -2,6 +2,9 @@ import { expect, test } from "@playwright/test";
 import type { Page } from "@playwright/test";
 import { configureMock, failNext, lookTilesLoaded, openApp, openPhotos, recordCalls, setUpdateState, setValue, settle, showUpdateReady, watchErrors } from "./helpers/app";
 
+/** A manual contrast or saturation (`docs/19` section 5: Auto or a value). */
+const manual = (value: number) => ({ kind: "manual", value }) as const;
+
 // Photos screen (tasks M3-06, M3-07, M3-08 UI) in a real browser against the mocked API: layout, the
 // flow Start → open → look → every tab, keyboard shortcuts, Crop and Pick white by mouse, and the error
 // states. Screenshot comparisons are in screenshots.spec.ts.
@@ -591,7 +594,7 @@ test("a folder of 500 photos: the first one opens while the rest develop, and th
 
 test("settings made before the session opens come through the mock (initialSettings)", async ({ page }) => {
   await openApp(page, MOCKUP);
-  await configureMock(page, { initialSettings: { DSC04204: { highlights: -18, shadows: 12, saturation: 6 } } });
+  await configureMock(page, { initialSettings: { DSC04204: { highlights: -18, shadows: 12, saturation: manual(6) } } });
   await openPhotos(page);
   await page.keyboard.press("Meta+2");
   await expect(valueBox(page, "Highlights")).toHaveValue("−18");

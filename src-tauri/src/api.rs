@@ -16,6 +16,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use ym_core::app::gpu::{GpuOpener, GpuPolicy, GpuSlot};
 use ym_core::app::{Core, CoreOptions};
+use ym_core::apple_auto::AutoAdvisor;
 use ym_core::export_queue::{ExportEvent, ExportJob as CoreExportJob, ExportSink};
 use ym_core::pipeline::PhotoSource;
 use ym_core::session::{
@@ -31,12 +32,12 @@ use crate::events::{AppEvent, Emitter};
 use crate::thumbs::Thumbnails;
 use crate::viewport::{FrameSink, FrameStore, Viewport, core_id};
 use crate::wire::{
-    AppError, AppInfo, ApplyScope, ChromaSample, ChromaScatter, CliLinkResult, CliLinkStatus,
-    DisplayLut, ErrorScope, ExportEstimate, ExportJob, ExportJobId, HistogramData, Look, LookId,
-    LookInput, LooksImportProgress, LooksImportResult, OpenSummary, PasteReport, PhotoId,
-    PhotoProgress, PixelSample, Preferences, PreferencesPatch, ResolvedSettings, SessionState,
-    SettingsPatch, SourceRecognition, ThumbnailReady, ViewportInfo, ViewportInput, ViewportMode,
-    ViewportRect, WatchStatus, convert,
+    AppError, AppInfo, AppleAutoStatus, ApplyScope, ChromaSample, ChromaScatter, CliLinkResult,
+    CliLinkStatus, DisplayLut, ErrorScope, ExportEstimate, ExportJob, ExportJobId, HistogramData,
+    Look, LookId, LookInput, LooksImportProgress, LooksImportResult, OpenSummary, PasteReport,
+    PhotoId, PhotoProgress, PixelSample, Preferences, PreferencesPatch, ResolvedSettings,
+    SessionState, SettingsPatch, SourceRecognition, ThumbnailReady, ViewportInfo, ViewportInput,
+    ViewportMode, ViewportRect, WatchStatus, convert,
 };
 use crate::wizard::{Downloads, recognise};
 
@@ -66,6 +67,21 @@ pub struct AppConfig {
     pub decode_threads: Option<usize>,
     /// The Downloads watcher's settings.
     pub watch: WatchConfig,
+    /// What looks at each photo for Apple Auto (`docs/19` sections 11 and 12): `ym_apple`'s system
+    /// advisor in the app (Apple's on-device model where it is available, the fake with
+    /// `YELLOWMOON_TEST_APPLE_AUTO=fake`); `None` in the tests unless they give one, which is the
+    /// same as unavailable.
+    pub advisor: Option<Advisor>,
+}
+
+/// An Apple Auto advisor for [`AppConfig`].
+#[derive(Clone)]
+pub struct Advisor(pub Arc<dyn AutoAdvisor>);
+
+impl std::fmt::Debug for Advisor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Advisor")
+    }
 }
 
 impl AppConfig {
@@ -88,6 +104,7 @@ impl AppConfig {
             thumbnails: true,
             decode_threads: None,
             watch: WatchConfig::default(),
+            advisor: Some(Advisor(ym_apple::system_advisor())),
         })
     }
 }
@@ -196,7 +213,13 @@ impl AppApi {
                         url,
                     }));
                 }
-                SessionEvent::EstimatesChanged { id } => shared.estimates_changed(id),
+                // A burst's median moved, Apple Auto answered or failed, or its preference changed
+                // (`docs/19` section 6): the viewport draws the photo again, and the webview reads its
+                // settings again, so the Automatic card and the sliders' detents follow.
+                SessionEvent::EstimatesChanged { id } => {
+                    shared.estimates_changed(id);
+                    emitter.emit(AppEvent::SettingsChanged(PhotoId(id.0)));
+                }
             })
         };
         let export_events = {
@@ -217,6 +240,7 @@ impl AppApi {
         options.export_events = export_events;
         options.home = config.home.clone();
         options.thumbnails = config.thumbnails;
+        options.advisor = config.advisor.as_ref().map(|a| Arc::clone(&a.0));
         if let Some(threads) = config.decode_threads {
             options.decode_threads = threads;
         }
@@ -974,6 +998,17 @@ impl AppApi {
         // The display rendering may have changed what the viewport shows.
         self.viewport.invalidate();
         convert(&next)
+    }
+
+    /// `apple_auto_status`: whether Apple Auto is available on this computer, read again now, and
+    /// whether it acts (`docs/19` sections 1 and 2). Preferences asks when it opens and shows its
+    /// row only while Apple Auto is available.
+    ///
+    /// # Errors
+    ///
+    /// [`AppError::internal`] when the answer does not cross the bridge (a bug).
+    pub fn apple_auto_status(&self) -> Result<AppleAutoStatus, AppError> {
+        convert(&self.core.apple_auto_status())
     }
 
     /// `install_cli_link`.

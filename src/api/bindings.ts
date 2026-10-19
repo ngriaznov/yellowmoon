@@ -149,6 +149,11 @@ export const commands = {
 	preferencesGet: () => __TAURI_INVOKE<Preferences>("preferences_get"),
 	/**  `preferences_set(patch)`: applies a patch and returns the new preferences. */
 	preferencesSet: (patch: PreferencesPatch) => __TAURI_INVOKE<Preferences>("preferences_set", { patch }),
+	/**
+	 *  `apple_auto_status()`: whether Apple Auto is available on this computer (read again now) and
+	 *  whether it acts; Preferences asks when it opens (`docs/19` sections 1 and 2).
+	 */
+	appleAutoStatus: () => __TAURI_INVOKE<AppleAutoStatus>("apple_auto_status"),
 	/**  `install_cli_link()`: the "Install Command-Line Tool…" menu item. */
 	installCliLink: () => __TAURI_INVOKE<CliLinkResult>("install_cli_link"),
 	/**  `cli_link_status()`. */
@@ -194,6 +199,147 @@ export type AppInfo = {
 	pipeline_version: string,
 };
 
+/**  Where a photo stands with Apple Auto (the core's `AppleAuto`), tagged by `state`. */
+export type AppleAuto = 
+/**  The preference is off, or the app has no advisor: Auto is the rule. */
+{ state: "off" } | 
+/**  Apple Auto is not available on this computer: Auto is the rule. */
+{ state: "unavailable"; 
+/**  Why. */
+reason: AppleAutoReason } | 
+/**  Asked, or waiting for its turn: Auto is the rule until the answer. */
+{ state: "pending" } | 
+/**  Answered: Auto takes the answer's values. */
+{ state: "answered"; 
+/**  The answer. */
+answer: AppleAutoAnswer; 
+/**  Which model answered. */
+info: AppleAutoInfo } | 
+/**  The request failed: Auto is the rule. */
+{ state: "failed"; 
+/**  Why. */
+kind: AppleAutoFailure; 
+/**  Apple's message, when there is one. */
+message: string; 
+/**  Which model was asked. */
+info: AppleAutoInfo };
+
+/**  One answer of Apple's model (the core's `AdvisorAnswer`). */
+export type AppleAutoAnswer = {
+	/**  The four steps. */
+	steps: AppleAutoSteps,
+	/**  What the photo shows, in a few words (for reports only). */
+	scene: string,
+};
+
+/**  Why one request to Apple's model failed (`docs/19` sections 6 and 8; the core's `FailureKind`). */
+export type AppleAutoFailure = 
+/**  Apple Auto stopped being available. */
+"unavailable" | 
+/**  macOS asked the app to wait. */
+"rate_limited" | 
+/**  No answer within 30 seconds. */
+"timeout" | 
+/**  The model refused. */
+"refused" | 
+/**  Apple's safety check stopped the request. */
+"guardrail" | 
+/**  The model does not support the language. */
+"unsupported_language" | 
+/**  The request did not fit the model's context. */
+"context_too_large" | 
+/**  The model's assets were not there. */
+"assets_unavailable" | 
+/**  Another request was running. */
+"concurrent_requests" | 
+/**  The answer could not be read. */
+"bad_answer" | 
+/**  Anything else; the message says what. */
+"other";
+
+/**  Which model answers (the core's `AdvisorInfo`). */
+export type AppleAutoInfo = {
+	/**  The model variant's display name: "AFM 3 Core". */
+	model: string,
+	/**  The macOS version and build: "27.0.1 (27A404)". */
+	os: string,
+};
+
+/**
+ *  How a run decides whether Apple Auto is used (the core's `AppleAutoMode`); the app always
+ *  follows the preference.
+ */
+export type AppleAutoMode = 
+/**  The `apple_auto` preference decides. */
+"from_preference" | 
+/**  On for this run. */
+"on" | 
+/**  Off for this run. */
+"off";
+
+/**
+ *  Why Apple Auto is not available on this computer (`docs/19` section 1; the core's
+ *  `UnavailableReason`).
+ */
+export type AppleAutoReason = 
+/**  Not a Mac. */
+"not_a_mac" | 
+/**  A Mac with an Intel processor. */
+"intel_mac" | 
+/**  This build has no bridge to Apple's model. */
+"built_without_support" | 
+/**  macOS older than 27. */
+"macos_too_old" | 
+/**  The Mac cannot run Apple Intelligence. */
+"device_not_eligible" | 
+/**  Apple Intelligence is off in System Settings. */
+"apple_intelligence_off" | 
+/**  The model is still downloading. */
+"model_not_ready" | 
+/**  Any other unavailability Apple reports. */
+"unavailable" | 
+/**  The model on this Mac cannot take pictures. */
+"no_image_input";
+
+/**
+ *  `apple_auto_status()`: whether Apple Auto is available on this computer (read again for the
+ *  answer), and whether it acts (`docs/19` sections 1 and 2; the core's `AppleAutoStatus`).
+ *  Preferences shows its row only while `available`.
+ */
+export type AppleAutoStatus = {
+	/**  Apple Auto is available on this computer now. */
+	available: boolean,
+	/**  Why it is not; null when it is, and when the app has no advisor. */
+	reason: AppleAutoReason | null,
+	/**  Which model answers, when it is available. */
+	info: AppleAutoInfo | null,
+	/**  The `apple_auto` preference. */
+	preference: boolean,
+	/**  How the run decides (always `from_preference` in the app). */
+	mode: AppleAutoMode,
+	/**  Apple Auto acts for the session now. */
+	active: boolean,
+	/**  The prompt's version. */
+	prompt: number,
+	/**  The table's version. */
+	table: number,
+};
+
+/**
+ *  The four steps of an answer (the core's `AutoSteps`): exposure -3 to +3, the others -2 to +2,
+ *  0 for keep.
+ */
+export type AppleAutoSteps = {
+	/**  Darker (negative) or brighter. */
+	exposure: number,
+	/**  Cooler (negative) or warmer. */
+	white: number,
+	/**  Less (negative) or more contrast. */
+	contrast: number,
+	/**  Less (negative) or more saturation. */
+	saturation: number,
+};
+
 /**  "Apply to" on the Look card, and the scope of `apply_look` and of an export. */
 export type ApplyScope = 
 /**  The current photo. */
@@ -203,16 +349,24 @@ export type ApplyScope =
 /**  Every photo. */
 "all";
 
-/**  Per-photo automatic estimates (`AutoEstimates` in `types.ts`). */
+/**  Per-photo automatic estimates (`AutoEstimates` in `types.ts`; the core's `AutoSummary`). */
 export type AutoEstimates = {
-	/**  `EV_auto`. */
+	/**  `EV_auto` (with Apple Auto's change, when there is one). */
 	exposure_ev: number,
 	/**  The automatic white lift in stops (0 when nothing is above +1 stop). */
 	white_ev: number,
-	/**  The Auto Kelvin. */
+	/**  The Auto Kelvin (with Apple Auto's nudge, when there is one). */
 	kelvin: number,
 	/**  The Auto tint. */
 	tint: number,
+	/**  What `contrast: Auto` resolves to: 0, or Apple Auto's contrast. */
+	contrast: number,
+	/**  What `saturation: Auto` resolves to: 0, or Apple Auto's saturation. */
+	saturation: number,
+	/**  Which Auto made these values. */
+	source: AutoSource,
+	/**  Where the photo stands with Apple Auto. */
+	apple: AppleAuto,
 	/**  The most probable light class. */
 	light_class: LightClass,
 	/**  Confidence of the light estimate, 0 to 1. */
@@ -229,6 +383,10 @@ export type AutoEstimates = {
 export type AutoFlags = {
 	/**  `exposure` is Auto. */
 	exposure: boolean,
+	/**  `contrast` is Auto. */
+	contrast: boolean,
+	/**  `saturation` is Auto. */
+	saturation: boolean,
 	/**  `light_source` is Auto. */
 	light_source: boolean,
 	/**  `white_balance` is Auto. */
@@ -238,6 +396,16 @@ export type AutoFlags = {
 	/**  `noise_reduction` is Auto. */
 	noise_reduction: boolean,
 };
+
+/**
+ *  Which Auto made a photo's automatic values: Yellowmoon's own (`rule`) or Apple Auto's answer
+ *  (`apple`).
+ */
+export type AutoSource = 
+/**  Yellowmoon's own Auto. */
+"rule" | 
+/**  Apple Auto's answer (the photo's own or its burst's). */
+"apple";
 
 /**  The detected body and the profile used for it. */
 export type CameraInfo = {
@@ -434,8 +602,8 @@ export type DevelopSettings = {
 	look_intensity: number,
 	/**  Light › Exposure: Auto or an absolute value, -4 to +4 EV. */
 	exposure: ExposureSetting,
-	/**  -100 to 100. */
-	contrast: number,
+	/**  Light › Exposure › Contrast: Auto or a value, -100 to 100. */
+	contrast: PercentSetting,
 	/**  -100 to 100. */
 	brightness: number,
 	/**  Light › High dynamic range, -100 to 100. */
@@ -457,8 +625,8 @@ export type DevelopSettings = {
 	white_balance: WhiteBalanceSetting,
 	/**  The three colour-balance wheels. */
 	color_balance: ColorBalance,
-	/**  Colour › Colour balance, -100 to 100. */
-	saturation: number,
+	/**  Colour › Colour balance › Saturation: Auto or a value, -100 to 100. */
+	saturation: PercentSetting,
 	/**  Colour › Colour warp: its pins. */
 	color_warp: ColorWarp,
 	/**  Detail › Sharpening: Auto or amount and radius. */
@@ -1027,6 +1195,30 @@ export type PastedPhoto = {
 	after: SettingsPatch,
 };
 
+/**
+ *  `contrast` or `saturation` in a patch: either form of [`PercentSetting`], or a plain number,
+ *  which the core reads as Manual with that value, except 0, which it reads as Auto (the form of a
+ *  settings document written before Apple Auto, `docs/19` section 5). The webview sends the tagged
+ *  form.
+ */
+export type PercentPatch = 
+/**  `{ "kind": "auto" }` or `{ "kind": "manual", "value": 12 }`. */
+PercentSetting | 
+/**  A plain number: Manual, or Auto for 0. */
+number;
+
+/**
+ *  `contrast` and `saturation`: Auto (0, or Apple Auto's value for the photo, `docs/19` section 5)
+ *  or a manual value. The JSON is `{ "kind": "auto" }` or `{ "kind": "manual", "value": 12 }`.
+ */
+export type PercentSetting = 
+/**  Resolve from the photo's automatic estimates. */
+{ kind: "auto" } | 
+/**  The user's value. */
+{ kind: "manual"; 
+/**  -100 to 100. */
+value: number };
+
 /**  Identifies a photo for the lifetime of the session only. */
 export type PhotoId = number;
 
@@ -1122,6 +1314,8 @@ export type Preferences = {
 	watch_downloads_during_import: boolean,
 	/**  Folders remembered between runs. */
 	last_used_folders: LastUsedFolders,
+	/**  Auto with Apple Intelligence (`docs/19` section 2); acts only where Apple Auto is available. */
+	apple_auto: boolean,
 };
 
 /**  A partial update of the preferences. */
@@ -1140,6 +1334,8 @@ export type PreferencesPatch = {
 	watch_downloads_during_import?: boolean | null,
 	/**  New remembered folders. */
 	last_used_folders?: LastUsedFolders | null,
+	/**  New value of "Auto with Apple Intelligence". */
+	apple_auto?: boolean | null,
 };
 
 /**  What the recogniser made of one source (`looks_recognise`). */
@@ -1253,7 +1449,7 @@ export type ResolvedValues = {
 	look_intensity: number,
 	/**  The exposure in stops. */
 	exposure_ev: number,
-	/**  `contrast`. */
+	/**  The contrast in effect: the manual value, or the photo's Auto contrast. */
 	contrast: number,
 	/**  `brightness`. */
 	brightness: number,
@@ -1277,7 +1473,7 @@ export type ResolvedValues = {
 	tint: number,
 	/**  `color_balance`. */
 	color_balance: ColorBalance,
-	/**  `saturation`. */
+	/**  The saturation in effect: the manual value, or the photo's Auto saturation. */
 	saturation: number,
 	/**  `color_warp`. */
 	color_warp: ColorWarp,
@@ -1345,9 +1541,11 @@ export type SessionState = {
 
 /**
  *  `settings_changed { photo_id }` (addition): the core changed a photo's settings by itself: after
- *  a `viewport_input` Pick white click, and once for each photo a `paste_settings` changed. Ask
- *  `get_settings` again (the webview skips the photos it is pasting onto: the paste's answer says
- *  what changed).
+ *  a `viewport_input` Pick white click, once for each photo a `paste_settings` changed, and when the
+ *  estimates its Auto values resolve against changed (the core's `estimates_changed`: a burst's
+ *  median moved, Apple Auto answered or failed, or the `apple_auto` preference changed, `docs/19`
+ *  section 6). Ask `get_settings` again (the webview skips the photos it is pasting onto: the
+ *  paste's answer says what changed).
  */
 export type SettingsChanged = {
 	/**  The photo. */
@@ -1368,8 +1566,8 @@ export type SettingsPatch = {
 	look_intensity?: number | null,
 	/**  New exposure (Manual to set it, Auto to reset it). */
 	exposure?: ExposureSetting | null,
-	/**  New contrast. */
-	contrast?: number | null,
+	/**  New contrast: Auto, a manual value, or a plain number (0 is Auto). */
+	contrast?: PercentPatch | null,
 	/**  New brightness. */
 	brightness?: number | null,
 	/**  New highlights. */
@@ -1388,8 +1586,8 @@ export type SettingsPatch = {
 	white_balance?: WhiteBalancePatch | null,
 	/**  Colour-balance wheels to change. */
 	color_balance?: ColorBalancePatch | null,
-	/**  New saturation. */
-	saturation?: number | null,
+	/**  New saturation: Auto, a manual value, or a plain number (0 is Auto). */
+	saturation?: PercentPatch | null,
 	/**  New colour warp: the whole list of pins (`{ pins: [] }` removes them all). */
 	color_warp?: ColorWarp | null,
 	/**  New sharpening; a manual one may leave out a part. */

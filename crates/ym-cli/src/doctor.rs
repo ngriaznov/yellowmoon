@@ -1,8 +1,9 @@
 //! `ym doctor`: the diagnostics that go into a bug report (`docs/10-cli.md`).
 //!
-//! The report says what it includes and nothing else: the version, the GPU, the render path, the
-//! model weights with their hashes, the camera profiles, how many looks are imported and the
-//! folders Yellowmoon uses. No photo, file name, location or look name is in it.
+//! The report says what it includes and nothing else: the version, the GPU, the render path,
+//! whether Apple Auto is available (and which model answers, `docs/19` section 8), the model weights
+//! with their hashes, the camera profiles, how many looks are imported and the folders Yellowmoon
+//! uses. No photo, file name, location or look name is in it.
 
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -12,6 +13,9 @@ use serde_json::{Value, json};
 use ym_core::app::gpu::{
     CpuReason, GpuOutcome, GpuPolicy, GpuStages, PolicyChoice, PolicySource, open_gpu,
     probe_adapter,
+};
+use ym_core::apple_auto::{
+    Activity, AppleAutoMode, AppleAutoStatus, Availability, PROMPT_VERSION, TABLE_VERSION,
 };
 use ym_core::data_dir::find_data_dir;
 use ym_core::looks::{LookGroupInfo, LookService};
@@ -27,10 +31,10 @@ pub mod bench;
 use crate::cli::{DoctorArgs, version_text};
 use crate::console::Console;
 use crate::exit::{self, Failure};
-use crate::text::{json_line, lossy, path_text};
+use crate::text::{json_line, line_text, lossy, path_text};
 
 /// The sentence at the top of the report: what it includes, and what it leaves out.
-pub const INCLUDES: &str = "This report lists the version, the GPU, the render path, the model weights and their hashes, the camera profiles, how many looks are imported, and the folders Yellowmoon uses. It does not include photos, file names, locations or look names.";
+pub const INCLUDES: &str = "This report lists the version, the GPU, the render path, whether Apple Auto is available, the model weights and their hashes, the camera profiles, how many looks are imported, and the folders Yellowmoon uses. It does not include photos, file names, locations or look names.";
 
 /// A model file shipped in `data/models/`.
 struct ModelFile {
@@ -60,6 +64,7 @@ struct Report {
     gpu: Result<GpuInfo, String>,
     plan: GpuPlan,
     neural: NeuralStatus,
+    apple_auto: AppleAutoStatus,
     weights: Vec<ModelFile>,
     illuminant_models: Vec<ModelFile>,
     profiles: Vec<(String, String, String)>,
@@ -202,6 +207,7 @@ fn build() -> Result<Report, Failure> {
         gpu,
         plan,
         neural: NeuralStatus::probe(Some(&data_folder)),
+        apple_auto: apple_auto_status(prefs.get().apple_auto),
         weights,
         illuminant_models,
         profiles,
@@ -256,6 +262,65 @@ fn gpu_report() -> (Result<GpuInfo, String>, GpuPlan) {
         choice,
     };
     (gpu, plan)
+}
+
+/// Apple Auto on this computer, as `Core::apple_auto_status` gives it to the app's Preferences
+/// (`docs/19` sections 1, 2 and 8), without opening a session: the advisor the app and `ym` use
+/// (`ym_apple::system_advisor`, read now) and the `apple_auto` preference.
+fn apple_auto_status(preference: bool) -> AppleAutoStatus {
+    let availability = ym_apple::system_advisor().availability();
+    let active = Activity::decide(
+        true,
+        AppleAutoMode::FromPreference,
+        preference,
+        Some(&availability),
+    )
+    .is_active();
+    let (available, reason, info) = match availability {
+        Availability::Available(info) => (true, None, Some(info)),
+        Availability::Unavailable(reason) => (false, Some(reason), None),
+    };
+    AppleAutoStatus {
+        available,
+        reason,
+        info,
+        preference,
+        mode: AppleAutoMode::FromPreference,
+        active,
+        prompt: PROMPT_VERSION,
+        table: TABLE_VERSION,
+    }
+}
+
+/// The `apple_auto` object of `doctor --json`: `{ "available", "reason", "model", "os",
+/// "preference", "prompt", "table" }` (`docs/19` section 8).
+fn apple_auto_value(s: &AppleAutoStatus) -> Value {
+    json!({
+        "available": s.available,
+        "reason": s.reason.and_then(|r| serde_json::to_value(r).ok()),
+        "model": s.info.as_ref().map(|i| i.model.as_str()),
+        "os": s.info.as_ref().map(|i| i.os.as_str()),
+        "preference": s.preference,
+        "prompt": s.prompt,
+        "table": s.table,
+    })
+}
+
+/// The `Apple Auto` row: `available · Apple Intelligence · AFM 3 Core · macOS 27.0.1 (27A404) ·
+/// prompt 1 · table 1` (with `· turned off in Preferences` when the preference is off), or `not
+/// available (this is not a Mac)`.
+fn apple_auto_text(s: &AppleAutoStatus) -> String {
+    match (&s.info, s.reason) {
+        (Some(info), _) if s.available => {
+            let mut text = format!("available · {}", line_text(&info.version_string()));
+            if !s.preference {
+                text.push_str(" · turned off in Preferences");
+            }
+            text
+        }
+        (_, Some(reason)) => format!("not available ({})", reason.words()),
+        _ => "not available".to_owned(),
+    }
 }
 
 fn source_word(source: PolicySource) -> &'static str {
@@ -331,6 +396,7 @@ fn to_json(r: &Report) -> Value {
             "reason": r.neural.reason,
             "device": "cpu",
         },
+        "apple_auto": apple_auto_value(&r.apple_auto),
         "model_weights": model_values(&r.weights),
         "illuminant_models": model_values(&r.illuminant_models),
         "profiles": r.profiles.iter().map(|(id, version, name)| json!({ "id": id, "version": version, "name": name })).collect::<Vec<_>>(),
@@ -455,6 +521,7 @@ fn to_text(r: &Report) -> String {
             .to_owned()
         },
     );
+    row("Apple Auto", apple_auto_text(&r.apple_auto));
     if r.weights.is_empty() {
         row("Model weights", "none installed".to_owned());
     } else {
@@ -530,6 +597,48 @@ mod tests {
     #[test]
     fn the_report_says_what_it_includes_and_what_it_leaves_out() {
         assert!(INCLUDES.contains("does not include photos, file names, locations"));
+    }
+
+    fn status(available: bool, preference: bool) -> AppleAutoStatus {
+        let info = ym_core::apple_auto::AdvisorInfo {
+            model: "AFM 3 Core".to_owned(),
+            os: "27.0.1 (27A404)".to_owned(),
+        };
+        AppleAutoStatus {
+            available,
+            reason: (!available).then_some(ym_core::apple_auto::UnavailableReason::MacosTooOld),
+            info: available.then_some(info),
+            preference,
+            mode: AppleAutoMode::FromPreference,
+            active: available && preference,
+            prompt: PROMPT_VERSION,
+            table: TABLE_VERSION,
+        }
+    }
+
+    #[test]
+    fn the_apple_auto_row_names_the_model_or_why_not() {
+        assert_eq!(
+            apple_auto_text(&status(true, true)),
+            "available · Apple Intelligence · AFM 3 Core · macOS 27.0.1 (27A404) · prompt 1 · table 1"
+        );
+        assert!(
+            apple_auto_text(&status(true, false)).ends_with("table 1 · turned off in Preferences")
+        );
+        assert_eq!(
+            apple_auto_text(&status(false, true)),
+            "not available (it needs macOS 27 or later)"
+        );
+        assert_eq!(
+            apple_auto_value(&status(false, true)),
+            json!({ "available": false, "reason": "macos_too_old", "model": null, "os": null,
+                    "preference": true, "prompt": 1, "table": 1 })
+        );
+        assert_eq!(
+            apple_auto_value(&status(true, false)),
+            json!({ "available": true, "reason": null, "model": "AFM 3 Core", "os": "27.0.1 (27A404)",
+                    "preference": false, "prompt": 1, "table": 1 })
+        );
     }
 
     #[test]

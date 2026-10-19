@@ -4,6 +4,10 @@ expression: shape(&v)
 ---
 {
   "auto": {
+    "apple": {
+      "state": "string"
+    },
+    "contrast": "number",
     "exposure_ev": "number",
     "kelvin": "number",
     "light_class": "string",
@@ -17,13 +21,16 @@ expression: shape(&v)
       "detail": "number",
       "luminance": "number"
     },
+    "saturation": "number",
     "sharpen": {
       "amount": "number",
       "radius_px": "number"
     },
+    "source": "string",
     "tint": "number",
     "white_ev": "number"
   },
+  "auto_source": "string",
   "camera": {
     "arw_version": "string",
     "body": "string",
@@ -67,7 +74,10 @@ expression: shape(&v)
     "color_warp": {
       "pins": []
     },
-    "contrast": "number",
+    "contrast": {
+      "kind": "string",
+      "value": "number"
+    },
     "crop": "null",
     "curve": {
       "blue": [
@@ -117,7 +127,10 @@ expression: shape(&v)
       "highlights": "number",
       "low_light": "number"
     },
-    "saturation": "number",
+    "saturation": {
+      "kind": "string",
+      "value": "number"
+    },
     "shadows": "number",
     "sharpen": {
       "amount": "number",

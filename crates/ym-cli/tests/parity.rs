@@ -14,15 +14,23 @@
 //! eleven cases, byte for byte. `parity_gpu.rs` goes further on the device (tiles, thread layouts, a
 //! DNG after a TIFF); the GPU leg here is the whole matrix of formats. Without an adapter the GPU leg
 //! skips with a notice, unless `YM_REQUIRE_GPU=1` makes that a failure.
+//!
+//! Apple Auto (`docs/19` section 7). The app's side here has no advisor (Apple Auto off) and the
+//! binary is given `--apple-auto off`, so a Mac with Apple Intelligence compares today's bytes too.
+//! The Apple Auto leg gives both sides the test advisor (`FakeAdvisor` in the core, the binary
+//! `YELLOWMOON_TEST_APPLE_AUTO=fake` and no option, so the app's setting decides as in the app): the
+//! same answers, the same files.
 
 mod common;
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 use common::{Sandbox, data_dir, names_in};
 use ym_core::app::gpu::{GpuPolicy, GpuSlot, open_gpu};
 use ym_core::app::{Core, CoreOptions};
+use ym_core::apple_auto::FakeAdvisor;
 use ym_core::export_queue::ExportJob;
 use ym_core::scheduler::MemoryBudget;
 use ym_core::session::{ApplyScope, OpenOptions, PhotoId};
@@ -51,6 +59,13 @@ impl App {
         Self::open_on(files, method, None)
     }
 
+    /// Like [`App::open`] with Apple Auto's test advisor, as the app has it with
+    /// `YELLOWMOON_TEST_APPLE_AUTO=fake`: the `apple_auto` preference (on in a new app folder)
+    /// decides, and the photos are answered before they count as developed.
+    fn open_with_fake_advisor(files: &[&Path]) -> Self {
+        Self::open_full(files, DEFAULT_METHOD, None, true)
+    }
+
     /// The GPU leg's app: the device of the `On` policy attached to the core the way the application
     /// attaches it. `None` (with a notice) when no adapter opens; a failure when `YM_REQUIRE_GPU` is set.
     fn open_on_device(files: &[&Path]) -> Option<Self> {
@@ -68,11 +83,18 @@ impl App {
     }
 
     fn open_on(files: &[&Path], method: Method, slot: Option<GpuSlot>) -> Self {
+        Self::open_full(files, method, slot, false)
+    }
+
+    fn open_full(files: &[&Path], method: Method, slot: Option<GpuSlot>, fake: bool) -> Self {
         let home = tempfile::tempdir().expect("tempdir");
         let mut options = CoreOptions::new(data_dir(), home.path().to_path_buf());
         // What the CLI does: no thumbnail renders competing with the export.
         options.thumbnails = false;
         options.render.demosaic = method;
+        if fake {
+            options.advisor = Some(Arc::new(FakeAdvisor));
+        }
         let core = Core::open(options).expect("core");
         if let Some(slot) = &slot {
             core.attach_gpu(slot);
@@ -137,11 +159,18 @@ fn cli_export_env(
     } else {
         &["--cpu"]
     };
+    // Apple Auto off, as on the app's side, unless the test gives both sides the test advisor.
+    let apple_auto: &[&str] = if env.iter().any(|(k, _)| *k == common::FAKE_APPLE_AUTO.0) {
+        &[]
+    } else {
+        &["--apple-auto", "off"]
+    };
     let out = sb
         .ym()
         .envs(env.iter().copied())
         .arg("render")
         .args(device)
+        .args(apple_auto)
         .args(inputs)
         .args(flags)
         .arg("--out")
@@ -319,6 +348,50 @@ fn every_format_is_byte_identical_through_the_app_path_and_the_binary_on_the_dev
     }
 }
 
+/// The Apple Auto leg (`docs/19` section 7): the app's core with the test advisor and the binary with
+/// `YELLOWMOON_TEST_APPLE_AUTO=fake` ask the same question about the same picture, get the same
+/// answer and write the same bytes, for a finished picture, a 16-bit TIFF and a DNG, one photo and a
+/// folder of two (a burst shares its answers). The files record Apple Auto (`ym:Auto` `apple`), so
+/// this is not today's picture with another name.
+#[test]
+fn apple_auto_gives_the_same_files_through_the_app_path_and_the_binary() {
+    let sb = Sandbox::new();
+    let a = sb.arw("a.ARW");
+    let b = sb.arw_sized("b.ARW", 128, 96, 7);
+    let app = App::open_with_fake_advisor(&[&a, &b]);
+    assert!(
+        app.core.apple_auto_status().active,
+        "the app's Apple Auto acts"
+    );
+    assert!(
+        app.core.session.apple_auto_asks() >= 2,
+        "both photos were asked"
+    );
+    let fake = [common::FAKE_APPLE_AUTO];
+    for case in cases()
+        .into_iter()
+        .filter(|c| matches!(c.name, "jpeg" | "tiff-16-lzw" | "dng"))
+    {
+        let app_dir = sb.root().join("app").join(case.name);
+        let cli_dir = sb.root().join("cli").join(case.name);
+        let from_app = app.export(case.options.clone(), &app_dir);
+        let from_cli = cli_export_env(&sb, &[&sb.photos()], case.flags, &cli_dir, &fake);
+        assert_same_files(&from_app, &from_cli, &format!("Apple Auto, {}", case.name));
+        for file in &from_cli {
+            let text = String::from_utf8_lossy(&bytes(file)).into_owned();
+            assert!(
+                text.contains("<ym:Auto>apple</ym:Auto>") && text.contains("<ym:AppleAuto>"),
+                "{} records Apple Auto",
+                file.display()
+            );
+        }
+    }
+    // And the answer changed the picture: the same photo without Apple Auto is another file.
+    let plain = cli_export(&sb, &[&a], &["--format", "jpeg"], &sb.root().join("plain"));
+    let with = sb.root().join("cli").join("jpeg").join("a_signature.jpg");
+    assert_ne!(bytes(&plain[0]), bytes(&with));
+}
+
 /// Both sides see the same policy result: with `--cpu` neither side touches a device, so the CPU leg is the CPU
 /// reference even where `auto` would pick a graphics card.
 #[test]
@@ -328,7 +401,14 @@ fn the_cpu_leg_asks_for_no_device_on_either_side() {
     let out = sb
         .ym()
         .env("YELLOWMOON_GPU", "on")
-        .args(["render", "--cpu", "--json", "--quiet"])
+        .args([
+            "render",
+            "--cpu",
+            "--json",
+            "--quiet",
+            "--apple-auto",
+            "off",
+        ])
         .arg(&arw)
         .arg("--out")
         .arg(sb.root().join("json"))
@@ -644,6 +724,8 @@ fn the_settings_an_export_records_reproduce_the_file() {
         .args([
             "render",
             "--json",
+            "--apple-auto",
+            "off",
             "--format",
             "png",
             "--bits",
@@ -662,7 +744,15 @@ fn the_settings_an_export_records_reproduce_the_file() {
     let again = sb
         .ym()
         .args([
-            "render", "--json", "--format", "png", "--bits", "8", "--out",
+            "render",
+            "--json",
+            "--apple-auto",
+            "off",
+            "--format",
+            "png",
+            "--bits",
+            "8",
+            "--out",
         ])
         .arg(sb.root().join("third"))
         .arg("--settings")

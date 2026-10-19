@@ -21,6 +21,10 @@ ym-export.workspace = true
 ym-gpu.workspace = true
 ym-looks.workspace = true
 ym-profiles.workspace = true
+# Apple Auto's bridge (docs/19): `ym_apple::system_advisor()`, the advisor `ym` hands to the core. On
+# Apple silicon with the macOS 27 SDK it carries the Swift bridge, and `build.rs` links FoundationModels
+# weakly; everywhere else it is a stub that says why Apple Auto is not available. Our own crate.
+ym-apple.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 serde_json.workspace = true

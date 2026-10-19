@@ -9,8 +9,14 @@ moves the entries below from Unreleased into a dated section for that version.
 
 ## [Unreleased]
 
+### Added
+
+- **Auto with Apple Intelligence** (macOS 27 on Apple silicon, with Apple Intelligence turned on). Apple's on-device model looks at each photo and fine-tunes Auto: a little brighter or darker, a warmer or cooler white, more or less contrast and saturation. It runs on the Mac and sends nothing anywhere. It is on by default where it is available and can be turned off in Preferences; on other Macs the setting is not shown and Auto works as before. Only values left on Auto change. A photo appears at once and updates when the answer arrives; exports wait for the answers, and each export records which Auto made it. `ym` follows the same setting, `--apple-auto on|off` overrides it for one run, and `ym doctor` says whether it is available.
+- Contrast and saturation now have an Auto value, like exposure: 0 unless Apple Intelligence chose one. Re-run on the Automatic card puts them back to Auto only while Apple Intelligence acts on the photo; otherwise it leaves them as you set them. `ym render` takes `--contrast auto` and `--saturation auto`.
+
 ### Changed
 
+- `ym render --json` and `ym info --json`, and the settings an export records in its metadata (`ym:Settings`), now write contrast and saturation as Auto or a value, for example `{"kind": "manual", "value": 0}`, where they used to write a plain number. The JSON's `auto` object also lists the automatic contrast and saturation and where Auto came from. Scripts that read contrast or saturation as numbers need updating.
 - The Signature look, the default look for new photos, is richer: more contrast (a steeper curve around mid grey, darker shadows, brighter lights) and more colour (saturation 1.45, was 1.20). Mid grey stays where it was. Built-in looks are now prepared at a finer grid of 65 points, so the stronger curve stays smooth (pipeline 0.4.2).
 - Output sharpening: the halo limiter no longer switches on tiny differences, so the graphics card and the CPU sharpen hard edges and clipped areas alike. Sharpened pictures change very slightly at a few edge pixels (pipeline 0.4.1).
 

@@ -382,6 +382,33 @@ pub enum NoiseReductionSetting {
     },
 }
 
+/// `contrast` and `saturation`: Auto (0, or Apple Auto's value for the photo, `docs/19` section 5)
+/// or a manual value. The JSON is `{ "kind": "auto" }` or `{ "kind": "manual", "value": 12 }`.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Type)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PercentSetting {
+    /// Resolve from the photo's automatic estimates.
+    Auto,
+    /// The user's value.
+    Manual {
+        /// -100 to 100.
+        value: Num,
+    },
+}
+
+/// `contrast` or `saturation` in a patch: either form of [`PercentSetting`], or a plain number,
+/// which the core reads as Manual with that value, except 0, which it reads as Auto (the form of a
+/// settings document written before Apple Auto, `docs/19` section 5). The webview sends the tagged
+/// form.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Type)]
+#[serde(untagged)]
+pub enum PercentPatch {
+    /// `{ "kind": "auto" }` or `{ "kind": "manual", "value": 12 }`.
+    Setting(PercentSetting),
+    /// A plain number: Manual, or Auto for 0.
+    Number(Num),
+}
+
 /// The sharpening in effect.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Type)]
 pub struct SharpenValue {
@@ -558,8 +585,8 @@ pub struct DevelopSettings {
     pub look_intensity: Num,
     /// Light › Exposure: Auto or an absolute value, -4 to +4 EV.
     pub exposure: ExposureSetting,
-    /// -100 to 100.
-    pub contrast: Num,
+    /// Light › Exposure › Contrast: Auto or a value, -100 to 100.
+    pub contrast: PercentSetting,
     /// -100 to 100.
     pub brightness: Num,
     /// Light › High dynamic range, -100 to 100.
@@ -579,8 +606,8 @@ pub struct DevelopSettings {
     pub white_balance: WhiteBalanceSetting,
     /// The three colour-balance wheels.
     pub color_balance: ColorBalance,
-    /// Colour › Colour balance, -100 to 100.
-    pub saturation: Num,
+    /// Colour › Colour balance › Saturation: Auto or a value, -100 to 100.
+    pub saturation: PercentSetting,
     /// Colour › Colour warp: its pins.
     pub color_warp: ColorWarp,
     /// Detail › Sharpening: Auto or amount and radius.
@@ -749,9 +776,9 @@ pub struct SettingsPatch {
     /// New exposure (Manual to set it, Auto to reset it).
     #[serde(default)]
     pub exposure: Option<ExposureSetting>,
-    /// New contrast.
+    /// New contrast: Auto, a manual value, or a plain number (0 is Auto).
     #[serde(default)]
-    pub contrast: Option<Num>,
+    pub contrast: Option<PercentPatch>,
     /// New brightness.
     #[serde(default)]
     pub brightness: Option<Num>,
@@ -779,9 +806,9 @@ pub struct SettingsPatch {
     /// Colour-balance wheels to change.
     #[serde(default)]
     pub color_balance: Option<ColorBalancePatch>,
-    /// New saturation.
+    /// New saturation: Auto, a manual value, or a plain number (0 is Auto).
     #[serde(default)]
-    pub saturation: Option<Num>,
+    pub saturation: Option<PercentPatch>,
     /// New colour warp: the whole list of pins (`{ pins: [] }` removes them all).
     #[serde(default)]
     pub color_warp: Option<ColorWarp>,
@@ -865,6 +892,10 @@ impl Serialize for SettingsPatch {
 pub struct AutoFlags {
     /// `exposure` is Auto.
     pub exposure: bool,
+    /// `contrast` is Auto.
+    pub contrast: bool,
+    /// `saturation` is Auto.
+    pub saturation: bool,
     /// `light_source` is Auto.
     pub light_source: bool,
     /// `white_balance` is Auto.
@@ -898,17 +929,192 @@ pub struct NoiseModel {
     pub b: Num,
 }
 
-/// Per-photo automatic estimates (`AutoEstimates` in `types.ts`).
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Type)]
+// ---------------------------------------------------------------------------------------------
+// Apple Auto (`docs/19`)
+// ---------------------------------------------------------------------------------------------
+
+/// Which Auto made a photo's automatic values: Yellowmoon's own (`rule`) or Apple Auto's answer
+/// (`apple`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum AutoSource {
+    /// Yellowmoon's own Auto.
+    Rule,
+    /// Apple Auto's answer (the photo's own or its burst's).
+    Apple,
+}
+
+/// Why Apple Auto is not available on this computer (`docs/19` section 1; the core's
+/// `UnavailableReason`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum AppleAutoReason {
+    /// Not a Mac.
+    NotAMac,
+    /// A Mac with an Intel processor.
+    IntelMac,
+    /// This build has no bridge to Apple's model.
+    BuiltWithoutSupport,
+    /// macOS older than 27.
+    MacosTooOld,
+    /// The Mac cannot run Apple Intelligence.
+    DeviceNotEligible,
+    /// Apple Intelligence is off in System Settings.
+    AppleIntelligenceOff,
+    /// The model is still downloading.
+    ModelNotReady,
+    /// Any other unavailability Apple reports.
+    Unavailable,
+    /// The model on this Mac cannot take pictures.
+    NoImageInput,
+}
+
+/// Why one request to Apple's model failed (`docs/19` sections 6 and 8; the core's `FailureKind`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum AppleAutoFailure {
+    /// Apple Auto stopped being available.
+    Unavailable,
+    /// macOS asked the app to wait.
+    RateLimited,
+    /// No answer within 30 seconds.
+    Timeout,
+    /// The model refused.
+    Refused,
+    /// Apple's safety check stopped the request.
+    Guardrail,
+    /// The model does not support the language.
+    UnsupportedLanguage,
+    /// The request did not fit the model's context.
+    ContextTooLarge,
+    /// The model's assets were not there.
+    AssetsUnavailable,
+    /// Another request was running.
+    ConcurrentRequests,
+    /// The answer could not be read.
+    BadAnswer,
+    /// Anything else; the message says what.
+    Other,
+}
+
+/// Which model answers (the core's `AdvisorInfo`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct AppleAutoInfo {
+    /// The model variant's display name: "AFM 3 Core".
+    pub model: String,
+    /// The macOS version and build: "27.0.1 (27A404)".
+    pub os: String,
+}
+
+/// The four steps of an answer (the core's `AutoSteps`): exposure -3 to +3, the others -2 to +2,
+/// 0 for keep.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct AppleAutoSteps {
+    /// Darker (negative) or brighter.
+    pub exposure: i8,
+    /// Cooler (negative) or warmer.
+    pub white: i8,
+    /// Less (negative) or more contrast.
+    pub contrast: i8,
+    /// Less (negative) or more saturation.
+    pub saturation: i8,
+}
+
+/// One answer of Apple's model (the core's `AdvisorAnswer`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct AppleAutoAnswer {
+    /// The four steps.
+    pub steps: AppleAutoSteps,
+    /// What the photo shows, in a few words (for reports only).
+    pub scene: String,
+}
+
+/// Where a photo stands with Apple Auto (the core's `AppleAuto`), tagged by `state`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum AppleAuto {
+    /// The preference is off, or the app has no advisor: Auto is the rule.
+    Off,
+    /// Apple Auto is not available on this computer: Auto is the rule.
+    Unavailable {
+        /// Why.
+        reason: AppleAutoReason,
+    },
+    /// Asked, or waiting for its turn: Auto is the rule until the answer.
+    Pending,
+    /// Answered: Auto takes the answer's values.
+    Answered {
+        /// The answer.
+        answer: AppleAutoAnswer,
+        /// Which model answered.
+        info: AppleAutoInfo,
+    },
+    /// The request failed: Auto is the rule.
+    Failed {
+        /// Why.
+        kind: AppleAutoFailure,
+        /// Apple's message, when there is one.
+        message: String,
+        /// Which model was asked.
+        info: AppleAutoInfo,
+    },
+}
+
+/// How a run decides whether Apple Auto is used (the core's `AppleAutoMode`); the app always
+/// follows the preference.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum AppleAutoMode {
+    /// The `apple_auto` preference decides.
+    FromPreference,
+    /// On for this run.
+    On,
+    /// Off for this run.
+    Off,
+}
+
+/// `apple_auto_status()`: whether Apple Auto is available on this computer (read again for the
+/// answer), and whether it acts (`docs/19` sections 1 and 2; the core's `AppleAutoStatus`).
+/// Preferences shows its row only while `available`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct AppleAutoStatus {
+    /// Apple Auto is available on this computer now.
+    pub available: bool,
+    /// Why it is not; null when it is, and when the app has no advisor.
+    pub reason: Option<AppleAutoReason>,
+    /// Which model answers, when it is available.
+    pub info: Option<AppleAutoInfo>,
+    /// The `apple_auto` preference.
+    pub preference: bool,
+    /// How the run decides (always `from_preference` in the app).
+    pub mode: AppleAutoMode,
+    /// Apple Auto acts for the session now.
+    pub active: bool,
+    /// The prompt's version.
+    pub prompt: u32,
+    /// The table's version.
+    pub table: u32,
+}
+
+/// Per-photo automatic estimates (`AutoEstimates` in `types.ts`; the core's `AutoSummary`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
 pub struct AutoEstimates {
-    /// `EV_auto`.
+    /// `EV_auto` (with Apple Auto's change, when there is one).
     pub exposure_ev: Num,
     /// The automatic white lift in stops (0 when nothing is above +1 stop).
     pub white_ev: Num,
-    /// The Auto Kelvin.
+    /// The Auto Kelvin (with Apple Auto's nudge, when there is one).
     pub kelvin: Num,
     /// The Auto tint.
     pub tint: Num,
+    /// What `contrast: Auto` resolves to: 0, or Apple Auto's contrast.
+    pub contrast: Num,
+    /// What `saturation: Auto` resolves to: 0, or Apple Auto's saturation.
+    pub saturation: Num,
+    /// Which Auto made these values.
+    pub source: AutoSource,
+    /// Where the photo stands with Apple Auto.
+    pub apple: AppleAuto,
     /// The most probable light class.
     pub light_class: LightClass,
     /// Confidence of the light estimate, 0 to 1.
@@ -930,7 +1136,7 @@ pub struct ResolvedValues {
     pub look_intensity: Num,
     /// The exposure in stops.
     pub exposure_ev: Num,
-    /// `contrast`.
+    /// The contrast in effect: the manual value, or the photo's Auto contrast.
     pub contrast: Num,
     /// `brightness`.
     pub brightness: Num,
@@ -954,7 +1160,7 @@ pub struct ResolvedValues {
     pub tint: Num,
     /// `color_balance`.
     pub color_balance: ColorBalance,
-    /// `saturation`.
+    /// The saturation in effect: the manual value, or the photo's Auto saturation.
     pub saturation: Num,
     /// `color_warp`.
     pub color_warp: ColorWarp,
@@ -1629,6 +1835,8 @@ pub struct Preferences {
     pub watch_downloads_during_import: bool,
     /// Folders remembered between runs.
     pub last_used_folders: LastUsedFolders,
+    /// Auto with Apple Intelligence (`docs/19` section 2); acts only where Apple Auto is available.
+    pub apple_auto: bool,
 }
 
 /// A partial update of the preferences.
@@ -1656,6 +1864,9 @@ pub struct PreferencesPatch {
     /// New remembered folders.
     #[serde(default)]
     pub last_used_folders: Option<LastUsedFolders>,
+    /// New value of "Auto with Apple Intelligence".
+    #[serde(default)]
+    pub apple_auto: Option<bool>,
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1911,9 +2122,11 @@ pub struct MenuActionEvent {
 }
 
 /// `settings_changed { photo_id }` (addition): the core changed a photo's settings by itself: after
-/// a `viewport_input` Pick white click, and once for each photo a `paste_settings` changed. Ask
-/// `get_settings` again (the webview skips the photos it is pasting onto: the paste's answer says
-/// what changed).
+/// a `viewport_input` Pick white click, once for each photo a `paste_settings` changed, and when the
+/// estimates its Auto values resolve against changed (the core's `estimates_changed`: a burst's
+/// median moved, Apple Auto answered or failed, or the `apple_auto` preference changed, `docs/19`
+/// section 6). Ask `get_settings` again (the webview skips the photos it is pasting onto: the
+/// paste's answer says what changed).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type, Event)]
 #[tauri_specta(event_name = "settings_changed")]
 pub struct SettingsChanged {

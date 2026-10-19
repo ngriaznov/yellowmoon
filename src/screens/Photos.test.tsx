@@ -4,6 +4,9 @@ import { openPhotos, openTab, renderApp, tools } from "../test/harness";
 import type { MockOptions } from "../api.mock";
 import type { Harness } from "../test/harness";
 
+/** A manual contrast or saturation (`docs/19` section 5: Auto or a value). */
+const manual = (value: number) => ({ kind: "manual", value }) as const;
+
 let h: Harness | undefined;
 afterEach(() => {
   h?.unmount();
@@ -411,7 +414,7 @@ describe("undo, redo and closing", () => {
   it("⌘Z and ⇧⌘Z undo and redo a change for this photo", async () => {
     await setup();
     await openTab(h!, "Light");
-    await h!.store.update({ contrast: 30 });
+    await h!.store.update({ contrast: manual(30) });
     await waitFor(() => expect(screen.getByRole("textbox", { name: "Contrast value" })).toHaveValue("+30"));
     await h!.user.keyboard("{Meta>}z{/Meta}");
     await waitFor(() => expect(screen.getByRole("textbox", { name: "Contrast value" })).toHaveValue("0"));

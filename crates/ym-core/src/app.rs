@@ -10,7 +10,12 @@
 //! * a change of the default look, the display rendering or the look list reaches the session and
 //!   the renderer, and then the application's `looks_changed` listener;
 //! * an **export** snapshots the photos and the preference "Remove location from exports" when it is
-//!   queued, and runs through `export_photo`, the function the CLI calls too.
+//!   queued, and runs through `export_photo`, the function the CLI calls too;
+//! * **Apple Auto** (`docs/19`) acts when the caller gives an advisor ([`CoreOptions::advisor`]: the
+//!   app and `ym` give `ym_apple::system_advisor()`, every other caller none), the preference or the
+//!   run's mode ([`CoreOptions::apple_auto`], [`Core::set_apple_auto_mode`]) is on and the advisor is
+//!   available; the availability is read again when a session opens, when the status is asked
+//!   ([`Core::apple_auto_status`]), when the preferences change and before each export.
 //!
 //! Nothing here persists anything but the preferences and the looks (`docs/01` section
 //! Persistence).
@@ -25,6 +30,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::apple_auto::{AppleAutoMode, AppleAutoStatus, AutoAdvisor};
+
 use ym_color::look::LookInput;
 use ym_looks::import::Progress;
 use ym_looks::library::LookId;
@@ -38,13 +45,13 @@ use crate::export_queue::{
 use crate::looks::{
     DisplayLutEntry, ImportRequest, LookEntry, LookService, LooksError, LooksImportResult,
 };
-use crate::pipeline::{RenderError, RenderOptions, Renderer};
+use crate::pipeline::{AdvisorPictures, RenderError, RenderOptions, Renderer};
 use crate::preferences::{
     DisplayRendering, LastUsedFolders, Preferences, PreferencesError, PreferencesPatch,
     PreferencesStore,
 };
 use crate::session::{
-    ApplyScope, EventSink, PasteReport, PhotoId, Session, SessionEnv, SessionError,
+    AppleAutoEnv, ApplyScope, EventSink, PasteReport, PhotoId, Session, SessionEnv, SessionError,
     default_decode_threads,
 };
 use crate::settings::SettingsPatch;
@@ -115,6 +122,13 @@ pub struct CoreOptions {
     /// application wants them; the CLI does not (it would spend the render worker on pictures
     /// nobody sees, and an export waits for such work).
     pub thumbnails: bool,
+    /// What looks at the photos for Apple Auto (`docs/19`): the app and `ym` give
+    /// `ym_apple::system_advisor()`; every other caller (tests, the golden tool, examples) gives none,
+    /// which is Apple Auto off and today's bytes everywhere.
+    pub advisor: Option<Arc<dyn AutoAdvisor>>,
+    /// How this run decides on Apple Auto: the preference ([`AppleAutoMode::FromPreference`], the
+    /// app's and `ym`'s default) or `ym --apple-auto on|off`.
+    pub apple_auto: AppleAutoMode,
 }
 
 impl CoreOptions {
@@ -148,6 +162,8 @@ impl CoreOptions {
             forced_profile: None,
             home: None,
             thumbnails: true,
+            advisor: None,
+            apple_auto: AppleAutoMode::FromPreference,
         }
     }
 }
@@ -203,7 +219,19 @@ impl Core {
         if let Some(profile) = &options.forced_profile {
             env = env.with_forced_profile(profile)?;
         }
+        if let Some(advisor) = options.advisor {
+            // The model's pictures come from a renderer of their own, without the device, so they
+            // are the CPU reference path's bytes whatever the GPU policy (`docs/19` section 3).
+            let pictures = AdvisorPictures::new(env.reference_look.clone(), &renderer.options())?;
+            env = env.with_apple_auto(AppleAutoEnv {
+                preference: preferences.get().apple_auto,
+                mode: options.apple_auto,
+                ..AppleAutoEnv::new(advisor, Arc::new(pictures))
+            });
+        }
         let session = Arc::new(Session::new(env));
+        // The preference is known to the session with or without an advisor (the status says it).
+        session.set_apple_auto_preference(preferences.get().apple_auto);
 
         let ctx = Arc::new(
             ExportContext::new(renderer.clone())
@@ -314,7 +342,26 @@ impl Core {
         self.session
             .set_default_look(self.looks.effective_default());
         self.renderer.set_display(self.looks.display_choice());
+        // Apple Auto follows its preference at once (off: every photo back to the rule; on: the
+        // photos without an answer are asked), with the availability read again.
+        self.session.set_apple_auto_preference(next.apple_auto);
         Ok(next)
+    }
+
+    // --- Apple Auto -----------------------------------------------------------------------
+
+    /// Apple Auto's status for the app's Preferences (whether to show the row) and `ym doctor`, with
+    /// the availability read again (`docs/19` sections 1, 2 and 8). Without an advisor it is not
+    /// available and has no reason.
+    #[must_use]
+    pub fn apple_auto_status(&self) -> AppleAutoStatus {
+        self.session.apple_auto_status()
+    }
+
+    /// Sets how this run decides on Apple Auto (`ym --apple-auto on|off`; the app keeps
+    /// [`AppleAutoMode::FromPreference`]). Takes effect at once, as the preference does.
+    pub fn set_apple_auto_mode(&self, mode: AppleAutoMode) {
+        self.session.set_apple_auto_mode(mode);
     }
 
     // --- Looks ------------------------------------------------------------------------------
@@ -455,6 +502,9 @@ impl Core {
         self.looks.reload();
         // A display LUT the user chose and that has since gone is an error, not ACES 2 in its place.
         self.looks.check_display_rendering()?;
+        // Apple Auto may have become available, or stopped being, since the last look (`docs/19`
+        // section 1); the export's photos then wait for their answers.
+        self.session.refresh_apple_auto();
         let remove_location = self.preferences.get().remove_location_from_exports;
         let id = self.exports.start(&self.session, job, remove_location)?;
         if let Some(folder) = &job.options.destination {

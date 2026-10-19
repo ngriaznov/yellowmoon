@@ -21,6 +21,7 @@ import { toAppError } from "../api";
 import type {
   ApplyScope,
   AppError,
+  AppleAutoStatus,
   ChromaSample,
   ChromaScatter,
   CliLinkStatus,
@@ -38,6 +39,7 @@ import type {
   MenuState,
   OpenSummary,
   PasteReport,
+  PercentSetting,
   PhotoId,
   PhotoProgress,
   PhotoStatus,
@@ -192,6 +194,11 @@ export interface AppState {
   displayLuts: readonly DisplayLut[] | null;
   /** Whether the command-line tool is linked onto the PATH, once asked for (Preferences). */
   cliLink: CliLinkStatus | null;
+  /**
+   * Whether Apple Auto is available on this computer and acts (`apple_auto_status`, `docs/19`), asked for each time Preferences opens;
+   * null before the first answer. Preferences shows "Auto with Apple Intelligence" only while it is available.
+   */
+  appleAuto: AppleAutoStatus | null;
   /** Which panel Photos shows. */
   panel: Panel;
   /** The Export panel's options: the remembered defaults, changed by the person (`docs/09` §Options). */
@@ -247,6 +254,7 @@ export function initialState(): AppState {
     preferences: null,
     displayLuts: null,
     cliLink: null,
+    appleAuto: null,
     panel: "tools",
     exportOptions: defaultExportOptions(),
     exportScope: "this",
@@ -266,7 +274,6 @@ export function initialState(): AppState {
 const DIRECT_KEYS: ReadonlySet<string> = new Set([
   "look",
   "look_intensity",
-  "contrast",
   "brightness",
   "highlights",
   "shadows",
@@ -275,7 +282,6 @@ const DIRECT_KEYS: ReadonlySet<string> = new Set([
   "black",
   "light_source",
   "color_balance",
-  "saturation",
   "color_warp",
   "output_sharpening",
   "curve",
@@ -286,12 +292,22 @@ const DIRECT_KEYS: ReadonlySet<string> = new Set([
   "white_pick",
 ]);
 
-/** The mirrored settings with a patch applied to the fields that need no resolving. */
+/**
+ * The mirrored settings with a patch applied to the fields that need no resolving. Contrast and saturation are Auto or a value
+ * (`docs/19` section 5) and need none either: Auto is the photo's Auto value, which the mirror already has (`estimates`).
+ */
 export function applyDirect(rs: ResolvedSettings, patch: SettingsPatch): ResolvedSettings {
   const settings = { ...rs.settings } as Record<string, unknown>;
   const values = { ...rs.values } as Record<string, unknown>;
   let auto = rs.auto;
   for (const [key, value] of Object.entries(patch)) {
+    if (value !== undefined && (key === "contrast" || key === "saturation")) {
+      const setting = value as PercentSetting;
+      settings[key] = setting;
+      values[key] = setting.kind === "manual" ? setting.value : rs.estimates[key];
+      auto = { ...auto, [key]: setting.kind === "auto" };
+      continue;
+    }
     if (value === undefined || !DIRECT_KEYS.has(key)) continue;
     settings[key] = value;
     values[key] = value;
@@ -357,6 +373,11 @@ export class AppStore {
   private readonly picks = new Set<PhotoId>();
   /** Photos a paste is changing: the core's `settings_changed` for them is the paste's own news, which the store handles itself. */
   private readonly pasting = new Set<PhotoId>();
+  /**
+   * How many times the store has written each photo's settings or sent a patch for it: a `getSettings` reply asked for before the
+   * latest of these may predate it, so {@link refreshSettings} does not show it (a slider being dragged would jump back).
+   */
+  private readonly writes = new Map<PhotoId, number>();
   /** The state the native menu was last told, which is the one it starts with: the settings items off. */
   private menuState: MenuState = { copy_settings: false, paste_settings: false, paste_settings_to_picked: false };
   private readonly lookThumbs = new Map<PhotoId, { key: string; urls: Map<LookId, LookThumb> }>();
@@ -651,10 +672,10 @@ export class AppStore {
     this.set({ viewportFrame: none ? null : frame });
   }
 
-  /** The core changed a photo's settings by itself (a Pick white click): ask for them again. */
+  /** The core changed a photo's settings or estimates by itself (an Apple Auto answer, a burst's exposure): ask for them again. */
   private async onSettingsChanged(id: PhotoId): Promise<void> {
     if (this.picks.has(id) || this.pasting.has(id) || !this.state.settings[id]) return;
-    await this.resyncSettings(id);
+    await this.refreshSettings(id);
   }
 
   // --- Session ------------------------------------------------------------------------------
@@ -769,6 +790,7 @@ export class AppStore {
     this.histories.clear();
     this.gestures.clear();
     this.senders.clear();
+    this.writes.clear();
     this.settingsRequests.clear();
     this.batch = [];
     this.state = {
@@ -781,6 +803,7 @@ export class AppStore {
       preferences: this.state.preferences,
       displayLuts: this.state.displayLuts,
       cliLink: this.state.cliLink,
+      appleAuto: this.state.appleAuto,
       exportOptions: this.state.exportOptions,
       // A run still writing files outlives the session; a finished one has been seen.
       exportRun: this.state.exportRun?.phase === "running" ? this.state.exportRun : null,
@@ -940,8 +963,22 @@ export class AppStore {
     try {
       const preferences = await this.api.preferencesSet(patch);
       this.set({ preferences });
+      // Apple Auto acts, or stops, with its preference; the photos' own news comes as `settings_changed`.
+      if (patch.apple_auto !== undefined) void this.refreshAppleAuto();
     } catch (error) {
       if (before) this.set({ preferences: before });
+      this.fail(error);
+    }
+  }
+
+  /**
+   * Asks whether Apple Auto is available on this computer (the core reads it again: Apple Intelligence may have been switched on, or its
+   * model finished downloading) and whether it acts.
+   */
+  async refreshAppleAuto(): Promise<void> {
+    try {
+      this.set({ appleAuto: await this.api.appleAutoStatus() });
+    } catch (error) {
       this.fail(error);
     }
   }
@@ -970,6 +1007,7 @@ export class AppStore {
     if (overlay === "preferences") {
       void this.refreshCliLink();
       void this.refreshDisplayLuts();
+      void this.refreshAppleAuto();
     }
   }
 
@@ -1408,13 +1446,46 @@ export class AppStore {
   private async resyncSettings(id: PhotoId): Promise<void> {
     try {
       const rs = await this.api.getSettings(id);
-      this.set({ settings: { ...this.state.settings, [id]: rs } });
+      this.setSettings(id, rs);
     } catch (error) {
       this.fail(error);
     }
   }
 
+  /**
+   * Reads a photo's settings again after news from the core, without taking back what the person is doing. Patches on their way land
+   * first; then the settings are asked for, and a reply that a newer write overtook while it was out (a patch sent or answered, Re-run,
+   * a Pick white, a paste: anything {@link writes} counts) is not shown, because it may predate that write and a slider being dragged
+   * would jump back. The store asks again once that write has landed: its own reply may predate the news. A photo whose settings the
+   * mirror no longer holds is not asked for.
+   */
+  private async refreshSettings(id: PhotoId): Promise<void> {
+    for (;;) {
+      await this.whenIdle(id);
+      if (!this.state.settings[id]) return;
+      if (this.isSending(id)) continue;
+      const asked = this.writes.get(id) ?? 0;
+      let rs: ResolvedSettings;
+      try {
+        rs = await this.api.getSettings(id);
+      } catch (error) {
+        this.fail(error);
+        return;
+      }
+      if ((this.writes.get(id) ?? 0) === asked) {
+        this.setSettings(id, rs);
+        return;
+      }
+    }
+  }
+
+  /** Counts a write of a photo's settings, or a patch sent for it ({@link writes}). */
+  private wrote(id: PhotoId): void {
+    this.writes.set(id, (this.writes.get(id) ?? 0) + 1);
+  }
+
   private setSettings(id: PhotoId, rs: ResolvedSettings): void {
+    this.wrote(id);
     this.set({ settings: { ...this.state.settings, [id]: rs } });
   }
 
@@ -1450,6 +1521,7 @@ export class AppStore {
   }
 
   private enqueue(id: PhotoId, patch: SettingsPatch, record: Queued["record"]): Promise<void> {
+    this.wrote(id);
     const sender = this.senderFor(id);
     return new Promise<void>((resolve) => {
       const last = sender.queue[sender.queue.length - 1];
@@ -1491,6 +1563,12 @@ export class AppStore {
       sender.busy = false;
       for (const wake of sender.idle.splice(0)) wake();
     }
+  }
+
+  /** Whether a patch for a photo is on its way to the core or waiting to be sent. */
+  private isSending(id: PhotoId): boolean {
+    const sender = this.senders.get(id);
+    return sender !== undefined && (sender.busy || sender.queue.length > 0);
   }
 
   /** Resolves when every patch for a photo has been answered. */

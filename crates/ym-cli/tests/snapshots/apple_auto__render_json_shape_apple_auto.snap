@@ -1,0 +1,62 @@
+---
+source: crates/ym-cli/tests/apple_auto.rs
+expression: "Value::Object(picked)"
+---
+{
+  "apple_auto": {
+    "model": "string",
+    "os": "string",
+    "prompt": "number",
+    "reason": "null",
+    "scene": "string",
+    "state": "string",
+    "steps": {
+      "contrast": "number",
+      "exposure": "number",
+      "saturation": "number",
+      "white": "number"
+    },
+    "table": "number"
+  },
+  "auto": {
+    "apple": {
+      "answer": {
+        "scene": "string",
+        "steps": {
+          "contrast": "number",
+          "exposure": "number",
+          "saturation": "number",
+          "white": "number"
+        }
+      },
+      "info": {
+        "model": "string",
+        "os": "string"
+      },
+      "state": "string"
+    },
+    "contrast": "number",
+    "exposure_ev": "number",
+    "kelvin": "number",
+    "light_class": "string",
+    "light_confidence": "number",
+    "noise": {
+      "a": "number",
+      "b": "number"
+    },
+    "noise_reduction": {
+      "color": "number",
+      "detail": "number",
+      "luminance": "number"
+    },
+    "saturation": "number",
+    "sharpen": {
+      "amount": "number",
+      "radius_px": "number"
+    },
+    "source": "string",
+    "tint": "number",
+    "white_ev": "number"
+  },
+  "auto_source": "string"
+}

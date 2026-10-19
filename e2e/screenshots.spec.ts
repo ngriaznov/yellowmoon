@@ -5,6 +5,9 @@ import { configureMock, lookTilesLoaded, openApp, openPhotos, showUpdateReady } 
 import { compareScreen } from "./helpers/compare";
 import { WARP_PINS } from "./helpers/states";
 
+/** A manual contrast or saturation (`docs/19` section 5: Auto or a value). */
+const manual = (value: number) => ({ kind: "manual", value }) as const;
+
 // Screenshot comparisons of the screens (docs/11 §Tests): the app at 1440 × 900 at 2× compared with `design/screenshots-c2/*.png`,
 // the references of the dark glass interface (C2). They are the app's own pictures on the mock API, taken with the browser flags of
 // `playwright.config.ts` (`npx playwright test --update-snapshots` retakes them; a person looks at them before they are committed).
@@ -30,7 +33,7 @@ const MOCKUP_SETTINGS: MockOptions["initialSettings"] = {
   DSC04204: {
     highlights: -18,
     shadows: 12,
-    saturation: 6,
+    saturation: manual(6),
     color_balance: { shadows: [-0.08, -0.12], midtones: [0, 0], highlights: [0.12, 0.12] },
     curve: { luma: CURVE_DEMO_POINTS.luma, red: CURVE_DEMO_POINTS.red, green: CURVE_DEMO_POINTS.green, blue: CURVE_DEMO_POINTS.blue },
   },
@@ -151,6 +154,30 @@ test.describe("Photos", () => {
       return now.length === before.length && now.every((src, i) => src !== before[i]);
     }).toBe(true);
     await compareScreen(page, "photos-look-teal");
+  });
+
+  test("Look with Apple Auto's answer: the Automatic card's Contrast and Saturation rows and its line (photos-look-apple-auto.png)", async ({ page }) => {
+    // docs/19 section 10, not in the mockup: the state of a Mac where Apple Auto is available and has answered (the mock's answer is a
+    // little brighter and warmer, more contrast and less saturation). Without Apple Auto the Look tab is photos-look.png, unchanged.
+    await openApp(page, { ...MOCKUP, mockAppleAuto: "answered" });
+    await configureMock(page, { initialSettings: MOCKUP_SETTINGS });
+    await openPhotos(page);
+    await showUpdateReady(page);
+    await expect(page.getByText("Neural · 42 ms · Display P3")).toBeVisible();
+    await expect(page.getByText("Set with Apple Intelligence.")).toBeVisible();
+    // The card is two rows and a line taller, so the look tiles may start below the fold: wait only for the ones that show.
+    await page.waitForFunction(() => {
+      const box = document.querySelector(".ym-tools__scroll")?.getBoundingClientRect();
+      if (!box) return false;
+      return [...document.querySelectorAll<HTMLElement>(".ym-look-tile")]
+        .filter((tile) => tile.getBoundingClientRect().top < box.bottom && tile.getBoundingClientRect().bottom > box.top)
+        .every((tile) => {
+          const img = tile.querySelector("img");
+          return !!img && img.complete && img.naturalWidth > 0;
+        });
+    });
+    await expect(page.locator(".ym-filmstrip__thumb img")).toHaveCount(12);
+    await compareScreen(page, "photos-look-apple-auto");
   });
 
   test("Look: search \"film\" (photos-look-search.png)", async ({ page }) => {

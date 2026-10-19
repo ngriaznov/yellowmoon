@@ -143,6 +143,12 @@ export interface OpenSummary {
  */
 export type AutoOr<Manual extends object> = { kind: "auto" } | ({ kind: "manual" } & Manual);
 
+/**
+ * `contrast` and `saturation` (`docs/19` section 5): Auto, which is 0 or Apple Auto's value for the photo (`AutoEstimates.contrast`,
+ * `.saturation`), or a manual value in −100…100. A slider dropped on the Auto value sends Auto (`manualOrAuto`).
+ */
+export type PercentSetting = AutoOr<{ value: number }>;
+
 /** `light_source`: Colour › White balance, the segmented control. */
 export type LightSource = "auto" | "day" | "shade" | "tungsten" | "led" | "fluorescent";
 
@@ -252,8 +258,8 @@ export interface DevelopSettings {
   look_intensity: number;
   /** Light › Exposure: `Auto` or `Manual(ev)` in −4…+4, step 0.01. */
   exposure: AutoOr<{ ev: number }>;
-  /** −100…100, default 0. */
-  contrast: number;
+  /** Light › Exposure › Contrast (and Look › Tone): `Auto` (the default) or `Manual(value)` in −100…100. */
+  contrast: PercentSetting;
   /** −100…100, default 0. */
   brightness: number;
   /** Light › High dynamic range, each −100…100, default 0. */
@@ -273,8 +279,8 @@ export interface DevelopSettings {
   /** Colour › White balance: `Auto` or `Manual { kelvin 2000–11000 step 50, tint −50…50 }`. */
   white_balance: AutoOr<{ kelvin: number; tint: number }>;
   color_balance: ColorBalance;
-  /** Colour › Colour balance, −100…100, default 0. */
-  saturation: number;
+  /** Colour › Colour balance › Saturation (and Look › Tone): `Auto` (the default) or `Manual(value)` in −100…100. */
+  saturation: PercentSetting;
   /** Colour › Colour warp: the pins of stage C9b, `{ pins: [] }` by default. */
   color_warp: ColorWarp;
   /** Detail › Sharpening: `Auto` or `{ amount 0–300, radius_px 0.3–2.5 }`. */
@@ -322,6 +328,8 @@ export interface PasteReport {
 /** Which `Auto` fields are still automatic; the UI shows the AUTO tag for these. */
 export interface AutoFlags {
   exposure: boolean;
+  contrast: boolean;
+  saturation: boolean;
   light_source: boolean;
   white_balance: boolean;
   sharpen: boolean;
@@ -331,9 +339,95 @@ export interface AutoFlags {
 /** Light classes of the illuminant estimate (`docs/02`). */
 export type LightClass = "daylight" | "tungsten" | "fluorescent" | "led";
 
+/** Which Auto made a photo's automatic values: Yellowmoon's own (`rule`) or Apple Auto's answer (`apple`, `docs/19`). */
+export type AutoSource = "rule" | "apple";
+
+/** Why Apple Auto is not available on this computer (`docs/19` section 1), in the order the conditions are checked. */
+export type AppleAutoReason =
+  | "not_a_mac"
+  | "intel_mac"
+  | "built_without_support"
+  | "macos_too_old"
+  | "device_not_eligible"
+  | "apple_intelligence_off"
+  | "model_not_ready"
+  | "unavailable"
+  | "no_image_input";
+
+/** Why one request to Apple's model failed (`docs/19` sections 6 and 8). A failed photo uses Yellowmoon's own Auto. */
+export type AppleAutoFailure =
+  | "unavailable"
+  | "rate_limited"
+  | "timeout"
+  | "refused"
+  | "guardrail"
+  | "unsupported_language"
+  | "context_too_large"
+  | "assets_unavailable"
+  | "concurrent_requests"
+  | "bad_answer"
+  | "other";
+
+/** Which model answers: "AFM 3 Core" on macOS "27.0.1 (27A404)". */
+export interface AppleAutoInfo {
+  model: string;
+  os: string;
+}
+
+/** The four steps of an answer (`docs/19` section 4): exposure −3…+3, the others −2…+2, 0 for keep. */
+export interface AppleAutoSteps {
+  exposure: number;
+  white: number;
+  contrast: number;
+  saturation: number;
+}
+
+/** One answer of Apple's model. `scene` is a few words about the photo, for reports only. */
+export interface AppleAutoAnswer {
+  steps: AppleAutoSteps;
+  scene: string;
+}
+
+/**
+ * Where a photo stands with Apple Auto (`docs/19` sections 6 and 12). `off`: the preference is off, or the app has no advisor (the
+ * browser build); `unavailable`: not on this computer; `pending`: asked, or waiting for its turn (Auto is the rule until the answer);
+ * `answered`; `failed` (Auto is the rule). The Automatic card shows its Contrast and Saturation rows and its line while the state is
+ * `pending`, `answered` or `failed`.
+ */
+export type AppleAuto =
+  | { state: "off" }
+  | { state: "unavailable"; reason: AppleAutoReason }
+  | { state: "pending" }
+  | { state: "answered"; answer: AppleAutoAnswer; info: AppleAutoInfo }
+  | { state: "failed"; kind: AppleAutoFailure; message: string; info: AppleAutoInfo };
+
+/** How a run decides whether Apple Auto is used; the app always follows the preference (`from_preference`). */
+export type AppleAutoMode = "from_preference" | "on" | "off";
+
+/**
+ * `apple_auto_status()` (addition, `docs/19` sections 1, 2 and 10): whether Apple Auto is available on this computer, read again for
+ * the answer, and whether it acts. Preferences shows its row "Auto with Apple Intelligence" only while `available`.
+ */
+export interface AppleAutoStatus {
+  available: boolean;
+  /** Why it is not available; null when it is, and when the app has no advisor (the browser build). */
+  reason: AppleAutoReason | null;
+  info: AppleAutoInfo | null;
+  /** The `apple_auto` preference. */
+  preference: boolean;
+  mode: AppleAutoMode;
+  /** Apple Auto acts for the session now: available, and the preference on. */
+  active: boolean;
+  /** The prompt's and the table's versions (`docs/19` sections 4 and 5). */
+  prompt: number;
+  table: number;
+}
+
 /**
  * Per-photo automatic estimates, computed once and recomputed by "Re-run" (`docs/01`
- * `AutoEstimates`; the shape of the `auto` object in `docs/10` `--json` output).
+ * `AutoEstimates`; the shape of the `auto` object in `docs/10` `--json` output). With an answer
+ * from Apple Auto, the exposure, the Kelvin, the contrast and the saturation are Apple's
+ * (`docs/19` section 5).
  */
 export interface AutoEstimates {
   exposure_ev: number;
@@ -341,6 +435,14 @@ export interface AutoEstimates {
   white_ev: number;
   kelvin: number;
   tint: number;
+  /** What `contrast: Auto` resolves to: 0, or Apple Auto's contrast (the Contrast slider's detent). */
+  contrast: number;
+  /** What `saturation: Auto` resolves to: 0, or Apple Auto's saturation (the Saturation slider's detent). */
+  saturation: number;
+  /** Which Auto made these values. */
+  source: AutoSource;
+  /** Where the photo stands with Apple Auto. */
+  apple: AppleAuto;
   light_class: LightClass;
   /** 0–1. */
   light_confidence: number;
@@ -355,9 +457,13 @@ export interface AutoEstimates {
 /** `DevelopSettings` with every `Auto` replaced by the number it resolves to. */
 export type ResolvedValues = Omit<
   DevelopSettings,
-  "exposure" | "white_balance" | "sharpen" | "noise_reduction"
+  "exposure" | "contrast" | "white_balance" | "saturation" | "sharpen" | "noise_reduction"
 > & {
   exposure_ev: number;
+  /** The contrast in effect: the manual value, or the photo's Auto contrast. */
+  contrast: number;
+  /** The saturation in effect: the manual value, or the photo's Auto saturation. */
+  saturation: number;
   /** The white lift in effect in stops: the automatic amount plus `white_offset_ev`, never below 0. */
   white_ev: number;
   kelvin: number;
@@ -778,6 +884,8 @@ export interface Preferences {
   check_for_updates_automatically: boolean;
   watch_downloads_during_import: boolean;
   last_used_folders: LastUsedFolders;
+  /** Auto with Apple Intelligence (`docs/19` section 2): on by default; it acts only where Apple Auto is available. */
+  apple_auto: boolean;
 }
 
 /** A partial update of the preferences. */

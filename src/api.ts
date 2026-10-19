@@ -22,6 +22,7 @@ import type {
   ApiEventName,
   ApiEvents,
   AppError,
+  AppleAutoStatus,
   ApplyScope,
   AppInfo,
   ChromaSample,
@@ -226,6 +227,12 @@ export interface Api {
   preferencesGet(): Promise<Preferences>;
   /** `preferences_set`: apply a patch and return the new preferences. */
   preferencesSet(patch: PreferencesPatch): Promise<Preferences>;
+  /**
+   * `apple_auto_status`: whether Apple Auto is available on this computer (read again for the answer) and whether it acts
+   * (`docs/19` sections 1 and 2). Preferences asks when it opens and shows "Auto with Apple Intelligence" only while it is available.
+   * Addition.
+   */
+  appleAutoStatus(): Promise<AppleAutoStatus>;
   /** `install_cli_link`: the "Install Command-Line Tool…" menu item. */
   installCliLink(): Promise<CliLinkResult>;
   /** `cli_link_status`: whether the link exists and where (Preferences › Command-line tool). Addition. */
@@ -323,6 +330,7 @@ export const tauriApi: Api = {
 
   preferencesGet: () => commands.preferencesGet(),
   preferencesSet: (patch) => commands.preferencesSet(patch),
+  appleAutoStatus: () => commands.appleAutoStatus(),
   installCliLink: () => commands.installCliLink(),
   cliLinkStatus: () => commands.cliLinkStatus(),
   appInfo: () => commands.appInfo(),

@@ -169,7 +169,7 @@ fn main() {
             let mut best = f64::MAX;
             for i in 1..=5 {
                 let mut s = src.settings.clone();
-                s.contrast = 5.0 * f64::from(i);
+                s.contrast = ym_core::settings::PercentSetting::manual_value(5.0 * f64::from(i));
                 let (t, f) = frame(&src.with_settings(s), &st);
                 assert_eq!(f.report.runs.raw_work(), 0);
                 worst = worst.max(t);

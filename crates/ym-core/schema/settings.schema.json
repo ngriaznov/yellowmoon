@@ -14,7 +14,7 @@
     },
     "look_intensity": { "type": "number", "minimum": 0, "maximum": 100, "default": 100 },
     "exposure": { "$ref": "#/$defs/exposure" },
-    "contrast": { "$ref": "#/$defs/percent" },
+    "contrast": { "$ref": "#/$defs/auto_percent" },
     "brightness": { "$ref": "#/$defs/percent" },
     "highlights": { "$ref": "#/$defs/percent" },
     "shadows": { "$ref": "#/$defs/percent" },
@@ -43,7 +43,7 @@
         "highlights": { "$ref": "#/$defs/disc_point" }
       }
     },
-    "saturation": { "$ref": "#/$defs/percent" },
+    "saturation": { "$ref": "#/$defs/auto_percent" },
     "color_warp": {
       "description": "Colour > Colour warp (docs/02 C9b): pins that move chosen colours across the chroma plane, in order. At most 16 (the core cuts the rest). No pins by default, which skips the stage. A patch replaces the whole list.",
       "type": "object",
@@ -162,6 +162,23 @@
   },
   "$defs": {
     "percent": { "type": "number", "minimum": -100, "maximum": 100, "default": 0 },
+    "auto_percent": {
+      "description": "contrast and saturation: Auto (0, or Apple Auto's value for the photo, docs/19 section 5), or a manual value from -100 to 100 (the UI steps by 1). A plain number is an older document: it reads as Manual with that value, and 0 as Auto.",
+      "oneOf": [
+        { "$ref": "#/$defs/auto" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "value"],
+          "properties": {
+            "kind": { "const": "manual" },
+            "value": { "type": "number", "minimum": -100, "maximum": 100 }
+          }
+        },
+        { "type": "number", "minimum": -100, "maximum": 100 }
+      ],
+      "default": { "kind": "auto" }
+    },
     "exposure": {
       "description": "Auto, or an absolute exposure in stops (the UI steps by 0.01).",
       "oneOf": [

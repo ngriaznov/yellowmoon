@@ -4,6 +4,12 @@
 //! Every test runs in its own temporary folder. `YELLOWMOON_HOME` points the preferences and the
 //! look library into it (so a test never touches the real app folder) and `YELLOWMOON_DATA` at the
 //! repository's `data/`.
+//!
+//! Apple Auto (`docs/19`): [`Sandbox::ym`] sets `YELLOWMOON_TEST_APPLE_AUTO=none`, so Apple Auto is
+//! not available, for the reason a build without the bridge gives on this platform (`not_a_mac` on
+//! Linux), even on a Mac with Apple Intelligence: every test gets the rule unless it asks for the
+//! deterministic test advisor ([`Sandbox::ym_fake`]). A test that compares bytes or values with the
+//! core's (parity, the snapshots) also passes `--apple-auto off`.
 
 #![allow(dead_code, reason = "each test binary uses some of the helpers")]
 
@@ -100,10 +106,35 @@ impl Sandbox {
             .env("HOME", self.root())
             .env_remove("RUST_LOG")
             .env_remove("XDG_DATA_HOME")
+            .env(NO_APPLE_AUTO.0, NO_APPLE_AUTO.1)
             .current_dir(self.root());
         cmd
     }
+
+    /// [`Sandbox::ym`] with the test advisor of Apple Auto (`YELLOWMOON_TEST_APPLE_AUTO=fake`):
+    /// available on every machine, model `Test advisor`, steps from the picture's statistics.
+    pub fn ym_fake(&self) -> Command {
+        let mut cmd = self.ym();
+        cmd.env(FAKE_APPLE_AUTO.0, FAKE_APPLE_AUTO.1);
+        cmd
+    }
+
+    /// Writes the app's `preferences.json` with the `apple_auto` preference (`docs/19` section 2).
+    pub fn set_apple_auto_preference(&self, on: bool) {
+        std::fs::write(
+            self.home().join("preferences.json"),
+            serde_json::json!({ "apple_auto": on }).to_string(),
+        )
+        .expect("write preferences");
+    }
 }
+
+/// The environment variable and value that give `ym` the test advisor of Apple Auto.
+pub const FAKE_APPLE_AUTO: (&str, &str) = ("YELLOWMOON_TEST_APPLE_AUTO", "fake");
+
+/// The environment variable and value that make Apple Auto unavailable to `ym`, as on a computer
+/// without it, whatever this one can do.
+pub const NO_APPLE_AUTO: (&str, &str) = ("YELLOWMOON_TEST_APPLE_AUTO", "none");
 
 /// The lines of a captured stdout.
 pub fn lines(bytes: &[u8]) -> Vec<String> {

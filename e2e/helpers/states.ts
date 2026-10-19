@@ -3,8 +3,9 @@ import type { Browser, BrowserContext, Page } from "@playwright/test";
 import { configureMock, dropFiles, failNext, lookTilesLoaded, openApp, openPhotos, settle, showUpdateReady } from "./app";
 
 // Every page state of the app that can be reached on the mock API: the 30 states of the dark glass interface (C2), the ones its
-// screenshots were taken of and its page audit ran over (`e2e/glass.spec.ts`), and the two of Colour › Colour warp (2026-10-17). A state
-// is a function that leaves a page in it; the numbers in the names are only an order.
+// screenshots were taken of and its page audit ran over (`e2e/glass.spec.ts`), the two of Colour › Colour warp (2026-10-17) and the two of
+// Apple Auto (`docs/19`: the Automatic card with Apple's answer, Preferences with its row). A state is a function that leaves a page in it;
+// the numbers in the names are only an order.
 
 const MOCKUP = { mockCurrent: 3, mockPicked: "2,3,4" } as const;
 const LL4 = "ARRI_LookLibrary_LogC4.zip";
@@ -23,7 +24,7 @@ const MOCKUP_SETTINGS = {
   DSC04204: {
     highlights: -18,
     shadows: 12,
-    saturation: 6,
+    saturation: { kind: "manual", value: 6 },
     color_balance: { shadows: [-0.08, -0.12], midtones: [0, 0], highlights: [0.12, 0.12] },
     curve: CURVES,
   },
@@ -307,6 +308,24 @@ export const STATES: readonly PageState[] = [
       await expect(p.getByText("Click a colour in the photo.")).toBeVisible();
       await p.mouse.move(420, 300);
       await p.waitForTimeout(300);
+    },
+  ],
+  // Apple Auto (docs/19 section 10), on a Mac where it is available: the Automatic card with its Contrast and Saturation rows and its line,
+  // and Preferences with the row "Auto with Apple Intelligence".
+  [
+    "33-tab-look-apple-auto",
+    async (p) => {
+      await photos(p, { ...MOCKUP, mockAppleAuto: "answered" });
+      await expect(p.getByText("Set with Apple Intelligence.")).toBeVisible();
+    },
+  ],
+  [
+    "34-dialog-preferences-apple-auto",
+    async (p) => {
+      await photos(p, { ...MOCKUP, mockAppleAuto: "answered" });
+      await p.keyboard.press("Meta+,");
+      await expect(p.getByRole("switch", { name: "Auto with Apple Intelligence" })).toBeVisible();
+      await p.waitForTimeout(400);
     },
   ],
 ];

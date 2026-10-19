@@ -231,6 +231,7 @@ fn ctrl_c_during_the_bench_ends_it_with_130_and_removes_its_scratch_folder() {
         .args(["--repeat", "1000"])
         .env("YELLOWMOON_HOME", sb.home())
         .env("YELLOWMOON_DATA", common::data_dir())
+        .env(common::NO_APPLE_AUTO.0, common::NO_APPLE_AUTO.1)
         .env("YELLOWMOON_GPU", "off")
         .env("TMPDIR", &tmp)
         .stdout(Stdio::piped())

@@ -490,12 +490,13 @@ pub fn color_plan(src: &PhotoSource) -> Result<ColorPlan, RenderError> {
 // The grade plan: C9 to C13
 // ---------------------------------------------------------------------------------------------
 
-/// The grade controls of the settings as `ym_color`'s parameters.
+/// The grade controls of the settings as `ym_color`'s parameters. An Auto contrast or saturation
+/// resolves against the photo's estimates (0, or Apple Auto's value, `docs/19` section 5).
 #[must_use]
-pub fn grade_params(s: &DevelopSettings) -> GradeParams {
+pub fn grade_params(s: &DevelopSettings, estimates: &AutoEstimates) -> GradeParams {
     let b = |p: [f64; 2]| ColorBalance { a: p[0], b: p[1] };
     GradeParams {
-        contrast: s.contrast,
+        contrast: s.contrast.resolve(estimates.contrast),
         brightness: s.brightness,
         shadows: s.shadows,
         highlights: s.highlights,
@@ -504,7 +505,7 @@ pub fn grade_params(s: &DevelopSettings) -> GradeParams {
         balance_shadows: b(s.color_balance.shadows),
         balance_midtones: b(s.color_balance.midtones),
         balance_highlights: b(s.color_balance.highlights),
-        saturation: s.saturation,
+        saturation: s.saturation.resolve(estimates.saturation),
     }
 }
 
@@ -607,7 +608,7 @@ fn key_of(src: &PhotoSource, color: &ColorPlan, req: &GradeRequest<'_>, p: &Piec
         key,
         "{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{}|{:?}|",
         color.key,
-        grade_params(s),
+        grade_params(s, &src.estimates),
         // The warp as the chain prepares it: pins that change nothing (locked pins with no pin that
         // moves, a pin whose target is its source) leave the key, and the frame, as without them.
         Warp::new(&warp_params(s)),
@@ -656,7 +657,7 @@ pub fn grade_plan(
     let p = pieces(src, req);
     let key = key_of(src, color, req, &p);
     let mut params = ChainParams::new(*color.fused.matrix(), color.tone);
-    params.grade = grade_params(s);
+    params.grade = grade_params(s, &src.estimates);
     params.warp = warp_params(s);
     params.curves = curve_set(s)?;
     params.output = req.target;

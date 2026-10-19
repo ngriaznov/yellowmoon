@@ -3,7 +3,19 @@ source: crates/ym-cli/tests/info.rs
 expression: v
 ---
 {
+  "apple_auto": {
+    "model": null,
+    "os": null,
+    "prompt": 1,
+    "reason": null,
+    "state": "off",
+    "table": 1
+  },
   "auto": {
+    "apple": {
+      "state": "off"
+    },
+    "contrast": 0.0,
     "exposure_ev": 1.11,
     "kelvin": 3450.0,
     "light_class": "daylight",
@@ -17,13 +29,16 @@ expression: v
       "detail": 50.0,
       "luminance": 30.0
     },
+    "saturation": 0.0,
     "sharpen": {
       "amount": 102.9,
       "radius_px": 0.8
     },
+    "source": "rule",
     "tint": -24.96,
     "white_ev": 0.4827
   },
+  "auto_source": "rule",
   "black": [
     512.0,
     512.0,
@@ -113,7 +128,10 @@ expression: v
     "color_warp": {
       "pins": []
     },
-    "contrast": 0.0,
+    "contrast": {
+      "kind": "manual",
+      "value": 0.0
+    },
     "crop": null,
     "curve": {
       "blue": [
@@ -183,7 +201,10 @@ expression: v
       "highlights": 1.0,
       "low_light": 0.5
     },
-    "saturation": 0.0,
+    "saturation": {
+      "kind": "manual",
+      "value": 0.0
+    },
     "shadows": 0.0,
     "sharpen": {
       "amount": 102.9,

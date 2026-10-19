@@ -12,6 +12,10 @@
 //! compared with the stored CPU pictures within a tolerance, in a mode of their own (`golden check --device gpu`):
 //! the process then gets `--require-gpu` and `YELLOWMOON_GPU=require`, so that a fallback to the CPU is an error and
 //! not a pass, and the JSON it prints (`device`, `notes`) is read back so that the report can say what ran where.
+//!
+//! Apple Auto is off for every golden render (`--apple-auto off`, `docs/19` section 7): on a Mac where Apple
+//! Intelligence can look at photos the app's setting would otherwise let Apple's model change the Auto values, and
+//! the golden pictures are Yellowmoon's own Auto, the same on every machine.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -338,6 +342,7 @@ impl YmBinary {
         let mut cmd = Command::new(&self.path);
         cmd.arg("render")
             .arg(device.flag())
+            .args(["--apple-auto", "off"])
             .arg("--json")
             .arg("--quiet")
             .arg("--settings")
@@ -578,7 +583,11 @@ mod tests {
             )
             .unwrap_err();
         let text = format!("{e:#}");
-        assert!(text.contains("args: render --cpu --json"), "{text}");
+        // The CPU reference with Yellowmoon's own Auto (`docs/19` section 7).
+        assert!(
+            text.contains("args: render --cpu --apple-auto off --json"),
+            "{text}"
+        );
         assert!(text.contains("gpu: off"), "{text}");
         let _ = std::fs::remove_dir_all(&dir);
     }

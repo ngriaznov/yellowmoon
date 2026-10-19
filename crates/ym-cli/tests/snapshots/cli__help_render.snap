@@ -43,8 +43,8 @@ Light:
       --exposure-offset <EV>
           Stops added to each photo's automatic exposure
 
-      --contrast <N>
-          Contrast, -100 to 100
+      --contrast <auto|N>
+          Contrast, -100 to 100, or `auto` (the default: 0, or the value Apple Auto chose)
 
       --brightness <N>
           Brightness, -100 to 100
@@ -79,8 +79,8 @@ Colour:
           - led:         LED light at the estimated colour
           - fluorescent: Fluorescent light at the estimated colour
 
-      --saturation <N>
-          Saturation, -100 to 100 (subtractive: more makes colours denser and darker, less makes them paler)
+      --saturation <auto|N>
+          Saturation, -100 to 100, or `auto` (the default: 0, or the value Apple Auto chose). Subtractive: more makes colours denser and darker, less makes them paler
 
 Detail:
       --nr <auto|L,C,D>
@@ -172,6 +172,9 @@ Run:
 
       --cpu
           Render on the CPU only and open no graphics device. The golden images are made this way. Beats YELLOWMOON_GPU
+
+      --apple-auto <on|off>
+          Apple Auto for this run. On a Mac with Apple Intelligence, Apple's on-device model sets each photo's automatic exposure, contrast and saturation and makes its white warmer or cooler. Default: the app's setting where Apple Auto is available, off elsewhere
 
 Examples:
   ym render ~/Pictures/2026-10-04 --look neutral --format jpeg --long-edge 3000 --out ~/Exports

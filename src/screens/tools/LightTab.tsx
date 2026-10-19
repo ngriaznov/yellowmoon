@@ -40,7 +40,7 @@ export const LightTab = memo(function LightTab({ store, photo, rs }: TabProps) {
         title="Exposure"
         tag={<AutoToggle isAuto={auto.exposure} onAuto={() => void store.update({ exposure: AUTO })} />}
         action={
-          <ResetLink size="card" onClick={() => void store.update({ exposure: AUTO, contrast: 0, brightness: 0 })} />
+          <ResetLink size="card" onClick={() => void store.update({ exposure: AUTO, contrast: AUTO, brightness: 0 })} />
         }
       >
         <Slider

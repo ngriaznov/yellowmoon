@@ -11,6 +11,9 @@ import { installManualRaf, mockRect } from "../test/raf";
 import { openPhotos, openTab, renderApp, sliderOf, tools, valueOf } from "../test/harness";
 import type { Harness, UpdateSpy } from "../test/harness";
 
+/** A manual contrast or saturation (`docs/19` section 5: Auto or a value). */
+const manual = (value: number) => ({ kind: "manual", value }) as const;
+
 let h: Harness;
 afterEach(() => h?.unmount());
 
@@ -101,7 +104,7 @@ describe("every control round-trips through update_settings", () => {
 
     await driveTyped(spy, [
       { label: "Exposure", typed: "1.5", patch: { exposure: { kind: "manual", ev: 1.5 } }, shows: "+1.50" },
-      { label: "Contrast", typed: "-25", patch: { contrast: -25 }, shows: "−25" },
+      { label: "Contrast", typed: "-25", patch: { contrast: manual(-25) }, shows: "−25" },
       { label: "Brightness", typed: "10", patch: { brightness: 10 }, shows: "+10" },
       { label: "Highlights", typed: "-18", patch: { highlights: -18 }, shows: "−18" },
       { label: "Shadows", typed: "12", patch: { shadows: 12 }, shows: "+12" },
@@ -115,7 +118,7 @@ describe("every control round-trips through update_settings", () => {
     spy.mockClear();
     sliderOf("Contrast").focus();
     await h.user.keyboard("{End}");
-    expect(await lastPatch(spy, "Contrast End")).toEqual({ contrast: 100 });
+    expect(await lastPatch(spy, "Contrast End")).toEqual({ contrast: manual(100) });
     await h.user.keyboard("{Home}");
     await waitFor(() => expect(valueOf("Contrast")).toBe("−100"));
 
@@ -129,7 +132,7 @@ describe("every control round-trips through update_settings", () => {
     // The card's Reset puts the three sliders back at once.
     spy.mockClear();
     await h.user.click(exposureCard.getByRole("button", { name: "Reset" }));
-    expect(await lastPatch(spy, "Exposure card reset")).toEqual({ exposure: { kind: "auto" }, contrast: 0, brightness: 0 });
+    expect(await lastPatch(spy, "Exposure card reset")).toEqual({ exposure: { kind: "auto" }, contrast: { kind: "auto" }, brightness: 0 });
     await waitFor(() => expect(valueOf("Contrast")).toBe("0"));
 
     spy.mockClear();
@@ -180,7 +183,7 @@ describe("every control round-trips through update_settings", () => {
     await driveTyped(spy, [
       { label: "Kelvin", typed: "6500", patch: { white_balance: { kind: "manual", kelvin: 6500, tint: 0 } }, shows: "6500 K" },
       { label: "Tint", typed: "12", patch: { white_balance: { kind: "manual", kelvin: 6500, tint: 12 } }, shows: "+12" },
-      { label: "Saturation", typed: "6", patch: { saturation: 6 }, shows: "+6" },
+      { label: "Saturation", typed: "6", patch: { saturation: manual(6) }, shows: "+6" },
     ]);
     expect(within(screen.getByRole("region", { name: "White balance" })).getByRole("button", { name: "Auto" })).toHaveAttribute("aria-pressed", "false");
 
@@ -214,7 +217,7 @@ describe("every control round-trips through update_settings", () => {
     // The Colour balance card's Reset centres all three and Saturation.
     spy.mockClear();
     await h.user.click(within(screen.getByRole("region", { name: "Colour balance" })).getByRole("button", { name: "Reset" }));
-    expect(await lastPatch(spy, "Colour balance reset")).toEqual({ color_balance: { shadows: [0, 0], midtones: [0, 0], highlights: [0, 0] }, saturation: 0 });
+    expect(await lastPatch(spy, "Colour balance reset")).toEqual({ color_balance: { shadows: [0, 0], midtones: [0, 0], highlights: [0, 0] }, saturation: { kind: "auto" } });
     await waitFor(() => expect(screen.getByRole("slider", { name: "Shadows colour balance" })).toHaveAttribute("aria-valuetext", "Centred"));
   });
 
@@ -377,7 +380,7 @@ describe("every control round-trips through update_settings", () => {
     const spy = await setup();
     await openTab(h, "Light");
     await type("Contrast", "20");
-    expect(await lastPatch(spy, "Contrast")).toEqual({ contrast: 20 });
+    expect(await lastPatch(spy, "Contrast")).toEqual({ contrast: manual(20) });
     await h.user.keyboard("{ArrowRight}");
     await waitFor(() => expect(h.store.currentSettings()?.photo_id).toBe(5));
     await waitFor(() => expect(valueOf("Contrast")).toBe("0"));

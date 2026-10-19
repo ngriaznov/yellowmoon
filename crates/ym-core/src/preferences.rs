@@ -95,6 +95,9 @@ pub struct Preferences {
     pub watch_downloads_during_import: bool,
     /// The folders used last.
     pub last_used_folders: LastUsedFolders,
+    /// "Auto with Apple Intelligence" (`docs/19` section 2): on by default, and a file without the
+    /// field reads as on. Read on every platform; it acts only where Apple Auto is available.
+    pub apple_auto: bool,
 }
 
 impl Default for Preferences {
@@ -107,6 +110,7 @@ impl Default for Preferences {
             check_for_updates_automatically: true,
             watch_downloads_during_import: false,
             last_used_folders: LastUsedFolders::default(),
+            apple_auto: true,
         }
     }
 }
@@ -138,6 +142,9 @@ pub struct PreferencesPatch {
     /// Replaces `last_used_folders`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_used_folders: Option<LastUsedFolders>,
+    /// Replaces `apple_auto`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub apple_auto: Option<bool>,
 }
 
 impl PreferencesPatch {
@@ -164,6 +171,9 @@ impl PreferencesPatch {
         }
         if let Some(v) = &self.last_used_folders {
             prefs.last_used_folders = v.clone();
+        }
+        if let Some(v) = self.apple_auto {
+            prefs.apple_auto = v;
         }
         *prefs != before
     }
@@ -325,6 +335,9 @@ pub fn parse(text: &str) -> ParsedPreferences {
     }
     if let Some(v) = take(&mut map, "watch_downloads_during_import", &mut warnings) {
         p.watch_downloads_during_import = v;
+    }
+    if let Some(v) = take(&mut map, "apple_auto", &mut warnings) {
+        p.apple_auto = v;
     }
     if let Some(v) = take_struct(&mut map, "last_used_folders", &mut warnings) {
         p.last_used_folders = v;
@@ -540,6 +553,34 @@ mod tests {
         assert!(p.check_for_updates_automatically);
         assert!(!p.watch_downloads_during_import);
         assert_eq!(p.last_used_folders, LastUsedFolders::default());
+        assert!(
+            p.apple_auto,
+            "Apple Auto is on by default (docs/19 section 2)"
+        );
+    }
+
+    #[test]
+    fn apple_auto_is_on_unless_the_file_says_off() {
+        // A file from before Apple Auto has no field: on. A value that is not a switch costs only
+        // that value. A patch turns it off and on.
+        assert!(
+            parse(r#"{ "remove_location_from_exports": true }"#)
+                .preferences
+                .apple_auto
+        );
+        assert!(!parse(r#"{ "apple_auto": false }"#).preferences.apple_auto);
+        let bad = parse(r#"{ "apple_auto": "yes", "remove_location_from_exports": true }"#);
+        assert!(bad.preferences.apple_auto && bad.preferences.remove_location_from_exports);
+        assert_eq!(bad.warnings.len(), 1);
+        let mut p = Preferences::default();
+        let off = PreferencesPatch {
+            apple_auto: Some(false),
+            ..PreferencesPatch::default()
+        };
+        assert!(off.apply(&mut p) && !p.apple_auto);
+        assert!(!off.apply(&mut p));
+        let patch: PreferencesPatch = serde_json::from_str(r#"{ "apple_auto": true }"#).unwrap();
+        assert!(patch.apply(&mut p) && p.apple_auto);
     }
 
     #[test]
@@ -558,7 +599,8 @@ mod tests {
                 "remove_location_from_exports": false,
                 "check_for_updates_automatically": true,
                 "watch_downloads_during_import": false,
-                "last_used_folders": { "open": null, "export": null, "looks_import": null }
+                "last_used_folders": { "open": null, "export": null, "looks_import": null },
+                "apple_auto": true
             })
         );
         let arri = DisplayRendering::ArriDisplay {

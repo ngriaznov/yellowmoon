@@ -9,6 +9,7 @@ use std::path::PathBuf;
 use std::sync::OnceLock;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
+use ym_core::apple_auto::AppleAutoMode;
 use ym_core::version::{PIPELINE_VERSION, app_version};
 use ym_export::{BitDepth, ColorSpace, FormatKind, TiffCompression};
 
@@ -109,9 +110,9 @@ pub struct RenderArgs {
     /// Stops added to each photo's automatic exposure.
     #[arg(long, value_name = "EV", value_parser = finite, allow_negative_numbers = true, help_heading = H_LIGHT)]
     pub exposure_offset: Option<f64>,
-    /// Contrast, -100 to 100.
-    #[arg(long, value_name = "N", value_parser = signed_percent, allow_negative_numbers = true, help_heading = H_LIGHT)]
-    pub contrast: Option<f64>,
+    /// Contrast, -100 to 100, or `auto` (the default: 0, or the value Apple Auto chose).
+    #[arg(long, value_name = "auto|N", value_parser = percent_or_auto, allow_negative_numbers = true, help_heading = H_LIGHT)]
+    pub contrast: Option<PercentArg>,
     /// Brightness, -100 to 100.
     #[arg(long, value_name = "N", value_parser = signed_percent, allow_negative_numbers = true, help_heading = H_LIGHT)]
     pub brightness: Option<f64>,
@@ -140,9 +141,10 @@ pub struct RenderArgs {
     /// Light preset instead of the estimated light.
     #[arg(long, value_enum, ignore_case = true, value_name = "LIGHT", help_heading = H_COLOR)]
     pub light: Option<LightArg>,
-    /// Saturation, -100 to 100 (subtractive: more makes colours denser and darker, less makes them paler).
-    #[arg(long, value_name = "N", value_parser = signed_percent, allow_negative_numbers = true, help_heading = H_COLOR)]
-    pub saturation: Option<f64>,
+    /// Saturation, -100 to 100, or `auto` (the default: 0, or the value Apple Auto chose). Subtractive: more makes
+    /// colours denser and darker, less makes them paler.
+    #[arg(long, value_name = "auto|N", value_parser = percent_or_auto, allow_negative_numbers = true, help_heading = H_COLOR)]
+    pub saturation: Option<PercentArg>,
 
     /// Noise reduction: `auto`, or luminance, colour and detail strengths (0 to 100 each).
     #[arg(long, value_name = "auto|L,C,D", value_parser = noise_reduction, help_heading = H_DETAIL)]
@@ -219,6 +221,11 @@ pub struct RenderArgs {
     /// Beats YELLOWMOON_GPU.
     #[arg(long, help_heading = H_RUN)]
     pub cpu: bool,
+    /// Apple Auto for this run. On a Mac with Apple Intelligence, Apple's on-device model sets each photo's
+    /// automatic exposure, contrast and saturation and makes its white warmer or cooler. Default: the app's
+    /// setting where Apple Auto is available, off elsewhere.
+    #[arg(long, value_enum, ignore_case = true, value_name = "on|off", hide_possible_values = true, help_heading = H_RUN)]
+    pub apple_auto: Option<AppleAutoArg>,
 }
 
 impl RenderArgs {
@@ -307,6 +314,27 @@ impl From<ColorSpaceArg> for ColorSpace {
     }
 }
 
+/// `--apple-auto` (`docs/19` section 8).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum AppleAutoArg {
+    /// Apple Auto acts where it is available, whatever the app's setting says.
+    On,
+    /// Auto is Yellowmoon's own for this run.
+    Off,
+}
+
+impl AppleAutoArg {
+    /// The core's mode for the option, given or not: without it the app's setting decides.
+    #[must_use]
+    pub fn mode(arg: Option<Self>) -> AppleAutoMode {
+        match arg {
+            None => AppleAutoMode::FromPreference,
+            Some(Self::On) => AppleAutoMode::On,
+            Some(Self::Off) => AppleAutoMode::Off,
+        }
+    }
+}
+
 /// `--light`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum LightArg {
@@ -331,6 +359,15 @@ pub enum ExposureArg {
     Auto,
     /// An absolute exposure in stops.
     Ev(f64),
+}
+
+/// `--contrast` and `--saturation`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum PercentArg {
+    /// The photo's Auto value: 0, or Apple Auto's (`docs/19` section 5).
+    Auto,
+    /// A manual value, -100 to 100.
+    Value(f64),
 }
 
 /// `--wb`.
@@ -413,6 +450,13 @@ fn finite(text: &str) -> Result<f64, String> {
 
 fn signed_percent(text: &str) -> Result<f64, String> {
     in_range(text, "the value", -100.0, 100.0)
+}
+
+fn percent_or_auto(text: &str) -> Result<PercentArg, String> {
+    if text.trim().eq_ignore_ascii_case("auto") {
+        return Ok(PercentArg::Auto);
+    }
+    signed_percent(text).map(PercentArg::Value)
 }
 
 fn percent(text: &str) -> Result<f64, String> {
@@ -520,6 +564,17 @@ pub struct InfoArgs {
     /// Force a camera profile, for comparisons (for example `sony-ilce-7rm4`).
     #[arg(long, value_name = "ID")]
     pub profile: Option<String>,
+    /// Apple Auto for this run. On a Mac with Apple Intelligence, Apple's on-device model sets each photo's
+    /// automatic exposure, contrast and saturation and makes its white warmer or cooler. Default: the app's
+    /// setting where Apple Auto is available, off elsewhere.
+    #[arg(
+        long,
+        value_enum,
+        ignore_case = true,
+        value_name = "on|off",
+        hide_possible_values = true
+    )]
+    pub apple_auto: Option<AppleAutoArg>,
 }
 
 /// Arguments of `ym doctor`.
@@ -640,6 +695,36 @@ mod tests {
     }
 
     #[test]
+    fn apple_auto_is_on_off_or_the_apps_setting_in_any_case() {
+        let mode = |args: &[&str]| -> AppleAutoMode {
+            let cli = Cli::try_parse_from(args).expect("parses");
+            match cli.command {
+                Command::Render(r) => AppleAutoArg::mode(r.apple_auto),
+                Command::Info(i) => AppleAutoArg::mode(i.apple_auto),
+                other => panic!("{other:?}"),
+            }
+        };
+        assert_eq!(
+            mode(&["ym", "render", "a.ARW"]),
+            AppleAutoMode::FromPreference
+        );
+        assert_eq!(
+            mode(&["ym", "render", "a.ARW", "--apple-auto", "on"]),
+            AppleAutoMode::On
+        );
+        assert_eq!(
+            mode(&["ym", "info", "a.ARW", "--apple-auto", "OFF"]),
+            AppleAutoMode::Off
+        );
+        assert_eq!(
+            mode(&["ym", "info", "a.ARW"]),
+            AppleAutoMode::FromPreference
+        );
+        assert!(Cli::try_parse_from(["ym", "render", "a.ARW", "--apple-auto", "maybe"]).is_err());
+        assert!(Cli::try_parse_from(["ym", "render", "a.ARW", "--apple-auto"]).is_err());
+    }
+
+    #[test]
     fn version_text_names_the_pipeline_and_a_commit() {
         let text = version_text();
         assert!(text.starts_with(app_version()), "{text}");
@@ -706,6 +791,13 @@ mod tests {
         assert!(bits("12").is_err());
         assert_eq!(bits("16"), Ok(BitDepth::Sixteen));
         assert!(signed_percent("-100").is_ok() && signed_percent("101").is_err());
+        assert_eq!(percent_or_auto("auto"), Ok(PercentArg::Auto));
+        assert_eq!(percent_or_auto(" AUTO "), Ok(PercentArg::Auto));
+        assert_eq!(percent_or_auto("-15"), Ok(PercentArg::Value(-15.0)));
+        assert_eq!(percent_or_auto("0"), Ok(PercentArg::Value(0.0)));
+        for bad in ["101", "-100.5", "automatic", "", "nan"] {
+            assert!(percent_or_auto(bad).is_err(), "{bad:?}");
+        }
         assert!(percent("-1").is_err() && percent("inf").is_err());
     }
 }
