@@ -658,12 +658,12 @@ fn contrast_on_near_neutrals_matches_the_cpu() {
 /// {-100, -60, -30, 0, 30, 60, 100}, alone and with the other controls set, at C9, in every storage
 /// mode (inputs are f16-representable).
 ///
-/// Measured on Mesa lavapipe, the same in all three storage modes: worst |GPU - CPU| at C9 4.7e-5 in
-/// LogC4 code values against the 2e-4 gate, at a code of -46 (a far out-of-gamut blue whose luminance
-/// is negative, at Saturation -100: an f32 ulp there is 4e-6); 1.2e-5 among the codes of photos (-0.2
-/// to 1.5), at the darkest channel of a strong orange after a boost (linear (20.8, 10.9, 0.04): the
-/// channel ends near 0 as `Y - lambda (Y - min)`, a difference of two numbers near 14 in f32, where a
-/// code near black is most sensitive). The CPU reference is f64.
+/// Measured on Mesa lavapipe, the same in all three storage modes (with the contrast's colour step and
+/// the saturation boost 1.5): worst |GPU - CPU| at C9 4.5e-5 in LogC4 code values against the 2e-4
+/// gate, at a code of -72 (a far out-of-gamut blue whose luminance is negative, at Contrast 100 and
+/// Saturation -100: an f32 ulp there is 8e-6); 9.4e-6 among the codes of photos (-0.2 to 1.5; 1.2e-5
+/// before the boost, at the darkest channel of a strong orange that a boost takes near 0 as
+/// `Y - lambda (Y - min)`, a difference of two larger numbers in f32). The CPU reference is f64.
 #[test]
 fn contrast_and_saturation_match_the_cpu_on_every_branch() {
     let mut px: Vec<[f32; 3]> = (-12..=12)

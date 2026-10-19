@@ -186,6 +186,10 @@ fn contrast_curve(x: f32, k: f32) -> f32 {
 // * the squared ratio is limited to [min(k, 1/k)^2, max(k, 1/k)^2] (k from 0.66 to 1.52), the range of
 //   T's slope, which the exact ratio never leaves: the square root never sees 0, even where f32 rounds
 //   the per-channel curve of a chroma of a few ulp to a neutral.
+// A C port of this function compiled with clang -O3 -ffast-math -ffp-contract=fast -mfma -mrecip=all
+// against -O2 -ffp-contract=off (200,000 pixels: exact neutrals, chromas of one ulp and of 1e-13, codes
+// to +-20 and garbage codes to +-1.4e32, k over its range): every output finite, exact neutrals neutral
+// in both, the two at most 3.1e-7 apart among photo codes.
 fn c9_contrast(v: vec3<f32>, l: f32, k: f32) -> vec3<f32> {
     let u = v + vec3<f32>(contrast_curve(l, k) - l);
     if (v.x == v.y && v.y == v.z) {

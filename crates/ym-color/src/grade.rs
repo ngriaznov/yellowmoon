@@ -55,17 +55,19 @@
 //! at the ends of the range. `beta = 0` is the hue-keeping offset alone, `beta = 1` gives `u` the
 //! chroma length of the per-channel curve.
 //!
-//! # Saturation (the design of 2026-10-19)
+//! # Saturation (the design of 2026-10-19, confirmed by the owner the same day)
 //!
-//! In linear AWG4: `rgb = decode(v)` and `Y` its luminance (the AWG4 `Y` row, the weights of `L`).
-//! The chroma `rgb - Y` is scaled about `Y` by a factor `lambda`, `rgb' = Y + lambda (rgb - Y)`, and
-//! the result is encoded to LogC4 again. As the `Y` row sums to 1, `Y` is unchanged: more saturation
-//! does not make a colour darker or lighter.
+//! It replaces the subtractive saturation of 2026-10-13 (about the brightest channel, which made
+//! colours denser and darker). In linear AWG4: `rgb = decode(v)` and `Y` its luminance (the AWG4
+//! `Y` row, the weights of `L`). The chroma `rgb - Y` is scaled about `Y` by a factor `lambda`,
+//! `rgb' = Y + lambda (rgb - Y)`, and the result is encoded to LogC4 again. As the `Y` row sums to
+//! 1, `Y` is unchanged: more saturation does not make a colour darker or lighter.
 //!
 //! * `s < 0`: `lambda = 1 + s / 100`, an even blend toward grey (`-100` is the grey of the same `Y`).
-//! * `s > 0`: `F = 1 + SATURATION_BOOST s / 100`. With `r = (Y - min(rgb)) / Y` (0 for a neutral, 1
-//!   when the darkest channel is at 0: scaling the chroma by `1 / r` would take that channel to
-//!   zero), `r' = 1 - (1 - r)^F` and `lambda = r' / r`. A muted colour (small `r`) has its chroma
+//! * `s > 0`: `F = 1 + SATURATION_BOOST s / 100` ([`SATURATION_BOOST`] 1.5, measured so that +60 adds
+//!   about as much colour to the owner's photos as the old control did). With
+//!   `r = (Y - min(rgb)) / Y` (0 for a neutral, 1 when the darkest channel is at 0: scaling the
+//!   chroma by `1 / r` would take that channel to zero), `r' = 1 - (1 - r)^F` and `lambda = r' / r`. A muted colour (small `r`) has its chroma
 //!   scaled by nearly `F`, a strong one (r near 1) by nearly 1, and the darkest channel ends at
 //!   `Y (1 - r') >= 0`: positive saturation never pushes a channel below zero. A pixel with `Y <= 0`
 //!   or a channel at or below 0 (`r >= 1`) is left as it is.
