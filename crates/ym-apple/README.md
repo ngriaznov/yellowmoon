@@ -18,9 +18,10 @@ cargo run -p ym-apple --release --example probe
 ```
 
 The probe prints whether Apple Auto is available (and why not), the model and the macOS build,
-then asks twice about a synthetic 768 × 512 picture and prints the steps, the scene, the time per
-request and whether the second answer repeated the first. `YELLOWMOON_TEST_APPLE_AUTO=fake` runs it
-against the test advisor.
+then asks twice about a synthetic 768 × 512 picture with the default instructions and prints the
+steps (a step the model left empty shows as not set), the scene, the plan, the time per request and
+whether the second answer repeated the first. `YELLOWMOON_TEST_APPLE_AUTO=fake` runs it against the
+test advisor.
 
 A binary that depends on this crate must link FoundationModels weakly and find the Swift runtime in
 macOS when the bridge is built: its build script passes `-Wl,-weak_framework,FoundationModels` and
