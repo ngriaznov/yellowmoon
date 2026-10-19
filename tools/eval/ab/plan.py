@@ -14,12 +14,14 @@ import random
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Mapping, Optional, Sequence, Tuple
+from typing import Dict, List, Mapping, Optional, Sequence, Tuple, Union
 
 DEFAULT_SEED = 20261019
 OTHER_STRATUM = "other"
 PLAN_FORMAT = "yellowmoon-ab-plan"
-PLAN_VERSION = 2
+#: 3: the steps of prompt version 2 (docs/19 section 4), any of which may be empty (null), and the instructions in the
+#: provenance.
+PLAN_VERSION = 3
 #: Every picture the plan can show. `apple` (Apple Auto on) is the picture under test; the others are what it is
 #: compared with: `rule` (Apple Auto off, Yellowmoon's own Auto) and `camera` (the camera's JPEG, with --with-camera).
 VARIANTS: Tuple[str, ...] = ("apple", "rule", "camera")
@@ -32,21 +34,35 @@ COMPARISONS: Mapping[str, str] = {
 }
 #: The comparisons that decide the gate of docs/19 section 13. The camera's JPEG is reported, not gated.
 GATED: Tuple[str, ...] = ("rule",)
-#: The four answers of Apple's model, in the order docs/19 section 4 gives them, and the range of each step.
-STEP_FIELDS: Tuple[str, ...] = ("exposure", "white", "contrast", "saturation")
-STEP_RANGE: Mapping[str, Tuple[int, int]] = {
-    "exposure": (-3, 3),
-    "white": (-2, 2),
-    "contrast": (-2, 2),
-    "saturation": (-2, 2),
+#: The numeric steps of Apple's answer (docs/19 sections 4 and 5, prompt version 2), in the order of the table, as `ym`
+#: prints them (`white` is the warmth), and the range of each step.
+STEP_FIELDS: Tuple[str, ...] = ("exposure", "highlights", "shadows", "blacks", "contrast", "white", "tint", "saturation")
+STEP_RANGE: Mapping[str, Tuple[int, int]] = {name: (-3, 3) if name == "exposure" else (-2, 2) for name in STEP_FIELDS}
+#: The colours of the shadows and the highlights: each colour field, the field of its strength and the colours it may
+#: name (docs/19 section 5).
+COLOR_FIELDS: Mapping[str, Tuple[str, Tuple[str, ...]]] = {
+    "shadow_color": ("shadow_color_strength", ("none", "teal", "blue", "green", "amber", "magenta")),
+    "highlight_color": ("highlight_color_strength", ("none", "warm", "gold", "cool", "pink")),
 }
+#: The range of a colour's strength: subtle (1) to strong (3).
+STRENGTH_RANGE: Tuple[int, int] = (1, 3)
+#: Every field of an answer's steps as `ym` prints them, in order: the numeric steps, then each colour and its strength.
+ANSWER_FIELDS: Tuple[str, ...] = STEP_FIELDS + (
+    "shadow_color",
+    "shadow_color_strength",
+    "highlight_color",
+    "highlight_color_strength",
+)
 #: The folder under the out folder that holds the pictures; one subfolder per variant, named by its code.
 PICTURES_DIR = "pictures"
 _UNSAFE_IN_NAME = re.compile(r"[^A-Za-z0-9_.-]")
 
-#: A photo's four steps, in the order of STEP_FIELDS.
-Steps = Tuple[int, int, int, int]
-NO_STEPS: Steps = (0, 0, 0, 0)
+#: One field of an answer: a step or a strength (int), a colour (str), or None where the model left it empty, which
+#: sets nothing (the control keeps Yellowmoon's own Auto value).
+StepValue = Union[int, str, None]
+#: A photo's steps, in the order of ANSWER_FIELDS.
+Steps = Tuple[StepValue, ...]
+NO_STEPS: Steps = (None,) * len(ANSWER_FIELDS)
 
 
 @dataclass(frozen=True)
@@ -62,7 +78,7 @@ class Photo:
 class PlanPhoto:
     """A photo that is in the test: its number (names its pictures), stem and stratum, the quarter turns that show its
     camera's JPEG upright (0 to 3, from the raw file's orientation), whether it has a camera picture (--with-camera),
-    and the steps and scene of Apple's answer."""
+    and the steps, scene and plan of Apple's answer."""
 
     number: int
     stem: str
@@ -71,11 +87,29 @@ class PlanPhoto:
     has_camera: bool = False
     steps: Steps = NO_STEPS
     scene: str = ""
+    plan: str = ""
 
 
-def steps_dict(steps: Sequence[int]) -> Dict[str, int]:
-    """The steps as the object `ym` prints (`{"exposure": 1, "white": 0, ...}`)."""
-    return {name: int(value) for name, value in zip(STEP_FIELDS, steps)}
+def steps_dict(steps: Sequence[StepValue]) -> Dict[str, StepValue]:
+    """The steps as the object `ym` prints (`{"exposure": 1, "highlights": null, "shadow_color": "teal", ...}`)."""
+    return {name: value for name, value in zip(ANSWER_FIELDS, steps)}
+
+
+def step_of(steps: Sequence[StepValue], name: str) -> StepValue:
+    """One field of a photo's steps, by its name in ANSWER_FIELDS."""
+    return steps[ANSWER_FIELDS.index(name)]
+
+
+def changed_fields(steps: Sequence[StepValue]) -> List[str]:
+    """What an answer changes, in the order of the table: each numeric step that was set and is not keep, then each
+    colour that was set, is not none and has a strength. A field left empty sets nothing, and a strength without a
+    colour is ignored (docs/19 section 4), so an answer with none of these leaves the picture as the rule's."""
+    changed = [name for name in STEP_FIELDS if isinstance(step_of(steps, name), int) and step_of(steps, name) != 0]
+    for color, (strength, _) in COLOR_FIELDS.items():
+        value, amount = step_of(steps, color), step_of(steps, strength)
+        if isinstance(value, str) and value != "none" and isinstance(amount, int):
+            changed.append(color)
+    return changed
 
 
 def picture_turns(photo: PlanPhoto, variant: str) -> int:
@@ -189,12 +223,13 @@ def build_plan(
     """The plan document (`plan.json`): the photos, their pictures, and the trials in the order the page shows them.
 
     `provenance` records what made the pictures (the `ym` version, the long edge, Apple's model, macOS, the prompt and
-    table versions). The plan id is a hash of the design, of the provenance, of every photo's steps and of the quarter
+    table versions, and which instructions the model read with their digest). The plan id is a hash of the design, of the provenance, of every photo's steps and of the quarter
     turns of every picture, so a different render, another answer, a different set of photos or a different turn gets
     a new id and the page keeps the answers of each plan apart. `details` adds fields to a photo's entry (the Auto
     values of its renders, for the diagnostics); it is not part of the id.
 
-    Each photo entry and each trial records Apple's steps and scene (scoring reads them for the diagnostics) and each
+    Each photo entry and each trial records Apple's steps, scene and plan (scoring reads them for the diagnostics; a
+    step the model left empty is `null`) and each
     trial side the quarter turns of its picture (`turns`; the page reads them from `plan.js`).
     """
     trials = build_trials(photos, seed)
@@ -209,6 +244,7 @@ def build_plan(
             "stratum": photo.stratum,
             "steps": steps_dict(photo.steps),
             "scene": photo.scene,
+            "plan": photo.plan,
             "pictures": {variant: picture_relpath(seed, variant, photo.number, photo.stem) for variant in shown},
             "turns": {variant: picture_turns(photo, variant) for variant in shown},
         }
@@ -228,6 +264,7 @@ def build_plan(
                 "right": trial.right,
                 "steps": steps_dict(photo.steps),
                 "scene": photo.scene,
+                "plan": photo.plan,
                 "pictures": {
                     "left": picture_relpath(seed, trial.left, trial.number, trial.stem),
                     "right": picture_relpath(seed, trial.right, trial.number, trial.stem),

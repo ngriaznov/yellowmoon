@@ -3,6 +3,7 @@
 #
 #   tools/eval/ab/ab.sh prepare PHOTOS_DIR --ym PATH [--out DIR] [--long-edge 2000] [--seed N] [--jobs N]
 #                                          [--apple-jobs 1] [--with-camera] [--resume] [--data DIR]
+#                                          [--instructions FILE]
 #   tools/eval/ab/ab.sh score RESULTS_JSON [--plan PLAN_JSON]
 #
 # Python 3.9 or newer, standard library only; nothing is uploaded. See tools/eval/ab/README.md.

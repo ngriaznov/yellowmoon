@@ -3,11 +3,14 @@
 
     tools/eval/ab/ab.sh prepare PHOTOS_DIR --ym PATH [--out DIR] [--long-edge 2000] [--seed N] [--jobs N]
                                            [--apple-jobs 1] [--with-camera] [--resume] [--data DIR]
+                                           [--instructions FILE]
     tools/eval/ab/ab.sh score RESULTS_JSON [--plan PLAN_JSON]
 
 `prepare` checks with `ym doctor` that Apple Auto is available, then renders each photo with Apple Auto on (`apple`)
-and off (`rule`, Yellowmoon's own Auto), at the defaults: the built-in default look and every setting at Auto. A
-photo whose answer failed is left out with its reason; a photo whose answer changed nothing gives no trial. With
+and off (`rule`, Yellowmoon's own Auto), at the defaults: the built-in default look and every setting at Auto. Apple's
+model reads the default instructions, or those of --instructions FILE (docs/19 section 2); the plan records which, with
+their digest. A photo whose answer failed is left out with its reason; a photo whose answer changed nothing gives no
+trial. With
 --with-camera it also copies the camera's own JPEG for a second, reported comparison. It writes `index.html` (the
 blind page), `plan.js` (what the page shows), `plan.json` (the key, for scoring), the pictures under `pictures/` and
 `ym`'s records under `records/` (the key too). `score` reads the `results.json` the page exports, applies the gate with
@@ -54,7 +57,9 @@ from renders import (  # noqa: E402
     call_ym,
     make_pictures,
     raw_turns,
+    instructions_digest,
     unavailable_words,
+    without_final_break,
     ym_environment,
 )
 from score import LABELS, ScoreError, format_report, score_results  # noqa: E402
@@ -66,6 +71,8 @@ REPO_DATA = REPO / "data"
 PLAN_FILE = "plan.json"
 TEST_ADVISOR = "Test advisor"
 DOCTOR_TIMEOUT_S = 300.0
+#: The longest instructions Apple's model is given, in characters (`ym_core::apple_auto::INSTRUCTIONS_MAX_CHARS`).
+INSTRUCTIONS_MAX_CHARS = 2000
 
 
 class UsageError(Exception):
@@ -92,6 +99,8 @@ class PrepareOptions:
     allow_unavailable: bool = False
     scratch_root: Optional[Path] = None
     resume: bool = False
+    #: Instructions for Apple's model instead of the default (`--instructions FILE`).
+    instructions: Optional[Path] = None
 
 
 @dataclass
@@ -153,7 +162,8 @@ def ym_version(ym: Path, data: Optional[Path], scratch: Path) -> str:
 
 
 def apple_auto_status(ym: Path, data: Optional[Path], scratch: Path) -> Dict[str, object]:
-    """`apple_auto` of `ym doctor --json` (docs/19 section 8): available, reason, model, os, prompt, table."""
+    """`apple_auto` of `ym doctor --json` (docs/19 section 8): available, reason, model, os, prompt, table, and the
+    instructions (`default` here: each `ym` call has an empty home folder) with their digest."""
     try:
         code, doc, last_error = call_ym(ym, data, scratch, ["doctor", "--json"], DOCTOR_TIMEOUT_S)
     except PictureError as exc:
@@ -181,11 +191,34 @@ def check_available(status: Dict[str, object], allow_unavailable: bool, log: Cal
     log(f"note: Apple Auto is not available ({words}); going on because of --allow-unavailable")
 
 
+def instructions_id(status: Dict[str, object], path: Optional[Path]) -> Dict[str, object]:
+    """Which instructions Apple's model reads in the test and their digest (`instructions`, `instructions_sha256`, as
+    `ym` reports them): the default (as `ym doctor` reports it), or the text of `path`. A file that cannot be read, is
+    not UTF-8 or is longer than the model takes is a usage error."""
+    default_sha = status.get("instructions_sha256")
+    if path is None:
+        return {"instructions": status.get("instructions"), "instructions_sha256": default_sha}
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise UsageError(f"the instructions file {path} cannot be read: {exc}") from None
+    length = len(without_final_break(text))
+    if length > INSTRUCTIONS_MAX_CHARS:
+        raise UsageError(
+            f"the instructions in {path} are {length} characters long; at most {INSTRUCTIONS_MAX_CHARS} fit, because "
+            "the model must also see the photo"
+        )
+    digest = instructions_digest(text, str(default_sha))
+    kind = "default" if digest == default_sha else "edited"
+    return {"instructions": kind, "instructions_sha256": digest}
+
+
 def _photo_item(job: PhotoJob, outcome: Optional[Outcome] = None, reason: str = "") -> Dict[str, object]:
     item: Dict[str, object] = {"number": job.number, "stem": job.stem, "stratum": job.stratum}
     if outcome is not None and outcome.status in ("unchanged", "trial"):
         item["steps"] = steps_dict(outcome.steps)
         item["scene"] = outcome.scene
+        item["plan"] = outcome.plan
     if reason:
         item["reason"] = reason
     return item
@@ -218,12 +251,16 @@ def prepare(options: PrepareOptions, log: Callable[[str], None] = stderr_log) ->
         version = ym_version(options.ym, options.data, scratch)
         status = apple_auto_status(options.ym, options.data, scratch)
         check_available(status, options.allow_unavailable, log)
+        instructions = instructions_id(status, options.instructions)
         provenance = {
             "ym": version,
             "long_edge": options.long_edge,
             "quality": QUALITY,
             "with_camera": options.with_camera,
-            "apple_auto": {key: status.get(key) for key in ("available", "reason", "model", "os", "prompt", "table")},
+            "apple_auto": {
+                **{key: status.get(key) for key in ("available", "reason", "model", "os", "prompt", "table")},
+                **instructions,
+            },
         }
         jobs = [
             PhotoJob(
@@ -244,12 +281,22 @@ def prepare(options: PrepareOptions, log: Callable[[str], None] = stderr_log) ->
             long_edge=options.long_edge,
             with_camera=options.with_camera,
             resume=options.resume,
+            instructions=options.instructions,
+            instructions_sha256=instructions["instructions_sha256"],  # type: ignore[arg-type]
         )
         log(
             f"Rendering {len(jobs)} photos with Apple Auto on and off, {options.jobs} at a time "
             f"({options.apple_jobs} waiting for Apple's model at a time)"
         )
         outcomes = make_pictures(pictures, jobs, options.jobs, options.apple_jobs, log)
+        reported = {o.instructions for o in outcomes.values() if o.instructions is not None}
+        wanted = (instructions["instructions"], instructions["instructions_sha256"])
+        if reported - {wanted}:
+            log(
+                "note: ym reported other instructions than expected ("
+                + ", ".join(f"{kind} {digest}" for kind, digest in sorted(reported - {wanted}))  # type: ignore[misc]
+                + f"; expected {wanted[0]} {wanted[1]})"
+            )
         result = PrepareResult(plan={}, found=len(jobs))
         kept: List[PlanPhoto] = []
         details: Dict[int, Dict[str, object]] = {}
@@ -273,6 +320,7 @@ def prepare(options: PrepareOptions, log: Callable[[str], None] = stderr_log) ->
                         has_camera=outcome.has_camera,
                         steps=outcome.steps,
                         scene=outcome.scene,
+                        plan=outcome.plan,
                     )
                 )
                 details[job.number] = {"auto_values": outcome.values}
@@ -323,7 +371,7 @@ def summary_text(result: PrepareResult, out: Path, ym_name: str) -> str:
     lines = [
         f"Blind A/B of Apple Auto written to {out}",
         f"  Apple Auto: {apple.get('model')} · macOS {apple.get('os')} · prompt {apple.get('prompt')} · "
-        f"table {apple.get('table')}",
+        f"table {apple.get('table')} · instructions {apple.get('instructions')} ({apple.get('instructions_sha256')})",
         f"  ym: {provenance['ym']}",  # type: ignore[index]
         f"  photos: {found} found, {kept} in the test",
         f"  Apple Auto left {len(result.unchanged)} of {found} {_photos_word(found)} as they were: they give no trial.",
@@ -405,6 +453,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="the data folder ym uses (default: the app's own for the ym in an app, else the repository's data/)",
     )
     prep.add_argument(
+        "--instructions",
+        type=Path,
+        metavar="FILE",
+        default=None,
+        help="a text file of instructions for Apple's model instead of the default (docs/19 section 2; at most 2000 "
+        "characters); the plan records which instructions were read",
+    )
+    prep.add_argument(
         "--allow-unavailable",
         action="store_true",
         help="go on when ym doctor says Apple Auto is not available (for tests of the kit)",
@@ -440,6 +496,9 @@ def run_prepare(args: argparse.Namespace) -> int:
     data = args.data.expanduser() if args.data is not None else default_data(ym)
     if data is not None and not data.is_dir():
         raise UsageError(f"the data folder {data} does not exist; pass --data DIR, or leave it out")
+    instructions = args.instructions.expanduser().resolve() if args.instructions is not None else None
+    if instructions is not None and not instructions.is_file():
+        raise UsageError(f"there is no instructions file at {instructions}")
     options = PrepareOptions(
         photos=args.photos.expanduser(),
         out=args.out.expanduser(),
@@ -452,6 +511,7 @@ def run_prepare(args: argparse.Namespace) -> int:
         with_camera=args.with_camera,
         allow_unavailable=args.allow_unavailable,
         resume=args.resume,
+        instructions=instructions,
     )
     try:
         result = prepare(options)

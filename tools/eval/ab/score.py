@@ -23,7 +23,20 @@ from pathlib import Path
 from typing import Dict, List, Mapping, Optional, Sequence, Tuple
 
 from page import RESULTS_FORMAT
-from plan import COMPARISONS, GATED, PLAN_FORMAT, STEP_FIELDS, UNDER_TEST, VARIANTS
+from plan import (
+    ANSWER_FIELDS,
+    COLOR_FIELDS,
+    COMPARISONS,
+    GATED,
+    PLAN_FORMAT,
+    STEP_FIELDS,
+    UNDER_TEST,
+    VARIANTS,
+    StepValue,
+    Steps,
+    changed_fields,
+    step_of,
+)
 
 SCORE_FORMAT = "yellowmoon-ab-score"
 SCORE_FILE = "score.json"
@@ -40,7 +53,7 @@ LABELS: Mapping[str, str] = {
     "rule": "Apple Auto vs the rule",
     "camera": "Apple Auto vs the camera's JPEG",
 }
-#: Words for each step of each answer (docs/19 section 4): -3 ... +3 for exposure, -2 ... +2 for the others.
+#: Words for each numeric step of an answer (docs/19 section 4): -3 ... +3 for exposure, -2 ... +2 for the others.
 STEP_WORDS: Mapping[str, Mapping[int, str]] = {
     "exposure": {
         -3: "much darker",
@@ -50,18 +63,40 @@ STEP_WORDS: Mapping[str, Mapping[int, str]] = {
         2: "brighter",
         3: "much brighter",
     },
-    "white": {-2: "much cooler", -1: "cooler", 1: "warmer", 2: "much warmer"},
+    "highlights": {
+        -2: "much darker highlights",
+        -1: "darker highlights",
+        1: "brighter highlights",
+        2: "much brighter highlights",
+    },
+    "shadows": {-2: "much darker shadows", -1: "darker shadows", 1: "brighter shadows", 2: "much brighter shadows"},
+    "blacks": {-2: "much deeper blacks", -1: "deeper blacks", 1: "lifted blacks", 2: "much lifted blacks"},
     "contrast": {-2: "much less contrast", -1: "less contrast", 1: "more contrast", 2: "much more contrast"},
+    "white": {-2: "much cooler", -1: "cooler", 1: "warmer", 2: "much warmer"},
+    "tint": {-2: "much greener", -1: "greener", 1: "more magenta", 2: "much more magenta"},
     "saturation": {-2: "much less saturation", -1: "less saturation", 1: "more saturation", 2: "much more saturation"},
 }
-#: The direction groups of the diagnostics, in the order they are printed: (label, field, sign).
+#: Words for a colour's strength (docs/19 section 4).
+STRENGTH_WORDS: Mapping[int, str] = {1: "subtle", 2: "medium", 3: "strong"}
+#: The tones each colour field colours, for the words ("teal shadows").
+COLOR_TONES: Mapping[str, str] = {"shadow_color": "shadows", "highlight_color": "highlights"}
+#: The direction groups of the diagnostics, in the order they are printed (the order of the table): (label, field,
+#: sign).
 DIRECTIONS: Tuple[Tuple[str, str, int], ...] = (
     ("brighter", "exposure", 1),
     ("darker", "exposure", -1),
-    ("warmer", "white", 1),
-    ("cooler", "white", -1),
+    ("darker highlights", "highlights", -1),
+    ("brighter highlights", "highlights", 1),
+    ("brighter shadows", "shadows", 1),
+    ("darker shadows", "shadows", -1),
+    ("deeper blacks", "blacks", -1),
+    ("lifted blacks", "blacks", 1),
     ("more contrast", "contrast", 1),
     ("less contrast", "contrast", -1),
+    ("warmer", "white", 1),
+    ("cooler", "white", -1),
+    ("greener", "tint", -1),
+    ("more magenta", "tint", 1),
     ("more saturation", "saturation", 1),
     ("less saturation", "saturation", -1),
 )
@@ -158,7 +193,9 @@ class Row:
     outcome: str
     flag_apple: bool
     flag_other: bool
-    steps: Optional[Tuple[int, int, int, int]]
+    #: Apple's steps in the order of ANSWER_FIELDS (None for a field the model left empty), or None when the plan has
+    #: none for the trial.
+    steps: Optional[Steps]
 
 
 def pct(value: Optional[float]) -> str:
@@ -168,13 +205,31 @@ def pct(value: Optional[float]) -> str:
     return f"{100 * value:.1f} %"
 
 
-def steps_words(steps: Optional[Sequence[int]]) -> str:
-    """Apple's steps in words, in the order exposure, white, contrast, saturation: "slightly brighter, more contrast";
-    "no change" when every step is keep, "unknown" without steps."""
+def color_words(steps: Sequence[StepValue], color: str) -> str:
+    """A colour of an answer in words: "teal shadows (medium)"."""
+    strength = step_of(steps, COLOR_FIELDS[color][0])
+    return f"{step_of(steps, color)} {COLOR_TONES[color]} ({STRENGTH_WORDS.get(strength, strength)})"  # type: ignore
+
+
+def steps_words(steps: Optional[Sequence[StepValue]]) -> str:
+    """What Apple's answer changes, in words, in the order of the table: "slightly brighter, darker highlights, more
+    contrast, teal shadows (medium)". A field left empty or at keep or none says nothing; "no change" when nothing is
+    left, "unknown" without steps."""
     if steps is None:
         return "unknown"
-    parts = [STEP_WORDS[name][value] for name, value in zip(STEP_FIELDS, steps) if value]
+    parts = [
+        color_words(steps, name) if name in COLOR_FIELDS else STEP_WORDS[name][step_of(steps, name)]  # type: ignore
+        for name in changed_fields(steps)
+    ]
     return ", ".join(parts) if parts else "no change"
+
+
+def empty_words(steps: Optional[Sequence[StepValue]]) -> str:
+    """The fields Apple's model left empty (they set nothing), by name, or "none"."""
+    if steps is None:
+        return "unknown"
+    empty = [name for name, value in zip(ANSWER_FIELDS, steps) if value is None and not name.endswith("_strength")]
+    return ", ".join(empty) if empty else "none"
 
 
 def load_json(path: Path, what: str) -> Dict[str, object]:
@@ -210,18 +265,28 @@ def validate_plan(plan: Mapping[str, object], path: Path) -> None:
             )
 
 
-def _steps_of(trial: Mapping[str, object], photos: Mapping[int, Mapping[str, object]]) -> Optional[Tuple[int, ...]]:
-    """Apple's steps for a trial: the trial's own, else its photo's, else None."""
+def _valid_step(name: str, value: object) -> bool:
+    """Whether a field of the plan's steps can be read: null (left empty: nothing set), a colour's name, or a number."""
+    if value is None:
+        return True
+    if name in COLOR_FIELDS:
+        return isinstance(value, str)
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _steps_of(trial: Mapping[str, object], photos: Mapping[int, Mapping[str, object]]) -> Optional[Steps]:
+    """Apple's steps for a trial, in the order of ANSWER_FIELDS: the trial's own, else its photo's, else None. A field
+    that is null or missing (a plan of prompt version 1 has four) is None: nothing set."""
     source = trial.get("steps")
     if not isinstance(source, dict):
         photo = photos.get(trial.get("number"))  # type: ignore[arg-type]
         source = photo.get("steps") if isinstance(photo, dict) else None
     if not isinstance(source, dict):
         return None
-    values = [source.get(name) for name in STEP_FIELDS]
-    if not all(isinstance(v, int) and not isinstance(v, bool) for v in values):
+    values = [source.get(name) for name in ANSWER_FIELDS]
+    if not all(_valid_step(name, value) for name, value in zip(ANSWER_FIELDS, values)):
         return None
-    return tuple(values)  # type: ignore[return-value]
+    return tuple(values)  # type: ignore[arg-type]
 
 
 def trial_answers(plan: Mapping[str, object], results: Mapping[str, object]) -> List[Row]:
@@ -334,31 +399,47 @@ def _group(label: str, part: Tally) -> Dict[str, object]:
 
 
 def diagnostics(rows: Sequence[Row], comparison: str = "rule") -> Dict[str, object]:
-    """What helps tune the table of docs/19 section 5, over the trials of one comparison: Apple Auto's win share by the
-    direction of each step (brighter, darker, warmer, ...), by photos where Apple changed one thing only, by each step,
-    and the losses with Apple's scene. A photo with several changes counts in each of its directions."""
+    """What helps tune the table of docs/19 section 5 and the prompt of section 4, over the trials of one comparison:
+    Apple Auto's win share by the direction of each step (brighter, darker highlights, warmer, ...), by the colour it
+    gave the shadows or the highlights, by photos where Apple changed one thing only, by each step, how often each field
+    was left empty, and the losses with Apple's scene and plan. A photo with several changes counts in each of its
+    directions; a field left empty changed nothing and counts in none."""
     mine = [row for row in rows if row.trial["comparison"] == comparison]
     directions: Dict[str, Tally] = {label: Tally() for label, _, _ in DIRECTIONS}
-    single: Dict[str, Tally] = {f"only {name}": Tally() for name in STEP_FIELDS}
+    colors: Dict[str, Tally] = {
+        f"{color} {COLOR_TONES[name]}": Tally() for name, (_, names) in COLOR_FIELDS.items() for color in names[1:]
+    }
+    single: Dict[str, Tally] = {f"only {name}": Tally() for name in (*STEP_FIELDS, *COLOR_FIELDS)}
     single["two or more changes"] = Tally()
-    by_step: Dict[Tuple[int, int], Tally] = {}
+    by_step: Dict[Tuple[int, object, object], Tally] = {}
+    empty: Dict[str, int] = {name: 0 for name in ANSWER_FIELDS if not name.endswith("_strength")}
+    with_steps = 0
     losses: List[Dict[str, object]] = []
     for row in mine:
         steps = row.steps
         if steps is None:
             continue
+        with_steps += 1
+        for name in empty:
+            if step_of(steps, name) is None:
+                empty[name] += 1
         for label, name, sign in DIRECTIONS:
-            value = steps[STEP_FIELDS.index(name)]
-            if value * sign > 0:
+            value = step_of(steps, name)
+            if isinstance(value, int) and value * sign > 0:
                 directions[label].add(row.outcome, row.flag_apple, row.flag_other)
-        changed = [name for name, value in zip(STEP_FIELDS, steps) if value]
+        changed = changed_fields(steps)
         if len(changed) == 1:
             single[f"only {changed[0]}"].add(row.outcome, row.flag_apple, row.flag_other)
         elif len(changed) > 1:
             single["two or more changes"].add(row.outcome, row.flag_apple, row.flag_other)
-        for index, value in enumerate(steps):
-            if value:
-                by_step.setdefault((index, value), Tally()).add(row.outcome, row.flag_apple, row.flag_other)
+        for name in changed:
+            index = ANSWER_FIELDS.index(name)
+            if name in COLOR_FIELDS:
+                colors[f"{step_of(steps, name)} {COLOR_TONES[name]}"].add(row.outcome, row.flag_apple, row.flag_other)
+                key: Tuple[int, object, object] = (index, step_of(steps, name), step_of(steps, COLOR_FIELDS[name][0]))
+            else:
+                key = (index, step_of(steps, name), None)
+            by_step.setdefault(key, Tally()).add(row.outcome, row.flag_apple, row.flag_other)
     for row in mine:
         if row.outcome != "loss":
             continue
@@ -368,21 +449,30 @@ def diagnostics(rows: Sequence[Row], comparison: str = "rule") -> Dict[str, obje
                 "stem": row.trial.get("stem"),
                 "stratum": row.trial.get("stratum"),
                 "scene": row.trial.get("scene", ""),
-                "steps": None if row.steps is None else dict(zip(STEP_FIELDS, row.steps)),
+                "plan": row.trial.get("plan", ""),
+                "steps": None if row.steps is None else dict(zip(ANSWER_FIELDS, row.steps)),
                 "changes": steps_words(row.steps),
+                "left_empty": empty_words(row.steps),
                 "needs_fix": {"apple": row.flag_apple, "other": row.flag_other},
             }
         )
     losses.sort(key=lambda item: (str(item["stratum"]), str(item["stem"]), int(item["trial"])))  # type: ignore[arg-type]
     step_rows = []
-    for (index, value), part in sorted(by_step.items()):
-        name = STEP_FIELDS[index]
-        step_rows.append({**_group(f"{name} {value:+d} ({STEP_WORDS[name][value]})", part), "field": name, "step": value})
+    for (index, value, strength), part in sorted(by_step.items(), key=lambda item: (item[0][0], str(item[0][1]), str(item[0][2]))):
+        name = ANSWER_FIELDS[index]
+        if name in COLOR_FIELDS:
+            words = f"{value} {COLOR_TONES[name]}, {STRENGTH_WORDS.get(strength, strength)}"  # type: ignore[arg-type]
+            step_rows.append({**_group(f"{name} {value} {strength} ({words})", part), "field": name, "step": value, "strength": strength})
+        else:
+            words = STEP_WORDS[name][value]  # type: ignore[index]
+            step_rows.append({**_group(f"{name} {value:+d} ({words})", part), "field": name, "step": value})
     return {
         "comparison": comparison,
         "by_direction": [_group(label, directions[label]) for label, _, _ in DIRECTIONS],
+        "by_color": [_group(label, part) for label, part in colors.items()],
         "by_single_change": [_group(label, part) for label, part in single.items()],
         "by_step": step_rows,
+        "left_empty": {"trials": with_steps, "fields": empty},
         "losses": losses,
     }
 
@@ -426,7 +516,7 @@ def build_report(plan: Mapping[str, object], rows: Sequence[Row]) -> Dict[str, o
     provenance = plan.get("provenance") if isinstance(plan.get("provenance"), dict) else {}
     return {
         "format": SCORE_FORMAT,
-        "version": 2,
+        "version": 3,
         "plan_id": plan["plan_id"],
         "seed": plan.get("seed"),
         "provenance": provenance,
@@ -456,10 +546,13 @@ def _model_line(provenance: Mapping[str, object]) -> Optional[str]:
     apple = provenance.get("apple_auto")
     if not isinstance(apple, dict):
         return None
-    return (
+    line = (
         f"Apple Auto: {apple.get('model') or 'unknown model'} · macOS {apple.get('os') or 'unknown'} · "
         f"prompt {apple.get('prompt')} · table {apple.get('table')}"
     )
+    if apple.get("instructions"):
+        line += f" · instructions {apple.get('instructions')} ({apple.get('instructions_sha256')})"
+    return line
 
 
 def _photos_line(counts: object) -> Optional[str]:
@@ -530,6 +623,7 @@ def format_report(report: Mapping[str, object]) -> str:
         lines.append("For tuning the table (docs/19 section 5): Apple Auto's win share against the rule, by what it did.")
         for title, key in (
             ("By direction (a photo with several changes counts in each)", "by_direction"),
+            ("By the colour of the shadows or the highlights", "by_color"),
             ("Photos with one change only, and the others", "by_single_change"),
             ("By step", "by_step"),
         ):
@@ -538,9 +632,14 @@ def format_report(report: Mapping[str, object]) -> str:
             if not groups:
                 lines.append("    no answers yet")
             lines.extend(_group_line(group) for group in groups)
+        empty = diag.get("left_empty")
+        if isinstance(empty, dict) and empty.get("trials"):
+            counts = [f"{name} {count}" for name, count in empty["fields"].items() if count]
+            lines.append(f"  Fields Apple's model left empty (they set nothing), of {_trials(empty['trials'])}:")
+            lines.append(f"    {', '.join(counts) if counts else 'none'}")
         losses = diag["losses"]
         lines.append("")
-        lines.append(f"Trials Apple Auto lost against the rule ({len(losses)}), with Apple's scene and its changes:")
+        lines.append(f"Trials Apple Auto lost against the rule ({len(losses)}), with Apple's scene, plan and changes:")
         if not losses:
             lines.append("  none")
         for loss in losses:
@@ -550,8 +649,9 @@ def format_report(report: Mapping[str, object]) -> str:
             if loss["needs_fix"]["other"]:
                 fixes.append("the rule's picture needs a fix")
             fix_text = f" [{'; '.join(fixes)}]" if fixes else ""
+            plan_text = f" (plan: \"{loss['plan']}\")" if loss.get("plan") else ""
             lines.append(
-                f"  trial {loss['trial']}, {loss['stratum']}/{loss['stem']}: \"{loss['scene']}\"; "
+                f"  trial {loss['trial']}, {loss['stratum']}/{loss['stem']}: \"{loss['scene']}\"{plan_text}; "
                 f"{loss['changes']}{fix_text}"
             )
     gated = report["gate"]["gated"]  # type: ignore[index]

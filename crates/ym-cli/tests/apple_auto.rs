@@ -602,6 +602,25 @@ fn the_instructions_come_from_the_preference_or_a_file_for_one_run() {
     );
     assert_eq!(v["apple_auto"]["plan"], "Test plan: You");
     assert_eq!(v["apple_auto"]["instructions"], "default");
+    // The file's final line break is not part of the instructions: the default text saved by an
+    // editor is the default.
+    let saved = sb.root().join("saved.txt");
+    std::fs::write(
+        &saved,
+        format!("{}\r\n", ym_core::apple_auto::DEFAULT_INSTRUCTIONS),
+    )
+    .expect("write");
+    let v = render_json(
+        sb.ym_fake(),
+        &arw,
+        &["--apple-auto-instructions", saved.to_str().expect("utf-8")],
+        &sb.root().join("saved"),
+    );
+    assert_eq!(v["apple_auto"]["instructions"], "default");
+    assert_eq!(
+        v["apple_auto"]["instructions_sha256"],
+        InstructionsId::default().instructions_sha256
+    );
     // Too long, or not there: a usage error (exit code 2) with a plain message.
     let long = sb.root().join("long.txt");
     std::fs::write(&long, "x".repeat(2001)).expect("write");

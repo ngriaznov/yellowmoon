@@ -5,9 +5,11 @@ Every `ym` call gets a new, empty home folder (so the user's preferences and imp
 picture), the `--cpu` renderer, the built-in default look and every setting at Auto. The two renders differ only in
 `--apple-auto on` (`apple`) and `--apple-auto off` (`rule`, Yellowmoon's own Auto). Each photo is handled on its own:
 
-1. the `apple` render, whose `--json` record says what Apple's model answered (`apple_auto`: state, steps, scene);
-2. a photo whose answer failed is left out with its reason; a photo whose steps are all keep gives no trial, because
-   its picture is the rule's (docs/19 section 5: with every step at 0 the chain is today's Auto, bit for bit);
+1. the `apple` render, whose `--json` record says what Apple's model answered (`apple_auto`: state, steps, scene, plan,
+   and the instructions it read);
+2. a photo whose answer failed is left out with its reason; a photo whose answer changes nothing (every step it set is
+   keep or none; a step left empty sets nothing) gives no trial, because its picture is the rule's (docs/19 section 5:
+   with every step at 0 the chain is today's Auto, bit for bit);
 3. otherwise the `rule` render; when the two pictures are the same pixels after all, the photo gives no trial either;
 4. with --with-camera, the camera's JPEG, copied byte for byte from the raw file. Its pixels are stored in sensor
    orientation, so the page turns it upright by the raw file's EXIF orientation (`raw_turns`), as `ym` turns the
@@ -32,7 +34,18 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
-from plan import NO_STEPS, STEP_FIELDS, STEP_RANGE, Steps, picture_name, picture_relpath
+from plan import (
+    ANSWER_FIELDS,
+    COLOR_FIELDS,
+    NO_STEPS,
+    STEP_RANGE,
+    STRENGTH_RANGE,
+    StepValue,
+    Steps,
+    changed_fields,
+    picture_name,
+    picture_relpath,
+)
 
 JPEG_START = b"\xff\xd8"
 QUALITY = 92
@@ -74,7 +87,18 @@ FAILURE_WORDS: Mapping[str, str] = {
     "other": "an error",
 }
 #: The Auto values of a render that the plan keeps for the diagnostics (`auto` of `ym render --json`).
-AUTO_VALUES: Tuple[str, ...] = ("exposure_ev", "kelvin", "tint", "contrast", "saturation")
+AUTO_VALUES: Tuple[str, ...] = (
+    "exposure_ev",
+    "kelvin",
+    "tint",
+    "highlights",
+    "shadows",
+    "black",
+    "contrast",
+    "saturation",
+    "balance_shadows",
+    "balance_highlights",
+)
 #: EXIF Orientation (IFD0 tag 0x0112) -> quarter turns clockwise that show the camera's JPEG upright. Sony cameras do
 #: not write the mirrored values (2, 4, 5, 7), so those are shown as their unmirrored turns and the mirror is ignored.
 ORIENTATION_TURNS: Mapping[int, int] = {1: 0, 2: 0, 3: 2, 4: 2, 5: 1, 6: 1, 7: 3, 8: 3}
@@ -133,6 +157,13 @@ class Pictures:
     #: temporary file and a rename, so a picture that is there is whole; it must still start like a JPEG, and a render
     #: is kept only with its record (an `apple` render only when its answer arrived).
     resume: bool = False
+    #: A text file of instructions for Apple's model (`prepare --instructions`), passed to the `apple` render as
+    #: `--apple-auto-instructions`; None for the default instructions (each `ym` call has an empty home folder, so the
+    #: app's own instructions never reach the test).
+    instructions: Optional[Path] = None
+    #: The digest of the instructions the `apple` renders must report (`instructions_sha256`): with --resume, an `apple`
+    #: render made with other instructions is made again. None does not check.
+    instructions_sha256: Optional[str] = None
 
 
 @dataclass
@@ -144,6 +175,9 @@ class Outcome:
     reason: str = ""
     steps: Steps = NO_STEPS
     scene: str = ""
+    plan: str = ""
+    #: Which instructions Apple's model read (`default` or `edited`) and their digest, from the `apple` render's record.
+    instructions: Optional[Tuple[str, str]] = None
     #: The Auto values of each render (`apple`, `rule`), for the diagnostics.
     values: Dict[str, Dict[str, object]] = field(default_factory=dict)
     has_camera: bool = False
@@ -270,6 +304,9 @@ def kept_record(pictures: Pictures, variant: str, job: PhotoJob) -> Optional[Dic
         apple = record.get("apple_auto")
         if not (isinstance(apple, dict) and apple.get("state") == "answered"):
             return None
+        wanted = pictures.instructions_sha256
+        if wanted is not None and apple.get("instructions_sha256") != wanted:
+            return None
     elif record.get("auto_source") != "rule":
         return None
     return record
@@ -300,6 +337,7 @@ def render_picture(pictures: Pictures, job: PhotoJob, variant: str) -> Dict[str,
         "--out",
         str(target.parent),
         *RENDER_FLAGS[variant],
+        *(["--apple-auto-instructions", str(pictures.instructions)] if variant == "apple" and pictures.instructions else []),
         str(job.raw),
     ]
     record = run_ym(pictures, args)
@@ -313,11 +351,32 @@ def render_picture(pictures: Pictures, job: PhotoJob, variant: str) -> Dict[str,
 
 
 def auto_values(record: Mapping[str, object]) -> Dict[str, object]:
-    """The Auto values in effect of a render (`auto` of `ym render --json`): exposure, white, contrast, saturation."""
+    """The Auto values in effect of a render (`auto` of `ym render --json`): exposure, white balance, highlights,
+    shadows, black, contrast, saturation and the points of the shadows and highlights wheels."""
     auto = record.get("auto")
     if not isinstance(auto, dict):
         return {}
     return {key: auto.get(key) for key in AUTO_VALUES if key in auto}
+
+
+def without_final_break(text: str) -> str:
+    """The instructions of a file as `ym --apple-auto-instructions` reads them: without the file's final line break
+    (`\\n` or `\\r\\n`), which text editors add."""
+    if text.endswith("\n"):
+        text = text[:-1]
+        if text.endswith("\r"):
+            text = text[:-1]
+    return text
+
+
+def instructions_digest(text: str, default_sha256: str) -> str:
+    """The digest `ym` reports for instructions read from a file (`instructions_sha256`, docs/19 section 8): the first
+    12 hex digits of the SHA-256 of the text without the file's final line break, or `default_sha256` when the text is
+    empty or only white space (the default instructions)."""
+    text = without_final_break(text)
+    if not text.strip():
+        return default_sha256
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
 
 
 @dataclass(frozen=True)
@@ -328,13 +387,40 @@ class AppleAnswer:
     reason: str = ""
     steps: Steps = NO_STEPS
     scene: str = ""
+    plan: str = ""
+    instructions: Optional[Tuple[str, str]] = None
+
+
+def _step_value(name: str, value: object) -> Tuple[bool, StepValue]:
+    """Reads one field of an answer's steps: (whether it is valid, its value). An empty field (`null`, or missing in the
+    record of an older `ym`) is valid and sets nothing."""
+    if value is None:
+        return True, None
+    if name in COLOR_FIELDS:
+        return (isinstance(value, str) and value in COLOR_FIELDS[name][1]), value  # type: ignore[return-value]
+    if isinstance(value, bool) or not isinstance(value, int):
+        return False, None
+    is_strength = any(name == strength for strength, _ in COLOR_FIELDS.values())
+    low, high = STRENGTH_RANGE if is_strength else STEP_RANGE[name]
+    return low <= value <= high, value
+
+
+def instructions_of(apple: Mapping[str, object]) -> Optional[Tuple[str, str]]:
+    """Which instructions Apple's model read (`default` or `edited`) and their digest, from `apple_auto` of a record, or
+    None for a `ym` that does not say."""
+    kind, digest = apple.get("instructions"), apple.get("instructions_sha256")
+    if isinstance(kind, str) and isinstance(digest, str):
+        return kind, digest
+    return None
 
 
 def apple_answer(record: Mapping[str, object]) -> AppleAnswer:
     """Reads Apple's answer from the record of an `apple` render (docs/19 section 8, `apple_auto`).
 
     Without an `apple_auto` object Apple Auto did not act on the photo: it was not available for the run (the record's
-    `auto.apple` says why). A failure gives its reason in words; steps outside their range count as a bad answer.
+    `auto.apple` says why). A failure gives its reason in words; steps outside their range count as a bad answer, and so
+    does an answer that set nothing (the core reports that as a failure already). A step left empty (`null`) sets
+    nothing: it is kept as None.
     """
     apple = record.get("apple_auto")
     if not isinstance(apple, dict):
@@ -356,15 +442,24 @@ def apple_answer(record: Mapping[str, object]) -> AppleAnswer:
     if state != "answered":
         return AppleAnswer(False, f"Apple Auto did not answer (its state: {state})")
     raw_steps = apple.get("steps")
-    steps: List[int] = []
-    for name in STEP_FIELDS:
-        value = raw_steps.get(name) if isinstance(raw_steps, dict) else None
-        low, high = STEP_RANGE[name]
-        if not isinstance(value, int) or isinstance(value, bool) or not low <= value <= high:
+    if not isinstance(raw_steps, dict):
+        return AppleAnswer(False, f"Apple Auto failed ({FAILURE_WORDS['bad_answer']})")
+    steps: List[StepValue] = []
+    for name in ANSWER_FIELDS:
+        valid, value = _step_value(name, raw_steps.get(name))
+        if not valid:
             return AppleAnswer(False, f"Apple Auto failed ({FAILURE_WORDS['bad_answer']})")
         steps.append(value)
-    scene = apple.get("scene")
-    return AppleAnswer(True, steps=(steps[0], steps[1], steps[2], steps[3]), scene=scene if isinstance(scene, str) else "")
+    if all(value is None for value in steps):
+        return AppleAnswer(False, f"Apple Auto failed ({FAILURE_WORDS['bad_answer']})")
+    scene, plan = apple.get("scene"), apple.get("plan")
+    return AppleAnswer(
+        True,
+        steps=tuple(steps),
+        scene=scene if isinstance(scene, str) else "",
+        plan=plan if isinstance(plan, str) else "",
+        instructions=instructions_of(apple),
+    )
 
 
 def jpeg_pixel_digest(path: Path) -> Optional[str]:
@@ -506,16 +601,17 @@ def process_photo(pictures: Pictures, job: PhotoJob, apple_gate: threading.Semap
     values: Dict[str, Dict[str, object]] = {"apple": auto_values(record)}
     if not answer.answered:
         return Outcome("failed", answer.reason, values=values)
-    if answer.steps == NO_STEPS:
-        return Outcome("unchanged", "every step is keep", answer.steps, answer.scene, values)
+    said = {"steps": answer.steps, "scene": answer.scene, "plan": answer.plan, "instructions": answer.instructions}
+    if not changed_fields(answer.steps):
+        return Outcome("unchanged", "every step it set is keep or none", values=values, **said)  # type: ignore[arg-type]
     try:
         rule = render_picture(pictures, job, "rule")
     except (PictureError, OSError, ValueError) as exc:
-        return Outcome("error", f"with Apple Auto off: {_problem(exc)}", answer.steps, answer.scene, values)
+        return Outcome("error", f"with Apple Auto off: {_problem(exc)}", values=values, **said)  # type: ignore[arg-type]
     values["rule"] = auto_values(rule)
     if same_pixels(picture_path(pictures, "apple", job), picture_path(pictures, "rule", job)):
-        return Outcome("unchanged", "the two pictures are the same", answer.steps, answer.scene, values)
-    outcome = Outcome("trial", "", answer.steps, answer.scene, values)
+        return Outcome("unchanged", "the two pictures are the same", values=values, **said)  # type: ignore[arg-type]
+    outcome = Outcome("trial", "", values=values, **said)  # type: ignore[arg-type]
     if pictures.with_camera:
         try:
             camera_picture(pictures, job)

@@ -54,18 +54,38 @@ def visible_markup(text: str) -> str:
 #: small JPEG whose metadata names the Auto that made it and whose scan data stands for its pixels. Per stem:
 #: FAKE_YM_FAIL (the render fails), FAKE_YM_APPLE_FAIL (the answer times out), FAKE_YM_APPLE_OTHER (the answer fails
 #: with Apple's message), FAKE_YM_APPLE_GONE (Apple Auto unavailable for the run), FAKE_YM_SAME_PIXELS (an answer that
-#: changes no pixel), FAKE_YM_STEPS (a JSON object stem -> [exposure, white, contrast, saturation]; default
-#: [1, 0, 1, 0]) and FAKE_YM_SLEEP (seconds an Apple render takes).
+#: changes no pixel), FAKE_YM_STEPS (a JSON object stem -> [exposure, white, contrast, saturation], the other fields
+#: left empty, or stem -> the whole steps object; default [1, 0, 1, 0]) and FAKE_YM_SLEEP (seconds an Apple render
+#: takes). It reads the instructions of `--apple-auto-instructions FILE` as `ym` does and reports their digest.
 FAKE_YM = r'''#!/usr/bin/env python3
 import json
 import os
 import sys
 import time
 
+import hashlib
+
 args = sys.argv[1:]
 log = os.environ.get("FAKE_YM_LOG")
 MODEL = "AFM 3 Core"
 MACOS = "27.0.1 (27A404)"
+DEFAULT_SHA = "6a8a034fb24b"
+FIELDS = ["exposure", "highlights", "shadows", "blacks", "contrast", "white", "tint", "saturation", "shadow_color",
+          "shadow_color_strength", "highlight_color", "highlight_color_strength"]
+
+
+def instructions_id():
+    if "--apple-auto-instructions" not in args:
+        return {"instructions": "default", "instructions_sha256": DEFAULT_SHA}
+    with open(args[args.index("--apple-auto-instructions") + 1], encoding="utf-8") as handle:
+        text = handle.read()
+    if text.endswith("\n"):
+        text = text[:-1]
+        if text.endswith("\r"):
+            text = text[:-1]
+    if not text.strip():
+        return {"instructions": "default", "instructions_sha256": DEFAULT_SHA}
+    return {"instructions": "edited", "instructions_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]}
 
 
 def record(**fields):
@@ -100,10 +120,10 @@ if args[:1] == ["doctor"]:
     reason = os.environ.get("FAKE_YM_UNAVAILABLE", "")
     if reason:
         apple = {"available": False, "reason": reason, "model": None, "os": None, "preference": True,
-                 "prompt": 1, "table": 1}
+                 "prompt": 2, "table": 2, "instructions": "default", "instructions_sha256": DEFAULT_SHA}
     else:
         apple = {"available": True, "reason": None, "model": MODEL, "os": MACOS, "preference": True,
-                 "prompt": 1, "table": 1}
+                 "prompt": 2, "table": 2, "instructions": "default", "instructions_sha256": DEFAULT_SHA}
     print(json.dumps({"apple_auto": apple, "version": "9.9.9"}))
     sys.exit(0)
 if args[:1] == ["info"]:
@@ -133,27 +153,35 @@ if args[:1] == ["render"]:
         print(json.dumps({"status": "error", "error": {"kind": "unsupported", "message": message}, "input": src,
                           "output": None}))
         sys.exit(1)
-    info = {"model": MODEL, "os": MACOS}
+    ids = instructions_id()
+    info = {"model": MODEL, "os": MACOS, **ids}
     apple_auto = None
     applied = [0, 0, 0, 0]
     if mode == "off":
         auto_apple = {"state": "off"}
     elif stem in stems("FAKE_YM_APPLE_FAIL"):
         auto_apple = {"state": "failed", "kind": "timeout", "message": "no answer", "info": info}
-        apple_auto = {"state": "failed", "reason": "timeout", "model": MODEL, "os": MACOS, "prompt": 1, "table": 1}
+        apple_auto = {"state": "failed", "reason": "timeout", "model": MODEL, "os": MACOS, "prompt": 2, "table": 2,
+                      **ids}
     elif stem in stems("FAKE_YM_APPLE_OTHER"):
         auto_apple = {"state": "failed", "kind": "other", "message": "Something odd happened", "info": info}
-        apple_auto = {"state": "failed", "reason": "other", "model": MODEL, "os": MACOS, "prompt": 1, "table": 1}
+        apple_auto = {"state": "failed", "reason": "other", "model": MODEL, "os": MACOS, "prompt": 2, "table": 2,
+                      **ids}
     elif stem in stems("FAKE_YM_APPLE_GONE"):
         auto_apple = {"state": "unavailable", "reason": "apple_intelligence_off"}
     else:
         steps = json.loads(os.environ.get("FAKE_YM_STEPS", "{}")).get(stem, [1, 0, 1, 0])
-        named = dict(zip(["exposure", "white", "contrast", "saturation"], steps))
+        if isinstance(steps, list):
+            steps = dict(zip(["exposure", "white", "contrast", "saturation"], steps))
+        named = {name: steps.get(name) for name in FIELDS}
         scene = "Scene of " + stem
-        auto_apple = {"state": "answered", "answer": {"steps": named, "scene": scene}, "info": info}
-        apple_auto = {"state": "answered", "reason": None, "model": MODEL, "os": MACOS, "prompt": 1, "table": 1,
-                      "steps": named, "scene": scene}
-        applied = steps
+        plan = "Plan for " + stem
+        auto_apple = {"state": "answered", "answer": {"steps": named, "scene": scene, "plan": plan}, "info": info}
+        apple_auto = {"state": "answered", "reason": None, "model": MODEL, "os": MACOS, "prompt": 2, "table": 2,
+                      **ids, "steps": named, "scene": scene, "plan": plan}
+        applied = [named[name] or 0 for name in ("exposure", "white", "contrast", "saturation")]
+        if named["shadow_color"] not in (None, "none") and named["shadow_color_strength"]:
+            applied.append(named["shadow_color"])
     source = "apple" if apple_auto is not None and apple_auto["state"] == "answered" else "rule"
     if apple_auto is not None and apple_auto["state"] == "failed":
         source = "rule"

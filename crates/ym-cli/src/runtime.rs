@@ -78,19 +78,26 @@ pub struct CoreSettings {
 }
 
 /// Reads `--apple-auto-instructions FILE` (`docs/19` section 8): the file's text as UTF-8, at most
-/// 2000 characters (`ym_core::apple_auto::INSTRUCTIONS_MAX_CHARS`). An empty file is the default
-/// instructions.
+/// 2000 characters (`ym_core::apple_auto::INSTRUCTIONS_MAX_CHARS`). The file's final line break
+/// (`\n` or `\r\n`, which text editors add) is not part of the instructions, so a file holding the
+/// default text is the default. An empty file is the default instructions.
 ///
 /// # Errors
 ///
 /// A usage [`Failure`] (exit code 2) when the file cannot be read or is too long.
 pub fn read_instructions(path: &std::path::Path) -> Result<String, Failure> {
-    let text = std::fs::read_to_string(path).map_err(|e| {
+    let mut text = std::fs::read_to_string(path).map_err(|e| {
         Failure::usage(format!(
             "Can't read the instructions for Apple Intelligence from {}: {e}.",
             path.display()
         ))
     })?;
+    if text.ends_with('\n') {
+        text.pop();
+        if text.ends_with('\r') {
+            text.pop();
+        }
+    }
     ym_core::apple_auto::check_instructions(&text).map_err(Failure::usage)?;
     Ok(text)
 }
