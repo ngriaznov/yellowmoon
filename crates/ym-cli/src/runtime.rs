@@ -364,9 +364,9 @@ mod tests {
     impl ym_core::apple_auto::AutoAdvisor for Switch {
         fn availability(&self) -> ym_core::apple_auto::Availability {
             if self.0.load(Ordering::SeqCst) {
-                ym_core::apple_auto::Availability::Available(
-                    ym_core::apple_auto::AdvisorInfo::new("Switch", "test"),
-                )
+                ym_core::apple_auto::Availability::Available(ym_core::apple_auto::AdvisorInfo::new(
+                    "Switch", "test",
+                ))
             } else {
                 ym_core::apple_auto::Availability::Unavailable(
                     UnavailableReason::AppleIntelligenceOff,

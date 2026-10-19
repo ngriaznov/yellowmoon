@@ -462,7 +462,11 @@ mod tests {
     #[test]
     fn the_apple_auto_row_says_what_happened() {
         use ym_core::apple_auto::UnavailableReason;
-        let a = answered(steps(1, 0, 1, 0), "Backlit portrait at dusk", "Warm and soft");
+        let a = answered(
+            steps(1, 0, 1, 0),
+            "Backlit portrait at dusk",
+            "Warm and soft",
+        );
         assert_eq!(
             apple_auto_text(&a, Some(steps(1, 0, 1, 0))),
             "Brighter +0.3 EV · contrast +15 · scene \"Backlit portrait at dusk\" · plan \"Warm and soft\""

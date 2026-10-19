@@ -16,8 +16,7 @@ use ym_core::app::gpu::{
 };
 use ym_core::apple_auto::{
     Activity, AppleAutoMode, AppleAutoStatus, Availability, DEFAULT_INSTRUCTIONS,
-    INSTRUCTIONS_MAX_CHARS, InstructionsId, PROMPT_VERSION, TABLE_VERSION,
-    effective_instructions,
+    INSTRUCTIONS_MAX_CHARS, InstructionsId, PROMPT_VERSION, TABLE_VERSION, effective_instructions,
 };
 use ym_core::data_dir::find_data_dir;
 use ym_core::looks::{LookGroupInfo, LookService};
@@ -209,10 +208,7 @@ fn build() -> Result<Report, Failure> {
         gpu,
         plan,
         neural: NeuralStatus::probe(Some(&data_folder)),
-        apple_auto: apple_auto_status(
-            prefs.get().apple_auto,
-            &prefs.get().apple_auto_instructions,
-        ),
+        apple_auto: apple_auto_status(prefs.get().apple_auto, &prefs.get().apple_auto_instructions),
         weights,
         illuminant_models,
         profiles,

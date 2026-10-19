@@ -1949,7 +1949,10 @@ fn apple_auto_reaches_the_webview_through_the_settings_the_status_and_settings_c
     let AppleAuto::Answered { info, .. } = apple_state(&h, id) else {
         panic!("answered");
     };
-    assert_eq!(info.instructions, crate::wire::AppleAutoInstructions::Edited);
+    assert_eq!(
+        info.instructions,
+        crate::wire::AppleAutoInstructions::Edited
+    );
     // Back to the default: the preference is cleared.
     let prefs = h
         .api

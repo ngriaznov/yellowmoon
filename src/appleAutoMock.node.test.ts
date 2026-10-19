@@ -1,10 +1,10 @@
 // @vitest-environment node
-// The mock's Apple Auto (`src/api.mock.ts`) copies the core's default instructions, their limit and the table of `docs/19` section 5
+// The mock's Apple Auto (`src/api.mock.ts`, its constants in `src/api/appleAutoMock.ts`) copies the core's default instructions, their limit and the table of `docs/19` section 5
 // (`crates/ym-core/src/apple_auto.rs`): this reads the Rust file and fails when either side changes without the other.
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { APPLE_TABLE, MOCK_APPLE_INFO, MOCK_DEFAULT_INSTRUCTIONS, MOCK_INSTRUCTIONS_MAX_CHARS } from "./api.mock";
+import { APPLE_TABLE, MOCK_DEFAULT_INSTRUCTIONS, MOCK_DEFAULT_INSTRUCTIONS_SHA256, MOCK_INSTRUCTIONS_MAX_CHARS } from "./api/appleAutoMock";
 
 const source = readFileSync(new URL("../crates/ym-core/src/apple_auto.rs", import.meta.url), "utf8");
 
@@ -35,8 +35,7 @@ describe("the mock's Apple Auto matches crates/ym-core/src/apple_auto.rs", () =>
     expect(JSON.parse(rustConst("DEFAULT_INSTRUCTIONS"))).toBe(MOCK_DEFAULT_INSTRUCTIONS);
     expect(Number(rustConst("INSTRUCTIONS_MAX_CHARS"))).toBe(MOCK_INSTRUCTIONS_MAX_CHARS);
     const sha = createHash("sha256").update(MOCK_DEFAULT_INSTRUCTIONS, "utf8").digest("hex").slice(0, 12);
-    expect(MOCK_APPLE_INFO.instructions).toBe("default");
-    expect(MOCK_APPLE_INFO.instructions_sha256).toBe(sha);
+    expect(MOCK_DEFAULT_INSTRUCTIONS_SHA256).toBe(sha);
   });
 
   it("has the table of section 5, step for step", () => {

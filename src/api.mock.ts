@@ -26,6 +26,12 @@
  * returns to a fresh app.
  */
 import type { Api, Unsubscribe } from "./api";
+import {
+  APPLE_TABLE,
+  MOCK_DEFAULT_INSTRUCTIONS,
+  MOCK_DEFAULT_INSTRUCTIONS_SHA256,
+  MOCK_INSTRUCTIONS_MAX_CHARS,
+} from "./api/appleAutoMock";
 import type {
   ApiEventName,
   ApiEvents,
@@ -35,8 +41,6 @@ import type {
   AppleAutoAnswer,
   AppleAutoInfo,
   AppleAutoStatus,
-  AppleHighlightColor,
-  AppleShadowColor,
   ApplyScope,
   AutoEstimates,
   BalanceSetting,
@@ -154,19 +158,11 @@ export const MOCK_ESTIMATES: AutoEstimates = {
  * every developed photo is waiting for its answer, has the answer of {@link MOCK_APPLE_ANSWER}, or failed (no answer within 30
  * seconds); with the preference off every photo is `off`.
  */
+export { APPLE_TABLE, MOCK_DEFAULT_INSTRUCTIONS, MOCK_INSTRUCTIONS_MAX_CHARS };
+
 export type MockAppleAuto = "none" | "unavailable" | "pending" | "answered" | "failed";
 
 const APPLE_AUTO_MODES: readonly MockAppleAuto[] = ["none", "unavailable", "pending", "answered", "failed"];
-
-/** The default instructions for Apple's model (`ym_core::apple_auto::DEFAULT_INSTRUCTIONS`, `docs/19` section 4). */
-export const MOCK_DEFAULT_INSTRUCTIONS =
-  "You are a professional colourist grading raw photos. The picture you see is the camera's neutral starting point, not a finished photo. Grade it into a finished, professional photograph, and give it a cinematic look when the scene invites it: dusk and night streets, fog and rain, dramatic or directional light, people in a mood. Work like a colourist: set the brightness of the subject, shape the highlights, the shadows and the black level, set the contrast, the warmth and tint of the light and the strength of the colours, and colour the shadows and the highlights when it serves the mood. A professional grade usually changes several of these. Respect the scene: a night scene stays dark, snow stays bright, a silhouette stays dark, candlelight and golden hour stay warm, and skin stays natural.";
-
-/** The longest instructions the model is given, in characters (`INSTRUCTIONS_MAX_CHARS`). */
-export const MOCK_INSTRUCTIONS_MAX_CHARS = 2000;
-
-/** The first 12 hex digits of the SHA-256 of the default instructions (what the core reports). */
-const DEFAULT_INSTRUCTIONS_SHA256 = "6a8a034fb24b";
 
 /**
  * Which instructions the mock's model reads: the default, or the person's own with a stand-in digest (12 hex digits of an FNV-1a
@@ -174,7 +170,7 @@ const DEFAULT_INSTRUCTIONS_SHA256 = "6a8a034fb24b";
  */
 export function mockInstructionsId(own: string): Pick<AppleAutoInfo, "instructions" | "instructions_sha256"> {
   if (own.trim() === "" || own === MOCK_DEFAULT_INSTRUCTIONS) {
-    return { instructions: "default", instructions_sha256: DEFAULT_INSTRUCTIONS_SHA256 };
+    return { instructions: "default", instructions_sha256: MOCK_DEFAULT_INSTRUCTIONS_SHA256 };
   }
   let h = 0xcbf29ce484222325n;
   for (const byte of new TextEncoder().encode(own)) h = BigInt.asUintN(64, (h ^ BigInt(byte)) * 0x100000001b3n);
@@ -209,31 +205,6 @@ export const MOCK_APPLE_ANSWER: AppleAutoAnswer = {
   },
   scene: "Street in late sun",
   plan: "Teal shadows and warm highlights for a cinematic late-sun street",
-};
-
-/** The table of `docs/19` section 5 (`ym_core::apple_auto::TABLE`, table version 2), by step. */
-export const APPLE_TABLE = {
-  exposure_ev: { [-3]: -1, [-2]: -0.6, [-1]: -0.3, 0: 0, 1: 0.3, 2: 0.6, 3: 1 } as Record<number, number>,
-  highlights: { [-2]: -40, [-1]: -20, 0: 0, 1: 20, 2: 40 } as Record<number, number>,
-  warmer_mired: { [-2]: -20, [-1]: -10, 0: 0, 1: 10, 2: 20 } as Record<number, number>,
-  tint: { [-2]: -10, [-1]: -5, 0: 0, 1: 5, 2: 10 } as Record<number, number>,
-  percent: { [-2]: -30, [-1]: -15, 0: 0, 1: 15, 2: 30 } as Record<number, number>,
-  strength_radius: { 1: 0.3, 2: 0.55, 3: 0.8 } as Record<number, number>,
-  shadow_directions: {
-    none: [0, 0],
-    teal: [-0.866, -0.5],
-    blue: [-0.5, -0.866],
-    green: [-0.5, 0.866],
-    amber: [0.866, 0.5],
-    magenta: [0.5, -0.866],
-  } as Record<AppleShadowColor, ColorBalancePoint>,
-  highlight_directions: {
-    none: [0, 0],
-    warm: [0.866, 0.5],
-    gold: [0.5, 0.866],
-    cool: [-0.5, -0.866],
-    pink: [0.866, -0.5],
-  } as Record<AppleHighlightColor, ColorBalancePoint>,
 };
 
 /** The wheel's point of a colour at a strength (`docs/19` section 5), `[0, 0]` for none or a colour without a strength. */

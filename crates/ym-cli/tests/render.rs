@@ -490,7 +490,8 @@ fn the_remaining_flags_of_docs_10_reach_the_settings_of_the_file() {
     assert_eq!(objects.len(), 1);
     let s = &objects[0]["settings"];
     assert_eq!(s["brightness"], 11.0);
-    assert_eq!(s["shadows"], 22.0);
+    // Shadows is Auto or a manual value (`docs/19` section 5): a number is Manual.
+    assert_eq!(s["shadows"], json!({ "kind": "manual", "value": 22.0 }));
     assert_eq!(s["white"], 33.0);
     assert_eq!(s["white_offset_ev"], -0.5);
     assert_eq!(
@@ -502,13 +503,18 @@ fn the_remaining_flags_of_docs_10_reach_the_settings_of_the_file() {
             "chromatic_aberration": true
         })
     );
-    // Untouched, they are what the photo opens with: Auto contrast and saturation are pinned to
-    // the 0 they resolve to without Apple Auto (docs/19 section 5).
-    for key in ["highlights", "black"] {
-        assert_eq!(s[key], 0.0, "{key}");
-    }
-    for key in ["contrast", "saturation"] {
+    // Untouched, they are what the photo opens with: Auto highlights, black, contrast and
+    // saturation are pinned to the 0 they resolve to without Apple Auto, and the shadows and
+    // highlights wheels to the centre (docs/19 section 5).
+    for key in ["highlights", "black", "contrast", "saturation"] {
         assert_eq!(s[key], json!({ "kind": "manual", "value": 0.0 }), "{key}");
+    }
+    for key in ["shadows", "highlights"] {
+        assert_eq!(
+            s["color_balance"][key],
+            json!({ "kind": "manual", "point": [0.0, 0.0] }),
+            "{key}"
+        );
     }
 }
 
