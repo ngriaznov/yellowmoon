@@ -505,7 +505,10 @@ pub fn grade_params(s: &DevelopSettings, estimates: &AutoEstimates) -> GradePara
         white: s.white,
         balance_shadows: b(s.color_balance.shadows.resolve(estimates.balance_shadows)),
         balance_midtones: b(s.color_balance.midtones),
-        balance_highlights: b(s.color_balance.highlights.resolve(estimates.balance_highlights)),
+        balance_highlights: b(s
+            .color_balance
+            .highlights
+            .resolve(estimates.balance_highlights)),
         saturation: s.saturation.resolve(estimates.saturation),
     }
 }

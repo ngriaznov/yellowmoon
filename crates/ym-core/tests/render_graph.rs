@@ -221,17 +221,29 @@ fn every_grade_control_and_the_look_only_rebuild_the_grade_group_with(rig: Rig) 
             Box::new(|s| s.contrast = ym_core::settings::PercentSetting::manual_value(20.0)),
         ),
         ("brightness", Box::new(|s| s.brightness = -20.0)),
-        ("highlights", Box::new(|s| s.highlights = 30.0)),
-        ("shadows", Box::new(|s| s.shadows = 30.0)),
+        (
+            "highlights",
+            Box::new(|s| s.highlights = ym_core::settings::PercentSetting::manual_value(30.0)),
+        ),
+        (
+            "shadows",
+            Box::new(|s| s.shadows = ym_core::settings::PercentSetting::manual_value(30.0)),
+        ),
         ("white", Box::new(|s| s.white = 10.0)),
-        ("black", Box::new(|s| s.black = 10.0)),
+        (
+            "black",
+            Box::new(|s| s.black = ym_core::settings::PercentSetting::manual_value(10.0)),
+        ),
         (
             "saturation",
             Box::new(|s| s.saturation = ym_core::settings::PercentSetting::manual_value(25.0)),
         ),
         (
             "color_balance",
-            Box::new(|s| s.color_balance.shadows = [0.3, -0.2]),
+            Box::new(|s| {
+                s.color_balance.shadows =
+                    ym_core::settings::BalanceSetting::manual_point([0.3, -0.2])
+            }),
         ),
         (
             "color_warp",

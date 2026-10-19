@@ -42,12 +42,14 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
+/// Steps with the four steps of prompt version 1 set and every other step keep (no colours).
 fn steps(exposure: i8, white: i8, contrast: i8, saturation: i8) -> AutoSteps {
     AutoSteps {
-        exposure,
-        white,
-        contrast,
-        saturation,
+        exposure: Some(exposure),
+        white: Some(white),
+        contrast: Some(contrast),
+        saturation: Some(saturation),
+        ..AutoSteps::keep()
     }
 }
 
@@ -158,15 +160,14 @@ struct Scripted {
     script: Mutex<HashMap<u8, VecDeque<Reply>>>,
     fallback: Mutex<Reply>,
     calls: Mutex<Vec<u8>>,
+    /// The instructions of each call, in order.
+    instructions: Mutex<Vec<String>>,
     gate: Gate,
 }
 
 impl Scripted {
     fn info() -> AdvisorInfo {
-        AdvisorInfo {
-            model: "Scripted".to_owned(),
-            os: "27.0 (27A1)".to_owned(),
-        }
+        AdvisorInfo::new("Scripted", "27.0 (27A1)")
     }
 
     fn new(fallback: Reply) -> Arc<Self> {
@@ -175,6 +176,7 @@ impl Scripted {
             script: Mutex::new(HashMap::new()),
             fallback: Mutex::new(fallback),
             calls: Mutex::new(Vec::new()),
+            instructions: Mutex::new(Vec::new()),
             gate: Gate::new(true),
         })
     }
@@ -208,9 +210,14 @@ impl AutoAdvisor for Scripted {
         lock(&self.availability).clone()
     }
 
-    fn ask(&self, picture: &AdvisorPicture) -> Result<AdvisorAnswer, AdvisorError> {
+    fn ask(
+        &self,
+        picture: &AdvisorPicture,
+        instructions: &str,
+    ) -> Result<AdvisorAnswer, AdvisorError> {
         let photo = picture.rgb[0];
         lock(&self.calls).push(photo);
+        lock(&self.instructions).push(instructions.to_owned());
         self.gate.pass(photo);
         let reply = lock(&self.script)
             .get_mut(&photo)
@@ -220,6 +227,7 @@ impl AutoAdvisor for Scripted {
             .map(|steps| AdvisorAnswer {
                 steps,
                 scene: format!("Photo {photo}"),
+                plan: format!("Plan {photo}"),
             })
             .map_err(|kind| AdvisorError::new(kind, "scripted"))
     }
@@ -465,6 +473,7 @@ fn auto_contrast_and_saturation_resolve_and_pin_to_the_estimates_values() {
             answer: AdvisorAnswer {
                 steps: steps(0, 0, 2, -1),
                 scene: String::new(),
+                plan: String::new(),
             },
             info: Scripted::info(),
         },
@@ -578,6 +587,178 @@ fn an_answer_moves_exposure_white_contrast_and_saturation() {
     );
 }
 
+#[test]
+fn an_answer_moves_highlights_shadows_black_the_tint_and_the_wheels() {
+    use ym_core::apple_auto::{HighlightColor, ShadowColor};
+    let dir = tempfile::tempdir().unwrap();
+    let (_, est, profile) = estimates_of_file(&scene(0.3).write(dir.path(), "a.ARW", MODEL));
+    let graded = AutoSteps {
+        highlights: Some(-2),
+        shadows: Some(1),
+        blacks: Some(-1),
+        tint: Some(2),
+        shadow_color: Some(ShadowColor::Teal),
+        shadow_color_strength: Some(2),
+        highlight_color: Some(HighlightColor::Warm),
+        highlight_color_strength: Some(1),
+        ..AutoSteps::default()
+    };
+    let e = est.with_apple(Some(graded), AppleAuto::Pending, tables_of(&profile));
+    assert_eq!((e.highlights, e.shadows, e.black), (-40.0, 15.0, -15.0));
+    assert_eq!(e.balance_shadows, [-0.866 * 0.55, -0.5 * 0.55]);
+    assert_eq!(e.balance_highlights, [0.866 * 0.3, 0.5 * 0.3]);
+    // The tint nudge: more magenta reads a higher tint, the Kelvin and the exposure stay.
+    assert_eq!(e.color.tint_shift, 10.0);
+    assert_eq!(e.color.white_shift_mired, 0.0);
+    assert!(
+        (e.readout.tint - (est.readout.tint + 10.0).min(50.0)).abs() < 0.5,
+        "{:?} vs {:?}",
+        e.readout,
+        est.readout
+    );
+    assert_eq!(e.readout.kelvin_k, est.readout.kelvin_k);
+    assert_eq!(e.exposure, est.exposure);
+    // Unset steps keep the values without Apple Auto.
+    assert_eq!((e.contrast, e.saturation), (0.0, 0.0));
+    // The settings resolve against them; a manual value wins; the grade takes them.
+    let settings = DevelopSettings::default();
+    let r = ym_core::settings::ResolvedSettings::resolve(PhotoId(1), &settings, &e, &profile, None)
+        .unwrap();
+    assert_eq!(
+        (r.values.highlights, r.values.shadows, r.values.black),
+        (-40.0, 15.0, -15.0)
+    );
+    assert_eq!(r.values.color_balance.shadows, e.balance_shadows);
+    assert_eq!(r.values.color_balance.highlights, e.balance_highlights);
+    assert_eq!(r.values.color_balance.midtones, [0.0, 0.0]);
+    assert!(r.auto.highlights && r.auto.balance_shadows && r.auto.balance_highlights);
+    let g = ym_core::pipeline::color::grade_params(&settings, &e);
+    assert_eq!((g.highlights, g.shadows, g.black), (-40.0, 15.0, -15.0));
+    assert_eq!(
+        [g.balance_shadows.a, g.balance_shadows.b],
+        e.balance_shadows
+    );
+    let mut manual = settings.clone();
+    manual.highlights = PercentSetting::manual_value(5.0);
+    manual.color_balance.shadows = ym_core::settings::BalanceSetting::manual_point([0.1, 0.2]);
+    let g = ym_core::pipeline::color::grade_params(&manual, &e);
+    assert_eq!(g.highlights, 5.0);
+    assert_eq!([g.balance_shadows.a, g.balance_shadows.b], [0.1, 0.2]);
+    // Pinned settings record the numbers and points they resolved to.
+    let pinned = r.pinned_settings();
+    assert_eq!(pinned.highlights, PercentSetting::manual_value(-40.0));
+    assert_eq!(
+        pinned.color_balance.shadows,
+        ym_core::settings::BalanceSetting::manual_point(e.balance_shadows)
+    );
+    // The summary carries the Auto values and the steps in effect.
+    let v = serde_json::to_value(e.summary()).unwrap();
+    assert_eq!(
+        (
+            v["highlights"].clone(),
+            v["shadows"].clone(),
+            v["black"].clone()
+        ),
+        (json!(-40.0), json!(15.0), json!(-15.0))
+    );
+    assert_eq!(v["apple_steps"]["highlights"], json!(-2));
+    assert_eq!(v["apple_steps"]["exposure"], json!(null));
+    assert_eq!(v["apple_steps"]["shadow_color"], json!("teal"));
+}
+
+#[test]
+fn steps_the_model_left_empty_set_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_, est, profile) = estimates_of_file(&scene(0.3).write(dir.path(), "a.ARW", MODEL));
+    // Only the contrast was filled: every other value is the rule's, bit for bit.
+    let only = AutoSteps {
+        contrast: Some(-1),
+        ..AutoSteps::default()
+    };
+    let e = est.with_apple(Some(only), AppleAuto::Pending, tables_of(&profile));
+    assert_eq!(e.contrast, -15.0);
+    assert_eq!(e.exposure, est.exposure);
+    assert_eq!(format!("{:?}", e.color), format!("{:?}", est.color));
+    assert_eq!(e.readout, est.readout);
+    assert_eq!(
+        (e.highlights, e.shadows, e.black, e.saturation),
+        (0.0, 0.0, 0.0, 0.0)
+    );
+    assert_eq!(
+        (e.balance_shadows, e.balance_highlights),
+        ([0.0; 2], [0.0; 2])
+    );
+    assert_eq!(e.source(), AutoSource::Apple);
+}
+
+#[test]
+fn shadow_and_highlight_colours_take_the_named_hue_through_the_grade() {
+    use ym_color::grade::{ColorBalance, Grade, GradeParams, logc4_at_stops};
+    use ym_color::logc::LogC4;
+    use ym_core::apple_auto::{HighlightColor, ShadowColor};
+    // The hue in degrees of a small offset from grey (HSV's hue of grey plus the offset).
+    fn hue(d: [f64; 3]) -> f64 {
+        let (r, g, b) = (d[0], d[1], d[2]);
+        let max = r.max(g).max(b);
+        let min = r.min(g).min(b);
+        let c = max - min;
+        assert!(c > 1e-4, "no colour: {d:?}");
+        let h = if max == r {
+            60.0 * ((g - b) / c)
+        } else if max == g {
+            60.0 * ((b - r) / c + 2.0)
+        } else {
+            60.0 * ((r - g) / c + 4.0)
+        };
+        (h + 360.0) % 360.0
+    }
+    // A neutral grey ramp through C9 with the wheel at the colour's point: the offset at the
+    // zone's centre (3 stops below or above grey) has the colour's hue, within 5 degrees: teal
+    // between cyan and blue, blue, green, amber (orange), magenta; warm (orange), gold (yellow),
+    // cool (blue), pink (between magenta and red).
+    let check = |shadows: [f64; 2], highlights: [f64; 2], stops: f64, want: f64, name: &str| {
+        let grade = Grade::new(&GradeParams {
+            balance_shadows: ColorBalance {
+                a: shadows[0],
+                b: shadows[1],
+            },
+            balance_highlights: ColorBalance {
+                a: highlights[0],
+                b: highlights[1],
+            },
+            ..GradeParams::default()
+        });
+        for s in [-6.0, -3.0, 0.0, 3.0, 6.0] {
+            let l = logc4_at_stops(s);
+            let out = grade.apply(LogC4([l, l, l]), l).0;
+            let d = [out[0] - l, out[1] - l, out[2] - l];
+            if s == stops {
+                let h = hue(d);
+                let off = ((h - want + 540.0) % 360.0 - 180.0).abs();
+                assert!(off < 5.0, "{name}: hue {h} at {s} stops, wanted {want}");
+            }
+        }
+    };
+    let point = |d: [f64; 2]| [0.55 * d[0], 0.55 * d[1]];
+    for (c, want) in [
+        (ShadowColor::Teal, 210.0),
+        (ShadowColor::Blue, 240.0),
+        (ShadowColor::Green, 120.0),
+        (ShadowColor::Amber, 30.0),
+        (ShadowColor::Magenta, 300.0),
+    ] {
+        check(point(c.direction()), [0.0; 2], -3.0, want, c.name());
+    }
+    for (c, want) in [
+        (HighlightColor::Warm, 30.0),
+        (HighlightColor::Gold, 60.0),
+        (HighlightColor::Cool, 240.0),
+        (HighlightColor::Pink, 330.0),
+    ] {
+        check([0.0; 2], point(c.direction()), 3.0, want, c.name());
+    }
+}
+
 // ---------------------------------------------------------------------------------------------
 // The worker
 // ---------------------------------------------------------------------------------------------
@@ -639,7 +820,7 @@ fn the_viewer_never_waits_and_the_answer_arrives_with_estimates_changed() {
 
 #[test]
 fn the_photo_on_screen_goes_first_then_an_exports_photos_then_the_others_in_order() {
-    let advisor = Scripted::new(Ok(AutoSteps::default()));
+    let advisor = Scripted::new(Ok(AutoSteps::keep()));
     advisor.set_available(false);
     let rig = Rig::new(advisor.clone(), 4, false);
     let ids = rig.open();
@@ -674,7 +855,7 @@ fn the_photo_on_screen_goes_first_then_an_exports_photos_then_the_others_in_orde
 
 #[test]
 fn failures_use_the_rule_and_say_why_and_only_waiting_is_retried() {
-    let advisor = Scripted::new(Ok(AutoSteps::default()));
+    let advisor = Scripted::new(Ok(AutoSteps::keep()));
     let rig = Rig::new(advisor.clone(), 6, false);
     // The ids are given in filmstrip order, from 1.
     let id = |k: u32| PhotoId(k);
@@ -745,7 +926,7 @@ fn a_burst_shares_the_median_of_its_answered_steps_and_waits_for_every_frame() {
     frame("b.ARW", "10", 0.20);
     frame("c.ARW", "11", 0.40);
     frame("d.ARW", "40", 0.10);
-    let advisor = Scripted::new(Ok(AutoSteps::default()));
+    let advisor = Scripted::new(Ok(AutoSteps::keep()));
     advisor.set_available(false);
     let pictures = Arc::new(StubPictures::default());
     let session = Session::new(base_env().with_apple_auto(AppleAutoEnv {
@@ -917,7 +1098,7 @@ fn rerun_asks_again_and_resets_contrast_and_saturation() {
 
 #[test]
 fn copy_and_paste_keep_auto_so_each_photo_keeps_its_own_answer() {
-    let advisor = Scripted::new(Ok(AutoSteps::default()));
+    let advisor = Scripted::new(Ok(AutoSteps::keep()));
     let rig = Rig::new(advisor.clone(), 2, false);
     advisor.answer(PhotoId(1), [Ok(steps(0, 0, 2, 0))]);
     advisor.answer(PhotoId(2), [Ok(steps(0, 0, -1, 0))]);
@@ -942,7 +1123,7 @@ fn copy_and_paste_keep_auto_so_each_photo_keeps_its_own_answer() {
 
 #[test]
 fn an_answer_that_moves_the_values_renders_the_thumbnail_again_and_keep_does_not() {
-    let advisor = Scripted::new(Ok(AutoSteps::default()));
+    let advisor = Scripted::new(Ok(AutoSteps::keep()));
     let rig = Rig::new(advisor.clone(), 2, true);
     advisor.answer(PhotoId(1), [Ok(steps(1, 0, 0, 0))]);
     let ids = rig.open();
@@ -1173,13 +1354,21 @@ fn the_status_and_the_preference_reach_the_session() {
     let s = fake.core.apple_auto_status();
     assert!(s.available && s.active && s.preference);
     assert_eq!(s.info, Some(FakeAdvisor::info()));
+    let sha = ym_core::apple_auto::InstructionsId::default().instructions_sha256;
     assert_eq!(
         serde_json::to_value(&s).unwrap(),
         json!({
             "available": true, "reason": null,
-            "info": { "model": "Test advisor", "os": "test" },
+            "info": {
+                "model": "Test advisor", "os": "test",
+                "instructions": "default", "instructions_sha256": sha,
+            },
             "preference": true, "mode": "from_preference", "active": true,
-            "prompt": 1, "table": 1
+            "prompt": 2, "table": 2,
+            "instructions": "default", "instructions_sha256": sha,
+            "own_instructions": "",
+            "default_instructions": ym_core::apple_auto::DEFAULT_INSTRUCTIONS,
+            "instructions_max_chars": 2000,
         })
     );
     let id = fake.open()[0];
@@ -1252,8 +1441,10 @@ fn exports_with_the_fake_carry_its_answer_and_are_the_same_bytes_twice() {
         assert_eq!(apple["scene"], json!("Test picture"));
         assert_eq!(
             (apple["prompt"].clone(), apple["table"].clone()),
-            (json!(1), json!(1))
+            (json!(2), json!(2))
         );
+        assert_eq!(apple["plan"], json!("Test plan: You"));
+        assert_eq!(apple["instructions"], json!("default"));
         // ym:Settings pins Auto contrast to the table's value of the answer.
         let settings: Value =
             serde_json::from_str(&unescape(&xmp_property(&xmp, "ym:Settings").unwrap())).unwrap();
@@ -1326,8 +1517,95 @@ fn a_failed_photo_exports_with_the_rule_and_says_why() {
     assert_eq!(xmp_property(&xmp, "ym:Auto").as_deref(), Some("rule"));
     assert_eq!(
         unescape(&xmp_property(&xmp, "ym:AppleAuto").unwrap()),
-        r#"{"model":"Scripted","os":"27.0 (27A1)","prompt":1,"reason":"guardrail","result":"failed","table":1}"#
+        format!(
+            r#"{{"instructions":"default","instructions_sha256":"{}","model":"Scripted","os":"27.0 (27A1)","prompt":2,"reason":"guardrail","result":"failed","table":2}}"#,
+            ym_core::apple_auto::InstructionsId::default().instructions_sha256
+        )
     );
+}
+
+#[test]
+fn new_instructions_ask_every_photo_again_and_the_model_reads_them() {
+    let fake = core_rig(Some(Arc::new(FakeAdvisor)), 2);
+    let ids = fake.open();
+    assert!(fake.core.session.wait_idle(Duration::from_secs(120)));
+    let plan = |id: PhotoId| match fake.core.session.estimates(id).unwrap().apple.clone() {
+        AppleAuto::Answered { answer, info } => (answer.plan, info.instructions.instructions),
+        other => panic!("{other:?}"),
+    };
+    use ym_core::apple_auto::InstructionsKind;
+    for id in &ids {
+        assert_eq!(
+            plan(*id),
+            ("Test plan: You".to_owned(), InstructionsKind::Default)
+        );
+    }
+    // Too long: refused with a plain message, nothing saved, nothing asked again.
+    let long = PreferencesPatch {
+        apple_auto_instructions: Some("x".repeat(2001)),
+        ..PreferencesPatch::default()
+    };
+    let err = fake.core.preferences_set(&long).unwrap_err().to_string();
+    assert!(err.contains("At most 2000"), "{err}");
+    assert_eq!(fake.core.preferences_get().apple_auto_instructions, "");
+    // Edited: saved, every photo asked again with them (the fake echoes their first word).
+    let edited = PreferencesPatch {
+        apple_auto_instructions: Some("Moody night grade, please.".to_owned()),
+        ..PreferencesPatch::default()
+    };
+    fake.core.preferences_set(&edited).unwrap();
+    assert!(fake.core.session.wait_idle(Duration::from_secs(120)));
+    for id in &ids {
+        assert_eq!(
+            plan(*id),
+            ("Test plan: Moody".to_owned(), InstructionsKind::Edited)
+        );
+    }
+    let status = fake.core.apple_auto_status();
+    assert_eq!(status.instructions.instructions, InstructionsKind::Edited);
+    assert_eq!(status.own_instructions, "Moody night grade, please.");
+    // Back to the default (empty text, or the default text itself): saved as "", asked again.
+    let reset = PreferencesPatch {
+        apple_auto_instructions: Some(ym_core::apple_auto::DEFAULT_INSTRUCTIONS.to_owned()),
+        ..PreferencesPatch::default()
+    };
+    let saved = fake.core.preferences_set(&reset).unwrap();
+    assert_eq!(saved.apple_auto_instructions, "");
+    assert!(fake.core.session.wait_idle(Duration::from_secs(120)));
+    for id in &ids {
+        assert_eq!(
+            plan(*id),
+            ("Test plan: You".to_owned(), InstructionsKind::Default)
+        );
+    }
+}
+
+#[test]
+fn an_answer_to_old_instructions_is_dropped_and_the_photo_asked_again() {
+    let advisor = Scripted::new(Ok(steps(1, 0, 0, 0)));
+    advisor.gate.close(None);
+    let rig = Rig::new(advisor.clone(), 1, false);
+    let id = rig.open()[0];
+    advisor.gate.wait_parked();
+    // The instructions change while the first request is held.
+    rig.session.set_apple_auto_instructions("Bright and airy.");
+    advisor.gate.open();
+    rig.settle();
+    let seen = lock(&advisor.instructions).clone();
+    assert_eq!(seen.len(), 2, "{seen:?}");
+    assert_eq!(seen[0], ym_core::apple_auto::DEFAULT_INSTRUCTIONS);
+    assert_eq!(seen[1], "Bright and airy.");
+    match rig.state(id) {
+        AppleAuto::Answered { info, .. } => assert_eq!(
+            info.instructions,
+            ym_core::apple_auto::InstructionsId::of("Bright and airy.")
+        ),
+        other => panic!("{other:?}"),
+    }
+    // The same text again changes nothing and asks nothing.
+    rig.session.set_apple_auto_instructions("Bright and airy.");
+    rig.settle();
+    assert_eq!(lock(&advisor.instructions).len(), 2);
 }
 
 #[test]

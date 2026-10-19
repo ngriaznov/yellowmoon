@@ -257,6 +257,8 @@ fn choosing_a_destination_remembers_the_folder_in_the_preferences_and_nothing_el
         "last_used_folders",
         // "Auto with Apple Intelligence", the eighth (the owner's agreement of 2026-10-19, docs/19).
         "apple_auto",
+        // "Instructions for Apple Intelligence", the ninth (the owner's request of 2026-10-19).
+        "apple_auto_instructions",
     ]
     .into_iter()
     .map(str::to_owned)
@@ -895,14 +897,12 @@ fn the_apple_auto_types_have_the_fields_of_the_typescript_interfaces() {
         "AppleAutoStatus",
         serde_json::to_value(&status).expect("json"),
     );
-    let info = AdvisorInfo {
-        model: "AFM 3 Core".into(),
-        os: "27.0.1 (27A404)".into(),
-    };
+    let info = AdvisorInfo::new("AFM 3 Core", "27.0.1 (27A404)");
     check("AppleAutoInfo", serde_json::to_value(&info).expect("json"));
     let answer = AdvisorAnswer {
-        steps: AutoSteps::default(),
+        steps: AutoSteps::keep(),
         scene: "A street".into(),
+        plan: "Soft and warm".into(),
     };
     check(
         "AppleAutoAnswer",

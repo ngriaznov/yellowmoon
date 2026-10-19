@@ -869,8 +869,9 @@ fn a_renderer_that_remembers_draws_the_pictures_of_one_that_does_not() {
                 what = "brightness".into();
             }
             2 => {
-                s.shadows = unit() * 100.0 - 50.0;
-                s.highlights = unit() * 100.0 - 50.0;
+                s.shadows = ym_core::settings::PercentSetting::manual_value(unit() * 100.0 - 50.0);
+                s.highlights =
+                    ym_core::settings::PercentSetting::manual_value(unit() * 100.0 - 50.0);
                 what = "shadows and highlights".into();
             }
             3 => {

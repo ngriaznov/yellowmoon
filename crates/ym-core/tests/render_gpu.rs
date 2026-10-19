@@ -105,7 +105,8 @@ fn gpu_and_cpu_frames_agree_within_the_parity_tolerance() {
                 s.contrast = ym_core::settings::PercentSetting::manual_value(30.0);
                 s.brightness = 10.0;
                 s.saturation = ym_core::settings::PercentSetting::manual_value(20.0);
-                s.color_balance.highlights = [0.4, -0.3];
+                s.color_balance.highlights =
+                    ym_core::settings::BalanceSetting::manual_point([0.4, -0.3]);
                 s.curve.luma = vec![[0.0, 0.0], [0.4, 0.5], [1.0, 1.0]];
                 s.curve.blue = vec![[0.0, 0.05], [1.0, 0.95]];
                 s.crop = Some(ym_core::settings::Crop {

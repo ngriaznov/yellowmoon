@@ -87,7 +87,11 @@ impl AutoAdvisor for NoAdvisor {
         Availability::Unavailable(NO_BRIDGE_REASON)
     }
 
-    fn ask(&self, _picture: &AdvisorPicture) -> Result<AdvisorAnswer, AdvisorError> {
+    fn ask(
+        &self,
+        _picture: &AdvisorPicture,
+        _instructions: &str,
+    ) -> Result<AdvisorAnswer, AdvisorError> {
         Err(AdvisorError::new(
             FailureKind::Unavailable,
             format!(
@@ -112,8 +116,12 @@ impl AutoAdvisor for AppleAdvisor {
         platform::availability()
     }
 
-    fn ask(&self, picture: &AdvisorPicture) -> Result<AdvisorAnswer, AdvisorError> {
-        platform::ask(picture)
+    fn ask(
+        &self,
+        picture: &AdvisorPicture,
+        instructions: &str,
+    ) -> Result<AdvisorAnswer, AdvisorError> {
+        platform::ask(picture, instructions)
     }
 }
 
@@ -136,15 +144,18 @@ mod platform {
         NoAdvisor.availability()
     }
 
-    pub(crate) fn ask(picture: &AdvisorPicture) -> Result<AdvisorAnswer, AdvisorError> {
-        NoAdvisor.ask(picture)
+    pub(crate) fn ask(
+        picture: &AdvisorPicture,
+        instructions: &str,
+    ) -> Result<AdvisorAnswer, AdvisorError> {
+        NoAdvisor.ask(picture, instructions)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ym_core::apple_auto::{AutoSteps, FailureKind, UnavailableReason};
+    use ym_core::apple_auto::{DEFAULT_INSTRUCTIONS, FailureKind, UnavailableReason};
 
     fn picture(value: u8) -> AdvisorPicture {
         AdvisorPicture {
@@ -161,16 +172,20 @@ mod tests {
             advisor.availability(),
             Availability::Available(FakeAdvisor::info())
         );
-        assert_eq!(advisor.ask(&picture(40)), FakeAdvisor.ask(&picture(40)));
         assert_eq!(
-            advisor.ask(&picture(40)).unwrap().steps,
-            AutoSteps {
-                exposure: 1,
-                white: 0,
-                contrast: 1,
-                saturation: 0
-            }
+            advisor.ask(&picture(40), DEFAULT_INSTRUCTIONS),
+            FakeAdvisor.ask(&picture(40), DEFAULT_INSTRUCTIONS)
         );
+        let answer = advisor.ask(&picture(40), "Grade it warm.").unwrap();
+        assert_eq!(
+            (
+                answer.steps.exposure,
+                answer.steps.contrast,
+                answer.steps.blacks
+            ),
+            (Some(1), Some(1), None)
+        );
+        assert_eq!(answer.plan, "Test plan: Grade");
     }
 
     #[test]
@@ -181,7 +196,10 @@ mod tests {
             Availability::Unavailable(NO_BRIDGE_REASON)
         );
         assert_eq!(
-            advisor.ask(&picture(40)).unwrap_err().kind,
+            advisor
+                .ask(&picture(40), DEFAULT_INSTRUCTIONS)
+                .unwrap_err()
+                .kind,
             FailureKind::Unavailable
         );
     }
@@ -247,7 +265,9 @@ mod tests {
             // A Mac with Apple Intelligence: the probe example and the owner's checks cover it.
             return;
         }
-        let error = AppleAdvisor.ask(&picture(128)).unwrap_err();
+        let error = AppleAdvisor
+            .ask(&picture(128), DEFAULT_INSTRUCTIONS)
+            .unwrap_err();
         assert_eq!(error.kind, FailureKind::Unavailable, "{error}");
     }
 
@@ -258,7 +278,7 @@ mod tests {
             height: 3,
             rgb: vec![0; 5],
         };
-        let error = AppleAdvisor.ask(&bad).unwrap_err();
+        let error = AppleAdvisor.ask(&bad, DEFAULT_INSTRUCTIONS).unwrap_err();
         // Without the bridge every request is unavailable; with it the picture is refused first.
         let expected = if cfg!(ym_apple_bridge) {
             FailureKind::Other

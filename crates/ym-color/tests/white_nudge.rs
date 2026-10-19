@@ -466,11 +466,7 @@ fn a_magenta_tint_nudge_takes_green_out_of_the_scene_white_and_a_green_one_adds_
                     scene.cct_k
                 );
                 // A step is small: 5 tint units move G/((R+B)/2) by a few percent.
-                assert!(
-                    g[3] / g[2] > 0.95 && g[3] / g[2] < 0.995,
-                    "{}: {g:?}",
-                    p.id
-                );
+                assert!(g[3] / g[2] > 0.95 && g[3] / g[2] < 0.995, "{}: {g:?}", p.id);
             }
         }
     }
@@ -485,7 +481,12 @@ fn the_tint_readout_follows_the_tint_nudge_and_the_kelvin_stays() {
             for t in [-10.0, -5.0, 5.0, 10.0] {
                 let nudged =
                     FusedChain::build(p.tables(), &scene, w_init, &tinted(0.0, 0.0, t)).unwrap();
-                assert_eq!(nudged.readout().kelvin_k, plain.readout().kelvin_k, "{}", p.id);
+                assert_eq!(
+                    nudged.readout().kelvin_k,
+                    plain.readout().kelvin_k,
+                    "{}",
+                    p.id
+                );
                 let expected = (plain.readout().tint + t).clamp(-50.0, 50.0);
                 assert!(
                     (nudged.readout().tint - expected).abs() < 1e-6,

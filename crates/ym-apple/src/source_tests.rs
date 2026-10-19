@@ -4,9 +4,12 @@
 
 use std::path::Path;
 
-use ym_core::apple_auto::{FailureKind, PROMPT_VERSION, UnavailableReason};
+use ym_core::apple_auto::{
+    DEFAULT_INSTRUCTIONS, FailureKind, HighlightColor, PROMPT_VERSION, ShadowColor,
+    UnavailableReason,
+};
 
-use crate::abi::{FAILURE_CODES, SCENE_BYTES, UNAVAILABLE_CODES, YmAppleAnswer};
+use crate::abi::{FAILURE_CODES, PLAN_BYTES, SCENE_BYTES, UNAVAILABLE_CODES, UNSET, YmAppleAnswer};
 
 fn read(relative: &str) -> String {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(relative);
@@ -87,8 +90,8 @@ fn block<'a>(source: &'a str, header: &str) -> &'a str {
 /// One field of the answer as section 4 describes it.
 struct Field {
     name: String,
-    /// The enum's cases in order; empty for the `String` field.
-    cases: Vec<String>,
+    /// The enum's cases in order with their codes; empty for a `String` field.
+    cases: Vec<(String, i32)>,
     guide: String,
 }
 
@@ -98,6 +101,24 @@ struct Request {
     prompt: String,
     options: String,
     fields: Vec<Field>,
+}
+
+/// `` `muchDarker` −3, `darker` −2, … `` as `(name, code)` pairs (the minus may be U+2212).
+fn coded_cases(cell: &str) -> Vec<(String, i32)> {
+    cell.split(',')
+        .map(|item| {
+            let item = item.trim();
+            let (name, code) = item
+                .rsplit_once(' ')
+                .unwrap_or_else(|| panic!("`{item}` is not `<case> <code>`"));
+            let code = code
+                .replace('\u{2212}', "-")
+                .trim_start_matches('+')
+                .parse()
+                .unwrap_or_else(|_| panic!("`{item}` has no code"));
+            (name.trim().trim_matches('`').to_owned(), code)
+        })
+        .collect()
 }
 
 fn request(spec: &str) -> Request {
@@ -133,10 +154,7 @@ fn request(spec: &str) -> Request {
             let cases = if cells[1] == "`String`" {
                 Vec::new()
             } else {
-                cells[1]
-                    .split(',')
-                    .map(|c| c.trim().trim_matches('`').to_owned())
-                    .collect()
+                coded_cases(cells[1])
             };
             Field {
                 name: cells[0].trim_matches('`').to_owned(),
@@ -145,7 +163,7 @@ fn request(spec: &str) -> Request {
             }
         })
         .collect::<Vec<_>>();
-    assert_eq!(fields.len(), 5, "section 4's answer has five fields");
+    assert_eq!(fields.len(), 14, "section 4's answer has fourteen fields");
     Request {
         instructions,
         prompt,
@@ -183,13 +201,32 @@ fn only_the_system_model_on_this_mac_is_used() {
 }
 
 #[test]
+fn the_default_instructions_are_section_4s_and_reach_the_swift_by_parameter() {
+    let swift = swift();
+    let request = request(&spec());
+    assert_eq!(
+        request.instructions, DEFAULT_INSTRUCTIONS,
+        "ym_core::apple_auto::DEFAULT_INSTRUCTIONS is not the text of docs/19 section 4"
+    );
+    // The Swift does not hold the instructions: it takes them from ym_apple_auto_ask's parameter
+    // and opens the session with them.
+    assert!(
+        !swift.contains(&request.instructions[..60]),
+        "the Swift holds the instructions"
+    );
+    let ask = block(&swift, "public func ymAppleAutoAsk(");
+    assert!(squeeze(ask).contains("_ instructions: UnsafePointer<CChar>?,"));
+    assert!(ask.contains("String(cString: $0)"));
+    assert!(ask.contains("instructions: instructionsText"));
+    let model = block(&swift, "private func askModel(");
+    assert!(model.contains("instructions: String"));
+    assert!(model.contains("LanguageModelSession(tools: [], instructions: { instructions })"));
+}
+
+#[test]
 fn the_swift_sends_what_section_4_says() {
     let swift = swift();
     let request = request(&spec());
-    assert!(
-        swift.contains(&format!("\"{}\"", request.instructions)),
-        "the instructions are not in the Swift verbatim"
-    );
     assert!(
         swift.contains(&format!("\"{}\"", request.prompt)),
         "the prompt is not in the Swift verbatim"
@@ -201,8 +238,12 @@ fn the_swift_sends_what_section_4_says() {
     );
     assert!(swift.contains("includeSchemaInPrompt: true"));
     assert!(swift.contains("Attachment(image, orientation: .up)"));
+    // The answer is streamed, so a cut answer keeps the fields filled until then.
+    assert!(swift.contains("session.streamResponse("));
+    assert!(swift.contains("generating: Answer.self"));
 
     let lines: Vec<&str> = swift.lines().map(str::trim).collect();
+    let filled = block(&swift, "private func filledFields(");
     let mut last_line = 0;
     for field in &request.fields {
         let guide = format!("@Guide(description: \"{}\")", field.guide);
@@ -221,10 +262,20 @@ fn the_swift_sends_what_section_4_says() {
 
         if field.cases.is_empty() {
             assert_eq!(swift_type, "String", "{}", field.name);
+            assert!(
+                filled.contains(&format!("forProperty: \"{}\"", field.name)),
+                "filledFields does not read {}",
+                field.name
+            );
             continue;
         }
+        // Every value is optional: a field the model leaves empty sets nothing.
+        let swift_type = swift_type
+            .strip_suffix('?')
+            .unwrap_or_else(|| panic!("{} is not optional: {swift_type}", field.name));
         let declared = block(&swift, &format!("enum {swift_type} {{"));
-        let cases_line = format!("case {}", field.cases.join(", "));
+        let names: Vec<&str> = field.cases.iter().map(|(n, _)| n.as_str()).collect();
+        let cases_line = format!("case {}", names.join(", "));
         assert!(
             declared.lines().any(|l| l.trim() == cases_line),
             "enum {swift_type} does not declare `{cases_line}`"
@@ -234,12 +285,10 @@ fn the_swift_sends_what_section_4_says() {
             1,
             "enum {swift_type} declares other cases"
         );
-        // The steps: −3 … +3 for seven cases, −2 … +2 for five, keep 0, in the table's order.
-        let mapping = block(&swift, &format!("extension {swift_type} {{"));
-        let n = i32::try_from(field.cases.len()).expect("a few cases");
-        for (i, case) in (0..).zip(&field.cases) {
-            let step = i - (n - 1) / 2;
-            let line = format!("case .{case}: return {step}");
+        // The codes: section 4's numbers, case by case.
+        let mapping = block(&swift, &format!("extension {swift_type}: AnswerCode {{"));
+        for (case, code) in &field.cases {
+            let line = format!("case .{case}: return {code}");
             assert!(
                 mapping.lines().any(|l| l.trim() == line),
                 "extension {swift_type} lacks `{line}`"
@@ -250,7 +299,73 @@ fn the_swift_sends_what_section_4_says() {
             field.cases.len(),
             "extension {swift_type} maps other cases"
         );
+        // The answer's reader takes this field by its name and type.
+        assert!(
+            filled.contains(&format!(
+                "code(of: {swift_type}.self, \"{}\", in: content)",
+                field.name
+            )),
+            "filledFields does not read {} as {swift_type}",
+            field.name
+        );
     }
+}
+
+#[test]
+fn the_codes_of_section_4_are_the_cores() {
+    // The steps run from −n to +n with keep 0 in the core's ranges; the colours and strengths are
+    // the core's codes.
+    let request = request(&spec());
+    let field = |name: &str| {
+        request
+            .fields
+            .iter()
+            .find(|f| f.name == name)
+            .unwrap_or_else(|| panic!("no field {name}"))
+    };
+    for (name, n) in [
+        ("exposure", 3),
+        ("highlights", 2),
+        ("shadows", 2),
+        ("blacks", 2),
+        ("contrast", 2),
+        ("warmth", 2),
+        ("tint", 2),
+        ("saturation", 2),
+    ] {
+        let codes: Vec<i32> = field(name).cases.iter().map(|(_, c)| *c).collect();
+        assert_eq!(codes, (-n..=n).collect::<Vec<_>>(), "{name}");
+        assert_eq!(field(name).cases[n as usize].0, "keep", "{name}");
+    }
+    let shadows: Vec<(String, i32)> = ShadowColor::ALL
+        .iter()
+        .map(|c| (to_camel(c.name()), c.code()))
+        .collect();
+    assert_eq!(field("shadowColour").cases, shadows);
+    let highlights: Vec<(String, i32)> = HighlightColor::ALL
+        .iter()
+        .map(|c| (to_camel(c.name()), c.code()))
+        .collect();
+    assert_eq!(field("highlightColour").cases, highlights);
+    for name in ["shadowColourStrength", "highlightColourStrength"] {
+        let cases = &field(name).cases;
+        assert_eq!(
+            cases
+                .iter()
+                .map(|(n, c)| (n.as_str(), *c))
+                .collect::<Vec<_>>(),
+            [("subtle", 1), ("medium", 2), ("strong", 3)],
+            "{name}"
+        );
+        for (n, c) in cases {
+            assert_eq!(ym_core::apple_auto::strength_name(*c as i8), n);
+        }
+    }
+}
+
+/// A name of the core (`teal`) as the Swift case (`teal`); one word each, so the same.
+fn to_camel(name: &str) -> String {
+    camel(name)
 }
 
 #[test]
@@ -404,29 +519,82 @@ fn the_header_the_swift_and_the_rust_name_the_same_four_functions() {
 fn the_answer_layout_agrees_everywhere() {
     let header = header();
     assert!(header.contains(&format!("#define YM_APPLE_SCENE_BYTES {SCENE_BYTES}")));
-    assert!(squeeze(&header).contains(
-        "typedef struct YmAppleAnswer { int32_t exposure; int32_t white; int32_t contrast; \
-         int32_t saturation; char scene[YM_APPLE_SCENE_BYTES]; } YmAppleAnswer;"
-    ));
-    let spec = squeeze(&section(&spec(), 11));
-    assert!(spec.contains(&format!(
-        "YmAppleAnswer {{ int32_t exposure, white, contrast, saturation; char scene[{SCENE_BYTES}]; }}"
+    assert!(header.contains(&format!("#define YM_APPLE_PLAN_BYTES {PLAN_BYTES}")));
+    assert!(header.contains("#define YM_APPLE_UNSET INT32_MIN"));
+    assert_eq!(UNSET, i32::MIN);
+    let ints = [
+        "exposure",
+        "highlights",
+        "shadows",
+        "blacks",
+        "contrast",
+        "white",
+        "tint",
+        "saturation",
+        "shadow_color",
+        "shadow_color_strength",
+        "highlight_color",
+        "highlight_color_strength",
+    ];
+    let declared: String = ints.iter().map(|f| format!("int32_t {f}; ")).collect();
+    assert!(squeeze(&header).contains(&format!(
+        "typedef struct YmAppleAnswer {{ {declared}char scene[YM_APPLE_SCENE_BYTES]; \
+         char plan[YM_APPLE_PLAN_BYTES]; }} YmAppleAnswer;"
     )));
+    assert!(header.contains(&format!(
+        "sizeof(YmAppleAnswer) == {}",
+        size_of::<YmAppleAnswer>()
+    )));
+    let spec = squeeze(&section(&spec(), 11));
+    assert!(
+        spec.contains(&format!(
+            "YmAppleAnswer {{ int32_t {}; char scene[{SCENE_BYTES}]; char plan[{PLAN_BYTES}]; }}",
+            ints.join(", ")
+        )),
+        "section 11 does not give the struct"
+    );
     let swift = swift();
     let layout = block(&swift, "private enum AnswerLayout {");
-    for (field, offset) in [
-        ("exposure", std::mem::offset_of!(YmAppleAnswer, exposure)),
-        ("white", std::mem::offset_of!(YmAppleAnswer, white)),
-        ("contrast", std::mem::offset_of!(YmAppleAnswer, contrast)),
+    let offsets = [
+        std::mem::offset_of!(YmAppleAnswer, exposure),
+        std::mem::offset_of!(YmAppleAnswer, highlights),
+        std::mem::offset_of!(YmAppleAnswer, shadows),
+        std::mem::offset_of!(YmAppleAnswer, blacks),
+        std::mem::offset_of!(YmAppleAnswer, contrast),
+        std::mem::offset_of!(YmAppleAnswer, white),
+        std::mem::offset_of!(YmAppleAnswer, tint),
+        std::mem::offset_of!(YmAppleAnswer, saturation),
+        std::mem::offset_of!(YmAppleAnswer, shadow_color),
+        std::mem::offset_of!(YmAppleAnswer, shadow_color_strength),
+        std::mem::offset_of!(YmAppleAnswer, highlight_color),
+        std::mem::offset_of!(YmAppleAnswer, highlight_color_strength),
+    ];
+    let mut expected: Vec<(String, usize)> = ints
+        .iter()
+        .zip(offsets)
+        .map(|(f, o)| (camel(f), o))
+        .collect();
+    expected.extend([
         (
-            "saturation",
-            std::mem::offset_of!(YmAppleAnswer, saturation),
+            "scene".to_owned(),
+            std::mem::offset_of!(YmAppleAnswer, scene),
         ),
-        ("scene", std::mem::offset_of!(YmAppleAnswer, scene)),
-        ("sceneBytes", SCENE_BYTES),
-    ] {
+        ("sceneBytes".to_owned(), SCENE_BYTES),
+        ("plan".to_owned(), std::mem::offset_of!(YmAppleAnswer, plan)),
+        ("planBytes".to_owned(), PLAN_BYTES),
+    ]);
+    for (field, offset) in expected {
         let line = format!("static let {field} = {offset}");
         assert!(layout.contains(&line), "AnswerLayout lacks `{line}`");
+    }
+    assert!(layout.contains("static let unset = Int32.min"));
+    // Every field is written, and cleared to unset before the request.
+    let write = block(&swift, "private func writeAnswer(");
+    for f in ints {
+        assert!(
+            write.contains(&format!("(AnswerLayout.{0}, filled.{0})", camel(f))),
+            "writeAnswer does not write {f}"
+        );
     }
 }
 
@@ -472,9 +640,9 @@ fn every_foundation_models_use_is_behind_macos_27() {
             );
         }
     }
-    // Answer, its four enums, currentAvailability, askModel and askCode at least.
+    // Answer, its eleven enums, currentAvailability, askModel and askCode at least.
     assert!(
-        checked >= 8,
+        checked >= 15,
         "only {checked} declarations use Foundation Models"
     );
     // The C entry points that reach the model check the system first.

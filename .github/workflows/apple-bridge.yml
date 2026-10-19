@@ -86,9 +86,11 @@ jobs:
           xcrun --sdk macosx swiftc --version
           framework="$(xcrun --sdk macosx --show-sdk-path)/System/Library/Frameworks/FoundationModels.framework"
           ls -d "$framework"
-          # The session initialisers and the error types of this SDK, for reference when the Swift needs a change.
+          # The session initialisers, the error types and the streaming API of this SDK, for reference when the Swift needs a
+          # change (prompt version 2 streams the answer and reads the last snapshot's raw content, docs/19 section 4).
           interface=$(ls "$framework"/Modules/FoundationModels.swiftmodule/*.swiftinterface 2>/dev/null | head -1 || true)
           [ -z "$interface" ] || grep -nE 'convenience init.*\(model|init.*\(tools|enum (GenerationError|Error)|enum LanguageModelError|@available.*deprecated' "$interface" | cut -c1-300 | head -60 || true
+          [ -z "$interface" ] || grep -nE 'func streamResponse|struct ResponseStream|struct Snapshot|var rawContent|var content|forProperty|typealias Element' "$interface" | cut -c1-300 | head -40 || true
       # A diagnosis for the release workflows, print only: a proc macro and a crate that uses it, built in release with Cargo's
       # default strip and without stripping, with the pinned Rust and with every other toolchain on the image.
       - name: Proc macros and stripping on this image (print only)

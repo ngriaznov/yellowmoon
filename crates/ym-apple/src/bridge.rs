@@ -23,12 +23,14 @@ unsafe extern "C" {
     /// The macOS version and build into `buf` (`len` bytes, NUL-terminated); 0 on success.
     fn ym_apple_auto_os(buf: *mut c_char, len: usize) -> i32;
 
-    /// Asks about `width × height` RGB pixels; blocks until the answer, an error or `timeout_ms`.
-    /// 0 with the answer in `*out`, else an error code (`abi::FAILURE_CODES`) with Apple's message.
+    /// Asks about `width × height` RGB pixels with `instructions` (NUL-terminated UTF-8); blocks
+    /// until the answer, an error or `timeout_ms`. 0 with the answer in `*out`, else an error code
+    /// (`abi::FAILURE_CODES`) with Apple's message.
     fn ym_apple_auto_ask(
         rgb: *const u8,
         width: u32,
         height: u32,
+        instructions: *const c_char,
         timeout_ms: u32,
         out: *mut YmAppleAnswer,
         message: *mut c_char,
@@ -58,13 +60,18 @@ fn read_text(read: unsafe extern "C" fn(*mut c_char, usize) -> i32) -> Option<St
     (code == 0).then(|| abi::c_string(&buf))
 }
 
-/// Asks Apple's model about one picture (no retries: the core retries).
-pub(crate) fn ask(picture: &AdvisorPicture) -> Result<AdvisorAnswer, AdvisorError> {
+/// Asks Apple's model about one picture with `instructions` (no retries: the core retries).
+pub(crate) fn ask(
+    picture: &AdvisorPicture,
+    instructions: &str,
+) -> Result<AdvisorAnswer, AdvisorError> {
     let (width, height) = abi::picture_size(picture)?;
-    let mut answer = YmAppleAnswer::zeroed();
+    let instructions = abi::instructions_c_string(instructions);
+    let mut answer = YmAppleAnswer::unset();
     let mut message = [0u8; MESSAGE_BYTES];
-    // SAFETY: `picture.rgb` holds `width × height × 3` bytes (checked by `picture_size`) and the
-    // Swift side reads them only before it returns (it copies them before the request starts).
+    // SAFETY: `picture.rgb` holds `width × height × 3` bytes (checked by `picture_size`) and
+    // `instructions` is a NUL-terminated string; the Swift side reads both only before it returns
+    // (it copies them before the request starts).
     // `answer` and `message` are writable for their full sizes and live until the call returns;
     // the Swift side writes them only on this thread and only before it returns, even after a
     // timeout (the request's task writes to a box of its own, never to these buffers).
@@ -73,6 +80,7 @@ pub(crate) fn ask(picture: &AdvisorPicture) -> Result<AdvisorAnswer, AdvisorErro
             picture.rgb.as_ptr(),
             width,
             height,
+            instructions.as_ptr(),
             REQUEST_TIMEOUT_MS,
             &raw mut answer,
             message.as_mut_ptr().cast::<c_char>(),

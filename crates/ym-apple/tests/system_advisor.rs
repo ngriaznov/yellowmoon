@@ -1,6 +1,8 @@
 //! `ym_apple::system_advisor()` as the app and `ym` call it, without the test advisor.
 
-use ym_core::apple_auto::{AdvisorPicture, Availability, FailureKind, UnavailableReason};
+use ym_core::apple_auto::{
+    AdvisorPicture, Availability, DEFAULT_INSTRUCTIONS, FailureKind, UnavailableReason,
+};
 
 #[test]
 fn the_system_advisor_reports_this_computer() {
@@ -31,7 +33,7 @@ fn the_system_advisor_reports_this_computer() {
             height: 2,
             rgb: vec![128; 12],
         };
-        let error = advisor.ask(&picture).unwrap_err();
+        let error = advisor.ask(&picture, DEFAULT_INSTRUCTIONS).unwrap_err();
         assert_eq!(error.kind, FailureKind::Unavailable, "{error}");
     }
 }

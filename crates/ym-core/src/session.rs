@@ -96,10 +96,9 @@ use ym_raw::metadata::RawMetadata;
 
 use crate::apple_auto::{
     Activity, AdvisorAnswer, AdvisorError, AdvisorPicture, AppleAuto, AppleAutoMode,
-    AppleAutoStatus, AutoAdvisor, AutoSteps, Availability, DEFAULT_INSTRUCTIONS,
-    INSTRUCTIONS_MAX_CHARS, FailureKind, InstructionsId, PROMPT_VERSION, RETRIES,
-    effective_instructions,
-    RETRY_PAUSE_MS, TABLE_VERSION, share_burst_steps,
+    AppleAutoStatus, AutoAdvisor, AutoSteps, Availability, DEFAULT_INSTRUCTIONS, FailureKind,
+    INSTRUCTIONS_MAX_CHARS, InstructionsId, PROMPT_VERSION, RETRIES, RETRY_PAUSE_MS, TABLE_VERSION,
+    effective_instructions, share_burst_steps,
 };
 use crate::auto::{
     AutoError, AutoEstimates, AutoInputs, IlluminantModels, NoisePool, POOL_MAX_FILES, burst_frame,

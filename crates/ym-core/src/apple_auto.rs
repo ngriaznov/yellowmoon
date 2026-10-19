@@ -672,7 +672,9 @@ impl AutoSteps {
             return None;
         }
         let other = |v: Option<i8>, table: &[f64; 5]| {
-            v.map_or(0.0, |v| table[usize::from((v - OTHER_STEPS.0).unsigned_abs())])
+            v.map_or(0.0, |v| {
+                table[usize::from((v - OTHER_STEPS.0).unsigned_abs())]
+            })
         };
         let exposure_ev = self.exposure.map_or(0.0, |v| {
             TABLE.exposure_ev[usize::from((v - EXPOSURE_STEPS.0).unsigned_abs())]
@@ -1307,7 +1309,12 @@ mod tests {
         );
         let v = all(-1, 2).values().unwrap();
         assert_eq!(
-            (v.exposure_ev, v.highlights, v.tint_shift, v.white_shift_mired),
+            (
+                v.exposure_ev,
+                v.highlights,
+                v.tint_shift,
+                v.white_shift_mired
+            ),
             (0.6, -20.0, -5.0, 10.0)
         );
     }
@@ -1380,7 +1387,11 @@ mod tests {
         assert_eq!(ShadowColor::from_code(6), None);
         assert_eq!(HighlightColor::from_code(-1), None);
         // Every point stays inside the unit disc, as a wheel's does.
-        for d in TABLE.shadow_directions.iter().chain(&TABLE.highlight_directions) {
+        for d in TABLE
+            .shadow_directions
+            .iter()
+            .chain(&TABLE.highlight_directions)
+        {
             assert!(d[0].hypot(d[1]) <= 1.0);
         }
     }
@@ -1555,11 +1566,17 @@ mod tests {
             colored(Some((Amber, Some(3)))),
         ];
         let s = share_burst_steps(&tie).unwrap();
-        assert_eq!((s.shadow_color, s.shadow_color_strength), (Some(Amber), Some(1)));
+        assert_eq!(
+            (s.shadow_color, s.shadow_color_strength),
+            (Some(Amber), Some(1))
+        );
         // The chosen colour's frames gave no strength: the colour sets nothing.
         let weak = [colored(Some((Teal, None))), colored(Some((Teal, None)))];
         let s = share_burst_steps(&weak).unwrap();
-        assert_eq!((s.shadow_color, s.shadow_color_strength), (Some(Teal), None));
+        assert_eq!(
+            (s.shadow_color, s.shadow_color_strength),
+            (Some(Teal), None)
+        );
         assert!(!s.sets_shadow_color());
         // None is a colour like the others.
         let none = [
@@ -1596,7 +1613,10 @@ mod tests {
             (dark.shadow_color, dark.shadow_color_strength),
             (Some(ShadowColor::Teal), Some(1))
         );
-        assert_eq!((dark.blacks, dark.tint, dark.highlight_color), (None, None, None));
+        assert_eq!(
+            (dark.blacks, dark.tint, dark.highlight_color),
+            (None, None, None)
+        );
         let bright = ask(&flat(4, 3, 220)).steps;
         assert_eq!(
             (bright.exposure, bright.highlights, bright.shadows),
@@ -1613,7 +1633,10 @@ mod tests {
             rgb,
         };
         let s = ask(&split).steps;
-        assert_eq!((s.exposure, s.highlights, s.contrast), (Some(0), None, Some(0)));
+        assert_eq!(
+            (s.exposure, s.highlights, s.contrast),
+            (Some(0), None, Some(0))
+        );
         assert_eq!(
             (s.shadow_color, s.shadow_color_strength),
             (Some(ShadowColor::None), None)
@@ -1622,7 +1645,9 @@ mod tests {
         // The plan names the first word of the instructions it was given.
         assert_eq!(ask(&flat(4, 3, 40)).plan, "Test plan: You");
         assert_eq!(
-            fake.ask(&flat(4, 3, 40), "Grade warmly, please").unwrap().plan,
+            fake.ask(&flat(4, 3, 40), "Grade warmly, please")
+                .unwrap()
+                .plan,
             "Test plan: Grade"
         );
         // Its answers pass the core's checks.
@@ -1637,7 +1662,10 @@ mod tests {
             rgb: vec![0; 5],
         };
         assert_eq!(
-            FakeAdvisor.ask(&bad, DEFAULT_INSTRUCTIONS).unwrap_err().kind,
+            FakeAdvisor
+                .ask(&bad, DEFAULT_INSTRUCTIONS)
+                .unwrap_err()
+                .kind,
             FailureKind::Other
         );
     }
@@ -1667,14 +1695,20 @@ mod tests {
         assert!(check_instructions(DEFAULT_INSTRUCTIONS).is_ok());
         assert!(check_instructions(&"é".repeat(INSTRUCTIONS_MAX_CHARS)).is_ok());
         let long = check_instructions(&"x".repeat(INSTRUCTIONS_MAX_CHARS + 1)).unwrap_err();
-        assert!(long.contains("2001 characters") && long.contains("At most 2000"), "{long}");
+        assert!(
+            long.contains("2001 characters") && long.contains("At most 2000"),
+            "{long}"
+        );
         let d = InstructionsId::of(DEFAULT_INSTRUCTIONS);
         assert_eq!(d, InstructionsId::default());
         assert_eq!(d.instructions, InstructionsKind::Default);
         assert_eq!(d.instructions_sha256.len(), 12);
         assert!(d.instructions_sha256.chars().all(|c| c.is_ascii_hexdigit()));
         // The SHA-256 of "abc" starts ba7816bf8f01.
-        assert_eq!(InstructionsId::of("abc").instructions_sha256, "ba7816bf8f01");
+        assert_eq!(
+            InstructionsId::of("abc").instructions_sha256,
+            "ba7816bf8f01"
+        );
         assert_eq!(
             InstructionsId::of("abc").instructions,
             InstructionsKind::Edited

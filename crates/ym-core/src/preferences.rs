@@ -632,6 +632,93 @@ mod tests {
     }
 
     #[test]
+    fn apple_auto_instructions_are_the_default_unless_the_person_wrote_their_own() {
+        use crate::apple_auto::DEFAULT_INSTRUCTIONS;
+        // Absent, empty or white space: the default, saved as "".
+        for text in [
+            r#"{}"#,
+            r#"{ "apple_auto_instructions": "" }"#,
+            r#"{ "apple_auto_instructions": "  \n" }"#,
+        ] {
+            let parsed = parse(text);
+            assert_eq!(parsed.preferences.apple_auto_instructions, "", "{text}");
+            assert!(parsed.warnings.is_empty(), "{text}");
+        }
+        // Edited: kept as written.
+        let edited = parse(r#"{ "apple_auto_instructions": "Moody and cool." }"#);
+        assert_eq!(
+            edited.preferences.apple_auto_instructions,
+            "Moody and cool."
+        );
+        // The default text itself reads as the default.
+        let same = serde_json::json!({ "apple_auto_instructions": DEFAULT_INSTRUCTIONS });
+        assert_eq!(
+            parse(&same.to_string()).preferences.apple_auto_instructions,
+            ""
+        );
+        // Too long (a file edited by hand), or not text: the default, with a warning; the rest is kept.
+        let long = serde_json::json!({
+            "apple_auto_instructions": "x".repeat(2001),
+            "apple_auto": false,
+        });
+        let parsed = parse(&long.to_string());
+        assert_eq!(parsed.preferences.apple_auto_instructions, "");
+        assert!(!parsed.preferences.apple_auto);
+        assert_eq!(parsed.warnings.len(), 1);
+        assert!(
+            parsed.warnings[0].contains("At most 2000"),
+            "{:?}",
+            parsed.warnings
+        );
+        let wrong = parse(r#"{ "apple_auto_instructions": 7 }"#);
+        assert_eq!(wrong.preferences.apple_auto_instructions, "");
+        assert_eq!(wrong.warnings.len(), 1);
+        // A patch sets them, the default text clears them, and one that is too long is refused.
+        let mut p = Preferences::default();
+        let set = PreferencesPatch {
+            apple_auto_instructions: Some("Warm and soft.".to_owned()),
+            ..PreferencesPatch::default()
+        };
+        assert!(set.check().is_ok());
+        assert!(set.apply(&mut p));
+        assert_eq!(p.apple_auto_instructions, "Warm and soft.");
+        let clear = PreferencesPatch {
+            apple_auto_instructions: Some(DEFAULT_INSTRUCTIONS.to_owned()),
+            ..PreferencesPatch::default()
+        };
+        assert!(clear.apply(&mut p));
+        assert_eq!(p.apple_auto_instructions, "");
+        let too_long = PreferencesPatch {
+            apple_auto_instructions: Some("é".repeat(2001)),
+            ..PreferencesPatch::default()
+        };
+        assert!(matches!(
+            too_long.check(),
+            Err(PreferencesError::Invalid(m)) if m.contains("2001 characters")
+        ));
+        let just = PreferencesPatch {
+            apple_auto_instructions: Some("é".repeat(2000)),
+            ..PreferencesPatch::default()
+        };
+        assert!(just.check().is_ok());
+        // The store refuses it and saves nothing.
+        let dir = tempfile::tempdir().unwrap();
+        let store = PreferencesStore::open(dir.path());
+        assert!(store.update(&too_long).is_err());
+        assert!(!dir.path().join(FILE_NAME).exists());
+        assert_eq!(
+            store.update(&set).unwrap().apple_auto_instructions,
+            "Warm and soft."
+        );
+        assert_eq!(
+            PreferencesStore::open(dir.path())
+                .get()
+                .apple_auto_instructions,
+            "Warm and soft."
+        );
+    }
+
+    #[test]
     fn the_json_has_the_fields_of_the_typescript_type() {
         let json = serde_json::to_value(Preferences::default()).expect("json");
         assert_eq!(
@@ -648,7 +735,8 @@ mod tests {
                 "check_for_updates_automatically": true,
                 "watch_downloads_during_import": false,
                 "last_used_folders": { "open": null, "export": null, "looks_import": null },
-                "apple_auto": true
+                "apple_auto": true,
+                "apple_auto_instructions": ""
             })
         );
         let arri = DisplayRendering::ArriDisplay {

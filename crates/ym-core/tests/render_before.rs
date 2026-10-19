@@ -124,9 +124,18 @@ fn edits() -> Vec<Edit> {
             Box::new(|s| s.contrast = ym_core::settings::PercentSetting::manual_value(60.0)),
         ),
         ("brightness", Box::new(|s| s.brightness = -40.0)),
-        ("highlights", Box::new(|s| s.highlights = -50.0)),
-        ("shadows", Box::new(|s| s.shadows = 50.0)),
-        ("black", Box::new(|s| s.black = 30.0)),
+        (
+            "highlights",
+            Box::new(|s| s.highlights = ym_core::settings::PercentSetting::manual_value(-50.0)),
+        ),
+        (
+            "shadows",
+            Box::new(|s| s.shadows = ym_core::settings::PercentSetting::manual_value(50.0)),
+        ),
+        (
+            "black",
+            Box::new(|s| s.black = ym_core::settings::PercentSetting::manual_value(30.0)),
+        ),
         ("white", Box::new(|s| s.white = -30.0)),
         ("white offset", Box::new(|s| s.white_offset_ev = 2.0)),
         (

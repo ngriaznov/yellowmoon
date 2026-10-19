@@ -144,8 +144,9 @@ export interface OpenSummary {
 export type AutoOr<Manual extends object> = { kind: "auto" } | ({ kind: "manual" } & Manual);
 
 /**
- * `contrast` and `saturation` (`docs/19` section 5): Auto, which is 0 or Apple Auto's value for the photo (`AutoEstimates.contrast`,
- * `.saturation`), or a manual value in −100…100. A slider dropped on the Auto value sends Auto (`manualOrAuto`).
+ * `contrast`, `highlights`, `shadows`, `black` and `saturation` (`docs/19` section 5): Auto, which is 0 or Apple Auto's value for
+ * the photo (`AutoEstimates.contrast`, `.highlights`, …), or a manual value in −100…100. A slider dropped on the Auto value sends
+ * Auto (`manualOrAuto`).
  */
 export type PercentSetting = AutoOr<{ value: number }>;
 
@@ -155,8 +156,21 @@ export type LightSource = "auto" | "day" | "shade" | "tungsten" | "led" | "fluor
 /** A point in the colour-balance disc: `[a, b]`, each within the unit disc. */
 export type ColorBalancePoint = [a: number, b: number];
 
-/** Colour balance wheels; each point is `[0, 0]` by default. */
+/**
+ * The shadows or highlights colour-balance wheel (`docs/19` section 5): Auto, which is `[0, 0]` or the colour Apple Auto gave that
+ * zone (`AutoEstimates.balance_shadows`, `.balance_highlights`), or a manual point. A puck dropped on the Auto point sends Auto.
+ */
+export type BalanceSetting = AutoOr<{ point: ColorBalancePoint }>;
+
+/** Colour balance wheels: the shadows and highlights wheels are Auto (the default) or a point; the midtones wheel is a point, `[0, 0]` by default. */
 export interface ColorBalance {
+  shadows: BalanceSetting;
+  midtones: ColorBalancePoint;
+  highlights: BalanceSetting;
+}
+
+/** The three wheels' points in effect (`ResolvedValues.color_balance`): a manual point, or the photo's Auto point. */
+export interface ColorBalancePoints {
   shadows: ColorBalancePoint;
   midtones: ColorBalancePoint;
   highlights: ColorBalancePoint;
@@ -262,9 +276,9 @@ export interface DevelopSettings {
   contrast: PercentSetting;
   /** −100…100, default 0. */
   brightness: number;
-  /** Light › High dynamic range, each −100…100, default 0. */
-  highlights: number;
-  shadows: number;
+  /** Light › High dynamic range, each −100…100: Highlights and Shadows are `Auto` (the default: 0, or Apple Auto's value) or a value. */
+  highlights: PercentSetting;
+  shadows: PercentSetting;
   white: number;
   /**
    * Light › White › Offset: stops added to the automatic white lift (`AutoEstimates.white_ev`), the
@@ -273,7 +287,8 @@ export interface DevelopSettings {
    * lift. A plain number, not Auto. Only the built-in ACES 2 display rendering has the lift.
    */
   white_offset_ev: number;
-  black: number;
+  /** Light › High dynamic range › Black: `Auto` (the default: 0, or Apple Auto's black level) or a value in −100…100. */
+  black: PercentSetting;
   /** Colour › White balance, segmented control. */
   light_source: LightSource;
   /** Colour › White balance: `Auto` or `Manual { kelvin 2000–11000 step 50, tint −50…50 }`. */
@@ -329,6 +344,11 @@ export interface PasteReport {
 export interface AutoFlags {
   exposure: boolean;
   contrast: boolean;
+  highlights: boolean;
+  shadows: boolean;
+  black: boolean;
+  balance_shadows: boolean;
+  balance_highlights: boolean;
   saturation: boolean;
   light_source: boolean;
   white_balance: boolean;
@@ -368,24 +388,49 @@ export type AppleAutoFailure =
   | "bad_answer"
   | "other";
 
-/** Which model answers: "AFM 3 Core" on macOS "27.0.1 (27A404)". */
+/** Whether Apple's model read the default instructions or the person's own (`docs/19` section 2). */
+export type AppleAutoInstructions = "default" | "edited";
+
+/** Which model answers: "AFM 3 Core" on macOS "27.0.1 (27A404)", with which instructions (the first 12 hex digits of their SHA-256). */
 export interface AppleAutoInfo {
   model: string;
   os: string;
+  instructions: AppleAutoInstructions;
+  instructions_sha256: string;
 }
 
-/** The four steps of an answer (`docs/19` section 4): exposure −3…+3, the others −2…+2, 0 for keep. */
+/** The colour Apple Auto gives the shadows (`docs/19` section 4). */
+export type AppleShadowColor = "none" | "teal" | "blue" | "green" | "amber" | "magenta";
+
+/** The colour Apple Auto gives the highlights. */
+export type AppleHighlightColor = "none" | "warm" | "gold" | "cool" | "pink";
+
+/**
+ * The steps of an answer (`docs/19` sections 4 and 5), each null when the model left the field empty (nothing is set for that
+ * control): exposure −3…+3; highlights, shadows, blacks, contrast, white (the model's warmth), tint and saturation −2…+2, 0 for keep;
+ * the colours of the shadows and the highlights with their strengths 1 (subtle) to 3 (strong), a strength only with a colour other
+ * than none.
+ */
 export interface AppleAutoSteps {
-  exposure: number;
-  white: number;
-  contrast: number;
-  saturation: number;
+  exposure: number | null;
+  highlights: number | null;
+  shadows: number | null;
+  blacks: number | null;
+  contrast: number | null;
+  white: number | null;
+  tint: number | null;
+  saturation: number | null;
+  shadow_color: AppleShadowColor | null;
+  shadow_color_strength: number | null;
+  highlight_color: AppleHighlightColor | null;
+  highlight_color_strength: number | null;
 }
 
-/** One answer of Apple's model. `scene` is a few words about the photo, for reports only. */
+/** One answer of Apple's model. `scene` is a few words about the photo, for reports only; `plan` the look it gives the photo (the Automatic card shows it). */
 export interface AppleAutoAnswer {
   steps: AppleAutoSteps;
   scene: string;
+  plan: string;
 }
 
 /**
@@ -421,6 +466,15 @@ export interface AppleAutoStatus {
   /** The prompt's and the table's versions (`docs/19` sections 4 and 5). */
   prompt: number;
   table: number;
+  /** Which instructions the model reads: the default or the person's own, and the first 12 hex digits of their SHA-256. */
+  instructions: AppleAutoInstructions;
+  instructions_sha256: string;
+  /** The person's own instructions (`Preferences.apple_auto_instructions`), "" for the default. */
+  own_instructions: string;
+  /** The default instructions, for Preferences' text field and its Reset to default. */
+  default_instructions: string;
+  /** The longest instructions the model is given, in characters (2000). */
+  instructions_max_chars: number;
 }
 
 /**
@@ -439,10 +493,22 @@ export interface AutoEstimates {
   contrast: number;
   /** What `saturation: Auto` resolves to: 0, or Apple Auto's saturation (the Saturation slider's detent). */
   saturation: number;
+  /** What `highlights: Auto` resolves to: 0, or Apple Auto's highlights (the Highlights slider's detent). */
+  highlights: number;
+  /** What `shadows: Auto` resolves to: 0, or Apple Auto's shadows. */
+  shadows: number;
+  /** What `black: Auto` resolves to: 0, or Apple Auto's black level. */
+  black: number;
+  /** What the shadows wheel's Auto resolves to: `[0, 0]`, or Apple Auto's shadow colour. */
+  balance_shadows: ColorBalancePoint;
+  /** What the highlights wheel's Auto resolves to: `[0, 0]`, or Apple Auto's highlight colour. */
+  balance_highlights: ColorBalancePoint;
   /** Which Auto made these values. */
   source: AutoSource;
   /** Where the photo stands with Apple Auto. */
   apple: AppleAuto;
+  /** Apple Auto's steps in effect (the photo's answer, or its burst's), null when Auto is the rule. */
+  apple_steps: AppleAutoSteps | null;
   light_class: LightClass;
   /** 0–1. */
   light_confidence: number;
@@ -457,11 +523,17 @@ export interface AutoEstimates {
 /** `DevelopSettings` with every `Auto` replaced by the number it resolves to. */
 export type ResolvedValues = Omit<
   DevelopSettings,
-  "exposure" | "contrast" | "white_balance" | "saturation" | "sharpen" | "noise_reduction"
+  "exposure" | "contrast" | "highlights" | "shadows" | "black" | "white_balance" | "color_balance" | "saturation" | "sharpen" | "noise_reduction"
 > & {
   exposure_ev: number;
   /** The contrast in effect: the manual value, or the photo's Auto contrast. */
   contrast: number;
+  /** Highlights, shadows and black in effect: the manual value, or the photo's Auto value. */
+  highlights: number;
+  shadows: number;
+  black: number;
+  /** The wheels' points in effect. */
+  color_balance: ColorBalancePoints;
   /** The saturation in effect: the manual value, or the photo's Auto saturation. */
   saturation: number;
   /** The white lift in effect in stops: the automatic amount plus `white_offset_ev`, never below 0. */
@@ -886,6 +958,11 @@ export interface Preferences {
   last_used_folders: LastUsedFolders;
   /** Auto with Apple Intelligence (`docs/19` section 2): on by default; it acts only where Apple Auto is available. */
   apple_auto: boolean;
+  /**
+   * Instructions for Apple Intelligence (`docs/19` section 2): the person's own instructions for Apple Auto's model, at most 2000
+   * characters; "" (the default) means `AppleAutoStatus.default_instructions`.
+   */
+  apple_auto_instructions: string;
 }
 
 /** A partial update of the preferences. */
