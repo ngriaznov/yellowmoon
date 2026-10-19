@@ -1169,6 +1169,16 @@ pub struct AutoEstimates {
     pub contrast: f64,
     /// What `saturation: Auto` resolves to: 0, or Apple Auto's saturation.
     pub saturation: f64,
+    /// What `highlights: Auto` resolves to: 0, or Apple Auto's highlights.
+    pub highlights: f64,
+    /// What `shadows: Auto` resolves to: 0, or Apple Auto's shadows.
+    pub shadows: f64,
+    /// What `black: Auto` resolves to: 0, or Apple Auto's black level.
+    pub black: f64,
+    /// What the shadows wheel's Auto resolves to: `[0, 0]`, or Apple Auto's shadow colour.
+    pub balance_shadows: [f64; 2],
+    /// What the highlights wheel's Auto resolves to: `[0, 0]`, or Apple Auto's highlight colour.
+    pub balance_highlights: [f64; 2],
     /// Where the photo stands with Apple Auto (`docs/19` section 12): [`AppleAuto::Off`] for the
     /// estimates of the photo alone and wherever Apple Auto is off.
     pub apple: AppleAuto,
@@ -1214,10 +1224,23 @@ pub struct AutoSummary {
     pub contrast: f64,
     /// What `saturation: Auto` resolves to: 0, or Apple Auto's saturation.
     pub saturation: f64,
+    /// What `highlights: Auto` resolves to: 0, or Apple Auto's highlights.
+    pub highlights: f64,
+    /// What `shadows: Auto` resolves to: 0, or Apple Auto's shadows.
+    pub shadows: f64,
+    /// What `black: Auto` resolves to: 0, or Apple Auto's black level.
+    pub black: f64,
+    /// What the shadows wheel's Auto resolves to: `[0, 0]`, or Apple Auto's shadow colour.
+    pub balance_shadows: [f64; 2],
+    /// What the highlights wheel's Auto resolves to: `[0, 0]`, or Apple Auto's highlight colour.
+    pub balance_highlights: [f64; 2],
     /// Which Auto made these values: `rule` or `apple`.
     pub source: AutoSource,
     /// Where the photo stands with Apple Auto (`docs/19` section 12).
     pub apple: AppleAuto,
+    /// Apple Auto's steps in effect (the photo's answer, or its burst's shared steps), `None` when
+    /// Auto is the rule. A step the model left empty is `null`: nothing was set for that control.
+    pub apple_steps: Option<AutoSteps>,
     /// The most probable light class.
     pub light_class: LightClass,
     /// Confidence of the light estimate, 0 to 1.
@@ -1369,6 +1392,11 @@ impl AutoEstimates {
             readout: metering.readout(),
             contrast: 0.0,
             saturation: 0.0,
+            highlights: 0.0,
+            shadows: 0.0,
+            black: 0.0,
+            balance_shadows: [0.0, 0.0],
+            balance_highlights: [0.0, 0.0],
             apple: AppleAuto::Off,
             apple_steps: None,
         })
@@ -1394,7 +1422,9 @@ impl AutoEstimates {
     /// The same estimates with Apple Auto's state and steps applied (`docs/19` section 5), on top of
     /// the rule's exposure as it stands (after the burst median): the exposure gains the table's EV
     /// (`exposure.ev` and `color.ev_auto` together, as [`AutoEstimates::with_shared_ev`] moves them),
-    /// the white its nudge (and the readout follows it), and contrast and saturation their values.
+    /// the white its nudges of warmth and tint (and the readout follows them), and highlights,
+    /// shadows, black, contrast, saturation and the shadows and highlights wheels their values. A
+    /// step the model left empty keeps the value without Apple Auto.
     /// The highlight guard is not applied again and the white lift is not sized again. `steps` of
     /// `None` (no answer, a failure, Apple Auto off) leave every value at the rule's, bit for bit; only
     /// `apple` records the state. A step out of its range counts as no answer.
@@ -1414,9 +1444,15 @@ impl AutoEstimates {
         s.apple_steps = Some(steps);
         let AppleValues {
             exposure_ev,
-            white_shift_mired,
+            highlights,
+            shadows,
+            black,
             contrast,
+            white_shift_mired,
+            tint_shift,
             saturation,
+            balance_shadows,
+            balance_highlights,
         } = values;
         if exposure_ev != 0.0 {
             s.exposure.ev = self.exposure.ev + exposure_ev;
@@ -1424,8 +1460,14 @@ impl AutoEstimates {
         }
         s.contrast = contrast;
         s.saturation = saturation;
-        if white_shift_mired != 0.0 {
+        s.highlights = highlights;
+        s.shadows = shadows;
+        s.black = black;
+        s.balance_shadows = balance_shadows;
+        s.balance_highlights = balance_highlights;
+        if white_shift_mired != 0.0 || tint_shift != 0.0 {
             s.color.white_shift_mired = white_shift_mired;
+            s.color.tint_shift = tint_shift;
             // The metering chain is the all-Auto chain; its readout is what the White balance rows
             // show. It cannot fail for estimates whose rule chain was built (the nudge moves a white
             // inside the tables), but if it did the rule's readout is kept rather than the photo lost.
@@ -1499,8 +1541,14 @@ impl AutoEstimates {
             tint: self.readout.tint,
             contrast: self.contrast,
             saturation: self.saturation,
+            highlights: self.highlights,
+            shadows: self.shadows,
+            black: self.black,
+            balance_shadows: self.balance_shadows,
+            balance_highlights: self.balance_highlights,
             source: self.source(),
             apple: self.apple.clone(),
+            apple_steps: self.apple_steps,
             light_class,
             light_confidence: self.illuminant.scene.confidence,
             noise: NoiseAb {

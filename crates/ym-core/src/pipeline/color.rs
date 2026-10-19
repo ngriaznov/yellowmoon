@@ -490,21 +490,22 @@ pub fn color_plan(src: &PhotoSource) -> Result<ColorPlan, RenderError> {
 // The grade plan: C9 to C13
 // ---------------------------------------------------------------------------------------------
 
-/// The grade controls of the settings as `ym_color`'s parameters. An Auto contrast or saturation
-/// resolves against the photo's estimates (0, or Apple Auto's value, `docs/19` section 5).
+/// The grade controls of the settings as `ym_color`'s parameters. An Auto contrast, highlights,
+/// shadows, black, saturation or shadows or highlights wheel resolves against the photo's estimates
+/// (0 or `[0, 0]`, or Apple Auto's value, `docs/19` section 5).
 #[must_use]
 pub fn grade_params(s: &DevelopSettings, estimates: &AutoEstimates) -> GradeParams {
     let b = |p: [f64; 2]| ColorBalance { a: p[0], b: p[1] };
     GradeParams {
         contrast: s.contrast.resolve(estimates.contrast),
         brightness: s.brightness,
-        shadows: s.shadows,
-        highlights: s.highlights,
-        black: s.black,
+        shadows: s.shadows.resolve(estimates.shadows),
+        highlights: s.highlights.resolve(estimates.highlights),
+        black: s.black.resolve(estimates.black),
         white: s.white,
-        balance_shadows: b(s.color_balance.shadows),
+        balance_shadows: b(s.color_balance.shadows.resolve(estimates.balance_shadows)),
         balance_midtones: b(s.color_balance.midtones),
-        balance_highlights: b(s.color_balance.highlights),
+        balance_highlights: b(s.color_balance.highlights.resolve(estimates.balance_highlights)),
         saturation: s.saturation.resolve(estimates.saturation),
     }
 }

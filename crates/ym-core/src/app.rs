@@ -30,7 +30,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::apple_auto::{AppleAutoMode, AppleAutoStatus, AutoAdvisor};
+use crate::apple_auto::{AppleAutoMode, AppleAutoStatus, AutoAdvisor, check_instructions};
 
 use ym_color::look::LookInput;
 use ym_looks::import::Progress;
@@ -48,7 +48,7 @@ use crate::looks::{
 use crate::pipeline::{AdvisorPictures, RenderError, RenderOptions, Renderer};
 use crate::preferences::{
     DisplayRendering, LastUsedFolders, Preferences, PreferencesError, PreferencesPatch,
-    PreferencesStore,
+    PreferencesStore, own_instructions,
 };
 use crate::session::{
     AppleAutoEnv, ApplyScope, EventSink, PasteReport, PhotoId, Session, SessionEnv, SessionError,
@@ -129,6 +129,10 @@ pub struct CoreOptions {
     /// How this run decides on Apple Auto: the preference ([`AppleAutoMode::FromPreference`], the
     /// app's and `ym`'s default) or `ym --apple-auto on|off`.
     pub apple_auto: AppleAutoMode,
+    /// Instructions for Apple Auto's model for this run instead of the `apple_auto_instructions`
+    /// preference (`ym --apple-auto-instructions FILE`, `docs/19` section 8); `None` follows the
+    /// preference. Checked by [`Core::open`].
+    pub apple_auto_instructions: Option<String>,
 }
 
 impl CoreOptions {
@@ -164,6 +168,7 @@ impl CoreOptions {
             thumbnails: true,
             advisor: None,
             apple_auto: AppleAutoMode::FromPreference,
+            apple_auto_instructions: None,
         }
     }
 }
@@ -181,6 +186,9 @@ pub struct Core {
     /// The export queue.
     pub exports: ExportQueue,
     data_root: PathBuf,
+    /// Apple Auto's instructions for this run when they override the preference
+    /// ([`CoreOptions::apple_auto_instructions`]).
+    instructions_override: Option<String>,
 }
 
 impl std::fmt::Debug for Core {
@@ -200,7 +208,17 @@ impl Core {
     /// [`CoreError::Session`] when the data folder cannot be read (profiles, noise priors),
     /// [`CoreError::Looks`], [`CoreError::Render`].
     pub fn open(options: CoreOptions) -> Result<Self, CoreError> {
+        let instructions_override = match &options.apple_auto_instructions {
+            Some(text) => {
+                check_instructions(text).map_err(PreferencesError::Invalid)?;
+                Some(own_instructions(text))
+            }
+            None => None,
+        };
         let preferences = Arc::new(PreferencesStore::open(&options.app_root));
+        let own = instructions_override
+            .clone()
+            .unwrap_or_else(|| preferences.get().apple_auto_instructions);
         let looks = Arc::new(LookService::open(
             &options.app_root,
             &options.data_root,
@@ -226,12 +244,14 @@ impl Core {
             env = env.with_apple_auto(AppleAutoEnv {
                 preference: preferences.get().apple_auto,
                 mode: options.apple_auto,
+                instructions: own.clone(),
                 ..AppleAutoEnv::new(advisor, Arc::new(pictures))
             });
         }
         let session = Arc::new(Session::new(env));
         // The preference is known to the session with or without an advisor (the status says it).
         session.set_apple_auto_preference(preferences.get().apple_auto);
+        session.set_apple_auto_instructions(&own);
 
         let ctx = Arc::new(
             ExportContext::new(renderer.clone())
@@ -259,6 +279,7 @@ impl Core {
             session,
             exports,
             data_root: options.data_root,
+            instructions_override,
         })
     }
 
@@ -343,8 +364,13 @@ impl Core {
             .set_default_look(self.looks.effective_default());
         self.renderer.set_display(self.looks.display_choice());
         // Apple Auto follows its preference at once (off: every photo back to the rule; on: the
-        // photos without an answer are asked), with the availability read again.
+        // photos without an answer are asked), with the availability read again; new instructions
+        // ask every photo again (unless this run overrides them).
         self.session.set_apple_auto_preference(next.apple_auto);
+        if self.instructions_override.is_none() {
+            self.session
+                .set_apple_auto_instructions(&next.apple_auto_instructions);
+        }
         Ok(next)
     }
 

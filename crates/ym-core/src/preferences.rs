@@ -31,6 +31,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
+use crate::apple_auto::{DEFAULT_INSTRUCTIONS, check_instructions};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -98,6 +99,11 @@ pub struct Preferences {
     /// "Auto with Apple Intelligence" (`docs/19` section 2): on by default, and a file without the
     /// field reads as on. Read on every platform; it acts only where Apple Auto is available.
     pub apple_auto: bool,
+    /// "Instructions for Apple Intelligence" (`docs/19` section 2): the person's own instructions for
+    /// Apple Auto's model, at most [`crate::apple_auto::INSTRUCTIONS_MAX_CHARS`] characters; `""` (absent, empty or only
+    /// white space) is the default, [`crate::apple_auto::DEFAULT_INSTRUCTIONS`]. Saved as `""` when
+    /// it equals the default.
+    pub apple_auto_instructions: String,
 }
 
 impl Default for Preferences {
@@ -111,6 +117,7 @@ impl Default for Preferences {
             watch_downloads_during_import: false,
             last_used_folders: LastUsedFolders::default(),
             apple_auto: true,
+            apple_auto_instructions: String::new(),
         }
     }
 }
@@ -145,6 +152,10 @@ pub struct PreferencesPatch {
     /// Replaces `apple_auto`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub apple_auto: Option<bool>,
+    /// Replaces `apple_auto_instructions` (`""` or the default text: the default). Checked by
+    /// [`PreferencesPatch::check`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub apple_auto_instructions: Option<String>,
 }
 
 impl PreferencesPatch {
@@ -175,7 +186,23 @@ impl PreferencesPatch {
         if let Some(v) = self.apple_auto {
             prefs.apple_auto = v;
         }
+        if let Some(v) = &self.apple_auto_instructions {
+            prefs.apple_auto_instructions = own_instructions(v);
+        }
         *prefs != before
+    }
+
+    /// Checks the values the core refuses rather than saves: instructions for Apple Intelligence
+    /// longer than [`crate::apple_auto::INSTRUCTIONS_MAX_CHARS`] characters.
+    ///
+    /// # Errors
+    ///
+    /// [`PreferencesError::Invalid`] with the message to show.
+    pub fn check(&self) -> Result<(), PreferencesError> {
+        if let Some(text) = &self.apple_auto_instructions {
+            check_instructions(text).map_err(PreferencesError::Invalid)?;
+        }
+        Ok(())
     }
 
     /// A patch that sets only the default look.
@@ -185,6 +212,17 @@ impl PreferencesPatch {
             default_look: Some(id),
             ..Self::default()
         }
+    }
+}
+
+/// The person's own instructions as they are saved: `""` for text that is empty, only white space or
+/// the default, else the text as given.
+#[must_use]
+pub fn own_instructions(text: &str) -> String {
+    if text.trim().is_empty() || text == DEFAULT_INSTRUCTIONS {
+        String::new()
+    } else {
+        text.to_owned()
     }
 }
 
@@ -339,6 +377,15 @@ pub fn parse(text: &str) -> ParsedPreferences {
     if let Some(v) = take(&mut map, "apple_auto", &mut warnings) {
         p.apple_auto = v;
     }
+    if let Some(v) = take::<String>(&mut map, "apple_auto_instructions", &mut warnings) {
+        // Longer than the model takes (a file edited by hand): the default, with a warning.
+        match check_instructions(&v) {
+            Ok(()) => p.apple_auto_instructions = own_instructions(&v),
+            Err(e) => warnings.push(format!(
+                "Preference \"apple_auto_instructions\" can't be used ({e}), so the default instructions are used."
+            )),
+        }
+    }
     if let Some(v) = take_struct(&mut map, "last_used_folders", &mut warnings) {
         p.last_used_folders = v;
     }
@@ -477,6 +524,7 @@ impl PreferencesStore {
     /// [`PreferencesError::Write`] or [`PreferencesError::Encode`] when the file cannot be saved.
     /// Nothing changes on an error.
     pub fn update(&self, patch: &PreferencesPatch) -> Result<Preferences, PreferencesError> {
+        patch.check()?;
         self.modify(|prefs| {
             patch.apply(prefs);
             Ok(())

@@ -96,7 +96,9 @@ use ym_raw::metadata::RawMetadata;
 
 use crate::apple_auto::{
     Activity, AdvisorAnswer, AdvisorError, AdvisorPicture, AppleAuto, AppleAutoMode,
-    AppleAutoStatus, AutoAdvisor, AutoSteps, Availability, FailureKind, PROMPT_VERSION, RETRIES,
+    AppleAutoStatus, AutoAdvisor, AutoSteps, Availability, DEFAULT_INSTRUCTIONS,
+    INSTRUCTIONS_MAX_CHARS, FailureKind, InstructionsId, PROMPT_VERSION, RETRIES,
+    effective_instructions,
     RETRY_PAUSE_MS, TABLE_VERSION, share_burst_steps,
 };
 use crate::auto::{
@@ -566,6 +568,11 @@ pub struct AppleAutoEnv {
     pub preference: bool,
     /// How the run decides ([`Session::set_apple_auto_mode`] changes it).
     pub mode: AppleAutoMode,
+    /// The person's own instructions for the model when the session starts (the
+    /// `apple_auto_instructions` preference, or `ym --apple-auto-instructions`); `""` for the
+    /// default ([`crate::apple_auto::effective_instructions`]).
+    /// [`Session::set_apple_auto_instructions`] changes them.
+    pub instructions: String,
     /// The pause before a request that macOS asked to wait is tried again: [`RETRY_PAUSE_MS`]
     /// (tests shorten it).
     pub retry_pause: Duration,
@@ -581,6 +588,7 @@ impl AppleAutoEnv {
             pictures,
             preference: true,
             mode: AppleAutoMode::FromPreference,
+            instructions: String::new(),
             retry_pause: Duration::from_millis(RETRY_PAUSE_MS),
         }
     }
@@ -591,6 +599,7 @@ impl std::fmt::Debug for AppleAutoEnv {
         f.debug_struct("AppleAutoEnv")
             .field("preference", &self.preference)
             .field("mode", &self.mode)
+            .field("instructions", &self.instructions)
             .field("retry_pause", &self.retry_pause)
             .finish_non_exhaustive()
     }
@@ -979,10 +988,16 @@ struct AppleState {
     urgent: Vec<PhotoId>,
     /// The photo being asked about.
     in_flight: Option<PhotoId>,
+    /// The person's own instructions, `""` for the default.
+    instructions: Arc<str>,
+    /// Bumped when the instructions change: an answer to a request made with older instructions
+    /// is dropped and the photo asked again.
+    instructions_gen: u64,
 }
 
 impl Default for AppleState {
-    /// No advisor, the preference on (its default) and the run following it.
+    /// No advisor, the preference on (its default), the run following it and the default
+    /// instructions.
     fn default() -> Self {
         Self {
             has_advisor: false,
@@ -991,6 +1006,8 @@ impl Default for AppleState {
             availability: None,
             urgent: Vec::new(),
             in_flight: None,
+            instructions: Arc::from(""),
+            instructions_gen: 0,
         }
     }
 }
@@ -1581,6 +1598,8 @@ impl Session {
                 mode: apple.mode,
                 preference: apple.preference,
                 availability: Some(apple.advisor.availability()),
+                instructions: Arc::from(apple.instructions.as_str()),
+                instructions_gen: 0,
                 urgent: Vec::new(),
                 in_flight: None,
             };
@@ -2504,6 +2523,36 @@ impl Session {
         self.inner.change_apple(move |a| a.mode = mode);
     }
 
+    /// Sets the person's own instructions for the model (`docs/19` section 2; `""` for the
+    /// default). When they change, every answer of the session is dropped and every photo asked
+    /// again, the photo on screen first, as when the preference is switched on; an answer to a
+    /// request made with the old instructions is dropped when it arrives, and an export waits for
+    /// the new answers, as after Re-run. Text the core refuses never gets here
+    /// ([`crate::apple_auto::check_instructions`]).
+    pub fn set_apple_auto_instructions(&self, own: &str) {
+        let epoch = self.inner.epoch.load(Ordering::SeqCst);
+        let refresh = {
+            let mut st = lock(&self.inner.state);
+            if *st.apple.instructions == *own {
+                return;
+            }
+            st.apple.instructions = Arc::from(own);
+            st.apple.instructions_gen += 1;
+            for p in &mut st.photos {
+                p.apple_result = None;
+            }
+            st.refresh_effective(&self.inner.env.priors)
+        };
+        self.inner.apple_wake.notify_all();
+        self.inner.after_refresh(epoch, refresh);
+    }
+
+    /// The person's own instructions for the model, `""` for the default.
+    #[must_use]
+    pub fn apple_auto_instructions(&self) -> String {
+        lock(&self.inner.state).apple.instructions.to_string()
+    }
+
     /// Apple Auto's status for the app's Preferences and `ym doctor`, with the availability read
     /// again.
     #[must_use]
@@ -2515,15 +2564,20 @@ impl Session {
             Some(Availability::Unavailable(reason)) => (false, Some(reason), None),
             None => (false, None, None),
         };
+        let text = effective_instructions(&st.apple.instructions);
         AppleAutoStatus {
             available,
             reason,
-            info,
+            info: info.map(|i| i.with_instructions(text)),
             preference: st.apple.preference,
             mode: st.apple.mode,
             active: st.apple.activity().is_active(),
             prompt: PROMPT_VERSION,
             table: TABLE_VERSION,
+            instructions: InstructionsId::of(text),
+            own_instructions: st.apple.instructions.to_string(),
+            default_instructions: DEFAULT_INSTRUCTIONS.to_owned(),
+            instructions_max_chars: INSTRUCTIONS_MAX_CHARS,
         }
     }
 
@@ -3202,6 +3256,8 @@ impl Inner {
                     camera: p.camera.clone(),
                     profile: p.profile.clone(),
                     own: p.own.clone(),
+                    instructions: Arc::from(effective_instructions(&st.apple.instructions)),
+                    instructions_gen: st.apple.instructions_gen,
                 };
                 st.apple.in_flight = Some(task.id);
                 return Some(task);
@@ -3225,14 +3281,17 @@ impl Inner {
             let refresh = {
                 let mut st = lock(&self.state);
                 let info = match &st.apple.availability {
-                    Some(Availability::Available(info)) => Some(info.clone()),
+                    Some(Availability::Available(info)) => {
+                        Some(info.clone().with_instructions(&task.instructions))
+                    }
                     _ => None,
                 };
                 let i = st
                     .index
                     .get(&task.id)
                     .copied()
-                    .filter(|&i| st.photos[i].own_gen == task.generation);
+                    .filter(|&i| st.photos[i].own_gen == task.generation)
+                    .filter(|_| st.apple.instructions_gen == task.instructions_gen);
                 match (info, i) {
                     (Some(info), Some(i)) if self.live(task.epoch) => {
                         let p = &mut st.photos[i];
@@ -3283,7 +3342,7 @@ impl Inner {
     /// Auto stopped being available before the call).
     fn apple_request(&self, apple: &AppleAutoEnv, task: &AppleTask) -> Option<AppleAuto> {
         let info = match apple.advisor.availability() {
-            Availability::Available(info) => info,
+            Availability::Available(info) => info.with_instructions(&task.instructions),
             unavailable @ Availability::Unavailable(_) => {
                 // Read before the call: the photo is not failed, it waits for Apple Auto to be back.
                 self.change_apple(move |a| a.availability = Some(unavailable));
@@ -3312,7 +3371,7 @@ impl Inner {
             let answer = catch_panic(|| {
                 apple
                     .advisor
-                    .ask(&picture)
+                    .ask(&picture, &task.instructions)
                     .and_then(AdvisorAnswer::checked)
                     .map_err(|e: AdvisorError| AnswerError::Advisor((e.kind, e.message)))
             });
@@ -3399,7 +3458,11 @@ impl Inner {
                     return None;
                 }
                 let i = *st.index.get(&task.id)?;
-                if st.photos[i].own_gen != task.generation {
+                // Re-run replaced the estimates, or the instructions changed, meanwhile: the photo
+                // is asked again.
+                if st.photos[i].own_gen != task.generation
+                    || st.apple.instructions_gen != task.instructions_gen
+                {
                     return None;
                 }
                 let p = &mut st.photos[i];
@@ -3495,6 +3558,10 @@ struct AppleTask {
     camera: Option<PhotoCamera>,
     profile: Option<Arc<Profile>>,
     own: Option<Arc<AutoEstimates>>,
+    /// The text the model reads ([`effective_instructions`]).
+    instructions: Arc<str>,
+    /// `instructions_gen` when the request was made: an answer to older instructions is dropped.
+    instructions_gen: u64,
 }
 
 /// The development job's hold on a photo's picture slot ([`PictureSlot::Rendering`]). Finished with
