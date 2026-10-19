@@ -581,7 +581,7 @@ impl Library {
 
     /// The look ready to apply, loaded on first use and kept in memory. An imported look's file is
     /// read, checked against its SHA-256 and parsed; a built-in parametric look is baked into a
-    /// 33-point cube.
+    /// 65-point cube (`ym_color::lut::BAKE_SIZE`).
     ///
     /// # Errors
     ///
