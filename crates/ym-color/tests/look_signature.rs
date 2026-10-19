@@ -1,11 +1,11 @@
 //! The `luma_curve` field of parametric looks and the built-in Signature look
 //! (`data/looks/builtin/signature.json`, `docs/08-looks.md`): a LogC4 luma curve applied as
-//! `v += T(L) - L`, then ASC CDL saturation 1.45, baked into a 33-point cube like every parametric
+//! `v += T(L) - L`, then ASC CDL saturation 1.45, baked into a 65-point cube like every parametric
 //! look (so the CPU and the GPU need no kernel of their own for it).
 //!
 //! The constants of Signature were chosen by eye (owner's decisions of 2026-10-14 and 2026-10-19); nothing here fits
 //! them to anything. What is tested: the file parses to what the spec says, mid grey and neutrals
-//! stay where they are, the look is monotone, the 33-point cube follows the exact look to one 8-bit
+//! stay where they are, the look is monotone, the 65-point cube follows the exact look to one 8-bit
 //! display code, and intensity 0 and 100 are exactly Neutral and exactly the look.
 
 use std::sync::Arc;
@@ -82,7 +82,7 @@ fn the_file_is_the_documented_look() {
     assert_eq!(t.input(), LookInput::LogC4);
     assert!(!t.is_identity() && !t.includes_display_rendering());
     assert_eq!(t.lut().expect("a cube").cube.size(), BAKE_SIZE);
-    assert_eq!(BAKE_SIZE, 33);
+    assert_eq!(BAKE_SIZE, 65);
 }
 
 /// Values of the same curve from an independent implementation (the research prototype's
@@ -203,7 +203,7 @@ fn mid_grey_is_unchanged_to_1e_minus_6() {
     // The cube is a little less exact between its grid points; it is still far inside a display code.
     let baked = look.to_transform().expect("bakes");
     let b = baked.eval_logc4(LogC4([g; 3])).expect("log look").0;
-    println!("mid grey: 33^3 cube moves it by {:.2e}", b[0] - g);
+    println!("mid grey: 65^3 cube moves it by {:.2e}", b[0] - g);
     assert!((b[0] - g).abs() < 5e-4, "{b:?}");
 }
 
@@ -657,7 +657,7 @@ fn random_scene(n: usize, seed: u64) -> Vec<Vec3> {
 }
 
 #[test]
-fn the_33_cube_follows_the_exact_look_to_one_display_code_on_synthetic_scenes() {
+fn the_baked_cube_follows_the_exact_look_to_one_display_code_on_synthetic_scenes() {
     let scenes: [(&str, Vec<Vec3>); 3] = [
         ("neutral ramp -8 to +6 stops", neutral_ramp()),
         ("hue sweep, 4 saturations x 8 exposures", colour_sweep()),
@@ -669,19 +669,19 @@ fn the_33_cube_follows_the_exact_look_to_one_display_code_on_synthetic_scenes() 
     for (name, scene) in scenes {
         let (worst, at) = worst_display_code_error(&scene);
         println!(
-            "33^3 cube vs exact look, {name}: worst {worst:.3} display codes (8 bit sRGB) at {at:?}"
+            "65^3 cube vs exact look, {name}: worst {worst:.3} display codes (8 bit sRGB) at {at:?}"
         );
         assert!(worst <= 1.0, "{name}: {worst:.3} codes at {at:?}");
     }
 }
 
 /// The cube against the exact look in LogC4 code values, for the record. Near-neutral colours (the
-/// ones a photo is made of) are followed to about 1e-3. The largest errors are strongly saturated
+/// ones a photo is made of) are followed to about 6e-4. The largest errors are strongly saturated
 /// colours with one channel far above the others (here a blue code of 0.93 next to a red of 0.34, a
 /// ratio of hundreds in linear light): the AWG4 luminance row has a negative blue entry, so `L` falls and bends quickly
-/// there, finer than the 1/32 grid. No display shows such a colour.
+/// there, finer than the 1/64 grid. No display shows such a colour.
 #[test]
-fn the_33_cube_error_in_logc4_values() {
+fn the_baked_cube_error_in_logc4_values() {
     let look = signature();
     let baked = look.to_transform().expect("bakes");
     let mut rng = Rng(99);
@@ -705,7 +705,7 @@ fn the_33_cube_error_in_logc4_values() {
         }
     }
     println!(
-        "33^3 cube of Signature: worst |cube - exact| {worst:.2e} at {worst_at:?}; near-neutral colours {worst_neutralish:.2e} (LogC4 code values)"
+        "65^3 cube of Signature: worst |cube - exact| {worst:.2e} at {worst_at:?}; near-neutral colours {worst_neutralish:.2e} (LogC4 code values)"
     );
     assert!(worst < 5e-2, "{worst:e}");
     assert!(worst_neutralish < 2e-3, "{worst_neutralish:e}");

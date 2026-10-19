@@ -17,7 +17,7 @@ The CLI is a second front end on the same core. A file rendered from the termina
 | `ym looks import <zip or folder or .cube or look file…> [--input logc4 or logc3 or logc3-rec709]` | The wizard's importer without the UI: same library folder, recognition rules and checksums. Sources are zips, folders, `.cube` files and ARRI Look Files (`.alf4`, `.alf4c`, `.aml`). `--input` answers the generic question for non-ARRI `.cube` files; look files say what they expect and ignore it. |
 | `ym looks verify` | Re-hash every imported look; report missing or changed files. |
 | `ym looks default <look>` | Set the default look. |
-| `ym looks bake <look.json> [--preview <ARW>…] [--out <dir>]` | Developer tool for the Signature look: bake to a 33³ LUT and render a contact sheet. |
+| `ym looks bake <look.json> [--preview <ARW>…] [--out <dir>]` | Developer tool for the Signature look: bake to a 65³ LUT and render a contact sheet. |
 | `ym doctor` | GPU (name, backend, limits), the graphics policy and the stages it runs, the memory budgets, runtime chosen, model weights and hashes, profiles and versions, imported looks count, preferences path, version. For bug reports. `ym doctor --bench FILE.ARW` times the render path on one photo instead (below). |
 | `ym --version` | Version, pipeline version, git SHA. |
 
