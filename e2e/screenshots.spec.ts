@@ -160,16 +160,18 @@ test.describe("Photos", () => {
     await compareScreen(page, "photos-look-teal");
   });
 
-  test("Look with Apple Auto's answer: the Automatic card's Contrast and Saturation rows and its line (photos-look-apple-auto.png)", async ({ page }) => {
+  test("Look with Apple Auto's answer: the Automatic card's rows for the values it set, its line and plan (photos-look-apple-auto.png)", async ({ page }) => {
     // docs/19 section 10, not in the mockup: the state of a Mac where Apple Auto is available and has answered (the mock's answer is a
-    // little brighter and warmer, more contrast and less saturation). Without Apple Auto the Look tab is photos-look.png, unchanged.
+    // little brighter and warmer, darker highlights, deeper blacks, more contrast, less saturation, teal shadows and warm highlights).
+    // The photo keeps only the mockup's curve, so every row shows Apple's value as Auto. Without Apple Auto the Look tab is
+    // photos-look.png, unchanged.
     await openApp(page, { ...MOCKUP, mockAppleAuto: "answered" });
-    await configureMock(page, { initialSettings: MOCKUP_SETTINGS });
+    await configureMock(page, { initialSettings: { DSC04204: { curve: MOCKUP_SETTINGS?.DSC04204?.curve } } });
     await openPhotos(page);
     await showUpdateReady(page);
     await expect(page.getByText("Neural · 42 ms · Display P3")).toBeVisible();
     await expect(page.getByText("Set with Apple Intelligence.")).toBeVisible();
-    // The card is two rows and a line taller, so the look tiles may start below the fold: wait only for the ones that show.
+    // The card is six rows and two lines taller, so the look tiles start below the fold: wait only for the ones that show.
     await page.waitForFunction(() => {
       const box = document.querySelector(".ym-tools__scroll")?.getBoundingClientRect();
       if (!box) return false;

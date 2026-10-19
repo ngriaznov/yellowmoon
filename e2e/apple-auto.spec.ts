@@ -4,13 +4,31 @@ import { openApp, openPhotos, watchErrors } from "./helpers/app";
 
 // Apple Auto in the app (docs/19 sections 2 and 10, docs/11) in a real browser against the mocked API. The mock plays a Mac where Apple
 // Auto is available (`mockAppleAuto=answered|pending|failed`) or not (`unavailable`, and the default, which is the browser build): the
-// Preferences row is there only while it is available, and the Automatic card has its Contrast and Saturation rows and its line only
-// while Apple Auto is on for the session.
+// Preferences row is there only while it is available, with the instructions for Apple's model under it while the switch is on, and
+// the Automatic card has a row for each value Apple's answer set, its line and the answer's plan only while Apple Auto is on for the
+// session.
 
 const MOCKUP = { mockCurrent: 3, mockPicked: "2,3,4" } as const;
 const TITLE = "Auto with Apple Intelligence";
 const HINT =
-  "Apple's on-device model looks at each photo and sets its exposure, contrast and saturation, and makes the white warmer or cooler. It runs on this Mac and sends nothing anywhere. Turn it off to use Yellowmoon's own Auto, the same on every computer.";
+  "Apple's on-device model looks at each photo and grades it: exposure, highlights, shadows, black level, contrast, warmth, tint, saturation and the colours of the shadows and highlights. It runs on this Mac and sends nothing anywhere. Turn it off to use Yellowmoon's own Auto, the same on every computer.";
+const INSTRUCTIONS = "Instructions for Apple Intelligence";
+const INSTRUCTIONS_HINT = "Apple's model reads these before each photo. The answer form stays the same.";
+/** The rows of the Automatic card with the mock's answer (it leaves the shadows and the tint empty: no row for them). */
+const ANSWERED_ROWS = [
+  "Exposure",
+  "White",
+  "White balance",
+  "Highlights",
+  "Black",
+  "Contrast",
+  "Saturation",
+  "Shadows colour",
+  "Highlights colour",
+  "Noise",
+  "Camera",
+];
+const PLAN = "\u201cTeal shadows and warm highlights for a cinematic late-sun street\u201d";
 const LINES = {
   answered: "Set with Apple Intelligence.",
   pending: "Apple Intelligence is looking at this photo…",
@@ -50,6 +68,49 @@ test.describe("Preferences", () => {
     expect(problems).toEqual([]);
   });
 
+  test("the instructions for Apple's model: under the switch while it is on, saved on blur, and Reset to default", async ({ page }) => {
+    const problems = watchErrors(page);
+    const dialog = await preferences(page, { mockAppleAuto: "answered" });
+    const row = dialog.getByRole("group", { name: TITLE });
+    const field = dialog.getByRole("textbox", { name: INSTRUCTIONS });
+    const reset = dialog.getByRole("button", { name: "Reset to default" });
+    const saved = () => page.evaluate(async () => (await window.__yellowmoon!.mockApi.preferencesGet()).apple_auto_instructions);
+    const defaults = await page.evaluate(async () => (await window.__yellowmoon!.mockApi.appleAutoStatus()).default_instructions);
+    // The default instructions, whole, with the hint and the count; Reset to default is there and disabled.
+    await expect(field).toBeVisible();
+    await expect(field).toHaveValue(defaults);
+    await expect(field).toHaveAttribute("data-slot", "textarea");
+    await expect(dialog.getByRole("group", { name: INSTRUCTIONS })).toContainText(INSTRUCTIONS_HINT);
+    await expect(dialog.getByRole("group", { name: INSTRUCTIONS })).toContainText(`${[...defaults].length} of 2000 characters.`);
+    await expect(reset).toBeVisible();
+    await expect(reset).toBeDisabled();
+    await expect(reset).toHaveAttribute("data-slot", "button");
+    // The button stands next to the field: just under its bottom edge, inside the field's group, under the switch's row.
+    const group = dialog.getByRole("group", { name: INSTRUCTIONS });
+    const [fieldBox, resetBox, rowBox, switchRowBox] = await Promise.all([field.boundingBox(), reset.boundingBox(), group.boundingBox(), row.boundingBox()]);
+    expect(fieldBox!.y).toBeGreaterThanOrEqual(switchRowBox!.y + switchRowBox!.height - 1);
+    expect(resetBox!.y).toBeGreaterThanOrEqual(fieldBox!.y + fieldBox!.height - 1);
+    expect(resetBox!.y - (fieldBox!.y + fieldBox!.height)).toBeLessThan(48);
+    expect(resetBox!.x + resetBox!.width).toBeLessThanOrEqual(rowBox!.x + rowBox!.width + 1);
+    // Edited text is saved when the field loses focus, and every photo is asked again with it.
+    await field.fill("Grade it like a warm documentary.");
+    await field.blur();
+    await expect.poll(saved).toBe("Grade it like a warm documentary.");
+    await expect.poll(() => page.evaluate(async () => (await window.__yellowmoon!.mockApi.appleAutoStatus()).info?.instructions)).toBe("edited");
+    await expect(reset).toBeEnabled();
+    // Reset to default saves the default (no own instructions) at once and puts the text back.
+    await reset.click();
+    await expect.poll(saved).toBe("");
+    await expect(field).toHaveValue(defaults);
+    await expect(reset).toBeDisabled();
+    await expect.poll(() => page.evaluate(async () => (await window.__yellowmoon!.mockApi.appleAutoStatus()).info?.instructions)).toBe("default");
+    // The field goes away with the switch.
+    await dialog.getByRole("switch", { name: TITLE }).click();
+    await expect(field).toHaveCount(0);
+    await expect(reset).toHaveCount(0);
+    expect(problems).toEqual([]);
+  });
+
   test("without Apple Auto: no row, in the browser build and on a Mac where it is not available", async ({ page }) => {
     for (const options of [{}, { mockAppleAuto: "unavailable" }] as Array<Record<string, string>>) {
       const dialog = await preferences(page, options);
@@ -60,6 +121,7 @@ test.describe("Preferences", () => {
       await expect.poll(() => page.evaluate(() => window.__yellowmoon!.mockApi.appleAutoStatus().then((s) => s.available))).toBe(false);
       await expect(dialog.getByRole("group", { name: TITLE })).toHaveCount(0);
       await expect(dialog.getByRole("switch", { name: TITLE })).toHaveCount(0);
+      await expect(dialog.getByRole("textbox", { name: INSTRUCTIONS })).toHaveCount(0);
     }
   });
 });
@@ -72,14 +134,19 @@ test.describe("the Automatic card", () => {
     for (const line of Object.values(LINES)) await expect(page.getByText(line)).toHaveCount(0);
   });
 
-  test("answered: Contrast and Saturation between White balance and Noise, and the line", async ({ page }) => {
+  test("answered: a row for each value the answer set between White balance and Noise, the line and the plan", async ({ page }) => {
     await openApp(page, { ...MOCKUP, mockAppleAuto: "answered" });
     await openPhotos(page);
-    expect(await rows(page)).toEqual(["Exposure", "White", "White balance", "Contrast", "Saturation", "Noise", "Camera"]);
+    expect(await rows(page)).toEqual(ANSWERED_ROWS);
+    await expect(page.getByRole("button", { name: "Highlights −20, Auto. Open Light" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Black −15, Auto. Open Light" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Contrast +15, Auto. Open Tone" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Saturation −15, Auto. Open Tone" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Shadows colour Teal · medium, Auto. Open Colour" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Highlights colour Warm · subtle, Auto. Open Colour" })).toBeVisible();
     const line = page.getByRole("region", { name: "Automatic" }).getByText(LINES.answered);
     await expect(line).toBeVisible();
+    await expect(page.getByRole("region", { name: "Automatic" }).getByText(PLAN)).toBeVisible();
     // Muted, as the Camera card's note.
     const [lineColour, rowColour] = await Promise.all([
       line.evaluate((el) => getComputedStyle(el).color),
@@ -94,22 +161,25 @@ test.describe("the Automatic card", () => {
     await expect(page.getByRole("tab", { name: "Look" })).toHaveAttribute("aria-selected", "true");
   });
 
-  test("pending, then the answer: the rule's values until it arrives, and the line follows", async ({ page }) => {
+  test("pending, then the answer: the rule's values and no rows of Apple's until it arrives, and the line follows", async ({ page }) => {
     await openApp(page, { ...MOCKUP, mockAppleAuto: "pending" });
     await openPhotos(page);
-    await expect(page.getByRole("button", { name: "Contrast 0, Auto. Open Tone" })).toBeVisible();
+    expect(await rows(page)).toEqual(["Exposure", "White", "White balance", "Noise", "Camera"]);
+    await expect(page.getByRole("textbox", { name: "Contrast value" })).toHaveValue("0");
     await expect(page.getByText(LINES.pending)).toBeVisible();
     await page.evaluate(() => window.__yellowmoon!.mockApi.setAppleAuto("answered"));
     await expect(page.getByRole("button", { name: "Contrast +15, Auto. Open Tone" })).toBeVisible();
     await expect(page.getByText(LINES.answered)).toBeVisible();
     await expect(page.getByText(LINES.pending)).toHaveCount(0);
+    expect(await rows(page)).toEqual(ANSWERED_ROWS);
     await expect(page.getByRole("textbox", { name: "Contrast value" })).toHaveValue("+15");
   });
 
   test("failed: Yellowmoon's own values and the line that says so", async ({ page }) => {
     await openApp(page, { ...MOCKUP, mockAppleAuto: "failed" });
     await openPhotos(page);
-    await expect(page.getByRole("button", { name: "Saturation 0, Auto. Open Tone" })).toBeVisible();
+    expect(await rows(page)).toEqual(["Exposure", "White", "White balance", "Noise", "Camera"]);
+    await expect(page.getByRole("textbox", { name: "Saturation value" })).toHaveValue("0");
     await expect(page.getByText(LINES.failed)).toBeVisible();
   });
 

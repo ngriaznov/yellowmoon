@@ -160,11 +160,17 @@ test.describe("Apple Auto (docs/19)", () => {
     let snapshot = await expectNamed(page, "Photos with Apple Auto");
     expect(snapshot).toContain('button "Contrast +15, Auto. Open Tone"');
     expect(snapshot).toContain('button "Saturation −15, Auto. Open Tone"');
+    expect(snapshot).toContain('button "Highlights −20, Auto. Open Light"');
+    expect(snapshot).toContain('button "Shadows colour Teal · medium, Auto. Open Colour"');
     expect(snapshot).toContain("Set with Apple Intelligence.");
+    expect(snapshot).toContain("Teal shadows and warm highlights for a cinematic late-sun street");
     await page.keyboard.press("Meta+,");
     await expect(page.getByRole("switch", { name: "Auto with Apple Intelligence" })).toBeVisible();
     snapshot = await expectNamed(page, "Preferences with Apple Auto");
     expect(snapshot).toMatch(/switch "Auto with Apple Intelligence" \[checked\]/);
+    // The instructions for Apple's model: a named text box and its Reset to default, disabled while the text is the default.
+    expect(snapshot).toMatch(/textbox "Instructions for Apple Intelligence"/);
+    expect(snapshot).toMatch(/button "Reset to default" \[disabled\]/);
   });
 
   test("the switch flips from the keyboard, and the rows are Tab stops with the ring", async ({ page }) => {

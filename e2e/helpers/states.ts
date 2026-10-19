@@ -3,9 +3,9 @@ import type { Browser, BrowserContext, Page } from "@playwright/test";
 import { configureMock, dropFiles, failNext, lookTilesLoaded, openApp, openPhotos, settle, showUpdateReady } from "./app";
 
 // Every page state of the app that can be reached on the mock API: the 30 states of the dark glass interface (C2), the ones its
-// screenshots were taken of and its page audit ran over (`e2e/glass.spec.ts`), the two of Colour › Colour warp (2026-10-17) and the two of
-// Apple Auto (`docs/19`: the Automatic card with Apple's answer, Preferences with its row). A state is a function that leaves a page in it;
-// the numbers in the names are only an order.
+// screenshots were taken of and its page audit ran over (`e2e/glass.spec.ts`), the two of Colour › Colour warp (2026-10-17) and the three of
+// Apple Auto (`docs/19`: the Automatic card with Apple's answer, Preferences with its row, and the instructions for Apple's model edited,
+// with Reset to default). A state is a function that leaves a page in it; the numbers in the names are only an order.
 
 const MOCKUP = { mockCurrent: 3, mockPicked: "2,3,4" } as const;
 const LL4 = "ARRI_LookLibrary_LogC4.zip";
@@ -310,8 +310,9 @@ export const STATES: readonly PageState[] = [
       await p.waitForTimeout(300);
     },
   ],
-  // Apple Auto (docs/19 section 10), on a Mac where it is available: the Automatic card with its Contrast and Saturation rows and its line,
-  // and Preferences with the row "Auto with Apple Intelligence".
+  // Apple Auto (docs/19 sections 2 and 10), on a Mac where it is available: the Automatic card with a row for each value Apple's answer
+  // set, its line and the plan; Preferences with the row "Auto with Apple Intelligence" and the instructions under it; and the instructions
+  // edited, with Reset to default enabled next to the field.
   [
     "33-tab-look-apple-auto",
     async (p) => {
@@ -325,6 +326,20 @@ export const STATES: readonly PageState[] = [
       await photos(p, { ...MOCKUP, mockAppleAuto: "answered" });
       await p.keyboard.press("Meta+,");
       await expect(p.getByRole("switch", { name: "Auto with Apple Intelligence" })).toBeVisible();
+      await p.waitForTimeout(400);
+    },
+  ],
+  [
+    "35-dialog-preferences-apple-instructions",
+    async (p) => {
+      await photos(p, { ...MOCKUP, mockAppleAuto: "answered" });
+      await p.keyboard.press("Meta+,");
+      const field = p.getByRole("textbox", { name: "Instructions for Apple Intelligence" });
+      await field.fill("Grade this photo as a warm, quiet documentary still. Keep skin natural and the blacks soft.");
+      await field.blur();
+      const reset = p.getByRole("button", { name: "Reset to default" });
+      await expect(reset).toBeEnabled();
+      await reset.scrollIntoViewIfNeeded();
       await p.waitForTimeout(400);
     },
   ],
