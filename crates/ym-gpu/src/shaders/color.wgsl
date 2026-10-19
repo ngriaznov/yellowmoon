@@ -188,11 +188,17 @@ fn c9_grade(v: vec3<f32>, l: f32) -> vec3<f32> {
 // ---- C9b: colour warp ----------------------------------------------------------------------------
 
 // The pins of ym_color::warp::Warp (docs/02 C9b), prepared on the host by `Warp::new` (clamped, still
-// pins left out, the range grown for a long move, the pivot as a LogC4 code): `CU.warp_n.x` moving pins
-// of three rows each in `CU.warp_mv`, [s.x, s.y, delta.x, delta.y], [1 / (2 rho'^2), shadows,
-// highlights, pivot code], [exposure in stops, 0, 0, 0], and `CU.warp_n.y` locked pins in `CU.warp_lk`,
-// [l.x, l.y, 1 / (2 rho^2), 0]. No moving pin skips the stage: the output is then bit for bit what it
-// was before the warp existed.
+// pins left out, the pivot as a LogC4 code, the number of flow steps): `CU.warp_n.x` moving pins of
+// three rows each in `CU.warp_mv`, [s.x, s.y, delta.x, delta.y], [1 / (2 rho^2), shadows, highlights,
+// pivot code], [exposure in stops, 0, 0, 0], `CU.warp_n.y` locked pins in `CU.warp_lk`, [l.x, l.y,
+// 1 / (2 rho^2), 0], and the flow's `CU.warp_n.z` steps. No moving pin skips the stage: the output is
+// then bit for bit what it was before the warp existed.
+//
+// The flow: in N steps every pin's Gaussian slides from its source by the share of its move this
+// pixel takes, to `s + gamma w delta`, and the pixel follows,
+// `c += (gamma / N) sum(w phi delta) / max(1, sum phi)` with the centres at `s + (k / N) gamma w delta`;
+// gamma (the neutral guard times the locks' hold) and the tonal weights w are the pixel's own, taken
+// once. The exposure is the one-step formula at the pixel's own chroma.
 //
 // Fast-math (K8). Nothing here rests on a rounding (the gate is 2e-4 in LogC4), and nothing may rest
 // on an infinity or a NaN either (Metal's fast-math may assume there are none):
@@ -201,20 +207,23 @@ fn c9_grade(v: vec3<f32>, l: f32) -> vec3<f32> {
 // * a neutral pixel returns before any square root is taken (fast-math may compute sqrt(x) as
 //   x * rsqrt(x), a NaN at 0); the threshold, |c| < 1e-12, is far above the denormals a fast-math
 //   device flushes, and the CPU moves such a pixel by less than 1e-20;
-// * the lock product is of factors in [0, 1] and the division is by max(1, sum of reaches) >= 1;
+// * the lock product is of factors in [0, 1], every division is by max(1, sum of reaches) >= 1, and
+//   the step count is at least 1 and at most WARP_MAX_STEPS whatever the uniform holds;
 // * the tone L decodes v limited to WARP_LUMA_CEIL, so the decode's exp2 stays finite in f32 (it
 //   overflows from a code of about 8; real pixels after C9 stay below 3, and from 0.8 up the tonal
 //   weight is the highlights' already).
-// A C port of this function compiled with clang -O3 -ffast-math -ffp-contract=fast -mfma -mrecip=all
-// against -O2 -ffp-contract=off (200 random pin sets of 0 to 16 pins, 80,000 pixels among them exact
-// neutrals, |c| = 1e-13, chroma of 1e30, codes up to 40 and down to -3e31, pixels on a lock): every
-// output finite, the two at most 2.4e-7 apart, exact neutrals unchanged in both.
-const WARP_EXP_LIMIT: f32 = 80.0;
+// docs/02 C9b gives the check of a C port of this function under clang -ffast-math.
 const WARP_NEUTRAL_R2: f32 = 1.0e-24;
 const WARP_LUMA_CEIL: f32 = 7.5;
 
 fn warp_gauss(d2: f32, inv_two_sigma_sq: f32) -> f32 {
     return exp(-min(d2 * inv_two_sigma_sq, WARP_EXP_LIMIT));
+}
+
+// A moving pin's tonal weight at the tone `l`: Shadows below the pivot, Highlights above it.
+fn warp_tonal_weight(b: vec4<f32>, l: f32) -> f32 {
+    let t = smoothstep(b.w - WARP_TONE_HALF_WIDTH, b.w + WARP_TONE_HALF_WIDTH, l);
+    return b.y + (b.z - b.y) * t;
 }
 
 fn c9b_warp(v: vec3<f32>) -> vec3<f32> {
@@ -238,9 +247,10 @@ fn c9b_warp(v: vec3<f32>) -> vec3<f32> {
     if (hold <= 0.0) {
         return v;
     }
+    let gamma = guard * hold;
     let l = logc4_encode(dot(Y_AWG4, logc4_decode3(min(v, vec3<f32>(WARP_LUMA_CEIL)))));
+    // The exposure, at the pixel's own chroma with the pins at their sources.
     var reach = 0.0;
-    var shift = vec2<f32>(0.0);
     var exposure = 0.0;
     for (var i = 0u; i < moves; i++) {
         let a = CU.warp_mv[3u * i];
@@ -249,14 +259,31 @@ fn c9b_warp(v: vec3<f32>) -> vec3<f32> {
         let d = c - a.xy;
         let phi = warp_gauss(dot(d, d), b.x);
         reach = reach + phi;
-        let t = smoothstep(b.w - WARP_TONE_HALF_WIDTH, b.w + WARP_TONE_HALF_WIDTH, l);
-        let w = (b.y + (b.z - b.y) * t) * phi;
-        shift = shift + w * a.zw;
-        exposure = exposure + w * x;
+        exposure = exposure + warp_tonal_weight(b, l) * phi * x;
     }
-    let k = guard * hold / max(reach, 1.0);
-    let dd = k * shift;
-    return v + dd.x * E1 + dd.y * E2 + vec3<f32>(k * exposure * STOP);
+    let e = gamma / max(reach, 1.0) * exposure;
+    // The flow, the move gathered in `dd`.
+    let steps = clamp(CU.warp_n.z, 1u, WARP_MAX_STEPS);
+    let n = f32(steps);
+    let h = gamma / n;
+    var dd = vec2<f32>(0.0);
+    for (var k = 0u; k < steps; k++) {
+        let tau = f32(k) / n;
+        let p = c + dd;
+        var sum = 0.0;
+        var shift = vec2<f32>(0.0);
+        for (var i = 0u; i < moves; i++) {
+            let a = CU.warp_mv[3u * i];
+            let b = CU.warp_mv[3u * i + 1u];
+            let w = warp_tonal_weight(b, l);
+            let d = p - (a.xy + (tau * (gamma * w)) * a.zw);
+            let phi = warp_gauss(dot(d, d), b.x);
+            sum = sum + phi;
+            shift = shift + (w * phi) * a.zw;
+        }
+        dd = dd + (h / max(sum, 1.0)) * shift;
+    }
+    return v + dd.x * E1 + dd.y * E2 + vec3<f32>(e * STOP);
 }
 
 // ---- C10: CDL and tetrahedral 3D LUT ---------------------------------------------------------------

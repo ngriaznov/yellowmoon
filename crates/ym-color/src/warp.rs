@@ -10,11 +10,14 @@
 //! leaves the mean of the three channels unchanged. The tone of a pixel is `L = encode(Y(decode(v)))`.
 //!
 //! A pixel does not jump to its new colour in one move: it follows a flow of `N` small steps while
-//! every moving pin's Gaussian slides from its source to its target, so a pin's reach is the range
-//! the person set however far the pin is dragged, and one pin never folds the plane (the fix of
-//! 2026-10-19; before it, a long move grew the range to `|delta| / 1.5`). For a pixel of chroma `c0`
-//! and tone `L`, the moving pins `i` (source `s`, target `t`, range `rho`, tonal weights `w_lo`, `w_hi`
-//! around the pivot `P`, exposure `x` in stops) and the locked pins `k` (at `l`, range `rho_k`):
+//! every moving pin's Gaussian slides from its source toward its target, so a pin's reach is the
+//! range the person set however far the pin is dragged, and one pin never folds the plane (the fix
+//! of 2026-10-19; before it, a long move grew the range to `|delta| / 1.5`). A pixel that takes only
+//! a share `gamma w` of a pin's move (its tonal weight, the neutral guard, the locks) sees that pin's
+//! centre slide by that share of the move, so a colour on the source lands on `s + gamma w delta`, as
+//! in one step. For a pixel of chroma `c0` and tone `L`, the moving pins `i` (source `s`, target `t`,
+//! range `rho`, tonal weights `w_lo`, `w_hi` around the pivot `P`, exposure `x` in stops) and the
+//! locked pins `k` (at `l`, range `rho_k`):
 //!
 //! ```text
 //! delta_i = t_i - s_i
@@ -25,18 +28,19 @@
 //! gamma   = g lambda                                     at the pixel's own chroma, for every step
 //! N       = clamp(ceil(1.25 sum_i |delta_i| / (rho_i sqrt(e))), 1, 64)   one number for the frame
 //! c_0     = c0, and for k = 0 .. N-1, tau_k = k / N:
-//!   phi_i   = G(|c_k - (s_i + tau_k delta_i)|^2, rho_i)
+//!   phi_i   = G(|c_k - (s_i + tau_k gamma w_i delta_i)|^2, rho_i)
 //!   c_{k+1} = c_k + (gamma / N) sum(w_i phi_i delta_i) / max(1, sum phi_i)
 //! D       = c_N - c0
 //! E       = gamma sum(w_i G(|c0 - s_i|^2, rho_i) x_i) / max(1, sum G(|c0 - s_i|^2, rho_i))
 //! v'      = v + D1 e1 + D2 e2 + E S
 //! ```
 //!
-//! Why it does not fold: one pin's move field `delta phi(c)` has the Lipschitz constant
-//! `|delta| / (rho sqrt(e))` (the steepest slope of a Gaussian, at one range from its centre), and an
-//! Euler step `c -> c + h V(c)` is one to one with a positive Jacobian determinant when
-//! `h Lip(V) < 1`; a chain of such steps is one to one too. With `h <= 1 / N` the rule for `N` keeps
-//! `h Lip(V) <= 1 / 1.25` for every pin. The cap of 64 never binds that bound for one pin (sources
+//! Why it does not fold: at one tone, away from neutral and locks (`gamma = 1`), every pixel follows
+//! the same flow, that of one pin moving `w delta`. Its field `w delta phi(c)` has the Lipschitz
+//! constant `w |delta| / (rho sqrt(e))` (the steepest slope of a Gaussian, at one range from its
+//! centre), and an Euler step `c -> c + V(c) / N` is one to one with a positive Jacobian determinant
+//! when `Lip(V) / N < 1`; a chain of such steps is one to one too. The rule for `N` keeps
+//! `Lip(V) / N <= 1 / 1.25` for every pin. The cap of 64 never binds that bound for one pin (sources
 //! and targets lie within 0.5 of neutral, so `|delta| <= 1`, and `rho >= 0.01` give at most 60.7), but
 //! it can for many long, narrow moves at once; then the plane can fold.
 //!
@@ -44,7 +48,8 @@
 //!
 //! * No pins, locked pins only, or pins that neither move nor change exposure: the identity, exactly.
 //! * One pin, away from neutral and locks, with tonal weights of 1: its source lands on its target
-//!   (to rounding), however long the move.
+//!   (to rounding), however long the move; with a weight or a lock's hold below 1, on that share of
+//!   the move.
 //! * Range: a colour three ranges beside or behind the source moves by at most `exp(-4.5)` of the
 //!   move, even for a long move (the grown range moved it by most of the move).
 //! * One pin never folds the plane: on a dense grid around the move every mapped cell keeps its
@@ -405,9 +410,12 @@ impl Warp {
             return ([0.0, 0.0], 0.0);
         }
         let gamma = guard * hold;
+        // Each pin's tonal weight `w`, and the share of its move this pixel takes, `gamma w`.
         let mut weights = [0.0; WARP_MAX_PINS];
-        for (w, m) in weights.iter_mut().zip(&self.moves) {
+        let mut shares = [0.0; WARP_MAX_PINS];
+        for ((w, b), m) in weights.iter_mut().zip(&mut shares).zip(&self.moves) {
             *w = m.tonal_weight(l);
+            *b = gamma * *w;
         }
         // The exposure, at the pixel's own chroma with the pins at their sources.
         let (mut reach, mut exposure) = (0.0, 0.0);
@@ -417,8 +425,10 @@ impl Warp {
             exposure += w * phi * m.exposure_ev;
         }
         let e = gamma / reach.max(1.0) * exposure;
-        // The flow: the pins' centres slide from source to target, the pixel follows in N steps.
-        // The move is gathered in `d`, so one step is the one-step formula bit for bit.
+        // The flow: each pin's centre slides from its source by the pixel's share of its move,
+        // `s + tau gamma w delta`, and the pixel follows in N steps (so a pixel on a source lands on
+        // `s + gamma w delta`, as in one step). The move is gathered in `d`, so one step is the
+        // one-step formula bit for bit.
         let n = f64::from(self.steps);
         let h = gamma / n;
         let mut d = [0.0, 0.0];
@@ -426,10 +436,11 @@ impl Warp {
             let tau = f64::from(k) / n;
             let p = [c[0] + d[0], c[1] + d[1]];
             let (mut reach, mut v0, mut v1) = (0.0, 0.0, 0.0);
-            for (m, w) in self.moves.iter().zip(weights) {
+            for ((m, w), b) in self.moves.iter().zip(weights).zip(shares) {
+                let slide = tau * b;
                 let centre = [
-                    m.source[0] + tau * m.delta[0],
-                    m.source[1] + tau * m.delta[1],
+                    m.source[0] + slide * m.delta[0],
+                    m.source[1] + slide * m.delta[1],
                 ];
                 let phi = gauss(dist2(p, centre), m.inv_two_sigma_sq);
                 reach += phi;
@@ -844,6 +855,40 @@ mod tests {
         // Bright highlights: the full move.
         let bright = pixel(logc4_at_stops(4.0), s);
         assert!(close(chroma_of(warp.apply(bright)), t, 2e-3));
+    }
+
+    #[test]
+    fn a_partial_weight_moves_the_source_by_that_share_of_a_long_move() {
+        // Shadows and Highlights at 0.4, and a lock whose hold at the source is 1 - exp(-1/2): the
+        // colour on the source takes that share of the move, as in one step (a flow whose centres
+        // slid the whole way would leave it behind after a few hundredths).
+        let (s, t) = ([0.1, 0.0], [0.1, 0.3]);
+        let weighted = Warp::new(&WarpParams {
+            pins: vec![WarpPin {
+                range: WARP_RANGE_MIN,
+                shadows: 0.4,
+                highlights: 0.4,
+                ..WarpPin::moving(s, t)
+            }],
+        });
+        assert_eq!(weighted.steps(), 23);
+        let out = chroma_of(weighted.apply(pixel(0.4, s)));
+        assert!(close(out, [0.1, 0.4 * 0.3], 1e-12), "{out:?}");
+        let held = Warp::new(&WarpParams {
+            pins: vec![
+                WarpPin {
+                    range: WARP_RANGE_MIN,
+                    ..WarpPin::moving(s, t)
+                },
+                WarpPin {
+                    range: 0.04,
+                    ..WarpPin::locked_at([0.14, 0.0])
+                },
+            ],
+        });
+        let hold = 1.0 - (-0.5f64).exp();
+        let out = chroma_of(held.apply(pixel(0.4, s)));
+        assert!(close(out, [0.1, hold * 0.3], 1e-12), "{out:?}");
     }
 
     #[test]
