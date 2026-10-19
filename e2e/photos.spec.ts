@@ -594,7 +594,7 @@ test("a folder of 500 photos: the first one opens while the rest develop, and th
 
 test("settings made before the session opens come through the mock (initialSettings)", async ({ page }) => {
   await openApp(page, MOCKUP);
-  await configureMock(page, { initialSettings: { DSC04204: { highlights: -18, shadows: 12, saturation: manual(6) } } });
+  await configureMock(page, { initialSettings: { DSC04204: { highlights: manual(-18), shadows: manual(12), saturation: manual(6) } } });
   await openPhotos(page);
   await page.keyboard.press("Meta+2");
   await expect(valueBox(page, "Highlights")).toHaveValue("−18");

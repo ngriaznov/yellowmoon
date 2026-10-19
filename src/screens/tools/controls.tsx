@@ -75,12 +75,16 @@ export function KelvinSlider({ store, rs, label = "Kelvin" }: ControlProps & { l
   );
 }
 
+/** The settings that are Auto or a value from −100 to 100 (`PercentSetting`, `docs/19` section 5). */
+export type PercentField = "contrast" | "saturation" | "highlights" | "shadows" | "black";
+
 /**
- * Contrast or Saturation: −100 to 100, Auto or a value (`docs/19` section 10). They behave like the Exposure slider: the detent and Reset
- * are at the photo's Auto value (0, or Apple Auto's answer, `AutoEstimates.contrast` / `.saturation`), a value equal to it is sent as
- * Auto (`manualOrAuto`) and any other value as Manual, and Reset sends Auto, not a manual copy of the Auto value.
+ * Contrast, Saturation, Highlights, Shadows or Black: −100 to 100, Auto or a value (`docs/19` section 10). They behave like the
+ * Exposure slider: the detent and Reset are at the photo's Auto value (0, or Apple Auto's answer, `AutoEstimates.contrast`, …), a
+ * value equal to it is sent as Auto (`manualOrAuto`) and any other value as Manual, and Reset sends Auto, not a manual copy of the
+ * Auto value.
  */
-function PercentSlider({ store, rs, field, label }: ControlProps & { field: "contrast" | "saturation"; label: string }) {
+export function PercentSlider({ store, rs, field, label }: ControlProps & { field: PercentField; label: string }) {
   const auto = rs.estimates[field];
   return (
     <Slider

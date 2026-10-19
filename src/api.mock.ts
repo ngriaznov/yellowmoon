@@ -35,12 +35,16 @@ import type {
   AppleAutoAnswer,
   AppleAutoInfo,
   AppleAutoStatus,
+  AppleHighlightColor,
+  AppleShadowColor,
   ApplyScope,
   AutoEstimates,
+  BalanceSetting,
   ChromaSample,
   ChromaScatter,
   CliLinkResult,
   CliLinkStatus,
+  ColorBalancePoint,
   DevelopSettings,
   DisplayLut,
   DownloadFound,
@@ -128,8 +132,14 @@ export const MOCK_ESTIMATES: AutoEstimates = {
   tint: 0,
   contrast: 0,
   saturation: 0,
+  highlights: 0,
+  shadows: 0,
+  black: 0,
+  balance_shadows: [0, 0],
+  balance_highlights: [0, 0],
   source: "rule",
   apple: { state: "off" },
+  apple_steps: null,
   light_class: "daylight",
   light_confidence: 0.82,
   noise: { a: 1.9e-5, b: 3.1e-7 },
@@ -148,50 +158,134 @@ export type MockAppleAuto = "none" | "unavailable" | "pending" | "answered" | "f
 
 const APPLE_AUTO_MODES: readonly MockAppleAuto[] = ["none", "unavailable", "pending", "answered", "failed"];
 
-/** The model the mock's Apple Auto says it is (the example of `docs/19` section 7). */
-export const MOCK_APPLE_INFO: AppleAutoInfo = { model: "AFM 3 Core", os: "27.0.1 (27A404)" };
+/** The default instructions for Apple's model (`ym_core::apple_auto::DEFAULT_INSTRUCTIONS`, `docs/19` section 4). */
+export const MOCK_DEFAULT_INSTRUCTIONS =
+  "You are a professional colourist grading raw photos. The picture you see is the camera's neutral starting point, not a finished photo. Grade it into a finished, professional photograph, and give it a cinematic look when the scene invites it: dusk and night streets, fog and rain, dramatic or directional light, people in a mood. Work like a colourist: set the brightness of the subject, shape the highlights, the shadows and the black level, set the contrast, the warmth and tint of the light and the strength of the colours, and colour the shadows and the highlights when it serves the mood. A professional grade usually changes several of these. Respect the scene: a night scene stays dark, snow stays bright, a silhouette stays dark, candlelight and golden hour stay warm, and skin stays natural.";
 
-/** The answer every photo gets while the mock's Apple Auto answers: a little brighter and warmer, more contrast, less saturation. */
+/** The longest instructions the model is given, in characters (`INSTRUCTIONS_MAX_CHARS`). */
+export const MOCK_INSTRUCTIONS_MAX_CHARS = 2000;
+
+/** The first 12 hex digits of the SHA-256 of the default instructions (what the core reports). */
+const DEFAULT_INSTRUCTIONS_SHA256 = "6a8a034fb24b";
+
+/**
+ * Which instructions the mock's model reads: the default, or the person's own with a stand-in digest (12 hex digits of an FNV-1a
+ * hash: the browser has no synchronous SHA-256, and the mock only needs two texts to read apart).
+ */
+export function mockInstructionsId(own: string): Pick<AppleAutoInfo, "instructions" | "instructions_sha256"> {
+  if (own.trim() === "" || own === MOCK_DEFAULT_INSTRUCTIONS) {
+    return { instructions: "default", instructions_sha256: DEFAULT_INSTRUCTIONS_SHA256 };
+  }
+  let h = 0xcbf29ce484222325n;
+  for (const byte of new TextEncoder().encode(own)) h = BigInt.asUintN(64, (h ^ BigInt(byte)) * 0x100000001b3n);
+  return { instructions: "edited", instructions_sha256: h.toString(16).padStart(16, "0").slice(0, 12) };
+}
+
+/** The model the mock's Apple Auto says it is (the example of `docs/19` section 7), with the default instructions. */
+export const MOCK_APPLE_INFO: AppleAutoInfo = {
+  model: "AFM 3 Core",
+  os: "27.0.1 (27A404)",
+  ...mockInstructionsId(""),
+};
+
+/**
+ * The answer every photo gets while the mock's Apple Auto answers: a little brighter and warmer, darker highlights, deeper blacks,
+ * more contrast, less saturation, teal shadows and warm highlights; it leaves the shadows and the tint empty (nothing set).
+ */
 export const MOCK_APPLE_ANSWER: AppleAutoAnswer = {
-  steps: { exposure: 1, white: 1, contrast: 1, saturation: -1 },
+  steps: {
+    exposure: 1,
+    highlights: -1,
+    shadows: null,
+    blacks: -1,
+    contrast: 1,
+    white: 1,
+    tint: null,
+    saturation: -1,
+    shadow_color: "teal",
+    shadow_color_strength: 2,
+    highlight_color: "warm",
+    highlight_color_strength: 1,
+  },
   scene: "Street in late sun",
+  plan: "Teal shadows and warm highlights for a cinematic late-sun street",
 };
 
-/** The table of `docs/19` section 5 (`ym_core::apple_auto::TABLE`, table version 1), by step. */
-const APPLE_TABLE = {
+/** The table of `docs/19` section 5 (`ym_core::apple_auto::TABLE`, table version 2), by step. */
+export const APPLE_TABLE = {
   exposure_ev: { [-3]: -1, [-2]: -0.6, [-1]: -0.3, 0: 0, 1: 0.3, 2: 0.6, 3: 1 } as Record<number, number>,
+  highlights: { [-2]: -40, [-1]: -20, 0: 0, 1: 20, 2: 40 } as Record<number, number>,
   warmer_mired: { [-2]: -20, [-1]: -10, 0: 0, 1: 10, 2: 20 } as Record<number, number>,
+  tint: { [-2]: -10, [-1]: -5, 0: 0, 1: 5, 2: 10 } as Record<number, number>,
   percent: { [-2]: -30, [-1]: -15, 0: 0, 1: 15, 2: 30 } as Record<number, number>,
+  strength_radius: { 1: 0.3, 2: 0.55, 3: 0.8 } as Record<number, number>,
+  shadow_directions: {
+    none: [0, 0],
+    teal: [-0.866, -0.5],
+    blue: [-0.5, -0.866],
+    green: [-0.5, 0.866],
+    amber: [0.866, 0.5],
+    magenta: [0.5, -0.866],
+  } as Record<AppleShadowColor, ColorBalancePoint>,
+  highlight_directions: {
+    none: [0, 0],
+    warm: [0.866, 0.5],
+    gold: [0.5, 0.866],
+    cool: [-0.5, -0.866],
+    pink: [0.866, -0.5],
+  } as Record<AppleHighlightColor, ColorBalancePoint>,
 };
+
+/** The wheel's point of a colour at a strength (`docs/19` section 5), `[0, 0]` for none or a colour without a strength. */
+function colorPoint(direction: ColorBalancePoint | undefined, strength: number | null): ColorBalancePoint {
+  if (!direction || strength === null) return [0, 0];
+  const r = APPLE_TABLE.strength_radius[strength] ?? 0;
+  return [r * direction[0], r * direction[1]];
+}
 
 /** Where a photo stands with the mock's Apple Auto, given the mode and the `apple_auto` preference (the core's `Activity::photo_state`). */
-export function mockAppleState(mode: MockAppleAuto, preference: boolean): AppleAuto {
+export function mockAppleState(mode: MockAppleAuto, preference: boolean, ownInstructions = ""): AppleAuto {
   if (mode === "none") return { state: "off" };
   if (mode === "unavailable") return { state: "unavailable", reason: "apple_intelligence_off" };
   if (!preference) return { state: "off" };
   if (mode === "pending") return { state: "pending" };
-  if (mode === "failed") return { state: "failed", kind: "timeout", message: "", info: MOCK_APPLE_INFO };
-  return { state: "answered", answer: MOCK_APPLE_ANSWER, info: MOCK_APPLE_INFO };
+  const info: AppleAutoInfo = { ...MOCK_APPLE_INFO, ...mockInstructionsId(ownInstructions) };
+  if (mode === "failed") return { state: "failed", kind: "timeout", message: "", info };
+  return { state: "answered", answer: MOCK_APPLE_ANSWER, info };
 }
 
 /**
  * What Auto resolves to for a photo of the mock: {@link MOCK_ESTIMATES}, with the answer's values while Apple Auto has answered
- * (`docs/19` section 5: the exposure added to the rule's, the white made warmer along the locus and read to 50 K, contrast and
- * saturation from the table).
+ * (`docs/19` section 5: the exposure added to the rule's, the white made warmer along the locus and read to 50 K, the tint added to
+ * the scene's, the sliders and the wheels from the table; a step left empty sets nothing).
  */
-export function mockEstimates(mode: MockAppleAuto, preference: boolean): AutoEstimates {
-  const apple = mockAppleState(mode, preference);
+export function mockEstimates(mode: MockAppleAuto, preference: boolean, ownInstructions = ""): AutoEstimates {
+  const apple = mockAppleState(mode, preference, ownInstructions);
   if (apple.state !== "answered") return { ...MOCK_ESTIMATES, apple };
   const { steps } = apple.answer;
-  const mired = 1e6 / MOCK_ESTIMATES.kelvin - (APPLE_TABLE.warmer_mired[steps.white] ?? 0);
+  const at = (table: Record<number, number>, step: number | null): number => (step === null ? 0 : (table[step] ?? 0));
+  const mired = 1e6 / MOCK_ESTIMATES.kelvin - at(APPLE_TABLE.warmer_mired, steps.white);
   return {
     ...MOCK_ESTIMATES,
-    exposure_ev: Math.round((MOCK_ESTIMATES.exposure_ev + (APPLE_TABLE.exposure_ev[steps.exposure] ?? 0)) * 100) / 100,
+    exposure_ev: Math.round((MOCK_ESTIMATES.exposure_ev + at(APPLE_TABLE.exposure_ev, steps.exposure)) * 100) / 100,
     kelvin: Math.round(1e6 / mired / 50) * 50,
-    contrast: APPLE_TABLE.percent[steps.contrast] ?? 0,
-    saturation: APPLE_TABLE.percent[steps.saturation] ?? 0,
+    tint: clamp(MOCK_ESTIMATES.tint + at(APPLE_TABLE.tint, steps.tint), -50, 50),
+    contrast: at(APPLE_TABLE.percent, steps.contrast),
+    saturation: at(APPLE_TABLE.percent, steps.saturation),
+    highlights: at(APPLE_TABLE.highlights, steps.highlights),
+    shadows: at(APPLE_TABLE.percent, steps.shadows),
+    black: at(APPLE_TABLE.percent, steps.blacks),
+    balance_shadows: colorPoint(
+      steps.shadow_color === null ? undefined : APPLE_TABLE.shadow_directions[steps.shadow_color],
+      steps.shadow_color === "none" ? 0 : steps.shadow_color_strength,
+    ),
+    balance_highlights: colorPoint(
+      steps.highlight_color === null ? undefined : APPLE_TABLE.highlight_directions[steps.highlight_color],
+      steps.highlight_color === "none" ? 0 : steps.highlight_color_strength,
+    ),
     source: "apple",
     apple,
+    apple_steps: steps,
   };
 }
 
@@ -416,14 +510,14 @@ export function defaultSettings(look: LookId = NEUTRAL): DevelopSettings {
     exposure: { kind: "auto" },
     contrast: { kind: "auto" },
     brightness: 0,
-    highlights: 0,
-    shadows: 0,
+    highlights: { kind: "auto" },
+    shadows: { kind: "auto" },
     white: 0,
     white_offset_ev: 0,
-    black: 0,
+    black: { kind: "auto" },
     light_source: "auto",
     white_balance: { kind: "auto" },
-    color_balance: { shadows: [0, 0], midtones: [0, 0], highlights: [0, 0] },
+    color_balance: { shadows: { kind: "auto" }, midtones: [0, 0], highlights: { kind: "auto" } },
     saturation: { kind: "auto" },
     color_warp: { pins: [] },
     sharpen: { kind: "auto" },
@@ -452,13 +546,23 @@ function unitDisc([a, b]: [number, number]): [number, number] {
 }
 
 /**
- * `contrast` or `saturation` as the core reads it (`docs/19` section 5): the `AutoOr` form, or a plain number from an older document,
- * which is Manual with that value except 0, which is Auto; a manual value is clamped to −100…100.
+ * `contrast`, `highlights`, `shadows`, `black` or `saturation` as the core reads it (`docs/19` section 5): the `AutoOr` form, or a
+ * plain number from an older document, which is Manual with that value except 0, which is Auto; a manual value is clamped to −100…100.
  */
 export function percentSetting(value: PercentSetting | number | undefined): PercentSetting {
   if (value === undefined || value === 0) return { kind: "auto" };
   if (typeof value === "number") return { kind: "manual", value: clamp(value, -100, 100) };
   return value.kind === "manual" ? { kind: "manual", value: clamp(value.value, -100, 100) } : { kind: "auto" };
+}
+
+/**
+ * The shadows or highlights wheel as the core reads it (`docs/19` section 5): the `AutoOr` form, or a plain point from an older
+ * document, which is Manual at that point except `[0, 0]`, which is Auto; a manual point is pulled into the unit disc.
+ */
+export function balanceSetting(value: BalanceSetting | ColorBalancePoint | undefined): BalanceSetting {
+  if (value === undefined) return { kind: "auto" };
+  if (Array.isArray(value)) return value[0] === 0 && value[1] === 0 ? { kind: "auto" } : { kind: "manual", point: unitDisc(value) };
+  return value.kind === "manual" ? { kind: "manual", point: unitDisc(value.point) } : { kind: "auto" };
 }
 
 /** Clamps every value to the ranges of `docs/01` §DevelopSettings, as the core does. */
@@ -469,18 +573,18 @@ export function clampSettings(s: DevelopSettings): DevelopSettings {
     look_intensity: clamp(s.look_intensity, 0, 100),
     contrast: percentSetting(s.contrast),
     brightness: pct(s.brightness),
-    highlights: pct(s.highlights),
-    shadows: pct(s.shadows),
+    highlights: percentSetting(s.highlights),
+    shadows: percentSetting(s.shadows),
     white: pct(s.white),
     white_offset_ev: clamp(s.white_offset_ev, -3, 3),
-    black: pct(s.black),
+    black: percentSetting(s.black),
     saturation: percentSetting(s.saturation),
     output_sharpening: clamp(s.output_sharpening, 0, 200),
     rolloff: { highlights: clamp(s.rolloff.highlights, 0, 1), low_light: clamp(s.rolloff.low_light, 0, 1) },
     color_balance: {
-      shadows: unitDisc(s.color_balance.shadows),
+      shadows: balanceSetting(s.color_balance.shadows),
       midtones: unitDisc(s.color_balance.midtones),
-      highlights: unitDisc(s.color_balance.highlights),
+      highlights: balanceSetting(s.color_balance.highlights),
     },
     // The core's rule (`WarpPin::clamped`): the first sixteen pins, every value in its range. Settings from before the warp have none.
     color_warp: { pins: clampPins(s.color_warp?.pins ?? []) },
@@ -527,14 +631,26 @@ export function clampSettings(s: DevelopSettings): DevelopSettings {
 
 /** Resolves every `Auto` against the estimates and reports which fields are still automatic. */
 export function resolveSettings(photoId: PhotoId, settings: DevelopSettings, estimates: AutoEstimates): ResolvedSettings {
-  const { exposure, contrast, white_balance, saturation, sharpen, noise_reduction, ...rest } = settings;
+  const { exposure, contrast, highlights, shadows, black, color_balance, white_balance, saturation, sharpen, noise_reduction, ...rest } =
+    settings;
+  const percent = (setting: PercentSetting, auto: number): number => (setting.kind === "manual" ? setting.value : auto);
+  const point = (setting: BalanceSetting, auto: ColorBalancePoint): ColorBalancePoint =>
+    setting.kind === "manual" ? setting.point : [auto[0], auto[1]];
   // A light preset stands in for the estimated light while White balance is Auto.
   const preset = settings.light_source === "auto" ? null : LIGHT_PRESETS[settings.light_source];
   const values: ResolvedValues = {
     ...rest,
     exposure_ev: exposure.kind === "manual" ? exposure.ev : estimates.exposure_ev,
-    contrast: contrast.kind === "manual" ? contrast.value : estimates.contrast,
-    saturation: saturation.kind === "manual" ? saturation.value : estimates.saturation,
+    contrast: percent(contrast, estimates.contrast),
+    highlights: percent(highlights, estimates.highlights),
+    shadows: percent(shadows, estimates.shadows),
+    black: percent(black, estimates.black),
+    color_balance: {
+      shadows: point(color_balance.shadows, estimates.balance_shadows),
+      midtones: color_balance.midtones,
+      highlights: point(color_balance.highlights, estimates.balance_highlights),
+    },
+    saturation: percent(saturation, estimates.saturation),
     white_ev: clamp(estimates.white_ev + settings.white_offset_ev, 0, 3),
     kelvin: white_balance.kind === "manual" ? white_balance.kelvin : (preset?.kelvin ?? estimates.kelvin),
     tint: white_balance.kind === "manual" ? white_balance.tint : (preset?.tint ?? estimates.tint),
@@ -554,6 +670,11 @@ export function resolveSettings(photoId: PhotoId, settings: DevelopSettings, est
     auto: {
       exposure: exposure.kind === "auto",
       contrast: contrast.kind === "auto",
+      highlights: highlights.kind === "auto",
+      shadows: shadows.kind === "auto",
+      black: black.kind === "auto",
+      balance_shadows: color_balance.shadows.kind === "auto",
+      balance_highlights: color_balance.highlights.kind === "auto",
       saturation: saturation.kind === "auto",
       light_source: settings.light_source === "auto",
       white_balance: white_balance.kind === "auto",
@@ -636,6 +757,7 @@ function defaultPreferences(): Preferences {
     watch_downloads_during_import: false,
     last_used_folders: { open: null, export: null, looks_import: null },
     apple_auto: true,
+    apple_auto_instructions: "",
   };
 }
 
@@ -1285,7 +1407,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
 
   /** What Auto resolves to now: the same for every photo, with Apple Auto's answer while it has one. */
   function estimates(): AutoEstimates {
-    return mockEstimates(options.appleAuto, preferences.apple_auto);
+    return mockEstimates(options.appleAuto, preferences.apple_auto, preferences.apple_auto_instructions);
   }
 
   /** The core's `apple_auto_status`. */
@@ -1295,12 +1417,16 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     return {
       available,
       reason: mode === "unavailable" ? "apple_intelligence_off" : null,
-      info: available ? MOCK_APPLE_INFO : null,
+      info: available ? { ...MOCK_APPLE_INFO, ...mockInstructionsId(preferences.apple_auto_instructions) } : null,
       preference: preferences.apple_auto,
       mode: "from_preference",
       active: available && preferences.apple_auto,
-      prompt: 1,
-      table: 1,
+      prompt: 2,
+      table: 2,
+      ...mockInstructionsId(preferences.apple_auto_instructions),
+      own_instructions: preferences.apple_auto_instructions,
+      default_instructions: MOCK_DEFAULT_INSTRUCTIONS,
+      instructions_max_chars: MOCK_INSTRUCTIONS_MAX_CHARS,
     };
   }
 
@@ -1932,6 +2058,8 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
         const rec = photo(photoId);
         const merged = { ...rec.settings } as Record<string, unknown>;
         for (const [key, value] of Object.entries(patch)) if (value !== undefined) merged[key] = value;
+        // The wheels may come as parts (the core's `ColorBalancePatch`): the missing ones keep their value.
+        if (patch.color_balance) merged.color_balance = { ...rec.settings.color_balance, ...patch.color_balance };
         if (patch.white_pick) {
           // Picking white sets the white balance by hand from the colour under the point.
           merged.white_balance = { kind: "manual", ...whiteFromPick(rec.scene, patch.white_pick) };
@@ -1964,7 +2092,16 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
         rec.settings = {
           ...rec.settings,
           exposure: { kind: "auto" },
-          ...(appleActs ? { contrast: { kind: "auto" }, saturation: { kind: "auto" } } : {}),
+          ...(appleActs
+            ? {
+                contrast: { kind: "auto" },
+                saturation: { kind: "auto" },
+                highlights: { kind: "auto" },
+                shadows: { kind: "auto" },
+                black: { kind: "auto" },
+                color_balance: { ...rec.settings.color_balance, shadows: { kind: "auto" }, highlights: { kind: "auto" } },
+              }
+            : {}),
           white_offset_ev: 0,
           light_source: "auto",
           white_balance: { kind: "auto" },
@@ -2258,8 +2395,22 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
           const look = findLook(patch.default_look);
           if (!look || look.missing) fail("preferences", "That look isn't in the library. Pick another default look.");
         }
+        if (patch.apple_auto_instructions !== undefined) {
+          const n = [...patch.apple_auto_instructions].length;
+          if (n > MOCK_INSTRUCTIONS_MAX_CHARS) {
+            fail(
+              "preferences",
+              `The instructions for Apple Intelligence are ${n} characters long. At most ${MOCK_INSTRUCTIONS_MAX_CHARS} fit, because the model must also see the photo.`,
+            );
+          }
+        }
         const next = { ...preferences } as Record<string, unknown>;
         for (const [key, value] of Object.entries(patch)) if (value !== undefined) next[key] = value;
+        // Saved as "" when they are empty or the default (the core's `own_instructions`).
+        if (patch.apple_auto_instructions !== undefined) {
+          const own = patch.apple_auto_instructions;
+          next.apple_auto_instructions = own.trim() === "" || own === MOCK_DEFAULT_INSTRUCTIONS ? "" : own;
+        }
         if (patch.display_rendering?.kind === "arri_display") {
           const wanted = patch.display_rendering.id;
           if (!displayLuts.some((l) => l.id === wanted)) {

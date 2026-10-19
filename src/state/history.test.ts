@@ -21,17 +21,17 @@ describe("diffSettings", () => {
 
   it("compares nested values as a whole, so a wheel moving is one change", () => {
     const before = defaultSettings();
-    const after = { ...before, color_balance: { ...before.color_balance, shadows: [0.2, -0.1] as [number, number] } };
+    const after = { ...before, color_balance: { ...before.color_balance, midtones: [0.2, -0.1] as [number, number] } };
     const entry = diffSettings(before, after);
     expect(Object.keys(entry?.after ?? {})).toEqual(["color_balance"]);
   });
 
   it("copies what it keeps, so later changes to the settings don't rewrite history", () => {
     const before = defaultSettings();
-    const after = { ...before, color_balance: { ...before.color_balance, shadows: [0.2, 0] as [number, number] } };
+    const after = { ...before, color_balance: { ...before.color_balance, midtones: [0.2, 0] as [number, number] } };
     const entry = diffSettings(before, after);
-    after.color_balance.shadows[0] = 0.9;
-    expect(entry?.after.color_balance?.shadows).toEqual([0.2, 0]);
+    after.color_balance.midtones[0] = 0.9;
+    expect(entry?.after.color_balance?.midtones).toEqual([0.2, 0]);
   });
 });
 

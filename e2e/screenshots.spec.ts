@@ -31,10 +31,14 @@ const CURVE_DEMO_POINTS = {
 /** What the mockup's 4th photo has been given: Light's Highlights and Shadows, Colour's wheels and Saturation, a curve. */
 const MOCKUP_SETTINGS: MockOptions["initialSettings"] = {
   DSC04204: {
-    highlights: -18,
-    shadows: 12,
+    highlights: manual(-18),
+    shadows: manual(12),
     saturation: manual(6),
-    color_balance: { shadows: [-0.08, -0.12], midtones: [0, 0], highlights: [0.12, 0.12] },
+    color_balance: {
+      shadows: { kind: "manual", point: [-0.08, -0.12] },
+      midtones: [0, 0],
+      highlights: { kind: "manual", point: [0.12, 0.12] },
+    },
     curve: { luma: CURVE_DEMO_POINTS.luma, red: CURVE_DEMO_POINTS.red, green: CURVE_DEMO_POINTS.green, blue: CURVE_DEMO_POINTS.blue },
   },
 };

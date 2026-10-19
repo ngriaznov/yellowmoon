@@ -22,9 +22,12 @@ import type {
   ApplyScope,
   AppError,
   AppleAutoStatus,
+  BalanceSetting,
   ChromaSample,
   ChromaScatter,
   CliLinkStatus,
+  ColorBalance,
+  ColorBalancePoint,
   DevelopSettings,
   DisplayLut,
   ExportJob,
@@ -275,13 +278,9 @@ const DIRECT_KEYS: ReadonlySet<string> = new Set([
   "look",
   "look_intensity",
   "brightness",
-  "highlights",
-  "shadows",
   "white",
   "white_offset_ev",
-  "black",
   "light_source",
-  "color_balance",
   "color_warp",
   "output_sharpening",
   "curve",
@@ -292,20 +291,37 @@ const DIRECT_KEYS: ReadonlySet<string> = new Set([
   "white_pick",
 ]);
 
+/** The settings that are Auto or a value from −100 to 100 (`docs/19` section 5), each resolved against the estimate of the same name. */
+const PERCENT_KEYS: ReadonlySet<string> = new Set(["contrast", "saturation", "highlights", "shadows", "black"]);
+
 /**
- * The mirrored settings with a patch applied to the fields that need no resolving. Contrast and saturation are Auto or a value
- * (`docs/19` section 5) and need none either: Auto is the photo's Auto value, which the mirror already has (`estimates`).
+ * The mirrored settings with a patch applied to the fields that need no resolving. Contrast, saturation, highlights, shadows, black
+ * and the shadows and highlights wheels are Auto or a value (`docs/19` section 5) and need none either: Auto is the photo's Auto value,
+ * which the mirror already has (`estimates`).
  */
 export function applyDirect(rs: ResolvedSettings, patch: SettingsPatch): ResolvedSettings {
   const settings = { ...rs.settings } as Record<string, unknown>;
   const values = { ...rs.values } as Record<string, unknown>;
   let auto = rs.auto;
   for (const [key, value] of Object.entries(patch)) {
-    if (value !== undefined && (key === "contrast" || key === "saturation")) {
+    if (value !== undefined && PERCENT_KEYS.has(key)) {
+      const field = key as "contrast" | "saturation" | "highlights" | "shadows" | "black";
       const setting = value as PercentSetting;
-      settings[key] = setting;
-      values[key] = setting.kind === "manual" ? setting.value : rs.estimates[key];
-      auto = { ...auto, [key]: setting.kind === "auto" };
+      settings[field] = setting;
+      values[field] = setting.kind === "manual" ? setting.value : rs.estimates[field];
+      auto = { ...auto, [field]: setting.kind === "auto" };
+      continue;
+    }
+    if (value !== undefined && key === "color_balance") {
+      const cb = { ...rs.settings.color_balance, ...(value as Partial<ColorBalance>) };
+      const point = (w: BalanceSetting, est: ColorBalancePoint): ColorBalancePoint => (w.kind === "manual" ? w.point : est);
+      settings.color_balance = cb;
+      values.color_balance = {
+        shadows: point(cb.shadows, rs.estimates.balance_shadows),
+        midtones: cb.midtones,
+        highlights: point(cb.highlights, rs.estimates.balance_highlights),
+      };
+      auto = { ...auto, balance_shadows: cb.shadows.kind === "auto", balance_highlights: cb.highlights.kind === "auto" };
       continue;
     }
     if (value === undefined || !DIRECT_KEYS.has(key)) continue;
@@ -963,8 +979,9 @@ export class AppStore {
     try {
       const preferences = await this.api.preferencesSet(patch);
       this.set({ preferences });
-      // Apple Auto acts, or stops, with its preference; the photos' own news comes as `settings_changed`.
-      if (patch.apple_auto !== undefined) void this.refreshAppleAuto();
+      // Apple Auto acts, or stops, with its preference, and asks every photo again with new instructions; the photos' own news comes
+      // as `settings_changed`.
+      if (patch.apple_auto !== undefined || patch.apple_auto_instructions !== undefined) void this.refreshAppleAuto();
     } catch (error) {
       if (before) this.set({ preferences: before });
       this.fail(error);

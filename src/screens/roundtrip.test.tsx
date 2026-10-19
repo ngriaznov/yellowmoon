@@ -106,10 +106,10 @@ describe("every control round-trips through update_settings", () => {
       { label: "Exposure", typed: "1.5", patch: { exposure: { kind: "manual", ev: 1.5 } }, shows: "+1.50" },
       { label: "Contrast", typed: "-25", patch: { contrast: manual(-25) }, shows: "−25" },
       { label: "Brightness", typed: "10", patch: { brightness: 10 }, shows: "+10" },
-      { label: "Highlights", typed: "-18", patch: { highlights: -18 }, shows: "−18" },
-      { label: "Shadows", typed: "12", patch: { shadows: 12 }, shows: "+12" },
+      { label: "Highlights", typed: "-18", patch: { highlights: manual(-18) }, shows: "−18" },
+      { label: "Shadows", typed: "12", patch: { shadows: manual(12) }, shows: "+12" },
       { label: "White", typed: "5", patch: { white: 5 }, shows: "+5" },
-      { label: "Black", typed: "-7", patch: { black: -7 }, shows: "−7" },
+      { label: "Black", typed: "-7", patch: { black: manual(-7) }, shows: "−7" },
     ]);
     // A manual exposure turns the AUTO button off, and the Automatic card says EDITED.
     expect(exposureCard.getByRole("button", { name: "Auto" })).toHaveAttribute("aria-pressed", "false");
@@ -137,7 +137,7 @@ describe("every control round-trips through update_settings", () => {
 
     spy.mockClear();
     await h.user.click(within(screen.getByRole("region", { name: "High dynamic range" })).getByRole("button", { name: "Reset" }));
-    expect(await lastPatch(spy, "HDR reset")).toEqual({ highlights: 0, shadows: 0, white: 0, black: 0 });
+    expect(await lastPatch(spy, "HDR reset")).toEqual({ highlights: { kind: "auto" }, shadows: { kind: "auto" }, white: 0, black: { kind: "auto" } });
   });
 
   it("Light: the AUTO button restores Auto exposure, and a slider dropped on its detent is Auto again", async () => {
@@ -202,22 +202,32 @@ describe("every control round-trips through update_settings", () => {
     const spy = await setup();
     await openTab(h, "Colour");
     const wheels = ["Shadows", "Midtones", "Highlights"] as const;
-    let expected = { shadows: [0, 0], midtones: [0, 0], highlights: [0, 0] } as Record<string, number[]>;
+    // The shadows and highlights wheels are Auto or a point (`docs/19` section 5); the midtones wheel is a point.
+    const moved = (name: string) => (name === "Midtones" ? [0.02, 0.02] : { kind: "manual", point: [0.02, 0.02] });
+    let expected = { shadows: { kind: "auto" }, midtones: [0, 0], highlights: { kind: "auto" } } as Record<string, unknown>;
     for (const name of wheels) {
       spy.mockClear();
       const wheel = screen.getByRole("slider", { name: `${name} colour balance` });
       wheel.focus();
       await h.user.keyboard("{ArrowRight}{ArrowUp}");
-      expected = { ...expected, [name.toLowerCase()]: [0.02, 0.02] };
+      expected = { ...expected, [name.toLowerCase()]: moved(name) };
       await waitFor(() => expect(spy.mock.calls.length).toBeGreaterThanOrEqual(2));
       expect(await lastPatch(spy, name)).toEqual({ color_balance: expected });
       await waitFor(() => expect(wheel, name).toHaveAttribute("aria-valuetext", expect.stringMatching(/^Strength \d+%, hue 45 degrees$/)));
     }
     expect((await h.api.getSettings(PHOTO)).settings.color_balance).toEqual(expected);
-    // The Colour balance card's Reset centres all three and Saturation.
+    // Reset on a wheel (Home) sends Auto for the shadows and highlights wheels.
+    spy.mockClear();
+    screen.getByRole("slider", { name: "Highlights colour balance" }).focus();
+    await h.user.keyboard("{Home}");
+    expect(await lastPatch(spy, "Highlights wheel reset")).toEqual({ color_balance: { ...expected, highlights: { kind: "auto" } } });
+    // The Colour balance card's Reset puts the shadows and highlights wheels back to Auto, centres the midtones and resets Saturation.
     spy.mockClear();
     await h.user.click(within(screen.getByRole("region", { name: "Colour balance" })).getByRole("button", { name: "Reset" }));
-    expect(await lastPatch(spy, "Colour balance reset")).toEqual({ color_balance: { shadows: [0, 0], midtones: [0, 0], highlights: [0, 0] }, saturation: { kind: "auto" } });
+    expect(await lastPatch(spy, "Colour balance reset")).toEqual({
+      color_balance: { shadows: { kind: "auto" }, midtones: [0, 0], highlights: { kind: "auto" } },
+      saturation: { kind: "auto" },
+    });
     await waitFor(() => expect(screen.getByRole("slider", { name: "Shadows colour balance" })).toHaveAttribute("aria-valuetext", "Centred"));
   });
 
@@ -417,16 +427,16 @@ describe("every control round-trips through update_settings", () => {
         raf.flush();
       });
       await waitFor(() => expect(spy).toHaveBeenCalledTimes(1));
-      expect(spy.mock.calls[0]?.[1]).toEqual({ highlights: -30 });
+      expect(spy.mock.calls[0]?.[1]).toEqual({ highlights: manual(-30) });
       pointer.move(150);
       await act(async () => {
         raf.flush();
       });
       await waitFor(() => expect(spy).toHaveBeenCalledTimes(2));
-      expect(spy.mock.calls[1]?.[1]).toEqual({ highlights: -50 });
+      expect(spy.mock.calls[1]?.[1]).toEqual({ highlights: manual(-50) });
       pointer.up(150);
       await waitFor(() => expect(spy).toHaveBeenCalledTimes(3));
-      expect(spy.mock.calls[2]?.[1]).toEqual({ highlights: -50 });
+      expect(spy.mock.calls[2]?.[1]).toEqual({ highlights: manual(-50) });
       await waitFor(() => expect(valueOf("Highlights")).toBe("\u221250"));
       expect(h.store.getState().canUndo).toBe(true);
     } finally {

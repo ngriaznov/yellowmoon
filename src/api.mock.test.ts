@@ -7,7 +7,9 @@ import {
   expandNameTemplate,
   libraryOf,
   lookSlug,
+  MOCK_APPLE_ANSWER,
   MOCK_APPLE_INFO,
+  MOCK_DEFAULT_INSTRUCTIONS,
   MOCK_ESTIMATES,
   mockEstimates,
   optionsFromLocation,
@@ -327,7 +329,20 @@ describe("settings", () => {
   it("starts at Auto everywhere, resolved against the estimates", async () => {
     const r = await api.getSettings(1);
     expect(r.photo_id).toBe(1);
-    expect(r.auto).toEqual({ exposure: true, contrast: true, saturation: true, light_source: true, white_balance: true, sharpen: true, noise_reduction: true });
+    expect(r.auto).toEqual({
+      exposure: true,
+      contrast: true,
+      highlights: true,
+      shadows: true,
+      black: true,
+      balance_shadows: true,
+      balance_highlights: true,
+      saturation: true,
+      light_source: true,
+      white_balance: true,
+      sharpen: true,
+      noise_reduction: true,
+    });
     expect(r.values).toMatchObject({ exposure_ev: 0.3, kelvin: 5450, tint: 0, contrast: 0, saturation: 0 });
     expect(r.values.sharpen).toEqual({ amount: 120, radius_px: 0.8 });
     expect(r.values.noise_reduction).toEqual({ luminance: 30, color: 50, detail: 50 });
@@ -393,7 +408,20 @@ describe("settings", () => {
       brightness: 20,
     });
     const r = await api.rerunAuto(1);
-    expect(r.auto).toEqual({ exposure: true, contrast: false, saturation: false, light_source: true, white_balance: true, sharpen: true, noise_reduction: true });
+    expect(r.auto).toEqual({
+      exposure: true,
+      contrast: false,
+      highlights: true,
+      shadows: true,
+      black: true,
+      balance_shadows: true,
+      balance_highlights: true,
+      saturation: false,
+      light_source: true,
+      white_balance: true,
+      sharpen: true,
+      noise_reduction: true,
+    });
     expect([r.values.contrast, r.values.saturation]).toEqual([20, -10]);
     expect(r.values.brightness).toBe(20); // other controls are not touched
   });
@@ -1166,7 +1194,7 @@ describe("what the screens need beyond docs/01", () => {
   it("opens photos with the initial settings and summary overrides given", async () => {
     const api = createMockApi({
       speed: Number.POSITIVE_INFINITY,
-      initialSettings: { DSC04204: { highlights: -18, saturation: manual(6) } },
+      initialSettings: { DSC04204: { highlights: manual(-18), saturation: manual(6) } },
       photoOverrides: { DSC04204: { reduced: true, camera: { match_kind: { kind: "sensor_family", via: "Sony A7 IV" } } } },
     });
     await open(api);
@@ -1206,12 +1234,13 @@ describe("what the screens need beyond docs/01", () => {
     const rs = await api.updateSettings(4, {
       crop: { rect: { x: -1, y: 0.5, width: 5, height: 5 }, angle_deg: 90, aspect: "free" },
       orientation: 450 as never,
-      color_balance: { shadows: [3, 4], midtones: [0, 0], highlights: [0, 0] },
+      color_balance: { shadows: { kind: "manual", point: [3, 4] }, midtones: [0, 0], highlights: { kind: "auto" } },
     });
     expect(rs.settings.crop?.angle_deg).toBe(45);
     expect(rs.settings.crop?.rect).toEqual({ x: 0, y: 0.5, width: 1, height: 0.5 });
     expect(rs.settings.orientation).toBe(90);
-    expect(Math.hypot(...(rs.settings.color_balance.shadows as [number, number]))).toBeCloseTo(1, 6);
+    expect(Math.hypot(...rs.values.color_balance.shadows)).toBeCloseTo(1, 6);
+    expect(rs.auto.balance_shadows).toBe(false);
   });
 });
 
@@ -1342,8 +1371,13 @@ describe("Apple Auto (docs/19)", () => {
       preference: true,
       mode: "from_preference",
       active: false,
-      prompt: 1,
-      table: 1,
+      prompt: 2,
+      table: 2,
+      instructions: "default",
+      instructions_sha256: "6a8a034fb24b",
+      own_instructions: "",
+      default_instructions: MOCK_DEFAULT_INSTRUCTIONS,
+      instructions_max_chars: 2000,
     });
     await api.openPaths(ARW);
     const rs = await api.getSettings(1);
@@ -1358,9 +1392,15 @@ describe("Apple Auto (docs/19)", () => {
     expect(mockEstimates("unavailable", true).apple).toEqual({ state: "unavailable", reason: "apple_intelligence_off" });
   });
 
-  it("answers through the table of section 5: +0.3 EV, 10 mired warmer, contrast +15, saturation −15", () => {
+  it("answers through the table of section 5: +0.3 EV, 10 mired warmer, contrast +15, saturation −15, and the rest", () => {
     const e = mockEstimates("answered", true);
     expect([e.exposure_ev, e.kelvin, e.contrast, e.saturation, e.source]).toEqual([0.6, 5750, 15, -15, "apple"]);
+    // Highlights −20, black −15, the shadows and the tint left empty (nothing set), teal shadows and warm highlights.
+    expect([e.highlights, e.shadows, e.black, e.tint]).toEqual([-20, 0, -15, 0]);
+    expect(e.balance_shadows[0]).toBeCloseTo(-0.866 * 0.55, 12);
+    expect(e.balance_shadows[1]).toBeCloseTo(-0.5 * 0.55, 12);
+    expect(e.balance_highlights[0]).toBeCloseTo(0.866 * 0.3, 12);
+    expect(e.apple_steps).toEqual(MOCK_APPLE_ANSWER.steps);
     expect(e.apple).toMatchObject({ state: "answered", info: MOCK_APPLE_INFO });
     // Pending and failed are the rule, as is the preference off.
     for (const [mode, pref] of [["pending", true], ["failed", true], ["answered", false]] as const) {
@@ -1369,6 +1409,28 @@ describe("Apple Auto (docs/19)", () => {
     }
     expect(mockEstimates("answered", false).apple).toEqual({ state: "off" });
     expect(mockEstimates("failed", true).apple).toMatchObject({ state: "failed", kind: "timeout" });
+  });
+
+  it("takes instructions of at most 2000 characters, saves the default as empty, and the answers say which were read", async () => {
+    api.reset({ appleAuto: "answered" });
+    await api.openPaths(ARW);
+    api.flush();
+    await expect(api.preferencesSet({ apple_auto_instructions: "x".repeat(2001) })).rejects.toMatchObject({ scope: "preferences" });
+    expect((await api.preferencesGet()).apple_auto_instructions).toBe("");
+    const changed: number[] = [];
+    api.on("settings_changed", (e) => changed.push(e.photo_id));
+    await api.preferencesSet({ apple_auto_instructions: "Moody night grade." });
+    await vi.advanceTimersByTimeAsync(1);
+    expect(changed).toHaveLength(12);
+    const status = await api.appleAutoStatus();
+    expect(status).toMatchObject({ instructions: "edited", own_instructions: "Moody night grade." });
+    expect(status.instructions_sha256).toMatch(/^[0-9a-f]{12}$/);
+    expect(status.instructions_sha256).not.toBe("6a8a034fb24b");
+    const rs = await api.getSettings(1);
+    expect(rs.estimates.apple).toMatchObject({ state: "answered", info: { instructions: "edited" } });
+    const saved = await api.preferencesSet({ apple_auto_instructions: MOCK_DEFAULT_INSTRUCTIONS });
+    expect(saved.apple_auto_instructions).toBe("");
+    expect(await api.appleAutoStatus()).toMatchObject({ instructions: "default", instructions_sha256: "6a8a034fb24b" });
   });
 
   it("follows the preference at once and tells about every developed photo with settings_changed", async () => {
