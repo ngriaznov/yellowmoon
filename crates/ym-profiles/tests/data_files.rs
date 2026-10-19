@@ -696,8 +696,8 @@ fn white_scales_are_recorded_with_their_source() {
     }
     assert_eq!((own, same), (11, 10));
     assert_eq!(
-        none, 5,
-        "the A7R V, A7CR, A9 III, A7 V and A7R VI have no data"
+        none, 6,
+        "the A1 II, A7R V, A7CR, A9 III, A7 V and A7R VI have no data"
     );
 
     // The A1: fitted on the presets stored in the owner's three photos.
@@ -719,13 +719,24 @@ fn white_scales_are_recorded_with_their_source() {
     assert!(res.matrix_mean_preset_angle_deg > 2.0 || res.matrix_daylight_k < 5000.0);
     assert_eq!(res.matrix_scale[1], 1.0);
 
-    // The A1 II takes the A1's scale: the published colour matrices of the two are the same.
+    // The A1 II does not take the A1's scale: its own published colour matrix is 0.1672 from the A1's, over the
+    // 0.02 of the sibling check (the two were the same only while a lookup by Model-string prefix gave the A1 II
+    // the A1's entry). The refused pairing stays in its note.
     let a1m2 = reg.body_by_model_id(400).unwrap();
-    assert_eq!(
-        a1m2.white_scale_source.as_ref().unwrap().kind,
-        WhiteScaleKind::Sibling
+    let src = a1m2.white_scale_source.as_ref().unwrap();
+    assert_eq!(src.kind, WhiteScaleKind::None);
+    assert_eq!(a1m2.white_scale, IDENTITY_WHITE_SCALE);
+    assert!(
+        src.note.contains("Sony A1:") && src.note.contains("0.1672"),
+        "{}",
+        src.note
     );
-    assert_eq!(a1m2.white_scale, a1.white_scale);
+    // No body takes another's scale today; the kind stays in the format for a stand-in whose matrix matches.
+    assert!(reg.bodies.iter().all(|b| {
+        b.white_scale_source
+            .as_ref()
+            .is_some_and(|s| s.kind != WhiteScaleKind::Sibling)
+    }));
 }
 
 #[test]

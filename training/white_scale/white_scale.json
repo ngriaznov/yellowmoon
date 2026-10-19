@@ -232,11 +232,11 @@
       "model": "ILCE-1"
     },
     "400": {
-      "white_scale": [0.8675, 1.0, 1.0861],
+      "white_scale": [1.0, 1.0, 1.0],
       "source": {
-        "kind": "sibling",
+        "kind": "none",
         "files": [],
-        "note": "Takes the scale of the Sony A1: the published colour matrices of the two bodies agree (largest per-coefficient difference 0.0000, limit 0.02). No file of this body was available, so the presets were not read."
+        "note": "No file with white-balance presets of this body was available, and it does not take the scale of the Sony A1: their published colour matrices differ (largest per-coefficient difference 0.1672, limit 0.02). Its whites are not corrected."
       },
       "model": "ILCE-1M2"
     },

@@ -196,12 +196,52 @@ class Registry(unittest.TestCase):
         lo, hi = fit_mod.DAYLIGHT_WINDOW_K
         self.assertTrue(lo <= res["daylight_k_after"] <= hi)
         self.assertTrue(res["matrix_mean_preset_angle_deg"] > fit_mod.MEAN_ANGLE_LIMIT_DEG or not lo <= res["matrix_daylight_k"] <= hi)
-        a1m2 = next(b for b in self.registry["bodies"] if b["model_id"] == 400)
-        self.assertEqual(a1m2["white_scale"], a1["white_scale"])
 
-    def test_the_siblings_published_matrices_agree_with_the_fitted_body(self):
+    def test_the_a1_ii_does_not_take_the_a1s_scale(self):
+        # Its own published matrix is 0.1672 from the A1's, over the limit of the sibling check, so the pairing of
+        # SIBLING_OF is refused and the note says so.
         m = ref.load_matrices()
-        self.assertLessEqual(ref.matrix_difference(m[400], m[384]), rd.SIBLING_LIMIT)
+        self.assertGreater(ref.matrix_difference(m[400], m[384]), rd.SIBLING_LIMIT)
+        a1m2 = next(b for b in self.registry["bodies"] if b["model_id"] == 400)
+        self.assertEqual(a1m2["white_scale"], [1.0, 1.0, 1.0])
+        self.assertEqual(a1m2["white_scale_source"]["kind"], "none")
+        self.assertIn("Sony A1:", a1m2["white_scale_source"]["note"])
+        self.assertIn(f"{ref.matrix_difference(m[400], m[384]):.4f}", a1m2["white_scale_source"]["note"])
+
+    def test_bodies_share_a_published_matrix_only_where_the_registry_pairs_them(self):
+        # A lookup by Model-string prefix once gave the A1 II the A1's matrix (and the A7 V and A7R VI those of the
+        # 2013 A7 and A7R). Two registry bodies with the same numbers must share a profile's sensor, be two measured
+        # bodies with one sensor (the A7 IV and A7C II), or be bodies that failed the same pairing together (the
+        # A7R V and A7CR).
+        def group(b: rd.Body):
+            if b.model_id in (388, 397):
+                return "ILCE-7M4 sensor"
+            if b.match in ("exact", "sensor_family"):
+                return b.profile
+            if b.model_id in rd.REJECTED_SIBLINGS:
+                return ("rejected", rd.REJECTED_SIBLINGS[b.model_id])
+            return b.model_id
+
+        m = ref.load_matrices()
+        self.assertEqual(set(m), {b.model_id for b in rd.BODIES}, "one matrix per registry body")
+        for a in rd.BODIES:
+            for b in rd.BODIES:
+                if a.model_id < b.model_id and np.array_equal(m[a.model_id], m[b.model_id]):
+                    self.assertEqual(group(a), group(b), f"{a.model} and {b.model} carry the same matrix")
+
+    def test_the_before_views_table_has_the_same_published_matrices(self):
+        # data/cameras/color-matrices.json (the Before view) and colour_matrices.json hold the same published
+        # numbers for every registry body, except the A1 II: the Before view gives it the A1's by the owner's
+        # decision of 2026-10-16 (docs/STATUS.md, questions 29 and 31).
+        before = json.loads((paths.REPO_ROOT / "data" / "cameras" / "color-matrices.json").read_text())
+        by_id = {b["model_id"]: b["xyz_d65_to_camera"] for b in before["bodies"]}
+        m = ref.load_matrices()
+        for b in rd.BODIES:
+            self.assertIn(b.model_id, by_id, b.model)
+            if b.model_id == 400:
+                self.assertEqual(by_id[400], by_id[384], "the A1 II takes the A1's numbers in the Before view")
+                continue
+            self.assertEqual(by_id[b.model_id], m[b.model_id].tolist(), b.model)
 
     def test_the_stand_in_profile_of_every_scaled_body_is_the_registrys_default(self):
         for b in self.registry["bodies"]:

@@ -234,20 +234,19 @@ fn middle_grey_after_the_camera_gain_lands_on_code_119_7() {
 
 #[test]
 fn a_body_without_a_matrix_of_its_own_gets_the_a7r_iv() {
-    // ILCE-7M5 and ILCE-7RM6 have no entry (docs: color-matrices.json, `excluded`); a made-up id and
-    // string are not in the table either. All use the A7R IV's matrix: the same camera default as an
-    // A7R IV file of the same scene.
+    // A made-up id and string are not in the table: they use the A7R IV's matrix, the same camera
+    // default as an A7R IV file of the same scene.
     let reference = patchwork("ILCE-7RM4");
     let g0 = |src: &PhotoSource| src.estimates.initial_gains().expect("gains");
     let want = camera_default_of(&reference, g0(&reference));
-    for model in ["ILCE-7M5", "ILCE-7RM6", "ILCE-9999"] {
-        let src = patchwork(model);
-        let got = camera_default_of(&src, g0(&src));
-        assert_eq!(got, want, "{model}");
+    let unknown = patchwork("ILCE-9999");
+    assert_eq!(camera_default_of(&unknown, g0(&unknown)), want);
+    // A body with a matrix of its own differs: among them the A7 V and A7R VI, which used the A7R IV's
+    // until their own published matrices were found (2026-10-19).
+    for model in ["ILCE-7M3", "ILCE-7M5", "ILCE-7RM6"] {
+        let other = patchwork(model);
+        assert_ne!(camera_default_of(&other, g0(&other)), want, "{model}");
     }
-    // A body with a matrix of its own differs.
-    let other = patchwork("ILCE-7M3");
-    assert_ne!(camera_default_of(&other, g0(&other)), want);
 }
 
 /// A patchwork shot by `model` with the Sony model ID `id` written in the maker note.

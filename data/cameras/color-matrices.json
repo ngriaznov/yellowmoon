@@ -2,14 +2,11 @@
   "schema": 1,
   "id": "color-matrices",
   "purpose": "The D65 colour matrix of each Sony body, for the Before view (the photo as the camera would render it by default). Not used by the final picture, whose colour comes from the spectral profiles.",
-  "provenance": "Numbers from the bodies' published D65 colour matrices (docs/14-licensing.md rule 8: numbers only, no table layout or text from the publishing project). Read for each body by its Sony model ID.",
+  "provenance": "Numbers from the bodies' published D65 colour matrices (docs/14-licensing.md rule 8: numbers only, no table layout or text from the publishing project). Read for each body by its Sony model ID; each is the body's own entry, never that of an older body whose Model string is a prefix of its own (checked 2026-10-19).",
   "matrix": "xyz_d65_to_camera: 3x3, rows are the camera R, G, B responses to CIE XYZ under D65, as published. The loader scales each row so that D65 white maps to camera [1, 1, 1] and inverts it (ym_color::camera_default).",
   "fallback": "ILCE-7RM4",
   "fallback_note": "A body that is not listed, or has no Sony model ID and an unknown model string, uses the fallback entry, as the profile registry falls back to the A7R IV profile.",
-  "excluded": [
-    {"model": "ILCE-7M5", "model_id": 407, "reason": "no published matrix of its own; a lookup returns another body's"},
-    {"model": "ILCE-7RM6", "model_id": 410, "reason": "no published matrix of its own; a lookup returns another body's"}
-  ],
+  "excluded": [],
   "bodies": [
     {
       "model_id": 261,
@@ -407,6 +404,24 @@
         [0.7657, -0.2847, -0.0607],
         [-0.4083, 1.1966, 0.2389],
         [-0.0684, 0.1418, 0.5844]
+      ]
+    },
+    {
+      "model_id": 407,
+      "model": "ILCE-7M5",
+      "xyz_d65_to_camera": [
+        [0.9089, -0.3577, -0.0787],
+        [-0.3563, 1.1326, 0.2557],
+        [-0.0114, 0.0928, 0.5904]
+      ]
+    },
+    {
+      "model_id": 410,
+      "model": "ILCE-7RM6",
+      "xyz_d65_to_camera": [
+        [1.1765, -0.5595, -0.1192],
+        [-0.3689, 1.1507, 0.2485],
+        [0.0051, 0.0681, 0.5731]
       ]
     }
   ]

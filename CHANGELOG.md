@@ -14,6 +14,11 @@ moves the entries below from Unreleased into a dated section for that version.
 - The Signature look, the default look for new photos, is richer: more contrast (a steeper curve around mid grey, darker shadows, brighter lights) and more colour (saturation 1.45, was 1.20). Mid grey stays where it was. Built-in looks are now prepared at a finer grid of 65 points, so the stronger curve stays smooth (pipeline 0.4.2).
 - Output sharpening: the halo limiter no longer switches on tiny differences, so the graphics card and the CPU sharpen hard edges and clipped areas alike. Sharpened pictures change very slightly at a few edge pixels (pipeline 0.4.1).
 
+### Fixed
+
+- Photos from the Sony A1 II no longer borrow the A1's white correction. The two cameras' published colour data differ, so the A1 II's whites are now read as they are, as for the other cameras without white data of their own. The Kelvin readout and the automatic light of A1 II photos can change; balanced colours hardly move (pipeline 0.4.3).
+- The Before view of the Sony A7 V and A7R VI uses each camera's own published colour data. It used the A7R IV's, because no data of their own had been found.
+
 ## [0.1.10] - 2026-10-17
 
 Highlights that end where an ALEXA's would: the camera's clipping point now lands at white, and can be placed anywhere from where it was recorded up to white.

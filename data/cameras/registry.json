@@ -1,5 +1,5 @@
 {
-  "version": "1.2.0",
+  "version": "1.2.1",
   "default_profile": "sony-ilce-7rm4",
   "sources": {
     "model_ids": "Sony SonyModelID values (maker-note tag 0xB001) and Model strings as the cameras write them; each pair cross-checked against independent tools (numbers only)",
@@ -526,11 +526,11 @@
       "match": "default",
       "via": null,
       "notes": "No measured profile; uses the Sony A7R IV stand-in (docs/03). A Sony file is never refused for lack of a profile.",
-      "white_scale": [0.8675, 1.0, 1.0861],
+      "white_scale": [1.0, 1.0, 1.0],
       "white_scale_source": {
-        "kind": "sibling",
+        "kind": "none",
         "files": [],
-        "note": "Takes the scale of the Sony A1: the published colour matrices of the two bodies agree (largest per-coefficient difference 0.0000, limit 0.02). No file of this body was available, so the presets were not read."
+        "note": "No file with white-balance presets of this body was available, and it does not take the scale of the Sony A1: their published colour matrices differ (largest per-coefficient difference 0.1672, limit 0.02). Its whites are not corrected."
       },
       "sensor_width_mm": 35.9,
       "active_width_px": 8640,

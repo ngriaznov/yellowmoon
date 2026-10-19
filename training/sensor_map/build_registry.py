@@ -31,7 +31,7 @@ from pathlib import Path
 from training.common import jsonfmt, paths
 from training.sensor_map import registry_data as rd
 
-REGISTRY_VERSION = "1.2.0"
+REGISTRY_VERSION = "1.2.1"
 WHITE_SCALE_JSON = Path(__file__).resolve().parents[1] / "white_scale" / "white_scale.json"
 
 

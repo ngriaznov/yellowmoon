@@ -67,7 +67,7 @@ fn the_embedded_copy_is_the_file_and_it_loads() {
     let on_disk = std::fs::read_to_string(ColorMatrices::data_path(data_root())).unwrap();
     assert_eq!(EMBEDDED_JSON, on_disk);
     let t = ColorMatrices::from_json(&on_disk).unwrap();
-    assert_eq!(t.bodies().len(), 44);
+    assert_eq!(t.bodies().len(), 46);
     assert_eq!(t.fallback().model, "ILCE-7RM4");
 }
 
@@ -85,10 +85,11 @@ fn the_matrix_table_agrees_with_the_registry_and_the_exclusions() {
         .iter()
         .map(|e| e["model"].as_str().unwrap())
         .collect();
-    assert_eq!(
-        excluded,
-        ["ILCE-7M5", "ILCE-7RM6"],
-        "the two bodies left out: no matrix of their own and no sibling to borrow from"
+    // The A7 V and A7R VI were left out until 2026-10-19, when their own published matrices were found
+    // (the numbers found before were the 2013 A7's and A7R's, returned by a lookup by Model-string prefix).
+    assert!(
+        excluded.is_empty(),
+        "every registry body has a matrix: {excluded:?}"
     );
     // The A3000 is in the table (by decision) although the profile registry does not list it.
     assert!(!registry.bodies.iter().any(|b| b.model == "ILCE-3000"));
@@ -97,21 +98,15 @@ fn the_matrix_table_agrees_with_the_registry_and_the_exclusions() {
         MatrixMatch::ModelId
     );
     for body in &registry.bodies {
+        // Every registry body has its own entry, found by ID, and the model string agrees.
         let hit = table.lookup("SONY", &body.model, Some(body.model_id));
-        if excluded.contains(&body.model.as_str()) {
-            // No matrix of its own: the A7R IV's.
-            assert_eq!(hit.how, MatrixMatch::Fallback, "{}", body.model);
-            assert_eq!(hit.body.model, "ILCE-7RM4");
-        } else {
-            // Every other registry body has its own entry, found by ID, and the model string agrees.
-            assert_eq!(hit.how, MatrixMatch::ModelId, "{}", body.model);
-            assert_eq!(hit.body.model, body.model);
-            assert_eq!(hit.body.model_id, body.model_id);
-            assert_eq!(
-                table.lookup("SONY", &body.model, None).body.model,
-                body.model
-            );
-        }
+        assert_eq!(hit.how, MatrixMatch::ModelId, "{}", body.model);
+        assert_eq!(hit.body.model, body.model);
+        assert_eq!(hit.body.model_id, body.model_id);
+        assert_eq!(
+            table.lookup("SONY", &body.model, None).body.model,
+            body.model
+        );
     }
     // A body that is not in the table at all uses the A7R IV matrix.
     let unknown = table.lookup("SONY", "ILCE-9999", Some(65000));
@@ -123,9 +118,9 @@ fn the_matrix_table_agrees_with_the_registry_and_the_exclusions() {
 /// the order of the IDs. The IDs are facts about the cameras (maker-note tag 0xB001), pinned here from an
 /// independent public list so that a guessed ID cannot slip in:
 /// `the_matrix_table_agrees_with_the_registry_and_the_exclusions` walks only the 28 registry bodies.
-/// Sony lists no 402 and 403 in older versions of that list; the profile registry (`docs/03`) has them.
-/// ID 302 is the A3000's (Sony writes it for the A3500 too, under the Model string ILCE-3500).
-const PUBLISHED_IDS: [(u16, &str); 44] = [
+/// Sony lists no 402 and 403 in older versions of that list; the profile registry (`docs/03`) has them, and
+/// 407 and 410 too. ID 302 is the A3000's (Sony writes it for the A3500 too, under the Model string ILCE-3500).
+const PUBLISHED_IDS: [(u16, &str); 46] = [
     (261, "DSLR-A300"),
     (274, "DSLR-A500"),
     (288, "NEX-5N"),
@@ -170,6 +165,8 @@ const PUBLISHED_IDS: [(u16, &str); 44] = [
     (400, "ILCE-1M2"),
     (402, "ILCE-6400A"),
     (403, "ILCE-6100A"),
+    (407, "ILCE-7M5"),
+    (410, "ILCE-7RM6"),
 ];
 
 #[test]
@@ -262,6 +259,49 @@ fn the_matrices_of_the_bodies_once_keyed_by_a_neighbouring_id_are_their_own() {
         assert_eq!(
             body.body.xyz_d65_to_camera, want,
             "{} ({id})",
+            body.body.model
+        );
+    }
+}
+
+#[test]
+fn the_a7_v_and_the_a7r_vi_carry_their_own_published_numbers() {
+    // A lookup by Model-string prefix returns the 2013 A7's numbers for "ILCE-7M5" and the 2013 A7R's for
+    // "ILCE-7RM6" (the same fault gave the A1 II the A1's in the white-scale table, `docs/03`). Pinned here,
+    // rounded as published, and checked against those older bodies.
+    let table = ColorMatrices::shipped();
+    let pinned: [(u16, u16, [[f64; 3]; 3]); 2] = [
+        (
+            407, // ILCE-7M5, not the ILCE-7 (306)
+            306,
+            [
+                [0.9089, -0.3577, -0.0787],
+                [-0.3563, 1.1326, 0.2557],
+                [-0.0114, 0.0928, 0.5904],
+            ],
+        ),
+        (
+            410, // ILCE-7RM6, not the ILCE-7R (311)
+            311,
+            [
+                [1.1765, -0.5595, -0.1192],
+                [-0.3689, 1.1507, 0.2485],
+                [0.0051, 0.0681, 0.5731],
+            ],
+        ),
+    ];
+    for (id, older, want) in pinned {
+        let body = table.lookup("SONY", "", Some(id));
+        assert_eq!(body.how, MatrixMatch::ModelId, "ID {id}");
+        assert_eq!(body.body.xyz_d65_to_camera, want, "{}", body.body.model);
+        assert_ne!(
+            want,
+            table.lookup("SONY", "", Some(older)).body.xyz_d65_to_camera,
+            "ID {id}"
+        );
+        assert!(
+            body.body.note.is_none(),
+            "{}: its own numbers",
             body.body.model
         );
     }

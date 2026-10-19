@@ -278,15 +278,23 @@ mod tests {
     }
 
     #[test]
-    fn bodies_without_a_real_entry_use_the_fallback() {
-        // These two are left out of the table (data/cameras/color-matrices.json, `excluded`): none
-        // published, or the numbers of another body. The A1 II and the A3000 were left out too until
-        // the owner's decision of 2026-10-16; they have entries now (the next test).
+    fn the_a7_v_and_the_a7r_vi_have_entries_of_their_own() {
+        // Left out (`excluded`, the A7R IV's numbers) until 2026-10-19: the only numbers found for them
+        // were the 2013 A7's and A7R's, which a lookup by Model-string prefix returns. Their own published
+        // matrices are in the table now, found by ID and by Model string, and are not those bodies'.
         let t = ColorMatrices::shipped();
-        for (model, id) in [("ILCE-7M5", Some(407)), ("ILCE-7RM6", Some(410))] {
-            for l in [t.lookup("SONY", model, id), t.lookup("SONY", model, None)] {
-                assert_eq!(l.how, MatrixMatch::Fallback, "{model}");
-                assert_eq!(l.body.model, "ILCE-7RM4", "{model}");
+        for (model, id, older) in [("ILCE-7M5", 407, 306), ("ILCE-7RM6", 410, 311)] {
+            for (l, how) in [
+                (t.lookup("SONY", model, Some(id)), MatrixMatch::ModelId),
+                (t.lookup("SONY", model, None), MatrixMatch::ModelString),
+            ] {
+                assert_eq!((l.body.model.as_str(), l.how), (model, how), "{model}");
+                assert_ne!(
+                    l.body.xyz_d65_to_camera,
+                    t.lookup("SONY", "", Some(older)).body.xyz_d65_to_camera,
+                    "{model}"
+                );
+                assert_ne!(l.body.xyz_d65_to_camera, t.fallback().xyz_d65_to_camera);
             }
         }
     }
