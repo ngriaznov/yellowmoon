@@ -428,9 +428,11 @@ fn the_renders_of_a_dng_have_no_capture_sharpening_on_the_device_and_match_the_c
         "DNG preview, device against CPU: worst {worst:e}, share over 1e-3 {over:e}, mean {mean:e}"
     );
     // Twice the first measured values (worst 8.3e-4, no sample over 1e-3, mean 4.5e-8): a tie flip of
-    // the demosaic and what the later stages make of it.
+    // the demosaic and what the later stages make of it. With method A as R6's denoise (2026-10-20) its
+    // own threshold decisions flip too (f32 against f64): worst 1.5e-3, share over 1e-3 1.4e-6, mean
+    // 2.5e-7, so the worst bound is twice that.
     assert!(
-        worst < 2e-3 && over <= 2e-5 && mean < 1e-6,
+        worst < 3.1e-3 && over <= 2e-5 && mean < 1e-6,
         "{worst} {over} {mean}"
     );
     let cpu_raw = full(&cpu, &src, FullTarget::DngLinearAwg4);
@@ -439,9 +441,10 @@ fn the_renders_of_a_dng_have_no_capture_sharpening_on_the_device_and_match_the_c
         "DNG pixels, device against CPU: worst {worst:e}, share over 1e-3 {over:e}, mean {mean:e}"
     );
     // The pixels are scene-linear (a wider range than the display's): twice the first measured values
-    // (worst 1.7e-3, share over 1e-3 8.5e-7, mean 7.7e-8).
+    // (worst 1.7e-3, share over 1e-3 8.5e-7, mean 7.7e-8), and with method A's threshold decisions
+    // (2026-10-20) twice worst 6.8e-3, share over 1e-3 7.8e-5, mean 6.2e-7.
     assert!(
-        worst < 4e-3 && over <= 2e-5 && mean < 1e-6,
+        worst < 1.4e-2 && over <= 1.6e-4 && mean < 1.3e-6,
         "{worst} {over} {mean}"
     );
 }

@@ -227,8 +227,8 @@ fn the_tiles_run_r1_to_r9_with_the_front_and_r6_to_r8_without_it() {
     );
     assert_eq!(front.report.runs.raw_uploads, 1);
     assert!(front.report.runs.tiles >= 6);
-    // Both are the CPU render's picture, up to the demosaic's decisions on exact ties; the front
-    // changes little against the CPU's own front.
+    // Both are the CPU render's picture, up to the decisions of the demosaic and of method A on exact
+    // ties; the front changes little against the CPU's own front.
     let stat = |a: &[f32], b: &[f32]| {
         assert_eq!(a.len(), b.len());
         let (mut worst, mut over, mut sum) = (0.0f64, 0usize, 0.0f64);
@@ -251,9 +251,13 @@ fn the_tiles_run_r1_to_r9_with_the_front_and_r6_to_r8_without_it() {
     // R1..R9: worst 1.7e-6, mean 3.8e-8; R1..R9 against R6..R8: worst 8.3e-7, mean 2.1e-8; none over
     // 1e-3). With the vignetting gain formed in f32 the front differed from the CPU's by 4 ulp
     // everywhere and a few samples of the noise flipped a tie of the demosaic (worst 2.4e-3).
-    assert!(w2 < 3.4e-6 && o2 <= 1e-5 && m2 < 7.7e-8, "{w2} {o2} {m2}");
+    // Since R6's denoise is method A (`docs/algorithms/05`, 2026-10-20) the device and the CPU part
+    // where a coefficient lies within rounding of method A's threshold (f32 against f64): twice the
+    // measured values, R6..R8 against the CPU worst 6.8e-4, mean 1.5e-7, R1..R9 against the CPU worst
+    // 6.8e-4, mean 1.5e-7, none over 1e-3; R1..R9 against R6..R8 is unchanged (7.7e-7, 2.9e-8).
+    assert!(w2 < 1.4e-3 && o2 <= 1e-5 && m2 < 3.1e-7, "{w2} {o2} {m2}");
     assert!(w3 < 1.7e-6 && o3 <= 1e-5 && m3 < 4.3e-8, "{w3} {o3} {m3}");
-    assert!(w1 < 3e-6 && o1 <= 1e-5 && m1 < 6.8e-8, "{w1} {o1} {m1}");
+    assert!(w1 < 1.4e-3 && o1 <= 1e-5 && m1 < 3e-7, "{w1} {o1} {m1}");
 }
 
 /// The lens switches of the RAW tab cut the front down to what the device makes bit for bit.

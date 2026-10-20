@@ -72,11 +72,12 @@ impl DenoiseMethod {
         matches!(self, DenoiseMethod::NlBayesRgb | DenoiseMethod::NlBayesYcc)
     }
 
-    /// Whether the device chain has a kernel for the method; a render with another one runs its raw chain on
-    /// the CPU (as with a demosaic method the device does not run).
+    /// Whether the device chain has a kernel for the method (the bilateral and R7, or method A and its
+    /// false-colour step: `kernels::bm_dct`, `kernels::false_color`); a render with another one runs its raw
+    /// chain on the CPU (as with a demosaic method the device does not run).
     #[must_use]
     pub const fn runs_on_device(self) -> bool {
-        matches!(self, DenoiseMethod::Bilateral)
+        matches!(self, DenoiseMethod::Bilateral | DenoiseMethod::BmDct)
     }
 }
 
