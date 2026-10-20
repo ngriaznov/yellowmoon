@@ -25,7 +25,7 @@ The export panel shows an estimate ("≈ 120 MB") from `export_estimate`, and th
 
 - Jobs run one photo at a time on the GPU (full-resolution neural path, tiled), with decode of the next file overlapping.
 - The panel shows each file as Waiting / n% / Done or an error. "Cancel" stops after the current tile and deletes the partial file.
-- Exports keep running while the user browses or edits other photos; edits to a photo already queued don't affect its job (settings are snapshotted at queue time).
+- Exports keep running while the user browses or edits other photos; edits to a photo already queued don't affect its job (settings are snapshotted at queue time). The same holds for photos taken out of the filmstrip (Remove from filmstrip, `docs/11`) or a session that is closed: the job keeps the photos it was started with and finishes them, and the files on disk are never touched.
 - Files are written to a temporary name in the destination folder and renamed when complete. Originals are never touched.
 - Auto-update waits: "Restart to update" stays disabled until the queue is empty.
 - Finished state: "N photos saved to <folder>." with "Show in Finder" and "Done" (back to the tool panel).

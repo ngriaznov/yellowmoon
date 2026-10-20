@@ -23,6 +23,8 @@ The CLI is a second front end on the same core. A file rendered from the termina
 
 Folders are walked for `*.ARW` (case-insensitive). `--recursive` walks subfolders.
 
+**Removing photos is app-only.** Remove from filmstrip and its Undo (`docs/11` §*Removing photos*) are for the app's session, which lasts while the person works. `ym render` opens the photos it is given, develops them and exits, so it has no removal and no flag for it: to leave a photo out, leave it out of the command.
+
 ## `render` options
 
 They mirror the app's controls. Anything not given uses the automatic value or the user's preference.

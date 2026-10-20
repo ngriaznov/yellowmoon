@@ -347,6 +347,91 @@ fn threads_that_render_the_same_photo_together_get_the_same_picture() {
 }
 
 #[test]
+fn removed_photos_get_no_more_render_work_the_others_and_the_exports_go_on() {
+    // Taking a photo out of the filmstrip cancels its queued and running renders, forgets its caches and refuses the
+    // requests that were on their way; an export, which holds its own snapshot, finishes the photo and leaves no cache
+    // behind; the photo put back by Undo is served again.
+    let t = two();
+    let r = Renderer::new(Arc::new(NeutralOnly), RenderOptions::default()).expect("render thread");
+    for src in [&t.a, &t.b] {
+        r.spawn_viewport_frame(src.clone(), cell(), FrameOptions::default())
+            .wait()
+            .expect("job")
+            .expect("frame");
+    }
+    let both = r.cached_bytes();
+    assert!(both > 0);
+    assert_ne!(r.counters(t.a.id), Default::default());
+
+    let (gate, gate_job) = block(&r);
+    let thumbnail_a = r.spawn_thumbnail(t.a.clone());
+    let frame_a = r.spawn_viewport_frame(t.a.clone(), cell(), FrameOptions::default());
+    let tile_a =
+        r.spawn_look_thumbnail(t.a.clone(), LookId::parse("builtin:neutral").expect("look"));
+    let thumbnail_b = r.spawn_thumbnail(t.b.clone());
+    let export_a = r.spawn_full(
+        t.a.clone(),
+        FullRequest {
+            target: FullTarget::DisplayLinear(OutputTarget::Srgb),
+        },
+    );
+    assert!(!r.is_retired(t.a.id));
+    r.retire_photos(&[t.a.id]);
+    assert!(r.is_retired(t.a.id) && !r.is_retired(t.b.id));
+    assert!(
+        r.cached_bytes() < both,
+        "the caches of the photo were forgotten"
+    );
+    assert_eq!(r.counters(t.a.id), Default::default());
+    gate.send(()).expect("open the gate");
+    gate_job.wait().expect("gate job");
+
+    // The photo's queued renders never ran; the other photo's did; the export finished.
+    assert_eq!(thumbnail_a.wait().map(|_| ()), Err(JobError::Cancelled));
+    assert_eq!(frame_a.wait().map(|_| ()), Err(JobError::Cancelled));
+    assert_eq!(tile_a.wait().map(|_| ()), Err(JobError::Cancelled));
+    assert!(thumbnail_b.wait().expect("job").is_ok());
+    let full = export_a
+        .wait()
+        .expect("job")
+        .expect("the export renders the photo it was started with");
+    assert_eq!((full.width, full.height), (1200, 800));
+    // The export left nothing of the removed photo behind.
+    assert_eq!(
+        r.counters(t.a.id),
+        Default::default(),
+        "no graph for the removed photo"
+    );
+
+    // A request that was on its way is refused as cancelled and builds nothing.
+    let never = CancelToken::new();
+    assert!(matches!(
+        r.viewport_frame(&t.a, &cell(), &FrameOptions::default(), &never),
+        Err(RenderError::Cancelled)
+    ));
+    assert!(matches!(
+        r.thumbnail_png(&t.a, &never),
+        Err(RenderError::Cancelled)
+    ));
+    assert!(matches!(
+        r.histogram(&t.a, &never),
+        Err(RenderError::Cancelled)
+    ));
+    assert_eq!(r.counters(t.a.id), Default::default());
+    // The other photo renders as before.
+    assert!(r.thumbnail_png(&t.b, &never).is_ok());
+
+    // Undo: the photo is served again.
+    r.unretire_photos(&[t.a.id]);
+    assert!(!r.is_retired(t.a.id));
+    assert!(r.thumbnail_png(&t.a, &never).is_ok());
+    // A closed session retires everything, the removed photos' marks included.
+    r.retire_photos(&[t.b.id]);
+    r.retire_through(t.session.last_photo_id().expect("photos were opened"));
+    assert!(r.is_retired(t.a.id) && r.is_retired(t.b.id));
+}
+
+#[test]
 fn a_retired_session_gets_no_more_viewport_work_but_its_exports_go_on() {
     // Closing the session cancels the queued foreground jobs, forgets the caches and retires the
     // ids: a request that was on its way (a command that read its photo before the close and

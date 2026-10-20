@@ -47,6 +47,7 @@ import type {
   PreferencesPatch,
   RenderStats,
   ResolvedSettings,
+  SessionChange,
   SessionState,
   SettingsPatch,
   SourceRecognition,
@@ -67,7 +68,7 @@ import type { ExportRun } from "../export/run";
 import { diffSettings, PhotoHistory } from "./history";
 import type { HistoryEntry } from "./history";
 import { perfCount } from "../perf";
-import { isReady, mergeSession, photoName, releaseUrl } from "./photo";
+import { isReady, mergeSession, photoName, releaseUrl, removedNotice, restoredNotice, withoutPhotos, withRestoredPhotos } from "./photo";
 import { RequestLimiter } from "./requestLimiter";
 import { ViewportInputQueue } from "./viewportInputQueue";
 import type { StreamInput } from "./viewportInputQueue";
@@ -78,6 +79,9 @@ export type Screen = "start" | "photos" | "import-looks";
 
 /** What Photos shows in the right-hand panel: the six tool tabs, or Export (`docs/11-ui.md` §Export). */
 export type Panel = "tools" | "export";
+
+/** What the notice bar offers next to Dismiss: Undo for a removal (`docs/11` §Removing photos). Only the notice of a removal has one. */
+export type NoticeAction = "undo-removal";
 
 /** A dialog laid over the screen: Preferences (⌘,), About, the question before closing a session during an export, the `.cube` import. */
 export type Overlay = "preferences" | "about" | "confirm-close" | "import-cube";
@@ -208,6 +212,8 @@ export interface AppState {
   cubeImport: CubeImport | null;
   /** A short message that is not an error ("Yellowmoon is up to date."), until dismissed. */
   notice: string | null;
+  /** The button the notice has besides Dismiss: Undo, after photos were removed from the filmstrip. Null for every other notice. */
+  noticeAction: NoticeAction | null;
   /**
    * Which viewport backend draws the photo (`viewport_info`): `native` leaves the photo cell transparent, `fallback` shows the
    * frames below. Null while unknown, and for an API that has none (the browser mock), where the screen draws its own picture.
@@ -255,6 +261,7 @@ export function initialState(): AppState {
     overlay: null,
     cubeImport: null,
     notice: null,
+    noticeAction: null,
     viewportBackend: null,
     viewportFrame: null,
     exportBusy: false,
@@ -339,6 +346,17 @@ interface LookThumb {
   url: string | null;
 }
 
+/** The photos of the last removal, as far as the page keeps them (the core keeps the rest: `Session::restore_removed`). */
+interface PendingRemoval {
+  /** Their undo histories (⌘Z steps of their settings), put back with them. */
+  histories: Map<PhotoId, PhotoHistory>;
+  /**
+   * How many undo steps the photos that stayed had when the photos left. While the histories still hold that many, nothing was done
+   * since and ⌘Z takes the removal back; after a new change ⌘Z undoes the change first, as in any undo stack.
+   */
+  depth: number;
+}
+
 /** The store. Create one per window with the `Api` to use. */
 export class AppStore {
   private state: AppState = initialState();
@@ -357,6 +375,11 @@ export class AppStore {
   private readonly picks = new Set<PhotoId>();
   /** Photos a paste is changing: the core's `settings_changed` for them is the paste's own news, which the store handles itself. */
   private readonly pasting = new Set<PhotoId>();
+  /**
+   * The last removal, which Undo takes back until the next removal or the end of the session: the removed photos' undo histories (the
+   * core keeps their settings, picks and place). In memory only, like everything about a photo (hard rule 4).
+   */
+  private removal: PendingRemoval | null = null;
   /** The state the native menu was last told, which is the one it starts with: the settings items off. */
   private menuState: MenuState = { copy_settings: false, paste_settings: false, paste_settings_to_picked: false };
   private readonly lookThumbs = new Map<PhotoId, { key: string; urls: Map<LookId, LookThumb> }>();
@@ -728,7 +751,15 @@ export class AppStore {
    */
   private adoptOpened(snapshot: SessionState): void {
     const old = this.state.session;
+    // Files opened on the Start screen start a new session: the removal of the last one is not offered any more.
+    if (!old) this.forgetRemoval();
     this.adoptSession(old ? mergeSession(old, snapshot) : snapshot);
+  }
+
+  /** The last removal can no longer be taken back (a new session has begun): its histories and the notice that offered Undo go. */
+  private forgetRemoval(): void {
+    this.removal = null;
+    if (this.state.noticeAction !== null) this.set({ notice: null, noticeAction: null });
   }
 
   /** True while Photos is on screen: files opened now are added to the session, and Photos says what was added. */
@@ -738,7 +769,7 @@ export class AppStore {
 
   /** "No ARW files in what you dropped.": in the drop zone on Start, in the notice bar where there is no drop zone. */
   private sayNoArw(onPhotos: boolean): void {
-    if (onPhotos) this.set({ dropNotice: null, notice: NO_ARW_NOTICE });
+    if (onPhotos) this.set({ dropNotice: null, notice: NO_ARW_NOTICE, noticeAction: null });
     else this.set({ dropNotice: NO_ARW_NOTICE });
   }
 
@@ -763,6 +794,17 @@ export class AppStore {
       this.fail(error);
       return;
     }
+    // What a removal kept goes with the session, and so does the notice that offered to take it back.
+    this.forgetRemoval();
+    this.endSessionView();
+  }
+
+  /**
+   * The page forgets the session and shows Start: the thumbnails, settings and histories of its photos, the Look tab's tiles and
+   * what depends on the photo on screen. Not the core: `closeSession` asks it to close first, and a session whose last photo was
+   * removed is empty in the core already (and keeps what Undo needs).
+   */
+  private endSessionView(): void {
     for (const url of Object.values(this.state.thumbnails)) releaseUrl(url);
     this.releaseLookThumbs();
     this.pendingStatus.clear();
@@ -787,6 +829,7 @@ export class AppStore {
       overlay: this.state.overlay === "confirm-close" ? null : this.state.overlay,
       cubeImport: this.state.cubeImport,
       notice: this.state.notice,
+      noticeAction: this.state.noticeAction,
       viewportBackend: this.state.viewportBackend,
       exportBusy: this.state.exportBusy,
       // What was copied is for pasting in another folder too; the id of its photo belongs to the closed session.
@@ -886,6 +929,185 @@ export class AppStore {
     await Promise.all(photos.filter((p) => p.picked).map((p) => this.setPicked(p.id, false)));
   }
 
+  // --- Removing photos ----------------------------------------------------------------------
+
+  /**
+   * Remove from filmstrip (`docs/11` §Removing photos): takes photos out of the session. The files on disk are not touched (hard
+   * rule 5); the photos' edits go with them, because nothing is saved per photo (hard rule 4), and are kept in memory for Undo until
+   * the next removal or the end of the session. The photo on screen hands over to the next one (the previous one when the last was
+   * removed); with no photo left the Start screen shows. Says what happened, with an Undo button ({@link undoRemoval}). Ids that are
+   * not in the session are ignored.
+   */
+  async removePhotos(ids: readonly PhotoId[]): Promise<void> {
+    const open = this.state.session;
+    if (!open) return;
+    const present = new Set(open.photos.map((p) => p.id));
+    const wanted = [...new Set(ids)].filter((id) => present.has(id));
+    if (wanted.length === 0) return;
+    const asked = new Set(wanted);
+    // Patches and the first read of the settings still on their way to these photos land first: none may reach a photo that has left
+    // (it would come back as an error from the core, and as a message on screen).
+    await Promise.all(wanted.map((id) => Promise.all([this.whenIdle(id), this.settingsRequests.get(id)])));
+    const before = this.state.session;
+    if (!before) return;
+    const names = before.photos.filter((p) => asked.has(p.id)).map((p) => photoName(p.file_name));
+    const wasCurrent = this.currentId();
+    // Wheel and drag input that has not been sent was meant for the photo that leaves.
+    if (wasCurrent !== null && asked.has(wasCurrent)) this.viewportQueue.clear();
+    let change: SessionChange;
+    try {
+      change = await this.api.removePhotos(wanted);
+    } catch (error) {
+      this.fail(error);
+      return;
+    }
+    const gone = new Set(change.photo_ids);
+    if (gone.size === 0) return;
+    const session = this.state.session;
+    if (!session) return;
+
+    // Their undo histories are kept with them; the rest of what the page knows about them goes now.
+    const histories = new Map<PhotoId, PhotoHistory>();
+    for (const id of gone) {
+      const history = this.histories.get(id);
+      if (history) histories.set(id, history);
+      this.histories.delete(id);
+      this.gestures.delete(id);
+      this.senders.delete(id);
+      this.settingsRequests.delete(id);
+      this.pendingStatus.delete(id);
+    }
+    this.forgetLookThumbsOf(gone);
+    const thumbnails = { ...this.state.thumbnails };
+    for (const id of gone) {
+      const url = thumbnails[id];
+      if (url !== undefined) releaseUrl(url);
+      delete thumbnails[id];
+    }
+    const settings = { ...this.state.settings };
+    for (const id of gone) delete settings[id];
+    this.removal = { histories, depth: this.undoDepth() };
+
+    // The photo on screen stays unless it left; then it is the shell's choice, the next photo or the previous one.
+    const shell = change.session.current_index === null ? null : (change.session.photos[change.session.current_index]?.id ?? null);
+    const stays = wasCurrent !== null && !gone.has(wasCurrent);
+    const current = stays ? wasCurrent : shell;
+    const next = withoutPhotos(session, gone, current);
+    const notice = { notice: removedNotice(names), noticeAction: "undo-removal" as const };
+    if (next.photos.length === 0) {
+      this.endSessionView();
+      this.set(notice);
+      return;
+    }
+    this.set({ session: next, thumbnails, settings, ...notice, ...(stays ? {} : this.currentChanged()) });
+    this.syncHistoryFlags();
+    const shown = next.photos[next.current_index ?? 0];
+    if (!stays && shown && isReady(shown)) void this.ensureSettings(shown.id);
+  }
+
+  /** Delete or Backspace: removes the photo on screen. */
+  removeCurrentPhoto(): Promise<void> {
+    const id = this.currentId();
+    return id === null ? Promise.resolve() : this.removePhotos([id]);
+  }
+
+  /** "Remove picked photos" in the filmstrip's menu. */
+  removePickedPhotos(): Promise<void> {
+    return this.removePhotos((this.state.session?.photos ?? []).filter((p) => p.picked).map((p) => p.id));
+  }
+
+  /**
+   * Undo of the last removal: the photos come back where they were in the filmstrip, with their settings, picks and undo steps; the
+   * photo that was on screen is on screen again unless the person has moved on since. Used by the notice's Undo button, and by ⌘Z while
+   * nothing was changed after the removal ({@link undo}). A photo whose file was added again meanwhile stays out. Nothing happens
+   * when there is nothing to put back.
+   */
+  async undoRemoval(): Promise<void> {
+    const pending = this.removal;
+    if (!pending) return;
+    let change: SessionChange;
+    try {
+      change = await this.api.restorePhotos();
+    } catch (error) {
+      this.fail(error);
+      return;
+    }
+    this.removal = null;
+    const back = new Set(change.photo_ids);
+    if (back.size === 0) {
+      this.set({ notice: "There is nothing to put back.", noticeAction: null });
+      this.syncHistoryFlags();
+      return;
+    }
+    for (const [id, history] of pending.histories) if (back.has(id)) this.histories.set(id, history);
+    const names = change.session.photos.filter((p) => back.has(p.id)).map((p) => photoName(p.file_name));
+    const notice = { notice: restoredNotice(names, change.already_open), noticeAction: null };
+    const old = this.state.session;
+    if (!old) {
+      // The last photo had been removed: the session starts again from what the core has.
+      this.adoptSession(change.session);
+      this.set({ screen: "photos", ...notice });
+      return;
+    }
+    // The photo on screen stays, unless the core put the person back on the photo the removal had taken away.
+    const wasCurrent = this.currentId();
+    const shell = change.session.current_index === null ? null : (change.session.photos[change.session.current_index]?.id ?? null);
+    const current = shell !== null && back.has(shell) ? shell : wasCurrent;
+    const session = withRestoredPhotos(old, change.session, back, current);
+    const moved = current !== wasCurrent;
+    this.set({ session, ...notice, ...(moved ? this.currentChanged() : {}) });
+    this.syncHistoryFlags();
+    const shown = session.photos[session.current_index ?? 0];
+    if (moved && shown && isReady(shown)) void this.ensureSettings(shown.id);
+  }
+
+  /** True while a removal can be taken back: the notice's Undo button, and ⌘Z on the Start screen after the last photo left. */
+  hasRemovalToUndo(): boolean {
+    return this.removal !== null;
+  }
+
+  /**
+   * The state that depends on the photo on screen, reset because it is another one now (as {@link setCurrent} does): Fit, the camera
+   * view off, no histogram, readout or scatter, no selected colour-warp pin, and the zoom figures of the last frame dropped (they
+   * belong to the photo that left). The core has done the same for its viewport.
+   */
+  private currentChanged(): Partial<AppState> {
+    this.viewportQueue.clear();
+    this.thumbLimiter.supersede(() => true);
+    return {
+      histogram: null,
+      middleReadout: null,
+      chromaScatter: null,
+      warpPin: null,
+      zoom: { kind: "fit" },
+      before: false,
+      stats: this.state.stats && { ...this.state.stats, zoom_percent: null, fit_percent: null },
+    };
+  }
+
+  /** The Look tab's tiles of photos that left are let go (the shell's addresses are not ours to free; the mock's `blob:` ones are). */
+  private forgetLookThumbsOf(ids: ReadonlySet<PhotoId>): void {
+    this.thumbLimiter.supersede((t) => ids.has(t.photoId));
+    for (const id of ids) {
+      const entry = this.lookThumbs.get(id);
+      if (!entry) continue;
+      for (const thumb of entry.urls.values()) void thumb.promise.then(releaseUrl, () => {});
+      this.lookThumbs.delete(id);
+    }
+  }
+
+  /** The undo steps of all photos together: what ⌘Z would take back, photo by photo. */
+  private undoDepth(): number {
+    let depth = 0;
+    for (const history of this.histories.values()) depth += history.undoDepth;
+    return depth;
+  }
+
+  /** The removal is the last thing the person did that ⌘Z can take back: nothing was changed since (or what was has been undone). */
+  private removalIsLatest(): boolean {
+    return this.removal !== null && this.removal.depth === this.undoDepth();
+  }
+
   // --- Navigation ---------------------------------------------------------------------------
 
   go(screen: Screen): void {
@@ -980,11 +1202,11 @@ export class AppStore {
 
   /** A short message that is not an error. */
   showNotice(notice: string): void {
-    this.set({ notice });
+    this.set({ notice, noticeAction: null });
   }
 
   dismissNotice(): void {
-    this.set({ notice: null });
+    this.set({ notice: null, noticeAction: null });
   }
 
   /** ⌘W: closes the session, after asking when an export is running (`docs/11` §Keyboard shortcuts). */
@@ -1908,13 +2130,21 @@ export class AppStore {
   private syncHistoryFlags(): void {
     const id = this.currentId();
     const history = id === null ? undefined : this.histories.get(id);
-    const canUndo = history?.canUndo ?? false;
+    // A removal that is the latest thing done can be undone too (⌘Z restores the photos).
+    const canUndo = (history?.canUndo ?? false) || this.removalIsLatest();
     const canRedo = history?.canRedo ?? false;
     if (canUndo !== this.state.canUndo || canRedo !== this.state.canRedo) this.set({ canUndo, canRedo });
   }
 
-  /** ⌘Z for the current photo. */
+  /**
+   * ⌘Z: takes back the photos of the last removal while nothing was changed after it ({@link undoRemoval}); otherwise undoes the
+   * newest setting change of the current photo.
+   */
   async undo(): Promise<void> {
+    if (this.removalIsLatest()) {
+      await this.undoRemoval();
+      return;
+    }
     await this.stepHistory((h) => h.undo(), "before");
   }
 

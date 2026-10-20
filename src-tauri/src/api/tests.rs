@@ -328,6 +328,225 @@ fn closing_the_session_cancels_its_queued_renders_and_forgets_what_they_cached()
     assert!(core.renderer.cached_bytes() > 0);
 }
 
+// --- Removing photos --------------------------------------------------------------------------
+
+/// The bytes and modification time of every file in the photo folder, by name.
+fn disk_state(dir: &Path) -> Vec<(String, Vec<u8>, std::time::SystemTime)> {
+    let mut files: Vec<_> = std::fs::read_dir(dir)
+        .expect("dir")
+        .map(|e| {
+            let path = e.expect("entry").path();
+            (
+                path.file_name()
+                    .expect("name")
+                    .to_string_lossy()
+                    .into_owned(),
+                std::fs::read(&path).expect("read"),
+                std::fs::metadata(&path)
+                    .expect("metadata")
+                    .modified()
+                    .expect("modified"),
+            )
+        })
+        .collect();
+    files.sort_by(|a, b| a.0.cmp(&b.0));
+    files
+}
+
+#[test]
+fn removing_photos_takes_them_out_hands_the_photo_on_screen_over_and_leaves_the_files() {
+    let h = Harness::new();
+    h.open(5);
+    let done = h.develop();
+    let ids: Vec<PhotoId> = done.photos.iter().map(|p| p.id).collect();
+    wait_until("five thumbnails", || h.frames.thumbnail_urls().len() == 5);
+    let urls: std::collections::HashMap<u32, String> =
+        h.frames.thumbnail_urls().into_iter().collect();
+    let on_disk = disk_state(h.photos.path());
+    std::thread::sleep(Duration::from_millis(30));
+
+    h.api.set_current(ids[1]).expect("current");
+    h.api.set_picked(ids[2], true).expect("pick");
+    h.api.set_picked(ids[4], true).expect("pick");
+    let change = h
+        .api
+        .remove_photos(&[ids[1], ids[2], PhotoId(9999)])
+        .expect("remove");
+    // The ids that were in the session, in filmstrip order; the unknown one is ignored.
+    assert_eq!(change.photo_ids, vec![ids[1], ids[2]]);
+    assert_eq!(change.already_open, 0);
+    let names: Vec<_> = change
+        .session
+        .photos
+        .iter()
+        .map(|p| p.file_name.as_str())
+        .collect();
+    assert_eq!(names, ["DSC00001.ARW", "DSC00004.ARW", "DSC00005.ARW"]);
+    // The photo that was on screen went: the next one is, in the core and in the viewport.
+    assert_eq!(change.session.current_index, Some(1));
+    assert_eq!(change.session.picked, vec![ids[4]]);
+    assert_eq!(h.api.core().session.current(), Some(core_id(ids[3])));
+    assert_eq!(h.api.viewport().snapshot_synced().0, Some(core_id(ids[3])));
+    // The removed photos are gone for every command, and their pictures are not served.
+    assert!(h.api.get_settings(ids[1]).is_err());
+    assert!(h.api.set_picked(ids[2], true).is_err());
+    for gone in [ids[1], ids[2]] {
+        let url = urls.get(&gone.0).expect("it had a thumbnail");
+        let (status, _, _) = h.frames.respond(path_of_url(url));
+        assert_eq!(status, 404, "{url}");
+    }
+    let kept: Vec<u32> = h
+        .frames
+        .thumbnail_urls()
+        .into_iter()
+        .map(|(id, _)| id)
+        .collect();
+    assert_eq!(kept, vec![ids[0].0, ids[3].0, ids[4].0]);
+    // The files on disk are as they were (hard rule 5).
+    assert_eq!(disk_state(h.photos.path()), on_disk);
+
+    // Nothing is announced for a removed photo from now on.
+    let seen = h.events.events().len();
+    std::thread::sleep(Duration::from_millis(200));
+    for e in &h.events.events()[seen..] {
+        match e {
+            AppEvent::PhotoProgress(p) => assert!(p.id != ids[1] && p.id != ids[2], "{p:?}"),
+            AppEvent::ThumbnailReady(t) => assert!(t.id != ids[1] && t.id != ids[2], "{t:?}"),
+            _ => {}
+        }
+    }
+    // The session as a fresh `session_state` says it.
+    assert_eq!(h.api.session_state().expect("state"), change.session);
+}
+
+#[test]
+fn undo_brings_the_photos_their_settings_and_their_thumbnails_back() {
+    let h = Harness::new();
+    h.open(4);
+    let done = h.develop();
+    let ids: Vec<PhotoId> = done.photos.iter().map(|p| p.id).collect();
+    wait_until("four thumbnails", || h.frames.thumbnail_urls().len() == 4);
+    let urls: std::collections::HashMap<u32, String> =
+        h.frames.thumbnail_urls().into_iter().collect();
+    let patch: SettingsPatch = serde_json::from_value(
+        json!({ "contrast": 25, "exposure": { "kind": "manual", "ev": 0.5 } }),
+    )
+    .expect("patch");
+    h.api.update_settings(ids[1], &patch).expect("edit");
+    h.api.set_picked(ids[1], true).expect("pick");
+    let edited = h.api.get_settings(ids[1]).expect("settings");
+    h.api.set_current(ids[1]).expect("current");
+
+    h.api.remove_photos(&[ids[1], ids[3]]).expect("remove");
+    let seen = h.events.events().len();
+    let back = h.api.restore_photos().expect("restore");
+    assert_eq!(back.photo_ids, vec![ids[1], ids[3]]);
+    assert_eq!(back.session.photos.len(), 4);
+    assert_eq!(
+        back.session.photos.iter().map(|p| p.id).collect::<Vec<_>>(),
+        ids
+    );
+    // On screen again, picked again, with its edits.
+    assert_eq!(back.session.current_index, Some(1));
+    assert_eq!(back.session.picked, vec![ids[1]]);
+    assert_eq!(h.api.get_settings(ids[1]).expect("settings"), edited);
+    assert_eq!(h.api.viewport().snapshot_synced().0, Some(core_id(ids[1])));
+    // The thumbnails are announced again at the addresses they had, and served.
+    let announced: Vec<(PhotoId, String)> = h.events.events()[seen..]
+        .iter()
+        .filter_map(|e| match e {
+            AppEvent::ThumbnailReady(t) => Some((t.id, t.url.clone())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(announced.len(), 2, "{announced:?}");
+    for (id, url) in &announced {
+        assert_eq!(url, urls.get(&id.0).expect("it had one"));
+        served(&h, url);
+    }
+    // There is nothing more to put back.
+    let again = h.api.restore_photos().expect("restore");
+    assert!(again.photo_ids.is_empty());
+    assert_eq!(again.session.photos.len(), 4);
+}
+
+#[test]
+fn removing_the_last_photos_empties_the_session_and_undo_fills_it_again() {
+    let h = Harness::new();
+    h.open(2);
+    let done = h.develop();
+    let ids: Vec<PhotoId> = done.photos.iter().map(|p| p.id).collect();
+    let change = h.api.remove_photos(&ids).expect("remove");
+    assert!(change.session.photos.is_empty());
+    assert_eq!(change.session.current_index, None);
+    assert_eq!(change.session.folder_name, None);
+    assert_eq!(h.api.core().session.current(), None);
+    assert_eq!(h.api.viewport().snapshot_synced().0, None);
+    assert!(h.frames.thumbnail_urls().is_empty());
+    // The files can be opened again: they are not "already open" any more.
+    let reopened = h.open(2);
+    assert_eq!(reopened.photos.len(), 2);
+    assert_eq!(
+        reopened.opened,
+        Some(OpenSummary {
+            added: 2,
+            already_open: 0
+        })
+    );
+    h.api.close_session();
+    assert!(
+        h.api
+            .restore_photos()
+            .expect("restore")
+            .photo_ids
+            .is_empty(),
+        "the session was closed"
+    );
+
+    // Remove everything and put it back.
+    let opened = h.open(2);
+    h.develop();
+    let ids: Vec<PhotoId> = opened.photos.iter().map(|p| p.id).collect();
+    h.api.remove_photos(&ids).expect("remove");
+    let back = h.api.restore_photos().expect("restore");
+    assert_eq!(back.photo_ids, ids);
+    assert_eq!(back.session.current_index, Some(0));
+    assert!(back.session.folder_name.is_some());
+    h.develop();
+}
+
+#[test]
+fn an_export_that_was_queued_keeps_the_photos_it_was_started_with() {
+    let h = Harness::new();
+    h.open(4);
+    let done = h.develop();
+    let ids: Vec<PhotoId> = done.photos.iter().map(|p| p.id).collect();
+    let out = tempfile::tempdir().expect("out");
+    let id = h.api.export_start(&jpeg_job(out.path())).expect("start");
+    // The person removes three of the four photos while the export runs.
+    h.api.remove_photos(&ids[1..]).expect("remove");
+    assert_eq!(h.api.session_state().expect("state").photos.len(), 1);
+
+    wait_until("the export to finish", || {
+        h.events.events().iter().any(|e| {
+            matches!(e, AppEvent::ExportProgress(p) if p.job_id == id && p.done == p.total && p.total == 4)
+        })
+    });
+    wait_until("the queue to go idle", || !h.api.export_busy());
+    assert_eq!(
+        std::fs::read_dir(out.path()).expect("dir").count(),
+        4,
+        "every photo of the job was written"
+    );
+    // The removed photos left no render cache behind.
+    for gone in &ids[1..] {
+        assert_eq!(
+            h.api.core().renderer.counters(core_id(*gone)),
+            Default::default()
+        );
+    }
+}
+
 // --- Settings ---------------------------------------------------------------------------------
 
 #[test]
